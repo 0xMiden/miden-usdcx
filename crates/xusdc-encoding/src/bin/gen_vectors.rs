@@ -6,7 +6,7 @@
 //! expectations (Poseidon2 Words, AccountIds) are computed ONCE against the pinned
 //! `protocol v0.15.3` crates (`Hasher::hash_elements`, `bytes_to_packed_u32_elements`,
 //! `AccountIdBuilder::build_with_seed`). This binary never calls the crate's mirror
-//! routines (they are red-suite placeholders); it is derivation code, not routine logic.
+//! routines (derivation independence); it is derivation code, not routine logic.
 //! Regeneration is an explicit, reviewed act: `cargo run --bin gen_vectors`.
 //!
 //! DC-1 byte offsets used below trace to the frozen 04 COMPONENT-SPEC DC-1 table

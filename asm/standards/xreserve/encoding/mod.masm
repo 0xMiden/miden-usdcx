@@ -73,21 +73,22 @@ end
 
 #! Reduces an externally-supplied uint256 amount to an AssetAmount felt.
 #!
-#! Byte-swaps the limbs to numeric order, asserts the high four limbs are zero, takes the
-#! low four limbs as a u128, floor-divides by 10^scale_exp, and asserts the quotient does
-#! not exceed the AssetAmount maximum. Rejects by trapping; never saturates or clamps.
+#! Byte-swaps the limbs to numeric order, asserts the numerically high half (U0, wire
+#! bytes 0..16) is zero, takes the numerically low half as a u128, floor-divides by
+#! 10^scale_exp, and asserts the quotient does not exceed the AssetAmount maximum.
+#! Rejects by trapping; never saturates or clamps.
 #!
 #! Inputs:  [U1, U0, scale_exp]
 #! Outputs: [y]
 #!
 #! Where:
-#! - U1 is the word holding the uint256's upper four u32-LE-packed limbs (bytes 16..32).
-#! - U0 is the word holding the uint256's lower four u32-LE-packed limbs (bytes 0..16).
+#! - U1 is the word holding the uint256's positionally upper four u32-LE-packed limbs (wire bytes 16..32 — the numerically low half).
+#! - U0 is the word holding the uint256's positionally lower four u32-LE-packed limbs (wire bytes 0..16 — the numerically high half).
 #! - scale_exp is the decimal scale exponent (EVM decimals minus Miden decimals, 0..=18).
 #! - y is the reduced amount as a single AssetAmount felt.
 #!
 #! Panics if:
-#! - any of the upper four limbs is nonzero (the value exceeds 2^128).
+#! - any limb of the numerically high half (U0) is nonzero (the value exceeds 2^128).
 #! - the post-scale quotient exceeds the AssetAmount maximum.
 #! - scale_exp exceeds 18.
 #! - a supplied limb is not a valid u32.

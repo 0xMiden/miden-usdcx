@@ -3,9 +3,6 @@
 //! the packed magic/version are the u32-LE reinterpretations of the big-endian wire
 //! values; the error strings are byte-identical). One-sided edits fail mechanically —
 //! the `masm-rust-constant-parity` obligation (V2-05 seam closed at the constant layer).
-//!
-//! RED-SUITE: layout.masm and the Rust DC-1 constants hold inconsistent SENTINELS, so
-//! these assertions are RED by design until routine R4 lands the real values.
 
 use std::collections::BTreeMap;
 

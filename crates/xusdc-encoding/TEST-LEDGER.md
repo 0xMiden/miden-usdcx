@@ -21,7 +21,7 @@ version `0x01000000` (both already pinned by the artifact's preimage felts).
 | 2 | focused Rust run | **11/11 green first pass** | — |
 | 3 | `layout.masm` real values + `mod.masm`: ERR_DI_* consts (string-identical to Rust), placeholder const/body removed, parser body + `field8_is_nonzero` helper; driver layout-asserts switched to single-felt loads (alignment); `probe_p3` DELETED (mandated — last placeholder gone) | parity: **2/2 green** | — |
 | 4 | `tv_dual_3` first run | accepts reached the OUTPUT asserts: structural checks + `remote_domain` correct; `remote_token_1` mismatch = word-orientation (push.{Word} = element-0-on-top, my pushes were reversed). Class: R4 implementation bug | RT words now pushed highest-index-first (element-0-on-top orientation) |
-| 5 | `tv_dual_3` re-run | **1 passed** — 2 accepts (D-4A stack contract + all 12 fields' per-felt layout asserts post-exec ⇒ staged memory unmutated) + 6 MASM rejects with exact `ERR_DI_*` (incl. the MASM-only `di-rej-felt-len`; truncation hits the len-guard branch — the byte-level TruncatedHeader analogue — sharing the frozen `ERR_DI_LENGTH`) | — |
+| 5 | `tv_dual_3` re-run | **1 passed** — 2 accepts (D-4A stack contract + all 12 fields' per-felt layout asserts post-exec ⇒ staged memory unmutated) + 8 MASM rejects with exact `ERR_DI_*` (incl. the MASM-only `di-rej-felt-len`; truncation hits the len-guard branch — the byte-level TruncatedHeader analogue — sharing the frozen `ERR_DI_LENGTH`) | — |
 | 6 | full dual + full suite | masm_dual **7/7**; workspace **37/37 green** (lib 28, parity 2, masm_dual 7; doc-tests 0) | — |
 
 Final sweeps: exactly ONE proc definition per canonical home (`mod.masm:64/96/189`);

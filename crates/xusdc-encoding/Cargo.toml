@@ -5,21 +5,22 @@ edition = "2021"
 publish = false
 description = "xUSDC-on-Miden 04 shared encoding: hand-written MASM + Rust mirror and test harness"
 
-# Pinned per docs/governing/V15-DEVNET-BASELINE.md: protocol v0.15.3 (681fc9058) via a
-# detached git worktree; Cargo.lock seeded from the worktree so the assembler stack
-# resolves at the v0.15.3-locked 0.23.3 family. The `testing` feature on the main
+# Pinned per docs/governing/V15-DEVNET-BASELINE.md: protocol v0.15.3 — git rev-pinned to
+# the released-tag commit 681fc90584131560b87db8f7487685f4fa8420a8 (CS-3; the repo is the
+# protocol monorepo, formerly miden-base — both GitHub names resolve the same rev). The
+# lock keeps the v0.15.3-locked 0.23.3 assembler family. The `testing` feature on the main
 # miden-protocol dep is required by the committed vector generator (AccountIdBuilder).
 
 [dependencies]
-miden-protocol  = { path = "/Users/philipp/Documents/Work/Miden-Coding/protocol-pin-v0.15.3/crates/miden-protocol", features = ["testing"] }
-miden-standards = { path = "/Users/philipp/Documents/Work/Miden-Coding/protocol-pin-v0.15.3/crates/miden-standards" }
+miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8", features = ["testing"] }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
-miden-standards = { path = "/Users/philipp/Documents/Work/Miden-Coding/protocol-pin-v0.15.3/crates/miden-standards", features = ["testing"] }
-miden-testing   = { path = "/Users/philipp/Documents/Work/Miden-Coding/protocol-pin-v0.15.3/crates/miden-testing" }
-miden-tx        = { path = "/Users/philipp/Documents/Work/Miden-Coding/protocol-pin-v0.15.3/crates/miden-tx" }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8", features = ["testing"] }
+miden-testing   = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
+miden-tx        = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
 # exact-error matching for u32-assert traps (OperationError::U32AssertionFailed); same
 # 0.23.3 the v0.15.3 lock already resolves
 miden-processor = "=0.23.3"

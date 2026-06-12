@@ -1,0 +1,29 @@
+[package]
+name = "xusdc-encoding"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "xUSDC-on-Miden 04 shared encoding: hand-written MASM + Rust mirror and test harness"
+
+# Pinned per docs/governing/V15-DEVNET-BASELINE.md: protocol v0.15.3 (681fc9058) via a
+# detached git worktree; Cargo.lock seeded from the worktree so the assembler stack
+# resolves at the v0.15.3-locked 0.23.3 family. The `testing` feature on the main
+# miden-protocol dep is required by the committed vector generator (AccountIdBuilder).
+
+[dependencies]
+miden-protocol  = { path = "/Users/philipp/Documents/Work/Miden-Coding/protocol-pin-v0.15.3/crates/miden-protocol", features = ["testing"] }
+miden-standards = { path = "/Users/philipp/Documents/Work/Miden-Coding/protocol-pin-v0.15.3/crates/miden-standards" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+miden-standards = { path = "/Users/philipp/Documents/Work/Miden-Coding/protocol-pin-v0.15.3/crates/miden-standards", features = ["testing"] }
+miden-testing   = { path = "/Users/philipp/Documents/Work/Miden-Coding/protocol-pin-v0.15.3/crates/miden-testing" }
+miden-tx        = { path = "/Users/philipp/Documents/Work/Miden-Coding/protocol-pin-v0.15.3/crates/miden-tx" }
+# exact-error matching for u32-assert traps (OperationError::U32AssertionFailed); same
+# 0.23.3 the v0.15.3 lock already resolves
+miden-processor = "=0.23.3"
+tokio = { version = "1", features = ["macros", "rt"] }
+anyhow = "1"
+rstest = "0.26"
+assert_matches = "1.5"

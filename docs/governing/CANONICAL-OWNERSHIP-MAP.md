@@ -1,0 +1,97 @@
+> **MIRROR — READ-ONLY (mirrored 2026-06-11).** Canonical source: `/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/07-implementation-readiness/CANONICAL-OWNERSHIP-MAP.md`. Do NOT edit this copy; if it diverges from the canonical source, the canonical source wins. Re-sync via `tools/sync-mirrors.sh`.
+
+# CANONICAL-OWNERSHIP-MAP (FINALIZED — GOVERNING, 2026-06-11 — MASM-first)
+
+> **Baseline: Miden v0.15 + devnet (2026-06-10).** Source citations to `miden-standards` / `protocol` resolve at the released tag **`protocol v0.15.3`** (`681fc9058`). The spike pin `0b662adfb` (`git describe` = `v0.15.0-21`) is a **v0.15-LINE commit** — NOT an ancestor of the v0.15 patch tags (it diverged toward `next` after `v0.15.0`); the cited `miden-standards` source (`fungible.masm`, `build.rs`) was verified **byte-identical** between `0b662adfb` and the historical `v0.15.1`, and and the gate-B re-audit (2026-06-10) **independently re-verified byte-identity through `v0.15.3`** for the load-bearing files (`fungible.masm`, `miden-standards/build.rs`, `code_builder/mod.rs`, the shim, `notes/{burn,mint}.masm`, `kernel/mod.rs`, `note/script.rs`), so every citation holds under the v0.15 baseline. `0.23.3`/`0.25.1` crate versions are the **v0.15 stack's dependencies** (v0.15.3-locked; the historical v0.15.1 locked 0.23.1), not a top-level target (and the VM/assembler line is a **separate `0.23.x` cadence**, NOT a "miden-vm v0.15" tag). See `V15-DEVNET-BASELINE.md`. This is an ownership/layout map; the retarget does not change owners — only the baseline framing of the cited source.
+
+**Purpose.** One — and only one — owner per shared concept, wire-format, and routine, so builders **conform to the owner instead of re-deriving it**. Re-deriving an owned thing is the defect generalized from the reconciliation's `V2-05`: the relayer keeps an off-chain DepositIntent layout that is byte-identical to the canonical 04 owner but not pinned to it, leaving a drift seam (`RECONCILIATION-REPORT.md:88-95`).
+
+**MASM-first scope note (read before using this map).** Ownership here is at the **concept/component level**, not the file level. The custom contracts (faucet first) are **hand-written MASM**, so the *encoding contract* (byte offsets, felt packing, cap/scale, hash-to-Word rule) is realized in **two implementations that must agree**:
+- **on-chain MASM** inside the faucet / shared MASM module (parse, verify, reduce), and
+- **off-chain Rust** inside the relayer/listener/monitor harnesses (encode, decode, pre-validate).
+
+The duplication rule is therefore **per language, plus cross-language conformance**: at most one MASM implementation and at most one Rust implementation of each owned routine, and both must pass the **same shared deterministic test vectors** (single canonical vector home — see Anti-duplication). A second copy *within* a language is a defect; an undocumented divergence *across* languages is the V2-05 drift seam.
+
+## Resolved MASM layout (conforms to the frozen archive — `PINNED BASELINE`)
+The MASM structure research (`MASM-STRUCTURE-RESEARCH-REPORT.md`, audited PASS) + the **frozen Phase 4 archive** fix the layout. **`xreserve` is the xUSDC *product-root* namespace** (NOT the faucet's folder): the faucet procs, the 04-owned `encoding` sub-module, and the note scripts all live under it. This matches `04-shared-encoding/COMPONENT-SPEC.md:152,:173,:210` (04 declares its own canonical convention `xreserve::encoding::<name>`), `01-onchain-xusdc-faucet/COMPONENT-SPEC.md:87-91,:317-324`, and the reconciliation's PINNED call paths (`90-reconciliation/SWEEP-V2-DUPLICATED-INCONSISTENT-ENCODING.md:18-19`, V2-01/V2-02).
+
+```
+asm/standards/
+  xreserve/                       # xUSDC PRODUCT-ROOT namespace (asm/standards/xreserve/**)
+    xreserve_mint.masm            # FAUCET(01): the only supply-increasing proc
+    xreserve_receive_and_burn.masm, mint_deny_guard.masm, nonce_registry.masm,
+    attester_admin.masm, min_burn_admin.masm, burn_policy.masm, domain_config.masm   # FAUCET(01)
+    deposit_intent_parser.masm    # FAUCET(01): mint-specific VALIDATION/ASSERTION logic ONLY (✅ NS-2 DECIDED by human, 2026-06-10: canonical parser = 04-owned `xreserve::encoding::parse_deposit_intent` — this file calls the 04 parser and asserts mint preconditions; it must NOT duplicate or re-own the shared parser; the `01:278` symbol `xreserve::parse_deposit_intent` is superseded as the shared-parser name)
+    attestation_verify.masm       # FAUCET(01): on-chain attestation verify
+    encoding/                     # SHARED-ENCODING(04)-OWNED sub-module → xreserve::encoding::*
+      layout.masm                 #   04: DepositIntent felt offsets + packed magic constant (DC-1)
+      uint256.masm                #   04: uint256→AssetAmount (DC-5)  → xreserve::encoding::uint256_to_asset_amount
+      bytes32.masm                #   04: bytes32→Word hash-to-Word (DC-3 commitment / DC-4 nonce key)
+      account_id.masm             #   04: AccountId↔bytes32 (DC-6)
+      attestation.masm            #   04: depositAttestation felt-packing/staging (DC-2) → xreserve::encoding::attestation
+      burn_items.masm             #   04: XReserveBurnNote item codec (DC-7) → xreserve::encoding::burn_items (✅ DC-7 RATIFIED by human, 2026-06-10: `asm/standards/xreserve/encoding/burn_items.masm` = the 04-owned burn-item codec home; faucet note behavior stays 01-owned; listener decoding conforms to this 04 codec)
+  notes/
+    xreserve_mint_note.masm, xreserve_burn_note.masm     # FAUCET(01) note scripts
+  account_components/
+    faucets/xreserve_faucet.masm  # thin `pub use` shim → its own .masl
+```
+Owner→path rule: directory path = MASM module path (report §1.1) and the Rust component `NAME` must equal it. **Logical owner ≠ physical parent:** 04 owns `xreserve::encoding::*` even though it sits under the `xreserve` product root; the faucet(01) owns the parser/attestation *assertion* logic but **consumes** 04's `encoding/layout.masm` constants (the boundary the reconciliation pinned, `01:278`).
+
+**Layout decision — ✅ RESOLVED: SELF-CONTAINED (human chose 2026-06-10; ratified via packet acceptance 2026-06-11):**
+- **Shim vs self-contained** — DECIDED: assemble a single **self-contained** component `.masm` (not the shim + standards-library split). Builders implement the self-contained layout; do not revisit (report §1.2 documents the alternative for the record).
+
+**Slot-binding convention (resolved — `decouple-component-from-storage` #2927 conflict, consortium N2).** The self-contained single-install xUSDC faucet MAY hard-code its own storage slot via `push.<SLOT_CONST>[0..2]`, **source-backed by `fungible.masm:64-67`** (the standard faucet it is modelled on hard-codes `TOKEN_CONFIG_SLOT[0..2]`). This convention was read at the spike pin `protocol@0b662adfb` (= `git describe` `v0.15.0-21`, on the **v0.15 line**), superseded by the released tag **`protocol v0.15.3`**; the cited `miden-standards` source was verified byte-identical between `0b662adfb`, the historical `v0.15.1`, **and `v0.15.3` (gate-B re-audit, 2026-06-10)** — the citation holds under the v0.15 baseline (`V15-DEVNET-BASELINE.md` §4). The #2927 `decouple-component-from-storage` parameterized-slot rule applies ONLY to procs intended for **multi-install reuse** — flag any such proc explicitly. Frozen protocol source wins for the self-contained faucet; a #2927-armed critic must NOT flag the hard-coded slot here as a defect.
+
+*(Resolved 2026-06-08, consortium HIGH finding: the earlier "sibling `encoding/`" tree was a research-report modelling of `xreserve` as the faucet folder; it conflicted with the frozen archive's `xreserve::encoding::*` product-root convention and would have broken the faucet's consumed call paths. Conformed to the archive — no archive edit. The `deposit_intent_parser`/`attestation_verify` HOME conformed to the frozen faucet spec (`asm/standards/xreserve/`, faucet-owned assertion over 04's layout constants — `01:278`,`:294`) — **and the parse-proc split is now ✅ NS-2 DECIDED by human, 2026-06-10: canonical parser = 04-owned `xreserve::encoding::parse_deposit_intent` (see §Naming splits below): 01 keeps only distinct mint-specific validation/assertion logic at `xreserve/` and must not duplicate or re-own the shared parser.**)*
+
+## Quarantined assumptions (removed from the prior draft — do NOT reintroduce)
+- ❌ "Shared encoding is a Rust crate that every component imports." → Replaced by the concept-level owner above; on-chain encoding is MASM, off-chain is Rust, both conform to the 04 contract.
+- ❌ "`cargo miden build` over `project-template/contracts/*` is the proof for the custom faucet." → The faucet is hand-written MASM; its proof is source-backed MASM assembly + MockChain + local-node (see `BUILDER-GATES`), **not** Rust-compiler build. `cargo`/`cargo miden` apply only to legitimately-Rust harness/tooling crates.
+- ❌ "Sibling top-level `asm/standards/encoding/` (namespace `encoding::*`)." → Conflicts with the frozen `xreserve::encoding::*`; use the nested product-root home above.
+
+## Canonical owners (concept/component level)
+
+| Owned thing (DC-id) | Canonical owner (concept) | On-chain MASM home (per §Resolved layout) | Off-chain Rust home | Conformance source of truth |
+|---|---|---|---|---|
+| `bytes32 → Word` hash-to-Word, Poseidon2 over 8×u32-LE (DC-3 commitment / DC-4 nonce key) | **shared-encoding (04)** (hash) + **faucet (01)** (nonce-registry & allowlist stores) | `asm/standards/xreserve/encoding/bytes32.masm` → **`xreserve::encoding::bytes32_to_key`** (✅ NS-1 DECIDED by human, 2026-06-10: canonical MASM proc = `xreserve::encoding::bytes32_to_key` — the 04 OWNER's name per `04:262` + TV-DUAL-1 `04-harness:107`). The `01:324` symbol `xreserve::encoding::bytes32_to_storage_map_key` is a **superseded 01 consumer-side symbol** — NOT a second MASM proc and NOT a wrapper alias. | harness encode helper | Rust routine `bytes32_to_storage_map_key` `04:252` (V2-01 PINNED at the Rust-routine level only); `INV-BYTES32-HASH-TO-WORD`; DC-4 `04:139`, DC-3 `04:142` |
+| `uint256 → AssetAmount` reducer (byte-swap → assert high-4-limbs-zero → low-4 → scale 6dp → cap `2^63−2^31`) (DC-5) | **shared-encoding (04)** | `asm/standards/xreserve/encoding/uint256.masm` → `xreserve::encoding::uint256_to_asset_amount` | harness | `DC-5`; `INV-UINT256-TO-ASSETAMOUNT`; routine `04:298`/`:309`; `ARCHITECTURE-DECISIONS-AND-CAVEATS.md:63-66` (C-6) |
+| `AccountId ↔ bytes32` (15-byte / two-felt, lossless, no keccak fallback) (DC-6) | **shared-encoding (04)** | `asm/standards/xreserve/encoding/account_id.masm` | relayer + listener | `DC-6`; `INV-ACCOUNTID-ENCODING`; routine `04:280` |
+| `DepositIntent` 240-byte header = 60 u32-LE felts + hookData (DC-1) | **shared-encoding (04)** owns the layout constants; **faucet (01)** owns the on-chain parse assertions | 04: `asm/standards/xreserve/encoding/layout.masm`; on-chain parse: **04-owned `xreserve::encoding::parse_deposit_intent`** (✅ NS-2 DECIDED by human, 2026-06-10: canonical parser = 04-owned `xreserve::encoding::parse_deposit_intent` — `04:347`, TV-DUAL-3 `04-harness:109`). 01's `xreserve/deposit_intent_parser.masm` keeps distinct mint-specific validation/assertion logic ONLY — it calls the 04 parser and must not duplicate or re-own it (`01:278`'s `xreserve::parse_deposit_intent` is superseded as the shared-parser name). | relayer pre-validate — **pin to 04, do not re-derive ← V2-05** | `DC-1`; `INV-DEPOSITINTENT-PARSE`; owner `04:90-101,:103,:347`; faucet `01:278` |
+| `depositAttestation` wire (raw secp256k1 over `keccak256(payload)`; 65B `r‖s‖v`=17 felts; 33B pubkey=9 felts; NOT EIP-712) (DC-2) | **shared-encoding (04)** owns the staging/felt-packing; **faucet (01)** owns the on-chain verify | 04 staging: `asm/standards/xreserve/encoding/attestation.masm`; 01 verify: `asm/standards/xreserve/attestation_verify.masm` | relayer transport | `DC-2`; `INV-DEPOSIT-ATTESTATION-RAW-KECCAK`; `04` TV-DUAL-5; faucet `01:294` |
+| pubkey commitment + allowlist key (`Poseidon2(33B)` → `Word`) (DC-3) | **shared-encoding (04)** (commitment hash) + **faucet (01)** (the on-chain `StorageMap` store) | commitment `asm/standards/xreserve/encoding/bytes32.masm`; store `asm/standards/xreserve/attester_admin.masm` | — | `DC-3`; `01:221` |
+| `XReserveBurnNote` item codec `(amount,destDomain,destRecipient,salt)` (DC-7) | **shared-encoding (04)** (codec — ✅ DC-7 RATIFIED by human, 2026-06-10: `asm/standards/xreserve/encoding/burn_items.masm` = the 04-owned burn-item codec home; faucet note behavior 01-owned; listener decoding conforms to the 04 codec) + **faucet (01)** (note schema/producer) | codec `asm/standards/xreserve/encoding/burn_items.masm`; note `asm/standards/notes/xreserve_burn_note.masm` | listener decode | `DC-7`; `INV-PUBLIC-BURN-OBSERVABILITY` |
+| Circle JSON schema types (DC-9/10/11/12) | **shared-encoding (04)** (type defs) | n/a (off-chain only) | relayer, listener, monitor | `DC-9..DC-12`; `CIRCLE-API-SURFACE.md` |
+| optional Circle binary decode (DC-13) | **shared-encoding (04)** (optional, NON-GATING) | n/a | listener (optional) | `DC-13` |
+| burn-evidence package assembly (`burnTxId`+`note_id`+`nullifier`+`block_num`; proof-strength labels) (DC-8) | **listener (03)** | n/a | listener | `DC-8`; `INV-BURN-EVIDENCE-TRUST`; `MIDEN-RPC-BURN-EVIDENCE.md` |
+| `xreserve_mint`, mint deny-guard, nonce registry, attester admin, burn policy, note types, faucet account components | **faucet (01)** — hand-written MASM | `asm/standards/xreserve/*.masm` + shim `asm/account_components/faucets/xreserve_faucet.masm` + notes `asm/standards/notes/xreserve_*_note.masm` | n/a | `01-onchain-xusdc-faucet/COMPONENT-SPEC.md`; `INV-MINT-*`/`INV-*BURN*` |
+| supply/monitoring, admin SOPs, upgrade-governance | **monitoring (05)** | n/a (off-chain/ops) | monitor | `05-monitoring-admin-ops/COMPONENT-SPEC.md` |
+
+## Anti-duplication rule (preserved, MASM-aware — mechanical, not prose)
+- Each owned routine: **≤ 1 MASM implementation** and **≤ 1 Rust implementation**, both conforming to the column-5 source of truth. A second within-language copy fails the duplication scan even if byte-identical.
+- **Shared test vectors have ONE canonical home (owner = shared-encoding 04).** The golden vectors (input → expected bytes/felts, incl. cap-boundary/limb-overflow edges) live in a single artifact under 04; BOTH the MASM-side test and the Rust-side test load them **by reference**, not as hand-copied tables. A duplicate vector table outside that home fails the G1 duplication scan, same as a duplicate routine. The 04 dual-impl harness already pins this (`04-shared-encoding/TEST-AND-VERIFICATION-HARNESS.md` TV-DUAL-*).
+- **The off-chain Rust mirror must pin to the 04 owner, not re-derive it.** Per the reconciliation's V2-05 remediation, the relayer's DepositIntent decoder **re-exports the 04 serde / `parse_deposit_intent_header` model** OR carries an explicit lockstep-pin reference to 04 (`RECONCILIATION-REPORT.md:88-95`, owner `04:341-345,:388`) — a byte-identical independent copy fails G1 even if it passes its own local vectors.
+- **Cross-language CONSTANTS follow `masm-rust-constant-parity` (#2927) — single source of truth.** The DC-1 layout offsets, the packed magic `0x5a2e0acd`, and the DC-5 cap `2^63−2^31` / 6-dp scale are numeric constants duplicated MASM↔Rust. **PREFER defining them in MASM and generating the Rust counterpart via `build.rs` codegen** (the protocol already does this for `ERR_*`/event consts — `MASM-STRUCTURE-RESEARCH-REPORT.md §3.7`); where still hand-duplicated, both sides MUST change in the SAME unit AND be cross-checked by the canonical golden vectors. A one-sided constant edit is the invisible-until-it-bites drift `masm-rust-constant-parity` warns against (the same failure class as V2-05).
+- A new shared concept/boundary must be **added to this map first** (human re-approves) — no silent new shared shapes.
+
+## ✅ Naming splits — ADJUDICATED by the human (2026-06-10; gate-B re-audit blocking finding, now resolved)
+
+The FROZEN archive itself carries two intra-archive MASM-symbol splits the reconciliation never adjudicated (V2-01 pinned only at the Rust-routine level, `SWEEP-V2:18`). This map previously adopted one side of each silently; both sides were surfaced, and **the human has now decided (2026-06-10)** — the decisions below are binding:
+
+| # | Owner-04 side (normative per `04:210` "MASM procedure names follow `xreserve::encoding::<name>`") | Consumer/faucet-01 side | Bound test rows |
+|---|---|---|---|
+| NS-1 (bytes32, DC-3/DC-4) — **✅ DECIDED: the 04 name** | `xreserve::encoding::bytes32_to_key` (`04:262`) — **canonical** | call boundary `xreserve::encoding::bytes32_to_storage_map_key` (`01:324`) — **superseded consumer-side symbol** | TV-DUAL-1 (`04-harness:107`) uses the 04 name |
+| NS-2 (DepositIntent parse, DC-1) — **✅ DECIDED: 04-owned** | 04-owned `xreserve::encoding::parse_deposit_intent` (`04:347`) — **canonical** | 01-owned `xreserve::parse_deposit_intent` at `xreserve/deposit_intent_parser.masm` (`01:278`) — **superseded as the shared-parser symbol** (file keeps mint-specific validation only) | TV-DUAL-3 (`04-harness:109`) uses the 04 name |
+
+**Adjudication record (human, 2026-06-10):** both splits were decided FOR the 04 OWNER's names (consistent with conform-to-the-owner and with TV-DUAL-1/-3, the binding cross-language acceptance rows G1/G4 point at). The human explicitly accepts that the frozen 01 consumer text (`01:278`,`:324`) carries superseded symbols — the frozen archive is NOT edited.
+
+**Decisions (binding):** NS-1 → `xreserve::encoding::bytes32_to_key` (04 owner name; `bytes32_to_storage_map_key` = superseded 01 consumer-side symbol, NOT a second proc or wrapper alias). NS-2 → 04-owned `xreserve::encoding::parse_deposit_intent` (01 keeps distinct mint-specific validation/assertion logic; no duplication/re-owning of the shared parser). **Builder STOP rule (G5): SATISFIED for NS-1/NS-2** — the rule remains in force for any FUTURE unadjudicated split: the builder MUST STOP at the affected routine and report; no silent pick, no dual-named wrapper.
+
+## Non-negotiables carried from the archive (do not weaken)
+- Single supply-increasing surface = custom `xreserve_mint`; stock `mint_and_send` is a deny guard.
+- No `ecrecover`: verify against a supplied candidate pubkey + commitment allowlist.
+- Public burn note (`NoteType::Public`) + fixed full-32-bit tag; two-block create→consume.
+- `burnTxId` linkage is **node-trusted** unless the optional full-block path runs (`DEV-7`, highest-risk, Circle-gated).
+- xUSDC is **not** the chain fee token (MVP).
+- Every Circle-owned `DEV-*`/`Q-*` stays **OPEN** — this map approves nothing Circle-owned.
+
+*FINALIZED — GOVERNING (2026-06-11, human acceptance of `HUMAN-FINALIZATION-PACKET.md`; §2.A decisions applied 2026-06-10, §2.B baseline + SELF-CONTAINED layout ratified via packet acceptance). MASM structure research + the grounding spike are done (PASS); the encoding-root is resolved by conforming to the frozen archive. **NS-1, NS-2, and DC-7 are DECIDED/RATIFIED by the human (2026-06-10); §2.B (v0.15.3/devnet baseline + SELF-CONTAINED layout) ratified via packet acceptance (2026-06-11).** Remaining human step: explicit implementation go/no-go ONLY. The duplication gate in `BUILDER-GATES` enforces it; its G5 STOP rule binds builders only if a FUTURE split appears unadjudicated (none currently — NS-1/NS-2 decided 2026-06-10).*

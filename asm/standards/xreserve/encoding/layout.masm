@@ -1,0 +1,38 @@
+# xreserve::encoding::layout
+#
+# DepositIntent wire-layout constants (DC-1): felt offsets of every header field within the
+# u32-LE-packed on-chain preimage (4 bytes per felt; byte offset / 4), the packed magic and
+# version compare constants, and the preimage size bounds. Owned by shared-encoding (04);
+# the faucet (01) consumes these constants for its mint-side assertions.
+#
+# Values per the frozen DC-1 table (CIRCLE-DATA-SCHEMAS.md:21-35) and C-10 (240-byte
+# header = 60 u32-LE felts). Cross-language parity with the Rust constants is enforced
+# by `crates/xusdc-encoding/tests/constant_parity.rs` (masm-rust-constant-parity).
+
+# CONSTANTS — DepositIntent felt offsets (DC-1 byte offset / 4)
+# =================================================================================================
+
+pub const MAGIC_FELT_OFF = 0
+pub const VERSION_FELT_OFF = 1
+pub const AMOUNT_FELT_OFF = 2
+pub const REMOTE_DOMAIN_FELT_OFF = 10
+pub const REMOTE_TOKEN_FELT_OFF = 11
+pub const REMOTE_RECIPIENT_FELT_OFF = 19
+pub const LOCAL_TOKEN_FELT_OFF = 27
+pub const LOCAL_DEPOSITOR_FELT_OFF = 35
+pub const MAX_FEE_FELT_OFF = 43
+pub const NONCE_FELT_OFF = 51
+pub const HOOK_DATA_LEN_FELT_OFF = 59
+pub const HOOK_DATA_FELT_OFF = 60
+
+# CONSTANTS — packed compare values and size bounds
+# =================================================================================================
+
+# the wire magic 0x5a2e0acd (big-endian bytes 5a 2e 0a cd) as the u32-LE-packed felt
+pub const DEPOSIT_INTENT_MAGIC_PACKED = 0xcd0a2e5a
+
+# the wire version 1 (big-endian bytes 00 00 00 01) as the u32-LE-packed felt
+pub const DEPOSIT_INTENT_VERSION_PACKED = 0x01000000
+
+pub const DEPOSIT_INTENT_HEADER_FELTS = 60
+pub const MAX_NOTE_STORAGE_FELTS = 1024

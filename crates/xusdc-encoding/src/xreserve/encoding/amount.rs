@@ -9,8 +9,9 @@ use miden_protocol::asset::AssetAmount;
 use super::error::EncodingError;
 
 /// The scale exponent bound (frozen `§6.4`: scale_exp = EVM decimals − Miden decimals,
-/// 0..=18; mirrored in MASM as `SCALE_EXP_MAX`).
-const MAX_SCALE_EXP: u32 = 18;
+/// 0..=18; mirrored in MASM as `SCALE_EXP_MAX` — `pub` so the constant-parity suite
+/// pins the cross-language pair, CS-5).
+pub const MAX_SCALE_EXP: u32 = 18;
 
 /// The single reduction core shared by all three public routines (≤ 1 implementation of
 /// the owned mechanic): frozen §8.2 — byte-swap → high-4-zero → low-4 u128 → floor-divide

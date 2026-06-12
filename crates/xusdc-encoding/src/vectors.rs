@@ -260,10 +260,16 @@ impl DiFields {
 mod tests {
     use super::*;
 
-    /// Scaffold/meta test: the artifact parses, every family is non-empty, and every
-    /// entry carries provenance (`cite` + `derivation`). Allowed green in the red-suite.
+    /// Scaffold/meta test: the artifact parses, every family is non-empty, every entry
+    /// carries provenance (`cite` + `derivation`), and every entry carries non-empty
+    /// `tv` tags unless it is on the explicit guard-vector allowlist (CS-5). Allowed
+    /// green in the red-suite.
     #[test]
     fn artifact_guard() {
+        // CS-5 allowlist: guard-only vectors that intentionally trace to no frozen TV
+        // row (they pin harness/trap mechanics, not a spec row).
+        const TV_TAG_ALLOWLIST: [&str; 1] = ["amt-guard-limb-not-u32"];
+
         let v = load();
         assert_eq!(v.version, 1);
         assert!(!v.families.b32.is_empty(), "b32 family");
@@ -271,17 +277,23 @@ mod tests {
         assert!(!v.families.aid.is_empty(), "aid family");
         assert!(!v.families.di.is_empty(), "di family");
         let no_provenance = |cite: &str, derivation: &str| cite.is_empty() || derivation.is_empty();
+        let tv_ok =
+            |id: &str, tv: &[String]| !tv.is_empty() || TV_TAG_ALLOWLIST.contains(&id);
         for e in &v.families.b32 {
             assert!(!no_provenance(&e.cite, &e.derivation), "{} provenance", e.id);
+            assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
         }
         for e in &v.families.amt {
             assert!(!no_provenance(&e.cite, &e.derivation), "{} provenance", e.id);
+            assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
         }
         for e in &v.families.aid {
             assert!(!no_provenance(&e.cite, &e.derivation), "{} provenance", e.id);
+            assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
         }
         for e in &v.families.di {
             assert!(!no_provenance(&e.cite, &e.derivation), "{} provenance", e.id);
+            assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
         }
     }
 }

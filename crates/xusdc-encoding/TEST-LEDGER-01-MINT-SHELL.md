@@ -1,7 +1,8 @@
 # 01 Faucet Slice 1 — Mint-Precondition Shell TEST LEDGER
 
-Loop records per the approved P5-01 plan. Phase: **RED-SUITE COMMITTED (C3)** — test
-infrastructure, fixtures, and the named placeholder only; zero assertion behavior.
+Loop records per the approved P5-01 plan. Phase: **RED-SUITE COMPLETE (C3 + C4/CS-5)** —
+test infrastructure, fixtures, the named placeholder, and the CS-5 hardening; zero
+assertion behavior. STOPPED for the independent red-suite audit before any C5 stage.
 
 Ratified human decisions in force (plan §0): **D-A** module home
 `asm/standards/xreserve/deposit_intent_parser.masm`, nested canonical path
@@ -68,3 +69,27 @@ Containment: this phase wrote `asm/standards/xreserve/deposit_intent_parser.masm
 `tests/support/mod.rs`, `tests/masm_mint_shell.rs`, and this ledger. `encoding/{mod,
 layout}.masm` procs, mirror routine bodies, the vector artifact, and all prior tests
 untouched (C1 doc-comment edits and the C2 pin migration are their own audited commits).
+
+## CS-5 hardening (C4, 2026-06-12)
+
+- `constant_parity.rs` rebuilt: `word("…")` constants parsed as a third category; NEW
+  rows `SCALE_EXP_MAX == MAX_SCALE_EXP` (= 18; cross-language names differ by frozen
+  decision) and `POW2_32 == 2^32`; NEW `masm_constants_bidirectional` sweep — every
+  numeric/string/word constant parsed from `layout.masm`, `encoding/mod.masm`, AND the
+  shell module must be covered by a parity row or a documented exemption (a new
+  MASM-only constant now FAILS); NEW staged `masm_shell_error_string_parity` (the
+  `SHELL_ERRORS_DECLARED` / `EXPECTED_SHELL_WORD_CONSTS` lists grow with the C5 commits
+  that declare the MASM consts, pinned against `tests/support`'s single Rust source).
+  Exemption: `ERR_UNIMPLEMENTED_*` prefix, red/implementation-phase-only — the final C5
+  stage removes the last placeholder and the hand-off sweep `rg ERR_UNIMPLEMENTED asm/`
+  must be empty.
+- **Enabling visibility edit (disclosed):** `amount.rs` `MAX_SCALE_EXP` `const` →
+  `pub const` (one token + doc note; zero behavior) — the CS-5-mandated parity row is
+  impossible from an integration test against a private constant.
+- `vectors.rs` `artifact_guard`: every vector requires non-empty `tv` tags; explicit
+  allowlist exactly `["amt-guard-limb-not-u32"]` (the only guard-only vector).
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `cargo test --locked --test masm_mint_shell -- --exact probe_slot_binding --nocapture` (canary first) | `1 passed` |
+| 2 | `cargo test --locked --no-fail-fast` | lib `28 passed` (incl. the extended `artifact_guard`) · constant_parity **`4 passed`** · masm_dual `7 passed` · masm_mint_shell `2 passed; 9 failed` (unchanged expected RED on the named placeholder) — 50 discovered: 41 green + 9 expected RED |

@@ -6,31 +6,37 @@
 # faucet-owned domain/identifier compares, D5a steps 5-6). Module home + nested path
 # ratified per D-1A rule 3 (plan decision D-A).
 #
-# RED-SUITE STATE: named placeholder trap only — the assertion behavior lands in the
-# approved staged implementation commits (parser route -> domain compare -> identifier
-# compare).
+# BUILD STATE (staged C5a): the shared-parser route is implemented — structural
+# rejects (R-MINT-1..5 mapped rows) trap inside the 04 parser through this call path;
+# the faucet-owned domain/identifier compares are NOT implemented yet (named trap).
+
+use xreserve::encoding
 
 # ERRORS
 # =================================================================================================
 
-const ERR_UNIMPLEMENTED_ASSERT_DEPOSIT_INTENT = "red-suite placeholder: assert_deposit_intent is not implemented"
+const ERR_UNIMPLEMENTED_DOMAIN_COMPARE = "red-suite placeholder: domain compare is not implemented"
 
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Red-suite placeholder for the mint-precondition assertion shell.
-#!
-#! Traps unconditionally with the named placeholder error.
+#! Routes a staged DepositIntent preimage through the 04-owned structural parser; the
+#! faucet-owned domain and identifier compares are not implemented yet and trap with
+#! the named placeholder error.
 #!
 #! Inputs:  [intent_ptr, len_felts]
 #! Outputs: []
 #!
 #! Panics if:
-#! - always (red-suite placeholder).
+#! - parse_deposit_intent fails to verify.
+#! - always after a structurally valid parse (staged placeholder).
 #!
 #! Invocation: exec
 pub proc assert_deposit_intent
-    # distinct discriminant so the placeholder owns its own MAST root (04 dedup lesson)
-    push.501 drop
-    push.0 assert.err=ERR_UNIMPLEMENTED_ASSERT_DEPOSIT_INTENT
+    exec.encoding::parse_deposit_intent
+    # => [remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]
+
+    # distinct discriminant so the staged body owns its own MAST root (04 dedup lesson)
+    push.502 drop
+    push.0 assert.err=ERR_UNIMPLEMENTED_DOMAIN_COMPARE
 end

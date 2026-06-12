@@ -1,8 +1,25 @@
 # 01 Faucet Slice 1 — Mint-Precondition Shell TEST LEDGER
 
-Loop records per the approved P5-01 plan. Phase: **RED-SUITE COMPLETE (C3 + C4/CS-5)** —
-test infrastructure, fixtures, the named placeholder, and the CS-5 hardening; zero
-assertion behavior. STOPPED for the independent red-suite audit before any C5 stage.
+Loop records per the approved P5-01 plan. Phase: **IMPLEMENTATION COMPLETE — FULL SLICE
+GREEN (50/50)** — red-suite (C3+C4) audited PASS, then staged behavior-by-behavior
+implementation (C5a→C5b→C5c), each stage canary-first + focused + full suite. Awaiting
+final Codex audit.
+
+## Implementation loop (C5a → C5b → C5c, 2026-06-12; approved staged plan)
+
+Every stage ran, in order: (1) `cargo test --locked --test masm_mint_shell -- --exact
+probe_slot_binding --nocapture` (canary) → `1 passed`; (2) the focused shell suite;
+(3) `cargo test --locked --no-fail-fast` (04's 37 + parity 4 stayed green throughout).
+
+| Stage | Change (MASM + same-commit parity rows) | Focused result | RED remainder (named trap) |
+|---|---|---|---|
+| C5a `e329c6b` | placeholder → `exec.encoding::parse_deposit_intent` route + `ERR_UNIMPLEMENTED_DOMAIN_COMPARE` trap (distinct discriminant 502) | **`7 passed; 4 failed`** — r_mint_1..5 GREEN with exact `ERR_DI_*` THROUGH the shell call path (ratified seam mapping executed) | happy ×2 + r6 + r7 on "domain compare is not implemented" — the happy failure point advanced past parsing |
+| C5b `41eebc7` | + `DOMAIN_CONFIG_SLOT` word-const + `get_item` + element-0 `assert_eq.err=ERR_XRESERVE_WRONG_DOMAIN`; trap → `ERR_UNIMPLEMENTED_IDENTIFIER_COMPARE` (503); parity: `SHELL_ERRORS_DECLARED += WRONG_DOMAIN`, `EXPECTED_SHELL_WORD_CONSTS += DOMAIN_CONFIG_SLOT` | **`8 passed; 3 failed`** — r_mint_6 GREEN on the frozen error; parity 4/4 incl. the new rows | happy ×2 + r7 on "identifier compare is not implemented" |
+| C5c (this commit) | + `IDENTIFIER_CONFIG_SLOT` word-const + `exec.encoding::bytes32_to_key` (parser output orientation = `[B1, B0]` input orientation) + `assert_eqw.err=ERR_XRESERVE_WRONG_IDENTIFIER` + final `[hook_data_len]` output contract + final doc block; last placeholder REMOVED; parity lists completed; the red-phase `ERR_UNIMPLEMENTED_*` exemption REMOVED from the bidirectional sweep | **`11 passed; 0 failed`** first pass — happy ×2 (in-driver `hook_data_len` assert + nonce_delta==1 + empty storage delta) + all 7 rejects exact + 2 probes | none — full suite **50/50** (lib 28, gen_vectors 0, parity 4, masm_dual 7, masm_mint_shell 11) |
+
+No test was edited in any C5 stage beyond the pre-declared additive parity-list
+extensions (plan §7, ratified); no behavior test body changed since the audited red
+commit `4298fca`.
 
 Ratified human decisions in force (plan §0): **D-A** module home
 `asm/standards/xreserve/deposit_intent_parser.masm`, nested canonical path

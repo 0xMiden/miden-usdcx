@@ -26,21 +26,17 @@ use xusdc_encoding::{ENCODING_MOD_MASM, LAYOUT_MASM};
 const SHELL_MASM: &str =
     include_str!("../../../asm/standards/xreserve/deposit_intent_parser.masm");
 
-/// Red/implementation-phase-only exemption for the named placeholder traps of the
-/// staged build; the final implementation commit removes the last placeholder and the
-/// hand-off sweep `rg ERR_UNIMPLEMENTED asm/` must come back empty.
-const RED_PHASE_ERR_EXEMPTION_PREFIX: &str = "ERR_UNIMPLEMENTED_";
-
-/// Faucet-owned shell error constants DECLARED in MASM so far. Staged: each
-/// implementation commit that adds a `const ERR_XRESERVE_*` to the shell module extends
-/// this list in the same commit; messages are pinned against the test-side
+/// Faucet-owned shell error constants declared in MASM, pinned against the test-side
 /// `support::SHELL_ERR_TABLE` (the single Rust source).
-const SHELL_ERRORS_DECLARED: &[&str] = &["ERR_XRESERVE_WRONG_DOMAIN"];
+const SHELL_ERRORS_DECLARED: &[&str] =
+    &["ERR_XRESERVE_WRONG_DOMAIN", "ERR_XRESERVE_WRONG_IDENTIFIER"];
 
-/// Expected `word("…")` slot-name constants per the shell module (name → label), pinned
-/// against the test-side label consts. Staged like `SHELL_ERRORS_DECLARED`.
-const EXPECTED_SHELL_WORD_CONSTS: &[(&str, &str)] =
-    &[("DOMAIN_CONFIG_SLOT", support::DOMAIN_CONFIG_SLOT_LABEL)];
+/// Expected `word("…")` slot-name constants of the shell module (name → label), pinned
+/// against the test-side label consts.
+const EXPECTED_SHELL_WORD_CONSTS: &[(&str, &str)] = &[
+    ("DOMAIN_CONFIG_SLOT", support::DOMAIN_CONFIG_SLOT_LABEL),
+    ("IDENTIFIER_CONFIG_SLOT", support::IDENTIFIER_CONFIG_SLOT_LABEL),
+];
 
 /// Numeric-constant coverage sets (bidirectional sweep): every numeric const parsed
 /// from a MASM source must appear in its file's set — extending a MASM file with a new
@@ -215,10 +211,11 @@ fn masm_shell_error_string_parity() {
 /// (numeric, string, or `word("…")`) fails here until it gets a row.
 #[test]
 fn masm_constants_bidirectional() {
+    // the red-phase ERR_UNIMPLEMENTED_* exemption was removed with the last placeholder
+    // (C5c); any future MASM-only string constant fails here until it gets a row
     let known_err = |name: &str| {
         ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
-            || name.starts_with(RED_PHASE_ERR_EXEMPTION_PREFIX)
     };
     let sources: [(&str, &str, &[&str], &[(&str, &str)]); 3] = [
         ("layout.masm", LAYOUT_MASM, LAYOUT_COVERED_NUMS, &[]),

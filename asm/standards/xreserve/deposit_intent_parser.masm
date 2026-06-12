@@ -4,11 +4,12 @@
 # D5a faucet-side entry that consumes the 04-owned shared parser BY REFERENCE (NS-2:
 # `xreserve::encoding::parse_deposit_intent` stays 04-owned; this module adds ONLY the
 # faucet-owned domain/identifier compares, D5a steps 5-6). Module home + nested path
-# ratified per D-1A rule 3 (plan decision D-A).
+# ratified per D-1A rule 3 (plan decision D-A); the identifier slot stores the
+# canonical `bytes32_to_key` key-Word and the R-MINT-7 equality is realized as key
+# equality (ratified plan decision D-C).
 #
-# BUILD STATE (staged C5b): parser route + the faucet domain compare are implemented
-# (R-MINT-1..5 mapped rows + R-MINT-6); the identifier compare is NOT implemented yet
-# (named trap).
+# BUILD STATE: implemented (C5a parser route, C5b domain compare, C5c identifier
+# compare + output contract). Loop history: crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
 
 use miden::protocol::active_account
 use xreserve::encoding
@@ -20,27 +21,38 @@ use xreserve::encoding
 # via StorageSlotName; hard-coded slots are source-approved for the self-contained
 # faucet, ownership map slot-binding note / fungible.masm precedent)
 pub const DOMAIN_CONFIG_SLOT = word("xusdc::xreserve::domain_config::domain")
+pub const IDENTIFIER_CONFIG_SLOT = word("xusdc::xreserve::domain_config::identifier")
 
 # ERRORS
 # =================================================================================================
 
 const ERR_XRESERVE_WRONG_DOMAIN = "deposit intent remote domain does not match the faucet domain"
-const ERR_UNIMPLEMENTED_IDENTIFIER_COMPARE = "red-suite placeholder: identifier compare is not implemented"
+const ERR_XRESERVE_WRONG_IDENTIFIER = "deposit intent remote token does not match the faucet identifier"
 
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Routes a staged DepositIntent preimage through the 04-owned structural parser and
-#! asserts the faucet-owned domain compare; the identifier compare is not implemented
-#! yet and traps with the named placeholder error.
+#! Asserts the faucet-owned DepositIntent mint preconditions over a staged preimage.
+#!
+#! Delegates the structural validation (D5a steps 1-4, 7, 8) to the 04-owned
+#! `xreserve::encoding::parse_deposit_intent`, then asserts the two faucet-owned
+#! compares (D5a steps 5-6) against the faucet config slots: the parsed remote domain
+#! must equal the configured domain, and the canonical key-Word of the parsed remote
+#! token must equal the configured identifier key.
 #!
 #! Inputs:  [intent_ptr, len_felts]
-#! Outputs: []
+#! Outputs: [hook_data_len]
+#!
+#! Where:
+#! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
+#! - len_felts is the staged preimage length in felts.
+#! - hook_data_len is the semantic hookDataLen value as a u32 felt.
 #!
 #! Panics if:
 #! - parse_deposit_intent fails to verify.
 #! - the parsed remote domain does not equal the faucet's configured domain.
-#! - always after a matching domain compare (staged placeholder).
+#! - the parsed remote token's key does not equal the faucet's configured identifier key.
+#! - a config slot with the expected id does not exist in account storage.
 #!
 #! Invocation: exec
 pub proc assert_deposit_intent
@@ -59,7 +71,15 @@ pub proc assert_deposit_intent
     assert_eq.err=ERR_XRESERVE_WRONG_DOMAIN
     # => [REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]
 
-    # distinct discriminant so the staged body owns its own MAST root (04 dedup lesson)
-    push.503 drop
-    push.0 assert.err=ERR_UNIMPLEMENTED_IDENTIFIER_COMPARE
+    # D5a step 6 (R-MINT-7): the parser's packed remoteToken words are already in the
+    # [B1, B0] orientation bytes32_to_key consumes
+    exec.encoding::bytes32_to_key
+    # => [KEY, hook_data_len]
+
+    push.IDENTIFIER_CONFIG_SLOT[0..2]
+    exec.active_account::get_item
+    # => [STORED_KEY, KEY, hook_data_len]
+
+    assert_eqw.err=ERR_XRESERVE_WRONG_IDENTIFIER
+    # => [hook_data_len]
 end

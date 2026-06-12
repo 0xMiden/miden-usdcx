@@ -35,11 +35,12 @@ const RED_PHASE_ERR_EXEMPTION_PREFIX: &str = "ERR_UNIMPLEMENTED_";
 /// implementation commit that adds a `const ERR_XRESERVE_*` to the shell module extends
 /// this list in the same commit; messages are pinned against the test-side
 /// `support::SHELL_ERR_TABLE` (the single Rust source).
-const SHELL_ERRORS_DECLARED: &[&str] = &[];
+const SHELL_ERRORS_DECLARED: &[&str] = &["ERR_XRESERVE_WRONG_DOMAIN"];
 
 /// Expected `word("…")` slot-name constants per the shell module (name → label), pinned
 /// against the test-side label consts. Staged like `SHELL_ERRORS_DECLARED`.
-const EXPECTED_SHELL_WORD_CONSTS: &[(&str, &str)] = &[];
+const EXPECTED_SHELL_WORD_CONSTS: &[(&str, &str)] =
+    &[("DOMAIN_CONFIG_SLOT", support::DOMAIN_CONFIG_SLOT_LABEL)];
 
 /// Numeric-constant coverage sets (bidirectional sweep): every numeric const parsed
 /// from a MASM source must appear in its file's set — extending a MASM file with a new

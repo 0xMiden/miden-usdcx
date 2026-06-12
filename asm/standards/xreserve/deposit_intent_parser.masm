@@ -6,37 +6,60 @@
 # faucet-owned domain/identifier compares, D5a steps 5-6). Module home + nested path
 # ratified per D-1A rule 3 (plan decision D-A).
 #
-# BUILD STATE (staged C5a): the shared-parser route is implemented — structural
-# rejects (R-MINT-1..5 mapped rows) trap inside the 04 parser through this call path;
-# the faucet-owned domain/identifier compares are NOT implemented yet (named trap).
+# BUILD STATE (staged C5b): parser route + the faucet domain compare are implemented
+# (R-MINT-1..5 mapped rows + R-MINT-6); the identifier compare is NOT implemented yet
+# (named trap).
 
+use miden::protocol::active_account
 use xreserve::encoding
+
+# CONSTANTS
+# =================================================================================================
+
+# Slots — ids derive from the namespaced labels (the Rust fixtures bind the same labels
+# via StorageSlotName; hard-coded slots are source-approved for the self-contained
+# faucet, ownership map slot-binding note / fungible.masm precedent)
+pub const DOMAIN_CONFIG_SLOT = word("xusdc::xreserve::domain_config::domain")
 
 # ERRORS
 # =================================================================================================
 
-const ERR_UNIMPLEMENTED_DOMAIN_COMPARE = "red-suite placeholder: domain compare is not implemented"
+const ERR_XRESERVE_WRONG_DOMAIN = "deposit intent remote domain does not match the faucet domain"
+const ERR_UNIMPLEMENTED_IDENTIFIER_COMPARE = "red-suite placeholder: identifier compare is not implemented"
 
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Routes a staged DepositIntent preimage through the 04-owned structural parser; the
-#! faucet-owned domain and identifier compares are not implemented yet and trap with
-#! the named placeholder error.
+#! Routes a staged DepositIntent preimage through the 04-owned structural parser and
+#! asserts the faucet-owned domain compare; the identifier compare is not implemented
+#! yet and traps with the named placeholder error.
 #!
 #! Inputs:  [intent_ptr, len_felts]
 #! Outputs: []
 #!
 #! Panics if:
 #! - parse_deposit_intent fails to verify.
-#! - always after a structurally valid parse (staged placeholder).
+#! - the parsed remote domain does not equal the faucet's configured domain.
+#! - always after a matching domain compare (staged placeholder).
 #!
 #! Invocation: exec
 pub proc assert_deposit_intent
     exec.encoding::parse_deposit_intent
     # => [remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]
 
+    # D5a step 5 (R-MINT-6): the configured domain lives in element 0 of the domain
+    # config slot word
+    push.DOMAIN_CONFIG_SLOT[0..2]
+    exec.active_account::get_item
+    # => [domain, d1, d2, d3, remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]
+
+    movdn.3 drop drop drop
+    # => [domain, remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]
+
+    assert_eq.err=ERR_XRESERVE_WRONG_DOMAIN
+    # => [REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]
+
     # distinct discriminant so the staged body owns its own MAST root (04 dedup lesson)
-    push.502 drop
-    push.0 assert.err=ERR_UNIMPLEMENTED_DOMAIN_COMPARE
+    push.503 drop
+    push.0 assert.err=ERR_UNIMPLEMENTED_IDENTIFIER_COMPARE
 end

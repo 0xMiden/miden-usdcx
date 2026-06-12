@@ -1,0 +1,36 @@
+# xreserve::deposit_intent_parser
+#
+# FAUCET(01)-owned DepositIntent mint-precondition assertion shell (P5-01 slice): the
+# D5a faucet-side entry that consumes the 04-owned shared parser BY REFERENCE (NS-2:
+# `xreserve::encoding::parse_deposit_intent` stays 04-owned; this module adds ONLY the
+# faucet-owned domain/identifier compares, D5a steps 5-6). Module home + nested path
+# ratified per D-1A rule 3 (plan decision D-A).
+#
+# RED-SUITE STATE: named placeholder trap only — the assertion behavior lands in the
+# approved staged implementation commits (parser route -> domain compare -> identifier
+# compare).
+
+# ERRORS
+# =================================================================================================
+
+const ERR_UNIMPLEMENTED_ASSERT_DEPOSIT_INTENT = "red-suite placeholder: assert_deposit_intent is not implemented"
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Red-suite placeholder for the mint-precondition assertion shell.
+#!
+#! Traps unconditionally with the named placeholder error.
+#!
+#! Inputs:  [intent_ptr, len_felts]
+#! Outputs: []
+#!
+#! Panics if:
+#! - always (red-suite placeholder).
+#!
+#! Invocation: exec
+pub proc assert_deposit_intent
+    # distinct discriminant so the placeholder owns its own MAST root (04 dedup lesson)
+    push.501 drop
+    push.0 assert.err=ERR_UNIMPLEMENTED_ASSERT_DEPOSIT_INTENT
+end

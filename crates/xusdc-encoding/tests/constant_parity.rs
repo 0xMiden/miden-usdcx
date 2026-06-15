@@ -31,8 +31,9 @@ const SHELL_MASM: &str =
 const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_WRONG_DOMAIN",
     "ERR_XRESERVE_WRONG_IDENTIFIER",
-    // D5b R-MINT-10 (R-MINT-11's ERR_XRESERVE_FEE_OVER_MAX is added by the feeAmount commit)
+    // D5b R-MINT-10 / R-MINT-11
     "ERR_XRESERVE_AMOUNT_BELOW_FEE",
+    "ERR_XRESERVE_FEE_OVER_MAX",
 ];
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned

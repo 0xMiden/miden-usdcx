@@ -179,6 +179,20 @@ pub proc assert_mint_amounts
     # => []
 end
 
+#! Asserts the deposit intent's nonce has not been used (D5c replay guard).
+#!
+#! RED-SUITE PLACEHOLDER: traps unconditionally so the D5c happy + replay tests are RED via
+#! REAL execution until the green commit lands the real assert-zero. No new `const` (the
+#! inline `.err` string is not parsed by the constant-parity sweep, so parity stays green).
+#!
+#! Inputs:  [intent_ptr]
+#! Outputs: []
+#!
+#! Invocation: exec
+pub proc assert_nonce_unused
+    push.0 assert.err="red-suite placeholder: assert_nonce_unused is not implemented"
+end
+
 # HELPER PROCEDURES
 # =================================================================================================
 

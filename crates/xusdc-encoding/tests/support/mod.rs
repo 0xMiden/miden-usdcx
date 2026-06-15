@@ -21,7 +21,9 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
-use miden_protocol::account::{AccountComponent, AccountId, StorageSlot, StorageSlotName};
+use miden_protocol::account::{
+    AccountComponent, AccountId, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
+};
 use miden_protocol::assembly::Library;
 use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::{ExecutedTransaction, TransactionKernel};
@@ -51,6 +53,11 @@ pub const TEST_WRONG_DOMAIN: u32 = 8;
 pub const DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::domain";
 pub const IDENTIFIER_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::identifier";
 
+/// D5c `usedNonces` map-slot label (frozen §5.6 nonce registry). The MASM shell declares a
+/// `word("…")` const with the byte-identical label at the D5c green commit (parity-enforced
+/// from that commit). Bound here as the single Rust source for the fixture slot binding.
+pub const USED_NONCES_SLOT_LABEL: &str = "xusdc::xreserve::nonce_registry::used_nonces";
+
 // FAUCET(01) ERROR MIRRORS (frozen names: 01 TEST-AND-VERIFICATION-HARNESS.md:72-73)
 // ================================================================================================
 
@@ -60,7 +67,7 @@ pub const IDENTIFIER_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 4] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 5] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -78,6 +85,13 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 4] = [
     (
         "ERR_XRESERVE_FEE_OVER_MAX",
         MasmError::from_static_str("operator fee amount exceeds the deposit intent max fee"),
+    ),
+    // D5c R-MINT-12 nonce replay. Frozen name (spec R-MINT-12); the red-suite carries it
+    // here so the replay test can name its EXACT expected error. The D5c green commit
+    // declares the matching MASM const + adds it to `SHELL_ERRORS_DECLARED` for parity.
+    (
+        "ERR_XRESERVE_NONCE_REPLAY",
+        MasmError::from_static_str("deposit intent nonce has already been used"),
     ),
 ];
 
@@ -125,16 +139,40 @@ pub struct ShellHarness {
     pub driver_path: &'static str,
 }
 
-/// Builds the MockChain account carrying [the xreserve component WITH the two named
-/// value config slots] + [the generated driver component], per the spike-proven Q4/Q5
-/// binding (`StorageSlotName::new(label)` ↔ MASM `word("label")`).
+/// Builds the MockChain account carrying [the xreserve component WITH the two named value
+/// config slots + the `usedNonces` map slot] + [the generated driver component], per the
+/// spike-proven Q4/Q5 binding (`StorageSlotName::new(label)` ↔ MASM `word("label")`) and the
+/// canary-proven `StorageSlot::with_map` map-slot path. The `usedNonces` map starts EMPTY
+/// (unused nonces read `EMPTY_WORD`); use `setup_shell_account_with_nonce_seed` to
+/// pre-populate it for the D5c replay path.
 pub fn setup_shell_account(
     domain: Word,
     identifier: Word,
     driver_src: &str,
     driver_path: &'static str,
 ) -> Result<ShellHarness> {
+    setup_shell_account_with_nonce_seed(domain, identifier, None, driver_src, driver_path)
+}
+
+/// Like `setup_shell_account`, but optionally seeds the `usedNonces` map with a single
+/// `key -> marker` entry (the D5c replay fixture): `Some((key, marker))` pre-populates the
+/// map so a real `active_account::get_map_item` read returns the non-empty marker; `None`
+/// leaves it empty. D5c is assert-zero ONLY — this seeding is a TEST fixture, not the
+/// on-chain nonce SET (deferred to D5e).
+pub fn setup_shell_account_with_nonce_seed(
+    domain: Word,
+    identifier: Word,
+    nonce_seed: Option<(Word, Word)>,
+    driver_src: &str,
+    driver_path: &'static str,
+) -> Result<ShellHarness> {
     let library = assemble_xreserve_lib()?;
+
+    let nonce_map = match nonce_seed {
+        Some((key, marker)) => StorageMap::with_entries([(StorageMapKey::new(key), marker)])
+            .map_err(|e| anyhow::anyhow!("seeding the usedNonces map fixture: {e}"))?,
+        None => StorageMap::new(),
+    };
 
     let xreserve_component = AccountComponent::new(
         library.clone(),
@@ -147,6 +185,10 @@ pub fn setup_shell_account(
                 StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
                     .context("identifier slot label")?,
                 identifier,
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
+                nonce_map,
             ),
         ],
         AccountComponentMetadata::new("xusdc-mint-shell-harness"),
@@ -365,4 +407,30 @@ pub async fn run_call_driver_with_advice(
         ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack));
     }
     ctx.build().expect("building the transaction").execute().await
+}
+
+// D5C NONCE REPLAY HELPERS (P5-01 slice 3)
+// ================================================================================================
+
+/// Generates the per-case D5c driver: stages the preimage in the account context, pushes
+/// `[intent_ptr]`, and `exec`s the faucet `assert_nonce_unused` shell. The shell returns `[]`
+/// (D5c is read-only — assert-zero, no nonce SET), so the staged-then-consumed stack restores
+/// the 16-depth `call` boundary.
+pub fn nonce_driver_src(preimage: &[Felt]) -> String {
+    let mut src = String::from(
+        "use xreserve::deposit_intent_parser\n\n\
+         #! Test driver: stages a DepositIntent preimage in the account context and execs the\n\
+         #! D5c nonce replay-guard shell.\n\
+         #!\n\
+         #! Inputs:  [pad(16)]\n\
+         #! Outputs: [pad(16)]\n\
+         #!\n\
+         #! Invocation: call\n\
+         pub proc drive\n",
+    );
+    stage_preimage(&mut src, preimage);
+    writeln!(src, "    push.{INTENT_PTR}").unwrap();
+    src.push_str("    exec.deposit_intent_parser::assert_nonce_unused\n");
+    src.push_str("end\n");
+    src
 }

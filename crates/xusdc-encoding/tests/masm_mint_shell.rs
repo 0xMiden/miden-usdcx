@@ -319,3 +319,141 @@ fn probe_mint_amounts_exports() -> Result<()> {
     );
     Ok(())
 }
+
+// D5C NONCE REPLAY GUARD (P5-01 slice 3) — RED-SUITE
+// ================================================================================================
+// Drives the NEW faucet-owned `xreserve::deposit_intent_parser::assert_nonce_unused` shell
+// through MockChain `execute().await`. The guard derives `key = bytes32_to_key(nonce felt[51..58])`
+// (consumed BY REFERENCE, G1), reads `usedNonces[key]` via the canary-proven
+// `active_account::get_map_item`, and asserts `== EMPTY_WORD` else traps R-MINT-12. D5c is
+// assert-zero ONLY — the nonce SET is deferred to D5e. RED-SUITE: the shell holds only the
+// placeholder trap ("red-suite placeholder: assert_nonce_unused is not implemented"), so every
+// behavior case below is RED via REAL execution until the green commit lands.
+// `probe_nonce_unused_exports` is a declared green scaffold.
+
+/// Any non-empty marker Word for seeding `usedNonces` (distinct from `EMPTY_WORD`). The real
+/// D5e marker value is out of scope for D5c (assert-zero only); the guard only distinguishes
+/// empty vs non-empty.
+const NONCE_MARKER: [u32; 4] = [1, 0, 0, 0];
+
+/// Derives the canonical `usedNonces` map key for a vector's nonce via the 04-owned Rust
+/// routine (`bytes32_to_storage_map_key`, by reference, G1) — guaranteed to match the MASM
+/// `bytes32_to_key(nonce felt[51..58])` by TV-DUAL-1.
+fn nonce_key(vector_id: &str) -> Word {
+    let f = di(vector_id).fields.as_ref().expect("accept vector carries fields");
+    Word::from(bytes32_to_storage_map_key(&f.bytes32("nonce")))
+}
+
+// HAPPY PATH FIRST (G4) — an unused nonce (empty map) passes the guard
+// ------------------------------------------------------------------------------------------------
+
+#[rstest]
+#[case::hookdata("di-pos-hookdata")]
+#[case::empty_hookdata("di-pos-empty-hookdata")]
+#[tokio::test]
+async fn d5c_happy_nonce_unused(#[case] vector_id: &str) -> Result<()> {
+    let v = di(vector_id);
+    let (domain, identifier) = config_for(vector_id, TEST_DOMAIN, false);
+    let driver_src = nonce_driver_src(&v.preimage_values());
+    // empty usedNonces map -> usedNonces[key] reads EMPTY_WORD (unused) -> passes
+    let h = setup_shell_account(domain, identifier, &driver_src, SHELL_DRIVER_PATH)?;
+    let executed = run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
+        panic!("vector {vector_id}: an unused nonce must pass the D5c guard: {e}")
+    });
+    assert_eq!(
+        executed.account_delta().nonce_delta(),
+        miden_protocol::ONE,
+        "auth must increment the nonce exactly once"
+    );
+    assert!(
+        executed.account_delta().storage().is_empty(),
+        "D5c is assert-zero only: it must not write account storage (no nonce SET)"
+    );
+    Ok(())
+}
+
+// REPLAY REJECT (R-MINT-12) — a seeded (used) nonce traps with the EXACT error
+// ------------------------------------------------------------------------------------------------
+
+#[rstest]
+#[case::hookdata("di-pos-hookdata")]
+#[case::empty_hookdata("di-pos-empty-hookdata")]
+#[tokio::test]
+async fn d5c_replay_rejects(#[case] vector_id: &str) -> Result<()> {
+    let v = di(vector_id);
+    let (domain, identifier) = config_for(vector_id, TEST_DOMAIN, false);
+    let driver_src = nonce_driver_src(&v.preimage_values());
+    // seed usedNonces[key(nonce)] = marker so the guard's REAL get_map_item read returns
+    // non-empty and the assert-zero traps R-MINT-12
+    let seed = (nonce_key(vector_id), Word::from(NONCE_MARKER));
+    let h = setup_shell_account_with_nonce_seed(
+        domain,
+        identifier,
+        Some(seed),
+        &driver_src,
+        SHELL_DRIVER_PATH,
+    )?;
+    let result = run_call_driver(&h, "drive").await;
+    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_NONCE_REPLAY"));
+    Ok(())
+}
+
+// KEY-SCOPING (strengthening) — a non-empty map must not reject an UNRELATED nonce
+// ------------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn d5c_unrelated_seeded_nonce_passes() -> Result<()> {
+    // seeding a DIFFERENT nonce's key must NOT reject this nonce — the read is key-scoped
+    // (canary Q4, re-proven at the faucet level). The "other" key is THIS nonce with one
+    // byte flipped (the `config_for` identifier-flip idiom), so it is guaranteed distinct
+    // (the two canonical accept vectors happen to share a nonce, so cross-vector keys would
+    // collide).
+    let run_id = "di-pos-hookdata";
+    let f = di(run_id).fields.as_ref().expect("accept vector carries fields");
+    let mut other_nonce = f.bytes32("nonce");
+    other_nonce[0] ^= 0xff;
+    let other_key = Word::from(bytes32_to_storage_map_key(&other_nonce));
+    assert_ne!(other_key, nonce_key(run_id), "the flipped-byte nonce key must differ");
+
+    let v = di(run_id);
+    let (domain, identifier) = config_for(run_id, TEST_DOMAIN, false);
+    let driver_src = nonce_driver_src(&v.preimage_values());
+    let seed = (other_key, Word::from(NONCE_MARKER));
+    let h = setup_shell_account_with_nonce_seed(
+        domain,
+        identifier,
+        Some(seed),
+        &driver_src,
+        SHELL_DRIVER_PATH,
+    )?;
+    let executed = run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
+        panic!("a seeded-but-unrelated nonce must not reject {run_id}: {e}")
+    });
+    assert_eq!(executed.account_delta().nonce_delta(), miden_protocol::ONE);
+    assert!(
+        executed.account_delta().storage().is_empty(),
+        "D5c is assert-zero only: it must not write account storage (no nonce SET)"
+    );
+    Ok(())
+}
+
+// PROBE (declared green scaffold — D-1A export check for the new proc)
+// ------------------------------------------------------------------------------------------------
+
+/// The assembled library exports the canonical NESTED D5c proc path (mirrors
+/// `probe_shell_exports`/`probe_mint_amounts_exports`; exports render absolute at 0.23.3).
+#[test]
+fn probe_nonce_unused_exports() -> Result<()> {
+    let lib = assemble_xreserve_lib()?;
+    let exports: Vec<String> = lib
+        .exports()
+        .filter(|e| e.as_procedure().is_some())
+        .map(|e| e.path().to_string())
+        .collect();
+    let canonical = "::xreserve::deposit_intent_parser::assert_nonce_unused";
+    assert!(
+        exports.iter().any(|e| e == canonical),
+        "canonical D5c proc path {canonical} missing; exports: {exports:?}"
+    );
+    Ok(())
+}

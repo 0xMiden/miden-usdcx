@@ -26,6 +26,7 @@ use miden_protocol::{Felt, Word};
 use miden_standards::code_builder::CodeBuilder;
 use miden_testing::{Auth, MockChain, assert_transaction_executor_error};
 use miden_tx::TransactionExecutorError;
+use serde::Deserialize;
 use xusdc_encoding::vectors::{felt_from_hex, load, word_from_hex};
 use xusdc_encoding::xreserve::encoding::masm_error_by_name;
 
@@ -228,6 +229,101 @@ end
 // memory assertions via the `layout` constants)
 // ================================================================================================
 
+/// Builds the shared `parse_deposit_intent` driver prefix: the layout-const imports,
+/// preimage staging, and the `exec` call — leaving the D-4A outputs
+/// `[remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]` on the stack. Shared by
+/// the canonical TV-DUAL-3 path and the Circle differential so both stage + exec via ONE
+/// code path. (Constants are imported individually — `push.` takes only unqualified
+/// constant identifiers, the protocol's single-const import style, report §2.3.)
+fn build_parser_driver_prefix(preimage: &[Felt], len_felts: u64) -> String {
+    let mut src = String::from("use xreserve::encoding\n");
+    for c in [
+        "MAGIC_FELT_OFF",
+        "VERSION_FELT_OFF",
+        "AMOUNT_FELT_OFF",
+        "REMOTE_DOMAIN_FELT_OFF",
+        "REMOTE_TOKEN_FELT_OFF",
+        "REMOTE_RECIPIENT_FELT_OFF",
+        "LOCAL_TOKEN_FELT_OFF",
+        "LOCAL_DEPOSITOR_FELT_OFF",
+        "MAX_FEE_FELT_OFF",
+        "NONCE_FELT_OFF",
+        "HOOK_DATA_LEN_FELT_OFF",
+        "HOOK_DATA_FELT_OFF",
+    ] {
+        writeln!(src, "use xreserve::encoding::layout::{c}").unwrap();
+    }
+    src.push_str("\nbegin\n");
+    stage_preimage(&mut src, preimage);
+    writeln!(src, "    push.{len_felts}").unwrap();
+    writeln!(src, "    push.{INTENT_PTR}").unwrap();
+    writeln!(src, "    exec.encoding::parse_deposit_intent").unwrap();
+    src
+}
+
+/// Maps a DC-1 field name to its `layout::*` felt-offset constant.
+fn layout_const_for(field: &str) -> &'static str {
+    match field {
+        "magic" => "MAGIC_FELT_OFF",
+        "version" => "VERSION_FELT_OFF",
+        "amount" => "AMOUNT_FELT_OFF",
+        "remote_domain" => "REMOTE_DOMAIN_FELT_OFF",
+        "remote_token" => "REMOTE_TOKEN_FELT_OFF",
+        "remote_recipient" => "REMOTE_RECIPIENT_FELT_OFF",
+        "local_token" => "LOCAL_TOKEN_FELT_OFF",
+        "local_depositor" => "LOCAL_DEPOSITOR_FELT_OFF",
+        "max_fee" => "MAX_FEE_FELT_OFF",
+        "nonce" => "NONCE_FELT_OFF",
+        "hook_data_len" => "HOOK_DATA_LEN_FELT_OFF",
+        "hook_data" => "HOOK_DATA_FELT_OFF",
+        other => panic!("unknown packed field {other}"),
+    }
+}
+
+/// Builds + runs an accept-path driver: stages the preimage, execs the parser, asserts the
+/// D-4A outputs, then asserts every DC-1 field reads back at its `layout::*` offset post-exec
+/// (⇒ staged memory unmutated). `packed` is `(field name, expected packed felts at that
+/// field's offset)`. Single-felt loads throughout: the DC-1 felt offsets are not word-aligned
+/// and word memory ops trap on unaligned addresses (processor `UnalignedWordAccess`,
+/// errors.rs:228-232). Shared by TV-DUAL-3 accepts and the Circle differential.
+async fn run_accept_driver(
+    h: &Harness,
+    label: &str,
+    preimage: &[Felt],
+    len_felts: u64,
+    remote_domain: u64,
+    rt0: Word,
+    rt1: Word,
+    hook_data_len: u64,
+    packed: &[(&str, Vec<Felt>)],
+) {
+    let mut src = build_parser_driver_prefix(preimage, len_felts);
+    // D-4A stack outputs: [remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len].
+    writeln!(src, "    push.{remote_domain} assert_eq.err=\"{label}: remote_domain\"").unwrap();
+    writeln!(src, "    push.{rt1} assert_eqw.err=\"{label}: remote_token_1\"").unwrap();
+    writeln!(src, "    push.{rt0} assert_eqw.err=\"{label}: remote_token_0\"").unwrap();
+    writeln!(src, "    push.{hook_data_len} assert_eq.err=\"{label}: hook_data_len\"").unwrap();
+    for (name, felts) in packed {
+        let const_name = layout_const_for(name);
+        for (i, felt) in felts.iter().enumerate() {
+            writeln!(
+                src,
+                "    push.{const_name} push.{INTENT_PTR} add push.{i} add mem_load \
+                 push.{} assert_eq.err=\"{label}: layout {name} felt {i}\"",
+                felt.as_canonical_u64()
+            )
+            .unwrap();
+        }
+    }
+    src.push_str("end\n");
+    run_driver(h, &src).await.unwrap_or_else(|e| {
+        panic!(
+            "{label}: MASM parser must accept, return the compare fields, and satisfy the \
+             layout assertions: {e}"
+        )
+    });
+}
+
 #[tokio::test]
 async fn tv_dual_3_parse_deposit_intent() -> Result<()> {
     let h = setup()?;
@@ -240,99 +336,34 @@ async fn tv_dual_3_parse_deposit_intent() -> Result<()> {
         let preimage = vec.preimage_values();
         let len_felts = vec.staging_len_felts.unwrap_or(vec.len_felts);
 
-        // constants are imported individually (`push.` takes only unqualified constant
-        // identifiers — the protocol's own single-const import style, report §2.3)
-        let mut src = String::from("use xreserve::encoding\n");
-        for c in [
-            "MAGIC_FELT_OFF",
-            "VERSION_FELT_OFF",
-            "AMOUNT_FELT_OFF",
-            "REMOTE_DOMAIN_FELT_OFF",
-            "REMOTE_TOKEN_FELT_OFF",
-            "REMOTE_RECIPIENT_FELT_OFF",
-            "LOCAL_TOKEN_FELT_OFF",
-            "LOCAL_DEPOSITOR_FELT_OFF",
-            "MAX_FEE_FELT_OFF",
-            "NONCE_FELT_OFF",
-            "HOOK_DATA_LEN_FELT_OFF",
-            "HOOK_DATA_FELT_OFF",
-        ] {
-            writeln!(src, "use xreserve::encoding::layout::{c}").unwrap();
-        }
-        src.push_str("\nbegin\n");
-        stage_preimage(&mut src, &preimage);
-        writeln!(src, "    push.{len_felts}").unwrap();
-        writeln!(src, "    push.{INTENT_PTR}").unwrap();
-        writeln!(src, "    exec.encoding::parse_deposit_intent").unwrap();
-
         match vec.kind.as_str() {
             "accept" => {
                 let f = vec.fields.as_ref().expect("accept vector carries fields");
                 let rt: Vec<Felt> =
                     f.remote_token_felts.iter().map(|s| felt_from_hex(s)).collect();
                 let (rt0, rt1) = (word_of(&rt[0..4]), word_of(&rt[4..8]));
-                // D-4A stack outputs: [remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len].
-                writeln!(
-                    src,
-                    "    push.{} assert_eq.err=\"vector {}: remote_domain\"",
-                    f.remote_domain, vec.id
+                let packed: Vec<(&str, Vec<Felt>)> = f
+                    .packed
+                    .iter()
+                    .map(|pf| {
+                        (pf.name.as_str(), pf.felts.iter().map(|s| felt_from_hex(s)).collect())
+                    })
+                    .collect();
+                run_accept_driver(
+                    &h,
+                    &vec.id,
+                    &preimage,
+                    len_felts,
+                    f.remote_domain as u64,
+                    rt0,
+                    rt1,
+                    f.hook_data_len as u64,
+                    &packed,
                 )
-                .unwrap();
-                writeln!(src, "    push.{rt1} assert_eqw.err=\"vector {}: remote_token_1\"", vec.id)
-                    .unwrap();
-                writeln!(src, "    push.{rt0} assert_eqw.err=\"vector {}: remote_token_0\"", vec.id)
-                    .unwrap();
-                writeln!(
-                    src,
-                    "    push.{} assert_eq.err=\"vector {}: hook_data_len\"",
-                    f.hook_data_len, vec.id
-                )
-                .unwrap();
-                // Layout-constant memory assertions: every DC-1 field read back from the
-                // staged preimage via `layout::*` offsets (run AFTER exec — also proves
-                // the parser did not mutate the staged memory).
-                for pf in &f.packed {
-                    let const_name = match pf.name.as_str() {
-                        "magic" => "MAGIC_FELT_OFF",
-                        "version" => "VERSION_FELT_OFF",
-                        "amount" => "AMOUNT_FELT_OFF",
-                        "remote_domain" => "REMOTE_DOMAIN_FELT_OFF",
-                        "remote_token" => "REMOTE_TOKEN_FELT_OFF",
-                        "remote_recipient" => "REMOTE_RECIPIENT_FELT_OFF",
-                        "local_token" => "LOCAL_TOKEN_FELT_OFF",
-                        "local_depositor" => "LOCAL_DEPOSITOR_FELT_OFF",
-                        "max_fee" => "MAX_FEE_FELT_OFF",
-                        "nonce" => "NONCE_FELT_OFF",
-                        "hook_data_len" => "HOOK_DATA_LEN_FELT_OFF",
-                        "hook_data" => "HOOK_DATA_FELT_OFF",
-                        other => panic!("unknown packed field {other}"),
-                    };
-                    let felts: Vec<Felt> = pf.felts.iter().map(|s| felt_from_hex(s)).collect();
-                    // single-felt loads throughout: the DC-1 felt offsets are not
-                    // word-aligned, and word memory ops trap on unaligned addresses
-                    // (processor `UnalignedWordAccess`, errors.rs:228-232)
-                    for (i, felt) in felts.iter().enumerate() {
-                        writeln!(
-                            src,
-                            "    push.{const_name} push.{INTENT_PTR} add push.{i} add \
-                             mem_load push.{} assert_eq.err=\"vector {}: layout {} felt {i}\"",
-                            felt.as_canonical_u64(),
-                            vec.id,
-                            pf.name
-                        )
-                        .unwrap();
-                    }
-                }
-                src.push_str("end\n");
-                run_driver(&h, &src).await.unwrap_or_else(|e| {
-                    panic!(
-                        "vector {}: MASM parser must accept, return the compare fields, and \
-                         satisfy the layout assertions: {e}",
-                        vec.id
-                    )
-                });
+                .await;
             },
             "reject" => {
+                let mut src = build_parser_driver_prefix(&preimage, len_felts);
                 // Clean up the would-be outputs so a non-trapping run completes cleanly
                 // and the error assertion below reports "unexpectedly successful".
                 src.push_str("    drop dropw dropw drop\nend\n");
@@ -420,4 +451,193 @@ async fn probe_p2_script_executes() -> Result<()> {
 fn probe_p4_packing_util() {
     let felts = miden_protocol::utils::bytes_to_packed_u32_elements(&[1u8, 2, 3, 4]);
     assert_eq!(felts.len(), 1);
+}
+
+// TV-CIRCLE-DIFF — real Circle-emitted DepositIntent bytes through our parser
+// ================================================================================================
+// Differential ("spec → Circle") test. Ground truth: Circle's evm-xreserve-contracts @
+// a571cbe12fa7cede3dfd48bc4fedb74739c04377, encoded by Circle's OWN
+// `DepositIntentLib.encodeDepositIntent` (abi.encodePacked). The fixture is copied verbatim
+// from that repo (`tests/vectors/circle-depositintent-groundtruth.json`). EXPECTED field
+// values come from Circle's decoder (the fixture); INPUTS are Circle's real bytes; only the
+// u32-LE staging packing and our parser are "ours". This validates the 04 PARSER ENVELOPE
+// (offsets, sizes, endianness, magic/version, length rule). It does NOT exercise the faucet
+// R-MINT-7 identifier compare against a real Miden identifier — Circle treats remoteToken /
+// remoteRecipient as opaque bytes32, so DEV-10 / Q-CRY-3/4 stay OPEN and out of scope here.
+
+const CIRCLE_FIXTURE: &str = include_str!("vectors/circle-depositintent-groundtruth.json");
+
+#[derive(Deserialize)]
+struct CircleFile {
+    vectors: Vec<CircleVec>,
+}
+
+#[derive(Deserialize)]
+struct CircleVec {
+    id: String,
+    bytes_hex: String,
+    length: u64,
+    fields: CircleFields,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CircleFields {
+    magic: String,
+    version: u64,
+    amount: u128,
+    remote_domain: u64,
+    remote_token: String,
+    remote_recipient: String,
+    local_token: String,
+    local_depositor: String,
+    max_fee: u128,
+    nonce: String,
+    hook_data_length: u64,
+    hook_data: String,
+}
+
+/// Decodes a `0x`-prefixed hex string to bytes.
+fn circle_hexdec(s: &str) -> Vec<u8> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("valid hex"))
+        .collect()
+}
+
+/// `0x`-prefixed lowercase hex of a byte slice.
+fn circle_hex(s: &[u8]) -> String {
+    let mut out = String::from("0x");
+    for b in s {
+        write!(out, "{b:02x}").unwrap();
+    }
+    out
+}
+
+/// A uint256 value (here always within u128) as its 32-byte big-endian wire encoding.
+fn be32_of_u128(v: u128) -> [u8; 32] {
+    let mut b = [0u8; 32];
+    b[16..32].copy_from_slice(&v.to_be_bytes());
+    b
+}
+
+#[tokio::test]
+async fn tv_circle_differential_real_bytes() -> Result<()> {
+    let h = setup()?;
+    let pack = miden_protocol::utils::bytes_to_packed_u32_elements;
+    let file: CircleFile =
+        serde_json::from_str(CIRCLE_FIXTURE).expect("circle ground-truth fixture parses");
+    assert!(!file.vectors.is_empty(), "circle fixture must carry vectors");
+
+    for v in &file.vectors {
+        let raw = circle_hexdec(&v.bytes_hex);
+        let f = &v.fields;
+
+        // (1) INDEPENDENT cross-check — our DC-1 offset model vs Circle's decoder output.
+        // Raw bytes sliced at the DC-1 offsets (big-endian) must equal Circle's stated
+        // field values. Catches any offset / size / endianness error in our spec model,
+        // using only Circle's real bytes + Circle's decoded fields (no parser involved).
+        assert_eq!(raw.len() as u64, v.length, "{}: declared length", v.id);
+        assert_eq!(
+            raw.len() as u64,
+            240 + f.hook_data_length,
+            "{}: length == 240 + hookDataLength",
+            v.id
+        );
+        assert_eq!(circle_hex(&raw[0..4]), f.magic, "{}: magic @0", v.id);
+        assert_eq!(
+            u32::from_be_bytes(raw[4..8].try_into().unwrap()) as u64,
+            f.version,
+            "{}: version @4",
+            v.id
+        );
+        assert_eq!(&raw[8..40], &be32_of_u128(f.amount)[..], "{}: amount @8", v.id);
+        assert_eq!(
+            u32::from_be_bytes(raw[40..44].try_into().unwrap()) as u64,
+            f.remote_domain,
+            "{}: remoteDomain @40",
+            v.id
+        );
+        assert_eq!(circle_hex(&raw[44..76]), f.remote_token, "{}: remoteToken @44", v.id);
+        assert_eq!(circle_hex(&raw[76..108]), f.remote_recipient, "{}: remoteRecipient @76", v.id);
+        assert_eq!(circle_hex(&raw[108..140]), f.local_token, "{}: localToken @108", v.id);
+        assert_eq!(circle_hex(&raw[140..172]), f.local_depositor, "{}: localDepositor @140", v.id);
+        assert_eq!(&raw[172..204], &be32_of_u128(f.max_fee)[..], "{}: maxFee @172", v.id);
+        assert_eq!(circle_hex(&raw[204..236]), f.nonce, "{}: nonce @204", v.id);
+        assert_eq!(
+            u32::from_be_bytes(raw[236..240].try_into().unwrap()) as u64,
+            f.hook_data_length,
+            "{}: hookDataLength @236",
+            v.id
+        );
+        let hd = if raw.len() > 240 { circle_hex(&raw[240..]) } else { String::from("0x") };
+        assert_eq!(hd, f.hook_data, "{}: hookData @240", v.id);
+
+        // (2) MASM parser run — Circle's real bytes → u32-LE staging → our parser. The
+        // expected D-4A outputs are derived from Circle's RAW bytes (big-endian), NOT by
+        // mirroring the parser's own LE-pack-then-byte-swap path, so a parser endianness or
+        // offset bug surfaces as a mismatch rather than a silent pass.
+        let preimage = pack(&raw);
+        let len_felts = preimage.len() as u64;
+        let remote_domain = u32::from_be_bytes(raw[40..44].try_into().unwrap()) as u64;
+        let hook_data_len = u32::from_be_bytes(raw[236..240].try_into().unwrap()) as u64;
+        let rt = pack(&raw[44..76]);
+        assert_eq!(rt.len(), 8, "{}: remoteToken packs to 8 limbs", v.id);
+        let (rt0, rt1) = (word_of(&rt[0..4]), word_of(&rt[4..8]));
+        // Every DC-1 field's packed felts at its offset. All offsets/sizes are 4-byte
+        // aligned (only trailing hookData is variable), so per-field packing equals the
+        // matching slice of the whole-preimage packing.
+        let spans: [(&str, usize, usize); 12] = [
+            ("magic", 0, 4),
+            ("version", 4, 4),
+            ("amount", 8, 32),
+            ("remote_domain", 40, 4),
+            ("remote_token", 44, 32),
+            ("remote_recipient", 76, 32),
+            ("local_token", 108, 32),
+            ("local_depositor", 140, 32),
+            ("max_fee", 172, 32),
+            ("nonce", 204, 32),
+            ("hook_data_len", 236, 4),
+            ("hook_data", 240, f.hook_data_length as usize),
+        ];
+        let packed: Vec<(&str, Vec<Felt>)> =
+            spans.iter().map(|(name, off, size)| (*name, pack(&raw[*off..*off + *size]))).collect();
+
+        run_accept_driver(
+            &h, &v.id, &preimage, len_felts, remote_domain, rt0, rt1, hook_data_len, &packed,
+        )
+        .await;
+    }
+
+    // (3) NEGATIVE CONTROLS — prove the differential actually rejects corrupted real bytes,
+    // so a green positive run cannot be a false pass. Corrupt one real Circle blob and
+    // confirm our parser traps the EXACT structural error through the same call path.
+    let base = circle_hexdec(&file.vectors[0].bytes_hex);
+    let reject_src = |raw: &[u8]| {
+        let preimage = pack(raw);
+        let mut src = build_parser_driver_prefix(&preimage, preimage.len() as u64);
+        src.push_str("    drop dropw dropw drop\nend\n");
+        src
+    };
+
+    // corrupted magic → ERR_DI_BAD_MAGIC
+    {
+        let mut bad = base.clone();
+        bad[0] ^= 0xff;
+        let result = run_driver(&h, &reject_src(&bad)).await;
+        assert_transaction_executor_error!(result, expected_err("ERR_DI_BAD_MAGIC"));
+    }
+    // zeroed amount → ERR_DI_ZERO_FIELD
+    {
+        let mut bad = base.clone();
+        for b in &mut bad[8..40] {
+            *b = 0;
+        }
+        let result = run_driver(&h, &reject_src(&bad)).await;
+        assert_transaction_executor_error!(result, expected_err("ERR_DI_ZERO_FIELD"));
+    }
+
+    Ok(())
 }

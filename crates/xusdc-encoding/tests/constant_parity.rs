@@ -34,6 +34,8 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     // D5b R-MINT-10 / R-MINT-11
     "ERR_XRESERVE_AMOUNT_BELOW_FEE",
     "ERR_XRESERVE_FEE_OVER_MAX",
+    // D5c R-MINT-12
+    "ERR_XRESERVE_NONCE_REPLAY",
 ];
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned
@@ -41,6 +43,7 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
 const EXPECTED_SHELL_WORD_CONSTS: &[(&str, &str)] = &[
     ("DOMAIN_CONFIG_SLOT", support::DOMAIN_CONFIG_SLOT_LABEL),
     ("IDENTIFIER_CONFIG_SLOT", support::IDENTIFIER_CONFIG_SLOT_LABEL),
+    ("USED_NONCES_SLOT", support::USED_NONCES_SLOT_LABEL),
 ];
 
 /// Numeric-constant coverage sets (bidirectional sweep): every numeric const parsed

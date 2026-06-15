@@ -16,6 +16,7 @@ use miden::protocol::active_account
 use xreserve::encoding
 use xreserve::encoding::layout::AMOUNT_FELT_OFF
 use xreserve::encoding::layout::MAX_FEE_FELT_OFF
+use xreserve::encoding::layout::NONCE_FELT_OFF
 
 # CONSTANTS
 # =================================================================================================
@@ -25,6 +26,10 @@ use xreserve::encoding::layout::MAX_FEE_FELT_OFF
 # faucet, ownership map slot-binding note / fungible.masm precedent)
 pub const DOMAIN_CONFIG_SLOT = word("xusdc::xreserve::domain_config::domain")
 pub const IDENTIFIER_CONFIG_SLOT = word("xusdc::xreserve::domain_config::identifier")
+
+# D5c nonce registry (frozen §5.6): the usedNonces StorageMap slot. The map-slot DECLARATION
+# is Rust-side (StorageSlot::with_map; canary-proven); this const is the MASM-side slot id.
+pub const USED_NONCES_SLOT = word("xusdc::xreserve::nonce_registry::used_nonces")
 
 # ERRORS
 # =================================================================================================
@@ -36,6 +41,9 @@ const ERR_XRESERVE_WRONG_IDENTIFIER = "deposit intent remote token does not matc
 # reducer, never redefined here.
 const ERR_XRESERVE_AMOUNT_BELOW_FEE = "deposit intent amount is below the max fee"
 const ERR_XRESERVE_FEE_OVER_MAX = "operator fee amount exceeds the deposit intent max fee"
+
+# D5c nonce replay (R-MINT-12). Assert-zero only; the registry write is deferred to D5e.
+const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
 
 # PUBLIC INTERFACE
 # =================================================================================================
@@ -179,18 +187,62 @@ pub proc assert_mint_amounts
     # => []
 end
 
-#! Asserts the deposit intent's nonce has not been used (D5c replay guard).
+#! Asserts the deposit intent's nonce has not been used (D5c replay guard, R-MINT-12).
 #!
-#! RED-SUITE PLACEHOLDER: traps unconditionally so the D5c happy + replay tests are RED via
-#! REAL execution until the green commit lands the real assert-zero. No new `const` (the
-#! inline `.err` string is not parsed by the constant-parity sweep, so parity stays green).
+#! Derives the nonce key by CONSUMING the 04-owned `xreserve::encoding::bytes32_to_key` (no
+#! re-implemented hash) over the parsed nonce (felt[51..58]), reads `usedNonces[key]` via the
+#! canary-proven `active_account::get_map_item`, and asserts it is `EMPTY_WORD`. Marking the
+#! nonce as consumed is the first atomic write in D5e — D5c is assert-zero ONLY, so a failed
+#! mint never consumes a nonce.
 #!
 #! Inputs:  [intent_ptr]
 #! Outputs: []
 #!
+#! Where:
+#! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
+#!
+#! Panics if:
+#! - usedNonces[key] is non-empty (the nonce was already used) -> ERR_XRESERVE_NONCE_REPLAY.
+#!
 #! Invocation: exec
 pub proc assert_nonce_unused
-    push.0 assert.err="red-suite placeholder: assert_nonce_unused is not implemented"
+    # => [intent_ptr]
+
+    push.NONCE_FELT_OFF add
+    # => [nonce_base]
+
+    # B0: the nonce's first four packed limbs (wire bytes 0..16), element-0 on top — the
+    # [B1, B0] orientation bytes32_to_key consumes (mirrors the parser's remoteToken load)
+    dup add.3 mem_load
+    dup.1 add.2 mem_load
+    dup.2 add.1 mem_load
+    dup.3 mem_load
+    # => [B0, nonce_base]
+
+    # B1: the next four packed limbs (wire bytes 16..32)
+    dup.4 add.7 mem_load
+    dup.5 add.6 mem_load
+    dup.6 add.5 mem_load
+    dup.7 add.4 mem_load
+    # => [B1, B0, nonce_base]
+
+    movup.8 drop
+    # => [B1, B0]
+
+    # consume the 04-owned hash-to-key BY REFERENCE (NS-1: bytes32_to_key); no re-impl
+    exec.encoding::bytes32_to_key
+    # => [KEY]
+
+    push.USED_NONCES_SLOT[0..2]
+    # => [slot_id_suffix, slot_id_prefix, KEY]
+
+    exec.active_account::get_map_item
+    # => [VALUE]
+
+    # assert-zero: an unused nonce reads EMPTY_WORD; a used (non-empty) one traps. D5c does
+    # NOT write the registry -- consuming the nonce is deferred to D5e.
+    padw assert_eqw.err=ERR_XRESERVE_NONCE_REPLAY
+    # => []
 end
 
 # HELPER PROCEDURES

@@ -151,3 +151,56 @@ G1 anti-duplication: the shell CALLS the reducer (two `exec.encoding::uint256_to
 `pow10`/`u128::divmod`/byte-swap/cap/`AssetAmount::MAX` logic in the shell. No
 storage-map/nonce/attestation/`token_supply`/note/mint-effect code; no R-B/account_id,
 Cargo, or pin change.
+
+# 01 Faucet Slice 3 — D5c Nonce Replay Guard TEST LEDGER
+
+Loop records per the approved P5-01 D5c plan (Codex Round-P REVISE → revised → PASS;
+Round-R red-suite audit PASS; Round-F final audit PASS). Phase: **IMPLEMENTATION COMPLETE
+— FULL SLICE GREEN** (red `7da46d2` → green `6bf980c`).
+
+NEW sibling proc `xreserve::deposit_intent_parser::assert_nonce_unused` (D-1A/D-A home;
+`assert_deposit_intent`/`assert_mint_amounts` + their 23 tests untouched). This is the
+**first REAL `StorageMap` slot on the faucet** (`USED_NONCES_SLOT`, frozen §5.6 nonce
+registry), built on the storage-map grounding canary. Derives the nonce key by CONSUMING the
+04-owned `xreserve::encoding::bytes32_to_key` BY REFERENCE over the parsed nonce
+(`felt[51..58]`, loaded as `[B1, B0]` — the parser's remoteToken orientation), reads
+`usedNonces[key]` via the canary-proven `active_account::get_map_item`, and asserts
+`== EMPTY_WORD` else traps `ERR_XRESERVE_NONCE_REPLAY` (R-MINT-12). **assert-zero ONLY** —
+the nonce mark is the first atomic write in D5e, so a failed mint never consumes a nonce
+(no `set_map_item` in D5c). DEV-9 / Q-CRY-5 (nonce-commitment keying) stays OPEN, never
+presented as Circle-approved.
+
+Fixture: NEW `setup_shell_account_with_nonce_seed` binds the `usedNonces` map slot
+(`StorageSlot::with_map`, canary-proven) — empty by default; `setup_shell_account` delegates
+with `None`, so the D5a/D5b accounts now carry the (unwritten) map slot (additive,
+behavior-preserving — slots are name-addressed; no storage delta). The replay fixture seeds
+`usedNonces[bytes32_to_storage_map_key(nonce)] = marker` via `StorageMap::with_entries`; the
+seed key is derived by the 04-owned Rust routine (by reference), parity with the MASM
+`bytes32_to_key(felt[51..58])` guaranteed by TV-DUAL-1. NEW `nonce_driver_src` helper.
+
+Vectors reused BY REFERENCE from the canonical 04 `di-*` accept family (zero new vectors):
+`di-pos-hookdata`, `di-pos-empty-hookdata`. Finding (non-defect): both accept vectors share
+the same nonce, so the key-scoping case derives a distinct "other" key by flipping one nonce
+byte (the `config_for` identifier-flip idiom), guaranteed distinct.
+
+| Stage | Change (MASM + same-commit parity rows) | Full-suite result | RED remainder (named trap) |
+|---|---|---|---|
+| RED `7da46d2` | named placeholder `assert_nonce_unused` (inline `.err` trap — no new `const`, so constant-parity stays green) + the `usedNonces` map-slot fixture (`setup_shell_account_with_nonce_seed` + empty slot bound in `setup_shell_account`) + `nonce_driver_src` + 5 D5c tests (happy ×2, replay ×2, key-scoping) + `probe_nonce_unused_exports` + `ERR_XRESERVE_NONCE_REPLAY` in `SHELL_ERR_TABLE` (red-suite carrier) | masm_mint_shell **`24 passed; 5 failed`** (lib 28, constant_parity 4, masm_dual 8, canary 1 green) | all 5 D5c on the placeholder trap, via real MockChain execution (exact-error mismatch / expected-accept) |
+| GREEN `6bf980c` | real proc: load nonce `felt[51..58]` as `[B1, B0]` → `exec.encoding::bytes32_to_key` → `push.USED_NONCES_SLOT[0..2]` → `active_account::get_map_item` → `padw assert_eqw.err=ERR_XRESERVE_NONCE_REPLAY`; declared `USED_NONCES_SLOT` word-const + `ERR_XRESERVE_NONCE_REPLAY` string-const + `NONCE_FELT_OFF` import; parity: `SHELL_ERRORS_DECLARED += NONCE_REPLAY`, `EXPECTED_SHELL_WORD_CONSTS += USED_NONCES_SLOT` | **`29 passed; 0 failed`** — full suite GREEN: lib 28, gen_vectors 0, constant_parity 4, masm_dual 8, masm_mint_shell 29; canary 1 | none |
+
+Every stage: `cargo test -p xusdc-encoding --locked --no-fail-fast` + the canary
+(`cargo test --manifest-path canary/storage-map-grounding/Cargo.toml --locked`); 04
+(masm_dual 8) + D5a/D5b (the 24 prior masm_mint_shell tests) + canary stayed green
+throughout; no test body weakened. Exact-error: replay via `assert_transaction_executor_error!`
++ `shell_error_by_name("ERR_XRESERVE_NONCE_REPLAY")`; happy + key-scoping assert success +
+`nonce_delta == 1` + empty storage delta (proves D5c writes NO nonce). G1 anti-duplication:
+the shell CALLS `bytes32_to_key` (a 2nd `exec.encoding::bytes32_to_key` call site after D5a)
++ `get_map_item`; `rg "bytes32_to_key|hash_elements|Poseidon2" asm/standards/xreserve/` shows
+NO re-implemented hash in the shell; `rg "bytes32_to_storage_map_key" asm/` = zero (NS-1);
+`rg -ni "set_map_item|marker|usedNonces.*:=|nonce.*set" asm/standards/xreserve/` = zero (no
+nonce SET in D5c). `usedNonces` is the faucet's frozen §5.6 slot (not a new boundary, G2). No
+attestation/supply/note/mint-effect code; no R-B/account_id, Cargo, or pin change.
+
+Ratified decisions in force: **D-A** module home `deposit_intent_parser.masm`, nested path
+`xreserve::deposit_intent_parser::assert_nonce_unused` (human-confirmed at plan time) · the
+nonce SET deferred to **D5e** (assert-zero only here).

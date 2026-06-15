@@ -16,7 +16,6 @@
 
 use miden_protocol::testing::account_id::AccountIdBuilder;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
-use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Hasher, Word};
 use serde_json::{Value, json};
 
@@ -374,12 +373,19 @@ fn main() {
     let ids: Vec<miden_protocol::account::AccountId> = (1u8..=3)
         .map(|seed| AccountIdBuilder::new().build_with_seed([seed; 32]))
         .collect();
+    // R-B / Agglayer-mirroring packaging (DEV-10 draft, human-selected 2026-06-15):
+    // bytes[0..16]=0, bytes[16..24]=prefix u64 BE, bytes[24..32]=suffix u64 BE. Derived
+    // inline from the protocol AccountId accessors (derivation independence — this binary
+    // never calls the crate mirror's account_id_to_bytes32).
+    let r_b_bytes32 = |id: &miden_protocol::account::AccountId| -> [u8; 32] {
+        let mut b = [0u8; 32];
+        b[16..24].copy_from_slice(&id.prefix().as_u64().to_be_bytes());
+        b[24..32].copy_from_slice(&id.suffix().as_canonical_u64().to_be_bytes());
+        b
+    };
     let mut aid: Vec<Value> = Vec::new();
     for (n, id) in ids.iter().enumerate() {
-        let ser = id.to_bytes();
-        assert_eq!(ser.len(), 15, "AccountId::SERIALIZED_SIZE");
-        let mut b32_bytes = [0u8; 32];
-        b32_bytes[..15].copy_from_slice(&ser);
+        let b32_bytes = r_b_bytes32(id);
         let prefix: Felt = id.prefix().as_felt();
         let suffix: Felt = id.suffix();
         aid.push(json!({
@@ -387,51 +393,49 @@ fn main() {
             "tv": ["TV-AID-1", "TV-AID-4"],
             "bytes32": hex_bytes(&b32_bytes),
             "prefix_felt": felt_hex(prefix), "suffix_felt": felt_hex(suffix),
-            "cite": "EL E-9 (:84), E-10 (:85); MIDEN-CRYPTO-AND-ENCODING.md:148-157; DEV-10 + IMPL-ACCOUNTID-LAYOUT (draft layout, REQUIRES CIRCLE CONFIRMATION)",
+            "cite": "EL E-9 (:84), E-10 (:85); MIDEN-CRYPTO-AND-ENCODING.md:148-157; DEV-10 + IMPL-ACCOUNTID-LAYOUT (R-B / Agglayer-mirroring draft, REQUIRES CIRCLE CONFIRMATION)",
             "derivation": format!(
-                "AccountIdBuilder::new().build_with_seed([{}; 32]) @ v0.15.3; bytes32[..15] = canonical 15-byte serialization, rest zero (draft layout)",
+                "AccountIdBuilder::new().build_with_seed([{}; 32]) @ v0.15.3; R-B layout: bytes[0..16]=0, [16..24]=prefix u64 BE, [24..32]=suffix u64 BE",
                 n + 1
             ),
         }));
     }
-    // out-of-range: valid id bytes with padding violated at byte 20.
+    // out-of-range: a valid R-B encoding with a non-zero byte in the leading 16-byte pad.
     {
-        let ser = ids[0].to_bytes();
-        let mut bad = [0u8; 32];
-        bad[..15].copy_from_slice(&ser);
-        bad[20] = 0x01;
+        let mut bad = r_b_bytes32(&ids[0]);
+        bad[0] = 0x01;
         aid.push(json!({
             "id": "aid-rej-out-of-range", "tv": ["TV-AID-2"],
             "bytes32": hex_bytes(&bad),
             "expected_variant": "AccountIdOutOfRange",
             "cite": "EL E-9 (:84), E-10 (:85)",
-            "derivation": "aid-rt-1 bytes32 with byte[20] = 0x01 (outside the 15-byte region)",
+            "derivation": "aid-rt-1 R-B bytes32 with byte[0] = 0x01 (non-zero in the leading 16-byte pad)",
         }));
     }
-    // non-canonical: in-region bytes that do not deserialize to an AccountId.
+    // non-canonical: zero pad, in-field prefix/suffix felts that do not form a canonical
+    // AccountId (exercises AccountId::try_from_elements; a non-zero suffix low byte alone
+    // breaks canonicity).
     {
-        use miden_protocol::utils::serde::Deserializable;
-        let candidate = [0xffu8; 15];
+        let (prefix, suffix) = (7u64, 7u64);
+        let prefix_felt = Felt::try_from(prefix).expect("in-field");
+        let suffix_felt = Felt::try_from(suffix).expect("in-field");
         assert!(
-            miden_protocol::account::AccountId::read_from_bytes(&candidate).is_err(),
-            "generator invariant: candidate must NOT deserialize to a canonical AccountId"
+            miden_protocol::account::AccountId::try_from_elements(suffix_felt, prefix_felt)
+                .is_err(),
+            "generator invariant: candidate prefix/suffix must NOT form a canonical AccountId"
         );
         let mut bad = [0u8; 32];
-        bad[..15].copy_from_slice(&candidate);
+        bad[16..24].copy_from_slice(&prefix.to_be_bytes());
+        bad[24..32].copy_from_slice(&suffix.to_be_bytes());
         aid.push(json!({
             "id": "aid-rej-non-canonical", "tv": ["TV-AID-2"],
             "bytes32": hex_bytes(&bad),
             "expected_variant": "NonCanonicalAccountId",
             "cite": "EL E-9 (:84)",
-            "derivation": "15 bytes of 0xff inside the region; verified rejected by AccountId::read_from_bytes @ v0.15.3",
+            "derivation": "R-B layout, zero pad; prefix=suffix=7 (in-field) rejected by AccountId::try_from_elements @ v0.15.3",
         }));
     }
-    let recipient_b32: [u8; 32] = {
-        let ser = ids[0].to_bytes();
-        let mut b = [0u8; 32];
-        b[..15].copy_from_slice(&ser);
-        b
-    };
+    let recipient_b32: [u8; 32] = r_b_bytes32(&ids[0]);
 
     // ---- di family --------------------------------------------------------------------
     let mut di: Vec<Value> = Vec::new();

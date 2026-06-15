@@ -1,38 +1,51 @@
 //! AccountId ↔ bytes32 family, frozen signatures per `COMPONENT-SPEC.md §6.3`
 //! (INV-ACCOUNTID-ENCODING; Rust-primary — human decision D-5: no MASM leg this slice).
-//! Implemented (routine R3). The byte layout is the IMPL-ACCOUNTID-LAYOUT draft: it
-//! `REQUIRES CIRCLE CONFIRMATION` (DEV-10) and `REQUIRES IMPLEMENTATION VALIDATION` —
-//! labels preserved, nothing resolved.
+//! Implemented (routine R3); the bytes32 packaging is the R-B / Agglayer-mirroring
+//! layout (DEV-10 draft, human-selected 2026-06-15 — supersedes the prior left-aligned
+//! 15-byte/trailing-zero draft). `REQUIRES CIRCLE CONFIRMATION` (DEV-10) and
+//! `REQUIRES IMPLEMENTATION VALIDATION` — the layout stays an OPEN proposal to Circle,
+//! no approval.
 
 use miden_protocol::Felt;
 use miden_protocol::account::AccountId;
-use miden_protocol::utils::serde::{Deserializable, Serializable};
 
 use super::error::EncodingError;
 
 /// `AddressType::AccountId` discriminant (EL E-11; pinned source:
-/// `miden-protocol/src/address/type.rs` — 232 = 0b1110_1000).
+/// `miden-protocol/src/address/type.rs` — 232 = 0b1110_1000). A bech32 discriminant,
+/// NOT part of the bytes32 wire form.
 pub const ADDRESS_TYPE_ACCOUNT_ID: u8 = 232;
 
-/// Lossless 15-byte encoding into bytes32 (draft layout, DEV-10: bytes[0..15] = the
-/// canonical 15-byte serialization — 8-byte BE prefix + 7-byte BE suffix (the suffix's
-/// always-zero last byte is omitted, `v1/mod.rs:300-308`); bytes[15..32] = zero padding).
+/// Lossless AccountId → bytes32 packaging — R-B / Agglayer-mirroring (DEV-10 draft):
+/// `bytes[0..16] = 0x00` (leading zero pad), `bytes[16..24] = prefix` as u64 big-endian,
+/// `bytes[24..32] = suffix` as canonical u64 big-endian. Mirrors the protocol Agglayer
+/// `EthEmbeddedAccountId` form `0x00000000 || prefix(8) || suffix(8)`
+/// (`miden-agglayer/src/eth_types/eth_embedded_account_id.rs:117-122`) widened to a
+/// 32-byte slot; uses the FULL 8-byte suffix, not `to_bytes()`'s 7-byte form.
 pub fn account_id_to_bytes32(id: AccountId) -> [u8; 32] {
     let mut out = [0u8; 32];
-    out[..AccountId::SERIALIZED_SIZE].copy_from_slice(&id.to_bytes());
+    out[16..24].copy_from_slice(&id.prefix().as_u64().to_be_bytes());
+    out[24..32].copy_from_slice(&id.suffix().as_canonical_u64().to_be_bytes());
     out
 }
 
-/// Inverse; rejects bytes set outside the 15-byte region (`AccountIdOutOfRange`) and
-/// non-canonical ids (`NonCanonicalAccountId`). Round-trip lossless for valid ids.
+/// Inverse (R-B): rejects a non-zero byte in the leading 16-byte pad region
+/// (`AccountIdOutOfRange`); rejects a prefix/suffix that do not form a canonical
+/// AccountId — out-of-field felts or a failed `try_from_elements` (`NonCanonicalAccountId`).
+/// Round-trip lossless for valid ids.
 pub fn bytes32_to_account_id(b: &[u8; 32]) -> Result<AccountId, EncodingError> {
-    if b[AccountId::SERIALIZED_SIZE..].iter().any(|&byte| byte != 0) {
+    if b[..16].iter().any(|&byte| byte != 0) {
         return Err(EncodingError::AccountIdOutOfRange);
     }
-    // the protocol's deserialization validates canonicity (version/type/prefix rules,
-    // `v1/mod.rs:388-394` → `AccountIdError`); the frozen unit variant cannot carry that
-    // source (preserve-error-source conflict recorded in the approved plan — frozen wins)
-    AccountId::read_from_bytes(&b[..AccountId::SERIALIZED_SIZE])
+    let prefix = u64::from_be_bytes(b[16..24].try_into().expect("8-byte slice"));
+    let suffix = u64::from_be_bytes(b[24..32].try_into().expect("8-byte slice"));
+    // packing into the field must not reduce mod p, then the felts must form a canonical
+    // AccountId (`try_from_elements(suffix, prefix)`, mirroring the Agglayer precedent
+    // `eth_embedded_account_id.rs:86-96`); the frozen unit variant cannot carry the inner
+    // `AccountIdError` source (preserve-error-source conflict recorded — frozen wins)
+    let prefix_felt = Felt::try_from(prefix).map_err(|_| EncodingError::NonCanonicalAccountId)?;
+    let suffix_felt = Felt::try_from(suffix).map_err(|_| EncodingError::NonCanonicalAccountId)?;
+    AccountId::try_from_elements(suffix_felt, prefix_felt)
         .map_err(|_| EncodingError::NonCanonicalAccountId)
 }
 

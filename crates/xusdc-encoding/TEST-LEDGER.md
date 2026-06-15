@@ -2,6 +2,27 @@
 
 Loop records per the approved plan §10/§11. Phase: **R4 COMPLETE — FULL SLICE GREEN (37/37)** — red-suite + R1 + R2 + R3 audited/accepted; R4 implemented; every in-scope TV row passes; awaiting final audit.
 
+## R5 — DEV-10 AccountId→bytes32 layout revision to R-B / Agglayer-mirroring (2026-06-15; human-authorized; GREEN)
+
+Post-acceptance layout supersession (`P5-04-SHARED-ENCODING-ACCEPTANCE-RECORD.md §1b`): the human selected the **R-B / Agglayer-mirroring** AccountId→bytes32 packaging, replacing the accepted left-aligned draft. This is the separate builder-gated **code+vector** revision that §1b deferred.
+
+**Before → after (`account_id_to_bytes32`):** left-aligned `out[..15] = id.to_bytes()` (8 BE prefix + 7 BE suffix), `[15..32]=0` → **R-B** `out[16..24] = prefix().as_u64() BE`, `out[24..32] = suffix().as_canonical_u64() BE`, `[0..16]=0` (full 8-byte suffix). Inverse now validates a zero leading-16 pad (`AccountIdOutOfRange`) then `Felt::try_from` + `AccountId::try_from_elements(suffix, prefix)` (`NonCanonicalAccountId`) — mirrors `miden-agglayer/.../eth_embedded_account_id.rs:86-96,:117-122`. `account_id_to_felts` unchanged (layout-independent).
+
+**Scope:** `account_id.rs` (impl + docs), `gen_vectors.rs` (R-B inline derivation `r_b_bytes32`, kept independent of the crate mirror; aid round-trip + both rejects regenerated; `recipient_b32` for the di family), regenerated `xreserve-encoding-vectors.json`. NO MASM AccountId proc (D-5 in force). Faucet MASM untouched. `remoteToken` di field is a synthetic pattern (unaffected); only `remoteRecipient` (AccountId-encoded) regenerated, so the di preimages change.
+
+**Vector deltas:** aid valid ids now occupy bytes 16..31 (zero pad 0..15; suffix LSB at 31 = 0 per the always-zero suffix byte); `aid-rej-out-of-range` = byte[0] set in the leading pad; `aid-rej-non-canonical` = zero pad + prefix=suffix=7 (in-field, rejected by `try_from_elements`, generator-asserted). Artifact 77296 bytes.
+
+| Command | Result |
+|---|---|
+| `cargo run --bin gen_vectors` | wrote artifact; R-B invariant asserts passed (`try_from_elements(7,7)` rejects) |
+| `cargo build --locked` | clean |
+| `cargo test --locked --test constant_parity` | 4 passed |
+| `cargo test --locked --test masm_dual` | 7 passed |
+| `cargo test --locked --test masm_mint_shell` | 11 passed (faucet alignment-agnostic — green against R-B vectors) |
+| `cargo test --locked --no-fail-fast` | **50/50** (lib 28, parity 4, masm_dual 7, masm_mint_shell 11) |
+
+**DEV-10 / Q-CRY-3 / Q-CRY-4 remain OPEN** — R-B is a revised proposal to Circle (`REQUIRES CIRCLE CONFIRMATION`, `NO EVIDENCE OF CIRCLE APPROVAL`), not an approval. Awaiting independent audit; faucet Phase B re-verification remains separately gated.
+
 ## R4 — DepositIntent layout + parser (2026-06-12, approved start; GREEN)
 
 Pre-change baselines: 11 DI tests RED (`unimplemented!()` + sentinel offsets), parity ×2

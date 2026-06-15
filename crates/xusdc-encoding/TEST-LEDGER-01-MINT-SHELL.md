@@ -110,3 +110,44 @@ untouched (C1 doc-comment edits and the C2 pin migration are their own audited c
 |---|---|---|
 | 1 | `cargo test --locked --test masm_mint_shell -- --exact probe_slot_binding --nocapture` (canary first) | `1 passed` |
 | 2 | `cargo test --locked --no-fail-fast` | lib `28 passed` (incl. the extended `artifact_guard`) · constant_parity **`4 passed`** · masm_dual `7 passed` · masm_mint_shell `2 passed; 9 failed` (unchanged expected RED on the named placeholder) — 50 discovered: 41 green + 9 expected RED |
+
+# 01 Faucet Slice 2 — D5b amount/fee Preconditions TEST LEDGER
+
+Loop records per the approved revised P5-01 D5b plan (Codex Round-P REVISE → revised →
+human-ratified Option C for `feeAmount`; Round-R red-suite audit PASS). Phase:
+**IMPLEMENTATION COMPLETE — FULL SLICE GREEN** (red `303b8e6` → green-1 `ed5ae31` →
+green-2 `1db91b6`). Awaiting final Codex audit (Round F).
+
+NEW sibling proc `xreserve::deposit_intent_parser::assert_mint_amounts` (D-1A/D-A home;
+`assert_deposit_intent` + its 9 tests untouched). Consumes the 04-owned
+`xreserve::encoding::uint256_to_asset_amount` BY REFERENCE for `amount` (felt[2..9]),
+`maxFee` (felt[43..50]), and the operator `feeAmount` (advice stack); asserts reduced
+`amount >= maxFee` (R-MINT-10) and `feeAmount <= maxFee` (R-MINT-11); R-MINT-9
+(`ERR_X_TOO_LARGE`) PROPAGATES from the reducer. `scale_exp` is a proc parameter — DEV-5 /
+Q-CRY-6 (cap/scale) stays OPEN, never presented as Circle-approved. `feeAmount` advice =
+human-ratified **Option C** (operator-chosen free parameter; hygiene rules 1/2 N/A — no
+in-scope commitment, bound is R-MINT-11 over the Circle-signed maxFee; rule 3 enforced:
+missing advice traps, malformed/non-u32 limb traps `ERR_FELT_OUT_OF_FIELD`, `feeAmount==0`
+is eight explicit zero limbs).
+
+Vectors reused BY REFERENCE from the canonical 04 `amt-*` family (zero new vectors):
+`amt-ge-gt/eq/lt` (the reduced-compare `reduced_ge` vectors, TV-AMT-5), `amt-pos-1/2`,
+`amt-cap-accept`, `amt-rej-limb-overflow`. `amount`/`maxFee` are spliced into a base
+`di-pos-empty-hookdata` preimage; `feeAmount` is staged on the advice stack.
+
+| Stage | Change (MASM + same-commit parity rows) | Full-suite result | RED remainder (named trap) |
+|---|---|---|---|
+| RED `303b8e6` | named placeholder `assert_mint_amounts` (`ERR_UNIMPLEMENTED_MINT_AMOUNTS`) + 11 D5b tests (happy ×4, rejects ×5, missing/malformed advice ×2) + 3 helpers (`splice_amounts`, `mint_amounts_driver_src`, `run_call_driver_with_advice`) + 2 proposed errors in `SHELL_ERR_TABLE` + temp CS-5 exemption + `probe_mint_amounts_exports` | masm_mint_shell **`12 passed; 11 failed`** (lib 28, parity 4, masm_dual 8 green) | all 11 D5b on the placeholder trap, via real MockChain execution (exact-error mismatch / expected-accept) |
+| GREEN-1 `ed5ae31` | reduce amount + maxFee via `reduce_uint256_field` (parser-mirrored non-word-aligned single-felt load) + R-MINT-10 (`ERR_XRESERVE_AMOUNT_BELOW_FEE`) via `u64::lte`; placeholder + exemption REMOVED; `SHELL_ERRORS_DECLARED += AMOUNT_BELOW_FEE` | masm_mint_shell **`19 passed; 4 failed`** | R-MINT-9 fee, R-MINT-11, missing, malformed (feeAmount path) |
+| GREEN-2 `1db91b6` | feeAmount via `adv_pushw`×2 (→ `[U1, U0]`) + reducer + R-MINT-11 (`ERR_XRESERVE_FEE_OVER_MAX`) via `u64::lte`; `SHELL_ERRORS_DECLARED += FEE_OVER_MAX` | **`23 passed; 0 failed`** — full suite GREEN: lib 28, gen_vectors 0, constant_parity 4, masm_dual 8, masm_mint_shell 23 | none |
+
+Every stage: `cargo test --locked --no-fail-fast`; 04 (masm_dual 8) + D5a (the 12 prior
+masm_mint_shell tests) stayed green throughout; no test body weakened. Exact-error asserts
+per case: R-MINT-9/10/11 via `assert_transaction_executor_error!` + `shell_error_by_name`;
+missing advice via `matches ExecutionError::AdviceError` ("advice stack read failed");
+malformed limb via `OperationError::U32AssertionFailed` pinned to `ERR_FELT_OUT_OF_FIELD`.
+G1 anti-duplication: the shell CALLS the reducer (two `exec.encoding::uint256_to_asset_amount`
+— one in the helper for amount/maxFee, one direct for feeAmount); `rg` shows NO copied
+`pow10`/`u128::divmod`/byte-swap/cap/`AssetAmount::MAX` logic in the shell. No
+storage-map/nonce/attestation/`token_supply`/note/mint-effect code; no R-B/account_id,
+Cargo, or pin change.

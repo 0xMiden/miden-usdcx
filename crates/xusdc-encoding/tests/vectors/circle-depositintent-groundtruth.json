@@ -1,6 +1,6 @@
 {
   "schema": "miden-xusdc-depositintent-differential-vectors/v1",
-  "purpose": "Real Circle-emitted DepositIntent envelope ground truth for Miden DC-1 differential testing.",
+  "purpose": "DepositIntent envelope ground truth for Miden DC-1 differential testing, LOCALLY GENERATED/RECONSTRUCTED from Circle source via Circle's own encoder. NOT a Circle-shipped artifact and NOT copied from Circle's repo.",
   "provenance": {
     "source_repo": "https://github.com/circlefin/evm-xreserve-contracts.git",
     "commit": "a571cbe12fa7cede3dfd48bc4fedb74739c04377",
@@ -9,8 +9,10 @@
     "solc_version": "0.8.29",
     "encoder": "DepositIntentLib.encodeDepositIntent (src/lib/DepositIntentLib.sol:318-333)",
     "encoder_is_circles_own": true,
-    "encoder_emission_path": "xReserve.encodeDepositIntent (src/xReserve.sol:154-155) delegates verbatim; production attester GenerateDepositIntentAttestation.s.sol:181 uses the same library function",
-    "ground_truth_method": "Foundry script (script/ExtractDepositIntentGroundTruth.s.sol) invoking Circle's own encoder with deterministic field values; no Circle golden-hex blob exists in test/ (Circle asserts via decode round-trip + length, not a literal blob)",
+    "encoder_emission_path": "xReserve.encodeDepositIntent (src/xReserve.sol:154-155) delegates verbatim; Circle's deploy-contracts/GenerateDepositIntentAttestation.s.sol:181 calls the same library function (both verified present in Circle's tracked tree at this commit)",
+    "ground_truth_method": "LOCALLY GENERATED, not copied from Circle: an AGENT-AUTHORED Foundry script (circle-extraction/ExtractDepositIntentGroundTruth.s.sol, reproduced in this directory) was run against a clone of Circle @ a571cbe; it invokes Circle's own DepositIntentLib.encodeDepositIntent over hardcoded field values, self-asserts every DC-1 offset, and round-trips through Circle's DepositIntentLib.decodeDepositIntent. Circle's tracked tree at a571cbe contains NEITHER a golden-hex blob NOR this extraction script (Circle's own tests assert via decode round-trip + length, not a literal blob).",
+    "reproduction": "see circle-extraction/README.md; in a clone of Circle @ a571cbe with the script under script/: `forge script script/ExtractDepositIntentGroundTruth.s.sol -vvv --skip 'test/**'` (the console.logBytes output is bytes_hex).",
+    "provenance_correction": "An earlier description called this fixture 'copied verbatim from Circle's repo' and said expected fields come from 'Circle's decoder'; both were inaccurate and corrected (audit finding). The bytes are Circle's ENCODER output reconstructed locally; the differential test's expected fields are raw-byte-derived and source-verified against Circle's DC-1 layout.",
     "envelope_endianness": "big-endian",
     "header_bytes": 240,
     "total_length_rule": "240 + hookDataLength"

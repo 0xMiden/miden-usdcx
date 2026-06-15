@@ -453,16 +453,20 @@ fn probe_p4_packing_util() {
     assert_eq!(felts.len(), 1);
 }
 
-// TV-CIRCLE-DIFF — real Circle-emitted DepositIntent bytes through our parser
+// TV-CIRCLE-DIFF — Circle-encoder-produced DepositIntent bytes through our parser
 // ================================================================================================
-// Differential ("spec → Circle") test. Ground truth: Circle's evm-xreserve-contracts @
-// a571cbe12fa7cede3dfd48bc4fedb74739c04377, encoded by Circle's OWN
-// `DepositIntentLib.encodeDepositIntent` (abi.encodePacked). The fixture is copied verbatim
-// from that repo (`tests/vectors/circle-depositintent-groundtruth.json`). EXPECTED field
-// values come from Circle's decoder (the fixture); INPUTS are Circle's real bytes; only the
-// u32-LE staging packing and our parser are "ours". This validates the 04 PARSER ENVELOPE
-// (offsets, sizes, endianness, magic/version, length rule). It does NOT exercise the faucet
-// R-MINT-7 identifier compare against a real Miden identifier — Circle treats remoteToken /
+// Differential ("spec → Circle") test. The fixture
+// `tests/vectors/circle-depositintent-groundtruth.json` was LOCALLY GENERATED/RECONSTRUCTED from
+// Circle source (evm-xreserve-contracts @ a571cbe12fa7cede3dfd48bc4fedb74739c04377) by an
+// agent-authored Foundry extraction script (reproduced under `tests/vectors/circle-extraction/`)
+// that invokes Circle's OWN `DepositIntentLib.encodeDepositIntent` (abi.encodePacked) over
+// hardcoded field values. It is NOT copied from Circle's repo; Circle's tracked tree at that
+// commit ships no golden-hex blob and no extraction script. EXPECTED field values here are
+// fixture/raw-byte-derived and source-verified against Circle's DC-1 layout (DepositIntent.sol
+// offsets) — this test does NOT run Circle's decoder. INPUTS are the Circle-encoder-produced
+// bytes; only the u32-LE staging packing and our parser are "ours". Validates the 04 PARSER
+// ENVELOPE (offsets, sizes, endianness, magic/version, length rule). It does NOT exercise the
+// faucet R-MINT-7 identifier compare against a real Miden identifier — Circle treats remoteToken /
 // remoteRecipient as opaque bytes32, so DEV-10 / Q-CRY-3/4 stay OPEN and out of scope here.
 
 const CIRCLE_FIXTURE: &str = include_str!("vectors/circle-depositintent-groundtruth.json");
@@ -534,10 +538,12 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
         let raw = circle_hexdec(&v.bytes_hex);
         let f = &v.fields;
 
-        // (1) INDEPENDENT cross-check — our DC-1 offset model vs Circle's decoder output.
-        // Raw bytes sliced at the DC-1 offsets (big-endian) must equal Circle's stated
-        // field values. Catches any offset / size / endianness error in our spec model,
-        // using only Circle's real bytes + Circle's decoded fields (no parser involved).
+        // (1) INDEPENDENT cross-check — our DC-1 offset model vs the fixture's stated field
+        // values (themselves source-verified against Circle's layout by the extraction
+        // script's offset self-asserts). Raw bytes sliced at the DC-1 offsets (big-endian)
+        // must equal the fixture's stated fields. Catches any offset / size / endianness
+        // error in our spec model, using only the fixture bytes + its stated fields (no
+        // parser involved).
         assert_eq!(raw.len() as u64, v.length, "{}: declared length", v.id);
         assert_eq!(
             raw.len() as u64,
@@ -574,9 +580,9 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
         let hd = if raw.len() > 240 { circle_hex(&raw[240..]) } else { String::from("0x") };
         assert_eq!(hd, f.hook_data, "{}: hookData @240", v.id);
 
-        // (2) MASM parser run — Circle's real bytes → u32-LE staging → our parser. The
-        // expected D-4A outputs are derived from Circle's RAW bytes (big-endian), NOT by
-        // mirroring the parser's own LE-pack-then-byte-swap path, so a parser endianness or
+        // (2) MASM parser run — the Circle-encoder-produced bytes → u32-LE staging → our
+        // parser. The expected D-4A outputs are derived from the RAW bytes (big-endian), NOT
+        // by mirroring the parser's own LE-pack-then-byte-swap path, so a parser endianness or
         // offset bug surfaces as a mismatch rather than a silent pass.
         let preimage = pack(&raw);
         let len_felts = preimage.len() as u64;
@@ -611,9 +617,9 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
         .await;
     }
 
-    // (3) NEGATIVE CONTROLS — prove the differential actually rejects corrupted real bytes,
-    // so a green positive run cannot be a false pass. Corrupt one real Circle blob and
-    // confirm our parser traps the EXACT structural error through the same call path.
+    // (3) NEGATIVE CONTROLS — prove the differential actually rejects corrupted input,
+    // so a green positive run cannot be a false pass. Corrupt one Circle-encoder-produced
+    // blob and confirm our parser traps the EXACT structural error through the same call path.
     let base = circle_hexdec(&file.vectors[0].bytes_hex);
     let reject_src = |raw: &[u8]| {
         let preimage = pack(raw);

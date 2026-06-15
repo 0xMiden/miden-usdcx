@@ -28,8 +28,12 @@ const SHELL_MASM: &str =
 
 /// Faucet-owned shell error constants declared in MASM, pinned against the test-side
 /// `support::SHELL_ERR_TABLE` (the single Rust source).
-const SHELL_ERRORS_DECLARED: &[&str] =
-    &["ERR_XRESERVE_WRONG_DOMAIN", "ERR_XRESERVE_WRONG_IDENTIFIER"];
+const SHELL_ERRORS_DECLARED: &[&str] = &[
+    "ERR_XRESERVE_WRONG_DOMAIN",
+    "ERR_XRESERVE_WRONG_IDENTIFIER",
+    // D5b R-MINT-10 (R-MINT-11's ERR_XRESERVE_FEE_OVER_MAX is added by the feeAmount commit)
+    "ERR_XRESERVE_AMOUNT_BELOW_FEE",
+];
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned
 /// against the test-side label consts.
@@ -211,14 +215,10 @@ fn masm_shell_error_string_parity() {
 /// (numeric, string, or `word("…")`) fails here until it gets a row.
 #[test]
 fn masm_constants_bidirectional() {
-    // RED-PHASE EXEMPTION (P5-01 D5b): the placeholder `ERR_UNIMPLEMENTED_MINT_AMOUNTS` is a
-    // MASM-only string const with no Rust counterpart by design; it (and this exemption) are
-    // removed by the D5b green commit, which replaces the placeholder with the real
-    // ERR_XRESERVE_AMOUNT_BELOW_FEE / ERR_XRESERVE_FEE_OVER_MAX consts (already mirrored in
-    // `support::SHELL_ERR_TABLE`). Any OTHER MASM-only string constant still fails here.
+    // every MASM-only string constant must be a known error (04 table or the faucet shell
+    // table); a new one fails here until it gets a row (CS-5)
     let known_err = |name: &str| {
-        name == "ERR_UNIMPLEMENTED_MINT_AMOUNTS"
-            || ERR_MESSAGES.iter().any(|(n, _)| *n == name)
+        ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
     };
     let sources: [(&str, &str, &[&str], &[(&str, &str)]); 3] = [

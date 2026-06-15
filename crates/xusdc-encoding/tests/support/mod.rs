@@ -26,6 +26,7 @@ use miden_protocol::assembly::Library;
 use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::{ExecutedTransaction, TransactionKernel};
 use miden_protocol::{Felt, Word};
+use miden_processor::advice::AdviceInputs;
 use miden_standards::code_builder::CodeBuilder;
 use miden_testing::{Auth, MockChain};
 use miden_tx::TransactionExecutorError;
@@ -53,9 +54,13 @@ pub const IDENTIFIER_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::
 // FAUCET(01) ERROR MIRRORS (frozen names: 01 TEST-AND-VERIFICATION-HARNESS.md:72-73)
 // ================================================================================================
 
-/// Name → constant table for the two faucet-owned shell errors (D-2 string `MasmError`
-/// pattern). The C5 implementation must declare byte-identical strings in MASM.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 2] = [
+/// Name → constant table for the faucet-owned shell errors (D-2 string `MasmError`
+/// pattern). The implementation must declare byte-identical strings in MASM. The two
+/// D5b amount/fee errors (R-MINT-10/11) are PROPOSED names pending human approval
+/// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
+/// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
+/// behavior tests can name their EXACT expected error.
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 4] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -65,6 +70,14 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 2] = [
         MasmError::from_static_str(
             "deposit intent remote token does not match the faucet identifier",
         ),
+    ),
+    (
+        "ERR_XRESERVE_AMOUNT_BELOW_FEE",
+        MasmError::from_static_str("deposit intent amount is below the max fee"),
+    ),
+    (
+        "ERR_XRESERVE_FEE_OVER_MAX",
+        MasmError::from_static_str("operator fee amount exceeds the deposit intent max fee"),
     ),
 ];
 
@@ -268,4 +281,88 @@ pub fn slot_probe_src(domain: Word, identifier: Word) -> String {
         domain_label = DOMAIN_CONFIG_SLOT_LABEL,
         identifier_label = IDENTIFIER_CONFIG_SLOT_LABEL,
     )
+}
+
+// D5B AMOUNT/FEE HELPERS (P5-01 slice 2)
+// ================================================================================================
+
+/// Felt offsets of the `amount` (felt[2..9]) and `maxFee` (felt[43..50]) uint256 fields
+/// within the staged preimage (DC-1 byte offset / 4 — equal to the MASM
+/// `AMOUNT_FELT_OFF` / `MAX_FEE_FELT_OFF` layout consts, parity-checked at the MASM layer
+/// by `constant_parity.rs`).
+pub const AMOUNT_FELT_OFF: usize = 2;
+pub const MAX_FEE_FELT_OFF: usize = 43;
+
+/// Clones a base accept preimage and overwrites the `amount` and `maxFee` fields with the
+/// 8 u32-LE limbs of the chosen canonical `amt-*` vectors (consumed BY REFERENCE — no
+/// copied vector tables, G1). The rest of the DepositIntent envelope (magic / version /
+/// nonzero fields / length) is unchanged, so the 04 structural parse stays valid and
+/// execution reaches the D5b reduce+compare.
+pub fn splice_amounts(base: &[Felt], amount_limbs: [u32; 8], maxfee_limbs: [u32; 8]) -> Vec<Felt> {
+    let mut preimage = base.to_vec();
+    for (i, limb) in amount_limbs.iter().enumerate() {
+        preimage[AMOUNT_FELT_OFF + i] = Felt::from(*limb);
+    }
+    for (i, limb) in maxfee_limbs.iter().enumerate() {
+        preimage[MAX_FEE_FELT_OFF + i] = Felt::from(*limb);
+    }
+    preimage
+}
+
+/// The 8 u32-LE `feeAmount` limbs as advice-stack felts (`Felt::from(u32)`, infallible —
+/// `felt-construction`). `feeAmount == 0` is the operator EXPLICITLY supplying eight zero
+/// limbs — distinct from missing advice (which errors, §4 Option C / rule 3).
+pub fn fee_advice_felts(limbs: [u32; 8]) -> Vec<Felt> {
+    limbs.iter().map(|l| Felt::from(*l)).collect()
+}
+
+/// Generates the per-case D5b driver: stages the (spliced) preimage in the account
+/// context, pushes `[intent_ptr, scale_exp]`, and `exec`s the faucet `assert_mint_amounts`
+/// shell (which reads `feeAmount` from the advice stack). The proc returns `[]`, so the
+/// staged-then-consumed stack restores the 16-depth `call` boundary.
+pub fn mint_amounts_driver_src(preimage: &[Felt], scale_exp: u32) -> String {
+    let mut src = String::from(
+        "use xreserve::deposit_intent_parser\n\n\
+         #! Test driver: stages a DepositIntent preimage in the account context and execs\n\
+         #! the D5b amount/fee precondition shell (feeAmount from the advice stack).\n\
+         #!\n\
+         #! Inputs:  [pad(16)]\n\
+         #! Outputs: [pad(16)]\n\
+         #!\n\
+         #! Invocation: call\n\
+         pub proc drive\n",
+    );
+    stage_preimage(&mut src, preimage);
+    writeln!(src, "    push.{scale_exp}").unwrap();
+    writeln!(src, "    push.{INTENT_PTR}").unwrap();
+    src.push_str("    exec.deposit_intent_parser::assert_mint_amounts\n");
+    src.push_str("end\n");
+    src
+}
+
+/// Like `run_call_driver`, but stages an optional `feeAmount` advice stack into the tx
+/// context (`extend_advice_inputs`). `None` ⇒ no advice staged (the missing-advice case,
+/// which must error — §4 Option C, rule 3). `AdviceInputs::with_stack` preserves order:
+/// the first felt is the first one `adv_push` returns.
+pub async fn run_call_driver_with_advice(
+    h: &ShellHarness,
+    proc_name: &str,
+    advice_stack: Option<Vec<Felt>>,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let src =
+        format!("use {path}->driver\nbegin\n    call.driver::{proc_name}\nend\n", path = h.driver_path);
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(&h.driver_code)
+        .expect("linking the driver component into the tx script")
+        .compile_tx_script(&src)
+        .unwrap_or_else(|e| panic!("driver call script failed to compile: {e}\n--- script ---\n{src}"));
+    let mut ctx = h
+        .mock_chain
+        .build_tx_context(h.account_id, &[], &[])
+        .expect("building the tx context")
+        .tx_script(tx_script);
+    if let Some(stack) = advice_stack {
+        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack));
+    }
+    ctx.build().expect("building the transaction").execute().await
 }

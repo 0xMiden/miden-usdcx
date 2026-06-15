@@ -211,10 +211,14 @@ fn masm_shell_error_string_parity() {
 /// (numeric, string, or `word("…")`) fails here until it gets a row.
 #[test]
 fn masm_constants_bidirectional() {
-    // the red-phase ERR_UNIMPLEMENTED_* exemption was removed with the last placeholder
-    // (C5c); any future MASM-only string constant fails here until it gets a row
+    // RED-PHASE EXEMPTION (P5-01 D5b): the placeholder `ERR_UNIMPLEMENTED_MINT_AMOUNTS` is a
+    // MASM-only string const with no Rust counterpart by design; it (and this exemption) are
+    // removed by the D5b green commit, which replaces the placeholder with the real
+    // ERR_XRESERVE_AMOUNT_BELOW_FEE / ERR_XRESERVE_FEE_OVER_MAX consts (already mirrored in
+    // `support::SHELL_ERR_TABLE`). Any OTHER MASM-only string constant still fails here.
     let known_err = |name: &str| {
-        ERR_MESSAGES.iter().any(|(n, _)| *n == name)
+        name == "ERR_UNIMPLEMENTED_MINT_AMOUNTS"
+            || ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
     };
     let sources: [(&str, &str, &[&str], &[(&str, &str)]); 3] = [

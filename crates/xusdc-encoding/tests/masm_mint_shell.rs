@@ -14,11 +14,13 @@
 mod support;
 
 use anyhow::Result;
+use miden_processor::ExecutionError;
+use miden_processor::operation::OperationError;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::*;
-use xusdc_encoding::vectors::{DiVector, load, parse_hex32};
+use xusdc_encoding::vectors::{AmtVector, DiVector, load, parse_hex32};
 use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
 
 /// Looks up a canonical 04 DepositIntent vector by id (by-reference loading; G1).
@@ -152,5 +154,168 @@ async fn probe_slot_binding() -> Result<()> {
     run_call_driver(&h, "read_slots")
         .await
         .unwrap_or_else(|e| panic!("slot-binding probe must execute green: {e}"));
+    Ok(())
+}
+
+// D5B AMOUNT/FEE PRECONDITIONS (P5-01 slice 2) — RED-SUITE
+// ================================================================================================
+// Drives the NEW faucet-owned `xreserve::deposit_intent_parser::assert_mint_amounts` shell
+// through MockChain `execute().await`. `amount`/`maxFee` are spliced into a base accept
+// preimage from the canonical 04 `amt-*` vectors (by reference, G1); `feeAmount` is staged
+// on the advice stack (§4 Option C). RED-SUITE: the shell holds only the placeholder trap
+// (`ERR_UNIMPLEMENTED_MINT_AMOUNTS`), so every behavior case below is RED on that trap via
+// real execution until the green commits land. `probe_mint_amounts_exports` is a declared
+// green scaffold.
+
+/// The D5b scale exponent, passed as a proc parameter (NOT a faucet constant): it matches
+/// the scale-6 `amt-*` vectors and keeps DEV-5 / Q-CRY-6 (scale factor) cleanly OPEN — the
+/// production source is deferred to the xreserve_mint/config slice (plan §10, decision 2).
+const D5B_SCALE_EXP: u32 = 6;
+
+/// Looks up a canonical 04 amount vector by id (by-reference loading; G1).
+fn amt(id: &str) -> &'static AmtVector {
+    load()
+        .families
+        .amt
+        .iter()
+        .find(|v| v.id == id)
+        .unwrap_or_else(|| panic!("canonical artifact is missing amt vector {id}"))
+}
+
+/// Builds a D5b harness over a base accept preimage with `amount`/`maxFee` spliced from the
+/// given limbs. The shell does not read config slots, but the component still binds them;
+/// the matching `di-pos-empty-hookdata` config is reused for tidiness.
+fn d5b_harness(amount_limbs: [u32; 8], maxfee_limbs: [u32; 8]) -> Result<ShellHarness> {
+    let base = di("di-pos-empty-hookdata").preimage_values();
+    let preimage = splice_amounts(&base, amount_limbs, maxfee_limbs);
+    let (domain, identifier) = config_for("di-pos-empty-hookdata", TEST_DOMAIN, false);
+    let driver_src = mint_amounts_driver_src(&preimage, D5B_SCALE_EXP);
+    setup_shell_account(domain, identifier, &driver_src, SHELL_DRIVER_PATH)
+}
+
+// HAPPY PATH FIRST (G4)
+// ------------------------------------------------------------------------------------------------
+
+#[rstest]
+// feeAmount == 0 (MVP default) accepted; amount (amt-ge-gt.a) > maxFee (amt-ge-gt.b)
+#[case::fee_zero(amt("amt-ge-gt").le_limbs(), amt("amt-ge-gt").b_le_limbs(), fee_advice_felts([0u32; 8]))]
+// boundary amount == maxFee accepted (R-MINT-10 is `<`, not `<=`)
+#[case::amount_eq_maxfee(amt("amt-ge-eq").le_limbs(), amt("amt-ge-eq").b_le_limbs(), fee_advice_felts([0u32; 8]))]
+// boundary feeAmount == maxFee accepted (R-MINT-11 is `>`, not `>=`)
+#[case::fee_eq_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-eq").le_limbs(), fee_advice_felts(amt("amt-ge-eq").le_limbs()))]
+// value at AssetAmount::MAX accepted at the cap; amount (cap) >= maxFee (amt-pos-1)
+#[case::cap_value(amt("amt-cap-accept").le_limbs(), amt("amt-pos-1").le_limbs(), fee_advice_felts([0u32; 8]))]
+#[tokio::test]
+async fn d5b_happy_amount_fee(
+    #[case] amount_limbs: [u32; 8],
+    #[case] maxfee_limbs: [u32; 8],
+    #[case] fee_advice: Vec<Felt>,
+) -> Result<()> {
+    let h = d5b_harness(amount_limbs, maxfee_limbs)?;
+    let executed = run_call_driver_with_advice(&h, "drive", Some(fee_advice))
+        .await
+        .unwrap_or_else(|e| panic!("D5b must accept these reduced amount/fee values: {e}"));
+    // the shell is read-only: the only account mutation is the auth nonce increment
+    assert_eq!(
+        executed.account_delta().nonce_delta(),
+        miden_protocol::ONE,
+        "auth must increment the nonce exactly once"
+    );
+    assert!(
+        executed.account_delta().storage().is_empty(),
+        "the D5b shell must not write account storage"
+    );
+    Ok(())
+}
+
+// REJECTS — plain `assert` traps (R-MINT-9 ERR_X_TOO_LARGE; R-MINT-10/11 faucet errors)
+// ------------------------------------------------------------------------------------------------
+// Each case pins the EXACT expected error (no `is_err()`); the family is parametrized
+// (parametrize-related-tests). ERR_X_TOO_LARGE propagates from the 04 reducer's
+// `assert.err=` (a FailedAssertion), so the plain `assert_transaction_executor_error!`
+// (MasmError) form applies — same as `masm_dual.rs` reject vectors.
+
+#[rstest]
+// R-MINT-9: high-4 limbs nonzero on the AMOUNT reduction
+#[case::r_mint_9_amount_overflow(amt("amt-rej-limb-overflow").le_limbs(), amt("amt-pos-1").le_limbs(), fee_advice_felts([0u32; 8]), "ERR_X_TOO_LARGE")]
+// R-MINT-9: high-4 limbs nonzero on the MAXFEE reduction (amount reduces OK first)
+#[case::r_mint_9_maxfee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-rej-limb-overflow").le_limbs(), fee_advice_felts([0u32; 8]), "ERR_X_TOO_LARGE")]
+// R-MINT-9: high-4 limbs nonzero on the FEEAMOUNT (advice) reduction
+#[case::r_mint_9_fee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-pos-1").le_limbs(), fee_advice_felts(amt("amt-rej-limb-overflow").le_limbs()), "ERR_X_TOO_LARGE")]
+// R-MINT-10: reduced amount (amt-ge-lt.a) < maxFee (amt-ge-lt.b)
+#[case::r_mint_10_amount_below_fee(amt("amt-ge-lt").le_limbs(), amt("amt-ge-lt").b_le_limbs(), fee_advice_felts([0u32; 8]), "ERR_XRESERVE_AMOUNT_BELOW_FEE")]
+// R-MINT-11: amount >= maxFee passes, then reduced feeAmount (amt-ge-lt.b) > maxFee (amt-ge-lt.a)
+#[case::r_mint_11_fee_over_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-lt").le_limbs(), fee_advice_felts(amt("amt-ge-lt").b_le_limbs()), "ERR_XRESERVE_FEE_OVER_MAX")]
+#[tokio::test]
+async fn d5b_amount_fee_rejects(
+    #[case] amount_limbs: [u32; 8],
+    #[case] maxfee_limbs: [u32; 8],
+    #[case] fee_advice: Vec<Felt>,
+    #[case] expected_err: &str,
+) -> Result<()> {
+    let h = d5b_harness(amount_limbs, maxfee_limbs)?;
+    let result = run_call_driver_with_advice(&h, "drive", Some(fee_advice)).await;
+    assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
+    Ok(())
+}
+
+// REJECTS — advice-provider hygiene (§4 Option C, rule 3): missing + malformed advice
+// ------------------------------------------------------------------------------------------------
+
+/// Missing `feeAmount` advice must ERROR (never default): the advice-stack read traps with
+/// `AdviceError::StackReadFailed` ("advice stack read failed"). Pinned on the exact
+/// `ExecutionError::AdviceError` variant + message (not `is_err()`).
+#[tokio::test]
+async fn d5b_fee_advice_missing() -> Result<()> {
+    // amount (amt-ge-gt.a) >= maxFee (amt-ge-gt.b) so execution reaches the feeAmount read
+    let h = d5b_harness(amt("amt-ge-gt").le_limbs(), amt("amt-ge-gt").b_le_limbs())?;
+    let result = run_call_driver_with_advice(&h, "drive", None).await;
+    assert_transaction_executor_error!(
+        result,
+        matches ExecutionError::AdviceError { ref err, .. }
+            if format!("{err}").contains("advice stack read failed")
+    );
+    Ok(())
+}
+
+/// A malformed (non-u32) `feeAmount` limb must ERROR: the reducer's `u32assertw` guard
+/// traps `ERR_FELT_OUT_OF_FIELD`. `u32assert*` surfaces as `OperationError::U32AssertionFailed`
+/// (not `FailedAssertion`), so the named error is pinned on that variant's code AND message
+/// — same strength as `masm_dual.rs`'s `amt-guard-limb-not-u32` row.
+#[tokio::test]
+async fn d5b_fee_advice_malformed_limb() -> Result<()> {
+    let h = d5b_harness(amt("amt-ge-gt").le_limbs(), amt("amt-ge-gt").b_le_limbs())?;
+    // a felt at 2^32 is a valid field element but NOT a valid u32 limb
+    let malformed = vec![Felt::try_from(1u64 << 32).expect("2^32 is within the field"); 8];
+    let result = run_call_driver_with_advice(&h, "drive", Some(malformed)).await;
+    let expected = shell_error_by_name("ERR_FELT_OUT_OF_FIELD");
+    assert_transaction_executor_error!(
+        result,
+        matches ExecutionError::OperationError {
+            err: OperationError::U32AssertionFailed { ref err_code, ref err_msg, .. },
+            ..
+        } if *err_code == expected.code() && err_msg.as_deref() == Some(expected.message())
+    );
+    Ok(())
+}
+
+// PROBE (declared green scaffold — D-1A export check for the new proc)
+// ------------------------------------------------------------------------------------------------
+
+/// The assembled library exports the canonical NESTED D5b proc path (mirrors
+/// `probe_shell_exports`; exports render absolute at 0.23.3).
+#[test]
+fn probe_mint_amounts_exports() -> Result<()> {
+    let lib = assemble_xreserve_lib()?;
+    let exports: Vec<String> = lib
+        .exports()
+        .filter(|e| e.as_procedure().is_some())
+        .map(|e| e.path().to_string())
+        .collect();
+    let canonical = "::xreserve::deposit_intent_parser::assert_mint_amounts";
+    assert!(
+        exports.iter().any(|e| e == canonical),
+        "canonical D5b proc path {canonical} missing; exports: {exports:?}"
+    );
     Ok(())
 }

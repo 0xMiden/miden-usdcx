@@ -29,6 +29,13 @@ pub const IDENTIFIER_CONFIG_SLOT = word("xusdc::xreserve::domain_config::identif
 const ERR_XRESERVE_WRONG_DOMAIN = "deposit intent remote domain does not match the faucet domain"
 const ERR_XRESERVE_WRONG_IDENTIFIER = "deposit intent remote token does not match the faucet identifier"
 
+# RED-SUITE PLACEHOLDER (P5-01 D5b): assert_mint_amounts is not implemented yet. The
+# red-suite drives this trap through real MockChain execution so every D5b behavior test
+# is RED for the right reason. This const + the placeholder proc + the temporary
+# constant_parity exemption are all removed by the D5b green commit, which declares the
+# real ERR_XRESERVE_AMOUNT_BELOW_FEE / ERR_XRESERVE_FEE_OVER_MAX constants in their place.
+const ERR_UNIMPLEMENTED_MINT_AMOUNTS = "red-suite placeholder: assert_mint_amounts is not implemented"
+
 # PUBLIC INTERFACE
 # =================================================================================================
 
@@ -82,4 +89,32 @@ pub proc assert_deposit_intent
 
     assert_eqw.err=ERR_XRESERVE_WRONG_IDENTIFIER
     # => [hook_data_len]
+end
+
+#! Asserts the faucet-owned D5b amount/fee mint preconditions (PLACEHOLDER — red-suite).
+#!
+#! The implemented form (D5b green commits) consumes the 04-owned
+#! `xreserve::encoding::uint256_to_asset_amount` BY REFERENCE to reduce `amount`
+#! (felt[2..9]), `maxFee` (felt[43..50]), and the operator `feeAmount` (read from the
+#! advice stack), then asserts reduced `amount >= maxFee` (R-MINT-10) and reduced
+#! `feeAmount <= maxFee` (R-MINT-11); R-MINT-9 (`ERR_X_TOO_LARGE`) propagates from the
+#! reducer. THIS placeholder traps unconditionally so the D5b behavior suite is RED via
+#! real MockChain execution until the green commits land.
+#!
+#! Inputs:  [intent_ptr, scale_exp]
+#! Outputs: []
+#!
+#! Where:
+#! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
+#! - scale_exp is the decimal scale exponent passed to the reducer.
+#!
+#! Panics if:
+#! - always (red-suite placeholder, `ERR_UNIMPLEMENTED_MINT_AMOUNTS`).
+#!
+#! Invocation: exec
+pub proc assert_mint_amounts
+    # => [intent_ptr, scale_exp]
+
+    # red-suite: trap unconditionally (real execution) so every D5b behavior test is RED
+    push.0 assert.err=ERR_UNIMPLEMENTED_MINT_AMOUNTS
 end

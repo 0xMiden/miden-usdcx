@@ -53,3 +53,13 @@ tokio = { version = "1", features = ["macros", "rt"] }
 anyhow = "1"
 rstest = "0.26"
 assert_matches = "1.5"
+# D5d attestation test vectors: deterministic secp256k1 keypairs + signatures generated
+# IN-TEST (zero touch to the 04 canonical artifact), mirroring the precompile canary and the
+# gen_vectors att_* helpers — k256 the keypair+signature, sha3 the keccak digest, miden-crypto
+# the PublicKey::to_commitment allowlist key. Same versions as the `vectors` feature deps and the
+# canary (single workspace member, so kept crate-local; promote to [workspace.dependencies] if a
+# second crate adopts them).
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha3 = "0.10"
+rand = "0.8"
+miden-crypto = { version = "0.25", default-features = false, features = ["std"] }

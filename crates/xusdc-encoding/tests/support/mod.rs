@@ -27,12 +27,24 @@ use miden_protocol::account::{
 use miden_protocol::assembly::Library;
 use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::{ExecutedTransaction, TransactionKernel};
+use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
 use miden_processor::advice::AdviceInputs;
 use miden_standards::code_builder::CodeBuilder;
 use miden_testing::{Auth, MockChain};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::xreserve::encoding::masm_error_by_name;
+
+// D5d attestation vectors — IN-TEST deterministic secp256k1 generation (zero touch to the 04
+// canonical artifact), mirroring the precompile canary + gen_vectors att_* helpers: k256 the
+// keypair+signature, sha3 the keccak digest, miden-crypto `PublicKey::to_commitment` the
+// allowlist-key oracle, miden_protocol `bytes_to_packed_u32_elements` the advice felt packing.
+use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey};
+use miden_crypto::dsa::ecdsa_k256_keccak::PublicKey;
+use miden_crypto::utils::Deserializable;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use sha3::{Digest, Keccak256};
 
 // TEST-ONLY FAUCET CONFIG (Q-DOM-1 / DEV-10 OPEN)
 // ================================================================================================
@@ -58,6 +70,12 @@ pub const IDENTIFIER_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::
 /// from that commit). Bound here as the single Rust source for the fixture slot binding.
 pub const USED_NONCES_SLOT_LABEL: &str = "xusdc::xreserve::nonce_registry::used_nonces";
 
+/// D5d `xReserveAttesters` map-slot label (frozen §5.5 XReserveAttesterAdmin). The MASM
+/// `attestation_verify.masm` declares a `word("…")` const with the byte-identical label
+/// (parity-enforced); the later `set_attester` admin slice co-owns the SAME slot. Bound here as
+/// the single Rust source for the allowlist fixture slot binding.
+pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin::xreserve_attesters";
+
 // FAUCET(01) ERROR MIRRORS (frozen names: 01 TEST-AND-VERIFICATION-HARNESS.md:72-73)
 // ================================================================================================
 
@@ -67,7 +85,7 @@ pub const USED_NONCES_SLOT_LABEL: &str = "xusdc::xreserve::nonce_registry::used_
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 5] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 8] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -92,6 +110,22 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 5] = [
     (
         "ERR_XRESERVE_NONCE_REPLAY",
         MasmError::from_static_str("deposit intent nonce has already been used"),
+    ),
+    // D5d R-MINT-13 / R-MINT-14 (attestation_verify.masm). Wording proposed in the plan and
+    // user-selected; parity-pinned against the MASM consts.
+    (
+        "ERR_XRESERVE_BAD_PK_COMMITMENT",
+        MasmError::from_static_str("deposit attester pubkey commitment is not allowlisted"),
+    ),
+    (
+        "ERR_XRESERVE_SIG_INVALID",
+        MasmError::from_static_str("deposit attestation signature verification failed"),
+    ),
+    // D5d RED-SUITE ONLY: the executing-red placeholder trap. REMOVED in the implementation
+    // commit (along with the matching MASM const + the `SHELL_ERRORS_DECLARED` row).
+    (
+        "ERR_XRESERVE_D5D_RED_PLACEHOLDER",
+        MasmError::from_static_str("red-suite placeholder: verify_attestation gate not wired"),
     ),
 ];
 
@@ -431,6 +465,135 @@ pub fn nonce_driver_src(preimage: &[Felt]) -> String {
     stage_preimage(&mut src, preimage);
     writeln!(src, "    push.{INTENT_PTR}").unwrap();
     src.push_str("    exec.deposit_intent_parser::assert_nonce_unused\n");
+    src.push_str("end\n");
+    src
+}
+
+// D5D ATTESTATION VERIFY HELPERS (P5-01 slice 4)
+// ================================================================================================
+
+/// A deterministically-generated attester: its 9-felt compressed pubkey + 17-felt signature (as
+/// advice felts) over a payload's keccak digest, and its `xReserveAttesters` allowlist commitment
+/// (the miden-crypto `PublicKey::to_commitment` oracle == the on-chain MASM `pubkey_commitment`).
+pub struct AttesterVector {
+    /// 9-felt u32-LE-packed compressed SEC1 pubkey (the candidate-pubkey advice felts).
+    pub pubkey_felts: Vec<Felt>,
+    /// 17-felt u32-LE-packed r||s||v signature over keccak256(payload) (the signature advice felts).
+    pub sig_felts: Vec<Felt>,
+    /// Poseidon2 commitment Word = the `xReserveAttesters` allowlist key for this pubkey.
+    pub commitment: Word,
+}
+
+impl AttesterVector {
+    /// The advice stack `verify_attestation` reads: pubkey (9) then signature (17), in seed order.
+    pub fn advice(&self) -> Vec<Felt> {
+        self.pubkey_felts.iter().chain(self.sig_felts.iter()).copied().collect()
+    }
+}
+
+/// Deterministically generates an attester keypair (k256 + seeded StdRng) and signs
+/// `keccak256(payload)` (sha3) with it — the SAME independent path the precompile canary and
+/// gen_vectors use. Two distinct seeds over the SAME payload give the seam's key A / key B.
+pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
+    let sk = SigningKey::random(&mut StdRng::seed_from_u64(seed));
+    let pk33: [u8; 33] = sk
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .try_into()
+        .expect("compressed secp256k1 pubkey is 33 bytes");
+
+    let mut hasher = Keccak256::new();
+    hasher.update(payload);
+    let digest: [u8; 32] = hasher.finalize().into();
+
+    let (sig, recid): (K256Signature, RecoveryId) =
+        sk.sign_prehash_recoverable(&digest).expect("k256 prehash sign");
+    let mut sig65 = [0u8; 65];
+    sig65[..64].copy_from_slice(sig.to_bytes().as_slice());
+    sig65[64] = recid.to_byte();
+
+    let commitment = PublicKey::read_from_bytes(&pk33)
+        .expect("valid compressed secp256k1 pubkey")
+        .to_commitment();
+
+    AttesterVector {
+        pubkey_felts: bytes_to_packed_u32_elements(&pk33),
+        sig_felts: bytes_to_packed_u32_elements(&sig65),
+        commitment,
+    }
+}
+
+/// Builds the MockChain account carrying [the xreserve component WITH the `xReserveAttesters` map
+/// slot] + [the generated driver]. `attesters_seed = Some((commitment, marker))` pre-populates the
+/// allowlist (an enabled attester); `None` leaves it empty (no attester allowlisted). The seeding
+/// is a TEST fixture — the real `set_attester` admin setter is a separate (out-of-scope) slice.
+pub fn setup_attestation_account(
+    attesters_seed: Option<(Word, Word)>,
+    driver_src: &str,
+    driver_path: &'static str,
+) -> Result<ShellHarness> {
+    let library = assemble_xreserve_lib()?;
+
+    let attesters_map = match attesters_seed {
+        Some((key, marker)) => StorageMap::with_entries([(StorageMapKey::new(key), marker)])
+            .map_err(|e| anyhow::anyhow!("seeding the xReserveAttesters map fixture: {e}"))?,
+        None => StorageMap::new(),
+    };
+
+    let xreserve_component = AccountComponent::new(
+        library.clone(),
+        vec![StorageSlot::with_map(
+            StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+                .context("xReserveAttesters slot label")?,
+            attesters_map,
+        )],
+        AccountComponentMetadata::new("xusdc-attestation-harness"),
+    )
+    .context("binding the xreserve library + attester allowlist slot as a component")?;
+
+    let driver_code = CodeBuilder::new()
+        .with_dynamically_linked_library(&library)
+        .context("linking the xreserve library into the driver component")?
+        .compile_component_code(driver_path, driver_src)
+        .with_context(|| {
+            format!("driver component failed to compile\n--- driver ---\n{driver_src}")
+        })?;
+    let driver_component = AccountComponent::new(
+        driver_code.clone(),
+        vec![],
+        AccountComponentMetadata::new("xusdc-attestation-driver"),
+    )
+    .context("binding the driver component")?;
+
+    let mut builder = MockChain::builder();
+    let account = builder
+        .add_existing_account_from_components(Auth::IncrNonce, [xreserve_component, driver_component])
+        .context("adding the attestation harness account")?;
+    let mock_chain = builder.build().context("building the MockChain")?;
+    Ok(ShellHarness { mock_chain, account_id: account.id(), driver_code, driver_path })
+}
+
+/// Generates the per-case D5d driver: stages the DepositIntent payload preimage in the account
+/// context, pushes `[intent_ptr, len_bytes]`, and `exec`s the faucet `verify_attestation` shell
+/// (which reads the candidate pubkey + signature from the advice stack). The shell returns `[]`
+/// (assert-only gate), so the staged-then-consumed stack restores the 16-depth `call` boundary.
+pub fn attestation_driver_src(preimage: &[Felt], len_bytes: u64) -> String {
+    let mut src = String::from(
+        "use xreserve::attestation_verify\n\n\
+         #! Test driver: stages a DepositIntent payload in the account context and execs the D5d\n\
+         #! attestation verify shell (pubkey + signature from the advice stack).\n\
+         #!\n\
+         #! Inputs:  [pad(16)]\n\
+         #! Outputs: [pad(16)]\n\
+         #!\n\
+         #! Invocation: call\n\
+         pub proc drive\n",
+    );
+    stage_preimage(&mut src, preimage);
+    writeln!(src, "    push.{len_bytes}").unwrap();
+    writeln!(src, "    push.{INTENT_PTR}").unwrap();
+    src.push_str("    exec.attestation_verify::verify_attestation\n");
     src.push_str("end\n");
     src
 }

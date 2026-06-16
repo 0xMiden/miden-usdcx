@@ -457,3 +457,193 @@ fn probe_nonce_unused_exports() -> Result<()> {
     );
     Ok(())
 }
+
+// D5D ATTESTATION VERIFY (P5-01 slice 4) — RED-SUITE
+// ================================================================================================
+// Drives the NEW faucet-owned `xreserve::attestation_verify::verify_attestation` shell through
+// MockChain execute().await: keccak the DepositIntent payload (hash_bytes), gate the candidate
+// pubkey against xReserveAttesters (get_map_item over Poseidon2(pubkey) -> R-MINT-13), and
+// ECDSA-verify the signature (verify_prehash -> R-MINT-14). The candidate pubkey is read ONCE into
+// one local region that feeds BOTH the commitment lookup and verify_prehash (the seam).
+//
+// Attester keypairs/signatures are generated IN-TEST (k256 + sha3 + miden-crypto), zero touch to
+// the 04 canonical artifact; key A (seed 1) and key B (seed 2) sign the SAME payload, so the seam
+// test can pair an allowlisted commitment with a foreign valid signature.
+//
+// RED-SUITE: the shell is the executing-red placeholder — it runs hash_bytes + pubkey_commitment +
+// get_map_item + verify_prehash then traps ERR_XRESERVE_D5D_RED_PLACEHOLDER, so the four behavior
+// cases are RED via REAL primitive execution until the implementation commit wires the gate. The
+// advice-hygiene case + the export probe are declared green scaffolds.
+
+/// The canonical payload the D5d cases keccak + sign over: the 240-byte (60-felt, no-hookData)
+/// accept DepositIntent, consumed BY REFERENCE (G1).
+const ATTESTATION_VECTOR: &str = "di-pos-empty-hookdata";
+
+/// Any non-empty enabled-marker Word for the allowlist value (absent/EMPTY_WORD = not allowlisted).
+const ATTESTER_MARKER: [u32; 4] = [1, 0, 0, 0];
+
+/// (preimage felts, payload bytes, len_bytes) for the attestation payload — the bytes the attester
+/// signs MUST equal the bytes the on-chain keccak hashes (the staged felts reconstruct them u32-LE).
+fn attestation_payload() -> (Vec<Felt>, Vec<u8>, u64) {
+    let v = di(ATTESTATION_VECTOR);
+    let bytes = v.bytes();
+    let len_bytes = bytes.len() as u64;
+    (v.preimage_values(), bytes, len_bytes)
+}
+
+/// The seam pair: key A (allowlisted in the happy/forged cases) and key B (the foreign key), both
+/// signing keccak256(the SAME payload). Distinct commitments.
+fn seam_keys(payload: &[u8]) -> (AttesterVector, AttesterVector) {
+    let a = gen_attester(1, payload);
+    let b = gen_attester(2, payload);
+    assert_ne!(a.commitment, b.commitment, "seam keys A and B must have distinct commitments");
+    (a, b)
+}
+
+/// Advice stack pairing one attester's pubkey with another's signature (the seam attack input):
+/// `[pubkey(9), sig(17)]`.
+fn paired_advice(pubkey_of: &AttesterVector, sig_of: &AttesterVector) -> Vec<Felt> {
+    pubkey_of.pubkey_felts.iter().chain(sig_of.sig_felts.iter()).copied().collect()
+}
+
+// HAPPY PATH FIRST (G4)
+// ------------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn d5d_happy_attestation() -> Result<()> {
+    let (preimage, bytes, len_bytes) = attestation_payload();
+    let (a, _b) = seam_keys(&bytes);
+    let driver_src = attestation_driver_src(&preimage, len_bytes);
+    // seed the allowlist with A's commitment -> A is an enabled attester
+    let h = setup_attestation_account(
+        Some((a.commitment, Word::from(ATTESTER_MARKER))),
+        &driver_src,
+        SHELL_DRIVER_PATH,
+    )?;
+    let executed = run_call_driver_with_advice(&h, "drive", Some(a.advice()))
+        .await
+        .unwrap_or_else(|e| panic!("an allowlisted attester + valid signature must pass D5d: {e}"));
+    // the verify shell is read-only: the only account mutation is the auth nonce increment
+    assert_eq!(
+        executed.account_delta().nonce_delta(),
+        miden_protocol::ONE,
+        "auth must increment the nonce exactly once"
+    );
+    assert!(
+        executed.account_delta().storage().is_empty(),
+        "the D5d verify shell must not write account storage"
+    );
+    Ok(())
+}
+
+// REJECTS — each pins the EXACT expected error (no is_err())
+// ------------------------------------------------------------------------------------------------
+
+/// §4.D forged-sig (R-MINT-14): an allowlisted pubkey A with a WELL-FORMED tampered signature
+/// (B's valid-for-B signature, not a malformed-bytes abort) -> verify_prehash returns 0.
+#[tokio::test]
+async fn d5d_forged_sig_rejects() -> Result<()> {
+    let (preimage, bytes, len_bytes) = attestation_payload();
+    let (a, b) = seam_keys(&bytes);
+    let driver_src = attestation_driver_src(&preimage, len_bytes);
+    let h = setup_attestation_account(
+        Some((a.commitment, Word::from(ATTESTER_MARKER))),
+        &driver_src,
+        SHELL_DRIVER_PATH,
+    )?;
+    let result = run_call_driver_with_advice(&h, "drive", Some(paired_advice(&a, &b))).await;
+    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_SIG_INVALID"));
+    Ok(())
+}
+
+/// §4.E non-allowlisted (R-MINT-13): pubkey B with B's valid signature, but only A is allowlisted
+/// -> xReserveAttesters[Poseidon2(B)] is EMPTY_WORD.
+#[tokio::test]
+async fn d5d_non_allowlisted_rejects() -> Result<()> {
+    let (preimage, bytes, len_bytes) = attestation_payload();
+    let (a, b) = seam_keys(&bytes);
+    let driver_src = attestation_driver_src(&preimage, len_bytes);
+    let h = setup_attestation_account(
+        Some((a.commitment, Word::from(ATTESTER_MARKER))),
+        &driver_src,
+        SHELL_DRIVER_PATH,
+    )?;
+    let result = run_call_driver_with_advice(&h, "drive", Some(b.advice())).await;
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT")
+    );
+    Ok(())
+}
+
+// THE SEAM (the catastrophic case) — BOTH attacker arrangements must reject
+// ------------------------------------------------------------------------------------------------
+
+/// An allowlisted commitment must NOT be pairable with a foreign valid signature. Drives BOTH
+/// arrangements through real execution: (1) A's pubkey (allowlisted) + B's signature -> R-MINT-14;
+/// (2) B's pubkey + B's signature, B not allowlisted -> R-MINT-13. The single pubkey local region
+/// makes it impossible to check one pubkey against the allowlist and verify against another.
+#[tokio::test]
+async fn d5d_seam_both_arrangements_reject() -> Result<()> {
+    let (preimage, bytes, len_bytes) = attestation_payload();
+    let (a, b) = seam_keys(&bytes);
+    let driver_src = attestation_driver_src(&preimage, len_bytes);
+    let allowlist_a = Some((a.commitment, Word::from(ATTESTER_MARKER)));
+
+    // arrangement 1: allowlisted pubkey A + B's (foreign, valid-for-B) signature -> R-MINT-14
+    let h1 = setup_attestation_account(allowlist_a, &driver_src, SHELL_DRIVER_PATH)?;
+    let r1 = run_call_driver_with_advice(&h1, "drive", Some(paired_advice(&a, &b))).await;
+    assert_transaction_executor_error!(r1, shell_error_by_name("ERR_XRESERVE_SIG_INVALID"));
+
+    // arrangement 2: B's pubkey + B's valid signature, but B is NOT allowlisted -> R-MINT-13
+    let h2 = setup_attestation_account(allowlist_a, &driver_src, SHELL_DRIVER_PATH)?;
+    let r2 = run_call_driver_with_advice(&h2, "drive", Some(b.advice())).await;
+    assert_transaction_executor_error!(r2, shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"));
+    Ok(())
+}
+
+// ADVICE-PROVIDER HYGIENE (declared green scaffold) — missing advice must fail closed
+// ------------------------------------------------------------------------------------------------
+
+/// Missing pubkey/signature advice must ERROR (never default): the materialization `adv_push*`
+/// traps with `AdviceError::StackReadFailed` ("advice stack read failed"). Green on arrival (the
+/// fail-closed materialization is structural), like the export probe.
+#[tokio::test]
+async fn d5d_missing_advice_traps() -> Result<()> {
+    let (preimage, bytes, len_bytes) = attestation_payload();
+    let (a, _b) = seam_keys(&bytes);
+    let driver_src = attestation_driver_src(&preimage, len_bytes);
+    let h = setup_attestation_account(
+        Some((a.commitment, Word::from(ATTESTER_MARKER))),
+        &driver_src,
+        SHELL_DRIVER_PATH,
+    )?;
+    let result = run_call_driver_with_advice(&h, "drive", None).await;
+    assert_transaction_executor_error!(
+        result,
+        matches ExecutionError::AdviceError { ref err, .. }
+            if format!("{err}").contains("advice stack read failed")
+    );
+    Ok(())
+}
+
+// PROBE (declared green scaffold — D-1A export check for the new proc)
+// ------------------------------------------------------------------------------------------------
+
+/// The assembled library exports the canonical NESTED D5d proc path (mirrors the other export
+/// probes; exports render absolute at 0.23.3).
+#[test]
+fn probe_attestation_verify_exports() -> Result<()> {
+    let lib = assemble_xreserve_lib()?;
+    let exports: Vec<String> = lib
+        .exports()
+        .filter(|e| e.as_procedure().is_some())
+        .map(|e| e.path().to_string())
+        .collect();
+    let canonical = "::xreserve::attestation_verify::verify_attestation";
+    assert!(
+        exports.iter().any(|e| e == canonical),
+        "canonical D5d proc path {canonical} missing; exports: {exports:?}"
+    );
+    Ok(())
+}

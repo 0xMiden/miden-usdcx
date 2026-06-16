@@ -26,6 +26,10 @@ use xusdc_encoding::{ENCODING_MOD_MASM, LAYOUT_MASM};
 const SHELL_MASM: &str =
     include_str!("../../../asm/standards/xreserve/deposit_intent_parser.masm");
 
+/// The FAUCET(01) D5d attestation-verify shell module source, read test-side by reference.
+const ATTESTATION_VERIFY_MASM: &str =
+    include_str!("../../../asm/standards/xreserve/attestation_verify.masm");
+
 /// Faucet-owned shell error constants declared in MASM, pinned against the test-side
 /// `support::SHELL_ERR_TABLE` (the single Rust source).
 const SHELL_ERRORS_DECLARED: &[&str] = &[
@@ -36,6 +40,12 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_FEE_OVER_MAX",
     // D5c R-MINT-12
     "ERR_XRESERVE_NONCE_REPLAY",
+    // D5d R-MINT-13 / R-MINT-14 (attestation_verify.masm)
+    "ERR_XRESERVE_BAD_PK_COMMITMENT",
+    "ERR_XRESERVE_SIG_INVALID",
+    // D5d RED-SUITE ONLY: the executing-red placeholder error. REMOVED in the implementation
+    // commit (along with the MASM const + the SHELL_ERR_TABLE entry).
+    "ERR_XRESERVE_D5D_RED_PLACEHOLDER",
 ];
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned
@@ -45,6 +55,14 @@ const EXPECTED_SHELL_WORD_CONSTS: &[(&str, &str)] = &[
     ("IDENTIFIER_CONFIG_SLOT", support::IDENTIFIER_CONFIG_SLOT_LABEL),
     ("USED_NONCES_SLOT", support::USED_NONCES_SLOT_LABEL),
 ];
+
+/// Expected `word("…")` slot-name constant of the D5d attestation-verify shell module.
+const EXPECTED_ATTESTATION_WORD_CONSTS: &[(&str, &str)] =
+    &[("XRESERVE_ATTESTERS_SLOT", support::XRESERVE_ATTESTERS_SLOT_LABEL)];
+
+/// The D5d attestation-verify shell declares no numeric constants (word-aligned `@locals`
+/// offsets are literal, matching `encoding/mod.masm::pubkey_commitment` and the precompile canary).
+const ATTESTATION_COVERED_NUMS: &[&str] = &[];
 
 /// Numeric-constant coverage sets (bidirectional sweep): every numeric const parsed
 /// from a MASM source must appear in its file's set — extending a MASM file with a new
@@ -205,7 +223,11 @@ fn masm_rust_error_string_parity() {
 /// commits that declare the MASM consts.)
 #[test]
 fn masm_shell_error_string_parity() {
-    let (_, strs, _) = parse_masm_consts(SHELL_MASM);
+    // the faucet shell errors live across both shell modules (deposit_intent_parser.masm +
+    // attestation_verify.masm); merge their string consts before the lookup.
+    let (_, mut strs, _) = parse_masm_consts(SHELL_MASM);
+    let (_, att_strs, _) = parse_masm_consts(ATTESTATION_VERIFY_MASM);
+    strs.extend(att_strs);
     for name in SHELL_ERRORS_DECLARED {
         let expected = support::SHELL_ERR_TABLE
             .iter()
@@ -213,7 +235,7 @@ fn masm_shell_error_string_parity() {
             .map(|(_, e)| e.message())
             .unwrap_or_else(|| panic!("SHELL_ERR_TABLE must carry {name}"));
         let masm = strs.get(*name).unwrap_or_else(|| {
-            panic!("deposit_intent_parser.masm must define const {name} = \"...\"")
+            panic!("a faucet shell module must define const {name} = \"...\"")
         });
         assert_eq!(masm, expected, "shell error message parity for {name}");
     }
@@ -230,10 +252,16 @@ fn masm_constants_bidirectional() {
         ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
     };
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 3] = [
+    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 4] = [
         ("layout.masm", LAYOUT_MASM, LAYOUT_COVERED_NUMS, &[]),
         ("encoding/mod.masm", ENCODING_MOD_MASM, ENCODING_COVERED_NUMS, &[]),
         ("deposit_intent_parser.masm", SHELL_MASM, SHELL_COVERED_NUMS, EXPECTED_SHELL_WORD_CONSTS),
+        (
+            "attestation_verify.masm",
+            ATTESTATION_VERIFY_MASM,
+            ATTESTATION_COVERED_NUMS,
+            EXPECTED_ATTESTATION_WORD_CONSTS,
+        ),
     ];
     for (file, src, covered_nums, expected_words) in sources {
         let (nums, strs, words) = parse_masm_consts(src);

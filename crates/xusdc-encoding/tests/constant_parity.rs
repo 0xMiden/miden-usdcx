@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use xusdc_encoding::xreserve::encoding::{
     DEPOSIT_INTENT_HEADER_FELTS, DEPOSIT_INTENT_HEADER_LEN, DEPOSIT_INTENT_MAGIC,
-    DEPOSIT_INTENT_VERSION, DepositIntentField, ERR_MESSAGES, MAX_SCALE_EXP,
+    DEPOSIT_INTENT_VERSION, DepositIntentField, ERR_MESSAGES, MAX_SCALE_EXP, PUBKEY_FELTS,
     deposit_intent_field_offset,
 };
 use xusdc_encoding::{ENCODING_MOD_MASM, LAYOUT_MASM};
@@ -67,7 +67,7 @@ const LAYOUT_COVERED_NUMS: &[&str] = &[
     "DEPOSIT_INTENT_HEADER_FELTS",
     "MAX_NOTE_STORAGE_FELTS",
 ];
-const ENCODING_COVERED_NUMS: &[&str] = &["SCALE_EXP_MAX", "POW2_32"];
+const ENCODING_COVERED_NUMS: &[&str] = &["SCALE_EXP_MAX", "POW2_32", "PUBKEY_FELTS"];
 const SHELL_COVERED_NUMS: &[&str] = &[];
 
 /// Parses `const NAME = <value>` / `pub const NAME = <value>` lines from a MASM source.
@@ -177,6 +177,11 @@ fn masm_rust_constant_parity() {
         num(&enc_nums, "POW2_32", "encoding/mod.masm"),
         1u64 << 32,
         "u32 limb base must be 2^32"
+    );
+    assert_eq!(
+        num(&enc_nums, "PUBKEY_FELTS", "encoding/mod.masm"),
+        PUBKEY_FELTS as u64,
+        "compressed-pubkey felt count parity (33 bytes -> 9 u32-LE felts; ATT commitment input)"
     );
 }
 

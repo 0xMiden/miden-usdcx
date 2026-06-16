@@ -7,32 +7,51 @@
 //! `keccak256::hash_bytes` digest production and the `ecdsa_k256_keccak::verify_prehash`
 //! call are faucet-owned (flow D5d); this library owns only the packing + commitment keying.
 //!
-//! RED-SUITE STUBS: the bodies below return deterministic placeholders so the TV-ATT /
-//! TV-DUAL-5 suite EXECUTES and fails on a value mismatch (not a missing symbol). The
-//! implementation commit replaces them with the real packing + Poseidon2 commitment.
+//! All four are infallible u32-LE packers / the Poseidon2 commitment — the same
+//! `bytes_to_packed_u32_elements` primitive miden-crypto uses for `to_elements`, so each
+//! `Felt` is a `u32 < p` (`felt-construction`: `Felt::from(u32)`, never `Felt::new`, no
+//! truncation; lengths are type-guaranteed, not input-dependent).
 
-use miden_protocol::{Felt, Word};
+use miden_protocol::utils::bytes_to_packed_u32_elements;
+use miden_protocol::{Felt, Hasher, Word};
 
-/// Packs a 32-byte keccak digest into 8 u32-LE field elements (4 bytes/felt). RED-SUITE STUB.
-pub fn keccak_digest_felts(_digest: &[u8; 32]) -> [Felt; 8] {
-    [Felt::from(0u32); 8]
+/// Number of u32-LE field elements a 33-byte compressed secp256k1 public key packs to
+/// (`33.div_ceil(4) = 9`) — the element count the commitment hashes. Parity-pinned against
+/// the MASM `PUBKEY_FELTS` constant by `tests/constant_parity.rs` (`masm-rust-constant-parity`).
+pub const PUBKEY_FELTS: usize = 9;
+
+/// Packs a 32-byte keccak digest into 8 u32-LE field elements (4 bytes/felt).
+pub fn keccak_digest_felts(digest: &[u8; 32]) -> [Felt; 8] {
+    bytes_to_packed_u32_elements(digest)
+        .try_into()
+        .expect("32 bytes always pack to exactly 8 u32 felts")
 }
 
-/// Packs a 33-byte compressed secp256k1 public key into 9 u32-LE field elements. RED-SUITE STUB.
-pub fn compressed_pubkey_felts(_pk: &[u8; 33]) -> [Felt; 9] {
-    [Felt::from(0u32); 9]
+/// Packs a 33-byte compressed secp256k1 public key into 9 u32-LE field elements (the final
+/// felt holds byte 32 with the upper 3 bytes zero-filled).
+pub fn compressed_pubkey_felts(pk: &[u8; 33]) -> [Felt; 9] {
+    bytes_to_packed_u32_elements(pk)
+        .try_into()
+        .expect("33 bytes always pack to exactly 9 u32 felts")
 }
 
-/// Packs a 65-byte `r‖s‖v` signature into 17 u32-LE field elements (`v` carried in felt 16,
-/// unused on-chain). RED-SUITE STUB.
-pub fn signature_felts(_sig: &[u8; 65]) -> [Felt; 17] {
-    [Felt::from(0u32); 17]
+/// Packs a 65-byte `r‖s‖v` signature into 17 u32-LE field elements; `v` is carried in felt
+/// 16 (byte 64, upper 3 bytes zero-filled) and is unused on-chain.
+pub fn signature_felts(sig: &[u8; 65]) -> [Felt; 17] {
+    bytes_to_packed_u32_elements(sig)
+        .try_into()
+        .expect("65 bytes always pack to exactly 17 u32 felts")
 }
 
-/// The attester-allowlist commitment key: `Poseidon2` over the 9 u32-LE pubkey felts,
-/// identical to miden-crypto `PublicKey::to_commitment`. RED-SUITE STUB.
-pub fn pubkey_commitment(_pk: &[u8; 33]) -> Word {
-    Word::new([Felt::from(0u32); 4])
+/// The attester-allowlist commitment key: Poseidon2 over the 9 u32-LE pubkey felts, identical
+/// to miden-crypto `PublicKey::to_commitment` (`Poseidon2::hash_elements(to_elements())`,
+/// `to_elements = bytes_to_packed_u32_elements(to_bytes())`) and to the MASM
+/// `xreserve::encoding::pubkey_commitment` the faucet D5d verify recomputes. `Hasher` is the
+/// protocol's Poseidon2 (same primitive as `bytes32_to_storage_map_key`); the 9-felt input
+/// engages the sponge capacity domain tag (`9 % 8 = 1`) — verified == `to_commitment` by
+/// TV-ATT-2 / TV-DUAL-5.
+pub fn pubkey_commitment(pk: &[u8; 33]) -> Word {
+    Word::from(Hasher::hash_elements(&compressed_pubkey_felts(pk)))
 }
 
 // TESTS — TV-ATT-1..3 (frozen 04 TEST-AND-VERIFICATION-HARNESS §2; harness rows :85-87)

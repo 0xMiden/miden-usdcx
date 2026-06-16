@@ -7,6 +7,7 @@
 # BUILD STATE: all three slice procedures are implemented (R1 bytes32_to_key,
 # R2 uint256_to_asset_amount, R4 parse_deposit_intent).
 
+use miden::core::crypto::hashes::poseidon2
 use miden::core::math::u128
 use miden::core::math::u64
 use miden::core::word
@@ -31,6 +32,11 @@ const SCALE_EXP_MAX = 18
 
 # the u32 limb base used to compose the output felt from two u32 quotient limbs
 const POW2_32 = 4294967296
+
+# the 33-byte compressed secp256k1 pubkey packs to 9 u32-LE felts (33.div_ceil(4)); this is
+# the element count poseidon2::hash_elements absorbs for the attester commitment (matches the
+# precompile verify wrapper's PK_LEN_FELTS; constant-parity'd against the Rust PUBKEY_FELTS)
+const PUBKEY_FELTS = 9
 
 # ERRORS
 # =================================================================================================
@@ -89,13 +95,24 @@ end
 #! - COMM is the Poseidon2 commitment Word.
 #!
 #! Invocation: exec
+@locals(12)
 pub proc pubkey_commitment
-    # RED-SUITE STUB: consume the 9 pubkey felts and return a placeholder Word; the
-    # implementation commit replaces this with the Poseidon2 commitment over locals.
-    dropw dropw drop
+    # Stage the 9 pubkey felts into word-aligned locals so poseidon2::hash_elements can absorb
+    # them, mirroring the precompile verify wrapper's PK_COMM staging (miden-core-lib-0.23.3
+    # asm/crypto/dsa/ecdsa_k256_keccak.masm:56-66). loc_storew_le places the top word's first
+    # felt at the lowest address, so loc[0..9] = the 9 to_elements felts (f0..f8).
+    loc_storew_le.0 dropw
+    # => [PK_W1, pk8]
+
+    loc_storew_le.4 dropw
+    # => [pk8]
+
+    loc_store.8
     # => []
 
-    padw
+    # COMM = Poseidon2(loc[0..9]); the sponge sets capacity[0] = 9 % 8 = 1 (domain tag),
+    # identical to miden-crypto PublicKey::to_commitment and the precompile PK_COMM.
+    push.PUBKEY_FELTS locaddr.0 exec.poseidon2::hash_elements
     # => [COMM]
 end
 

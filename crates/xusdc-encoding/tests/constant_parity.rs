@@ -47,10 +47,8 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     // D5d R-MINT-13 / R-MINT-14 (attestation_verify.masm)
     "ERR_XRESERVE_BAD_PK_COMMITMENT",
     "ERR_XRESERVE_SIG_INVALID",
-    // D5e R-MINT-15 + the executing-red placeholder (xreserve_mint.masm; the placeholder is
-    // REMOVED at the green commit)
+    // D5e R-MINT-15 (xreserve_mint.masm)
     "ERR_XRESERVE_SUPPLY_CAP",
-    "ERR_XRESERVE_D5E_RED_PLACEHOLDER",
 ];
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned

@@ -47,9 +47,8 @@ fn token_config_delta(executed: &miden_protocol::transaction::ExecutedTransactio
 async fn d5e_happy_conservation() -> Result<()> {
     let amount = 1000u64;
     let h = setup_mint_faucet_account(1_000_000, 0, &inputs(amount, 0, KEY))?;
-    let executed = run_call_driver(&h, "drive")
-        .await
-        .expect("apply_mint_effects must apply the effects on a valid mint");
+    let executed =
+        run_mint(&h).await.expect("apply_mint_effects must apply the effects on a valid mint");
 
     // recipient note carries amount - feeAmount (== amount at MVP), from this faucet.
     assert_eq!(executed.output_notes().num_notes(), 1, "exactly one recipient note");
@@ -90,11 +89,30 @@ async fn d5e_cap_boundary_accepts() -> Result<()> {
     let seeded = 400_000u64;
     let amount = max - seeded; // exactly hits the cap
     let h = setup_mint_faucet_account(max, seeded, &inputs(amount, 0, KEY))?;
-    let executed = run_call_driver(&h, "drive").await.expect("minting exactly to the cap is allowed");
+    let executed = run_mint(&h).await.expect("minting exactly to the cap is allowed");
     assert_eq!(
         token_config_delta(&executed)[0],
         Felt::from((seeded + amount) as u32),
         "token_supply == max_supply at the cap"
+    );
+    Ok(())
+}
+
+/// Near-`FUNGIBLE_ASSET_MAX_AMOUNT` boundary (the catastrophic-case check): max_supply at the
+/// AssetAmount cap, token_supply one mint below it. The ordered felt asserts + the supply write
+/// must not wrap at values near 2^63. Mints exactly to the cap.
+#[tokio::test]
+async fn d5e_near_max_boundary() -> Result<()> {
+    // FUNGIBLE_ASSET_MAX_AMOUNT = 2^63 - 2^31.
+    let max = 9_223_372_034_707_292_160u64;
+    let amount = 1000u64;
+    let seeded = max - amount;
+    let h = setup_mint_faucet_account(max, seeded, &inputs(amount, 0, KEY))?;
+    let executed = run_mint(&h).await.expect("minting to the AssetAmount cap must not wrap");
+    assert_eq!(
+        token_config_delta(&executed)[0],
+        miden_protocol::Felt::from(miden_protocol::asset::AssetAmount::new(max)?),
+        "token_supply == max_supply at the AssetAmount cap, no wrap"
     );
     Ok(())
 }
@@ -111,8 +129,15 @@ async fn d5e_over_cap_rejects() -> Result<()> {
     let seeded = 400_000u64;
     let amount = max - seeded + 1; // one over the cap
     let h = setup_mint_faucet_account(max, seeded, &inputs(amount, 0, KEY))?;
-    let result = run_call_driver(&h, "drive").await;
+    let result = run_mint(&h).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_SUPPLY_CAP"));
+
+    // No-effects proof (finding #3b): the rejected tx trapped at the guard (before any write) and
+    // committed nothing; a follow-up readback on the SAME account confirms token_config and
+    // usedNonces[KEY] are unchanged (genesis seed). It must execute cleanly (no assertion trap).
+    run_noeffect_probe(&h)
+        .await
+        .expect("over-cap reject must leave token_config and usedNonces unchanged");
     Ok(())
 }
 

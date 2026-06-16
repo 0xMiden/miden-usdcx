@@ -12,20 +12,20 @@
 # xreserve library stays core+protocol only — no standards link needed by the harness assembler;
 # the P2ID script root is passed in, the faucet.rs:538-600 pattern).
 #
-# BUILD STATE: EXECUTING-RED skeleton (D5e red commit). `apply_mint_effects` runs the FULL real
-# primitive sequence — token_config read, nonce SET, P2ID note emission, token_supply write-back —
-# then traps with the terminal placeholder ERR_XRESERVE_D5E_RED_PLACEHOLDER as the LAST
-# instruction (so the primitives genuinely EXECUTE under MockChain; the trap rolls the tx back, so
-# NO effects commit in red mode — commit semantics are proven by the canary). The GREEN commit
-# inserts the three supply-cap asserts (R-MINT-15, at the SUPPLY-GUARD marker) and removes the
-# terminal trap. The xreserve_mint COMPOSITION (chaining D5a-e + the fail-closed property) is the
-# NEXT slice. Loop history: crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
+# BUILD STATE: implemented (D5e green commit). The supply-cap guard (R-MINT-15) does the three
+# ordered non-wrap asserts mirroring mint_and_send (fungible.masm:288-308), trapping the single
+# ERR_XRESERVE_SUPPLY_CAP; over-cap rejects BEFORE any effect (guard is first, so no nonce/note/
+# supply write). Then the atomic effects in spec order (COMPONENT-SPEC §5.1:260-264): nonce SET →
+# P2ID recipient note (amount - feeAmount) → token_supply += amount. The xreserve_mint COMPOSITION
+# (chaining D5a-e + the fail-closed property) is the NEXT slice. Loop history:
+# crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
 
 use miden::protocol::active_account
 use miden::protocol::native_account
 use miden::protocol::faucet
 use miden::protocol::note
 use miden::protocol::output_note
+use miden::protocol::asset::FUNGIBLE_ASSET_MAX_AMOUNT
 use xreserve::deposit_intent_parser::USED_NONCES_SLOT
 
 # CONSTANTS
@@ -49,11 +49,6 @@ const NONCE_USED_MARKER = [1, 0, 0, 0]
 
 # D5e supply cap (R-MINT-15). token_supply + amount must not exceed max_supply <= AssetAmount::MAX.
 const ERR_XRESERVE_SUPPLY_CAP = "mint amount exceeds the faucet supply cap"
-
-# Executing-red terminal placeholder (REMOVED at the D5e green commit). Trapped as the LAST
-# instruction after the real primitive sequence runs, so the red suite proves the primitives
-# EXECUTE under MockChain.
-const ERR_XRESERVE_D5E_RED_PLACEHOLDER = "red-suite placeholder: apply_mint_effects is not implemented"
 
 # LOCAL LAYOUT (felts)
 # =================================================================================================
@@ -87,9 +82,8 @@ const ERR_XRESERVE_D5E_RED_PLACEHOLDER = "red-suite placeholder: apply_mint_effe
 #! - tag, note_type are the recipient note metadata (note_type 1 = public).
 #!
 #! Panics if:
-#! - [GREEN] token_supply + amount > max_supply, or max_supply > FUNGIBLE_ASSET_MAX_AMOUNT
-#!   (R-MINT-15, ERR_XRESERVE_SUPPLY_CAP) — no effects applied.
-#! - [RED] always, via the terminal ERR_XRESERVE_D5E_RED_PLACEHOLDER after the primitive sequence.
+#! - token_supply + amount > max_supply, or max_supply > FUNGIBLE_ASSET_MAX_AMOUNT (R-MINT-15,
+#!   ERR_XRESERVE_SUPPLY_CAP) — the guard is first, so no effects are applied on reject.
 #!
 #! Invocation: exec
 @locals(24)
@@ -109,15 +103,28 @@ pub proc apply_mint_effects
     loc_store.22 loc_store.23
     # => [...]
 
-    # ---- supply guard: READ token_config (fungible.masm:264) ----
+    # ---- supply guard (R-MINT-15): READ token_config + three ordered non-wrap asserts ----
+    # mirror mint_and_send (fungible.masm:264-308): the asserts are ordered so the `sub` cannot
+    # wrap (token_supply <= max_supply asserted first), and the inputs are pre-bounded < 2^63 by
+    # the D5b reducer (amount <= FUNGIBLE_ASSET_MAX_AMOUNT) — so felt lte/sub behave as integers.
     push.TOKEN_CONFIG_SLOT[0..2] exec.active_account::get_item
     # => [token_supply, max_supply, decimals, token_symbol, ...]
-
-    # === SUPPLY-GUARD MARKER (R-MINT-15): the three ordered non-wrap asserts are inserted HERE at
-    # the green commit (mirror fungible.masm:288-308), trapping ERR_XRESERVE_SUPPLY_CAP. ===
-
-    loc_storew_le.16 dropw
-    # => [...]   (cached the token_config word for the write-back)
+    loc_storew_le.16
+    # => [token_supply, max_supply, decimals, token_symbol, ...]   (cached for the write-back, kept on stack)
+    swap movup.2 drop movup.2 drop
+    # => [max_supply, token_supply, ...]
+    loc_load.20 movdn.2
+    # => [max_supply, token_supply, amount, ...]
+    dup.1 dup.1 lte assert.err=ERR_XRESERVE_SUPPLY_CAP
+    # => [max_supply, token_supply, amount, ...]   (token_supply <= max_supply: the no-wrap guard)
+    dup lte.FUNGIBLE_ASSET_MAX_AMOUNT assert.err=ERR_XRESERVE_SUPPLY_CAP
+    # => [max_supply, token_supply, amount, ...]   (max_supply <= FUNGIBLE_ASSET_MAX_AMOUNT)
+    dup.2 swap dup.2 sub
+    # => [max_mint_amount, amount, token_supply, amount, ...]   (max_mint_amount = max_supply - token_supply)
+    lte assert.err=ERR_XRESERVE_SUPPLY_CAP
+    # => [token_supply, amount, ...]   (amount <= max_mint_amount: token_supply + amount <= max_supply)
+    drop drop
+    # => [...]   (guard passed; the cached config word lives in locals 16..19)
 
     # ---- nonce SET (FIRST state write): usedNonces[KEY] := MARKER ----
     push.NONCE_USED_MARKER
@@ -154,7 +161,4 @@ pub proc apply_mint_effects
     # => [new_token_supply, max_supply, decimals, token_symbol, ...]
     push.TOKEN_CONFIG_SLOT[0..2] exec.native_account::set_item dropw
     # => [...]
-
-    # ---- terminal executing-red placeholder (REMOVED at green) ----
-    push.0 assert.err=ERR_XRESERVE_D5E_RED_PLACEHOLDER
 end

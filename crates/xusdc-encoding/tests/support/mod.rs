@@ -93,7 +93,7 @@ pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 9] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 8] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -133,11 +133,6 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 9] = [
     (
         "ERR_XRESERVE_SUPPLY_CAP",
         MasmError::from_static_str("mint amount exceeds the faucet supply cap"),
-    ),
-    // D5e executing-red terminal placeholder (REMOVED at the green commit).
-    (
-        "ERR_XRESERVE_D5E_RED_PLACEHOLDER",
-        MasmError::from_static_str("red-suite placeholder: apply_mint_effects is not implemented"),
     ),
 ];
 
@@ -615,6 +610,18 @@ pub fn attestation_driver_src(preimage: &[Felt], len_bytes: u64) -> String {
 
 /// Module path of the generated D5e mint-effects driver component.
 pub const MINT_DRIVER_PATH: &str = "xusdc::test_fixtures::mint_driver";
+/// Module path of the generated D5e no-effects readback probe component.
+pub const MINT_PROBE_PATH: &str = "xusdc::test_fixtures::mint_probe";
+
+/// A faucet harness for the D5e mint write-phase: a `FungibleFaucet` account carrying the mint
+/// driver (`drive`) AND a no-effects readback probe (`check`), so the over-cap reject can be
+/// proven to leave token_config / usedNonces unchanged on the SAME account (finding #3b).
+pub struct MintHarness {
+    pub mock_chain: MockChain,
+    pub account_id: AccountId,
+    pub mint_driver_code: AccountComponentCode,
+    pub probe_driver_code: AccountComponentCode,
+}
 
 /// The verified-intent outputs `apply_mint_effects` consumes (explicit-stack inputs). For the
 /// standalone write-phase shell these are seeded directly (the composition wires them from the
@@ -631,31 +638,42 @@ pub struct MintInputs {
 
 /// Builds a MockChain `FungibleFaucet` account (token_config = [token_supply, max_supply, 6,
 /// "XUSDC"]) carrying the xreserve component (the `apply_mint_effects` proc + the `usedNonces` map
-/// slot) + a generated driver, plus a recipient wallet for the P2ID note. Mirrors the
-/// canary-proven construction (`add_existing_account_from_components([faucet.into(), …])`). Returns
-/// a `ShellHarness` so `run_call_driver` drives `apply_mint_effects` exactly like the D5a-d shells.
+/// slot), the generated mint driver, AND a no-effects readback probe, plus a recipient wallet for
+/// the P2ID note. Mirrors the canary-proven construction
+/// (`add_existing_account_from_components([faucet.into(), …])`).
 pub fn setup_mint_faucet_account(
     max_supply: u64,
     token_supply: u64,
     inputs: &MintInputs,
-) -> Result<ShellHarness> {
+) -> Result<MintHarness> {
     let library = assemble_xreserve_lib()?;
 
     let mut builder = MockChain::builder();
     let recipient = builder.add_existing_wallet(Auth::IncrNonce).context("adding recipient")?;
     let driver_src = mint_effects_driver_src(inputs, recipient.id());
+    let probe_src = mint_noeffect_probe_src(token_supply, inputs.key);
 
-    let driver_code = CodeBuilder::new()
-        .with_dynamically_linked_library(&library)
-        .context("linking the xreserve library into the mint driver")?
-        .compile_component_code(MINT_DRIVER_PATH, &driver_src)
-        .with_context(|| format!("mint driver failed to compile\n--- driver ---\n{driver_src}"))?;
-    let driver_component = AccountComponent::new(
-        driver_code.clone(),
+    let link = |path: &'static str, src: &str, what: &str| -> Result<AccountComponentCode> {
+        CodeBuilder::new()
+            .with_dynamically_linked_library(&library)
+            .with_context(|| format!("linking the xreserve library into the {what}"))?
+            .compile_component_code(path, src)
+            .with_context(|| format!("{what} failed to compile\n--- src ---\n{src}"))
+    };
+    let mint_driver_code = link(MINT_DRIVER_PATH, &driver_src, "mint driver")?;
+    let probe_driver_code = link(MINT_PROBE_PATH, &probe_src, "no-effects probe")?;
+    let mint_driver_component = AccountComponent::new(
+        mint_driver_code.clone(),
         vec![],
         AccountComponentMetadata::new("xusdc-mint-effects-driver"),
     )
     .context("binding the mint driver component")?;
+    let probe_driver_component = AccountComponent::new(
+        probe_driver_code.clone(),
+        vec![],
+        AccountComponentMetadata::new("xusdc-mint-noeffect-probe"),
+    )
+    .context("binding the no-effects probe component")?;
 
     let xreserve_component = AccountComponent::new(
         library.clone(),
@@ -679,11 +697,55 @@ pub fn setup_mint_faucet_account(
     let account = builder
         .add_existing_account_from_components(
             Auth::IncrNonce,
-            [faucet.into(), xreserve_component, driver_component],
+            [faucet.into(), xreserve_component, mint_driver_component, probe_driver_component],
         )
         .context("adding the mint faucet account")?;
     let mock_chain = builder.build().context("building the MockChain")?;
-    Ok(ShellHarness { mock_chain, account_id: account.id(), driver_code, driver_path: MINT_DRIVER_PATH })
+    Ok(MintHarness {
+        mock_chain,
+        account_id: account.id(),
+        mint_driver_code,
+        probe_driver_code,
+    })
+}
+
+/// Runs `call.<driver>::<proc>` from a trivial tx script against the faucet account.
+async fn run_mint_driver(
+    h: &MintHarness,
+    driver_code: &AccountComponentCode,
+    driver_path: &str,
+    proc: &str,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let src = format!("use {driver_path}->driver\nbegin\n    call.driver::{proc}\nend\n");
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(driver_code)
+        .expect("linking the driver into the tx script")
+        .compile_tx_script(&src)
+        .unwrap_or_else(|e| panic!("driver call script failed to compile: {e}\n--- script ---\n{src}"));
+    h.mock_chain
+        .build_tx_context(h.account_id, &[], &[])
+        .expect("building the tx context")
+        .tx_script(tx_script)
+        .build()
+        .expect("building the transaction")
+        .execute()
+        .await
+}
+
+/// Drives `apply_mint_effects` (the mint write-phase) against the faucet account.
+pub async fn run_mint(
+    h: &MintHarness,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    run_mint_driver(h, &h.mint_driver_code, MINT_DRIVER_PATH, "drive").await
+}
+
+/// Runs the no-effects readback probe (asserts token_config / usedNonces unchanged). Used after a
+/// rejected over-cap mint on the SAME account (which traps and commits nothing) to concretely
+/// prove no nonce / supply effect landed (finding #3b).
+pub async fn run_noeffect_probe(
+    h: &MintHarness,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    run_mint_driver(h, &h.probe_driver_code, MINT_PROBE_PATH, "check").await
 }
 
 /// Generates the per-case D5e driver: a CALL-entered account proc that stages the mint inputs and
@@ -716,4 +778,34 @@ pub fn mint_effects_driver_src(inputs: &MintInputs, recipient: AccountId) -> Str
     src.push_str("    exec.xreserve_mint::apply_mint_effects\n");
     src.push_str("end\n");
     src
+}
+
+/// Generates the no-effects readback probe component: `check` asserts the faucet token_config
+/// `token_supply` still equals `expected_token_supply` and `usedNonces[key]` is still EMPTY_WORD —
+/// run on the SAME account after a rejected over-cap mint to prove no supply/nonce effect committed
+/// (the rejected tx traps and commits nothing; this concretely observes the unchanged genesis
+/// state). Uses the proven `active_account::{get_item, get_map_item}` reads.
+pub fn mint_noeffect_probe_src(expected_token_supply: u64, key: [u32; 4]) -> String {
+    format!(
+        "use miden::protocol::active_account\n\n\
+         const PROBE_TOKEN_CONFIG_SLOT = word(\"{cfg}\")\n\
+         const PROBE_USED_NONCES_SLOT = word(\"{used}\")\n\n\
+         #! No-effects readback: token_config.token_supply == expected and usedNonces[KEY] EMPTY.\n\
+         #!\n\
+         #! Inputs:  [pad(16)]\n\
+         #! Outputs: [pad(16)]\n\
+         #!\n\
+         #! Invocation: call\n\
+         pub proc check\n\
+         \x20\x20\x20\x20push.PROBE_TOKEN_CONFIG_SLOT[0..2] exec.active_account::get_item\n\
+         \x20\x20\x20\x20push.{expected} assert_eq.err=\"no-effect: token_supply changed\"\n\
+         \x20\x20\x20\x20dropw\n\
+         \x20\x20\x20\x20push.{key} push.PROBE_USED_NONCES_SLOT[0..2] exec.active_account::get_map_item\n\
+         \x20\x20\x20\x20padw assert_eqw.err=\"no-effect: usedNonces key was set\"\n\
+         end\n",
+        cfg = TOKEN_CONFIG_SLOT_LABEL,
+        used = USED_NONCES_SLOT_LABEL,
+        expected = expected_token_supply,
+        key = format!("[{},{},{},{}]", key[0], key[1], key[2], key[3]),
+    )
 }

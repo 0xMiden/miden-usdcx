@@ -384,8 +384,19 @@ end
     let err = run(tx_src, advice)
         .await
         .expect_err("malformed signature must surface a host/deserialization error, not a boolean 0");
+    let msg = format!("{err:#}");
+    // Pin the SPECIFIC failure mode: the ecdsa handler's Signature::read_from_bytes rejects the
+    // invalid recovery id BEFORE any boolean verification result is produced (distinct from 0).
+    assert!(
+        msg.contains("failed to deserialize signature"),
+        "expected malformed signature deserialization error, got: {msg}"
+    );
+    assert!(
+        msg.contains("Invalid recovery ID"),
+        "expected invalid recovery id root cause, got: {msg}"
+    );
     println!(
-        "[canary] malformed-sig case EXECUTED; surfaced a host/deserialization error (NOT a boolean reject): {err:#}"
+        "[canary] malformed-sig case EXECUTED; surfaced a deserialization error (NOT a boolean reject): {err:#}"
     );
     Ok(())
 }

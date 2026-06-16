@@ -24,13 +24,16 @@ use miden_protocol::account::component::{AccountComponentCode, AccountComponentM
 use miden_protocol::account::{
     AccountComponent, AccountId, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
 };
+use miden_protocol::asset::{AssetAmount, TokenSymbol};
 use miden_protocol::assembly::Library;
 use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::{ExecutedTransaction, TransactionKernel};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
 use miden_processor::advice::AdviceInputs;
+use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::code_builder::CodeBuilder;
+use miden_standards::note::P2idNote;
 use miden_testing::{Auth, MockChain};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::xreserve::encoding::masm_error_by_name;
@@ -70,6 +73,11 @@ pub const IDENTIFIER_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::
 /// from that commit). Bound here as the single Rust source for the fixture slot binding.
 pub const USED_NONCES_SLOT_LABEL: &str = "xusdc::xreserve::nonce_registry::used_nonces";
 
+/// D5e faucet `token_config` value-slot label — the slot the standard `FungibleFaucet` component
+/// installs (`[token_supply, max_supply, decimals, token_symbol]`), read/written by
+/// `xreserve_mint.masm`. Bound here as the single Rust source for the constant-parity row.
+pub const TOKEN_CONFIG_SLOT_LABEL: &str = "miden::standards::faucets::fungible::token_config";
+
 /// D5d `xReserveAttesters` map-slot label (frozen §5.5 XReserveAttesterAdmin). The MASM
 /// `attestation_verify.masm` declares a `word("…")` const with the byte-identical label
 /// (parity-enforced); the later `set_attester` admin slice co-owns the SAME slot. Bound here as
@@ -85,7 +93,7 @@ pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 7] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 9] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -120,6 +128,16 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 7] = [
     (
         "ERR_XRESERVE_SIG_INVALID",
         MasmError::from_static_str("deposit attestation signature verification failed"),
+    ),
+    // D5e R-MINT-15 supply cap (xreserve_mint.masm). Proposed wording; parity-pinned.
+    (
+        "ERR_XRESERVE_SUPPLY_CAP",
+        MasmError::from_static_str("mint amount exceeds the faucet supply cap"),
+    ),
+    // D5e executing-red terminal placeholder (REMOVED at the green commit).
+    (
+        "ERR_XRESERVE_D5E_RED_PLACEHOLDER",
+        MasmError::from_static_str("red-suite placeholder: apply_mint_effects is not implemented"),
     ),
 ];
 
@@ -588,6 +606,114 @@ pub fn attestation_driver_src(preimage: &[Felt], len_bytes: u64) -> String {
     writeln!(src, "    push.{len_bytes}").unwrap();
     writeln!(src, "    push.{INTENT_PTR}").unwrap();
     src.push_str("    exec.attestation_verify::verify_attestation\n");
+    src.push_str("end\n");
+    src
+}
+
+// D5E MINT WRITE-PHASE HELPERS (P5-01 slice 5)
+// ================================================================================================
+
+/// Module path of the generated D5e mint-effects driver component.
+pub const MINT_DRIVER_PATH: &str = "xusdc::test_fixtures::mint_driver";
+
+/// The verified-intent outputs `apply_mint_effects` consumes (explicit-stack inputs). For the
+/// standalone write-phase shell these are seeded directly (the composition wires them from the
+/// parsed/verified DepositIntent). `key` stands in for `bytes32_to_key(nonce)` (consumed by
+/// reference); `note_type` 1 = public.
+pub struct MintInputs {
+    pub amount: u64,
+    pub fee_amount: u64,
+    pub key: [u32; 4],
+    pub serial: [u32; 4],
+    pub tag: u32,
+    pub note_type: u8,
+}
+
+/// Builds a MockChain `FungibleFaucet` account (token_config = [token_supply, max_supply, 6,
+/// "XUSDC"]) carrying the xreserve component (the `apply_mint_effects` proc + the `usedNonces` map
+/// slot) + a generated driver, plus a recipient wallet for the P2ID note. Mirrors the
+/// canary-proven construction (`add_existing_account_from_components([faucet.into(), …])`). Returns
+/// a `ShellHarness` so `run_call_driver` drives `apply_mint_effects` exactly like the D5a-d shells.
+pub fn setup_mint_faucet_account(
+    max_supply: u64,
+    token_supply: u64,
+    inputs: &MintInputs,
+) -> Result<ShellHarness> {
+    let library = assemble_xreserve_lib()?;
+
+    let mut builder = MockChain::builder();
+    let recipient = builder.add_existing_wallet(Auth::IncrNonce).context("adding recipient")?;
+    let driver_src = mint_effects_driver_src(inputs, recipient.id());
+
+    let driver_code = CodeBuilder::new()
+        .with_dynamically_linked_library(&library)
+        .context("linking the xreserve library into the mint driver")?
+        .compile_component_code(MINT_DRIVER_PATH, &driver_src)
+        .with_context(|| format!("mint driver failed to compile\n--- driver ---\n{driver_src}"))?;
+    let driver_component = AccountComponent::new(
+        driver_code.clone(),
+        vec![],
+        AccountComponentMetadata::new("xusdc-mint-effects-driver"),
+    )
+    .context("binding the mint driver component")?;
+
+    let xreserve_component = AccountComponent::new(
+        library.clone(),
+        vec![StorageSlot::with_map(
+            StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
+            StorageMap::new(),
+        )],
+        AccountComponentMetadata::new("xusdc-mint-effects-harness"),
+    )
+    .context("binding the xreserve library + usedNonces slot as a component")?;
+
+    let faucet = FungibleFaucet::builder()
+        .name(TokenName::new("XUSDC")?)
+        .symbol(TokenSymbol::new("XUSDC")?)
+        .decimals(6)
+        .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
+        .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
+        .build()
+        .context("failed to build FungibleFaucet")?;
+
+    let account = builder
+        .add_existing_account_from_components(
+            Auth::IncrNonce,
+            [faucet.into(), xreserve_component, driver_component],
+        )
+        .context("adding the mint faucet account")?;
+    let mock_chain = builder.build().context("building the MockChain")?;
+    Ok(ShellHarness { mock_chain, account_id: account.id(), driver_code, driver_path: MINT_DRIVER_PATH })
+}
+
+/// Generates the per-case D5e driver: a CALL-entered account proc that stages the mint inputs and
+/// `exec`s `apply_mint_effects`. Push order is bottom-first so the proc sees `[amount, feeAmount,
+/// KEY, recipient_suffix, recipient_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]`. The
+/// P2ID script root is the canonical `P2idNote::script_root()` (the recipient note is P2ID).
+pub fn mint_effects_driver_src(inputs: &MintInputs, recipient: AccountId) -> String {
+    let wlit = |w: [u32; 4]| format!("[{},{},{},{}]", w[0], w[1], w[2], w[3]);
+    let script_root: Word = P2idNote::script_root().into();
+    let mut src = String::from(
+        "use xreserve::xreserve_mint\n\n\
+         #! Test driver: stages the D5e mint-effects inputs in the account context and execs the\n\
+         #! faucet write-phase shell apply_mint_effects.\n\
+         #!\n\
+         #! Inputs:  [pad(16)]\n\
+         #! Outputs: [pad(16)]\n\
+         #!\n\
+         #! Invocation: call\n\
+         pub proc drive\n",
+    );
+    writeln!(src, "    push.{}", inputs.note_type).unwrap();
+    writeln!(src, "    push.{}", inputs.tag).unwrap();
+    writeln!(src, "    push.{script_root}").unwrap();
+    writeln!(src, "    push.{}", wlit(inputs.serial)).unwrap();
+    writeln!(src, "    push.{}", recipient.prefix().as_felt()).unwrap();
+    writeln!(src, "    push.{}", recipient.suffix()).unwrap();
+    writeln!(src, "    push.{}", wlit(inputs.key)).unwrap();
+    writeln!(src, "    push.{}", inputs.fee_amount).unwrap();
+    writeln!(src, "    push.{}", inputs.amount).unwrap();
+    src.push_str("    exec.xreserve_mint::apply_mint_effects\n");
     src.push_str("end\n");
     src
 }

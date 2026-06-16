@@ -30,6 +30,10 @@ const SHELL_MASM: &str =
 const ATTESTATION_VERIFY_MASM: &str =
     include_str!("../../../asm/standards/xreserve/attestation_verify.masm");
 
+/// The FAUCET(01) D5e mint write-phase shell module source, read test-side by reference.
+const XRESERVE_MINT_MASM: &str =
+    include_str!("../../../asm/standards/xreserve/xreserve_mint.masm");
+
 /// Faucet-owned shell error constants declared in MASM, pinned against the test-side
 /// `support::SHELL_ERR_TABLE` (the single Rust source).
 const SHELL_ERRORS_DECLARED: &[&str] = &[
@@ -43,6 +47,10 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     // D5d R-MINT-13 / R-MINT-14 (attestation_verify.masm)
     "ERR_XRESERVE_BAD_PK_COMMITMENT",
     "ERR_XRESERVE_SIG_INVALID",
+    // D5e R-MINT-15 + the executing-red placeholder (xreserve_mint.masm; the placeholder is
+    // REMOVED at the green commit)
+    "ERR_XRESERVE_SUPPLY_CAP",
+    "ERR_XRESERVE_D5E_RED_PLACEHOLDER",
 ];
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned
@@ -57,9 +65,21 @@ const EXPECTED_SHELL_WORD_CONSTS: &[(&str, &str)] = &[
 const EXPECTED_ATTESTATION_WORD_CONSTS: &[(&str, &str)] =
     &[("XRESERVE_ATTESTERS_SLOT", support::XRESERVE_ATTESTERS_SLOT_LABEL)];
 
+/// Expected `word("…")` slot-name constant of the D5e mint shell module. `TOKEN_CONFIG_SLOT` is
+/// hard-coded byte-identical to the standard FungibleFaucet slot label (CANONICAL-OWNERSHIP-MAP
+/// :41; fungible.masm:26); `USED_NONCES_SLOT` is IMPORTED from deposit_intent_parser (no
+/// redeclaration → not parsed here, no duplicate parity row, G1).
+const EXPECTED_XRESERVE_MINT_WORD_CONSTS: &[(&str, &str)] =
+    &[("TOKEN_CONFIG_SLOT", support::TOKEN_CONFIG_SLOT_LABEL)];
+
 /// The D5d attestation-verify shell declares no numeric constants (word-aligned `@locals`
 /// offsets are literal, matching `encoding/mod.masm::pubkey_commitment` and the precompile canary).
 const ATTESTATION_COVERED_NUMS: &[&str] = &[];
+
+/// D5e mint-shell numeric constants (NONCE_USED_MARKER is a Word array literal, not parsed).
+/// P2ID_NUM_STORAGE_ITEMS is the local note-storage item count for the P2ID recipient build (2,
+/// matching notes/p2id.masm's storage format); no Rust counterpart, covered here (CS-5).
+const XRESERVE_MINT_COVERED_NUMS: &[&str] = &["P2ID_NUM_STORAGE_ITEMS"];
 
 /// Numeric-constant coverage sets (bidirectional sweep): every numeric const parsed
 /// from a MASM source must appear in its file's set — extending a MASM file with a new
@@ -224,7 +244,9 @@ fn masm_shell_error_string_parity() {
     // attestation_verify.masm); merge their string consts before the lookup.
     let (_, mut strs, _) = parse_masm_consts(SHELL_MASM);
     let (_, att_strs, _) = parse_masm_consts(ATTESTATION_VERIFY_MASM);
+    let (_, mint_strs, _) = parse_masm_consts(XRESERVE_MINT_MASM);
     strs.extend(att_strs);
+    strs.extend(mint_strs);
     for name in SHELL_ERRORS_DECLARED {
         let expected = support::SHELL_ERR_TABLE
             .iter()
@@ -249,7 +271,7 @@ fn masm_constants_bidirectional() {
         ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
     };
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 4] = [
+    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 5] = [
         ("layout.masm", LAYOUT_MASM, LAYOUT_COVERED_NUMS, &[]),
         ("encoding/mod.masm", ENCODING_MOD_MASM, ENCODING_COVERED_NUMS, &[]),
         ("deposit_intent_parser.masm", SHELL_MASM, SHELL_COVERED_NUMS, EXPECTED_SHELL_WORD_CONSTS),
@@ -258,6 +280,12 @@ fn masm_constants_bidirectional() {
             ATTESTATION_VERIFY_MASM,
             ATTESTATION_COVERED_NUMS,
             EXPECTED_ATTESTATION_WORD_CONSTS,
+        ),
+        (
+            "xreserve_mint.masm",
+            XRESERVE_MINT_MASM,
+            XRESERVE_MINT_COVERED_NUMS,
+            EXPECTED_XRESERVE_MINT_WORD_CONSTS,
         ),
     ];
     for (file, src, covered_nums, expected_words) in sources {

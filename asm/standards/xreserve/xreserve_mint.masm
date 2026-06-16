@@ -1,0 +1,160 @@
+# xreserve::xreserve_mint
+#
+# FAUCET(01)-owned mint WRITE-phase (P5-01 D5e slice): `apply_mint_effects` — the supply-cap
+# guard (R-MINT-15) plus the atomic mint effects (nonce SET, P2ID recipient note carrying the
+# minted xUSDC, token_supply += amount). The only supply-increasing surface (CMP-A9, §5.1); a
+# CUSTOM proc that does NOT route through `execute_mint_policy` / the stock `mint_and_send`
+# (ASG-1 / C-7). The write-side kernel primitives it consumes (token_config value-slot R/W,
+# native_account::set_map_item, note::compute_and_store_recipient + output_note::*,
+# faucet::create_fungible_asset + faucet::mint) are grounded by canary/mint-effects-grounding
+# (executes+commits under MockChain) and mirror mint_and_send (fungible.masm:264-364) +
+# notes/p2id.masm:90 (the recipient build is inlined here from miden::protocol::note so the
+# xreserve library stays core+protocol only — no standards link needed by the harness assembler;
+# the P2ID script root is passed in, the faucet.rs:538-600 pattern).
+#
+# BUILD STATE: EXECUTING-RED skeleton (D5e red commit). `apply_mint_effects` runs the FULL real
+# primitive sequence — token_config read, nonce SET, P2ID note emission, token_supply write-back —
+# then traps with the terminal placeholder ERR_XRESERVE_D5E_RED_PLACEHOLDER as the LAST
+# instruction (so the primitives genuinely EXECUTE under MockChain; the trap rolls the tx back, so
+# NO effects commit in red mode — commit semantics are proven by the canary). The GREEN commit
+# inserts the three supply-cap asserts (R-MINT-15, at the SUPPLY-GUARD marker) and removes the
+# terminal trap. The xreserve_mint COMPOSITION (chaining D5a-e + the fail-closed property) is the
+# NEXT slice. Loop history: crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
+
+use miden::protocol::active_account
+use miden::protocol::native_account
+use miden::protocol::faucet
+use miden::protocol::note
+use miden::protocol::output_note
+use xreserve::deposit_intent_parser::USED_NONCES_SLOT
+
+# CONSTANTS
+# =================================================================================================
+
+# The standard FungibleFaucet component installs this value slot holding
+# [token_supply, max_supply, decimals, token_symbol]. Hard-coded here exactly as the standard
+# faucet does (fungible.masm:26), sanctioned for the self-contained faucet by
+# CANONICAL-OWNERSHIP-MAP.md:41; the Rust fixture binds the same label.
+pub const TOKEN_CONFIG_SLOT = word("miden::standards::faucets::fungible::token_config")
+
+# Number of P2ID note-storage items ([target_id_suffix, target_id_prefix]; p2id.masm storage fmt).
+const P2ID_NUM_STORAGE_ITEMS = 2
+
+# The non-empty Word written into usedNonces[KEY] (the D5c read asserts EMPTY_WORD, so any
+# non-empty marker flips it). DEV-9 / Q-CRY-5: the marker stays a plain flag (OPEN).
+const NONCE_USED_MARKER = [1, 0, 0, 0]
+
+# ERRORS
+# =================================================================================================
+
+# D5e supply cap (R-MINT-15). token_supply + amount must not exceed max_supply <= AssetAmount::MAX.
+const ERR_XRESERVE_SUPPLY_CAP = "mint amount exceeds the faucet supply cap"
+
+# Executing-red terminal placeholder (REMOVED at the D5e green commit). Trapped as the LAST
+# instruction after the real primitive sequence runs, so the red suite proves the primitives
+# EXECUTE under MockChain.
+const ERR_XRESERVE_D5E_RED_PLACEHOLDER = "red-suite placeholder: apply_mint_effects is not implemented"
+
+# LOCAL LAYOUT (felts)
+# =================================================================================================
+#   0..3   P2ID note storage ([target_id_suffix, target_id_prefix, _, _]) — word-aligned base for
+#          note::compute_and_store_recipient (reads P2ID_NUM_STORAGE_ITEMS felts from locaddr.0)
+#   4..7   KEY (usedNonces storage-map key; consumed by reference from D5c)
+#   8..11  SERIAL_NUM (recipient note serial)
+#   12..15 P2ID_SCRIPT_ROOT (the P2ID note script root; passed in, identifies the note as P2ID)
+#   16..19 token_config cache (the slot word, for the supply write-back)
+#   20 amount   21 feeAmount   22 tag   23 note_type
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Applies the atomic mint effects for a verified intent's outputs (D5e). Reads the faucet
+#! token_config, sets the nonce marker, emits the P2ID recipient note carrying `amount - feeAmount`
+#! of the minted xUSDC to the target AccountId, and raises `token_supply` by the full `amount`.
+#!
+#! Inputs:  [amount, feeAmount, KEY, recipient_id_suffix, recipient_id_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
+#! Outputs: [pad(16)]
+#!
+#! Where:
+#! - amount is the reduced AssetAmount to mint (full amount added to token_supply).
+#! - feeAmount is the reduced operator fee (MVP == 0; the recipient note carries amount - feeAmount).
+#! - KEY is the usedNonces storage-map key (already = bytes32_to_key(nonce) from D5c; consumed by
+#!   reference, never re-derived here).
+#! - recipient_id_{suffix,prefix} are the two AccountId felts of the P2ID target (D-5: consumed
+#!   directly; the remoteRecipient bytes32->felts extraction is the composition's job, DEV-10 OPEN).
+#! - SERIAL_NUM is the recipient note serial number.
+#! - P2ID_SCRIPT_ROOT is the P2ID note script root (identifies the recipient note as P2ID).
+#! - tag, note_type are the recipient note metadata (note_type 1 = public).
+#!
+#! Panics if:
+#! - [GREEN] token_supply + amount > max_supply, or max_supply > FUNGIBLE_ASSET_MAX_AMOUNT
+#!   (R-MINT-15, ERR_XRESERVE_SUPPLY_CAP) — no effects applied.
+#! - [RED] always, via the terminal ERR_XRESERVE_D5E_RED_PLACEHOLDER after the primitive sequence.
+#!
+#! Invocation: exec
+@locals(24)
+pub proc apply_mint_effects
+    # park every input into locals (top-first) so each effect step loads exactly what it needs;
+    # the recipient felts go to the word-aligned note-storage region at locals 0..1
+    loc_store.20 loc_store.21
+    # => [KEY, recipient_id_suffix, recipient_id_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type, ...]
+    loc_storew_le.4 dropw
+    # => [recipient_id_suffix, recipient_id_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type, ...]
+    loc_store.0 loc_store.1
+    # => [SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type, ...]
+    loc_storew_le.8 dropw
+    # => [P2ID_SCRIPT_ROOT, tag, note_type, ...]
+    loc_storew_le.12 dropw
+    # => [tag, note_type, ...]
+    loc_store.22 loc_store.23
+    # => [...]
+
+    # ---- supply guard: READ token_config (fungible.masm:264) ----
+    push.TOKEN_CONFIG_SLOT[0..2] exec.active_account::get_item
+    # => [token_supply, max_supply, decimals, token_symbol, ...]
+
+    # === SUPPLY-GUARD MARKER (R-MINT-15): the three ordered non-wrap asserts are inserted HERE at
+    # the green commit (mirror fungible.masm:288-308), trapping ERR_XRESERVE_SUPPLY_CAP. ===
+
+    loc_storew_le.16 dropw
+    # => [...]   (cached the token_config word for the write-back)
+
+    # ---- nonce SET (FIRST state write): usedNonces[KEY] := MARKER ----
+    push.NONCE_USED_MARKER
+    # => [MARKER]
+    padw loc_loadw_le.4
+    # => [KEY, MARKER]
+    push.USED_NONCES_SLOT[0..2]
+    # => [slot_id_suffix, slot_id_prefix, KEY, MARKER]
+    exec.native_account::set_map_item dropw
+    # => [...]
+
+    # ---- recipient P2ID note carrying amount - feeAmount ----
+    # build the recipient on-chain from the target id (note storage at locals 0..1), the serial,
+    # and the P2ID script root (note::compute_and_store_recipient, mirrors p2id.masm:105-108)
+    padw loc_loadw_le.12 padw loc_loadw_le.8 push.P2ID_NUM_STORAGE_ITEMS locaddr.0
+    # => [storage_ptr, num_storage_items, SERIAL_NUM, P2ID_SCRIPT_ROOT, ...]
+    exec.note::compute_and_store_recipient
+    # => [RECIPIENT, ...]
+    loc_load.23 loc_load.22 exec.output_note::create
+    # => [note_idx, ...]
+    loc_load.20 loc_load.21 sub
+    # => [amount - feeAmount, note_idx, ...]
+    exec.faucet::create_fungible_asset
+    # => [ASSET_KEY, ASSET_VALUE, note_idx, ...]
+    dupw.1 dupw.1 exec.faucet::mint
+    # => [ASSET_KEY, ASSET_VALUE, note_idx, ...]
+    exec.output_note::add_asset
+    # => [...]   (the recipient note is emitted as a tx side effect)
+
+    # ---- token_supply += amount (the FULL amount, exactly once) ----
+    padw loc_loadw_le.16
+    # => [token_supply, max_supply, decimals, token_symbol, ...]
+    loc_load.20 add
+    # => [new_token_supply, max_supply, decimals, token_symbol, ...]
+    push.TOKEN_CONFIG_SLOT[0..2] exec.native_account::set_item dropw
+    # => [...]
+
+    # ---- terminal executing-red placeholder (REMOVED at green) ----
+    push.0 assert.err=ERR_XRESERVE_D5E_RED_PLACEHOLDER
+end

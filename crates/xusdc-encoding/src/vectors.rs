@@ -20,6 +20,7 @@ pub struct Families {
     pub amt: Vec<AmtVector>,
     pub aid: Vec<AidVector>,
     pub di: Vec<DiVector>,
+    pub att: Vec<AttVector>,
 }
 
 /// bytes32 → Word vectors. `lossless_error` marks the TV-B32-2 limb-ge-p entry.
@@ -141,6 +142,28 @@ pub struct PackedField {
     pub felts: Vec<String>,
 }
 
+/// Attestation (ATT) vectors (frozen §6.7 / §7). One independent secp256k1 keypair each:
+/// the 33-byte compressed pubkey (→ 9 felts) and its `PublicKey::to_commitment` Word, the
+/// 32-byte keccak digest over a full DepositIntent payload (→ 8 felts), and the 65-byte
+/// `r‖s‖v` signature (→ 17 felts; `v` carried in felt 16, unused on-chain).
+#[derive(Debug, Deserialize)]
+pub struct AttVector {
+    pub id: String,
+    pub tv: Vec<String>,
+    pub pubkey_hex: String,
+    pub packed_felts: Vec<String>,
+    pub expected_commitment: [String; 4],
+    pub digest_hex: String,
+    pub digest_felts: Vec<String>,
+    pub sig_hex: String,
+    pub sig_felts: Vec<String>,
+    pub v_byte: u8,
+    /// The full DepositIntent payload that was keccak'd (raw keccak, NOT EIP-712, no struct).
+    pub payload_hex: String,
+    pub cite: String,
+    pub derivation: String,
+}
+
 // LOAD + PARSE HELPERS
 // ================================================================================================
 
@@ -237,6 +260,42 @@ impl DiVector {
     }
 }
 
+impl AttVector {
+    pub fn pubkey(&self) -> [u8; 33] {
+        let b = parse_hex(&self.pubkey_hex);
+        b.as_slice().try_into().unwrap_or_else(|_| panic!("expected 33 bytes, got {}", b.len()))
+    }
+
+    pub fn digest(&self) -> [u8; 32] {
+        parse_hex32(&self.digest_hex)
+    }
+
+    pub fn sig(&self) -> [u8; 65] {
+        let b = parse_hex(&self.sig_hex);
+        b.as_slice().try_into().unwrap_or_else(|_| panic!("expected 65 bytes, got {}", b.len()))
+    }
+
+    pub fn payload(&self) -> Vec<u8> {
+        parse_hex(&self.payload_hex)
+    }
+
+    pub fn packed_felts_values(&self) -> Vec<Felt> {
+        self.packed_felts.iter().map(|s| felt_from_hex(s)).collect()
+    }
+
+    pub fn digest_felts_values(&self) -> Vec<Felt> {
+        self.digest_felts.iter().map(|s| felt_from_hex(s)).collect()
+    }
+
+    pub fn sig_felts_values(&self) -> Vec<Felt> {
+        self.sig_felts.iter().map(|s| felt_from_hex(s)).collect()
+    }
+
+    pub fn expected_commitment_word(&self) -> Word {
+        word_from_hex(&self.expected_commitment)
+    }
+}
+
 impl DiFields {
     pub fn bytes32(&self, name: &str) -> [u8; 32] {
         let hex = match name {
@@ -276,6 +335,7 @@ mod tests {
         assert!(!v.families.amt.is_empty(), "amt family");
         assert!(!v.families.aid.is_empty(), "aid family");
         assert!(!v.families.di.is_empty(), "di family");
+        assert!(!v.families.att.is_empty(), "att family");
         let no_provenance = |cite: &str, derivation: &str| cite.is_empty() || derivation.is_empty();
         let tv_ok =
             |id: &str, tv: &[String]| !tv.is_empty() || TV_TAG_ALLOWLIST.contains(&id);
@@ -292,6 +352,10 @@ mod tests {
             assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
         }
         for e in &v.families.di {
+            assert!(!no_provenance(&e.cite, &e.derivation), "{} provenance", e.id);
+            assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
+        }
+        for e in &v.families.att {
             assert!(!no_provenance(&e.cite, &e.derivation), "{} provenance", e.id);
             assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
         }

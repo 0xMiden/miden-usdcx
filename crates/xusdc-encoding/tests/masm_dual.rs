@@ -377,6 +377,56 @@ async fn tv_dual_3_parse_deposit_intent() -> Result<()> {
     Ok(())
 }
 
+// TV-DUAL-5 — pubkey_commitment (every att vector, executed): the MASM commitment Word
+// equals BOTH the canonical artifact's `expected_commitment` (miden-crypto
+// `PublicKey::to_commitment`) AND — asserted alongside — the Rust mirror `pubkey_commitment`.
+// Anti-drift across MASM ↔ Rust ↔ miden-crypto.
+// ================================================================================================
+
+#[tokio::test]
+async fn tv_dual_5_pubkey_commitment() -> Result<()> {
+    let h = setup()?;
+    for vec in &load().families.att {
+        let limbs = vec.packed_felts_values(); // 9 felts f0..f8 (to_elements order)
+        let (pkw0, pkw1) = (word_of(&limbs[0..4]), word_of(&limbs[4..8]));
+        let pk8 = limbs[8].as_canonical_u64();
+        let expected = vec.expected_commitment_word();
+
+        // Rust mirror == the vector oracle (miden-crypto to_commitment): the third anti-drift
+        // leg, asserted in-process so a mirror regression fails here too, not only in TV-ATT-2.
+        assert_eq!(
+            xusdc_encoding::xreserve::encoding::pubkey_commitment(&vec.pubkey()),
+            expected,
+            "vector {}: Rust pubkey_commitment must equal miden-crypto to_commitment",
+            vec.id
+        );
+
+        // MASM proc executed under MockChain: push [PK_W0, PK_W1, pk8] (PK_W0 on top, consumed
+        // first by loc_storew_le.0), exec, assert the returned Word equals the canonical oracle.
+        let src = format!(
+            r#"use xreserve::encoding
+
+begin
+    push.{pk8}
+    push.{pkw1}
+    push.{pkw0}
+    exec.encoding::pubkey_commitment
+    push.{expected}
+    assert_eqw.err="vector {id}: pubkey_commitment mismatch"
+end
+"#,
+            id = vec.id,
+        );
+        run_driver(&h, &src).await.unwrap_or_else(|e| {
+            panic!(
+                "vector {}: MASM pubkey_commitment must equal miden-crypto to_commitment: {e}",
+                vec.id
+            )
+        });
+    }
+    Ok(())
+}
+
 // HARNESS META-TEST + PROBES (scaffold surfaces — allowed green in the red-suite)
 // ================================================================================================
 
@@ -424,6 +474,7 @@ fn probe_p1_exports() -> Result<()> {
         "::xreserve::encoding::bytes32_to_key",
         "::xreserve::encoding::uint256_to_asset_amount",
         "::xreserve::encoding::parse_deposit_intent",
+        "::xreserve::encoding::pubkey_commitment",
     ] {
         assert!(
             exports.iter().any(|e| e == canonical),

@@ -3,12 +3,14 @@
 
 mod account_id;
 mod amount;
+mod attestation;
 mod bytes32;
 mod deposit_intent;
 mod error;
 
 pub use account_id::*;
 pub use amount::*;
+pub use attestation::*;
 pub use bytes32::*;
 pub use deposit_intent::*;
 pub use error::*;

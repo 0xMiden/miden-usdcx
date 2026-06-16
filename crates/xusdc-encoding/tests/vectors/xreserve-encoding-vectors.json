@@ -389,6 +389,194 @@
         "tv": []
       }
     ],
+    "att": [
+      {
+        "cite": "MIDEN-CRYPTO-AND-ENCODING.md:40-44,:53-54; 04 COMPONENT-SPEC §6.7,§7; miden-crypto-0.25.1 dsa/ecdsa_k256_keccak/mod.rs:253,:301 + src/lib.rs:156-170",
+        "derivation": "k256 SigningKey::random(StdRng seed 1); pk = 33B compressed SEC1 (9 felts); sig = 65B r||s||v (17 felts, v carried) over keccak256(full 240B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.25.1 (Poseidon2 over the 9 pubkey felts)",
+        "digest_felts": [
+          "0x7d53c422",
+          "0xc6bc144a",
+          "0xc41fc84d",
+          "0xbe650226",
+          "0xde55288b",
+          "0x6bc3be95",
+          "0x79b48bf4",
+          "0x5692b4b6"
+        ],
+        "digest_hex": "0x22c4537d4a14bcc64dc81fc4260265be8b2855de95bec36bf48bb479b6b49256",
+        "expected_commitment": [
+          "0xd697e679e5c9caad",
+          "0xcc5014ce6e6e0cfe",
+          "0x7a3a3f4fc7cb83c0",
+          "0xd8bd0bf11ad869b1"
+        ],
+        "id": "att-1",
+        "packed_felts": [
+          "0x5f088503",
+          "0x6215aa94",
+          "0xac7db6db",
+          "0xf0afd135",
+          "0xc799d9c6",
+          "0x4041c3e",
+          "0x4bfb6ca1",
+          "0xf6245202",
+          "0x9a"
+        ],
+        "payload_hex": "0x5a2e0acd0000000100000000000000000000000000000000000000000000000000000000000f424000000007a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf000000000000000000000000000000008110548cc41852010140bd1325ff0800b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf00000000000000000000000000000000000000000000000000000000001e8480d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff000000000",
+        "pubkey_hex": "0x0385085f94aa1562dbb67dac35d1aff0c6d999c73e1c0404a16cfb4b025224f69a",
+        "sig_felts": [
+          "0x7471c6f2",
+          "0xb9282250",
+          "0xfa9d173d",
+          "0x11328fa0",
+          "0x594a826b",
+          "0x51579a89",
+          "0xeef0f639",
+          "0x6a29b331",
+          "0xa1b87c73",
+          "0x13f84c68",
+          "0xc4412e82",
+          "0x399d22ca",
+          "0x5becc409",
+          "0x487fe84f",
+          "0xc3576800",
+          "0x22e3ddf7",
+          "0x1"
+        ],
+        "sig_hex": "0xf2c67174502228b93d179dfaa08f32116b824a59899a575139f6f0ee31b3296a737cb8a1684cf813822e41c4ca229d3909c4ec5b4fe87f48006857c3f7dde32201",
+        "tv": [
+          "TV-ATT-1",
+          "TV-ATT-2",
+          "TV-ATT-3",
+          "TV-DUAL-5"
+        ],
+        "v_byte": 1
+      },
+      {
+        "cite": "MIDEN-CRYPTO-AND-ENCODING.md:40-44,:53-54; 04 COMPONENT-SPEC §6.7,§7; miden-crypto-0.25.1 dsa/ecdsa_k256_keccak/mod.rs:253,:301 + src/lib.rs:156-170",
+        "derivation": "k256 SigningKey::random(StdRng seed 2); pk = 33B compressed SEC1 (9 felts); sig = 65B r||s||v (17 felts, v carried) over keccak256(full 240B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.25.1 (Poseidon2 over the 9 pubkey felts)",
+        "digest_felts": [
+          "0x3e7165eb",
+          "0x983f3b68",
+          "0xe7cea755",
+          "0x5ee08ab6",
+          "0x2cdbcf24",
+          "0xf820536c",
+          "0x9134614d",
+          "0xb18a51a3"
+        ],
+        "digest_hex": "0xeb65713e683b3f9855a7cee7b68ae05e24cfdb2c6c5320f84d613491a3518ab1",
+        "expected_commitment": [
+          "0x30383c2fdd6fa105",
+          "0x1e573757b15f4f53",
+          "0x7eecaf9370bcc463",
+          "0x241a5874bbed281a"
+        ],
+        "id": "att-2",
+        "packed_felts": [
+          "0x8bf5bc03",
+          "0xd260e6db",
+          "0x23a3b40d",
+          "0x787a7f3f",
+          "0xe9edc0a7",
+          "0x969f15ac",
+          "0xd5543912",
+          "0xa0f547f1",
+          "0xaf"
+        ],
+        "payload_hex": "0x5a2e0acd0000000100000000000000000000000000000000000000000000000000000000000f424000000007a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf000000000000000000000000000000008110548cc41852010140bd1325ff0800b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf00000000000000000000000000000000000000000000000000000000001e8480d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f100000000",
+        "pubkey_hex": "0x03bcf58bdbe660d20db4a3233f7f7a78a7c0ede9ac159f96123954d5f147f5a0af",
+        "sig_felts": [
+          "0xa2719755",
+          "0x2821f881",
+          "0x42bc161",
+          "0x6ac76f03",
+          "0x56f4f213",
+          "0x1bf428fd",
+          "0xb9e1b757",
+          "0x86267d13",
+          "0xc968d128",
+          "0x2d5f8930",
+          "0xd7126",
+          "0xc984e147",
+          "0xc16d7e3f",
+          "0x576ae401",
+          "0xe449d099",
+          "0xcebb0499",
+          "0x0"
+        ],
+        "sig_hex": "0x559771a281f8212861c12b04036fc76a13f2f456fd28f41b57b7e1b9137d268628d168c930895f2d26710d0047e184c93f7e6dc101e46a5799d049e49904bbce00",
+        "tv": [
+          "TV-ATT-1",
+          "TV-ATT-2",
+          "TV-ATT-3",
+          "TV-DUAL-5"
+        ],
+        "v_byte": 0
+      },
+      {
+        "cite": "MIDEN-CRYPTO-AND-ENCODING.md:40-44,:53-54; 04 COMPONENT-SPEC §6.7,§7; miden-crypto-0.25.1 dsa/ecdsa_k256_keccak/mod.rs:253,:301 + src/lib.rs:156-170",
+        "derivation": "k256 SigningKey::random(StdRng seed 3); pk = 33B compressed SEC1 (9 felts); sig = 65B r||s||v (17 felts, v carried) over keccak256(full 240B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.25.1 (Poseidon2 over the 9 pubkey felts)",
+        "digest_felts": [
+          "0x84a810e1",
+          "0xf1f17f60",
+          "0xa019e51e",
+          "0x4cc77ea8",
+          "0x540619e3",
+          "0xc29813a2",
+          "0x85fd1140",
+          "0x17766c67"
+        ],
+        "digest_hex": "0xe110a884607ff1f11ee519a0a87ec74ce3190654a21398c24011fd85676c7617",
+        "expected_commitment": [
+          "0x25b8b532187e4664",
+          "0xf9543bfdeb3d8423",
+          "0xd2deb953a580585b",
+          "0x12523f29c0841574"
+        ],
+        "id": "att-3",
+        "packed_felts": [
+          "0xcf505103",
+          "0x64225e7e",
+          "0xaef2ba94",
+          "0xca833468",
+          "0x83d4209b",
+          "0xccd89913",
+          "0x388a36fd",
+          "0xa584b41b",
+          "0x51"
+        ],
+        "payload_hex": "0x5a2e0acd0000000100000000000000000000000000000000000000000000000000000000000f424000000007a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf000000000000000000000000000000008110548cc41852010140bd1325ff0800b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf00000000000000000000000000000000000000000000000000000000001e8480d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f200000000",
+        "pubkey_hex": "0x035150cf7e5e226494baf2ae683483ca9b20d4831399d8ccfd368a381bb484a551",
+        "sig_felts": [
+          "0x7c238b06",
+          "0xda82724c",
+          "0xb2f12c37",
+          "0x4b2f8d43",
+          "0x3de496d4",
+          "0xec6e540f",
+          "0x342cb819",
+          "0x57db1288",
+          "0x5b5cf901",
+          "0x728d52ea",
+          "0x6432072a",
+          "0x185682cb",
+          "0x336f7208",
+          "0x1145875c",
+          "0x539decba",
+          "0x5143393e",
+          "0x0"
+        ],
+        "sig_hex": "0x068b237c4c7282da372cf1b2438d2f4bd496e43d0f546eec19b82c348812db5701f95c5bea528d722a073264cb82561808726f335c874511baec9d533e39435100",
+        "tv": [
+          "TV-ATT-1",
+          "TV-ATT-2",
+          "TV-ATT-3",
+          "TV-DUAL-5"
+        ],
+        "v_byte": 0
+      }
+    ],
     "b32": [
       {
         "bytes32": "0x0000000000000000000000000000000000000000000000000000000000000000",

@@ -17,6 +17,31 @@ miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "681fc905
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Vector-generator crates (RQ-3): OPTIONAL, gated behind the `vectors` feature; never
+# compiled for the library or the normal `cargo test`/`cargo build` path. The generator
+# binary requires this feature ([[bin]] below). The set mirrors the precompile canary
+# (canary/precompile-execution-grounding/Cargo.toml): k256 produces the secp256k1 keypair +
+# signature independently of miden-crypto's signer, sha3 the keccak digest, and miden-crypto
+# provides PublicKey::to_commitment — the canonical attester-allowlist keying primitive the
+# ATT vectors pin (the TV-DUAL-5 oracle). `std` gates miden-crypto's `dsa` module
+# (miden-crypto-0.25.1/src/lib.rs:9).
+k256 = { version = "0.13", features = ["ecdsa"], optional = true }
+sha3 = { version = "0.10", optional = true }
+rand = { version = "0.8", optional = true }
+miden-crypto = { version = "0.25", default-features = false, features = ["std"], optional = true }
+
+[features]
+# Enables the canonical golden-vector generator binary. Its secp256k1/keccak/commitment
+# crates live behind this feature so they never enter the library or the normal test build;
+# regenerate the artifact with `cargo run --bin gen_vectors --features vectors`.
+vectors = ["dep:k256", "dep:sha3", "dep:rand", "dep:miden-crypto"]
+
+# The committed-artifact generator (RQ-3): a normal binary, so its deps are real
+# [dependencies] (optional, feature-gated) — `cargo run --bin` cannot see dev-deps.
+[[bin]]
+name = "gen_vectors"
+required-features = ["vectors"]
+
 [dev-dependencies]
 miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8", features = ["testing"] }
 miden-testing   = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }

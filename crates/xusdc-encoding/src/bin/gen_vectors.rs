@@ -14,10 +14,16 @@
 //! remoteToken@44, remoteRecipient@76, localToken@108, localDepositor@140, maxFee@172,
 //! nonce@204, hookDataLen@236, hookData@240; header = 240 bytes = 60 u32-LE felts (C-10).
 
+use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey};
+use miden_crypto::dsa::ecdsa_k256_keccak::PublicKey;
+use miden_crypto::utils::Deserializable;
 use miden_protocol::testing::account_id::AccountIdBuilder;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Hasher, Word};
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use serde_json::{Value, json};
+use sha3::{Digest, Keccak256};
 
 const ASSET_AMOUNT_MAX: u128 = (1u128 << 63) - (1u128 << 31); // E-7: 2^63 - 2^31
 
@@ -231,6 +237,58 @@ fn di_reject(
         "expected_variant": variant, "masm_err": masm_err,
         "cite": cite, "derivation": derivation,
     })
+}
+
+// Attestation (ATT) entries — §6.7 dual surface
+// ================================================================================================
+// Independent generation (anti-circularity): the secp256k1 keypair + signature come from the
+// INDEPENDENT `k256` crate, the keccak digest from `sha3` — never a miden signer. The commitment
+// oracle is miden-crypto `PublicKey::to_commitment` (the canonical attester-allowlist keying
+// primitive D5d looks up), deserialized from the exact 33 compressed wire bytes. This binary
+// never calls the crate mirror (`pubkey_commitment`/`*_felts`) — derivation independence.
+
+/// Deterministic independent secp256k1 keypair (k256 + seeded StdRng).
+fn att_keypair(seed: u64) -> SigningKey {
+    SigningKey::random(&mut StdRng::seed_from_u64(seed))
+}
+
+/// 33-byte compressed SEC1 public key.
+fn att_pk33(sk: &SigningKey) -> [u8; 33] {
+    sk.verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .try_into()
+        .expect("compressed secp256k1 pubkey is 33 bytes")
+}
+
+/// keccak256 (original Keccak, not NIST SHA3-256) of `msg` via the INDEPENDENT `sha3` crate.
+fn att_keccak256(msg: &[u8]) -> [u8; 32] {
+    let mut h = Keccak256::new();
+    h.update(msg);
+    h.finalize().into()
+}
+
+/// 65-byte `r || s || v` signature of `digest` under `sk`, generated entirely by `k256`
+/// (`sign_prehash_recoverable`) — mirrors miden-crypto 0.25.1 `Signature` serialization
+/// (r‖s‖v, v = recovery id). RAW secp256k1 over the keccak digest: NO EIP-712 domain, no
+/// struct (INV-DEPOSIT-ATTESTATION-RAW-KECCAK); v is carried, unused on-chain.
+fn att_sign65(sk: &SigningKey, digest: &[u8; 32]) -> [u8; 65] {
+    let (sig, recid): (K256Signature, RecoveryId) =
+        sk.sign_prehash_recoverable(digest).expect("k256 prehash sign");
+    let mut out = [0u8; 65];
+    out[..64].copy_from_slice(sig.to_bytes().as_slice()); // 64-byte big-endian r || s
+    out[64] = recid.to_byte(); // v in {0..3}
+    out
+}
+
+/// The canonical commitment oracle: deserialize the exact 33 compressed wire bytes into the
+/// miden-crypto `PublicKey` and take `to_commitment()` = Poseidon2 over the 9 u32-LE pubkey
+/// felts (miden-crypto-0.25.1/src/dsa/ecdsa_k256_keccak/mod.rs:253,:301; src/lib.rs:156-170).
+/// This is exactly what off-chain `set_attester` keys the `xReserveAttesters` allowlist by.
+fn att_commitment(pk33: &[u8; 33]) -> Word {
+    PublicKey::read_from_bytes(pk33)
+        .expect("valid compressed secp256k1 pubkey")
+        .to_commitment()
 }
 
 fn main() {
@@ -559,7 +617,43 @@ fn main() {
         }));
     }
 
-    let file = json!({ "version": 1, "families": { "b32": b32, "amt": amt, "aid": aid, "di": di } });
+    // ---- att family (§6.7 attestation surface) ----------------------------------------
+    // Each vector: an independent k256 keypair; the digest is keccak256 of a FULL DepositIntent
+    // payload (raw keccak, NOT EIP-712, no struct — INV-DEPOSIT-ATTESTATION-RAW-KECCAK); the
+    // 65-byte r||s||v signature over that digest; and the canonical commitment from miden-crypto
+    // `PublicKey::to_commitment`. The nonce is varied per seed so digests/sigs/pubkeys all differ.
+    let mut att: Vec<Value> = Vec::new();
+    for seed in 1u64..=3 {
+        let mut spec = IntentSpec::base(recipient_b32);
+        spec.nonce = pattern32(0xd0u8.wrapping_add(seed as u8));
+        let payload = spec.encode();
+
+        let sk = att_keypair(seed);
+        let pk = att_pk33(&sk);
+        let digest = att_keccak256(&payload);
+        let sig = att_sign65(&sk, &digest);
+        let commitment = att_commitment(&pk);
+        att.push(json!({
+            "id": format!("att-{seed}"),
+            "tv": ["TV-ATT-1", "TV-ATT-2", "TV-ATT-3", "TV-DUAL-5"],
+            "pubkey_hex": hex_bytes(&pk),
+            "packed_felts": felts_hex(&packed(&pk)),
+            "expected_commitment": word_hex(commitment),
+            "digest_hex": hex_bytes(&digest),
+            "digest_felts": felts_hex(&packed(&digest)),
+            "sig_hex": hex_bytes(&sig),
+            "sig_felts": felts_hex(&packed(&sig)),
+            "v_byte": sig[64],
+            "payload_hex": hex_bytes(&payload),
+            "cite": "MIDEN-CRYPTO-AND-ENCODING.md:40-44,:53-54; 04 COMPONENT-SPEC §6.7,§7; miden-crypto-0.25.1 dsa/ecdsa_k256_keccak/mod.rs:253,:301 + src/lib.rs:156-170",
+            "derivation": format!(
+                "k256 SigningKey::random(StdRng seed {seed}); pk = 33B compressed SEC1 (9 felts); sig = 65B r||s||v (17 felts, v carried) over keccak256(full {plen}B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.25.1 (Poseidon2 over the 9 pubkey felts)",
+                plen = payload.len(),
+            ),
+        }));
+    }
+
+    let file = json!({ "version": 1, "families": { "b32": b32, "amt": amt, "aid": aid, "di": di, "att": att } });
     let path = xusdc_encoding::vectors_path();
     std::fs::create_dir_all(path.parent().unwrap()).expect("create vectors dir");
     std::fs::write(&path, serde_json::to_string_pretty(&file).expect("serialize") + "\n")

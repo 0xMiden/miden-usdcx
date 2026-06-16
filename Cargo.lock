@@ -1168,7 +1168,7 @@ dependencies = [
  "p3-symmetric",
  "p3-util",
  "rand 0.9.4",
- "rand_chacha",
+ "rand_chacha 0.9.0",
  "rand_core 0.9.5",
  "rand_hc",
  "rayon",
@@ -1392,7 +1392,7 @@ dependencies = [
  "miden-utils-sync",
  "miden-verifier",
  "rand 0.9.4",
- "rand_chacha",
+ "rand_chacha 0.9.0",
  "rand_xoshiro",
  "regex",
  "semver 1.0.28",
@@ -1481,7 +1481,7 @@ dependencies = [
  "miden-tx",
  "miden-tx-batch-prover",
  "rand 0.9.4",
- "rand_chacha",
+ "rand_chacha 0.9.0",
  "thiserror",
 ]
 
@@ -2079,7 +2079,7 @@ dependencies = [
  "bitflags",
  "num-traits",
  "rand 0.9.4",
- "rand_chacha",
+ "rand_chacha 0.9.0",
  "rand_xorshift",
  "regex-syntax",
  "unarray",
@@ -2127,11 +2127,22 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
 name = "rand"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
+dependencies = [
+ "libc",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+]
+
+[[package]]
+name = "rand"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44c5af06bb1b7d3216d91932aed5265164bf384dc89cd6ba05cf59a35f5f76ea"
 dependencies = [
- "rand_chacha",
+ "rand_chacha 0.9.0",
  "rand_core 0.9.5",
 ]
 
@@ -2142,6 +2153,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2e8e8bcc7961af1fdac401278c6a831614941f6164ee3bf4ce61b7edb162207"
 dependencies = [
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "rand_chacha"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
+dependencies = [
+ "ppv-lite86",
+ "rand_core 0.6.4",
 ]
 
 [[package]]
@@ -3095,14 +3116,18 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "assert_matches",
+ "k256",
+ "miden-crypto",
  "miden-processor",
  "miden-protocol",
  "miden-standards",
  "miden-testing",
  "miden-tx",
+ "rand 0.8.6",
  "rstest",
  "serde",
  "serde_json",
+ "sha3",
  "tokio",
 ]
 

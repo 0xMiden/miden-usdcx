@@ -71,6 +71,34 @@ pub proc bytes32_to_key
     # => [KEY]
 end
 
+#! Computes the attester-allowlist commitment key over a compressed secp256k1 public key.
+#!
+#! Poseidon2 over the 9 u32-LE-packed limbs of the 33-byte compressed pubkey, identical to
+#! miden-crypto `PublicKey::to_commitment` and the precompile `verify` wrapper's `PK_COMM`
+#! (the value the faucet D5d verify recomputes and looks up in the `xReserveAttesters`
+#! allowlist). NOTE the sponge capacity domain tag is `9 % 8 = 1` — this is NOT `hmerge`
+#! (capacity 0, exactly 8 felts), so `bytes32_to_key` cannot serve it.
+#!
+#! Inputs:  [PK_W0, PK_W1, pk8]
+#! Outputs: [COMM]
+#!
+#! Where:
+#! - PK_W0 is the word holding pubkey felts 0..4 (compressed bytes 0..16).
+#! - PK_W1 is the word holding pubkey felts 4..8 (compressed bytes 16..32).
+#! - pk8 is the 9th pubkey felt (compressed byte 32, u32-LE zero-filled).
+#! - COMM is the Poseidon2 commitment Word.
+#!
+#! Invocation: exec
+pub proc pubkey_commitment
+    # RED-SUITE STUB: consume the 9 pubkey felts and return a placeholder Word; the
+    # implementation commit replaces this with the Poseidon2 commitment over locals.
+    dropw dropw drop
+    # => []
+
+    padw
+    # => [COMM]
+end
+
 #! Reduces an externally-supplied uint256 amount to an AssetAmount felt.
 #!
 #! Byte-swaps the limbs to numeric order, asserts the numerically high half (U0, wire

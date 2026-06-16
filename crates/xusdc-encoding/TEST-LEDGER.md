@@ -1,6 +1,33 @@
 # 04 Shared-Encoding TEST LEDGER
 
-Loop records per the approved plan §10/§11. Phase: **R4 COMPLETE — FULL SLICE GREEN (37/37)** — red-suite + R1 + R2 + R3 audited/accepted; R4 implemented; every in-scope TV row passes; awaiting final audit.
+Loop records per the approved plan §10/§11. Phase: **ATT COMPLETE — full suite GREEN (73/73)** — the deferred attestation surface (`pubkey_commitment` + the three Rust packers + TV-ATT-1..3 + TV-DUAL-5) built on top of the accepted R1–R5 slice; the faucet D5d verify (R-MINT-13) can now consume `xreserve::encoding::pubkey_commitment` by reference. Awaiting final audit.
+
+## ATT — attestation surface: pubkey_commitment + byte→felt packers (2026-06-16, approved start; GREEN)
+
+The originally-deferred ATT/TV-DUAL-5 families (`P5-04-SHARED-ENCODING-ACCEPTANCE-RECORD.md:36`). Built MASM-first/dual on a dedicated branch (`feat/04-attestation-encoding`); two signed commits in the planned red→green order.
+
+**Commitment scheme (pinned from source before any edit).** `PublicKey::to_commitment` (`miden-crypto-0.25.1/src/dsa/ecdsa_k256_keccak/mod.rs:253,:301`) = `Poseidon2::hash_elements(bytes_to_packed_u32_elements(to_bytes()))` over the 9-felt compressed pubkey (`src/lib.rs:156-170`; sponge capacity tag `9 % 8 = 1`, `src/hash/algebraic_sponge/mod.rs:201-243`). **Byte-for-byte identical** to the precompile `verify` wrapper's `PK_COMM` (`miden-core-lib-0.23.3/asm/crypto/dsa/ecdsa_k256_keccak.masm:20,64-66`). NOT `hmerge` (capacity 0, 8 felts) — so `bytes32_to_key` cannot serve it (G1).
+
+**Human ratifications (2026-06-16, all confirmed recommended).** RQ-1: `pubkey_commitment` homed in `encoding/mod.masm` at the flat path `xreserve::encoding::pubkey_commitment` (D-1A; no `attestation.masm`). RQ-2: MASM surface = `pubkey_commitment` ONLY; the three byte→felt packers are Rust-only (on-chain the pubkey/sig arrive already-packed via advice and the digest from `keccak256::hash_bytes`, so a MASM packer would be a forbidden no-op); TV-DUAL-5 realized as the **commitment dual** (MASM == Rust == miden-crypto) — preserves coverage, deviates from the literal "attestation.masm staging" wording, ratified per G5. RQ-3: generator deps optional behind the `vectors` feature, `src/bin/gen_vectors.rs` kept (`cargo run --bin gen_vectors --features vectors`).
+
+**Red-suite (commit `63dd45c`).** Schema + regenerated artifact present FIRST (att family, 3 independent k256 keypairs; pubkey/digest/sig + the miden-crypto `to_commitment` oracle), then deterministic STUBS (Rust zeros; MASM `dropw dropw drop padw`) so the suite EXECUTES and fails on a value mismatch — not missing-symbol/link.
+
+| Command | Result |
+|---|---|
+| `cargo run --bin gen_vectors --features vectors` | wrote artifact (85170 bytes); att family added; lock += rand 0.8.6 + rand_chacha 0.3.1 (additive) |
+| `cargo test --locked --no-fail-fast` (red) | lib **28 passed; 3 failed** (TV-ATT-1/2/3 on value mismatch, executed); masm_dual **8 passed; 1 failed** (TV-DUAL-5 on the Rust-mirror value assert); parity 4, mint_shell 29 GREEN. Baseline 69 intact; the 4 new RED for the right reason |
+
+**Green (commit `b7ef630`).** Rust mirror = `bytes_to_packed_u32_elements` packers (8/9/17) + `pubkey_commitment = Hasher::hash_elements(&compressed_pubkey_felts(pk))`. MASM `pubkey_commitment`: `@locals(12)`, stage 9 felts via `loc_storew_le.0 / loc_storew_le.4 / loc_store.8`, then `push.PUBKEY_FELTS locaddr.0 exec.poseidon2::hash_elements` — the precompile PK_COMM staging. `PUBKEY_FELTS = 9` named const, parity-pinned MASM↔Rust.
+
+| Command | Result |
+|---|---|
+| `cargo test --locked --no-fail-fast` | **73/73 green** (lib 31, parity 4, masm_dual 9, mint_shell 29; doc-tests 0) |
+| TV-DUAL-5 (executed under MockChain) | MASM `pubkey_commitment` Word == Rust mirror == miden-crypto `PublicKey::to_commitment` for all 3 att vectors (distinct commitments) — empirically confirms `Hasher` is Poseidon2 and the `loc_storew_le`/`hash_elements` staging reproduces `to_commitment` |
+| TV-ATT-1/2/3 | felt shapes 8/9/17 + values; commitment == oracle; raw-keccak (verbatim digest pack, no EIP-712 framing; full DepositIntent payload; raw 65B r‖s‖v, v in felt 16) |
+| `cargo tree` | miden-core-lib 0.23.3, miden-assembly 0.23.3, miden-crypto 0.25.1 (unchanged) |
+| `rg "attestation\.masm" asm/` | none (D-1A); `pub proc pubkey_commitment` at `encoding/mod.masm:99` |
+
+**Containment.** Diff = `Cargo.toml`/`Cargo.lock` (additive vector-gen deps), `gen_vectors.rs`, `vectors.rs`, `encoding/mod.rs`, `attestation.rs` (new), `encoding/mod.masm`, `masm_dual.rs`, `constant_parity.rs`, the artifact (pure addition — `git diff` `@@ -391,0 +392,188 @@`), this ledger. NOT touched: the faucet `deposit_intent_parser.masm`, the already-built R1–R4 procs (`bytes32_to_key`/`uint256_to_asset_amount`/`parse_deposit_intent`), the deferred BN/JSON/BIN/DUAL-4 families. The pre-existing uncommitted `docs/` mirror edits (sync-mirrors batch) are NOT mine and were excluded from every commit. DEV-1/Q-CRY-* stay OPEN.
 
 ## R5 — DEV-10 AccountId→bytes32 layout revision to R-B / Agglayer-mirroring (2026-06-15; human-authorized; GREEN)
 

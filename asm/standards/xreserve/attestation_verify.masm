@@ -9,15 +9,10 @@
 # BY REFERENCE: xreserve::encoding::pubkey_commitment (04 ATT), keccak256::hash_bytes +
 # ecdsa_k256_keccak::verify_prehash (precompiles), active_account::get_map_item (kernel). Module
 # home + nested path per D-1A. Loop history: crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
-#
-# RED-SUITE STATE: executing-red placeholder. The proc runs the FULL real sequence (hash_bytes +
-# pubkey_commitment + get_map_item + verify_prehash) and then traps unconditionally with
-# ERR_XRESERVE_D5D_RED_PLACEHOLDER, so every behavior test is RED via REAL primitive execution.
-# The implementation commit replaces the discard+placeholder tail with the R-MINT-13 / R-MINT-14
-# asserts + the accept (Outputs []) and DELETES the placeholder constant.
 
 use miden::core::crypto::hashes::keccak256
 use miden::core::crypto::dsa::ecdsa_k256_keccak
+use miden::core::word
 use miden::protocol::active_account
 use xreserve::encoding
 
@@ -38,11 +33,6 @@ const ERR_XRESERVE_BAD_PK_COMMITMENT = "deposit attester pubkey commitment is no
 
 # R-MINT-14: the ECDSA signature does not verify over keccak256(payload) for the candidate pubkey.
 const ERR_XRESERVE_SIG_INVALID = "deposit attestation signature verification failed"
-
-# RED-SUITE ONLY: an unconditional placeholder trap placed AFTER the real hash_bytes +
-# pubkey_commitment + get_map_item + verify_prehash calls, so every behavior test is RED via REAL
-# primitive execution. The implementation commit deletes this constant and wires the gate.
-const ERR_XRESERVE_D5D_RED_PLACEHOLDER = "red-suite placeholder: verify_attestation gate not wired"
 
 # PUBLIC INTERFACE
 # =================================================================================================
@@ -121,9 +111,12 @@ pub proc verify_attestation
     swapw dropw
     # => [VALUE, pad(12)]
 
-    # RED-SUITE: discard the allowlist VALUE (the R-MINT-13 assert is wired in the implementation
-    # commit). The map read EXECUTED above.
-    dropw
+    # R-MINT-13: the stored allowlist value must be a non-empty enabled marker -- an absent /
+    # EMPTY_WORD value means the candidate pubkey's commitment is not allowlisted.
+    exec.word::eqz
+    # => [is_empty, pad(12)]
+
+    assertz.err=ERR_XRESERVE_BAD_PK_COMMITMENT
     # => [pad(16)]
 
     # ECDSA verify (R-MINT-14): verify_prehash over the SAME pubkey region (loc[0..9]), the digest
@@ -134,12 +127,7 @@ pub proc verify_attestation
     exec.ecdsa_k256_keccak::verify_prehash
     # => [result, pad(16)]
 
-    # RED-SUITE: discard the verify result (the R-MINT-14 assert is wired in the implementation
-    # commit). The verify EXECUTED above.
-    drop
+    # R-MINT-14: the signature must verify over the payload digest for the candidate pubkey.
+    assert.err=ERR_XRESERVE_SIG_INVALID
     # => [pad(16)]
-
-    # RED-SUITE placeholder: trap unconditionally AFTER the four primitives executed, so every
-    # behavior test is RED for the right reason. Removed in the implementation commit.
-    push.0 assert.err=ERR_XRESERVE_D5D_RED_PLACEHOLDER
 end

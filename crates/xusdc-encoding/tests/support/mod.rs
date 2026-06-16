@@ -85,7 +85,7 @@ pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 8] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 7] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -120,12 +120,6 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 8] = [
     (
         "ERR_XRESERVE_SIG_INVALID",
         MasmError::from_static_str("deposit attestation signature verification failed"),
-    ),
-    // D5d RED-SUITE ONLY: the executing-red placeholder trap. REMOVED in the implementation
-    // commit (along with the matching MASM const + the `SHELL_ERRORS_DECLARED` row).
-    (
-        "ERR_XRESERVE_D5D_RED_PLACEHOLDER",
-        MasmError::from_static_str("red-suite placeholder: verify_attestation gate not wired"),
     ),
 ];
 

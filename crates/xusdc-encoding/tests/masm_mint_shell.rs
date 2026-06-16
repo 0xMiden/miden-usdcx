@@ -470,10 +470,10 @@ fn probe_nonce_unused_exports() -> Result<()> {
 // the 04 canonical artifact; key A (seed 1) and key B (seed 2) sign the SAME payload, so the seam
 // test can pair an allowlisted commitment with a foreign valid signature.
 //
-// RED-SUITE: the shell is the executing-red placeholder — it runs hash_bytes + pubkey_commitment +
-// get_map_item + verify_prehash then traps ERR_XRESERVE_D5D_RED_PLACEHOLDER, so the four behavior
-// cases are RED via REAL primitive execution until the implementation commit wires the gate. The
-// advice-hygiene case + the export probe are declared green scaffolds.
+// Each behavior case EXECUTES the real gate (hash_bytes + pubkey_commitment + get_map_item +
+// verify_prehash) under MockChain and pins the exact outcome: the happy path reaches the
+// supply-write boundary (no storage write); the rejects trap the EXACT R-MINT-13 / R-MINT-14
+// errors; the missing-advice case fails closed (AdviceError). The export probe pins the D-1A path.
 
 /// The canonical payload the D5d cases keccak + sign over: the 240-byte (60-felt, no-hookData)
 /// accept DepositIntent, consumed BY REFERENCE (G1).

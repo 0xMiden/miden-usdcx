@@ -43,9 +43,6 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     // D5d R-MINT-13 / R-MINT-14 (attestation_verify.masm)
     "ERR_XRESERVE_BAD_PK_COMMITMENT",
     "ERR_XRESERVE_SIG_INVALID",
-    // D5d RED-SUITE ONLY: the executing-red placeholder error. REMOVED in the implementation
-    // commit (along with the MASM const + the SHELL_ERR_TABLE entry).
-    "ERR_XRESERVE_D5D_RED_PLACEHOLDER",
 ];
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned

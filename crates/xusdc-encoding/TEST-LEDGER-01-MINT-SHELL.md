@@ -204,3 +204,73 @@ attestation/supply/note/mint-effect code; no R-B/account_id, Cargo, or pin chang
 Ratified decisions in force: **D-A** module home `deposit_intent_parser.masm`, nested path
 `xreserve::deposit_intent_parser::assert_nonce_unused` (human-confirmed at plan time) · the
 nonce SET deferred to **D5e** (assert-zero only here).
+
+# 01 Faucet Slice 4 — D5d Attestation Verify TEST LEDGER
+
+Loop records per the approved P5-01 D5d plan (Codex Round-P REVISE → recheck REVISE →
+addressed; plan approved). Phase: **IMPLEMENTATION COMPLETE — FULL SLICE GREEN** (red
+`9d5874c` → green this commit). Awaiting Codex Round-R / Round-F audits.
+
+NEW file `asm/standards/xreserve/attestation_verify.masm` (the first NEW shell file; D-1A
+nested home `xreserve::attestation_verify::verify_attestation` — NOT in
+`deposit_intent_parser.masm`, NOT a flat `xreserve::verify_attestation`). The mint-time
+deposit-attestation gate, built as ONE slice because of a single binding invariant: **the
+candidate pubkey is materialized ONCE into one word-aligned local region (loc[0..9]) that
+feeds BOTH `xreserve::encoding::pubkey_commitment` (→ the `xReserveAttesters` allowlist key)
+AND `ecdsa_k256_keccak::verify_prehash` (`pk_ptr`)** — so an allowlisted commitment can only
+pass with its own signature (ECDSA soundness closes the seam by construction). Consumes the
+built/proven primitives BY REFERENCE: `pubkey_commitment` (04 ATT), `keccak256::hash_bytes`
++ `verify_prehash` (precompiles, EXECUTION-proven by the precompile canary), and
+`active_account::get_map_item` (kernel, storage-map canary). Flow (§5.4): keccak the full
+payload → store the 8-limb digest to loc[12..20]; materialize pubkey(9)+sig(17) from advice
+(seam region + sig at loc[20..37]; missing/short advice traps fail-closed); allowlist gate
+R-MINT-13 (`exec.word::eqz` → `assertz.err=ERR_XRESERVE_BAD_PK_COMMITMENT` — the value is a
+non-empty enabled marker, absent/`EMPTY_WORD` = not allowlisted); verify R-MINT-14
+(`verify_prehash` over the SAME pubkey region → `assert.err=ERR_XRESERVE_SIG_INVALID`).
+NEW slot `XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xreserve_attesters")`
+(frozen §5.5 `XReserveAttesterAdmin`; the later `set_attester` admin slice co-owns the SAME
+slot). DEV-1 / Q-CRY-1 / Q-DA-QUORUM / DEV-6 (hookData extent) stay OPEN, never presented as
+Circle-approved.
+
+Vectors: **in-test deterministic secp256k1 generation** (`gen_attester` in `tests/support`,
+mirroring the precompile canary + `gen_vectors` `att_*`: k256 `SigningKey::random(seeded
+StdRng)` + `sign_prehash_recoverable`, sha3 `Keccak256`, miden-crypto
+`PublicKey::to_commitment` oracle, `bytes_to_packed_u32_elements` advice felts) — **zero
+touch to the 04 canonical artifact / `gen_vectors.rs` / the att-1..3 vectors**. Additive
+`[dev-dependencies]`: `k256 0.13` (ecdsa), `sha3 0.10`, `rand 0.8`, `miden-crypto 0.25` (std)
+— the canary-established set. Key A (seed 1) and key B (seed 2) sign keccak256 of the SAME
+payload (`di-pos-empty-hookdata`, the 240-byte / 60-felt accept DepositIntent, consumed BY
+REFERENCE) so the seam test can pair an allowlisted commitment with a foreign valid signature.
+NEW fixture `setup_attestation_account` (binds the `xReserveAttesters` map slot via
+`StorageSlot::with_map`; `Some((commitment, marker))` enables an attester directly — NOT via
+the out-of-scope `set_attester`) + `attestation_driver_src`.
+
+| Stage | Change (MASM + same-commit parity rows) | Full-suite result | RED remainder (named trap) |
+|---|---|---|---|
+| RED `9d5874c` | **executing-red** placeholder `verify_attestation` — runs the FULL real sequence (hash_bytes + pubkey_commitment + get_map_item + verify_prehash) then traps `ERR_XRESERVE_D5D_RED_PLACEHOLDER` (the last instruction, so the primitives genuinely execute) + the slot const + the two R-MINT-13/14 error consts + `setup_attestation_account` + `gen_attester` + dev-deps + 6 tests (happy, forged-sig, non-allowlisted, seam-both-arrangements, missing-advice, export probe) + constant-parity wiring (`ATTESTATION_VERIFY_MASM` parsed; `SHELL_ERRORS_DECLARED`/`SHELL_ERR_TABLE` += 3; `EXPECTED_ATTESTATION_WORD_CONSTS`; the bidirectional `sources` += the new file) | masm_mint_shell **`31 passed; 4 failed`** (lib 31, constant_parity 4, masm_dual 9 green) | the 4 behavior cases on the placeholder trap, via REAL primitive execution (exact-error mismatch / expected-accept); the missing-advice hygiene case + the export probe are declared green scaffolds |
+| GREEN (this commit) | wire the gate: `exec.word::eqz` + `assertz.err=ERR_XRESERVE_BAD_PK_COMMITMENT` (R-MINT-13) + `assert.err=ERR_XRESERVE_SIG_INVALID` (R-MINT-14) + accept (Outputs `[]`); `use miden::core::word` added; the placeholder const + its `SHELL_ERR_TABLE` / `SHELL_ERRORS_DECLARED` rows REMOVED | **`35 passed; 0 failed`** — full suite GREEN: lib 31, gen_vectors 0, constant_parity 4, masm_dual 9, masm_mint_shell 35 (= **79 total**, the 73 baseline + 6 D5d) | none |
+
+Every stage: `cargo test --locked --no-fail-fast`; the 73 baseline (lib 31, parity 4,
+masm_dual 9, the 29 prior masm_mint_shell tests) stayed green throughout — D5d is purely
+additive. Exact-error per case: R-MINT-13 / R-MINT-14 via `assert_transaction_executor_error!`
++ `shell_error_by_name`; happy asserts success + `nonce_delta == 1` + empty storage delta
+(read-only gate, reaches the supply-write boundary); missing advice via
+`matches ExecutionError::AdviceError` ("advice stack read failed"). The seam test drives BOTH
+attacker arrangements through real execution: (1) allowlisted pubkey A + B's valid-for-B
+signature → R-MINT-14; (2) B's pubkey + B's valid signature, B not allowlisted → R-MINT-13.
+G1 anti-duplication: `rg "pubkey_commitment|hash_bytes|verify_prehash|get_map_item"
+attestation_verify.masm` shows CALLS only; `rg -ni "hash_elements|poseidon|secp|ecdsa.*proc|
+keccak.*proc"` shows no re-implemented crypto (only descriptive comments). No
+`set_attester`/Authority/`token_supply`/note/mint-effect/nonce-set code (D5e + the admin
+slice + the composition stay out of scope); no 04 / D5a-c / canary / vector / pin change
+(`git status` clean of those); `rg RED_PLACEHOLDER` empty post-implementation.
+
+Ratified decisions in force: **D-1A** new-file nested home (the spec's flat
+`xreserve::verify_attestation` superseded) · the single-pubkey-region seam (one
+materialization feeds both consumers) · in-test vector generation (no edit to the 04
+artifact) · error strings proposed-and-user-selected (`ERR_XRESERVE_BAD_PK_COMMITMENT` =
+"deposit attester pubkey commitment is not allowlisted"; `ERR_XRESERVE_SIG_INVALID` =
+"deposit attestation signature verification failed"). Remaining before `verify_attestation`
+is wired into the composite `xreserve_mint`: **D5e** (supply-guard + the atomic mint effects
+— supply write / notes / nonce SET) + the `xreserve_mint` composition slice; DEV-1 /
+Q-CRY-1 / Q-DA-QUORUM / DEV-6 stay OPEN.

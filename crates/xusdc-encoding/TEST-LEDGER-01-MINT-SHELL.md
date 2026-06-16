@@ -274,3 +274,65 @@ artifact) · error strings proposed-and-user-selected (`ERR_XRESERVE_BAD_PK_COMM
 is wired into the composite `xreserve_mint`: **D5e** (supply-guard + the atomic mint effects
 — supply write / notes / nonce SET) + the `xreserve_mint` composition slice; DEV-1 /
 Q-CRY-1 / Q-DA-QUORUM / DEV-6 stay OPEN.
+
+## D5e — mint write-phase (`xreserve::xreserve_mint::apply_mint_effects`, P5-01 slice 5)
+
+The mint WRITE-phase (CMP-A9, §5.1): the supply-cap guard (R-MINT-15) + the atomic mint
+effects (nonce SET, P2ID recipient note carrying `amount − feeAmount`, `token_supply += amount`).
+NEW file `asm/standards/xreserve/xreserve_mint.masm` (module `xreserve::xreserve_mint`, D-1A
+home, CMP-A9). A CUSTOM proc that does NOT route through `execute_mint_policy` / stock
+`mint_and_send` (ASG-1 / C-7) — the supply math mirrors `mint_and_send`'s NON-WRAPPING assert
+chain (`fungible.masm:288-308`): `token_supply <= max_supply` (no-wrap guard before the `sub`),
+`max_supply <= FUNGIBLE_ASSET_MAX_AMOUNT`, `amount <= max_supply − token_supply`, all trapping
+the single `ERR_XRESERVE_SUPPLY_CAP`; the guard is FIRST so an over-cap mint rejects before any
+effect. The recipient note is built ON-CHAIN from the `[prefix, suffix]` AccountId felts (D-5)
+via `miden::protocol::note::compute_and_store_recipient` + `output_note::create` (the P2ID script
+root passed in, the `faucet.rs` pattern) — so the xreserve library stays **core+protocol only**
+(no standards link needed by the harness assembler; `masm_dual.rs` untouched). The write-side
+kernel primitives (`active_account::get_item` / `native_account::set_item` on the faucet
+`token_config` slot, `native_account::set_map_item`, `note::compute_and_store_recipient` +
+`output_note::*`, `faucet::create_fungible_asset` + `faucet::mint`) are consumed BY REFERENCE and
+grounded by a NEW grounding canary (`canary/mint-effects-grounding/`, commit `b1e107a`) that
+proves they EXECUTE AND COMMIT on a `FungibleFaucet` account carrying a custom component under
+MockChain. `USED_NONCES_SLOT` is IMPORTED from `deposit_intent_parser` (no duplication, G1);
+`TOKEN_CONFIG_SLOT` is hard-coded byte-identical to the standard faucet slot
+(`CANONICAL-OWNERSHIP-MAP:41`; `fungible.masm:26`). NEW fixture `setup_mint_faucet_account` (a
+`FungibleFaucet` + the xreserve component + the mint driver + a no-effects readback probe;
+`add_existing_account_from_components([faucet.into(), …])`, the canary-proven construction) +
+`mint_effects_driver_src` + `mint_noeffect_probe_src`.
+
+| Stage | Change (MASM + same-commit parity rows) | Full-suite result | RED remainder (named trap) |
+|---|---|---|---|
+| RED `5e0bcc8` | **executing-red** `apply_mint_effects` — runs the FULL real primitive sequence (token_config read + `set_map_item` nonce SET + `compute_and_store_recipient`/`output_note::*` note emission + `create_fungible_asset`/`faucet::mint` + token_supply write-back) then traps `ERR_XRESERVE_D5E_RED_PLACEHOLDER` (the last instruction, so the primitives genuinely execute; the trap rolls the tx back, no commit) + the slot/marker consts + `ERR_XRESERVE_SUPPLY_CAP` + `setup_mint_faucet_account`/`mint_effects_driver_src` + 4 tests (happy/conservation, cap-boundary accept, over-cap reject, export probe) + constant-parity wiring (`XRESERVE_MINT_MASM` parsed; `SHELL_ERRORS_DECLARED`/`SHELL_ERR_TABLE` += 2; `EXPECTED_XRESERVE_MINT_WORD_CONSTS`/`XRESERVE_MINT_COVERED_NUMS`; the `sources` += the new file) | mint_effects **`1 passed; 3 failed`** (lib 31, constant_parity 4, masm_dual 9, masm_mint_shell 35 green) | the 3 behavior cases on the placeholder trap, via REAL primitive execution (happy/cap-boundary fail because the terminal trap reverts; over-cap fails the exact-error match — confirming the kernel mint does NOT catch the component-level over-cap); the export probe is a declared green scaffold |
+| GREEN `8395b7c` | wire the guard: the three ordered non-wrap asserts at the supply-guard marker (R-MINT-15, single `ERR_XRESERVE_SUPPLY_CAP`) + `use …asset::FUNGIBLE_ASSET_MAX_AMOUNT`; the placeholder const + its `SHELL_ERR_TABLE`/`SHELL_ERRORS_DECLARED` rows REMOVED; add the same-account no-effects readback (`run_noeffect_probe`) to the over-cap test + the near-`FUNGIBLE_ASSET_MAX_AMOUNT` boundary test | **`84 passed; 0 failed`** — full suite GREEN: lib 31, constant_parity 4, masm_dual 9, masm_mint_shell 35, mint_effects 5 | none |
+
+Every stage: `cargo test --locked --no-fail-fast`; the 79 baseline (lib 31, parity 4, masm_dual
+9, masm_mint_shell 35) stayed green throughout — D5e is purely additive. Exact-error per case:
+R-MINT-15 via `assert_transaction_executor_error!` + `shell_error_by_name`; happy/conservation
+reads back the post-tx `OutputNote` asset (`output_notes().get_note(0).assets().iter_fungible()`
+== `amount − feeAmount`), the `token_config` value-slot delta (`StorageSlotDelta::Value` word[0]
+== `amount`), and `usedNonces[KEY]` (`StorageSlotDelta::Map` == the marker). Over-cap: traps
+`ERR_XRESERVE_SUPPLY_CAP` (guard before any effect) + a follow-up readback tx on the SAME account
+proves `token_config`/`usedNonces[KEY]` unchanged (no committed effect). G1 anti-duplication:
+`rg "set_map_item|get_item|set_item|output_note|create_fungible_asset|faucet::mint" xreserve_mint.masm`
+shows CALLS only; `rg -ni "execute_mint_policy|mint_and_send"` shows descriptive comments only (no
+route); `rg -ni "hash_elements|poseidon|asset::create_fungible_asset_unchecked"` empty;
+`rg RED_PLACEHOLDER` empty post-green. No 04 / D5a-d / canary-dir / vector / pin change.
+
+**ATOMIC ORDER (static trace — finding #3a):** post-tx state proves final conservation, not
+temporal order within one atomic tx. The order is the documented instruction sequence in
+`apply_mint_effects` (`# =>` stack comments): supply guard (read + assert) → nonce SET (FIRST
+write) → recipient note → `token_supply += amount` (last) — the FINAL-round auditor inspects this
+static trace against §5.1 CIR-MINT-STATE-1..4.
+
+Ratified decisions in force: **D-1A** new-file `xreserve_mint.masm` home (module `xreserve::xreserve_mint`);
+custom proc, no `mint_and_send`/`execute_mint_policy` (ASG-1); on-chain P2ID recipient build from
+`[prefix, suffix]` (D-5; library stays core+protocol only, P2ID script root passed in); supply
+math mirrors `mint_and_send`'s ordered non-wrap pattern (the catastrophic-case guard); `feeAmount`
+computed into the note value (`amount − feeAmount`), full `amount` into supply. Remaining before
+this is a complete mint: the **`xreserve_mint` COMPOSITION** slice (chain D5a→D5e + the fail-closed
+"any verify trap ⇒ no writes" property + the audit-level "only `xreserve_mint` raises
+`token_supply`" check) + the mint-deny guard (R-MINT-16, §5.2). **DEV-8** (`feeAmount > 0` two-note
+relayer split), **DEV-9 / Q-CRY-5** (nonce keying / marker), **DEV-10** (recipient bytes32→felts
+encoding), and **IMPL-MINT-SPLIT** stay OPEN — implemented per the frozen spec, never marked
+Circle-approved.

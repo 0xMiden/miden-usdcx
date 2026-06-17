@@ -24,6 +24,7 @@ use miden_protocol::asset::{AssetAmount, TokenSymbol};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::code_builder::CodeBuilder;
+use miden_standards::note::P2idNote;
 use miden_testing::{Auth, MockChain};
 
 use xusdc_canary_mint_effects::{CANARY_MASM, CANARY_PATH, TOKEN_CONFIG_SLOT_LABEL, USED_SLOT_LABEL};
@@ -104,6 +105,20 @@ end
         .expect("the output note must carry a fungible asset");
     assert_eq!(Felt::from(asset.amount()), Felt::from(AMOUNT as u32), "minted note amount");
     assert_eq!(asset.faucet_id(), faucet_account.id(), "asset faucet id");
+
+    // the note is the canonical P2ID recipient note for the intended recipient (script root +
+    // [suffix, prefix] storage) — proves p2id::new emits a real P2ID note, not just the asset.
+    let recipient_note = note.recipient().expect("public output note must carry its recipient");
+    assert_eq!(
+        recipient_note.script().root(),
+        P2idNote::script_root(),
+        "output note must use the canonical P2ID script root"
+    );
+    assert_eq!(
+        recipient_note.storage().items(),
+        [recipient.id().suffix(), recipient.id().prefix().as_felt()].as_slice(),
+        "output note storage must be [recipient_suffix, recipient_prefix]"
+    );
 
     // 6b. token_config value-slot delta: token_supply rose to AMOUNT (word[0]).
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;

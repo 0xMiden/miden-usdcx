@@ -316,8 +316,10 @@ reads back the post-tx `OutputNote` asset (`output_notes().get_note(0).assets().
 proves `token_config`/`usedNonces[KEY]` unchanged (no committed effect). G1 anti-duplication:
 `rg "set_map_item|get_item|set_item|output_note|create_fungible_asset|faucet::mint" xreserve_mint.masm`
 shows CALLS only; `rg -ni "execute_mint_policy|mint_and_send"` shows descriptive comments only (no
-route); `rg -ni "hash_elements|poseidon|asset::create_fungible_asset_unchecked"` empty;
-`rg RED_PLACEHOLDER` empty post-green. No 04 / D5a-d / canary-dir / vector / pin change.
+route); `rg -ni "hash_elements|poseidon|asset::create_fungible_asset_unchecked"` empty; no live
+MASM/parity/support execution path contains `ERR_XRESERVE_D5E_RED_PLACEHOLDER` post-green
+(`rg` over `xreserve_mint.masm`, `constant_parity.rs`, `support/mod.rs` is empty — remaining hits
+are historical/prose ledger + test-doc evidence). No 04 / D5a-d / canary-dir / vector / pin change.
 
 **ATOMIC ORDER (static trace — finding #3a):** post-tx state proves final conservation, not
 temporal order within one atomic tx. The order is the documented instruction sequence in

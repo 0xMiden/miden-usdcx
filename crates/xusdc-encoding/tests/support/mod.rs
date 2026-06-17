@@ -619,6 +619,8 @@ pub const MINT_PROBE_PATH: &str = "xusdc::test_fixtures::mint_probe";
 pub struct MintHarness {
     pub mock_chain: MockChain,
     pub account_id: AccountId,
+    /// The P2ID recipient account id (for asserting the emitted note targets it).
+    pub recipient_id: AccountId,
     pub mint_driver_code: AccountComponentCode,
     pub probe_driver_code: AccountComponentCode,
 }
@@ -704,6 +706,7 @@ pub fn setup_mint_faucet_account(
     Ok(MintHarness {
         mock_chain,
         account_id: account.id(),
+        recipient_id: recipient.id(),
         mint_driver_code,
         probe_driver_code,
     })

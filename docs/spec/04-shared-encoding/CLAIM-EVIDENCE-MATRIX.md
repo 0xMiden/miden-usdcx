@@ -1,4 +1,4 @@
-> **MIRROR — READ-ONLY (mirrored 2026-06-11).** Canonical source: `/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/06-phase4-component-specs/04-shared-encoding/CLAIM-EVIDENCE-MATRIX.md`. Do NOT edit this copy; if it diverges from the canonical source, the canonical source wins. Re-sync via `tools/sync-mirrors.sh`.
+> **MIRROR — READ-ONLY (mirrored 2026-06-15).** Canonical source: `/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/06-phase4-component-specs/04-shared-encoding/CLAIM-EVIDENCE-MATRIX.md`. Do NOT edit this copy; if it diverges from the canonical source, the canonical source wins. Re-sync via `tools/sync-mirrors.sh`.
 
 # CLAIM-EVIDENCE-MATRIX — Shared Encoding Helper Library (`P4-ENCODE`)
 
@@ -53,15 +53,15 @@ All citations were opened and read before citing. Where the registry attached a 
 
 | Claim | Class | Exact citation (`path:LINE`) | How verified | Status token | Notes |
 |---|---|---|---|---|---|
-| `AccountId::SERIALIZED_SIZE = 15` bytes = 2 felts (prefix,suffix); fits a `Word` | SOURCE-BACKED FACT (E-9) | `01-0xMiden-capabilities/MIDEN-EVIDENCE-LEDGER.md:84` | TV-AID-1 | — |
+| Protocol/natural form: `AccountId::SERIALIZED_SIZE = 15` bytes = 2 felts (prefix,suffix); the two-felt form fits a `Word` (this is NOT the bytes32 wire packaging) | SOURCE-BACKED FACT (E-9) | `01-0xMiden-capabilities/MIDEN-EVIDENCE-LEDGER.md:84` | TV-AID-1 | — |
 | 15-byte serialization = 8 BE prefix + 7 BE suffix | SOURCE-BACKED FACT (E-10) | `01-0xMiden-capabilities/MIDEN-EVIDENCE-LEDGER.md:85` | TV-AID-1, TV-AID-2 | — |
-| `AddressType::AccountId = 232 = 0b1110_1000` | SOURCE-BACKED FACT (E-11) | `01-0xMiden-capabilities/MIDEN-EVIDENCE-LEDGER.md:86` | TV-AID-3 | — |
+| `AddressType::AccountId = 232 = 0b1110_1000` (bech32 string discriminant — NOT part of the bytes32 wire form) | SOURCE-BACKED FACT (E-11) | `01-0xMiden-capabilities/MIDEN-EVIDENCE-LEDGER.md:86` | TV-AID-3 | — |
 | On-chain natural form = the two felts `[prefix, suffix]` directly (no repacking) | SOURCE-BACKED FACT | `01-0xMiden-capabilities/MIDEN-CRYPTO-AND-ENCODING.md:148-157` (§5), `:152` | TV-AID-4 | — |
-| Lossless 15-byte / two-felt encoding; no keccak fallback | ARCHITECTURE DECISION (RACD, DL-9/MC-CR-6) | `03-architecture/ARCHITECTURE-DECISIONS-AND-CAVEATS.md:21`; `01-0xMiden-capabilities/MIDEN-CAPABILITY-MATRIX.md:69` | TV-AID-1..3 | RCC via DEV-10 |
+| **bytes32 packaging (DEV-10 draft) = R-B / Agglayer-mirroring right-aligned** (`bytes[0..16]=0`, `bytes[16..24]=prefix u64 BE`, `bytes[24..32]=suffix u64 BE`); **supersedes the prior left-aligned 15-byte/trailing-zero bytes32 draft** (2026-06-15); lossless, no keccak fallback (≤32B) | ARCHITECTURE DECISION (RACD, DL-9/MC-CR-6) | `03-architecture/ARCHITECTURE-DECISIONS-AND-CAVEATS.md:21`; `01-0xMiden-capabilities/MIDEN-CAPABILITY-MATRIX.md:69`; Agglayer precedent `protocol/crates/miden-agglayer/src/eth_types/eth_embedded_account_id.rs:117-122` | TV-AID-1..3 | RCC via DEV-10 |
 | CIR-HOOK-3 (>32-byte keccak fallback) NOT needed (AccountId 15 bytes) | SOURCE-BACKED FACT | `02-specifications/CIRCLE-REQUIREMENTS-MATRIX.md:125`; `03-architecture/ARCHITECTURE-TRACEABILITY-MATRIX.md:67` | TV-AID-3 | resolved-no-fallback |
 | The >32-byte keccak portability path itself | SOURCE-BACKED FACT | `02-specifications/CIRCLE-DATA-SCHEMAS.md:234` | TV-AID-3 (asserts absence) | — |
 | Encoding change gated by the S1-NDA L22 approval workflow (CIR-DEPLOY-8) | CIRCLE-OWNED OPEN (DEV-10/Q-CRY-3/4) | `02-specifications/CIRCLE-MIDEN-DEVIATIONS-AND-QUESTIONS.md:80-85`; `02-specifications/CIRCLE-REQUIREMENTS-MATRIX.md:22`; `06-resources/CIRCLE_PARTNER_INTEGRATION_GUIDELINES.md:22` | TV-AID-3 | `REQUIRES CIRCLE CONFIRMATION` · `NO EVIDENCE OF CIRCLE APPROVAL` | NDA L22 verbatim confirmed at `:22` |
-| AccountId→bytes32 byte-layout draft for Circle approval | IMPLEMENTATION ASSUMPTION (RIV) | `03-architecture/ARCHITECTURE-GAPS-AND-DECISIONS.md:127`; `../00-foundation/PHASE4-OPEN-DECISIONS.md:85` | TV-AID-3 | `REQUIRES IMPLEMENTATION VALIDATION` (IMPL-ACCOUNTID-LAYOUT) | id foundation-assigned |
+| AccountId→bytes32 byte-layout draft for Circle approval (current draft = **R-B / Agglayer-mirroring right-aligned**, supersedes left-aligned 2026-06-15) | IMPLEMENTATION ASSUMPTION (RIV) | `03-architecture/ARCHITECTURE-GAPS-AND-DECISIONS.md:127`; `../00-foundation/PHASE4-OPEN-DECISIONS.md:85` | TV-AID-3 | `REQUIRES IMPLEMENTATION VALIDATION` (IMPL-ACCOUNTID-LAYOUT) | id foundation-assigned |
 
 ## D. DepositIntent parse (INV-DEPOSITINTENT-PARSE)
 

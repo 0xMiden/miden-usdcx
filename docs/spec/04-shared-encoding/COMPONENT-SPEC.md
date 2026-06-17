@@ -1,4 +1,4 @@
-> **MIRROR — READ-ONLY (mirrored 2026-06-11).** Canonical source: `/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/06-phase4-component-specs/04-shared-encoding/COMPONENT-SPEC.md`. Do NOT edit this copy; if it diverges from the canonical source, the canonical source wins. Re-sync via `tools/sync-mirrors.sh`.
+> **MIRROR — READ-ONLY (mirrored 2026-06-15).** Canonical source: `/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/06-phase4-component-specs/04-shared-encoding/COMPONENT-SPEC.md`. Do NOT edit this copy; if it diverges from the canonical source, the canonical source wins. Re-sync via `tools/sync-mirrors.sh`.
 
 # COMPONENT-SPEC — Shared Encoding Helper Library (`P4-ENCODE`)
 
@@ -23,7 +23,7 @@
 This is the cross-cutting Rust + MASM utility layer that owns **every byte-level encode / decode / parse / scale / hash-to-key operation crossing the Circle (EVM, big-endian) ↔ Miden (Felt/Word, Poseidon2) boundary**. Concretely, seven helper families:
 
 1. **`bytes32` parsing + hash-to-Word** — Option B Poseidon2 `Hasher::hash_elements` over the 8× u32-LE packing → one canonical `Word`/`StorageMapKey`; the fallibility of the native `TryFrom<[u8;32]> for Word`; the field-overflow guard. Consumed by the nonce registry (`CMP-A8`) and the attester allowlist keying (`CMP-A7`).
-2. **AccountId ↔ bytes32** — the lossless 15-byte / two-felt encoding; `AddressType::AccountId = 232`; no keccak fallback needed.
+2. **AccountId ↔ bytes32** — protocol/natural form is 15-byte (`to_bytes()` = 8 BE prefix + 7 BE suffix) / two-felt `[prefix, suffix]` (`AddressType::AccountId = 232` is a bech32 discriminant, NOT in the wire form); the **bytes32 wire packaging** is the **R-B / Agglayer-mirroring** right-aligned draft (DEV-10, REQUIRES CIRCLE CONFIRMATION); no keccak fallback needed.
 3. **uint256 → AssetAmount** — byte-swap, high-4-limbs-zero ceiling, low-4-as-u128, decimal scale-down, then reject/trap if the post-scale quotient exceeds `AssetAmount::MAX = 2^63 − 2^31` (no saturation or clamping); modelled on `EthAmount::scale_to_token_amount` / the AggLayer `verify_u256_to_native_amount_conversion` precedent.
 4. **`DepositIntent` fixed-layout parsing helpers** — the 240-byte big-endian header offsets + variable `hookData`; the u32-LE-packed 60-felt on-chain preimage form; per-field extraction.
 5. **Burn-note storage-schema helpers** — encode/decode of the `XReserveBurnNote` public `NoteStorage.items` payload `(amount, destDomain, destRecipient, salt)`.
@@ -57,7 +57,7 @@ Parse/scale-down `uint256` into `AssetAmount` (a `u64` newtype, `MAX = 2^63 − 
 **Cite:** `03-architecture/ARCHITECTURE-DECISIONS-AND-CAVEATS.md:63-66` (C-6), `:20` (DL-8); `01-0xMiden-capabilities/MIDEN-EVIDENCE-LEDGER.md:82` (E-7, the `MAX` constant), `:90` (E-15, `EthAmount::scale_to_token_amount` reuse precedent), `:91` (E-16, the byte-swap / high-4-limbs-zero / low-4-as-u128 / cap mechanic); `01-0xMiden-capabilities/MIDEN-CAPABILITY-MATRIX.md:68` (MC-CR-5, `uint256→AssetAmount` bounded reduction); `01-0xMiden-capabilities/MIDEN-CRYPTO-AND-ENCODING.md:114-117` (§4.1 bound), `:119-126` (§4.2 mechanic); `02-specifications/CIRCLE-REQUIREMENTS-MATRIX.md:116` (CIR-FEE-3). **Capability:** MC-CR-5 (alongside MC-MINT-3 / GMS-4 / G4). **Gating:** DEV-5. **Tests:** TV-AMT-1..7. **Guardrail:** ASG-7.
 
 ### INV-ACCOUNTID-ENCODING
-AccountId ↔ `bytes32` is a lossless **15-byte / two-felt** encoding that fits a `Word`; no keccak fallback is needed; the encoding change is gated by the S1-NDA **L22** approval workflow.
+AccountId's protocol/natural form is **15-byte** (`to_bytes()` = 8 BE prefix + 7 BE suffix) / **two-felt** `[prefix, suffix]`; only the two-felt natural form fits one `Word`. The **bytes32 wire packaging is a separate integration proposal** — current draft **R-B / Agglayer-mirroring** right-aligned (`bytes[0..16]=0`, `bytes[16..24]=prefix u64 BE`, `bytes[24..32]=suffix u64 BE`; it occupies **8 felts / 2 Words**, NOT a raw `Word`; supersedes the prior left-aligned 15-byte/trailing-zero draft). Lossless, no keccak fallback (≤32B); gated by the S1-NDA **L22** approval workflow — **REQUIRES CIRCLE CONFIRMATION** (DEV-10).
 **Cite:** `03-architecture/ARCHITECTURE-DECISIONS-AND-CAVEATS.md:21` (DL-9); `01-0xMiden-capabilities/MIDEN-EVIDENCE-LEDGER.md:84` (E-9, `SERIALIZED_SIZE = 15`, 2 felts), `:85` (E-10, 8 BE prefix + 7 BE suffix), `:86` (E-11, `AddressType::AccountId = 232`); `01-0xMiden-capabilities/MIDEN-CAPABILITY-MATRIX.md:69` (MC-CR-6); `01-0xMiden-capabilities/MIDEN-CRYPTO-AND-ENCODING.md:148-157` (§5); `06-resources/CIRCLE_PARTNER_INTEGRATION_GUIDELINES.md:22` (NDA L22, cite by path+line only). **Gating:** DEV-10. **Tests:** TV-AID-1..3.
 
 ### INV-DEPOSITINTENT-PARSE
@@ -125,7 +125,7 @@ Authored against `../00-foundation/PHASE4-DATA-CONTRACTS.md`. For each: the exac
 The same reduced-compare governs `amount ≥ maxFee` and `feeAmount ≤ maxFee` (CIR-MINT-PRE-8/9, `02-specifications/CIRCLE-REQUIREMENTS-MATRIX.md:47-48`); scale to **6 decimals** (CIR-FEE-3, `:116`). **PRODUCER:** Circle (`amount`/`maxFee`), relayer/operator (`feeAmount`). **CONSUMER:** `xreserve_mint` (CMP-A9). **Capability:** MC-CR-5 (`01-0xMiden-capabilities/MIDEN-CAPABILITY-MATRIX.md:68`, `uint256` amounts bounded reduction) — alongside MC-MINT-3 / GMS-4 / G4. **Gating:** DEV-5 / Q-CRY-6 (cap value, scale factor, dust tolerance — the narrower-width category is spec-permitted: `02-specifications/CIRCLE-DATA-SCHEMAS.md:221`).
 
 ### DC-6 — AccountId ↔ `bytes32`
-**Layout** (`01-0xMiden-capabilities/MIDEN-EVIDENCE-LEDGER.md:84-86`; `03-architecture/ARCHITECTURE-DECISIONS-AND-CAVEATS.md:21`): `AccountId::SERIALIZED_SIZE = 15 bytes` = 8 BE prefix + 7 BE suffix = two felts `[prefix, suffix]`, fits a single `Word`; `AddressType::AccountId = 232`. Lossless — **no keccak fallback** is needed (CIR-HOOK-3 not required because the identifier ≤ 32 bytes — `02-specifications/CIRCLE-REQUIREMENTS-MATRIX.md:125`; `03-architecture/ARCHITECTURE-TRACEABILITY-MATRIX.md:67`; the >32-byte keccak path itself is `02-specifications/CIRCLE-DATA-SCHEMAS.md:234`). **PRODUCER/CONSUMER:** relayer/listener encode/decode (off-chain); on-chain compares `remoteRecipient`/`remoteToken == self.identifier`. **Gating:** DEV-10 / Q-CRY-3/4 (byte layout submitted via S1-NDA L22; CIR-DEPLOY-8, `02-specifications/CIRCLE-REQUIREMENTS-MATRIX.md:22`).
+**Protocol fact (unchanged):** the canonical Miden `AccountId::SERIALIZED_SIZE = 15 bytes` = 8 BE prefix + 7 BE suffix = two felts `[prefix, suffix]`, fits a single `Word`; `AddressType::AccountId = 232` (bech32m discriminant — NOT part of the bytes32 wire form). **bytes32 packaging (DEV-10 draft):** **R-B / Agglayer-mirroring** bytes32 packaging (DEV-10 draft, human-selected 2026-06-15): `bytes[0..16]=0x00` (leading zero pad), `bytes[16..24]=AccountId prefix u64 BE`, `bytes[24..32]=AccountId suffix u64 BE` — mirrors the protocol Agglayer `EthEmbeddedAccountId` form `0x00000000 || prefix(8) || suffix(8)` (`protocol/crates/miden-agglayer/src/eth_types/eth_embedded_account_id.rs:117-122`) widened to a 32-byte slot; inverse validates `Felt<p` + `AccountId::try_from_elements` (ibid:86-96); lossless, no keccak fallback (≤32B). Supersedes the prior data-left-aligned 15-byte/trailing-zero draft (2026-06-15). **REQUIRES CIRCLE CONFIRMATION** (DEV-10); NO EVIDENCE OF CIRCLE APPROVAL. Lossless — **no keccak fallback** is needed (CIR-HOOK-3 not required because the identifier ≤ 32 bytes — `02-specifications/CIRCLE-REQUIREMENTS-MATRIX.md:125`; `03-architecture/ARCHITECTURE-TRACEABILITY-MATRIX.md:67`; the >32-byte keccak path itself is `02-specifications/CIRCLE-DATA-SCHEMAS.md:234`). **PRODUCER/CONSUMER:** relayer/listener encode/decode (off-chain); on-chain compares `remoteRecipient`/`remoteToken == self.identifier`. **Gating:** DEV-10 / Q-CRY-3/4 (byte layout submitted via S1-NDA L22; CIR-DEPLOY-8, `02-specifications/CIRCLE-REQUIREMENTS-MATRIX.md:22`).
 
 ### DC-7 — `XReserveBurnNote` public payload (burn-note storage-schema helper)
 **Canonical name:** `XReserveBurnNote` payload `(amount, destDomain, destRecipient, salt)`. **Source:** `03-architecture/ARCHITECTURE-COMPONENT-MAP.md:44`; `../00-foundation/PHASE4-DATA-CONTRACTS.md:148-165`.
@@ -226,7 +226,7 @@ pub enum EncodingError {
     TruncatedHeader,       // input shorter than 240 bytes
     LengthMismatch,        // total length != 240 + hookDataLen
     HookDataTooLarge,      // 60-felt header + hookData felts exceed the 1024-felt bound (DEV-6)
-    AccountIdOutOfRange,   // bytes set outside the 15-byte serialization region
+    AccountIdOutOfRange,   // R-B: a non-zero byte in the leading 16-byte pad region bytes[0..16]
     NonCanonicalAccountId, // bytes32 does not decode to a canonical AccountId
     BurnItemsMalformed,    // burn-note NoteStorage.items wrong length/shape
     JsonSchema(String),    // Circle JSON does not match the Phase-1 schema
@@ -273,16 +273,23 @@ MASM: `xreserve::encoding::bytes32_to_key`
 ```rust
 pub const ADDRESS_TYPE_ACCOUNT_ID: u8 = 232; // E-11 (MIDEN-EVIDENCE-LEDGER.md:86)
 
-/// Lossless 15-byte encoding into bytes32. DEFAULT DRAFT LAYOUT (IMPL-ACCOUNTID-LAYOUT, RCC DEV-10):
-/// bytes[0..8]   = AccountId prefix felt, big-endian
-/// bytes[8..15]  = AccountId suffix felt, low 7 bytes big-endian
-/// bytes[15..32] = 0x00 (zero padding)
-/// The exact byte layout is a DRAFT submitted to Circle via the S1-NDA L22 workflow.
-/// Cite: E-9 (:84), E-10 (:85), MIDEN-CRYPTO-AND-ENCODING.md:148-157.
+/// AccountId -> bytes32 packaging. DEFAULT DRAFT LAYOUT = R-B / Agglayer-mirroring
+/// (IMPL-ACCOUNTID-LAYOUT, RCC DEV-10; human-selected 2026-06-15):
+///   bytes[0..16]  = 0x00 (leading zero padding)
+///   bytes[16..24] = AccountId prefix, u64 big-endian   (prefix().as_u64().to_be_bytes())
+///   bytes[24..32] = AccountId suffix, u64 big-endian   (suffix().as_canonical_u64().to_be_bytes())
+/// Mirrors the protocol Agglayer EthEmbeddedAccountId 20-byte form `0x00000000 || prefix(8) || suffix(8)`
+/// (protocol crates/miden-agglayer/src/eth_types/eth_embedded_account_id.rs:117-122) widened to a 32-byte slot;
+/// the inverse validates Felt<p + AccountId::try_from_elements (ibid:86-96). Lossless; <=32 bytes so no keccak fallback.
+/// SUPERSEDED (2026-06-15): the prior draft was data-LEFT-aligned (bytes[0..15] = the 15-byte AccountId::to_bytes(),
+/// bytes[15..32] = zero). Replaced by R-B above; the 04 code+vector revision is a SEPARATE, builder-gated task.
+/// The exact byte layout is a DRAFT submitted to Circle via the S1-NDA L22 workflow -- REQUIRES CIRCLE CONFIRMATION (DEV-10); no Circle approval.
+/// Cite: E-9 (:84), E-10 (:85), MIDEN-CRYPTO-AND-ENCODING.md:148-157; Agglayer precedent eth_embedded_account_id.rs:117-122.
 pub fn account_id_to_bytes32(id: AccountId) -> [u8; 32];
 
-/// Inverse; rejects bytes set outside the 15-byte region (AccountIdOutOfRange) and
-/// non-canonical AccountIds (NonCanonicalAccountId). Round-trip lossless for valid ids.
+/// Inverse (R-B): rejects any non-zero byte in the leading 16-byte pad region bytes[0..16]
+/// (AccountIdOutOfRange) and a prefix/suffix that is not a canonical AccountId (NonCanonicalAccountId).
+/// Round-trip lossless for valid ids.
 pub fn bytes32_to_account_id(b: &[u8; 32]) -> Result<AccountId, EncodingError>;
 
 /// The on-chain natural form: the two felts [prefix, suffix] directly (no byte repacking).
@@ -464,8 +471,8 @@ The library performs steps 1–4, 7, 8 (structural); the faucet performs steps 5
 | `magic`/`version` mismatch | `parse_deposit_intent_header` | `BadMagic` / `BadVersion` | `:35`, CIR-MINT-PRE-2/3 `:41-42` |
 | `amount`/`localToken`/`localDepositor` == 0 | `parse_deposit_intent_header` | `ZeroField{..}` | `:35`, CIR-MINT-PRE-4/5 `:43-44` |
 | `hookDataLen` overflowing the 1024-felt bound | `deposit_intent_to_packed_felts` | `HookDataTooLarge` (DEV-6 RCC; default cap within 1024 felts) | C-10 `:85`, N-4 `:100` |
-| bytes32 with bytes set outside the 15-byte AccountId region | `bytes32_to_account_id` | `AccountIdOutOfRange` | E-9 `:84`, E-10 `:85` |
-| bytes32 not decoding to a canonical AccountId | `bytes32_to_account_id` | `NonCanonicalAccountId` | E-9 `:84` |
+| bytes32 with a non-zero byte in the R-B leading pad region `bytes[0..16]` | `bytes32_to_account_id` | `AccountIdOutOfRange` | E-9 `:84`, E-10 `:85` |
+| bytes32 whose `bytes[16..24]`/`bytes[24..32]` prefix/suffix do not form a canonical AccountId (`AccountId::try_from_elements`) | `bytes32_to_account_id` | `NonCanonicalAccountId` | E-9 `:84` |
 | burn-note items wrong length/shape | `decode_burn_note_items` | `BurnItemsMalformed` | ARCHITECTURE-COMPONENT-MAP.md:44 |
 | Circle JSON off-schema / malformed / error body | `circle_json` | `JsonSchema(..)` | CIRCLE-API-SURFACE.md:129-143 |
 | optional decoder wrong magic / 524B mismatch | `circle_binary` | `BinaryMagic` / `BinaryLength` | CIRCLE-CLAIM-ADJUDICATION.md:76 |
@@ -481,10 +488,10 @@ Where a value is Circle-owned and unresolved, this spec writes **REQUIRES CIRCLE
 - **DEV-5 / Q-CRY-6** — uint256 cap + scale + dust. Default: cap `2^63 − 2^31`, scale to 6 dp. **REQUIRES CIRCLE CONFIRMATION**; **NO EVIDENCE OF CIRCLE APPROVAL** (`02-specifications/CIRCLE-MIDEN-DEVIATIONS-AND-QUESTIONS.md:44-49`).
 - **DEV-6 / Q-INFRA-5** — hookData cap. Default: cap within the 1024-felt `NoteStorage` bound, attachment fallback. **REQUIRES CIRCLE CONFIRMATION** (Circle states no max length, `02-specifications/CIRCLE-DATA-SCHEMAS.md:229`; `02-specifications/CIRCLE-MIDEN-DEVIATIONS-AND-QUESTIONS.md:51-56`).
 - **DEV-9 / Q-CRY-5** — nonce keyed by Poseidon2 commitment. Default: hash-to-Word keying. **REQUIRES CIRCLE CONFIRMATION**; **NO EVIDENCE OF CIRCLE APPROVAL** (`02-specifications/CIRCLE-MIDEN-DEVIATIONS-AND-QUESTIONS.md:73-78`).
-- **DEV-10 / Q-CRY-3/4** — AccountId↔bytes32 byte layout (via S1-NDA L22). Default: lossless 15-byte/two-felt encoding; draft + submit. **REQUIRES CIRCLE CONFIRMATION**; **NO EVIDENCE OF CIRCLE APPROVAL** (`02-specifications/CIRCLE-MIDEN-DEVIATIONS-AND-QUESTIONS.md:80-85`; `06-resources/CIRCLE_PARTNER_INTEGRATION_GUIDELINES.md:22`).
+- **DEV-10 / Q-CRY-3/4** — AccountId↔bytes32 byte layout (via S1-NDA L22). Default: **R-B / Agglayer-mirroring** right-aligned packaging (`bytes[0..16]=0`, `[16..24]=prefix u64 BE`, `[24..32]=suffix u64 BE`; see §DC-6; supersedes the prior left-aligned 15-byte/trailing-zero draft, 2026-06-15); draft + submit. **REQUIRES CIRCLE CONFIRMATION**; **NO EVIDENCE OF CIRCLE APPROVAL** (`02-specifications/CIRCLE-MIDEN-DEVIATIONS-AND-QUESTIONS.md:80-85`; `06-resources/CIRCLE_PARTNER_INTEGRATION_GUIDELINES.md:22`).
 - **IMPL-UINT256-REUSE (DEV-5)** — reuse AggLayer `EthAmount::scale_to_token_amount` vs reimplement. **REQUIRES IMPLEMENTATION VALIDATION** (cap/scale still gated by the DEV-5 RCC) (`03-architecture/ARCHITECTURE-GAPS-AND-DECISIONS.md:126`; `../00-foundation/PHASE4-OPEN-DECISIONS.md:84`).
 - **IMPL-HOOKDATA-CARRIER (DEV-6)** — hookData cap value + carrier (inline / attachment / commitment). **REQUIRES IMPLEMENTATION VALIDATION** (value gated by the DEV-6 RCC) (`03-architecture/ARCHITECTURE-GAPS-AND-DECISIONS.md:125`; `../00-foundation/PHASE4-OPEN-DECISIONS.md:83`).
-- **IMPL-ACCOUNTID-LAYOUT (DEV-10)** — AccountId→bytes32 byte-layout draft for Circle approval. **REQUIRES IMPLEMENTATION VALIDATION** (approval gated by the DEV-10 RCC) (`03-architecture/ARCHITECTURE-GAPS-AND-DECISIONS.md:127`; `../00-foundation/PHASE4-OPEN-DECISIONS.md:85`).
+- **IMPL-ACCOUNTID-LAYOUT (DEV-10)** — AccountId→bytes32 byte-layout draft for Circle approval; **current draft = R-B / Agglayer-mirroring right-aligned** (2026-06-15, supersedes left-aligned). **REQUIRES IMPLEMENTATION VALIDATION** (approval gated by the DEV-10 RCC) (`03-architecture/ARCHITECTURE-GAPS-AND-DECISIONS.md:127`; `../00-foundation/PHASE4-OPEN-DECISIONS.md:85`).
 
 **Resolved-no-fallback (SOURCE-BACKED FACT, not an open decision):** CIR-HOOK-3 (>32-byte id keccak fallback) is **not needed** because an AccountId is 15 bytes (`02-specifications/CIRCLE-REQUIREMENTS-MATRIX.md:125`; `03-architecture/ARCHITECTURE-TRACEABILITY-MATRIX.md:67`; E-9 `:84`). Optional Circle-returned binary reconstruction (DC-13) carries an RCC for the byte-level JSON→binary transform (`02-specifications/CIRCLE-DATA-SCHEMAS.md:166`).
 

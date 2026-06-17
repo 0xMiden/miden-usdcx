@@ -1,4 +1,4 @@
-> **MIRROR — READ-ONLY (mirrored 2026-06-11).** Canonical source: `/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/07-implementation-readiness/BUILDER-GATES.md`. Do NOT edit this copy; if it diverges from the canonical source, the canonical source wins. Re-sync via `tools/sync-mirrors.sh`.
+> **MIRROR — READ-ONLY (mirrored 2026-06-15).** Canonical source: `/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/07-implementation-readiness/BUILDER-GATES.md`. Do NOT edit this copy; if it diverges from the canonical source, the canonical source wins. Re-sync via `tools/sync-mirrors.sh`.
 
 # BUILDER-GATES (FINALIZED — GOVERNING, 2026-06-11 — MASM-first)
 
@@ -41,6 +41,7 @@ A unit is not eligible for human review until all of these are green (a green bu
 
 ## G3 — Module/file size + structure
 - Default file ceiling **~500–700 lines** for Rust. Research found **no mandated MASM file-size rule** in source (report §5.10–§5.11); split `.masm` logically per the two-root layout (one routine-family per module under `asm/standards/{xreserve,encoding,notes}/`) rather than by a guessed line count. Past a Rust ceiling → stop and split before continuing.
+- **D-1A module-realization rule (ratified 2026-06-12 — overrides any per-file sketch):** under miden-assembly 0.23.3, procs whose canonical path is FLAT `xreserve::encoding::<name>` MUST live in the directory root `encoding/mod.masm` (per-file `.masm` ⇒ nested module paths; wrapper aliases banned per G1/NS-1). See the ownership map §MASM module realization + `P5-04-SHARED-ENCODING-ACCEPTANCE-RECORD.md`.
 - Tests live in their **own module/file**, not inline with implementation.
 - Final layout target: **MASM monorepo, one folder per component** — shape **resolved** (two-root `asm/standards` + `asm/account_components` tree; see `CANONICAL-OWNERSHIP-MAP` §Resolved layout). Permanent on-disk home = human decision.
 

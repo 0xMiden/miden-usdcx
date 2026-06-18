@@ -189,8 +189,14 @@ async fn happy_end_to_end_mints_once() -> Result<()> {
     assert_eq!(Felt::from(asset.amount()), Felt::from(REDUCED_AMOUNT), "note asset == reduced amount");
     assert_eq!(asset.faucet_id(), h.account_id, "asset minted by this faucet");
 
-    // (2) it is the intended P2ID note: canonical script root + storage [suffix, prefix].
+    // (2) it is the intended P2ID note: nonce-derived serial, canonical script root + storage
+    // [suffix, prefix], Public note type, and the faucet as sender.
     let recipient = note.recipient().expect("public output note must carry its recipient");
+    assert_eq!(
+        recipient.serial_num(),
+        nonce_key(),
+        "recipient note serial must be the nonce-derived KEY"
+    );
     assert_eq!(
         recipient.script().root(),
         P2idNote::script_root(),
@@ -206,6 +212,12 @@ async fn happy_end_to_end_mints_once() -> Result<()> {
         expected_account_target_tag(BASE_VECTOR),
         "P2ID note tag must target the recipient (NoteTag::with_account_target: prefix HIGH u32)"
     );
+    assert_eq!(
+        note.metadata().note_type(),
+        miden_protocol::note::NoteType::Public,
+        "recipient note must be Public"
+    );
+    assert_eq!(note.metadata().sender(), h.account_id, "note sender is the faucet");
 
     // (3) token_supply rose by exactly the reduced amount.
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
@@ -455,6 +467,11 @@ async fn happy_end_to_end_with_hookdata() -> Result<()> {
     assert_eq!(asset.faucet_id(), h.account_id, "asset minted by this faucet");
     let recipient = note.recipient().expect("public output note must carry its recipient");
     assert_eq!(
+        recipient.serial_num(),
+        nonce_key_of("di-pos-hookdata"),
+        "recipient note serial must be the nonce-derived KEY"
+    );
+    assert_eq!(
         recipient.script().root(),
         P2idNote::script_root(),
         "recipient note script root must be the canonical P2ID script root"
@@ -468,6 +485,11 @@ async fn happy_end_to_end_with_hookdata() -> Result<()> {
         note.metadata().tag().as_u32(),
         expected_account_target_tag("di-pos-hookdata"),
         "P2ID note tag must target the recipient (NoteTag::with_account_target: prefix HIGH u32)"
+    );
+    assert_eq!(
+        note.metadata().note_type(),
+        miden_protocol::note::NoteType::Public,
+        "recipient note must be Public"
     );
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
     let StorageSlotDelta::Value(cfg) =

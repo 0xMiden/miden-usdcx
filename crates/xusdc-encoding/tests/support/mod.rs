@@ -93,7 +93,7 @@ pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 8] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 11] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -133,6 +133,24 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 8] = [
     (
         "ERR_XRESERVE_SUPPLY_CAP",
         MasmError::from_static_str("mint amount exceeds the faucet supply cap"),
+    ),
+    // Slice-1 recipient AccountId helper (extract_recipient_account_id, xreserve_mint.masm). These
+    // are the LOCAL layout / field-range errors; the suffix-shape and unknown-version rejects
+    // surface the PROTOCOL `account_id::validate` `ERR_ACCOUNT_ID_*` constants directly (asserted
+    // inline in the recipient test). The red-suite carries these mirrors so the behavior tests can
+    // name their EXACT expected error; the green commit declares the matching MASM consts and adds
+    // them to `SHELL_ERRORS_DECLARED` for parity.
+    (
+        "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",
+        MasmError::from_static_str("deposit intent remote recipient address pad is not zero"),
+    ),
+    (
+        "ERR_XRESERVE_RECIPIENT_BAD_LIMB",
+        MasmError::from_static_str("deposit intent remote recipient limb is not a valid u32"),
+    ),
+    (
+        "ERR_XRESERVE_RECIPIENT_NONCANONICAL",
+        MasmError::from_static_str("deposit intent remote recipient value does not fit in the field"),
     ),
 ];
 
@@ -811,4 +829,60 @@ pub fn mint_noeffect_probe_src(expected_token_supply: u64, key: [u32; 4]) -> Str
         expected = expected_token_supply,
         key = format!("[{},{},{},{}]", key[0], key[1], key[2], key[3]),
     )
+}
+
+// RECIPIENT ACCOUNTID HELPER (P5-01 Slice 1) — extract_recipient_account_id
+// ================================================================================================
+
+/// Felt offset of the `remoteRecipient` bytes32 field within the staged preimage (DC-1 byte offset
+/// 76 / 4 == the MASM `REMOTE_RECIPIENT_FELT_OFF` layout const, parity-checked at the MASM layer by
+/// `constant_parity.rs`). The eight u32-LE limbs occupy felts `[19..27)`.
+pub const REMOTE_RECIPIENT_FELT_OFF: usize = 19;
+
+/// Clones a base accept preimage and overwrites the 8-felt `remoteRecipient` field with the u32-LE
+/// packing of `recipient` (the protocol `bytes_to_packed_u32_elements` — the SAME packing the
+/// canonical preimage uses, so the helper's byte-swap recovers the big-endian AccountId). Consumed
+/// BY REFERENCE — no copied vector tables (G1).
+pub fn splice_recipient(base: &[Felt], recipient: [u8; 32]) -> Vec<Felt> {
+    let mut preimage = base.to_vec();
+    for (i, limb) in bytes_to_packed_u32_elements(&recipient).iter().enumerate() {
+        preimage[REMOTE_RECIPIENT_FELT_OFF + i] = *limb;
+    }
+    preimage
+}
+
+/// Generates the per-case Slice-1 driver: a CALL-entered account proc that stages the (spliced)
+/// preimage in the account context, pushes `[intent_ptr]`, and `exec`s
+/// `xreserve_mint::extract_recipient_account_id`. The extractor returns `[suffix, prefix]`:
+/// `Some((suffix, prefix))` pins both (happy path, restoring the 16-depth `call` boundary); `None`
+/// drops them (reject path — the extractor traps, but a non-trapping run returns cleanly so the
+/// test's exact-error assertion reports the mismatch).
+pub fn recipient_driver_src(preimage: &[Felt], expected: Option<(Felt, Felt)>) -> String {
+    let mut src = String::from(
+        "use xreserve::xreserve_mint\n\n\
+         #! Test driver: stages a DepositIntent preimage in the account context and execs the\n\
+         #! Slice-1 recipient AccountId extractor.\n\
+         #!\n\
+         #! Inputs:  [pad(16)]\n\
+         #! Outputs: [pad(16)]\n\
+         #!\n\
+         #! Invocation: call\n\
+         pub proc drive\n",
+    );
+    stage_preimage(&mut src, preimage);
+    writeln!(src, "    push.{INTENT_PTR}").unwrap();
+    src.push_str("    exec.xreserve_mint::extract_recipient_account_id\n");
+    match expected {
+        // happy: the extractor returns [suffix, prefix]; pin both, restoring the call boundary
+        Some((suffix, prefix)) => {
+            writeln!(src, "    push.{suffix} assert_eq.err=\"driver: recipient suffix mismatch\"")
+                .unwrap();
+            writeln!(src, "    push.{prefix} assert_eq.err=\"driver: recipient prefix mismatch\"")
+                .unwrap();
+        },
+        // reject: the extractor traps; balance the would-be [suffix, prefix] for a non-trapping run
+        None => src.push_str("    drop drop\n"),
+    }
+    src.push_str("end\n");
+    src
 }

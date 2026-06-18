@@ -49,6 +49,10 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_SIG_INVALID",
     // D5e R-MINT-15 (xreserve_mint.masm)
     "ERR_XRESERVE_SUPPLY_CAP",
+    // Slice-1 recipient AccountId extraction (xreserve_mint.masm)
+    "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",
+    "ERR_XRESERVE_RECIPIENT_BAD_LIMB",
+    "ERR_XRESERVE_RECIPIENT_NONCANONICAL",
 ];
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned

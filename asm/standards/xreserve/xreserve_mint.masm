@@ -25,8 +25,10 @@ use miden::protocol::native_account
 use miden::protocol::faucet
 use miden::protocol::note
 use miden::protocol::output_note
+use miden::protocol::account_id
 use miden::protocol::asset::FUNGIBLE_ASSET_MAX_AMOUNT
 use xreserve::deposit_intent_parser::USED_NONCES_SLOT
+use xreserve::encoding::layout::REMOTE_RECIPIENT_FELT_OFF
 
 # CONSTANTS
 # =================================================================================================
@@ -49,6 +51,14 @@ const NONCE_USED_MARKER = [1, 0, 0, 0]
 
 # D5e supply cap (R-MINT-15). token_supply + amount must not exceed max_supply <= AssetAmount::MAX.
 const ERR_XRESERVE_SUPPLY_CAP = "mint amount exceeds the faucet supply cap"
+
+# Slice-1 recipient AccountId extraction (extract_recipient_account_id). The local R-B layout /
+# field-range checks; the suffix-shape and unknown-version rejects surface the protocol
+# account_id::validate ERR_ACCOUNT_ID_* constants directly. Parity-pinned against
+# support::SHELL_ERR_TABLE + SHELL_ERRORS_DECLARED (constant_parity.rs).
+const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient address pad is not zero"
+const ERR_XRESERVE_RECIPIENT_BAD_LIMB = "deposit intent remote recipient limb is not a valid u32"
+const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient value does not fit in the field"
 
 # LOCAL LAYOUT (felts)
 # =================================================================================================
@@ -161,4 +171,128 @@ pub proc apply_mint_effects
     # => [new_token_supply, max_supply, decimals, token_symbol, ...]
     push.TOKEN_CONFIG_SLOT[0..2] exec.native_account::set_item dropw
     # => [...]
+end
+
+#! Extracts and canonically validates the P2ID recipient's Miden AccountId felts from the staged
+#! DepositIntent's `remoteRecipient` bytes32 (R-B layout), feeding `apply_mint_effects` (Slice 1).
+#!
+#! Reads the eight u32-LE-packed `remoteRecipient` limbs at `intent_ptr + REMOTE_RECIPIENT_FELT_OFF`,
+#! asserts the 16-byte leading pad is zero, rebuilds the big-endian `prefix`/`suffix` u64s — each
+#! through a no-reduction `build_felt` (byte-swap the two limbs, compose `hi*2^32 + lo`, then prove
+#! via a `u32split` round-trip that the value did NOT reduce mod the field, mirroring Rust
+#! `Felt::try_from`) — then delegates canonical AccountId validation to
+#! `miden::protocol::account_id::validate` (suffix low byte == 0, suffix MSB == 0, version == 1).
+#!
+#! Inputs:  [intent_ptr]
+#! Outputs: [recipient_id_suffix, recipient_id_prefix]
+#!
+#! Where:
+#! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
+#! - recipient_id_{suffix,prefix} are the two validated Miden AccountId felts, in the stack order
+#!   `apply_mint_effects` consumes ([suffix, prefix]; Rust `account_id_to_felts` is [prefix, suffix]).
+#!
+#! Panics if:
+#! - the remoteRecipient 16-byte leading pad is non-zero (ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE).
+#! - a staged remoteRecipient limb is not a valid u32 (ERR_XRESERVE_RECIPIENT_BAD_LIMB).
+#! - a rebuilt prefix/suffix u64 reduced mod the field (ERR_XRESERVE_RECIPIENT_NONCANONICAL).
+#! - account_id::validate rejects the felts (its ERR_ACCOUNT_ID_* suffix/version constants).
+#!
+#! Invocation: exec
+pub proc extract_recipient_account_id
+    push.REMOTE_RECIPIENT_FELT_OFF add
+    # => [base]   (base = intent_ptr + REMOTE_RECIPIENT_FELT_OFF; the 8 limbs occupy base+0..7)
+
+    # ---- R-B leading pad: the 16-byte pad (limbs base+0..3) must be exactly zero ----
+    dup mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
+    dup add.1 mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
+    dup add.2 mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
+    dup add.3 mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
+    # => [base]
+
+    # ---- prefix = build_felt(lo = limb base+5, hi = limb base+4)  (bytes[16..24], big-endian) ----
+    dup add.4 mem_load
+    # => [prefix_hi, base]
+    dup.1 add.5 mem_load
+    # => [prefix_lo, prefix_hi, base]
+    exec.build_felt
+    # => [prefix, base]
+
+    # ---- suffix = build_felt(lo = limb base+7, hi = limb base+6)  (bytes[24..32], big-endian) ----
+    dup.1 add.6 mem_load
+    # => [suffix_hi, prefix, base]
+    movup.2 add.7 mem_load
+    # => [suffix_lo, suffix_hi, prefix]
+    exec.build_felt
+    # => [suffix, prefix]
+
+    # ---- canonical AccountId validation (suffix low byte == 0, suffix MSB == 0, version == 1) ----
+    # delegate to the pinned protocol validator (consumed BY REFERENCE) over a copy of the felts;
+    # the originals are the returned [suffix, prefix] apply_mint_effects consumes
+    dup.1 dup.1
+    # => [suffix, prefix, suffix, prefix]
+    exec.account_id::validate
+    # => [suffix, prefix]
+end
+
+# HELPER PROCEDURES
+# =================================================================================================
+
+#! Builds a Miden field element from the two u32-LE-packed limbs of a big-endian u64, PROVING the
+#! value did not reduce mod the field (the canonical-range check mirroring Rust `Felt::try_from`;
+#! the `miden-agglayer` `eth_address.masm::build_felt` precedent, adapted with a local byte-swap so
+#! the faucet library depends on no private 04 export).
+#!
+#! Inputs:  [lo, hi]
+#! Outputs: [felt]
+#!
+#! Where:
+#! - lo, hi are the low / high u32-LE-packed limbs of a big-endian u64 (4 wire bytes each).
+#! - felt is the reconstructed field element (hi_be * 2^32 + lo_be).
+#!
+#! Panics if:
+#! - a limb is not a valid u32 (ERR_XRESERVE_RECIPIENT_BAD_LIMB).
+#! - the composed u64 reduced mod the field, i.e. it is >= the field modulus
+#!   (ERR_XRESERVE_RECIPIENT_NONCANONICAL).
+#!
+#! Invocation: exec
+proc build_felt
+    u32assert2.err=ERR_XRESERVE_RECIPIENT_BAD_LIMB
+    # => [lo, hi]
+    exec.swap_u32_bytes swap exec.swap_u32_bytes swap
+    # => [lo_be, hi_be]   (each limb byte-swapped LE -> BE)
+    dup.1 dup.1
+    # => [lo_be, hi_be, lo_be, hi_be]
+    swap mul.0x0100000000 add
+    # => [felt, lo_be, hi_be]   (felt = hi_be * 2^32 + lo_be, in the field)
+    dup u32split
+    # => [felt_lo, felt_hi, felt, lo_be, hi_be]
+    movup.3 assert_eq.err=ERR_XRESERVE_RECIPIENT_NONCANONICAL
+    # => [felt_hi, felt, hi_be]   (no reduction: low 32 bits round-trip)
+    movup.2 assert_eq.err=ERR_XRESERVE_RECIPIENT_NONCANONICAL
+    # => [felt]                    (no reduction: high 32 bits round-trip)
+end
+
+#! Reverses the byte order of a u32 (little-endian <-> big-endian). A generic u32 primitive (NOT
+#! 04-owned domain logic); reimplemented locally because the 04 `encoding::swap_u32_bytes` is a
+#! private `proc` and exporting it / adding to 04 is out of this slice's ownership. The caller
+#! asserts u32-ness (`build_felt`'s `u32assert2`) before invoking.
+#!
+#! Inputs:  [value]
+#! Outputs: [swapped]
+#!
+#! Where:
+#! - value is a u32; swapped is value with its four bytes reversed.
+#!
+#! Invocation: exec
+proc swap_u32_bytes
+    dup u32and.0xff u32shl.24
+    # => [part0, value]   (byte 0 -> byte 3)
+    dup.1 u32shr.8 u32and.0xff u32shl.16 u32or
+    # => [part01, value]  (byte 1 -> byte 2)
+    dup.1 u32shr.16 u32and.0xff u32shl.8 u32or
+    # => [part012, value] (byte 2 -> byte 1)
+    dup.1 u32shr.24 u32or
+    # => [swapped, value] (byte 3 -> byte 0)
+    swap drop
+    # => [swapped]
 end

@@ -338,3 +338,76 @@ this is a complete mint: the **`xreserve_mint` COMPOSITION** slice (chain D5a→
 relayer split), **DEV-9 / Q-CRY-5** (nonce keying / marker), **DEV-10** (recipient bytes32→felts
 encoding), and **IMPL-MINT-SPLIT** stay OPEN — implemented per the frozen spec, never marked
 Circle-approved.
+
+## Recipient AccountId helper (`xreserve::xreserve_mint::extract_recipient_account_id`, P5-01, 2026-06-18)
+
+The helper-first slice (human re-sequencing: build + audit the recipient extractor BEFORE chaining the
+full mint). Extracts and canonically validates the `remoteRecipient` bytes32 (felt offset 19, R-B
+layout: a 16-byte zero pad, then `prefix`/`suffix` u64 big-endian) into the `[suffix, prefix]`
+AccountId felts `apply_mint_effects` consumes. ADDED to `asm/standards/xreserve/xreserve_mint.masm`
+(faucet/01-owned; the 04 `encoding` stays untouched). The kernel does NOT validate the target
+AccountId at note creation (fail-OPEN; verified in `miden-protocol` note.masm / output_note.masm), so
+the check is explicit: a LOCAL byte-swap + a `build_felt` no-reduction round-trip (the `miden-agglayer`
+`eth_address.masm::build_felt` precedent; the 04 `encoding::swap_u32_bytes` is private, and exporting
+it / adding `account_id.masm` to 04 is out of scope) does the zero-pad assert and the `prefix < p`
+felt-construction guard, then canonical validation is DELEGATED to the pinned protocol
+`account_id::validate` BY REFERENCE (suffix low byte == 0, suffix MSB == 0, version == `VERSION_1` =
+**1**, not 0 — a Round-2 audit fix). NEW errors `ERR_XRESERVE_RECIPIENT_{OUT_OF_RANGE, BAD_LIMB,
+NONCANONICAL}` (the suffix-shape / version rejects surface the protocol `ERR_ACCOUNT_ID_*` directly —
+no xUSDC copy, no version const to drift). NEW test file
+`crates/xusdc-encoding/tests/mint_recipient_account_id.rs` + `splice_recipient` / `recipient_driver_src`
+(support). **D-5 human approval RECORDED** (2026-06-17 helper-first decision; CANONICAL-OWNERSHIP-MAP
+L29/L58) for the first MASM AccountId↔bytes32 conversion.
+
+| Stage | Change (MASM + same-commit parity rows) | Suite result | RED remainder (named trap) |
+|---|---|---|---|
+| RED (audited) | named placeholder `extract_recipient_account_id` (terminal `assert` trap) + 12 tests (export probe, 3 `aid-rt` happy, the pad/prefix-modulus/suffix-modulus/suffix-MSB/bad-version/malformed-limb rejects, no-effects) + `SHELL_ERR_TABLE` += the 3 recipient errors | `mint_recipient_account_id` **`1 passed; 11 failed`** (rest of crate green) | the 11 behavior tests on the placeholder, via REAL execution; the export probe is a declared green scaffold |
+| GREEN (audited) | the real extractor (local byte-swap + `build_felt` + `exec.account_id::validate`) + `SHELL_ERRORS_DECLARED` += the 3 errors (`constant_parity`) | **`12 passed; 0 failed`** first pass; full crate green | none |
+
+Committed as `6f52d5a` (`feat(faucet): add recipient AccountId extraction helper`) — red-suite + green
+together, after both passed independent Codex audits (the version-1 fix + the consume-by-reference
+validator landed in the Round-2 plan/impl revisions). **DEV-10 / Q-CRY-3/4** (the R-B layout) stay OPEN.
+
+## xreserve_mint composition (`xreserve::xreserve_mint::mint`, P5-01, 2026-06-18)
+
+The complete supply-gating mint: chains the accepted stages **verify-once → write-once** —
+`assert_deposit_intent` (D5a) → `assert_mint_amounts` (D5b) → `assert_nonce_unused` (D5c) →
+`verify_attestation` (D5d) → `extract_recipient_account_id` → `apply_mint_effects` (D5e), all consumed
+BY REFERENCE. **Fail-closed:** any verify / extraction trap aborts the whole tx with NO writes (no
+nonce SET, no recipient note, no `token_supply` change), so a failed mint never burns the nonce. The
+operand stack is kept logically empty between stages via `@locals` (D5d's keccak restores the depth-16
+floor, so nothing may sit above it when it runs). `len_bytes = DEPOSIT_INTENT_HEADER_FELTS * 4 +
+hook_data_len` (the hookData happy test pins the exact `240 + hook_data_len` keccak extent). MARSHAL of
+the D5e inputs (deterministic recompute from the UNMUTATED preimage): `amount` re-reduced via
+`encoding::uint256_to_asset_amount`, `KEY` via `encoding::bytes32_to_key` (== D5c's key, reused as
+`SERIAL_NUM`), recipient via the audited extractor, `tag` via `NoteTag::with_account_target` (the top
+14 bits of the prefix's HIGH u32), `P2ID_SCRIPT_ROOT` an array-literal const (functionally pinned by
+the happy tests), `feeAmount = 0` (MVP single recipient note). NEW local helper `load_field_words`
+(replicates the private `deposit_intent_parser` staging; the reductions / key-hash are the 04 `pub`
+procs by reference). NEW test file `crates/xusdc-encoding/tests/xreserve_mint.rs` +
+`setup_mint_composition_account` (a `FungibleFaucet` carrying ALL composition slots: domain_config,
+identifier_config, usedNonces, xReserveAttesters) + `mint_composition_driver_src` + the readback probes
+(support).
+
+| Stage | Change | Composition-suite result | RED remainder (named trap) |
+|---|---|---|---|
+| RED (audited; +3 rows on re-audit) | bare terminal-trap placeholder `mint` + 11 tests: export probe, 2 happy (empty + hookData), 8 fail-closed rejects (wrong-domain D5a, amount-below-fee D5b, nonce-replay D5c, non-allowlisted + forged-sig D5d, bad-recipient, fee-over-max, supply-cap) | `xreserve_mint` **`1 passed; 10 failed`** (rest of crate green) | the 10 behavior tests on the placeholder, via REAL execution (the chain inputs are staged + reached, then the terminal trap reverts); the export probe is a declared green scaffold |
+| GREEN (audited; +tag fix on re-audit) | the full chain + marshal + write. The green re-audit found `tag` kept the LOW u32 (`u32split swap drop`) — fixed to keep the HIGH u32 (`u32split drop`), matching `with_account_target`, + a regression tag assertion added to both happy paths | **`11 passed; 0 failed`**; full crate green | none |
+
+Committed as `6445dbb` (`feat(faucet): implement xreserve_mint mint composition (chains D5a-D5e,
+fail-closed)`) — red-suite + green together, after both passed independent Codex audits. Exact-error
+per reject via `assert_transaction_executor_error!` + `shell_error_by_name`; no-effects via a
+same-account readback probe (token_supply unchanged; usedNonces[KEY] empty, except the replay reject
+where the nonce is seeded by fixture so only supply is checked). Happy paths read back the committed
+`ExecutedTransaction`: one P2ID note carrying the reduced `amount` from this faucet, the canonical P2ID
+script root + `[suffix, prefix]` storage, the `with_account_target` tag, `token_supply += amount`, and
+`usedNonces[KEY] == MARKER`. No 04 / D5a-e / canary / vector / pin change.
+
+**Remaining for the faucet:** **R-MINT-16** mint-deny guard (§5.2, `ERR_XRESERVE_MINT_DENIED`) — the
+only-`xreserve_mint`-raises-`token_supply` exclusivity is proven HALF here (the assembled xreserve
+library has a single supply-raising surface, `apply_mint_effects`; static grep + supply-conservation);
+the NEGATIVE half (the stock `mint_and_send` is deny-guarded) is the next slice. Then admin /
+`set_attester` / domain-config, burn produce + consume, local-node validation, then the off-chain
+relayer/listener. **DEV-8** (`feeAmount > 0` relayer split), **DEV-9 / Q-CRY-5** (nonce keying /
+marker), **DEV-10 / Q-CRY-3/4** (recipient bytes32→felts encoding) stay OPEN — implemented per the
+frozen spec, never marked Circle-approved.

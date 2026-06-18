@@ -886,3 +886,246 @@ pub fn recipient_driver_src(preimage: &[Felt], expected: Option<(Felt, Felt)>) -
     src.push_str("end\n");
     src
 }
+
+// MINT COMPOSITION (P5-01 Slice 2) — xreserve_mint::mint
+// ================================================================================================
+
+/// Module path of the generated mint-composition driver component.
+pub const MINT_COMPOSITION_DRIVER_PATH: &str = "xusdc::test_fixtures::mint_composition_driver";
+
+/// Byte offsets (DC-1 felt offset x 4) of the fields a composition fixture splices in BYTES — so the
+/// keccak'd attestation payload stays consistent with the staged felts. Each uint256 / bytes32 field
+/// is 32 bytes.
+pub const AMOUNT_BYTE_OFF: usize = AMOUNT_FELT_OFF * 4;
+pub const MAX_FEE_BYTE_OFF: usize = MAX_FEE_FELT_OFF * 4;
+pub const REMOTE_RECIPIENT_BYTE_OFF: usize = REMOTE_RECIPIENT_FELT_OFF * 4;
+
+/// A `uint256` big-endian 32-byte encoding of a u64 value (24 zero bytes + 8-byte BE) — for splicing
+/// `amount` / `maxFee` into a payload's byte image.
+pub fn uint256_be(value: u64) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[24..32].copy_from_slice(&value.to_be_bytes());
+    out
+}
+
+/// The composition's combined advice stack, in the order the chain consumes it: `feeAmount` (8
+/// limbs, read by D5b) then the attester's pubkey (9) + signature (17) (read by D5d).
+pub fn composition_advice(fee_amount_limbs: [u32; 8], attester: &AttesterVector) -> Vec<Felt> {
+    fee_advice_felts(fee_amount_limbs).into_iter().chain(attester.advice()).collect()
+}
+
+pub struct CompositionHarness {
+    pub mock_chain: MockChain,
+    pub account_id: AccountId,
+    pub driver_code: AccountComponentCode,
+    pub probe_code: AccountComponentCode,
+}
+
+/// Builds a `FungibleFaucet` account carrying the xreserve component bound with ALL composition
+/// slots (domain_config + identifier_config value slots, usedNonces + xReserveAttesters map slots),
+/// the mint-composition driver, AND a no-effects readback probe — the union of the D5a-D5e harnesses
+/// on ONE account (the production composition shape). `nonce_seed` / `attesters_seed` pre-populate
+/// the respective maps (the D5c replay fixture / the D5d allowlist).
+pub fn setup_mint_composition_account(
+    max_supply: u64,
+    token_supply: u64,
+    domain: Word,
+    identifier: Word,
+    nonce_seed: Option<(Word, Word)>,
+    attesters_seed: Option<(Word, Word)>,
+    driver_src: &str,
+    probe_src: &str,
+) -> Result<CompositionHarness> {
+    let library = assemble_xreserve_lib()?;
+
+    let map_of = |seed: Option<(Word, Word)>, what: &str| -> Result<StorageMap> {
+        match seed {
+            Some((key, marker)) => StorageMap::with_entries([(StorageMapKey::new(key), marker)])
+                .map_err(|e| anyhow::anyhow!("seeding the {what} map fixture: {e}")),
+            None => Ok(StorageMap::new()),
+        }
+    };
+
+    let xreserve_component = AccountComponent::new(
+        library.clone(),
+        vec![
+            StorageSlot::with_value(
+                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
+                domain,
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL).context("identifier slot label")?,
+                identifier,
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
+                map_of(nonce_seed, "usedNonces")?,
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+                    .context("xReserveAttesters slot label")?,
+                map_of(attesters_seed, "xReserveAttesters")?,
+            ),
+        ],
+        AccountComponentMetadata::new("xusdc-mint-composition-harness"),
+    )
+    .context("binding the xreserve library + all composition slots as a component")?;
+
+    let link = |path: &'static str, src: &str, what: &str| -> Result<AccountComponentCode> {
+        CodeBuilder::new()
+            .with_dynamically_linked_library(&library)
+            .with_context(|| format!("linking the xreserve library into the {what}"))?
+            .compile_component_code(path, src)
+            .with_context(|| format!("{what} failed to compile\n--- src ---\n{src}"))
+    };
+    let driver_code = link(MINT_COMPOSITION_DRIVER_PATH, driver_src, "mint composition driver")?;
+    let probe_code = link(MINT_PROBE_PATH, probe_src, "no-effects probe")?;
+    let driver_component = AccountComponent::new(
+        driver_code.clone(),
+        vec![],
+        AccountComponentMetadata::new("xusdc-mint-composition-driver"),
+    )
+    .context("binding the mint composition driver component")?;
+    let probe_component = AccountComponent::new(
+        probe_code.clone(),
+        vec![],
+        AccountComponentMetadata::new("xusdc-mint-composition-probe"),
+    )
+    .context("binding the no-effects probe component")?;
+
+    let faucet = FungibleFaucet::builder()
+        .name(TokenName::new("XUSDC")?)
+        .symbol(TokenSymbol::new("XUSDC")?)
+        .decimals(6)
+        .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
+        .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
+        .build()
+        .context("failed to build FungibleFaucet")?;
+
+    let mut builder = MockChain::builder();
+    let account = builder
+        .add_existing_account_from_components(
+            Auth::IncrNonce,
+            [faucet.into(), xreserve_component, driver_component, probe_component],
+        )
+        .context("adding the mint composition account")?;
+    let mock_chain = builder.build().context("building the MockChain")?;
+    Ok(CompositionHarness { mock_chain, account_id: account.id(), driver_code, probe_code })
+}
+
+/// Generates the per-case composition driver: a CALL-entered account proc that stages the preimage,
+/// pushes `[intent_ptr, len_felts, scale_exp]`, and `exec`s `xreserve_mint::mint` (which reads
+/// feeAmount + pubkey + signature from the advice stack). `mint` returns `[pad(16)]`, restoring the
+/// 16-depth `call` boundary.
+pub fn mint_composition_driver_src(preimage: &[Felt], len_felts: u64, scale_exp: u32) -> String {
+    let mut src = String::from(
+        "use xreserve::xreserve_mint\n\n\
+         #! Test driver: stages a DepositIntent preimage in the account context and execs the\n\
+         #! xreserve_mint composition entry (feeAmount + attestation pubkey/sig from advice).\n\
+         #!\n\
+         #! Inputs:  [pad(16)]\n\
+         #! Outputs: [pad(16)]\n\
+         #!\n\
+         #! Invocation: call\n\
+         pub proc drive\n",
+    );
+    stage_preimage(&mut src, preimage);
+    writeln!(src, "    push.{scale_exp}").unwrap();
+    writeln!(src, "    push.{len_felts}").unwrap();
+    writeln!(src, "    push.{INTENT_PTR}").unwrap();
+    src.push_str("    exec.xreserve_mint::mint\n");
+    src.push_str("end\n");
+    src
+}
+
+/// No-effects readback probe for the composition: asserts `token_config.token_supply ==
+/// expected_token_supply` and `usedNonces[nonce_key]` is EMPTY. Distinct from
+/// `mint_noeffect_probe_src` because the composition's nonce key is a Poseidon2 `Word` (not a
+/// synthetic `[u32; 4]`).
+pub fn composition_noeffect_probe_src(expected_token_supply: u64, nonce_key: Word) -> String {
+    format!(
+        "use miden::protocol::active_account\n\n\
+         const PROBE_TOKEN_CONFIG_SLOT = word(\"{cfg}\")\n\
+         const PROBE_USED_NONCES_SLOT = word(\"{used}\")\n\n\
+         #! No-effects readback: token_config.token_supply == expected and usedNonces[KEY] EMPTY.\n\
+         #!\n\
+         #! Inputs:  [pad(16)]\n\
+         #! Outputs: [pad(16)]\n\
+         #!\n\
+         #! Invocation: call\n\
+         pub proc check\n\
+         \x20\x20\x20\x20push.PROBE_TOKEN_CONFIG_SLOT[0..2] exec.active_account::get_item\n\
+         \x20\x20\x20\x20push.{expected} assert_eq.err=\"no-effect: token_supply changed\"\n\
+         \x20\x20\x20\x20dropw\n\
+         \x20\x20\x20\x20push.{key} push.PROBE_USED_NONCES_SLOT[0..2] exec.active_account::get_map_item\n\
+         \x20\x20\x20\x20padw assert_eqw.err=\"no-effect: usedNonces key was set\"\n\
+         end\n",
+        cfg = TOKEN_CONFIG_SLOT_LABEL,
+        used = USED_NONCES_SLOT_LABEL,
+        expected = expected_token_supply,
+        key = nonce_key,
+    )
+}
+
+/// Supply-only no-effects readback probe: asserts `token_config.token_supply ==
+/// expected_token_supply`. Used by the replay reject, where `usedNonces[KEY]` is non-empty BY
+/// FIXTURE (the seed) — so only the supply invariant is a meaningful no-effect check there.
+pub fn composition_supply_probe_src(expected_token_supply: u64) -> String {
+    format!(
+        "use miden::protocol::active_account\n\n\
+         const PROBE_TOKEN_CONFIG_SLOT = word(\"{cfg}\")\n\n\
+         #! No-effects readback: token_config.token_supply == expected.\n\
+         #!\n\
+         #! Inputs:  [pad(16)]\n\
+         #! Outputs: [pad(16)]\n\
+         #!\n\
+         #! Invocation: call\n\
+         pub proc check\n\
+         \x20\x20\x20\x20push.PROBE_TOKEN_CONFIG_SLOT[0..2] exec.active_account::get_item\n\
+         \x20\x20\x20\x20push.{expected} assert_eq.err=\"no-effect: token_supply changed\"\n\
+         \x20\x20\x20\x20dropw\n\
+         end\n",
+        cfg = TOKEN_CONFIG_SLOT_LABEL,
+        expected = expected_token_supply,
+    )
+}
+
+async fn run_composition_driver(
+    h: &CompositionHarness,
+    driver_code: &AccountComponentCode,
+    driver_path: &str,
+    proc: &str,
+    advice: Option<Vec<Felt>>,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let src = format!("use {driver_path}->driver\nbegin\n    call.driver::{proc}\nend\n");
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(driver_code)
+        .expect("linking the driver into the tx script")
+        .compile_tx_script(&src)
+        .unwrap_or_else(|e| panic!("driver call script failed to compile: {e}\n--- script ---\n{src}"));
+    let mut ctx = h
+        .mock_chain
+        .build_tx_context(h.account_id, &[], &[])
+        .expect("building the tx context")
+        .tx_script(tx_script);
+    if let Some(stack) = advice {
+        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack));
+    }
+    ctx.build().expect("building the transaction").execute().await
+}
+
+/// Drives the `xreserve_mint::mint` composition with the combined advice stack.
+pub async fn run_mint_composition(
+    h: &CompositionHarness,
+    advice: Vec<Felt>,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    run_composition_driver(h, &h.driver_code, MINT_COMPOSITION_DRIVER_PATH, "drive", Some(advice)).await
+}
+
+/// Runs the no-effects readback probe on the SAME account after a rejected mint (the trapped tx
+/// committed nothing), proving token_config / usedNonces unchanged.
+pub async fn run_composition_probe(
+    h: &CompositionHarness,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    run_composition_driver(h, &h.probe_code, MINT_PROBE_PATH, "check", None).await
+}

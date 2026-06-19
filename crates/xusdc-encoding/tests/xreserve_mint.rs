@@ -541,3 +541,101 @@ async fn reject_fee_over_max_fails_closed() -> Result<()> {
     run_composition_probe(&h).await.expect("fee-over-max reject must leave token_config + usedNonces unchanged");
     Ok(())
 }
+
+// R-MINT-16 NO-REGRESSION — the deny guard does not touch the custom xreserve_mint path
+// ================================================================================================
+
+/// The custom `xreserve_mint` mints exactly as `happy_end_to_end_mints_once` does even when the
+/// faucet carries the mint-deny guard as its active mint policy (composed via
+/// `XReserveStablecoinBuilder`, deny oracle). `xreserve_mint` calls kernel `faucet::mint` directly
+/// and bypasses the `policy_manager`, so the deny guard (which gates only the stock `mint_and_send`)
+/// is irrelevant to it — all four happy effects must still hold. GREEN at the gate AND after Step 2
+/// (the guard never sits on this path). The structural sibling of the mint_deny deny tests: deny the
+/// stock surface, keep the custom surface fully working.
+#[tokio::test]
+async fn xreserve_mint_still_mints_on_guarded_account() -> Result<()> {
+    let payload = happy_payload();
+    let attester = gen_attester(1, &payload);
+    let (domain, identifier) = config(TEST_DOMAIN);
+    let driver = mint_composition_driver_src(&pack(&payload), LEN_FELTS, SCALE_EXP);
+    let probe = composition_noeffect_probe_src(0, nonce_key());
+    let gm = setup_guarded_mint_account(
+        support::GuardSelection::OracleDeny,
+        1_000_000,
+        0,
+        domain,
+        identifier,
+        None,
+        Some((attester.commitment, Word::from(MARKER))),
+        &driver,
+        &probe,
+    )?;
+    let executed = run_mint_composition(&gm.harness, composition_advice([0u32; 8], &attester))
+        .await
+        .expect("a fully valid deposit intent + attestation must mint even on a deny-guarded faucet");
+
+    // (1) exactly one P2ID recipient note carrying amount - feeAmount (== reduced amount at MVP).
+    assert_eq!(executed.output_notes().num_notes(), 1, "exactly one recipient note");
+    let note = executed.output_notes().get_note(0);
+    let asset = note
+        .assets()
+        .iter_fungible()
+        .next()
+        .expect("the recipient note must carry a fungible asset");
+    assert_eq!(Felt::from(asset.amount()), Felt::from(REDUCED_AMOUNT), "note asset == reduced amount");
+    assert_eq!(asset.faucet_id(), gm.harness.account_id, "asset minted by this faucet");
+
+    // (2) it is the intended P2ID note: nonce-derived serial, canonical script root + storage
+    // [suffix, prefix], Public note type, and the faucet as sender.
+    let recipient = note.recipient().expect("public output note must carry its recipient");
+    assert_eq!(
+        recipient.serial_num(),
+        nonce_key(),
+        "recipient note serial must be the nonce-derived KEY"
+    );
+    assert_eq!(
+        recipient.script().root(),
+        P2idNote::script_root(),
+        "recipient note script root must be the canonical P2ID script root"
+    );
+    assert_eq!(
+        recipient.storage().items(),
+        recipient_storage().as_slice(),
+        "recipient note storage must be [target_id_suffix, target_id_prefix]"
+    );
+    assert_eq!(
+        note.metadata().tag().as_u32(),
+        expected_account_target_tag(BASE_VECTOR),
+        "P2ID note tag must target the recipient (NoteTag::with_account_target: prefix HIGH u32)"
+    );
+    assert_eq!(
+        note.metadata().note_type(),
+        miden_protocol::note::NoteType::Public,
+        "recipient note must be Public"
+    );
+    assert_eq!(note.metadata().sender(), gm.harness.account_id, "note sender is the faucet");
+
+    // (3) token_supply rose by exactly the reduced amount.
+    let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
+    let StorageSlotDelta::Value(cfg) =
+        executed.account_delta().storage().get(&cfg_slot).expect("token_config slot delta")
+    else {
+        panic!("token_config must be a Value slot delta");
+    };
+    assert_eq!(cfg[0], Felt::from(REDUCED_AMOUNT), "token_supply delta == reduced amount");
+
+    // (4) the nonce was marked: usedNonces[KEY] == MARKER.
+    let used = StorageSlotName::new(USED_NONCES_SLOT_LABEL)?;
+    let StorageSlotDelta::Map(map_delta) =
+        executed.account_delta().storage().get(&used).expect("usedNonces slot delta")
+    else {
+        panic!("usedNonces must be a Map slot delta");
+    };
+    let written = map_delta
+        .entries()
+        .get(&StorageMapKey::new(nonce_key()))
+        .copied()
+        .expect("the nonce KEY must appear in the usedNonces delta");
+    assert_eq!(written, Word::from(MARKER), "nonce marker committed");
+    Ok(())
+}

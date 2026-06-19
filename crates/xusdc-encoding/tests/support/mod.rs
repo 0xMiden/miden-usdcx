@@ -93,7 +93,7 @@ pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 11] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 12] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -151,6 +151,13 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 11] = [
     (
         "ERR_XRESERVE_RECIPIENT_NONCANONICAL",
         MasmError::from_static_str("deposit intent remote recipient value does not fit in the field"),
+    ),
+    // R-MINT-16 mint-deny guard (mint_deny_guard.masm). The stock inherited `mint_and_send` is
+    // denied so `xreserve_mint` is the sole supply-increasing surface (INV-MINT-SECURITY, §5.2);
+    // parity-pinned against the MASM const declared in mint_deny_guard.masm.
+    (
+        "ERR_XRESERVE_MINT_DENIED",
+        MasmError::from_static_str("stock mint_and_send is denied; only xreserve_mint may raise supply"),
     ),
 ];
 
@@ -1128,4 +1135,180 @@ pub async fn run_composition_probe(
     h: &CompositionHarness,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     run_composition_driver(h, &h.probe_code, MINT_PROBE_PATH, "check", None).await
+}
+
+// R-MINT-16 MINT-DENY GUARD (P5-01) — guarded faucet composition + stock mint_and_send invocation
+// ================================================================================================
+
+/// Which mint policy the guarded faucet fixture installs.
+pub enum GuardSelection {
+    /// PRODUCTION `XReserveStablecoinBuilder::build_components` (deny ONLY, no reserved allow-all).
+    ProductionDeny,
+    /// TEST oracle: deny ACTIVE, allow-all RESERVED (`deny_oracle_components`).
+    OracleDeny,
+    /// TEST oracle: allow-all ACTIVE, deny RESERVED (`allow_all_oracle_components`).
+    OracleAllowAll,
+}
+
+/// A guarded mint harness: the composition account WITH the `TokenPolicyManager` (mint-deny guard
+/// active or allow-all per the [`GuardSelection`]) + `PausableManager` installed via the production
+/// `XReserveStablecoinBuilder`, plus the resolved deny-guard proc root.
+pub struct GuardedMint {
+    pub harness: CompositionHarness,
+    pub deny_root: Word,
+}
+
+/// Like [`setup_mint_composition_account`] but ALSO installs the `TokenPolicyManager` (mint-deny
+/// guard active or allow-all per `selection`) + `PausableManager` via [`XReserveStablecoinBuilder`].
+/// The deny guard rides the same `xreserve` library component (its `check_policy` proc). Used by the
+/// R-MINT-16 deny suite to drive the inherited stock `mint_and_send` against a policy-managed faucet.
+pub fn setup_guarded_mint_account(
+    selection: GuardSelection,
+    max_supply: u64,
+    token_supply: u64,
+    domain: Word,
+    identifier: Word,
+    nonce_seed: Option<(Word, Word)>,
+    attesters_seed: Option<(Word, Word)>,
+    driver_src: &str,
+    probe_src: &str,
+) -> Result<GuardedMint> {
+    let library = assemble_xreserve_lib()?;
+
+    let map_of = |seed: Option<(Word, Word)>, what: &str| -> Result<StorageMap> {
+        match seed {
+            Some((key, marker)) => StorageMap::with_entries([(StorageMapKey::new(key), marker)])
+                .map_err(|e| anyhow::anyhow!("seeding the {what} map fixture: {e}")),
+            None => Ok(StorageMap::new()),
+        }
+    };
+
+    let xreserve_component = AccountComponent::new(
+        library.clone(),
+        vec![
+            StorageSlot::with_value(
+                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
+                domain,
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL).context("identifier slot label")?,
+                identifier,
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
+                map_of(nonce_seed, "usedNonces")?,
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+                    .context("xReserveAttesters slot label")?,
+                map_of(attesters_seed, "xReserveAttesters")?,
+            ),
+        ],
+        AccountComponentMetadata::new("xusdc-mint-composition-harness"),
+    )
+    .context("binding the xreserve library + all composition slots as a component")?;
+
+    let link = |path: &'static str, src: &str, what: &str| -> Result<AccountComponentCode> {
+        CodeBuilder::new()
+            .with_dynamically_linked_library(&library)
+            .with_context(|| format!("linking the xreserve library into the {what}"))?
+            .compile_component_code(path, src)
+            .with_context(|| format!("{what} failed to compile\n--- src ---\n{src}"))
+    };
+    let driver_code = link(MINT_COMPOSITION_DRIVER_PATH, driver_src, "mint composition driver")?;
+    let probe_code = link(MINT_PROBE_PATH, probe_src, "no-effects probe")?;
+    let driver_component = AccountComponent::new(
+        driver_code.clone(),
+        vec![],
+        AccountComponentMetadata::new("xusdc-mint-composition-driver"),
+    )
+    .context("binding the mint composition driver component")?;
+    let probe_component = AccountComponent::new(
+        probe_code.clone(),
+        vec![],
+        AccountComponentMetadata::new("xusdc-mint-composition-probe"),
+    )
+    .context("binding the no-effects probe component")?;
+
+    let faucet = FungibleFaucet::builder()
+        .name(TokenName::new("XUSDC")?)
+        .symbol(TokenSymbol::new("XUSDC")?)
+        .decimals(6)
+        .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
+        .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
+        .build()
+        .context("failed to build FungibleFaucet")?;
+
+    // The builder CLONES the faucet + xreserve_component internally, so pass them by value.
+    let builder =
+        xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(faucet, xreserve_component);
+    let deny_root = builder.mint_deny_guard_root().map_err(|e| anyhow::anyhow!("deny root: {e}"))?;
+    let mut components = match selection {
+        GuardSelection::ProductionDeny => builder.build_components(),
+        GuardSelection::OracleDeny => builder.deny_oracle_components(),
+        GuardSelection::OracleAllowAll => builder.allow_all_oracle_components(),
+    }
+    .map_err(|e| anyhow::anyhow!("composing guarded faucet: {e}"))?;
+    components.push(driver_component);
+    components.push(probe_component);
+
+    let mut mc = MockChain::builder();
+    let account = mc
+        .add_existing_account_from_components(Auth::IncrNonce, components)
+        .context("adding guarded faucet")?;
+    let mock_chain = mc.build().context("building MockChain")?;
+    Ok(GuardedMint {
+        harness: CompositionHarness {
+            mock_chain,
+            account_id: account.id(),
+            driver_code,
+            probe_code,
+        },
+        deny_root,
+    })
+}
+
+/// Invokes the stock `mint_and_send` faucet entrypoint via a tx script (NOT a driver proc):
+/// `create_fungible_asset` then `call.::miden::standards::faucets::fungible::mint_and_send`. The
+/// push order feeds `create_fungible_asset` then `mint_and_send`, mirroring the protocol's own
+/// faucet `create_mint_script_code` (miden-testing scripts/faucet.rs). `mint_and_send` routes
+/// through `policy_manager::execute_mint_policy`, so the active mint policy (deny guard or allow-all)
+/// gates it — the R-MINT-16 deny surface.
+pub async fn run_mint_and_send(
+    h: &CompositionHarness,
+    recipient: Word,
+    note_type: u8,
+    tag: u32,
+    amount: u64,
+    enable_callbacks: u8,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let src = format!(
+        "
+            begin
+                push.{recipient}
+                push.{note_type}
+                push.{tag}
+                push.{amount}
+                push.{faucet_id_prefix}
+                push.{faucet_id_suffix}
+                push.{enable_callbacks}
+                exec.::miden::protocol::asset::create_fungible_asset
+                call.::miden::standards::faucets::fungible::mint_and_send
+                dropw dropw dropw dropw
+            end
+            ",
+        faucet_id_prefix = h.account_id.prefix().as_felt(),
+        faucet_id_suffix = h.account_id.suffix(),
+    );
+    let tx_script = CodeBuilder::new().compile_tx_script(&src).unwrap_or_else(|e| {
+        panic!("mint_and_send script failed to compile: {e}\n--- script ---\n{src}")
+    });
+    h.mock_chain
+        .build_tx_context(h.account_id, &[], &[])
+        .expect("building the tx context")
+        .tx_script(tx_script)
+        .build()
+        .expect("building the transaction")
+        .execute()
+        .await
 }

@@ -1,10 +1,13 @@
-//! xUSDC-on-Miden 04 shared encoding: Rust mirror of the hand-written MASM encoding
-//! module plus the test harness (canonical golden-vector loader, vector generator).
+//! xUSDC-on-Miden Rust mirror + test harness. Originally the 04 shared-encoding unit (Rust mirror of
+//! the hand-written MASM encoding module plus the canonical golden-vector loader / generator); now
+//! also hosts the faucet (01) account composition (the
+//! [`account::xreserve::XReserveStablecoinBuilder`], R-MINT-16 mint-deny increment).
 //!
-//! BUILD STATE: all four slice routines are implemented and green (R1 bytes32, R2
-//! uint256 reducer, R3 AccountId Rust-primary, R4 DepositIntent layout + parser); the
-//! test suite is the executable spec. Loop history: `TEST-LEDGER.md`.
+//! BUILD STATE: the four 04 encoding routines are implemented and green (R1 bytes32, R2 uint256
+//! reducer, R3 AccountId Rust-primary, R4 DepositIntent layout + parser); the faucet composition is
+//! the R-MINT-16 increment. The test suite is the executable spec. Loop history: `TEST-LEDGER.md`.
 
+pub mod account;
 pub mod vectors;
 pub mod xreserve;
 

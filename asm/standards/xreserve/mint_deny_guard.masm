@@ -9,13 +9,6 @@
 # directly (xreserve_mint.masm:174) -- is the provably SOLE supply-increasing surface
 # (INV-MINT-SECURITY, §5.2 COMPONENT-SPEC.md:271). Module home + flat path per D-1A
 # (CANONICAL-OWNERSHIP-MAP.md:66). Loop history: crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
-#
-# RED-GATE STATE (R-MINT-16 Step 0): `check_policy` ships with a NON-denying body
-# (`push.0 assertz` = pass) so the executing-red gate observes `mint_and_send` reach success under an
-# active-but-not-yet-denying policy; the deny test is then red on its exact-error assertion (a real
-# MockChain execution reaching mint_and_send, not a compile error). Step 2 flips the single token
-# `assertz` -> `assert` to make the guard deny. The `assertz` form references ERR_XRESERVE_MINT_DENIED
-# so the constant is not unused under `with_warnings_as_errors`.
 
 # ERRORS
 # =================================================================================================
@@ -32,9 +25,9 @@ const ERR_XRESERVE_MINT_DENIED = "stock mint_and_send is denied; only xreserve_m
 #! `mint_and_send` path. The custom `xreserve_mint` never routes here.
 #!
 #! Inputs:  [amount, tag, note_type, RECIPIENT]
-#! Outputs: never returns -- unconditional trap (ERR_XRESERVE_MINT_DENIED); see RED-GATE STATE above.
+#! Outputs: never returns -- unconditional trap (ERR_XRESERVE_MINT_DENIED).
 #!
 #! Invocation: dynexec
 pub proc check_policy
-    push.0 assertz.err=ERR_XRESERVE_MINT_DENIED
+    push.0 assert.err=ERR_XRESERVE_MINT_DENIED
 end

@@ -95,6 +95,45 @@ async fn d5e_happy_conservation() -> Result<()> {
     Ok(())
 }
 
+/// Non-zero `feeAmount`: the recipient note carries `amount - feeAmount` while `token_supply` rises
+/// by the FULL `amount` — the two MUST differ, pinning the fee subtraction (I8) AND supply
+/// conservation (I7) independently. This is the only path that exercises the `amount - feeAmount`
+/// subtraction (xreserve_mint.masm:170) with a LIVE fee: the `xreserve_mint::mint` composition
+/// hardcodes `feeAmount = 0` into `apply_mint_effects` (xreserve_mint.masm:350, MVP), so a
+/// composition note always carries the full amount and cannot distinguish the two formulas (P5-01
+/// Tier-3 oracle-gaps report, F3).
+#[tokio::test]
+async fn d5e_nonzero_fee_note_carries_amount_minus_fee() -> Result<()> {
+    let amount = 1000u64;
+    let fee_amount = 250u64; // genuinely non-zero, < amount (no underflow); reduced note == 750
+    let h = setup_mint_faucet_account(1_000_000, 0, &inputs(amount, fee_amount, KEY))?;
+    let executed =
+        run_mint(&h).await.expect("apply_mint_effects must mint with a non-zero fee");
+
+    assert_eq!(executed.output_notes().num_notes(), 1, "exactly one recipient note");
+    let note = executed.output_notes().get_note(0);
+    let asset = note
+        .assets()
+        .iter_fungible()
+        .next()
+        .expect("the recipient note must carry a fungible asset");
+    // the WHOLE point: the note carries amount - feeAmount (== 750), distinct from the full amount.
+    assert_eq!(
+        Felt::from(asset.amount()),
+        Felt::from((amount - fee_amount) as u32),
+        "note asset == amount - feeAmount"
+    );
+    assert_eq!(asset.faucet_id(), h.account_id, "asset minted by this faucet");
+
+    // INV-SUPPLY-CONSERVATION: token_supply rises by the FULL amount (== 1000), not amount - fee.
+    assert_eq!(
+        token_config_delta(&executed)[0],
+        Felt::from(amount as u32),
+        "token_supply delta == full amount (not reduced by the fee)"
+    );
+    Ok(())
+}
+
 /// Cap boundary ACCEPTS: token_supply + amount == max_supply is allowed (R-MINT-15 uses
 /// `amount <= max_supply - token_supply`).
 #[tokio::test]

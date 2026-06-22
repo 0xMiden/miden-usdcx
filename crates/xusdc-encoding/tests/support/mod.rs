@@ -31,7 +31,9 @@ use miden_protocol::transaction::{ExecutedTransaction, TransactionKernel};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
 use miden_processor::advice::AdviceInputs;
+use miden_standards::account::access::PausableManager;
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
+use miden_standards::account::policies::{MintPolicyConfig, PolicyRegistration, TokenPolicyManager};
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::P2idNote;
 use miden_testing::{Auth, MockChain};
@@ -1144,15 +1146,16 @@ pub async fn run_composition_probe(
 pub enum GuardSelection {
     /// PRODUCTION `XReserveStablecoinBuilder::build_components` (deny ONLY, no reserved allow-all).
     ProductionDeny,
-    /// TEST oracle: deny ACTIVE, allow-all RESERVED (`deny_oracle_components`).
+    /// TEST-ONLY oracle (test-harness [`oracle_components`]): deny ACTIVE, allow-all RESERVED.
     OracleDeny,
-    /// TEST oracle: allow-all ACTIVE, deny RESERVED (`allow_all_oracle_components`).
+    /// TEST-ONLY oracle (test-harness [`oracle_components`]): allow-all ACTIVE, deny RESERVED.
     OracleAllowAll,
 }
 
 /// A guarded mint harness: the composition account WITH the `TokenPolicyManager` (mint-deny guard
-/// active or allow-all per the [`GuardSelection`]) + `PausableManager` installed via the production
-/// `XReserveStablecoinBuilder`, plus the resolved deny-guard proc root.
+/// active or allow-all per the [`GuardSelection`]) + `PausableManager`, plus the resolved deny-guard
+/// proc root. The production deny path is composed by `XReserveStablecoinBuilder::build_components`;
+/// the allow-all/deny oracle pair is composed by the test-only [`oracle_components`] helper.
 pub struct GuardedMint {
     pub harness: CompositionHarness,
     pub deny_root: Word,
@@ -1239,16 +1242,36 @@ pub fn setup_guarded_mint_account(
         .build()
         .context("failed to build FungibleFaucet")?;
 
-    // The builder CLONES the faucet + xreserve_component internally, so pass them by value.
-    let builder =
-        xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(faucet, xreserve_component);
-    let deny_root = builder.mint_deny_guard_root().map_err(|e| anyhow::anyhow!("deny root: {e}"))?;
+    // Resolve the deny-guard root from the assembled component (a benign read-only proc-root lookup;
+    // the same value the production builder registers as the active mint policy).
+    let deny_root: Word = xreserve_component
+        .get_procedure_root_by_path(xusdc_encoding::account::xreserve::MINT_DENY_GUARD_PROC_PATH)
+        .map(Word::from)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "xreserve component does not export the mint-deny guard procedure '{}'",
+                xusdc_encoding::account::xreserve::MINT_DENY_GUARD_PROC_PATH
+            )
+        })?;
     let mut components = match selection {
-        GuardSelection::ProductionDeny => builder.build_components(),
-        GuardSelection::OracleDeny => builder.deny_oracle_components(),
-        GuardSelection::OracleAllowAll => builder.allow_all_oracle_components(),
-    }
-    .map_err(|e| anyhow::anyhow!("composing guarded faucet: {e}"))?;
+        // PRODUCTION path: the real builder, deny ONLY (no reserved allow-all).
+        GuardSelection::ProductionDeny => {
+            xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
+                faucet,
+                xreserve_component,
+            )
+            .build_components()
+            .map_err(|e| anyhow::anyhow!("composing the production deny faucet: {e}"))?
+        },
+        // TEST-ONLY oracle (non-vacuity pair): both policies registered, deny ACTIVE.
+        GuardSelection::OracleDeny => oracle_components(faucet, xreserve_component, deny_root, true)
+            .context("composing the oracle deny faucet")?,
+        // TEST-ONLY oracle (non-vacuity pair): both policies registered, allow-all ACTIVE.
+        GuardSelection::OracleAllowAll => {
+            oracle_components(faucet, xreserve_component, deny_root, false)
+                .context("composing the oracle allow-all faucet")?
+        },
+    };
     components.push(driver_component);
     components.push(probe_component);
 
@@ -1266,6 +1289,43 @@ pub fn setup_guarded_mint_account(
         },
         deny_root,
     })
+}
+
+/// TEST-ONLY oracle composition for the R-MINT-16 non-vacuity pair. Registers BOTH the mint-deny
+/// guard (`Custom(deny_root)`) and the stock allow-all in the `TokenPolicyManager`, one `Active` and
+/// the other `Reserved`, so the allow-all and deny accounts are CODE-IDENTICAL (same components —
+/// faucet + xreserve + policy-manager + `MintAllowAll` + `PausableManager` — and the same allowed
+/// mint-policy set) and differ ONLY in `active_mint_policy_proc_root`. That identity is what makes the
+/// allow-vs-deny pair a sound non-vacuity oracle: a deny trap is attributable to the active policy,
+/// not to any fixture difference.
+///
+/// This lives in the TEST harness — NOT the production `XReserveStablecoinBuilder` — precisely so no
+/// shipped API can construct an allow-all-active (stock-`mint_and_send`-reopening) faucet. The only
+/// production composition path, [`xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::build_components`],
+/// is deny-ONLY and rejects any non-deny active mint policy.
+fn oracle_components(
+    faucet: FungibleFaucet,
+    xreserve_component: AccountComponent,
+    deny_root: Word,
+    deny_active: bool,
+) -> Result<Vec<AccountComponent>> {
+    let deny = MintPolicyConfig::Custom(deny_root);
+    let (active, reserved) = if deny_active {
+        (deny, MintPolicyConfig::AllowAll)
+    } else {
+        (MintPolicyConfig::AllowAll, deny)
+    };
+    let manager = TokenPolicyManager::new()
+        .with_mint_policy(active, PolicyRegistration::Active)
+        .map_err(|e| anyhow::anyhow!("oracle manager active mint policy: {e}"))?
+        .with_mint_policy(reserved, PolicyRegistration::Reserved)
+        .map_err(|e| anyhow::anyhow!("oracle manager reserved mint policy: {e}"))?;
+    // PausableManager is mandatory (the stock execute_mint_policy runs assert_not_paused before
+    // dispatching). Component order/contents mirror XReserveStablecoinBuilder::assemble_components.
+    let mut components = vec![faucet.into(), xreserve_component];
+    components.extend(manager); // [policy-manager component, MintAllowAll]
+    components.push(PausableManager.into());
+    Ok(components)
 }
 
 /// Invokes the stock `mint_and_send` faucet entrypoint via a tx script (NOT a driver proc):

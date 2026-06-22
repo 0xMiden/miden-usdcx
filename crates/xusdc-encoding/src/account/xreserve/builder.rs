@@ -164,56 +164,6 @@ impl XReserveStablecoinBuilder {
         Ok(self.assemble_components(manager))
     }
 
-    /// TEST-ORACLE seam (non-vacuity pair): composes the account with BOTH the deny guard and the
-    /// stock allow-all registered, the `deny` arm Active and allow-all Reserved. Code-identical to
-    /// [`Self::allow_all_oracle_components`] except for `active_mint_policy_proc_root`.
-    ///
-    /// Not for production: the deny arm of the load-bearing allow-vs-deny oracle. Production uses
-    /// [`Self::build_components`] (deny only).
-    #[doc(hidden)]
-    pub fn deny_oracle_components(
-        &self,
-    ) -> Result<Vec<AccountComponent>, XReserveStablecoinBuilderError> {
-        self.oracle_components(true)
-    }
-
-    /// TEST-ORACLE seam (non-vacuity pair): composes the account with BOTH policies registered, the
-    /// stock allow-all Active and the deny guard Reserved. Code-identical to
-    /// [`Self::deny_oracle_components`] except for `active_mint_policy_proc_root`. Used to prove the
-    /// fixture reaches a *working* `mint_and_send` (so a deny trap is policy-caused, not a
-    /// missing-slot / zero-root / proc-not-found artifact).
-    #[doc(hidden)]
-    pub fn allow_all_oracle_components(
-        &self,
-    ) -> Result<Vec<AccountComponent>, XReserveStablecoinBuilderError> {
-        self.oracle_components(false)
-    }
-
-    /// Shared oracle composition. Both `MintPolicyConfig::AllowAll` and `Custom(deny_root)` are
-    /// registered in every case (`AllowAll` contributes the `MintAllowAll` component whether Active
-    /// or Reserved; `Custom` contributes none — the deny proc rides the `xreserve` component), so the
-    /// component set is identical regardless of which is active; only the active root differs.
-    fn oracle_components(
-        &self,
-        deny_active: bool,
-    ) -> Result<Vec<AccountComponent>, XReserveStablecoinBuilderError> {
-        if self.account_type != AccountType::Public {
-            return Err(XReserveStablecoinBuilderError::NonPublicAccountType(
-                self.account_type,
-            ));
-        }
-        let deny = MintPolicyConfig::Custom(self.mint_deny_guard_root()?);
-        let (active, reserved) = if deny_active {
-            (deny, MintPolicyConfig::AllowAll)
-        } else {
-            (MintPolicyConfig::AllowAll, deny)
-        };
-        let manager = TokenPolicyManager::new()
-            .with_mint_policy(active, PolicyRegistration::Active)?
-            .with_mint_policy(reserved, PolicyRegistration::Reserved)?;
-        Ok(self.assemble_components(manager))
-    }
-
     /// Assembles the final component list. `PausableManager` is mandatory: the stock
     /// `execute_mint_policy` runs `assert_not_paused` before dispatching the mint policy.
     fn assemble_components(&self, manager: TokenPolicyManager) -> Vec<AccountComponent> {

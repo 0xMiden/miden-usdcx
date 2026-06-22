@@ -5,13 +5,14 @@
 //! `policy_manager::execute_mint_policy` -> `dynexec` of the active mint-policy proc root, so the
 //! deny guard's `check_policy` gates every stock mint.
 //!
-//! RED-GATE STATE (R-MINT-16 Step 0): `mint_deny_guard.masm::check_policy` ships a NON-denying body
-//! (`push.0 assertz` = pass). Under it, stock `mint_and_send` SUCCEEDS, so the deny tests are RED on
-//! their exact-error assertion — a real MockChain execution that REACHES and completes
-//! `mint_and_send`, NOT a compile error. The allow-all oracle proves the fixture reaches a *working*
-//! `mint_and_send` (so a future deny trap is policy-caused, not a missing-slot / zero-root artifact).
-//! Step 2 (someone else) flips the single `assertz` -> `assert` to make the guard deny; the deny
-//! tests then go green. Per the R-MINT-16 brief this suite NEVER edits the masm to change red<->green.
+//! The deny guard (`mint_deny_guard.masm::check_policy`) traps unconditionally, so stock
+//! `mint_and_send` is denied (ERR_XRESERVE_MINT_DENIED) and the custom `xreserve_mint` is the sole
+//! supply-increasing surface. The allow-all oracle is the non-vacuity control: on a CODE-IDENTICAL
+//! account with the allow-all policy active (differing ONLY in `active_mint_policy_proc_root`),
+//! `mint_and_send` SUCCEEDS and raises supply — so the deny arm's trap is policy-caused, not a
+//! missing-slot / zero-root / proc-not-found artifact. The allow-vs-deny fixtures are composed by the
+//! TEST-ONLY `support::oracle_components`; production composition (deny-only) is
+//! `XReserveStablecoinBuilder::build_components`.
 
 mod support;
 
@@ -127,9 +128,9 @@ async fn mint_and_send_succeeds_under_allow_all() -> Result<()> {
 // DENY (EXPECTED RED at the gate — mint_and_send SUCCEEDS under the no-op guard)
 // ================================================================================================
 
-/// With the deny guard ACTIVE, the stock `mint_and_send` must trap with ERR_XRESERVE_MINT_DENIED.
-/// EXPECTED RED at the R-MINT-16 gate: the no-op guard lets `mint_and_send` succeed, so this
-/// exact-error assertion fails on a real execution that REACHED mint_and_send (not a compile error).
+/// With the deny guard ACTIVE, the stock `mint_and_send` traps with the EXACT ERR_XRESERVE_MINT_DENIED
+/// — declared ONLY in `mint_deny_guard.masm`, so the trap is unambiguously the deny guard. Paired with
+/// `mint_and_send_succeeds_under_allow_all` on a code-identical account, this is the non-vacuity proof.
 #[tokio::test]
 async fn deny_mint_and_send_traps() -> Result<()> {
     let (driver, probe) = unused_driver_probe();
@@ -158,15 +159,12 @@ async fn deny_mint_and_send_traps() -> Result<()> {
     Ok(())
 }
 
-/// The denied stock `mint_and_send` must produce NO `token_supply` effect. This observes the supply
-/// effect on the mint transaction's OWN delta (the harness builds each tx from genesis and does not
-/// commit between calls, so a separate readback probe always reads genesis — it cannot witness a
-/// *successful* mint's effect; the delta can).
-///
-/// Post-Step-2 (deny live): `run_mint_and_send` returns `Err` (the guard traps) → no delta → no
-/// supply effect → GREEN. EXPECTED RED at the gate: under the no-op guard `mint_and_send` returns
-/// `Ok` carrying a `token_supply += amount` delta → the no-supply-effect assertion trips on a real
-/// execution that REACHED and completed mint_and_send, NOT a compile error.
+/// The denied stock `mint_and_send` produces NO `token_supply` effect: the guard traps, so the tx
+/// returns `Err` and commits nothing. We observe the effect on the mint tx's OWN delta rather than a
+/// separate readback probe, because this harness builds each tx from genesis and never commits between
+/// calls — a probe would always read genesis and could not witness a *successful* mint's effect; the
+/// delta can. Were the policy ever to let the mint through, the resulting `Ok` delta would carry a
+/// `token_supply += amount` rise and trip the assertion.
 #[tokio::test]
 async fn denied_path_no_supply_effect() -> Result<()> {
     let (driver, probe) = unused_driver_probe();
@@ -192,9 +190,9 @@ async fn denied_path_no_supply_effect() -> Result<()> {
     )
     .await;
 
-    // A denied mint must not raise supply. If the guard trapped (Err), the denied path trivially
-    // committed nothing. If it returned Ok (the gate's no-op guard), the executed tx's delta must
-    // carry NO token_supply rise — which it does at the gate, so this assertion fails RED.
+    // A denied mint must not raise supply. The guard traps (Err) so the path commits nothing; the
+    // `if let Ok` below is defense-in-depth — were the policy ever to let the mint through, the
+    // executed tx's delta must carry NO token_supply rise.
     if let Ok(executed) = result {
         let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
         let raised = match executed.account_delta().storage().get(&cfg_slot) {

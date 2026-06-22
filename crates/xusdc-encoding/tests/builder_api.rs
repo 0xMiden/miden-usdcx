@@ -1,10 +1,9 @@
 //! R-MINT-16 `XReserveStablecoinBuilder` API suite (P5-01): the production builder must compose a
 //! deny-active PUBLIC faucet and reject the two packaging mistakes that would re-open the stock
 //! mint surface — a non-`Public` account type and an active mint policy that is not the deny guard
-//! (INV-MINT-SECURITY, §5.2). The build-validation tests are GREEN at the gate (pure builder logic);
-//! the one BEHAVIOR assertion (a production-deny faucet actually traps stock mint_and_send) is
-//! EXPECTED RED at the gate because the deny guard's MASM body is still the no-op pass (Step 2 flips
-//! it). This suite NEVER edits the masm to change red<->green.
+//! (INV-MINT-SECURITY, §5.2). The build-validation tests assert the two rejections (pure builder
+//! logic); the behavior test asserts a production-deny faucet actually traps stock `mint_and_send`
+//! with the exact ERR_XRESERVE_MINT_DENIED, end to end.
 
 mod support;
 
@@ -85,14 +84,12 @@ fn dummy_config() -> (Word, Word) {
 // ================================================================================================
 
 /// The production `build_components` composes a deny-active PUBLIC faucet without error (the
-/// build-validation half — GREEN). Then the BEHAVIOR half installs that exact production composition
-/// (`GuardSelection::ProductionDeny`) and asserts the stock `mint_and_send` traps with
-/// ERR_XRESERVE_MINT_DENIED — EXPECTED RED at the gate (the no-op guard lets the mint through; a real
-/// execution that REACHED mint_and_send, not a compile error). Step 2 flips the guard and it goes
-/// green.
+/// build-validation half). The BEHAVIOR half installs that exact production composition
+/// (`GuardSelection::ProductionDeny`) and asserts the stock `mint_and_send` traps with the exact
+/// ERR_XRESERVE_MINT_DENIED — i.e. the production deny composition genuinely denies, end to end.
 #[tokio::test]
 async fn build_produces_deny_active_public_faucet() -> Result<()> {
-    // build-validation half (GREEN): the default builder (Public + deny active) composes cleanly.
+    // build-validation half: the default builder (Public + deny active) composes cleanly.
     let (faucet, xreserve_component) = faucet_and_component()?;
     let components = XReserveStablecoinBuilder::new(faucet, xreserve_component).build_components();
     assert!(
@@ -101,7 +98,7 @@ async fn build_produces_deny_active_public_faucet() -> Result<()> {
         components.err()
     );
 
-    // behavior half (EXPECTED RED at the gate): the production-deny faucet must deny stock mint_and_send.
+    // behavior half: the production-deny faucet must deny stock mint_and_send.
     let (driver, probe) = {
         let driver = mint_composition_driver_src(&[Felt::from(0u32)], 60, 6);
         let probe = composition_supply_probe_src(0);

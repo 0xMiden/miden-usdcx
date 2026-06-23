@@ -1,0 +1,49 @@
+# xreserve::attester_admin
+#
+# FAUCET(01)-owned deposit-attester allowlist admin (P5-01 set_attester + RBAC-foundation slice):
+# the ATTEST_ADMIN-gated `set_attester` setter that writes the xReserveAttesters allowlist — the
+# on-chain write completing the D5d read seam (attestation_verify.masm:95-119, R-MINT-13). The slot
+# this setter co-owns is named by attestation_verify.masm:26
+# (word("xusdc::xreserve::attester_admin::xreserve_attesters")). Module home + flat path per D-1A
+# (CANONICAL-OWNERSHIP-MAP.md:59). Loop history: crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
+#
+# SCAFFOLD (executing-red commit): `set_attester` is a named placeholder that traps
+# ERR_SET_ATTESTER_UNIMPLEMENTED so the red suite assembles and every test reaches execute().await
+# (red at runtime, never a compile error). The green commit replaces the body with the real gate +
+# write (assert_authorized -> assert_not_paused -> set_map_item) and drops this error const.
+
+# ERRORS
+# =================================================================================================
+
+# Executing-red placeholder trap; removed when the real body lands (green commit).
+const ERR_SET_ATTESTER_UNIMPLEMENTED = "set_attester is not yet implemented"
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! ATTEST_ADMIN-gated setter for the xReserveAttesters allowlist: enables (enabled = 1) or disables
+#! (enabled = 0) a deposit attester keyed by its pubkey commitment. The §5.5 setter — it trusts the
+#! caller's commitment Word verbatim and does NOT recompute it from a raw pubkey.
+#!
+#! Inputs:  [PK_COMMITMENT, enabled, pad(11)]
+#! Outputs: [pad(16)]
+#!
+#! Where:
+#! - PK_COMMITMENT is the Poseidon2 pubkey commitment (the xReserveAttesters map key).
+#! - enabled is 1 to allowlist the attester (write the enabled marker) or 0 to remove it (write
+#!   EMPTY_WORD).
+#!
+#! Panics if:
+#! - the note sender does not hold ATTEST_ADMIN (ERR_SENDER_LACKS_ROLE, green commit).
+#! - the faucet is paused (ERR_PAUSABLE_IS_PAUSED, green commit).
+#!
+#! Invocation: call
+#!
+#! SCAFFOLD: unconditional trap (ERR_SET_ATTESTER_UNIMPLEMENTED) until the green commit. Uses
+#! `push.1 assertz` (NOT `push.0 assert`) so this proc's MAST root differs from the structurally
+#! identical `mint_deny_guard::check_policy` — error messages are MAST decorators, not part of the
+#! root, so two `push.0 assert.err=…` procs would collide and the deny-guard `dynexec` would surface
+#! THIS error. The real body (green commit) is structurally distinct and needs no such guard.
+pub proc set_attester
+    push.1 assertz.err=ERR_SET_ATTESTER_UNIMPLEMENTED
+end

@@ -20,13 +20,23 @@
 
 use core::fmt;
 
-use miden_protocol::account::{AccountComponent, AccountType};
-use miden_protocol::Word;
-use miden_standards::account::access::PausableManager;
+use miden_protocol::account::{
+    AccountComponent, AccountId, AccountType, RoleSymbol, StorageMap, StorageMapKey, StorageSlot,
+};
+use miden_protocol::{Felt, Word};
+use miden_standards::account::access::{
+    Authority, Ownable2Step, PausableManager, RoleBasedAccessControl,
+};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::{
     MintPolicyConfig, PolicyRegistration, TokenPolicyManager, TokenPolicyManagerError,
 };
+
+/// The single RBAC role this faucet seeds and gates `set_attester` on: the deposit-attester
+/// admin. 12 chars (`RoleSymbol`'s max; `ATTESTER_ADMIN` (14) would be rejected). The MASM gate
+/// carries the same symbol via the installed `Authority::RbacControlled` slot — parity is asserted
+/// in the builder tests.
+pub const ATTEST_ADMIN_ROLE: &str = "ATTEST_ADMIN";
 
 /// Flat library path of the mint-deny guard's `check_policy` procedure within the assembled
 /// `xreserve` library (namespace `xreserve`, module `mint_deny_guard`). This is the
@@ -90,26 +100,42 @@ impl From<TokenPolicyManagerError> for XReserveStablecoinBuilderError {
 }
 
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library component
-/// + a `TokenPolicyManager` with the mint-deny guard active + `PausableManager`.
+/// + a `TokenPolicyManager` with the mint-deny guard active + `PausableManager` + the **RBAC
+/// admin foundation** (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::RbacControlled`
+/// gating on `ATTEST_ADMIN`). The RBAC foundation ships in this production builder so the deployed
+/// faucet validates the real auth model: `set_attester` is gated on `ATTEST_ADMIN`.
 ///
-/// Construct with [`XReserveStablecoinBuilder::new`], optionally override the account type (for the
-/// non-`Public` rejection test) or the requested active mint policy (for the missing-guard rejection
-/// test), then call [`XReserveStablecoinBuilder::build_components`].
+/// Construct with [`XReserveStablecoinBuilder::new`] (the `owner` and the sole `ATTEST_ADMIN`
+/// `admin_holder` are required), optionally override the account type (for the non-`Public`
+/// rejection test) or the requested active mint policy (for the missing-guard rejection test), then
+/// call [`XReserveStablecoinBuilder::build_components`].
 pub struct XReserveStablecoinBuilder {
     faucet: FungibleFaucet,
     xreserve_component: AccountComponent,
+    /// Top-level RBAC authority (the `Ownable2Step` owner). Required by the stock RBAC component.
+    owner: AccountId,
+    /// The sole seeded member of `ATTEST_ADMIN` (the account allowed to send `set_attester` notes).
+    admin_holder: AccountId,
     account_type: AccountType,
     requested_active_mint_policy: Option<MintPolicyConfig>,
 }
 
 impl XReserveStablecoinBuilder {
     /// Creates a builder from a built `FungibleFaucet` and the assembled `xreserve` library
-    /// component (which must carry the deny-guard `check_policy`). Defaults to `AccountType::Public`
-    /// and the deny guard as the active mint policy.
-    pub fn new(faucet: FungibleFaucet, xreserve_component: AccountComponent) -> Self {
+    /// component (which must carry the deny-guard `check_policy`), the RBAC `owner` (top-level
+    /// authority), and the `admin_holder` seeded as the sole `ATTEST_ADMIN` member. Defaults to
+    /// `AccountType::Public` and the deny guard as the active mint policy.
+    pub fn new(
+        faucet: FungibleFaucet,
+        xreserve_component: AccountComponent,
+        owner: AccountId,
+        admin_holder: AccountId,
+    ) -> Self {
         Self {
             faucet,
             xreserve_component,
+            owner,
+            admin_holder,
             account_type: AccountType::Public,
             requested_active_mint_policy: None,
         }
@@ -161,7 +187,21 @@ impl XReserveStablecoinBuilder {
         }
         let manager =
             TokenPolicyManager::new().with_mint_policy(active, PolicyRegistration::Active)?;
-        Ok(self.assemble_components(manager))
+
+        // The RBAC admin foundation, appended AFTER the account-type / deny-guard early returns so a
+        // rejected build never reaches here. The single `Authority` slot gates the stock admin
+        // SETTERS (and `set_attester`) on `ATTEST_ADMIN`; mint execution / the deny path is
+        // `assert_authorized`-free (policy_manager.masm:284-297), so installing this leaves the
+        // R-MINT-16 deny behavior unchanged. Dependency chain: `Ownable2Step` (top-level authority
+        // the stock RBAC requires) -> seeded `RoleBasedAccessControl` -> `Authority::RbacControlled`
+        // (links into `rbac::assert_sender_has_role`).
+        let role = RoleSymbol::new(ATTEST_ADMIN_ROLE)
+            .expect("ATTEST_ADMIN is a fixed valid 12-char role symbol");
+        let mut components = self.assemble_components(manager);
+        components.push(Ownable2Step::new(self.owner).into());
+        components.push(seeded_attest_admin_rbac(self.admin_holder));
+        components.push(Authority::RbacControlled { role }.into());
+        Ok(components)
     }
 
     /// Assembles the final component list. `PausableManager` is mandatory: the stock
@@ -174,4 +214,52 @@ impl XReserveStablecoinBuilder {
         components.push(PausableManager.into());
         components
     }
+}
+
+/// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` (Option A): both stock RBAC
+/// maps are direct-seeded at build, consistent with `grant_role`'s post-state for a single first
+/// grant — `role_membership[{0, ATTEST_ADMIN, holder.suffix, holder.prefix}] = [1,0,0,0]` AND
+/// `role_config[{0,0,0,ATTEST_ADMIN}] = [member_count=1, admin_role=0, 0, 0]`. It reuses the stock
+/// RBAC code + slot names + component metadata verbatim (NO custom RBAC logic); only the maps are
+/// non-empty (the stock `From<RoleBasedAccessControl>` seeds them empty). The key encodings mirror
+/// the stock readers (`miden-testing/tests/scripts/rbac.rs:57-63`). `grant_role` is NOT used (it
+/// would add a tx and is a later dynamic-management slice). Seed correctness is locked by the
+/// `rbac_seed_parity` + role-gate tests, not by construction (`AccountComponent::new` does not
+/// validate slots against the metadata schema). Construction failures are invariants, so this
+/// mirrors the stock `From<RoleBasedAccessControl>` `.expect()` pattern.
+fn seeded_attest_admin_rbac(admin_holder: AccountId) -> AccountComponent {
+    let role = RoleSymbol::new(ATTEST_ADMIN_ROLE)
+        .expect("ATTEST_ADMIN is a fixed valid 12-char role symbol");
+    // [1,0,0,0]: role_config member_count = 1, and role_membership is_member = 1.
+    let member_word = Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
+
+    let role_config = StorageMap::with_entries([(
+        StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&role)])),
+        member_word,
+    )])
+    .expect("the single-entry role_config seed is valid");
+
+    let role_membership = StorageMap::with_entries([(
+        StorageMapKey::new(Word::from([
+            Felt::ZERO,
+            Felt::from(&role),
+            admin_holder.suffix(),
+            admin_holder.prefix().as_felt(),
+        ])),
+        member_word,
+    )])
+    .expect("the single-entry role_membership seed is valid");
+
+    AccountComponent::new(
+        RoleBasedAccessControl::code().clone(),
+        vec![
+            StorageSlot::with_map(RoleBasedAccessControl::role_config_slot().clone(), role_config),
+            StorageSlot::with_map(
+                RoleBasedAccessControl::role_membership_slot().clone(),
+                role_membership,
+            ),
+        ],
+        RoleBasedAccessControl::component_metadata(),
+    )
+    .expect("the seeded RBAC component mirrors the stock From impl and is valid")
 }

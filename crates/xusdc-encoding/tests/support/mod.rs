@@ -22,7 +22,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
-    AccountComponent, AccountId, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
+    AccountComponent, AccountId, AccountIdVersion, AccountType, StorageMap, StorageMapKey,
+    StorageSlot, StorageSlotName,
 };
 use miden_protocol::asset::{AssetAmount, TokenSymbol};
 use miden_protocol::assembly::Library;
@@ -192,6 +193,13 @@ pub const SLOT_PROBE_PATH: &str = "xusdc::test_fixtures::slot_probe";
 /// Assembles the `asm/standards/xreserve` tree into one library under namespace
 /// `xreserve` — lifted from `masm_dual.rs:41-47` (test scaffolding, not an owned
 /// routine; kept byte-equivalent).
+/// A deterministic dummy `AccountId` for the builder's `owner` / `admin_holder` inputs and for the
+/// role-holder / non-holder note senders in the `set_attester` suite. Mirrors
+/// `miden-testing/tests/scripts/rbac.rs:49-51`.
+pub fn test_account_id(seed: u8) -> AccountId {
+    AccountId::dummy([seed; 15], AccountIdVersion::Version1, AccountType::Private)
+}
+
 pub fn assemble_xreserve_lib() -> Result<Library> {
     let assembler = TransactionKernel::assembler().with_warnings_as_errors(true);
     let lib = assembler
@@ -1259,6 +1267,8 @@ pub fn setup_guarded_mint_account(
             xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
                 faucet,
                 xreserve_component,
+                test_account_id(1),
+                test_account_id(2),
             )
             .build_components()
             .map_err(|e| anyhow::anyhow!("composing the production deny faucet: {e}"))?

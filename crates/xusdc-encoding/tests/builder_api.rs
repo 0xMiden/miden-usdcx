@@ -91,7 +91,7 @@ fn dummy_config() -> (Word, Word) {
 async fn build_produces_deny_active_public_faucet() -> Result<()> {
     // build-validation half: the default builder (Public + deny active) composes cleanly.
     let (faucet, xreserve_component) = faucet_and_component()?;
-    let components = XReserveStablecoinBuilder::new(faucet, xreserve_component).build_components();
+    let components = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2)).build_components();
     assert!(
         components.is_ok(),
         "the default production builder must compose a deny-active Public faucet: {:?}",
@@ -129,7 +129,7 @@ async fn build_produces_deny_active_public_faucet() -> Result<()> {
 #[test]
 fn build_rejects_non_public_account_type() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component()?;
-    let err = XReserveStablecoinBuilder::new(faucet, xreserve_component)
+    let err = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2))
         .account_type(AccountType::Private)
         .build_components()
         .expect_err("a non-Public account type must be rejected");
@@ -148,7 +148,7 @@ fn build_rejects_non_public_account_type() -> Result<()> {
 #[test]
 fn build_rejects_missing_mint_deny_guard() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component()?;
-    let err = XReserveStablecoinBuilder::new(faucet, xreserve_component)
+    let err = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2))
         .with_active_mint_policy(MintPolicyConfig::AllowAll)
         .build_components()
         .expect_err("a non-deny active mint policy must be rejected");

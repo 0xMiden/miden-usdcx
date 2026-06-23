@@ -2,48 +2,81 @@
 #
 # FAUCET(01)-owned deposit-attester allowlist admin (P5-01 set_attester + RBAC-foundation slice):
 # the ATTEST_ADMIN-gated `set_attester` setter that writes the xReserveAttesters allowlist — the
-# on-chain write completing the D5d read seam (attestation_verify.masm:95-119, R-MINT-13). The slot
-# this setter co-owns is named by attestation_verify.masm:26
-# (word("xusdc::xreserve::attester_admin::xreserve_attesters")). Module home + flat path per D-1A
-# (CANONICAL-OWNERSHIP-MAP.md:59). Loop history: crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
-#
-# SCAFFOLD (executing-red commit): `set_attester` is a named placeholder that traps
-# ERR_SET_ATTESTER_UNIMPLEMENTED so the red suite assembles and every test reaches execute().await
-# (red at runtime, never a compile error). The green commit replaces the body with the real gate +
-# write (assert_authorized -> assert_not_paused -> set_map_item) and drops this error const.
+# on-chain write completing the D5d read seam (attestation_verify.masm:95-119, R-MINT-13). Reuses the
+# stock access primitives BY REFERENCE: authority::assert_authorized (the Authority::RbacControlled
+# gate -> rbac::assert_sender_has_role on the note sender) + pausable::assert_not_paused (the
+# faucet-installed is_paused slot) + native_account::set_map_item (the write). No custom RBAC/owner
+# logic. Module home + flat path per D-1A (CANONICAL-OWNERSHIP-MAP.md:59). Loop history:
+# crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
 
-# ERRORS
+use miden::standards::access::authority
+use miden::standards::access::pausable
+use miden::protocol::native_account
+
+# CONSTANTS
 # =================================================================================================
 
-# Executing-red placeholder trap; removed when the real body lands (green commit).
-const ERR_SET_ATTESTER_UNIMPLEMENTED = "set_attester is not yet implemented"
+# The xReserveAttesters allowlist StorageMap slot — byte-identical to attestation_verify.masm:26 (the
+# D5d read path keys the SAME slot). The slot id both modules derive from this one name string is the
+# single source of truth; the Rust XRESERVE_ATTESTERS_SLOT_LABEL binds the identical string.
+pub const XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xreserve_attesters")
+
+# The non-empty enabled marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1 (== the
+# fixture MARKER; the D5d read path asserts only that the stored value is non-empty). enabled = 0
+# writes EMPTY_WORD, which the read path treats as "not allowlisted".
+const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
 
 # PUBLIC INTERFACE
 # =================================================================================================
 
 #! ATTEST_ADMIN-gated setter for the xReserveAttesters allowlist: enables (enabled = 1) or disables
-#! (enabled = 0) a deposit attester keyed by its pubkey commitment. The §5.5 setter — it trusts the
-#! caller's commitment Word verbatim and does NOT recompute it from a raw pubkey.
+#! (enabled = 0) a deposit attester keyed by its pubkey commitment. The frozen §5.5 setter — it trusts
+#! the caller's commitment Word verbatim and does NOT recompute it from a raw pubkey.
 #!
 #! Inputs:  [PK_COMMITMENT, enabled, pad(11)]
 #! Outputs: [pad(16)]
 #!
 #! Where:
 #! - PK_COMMITMENT is the Poseidon2 pubkey commitment (the xReserveAttesters map key).
-#! - enabled is 1 to allowlist the attester (write the enabled marker) or 0 to remove it (write
-#!   EMPTY_WORD).
+#! - enabled is 1 (allowlist: write the enabled marker) or 0 (remove: write EMPTY_WORD).
 #!
 #! Panics if:
-#! - the note sender does not hold ATTEST_ADMIN (ERR_SENDER_LACKS_ROLE, green commit).
-#! - the faucet is paused (ERR_PAUSABLE_IS_PAUSED, green commit).
+#! - the note sender does not hold ATTEST_ADMIN (authority::assert_authorized ->
+#!   rbac::assert_sender_has_role, ERR_SENDER_LACKS_ROLE).
+#! - the faucet is paused (pausable::assert_not_paused, ERR_PAUSABLE_IS_PAUSED).
+#! - `enabled` is not a boolean (the `if.true` binary constraint).
 #!
 #! Invocation: call
-#!
-#! SCAFFOLD: unconditional trap (ERR_SET_ATTESTER_UNIMPLEMENTED) until the green commit. Uses
-#! `push.1 assertz` (NOT `push.0 assert`) so this proc's MAST root differs from the structurally
-#! identical `mint_deny_guard::check_policy` — error messages are MAST decorators, not part of the
-#! root, so two `push.0 assert.err=…` procs would collide and the deny-guard `dynexec` would surface
-#! THIS error. The real body (green commit) is structurally distinct and needs no such guard.
+@locals(4)
 pub proc set_attester
-    push.1 assertz.err=ERR_SET_ATTESTER_UNIMPLEMENTED
+    # => [PK_COMMITMENT, enabled, pad(11)]
+
+    # gate: the ATTEST_ADMIN role (sender-based) then the faucet-wide pause guard. Both read account
+    # storage and are operand-stack-neutral.
+    exec.authority::assert_authorized
+    # => [PK_COMMITMENT, enabled, pad(11)]
+    exec.pausable::assert_not_paused
+    # => [PK_COMMITMENT, enabled, pad(11)]
+
+    # stash the caller-supplied commitment (the map key) into loc[0..4], trusted verbatim (§5.5). The
+    # `_le` store leaves the word on the stack, so drop the copy.
+    loc_storew_le.0 dropw
+    # => [enabled, pad(11)]
+
+    # VALUE = enabled ? ATTESTER_ENABLED_MARKER : EMPTY_WORD. `if.true` requires `enabled` to be
+    # boolean, so a non-bool can never write a non-canonical marker.
+    if.true
+        push.ATTESTER_ENABLED_MARKER
+    else
+        padw
+    end
+    # => [VALUE, pad(11)]
+
+    # xReserveAttesters[PK_COMMITMENT] := VALUE.
+    padw loc_loadw_le.0
+    # => [PK_COMMITMENT, VALUE, pad(11)]
+    push.XRESERVE_ATTESTERS_SLOT[0..2]
+    # => [slot_id_suffix, slot_id_prefix, PK_COMMITMENT, VALUE, pad(11)]
+    exec.native_account::set_map_item dropw
+    # => [pad(16)]
 end

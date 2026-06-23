@@ -23,6 +23,7 @@ use miden_protocol::transaction::{ExecutedTransaction, TransactionKernel};
 use miden_processor::ExecutionError;
 use miden_processor::operation::OperationError;
 use miden_protocol::{Felt, Word};
+use miden_standards::StandardsLib;
 use miden_standards::code_builder::CodeBuilder;
 use miden_testing::{Auth, MockChain, assert_transaction_executor_error};
 use miden_tx::TransactionExecutorError;
@@ -40,7 +41,12 @@ const INTENT_PTR: u64 = 1024;
 /// Assembles the `asm/standards/xreserve` tree into one library under namespace
 /// `xreserve` — mirrors `miden-standards/build.rs:45,:77` verbatim.
 fn assemble_xreserve_lib() -> Result<Library> {
-    let assembler = TransactionKernel::assembler().with_warnings_as_errors(true);
+    // Link StandardsLib (mirrors support::assemble_xreserve_lib): attester_admin::set_attester calls
+    // the stock authority/pausable procs, which live in StandardsLib.
+    let assembler = TransactionKernel::assembler()
+        .with_dynamic_library(StandardsLib::default())
+        .map_err(|e| anyhow::anyhow!("linking the standards library into the xreserve assembler: {e}"))?
+        .with_warnings_as_errors(true);
     let lib = assembler
         .assemble_library_from_dir(xusdc_encoding::xreserve_asm_dir(), "xreserve")
         .map_err(|e| anyhow::anyhow!("xreserve library failed to assemble: {e}"))?;

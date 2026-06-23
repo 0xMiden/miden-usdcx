@@ -38,6 +38,7 @@ use miden_processor::crypto::random::RandomCoin;
 use miden_standards::account::access::PausableManager;
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::policies::{MintPolicyConfig, PolicyRegistration, TokenPolicyManager};
+use miden_standards::StandardsLib;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::P2idNote;
 use miden_testing::{Auth, MockChain};
@@ -204,7 +205,15 @@ pub fn test_account_id(seed: u8) -> AccountId {
 }
 
 pub fn assemble_xreserve_lib() -> Result<Library> {
-    let assembler = TransactionKernel::assembler().with_warnings_as_errors(true);
+    // Link the standards library (mirrors CodeBuilder's own `with_dynamic_library(StandardsLib)`):
+    // attester_admin::set_attester calls the stock `authority::assert_authorized` /
+    // `pausable::assert_not_paused`, which live in StandardsLib. The other xreserve modules stay
+    // core+protocol-only; linking standards only adds resolvable symbols (it does not change their
+    // MAST roots).
+    let assembler = TransactionKernel::assembler()
+        .with_dynamic_library(StandardsLib::default())
+        .map_err(|e| anyhow::anyhow!("linking the standards library into the xreserve assembler: {e}"))?
+        .with_warnings_as_errors(true);
     let lib = assembler
         .assemble_library_from_dir(xusdc_encoding::xreserve_asm_dir(), "xreserve")
         .map_err(|e| anyhow::anyhow!("xreserve library failed to assemble: {e}"))?;

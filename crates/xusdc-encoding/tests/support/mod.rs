@@ -1235,6 +1235,50 @@ pub fn faucet_account(h: &CompositionHarness) -> Account {
         .clone()
 }
 
+/// Builds a note SENT BY `sender` whose script calls the stock `PausableManager::pause` — gated on
+/// the SAME Authority (ATTEST_ADMIN). Used to pause the faucet before exercising the set_attester
+/// pause gate. `pause` is a pure standards proc (CodeBuilder pre-links StandardsLib), so no xreserve
+/// link is needed.
+pub fn pause_note(sender: AccountId, seed: u64) -> Result<Note> {
+    let src = "use miden::standards::access::pausable::manager\n\
+               @note_script\n\
+               pub proc main\n\
+               \x20\x20\x20\x20repeat.16 push.0 end\n\
+               \x20\x20\x20\x20call.manager::pause\n\
+               \x20\x20\x20\x20dropw dropw dropw dropw\n\
+               end\n";
+    let script = CodeBuilder::new()
+        .compile_note_script(src)
+        .map_err(|e| anyhow::anyhow!("pause note script failed to compile: {e}"))?;
+    let mut rng = RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(3u32),
+        Felt::from(4u32),
+    ]));
+    Ok(NoteBuilder::new(sender, &mut rng)
+        .note_type(NoteType::Private)
+        .script(script)
+        .build()?)
+}
+
+/// Executes a `PausableManager::pause` note (sent by `sender`) against the faucet `account`.
+pub async fn run_pause_tx(
+    h: &CompositionHarness,
+    account: &Account,
+    sender: AccountId,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = pause_note(sender, seed).expect("building the pause note (test-setup invariant)");
+    h.mock_chain
+        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
+        .expect("building the pause tx context")
+        .build()
+        .expect("building the pause transaction")
+        .execute()
+        .await
+}
+
 /// Runs the mint composition driver against an explicit (possibly evolved) `account` — the seam's
 /// tx2, after a real `set_attester` tx evolved the faucet. Mirrors [`run_mint_composition`] but
 /// threads the account instead of `h.account_id`, so tx1's storage delta is visible to the read path.

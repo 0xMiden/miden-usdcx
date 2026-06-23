@@ -203,3 +203,30 @@ async fn set_attester_non_holder_rejects() -> Result<()> {
     );
     Ok(())
 }
+
+// PAUSE GATE — set_attester traps the EXACT pause error when the faucet is paused (forbidden #8)
+// ================================================================================================
+
+/// After the ATTEST_ADMIN holder pauses the faucet (stock `PausableManager::pause`), a holder-sent
+/// `set_attester` note passes the role gate but traps the EXACT ERR_PAUSABLE_IS_PAUSED — proving the
+/// pause guard is real (the `is_paused` slot is installed by FungibleFaucet, so this is never a
+/// missing-slot trap). The pause test sends from the HOLDER so it clears `assert_authorized` first
+/// and isolates the pause gate.
+#[tokio::test]
+async fn set_attester_paused_rejects() -> Result<()> {
+    let gm = guarded_faucet()?;
+    let account = faucet_account(&gm.harness);
+
+    // tx1: the holder pauses the faucet (is_paused := true).
+    let paused = run_pause_tx(&gm.harness, &account, holder(), 5)
+        .await
+        .expect("the ATTEST_ADMIN holder can pause the faucet");
+    let mut evolved = account.clone();
+    evolved.apply_delta(paused.account_delta())?;
+
+    // tx2: set_attester by the holder now traps the EXACT pause error (gate passes, pause fails).
+    let result =
+        run_set_attester_tx(&gm.harness, &evolved, holder(), Word::from([1u32, 2, 3, 4]), 1, 7).await;
+    assert_transaction_executor_error!(result, MasmError::from_static_str("the contract is paused"));
+    Ok(())
+}

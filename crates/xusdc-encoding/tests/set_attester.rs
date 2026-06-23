@@ -1,8 +1,8 @@
 //! P5-01 `set_attester` + RBAC-foundation suite: the `ATTEST_ADMIN`-gated allowlist setter installed
 //! into the production `XReserveStablecoinBuilder`. This file covers the role gate (the security
-//! core), the RBAC seed parity, and the production-deny regression. The non-vacuity set->verify seam
-//! (`set_attester_enables_attestation` and friends) + the paused gate ride the shared mint-composition
-//! fixtures and land in a follow-up.
+//! core), the RBAC seed parity, the production-deny regression, and the pause gate. The non-vacuity
+//! set->verify seam (`set_attester_enables_attestation`, remove-denies, and the 5-step rotation)
+//! lives in `xreserve_mint.rs`, alongside the shared mint-composition fixtures it reuses.
 //!
 //! RED-SUITE (executing-red): `attester_admin.masm` holds only the NAMED placeholder trap
 //! (ERR_SET_ATTESTER_UNIMPLEMENTED). Each behavior test asserts its FINAL (green) expectation and is

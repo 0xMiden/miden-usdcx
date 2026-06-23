@@ -38,6 +38,10 @@ const XRESERVE_MINT_MASM: &str =
 const MINT_DENY_GUARD_MASM: &str =
     include_str!("../../../asm/standards/xreserve/mint_deny_guard.masm");
 
+/// The FAUCET(01) P5-01 set_attester admin module source, read test-side by reference.
+const ATTESTER_ADMIN_MASM: &str =
+    include_str!("../../../asm/standards/xreserve/attester_admin.masm");
+
 /// Faucet-owned shell error constants declared in MASM, pinned against the test-side
 /// `support::SHELL_ERR_TABLE` (the single Rust source).
 const SHELL_ERRORS_DECLARED: &[&str] = &[
@@ -71,6 +75,13 @@ const EXPECTED_SHELL_WORD_CONSTS: &[(&str, &str)] = &[
 
 /// Expected `word("…")` slot-name constant of the D5d attestation-verify shell module.
 const EXPECTED_ATTESTATION_WORD_CONSTS: &[(&str, &str)] =
+    &[("XRESERVE_ATTESTERS_SLOT", support::XRESERVE_ATTESTERS_SLOT_LABEL)];
+
+/// Expected `word("…")` slot-name constant of the P5-01 set_attester admin module. Its
+/// `XRESERVE_ATTESTERS_SLOT` MUST be byte-identical to attestation_verify's (the setter writes the
+/// SAME slot the D5d read path keys); the shared label is the single Rust source. (The
+/// `ATTESTER_ENABLED_MARKER` Word array literal is not parity-parsed, like `NONCE_USED_MARKER`.)
+const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] =
     &[("XRESERVE_ATTESTERS_SLOT", support::XRESERVE_ATTESTERS_SLOT_LABEL)];
 
 /// Expected `word("…")` slot-name constant of the D5e mint shell module. `TOKEN_CONFIG_SLOT` is
@@ -281,7 +292,7 @@ fn masm_constants_bidirectional() {
         ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
     };
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 6] = [
+    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 7] = [
         ("layout.masm", LAYOUT_MASM, LAYOUT_COVERED_NUMS, &[]),
         ("encoding/mod.masm", ENCODING_MOD_MASM, ENCODING_COVERED_NUMS, &[]),
         ("deposit_intent_parser.masm", SHELL_MASM, SHELL_COVERED_NUMS, EXPECTED_SHELL_WORD_CONSTS),
@@ -300,6 +311,14 @@ fn masm_constants_bidirectional() {
         // R-MINT-16: the deny guard declares only ERR_XRESERVE_MINT_DENIED (a known shell error via
         // SHELL_ERR_TABLE); no numeric or word("…") constants.
         ("mint_deny_guard.masm", MINT_DENY_GUARD_MASM, &[], &[]),
+        // P5-01 set_attester: pins XRESERVE_ATTESTERS_SLOT to the shared label (no numeric consts;
+        // the reused ERR_SENDER_LACKS_ROLE / ERR_PAUSABLE_IS_PAUSED are stock, not declared here).
+        (
+            "attester_admin.masm",
+            ATTESTER_ADMIN_MASM,
+            &[],
+            EXPECTED_ATTESTER_ADMIN_WORD_CONSTS,
+        ),
     ];
     for (file, src, covered_nums, expected_words) in sources {
         let (nums, strs, words) = parse_masm_consts(src);
@@ -331,4 +350,41 @@ fn masm_constants_bidirectional() {
             assert_eq!(masm_label, label, "slot-label parity for {name} in {file}");
         }
     }
+}
+
+/// Parity for the installed RBAC gate role: the production builder's `Authority` slot must carry
+/// exactly `RbacControlled { role: ATTEST_ADMIN }` = `[RBAC_CONTROLLED, Felt::from(ATTEST_ADMIN), 0,
+/// 0]`. The MASM gate reads this role from storage (no MASM literal to pin), so this ties the
+/// on-chain gate role to the Rust `ATTEST_ADMIN_ROLE` const — extending the constant sweep to the
+/// authority role. Drifting the const (or the builder's installed role) fails here.
+#[test]
+fn attest_admin_authority_role_parity() -> anyhow::Result<()> {
+    use miden_protocol::Word;
+    use miden_protocol::account::RoleSymbol;
+    use miden_standards::account::access::Authority;
+    use xusdc_encoding::account::xreserve::ATTEST_ADMIN_ROLE;
+
+    let driver = support::mint_composition_driver_src(&[miden_protocol::Felt::from(0u32)], 60, 6);
+    let probe = support::composition_supply_probe_src(0);
+    let gm = support::setup_guarded_mint_account(
+        support::GuardSelection::ProductionDeny,
+        1_000_000,
+        0,
+        Word::from([7u32, 0, 0, 0]),
+        Word::from([11u32, 12, 13, 14]),
+        None,
+        None,
+        &driver,
+        &probe,
+    )?;
+    let account = support::faucet_account(&gm.harness);
+
+    let role = RoleSymbol::new(ATTEST_ADMIN_ROLE).expect("ATTEST_ADMIN is a valid role symbol");
+    let installed = Authority::try_from_storage(account.storage())?;
+    assert_eq!(
+        installed,
+        Authority::RbacControlled { role },
+        "the installed Authority must be RbacControlled{{ATTEST_ADMIN}}"
+    );
+    Ok(())
 }

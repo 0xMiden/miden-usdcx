@@ -1305,6 +1305,130 @@ pub async fn run_mint_against(
         .await
 }
 
+/// A rotation harness: the RBAC-equipped production faucet (admin_holder = id(2)) with an EMPTY
+/// allowlist + ONE mint driver per distinct-nonce payload, so the rotation can run several successful
+/// mints (each consumes its own nonce) on ONE evolving account. Reuses [`CompositionHarness`] for
+/// `mock_chain` / `account_id`; the rotation runs drivers explicitly via [`run_rotation_mint`].
+pub struct RotationHarness {
+    pub harness: CompositionHarness,
+    pub drivers: Vec<(String, AccountComponentCode)>,
+}
+
+/// Builds the rotation account: the production builder (RBAC seeded) + one driver component per
+/// `driver_srcs` entry, each at a distinct module path (`xusdc::test_fixtures::rotation_driver_{i}`).
+pub fn setup_rotation_account(
+    domain: Word,
+    identifier: Word,
+    driver_srcs: &[&str],
+) -> Result<RotationHarness> {
+    let library = assemble_xreserve_lib()?;
+    let xreserve_component = AccountComponent::new(
+        library.clone(),
+        vec![
+            StorageSlot::with_value(
+                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
+                domain,
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL).context("identifier slot label")?,
+                identifier,
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
+                StorageMap::new(),
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+                    .context("xReserveAttesters slot label")?,
+                StorageMap::new(),
+            ),
+        ],
+        AccountComponentMetadata::new("xusdc-rotation-harness"),
+    )
+    .context("binding the rotation xreserve component")?;
+
+    let mut drivers = Vec::new();
+    let mut driver_components = Vec::new();
+    for (i, src) in driver_srcs.iter().enumerate() {
+        let path = format!("xusdc::test_fixtures::rotation_driver_{i}");
+        let code = CodeBuilder::new()
+            .with_dynamically_linked_library(&library)
+            .with_context(|| format!("linking xreserve into rotation driver {i}"))?
+            .compile_component_code(&path, *src)
+            .with_context(|| format!("rotation driver {i} failed to compile"))?;
+        driver_components.push(
+            AccountComponent::new(
+                code.clone(),
+                vec![],
+                AccountComponentMetadata::new(format!("xusdc-rotation-driver-{i}")),
+            )
+            .with_context(|| format!("binding rotation driver {i}"))?,
+        );
+        drivers.push((path, code));
+    }
+
+    let faucet = FungibleFaucet::builder()
+        .name(TokenName::new("XUSDC")?)
+        .symbol(TokenSymbol::new("XUSDC")?)
+        .decimals(6)
+        .max_supply(AssetAmount::new(1_000_000).context("invalid max_supply")?)
+        .token_supply(AssetAmount::new(0).context("invalid token_supply")?)
+        .build()
+        .context("failed to build FungibleFaucet")?;
+
+    let mut components = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
+        faucet,
+        xreserve_component,
+        test_account_id(1),
+        test_account_id(2),
+    )
+    .build_components()
+    .map_err(|e| anyhow::anyhow!("composing the rotation faucet: {e}"))?;
+    components.extend(driver_components);
+
+    let mut mc = MockChain::builder();
+    let account = mc
+        .add_existing_account_from_components(Auth::IncrNonce, components)
+        .context("adding the rotation account")?;
+    let mock_chain = mc.build().context("building the rotation MockChain")?;
+    let first = drivers[0].1.clone();
+    Ok(RotationHarness {
+        harness: CompositionHarness {
+            mock_chain,
+            account_id: account.id(),
+            driver_code: first.clone(),
+            probe_code: first,
+        },
+        drivers,
+    })
+}
+
+/// Runs rotation `driver` (path + code) against an explicit (evolving) `account` with `advice` — the
+/// per-payload analog of [`run_mint_against`].
+pub async fn run_rotation_mint(
+    h: &CompositionHarness,
+    driver: &(String, AccountComponentCode),
+    account: &Account,
+    advice: Vec<Felt>,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let (path, code) = driver;
+    let src = format!("use {path}->driver\nbegin\n    call.driver::drive\nend\n");
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(code)
+        .expect("linking the rotation driver into the tx script")
+        .compile_tx_script(&src)
+        .unwrap_or_else(|e| panic!("rotation driver script failed to compile: {e}\n{src}"));
+    h.mock_chain
+        .build_tx_context(account.clone(), &[], &[])
+        .expect("building the rotation tx context")
+        .tx_script(tx_script)
+        .extend_advice_inputs(AdviceInputs::default().with_stack(advice))
+        .build()
+        .expect("building the rotation transaction")
+        .execute()
+        .await
+}
+
 // R-MINT-16 MINT-DENY GUARD (P5-01) — guarded faucet composition + stock mint_and_send invocation
 // ================================================================================================
 

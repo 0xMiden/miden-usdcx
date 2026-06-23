@@ -90,6 +90,18 @@ fn with_amounts(mut payload: Vec<u8>, amount: u64, max_fee: u64) -> Vec<u8> {
     payload
 }
 
+/// First byte of the 32-byte `nonce` field within the DepositIntent header (`NONCE_FELT_OFF` * 4
+/// bytes/felt; `asm/standards/xreserve/encoding/layout.masm:24`).
+const NONCE_BYTE_OFF: usize = 51 * 4;
+
+/// Distinct-nonce variant of a payload: perturbs the nonce field so the rotation can mint several
+/// payloads on one evolving account without a D5c replay collision (each successful mint consumes its
+/// nonce). XOR with a distinct non-zero byte yields nonces distinct from the base and from each other.
+fn with_nonce(mut payload: Vec<u8>, perturbation: u8) -> Vec<u8> {
+    payload[NONCE_BYTE_OFF] ^= perturbation;
+    payload
+}
+
 /// The fully-consistent happy payload: valid amount/maxFee, valid recipient (unchanged).
 fn happy_payload() -> Vec<u8> {
     with_amounts(base_payload(), HAPPY_AMOUNT_RAW, HAPPY_MAX_FEE_RAW)
@@ -646,8 +658,8 @@ async fn xreserve_mint_still_mints_on_guarded_account() -> Result<()> {
 // vacuous. Only an end-to-end attestation proves the key set_attester WROTE equals the key the D5d
 // read path COMPUTES. These run on the RBAC-equipped production faucet (admin_holder = id(2)) with an
 // EMPTY allowlist, then drive a real set_attester note tx (tx1) and a real mint tx (tx2) on the
-// evolved account. (The 5-step rotation + the paused gate ride nonce-varying payloads / a paused
-// fixture and land next.)
+// evolved account. The 5-step rotation (below) uses distinct-nonce payloads (`with_nonce`); the
+// pause gate needs no mint and lives in `set_attester.rs`.
 
 /// Positive seam (add enables) + negative-before control: an empty allowlist denies K's attestation
 /// (R-MINT-13); after the ATTEST_ADMIN holder runs `set_attester(K, true)`, the SAME attestation
@@ -737,5 +749,67 @@ async fn set_attester_remove_denies_attestation() -> Result<()> {
     // the SAME K-attestation now traps R-MINT-13 (K is no longer allowlisted).
     let denied = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
     assert_transaction_executor_error!(denied, shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"));
+    Ok(())
+}
+
+/// 5-step add-then-retire rotation (§4.K) on ONE evolving account, each step proven via the seam:
+/// (1) enable K_old -> K_old mints; (2) enable K_new -> K_new mints; (3) disable K_old; (4) K_old
+/// traps R-MINT-13; (5) K_new still mints. Three distinct-nonce payloads — each successful mint
+/// (steps 1, 2, 5) consumes its nonce; the denied K_old attempt (step 4) traps at D5d BEFORE the
+/// nonce SET, so it shares payload_c's nonce with step 5. K_old (seed 1) / K_new (seed 2) keep their
+/// commitments across payloads; only the signature changes per payload.
+#[tokio::test]
+async fn set_attester_add_then_retire_rotation() -> Result<()> {
+    let payload_a = with_nonce(happy_payload(), 1);
+    let payload_b = with_nonce(happy_payload(), 2);
+    let payload_c = with_nonce(happy_payload(), 3);
+    let old_a = gen_attester(1, &payload_a); // K_old over payload_a
+    let new_b = gen_attester(2, &payload_b); // K_new over payload_b
+    let old_c = gen_attester(1, &payload_c); // K_old over payload_c (same commitment as old_a)
+    let new_c = gen_attester(2, &payload_c); // K_new over payload_c (same commitment as new_b)
+    assert_ne!(old_a.commitment, new_b.commitment, "K_old and K_new must be distinct keys");
+
+    let (domain, identifier) = config(TEST_DOMAIN);
+    // One driver per distinct-nonce payload (each successful mint consumes its nonce; the mint must
+    // run as an installed account procedure, so one driver per payload).
+    let driver_a = mint_composition_driver_src(&pack(&payload_a), LEN_FELTS, SCALE_EXP);
+    let driver_b = mint_composition_driver_src(&pack(&payload_b), LEN_FELTS, SCALE_EXP);
+    let driver_c = mint_composition_driver_src(&pack(&payload_c), LEN_FELTS, SCALE_EXP);
+    let rh = setup_rotation_account(domain, identifier, &[&driver_a, &driver_b, &driver_c])?;
+    let h = &rh.harness;
+    let holder = test_account_id(2);
+    let mut acct = faucet_account(h);
+
+    // 1. enable K_old -> K_old mints (driver_a / payload_a, nonce_a).
+    let s1 = run_set_attester_tx(h, &acct, holder, old_a.commitment, 1, 11).await.expect("enable K_old");
+    acct.apply_delta(s1.account_delta())?;
+    let m1 = run_rotation_mint(h, &rh.drivers[0], &acct, composition_advice([0u32; 8], &old_a))
+        .await
+        .expect("K_old mints once enabled");
+    assert_eq!(m1.output_notes().num_notes(), 1, "step 1: K_old mints");
+    acct.apply_delta(m1.account_delta())?;
+
+    // 2. enable K_new -> K_new mints (driver_b / payload_b, nonce_b).
+    let s2 = run_set_attester_tx(h, &acct, holder, new_b.commitment, 1, 12).await.expect("enable K_new");
+    acct.apply_delta(s2.account_delta())?;
+    let m2 = run_rotation_mint(h, &rh.drivers[1], &acct, composition_advice([0u32; 8], &new_b))
+        .await
+        .expect("K_new mints once enabled");
+    assert_eq!(m2.output_notes().num_notes(), 1, "step 2: K_new mints");
+    acct.apply_delta(m2.account_delta())?;
+
+    // 3. disable K_old.
+    let s3 = run_set_attester_tx(h, &acct, holder, old_a.commitment, 0, 13).await.expect("disable K_old");
+    acct.apply_delta(s3.account_delta())?;
+
+    // 4. K_old now traps R-MINT-13 (driver_c / payload_c; traps at D5d, so nonce_c is NOT consumed).
+    let m4 = run_rotation_mint(h, &rh.drivers[2], &acct, composition_advice([0u32; 8], &old_c)).await;
+    assert_transaction_executor_error!(m4, shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"));
+
+    // 5. K_new still mints (driver_c / payload_c, nonce_c still fresh).
+    let m5 = run_rotation_mint(h, &rh.drivers[2], &acct, composition_advice([0u32; 8], &new_c))
+        .await
+        .expect("K_new still mints after K_old is retired");
+    assert_eq!(m5.output_notes().num_notes(), 1, "step 5: K_new still mints");
     Ok(())
 }

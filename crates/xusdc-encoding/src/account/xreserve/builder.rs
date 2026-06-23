@@ -3,14 +3,15 @@
 //! mint policy so the inherited stock `mint_and_send` traps and the custom `xreserve_mint` is the
 //! provably sole supply-increasing surface (INV-MINT-SECURITY, §5.2).
 //!
-//! Scope of THIS increment (the rest is named-deferred, not dropped — see the R-MINT-16 plan §2):
-//! it composes `FungibleFaucet` + the assembled `xreserve` library component (carries
-//! `apply_mint_effects` AND the deny-guard `check_policy`) + a `TokenPolicyManager` whose active mint
-//! policy is the deny guard + `PausableManager` (required: `execute_mint_policy` runs
-//! `assert_not_paused`). DEFERRED to later slices: `Authority`/`Ownable2Step`/`RBAC` admin + auth
-//! finalisation into a signed `Account`, `XReserveDomainConfig`, `XReserveAttesterAdmin`,
-//! `XReserveNonceRegistry` as a distinct component, and the burn policy. The builder yields the
-//! validated component composition; MockChain (tests) and the future admin builder finalise it.
+//! Scope (cumulative): it composes `FungibleFaucet` + the assembled `xreserve` library component
+//! (carries `apply_mint_effects`, the deny-guard `check_policy`, AND the P5-01 `set_attester` admin
+//! proc) + a `TokenPolicyManager` whose active mint policy is the deny guard + `PausableManager`
+//! (required: `execute_mint_policy` runs `assert_not_paused`) + the **RBAC admin foundation**
+//! (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::RbacControlled` on
+//! `ATTEST_ADMIN`; see below). STILL DEFERRED to later slices: dynamic role management
+//! (`grant_role`/`revoke_role`/`set_role_admin`), other roles (DOMAIN_PAUSER / DOMAIN_MANAGER),
+//! `set_max_supply`, domain init, and the burn policy. The builder yields the validated component
+//! composition; MockChain (tests) finalises it into a signed `Account`.
 //!
 //! Packaging: the deny guard is **runtime-assembled** MASM (no `.masl` asset / `account_component_code!`
 //! here — that is a miden-standards-internal pipeline). The caller assembles the `xreserve` library

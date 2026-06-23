@@ -639,3 +639,103 @@ async fn xreserve_mint_still_mints_on_guarded_account() -> Result<()> {
     assert_eq!(written, Word::from(MARKER), "nonce marker committed");
     Ok(())
 }
+
+// set_attester -> verify SEAM (P5-01) — the load-bearing non-vacuity proof
+// ================================================================================================
+// The setter trusts the caller's commitment Word verbatim (§5.5), so a storage-delta check is
+// vacuous. Only an end-to-end attestation proves the key set_attester WROTE equals the key the D5d
+// read path COMPUTES. These run on the RBAC-equipped production faucet (admin_holder = id(2)) with an
+// EMPTY allowlist, then drive a real set_attester note tx (tx1) and a real mint tx (tx2) on the
+// evolved account. (The 5-step rotation + the paused gate ride nonce-varying payloads / a paused
+// fixture and land next.)
+
+/// Positive seam (add enables) + negative-before control: an empty allowlist denies K's attestation
+/// (R-MINT-13); after the ATTEST_ADMIN holder runs `set_attester(K, true)`, the SAME attestation
+/// mints. Proves set's written key == the read path's computed key.
+#[tokio::test]
+async fn set_attester_enables_attestation() -> Result<()> {
+    let payload = happy_payload();
+    let attester = gen_attester(1, &payload);
+    let (domain, identifier) = config(TEST_DOMAIN);
+    let driver = mint_composition_driver_src(&pack(&payload), LEN_FELTS, SCALE_EXP);
+    let probe = composition_noeffect_probe_src(0, nonce_key());
+    let gm = setup_guarded_mint_account(
+        support::GuardSelection::ProductionDeny,
+        1_000_000,
+        0,
+        domain,
+        identifier,
+        None,
+        None, // EMPTY allowlist — set_attester is the only way K gets admitted
+        &driver,
+        &probe,
+    )?;
+    let account = faucet_account(&gm.harness);
+
+    // negative-before: K is not allowlisted -> the D5d read traps R-MINT-13 (the "before" anchor).
+    let before = run_mint_against(&gm.harness, &account, composition_advice([0u32; 8], &attester)).await;
+    assert_transaction_executor_error!(before, shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"));
+
+    // tx1: the ATTEST_ADMIN holder (id(2)) allowlists K.
+    let set = run_set_attester_tx(&gm.harness, &account, test_account_id(2), attester.commitment, 1, 7)
+        .await
+        .expect("the ATTEST_ADMIN holder's set_attester(K, true) must succeed");
+    let mut evolved = account.clone();
+    evolved.apply_delta(set.account_delta())?;
+
+    // positive seam: the SAME K-attestation now PASSES the gate and mints.
+    let minted = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester))
+        .await
+        .expect("set_attester(K, true) must enable K's attestation to mint (seam closes)");
+    assert_eq!(minted.output_notes().num_notes(), 1, "exactly one recipient note");
+    let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
+    let StorageSlotDelta::Value(cfg) =
+        minted.account_delta().storage().get(&cfg_slot).expect("token_config slot delta")
+    else {
+        panic!("token_config must be a Value slot delta");
+    };
+    assert_eq!(cfg[0], Felt::from(REDUCED_AMOUNT), "token_supply rose by the reduced amount");
+    Ok(())
+}
+
+/// Negative-after (remove denies): after the holder enables then `set_attester(K, false)` removes K,
+/// the SAME attestation traps R-MINT-13 — proving the removal write (EMPTY_WORD) genuinely closes the
+/// seam (forbidden #6: a remove that writes a still-non-empty value would keep K verifying).
+#[tokio::test]
+async fn set_attester_remove_denies_attestation() -> Result<()> {
+    let payload = happy_payload();
+    let attester = gen_attester(1, &payload);
+    let (domain, identifier) = config(TEST_DOMAIN);
+    let driver = mint_composition_driver_src(&pack(&payload), LEN_FELTS, SCALE_EXP);
+    let probe = composition_noeffect_probe_src(0, nonce_key());
+    let gm = setup_guarded_mint_account(
+        support::GuardSelection::ProductionDeny,
+        1_000_000,
+        0,
+        domain,
+        identifier,
+        None,
+        None,
+        &driver,
+        &probe,
+    )?;
+    let account = faucet_account(&gm.harness);
+
+    // tx1: enable K.
+    let enable = run_set_attester_tx(&gm.harness, &account, test_account_id(2), attester.commitment, 1, 7)
+        .await
+        .expect("enable must succeed");
+    let mut evolved = account.clone();
+    evolved.apply_delta(enable.account_delta())?;
+
+    // tx2: remove K (enabled = 0 -> EMPTY_WORD).
+    let remove = run_set_attester_tx(&gm.harness, &evolved, test_account_id(2), attester.commitment, 0, 9)
+        .await
+        .expect("remove must succeed");
+    evolved.apply_delta(remove.account_delta())?;
+
+    // the SAME K-attestation now traps R-MINT-13 (K is no longer allowlisted).
+    let denied = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
+    assert_transaction_executor_error!(denied, shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"));
+    Ok(())
+}

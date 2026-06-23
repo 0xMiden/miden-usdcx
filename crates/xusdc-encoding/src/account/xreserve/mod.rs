@@ -3,5 +3,6 @@
 pub mod builder;
 
 pub use builder::{
-    XReserveStablecoinBuilder, XReserveStablecoinBuilderError, MINT_DENY_GUARD_PROC_PATH,
+    ATTEST_ADMIN_ROLE, MINT_DENY_GUARD_PROC_PATH, XReserveStablecoinBuilder,
+    XReserveStablecoinBuilderError,
 };

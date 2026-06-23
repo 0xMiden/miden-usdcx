@@ -22,16 +22,19 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
-    AccountComponent, AccountId, AccountIdVersion, AccountType, StorageMap, StorageMapKey,
+    Account, AccountComponent, AccountId, AccountIdVersion, AccountType, StorageMap, StorageMapKey,
     StorageSlot, StorageSlotName,
 };
 use miden_protocol::asset::{AssetAmount, TokenSymbol};
+use miden_protocol::note::{Note, NoteType};
+use miden_standards::testing::note::NoteBuilder;
 use miden_protocol::assembly::Library;
 use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::{ExecutedTransaction, TransactionKernel};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
 use miden_processor::advice::AdviceInputs;
+use miden_processor::crypto::random::RandomCoin;
 use miden_standards::account::access::PausableManager;
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::policies::{MintPolicyConfig, PolicyRegistration, TokenPolicyManager};
@@ -1145,6 +1148,108 @@ pub async fn run_composition_probe(
     h: &CompositionHarness,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     run_composition_driver(h, &h.probe_code, MINT_PROBE_PATH, "check", None).await
+}
+
+// set_attester — role-holder note invocation + the set->verify seam
+// ================================================================================================
+
+/// Builds an unauthenticated note SENT BY `sender` whose script `call`s
+/// `xreserve::attester_admin::set_attester(PK_COMMITMENT, enabled)`. The RBAC gate reads the note
+/// sender (`active_note::get_sender`), so the sender is what the ATTEST_ADMIN check tests. `enabled`
+/// is 1 (allowlist) or 0 (remove). The note script is compiled with the `xreserve` library linked so
+/// the `call` resolves to the same proc installed on the faucet account.
+pub fn set_attester_note(sender: AccountId, commitment: Word, enabled: u8, seed: u64) -> Result<Note> {
+    let lib = assemble_xreserve_lib()?;
+    // Stack contract: [PK_COMMITMENT, enabled, pad(11)] (PK_COMMITMENT element-0 on top). Push the
+    // 11 pad felts (deepest), then enabled, then the commitment so c0 ends on top: 11 + 1 + 4 = 16.
+    let src = format!(
+        "use xreserve::attester_admin\n\
+         @note_script\n\
+         pub proc main\n\
+         \x20\x20\x20\x20repeat.11 push.0 end\n\
+         \x20\x20\x20\x20push.{enabled}\n\
+         \x20\x20\x20\x20push.{c3}.{c2}.{c1}.{c0}\n\
+         \x20\x20\x20\x20call.attester_admin::set_attester\n\
+         \x20\x20\x20\x20dropw dropw dropw dropw\n\
+         end\n",
+        c0 = commitment[0],
+        c1 = commitment[1],
+        c2 = commitment[2],
+        c3 = commitment[3],
+    );
+    let script = CodeBuilder::new()
+        .with_dynamically_linked_library(&lib)
+        .context("linking xreserve into the set_attester note script")?
+        .compile_note_script(src.clone())
+        .map_err(|e| anyhow::anyhow!("set_attester note script failed to compile: {e}\n{src}"))?;
+    // Deterministic note rng (RandomCoin satisfies NoteBuilder's `Rng` bound; StdRng's `rand`
+    // version does not). The seed only affects the note serial, never the gate.
+    let mut rng = RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(1u32),
+        Felt::from(2u32),
+    ]));
+    Ok(NoteBuilder::new(sender, &mut rng)
+        .note_type(NoteType::Private)
+        .script(script)
+        .build()?)
+}
+
+/// Executes a `set_attester` note (sent by `sender`) against the faucet `account`, returning the raw
+/// execution result so callers can assert success or the exact trap. Note building (assemble/compile)
+/// is a test-setup invariant (panics on failure); only the on-chain execution is returned.
+pub async fn run_set_attester_tx(
+    h: &CompositionHarness,
+    account: &Account,
+    sender: AccountId,
+    commitment: Word,
+    enabled: u8,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = set_attester_note(sender, commitment, enabled, seed)
+        .expect("building the set_attester note (test-setup invariant)");
+    h.mock_chain
+        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
+        .expect("building the set_attester tx context")
+        .build()
+        .expect("building the set_attester transaction")
+        .execute()
+        .await
+}
+
+/// The faucet account's CURRENT committed state — the starting point for the seam's first tx.
+pub fn faucet_account(h: &CompositionHarness) -> Account {
+    h.mock_chain
+        .committed_account(h.account_id)
+        .expect("faucet account is committed in the mock chain")
+        .clone()
+}
+
+/// Runs the mint composition driver against an explicit (possibly evolved) `account` — the seam's
+/// tx2, after a real `set_attester` tx evolved the faucet. Mirrors [`run_mint_composition`] but
+/// threads the account instead of `h.account_id`, so tx1's storage delta is visible to the read path.
+pub async fn run_mint_against(
+    h: &CompositionHarness,
+    account: &Account,
+    advice: Vec<Felt>,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let src =
+        format!("use {MINT_COMPOSITION_DRIVER_PATH}->driver\nbegin\n    call.driver::drive\nend\n");
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(&h.driver_code)
+        .expect("linking the driver into the tx script")
+        .compile_tx_script(&src)
+        .unwrap_or_else(|e| panic!("driver call script failed to compile: {e}\n--- script ---\n{src}"));
+    h.mock_chain
+        .build_tx_context(account.clone(), &[], &[])
+        .expect("building the tx context")
+        .tx_script(tx_script)
+        .extend_advice_inputs(AdviceInputs::default().with_stack(advice))
+        .build()
+        .expect("building the transaction")
+        .execute()
+        .await
 }
 
 // R-MINT-16 MINT-DENY GUARD (P5-01) — guarded faucet composition + stock mint_and_send invocation

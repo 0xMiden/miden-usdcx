@@ -376,6 +376,7 @@ fn attest_admin_authority_role_parity() -> anyhow::Result<()> {
         None,
         &driver,
         &probe,
+        false,
     )?;
     let account = support::faucet_account(&gm.harness);
 

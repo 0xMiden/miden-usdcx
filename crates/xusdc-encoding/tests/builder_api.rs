@@ -115,6 +115,7 @@ async fn build_produces_deny_active_public_faucet() -> Result<()> {
         None,
         &driver,
         &probe,
+        false,
     )?;
     let result = run_mint_and_send(&gm.harness, Word::from([0u32, 1, 2, 3]), 0, 4, 100, 0).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_MINT_DENIED"));

@@ -581,6 +581,7 @@ async fn xreserve_mint_still_mints_on_guarded_account() -> Result<()> {
         Some((attester.commitment, Word::from(MARKER))),
         &driver,
         &probe,
+        false,
     )?;
     let executed = run_mint_composition(&gm.harness, composition_advice([0u32; 8], &attester))
         .await
@@ -681,6 +682,7 @@ async fn set_attester_enables_attestation() -> Result<()> {
         None, // EMPTY allowlist — set_attester is the only way K gets admitted
         &driver,
         &probe,
+        false,
     )?;
     let account = faucet_account(&gm.harness);
 
@@ -730,6 +732,7 @@ async fn set_attester_remove_denies_attestation() -> Result<()> {
         None,
         &driver,
         &probe,
+        false,
     )?;
     let account = faucet_account(&gm.harness);
 
@@ -811,5 +814,152 @@ async fn set_attester_add_then_retire_rotation() -> Result<()> {
         .await
         .expect("K_new still mints after K_old is retired");
     assert_eq!(m5.output_notes().num_notes(), 1, "step 5: K_new still mints");
+    Ok(())
+}
+
+// set_max_supply -> R-MINT-15 cap-enforcement SEAM (P5-01) — the load-bearing non-vacuity proof
+// ================================================================================================
+// A token_config[max_supply] storage-delta is vacuous; only a real mint proves set_max_supply changed
+// what R-MINT-15 enforces (R-MINT-15 reads max_supply from the SAME token_config word set_max_supply
+// writes). These run on the RBAC-equipped production faucet (admin_holder = id(2)) with K allowlisted,
+// then drive a real set_max_supply note tx (tx1) and a real mint tx (tx2) on the apply_delta-evolved
+// account. RED-suite: built IMMUTABLE (is_max_supply_mutable = false), so tx1's set_max_supply traps
+// ERR_MAX_SUPPLY_NOT_MUTABLE and the seam can't close (red-for-the-right-reason); GREEN flips to `true`.
+
+/// Lower-then-reject: start at cap 1_000_000 (a 2-unit mint is fine). The ATTEST_ADMIN holder lowers
+/// the cap to 1; the SAME valid mint (amount 2) now exceeds it -> R-MINT-15 traps the EXACT
+/// ERR_XRESERVE_SUPPLY_CAP. Lowering tightened what the mint enforces (forbidden #2). RED: tx1 traps
+/// immutable.
+#[tokio::test]
+async fn set_max_supply_lower_then_over_cap_rejects() -> Result<()> {
+    let payload = happy_payload();
+    let attester = gen_attester(1, &payload);
+    let (domain, identifier) = config(TEST_DOMAIN);
+    let driver = mint_composition_driver_src(&pack(&payload), LEN_FELTS, SCALE_EXP);
+    let probe = composition_noeffect_probe_src(0, nonce_key());
+    let gm = setup_guarded_mint_account(
+        support::GuardSelection::ProductionDeny,
+        1_000_000,
+        0,
+        domain,
+        identifier,
+        None,
+        Some((attester.commitment, Word::from(MARKER))), // allowlist K so the mint passes D5d
+        &driver,
+        &probe,
+        false, // RED: immutable -> set_max_supply traps; GREEN flips to true
+    )?;
+    let account = faucet_account(&gm.harness);
+
+    // tx1: the holder lowers the cap to 1 (below the 2-unit mint).
+    let set = run_set_max_supply_tx(&gm.harness, &account, test_account_id(2), 1, 7)
+        .await
+        .expect("the ATTEST_ADMIN holder's set_max_supply(1) must succeed on a mutable faucet");
+    let mut evolved = account.clone();
+    evolved.apply_delta(set.account_delta())?;
+
+    // tx2: the SAME valid mint (amount 2) now exceeds the lowered cap -> R-MINT-15 traps.
+    let over_cap =
+        run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
+    assert_transaction_executor_error!(over_cap, shell_error_by_name("ERR_XRESERVE_SUPPLY_CAP"));
+    Ok(())
+}
+
+/// At-cap accepts (the positive boundary): the holder sets the cap exactly at the mint amount (2); the
+/// 2-unit mint then fits (0 + 2 <= 2) and mints once, raising token_supply by the reduced amount. RED:
+/// tx1 traps immutable.
+#[tokio::test]
+async fn set_max_supply_at_cap_accepts() -> Result<()> {
+    let payload = happy_payload();
+    let attester = gen_attester(1, &payload);
+    let (domain, identifier) = config(TEST_DOMAIN);
+    let driver = mint_composition_driver_src(&pack(&payload), LEN_FELTS, SCALE_EXP);
+    let probe = composition_noeffect_probe_src(0, nonce_key());
+    let gm = setup_guarded_mint_account(
+        support::GuardSelection::ProductionDeny,
+        1_000_000,
+        0,
+        domain,
+        identifier,
+        None,
+        Some((attester.commitment, Word::from(MARKER))),
+        &driver,
+        &probe,
+        false,
+    )?;
+    let account = faucet_account(&gm.harness);
+
+    // tx1: the holder sets the cap exactly at the mint amount (2).
+    let set = run_set_max_supply_tx(&gm.harness, &account, test_account_id(2), 2, 7)
+        .await
+        .expect("the ATTEST_ADMIN holder's set_max_supply(2) must succeed on a mutable faucet");
+    let mut evolved = account.clone();
+    evolved.apply_delta(set.account_delta())?;
+
+    // tx2: the mint (amount 2) is exactly at the new cap -> mints once, token_supply -> 2.
+    let minted = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester))
+        .await
+        .expect("a mint exactly at the new cap must succeed");
+    assert_eq!(minted.output_notes().num_notes(), 1, "exactly one recipient note");
+    let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
+    let StorageSlotDelta::Value(cfg) =
+        minted.account_delta().storage().get(&cfg_slot).expect("token_config slot delta")
+    else {
+        panic!("token_config must be a Value slot delta");
+    };
+    assert_eq!(cfg[0], Felt::from(REDUCED_AMOUNT), "token_supply rose by the reduced amount");
+    Ok(())
+}
+
+/// Raise-then-accept (with a negative-before control): start at cap 1, where the 2-unit mint traps
+/// R-MINT-15 (in apply_mint_effects, BEFORE the nonce SET -> the nonce is NOT consumed). The holder
+/// raises the cap to 1_000_000; the SAME mint now fits and mints (nonce still fresh). Proves the accept
+/// is CAUSED by the raise (forbidden #2, the other direction). RED: tx1 traps immutable.
+#[tokio::test]
+async fn set_max_supply_raise_then_accepts() -> Result<()> {
+    let payload = happy_payload();
+    let attester = gen_attester(1, &payload);
+    let (domain, identifier) = config(TEST_DOMAIN);
+    let driver = mint_composition_driver_src(&pack(&payload), LEN_FELTS, SCALE_EXP);
+    let probe = composition_noeffect_probe_src(0, nonce_key());
+    let gm = setup_guarded_mint_account(
+        support::GuardSelection::ProductionDeny,
+        1, // cap starts at 1 (below the 2-unit mint)
+        0,
+        domain,
+        identifier,
+        None,
+        Some((attester.commitment, Word::from(MARKER))),
+        &driver,
+        &probe,
+        false,
+    )?;
+    let account = faucet_account(&gm.harness);
+
+    // negative-before: the cap is 1, so the 2-unit mint traps R-MINT-15 BEFORE the nonce SET (the nonce
+    // is NOT consumed). The "before" anchor.
+    let before =
+        run_mint_against(&gm.harness, &account, composition_advice([0u32; 8], &attester)).await;
+    assert_transaction_executor_error!(before, shell_error_by_name("ERR_XRESERVE_SUPPLY_CAP"));
+
+    // tx1: the holder raises the cap well above the mint.
+    let set = run_set_max_supply_tx(&gm.harness, &account, test_account_id(2), 1_000_000, 7)
+        .await
+        .expect("the ATTEST_ADMIN holder's set_max_supply(1_000_000) must succeed on a mutable faucet");
+    let mut evolved = account.clone();
+    evolved.apply_delta(set.account_delta())?;
+
+    // tx2: the SAME mint now fits under the raised cap and mints (nonce still fresh).
+    let minted = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester))
+        .await
+        .expect("after raising the cap, the same mint must succeed");
+    assert_eq!(minted.output_notes().num_notes(), 1, "exactly one recipient note");
+    let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
+    let StorageSlotDelta::Value(cfg) =
+        minted.account_delta().storage().get(&cfg_slot).expect("token_config slot delta")
+    else {
+        panic!("token_config must be a Value slot delta");
+    };
+    assert_eq!(cfg[0], Felt::from(REDUCED_AMOUNT), "token_supply rose by the reduced amount");
     Ok(())
 }

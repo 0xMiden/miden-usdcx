@@ -1279,6 +1279,88 @@ pub async fn run_pause_tx(
         .await
 }
 
+// set_max_supply — stock admin setter note + token_config read-back (P5-01 set_max_supply slice)
+// ================================================================================================
+
+/// The exact stock error `set_max_supply` traps when the faucet's max_supply is immutable
+/// (`fungible.masm:40` ERR_MAX_SUPPLY_NOT_MUTABLE). Constructed inline (a stock protocol error, not an
+/// xusdc shell error, so it is not in `SHELL_ERR_TABLE`).
+pub fn err_max_supply_not_mutable() -> MasmError {
+    MasmError::from_static_str("max supply is not mutable")
+}
+
+/// The exact stock error `set_max_supply` traps when `new_max_supply < token_supply`
+/// (`fungible.masm:41` ERR_NEW_MAX_SUPPLY_BELOW_TOKEN_SUPPLY).
+pub fn err_new_max_supply_below_token_supply() -> MasmError {
+    MasmError::from_static_str("new max supply is less than current token supply")
+}
+
+/// Builds a note SENT BY `sender` whose script `call`s the stock `set_max_supply(new_max_supply)` —
+/// gated on the SAME Authority (ATTEST_ADMIN) + `assert_not_paused` + the build-time mutability flag,
+/// fired mutability -> auth -> pause -> below-supply. Stock `set_max_supply` consumes
+/// `[new_max_supply, pad(15)]` and returns `[pad(16)]`. Like `pause_note`, `set_max_supply` is a pure
+/// standards proc (CodeBuilder pre-links StandardsLib), so no xreserve link is needed; the
+/// absolute-path `call` resolves to the same stock proc the faucet account exposes (the path
+/// `run_mint_and_send` reaches `mint_and_send` through).
+pub fn set_max_supply_note(sender: AccountId, new_max_supply: u64, seed: u64) -> Result<Note> {
+    // Stack contract: [new_max_supply, pad(15)] (new_max_supply on top). Push 15 pad felts (deepest)
+    // then new_max_supply so it ends on top: 15 + 1 = 16.
+    let src = format!(
+        "@note_script\n\
+         pub proc main\n\
+         \x20\x20\x20\x20repeat.15 push.0 end\n\
+         \x20\x20\x20\x20push.{new_max_supply}\n\
+         \x20\x20\x20\x20call.::miden::standards::faucets::fungible::set_max_supply\n\
+         \x20\x20\x20\x20dropw dropw dropw dropw\n\
+         end\n",
+    );
+    let script = CodeBuilder::new()
+        .compile_note_script(src.clone())
+        .map_err(|e| anyhow::anyhow!("set_max_supply note script failed to compile: {e}\n{src}"))?;
+    // Deterministic note rng (serial only; never affects the gate). Distinct tail [5,6] keeps serials
+    // disjoint from set_attester [1,2] and pause [3,4].
+    let mut rng = RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(5u32),
+        Felt::from(6u32),
+    ]));
+    Ok(NoteBuilder::new(sender, &mut rng)
+        .note_type(NoteType::Private)
+        .script(script)
+        .build()?)
+}
+
+/// Executes a `set_max_supply` note (sent by `sender`) against the faucet `account`, returning the raw
+/// execution result so callers can assert success or the exact trap. Mirrors `run_set_attester_tx`.
+pub async fn run_set_max_supply_tx(
+    h: &CompositionHarness,
+    account: &Account,
+    sender: AccountId,
+    new_max_supply: u64,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = set_max_supply_note(sender, new_max_supply, seed)
+        .expect("building the set_max_supply note (test-setup invariant)");
+    h.mock_chain
+        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
+        .expect("building the set_max_supply tx context")
+        .build()
+        .expect("building the set_max_supply transaction")
+        .execute()
+        .await
+}
+
+/// Reads the faucet `token_config` value word `[token_supply, max_supply, decimals, token_symbol]`
+/// from a committed/evolved account — the full-word read-back the set_max_supply write-integrity test
+/// uses to prove `set_max_supply` changed ONLY word[1] (max_supply).
+pub fn read_token_config(account: &Account) -> Result<Word> {
+    account
+        .storage()
+        .get_item(&StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL).context("token_config slot label")?)
+        .map_err(|e| anyhow::anyhow!("reading the token_config value slot: {e}"))
+}
+
 /// Runs the mint composition driver against an explicit (possibly evolved) `account` — the seam's
 /// tx2, after a real `set_attester` tx evolved the faucet. Mirrors [`run_mint_composition`] but
 /// threads the account instead of `h.account_id`, so tx1's storage delta is visible to the read path.
@@ -1455,6 +1537,13 @@ pub struct GuardedMint {
 /// guard active or allow-all per `selection`) + `PausableManager` via [`XReserveStablecoinBuilder`].
 /// The deny guard rides the same `xreserve` library component (its `check_policy` proc). Used by the
 /// R-MINT-16 deny suite to drive the inherited stock `mint_and_send` against a policy-managed faucet.
+///
+/// `is_max_supply_mutable` configures the built faucet's stock max-supply mutability flag (default
+/// `false`, threaded into the `FungibleFaucet::builder()` chain). Existing call sites pass `false`
+/// (immutable — unchanged behavior); the P5-01 set_max_supply slice's gate/seam tests pass `true` at
+/// green to exercise the stock setter (built `false` in the red commit so they trap
+/// ERR_MAX_SUPPLY_NOT_MUTABLE). There is no active in-repo builder mutability guard, so an immutable
+/// `ProductionDeny` faucet composes without rejection.
 pub fn setup_guarded_mint_account(
     selection: GuardSelection,
     max_supply: u64,
@@ -1465,6 +1554,7 @@ pub fn setup_guarded_mint_account(
     attesters_seed: Option<(Word, Word)>,
     driver_src: &str,
     probe_src: &str,
+    is_max_supply_mutable: bool,
 ) -> Result<GuardedMint> {
     let library = assemble_xreserve_lib()?;
 
@@ -1529,6 +1619,7 @@ pub fn setup_guarded_mint_account(
         .decimals(6)
         .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
+        .is_max_supply_mutable(is_max_supply_mutable)
         .build()
         .context("failed to build FungibleFaucet")?;
 

@@ -90,6 +90,7 @@ async fn mint_and_send_succeeds_under_allow_all() -> Result<()> {
         None,
         &driver,
         &probe,
+        false,
     )?;
     let executed = run_mint_and_send(
         &gm.harness,
@@ -145,6 +146,7 @@ async fn deny_mint_and_send_traps() -> Result<()> {
         None,
         &driver,
         &probe,
+        false,
     )?;
     let result = run_mint_and_send(
         &gm.harness,
@@ -179,6 +181,7 @@ async fn denied_path_no_supply_effect() -> Result<()> {
         None,
         &driver,
         &probe,
+        false,
     )?;
     let result = run_mint_and_send(
         &gm.harness,

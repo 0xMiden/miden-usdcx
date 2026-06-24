@@ -159,3 +159,22 @@ fn build_rejects_missing_mint_deny_guard() -> Result<()> {
     );
     Ok(())
 }
+
+/// An immutable-`max_supply` faucet is rejected at build time: the stock `set_max_supply` admin
+/// function would otherwise ship permanently dead (every call traps the runtime mutability gate). The
+/// faucet here is otherwise valid (Public + deny active) and differs ONLY in mutability, so the guard
+/// is the sole reason for rejection — and deleting the guard makes this build succeed (removal-based
+/// non-vacuity). `faucet_and_component()` builds an IMMUTABLE faucet (no `.is_max_supply_mutable`),
+/// exactly the misconfiguration the guard exists to reject.
+#[test]
+fn build_rejects_immutable_max_supply() -> Result<()> {
+    let (faucet, xreserve_component) = faucet_and_component()?;
+    let err = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2))
+        .build_components()
+        .expect_err("an immutable-max-supply faucet must be rejected at build time");
+    assert!(
+        matches!(err, XReserveStablecoinBuilderError::ImmutableMaxSupply),
+        "expected ImmutableMaxSupply, got {err:?}"
+    );
+    Ok(())
+}

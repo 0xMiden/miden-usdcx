@@ -54,6 +54,15 @@ pub enum XReserveStablecoinBuilderError {
     /// The active mint policy does not resolve to the deny guard — packaging cannot bypass the
     /// sole-supply-surface gate (INV-MINT-SECURITY, §5.2).
     MissingMintDenyGuard,
+    /// The supplied faucet was not built with a mutable `max_supply`, so the stock `set_max_supply`
+    /// admin function would be permanently dead on the deployed faucet (every call traps the runtime
+    /// mutability gate). Rejected at build time so packaging cannot silently ship a faucet whose
+    /// `set_max_supply` is inoperable — build the faucet with `.is_max_supply_mutable(true)`.
+    // The guard that constructs this variant is wired in `build_components` in the green commit; the
+    // executing-red suite commit only declares the variant so `build_rejects_immutable_max_supply`
+    // can assert it. Remove the `allow` once the guard constructs it.
+    #[allow(dead_code)]
+    ImmutableMaxSupply,
     /// The supplied `xreserve` component does not export the deny-guard procedure (assembly/path
     /// drift). Carries the expected path for diagnosis.
     DenyGuardProcNotFound,
@@ -74,6 +83,11 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 f,
                 "active mint policy is not the mint-deny guard; packaging cannot bypass the \
                  sole-supply-surface gate"
+            ),
+            Self::ImmutableMaxSupply => write!(
+                f,
+                "xusdc faucet must be built with a mutable max supply \
+                 (is_max_supply_mutable=true) so the deployed faucet's set_max_supply stays operable"
             ),
             Self::DenyGuardProcNotFound => write!(
                 f,

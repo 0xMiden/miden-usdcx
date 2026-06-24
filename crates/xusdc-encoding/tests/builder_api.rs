@@ -30,7 +30,10 @@ const DUMMY_DOMAIN: u32 = 7;
 /// the two inputs `XReserveStablecoinBuilder::new` consumes. The component carries the standard
 /// 4-slot composition layout (so it binds) AND exports the deny-guard `check_policy` (so
 /// `mint_deny_guard_root` resolves). A fresh pair per call because `new` takes them by value.
-fn faucet_and_component() -> Result<(FungibleFaucet, AccountComponent)> {
+/// `is_max_supply_mutable` selects the faucet's stock mutability flag: production builds pass `true`
+/// (the builder now rejects immutable `max_supply`); the rejection tests whose own check fires first
+/// (non-public / missing-deny) and the immutable-rejection test pass `false`.
+fn faucet_and_component(is_max_supply_mutable: bool) -> Result<(FungibleFaucet, AccountComponent)> {
     let library = assemble_xreserve_lib()?;
     let domain = Word::from([DUMMY_DOMAIN, 0, 0, 0]);
     let identifier = Word::from([11u32, 12, 13, 14]);
@@ -66,6 +69,7 @@ fn faucet_and_component() -> Result<(FungibleFaucet, AccountComponent)> {
         .decimals(6)
         .max_supply(AssetAmount::new(1_000_000).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(0).context("invalid token_supply")?)
+        .is_max_supply_mutable(is_max_supply_mutable)
         .build()
         .context("failed to build FungibleFaucet")?;
     Ok((faucet, xreserve_component))
@@ -89,8 +93,9 @@ fn dummy_config() -> (Word, Word) {
 /// ERR_XRESERVE_MINT_DENIED — i.e. the production deny composition genuinely denies, end to end.
 #[tokio::test]
 async fn build_produces_deny_active_public_faucet() -> Result<()> {
-    // build-validation half: the default builder (Public + deny active) composes cleanly.
-    let (faucet, xreserve_component) = faucet_and_component()?;
+    // build-validation half: the default builder (Public + deny active, mutable max_supply) composes
+    // cleanly.
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
     let components = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2)).build_components();
     assert!(
         components.is_ok(),
@@ -115,7 +120,7 @@ async fn build_produces_deny_active_public_faucet() -> Result<()> {
         None,
         &driver,
         &probe,
-        false,
+        true,
     )?;
     let result = run_mint_and_send(&gm.harness, Word::from([0u32, 1, 2, 3]), 0, 4, 100, 0).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_MINT_DENIED"));
@@ -129,7 +134,7 @@ async fn build_produces_deny_active_public_faucet() -> Result<()> {
 /// faucet). The non-public check runs before the guard resolution, so this fails fast. GREEN.
 #[test]
 fn build_rejects_non_public_account_type() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component()?;
+    let (faucet, xreserve_component) = faucet_and_component(false)?;
     let err = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2))
         .account_type(AccountType::Private)
         .build_components()
@@ -148,7 +153,7 @@ fn build_rejects_non_public_account_type() -> Result<()> {
 /// deny guard (the only mint policy production allows). GREEN.
 #[test]
 fn build_rejects_missing_mint_deny_guard() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component()?;
+    let (faucet, xreserve_component) = faucet_and_component(false)?;
     let err = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2))
         .with_active_mint_policy(MintPolicyConfig::AllowAll)
         .build_components()
@@ -164,11 +169,11 @@ fn build_rejects_missing_mint_deny_guard() -> Result<()> {
 /// function would otherwise ship permanently dead (every call traps the runtime mutability gate). The
 /// faucet here is otherwise valid (Public + deny active) and differs ONLY in mutability, so the guard
 /// is the sole reason for rejection — and deleting the guard makes this build succeed (removal-based
-/// non-vacuity). `faucet_and_component()` builds an IMMUTABLE faucet (no `.is_max_supply_mutable`),
-/// exactly the misconfiguration the guard exists to reject.
+/// non-vacuity). `faucet_and_component(false)` builds an IMMUTABLE faucet, exactly the misconfiguration
+/// the guard exists to reject.
 #[test]
 fn build_rejects_immutable_max_supply() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component()?;
+    let (faucet, xreserve_component) = faucet_and_component(false)?;
     let err = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2))
         .build_components()
         .expect_err("an immutable-max-supply faucet must be rejected at build time");

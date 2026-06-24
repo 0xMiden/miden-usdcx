@@ -72,7 +72,7 @@ fn guarded_faucet() -> Result<GuardedMint> {
         None,
         &driver,
         &probe,
-        false,
+        true,
     )
 }
 

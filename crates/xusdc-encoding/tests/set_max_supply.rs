@@ -75,9 +75,13 @@ fn guarded_faucet(token_supply: u64, is_max_supply_mutable: bool) -> Result<Guar
 /// first, independent of the role/pause/below-supply gates the mutable tests exercise.
 #[tokio::test]
 async fn set_max_supply_immutable_traps() -> Result<()> {
-    let gm = guarded_faucet(0, false)?;
-    let account = faucet_account(&gm.harness);
-    let result = run_set_max_supply_tx(&gm.harness, &account, holder(), 500_000, 7).await;
+    // Builder-BYPASS fixture: the production `XReserveStablecoinBuilder` now rejects an immutable
+    // max_supply at build time, so this control assembles a bare immutable faucet directly. What it
+    // proves is the stock RUNTIME mutability gate, which fires FIRST (before auth/pause/below-supply),
+    // so a bare faucet (no RBAC) traps ERR_MAX_SUPPLY_NOT_MUTABLE identically to a full production one.
+    let harness = setup_bare_immutable_faucet(0, 1_000_000)?;
+    let account = faucet_account(&harness);
+    let result = run_set_max_supply_tx(&harness, &account, holder(), 500_000, 7).await;
     assert_transaction_executor_error!(result, err_max_supply_not_mutable());
     Ok(())
 }

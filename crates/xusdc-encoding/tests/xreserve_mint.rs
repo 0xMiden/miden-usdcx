@@ -682,7 +682,7 @@ async fn set_attester_enables_attestation() -> Result<()> {
         None, // EMPTY allowlist — set_attester is the only way K gets admitted
         &driver,
         &probe,
-        false,
+        true,
     )?;
     let account = faucet_account(&gm.harness);
 
@@ -732,7 +732,7 @@ async fn set_attester_remove_denies_attestation() -> Result<()> {
         None,
         &driver,
         &probe,
-        false,
+        true,
     )?;
     let account = faucet_account(&gm.harness);
 

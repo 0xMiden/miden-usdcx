@@ -23,6 +23,7 @@ use core::fmt;
 
 use miden_protocol::account::{
     AccountComponent, AccountId, AccountType, RoleSymbol, StorageMap, StorageMapKey, StorageSlot,
+    StorageSlotName,
 };
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{
@@ -45,6 +46,16 @@ pub const ATTEST_ADMIN_ROLE: &str = "ATTEST_ADMIN";
 /// `procedure_root!` macro and the protocol callback wiring).
 pub const MINT_DENY_GUARD_PROC_PATH: &str = "xreserve::mint_deny_guard::check_policy";
 
+/// The storage slot the stock `FungibleFaucet` writes its mutability flags into (miden-standards
+/// `token_metadata.rs`, pinned v0.15.3). `build_components` reads it to reject an immutable-`max_supply`
+/// faucet — `FungibleFaucet` exposes no public accessor for the flag (it lives in private `metadata`).
+const FAUCET_MUTABILITY_CONFIG_SLOT: &str = "miden::standards::faucets::mutability_config";
+
+/// Index of `is_max_supply_mutable` within the faucet `mutability_config` word, whose layout is
+/// `[is_desc_mutable, is_logo_mutable, is_extlink_mutable, is_max_supply_mutable]` (miden-standards
+/// `token_metadata.rs`, pinned v0.15.3).
+const MAX_SUPPLY_MUTABLE_WORD_INDEX: usize = 3;
+
 /// Errors returned while composing the xUSDC faucet account.
 #[derive(Debug)]
 pub enum XReserveStablecoinBuilderError {
@@ -58,10 +69,6 @@ pub enum XReserveStablecoinBuilderError {
     /// admin function would be permanently dead on the deployed faucet (every call traps the runtime
     /// mutability gate). Rejected at build time so packaging cannot silently ship a faucet whose
     /// `set_max_supply` is inoperable — build the faucet with `.is_max_supply_mutable(true)`.
-    // The guard that constructs this variant is wired in `build_components` in the green commit; the
-    // executing-red suite commit only declares the variant so `build_rejects_immutable_max_supply`
-    // can assert it. Remove the `allow` once the guard constructs it.
-    #[allow(dead_code)]
     ImmutableMaxSupply,
     /// The supplied `xreserve` component does not export the deny-guard procedure (assembly/path
     /// drift). Carries the expected path for diagnosis.
@@ -180,6 +187,24 @@ impl XReserveStablecoinBuilder {
             .ok_or(XReserveStablecoinBuilderError::DenyGuardProcNotFound)
     }
 
+    /// Reads the supplied faucet's `is_max_supply_mutable` flag from its assembled storage. The stock
+    /// `FungibleFaucet` exposes no accessor for it (the flag lives in its private `metadata`), so the
+    /// guard reads the `mutability_config` slot the faucet writes. Fail-closed: returns `true` ONLY
+    /// when the slot is present and the flag felt is exactly `1`; a missing slot or any non-`1` felt
+    /// yields `false`, so [`Self::build_components`] rejects the build rather than letting an immutable
+    /// (or malformed) faucet pass silently.
+    fn faucet_max_supply_is_mutable(&self) -> bool {
+        let slot_name = StorageSlotName::new(FAUCET_MUTABILITY_CONFIG_SLOT)
+            .expect("the faucet mutability_config slot name is a valid constant");
+        self.faucet
+            .clone()
+            .into_storage_slots()
+            .into_iter()
+            .find(|slot| slot.name() == &slot_name)
+            .map(|slot| slot.value()[MAX_SUPPLY_MUTABLE_WORD_INDEX] == Felt::from(1u32))
+            .unwrap_or(false)
+    }
+
     /// Production composition: validates `AccountType::Public` and that the active mint policy is the
     /// deny guard, then composes the account components with the deny guard as the **only** mint
     /// policy (no reserved allow-all — production carries no re-activation path for the denied stock
@@ -199,6 +224,13 @@ impl XReserveStablecoinBuilder {
         // INV-MINT-SECURITY (§5.2): the active mint policy MUST resolve to the deny guard.
         if active.root() != deny_root {
             return Err(XReserveStablecoinBuilderError::MissingMintDenyGuard);
+        }
+        // Validate-what-you-ship: the supplied faucet's max_supply must be mutable, else the stock
+        // `set_max_supply` admin function ships permanently dead (it traps the runtime mutability gate
+        // on every call). Placed AFTER the account-type / deny-guard rejections so those keep their
+        // precedence. Reject — never mutate the supplied faucet.
+        if !self.faucet_max_supply_is_mutable() {
+            return Err(XReserveStablecoinBuilderError::ImmutableMaxSupply);
         }
         let manager =
             TokenPolicyManager::new().with_mint_policy(active, PolicyRegistration::Active)?;

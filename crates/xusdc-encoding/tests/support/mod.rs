@@ -1042,6 +1042,39 @@ pub fn setup_mint_composition_account(
     Ok(CompositionHarness { mock_chain, account_id: account.id(), driver_code, probe_code })
 }
 
+/// Assembles a MINIMAL, faucet-ONLY account with an IMMUTABLE `max_supply` — a builder-BYPASS fixture
+/// (`add_existing_account_from_components`, NOT `XReserveStablecoinBuilder`, so the build-time mutability
+/// guard does not apply). The immutable control [`set_max_supply_immutable_traps`] uses it to prove the
+/// stock RUNTIME mutability gate fires: stock `set_max_supply` checks mutability FIRST (before
+/// auth / pause / below-supply), so a bare faucet (no RBAC) traps `ERR_MAX_SUPPLY_NOT_MUTABLE`
+/// identically to a full production account. `driver_code` / `probe_code` are unused on this path
+/// (set_max_supply runs via a note, not the mint driver), so the faucet's own code stands in as a
+/// harmless placeholder for those [`CompositionHarness`] fields.
+pub fn setup_bare_immutable_faucet(token_supply: u64, max_supply: u64) -> Result<CompositionHarness> {
+    let faucet = FungibleFaucet::builder()
+        .name(TokenName::new("XUSDC")?)
+        .symbol(TokenSymbol::new("XUSDC")?)
+        .decimals(6)
+        .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
+        .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
+        // is_max_supply_mutable defaults to false (immutable) — the control fixture.
+        .build()
+        .context("failed to build the bare immutable FungibleFaucet")?;
+    let placeholder = FungibleFaucet::code().clone();
+
+    let mut builder = MockChain::builder();
+    let account = builder
+        .add_existing_account_from_components(Auth::IncrNonce, [faucet.into()])
+        .context("adding the bare immutable faucet account")?;
+    let mock_chain = builder.build().context("building the bare-faucet MockChain")?;
+    Ok(CompositionHarness {
+        mock_chain,
+        account_id: account.id(),
+        driver_code: placeholder.clone(),
+        probe_code: placeholder,
+    })
+}
+
 /// Generates the per-case composition driver: a CALL-entered account proc that stages the preimage,
 /// pushes `[intent_ptr, len_felts, scale_exp]`, and `exec`s `xreserve_mint::mint` (which reads
 /// feeAmount + pubkey + signature from the advice stack). `mint` returns `[pad(16)]`, restoring the
@@ -1455,6 +1488,8 @@ pub fn setup_rotation_account(
         .decimals(6)
         .max_supply(AssetAmount::new(1_000_000).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(0).context("invalid token_supply")?)
+        // Mutable: the production builder now rejects an immutable max_supply (build-time guard).
+        .is_max_supply_mutable(true)
         .build()
         .context("failed to build FungibleFaucet")?;
 
@@ -1538,12 +1573,12 @@ pub struct GuardedMint {
 /// The deny guard rides the same `xreserve` library component (its `check_policy` proc). Used by the
 /// R-MINT-16 deny suite to drive the inherited stock `mint_and_send` against a policy-managed faucet.
 ///
-/// `is_max_supply_mutable` configures the built faucet's stock max-supply mutability flag (default
-/// `false`, threaded into the `FungibleFaucet::builder()` chain). Existing call sites pass `false`
-/// (immutable — unchanged behavior); the P5-01 set_max_supply slice's gate/seam tests pass `true` at
-/// green to exercise the stock setter (built `false` in the red commit so they trap
-/// ERR_MAX_SUPPLY_NOT_MUTABLE). There is no active in-repo builder mutability guard, so an immutable
-/// `ProductionDeny` faucet composes without rejection.
+/// `is_max_supply_mutable` configures the built faucet's stock max-supply mutability flag (threaded
+/// into the `FungibleFaucet::builder()` chain). The production builder (`GuardSelection::ProductionDeny`)
+/// REJECTS an immutable max_supply at build time, so every `ProductionDeny` caller must pass `true`; the
+/// `OracleDeny` / `OracleAllowAll` paths bypass the builder and are unaffected. The immutable control
+/// (`set_max_supply_immutable_traps`) builds its immutable fixture via the builder-bypassing
+/// [`setup_bare_immutable_faucet`] instead of this helper.
 pub fn setup_guarded_mint_account(
     selection: GuardSelection,
     max_supply: u64,

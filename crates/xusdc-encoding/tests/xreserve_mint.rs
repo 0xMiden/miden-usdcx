@@ -823,13 +823,12 @@ async fn set_attester_add_then_retire_rotation() -> Result<()> {
 // what R-MINT-15 enforces (R-MINT-15 reads max_supply from the SAME token_config word set_max_supply
 // writes). These run on the RBAC-equipped production faucet (admin_holder = id(2)) with K allowlisted,
 // then drive a real set_max_supply note tx (tx1) and a real mint tx (tx2) on the apply_delta-evolved
-// account. RED-suite: built IMMUTABLE (is_max_supply_mutable = false), so tx1's set_max_supply traps
-// ERR_MAX_SUPPLY_NOT_MUTABLE and the seam can't close (red-for-the-right-reason); GREEN flips to `true`.
+// account. The faucet is built MUTABLE (is_max_supply_mutable = true), so tx1's set_max_supply lands
+// and the mint outcome flips with the cap — a green token_config delta alone would be vacuous.
 
 /// Lower-then-reject: start at cap 1_000_000 (a 2-unit mint is fine). The ATTEST_ADMIN holder lowers
 /// the cap to 1; the SAME valid mint (amount 2) now exceeds it -> R-MINT-15 traps the EXACT
-/// ERR_XRESERVE_SUPPLY_CAP. Lowering tightened what the mint enforces (forbidden #2). RED: tx1 traps
-/// immutable.
+/// ERR_XRESERVE_SUPPLY_CAP. Lowering tightened what the mint enforces (forbidden #2).
 #[tokio::test]
 async fn set_max_supply_lower_then_over_cap_rejects() -> Result<()> {
     let payload = happy_payload();
@@ -847,7 +846,7 @@ async fn set_max_supply_lower_then_over_cap_rejects() -> Result<()> {
         Some((attester.commitment, Word::from(MARKER))), // allowlist K so the mint passes D5d
         &driver,
         &probe,
-        false, // RED: immutable -> set_max_supply traps; GREEN flips to true
+        true, // mutable: the holder's set_max_supply(1) lands, tightening the cap the mint enforces
     )?;
     let account = faucet_account(&gm.harness);
 
@@ -866,8 +865,7 @@ async fn set_max_supply_lower_then_over_cap_rejects() -> Result<()> {
 }
 
 /// At-cap accepts (the positive boundary): the holder sets the cap exactly at the mint amount (2); the
-/// 2-unit mint then fits (0 + 2 <= 2) and mints once, raising token_supply by the reduced amount. RED:
-/// tx1 traps immutable.
+/// 2-unit mint then fits (0 + 2 <= 2) and mints once, raising token_supply by the reduced amount.
 #[tokio::test]
 async fn set_max_supply_at_cap_accepts() -> Result<()> {
     let payload = happy_payload();
@@ -885,7 +883,7 @@ async fn set_max_supply_at_cap_accepts() -> Result<()> {
         Some((attester.commitment, Word::from(MARKER))),
         &driver,
         &probe,
-        false,
+        true,
     )?;
     let account = faucet_account(&gm.harness);
 
@@ -914,7 +912,7 @@ async fn set_max_supply_at_cap_accepts() -> Result<()> {
 /// Raise-then-accept (with a negative-before control): start at cap 1, where the 2-unit mint traps
 /// R-MINT-15 (in apply_mint_effects, BEFORE the nonce SET -> the nonce is NOT consumed). The holder
 /// raises the cap to 1_000_000; the SAME mint now fits and mints (nonce still fresh). Proves the accept
-/// is CAUSED by the raise (forbidden #2, the other direction). RED: tx1 traps immutable.
+/// is CAUSED by the raise (forbidden #2, the other direction).
 #[tokio::test]
 async fn set_max_supply_raise_then_accepts() -> Result<()> {
     let payload = happy_payload();
@@ -932,7 +930,7 @@ async fn set_max_supply_raise_then_accepts() -> Result<()> {
         Some((attester.commitment, Word::from(MARKER))),
         &driver,
         &probe,
-        false,
+        true,
     )?;
     let account = faucet_account(&gm.harness);
 

@@ -42,6 +42,11 @@ const MINT_DENY_GUARD_MASM: &str =
 const ATTESTER_ADMIN_MASM: &str =
     include_str!("../../../asm/standards/xreserve/attester_admin.masm");
 
+/// The FAUCET(01) P5-01 R-ADMIN-4 domain-config init-once setter module source, read test-side by
+/// reference.
+const DOMAIN_CONFIG_MASM: &str =
+    include_str!("../../../asm/standards/xreserve/domain_config.masm");
+
 /// Faucet-owned shell error constants declared in MASM, pinned against the test-side
 /// `support::SHELL_ERR_TABLE` (the single Rust source).
 const SHELL_ERRORS_DECLARED: &[&str] = &[
@@ -63,6 +68,8 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_RECIPIENT_NONCANONICAL",
     // R-MINT-16 mint-deny guard (mint_deny_guard.masm)
     "ERR_XRESERVE_MINT_DENIED",
+    // R-ADMIN-4 domain-config init-once setter (domain_config.masm)
+    "ERR_XRESERVE_DOMAIN_REINIT",
 ];
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned
@@ -265,9 +272,11 @@ fn masm_shell_error_string_parity() {
     let (_, att_strs, _) = parse_masm_consts(ATTESTATION_VERIFY_MASM);
     let (_, mint_strs, _) = parse_masm_consts(XRESERVE_MINT_MASM);
     let (_, deny_strs, _) = parse_masm_consts(MINT_DENY_GUARD_MASM);
+    let (_, domain_strs, _) = parse_masm_consts(DOMAIN_CONFIG_MASM);
     strs.extend(att_strs);
     strs.extend(mint_strs);
     strs.extend(deny_strs);
+    strs.extend(domain_strs);
     for name in SHELL_ERRORS_DECLARED {
         let expected = support::SHELL_ERR_TABLE
             .iter()
@@ -292,7 +301,7 @@ fn masm_constants_bidirectional() {
         ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
     };
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 7] = [
+    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 8] = [
         ("layout.masm", LAYOUT_MASM, LAYOUT_COVERED_NUMS, &[]),
         ("encoding/mod.masm", ENCODING_MOD_MASM, ENCODING_COVERED_NUMS, &[]),
         ("deposit_intent_parser.masm", SHELL_MASM, SHELL_COVERED_NUMS, EXPECTED_SHELL_WORD_CONSTS),
@@ -319,6 +328,10 @@ fn masm_constants_bidirectional() {
             &[],
             EXPECTED_ATTESTER_ADMIN_WORD_CONSTS,
         ),
+        // P5-01 R-ADMIN-4 domain_init: declares only ERR_XRESERVE_DOMAIN_REINIT (a known shell error
+        // via SHELL_ERR_TABLE); the two slot consts are IMPORTED from deposit_intent_parser (not
+        // redeclared -> not parsed here, no duplicate parity row, G1).
+        ("domain_config.masm", DOMAIN_CONFIG_MASM, &[], &[]),
     ];
     for (file, src, covered_nums, expected_words) in sources {
         let (nums, strs, words) = parse_masm_consts(src);

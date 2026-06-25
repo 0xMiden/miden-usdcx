@@ -1,35 +1,75 @@
 # xreserve::domain_config
 #
 # FAUCET(01)-owned domain-config init-once setter (P5-01 R-ADMIN-4 slice): the owner-gated, one-time
-# write of the faucet's domain + identifier config -- the slots the mint path's D5a domain/identifier
-# compare (deposit_intent_parser.masm:78-100) already reads to reject mis-addressed deposits. A second
-# write traps ERR_XRESERVE_DOMAIN_REINIT. Owner-gated (Ownable2Step), NOT ATTEST_ADMIN: domain binding
-# is deploy-time identity, separated from the operational attester-admin role. No pause gate (deploy-
-# time config is orthogonal to the operational pause). Module home + flat path per D-1A
-# (CANONICAL-OWNERSHIP-MAP.md). Loop history: crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
-#
-# RED-SUITE (executing-red): this module holds only the NAMED placeholder trap
-# (ERR_UNIMPLEMENTED_DOMAIN_INIT). The behavior tests in tests/domain_config.rs assert their FINAL
-# (green) expectations and are therefore RED here -- the owner/non-owner note reaches
-# call.domain_init, then the terminal placeholder reverts the tx. The GREEN commit wires the owner
-# gate + the init-once guard + the two slot writes and removes this trap.
+# write of the faucet's `domain` + `identifier` config -- the slots the mint path's D5a compare
+# (deposit_intent_parser::assert_deposit_intent) already reads to reject mis-addressed deposits. A
+# second write traps ERR_XRESERVE_DOMAIN_REINIT. Owner-gated (Ownable2Step), NOT ATTEST_ADMIN: domain
+# binding is deploy-time identity, separated from the operational attester-admin role. No pause gate
+# (deploy-time config is orthogonal to the operational pause). The two slot consts are IMPORTED from
+# deposit_intent_parser (the single source of truth -- the setter MUST write the identical slots D5a
+# reads). Module home + flat path per D-1A (CANONICAL-OWNERSHIP-MAP.md). Loop history:
+# crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
+
+use miden::standards::access::ownable2step
+use miden::protocol::active_account
+use miden::protocol::native_account
+use xreserve::deposit_intent_parser::DOMAIN_CONFIG_SLOT
+use xreserve::deposit_intent_parser::IDENTIFIER_CONFIG_SLOT
 
 # ERRORS
 # =================================================================================================
 
-# RED placeholder: removed at the GREEN commit when domain_init is implemented.
-const ERR_UNIMPLEMENTED_DOMAIN_INIT = "red-suite placeholder: domain_config::domain_init is not implemented"
+# R-ADMIN-4: domain config is init-once; a second write traps. The init-once sentinel is the
+# identifier slot -- a Poseidon2 bytes32->key hash, non-empty by construction once set, so it is
+# value-independent of the Circle-assigned domain value (which could legitimately be 0).
+const ERR_XRESERVE_DOMAIN_REINIT = "domain config has already been initialized"
 
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Placeholder for the owner-gated, init-once domain-config setter (R-ADMIN-4). Unconditional trap
-#! until the GREEN commit.
+#! Owner-gated, init-once writer of the faucet domain config: the `domain` (u32) and `identifier` (the
+#! pre-hashed bytes32->key Word) slots the mint path's D5a compare reads to reject mis-addressed
+#! deposits. Gated on the Ownable2Step owner -- NOT the operational ATTEST_ADMIN role -- because domain
+#! binding is deploy-time identity. Init-once (R-ADMIN-4): a second call finds the identifier slot
+#! non-empty and traps. The identifier is trusted verbatim (the set_attester discipline); D5a compares
+#! the stored Word directly.
 #!
 #! Inputs:  [IDENTIFIER, domain, pad(11)]
-#! Outputs: never returns -- unconditional trap (ERR_UNIMPLEMENTED_DOMAIN_INIT).
+#! Outputs: [pad(16)]
+#!
+#! Where:
+#! - IDENTIFIER is the faucet identifier as the canonical bytes32->key Word (stored verbatim; D5a
+#!   asserts word equality against it).
+#! - domain is the u32 domain id, stored as element 0 of the domain config word (D5a reads element 0).
+#!
+#! Panics if:
+#! - the note sender is not the Ownable2Step owner (ownable2step::assert_sender_is_owner,
+#!   ERR_SENDER_NOT_OWNER).
+#! - the domain config was already initialized -- the identifier slot is non-empty
+#!   (ERR_XRESERVE_DOMAIN_REINIT, R-ADMIN-4).
 #!
 #! Invocation: call
 pub proc domain_init
-    push.0 assert.err=ERR_UNIMPLEMENTED_DOMAIN_INIT
+    # => [IDENTIFIER, domain, pad(11)]
+
+    # gate: owner-only. Domain binding is deploy-time identity, off the operational ATTEST_ADMIN role.
+    exec.ownable2step::assert_sender_is_owner
+    # => [IDENTIFIER, domain, pad(11)]
+
+    # init-once (R-ADMIN-4): the identifier slot must be EMPTY. assert_eqw against EMPTY_WORD passes
+    # only when uninitialized; a second write finds the stored hash word and traps.
+    push.IDENTIFIER_CONFIG_SLOT[0..2] exec.active_account::get_item
+    # => [STORED_IDENTIFIER, IDENTIFIER, domain, pad(11)]
+    padw assert_eqw.err=ERR_XRESERVE_DOMAIN_REINIT
+    # => [IDENTIFIER, domain, pad(11)]
+
+    # identifier_config := IDENTIFIER (the verbatim Word D5a's assert_eqw reads).
+    push.IDENTIFIER_CONFIG_SLOT[0..2] exec.native_account::set_item dropw
+    # => [domain, pad(11)]
+
+    # domain_config := [domain, 0, 0, 0] (D5a reads element 0 via get_item).
+    push.0.0.0 movup.3
+    # => [domain, 0, 0, 0, pad(11)]
+    push.DOMAIN_CONFIG_SLOT[0..2] exec.native_account::set_item dropw
+    # => [pad(11)]
 end

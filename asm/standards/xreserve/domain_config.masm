@@ -1,0 +1,35 @@
+# xreserve::domain_config
+#
+# FAUCET(01)-owned domain-config init-once setter (P5-01 R-ADMIN-4 slice): the owner-gated, one-time
+# write of the faucet's domain + identifier config -- the slots the mint path's D5a domain/identifier
+# compare (deposit_intent_parser.masm:78-100) already reads to reject mis-addressed deposits. A second
+# write traps ERR_XRESERVE_DOMAIN_REINIT. Owner-gated (Ownable2Step), NOT ATTEST_ADMIN: domain binding
+# is deploy-time identity, separated from the operational attester-admin role. No pause gate (deploy-
+# time config is orthogonal to the operational pause). Module home + flat path per D-1A
+# (CANONICAL-OWNERSHIP-MAP.md). Loop history: crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
+#
+# RED-SUITE (executing-red): this module holds only the NAMED placeholder trap
+# (ERR_UNIMPLEMENTED_DOMAIN_INIT). The behavior tests in tests/domain_config.rs assert their FINAL
+# (green) expectations and are therefore RED here -- the owner/non-owner note reaches
+# call.domain_init, then the terminal placeholder reverts the tx. The GREEN commit wires the owner
+# gate + the init-once guard + the two slot writes and removes this trap.
+
+# ERRORS
+# =================================================================================================
+
+# RED placeholder: removed at the GREEN commit when domain_init is implemented.
+const ERR_UNIMPLEMENTED_DOMAIN_INIT = "red-suite placeholder: domain_config::domain_init is not implemented"
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Placeholder for the owner-gated, init-once domain-config setter (R-ADMIN-4). Unconditional trap
+#! until the GREEN commit.
+#!
+#! Inputs:  [IDENTIFIER, domain, pad(11)]
+#! Outputs: never returns -- unconditional trap (ERR_UNIMPLEMENTED_DOMAIN_INIT).
+#!
+#! Invocation: call
+pub proc domain_init
+    push.0 assert.err=ERR_UNIMPLEMENTED_DOMAIN_INIT
+end

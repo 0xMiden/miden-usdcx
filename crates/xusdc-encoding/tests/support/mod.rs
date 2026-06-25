@@ -100,7 +100,7 @@ pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 12] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 13] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -165,6 +165,13 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 12] = [
     (
         "ERR_XRESERVE_MINT_DENIED",
         MasmError::from_static_str("stock mint_and_send is denied; only xreserve_mint may raise supply"),
+    ),
+    // R-ADMIN-4 domain-config init-once setter (domain_config.masm). The second write traps this; the
+    // red-suite carries it here so the reinit test can name its EXACT expected error. The GREEN commit
+    // declares the matching MASM const + adds it to `SHELL_ERRORS_DECLARED` for parity.
+    (
+        "ERR_XRESERVE_DOMAIN_REINIT",
+        MasmError::from_static_str("domain config has already been initialized"),
     ),
 ];
 
@@ -1308,6 +1315,83 @@ pub async fn run_pause_tx(
         .expect("building the pause tx context")
         .build()
         .expect("building the pause transaction")
+        .execute()
+        .await
+}
+
+// domain_init — owner-gated init-once domain-config setter note (P5-01 R-ADMIN-4 slice)
+// ================================================================================================
+
+/// The exact stock error `ownable2step::assert_sender_is_owner` traps (ownable2step.masm:38
+/// ERR_SENDER_NOT_OWNER). Constructed inline (a stock protocol error, not an xusdc shell error, so it
+/// is not in `SHELL_ERR_TABLE`). The owner gate is the SEPARATION-OF-DUTIES distinction from
+/// set_attester's ATTEST_ADMIN gate: domain binding is deploy-time identity, the OWNER's to set.
+pub fn err_sender_not_owner() -> MasmError {
+    MasmError::from_static_str("note sender is not the owner")
+}
+
+/// Builds an unauthenticated note SENT BY `sender` whose script `call`s
+/// `xreserve::domain_config::domain_init(IDENTIFIER, domain)`. The Ownable2Step gate reads the note
+/// sender (`active_note::get_sender`), so the sender is what the owner check tests. `domain` is the
+/// u32 domain id (stored as element 0 of the domain config word); `identifier` is the pre-hashed
+/// `bytes32_to_key` Word stored verbatim (the set_attester trust-the-caller's-Word discipline). The
+/// note script is compiled with the `xreserve` library linked so the `call` resolves to the same proc
+/// installed on the faucet account.
+pub fn domain_init_note(sender: AccountId, domain: u32, identifier: Word, seed: u64) -> Result<Note> {
+    let lib = assemble_xreserve_lib()?;
+    // Stack contract: [IDENTIFIER, domain, pad(11)] (IDENTIFIER element-0 on top). Push the 11 pad
+    // felts (deepest), then domain, then the identifier word so i0 ends on top: 11 + 1 + 4 = 16.
+    let src = format!(
+        "use xreserve::domain_config\n\
+         @note_script\n\
+         pub proc main\n\
+         \x20\x20\x20\x20repeat.11 push.0 end\n\
+         \x20\x20\x20\x20push.{domain}\n\
+         \x20\x20\x20\x20push.{i3}.{i2}.{i1}.{i0}\n\
+         \x20\x20\x20\x20call.domain_config::domain_init\n\
+         \x20\x20\x20\x20dropw dropw dropw dropw\n\
+         end\n",
+        i0 = identifier[0],
+        i1 = identifier[1],
+        i2 = identifier[2],
+        i3 = identifier[3],
+    );
+    let script = CodeBuilder::new()
+        .with_dynamically_linked_library(&lib)
+        .context("linking xreserve into the domain_init note script")?
+        .compile_note_script(src.clone())
+        .map_err(|e| anyhow::anyhow!("domain_init note script failed to compile: {e}\n{src}"))?;
+    // Deterministic note rng (serial only; never affects the gate). Distinct tail [9,10] keeps serials
+    // disjoint from set_attester [1,2] / pause [3,4] / set_max_supply [5,6].
+    let mut rng = RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(9u32),
+        Felt::from(10u32),
+    ]));
+    Ok(NoteBuilder::new(sender, &mut rng)
+        .note_type(NoteType::Private)
+        .script(script)
+        .build()?)
+}
+
+/// Executes a `domain_init` note (sent by `sender`) against the faucet `account`, returning the raw
+/// execution result so callers can assert success or the exact trap. Mirrors `run_set_attester_tx`.
+pub async fn run_domain_init_tx(
+    h: &CompositionHarness,
+    account: &Account,
+    sender: AccountId,
+    domain: u32,
+    identifier: Word,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = domain_init_note(sender, domain, identifier, seed)
+        .expect("building the domain_init note (test-setup invariant)");
+    h.mock_chain
+        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
+        .expect("building the domain_init tx context")
+        .build()
+        .expect("building the domain_init transaction")
         .execute()
         .await
 }

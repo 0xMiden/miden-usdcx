@@ -27,11 +27,13 @@ use miden_protocol::asset::{AssetAmount, FungibleAsset};
 use miden_protocol::note::{
     Note, NoteAssets, NoteRecipient, NoteStorage, NoteTag, NoteType, PartialNoteMetadata,
 };
-use miden_protocol::transaction::RawOutputNote;
+use miden_protocol::transaction::{InputNote, RawOutputNote};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::errors::standards::ERR_FUNGIBLE_BURN_WRONG_NUMBER_OF_ASSETS;
+use miden_standards::errors::standards::{
+    ERR_FAUCET_BURN_AMOUNT_EXCEEDS_TOKEN_SUPPLY, ERR_FUNGIBLE_BURN_WRONG_NUMBER_OF_ASSETS,
+};
 use miden_standards::note::BurnNote;
 use miden_testing::{assert_transaction_executor_error, Auth, MockChain};
 use miden_tx::LocalTransactionProver;
@@ -92,6 +94,36 @@ end
 fn committed_token_supply(chain: &MockChain, faucet_id: AccountId) -> anyhow::Result<AssetAmount> {
     let storage = chain.committed_account(faucet_id)?.storage();
     Ok(FungibleFaucet::try_from(storage)?.token_supply())
+}
+
+/// Asserts the retrieved public note's FULL details match the canonical `burn_note` — id, assets,
+/// recipient digest, and metadata (sender/type/tag) — via `InputNote::note()`. This makes the
+/// public-note observability the withdrawal flow needs explicit, not just an id / `Some` check.
+fn assert_full_burn_note_details(
+    retrieved: &InputNote,
+    burn_note: &Note,
+    user_id: AccountId,
+    faucet_id: AccountId,
+) {
+    let r = retrieved.note();
+    assert_eq!(r.id(), burn_note.id(), "retrieved note id");
+    assert_eq!(r.assets(), burn_note.assets(), "retrieved note assets");
+    assert_eq!(
+        r.recipient().digest(),
+        burn_note.recipient().digest(),
+        "retrieved recipient digest"
+    );
+    assert_eq!(r.metadata().sender(), user_id, "retrieved metadata sender");
+    assert_eq!(
+        r.metadata().note_type(),
+        NoteType::Public,
+        "retrieved note type"
+    );
+    assert_eq!(
+        r.metadata().tag(),
+        NoteTag::with_account_target(faucet_id),
+        "retrieved metadata tag"
+    );
 }
 
 // C1 — NEXT-BLOCK LIFECYCLE (user create -> retrieve -> authenticated consume -> supply decrement)
@@ -215,7 +247,7 @@ async fn c1_next_block_user_create_retrieve_consume() -> anyhow::Result<()> {
     let retrieved = chain
         .get_public_note(&burn_note.id())
         .expect("public burn note retrievable at block N");
-    assert_eq!(retrieved.id(), burn_note.id(), "retrieved note id matches");
+    assert_full_burn_note_details(&retrieved, &burn_note, user.id(), faucet.id());
     assert!(
         chain.is_note_unspent(&burn_note.nullifier()),
         "nullifier unspent before consume"
@@ -258,14 +290,15 @@ async fn c1_next_block_user_create_retrieve_consume() -> anyhow::Result<()> {
         "nullifier consumed after burn"
     );
 
-    // Public note still discoverable AFTER consumption. NOTE: this holds because MockChain marks
-    // the nullifier spent but does not yet prune committed_notes (chain.rs:920-928 TODO) — a
-    // harness behavior, not a protocol guarantee. The durable burn-event observability is a
-    // local-node / withdrawal-attester concern (see BURN-MECHANICS-GROUNDING-REPORT.md).
-    assert!(
-        chain.get_public_note(&burn_note.id()).is_some(),
-        "public note retained post-consume (MockChain TODO)"
-    );
+    // Public note still discoverable AFTER consumption — assert the FULL details still match.
+    // NOTE: this holds because MockChain marks the nullifier spent but does not yet prune
+    // committed_notes (chain.rs:920-928 TODO) — a harness behavior, not a protocol guarantee. The
+    // durable burn-event observability is a local-node / withdrawal-attester concern (see
+    // BURN-MECHANICS-GROUNDING-REPORT.md).
+    let retrieved_after = chain
+        .get_public_note(&burn_note.id())
+        .expect("public note retained post-consume (MockChain TODO)");
+    assert_full_burn_note_details(&retrieved_after, &burn_note, user.id(), faucet.id());
 
     println!(
         "[burn-canary][C1] user created BurnNote in-block; retrievable at N; faucet burned at N+1."
@@ -426,6 +459,55 @@ async fn b_zero_asset_note_traps_wrong_number_of_assets() -> anyhow::Result<()> 
 
     println!(
         "[burn-canary][B] 0-asset burn note trapped ERR_FUNGIBLE_BURN_WRONG_NUMBER_OF_ASSETS."
+    );
+    Ok(())
+}
+
+// B2 — EXCEEDS-SUPPLY TRAP (burn amount > token_supply)
+// ================================================================================================
+
+#[tokio::test]
+async fn b_exceeds_supply_traps_amount_exceeds_token_supply() -> anyhow::Result<()> {
+    let mut builder = MockChain::builder();
+    let faucet = builder.add_existing_basic_faucet(
+        Auth::BasicAuth {
+            auth_scheme: AuthScheme::Falcon512Poseidon2,
+        },
+        "XUSDC",
+        MAX_SUPPLY,
+        Some(TOKEN_SUPPLY),
+    )?;
+    let sender = builder.add_existing_wallet(Auth::IncrNonce)?;
+
+    // A single-asset burn note carrying MORE than the faucet's current token_supply -> stock
+    // receive_and_burn's `amount <= token_supply` guard (fungible.masm:432-433) must trip. Mirrors
+    // the stock `faucet_burn_fungible_asset_fails_amount_exceeds_token_supply` test. Negative case,
+    // so a committed note is fine.
+    let over_amount = TOKEN_SUPPLY + 1;
+    let fungible_asset = FungibleAsset::new(faucet.id(), over_amount)?;
+    let note_script = CodeBuilder::default().compile_note_script(BURN_NOTE_SCRIPT)?;
+    let serial_num = Word::from([7u32, 7, 7, 7]);
+    let vault = NoteAssets::new(vec![fungible_asset.into()])?;
+    let metadata = PartialNoteMetadata::new(sender.id(), NoteType::Public)
+        .with_tag(NoteTag::with_account_target(faucet.id()));
+    let inputs = NoteStorage::new(vec![])?;
+    let recipient = NoteRecipient::new(serial_num, note_script, inputs);
+    let over_note = Note::new(vault, metadata, recipient);
+
+    builder.add_output_note(RawOutputNote::Full(over_note.clone()));
+    let chain = builder.build()?;
+
+    let tx = chain
+        .build_tx_context(faucet.id(), &[over_note.id()], &[])?
+        .build()?
+        .execute()
+        .await;
+
+    assert_transaction_executor_error!(tx, ERR_FAUCET_BURN_AMOUNT_EXCEEDS_TOKEN_SUPPLY);
+
+    println!(
+        "[burn-canary][B2] burn {} > token_supply {} trapped ERR_FAUCET_BURN_AMOUNT_EXCEEDS_TOKEN_SUPPLY.",
+        over_amount, TOKEN_SUPPLY
     );
     Ok(())
 }

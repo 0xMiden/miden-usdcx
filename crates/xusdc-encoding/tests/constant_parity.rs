@@ -47,6 +47,10 @@ const ATTESTER_ADMIN_MASM: &str =
 const DOMAIN_CONFIG_MASM: &str =
     include_str!("../../../asm/standards/xreserve/domain_config.masm");
 
+/// The FAUCET(01) CMP-A10 R-BURN-1/2 burn-policy module source, read test-side by reference.
+const BURN_POLICY_MASM: &str =
+    include_str!("../../../asm/standards/xreserve/burn_policy.masm");
+
 /// Faucet-owned shell error constants declared in MASM, pinned against the test-side
 /// `support::SHELL_ERR_TABLE` (the single Rust source).
 const SHELL_ERRORS_DECLARED: &[&str] = &[
@@ -70,6 +74,9 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_MINT_DENIED",
     // R-ADMIN-4 domain-config init-once setter (domain_config.masm)
     "ERR_XRESERVE_DOMAIN_REINIT",
+    // CMP-A10 R-BURN-1 / R-BURN-2 burn policy (burn_policy.masm)
+    "ERR_XRESERVE_BURN_ZERO",
+    "ERR_XRESERVE_BURN_BELOW_MIN",
 ];
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned
@@ -97,6 +104,12 @@ const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] =
 /// redeclaration → not parsed here, no duplicate parity row, G1).
 const EXPECTED_XRESERVE_MINT_WORD_CONSTS: &[(&str, &str)] =
     &[("TOKEN_CONFIG_SLOT", support::TOKEN_CONFIG_SLOT_LABEL)];
+
+/// Expected `word("…")` slot-name constant of the CMP-A10 burn-policy module. `MIN_BURN_SIZE_SLOT`
+/// MUST be byte-identical to the future CMP-F2 `set_min_burn_size` setter's slot (the reader↔setter
+/// slot identity); the shared label is the single Rust source (`support::MIN_BURN_SIZE_SLOT_LABEL`).
+const EXPECTED_BURN_POLICY_WORD_CONSTS: &[(&str, &str)] =
+    &[("MIN_BURN_SIZE_SLOT", support::MIN_BURN_SIZE_SLOT_LABEL)];
 
 /// The D5d attestation-verify shell declares no numeric constants (word-aligned `@locals`
 /// offsets are literal, matching `encoding/mod.masm::pubkey_commitment` and the precompile canary).
@@ -273,10 +286,12 @@ fn masm_shell_error_string_parity() {
     let (_, mint_strs, _) = parse_masm_consts(XRESERVE_MINT_MASM);
     let (_, deny_strs, _) = parse_masm_consts(MINT_DENY_GUARD_MASM);
     let (_, domain_strs, _) = parse_masm_consts(DOMAIN_CONFIG_MASM);
+    let (_, burn_strs, _) = parse_masm_consts(BURN_POLICY_MASM);
     strs.extend(att_strs);
     strs.extend(mint_strs);
     strs.extend(deny_strs);
     strs.extend(domain_strs);
+    strs.extend(burn_strs);
     for name in SHELL_ERRORS_DECLARED {
         let expected = support::SHELL_ERR_TABLE
             .iter()
@@ -301,7 +316,7 @@ fn masm_constants_bidirectional() {
         ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
     };
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 8] = [
+    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 9] = [
         ("layout.masm", LAYOUT_MASM, LAYOUT_COVERED_NUMS, &[]),
         ("encoding/mod.masm", ENCODING_MOD_MASM, ENCODING_COVERED_NUMS, &[]),
         ("deposit_intent_parser.masm", SHELL_MASM, SHELL_COVERED_NUMS, EXPECTED_SHELL_WORD_CONSTS),
@@ -332,6 +347,15 @@ fn masm_constants_bidirectional() {
         // via SHELL_ERR_TABLE); the two slot consts are IMPORTED from deposit_intent_parser (not
         // redeclared -> not parsed here, no duplicate parity row, G1).
         ("domain_config.masm", DOMAIN_CONFIG_MASM, &[], &[]),
+        // CMP-A10 burn policy: declares the two ERR_XRESERVE_BURN_* errors (known shell errors via
+        // SHELL_ERR_TABLE) + the MIN_BURN_SIZE_SLOT word const (pinned to MIN_BURN_SIZE_SLOT_LABEL); no
+        // numeric consts.
+        (
+            "burn_policy.masm",
+            BURN_POLICY_MASM,
+            &[],
+            EXPECTED_BURN_POLICY_WORD_CONSTS,
+        ),
     ];
     for (file, src, covered_nums, expected_words) in sources {
         let (nums, strs, words) = parse_masm_consts(src);

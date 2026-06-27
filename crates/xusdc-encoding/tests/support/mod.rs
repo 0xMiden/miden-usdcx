@@ -22,27 +22,34 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
-    Account, AccountComponent, AccountId, AccountIdVersion, AccountType, StorageMap, StorageMapKey,
-    StorageSlot, StorageSlotName,
+    Account, AccountComponent, AccountId, AccountIdVersion, AccountType, RoleSymbol, StorageMap,
+    StorageMapKey, StorageSlot, StorageSlotName,
 };
-use miden_protocol::asset::{AssetAmount, TokenSymbol};
-use miden_protocol::note::{Note, NoteType};
+use miden_protocol::asset::{AssetAmount, FungibleAsset, TokenSymbol};
+use miden_protocol::note::{Note, NoteTag, NoteType};
 use miden_standards::testing::note::NoteBuilder;
 use miden_protocol::assembly::Library;
 use miden_protocol::errors::MasmError;
-use miden_protocol::transaction::{ExecutedTransaction, TransactionKernel};
+use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote, TransactionKernel};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
 use miden_processor::advice::AdviceInputs;
 use miden_processor::crypto::random::RandomCoin;
-use miden_standards::account::access::PausableManager;
+use miden_standards::account::access::{
+    Authority, Ownable2Step, PausableManager, RoleBasedAccessControl,
+};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
-use miden_standards::account::policies::{MintPolicyConfig, PolicyRegistration, TokenPolicyManager};
+use miden_standards::account::policies::{
+    BurnPolicyConfig, MintPolicyConfig, PolicyRegistration, TokenPolicyManager,
+};
 use miden_standards::StandardsLib;
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::P2idNote;
+use miden_standards::note::{BurnNote, P2idNote};
 use miden_testing::{Auth, MockChain};
 use miden_tx::TransactionExecutorError;
+use xusdc_encoding::account::xreserve::{
+    ATTEST_ADMIN_ROLE, BURN_POLICY_PROC_PATH, MINT_DENY_GUARD_PROC_PATH,
+};
 use xusdc_encoding::xreserve::encoding::masm_error_by_name;
 
 // D5d attestation vectors — IN-TEST deterministic secp256k1 generation (zero touch to the 04
@@ -91,6 +98,13 @@ pub const TOKEN_CONFIG_SLOT_LABEL: &str = "miden::standards::faucets::fungible::
 /// the single Rust source for the allowlist fixture slot binding.
 pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin::xreserve_attesters";
 
+/// CMP-A10 `minBurnSize` value-slot label (§5.5 XReserveAttesterAdmin home, SPEC-OWNER RATIFIED). The
+/// burn policy (`burn_policy.masm`) declares a `word("…")` const with the byte-identical label
+/// (parity-enforced); the future CMP-F2 `set_min_burn_size` setter co-owns the SAME slot. Bound here as
+/// the single Rust source for the burn-policy fixture slot binding (twin of
+/// [`XRESERVE_ATTESTERS_SLOT_LABEL`]).
+pub const MIN_BURN_SIZE_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin::min_burn_size";
+
 // FAUCET(01) ERROR MIRRORS (frozen names: 01 TEST-AND-VERIFICATION-HARNESS.md:72-73)
 // ================================================================================================
 
@@ -100,7 +114,7 @@ pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 13] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 15] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -172,6 +186,18 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 13] = [
     (
         "ERR_XRESERVE_DOMAIN_REINIT",
         MasmError::from_static_str("domain config has already been initialized"),
+    ),
+    // CMP-A10 R-BURN-1: a burn must move a strictly positive amount (burn_policy.masm). The red-suite
+    // carries it here so the zero-amount reject test can name its EXACT expected error; the GREEN
+    // commit references the matching MASM const (declared now for parity).
+    (
+        "ERR_XRESERVE_BURN_ZERO",
+        MasmError::from_static_str("burn amount must be greater than zero"),
+    ),
+    // CMP-A10 R-BURN-2: a burn must be at least the configured minimum burn size (burn_policy.masm).
+    (
+        "ERR_XRESERVE_BURN_BELOW_MIN",
+        MasmError::from_static_str("burn amount is below the minimum burn size"),
     ),
 ];
 
@@ -1873,4 +1899,436 @@ pub async fn run_mint_and_send(
         .expect("building the transaction")
         .execute()
         .await
+}
+
+// CMP-A10 BURN POLICY (P5-01 R-BURN-1/2) — real-MockChain 2-block burn-consume oracle + direct driver
+// ================================================================================================
+
+/// Which burn policy the burn-oracle faucet fixture installs ACTIVE. Both selections compose a
+/// CODE-IDENTICAL account (faucet + xreserve + policy-manager + BurnAllowAll + PausableManager + RBAC,
+/// with the mint-deny guard ACTIVE and BOTH burn policies registered) differing ONLY in
+/// `active_burn_policy_proc_root` — the non-vacuity oracle the R-BURN-2 reject leans on.
+/// Test-side u64 -> `Felt` for burn magnitudes (`min_burn_size` / `amount`), which are `AssetAmount`s
+/// `< 2^63` and therefore always field-safe. `Felt::new` is fallible (it validates `< p`); this wraps
+/// the infallible-for-our-range case.
+fn felt_from_u64(value: u64) -> Felt {
+    Felt::new(value).expect("a burn magnitude (< 2^63) is a valid field element")
+}
+
+pub enum BurnGuardSelection {
+    /// TEST-ONLY oracle: the real `burn_policy::check_policy` (`Custom(burn_root)`) ACTIVE, allow-all
+    /// RESERVED. The arm the R-BURN-1/2 rejects + the valid-burn positive run against.
+    OracleBurnReal,
+    /// TEST-ONLY oracle: stock `BurnAllowAll` ACTIVE, the real burn policy RESERVED. The non-vacuity
+    /// control: the SAME below-min burn succeeds + decrements here, proving the real arm's trap is
+    /// policy-caused.
+    OracleBurnAllowAll,
+}
+
+/// A burn-policy harness: a built [`MockChain`] holding the composed faucet (real burn policy active or
+/// allow-all per [`BurnGuardSelection`]) + a user wallet seeded with the burn asset + the canonical
+/// asset-bearing [`BurnNote`] the tests reproduce in-block and consume via the canary 2-block
+/// lifecycle.
+pub struct BurnPolicyHarness {
+    pub chain: MockChain,
+    pub faucet_id: AccountId,
+    pub user_id: AccountId,
+    /// The canonical burn note (random serial) the user emits in-block, then the faucet consumes.
+    pub burn_note: Note,
+    /// The single fungible burn asset (`FungibleAsset::new(faucet_id, burn_amount)`).
+    pub asset: FungibleAsset,
+    pub burn_root: Word,
+    pub min_burn_size: u64,
+    pub burn_amount: u64,
+}
+
+/// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` for the burn oracle — a faithful
+/// replica of the production builder's private `seeded_attest_admin_rbac` (Option A: both stock RBAC
+/// maps direct-seeded so `admin_holder` is the sole `ATTEST_ADMIN` member). The burn oracle needs the
+/// RBAC foundation so the holder-sent `PausableManager::pause` clears `assert_authorized` (the pause
+/// gate `burn_paused_rejects` exercises). Reuses the stock RBAC code + slot names + metadata verbatim.
+fn seeded_attest_admin_rbac_component(admin_holder: AccountId) -> AccountComponent {
+    let role =
+        RoleSymbol::new(ATTEST_ADMIN_ROLE).expect("ATTEST_ADMIN is a fixed valid 12-char role symbol");
+    let member_word = Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
+
+    let role_config = StorageMap::with_entries([(
+        StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&role)])),
+        member_word,
+    )])
+    .expect("the single-entry role_config seed is valid");
+
+    let role_membership = StorageMap::with_entries([(
+        StorageMapKey::new(Word::from([
+            Felt::ZERO,
+            Felt::from(&role),
+            admin_holder.suffix(),
+            admin_holder.prefix().as_felt(),
+        ])),
+        member_word,
+    )])
+    .expect("the single-entry role_membership seed is valid");
+
+    AccountComponent::new(
+        RoleBasedAccessControl::code().clone(),
+        vec![
+            StorageSlot::with_map(RoleBasedAccessControl::role_config_slot().clone(), role_config),
+            StorageSlot::with_map(
+                RoleBasedAccessControl::role_membership_slot().clone(),
+                role_membership,
+            ),
+        ],
+        RoleBasedAccessControl::component_metadata(),
+    )
+    .expect("the seeded RBAC component mirrors the stock From impl and is valid")
+}
+
+/// TEST-ONLY burn-oracle composition: registers the mint-deny guard ACTIVE (the production mint slot)
+/// AND BOTH burn policies (the real `Custom(burn_root)` + stock `BurnAllowAll`), one `Active` and one
+/// `Reserved` per `burn_real_active`, so the real-vs-allow-all pair is CODE-IDENTICAL and differs ONLY
+/// in `active_burn_policy_proc_root`. Mirrors `oracle_components` (mint) + the production
+/// `XReserveStablecoinBuilder::{assemble_components, build_components}` RBAC foundation, but is the
+/// TEST harness — production composition (`build_components`) installs the real burn policy ONLY (no
+/// reserved allow-all), so no shipped API can construct an allow-all-active burn faucet.
+fn oracle_burn_components(
+    faucet: FungibleFaucet,
+    xreserve_component: AccountComponent,
+    mint_deny_root: Word,
+    burn_root: Word,
+    burn_real_active: bool,
+    owner: AccountId,
+    admin_holder: AccountId,
+) -> Result<Vec<AccountComponent>> {
+    let real_burn = BurnPolicyConfig::Custom(burn_root);
+    let (active_burn, reserved_burn) = if burn_real_active {
+        (real_burn, BurnPolicyConfig::AllowAll)
+    } else {
+        (BurnPolicyConfig::AllowAll, real_burn)
+    };
+    let manager = TokenPolicyManager::new()
+        .with_mint_policy(MintPolicyConfig::Custom(mint_deny_root), PolicyRegistration::Active)
+        .map_err(|e| anyhow::anyhow!("oracle manager active mint policy: {e}"))?
+        .with_burn_policy(active_burn, PolicyRegistration::Active)
+        .map_err(|e| anyhow::anyhow!("oracle manager active burn policy: {e}"))?
+        .with_burn_policy(reserved_burn, PolicyRegistration::Reserved)
+        .map_err(|e| anyhow::anyhow!("oracle manager reserved burn policy: {e}"))?;
+
+    // Component order/contents mirror XReserveStablecoinBuilder::{assemble_components, build_components}:
+    // faucet + xreserve + [policy-manager, BurnAllowAll] + PausableManager + the RBAC foundation.
+    let mut components = vec![faucet.into(), xreserve_component];
+    components.extend(manager);
+    components.push(PausableManager.into());
+    let role =
+        RoleSymbol::new(ATTEST_ADMIN_ROLE).expect("ATTEST_ADMIN is a fixed valid 12-char role symbol");
+    components.push(Ownable2Step::new(owner).into());
+    components.push(seeded_attest_admin_rbac_component(admin_holder));
+    components.push(Authority::RbacControlled { role }.into());
+    Ok(components)
+}
+
+/// Builds the burn-policy harness: assembles the `xreserve` component with the full production slot set
+/// (domain/identifier value slots, usedNonces/xReserveAttesters map slots, AND the NET-NEW minBurnSize
+/// value slot seeded `[min_burn_size, 0, 0, 0]`), composes the faucet via [`oracle_burn_components`]
+/// (`owner` = id(1), `admin_holder` = id(2)), adds a user wallet seeded with the single burn asset, and
+/// creates the canonical [`BurnNote`]. The faucet is built with `is_max_supply_mutable(true)` + decimals
+/// 6, mirroring the mint composition fixtures.
+pub fn setup_burn_policy_account(
+    selection: BurnGuardSelection,
+    max_supply: u64,
+    token_supply: u64,
+    min_burn_size: u64,
+    burn_amount: u64,
+) -> Result<BurnPolicyHarness> {
+    let library = assemble_xreserve_lib()?;
+
+    let xreserve_component = AccountComponent::new(
+        library.clone(),
+        vec![
+            StorageSlot::with_value(
+                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
+                Word::from([TEST_DOMAIN, 0, 0, 0]),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL).context("identifier slot label")?,
+                Word::from([11u32, 12, 13, 14]),
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
+                StorageMap::new(),
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+                    .context("xReserveAttesters slot label")?,
+                StorageMap::new(),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(MIN_BURN_SIZE_SLOT_LABEL).context("min_burn_size slot label")?,
+                Word::from([felt_from_u64(min_burn_size), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
+            ),
+        ],
+        AccountComponentMetadata::new("xusdc-burn-policy-harness"),
+    )
+    .context("binding the xreserve library + all composition slots + minBurnSize as a component")?;
+
+    let resolve = |path: &str| -> Result<Word> {
+        xreserve_component
+            .get_procedure_root_by_path(path)
+            .map(Word::from)
+            .ok_or_else(|| anyhow::anyhow!("xreserve component does not export '{path}'"))
+    };
+    let mint_deny_root = resolve(MINT_DENY_GUARD_PROC_PATH)?;
+    let burn_root = resolve(BURN_POLICY_PROC_PATH)?;
+
+    let faucet = FungibleFaucet::builder()
+        .name(TokenName::new("XUSDC")?)
+        .symbol(TokenSymbol::new("XUSDC")?)
+        .decimals(6)
+        .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
+        .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
+        .is_max_supply_mutable(true)
+        .build()
+        .context("failed to build FungibleFaucet")?;
+
+    let burn_real_active = matches!(selection, BurnGuardSelection::OracleBurnReal);
+    let components = oracle_burn_components(
+        faucet,
+        xreserve_component,
+        mint_deny_root,
+        burn_root,
+        burn_real_active,
+        test_account_id(1),
+        test_account_id(2),
+    )?;
+
+    let mut builder = MockChain::builder();
+    let faucet_account = builder
+        .add_existing_account_from_components(Auth::IncrNonce, components)
+        .context("adding the burn-policy faucet account")?;
+    let faucet_id = faucet_account.id();
+
+    // The user wallet seeded with exactly the burn asset (faucet_id known only now).
+    let asset = FungibleAsset::new(faucet_id, burn_amount).context("invalid burn asset")?;
+    let user = builder
+        .add_existing_wallet_with_assets(Auth::IncrNonce, [asset.into()])
+        .context("adding the burn user wallet")?;
+    let user_id = user.id();
+
+    // The canonical burn note (random serial) — created while the builder rng is live (canary C1).
+    let burn_note = BurnNote::create(
+        user_id,
+        faucet_id,
+        asset.into(),
+        Default::default(),
+        builder.rng_mut(),
+    )
+    .context("creating the canonical burn note")?;
+
+    let chain = builder.build().context("building the burn-policy MockChain")?;
+    Ok(BurnPolicyHarness {
+        chain,
+        faucet_id,
+        user_id,
+        burn_note,
+        asset,
+        burn_root,
+        min_burn_size,
+        burn_amount,
+    })
+}
+
+/// The user send tx-script that emits `burn_note` exactly (ported verbatim from the burn canary
+/// `burn_canary.rs:57-91`): pushes `burn_note`'s recipient digest + metadata (Public, faucet-target
+/// tag) into `output_note::create`, then `call`s the BasicWallet `move_asset_to_note` to draw
+/// `fungible_asset` from the executing user's vault into that note.
+pub fn send_burn_note_script(
+    burn_note: &Note,
+    fungible_asset: &FungibleAsset,
+    faucet_id: AccountId,
+) -> String {
+    let recipient = burn_note.recipient().digest();
+    let note_type = Felt::from(NoteType::Public);
+    let tag = Felt::from(NoteTag::with_account_target(faucet_id));
+    let asset_key = fungible_asset.to_key_word();
+    let asset_value = fungible_asset.to_value_word();
+    format!(
+        r#"
+use miden::protocol::output_note
+use miden::standards::wallets::basic->wallet
+
+begin
+    # create the burn note (empty) carrying burn_note's recipient + metadata.
+    push.{recipient}
+    push.{note_type}
+    push.{tag}
+    exec.output_note::create
+    # => [note_idx]
+
+    # move the user's single fungible asset from the vault into the note.
+    push.{asset_value}
+    push.{asset_key}
+    # => [ASSET_KEY, ASSET_VALUE, note_idx]
+    call.wallet::move_asset_to_note
+    # => [pad(16)]
+
+    exec.::miden::core::sys::truncate_stack
+end
+"#
+    )
+}
+
+/// Reads the faucet's committed `token_supply` from its `token_config` slot post-block (ported from
+/// the burn canary `burn_canary.rs:94-97`).
+pub fn committed_token_supply(chain: &MockChain, faucet_id: AccountId) -> Result<AssetAmount> {
+    let storage = chain.committed_account(faucet_id)?.storage();
+    Ok(FungibleFaucet::try_from(storage)?.token_supply())
+}
+
+/// tx0 ONLY (non-panicking): the user emits `burn_note` in-block (a send tx-script that draws the asset
+/// from the user vault into the note). Returns the raw execution result so callers can observe an
+/// upstream rejection (the zero-amount reachability probe) without the strict-path panic. Used as the
+/// first half of [`run_burn_consume`].
+pub async fn try_emit_burn_note(
+    chain: &MockChain,
+    burn_note: &Note,
+    asset: &FungibleAsset,
+    faucet_id: AccountId,
+    user_id: AccountId,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let tx_script = CodeBuilder::new()
+        .compile_tx_script(send_burn_note_script(burn_note, asset, faucet_id))
+        .expect("the user send-burn-note script compiles");
+    chain
+        .build_tx_context(user_id, &[], &[])
+        .expect("building the user emit tx context")
+        .tx_script(tx_script)
+        // Register the full note details so the kernel's `before_created` event can resolve the PUBLIC
+        // note's details when tx0 creates it (canary C1).
+        .extend_expected_output_notes(vec![RawOutputNote::Full(burn_note.clone())])
+        .build()
+        .expect("building the user emit tx")
+        .execute()
+        .await
+}
+
+/// Runs the canary 2-block burn lifecycle against `chain`: the user emits `burn_note` at block N (tx0,
+/// a test-setup invariant — panics on failure), the block is proven, then the FAUCET consumes the
+/// now-committed note at block N+1 via stock `receive_and_burn`. Returns the faucet-consume RESULT so
+/// the caller asserts the policy trap (`assert_transaction_executor_error!`) or the success+decrement
+/// (`committed_token_supply` after committing the returned tx).
+pub async fn run_burn_consume(
+    chain: &mut MockChain,
+    burn_note: &Note,
+    asset: &FungibleAsset,
+    faucet_id: AccountId,
+    user_id: AccountId,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let tx0 = try_emit_burn_note(chain, burn_note, asset, faucet_id, user_id)
+        .await
+        .expect("the user emit tx0 succeeds (test-setup invariant)");
+    chain
+        .add_pending_executed_transaction(&tx0)
+        .expect("queuing tx0 into block N");
+    chain.prove_next_block().expect("proving block N");
+
+    // tx1: the faucet consumes the committed burn note (runs receive_and_burn -> execute_burn_policy ->
+    // the active burn policy).
+    chain
+        .build_tx_context(faucet_id, &[burn_note.id()], &[])
+        .expect("building the faucet consume tx context")
+        .build()
+        .expect("building the faucet consume tx")
+        .execute()
+        .await
+}
+
+/// Pauses the faucet: builds a `PausableManager::pause` note SENT BY `sender` and executes it against
+/// the faucet `account` (the note is provided unauthenticated). The caller commits the returned tx +
+/// proves a block to make the committed faucet state paused. Mirrors [`run_pause_tx`] but threads a
+/// bare `&MockChain` + `&Account` (the burn harness is not a `CompositionHarness`).
+pub async fn run_pause_against(
+    chain: &MockChain,
+    account: &Account,
+    sender: AccountId,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = pause_note(sender, seed).expect("building the pause note (test-setup invariant)");
+    chain
+        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
+        .expect("building the pause tx context")
+        .build()
+        .expect("building the pause transaction")
+        .execute()
+        .await
+}
+
+// CMP-A10 R-BURN-1 DIRECT-POLICY DRIVER — exec check_policy with a crafted [ASSET_KEY, ASSET_VALUE]
+// ================================================================================================
+
+/// Module path of the generated direct burn-policy driver component.
+pub const BURN_POLICY_DRIVER_PATH: &str = "xusdc::test_fixtures::burn_policy_driver";
+
+/// Generates a direct-policy driver: a CALL-entered account proc that pushes a crafted
+/// `[ASSET_KEY, ASSET_VALUE]` burn-policy stack (`ASSET_VALUE = [amount, 0, 0, 0]`) and `exec`s
+/// `burn_policy::check_policy`. The policy consumes the 8 cells and returns `[]`, restoring the
+/// 16-depth `call` boundary. Drives the R-BURN-1 zero-amount proof DIRECTLY (the 0-amount burn note's
+/// reachability through note creation is unproven — the vault treats a 0-amount asset as absent — so
+/// R-BURN-1 is exercised as a defensive guard via this driver, not a note-reachable reject).
+pub fn burn_policy_direct_driver_src(asset_key: Word, amount: u64) -> String {
+    let asset_value = Word::from([felt_from_u64(amount), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
+    format!(
+        "use xreserve::burn_policy\n\n\
+         #! Test driver: pushes [ASSET_KEY, ASSET_VALUE] and execs the burn policy directly.\n\
+         #!\n\
+         #! Inputs:  [pad(16)]\n\
+         #! Outputs: [pad(16)]\n\
+         #!\n\
+         #! Invocation: call\n\
+         pub proc drive\n\
+         \x20\x20\x20\x20push.{asset_value}\n\
+         \x20\x20\x20\x20push.{asset_key}\n\
+         \x20\x20\x20\x20exec.burn_policy::check_policy\n\
+         end\n",
+    )
+}
+
+/// Builds a MockChain account carrying [the xreserve component WITH the seeded minBurnSize value slot]
+/// + [the generated direct burn-policy driver], reusing [`ShellHarness`] + [`run_call_driver`]. Used by
+/// the R-BURN-1 zero-amount direct proof: only the minBurnSize slot is bound (the direct
+/// `check_policy` reads only `amount` + that slot; a zero amount traps before the slot is read).
+pub fn setup_burn_policy_direct_account(min_burn_size: u64, driver_src: &str) -> Result<ShellHarness> {
+    let library = assemble_xreserve_lib()?;
+
+    let xreserve_component = AccountComponent::new(
+        library.clone(),
+        vec![StorageSlot::with_value(
+            StorageSlotName::new(MIN_BURN_SIZE_SLOT_LABEL).context("min_burn_size slot label")?,
+            Word::from([felt_from_u64(min_burn_size), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
+        )],
+        AccountComponentMetadata::new("xusdc-burn-policy-direct-harness"),
+    )
+    .context("binding the xreserve library + minBurnSize slot as a component")?;
+
+    let driver_code = CodeBuilder::new()
+        .with_dynamically_linked_library(&library)
+        .context("linking the xreserve library into the direct driver component")?
+        .compile_component_code(BURN_POLICY_DRIVER_PATH, driver_src)
+        .with_context(|| format!("direct driver failed to compile\n--- driver ---\n{driver_src}"))?;
+    let driver_component = AccountComponent::new(
+        driver_code.clone(),
+        vec![],
+        AccountComponentMetadata::new("xusdc-burn-policy-direct-driver"),
+    )
+    .context("binding the direct driver component")?;
+
+    let mut builder = MockChain::builder();
+    let account = builder
+        .add_existing_account_from_components(Auth::IncrNonce, [xreserve_component, driver_component])
+        .context("adding the direct burn-policy account")?;
+    let mock_chain = builder.build().context("building the direct-policy MockChain")?;
+    Ok(ShellHarness {
+        mock_chain,
+        account_id: account.id(),
+        driver_code,
+        driver_path: BURN_POLICY_DRIVER_PATH,
+    })
 }

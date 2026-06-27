@@ -31,7 +31,8 @@ use miden_standards::account::access::{
 };
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::{
-    MintPolicyConfig, PolicyRegistration, TokenPolicyManager, TokenPolicyManagerError,
+    BurnPolicyConfig, MintPolicyConfig, PolicyRegistration, TokenPolicyManager,
+    TokenPolicyManagerError,
 };
 
 /// The single RBAC role this faucet seeds and gates `set_attester` on: the deposit-attester
@@ -45,6 +46,12 @@ pub const ATTEST_ADMIN_ROLE: &str = "ATTEST_ADMIN";
 /// no-leading-`::` form [`AccountComponent::get_procedure_root_by_path`] expects (matching the
 /// `procedure_root!` macro and the protocol callback wiring).
 pub const MINT_DENY_GUARD_PROC_PATH: &str = "xreserve::mint_deny_guard::check_policy";
+
+/// Flat library path of the burn policy's `check_policy` procedure within the assembled `xreserve`
+/// library (namespace `xreserve`, module `burn_policy`). The burn-slot twin of
+/// [`MINT_DENY_GUARD_PROC_PATH`]; resolved via [`AccountComponent::get_procedure_root_by_path`] so the
+/// `dynexec` root the policy manager stores equals the installed proc's MAST root (CMP-A10).
+pub const BURN_POLICY_PROC_PATH: &str = "xreserve::burn_policy::check_policy";
 
 /// The storage slot the stock `FungibleFaucet` writes its mutability flags into (miden-standards
 /// `token_metadata.rs`, pinned v0.15.3). `build_components` reads it to reject an immutable-`max_supply`
@@ -73,6 +80,13 @@ pub enum XReserveStablecoinBuilderError {
     /// The supplied `xreserve` component does not export the deny-guard procedure (assembly/path
     /// drift). Carries the expected path for diagnosis.
     DenyGuardProcNotFound,
+    /// The active burn policy does not resolve to the installed `burn_policy::check_policy` — packaging
+    /// cannot ship a faucet whose burns bypass the R-BURN-1/2 security predicate (CMP-A10). The burn-slot
+    /// twin of [`Self::MissingMintDenyGuard`].
+    MissingBurnPolicyGuard,
+    /// The supplied `xreserve` component does not export the burn-policy procedure (assembly/path
+    /// drift). The burn-slot twin of [`Self::DenyGuardProcNotFound`].
+    BurnPolicyProcNotFound,
     /// The underlying `TokenPolicyManager` rejected the policy registration.
     PolicyManager(TokenPolicyManagerError),
 }
@@ -100,6 +114,16 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 f,
                 "the xreserve component does not export the mint-deny guard procedure \
                  '{MINT_DENY_GUARD_PROC_PATH}'"
+            ),
+            Self::MissingBurnPolicyGuard => write!(
+                f,
+                "active burn policy is not the xreserve burn policy; packaging cannot bypass the \
+                 burn security predicate (R-BURN-1/2)"
+            ),
+            Self::BurnPolicyProcNotFound => write!(
+                f,
+                "the xreserve component does not export the burn policy procedure \
+                 '{BURN_POLICY_PROC_PATH}'"
             ),
             Self::PolicyManager(_) => write!(f, "token policy manager composition failed"),
         }
@@ -140,6 +164,9 @@ pub struct XReserveStablecoinBuilder {
     admin_holder: AccountId,
     account_type: AccountType,
     requested_active_mint_policy: Option<MintPolicyConfig>,
+    /// Overridden active burn policy (default: the installed `burn_policy::check_policy` as
+    /// `Custom(burn_root)`). A non-burn-policy choice exercises the missing-burn-guard rejection.
+    requested_active_burn_policy: Option<BurnPolicyConfig>,
 }
 
 impl XReserveStablecoinBuilder {
@@ -160,6 +187,7 @@ impl XReserveStablecoinBuilder {
             admin_holder,
             account_type: AccountType::Public,
             requested_active_mint_policy: None,
+            requested_active_burn_policy: None,
         }
     }
 
@@ -177,6 +205,16 @@ impl XReserveStablecoinBuilder {
         self
     }
 
+    /// Overrides the requested active burn policy (default: the installed `burn_policy::check_policy`).
+    /// The burn-slot twin of [`Self::with_active_mint_policy`]; a non-burn-policy choice (e.g.
+    /// [`BurnPolicyConfig::AllowAll`]) is rejected by [`Self::build_components`] with
+    /// [`XReserveStablecoinBuilderError::MissingBurnPolicyGuard`] — packaging cannot drop the burn
+    /// security predicate (CMP-A10, R-BURN-1/2).
+    pub fn with_active_burn_policy(mut self, policy: BurnPolicyConfig) -> Self {
+        self.requested_active_burn_policy = Some(policy);
+        self
+    }
+
     /// Resolves the deny-guard procedure root from the installed `xreserve` component. The same root
     /// is registered as the active mint policy, so the policy manager's stored `dynexec` root equals
     /// the installed proc's MAST root.
@@ -185,6 +223,16 @@ impl XReserveStablecoinBuilder {
             .get_procedure_root_by_path(MINT_DENY_GUARD_PROC_PATH)
             .map(Word::from)
             .ok_or(XReserveStablecoinBuilderError::DenyGuardProcNotFound)
+    }
+
+    /// Resolves the burn-policy procedure root from the installed `xreserve` component. The same root
+    /// is registered as the active burn policy, so the policy manager's stored `dynexec` root equals
+    /// the installed proc's MAST root. The burn-slot twin of [`Self::mint_deny_guard_root`].
+    pub fn burn_policy_root(&self) -> Result<Word, XReserveStablecoinBuilderError> {
+        self.xreserve_component
+            .get_procedure_root_by_path(BURN_POLICY_PROC_PATH)
+            .map(Word::from)
+            .ok_or(XReserveStablecoinBuilderError::BurnPolicyProcNotFound)
     }
 
     /// Reads the supplied faucet's `is_max_supply_mutable` flag from its assembled storage. The stock
@@ -232,8 +280,22 @@ impl XReserveStablecoinBuilder {
         if !self.faucet_max_supply_is_mutable() {
             return Err(XReserveStablecoinBuilderError::ImmutableMaxSupply);
         }
-        let manager =
-            TokenPolicyManager::new().with_mint_policy(active, PolicyRegistration::Active)?;
+        // CMP-A10 burn slot: wire the installed `burn_policy::check_policy` as the ACTIVE burn policy so
+        // every `receive_and_burn` is gated on the R-BURN-1/2 predicate (the burn-slot twin of the
+        // active mint deny guard above).
+        let burn_root = self.burn_policy_root()?;
+        let active_burn = self
+            .requested_active_burn_policy
+            .unwrap_or(BurnPolicyConfig::Custom(burn_root));
+        // EXECUTING-RED NOTE: the production build-time burn-policy guard — rejecting any active burn
+        // policy whose root != `burn_root` with `MissingBurnPolicyGuard` — is the GREEN commit. Its
+        // ABSENCE here is what makes `builder_api::denies_non_policy_burn` red (an AllowAll active burn
+        // policy composes `Ok` instead of the rejected `Err(MissingBurnPolicyGuard)`). Do NOT add the
+        // `if active_burn.root() != burn_root { return Err(MissingBurnPolicyGuard); }` check in this
+        // commit.
+        let manager = TokenPolicyManager::new()
+            .with_mint_policy(active, PolicyRegistration::Active)?
+            .with_burn_policy(active_burn, PolicyRegistration::Active)?;
 
         // The RBAC admin foundation, appended AFTER the account-type / deny-guard early returns so a
         // rejected build never reaches here. The single `Authority` slot gates the stock admin

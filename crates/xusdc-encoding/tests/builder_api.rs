@@ -15,7 +15,7 @@ use miden_protocol::account::{
 use miden_protocol::asset::{AssetAmount, TokenSymbol};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
-use miden_standards::account::policies::MintPolicyConfig;
+use miden_standards::account::policies::{BurnPolicyConfig, MintPolicyConfig};
 use miden_testing::assert_transaction_executor_error;
 use support::*;
 use xusdc_encoding::account::xreserve::{
@@ -161,6 +161,35 @@ fn build_rejects_missing_mint_deny_guard() -> Result<()> {
     assert!(
         matches!(err, XReserveStablecoinBuilderError::MissingMintDenyGuard),
         "expected MissingMintDenyGuard, got {err:?}"
+    );
+    Ok(())
+}
+
+/// An active burn policy that is not the installed `burn_policy::check_policy` is rejected (the
+/// burn-slot twin of [`build_rejects_missing_mint_deny_guard`]): packaging cannot drop the burn
+/// security predicate (CMP-A10, R-BURN-1/2). The faucet is otherwise valid (Public + deny mint active +
+/// mutable max_supply) so the burn guard is the SOLE reason for rejection.
+///
+/// EXECUTING-RED: the production build-time burn-policy guard is the GREEN commit, so this RED commit's
+/// `build_components` composes `Ok` (an AllowAll active burn policy is wired through with no guard) where
+/// the GREEN behavior must return `Err(MissingBurnPolicyGuard)` — this assertion FAILS here, for the
+/// right reason (the missing guard), and goes green when the guard lands.
+#[test]
+fn denies_non_policy_burn() -> Result<()> {
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
+    let result = XReserveStablecoinBuilder::new(
+        faucet,
+        xreserve_component,
+        test_account_id(1),
+        test_account_id(2),
+    )
+    .with_active_burn_policy(BurnPolicyConfig::AllowAll)
+    .build_components();
+    assert!(
+        matches!(result, Err(XReserveStablecoinBuilderError::MissingBurnPolicyGuard)),
+        "production build_components must reject an AllowAll active burn policy with \
+         MissingBurnPolicyGuard (the burn-slot twin of MissingMintDenyGuard); got Ok/other: {:?}",
+        result.as_ref().map(|c| c.len())
     );
     Ok(())
 }

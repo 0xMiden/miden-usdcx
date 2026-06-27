@@ -2270,9 +2270,12 @@ pub const BURN_POLICY_DRIVER_PATH: &str = "xusdc::test_fixtures::burn_policy_dri
 /// Generates a direct-policy driver: a CALL-entered account proc that pushes a crafted
 /// `[ASSET_KEY, ASSET_VALUE]` burn-policy stack (`ASSET_VALUE = [amount, 0, 0, 0]`) and `exec`s
 /// `burn_policy::check_policy`. The policy consumes the 8 cells and returns `[]`, restoring the
-/// 16-depth `call` boundary. Drives the R-BURN-1 zero-amount proof DIRECTLY (the 0-amount burn note's
-/// reachability through note creation is unproven — the vault treats a 0-amount asset as absent — so
-/// R-BURN-1 is exercised as a defensive guard via this driver, not a note-reachable reject).
+/// 16-depth `call` boundary. Drives the R-BURN-1 zero-amount proof DIRECTLY as a SUPPLEMENTARY,
+/// belt-and-suspenders proof. Zero-amount note reachability is now PROVEN: `burn_zero_amount_rejects`
+/// constructs and consumes a REAL 0-amount burn note that reaches `check_policy` (the vault no-ops a
+/// 0-amount asset without failing; see `zero_amount_burn_note_reachability`), so R-BURN-1 has BOTH a
+/// note-reachable reject AND this direct-driver proof. This driver exercises `check_policy` in
+/// isolation (not because note reachability is unproven).
 pub fn burn_policy_direct_driver_src(asset_key: Word, amount: u64) -> String {
     let asset_value = Word::from([felt_from_u64(amount), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
     format!(

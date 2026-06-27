@@ -167,6 +167,14 @@ pub struct XReserveStablecoinBuilder {
     /// Overridden active burn policy (default: the installed `burn_policy::check_policy` as
     /// `Custom(burn_root)`). A non-burn-policy choice exercises the missing-burn-guard rejection.
     requested_active_burn_policy: Option<BurnPolicyConfig>,
+    /// The `minBurnSize` (R-BURN-2 threshold) the builder seeds into the `MIN_BURN_SIZE_SLOT`
+    /// (`xusdc::xreserve::attester_admin::min_burn_size`) value slot as `[min_burn_size, 0, 0, 0]`.
+    /// Default + override are owned here per plan §3.2 (the deferred CMP-F2 `set_min_burn_size` writes
+    /// the SAME slot). EXECUTING-RED: this field is API surface only — `build_components` does NOT yet
+    /// seed the slot (the seeding is the GREEN commit, proven red by
+    /// `builder_api::production_seeds_min_burn_size`).
+    #[allow(dead_code)]
+    min_burn_size: u64,
 }
 
 impl XReserveStablecoinBuilder {
@@ -188,6 +196,7 @@ impl XReserveStablecoinBuilder {
             account_type: AccountType::Public,
             requested_active_mint_policy: None,
             requested_active_burn_policy: None,
+            min_burn_size: 0,
         }
     }
 
@@ -212,6 +221,14 @@ impl XReserveStablecoinBuilder {
     /// security predicate (CMP-A10, R-BURN-1/2).
     pub fn with_active_burn_policy(mut self, policy: BurnPolicyConfig) -> Self {
         self.requested_active_burn_policy = Some(policy);
+        self
+    }
+
+    /// Sets the `minBurnSize` (the R-BURN-2 threshold) the builder seeds into the `MIN_BURN_SIZE_SLOT`
+    /// value slot as `[min_burn_size, 0, 0, 0]` (default `0` — no minimum). The burn policy's R-BURN-2
+    /// check reads element 0 of this slot.
+    pub fn min_burn_size(mut self, min_burn_size: u64) -> Self {
+        self.min_burn_size = min_burn_size;
         self
     }
 

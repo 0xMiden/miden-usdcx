@@ -212,3 +212,64 @@ fn build_rejects_immutable_max_supply() -> Result<()> {
     );
     Ok(())
 }
+
+// PRODUCTION minBurnSize SEEDING (P5-01 CMP-A10, plan §3.2/§5)
+// ================================================================================================
+
+/// Production `build_components` must SEED the minBurnSize config slot
+/// (`xusdc::xreserve::attester_admin::min_burn_size` = `[min_burn_size, 0, 0, 0]`) so the burn
+/// policy's R-BURN-2 read resolves on a real production faucet. Today that slot is bound ONLY by the
+/// test-only burn-oracle helper, never through `build_components`, so the production path ships a
+/// faucet whose burn policy has no minBurnSize to read.
+///
+/// EXECUTING-RED: the builder owns a `min_burn_size` default/override (API surface), but the slot
+/// SEEDING in `build_components` is the GREEN commit. This RED commit composes a production faucet
+/// WITHOUT the slot, so this assertion FAILS for the right reason (the slot is absent from every
+/// composed component) and goes green when the builder seeds it.
+#[test]
+fn production_seeds_min_burn_size() -> Result<()> {
+    // Anti-truncation: minBurnSize is a FULL `u64` `AssetAmount` (plan §3.2; `AssetAmount::MAX` =
+    // 2^63 - 2^31), encoded as `[min_burn_size, 0, 0, 0]`. MIN_BURN is chosen > `u32::MAX` so any
+    // `... as u32` truncation — in the seed (green) OR in this expectation — yields a DIFFERENT `Felt`
+    // and fails the test, rather than two sides silently agreeing on a truncated low-32-bit value.
+    const MIN_BURN: u64 = 5_000_000_000; // > u32::MAX (4_294_967_295), well within AssetAmount::MAX
+    const _: () = assert!(
+        MIN_BURN > u32::MAX as u64,
+        "MIN_BURN must exceed u32::MAX so the encoding test catches u32 truncation",
+    );
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
+    let components = XReserveStablecoinBuilder::new(
+        faucet,
+        xreserve_component,
+        test_account_id(1),
+        test_account_id(2),
+    )
+    .min_burn_size(MIN_BURN)
+    .build_components()
+    .context("production build_components must compose")?;
+
+    let slot_name =
+        StorageSlotName::new(MIN_BURN_SIZE_SLOT_LABEL).context("min_burn_size slot label")?;
+    let slot = components
+        .iter()
+        .flat_map(|c| c.storage_slots().iter())
+        .find(|s| s.name() == &slot_name)
+        .with_context(|| {
+            format!(
+                "production build_components must seed the minBurnSize slot \
+                 '{MIN_BURN_SIZE_SLOT_LABEL}' (GREEN); none of the {} composed components carries it",
+                components.len()
+            )
+        })?;
+    // Canonical FULL-u64 encoding via the protocol's own `AssetAmount -> Felt` (asset_amount.rs:129
+    // `Felt::try_from(u64)`), NOT `MIN_BURN as u32` — so a green seed that truncated the high bits
+    // would mismatch and fail here.
+    let expected_min_burn =
+        Felt::from(AssetAmount::new(MIN_BURN).context("MIN_BURN must be within AssetAmount::MAX")?);
+    assert_eq!(
+        slot.value(),
+        Word::from([expected_min_burn, Felt::ZERO, Felt::ZERO, Felt::ZERO]),
+        "the seeded minBurnSize slot must carry the FULL-u64 [min_burn_size, 0, 0, 0] (no u32 truncation)"
+    );
+    Ok(())
+}

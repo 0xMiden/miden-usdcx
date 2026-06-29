@@ -25,6 +25,7 @@ use miden_protocol::account::{
     AccountComponent, AccountId, AccountType, RoleSymbol, StorageMap, StorageMapKey, StorageSlot,
     StorageSlotName,
 };
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{
     Authority, Ownable2Step, PausableManager, RoleBasedAccessControl,
@@ -52,6 +53,14 @@ pub const MINT_DENY_GUARD_PROC_PATH: &str = "xreserve::mint_deny_guard::check_po
 /// [`MINT_DENY_GUARD_PROC_PATH`]; resolved via [`AccountComponent::get_procedure_root_by_path`] so the
 /// `dynexec` root the policy manager stores equals the installed proc's MAST root (CMP-A10).
 pub const BURN_POLICY_PROC_PATH: &str = "xreserve::burn_policy::check_policy";
+
+/// Canonical Rust label of the `minBurnSize` value storage slot
+/// (`xusdc::xreserve::attester_admin::min_burn_size`, §5.5 XReserveAttesterAdmin home, SPEC-OWNER
+/// RATIFIED). The single Rust source of truth: `burn_policy.masm` declares a byte-identical
+/// `word("…")` const (parity-enforced), the tests re-export this, and the future CMP-F2
+/// `set_min_burn_size` setter co-owns the SAME slot. [`XReserveStablecoinBuilder::build_components`]
+/// seeds it as `[min_burn_size, 0, 0, 0]`.
+pub const MIN_BURN_SIZE_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin::min_burn_size";
 
 /// The storage slot the stock `FungibleFaucet` writes its mutability flags into (miden-standards
 /// `token_metadata.rs`, pinned v0.15.3). `build_components` reads it to reject an immutable-`max_supply`
@@ -87,6 +96,10 @@ pub enum XReserveStablecoinBuilderError {
     /// The supplied `xreserve` component does not export the burn-policy procedure (assembly/path
     /// drift). The burn-slot twin of [`Self::DenyGuardProcNotFound`].
     BurnPolicyProcNotFound,
+    /// The requested `min_burn_size` exceeds [`AssetAmount::MAX`] (`2^63 - 2^31`), so it is not a
+    /// valid burn amount / field element and cannot be seeded into the `MIN_BURN_SIZE_SLOT`. Carries
+    /// the offending value.
+    MinBurnSizeExceedsMax(u64),
     /// The underlying `TokenPolicyManager` rejected the policy registration.
     PolicyManager(TokenPolicyManagerError),
 }
@@ -124,6 +137,11 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 f,
                 "the xreserve component does not export the burn policy procedure \
                  '{BURN_POLICY_PROC_PATH}'"
+            ),
+            Self::MinBurnSizeExceedsMax(value) => write!(
+                f,
+                "min_burn_size {value} exceeds the maximum representable asset amount \
+                 (AssetAmount::MAX = 2^63 - 2^31)"
             ),
             Self::PolicyManager(_) => write!(f, "token policy manager composition failed"),
         }
@@ -169,11 +187,8 @@ pub struct XReserveStablecoinBuilder {
     requested_active_burn_policy: Option<BurnPolicyConfig>,
     /// The `minBurnSize` (R-BURN-2 threshold) the builder seeds into the `MIN_BURN_SIZE_SLOT`
     /// (`xusdc::xreserve::attester_admin::min_burn_size`) value slot as `[min_burn_size, 0, 0, 0]`.
-    /// Default + override are owned here per plan §3.2 (the deferred CMP-F2 `set_min_burn_size` writes
-    /// the SAME slot). EXECUTING-RED: this field is API surface only — `build_components` does NOT yet
-    /// seed the slot (the seeding is the GREEN commit, proven red by
-    /// `builder_api::production_seeds_min_burn_size`).
-    #[allow(dead_code)]
+    /// Default `0` (no minimum); override via [`Self::min_burn_size`]. The deferred CMP-F2
+    /// `set_min_burn_size` writes the SAME slot (plan §3.2).
     min_burn_size: u64,
 }
 
@@ -304,12 +319,12 @@ impl XReserveStablecoinBuilder {
         let active_burn = self
             .requested_active_burn_policy
             .unwrap_or(BurnPolicyConfig::Custom(burn_root));
-        // EXECUTING-RED NOTE: the production build-time burn-policy guard — rejecting any active burn
-        // policy whose root != `burn_root` with `MissingBurnPolicyGuard` — is the GREEN commit. Its
-        // ABSENCE here is what makes `builder_api::denies_non_policy_burn` red (an AllowAll active burn
-        // policy composes `Ok` instead of the rejected `Err(MissingBurnPolicyGuard)`). Do NOT add the
-        // `if active_burn.root() != burn_root { return Err(MissingBurnPolicyGuard); }` check in this
-        // commit.
+        // INV (CMP-A10): the active burn policy MUST resolve to the installed `burn_policy::check_policy`
+        // — packaging cannot ship a faucet whose burns bypass the R-BURN-1/2 predicate (the burn-slot
+        // twin of the mint deny-guard check above).
+        if active_burn.root() != burn_root {
+            return Err(XReserveStablecoinBuilderError::MissingBurnPolicyGuard);
+        }
         let manager = TokenPolicyManager::new()
             .with_mint_policy(active, PolicyRegistration::Active)?
             .with_burn_policy(active_burn, PolicyRegistration::Active)?;
@@ -323,19 +338,52 @@ impl XReserveStablecoinBuilder {
         // (links into `rbac::assert_sender_has_role`).
         let role = RoleSymbol::new(ATTEST_ADMIN_ROLE)
             .expect("ATTEST_ADMIN is a fixed valid 12-char role symbol");
-        let mut components = self.assemble_components(manager);
+        let xreserve_component = self.xreserve_component_with_min_burn_size()?;
+        let mut components = self.assemble_components(manager, xreserve_component);
         components.push(Ownable2Step::new(self.owner).into());
         components.push(seeded_attest_admin_rbac(self.admin_holder));
         components.push(Authority::RbacControlled { role }.into());
         Ok(components)
     }
 
+    /// Reconstructs the supplied `xreserve` component with the `MIN_BURN_SIZE_SLOT` value slot
+    /// appended (`[min_burn_size, 0, 0, 0]`) so the installed `burn_policy::check_policy` resolves its
+    /// R-BURN-2 read on the deployed account. The caller supplies the component WITHOUT this slot (the
+    /// builder owns seeding it); the future CMP-F2 `set_min_burn_size` mutates the SAME slot (plan
+    /// §3.2). Uses the canonical `AssetAmount -> Felt` (no truncation); a `min_burn_size` exceeding
+    /// [`AssetAmount::MAX`] is rejected with [`XReserveStablecoinBuilderError::MinBurnSizeExceedsMax`].
+    fn xreserve_component_with_min_burn_size(
+        &self,
+    ) -> Result<AccountComponent, XReserveStablecoinBuilderError> {
+        let min_burn = AssetAmount::new(self.min_burn_size)
+            .map_err(|_| XReserveStablecoinBuilderError::MinBurnSizeExceedsMax(self.min_burn_size))?;
+        let slot_name = StorageSlotName::new(MIN_BURN_SIZE_SLOT_LABEL)
+            .expect("the min_burn_size slot label is a valid constant");
+        let mut slots = self.xreserve_component.storage_slots().to_vec();
+        slots.push(StorageSlot::with_value(
+            slot_name,
+            Word::from([Felt::from(min_burn), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
+        ));
+        Ok(AccountComponent::new(
+            self.xreserve_component.component_code().clone(),
+            slots,
+            self.xreserve_component.metadata().clone(),
+        )
+        .expect("the xreserve component augmented with the min_burn_size slot has < 256 slots"))
+    }
+
     /// Assembles the final component list. `PausableManager` is mandatory: the stock
-    /// `execute_mint_policy` runs `assert_not_paused` before dispatching the mint policy.
-    fn assemble_components(&self, manager: TokenPolicyManager) -> Vec<AccountComponent> {
+    /// `execute_mint_policy` runs `assert_not_paused` before dispatching the mint policy. Takes the
+    /// `xreserve` component already augmented with the `MIN_BURN_SIZE_SLOT` (see
+    /// [`Self::xreserve_component_with_min_burn_size`]).
+    fn assemble_components(
+        &self,
+        manager: TokenPolicyManager,
+        xreserve_component: AccountComponent,
+    ) -> Vec<AccountComponent> {
         let mut components = Vec::new();
         components.push(self.faucet.clone().into());
-        components.push(self.xreserve_component.clone());
+        components.push(xreserve_component);
         components.extend(manager); // [policy-manager component, MintAllowAll (when registered)]
         components.push(PausableManager.into());
         components

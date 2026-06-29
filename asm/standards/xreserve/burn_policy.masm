@@ -9,11 +9,8 @@
 # `execute_burn_policy` wrapper BEFORE this policy is dispatched (DECISION-RBURN3-PAUSE-ERROR-
 # RECONCILIATION.md), so this policy does NOT check pause -- it never runs when paused. Module home +
 # flat path per D-1A (CANONICAL-OWNERSHIP-MAP.md).
-#
-# SHELL (executing-red): the body is a behavioral NO-OP -- it clears the 8-cell burn-policy stack and
-# ACCEPTS every burn. The real R-BURN-1/2 checks land in the GREEN commit. The two NET-NEW error
-# consts + the `MIN_BURN_SIZE_SLOT` name const are declared now (parity-locked) but are unused by the
-# no-op shell; the green commit references them.
+
+use miden::protocol::active_account
 
 # CONSTANTS
 # =================================================================================================
@@ -47,19 +44,36 @@ const ERR_XRESERVE_BURN_BELOW_MIN = "burn amount is below the minimum burn size"
 #! Where:
 #! - ASSET_VALUE = [amount, 0, 0, 0]; `amount` (the burn amount, a felt < 2^63) is element 0 of
 #!   ASSET_VALUE, i.e. stack depth 4 -- read non-destructively with `dup.4` (mirrors
-#!   util/asset.masm::fungible_to_amount).
+#!   util/asset.masm::fungible_to_amount). The accept path returns with the stack EMPTY (the dynexec
+#!   burn-policy contract), unlike the mint-deny twin which traps and never returns.
 #!
-#! Panics if (GREEN):
+#! Panics if:
 #! - amount == 0 (ERR_XRESERVE_BURN_ZERO, R-BURN-1).
 #! - amount < min_burn_size (ERR_XRESERVE_BURN_BELOW_MIN, R-BURN-2).
-#!
-#! SHELL (executing-red): behavioral NO-OP -- drops the 8 burn-policy cells and ACCEPTS every burn (the
-#! real R-BURN-1/2 checks are the green commit). The stack MUST exit EMPTY (the dynexec burn-policy
-#! contract; the accept path returns, unlike the mint-deny twin which traps and never returns).
 #!
 #! Invocation: dynexec
 pub proc check_policy
     # => [ASSET_KEY, ASSET_VALUE]
+    dup.4
+    # => [amount, ASSET_KEY, ASSET_VALUE]
+
+    # R-BURN-1: reject a zero burn amount (require amount > 0).
+    dup.0 eq.0 assertz.err=ERR_XRESERVE_BURN_ZERO
+    # => [amount, ASSET_KEY, ASSET_VALUE]
+
+    # R-BURN-2: reject amount < min_burn_size. Load the minBurnSize slot word [min, 0, 0, 0], keep
+    # element 0, and assert amount >= min (mirrors the stock burn `lte` amount comparison,
+    # fungible.masm:436; both operands are AssetAmounts < 2^63, so the felt comparison is range-safe).
+    push.MIN_BURN_SIZE_SLOT[0..2] exec.active_account::get_item
+    # => [min_burn_size, 0, 0, 0, amount, ASSET_KEY, ASSET_VALUE]
+    movdn.3 drop drop drop
+    # => [min_burn_size, amount, ASSET_KEY, ASSET_VALUE]
+    swap
+    # => [amount, min_burn_size, ASSET_KEY, ASSET_VALUE]
+    lte assert.err=ERR_XRESERVE_BURN_BELOW_MIN
+    # => [ASSET_KEY, ASSET_VALUE]
+
+    # accept: clear the 8-cell burn-policy stack -> [].
     dropw dropw
     # => []
 end

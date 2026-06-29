@@ -98,12 +98,12 @@ pub const TOKEN_CONFIG_SLOT_LABEL: &str = "miden::standards::faucets::fungible::
 /// the single Rust source for the allowlist fixture slot binding.
 pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin::xreserve_attesters";
 
-/// CMP-A10 `minBurnSize` value-slot label (§5.5 XReserveAttesterAdmin home, SPEC-OWNER RATIFIED). The
-/// burn policy (`burn_policy.masm`) declares a `word("…")` const with the byte-identical label
-/// (parity-enforced); the future CMP-F2 `set_min_burn_size` setter co-owns the SAME slot. Bound here as
-/// the single Rust source for the burn-policy fixture slot binding (twin of
+/// CMP-A10 `minBurnSize` value-slot label (§5.5 XReserveAttesterAdmin home, SPEC-OWNER RATIFIED).
+/// Re-exported from the production crate so the builder (which SEEDS the slot) and the tests share a
+/// SINGLE Rust source; `burn_policy.masm` declares a byte-identical `word("…")` const (parity-enforced)
+/// and the future CMP-F2 `set_min_burn_size` setter co-owns the SAME slot (twin of
 /// [`XRESERVE_ATTESTERS_SLOT_LABEL`]).
-pub const MIN_BURN_SIZE_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin::min_burn_size";
+pub use xusdc_encoding::account::xreserve::MIN_BURN_SIZE_SLOT_LABEL;
 
 // FAUCET(01) ERROR MIRRORS (frozen names: 01 TEST-AND-VERIFICATION-HARNESS.md:72-73)
 // ================================================================================================

@@ -168,12 +168,8 @@ fn build_rejects_missing_mint_deny_guard() -> Result<()> {
 /// An active burn policy that is not the installed `burn_policy::check_policy` is rejected (the
 /// burn-slot twin of [`build_rejects_missing_mint_deny_guard`]): packaging cannot drop the burn
 /// security predicate (CMP-A10, R-BURN-1/2). The faucet is otherwise valid (Public + deny mint active +
-/// mutable max_supply) so the burn guard is the SOLE reason for rejection.
-///
-/// EXECUTING-RED: the production build-time burn-policy guard is the GREEN commit, so this RED commit's
-/// `build_components` composes `Ok` (an AllowAll active burn policy is wired through with no guard) where
-/// the GREEN behavior must return `Err(MissingBurnPolicyGuard)` — this assertion FAILS here, for the
-/// right reason (the missing guard), and goes green when the guard lands.
+/// mutable max_supply) so the burn guard is the SOLE reason for rejection — removing the guard makes
+/// this build succeed (removal-based non-vacuity).
 #[test]
 fn denies_non_policy_burn() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
@@ -216,16 +212,12 @@ fn build_rejects_immutable_max_supply() -> Result<()> {
 // PRODUCTION minBurnSize SEEDING (P5-01 CMP-A10, plan §3.2/§5)
 // ================================================================================================
 
-/// Production `build_components` must SEED the minBurnSize config slot
-/// (`xusdc::xreserve::attester_admin::min_burn_size` = `[min_burn_size, 0, 0, 0]`) so the burn
-/// policy's R-BURN-2 read resolves on a real production faucet. Today that slot is bound ONLY by the
-/// test-only burn-oracle helper, never through `build_components`, so the production path ships a
-/// faucet whose burn policy has no minBurnSize to read.
-///
-/// EXECUTING-RED: the builder owns a `min_burn_size` default/override (API surface), but the slot
-/// SEEDING in `build_components` is the GREEN commit. This RED commit composes a production faucet
-/// WITHOUT the slot, so this assertion FAILS for the right reason (the slot is absent from every
-/// composed component) and goes green when the builder seeds it.
+/// Production `build_components` SEEDS the minBurnSize config slot
+/// (`xusdc::xreserve::attester_admin::min_burn_size` = `[min_burn_size, 0, 0, 0]`) so the burn policy's
+/// R-BURN-2 read resolves on a real production faucet — the builder owns a `min_burn_size`
+/// default/override and binds the slot onto the xreserve component (the future CMP-F2 `set_min_burn_size`
+/// co-owns the SAME slot). The expected value uses the canonical full-u64 `AssetAmount -> Felt`, so an
+/// `as u32` truncation in the seed would fail this test (see the MIN_BURN choice below).
 #[test]
 fn production_seeds_min_burn_size() -> Result<()> {
     // Anti-truncation: minBurnSize is a FULL `u64` `AssetAmount` (plan §3.2; `AssetAmount::MAX` =
@@ -270,6 +262,30 @@ fn production_seeds_min_burn_size() -> Result<()> {
         slot.value(),
         Word::from([expected_min_burn, Felt::ZERO, Felt::ZERO, Felt::ZERO]),
         "the seeded minBurnSize slot must carry the FULL-u64 [min_burn_size, 0, 0, 0] (no u32 truncation)"
+    );
+    Ok(())
+}
+
+/// A `min_burn_size` exceeding `AssetAmount::MAX` (`2^63 - 2^31`) cannot be a valid burn amount / field
+/// element, so `build_components` REJECTS it with `MinBurnSizeExceedsMax` rather than panicking or
+/// silently truncating it into the `MIN_BURN_SIZE_SLOT`. The faucet is otherwise valid (Public + deny
+/// mint active + mutable max_supply), so the oversized minBurnSize is the SOLE reason for rejection.
+#[test]
+fn build_rejects_min_burn_size_exceeding_max() -> Result<()> {
+    let over_max = AssetAmount::MAX.as_u64() + 1;
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
+    let err = XReserveStablecoinBuilder::new(
+        faucet,
+        xreserve_component,
+        test_account_id(1),
+        test_account_id(2),
+    )
+    .min_burn_size(over_max)
+    .build_components()
+    .expect_err("a min_burn_size exceeding AssetAmount::MAX must be rejected at build time");
+    assert!(
+        matches!(err, XReserveStablecoinBuilderError::MinBurnSizeExceedsMax(v) if v == over_max),
+        "expected MinBurnSizeExceedsMax({over_max}), got {err:?}"
     );
     Ok(())
 }

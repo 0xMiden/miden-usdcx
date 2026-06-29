@@ -6,16 +6,14 @@
 //! (`amount >= minBurnSize`). R-BURN-3 (pause) is the stock wrapper's gate, run BEFORE the policy
 //! (DECISION-RBURN3), so the custom policy does NOT check pause.
 //!
-//! EXECUTING-RED: `burn_policy.masm::check_policy` is a behavioral NO-OP (`dropw dropw`) that ACCEPTS
-//! every burn, and the builder wires the active burn policy WITHOUT the build-time guard. So the
-//! policy-defining rejects (`burn_below_min_rejects`, `burn_zero_amount_rejects_direct`) and the builder
-//! guard (`denies_non_policy_burn`, in `builder_api.rs`) are RED — the no-op accepts a burn the real
-//! policy must reject / the missing guard composes Ok. The positive (`burn_valid_passes_and_decrements`),
-//! the primary allow-all oracle (`burn_below_min_passes_under_allow_all`), the stock pause
-//! (`burn_paused_rejects`), and the export probe are GREEN. The harness is the burn canary's real
-//! MockChain 2-block lifecycle (user emits an asset-bearing BurnNote at block N → faucet consumes it via
-//! `receive_and_burn` at block N+1), composed via the TEST-ONLY `support::oracle_burn_components`
-//! non-vacuity oracle (real-vs-allow-all, code-identical, differing only in `active_burn_policy_proc_root`).
+//! Non-vacuity: the policy-defining rejects (`burn_below_min_rejects`, `burn_zero_amount_rejects`,
+//! `burn_zero_amount_rejects_direct`) trap the EXACT R-BURN-1/2 errors on the REAL-policy account, while
+//! the SAME invalid burn SUCCEEDS on a CODE-IDENTICAL `BurnAllowAll`-active account
+//! (`burn_below_min_passes_under_allow_all`) — proving each trap is policy-caused, not a fixture
+//! artifact. The harness is the burn canary's real MockChain 2-block lifecycle (the user emits an
+//! asset-bearing BurnNote at block N → the faucet consumes it via `receive_and_burn` at block N+1),
+//! composed via the TEST-ONLY `support::oracle_burn_components` oracle (real-vs-allow-all, code-identical,
+//! differing only in `active_burn_policy_proc_root`).
 
 mod support;
 
@@ -44,10 +42,9 @@ fn holder() -> AccountId {
 // POSITIVE + ALLOW-ALL ORACLE (GREEN)
 // ================================================================================================
 
-/// A valid burn (`amount >= minBurnSize > 0`, not paused) on the REAL-policy account succeeds and
-/// decrements `committed_token_supply` by exactly the burned amount — the burn analog of the proven
-/// mint increment. GREEN: the no-op shell accepts the valid burn and stock `receive_and_burn`
-/// decrements supply; the real R-BURN-1/2 checks (green commit) also accept a valid burn.
+/// A valid burn (`amount >= minBurnSize > 0`, not paused) on the REAL-policy account passes the policy
+/// and decrements `committed_token_supply` by exactly the burned amount — the burn analog of the proven
+/// mint increment, and proof the policy does not over-reject a valid burn.
 #[tokio::test]
 async fn burn_valid_passes_and_decrements() -> Result<()> {
     let h = setup_burn_policy_account(
@@ -77,7 +74,6 @@ async fn burn_valid_passes_and_decrements() -> Result<()> {
 /// SUCCEEDS and decrements on a CODE-IDENTICAL `BurnAllowAll`-active account (differing ONLY in
 /// `active_burn_policy_proc_root`). Paired with `burn_below_min_rejects`, this proves the below-min trap
 /// is policy-caused, not a fixture artifact — and it runs on a real, definitely-constructible note.
-/// GREEN both before and after the green commit (allow-all accepts the below-min burn either way).
 #[tokio::test]
 async fn burn_below_min_passes_under_allow_all() -> Result<()> {
     let h = setup_burn_policy_account(
@@ -103,14 +99,12 @@ async fn burn_below_min_passes_under_allow_all() -> Result<()> {
     Ok(())
 }
 
-// POLICY-DEFINING REJECTS (RED against the no-op shell)
+// POLICY-DEFINING REJECTS (R-BURN-1/2) — exact-error traps on the REAL-policy account
 // ================================================================================================
 
-/// R-BURN-2: a `0 < amount < minBurnSize` burn (the seeded minBurnSize slot) on the REAL-policy account
-/// must trap the EXACT ERR_XRESERVE_BURN_BELOW_MIN. RED here: the no-op shell ACCEPTS the below-min burn
-/// (no trap), so `receive_and_burn` succeeds and `assert_transaction_executor_error!` reports the burn
-/// was "unexpectedly successful" — red for the right reason (a below-min burn the real policy must
-/// reject got through). Goes green when `check_policy` enforces `amount >= minBurnSize`.
+/// R-BURN-2: a `0 < amount < minBurnSize` burn (against the seeded minBurnSize slot) on the REAL-policy
+/// account traps the EXACT ERR_XRESERVE_BURN_BELOW_MIN — `check_policy` reads `MIN_BURN_SIZE_SLOT` and
+/// asserts `amount >= minBurnSize`. Paired with `burn_below_min_passes_under_allow_all` for non-vacuity.
 #[tokio::test]
 async fn burn_below_min_rejects() -> Result<()> {
     let h = setup_burn_policy_account(
@@ -127,12 +121,10 @@ async fn burn_below_min_rejects() -> Result<()> {
     Ok(())
 }
 
-/// R-BURN-1 (note-driven, plan §6 step 1): a real 0-amount burn note consumed by the faucet must trap
-/// the EXACT ERR_XRESERVE_BURN_ZERO. The 0-amount burn is note-reachable (see
-/// `zero_amount_burn_note_reachability`), so this is a real `receive_and_burn` consume on the REAL-policy
-/// account. RED here: the no-op shell ACCEPTS the zero burn (no trap), so the consume succeeds and
-/// `assert_transaction_executor_error!` reports "unexpectedly successful" — red for the right reason.
-/// Goes green when `check_policy` enforces `amount > 0`.
+/// R-BURN-1 (note-driven, plan §6 step 1): a real 0-amount burn note consumed by the faucet traps the
+/// EXACT ERR_XRESERVE_BURN_ZERO — `check_policy` asserts `amount > 0`. The 0-amount burn is note-reachable
+/// (see `zero_amount_burn_note_reachability`), so this is a real `receive_and_burn` consume on the
+/// REAL-policy account, not a synthetic one.
 #[tokio::test]
 async fn burn_zero_amount_rejects() -> Result<()> {
     let h = setup_burn_policy_account(
@@ -150,9 +142,8 @@ async fn burn_zero_amount_rejects() -> Result<()> {
 }
 
 /// R-BURN-1 (direct-policy defensive proof): `exec` `check_policy` with a crafted `[ASSET_KEY, [0,0,0,0]]`
-/// stack — the faucet-independent guard proof the brief names. The real policy must trap
-/// ERR_XRESERVE_BURN_ZERO; the no-op shell returns cleanly (`dropw dropw`) — RED for the right reason.
-/// Complements the note-driven `burn_zero_amount_rejects` (the 0-amount burn turned out note-reachable).
+/// stack — the faucet-independent guard proof. The policy traps ERR_XRESERVE_BURN_ZERO in isolation,
+/// complementing the note-driven `burn_zero_amount_rejects` (the 0-amount burn is also note-reachable).
 #[tokio::test]
 async fn burn_zero_amount_rejects_direct() -> Result<()> {
     let asset_key = Word::from([7u32, 7, 7, 7]);
@@ -220,8 +211,8 @@ async fn burn_paused_rejects() -> Result<()> {
 /// asset, `0 <= token_supply`). On a CODE-IDENTICAL `BurnAllowAll`-active account the consume therefore
 /// SUCCEEDS — proving the 0-amount burn DOES reach the policy. So R-BURN-1 is proven by a real
 /// note-driven consume (`burn_zero_amount_rejects`) AND, defensively, by the direct-policy driver
-/// (`burn_zero_amount_rejects_direct`). GREEN before and after the green commit (allow-all accepts
-/// either way); it is the non-vacuity mirror for the zero case.
+/// (`burn_zero_amount_rejects_direct`). This is the non-vacuity mirror for the zero case: allow-all
+/// accepts the 0-amount burn the real policy rejects.
 #[tokio::test]
 async fn zero_amount_burn_note_reachability() -> Result<()> {
     let h = setup_burn_policy_account(

@@ -13,6 +13,9 @@ use super::deposit_intent::DepositIntentField;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EncodingError {
     LimbOutOfField,
+    /// A u32-LE-packed felt limb exceeds `u32::MAX` (DC-7 `packed_felts_to_bytes32` guard,
+    /// distinct from `LimbOutOfField`'s 8-byte/felt `>= p` Word-packing check).
+    LimbNotU32,
     AmountTooLarge,
     AmountOverCap,
     ScaleExpTooLarge,
@@ -34,6 +37,7 @@ impl fmt::Display for EncodingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LimbOutOfField => write!(f, "a u64 limb is not a valid field element"),
+            Self::LimbNotU32 => write!(f, "packed felt exceeds u32 range"),
             Self::AmountTooLarge => write!(f, "larger than 2**128"),
             Self::AmountOverCap => write!(f, "post-scale quotient exceeds the asset amount maximum"),
             Self::ScaleExpTooLarge => write!(f, "scale exponent exceeds 18"),

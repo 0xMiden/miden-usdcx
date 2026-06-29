@@ -653,7 +653,107 @@ fn main() {
         }));
     }
 
-    let file = json!({ "version": 1, "families": { "b32": b32, "amt": amt, "aid": aid, "di": di, "att": att } });
+    // ---- bn family (§6.6 / DC-7 burn-note items) --------------------------------------
+    // §7 layout (:419): items = amount(1) + destDomain(1) + destRecipient(8 u32-LE) + salt(8 u32-LE)
+    // = 18 felts. Derived independently of the crate's encode: amount/destDomain are the canonical
+    // felt of the integer; the two bytes32 fields use the same `packed` primitive as the b32 family.
+    let bn_items = |amount: u64, domain: u32, recipient: &[u8; 32], salt: &[u8; 32]| -> Vec<String> {
+        let mut out = Vec::with_capacity(18);
+        out.push(felt_hex(Felt::try_from(amount).expect("amount < p")));
+        out.push(felt_hex(Felt::from(domain)));
+        out.extend(felts_hex(&packed(recipient)));
+        out.extend(felts_hex(&packed(salt)));
+        out
+    };
+    let bn_accept =
+        |id: &str, amount: u64, domain: u32, recipient: [u8; 32], salt: [u8; 32], derivation: &str| {
+            json!({
+                "id": id, "tv": ["TV-BN-1", "TV-BN-2", "TV-BN-3"], "kind": "accept",
+                "amount": amount.to_string(),
+                "dest_domain": domain,
+                "dest_recipient": hex_bytes(&recipient),
+                "salt": hex_bytes(&salt),
+                "items": bn_items(amount, domain, &recipient, &salt),
+                "cite": "04 COMPONENT-SPEC §6.6 (:363-376), §7 (:419); DC-7 (:130-135)",
+                "derivation": derivation,
+            })
+        };
+    let bn_max = ASSET_AMOUNT_MAX as u64; // 2^63 - 2^31, < u64::MAX
+    let mut bn: Vec<Value> = vec![
+        bn_accept(
+            "bn-pos-min",
+            0,
+            0,
+            [0u8; 32],
+            [0u8; 32],
+            "lower boundary: amount=0, destDomain=0, destRecipient/salt all-zero",
+        ),
+        bn_accept(
+            "bn-pos-typical",
+            1_000_000,
+            6,
+            pattern32(0x11),
+            pattern32(0x22),
+            "typical: amount=10^6 (1 USDC @ 6dp), destDomain=6 (Arbitrum CCTP), patterned bytes32",
+        ),
+        bn_accept(
+            "bn-pos-max",
+            bn_max,
+            u32::MAX,
+            [0xffu8; 32],
+            pattern32(0x44),
+            "upper boundary: amount=AssetAmount::MAX=2^63-2^31, destDomain=u32::MAX, recipient all-0xff",
+        ),
+    ];
+    // reject entries: one perturbation each off a valid 18-felt base → BurnItemsMalformed.
+    let bn_base = bn_items(1_000_000, 6, &pattern32(0x55), &pattern32(0x66));
+    let over_u32 = felt_hex(Felt::try_from((u32::MAX as u64) + 1).expect("2^32 < p"));
+    let over_cap = felt_hex(Felt::try_from(bn_max + 1).expect("MAX+1 < p"));
+    let bn_reject = |id: &str, items: Vec<String>, derivation: &str| {
+        json!({
+            "id": id, "tv": ["TV-BN-4"], "kind": "reject",
+            "items": items,
+            "expected_variant": "BurnItemsMalformed",
+            "cite": "04 COMPONENT-SPEC §6.6 (:363-376), error-map (:476); ASG-13/ASG-17",
+            "derivation": derivation,
+        })
+    };
+    let mut short = bn_base.clone();
+    short.pop(); // 17 felts
+    let mut long = bn_base.clone();
+    long.push(felt_hex(Felt::from(0u32))); // 19 felts
+    let mut amount_over = bn_base.clone();
+    amount_over[0] = over_cap;
+    let mut domain_over = bn_base.clone();
+    domain_over[1] = over_u32.clone();
+    let mut recip_limb = bn_base.clone();
+    recip_limb[5] = over_u32.clone(); // within destRecipient [2..10]
+    let mut salt_limb = bn_base.clone();
+    salt_limb[12] = over_u32; // within salt [10..18]
+    bn.push(bn_reject("bn-rej-len-short", short, "17 felts (< 18) → wrong length"));
+    bn.push(bn_reject("bn-rej-len-long", long, "19 felts (> 18) → wrong length"));
+    bn.push(bn_reject(
+        "bn-rej-amount-over-cap",
+        amount_over,
+        "items[0] = AssetAmount::MAX + 1 → amount out of range",
+    ));
+    bn.push(bn_reject(
+        "bn-rej-domain-over-u32",
+        domain_over,
+        "items[1] = 2^32 → destDomain not a u32",
+    ));
+    bn.push(bn_reject(
+        "bn-rej-recipient-limb-not-u32",
+        recip_limb,
+        "items[5] = 2^32 → destRecipient limb not a u32",
+    ));
+    bn.push(bn_reject(
+        "bn-rej-salt-limb-not-u32",
+        salt_limb,
+        "items[12] = 2^32 → salt limb not a u32",
+    ));
+
+    let file = json!({ "version": 1, "families": { "b32": b32, "amt": amt, "aid": aid, "di": di, "att": att, "bn": bn } });
     let path = xusdc_encoding::vectors_path();
     std::fs::create_dir_all(path.parent().unwrap()).expect("create vectors dir");
     std::fs::write(&path, serde_json::to_string_pretty(&file).expect("serialize") + "\n")

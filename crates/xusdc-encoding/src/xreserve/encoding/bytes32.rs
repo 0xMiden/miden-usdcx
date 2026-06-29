@@ -31,6 +31,16 @@ pub fn bytes32_to_word_lossless(b: &[u8; 32]) -> Result<Word, EncodingError> {
     Word::try_from(*b).map_err(|_| EncodingError::LimbOutOfField)
 }
 
+/// Inverse of [`bytes32_to_packed_felts`]: 8 u32-LE-packed felts → the 32-byte value
+/// (additive DC-7 increment; the forward packer above is unchanged). Fail-closed — any felt
+/// `> u32::MAX` is not a valid packed limb and returns [`EncodingError::LimbNotU32`] rather
+/// than truncating. Round-trip: `packed_felts_to_bytes32(bytes32_to_packed_felts(b)) == b`.
+/// Consumed by reference from the DC-7 burn-note decode and the off-chain withdrawal attester.
+pub fn packed_felts_to_bytes32(felts: &[Felt; 8]) -> Result<[u8; 32], EncodingError> {
+    let _ = felts;
+    unimplemented!("P5-04 DC-7: implemented in the GREEN commit")
+}
+
 // TESTS — TV-B32-1..4 (frozen 04 TEST-AND-VERIFICATION-HARNESS §2.1)
 // ================================================================================================
 
@@ -99,5 +109,31 @@ mod tests {
             let expected: Vec<Felt> = vec.packed_felts_values();
             assert_eq!(felts.as_slice(), expected.as_slice(), "vector {}: limbs", vec.id);
         }
+    }
+
+    /// TV-B32-INV-1 (inverse round-trip): `packed_felts_to_bytes32` is the exact inverse of
+    /// `bytes32_to_packed_felts` over every committed b32 vector (every limb is a valid u32).
+    #[test]
+    fn tv_b32_inverse_round_trip() {
+        let v = load();
+        for vec in &v.families.b32 {
+            let b = vec.bytes32();
+            let felts = bytes32_to_packed_felts(&b);
+            let back = packed_felts_to_bytes32(&felts).expect("valid u32 limbs round-trip");
+            assert_eq!(back, b, "vector {}: inverse round-trip", vec.id);
+            assert_eq!(bytes32_to_packed_felts(&back), felts, "vector {}: forward∘inverse", vec.id);
+        }
+    }
+
+    /// TV-B32-INV-2 (fail-closed): a packed felt `> u32::MAX` is rejected, never truncated.
+    #[test]
+    fn tv_b32_inverse_rejects_non_u32() {
+        let mut felts = [Felt::from(0u32); 8];
+        felts[3] = Felt::try_from((u32::MAX as u64) + 1).expect("2^32 < p");
+        assert_matches!(
+            packed_felts_to_bytes32(&felts),
+            Err(EncodingError::LimbNotU32),
+            "a 2^32 limb must be rejected, not truncated"
+        );
     }
 }

@@ -21,6 +21,7 @@ pub struct Families {
     pub aid: Vec<AidVector>,
     pub di: Vec<DiVector>,
     pub att: Vec<AttVector>,
+    pub bn: Vec<BnVector>,
 }
 
 /// bytes32 → Word vectors. `lossless_error` marks the TV-B32-2 limb-ge-p entry.
@@ -160,6 +161,30 @@ pub struct AttVector {
     pub v_byte: u8,
     /// The full DepositIntent payload that was keccak'd (raw keccak, NOT EIP-712, no struct).
     pub payload_hex: String,
+    pub cite: String,
+    pub derivation: String,
+}
+
+/// Burn-note item (BN) vectors (DC-7 / §6.6). `kind`: accept | reject. Accept entries carry
+/// the four semantic inputs plus the 18-felt golden `items` layout; reject entries carry the
+/// malformed `items` felts plus `expected_variant` (`BurnItemsMalformed`).
+#[derive(Debug, Deserialize)]
+pub struct BnVector {
+    pub id: String,
+    pub tv: Vec<String>,
+    pub kind: String,
+    #[serde(default)]
+    pub amount: Option<String>,
+    #[serde(default)]
+    pub dest_domain: Option<u32>,
+    #[serde(default)]
+    pub dest_recipient: Option<String>,
+    #[serde(default)]
+    pub salt: Option<String>,
+    /// Accept: the 18-felt §7 `NoteStorage.items` golden layout. Reject: the malformed felts.
+    pub items: Vec<String>,
+    #[serde(default)]
+    pub expected_variant: Option<String>,
     pub cite: String,
     pub derivation: String,
 }
@@ -312,6 +337,37 @@ impl DiFields {
     }
 }
 
+impl BnVector {
+    pub fn amount(&self) -> miden_protocol::asset::AssetAmount {
+        let a: u64 =
+            self.amount.as_deref().expect("accept vector carries amount").parse().expect("u64");
+        miden_protocol::asset::AssetAmount::new(a).expect("vector amount within bounds")
+    }
+
+    pub fn dest_recipient(&self) -> [u8; 32] {
+        parse_hex32(self.dest_recipient.as_deref().expect("accept vector carries dest_recipient"))
+    }
+
+    pub fn salt(&self) -> [u8; 32] {
+        parse_hex32(self.salt.as_deref().expect("accept vector carries salt"))
+    }
+
+    /// The felt slice under test (accept: 18-felt golden layout; reject: malformed felts).
+    pub fn items_values(&self) -> Vec<Felt> {
+        self.items.iter().map(|s| felt_from_hex(s)).collect()
+    }
+
+    /// Reconstructs the semantic `XReserveBurnItems` from an accept vector's inputs.
+    pub fn expected_struct(&self) -> crate::xreserve::encoding::XReserveBurnItems {
+        crate::xreserve::encoding::XReserveBurnItems {
+            amount: self.amount(),
+            dest_domain: self.dest_domain.expect("accept vector carries dest_domain"),
+            dest_recipient: self.dest_recipient(),
+            salt: self.salt(),
+        }
+    }
+}
+
 // ARTIFACT GUARD (scaffold test — green in the red-suite by design)
 // ================================================================================================
 
@@ -336,6 +392,7 @@ mod tests {
         assert!(!v.families.aid.is_empty(), "aid family");
         assert!(!v.families.di.is_empty(), "di family");
         assert!(!v.families.att.is_empty(), "att family");
+        assert!(!v.families.bn.is_empty(), "bn family");
         let no_provenance = |cite: &str, derivation: &str| cite.is_empty() || derivation.is_empty();
         let tv_ok =
             |id: &str, tv: &[String]| !tv.is_empty() || TV_TAG_ALLOWLIST.contains(&id);
@@ -356,6 +413,10 @@ mod tests {
             assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
         }
         for e in &v.families.att {
+            assert!(!no_provenance(&e.cite, &e.derivation), "{} provenance", e.id);
+            assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
+        }
+        for e in &v.families.bn {
             assert!(!no_provenance(&e.cite, &e.derivation), "{} provenance", e.id);
             assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
         }

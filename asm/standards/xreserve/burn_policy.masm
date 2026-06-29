@@ -68,6 +68,10 @@ pub proc check_policy
     # => [min_burn_size, 0, 0, 0, amount, ASSET_KEY, ASSET_VALUE]
     movdn.3 drop drop drop
     # => [min_burn_size, amount, ASSET_KEY, ASSET_VALUE]
+    # `swap` is intentional: it puts `amount` on top so `lte` computes `min_burn_size <= amount`
+    # (i.e. amount >= min). This is the deliberate FLIP of the stock burn's `amount <= token_supply`
+    # (fungible.masm:436) -- do NOT remove the swap or the >= boundary inverts (see the
+    # burn_at_min_* boundary tests).
     swap
     # => [amount, min_burn_size, ASSET_KEY, ASSET_VALUE]
     lte assert.err=ERR_XRESERVE_BURN_BELOW_MIN

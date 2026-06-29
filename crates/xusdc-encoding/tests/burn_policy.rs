@@ -121,6 +121,55 @@ async fn burn_below_min_rejects() -> Result<()> {
     Ok(())
 }
 
+/// R-BURN-2 boundary (ACCEPT side): a burn of EXACTLY `minBurnSize` PASSES and decrements
+/// `committed_token_supply` by that amount — R-BURN-2 is `amount >= minBurnSize`, so `== min` is
+/// accepted. Paired with `burn_at_min_minus_one_rejects`, this pins the `>=` boundary exactly: a
+/// `lte`->`lt` regression in `check_policy` (which would reject `== min`) flips THIS test red.
+#[tokio::test]
+async fn burn_at_min_passes_and_decrements() -> Result<()> {
+    let h = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        MIN_BURN_SIZE,
+    )?;
+    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = h;
+
+    let tx1 = run_burn_consume(&mut chain, &burn_note, &asset, faucet_id, user_id)
+        .await
+        .expect("a burn of exactly minBurnSize must pass (R-BURN-2 is amount >= min)");
+    chain.add_pending_executed_transaction(&tx1)?;
+    chain.prove_next_block()?;
+
+    assert_eq!(
+        committed_token_supply(&chain, faucet_id)?,
+        AssetAmount::new(TOKEN_SUPPLY - MIN_BURN_SIZE)?,
+        "a burn at exactly minBurnSize must decrement committed token_supply by exactly that amount"
+    );
+    Ok(())
+}
+
+/// R-BURN-2 boundary (REJECT side): a burn of `minBurnSize - 1` — the largest below-minimum amount,
+/// one unit under the threshold — traps the EXACT ERR_XRESERVE_BURN_BELOW_MIN. With
+/// `burn_at_min_passes_and_decrements` this pins `amount >= minBurnSize` exactly (not `> min`, not
+/// `>= min - 1`), so an off-by-one or `lte`->`lt` regression is caught.
+#[tokio::test]
+async fn burn_at_min_minus_one_rejects() -> Result<()> {
+    let h = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        MIN_BURN_SIZE - 1,
+    )?;
+    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = h;
+
+    let result = run_burn_consume(&mut chain, &burn_note, &asset, faucet_id, user_id).await;
+    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_BURN_BELOW_MIN"));
+    Ok(())
+}
+
 /// R-BURN-1 (note-driven, plan §6 step 1): a real 0-amount burn note consumed by the faucet traps the
 /// EXACT ERR_XRESERVE_BURN_ZERO — `check_policy` asserts `amount > 0`. The 0-amount burn is note-reachable
 /// (see `zero_amount_burn_note_reachability`), so this is a real `receive_and_burn` consume on the

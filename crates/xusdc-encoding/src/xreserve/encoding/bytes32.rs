@@ -2,7 +2,7 @@
 //! (INV-BYTES32-HASH-TO-WORD). Implemented (routine R1).
 
 use miden_protocol::account::StorageMapKey;
-use miden_protocol::utils::bytes_to_packed_u32_elements;
+use miden_protocol::utils::{bytes_to_packed_u32_elements, packed_u32_elements_to_bytes};
 use miden_protocol::{Felt, Hasher, Word};
 
 use super::error::EncodingError;
@@ -37,8 +37,17 @@ pub fn bytes32_to_word_lossless(b: &[u8; 32]) -> Result<Word, EncodingError> {
 /// than truncating. Round-trip: `packed_felts_to_bytes32(bytes32_to_packed_felts(b)) == b`.
 /// Consumed by reference from the DC-7 burn-note decode and the off-chain withdrawal attester.
 pub fn packed_felts_to_bytes32(felts: &[Felt; 8]) -> Result<[u8; 32], EncodingError> {
-    let _ = felts;
-    unimplemented!("P5-04 DC-7: implemented in the GREEN commit")
+    // Fail-closed: the upstream unpacker truncates a felt >= 2^32 to its low 32 bits, so the
+    // valid-u32 guard must run first (never silently narrow a malformed limb).
+    for f in felts {
+        if f.as_canonical_u64() > u32::MAX as u64 {
+            return Err(EncodingError::LimbNotU32);
+        }
+    }
+    Ok(packed_u32_elements_to_bytes(felts)
+        .try_into()
+        // each guarded u32 limb contributes exactly 4 bytes, so 8 limbs => 32 bytes
+        .expect("8 u32 limbs always unpack to exactly 32 bytes"))
 }
 
 // TESTS — TV-B32-1..4 (frozen 04 TEST-AND-VERIFICATION-HARNESS §2.1)

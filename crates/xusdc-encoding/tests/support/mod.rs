@@ -2222,6 +2222,52 @@ pub fn faucet_burn_caller_procs(src: &str) -> Vec<String> {
     callers
 }
 
+/// CMP-B3 N1D — returns the names of the procedures in a vendored pinned-standards MASM source that
+/// perform a supply-DECREMENT write to `TOKEN_CONFIG_SLOT` (a `set_item` write whose written value is
+/// produced by a `sub`). For each `TOKEN_CONFIG_SLOT` `set_item` write it finds the nearest preceding
+/// arithmetic op (`add`/`sub`) within the enclosing proc and classifies the write `sub` => decrement,
+/// `add` => raise. The standards' `mint_and_send` write is `add`-fed (raise) and `set_max_supply`
+/// preserves supply, so the only decrement write is `receive_and_burn`'s. Used to prove the sole
+/// inherited supply-LOWERING surface is `receive_and_burn` (the burn-write twin of `faucet_burn_caller_procs`).
+pub fn faucet_supply_decrement_write_procs(src: &str) -> Vec<String> {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut current: Option<String> = None;
+    let mut proc_start = 0usize;
+    let mut procs = Vec::new();
+    for (idx, raw) in lines.iter().enumerate() {
+        let trimmed = raw.trim();
+        if let Some(rest) = trimmed
+            .strip_prefix("pub proc ")
+            .or_else(|| trimmed.strip_prefix("proc "))
+        {
+            current = Some(rest.split_whitespace().next().unwrap_or(rest).to_string());
+            proc_start = idx;
+        } else if trimmed.contains("set_item") && trimmed.contains("TOKEN_CONFIG_SLOT") {
+            // Nearest preceding arithmetic op within the enclosing proc decides the write's DIRECTION
+            // (robust to stack ops/comments between the arithmetic and the write-back).
+            let arith = lines[proc_start..idx]
+                .iter()
+                .rev()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .find_map(|l| {
+                    let toks: Vec<&str> = l.split_whitespace().collect();
+                    if toks.iter().any(|&t| t == "sub") {
+                        Some("sub")
+                    } else if toks.iter().any(|&t| t == "add") {
+                        Some("add")
+                    } else {
+                        None
+                    }
+                });
+            if arith == Some("sub") {
+                procs.push(current.clone().unwrap_or_else(|| "<top-level>".to_string()));
+            }
+        }
+    }
+    procs
+}
+
 /// tx0 ONLY (non-panicking): the user emits `burn_note` in-block (a send tx-script that draws the asset
 /// from the user vault into the note). Returns the raw execution result so callers can observe an
 /// upstream rejection (the zero-amount reachability probe) without the strict-path panic. Used as the

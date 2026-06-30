@@ -135,8 +135,28 @@ fn pinned_standards_single_faucet_burn_caller() {
     assert_eq!(
         callers,
         vec!["receive_and_burn".to_string()],
-        "exactly one inherited supply-decrement surface (stock receive_and_burn) may call \
-         exec.faucet::burn across the vendored standards faucet code; saw: {callers:?}"
+        "exactly one stock proc may call exec.faucet::burn across the vendored standards faucet code \
+         (receive_and_burn); saw: {callers:?}"
+    );
+}
+
+/// N1D (decrement-WRITE twin): across the vendored standards faucet code, exactly ONE
+/// `TOKEN_CONFIG_SLOT` supply-DECREMENT write (a `set_item` write whose value is produced by `sub`)
+/// exists, inside `receive_and_burn`. Together with `pinned_standards_single_faucet_burn_caller` this
+/// proves the SOLE inherited supply-lowering surface is the stock `receive_and_burn` — both the burn
+/// primitive AND the supply write-back, with `sub` feeding it (anchor: `fungible.masm` receive_and_burn
+/// @390, faucet::burn @420, sub @440, the TOKEN_CONFIG_SLOT set_item write-back @444).
+#[test]
+fn pinned_standards_single_supply_decrement_write() {
+    let writers: Vec<String> = [PINNED_FUNGIBLE_MASM, PINNED_POLICY_MANAGER_MASM]
+        .into_iter()
+        .flat_map(faucet_supply_decrement_write_procs)
+        .collect();
+    assert_eq!(
+        writers,
+        vec!["receive_and_burn".to_string()],
+        "exactly one TOKEN_CONFIG_SLOT supply-decrement write (sub-fed) may exist across the vendored \
+         standards faucet code, inside receive_and_burn; saw: {writers:?}"
     );
 }
 
@@ -175,13 +195,51 @@ const PINNED_STANDARDS_REV: &str = "681fc90584131560b87db8f7487685f4fa8420a8";
 
 /// N1D provenance anchor: the vendored fixtures are a snapshot of `miden-standards` at this rev. If the
 /// Cargo dep rev is bumped, this fails — re-vendor + re-checksum (PROVENANCE.md) before trusting N1D.
+/// Extracts the `rev = "..."` value from every `miden-standards = { git = ..., rev = "..." }` entry in
+/// a Cargo manifest — binds to the `miden-standards` key SPECIFICALLY (the key left of the first `=`),
+/// so a sibling dep's rev (e.g. miden-protocol) can never satisfy the pin.
+fn miden_standards_revs(cargo_toml: &str) -> Vec<&str> {
+    cargo_toml
+        .lines()
+        .filter(|l| l.split('=').next().map(str::trim) == Some("miden-standards"))
+        .filter_map(|l| l.split("rev = \"").nth(1).and_then(|a| a.split('"').next()))
+        .collect()
+}
+
+/// N1D provenance anchor: every `miden-standards` dependency entry (the dep + the dev-dep) pins the
+/// vendored-fixture rev. A standards bump fails this even if a sibling dep still carries the old rev —
+/// re-vendor + re-checksum (PROVENANCE.md) before trusting N1D.
 #[test]
 fn pinned_standards_rev_matches_cargo() {
-    let needle = format!("rev = \"{PINNED_STANDARDS_REV}\"");
+    let revs = miden_standards_revs(CARGO_TOML);
     assert!(
-        CARGO_TOML.contains(&needle),
-        "Cargo.toml must pin miden-standards to the vendored rev ({PINNED_STANDARDS_REV}); a bump was \
-         detected — re-vendor the pinned-standards fixtures and update the checksums"
+        !revs.is_empty(),
+        "Cargo.toml must declare a git-pinned miden-standards dependency (the fixtures' source crate)"
+    );
+    for rev in &revs {
+        assert_eq!(
+            *rev, PINNED_STANDARDS_REV,
+            "the miden-standards dep rev must equal the vendored-fixture rev ({PINNED_STANDARDS_REV}); a \
+             bump was detected — re-vendor the pinned-standards fixtures and update the checksums"
+        );
+    }
+}
+
+/// Non-vacuity for the rev binding: a sibling dep (miden-protocol) carrying the OLD rev must NOT mask a
+/// `miden-standards` bump. A naive `Cargo.toml.contains(old_rev)` would falsely pass; the
+/// miden-standards-specific parse extracts the bumped standards rev.
+#[test]
+fn rev_pin_binds_to_miden_standards_specifically() {
+    let synthetic = "miden-protocol  = { git = \"x\", rev = \"OLDREV\" }\n\
+                     miden-standards = { git = \"x\", rev = \"BUMPED\" }\n";
+    assert_eq!(
+        miden_standards_revs(synthetic),
+        vec!["BUMPED"],
+        "must extract the miden-standards rev, not a sibling dep's"
+    );
+    assert!(
+        synthetic.contains("OLDREV"),
+        "a naive contains(OLDREV) check would have falsely passed despite the miden-standards bump"
     );
 }
 

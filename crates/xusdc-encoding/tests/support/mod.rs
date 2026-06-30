@@ -26,7 +26,7 @@ use miden_protocol::account::{
     StorageMapKey, StorageSlot, StorageSlotName,
 };
 use miden_protocol::asset::{AssetAmount, FungibleAsset, TokenSymbol};
-use miden_protocol::note::{Note, NoteTag, NoteType};
+use miden_protocol::note::{Note, NoteType};
 use miden_standards::testing::note::NoteBuilder;
 use miden_protocol::assembly::Library;
 use miden_protocol::errors::MasmError;
@@ -2136,18 +2136,21 @@ pub fn setup_burn_policy_account(
     })
 }
 
-/// The user send tx-script that emits `burn_note` exactly (ported verbatim from the burn canary
-/// `burn_canary.rs:57-91`): pushes `burn_note`'s recipient digest + metadata (Public, faucet-target
-/// tag) into `output_note::create`, then `call`s the BasicWallet `move_asset_to_note` to draw
-/// `fungible_asset` from the executing user's vault into that note.
+/// The user send tx-script that emits `burn_note` exactly (ported from the burn canary
+/// `burn_canary.rs:57-91`): pushes `burn_note`'s recipient digest + the note's OWN metadata
+/// (`note_type` + `tag`, read from `burn_note.metadata()`) into `output_note::create`, then `call`s
+/// the BasicWallet `move_asset_to_note` to draw `fungible_asset` from the executing user's vault into
+/// that note. Reading the note's own metadata keeps the emitted note's id == `burn_note.id()` for BOTH
+/// the stock `BurnNote` (Public + `with_account_target`) and the `XReserveBurnNote` (Public + the fixed
+/// xUSDC burn tag) — NoteId commits to metadata, so a recomputed tag would break id parity.
 pub fn send_burn_note_script(
     burn_note: &Note,
     fungible_asset: &FungibleAsset,
-    faucet_id: AccountId,
+    _faucet_id: AccountId,
 ) -> String {
     let recipient = burn_note.recipient().digest();
-    let note_type = Felt::from(NoteType::Public);
-    let tag = Felt::from(NoteTag::with_account_target(faucet_id));
+    let note_type = Felt::from(burn_note.metadata().note_type());
+    let tag = Felt::from(burn_note.metadata().tag());
     let asset_key = fungible_asset.to_key_word();
     let asset_value = fungible_asset.to_value_word();
     format!(

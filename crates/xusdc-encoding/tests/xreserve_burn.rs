@@ -1,0 +1,254 @@
+//! CMP-B2 `XReserveBurnNote` suite (P5-01, DC-7): the Circle-facing public burn-event note.
+//!
+//! Per `DECISION-CMP-B2` (RATIFIED): a FRESH note (N-11 / `P2idNote` idiom) that REUSES the stock
+//! burn consume script (`receive_and_burn` → CMP-A10), mandates `NoteType::Public`, bears the fixed
+//! xUSDC burn tag, and writes the DC-7 `(amount, destDomain, destRecipient, salt)` payload into
+//! `NoteStorage.items` via the 04 codec (consumed by reference).
+//!
+//! The load-bearing proof is OBSERVABILITY NON-VACUITY (Case-001): `note_type` AND the exact `tag`
+//! are asserted DIRECTLY against an independent constant, never inferred from the payload — a wrong
+//! tag or a `Private` note must fail a named test. The create→consume seam proves the real note is
+//! consumable by the faucet (running CMP-A10) and decrements `token_supply` by exactly the amount.
+//! `burn_note_emitted_items_match_codec_vectors` is vector-driven EMITTED-note parity (TV-DUAL-4):
+//! the items as they land on-chain equal both the codec encode AND the golden §7 felts.
+
+mod support;
+
+use miden_processor::crypto::random::RandomCoin;
+use miden_protocol::account::auth::AuthScheme;
+use miden_protocol::asset::{AssetAmount, FungibleAsset};
+use miden_protocol::note::{NoteTag, NoteType};
+use miden_protocol::{Felt, Word};
+use miden_testing::{Auth, MockChain};
+use support::*;
+use xusdc_encoding::note::xreserve_burn::{FIXED_XUSDC_BURN_TAG, XReserveBurnNote};
+use xusdc_encoding::vectors::load;
+use xusdc_encoding::xreserve::encoding::{
+    XReserveBurnItems, decode_burn_note_items, encode_burn_note_items,
+};
+
+// HARNESS
+// ================================================================================================
+
+/// A deterministic standalone note rng (only the serial number depends on it; never the schema/tag).
+fn note_rng(seed: u64) -> RandomCoin {
+    RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(7u32),
+        Felt::from(11u32),
+    ]))
+}
+
+/// A sample DC-7 payload with an arbitrary (round-trippable) destination + salt.
+fn sample_items(amount: u64) -> XReserveBurnItems {
+    XReserveBurnItems {
+        amount: AssetAmount::new(amount).expect("amount within AssetAmount bounds"),
+        dest_domain: 9,
+        dest_recipient: [0xABu8; 32],
+        salt: [0xCDu8; 32],
+    }
+}
+
+/// Emits a real `XReserveBurnNote` carrying `items` through a minimal MockChain (basic faucet + a
+/// user seeded at `AssetAmount::MAX` so every accept-vector amount moves) and returns the EMITTED
+/// output note's `NoteStorage.items` — the on-chain truth the TV-DUAL-4 parity test asserts.
+async fn emitted_items_for(items: &XReserveBurnItems) -> anyhow::Result<Vec<Felt>> {
+    let cap = u64::from(AssetAmount::MAX);
+    let mut builder = MockChain::builder();
+    let faucet = builder.add_existing_basic_faucet(
+        Auth::BasicAuth { auth_scheme: AuthScheme::Falcon512Poseidon2 },
+        "XUSDC",
+        cap,
+        Some(cap),
+    )?;
+    let seed_asset = FungibleAsset::new(faucet.id(), cap)?;
+    let user = builder.add_existing_wallet_with_assets(Auth::IncrNonce, [seed_asset.into()])?;
+
+    let note = XReserveBurnNote::create(user.id(), faucet.id(), items.clone(), builder.rng_mut())?;
+    // The asset the emit moves equals the note's own NoteAssets asset (single-sourced from the amount).
+    let note_asset = FungibleAsset::new(faucet.id(), u64::from(items.amount))?;
+    let chain = builder.build()?;
+
+    let tx0 = try_emit_burn_note(&chain, &note, &note_asset, faucet.id(), user.id())
+        .await
+        .map_err(|e| anyhow::anyhow!("emit tx0 failed: {e:?}"))?;
+    let emitted = tx0.output_notes().get_note(0);
+    let recipient = emitted.recipient().expect("public output note carries its full recipient");
+    Ok(recipient.storage().items().to_vec())
+}
+
+// 1 — OBSERVABILITY NON-VACUITY (Case-001): Public + the exact fixed tag, asserted DIRECTLY
+// ================================================================================================
+
+#[test]
+fn burn_note_is_public_with_fixed_tag() {
+    let sender = test_account_id(3);
+    let faucet = test_account_id(1);
+    let note = XReserveBurnNote::create(sender, faucet, sample_items(5_000), &mut note_rng(1))
+        .expect("constructing the burn note");
+
+    // Direct (NOT payload-inferred) assertions — a wrong tag or a Private note fails HERE.
+    assert_eq!(note.metadata().note_type(), NoteType::Public, "burn note must be Public");
+    assert_eq!(
+        note.metadata().tag().as_u32(),
+        FIXED_XUSDC_BURN_TAG,
+        "burn note must bear the fixed full-32-bit xUSDC burn tag",
+    );
+    // The fixed enumerated tag is structurally NOT the stock account-target tag.
+    assert_ne!(
+        note.metadata().tag(),
+        NoteTag::with_account_target(faucet),
+        "the fixed xUSDC burn tag must differ from the stock account-target tag",
+    );
+}
+
+// 2 — DC-7 PAYLOAD SCHEMA: items in NoteStorage (NOT metadata); assets + sender
+// ================================================================================================
+
+#[test]
+fn burn_note_payload_schema() {
+    let sender = test_account_id(3);
+    let faucet = test_account_id(1);
+    let items = sample_items(5_000);
+    let note = XReserveBurnNote::create(sender, faucet, items.clone(), &mut note_rng(2))
+        .expect("constructing the burn note");
+
+    // Payload lives in NoteStorage.items, in the exact DC-7 order/width (decode round-trips).
+    let storage_items = note.recipient().storage().items();
+    assert_eq!(storage_items.len(), 18, "DC-7 is exactly 18 felts");
+    let decoded = decode_burn_note_items(storage_items).expect("decoding DC-7 items");
+    assert_eq!(decoded, items, "NoteStorage.items decode == input items (DC-7 order)");
+
+    // NoteAssets carries the burned xUSDC FungibleAsset (amount single-sourced from items.amount).
+    let asset = note.assets().iter_fungible().next().expect("note carries one fungible asset");
+    assert_eq!(asset.faucet_id(), faucet, "asset issued by the faucet");
+    assert_eq!(asset.amount(), items.amount, "NoteAssets amount == items.amount");
+
+    // metadata exposes ONLY the depositor as sender (destination fields are in NoteStorage; anti-ASG-13).
+    assert_eq!(note.metadata().sender(), sender, "metadata.sender == depositor");
+}
+
+// 3 — R-BURN-6 PRODUCING SIDE: the constructor always yields Public (no note_type parameter)
+// ================================================================================================
+
+#[test]
+fn burn_note_is_never_private() {
+    let faucet = test_account_id(1);
+    for seed in [1u64, 2, 3] {
+        let note = XReserveBurnNote::create(test_account_id(3), faucet, sample_items(1_000), &mut note_rng(seed))
+            .expect("constructing the burn note");
+        assert_eq!(note.metadata().note_type(), NoteType::Public, "R-BURN-6: always Public");
+        assert_ne!(note.metadata().note_type(), NoteType::Private, "R-BURN-6: never Private");
+    }
+}
+
+// 4 — TV-DUAL-4 (vector-driven EMITTED-note parity): emitted items == codec encode == golden felts
+// ================================================================================================
+
+#[tokio::test]
+async fn burn_note_emitted_items_match_codec_vectors() -> anyhow::Result<()> {
+    let accept: Vec<_> = load().families.bn.iter().filter(|v| v.kind == "accept").collect();
+    assert!(!accept.is_empty(), "BN accept vectors present");
+    for vec in accept {
+        let items = vec.expected_struct();
+        let expected = encode_burn_note_items(&items);
+        let got = emitted_items_for(&items).await?;
+        assert_eq!(
+            got.as_slice(),
+            expected.as_slice(),
+            "vector {}: emitted NoteStorage.items == encode_burn_note_items",
+            vec.id,
+        );
+        assert_eq!(
+            got.as_slice(),
+            vec.items_values().as_slice(),
+            "vector {}: emitted NoteStorage.items == golden §7 felts",
+            vec.id,
+        );
+    }
+    Ok(())
+}
+
+// 5 — CREATE→CONSUME SEAM: faucet consumes the real note (CMP-A10) → token_supply -= amount
+// ================================================================================================
+
+#[tokio::test]
+async fn burn_note_consumed_by_faucet_decrements() -> anyhow::Result<()> {
+    const MAX_SUPPLY: u64 = 1_000_000;
+    const TOKEN_SUPPLY: u64 = 100_000;
+    const MIN_BURN_SIZE: u64 = 1_000;
+    const AMOUNT: u64 = 5_000; // >= MIN_BURN_SIZE and <= TOKEN_SUPPLY
+
+    let h = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        AMOUNT,
+    )?;
+
+    // The REAL XReserveBurnNote with the same faucet + user + amount as the harness asset.
+    let items = XReserveBurnItems {
+        amount: AssetAmount::new(AMOUNT)?,
+        dest_domain: 9,
+        dest_recipient: [0xABu8; 32],
+        salt: [0xCDu8; 32],
+    };
+    let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items, &mut note_rng(42))?;
+
+    let mut chain = h.chain;
+    assert_eq!(committed_token_supply(&chain, h.faucet_id)?, AssetAmount::new(TOKEN_SUPPLY)?);
+
+    // Emit at block N, faucet consumes at N+1 (runs receive_and_burn → execute_burn_policy → CMP-A10).
+    let tx1 = run_burn_consume(&mut chain, &note, &h.asset, h.faucet_id, h.user_id)
+        .await
+        .expect("faucet consumes the XReserveBurnNote via receive_and_burn → CMP-A10");
+    chain.add_pending_executed_transaction(&tx1)?;
+    chain.prove_next_block()?;
+
+    assert_eq!(
+        committed_token_supply(&chain, h.faucet_id)?,
+        AssetAmount::new(TOKEN_SUPPLY - AMOUNT)?,
+        "committed token_supply -= AMOUNT exactly",
+    );
+    Ok(())
+}
+
+// 6 — R-BURN-5: insufficient holder balance fails the create-tx (the asset can't move into NoteAssets)
+// ================================================================================================
+
+#[tokio::test]
+async fn burn_note_insufficient_balance_rejects_create() -> anyhow::Result<()> {
+    const MAX_SUPPLY: u64 = 1_000_000;
+    const TOKEN_SUPPLY: u64 = 100_000;
+    const MIN_BURN_SIZE: u64 = 1_000;
+    const HELD: u64 = 5_000;
+
+    // The user is seeded with exactly HELD of the asset.
+    let h = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        HELD,
+    )?;
+
+    // A note demanding MORE than the holder's balance.
+    let over = HELD + 1;
+    let items = XReserveBurnItems {
+        amount: AssetAmount::new(over)?,
+        dest_domain: 9,
+        dest_recipient: [0xABu8; 32],
+        salt: [0xCDu8; 32],
+    };
+    let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items, &mut note_rng(7))?;
+    let over_asset = FungibleAsset::new(h.faucet_id, over)?;
+
+    let result = try_emit_burn_note(&h.chain, &note, &over_asset, h.faucet_id, h.user_id).await;
+    assert!(
+        result.is_err(),
+        "R-BURN-5: creating a burn note for more than the holder's balance must fail the create-tx",
+    );
+    Ok(())
+}

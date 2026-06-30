@@ -8,6 +8,7 @@
 //! the R-MINT-16 increment. The test suite is the executable spec. Loop history: `TEST-LEDGER.md`.
 
 pub mod account;
+pub mod note;
 pub mod vectors;
 pub mod xreserve;
 

@@ -2192,10 +2192,10 @@ pub fn committed_token_supply(chain: &MockChain, faucet_id: AccountId) -> Result
 /// supply-decrement path (stock `receive_and_burn`) is CMP-A10-gated — stronger than resolving the
 /// merely-EXPORTED proc root via `get_procedure_root_by_path`.
 pub fn read_active_burn_policy_root(account: &Account) -> Result<Word> {
-    let _ = account;
-    unimplemented!(
-        "CMP-B3 GREEN: account.storage().get_item(TokenPolicyManager::active_burn_policy_slot())"
-    )
+    account
+        .storage()
+        .get_item(TokenPolicyManager::active_burn_policy_slot())
+        .map_err(|e| anyhow::anyhow!("reading the active burn policy root slot: {e}"))
 }
 
 /// CMP-B3 N1D — returns the names of the procedures in a vendored pinned-standards MASM source that
@@ -2204,8 +2204,22 @@ pub fn read_active_burn_policy_root(account: &Account) -> Result<Word> {
 /// are irrelevant to which proc a line belongs to). Used to prove the sole inherited decrement surface
 /// is `receive_and_burn`.
 pub fn faucet_burn_caller_procs(src: &str) -> Vec<String> {
-    let _ = src;
-    unimplemented!("CMP-B3 GREEN: scan procs, collect callers of exec.faucet::burn")
+    let mut current: Option<String> = None;
+    let mut callers = Vec::new();
+    for line in src.lines() {
+        let trimmed = line.trim();
+        // A call's enclosing proc is the most recent `(pub )?proc <name>` above it; MASM procs are
+        // top-level, so inner block `end`s never change which proc a line belongs to.
+        if let Some(rest) = trimmed
+            .strip_prefix("pub proc ")
+            .or_else(|| trimmed.strip_prefix("proc "))
+        {
+            current = Some(rest.split_whitespace().next().unwrap_or(rest).to_string());
+        } else if trimmed.contains("exec.faucet::burn") {
+            callers.push(current.clone().unwrap_or_else(|| "<top-level>".to_string()));
+        }
+    }
+    callers
 }
 
 /// tx0 ONLY (non-panicking): the user emits `burn_note` in-block (a send tx-script that draws the asset

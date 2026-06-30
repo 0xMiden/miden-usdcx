@@ -142,8 +142,8 @@ fn pinned_standards_single_faucet_burn_caller() {
 
 // FNV-1a (std-only, portable) drift tripwire on the vendored copies. Re-vendoring at a new rev requires
 // recomputing these (run the test; the assert prints `left` = the actual digest).
-const FUNGIBLE_FNV1A: u64 = 0; // RED placeholder; GREEN sets the real digest
-const POLICY_MANAGER_FNV1A: u64 = 0; // RED placeholder; GREEN sets the real digest
+const FUNGIBLE_FNV1A: u64 = 17252926805552427287;
+const POLICY_MANAGER_FNV1A: u64 = 12570707895715501309;
 
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -171,7 +171,7 @@ fn pinned_standards_fixture_unchanged() {
 }
 
 const CARGO_TOML: &str = include_str!("../Cargo.toml");
-const PINNED_STANDARDS_REV: &str = "PENDING"; // RED placeholder; GREEN = the pinned miden-standards rev
+const PINNED_STANDARDS_REV: &str = "681fc90584131560b87db8f7487685f4fa8420a8";
 
 /// N1D provenance anchor: the vendored fixtures are a snapshot of `miden-standards` at this rev. If the
 /// Cargo dep rev is bumped, this fails — re-vendor + re-checksum (PROVENANCE.md) before trusting N1D.

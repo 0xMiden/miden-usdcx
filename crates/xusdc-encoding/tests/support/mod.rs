@@ -2186,6 +2186,28 @@ pub fn committed_token_supply(chain: &MockChain, faucet_id: AccountId) -> Result
     Ok(FungibleFaucet::try_from(storage)?.token_supply())
 }
 
+/// CMP-B3 N1B — reads the ACTIVE burn-policy procedure root committed in the faucet account's
+/// `TokenPolicyManager` storage slot (the burn-slot twin of the mint deny-root). Asserting this stored
+/// root equals the CMP-A10 `burn_policy_root()` is the storage-COMMITMENT proof that the sole
+/// supply-decrement path (stock `receive_and_burn`) is CMP-A10-gated — stronger than resolving the
+/// merely-EXPORTED proc root via `get_procedure_root_by_path`.
+pub fn read_active_burn_policy_root(account: &Account) -> Result<Word> {
+    let _ = account;
+    unimplemented!(
+        "CMP-B3 GREEN: account.storage().get_item(TokenPolicyManager::active_burn_policy_slot())"
+    )
+}
+
+/// CMP-B3 N1D — returns the names of the procedures in a vendored pinned-standards MASM source that
+/// call `exec.faucet::burn` (the inherited supply-decrement primitive). A call's enclosing proc is the
+/// most recent `(pub )?proc <name>` declaration above it (MASM procs are top-level; inner block `end`s
+/// are irrelevant to which proc a line belongs to). Used to prove the sole inherited decrement surface
+/// is `receive_and_burn`.
+pub fn faucet_burn_caller_procs(src: &str) -> Vec<String> {
+    let _ = src;
+    unimplemented!("CMP-B3 GREEN: scan procs, collect callers of exec.faucet::burn")
+}
+
 /// tx0 ONLY (non-panicking): the user emits `burn_note` in-block (a send tx-script that draws the asset
 /// from the user vault into the note). Returns the raw execution result so callers can observe an
 /// upstream rejection (the zero-amount reachability probe) without the strict-path panic. Used as the

@@ -14,12 +14,16 @@
 //! observability — there is no on-chain burn-items parser, hence no custom consume MASM.
 
 use miden_protocol::account::AccountId;
+use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
-use miden_protocol::note::{Note, NoteScript, NoteScriptRoot};
+use miden_protocol::note::{
+    Note, NoteAssets, NoteRecipient, NoteScript, NoteScriptRoot, NoteStorage, NoteTag, NoteType,
+    PartialNoteMetadata,
+};
 use miden_standards::note::BurnNote;
 
-use crate::xreserve::encoding::{BURN_NOTE_ITEMS_FELTS, XReserveBurnItems};
+use crate::xreserve::encoding::{BURN_NOTE_ITEMS_FELTS, XReserveBurnItems, encode_burn_note_items};
 
 /// The fixed, enumerated xUSDC burn-event note tag (DC-7). It is a FULL 32-bit exact-match value
 /// (Circle's `SyncNotes` discovery is exact equality, not a prefix). ASCII `"BURN"`. The low 18
@@ -55,8 +59,24 @@ impl XReserveBurnNote {
         items: XReserveBurnItems,
         rng: &mut R,
     ) -> Result<Note, NoteError> {
-        // RED STUB — the green step replaces this body.
-        let _ = (sender, faucet_id, items, rng);
-        unimplemented!("XReserveBurnNote::create — CMP-B2 green implementation pending")
+        let serial_num = rng.draw_word();
+
+        // DC-7 payload → NoteStorage.items via the 04 codec (consumed by reference; no re-impl).
+        let storage = NoteStorage::new(encode_burn_note_items(&items))?;
+        // Reuse the STOCK burn consume script (→ faucet::receive_and_burn → CMP-A10).
+        let recipient = NoteRecipient::new(serial_num, BurnNote::script(), storage);
+
+        // Public mandate (R-BURN-6, no note_type parameter) + the fixed xUSDC burn tag;
+        // metadata.sender = the depositor (destination fields stay in NoteStorage; anti-ASG-13).
+        let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
+            .with_tag(NoteTag::new(FIXED_XUSDC_BURN_TAG));
+
+        // NoteAssets = the burned xUSDC asset; amount single-sourced from items.amount so the
+        // recorded amount and the burned asset can never diverge.
+        let asset = FungibleAsset::new(faucet_id, u64::from(items.amount))
+            .map_err(|err| NoteError::other_with_source("invalid burned xUSDC asset", err))?;
+        let vault = NoteAssets::new(vec![asset.into()])?;
+
+        Ok(Note::new(vault, metadata, recipient))
     }
 }

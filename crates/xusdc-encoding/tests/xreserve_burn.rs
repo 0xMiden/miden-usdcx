@@ -21,10 +21,10 @@ use miden_protocol::note::{NoteTag, NoteType};
 use miden_protocol::{Felt, Word};
 use miden_testing::{Auth, MockChain};
 use support::*;
-use xusdc_encoding::note::xreserve_burn::{FIXED_XUSDC_BURN_TAG, XReserveBurnNote};
+use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
 use xusdc_encoding::vectors::load;
 use xusdc_encoding::xreserve::encoding::{
-    XReserveBurnItems, decode_burn_note_items, encode_burn_note_items,
+    decode_burn_note_items, encode_burn_note_items, XReserveBurnItems,
 };
 
 // HARNESS
@@ -57,7 +57,9 @@ async fn emitted_items_for(items: &XReserveBurnItems) -> anyhow::Result<Vec<Felt
     let cap = u64::from(AssetAmount::MAX);
     let mut builder = MockChain::builder();
     let faucet = builder.add_existing_basic_faucet(
-        Auth::BasicAuth { auth_scheme: AuthScheme::Falcon512Poseidon2 },
+        Auth::BasicAuth {
+            auth_scheme: AuthScheme::Falcon512Poseidon2,
+        },
         "XUSDC",
         cap,
         Some(cap),
@@ -74,7 +76,9 @@ async fn emitted_items_for(items: &XReserveBurnItems) -> anyhow::Result<Vec<Felt
         .await
         .map_err(|e| anyhow::anyhow!("emit tx0 failed: {e:?}"))?;
     let emitted = tx0.output_notes().get_note(0);
-    let recipient = emitted.recipient().expect("public output note carries its full recipient");
+    let recipient = emitted
+        .recipient()
+        .expect("public output note carries its full recipient");
     Ok(recipient.storage().items().to_vec())
 }
 
@@ -89,7 +93,11 @@ fn burn_note_is_public_with_fixed_tag() {
         .expect("constructing the burn note");
 
     // Direct (NOT payload-inferred) assertions — a wrong tag or a Private note fails HERE.
-    assert_eq!(note.metadata().note_type(), NoteType::Public, "burn note must be Public");
+    assert_eq!(
+        note.metadata().note_type(),
+        NoteType::Public,
+        "burn note must be Public"
+    );
     assert_eq!(
         note.metadata().tag().as_u32(),
         FIXED_XUSDC_BURN_TAG,
@@ -118,15 +126,30 @@ fn burn_note_payload_schema() {
     let storage_items = note.recipient().storage().items();
     assert_eq!(storage_items.len(), 18, "DC-7 is exactly 18 felts");
     let decoded = decode_burn_note_items(storage_items).expect("decoding DC-7 items");
-    assert_eq!(decoded, items, "NoteStorage.items decode == input items (DC-7 order)");
+    assert_eq!(
+        decoded, items,
+        "NoteStorage.items decode == input items (DC-7 order)"
+    );
 
     // NoteAssets carries the burned xUSDC FungibleAsset (amount single-sourced from items.amount).
-    let asset = note.assets().iter_fungible().next().expect("note carries one fungible asset");
+    let asset = note
+        .assets()
+        .iter_fungible()
+        .next()
+        .expect("note carries one fungible asset");
     assert_eq!(asset.faucet_id(), faucet, "asset issued by the faucet");
-    assert_eq!(asset.amount(), items.amount, "NoteAssets amount == items.amount");
+    assert_eq!(
+        asset.amount(),
+        items.amount,
+        "NoteAssets amount == items.amount"
+    );
 
     // metadata exposes ONLY the depositor as sender (destination fields are in NoteStorage; anti-ASG-13).
-    assert_eq!(note.metadata().sender(), sender, "metadata.sender == depositor");
+    assert_eq!(
+        note.metadata().sender(),
+        sender,
+        "metadata.sender == depositor"
+    );
 }
 
 // 3 — R-BURN-6 PRODUCING SIDE: the constructor always yields Public (no note_type parameter)
@@ -136,10 +159,23 @@ fn burn_note_payload_schema() {
 fn burn_note_is_never_private() {
     let faucet = test_account_id(1);
     for seed in [1u64, 2, 3] {
-        let note = XReserveBurnNote::create(test_account_id(3), faucet, sample_items(1_000), &mut note_rng(seed))
-            .expect("constructing the burn note");
-        assert_eq!(note.metadata().note_type(), NoteType::Public, "R-BURN-6: always Public");
-        assert_ne!(note.metadata().note_type(), NoteType::Private, "R-BURN-6: never Private");
+        let note = XReserveBurnNote::create(
+            test_account_id(3),
+            faucet,
+            sample_items(1_000),
+            &mut note_rng(seed),
+        )
+        .expect("constructing the burn note");
+        assert_eq!(
+            note.metadata().note_type(),
+            NoteType::Public,
+            "R-BURN-6: always Public"
+        );
+        assert_ne!(
+            note.metadata().note_type(),
+            NoteType::Private,
+            "R-BURN-6: never Private"
+        );
     }
 }
 
@@ -148,7 +184,12 @@ fn burn_note_is_never_private() {
 
 #[tokio::test]
 async fn burn_note_emitted_items_match_codec_vectors() -> anyhow::Result<()> {
-    let accept: Vec<_> = load().families.bn.iter().filter(|v| v.kind == "accept").collect();
+    let accept: Vec<_> = load()
+        .families
+        .bn
+        .iter()
+        .filter(|v| v.kind == "accept")
+        .collect();
     assert!(!accept.is_empty(), "BN accept vectors present");
     for vec in accept {
         let items = vec.expected_struct();
@@ -198,7 +239,10 @@ async fn burn_note_consumed_by_faucet_decrements() -> anyhow::Result<()> {
     let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items, &mut note_rng(42))?;
 
     let mut chain = h.chain;
-    assert_eq!(committed_token_supply(&chain, h.faucet_id)?, AssetAmount::new(TOKEN_SUPPLY)?);
+    assert_eq!(
+        committed_token_supply(&chain, h.faucet_id)?,
+        AssetAmount::new(TOKEN_SUPPLY)?
+    );
 
     // Emit at block N, faucet consumes at N+1 (runs receive_and_burn → execute_burn_policy → CMP-A10).
     let tx1 = run_burn_consume(&mut chain, &note, &h.asset, h.faucet_id, h.user_id)

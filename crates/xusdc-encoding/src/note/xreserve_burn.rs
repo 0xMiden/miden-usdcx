@@ -23,7 +23,7 @@ use miden_protocol::note::{
 };
 use miden_standards::note::BurnNote;
 
-use crate::xreserve::encoding::{BURN_NOTE_ITEMS_FELTS, XReserveBurnItems, encode_burn_note_items};
+use crate::xreserve::encoding::{encode_burn_note_items, XReserveBurnItems, BURN_NOTE_ITEMS_FELTS};
 
 /// The fixed, enumerated xUSDC burn-event note tag (DC-7). It is a FULL 32-bit exact-match value
 /// (Circle's `SyncNotes` discovery is exact equality, not a prefix). ASCII `"BURN"`. The low 18

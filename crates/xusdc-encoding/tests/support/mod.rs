@@ -48,7 +48,7 @@ use miden_standards::note::{BurnNote, P2idNote};
 use miden_testing::{Auth, MockChain};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
-    ATTEST_ADMIN_ROLE, BURN_POLICY_PROC_PATH, MINT_DENY_GUARD_PROC_PATH,
+    BURN_POLICY_PROC_PATH, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE, MINT_DENY_GUARD_PROC_PATH,
 };
 use xusdc_encoding::xreserve::encoding::masm_error_by_name;
 
@@ -230,7 +230,7 @@ pub const SLOT_PROBE_PATH: &str = "xusdc::test_fixtures::slot_probe";
 /// Assembles the `asm/standards/xreserve` tree into one library under namespace
 /// `xreserve` — lifted from `masm_dual.rs:41-47` (test scaffolding, not an owned
 /// routine; kept byte-equivalent).
-/// A deterministic dummy `AccountId` for the builder's `owner` / `admin_holder` inputs and for the
+/// A deterministic dummy `AccountId` for the builder's `owner` / DOM role-holder inputs and for the
 /// role-holder / non-holder note senders in the `set_attester` suite. Mirrors
 /// `miden-testing/tests/scripts/rbac.rs:49-51`.
 pub fn test_account_id(seed: u8) -> AccountId {
@@ -1230,7 +1230,7 @@ pub async fn run_composition_probe(
 
 /// Builds an unauthenticated note SENT BY `sender` whose script `call`s
 /// `xreserve::attester_admin::set_attester(PK_COMMITMENT, enabled)`. The RBAC gate reads the note
-/// sender (`active_note::get_sender`), so the sender is what the ATTEST_ADMIN check tests. `enabled`
+/// sender (`active_note::get_sender`), so the sender is what the owner check tests. `enabled`
 /// is 1 (allowlist) or 0 (remove). The note script is compiled with the `xreserve` library linked so
 /// the `call` resolves to the same proc installed on the faucet account.
 pub fn set_attester_note(sender: AccountId, commitment: Word, enabled: u8, seed: u64) -> Result<Note> {
@@ -1302,7 +1302,7 @@ pub fn faucet_account(h: &CompositionHarness) -> Account {
 }
 
 /// Builds a note SENT BY `sender` whose script calls the stock `PausableManager::pause` — gated on
-/// the SAME Authority (ATTEST_ADMIN). Used to pause the faucet before exercising the set_attester
+/// the SAME owner Authority. Used to pause the faucet before exercising the set_attester
 /// pause gate. `pause` is a pure standards proc (CodeBuilder pre-links StandardsLib), so no xreserve
 /// link is needed.
 pub fn pause_note(sender: AccountId, seed: u64) -> Result<Note> {
@@ -1350,8 +1350,9 @@ pub async fn run_pause_tx(
 
 /// The exact stock error `ownable2step::assert_sender_is_owner` traps (ownable2step.masm:38
 /// ERR_SENDER_NOT_OWNER). Constructed inline (a stock protocol error, not an xusdc shell error, so it
-/// is not in `SHELL_ERR_TABLE`). The owner gate is the SEPARATION-OF-DUTIES distinction from
-/// set_attester's ATTEST_ADMIN gate: domain binding is deploy-time identity, the OWNER's to set.
+/// is not in `SHELL_ERR_TABLE`). Under the reconciled owner-gated model (DECISION-ADMIN-ROLE-MODEL)
+/// this is the SHARED trap for a non-owner sender across every setter (`set_attester` /
+/// `set_min_burn_size` / `set_max_supply` / `domain_init`).
 pub fn err_sender_not_owner() -> MasmError {
     MasmError::from_static_str("note sender is not the owner")
 }
@@ -1513,7 +1514,7 @@ pub fn err_new_max_supply_below_token_supply() -> MasmError {
 }
 
 /// Builds a note SENT BY `sender` whose script `call`s the stock `set_max_supply(new_max_supply)` —
-/// gated on the SAME Authority (ATTEST_ADMIN) + `assert_not_paused` + the build-time mutability flag,
+/// gated on the SAME owner Authority + `assert_not_paused` + the build-time mutability flag,
 /// fired mutability -> auth -> pause -> below-supply. Stock `set_max_supply` consumes
 /// `[new_max_supply, pad(15)]` and returns `[pad(16)]`. Like `pause_note`, `set_max_supply` is a pure
 /// standards proc (CodeBuilder pre-links StandardsLib), so no xreserve link is needed; the
@@ -1604,7 +1605,7 @@ pub async fn run_mint_against(
         .await
 }
 
-/// A rotation harness: the RBAC-equipped production faucet (admin_holder = id(2)) with an EMPTY
+/// A rotation harness: the owner-gated production faucet (owner = id(1)) with an EMPTY
 /// allowlist + ONE mint driver per distinct-nonce payload, so the rotation can run several successful
 /// mints (each consumes its own nonce) on ONE evolving account. Reuses [`CompositionHarness`] for
 /// `mock_chain` / `account_id`; the rotation runs drivers explicitly via [`run_rotation_mint`].
@@ -1682,6 +1683,7 @@ pub fn setup_rotation_account(
         xreserve_component,
         test_account_id(1),
         test_account_id(2),
+        test_account_id(3),
     )
     .build_components()
     .map_err(|e| anyhow::anyhow!("composing the rotation faucet: {e}"))?;
@@ -1861,6 +1863,7 @@ pub fn setup_guarded_mint_account(
                 xreserve_component,
                 test_account_id(1),
                 test_account_id(2),
+                test_account_id(3),
             )
             .build_components()
             .map_err(|e| anyhow::anyhow!("composing the production deny faucet: {e}"))?
@@ -2017,31 +2020,52 @@ pub struct BurnPolicyHarness {
 }
 
 /// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` for the burn oracle — a faithful
-/// replica of the production builder's private `seeded_attest_admin_rbac` (Option A: both stock RBAC
-/// maps direct-seeded so `admin_holder` is the sole `ATTEST_ADMIN` member). The burn oracle needs the
-/// RBAC foundation so the holder-sent `PausableManager::pause` clears `assert_authorized` (the pause
-/// gate `burn_paused_rejects` exercises). Reuses the stock RBAC code + slot names + metadata verbatim.
-fn seeded_attest_admin_rbac_component(admin_holder: AccountId) -> AccountComponent {
-    let role =
-        RoleSymbol::new(ATTEST_ADMIN_ROLE).expect("ATTEST_ADMIN is a fixed valid 12-char role symbol");
+/// replica of the production builder's private `seeded_dom_roles_rbac` (Option A: both stock RBAC maps
+/// direct-seeded with the two Circle Domain role members `DOM_PAUSER`→`pauser_holder` and
+/// `DOM_MANAGER`→`manager_holder`). The burn oracle needs the RBAC foundation so the owner-sent
+/// `PausableManager::pause` clears `assert_authorized` (the pause gate `burn_paused_rejects` exercises).
+/// Reuses the stock RBAC code + slot names + metadata verbatim.
+fn seeded_dom_roles_rbac_component(
+    pauser_holder: AccountId,
+    manager_holder: AccountId,
+) -> AccountComponent {
+    let pauser = RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol");
+    let manager = RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol");
     let member_word = Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
 
-    let role_config = StorageMap::with_entries([(
-        StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&role)])),
-        member_word,
-    )])
-    .expect("the single-entry role_config seed is valid");
+    let role_config = StorageMap::with_entries([
+        (
+            StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&pauser)])),
+            member_word,
+        ),
+        (
+            StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&manager)])),
+            member_word,
+        ),
+    ])
+    .expect("the two-role role_config seed is valid");
 
-    let role_membership = StorageMap::with_entries([(
-        StorageMapKey::new(Word::from([
-            Felt::ZERO,
-            Felt::from(&role),
-            admin_holder.suffix(),
-            admin_holder.prefix().as_felt(),
-        ])),
-        member_word,
-    )])
-    .expect("the single-entry role_membership seed is valid");
+    let role_membership = StorageMap::with_entries([
+        (
+            StorageMapKey::new(Word::from([
+                Felt::ZERO,
+                Felt::from(&pauser),
+                pauser_holder.suffix(),
+                pauser_holder.prefix().as_felt(),
+            ])),
+            member_word,
+        ),
+        (
+            StorageMapKey::new(Word::from([
+                Felt::ZERO,
+                Felt::from(&manager),
+                manager_holder.suffix(),
+                manager_holder.prefix().as_felt(),
+            ])),
+            member_word,
+        ),
+    ])
+    .expect("the two-role role_membership seed is valid");
 
     AccountComponent::new(
         RoleBasedAccessControl::code().clone(),
@@ -2071,7 +2095,8 @@ fn oracle_burn_components(
     burn_root: Word,
     burn_real_active: bool,
     owner: AccountId,
-    admin_holder: AccountId,
+    pauser_holder: AccountId,
+    manager_holder: AccountId,
 ) -> Result<Vec<AccountComponent>> {
     let real_burn = BurnPolicyConfig::Custom(burn_root);
     let (active_burn, reserved_burn) = if burn_real_active {
@@ -2088,22 +2113,21 @@ fn oracle_burn_components(
         .map_err(|e| anyhow::anyhow!("oracle manager reserved burn policy: {e}"))?;
 
     // Component order/contents mirror XReserveStablecoinBuilder::{assemble_components, build_components}:
-    // faucet + xreserve + [policy-manager, BurnAllowAll] + PausableManager + the RBAC foundation.
+    // faucet + xreserve + [policy-manager, BurnAllowAll] + PausableManager + the owner-gating foundation
+    // (Ownable2Step + seeded DOM-roles RBAC + Authority::OwnerControlled).
     let mut components = vec![faucet.into(), xreserve_component];
     components.extend(manager);
     components.push(PausableManager.into());
-    let role =
-        RoleSymbol::new(ATTEST_ADMIN_ROLE).expect("ATTEST_ADMIN is a fixed valid 12-char role symbol");
     components.push(Ownable2Step::new(owner).into());
-    components.push(seeded_attest_admin_rbac_component(admin_holder));
-    components.push(Authority::RbacControlled { role }.into());
+    components.push(seeded_dom_roles_rbac_component(pauser_holder, manager_holder));
+    components.push(Authority::OwnerControlled.into());
     Ok(components)
 }
 
 /// Builds the burn-policy harness: assembles the `xreserve` component with the full production slot set
 /// (domain/identifier value slots, usedNonces/xReserveAttesters map slots, AND the NET-NEW minBurnSize
 /// value slot seeded `[min_burn_size, 0, 0, 0]`), composes the faucet via [`oracle_burn_components`]
-/// (`owner` = id(1), `admin_holder` = id(2)), adds a user wallet seeded with the single burn asset, and
+/// (`owner` = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3)), adds a user wallet seeded with the single burn asset, and
 /// creates the canonical [`BurnNote`]. The faucet is built with `is_max_supply_mutable(true)` + decimals
 /// 6, mirroring the mint composition fixtures.
 pub fn setup_burn_policy_account(
@@ -2172,6 +2196,7 @@ pub fn setup_burn_policy_account(
         burn_real_active,
         test_account_id(1),
         test_account_id(2),
+        test_account_id(3),
     )?;
 
     let mut builder = MockChain::builder();

@@ -4,14 +4,15 @@
 //! provably sole supply-increasing surface (INV-MINT-SECURITY, §5.2).
 //!
 //! Scope (cumulative): it composes `FungibleFaucet` + the assembled `xreserve` library component
-//! (carries `apply_mint_effects`, the deny-guard `check_policy`, AND the P5-01 `set_attester` admin
-//! proc) + a `TokenPolicyManager` whose active mint policy is the deny guard + `PausableManager`
-//! (required: `execute_mint_policy` runs `assert_not_paused`) + the **RBAC admin foundation**
-//! (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::RbacControlled` on
-//! `ATTEST_ADMIN`; see below). STILL DEFERRED to later slices: dynamic role management
-//! (`grant_role`/`revoke_role`/`set_role_admin`), other roles (DOMAIN_PAUSER / DOMAIN_MANAGER),
-//! `set_max_supply`, domain init, and the burn policy. The builder yields the validated component
-//! composition; MockChain (tests) finalises it into a signed `Account`.
+//! (carries `apply_mint_effects`, the deny-guard `check_policy`, the `set_attester` + `set_min_burn_size`
+//! admin procs) + a `TokenPolicyManager` whose active mint policy is the deny guard + `PausableManager`
+//! (required: `execute_mint_policy` runs `assert_not_paused`) + the **owner-gating admin foundation**
+//! (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::OwnerControlled`; DECISION-ADMIN-ROLE-MODEL,
+//! the `AccessControl::Rbac{authority_role: None}` composition). The RBAC is SEEDED with the two Circle
+//! Domain role members (`DOM_PAUSER` / `DOM_MANAGER`). STILL DEFERRED to later slices: the DOM role
+//! CONSUMERS — custom `pause`/`unpause`, dynamic role management (`grant_role`/`revoke_role`/`set_role_admin`) —
+//! and the full faucet assembly. The builder yields the validated component composition; MockChain
+//! (tests) finalises it into a signed `Account`.
 //!
 //! Packaging: the deny guard is **runtime-assembled** MASM (no `.masl` asset / `account_component_code!`
 //! here — that is a miden-standards-internal pipeline). The caller assembles the `xreserve` library
@@ -36,11 +37,14 @@ use miden_standards::account::policies::{
     TokenPolicyManagerError,
 };
 
-/// The single RBAC role this faucet seeds and gates `set_attester` on: the deposit-attester
-/// admin. 12 chars (`RoleSymbol`'s max; `ATTESTER_ADMIN` (14) would be rejected). The MASM gate
-/// carries the same symbol via the installed `Authority::RbacControlled` slot — parity is asserted
-/// in the builder tests.
-pub const ATTEST_ADMIN_ROLE: &str = "ATTEST_ADMIN";
+/// The two Circle Domain RoleSymbols this faucet seeds under the ratified Circle-faithful admin model
+/// (DECISION-ADMIN-ROLE-MODEL): `DOM_PAUSER` (custom pause/unpause) and `DOM_MANAGER` (rotation / role
+/// management). Both are valid `RoleSymbol`s (≤12 chars, `A`–`Z`/`_`; `DOMAIN_PAUSER`(13)/`DOMAIN_MANAGER`(14)
+/// would be rejected). ORCHESTRATOR-FIXED — the builder only SEEDS the members here; their CONSUMERS
+/// (the custom pause procs, grant/revoke/set_role_admin) are later slices. The setters are owner-gated
+/// (`Authority::OwnerControlled`), not role-gated, so no MASM references these symbols in this slice.
+pub const DOM_PAUSER_ROLE: &str = "DOM_PAUSER";
+pub const DOM_MANAGER_ROLE: &str = "DOM_MANAGER";
 
 /// Flat library path of the mint-deny guard's `check_policy` procedure within the assembled
 /// `xreserve` library (namespace `xreserve`, module `mint_deny_guard`). This is the
@@ -164,22 +168,26 @@ impl From<TokenPolicyManagerError> for XReserveStablecoinBuilderError {
 }
 
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library component
-/// + a `TokenPolicyManager` with the mint-deny guard active + `PausableManager` + the **RBAC
-/// admin foundation** (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::RbacControlled`
-/// gating on `ATTEST_ADMIN`). The RBAC foundation ships in this production builder so the deployed
-/// faucet validates the real auth model: `set_attester` is gated on `ATTEST_ADMIN`.
+/// + a `TokenPolicyManager` with the mint-deny guard active + `PausableManager` + the **owner-gating
+/// admin foundation** (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::OwnerControlled`;
+/// DECISION-ADMIN-ROLE-MODEL). The foundation ships in this production builder so the deployed faucet
+/// validates the real auth model: the setters (`set_attester` / `set_min_burn_size` / `set_max_supply`)
+/// are gated on the Ownable2Step owner, and the `DOM_PAUSER` / `DOM_MANAGER` role members are seeded.
 ///
-/// Construct with [`XReserveStablecoinBuilder::new`] (the `owner` and the sole `ATTEST_ADMIN`
-/// `admin_holder` are required), optionally override the account type (for the non-`Public`
-/// rejection test) or the requested active mint policy (for the missing-guard rejection test), then
-/// call [`XReserveStablecoinBuilder::build_components`].
+/// Construct with [`XReserveStablecoinBuilder::new`] (the `owner` and the `DOM_PAUSER` / `DOM_MANAGER`
+/// holders are required), optionally override the account type (for the non-`Public` rejection test) or
+/// the requested active mint policy (for the missing-guard rejection test), then call
+/// [`XReserveStablecoinBuilder::build_components`].
 pub struct XReserveStablecoinBuilder {
     faucet: FungibleFaucet,
     xreserve_component: AccountComponent,
-    /// Top-level RBAC authority (the `Ownable2Step` owner). Required by the stock RBAC component.
+    /// Top-level authority (the `Ownable2Step` owner) — the sole authority for the owner-gated setters
+    /// (`set_attester` / `set_min_burn_size` / stock `set_max_supply`) under `Authority::OwnerControlled`.
     owner: AccountId,
-    /// The sole seeded member of `ATTEST_ADMIN` (the account allowed to send `set_attester` notes).
-    admin_holder: AccountId,
+    /// The seeded `DOM_PAUSER` role member (its consumer — custom pause/unpause — is a later slice).
+    pauser_holder: AccountId,
+    /// The seeded `DOM_MANAGER` role member (its consumer — role management — is a later slice).
+    manager_holder: AccountId,
     account_type: AccountType,
     requested_active_mint_policy: Option<MintPolicyConfig>,
     /// Overridden active burn policy (default: the installed `burn_policy::check_policy` as
@@ -194,20 +202,23 @@ pub struct XReserveStablecoinBuilder {
 
 impl XReserveStablecoinBuilder {
     /// Creates a builder from a built `FungibleFaucet` and the assembled `xreserve` library
-    /// component (which must carry the deny-guard `check_policy`), the RBAC `owner` (top-level
-    /// authority), and the `admin_holder` seeded as the sole `ATTEST_ADMIN` member. Defaults to
-    /// `AccountType::Public` and the deny guard as the active mint policy.
+    /// component (which must carry the deny-guard `check_policy`), the `owner` (top-level authority for
+    /// the owner-gated setters), and the `pauser_holder` / `manager_holder` seeded as the sole members
+    /// of `DOM_PAUSER` / `DOM_MANAGER`. Defaults to `AccountType::Public` and the deny guard as the
+    /// active mint policy.
     pub fn new(
         faucet: FungibleFaucet,
         xreserve_component: AccountComponent,
         owner: AccountId,
-        admin_holder: AccountId,
+        pauser_holder: AccountId,
+        manager_holder: AccountId,
     ) -> Self {
         Self {
             faucet,
             xreserve_component,
             owner,
-            admin_holder,
+            pauser_holder,
+            manager_holder,
             account_type: AccountType::Public,
             requested_active_mint_policy: None,
             requested_active_burn_policy: None,
@@ -329,20 +340,19 @@ impl XReserveStablecoinBuilder {
             .with_mint_policy(active, PolicyRegistration::Active)?
             .with_burn_policy(active_burn, PolicyRegistration::Active)?;
 
-        // The RBAC admin foundation, appended AFTER the account-type / deny-guard early returns so a
-        // rejected build never reaches here. The single `Authority` slot gates the stock admin
-        // SETTERS (and `set_attester`) on `ATTEST_ADMIN`; mint execution / the deny path is
-        // `assert_authorized`-free (policy_manager.masm:284-297), so installing this leaves the
-        // R-MINT-16 deny behavior unchanged. Dependency chain: `Ownable2Step` (top-level authority
-        // the stock RBAC requires) -> seeded `RoleBasedAccessControl` -> `Authority::RbacControlled`
-        // (links into `rbac::assert_sender_has_role`).
-        let role = RoleSymbol::new(ATTEST_ADMIN_ROLE)
-            .expect("ATTEST_ADMIN is a fixed valid 12-char role symbol");
+        // The owner-gating admin foundation (DECISION-ADMIN-ROLE-MODEL), appended AFTER the account-type
+        // / deny-guard early returns so a rejected build never reaches here. `Authority::OwnerControlled`
+        // gates the stock admin SETTERS (and `set_attester` / `set_min_burn_size`) on the Ownable2Step
+        // owner; mint execution / the deny path is `assert_authorized`-free (policy_manager.masm:284-297),
+        // so installing this leaves the R-MINT-16 deny behavior unchanged. This is exactly the
+        // `AccessControl::Rbac { authority_role: None }` composition (Ownable2Step + RoleBasedAccessControl
+        // + Authority::OwnerControlled, access/mod.rs:79) with the RBAC SEEDED with the two DOM role
+        // members (whose consumers — custom pause, role management — are later slices).
         let xreserve_component = self.xreserve_component_with_min_burn_size()?;
         let mut components = self.assemble_components(manager, xreserve_component);
         components.push(Ownable2Step::new(self.owner).into());
-        components.push(seeded_attest_admin_rbac(self.admin_holder));
-        components.push(Authority::RbacControlled { role }.into());
+        components.push(seeded_dom_roles_rbac(self.pauser_holder, self.manager_holder));
+        components.push(Authority::OwnerControlled.into());
         Ok(components)
     }
 
@@ -390,39 +400,62 @@ impl XReserveStablecoinBuilder {
     }
 }
 
-/// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` (Option A): both stock RBAC
-/// maps are direct-seeded at build, consistent with `grant_role`'s post-state for a single first
-/// grant — `role_membership[{0, ATTEST_ADMIN, holder.suffix, holder.prefix}] = [1,0,0,0]` AND
-/// `role_config[{0,0,0,ATTEST_ADMIN}] = [member_count=1, admin_role=0, 0, 0]`. It reuses the stock
-/// RBAC code + slot names + component metadata verbatim (NO custom RBAC logic); only the maps are
-/// non-empty (the stock `From<RoleBasedAccessControl>` seeds them empty). The key encodings mirror
-/// the stock readers (`miden-testing/tests/scripts/rbac.rs:57-63`). `grant_role` is NOT used (it
-/// would add a tx and is a later dynamic-management slice). Seed correctness is locked by the
-/// `rbac_seed_parity` + role-gate tests, not by construction (`AccountComponent::new` does not
-/// validate slots against the metadata schema). Construction failures are invariants, so this
-/// mirrors the stock `From<RoleBasedAccessControl>` `.expect()` pattern.
-fn seeded_attest_admin_rbac(admin_holder: AccountId) -> AccountComponent {
-    let role = RoleSymbol::new(ATTEST_ADMIN_ROLE)
-        .expect("ATTEST_ADMIN is a fixed valid 12-char role symbol");
+/// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` (Option A) with the TWO Circle
+/// Domain role members — `DOM_PAUSER` (→ `pauser_holder`) and `DOM_MANAGER` (→ `manager_holder`). Both
+/// stock RBAC maps are direct-seeded at build, consistent with `grant_role`'s post-state for a single
+/// first grant per role — `role_membership[{0, <role>, holder.suffix, holder.prefix}] = [1,0,0,0]` AND
+/// `role_config[{0,0,0,<role>}] = [member_count=1, admin_role=0, 0, 0]` (admin_role=0 = owner-administered;
+/// `set_role_admin` is owner-only, rbac.masm:159). It reuses the stock RBAC code + slot names + component
+/// metadata verbatim (NO custom RBAC logic); only the maps are non-empty (the stock
+/// `From<RoleBasedAccessControl>` seeds them empty). The key encodings mirror the stock readers
+/// (`miden-testing/tests/scripts/rbac.rs:57-63`). `grant_role` is NOT used (it would add a tx and is a
+/// later dynamic-management slice). Seed correctness is locked by the `dom_roles_seeded_correctly` +
+/// owner-ONLY tests, not by construction (`AccountComponent::new` does not validate slots against the
+/// metadata schema). Construction failures are invariants, so this mirrors the stock `.expect()` pattern.
+fn seeded_dom_roles_rbac(
+    pauser_holder: AccountId,
+    manager_holder: AccountId,
+) -> AccountComponent {
+    let pauser =
+        RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol (≤12)");
+    let manager =
+        RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol (≤12)");
     // [1,0,0,0]: role_config member_count = 1, and role_membership is_member = 1.
     let member_word = Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
 
-    let role_config = StorageMap::with_entries([(
-        StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&role)])),
-        member_word,
-    )])
-    .expect("the single-entry role_config seed is valid");
+    let role_config = StorageMap::with_entries([
+        (
+            StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&pauser)])),
+            member_word,
+        ),
+        (
+            StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&manager)])),
+            member_word,
+        ),
+    ])
+    .expect("the two-role role_config seed is valid");
 
-    let role_membership = StorageMap::with_entries([(
-        StorageMapKey::new(Word::from([
-            Felt::ZERO,
-            Felt::from(&role),
-            admin_holder.suffix(),
-            admin_holder.prefix().as_felt(),
-        ])),
-        member_word,
-    )])
-    .expect("the single-entry role_membership seed is valid");
+    let role_membership = StorageMap::with_entries([
+        (
+            StorageMapKey::new(Word::from([
+                Felt::ZERO,
+                Felt::from(&pauser),
+                pauser_holder.suffix(),
+                pauser_holder.prefix().as_felt(),
+            ])),
+            member_word,
+        ),
+        (
+            StorageMapKey::new(Word::from([
+                Felt::ZERO,
+                Felt::from(&manager),
+                manager_holder.suffix(),
+                manager_holder.prefix().as_felt(),
+            ])),
+            member_word,
+        ),
+    ])
+    .expect("the two-role role_membership seed is valid");
 
     AccountComponent::new(
         RoleBasedAccessControl::code().clone(),
@@ -435,5 +468,5 @@ fn seeded_attest_admin_rbac(admin_holder: AccountId) -> AccountComponent {
         ],
         RoleBasedAccessControl::component_metadata(),
     )
-    .expect("the seeded RBAC component mirrors the stock From impl and is valid")
+    .expect("the seeded DOM-roles RBAC component mirrors the stock From impl and is valid")
 }

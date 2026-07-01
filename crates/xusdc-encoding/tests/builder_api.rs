@@ -96,7 +96,7 @@ async fn build_produces_deny_active_public_faucet() -> Result<()> {
     // build-validation half: the default builder (Public + deny active, mutable max_supply) composes
     // cleanly.
     let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let components = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2)).build_components();
+    let components = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2), test_account_id(3)).build_components();
     assert!(
         components.is_ok(),
         "the default production builder must compose a deny-active Public faucet: {:?}",
@@ -135,7 +135,7 @@ async fn build_produces_deny_active_public_faucet() -> Result<()> {
 #[test]
 fn build_rejects_non_public_account_type() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(false)?;
-    let err = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2))
+    let err = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2), test_account_id(3))
         .account_type(AccountType::Private)
         .build_components()
         .expect_err("a non-Public account type must be rejected");
@@ -154,7 +154,7 @@ fn build_rejects_non_public_account_type() -> Result<()> {
 #[test]
 fn build_rejects_missing_mint_deny_guard() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(false)?;
-    let err = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2))
+    let err = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2), test_account_id(3))
         .with_active_mint_policy(MintPolicyConfig::AllowAll)
         .build_components()
         .expect_err("a non-deny active mint policy must be rejected");
@@ -178,6 +178,7 @@ fn denies_non_policy_burn() -> Result<()> {
         xreserve_component,
         test_account_id(1),
         test_account_id(2),
+        test_account_id(3),
     )
     .with_active_burn_policy(BurnPolicyConfig::AllowAll)
     .build_components();
@@ -199,7 +200,7 @@ fn denies_non_policy_burn() -> Result<()> {
 #[test]
 fn build_rejects_immutable_max_supply() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(false)?;
-    let err = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2))
+    let err = XReserveStablecoinBuilder::new(faucet, xreserve_component, test_account_id(1), test_account_id(2), test_account_id(3))
         .build_components()
         .expect_err("an immutable-max-supply faucet must be rejected at build time");
     assert!(
@@ -235,6 +236,7 @@ fn production_seeds_min_burn_size() -> Result<()> {
         xreserve_component,
         test_account_id(1),
         test_account_id(2),
+        test_account_id(3),
     )
     .min_burn_size(MIN_BURN)
     .build_components()
@@ -279,6 +281,7 @@ fn build_rejects_min_burn_size_exceeding_max() -> Result<()> {
         xreserve_component,
         test_account_id(1),
         test_account_id(2),
+        test_account_id(3),
     )
     .min_burn_size(over_max)
     .build_components()

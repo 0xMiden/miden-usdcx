@@ -55,6 +55,9 @@ const SEED_MIN: u64 = 1_000;
 fn role_membership_key(role: &RoleSymbol, id: AccountId) -> Word {
     Word::from([Felt::ZERO, Felt::from(role), id.suffix(), id.prefix().as_felt()])
 }
+fn role_config_key(role: &RoleSymbol) -> Word {
+    Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(role)])
+}
 
 /// The `MIN_BURN_SIZE_SLOT` value word for a floor `v` (`[v,0,0,0]`) — the read-back the write-integrity
 /// and no-state-change tests compare against. Test floors are small, so `as u32` is exact.
@@ -202,6 +205,21 @@ async fn dom_roles_seeded_correctly() -> Result<()> {
     let h = faucet_harness()?;
     let account = faucet(&h)?;
 
+    // role_config[{0,0,0,<role>}] = [member_count=1, admin_role=0, 0, 0] for each DOM role (admin_role=0
+    // == owner-administered; set_role_admin is owner-only, rbac.masm:159).
+    let pauser_config = account
+        .storage()
+        .get_map_item(RoleBasedAccessControl::role_config_slot(), role_config_key(&pauser))?;
+    assert_eq!(pauser_config[0], Felt::from(1u32), "DOM_PAUSER member_count == 1");
+    assert_eq!(pauser_config[1], Felt::ZERO, "DOM_PAUSER admin_role == 0 (owner-administered)");
+
+    let manager_config = account
+        .storage()
+        .get_map_item(RoleBasedAccessControl::role_config_slot(), role_config_key(&manager))?;
+    assert_eq!(manager_config[0], Felt::from(1u32), "DOM_MANAGER member_count == 1");
+    assert_eq!(manager_config[1], Felt::ZERO, "DOM_MANAGER admin_role == 0 (owner-administered)");
+
+    // role_membership[{0,<role>,holder.suffix,holder.prefix}] = [1,0,0,0] for each DOM holder.
     let pauser_membership = account.storage().get_map_item(
         RoleBasedAccessControl::role_membership_slot(),
         role_membership_key(&pauser, dom_pauser()),

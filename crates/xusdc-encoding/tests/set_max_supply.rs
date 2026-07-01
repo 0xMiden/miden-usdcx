@@ -25,13 +25,17 @@ use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use support::*;
 
-// The seeded principals the reconciled builder installs: owner = id(1) (Ownable2Step); DOM_PAUSER = id(2)
-// (a seeded role-holder who is NOT the owner — the owner-ONLY proof's non-owner sender).
+// The seeded principals the reconciled builder installs: owner = id(1) (Ownable2Step); the two seeded
+// DOM role-holders DOM_PAUSER = id(2) / DOM_MANAGER = id(3) — privileged non-owners the owner-ONLY proof
+// rejects.
 fn owner() -> AccountId {
     test_account_id(1)
 }
-fn dom_holder() -> AccountId {
+fn dom_pauser() -> AccountId {
     test_account_id(2)
+}
+fn dom_manager() -> AccountId {
+    test_account_id(3)
 }
 
 /// Config words the builder does not read (these tests invoke `set_max_supply` via a note, never the
@@ -109,16 +113,15 @@ async fn set_max_supply_owner_succeeds() -> Result<()> {
     Ok(())
 }
 
-/// A NON-owner-sent `set_max_supply` note (from a seeded DOM role-holder — the owner-ONLY proof) traps
-/// the EXACT ERR_SENDER_NOT_OWNER and leaves `token_config` unchanged (the auth gate fires after
-/// mutability passes; the trap commits nothing, so token_config is byte-identical).
-#[tokio::test]
-async fn set_max_supply_non_owner_rejects() -> Result<()> {
+/// Shared owner-ONLY assertion for `set_max_supply`: a NON-owner `sender` (a seeded DOM role-holder)
+/// traps the EXACT ERR_SENDER_NOT_OWNER and leaves `token_config` byte-identical (the auth gate fires
+/// after mutability passes; the trap commits nothing).
+async fn assert_set_max_supply_non_owner_rejected(sender: AccountId) -> Result<()> {
     let gm = guarded_faucet(0, true)?;
     let account = faucet_account(&gm.harness);
     let before = read_token_config(&account)?;
 
-    let result = run_set_max_supply_tx(&gm.harness, &account, dom_holder(), 500_000, 7).await;
+    let result = run_set_max_supply_tx(&gm.harness, &account, sender, 500_000, 7).await;
     assert_transaction_executor_error!(result, err_sender_not_owner());
 
     // no state change: token_config (esp. word[1] max_supply) is byte-identical to before the reject.
@@ -128,6 +131,19 @@ async fn set_max_supply_non_owner_rejects() -> Result<()> {
         "a rejected non-owner set_max_supply leaves token_config unchanged"
     );
     Ok(())
+}
+
+/// Owner-ONLY: the seeded DOM_PAUSER holder id(2) is rejected from `set_max_supply`.
+#[tokio::test]
+async fn set_max_supply_dom_pauser_non_owner_rejects() -> Result<()> {
+    assert_set_max_supply_non_owner_rejected(dom_pauser()).await
+}
+
+/// Owner-ONLY: the seeded DOM_MANAGER holder id(3) is rejected from `set_max_supply` (completing the
+/// owner-ONLY cross-product for this setter).
+#[tokio::test]
+async fn set_max_supply_dom_manager_non_owner_rejects() -> Result<()> {
+    assert_set_max_supply_non_owner_rejected(dom_manager()).await
 }
 
 // BELOW-SUPPLY GUARD — set_max_supply below current token_supply is rejected

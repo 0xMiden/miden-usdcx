@@ -16,14 +16,17 @@ use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use support::*;
 
-// The seeded principals the reconciled builder installs: owner = id(1) (Ownable2Step). DOM_PAUSER = id(2)
-// is a seeded role-holder who is NOT the owner AND is the FORMER ATTEST_ADMIN holder — the owner-ONLY /
-// ATTEST_ADMIN-removed non-owner sender.
+// The seeded principals the reconciled builder installs: owner = id(1) (Ownable2Step); the two seeded
+// DOM role-holders DOM_PAUSER = id(2) (also the FORMER ATTEST_ADMIN holder) and DOM_MANAGER = id(3) —
+// privileged non-owners the owner-ONLY proof rejects.
 fn owner() -> AccountId {
     test_account_id(1)
 }
-fn dom_holder() -> AccountId {
+fn dom_pauser() -> AccountId {
     test_account_id(2)
+}
+fn dom_manager() -> AccountId {
+    test_account_id(3)
 }
 
 /// Config words the builder does not read (these tests invoke `set_attester` via a note, never the
@@ -124,16 +127,14 @@ async fn set_attester_owner_succeeds() -> Result<()> {
     Ok(())
 }
 
-/// A NON-owner-sent `set_attester` note traps the EXACT ERR_SENDER_NOT_OWNER and leaves the allowlist
-/// unchanged. The sender is the seeded DOM_PAUSER holder id(2) — who is BOTH the former `ATTEST_ADMIN`
-/// holder (proving the removed role grants no access) AND a privileged non-owner (the owner-ONLY proof).
-#[tokio::test]
-async fn set_attester_former_admin_non_owner_rejects() -> Result<()> {
+/// Shared owner-ONLY assertion for `set_attester`: a NON-owner `sender` traps the EXACT
+/// ERR_SENDER_NOT_OWNER AND leaves the allowlist entry for the attempted key EMPTY (no partial write).
+async fn assert_set_attester_non_owner_rejected(sender: AccountId, key_seed: u32) -> Result<()> {
     let gm = guarded_faucet()?;
     let account = faucet_account(&gm.harness);
-    let commitment = Word::from([20u32, 21, 22, 23]);
+    let commitment = Word::from([key_seed, key_seed + 1, key_seed + 2, key_seed + 3]);
 
-    let result = run_set_attester_tx(&gm.harness, &account, dom_holder(), commitment, 1, 7).await;
+    let result = run_set_attester_tx(&gm.harness, &account, sender, commitment, 1, 7).await;
     assert_transaction_executor_error!(result, err_sender_not_owner());
 
     // no state change: the allowlist entry for the attempted key never landed (reads EMPTY_WORD).
@@ -143,6 +144,20 @@ async fn set_attester_former_admin_non_owner_rejects() -> Result<()> {
         "a rejected non-owner set_attester leaves xReserveAttesters[K] empty"
     );
     Ok(())
+}
+
+/// Owner-ONLY: the seeded DOM_PAUSER holder id(2) — who is BOTH the former `ATTEST_ADMIN` holder
+/// (proving the removed role grants no access) AND a privileged non-owner — is rejected from `set_attester`.
+#[tokio::test]
+async fn set_attester_former_admin_dom_pauser_non_owner_rejects() -> Result<()> {
+    assert_set_attester_non_owner_rejected(dom_pauser(), 20).await
+}
+
+/// Owner-ONLY: the seeded DOM_MANAGER holder id(3) — a privileged non-owner — is rejected from
+/// `set_attester` (completing the owner-ONLY cross-product for this setter).
+#[tokio::test]
+async fn set_attester_dom_manager_non_owner_rejects() -> Result<()> {
+    assert_set_attester_non_owner_rejected(dom_manager(), 30).await
 }
 
 // PAUSE GATE — set_attester traps the EXACT pause error when the faucet is paused

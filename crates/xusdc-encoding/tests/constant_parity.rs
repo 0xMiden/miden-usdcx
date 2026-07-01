@@ -51,6 +51,9 @@ const DOMAIN_CONFIG_MASM: &str =
 const BURN_POLICY_MASM: &str =
     include_str!("../../../asm/standards/xreserve/burn_policy.masm");
 
+const MIN_BURN_ADMIN_MASM: &str =
+    include_str!("../../../asm/standards/xreserve/min_burn_admin.masm");
+
 /// Faucet-owned shell error constants declared in MASM, pinned against the test-side
 /// `support::SHELL_ERR_TABLE` (the single Rust source).
 const SHELL_ERRORS_DECLARED: &[&str] = &[
@@ -109,6 +112,13 @@ const EXPECTED_XRESERVE_MINT_WORD_CONSTS: &[(&str, &str)] =
 /// MUST be byte-identical to the future CMP-F2 `set_min_burn_size` setter's slot (the reader↔setter
 /// slot identity); the shared label is the single Rust source (`support::MIN_BURN_SIZE_SLOT_LABEL`).
 const EXPECTED_BURN_POLICY_WORD_CONSTS: &[(&str, &str)] =
+    &[("MIN_BURN_SIZE_SLOT", support::MIN_BURN_SIZE_SLOT_LABEL)];
+
+/// Expected `word("…")` slot-name constant of the CMP-F2 `set_min_burn_size` setter module. It writes
+/// the SAME `MIN_BURN_SIZE_SLOT` CMP-A10's `burn_policy` reads (the setter↔reader slot identity), so it
+/// re-declares the const byte-identically (the attester_admin↔attestation_verify precedent) and binds
+/// the shared Rust label `support::MIN_BURN_SIZE_SLOT_LABEL`.
+const EXPECTED_MIN_BURN_ADMIN_WORD_CONSTS: &[(&str, &str)] =
     &[("MIN_BURN_SIZE_SLOT", support::MIN_BURN_SIZE_SLOT_LABEL)];
 
 /// The D5d attestation-verify shell declares no numeric constants (word-aligned `@locals`
@@ -316,7 +326,7 @@ fn masm_constants_bidirectional() {
         ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
     };
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 9] = [
+    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 10] = [
         ("layout.masm", LAYOUT_MASM, LAYOUT_COVERED_NUMS, &[]),
         ("encoding/mod.masm", ENCODING_MOD_MASM, ENCODING_COVERED_NUMS, &[]),
         ("deposit_intent_parser.masm", SHELL_MASM, SHELL_COVERED_NUMS, EXPECTED_SHELL_WORD_CONSTS),
@@ -336,7 +346,7 @@ fn masm_constants_bidirectional() {
         // SHELL_ERR_TABLE); no numeric or word("…") constants.
         ("mint_deny_guard.masm", MINT_DENY_GUARD_MASM, &[], &[]),
         // P5-01 set_attester: pins XRESERVE_ATTESTERS_SLOT to the shared label (no numeric consts;
-        // the reused ERR_SENDER_LACKS_ROLE / ERR_PAUSABLE_IS_PAUSED are stock, not declared here).
+        // the owner-gate traps reuse the stock ERR_SENDER_NOT_OWNER / ERR_PAUSABLE_IS_PAUSED, not declared here).
         (
             "attester_admin.masm",
             ATTESTER_ADMIN_MASM,
@@ -355,6 +365,15 @@ fn masm_constants_bidirectional() {
             BURN_POLICY_MASM,
             &[],
             EXPECTED_BURN_POLICY_WORD_CONSTS,
+        ),
+        // CMP-F2 set_min_burn_size: re-declares the MIN_BURN_SIZE_SLOT word const byte-identically to
+        // burn_policy.masm (the setter↔reader slot identity); no numeric consts, no new errors (the
+        // gate traps reuse the stock ERR_SENDER_NOT_OWNER / ERR_PAUSABLE_IS_PAUSED).
+        (
+            "min_burn_admin.masm",
+            MIN_BURN_ADMIN_MASM,
+            &[],
+            EXPECTED_MIN_BURN_ADMIN_WORD_CONSTS,
         ),
     ];
     for (file, src, covered_nums, expected_words) in sources {
@@ -389,17 +408,15 @@ fn masm_constants_bidirectional() {
     }
 }
 
-/// Parity for the installed RBAC gate role: the production builder's `Authority` slot must carry
-/// exactly `RbacControlled { role: ATTEST_ADMIN }` = `[RBAC_CONTROLLED, Felt::from(ATTEST_ADMIN), 0,
-/// 0]`. The MASM gate reads this role from storage (no MASM literal to pin), so this ties the
-/// on-chain gate role to the Rust `ATTEST_ADMIN_ROLE` const — extending the constant sweep to the
-/// authority role. Drifting the const (or the builder's installed role) fails here.
+/// Parity for the installed authority mode: under the reconciled Circle-faithful model
+/// (DECISION-ADMIN-ROLE-MODEL) the production builder's `Authority` slot must carry exactly
+/// `OwnerControlled` = `[OWNER_CONTROLLED, 0, 0, 0]`, so the account-wide gate resolves the setters
+/// (`set_attester` / `set_min_burn_size` / stock `set_max_supply`) to the Ownable2Step owner. The built
+/// `ATTEST_ADMIN` role + `RbacControlled` gate are removed; drifting the installed mode fails here.
 #[test]
-fn attest_admin_authority_role_parity() -> anyhow::Result<()> {
+fn owner_controlled_authority_parity() -> anyhow::Result<()> {
     use miden_protocol::Word;
-    use miden_protocol::account::RoleSymbol;
     use miden_standards::account::access::Authority;
-    use xusdc_encoding::account::xreserve::ATTEST_ADMIN_ROLE;
 
     let driver = support::mint_composition_driver_src(&[miden_protocol::Felt::from(0u32)], 60, 6);
     let probe = support::composition_supply_probe_src(0);
@@ -417,12 +434,11 @@ fn attest_admin_authority_role_parity() -> anyhow::Result<()> {
     )?;
     let account = support::faucet_account(&gm.harness);
 
-    let role = RoleSymbol::new(ATTEST_ADMIN_ROLE).expect("ATTEST_ADMIN is a valid role symbol");
     let installed = Authority::try_from_storage(account.storage())?;
     assert_eq!(
         installed,
-        Authority::RbacControlled { role },
-        "the installed Authority must be RbacControlled{{ATTEST_ADMIN}}"
+        Authority::OwnerControlled,
+        "the installed Authority must be OwnerControlled (owner-gated setters)"
     );
     Ok(())
 }

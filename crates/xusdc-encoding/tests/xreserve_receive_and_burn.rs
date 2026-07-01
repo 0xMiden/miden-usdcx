@@ -25,8 +25,10 @@ use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::errors::MasmError;
+use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
+use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
@@ -41,9 +43,10 @@ const VALID_BURN: u64 = 5_000;
 /// A below-minimum burn: `0 < BELOW_MIN < MIN_BURN_SIZE`.
 const BELOW_MIN: u64 = 500;
 
-/// The seeded `ATTEST_ADMIN` holder the burn oracle installs (`admin_holder` = id(2)); it can pause.
-fn holder() -> AccountId {
-    test_account_id(2)
+/// The Ownable2Step OWNER the burn oracle installs (id(1)). Under the reconciled Circle-faithful admin
+/// model (DECISION-ADMIN-ROLE-MODEL) pause and the setters gate on the owner (`Authority::OwnerControlled`).
+fn owner() -> AccountId {
+    test_account_id(1)
 }
 
 /// A deterministic standalone note rng (only the serial number depends on it; never the schema/tag).
@@ -319,9 +322,9 @@ async fn burn_zero_rejected_through_composition() -> Result<()> {
     Ok(())
 }
 
-/// N3 (R-BURN-3): a paused faucet halts the consume. After the ATTEST_ADMIN holder pauses the faucet,
-/// consuming a committed (valid-amount) real `XReserveBurnNote` traps the stock `ERR_PAUSABLE_IS_PAUSED`
-/// ("the contract is paused") — `execute_burn_policy` runs `assert_not_paused` BEFORE the custom policy
+/// N3 (R-BURN-3): a paused faucet halts the consume. After the OWNER pauses the faucet, consuming a
+/// committed (valid-amount) real `XReserveBurnNote` traps the stock `ERR_PAUSABLE_IS_PAUSED` ("the
+/// contract is paused") — `execute_burn_policy` runs `assert_not_paused` BEFORE the custom policy
 /// (DECISION-RBURN3). Mirrors `burn_policy::burn_paused_rejects` but through the real note.
 #[tokio::test]
 async fn burn_paused_rejected_through_composition() -> Result<()> {
@@ -344,12 +347,12 @@ async fn burn_paused_rejected_through_composition() -> Result<()> {
     chain.add_pending_executed_transaction(&tx0)?;
     chain.prove_next_block()?;
 
-    // The ATTEST_ADMIN holder pauses the faucet; evolve the committed faucet with the (unauthenticated)
-    // pause delta — mirrors burn_policy::burn_paused_rejects.
+    // The OWNER pauses the faucet; evolve the committed faucet with the (unauthenticated) pause delta —
+    // mirrors burn_policy::burn_paused_rejects.
     let account = chain.committed_account(faucet_id)?.clone();
-    let paused = run_pause_against(&chain, &account, holder(), 5)
+    let paused = run_pause_against(&chain, &account, owner(), 5)
         .await
-        .expect("the ATTEST_ADMIN holder can pause the faucet");
+        .expect("the owner can pause the faucet");
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
 
@@ -361,5 +364,74 @@ async fn burn_paused_rejected_through_composition() -> Result<()> {
         .execute()
         .await;
     assert_transaction_executor_error!(result, MasmError::from_static_str("the contract is paused"));
+    Ok(())
+}
+
+// CMP-F2 BURN-MIN SEAM — set the floor, then the SAME slot CMP-A10 reads decides the burn (two txs)
+// ================================================================================================
+
+/// Two-tx apply_delta plumbing shared by both seam directions: emit + commit the burn note, run an
+/// OWNER-sent `set_min_burn_size(new_min)` against the committed faucet, evolve the faucet with the
+/// setter delta, then consume the committed note against that evolved (floor-updated) faucet. Returns
+/// the consume RESULT (mirrors `burn_paused_rejected_through_composition`).
+async fn run_set_min_burn_then_consume(
+    seed_floor: u64,
+    new_min: u64,
+    burn_amount: u64,
+) -> Result<std::result::Result<ExecutedTransaction, TransactionExecutorError>> {
+    let h = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        seed_floor,
+        burn_amount,
+    )?;
+    let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items(burn_amount)?, &mut note_rng(23))?;
+    let faucet_id = h.faucet_id;
+    let user_id = h.user_id;
+    let mut chain = h.chain;
+
+    // Block N: the user emits + commits the burn note (floor still `seed_floor`).
+    let tx0 = try_emit_burn_note(&chain, &note, &h.asset, faucet_id, user_id)
+        .await
+        .expect("the user emits the XReserveBurnNote (test-setup invariant)");
+    chain.add_pending_executed_transaction(&tx0)?;
+    chain.prove_next_block()?;
+
+    // The OWNER moves the floor to `new_min`; evolve the committed faucet with the setter delta.
+    let account = chain.committed_account(faucet_id)?.clone();
+    let set = run_set_min_burn_size_against(&chain, &account, owner(), new_min, 31)
+        .await
+        .expect("the owner's set_min_burn_size must succeed");
+    let mut evolved = account.clone();
+    evolved.apply_delta(set.account_delta())?;
+
+    // The faucet consumes the committed note against the EVOLVED (floor-updated) faucet — CMP-A10 reads
+    // the SAME MIN_BURN_SIZE_SLOT the setter wrote (the seam).
+    let result = chain
+        .build_tx_context(evolved, &[note.id()], &[])?
+        .build()?
+        .execute()
+        .await;
+    Ok(result)
+}
+
+/// SEAM (negative = raise): floor seeded `MIN_BURN_SIZE`, owner RAISES it above a burn that passed
+/// before; that burn now traps the EXACT `ERR_XRESERVE_BURN_BELOW_MIN` via CMP-A10. `VALID_BURN`
+/// (5_000) passes at the seeded 1_000 floor but is below the new 10_000 floor.
+#[tokio::test]
+async fn set_min_burn_raise_then_below_new_min_rejects() -> Result<()> {
+    let result = run_set_min_burn_then_consume(MIN_BURN_SIZE, 10_000, VALID_BURN).await?;
+    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_BURN_BELOW_MIN"));
+    Ok(())
+}
+
+/// SEAM (positive = lower): floor seeded HIGH (10_000), owner LOWERS it to exactly the burn amount
+/// (2_000); the burn that would trap at the seeded floor now PASSES (consume succeeds). Proves the
+/// setter's write actually relaxes CMP-A10's R-BURN-2 gate.
+#[tokio::test]
+async fn set_min_burn_lower_then_at_new_min_passes() -> Result<()> {
+    let result = run_set_min_burn_then_consume(10_000, 2_000, 2_000).await?;
+    result.expect("a burn == the lowered floor passes CMP-A10 after set_min_burn_size");
     Ok(())
 }

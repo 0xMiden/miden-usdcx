@@ -34,9 +34,10 @@ const VALID_BURN: u64 = 5_000;
 /// A below-minimum burn: `0 < BELOW_MIN < MIN_BURN_SIZE` (note-reachable, no zero-amount dependency).
 const BELOW_MIN: u64 = 500;
 
-/// The seeded `ATTEST_ADMIN` holder the burn oracle installs (`admin_holder` = id(2)); it can pause.
-fn holder() -> AccountId {
-    test_account_id(2)
+/// The Ownable2Step OWNER the burn oracle installs (id(1)); under the reconciled owner-gated model
+/// (DECISION-ADMIN-ROLE-MODEL) pause gates on the owner (`Authority::OwnerControlled`).
+fn owner() -> AccountId {
+    test_account_id(1)
 }
 
 // POSITIVE + ALLOW-ALL ORACLE (GREEN)
@@ -206,7 +207,7 @@ async fn burn_zero_amount_rejects_direct() -> Result<()> {
 // STOCK PAUSE GATE (GREEN) — R-BURN-3 traps the stock error BEFORE the custom policy runs
 // ================================================================================================
 
-/// R-BURN-3: a paused faucet halts the burn. After the ATTEST_ADMIN holder pauses the REAL-policy
+/// R-BURN-3: a paused faucet halts the burn. After the OWNER pauses the REAL-policy
 /// faucet (stock `PausableManager::pause`), the burn consume traps the EXACT stock ERR_PAUSABLE_IS_PAUSED
 /// (`"the contract is paused"`) — enforced by `execute_burn_policy`'s `assert_not_paused` BEFORE the
 /// custom policy is dispatched (DECISION-RBURN3). GREEN regardless of the policy body (the stock gate
@@ -230,12 +231,12 @@ async fn burn_paused_rejects() -> Result<()> {
     chain.add_pending_executed_transaction(&tx0)?;
     chain.prove_next_block()?;
 
-    // The ATTEST_ADMIN holder pauses the faucet; evolve the committed faucet with the pause delta (NOT
-    // committed — the unauthenticated pause note can't be block-proven; mirrors set_attester_paused_rejects).
+    // The OWNER pauses the faucet; evolve the committed faucet with the pause delta (NOT committed — the
+    // unauthenticated pause note can't be block-proven; mirrors set_attester_paused_rejects).
     let account = chain.committed_account(faucet_id)?.clone();
-    let paused = run_pause_against(&chain, &account, holder(), 5)
+    let paused = run_pause_against(&chain, &account, owner(), 5)
         .await
-        .expect("the ATTEST_ADMIN holder can pause the faucet");
+        .expect("the owner can pause the faucet");
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
 

@@ -1,18 +1,20 @@
-//! P5-01 `set_max_supply` admin slice: the supply-cap setter. This is STOCK reuse — the standard
-//! `FungibleFaucet` already exposes `set_max_supply`, gated (in this order) mutability ->
-//! `authority::assert_authorized` (RbacControlled{ATTEST_ADMIN} on our account) ->
-//! `assert_not_paused` -> below-current-supply. No new MASM. This file covers the role gate, write
-//! integrity, the below-supply guard, the pause gate, and the immutable control. The cap-enforcement
-//! seam (that `set_max_supply` actually changes what R-MINT-15 enforces) lives in `xreserve_mint.rs`,
-//! alongside the shared mint-composition fixtures it reuses.
+//! P5-01 `set_max_supply` admin slice, reconciled to the Circle-faithful OWNER-gated model
+//! (DECISION-ADMIN-ROLE-MODEL). This is STOCK reuse — the standard `FungibleFaucet` already exposes
+//! `set_max_supply`, gated (in this order) mutability -> `authority::assert_authorized` ->
+//! `assert_not_paused` -> below-current-supply. No new MASM. The reconciliation is a pure Authority
+//! config change: the account installs `Authority::OwnerControlled` (was `RbacControlled{ATTEST_ADMIN}`),
+//! so `authority::assert_authorized` now resolves to the Ownable2Step owner. This file covers the owner
+//! gate, write integrity, the below-supply guard, the pause gate, and the immutable control. The
+//! cap-enforcement seam (that `set_max_supply` actually changes what R-MINT-15 enforces) lives in
+//! `xreserve_mint.rs`, alongside the shared mint-composition fixtures it reuses.
 //!
 //! The slice's net-new surface is the build-time mutability flag. The gate fixtures are built MUTABLE
-//! (`is_max_supply_mutable = true`), so each gate test exercises its intended gate: the holder's
-//! `set_max_supply` succeeds (write integrity), a non-holder traps ERR_SENDER_LACKS_ROLE, a paused
-//! faucet traps ERR_PAUSABLE_IS_PAUSED, and a below-current-supply value traps
-//! ERR_NEW_MAX_SUPPLY_BELOW_TOKEN_SUPPLY. `set_max_supply_immutable_traps` keeps an IMMUTABLE faucet as
-//! the control, pinning that the mutability gate fires FIRST (the EXACT ERR_MAX_SUPPLY_NOT_MUTABLE,
-//! even for the holder). Stock `set_max_supply` is reused verbatim — no new MASM.
+//! (`is_max_supply_mutable = true`), so each gate test exercises its intended gate: the owner's
+//! `set_max_supply` succeeds (write integrity), a non-owner (incl. a seeded DOM role-holder) traps
+//! ERR_SENDER_NOT_OWNER with no state change, a paused faucet traps ERR_PAUSABLE_IS_PAUSED, and a
+//! below-current-supply value traps ERR_NEW_MAX_SUPPLY_BELOW_TOKEN_SUPPLY. `set_max_supply_immutable_traps`
+//! keeps an IMMUTABLE faucet as the control, pinning that the mutability gate fires FIRST (the EXACT
+//! ERR_MAX_SUPPLY_NOT_MUTABLE, even for the owner). Stock `set_max_supply` is reused verbatim — no new MASM.
 
 mod support;
 
@@ -23,19 +25,13 @@ use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use support::*;
 
-// The seeded admin_holder / owner the production builder installs (admin_holder = id(2) into
-// ATTEST_ADMIN; owner = id(1)). A non-holder is any other id.
-fn holder() -> AccountId {
+// The seeded principals the reconciled builder installs: owner = id(1) (Ownable2Step); DOM_PAUSER = id(2)
+// (a seeded role-holder who is NOT the owner — the owner-ONLY proof's non-owner sender).
+fn owner() -> AccountId {
+    test_account_id(1)
+}
+fn dom_holder() -> AccountId {
     test_account_id(2)
-}
-fn non_holder() -> AccountId {
-    test_account_id(99)
-}
-
-/// The exact stock error `rbac::assert_sender_has_role` traps (rbac.masm:50). Constructed inline (a
-/// stock error, not an xusdc shell error, so it is not in `SHELL_ERR_TABLE`).
-fn err_sender_lacks_role() -> MasmError {
-    MasmError::from_static_str("note sender does not hold the required role")
 }
 
 /// Config words the builder does not read (these tests invoke `set_max_supply` via a note, never the
@@ -44,10 +40,9 @@ fn dummy_config() -> (Word, Word) {
     (Word::from([7u32, 0, 0, 0]), Word::from([11u32, 12, 13, 14]))
 }
 
-/// An RBAC-equipped production faucet (admin_holder = id(2), deny active) with cap 1_000_000 and a
-/// trivial unused driver/probe — the base for the gate tests. `token_supply` seeds the initial
-/// `token_config[token_supply]` (for the below-supply guard); `is_max_supply_mutable` is the slice's
-/// net-new flag (RED commits `false`; GREEN flips the gate tests to `true`).
+/// An owner-gated production faucet (deny active) with cap 1_000_000 and a trivial unused driver/probe —
+/// the base for the gate tests. `token_supply` seeds the initial `token_config[token_supply]` (for the
+/// below-supply guard); `is_max_supply_mutable` is the slice's net-new flag.
 fn guarded_faucet(token_supply: u64, is_max_supply_mutable: bool) -> Result<GuardedMint> {
     let driver = mint_composition_driver_src(&[Felt::from(0u32)], 60, 6);
     let probe = composition_supply_probe_src(0);
@@ -69,37 +64,37 @@ fn guarded_faucet(token_supply: u64, is_max_supply_mutable: bool) -> Result<Guar
 // IMMUTABLE CONTROL (declared GREEN from the start) — the mutability gate is real and fires first
 // ================================================================================================
 
-/// On an IMMUTABLE faucet, even the ATTEST_ADMIN holder's `set_max_supply` traps the EXACT
-/// ERR_MAX_SUPPLY_NOT_MUTABLE — the mutability gate fires before auth/pause/below-supply. The immutable
-/// control (forbidden #4 — the immutable half): it pins that the mutability gate is real and fires
-/// first, independent of the role/pause/below-supply gates the mutable tests exercise.
+/// On an IMMUTABLE faucet, even the owner's `set_max_supply` traps the EXACT ERR_MAX_SUPPLY_NOT_MUTABLE —
+/// the mutability gate fires before auth/pause/below-supply. The immutable control: it pins that the
+/// mutability gate is real and fires first, independent of the auth/pause/below-supply gates the mutable
+/// tests exercise. GREEN throughout (the mutability gate precedes auth, so the sender identity is moot).
 #[tokio::test]
 async fn set_max_supply_immutable_traps() -> Result<()> {
     // Builder-BYPASS fixture: the production `XReserveStablecoinBuilder` now rejects an immutable
     // max_supply at build time, so this control assembles a bare immutable faucet directly. What it
     // proves is the stock RUNTIME mutability gate, which fires FIRST (before auth/pause/below-supply),
-    // so a bare faucet (no RBAC) traps ERR_MAX_SUPPLY_NOT_MUTABLE identically to a full production one.
+    // so a bare faucet (no Authority) traps ERR_MAX_SUPPLY_NOT_MUTABLE identically to a full production one.
     let harness = setup_bare_immutable_faucet(0, 1_000_000)?;
     let account = faucet_account(&harness);
-    let result = run_set_max_supply_tx(&harness, &account, holder(), 500_000, 7).await;
+    let result = run_set_max_supply_tx(&harness, &account, owner(), 500_000, 7).await;
     assert_transaction_executor_error!(result, err_max_supply_not_mutable());
     Ok(())
 }
 
-// ROLE GATE + WRITE INTEGRITY — RED until the gate faucet is built mutable (green)
+// OWNER GATE + WRITE INTEGRITY — RED until the Authority is flipped to OwnerControlled (green)
 // ================================================================================================
 
-/// An ATTEST_ADMIN-holder-sent `set_max_supply(X)` succeeds and writes ONLY word[1] (max_supply),
-/// preserving token_supply/decimals/symbol (forbidden #3 — full-word read-back).
+/// An OWNER-sent `set_max_supply(X)` succeeds and writes ONLY word[1] (max_supply), preserving
+/// token_supply/decimals/symbol (full-word read-back).
 #[tokio::test]
-async fn set_max_supply_role_holder_succeeds() -> Result<()> {
+async fn set_max_supply_owner_succeeds() -> Result<()> {
     let gm = guarded_faucet(0, true)?;
     let account = faucet_account(&gm.harness);
     let before = read_token_config(&account)?; // [token_supply=0, max_supply=1_000_000, decimals=6, "XUSDC"]
 
-    let executed = run_set_max_supply_tx(&gm.harness, &account, holder(), 500_000, 7)
+    let executed = run_set_max_supply_tx(&gm.harness, &account, owner(), 500_000, 7)
         .await
-        .expect("an ATTEST_ADMIN holder's set_max_supply must succeed on a mutable faucet");
+        .expect("the owner's set_max_supply must succeed on a mutable faucet");
 
     // write integrity: the token_config delta carries the FULL word with ONLY word[1] changed.
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
@@ -114,52 +109,62 @@ async fn set_max_supply_role_holder_succeeds() -> Result<()> {
     Ok(())
 }
 
-/// A NON-holder-sent `set_max_supply` note traps the EXACT ERR_SENDER_LACKS_ROLE (the auth gate fires
-/// after mutability passes; the trap commits nothing, so token_config is untouched).
+/// A NON-owner-sent `set_max_supply` note (from a seeded DOM role-holder — the owner-ONLY proof) traps
+/// the EXACT ERR_SENDER_NOT_OWNER and leaves `token_config` unchanged (the auth gate fires after
+/// mutability passes; the trap commits nothing, so token_config is byte-identical).
 #[tokio::test]
-async fn set_max_supply_non_holder_rejects() -> Result<()> {
+async fn set_max_supply_non_owner_rejects() -> Result<()> {
     let gm = guarded_faucet(0, true)?;
     let account = faucet_account(&gm.harness);
-    let result = run_set_max_supply_tx(&gm.harness, &account, non_holder(), 500_000, 7).await;
-    assert_transaction_executor_error!(result, err_sender_lacks_role());
+    let before = read_token_config(&account)?;
+
+    let result = run_set_max_supply_tx(&gm.harness, &account, dom_holder(), 500_000, 7).await;
+    assert_transaction_executor_error!(result, err_sender_not_owner());
+
+    // no state change: token_config (esp. word[1] max_supply) is byte-identical to before the reject.
+    assert_eq!(
+        read_token_config(&account)?,
+        before,
+        "a rejected non-owner set_max_supply leaves token_config unchanged"
+    );
     Ok(())
 }
 
-// BELOW-SUPPLY GUARD — set_max_supply below current token_supply is rejected (forbidden #5)
+// BELOW-SUPPLY GUARD — set_max_supply below current token_supply is rejected
 // ================================================================================================
 
-/// With token_supply seeded at 400_000, `set_max_supply(300_000)` (< token_supply) traps the EXACT
-/// ERR_NEW_MAX_SUPPLY_BELOW_TOKEN_SUPPLY (the below-supply guard, after mutability/auth/pause pass).
+/// With token_supply seeded at 400_000, an OWNER-sent `set_max_supply(300_000)` (< token_supply) traps
+/// the EXACT ERR_NEW_MAX_SUPPLY_BELOW_TOKEN_SUPPLY (the below-supply guard, after mutability/auth/pause pass).
 #[tokio::test]
 async fn set_max_supply_below_supply_rejects() -> Result<()> {
     let gm = guarded_faucet(400_000, true)?;
     let account = faucet_account(&gm.harness);
-    let result = run_set_max_supply_tx(&gm.harness, &account, holder(), 300_000, 7).await;
+    let result = run_set_max_supply_tx(&gm.harness, &account, owner(), 300_000, 7).await;
     assert_transaction_executor_error!(result, err_new_max_supply_below_token_supply());
     Ok(())
 }
 
-// PAUSE GATE — set_max_supply traps the EXACT pause error when paused (forbidden #8)
+// PAUSE GATE — set_max_supply traps the EXACT pause error when paused
 // ================================================================================================
 
-/// After the ATTEST_ADMIN holder pauses the faucet (stock `PausableManager::pause`, gated on the same
-/// ATTEST_ADMIN Authority), a holder-sent `set_max_supply` passes mutability + auth but traps the
-/// EXACT ERR_PAUSABLE_IS_PAUSED — proving the pause guard is real (the `is_paused` slot is installed by
-/// the faucet, so this is never a missing-slot artifact).
+/// After the OWNER pauses the faucet (stock `PausableManager::pause`, gated on the same owner Authority),
+/// an owner-sent `set_max_supply` passes mutability + auth but traps the EXACT ERR_PAUSABLE_IS_PAUSED —
+/// proving the pause guard is real (the `is_paused` slot is installed by the faucet, so this is never a
+/// missing-slot artifact).
 #[tokio::test]
 async fn set_max_supply_paused_rejects() -> Result<()> {
     let gm = guarded_faucet(0, true)?;
     let account = faucet_account(&gm.harness);
 
-    // tx1: the holder pauses the faucet (is_paused := true).
-    let paused = run_pause_tx(&gm.harness, &account, holder(), 5)
+    // tx1: the owner pauses the faucet (is_paused := true).
+    let paused = run_pause_tx(&gm.harness, &account, owner(), 5)
         .await
-        .expect("the ATTEST_ADMIN holder can pause the faucet");
+        .expect("the owner can pause the faucet");
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
 
-    // tx2: set_max_supply by the holder now traps the EXACT pause error (mutability + auth pass).
-    let result = run_set_max_supply_tx(&gm.harness, &evolved, holder(), 500_000, 7).await;
+    // tx2: set_max_supply by the owner now traps the EXACT pause error (mutability + auth pass).
+    let result = run_set_max_supply_tx(&gm.harness, &evolved, owner(), 500_000, 7).await;
     assert_transaction_executor_error!(result, MasmError::from_static_str("the contract is paused"));
     Ok(())
 }

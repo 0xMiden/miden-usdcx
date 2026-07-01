@@ -657,13 +657,13 @@ async fn xreserve_mint_still_mints_on_guarded_account() -> Result<()> {
 // ================================================================================================
 // The setter trusts the caller's commitment Word verbatim (§5.5), so a storage-delta check is
 // vacuous. Only an end-to-end attestation proves the key set_attester WROTE equals the key the D5d
-// read path COMPUTES. These run on the RBAC-equipped production faucet (admin_holder = id(2)) with an
+// read path COMPUTES. These run on the owner-gated production faucet (owner = id(1)) with an
 // EMPTY allowlist, then drive a real set_attester note tx (tx1) and a real mint tx (tx2) on the
 // evolved account. The 5-step rotation (below) uses distinct-nonce payloads (`with_nonce`); the
 // pause gate needs no mint and lives in `set_attester.rs`.
 
 /// Positive seam (add enables) + negative-before control: an empty allowlist denies K's attestation
-/// (R-MINT-13); after the ATTEST_ADMIN holder runs `set_attester(K, true)`, the SAME attestation
+/// (R-MINT-13); after the owner runs `set_attester(K, true)`, the SAME attestation
 /// mints. Proves set's written key == the read path's computed key.
 #[tokio::test]
 async fn set_attester_enables_attestation() -> Result<()> {
@@ -690,10 +690,10 @@ async fn set_attester_enables_attestation() -> Result<()> {
     let before = run_mint_against(&gm.harness, &account, composition_advice([0u32; 8], &attester)).await;
     assert_transaction_executor_error!(before, shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"));
 
-    // tx1: the ATTEST_ADMIN holder (id(2)) allowlists K.
-    let set = run_set_attester_tx(&gm.harness, &account, test_account_id(2), attester.commitment, 1, 7)
+    // tx1: the owner (id(1)) allowlists K.
+    let set = run_set_attester_tx(&gm.harness, &account, test_account_id(1), attester.commitment, 1, 7)
         .await
-        .expect("the ATTEST_ADMIN holder's set_attester(K, true) must succeed");
+        .expect("the owner's set_attester(K, true) must succeed");
     let mut evolved = account.clone();
     evolved.apply_delta(set.account_delta())?;
 
@@ -712,7 +712,7 @@ async fn set_attester_enables_attestation() -> Result<()> {
     Ok(())
 }
 
-/// Negative-after (remove denies): after the holder enables then `set_attester(K, false)` removes K,
+/// Negative-after (remove denies): after the owner enables then `set_attester(K, false)` removes K,
 /// the SAME attestation traps R-MINT-13 — proving the removal write (EMPTY_WORD) genuinely closes the
 /// seam (forbidden #6: a remove that writes a still-non-empty value would keep K verifying).
 #[tokio::test]
@@ -737,14 +737,14 @@ async fn set_attester_remove_denies_attestation() -> Result<()> {
     let account = faucet_account(&gm.harness);
 
     // tx1: enable K.
-    let enable = run_set_attester_tx(&gm.harness, &account, test_account_id(2), attester.commitment, 1, 7)
+    let enable = run_set_attester_tx(&gm.harness, &account, test_account_id(1), attester.commitment, 1, 7)
         .await
         .expect("enable must succeed");
     let mut evolved = account.clone();
     evolved.apply_delta(enable.account_delta())?;
 
     // tx2: remove K (enabled = 0 -> EMPTY_WORD).
-    let remove = run_set_attester_tx(&gm.harness, &evolved, test_account_id(2), attester.commitment, 0, 9)
+    let remove = run_set_attester_tx(&gm.harness, &evolved, test_account_id(1), attester.commitment, 0, 9)
         .await
         .expect("remove must succeed");
     evolved.apply_delta(remove.account_delta())?;
@@ -780,11 +780,11 @@ async fn set_attester_add_then_retire_rotation() -> Result<()> {
     let driver_c = mint_composition_driver_src(&pack(&payload_c), LEN_FELTS, SCALE_EXP);
     let rh = setup_rotation_account(domain, identifier, &[&driver_a, &driver_b, &driver_c])?;
     let h = &rh.harness;
-    let holder = test_account_id(2);
+    let owner = test_account_id(1);
     let mut acct = faucet_account(h);
 
     // 1. enable K_old -> K_old mints (driver_a / payload_a, nonce_a).
-    let s1 = run_set_attester_tx(h, &acct, holder, old_a.commitment, 1, 11).await.expect("enable K_old");
+    let s1 = run_set_attester_tx(h, &acct, owner, old_a.commitment, 1, 11).await.expect("enable K_old");
     acct.apply_delta(s1.account_delta())?;
     let m1 = run_rotation_mint(h, &rh.drivers[0], &acct, composition_advice([0u32; 8], &old_a))
         .await
@@ -793,7 +793,7 @@ async fn set_attester_add_then_retire_rotation() -> Result<()> {
     acct.apply_delta(m1.account_delta())?;
 
     // 2. enable K_new -> K_new mints (driver_b / payload_b, nonce_b).
-    let s2 = run_set_attester_tx(h, &acct, holder, new_b.commitment, 1, 12).await.expect("enable K_new");
+    let s2 = run_set_attester_tx(h, &acct, owner, new_b.commitment, 1, 12).await.expect("enable K_new");
     acct.apply_delta(s2.account_delta())?;
     let m2 = run_rotation_mint(h, &rh.drivers[1], &acct, composition_advice([0u32; 8], &new_b))
         .await
@@ -802,7 +802,7 @@ async fn set_attester_add_then_retire_rotation() -> Result<()> {
     acct.apply_delta(m2.account_delta())?;
 
     // 3. disable K_old.
-    let s3 = run_set_attester_tx(h, &acct, holder, old_a.commitment, 0, 13).await.expect("disable K_old");
+    let s3 = run_set_attester_tx(h, &acct, owner, old_a.commitment, 0, 13).await.expect("disable K_old");
     acct.apply_delta(s3.account_delta())?;
 
     // 4. K_old now traps R-MINT-13 (driver_c / payload_c; traps at D5d, so nonce_c is NOT consumed).
@@ -821,12 +821,12 @@ async fn set_attester_add_then_retire_rotation() -> Result<()> {
 // ================================================================================================
 // A token_config[max_supply] storage-delta is vacuous; only a real mint proves set_max_supply changed
 // what R-MINT-15 enforces (R-MINT-15 reads max_supply from the SAME token_config word set_max_supply
-// writes). These run on the RBAC-equipped production faucet (admin_holder = id(2)) with K allowlisted,
+// writes). These run on the owner-gated production faucet (owner = id(1)) with K allowlisted,
 // then drive a real set_max_supply note tx (tx1) and a real mint tx (tx2) on the apply_delta-evolved
 // account. The faucet is built MUTABLE (is_max_supply_mutable = true), so tx1's set_max_supply lands
 // and the mint outcome flips with the cap — a green token_config delta alone would be vacuous.
 
-/// Lower-then-reject: start at cap 1_000_000 (a 2-unit mint is fine). The ATTEST_ADMIN holder lowers
+/// Lower-then-reject: start at cap 1_000_000 (a 2-unit mint is fine). The owner lowers
 /// the cap to 1; the SAME valid mint (amount 2) now exceeds it -> R-MINT-15 traps the EXACT
 /// ERR_XRESERVE_SUPPLY_CAP. Lowering tightened what the mint enforces (forbidden #2).
 #[tokio::test]
@@ -846,14 +846,14 @@ async fn set_max_supply_lower_then_over_cap_rejects() -> Result<()> {
         Some((attester.commitment, Word::from(MARKER))), // allowlist K so the mint passes D5d
         &driver,
         &probe,
-        true, // mutable: the holder's set_max_supply(1) lands, tightening the cap the mint enforces
+        true, // mutable: the owner's set_max_supply(1) lands, tightening the cap the mint enforces
     )?;
     let account = faucet_account(&gm.harness);
 
-    // tx1: the holder lowers the cap to 1 (below the 2-unit mint).
-    let set = run_set_max_supply_tx(&gm.harness, &account, test_account_id(2), 1, 7)
+    // tx1: the owner lowers the cap to 1 (below the 2-unit mint).
+    let set = run_set_max_supply_tx(&gm.harness, &account, test_account_id(1), 1, 7)
         .await
-        .expect("the ATTEST_ADMIN holder's set_max_supply(1) must succeed on a mutable faucet");
+        .expect("the owner's set_max_supply(1) must succeed on a mutable faucet");
     let mut evolved = account.clone();
     evolved.apply_delta(set.account_delta())?;
 
@@ -864,7 +864,7 @@ async fn set_max_supply_lower_then_over_cap_rejects() -> Result<()> {
     Ok(())
 }
 
-/// At-cap accepts (the positive boundary): the holder sets the cap exactly at the mint amount (2); the
+/// At-cap accepts (the positive boundary): the owner sets the cap exactly at the mint amount (2); the
 /// 2-unit mint then fits (0 + 2 <= 2) and mints once, raising token_supply by the reduced amount.
 #[tokio::test]
 async fn set_max_supply_at_cap_accepts() -> Result<()> {
@@ -887,10 +887,10 @@ async fn set_max_supply_at_cap_accepts() -> Result<()> {
     )?;
     let account = faucet_account(&gm.harness);
 
-    // tx1: the holder sets the cap exactly at the mint amount (2).
-    let set = run_set_max_supply_tx(&gm.harness, &account, test_account_id(2), 2, 7)
+    // tx1: the owner sets the cap exactly at the mint amount (2).
+    let set = run_set_max_supply_tx(&gm.harness, &account, test_account_id(1), 2, 7)
         .await
-        .expect("the ATTEST_ADMIN holder's set_max_supply(2) must succeed on a mutable faucet");
+        .expect("the owner's set_max_supply(2) must succeed on a mutable faucet");
     let mut evolved = account.clone();
     evolved.apply_delta(set.account_delta())?;
 
@@ -940,10 +940,10 @@ async fn set_max_supply_raise_then_accepts() -> Result<()> {
         run_mint_against(&gm.harness, &account, composition_advice([0u32; 8], &attester)).await;
     assert_transaction_executor_error!(before, shell_error_by_name("ERR_XRESERVE_SUPPLY_CAP"));
 
-    // tx1: the holder raises the cap well above the mint.
-    let set = run_set_max_supply_tx(&gm.harness, &account, test_account_id(2), 1_000_000, 7)
+    // tx1: the owner raises the cap well above the mint.
+    let set = run_set_max_supply_tx(&gm.harness, &account, test_account_id(1), 1_000_000, 7)
         .await
-        .expect("the ATTEST_ADMIN holder's set_max_supply(1_000_000) must succeed on a mutable faucet");
+        .expect("the owner's set_max_supply(1_000_000) must succeed on a mutable faucet");
     let mut evolved = account.clone();
     evolved.apply_delta(set.account_delta())?;
 

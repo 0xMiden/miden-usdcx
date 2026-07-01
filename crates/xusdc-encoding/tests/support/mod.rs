@@ -1422,6 +1422,80 @@ pub async fn run_domain_init_tx(
         .await
 }
 
+// set_min_burn_size — owner-gated minBurnSize setter note + slot read-back (P5-01 CMP-F2 slice)
+// ================================================================================================
+
+/// Builds an unauthenticated note SENT BY `sender` whose script `call`s
+/// `xreserve::min_burn_admin::set_min_burn_size(new_min)`. Like `set_attester`/`domain_init`, the gate
+/// reads the note sender (`active_note::get_sender`), so the sender is what the owner check tests.
+/// `new_min` is the single felt written as element 0 of the `MIN_BURN_SIZE_SLOT` value word. The note
+/// script links the `xreserve` library so the `call` resolves to the same proc installed on the faucet.
+pub fn set_min_burn_size_note(sender: AccountId, new_min: u64, seed: u64) -> Result<Note> {
+    let lib = assemble_xreserve_lib()?;
+    // Stack contract: [new_min, pad(15)] (new_min on top). Push 15 pad felts (deepest) then new_min so
+    // it ends on top: 15 + 1 = 16.
+    let src = format!(
+        "use xreserve::min_burn_admin\n\
+         @note_script\n\
+         pub proc main\n\
+         \x20\x20\x20\x20repeat.15 push.0 end\n\
+         \x20\x20\x20\x20push.{new_min}\n\
+         \x20\x20\x20\x20call.min_burn_admin::set_min_burn_size\n\
+         \x20\x20\x20\x20dropw dropw dropw dropw\n\
+         end\n",
+    );
+    let script = CodeBuilder::new()
+        .with_dynamically_linked_library(&lib)
+        .context("linking xreserve into the set_min_burn_size note script")?
+        .compile_note_script(src.clone())
+        .map_err(|e| anyhow::anyhow!("set_min_burn_size note script failed to compile: {e}\n{src}"))?;
+    // Deterministic note rng (serial only; never affects the gate). Distinct tail [7,8] keeps serials
+    // disjoint from set_attester [1,2] / pause [3,4] / set_max_supply [5,6] / domain_init [9,10].
+    let mut rng = RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(7u32),
+        Felt::from(8u32),
+    ]));
+    Ok(NoteBuilder::new(sender, &mut rng)
+        .note_type(NoteType::Private)
+        .script(script)
+        .build()?)
+}
+
+/// Executes a `set_min_burn_size` note (sent by `sender`) against the faucet `account` on a bare
+/// `&MockChain` (the burn-policy harness is a `BurnPolicyHarness`, not a `CompositionHarness`). Returns
+/// the raw execution result so callers assert success or the exact trap. Mirrors [`run_pause_against`].
+pub async fn run_set_min_burn_size_against(
+    chain: &MockChain,
+    account: &Account,
+    sender: AccountId,
+    new_min: u64,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = set_min_burn_size_note(sender, new_min, seed)
+        .expect("building the set_min_burn_size note (test-setup invariant)");
+    chain
+        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
+        .expect("building the set_min_burn_size tx context")
+        .build()
+        .expect("building the set_min_burn_size transaction")
+        .execute()
+        .await
+}
+
+/// Reads the faucet `MIN_BURN_SIZE_SLOT` value word `[min_burn_size, 0, 0, 0]` from a committed/evolved
+/// account — the full-word read-back the CMP-F2 write-integrity + no-state-change tests use (the slot
+/// CMP-A10's `burn_policy::check_policy` reads for R-BURN-2). Mirrors [`read_token_config`].
+pub fn read_min_burn_size(account: &Account) -> Result<Word> {
+    account
+        .storage()
+        .get_item(
+            &StorageSlotName::new(MIN_BURN_SIZE_SLOT_LABEL).context("min_burn_size slot label")?,
+        )
+        .map_err(|e| anyhow::anyhow!("reading the min_burn_size value slot: {e}"))
+}
+
 // set_max_supply — stock admin setter note + token_config read-back (P5-01 set_max_supply slice)
 // ================================================================================================
 

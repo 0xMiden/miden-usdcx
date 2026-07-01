@@ -1,0 +1,26 @@
+# xreserve::min_burn_admin
+#
+# RED-SUITE PLACEHOLDER (P5-01 CMP-F2 set_min_burn_size slice). This is a DELIBERATELY NON-SECURING
+# stub committed with the executing-red suite so the owner-sent + non-owner-sent set_min_burn_size txs
+# and the burn-min seam reach REAL MockChain execution (not a missing-proc link error). It performs NO
+# owner gate, NO pause gate, and NO write — every security assertion therefore fails via real execution.
+# The GREEN commit REPLACES this body with the owner-gated writer
+# (authority::assert_authorized -> pausable::assert_not_paused -> native_account::set_item into
+# MIN_BURN_SIZE_SLOT). Do NOT ship this stub.
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! PLACEHOLDER set_min_burn_size (red-suite only): consumes the setter's logical input and returns a
+#! clean stack WITHOUT gating or writing. Exists solely so the set_min_burn note links and executes.
+#!
+#! Inputs:  [new_min, pad(15)]
+#! Outputs: [pad(16)]
+#!
+#! Invocation: call
+pub proc set_min_burn_size
+    # => [new_min, pad(15)]
+    # PLACEHOLDER: no gate, no write. The stack is left 16-deep for the note script to clean.
+    push.0 drop
+    # => [new_min, pad(15)]
+end

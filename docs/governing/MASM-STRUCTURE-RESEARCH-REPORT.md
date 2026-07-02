@@ -1,4 +1,4 @@
-> **MIRROR — READ-ONLY (mirrored 2026-06-15).** Canonical source: `/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/07-implementation-readiness/MASM-STRUCTURE-RESEARCH-REPORT.md`. Do NOT edit this copy; if it diverges from the canonical source, the canonical source wins. Re-sync via `tools/sync-mirrors.sh`.
+> **MIRROR — READ-ONLY (mirrored 2026-07-01).** Canonical source: `/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/07-implementation-readiness/MASM-STRUCTURE-RESEARCH-REPORT.md`. Do NOT edit this copy; if it diverges from the canonical source, the canonical source wins. Re-sync via `tools/sync-mirrors.sh`.
 
 # MASM Structure & Tooling Research Report (Phase 4.3)
 

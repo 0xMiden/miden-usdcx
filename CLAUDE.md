@@ -10,7 +10,7 @@ Circle **xReserve / xUSDC** (NOT standard USDC, NOT CCTP) on Miden: native USDC 
 4. **Frozen decisions (do not revisit, do not alias):**
    - NS-1: bytes32→Word MASM proc = `xreserve::encoding::bytes32_to_key` (the Rust routine keeps `bytes32_to_storage_map_key`).
    - NS-2: the shared DepositIntent parser = 04-owned `xreserve::encoding::parse_deposit_intent`; faucet owns only mint-specific assertions.
-   - DC-7: `encoding/burn_items.masm` = 04-owned burn-item codec home (deferred past the first slice).
+   - DC-7: `encoding/burn_items.masm` = 04-owned burn-item codec home (deferred past the first slice). [SUPERSEDED 2026-06-30 → P5-04 codec: DC-7 shipped as RUST (`crates/xusdc-encoding/src/xreserve/encoding/burn_note.rs`), NOT a .masm file — there is no burn_items.masm]
    - Layout: **SELF-CONTAINED** components; two-root tree `asm/standards/xreserve/…` + `asm/account_components/faucets/…`.
 5. **Version pins (ledger: `docs/governing/V15-DEVNET-BASELINE.md`):** Miden **v0.15 + devnet**. `protocol v0.15.3` (`681fc9058`) → assembler crates **0.23.3** (seed `Cargo.lock`); `miden-node v0.15.0` (`29a876c3`, the TAG is the pin); devnet RPC `https://rpc.devnet.miden.io`. Miden testnet (v0.14) is NOT the validation network. `miden-vm`/`miden-assembly` follow their own `0.23.x` cadence — never pin a "miden-vm v0.15" tag.
 6. **Circle-owned open decisions stay OPEN** (`DEV-*`/`Q-*`, e.g. DEV-5 cap/scale, DEV-7 burn evidence, DEV-10 AccountId encoding): implement per the frozen spec, keep the OPEN labels, never mark them approved/resolved.
@@ -26,6 +26,7 @@ Circle **xReserve / xUSDC** (NOT standard USDC, NOT CCTP) on Miden: native USDC 
 ```
 asm/standards/xreserve/           # product root (xreserve::*)
   encoding/                       # 04-owned: layout.masm, bytes32.masm, uint256.masm, account_id.masm, (later) burn_items.masm
+                                  # [SUPERSEDED → D-1A/D-5/P5-04: flat procs live in encoding/mod.masm; account_id + DC-7 codec are Rust-only; no per-proc .masm]
   notes/                          # note scripts (later units)
 asm/account_components/faucets/   # the xUSDC faucet component (later unit)
 <rust workspace>                  # off-chain mirror + test harness crates (shape per approved plan)
@@ -33,3 +34,5 @@ docs/governing/  docs/spec/       # read-only mirrors (see rule 3)
 ```
 
 Build order: **04 shared encoding → 01 faucet → 02 relayer → 03 listener → local-node/devnet validation → 05 monitoring** (frontend deferred). Each unit: plan → audit → build → consortium → Codex audit → human approval.
+
+> [SUPERSEDED → faucet §11: the **faucet's own local-node validation is part of unit 01** (its own gate, BEFORE the off-chain relayer/listener) — do NOT defer the faucet's node-validation to the end. The trailing "local-node/devnet validation" step above is the **system E2E** (whole-flow), not the faucet's unit gate.]

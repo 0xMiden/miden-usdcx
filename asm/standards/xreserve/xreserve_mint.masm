@@ -4,7 +4,9 @@
 # guard (R-MINT-15) plus the atomic mint effects (nonce SET, P2ID recipient note carrying the
 # minted xUSDC, token_supply += amount). The only supply-increasing surface (CMP-A9, §5.1); a
 # CUSTOM proc that does NOT route through `execute_mint_policy` / the stock `mint_and_send`
-# (ASG-1 / C-7). The write-side kernel primitives it consumes (token_config value-slot R/W,
+# (ASG-1 / C-7). Because it bypasses `execute_mint_policy` — where the stock pause gate lives — `mint`
+# runs its own `assert_not_paused` FIRST so a DOM_PAUSER pause halts deposits (CIR-ADMIN-4)
+# [RECONCILED → DECISION-CMPF3-MINT-PAUSE-GAP]. The write-side kernel primitives it consumes (token_config value-slot R/W,
 # native_account::set_map_item, note::compute_and_store_recipient + output_note::*,
 # faucet::create_fungible_asset + faucet::mint) are grounded by canary/mint-effects-grounding
 # (executes+commits under MockChain) and mirror mint_and_send (fungible.masm:264-364) +
@@ -27,6 +29,7 @@ use miden::protocol::note
 use miden::protocol::output_note
 use miden::protocol::account_id
 use miden::protocol::asset::FUNGIBLE_ASSET_MAX_AMOUNT
+use miden::standards::access::pausable
 use xreserve::deposit_intent_parser
 use xreserve::deposit_intent_parser::USED_NONCES_SLOT
 use xreserve::attestation_verify
@@ -264,6 +267,9 @@ end
 #!   the marshalled `amount` reduction).
 #!
 #! Panics if:
+#! - the faucet is paused (pausable::assert_not_paused, ERR_PAUSABLE_IS_PAUSED) — the CMP-F3 halt gate
+#!   (CIR-ADMIN-4; DECISION-CMPF3-MINT-PAUSE-GAP): the custom mint bypasses the deny'd mint policy where
+#!   the stock assert_not_paused lives, so this pause check makes a DOM_PAUSER pause halt deposits.
 #! - any verify stage (R-MINT-1..14) or the recipient extraction rejects (fail-closed), or the supply
 #!   cap is exceeded (R-MINT-15) — no effects are applied on any reject.
 #!
@@ -271,6 +277,12 @@ end
 @locals(12)
 pub proc mint
     # => [intent_ptr, len_felts, scale_exp]
+    # halt gate (R-MINT pause, CMP-F3): a paused faucet must not mint. FIRST (before any verify), mirrors
+    # the sibling setters + the stock execute_mint_policy this custom mint bypasses; operand-stack-neutral
+    # (reads the FungibleFaucet-installed is_paused slot). See DECISION-CMPF3-MINT-PAUSE-GAP.
+    exec.pausable::assert_not_paused
+    # => [intent_ptr, len_felts, scale_exp]
+
     # stash intent_ptr (loc 0) + scale_exp (loc 1); both are reused across the chain + marshal, and
     # the operand stack is kept logically empty between stages (verify_attestation restores the
     # depth-16 floor, so nothing else may sit above it when it runs).

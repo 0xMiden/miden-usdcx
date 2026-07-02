@@ -1,0 +1,416 @@
+//! P5-01 CMP-F3 custom `pause`/`unpause` suite: the DOM_PAUSER-gated emergency halt (§5.12,
+//! CIR-ADMIN-3/4/5, per DECISION-ADMIN-ROLE-MODEL). The stock `PausableManager` gates pause on the
+//! account-wide `Authority` (= owner), so a distinct pause role needs a CUSTOM proc:
+//! `xreserve::pause_admin::{pause,unpause}` = `rbac::assert_sender_has_role(DOM_PAUSER)` +
+//! the unauthenticated `pausable::pause`/`unpause` primitives.
+//!
+//! The load-bearing proof is the PAUSE-HALT SEAM — a DOM_PAUSER pause must actually HALT the real
+//! faucet, not just flip `is_paused`: a real `xreserve_mint` AND a real `receive_and_burn` trap
+//! `ERR_PAUSABLE_IS_PAUSED` while paused, and both resume on unpause. Discovery found the burn already
+//! halts (execute_burn_policy runs assert_not_paused first) but the custom `xreserve_mint` bypasses the
+//! mint policy and did NOT honor `is_paused` — closed this slice by adding `assert_not_paused` to
+//! `xreserve_mint::mint` (the mint reconciliation; DECISION-CMPF3-MINT-PAUSE-GAP). `paused_mint_traps`
+//! isolates that fix (pauses via the STOCK owner pause, independent of the custom proc).
+//!
+//! RED-SUITE (executing-red): `pause_admin.masm` holds only inline-error placeholders
+//! ("xreserve pause not implemented") and the mint guard is NOT yet added. DOM_PAUSER-pause-driven
+//! tests fail at the placeholder; `paused_mint_traps` fails because the un-guarded mint succeeds while
+//! paused. `dom_pauser_cannot_call_owner_setters` is a green separation guard (the owner gate is CMP-F2).
+
+mod support;
+
+use anyhow::Result;
+use miden_protocol::account::{Account, AccountId, StorageSlotDelta, StorageSlotName};
+use miden_protocol::errors::MasmError;
+use miden_protocol::{Felt, Word};
+use miden_testing::assert_transaction_executor_error;
+use support::*;
+use xusdc_encoding::vectors::{DiFields, DiVector, load, parse_hex32};
+use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
+
+// The production builder seeds owner = id(1) (Ownable2Step), DOM_PAUSER = id(2), DOM_MANAGER = id(3).
+fn owner() -> AccountId {
+    test_account_id(1)
+}
+fn dom_pauser() -> AccountId {
+    test_account_id(2)
+}
+fn dom_manager() -> AccountId {
+    test_account_id(3)
+}
+fn plain_non_owner() -> AccountId {
+    test_account_id(99)
+}
+
+// Burn-faucet parameters (mirrors burn_policy.rs / set_min_burn.rs).
+const MAX_SUPPLY: u64 = 1_000_000;
+const TOKEN_SUPPLY: u64 = 100_000;
+const MIN_BURN_SIZE: u64 = 1_000;
+const VALID_BURN: u64 = 5_000;
+
+// The exact stock pause / role errors these tests pin (assert-specific-error-in-tests).
+fn err_paused() -> MasmError {
+    MasmError::from_static_str("the contract is paused")
+}
+fn err_sender_lacks_role() -> MasmError {
+    MasmError::from_static_str("note sender does not hold the required role")
+}
+
+// MINT-SEAM FIXTURES (reconstructed from the canonical accept payload — mirrors domain_config.rs)
+// ================================================================================================
+
+const BASE_VECTOR: &str = "di-pos-empty-hookdata";
+const LEN_FELTS: u64 = 60;
+const SCALE_EXP: u32 = 6;
+const HAPPY_AMOUNT_RAW: u64 = 2_000_000;
+const HAPPY_MAX_FEE_RAW: u64 = 1_000_000;
+/// amount 2_000_000 reduced by scale_exp=6 → 2 (the token_supply delta a successful mint commits).
+const REDUCED_AMOUNT: u32 = 2;
+const MARKER: [u32; 4] = [1, 0, 0, 0];
+
+fn di(id: &str) -> &'static DiVector {
+    load()
+        .families
+        .di
+        .iter()
+        .find(|v| v.id == id)
+        .unwrap_or_else(|| panic!("canonical artifact is missing di vector {id}"))
+}
+
+fn fields_of(id: &str) -> &'static DiFields {
+    di(id).fields.as_ref().expect("accept vector carries fields")
+}
+
+fn base_payload() -> Vec<u8> {
+    di(BASE_VECTOR).bytes()
+}
+
+/// Splices `amount`/`maxFee` (uint256 BE) into a payload's byte image (so the keccak'd attestation
+/// payload stays consistent with what the attester signs).
+fn with_amounts(mut payload: Vec<u8>, amount: u64, max_fee: u64) -> Vec<u8> {
+    payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
+    payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(max_fee));
+    payload
+}
+
+fn happy_payload() -> Vec<u8> {
+    with_amounts(base_payload(), HAPPY_AMOUNT_RAW, HAPPY_MAX_FEE_RAW)
+}
+
+fn pack(bytes: &[u8]) -> Vec<Felt> {
+    miden_protocol::utils::bytes_to_packed_u32_elements(bytes)
+}
+
+/// The configured identifier = the canonical key-Word of the vector's remoteToken (what D5a compares).
+fn identifier_of(id: &str) -> Word {
+    Word::from(bytes32_to_storage_map_key(&parse_hex32(&fields_of(id).remote_token_hex)))
+}
+
+fn nonce_key() -> Word {
+    Word::from(bytes32_to_storage_map_key(&fields_of(BASE_VECTOR).bytes32("nonce")))
+}
+
+/// A production faucet (owner=id(1), DOM_PAUSER=id(2)) pre-configured for a VALID mint: domain =
+/// TEST_DOMAIN, identifier = the canonical remoteToken key, the attester allowlisted, cap 1_000_000,
+/// supply 0. Returns the harness + the attester so a real `xreserve_mint` can be driven.
+fn guarded_mint_ready() -> Result<(GuardedMint, AttesterVector)> {
+    let payload = happy_payload();
+    let attester = gen_attester(1, &payload);
+    let identifier = identifier_of(BASE_VECTOR);
+    let domain = Word::from([Felt::from(TEST_DOMAIN), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
+    let driver = mint_composition_driver_src(&pack(&payload), LEN_FELTS, SCALE_EXP);
+    let probe = composition_noeffect_probe_src(0, nonce_key());
+    let gm = setup_guarded_mint_account(
+        GuardSelection::ProductionDeny,
+        1_000_000,
+        0,
+        domain,
+        identifier,
+        None,
+        Some((attester.commitment, Word::from(MARKER))),
+        &driver,
+        &probe,
+        true,
+    )?;
+    Ok((gm, attester))
+}
+
+/// Reads the committed `token_supply` (token_config word element 0) of a burn faucet.
+fn token_supply_of(account: &Account) -> Result<Felt> {
+    Ok(read_token_config(account)?[0])
+}
+
+// EXPORT PROBE (declared green scaffold — D-1A flat-path check for the new pause procs)
+// ================================================================================================
+
+#[test]
+fn probe_pause_admin_exports() -> Result<()> {
+    let lib = assemble_xreserve_lib()?;
+    let exports: Vec<String> = lib
+        .exports()
+        .filter(|e| e.as_procedure().is_some())
+        .map(|e| e.path().to_string())
+        .collect();
+    for canonical in ["::xreserve::pause_admin::pause", "::xreserve::pause_admin::unpause"] {
+        assert!(
+            exports.iter().any(|e| e == canonical),
+            "canonical pause proc path {canonical} missing; exports: {exports:?}"
+        );
+    }
+    Ok(())
+}
+
+// PAUSE-HALT SEAM — the non-vacuity must-have: a pause HALTS the real mint AND the real burn
+// ================================================================================================
+
+/// Isolates the MINT reconciliation: after the OWNER pauses via the STOCK `PausableManager` (no custom
+/// proc involved), a real `xreserve_mint` must trap the EXACT `ERR_PAUSABLE_IS_PAUSED`. RED: the
+/// un-guarded mint bypasses the pause flag and SUCCEEDS. GREEN once `assert_not_paused` is added to
+/// `xreserve_mint::mint`.
+#[tokio::test]
+async fn paused_mint_traps() -> Result<()> {
+    let (gm, attester) = guarded_mint_ready()?;
+    let account = faucet_account(&gm.harness);
+
+    let paused = run_pause_against(&gm.harness.mock_chain, &account, owner(), 5)
+        .await
+        .expect("the owner can pause via the stock PausableManager");
+    let mut evolved = account.clone();
+    evolved.apply_delta(paused.account_delta())?;
+
+    let result = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
+    assert_transaction_executor_error!(result, err_paused());
+    Ok(())
+}
+
+/// A DOM_PAUSER-triggered pause HALTS the real mint: DOM_PAUSER (id 2) pauses, then a real
+/// `xreserve_mint` traps the EXACT `ERR_PAUSABLE_IS_PAUSED`. RED: the pause placeholder traps first.
+#[tokio::test]
+async fn dom_pauser_pause_halts_mint() -> Result<()> {
+    let (gm, attester) = guarded_mint_ready()?;
+    let account = faucet_account(&gm.harness);
+
+    let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &account, dom_pauser(), 5)
+        .await
+        .expect("DOM_PAUSER pauses the mint faucet");
+    let mut evolved = account.clone();
+    evolved.apply_delta(paused.account_delta())?;
+
+    let result = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
+    assert_transaction_executor_error!(result, err_paused());
+    Ok(())
+}
+
+/// A DOM_PAUSER-triggered pause HALTS the real burn: DOM_PAUSER pauses, then a real `receive_and_burn`
+/// traps the EXACT `ERR_PAUSABLE_IS_PAUSED` (execute_burn_policy's stock pause gate). RED: the pause
+/// placeholder traps first.
+#[tokio::test]
+async fn dom_pauser_pause_halts_burn() -> Result<()> {
+    let bh = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        VALID_BURN,
+    )?;
+    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = bh;
+
+    // Block N: the user emits + commits the (valid-amount) burn note (faucet not yet paused).
+    let tx0 = try_emit_burn_note(&chain, &burn_note, &asset, faucet_id, user_id)
+        .await
+        .expect("the user emits the burn note (test-setup invariant)");
+    chain.add_pending_executed_transaction(&tx0)?;
+    chain.prove_next_block()?;
+
+    // DOM_PAUSER pauses the faucet; evolve the committed faucet with the (uncommitted) pause delta.
+    let account = chain.committed_account(faucet_id)?.clone();
+    let paused = run_dom_pauser_pause(&chain, &account, dom_pauser(), 5)
+        .await
+        .expect("DOM_PAUSER pauses the burn faucet");
+    let mut evolved = account.clone();
+    evolved.apply_delta(paused.account_delta())?;
+
+    // The faucet consumes the committed burn note against the paused account → execute_burn_policy's
+    // assert_not_paused traps the stock pause error (the valid amount isolates the pause gate).
+    let result = chain
+        .build_tx_context(evolved, &[burn_note.id()], &[])?
+        .build()?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, err_paused());
+    Ok(())
+}
+
+/// UNPAUSE RESUMES both surfaces: after a DOM_PAUSER pause→unpause, a real mint mints again (one
+/// recipient note, token_supply += reduced amount) AND a real burn decrements token_supply. RED: the
+/// pause/unpause placeholders trap.
+#[tokio::test]
+async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
+    // --- mint side ---
+    let (gm, attester) = guarded_mint_ready()?;
+    let account = faucet_account(&gm.harness);
+
+    let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &account, dom_pauser(), 5)
+        .await
+        .expect("DOM_PAUSER pauses the mint faucet");
+    let mut evolved = account.clone();
+    evolved.apply_delta(paused.account_delta())?;
+    let unpaused = run_dom_pauser_unpause(&gm.harness.mock_chain, &evolved, dom_pauser(), 6)
+        .await
+        .expect("DOM_PAUSER unpauses the mint faucet");
+    evolved.apply_delta(unpaused.account_delta())?;
+
+    let minted = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester))
+        .await
+        .expect("after unpause, the real xreserve_mint mints again");
+    assert_eq!(minted.output_notes().num_notes(), 1, "unpause resumes minting (one recipient note)");
+    let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
+    let StorageSlotDelta::Value(cfg) =
+        minted.account_delta().storage().get(&cfg_slot).expect("token_config slot delta")
+    else {
+        panic!("token_config must be a Value slot delta");
+    };
+    assert_eq!(cfg[0], Felt::from(REDUCED_AMOUNT), "token_supply rose by the reduced amount");
+
+    // --- burn side ---
+    let bh = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        VALID_BURN,
+    )?;
+    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = bh;
+    let tx0 = try_emit_burn_note(&chain, &burn_note, &asset, faucet_id, user_id)
+        .await
+        .expect("the user emits the burn note (test-setup invariant)");
+    chain.add_pending_executed_transaction(&tx0)?;
+    chain.prove_next_block()?;
+
+    let bacct = chain.committed_account(faucet_id)?.clone();
+    let bpaused = run_dom_pauser_pause(&chain, &bacct, dom_pauser(), 7)
+        .await
+        .expect("DOM_PAUSER pauses the burn faucet");
+    let mut bevolved = bacct.clone();
+    bevolved.apply_delta(bpaused.account_delta())?;
+    let bunpaused = run_dom_pauser_unpause(&chain, &bevolved, dom_pauser(), 8)
+        .await
+        .expect("DOM_PAUSER unpauses the burn faucet");
+    bevolved.apply_delta(bunpaused.account_delta())?;
+
+    // The faucet consumes the committed burn note against the UNPAUSED account → the burn succeeds.
+    let burned = chain
+        .build_tx_context(bevolved.clone(), &[burn_note.id()], &[])?
+        .build()?
+        .execute()
+        .await
+        .expect("after unpause, the real receive_and_burn decrements supply");
+    let mut bfinal = bevolved.clone();
+    bfinal.apply_delta(burned.account_delta())?;
+    assert_eq!(
+        token_supply_of(&bfinal)?,
+        Felt::from((TOKEN_SUPPLY - VALID_BURN) as u32),
+        "unpause resumes burning (token_supply decremented by the burn amount)"
+    );
+    Ok(())
+}
+
+// ROLE GATE + SEPARATION — the custom pause is DOM_PAUSER-specific, and a pauser is not the owner
+// ================================================================================================
+
+/// Shared: a non-DOM_PAUSER `sender` is rejected from the CUSTOM pause with the EXACT
+/// `ERR_SENDER_LACKS_ROLE`, and `is_paused` is unchanged (the gate traps before the pausable write).
+async fn assert_custom_pause_rejects(sender: AccountId) -> Result<()> {
+    let bh = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        VALID_BURN,
+    )?;
+    let account = bh.chain.committed_account(bh.faucet_id)?.clone();
+
+    let result = run_dom_pauser_pause(&bh.chain, &account, sender, 5).await;
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
+    assert_eq!(
+        read_is_paused(&account)?,
+        Word::from([0u32, 0, 0, 0]),
+        "a rejected custom pause leaves is_paused unchanged (unpaused)"
+    );
+    Ok(())
+}
+
+/// A plain non-holder (id 99) cannot pause via the custom proc.
+#[tokio::test]
+async fn non_dom_pauser_pause_rejects() -> Result<()> {
+    assert_custom_pause_rejects(plain_non_owner()).await
+}
+
+/// The OWNER (id 1) is NOT a DOM_PAUSER holder, so the custom pause rejects the owner too — the custom
+/// surface is role-gated, not owner-gated. (The owner retains the stock `PausableManager::pause` path
+/// under the DOM_PAUSER+owner baseline; this test asserts only that the CUSTOM proc is role-specific.)
+#[tokio::test]
+async fn owner_is_not_dom_pauser_on_custom_pause() -> Result<()> {
+    assert_custom_pause_rejects(owner()).await
+}
+
+/// A DIFFERENT role holder (DOM_MANAGER id 3) cannot pause — forecloses a caller-supplied/spoofable role
+/// symbol: only the hard-coded DOM_PAUSER symbol passes the gate.
+#[tokio::test]
+async fn other_role_holder_cannot_pause() -> Result<()> {
+    assert_custom_pause_rejects(dom_manager()).await
+}
+
+/// SEPARATION: the DOM_PAUSER holder (id 2) can pause but is NOT the owner — an owner-gated setter
+/// (`set_min_burn_size`) rejects it with the EXACT `ERR_SENDER_NOT_OWNER` (reuses the CMP-F2 owner gate,
+/// so this is a GREEN separation regression guard).
+#[tokio::test]
+async fn dom_pauser_cannot_call_owner_setters() -> Result<()> {
+    let bh = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        VALID_BURN,
+    )?;
+    let account = bh.chain.committed_account(bh.faucet_id)?.clone();
+
+    let result = run_set_min_burn_size_against(&bh.chain, &account, dom_pauser(), 5_000, 7).await;
+    assert_transaction_executor_error!(result, err_sender_not_owner());
+    Ok(())
+}
+
+// OBSERVABILITY — is_paused reads back via GetAccount (CIR-ADMIN-4)
+// ================================================================================================
+
+/// `is_paused` is a network-observable value slot: it reads back unpaused pre-pause and paused after a
+/// DOM_PAUSER pause. RED: the pause placeholder traps, so the flag never flips.
+#[tokio::test]
+async fn is_paused_publicly_readable() -> Result<()> {
+    let bh = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        VALID_BURN,
+    )?;
+    let account = bh.chain.committed_account(bh.faucet_id)?.clone();
+
+    assert_eq!(
+        read_is_paused(&account)?,
+        Word::from([0u32, 0, 0, 0]),
+        "is_paused reads back unpaused pre-pause (GetAccount observability)"
+    );
+
+    let paused = run_dom_pauser_pause(&bh.chain, &account, dom_pauser(), 9)
+        .await
+        .expect("DOM_PAUSER pauses the faucet");
+    let mut evolved = account.clone();
+    evolved.apply_delta(paused.account_delta())?;
+    assert_eq!(
+        read_is_paused(&evolved)?,
+        Word::from([1u32, 0, 0, 0]),
+        "after a DOM_PAUSER pause, is_paused reads back paused"
+    );
+    Ok(())
+}

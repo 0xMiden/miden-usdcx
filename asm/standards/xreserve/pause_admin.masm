@@ -1,0 +1,48 @@
+# xreserve::pause_admin
+#
+# FAUCET(01)-owned emergency pause admin (P5-01 CMP-F3, §5.12 / CIR-ADMIN-3/4/5, per
+# DECISION-ADMIN-ROLE-MODEL): the DOM_PAUSER-gated custom `pause`/`unpause`. The stock `PausableManager`
+# gates pause on the account-wide `Authority` (= owner), so it cannot give pause a distinct role; the
+# green procs compose `rbac::assert_sender_has_role(DOM_PAUSER)` with the UNAUTHENTICATED
+# `pausable::pause`/`unpause` primitives (mod.masm:57 "compose with access control in a wrapper").
+#
+# RED-SUITE PLACEHOLDER: both procs trap an INLINE "not implemented" error (no named const, so the
+# constant_parity closed inventory is untouched) — every DOM_PAUSER-pause-driven test fails
+# behaviorally (runtime not-implemented), not with an assembly error. The green commit replaces these
+# bodies with the real gate + primitive and adds the `DOM_PAUSER_ROLE` role-symbol constant. Module home
+# + flat path per D-1A (CANONICAL-OWNERSHIP-MAP.md).
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! RED placeholder for the DOM_PAUSER-gated pause. Traps unconditionally (pause is not yet implemented).
+#!
+#! Inputs:  [pad(16)]
+#! Outputs: [pad(16)]
+#!
+#! Panics if:
+#! - always (red-suite placeholder).
+#!
+#! Invocation: call
+pub proc pause
+    # push a distinctive marker CONSUMED by assertz (so it can't be dead-code-eliminated), keeping the
+    # placeholder MAST unique — a bare `push.0 assert` would MAST-dedup with mint_deny_guard::check_policy
+    # (error messages are decorators, not part of the MAST root, v0.23.3), so the pause call would trap
+    # the deny guard's error instead of this one. The green body (rbac + pausable) is naturally unique.
+    push.808080 assertz.err="xreserve pause not implemented"
+end
+
+#! RED placeholder for the DOM_PAUSER-gated unpause. Traps unconditionally (not yet implemented).
+#!
+#! Inputs:  [pad(16)]
+#! Outputs: [pad(16)]
+#!
+#! Panics if:
+#! - always (red-suite placeholder).
+#!
+#! Invocation: call
+pub proc unpause
+    # same unique-MAST placeholder as `pause` (see the note there). pause/unpause dedup with each other
+    # (both are the not-implemented stub) — harmless; the green bodies diverge (write [1..] vs [0..]).
+    push.808080 assertz.err="xreserve pause not implemented"
+end

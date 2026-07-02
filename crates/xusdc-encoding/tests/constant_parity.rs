@@ -21,6 +21,8 @@ use xusdc_encoding::xreserve::encoding::{
     deposit_intent_field_offset,
 };
 use xusdc_encoding::{ENCODING_MOD_MASM, LAYOUT_MASM};
+use miden_protocol::account::RoleSymbol;
+use xusdc_encoding::account::xreserve::DOM_PAUSER_ROLE;
 
 /// The FAUCET(01) shell module source, read test-side by reference.
 const SHELL_MASM: &str =
@@ -53,6 +55,10 @@ const BURN_POLICY_MASM: &str =
 
 const MIN_BURN_ADMIN_MASM: &str =
     include_str!("../../../asm/standards/xreserve/min_burn_admin.masm");
+
+/// The FAUCET(01) CMP-F3 DOM_PAUSER custom pause/unpause module source, read test-side by reference.
+const PAUSE_ADMIN_MASM: &str =
+    include_str!("../../../asm/standards/xreserve/pause_admin.masm");
 
 /// Faucet-owned shell error constants declared in MASM, pinned against the test-side
 /// `support::SHELL_ERR_TABLE` (the single Rust source).
@@ -129,6 +135,10 @@ const ATTESTATION_COVERED_NUMS: &[&str] = &[];
 /// P2ID_NUM_STORAGE_ITEMS is the local note-storage item count for the P2ID recipient build (2,
 /// matching notes/p2id.masm's storage format); no Rust counterpart, covered here (CS-5).
 const XRESERVE_MINT_COVERED_NUMS: &[&str] = &["P2ID_NUM_STORAGE_ITEMS"];
+
+/// CMP-F3 pause-admin numeric const: DOM_PAUSER_ROLE (the encoded RoleSymbol felt), parity-asserted
+/// against `RoleSymbol::new(DOM_PAUSER_ROLE).as_element()` in `masm_rust_constant_parity` below.
+const PAUSE_ADMIN_COVERED_NUMS: &[&str] = &["DOM_PAUSER_ROLE"];
 
 /// Numeric-constant coverage sets (bidirectional sweep): every numeric const parsed
 /// from a MASM source must appear in its file's set — extending a MASM file with a new
@@ -267,6 +277,20 @@ fn masm_rust_constant_parity() {
         PUBKEY_FELTS as u64,
         "compressed-pubkey felt count parity (33 bytes -> 9 u32-LE felts; ATT commitment input)"
     );
+
+    // CMP-F3: the DOM_PAUSER role-symbol MASM const must equal the Rust encoding
+    // RoleSymbol::new(DOM_PAUSER_ROLE).as_element() (base-27 over A-Z/_). A one-sided edit fails here.
+    // Felt::as_int() does NOT exist at the pin; as_canonical_u64 is the inherent u64 accessor at
+    // miden-field 0.25.1 (the repo migrated as_int()->as_canonical_u64; used in account_id.rs).
+    let (pause_nums, _, _) = parse_masm_consts(PAUSE_ADMIN_MASM);
+    assert_eq!(
+        num(&pause_nums, "DOM_PAUSER_ROLE", "pause_admin.masm"),
+        RoleSymbol::new(DOM_PAUSER_ROLE)
+            .expect("DOM_PAUSER is a valid RoleSymbol")
+            .as_element()
+            .as_canonical_u64(),
+        "DOM_PAUSER role-symbol felt parity (MASM const == RoleSymbol::new(DOM_PAUSER_ROLE).as_element())"
+    );
 }
 
 /// Error-string parity, Rust → MASM: every Rust `ERR_*` MasmError has an
@@ -326,7 +350,7 @@ fn masm_constants_bidirectional() {
         ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
     };
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 10] = [
+    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 11] = [
         ("layout.masm", LAYOUT_MASM, LAYOUT_COVERED_NUMS, &[]),
         ("encoding/mod.masm", ENCODING_MOD_MASM, ENCODING_COVERED_NUMS, &[]),
         ("deposit_intent_parser.masm", SHELL_MASM, SHELL_COVERED_NUMS, EXPECTED_SHELL_WORD_CONSTS),
@@ -375,6 +399,10 @@ fn masm_constants_bidirectional() {
             &[],
             EXPECTED_MIN_BURN_ADMIN_WORD_CONSTS,
         ),
+        // CMP-F3 pause_admin: declares the numeric DOM_PAUSER_ROLE role-symbol const (parity-asserted in
+        // masm_rust_constant_parity); no word("…") consts, and no new string errors (the role gate reuses
+        // the stock ERR_SENDER_LACKS_ROLE, the primitive reuses ERR_PAUSABLE_IS_PAUSED).
+        ("pause_admin.masm", PAUSE_ADMIN_MASM, PAUSE_ADMIN_COVERED_NUMS, &[]),
     ];
     for (file, src, covered_nums, expected_words) in sources {
         let (nums, strs, words) = parse_masm_consts(src);

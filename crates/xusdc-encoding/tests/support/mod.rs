@@ -2445,6 +2445,113 @@ pub async fn run_pause_against(
         .await
 }
 
+// CMP-F3 DOM_PAUSER CUSTOM PAUSE — notes + runners for the xreserve::pause_admin procs
+// ================================================================================================
+
+/// Builds a note SENT BY `sender` whose script `call`s the CUSTOM `xreserve::pause_admin::{proc}`
+/// (DOM_PAUSER-gated, CMP-F3). Unlike [`pause_note`] (which calls the stock owner-gated
+/// `PausableManager::pause`, a pre-linked StandardsLib proc), this links the `xreserve` library so the
+/// `xreserve::pause_admin::*` path resolves. `pause`/`unpause` take `[pad(16)]` and return `[pad(16)]`,
+/// so the note pushes 16 pad felts, `call`s, and clears the returned frame — the [`pause_note`] shape.
+fn dom_pauser_pause_admin_note(
+    sender: AccountId,
+    seed: u64,
+    proc: &str,
+    tail0: u32,
+    tail1: u32,
+) -> Result<Note> {
+    let lib = assemble_xreserve_lib()?;
+    let src = format!(
+        "use xreserve::pause_admin\n\
+         @note_script\n\
+         pub proc main\n\
+         \x20\x20\x20\x20repeat.16 push.0 end\n\
+         \x20\x20\x20\x20call.pause_admin::{proc}\n\
+         \x20\x20\x20\x20dropw dropw dropw dropw\n\
+         end\n",
+    );
+    let script = CodeBuilder::new()
+        .with_dynamically_linked_library(&lib)
+        .context("linking xreserve into the dom_pauser pause_admin note script")?
+        .compile_note_script(src.clone())
+        .map_err(|e| anyhow::anyhow!("dom_pauser {proc} note script failed to compile: {e}\n{src}"))?;
+    // Deterministic note rng (serial only; never affects the gate). Distinct tails ([21,22] pause /
+    // [23,24] unpause) keep serials disjoint from set_attester [1,2] / pause [3,4] / set_max_supply
+    // [5,6] / set_min_burn [7,8] / domain_init [9,10].
+    let mut rng = RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(tail0),
+        Felt::from(tail1),
+    ]));
+    Ok(NoteBuilder::new(sender, &mut rng)
+        .note_type(NoteType::Private)
+        .script(script)
+        .build()?)
+}
+
+/// A DOM_PAUSER `pause_admin::pause` note sent by `sender`.
+pub fn dom_pauser_pause_note(sender: AccountId, seed: u64) -> Result<Note> {
+    dom_pauser_pause_admin_note(sender, seed, "pause", 21, 22)
+}
+
+/// A DOM_PAUSER `pause_admin::unpause` note sent by `sender`.
+pub fn dom_pauser_unpause_note(sender: AccountId, seed: u64) -> Result<Note> {
+    dom_pauser_pause_admin_note(sender, seed, "unpause", 23, 24)
+}
+
+/// Executes a DOM_PAUSER `pause_admin::pause` note (sent by `sender`) against the faucet `account` on a
+/// bare `&MockChain`. Mirrors [`run_pause_against`] (stock owner pause) but drives the CUSTOM CMP-F3
+/// proc; the caller applies the returned delta (the unauthenticated note is not block-proven).
+pub async fn run_dom_pauser_pause(
+    chain: &MockChain,
+    account: &Account,
+    sender: AccountId,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = dom_pauser_pause_note(sender, seed)
+        .expect("building the dom_pauser pause note (test-setup invariant)");
+    chain
+        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
+        .expect("building the dom_pauser pause tx context")
+        .build()
+        .expect("building the dom_pauser pause transaction")
+        .execute()
+        .await
+}
+
+/// The `unpause` twin of [`run_dom_pauser_pause`].
+pub async fn run_dom_pauser_unpause(
+    chain: &MockChain,
+    account: &Account,
+    sender: AccountId,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = dom_pauser_unpause_note(sender, seed)
+        .expect("building the dom_pauser unpause note (test-setup invariant)");
+    chain
+        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
+        .expect("building the dom_pauser unpause tx context")
+        .build()
+        .expect("building the dom_pauser unpause transaction")
+        .execute()
+        .await
+}
+
+/// Reads the FungibleFaucet-installed `is_paused` value slot (`[0,0,0,0]` unpaused, `[1,0,0,0]` paused)
+/// from a committed/evolved account — the CIR-ADMIN-4 `GetAccount` observability read. Mirrors
+/// [`read_min_burn_size`] / [`read_token_config`]; the slot is installed by FungibleFaucet, so it is
+/// present on every production faucet (never a missing-slot artifact).
+pub fn read_is_paused(account: &Account) -> Result<Word> {
+    account
+        .storage()
+        .get_item(
+            &StorageSlotName::new("miden::standards::access::pausable::is_paused")
+                .context("is_paused slot label")?,
+        )
+        .map_err(|e| anyhow::anyhow!("reading the is_paused value slot: {e}"))
+}
+
 // CMP-A10 R-BURN-1 DIRECT-POLICY DRIVER — exec check_policy with a crafted [ASSET_KEY, ASSET_VALUE]
 // ================================================================================================
 

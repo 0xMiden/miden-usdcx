@@ -8,14 +8,17 @@
 //! faucet, not just flip `is_paused`: a real `xreserve_mint` AND a real `receive_and_burn` trap
 //! `ERR_PAUSABLE_IS_PAUSED` while paused, and both resume on unpause. Discovery found the burn already
 //! halts (execute_burn_policy runs assert_not_paused first) but the custom `xreserve_mint` bypasses the
-//! mint policy and did NOT honor `is_paused` — closed this slice by adding `assert_not_paused` to
-//! `xreserve_mint::mint` (the mint reconciliation; DECISION-CMPF3-MINT-PAUSE-GAP). `paused_mint_traps`
-//! isolates that fix (pauses via the STOCK owner pause, independent of the custom proc).
+//! mint policy and did NOT honor `is_paused` — closed by adding `assert_not_paused` to
+//! `xreserve_mint::mint` (the mint reconciliation; DECISION-CMPF3-MINT-PAUSE-GAP).
 //!
-//! RED-SUITE (executing-red): `pause_admin.masm` holds only inline-error placeholders
-//! ("xreserve pause not implemented") and the mint guard is NOT yet added. DOM_PAUSER-pause-driven
-//! tests fail at the placeholder; `paused_mint_traps` fails because the un-guarded mint succeeds while
-//! paused. `dom_pauser_cannot_call_owner_setters` is a green separation guard (the owner gate is CMP-F2).
+//! OPTION-1 REVISION (IMPL-DEV-1 remediation): Circle's model is Domain-Pauser-ONLY
+//! (CIRCLE-SPECIFICATION.md:121 — the owner has NO direct pause path), so the stock `PausableManager`
+//! is REMOVED from the composition and the DOM_PAUSER custom procs are the ONLY pause surface.
+//! RED-SUITE (executing-red): `owner_has_no_pause_path` / `owner_has_no_unpause_path` assert an
+//! owner-sent STOCK `PausableManager::pause`/`unpause` note now fails with the exact
+//! `UnknownAccountProcedure` (the roots are gone from the account code) — RED while the Option-2
+//! baseline still installs the manager. `dom_pauser_pause_halts_mint`/`_burn` double as the
+//! `is_paused`-slot-survival guards (the slot is FungibleFaucet-installed, NOT manager-installed).
 
 mod support;
 
@@ -163,23 +166,57 @@ fn probe_pause_admin_exports() -> Result<()> {
 // PAUSE-HALT SEAM — the non-vacuity must-have: a pause HALTS the real mint AND the real burn
 // ================================================================================================
 
-/// Isolates the MINT reconciliation: after the OWNER pauses via the STOCK `PausableManager` (no custom
-/// proc involved), a real `xreserve_mint` must trap the EXACT `ERR_PAUSABLE_IS_PAUSED`. RED: the
-/// un-guarded mint bypasses the pause flag and SUCCEEDS. GREEN once `assert_not_paused` is added to
-/// `xreserve_mint::mint`.
+/// OPTION 1 (IMPL-DEV-1 remediation): the owner's STOCK pause path is GONE. An owner-sent stock
+/// `PausableManager::pause` note still ASSEMBLES (StandardsLib is pre-linked) but the production
+/// account no longer exposes the proc root, so execution fails with the EXACT
+/// `UnknownAccountProcedure` host-event error ("… is not in the account procedure index map" — NOT
+/// a MASM assert) and `is_paused` stays untouched. Replaces `paused_mint_traps` (the owner-stock-
+/// pause → mint-trap scenario ceases to exist; its mint-halt purpose lives in
+/// `dom_pauser_pause_halts_mint`). RED at the Option-2 baseline: the owner stock pause SUCCEEDS.
 #[tokio::test]
-async fn paused_mint_traps() -> Result<()> {
-    let (gm, attester) = guarded_mint_ready()?;
+async fn owner_has_no_pause_path() -> Result<()> {
+    let (gm, _attester) = guarded_mint_ready()?;
     let account = faucet_account(&gm.harness);
 
-    let paused = run_pause_against(&gm.harness.mock_chain, &account, owner(), 5)
+    let result = run_pause_against(&gm.harness.mock_chain, &account, owner(), 5).await;
+    let err = result.expect_err("the stock owner pause path must be gone (Option 1)");
+    assert_unknown_account_procedure(&err);
+    assert_eq!(
+        read_is_paused(&account)?,
+        Word::from([0u32, 0, 0, 0]),
+        "a failed stock pause leaves is_paused unpaused"
+    );
+    Ok(())
+}
+
+/// The unpause twin: DOM_PAUSER pauses first (the flag REALLY flips), then an owner-sent stock
+/// `PausableManager::unpause` note fails with the EXACT `UnknownAccountProcedure` and the faucet
+/// STAYS paused — a surviving stock unpause would visibly clear the flag. RED at the Option-2
+/// baseline: the owner stock unpause SUCCEEDS (gated only on the owner Authority).
+#[tokio::test]
+async fn owner_has_no_unpause_path() -> Result<()> {
+    let (gm, _attester) = guarded_mint_ready()?;
+    let account = faucet_account(&gm.harness);
+
+    let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &account, dom_pauser(), 5)
         .await
-        .expect("the owner can pause via the stock PausableManager");
+        .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
+    assert_eq!(
+        read_is_paused(&evolved)?,
+        Word::from([1u32, 0, 0, 0]),
+        "precondition: the DOM_PAUSER pause really flipped is_paused"
+    );
 
-    let result = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
-    assert_transaction_executor_error!(result, err_paused());
+    let result = run_stock_unpause_against(&gm.harness.mock_chain, &evolved, owner(), 6).await;
+    let err = result.expect_err("the stock owner unpause path must be gone (Option 1)");
+    assert_unknown_account_procedure(&err);
+    assert_eq!(
+        read_is_paused(&evolved)?,
+        Word::from([1u32, 0, 0, 0]),
+        "a failed stock unpause leaves the faucet paused"
+    );
     Ok(())
 }
 
@@ -347,8 +384,11 @@ async fn non_dom_pauser_pause_rejects() -> Result<()> {
 }
 
 /// The OWNER (id 1) is NOT a DOM_PAUSER holder, so the custom pause rejects the owner too — the custom
-/// surface is role-gated, not owner-gated. (The owner retains the stock `PausableManager::pause` path
-/// under the DOM_PAUSER+owner baseline; this test asserts only that the CUSTOM proc is role-specific.)
+/// surface is role-gated, not owner-gated. Under Option 1 (the stock `PausableManager` removed —
+/// `owner_has_no_pause_path`) this completes "the owner has no DIRECT pause path": neither the stock
+/// nor the custom surface accepts the owner. (The owner keeps Circle-conformant ROLE-ADMINISTRATION
+/// power — it could `grant_role` itself DOM_PAUSER, matching CIR-ADMIN-3's `onlyOwner` rotation —
+/// a rotation concern for the deferred DOM_MANAGER slice, not a pause surface.)
 #[tokio::test]
 async fn owner_is_not_dom_pauser_on_custom_pause() -> Result<()> {
     assert_custom_pause_rejects(owner()).await

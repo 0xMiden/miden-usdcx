@@ -44,9 +44,15 @@ const VALID_BURN: u64 = 5_000;
 const BELOW_MIN: u64 = 500;
 
 /// The Ownable2Step OWNER the burn oracle installs (id(1)). Under the reconciled Circle-faithful admin
-/// model (DECISION-ADMIN-ROLE-MODEL) pause and the setters gate on the owner (`Authority::OwnerControlled`).
+/// model (DECISION-ADMIN-ROLE-MODEL) the setters gate on the owner (`Authority::OwnerControlled`).
 fn owner() -> AccountId {
     test_account_id(1)
+}
+
+/// The seeded DOM_PAUSER holder (id(2)) — the ONLY pause authority under Option 1 (CMP-F3,
+/// Domain-Pauser-only; the custom `xreserve::pause_admin` procs).
+fn dom_pauser() -> AccountId {
+    test_account_id(2)
 }
 
 /// A deterministic standalone note rng (only the serial number depends on it; never the schema/tag).
@@ -322,9 +328,10 @@ async fn burn_zero_rejected_through_composition() -> Result<()> {
     Ok(())
 }
 
-/// N3 (R-BURN-3): a paused faucet halts the consume. After the OWNER pauses the faucet, consuming a
-/// committed (valid-amount) real `XReserveBurnNote` traps the stock `ERR_PAUSABLE_IS_PAUSED` ("the
-/// contract is paused") — `execute_burn_policy` runs `assert_not_paused` BEFORE the custom policy
+/// N3 (R-BURN-3): a paused faucet halts the consume. After the DOM_PAUSER pauses the faucet (custom
+/// `xreserve::pause_admin::pause` — the ONLY pause surface under Option 1), consuming a committed
+/// (valid-amount) real `XReserveBurnNote` traps the stock `ERR_PAUSABLE_IS_PAUSED` ("the contract is
+/// paused") — `execute_burn_policy` runs `assert_not_paused` BEFORE the custom policy
 /// (DECISION-RBURN3). Mirrors `burn_policy::burn_paused_rejects` but through the real note.
 #[tokio::test]
 async fn burn_paused_rejected_through_composition() -> Result<()> {
@@ -347,12 +354,12 @@ async fn burn_paused_rejected_through_composition() -> Result<()> {
     chain.add_pending_executed_transaction(&tx0)?;
     chain.prove_next_block()?;
 
-    // The OWNER pauses the faucet; evolve the committed faucet with the (unauthenticated) pause delta —
-    // mirrors burn_policy::burn_paused_rejects.
+    // The DOM_PAUSER pauses the faucet; evolve the committed faucet with the (unauthenticated) pause
+    // delta — mirrors burn_policy::burn_paused_rejects.
     let account = chain.committed_account(faucet_id)?.clone();
-    let paused = run_pause_against(&chain, &account, owner(), 5)
+    let paused = run_dom_pauser_pause(&chain, &account, dom_pauser(), 5)
         .await
-        .expect("the owner can pause the faucet");
+        .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
 

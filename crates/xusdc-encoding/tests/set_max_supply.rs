@@ -163,19 +163,19 @@ async fn set_max_supply_below_supply_rejects() -> Result<()> {
 // PAUSE GATE — set_max_supply traps the EXACT pause error when paused
 // ================================================================================================
 
-/// After the OWNER pauses the faucet (stock `PausableManager::pause`, gated on the same owner Authority),
-/// an owner-sent `set_max_supply` passes mutability + auth but traps the EXACT ERR_PAUSABLE_IS_PAUSED —
-/// proving the pause guard is real (the `is_paused` slot is installed by the faucet, so this is never a
-/// missing-slot artifact).
+/// After the DOM_PAUSER pauses the faucet (custom `xreserve::pause_admin::pause` — the ONLY pause
+/// surface under Option 1), an owner-sent `set_max_supply` passes mutability + auth but traps the EXACT
+/// ERR_PAUSABLE_IS_PAUSED — proving the pause guard is real (the `is_paused` slot is installed by the
+/// faucet, so this is never a missing-slot artifact).
 #[tokio::test]
 async fn set_max_supply_paused_rejects() -> Result<()> {
     let gm = guarded_faucet(0, true)?;
     let account = faucet_account(&gm.harness);
 
-    // tx1: the owner pauses the faucet (is_paused := true).
-    let paused = run_pause_tx(&gm.harness, &account, owner(), 5)
+    // tx1: the DOM_PAUSER pauses the faucet (is_paused := true).
+    let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &account, dom_pauser(), 5)
         .await
-        .expect("the owner can pause the faucet");
+        .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
 

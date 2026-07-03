@@ -163,19 +163,20 @@ async fn set_attester_dom_manager_non_owner_rejects() -> Result<()> {
 // PAUSE GATE — set_attester traps the EXACT pause error when the faucet is paused
 // ================================================================================================
 
-/// After the OWNER pauses the faucet (stock `PausableManager::pause`), an owner-sent `set_attester` note
-/// passes the owner gate but traps the EXACT ERR_PAUSABLE_IS_PAUSED — proving the pause guard is real
-/// (the `is_paused` slot is installed by FungibleFaucet, so this is never a missing-slot trap). The
-/// pause test sends from the OWNER so it clears `assert_authorized` first and isolates the pause gate.
+/// After the DOM_PAUSER pauses the faucet (custom `xreserve::pause_admin::pause` — the ONLY pause
+/// surface under Option 1), an owner-sent `set_attester` note passes the owner gate but traps the EXACT
+/// ERR_PAUSABLE_IS_PAUSED — proving the pause guard is real (the `is_paused` slot is installed by
+/// FungibleFaucet, so this is never a missing-slot trap). The setter is sent from the OWNER so it
+/// clears `assert_authorized` first and isolates the pause gate.
 #[tokio::test]
 async fn set_attester_paused_rejects() -> Result<()> {
     let gm = guarded_faucet()?;
     let account = faucet_account(&gm.harness);
 
-    // tx1: the owner pauses the faucet (is_paused := true).
-    let paused = run_pause_tx(&gm.harness, &account, owner(), 5)
+    // tx1: the DOM_PAUSER pauses the faucet (is_paused := true).
+    let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &account, dom_pauser(), 5)
         .await
-        .expect("the owner can pause the faucet");
+        .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
 

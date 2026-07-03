@@ -34,10 +34,11 @@ const VALID_BURN: u64 = 5_000;
 /// A below-minimum burn: `0 < BELOW_MIN < MIN_BURN_SIZE` (note-reachable, no zero-amount dependency).
 const BELOW_MIN: u64 = 500;
 
-/// The Ownable2Step OWNER the burn oracle installs (id(1)); under the reconciled owner-gated model
-/// (DECISION-ADMIN-ROLE-MODEL) pause gates on the owner (`Authority::OwnerControlled`).
-fn owner() -> AccountId {
-    test_account_id(1)
+/// The seeded DOM_PAUSER holder (id(2)) — the ONLY pause authority under Option 1 (CMP-F3,
+/// Domain-Pauser-only; the custom `xreserve::pause_admin` procs). The Ownable2Step owner (id(1))
+/// has no direct pause path and no other role in this suite.
+fn dom_pauser() -> AccountId {
+    test_account_id(2)
 }
 
 // POSITIVE + ALLOW-ALL ORACLE (GREEN)
@@ -204,15 +205,16 @@ async fn burn_zero_amount_rejects_direct() -> Result<()> {
     Ok(())
 }
 
-// STOCK PAUSE GATE (GREEN) — R-BURN-3 traps the stock error BEFORE the custom policy runs
+// PAUSE GATE (GREEN) — R-BURN-3 traps the stock error BEFORE the custom policy runs
 // ================================================================================================
 
-/// R-BURN-3: a paused faucet halts the burn. After the OWNER pauses the REAL-policy
-/// faucet (stock `PausableManager::pause`), the burn consume traps the EXACT stock ERR_PAUSABLE_IS_PAUSED
-/// (`"the contract is paused"`) — enforced by `execute_burn_policy`'s `assert_not_paused` BEFORE the
-/// custom policy is dispatched (DECISION-RBURN3). GREEN regardless of the policy body (the stock gate
-/// fires first); the real `PausableManager`-bearing account (not a bare faucet) makes this a real gate,
-/// never a missing-slot artifact. Mirrors `set_attester_paused_rejects`.
+/// R-BURN-3: a paused faucet halts the burn. After the DOM_PAUSER pauses the REAL-policy faucet
+/// (custom `xreserve::pause_admin::pause` — the ONLY pause surface under Option 1), the burn consume
+/// traps the EXACT stock ERR_PAUSABLE_IS_PAUSED (`"the contract is paused"`) — enforced by
+/// `execute_burn_policy`'s `assert_not_paused` BEFORE the custom policy is dispatched
+/// (DECISION-RBURN3). GREEN regardless of the policy body (the stock gate fires first); the
+/// FungibleFaucet-installed `is_paused` slot makes this a real gate, never a missing-slot artifact.
+/// Mirrors `set_attester_paused_rejects`.
 #[tokio::test]
 async fn burn_paused_rejects() -> Result<()> {
     let h = setup_burn_policy_account(
@@ -231,12 +233,12 @@ async fn burn_paused_rejects() -> Result<()> {
     chain.add_pending_executed_transaction(&tx0)?;
     chain.prove_next_block()?;
 
-    // The OWNER pauses the faucet; evolve the committed faucet with the pause delta (NOT committed — the
-    // unauthenticated pause note can't be block-proven; mirrors set_attester_paused_rejects).
+    // The DOM_PAUSER pauses the faucet; evolve the committed faucet with the pause delta (NOT committed —
+    // the unauthenticated pause note can't be block-proven; mirrors set_attester_paused_rejects).
     let account = chain.committed_account(faucet_id)?.clone();
-    let paused = run_pause_against(&chain, &account, owner(), 5)
+    let paused = run_dom_pauser_pause(&chain, &account, dom_pauser(), 5)
         .await
-        .expect("the owner can pause the faucet");
+        .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
 

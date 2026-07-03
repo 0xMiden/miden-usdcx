@@ -2445,6 +2445,73 @@ pub async fn run_pause_against(
         .await
 }
 
+/// Builds a note SENT BY `sender` whose script calls the stock `PausableManager::unpause` — the
+/// unpause twin of [`pause_note`]. Serial tail [25, 26] keeps note serials disjoint from the other
+/// admin-note families.
+pub fn stock_unpause_note(sender: AccountId, seed: u64) -> Result<Note> {
+    let src = "use miden::standards::access::pausable::manager\n\
+               @note_script\n\
+               pub proc main\n\
+               \x20\x20\x20\x20repeat.16 push.0 end\n\
+               \x20\x20\x20\x20call.manager::unpause\n\
+               \x20\x20\x20\x20dropw dropw dropw dropw\n\
+               end\n";
+    let script = CodeBuilder::new()
+        .compile_note_script(src)
+        .map_err(|e| anyhow::anyhow!("stock unpause note script failed to compile: {e}"))?;
+    let mut rng = RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(25u32),
+        Felt::from(26u32),
+    ]));
+    Ok(NoteBuilder::new(sender, &mut rng)
+        .note_type(NoteType::Private)
+        .script(script)
+        .build()?)
+}
+
+/// Executes a stock `PausableManager::unpause` note (sent by `sender`) against the faucet `account`
+/// on a bare `&MockChain` — the unpause twin of [`run_pause_against`].
+pub async fn run_stock_unpause_against(
+    chain: &MockChain,
+    account: &Account,
+    sender: AccountId,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = stock_unpause_note(sender, seed)
+        .expect("building the stock unpause note (test-setup invariant)");
+    chain
+        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
+        .expect("building the stock unpause tx context")
+        .build()
+        .expect("building the stock unpause transaction")
+        .execute()
+        .await
+}
+
+/// Asserts an executor error carries the EXACT `UnknownAccountProcedure` failure — the pinned
+/// surface when a note `call`s a procedure whose MAST root is NOT in the account code: the kernel's
+/// `authenticate_and_track_procedure` first emits `ACCOUNT_PUSH_PROCEDURE_INDEX_EVENT`, whose host
+/// handler fails with `TransactionKernelError::UnknownAccountProcedure` ("account procedure with
+/// procedure root .. is not in the account procedure index map"), surfacing as
+/// `ExecutionError::EventError` — a HOST event error, NOT a MASM assert (so `MasmError` matching
+/// can never see it). Walks the full error chain and asserts the exact static message
+/// (assert-specific-error-in-tests; no bare `is_err()`).
+pub fn assert_unknown_account_procedure(err: &TransactionExecutorError) {
+    let mut messages = vec![err.to_string()];
+    let mut source: Option<&dyn std::error::Error> = std::error::Error::source(err);
+    while let Some(inner) = source {
+        messages.push(inner.to_string());
+        source = inner.source();
+    }
+    assert!(
+        messages.iter().any(|m| m.contains("is not in the account procedure index map")),
+        "expected the exact UnknownAccountProcedure failure (the called proc root is not part of \
+         the account code); actual error chain: {messages:?}"
+    );
+}
+
 // CMP-F3 DOM_PAUSER CUSTOM PAUSE — notes + runners for the xreserve::pause_admin procs
 // ================================================================================================
 

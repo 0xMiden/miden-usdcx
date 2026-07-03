@@ -14,6 +14,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::asset::{AssetAmount, TokenSymbol};
 use miden_protocol::{Felt, Word};
+use miden_standards::account::access::{PausableManager, PausableStorage};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::policies::{BurnPolicyConfig, MintPolicyConfig};
 use miden_testing::assert_transaction_executor_error;
@@ -289,6 +290,75 @@ fn build_rejects_min_burn_size_exceeding_max() -> Result<()> {
     assert!(
         matches!(err, XReserveStablecoinBuilderError::MinBurnSizeExceedsMax(v) if v == over_max),
         "expected MinBurnSizeExceedsMax({over_max}), got {err:?}"
+    );
+    Ok(())
+}
+
+// OPTION-1 PAUSE COMPOSITION (IMPL-DEV-1 remediation) — Domain-Pauser-ONLY pause surface
+// ================================================================================================
+
+/// OPTION 1 (Circle Domain-Pauser-only, CIRCLE-SPECIFICATION.md:121): the production composition
+/// exposes NO stock `PausableManager` procedure — neither the `pause` nor the `unpause` root appears
+/// in any composed component, so the ONLY pause surface is the DOM_PAUSER-gated
+/// `xreserve::pause_admin::{pause,unpause}`. The structural twin of the executing
+/// `owner_has_no_pause_path` / `owner_has_no_unpause_path` (pause_admin.rs). RED at the Option-2
+/// baseline (the builder pushes `PausableManager`).
+#[test]
+fn builder_installs_no_stock_pause_manager() -> Result<()> {
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
+    let components = XReserveStablecoinBuilder::new(
+        faucet,
+        xreserve_component,
+        test_account_id(1),
+        test_account_id(2),
+        test_account_id(3),
+    )
+    .build_components()
+    .context("production build_components must compose")?;
+
+    let banned = [PausableManager::pause_root(), PausableManager::unpause_root()];
+    for component in &components {
+        for (root, _is_auth) in component.procedures() {
+            assert!(
+                !banned.contains(&root),
+                "the production composition must not expose the stock PausableManager \
+                 pause/unpause (Option 1, Domain-Pauser-only); found a banned root in component \
+                 '{}'",
+                component.metadata().name(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The `is_paused` slot SURVIVES Option 1: the production composition carries the value slot
+/// `miden::standards::access::pausable::is_paused`, installed by `FungibleFaucet` ITSELF at the
+/// pinned v0.15.3 (`fungible/mod.rs:397`) — NOT by the removed `PausableManager`, which installs
+/// zero storage (`manager.rs:78`). Without this slot the mint/burn `assert_not_paused` halt-gates
+/// break, reopening the CIR-ADMIN-4 halt-gap. This is also the structural TRIPWIRE for the upstream
+/// v0.16 change (#2944) that moves the slot OUT of `FungibleFaucet`: at any future pin bump this
+/// test fails loudly and the composition must add the base `Pausable` component instead.
+#[test]
+fn production_components_carry_is_paused_slot() -> Result<()> {
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
+    let components = XReserveStablecoinBuilder::new(
+        faucet,
+        xreserve_component,
+        test_account_id(1),
+        test_account_id(2),
+        test_account_id(3),
+    )
+    .build_components()
+    .context("production build_components must compose")?;
+
+    let is_paused = PausableStorage::is_paused_slot();
+    assert!(
+        components
+            .iter()
+            .flat_map(|c| c.storage_slots().iter())
+            .any(|slot| slot.name() == is_paused),
+        "the production composition must carry the FungibleFaucet-installed is_paused slot \
+         (its absence breaks the mint/burn pause halt-gates — CIR-ADMIN-4)"
     );
     Ok(())
 }

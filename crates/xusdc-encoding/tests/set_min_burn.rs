@@ -169,18 +169,19 @@ async fn assert_non_owner_rejected(sender: AccountId) -> Result<()> {
 // PAUSE GATE — set_min_burn_size traps the EXACT pause error when the faucet is paused
 // ================================================================================================
 
-/// After the OWNER pauses the faucet, an OWNER-sent `set_min_burn_size` passes the owner gate but traps
-/// the EXACT `ERR_PAUSABLE_IS_PAUSED` (the `is_paused` slot is FungibleFaucet-installed, so never a
-/// missing-slot artifact). Sends from the owner so the pause gate is isolated after auth passes.
+/// After the DOM_PAUSER pauses the faucet (custom `xreserve::pause_admin::pause` — the ONLY pause
+/// surface under Option 1), an OWNER-sent `set_min_burn_size` passes the owner gate but traps the EXACT
+/// `ERR_PAUSABLE_IS_PAUSED` (the `is_paused` slot is FungibleFaucet-installed, so never a
+/// missing-slot artifact). The setter sends from the owner so the pause gate is isolated after auth passes.
 #[tokio::test]
 async fn set_min_burn_paused_rejects() -> Result<()> {
     let h = faucet_harness()?;
     let account = faucet(&h)?;
 
-    // tx1: the owner pauses the faucet (is_paused := true).
-    let paused = run_pause_against(&h.chain, &account, owner(), 5)
+    // tx1: the DOM_PAUSER pauses the faucet (is_paused := true).
+    let paused = run_dom_pauser_pause(&h.chain, &account, dom_pauser(), 5)
         .await
-        .expect("the owner can pause the faucet");
+        .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
 

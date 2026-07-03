@@ -5,14 +5,17 @@
 //!
 //! Scope (cumulative): it composes `FungibleFaucet` + the assembled `xreserve` library component
 //! (carries `apply_mint_effects`, the deny-guard `check_policy`, the `set_attester` + `set_min_burn_size`
-//! admin procs) + a `TokenPolicyManager` whose active mint policy is the deny guard + `PausableManager`
-//! (required: `execute_mint_policy` runs `assert_not_paused`) + the **owner-gating admin foundation**
-//! (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::OwnerControlled`; DECISION-ADMIN-ROLE-MODEL,
+//! admin procs, the DOM_PAUSER custom `pause`/`unpause`) + a `TokenPolicyManager` whose active mint
+//! policy is the deny guard + the **owner-gating admin foundation** (`Ownable2Step` + a seeded
+//! `RoleBasedAccessControl` + `Authority::OwnerControlled`; DECISION-ADMIN-ROLE-MODEL,
 //! the `AccessControl::Rbac{authority_role: None}` composition). The RBAC is SEEDED with the two Circle
-//! Domain role members (`DOM_PAUSER` / `DOM_MANAGER`). STILL DEFERRED to later slices: the DOM role
-//! CONSUMERS — custom `pause`/`unpause`, dynamic role management (`grant_role`/`revoke_role`/`set_role_admin`) —
-//! and the full faucet assembly. The builder yields the validated component composition; MockChain
-//! (tests) finalises it into a signed `Account`.
+//! Domain role members (`DOM_PAUSER` / `DOM_MANAGER`). Pause is Domain-Pauser-ONLY (Option 1,
+//! CIRCLE-SPECIFICATION.md:121; IMPL-DEV-1 remediation): the stock `PausableManager` is NOT installed —
+//! the only pause surface is the DOM_PAUSER-gated `xreserve::pause_admin` procs; the `is_paused` slot
+//! the halt-gates read is installed by `FungibleFaucet` itself (see [`Self::assemble_components`]).
+//! STILL DEFERRED to later slices: dynamic role management (`grant_role`/`revoke_role`/`set_role_admin`
+//! consumers) and the full faucet assembly. The builder yields the validated component composition;
+//! MockChain (tests) finalises it into a signed `Account`.
 //!
 //! Packaging: the deny guard is **runtime-assembled** MASM (no `.masl` asset / `account_component_code!`
 //! here — that is a miden-standards-internal pipeline). The caller assembles the `xreserve` library
@@ -28,9 +31,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::{Felt, Word};
-use miden_standards::account::access::{
-    Authority, Ownable2Step, PausableManager, RoleBasedAccessControl,
-};
+use miden_standards::account::access::{Authority, Ownable2Step, RoleBasedAccessControl};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::{
     BurnPolicyConfig, MintPolicyConfig, PolicyRegistration, TokenPolicyManager,
@@ -168,11 +169,14 @@ impl From<TokenPolicyManagerError> for XReserveStablecoinBuilderError {
 }
 
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library component
-/// + a `TokenPolicyManager` with the mint-deny guard active + `PausableManager` + the **owner-gating
-/// admin foundation** (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::OwnerControlled`;
+/// + a `TokenPolicyManager` with the mint-deny guard active + the **owner-gating admin foundation**
+/// (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::OwnerControlled`;
 /// DECISION-ADMIN-ROLE-MODEL). The foundation ships in this production builder so the deployed faucet
 /// validates the real auth model: the setters (`set_attester` / `set_min_burn_size` / `set_max_supply`)
 /// are gated on the Ownable2Step owner, and the `DOM_PAUSER` / `DOM_MANAGER` role members are seeded.
+/// Pause is Domain-Pauser-ONLY: the stock `PausableManager` is deliberately NOT part of the
+/// composition (Option 1, IMPL-DEV-1 remediation) — `xreserve::pause_admin::{pause,unpause}`
+/// (DOM_PAUSER-gated) is the sole pause surface.
 ///
 /// Construct with [`XReserveStablecoinBuilder::new`] (the `owner` and the `DOM_PAUSER` / `DOM_MANAGER`
 /// holders are required), optionally override the account type (for the non-`Public` rejection test) or
@@ -382,10 +386,21 @@ impl XReserveStablecoinBuilder {
         .expect("the xreserve component augmented with the min_burn_size slot has < 256 slots"))
     }
 
-    /// Assembles the final component list. `PausableManager` is mandatory: the stock
-    /// `execute_mint_policy` runs `assert_not_paused` before dispatching the mint policy. Takes the
-    /// `xreserve` component already augmented with the `MIN_BURN_SIZE_SLOT` (see
-    /// [`Self::xreserve_component_with_min_burn_size`]).
+    /// Assembles the final component list. Takes the `xreserve` component already augmented with the
+    /// `MIN_BURN_SIZE_SLOT` (see [`Self::xreserve_component_with_min_burn_size`]).
+    ///
+    /// PAUSE PROVENANCE (Option 1, Domain-Pauser-only — IMPL-DEV-1 remediation): the stock
+    /// `PausableManager` (owner-gated callable `pause`/`unpause`) is deliberately NOT installed; the
+    /// only pause surface is the DOM_PAUSER-gated `xreserve::pause_admin` procs carried by the
+    /// `xreserve` component. The `is_paused` slot every `assert_not_paused` halt-gate reads
+    /// (`execute_mint_policy`/`execute_burn_policy`, the setters, `xreserve_mint.masm`) is installed
+    /// by `FungibleFaucet::into_storage_slots` ITSELF at the pinned v0.15.3 (`fungible/mod.rs:397`) —
+    /// `PausableManager` installs ZERO storage (`manager.rs:78`), so its removal cannot drop the slot.
+    /// PIN-BUMP HAZARD: upstream v0.16 (#2944) moves the slot OUT of `FungibleFaucet` — at any pin
+    /// bump the composition must add the base `Pausable` component (NOT `PausableManager`); the
+    /// `production_components_carry_is_paused_slot` builder test is the loud tripwire. Do NOT add the
+    /// base `Pausable` at THIS pin: the faucet already installs the identically-named slot and
+    /// duplicate slot names hard-reject the build (`AccountError::DuplicateStorageSlotName`).
     fn assemble_components(
         &self,
         manager: TokenPolicyManager,
@@ -395,7 +410,6 @@ impl XReserveStablecoinBuilder {
         components.push(self.faucet.clone().into());
         components.push(xreserve_component);
         components.extend(manager); // [policy-manager component, MintAllowAll (when registered)]
-        components.push(PausableManager.into());
         components
     }
 }

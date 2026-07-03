@@ -35,9 +35,7 @@ use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
 use miden_processor::advice::AdviceInputs;
 use miden_processor::crypto::random::RandomCoin;
-use miden_standards::account::access::{
-    Authority, Ownable2Step, PausableManager, RoleBasedAccessControl,
-};
+use miden_standards::account::access::{Authority, Ownable2Step, RoleBasedAccessControl};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::policies::{
     BurnPolicyConfig, MintPolicyConfig, PolicyRegistration, TokenPolicyManager,
@@ -1301,9 +1299,10 @@ pub fn faucet_account(h: &CompositionHarness) -> Account {
         .clone()
 }
 
-/// Builds a note SENT BY `sender` whose script calls the stock `PausableManager::pause` — gated on
-/// the SAME owner Authority. Used to pause the faucet before exercising the set_attester
-/// pause gate. `pause` is a pure standards proc (CodeBuilder pre-links StandardsLib), so no xreserve
+/// Builds a note SENT BY `sender` whose script calls the stock `PausableManager::pause`. Under
+/// Option 1 (Domain-Pauser-only) the composition does NOT install `PausableManager`, so this note is
+/// the NEGATIVE PROBE for `owner_has_no_pause_path`: it assembles (StandardsLib is pre-linked) but
+/// executing it traps `UnknownAccountProcedure` (the root is not in the account code). No xreserve
 /// link is needed.
 pub fn pause_note(sender: AccountId, seed: u64) -> Result<Note> {
     let src = "use miden::standards::access::pausable::manager\n\
@@ -1328,7 +1327,9 @@ pub fn pause_note(sender: AccountId, seed: u64) -> Result<Note> {
         .build()?)
 }
 
-/// Executes a `PausableManager::pause` note (sent by `sender`) against the faucet `account`.
+/// Executes a stock `PausableManager::pause` note (sent by `sender`) against the faucet `account` —
+/// the CompositionHarness-shaped twin of [`run_pause_against`]. Under Option 1 this is a negative
+/// probe: the stock proc is not installed, so execution traps `UnknownAccountProcedure`.
 pub async fn run_pause_tx(
     h: &CompositionHarness,
     account: &Account,
@@ -1746,16 +1747,18 @@ pub enum GuardSelection {
 }
 
 /// A guarded mint harness: the composition account WITH the `TokenPolicyManager` (mint-deny guard
-/// active or allow-all per the [`GuardSelection`]) + `PausableManager`, plus the resolved deny-guard
-/// proc root. The production deny path is composed by `XReserveStablecoinBuilder::build_components`;
-/// the allow-all/deny oracle pair is composed by the test-only [`oracle_components`] helper.
+/// active or allow-all per the [`GuardSelection`]), plus the resolved deny-guard proc root. The
+/// production deny path is composed by `XReserveStablecoinBuilder::build_components`; the
+/// allow-all/deny oracle pair is composed by the test-only [`oracle_components`] helper. No stock
+/// `PausableManager` anywhere (Option 1, Domain-Pauser-only): the `is_paused` slot is
+/// FungibleFaucet-installed and pause is exclusively `xreserve::pause_admin`.
 pub struct GuardedMint {
     pub harness: CompositionHarness,
     pub deny_root: Word,
 }
 
 /// Like [`setup_mint_composition_account`] but ALSO installs the `TokenPolicyManager` (mint-deny
-/// guard active or allow-all per `selection`) + `PausableManager` via [`XReserveStablecoinBuilder`].
+/// guard active or allow-all per `selection`) via [`XReserveStablecoinBuilder`].
 /// The deny guard rides the same `xreserve` library component (its `check_policy` proc). Used by the
 /// R-MINT-16 deny suite to drive the inherited stock `mint_and_send` against a policy-managed faucet.
 ///
@@ -1899,10 +1902,10 @@ pub fn setup_guarded_mint_account(
 /// TEST-ONLY oracle composition for the R-MINT-16 non-vacuity pair. Registers BOTH the mint-deny
 /// guard (`Custom(deny_root)`) and the stock allow-all in the `TokenPolicyManager`, one `Active` and
 /// the other `Reserved`, so the allow-all and deny accounts are CODE-IDENTICAL (same components —
-/// faucet + xreserve + policy-manager + `MintAllowAll` + `PausableManager` — and the same allowed
-/// mint-policy set) and differ ONLY in `active_mint_policy_proc_root`. That identity is what makes the
-/// allow-vs-deny pair a sound non-vacuity oracle: a deny trap is attributable to the active policy,
-/// not to any fixture difference.
+/// faucet + xreserve + policy-manager + `MintAllowAll` — and the same allowed mint-policy set) and
+/// differ ONLY in `active_mint_policy_proc_root`. That identity is what makes the allow-vs-deny pair
+/// a sound non-vacuity oracle: a deny trap is attributable to the active policy, not to any fixture
+/// difference.
 ///
 /// This lives in the TEST harness — NOT the production `XReserveStablecoinBuilder` — precisely so no
 /// shipped API can construct an allow-all-active (stock-`mint_and_send`-reopening) faucet. The only
@@ -1925,11 +1928,11 @@ fn oracle_components(
         .map_err(|e| anyhow::anyhow!("oracle manager active mint policy: {e}"))?
         .with_mint_policy(reserved, PolicyRegistration::Reserved)
         .map_err(|e| anyhow::anyhow!("oracle manager reserved mint policy: {e}"))?;
-    // PausableManager is mandatory (the stock execute_mint_policy runs assert_not_paused before
-    // dispatching). Component order/contents mirror XReserveStablecoinBuilder::assemble_components.
+    // No PausableManager (Option 1, Domain-Pauser-only): the is_paused slot execute_mint_policy's
+    // assert_not_paused reads is FungibleFaucet-installed (fungible/mod.rs:397, pinned v0.15.3).
+    // Component order/contents mirror XReserveStablecoinBuilder::assemble_components.
     let mut components = vec![faucet.into(), xreserve_component];
     components.extend(manager); // [policy-manager component, MintAllowAll]
-    components.push(PausableManager.into());
     Ok(components)
 }
 
@@ -1982,7 +1985,7 @@ pub async fn run_mint_and_send(
 // ================================================================================================
 
 /// Which burn policy the burn-oracle faucet fixture installs ACTIVE. Both selections compose a
-/// CODE-IDENTICAL account (faucet + xreserve + policy-manager + BurnAllowAll + PausableManager + RBAC,
+/// CODE-IDENTICAL account (faucet + xreserve + policy-manager + BurnAllowAll + RBAC,
 /// with the mint-deny guard ACTIVE and BOTH burn policies registered) differing ONLY in
 /// `active_burn_policy_proc_root` — the non-vacuity oracle the R-BURN-2 reject leans on.
 /// Test-side u64 -> `Felt` for burn magnitudes (`min_burn_size` / `amount`), which are `AssetAmount`s
@@ -2022,9 +2025,9 @@ pub struct BurnPolicyHarness {
 /// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` for the burn oracle — a faithful
 /// replica of the production builder's private `seeded_dom_roles_rbac` (Option A: both stock RBAC maps
 /// direct-seeded with the two Circle Domain role members `DOM_PAUSER`→`pauser_holder` and
-/// `DOM_MANAGER`→`manager_holder`). The burn oracle needs the RBAC foundation so the owner-sent
-/// `PausableManager::pause` clears `assert_authorized` (the pause gate `burn_paused_rejects` exercises).
-/// Reuses the stock RBAC code + slot names + metadata verbatim.
+/// `DOM_MANAGER`→`manager_holder`). The burn oracle needs the RBAC foundation so the DOM_PAUSER-sent
+/// custom `xreserve::pause_admin::pause` clears its role gate (the pause gate `burn_paused_rejects`
+/// exercises). Reuses the stock RBAC code + slot names + metadata verbatim.
 fn seeded_dom_roles_rbac_component(
     pauser_holder: AccountId,
     manager_holder: AccountId,
@@ -2113,11 +2116,12 @@ fn oracle_burn_components(
         .map_err(|e| anyhow::anyhow!("oracle manager reserved burn policy: {e}"))?;
 
     // Component order/contents mirror XReserveStablecoinBuilder::{assemble_components, build_components}:
-    // faucet + xreserve + [policy-manager, BurnAllowAll] + PausableManager + the owner-gating foundation
-    // (Ownable2Step + seeded DOM-roles RBAC + Authority::OwnerControlled).
+    // faucet + xreserve + [policy-manager, BurnAllowAll] + the owner-gating foundation
+    // (Ownable2Step + seeded DOM-roles RBAC + Authority::OwnerControlled). No PausableManager
+    // (Option 1, Domain-Pauser-only): the is_paused slot is FungibleFaucet-installed and pause is
+    // exclusively the DOM_PAUSER custom xreserve::pause_admin procs.
     let mut components = vec![faucet.into(), xreserve_component];
     components.extend(manager);
-    components.push(PausableManager.into());
     components.push(Ownable2Step::new(owner).into());
     components.push(seeded_dom_roles_rbac_component(pauser_holder, manager_holder));
     components.push(Authority::OwnerControlled.into());
@@ -2425,10 +2429,11 @@ pub async fn run_burn_consume(
         .await
 }
 
-/// Pauses the faucet: builds a `PausableManager::pause` note SENT BY `sender` and executes it against
-/// the faucet `account` (the note is provided unauthenticated). The caller commits the returned tx +
-/// proves a block to make the committed faucet state paused. Mirrors [`run_pause_tx`] but threads a
-/// bare `&MockChain` + `&Account` (the burn harness is not a `CompositionHarness`).
+/// Executes a stock `PausableManager::pause` note SENT BY `sender` against the faucet `account` on a
+/// bare `&MockChain` (the note is provided unauthenticated). Under Option 1 (Domain-Pauser-only) the
+/// stock proc is NOT installed — this is the NEGATIVE PROBE `owner_has_no_pause_path` drives: the tx
+/// must trap `UnknownAccountProcedure` and never flip `is_paused`. To actually pause, use
+/// [`run_dom_pauser_pause`] (the DOM_PAUSER custom proc — the only pause surface).
 pub async fn run_pause_against(
     chain: &MockChain,
     account: &Account,
@@ -2516,10 +2521,11 @@ pub fn assert_unknown_account_procedure(err: &TransactionExecutorError) {
 // ================================================================================================
 
 /// Builds a note SENT BY `sender` whose script `call`s the CUSTOM `xreserve::pause_admin::{proc}`
-/// (DOM_PAUSER-gated, CMP-F3). Unlike [`pause_note`] (which calls the stock owner-gated
-/// `PausableManager::pause`, a pre-linked StandardsLib proc), this links the `xreserve` library so the
-/// `xreserve::pause_admin::*` path resolves. `pause`/`unpause` take `[pad(16)]` and return `[pad(16)]`,
-/// so the note pushes 16 pad felts, `call`s, and clears the returned frame — the [`pause_note`] shape.
+/// (DOM_PAUSER-gated, CMP-F3) — under Option 1 the ONLY installed pause surface. Unlike
+/// [`pause_note`] (the stock negative probe, a pre-linked StandardsLib proc), this links the
+/// `xreserve` library so the `xreserve::pause_admin::*` path resolves. `pause`/`unpause` take
+/// `[pad(16)]` and return `[pad(16)]`, so the note pushes 16 pad felts, `call`s, and clears the
+/// returned frame — the [`pause_note`] shape.
 fn dom_pauser_pause_admin_note(
     sender: AccountId,
     seed: u64,

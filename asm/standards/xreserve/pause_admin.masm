@@ -1,12 +1,14 @@
 # xreserve::pause_admin
 #
 # FAUCET(01)-owned emergency pause admin (P5-01 CMP-F3, §5.12 / CIR-ADMIN-3/4/5, per
-# DECISION-ADMIN-ROLE-MODEL): the DOM_PAUSER-gated custom pause/unpause. The stock PausableManager gates
-# pause on the account-wide Authority (= owner now), so it cannot give pause a distinct role; these procs
-# compose rbac::assert_sender_has_role(DOM_PAUSER) with the UNAUTHENTICATED pausable::pause/unpause
-# primitives (mod.masm:57 "compose with access control in a wrapper"). The is_paused slot is
-# FungibleFaucet-installed, so these write a real slot. Module home + flat path per D-1A
-# (CANONICAL-OWNERSHIP-MAP.md); the DOM_PAUSER+owner baseline retains the stock PausableManager.
+# DECISION-ADMIN-ROLE-MODEL): the DOM_PAUSER-gated custom pause/unpause — under Option 1
+# (Domain-Pauser-ONLY, CIRCLE-SPECIFICATION.md:121; IMPL-DEV-1 remediation) the ONLY pause surface on
+# the faucet. The stock PausableManager gates pause on the account-wide Authority (= owner), which both
+# fails Circle's distinct-pauser-role model AND gives the owner a direct pause path — so it is NOT
+# installed; these procs compose rbac::assert_sender_has_role(DOM_PAUSER) with the UNAUTHENTICATED
+# pausable::pause/unpause primitives (mod.masm:57 "compose with access control in a wrapper"). The
+# is_paused slot is FungibleFaucet-installed (pinned v0.15.3), so these write a real slot. Module home
+# + flat path per D-1A (CANONICAL-OWNERSHIP-MAP.md).
 
 use miden::standards::access::rbac
 use miden::standards::access::pausable

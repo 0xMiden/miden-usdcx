@@ -5,7 +5,8 @@
 //! gate (the security core), the production-deny regression, and the pause gate. The non-vacuity
 //! set->verify seam (`set_attester_enables_attestation`, remove-denies, and the 5-step rotation) lives
 //! in `xreserve_mint.rs`, alongside the shared mint-composition fixtures it reuses. The DOM role SEED
-//! itself is proven in `set_min_burn.rs` (`dom_roles_seeded_correctly`).
+//! itself is proven in `role_admin.rs` (`shipped_delegation_reads_back`, production builder) and
+//! `set_min_burn.rs` (`support_replica_carries_delegation_seed`, the burn-oracle replica).
 
 mod support;
 

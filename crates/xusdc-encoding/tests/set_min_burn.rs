@@ -194,25 +194,35 @@ async fn set_min_burn_paused_rejects() -> Result<()> {
 // DOM ROLE SEEDING (owner-ONLY foundation) — the DOM_PAUSER/DOM_MANAGER members are seeded + valid
 // ================================================================================================
 
-/// `DOM_PAUSER` (10) and `DOM_MANAGER` (11) are valid `RoleSymbol`s and are SEEDED into the RBAC — each
-/// role's membership for its holder reads back `[1,0,0,0]`. RED: the un-flipped builder seeds only
-/// `ATTEST_ADMIN`, so the DOM membership reads back EMPTY. (MASM↔Rust DOM parity is deferred to the
-/// first DOM-consumer MASM slice, CMP-F3 — no MASM references the DOM symbols in this slice.)
+/// REPLICA FIDELITY (CMP-F5): this test reads the burn-oracle SUPPORT-REPLICA account (the
+/// `setup_burn_policy_account` composition installs the test-side `seeded_dom_roles_rbac_component`,
+/// NOT the production builder) and pins that replica to the PRODUCTION seed shape — `DOM_PAUSER`
+/// config `[1, DOM_MANAGER, 0, 0]` (the CMP-F5 delegation), `DOM_MANAGER` config `[1, 0, 0, 0]`
+/// (owner-administered), and both seeded memberships `[1,0,0,0]`. It is the SOLE tripwire for
+/// replica drift: every burn-oracle-fixture test (pause rejects, setter rejects here) leans on this
+/// replica. The PRODUCTION-account twin of these assertions is
+/// `role_admin.rs::shipped_delegation_reads_back`. RED (CMP-F5): the replica still seeds
+/// `admin_role = 0`.
 #[tokio::test]
-async fn dom_roles_seeded_correctly() -> Result<()> {
+async fn support_replica_carries_delegation_seed() -> Result<()> {
     let pauser = RoleSymbol::new(DOM_PAUSER_SYMBOL).expect("DOM_PAUSER is a valid <=12 role symbol");
     let manager = RoleSymbol::new(DOM_MANAGER_SYMBOL).expect("DOM_MANAGER is a valid <=12 role symbol");
 
     let h = faucet_harness()?;
     let account = faucet(&h)?;
 
-    // role_config[{0,0,0,<role>}] = [member_count=1, admin_role=0, 0, 0] for each DOM role (admin_role=0
-    // == owner-administered; set_role_admin is owner-only, rbac.masm:159).
+    // role_config[{0,0,0,DOM_PAUSER}] = [member_count=1, admin_role=DOM_MANAGER, 0, 0] (the CMP-F5
+    // delegation: the Domain Manager rotates the Pauser); DOM_MANAGER keeps admin_role=0
+    // (owner-administered; set_role_admin is owner-only, rbac.masm:159).
     let pauser_config = account
         .storage()
         .get_map_item(RoleBasedAccessControl::role_config_slot(), role_config_key(&pauser))?;
     assert_eq!(pauser_config[0], Felt::from(1u32), "DOM_PAUSER member_count == 1");
-    assert_eq!(pauser_config[1], Felt::ZERO, "DOM_PAUSER admin_role == 0 (owner-administered)");
+    assert_eq!(
+        pauser_config[1],
+        Felt::from(&manager),
+        "DOM_PAUSER admin_role == DOM_MANAGER (the CMP-F5 delegation, replica seed)"
+    );
 
     let manager_config = account
         .storage()

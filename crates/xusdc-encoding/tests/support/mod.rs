@@ -2625,6 +2625,191 @@ pub fn read_is_paused(account: &Account) -> Result<Word> {
         .map_err(|e| anyhow::anyhow!("reading the is_paused value slot: {e}"))
 }
 
+// CMP-F5 RBAC ROLE ADMINISTRATION — grant/revoke/set_role_admin notes + runners + role read-backs
+// ================================================================================================
+
+/// Builds a note SENT BY `sender` whose script `call`s a stock rbac member-administration proc
+/// (`grant_role` / `revoke_role`, rbac.masm:197/:228) for (`role`, `member`). Stack contract:
+/// `[role_symbol, account_suffix, account_prefix, pad(13)]` (role on top). Like `set_max_supply_note`,
+/// the stock rbac procs are pure standards procs (CodeBuilder pre-links StandardsLib), so the
+/// absolute-path `call` resolves to the SAME proc root the production account exposes via the RBAC
+/// component re-exports (`account_components/access/rbac.masm`) — no xreserve link is needed. The
+/// role/member felts are injected from the Rust-side `RoleSymbol`/`AccountId` (single source; no new
+/// MASM constants, no new parity surface).
+fn rbac_member_note(
+    sender: AccountId,
+    proc_name: &str,
+    role: &RoleSymbol,
+    member: AccountId,
+    seed: u64,
+    tail0: u32,
+    tail1: u32,
+) -> Result<Note> {
+    // Push 13 pads (deepest), then prefix, suffix, role so the triple ends role-on-top: 13 + 3 = 16.
+    let role_felt = Felt::from(role).as_canonical_u64();
+    let member_suffix = member.suffix().as_canonical_u64();
+    let member_prefix = member.prefix().as_felt().as_canonical_u64();
+    let src = format!(
+        "@note_script\n\
+         pub proc main\n\
+         \x20\x20\x20\x20repeat.13 push.0 end\n\
+         \x20\x20\x20\x20push.{member_prefix}\n\
+         \x20\x20\x20\x20push.{member_suffix}\n\
+         \x20\x20\x20\x20push.{role_felt}\n\
+         \x20\x20\x20\x20call.::miden::standards::access::rbac::{proc_name}\n\
+         \x20\x20\x20\x20dropw dropw dropw dropw\n\
+         end\n",
+    );
+    let script = CodeBuilder::new()
+        .compile_note_script(src.clone())
+        .map_err(|e| anyhow::anyhow!("rbac {proc_name} note script failed to compile: {e}\n{src}"))?;
+    // Deterministic note rng (serial only; never affects the gate). Distinct tails ([11,12] grant /
+    // [13,14] revoke / [15,16] set_role_admin) keep serials disjoint from set_attester [1,2] / pause
+    // [3,4] / set_max_supply [5,6] / set_min_burn [7,8] / domain_init [9,10] / dom pause [21,22] /
+    // dom unpause [23,24].
+    let mut rng = RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(tail0),
+        Felt::from(tail1),
+    ]));
+    Ok(NoteBuilder::new(sender, &mut rng)
+        .note_type(NoteType::Private)
+        .script(script)
+        .build()?)
+}
+
+/// A `grant_role(role, member)` note sent by `sender` (stock gate: owner-or-role-admin, rbac.masm:411).
+pub fn grant_role_note(sender: AccountId, role: &RoleSymbol, member: AccountId, seed: u64) -> Result<Note> {
+    rbac_member_note(sender, "grant_role", role, member, seed, 11, 12)
+}
+
+/// A `revoke_role(role, member)` note sent by `sender` (same owner-or-role-admin gate).
+pub fn revoke_role_note(sender: AccountId, role: &RoleSymbol, member: AccountId, seed: u64) -> Result<Note> {
+    rbac_member_note(sender, "revoke_role", role, member, seed, 13, 14)
+}
+
+/// A `set_role_admin(role, admin_role)` note sent by `sender` (stock gate: OWNER-ONLY, rbac.masm:163).
+/// `admin_role = None` pushes 0 — the stock "clear the delegation" sentinel (rbac.masm:147-148).
+/// Stack contract: `[role_symbol, admin_role_symbol, pad(14)]` (role on top).
+pub fn set_role_admin_note(
+    sender: AccountId,
+    role: &RoleSymbol,
+    admin_role: Option<&RoleSymbol>,
+    seed: u64,
+) -> Result<Note> {
+    let role_felt = Felt::from(role).as_canonical_u64();
+    let admin_felt = admin_role.map(|r| Felt::from(r).as_canonical_u64()).unwrap_or(0);
+    let src = format!(
+        "@note_script\n\
+         pub proc main\n\
+         \x20\x20\x20\x20repeat.14 push.0 end\n\
+         \x20\x20\x20\x20push.{admin_felt}\n\
+         \x20\x20\x20\x20push.{role_felt}\n\
+         \x20\x20\x20\x20call.::miden::standards::access::rbac::set_role_admin\n\
+         \x20\x20\x20\x20dropw dropw dropw dropw\n\
+         end\n",
+    );
+    let script = CodeBuilder::new()
+        .compile_note_script(src.clone())
+        .map_err(|e| anyhow::anyhow!("set_role_admin note script failed to compile: {e}\n{src}"))?;
+    let mut rng = RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(15u32),
+        Felt::from(16u32),
+    ]));
+    Ok(NoteBuilder::new(sender, &mut rng)
+        .note_type(NoteType::Private)
+        .script(script)
+        .build()?)
+}
+
+/// Executes a role-administration `note` against the faucet `account` on a bare `&MockChain` —
+/// the shared body of the grant/revoke/set_role_admin runners. Mirrors [`run_dom_pauser_pause`];
+/// the caller applies the returned delta (the unauthenticated note is not block-proven).
+async fn run_rbac_note_against(
+    chain: &MockChain,
+    account: &Account,
+    note: Note,
+    what: &str,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    chain
+        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
+        .unwrap_or_else(|e| panic!("building the {what} tx context: {e}"))
+        .build()
+        .unwrap_or_else(|e| panic!("building the {what} transaction: {e}"))
+        .execute()
+        .await
+}
+
+/// Executes a `grant_role` note (sent by `sender`) against the faucet `account`.
+pub async fn run_grant_role_against(
+    chain: &MockChain,
+    account: &Account,
+    sender: AccountId,
+    role: &RoleSymbol,
+    member: AccountId,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = grant_role_note(sender, role, member, seed)
+        .expect("building the grant_role note (test-setup invariant)");
+    run_rbac_note_against(chain, account, note, "grant_role").await
+}
+
+/// Executes a `revoke_role` note (sent by `sender`) against the faucet `account`.
+pub async fn run_revoke_role_against(
+    chain: &MockChain,
+    account: &Account,
+    sender: AccountId,
+    role: &RoleSymbol,
+    member: AccountId,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = revoke_role_note(sender, role, member, seed)
+        .expect("building the revoke_role note (test-setup invariant)");
+    run_rbac_note_against(chain, account, note, "revoke_role").await
+}
+
+/// Executes a `set_role_admin` note (sent by `sender`) against the faucet `account`.
+pub async fn run_set_role_admin_against(
+    chain: &MockChain,
+    account: &Account,
+    sender: AccountId,
+    role: &RoleSymbol,
+    admin_role: Option<&RoleSymbol>,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = set_role_admin_note(sender, role, admin_role, seed)
+        .expect("building the set_role_admin note (test-setup invariant)");
+    run_rbac_note_against(chain, account, note, "set_role_admin").await
+}
+
+/// Reads a role's `role_config` word `[member_count, admin_role_symbol, 0, 0]` from a
+/// committed/evolved account (stock key encoding `[0,0,0,role_symbol]`, rbac.masm:12).
+pub fn read_role_config(account: &Account, role: &RoleSymbol) -> Result<Word> {
+    let key = Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(role)]);
+    account
+        .storage()
+        .get_map_item(RoleBasedAccessControl::role_config_slot(), key)
+        .map_err(|e| anyhow::anyhow!("reading the role_config entry: {e}"))
+}
+
+/// Reads a member's `role_membership` word `[is_member, 0, 0, 0]` from a committed/evolved account
+/// (stock key encoding `[0, role_symbol, account_suffix, account_prefix]`, rbac.masm:15).
+pub fn read_role_membership(account: &Account, role: &RoleSymbol, member: AccountId) -> Result<Word> {
+    let key = Word::from([
+        Felt::ZERO,
+        Felt::from(role),
+        member.suffix(),
+        member.prefix().as_felt(),
+    ]);
+    account
+        .storage()
+        .get_map_item(RoleBasedAccessControl::role_membership_slot(), key)
+        .map_err(|e| anyhow::anyhow!("reading the role_membership entry: {e}"))
+}
+
 // CMP-A10 R-BURN-1 DIRECT-POLICY DRIVER — exec check_policy with a crafted [ASSET_KEY, ASSET_VALUE]
 // ================================================================================================
 

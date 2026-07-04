@@ -9,13 +9,15 @@
 //! policy is the deny guard + the **owner-gating admin foundation** (`Ownable2Step` + a seeded
 //! `RoleBasedAccessControl` + `Authority::OwnerControlled`; DECISION-ADMIN-ROLE-MODEL,
 //! the `AccessControl::Rbac{authority_role: None}` composition). The RBAC is SEEDED with the two Circle
-//! Domain role members (`DOM_PAUSER` / `DOM_MANAGER`). Pause is Domain-Pauser-ONLY (Option 1,
+//! Domain role members (`DOM_PAUSER` / `DOM_MANAGER`), with `DOM_PAUSER` administration DELEGATED to
+//! `DOM_MANAGER` (CMP-F5, CIR-ADMIN-3 "the Domain Manager rotates the Pauser": `admin_role =
+//! DOM_MANAGER` in the seed, so the stock `grant_role`/`revoke_role` accept the owner OR a
+//! `DOM_MANAGER` holder; `set_role_admin` stays owner-only). Pause is Domain-Pauser-ONLY (Option 1,
 //! CIRCLE-SPECIFICATION.md:121; IMPL-DEV-1 remediation): the stock `PausableManager` is NOT installed —
 //! the only pause surface is the DOM_PAUSER-gated `xreserve::pause_admin` procs; the `is_paused` slot
 //! the halt-gates read is installed by `FungibleFaucet` itself (see [`Self::assemble_components`]).
-//! STILL DEFERRED to later slices: dynamic role management (`grant_role`/`revoke_role`/`set_role_admin`
-//! consumers) and the full faucet assembly. The builder yields the validated component composition;
-//! MockChain (tests) finalises it into a signed `Account`.
+//! STILL DEFERRED to later slices: the full faucet assembly. The builder yields the validated
+//! component composition; MockChain (tests) finalises it into a signed `Account`.
 //!
 //! Packaging: the deny guard is **runtime-assembled** MASM (no `.masl` asset / `account_component_code!`
 //! here — that is a miden-standards-internal pipeline). The caller assembles the `xreserve` library
@@ -39,11 +41,12 @@ use miden_standards::account::policies::{
 };
 
 /// The two Circle Domain RoleSymbols this faucet seeds under the ratified Circle-faithful admin model
-/// (DECISION-ADMIN-ROLE-MODEL): `DOM_PAUSER` (custom pause/unpause) and `DOM_MANAGER` (rotation / role
-/// management). Both are valid `RoleSymbol`s (≤12 chars, `A`–`Z`/`_`; `DOMAIN_PAUSER`(13)/`DOMAIN_MANAGER`(14)
-/// would be rejected). ORCHESTRATOR-FIXED — the builder only SEEDS the members here; their CONSUMERS
-/// (the custom pause procs, grant/revoke/set_role_admin) are later slices. The setters are owner-gated
-/// (`Authority::OwnerControlled`), not role-gated, so no MASM references these symbols in this slice.
+/// (DECISION-ADMIN-ROLE-MODEL): `DOM_PAUSER` (custom pause/unpause, CMP-F3) and `DOM_MANAGER`
+/// (rotation / role management — the delegated admin of `DOM_PAUSER`, CMP-F5). Both are valid
+/// `RoleSymbol`s (≤12 chars, `A`–`Z`/`_`; `DOMAIN_PAUSER`(13)/`DOMAIN_MANAGER`(14) would be rejected).
+/// ORCHESTRATOR-FIXED — the pause gate hard-codes the `DOM_PAUSER` symbol in `pause_admin.masm`
+/// (parity-asserted); role management consumes the STOCK rbac procs, so no MASM references
+/// `DOM_MANAGER`. The setters are owner-gated (`Authority::OwnerControlled`), not role-gated.
 pub const DOM_PAUSER_ROLE: &str = "DOM_PAUSER";
 pub const DOM_MANAGER_ROLE: &str = "DOM_MANAGER";
 
@@ -416,16 +419,20 @@ impl XReserveStablecoinBuilder {
 
 /// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` (Option A) with the TWO Circle
 /// Domain role members — `DOM_PAUSER` (→ `pauser_holder`) and `DOM_MANAGER` (→ `manager_holder`). Both
-/// stock RBAC maps are direct-seeded at build, consistent with `grant_role`'s post-state for a single
+/// stock RBAC maps are direct-seeded at build, consistent with the stock procs' post-state for a single
 /// first grant per role — `role_membership[{0, <role>, holder.suffix, holder.prefix}] = [1,0,0,0]` AND
-/// `role_config[{0,0,0,<role>}] = [member_count=1, admin_role=0, 0, 0]` (admin_role=0 = owner-administered;
-/// `set_role_admin` is owner-only, rbac.masm:159). It reuses the stock RBAC code + slot names + component
+/// `role_config[{0,0,0,DOM_PAUSER}] = [member_count=1, admin_role=DOM_MANAGER, 0, 0]` (the CMP-F5
+/// delegation: the Domain Manager rotates the Pauser, CIR-ADMIN-3 — byte-identical to an owner-sent
+/// `set_role_admin(DOM_PAUSER, DOM_MANAGER)`, rbac.masm:314-333, so the faucet deploys with the
+/// rotation model already in force) while `role_config[{0,0,0,DOM_MANAGER}] = [1, 0, 0, 0]`
+/// (admin_role=0 = owner-administered; `set_role_admin` is owner-only, rbac.masm:159 — rotation of the
+/// Manager itself stays under the owner). It reuses the stock RBAC code + slot names + component
 /// metadata verbatim (NO custom RBAC logic); only the maps are non-empty (the stock
 /// `From<RoleBasedAccessControl>` seeds them empty). The key encodings mirror the stock readers
-/// (`miden-testing/tests/scripts/rbac.rs:57-63`). `grant_role` is NOT used (it would add a tx and is a
-/// later dynamic-management slice). Seed correctness is locked by the `dom_roles_seeded_correctly` +
-/// owner-ONLY tests, not by construction (`AccountComponent::new` does not validate slots against the
-/// metadata schema). Construction failures are invariants, so this mirrors the stock `.expect()` pattern.
+/// (`miden-testing/tests/scripts/rbac.rs:57-63`). `grant_role` is NOT used (it would add a tx). Seed
+/// correctness is locked by the `shipped_delegation_reads_back` + rotation-seam + owner-ONLY tests,
+/// not by construction (`AccountComponent::new` does not validate slots against the metadata schema).
+/// Construction failures are invariants, so this mirrors the stock `.expect()` pattern.
 fn seeded_dom_roles_rbac(
     pauser_holder: AccountId,
     manager_holder: AccountId,
@@ -434,13 +441,16 @@ fn seeded_dom_roles_rbac(
         RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol (≤12)");
     let manager =
         RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol (≤12)");
-    // [1,0,0,0]: role_config member_count = 1, and role_membership is_member = 1.
+    // [1,0,0,0]: role_config member_count = 1 (owner-administered), and role_membership is_member = 1.
     let member_word = Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
+    // [1, DOM_MANAGER, 0, 0]: member_count = 1 with administration delegated to DOM_MANAGER (CMP-F5).
+    let delegated_config_word =
+        Word::from([Felt::from(1u32), Felt::from(&manager), Felt::ZERO, Felt::ZERO]);
 
     let role_config = StorageMap::with_entries([
         (
             StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&pauser)])),
-            member_word,
+            delegated_config_word,
         ),
         (
             StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&manager)])),

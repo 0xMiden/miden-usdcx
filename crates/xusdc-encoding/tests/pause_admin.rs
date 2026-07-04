@@ -387,8 +387,9 @@ async fn non_dom_pauser_pause_rejects() -> Result<()> {
 /// surface is role-gated, not owner-gated. Under Option 1 (the stock `PausableManager` removed —
 /// `owner_has_no_pause_path`) this completes "the owner has no DIRECT pause path": neither the stock
 /// nor the custom surface accepts the owner. (The owner keeps Circle-conformant ROLE-ADMINISTRATION
-/// power — it could `grant_role` itself DOM_PAUSER, matching CIR-ADMIN-3's `onlyOwner` rotation —
-/// a rotation concern for the deferred DOM_MANAGER slice, not a pause surface.)
+/// power — it could `grant_role` itself DOM_PAUSER, matching CIR-ADMIN-3's `onlyOwner` rotation
+/// backstop; the operational rotation path is the CMP-F5 `DOM_MANAGER` delegation, proven in
+/// `role_admin.rs` — a rotation concern, not a pause surface.)
 #[tokio::test]
 async fn owner_is_not_dom_pauser_on_custom_pause() -> Result<()> {
     assert_custom_pause_rejects(owner()).await

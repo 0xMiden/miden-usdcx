@@ -2025,9 +2025,13 @@ pub struct BurnPolicyHarness {
 /// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` for the burn oracle — a faithful
 /// replica of the production builder's private `seeded_dom_roles_rbac` (Option A: both stock RBAC maps
 /// direct-seeded with the two Circle Domain role members `DOM_PAUSER`→`pauser_holder` and
-/// `DOM_MANAGER`→`manager_holder`). The burn oracle needs the RBAC foundation so the DOM_PAUSER-sent
-/// custom `xreserve::pause_admin::pause` clears its role gate (the pause gate `burn_paused_rejects`
-/// exercises). Reuses the stock RBAC code + slot names + metadata verbatim.
+/// `DOM_MANAGER`→`manager_holder`; `DOM_PAUSER` administration delegated to `DOM_MANAGER` — the CMP-F5
+/// seed `role_config[DOM_PAUSER] = [1, DOM_MANAGER, 0, 0]`). The burn oracle needs the RBAC foundation
+/// so the DOM_PAUSER-sent custom `xreserve::pause_admin::pause` clears its role gate (the pause gate
+/// `burn_paused_rejects` exercises). Reuses the stock RBAC code + slot names + metadata verbatim.
+/// Replica fidelity to the production seed is pinned by
+/// `set_min_burn.rs::support_replica_carries_delegation_seed` (the production twin is
+/// `role_admin.rs::shipped_delegation_reads_back`).
 fn seeded_dom_roles_rbac_component(
     pauser_holder: AccountId,
     manager_holder: AccountId,
@@ -2035,11 +2039,14 @@ fn seeded_dom_roles_rbac_component(
     let pauser = RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol");
     let manager = RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol");
     let member_word = Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
+    // [1, DOM_MANAGER, 0, 0]: member_count = 1 with administration delegated to DOM_MANAGER (CMP-F5).
+    let delegated_config_word =
+        Word::from([Felt::from(1u32), Felt::from(&manager), Felt::ZERO, Felt::ZERO]);
 
     let role_config = StorageMap::with_entries([
         (
             StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&pauser)])),
-            member_word,
+            delegated_config_word,
         ),
         (
             StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&manager)])),

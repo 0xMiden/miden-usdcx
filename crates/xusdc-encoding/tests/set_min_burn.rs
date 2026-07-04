@@ -2,8 +2,8 @@
 //! CMP-A10's `burn_policy::check_policy` reads for R-BURN-2. Under the ratified Circle-faithful admin
 //! model (DECISION-ADMIN-ROLE-MODEL), all three faucet setters gate on the Ownable2Step OWNER via the
 //! account-wide `Authority::OwnerControlled`; the built `ATTEST_ADMIN` role is removed and the RBAC
-//! foundation is repurposed to seed `DOM_PAUSER` + `DOM_MANAGER` role MEMBERS (their consumers — custom
-//! pause, role management — are later slices, NOT built here).
+//! foundation is repurposed to seed `DOM_PAUSER` + `DOM_MANAGER` role MEMBERS (their consumers —
+//! custom pause CMP-F3, role management CMP-F5 — are built in later slices, NOT here).
 //!
 //! This file covers the setter's owner gate (the security core), write integrity, the pause gate, the
 //! owner-ONLY proof (a seeded non-owner DOM role-holder is rejected), and the DOM seed itself. The

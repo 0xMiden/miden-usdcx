@@ -27,6 +27,7 @@ use miden_protocol::account::{Account, AccountId, StorageSlotDelta, StorageSlotN
 use miden_protocol::errors::MasmError;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
+use rstest::rstest;
 use support::*;
 use xusdc_encoding::vectors::{DiFields, DiVector, load, parse_hex32};
 use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
@@ -400,6 +401,48 @@ async fn owner_is_not_dom_pauser_on_custom_pause() -> Result<()> {
 #[tokio::test]
 async fn other_role_holder_cannot_pause() -> Result<()> {
     assert_custom_pause_rejects(dom_manager()).await
+}
+
+/// The custom `unpause` role gate, proven NEGATIVELY (audit HIGH finding): a non-DOM_PAUSER sender
+/// — stranger, owner, or a DIFFERENT role holder (DOM_MANAGER) — is rejected from `unpause` with
+/// the EXACT stock `ERR_SENDER_LACKS_ROLE`, and the faucet STAYS paused (no state change). Unpause
+/// is the security-critical direction (CIR-ADMIN-5 makes unpause joint-approval): an ungated
+/// unpause would let anyone re-enable a paused — possibly compromised — bridge.
+#[rstest]
+#[case::stranger(plain_non_owner())]
+#[case::owner(owner())]
+#[case::dom_manager(dom_manager())]
+#[tokio::test]
+async fn non_dom_pauser_unpause_rejects(#[case] sender: AccountId) -> Result<()> {
+    let bh = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        VALID_BURN,
+    )?;
+    let account = bh.chain.committed_account(bh.faucet_id)?.clone();
+
+    // Arm the negative on a genuinely paused faucet: a real DOM_PAUSER pause first.
+    let paused = run_dom_pauser_pause(&bh.chain, &account, dom_pauser(), 11)
+        .await
+        .expect("DOM_PAUSER pauses the faucet");
+    let mut evolved = account.clone();
+    evolved.apply_delta(paused.account_delta())?;
+    assert_eq!(
+        read_is_paused(&evolved)?,
+        Word::from([1u32, 0, 0, 0]),
+        "paused before the unpause probe"
+    );
+
+    let result = run_dom_pauser_unpause(&bh.chain, &evolved, sender, 12).await;
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
+    assert_eq!(
+        read_is_paused(&evolved)?,
+        Word::from([1u32, 0, 0, 0]),
+        "a rejected custom unpause leaves the faucet paused (no state change)"
+    );
+    Ok(())
 }
 
 /// SEPARATION: the DOM_PAUSER holder (id 2) can pause but is NOT the owner — an owner-gated setter

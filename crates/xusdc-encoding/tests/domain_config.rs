@@ -763,6 +763,46 @@ async fn domain_init_then_wrong_identifier_mint_rejects() -> Result<()> {
     Ok(())
 }
 
+/// Item-7 CHARACTERIZATION (surface, don't fix): a mint attempted BEFORE `domain_init`, crafted to
+/// the audit-derived WORST-CASE shape — `remoteDomain = 0`. Pre-init the domain slot reads
+/// `[0,0,0,0]`, so the D5a domain compare (R-MINT-6) PASSES for a remoteDomain=0 intent (0 == the
+/// unwritten slot's 0 — the domain compare is NOT what forecloses this mint). The SOLE foreclosure
+/// is the NEXT check, the R-MINT-7 identifier compare: the intent's remoteToken key-Word (a
+/// Poseidon2 image via `bytes32_to_storage_map_key`) vs the EMPTY identifier slot. That is a
+/// cryptographic ACCIDENT, not a designed guard — a Poseidon2 image equal to the zero Word is
+/// practically unreachable, so the foreclosure is robust but undesigned. This test pins the exact
+/// foreclosing error so any change to that mechanism (e.g. a future `domain_init`-required guard,
+/// or a reordering of the D5a compares) surfaces loudly. The attestation is VALID over the edited
+/// payload and the attester IS allowlisted — neither is what forecloses.
+#[tokio::test]
+async fn mint_before_domain_init_rejects() -> Result<()> {
+    // The canonical happy payload with remoteDomain (u32 BE at byte offset 40, gen_vectors.rs:153)
+    // zeroed — the worst case: it MATCHES the unwritten domain slot.
+    let mut payload = happy_payload();
+    payload[40..44].fill(0);
+    let attester = gen_attester(1, &payload);
+    let driver = mint_composition_driver_src(&pack(&payload), LEN_FELTS, SCALE_EXP);
+    let probe = composition_noeffect_probe_src(0, nonce_key());
+    let gm = setup_guarded_mint_account(
+        GuardSelection::ProductionDeny,
+        1_000_000,
+        0,
+        empty_word(),
+        empty_word(),
+        None,
+        Some((attester.commitment, Word::from(MARKER))),
+        &driver,
+        &probe,
+        true,
+    )?;
+    let account = faucet_account(&gm.harness);
+
+    // NO domain_init: all five domain-config slots are the exact pre-init state (EMPTY).
+    let result = run_mint_against(&gm.harness, &account, composition_advice([0u32; 8], &attester)).await;
+    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_WRONG_IDENTIFIER"));
+    Ok(())
+}
+
 // SOLE-WRITER STATIC SWEEP — only domain_init writes the five domain-config slots (immutability's
 // structural leg; the N1A-family idiom)
 // ================================================================================================

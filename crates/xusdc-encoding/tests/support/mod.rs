@@ -2986,6 +2986,112 @@ pub async fn run_set_role_admin_against(
     run_rbac_note_against(chain, account, note, "set_role_admin").await
 }
 
+// ITEM-6 OWNABLE2STEP TWO-STEP OWNER TRANSFER — notes + runners + owner-config read-back
+// ================================================================================================
+
+/// A `transfer_ownership(new_owner)` note sent by `sender` (stock gate: OWNER-only,
+/// `standards/access/ownable2step.masm:248`; the pending nominee has no authority until accept).
+/// Stack contract: `[new_owner_suffix, new_owner_prefix, pad(14)]` (suffix on top). Like the rbac
+/// notes, the stock proc is a pure standards proc, so the absolute-path `call` resolves to the
+/// SAME proc root the production account exposes via the Ownable2Step component re-exports
+/// (`account_components/access/ownable2step.masm`).
+pub fn transfer_ownership_note(sender: AccountId, new_owner: AccountId, seed: u64) -> Result<Note> {
+    let new_suffix = new_owner.suffix().as_canonical_u64();
+    let new_prefix = new_owner.prefix().as_felt().as_canonical_u64();
+    let src = format!(
+        "@note_script\n\
+         pub proc main\n\
+         \x20\x20\x20\x20repeat.14 push.0 end\n\
+         \x20\x20\x20\x20push.{new_prefix}\n\
+         \x20\x20\x20\x20push.{new_suffix}\n\
+         \x20\x20\x20\x20call.::miden::standards::access::ownable2step::transfer_ownership\n\
+         \x20\x20\x20\x20dropw dropw dropw dropw\n\
+         end\n",
+    );
+    let script = CodeBuilder::new()
+        .compile_note_script(src.clone())
+        .map_err(|e| {
+            anyhow::anyhow!("transfer_ownership note script failed to compile: {e}\n{src}")
+        })?;
+    // Fresh serial tail [27,28] — disjoint from every other admin-note family.
+    let mut rng = RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(27u32),
+        Felt::from(28u32),
+    ]));
+    Ok(NoteBuilder::new(sender, &mut rng)
+        .note_type(NoteType::Private)
+        .script(script)
+        .build()?)
+}
+
+/// An `accept_ownership` note sent by `sender` (stock gate: NOMINATED-owner-only,
+/// `standards/access/ownable2step.masm:292-324`). Stack contract: `[pad(16)]`.
+pub fn accept_ownership_note(sender: AccountId, seed: u64) -> Result<Note> {
+    let src = "@note_script\n\
+         pub proc main\n\
+         \x20\x20\x20\x20repeat.16 push.0 end\n\
+         \x20\x20\x20\x20call.::miden::standards::access::ownable2step::accept_ownership\n\
+         \x20\x20\x20\x20dropw dropw dropw dropw\n\
+         end\n"
+        .to_string();
+    let script = CodeBuilder::new()
+        .compile_note_script(src.clone())
+        .map_err(|e| {
+            anyhow::anyhow!("accept_ownership note script failed to compile: {e}\n{src}")
+        })?;
+    // Fresh serial tail [29,30] — disjoint from every other admin-note family.
+    let mut rng = RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(29u32),
+        Felt::from(30u32),
+    ]));
+    Ok(NoteBuilder::new(sender, &mut rng)
+        .note_type(NoteType::Private)
+        .script(script)
+        .build()?)
+}
+
+/// Executes a `transfer_ownership` note (sent by `sender`) against the faucet `account`.
+pub async fn run_transfer_ownership_against(
+    chain: &MockChain,
+    account: &Account,
+    sender: AccountId,
+    new_owner: AccountId,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = transfer_ownership_note(sender, new_owner, seed)
+        .expect("building the transfer_ownership note (test-setup invariant)");
+    run_rbac_note_against(chain, account, note, "transfer_ownership").await
+}
+
+/// Executes an `accept_ownership` note (sent by `sender`) against the faucet `account`.
+pub async fn run_accept_ownership_against(
+    chain: &MockChain,
+    account: &Account,
+    sender: AccountId,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = accept_ownership_note(sender, seed)
+        .expect("building the accept_ownership note (test-setup invariant)");
+    run_rbac_note_against(chain, account, note, "accept_ownership").await
+}
+
+/// Reads the Ownable2Step `owner_config` value slot:
+/// `[owner_suffix, owner_prefix, nominated_owner_suffix, nominated_owner_prefix]`
+/// (pinned `ownable2step.rs:25,40-42`); the nominated pair is `(0, 0)` when no transfer pends.
+pub fn read_owner_config(account: &Account) -> Result<Word> {
+    account
+        .storage()
+        .get_item(
+            &StorageSlotName::new("miden::standards::access::ownable2step::owner_config")
+                .context("owner_config slot label")?,
+        )
+        .map_err(|e| anyhow::anyhow!("reading the owner_config value slot: {e}"))
+}
+
 /// Reads a role's `role_config` word `[member_count, admin_role_symbol, 0, 0]` from a
 /// committed/evolved account (stock key encoding `[0,0,0,role_symbol]`, rbac.masm:12).
 pub fn read_role_config(account: &Account, role: &RoleSymbol) -> Result<Word> {

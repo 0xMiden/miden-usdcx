@@ -70,18 +70,19 @@ pub const BURN_POLICY_PROC_PATH: &str = "xreserve::burn_policy::check_policy";
 /// seeds it as `[min_burn_size, 0, 0, 0]`.
 pub const MIN_BURN_SIZE_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin::min_burn_size";
 
-/// The shipped on-chain `TokenSymbol` guard constant (§5.13 token config). The pinned
-/// `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs:17` `ShortCapitalString`), so the spec's
-/// Circle-facing label `"xUSDC"` is unrepresentable on-chain — a pre-existing VM-forced naming
-/// condition surfaced for acceptance-time recording (human/orchestrator process gate, 2026-07-06;
-/// no register row is authored in this slice). [`XReserveStablecoinBuilder::build_components`]
-/// rejects any other symbol so the deployed symbol is load-bearing.
-pub const XUSDC_TOKEN_SYMBOL: &str = "XUSDC";
+/// The shipped on-chain `TokenSymbol` guard constant (§5.13 token config). The token's identity is
+/// **USDCx** (human decision 2026-07-06) — a DISTINCT identity from the superseded "xUSDC" label;
+/// the two must not be confused. The pinned `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs:17`
+/// `ShortCapitalString`), so the on-chain symbol is `USDCX`, the VM-forced uppercase form of
+/// "USDCx"; the display `TokenName` keeps the mixed-case "USDCx".
+/// [`XReserveStablecoinBuilder::build_components`] rejects any other symbol so the deployed symbol
+/// is load-bearing.
+pub const USDCX_TOKEN_SYMBOL: &str = "USDCX";
 
-/// The spec-mandated token decimals (§5.13 `token_config (decimals=6, "xUSDC")`; CIR-FEE-3 six
-/// decimal places — the D5b reducer scales to 6dp, so a mismatched faucet would silently mis-scale
-/// every minted amount).
-pub const XUSDC_DECIMALS: u8 = 6;
+/// The spec-mandated token decimals (§5.13 `token_config` decimals=6; CIR-FEE-3 six decimal
+/// places — the D5b reducer scales to 6dp, so a mismatched faucet would silently mis-scale every
+/// minted amount).
+pub const USDCX_DECIMALS: u8 = 6;
 
 /// Canonical Rust labels of the seven caller-declared `xreserve` storage slots (the single Rust
 /// source, the [`MIN_BURN_SIZE_SLOT_LABEL`] precedent: the tests re-export these and the
@@ -155,17 +156,15 @@ pub enum XReserveStablecoinBuilderError {
     /// validate-what-you-ship, [`REQUIRED_XRESERVE_SLOT_LABELS`]: a missing slot would ship a
     /// faucet whose reads/writes of that slot trap at runtime). Carries the missing slot's label.
     MissingXReserveSlot(&'static str),
-    /// The supplied faucet's `decimals` is not the spec-mandated [`XUSDC_DECIMALS`] (= 6; §5.13
-    /// `token_config (decimals=6, "xUSDC")`; CIR-FEE-3 six decimal places — the D5b reducer scales
-    /// to 6dp, so a mismatched faucet silently mis-scales every amount). Carries the offending
-    /// value.
+    /// The supplied faucet's `decimals` is not the spec-mandated [`USDCX_DECIMALS`] (= 6; §5.13
+    /// `token_config` decimals=6; CIR-FEE-3 six decimal places — the D5b reducer scales to 6dp,
+    /// so a mismatched faucet silently mis-scales every amount). Carries the offending value.
     WrongDecimals(u8),
-    /// The supplied faucet's `TokenSymbol` is not the shipped [`XUSDC_TOKEN_SYMBOL`] guard
-    /// constant. The pinned `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs:17`), so the
-    /// spec's Circle-facing label `"xUSDC"` is unrepresentable on-chain — a pre-existing VM-forced
-    /// naming condition surfaced for acceptance-time recording (human/orchestrator process gate,
-    /// 2026-07-06); this guard pins the shipped constant so the deployed symbol is load-bearing
-    /// and a drift fails the build.
+    /// The supplied faucet's `TokenSymbol` is not the shipped [`USDCX_TOKEN_SYMBOL`] guard
+    /// constant. The token's identity is USDCx (human decision 2026-07-06, distinct from the
+    /// superseded "xUSDC"); the pinned `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs:17`),
+    /// so the on-chain symbol is the VM-forced uppercase `USDCX`; this guard pins the shipped
+    /// constant so the deployed symbol is load-bearing and a drift fails the build.
     WrongTokenSymbol,
     /// The underlying `TokenPolicyManager` rejected the policy registration.
     PolicyManager(TokenPolicyManagerError),
@@ -221,7 +220,7 @@ impl fmt::Display for XReserveStablecoinBuilderError {
             ),
             Self::WrongTokenSymbol => write!(
                 f,
-                "xusdc faucet token symbol must be the shipped XUSDC guard constant"
+                "xusdc faucet token symbol must be the shipped USDCX guard constant"
             ),
             Self::PolicyManager(_) => write!(f, "token policy manager composition failed"),
         }
@@ -420,13 +419,13 @@ impl XReserveStablecoinBuilder {
             }
         }
         // §5.13 token-config exactness: decimals MUST be 6 (CIR-FEE-3; the D5b reducer scales to
-        // 6dp) and the symbol MUST be the shipped XUSDC guard constant (the Circle-facing "xUSDC"
-        // is unrepresentable — see XUSDC_TOKEN_SYMBOL).
-        if self.faucet.decimals() != XUSDC_DECIMALS {
+        // 6dp) and the symbol MUST be the shipped USDCX guard constant (the USDCx identity's
+        // VM-forced uppercase on-chain form — see USDCX_TOKEN_SYMBOL).
+        if self.faucet.decimals() != USDCX_DECIMALS {
             return Err(XReserveStablecoinBuilderError::WrongDecimals(self.faucet.decimals()));
         }
-        let expected_symbol = TokenSymbol::new(XUSDC_TOKEN_SYMBOL)
-            .expect("the shipped XUSDC symbol guard constant is a valid TokenSymbol");
+        let expected_symbol = TokenSymbol::new(USDCX_TOKEN_SYMBOL)
+            .expect("the shipped USDCX symbol guard constant is a valid TokenSymbol");
         if self.faucet.symbol() != &expected_symbol {
             return Err(XReserveStablecoinBuilderError::WrongTokenSymbol);
         }

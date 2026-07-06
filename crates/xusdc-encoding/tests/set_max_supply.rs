@@ -94,7 +94,7 @@ async fn set_max_supply_immutable_traps() -> Result<()> {
 async fn set_max_supply_owner_succeeds() -> Result<()> {
     let gm = guarded_faucet(0, true)?;
     let account = faucet_account(&gm.harness);
-    let before = read_token_config(&account)?; // [token_supply=0, max_supply=1_000_000, decimals=6, "XUSDC"]
+    let before = read_token_config(&account)?; // [token_supply=0, max_supply=1_000_000, decimals=6, "USDCX"]
 
     let executed = run_set_max_supply_tx(&gm.harness, &account, owner(), 500_000, 7)
         .await

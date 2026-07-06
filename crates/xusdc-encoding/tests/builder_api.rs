@@ -36,7 +36,7 @@ const DUMMY_DOMAIN: u32 = 7;
 /// (non-public / missing-deny) and the immutable-rejection test pass `false`.
 fn faucet_and_component(is_max_supply_mutable: bool) -> Result<(FungibleFaucet, AccountComponent)> {
     Ok((
-        production_faucet(is_max_supply_mutable, 6, "XUSDC")?,
+        production_faucet(is_max_supply_mutable, 6, "USDCX")?,
         xreserve_component_with_slots(&ALL_XRESERVE_SLOT_LABELS)?,
     ))
 }
@@ -84,14 +84,14 @@ fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
 }
 
 /// Builds a `FungibleFaucet` with configurable decimals/symbol — the fixture for the §5.13
-/// token-config guard tests (`decimals=6`, the shipped `XUSDC` symbol guard constant).
+/// token-config guard tests (`decimals=6`, the shipped `USDCX` symbol guard constant).
 fn production_faucet(
     is_max_supply_mutable: bool,
     decimals: u8,
     symbol: &str,
 ) -> Result<FungibleFaucet> {
     FungibleFaucet::builder()
-        .name(TokenName::new("XUSDC")?)
+        .name(TokenName::new("USDCx")?)
         .symbol(TokenSymbol::new(symbol)?)
         .decimals(decimals)
         .max_supply(AssetAmount::new(1_000_000).context("invalid max_supply")?)
@@ -413,7 +413,7 @@ fn build_rejects_missing_xreserve_slot(#[case] omitted: usize) -> Result<()> {
         .map(|(_, l)| *l)
         .collect();
     let component = xreserve_component_with_slots(&labels)?;
-    let faucet = production_faucet(true, 6, "XUSDC")?;
+    let faucet = production_faucet(true, 6, "USDCX")?;
     let err = XReserveStablecoinBuilder::new(
         faucet,
         component,
@@ -439,7 +439,7 @@ fn build_rejects_missing_xreserve_slot(#[case] omitted: usize) -> Result<()> {
 #[test]
 fn build_rejects_wrong_decimals() -> Result<()> {
     let component = xreserve_component_with_slots(&ALL_XRESERVE_SLOT_LABELS)?;
-    let faucet = production_faucet(true, 7, "XUSDC")?;
+    let faucet = production_faucet(true, 7, "USDCX")?;
     let err = XReserveStablecoinBuilder::new(
         faucet,
         component,
@@ -456,16 +456,16 @@ fn build_rejects_wrong_decimals() -> Result<()> {
     Ok(())
 }
 
-/// §5.13 token-config exactness: a faucet whose `TokenSymbol` is not the shipped `XUSDC` guard
-/// constant is rejected with the EXACT `WrongTokenSymbol`. (The spec's Circle-facing "xUSDC" is
-/// unrepresentable on-chain — pinned `TokenSymbol` is uppercase A–Z only, `token_symbol.rs:17`; a
-/// pre-existing VM-forced naming condition surfaced for acceptance-time recording per the
-/// human/orchestrator process gate 2026-07-06 — this guard pins the SHIPPED constant so the
-/// deployed symbol is load-bearing.) RED: the shipped builder performs no symbol check.
+/// §5.13 token-config exactness: a faucet whose `TokenSymbol` is not the shipped `USDCX` guard
+/// constant is rejected with the EXACT `WrongTokenSymbol`. The token's identity is USDCx (human
+/// decision 2026-07-06, DISTINCT from the superseded "xUSDC"); the pinned `TokenSymbol` is
+/// uppercase A–Z only (`token_symbol.rs:17`), so `USDCX` is the VM-forced uppercase on-chain form.
+/// The WRONG fixture is deliberately the superseded `"XUSDC"` — this test now also guards against
+/// regressing to the old symbol.
 #[test]
 fn build_rejects_wrong_token_symbol() -> Result<()> {
     let component = xreserve_component_with_slots(&ALL_XRESERVE_SLOT_LABELS)?;
-    let faucet = production_faucet(true, 6, "USDX")?;
+    let faucet = production_faucet(true, 6, "XUSDC")?;
     let err = XReserveStablecoinBuilder::new(
         faucet,
         component,
@@ -474,7 +474,7 @@ fn build_rejects_wrong_token_symbol() -> Result<()> {
         test_account_id(3),
     )
     .build_components()
-    .expect_err("a faucet whose symbol is not the shipped XUSDC must be rejected at build time");
+    .expect_err("a faucet whose symbol is not the shipped USDCX must be rejected at build time");
     assert!(
         matches!(err, XReserveStablecoinBuilderError::WrongTokenSymbol),
         "expected WrongTokenSymbol, got {err:?}"

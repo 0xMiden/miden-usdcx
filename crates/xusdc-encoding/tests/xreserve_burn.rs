@@ -60,7 +60,7 @@ async fn emitted_items_for(items: &XReserveBurnItems) -> anyhow::Result<Vec<Felt
         Auth::BasicAuth {
             auth_scheme: AuthScheme::Falcon512Poseidon2,
         },
-        "XUSDC",
+        "USDCX",
         cap,
         Some(cap),
     )?;

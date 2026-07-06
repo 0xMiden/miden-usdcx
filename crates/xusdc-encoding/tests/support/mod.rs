@@ -746,7 +746,7 @@ pub struct MintInputs {
 }
 
 /// Builds a MockChain `FungibleFaucet` account (token_config = [token_supply, max_supply, 6,
-/// "XUSDC"]) carrying the xreserve component (the `apply_mint_effects` proc + the `usedNonces` map
+/// "USDCX"]) carrying the xreserve component (the `apply_mint_effects` proc + the `usedNonces` map
 /// slot), the generated mint driver, AND a no-effects readback probe, plus a recipient wallet for
 /// the P2ID note. Mirrors the canary-proven construction
 /// (`add_existing_account_from_components([faucet.into(), …])`).
@@ -795,8 +795,8 @@ pub fn setup_mint_faucet_account(
     .context("binding the xreserve library + usedNonces slot as a component")?;
 
     let faucet = FungibleFaucet::builder()
-        .name(TokenName::new("XUSDC")?)
-        .symbol(TokenSymbol::new("XUSDC")?)
+        .name(TokenName::new("USDCx")?)
+        .symbol(TokenSymbol::new("USDCX")?)
         .decimals(6)
         .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
@@ -1100,8 +1100,8 @@ pub fn setup_mint_composition_account(
     .context("binding the no-effects probe component")?;
 
     let faucet = FungibleFaucet::builder()
-        .name(TokenName::new("XUSDC")?)
-        .symbol(TokenSymbol::new("XUSDC")?)
+        .name(TokenName::new("USDCx")?)
+        .symbol(TokenSymbol::new("USDCX")?)
         .decimals(6)
         .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
@@ -1129,8 +1129,8 @@ pub fn setup_mint_composition_account(
 /// harmless placeholder for those [`CompositionHarness`] fields.
 pub fn setup_bare_immutable_faucet(token_supply: u64, max_supply: u64) -> Result<CompositionHarness> {
     let faucet = FungibleFaucet::builder()
-        .name(TokenName::new("XUSDC")?)
-        .symbol(TokenSymbol::new("XUSDC")?)
+        .name(TokenName::new("USDCx")?)
+        .symbol(TokenSymbol::new("USDCX")?)
         .decimals(6)
         .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
@@ -1820,8 +1820,8 @@ pub fn setup_rotation_account(
     }
 
     let faucet = FungibleFaucet::builder()
-        .name(TokenName::new("XUSDC")?)
-        .symbol(TokenSymbol::new("XUSDC")?)
+        .name(TokenName::new("USDCx")?)
+        .symbol(TokenSymbol::new("USDCX")?)
         .decimals(6)
         .max_supply(AssetAmount::new(1_000_000).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(0).context("invalid token_supply")?)
@@ -2006,8 +2006,8 @@ pub fn setup_guarded_mint_account(
     .context("binding the no-effects probe component")?;
 
     let faucet = FungibleFaucet::builder()
-        .name(TokenName::new("XUSDC")?)
-        .symbol(TokenSymbol::new("XUSDC")?)
+        .name(TokenName::new("USDCx")?)
+        .symbol(TokenSymbol::new("USDCX")?)
         .decimals(6)
         .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
@@ -2374,8 +2374,8 @@ pub fn setup_burn_policy_account(
     let burn_root = resolve(BURN_POLICY_PROC_PATH)?;
 
     let faucet = FungibleFaucet::builder()
-        .name(TokenName::new("XUSDC")?)
-        .symbol(TokenSymbol::new("XUSDC")?)
+        .name(TokenName::new("USDCx")?)
+        .symbol(TokenSymbol::new("USDCX")?)
         .decimals(6)
         .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
@@ -3184,8 +3184,8 @@ pub fn setup_assembled_faucet(
     }
 
     let faucet = FungibleFaucet::builder()
-        .name(TokenName::new("XUSDC")?)
-        .symbol(TokenSymbol::new("XUSDC")?)
+        .name(TokenName::new("USDCx")?)
+        .symbol(TokenSymbol::new("USDCX")?)
         .decimals(6)
         .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)

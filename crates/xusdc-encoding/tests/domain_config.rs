@@ -372,9 +372,11 @@ async fn domain_init_reinit_leaves_all_fields_unchanged() -> Result<()> {
 
 /// Shared body of the malformed-scalar/limb guard family: the malformed value staged DIRECTLY as a
 /// raw > u32::MAX felt (bypassing the u32-typed Rust builder, which cannot produce it) must trap
-/// the EXACT per-field guard error and write NO domain-config slot (all five words still empty
-/// afterwards). RED: the shipped proc has no guards — the malformed init SUCCEEDS and writes, so
-/// both the expected-trap and the no-write assertions fail behaviorally.
+/// the EXACT per-field guard error. RED: the shipped proc has no guards — the malformed init
+/// SUCCEEDS, so the expected-trap assertion (`Execution was unexpectedly successful`) is the
+/// behavioral red trigger. The trailing no-write read-back is the GREEN-phase contract
+/// (belt-and-braces: a trapped tx commits nothing, so the un-evolved snapshot stays empty); it is
+/// not itself the red signal.
 async fn assert_malformed_value_traps(
     domain: u64,
     source_domain: u64,

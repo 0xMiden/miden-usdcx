@@ -204,6 +204,38 @@ fn assert_supply(chain: &MockChain, faucet_id: AccountId, expected: u64, what: &
     Ok(())
 }
 
+/// Reads a map-slot entry word from an account (the attester-allowlist / usedNonces read-backs).
+fn read_map_word(account: &Account, slot_label: &str, key: Word) -> Result<Word> {
+    account
+        .storage()
+        .get_map_item(
+            &miden_protocol::account::StorageSlotName::new(slot_label)
+                .with_context(|| format!("slot label {slot_label}"))?,
+            key,
+        )
+        .map_err(|e| anyhow::anyhow!("reading map slot {slot_label}: {e}"))
+}
+
+/// The recipient wallet's total balance of the faucet's fungible asset (vault iteration — the
+/// custody read-back for S7/D-E2E-ARC).
+fn wallet_balance(account: &Account, faucet_id: AccountId) -> u64 {
+    account
+        .vault()
+        .assets()
+        .filter_map(|asset| match asset {
+            miden_protocol::asset::Asset::Fungible(f) if f.faucet_id() == faucet_id => {
+                Some(u64::from(f.amount()))
+            },
+            _ => None,
+        })
+        .sum()
+}
+
+/// The map marker word `[1, 0, 0, 0]` (attester enabled / nonce used / role member).
+fn marker() -> Word {
+    Word::from([1u32, 0, 0, 0])
+}
+
 // THE FULL LIFECYCLE
 // ================================================================================================
 
@@ -231,9 +263,9 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let identifier = identifier_word();
     let xrc = test_xreserve_contract();
     let pauser_sym = RoleSymbol::new(DOM_PAUSER_ROLE).expect("valid role symbol");
-    let _manager_sym = RoleSymbol::new(DOM_MANAGER_ROLE).expect("valid role symbol");
+    let manager_sym = RoleSymbol::new(DOM_MANAGER_ROLE).expect("valid role symbol");
 
-    // S0 read-backs: empty domain config; supply 0.
+    // S0 read-backs: empty domain config; supply 0; the CMP-F5 delegation seeded at build.
     let faucet0 = committed(&af.harness.mock_chain, faucet_id)?;
     assert_eq!(
         read_domain_config_words(&faucet0)?,
@@ -241,6 +273,21 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S0: all five domain-config slots ship EMPTY (domain_init is the production writer)"
     );
     assert_supply(&af.harness.mock_chain, faucet_id, 0, "S0 assembly")?;
+    assert_eq!(
+        read_role_config(&faucet0, &pauser_sym)?,
+        Word::new([Felt::from(1u32), Felt::from(&manager_sym), Felt::from(0u32), Felt::from(0u32)]),
+        "S0: role_config[DOM_PAUSER] carries the CMP-F5 delegation (admin_role = DOM_MANAGER)"
+    );
+    assert_eq!(
+        read_role_config(&faucet0, &manager_sym)?,
+        marker(),
+        "S0: role_config[DOM_MANAGER] is owner-administered ([1,0,0,0])"
+    );
+    assert_eq!(
+        read_map_word(&faucet0, XRESERVE_ATTESTERS_SLOT_LABEL, attester1.commitment)?,
+        Word::from([0u32, 0, 0, 0]),
+        "S0: the attester allowlist ships EMPTY (set_attester is the bring-up writer)"
+    );
 
     // ── S1a — INIT REJECT: a stranger's domain_init traps the EXACT owner error; nothing written.
     let result = run_domain_init_tx(
@@ -281,6 +328,18 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S1b: xreserve_contract_lo read-back"
     );
     assert_eq!(words[4], identifier, "S1b: identifier read-back (verbatim)");
+    // D-A6-XRC guard 1 (lossless leg): the stored bytes32 round-trips through the FAIL-CLOSED
+    // inverse back to the input — the GetAccount-readable public identity.
+    let stored_xrc: [Felt; 8] = [
+        words[2][0], words[2][1], words[2][2], words[2][3], words[3][0], words[3][1], words[3][2],
+        words[3][3],
+    ];
+    assert_eq!(
+        xusdc_encoding::xreserve::encoding::packed_felts_to_bytes32(&stored_xrc)
+            .expect("S1b: stored xreserve_contract limbs are valid u32s (fail-closed inverse)"),
+        xrc,
+        "S1b: fail-closed bytes32 round-trip == the input xreserve_contract"
+    );
     commit(&mut af.harness.mock_chain, &init_tx)?;
 
     // ── S2 — RE-INIT: a second owner init traps the EXACT R-ADMIN-4 error; every field unchanged.
@@ -303,14 +362,29 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S2: the trapped re-init left all five domain-config words unchanged (immutable)"
     );
 
-    // ── S3a — ADMIN: owner allowlists the attester; a stranger's attempt is rejected.
+    // ── S3a — ADMIN: owner allowlists the attester; a stranger's attempt is rejected and leaves
+    // the map unchanged.
     let result =
         run_set_attester_tx(&af.harness, &faucet, stranger(), attester1.commitment, 1, 13).await;
     assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_eq!(
+        read_map_word(&faucet, XRESERVE_ATTESTERS_SLOT_LABEL, attester1.commitment)?,
+        Word::from([0u32, 0, 0, 0]),
+        "S3a: the rejected set_attester left the allowlist unchanged"
+    );
     let tx = run_set_attester_tx(&af.harness, &faucet, owner(), attester1.commitment, 1, 14)
         .await
         .expect("S3a: the owner's set_attester must succeed");
     commit(&mut af.harness.mock_chain, &tx)?;
+    assert_eq!(
+        read_map_word(
+            &committed(&af.harness.mock_chain, faucet_id)?,
+            XRESERVE_ATTESTERS_SLOT_LABEL,
+            attester1.commitment
+        )?,
+        marker(),
+        "S3a: the allowlist marker [1,0,0,0] reads back for the commitment"
+    );
 
     // ── S3b — ADMIN: owner sets max_supply; a stranger's attempt is rejected.
     let faucet = committed(&af.harness.mock_chain, faucet_id)?;
@@ -381,6 +455,15 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(note.metadata().note_type(), NoteType::Public, "S4: recipient note is Public");
     commit(&mut af.harness.mock_chain, &minted)?;
     assert_supply(&af.harness.mock_chain, faucet_id, MINT_REDUCED, "S4 after mint")?;
+    assert_eq!(
+        read_map_word(
+            &committed(&af.harness.mock_chain, faucet_id)?,
+            USED_NONCES_SLOT_LABEL,
+            nonce_key_of_payload(&payload1)
+        )?,
+        marker(),
+        "S4: usedNonces[key] marker set (the first atomic state write)"
+    );
 
     // ── S5 — REPLAY: the same nonce traps the EXACT R-MINT-12 error; supply unchanged.
     let faucet = committed(&af.harness.mock_chain, faucet_id)?;
@@ -402,10 +485,20 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
 
     // ── S7 — P2ID CONSUME: the recipient wallet consumes the minted note (custody-traced funds).
     let recipient = committed(&af.harness.mock_chain, recipient_id)?;
+    assert_eq!(
+        wallet_balance(&recipient, faucet_id),
+        0,
+        "S7: the recipient holds nothing before consuming the mint note"
+    );
     let consume = consume_committed_note(&af.harness.mock_chain, &recipient, mint_note_id)
         .await
         .expect("S7: the recipient consumes its P2ID mint note");
     commit(&mut af.harness.mock_chain, &consume)?;
+    assert_eq!(
+        wallet_balance(&committed(&af.harness.mock_chain, recipient_id)?, faucet_id),
+        MINT_REDUCED,
+        "S7: the recipient's vault holds the full minted amount (custody-traced)"
+    );
 
     // ── S8 — BURN BELOW MIN: a real XReserveBurnNote below min_burn_size is rejected at consume
     // with the EXACT R-BURN-2 error (CMP-A10 live on the assembled instance).
@@ -629,6 +722,36 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         read_min_burn_size(&faucet)?[0],
         Felt::from(AssetAmount::new(MIN_BURN)?),
         "S13: min_burn_size still the S3c value"
+    );
+    assert_eq!(
+        read_map_word(&faucet, USED_NONCES_SLOT_LABEL, nonce_key_of_payload(&payload1))?,
+        marker(),
+        "S13: nonce 1 still marked"
+    );
+    assert_eq!(
+        read_map_word(&faucet, USED_NONCES_SLOT_LABEL, nonce_key_of_payload(&payload2))?,
+        marker(),
+        "S13: nonce 2 still marked"
+    );
+    assert_eq!(
+        read_map_word(&faucet, XRESERVE_ATTESTERS_SLOT_LABEL, attester1.commitment)?,
+        marker(),
+        "S13: the attester allowlist marker survives the whole arc"
+    );
+    assert_eq!(
+        read_role_config(&faucet, &pauser_sym)?,
+        Word::new([Felt::from(1u32), Felt::from(&manager_sym), Felt::from(0u32), Felt::from(0u32)]),
+        "S13: the CMP-F5 delegation word survives the whole arc"
+    );
+    assert_eq!(
+        read_role_membership(&faucet, &pauser_sym, pauser())?,
+        marker(),
+        "S13: the original DOM_PAUSER member is intact"
+    );
+    assert_eq!(
+        read_role_membership(&faucet, &pauser_sym, new_pauser())?,
+        Word::from([0u32, 0, 0, 0]),
+        "S13: the rotated-out member stays revoked"
     );
     Ok(())
 }

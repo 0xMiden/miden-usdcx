@@ -48,7 +48,10 @@ impl fmt::Display for EncodingError {
             Self::LengthMismatch => write!(f, "deposit intent length relation violated"),
             Self::HookDataTooLarge => write!(f, "hook data exceeds the note storage felt bound"),
             Self::AccountIdOutOfRange => {
-                write!(f, "bytes set outside the 15-byte account id region")
+                // R-B / Agglayer-mirroring layout (IMPL-DEV-12 fix): the account id region is the
+                // 16 bytes `bytes[16..32]` (prefix u64 BE + suffix u64 BE) behind a 16-byte zero
+                // pad — not the superseded left-aligned draft's 15-byte region.
+                write!(f, "bytes set outside the 16-byte account id region")
             },
             Self::NonCanonicalAccountId => {
                 write!(f, "bytes do not decode to a canonical account id")

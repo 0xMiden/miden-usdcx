@@ -12,11 +12,15 @@
 //! stitched per-slice fixtures. Every reject pins its EXACT error; every state change is read back;
 //! the final ledger asserts the exact whole-arc supply equation.
 //!
-//! RED-SUITE (executing-red, full-assembly slice): stage S1b's 4-field read-backs fail against the
-//! SHIPPED 2-field `domain_init` (it executes, writes identifier + a junk "domain" from the wrong
-//! stack position, and leaves source_domain/xreserve_contract empty) — the lifecycle dies at its
-//! FIRST load-bearing assertion for exactly the reason the slice exists. The GREEN loop implements
-//! the 4-field `domain_config.masm` and then walks this test stage by stage.
+//! MECHANICS: the admin notes are deterministic and pre-seeded ON-CHAIN at build
+//! (`setup_assembled_faucet` seeded_notes), so every admin step consumes its note BY ID as an
+//! authenticated input — block-provable, which commit-each-step requires (an unauthenticated note
+//! cannot be committed: no inclusion proof). Reject-path notes stay unconsumed after their tx
+//! traps. RED HISTORY (git-replayable): at the red commits the lifecycle died at S1b's 4-field
+//! read-backs against the shipped 2-field `domain_init` (it executed, wrote identifier + a junk
+//! "domain" from the wrong stack position, and left source_domain/xreserve_contract empty) — red
+//! for exactly the reason the slice exists; the green commit implements the 4-field
+//! `domain_config.masm` + the builder guards.
 
 mod support;
 
@@ -244,12 +248,63 @@ fn marker() -> Word {
 #[tokio::test]
 async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // ── S0 — ASSEMBLY: the production builder composes the faucet; domain config + allowlist EMPTY.
+    // All admin notes are DETERMINISTIC and pre-seeded ON-CHAIN at build (indices below), so every
+    // admin step consumes its note BY ID as an authenticated input — block-provable, which the
+    // commit-each-step design requires (an unauthenticated note cannot be committed: "no inclusion
+    // proof"). Reject-path notes simply stay unconsumed after their tx traps.
     let mut af = setup_assembled_faucet(MAX_SUPPLY, 0, |recipient| {
-        vec![
+        let drivers = vec![
             mint_composition_driver_src(&pack(&payload_for(recipient)), LEN_FELTS, SCALE_EXP),
             mint_composition_driver_src(&pack(&payload2_for(recipient)), LEN_FELTS, SCALE_EXP),
-        ]
+        ];
+        let commitment = gen_attester(1, &payload_for(recipient)).commitment;
+        let psym = RoleSymbol::new(DOM_PAUSER_ROLE).expect("valid role symbol");
+        let xrc = test_xreserve_contract();
+        let identifier = identifier_word();
+        let build = |what: &str, r: anyhow::Result<miden_protocol::note::Note>| {
+            r.unwrap_or_else(|e| panic!("building the seeded {what} note: {e}"))
+        };
+        let notes = vec![
+            // 0: S1a stranger domain_init (reject)
+            build("init-stranger", domain_init_note(stranger(), TEST_DOMAIN, TEST_SOURCE_DOMAIN, &xrc, identifier, 910)),
+            // 1: S1b owner domain_init
+            build("init-owner", domain_init_note(owner(), TEST_DOMAIN, TEST_SOURCE_DOMAIN, &xrc, identifier, 911)),
+            // 2: S2 owner re-init with different values (reject)
+            build("re-init", domain_init_note(owner(), TEST_WRONG_DOMAIN, TEST_SOURCE_DOMAIN + 1, &[0xEEu8; 32], Word::from([91u32, 92, 93, 94]), 912)),
+            // 3: S3a stranger set_attester (reject)
+            build("attester-stranger", set_attester_note(stranger(), commitment, 1, 913)),
+            // 4: S3a owner set_attester
+            build("attester-owner", set_attester_note(owner(), commitment, 1, 914)),
+            // 5: S3b stranger set_max_supply (reject)
+            build("max-stranger", set_max_supply_note(stranger(), NEW_MAX_SUPPLY, 915)),
+            // 6: S3b owner set_max_supply
+            build("max-owner", set_max_supply_note(owner(), NEW_MAX_SUPPLY, 916)),
+            // 7: S3c stranger set_min_burn_size (reject)
+            build("min-stranger", set_min_burn_size_note(stranger(), MIN_BURN, 917)),
+            // 8: S3c owner set_min_burn_size
+            build("min-owner", set_min_burn_size_note(owner(), MIN_BURN, 918)),
+            // 9: S10 DOM_PAUSER pause
+            build("pause-pauser", dom_pauser_pause_note(pauser(), 919)),
+            // 10: S10c owner STOCK pause probe (traps UnknownAccountProcedure)
+            build("pause-stock-owner", pause_note(owner(), 920)),
+            // 11: S10d stranger custom pause (reject)
+            build("pause-stranger", dom_pauser_pause_note(stranger(), 921)),
+            // 12: S11 DOM_PAUSER unpause
+            build("unpause-pauser", dom_pauser_unpause_note(pauser(), 922)),
+            // 13: S12 DOM_MANAGER grant_role(DOM_PAUSER, new_pauser)
+            build("grant", grant_role_note(manager(), &psym, new_pauser(), 923)),
+            // 14: S12 new pauser pause
+            build("pause-new", dom_pauser_pause_note(new_pauser(), 924)),
+            // 15: S12 new pauser unpause
+            build("unpause-new", dom_pauser_unpause_note(new_pauser(), 925)),
+            // 16: S12 DOM_MANAGER revoke_role(DOM_PAUSER, new_pauser)
+            build("revoke", revoke_role_note(manager(), &psym, new_pauser(), 926)),
+            // 17: S12 revoked pauser pause attempt (reject)
+            build("pause-revoked", dom_pauser_pause_note(new_pauser(), 927)),
+        ];
+        (drivers, notes)
     })?;
+    let note_id = |i: usize| af.seeded_notes[i].id();
     let faucet_id = af.harness.account_id;
     let recipient_id = af.recipient_id;
     let payload1 = payload_for(recipient_id);
@@ -290,10 +345,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     );
 
     // ── S1a — INIT REJECT: a stranger's domain_init traps the EXACT owner error; nothing written.
-    let result = run_domain_init_tx(
-        &af.harness, &faucet0, stranger(), TEST_DOMAIN, TEST_SOURCE_DOMAIN, &xrc, identifier, 10,
-    )
-    .await;
+    let result = consume_committed_note(&af.harness.mock_chain, &faucet0, note_id(0)).await;
     assert_transaction_executor_error!(result, err_sender_not_owner());
     assert_eq!(
         read_domain_config_words(&committed(&af.harness.mock_chain, faucet_id)?)?,
@@ -302,11 +354,9 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     );
 
     // ── S1b — INIT: the owner writes ALL FOUR §5.9 fields; each reads back exactly.
-    let init_tx = run_domain_init_tx(
-        &af.harness, &faucet0, owner(), TEST_DOMAIN, TEST_SOURCE_DOMAIN, &xrc, identifier, 11,
-    )
-    .await
-    .expect("S1b: the owner's 4-field domain_init must succeed");
+    let init_tx = consume_committed_note(&af.harness.mock_chain, &faucet0, note_id(1))
+        .await
+        .expect("S1b: the owner's 4-field domain_init must succeed");
     let mut faucet1 = faucet0.clone();
     faucet1.apply_delta(init_tx.account_delta())?;
     let words = read_domain_config_words(&faucet1)?;
@@ -344,17 +394,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
 
     // ── S2 — RE-INIT: a second owner init traps the EXACT R-ADMIN-4 error; every field unchanged.
     let faucet = committed(&af.harness.mock_chain, faucet_id)?;
-    let result = run_domain_init_tx(
-        &af.harness,
-        &faucet,
-        owner(),
-        TEST_WRONG_DOMAIN,
-        TEST_SOURCE_DOMAIN + 1,
-        &[0xEEu8; 32],
-        Word::from([91u32, 92, 93, 94]),
-        12,
-    )
-    .await;
+    let result = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(2)).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_DOMAIN_REINIT"));
     assert_eq!(
         read_domain_config_words(&faucet)?,
@@ -364,15 +404,14 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
 
     // ── S3a — ADMIN: owner allowlists the attester; a stranger's attempt is rejected and leaves
     // the map unchanged.
-    let result =
-        run_set_attester_tx(&af.harness, &faucet, stranger(), attester1.commitment, 1, 13).await;
+    let result = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(3)).await;
     assert_transaction_executor_error!(result, err_sender_not_owner());
     assert_eq!(
         read_map_word(&faucet, XRESERVE_ATTESTERS_SLOT_LABEL, attester1.commitment)?,
         Word::from([0u32, 0, 0, 0]),
         "S3a: the rejected set_attester left the allowlist unchanged"
     );
-    let tx = run_set_attester_tx(&af.harness, &faucet, owner(), attester1.commitment, 1, 14)
+    let tx = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(4))
         .await
         .expect("S3a: the owner's set_attester must succeed");
     commit(&mut af.harness.mock_chain, &tx)?;
@@ -388,9 +427,9 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
 
     // ── S3b — ADMIN: owner sets max_supply; a stranger's attempt is rejected.
     let faucet = committed(&af.harness.mock_chain, faucet_id)?;
-    let result = run_set_max_supply_tx(&af.harness, &faucet, stranger(), NEW_MAX_SUPPLY, 15).await;
+    let result = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(5)).await;
     assert_transaction_executor_error!(result, err_sender_not_owner());
-    let tx = run_set_max_supply_tx(&af.harness, &faucet, owner(), NEW_MAX_SUPPLY, 16)
+    let tx = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(6))
         .await
         .expect("S3b: the owner's set_max_supply must succeed");
     commit(&mut af.harness.mock_chain, &tx)?;
@@ -402,11 +441,9 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     );
 
     // ── S3c — ADMIN: owner sets min_burn_size; a stranger's attempt is rejected.
-    let result =
-        run_set_min_burn_size_against(&af.harness.mock_chain, &faucet, stranger(), MIN_BURN, 17)
-            .await;
+    let result = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(7)).await;
     assert_transaction_executor_error!(result, err_sender_not_owner());
-    let tx = run_set_min_burn_size_against(&af.harness.mock_chain, &faucet, owner(), MIN_BURN, 18)
+    let tx = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(8))
         .await
         .expect("S3c: the owner's set_min_burn_size must succeed");
     commit(&mut af.harness.mock_chain, &tx)?;
@@ -561,7 +598,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
 
     // ── S10 — PAUSE: DOM_PAUSER pauses; the halt is real on BOTH paths; the owner has NO path.
     let faucet = committed(&af.harness.mock_chain, faucet_id)?;
-    let tx = run_dom_pauser_pause(&af.harness.mock_chain, &faucet, pauser(), 50)
+    let tx = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(9))
         .await
         .expect("S10: the DOM_PAUSER pause must succeed");
     commit(&mut af.harness.mock_chain, &tx)?;
@@ -599,15 +636,15 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let result = consume_committed_note(&af.harness.mock_chain, &faucet, paused_note.id()).await;
     assert_transaction_executor_error!(result, err_paused());
     // S10c: the owner has NO direct pause path (Option 1 — the stock PausableManager is absent).
-    let result = run_pause_tx(&af.harness, &faucet, owner(), 51).await;
+    let result = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(10)).await;
     let err = result.expect_err("S10c: the stock owner pause path must not exist");
     assert_unknown_account_procedure(&err);
     // S10d: a non-DOM_PAUSER custom pause attempt is rejected with the EXACT role error.
-    let result = run_dom_pauser_pause(&af.harness.mock_chain, &faucet, stranger(), 52).await;
+    let result = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(11)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
 
     // ── S11 — UNPAUSE: DOM_PAUSER unpauses; BOTH paths resume.
-    let tx = run_dom_pauser_unpause(&af.harness.mock_chain, &faucet, pauser(), 53)
+    let tx = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(12))
         .await
         .expect("S11: the DOM_PAUSER unpause must succeed");
     commit(&mut af.harness.mock_chain, &tx)?;
@@ -650,11 +687,9 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // ── S12 — ROTATION (CMP-F5): DOM_MANAGER grants a new pauser -> the new member can pause
     // (capability-proven against a REAL mint); revoke -> they cannot.
     let faucet = committed(&af.harness.mock_chain, faucet_id)?;
-    let tx = run_grant_role_against(
-        &af.harness.mock_chain, &faucet, manager(), &pauser_sym, new_pauser(), 60,
-    )
-    .await
-    .expect("S12: the DOM_MANAGER grant must succeed (delegated admin)");
+    let tx = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(13))
+        .await
+        .expect("S12: the DOM_MANAGER grant must succeed (delegated admin)");
     commit(&mut af.harness.mock_chain, &tx)?;
     let faucet = committed(&af.harness.mock_chain, faucet_id)?;
     assert_eq!(
@@ -662,7 +697,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         Word::from([1u32, 0, 0, 0]),
         "S12: the new pauser's membership reads back"
     );
-    let tx = run_dom_pauser_pause(&af.harness.mock_chain, &faucet, new_pauser(), 61)
+    let tx = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(14))
         .await
         .expect("S12: the NEW pauser can pause");
     commit(&mut af.harness.mock_chain, &tx)?;
@@ -675,16 +710,14 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     )
     .await;
     assert_transaction_executor_error!(result, err_paused());
-    let tx = run_dom_pauser_unpause(&af.harness.mock_chain, &faucet, new_pauser(), 62)
+    let tx = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(15))
         .await
         .expect("S12: the new pauser unpauses");
     commit(&mut af.harness.mock_chain, &tx)?;
     let faucet = committed(&af.harness.mock_chain, faucet_id)?;
-    let tx = run_revoke_role_against(
-        &af.harness.mock_chain, &faucet, manager(), &pauser_sym, new_pauser(), 63,
-    )
-    .await
-    .expect("S12: the DOM_MANAGER revoke must succeed");
+    let tx = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(16))
+        .await
+        .expect("S12: the DOM_MANAGER revoke must succeed");
     commit(&mut af.harness.mock_chain, &tx)?;
     let faucet = committed(&af.harness.mock_chain, faucet_id)?;
     assert_eq!(
@@ -692,7 +725,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         Word::from([0u32, 0, 0, 0]),
         "S12: the revoked member's membership is cleared"
     );
-    let result = run_dom_pauser_pause(&af.harness.mock_chain, &faucet, new_pauser(), 64).await;
+    let result = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(17)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
     assert_eq!(
         read_is_paused(&faucet)?,

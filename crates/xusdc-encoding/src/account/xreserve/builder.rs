@@ -31,7 +31,7 @@ use miden_protocol::account::{
     AccountComponent, AccountId, AccountType, RoleSymbol, StorageMap, StorageMapKey, StorageSlot,
     StorageSlotName,
 };
-use miden_protocol::asset::AssetAmount;
+use miden_protocol::asset::{AssetAmount, TokenSymbol};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Authority, Ownable2Step, RoleBasedAccessControl};
 use miden_standards::account::faucets::FungibleFaucet;
@@ -69,6 +69,49 @@ pub const BURN_POLICY_PROC_PATH: &str = "xreserve::burn_policy::check_policy";
 /// `set_min_burn_size` setter co-owns the SAME slot. [`XReserveStablecoinBuilder::build_components`]
 /// seeds it as `[min_burn_size, 0, 0, 0]`.
 pub const MIN_BURN_SIZE_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin::min_burn_size";
+
+/// The shipped on-chain `TokenSymbol` guard constant (§5.13 token config). The pinned
+/// `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs:17` `ShortCapitalString`), so the spec's
+/// Circle-facing label `"xUSDC"` is unrepresentable on-chain — a pre-existing VM-forced naming
+/// condition surfaced for acceptance-time recording (human/orchestrator process gate, 2026-07-06;
+/// no register row is authored in this slice). [`XReserveStablecoinBuilder::build_components`]
+/// rejects any other symbol so the deployed symbol is load-bearing.
+pub const XUSDC_TOKEN_SYMBOL: &str = "XUSDC";
+
+/// The spec-mandated token decimals (§5.13 `token_config (decimals=6, "xUSDC")`; CIR-FEE-3 six
+/// decimal places — the D5b reducer scales to 6dp, so a mismatched faucet would silently mis-scale
+/// every minted amount).
+pub const XUSDC_DECIMALS: u8 = 6;
+
+/// Canonical Rust labels of the seven caller-declared `xreserve` storage slots (the single Rust
+/// source, the [`MIN_BURN_SIZE_SLOT_LABEL`] precedent: the tests re-export these and the
+/// constant-parity suite pins them against the MASM `word("…")` consts). The five §5.9
+/// domain-config slots + the two registry maps.
+pub const DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::domain";
+pub const IDENTIFIER_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::identifier";
+pub const SOURCE_DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::source_domain";
+pub const XRESERVE_CONTRACT_HI_SLOT_LABEL: &str =
+    "xusdc::xreserve::domain_config::xreserve_contract_hi";
+pub const XRESERVE_CONTRACT_LO_SLOT_LABEL: &str =
+    "xusdc::xreserve::domain_config::xreserve_contract_lo";
+pub const USED_NONCES_SLOT_LABEL: &str = "xusdc::xreserve::nonce_registry::used_nonces";
+pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str =
+    "xusdc::xreserve::attester_admin::xreserve_attesters";
+
+/// The SEVEN storage slots the supplied `xreserve` component must declare (§5.13
+/// validate-what-you-ship): a missing slot would ship a faucet whose reads/writes of it trap
+/// `ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME` at runtime;
+/// [`XReserveStablecoinBuilder::build_components`] rejects at build time instead (`min_burn_size`
+/// is builder-seeded, not caller-declared — see [`XReserveStablecoinBuilder::min_burn_size`]).
+pub const REQUIRED_XRESERVE_SLOT_LABELS: [&str; 7] = [
+    DOMAIN_CONFIG_SLOT_LABEL,
+    IDENTIFIER_CONFIG_SLOT_LABEL,
+    SOURCE_DOMAIN_CONFIG_SLOT_LABEL,
+    XRESERVE_CONTRACT_HI_SLOT_LABEL,
+    XRESERVE_CONTRACT_LO_SLOT_LABEL,
+    USED_NONCES_SLOT_LABEL,
+    XRESERVE_ATTESTERS_SLOT_LABEL,
+];
 
 /// The storage slot the stock `FungibleFaucet` writes its mutability flags into (miden-standards
 /// `token_metadata.rs`, pinned v0.15.3). `build_components` reads it to reject an immutable-`max_supply`
@@ -109,22 +152,20 @@ pub enum XReserveStablecoinBuilderError {
     /// the offending value.
     MinBurnSizeExceedsMax(u64),
     /// The supplied `xreserve` component does not declare a required storage slot (§5.13
-    /// validate-what-you-ship: a missing slot would ship a faucet whose reads/writes of that slot
-    /// trap at runtime). Carries the missing slot's label. RED-SUITE INERT VARIANT (the
-    /// mutability-guard `3fd7636` precedent): declared so the executing-red `builder_api` tests
-    /// compile and fail behaviorally; the GREEN commit adds the presence check.
+    /// validate-what-you-ship, [`REQUIRED_XRESERVE_SLOT_LABELS`]: a missing slot would ship a
+    /// faucet whose reads/writes of that slot trap at runtime). Carries the missing slot's label.
     MissingXReserveSlot(&'static str),
-    /// The supplied faucet's `decimals` is not the spec-mandated 6 (§5.13 `token_config
-    /// (decimals=6, "xUSDC")`; CIR-FEE-3 six decimal places — the D5b reducer scales to 6dp, so a
-    /// mismatched faucet silently mis-scales every amount). Carries the offending value.
-    /// RED-SUITE INERT VARIANT — the GREEN commit adds the check.
+    /// The supplied faucet's `decimals` is not the spec-mandated [`XUSDC_DECIMALS`] (= 6; §5.13
+    /// `token_config (decimals=6, "xUSDC")`; CIR-FEE-3 six decimal places — the D5b reducer scales
+    /// to 6dp, so a mismatched faucet silently mis-scales every amount). Carries the offending
+    /// value.
     WrongDecimals(u8),
-    /// The supplied faucet's `TokenSymbol` is not the shipped `XUSDC` guard constant. The pinned
-    /// `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs:17`), so the spec's Circle-facing
-    /// label `"xUSDC"` is unrepresentable on-chain — a pre-existing VM-forced naming condition
-    /// surfaced for acceptance-time recording (human/orchestrator process gate, 2026-07-06); this
-    /// guard pins the shipped constant so the deployed symbol is load-bearing and a drift fails the
-    /// build. RED-SUITE INERT VARIANT — the GREEN commit adds the check.
+    /// The supplied faucet's `TokenSymbol` is not the shipped [`XUSDC_TOKEN_SYMBOL`] guard
+    /// constant. The pinned `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs:17`), so the
+    /// spec's Circle-facing label `"xUSDC"` is unrepresentable on-chain — a pre-existing VM-forced
+    /// naming condition surfaced for acceptance-time recording (human/orchestrator process gate,
+    /// 2026-07-06); this guard pins the shipped constant so the deployed symbol is load-bearing
+    /// and a drift fails the build.
     WrongTokenSymbol,
     /// The underlying `TokenPolicyManager` rejected the policy registration.
     PolicyManager(TokenPolicyManagerError),
@@ -360,6 +401,34 @@ impl XReserveStablecoinBuilder {
         // precedence. Reject — never mutate the supplied faucet.
         if !self.faucet_max_supply_is_mutable() {
             return Err(XReserveStablecoinBuilderError::ImmutableMaxSupply);
+        }
+        // §5.13 validate-what-you-ship (full-assembly slice): every required xreserve slot must be
+        // declared on the supplied component — a missing slot would ship a faucet whose reads /
+        // writes of it trap ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME at runtime. Presence-only (the
+        // per-slice fixtures legitimately pre-seed values; the E2E proves the empty->domain_init
+        // production path).
+        for label in REQUIRED_XRESERVE_SLOT_LABELS {
+            let name = StorageSlotName::new(label)
+                .expect("the required xreserve slot labels are valid constants");
+            if !self
+                .xreserve_component
+                .storage_slots()
+                .iter()
+                .any(|slot| slot.name() == &name)
+            {
+                return Err(XReserveStablecoinBuilderError::MissingXReserveSlot(label));
+            }
+        }
+        // §5.13 token-config exactness: decimals MUST be 6 (CIR-FEE-3; the D5b reducer scales to
+        // 6dp) and the symbol MUST be the shipped XUSDC guard constant (the Circle-facing "xUSDC"
+        // is unrepresentable — see XUSDC_TOKEN_SYMBOL).
+        if self.faucet.decimals() != XUSDC_DECIMALS {
+            return Err(XReserveStablecoinBuilderError::WrongDecimals(self.faucet.decimals()));
+        }
+        let expected_symbol = TokenSymbol::new(XUSDC_TOKEN_SYMBOL)
+            .expect("the shipped XUSDC symbol guard constant is a valid TokenSymbol");
+        if self.faucet.symbol() != &expected_symbol {
+            return Err(XReserveStablecoinBuilderError::WrongTokenSymbol);
         }
         // CMP-A10 burn slot: wire the installed `burn_policy::check_policy` as the ACTIVE burn policy so
         // every `receive_and_burn` is gated on the R-BURN-1/2 predicate (the burn-slot twin of the

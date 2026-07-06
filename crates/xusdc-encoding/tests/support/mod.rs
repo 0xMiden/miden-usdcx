@@ -77,31 +77,23 @@ pub const TEST_WRONG_DOMAIN: u32 = 8;
 /// Slot labels (frozen CMP-A6 `XReserveDomainConfig` field names under the product
 /// namespace). The MASM shell module must declare `word("…")` consts with byte-identical
 /// labels (parity-enforced from the C5 commits on).
-pub const DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::domain";
-pub const IDENTIFIER_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::identifier";
-
-/// §5.9 4-field closure (P5-01 full-assembly slice): the `source_domain` (u32) value slot —
-/// `[source_domain, 0, 0, 0]`, mirroring the accepted domain realization. Owned + written ONLY by
-/// `domain_init` (no on-chain reader; off-chain identity config read via `GetAccount`). The MASM
-/// `domain_config.masm` declares a byte-identical `word("…")` const at the GREEN commit
-/// (parity-enforced from then on).
-pub const SOURCE_DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::source_domain";
-
-/// §5.9 4-field closure: the `xreserve_contract` bytes32 stored LOSSLESSLY as its 8×u32-LE packed
-/// felts across TWO value slots (human-directed D-A6-XRC): `_hi` = packed felts[0..4] (wire bytes
-/// 0..16), `_lo` = packed felts[4..8] (wire bytes 16..32). Deliberate asymmetry with `identifier`
-/// (a Poseidon2 hash-Word, consumer-forced by D5a's `assert_eqw`): `xreserve_contract` has NO
-/// on-chain consumer, so the public identity must be READABLE (fail-closed
-/// `packed_felts_to_bytes32` round-trip), not merely verifiable. Written ONLY by `domain_init`.
-pub const XRESERVE_CONTRACT_HI_SLOT_LABEL: &str =
-    "xusdc::xreserve::domain_config::xreserve_contract_hi";
-pub const XRESERVE_CONTRACT_LO_SLOT_LABEL: &str =
-    "xusdc::xreserve::domain_config::xreserve_contract_lo";
+// RE-EXPORTED from the production crate (the MIN_BURN_SIZE_SLOT_LABEL precedent, single Rust
+// source: the builder's §5.13 slot-presence guard and these test bindings can never drift). The
+// MASM modules declare byte-identical `word("…")` consts (parity-enforced). The two
+// `xreserve_contract` slots carry the D-A6-XRC raw 8×u32-LE realization (hi = packed felts[0..4]
+// / wire bytes 0..16, lo = felts[4..8]); `identifier` stays the D5a-consumer-forced hash-Word;
+// `source_domain`/`xreserve_contract` are written ONLY by `domain_init` (off-chain identity,
+// `GetAccount`-readable).
+pub use xusdc_encoding::account::xreserve::{
+    DOMAIN_CONFIG_SLOT_LABEL, IDENTIFIER_CONFIG_SLOT_LABEL, SOURCE_DOMAIN_CONFIG_SLOT_LABEL,
+    XRESERVE_CONTRACT_HI_SLOT_LABEL, XRESERVE_CONTRACT_LO_SLOT_LABEL,
+};
 
 /// D5c `usedNonces` map-slot label (frozen §5.6 nonce registry). The MASM shell declares a
 /// `word("…")` const with the byte-identical label at the D5c green commit (parity-enforced
-/// from that commit). Bound here as the single Rust source for the fixture slot binding.
-pub const USED_NONCES_SLOT_LABEL: &str = "xusdc::xreserve::nonce_registry::used_nonces";
+/// from that commit). Re-exported from the production crate (single Rust source with the
+/// builder's §5.13 slot-presence guard).
+pub use xusdc_encoding::account::xreserve::USED_NONCES_SLOT_LABEL;
 
 /// D5e faucet `token_config` value-slot label — the slot the standard `FungibleFaucet` component
 /// installs (`[token_supply, max_supply, decimals, token_symbol]`), read/written by
@@ -110,9 +102,9 @@ pub const TOKEN_CONFIG_SLOT_LABEL: &str = "miden::standards::faucets::fungible::
 
 /// D5d `xReserveAttesters` map-slot label (frozen §5.5 XReserveAttesterAdmin). The MASM
 /// `attestation_verify.masm` declares a `word("…")` const with the byte-identical label
-/// (parity-enforced); the later `set_attester` admin slice co-owns the SAME slot. Bound here as
-/// the single Rust source for the allowlist fixture slot binding.
-pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin::xreserve_attesters";
+/// (parity-enforced); the later `set_attester` admin slice co-owns the SAME slot. Re-exported
+/// from the production crate (single Rust source with the builder's §5.13 slot-presence guard).
+pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 
 /// CMP-A10 `minBurnSize` value-slot label (§5.5 XReserveAttesterAdmin home, SPEC-OWNER RATIFIED).
 /// Re-exported from the production crate so the builder (which SEEDS the slot) and the tests share a
@@ -3100,6 +3092,10 @@ pub struct AssembledFaucet {
     pub harness: CompositionHarness,
     pub drivers: Vec<(String, AccountComponentCode)>,
     pub recipient_id: AccountId,
+    /// The admin notes seeded ON-CHAIN at build (in the caller's order): admin steps consume them
+    /// BY ID as authenticated inputs, so every admin tx is block-provable (an unauthenticated note
+    /// cannot be committed — "no inclusion proof" — which would break the commit-each-step E2E).
+    pub seeded_notes: Vec<Note>,
 }
 
 /// Builds the assembled-faucet E2E fixture. `driver_srcs_for` receives the recipient wallet's
@@ -3110,7 +3106,7 @@ pub struct AssembledFaucet {
 pub fn setup_assembled_faucet(
     max_supply: u64,
     token_supply: u64,
-    driver_srcs_for: impl FnOnce(AccountId) -> Vec<String>,
+    driver_srcs_for: impl FnOnce(AccountId) -> (Vec<String>, Vec<Note>),
 ) -> Result<AssembledFaucet> {
     let mut mc = MockChain::builder();
     // The recipient wallet FIRST: its id feeds the payload/driver generation below.
@@ -3118,7 +3114,10 @@ pub fn setup_assembled_faucet(
         .add_existing_wallet(Auth::IncrNonce)
         .context("adding the recipient wallet")?;
     let recipient_id = recipient.id();
-    let driver_srcs = driver_srcs_for(recipient_id);
+    let (driver_srcs, seeded_notes) = driver_srcs_for(recipient_id);
+    for note in &seeded_notes {
+        mc.add_output_note(RawOutputNote::Full(note.clone()));
+    }
 
     let library = assemble_xreserve_lib()?;
     let empty = || Word::from([0u32, 0, 0, 0]);
@@ -3219,5 +3218,6 @@ pub fn setup_assembled_faucet(
         },
         drivers,
         recipient_id,
+        seeded_notes,
     })
 }

@@ -25,6 +25,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use miden_protocol::account::{AccountId, StorageSlotName};
 use miden_protocol::{Felt, Word};
+use miden_processor::ExecutionError;
+use miden_processor::operation::OperationError;
 use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::*;
@@ -403,7 +405,17 @@ async fn assert_malformed_value_traps(
         1,
     )
     .await;
-    assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
+    // u32assert* surfaces as OperationError::U32AssertionFailed (not FailedAssertion), so the
+    // named error is pinned on that variant's code AND message — the malformed_limb_traps_bad_limb
+    // idiom (mint_recipient_account_id.rs).
+    let expected = shell_error_by_name(expected_err);
+    assert_transaction_executor_error!(
+        result,
+        matches ExecutionError::OperationError {
+            err: OperationError::U32AssertionFailed { ref err_code, ref err_msg, .. },
+            ..
+        } if *err_code == expected.code() && err_msg.as_deref() == Some(expected.message())
+    );
 
     // No-write proof: a trapped tx commits nothing; every domain-config slot is still empty on the
     // (un-evolved) account.

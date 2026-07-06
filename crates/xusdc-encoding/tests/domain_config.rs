@@ -368,6 +368,71 @@ async fn domain_init_reinit_leaves_all_fields_unchanged() -> Result<()> {
     Ok(())
 }
 
+/// R-ADMIN-4 with the PRODUCTION-shaped `domain = 0` (Circle domains can legitimately be 0): the
+/// init succeeds, the stored domain word `[0,0,0,0]` is byte-identical to an UNWRITTEN slot, and
+/// init-once still holds because the sentinel keys on the IDENTIFIER slot, never the domain slot
+/// (`domain_config.masm:43-47`). Off-chain contract this test pins: a stored `[0,0,0,0]` aliases an
+/// unwritten slot, so `GetAccount` readers MUST disambiguate "initialized-to-0" vs "never
+/// initialized" via the **identifier** sentinel, never the domain/source_domain slots. Kills audit
+/// mutant M28 (sentinel retargeted to the domain slot → a domain=0 deploy becomes re-initializable).
+#[tokio::test]
+async fn domain_init_with_zero_domain_is_still_init_once() -> Result<()> {
+    let gm = uninit_faucet()?;
+    let account = faucet_account(&gm.harness);
+    let identifier = dummy_identifier();
+
+    let first = init_four_fields(&gm, &account, owner(), 0, identifier, 1)
+        .await
+        .expect("domain_init with domain=0 (a legitimate Circle domain) must succeed");
+    let mut evolved = account.clone();
+    evolved.apply_delta(first.account_delta())?;
+    let words = read_domain_config_words(&evolved)?;
+    assert_eq!(words[0], empty_word(), "stored domain=0 is byte-identical to an unwritten slot");
+    assert_eq!(words[4], identifier, "the identifier sentinel is armed despite domain=0");
+
+    let result = init_four_fields(&gm, &evolved, owner(), TEST_DOMAIN, identifier, 2).await;
+    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_DOMAIN_REINIT"));
+    Ok(())
+}
+
+/// The `source_domain = 0` sibling — 0 is the PRODUCTION value (Circle source domains start at 0,
+/// Ethereum first), which every other fixture deliberately routes around. Same pinned off-chain
+/// contract: a stored `[0,0,0,0]` aliases an unwritten slot; readers disambiguate via the
+/// identifier sentinel only. Init succeeds, reads back `[0,0,0,0]`, and re-init still traps the
+/// EXACT ERR_XRESERVE_DOMAIN_REINIT.
+#[tokio::test]
+async fn domain_init_with_zero_source_domain_is_still_init_once() -> Result<()> {
+    let gm = uninit_faucet()?;
+    let account = faucet_account(&gm.harness);
+    let identifier = dummy_identifier();
+
+    let first = run_domain_init_tx(
+        &gm.harness,
+        &account,
+        owner(),
+        TEST_DOMAIN,
+        0,
+        &test_xreserve_contract(),
+        identifier,
+        1,
+    )
+    .await
+    .expect("domain_init with source_domain=0 (the production Ethereum value) must succeed");
+    let mut evolved = account.clone();
+    evolved.apply_delta(first.account_delta())?;
+    let words = read_domain_config_words(&evolved)?;
+    assert_eq!(words[0], Word::from([TEST_DOMAIN, 0, 0, 0]), "domain written exactly");
+    assert_eq!(
+        words[1],
+        empty_word(),
+        "stored source_domain=0 is byte-identical to an unwritten slot"
+    );
+
+    let result = init_four_fields(&gm, &evolved, owner(), TEST_DOMAIN, identifier, 2).await;
+    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_DOMAIN_REINIT"));
+    Ok(())
+}
+
 // §5.9 SCALAR/LIMB u32 GUARDS (Round-P change 1) — malformed values staged as RAW felts trap the
 // EXACT error BEFORE any write
 // ================================================================================================

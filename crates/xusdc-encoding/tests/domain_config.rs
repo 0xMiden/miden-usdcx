@@ -368,6 +368,33 @@ async fn domain_init_reinit_leaves_all_fields_unchanged() -> Result<()> {
     Ok(())
 }
 
+/// R-ADMIN-4 hardening (Item 4, tests-first): `domain_init` with `identifier = EMPTY_WORD` traps
+/// the EXACT ERR_XRESERVE_IDENTIFIER_EMPTY and writes NOTHING. The identifier IS the init-once
+/// sentinel — an EMPTY identifier would never arm it (the "immutable" config stays silently
+/// re-initializable, R-ADMIN-4 broken for that deploy) AND D5a would compare every intent's
+/// identifier against EMPTY. Until now this was an unenforced doc-only assumption
+/// ("non-empty by construction"); the guard enforces it on-chain. RED: the shipped proc has no
+/// empty-identifier guard, so this init SUCCEEDS.
+#[tokio::test]
+async fn domain_init_empty_identifier_traps() -> Result<()> {
+    let gm = uninit_faucet()?;
+    let account = faucet_account(&gm.harness);
+
+    let result = init_four_fields(&gm, &account, owner(), TEST_DOMAIN, empty_word(), 1).await;
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_IDENTIFIER_EMPTY")
+    );
+
+    // No-write proof: a trapped tx commits nothing; every domain-config slot stays empty.
+    assert_eq!(
+        read_domain_config_words(&account)?,
+        [empty_word(); 5],
+        "a trapped empty-identifier init must leave every domain-config slot unwritten"
+    );
+    Ok(())
+}
+
 /// R-ADMIN-4 with the PRODUCTION-shaped `domain = 0` (Circle domains can legitimately be 0): the
 /// init succeeds, the stored domain word `[0,0,0,0]` is byte-identical to an UNWRITTEN slot, and
 /// init-once still holds because the sentinel keys on the IDENTIFIER slot, never the domain slot

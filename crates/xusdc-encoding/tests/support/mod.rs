@@ -122,7 +122,7 @@ pub use xusdc_encoding::account::xreserve::MIN_BURN_SIZE_SLOT_LABEL;
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 19] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -225,6 +225,15 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
     (
         "ERR_XRESERVE_XRC_LIMB_NOT_U32",
         MasmError::from_static_str("xreserve contract limb is not a valid u32"),
+    ),
+    // R-ADMIN-4 hardening (P5-01 hardening Item 4): the identifier IS the init-once sentinel; an
+    // EMPTY identifier would never arm it, leaving the "immutable" config silently
+    // re-initializable. The red-suite carries the error here so the empty-identifier test can name
+    // its EXACT expected error; the GREEN commit declares the matching MASM const in
+    // domain_config.masm + adds it to SHELL_ERRORS_DECLARED for parity.
+    (
+        "ERR_XRESERVE_IDENTIFIER_EMPTY",
+        MasmError::from_static_str("identifier must be non-empty"),
     ),
 ];
 

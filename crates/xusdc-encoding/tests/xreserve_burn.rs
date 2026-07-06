@@ -14,12 +14,17 @@
 
 mod support;
 
+use core::slice;
+
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::auth::AuthScheme;
 use miden_protocol::asset::{AssetAmount, FungibleAsset};
 use miden_protocol::note::{NoteTag, NoteType};
+use miden_protocol::transaction::RawOutputNote;
 use miden_protocol::{Felt, Word};
+use miden_standards::code_builder::CodeBuilder;
 use miden_testing::{Auth, MockChain};
+use miden_tx::LocalTransactionProver;
 use support::*;
 use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
 use xusdc_encoding::vectors::load;
@@ -293,6 +298,138 @@ async fn burn_note_insufficient_balance_rejects_create() -> anyhow::Result<()> {
     assert!(
         result.is_err(),
         "R-BURN-5: creating a burn note for more than the holder's balance must fail the create-tx",
+    );
+    Ok(())
+}
+
+// 7 — R-BURN-5 `==balance` ACCEPT boundary (Item 11): the recipient burns 100% of holdings
+// ================================================================================================
+
+/// The `== balance` ACCEPT side of R-BURN-5, pinned EXPLICITLY: the holder burns their ENTIRE
+/// holding — the emit succeeds, the holder's vault is EMPTY afterwards, and `token_supply`
+/// decrements by exactly the full amount. Honest framing: the seam test above already burns == the
+/// seeded balance de facto (the harness seeds the user with exactly `burn_amount`), but nothing
+/// ASSERTED the boundary — this pin adds the vault-empty and exact-decrement assertions so a
+/// fixture-constant drift cannot silently unpin the accept boundary.
+#[tokio::test]
+async fn recipient_burns_full_balance() -> anyhow::Result<()> {
+    const MAX_SUPPLY: u64 = 1_000_000;
+    const TOKEN_SUPPLY: u64 = 100_000;
+    const MIN_BURN_SIZE: u64 = 1_000;
+    const HELD: u64 = 5_000; // the holder's ENTIRE seeded balance — burned in full
+
+    let h = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        HELD,
+    )?;
+    let items = sample_items(HELD);
+    let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items, &mut note_rng(21))?;
+
+    let mut chain = h.chain;
+    let tx1 = run_burn_consume(&mut chain, &note, &h.asset, h.faucet_id, h.user_id)
+        .await
+        .expect("a burn of the holder's ENTIRE balance (the == boundary of R-BURN-5) must succeed");
+    chain.add_pending_executed_transaction(&tx1)?;
+    chain.prove_next_block()?;
+
+    assert_eq!(
+        chain
+            .committed_account(h.user_id)?
+            .vault()
+            .get_balance(h.asset.vault_key())?,
+        AssetAmount::new(0)?,
+        "the full-balance emit leaves the holder's vault EMPTY"
+    );
+    assert_eq!(
+        committed_token_supply(&chain, h.faucet_id)?,
+        AssetAmount::new(TOKEN_SUPPLY - HELD)?,
+        "committed token_supply -= the full holding exactly"
+    );
+    Ok(())
+}
+
+// 8 — §4.P same-block erasure with the PRODUCTION note (Item 11; the canary C2 mechanism)
+// ================================================================================================
+
+/// R-BURN-4 / harness §4.P with the PRODUCTION `XReserveBurnNote` on the PRODUCTION burn-policy
+/// composition (the canary C2 proved this mechanism with the STOCK `BurnNote` on a canary
+/// fixture): the user emits the note and the faucet consumes it UNAUTHENTICATED in the SAME block
+/// — the note is erased (absent from the block's output notes, not retrievable, not committed, no
+/// nullifier), yet tx1's account delta COMMITS, so `token_supply` still drops by the burned
+/// amount. Pins the exact semantics C2 observed, now on the production note + policy.
+#[tokio::test]
+async fn production_burn_note_same_block_consume_is_erased() -> anyhow::Result<()> {
+    const MAX_SUPPLY: u64 = 1_000_000;
+    const TOKEN_SUPPLY: u64 = 100_000;
+    const MIN_BURN_SIZE: u64 = 1_000;
+    const AMOUNT: u64 = 5_000;
+
+    let h = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        AMOUNT,
+    )?;
+    let items = sample_items(AMOUNT);
+    let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items, &mut note_rng(22))?;
+    let mut chain = h.chain;
+
+    // tx0: the user emit-tx creates the production note in-block (executed, then dummy-proven —
+    // the canary C2 idiom; the create_*_proven_tx helpers are private to miden-testing).
+    let tx_script = CodeBuilder::new().compile_tx_script(send_burn_note_script(
+        &note,
+        &h.asset,
+        h.faucet_id,
+    ))?;
+    let tx0 = chain
+        .build_tx_context(h.user_id, &[], &[])?
+        .tx_script(tx_script)
+        .extend_expected_output_notes(vec![RawOutputNote::Full(note.clone())])
+        .build()?
+        .execute()
+        .await?;
+    assert_eq!(
+        tx0.output_notes().get_note(0).id(),
+        note.id(),
+        "tx0 emits the production XReserveBurnNote"
+    );
+    let tx0p = LocalTransactionProver::default().prove_dummy(tx0)?;
+
+    // tx1: the faucet consumes the note UNAUTHENTICATED (not yet committed) — running the real
+    // `receive_and_burn` behind the PRODUCTION burn policy.
+    let tx1 = chain
+        .build_tx_context(h.faucet_id, &[], slice::from_ref(&note))?
+        .build()?
+        .execute()
+        .await?;
+    let tx1p = LocalTransactionProver::default().prove_dummy(tx1)?;
+
+    // Create BEFORE consume, then ONE block — the same-block erase shape.
+    chain.add_pending_proven_transaction(tx0p);
+    chain.add_pending_proven_transaction(tx1p);
+    let block = chain.prove_next_block()?;
+
+    // The C2 erasure quad, on the production note.
+    assert!(
+        block.body().output_notes().all(|(_, on)| on.id() != note.id()),
+        "the production burn note is erased from the block's output notes"
+    );
+    assert!(chain.get_public_note(&note.id()).is_none(), "the erased note is not retrievable");
+    assert!(!chain.is_note_committed(&note.id()), "the erased note is not committed");
+    assert!(
+        !chain.is_note_consumed(&note.nullifier()),
+        "no nullifier is created for the erased note"
+    );
+
+    // Erasure removes the NOTE, not tx1's account delta: the burn still lands on the ledger.
+    assert_eq!(
+        committed_token_supply(&chain, h.faucet_id)?,
+        AssetAmount::new(TOKEN_SUPPLY - AMOUNT)?,
+        "token_supply -= AMOUNT even under same-block erasure"
     );
     Ok(())
 }

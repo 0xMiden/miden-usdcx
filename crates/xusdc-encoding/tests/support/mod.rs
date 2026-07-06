@@ -3267,13 +3267,44 @@ pub fn setup_assembled_faucet(
     token_supply: u64,
     driver_srcs_for: impl FnOnce(AccountId) -> (Vec<String>, Vec<Note>),
 ) -> Result<AssembledFaucet> {
+    let (assembled, _ids) =
+        setup_assembled_faucet_inner(max_supply, token_supply, 1, |ids| driver_srcs_for(ids[0]))?;
+    Ok(assembled)
+}
+
+/// The TWO-recipient variant (Item 11 `second_mint_to_distinct_recipient`): identical composition,
+/// but with a SECOND independent recipient wallet so a second attested mint can route funds to a
+/// DIFFERENT wallet (full-path recipient routing). Returns the fixture (whose `recipient_id` is
+/// the FIRST wallet) plus the second wallet's id; the closure receives both ids in order.
+pub fn setup_assembled_faucet_two_recipients(
+    max_supply: u64,
+    token_supply: u64,
+    driver_srcs_for: impl FnOnce(AccountId, AccountId) -> (Vec<String>, Vec<Note>),
+) -> Result<(AssembledFaucet, AccountId)> {
+    let (assembled, ids) = setup_assembled_faucet_inner(max_supply, token_supply, 2, |ids| {
+        driver_srcs_for(ids[0], ids[1])
+    })?;
+    Ok((assembled, ids[1]))
+}
+
+/// Shared body of the assembled-faucet fixtures, parameterized by recipient-wallet count.
+fn setup_assembled_faucet_inner(
+    max_supply: u64,
+    token_supply: u64,
+    n_recipients: usize,
+    driver_srcs_for: impl FnOnce(&[AccountId]) -> (Vec<String>, Vec<Note>),
+) -> Result<(AssembledFaucet, Vec<AccountId>)> {
     let mut mc = MockChain::builder();
-    // The recipient wallet FIRST: its id feeds the payload/driver generation below.
-    let recipient = mc
-        .add_existing_wallet(Auth::IncrNonce)
-        .context("adding the recipient wallet")?;
-    let recipient_id = recipient.id();
-    let (driver_srcs, seeded_notes) = driver_srcs_for(recipient_id);
+    // The recipient wallet(s) FIRST: their ids feed the payload/driver generation below.
+    let mut recipient_ids = Vec::new();
+    for i in 0..n_recipients {
+        let recipient = mc
+            .add_existing_wallet(Auth::IncrNonce)
+            .with_context(|| format!("adding recipient wallet {i}"))?;
+        recipient_ids.push(recipient.id());
+    }
+    let recipient_id = recipient_ids[0];
+    let (driver_srcs, seeded_notes) = driver_srcs_for(&recipient_ids);
     for note in &seeded_notes {
         mc.add_output_note(RawOutputNote::Full(note.clone()));
     }
@@ -3368,15 +3399,18 @@ pub fn setup_assembled_faucet(
         .context("adding the assembled faucet account")?;
     let mock_chain = mc.build().context("building the assembled MockChain")?;
     let first = drivers[0].1.clone();
-    Ok(AssembledFaucet {
-        harness: CompositionHarness {
-            mock_chain,
-            account_id: account.id(),
-            driver_code: first.clone(),
-            probe_code: first,
+    Ok((
+        AssembledFaucet {
+            harness: CompositionHarness {
+                mock_chain,
+                account_id: account.id(),
+                driver_code: first.clone(),
+                probe_code: first,
+            },
+            drivers,
+            recipient_id,
+            seeded_notes,
         },
-        drivers,
-        recipient_id,
-        seeded_notes,
-    })
+        recipient_ids,
+    ))
 }

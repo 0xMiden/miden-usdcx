@@ -788,3 +788,130 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     );
     Ok(())
 }
+
+// SECOND-RECIPIENT ROUTING (Item 11) — a second attested mint targets a DIFFERENT wallet
+// ================================================================================================
+
+/// Full-path RECIPIENT ROUTING: the lifecycle E2E's two mints target the SAME wallet (`payload2_for`
+/// only XORs a nonce byte), so recipient-encoding variety existed only at the extraction-helper
+/// level. Here ONE assembled instance mints twice — mint #1 to recipient1, mint #2 (distinct
+/// nonce) whose `remoteRecipient` encodes a DIFFERENT wallet — and EACH wallet consumes ITS P2ID
+/// note and holds exactly its minted amount: the intent's recipient bytes genuinely steer the
+/// funds end-to-end, not just at the helper level.
+#[tokio::test]
+async fn second_mint_to_distinct_recipient() -> Result<()> {
+    let (mut af, recipient2_id) =
+        setup_assembled_faucet_two_recipients(MAX_SUPPLY, 0, |recipient1, recipient2| {
+            let drivers = vec![
+                mint_composition_driver_src(&pack(&payload_for(recipient1)), LEN_FELTS, SCALE_EXP),
+                mint_composition_driver_src(&pack(&payload2_for(recipient2)), LEN_FELTS, SCALE_EXP),
+            ];
+            let commitment = gen_attester(1, &payload_for(recipient1)).commitment;
+            let xrc = test_xreserve_contract();
+            let identifier = identifier_word();
+            let build = |what: &str, r: anyhow::Result<miden_protocol::note::Note>| {
+                r.unwrap_or_else(|e| panic!("building the seeded {what} note: {e}"))
+            };
+            let notes = vec![
+                // 0: owner domain_init (bring-up)
+                build(
+                    "init-owner",
+                    domain_init_note(
+                        owner(),
+                        TEST_DOMAIN,
+                        TEST_SOURCE_DOMAIN,
+                        &xrc,
+                        identifier,
+                        930,
+                    ),
+                ),
+                // 1: owner set_attester (bring-up)
+                build("attester-owner", set_attester_note(owner(), commitment, 1, 931)),
+            ];
+            (drivers, notes)
+        })?;
+    let faucet_id = af.harness.account_id;
+    let recipient1_id = af.recipient_id;
+    let payload1 = payload_for(recipient1_id);
+    let payload2 = payload2_for(recipient2_id);
+    let attester1 = gen_attester(1, &payload1);
+    let attester2 = gen_attester(1, &payload2);
+    assert_eq!(
+        attester1.commitment, attester2.commitment,
+        "one deterministic attester key signs both payloads (single allowlist entry)"
+    );
+
+    // Bring-up: domain_init + set_attester (the production path).
+    let faucet = committed(&af.harness.mock_chain, faucet_id)?;
+    let init_tx = consume_committed_note(&af.harness.mock_chain, &faucet, af.seeded_notes[0].id())
+        .await
+        .expect("the owner's domain_init must succeed");
+    commit(&mut af.harness.mock_chain, &init_tx)?;
+    let faucet = committed(&af.harness.mock_chain, faucet_id)?;
+    let att_tx = consume_committed_note(&af.harness.mock_chain, &faucet, af.seeded_notes[1].id())
+        .await
+        .expect("the owner's set_attester must succeed");
+    commit(&mut af.harness.mock_chain, &att_tx)?;
+
+    // Mint #1 → recipient1's P2ID note.
+    let faucet = committed(&af.harness.mock_chain, faucet_id)?;
+    let mint1 = run_rotation_mint(
+        &af.harness,
+        &af.drivers[0],
+        &faucet,
+        composition_advice([0u32; 8], &attester1),
+    )
+    .await
+    .expect("mint #1 (recipient1) must pass");
+    assert_eq!(mint1.output_notes().num_notes(), 1, "mint #1: exactly one recipient note");
+    let note1_id = mint1.output_notes().get_note(0).id();
+    assert_eq!(
+        mint1.output_notes().get_note(0).metadata().tag().as_u32(),
+        expected_p2id_tag(recipient1_id),
+        "mint #1's note targets recipient1"
+    );
+    commit(&mut af.harness.mock_chain, &mint1)?;
+
+    // Mint #2 (distinct nonce) → the DIFFERENT wallet's P2ID note.
+    let faucet = committed(&af.harness.mock_chain, faucet_id)?;
+    let mint2 = run_rotation_mint(
+        &af.harness,
+        &af.drivers[1],
+        &faucet,
+        composition_advice([0u32; 8], &attester2),
+    )
+    .await
+    .expect("mint #2 (the DISTINCT recipient2) must pass");
+    assert_eq!(mint2.output_notes().num_notes(), 1, "mint #2: exactly one recipient note");
+    let note2_id = mint2.output_notes().get_note(0).id();
+    assert_eq!(
+        mint2.output_notes().get_note(0).metadata().tag().as_u32(),
+        expected_p2id_tag(recipient2_id),
+        "mint #2's note targets the DISTINCT recipient2"
+    );
+    commit(&mut af.harness.mock_chain, &mint2)?;
+    assert_supply(&af.harness.mock_chain, faucet_id, 2 * MINT_REDUCED, "after both mints")?;
+
+    // Each recipient consumes ITS note; each holds exactly its own minted amount.
+    let r1 = committed(&af.harness.mock_chain, recipient1_id)?;
+    let c1 = consume_committed_note(&af.harness.mock_chain, &r1, note1_id)
+        .await
+        .expect("recipient1 consumes its P2ID note");
+    commit(&mut af.harness.mock_chain, &c1)?;
+    let r2 = committed(&af.harness.mock_chain, recipient2_id)?;
+    let c2 = consume_committed_note(&af.harness.mock_chain, &r2, note2_id)
+        .await
+        .expect("recipient2 consumes ITS P2ID note");
+    commit(&mut af.harness.mock_chain, &c2)?;
+    assert_eq!(
+        wallet_balance(&committed(&af.harness.mock_chain, recipient1_id)?, faucet_id),
+        MINT_REDUCED,
+        "recipient1 holds exactly its minted amount"
+    );
+    assert_eq!(
+        wallet_balance(&committed(&af.harness.mock_chain, recipient2_id)?, faucet_id),
+        MINT_REDUCED,
+        "recipient2 holds exactly ITS minted amount — the intent's recipient bytes steer the funds"
+    );
+    Ok(())
+}

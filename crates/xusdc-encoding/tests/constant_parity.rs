@@ -87,6 +87,8 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_DOMAIN_NOT_U32",
     "ERR_XRESERVE_SOURCE_DOMAIN_NOT_U32",
     "ERR_XRESERVE_XRC_LIMB_NOT_U32",
+    // R-ADMIN-4 empty-identifier init guard (P5-01 hardening Item 4; domain_config.masm)
+    "ERR_XRESERVE_IDENTIFIER_EMPTY",
     // CMP-A10 R-BURN-1 / R-BURN-2 burn policy (burn_policy.masm)
     "ERR_XRESERVE_BURN_ZERO",
     "ERR_XRESERVE_BURN_BELOW_MIN",
@@ -392,10 +394,10 @@ fn masm_constants_bidirectional() {
             EXPECTED_ATTESTER_ADMIN_WORD_CONSTS,
         ),
         // P5-01 §5.9 4-field domain_init (full-assembly slice): declares ERR_XRESERVE_DOMAIN_REINIT
-        // + the three u32-guard errors (known shell errors via SHELL_ERR_TABLE) and the THREE new
-        // slot consts it owns (source_domain + xreserve_contract hi/lo); the domain/identifier
-        // consts stay IMPORTED from deposit_intent_parser (not redeclared -> no duplicate parity
-        // row, G1).
+        // + the three u32-guard errors + the ERR_XRESERVE_IDENTIFIER_EMPTY init guard (hardening
+        // Item 4) — all known shell errors via SHELL_ERR_TABLE — and the THREE new slot consts it
+        // owns (source_domain + xreserve_contract hi/lo); the domain/identifier consts stay
+        // IMPORTED from deposit_intent_parser (not redeclared -> no duplicate parity row, G1).
         ("domain_config.masm", DOMAIN_CONFIG_MASM, &[], EXPECTED_DOMAIN_CONFIG_WORD_CONSTS),
         // CMP-A10 burn policy: declares the two ERR_XRESERVE_BURN_* errors (known shell errors via
         // SHELL_ERR_TABLE) + the MIN_BURN_SIZE_SLOT word const (pinned to MIN_BURN_SIZE_SLOT_LABEL); no

@@ -56,6 +56,11 @@ const ERR_XRESERVE_SOURCE_DOMAIN_NOT_U32 = "source domain is not a valid u32"
 # are stored -- the fail-closed on-chain mirror of the Rust `packed_felts_to_bytes32` inverse.
 const ERR_XRESERVE_XRC_LIMB_NOT_U32 = "xreserve contract limb is not a valid u32"
 
+# R-ADMIN-4 hardening (P5-01 hardening Item 4): the identifier IS the init-once sentinel; an EMPTY
+# identifier would never arm it (the "immutable" config stays silently re-initializable) and D5a
+# would compare every intent's identifier against EMPTY. Trap rather than deploy that state.
+const ERR_XRESERVE_IDENTIFIER_EMPTY = "identifier must be non-empty"
+
 # PUBLIC INTERFACE
 # =================================================================================================
 
@@ -91,6 +96,8 @@ const ERR_XRESERVE_XRC_LIMB_NOT_U32 = "xreserve contract limb is not a valid u32
 #!   ERR_SENDER_NOT_OWNER).
 #! - the domain config was already initialized -- the identifier slot is non-empty
 #!   (ERR_XRESERVE_DOMAIN_REINIT, R-ADMIN-4).
+#! - the input IDENTIFIER is the empty word -- it could never arm the init-once sentinel
+#!   (ERR_XRESERVE_IDENTIFIER_EMPTY).
 #! - domain is not a valid u32 (ERR_XRESERVE_DOMAIN_NOT_U32).
 #! - source_domain is not a valid u32 (ERR_XRESERVE_SOURCE_DOMAIN_NOT_U32).
 #! - any xreserve_contract limb is not a valid u32 (ERR_XRESERVE_XRC_LIMB_NOT_U32).
@@ -108,6 +115,18 @@ pub proc domain_init
     push.IDENTIFIER_CONFIG_SLOT[0..2] exec.active_account::get_item
     # => [STORED_IDENTIFIER, IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
     padw assert_eqw.err=ERR_XRESERVE_DOMAIN_REINIT
+    # => [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
+
+    # R-ADMIN-4 hardening: the input IDENTIFIER must be non-empty -- an EMPTY identifier would
+    # never arm the sentinel above. Non-destructive compare: eqw pushes the flag WITHOUT consuming
+    # the words, so IDENTIFIER reaches its verbatim write (and D5a's read) untouched.
+    padw
+    # => [EMPTY, IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
+    eqw
+    # => [is_empty, EMPTY, IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
+    assertz.err=ERR_XRESERVE_IDENTIFIER_EMPTY
+    # => [EMPTY, IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
+    dropw
     # => [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
 
     # §5.9 u32 guards -- ALL validation BEFORE ANY write (a trap here leaves every slot unwritten).

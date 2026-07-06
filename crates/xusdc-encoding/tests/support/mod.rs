@@ -2986,6 +2986,50 @@ pub async fn run_set_role_admin_against(
     run_rbac_note_against(chain, account, note, "set_role_admin").await
 }
 
+/// A `renounce_role(role)` note sent by `sender` (stock gate: SELF-only by construction —
+/// `rbac::renounce_role` reads the note sender and revokes that account's own membership;
+/// re-exported on the account interface, `account_components/access/rbac.masm:12`). Stack
+/// contract: `[role_symbol, pad(15)]`.
+pub fn renounce_role_note(sender: AccountId, role: &RoleSymbol, seed: u64) -> Result<Note> {
+    let role_felt = Felt::from(role).as_canonical_u64();
+    let src = format!(
+        "@note_script\n\
+         pub proc main\n\
+         \x20\x20\x20\x20repeat.15 push.0 end\n\
+         \x20\x20\x20\x20push.{role_felt}\n\
+         \x20\x20\x20\x20call.::miden::standards::access::rbac::renounce_role\n\
+         \x20\x20\x20\x20dropw dropw dropw dropw\n\
+         end\n",
+    );
+    let script = CodeBuilder::new()
+        .compile_note_script(src.clone())
+        .map_err(|e| anyhow::anyhow!("renounce_role note script failed to compile: {e}\n{src}"))?;
+    // Fresh serial tail [31,32] — disjoint from every other admin-note family.
+    let mut rng = RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(31u32),
+        Felt::from(32u32),
+    ]));
+    Ok(NoteBuilder::new(sender, &mut rng)
+        .note_type(NoteType::Private)
+        .script(script)
+        .build()?)
+}
+
+/// Executes a `renounce_role` note (sent by `sender`, self-targeting) against the faucet `account`.
+pub async fn run_renounce_role_against(
+    chain: &MockChain,
+    account: &Account,
+    sender: AccountId,
+    role: &RoleSymbol,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = renounce_role_note(sender, role, seed)
+        .expect("building the renounce_role note (test-setup invariant)");
+    run_rbac_note_against(chain, account, note, "renounce_role").await
+}
+
 // ITEM-6 OWNABLE2STEP TWO-STEP OWNER TRANSFER — notes + runners + owner-config read-back
 // ================================================================================================
 

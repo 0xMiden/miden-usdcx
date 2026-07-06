@@ -464,6 +464,72 @@ async fn dom_pauser_cannot_call_owner_setters() -> Result<()> {
     Ok(())
 }
 
+// IDEMPOTENCY PINS (Item 11) — the stock pausable primitives are UNCONDITIONAL writes
+// ================================================================================================
+
+/// `pause` when ALREADY paused is idempotent SUCCESS: the stock `pausable::pause` is an
+/// unconditional `set_item` write with no already-paused guard (pinned v0.15.3
+/// `pausable/mod.masm:67-79`), so a redundant DOM_PAUSER pause succeeds and `is_paused` stays
+/// `[1,0,0,0]`. Pin-bump drift tripwire: a future stock version that traps on a redundant pause
+/// would silently change ops semantics — it fails HERE instead.
+#[tokio::test]
+async fn pause_when_already_paused_is_idempotent() -> Result<()> {
+    let bh = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        VALID_BURN,
+    )?;
+    let account = bh.chain.committed_account(bh.faucet_id)?.clone();
+
+    let paused = run_dom_pauser_pause(&bh.chain, &account, dom_pauser(), 13)
+        .await
+        .expect("the first DOM_PAUSER pause succeeds");
+    let mut evolved = account.clone();
+    evolved.apply_delta(paused.account_delta())?;
+    assert_eq!(read_is_paused(&evolved)?, Word::from([1u32, 0, 0, 0]), "paused after pause #1");
+
+    let again = run_dom_pauser_pause(&bh.chain, &evolved, dom_pauser(), 14)
+        .await
+        .expect("a redundant pause is idempotent success (stock pause is an unconditional write)");
+    evolved.apply_delta(again.account_delta())?;
+    assert_eq!(
+        read_is_paused(&evolved)?,
+        Word::from([1u32, 0, 0, 0]),
+        "is_paused stays exactly [1,0,0,0] after the redundant pause"
+    );
+    Ok(())
+}
+
+/// `unpause` when NOT paused is idempotent SUCCESS: the stock `pausable::unpause` is an
+/// unconditional `set_item` write with no not-paused guard (pinned v0.15.3
+/// `pausable/mod.masm:89-101`) — the same pin-bump drift tripwire, in the unpause direction.
+#[tokio::test]
+async fn unpause_when_not_paused_is_idempotent() -> Result<()> {
+    let bh = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        VALID_BURN,
+    )?;
+    let account = bh.chain.committed_account(bh.faucet_id)?.clone();
+    assert_eq!(read_is_paused(&account)?, Word::from([0u32, 0, 0, 0]), "fresh faucet is unpaused");
+
+    let unpaused = run_dom_pauser_unpause(&bh.chain, &account, dom_pauser(), 15)
+        .await
+        .expect("unpausing an unpaused faucet is idempotent success (unconditional write)");
+    let mut evolved = account.clone();
+    evolved.apply_delta(unpaused.account_delta())?;
+    assert_eq!(
+        read_is_paused(&evolved)?,
+        Word::from([0u32, 0, 0, 0]),
+        "is_paused stays exactly [0,0,0,0] after the redundant unpause"
+    );
+    Ok(())
+}
+
 // OBSERVABILITY — is_paused reads back via GetAccount (CIR-ADMIN-4)
 // ================================================================================================
 

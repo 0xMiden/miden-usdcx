@@ -82,6 +82,9 @@ fn err_sender_lacks_role() -> MasmError {
 fn err_not_owner_or_role_admin() -> MasmError {
     MasmError::from_static_str("note sender is not the owner or a role admin")
 }
+fn err_account_not_in_role() -> MasmError {
+    MasmError::from_static_str("account does not hold the role")
+}
 
 // PRODUCTION FIXTURES (both compose via XReserveStablecoinBuilder::build_components — never the
 // burn-oracle replica). Recreated from public support helpers per the established per-file pattern
@@ -320,6 +323,131 @@ async fn dom_manager_rotates_pauser_revoke_then_grant() -> Result<()> {
     let result =
         run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
     assert_transaction_executor_error!(result, err_paused());
+    Ok(())
+}
+
+// STOCK-BRANCH PINS (Item 11) — the grant no-op branch, the non-member revoke trap, self-renounce
+// ================================================================================================
+
+/// A double-grant leaves NO ghost member: the stock `grant_role_internal` takes its
+/// "Already a member — no-op" branch BEFORE the count increment (pinned v0.15.3 rbac.masm:445-496
+/// — `has_role → drop drop drop`; the `add.1` sits only in the else branch), so granting the
+/// SEEDED DOM_PAUSER member a second time cannot double-increment `member_count`, and ONE revoke
+/// fully removes the member — their pause then rejects with the exact role error. (The existing
+/// pins cover count 1→0 and revoke-then-grant; neither touched the no-op branch.)
+#[tokio::test]
+async fn double_grant_pauser_leaves_no_ghost_member() -> Result<()> {
+    let gm = production_faucet()?;
+    let account = faucet_account(&gm.harness);
+
+    // Grant DOM_PAUSER to the ALREADY-seeded member: idempotent success via the no-op branch...
+    let granted = run_grant_role_against(
+        &gm.harness.mock_chain,
+        &account,
+        dom_manager(),
+        &pauser_sym(),
+        dom_pauser(),
+        51,
+    )
+    .await
+    .expect("granting an existing member succeeds via the stock no-op branch");
+    let mut evolved = account.clone();
+    evolved.apply_delta(granted.account_delta())?;
+
+    // ...with NO count increment (the ghost-member hazard this test forecloses).
+    assert_eq!(
+        read_role_config(&evolved, &pauser_sym())?[0],
+        Felt::from(1u32),
+        "member_count stays exactly 1 after the double grant (no-op branch, no increment)"
+    );
+    assert_eq!(
+        read_role_membership(&evolved, &pauser_sym(), dom_pauser())?[0],
+        Felt::from(1u32),
+        "the membership flag is unchanged"
+    );
+
+    // ONE revoke fully removes the member — no ghost count survives.
+    let revoked = run_revoke_role_against(
+        &gm.harness.mock_chain,
+        &evolved,
+        dom_manager(),
+        &pauser_sym(),
+        dom_pauser(),
+        52,
+    )
+    .await
+    .expect("one revoke removes the double-granted member");
+    evolved.apply_delta(revoked.account_delta())?;
+    assert_eq!(
+        read_role_config(&evolved, &pauser_sym())?[0],
+        Felt::ZERO,
+        "ONE revoke takes member_count to 0 (a ghost would leave 1)"
+    );
+    assert_eq!(
+        read_role_membership(&evolved, &pauser_sym(), dom_pauser())?[0],
+        Felt::ZERO,
+        "the membership flag is cleared"
+    );
+    let result = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, dom_pauser(), 53).await;
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
+    Ok(())
+}
+
+/// Revoking a NON-member traps the EXACT stock `ERR_ACCOUNT_NOT_IN_ROLE`
+/// (pinned v0.15.3 rbac.masm:52, asserted in `revoke_role_internal` at :520) and leaves the role
+/// config untouched — the first pin of this stock constant in the repo.
+#[tokio::test]
+async fn revoke_role_non_member_traps() -> Result<()> {
+    let gm = production_faucet()?;
+    let account = faucet_account(&gm.harness);
+
+    let result = run_revoke_role_against(
+        &gm.harness.mock_chain,
+        &account,
+        dom_manager(),
+        &pauser_sym(),
+        stranger(),
+        54,
+    )
+    .await;
+    assert_transaction_executor_error!(result, err_account_not_in_role());
+    assert_eq!(
+        read_role_config(&account, &pauser_sym())?[0],
+        Felt::from(1u32),
+        "a rejected non-member revoke leaves member_count untouched"
+    );
+    Ok(())
+}
+
+/// CHARACTERIZATION pin of the stock `renounce_role` ops surface: a DOM_PAUSER holder can
+/// SELF-remove (the stock proc is self-only by construction — it reads the note sender — and has
+/// no owner/admin gate; re-exported on the account interface,
+/// `account_components/access/rbac.masm:12`). After the renounce, their pause rejects with the
+/// exact role error. Documents that self-renounce is possible BY DESIGN — an ops-surface fact,
+/// not a defect.
+#[tokio::test]
+async fn dom_pauser_can_renounce_own_role() -> Result<()> {
+    let gm = production_faucet()?;
+    let account = faucet_account(&gm.harness);
+
+    let renounced =
+        run_renounce_role_against(&gm.harness.mock_chain, &account, dom_pauser(), &pauser_sym(), 55)
+            .await
+            .expect("a DOM_PAUSER holder self-renounces (stock renounce_role, self-only)");
+    let mut evolved = account.clone();
+    evolved.apply_delta(renounced.account_delta())?;
+    assert_eq!(
+        read_role_config(&evolved, &pauser_sym())?[0],
+        Felt::ZERO,
+        "self-renounce decrements member_count to 0"
+    );
+    assert_eq!(
+        read_role_membership(&evolved, &pauser_sym(), dom_pauser())?[0],
+        Felt::ZERO,
+        "self-renounce clears the membership flag"
+    );
+    let result = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, dom_pauser(), 56).await;
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     Ok(())
 }
 

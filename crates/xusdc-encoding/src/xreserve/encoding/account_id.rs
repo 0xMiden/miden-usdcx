@@ -98,6 +98,40 @@ mod tests {
         }
     }
 
+    /// INV-ACCOUNTID-ENCODING reject boundary, per pad byte: a `0x01` at EVERY index of the
+    /// leading 16-byte zero pad (not just byte 0, the canonical vector's shape) rejects with the
+    /// EXACT `AccountIdOutOfRange`. Byte 15 is the boundary byte of the `b[..16]` sweep — a
+    /// weakened `b[..15]` pad check (audit mutant M23) decodes a `b[15] != 0` wire form into a
+    /// lossy, non-round-tripping AccountId; the `b15` case kills that mutant.
+    #[rstest]
+    #[case::b0(0)]
+    #[case::b1(1)]
+    #[case::b2(2)]
+    #[case::b3(3)]
+    #[case::b4(4)]
+    #[case::b5(5)]
+    #[case::b6(6)]
+    #[case::b7(7)]
+    #[case::b8(8)]
+    #[case::b9(9)]
+    #[case::b10(10)]
+    #[case::b11(11)]
+    #[case::b12(12)]
+    #[case::b13(13)]
+    #[case::b14(14)]
+    #[case::b15(15)]
+    fn nonzero_pad_byte_rejects_at_every_index(#[case] pad_index: usize) {
+        let v = load();
+        let vec = v.families.aid.iter().find(|v| v.id == "aid-rt-1").expect("vector present");
+        let mut b = parse_hex32(&vec.bytes32);
+        b[pad_index] = 0x01;
+        assert_matches!(
+            bytes32_to_account_id(&b),
+            Err(EncodingError::AccountIdOutOfRange),
+            "pad byte {pad_index}"
+        );
+    }
+
     /// TV-AID-3 (constants/API shape): the address type discriminant is 232 and the API
     /// has no >32-byte / keccak fallback branch (input type is `[u8; 32]` by signature).
     /// Layout labels: `REQUIRES CIRCLE CONFIRMATION` (DEV-10) — `NO EVIDENCE OF CIRCLE

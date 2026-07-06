@@ -388,6 +388,51 @@ fn production_components_carry_is_paused_slot() -> Result<()> {
     Ok(())
 }
 
+/// PIN-BUMP TRIPWIRE for the `mutability_config` slot (audit mutant M19's chosen closure): the
+/// builder's fail-closed `unwrap_or(false)` in `faucet_max_supply_is_mutable` (builder.rs) only
+/// arms when the slot is MISSING — unreachable at the pinned v0.15.3, where `FungibleFaucet`
+/// always installs it. This test pins the slot's presence AND its word layout on the production
+/// build, so a pin bump that drops, renames, or reshuffles it fails loudly here instead of
+/// silently arming the missing-slot default. The name string is DELIBERATELY duplicated from the
+/// builder's private `FAUCET_MUTABILITY_CONFIG_SLOT` (builder.rs) rather than taken from a stock
+/// accessor: a stock rename must fail THIS test, not be silently tracked.
+#[test]
+fn production_components_carry_mutability_config_slot() -> Result<()> {
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
+    let components = XReserveStablecoinBuilder::new(
+        faucet,
+        xreserve_component,
+        test_account_id(1),
+        test_account_id(2),
+        test_account_id(3),
+    )
+    .build_components()
+    .context("production build_components must compose")?;
+
+    let mutability = StorageSlotName::new("miden::standards::faucets::mutability_config")
+        .context("the pinned mutability_config slot name")?;
+    let slot_value = components
+        .iter()
+        .flat_map(|c| c.storage_slots().iter())
+        .find(|slot| slot.name() == &mutability)
+        .map(|slot| slot.value())
+        .expect(
+            "the production composition must carry the FungibleFaucet-installed \
+             mutability_config slot (PIN-BUMP HAZARD: its absence arms the builder's \
+             missing-slot default)",
+        );
+    // Layout tripwire: `[is_desc, is_logo, is_extlink, is_max_supply]` — the production build
+    // passes is_max_supply_mutable(true), so element 3 (MAX_SUPPLY_MUTABLE_WORD_INDEX) must be 1.
+    // A pin bump reshuffling the word would silently flip the builder's flag read.
+    assert_eq!(
+        slot_value[3],
+        Felt::from(1u32),
+        "mutability_config element 3 must be the is_max_supply_mutable flag (= 1 for the \
+         production mutable-max-supply build)"
+    );
+    Ok(())
+}
+
 // §5.13 COMPLETENESS GUARDS (full-assembly slice, plan §3.2) — RED: no guard logic exists yet, so
 // every build below composes Ok and `expect_err` fails behaviorally.
 // ================================================================================================

@@ -111,6 +111,21 @@ mod tests {
             bytes32_to_account_id;
     }
 
+    /// IMPL-DEV-12 rider (full-assembly slice): the `AccountIdOutOfRange` Display message must
+    /// describe the SHIPPED R-B layout — the account id region is the 16 bytes `bytes[16..32]`
+    /// (prefix u64 BE + suffix u64 BE) behind a 16-byte zero pad — not the superseded left-aligned
+    /// draft's "15-byte region" (error.rs:51 stale message; register row IMPL-DEV-12). RED: the
+    /// shipped message still says "15-byte".
+    #[test]
+    fn account_id_out_of_range_message_names_16_byte_region() {
+        assert_eq!(
+            EncodingError::AccountIdOutOfRange.to_string(),
+            "bytes set outside the 16-byte account id region",
+            "the AccountIdOutOfRange message must match the shipped R-B 16-byte-pad layout \
+             (IMPL-DEV-12)"
+        );
+    }
+
     /// TV-AID-4 (on-chain shape): the two-felt form matches the vector's expected
     /// `[prefix, suffix]` pair and the pair recovered from the bytes32 form.
     #[test]

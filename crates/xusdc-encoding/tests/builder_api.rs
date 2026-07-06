@@ -35,45 +35,70 @@ const DUMMY_DOMAIN: u32 = 7;
 /// (the builder now rejects immutable `max_supply`); the rejection tests whose own check fires first
 /// (non-public / missing-deny) and the immutable-rejection test pass `false`.
 fn faucet_and_component(is_max_supply_mutable: bool) -> Result<(FungibleFaucet, AccountComponent)> {
+    Ok((
+        production_faucet(is_max_supply_mutable, 6, "XUSDC")?,
+        xreserve_component_with_slots(&ALL_XRESERVE_SLOT_LABELS)?,
+    ))
+}
+
+/// The SEVEN required xreserve slot labels (§5.13 slot-presence guard; the 4-field §5.9 set + the
+/// two maps; `min_burn_size` is builder-seeded, not caller-declared).
+const ALL_XRESERVE_SLOT_LABELS: [&str; 7] = [
+    DOMAIN_CONFIG_SLOT_LABEL,
+    IDENTIFIER_CONFIG_SLOT_LABEL,
+    SOURCE_DOMAIN_CONFIG_SLOT_LABEL,
+    XRESERVE_CONTRACT_HI_SLOT_LABEL,
+    XRESERVE_CONTRACT_LO_SLOT_LABEL,
+    USED_NONCES_SLOT_LABEL,
+    XRESERVE_ATTESTERS_SLOT_LABEL,
+];
+
+/// Assembles the xreserve component carrying exactly `labels` (value slots get a dummy word for
+/// the domain/identifier pair and empty words for the new §5.9 slots; the two well-known map labels
+/// get empty maps) — the omission fixture for the slot-presence guard tests.
+fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
     let library = assemble_xreserve_lib()?;
-    let domain = Word::from([DUMMY_DOMAIN, 0, 0, 0]);
-    let identifier = Word::from([11u32, 12, 13, 14]);
-    let xreserve_component = AccountComponent::new(
+    let mut slots = Vec::new();
+    for label in labels {
+        let name = StorageSlotName::new(*label).with_context(|| format!("slot label {label}"))?;
+        let slot = match *label {
+            USED_NONCES_SLOT_LABEL | XRESERVE_ATTESTERS_SLOT_LABEL => {
+                StorageSlot::with_map(name, StorageMap::new())
+            },
+            l if l == DOMAIN_CONFIG_SLOT_LABEL => {
+                StorageSlot::with_value(name, Word::from([DUMMY_DOMAIN, 0, 0, 0]))
+            },
+            l if l == IDENTIFIER_CONFIG_SLOT_LABEL => {
+                StorageSlot::with_value(name, Word::from([11u32, 12, 13, 14]))
+            },
+            _ => StorageSlot::with_value(name, Word::from([0u32, 0, 0, 0])),
+        };
+        slots.push(slot);
+    }
+    AccountComponent::new(
         library,
-        vec![
-            StorageSlot::with_value(
-                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
-                domain,
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
-                    .context("identifier slot label")?,
-                identifier,
-            ),
-            StorageSlot::with_map(
-                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
-                StorageMap::new(),
-            ),
-            StorageSlot::with_map(
-                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
-                    .context("xReserveAttesters slot label")?,
-                StorageMap::new(),
-            ),
-        ],
+        slots,
         AccountComponentMetadata::new("xusdc-builder-api-xreserve"),
     )
-    .context("binding the xreserve library + composition slots as a component")?;
+    .context("binding the xreserve library + composition slots as a component")
+}
 
-    let faucet = FungibleFaucet::builder()
+/// Builds a `FungibleFaucet` with configurable decimals/symbol — the fixture for the §5.13
+/// token-config guard tests (`decimals=6`, the shipped `XUSDC` symbol guard constant).
+fn production_faucet(
+    is_max_supply_mutable: bool,
+    decimals: u8,
+    symbol: &str,
+) -> Result<FungibleFaucet> {
+    FungibleFaucet::builder()
         .name(TokenName::new("XUSDC")?)
-        .symbol(TokenSymbol::new("XUSDC")?)
-        .decimals(6)
+        .symbol(TokenSymbol::new(symbol)?)
+        .decimals(decimals)
         .max_supply(AssetAmount::new(1_000_000).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(0).context("invalid token_supply")?)
         .is_max_supply_mutable(is_max_supply_mutable)
         .build()
-        .context("failed to build FungibleFaucet")?;
-    Ok((faucet, xreserve_component))
+        .context("failed to build FungibleFaucet")
 }
 
 /// Dummy config for the behavior fixture (the production-deny faucet drives stock mint_and_send,
@@ -359,6 +384,100 @@ fn production_components_carry_is_paused_slot() -> Result<()> {
             .any(|slot| slot.name() == is_paused),
         "the production composition must carry the FungibleFaucet-installed is_paused slot \
          (its absence breaks the mint/burn pause halt-gates — CIR-ADMIN-4)"
+    );
+    Ok(())
+}
+
+// §5.13 COMPLETENESS GUARDS (full-assembly slice, plan §3.2) — RED: no guard logic exists yet, so
+// every build below composes Ok and `expect_err` fails behaviorally.
+// ================================================================================================
+
+/// Validate-what-you-ship slot presence: a component missing ANY of the seven required xreserve
+/// slots is rejected with the EXACT `MissingXReserveSlot(label)` naming the absent slot — a missing
+/// slot would ship a faucet whose reads/writes of it trap `ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME`
+/// at runtime (LOUD, but deploy-time rejection is the §5.13 "invalid composition → build error"
+/// bar). One case per omitted slot. RED: the shipped builder performs no presence check.
+#[rstest::rstest]
+#[case::domain(0)]
+#[case::identifier(1)]
+#[case::source_domain(2)]
+#[case::xreserve_contract_hi(3)]
+#[case::xreserve_contract_lo(4)]
+#[case::used_nonces(5)]
+#[case::xreserve_attesters(6)]
+fn build_rejects_missing_xreserve_slot(#[case] omitted: usize) -> Result<()> {
+    let labels: Vec<&str> = ALL_XRESERVE_SLOT_LABELS
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != omitted)
+        .map(|(_, l)| *l)
+        .collect();
+    let component = xreserve_component_with_slots(&labels)?;
+    let faucet = production_faucet(true, 6, "XUSDC")?;
+    let err = XReserveStablecoinBuilder::new(
+        faucet,
+        component,
+        test_account_id(1),
+        test_account_id(2),
+        test_account_id(3),
+    )
+    .build_components()
+    .expect_err("a component missing a required xreserve slot must be rejected at build time");
+    let missing = ALL_XRESERVE_SLOT_LABELS[omitted];
+    assert!(
+        matches!(err, XReserveStablecoinBuilderError::MissingXReserveSlot(l) if l == missing),
+        "expected MissingXReserveSlot({missing}), got {err:?}"
+    );
+    Ok(())
+}
+
+/// §5.13 token-config exactness: a faucet whose `decimals != 6` is rejected with the EXACT
+/// `WrongDecimals(d)` — CIR-FEE-3 mandates six decimal places and the D5b reducer scales to 6dp, so
+/// a mismatched faucet silently mis-scales every minted amount. The faucet is otherwise valid
+/// (Public + deny active + mutable max_supply + full slot set), so the decimals are the SOLE reason
+/// for rejection. RED: the shipped builder performs no decimals check.
+#[test]
+fn build_rejects_wrong_decimals() -> Result<()> {
+    let component = xreserve_component_with_slots(&ALL_XRESERVE_SLOT_LABELS)?;
+    let faucet = production_faucet(true, 7, "XUSDC")?;
+    let err = XReserveStablecoinBuilder::new(
+        faucet,
+        component,
+        test_account_id(1),
+        test_account_id(2),
+        test_account_id(3),
+    )
+    .build_components()
+    .expect_err("a faucet with decimals != 6 must be rejected at build time");
+    assert!(
+        matches!(err, XReserveStablecoinBuilderError::WrongDecimals(7)),
+        "expected WrongDecimals(7), got {err:?}"
+    );
+    Ok(())
+}
+
+/// §5.13 token-config exactness: a faucet whose `TokenSymbol` is not the shipped `XUSDC` guard
+/// constant is rejected with the EXACT `WrongTokenSymbol`. (The spec's Circle-facing "xUSDC" is
+/// unrepresentable on-chain — pinned `TokenSymbol` is uppercase A–Z only, `token_symbol.rs:17`; a
+/// pre-existing VM-forced naming condition surfaced for acceptance-time recording per the
+/// human/orchestrator process gate 2026-07-06 — this guard pins the SHIPPED constant so the
+/// deployed symbol is load-bearing.) RED: the shipped builder performs no symbol check.
+#[test]
+fn build_rejects_wrong_token_symbol() -> Result<()> {
+    let component = xreserve_component_with_slots(&ALL_XRESERVE_SLOT_LABELS)?;
+    let faucet = production_faucet(true, 6, "USDX")?;
+    let err = XReserveStablecoinBuilder::new(
+        faucet,
+        component,
+        test_account_id(1),
+        test_account_id(2),
+        test_account_id(3),
+    )
+    .build_components()
+    .expect_err("a faucet whose symbol is not the shipped XUSDC must be rejected at build time");
+    assert!(
+        matches!(err, XReserveStablecoinBuilderError::WrongTokenSymbol),
+        "expected WrongTokenSymbol, got {err:?}"
     );
     Ok(())
 }

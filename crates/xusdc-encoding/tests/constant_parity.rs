@@ -83,6 +83,10 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_MINT_DENIED",
     // R-ADMIN-4 domain-config init-once setter (domain_config.masm)
     "ERR_XRESERVE_DOMAIN_REINIT",
+    // §5.9 scalar/limb u32 guards (full-assembly slice, Round-P change 1; domain_config.masm)
+    "ERR_XRESERVE_DOMAIN_NOT_U32",
+    "ERR_XRESERVE_SOURCE_DOMAIN_NOT_U32",
+    "ERR_XRESERVE_XRC_LIMB_NOT_U32",
     // CMP-A10 R-BURN-1 / R-BURN-2 burn policy (burn_policy.masm)
     "ERR_XRESERVE_BURN_ZERO",
     "ERR_XRESERVE_BURN_BELOW_MIN",
@@ -113,6 +117,16 @@ const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] =
 /// redeclaration → not parsed here, no duplicate parity row, G1).
 const EXPECTED_XRESERVE_MINT_WORD_CONSTS: &[(&str, &str)] =
     &[("TOKEN_CONFIG_SLOT", support::TOKEN_CONFIG_SLOT_LABEL)];
+
+/// Expected `word("…")` slot-name constants of the §5.9 4-field `domain_config.masm` (full-assembly
+/// slice): the THREE new slots it owns and writes (`source_domain`, `xreserve_contract_hi/lo` —
+/// D-A6-XRC raw 8×u32-LE realization). The `domain`/`identifier` consts stay IMPORTED from
+/// deposit_intent_parser (no redeclaration → no duplicate parity row, G1).
+const EXPECTED_DOMAIN_CONFIG_WORD_CONSTS: &[(&str, &str)] = &[
+    ("SOURCE_DOMAIN_CONFIG_SLOT", support::SOURCE_DOMAIN_CONFIG_SLOT_LABEL),
+    ("XRESERVE_CONTRACT_HI_SLOT", support::XRESERVE_CONTRACT_HI_SLOT_LABEL),
+    ("XRESERVE_CONTRACT_LO_SLOT", support::XRESERVE_CONTRACT_LO_SLOT_LABEL),
+];
 
 /// Expected `word("…")` slot-name constant of the CMP-A10 burn-policy module. `MIN_BURN_SIZE_SLOT`
 /// MUST be byte-identical to the future CMP-F2 `set_min_burn_size` setter's slot (the reader↔setter
@@ -377,10 +391,12 @@ fn masm_constants_bidirectional() {
             &[],
             EXPECTED_ATTESTER_ADMIN_WORD_CONSTS,
         ),
-        // P5-01 R-ADMIN-4 domain_init: declares only ERR_XRESERVE_DOMAIN_REINIT (a known shell error
-        // via SHELL_ERR_TABLE); the two slot consts are IMPORTED from deposit_intent_parser (not
-        // redeclared -> not parsed here, no duplicate parity row, G1).
-        ("domain_config.masm", DOMAIN_CONFIG_MASM, &[], &[]),
+        // P5-01 §5.9 4-field domain_init (full-assembly slice): declares ERR_XRESERVE_DOMAIN_REINIT
+        // + the three u32-guard errors (known shell errors via SHELL_ERR_TABLE) and the THREE new
+        // slot consts it owns (source_domain + xreserve_contract hi/lo); the domain/identifier
+        // consts stay IMPORTED from deposit_intent_parser (not redeclared -> no duplicate parity
+        // row, G1).
+        ("domain_config.masm", DOMAIN_CONFIG_MASM, &[], EXPECTED_DOMAIN_CONFIG_WORD_CONSTS),
         // CMP-A10 burn policy: declares the two ERR_XRESERVE_BURN_* errors (known shell errors via
         // SHELL_ERR_TABLE) + the MIN_BURN_SIZE_SLOT word const (pinned to MIN_BURN_SIZE_SLOT_LABEL); no
         // numeric consts.

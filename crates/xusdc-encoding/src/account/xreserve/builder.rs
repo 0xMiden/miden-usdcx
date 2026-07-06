@@ -108,6 +108,24 @@ pub enum XReserveStablecoinBuilderError {
     /// valid burn amount / field element and cannot be seeded into the `MIN_BURN_SIZE_SLOT`. Carries
     /// the offending value.
     MinBurnSizeExceedsMax(u64),
+    /// The supplied `xreserve` component does not declare a required storage slot (§5.13
+    /// validate-what-you-ship: a missing slot would ship a faucet whose reads/writes of that slot
+    /// trap at runtime). Carries the missing slot's label. RED-SUITE INERT VARIANT (the
+    /// mutability-guard `3fd7636` precedent): declared so the executing-red `builder_api` tests
+    /// compile and fail behaviorally; the GREEN commit adds the presence check.
+    MissingXReserveSlot(&'static str),
+    /// The supplied faucet's `decimals` is not the spec-mandated 6 (§5.13 `token_config
+    /// (decimals=6, "xUSDC")`; CIR-FEE-3 six decimal places — the D5b reducer scales to 6dp, so a
+    /// mismatched faucet silently mis-scales every amount). Carries the offending value.
+    /// RED-SUITE INERT VARIANT — the GREEN commit adds the check.
+    WrongDecimals(u8),
+    /// The supplied faucet's `TokenSymbol` is not the shipped `XUSDC` guard constant. The pinned
+    /// `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs:17`), so the spec's Circle-facing
+    /// label `"xUSDC"` is unrepresentable on-chain — a pre-existing VM-forced naming condition
+    /// surfaced for acceptance-time recording (human/orchestrator process gate, 2026-07-06); this
+    /// guard pins the shipped constant so the deployed symbol is load-bearing and a drift fails the
+    /// build. RED-SUITE INERT VARIANT — the GREEN commit adds the check.
+    WrongTokenSymbol,
     /// The underlying `TokenPolicyManager` rejected the policy registration.
     PolicyManager(TokenPolicyManagerError),
 }
@@ -150,6 +168,19 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 f,
                 "min_burn_size {value} exceeds the maximum representable asset amount \
                  (AssetAmount::MAX = 2^63 - 2^31)"
+            ),
+            Self::MissingXReserveSlot(label) => write!(
+                f,
+                "the xreserve component does not declare the required storage slot '{label}'"
+            ),
+            Self::WrongDecimals(decimals) => write!(
+                f,
+                "xusdc faucet decimals must be 6 (CIR-FEE-3; the reducer scales to 6dp), got \
+                 {decimals}"
+            ),
+            Self::WrongTokenSymbol => write!(
+                f,
+                "xusdc faucet token symbol must be the shipped XUSDC guard constant"
             ),
             Self::PolicyManager(_) => write!(f, "token policy manager composition failed"),
         }

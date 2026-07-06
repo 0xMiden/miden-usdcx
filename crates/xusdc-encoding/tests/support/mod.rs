@@ -80,6 +80,24 @@ pub const TEST_WRONG_DOMAIN: u32 = 8;
 pub const DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::domain";
 pub const IDENTIFIER_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::identifier";
 
+/// §5.9 4-field closure (P5-01 full-assembly slice): the `source_domain` (u32) value slot —
+/// `[source_domain, 0, 0, 0]`, mirroring the accepted domain realization. Owned + written ONLY by
+/// `domain_init` (no on-chain reader; off-chain identity config read via `GetAccount`). The MASM
+/// `domain_config.masm` declares a byte-identical `word("…")` const at the GREEN commit
+/// (parity-enforced from then on).
+pub const SOURCE_DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::source_domain";
+
+/// §5.9 4-field closure: the `xreserve_contract` bytes32 stored LOSSLESSLY as its 8×u32-LE packed
+/// felts across TWO value slots (human-directed D-A6-XRC): `_hi` = packed felts[0..4] (wire bytes
+/// 0..16), `_lo` = packed felts[4..8] (wire bytes 16..32). Deliberate asymmetry with `identifier`
+/// (a Poseidon2 hash-Word, consumer-forced by D5a's `assert_eqw`): `xreserve_contract` has NO
+/// on-chain consumer, so the public identity must be READABLE (fail-closed
+/// `packed_felts_to_bytes32` round-trip), not merely verifiable. Written ONLY by `domain_init`.
+pub const XRESERVE_CONTRACT_HI_SLOT_LABEL: &str =
+    "xusdc::xreserve::domain_config::xreserve_contract_hi";
+pub const XRESERVE_CONTRACT_LO_SLOT_LABEL: &str =
+    "xusdc::xreserve::domain_config::xreserve_contract_lo";
+
 /// D5c `usedNonces` map-slot label (frozen §5.6 nonce registry). The MASM shell declares a
 /// `word("…")` const with the byte-identical label at the D5c green commit (parity-enforced
 /// from that commit). Bound here as the single Rust source for the fixture slot binding.
@@ -112,7 +130,7 @@ pub use xusdc_encoding::account::xreserve::MIN_BURN_SIZE_SLOT_LABEL;
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 15] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -196,6 +214,25 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 15] = [
     (
         "ERR_XRESERVE_BURN_BELOW_MIN",
         MasmError::from_static_str("burn amount is below the minimum burn size"),
+    ),
+    // §5.9 scalar-u32 exactness (full-assembly slice, Round-P change 1): domain_init guards BOTH
+    // scalar fields as valid u32 values BEFORE any write (the spec types them u32,
+    // COMPONENT-SPEC.md:331). The red-suite carries the three guard errors here so the
+    // malformed-scalar/limb tests can name their EXACT expected error; the GREEN commit declares the
+    // matching MASM consts in domain_config.masm + adds them to SHELL_ERRORS_DECLARED for parity.
+    (
+        "ERR_XRESERVE_DOMAIN_NOT_U32",
+        MasmError::from_static_str("domain is not a valid u32"),
+    ),
+    (
+        "ERR_XRESERVE_SOURCE_DOMAIN_NOT_U32",
+        MasmError::from_static_str("source domain is not a valid u32"),
+    ),
+    // D-A6-XRC guard 2: every xreserve_contract limb must be a valid u32 before the two packed
+    // words are stored (the fail-closed on-chain mirror of `packed_felts_to_bytes32`).
+    (
+        "ERR_XRESERVE_XRC_LIMB_NOT_U32",
+        MasmError::from_static_str("xreserve contract limb is not a valid u32"),
     ),
 ];
 
@@ -1017,6 +1054,23 @@ pub fn setup_mint_composition_account(
                 StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL).context("identifier slot label")?,
                 identifier,
             ),
+            // §5.9 4-field closure: the two new scalar/bytes32 config slots, EMPTY at assembly
+            // (domain_init is the sole writer; per-slice fixtures never read them).
+            StorageSlot::with_value(
+                StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
+                    .context("source_domain slot label")?,
+                Word::from([0u32, 0, 0, 0]),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
+                    .context("xreserve_contract_hi slot label")?,
+                Word::from([0u32, 0, 0, 0]),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
+                    .context("xreserve_contract_lo slot label")?,
+                Word::from([0u32, 0, 0, 0]),
+            ),
             StorageSlot::with_map(
                 StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
                 map_of(nonce_seed, "usedNonces")?,
@@ -1358,27 +1412,71 @@ pub fn err_sender_not_owner() -> MasmError {
     MasmError::from_static_str("note sender is not the owner")
 }
 
-/// Builds an unauthenticated note SENT BY `sender` whose script `call`s
-/// `xreserve::domain_config::domain_init(IDENTIFIER, domain)`. The Ownable2Step gate reads the note
-/// sender (`active_note::get_sender`), so the sender is what the owner check tests. `domain` is the
-/// u32 domain id (stored as element 0 of the domain config word); `identifier` is the pre-hashed
-/// `bytes32_to_key` Word stored verbatim (the set_attester trust-the-caller's-Word discipline). The
-/// note script is compiled with the `xreserve` library linked so the `call` resolves to the same proc
-/// installed on the faucet account.
-pub fn domain_init_note(sender: AccountId, domain: u32, identifier: Word, seed: u64) -> Result<Note> {
+/// Builds an unauthenticated note SENT BY `sender` whose script `call`s the FOUR-FIELD
+/// `xreserve::domain_config::domain_init(IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain)` (§5.9
+/// closure). The Ownable2Step gate reads the note sender (`active_note::get_sender`), so the sender
+/// is what the owner check tests. `domain`/`source_domain` are the u32 scalar fields (each stored as
+/// element 0 of its config word, u32-guarded on-chain before any write); `xreserve_contract` is the
+/// raw bytes32 packed via the 04 codec BY REFERENCE (`bytes32_to_packed_felts` — D-A6-XRC guard 1;
+/// hi = felts[0..4], lo = felts[4..8]); `identifier` is the pre-hashed `bytes32_to_key` Word stored
+/// verbatim (unchanged). The note script links the `xreserve` library so the `call` resolves to the
+/// same proc installed on the faucet account.
+pub fn domain_init_note(
+    sender: AccountId,
+    domain: u32,
+    source_domain: u32,
+    xreserve_contract: &[u8; 32],
+    identifier: Word,
+    seed: u64,
+) -> Result<Note> {
+    let xrc = xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts(xreserve_contract);
+    let mut xrc_u64 = [0u64; 8];
+    for (dst, felt) in xrc_u64.iter_mut().zip(xrc.iter()) {
+        *dst = felt.as_canonical_u64();
+    }
+    domain_init_note_raw(sender, u64::from(domain), u64::from(source_domain), &xrc_u64, identifier, seed)
+}
+
+/// RAW-FELT variant of [`domain_init_note`]: stages `domain` / `source_domain` / the 8
+/// `xreserve_contract` limbs as raw u64 felt literals, BYPASSING the u32-typed builder above — the
+/// only way to stage the malformed (> `u32::MAX`) values the on-chain scalar/limb guards must trap
+/// (`ERR_XRESERVE_DOMAIN_NOT_U32` / `ERR_XRESERVE_SOURCE_DOMAIN_NOT_U32` /
+/// `ERR_XRESERVE_XRC_LIMB_NOT_U32`; §5.9 scalar-u32 exactness, Round-P change 1).
+pub fn domain_init_note_raw(
+    sender: AccountId,
+    domain: u64,
+    source_domain: u64,
+    xrc_limbs: &[u64; 8],
+    identifier: Word,
+    seed: u64,
+) -> Result<Note> {
     let lib = assemble_xreserve_lib()?;
-    // Stack contract: [IDENTIFIER, domain, pad(11)] (IDENTIFIER element-0 on top). Push the 11 pad
-    // felts (deepest), then domain, then the identifier word so i0 ends on top: 11 + 1 + 4 = 16.
+    // Stack contract: [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)] (IDENTIFIER
+    // element-0 on top; 4+4+4+1+1 = 14 meaningful + pad(2) = 16, the full call-boundary window —
+    // ZERO margin; any future field forces the advice path). Push order: 2 pads (deepest), domain,
+    // source_domain, XRC_LO word, XRC_HI word, IDENTIFIER word (each word pushed e3..e0 so element 0
+    // ends on top).
     let src = format!(
         "use xreserve::domain_config\n\
          @note_script\n\
          pub proc main\n\
-         \x20\x20\x20\x20repeat.11 push.0 end\n\
+         \x20\x20\x20\x20repeat.2 push.0 end\n\
          \x20\x20\x20\x20push.{domain}\n\
+         \x20\x20\x20\x20push.{source_domain}\n\
+         \x20\x20\x20\x20push.{xl3}.{xl2}.{xl1}.{xl0}\n\
+         \x20\x20\x20\x20push.{xh3}.{xh2}.{xh1}.{xh0}\n\
          \x20\x20\x20\x20push.{i3}.{i2}.{i1}.{i0}\n\
          \x20\x20\x20\x20call.domain_config::domain_init\n\
          \x20\x20\x20\x20dropw dropw dropw dropw\n\
          end\n",
+        xh0 = xrc_limbs[0],
+        xh1 = xrc_limbs[1],
+        xh2 = xrc_limbs[2],
+        xh3 = xrc_limbs[3],
+        xl0 = xrc_limbs[4],
+        xl1 = xrc_limbs[5],
+        xl2 = xrc_limbs[6],
+        xl3 = xrc_limbs[7],
         i0 = identifier[0],
         i1 = identifier[1],
         i2 = identifier[2],
@@ -1403,17 +1501,20 @@ pub fn domain_init_note(sender: AccountId, domain: u32, identifier: Word, seed: 
         .build()?)
 }
 
-/// Executes a `domain_init` note (sent by `sender`) against the faucet `account`, returning the raw
-/// execution result so callers can assert success or the exact trap. Mirrors `run_set_attester_tx`.
+/// Executes a FOUR-FIELD `domain_init` note (sent by `sender`) against the faucet `account`,
+/// returning the raw execution result so callers can assert success or the exact trap. Mirrors
+/// `run_set_attester_tx`.
 pub async fn run_domain_init_tx(
     h: &CompositionHarness,
     account: &Account,
     sender: AccountId,
     domain: u32,
+    source_domain: u32,
+    xreserve_contract: &[u8; 32],
     identifier: Word,
     seed: u64,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note = domain_init_note(sender, domain, identifier, seed)
+    let note = domain_init_note(sender, domain, source_domain, xreserve_contract, identifier, seed)
         .expect("building the domain_init note (test-setup invariant)");
     h.mock_chain
         .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
@@ -1422,6 +1523,47 @@ pub async fn run_domain_init_tx(
         .expect("building the domain_init transaction")
         .execute()
         .await
+}
+
+/// The raw-felt twin of [`run_domain_init_tx`] (malformed-scalar/limb staging).
+pub async fn run_domain_init_tx_raw(
+    h: &CompositionHarness,
+    account: &Account,
+    sender: AccountId,
+    domain: u64,
+    source_domain: u64,
+    xrc_limbs: &[u64; 8],
+    identifier: Word,
+    seed: u64,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let note = domain_init_note_raw(sender, domain, source_domain, xrc_limbs, identifier, seed)
+        .expect("building the raw domain_init note (test-setup invariant)");
+    h.mock_chain
+        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
+        .expect("building the domain_init tx context")
+        .build()
+        .expect("building the domain_init transaction")
+        .execute()
+        .await
+}
+
+/// Reads the FIVE domain-config words `[domain, source_domain, xrc_hi, xrc_lo, identifier]` from a
+/// committed/evolved account — the §5.9 4-field read-back (+ the no-write assert of the guard
+/// tests). Missing-slot reads propagate as errors (the slots are always declared on the fixtures).
+pub fn read_domain_config_words(account: &Account) -> Result<[Word; 5]> {
+    let read = |label: &str| -> Result<Word> {
+        account
+            .storage()
+            .get_item(&StorageSlotName::new(label).with_context(|| format!("slot label {label}"))?)
+            .map_err(|e| anyhow::anyhow!("reading domain-config slot {label}: {e}"))
+    };
+    Ok([
+        read(DOMAIN_CONFIG_SLOT_LABEL)?,
+        read(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)?,
+        read(XRESERVE_CONTRACT_HI_SLOT_LABEL)?,
+        read(XRESERVE_CONTRACT_LO_SLOT_LABEL)?,
+        read(IDENTIFIER_CONFIG_SLOT_LABEL)?,
+    ])
 }
 
 // set_min_burn_size — owner-gated minBurnSize setter note + slot read-back (P5-01 CMP-F2 slice)
@@ -1634,6 +1776,23 @@ pub fn setup_rotation_account(
                 StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL).context("identifier slot label")?,
                 identifier,
             ),
+            // §5.9 4-field closure: the two new scalar/bytes32 config slots, EMPTY at assembly
+            // (domain_init is the sole writer).
+            StorageSlot::with_value(
+                StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
+                    .context("source_domain slot label")?,
+                Word::from([0u32, 0, 0, 0]),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
+                    .context("xreserve_contract_hi slot label")?,
+                Word::from([0u32, 0, 0, 0]),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
+                    .context("xreserve_contract_lo slot label")?,
+                Word::from([0u32, 0, 0, 0]),
+            ),
             StorageSlot::with_map(
                 StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
                 StorageMap::new(),
@@ -1800,6 +1959,23 @@ pub fn setup_guarded_mint_account(
             StorageSlot::with_value(
                 StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL).context("identifier slot label")?,
                 identifier,
+            ),
+            // §5.9 4-field closure: the two new scalar/bytes32 config slots, EMPTY at assembly
+            // (domain_init is the sole writer; per-slice fixtures never read them).
+            StorageSlot::with_value(
+                StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
+                    .context("source_domain slot label")?,
+                Word::from([0u32, 0, 0, 0]),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
+                    .context("xreserve_contract_hi slot label")?,
+                Word::from([0u32, 0, 0, 0]),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
+                    .context("xreserve_contract_lo slot label")?,
+                Word::from([0u32, 0, 0, 0]),
             ),
             StorageSlot::with_map(
                 StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
@@ -2160,6 +2336,23 @@ pub fn setup_burn_policy_account(
             StorageSlot::with_value(
                 StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL).context("identifier slot label")?,
                 Word::from([11u32, 12, 13, 14]),
+            ),
+            // §5.9 4-field closure: the two new scalar/bytes32 config slots, EMPTY at assembly
+            // (domain_init is the sole writer; the burn fixtures never read them).
+            StorageSlot::with_value(
+                StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
+                    .context("source_domain slot label")?,
+                Word::from([0u32, 0, 0, 0]),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
+                    .context("xreserve_contract_hi slot label")?,
+                Word::from([0u32, 0, 0, 0]),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
+                    .context("xreserve_contract_lo slot label")?,
+                Word::from([0u32, 0, 0, 0]),
             ),
             StorageSlot::with_map(
                 StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
@@ -2889,5 +3082,142 @@ pub fn setup_burn_policy_direct_account(min_burn_size: u64, driver_src: &str) ->
         account_id: account.id(),
         driver_code,
         driver_path: BURN_POLICY_DRIVER_PATH,
+    })
+}
+
+// FULL-ASSEMBLY E2E HARNESS (P5-01 final on-chain slice) — the production-assembled faucet with
+// EMPTY domain config + a real recipient wallet, run sequentially through the whole lifecycle.
+// ================================================================================================
+
+/// The full-assembly E2E harness: ONE production-composed faucet (`XReserveStablecoinBuilder`,
+/// owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3)) whose FIVE domain-config slots start
+/// EMPTY (the E2E's `domain_init` tx is the writer — the production bring-up path, not a fixture
+/// seed), an EMPTY attester allowlist (the E2E's `set_attester` tx populates it), one mint driver
+/// per distinct-nonce payload (the rotation-harness pattern), and a REAL recipient wallet that
+/// consumes the minted P2ID note and emits the burn notes (D-E2E-ARC: the burn consumes the
+/// actually-minted funds).
+pub struct AssembledFaucet {
+    pub harness: CompositionHarness,
+    pub drivers: Vec<(String, AccountComponentCode)>,
+    pub recipient_id: AccountId,
+}
+
+/// Builds the assembled-faucet E2E fixture. `driver_srcs_for` receives the recipient wallet's
+/// `AccountId` FIRST (the DepositIntent payloads embed `remoteRecipient =
+/// account_id_to_bytes32(recipient)`, and the driver sources embed the payloads), then the faucet +
+/// drivers are composed via the PRODUCTION `XReserveStablecoinBuilder::build_components` path.
+/// `max_supply`/`token_supply` configure the faucet build (mutable max_supply, decimals 6, XUSDC).
+pub fn setup_assembled_faucet(
+    max_supply: u64,
+    token_supply: u64,
+    driver_srcs_for: impl FnOnce(AccountId) -> Vec<String>,
+) -> Result<AssembledFaucet> {
+    let mut mc = MockChain::builder();
+    // The recipient wallet FIRST: its id feeds the payload/driver generation below.
+    let recipient = mc
+        .add_existing_wallet(Auth::IncrNonce)
+        .context("adding the recipient wallet")?;
+    let recipient_id = recipient.id();
+    let driver_srcs = driver_srcs_for(recipient_id);
+
+    let library = assemble_xreserve_lib()?;
+    let empty = || Word::from([0u32, 0, 0, 0]);
+    let xreserve_component = AccountComponent::new(
+        library.clone(),
+        vec![
+            // ALL FIVE domain-config slots EMPTY: domain_init (tx S1b) is the production writer.
+            StorageSlot::with_value(
+                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
+                    .context("identifier slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
+                    .context("source_domain slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
+                    .context("xreserve_contract_hi slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
+                    .context("xreserve_contract_lo slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
+                StorageMap::new(),
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+                    .context("xReserveAttesters slot label")?,
+                StorageMap::new(),
+            ),
+        ],
+        AccountComponentMetadata::new("xusdc-assembled-faucet"),
+    )
+    .context("binding the xreserve library + all seven slots as a component")?;
+
+    let mut drivers = Vec::new();
+    let mut driver_components = Vec::new();
+    for (i, src) in driver_srcs.iter().enumerate() {
+        let path = format!("xusdc::test_fixtures::assembled_driver_{i}");
+        let code = CodeBuilder::new()
+            .with_dynamically_linked_library(&library)
+            .with_context(|| format!("linking xreserve into assembled driver {i}"))?
+            .compile_component_code(&path, src)
+            .with_context(|| format!("assembled driver {i} failed to compile"))?;
+        driver_components.push(
+            AccountComponent::new(
+                code.clone(),
+                vec![],
+                AccountComponentMetadata::new(format!("xusdc-assembled-driver-{i}")),
+            )
+            .with_context(|| format!("binding assembled driver {i}"))?,
+        );
+        drivers.push((path, code));
+    }
+
+    let faucet = FungibleFaucet::builder()
+        .name(TokenName::new("XUSDC")?)
+        .symbol(TokenSymbol::new("XUSDC")?)
+        .decimals(6)
+        .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
+        .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
+        .is_max_supply_mutable(true)
+        .build()
+        .context("failed to build FungibleFaucet")?;
+
+    let mut components = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
+        faucet,
+        xreserve_component,
+        test_account_id(1),
+        test_account_id(2),
+        test_account_id(3),
+    )
+    .build_components()
+    .map_err(|e| anyhow::anyhow!("composing the assembled faucet: {e}"))?;
+    components.extend(driver_components);
+
+    let account = mc
+        .add_existing_account_from_components(Auth::IncrNonce, components)
+        .context("adding the assembled faucet account")?;
+    let mock_chain = mc.build().context("building the assembled MockChain")?;
+    let first = drivers[0].1.clone();
+    Ok(AssembledFaucet {
+        harness: CompositionHarness {
+            mock_chain,
+            account_id: account.id(),
+            driver_code: first.clone(),
+            probe_code: first,
+        },
+        drivers,
+        recipient_id,
     })
 }

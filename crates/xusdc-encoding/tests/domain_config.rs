@@ -382,17 +382,20 @@ async fn domain_init_reinit_leaves_all_fields_unchanged() -> Result<()> {
 async fn assert_malformed_value_traps(
     domain: u64,
     source_domain: u64,
-    xrc_limb0: u64,
+    xrc_limb_index: usize,
+    xrc_limb_value: u64,
     expected_err: &str,
 ) -> Result<()> {
     let gm = uninit_faucet()?;
     let account = faucet_account(&gm.harness);
 
-    // Well-formed limbs except limb 0 (the per-case malformed slot). Malformed values must sit in
-    // [2^32, p) — valid FELT literals (the assembler rejects >= p = 2^64 - 2^32 + 1) that are NOT
-    // valid u32s — exactly what the on-chain guard must catch.
+    // Well-formed limbs except the indexed malformed slot. Malformed values must sit in [2^32, p)
+    // — valid FELT literals (the assembler rejects >= p = 2^64 - 2^32 + 1) that are NOT valid u32s
+    // — exactly what the on-chain guard must catch. The index parameterization exercises BOTH
+    // guard words: limbs 0..4 trap the HI-word u32assertw, limbs 4..8 the LO-word one (the
+    // acceptance-audit surviving-mutant fix: index-0-only staging left the LO guard unexercised).
     let mut xrc_limbs = [0xABu64; 8];
-    xrc_limbs[0] = xrc_limb0;
+    xrc_limbs[xrc_limb_index] = xrc_limb_value;
 
     let result = run_domain_init_tx_raw(
         &gm.harness,
@@ -434,6 +437,7 @@ async fn domain_init_domain_over_u32_traps() -> Result<()> {
     assert_malformed_value_traps(
         u32::MAX as u64 + 1,
         TEST_SOURCE_DOMAIN as u64,
+        0,
         0xAB,
         "ERR_XRESERVE_DOMAIN_NOT_U32",
     )
@@ -447,6 +451,7 @@ async fn domain_init_source_domain_over_u32_traps() -> Result<()> {
     assert_malformed_value_traps(
         TEST_DOMAIN as u64,
         u32::MAX as u64 + 1,
+        0,
         0xAB,
         "ERR_XRESERVE_SOURCE_DOMAIN_NOT_U32",
     )
@@ -455,12 +460,20 @@ async fn domain_init_source_domain_over_u32_traps() -> Result<()> {
 
 /// D-A6-XRC guard 2: an xreserve_contract limb > u32::MAX (2^32 — a valid felt below the field
 /// modulus p = 2^64 − 2^32 + 1, but not a valid u32) traps the EXACT
-/// ERR_XRESERVE_XRC_LIMB_NOT_U32, nothing written. RED (no guard shipped).
+/// ERR_XRESERVE_XRC_LIMB_NOT_U32, nothing written — at ANY limb position. The cases span BOTH
+/// stored words so BOTH `u32assertw` guards are load-bearing: index 0 = the HI word's first limb,
+/// indices 4 and 7 = the LO word's first and last limbs (the acceptance-audit surviving-mutant
+/// fix: staging only index 0 left the LO-word guard removable with the suite green).
+#[rstest]
+#[case::hi_limb_0(0)]
+#[case::lo_limb_4(4)]
+#[case::lo_limb_7(7)]
 #[tokio::test]
-async fn domain_init_xrc_limb_over_u32_traps() -> Result<()> {
+async fn domain_init_xrc_limb_over_u32_traps(#[case] xrc_limb_index: usize) -> Result<()> {
     assert_malformed_value_traps(
         TEST_DOMAIN as u64,
         TEST_SOURCE_DOMAIN as u64,
+        xrc_limb_index,
         u32::MAX as u64 + 1,
         "ERR_XRESERVE_XRC_LIMB_NOT_U32",
     )

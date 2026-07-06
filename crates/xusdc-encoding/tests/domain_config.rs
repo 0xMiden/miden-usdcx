@@ -460,6 +460,133 @@ async fn domain_init_with_zero_source_domain_is_still_init_once() -> Result<()> 
     Ok(())
 }
 
+/// Item 8: the `domain == u32::MAX` ACCEPT boundary (only the `u32::MAX + 1` trap side was
+/// pinned). The maximal valid u32 passes the guard and reads back exactly `[u32::MAX,0,0,0]`.
+#[tokio::test]
+async fn domain_init_domain_at_u32_max_succeeds() -> Result<()> {
+    let gm = uninit_faucet()?;
+    let account = faucet_account(&gm.harness);
+    let identifier = dummy_identifier();
+
+    let executed = init_four_fields(&gm, &account, owner(), u32::MAX, identifier, 1)
+        .await
+        .expect("domain_init with domain == u32::MAX (the accept boundary) must succeed");
+    let mut evolved = account.clone();
+    evolved.apply_delta(executed.account_delta())?;
+    let words = read_domain_config_words(&evolved)?;
+    assert_eq!(words[0], Word::from([u32::MAX, 0, 0, 0]), "domain == u32::MAX written exactly");
+    assert_eq!(words[4], identifier, "the sentinel is armed");
+    Ok(())
+}
+
+/// Item 8 sibling: the `source_domain == u32::MAX` ACCEPT boundary.
+#[tokio::test]
+async fn domain_init_source_domain_at_u32_max_succeeds() -> Result<()> {
+    let gm = uninit_faucet()?;
+    let account = faucet_account(&gm.harness);
+    let identifier = dummy_identifier();
+
+    let executed = run_domain_init_tx(
+        &gm.harness,
+        &account,
+        owner(),
+        TEST_DOMAIN,
+        u32::MAX,
+        &test_xreserve_contract(),
+        identifier,
+        1,
+    )
+    .await
+    .expect("domain_init with source_domain == u32::MAX (the accept boundary) must succeed");
+    let mut evolved = account.clone();
+    evolved.apply_delta(executed.account_delta())?;
+    let words = read_domain_config_words(&evolved)?;
+    assert_eq!(
+        words[1],
+        Word::from([u32::MAX, 0, 0, 0]),
+        "source_domain == u32::MAX written exactly"
+    );
+    Ok(())
+}
+
+/// Item 9: the ALL-ZERO `xreserve_contract` ACCEPT pin — spec §5.9 mandates NO zero-guard on the
+/// XRC field, so an all-zero bytes32 initializes successfully (both XRC slots read back
+/// `[0,0,0,0]`) and the sentinel still arms (re-init traps the EXACT reinit error). This PINS the
+/// no-guard behavior; it does NOT endorse it — an all-zero immutable XRC is a deploy footgun
+/// flagged for the orchestrator's register (spec-conformant, not a defect).
+#[tokio::test]
+async fn domain_init_all_zero_xreserve_contract_succeeds() -> Result<()> {
+    let gm = uninit_faucet()?;
+    let account = faucet_account(&gm.harness);
+    let identifier = dummy_identifier();
+
+    let executed = run_domain_init_tx(
+        &gm.harness,
+        &account,
+        owner(),
+        TEST_DOMAIN,
+        TEST_SOURCE_DOMAIN,
+        &[0u8; 32],
+        identifier,
+        1,
+    )
+    .await
+    .expect("domain_init with an all-zero xreserve_contract must succeed (spec §5.9: no guard)");
+    let mut evolved = account.clone();
+    evolved.apply_delta(executed.account_delta())?;
+    let words = read_domain_config_words(&evolved)?;
+    assert_eq!(words[2], empty_word(), "xreserve_contract_hi reads back all-zero");
+    assert_eq!(words[3], empty_word(), "xreserve_contract_lo reads back all-zero");
+
+    let result = init_four_fields(&gm, &evolved, owner(), TEST_DOMAIN, identifier, 2).await;
+    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_DOMAIN_REINIT"));
+    Ok(())
+}
+
+/// Item 10: `domain_init` SUCCEEDS while the faucet is paused — deploy-time config is deliberately
+/// NOT pause-gated (`domain_config.masm:10-11` "no pause gate — deploy-time config is orthogonal to
+/// the operational pause"), while the three operational setters ARE pause-gated; this asymmetry was
+/// pinned by no test. Anti-mutant: adding a pause gate to `domain_init` makes this fail with
+/// "the contract is paused".
+#[tokio::test]
+async fn domain_init_succeeds_while_paused() -> Result<()> {
+    let gm = uninit_faucet()?;
+    let account = faucet_account(&gm.harness);
+    let identifier = dummy_identifier();
+
+    // Pause first (DOM_PAUSER = id(2) = role_holder_not_owner()).
+    let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &account, role_holder_not_owner(), 5)
+        .await
+        .expect("DOM_PAUSER pauses the faucet");
+    let mut evolved = account.clone();
+    evolved.apply_delta(paused.account_delta())?;
+    assert_eq!(read_is_paused(&evolved)?, Word::from([1u32, 0, 0, 0]), "paused before init");
+
+    // domain_init on the PAUSED faucet succeeds and writes all four fields.
+    let executed = init_four_fields(&gm, &evolved, owner(), TEST_DOMAIN, identifier, 6)
+        .await
+        .expect("domain_init must succeed while paused (deploy-time config is not pause-gated)");
+    evolved.apply_delta(executed.account_delta())?;
+    let (exp_hi, exp_lo) = expected_xrc_words(&test_xreserve_contract());
+    assert_eq!(
+        read_domain_config_words(&evolved)?,
+        [
+            Word::from([TEST_DOMAIN, 0, 0, 0]),
+            Word::from([TEST_SOURCE_DOMAIN, 0, 0, 0]),
+            exp_hi,
+            exp_lo,
+            identifier,
+        ],
+        "the paused-state init wrote all four fields exactly"
+    );
+    assert_eq!(
+        read_is_paused(&evolved)?,
+        Word::from([1u32, 0, 0, 0]),
+        "the faucet stays paused across domain_init"
+    );
+    Ok(())
+}
+
 // §5.9 SCALAR/LIMB u32 GUARDS (Round-P change 1) — malformed values staged as RAW felts trap the
 // EXACT error BEFORE any write
 // ================================================================================================

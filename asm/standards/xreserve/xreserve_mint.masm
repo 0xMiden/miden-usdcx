@@ -67,6 +67,11 @@ const P2ID_SCRIPT_ROOT = [12857783041667862256, 16051201080474444825, 5045064883
 # D5e supply cap (R-MINT-15). token_supply + amount must not exceed max_supply <= AssetAmount::MAX.
 const ERR_XRESERVE_SUPPLY_CAP = "mint amount exceeds the faucet supply cap"
 
+# D5e fee guard (F2). MVP mints a single recipient note (amount - feeAmount) and raises token_supply
+# by the FULL amount; a non-zero feeAmount would over-count token_supply vs the minted assets (the
+# relayer-fee leg is deferred, DEV-8). `mint` hardcodes feeAmount = 0, so this rejects any other caller.
+const ERR_XRESERVE_FEE_NONZERO = "mint fee amount must be zero"
+
 # Slice-1 recipient AccountId extraction (extract_recipient_account_id). The local R-B layout /
 # field-range checks; the suffix-shape and unknown-version rejects surface the protocol
 # account_id::validate ERR_ACCOUNT_ID_* constants directly. Parity-pinned against
@@ -107,12 +112,13 @@ const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient val
 #! - tag, note_type are the recipient note metadata (note_type 1 = public).
 #!
 #! Panics if:
+#! - feeAmount is non-zero (F2; the MVP requires feeAmount == 0) — rejected before any effect.
 #! - token_supply + amount > max_supply, or max_supply > FUNGIBLE_ASSET_MAX_AMOUNT (R-MINT-15,
 #!   ERR_XRESERVE_SUPPLY_CAP) — the guard is first, so no effects are applied on reject.
 #!
 #! Invocation: exec
 @locals(24)
-pub proc apply_mint_effects
+proc apply_mint_effects
     # park every input into locals (top-first) so each effect step loads exactly what it needs;
     # the recipient felts go to the word-aligned note-storage region at locals 0..1
     loc_store.20 loc_store.21
@@ -126,6 +132,11 @@ pub proc apply_mint_effects
     loc_storew_le.12 dropw
     # => [tag, note_type, ...]
     loc_store.22 loc_store.23
+    # => [...]
+
+    # ---- F2 fee guard: feeAmount (local 21) must be zero (MVP; `mint` hardcodes 0), else a live fee
+    # would over-count token_supply vs the single minted note. Rejects before any state write. ----
+    loc_load.21 assertz.err=ERR_XRESERVE_FEE_NONZERO
     # => [...]
 
     # ---- supply guard (R-MINT-15): READ token_config + three ordered non-wrap asserts ----
@@ -213,7 +224,7 @@ end
 #! - account_id::validate rejects the felts (its ERR_ACCOUNT_ID_* suffix/version constants).
 #!
 #! Invocation: exec
-pub proc extract_recipient_account_id
+proc extract_recipient_account_id
     push.REMOTE_RECIPIENT_FELT_OFF add
     # => [base]   (base = intent_ptr + REMOTE_RECIPIENT_FELT_OFF; the 8 limbs occupy base+0..7)
 

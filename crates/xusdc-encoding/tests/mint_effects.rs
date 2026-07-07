@@ -172,22 +172,7 @@ async fn d5e_over_cap_rejects() -> Result<()> {
     Ok(())
 }
 
-// PROBE (declared green scaffold)
-// ================================================================================================
-
-/// D-1A: the assembled library exports the canonical nested mint-shell path.
-#[test]
-fn probe_mint_effects_exports() -> Result<()> {
-    let lib = assemble_xreserve_lib()?;
-    let exports: Vec<String> = lib
-        .exports()
-        .filter(|e| e.as_procedure().is_some())
-        .map(|e| e.path().to_string())
-        .collect();
-    let canonical = "::xreserve::xreserve_mint::apply_mint_effects";
-    assert!(
-        exports.iter().any(|e| e == canonical),
-        "canonical mint shell proc path {canonical} missing; exports: {exports:?}"
-    );
-    Ok(())
-}
+// The former `probe_mint_effects_exports` (asserting `apply_mint_effects` IS a library export) is
+// retired by the F1 demotion: exporting it was the vulnerability. The correct-level sole-surface
+// proof — `apply_mint_effects` is NOT a callable account root — lives in
+// `mint_root_surface::production_supply_raising_root_set_is_exactly_mint`.

@@ -75,6 +75,8 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_SIG_INVALID",
     // D5e R-MINT-15 (xreserve_mint.masm)
     "ERR_XRESERVE_SUPPLY_CAP",
+    // D5e F2 fee guard (xreserve_mint.masm)
+    "ERR_XRESERVE_FEE_NONZERO",
     // Slice-1 recipient AccountId extraction (xreserve_mint.masm)
     "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",
     "ERR_XRESERVE_RECIPIENT_BAD_LIMB",

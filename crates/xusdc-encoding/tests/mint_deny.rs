@@ -235,26 +235,18 @@ fn probe_mint_deny_guard_export() -> Result<()> {
     Ok(())
 }
 
-/// Static write-surface enumeration over the `xreserve` MASM tree: exactly ONE `TOKEN_CONFIG_SLOT`
-/// write and it RAISES supply (`xreserve_mint::apply_mint_effects`). This is the local half of BOTH the
-/// mint sole-RAISE audit and (CMP-B3) the sole-DECREMENT audit. Concretely:
+/// Static supply-DECREMENT surface enumeration over the `xreserve` MASM tree (CMP-B3): there is NO
+/// local `exec.faucet::burn` (the decrement primitive) and NO `xreserve_receive_and_burn.masm` — the
+/// burn decrement is the STOCK `receive_and_burn` (linked miden-standards), BY DESIGN (CMP-B3
+/// stock-suffices determination), not a deferred local proc.
 ///
-/// - the kernel mint primitives `exec.faucet::mint` / `exec.faucet::create_fungible_asset` appear
-///   ONLY in `xreserve_mint.masm`;
-/// - across the WHOLE local tree there is EXACTLY ONE `set_item` on `TOKEN_CONFIG_SLOT` (a write-surface
-///   enumeration robust to a multi-line decrement — a second/smuggled write-back anywhere, incl. inside
-///   `xreserve_mint.masm`, trips the count), it is in `xreserve_mint.masm`, and its DIRECTION is bound to
-///   the write SITE: the value written is produced by the RAISE `loc_load.20 add` immediately feeding the
-///   write-back (NOT a proc-wide no-`sub` rule — `apply_mint_effects` legitimately contains `sub` for the
-///   supply-cap headroom + the amount math);
-/// - there is NO local `exec.faucet::burn` (the decrement primitive) and NO `xreserve_receive_and_burn.masm`
-///   — the burn decrement is the STOCK `receive_and_burn` (linked miden-standards), BY DESIGN (CMP-B3
-///   stock-suffices determination), not a deferred local proc.
-///
-/// Runtime counterparts: the RAISE's is the deny guard; the DECREMENT's is the CMP-A10-gated stock
-/// `receive_and_burn` (storage-commitment + composition in `xreserve_receive_and_burn.rs`). Must be GREEN.
+/// The supply-RAISE sole-surface guarantee (only `mint` is a callable supply-raising root) is now
+/// enforced at the correct account-code-commitment / procedure-root level by
+/// `mint_root_surface::production_supply_raising_root_set_is_exactly_mint` — it replaced the former
+/// file-grep RAISE sweep (F3), a text proxy that could not see the over-exported `apply_mint_effects`
+/// (F1). Must be GREEN.
 #[test]
-fn no_other_supply_surface_static_sweep() {
+fn no_local_supply_decrement_surface() {
     let dir = xusdc_encoding::xreserve_asm_dir();
 
     // Recursively collect every *.masm under the xreserve tree (skip the `canary/` subtree per the
@@ -287,67 +279,7 @@ fn no_other_supply_surface_static_sweep() {
         files.keys().collect::<Vec<_>>()
     );
 
-    // (1) the kernel mint primitives appear ONLY in xreserve_mint.masm.
-    for primitive in ["exec.faucet::mint", "exec.faucet::create_fungible_asset"] {
-        for (name, src) in &files {
-            let hits = src.lines().filter(|l| l.contains(primitive)).count();
-            if name == "xreserve_mint.masm" {
-                assert!(
-                    hits >= 1,
-                    "xreserve_mint.masm must carry the supply primitive `{primitive}` (its mint site)"
-                );
-            } else {
-                assert_eq!(
-                    hits, 0,
-                    "`{primitive}` is a supply-raising primitive and must NOT appear in {name} \
-                     (only xreserve_mint.masm may raise supply, INV-MINT-SECURITY §5.2)"
-                );
-            }
-        }
-    }
-
-    // (2) WRITE-SURFACE ENUMERATION: exactly ONE TOKEN_CONFIG_SLOT supply-write across the WHOLE local
-    // tree (not one *file*) — robust to a multi-line decrement that adds a second write-back anywhere,
-    // incl. inside xreserve_mint.masm. Filter on `set_item` (not `get_item`) so the supply READ
-    // (`push.TOKEN_CONFIG_SLOT[0..2] exec.active_account::get_item`) is excluded.
-    let mut writes: Vec<(String, usize)> = Vec::new();
-    for (name, src) in &files {
-        for (idx, line) in src.lines().enumerate() {
-            if line.contains("set_item") && line.contains("TOKEN_CONFIG_SLOT") {
-                writes.push((name.clone(), idx));
-            }
-        }
-    }
-    assert_eq!(
-        writes.len(),
-        1,
-        "exactly one local TOKEN_CONFIG_SLOT supply-write must exist (a multi-line decrement adds a \
-         second write-back); saw: {writes:?}"
-    );
-    let (write_file, write_idx) = &writes[0];
-    assert_eq!(
-        write_file, "xreserve_mint.masm",
-        "the sole local supply-write must be in xreserve_mint.masm; saw it in {write_file}"
-    );
-
-    // (3) DIRECTION bound to the write SITE: the nearest preceding non-comment code line must be the
-    // known RAISE `loc_load.20 add` (a `sub` or any other op feeding the write-back would be a
-    // supply-LOWER). NOT a proc-wide no-`sub` rule — apply_mint_effects legitimately contains `sub`
-    // (supply-cap headroom, amount math), so a proc-wide rule would false-positive.
-    let mint_lines: Vec<&str> = files["xreserve_mint.masm"].lines().collect();
-    let preceding = mint_lines[..*write_idx]
-        .iter()
-        .rev()
-        .map(|l| l.trim())
-        .find(|l| !l.is_empty() && !l.starts_with('#'))
-        .expect("the supply-write must have a preceding code line");
-    assert_eq!(
-        preceding, "loc_load.20 add",
-        "the sole supply-write must be fed by the RAISE `loc_load.20 add` (a `sub`/other op feeding the \
-         write is a supply-LOWER); saw: {preceding:?}"
-    );
-
-    // (4) NO local supply-DECREMENT surface, BY DESIGN: the burn decrement is the stock receive_and_burn
+    // NO local supply-DECREMENT surface, BY DESIGN: the burn decrement is the stock receive_and_burn
     // (linked miden-standards), so the local tree has no `faucet::burn` caller and no custom consume proc.
     for (name, src) in &files {
         assert_eq!(

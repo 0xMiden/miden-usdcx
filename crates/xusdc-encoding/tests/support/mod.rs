@@ -122,7 +122,7 @@ pub use xusdc_encoding::account::xreserve::MIN_BURN_SIZE_SLOT_LABEL;
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 19] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 20] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -162,6 +162,12 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 19] = [
     (
         "ERR_XRESERVE_SUPPLY_CAP",
         MasmError::from_static_str("mint amount exceeds the faucet supply cap"),
+    ),
+    // D5e F2 fee guard (xreserve_mint.masm). apply_mint_effects rejects a non-zero feeAmount (MVP
+    // requires 0); parity-pinned against the MASM const.
+    (
+        "ERR_XRESERVE_FEE_NONZERO",
+        MasmError::from_static_str("mint fee amount must be zero"),
     ),
     // Slice-1 recipient AccountId helper (extract_recipient_account_id, xreserve_mint.masm). These
     // are the LOCAL layout / field-range errors; the suffix-shape and unknown-version rejects
@@ -465,8 +471,44 @@ pub fn setup_shell_account_with_nonce_seed(
     driver_src: &str,
     driver_path: &'static str,
 ) -> Result<ShellHarness> {
-    let library = assemble_xreserve_lib()?;
+    setup_shell_account_with_lib(
+        assemble_xreserve_lib()?,
+        domain,
+        identifier,
+        nonce_seed,
+        driver_src,
+        driver_path,
+    )
+}
 
+/// Like [`setup_shell_account`], but installs the effects-public `xreserve` variant so a driver's
+/// cross-module `exec.xreserve_mint::extract_recipient_account_id` resolves and the demoted proc is
+/// a member of this TEST-ONLY account. The recipient-extractor isolation tests use this after the
+/// F1 demotion makes the proc private in the shipped component.
+pub fn setup_shell_account_effects_public(
+    domain: Word,
+    identifier: Word,
+    driver_src: &str,
+    driver_path: &'static str,
+) -> Result<ShellHarness> {
+    setup_shell_account_with_lib(
+        assemble_xreserve_lib_effects_public()?,
+        domain,
+        identifier,
+        None,
+        driver_src,
+        driver_path,
+    )
+}
+
+fn setup_shell_account_with_lib(
+    library: Library,
+    domain: Word,
+    identifier: Word,
+    nonce_seed: Option<(Word, Word)>,
+    driver_src: &str,
+    driver_path: &'static str,
+) -> Result<ShellHarness> {
     let nonce_map = match nonce_seed {
         Some((key, marker)) => StorageMap::with_entries([(StorageMapKey::new(key), marker)])
             .map_err(|e| anyhow::anyhow!("seeding the usedNonces map fixture: {e}"))?,
@@ -906,7 +948,11 @@ pub fn setup_mint_faucet_account(
     token_supply: u64,
     inputs: &MintInputs,
 ) -> Result<MintHarness> {
-    let library = assemble_xreserve_lib()?;
+    // effects-public variant: after the F1 demotion `apply_mint_effects` is private in the shipped
+    // library, so the isolation driver's cross-module `exec.xreserve_mint::apply_mint_effects` only
+    // resolves against this test-only assembly (identical MAST root; a test-only account, never the
+    // production component).
+    let library = assemble_xreserve_lib_effects_public()?;
 
     let mut builder = MockChain::builder();
     let recipient = builder.add_existing_wallet(Auth::IncrNonce).context("adding recipient")?;

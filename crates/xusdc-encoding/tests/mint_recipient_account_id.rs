@@ -73,29 +73,16 @@ fn valid_recipient() -> [u8; 32] {
 fn harness(driver_src: &str) -> Result<ShellHarness> {
     let domain = Word::from([TEST_DOMAIN, 0, 0, 0]);
     let identifier = Word::from([11u32, 12, 13, 14]);
-    setup_shell_account(domain, identifier, driver_src, SHELL_DRIVER_PATH)
+    // effects-public variant: after the F1 demotion `extract_recipient_account_id` is private in the
+    // shipped library, so this isolation harness installs the test-only assembly where the demoted
+    // proc is reachable (identical MAST root; a test-only account, never the production component).
+    setup_shell_account_effects_public(domain, identifier, driver_src, SHELL_DRIVER_PATH)
 }
 
-// EXPORT PROBE (declared green scaffold — D-1A path check for the new proc)
-// ================================================================================================
-
-/// The assembled library exports the canonical Slice-1 proc path (mirrors the D5a-D5d export
-/// probes; exports render absolute at 0.23.3). Green from the placeholder (the proc path resolves).
-#[test]
-fn probe_recipient_extract_exports() -> Result<()> {
-    let lib = assemble_xreserve_lib()?;
-    let exports: Vec<String> = lib
-        .exports()
-        .filter(|e| e.as_procedure().is_some())
-        .map(|e| e.path().to_string())
-        .collect();
-    let canonical = "::xreserve::xreserve_mint::extract_recipient_account_id";
-    assert!(
-        exports.iter().any(|e| e == canonical),
-        "canonical Slice-1 proc path {canonical} missing; exports: {exports:?}"
-    );
-    Ok(())
-}
+// The former `probe_recipient_extract_exports` (asserting `extract_recipient_account_id` IS a
+// library export) is retired by the L1 demotion: it is now a same-module `exec`-only internal.
+// The production callable-root set is pinned by
+// `mint_root_surface::production_supply_raising_root_set_is_exactly_mint`.
 
 // HAPPY PATH FIRST (G4) — the worked vectors extract to their canonical [suffix, prefix]
 // ================================================================================================

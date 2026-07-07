@@ -789,6 +789,10 @@ pub struct AttesterVector {
     pub sig_felts: Vec<Felt>,
     /// Poseidon2 commitment Word = the `xReserveAttesters` allowlist key for this pubkey.
     pub commitment: Word,
+    /// Raw 33-byte compressed SEC1 pubkey (what the relayer hands `XReserveMintNote::create`).
+    pub pubkey_bytes: [u8; 33],
+    /// Raw 65-byte `r||s||v` signature (what the relayer hands `XReserveMintNote::create`).
+    pub sig_bytes: [u8; 65],
 }
 
 impl AttesterVector {
@@ -828,6 +832,8 @@ pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
         pubkey_felts: bytes_to_packed_u32_elements(&pk33),
         sig_felts: bytes_to_packed_u32_elements(&sig65),
         commitment,
+        pubkey_bytes: pk33,
+        sig_bytes: sig65,
     }
 }
 
@@ -3601,4 +3607,178 @@ fn setup_assembled_faucet_inner(
         },
         recipient_ids,
     ))
+}
+
+// CMP-B1 PRODUCTION-FAUCET HARNESS (real-note transport; NO driver/probe components)
+// ================================================================================================
+
+/// The CMP-B1 real-note fixture: the PRODUCTION component set only (the
+/// `XReserveStablecoinBuilder::build_components` output — no driver, no probe), plus a recipient
+/// wallet (the P2ID target embedded in the DepositIntent payloads) and a producer/relayer wallet
+/// (the mint-note sender). Admin bring-up notes (domain_init / set_attester) are seeded ON-CHAIN
+/// at build so each admin tx is block-provable, mirroring `setup_assembled_faucet`.
+pub struct ProductionFaucet {
+    pub mock_chain: MockChain,
+    pub faucet_id: AccountId,
+    pub recipient_id: AccountId,
+    pub producer_id: AccountId,
+    pub seeded_notes: Vec<Note>,
+}
+
+/// Builds the production-component-set faucet fixture. `seed_notes_for` receives the recipient
+/// wallet's `AccountId` (payloads embed `remoteRecipient = account_id_to_bytes32(recipient)`) and
+/// returns the admin notes to seed at genesis. The faucet account carries EXACTLY the components
+/// `XReserveStablecoinBuilder::build_components` returns — proving the real-note mint needs no
+/// test-only component.
+pub fn setup_production_faucet(
+    max_supply: u64,
+    token_supply: u64,
+    seed_notes_for: impl FnOnce(AccountId) -> Vec<Note>,
+) -> Result<ProductionFaucet> {
+    let mut mc = MockChain::builder();
+    let recipient = mc.add_existing_wallet(Auth::IncrNonce).context("adding recipient wallet")?;
+    let producer = mc.add_existing_wallet(Auth::IncrNonce).context("adding producer wallet")?;
+    let seeded_notes = seed_notes_for(recipient.id());
+    for note in &seeded_notes {
+        mc.add_output_note(RawOutputNote::Full(note.clone()));
+    }
+
+    let library = assemble_xreserve_lib()?;
+    let empty = || Word::from([0u32, 0, 0, 0]);
+    let xreserve_component = AccountComponent::new(
+        library,
+        vec![
+            // ALL FIVE domain-config slots EMPTY: domain_init (the seeded owner note) is the
+            // production writer; the attester allowlist ships EMPTY (set_attester writes it).
+            StorageSlot::with_value(
+                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
+                    .context("identifier slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
+                    .context("source_domain slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
+                    .context("xreserve_contract_hi slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
+                    .context("xreserve_contract_lo slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
+                StorageMap::new(),
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+                    .context("xReserveAttesters slot label")?,
+                StorageMap::new(),
+            ),
+        ],
+        AccountComponentMetadata::new("xusdc-production-faucet"),
+    )
+    .context("binding the xreserve library + all seven slots as a component")?;
+
+    let faucet = FungibleFaucet::builder()
+        .name(TokenName::new("USDCx")?)
+        .symbol(TokenSymbol::new("USDCX")?)
+        .decimals(6)
+        .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
+        .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
+        .is_max_supply_mutable(true)
+        .build()
+        .context("failed to build FungibleFaucet")?;
+
+    let components = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
+        faucet,
+        xreserve_component,
+        test_account_id(1),
+        test_account_id(2),
+        test_account_id(3),
+    )
+    .build_components()
+    .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
+
+    let account = mc
+        .add_existing_account_from_components(Auth::IncrNonce, components)
+        .context("adding the production faucet account")?;
+    let mock_chain = mc.build().context("building the production MockChain")?;
+    Ok(ProductionFaucet {
+        mock_chain,
+        faucet_id: account.id(),
+        recipient_id: recipient.id(),
+        producer_id: producer.id(),
+        seeded_notes,
+    })
+}
+
+/// Emits `note` (with any attachments) from `producer` in a REAL in-block tx and commits block N:
+/// `output_note::create` from the recipient digest + metadata, then `output_note::add_attachment`
+/// per attachment with the elements in the PRODUCER tx's advice map (the upstream
+/// `note_script_that_creates_notes` pattern, miden-testing/src/utils.rs:245-315 — producer-side
+/// advice is legitimate: the producer knows the data it is publishing). The full note details are
+/// registered via `RawOutputNote::Full` so the kernel resolves the PUBLIC note, mirroring
+/// `try_emit_burn_note`. Asset-less (the mint-note shape).
+pub async fn emit_note_with_attachments(
+    chain: &mut MockChain,
+    producer: AccountId,
+    note: &Note,
+) -> Result<()> {
+    let recipient = note.recipient().digest();
+    let note_type = Felt::from(note.metadata().note_type());
+    let tag = Felt::from(note.metadata().tag());
+
+    let mut src = format!(
+        "use miden::protocol::output_note\n\
+         \n\
+         begin\n\
+         \x20\x20\x20\x20push.{recipient}\n\
+         \x20\x20\x20\x20push.{note_type}\n\
+         \x20\x20\x20\x20push.{tag}\n\
+         \x20\x20\x20\x20exec.output_note::create\n"
+    );
+    let mut advice = AdviceInputs::default();
+    for attachment in note.attachments().iter() {
+        let scheme = attachment.attachment_scheme().as_u16();
+        let commitment = attachment.content().to_commitment();
+        src.push_str(&format!(
+            "\x20\x20\x20\x20dup\n\
+             \x20\x20\x20\x20push.{commitment}\n\
+             \x20\x20\x20\x20push.{scheme}\n\
+             \x20\x20\x20\x20exec.output_note::add_attachment\n"
+        ));
+        advice = advice.with_map([(commitment, attachment.content().to_elements())]);
+    }
+    src.push_str(
+        "\x20\x20\x20\x20drop\n\
+         \x20\x20\x20\x20exec.::miden::core::sys::truncate_stack\n\
+         end\n",
+    );
+
+    let tx_script = CodeBuilder::new().compile_tx_script(src)?;
+    let tx = chain
+        .build_tx_context(producer, &[], &[])?
+        .tx_script(tx_script)
+        .extend_advice_inputs(advice)
+        .extend_expected_output_notes(vec![RawOutputNote::Full(note.clone())])
+        .build()?
+        .execute()
+        .await?;
+    anyhow::ensure!(
+        tx.output_notes().num_notes() == 1 && tx.output_notes().get_note(0).id() == note.id(),
+        "the producer tx must emit exactly the constructed note (id parity)"
+    );
+    chain.add_pending_executed_transaction(&tx)?;
+    chain.prove_next_block()?;
+    anyhow::ensure!(chain.is_note_committed(&note.id()), "the emitted note must be committed");
+    Ok(())
 }

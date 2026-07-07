@@ -289,6 +289,148 @@ pub fn assemble_xreserve_lib() -> Result<Library> {
     Ok(Arc::unwrap_or_clone(lib))
 }
 
+/// Assembles a TEST-ONLY variant of the `xreserve` library in which `apply_mint_effects` and
+/// `extract_recipient_account_id` are forced `pub` (callable + addressable by path/root), whatever
+/// their visibility in the shipped source. It copies the shipped `asm/standards/xreserve` tree to a
+/// temp dir, idempotently forces the two procs `pub` (a no-op when they are already `pub`), and
+/// assembles the copy with the SAME assembler as [`assemble_xreserve_lib`].
+///
+/// Visibility does not change a procedure's MAST, so this library's `apply_mint_effects` /
+/// `extract_recipient_account_id` carry the IDENTICAL MAST root to the shipped (post-fix: private)
+/// ones. That is what lets the isolation tests reach the demoted procs via cross-module `exec`, and
+/// lets the procedure-root security test target the exact root the production faucet no longer
+/// exposes. This is NOT the shipped `xreserve` component — it is used only to drive the demoted
+/// procs in isolation.
+pub fn assemble_xreserve_lib_effects_public() -> Result<Library> {
+    let src_dir = xusdc_encoding::xreserve_asm_dir();
+    let tmp_dir = unique_temp_dir("xusdc_xreserve_effects_public");
+    copy_dir_recursive(&src_dir, &tmp_dir).context("copying the xreserve asm tree to a temp dir")?;
+
+    // force the two demoted procs `pub` in the temp copy (idempotent: no-op when already `pub`).
+    let mint_masm = tmp_dir.join("xreserve_mint.masm");
+    let mut src = std::fs::read_to_string(&mint_masm)
+        .with_context(|| format!("reading {}", mint_masm.display()))?;
+    src = force_proc_public(&src, "apply_mint_effects");
+    src = force_proc_public(&src, "extract_recipient_account_id");
+    std::fs::write(&mint_masm, src).context("writing the effects-public xreserve_mint.masm")?;
+
+    let assembler = TransactionKernel::assembler()
+        .with_dynamic_library(StandardsLib::default())
+        .map_err(|e| {
+            anyhow::anyhow!("linking the standards library into the effects-public assembler: {e}")
+        })?
+        .with_warnings_as_errors(true);
+    let lib = assembler
+        .assemble_library_from_dir(&tmp_dir, "xreserve")
+        .map_err(|e| anyhow::anyhow!("effects-public xreserve library failed to assemble: {e}"))?;
+    Ok(Arc::unwrap_or_clone(lib))
+}
+
+/// Inserts `pub ` before the line-anchored `proc {name}` declaration iff it is not already
+/// `pub proc {name}` — idempotent whether the shipped source has the proc `pub` or private.
+fn force_proc_public(src: &str, name: &str) -> String {
+    let pub_decl = format!("\npub proc {name}");
+    if src.contains(&pub_decl) {
+        return src.to_string();
+    }
+    src.replacen(&format!("\nproc {name}"), &pub_decl, 1)
+}
+
+/// Recursively copies every file and subdirectory under `from` into `to` (creating `to`).
+fn copy_dir_recursive(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        if src.is_dir() {
+            copy_dir_recursive(&src, &dst)?;
+        } else {
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
+/// A collision-free temp-dir path (process id + a monotonic counter — no RNG/timestamp needed, so
+/// parallel test threads never clash).
+fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{prefix}_{}_{n}", std::process::id()))
+}
+
+/// Composes the PRODUCTION component set exactly as the on-chain faucet is built — via
+/// `XReserveStablecoinBuilder::build_components()`, installing the shipped `xreserve` library
+/// (from [`assemble_xreserve_lib`]) with the full seven-slot production storage set. Returns the
+/// composed `AccountComponent`s (the union whose exported procedure roots become the account's
+/// callable interface). Used by the procedure-root sole-surface test — NOT a bespoke harness.
+pub fn production_component_set(max_supply: u64, token_supply: u64) -> Result<Vec<AccountComponent>> {
+    let library = assemble_xreserve_lib()?;
+    let empty = || Word::from([0u32, 0, 0, 0]);
+    let xreserve_component = AccountComponent::new(
+        library,
+        vec![
+            StorageSlot::with_value(
+                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
+                    .context("identifier slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
+                    .context("source_domain slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
+                    .context("xreserve_contract_hi slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_value(
+                StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
+                    .context("xreserve_contract_lo slot label")?,
+                empty(),
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
+                StorageMap::new(),
+            ),
+            StorageSlot::with_map(
+                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+                    .context("xReserveAttesters slot label")?,
+                StorageMap::new(),
+            ),
+        ],
+        AccountComponentMetadata::new("xusdc-production-surface"),
+    )
+    .context("binding the xreserve library + all seven slots as a component")?;
+
+    let faucet = FungibleFaucet::builder()
+        .name(TokenName::new("USDCx")?)
+        .symbol(TokenSymbol::new("USDCX")?)
+        .decimals(6)
+        .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
+        .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
+        .is_max_supply_mutable(true)
+        .build()
+        .context("failed to build FungibleFaucet")?;
+
+    xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
+        faucet,
+        xreserve_component,
+        test_account_id(1),
+        test_account_id(2),
+        test_account_id(3),
+    )
+    .build_components()
+    .map_err(|e| anyhow::anyhow!("composing the production faucet components: {e}"))
+}
+
 pub struct ShellHarness {
     pub mock_chain: MockChain,
     pub account_id: AccountId,

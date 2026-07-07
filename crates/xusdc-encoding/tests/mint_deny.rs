@@ -245,13 +245,11 @@ fn probe_mint_deny_guard_export() -> Result<()> {
 /// `mint_root_surface::production_supply_raising_root_set_is_exactly_mint` — it replaced the former
 /// file-grep RAISE sweep (F3), a text proxy that could not see the over-exported `apply_mint_effects`
 /// (F1). Must be GREEN.
-#[test]
-fn no_local_supply_decrement_surface() {
-    let dir = xusdc_encoding::xreserve_asm_dir();
 
-    // Recursively collect every *.masm under the xreserve tree (skip the `canary/` subtree per the
-    // brief; there is none today, but keep the guard robust).
-    fn collect_masm(dir: &std::path::Path, out: &mut BTreeMap<String, String>) {
+/// Recursively collects every `*.masm` under the xreserve tree (skipping any `canary/` subtree)
+/// as file-name -> source. Shared by the two static sweeps below.
+fn collect_xreserve_masm() -> BTreeMap<String, String> {
+    fn collect(dir: &std::path::Path, out: &mut BTreeMap<String, String>) {
         for entry in std::fs::read_dir(dir).expect("reading the xreserve asm dir") {
             let entry = entry.expect("dir entry");
             let path = entry.path();
@@ -259,25 +257,27 @@ fn no_local_supply_decrement_surface() {
                 if path.file_name().and_then(|n| n.to_str()) == Some("canary") {
                     continue;
                 }
-                collect_masm(&path, out);
+                collect(&path, out);
             } else if path.extension().and_then(|e| e.to_str()) == Some("masm") {
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap()
-                    .to_string();
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap().to_string();
                 let src = std::fs::read_to_string(&path).expect("reading a masm file");
                 out.insert(name, src);
             }
         }
     }
     let mut files = BTreeMap::new();
-    collect_masm(&dir, &mut files);
+    collect(&xusdc_encoding::xreserve_asm_dir(), &mut files);
     assert!(
         files.contains_key("xreserve_mint.masm"),
         "the sweep must see xreserve_mint.masm; saw: {:?}",
         files.keys().collect::<Vec<_>>()
     );
+    files
+}
+
+#[test]
+fn no_local_supply_decrement_surface() {
+    let files = collect_xreserve_masm();
 
     // NO local supply-DECREMENT surface, BY DESIGN: the burn decrement is the stock receive_and_burn
     // (linked miden-standards), so the local tree has no `faucet::burn` caller and no custom consume proc.
@@ -293,5 +293,78 @@ fn no_local_supply_decrement_surface() {
         !files.contains_key("xreserve_receive_and_burn.masm"),
         "no xreserve_receive_and_burn.masm exists by design — the stock receive_and_burn is the burn \
          path (CMP-B3 stock-suffices determination); a custom consume proc requires a cited stock gap"
+    );
+}
+
+/// L11 (P5-01 CMP-B1 ride-along): the RAISE-side static write-integrity sweep the F1 slice
+/// dropped, re-added as a COMPLEMENT to — not a replacement for — the procedure-root enumeration
+/// (`mint_root_surface::production_supply_raising_root_set_is_exactly_mint`). The enumeration
+/// proves WHICH roots are callable; this sweep proves the WRITE SITE topology: across the whole
+/// local tree there is exactly one `token_supply` write, it is the RAISE, and the kernel mint
+/// primitives live only in `xreserve_mint.masm`. Its tree-wide "exactly one" clauses
+/// automatically police every new xreserve file forever — including the CMP-B1
+/// `xreserve_mint_note_entry.masm` transport shim (which must carry NO supply write and NO mint
+/// primitive). Must be GREEN.
+#[test]
+fn token_supply_raise_write_integrity_static_sweep() {
+    let files = collect_xreserve_masm();
+
+    // (1) the kernel mint primitives appear ONLY in xreserve_mint.masm.
+    for primitive in ["exec.faucet::mint", "exec.faucet::create_fungible_asset"] {
+        for (name, src) in &files {
+            let hits = src.lines().filter(|l| l.contains(primitive)).count();
+            if name == "xreserve_mint.masm" {
+                assert!(
+                    hits >= 1,
+                    "xreserve_mint.masm must carry the supply primitive `{primitive}` (its mint site)"
+                );
+            } else {
+                assert_eq!(
+                    hits, 0,
+                    "`{primitive}` is a supply-raising primitive and must NOT appear in {name} \
+                     (only xreserve_mint.masm may raise supply, INV-MINT-SECURITY §5.2)"
+                );
+            }
+        }
+    }
+
+    // (2) WRITE-SURFACE ENUMERATION: exactly ONE TOKEN_CONFIG_SLOT supply-write across the WHOLE
+    // local tree (not one *file*) — robust to a second/smuggled write-back anywhere, incl. inside
+    // xreserve_mint.masm or the CMP-B1 note-entry shim. Filter on `set_item` (not `get_item`) so
+    // the supply READ is excluded.
+    let mut writes: Vec<(String, usize)> = Vec::new();
+    for (name, src) in &files {
+        for (idx, line) in src.lines().enumerate() {
+            if line.contains("set_item") && line.contains("TOKEN_CONFIG_SLOT") {
+                writes.push((name.clone(), idx));
+            }
+        }
+    }
+    assert_eq!(
+        writes.len(),
+        1,
+        "exactly one local TOKEN_CONFIG_SLOT supply-write must exist; saw: {writes:?}"
+    );
+    let (write_file, write_idx) = &writes[0];
+    assert_eq!(
+        write_file, "xreserve_mint.masm",
+        "the sole local supply-write must be in xreserve_mint.masm; saw it in {write_file}"
+    );
+
+    // (3) DIRECTION bound to the write SITE: the nearest preceding non-comment code line must be
+    // the known RAISE `loc_load.20 add` (a `sub`/other op feeding the write-back would be a
+    // supply-LOWER). NOT a proc-wide no-`sub` rule — apply_mint_effects legitimately contains
+    // `sub` (supply-cap headroom, amount math), so a proc-wide rule would false-positive.
+    let mint_lines: Vec<&str> = files["xreserve_mint.masm"].lines().collect();
+    let preceding = mint_lines[..*write_idx]
+        .iter()
+        .rev()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty() && !l.starts_with('#'))
+        .expect("the supply-write must have a preceding code line");
+    assert_eq!(
+        preceding, "loc_load.20 add",
+        "the sole supply-write must be fed by the RAISE `loc_load.20 add` (a `sub`/other op \
+         feeding the write is a supply-LOWER); saw: {preceding:?}"
     );
 }

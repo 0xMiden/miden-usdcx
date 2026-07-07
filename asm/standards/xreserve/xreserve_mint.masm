@@ -93,6 +93,127 @@ const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient val
 # PUBLIC INTERFACE
 # =================================================================================================
 
+#! The xUSDC mint composition entry (Slice 2): chains the accepted verify stages and the write stage
+#! into one supply-gating mint — assert_deposit_intent (D5a) -> assert_mint_amounts (D5b) ->
+#! assert_nonce_unused (D5c) -> verify_attestation (D5d) -> extract_recipient_account_id ->
+#! apply_mint_effects (D5e) — verify-once then write-once. Fail-closed: any verify / extraction trap
+#! aborts the whole tx with NO writes (no nonce SET, no recipient note, no token_supply change), so a
+#! failed mint never burns the nonce.
+#!
+#! Inputs (stack):  [intent_ptr, len_felts, scale_exp]
+#! Inputs (advice): [feeAmount(8 limbs), pubkey(9), signature(17)]   (MVP feeAmount = eight zero limbs)
+#! Outputs: [pad(16)]
+#!
+#! Where:
+#! - intent_ptr is the memory address of the staged u32-LE-packed DepositIntent preimage.
+#! - len_felts is the staged preimage length in felts (D5a structural length relation).
+#! - scale_exp is the uint256 -> AssetAmount decimal scale exponent (DEV-5 OPEN; threaded to D5b and
+#!   the marshalled `amount` reduction).
+#!
+#! Panics if:
+#! - the faucet is paused (pausable::assert_not_paused, ERR_PAUSABLE_IS_PAUSED) — the CMP-F3 halt gate
+#!   (CIR-ADMIN-4; DECISION-CMPF3-MINT-PAUSE-GAP): the custom mint bypasses the deny'd mint policy where
+#!   the stock assert_not_paused lives, so this pause check makes a DOM_PAUSER pause halt deposits.
+#! - any verify stage (R-MINT-1..14) or the recipient extraction rejects (fail-closed), or the supply
+#!   cap is exceeded (R-MINT-15) — no effects are applied on any reject.
+#!
+#! Invocation: exec
+@locals(12)
+pub proc mint
+    # => [intent_ptr, len_felts, scale_exp]
+    # halt gate (R-MINT pause, CMP-F3): a paused faucet must not mint. FIRST (before any verify), mirrors
+    # the sibling setters + the stock execute_mint_policy this custom mint bypasses; operand-stack-neutral
+    # (reads the FungibleFaucet-installed is_paused slot). See DECISION-CMPF3-MINT-PAUSE-GAP.
+    exec.pausable::assert_not_paused
+    # => [intent_ptr, len_felts, scale_exp]
+
+    # stash intent_ptr (loc 0) + scale_exp (loc 1); both are reused across the chain + marshal, and
+    # the operand stack is kept logically empty between stages (verify_attestation restores the
+    # depth-16 floor, so nothing else may sit above it when it runs).
+    movup.2 loc_store.1
+    # => [intent_ptr, len_felts]
+    dup loc_store.0
+    # => [intent_ptr, len_felts]
+
+    # ---- VERIFY (verify-once); any trap aborts the whole tx -> no writes reachable ----
+
+    # D5a (R-MINT-1..8): structural parse + domain/identifier compares -> [hook_data_len]
+    exec.deposit_intent_parser::assert_deposit_intent
+    loc_store.2
+    # => []   (loc 2 = hook_data_len, for the D5d keccak extent)
+
+    # D5b (R-MINT-9/10/11): amount/maxFee/feeAmount reduction + bounds (feeAmount from advice)
+    loc_load.1 loc_load.0
+    # => [intent_ptr, scale_exp]
+    exec.deposit_intent_parser::assert_mint_amounts
+    # => []
+
+    # D5c (R-MINT-12): nonce replay guard (assert-zero only; the SET is the first D5e write)
+    loc_load.0
+    exec.deposit_intent_parser::assert_nonce_unused
+    # => []
+
+    # D5d (R-MINT-13/14): keccak the 240 + hook_data_len payload, allowlist gate + ECDSA verify
+    # (pubkey + signature from advice). len_bytes = DEPOSIT_INTENT_HEADER_FELTS*4 + hook_data_len.
+    loc_load.2 push.DEPOSIT_INTENT_HEADER_FELTS mul.4 add
+    # => [len_bytes]
+    loc_load.0
+    # => [intent_ptr, len_bytes]
+    exec.attestation_verify::verify_attestation
+    # => [pad(16)]   (depth-16 floor restored; operand stack logically empty)
+
+    # ---- MARSHAL apply_mint_effects inputs (deterministic recompute from the UNMUTATED preimage) ----
+
+    # KEY = bytes32_to_key(nonce) (loc 4..7); == the key D5c checked and the one D5e SETs / serials
+    loc_load.0 push.NONCE_FELT_OFF add
+    exec.load_field_words
+    exec.encoding::bytes32_to_key
+    loc_storew_le.4 dropw
+    # => []
+
+    # recipient AccountId felts from remoteRecipient (loc 8 = suffix, loc 9 = prefix)
+    loc_load.0
+    exec.extract_recipient_account_id
+    # => [recipient_id_suffix, recipient_id_prefix]
+    loc_store.8 loc_store.9
+    # => []
+
+    # amount = reduce(amount field, scale_exp) (loc 3); == the value D5b verified >= maxFee
+    loc_load.1 loc_load.0 push.AMOUNT_FELT_OFF add
+    # => [amount_base, scale_exp]
+    exec.load_field_words
+    # => [U1, U0, scale_exp]
+    exec.encoding::uint256_to_asset_amount
+    loc_store.3
+    # => []
+
+    # ---- WRITE-ONCE: build apply_mint_effects inputs (push bottom-first) and apply the effects ----
+    # [amount, feeAmount, KEY, recip_suffix, recip_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
+    push.1
+    # => [note_type]   (note_type 1 = public)
+    # tag (best-effort routing; NoteTag::with_account_target): top 14 bits of the prefix's HIGH u32.
+    # u32split -> [lo, hi] (lo on top); drop lo to keep hi = prefix >> 32, then mask the top 14 bits.
+    loc_load.9 u32split drop u32and.0xfffc0000
+    # => [tag, note_type]
+    push.P2ID_SCRIPT_ROOT
+    # => [P2ID_SCRIPT_ROOT, tag, note_type]
+    padw loc_loadw_le.4
+    # => [SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]   (SERIAL_NUM = the nonce-derived KEY)
+    loc_load.9 loc_load.8
+    # => [recip_suffix, recip_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
+    padw loc_loadw_le.4
+    # => [KEY, recip_suffix, recip_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
+    push.0
+    # => [feeAmount, KEY, ...]   (MVP feeAmount == 0: the single recipient note carries the full amount)
+    loc_load.3
+    # => [amount, feeAmount, KEY, recip_suffix, recip_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
+    exec.apply_mint_effects
+    # => [pad(16)]
+end
+
+# HELPER PROCEDURES
+# =================================================================================================
+
 #! Applies the atomic mint effects for a verified intent's outputs (D5e). Reads the faucet
 #! token_config, sets the nonce marker, emits the P2ID recipient note carrying `amount - feeAmount`
 #! of the minted xUSDC to the target AccountId, and raises `token_supply` by the full `amount`.
@@ -259,127 +380,6 @@ proc extract_recipient_account_id
     exec.account_id::validate
     # => [suffix, prefix]
 end
-
-#! The xUSDC mint composition entry (Slice 2): chains the accepted verify stages and the write stage
-#! into one supply-gating mint — assert_deposit_intent (D5a) -> assert_mint_amounts (D5b) ->
-#! assert_nonce_unused (D5c) -> verify_attestation (D5d) -> extract_recipient_account_id ->
-#! apply_mint_effects (D5e) — verify-once then write-once. Fail-closed: any verify / extraction trap
-#! aborts the whole tx with NO writes (no nonce SET, no recipient note, no token_supply change), so a
-#! failed mint never burns the nonce.
-#!
-#! Inputs (stack):  [intent_ptr, len_felts, scale_exp]
-#! Inputs (advice): [feeAmount(8 limbs), pubkey(9), signature(17)]   (MVP feeAmount = eight zero limbs)
-#! Outputs: [pad(16)]
-#!
-#! Where:
-#! - intent_ptr is the memory address of the staged u32-LE-packed DepositIntent preimage.
-#! - len_felts is the staged preimage length in felts (D5a structural length relation).
-#! - scale_exp is the uint256 -> AssetAmount decimal scale exponent (DEV-5 OPEN; threaded to D5b and
-#!   the marshalled `amount` reduction).
-#!
-#! Panics if:
-#! - the faucet is paused (pausable::assert_not_paused, ERR_PAUSABLE_IS_PAUSED) — the CMP-F3 halt gate
-#!   (CIR-ADMIN-4; DECISION-CMPF3-MINT-PAUSE-GAP): the custom mint bypasses the deny'd mint policy where
-#!   the stock assert_not_paused lives, so this pause check makes a DOM_PAUSER pause halt deposits.
-#! - any verify stage (R-MINT-1..14) or the recipient extraction rejects (fail-closed), or the supply
-#!   cap is exceeded (R-MINT-15) — no effects are applied on any reject.
-#!
-#! Invocation: exec
-@locals(12)
-pub proc mint
-    # => [intent_ptr, len_felts, scale_exp]
-    # halt gate (R-MINT pause, CMP-F3): a paused faucet must not mint. FIRST (before any verify), mirrors
-    # the sibling setters + the stock execute_mint_policy this custom mint bypasses; operand-stack-neutral
-    # (reads the FungibleFaucet-installed is_paused slot). See DECISION-CMPF3-MINT-PAUSE-GAP.
-    exec.pausable::assert_not_paused
-    # => [intent_ptr, len_felts, scale_exp]
-
-    # stash intent_ptr (loc 0) + scale_exp (loc 1); both are reused across the chain + marshal, and
-    # the operand stack is kept logically empty between stages (verify_attestation restores the
-    # depth-16 floor, so nothing else may sit above it when it runs).
-    movup.2 loc_store.1
-    # => [intent_ptr, len_felts]
-    dup loc_store.0
-    # => [intent_ptr, len_felts]
-
-    # ---- VERIFY (verify-once); any trap aborts the whole tx -> no writes reachable ----
-
-    # D5a (R-MINT-1..8): structural parse + domain/identifier compares -> [hook_data_len]
-    exec.deposit_intent_parser::assert_deposit_intent
-    loc_store.2
-    # => []   (loc 2 = hook_data_len, for the D5d keccak extent)
-
-    # D5b (R-MINT-9/10/11): amount/maxFee/feeAmount reduction + bounds (feeAmount from advice)
-    loc_load.1 loc_load.0
-    # => [intent_ptr, scale_exp]
-    exec.deposit_intent_parser::assert_mint_amounts
-    # => []
-
-    # D5c (R-MINT-12): nonce replay guard (assert-zero only; the SET is the first D5e write)
-    loc_load.0
-    exec.deposit_intent_parser::assert_nonce_unused
-    # => []
-
-    # D5d (R-MINT-13/14): keccak the 240 + hook_data_len payload, allowlist gate + ECDSA verify
-    # (pubkey + signature from advice). len_bytes = DEPOSIT_INTENT_HEADER_FELTS*4 + hook_data_len.
-    loc_load.2 push.DEPOSIT_INTENT_HEADER_FELTS mul.4 add
-    # => [len_bytes]
-    loc_load.0
-    # => [intent_ptr, len_bytes]
-    exec.attestation_verify::verify_attestation
-    # => [pad(16)]   (depth-16 floor restored; operand stack logically empty)
-
-    # ---- MARSHAL apply_mint_effects inputs (deterministic recompute from the UNMUTATED preimage) ----
-
-    # KEY = bytes32_to_key(nonce) (loc 4..7); == the key D5c checked and the one D5e SETs / serials
-    loc_load.0 push.NONCE_FELT_OFF add
-    exec.load_field_words
-    exec.encoding::bytes32_to_key
-    loc_storew_le.4 dropw
-    # => []
-
-    # recipient AccountId felts from remoteRecipient (loc 8 = suffix, loc 9 = prefix)
-    loc_load.0
-    exec.extract_recipient_account_id
-    # => [recipient_id_suffix, recipient_id_prefix]
-    loc_store.8 loc_store.9
-    # => []
-
-    # amount = reduce(amount field, scale_exp) (loc 3); == the value D5b verified >= maxFee
-    loc_load.1 loc_load.0 push.AMOUNT_FELT_OFF add
-    # => [amount_base, scale_exp]
-    exec.load_field_words
-    # => [U1, U0, scale_exp]
-    exec.encoding::uint256_to_asset_amount
-    loc_store.3
-    # => []
-
-    # ---- WRITE-ONCE: build apply_mint_effects inputs (push bottom-first) and apply the effects ----
-    # [amount, feeAmount, KEY, recip_suffix, recip_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
-    push.1
-    # => [note_type]   (note_type 1 = public)
-    # tag (best-effort routing; NoteTag::with_account_target): top 14 bits of the prefix's HIGH u32.
-    # u32split -> [lo, hi] (lo on top); drop lo to keep hi = prefix >> 32, then mask the top 14 bits.
-    loc_load.9 u32split drop u32and.0xfffc0000
-    # => [tag, note_type]
-    push.P2ID_SCRIPT_ROOT
-    # => [P2ID_SCRIPT_ROOT, tag, note_type]
-    padw loc_loadw_le.4
-    # => [SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]   (SERIAL_NUM = the nonce-derived KEY)
-    loc_load.9 loc_load.8
-    # => [recip_suffix, recip_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
-    padw loc_loadw_le.4
-    # => [KEY, recip_suffix, recip_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
-    push.0
-    # => [feeAmount, KEY, ...]   (MVP feeAmount == 0: the single recipient note carries the full amount)
-    loc_load.3
-    # => [amount, feeAmount, KEY, recip_suffix, recip_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
-    exec.apply_mint_effects
-    # => [pad(16)]
-end
-
-# HELPER PROCEDURES
-# =================================================================================================
 
 #! Builds a Miden field element from the two u32-LE-packed limbs of a big-endian u64, PROVING the
 #! value did not reduce mod the field (the canonical-range check mirroring Rust `Felt::try_from`;

@@ -122,7 +122,7 @@ pub use xusdc_encoding::account::xreserve::MIN_BURN_SIZE_SLOT_LABEL;
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 20] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -212,6 +212,25 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 20] = [
     (
         "ERR_XRESERVE_BURN_BELOW_MIN",
         MasmError::from_static_str("burn amount is below the minimum burn size"),
+    ),
+    // CMP-B1 mint-note-entry transport-shape guards (xreserve_mint_note_entry.masm): the
+    // note-storage header-length floor, the attachment scheme lookup, the exactly-one-attachment
+    // count, and the 9-word size assert on the hash-verified attestation attachment.
+    (
+        "ERR_XRESERVE_MINT_NOTE_STORAGE_TOO_SHORT",
+        MasmError::from_static_str("mint note storage is shorter than the deposit intent header"),
+    ),
+    (
+        "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_MISSING",
+        MasmError::from_static_str("mint note attestation attachment is missing"),
+    ),
+    (
+        "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT",
+        MasmError::from_static_str("mint note must carry exactly one attachment"),
+    ),
+    (
+        "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_NUM_WORDS",
+        MasmError::from_static_str("mint note attachment word count is invalid"),
     ),
     // §5.9 scalar-u32 exactness (full-assembly slice, Round-P change 1): domain_init guards BOTH
     // scalar fields as valid u32 values BEFORE any write (the spec types them u32,

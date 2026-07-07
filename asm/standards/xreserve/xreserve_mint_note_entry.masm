@@ -1,0 +1,158 @@
+# xreserve::xreserve_mint_note_entry
+#
+# FAUCET(01)-owned CMP-B1 note-entry wrapper: `receive_and_mint` — the account-side transport
+# shim the production `XReserveMintNote` script `call`s. It stages the note's DepositIntent
+# preimage into the ACCOUNT call frame (`active_note::get_storage`; the `receive_and_burn`
+# context precedent, fungible.masm:370-403 — `exec` shares the call frame, so the data lands
+# exactly where `mint` reads `intent_ptr`), hash-verifies the single fee/pubkey/signature
+# attachment against the note-committed attachment commitment (`find_attachment` +
+# `write_attachment_to_memory` with count + 9-word size asserts — the network_account_target
+# idiom, network_account_target.masm:101-124), re-surfaces the SAME verified advice-map entry
+# onto the advice stack (`adv.push_mapval`, used ONLY after the hash check; no advice-map
+# mutation in between — the entry is proven to hash to the note-committed commitment), and hands
+# `[intent_ptr, len_felts, scale_exp]` to `exec.xreserve_mint::mint` — the ONLY mint-family
+# callable root (F1).
+#
+# A pure TRANSPORT SHIM: it writes no storage, raises no supply, replicates no D5 logic, and
+# CANNOT reference the demoted `apply_mint_effects` / `extract_recipient_account_id` (private
+# procs are not importable cross-module post-F1). Every gate lives in `mint` (pause, D5a→D5e).
+# It IS a new callable account root (#17) — consciously registered in the frozen root-surface
+# tripwire (mint_root_surface.rs) and policed by the tree-wide supply write-integrity sweep.
+#
+# Grounded by canary/mint-note-transport-grounding (executes + commits under MockChain on the
+# pinned v0.15.3 / 0.23.3 stack; the element-0-first `adv.push_mapval` pop order and the
+# tampered-advice fail-close are pinned there).
+
+use miden::protocol::active_note
+use xreserve::xreserve_mint
+use xreserve::encoding::layout::DEPOSIT_INTENT_HEADER_FELTS
+
+# CONSTANTS
+# =================================================================================================
+
+# Absolute account-call-frame address where the DepositIntent preimage is staged for `mint`
+# (word-aligned; the proven driver convention — the same value the composition harness stages at).
+const INTENT_PTR = 1024
+
+# The mint-note attestation attachment scheme. The Rust constructor declares the same value
+# (`XRESERVE_MINT_ATTACHMENT_SCHEME`, masm-rust-constant-parity via constant_parity.rs); a
+# scheme mismatch fail-closes in `find_attachment` below.
+const XRESERVE_MINT_ATTACHMENT_SCHEME = 1
+
+# The attestation attachment word count: [feeAmount(8), pubkey(9), signature(17), pad(2)]
+# = 36 felts = 9 words, matching `mint`'s frozen advice contract order.
+const XRESERVE_MINT_ATTACHMENT_NUM_WORDS = 9
+
+# The DC-5 uint256→AssetAmount decimal scale (`y = floor(x / 10^scale_exp)`), FAUCET-side by
+# design: a note-carried scale would let the producer diverge the minted amount from the attested
+# amount. MVP value 6 (the canonical fixture scale; DEV-5 OPEN — this constant is the
+# parameterization point).
+const DEPOSIT_SCALE_EXP = 6
+
+# ERRORS
+# =================================================================================================
+
+# The note storage must carry at least the 60-felt DepositIntent header (D5a re-validates the
+# content; this is the transport-shape guard on the kernel-returned item count).
+const ERR_XRESERVE_MINT_NOTE_STORAGE_TOO_SHORT = "mint note storage is shorter than the deposit intent header"
+
+# The attestation attachment (fee + candidate pubkey + signature) must be present under the
+# mint-note scheme.
+const ERR_XRESERVE_MINT_NOTE_ATTACHMENT_MISSING = "mint note attestation attachment is missing"
+
+# Exactly ONE attachment: a second attachment has no sanctioned meaning on this note.
+const ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT = "mint note must carry exactly one attachment"
+
+# The verified attachment must be exactly 9 words ([feeAmount(8), pubkey(9), signature(17), pad(2)]).
+const ERR_XRESERVE_MINT_NOTE_ATTACHMENT_NUM_WORDS = "mint note attachment word count is invalid"
+
+# LOCAL LAYOUT (felts)
+# =================================================================================================
+#   0..35   hash-verified attachment content ([feeAmount(8), pubkey(9), signature(17), pad(2)])
+#   36..51  attachment commitments list (≤ 4 words; exactly one used — word 36..39 is the key)
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Consumes the active `XReserveMintNote` and drives the fully-gated attested mint.
+#!
+#! Stages the note's storage (the u32-LE-packed DepositIntent preimage) into the account call
+#! frame at INTENT_PTR, hash-verifies the single attestation attachment against the
+#! note-committed attachment commitment, re-surfaces the verified elements onto the advice stack
+#! in `mint`'s frozen order [feeAmount(8), pubkey(9), signature(17)], and execs
+#! `xreserve_mint::mint`. A pure transport shim: no storage writes, no supply arithmetic, no D5
+#! logic — every gate lives in `mint`.
+#!
+#! Inputs:  [pad(16)]
+#! Outputs: [pad(16)]
+#!
+#! Where:
+#! - the active note's storage is the DepositIntent preimage (60 header felts + hookData felts).
+#! - the active note's single attachment is [feeAmount(8), pubkey(9), signature(17), pad(2)].
+#!
+#! Panics if:
+#! - the procedure is not called from a note context (active_note::* will fail).
+#! - the note storage is shorter than the 60-felt DepositIntent header.
+#! - the attestation attachment is missing, not the only attachment, or not 9 words.
+#! - the attachment advice-map content does not hash to the note-committed attachment
+#!   commitment (the pipe_preimage_to_memory assert inside write_attachment_to_memory).
+#! - any `mint` gate rejects (pause, D5a..D5e).
+#!
+#! Invocation: call
+@locals(52)
+pub proc receive_and_mint
+    # --- stage the DepositIntent preimage into the account call frame ---
+    push.INTENT_PTR exec.active_note::get_storage
+    # => [num_storage_items, pad(16)]
+
+    # transport-shape guard: at least the 60-felt header (content is D5a's job)
+    dup push.DEPOSIT_INTENT_HEADER_FELTS
+    # => [60, num_storage_items, num_storage_items, pad(16)]
+
+    u32assert2.err=ERR_XRESERVE_MINT_NOTE_STORAGE_TOO_SHORT
+    u32gte assert.err=ERR_XRESERVE_MINT_NOTE_STORAGE_TOO_SHORT
+    # => [num_storage_items, pad(16)]
+
+    # --- locate the attestation attachment by scheme ---
+    push.XRESERVE_MINT_ATTACHMENT_SCHEME exec.active_note::find_attachment
+    # => [is_found, attachment_idx, num_storage_items, pad(16)]
+
+    assert.err=ERR_XRESERVE_MINT_NOTE_ATTACHMENT_MISSING
+    # => [attachment_idx, num_storage_items, pad(16)]
+
+    # --- commitments list: count check + commitment-key retrieval ONLY (not content binding) ---
+    locaddr.36 exec.active_note::write_attachment_commitments_to_memory
+    # => [num_attachments, attachment_idx, num_storage_items, pad(16)]
+
+    eq.1 assert.err=ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT
+    # => [attachment_idx, num_storage_items, pad(16)]
+
+    # --- the binding step: hash-verified content read + size check ---
+    locaddr.0 exec.active_note::write_attachment_to_memory
+    # => [num_words, num_storage_items, pad(16)]
+
+    eq.XRESERVE_MINT_ATTACHMENT_NUM_WORDS assert.err=ERR_XRESERVE_MINT_NOTE_ATTACHMENT_NUM_WORDS
+    # => [num_storage_items, pad(16)]
+
+    # --- surface the SAME verified map entry to the advice stack (element-0-first pop order) ---
+    # load the (list-verified) attachment commitment exactly as note.masm:198-201 does
+    padw loc_loadw_le.36
+    # => [ATTACHMENT_COMMITMENT, num_storage_items, pad(16)]
+
+    adv.push_mapval
+    # => [ATTACHMENT_COMMITMENT, num_storage_items, pad(16)]
+    # advice stack => [feeAmount(8), pubkey(9), signature(17), pad(2)]
+
+    dropw
+    # => [num_storage_items, pad(16)]
+
+    # --- hand off to the ONLY mint-family callable root (F1): [intent_ptr, len_felts, scale_exp] ---
+    push.DEPOSIT_SCALE_EXP swap
+    # => [len_felts, scale_exp, pad(16)]
+
+    push.INTENT_PTR
+    # => [intent_ptr, len_felts, scale_exp, pad(16)]
+
+    exec.xreserve_mint::mint
+    # => [pad(16)]
+end

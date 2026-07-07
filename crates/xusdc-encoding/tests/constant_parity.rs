@@ -23,6 +23,9 @@ use xusdc_encoding::xreserve::encoding::{
 use xusdc_encoding::{ENCODING_MOD_MASM, LAYOUT_MASM};
 use miden_protocol::account::RoleSymbol;
 use xusdc_encoding::account::xreserve::DOM_PAUSER_ROLE;
+use xusdc_encoding::note::xreserve_mint::{
+    XRESERVE_MINT_ATTACHMENT_NUM_WORDS, XRESERVE_MINT_ATTACHMENT_SCHEME,
+};
 
 /// The FAUCET(01) shell module source, read test-side by reference.
 const SHELL_MASM: &str =
@@ -60,6 +63,10 @@ const MIN_BURN_ADMIN_MASM: &str =
 const PAUSE_ADMIN_MASM: &str =
     include_str!("../../../asm/standards/xreserve/pause_admin.masm");
 
+/// The FAUCET(01) CMP-B1 mint-note-entry transport shim module source, read test-side by reference.
+const MINT_NOTE_ENTRY_MASM: &str =
+    include_str!("../../../asm/standards/xreserve/xreserve_mint_note_entry.masm");
+
 /// Faucet-owned shell error constants declared in MASM, pinned against the test-side
 /// `support::SHELL_ERR_TABLE` (the single Rust source).
 const SHELL_ERRORS_DECLARED: &[&str] = &[
@@ -94,6 +101,11 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     // CMP-A10 R-BURN-1 / R-BURN-2 burn policy (burn_policy.masm)
     "ERR_XRESERVE_BURN_ZERO",
     "ERR_XRESERVE_BURN_BELOW_MIN",
+    // CMP-B1 mint-note-entry transport-shape guards (xreserve_mint_note_entry.masm).
+    "ERR_XRESERVE_MINT_NOTE_STORAGE_TOO_SHORT",
+    "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_MISSING",
+    "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT",
+    "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_NUM_WORDS",
 ];
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned
@@ -157,6 +169,19 @@ const XRESERVE_MINT_COVERED_NUMS: &[&str] = &["P2ID_NUM_STORAGE_ITEMS"];
 /// CMP-F3 pause-admin numeric const: DOM_PAUSER_ROLE (the encoded RoleSymbol felt), parity-asserted
 /// against `RoleSymbol::new(DOM_PAUSER_ROLE).as_element()` in `masm_rust_constant_parity` below.
 const PAUSE_ADMIN_COVERED_NUMS: &[&str] = &["DOM_PAUSER_ROLE"];
+
+/// CMP-B1 mint-note-entry numeric consts: the attachment scheme + word count are parity-asserted
+/// against the Rust `XRESERVE_MINT_ATTACHMENT_SCHEME` / `XRESERVE_MINT_ATTACHMENT_NUM_WORDS` in
+/// `masm_rust_constant_parity` below (the constructor builds what the wrapper verifies).
+/// `INTENT_PTR` (the account-frame staging address, the proven driver convention) and
+/// `DEPOSIT_SCALE_EXP` (the FAUCET-side DC-5 scale, DEV-5 parameterization point, MVP 6 — the
+/// canonical fixture scale) are wrapper-owned with no Rust counterpart, covered here (CS-5).
+const MINT_NOTE_ENTRY_COVERED_NUMS: &[&str] = &[
+    "INTENT_PTR",
+    "XRESERVE_MINT_ATTACHMENT_SCHEME",
+    "XRESERVE_MINT_ATTACHMENT_NUM_WORDS",
+    "DEPOSIT_SCALE_EXP",
+];
 
 /// Numeric-constant coverage sets (bidirectional sweep): every numeric const parsed
 /// from a MASM source must appear in its file's set — extending a MASM file with a new
@@ -309,6 +334,21 @@ fn masm_rust_constant_parity() {
             .as_canonical_u64(),
         "DOM_PAUSER role-symbol felt parity (MASM const == RoleSymbol::new(DOM_PAUSER_ROLE).as_element())"
     );
+
+    // CMP-B1: the mint-note attachment scheme + word count must match across languages — the
+    // Rust constructor builds exactly what the MASM wrapper locates (find_attachment by scheme)
+    // and size-asserts (num_words == 9). A one-sided edit fails here.
+    let (entry_nums, _, _) = parse_masm_consts(MINT_NOTE_ENTRY_MASM);
+    assert_eq!(
+        num(&entry_nums, "XRESERVE_MINT_ATTACHMENT_SCHEME", "xreserve_mint_note_entry.masm"),
+        XRESERVE_MINT_ATTACHMENT_SCHEME as u64,
+        "mint-note attachment scheme parity (MASM wrapper == Rust constructor)"
+    );
+    assert_eq!(
+        num(&entry_nums, "XRESERVE_MINT_ATTACHMENT_NUM_WORDS", "xreserve_mint_note_entry.masm"),
+        XRESERVE_MINT_ATTACHMENT_NUM_WORDS as u64,
+        "mint-note attachment word-count parity (MASM wrapper == Rust constructor)"
+    );
 }
 
 /// Error-string parity, Rust → MASM: every Rust `ERR_*` MasmError has an
@@ -339,11 +379,13 @@ fn masm_shell_error_string_parity() {
     let (_, deny_strs, _) = parse_masm_consts(MINT_DENY_GUARD_MASM);
     let (_, domain_strs, _) = parse_masm_consts(DOMAIN_CONFIG_MASM);
     let (_, burn_strs, _) = parse_masm_consts(BURN_POLICY_MASM);
+    let (_, note_entry_strs, _) = parse_masm_consts(MINT_NOTE_ENTRY_MASM);
     strs.extend(att_strs);
     strs.extend(mint_strs);
     strs.extend(deny_strs);
     strs.extend(domain_strs);
     strs.extend(burn_strs);
+    strs.extend(note_entry_strs);
     for name in SHELL_ERRORS_DECLARED {
         let expected = support::SHELL_ERR_TABLE
             .iter()
@@ -368,7 +410,7 @@ fn masm_constants_bidirectional() {
         ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
     };
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 11] = [
+    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 12] = [
         ("layout.masm", LAYOUT_MASM, LAYOUT_COVERED_NUMS, &[]),
         ("encoding/mod.masm", ENCODING_MOD_MASM, ENCODING_COVERED_NUMS, &[]),
         ("deposit_intent_parser.masm", SHELL_MASM, SHELL_COVERED_NUMS, EXPECTED_SHELL_WORD_CONSTS),
@@ -423,6 +465,16 @@ fn masm_constants_bidirectional() {
         // masm_rust_constant_parity); no word("…") consts, and no new string errors (the role gate reuses
         // the stock ERR_SENDER_LACKS_ROLE, the primitive reuses ERR_PAUSABLE_IS_PAUSED).
         ("pause_admin.masm", PAUSE_ADMIN_MASM, PAUSE_ADMIN_COVERED_NUMS, &[]),
+        // CMP-B1 note-entry transport shim: declares the four ERR_XRESERVE_MINT_NOTE_* transport
+        // guards (known shell errors via SHELL_ERR_TABLE) + the four numeric consts covered/
+        // parity-asserted above; no word("…") consts (it touches NO storage slot — a transport
+        // shim; every slot access lives in the procs `mint` execs).
+        (
+            "xreserve_mint_note_entry.masm",
+            MINT_NOTE_ENTRY_MASM,
+            MINT_NOTE_ENTRY_COVERED_NUMS,
+            &[],
+        ),
     ];
     for (file, src, covered_nums, expected_words) in sources {
         let (nums, strs, words) = parse_masm_consts(src);

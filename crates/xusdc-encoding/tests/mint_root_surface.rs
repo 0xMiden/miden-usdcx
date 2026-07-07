@@ -39,11 +39,15 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 
 /// The frozen sanctioned callable-root set of the shipped `xreserve` library after the F1 demotion:
-/// the 15 do-not-demote procs plus `mint` = 16. `apply_mint_effects` and
+/// the 15 do-not-demote procs plus `mint` = 16, plus (CMP-B1, a CONSCIOUS registration) the
+/// `receive_and_mint` note-entry transport shim = 17 — the account-side proc the production
+/// `XReserveMintNote` script `call`s; it only stages the preimage, hash-verifies + surfaces the
+/// attestation attachment, and `exec`s `mint` (no storage writes, no supply arithmetic; policed by
+/// the tree-wide supply write-integrity sweep). `apply_mint_effects` and
 /// `extract_recipient_account_id` are ABSENT (demoted to same-module `exec`-only). Any drift (a new
 /// export, i.e. a new supply door) trips `production_supply_raising_root_set_is_exactly_mint`.
 /// Paths render absolute (leading `::`) at assembler 0.23.3.
-const FROZEN_CALLABLE_ROOTS: [&str; 16] = [
+const FROZEN_CALLABLE_ROOTS: [&str; 17] = [
     "::xreserve::attestation_verify::verify_attestation",
     "::xreserve::attester_admin::set_attester",
     "::xreserve::burn_policy::check_policy",
@@ -60,6 +64,7 @@ const FROZEN_CALLABLE_ROOTS: [&str; 16] = [
     "::xreserve::pause_admin::pause",
     "::xreserve::pause_admin::unpause",
     "::xreserve::xreserve_mint::mint",
+    "::xreserve::xreserve_mint_note_entry::receive_and_mint",
 ];
 
 const APPLY_MINT_EFFECTS_PATH: &str = "xreserve::xreserve_mint::apply_mint_effects";
@@ -231,7 +236,7 @@ fn production_supply_raising_root_set_is_exactly_mint() -> Result<()> {
         "extract_recipient_account_id must NOT be a callable account root (L1)"
     );
 
-    // Frozen tripwire: the exported-proc set is EXACTLY the 16 sanctioned roots.
+    // Frozen tripwire: the exported-proc set is EXACTLY the 17 sanctioned roots.
     let lib: &miden_protocol::assembly::Library = xreserve.component_code().as_ref();
     let mut paths: Vec<String> = lib
         .exports()

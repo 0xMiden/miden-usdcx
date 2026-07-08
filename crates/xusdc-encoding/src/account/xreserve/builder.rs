@@ -445,6 +445,26 @@ impl XReserveStablecoinBuilder {
         let manager = TokenPolicyManager::new()
             .with_mint_policy(active, PolicyRegistration::Active)?
             .with_burn_policy(active_burn, PolicyRegistration::Active)?;
+        // xUSDC ships as a BASIC (transfer-free) fungible asset — DELIBERATELY no send/receive
+        // transfer policy is registered here (human decision 2026-07-08, RATIFIED). With no transfer
+        // policy the manager installs no asset-callback slots, so every minted xUSDC carries
+        // `AssetCallbackFlag::Disabled` and holder-to-holder transfers are unpoliced — behaviourally
+        // identical to Circle's reference `USDCx.sol`, which has no transfer logic.
+        //
+        // Do NOT add `.with_send_policy(...)` / `.with_receive_policy(...)` here. Registering ANY
+        // transfer policy (even `TransferPolicy::AllowAll`, and even `Reserved`) stamps callbacks
+        // Enabled and turns xUSDC into a "policed" asset: the kernel then `call`s this faucet's
+        // policy proc on every send/receive, forcing every counterparty to attach this faucet as a
+        // foreign account (FPI) on every transfer/consume. That breaks P2ID / basic-wallet / SWAP /
+        // deposit-relayer composability supply-wide, for a capability Circle does NOT require —
+        // xUSDC compliance lives at the bridge boundary (attestation-gated mint + pause + reserve
+        // redemption), all already built. The "swap a custom policy in later" option is illusory:
+        // `set_{send,receive}_policy` only accept a root already baked into the account + its
+        // build-time allowed-roots map, both immutable post-deploy — any real change is a redeploy.
+        //
+        // Re-wiring is a conscious re-decision gated on Q-PRV-5 (Circle confirmation) + a faucet-v2
+        // migration. See DECISION-F4-BASIC-ASSET-NO-TRANSFER-POLICY.md and IMPL-DEV-20. The
+        // `basic_asset_tripwire.rs` test enforces this invariant (it goes RED on any wire).
 
         // The owner-gating admin foundation (DECISION-ADMIN-ROLE-MODEL), appended AFTER the account-type
         // / deny-guard early returns so a rejected build never reaches here. `Authority::OwnerControlled`

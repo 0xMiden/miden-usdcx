@@ -144,9 +144,11 @@ impl XReserveMintNote {
     /// the consuming faucet (account-target tag), `deposit_intent` the RAW DepositIntent payload
     /// bytes (validated + packed via the 04 codec by reference — structural rejects and the
     /// 1024-felt bound surface as [`NoteError`] with the codec error as source), `attestation`
-    /// the raw sig + candidate pubkey (packed 17 + 9 felts into the single attachment after the
-    /// MVP-zero feeAmount limbs — DEV-8, hardcoded: a non-zero fee would only ever trap the F2
-    /// guard on-chain). Asset-less; `NoteType::Public` forced.
+    /// the raw sig + candidate pubkey (packed 17 + 9 felts into the scheme-1 attestation attachment
+    /// after the MVP-zero feeAmount limbs — DEV-8, hardcoded: a non-zero fee would only ever trap
+    /// the F2 guard on-chain). The note carries TWO attachments (F5): that scheme-1 attestation plus
+    /// the scheme-2 `NetworkAccountTarget` routing bind to `faucet_id` (`NoteExecutionHint::Always`).
+    /// Asset-less; `NoteType::Public` forced.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -174,7 +176,7 @@ impl XReserveMintNote {
         Ok(Note::with_attachments(NoteAssets::new(vec![])?, metadata, recipient, attachments))
     }
 
-    /// Builds the single attestation attachment: 36 felts
+    /// Builds the scheme-1 attestation attachment: 36 felts
     /// `[feeAmount(8 zero limbs), pubkey(9), signature(17), pad(2)]` as 9 words — the exact
     /// order `mint` pops from the advice stack (element-0-first `adv.push_mapval` pop order,
     /// pinned by the transport canary).

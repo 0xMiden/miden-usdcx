@@ -122,7 +122,7 @@ pub use xusdc_encoding::account::xreserve::MIN_BURN_SIZE_SLOT_LABEL;
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 25] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -231,6 +231,16 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
     (
         "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_NUM_WORDS",
         MasmError::from_static_str("mint note attachment word count is invalid"),
+    ),
+    // F5 fix-slice A: the 2-attachment reconciliation requires the scheme-2 NetworkAccountTarget
+    // routing attachment to be present (routing-only). The red-suite carries the error here so the
+    // scheme-aware negatives can name their EXACT expected error; the GREEN commit declares the
+    // matching MASM const in xreserve_mint_note_entry.masm + adds it to the constant_parity covered
+    // list. (The ATTACHMENT_COUNT string is reworded "exactly one"→"exactly two" in the GREEN commit,
+    // MASM + this table together, so parity stays consistent.)
+    (
+        "ERR_XRESERVE_MINT_NOTE_TARGET_MISSING",
+        MasmError::from_static_str("mint note routing target attachment is missing"),
     ),
     // §5.9 scalar-u32 exactness (full-assembly slice, Round-P change 1): domain_init guards BOTH
     // scalar fields as valid u32 values BEFORE any write (the spec types them u32,

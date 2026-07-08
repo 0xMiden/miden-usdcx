@@ -3727,8 +3727,18 @@ pub fn setup_production_faucet(
     .build_components()
     .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
 
+    // F5: the production faucet is finalized under the stock AuthNetworkAccount (keyless network
+    // account) with the frozen note-script allowlist and an EMPTY tx-script allowlist — the same
+    // single-source frozen set the deploy path composes via `AccountBuilder::with_auth_component`.
     let account = mc
-        .add_existing_account_from_components(Auth::IncrNonce, components)
+        .add_existing_account_from_components(
+            Auth::NetworkAccount {
+                allowed_script_roots:
+                    xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::allowed_note_scripts(),
+                allowed_tx_script_roots: std::collections::BTreeSet::new(),
+            },
+            components,
+        )
         .context("adding the production faucet account")?;
     let mock_chain = mc.build().context("building the production MockChain")?;
     Ok(ProductionFaucet {

@@ -26,19 +26,25 @@
 //! the `dynexec` root the policy manager stores always equals the installed proc's MAST root.
 
 use core::fmt;
+use std::collections::BTreeSet;
 
 use miden_protocol::account::{
     AccountComponent, AccountId, AccountType, RoleSymbol, StorageMap, StorageMapKey, StorageSlot,
     StorageSlotName,
 };
 use miden_protocol::asset::{AssetAmount, TokenSymbol};
+use miden_protocol::note::NoteScriptRoot;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Authority, Ownable2Step, RoleBasedAccessControl};
+use miden_standards::account::auth::{AuthNetworkAccount, NetworkAccountNoteAllowlistError};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::{
     BurnPolicyConfig, MintPolicyConfig, PolicyRegistration, TokenPolicyManager,
     TokenPolicyManagerError,
 };
+use miden_standards::note::BurnNote;
+
+use crate::note::xreserve_mint::XReserveMintNote;
 
 /// The two Circle Domain RoleSymbols this faucet seeds under the ratified Circle-faithful admin model
 /// (DECISION-ADMIN-ROLE-MODEL): `DOM_PAUSER` (custom pause/unpause, CMP-F3) and `DOM_MANAGER`
@@ -354,6 +360,31 @@ impl XReserveStablecoinBuilder {
             .get_procedure_root_by_path(BURN_POLICY_PROC_PATH)
             .map(Word::from)
             .ok_or(XReserveStablecoinBuilderError::BurnPolicyProcNotFound)
+    }
+
+    /// The FROZEN note-script allowlist for the production faucet's `AuthNetworkAccount` auth
+    /// component (F5). Human-ratified rows 1-13 (`renounce_role` OMITTED); the scheme-2
+    /// `NetworkAccountTarget` bind is routing-only, not a consume gate. The list is IMMUTABLE
+    /// post-deploy (`AuthNetworkAccount` exports no mutator), so every admin op that must run
+    /// post-deploy is present. This is the SINGLE SOURCE OF TRUTH: the production auth component
+    /// (`Self::auth_component`) and the MockChain `Auth::NetworkAccount` fixture both consume it,
+    /// and the allowlist tripwire asserts the built account's allowlist equals it exactly.
+    pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
+        BTreeSet::from([
+            // rows 1-2: the supply-side notes (the mint script root re-pins on the `eq.2` shim).
+            XReserveMintNote::script_root(),
+            BurnNote::script_root(),
+            // rows 3-13: the admin note scripts are added by the admin-note-scripts slice.
+        ])
+    }
+
+    /// The stock `AuthNetworkAccount` production auth component, initialized with the frozen
+    /// note-script allowlist (`Self::allowed_note_scripts`) and an EMPTY tx-script allowlist
+    /// (sole-mint-surface / F1 — never `.with_allowed_tx_scripts`). Composed into the account's
+    /// dedicated auth slot at finalization (deploy: `AccountBuilder::with_auth_component`; tests:
+    /// `Auth::NetworkAccount`).
+    pub fn auth_component() -> Result<AuthNetworkAccount, NetworkAccountNoteAllowlistError> {
+        AuthNetworkAccount::with_allowed_notes(Self::allowed_note_scripts())
     }
 
     /// Reads the supplied faucet's `is_max_supply_mutable` flag from its assembled storage. The stock

@@ -378,7 +378,9 @@ impl XReserveStablecoinBuilder {
             // rows 1-2: the supply-side notes (the mint script root re-pins on the `eq.2` shim).
             XReserveMintNote::script_root(),
             BurnNote::script_root(),
-            // rows 3-13: the admin note scripts — NOT YET ADDED (admin-note-scripts unit).
+            // row 3: set_attester admin note (reference op).
+            crate::note::xreserve_admin::XReserveSetAttesterNote::script_root(),
+            // rows 4-13: the remaining admin note scripts — NOT YET ADDED (admin-note-scripts unit).
         ])
     }
 

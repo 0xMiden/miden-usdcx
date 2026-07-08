@@ -106,6 +106,8 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_MISSING",
     "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT",
     "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_NUM_WORDS",
+    // F5 fix-slice A: the scheme-2 NetworkAccountTarget routing attachment presence guard.
+    "ERR_XRESERVE_MINT_NOTE_TARGET_MISSING",
 ];
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned
@@ -181,6 +183,8 @@ const MINT_NOTE_ENTRY_COVERED_NUMS: &[&str] = &[
     "XRESERVE_MINT_ATTACHMENT_SCHEME",
     "XRESERVE_MINT_ATTACHMENT_NUM_WORDS",
     "DEPOSIT_SCALE_EXP",
+    // F5 fix-slice A: WORD_NUM_ELEMENTS for the indexed attachment-commitment address math.
+    "WORD_NUM_ELEMENTS",
 ];
 
 /// Numeric-constant coverage sets (bidirectional sweep): every numeric const parsed

@@ -376,7 +376,8 @@ impl XReserveStablecoinBuilder {
     /// set still requires explicit HUMAN ratification once all the admin roots are wired in.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
         BTreeSet::from([
-            // rows 1-2: the supply-side notes (the mint script root re-pins on the `eq.2` shim).
+            // rows 1-2: the supply-side notes. The mint-note shim asserts exactly one scheme-1
+            // attestation + one scheme-2 routing target (eq.2, dynamic commitment) — F5 fix-slice A.
             XReserveMintNote::script_root(),
             BurnNote::script_root(),
             // row 3: set_attester admin note (reference op).

@@ -226,7 +226,7 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 25] = [
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT",
-        MasmError::from_static_str("mint note must carry exactly one attachment"),
+        MasmError::from_static_str("mint note must carry exactly two attachments"),
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_NUM_WORDS",

@@ -388,6 +388,8 @@ async fn production_burn_note_same_block_consume_is_erased() -> anyhow::Result<(
     let tx0 = chain
         .build_tx_context(h.user_id, &[], &[])?
         .tx_script(tx_script)
+        // F5: the routing-target attachment content (keyed by commitment) for `add_attachment`.
+        .extend_advice_inputs(attachment_advice(&note))
         .extend_expected_output_notes(vec![RawOutputNote::Full(note.clone())])
         .build()?
         .execute()

@@ -2677,6 +2677,17 @@ pub fn send_burn_note_script(
     let tag = Felt::from(burn_note.metadata().tag());
     let asset_key = fungible_asset.to_key_word();
     let asset_value = fungible_asset.to_value_word();
+    // F5: reproduce the note's attachments (e.g. the scheme-2 NetworkAccountTarget) so the emitted
+    // note's id == burn_note.id() (NoteId commits to attachments). The content is supplied via the
+    // advice map keyed by its commitment (see `attachment_advice`, extended in `try_emit_burn_note`).
+    let mut attachments_src = String::new();
+    for attachment in burn_note.attachments().iter() {
+        let scheme = attachment.attachment_scheme().as_u16();
+        let commitment = attachment.content().to_commitment();
+        attachments_src.push_str(&format!(
+            "    dup\n    push.{commitment}\n    push.{scheme}\n    exec.output_note::add_attachment\n"
+        ));
+    }
     format!(
         r#"
 use miden::protocol::output_note
@@ -2690,6 +2701,8 @@ begin
     exec.output_note::create
     # => [note_idx]
 
+    # reproduce the note's attachments (routing target).
+{attachments_src}
     # move the user's single fungible asset from the vault into the note.
     push.{asset_value}
     push.{asset_key}
@@ -2701,6 +2714,17 @@ begin
 end
 "#
     )
+}
+
+/// The advice-map inputs carrying each of `note`'s attachment contents keyed by its commitment — the
+/// witness the `output_note::add_attachment` emit path resolves (F5: the scheme-2 routing target).
+pub fn attachment_advice(note: &Note) -> AdviceInputs {
+    let mut advice = AdviceInputs::default();
+    for attachment in note.attachments().iter() {
+        advice = advice
+            .with_map([(attachment.content().to_commitment(), attachment.content().to_elements())]);
+    }
+    advice
 }
 
 /// Reads the faucet's committed `token_supply` from its `token_config` slot post-block (ported from
@@ -2810,6 +2834,8 @@ pub async fn try_emit_burn_note(
         .build_tx_context(user_id, &[], &[])
         .expect("building the user emit tx context")
         .tx_script(tx_script)
+        // F5: the attachment contents (routing target) keyed by commitment for `add_attachment`.
+        .extend_advice_inputs(attachment_advice(burn_note))
         // Register the full note details so the kernel's `before_created` event can resolve the PUBLIC
         // note's details when tx0 creates it (canary C1).
         .extend_expected_output_notes(vec![RawOutputNote::Full(burn_note.clone())])

@@ -32,6 +32,7 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::note::xreserve_mint::{
     MintAttestation, XReserveMintNote, XRESERVE_MINT_ATTACHMENT_NUM_WORDS,
+    XRESERVE_MINT_ATTACHMENT_SCHEME,
 };
 use xusdc_encoding::vectors::{DiFields, DiVector, load, parse_hex32};
 use xusdc_encoding::xreserve::encoding::{
@@ -407,7 +408,7 @@ async fn mint_note_forged_signature_rejects_no_writes() -> Result<()> {
 #[test]
 fn mint_note_is_public_with_fixed_script_root() -> Result<()> {
     let recipient = test_account_id(5);
-    let faucet_id = test_account_id(7);
+    let faucet_id = test_faucet_id(7);
     let payload = payload_for(recipient);
     let note = XReserveMintNote::create(
         test_account_id(6),
@@ -441,14 +442,20 @@ fn mint_note_is_public_with_fixed_script_root() -> Result<()> {
     assert_eq!(note.assets().num_assets(), 0, "the mint note carries NO assets");
     assert_eq!(
         note.attachments().num_attachments(),
-        1,
-        "exactly one attachment (fee + pubkey + signature)"
+        2,
+        "two attachments: the scheme-1 attestation + the scheme-2 NetworkAccountTarget routing bind (F5)"
     );
-    let attachment = note.attachments().iter().next().expect("one attachment");
+    let scheme_one = miden_protocol::note::NoteAttachmentScheme::new(XRESERVE_MINT_ATTACHMENT_SCHEME)
+        .expect("scheme 1 is a valid attachment scheme");
+    let attestation = note
+        .attachments()
+        .iter()
+        .find(|a| a.attachment_scheme() == scheme_one)
+        .expect("the scheme-1 attestation attachment");
     assert_eq!(
-        attachment.content().as_words().len(),
+        attestation.content().as_words().len(),
         XRESERVE_MINT_ATTACHMENT_NUM_WORDS,
-        "attachment is exactly 9 words: [fee(8), pubkey(9), sig(17), pad(2)]"
+        "the attestation is exactly 9 words: [fee(8), pubkey(9), sig(17), pad(2)]"
     );
     Ok(())
 }
@@ -462,7 +469,7 @@ fn mint_note_items_are_04_packed_preimage() -> Result<()> {
     let payload = payload_for(recipient);
     let note = XReserveMintNote::create(
         test_account_id(6),
-        test_account_id(7),
+        test_faucet_id(7),
         &payload,
         &attestation_for(1, &payload),
         &mut note_rng(47),

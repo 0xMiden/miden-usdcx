@@ -362,19 +362,23 @@ impl XReserveStablecoinBuilder {
             .ok_or(XReserveStablecoinBuilderError::BurnPolicyProcNotFound)
     }
 
-    /// The FROZEN note-script allowlist for the production faucet's `AuthNetworkAccount` auth
-    /// component (F5). Human-ratified rows 1-13 (`renounce_role` OMITTED); the scheme-2
-    /// `NetworkAccountTarget` bind is routing-only, not a consume gate. The list is IMMUTABLE
-    /// post-deploy (`AuthNetworkAccount` exports no mutator), so every admin op that must run
-    /// post-deploy is present. This is the SINGLE SOURCE OF TRUTH: the production auth component
-    /// (`Self::auth_component`) and the MockChain `Auth::NetworkAccount` fixture both consume it,
-    /// and the allowlist tripwire asserts the built account's allowlist equals it exactly.
+    /// The note-script allowlist for the production faucet's `AuthNetworkAccount` auth component
+    /// (F5). It is the SINGLE SOURCE OF TRUTH — the production auth component (`Self::auth_component`)
+    /// and the MockChain `Auth::NetworkAccount` fixture both consume it, and the allowlist tripwire
+    /// asserts the built account's allowlist equals it exactly. The scheme-2 `NetworkAccountTarget`
+    /// bind on the notes is routing-only, not a consume gate.
+    ///
+    /// INCOMPLETE (WIP): only rows 1-2 (the supply-side notes) are returned today. The human-ratified
+    /// frozen set is rows 1-13 (`renounce_role` OMITTED), and since the allowlist is IMMUTABLE
+    /// post-deploy (`AuthNetworkAccount` exports no mutator), rows 3-13 (the admin note scripts) MUST
+    /// be added here — by the admin-note-scripts unit — before this faucet can be deployed. The
+    /// rows-1-13 set still requires explicit HUMAN ratification once the admin roots are wired in.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
         BTreeSet::from([
             // rows 1-2: the supply-side notes (the mint script root re-pins on the `eq.2` shim).
             XReserveMintNote::script_root(),
             BurnNote::script_root(),
-            // rows 3-13: the admin note scripts are added by the admin-note-scripts slice.
+            // rows 3-13: the admin note scripts — NOT YET ADDED (admin-note-scripts unit).
         ])
     }
 

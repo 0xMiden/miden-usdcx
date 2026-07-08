@@ -368,11 +368,12 @@ impl XReserveStablecoinBuilder {
     /// asserts the built account's allowlist equals it exactly. The scheme-2 `NetworkAccountTarget`
     /// bind on the notes is routing-only, not a consume gate.
     ///
-    /// INCOMPLETE (WIP): only rows 1-2 (the supply-side notes) are returned today. The human-ratified
-    /// frozen set is rows 1-13 (`renounce_role` OMITTED), and since the allowlist is IMMUTABLE
-    /// post-deploy (`AuthNetworkAccount` exports no mutator), rows 3-13 (the admin note scripts) MUST
-    /// be added here — by the admin-note-scripts unit — before this faucet can be deployed. The
-    /// rows-1-13 set still requires explicit HUMAN ratification once the admin roots are wired in.
+    /// INCOMPLETE (WIP): rows 1-3 are returned today — rows 1-2 (the supply-side mint + burn notes)
+    /// and row 3 (the `set_attester` admin note, the reference op). The human-ratified frozen set is
+    /// rows 1-13 (`renounce_role` OMITTED), and since the allowlist is IMMUTABLE post-deploy
+    /// (`AuthNetworkAccount` exports no mutator), rows 4-13 (the remaining admin note scripts) MUST be
+    /// added here — by the admin-note-scripts unit — before this faucet can be deployed. The rows-1-13
+    /// set still requires explicit HUMAN ratification once all the admin roots are wired in.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
         BTreeSet::from([
             // rows 1-2: the supply-side notes (the mint script root re-pins on the `eq.2` shim).

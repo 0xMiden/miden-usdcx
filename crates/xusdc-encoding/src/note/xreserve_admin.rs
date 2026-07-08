@@ -8,7 +8,8 @@
 //! params onto the stack and `call`s the unchanged sender-gated admin proc — the note sender is
 //! kernel-forced, so the proc's owner/role gate is sound under permissionless network execution.
 //!
-//! This module ships the ratified allowlist rows 3-13; `set_attester` (row 3) is the reference.
+//! This module ships allowlist row 3 (`set_attester`) as the reference op; rows 4-13 (the remaining
+//! ratified admin note scripts) are pending.
 
 use std::sync::{Arc, LazyLock};
 
@@ -63,6 +64,14 @@ const SET_ATTESTER_NOTE_SCRIPT_SRC: &str =
 static SET_ATTESTER_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(SET_ATTESTER_NOTE_SCRIPT_SRC));
 
+/// The PINNED set_attester admin note-script root (`masm-rust-constant-parity`): the MAST root of
+/// the compiled `xreserve_set_attester_note.masm` with the xreserve library linked. It binds
+/// transitively to `attester_admin::set_attester`'s digest, so ANY edit of the note script or the
+/// proc it calls trips the parity assertion (`script_root() == pinned_script_root()`) and forces a
+/// conscious re-pin.
+pub const XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0xc324299a70124e4ca6c55130195e53b3aca9304e9d2a6ad1a1110252d6d27b0d";
+
 /// The owner-gated `set_attester` admin note (F5). Storage layout: `[pk_commitment(4), enabled]`.
 /// Consumed against the faucet network account; `attester_admin::set_attester` gates on the (kernel-
 /// forced) note sender being the owner.
@@ -75,9 +84,18 @@ impl XReserveSetAttesterNote {
         SET_ATTESTER_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 3).
+    /// The note-script root (allowlist row 3). Must equal the pinned
+    /// [`XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX`] (parity-tested).
     pub fn script_root() -> NoteScriptRoot {
         SET_ATTESTER_NOTE_SCRIPT.root()
+    }
+
+    /// The PINNED note-script root ([`XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX`]).
+    pub fn pinned_script_root() -> NoteScriptRoot {
+        NoteScriptRoot::from_raw(
+            Word::parse(XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX)
+                .expect("the pinned set_attester note-script root hex is a valid word"),
+        )
     }
 
     /// Builds a `set_attester` admin note: `sender` is the admin party (the owner, for success),

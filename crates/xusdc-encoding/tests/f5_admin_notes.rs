@@ -88,3 +88,14 @@ async fn set_attester_admin_note_owner_writes_and_nonowner_traps() -> Result<()>
     assert_transaction_executor_error!(result, err_sender_not_owner());
     Ok(())
 }
+
+/// masm-rust-constant-parity: the compiled set_attester note-script root must equal the pinned
+/// constant, so any edit to the script (or the proc it calls) forces a conscious re-pin.
+#[test]
+fn set_attester_note_script_root_is_pinned() {
+    assert_eq!(
+        XReserveSetAttesterNote::script_root(),
+        XReserveSetAttesterNote::pinned_script_root(),
+        "masm-rust-constant-parity: compiled set_attester note-script root == the pinned constant",
+    );
+}

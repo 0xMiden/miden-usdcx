@@ -20,7 +20,6 @@ mod support;
 
 use anyhow::Result;
 use miden_protocol::account::{Account, AccountId, RoleSymbol};
-use miden_protocol::errors::MasmError;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::RoleBasedAccessControl;
 use miden_testing::assert_transaction_executor_error;
@@ -166,17 +165,19 @@ async fn assert_non_owner_rejected(sender: AccountId) -> Result<()> {
     Ok(())
 }
 
-// PAUSE GATE — set_min_burn_size traps the EXACT pause error when the faucet is paused
+// SETTER NOT PAUSE-GATED (F6) — the OWNER may set_min_burn_size while the faucet is paused
 // ================================================================================================
 
 /// After the DOM_PAUSER pauses the faucet (custom `xreserve::pause_admin::pause` — the ONLY pause
-/// surface under Option 1), an OWNER-sent `set_min_burn_size` passes the owner gate but traps the EXACT
-/// `ERR_PAUSABLE_IS_PAUSED` (the `is_paused` slot is FungibleFaucet-installed, so never a
-/// missing-slot artifact). The setter sends from the owner so the pause gate is isolated after auth passes.
+/// surface under Option 1), an OWNER-sent `set_min_burn_size` SUCCEEDS while paused: F6 reconciles the
+/// setters to Circle's `onlyOwner` (deliberately NOT pause-gated), so the burn floor can be adjusted
+/// during a pause. The full word `[new_min,0,0,0]` lands despite is_paused == true; the owner gate still
+/// governs it (the `*_non_owner_rejects` tests above prove that half).
 #[tokio::test]
-async fn set_min_burn_paused_rejects() -> Result<()> {
+async fn set_min_burn_owner_succeeds_while_paused() -> Result<()> {
     let h = faucet_harness()?;
     let account = faucet(&h)?;
+    const NEW_MIN: u64 = 5_000;
 
     // tx1: the DOM_PAUSER pauses the faucet (is_paused := true).
     let paused = run_dom_pauser_pause(&h.chain, &account, dom_pauser(), 5)
@@ -185,9 +186,17 @@ async fn set_min_burn_paused_rejects() -> Result<()> {
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
 
-    // tx2: set_min_burn_size by the owner now traps the EXACT pause error (auth passes, pause fails).
-    let result = run_set_min_burn_size_against(&h.chain, &evolved, owner(), 5_000, 7).await;
-    assert_transaction_executor_error!(result, MasmError::from_static_str("the contract is paused"));
+    // tx2: the OWNER's set_min_burn_size(M) SUCCEEDS while paused (F6: setters are not pause-gated).
+    let executed = run_set_min_burn_size_against(&h.chain, &evolved, owner(), NEW_MIN, 7)
+        .await
+        .expect("the owner's set_min_burn_size(M) must succeed while the faucet is paused");
+    evolved.apply_delta(executed.account_delta())?;
+
+    assert_eq!(
+        read_min_burn_size(&evolved)?,
+        min_word(NEW_MIN),
+        "set_min_burn_size writes [new_min,0,0,0] to MIN_BURN_SIZE_SLOT while paused"
+    );
     Ok(())
 }
 

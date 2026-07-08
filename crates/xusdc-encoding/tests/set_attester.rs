@@ -12,7 +12,6 @@ mod support;
 
 use anyhow::Result;
 use miden_protocol::account::{AccountId, StorageMapKey, StorageSlotDelta, StorageSlotName};
-use miden_protocol::errors::MasmError;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use support::*;
@@ -161,18 +160,19 @@ async fn set_attester_dom_manager_non_owner_rejects() -> Result<()> {
     assert_set_attester_non_owner_rejected(dom_manager(), 30).await
 }
 
-// PAUSE GATE — set_attester traps the EXACT pause error when the faucet is paused
+// SETTER NOT PAUSE-GATED (F6) — the OWNER may set_attester while the faucet is paused
 // ================================================================================================
 
 /// After the DOM_PAUSER pauses the faucet (custom `xreserve::pause_admin::pause` — the ONLY pause
-/// surface under Option 1), an owner-sent `set_attester` note passes the owner gate but traps the EXACT
-/// ERR_PAUSABLE_IS_PAUSED — proving the pause guard is real (the `is_paused` slot is installed by
-/// FungibleFaucet, so this is never a missing-slot trap). The setter is sent from the OWNER so it
-/// clears `assert_authorized` first and isolates the pause gate.
+/// surface under Option 1), an OWNER-sent `set_attester` note SUCCEEDS while paused: F6 reconciles the
+/// admin setters to Circle's `onlyOwner` (deliberately NOT pause-gated), so a compromised attester can
+/// be disabled during a pause. The enabled marker lands despite is_paused == true. The owner gate still
+/// governs it — the `*_non_owner_rejects` tests above prove that half.
 #[tokio::test]
-async fn set_attester_paused_rejects() -> Result<()> {
+async fn set_attester_owner_succeeds_while_paused() -> Result<()> {
     let gm = guarded_faucet()?;
     let account = faucet_account(&gm.harness);
+    let commitment = Word::from([1u32, 2, 3, 4]);
 
     // tx1: the DOM_PAUSER pauses the faucet (is_paused := true).
     let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &account, dom_pauser(), 5)
@@ -181,9 +181,26 @@ async fn set_attester_paused_rejects() -> Result<()> {
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
 
-    // tx2: set_attester by the owner now traps the EXACT pause error (gate passes, pause fails).
-    let result =
-        run_set_attester_tx(&gm.harness, &evolved, owner(), Word::from([1u32, 2, 3, 4]), 1, 7).await;
-    assert_transaction_executor_error!(result, MasmError::from_static_str("the contract is paused"));
+    // tx2: the OWNER's set_attester(K, true) SUCCEEDS while paused (F6: setters are not pause-gated).
+    let executed = run_set_attester_tx(&gm.harness, &evolved, owner(), commitment, 1, 7)
+        .await
+        .expect("the owner's set_attester(K, true) must succeed while the faucet is paused");
+
+    // the allowlist entry landed despite the pause: xReserveAttesters[K] == [1,0,0,0].
+    let attesters = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)?;
+    let StorageSlotDelta::Map(delta) = executed
+        .account_delta()
+        .storage()
+        .get(&attesters)
+        .expect("xReserveAttesters slot delta")
+    else {
+        panic!("xReserveAttesters must be a Map slot delta");
+    };
+    let written = delta
+        .entries()
+        .get(&StorageMapKey::new(commitment))
+        .copied()
+        .expect("the commitment KEY must appear in the xReserveAttesters delta");
+    assert_eq!(written, Word::from([1u32, 0, 0, 0]), "enabled marker written while paused");
     Ok(())
 }

@@ -298,6 +298,13 @@ pub fn test_account_id(seed: u8) -> AccountId {
     AccountId::dummy([seed; 15], AccountIdVersion::Version1, AccountType::Private)
 }
 
+/// A deterministic PUBLIC dummy account id — usable as a faucet target for the F5 scheme-2
+/// `NetworkAccountTarget` routing attachment (mint/burn/admin notes require a PUBLIC faucet id) and
+/// as a fungible-asset issuer in note-construction unit tests.
+pub fn test_faucet_id(seed: u8) -> AccountId {
+    AccountId::dummy([seed; 15], AccountIdVersion::Version1, AccountType::Public)
+}
+
 pub fn assemble_xreserve_lib() -> Result<Library> {
     // Link the standards library (mirrors CodeBuilder's own `with_dynamic_library(StandardsLib)`):
     // attester_admin::set_attester calls the stock `authority::assert_authorized` /

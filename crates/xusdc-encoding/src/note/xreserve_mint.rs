@@ -36,6 +36,7 @@ use miden_protocol::note::{
 use miden_protocol::transaction::TransactionKernel;
 use miden_protocol::{Felt, Word};
 use miden_standards::code_builder::CodeBuilder;
+use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
 use miden_standards::StandardsLib;
 
 use crate::xreserve::encoding::{
@@ -157,7 +158,15 @@ impl XReserveMintNote {
         let recipient = NoteRecipient::new(serial_num, Self::script(), storage);
         let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
             .with_tag(NoteTag::with_account_target(faucet_id));
-        let attachments = NoteAttachments::new(vec![Self::attestation_attachment(attestation)?])?;
+        // F5: two attachments — the scheme-1 attestation (hash-verified by the shim) + the scheme-2
+        // NetworkAccountTarget routing bind to the faucet network account (routing only; the shim's
+        // `eq.2` accepts exactly these two). Requires a PUBLIC faucet id.
+        let target = NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always)
+            .map_err(|err| NoteError::other_with_source("faucet id is not a public network account", err))?;
+        let attachments = NoteAttachments::new(vec![
+            Self::attestation_attachment(attestation)?,
+            NoteAttachment::from(target),
+        ])?;
         Ok(Note::with_attachments(NoteAssets::new(vec![])?, metadata, recipient, attachments))
     }
 

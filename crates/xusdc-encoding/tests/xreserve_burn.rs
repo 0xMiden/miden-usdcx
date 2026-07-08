@@ -93,7 +93,7 @@ async fn emitted_items_for(items: &XReserveBurnItems) -> anyhow::Result<Vec<Felt
 #[test]
 fn burn_note_is_public_with_fixed_tag() {
     let sender = test_account_id(3);
-    let faucet = test_account_id(1);
+    let faucet = test_faucet_id(1);
     let note = XReserveBurnNote::create(sender, faucet, sample_items(5_000), &mut note_rng(1))
         .expect("constructing the burn note");
 
@@ -122,7 +122,7 @@ fn burn_note_is_public_with_fixed_tag() {
 #[test]
 fn burn_note_payload_schema() {
     let sender = test_account_id(3);
-    let faucet = test_account_id(1);
+    let faucet = test_faucet_id(1);
     let items = sample_items(5_000);
     let note = XReserveBurnNote::create(sender, faucet, items.clone(), &mut note_rng(2))
         .expect("constructing the burn note");
@@ -162,7 +162,7 @@ fn burn_note_payload_schema() {
 
 #[test]
 fn burn_note_is_never_private() {
-    let faucet = test_account_id(1);
+    let faucet = test_faucet_id(1);
     for seed in [1u64, 2, 3] {
         let note = XReserveBurnNote::create(
             test_account_id(3),

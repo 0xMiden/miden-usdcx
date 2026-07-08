@@ -214,8 +214,9 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 25] = [
         MasmError::from_static_str("burn amount is below the minimum burn size"),
     ),
     // CMP-B1 mint-note-entry transport-shape guards (xreserve_mint_note_entry.masm): the
-    // note-storage header-length floor, the attachment scheme lookup, the exactly-one-attachment
-    // count, and the 9-word size assert on the hash-verified attestation attachment.
+    // note-storage header-length floor, the scheme-1 attestation + scheme-2 routing-target presence,
+    // the exactly-two-attachment count (F5 fix-slice A), and the 9-word size assert on the
+    // hash-verified attestation attachment.
     (
         "ERR_XRESERVE_MINT_NOTE_STORAGE_TOO_SHORT",
         MasmError::from_static_str("mint note storage is shorter than the deposit intent header"),

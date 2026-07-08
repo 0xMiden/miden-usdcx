@@ -12,9 +12,9 @@
 //!   `[feeAmount(8), pubkey(9), signature(17)]` (`xreserve_mint.masm` doc; byte→felt packing reuses
 //!   the 04 codec [`compressed_pubkey_felts`] / [`signature_felts`] by reference); and (2) the
 //!   scheme-2 `NetworkAccountTarget` routing bind to the faucet network account
-//!   (`NoteExecutionHint::Always`, routing-only). NOTE (WIP): the entry shim's attachment-count
-//!   guard is being reconciled from `eq.1` to `eq.2` (+ scheme-1/scheme-2 presence) to accept this
-//!   two-attachment note; until then the mint-consume path traps on the second attachment.
+//!   (`NoteExecutionHint::Always`, routing-only). The entry shim asserts exactly one scheme-1
+//!   attestation + one scheme-2 target (`eq.2`) and hash-verifies the attestation content by its
+//!   found index (F5 fix-slice A).
 //! - `NoteType::Public` is FORCED (network-tx observability mandate); the tag is the faucet
 //!   account-target tag (`NoteTag::with_account_target`, TAG-1 — burn notes carry the fixed
 //!   `0x4255524E` tag instead precisely so mint notes own the account-target routing identity).

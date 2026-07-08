@@ -1,23 +1,23 @@
-//! F5 fix-slice A — scheme-aware mint-shim negatives (executing-red BEFORE the shim reconciliation).
+//! F5 fix-slice A — scheme-aware mint-shim negatives.
 //!
-//! The reconciled `xreserve_mint_note_entry.masm` must accept a mint note with EXACTLY one scheme-1
-//! attestation + EXACTLY one scheme-2 NetworkAccountTarget (routing-only), and reject every other
+//! The reconciled `xreserve_mint_note_entry.masm` accepts a mint note with EXACTLY one scheme-1
+//! attestation + EXACTLY one scheme-2 NetworkAccountTarget (routing-only), and rejects every other
 //! attachment shape. These negatives construct a malformed mint note and consume it **directly** as
 //! an unauthenticated input against the production network-auth faucet (no bring-up: the mint note is
 //! allowlisted row 1, so it reaches the shim and traps THERE, before any mint/domain/attester logic;
 //! no block commit, so no inclusion-proof requirement). Each pins the EXACT `ERR_*`.
 //!
-//! RED-FOR-THE-RIGHT-REASON at this commit (the eq.1 shim, no scheme-2 check): (a)/(d) assert
-//! `TARGET_MISSING` which the current shim never raises (it eq.1-passes then mint-fails / eq.1-counts);
-//! (c3) asserts the reworded "exactly two" which the current "exactly one" MASM contradicts. (b)/(c0)
-//! are regression guards that already hold (`ATTACHMENT_MISSING`). The green shim makes all pass; the
-//! non-vacuity (eq.2→eq.1) re-reds them.
+//! Against the reconciled shim: (a)/(d) → `TARGET_MISSING` (scheme-2 presence), (b)/(c0) →
+//! `ATTACHMENT_MISSING` (scheme-1 presence), (c3) → the `ATTACHMENT_COUNT` "exactly two". History:
+//! authored executing-red against the pre-fix `eq.1` shim (own commit before green). Non-vacuity:
+//! neutralizing the scheme-2 presence assert re-reds (a)+(d) (a bare `eq.2`→`eq.1` does not, since the
+//! scheme-2 assert fires first).
 
 mod support;
 
 use core::slice;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::MasmError;

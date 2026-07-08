@@ -4,11 +4,10 @@
 # DECISION-ADMIN-ROLE-MODEL): the OWNER-gated setter that writes the minBurnSize value slot CMP-A10's
 # burn_policy.masm reads for R-BURN-2 (ERR_XRESERVE_BURN_BELOW_MIN). Reuses the stock access primitives
 # BY REFERENCE: authority::assert_authorized (the Authority::OwnerControlled gate -> the Ownable2Step
-# owner) + pausable::assert_not_paused (the faucet-installed is_paused slot) + native_account::set_item
-# (the write). No custom owner/RBAC logic. Module home + flat path per D-1A (CANONICAL-OWNERSHIP-MAP.md).
+# owner) + native_account::set_item (the write). No custom owner/RBAC logic; the setter is intentionally
+# NOT pause-gated (Circle onlyOwner / F6). Module home + flat path per D-1A (CANONICAL-OWNERSHIP-MAP.md).
 
 use miden::standards::access::authority
-use miden::standards::access::pausable
 use miden::protocol::native_account
 
 # CONSTANTS
@@ -36,17 +35,15 @@ pub const MIN_BURN_SIZE_SLOT = word("xusdc::xreserve::attester_admin::min_burn_s
 #! Panics if:
 #! - the note sender is not the registered owner (authority::assert_authorized ->
 #!   ownable2step::assert_sender_is_owner, ERR_SENDER_NOT_OWNER).
-#! - the faucet is paused (pausable::assert_not_paused, ERR_PAUSABLE_IS_PAUSED).
 #!
 #! Invocation: call
 pub proc set_min_burn_size
     # => [new_min, pad(15)]
 
-    # gate: the Ownable2Step owner (sender-based) then the faucet-wide pause guard. Both read account
-    # storage and are operand-stack-neutral.
+    # gate: the Ownable2Step owner (sender-based) ONLY — intentionally NOT pause-gated (Circle
+    # onlyOwner / F6), so the owner may adjust the burn floor while the faucet is paused.
+    # Reads account storage and is operand-stack-neutral.
     exec.authority::assert_authorized
-    # => [new_min, pad(15)]
-    exec.pausable::assert_not_paused
     # => [new_min, pad(15)]
 
     # VALUE := [new_min, 0, 0, 0], built EXPLICITLY so slot felts 1..3 are provably zero (matching the

@@ -5,12 +5,11 @@
 # allowlist — the on-chain write completing the D5d read seam (attestation_verify.masm:95-119, R-MINT-13).
 # Reuses the stock access primitives BY REFERENCE: authority::assert_authorized (the account-wide
 # Authority::OwnerControlled gate -> ownable2step::assert_sender_is_owner on the note sender) +
-# pausable::assert_not_paused (the faucet-installed is_paused slot) + native_account::set_map_item (the
-# write). No custom owner/RBAC logic; the MASM is unchanged from the RBAC era — only the installed
-# Authority mode changed. Module home + flat path per D-1A (CANONICAL-OWNERSHIP-MAP.md:59).
+# native_account::set_map_item (the write). No custom owner/RBAC logic; the MASM is unchanged from the
+# RBAC era — only the installed Authority mode changed. The setter is intentionally NOT pause-gated
+# (Circle onlyOwner / F6). Module home + flat path per D-1A (CANONICAL-OWNERSHIP-MAP.md:59).
 
 use miden::standards::access::authority
-use miden::standards::access::pausable
 use miden::protocol::native_account
 
 # CONSTANTS
@@ -43,7 +42,6 @@ const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
 #! Panics if:
 #! - the note sender is not the registered owner (authority::assert_authorized ->
 #!   ownable2step::assert_sender_is_owner, ERR_SENDER_NOT_OWNER).
-#! - the faucet is paused (pausable::assert_not_paused, ERR_PAUSABLE_IS_PAUSED).
 #! - `enabled` is not a boolean (the `if.true` binary constraint).
 #!
 #! Invocation: call
@@ -51,11 +49,10 @@ const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
 pub proc set_attester
     # => [PK_COMMITMENT, enabled, pad(11)]
 
-    # gate: the Ownable2Step owner (sender-based) then the faucet-wide pause guard. Both read account
-    # storage and are operand-stack-neutral.
+    # gate: the Ownable2Step owner (sender-based) ONLY — intentionally NOT pause-gated (Circle
+    # onlyOwner / F6), so the owner may disable a compromised attester while the faucet is paused.
+    # Reads account storage and is operand-stack-neutral.
     exec.authority::assert_authorized
-    # => [PK_COMMITMENT, enabled, pad(11)]
-    exec.pausable::assert_not_paused
     # => [PK_COMMITMENT, enabled, pad(11)]
 
     # stash the caller-supplied commitment (the map key) into loc[0..4], trusted verbatim (§5.5). The

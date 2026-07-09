@@ -1,0 +1,38 @@
+[package]
+name = "xusdc-validation"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Phase-4 §11.2 local-node validation harness (LNV): real-node lifecycle, drivers, and assertions for the xUSDC faucet"
+
+# LNV-1 dep ledger (VALIDATION-RECORD.md §2). The protocol family is pinned to the SAME git rev
+# as `xusdc-encoding` (681fc905… = the v0.15.3 release-tag commit); `miden-client` +
+# `miden-client-sqlite-store` come from crates.io at =0.15.3 — the release whose protocol-family
+# requirements are exactly ^0.15.3 — and the workspace `[patch.crates-io]` redirects those
+# requirements onto the pinned git source so one copy of each protocol crate exists in the graph.
+# k256/rand/miden-crypto mirror the versions `xusdc-encoding` already uses for its attestation
+# vectors (kept crate-local there; promoting both crates to [workspace.dependencies] is a
+# deliberate later cleanup, not this validation slice).
+
+[dependencies]
+xusdc-encoding = { path = "../xusdc-encoding" }
+miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
+miden-tx        = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
+miden-client = { version = "=0.15.3", default-features = false, features = ["std", "tonic"] }
+miden-client-sqlite-store = { version = "=0.15.3" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Local test-attester keygen (never Circle keys): same crates + versions as the xusdc-encoding
+# attestation vectors — k256 for the secp256k1 keypair, sha3 for the keccak digest of the SEC1
+# pubkey, miden-crypto for PublicKey::to_commitment (the attester-allowlist keying primitive).
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha3 = "0.10"
+rand = "0.8"
+miden-crypto = { version = "0.25", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# `AccountId::dummy` for synthetic assertion fixtures (tests only; same pinned source).
+miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8", features = ["testing"] }

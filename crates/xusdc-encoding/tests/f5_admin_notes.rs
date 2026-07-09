@@ -10,21 +10,42 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
-use miden_protocol::account::{AccountId, StorageMapKey, StorageSlotDelta, StorageSlotName};
+use miden_protocol::account::{
+    AccountId, RoleSymbol, StorageMapKey, StorageSlotDelta, StorageSlotName,
+};
 use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_testing::{MockChain, assert_transaction_executor_error};
 use support::*;
+use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveDomainInitNote, XReservePauseNote, XReserveSetAttesterNote, XReserveSetMinBurnSizeNote,
-    XReserveUnpauseNote,
+    XReserveDomainInitNote, XReserveGrantRoleNote, XReservePauseNote, XReserveSetAttesterNote,
+    XReserveSetMinBurnSizeNote, XReserveUnpauseNote,
 };
 
 /// The exact stock role error the DOM_PAUSER gate traps (rbac.masm:50 ERR_SENDER_LACKS_ROLE).
 /// Defined per-file (as in pause_admin.rs / role_admin.rs); not exported from the shared harness.
 fn err_sender_lacks_role() -> MasmError {
     MasmError::from_static_str("note sender does not hold the required role")
+}
+
+/// The exact stock RBAC delegation error (rbac.masm:51 ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN).
+fn err_not_owner_or_role_admin() -> MasmError {
+    MasmError::from_static_str("note sender is not the owner or a role admin")
+}
+
+fn pauser_sym() -> RoleSymbol {
+    RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol")
+}
+
+fn manager_sym() -> RoleSymbol {
+    RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol")
+}
+
+/// The `[is_member,0,0,0]` / marker word.
+fn member_marker() -> Word {
+    Word::from([1u32, 0, 0, 0])
 }
 
 /// The standardized stock `is_paused` value slot label (FungibleFaucet-installed).
@@ -648,6 +669,116 @@ fn unpause_note_script_root_is_pinned() {
         root,
         XReserveUnpauseNote::pinned_script_root(),
         "masm-rust-constant-parity: unpause note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
+    );
+}
+
+// GRANT_ROLE (allowlist row 8) — STOCK RBAC grant (CANARY: a note calling a stock component proc)
+// ================================================================================================
+
+/// Authorized grant: `sender` grants DOM_PAUSER to id(4); the membership map is written. Proves the
+/// note's absolute-path `call` resolves to the installed stock `rbac::grant_role` root (the canary).
+async fn assert_grant_role_authorized(sender: AccountId, seed: u64) -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let grantee = test_account_id(4);
+    let note = XReserveGrantRoleNote::create(
+        sender, faucet_id, Felt::from(&pauser_sym()), grantee, &mut note_rng(seed),
+    )
+    .context("building the grant_role note")?;
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("grant_role tx context")?
+        .build()
+        .context("grant_role tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("authorized grant_role must succeed under network auth: {e}"))?;
+    let mut evolved = chain.committed_account(faucet_id).context("committed faucet")?.clone();
+    evolved.apply_delta(tx.account_delta())?;
+    assert_eq!(
+        read_role_membership(&evolved, &pauser_sym(), grantee)?,
+        member_marker(),
+        "authorized grant_role must make id(4) a DOM_PAUSER member",
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn grant_role_owner_authorized() -> Result<()> {
+    assert_grant_role_authorized(test_account_id(1), 70).await
+}
+
+#[tokio::test]
+async fn grant_role_dom_manager_authorized() -> Result<()> {
+    assert_grant_role_authorized(test_account_id(3), 71).await
+}
+
+/// A third party (neither owner nor DOM_MANAGER) PASSES auth but TRAPS at the delegation gate.
+#[tokio::test]
+async fn grant_role_third_party_traps() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let note = XReserveGrantRoleNote::create(
+        test_account_id(99), faucet_id, Felt::from(&pauser_sym()), test_account_id(4),
+        &mut note_rng(72),
+    )
+    .context("building the third-party grant_role note")?;
+    let result = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("third-party grant_role tx context")?
+        .build()
+        .context("third-party grant_role tx build")?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, err_not_owner_or_role_admin());
+    Ok(())
+}
+
+/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the granted membership.
+#[tokio::test]
+async fn grant_role_note_args_are_inert() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let grantee = test_account_id(5);
+    let note = XReserveGrantRoleNote::create(
+        test_account_id(1), faucet_id, Felt::from(&pauser_sym()), grantee, &mut note_rng(73),
+    )
+    .context("building the owner grant_role note")?;
+    let bogus_args = Word::from([7u32, 7, 7, 7]);
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("grant_role note-args tx context")?
+        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
+        .build()
+        .context("grant_role note-args tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("grant_role with bogus NOTE_ARGS must still succeed: {e}"))?;
+    let mut evolved = chain.committed_account(faucet_id).context("committed faucet")?.clone();
+    evolved.apply_delta(tx.account_delta())?;
+    assert_eq!(
+        read_role_membership(&evolved, &pauser_sym(), grantee)?,
+        member_marker(),
+        "grant_role must write the storage-committed member regardless of executor NOTE_ARGS",
+    );
+    Ok(())
+}
+
+/// masm-rust-constant-parity for the grant_role note (the failure prints the actual hex).
+#[test]
+fn grant_role_note_script_root_is_pinned() {
+    let root = XReserveGrantRoleNote::script_root();
+    assert_eq!(
+        root,
+        XReserveGrantRoleNote::pinned_script_root(),
+        "masm-rust-constant-parity: grant_role note-script root == the pinned constant (actual = {})",
         root.to_hex(),
     );
 }

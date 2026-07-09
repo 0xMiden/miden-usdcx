@@ -22,7 +22,7 @@ use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
     XReserveDomainInitNote, XReserveGrantRoleNote, XReservePauseNote, XReserveRevokeRoleNote,
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-    XReserveSetRoleAdminNote, XReserveUnpauseNote,
+    XReserveSetRoleAdminNote, XReserveTransferOwnershipNote, XReserveUnpauseNote,
 };
 
 /// The exact stock role error the DOM_PAUSER gate traps (rbac.masm:50 ERR_SENDER_LACKS_ROLE).
@@ -1116,6 +1116,122 @@ fn set_role_admin_note_script_root_is_pinned() {
         root,
         XReserveSetRoleAdminNote::pinned_script_root(),
         "masm-rust-constant-parity: set_role_admin note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
+    );
+}
+
+// TRANSFER_OWNERSHIP (allowlist row 11) — current-owner-gated, step 1 of the 2-step transfer
+// ================================================================================================
+
+const OWNER_CONFIG_LABEL: &str = "miden::standards::access::ownable2step::owner_config";
+
+/// The Ownable2Step `owner_config` word `[owner_suffix, owner_prefix, nominee_suffix, nominee_prefix]`.
+fn owner_config_word(owner: AccountId, nominee: AccountId) -> Word {
+    Word::from([
+        owner.suffix(),
+        owner.prefix().as_felt(),
+        nominee.suffix(),
+        nominee.prefix().as_felt(),
+    ])
+}
+
+/// Owner-sent transfer_ownership PASSES auth + the owner gate and nominates id(5); the CURRENT owner
+/// half is UNCHANGED (the 2-step invariant).
+#[tokio::test]
+async fn transfer_ownership_owner_nominates() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let new_owner = test_account_id(5);
+    let note = XReserveTransferOwnershipNote::create(test_account_id(1), faucet_id, new_owner, &mut note_rng(130))
+        .context("building the owner transfer_ownership note")?;
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("owner transfer_ownership tx context")?
+        .build()
+        .context("owner transfer_ownership tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("owner-sent transfer_ownership must succeed under network auth: {e}"))?;
+    assert_eq!(
+        value_delta(&tx, OWNER_CONFIG_LABEL),
+        owner_config_word(test_account_id(1), new_owner),
+        "transfer_ownership must nominate id(5) with the owner half UNCHANGED (2-step)",
+    );
+    Ok(())
+}
+
+/// A non-owner transfer_ownership note PASSES auth but TRAPS at the owner gate.
+async fn assert_transfer_ownership_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let note = XReserveTransferOwnershipNote::create(sender, faucet_id, test_account_id(5), &mut note_rng(seed))
+        .context("building the non-owner transfer_ownership note")?;
+    let result = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("non-owner transfer_ownership tx context")?
+        .build()
+        .context("non-owner transfer_ownership tx build")?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, err_sender_not_owner());
+    Ok(())
+}
+
+#[tokio::test]
+async fn transfer_ownership_dom_pauser_traps() -> Result<()> {
+    assert_transfer_ownership_nonowner_traps(test_account_id(2), 131).await
+}
+
+#[tokio::test]
+async fn transfer_ownership_dom_manager_traps() -> Result<()> {
+    assert_transfer_ownership_nonowner_traps(test_account_id(3), 132).await
+}
+
+#[tokio::test]
+async fn transfer_ownership_third_party_traps() -> Result<()> {
+    assert_transfer_ownership_nonowner_traps(test_account_id(99), 133).await
+}
+
+/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the nomination.
+#[tokio::test]
+async fn transfer_ownership_note_args_are_inert() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let new_owner = test_account_id(5);
+    let note = XReserveTransferOwnershipNote::create(test_account_id(1), faucet_id, new_owner, &mut note_rng(134))
+        .context("building the owner transfer_ownership note")?;
+    let bogus_args = Word::from([2u32, 2, 2, 2]);
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("transfer_ownership note-args tx context")?
+        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
+        .build()
+        .context("transfer_ownership note-args tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("transfer_ownership with bogus NOTE_ARGS must still succeed: {e}"))?;
+    assert_eq!(
+        value_delta(&tx, OWNER_CONFIG_LABEL),
+        owner_config_word(test_account_id(1), new_owner),
+        "transfer_ownership must nominate the storage-committed owner regardless of executor NOTE_ARGS",
+    );
+    Ok(())
+}
+
+/// masm-rust-constant-parity for the transfer_ownership note (the failure prints the actual hex).
+#[test]
+fn transfer_ownership_note_script_root_is_pinned() {
+    let root = XReserveTransferOwnershipNote::script_root();
+    assert_eq!(
+        root,
+        XReserveTransferOwnershipNote::pinned_script_root(),
+        "masm-rust-constant-parity: transfer_ownership note-script root == the pinned constant (actual = {})",
         root.to_hex(),
     );
 }

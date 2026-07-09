@@ -483,6 +483,57 @@ impl XReserveSetRoleAdminNote {
     }
 }
 
+// TRANSFER_OWNERSHIP (allowlist row 11)
+// ================================================================================================
+
+const TRANSFER_OWNERSHIP_NOTE_SCRIPT_SRC: &str =
+    include_str!("../../../../asm/standards/notes/xreserve_transfer_ownership_note.masm");
+
+static TRANSFER_OWNERSHIP_NOTE_SCRIPT: LazyLock<NoteScript> =
+    LazyLock::new(|| compile_admin_note_script(TRANSFER_OWNERSHIP_NOTE_SCRIPT_SRC));
+
+/// The PINNED transfer_ownership admin note-script root (`masm-rust-constant-parity`): binds
+/// transitively to the stock `ownable2step::transfer_ownership`'s digest.
+pub const XRESERVE_TRANSFER_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+/// The current-owner-gated stock `transfer_ownership` admin note (F5, step 1 of the 2-step transfer).
+/// Storage layout: `[new_owner_suffix, new_owner_prefix]`.
+pub struct XReserveTransferOwnershipNote;
+
+impl XReserveTransferOwnershipNote {
+    /// The compiled, fixed-root note script.
+    pub fn script() -> NoteScript {
+        TRANSFER_OWNERSHIP_NOTE_SCRIPT.clone()
+    }
+
+    /// The note-script root (allowlist row 11). Must equal the pinned constant (parity-tested).
+    pub fn script_root() -> NoteScriptRoot {
+        TRANSFER_OWNERSHIP_NOTE_SCRIPT.root()
+    }
+
+    /// The PINNED note-script root ([`XRESERVE_TRANSFER_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX`]).
+    pub fn pinned_script_root() -> NoteScriptRoot {
+        NoteScriptRoot::from_raw(
+            Word::parse(XRESERVE_TRANSFER_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX)
+                .expect("the pinned transfer_ownership note-script root hex is a valid word"),
+        )
+    }
+
+    /// Builds a `transfer_ownership` admin note: `sender` is the current owner (for success),
+    /// `faucet_id` the target faucet (PUBLIC), `new_owner` the nominated owner. The params live in
+    /// note storage; NOTE_ARGS are ignored.
+    pub fn create<R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        new_owner: AccountId,
+        rng: &mut R,
+    ) -> Result<Note, NoteError> {
+        let items = vec![new_owner.suffix(), new_owner.prefix().as_felt()];
+        build_admin_note(sender, faucet_id, Self::script(), items, rng)
+    }
+}
+
 // SET_MAX_SUPPLY (allowlist row 5)
 // ================================================================================================
 

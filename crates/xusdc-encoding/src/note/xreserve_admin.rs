@@ -332,3 +332,50 @@ impl XReservePauseNote {
         build_admin_note(sender, faucet_id, Self::script(), vec![], rng)
     }
 }
+
+// UNPAUSE (allowlist row 7)
+// ================================================================================================
+
+const UNPAUSE_NOTE_SCRIPT_SRC: &str =
+    include_str!("../../../../asm/standards/notes/xreserve_unpause_note.masm");
+
+static UNPAUSE_NOTE_SCRIPT: LazyLock<NoteScript> =
+    LazyLock::new(|| compile_admin_note_script(UNPAUSE_NOTE_SCRIPT_SRC));
+
+/// The PINNED unpause admin note-script root (`masm-rust-constant-parity`): binds transitively to
+/// `pause_admin::unpause`'s digest.
+pub const XRESERVE_UNPAUSE_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+/// The DOM_PAUSER-gated, PARAM-LESS `unpause` admin note (F5).
+pub struct XReserveUnpauseNote;
+
+impl XReserveUnpauseNote {
+    /// The compiled, fixed-root note script.
+    pub fn script() -> NoteScript {
+        UNPAUSE_NOTE_SCRIPT.clone()
+    }
+
+    /// The note-script root (allowlist row 7). Must equal the pinned constant (parity-tested).
+    pub fn script_root() -> NoteScriptRoot {
+        UNPAUSE_NOTE_SCRIPT.root()
+    }
+
+    /// The PINNED note-script root ([`XRESERVE_UNPAUSE_NOTE_SCRIPT_ROOT_HEX`]).
+    pub fn pinned_script_root() -> NoteScriptRoot {
+        NoteScriptRoot::from_raw(
+            Word::parse(XRESERVE_UNPAUSE_NOTE_SCRIPT_ROOT_HEX)
+                .expect("the pinned unpause note-script root hex is a valid word"),
+        )
+    }
+
+    /// Builds an `unpause` admin note (param-less): `sender` is the DOM_PAUSER holder (for success),
+    /// `faucet_id` the target faucet (PUBLIC). Carries no storage payload; the note ARGS are ignored.
+    pub fn create<R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        rng: &mut R,
+    ) -> Result<Note, NoteError> {
+        build_admin_note(sender, faucet_id, Self::script(), vec![], rng)
+    }
+}

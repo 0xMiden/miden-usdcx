@@ -14,10 +14,11 @@ use miden_protocol::account::{AccountId, StorageMapKey, StorageSlotDelta, Storag
 use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
-use miden_testing::assert_transaction_executor_error;
+use miden_testing::{MockChain, assert_transaction_executor_error};
 use support::*;
 use xusdc_encoding::note::xreserve_admin::{
     XReserveDomainInitNote, XReservePauseNote, XReserveSetAttesterNote, XReserveSetMinBurnSizeNote,
+    XReserveUnpauseNote,
 };
 
 /// The exact stock role error the DOM_PAUSER gate traps (rbac.masm:50 ERR_SENDER_LACKS_ROLE).
@@ -529,6 +530,124 @@ fn pause_note_script_root_is_pinned() {
         root,
         XReservePauseNote::pinned_script_root(),
         "masm-rust-constant-parity: pause note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
+    );
+}
+
+// UNPAUSE (allowlist row 7) — DOM_PAUSER-gated resume
+// ================================================================================================
+
+/// A production faucet paused by a SEEDED DOM_PAUSER pause note (brought up on-chain), so an unpause
+/// tx has a 1 -> 0 `is_paused` transition to observe. Placeholder PUBLIC routing target (routing-only).
+async fn paused_faucet() -> Result<(MockChain, AccountId)> {
+    let route = test_faucet_id(1);
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| {
+        vec![
+            XReservePauseNote::create(test_account_id(2), route, &mut note_rng(60))
+                .expect("building the seeded pause note"),
+        ]
+    })
+    .context("building the production faucet with a seeded pause")?;
+    let mut chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    for note in pf.seeded_notes.clone() {
+        let tx = chain
+            .build_tx_context(faucet_id, &[note.id()], &[])
+            .context("pause bring-up tx context")?
+            .build()
+            .context("pause bring-up tx build")?
+            .execute()
+            .await
+            .map_err(|e| anyhow::anyhow!("pause bring-up must succeed: {e}"))?;
+        chain.add_pending_executed_transaction(&tx)?;
+        chain.prove_next_block()?;
+    }
+    Ok((chain, faucet_id))
+}
+
+/// DOM_PAUSER-sent unpause PASSES auth + the proc's DOM_PAUSER gate and clears is_paused to 0.
+#[tokio::test]
+async fn unpause_dom_pauser_clears_is_paused() -> Result<()> {
+    let (chain, faucet_id) = paused_faucet().await?;
+    let note = XReserveUnpauseNote::create(test_account_id(2), faucet_id, &mut note_rng(61))
+        .context("building the DOM_PAUSER unpause note")?;
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("DOM_PAUSER unpause tx context")?
+        .build()
+        .context("DOM_PAUSER unpause tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("DOM_PAUSER unpause must succeed under network auth: {e}"))?;
+    assert_eq!(
+        value_delta(&tx, IS_PAUSED_LABEL),
+        scalar_word(Felt::from(0u32)),
+        "DOM_PAUSER unpause must clear is_paused to 0",
+    );
+    Ok(())
+}
+
+/// A non-DOM_PAUSER unpause note PASSES auth but TRAPS at the proc's role gate (owner included).
+async fn assert_unpause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let note = XReserveUnpauseNote::create(sender, faucet_id, &mut note_rng(seed))
+        .context("building the non-pauser unpause note")?;
+    let result = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("non-pauser unpause tx context")?
+        .build()
+        .context("non-pauser unpause tx build")?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
+    Ok(())
+}
+
+#[tokio::test]
+async fn unpause_owner_traps() -> Result<()> {
+    assert_unpause_nonpauser_traps(test_account_id(1), 62).await
+}
+
+#[tokio::test]
+async fn unpause_third_party_traps() -> Result<()> {
+    assert_unpause_nonpauser_traps(test_account_id(99), 63).await
+}
+
+/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the unpause effect.
+#[tokio::test]
+async fn unpause_note_args_are_inert() -> Result<()> {
+    let (chain, faucet_id) = paused_faucet().await?;
+    let note = XReserveUnpauseNote::create(test_account_id(2), faucet_id, &mut note_rng(64))
+        .context("building the DOM_PAUSER unpause note")?;
+    let bogus_args = Word::from([8u32, 8, 8, 8]);
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("unpause note-args tx context")?
+        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
+        .build()
+        .context("unpause note-args tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("unpause with bogus NOTE_ARGS must still succeed: {e}"))?;
+    assert_eq!(
+        value_delta(&tx, IS_PAUSED_LABEL),
+        scalar_word(Felt::from(0u32)),
+        "unpause must clear is_paused=0 regardless of executor NOTE_ARGS",
+    );
+    Ok(())
+}
+
+/// masm-rust-constant-parity for the unpause note (the failure prints the actual hex).
+#[test]
+fn unpause_note_script_root_is_pinned() {
+    let root = XReserveUnpauseNote::script_root();
+    assert_eq!(
+        root,
+        XReserveUnpauseNote::pinned_script_root(),
+        "masm-rust-constant-parity: unpause note-script root == the pinned constant (actual = {})",
         root.to_hex(),
     );
 }

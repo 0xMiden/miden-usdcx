@@ -15,7 +15,9 @@ use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use support::*;
-use xusdc_encoding::note::xreserve_admin::{XReserveDomainInitNote, XReserveSetAttesterNote};
+use xusdc_encoding::note::xreserve_admin::{
+    XReserveDomainInitNote, XReserveSetAttesterNote, XReserveSetMinBurnSizeNote,
+};
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -131,23 +133,30 @@ fn expected_domain_config() -> [Word; 5] {
     ]
 }
 
+/// Reads a single value-slot's post-tx word from the account delta (the slot's new value).
+fn value_delta(tx: &ExecutedTransaction, label: &str) -> Word {
+    let slot = StorageSlotName::new(label).expect("valid slot label");
+    match tx.account_delta().storage().get(&slot) {
+        Some(StorageSlotDelta::Value(w)) => *w,
+        other => panic!("value slot {label} expected a value delta, got {other:?}"),
+    }
+}
+
 /// Reads the FIVE §5.9 config words from a tx's account delta, in the order
 /// `[domain, source_domain, xrc_hi, xrc_lo, identifier]` (each is a value-slot write empty -> value).
 fn domain_config_delta(tx: &ExecutedTransaction) -> [Word; 5] {
-    let read = |label: &str| -> Word {
-        let slot = StorageSlotName::new(label).expect("valid config slot label");
-        match tx.account_delta().storage().get(&slot) {
-            Some(StorageSlotDelta::Value(w)) => *w,
-            other => panic!("config slot {label} expected a value delta, got {other:?}"),
-        }
-    };
     [
-        read(DOMAIN_CONFIG_SLOT_LABEL),
-        read(SOURCE_DOMAIN_CONFIG_SLOT_LABEL),
-        read(XRESERVE_CONTRACT_HI_SLOT_LABEL),
-        read(XRESERVE_CONTRACT_LO_SLOT_LABEL),
-        read(IDENTIFIER_CONFIG_SLOT_LABEL),
+        value_delta(tx, DOMAIN_CONFIG_SLOT_LABEL),
+        value_delta(tx, SOURCE_DOMAIN_CONFIG_SLOT_LABEL),
+        value_delta(tx, XRESERVE_CONTRACT_HI_SLOT_LABEL),
+        value_delta(tx, XRESERVE_CONTRACT_LO_SLOT_LABEL),
+        value_delta(tx, IDENTIFIER_CONFIG_SLOT_LABEL),
     ]
+}
+
+/// A single felt as its value-slot word `[f, 0, 0, 0]`.
+fn scalar_word(f: Felt) -> Word {
+    Word::from([f, Felt::from(0u32), Felt::from(0u32), Felt::from(0u32)])
 }
 
 /// Consumes `owner`'s domain_init note against a fresh production faucet, PASSING network auth
@@ -300,5 +309,117 @@ fn domain_init_note_script_root_is_pinned() {
         XReserveDomainInitNote::script_root(),
         XReserveDomainInitNote::pinned_script_root(),
         "masm-rust-constant-parity: compiled domain_init note-script root == the pinned constant",
+    );
+}
+
+// SET_MIN_BURN_SIZE (allowlist row 4) — owner-gated minBurnSize setter
+// ================================================================================================
+
+const NEW_MIN_BURN: u64 = 5_000;
+
+fn expected_min_burn() -> Word {
+    scalar_word(Felt::try_from(NEW_MIN_BURN).expect("min burn within the field"))
+}
+
+/// Owner-sent set_min_burn_size PASSES auth (allowlisted) + the proc owner gate and writes
+/// `[new_min,0,0,0]` at `MIN_BURN_SIZE_SLOT`.
+#[tokio::test]
+async fn set_min_burn_size_owner_writes_slot() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let owner = test_account_id(1);
+
+    let note = XReserveSetMinBurnSizeNote::create(owner, faucet_id, NEW_MIN_BURN, &mut note_rng(40))
+        .context("building the owner set_min_burn_size note")?;
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("owner set_min_burn_size tx context")?
+        .build()
+        .context("owner set_min_burn_size tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("owner-sent set_min_burn_size must succeed under network auth: {e}"))?;
+    assert_eq!(
+        value_delta(&tx, MIN_BURN_SIZE_SLOT_LABEL),
+        expected_min_burn(),
+        "owner set_min_burn_size must write [new_min,0,0,0] at MIN_BURN_SIZE_SLOT",
+    );
+    Ok(())
+}
+
+/// A non-owner set_min_burn_size note PASSES auth but TRAPS at the proc's owner gate.
+async fn assert_set_min_burn_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let note = XReserveSetMinBurnSizeNote::create(sender, faucet_id, NEW_MIN_BURN, &mut note_rng(seed))
+        .context("building the non-owner set_min_burn_size note")?;
+    let result = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("non-owner set_min_burn_size tx context")?
+        .build()
+        .context("non-owner set_min_burn_size tx build")?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, err_sender_not_owner());
+    Ok(())
+}
+
+#[tokio::test]
+async fn set_min_burn_size_dom_pauser_traps() -> Result<()> {
+    assert_set_min_burn_nonowner_traps(test_account_id(2), 41).await
+}
+
+#[tokio::test]
+async fn set_min_burn_size_dom_manager_traps() -> Result<()> {
+    assert_set_min_burn_nonowner_traps(test_account_id(3), 42).await
+}
+
+#[tokio::test]
+async fn set_min_burn_size_third_party_traps() -> Result<()> {
+    assert_set_min_burn_nonowner_traps(test_account_id(99), 43).await
+}
+
+/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the written min burn size.
+#[tokio::test]
+async fn set_min_burn_size_note_args_are_inert() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let owner = test_account_id(1);
+
+    let note = XReserveSetMinBurnSizeNote::create(owner, faucet_id, NEW_MIN_BURN, &mut note_rng(44))
+        .context("building the owner set_min_burn_size note")?;
+    let bogus_args = Word::from([999u32, 1, 2, 3]);
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("set_min_burn_size note-args tx context")?
+        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
+        .build()
+        .context("set_min_burn_size note-args tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("set_min_burn_size with bogus NOTE_ARGS must still succeed: {e}"))?;
+    assert_eq!(
+        value_delta(&tx, MIN_BURN_SIZE_SLOT_LABEL),
+        expected_min_burn(),
+        "set_min_burn_size must write the storage-committed param regardless of executor NOTE_ARGS",
+    );
+    Ok(())
+}
+
+/// masm-rust-constant-parity for the set_min_burn_size note (the failure prints the actual hex).
+#[test]
+fn set_min_burn_size_note_script_root_is_pinned() {
+    let root = XReserveSetMinBurnSizeNote::script_root();
+    assert_eq!(
+        root,
+        XReserveSetMinBurnSizeNote::pinned_script_root(),
+        "masm-rust-constant-parity: set_min_burn_size note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
     );
 }

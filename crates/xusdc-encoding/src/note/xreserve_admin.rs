@@ -55,6 +55,27 @@ fn routing_attachments(faucet_id: AccountId) -> Result<NoteAttachments, NoteErro
     NoteAttachments::new(vec![NoteAttachment::from(target)])
 }
 
+/// Assembles an admin note from its fixed-root `script` + the creator-committed storage `items`,
+/// carrying the scheme-2 `NetworkAccountTarget` routing bind to `faucet_id` (routing-only). Shared by
+/// every admin-note factory: the notes differ only in their script + the felt payload they commit;
+/// the metadata (PUBLIC, faucet-tagged), the serial draw, the empty asset set, and the routing
+/// attachment are identical. `sender` is the (kernel-forced) admin party the wrapped proc's gate reads.
+fn build_admin_note<R: FeltRng>(
+    sender: AccountId,
+    faucet_id: AccountId,
+    script: NoteScript,
+    items: Vec<Felt>,
+    rng: &mut R,
+) -> Result<Note, NoteError> {
+    let storage = NoteStorage::new(items)?;
+    let serial_num = rng.draw_word();
+    let recipient = NoteRecipient::new(serial_num, script, storage);
+    let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
+        .with_tag(NoteTag::with_account_target(faucet_id));
+    let attachments = routing_attachments(faucet_id)?;
+    Ok(Note::with_attachments(NoteAssets::new(vec![])?, metadata, recipient, attachments))
+}
+
 // SET_ATTESTER (allowlist row 3)
 // ================================================================================================
 
@@ -210,5 +231,57 @@ impl XReserveDomainInitNote {
             .with_tag(NoteTag::with_account_target(faucet_id));
         let attachments = routing_attachments(faucet_id)?;
         Ok(Note::with_attachments(NoteAssets::new(vec![])?, metadata, recipient, attachments))
+    }
+}
+
+// SET_MIN_BURN_SIZE (allowlist row 4)
+// ================================================================================================
+
+const SET_MIN_BURN_SIZE_NOTE_SCRIPT_SRC: &str =
+    include_str!("../../../../asm/standards/notes/xreserve_set_min_burn_size_note.masm");
+
+static SET_MIN_BURN_SIZE_NOTE_SCRIPT: LazyLock<NoteScript> =
+    LazyLock::new(|| compile_admin_note_script(SET_MIN_BURN_SIZE_NOTE_SCRIPT_SRC));
+
+/// The PINNED set_min_burn_size admin note-script root (`masm-rust-constant-parity`): binds
+/// transitively to `min_burn_admin::set_min_burn_size`'s digest, so any edit of the note or the proc
+/// it calls trips parity and forces a conscious re-pin.
+pub const XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+/// The owner-gated `set_min_burn_size` admin note (F5). Storage layout: `[new_min]`.
+pub struct XReserveSetMinBurnSizeNote;
+
+impl XReserveSetMinBurnSizeNote {
+    /// The compiled, fixed-root note script.
+    pub fn script() -> NoteScript {
+        SET_MIN_BURN_SIZE_NOTE_SCRIPT.clone()
+    }
+
+    /// The note-script root (allowlist row 4). Must equal the pinned constant (parity-tested).
+    pub fn script_root() -> NoteScriptRoot {
+        SET_MIN_BURN_SIZE_NOTE_SCRIPT.root()
+    }
+
+    /// The PINNED note-script root ([`XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX`]).
+    pub fn pinned_script_root() -> NoteScriptRoot {
+        NoteScriptRoot::from_raw(
+            Word::parse(XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX)
+                .expect("the pinned set_min_burn_size note-script root hex is a valid word"),
+        )
+    }
+
+    /// Builds a `set_min_burn_size` admin note: `sender` is the admin party (the owner, for success),
+    /// `faucet_id` the target faucet (PUBLIC), `new_min` the new minimum burn size. The param lives in
+    /// note storage; the executor-controlled `NOTE_ARGS` are ignored by the script.
+    pub fn create<R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        new_min: u64,
+        rng: &mut R,
+    ) -> Result<Note, NoteError> {
+        let new_min_felt = Felt::try_from(new_min)
+            .map_err(|e| NoteError::other_with_source("min burn size exceeds the field modulus", e))?;
+        build_admin_note(sender, faucet_id, Self::script(), vec![new_min_felt], rng)
     }
 }

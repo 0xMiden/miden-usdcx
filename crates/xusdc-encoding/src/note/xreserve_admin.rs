@@ -444,7 +444,7 @@ static SET_ROLE_ADMIN_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED set_role_admin admin note-script root (`masm-rust-constant-parity`): binds transitively
 /// to the stock `rbac::set_role_admin`'s digest.
 pub const XRESERVE_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x0000000000000000000000000000000000000000000000000000000000000000";
+    "0xf0f9033fb2dae352038fda2cea6861521def23b60e3d3151d6b4cb4b9677f3c6";
 
 /// The OWNER-ONLY stock `set_role_admin` admin note (F5). Storage layout:
 /// `[role_symbol, admin_role_symbol]` (`admin_role_symbol = 0` clears the delegation).

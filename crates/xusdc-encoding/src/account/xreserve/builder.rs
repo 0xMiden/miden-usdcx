@@ -396,7 +396,9 @@ impl XReserveStablecoinBuilder {
             crate::note::xreserve_admin::XReserveSetMaxSupplyNote::script_root(),
             // row 9: revoke_role admin note (owner-or-role-admin-gated, stock RBAC).
             crate::note::xreserve_admin::XReserveRevokeRoleNote::script_root(),
-            // rows 10-12: the remaining admin note scripts — NOT YET ADDED (admin-note-scripts unit).
+            // row 10: set_role_admin admin note (owner-only, stock RBAC).
+            crate::note::xreserve_admin::XReserveSetRoleAdminNote::script_root(),
+            // rows 11-12: the remaining admin note scripts — NOT YET ADDED (admin-note-scripts unit).
         ])
     }
 

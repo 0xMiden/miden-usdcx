@@ -400,7 +400,8 @@ impl XReserveStablecoinBuilder {
             crate::note::xreserve_admin::XReserveSetRoleAdminNote::script_root(),
             // row 11: transfer_ownership admin note (current-owner-gated, stock Ownable2Step).
             crate::note::xreserve_admin::XReserveTransferOwnershipNote::script_root(),
-            // row 12: the remaining admin note script — NOT YET ADDED (admin-note-scripts unit).
+            // row 12: accept_ownership admin note (nominated-owner-gated, stock Ownable2Step).
+            crate::note::xreserve_admin::XReserveAcceptOwnershipNote::script_root(),
         ])
     }
 

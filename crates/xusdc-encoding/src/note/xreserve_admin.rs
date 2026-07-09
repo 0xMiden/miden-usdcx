@@ -546,7 +546,7 @@ static ACCEPT_OWNERSHIP_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED accept_ownership admin note-script root (`masm-rust-constant-parity`): binds
 /// transitively to the stock `ownable2step::accept_ownership`'s digest.
 pub const XRESERVE_ACCEPT_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x0000000000000000000000000000000000000000000000000000000000000000";
+    "0x0df50dc9f465a0bd22430afb8cafbd00636d8268004b0de11298784014e37da0";
 
 /// The nominated-owner-gated, PARAM-LESS stock `accept_ownership` admin note (F5, step 2 of the
 /// 2-step transfer).

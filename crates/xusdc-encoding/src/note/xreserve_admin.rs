@@ -444,7 +444,7 @@ static SET_MAX_SUPPLY_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED set_max_supply admin note-script root (`masm-rust-constant-parity`): binds transitively
 /// to the stock `fungible::set_max_supply`'s digest.
 pub const XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x0000000000000000000000000000000000000000000000000000000000000000";
+    "0xa8cc3d64cf29f2ab91f32acce730bd007586094f17579b016076f1f8106d3aac";
 
 /// The owner-gated stock `set_max_supply` admin note (F5). Storage layout: `[new_max_supply]`.
 pub struct XReserveSetMaxSupplyNote;

@@ -495,7 +495,7 @@ static REVOKE_ROLE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED revoke_role admin note-script root (`masm-rust-constant-parity`): binds transitively to
 /// the stock `rbac::revoke_role`'s digest.
 pub const XRESERVE_REVOKE_ROLE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x0000000000000000000000000000000000000000000000000000000000000000";
+    "0x760586945e215bc6c4ba58f5b613a7e62ab732fc20a3c7baab6e65c32323b538";
 
 /// The owner-or-role-admin-gated stock `revoke_role` admin note (F5). Storage layout:
 /// `[role_symbol, account_suffix, account_prefix]`.

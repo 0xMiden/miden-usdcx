@@ -285,3 +285,50 @@ impl XReserveSetMinBurnSizeNote {
         build_admin_note(sender, faucet_id, Self::script(), vec![new_min_felt], rng)
     }
 }
+
+// PAUSE (allowlist row 6)
+// ================================================================================================
+
+const PAUSE_NOTE_SCRIPT_SRC: &str =
+    include_str!("../../../../asm/standards/notes/xreserve_pause_note.masm");
+
+static PAUSE_NOTE_SCRIPT: LazyLock<NoteScript> =
+    LazyLock::new(|| compile_admin_note_script(PAUSE_NOTE_SCRIPT_SRC));
+
+/// The PINNED pause admin note-script root (`masm-rust-constant-parity`): binds transitively to
+/// `pause_admin::pause`'s digest.
+pub const XRESERVE_PAUSE_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+/// The DOM_PAUSER-gated, PARAM-LESS `pause` admin note (F5).
+pub struct XReservePauseNote;
+
+impl XReservePauseNote {
+    /// The compiled, fixed-root note script.
+    pub fn script() -> NoteScript {
+        PAUSE_NOTE_SCRIPT.clone()
+    }
+
+    /// The note-script root (allowlist row 6). Must equal the pinned constant (parity-tested).
+    pub fn script_root() -> NoteScriptRoot {
+        PAUSE_NOTE_SCRIPT.root()
+    }
+
+    /// The PINNED note-script root ([`XRESERVE_PAUSE_NOTE_SCRIPT_ROOT_HEX`]).
+    pub fn pinned_script_root() -> NoteScriptRoot {
+        NoteScriptRoot::from_raw(
+            Word::parse(XRESERVE_PAUSE_NOTE_SCRIPT_ROOT_HEX)
+                .expect("the pinned pause note-script root hex is a valid word"),
+        )
+    }
+
+    /// Builds a `pause` admin note (param-less): `sender` is the DOM_PAUSER holder (for success),
+    /// `faucet_id` the target faucet (PUBLIC). Carries no storage payload; the note ARGS are ignored.
+    pub fn create<R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        rng: &mut R,
+    ) -> Result<Note, NoteError> {
+        build_admin_note(sender, faucet_id, Self::script(), vec![], rng)
+    }
+}

@@ -11,13 +11,23 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::{AccountId, StorageMapKey, StorageSlotDelta, StorageSlotName};
+use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveDomainInitNote, XReserveSetAttesterNote, XReserveSetMinBurnSizeNote,
+    XReserveDomainInitNote, XReservePauseNote, XReserveSetAttesterNote, XReserveSetMinBurnSizeNote,
 };
+
+/// The exact stock role error the DOM_PAUSER gate traps (rbac.masm:50 ERR_SENDER_LACKS_ROLE).
+/// Defined per-file (as in pause_admin.rs / role_admin.rs); not exported from the shared harness.
+fn err_sender_lacks_role() -> MasmError {
+    MasmError::from_static_str("note sender does not hold the required role")
+}
+
+/// The standardized stock `is_paused` value slot label (FungibleFaucet-installed).
+const IS_PAUSED_LABEL: &str = "miden::standards::access::pausable::is_paused";
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -420,6 +430,105 @@ fn set_min_burn_size_note_script_root_is_pinned() {
         root,
         XReserveSetMinBurnSizeNote::pinned_script_root(),
         "masm-rust-constant-parity: set_min_burn_size note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
+    );
+}
+
+// PAUSE (allowlist row 6) — DOM_PAUSER-gated emergency halt (owner has NO pause path)
+// ================================================================================================
+
+/// DOM_PAUSER-sent pause PASSES auth (allowlisted) + the proc's DOM_PAUSER gate and sets is_paused=1.
+#[tokio::test]
+async fn pause_dom_pauser_sets_is_paused() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+
+    let note = XReservePauseNote::create(test_account_id(2), faucet_id, &mut note_rng(50))
+        .context("building the DOM_PAUSER pause note")?;
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("DOM_PAUSER pause tx context")?
+        .build()
+        .context("DOM_PAUSER pause tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("DOM_PAUSER pause must succeed under network auth: {e}"))?;
+    assert_eq!(
+        value_delta(&tx, IS_PAUSED_LABEL),
+        scalar_word(Felt::from(1u32)),
+        "DOM_PAUSER pause must set is_paused = 1",
+    );
+    Ok(())
+}
+
+/// A non-DOM_PAUSER pause note PASSES auth but TRAPS at the proc's role gate — including the OWNER
+/// (Circle model: the owner has NO pause path).
+async fn assert_pause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let note = XReservePauseNote::create(sender, faucet_id, &mut note_rng(seed))
+        .context("building the non-pauser pause note")?;
+    let result = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("non-pauser pause tx context")?
+        .build()
+        .context("non-pauser pause tx build")?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
+    Ok(())
+}
+
+#[tokio::test]
+async fn pause_owner_traps() -> Result<()> {
+    assert_pause_nonpauser_traps(test_account_id(1), 51).await
+}
+
+#[tokio::test]
+async fn pause_third_party_traps() -> Result<()> {
+    assert_pause_nonpauser_traps(test_account_id(99), 52).await
+}
+
+/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the pause effect.
+#[tokio::test]
+async fn pause_note_args_are_inert() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+
+    let note = XReservePauseNote::create(test_account_id(2), faucet_id, &mut note_rng(53))
+        .context("building the DOM_PAUSER pause note")?;
+    let bogus_args = Word::from([5u32, 5, 5, 5]);
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("pause note-args tx context")?
+        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
+        .build()
+        .context("pause note-args tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("pause with bogus NOTE_ARGS must still succeed: {e}"))?;
+    assert_eq!(
+        value_delta(&tx, IS_PAUSED_LABEL),
+        scalar_word(Felt::from(1u32)),
+        "pause must set is_paused=1 regardless of executor NOTE_ARGS",
+    );
+    Ok(())
+}
+
+/// masm-rust-constant-parity for the pause note (the failure prints the actual hex).
+#[test]
+fn pause_note_script_root_is_pinned() {
+    let root = XReservePauseNote::script_root();
+    assert_eq!(
+        root,
+        XReservePauseNote::pinned_script_root(),
+        "masm-rust-constant-parity: pause note-script root == the pinned constant (actual = {})",
         root.to_hex(),
     );
 }

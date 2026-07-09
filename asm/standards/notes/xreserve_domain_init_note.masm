@@ -1,0 +1,99 @@
+# xreserve_domain_init_note — the shipped, root-pinned domain_init admin note script (F5).
+#
+# The production admin surface for `domain_init` under the network account: a fixed-root note whose
+# parameters are CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the network executor
+# controls). It stages the note storage into memory, marshals the creator's params onto the stack in
+# the proc's Inputs order, and `call`s the OWNER-gated + init-once `domain_config::domain_init` (the
+# sender gate lives in the proc; the note sender is kernel-forced, so a non-owner creator traps
+# there). A scheme-2 NetworkAccountTarget routing attachment addresses the note at the faucet
+# (routing-only, added by the Rust factory).
+#
+# Note storage layout (14 felts): [IDENTIFIER(4), XRC_HI(4), XRC_LO(4), source_domain, domain] —
+# `identifier` is the pre-hashed bytes32_to_key Word (verbatim); `xreserve_contract` is the raw
+# bytes32 packed via the 04 codec into 8 u32-LE limbs (hi = felts[0..4], lo = felts[4..8]);
+# `source_domain`/`domain` are the u32 scalars (u32-guarded on-chain before any write).
+
+use miden::protocol::active_note
+use xreserve::domain_config
+
+# CONSTANTS
+# =================================================================================================
+
+# Absolute memory address where the creator-committed params are staged (word-aligned; the mint-note
+# INTENT_PTR convention, shared with the set_attester reference note).
+const PARAM_PTR = 1024
+
+# The exact note-storage item count for this admin op:
+# [IDENTIFIER(4), XRC_HI(4), XRC_LO(4), source_domain, domain] = 14 felts.
+const DOMAIN_INIT_NOTE_NUM_ITEMS = 14
+
+# ERRORS
+# =================================================================================================
+
+# The note must carry exactly the 14 param felts; a wrong count is a malformed admin note.
+const ERR_XRESERVE_DOMAIN_INIT_NOTE_STORAGE = "domain_init note storage item count is invalid"
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Consumes the `domain_init` admin note and drives the owner-gated, init-once domain-config write.
+#!
+#! Stages the creator-committed params (`[IDENTIFIER(4), XRC_HI(4), XRC_LO(4), source_domain, domain]`)
+#! into memory at PARAM_PTR, marshals them onto the stack as
+#! `[IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]`, and `call`s
+#! `domain_config::domain_init`. The note ARGS are unused (executor-controlled).
+#!
+#! Inputs:  [pad(16)]
+#! Outputs: [pad(16)]
+#!
+#! Panics if:
+#! - the note storage does not carry exactly 14 items.
+#! - the note sender is not the registered owner (domain_config::domain_init's owner gate).
+#! - the domain config was already initialized (domain_config::domain_init's init-once gate).
+#!
+#! Invocation: dyncall
+@note_script
+pub proc main
+    dropw
+    # => [pad(16)]
+
+    # stage the creator-committed params into memory; the executor-controlled note ARGS are ignored.
+    push.PARAM_PTR exec.active_note::get_storage
+    # => [num_items, pad(16)]
+
+    eq.DOMAIN_INIT_NOTE_NUM_ITEMS assert.err=ERR_XRESERVE_DOMAIN_INIT_NOTE_STORAGE
+    # => [pad(16)]
+
+    # marshal params deepest-first (offset 13 down to 0) so IDENTIFIER element 0 lands on top,
+    # matching the proc's Inputs [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]. Felt-by-
+    # felt mem_load (the set_attester convention) avoids any word-load element-order ambiguity.
+    push.PARAM_PTR add.13 mem_load
+    # => [domain, pad(16)]
+
+    push.PARAM_PTR add.12 mem_load
+    # => [source_domain, domain, pad(16)]
+
+    push.PARAM_PTR add.11 mem_load
+    push.PARAM_PTR add.10 mem_load
+    push.PARAM_PTR add.9 mem_load
+    push.PARAM_PTR add.8 mem_load
+    # => [XRC_LO, source_domain, domain, pad(16)]
+
+    push.PARAM_PTR add.7 mem_load
+    push.PARAM_PTR add.6 mem_load
+    push.PARAM_PTR add.5 mem_load
+    push.PARAM_PTR add.4 mem_load
+    # => [XRC_HI, XRC_LO, source_domain, domain, pad(16)]
+
+    push.PARAM_PTR add.3 mem_load
+    push.PARAM_PTR add.2 mem_load
+    push.PARAM_PTR add.1 mem_load
+    push.PARAM_PTR mem_load
+    # => [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(16)]
+    # (the call consumes the top 16: [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)])
+
+    call.domain_config::domain_init
+    # => [pad(16)]
+
+    exec.::miden::core::sys::truncate_stack
+end

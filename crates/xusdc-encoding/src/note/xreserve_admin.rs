@@ -345,7 +345,7 @@ static UNPAUSE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED unpause admin note-script root (`masm-rust-constant-parity`): binds transitively to
 /// `pause_admin::unpause`'s digest.
 pub const XRESERVE_UNPAUSE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x0000000000000000000000000000000000000000000000000000000000000000";
+    "0x4c38df2fe68ed8779b70d9828568eab14177a825077e1752587a761f8c4f5c11";
 
 /// The DOM_PAUSER-gated, PARAM-LESS `unpause` admin note (F5).
 pub struct XReserveUnpauseNote;

@@ -22,15 +22,29 @@
 
 mod support;
 
+use core::slice;
+
 use anyhow::Result;
+use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::{Account, AccountId, StorageSlotDelta, StorageSlotName};
 use miden_protocol::errors::MasmError;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::*;
+use xusdc_encoding::note::xreserve_admin::XReservePauseNote;
 use xusdc_encoding::vectors::{DiFields, DiVector, load, parse_hex32};
 use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
+
+/// Deterministic note rng for the production admin notes (serial only; never affects the gate).
+fn prod_note_rng(seed: u64) -> RandomCoin {
+    RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(3u32),
+        Felt::from(4u32),
+    ]))
+}
 
 // The production builder seeds owner = id(1) (Ownable2Step), DOM_PAUSER = id(2), DOM_MANAGER = id(3).
 fn owner() -> AccountId {
@@ -235,6 +249,79 @@ async fn dom_pauser_pause_halts_mint() -> Result<()> {
     evolved.apply_delta(paused.account_delta())?;
 
     let result = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
+    assert_transaction_executor_error!(result, err_paused());
+    Ok(())
+}
+
+/// F5 — the ALLOWLISTED PRODUCTION `XReservePauseNote` (DOM_PAUSER-sent) HALTS the real attested
+/// mint: the note-driven twin of `dom_pauser_pause_halts_mint`, proving the shipped production note
+/// (not just an inline probe) drives the emergency stop. Routing target is a placeholder PUBLIC id
+/// (routing-only); this guarded harness is not network-auth, so the note executes directly and its
+/// `is_paused=1` delta is applied to the evolved faucet the mint runs against.
+#[tokio::test]
+async fn dom_pauser_production_pause_note_halts_mint() -> Result<()> {
+    let (gm, attester) = guarded_mint_ready()?;
+    let account = faucet_account(&gm.harness);
+
+    let note = XReservePauseNote::create(dom_pauser(), test_faucet_id(1), &mut prod_note_rng(7))?;
+    let paused = gm
+        .harness
+        .mock_chain
+        .build_tx_context(account.clone(), &[], slice::from_ref(&note))
+        .expect("production pause tx context")
+        .build()
+        .expect("production pause tx build")
+        .execute()
+        .await
+        .expect("the DOM_PAUSER production pause note pauses the mint faucet");
+    let mut evolved = account.clone();
+    evolved.apply_delta(paused.account_delta())?;
+
+    let result = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
+    assert_transaction_executor_error!(result, err_paused());
+    Ok(())
+}
+
+/// F5 — the ALLOWLISTED PRODUCTION `XReservePauseNote` HALTS the real burn: the note-driven twin of
+/// `dom_pauser_pause_halts_burn`.
+#[tokio::test]
+async fn dom_pauser_production_pause_note_halts_burn() -> Result<()> {
+    let bh = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        VALID_BURN,
+    )?;
+    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = bh;
+
+    // Block N: the user emits + commits the (valid-amount) burn note (faucet not yet paused).
+    let tx0 = try_emit_burn_note(&chain, &burn_note, &asset, faucet_id, user_id)
+        .await
+        .expect("the user emits the burn note (test-setup invariant)");
+    chain.add_pending_executed_transaction(&tx0)?;
+    chain.prove_next_block()?;
+
+    // The DOM_PAUSER production pause note pauses the faucet; apply its delta to the evolved account.
+    let account = chain.committed_account(faucet_id)?.clone();
+    let note = XReservePauseNote::create(dom_pauser(), test_faucet_id(1), &mut prod_note_rng(8))?;
+    let paused = chain
+        .build_tx_context(account.clone(), &[], slice::from_ref(&note))
+        .expect("production pause tx context")
+        .build()
+        .expect("production pause tx build")
+        .execute()
+        .await
+        .expect("the DOM_PAUSER production pause note pauses the burn faucet");
+    let mut evolved = account.clone();
+    evolved.apply_delta(paused.account_delta())?;
+
+    // The faucet consumes the committed burn note against the paused account → assert_not_paused traps.
+    let result = chain
+        .build_tx_context(evolved, &[burn_note.id()], &[])?
+        .build()?
+        .execute()
+        .await;
     assert_transaction_executor_error!(result, err_paused());
     Ok(())
 }

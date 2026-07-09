@@ -1,4 +1,4 @@
-//! F5 — production transaction auth: the faucet is a Miden NETWORK ACCOUNT (executing-red suite).
+//! F5 — production transaction auth: the faucet is a Miden NETWORK ACCOUNT.
 //!
 //! Human decision (2026-07-08, RATIFIED): the xUSDC/xReserve faucet ships composing the stock
 //! `AuthNetworkAccount` as its ONE production auth component — keyless, a frozen note-script
@@ -6,32 +6,24 @@
 //! `circle-integration/07-implementation-readiness/F5-PRODUCTION-AUTH-RESEARCH-AND-RECOMMENDATION.md`;
 //! plan: `~/.claude/plans/model-soft-crescent.md` (Round-P PASS + §4 allowlist ratified).
 //!
-//! RED-FOR-THE-RIGHT-REASON. Every test below references only APIs that already exist and asserts
-//! the F5 END STATE. At this commit the production faucet is still finalized under the permissive
-//! `Auth::IncrNonce` (`support::setup_production_faucet`) and the notes still carry their pre-F5
-//! attachment sets, so each test RUNS and fails BEHAVIOURALLY — nothing here is a compile error and
-//! no production code is touched. The green loop makes them pass by composing `AuthNetworkAccount`
-//! (re-basing `setup_production_faucet` onto `Auth::NetworkAccount` fed `builder.allowed_note_scripts()`)
-//! and adding the scheme-2 `NetworkAccountTarget` routing attachment to the mint + burn notes.
+//! The production faucet (`support::setup_production_faucet`) is finalized under
+//! `Auth::NetworkAccount` fed `builder.allowed_note_scripts()`, and the mint + burn notes carry the
+//! scheme-2 `NetworkAccountTarget` routing attachment.
 //!
-//! COVERAGE (this file) — the MockChain-provable core that needs NO not-yet-shipped production code:
+//! COVERAGE (this file):
 //! - proof #6: the production faucet IS a network account AND its auth component is the stock
 //!   `AuthNetworkAccount` (its auth procedure root is present in the account code).
-//! - proof #5: the note-script allowlist carries the mint + stock-burn roots; the tx-script
-//!   allowlist is present AND EXACTLY empty (0 roots).
+//! - proof #5: the note-script allowlist equals EXACTLY the 13 ratified roots (2 supply + 11 admin);
+//!   the tx-script allowlist is present AND EXACTLY empty (0 roots).
 //! - proof #1: a non-allowlisted note is rejected by auth; any tx script is rejected.
 //! - proof #2/#3: exact routing-attachment wire form + semantics — the mint carries the scheme-1
 //!   attestation AND a scheme-2 `NetworkAccountTarget` to the faucet with `NoteExecutionHint::Always`;
 //!   the burn carries the scheme-2 target to the faucet with `Always`.
 //!
-//! NOT YET WRITTEN — ESCALATED, requires not-yet-existing production admin scripts / constants (see
-//! the follow-up report; do NOT read this as "Phase 3 red is done"):
-//! - exact 13-root note-allowlist equality (needs the 11 admin note-script roots).
-//! - admin layered-auth E2E per op: owner-sent succeeds + writes state; wrong-sender passes auth but
-//!   traps at the proc sender gate; the NOTE_ARGS-inert test (needs the shipped storage-param admin
-//!   note scripts + the production allowlist that carries them).
-//! - scheme-aware mint negatives: missing scheme-1 / missing scheme-2 / wrong count / tampered
-//!   attestation (needs the reconciled `eq.2` shim and its new error constants).
+//! Related coverage lives in sibling suites: the admin layered-auth E2E per op (owner/role-gated
+//! writes + wrong-sender traps + NOTE_ARGS-inert) in `f5_admin_notes.rs`, and the scheme-aware mint
+//! negatives (missing scheme-1 / missing scheme-2 / wrong count / tampered attestation, under the
+//! reconciled `eq.2` shim) in `f5_mint_shim_negatives.rs`.
 
 mod support;
 
@@ -139,7 +131,7 @@ fn stock_network_auth_proc_root() -> Word {
 // ================================================================================================
 
 /// The production faucet must be a network account (public + the standardized note-script allowlist
-/// slot). RED now: finalized under `Auth::IncrNonce`, which installs no allowlist slot.
+/// slot).
 #[test]
 fn production_faucet_is_a_network_account() -> Result<()> {
     let (_chain, account) = production_faucet()?;
@@ -155,7 +147,7 @@ fn production_faucet_is_a_network_account() -> Result<()> {
 
 /// The production faucet's dedicated auth component must be the STOCK `AuthNetworkAccount` (not a
 /// custom / mutable-allowlist component): its auth-procedure MAST root must appear in the account
-/// code. RED now: under `Auth::IncrNonce` the account carries the IncrNonce auth procedure instead.
+/// code.
 #[test]
 fn production_faucet_auth_component_is_stock_network_account() -> Result<()> {
     let (_chain, account) = production_faucet()?;
@@ -218,7 +210,7 @@ fn production_faucet_note_allowlist_is_exactly_the_13_ratified_roots() -> Result
 }
 
 /// The tx-script allowlist must exist and be EXACTLY empty (0 roots) — the sole-mint-surface
-/// invariant (reinforces F1). RED now: no tx-script allowlist slot under `Auth::IncrNonce`.
+/// invariant (reinforces F1).
 #[test]
 fn production_faucet_tx_script_allowlist_is_exactly_empty() -> Result<()> {
     let (_chain, account) = production_faucet()?;
@@ -236,8 +228,7 @@ fn production_faucet_tx_script_allowlist_is_exactly_empty() -> Result<()> {
 // ================================================================================================
 
 /// Consuming a note whose script root is NOT in the allowlist must be rejected by the network-auth
-/// component with the exact allowlist error. RED now: under `Auth::IncrNonce` the no-op note is
-/// consumed (or fails for an unrelated reason), never the allowlist error.
+/// component with the exact allowlist error.
 #[tokio::test]
 async fn non_allowlisted_note_is_rejected_by_auth() -> Result<()> {
     let (chain, account) = production_faucet()?;
@@ -262,9 +253,7 @@ async fn non_allowlisted_note_is_rejected_by_auth() -> Result<()> {
     Ok(())
 }
 
-/// Any transaction script must be rejected by the EMPTY tx-script allowlist. RED now: under
-/// `Auth::IncrNonce` there is no tx-script allowlist, so a trivial tx script is not rejected with
-/// the allowlist error.
+/// Any transaction script must be rejected by the EMPTY tx-script allowlist.
 #[tokio::test]
 async fn any_tx_script_is_rejected_by_empty_tx_allowlist() -> Result<()> {
     let (chain, account) = production_faucet()?;
@@ -290,7 +279,6 @@ async fn any_tx_script_is_rejected_by_empty_tx_allowlist() -> Result<()> {
 
 /// The mint note must carry EXACTLY the scheme-1 attestation attachment AND a scheme-2
 /// `NetworkAccountTarget` routing attachment addressed to the faucet with `NoteExecutionHint::Always`.
-/// RED now: the constructor builds only the scheme-1 attestation (no scheme-2 target).
 #[test]
 fn mint_note_carries_scheme1_attestation_and_scheme2_target_to_faucet() -> Result<()> {
     let (_chain, faucet) = production_faucet()?;
@@ -332,8 +320,7 @@ fn mint_note_carries_scheme1_attestation_and_scheme2_target_to_faucet() -> Resul
 }
 
 /// The burn note must carry the scheme-2 `NetworkAccountTarget` routing attachment addressed to the
-/// faucet with `NoteExecutionHint::Always` (and nothing else). RED now: the burn note carries zero
-/// attachments — this also changes the shared burn-note wire form `[] -> [2]`.
+/// faucet with `NoteExecutionHint::Always` (and nothing else).
 #[test]
 fn burn_note_carries_scheme2_target_to_faucet() -> Result<()> {
     let (_chain, faucet) = production_faucet()?;

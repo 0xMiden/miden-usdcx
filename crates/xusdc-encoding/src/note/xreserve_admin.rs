@@ -8,8 +8,9 @@
 //! params onto the stack and `call`s the unchanged sender-gated admin proc — the note sender is
 //! kernel-forced, so the proc's owner/role gate is sound under permissionless network execution.
 //!
-//! This module ships allowlist row 3 (`set_attester`) as the reference op; rows 4-13 (the remaining
-//! ratified admin note scripts) are pending.
+//! This module ships allowlist rows 3-13: the `set_attester` reference op and the remaining ratified
+//! admin note scripts (`set_min_burn_size`, `set_max_supply`, `pause`, `unpause`, `grant_role`,
+//! `revoke_role`, `set_role_admin`, `transfer_ownership`, `accept_ownership`, `domain_init`).
 
 use std::sync::{Arc, LazyLock};
 

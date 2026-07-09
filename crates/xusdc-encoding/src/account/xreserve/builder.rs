@@ -368,12 +368,12 @@ impl XReserveStablecoinBuilder {
     /// asserts the built account's allowlist equals it exactly. The scheme-2 `NetworkAccountTarget`
     /// bind on the notes is routing-only, not a consume gate.
     ///
-    /// INCOMPLETE (WIP): rows 1-3 are returned today — rows 1-2 (the supply-side mint + burn notes)
-    /// and row 3 (the `set_attester` admin note, the reference op). The human-ratified frozen set is
-    /// rows 1-13 (`renounce_role` OMITTED), and since the allowlist is IMMUTABLE post-deploy
-    /// (`AuthNetworkAccount` exports no mutator), rows 4-13 (the remaining admin note scripts) MUST be
-    /// added here — by the admin-note-scripts unit — before this faucet can be deployed. The rows-1-13
-    /// set still requires explicit HUMAN ratification once all the admin roots are wired in.
+    /// COMPLETE — the frozen 13-root set: rows 1-2 (the supply-side mint + burn notes), row 3
+    /// (`set_attester`, the reference op), and rows 4-13 (the remaining admin note scripts). The set
+    /// is IMMUTABLE post-deploy (`AuthNetworkAccount` exports no mutator); `renounce_role` is
+    /// deliberately OMITTED (human-ratified, grounded in Circle's xReserve EVM admin model, which has
+    /// no role self-renounce). The materialized 13 pinned roots still require explicit HUMAN
+    /// ratification before deploy.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
         BTreeSet::from([
             // rows 1-2: the supply-side notes. The mint-note shim asserts exactly one scheme-1

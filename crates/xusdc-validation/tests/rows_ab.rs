@@ -6,10 +6,16 @@
 //!    v0.15.1 stack, deploys the production faucet via path C, drives `domain_init` #1/#2, and
 //!    judges the observations with the row-A/B assertion suite. This is the gate run for this
 //!    slice; it needs the pinned node binaries installed (`miden-node`/`miden-validator`/
-//!    `miden-ntx-builder`/`miden-remote-prover`) and free loopback ports 57291–57294.
-//! 2. **Assertion negatives** (no node): synthetic observations built from REAL
-//!    production-composition accounts, each proving one row-check actually rejects the state it
-//!    exists to reject — a silently-weakened assertion suite fails these.
+//!    `miden-ntx-builder`/`miden-remote-prover`) and free loopback ports 57291–57294. It is
+//!    `#[ignore]`d in the DEFAULT suite because it requires loopback LISTENER binds, which
+//!    hermetic audit sandboxes deny (`Operation not permitted` on bind) — run it explicitly:
+//!    `cargo test -p xusdc-validation --locked -- --include-ignored` (or the `lnv1_rows_ab`
+//!    binary). The §11.2 gate claim ("rows A/B pass on a REAL node") rides ONLY on such real
+//!    runs plus the LNV-1 human supervision gate — a green DEFAULT suite is NEVER the gate.
+//! 2. **Assertion negatives** (no node, sandbox-safe — the default suite): synthetic
+//!    observations built from REAL production-composition accounts, each proving one row-check
+//!    actually rejects the state it exists to reject — a silently-weakened assertion suite
+//!    fails these.
 
 use anyhow::Result;
 use miden_protocol::account::{Account, AccountBuilder, AccountId, AccountIdVersion, AccountType};
@@ -221,7 +227,16 @@ fn row_b_accepts_the_initialized_shape() -> Result<()> {
 /// validator/ntx-builder/sequencer/prover, deploy the production faucet (its first transaction
 /// consumes the owner's `domain_init` — the first admin note), verify recognition + read-backs,
 /// prove init-once, tear down. Writes `evidence.json` under the gitignored run root either way.
+///
+/// Ignored by default (NOT optional for the gate): it must bind loopback listener sockets for
+/// the four node services, which hermetic audit sandboxes forbid. The gate record requires this
+/// test green via `-- --include-ignored` on a network-enabled box; the default suite's green
+/// carries no real-node claim.
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "real-node E2E: needs the v0.15.1 node binaries + loopback listener binds (denied in \
+            sandboxed audit environments); run with `-- --include-ignored` or the lnv1_rows_ab \
+            binary — the §11.2 gate claim rides on real runs + the human gate, never on the \
+            default suite"]
 async fn lnv1_rows_ab_against_real_local_node() -> Result<()> {
     let label = format!(
         "test-{}-{}",

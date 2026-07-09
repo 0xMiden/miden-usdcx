@@ -185,12 +185,23 @@ archived in that gitignored run root; `evidence.json` alongside).
 ```
 # full row-A/B gate run (fresh stack, ~6 min: three Falcon proofs client-side + block waits)
 cargo run -p xusdc-validation --bin lnv1_rows_ab
-# or via the test suite (the E2E + the 9 assertion negatives)
+# or via the test suite (the real-node E2E + the 9 assertion negatives)
+cargo test -p xusdc-validation --locked -- --include-ignored
+# the DEFAULT suite (sandbox-safe, synthetic negatives only — NO real-node claim)
 cargo test -p xusdc-validation --locked
 # supervised manual stack
 cargo run -p xusdc-validation --bin lnv_stack -- up   [label]
 cargo run -p xusdc-validation --bin lnv_stack -- down <run-root>
 ```
+
+**Audit-sandbox partition (2026-07-09, round 3).** The real-node E2E requires loopback LISTENER
+binds for the four node services; the hermetic audit sandbox denies them (`bind: Operation not
+permitted`, reproduced there with `nc -l 127.0.0.1 57294`). The E2E is therefore `#[ignore]`d in
+the default suite and run explicitly via `-- --include-ignored` (or `lnv1_rows_ab`) on
+network-enabled boxes. The partition is VISIBLE (the default run prints `1 ignored`), and the
+gate claim is carried exclusively by real runs + the human gate — a green default suite proves
+the assertion layer only. If the audit environment later permits loopback binds, reverting is
+one attribute (`#[ignore]` on `lnv1_rows_ab_against_real_local_node`).
 
 ## 7. Open items carried forward (NOT resolved here)
 

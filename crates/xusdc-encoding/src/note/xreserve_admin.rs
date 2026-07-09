@@ -482,3 +482,55 @@ impl XReserveSetMaxSupplyNote {
         build_admin_note(sender, faucet_id, Self::script(), vec![cap_felt], rng)
     }
 }
+
+// REVOKE_ROLE (allowlist row 9)
+// ================================================================================================
+
+const REVOKE_ROLE_NOTE_SCRIPT_SRC: &str =
+    include_str!("../../../../asm/standards/notes/xreserve_revoke_role_note.masm");
+
+static REVOKE_ROLE_NOTE_SCRIPT: LazyLock<NoteScript> =
+    LazyLock::new(|| compile_admin_note_script(REVOKE_ROLE_NOTE_SCRIPT_SRC));
+
+/// The PINNED revoke_role admin note-script root (`masm-rust-constant-parity`): binds transitively to
+/// the stock `rbac::revoke_role`'s digest.
+pub const XRESERVE_REVOKE_ROLE_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+/// The owner-or-role-admin-gated stock `revoke_role` admin note (F5). Storage layout:
+/// `[role_symbol, account_suffix, account_prefix]`.
+pub struct XReserveRevokeRoleNote;
+
+impl XReserveRevokeRoleNote {
+    /// The compiled, fixed-root note script.
+    pub fn script() -> NoteScript {
+        REVOKE_ROLE_NOTE_SCRIPT.clone()
+    }
+
+    /// The note-script root (allowlist row 9). Must equal the pinned constant (parity-tested).
+    pub fn script_root() -> NoteScriptRoot {
+        REVOKE_ROLE_NOTE_SCRIPT.root()
+    }
+
+    /// The PINNED note-script root ([`XRESERVE_REVOKE_ROLE_NOTE_SCRIPT_ROOT_HEX`]).
+    pub fn pinned_script_root() -> NoteScriptRoot {
+        NoteScriptRoot::from_raw(
+            Word::parse(XRESERVE_REVOKE_ROLE_NOTE_SCRIPT_ROOT_HEX)
+                .expect("the pinned revoke_role note-script root hex is a valid word"),
+        )
+    }
+
+    /// Builds a `revoke_role` admin note: `sender` is the admin party (owner or a role admin, for
+    /// success), `faucet_id` the target faucet (PUBLIC), `role_symbol` the RBAC role element, `member`
+    /// the account to revoke it from. The params live in note storage; NOTE_ARGS are ignored.
+    pub fn create<R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        role_symbol: Felt,
+        member: AccountId,
+        rng: &mut R,
+    ) -> Result<Note, NoteError> {
+        let items = vec![role_symbol, member.suffix(), member.prefix().as_felt()];
+        build_admin_note(sender, faucet_id, Self::script(), items, rng)
+    }
+}

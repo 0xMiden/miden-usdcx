@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::{
-    AccountId, RoleSymbol, StorageMapKey, StorageSlotDelta, StorageSlotName,
+    Account, AccountId, RoleSymbol, StorageMapKey, StorageSlotDelta, StorageSlotName,
 };
 use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::ExecutedTransaction;
@@ -20,8 +20,9 @@ use miden_testing::{MockChain, assert_transaction_executor_error};
 use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveDomainInitNote, XReserveGrantRoleNote, XReservePauseNote, XReserveSetAttesterNote,
-    XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote, XReserveUnpauseNote,
+    XReserveDomainInitNote, XReserveGrantRoleNote, XReservePauseNote, XReserveRevokeRoleNote,
+    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
+    XReserveUnpauseNote,
 };
 
 /// The exact stock role error the DOM_PAUSER gate traps (rbac.masm:50 ERR_SENDER_LACKS_ROLE).
@@ -883,6 +884,128 @@ fn set_max_supply_note_script_root_is_pinned() {
         root,
         XReserveSetMaxSupplyNote::pinned_script_root(),
         "masm-rust-constant-parity: set_max_supply note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
+    );
+}
+
+// REVOKE_ROLE (allowlist row 9) — STOCK RBAC revoke (needs a prior grant)
+// ================================================================================================
+
+/// A production faucet where id(4) has been granted DOM_PAUSER by the owner, applied as a delta to an
+/// evolved (not-committed) account. Returns (chain, faucet_id, evolved account, grantee).
+async fn faucet_with_granted_pauser(grant_seed: u64) -> Result<(MockChain, AccountId, Account, AccountId)> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let grantee = test_account_id(4);
+    let grant = XReserveGrantRoleNote::create(
+        test_account_id(1), faucet_id, Felt::from(&pauser_sym()), grantee, &mut note_rng(grant_seed),
+    )
+    .context("building the owner grant note")?;
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&grant))
+        .context("grant seed tx context")?
+        .build()
+        .context("grant seed tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("seeding the owner grant must succeed: {e}"))?;
+    let mut evolved = chain.committed_account(faucet_id).context("committed faucet")?.clone();
+    evolved.apply_delta(tx.account_delta())?;
+    Ok((chain, faucet_id, evolved, grantee))
+}
+
+/// Authorized revoke: `sender` (owner or DOM_MANAGER) revokes id(4)'s DOM_PAUSER; membership cleared.
+async fn assert_revoke_authorized(sender: AccountId, grant_seed: u64, revoke_seed: u64) -> Result<()> {
+    let (chain, faucet_id, evolved, grantee) = faucet_with_granted_pauser(grant_seed).await?;
+    let note = XReserveRevokeRoleNote::create(
+        sender, faucet_id, Felt::from(&pauser_sym()), grantee, &mut note_rng(revoke_seed),
+    )
+    .context("building the revoke note")?;
+    let tx = chain
+        .build_tx_context(evolved.clone(), &[], slice::from_ref(&note))
+        .context("authorized revoke tx context")?
+        .build()
+        .context("authorized revoke tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("authorized revoke must succeed under network auth: {e}"))?;
+    let mut evolved2 = evolved.clone();
+    evolved2.apply_delta(tx.account_delta())?;
+    assert_eq!(
+        read_role_membership(&evolved2, &pauser_sym(), grantee)?,
+        Word::from([0u32, 0, 0, 0]),
+        "authorized revoke must clear id(4)'s DOM_PAUSER membership",
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn revoke_role_owner_authorized() -> Result<()> {
+    assert_revoke_authorized(test_account_id(1), 110, 100).await
+}
+
+#[tokio::test]
+async fn revoke_role_dom_manager_authorized() -> Result<()> {
+    assert_revoke_authorized(test_account_id(3), 111, 101).await
+}
+
+/// A third party (neither owner nor DOM_MANAGER) PASSES auth but TRAPS at the delegation gate.
+#[tokio::test]
+async fn revoke_role_third_party_traps() -> Result<()> {
+    let (chain, faucet_id, evolved, grantee) = faucet_with_granted_pauser(112).await?;
+    let note = XReserveRevokeRoleNote::create(
+        test_account_id(99), faucet_id, Felt::from(&pauser_sym()), grantee, &mut note_rng(102),
+    )
+    .context("building the third-party revoke note")?;
+    let result = chain
+        .build_tx_context(evolved, &[], slice::from_ref(&note))
+        .context("third-party revoke tx context")?
+        .build()
+        .context("third-party revoke tx build")?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, err_not_owner_or_role_admin());
+    Ok(())
+}
+
+/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the revocation.
+#[tokio::test]
+async fn revoke_role_note_args_are_inert() -> Result<()> {
+    let (chain, faucet_id, evolved, grantee) = faucet_with_granted_pauser(113).await?;
+    let note = XReserveRevokeRoleNote::create(
+        test_account_id(1), faucet_id, Felt::from(&pauser_sym()), grantee, &mut note_rng(103),
+    )
+    .context("building the owner revoke note")?;
+    let bogus_args = Word::from([6u32, 6, 6, 6]);
+    let tx = chain
+        .build_tx_context(evolved.clone(), &[], slice::from_ref(&note))
+        .context("revoke note-args tx context")?
+        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
+        .build()
+        .context("revoke note-args tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("revoke with bogus NOTE_ARGS must still succeed: {e}"))?;
+    let mut evolved2 = evolved.clone();
+    evolved2.apply_delta(tx.account_delta())?;
+    assert_eq!(
+        read_role_membership(&evolved2, &pauser_sym(), grantee)?,
+        Word::from([0u32, 0, 0, 0]),
+        "revoke must clear membership regardless of executor NOTE_ARGS",
+    );
+    Ok(())
+}
+
+/// masm-rust-constant-parity for the revoke_role note (the failure prints the actual hex).
+#[test]
+fn revoke_role_note_script_root_is_pinned() {
+    let root = XReserveRevokeRoleNote::script_root();
+    assert_eq!(
+        root,
+        XReserveRevokeRoleNote::pinned_script_root(),
+        "masm-rust-constant-parity: revoke_role note-script root == the pinned constant (actual = {})",
         root.to_hex(),
     );
 }

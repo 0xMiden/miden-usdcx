@@ -382,7 +382,9 @@ impl XReserveStablecoinBuilder {
             BurnNote::script_root(),
             // row 3: set_attester admin note (reference op).
             crate::note::xreserve_admin::XReserveSetAttesterNote::script_root(),
-            // rows 4-13: the remaining admin note scripts — NOT YET ADDED (admin-note-scripts unit).
+            // row 13: domain_init admin note (owner-gated, init-once).
+            crate::note::xreserve_admin::XReserveDomainInitNote::script_root(),
+            // rows 4-12: the remaining admin note scripts — NOT YET ADDED (admin-note-scripts unit).
         ])
     }
 

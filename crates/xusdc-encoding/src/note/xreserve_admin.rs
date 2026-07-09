@@ -140,7 +140,7 @@ static DOMAIN_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// to `domain_config::domain_init`'s digest, so ANY edit of the note script or the proc it calls trips
 /// the parity assertion (`script_root() == pinned_script_root()`) and forces a conscious re-pin.
 pub const XRESERVE_DOMAIN_INIT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x0000000000000000000000000000000000000000000000000000000000000000";
+    "0xa0438e24f8af12db390d0fceb25d5f4a6a63b112f9c95a6efd3ad0aef85004fc";
 
 /// The owner-gated, init-once `domain_init` admin note (F5). Storage layout:
 /// `[IDENTIFIER(4), XRC_HI(4), XRC_LO(4), source_domain, domain]`. Consumed against the faucet

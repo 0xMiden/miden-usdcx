@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::{AccountId, StorageMapKey, StorageSlotDelta, StorageSlotName};
+use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use support::*;
@@ -130,14 +131,33 @@ fn expected_domain_config() -> [Word; 5] {
     ]
 }
 
+/// Reads the FIVE §5.9 config words from a tx's account delta, in the order
+/// `[domain, source_domain, xrc_hi, xrc_lo, identifier]` (each is a value-slot write empty -> value).
+fn domain_config_delta(tx: &ExecutedTransaction) -> [Word; 5] {
+    let read = |label: &str| -> Word {
+        let slot = StorageSlotName::new(label).expect("valid config slot label");
+        match tx.account_delta().storage().get(&slot) {
+            Some(StorageSlotDelta::Value(w)) => *w,
+            other => panic!("config slot {label} expected a value delta, got {other:?}"),
+        }
+    };
+    [
+        read(DOMAIN_CONFIG_SLOT_LABEL),
+        read(SOURCE_DOMAIN_CONFIG_SLOT_LABEL),
+        read(XRESERVE_CONTRACT_HI_SLOT_LABEL),
+        read(XRESERVE_CONTRACT_LO_SLOT_LABEL),
+        read(IDENTIFIER_CONFIG_SLOT_LABEL),
+    ]
+}
+
 /// Consumes `owner`'s domain_init note against a fresh production faucet, PASSING network auth
 /// (allowlisted) AND the proc's owner gate, and writes all five §5.9 config slots at the creator-
-/// committed params (read back from the evolved account — the storage-param marshaling is correct).
+/// committed params (read back from the account delta — the storage-param marshaling is correct).
 #[tokio::test]
 async fn domain_init_owner_writes_all_five_config_slots() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
         .context("building the production network-auth faucet")?;
-    let mut chain = pf.mock_chain;
+    let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let owner = test_account_id(1);
 
@@ -153,12 +173,8 @@ async fn domain_init_owner_writes_all_five_config_slots() -> Result<()> {
         .execute()
         .await
         .map_err(|e| anyhow::anyhow!("owner-sent domain_init must succeed under network auth: {e}"))?;
-    chain.add_pending_executed_transaction(&tx)?;
-    chain.prove_next_block()?;
-
-    let account = chain.committed_account(faucet_id).context("evolved faucet account")?;
     assert_eq!(
-        read_domain_config_words(&account)?,
+        domain_config_delta(&tx),
         expected_domain_config(),
         "owner domain_init must write all five §5.9 config slots at the creator-committed params",
     );
@@ -196,32 +212,42 @@ async fn domain_init_third_party_traps() -> Result<()> {
     assert_domain_init_nonowner_traps(test_account_id(99), 15).await
 }
 
-/// init-once: a SECOND domain_init — even from the owner — traps `ERR_XRESERVE_DOMAIN_REINIT`.
+/// init-once: a SECOND domain_init — even from the owner — traps `ERR_XRESERVE_DOMAIN_REINIT`. The
+/// first init is SEEDED on-chain (block-provable) so the second sees initialized state. The seeded
+/// note's routing target is a placeholder PUBLIC id (routing-only, not consume-gated; the script
+/// root — hence the allowlist entry — is attachment-independent, so it still passes auth).
 #[tokio::test]
 async fn domain_init_reinit_traps_even_from_owner() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
-        .context("building the production network-auth faucet")?;
+    let route = test_faucet_id(1);
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| {
+        vec![
+            XReserveDomainInitNote::create(
+                test_account_id(1), route, DOMAIN, SOURCE_DOMAIN, &xrc_bytes(), identifier(),
+                &mut note_rng(16),
+            )
+            .expect("building the seeded first domain_init note"),
+        ]
+    })
+    .context("building the production faucet with a seeded first domain_init")?;
     let mut chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let owner = test_account_id(1);
 
-    let note1 = XReserveDomainInitNote::create(
-        owner, faucet_id, DOMAIN, SOURCE_DOMAIN, &xrc_bytes(), identifier(), &mut note_rng(16),
-    )
-    .context("building the first domain_init note")?;
-    let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note1))
-        .context("first domain_init tx context")?
-        .build()
-        .context("first domain_init tx build")?
-        .execute()
-        .await
-        .map_err(|e| anyhow::anyhow!("first domain_init must succeed: {e}"))?;
-    chain.add_pending_executed_transaction(&tx)?;
-    chain.prove_next_block()?;
+    for note in pf.seeded_notes.clone() {
+        let tx = chain
+            .build_tx_context(faucet_id, &[note.id()], &[])
+            .context("first domain_init bring-up tx context")?
+            .build()
+            .context("first domain_init bring-up tx build")?
+            .execute()
+            .await
+            .map_err(|e| anyhow::anyhow!("first domain_init bring-up must succeed: {e}"))?;
+        chain.add_pending_executed_transaction(&tx)?;
+        chain.prove_next_block()?;
+    }
 
     let note2 = XReserveDomainInitNote::create(
-        owner, faucet_id, DOMAIN, SOURCE_DOMAIN, &xrc_bytes(), identifier(), &mut note_rng(17),
+        test_account_id(1), faucet_id, DOMAIN, SOURCE_DOMAIN, &xrc_bytes(), identifier(),
+        &mut note_rng(17),
     )
     .context("building the second domain_init note")?;
     let result = chain
@@ -241,7 +267,7 @@ async fn domain_init_reinit_traps_even_from_owner() -> Result<()> {
 async fn domain_init_note_args_are_inert() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
         .context("building the production network-auth faucet")?;
-    let mut chain = pf.mock_chain;
+    let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let owner = test_account_id(1);
 
@@ -259,12 +285,8 @@ async fn domain_init_note_args_are_inert() -> Result<()> {
         .execute()
         .await
         .map_err(|e| anyhow::anyhow!("owner domain_init with bogus NOTE_ARGS must still succeed: {e}"))?;
-    chain.add_pending_executed_transaction(&tx)?;
-    chain.prove_next_block()?;
-
-    let account = chain.committed_account(faucet_id).context("evolved faucet account")?;
     assert_eq!(
-        read_domain_config_words(&account)?,
+        domain_config_delta(&tx),
         expected_domain_config(),
         "domain_init must write the storage-committed params regardless of executor NOTE_ARGS",
     );

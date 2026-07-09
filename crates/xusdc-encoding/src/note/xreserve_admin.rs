@@ -431,3 +431,54 @@ impl XReserveGrantRoleNote {
         build_admin_note(sender, faucet_id, Self::script(), items, rng)
     }
 }
+
+// SET_MAX_SUPPLY (allowlist row 5)
+// ================================================================================================
+
+const SET_MAX_SUPPLY_NOTE_SCRIPT_SRC: &str =
+    include_str!("../../../../asm/standards/notes/xreserve_set_max_supply_note.masm");
+
+static SET_MAX_SUPPLY_NOTE_SCRIPT: LazyLock<NoteScript> =
+    LazyLock::new(|| compile_admin_note_script(SET_MAX_SUPPLY_NOTE_SCRIPT_SRC));
+
+/// The PINNED set_max_supply admin note-script root (`masm-rust-constant-parity`): binds transitively
+/// to the stock `fungible::set_max_supply`'s digest.
+pub const XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+/// The owner-gated stock `set_max_supply` admin note (F5). Storage layout: `[new_max_supply]`.
+pub struct XReserveSetMaxSupplyNote;
+
+impl XReserveSetMaxSupplyNote {
+    /// The compiled, fixed-root note script.
+    pub fn script() -> NoteScript {
+        SET_MAX_SUPPLY_NOTE_SCRIPT.clone()
+    }
+
+    /// The note-script root (allowlist row 5). Must equal the pinned constant (parity-tested).
+    pub fn script_root() -> NoteScriptRoot {
+        SET_MAX_SUPPLY_NOTE_SCRIPT.root()
+    }
+
+    /// The PINNED note-script root ([`XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX`]).
+    pub fn pinned_script_root() -> NoteScriptRoot {
+        NoteScriptRoot::from_raw(
+            Word::parse(XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX)
+                .expect("the pinned set_max_supply note-script root hex is a valid word"),
+        )
+    }
+
+    /// Builds a `set_max_supply` admin note: `sender` is the admin party (the owner, for success),
+    /// `faucet_id` the target faucet (PUBLIC), `new_max_supply` the new cap. The param lives in note
+    /// storage; NOTE_ARGS are ignored.
+    pub fn create<R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        new_max_supply: u64,
+        rng: &mut R,
+    ) -> Result<Note, NoteError> {
+        let cap_felt = Felt::try_from(new_max_supply)
+            .map_err(|e| NoteError::other_with_source("max supply exceeds the field modulus", e))?;
+        build_admin_note(sender, faucet_id, Self::script(), vec![cap_felt], rng)
+    }
+}

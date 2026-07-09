@@ -21,7 +21,7 @@ use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
     XReserveDomainInitNote, XReserveGrantRoleNote, XReservePauseNote, XReserveSetAttesterNote,
-    XReserveSetMinBurnSizeNote, XReserveUnpauseNote,
+    XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote, XReserveUnpauseNote,
 };
 
 /// The exact stock role error the DOM_PAUSER gate traps (rbac.masm:50 ERR_SENDER_LACKS_ROLE).
@@ -779,6 +779,110 @@ fn grant_role_note_script_root_is_pinned() {
         root,
         XReserveGrantRoleNote::pinned_script_root(),
         "masm-rust-constant-parity: grant_role note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
+    );
+}
+
+// SET_MAX_SUPPLY (allowlist row 5) — owner-gated stock max-supply setter
+// ================================================================================================
+
+const NEW_MAX_SUPPLY: u64 = 2_000_000;
+
+/// Owner-sent set_max_supply PASSES auth + the owner Authority gate (the production faucet is
+/// max-supply-mutable + unpaused) and writes word[1] (max_supply) of the token_config slot.
+#[tokio::test]
+async fn set_max_supply_owner_writes_cap() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let note = XReserveSetMaxSupplyNote::create(test_account_id(1), faucet_id, NEW_MAX_SUPPLY, &mut note_rng(90))
+        .context("building the owner set_max_supply note")?;
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("owner set_max_supply tx context")?
+        .build()
+        .context("owner set_max_supply tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("owner-sent set_max_supply must succeed under network auth: {e}"))?;
+    assert_eq!(
+        value_delta(&tx, TOKEN_CONFIG_SLOT_LABEL)[1],
+        Felt::try_from(NEW_MAX_SUPPLY).expect("cap within the field"),
+        "owner set_max_supply must write word[1] = the new cap",
+    );
+    Ok(())
+}
+
+/// A non-owner set_max_supply note PASSES auth but TRAPS at the owner Authority gate.
+async fn assert_set_max_supply_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let note = XReserveSetMaxSupplyNote::create(sender, faucet_id, NEW_MAX_SUPPLY, &mut note_rng(seed))
+        .context("building the non-owner set_max_supply note")?;
+    let result = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("non-owner set_max_supply tx context")?
+        .build()
+        .context("non-owner set_max_supply tx build")?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, err_sender_not_owner());
+    Ok(())
+}
+
+#[tokio::test]
+async fn set_max_supply_dom_pauser_traps() -> Result<()> {
+    assert_set_max_supply_nonowner_traps(test_account_id(2), 91).await
+}
+
+#[tokio::test]
+async fn set_max_supply_dom_manager_traps() -> Result<()> {
+    assert_set_max_supply_nonowner_traps(test_account_id(3), 92).await
+}
+
+#[tokio::test]
+async fn set_max_supply_third_party_traps() -> Result<()> {
+    assert_set_max_supply_nonowner_traps(test_account_id(99), 93).await
+}
+
+/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the written cap.
+#[tokio::test]
+async fn set_max_supply_note_args_are_inert() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let note = XReserveSetMaxSupplyNote::create(test_account_id(1), faucet_id, NEW_MAX_SUPPLY, &mut note_rng(94))
+        .context("building the owner set_max_supply note")?;
+    let bogus_args = Word::from([3u32, 3, 3, 3]);
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("set_max_supply note-args tx context")?
+        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
+        .build()
+        .context("set_max_supply note-args tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("set_max_supply with bogus NOTE_ARGS must still succeed: {e}"))?;
+    assert_eq!(
+        value_delta(&tx, TOKEN_CONFIG_SLOT_LABEL)[1],
+        Felt::try_from(NEW_MAX_SUPPLY).expect("cap within the field"),
+        "set_max_supply must write the storage-committed cap regardless of executor NOTE_ARGS",
+    );
+    Ok(())
+}
+
+/// masm-rust-constant-parity for the set_max_supply note (the failure prints the actual hex).
+#[test]
+fn set_max_supply_note_script_root_is_pinned() {
+    let root = XReserveSetMaxSupplyNote::script_root();
+    assert_eq!(
+        root,
+        XReserveSetMaxSupplyNote::pinned_script_root(),
+        "masm-rust-constant-parity: set_max_supply note-script root == the pinned constant (actual = {})",
         root.to_hex(),
     );
 }

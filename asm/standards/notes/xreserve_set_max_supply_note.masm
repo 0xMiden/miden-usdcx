@@ -1,0 +1,64 @@
+# xreserve_set_max_supply_note — the shipped, root-pinned set_max_supply admin note script (F5).
+#
+# The production admin surface for the STOCK `set_max_supply` under the network account: a fixed-root
+# note whose parameter is CREATOR-COMMITTED in note storage (never NOTE_ARGS). It stages the note
+# storage into memory, marshals the creator's param onto the stack in the proc's Inputs order, and
+# `call`s the owner-gated (via the account Authority) stock
+# `miden::standards::faucets::fungible::set_max_supply` (the gate lives in the proc; the note sender is
+# kernel-forced, so a non-owner creator traps there). The absolute-path `call` resolves to the SAME
+# proc root the faucet exposes via the FungibleFaucet component re-exports. A scheme-2
+# NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only).
+#
+# Note storage layout (1 felt): [new_max_supply].
+
+use miden::protocol::active_note
+
+# CONSTANTS
+# =================================================================================================
+
+const PARAM_PTR = 1024
+const SET_MAX_SUPPLY_NOTE_NUM_ITEMS = 1
+
+# ERRORS
+# =================================================================================================
+
+const ERR_XRESERVE_SET_MAX_SUPPLY_NOTE_STORAGE = "set_max_supply note storage item count is invalid"
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Consumes the `set_max_supply` admin note and drives the owner-gated max-supply write.
+#!
+#! Stages the creator-committed param (`[new_max_supply]`) into memory at PARAM_PTR, marshals it onto
+#! the stack as `[new_max_supply, pad(15)]`, and `call`s the stock `fungible::set_max_supply`. The
+#! note ARGS are unused (executor-controlled).
+#!
+#! Inputs:  [pad(16)]
+#! Outputs: [pad(16)]
+#!
+#! Panics if:
+#! - the note storage does not carry exactly 1 item.
+#! - the max supply is not mutable, the note sender is not the owner, or the faucet is paused, or
+#!   new_max_supply < token_supply (the stock set_max_supply gate chain).
+#!
+#! Invocation: dyncall
+@note_script
+pub proc main
+    dropw
+    # => [pad(16)]
+
+    push.PARAM_PTR exec.active_note::get_storage
+    # => [num_items, pad(16)]
+
+    eq.SET_MAX_SUPPLY_NOTE_NUM_ITEMS assert.err=ERR_XRESERVE_SET_MAX_SUPPLY_NOTE_STORAGE
+    # => [pad(16)]
+
+    push.PARAM_PTR mem_load
+    # => [new_max_supply, pad(16)]
+    # (the call consumes the top 16: [new_max_supply, pad(15)])
+
+    call.::miden::standards::faucets::fungible::set_max_supply
+    # => [pad(16)]
+
+    exec.::miden::core::sys::truncate_stack
+end

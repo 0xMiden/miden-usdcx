@@ -20,9 +20,10 @@ use miden_testing::{MockChain, assert_transaction_executor_error};
 use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveDomainInitNote, XReserveGrantRoleNote, XReservePauseNote, XReserveRevokeRoleNote,
-    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-    XReserveSetRoleAdminNote, XReserveTransferOwnershipNote, XReserveUnpauseNote,
+    XReserveAcceptOwnershipNote, XReserveDomainInitNote, XReserveGrantRoleNote, XReservePauseNote,
+    XReserveRevokeRoleNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
+    XReserveSetMinBurnSizeNote, XReserveSetRoleAdminNote, XReserveTransferOwnershipNote,
+    XReserveUnpauseNote,
 };
 
 /// The exact stock role error the DOM_PAUSER gate traps (rbac.masm:50 ERR_SENDER_LACKS_ROLE).
@@ -1232,6 +1233,140 @@ fn transfer_ownership_note_script_root_is_pinned() {
         root,
         XReserveTransferOwnershipNote::pinned_script_root(),
         "masm-rust-constant-parity: transfer_ownership note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
+    );
+}
+
+// ACCEPT_OWNERSHIP (allowlist row 12) — nominated-owner-gated, step 2 of the 2-step transfer
+// ================================================================================================
+
+/// The exact stock error accept_ownership traps for a non-nominated sender
+/// (ownable2step.masm:39 ERR_SENDER_NOT_NOMINATED_OWNER). Defined locally (a stock error not in
+/// SHELL_ERR_TABLE); no existing harness helper covers it.
+fn err_sender_not_nominated_owner() -> MasmError {
+    MasmError::from_static_str("note sender is not the nominated owner")
+}
+
+/// A production faucet with `nominee` set as the pending owner (an owner transfer_ownership applied as
+/// a delta to an evolved, not-committed account). Returns (chain, faucet_id, evolved account).
+async fn faucet_with_pending_owner(nominee: AccountId, transfer_seed: u64) -> Result<(MockChain, AccountId, Account)> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let transfer = XReserveTransferOwnershipNote::create(test_account_id(1), faucet_id, nominee, &mut note_rng(transfer_seed))
+        .context("building the owner transfer note")?;
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&transfer))
+        .context("transfer seed tx context")?
+        .build()
+        .context("transfer seed tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("seeding the owner transfer must succeed: {e}"))?;
+    let mut evolved = chain.committed_account(faucet_id).context("committed faucet")?.clone();
+    evolved.apply_delta(tx.account_delta())?;
+    Ok((chain, faucet_id, evolved))
+}
+
+/// The post-accept owner_config: the nominee is promoted to owner, the nomination cleared to (0,0).
+fn accepted_owner_config(nominee: AccountId) -> Word {
+    Word::from([
+        nominee.suffix(),
+        nominee.prefix().as_felt(),
+        Felt::from(0u32),
+        Felt::from(0u32),
+    ])
+}
+
+/// The nominated (pending) owner accepts: it PASSES auth + the pending-owner gate and becomes owner.
+#[tokio::test]
+async fn accept_ownership_pending_owner_becomes_owner() -> Result<()> {
+    let nominee = test_account_id(5);
+    let (chain, faucet_id, evolved) = faucet_with_pending_owner(nominee, 140).await?;
+    let note = XReserveAcceptOwnershipNote::create(nominee, faucet_id, &mut note_rng(141))
+        .context("building the pending-owner accept note")?;
+    let tx = chain
+        .build_tx_context(evolved.clone(), &[], slice::from_ref(&note))
+        .context("accept_ownership tx context")?
+        .build()
+        .context("accept_ownership tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("pending-owner accept_ownership must succeed under network auth: {e}"))?;
+    let mut evolved2 = evolved.clone();
+    evolved2.apply_delta(tx.account_delta())?;
+    assert_eq!(
+        read_owner_config(&evolved2)?,
+        accepted_owner_config(nominee),
+        "accept_ownership must promote the nominee to owner and clear the nomination",
+    );
+    Ok(())
+}
+
+/// A non-nominated sender (the current owner or a third party) PASSES auth but TRAPS at the
+/// pending-owner gate.
+async fn assert_accept_wrong_sender_traps(sender: AccountId, seed: u64) -> Result<()> {
+    let nominee = test_account_id(5);
+    let (chain, faucet_id, evolved) = faucet_with_pending_owner(nominee, 150 + seed).await?;
+    let note = XReserveAcceptOwnershipNote::create(sender, faucet_id, &mut note_rng(seed))
+        .context("building the wrong-sender accept note")?;
+    let result = chain
+        .build_tx_context(evolved, &[], slice::from_ref(&note))
+        .context("wrong-sender accept tx context")?
+        .build()
+        .context("wrong-sender accept tx build")?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, err_sender_not_nominated_owner());
+    Ok(())
+}
+
+#[tokio::test]
+async fn accept_ownership_current_owner_traps() -> Result<()> {
+    assert_accept_wrong_sender_traps(test_account_id(1), 142).await
+}
+
+#[tokio::test]
+async fn accept_ownership_third_party_traps() -> Result<()> {
+    assert_accept_wrong_sender_traps(test_account_id(99), 143).await
+}
+
+/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the ownership promotion.
+#[tokio::test]
+async fn accept_ownership_note_args_are_inert() -> Result<()> {
+    let nominee = test_account_id(5);
+    let (chain, faucet_id, evolved) = faucet_with_pending_owner(nominee, 144).await?;
+    let note = XReserveAcceptOwnershipNote::create(nominee, faucet_id, &mut note_rng(145))
+        .context("building the pending-owner accept note")?;
+    let bogus_args = Word::from([9u32, 9, 9, 9]);
+    let tx = chain
+        .build_tx_context(evolved.clone(), &[], slice::from_ref(&note))
+        .context("accept note-args tx context")?
+        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
+        .build()
+        .context("accept note-args tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("accept_ownership with bogus NOTE_ARGS must still succeed: {e}"))?;
+    let mut evolved2 = evolved.clone();
+    evolved2.apply_delta(tx.account_delta())?;
+    assert_eq!(
+        read_owner_config(&evolved2)?,
+        accepted_owner_config(nominee),
+        "accept_ownership must promote the nominee regardless of executor NOTE_ARGS",
+    );
+    Ok(())
+}
+
+/// masm-rust-constant-parity for the accept_ownership note (the failure prints the actual hex).
+#[test]
+fn accept_ownership_note_script_root_is_pinned() {
+    let root = XReserveAcceptOwnershipNote::script_root();
+    assert_eq!(
+        root,
+        XReserveAcceptOwnershipNote::pinned_script_root(),
+        "masm-rust-constant-parity: accept_ownership note-script root == the pinned constant (actual = {})",
         root.to_hex(),
     );
 }

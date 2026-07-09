@@ -534,6 +534,55 @@ impl XReserveTransferOwnershipNote {
     }
 }
 
+// ACCEPT_OWNERSHIP (allowlist row 12)
+// ================================================================================================
+
+const ACCEPT_OWNERSHIP_NOTE_SCRIPT_SRC: &str =
+    include_str!("../../../../asm/standards/notes/xreserve_accept_ownership_note.masm");
+
+static ACCEPT_OWNERSHIP_NOTE_SCRIPT: LazyLock<NoteScript> =
+    LazyLock::new(|| compile_admin_note_script(ACCEPT_OWNERSHIP_NOTE_SCRIPT_SRC));
+
+/// The PINNED accept_ownership admin note-script root (`masm-rust-constant-parity`): binds
+/// transitively to the stock `ownable2step::accept_ownership`'s digest.
+pub const XRESERVE_ACCEPT_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+/// The nominated-owner-gated, PARAM-LESS stock `accept_ownership` admin note (F5, step 2 of the
+/// 2-step transfer).
+pub struct XReserveAcceptOwnershipNote;
+
+impl XReserveAcceptOwnershipNote {
+    /// The compiled, fixed-root note script.
+    pub fn script() -> NoteScript {
+        ACCEPT_OWNERSHIP_NOTE_SCRIPT.clone()
+    }
+
+    /// The note-script root (allowlist row 12). Must equal the pinned constant (parity-tested).
+    pub fn script_root() -> NoteScriptRoot {
+        ACCEPT_OWNERSHIP_NOTE_SCRIPT.root()
+    }
+
+    /// The PINNED note-script root ([`XRESERVE_ACCEPT_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX`]).
+    pub fn pinned_script_root() -> NoteScriptRoot {
+        NoteScriptRoot::from_raw(
+            Word::parse(XRESERVE_ACCEPT_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX)
+                .expect("the pinned accept_ownership note-script root hex is a valid word"),
+        )
+    }
+
+    /// Builds an `accept_ownership` admin note (param-less): `sender` is the nominated (pending) owner
+    /// (for success), `faucet_id` the target faucet (PUBLIC). Carries no storage payload; NOTE_ARGS
+    /// are ignored.
+    pub fn create<R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        rng: &mut R,
+    ) -> Result<Note, NoteError> {
+        build_admin_note(sender, faucet_id, Self::script(), vec![], rng)
+    }
+}
+
 // SET_MAX_SUPPLY (allowlist row 5)
 // ================================================================================================
 

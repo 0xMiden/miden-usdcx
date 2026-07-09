@@ -247,7 +247,7 @@ static SET_MIN_BURN_SIZE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// transitively to `min_burn_admin::set_min_burn_size`'s digest, so any edit of the note or the proc
 /// it calls trips parity and forces a conscious re-pin.
 pub const XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x0000000000000000000000000000000000000000000000000000000000000000";
+    "0x4d3c5d640754aeb3794db0f59214bace8083cd4280b46185fb13275e363ea265";
 
 /// The owner-gated `set_min_burn_size` admin note (F5). Storage layout: `[new_min]`.
 pub struct XReserveSetMinBurnSizeNote;

@@ -384,7 +384,9 @@ impl XReserveStablecoinBuilder {
             crate::note::xreserve_admin::XReserveSetAttesterNote::script_root(),
             // row 13: domain_init admin note (owner-gated, init-once).
             crate::note::xreserve_admin::XReserveDomainInitNote::script_root(),
-            // rows 4-12: the remaining admin note scripts — NOT YET ADDED (admin-note-scripts unit).
+            // row 4: set_min_burn_size admin note (owner-gated).
+            crate::note::xreserve_admin::XReserveSetMinBurnSizeNote::script_root(),
+            // rows 5-12: the remaining admin note scripts — NOT YET ADDED (admin-note-scripts unit).
         ])
     }
 

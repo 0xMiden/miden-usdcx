@@ -432,6 +432,57 @@ impl XReserveGrantRoleNote {
     }
 }
 
+// SET_ROLE_ADMIN (allowlist row 10)
+// ================================================================================================
+
+const SET_ROLE_ADMIN_NOTE_SCRIPT_SRC: &str =
+    include_str!("../../../../asm/standards/notes/xreserve_set_role_admin_note.masm");
+
+static SET_ROLE_ADMIN_NOTE_SCRIPT: LazyLock<NoteScript> =
+    LazyLock::new(|| compile_admin_note_script(SET_ROLE_ADMIN_NOTE_SCRIPT_SRC));
+
+/// The PINNED set_role_admin admin note-script root (`masm-rust-constant-parity`): binds transitively
+/// to the stock `rbac::set_role_admin`'s digest.
+pub const XRESERVE_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+/// The OWNER-ONLY stock `set_role_admin` admin note (F5). Storage layout:
+/// `[role_symbol, admin_role_symbol]` (`admin_role_symbol = 0` clears the delegation).
+pub struct XReserveSetRoleAdminNote;
+
+impl XReserveSetRoleAdminNote {
+    /// The compiled, fixed-root note script.
+    pub fn script() -> NoteScript {
+        SET_ROLE_ADMIN_NOTE_SCRIPT.clone()
+    }
+
+    /// The note-script root (allowlist row 10). Must equal the pinned constant (parity-tested).
+    pub fn script_root() -> NoteScriptRoot {
+        SET_ROLE_ADMIN_NOTE_SCRIPT.root()
+    }
+
+    /// The PINNED note-script root ([`XRESERVE_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX`]).
+    pub fn pinned_script_root() -> NoteScriptRoot {
+        NoteScriptRoot::from_raw(
+            Word::parse(XRESERVE_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX)
+                .expect("the pinned set_role_admin note-script root hex is a valid word"),
+        )
+    }
+
+    /// Builds a `set_role_admin` admin note: `sender` is the OWNER (for success), `faucet_id` the
+    /// target faucet (PUBLIC), `role_symbol` the RBAC role, `admin_role_symbol` the role that may
+    /// administer it (`0` clears the delegation). The params live in note storage; NOTE_ARGS ignored.
+    pub fn create<R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        role_symbol: Felt,
+        admin_role_symbol: Felt,
+        rng: &mut R,
+    ) -> Result<Note, NoteError> {
+        build_admin_note(sender, faucet_id, Self::script(), vec![role_symbol, admin_role_symbol], rng)
+    }
+}
+
 // SET_MAX_SUPPLY (allowlist row 5)
 // ================================================================================================
 

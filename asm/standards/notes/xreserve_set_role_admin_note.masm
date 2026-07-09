@@ -1,0 +1,65 @@
+# xreserve_set_role_admin_note — the shipped, root-pinned set_role_admin admin note script (F5).
+#
+# The production admin surface for the STOCK `set_role_admin` under the network account: a fixed-root
+# note whose parameters are CREATOR-COMMITTED in note storage (never NOTE_ARGS). It stages the note
+# storage into memory, marshals the creator's params onto the stack in the proc's Inputs order, and
+# `call`s the OWNER-ONLY stock `miden::standards::access::rbac::set_role_admin` (delegation does NOT
+# extend here — a DOM_MANAGER creator traps at the owner gate; the note sender is kernel-forced). The
+# absolute-path `call` resolves to the SAME proc root the faucet exposes via the RBAC component
+# re-exports. A scheme-2 NetworkAccountTarget routing attachment addresses the note at the faucet
+# (routing-only).
+#
+# Note storage layout (2 felts): [role_symbol, admin_role_symbol]. `admin_role_symbol = 0` clears the
+# delegation (owner-only management) — the stock sentinel.
+
+use miden::protocol::active_note
+
+# CONSTANTS
+# =================================================================================================
+
+const PARAM_PTR = 1024
+const SET_ROLE_ADMIN_NOTE_NUM_ITEMS = 2
+
+# ERRORS
+# =================================================================================================
+
+const ERR_XRESERVE_SET_ROLE_ADMIN_NOTE_STORAGE = "set_role_admin note storage item count is invalid"
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Consumes the `set_role_admin` admin note and drives the OWNER-ONLY role-admin write.
+#!
+#! Stages the creator-committed params (`[role_symbol, admin_role_symbol]`) into memory at PARAM_PTR,
+#! marshals them onto the stack as `[role_symbol, admin_role_symbol, pad(14)]`, and `call`s the stock
+#! `rbac::set_role_admin`. The note ARGS are unused.
+#!
+#! Inputs:  [pad(16)]
+#! Outputs: [pad(16)]
+#!
+#! Panics if:
+#! - the note storage does not carry exactly 2 items.
+#! - the note sender is not the owner (set_role_admin's owner-only gate).
+#!
+#! Invocation: dyncall
+@note_script
+pub proc main
+    dropw
+    # => [pad(16)]
+
+    push.PARAM_PTR exec.active_note::get_storage
+    # => [num_items, pad(16)]
+
+    eq.SET_ROLE_ADMIN_NOTE_NUM_ITEMS assert.err=ERR_XRESERVE_SET_ROLE_ADMIN_NOTE_STORAGE
+    # => [pad(16)]
+
+    push.PARAM_PTR add.1 mem_load
+    push.PARAM_PTR mem_load
+    # => [role_symbol, admin_role_symbol, pad(16)]
+    # (the call consumes the top 16: [role_symbol, admin_role_symbol, pad(14)])
+
+    call.::miden::standards::access::rbac::set_role_admin
+    # => [pad(16)]
+
+    exec.::miden::core::sys::truncate_stack
+end

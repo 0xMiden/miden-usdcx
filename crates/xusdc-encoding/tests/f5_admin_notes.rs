@@ -22,7 +22,7 @@ use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
     XReserveDomainInitNote, XReserveGrantRoleNote, XReservePauseNote, XReserveRevokeRoleNote,
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-    XReserveUnpauseNote,
+    XReserveSetRoleAdminNote, XReserveUnpauseNote,
 };
 
 /// The exact stock role error the DOM_PAUSER gate traps (rbac.masm:50 ERR_SENDER_LACKS_ROLE).
@@ -1006,6 +1006,116 @@ fn revoke_role_note_script_root_is_pinned() {
         root,
         XReserveRevokeRoleNote::pinned_script_root(),
         "masm-rust-constant-parity: revoke_role note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
+    );
+}
+
+// SET_ROLE_ADMIN (allowlist row 10) — OWNER-ONLY (delegation does NOT extend here)
+// ================================================================================================
+
+/// Owner-sent set_role_admin(DOM_MANAGER, DOM_PAUSER) PASSES auth + the owner-only gate and updates
+/// DOM_MANAGER's admin_role in its role_config (seeded 0 -> DOM_PAUSER).
+#[tokio::test]
+async fn set_role_admin_owner_updates_admin_role() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let note = XReserveSetRoleAdminNote::create(
+        test_account_id(1), faucet_id, Felt::from(&manager_sym()), Felt::from(&pauser_sym()),
+        &mut note_rng(120),
+    )
+    .context("building the owner set_role_admin note")?;
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("owner set_role_admin tx context")?
+        .build()
+        .context("owner set_role_admin tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("owner-sent set_role_admin must succeed under network auth: {e}"))?;
+    let mut evolved = chain.committed_account(faucet_id).context("committed faucet")?.clone();
+    evolved.apply_delta(tx.account_delta())?;
+    assert_eq!(
+        read_role_config(&evolved, &manager_sym())?[1],
+        Felt::from(&pauser_sym()),
+        "owner set_role_admin must set DOM_MANAGER's admin_role to DOM_PAUSER",
+    );
+    Ok(())
+}
+
+/// A non-owner set_role_admin note PASSES auth but TRAPS at the owner-only gate — INCLUDING
+/// DOM_MANAGER (delegation does NOT extend to set_role_admin).
+async fn assert_set_role_admin_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let note = XReserveSetRoleAdminNote::create(
+        sender, faucet_id, Felt::from(&manager_sym()), Felt::from(&pauser_sym()), &mut note_rng(seed),
+    )
+    .context("building the non-owner set_role_admin note")?;
+    let result = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("non-owner set_role_admin tx context")?
+        .build()
+        .context("non-owner set_role_admin tx build")?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, err_sender_not_owner());
+    Ok(())
+}
+
+#[tokio::test]
+async fn set_role_admin_dom_manager_traps() -> Result<()> {
+    assert_set_role_admin_nonowner_traps(test_account_id(3), 121).await
+}
+
+#[tokio::test]
+async fn set_role_admin_third_party_traps() -> Result<()> {
+    assert_set_role_admin_nonowner_traps(test_account_id(99), 122).await
+}
+
+/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the admin_role write.
+#[tokio::test]
+async fn set_role_admin_note_args_are_inert() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let note = XReserveSetRoleAdminNote::create(
+        test_account_id(1), faucet_id, Felt::from(&manager_sym()), Felt::from(&pauser_sym()),
+        &mut note_rng(123),
+    )
+    .context("building the owner set_role_admin note")?;
+    let bogus_args = Word::from([4u32, 4, 4, 4]);
+    let tx = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("set_role_admin note-args tx context")?
+        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
+        .build()
+        .context("set_role_admin note-args tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("set_role_admin with bogus NOTE_ARGS must still succeed: {e}"))?;
+    let mut evolved = chain.committed_account(faucet_id).context("committed faucet")?.clone();
+    evolved.apply_delta(tx.account_delta())?;
+    assert_eq!(
+        read_role_config(&evolved, &manager_sym())?[1],
+        Felt::from(&pauser_sym()),
+        "set_role_admin must write the storage-committed admin_role regardless of executor NOTE_ARGS",
+    );
+    Ok(())
+}
+
+/// masm-rust-constant-parity for the set_role_admin note (the failure prints the actual hex).
+#[test]
+fn set_role_admin_note_script_root_is_pinned() {
+    let root = XReserveSetRoleAdminNote::script_root();
+    assert_eq!(
+        root,
+        XReserveSetRoleAdminNote::pinned_script_root(),
+        "masm-rust-constant-parity: set_role_admin note-script root == the pinned constant (actual = {})",
         root.to_hex(),
     );
 }

@@ -495,7 +495,7 @@ static TRANSFER_OWNERSHIP_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED transfer_ownership admin note-script root (`masm-rust-constant-parity`): binds
 /// transitively to the stock `ownable2step::transfer_ownership`'s digest.
 pub const XRESERVE_TRANSFER_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x0000000000000000000000000000000000000000000000000000000000000000";
+    "0x151f76c6d72892f6880f7002c6d9032b97d954d4a8ec190a8de51443a2bd5425";
 
 /// The current-owner-gated stock `transfer_ownership` admin note (F5, step 1 of the 2-step transfer).
 /// Storage layout: `[new_owner_suffix, new_owner_prefix]`.

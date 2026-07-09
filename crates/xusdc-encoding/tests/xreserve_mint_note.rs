@@ -30,6 +30,7 @@ use miden_standards::note::P2idNote;
 use miden_testing::{MockChain, assert_transaction_executor_error};
 use miden_tx::TransactionExecutorError;
 use support::*;
+use xusdc_encoding::note::xreserve_admin::{XReserveDomainInitNote, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_mint::{
     MintAttestation, XReserveMintNote, XRESERVE_MINT_ATTACHMENT_NUM_WORDS,
     XRESERVE_MINT_ATTACHMENT_SCHEME,
@@ -135,17 +136,23 @@ fn marker() -> Word {
 fn fixture() -> Result<ProductionFaucet> {
     setup_production_faucet(MAX_SUPPLY, 0, |recipient| {
         let commitment = gen_attester(1, &payload_for(recipient)).commitment;
+        // The ALLOWLISTED PRODUCTION admin notes (F5): the routing target is a placeholder PUBLIC id
+        // (routing-only, not consume-gated; the script root — hence the allowlist entry — is
+        // attachment-independent, so bring_up's consume-by-id passes network auth). This replaces the
+        // pre-F5 inline-stub notes whose roots were NOT allowlisted, which is why bring-up note 0 died.
+        let route = test_faucet_id(1);
         vec![
-            domain_init_note(
+            XReserveDomainInitNote::create(
                 owner(),
+                route,
                 TEST_DOMAIN,
                 TEST_SOURCE_DOMAIN,
                 &test_xreserve_contract(),
                 identifier_word(),
-                941,
+                &mut note_rng(941),
             )
             .expect("building the owner domain_init note"),
-            set_attester_note(owner(), commitment, 1, 942)
+            XReserveSetAttesterNote::create(owner(), route, commitment, 1, &mut note_rng(942))
                 .expect("building the owner set_attester note"),
         ]
     })

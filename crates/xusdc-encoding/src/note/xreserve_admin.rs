@@ -392,7 +392,7 @@ static GRANT_ROLE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED grant_role admin note-script root (`masm-rust-constant-parity`): binds transitively to
 /// the stock `rbac::grant_role`'s digest.
 pub const XRESERVE_GRANT_ROLE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x0000000000000000000000000000000000000000000000000000000000000000";
+    "0x8ff13c53cbbe3752c9d245c5e4b38fe7d0f230928917ffd9606f6accb3a91400";
 
 /// The owner-or-role-admin-gated stock `grant_role` admin note (F5). Storage layout:
 /// `[role_symbol, account_suffix, account_prefix]`.

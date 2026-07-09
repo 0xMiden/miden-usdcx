@@ -390,7 +390,9 @@ impl XReserveStablecoinBuilder {
             crate::note::xreserve_admin::XReservePauseNote::script_root(),
             // row 7: unpause admin note (DOM_PAUSER-gated).
             crate::note::xreserve_admin::XReserveUnpauseNote::script_root(),
-            // rows 5, 8-12: the remaining admin note scripts — NOT YET ADDED (admin-note-scripts unit).
+            // row 8: grant_role admin note (owner-or-role-admin-gated, stock RBAC).
+            crate::note::xreserve_admin::XReserveGrantRoleNote::script_root(),
+            // rows 5, 9-12: the remaining admin note scripts — NOT YET ADDED (admin-note-scripts unit).
         ])
     }
 

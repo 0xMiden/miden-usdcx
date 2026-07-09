@@ -1,3 +1,20 @@
 [workspace]
 resolver = "2"
-members = ["crates/xusdc-encoding"]
+members = ["crates/xusdc-encoding", "crates/xusdc-validation"]
+
+# LNV-1 toolchain resolution (ledger: crates/xusdc-validation/VALIDATION-RECORD.md §2).
+#
+# The validation harness consumes `miden-client 0.15.3` from crates.io, whose protocol-family
+# requirements (`miden-protocol`/`miden-standards`/`miden-tx`/`miden-tx-batch-prover`/
+# `miden-agglayer` `^0.15.3`) would otherwise resolve to the crates.io releases — a SECOND copy of
+# the protocol crates next to the repo's git-rev pins, with non-unifiable types at every API
+# boundary. The git rev below IS the v0.15.3 release-tag commit (V15-DEVNET-BASELINE), so these
+# entries redirect every registry requirement onto the one pinned source: exactly one copy of each
+# protocol crate exists in the graph and types unify across `xusdc-encoding`, `miden-client`, and
+# the harness.
+[patch.crates-io]
+miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
+miden-tx = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
+miden-tx-batch-prover = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
+miden-agglayer = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }

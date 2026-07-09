@@ -1,0 +1,156 @@
+//! Run + stack configuration for the LNV harness.
+//!
+//! Every port is fixed and loopback-only for reproducibility (recorded in the validation record):
+//! the auditors reproduce the gate from a fresh node with the same wiring. All node data
+//! directories, stores, keystores, and full logs live under the gitignored
+//! `local-node-data/` repo root (evidence excerpts go in the record; full logs stay out of git).
+
+use std::path::{Path, PathBuf};
+
+use miden_protocol::Word;
+use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
+
+/// Sequencer public RPC port — the standard local Miden RPC port the pinned
+/// `miden-client 0.15.3` `for_localhost()` preset also expects.
+pub const RPC_PORT: u16 = 57291;
+/// Validator gRPC port (harness-assigned, loopback).
+pub const VALIDATOR_PORT: u16 = 57292;
+/// ntx-builder gRPC port (harness-assigned, loopback).
+pub const NTX_BUILDER_PORT: u16 = 57293;
+/// Remote tx-prover port (harness-assigned, loopback; the ntx-builder REQUIRES a prover URL).
+pub const TX_PROVER_PORT: u16 = 57294;
+
+/// The shared network-transaction authorization token. v0.15.1 rejects post-deployment
+/// user-RPC transactions against network accounts ("Network transactions may not be submitted by
+/// users yet"); the sequencer accepts them only from a submitter presenting this value in the
+/// `x-miden-network-tx-auth` metadata header. The harness starts the sequencer with this token and
+/// hands it to the ntx-builder, making the local stack's network-transaction path fully
+/// operational (row K exercises it; rows A/B do not depend on it).
+pub const NETWORK_TX_AUTH_TOKEN: &str = "lnv-local-network-tx-auth";
+
+/// The §5.9 domain-config parameters committed by the owner's `domain_init` note. LOCAL TEST
+/// values (Circle's real domain assignment is DEV-gated and stays OPEN — these exist to prove the
+/// write/read-back path, not to bind a real domain).
+#[derive(Debug, Clone)]
+pub struct DomainParams {
+    /// `domain` (u32) — the Miden-side domain id, element 0 of the domain slot.
+    pub domain: u32,
+    /// `source_domain` (u32) — the native-USDC source domain id.
+    pub source_domain: u32,
+    /// `xreserve_contract` — the raw bytes32, stored as 8 u32-LE packed felts across two slots.
+    pub xreserve_contract: [u8; 32],
+    /// `identifier` — the raw bytes32 whose `bytes32_to_key` Word is stored (the init-once
+    /// sentinel; must be non-empty).
+    pub identifier_bytes: [u8; 32],
+}
+
+impl DomainParams {
+    /// The identifier as the canonical `bytes32_to_key` Word — what `domain_init` stores and what
+    /// the D5a mint-path compare later reads.
+    pub fn identifier_word(&self) -> Word {
+        bytes32_to_storage_map_key(&self.identifier_bytes).into()
+    }
+
+    /// The fixed LNV-1 test parameters (recorded in the evidence; values are arbitrary non-zero
+    /// patterns chosen to make read-back mismatches loud).
+    pub fn lnv1() -> Self {
+        Self {
+            domain: 1313,
+            source_domain: 7,
+            xreserve_contract: [0xC1; 32],
+            identifier_bytes: [0x1D; 32],
+        }
+    }
+
+    /// A SECOND, everywhere-different parameter set for the init-once negative: if the reinit
+    /// gate ever failed and the second note's values were written, every read-back assertion
+    /// would mismatch loudly.
+    pub fn lnv1_reinit_attempt() -> Self {
+        Self {
+            domain: 9999,
+            source_domain: 42,
+            xreserve_contract: [0xEE; 32],
+            identifier_bytes: [0x2A; 32],
+        }
+    }
+}
+
+/// Where the three services + prover live and how they are wired.
+#[derive(Debug, Clone)]
+pub struct StackConfig {
+    /// Root directory of this run (gitignored). Genesis, data dirs, logs, store, keystore all
+    /// live underneath it.
+    pub run_root: PathBuf,
+    pub rpc_port: u16,
+    pub validator_port: u16,
+    pub ntx_builder_port: u16,
+    pub tx_prover_port: u16,
+    /// The shared `x-miden-network-tx-auth` token (sequencer expects it; ntx-builder presents it).
+    pub network_tx_auth_token: String,
+}
+
+impl StackConfig {
+    pub fn new(run_root: PathBuf) -> Self {
+        Self {
+            run_root,
+            rpc_port: RPC_PORT,
+            validator_port: VALIDATOR_PORT,
+            ntx_builder_port: NTX_BUILDER_PORT,
+            tx_prover_port: TX_PROVER_PORT,
+            network_tx_auth_token: NETWORK_TX_AUTH_TOKEN.to_string(),
+        }
+    }
+
+    pub fn rpc_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.rpc_port)
+    }
+    pub fn validator_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.validator_port)
+    }
+    pub fn ntx_builder_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.ntx_builder_port)
+    }
+    pub fn tx_prover_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.tx_prover_port)
+    }
+    pub fn log_dir(&self) -> PathBuf {
+        self.run_root.join("logs")
+    }
+}
+
+/// Full LNV-1 run configuration.
+#[derive(Debug, Clone)]
+pub struct RunConfig {
+    pub stack: StackConfig,
+    /// The faucet's `max_supply` at build (mutable post-deploy via `set_max_supply`).
+    pub max_supply: u64,
+    /// The owner-committed domain params for the FIRST (succeeding) `domain_init`.
+    pub domain_params: DomainParams,
+    /// The everywhere-different params for the SECOND (rejected) `domain_init`.
+    pub reinit_params: DomainParams,
+    /// Keep the node stack running after the run (supervised/manual inspection); default false —
+    /// the stack MUST be torn down so port 57291 is free for the next run.
+    pub keep_stack: bool,
+}
+
+impl RunConfig {
+    /// A fresh run rooted under `local-node-data/lnv1/<label>` in the repo (gitignored).
+    pub fn fresh(repo_root: &Path, label: &str) -> Self {
+        let run_root = repo_root.join("local-node-data").join("lnv1").join(label);
+        Self {
+            stack: StackConfig::new(run_root),
+            max_supply: 1_000_000_000_000,
+            domain_params: DomainParams::lnv1(),
+            reinit_params: DomainParams::lnv1_reinit_attempt(),
+            keep_stack: false,
+        }
+    }
+}
+
+/// The repo root, resolved from this crate's manifest dir (`crates/xusdc-validation` → two up).
+pub fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("the crate lives two levels under the repo root")
+}

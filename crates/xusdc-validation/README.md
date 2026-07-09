@@ -6,21 +6,27 @@ Validation-only — it never modifies faucet code; a red assertion here is a sur
 
 - **Pins:** protocol v0.15.3 (git `681fc905…`), node binaries v0.15.1 (installed in
   `/usr/local/bin`), `miden-client =0.15.3`. Ledger + discovered mechanics + evidence:
-  [`VALIDATION-RECORD.md`](VALIDATION-RECORD.md).
-- **This slice (LNV-1):** harness foundation + matrix rows A (deploy + recognize) and
-  B (`domain_init` init-once).
+  [`VALIDATION-RECORD.md`](VALIDATION-RECORD.md) (LNV-1),
+  [`VALIDATION-RECORD-LNV2.md`](VALIDATION-RECORD-LNV2.md) (LNV-2).
+- **LNV-1:** harness foundation + matrix rows A (deploy + recognize) and B (`domain_init` init-once).
+- **LNV-2:** matrix rows C (admin suite — `set_attester` + rotation, `set_min_burn_size`,
+  `set_max_supply`, pause/unpause + F6, DOM_MANAGER role rotation, non-authorized-sender negatives)
+  and F (the F5 auth boundary — non-allowlisted note + tx-script both rejected). Admin state changes
+  commit via the ntx-builder (path N); accept/reject probes run client-side (kernel traps).
 
 ## One-command runs
 
 ```bash
-# THE GATE RUN — rows A/B against a fresh local stack (bootstraps genesis, starts
+# THE LNV-1 GATE RUN — rows A/B against a fresh local stack (bootstraps genesis, starts
 # validator + ntx-builder + sequencer + tx prover, tears down after)
 cargo run -p xusdc-validation --bin lnv1_rows_ab
-# equivalent via the test suite (real-node E2E + the 9 synthetic assertion negatives)
+# THE LNV-2 GATE RUN — rows C/F (~30 min: ~16 ntx-builder-committed admin ops + client-side probes)
+cargo run -p xusdc-validation --bin lnv2_rows_cf
+# equivalent via the test suite (both real-node E2Es + all synthetic assertion negatives)
 cargo test -p xusdc-validation --locked -- --include-ignored
 
-# the DEFAULT (sandbox-safe) suite: the 9 synthetic assertion negatives only — no node,
-# no listener sockets. Green here carries NO real-node claim.
+# the DEFAULT (sandbox-safe) suite: the synthetic assertion negatives + err_code tripwire only —
+# no node, no listener sockets. Green here carries NO real-node claim.
 cargo test -p xusdc-validation --locked
 
 # supervised manual stack (leaves it running; pids under the run root)

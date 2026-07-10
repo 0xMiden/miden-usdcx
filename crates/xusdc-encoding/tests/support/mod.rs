@@ -122,7 +122,7 @@ pub use xusdc_encoding::account::xreserve::MIN_BURN_SIZE_SLOT_LABEL;
 /// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
 /// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 25] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -136,10 +136,6 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 25] = [
     (
         "ERR_XRESERVE_AMOUNT_BELOW_FEE",
         MasmError::from_static_str("deposit intent amount is below the max fee"),
-    ),
-    (
-        "ERR_XRESERVE_FEE_OVER_MAX",
-        MasmError::from_static_str("operator fee amount exceeds the deposit intent max fee"),
     ),
     // D5c R-MINT-12 nonce replay. Frozen name (spec R-MINT-12); the red-suite carries it
     // here so the replay test can name its EXACT expected error. The D5c green commit

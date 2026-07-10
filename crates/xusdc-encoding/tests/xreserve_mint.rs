@@ -525,10 +525,11 @@ async fn happy_end_to_end_with_hookdata() -> Result<()> {
     Ok(())
 }
 
-/// D5b (R-MINT-11): a valid intent (reduced amount >= maxFee) but an operator `feeAmount` that
-/// reduces ABOVE maxFee must fail closed — proving the composition wires AND orders the feeAmount
-/// advice (consumed by D5b, before the D5d pubkey/signature). The fee felts use the SAME u32-LE
-/// packing as the payload uint256 fields.
+/// D5b: a valid intent (reduced amount >= maxFee) but an operator `feeAmount` that reduces ABOVE
+/// maxFee must fail closed — proving the composition wires AND orders the feeAmount advice (consumed
+/// by D5b, before the D5d pubkey/signature). Under the F2 MVP (`feeAmount == 0`) an over-max fee is
+/// rejected as *nonzero* (`ERR_XRESERVE_FEE_NONZERO`); the old R-MINT-11 over-max case is subsumed.
+/// The fee felts use the SAME u32-LE packing as the payload uint256 fields.
 #[tokio::test]
 async fn reject_fee_over_max_fails_closed() -> Result<()> {
     let payload = happy_payload(); // reduced amount 2 >= maxFee 1
@@ -549,8 +550,39 @@ async fn reject_fee_over_max_fails_closed() -> Result<()> {
     let fee = bytes_to_packed_u32_elements(&uint256_be(HAPPY_AMOUNT_RAW));
     let advice: Vec<Felt> = fee.into_iter().chain(attester.advice()).collect();
     let result = run_mint_composition(&h, advice).await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_FEE_OVER_MAX"));
+    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_FEE_NONZERO"));
     run_composition_probe(&h).await.expect("fee-over-max reject must leave token_config + usedNonces unchanged");
+    Ok(())
+}
+
+/// F2 (LNV-3): a mint carrying a NONZERO advice `feeAmount` that is `<= maxFee` — the case the old
+/// R-MINT-11 accepted and the effects then SILENTLY IGNORED (LNV-3 drove feeAmount=3, maxFee=10) —
+/// must now fail closed with `ERR_XRESERVE_FEE_NONZERO` and ZERO writes. Structural sibling of
+/// `reject_fee_over_max_fails_closed`, but the fee is BELOW maxFee (the exact divergence F2 closes).
+#[tokio::test]
+async fn reject_nonzero_fee_below_maxfee_fails_closed() -> Result<()> {
+    let payload = with_amounts(base_payload(), 20_000_000, 10_000_000); // reduced amount 20 >= maxFee 10
+    let attester = gen_attester(1, &payload);
+    let (domain, identifier) = config(TEST_DOMAIN);
+    let driver = mint_composition_driver_src(&pack(&payload), LEN_FELTS, SCALE_EXP);
+    let h = setup_mint_composition_account(
+        1_000_000,
+        0,
+        domain,
+        identifier,
+        None,
+        Some((attester.commitment, Word::from(MARKER))),
+        &driver,
+        &composition_noeffect_probe_src(0, nonce_key()),
+    )?;
+    // feeAmount reduces to 3 (<= maxFee 10, but NONZERO); packed exactly like a uint256 payload field.
+    let fee = bytes_to_packed_u32_elements(&uint256_be(3_000_000));
+    let advice: Vec<Felt> = fee.into_iter().chain(attester.advice()).collect();
+    let result = run_mint_composition(&h, advice).await;
+    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_FEE_NONZERO"));
+    run_composition_probe(&h)
+        .await
+        .expect("nonzero-fee reject must leave token_config + usedNonces unchanged");
     Ok(())
 }
 

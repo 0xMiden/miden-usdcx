@@ -72,9 +72,9 @@ const MINT_NOTE_ENTRY_MASM: &str =
 const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_WRONG_DOMAIN",
     "ERR_XRESERVE_WRONG_IDENTIFIER",
-    // D5b R-MINT-10 / R-MINT-11
+    // D5b R-MINT-10 (F2's feeAmount==0 reuses ERR_XRESERVE_FEE_NONZERO, declared below; the old
+    // R-MINT-11 <= maxFee compare + ERR_XRESERVE_FEE_OVER_MAX are subsumed and removed)
     "ERR_XRESERVE_AMOUNT_BELOW_FEE",
-    "ERR_XRESERVE_FEE_OVER_MAX",
     // D5c R-MINT-12
     "ERR_XRESERVE_NONCE_REPLAY",
     // D5d R-MINT-13 / R-MINT-14 (attestation_verify.masm)
@@ -82,7 +82,8 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_SIG_INVALID",
     // D5e R-MINT-15 (xreserve_mint.masm)
     "ERR_XRESERVE_SUPPLY_CAP",
-    // D5e F2 fee guard (xreserve_mint.masm)
+    // F2 fee guard, declared in BOTH deposit_intent_parser.masm (D5b advice-gate) and
+    // xreserve_mint.masm (D5e apply_mint_effects) — same string ⇒ shared felt code
     "ERR_XRESERVE_FEE_NONZERO",
     // Slice-1 recipient AccountId extraction (xreserve_mint.masm)
     "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",

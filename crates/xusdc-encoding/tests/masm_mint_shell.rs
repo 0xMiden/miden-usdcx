@@ -201,8 +201,6 @@ fn d5b_harness(amount_limbs: [u32; 8], maxfee_limbs: [u32; 8]) -> Result<ShellHa
 #[case::fee_zero(amt("amt-ge-gt").le_limbs(), amt("amt-ge-gt").b_le_limbs(), fee_advice_felts([0u32; 8]))]
 // boundary amount == maxFee accepted (R-MINT-10 is `<`, not `<=`)
 #[case::amount_eq_maxfee(amt("amt-ge-eq").le_limbs(), amt("amt-ge-eq").b_le_limbs(), fee_advice_felts([0u32; 8]))]
-// boundary feeAmount == maxFee accepted (R-MINT-11 is `>`, not `>=`)
-#[case::fee_eq_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-eq").le_limbs(), fee_advice_felts(amt("amt-ge-eq").le_limbs()))]
 // value at AssetAmount::MAX accepted at the cap; amount (cap) >= maxFee (amt-pos-1)
 #[case::cap_value(amt("amt-cap-accept").le_limbs(), amt("amt-pos-1").le_limbs(), fee_advice_felts([0u32; 8]))]
 #[tokio::test]
@@ -244,8 +242,12 @@ async fn d5b_happy_amount_fee(
 #[case::r_mint_9_fee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-pos-1").le_limbs(), fee_advice_felts(amt("amt-rej-limb-overflow").le_limbs()), "ERR_X_TOO_LARGE")]
 // R-MINT-10: reduced amount (amt-ge-lt.a) < maxFee (amt-ge-lt.b)
 #[case::r_mint_10_amount_below_fee(amt("amt-ge-lt").le_limbs(), amt("amt-ge-lt").b_le_limbs(), fee_advice_felts([0u32; 8]), "ERR_XRESERVE_AMOUNT_BELOW_FEE")]
-// R-MINT-11: amount >= maxFee passes, then reduced feeAmount (amt-ge-lt.b) > maxFee (amt-ge-lt.a)
-#[case::r_mint_11_fee_over_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-lt").le_limbs(), fee_advice_felts(amt("amt-ge-lt").b_le_limbs()), "ERR_XRESERVE_FEE_OVER_MAX")]
+// F2 (A1): amount >= maxFee passes, then reduced feeAmount (amt-ge-lt.b) is NONZERO (and > maxFee) ->
+// ERR_XRESERVE_FEE_NONZERO. The old R-MINT-11 over-max reject is subsumed by the feeAmount==0 gate.
+#[case::r_mint_11_fee_over_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-lt").le_limbs(), fee_advice_felts(amt("amt-ge-lt").b_le_limbs()), "ERR_XRESERVE_FEE_NONZERO")]
+// F2 (B1; moved from the accept suite d5b_happy_amount_fee): a nonzero feeAmount == maxFee (amt-ge-eq)
+// is no longer accepted — the old R-MINT-11 accept boundary is now a reject -> ERR_XRESERVE_FEE_NONZERO.
+#[case::fee_eq_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-eq").le_limbs(), fee_advice_felts(amt("amt-ge-eq").le_limbs()), "ERR_XRESERVE_FEE_NONZERO")]
 #[tokio::test]
 async fn d5b_amount_fee_rejects(
     #[case] amount_limbs: [u32; 8],

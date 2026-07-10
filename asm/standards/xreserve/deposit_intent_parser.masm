@@ -37,10 +37,13 @@ pub const USED_NONCES_SLOT = word("xusdc::xreserve::nonce_registry::used_nonces"
 const ERR_XRESERVE_WRONG_DOMAIN = "deposit intent remote domain does not match the faucet domain"
 const ERR_XRESERVE_WRONG_IDENTIFIER = "deposit intent remote token does not match the faucet identifier"
 
-# D5b amount/fee (R-MINT-10/11). R-MINT-9 (ERR_X_TOO_LARGE) is CONSUMED from the 04
-# reducer, never redefined here.
+# D5b amount/fee (R-MINT-10 + F2). R-MINT-9 (ERR_X_TOO_LARGE) is CONSUMED from the 04
+# reducer, never redefined here. the F2 feeAmount==0 gate SUBSUMES the old R-MINT-11
+# feeAmount<=maxFee compare (restored at the DEV-8 fee-split — see assert_mint_amounts); its
+# ERR string is byte-identical to xreserve_mint.masm's ERR_XRESERVE_FEE_NONZERO so the felt
+# code is shared (MASM consts are module-scoped — this parser declares its own).
 const ERR_XRESERVE_AMOUNT_BELOW_FEE = "deposit intent amount is below the max fee"
-const ERR_XRESERVE_FEE_OVER_MAX = "operator fee amount exceeds the deposit intent max fee"
+const ERR_XRESERVE_FEE_NONZERO = "mint fee amount must be zero"
 
 # D5c nonce replay (R-MINT-12). Assert-zero only; the registry write is deferred to D5e.
 const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
@@ -106,13 +109,14 @@ end
 #! reduce the `amount` (felt[2..9]) and `maxFee` (felt[43..50]) uint256 fields from the
 #! staged preimage and the operator `feeAmount` (8 u32-LE limbs read from the advice
 #! stack), then asserts reduced `amount >= maxFee` (R-MINT-10) and reduced
-#! `feeAmount <= maxFee` (R-MINT-11). R-MINT-9 (`ERR_X_TOO_LARGE`, high-4 limbs nonzero)
-#! PROPAGATES from the reducer on any of the three values.
+#! `feeAmount == 0` (F2 MVP; SUBSUMES R-MINT-11 `feeAmount <= maxFee`). R-MINT-9
+#! (`ERR_X_TOO_LARGE`, high-4 limbs nonzero) PROPAGATES from the reducer on any of the three values.
 #!
 #! `feeAmount` advice-provider hygiene (human-ratified Option C): `feeAmount` is an
 #! operator-chosen free parameter with no in-scope kernel-trusted commitment, so the
-#! commitment/content-key hygiene rules are N/A; its bound is the R-MINT-11 compare
-#! against the Circle-signed `maxFee`. Missing advice ERRORS (the `adv_push` read traps),
+#! commitment/content-key hygiene rules are N/A; under the F2 MVP its bound is the
+#! `feeAmount == 0` gate (the DEV-8 fee-split restores the R-MINT-11 `<= maxFee` compare
+#! against the Circle-signed `maxFee`). Missing advice ERRORS (the `adv_push` read traps),
 #! never defaults; a malformed (non-u32) limb traps `ERR_FELT_OUT_OF_FIELD` in the
 #! reducer's `u32assertw` guard. `feeAmount == 0` is the operator pushing eight zero limbs.
 #!
@@ -127,7 +131,7 @@ end
 #! - the reducer rejects amount, maxFee, or feeAmount (ERR_X_TOO_LARGE / ERR_AMOUNT_OVER_CAP).
 #! - a feeAmount advice limb is not a valid u32 (ERR_FELT_OUT_OF_FIELD), or feeAmount advice is absent.
 #! - reduced amount < maxFee (ERR_XRESERVE_AMOUNT_BELOW_FEE, R-MINT-10).
-#! - reduced feeAmount > maxFee (ERR_XRESERVE_FEE_OVER_MAX, R-MINT-11).
+#! - reduced feeAmount != 0 (ERR_XRESERVE_FEE_NONZERO, F2 MVP; subsumes R-MINT-11 feeAmount <= maxFee).
 #!
 #! Invocation: exec
 pub proc assert_mint_amounts
@@ -175,15 +179,17 @@ pub proc assert_mint_amounts
     exec.encoding::uint256_to_asset_amount
     # => [feeamount_y, maxfee_y]
 
-    # R-MINT-11: assert reduced feeAmount <= maxFee
-    u32split
-    # => [fee_lo, fee_hi, maxfee_y]
-    movup.2 u32split
-    # => [maxfee_lo, maxfee_hi, fee_lo, fee_hi]
-    # u64::lte over [b, a] (b on top) returns a <= b; here b = maxFee, a = feeAmount
-    exec.u64::lte
-    # => [is_fee_le_maxfee]
-    assert.err=ERR_XRESERVE_FEE_OVER_MAX
+    # fail-loud MVP (F2): the operator feeAmount must be zero. this subsumes R-MINT-11
+    # (feeAmount <= maxFee) — under the MVP the only allowed fee is 0 and 0 <= maxFee always
+    # holds, so the <= maxFee compare is unreachable and is removed. mirrors the F2 guard on
+    # apply_mint_effects (xreserve_mint.masm) but fires on the advice feeAmount the hardcoded-0
+    # effects never see. DEV-8 upgrade point: when the relayer fee-split lands (CIR-FEE-2:
+    # recipient amount - feeAmount, relayer credited feeAmount) restore the feeAmount <= maxFee
+    # compare here + add the relayer-credit leg to apply_mint_effects.
+    assertz.err=ERR_XRESERVE_FEE_NONZERO
+    # => [maxfee_y]
+
+    drop
     # => []
 end
 

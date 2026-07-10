@@ -62,7 +62,7 @@ pub const XRESERVE_MINT_ATTACHMENT_NUM_WORDS: usize = 9;
 /// `receive_and_mint`'s MAST digest, so ANY edit of the note script or the wrapper trips the
 /// parity assertion (`XReserveMintNote::script_root() == pinned`) and forces a conscious re-pin.
 pub const XRESERVE_MINT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x07be669ca9853347a69db69e9368dc04d090a1c033b79d4961a9e62bff188f2e";
+    "0xb4a510d89ef62eac1dd645fadeca1b00db000dddae8103e0220296ab208328c5";
 
 /// The mint-note consume script source (spec §2 file layout).
 const MINT_NOTE_SCRIPT_SRC: &str =

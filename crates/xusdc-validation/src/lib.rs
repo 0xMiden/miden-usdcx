@@ -27,14 +27,21 @@
 
 pub mod actors;
 pub mod assertions;
+pub mod assertions_cf;
 pub mod client;
 pub mod config;
 pub mod deploy;
 pub mod evidence;
+pub mod evidence_cf;
+pub mod mintburn;
 pub mod observations;
+pub mod observations_cf;
 pub mod rows_ab;
+pub mod rows_cf;
 pub mod stack;
 
 pub use config::{DomainParams, RunConfig, StackConfig};
 pub use observations::RowsAbObservations;
+pub use observations_cf::RowsCfObservations;
 pub use rows_ab::run_rows_ab;
+pub use rows_cf::run_rows_cf;

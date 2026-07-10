@@ -71,6 +71,25 @@ impl AttesterKey {
         sig65[64] = recid.to_byte();
         MintAttestation::new(sig65, self.pubkey_sec1)
     }
+
+    /// Signs an ARBITRARY 32-byte `digest` with this attester's key and bundles it with this
+    /// attester's REAL compressed pubkey. Used for the forged-signature Row-E negative: signing a
+    /// digest that is NOT `keccak256(payload)` yields a WELL-FORMED ECDSA signature that
+    /// `verify_prehash` runs to completion and rejects as invalid over the payload's true digest —
+    /// so the mint traps at `ERR_XRESERVE_SIG_INVALID` (the signature check), not the earlier
+    /// commitment gate (the pubkey stays this allowlisted attester's). A well-formed-but-wrong
+    /// signature is deliberate: a byte-mangled signature could instead trap inside `verify_prehash`
+    /// on a malformed scalar rather than returning "invalid".
+    pub fn attestation_over_digest(&self, digest: [u8; 32]) -> MintAttestation {
+        let (sig, recid): (K256Signature, RecoveryId) = self
+            .signing_key
+            .sign_prehash_recoverable(&digest)
+            .expect("secp256k1 prehash signing over a 32-byte digest");
+        let mut sig65 = [0u8; 65];
+        sig65[..64].copy_from_slice(sig.to_bytes().as_slice());
+        sig65[64] = recid.to_byte();
+        MintAttestation::new(sig65, self.pubkey_sec1)
+    }
 }
 
 /// The six wallets + two attesters (A and B — the C1 rotation seam).
@@ -92,7 +111,10 @@ pub struct Actors {
 /// account with the client. The wallet materializes on-chain with its first transaction.
 async fn create_wallet(hc: &mut HarnessClient) -> Result<Account> {
     let key = AuthSecretKey::new_falcon512_poseidon2();
-    let auth = AuthSingleSig::new(key.public_key().to_commitment(), AuthSchemeId::Falcon512Poseidon2);
+    let auth = AuthSingleSig::new(
+        key.public_key().to_commitment(),
+        AuthSchemeId::Falcon512Poseidon2,
+    );
 
     let account = AccountBuilder::new(os_seed())
         .account_type(AccountType::Public)
@@ -135,7 +157,14 @@ fn create_attester(run_root: &Path, label: &str) -> Result<AttesterKey> {
     fs::write(&secret_path, hex_lower(&signing_key.to_bytes()))
         .with_context(|| format!("writing {}", secret_path.display()))?;
 
-    Ok(AttesterKey { signing_key, pubkey_sec1, pubkey_sec1_hex, commitment, commitment_hex, secret_path })
+    Ok(AttesterKey {
+        signing_key,
+        pubkey_sec1,
+        pubkey_sec1_hex,
+        commitment,
+        commitment_hex,
+        secret_path,
+    })
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -146,13 +175,34 @@ fn hex_lower(bytes: &[u8]) -> String {
 /// (their on-chain materialization happens with their first transaction), and the secp256k1
 /// attester persisted under `run_root`.
 pub async fn create_actors(hc: &mut HarnessClient, run_root: &Path) -> Result<Actors> {
-    let owner = create_wallet(hc).await.context("creating the owner wallet")?;
-    let pauser = create_wallet(hc).await.context("creating the DOM_PAUSER wallet")?;
-    let manager = create_wallet(hc).await.context("creating the DOM_MANAGER wallet")?;
-    let recipient = create_wallet(hc).await.context("creating the recipient wallet")?;
-    let holder = create_wallet(hc).await.context("creating the holder wallet")?;
-    let new_pauser = create_wallet(hc).await.context("creating the C5 new-pauser wallet")?;
+    let owner = create_wallet(hc)
+        .await
+        .context("creating the owner wallet")?;
+    let pauser = create_wallet(hc)
+        .await
+        .context("creating the DOM_PAUSER wallet")?;
+    let manager = create_wallet(hc)
+        .await
+        .context("creating the DOM_MANAGER wallet")?;
+    let recipient = create_wallet(hc)
+        .await
+        .context("creating the recipient wallet")?;
+    let holder = create_wallet(hc)
+        .await
+        .context("creating the holder wallet")?;
+    let new_pauser = create_wallet(hc)
+        .await
+        .context("creating the C5 new-pauser wallet")?;
     let attester = create_attester(run_root, "a").context("creating local test attester A")?;
     let attester_b = create_attester(run_root, "b").context("creating local test attester B")?;
-    Ok(Actors { owner, pauser, manager, recipient, holder, new_pauser, attester, attester_b })
+    Ok(Actors {
+        owner,
+        pauser,
+        manager,
+        recipient,
+        holder,
+        new_pauser,
+        attester,
+        attester_b,
+    })
 }

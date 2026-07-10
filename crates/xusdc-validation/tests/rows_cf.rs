@@ -384,6 +384,70 @@ fn stock_gate_err_codes_match_the_real_node_observed_values() {
     );
 }
 
+/// The shape a STOCK miden-standards gate produces on a client-side trap: a `FailedAssertion`
+/// carrying ONLY the `err_code` for `expected_msg`, with `err_msg: None`. This is what the real node
+/// surfaces for the owner / role / pause / note+tx-script-allowlist gates (§2.4 of the record) — the
+/// message text is absent, so a row-check that matched ONLY on the message would spuriously reject a
+/// genuine gate trap.
+fn rejected_code_only(expected_msg: &str) -> Verdict {
+    use miden_protocol::errors::MasmError;
+    let code = MasmError::new(expected_msg.to_string()).code().as_canonical_u64();
+    Verdict::Rejected(format!(
+        "TransactionExecutorError(TransactionProgramExecutionFailed(OperationError {{ \
+         err: FailedAssertion {{ err_code: {code}, err_msg: None }} }}))"
+    ))
+}
+
+/// A stock-gate reject carried ONLY by its `err_code` (no message) is ACCEPTED by the row-check —
+/// this exercises the `err_code` branch of `assert_rejected_with`, which the 30-min real-node run is
+/// otherwise the only thing to cover. With that branch removed the auditor's mutation lands here.
+#[test]
+fn code_only_stock_gate_rejects_are_matched() {
+    // Row F — both gates are stock (code-only on the real node).
+    let f = RowF {
+        non_allowlisted_note: rejected_code_only(
+            "input note script root is not in the note script allowlist",
+        ),
+        tx_script: rejected_code_only("transaction script root is not in the tx script allowlist"),
+    };
+    assert_f(&f).expect("row F must accept stock-gate rejects carried only by their err_code");
+
+    // C4 — the pause halt is a stock gate (code-only). The rest of the green C4 shape is message-based.
+    let mut c4 = green_c4();
+    c4.mint_while_paused = rejected_code_only("the contract is paused");
+    c4.burn_while_paused = rejected_code_only("the contract is paused");
+    assert_c4(&c4).expect("C4 must accept a code-only paused reject");
+
+    // C6 — the owner/role gates are stock (code-only).
+    let c6 = vec![
+        AdminGateReject {
+            op: "set_attester".to_string(),
+            sender: "non-owner".to_string(),
+            expected_gate: ERR_NOT_OWNER.to_string(),
+            verdict: rejected_code_only(ERR_NOT_OWNER),
+            note_unconsumed: true,
+        },
+        AdminGateReject {
+            op: "pause".to_string(),
+            sender: "non-DOM_PAUSER".to_string(),
+            expected_gate: ERR_LACKS_ROLE.to_string(),
+            verdict: rejected_code_only(ERR_LACKS_ROLE),
+            note_unconsumed: true,
+        },
+    ];
+    assert_c6(&c6).expect("C6 must accept code-only owner/role rejects");
+}
+
+/// A code-only reject whose `err_code` is for a DIFFERENT error must NOT satisfy the gate — the
+/// err_code branch is SPECIFIC (it matches the expected error's code, not any code).
+#[test]
+fn code_only_reject_with_the_wrong_code_is_rejected() {
+    let mut f = green_f();
+    f.non_allowlisted_note = rejected_code_only("some entirely unrelated assertion");
+    let e = assert_f(&f).expect_err("F must reject a code-only reject bearing the WRONG err_code");
+    assert!(format!("{e:#}").contains("note script allowlist"), "got: {e:#}");
+}
+
 // ── the real-node E2E (the gate run for this slice) ──────────────────────────────────────────
 
 /// Rows C + F against a REAL fresh local node: bootstrap genesis, start the four services, deploy

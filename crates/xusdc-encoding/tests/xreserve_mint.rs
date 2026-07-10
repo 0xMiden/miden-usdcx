@@ -554,6 +554,37 @@ async fn reject_fee_over_max_fails_closed() -> Result<()> {
     Ok(())
 }
 
+/// F2 (LNV-3): a mint carrying a NONZERO advice `feeAmount` that is `<= maxFee` — the case the old
+/// R-MINT-11 accepted and the effects then SILENTLY IGNORED (LNV-3 drove feeAmount=3, maxFee=10) —
+/// must now fail closed with `ERR_XRESERVE_FEE_NONZERO` and ZERO writes. Structural sibling of
+/// `reject_fee_over_max_fails_closed`, but the fee is BELOW maxFee (the exact divergence F2 closes).
+#[tokio::test]
+async fn reject_nonzero_fee_below_maxfee_fails_closed() -> Result<()> {
+    let payload = with_amounts(base_payload(), 20_000_000, 10_000_000); // reduced amount 20 >= maxFee 10
+    let attester = gen_attester(1, &payload);
+    let (domain, identifier) = config(TEST_DOMAIN);
+    let driver = mint_composition_driver_src(&pack(&payload), LEN_FELTS, SCALE_EXP);
+    let h = setup_mint_composition_account(
+        1_000_000,
+        0,
+        domain,
+        identifier,
+        None,
+        Some((attester.commitment, Word::from(MARKER))),
+        &driver,
+        &composition_noeffect_probe_src(0, nonce_key()),
+    )?;
+    // feeAmount reduces to 3 (<= maxFee 10, but NONZERO); packed exactly like a uint256 payload field.
+    let fee = bytes_to_packed_u32_elements(&uint256_be(3_000_000));
+    let advice: Vec<Felt> = fee.into_iter().chain(attester.advice()).collect();
+    let result = run_mint_composition(&h, advice).await;
+    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_FEE_NONZERO"));
+    run_composition_probe(&h)
+        .await
+        .expect("nonzero-fee reject must leave token_config + usedNonces unchanged");
+    Ok(())
+}
+
 // R-MINT-16 NO-REGRESSION — the deny guard does not touch the custom xreserve_mint path
 // ================================================================================================
 

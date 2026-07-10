@@ -16,11 +16,22 @@ use anyhow::{Context, Result};
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::crypto::rand::FeltRng;
-use miden_protocol::note::Note;
+use miden_protocol::note::{
+    Note, NoteAssets, NoteAttachment, NoteAttachmentScheme, NoteAttachments, NoteRecipient,
+    NoteStorage, NoteTag, NoteType, PartialNoteMetadata,
+};
+use miden_protocol::{Felt, Word};
+use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
-use xusdc_encoding::note::xreserve_mint::XReserveMintNote;
+use xusdc_encoding::note::xreserve_mint::{
+    MintAttestation, XReserveMintNote, XRESERVE_MINT_ATTACHMENT_NUM_WORDS,
+    XRESERVE_MINT_ATTACHMENT_SCHEME,
+};
 use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
-use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, XReserveBurnItems};
+use xusdc_encoding::xreserve::encoding::{
+    account_id_to_bytes32, bytes32_to_storage_map_key, compressed_pubkey_felts,
+    deposit_intent_to_packed_felts, signature_felts, XReserveBurnItems,
+};
 
 use crate::actors::AttesterKey;
 use crate::config::DomainParams;
@@ -29,6 +40,12 @@ use crate::config::DomainParams;
 /// header, no hookData tail — the minimal valid mint). Its `remoteDomain` is 7 and its `remoteToken`
 /// keys the faucet identifier.
 pub const BASE_VECTOR: &str = "di-pos-empty-hookdata";
+
+/// The canonical accept vector carrying a NON-empty hookData tail (`hook_data_len == 10`; a 250-byte
+/// payload = the 240-byte header + 10 hookData bytes). Shares `remoteDomain` 7 and the SAME
+/// `remoteToken` as [`BASE_VECTOR`], so ONE `domain_init` validates BOTH the empty-hookData and the
+/// hookData-bearing Row-D mints — the second variant (bounded hookData) the mint matrix requires.
+pub const HOOKDATA_VECTOR: &str = "di-pos-hookdata";
 
 /// The vector's `remoteDomain` (Q-DOM-1 OPEN; `TEST_DOMAIN` in the MockChain suite). `domain_init`
 /// must write this so the D5a domain compare passes.
@@ -47,17 +64,33 @@ const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
 const MAX_FEE_BYTE_OFF: usize = 43 * 4;
 const NONCE_BYTE_OFF: usize = 51 * 4;
 
-fn base_vector() -> &'static DiVector {
+fn vector(id: &str) -> &'static DiVector {
     load()
         .families
         .di
         .iter()
-        .find(|v| v.id == BASE_VECTOR)
-        .unwrap_or_else(|| panic!("canonical artifact is missing di vector {BASE_VECTOR}"))
+        .find(|v| v.id == id)
+        .unwrap_or_else(|| panic!("canonical artifact is missing di vector {id}"))
+}
+
+fn base_vector() -> &'static DiVector {
+    vector(BASE_VECTOR)
 }
 
 fn base_fields() -> &'static DiFields {
-    base_vector().fields.as_ref().expect("the accept vector carries fields")
+    base_vector()
+        .fields
+        .as_ref()
+        .expect("the accept vector carries fields")
+}
+
+/// The `hook_data_len` field of a canonical vector (0 for [`BASE_VECTOR`], >0 for [`HOOKDATA_VECTOR`]).
+pub fn hook_data_len(vector_id: &str) -> u32 {
+    vector(vector_id)
+        .fields
+        .as_ref()
+        .expect("the accept vector carries fields")
+        .hook_data_len
 }
 
 /// The §5.9 `domain_init` parameters LNV-2 deploys with: `domain`/`identifier` MATCH the mint
@@ -81,12 +114,32 @@ fn uint256_be(value: u64) -> [u8; 32] {
     out
 }
 
-/// Builds a mint DepositIntent payload from the base vector: splices the raw uint256 `amount_raw`
-/// and `max_fee_raw`, points `remoteRecipient` at `recipient` (so the emitted P2ID note targets a
-/// real wallet), and XOR-perturbs one nonce byte by `nonce_salt` (distinct salts ⇒ distinct nonces,
-/// avoiding the replay gate across probes).
-pub fn mint_payload(recipient: AccountId, amount_raw: u64, max_fee_raw: u64, nonce_salt: u8) -> Vec<u8> {
-    let mut payload = base_vector().bytes();
+/// Builds a mint DepositIntent payload from [`BASE_VECTOR`] (empty hookData). See
+/// [`mint_payload_from`].
+pub fn mint_payload(
+    recipient: AccountId,
+    amount_raw: u64,
+    max_fee_raw: u64,
+    nonce_salt: u8,
+) -> Vec<u8> {
+    mint_payload_from(BASE_VECTOR, recipient, amount_raw, max_fee_raw, nonce_salt)
+}
+
+/// Builds a mint DepositIntent payload from the canonical vector `vector_id`: splices the raw
+/// uint256 `amount_raw` and `max_fee_raw`, points `remoteRecipient` at `recipient` (so the emitted
+/// P2ID note targets a real wallet), and XOR-perturbs one nonce byte by `nonce_salt` (distinct salts
+/// ⇒ distinct nonces, avoiding the replay gate across probes). The amount/maxFee/recipient/nonce all
+/// live in the 60-felt header, so the splice is identical for the empty-hookData ([`BASE_VECTOR`])
+/// and hookData-bearing ([`HOOKDATA_VECTOR`]) vectors; the hookData tail (if any) is carried verbatim
+/// and covered by the attester's keccak.
+pub fn mint_payload_from(
+    vector_id: &str,
+    recipient: AccountId,
+    amount_raw: u64,
+    max_fee_raw: u64,
+    nonce_salt: u8,
+) -> Vec<u8> {
+    let mut payload = vector(vector_id).bytes();
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount_raw));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(max_fee_raw));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
@@ -95,6 +148,16 @@ pub fn mint_payload(recipient: AccountId, amount_raw: u64, max_fee_raw: u64, non
         payload[NONCE_BYTE_OFF] ^= nonce_salt;
     }
     payload
+}
+
+/// The `usedNonces[nonce]` storage-map key for a payload's nonce field (`bytes32_to_key(nonce)`) —
+/// the SAME key the mint's D5c/D5e derive and set, so the driver can read the marker back after a
+/// committed mint or prove a rejected negative left it empty.
+pub fn nonce_key(payload: &[u8]) -> Word {
+    let nonce: [u8; 32] = payload[NONCE_BYTE_OFF..NONCE_BYTE_OFF + 32]
+        .try_into()
+        .expect("32 nonce bytes");
+    bytes32_to_storage_map_key(&nonce).into()
 }
 
 /// The reduced (on-chain) asset amount for a raw uint256 amount (÷ 10^SCALE_EXP).
@@ -128,6 +191,80 @@ pub fn mint_note<R: FeltRng>(
         .context("building the XReserveMintNote probe")
 }
 
+/// The 8 u32-LE `feeAmount` attachment limbs encoding a raw uint256 `fee_raw` — extracted from the
+/// `amount` field position of a freshly-packed DepositIntent, so the on-chain `uint256_to_asset_amount`
+/// reducer (shared by the `amount` field and the advice `feeAmount`) reduces them to EXACTLY
+/// `fee_raw / 10^SCALE_EXP`. Deriving the limbs from the trusted amount-field packing avoids
+/// re-deriving the wire-byte→limb layout by hand — the F2 negative needs a reduced fee ≥ 1, i.e.
+/// `fee_raw ≥ SCALE`. The production attestation attachment hardcodes these eight limbs to zero
+/// (DEV-8 MVP); only a harness-crafted note can carry a non-zero fee.
+pub fn fee_limbs_for(fee_raw: u64) -> [Felt; 8] {
+    // Splice `fee_raw` into the base vector's amount field (leaving its own valid recipient), pack,
+    // and read the amount-field limbs back — the reducer treats those limbs identically to the
+    // advice feeAmount, so they reduce to `fee_raw / 10^SCALE_EXP`.
+    let mut payload = base_vector().bytes();
+    payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(fee_raw));
+    let packed =
+        deposit_intent_to_packed_felts(&payload).expect("a well-formed accept payload packs");
+    let felt_off = AMOUNT_BYTE_OFF / 4;
+    core::array::from_fn(|i| packed[felt_off + i])
+}
+
+/// Builds an `XReserveMintNote` with a CUSTOM scheme-1 attestation attachment: the same transport
+/// shape the production [`XReserveMintNote::create`] emits (custom mint script, DepositIntent
+/// storage, scheme-2 `NetworkAccountTarget` routing bind) but with the attestation attachment's
+/// `[feeAmount(8), pubkey(9), signature(17), pad(2)]` words assembled from the caller-supplied
+/// `fee_limbs` + `attestation`. This is the harness's ADVERSARIAL note builder — it exists solely to
+/// stage Row-E negatives the production factory cannot (a non-zero feeAmount, a payload the
+/// attestation did not sign); it never re-implements any faucet gate. Mirrors the F5-suite
+/// `mint_note_with_attachments` helper (public-API note assembly, unchanged script root).
+pub fn mint_note_with_fee<R: FeltRng>(
+    sender: AccountId,
+    faucet: AccountId,
+    payload: &[u8],
+    attestation: &MintAttestation,
+    fee_limbs: [Felt; 8],
+    rng: &mut R,
+) -> Result<Note> {
+    // The scheme-1 attestation content: [feeAmount(8), pubkey(9), signature(17), pad(2)] = 36 felts
+    // = 9 words — the exact order `mint` pops from the advice stack. Identical to the production
+    // `attestation_attachment`, save the caller-chosen fee limbs (production hardcodes eight zeros).
+    let mut felts: Vec<Felt> = Vec::with_capacity(36);
+    felts.extend(fee_limbs);
+    felts.extend(compressed_pubkey_felts(attestation.pubkey()));
+    felts.extend(signature_felts(attestation.signature()));
+    felts.extend([Felt::from(0u32); 2]);
+    let words: Vec<Word> = felts
+        .chunks_exact(4)
+        .map(|c| Word::new([c[0], c[1], c[2], c[3]]))
+        .collect();
+    debug_assert_eq!(words.len(), XRESERVE_MINT_ATTACHMENT_NUM_WORDS);
+    let attestation_attachment = NoteAttachment::with_words(
+        NoteAttachmentScheme::new(XRESERVE_MINT_ATTACHMENT_SCHEME)
+            .context("scheme-1 attachment scheme")?,
+        words,
+    )
+    .context("building the custom scheme-1 attestation attachment")?;
+
+    let items = deposit_intent_to_packed_felts(payload)
+        .map_err(|e| anyhow::anyhow!("packing the deposit intent: {e}"))?;
+    let storage = NoteStorage::new(items).context("mint-note storage")?;
+    let recipient_note = NoteRecipient::new(rng.draw_word(), XReserveMintNote::script(), storage);
+    let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
+        .with_tag(NoteTag::with_account_target(faucet));
+    let target = NetworkAccountTarget::new(faucet, NoteExecutionHint::Always)
+        .map_err(|e| anyhow::anyhow!("faucet id is not a public network account: {e}"))?;
+    let attachments =
+        NoteAttachments::new(vec![attestation_attachment, NoteAttachment::from(target)])
+            .context("mint-note attachments")?;
+    Ok(Note::with_attachments(
+        NoteAssets::new(vec![]).context("empty mint-note vault")?,
+        metadata,
+        recipient_note,
+        attachments,
+    ))
+}
+
 /// Builds a production `XReserveBurnNote` carrying `amount` units of the faucet's xUSDC (the note's
 /// vault holds the asset; the faucet's `receive_and_burn` gate is what the C2/C4 probes exercise).
 pub fn burn_note<R: FeltRng>(
@@ -143,5 +280,6 @@ pub fn burn_note<R: FeltRng>(
         dest_recipient: [0xAB; 32],
         salt: [dest_salt; 32],
     };
-    XReserveBurnNote::create(sender, faucet, items, rng).context("building the XReserveBurnNote probe")
+    XReserveBurnNote::create(sender, faucet, items, rng)
+        .context("building the XReserveBurnNote probe")
 }

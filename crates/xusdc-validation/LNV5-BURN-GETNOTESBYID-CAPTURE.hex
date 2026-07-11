@@ -1,0 +1,11 @@
+# Byte-exact GetNotesById response for the committed production XReserveBurnNote (LNV-5 Row G).
+# Deliverable for the examples repo / Njord follow-up. The FULL response content of
+# NodeRpcClient::get_notes_by_id -> FetchedNote::Public(Note, NoteInclusionProof): BOTH halves,
+# hex-encoded via Serializable::to_bytes — the note body AND its inclusion proof (the proof is
+# what the withdrawal attester needs to verify the note's on-chain inclusion).
+# note_id=0x387d6378252adee6968417df4c0057f179d4dd319b69989840afe89922be9d26  tag=0x4255524E  inclusion_block=1461
+#
+# --- Note (miden_protocol::note::Note::to_bytes), 346 bytes ---
+0127fc127c813084315d0d9240b33a3f4e5255420101cbe044fc2bcad991386b7cb29c17056400000000000000004d4153540000000301030300000000010000000000000080861d8e08672e928179e1aedb1e4ec09bff641ed457025123ffb01d502f5deaeb010101010101010105010101010101010101010101010101010100000000120064000000000000000300000000000000abababab00000000abababab00000000abababab00000000abababab00000000abababab00000000abababab00000000abababab00000000abababab0000000065656565000000006565656500000000656565650000000065656565000000006565656500000000656565650000000065656565000000006565656500000000f98971d62626456aa72118b00f2b719fbadc1c8be808dd502667901d24045247010200000005179cb27c6b3891d9ca2bfc44e0cb01000000000000000000000000000000
+# --- NoteInclusionProof (miden_protocol::note::NoteInclusionProof::to_bytes), 15 bytes ---
+b5050000000010ffff000000000000

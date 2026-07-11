@@ -134,9 +134,16 @@ pub struct RunConfig {
 }
 
 impl RunConfig {
-    /// A fresh run rooted under `local-node-data/lnv1/<label>` in the repo (gitignored).
+    /// A fresh run rooted under `local-node-data/lnv1/<label>` in the repo (gitignored) — the
+    /// historical single-slice layout the LNV-1..4 binaries use.
     pub fn fresh(repo_root: &Path, label: &str) -> Self {
-        let run_root = repo_root.join("local-node-data").join("lnv1").join(label);
+        Self::fresh_under(repo_root, "lnv1", label)
+    }
+
+    /// A fresh run rooted under `local-node-data/<track>/<label>` (gitignored). The LNV-5
+    /// consolidated gate runs under the `lnv5` track.
+    pub fn fresh_under(repo_root: &Path, track: &str, label: &str) -> Self {
+        let run_root = repo_root.join("local-node-data").join(track).join(label);
         Self {
             stack: StackConfig::new(run_root),
             max_supply: 1_000_000_000_000,

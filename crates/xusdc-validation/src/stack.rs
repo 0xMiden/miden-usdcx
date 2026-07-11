@@ -37,6 +37,78 @@ const RPC_READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long to wait for a service to exit after SIGTERM before SIGKILL.
 const TERM_GRACE: Duration = Duration::from_secs(10);
 
+/// How long the sequencer keeps a gRPC connection before dropping it
+/// (`--rpc.grpc.max-connection-age`). `miden-node v0.15.1` defaults to 30 MINUTES
+/// (`DEFAULT_MAX_CONNECTION_AGE`, node `crates/utils/src/clap.rs:13`), and tonic 0.14.6's
+/// connection-age future panics the serving worker when that age elapses (`async fn resumed
+/// after completion`, tonic `transport/server/mod.rs:891`) — the LNV-5 round-1 row-L finding
+/// (`LNV5-ROW-L-FINDING.md`): every harness connection that lived 30 minutes panicked the
+/// sequencer. A consolidated gate run holds client connections for ~70 minutes, so the stack
+/// extends the age to ONE WEEK — unreachable by any run — at the CONFIG level via the node's own
+/// CLI flag (the human-approved disposition; no node/production code is patched and the row-L
+/// panic detector stays fully strict).
+pub const SEQUENCER_MAX_CONNECTION_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// The `miden-validator <args…>` invocation for the validator service.
+pub fn validator_start_args(config: &StackConfig) -> Vec<String> {
+    vec![
+        "start".to_string(),
+        "--listen".to_string(),
+        format!("127.0.0.1:{}", config.validator_port),
+        "--data-directory".to_string(),
+        config.run_root.join("validator").display().to_string(),
+    ]
+}
+
+/// The `miden-ntx-builder <args…>` invocation for the ntx-builder service (presents the shared
+/// network-tx auth token to the sequencer; path N depends on it).
+pub fn ntx_builder_start_args(config: &StackConfig) -> Vec<String> {
+    vec![
+        "start".to_string(),
+        "--listen".to_string(),
+        format!("127.0.0.1:{}", config.ntx_builder_port),
+        "--rpc.url".to_string(),
+        config.rpc_url(),
+        "--rpc.auth-header-value".to_string(),
+        config.network_tx_auth_token.clone(),
+        "--tx-prover.url".to_string(),
+        config.tx_prover_url(),
+        "--data-directory".to_string(),
+        config.run_root.join("ntx-builder").display().to_string(),
+    ]
+}
+
+/// The `miden-remote-prover <args…>` invocation for the transaction prover.
+pub fn tx_prover_start_args(config: &StackConfig) -> Vec<String> {
+    vec![
+        "--kind".to_string(),
+        "transaction".to_string(),
+        "--port".to_string(),
+        config.tx_prover_port.to_string(),
+    ]
+}
+
+/// The `miden-node <args…>` invocation for the sequencer service: the public RPC listen address,
+/// the validator/ntx-builder wiring, the network-tx auth token, and the gRPC connection-age
+/// override ([`SEQUENCER_MAX_CONNECTION_AGE`], rendered as humantime whole seconds).
+pub fn sequencer_start_args(config: &StackConfig) -> Vec<String> {
+    vec![
+        "sequencer".to_string(),
+        "--data-directory".to_string(),
+        config.run_root.join("node").display().to_string(),
+        "--rpc.listen".to_string(),
+        format!("127.0.0.1:{}", config.rpc_port),
+        "--validator.url".to_string(),
+        config.validator_url(),
+        "--ntx-builder.url".to_string(),
+        config.ntx_builder_url(),
+        "--rpc.network-tx-auth-header-value".to_string(),
+        config.network_tx_auth_token.clone(),
+        "--rpc.grpc.max-connection-age".to_string(),
+        format!("{}s", SEQUENCER_MAX_CONNECTION_AGE.as_secs()),
+    ]
+}
+
 /// One spawned stack service.
 pub struct Service {
     pub name: &'static str,
@@ -54,8 +126,8 @@ pub struct NodeStack {
 /// Runs a bootstrap-style command to completion, teeing output to a log file.
 fn run_to_completion(name: &str, log_dir: &Path, mut cmd: Command) -> Result<()> {
     let log_path = log_dir.join(format!("bootstrap-{name}.log"));
-    let log = File::create(&log_path)
-        .with_context(|| format!("creating {}", log_path.display()))?;
+    let log =
+        File::create(&log_path).with_context(|| format!("creating {}", log_path.display()))?;
     let err_log = log.try_clone().context("cloning the log handle")?;
     let status = cmd
         .stdout(Stdio::from(log))
@@ -74,20 +146,26 @@ fn run_to_completion(name: &str, log_dir: &Path, mut cmd: Command) -> Result<()>
 /// Spawns a long-running service with stdout+stderr captured to its log file.
 fn spawn_service(name: &'static str, log_dir: &Path, mut cmd: Command) -> Result<Service> {
     let log_path = log_dir.join(format!("{name}.log"));
-    let log = File::create(&log_path)
-        .with_context(|| format!("creating {}", log_path.display()))?;
+    let log =
+        File::create(&log_path).with_context(|| format!("creating {}", log_path.display()))?;
     let err_log = log.try_clone().context("cloning the log handle")?;
     let child = cmd
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(err_log))
         .spawn()
         .with_context(|| format!("spawning {name}"))?;
-    Ok(Service { name, child, log_path })
+    Ok(Service {
+        name,
+        child,
+        log_path,
+    })
 }
 
 fn port_open(port: u16) -> bool {
     TcpStream::connect_timeout(
-        &format!("127.0.0.1:{port}").parse().expect("loopback address parses"),
+        &format!("127.0.0.1:{port}")
+            .parse()
+            .expect("loopback address parses"),
         Duration::from_millis(250),
     )
     .is_ok()
@@ -120,9 +198,15 @@ impl NodeStack {
         let node_dir = root.join("node");
         let ntx_dir = root.join("ntx-builder");
         let log_dir = config.log_dir();
-        for dir in [&genesis_dir, &accounts_dir, &validator_dir, &node_dir, &ntx_dir, &log_dir] {
-            fs::create_dir_all(dir)
-                .with_context(|| format!("creating {}", dir.display()))?;
+        for dir in [
+            &genesis_dir,
+            &accounts_dir,
+            &validator_dir,
+            &node_dir,
+            &ntx_dir,
+            &log_dir,
+        ] {
+            fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
 
         // 1. LOCAL genesis: build + sign genesis.dat with the documented default dev validator
@@ -159,44 +243,25 @@ impl NodeStack {
             .arg(&genesis_file);
         run_to_completion("ntx-builder", &log_dir, cmd)?;
 
-        // 3. Start the services: prover → validator → ntx-builder → sequencer.
+        // 3. Start the services: prover → validator → ntx-builder → sequencer. The argument
+        //    vectors are built by the pub arg-builder fns (unit-tested; the sequencer's carries
+        //    the [`SEQUENCER_MAX_CONNECTION_AGE`] override).
         let mut services = Vec::new();
 
         let mut cmd = Command::new("miden-remote-prover");
-        cmd.args(["--kind", "transaction", "--port", &config.tx_prover_port.to_string()]);
+        cmd.args(tx_prover_start_args(config));
         services.push(spawn_service("tx-prover", &log_dir, cmd)?);
 
         let mut cmd = Command::new("miden-validator");
-        cmd.args(["start", "--listen"])
-            .arg(format!("127.0.0.1:{}", config.validator_port))
-            .arg("--data-directory")
-            .arg(&validator_dir);
+        cmd.args(validator_start_args(config));
         services.push(spawn_service("validator", &log_dir, cmd)?);
 
         let mut cmd = Command::new("miden-ntx-builder");
-        cmd.args(["start", "--listen"])
-            .arg(format!("127.0.0.1:{}", config.ntx_builder_port))
-            .arg("--rpc.url")
-            .arg(config.rpc_url())
-            .arg("--rpc.auth-header-value")
-            .arg(&config.network_tx_auth_token)
-            .arg("--tx-prover.url")
-            .arg(config.tx_prover_url())
-            .arg("--data-directory")
-            .arg(&ntx_dir);
+        cmd.args(ntx_builder_start_args(config));
         services.push(spawn_service("ntx-builder", &log_dir, cmd)?);
 
         let mut cmd = Command::new("miden-node");
-        cmd.args(["sequencer", "--data-directory"])
-            .arg(&node_dir)
-            .arg("--rpc.listen")
-            .arg(format!("127.0.0.1:{}", config.rpc_port))
-            .arg("--validator.url")
-            .arg(config.validator_url())
-            .arg("--ntx-builder.url")
-            .arg(config.ntx_builder_url())
-            .arg("--rpc.network-tx-auth-header-value")
-            .arg(&config.network_tx_auth_token);
+        cmd.args(sequencer_start_args(config));
         services.push(spawn_service("sequencer", &log_dir, cmd)?);
 
         let mut stack = Self {

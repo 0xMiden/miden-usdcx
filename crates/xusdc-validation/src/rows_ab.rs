@@ -130,12 +130,9 @@ fn domain_init_note(
     .context("building a domain_init note")
 }
 
-/// Runs the full LNV-1 row-A/B flow. See the module docs for the step list.
+/// Runs the full LNV-1 row-A/B flow on its own fresh stack. See the module docs for the step
+/// list.
 pub async fn run_rows_ab(cfg: &RunConfig) -> Result<RowsAbObservations> {
-    use miden_client::rpc::NodeRpcClient;
-
-    let main_commit = git_head_commit();
-
     // 1. Fresh stack.
     let mut stack = NodeStack::bootstrap_and_start(&cfg.stack)
         .context("bootstrapping + starting the local node stack")?;
@@ -143,10 +140,29 @@ pub async fn run_rows_ab(cfg: &RunConfig) -> Result<RowsAbObservations> {
         stack.keep_on_drop();
     }
 
+    let obs = run_rows_ab_on(cfg, "main").await?;
+
+    // Teardown (Drop also covers the error paths above).
+    if !cfg.keep_stack {
+        stack.stop().context("stopping the node stack")?;
+    }
+    Ok(obs)
+}
+
+/// Runs the row-A/B flow against an ALREADY-RUNNING stack (the LNV-5 consolidated run boots ONE
+/// stack and drives every slice on it in matrix order). `client_label` namespaces this slice's
+/// client store, keystore, and actor secrets under `<run_root>/client-<label>/` so composed
+/// slices cannot collide. No stack lifecycle happens here.
+pub async fn run_rows_ab_on(cfg: &RunConfig, client_label: &str) -> Result<RowsAbObservations> {
+    use miden_client::rpc::NodeRpcClient;
+
+    let main_commit = git_head_commit();
+
     // 2. Client + actors.
-    let mut hc = build_client(&cfg.stack, "main").await?;
+    let mut hc = build_client(&cfg.stack, client_label).await?;
     hc.client.sync_state().await.context("initial sync")?;
-    let actors = create_actors(&mut hc, &cfg.stack.run_root).await?;
+    let actor_root = cfg.stack.run_root.join(format!("client-{client_label}"));
+    let actors = create_actors(&mut hc, &actor_root).await?;
     let owner_id = actors.owner.id();
 
     // 3. The production faucet account, locally composed (nonce 0, seed embedded).
@@ -226,11 +242,6 @@ pub async fn run_rows_ab(cfg: &RunConfig) -> Result<RowsAbObservations> {
         .get_account_details(faucet_id)
         .await
         .map_err(|e| anyhow::anyhow!("GetAccount({faucet_id}) after the reinit attempt: {e}"))?;
-
-    // 9. Teardown (Drop also covers the error paths above).
-    if !cfg.keep_stack {
-        stack.stop().context("stopping the node stack")?;
-    }
 
     Ok(RowsAbObservations {
         main_commit,

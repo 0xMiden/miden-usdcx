@@ -637,10 +637,9 @@ async fn negative(
     })
 }
 
-/// Runs the full LNV-3 rows-D/E arc. See the module docs for the execution model + arc order.
+/// Runs the full LNV-3 rows-D/E arc on its own fresh stack. See the module docs for the
+/// execution model + arc order.
 pub async fn run_rows_de(cfg: &RunConfig) -> Result<RowsDeObservations> {
-    let main_commit = git_head_commit();
-
     // 1. Fresh stack.
     let mut stack = NodeStack::bootstrap_and_start(&cfg.stack)
         .context("bootstrapping + starting the local node stack")?;
@@ -648,10 +647,27 @@ pub async fn run_rows_de(cfg: &RunConfig) -> Result<RowsDeObservations> {
         stack.keep_on_drop();
     }
 
+    let obs = run_rows_de_on(cfg, "main").await?;
+
+    // Teardown (Drop also covers the error paths above).
+    if !cfg.keep_stack {
+        stack.stop().context("stopping the node stack")?;
+    }
+    Ok(obs)
+}
+
+/// Runs the rows-D/E arc against an ALREADY-RUNNING stack (the LNV-5 consolidated run boots ONE
+/// stack and drives every slice on it in matrix order). `client_label` namespaces this slice's
+/// client store, keystore, and actor secrets under `<run_root>/client-<label>/` so composed
+/// slices cannot collide. No stack lifecycle happens here.
+pub async fn run_rows_de_on(cfg: &RunConfig, client_label: &str) -> Result<RowsDeObservations> {
+    let main_commit = git_head_commit();
+
     // 2. Client + actors + the production faucet account (domain_init matching the mint vector).
-    let mut hc = build_client(&cfg.stack, "main").await?;
+    let mut hc = build_client(&cfg.stack, client_label).await?;
     hc.client.sync_state().await.context("initial sync")?;
-    let actors = create_actors(&mut hc, &cfg.stack.run_root).await?;
+    let actor_root = cfg.stack.run_root.join(format!("client-{client_label}"));
+    let actors = create_actors(&mut hc, &actor_root).await?;
     let owner_id = actors.owner.id();
     let domain = mintburn::lnv2_domain_params();
     let faucet = build_faucet_account(
@@ -750,11 +766,6 @@ pub async fn run_rows_de(cfg: &RunConfig) -> Result<RowsDeObservations> {
     // 6. Row E — the negatives (client-side rejects + zero-state-change read-backs). The replay
     //    reuses the empty-hookData variant's (now-committed) nonce.
     let e = run_negatives(&mut d, &replay_payload).await?;
-
-    // Teardown.
-    if !cfg.keep_stack {
-        stack.stop().context("stopping the node stack")?;
-    }
 
     Ok(RowsDeObservations {
         main_commit,

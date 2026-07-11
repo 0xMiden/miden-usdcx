@@ -7,12 +7,22 @@ Validation-only — it never modifies faucet code; a red assertion here is a sur
 - **Pins:** protocol v0.15.3 (git `681fc905…`), node binaries v0.15.1 (installed in
   `/usr/local/bin`), `miden-client =0.15.3`. Ledger + discovered mechanics + evidence:
   [`VALIDATION-RECORD.md`](VALIDATION-RECORD.md) (LNV-1),
-  [`VALIDATION-RECORD-LNV2.md`](VALIDATION-RECORD-LNV2.md) (LNV-2).
+  [`VALIDATION-RECORD-LNV2.md`](VALIDATION-RECORD-LNV2.md) (LNV-2),
+  [`VALIDATION-RECORD-LNV3.md`](VALIDATION-RECORD-LNV3.md) (LNV-3),
+  [`VALIDATION-RECORD-LNV4.md`](VALIDATION-RECORD-LNV4.md) (LNV-4).
 - **LNV-1:** harness foundation + matrix rows A (deploy + recognize) and B (`domain_init` init-once).
 - **LNV-2:** matrix rows C (admin suite — `set_attester` + rotation, `set_min_burn_size`,
   `set_max_supply`, pause/unpause + F6, DOM_MANAGER role rotation, non-authorized-sender negatives)
   and F (the F5 auth boundary — non-allowlisted note + tx-script both rejected). Admin state changes
   commit via the ntx-builder (path N); accept/reject probes run client-side (kernel traps).
+- **LNV-3:** matrix rows D (mint happy path — both hookData variants, committed via path N with the
+  recipient consuming the emitted P2ID) and E (mint negatives — replay, forged signature,
+  non-allowlisted attester, non-zero fee, tampered payload).
+- **LNV-4:** matrix rows G (burn two-block — the Circle read-path proof: the production
+  `XReserveBurnNote` committed, tag-discoverable, and durably `GetNotesById`-retrievable after the
+  faucet consumes it), H (the **F7 same-block-erasure RIV** — a Circle/DEV-7 EVIDENCE packet against
+  the production note, no acceptability decision), I (burn negatives — below-min, while-paused,
+  wrong-asset) and J (conservation — `token_supply == Σminted − Σburned`).
 
 ## One-command runs
 
@@ -22,7 +32,11 @@ Validation-only — it never modifies faucet code; a red assertion here is a sur
 cargo run -p xusdc-validation --bin lnv1_rows_ab
 # THE LNV-2 GATE RUN — rows C/F (~30 min: ~16 ntx-builder-committed admin ops + client-side probes)
 cargo run -p xusdc-validation --bin lnv2_rows_cf
-# equivalent via the test suite (both real-node E2Es + all synthetic assertion negatives)
+# THE LNV-3 GATE RUN — rows D/E (mint lifecycle: path-N mints + recipient P2ID consumes, client-side negatives)
+cargo run -p xusdc-validation --bin lnv3_rows_de
+# THE LNV-4 GATE RUN — rows G/H/I/J (~15 min: burn two-block + F7 same-block RIV + burn negatives + conservation)
+cargo run -p xusdc-validation --bin lnv4_rows_gj
+# equivalent via the test suite (all real-node E2Es + all synthetic assertion negatives)
 cargo test -p xusdc-validation --locked -- --include-ignored
 
 # the DEFAULT (sandbox-safe) suite: the synthetic assertion negatives + err_code tripwire only —

@@ -1,7 +1,14 @@
-//! Circle-facing off-chain validation (the fail-fast checks before the seam; §3, §8.1). This slice
-//! ships the DepositIntent structural decoder ([`deposit_intent`], the mirror of D5a); the
-//! attestation-envelope + `messageHash == keccak256(payload)` checks land in a later slice.
+//! Circle-facing off-chain validation (the fail-fast checks before the seam; §3, §8.1): the
+//! DepositIntent structural decoder ([`deposit_intent`], the mirror of D5a) and the attestation
+//! envelope ([`envelope`] — `messageHash == keccak256(payload)` by RAW keccak, DC-2, plus the
+//! 65-byte `r‖s‖v` shape check).
+//!
+//! Every check here is a LIVENESS filter, never an authority: each one stops the relayer from
+//! spending a Miden transaction on an envelope the chain would certainly reject. The authoritative
+//! parse, the ECDSA verification, and the attester-allowlist gate are all on-chain (§1.2).
 
 pub mod deposit_intent;
+pub mod envelope;
 
 pub use deposit_intent::{decode_and_validate_deposit_intent, DepositIntent};
+pub use envelope::{validate_attestation_envelope, verify_message_hash};

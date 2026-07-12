@@ -20,6 +20,44 @@ plus the Rust encoding library and validation harness that support it.
 | `docs/governing/` | The pins, module-ownership map, MASM structure conventions, and toolchain-grounding reports the code is built against. |
 | `canary/` | Grounding reports proving each Miden primitive the faucet relies on actually executes on the pinned toolchain. |
 
+## How it works
+
+xUSDC is a Miden fungible-faucet account whose **supply-changing surfaces are replaced with custom,
+fully-gated MASM**. Native USDC stays locked 1:1 in Circle's xReserve contract on the source chain;
+this account mints xUSDC against a Circle-attested deposit and burns it on withdrawal.
+
+- **Mint.** A relayer submits a Circle-attested `DepositIntent` plus an attestation attachment (fee,
+  attester pubkey, signature) through the public mint note. The account runs `xreserve_mint` as a
+  strict **verify-once-then-write-once** pipeline: pause gate → structural/addressing checks →
+  amount/fee reduction → nonce replay guard → keccak-then-ECDSA attestation check against the attester
+  allowlist → supply-cap guard; then, atomically, it marks the nonce used, emits a P2ID note carrying
+  the minted xUSDC to the recipient, and raises `token_supply`. Any check that fails aborts the whole
+  transaction with no writes, so a failed mint never consumes its nonce. The stock `mint_and_send`
+  path is denied, which makes `xreserve_mint` the **only** surface that can raise supply.
+- **Burn.** A holder creates a **Public** `XReserveBurnNote` carrying `(amount, destDomain,
+  destRecipient, salt)`; creating the note moves the assets out of the holder's vault (so the balance
+  is checked at creation). In a **later block** the faucet consumes the note (`receive_and_burn`):
+  pause is checked, then a custom burn policy requires `amount > 0` and `amount ≥ minBurnSize`, and
+  consuming the note decrements `token_supply`. The note is always public and two-block so Circle can
+  observe the withdrawal.
+- **Encoding.** The codecs that translate Circle's wire formats to Miden types are **written once** in
+  `xreserve::encoding` (MASM) and mirrored in Rust — `bytes32` hashing, `uint256`→amount reduction,
+  the `DepositIntent` parse, and the attester **pubkey commitment** (`DC-3`, a Poseidon2 hash over the
+  already-packed pubkey felts) — with a cross-implementation test (`TV-DUAL-1`/`-2`/`-3`/`-5`) proving
+  they agree on every golden vector. The remaining codecs are **Rust-only** (the relayer/harness side):
+  the burn-note payload (`DC-7`, checked for Rust emit-vs-decode parity), the AccountId↔bytes32 mapping
+  (`DC-6`), and the attestation byte→felt packing of the **digest, compressed pubkey, and signature**
+  (`DC-2`). `TV-DUAL-5` compares each side's final `pubkey_commitment` Word against the miden-crypto
+  oracle — the MASM proc hashes the vector's pre-packed felts (there is no MASM pubkey packer), while
+  the Rust leg packs the raw key itself — so the byte→felt packing runs only in Rust, with no MASM
+  counterpart to diff against. The keccak digest and the ECDSA signature check themselves are not
+  encoding codecs — they run on-chain in the faucet's attestation verifier.
+- **Admin.** `Ownable2Step` ownership, owner-gated setters (`set_attester`, `set_min_burn_size`,
+  `domain_init`), and a separate `DOM_PAUSER`-gated pause/unpause that halts both mint and
+  burn-consume.
+
+See [`docs/spec/FAUCET-COMPONENT-SPEC.md`](docs/spec/FAUCET-COMPONENT-SPEC.md) for the full pipeline.
+
 ## Start here
 
 - **What the faucet does and how it's built:** [`docs/spec/FAUCET-COMPONENT-SPEC.md`](docs/spec/FAUCET-COMPONENT-SPEC.md).
@@ -30,25 +68,54 @@ plus the Rust encoding library and validation harness that support it.
 
 ## Build and test
 
-The MASM is not compiled by a Rust-contract toolchain; it is assembled and executed by the test
-suite. The primary gate assembles every `.masm`, links it into the faucet account, and runs the
-mint/burn/admin behaviour against a mock chain:
+The MASM is not compiled by a Rust-contract toolchain; it is assembled and **executed** by the test
+suite. Everything below runs offline — the toolchain is pinned in `Cargo.lock` — from the repo root:
 
 ```sh
-cargo test --locked -p xusdc-encoding --release   # assemble + execute the MASM, run the full suite
-cargo test --locked -p xusdc-encoding --test masm_structure   # MASM source-convention conformance
+cargo build  --locked -p xusdc-encoding                       # compile the encoding crate (Rust; MASM is assembled by the test gate, not here)
+cargo test   --locked -p xusdc-encoding --release             # THE gate: assemble + EXECUTE the MASM, full suite
+cargo test   --locked -p xusdc-encoding --test masm_structure # MASM source-convention conformance
+cargo fmt    --all -- --check                                 # formatting
+cargo clippy --workspace --locked -- -D warnings              # lints
 ```
 
-Real-local-node validation lives in `xusdc-validation` and requires a running Miden node stack; see
-[`crates/xusdc-validation/README.md`](crates/xusdc-validation/README.md).
+The primary gate (`cargo test -p xusdc-encoding --release`) assembles every `.masm`, links it into
+the faucet account, and runs the mint/burn/admin behaviour — including the Rust↔MASM
+cross-implementation vectors — against a mock chain.
+
+### Real-local-node validation
+
+`crates/xusdc-validation` deploys the production faucet to a **real Miden node** and drives the
+mint/burn/admin acceptance matrix (rows `A`–`L`). It is **not** part of the offline gate above. Each
+gate binary is self-contained: it **bootstraps genesis, starts the four-service node stack (validator,
+ntx-builder, sequencer, tx prover), runs its rows, and tears the stack down**. The only prerequisites
+are the four v0.15.1 node binaries on `PATH` and loopback ports `57291–57294` free.
+
+```sh
+cargo run -p xusdc-validation --bin lnv1_rows_ab      # rows A/B — deploy + domain_init init-once
+cargo run -p xusdc-validation --bin lnv2_rows_cf      # rows C/F — admin suite + auth boundary
+cargo run -p xusdc-validation --bin lnv3_rows_de      # rows D/E — mint lifecycle + negatives
+cargo run -p xusdc-validation --bin lnv4_rows_gj      # rows G/H/I/J — burn two-block + F7 + conservation
+cargo run -p xusdc-validation --bin lnv5_full_matrix  # the consolidated A–L §11.2 gate run on one fresh node
+cargo run -p xusdc-validation --bin lnv_stack -- up [label]   # bring a stack up and leave it running (`-- down <run-root>` to stop)
+```
+
+`cargo test -p xusdc-validation` on its own is sandbox-safe (synthetic negatives only, no node); the
+real-node E2Es are `#[ignore]`d and run with `-- --include-ignored` on a network-enabled box. See
+[`crates/xusdc-validation/README.md`](crates/xusdc-validation/README.md) for the full run notes and
+[`crates/xusdc-validation/VALIDATION-RECORD-LNV5.md`](crates/xusdc-validation/VALIDATION-RECORD-LNV5.md)
+for the proven procedure and the durable evidence record. **The gate PASS is a human decision — the
+binaries never declare it.**
 
 ## Key design points
 
 - **`xreserve_mint` is the only surface that can raise supply**, and it requires a valid attester
   signature; the stock `mint_and_send` path is deny-guarded.
 - **Burns are public, two-block notes** so Circle can observe them.
-- **Encoding is written once** in `xreserve::encoding` (MASM) and mirrored in Rust; a
-  cross-implementation test proves the two agree on every golden vector.
+- **The dual codecs are written once** in `xreserve::encoding` (MASM) and mirrored in Rust — bytes32
+  hashing, amount reduction, the `DepositIntent` parse, and the attester pubkey commitment — each
+  proven Rust==MASM on every golden vector; the rest (AccountId, burn payload, and the attestation
+  digest/compressed-pubkey/signature packing) is Rust-only.
 - Several items remain **OPEN pending Circle** (`DEV-*` / `Q-*` in the glossary) — the code takes a
   documented provisional position on each; none are marked approved.
 

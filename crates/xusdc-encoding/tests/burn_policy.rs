@@ -1,10 +1,10 @@
-//! CMP-A10 `XReserveBurnPolicy` suite (P5-01, R-BURN-1/2/3): the real burn security predicate
-//! (`burn_policy.masm::check_policy`) wired as the ACTIVE burn policy of the `XReserveStablecoinBuilder`
-//! faucet's `TokenPolicyManager`. Stock `receive_and_burn` routes every burn through
-//! `policy_manager::execute_burn_policy`, which (after the stock pause gate) `dynexec`s the active burn
-//! policy — so this `check_policy` gates every burn on R-BURN-1 (`amount > 0`) + R-BURN-2
-//! (`amount >= minBurnSize`). R-BURN-3 (pause) is the stock wrapper's gate, run BEFORE the policy
-//! (DECISION-RBURN3), so the custom policy does NOT check pause.
+//! Burn security-policy suite (component CMP-A10, reject conditions R-BURN-1/2/3): the real burn
+//! security predicate (`burn_policy.masm::check_policy`) wired as the ACTIVE burn policy of the
+//! `XReserveStablecoinBuilder` faucet's `TokenPolicyManager`. Stock `receive_and_burn` routes every
+//! burn through `policy_manager::execute_burn_policy`, which (after the stock pause gate) `dynexec`s
+//! the active burn policy — so this `check_policy` gates every burn on R-BURN-1 (`amount > 0`) +
+//! R-BURN-2 (`amount >= minBurnSize`). The pause reject R-BURN-3 is the stock wrapper's gate, run
+//! BEFORE the policy, so the custom policy does NOT check pause.
 //!
 //! Non-vacuity: the policy-defining rejects (`burn_below_min_rejects`, `burn_zero_amount_rejects`,
 //! `burn_zero_amount_rejects_direct`) trap the EXACT R-BURN-1/2 errors on the REAL-policy account, while
@@ -34,8 +34,8 @@ const VALID_BURN: u64 = 5_000;
 /// A below-minimum burn: `0 < BELOW_MIN < MIN_BURN_SIZE` (note-reachable, no zero-amount dependency).
 const BELOW_MIN: u64 = 500;
 
-/// The seeded DOM_PAUSER holder (id(2)) — the ONLY pause authority under Option 1 (CMP-F3,
-/// Domain-Pauser-only; the custom `xreserve::pause_admin` procs). The Ownable2Step owner (id(1))
+/// The seeded DOM_PAUSER holder (id(2)) — the ONLY pause authority in the Domain-Pauser-only model
+/// (component CMP-F3; the custom `xreserve::pause_admin` procs). The Ownable2Step owner (id(1))
 /// has no direct pause path and no other role in this suite.
 fn dom_pauser() -> AccountId {
     test_account_id(2)
@@ -56,7 +56,14 @@ async fn burn_valid_passes_and_decrements() -> Result<()> {
         MIN_BURN_SIZE,
         VALID_BURN,
     )?;
-    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = h;
+    let BurnPolicyHarness {
+        mut chain,
+        faucet_id,
+        user_id,
+        burn_note,
+        asset,
+        ..
+    } = h;
 
     let tx1 = run_burn_consume(&mut chain, &burn_note, &asset, faucet_id, user_id)
         .await
@@ -85,7 +92,14 @@ async fn burn_below_min_passes_under_allow_all() -> Result<()> {
         MIN_BURN_SIZE,
         BELOW_MIN,
     )?;
-    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = h;
+    let BurnPolicyHarness {
+        mut chain,
+        faucet_id,
+        user_id,
+        burn_note,
+        asset,
+        ..
+    } = h;
 
     let tx1 = run_burn_consume(&mut chain, &burn_note, &asset, faucet_id, user_id)
         .await
@@ -116,7 +130,14 @@ async fn burn_below_min_rejects() -> Result<()> {
         MIN_BURN_SIZE,
         BELOW_MIN,
     )?;
-    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = h;
+    let BurnPolicyHarness {
+        mut chain,
+        faucet_id,
+        user_id,
+        burn_note,
+        asset,
+        ..
+    } = h;
 
     let result = run_burn_consume(&mut chain, &burn_note, &asset, faucet_id, user_id).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_BURN_BELOW_MIN"));
@@ -136,7 +157,14 @@ async fn burn_at_min_passes_and_decrements() -> Result<()> {
         MIN_BURN_SIZE,
         MIN_BURN_SIZE,
     )?;
-    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = h;
+    let BurnPolicyHarness {
+        mut chain,
+        faucet_id,
+        user_id,
+        burn_note,
+        asset,
+        ..
+    } = h;
 
     let tx1 = run_burn_consume(&mut chain, &burn_note, &asset, faucet_id, user_id)
         .await
@@ -165,14 +193,21 @@ async fn burn_at_min_minus_one_rejects() -> Result<()> {
         MIN_BURN_SIZE,
         MIN_BURN_SIZE - 1,
     )?;
-    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = h;
+    let BurnPolicyHarness {
+        mut chain,
+        faucet_id,
+        user_id,
+        burn_note,
+        asset,
+        ..
+    } = h;
 
     let result = run_burn_consume(&mut chain, &burn_note, &asset, faucet_id, user_id).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_BURN_BELOW_MIN"));
     Ok(())
 }
 
-/// R-BURN-1 (note-driven, plan §6 step 1): a real 0-amount burn note consumed by the faucet traps the
+/// R-BURN-1 (note-driven): a real 0-amount burn note consumed by the faucet traps the
 /// EXACT ERR_XRESERVE_BURN_ZERO — `check_policy` asserts `amount > 0`. The 0-amount burn is note-reachable
 /// (see `zero_amount_burn_note_reachability`), so this is a real `receive_and_burn` consume on the
 /// REAL-policy account, not a synthetic one.
@@ -185,7 +220,14 @@ async fn burn_zero_amount_rejects() -> Result<()> {
         MIN_BURN_SIZE,
         0,
     )?;
-    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = h;
+    let BurnPolicyHarness {
+        mut chain,
+        faucet_id,
+        user_id,
+        burn_note,
+        asset,
+        ..
+    } = h;
 
     let result = run_burn_consume(&mut chain, &burn_note, &asset, faucet_id, user_id).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_BURN_ZERO"));
@@ -209,10 +251,10 @@ async fn burn_zero_amount_rejects_direct() -> Result<()> {
 // ================================================================================================
 
 /// R-BURN-3: a paused faucet halts the burn. After the DOM_PAUSER pauses the REAL-policy faucet
-/// (custom `xreserve::pause_admin::pause` — the ONLY pause surface under Option 1), the burn consume
-/// traps the EXACT stock ERR_PAUSABLE_IS_PAUSED (`"the contract is paused"`) — enforced by
-/// `execute_burn_policy`'s `assert_not_paused` BEFORE the custom policy is dispatched
-/// (DECISION-RBURN3). GREEN regardless of the policy body (the stock gate fires first); the
+/// (custom `xreserve::pause_admin::pause` — the ONLY pause surface in the Domain-Pauser-only model),
+/// the burn consume traps the EXACT stock ERR_PAUSABLE_IS_PAUSED (`"the contract is paused"`) —
+/// enforced by `execute_burn_policy`'s `assert_not_paused` BEFORE the custom policy is dispatched.
+/// GREEN regardless of the policy body (the stock gate fires first); the
 /// FungibleFaucet-installed `is_paused` slot makes this a real gate, never a missing-slot artifact.
 /// Mirrors `set_attester_paused_rejects`.
 #[tokio::test]
@@ -224,7 +266,14 @@ async fn burn_paused_rejects() -> Result<()> {
         MIN_BURN_SIZE,
         VALID_BURN,
     )?;
-    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = h;
+    let BurnPolicyHarness {
+        mut chain,
+        faucet_id,
+        user_id,
+        burn_note,
+        asset,
+        ..
+    } = h;
 
     // Block N: the user emits + commits the (valid-amount) burn note, while the faucet is NOT yet paused.
     let tx0 = try_emit_burn_note(&chain, &burn_note, &asset, faucet_id, user_id)
@@ -250,14 +299,17 @@ async fn burn_paused_rejects() -> Result<()> {
         .build()?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, MasmError::from_static_str("the contract is paused"));
+    assert_transaction_executor_error!(
+        result,
+        MasmError::from_static_str("the contract is paused")
+    );
     Ok(())
 }
 
 // R-BURN-1 ZERO-AMOUNT REACHABILITY PROBE (GREEN diagnostic)
 // ================================================================================================
 
-/// Empirically resolves R-BURN-1's note-reachability (plan §6 step 1). A 0-amount fungible asset is
+/// Empirically resolves R-BURN-1's note-reachability. A 0-amount fungible asset is
 /// constructible (only the UPPER bound is checked) AND note-reachable: the user emits a 0-amount burn
 /// note (tx0), and the faucet's `receive_and_burn` reaches the burn policy with `amount == 0` (one
 /// asset, `0 <= token_supply`). On a CODE-IDENTICAL `BurnAllowAll`-active account the consume therefore
@@ -274,7 +326,14 @@ async fn zero_amount_burn_note_reachability() -> Result<()> {
         MIN_BURN_SIZE,
         0,
     )?;
-    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = h;
+    let BurnPolicyHarness {
+        mut chain,
+        faucet_id,
+        user_id,
+        burn_note,
+        asset,
+        ..
+    } = h;
 
     let result = run_burn_consume(&mut chain, &burn_note, &asset, faucet_id, user_id).await;
     assert!(
@@ -298,7 +357,10 @@ fn probe_burn_policy_export() -> Result<()> {
     assert!(
         lib.exports()
             .filter(|e| e.as_procedure().is_some())
-            .any(|e| e.path().to_string().ends_with("xreserve::burn_policy::check_policy")),
+            .any(|e| e
+                .path()
+                .to_string()
+                .ends_with("xreserve::burn_policy::check_policy")),
         "the xreserve library must export xreserve::burn_policy::check_policy; exports: {:?}",
         lib.exports()
             .filter(|e| e.as_procedure().is_some())

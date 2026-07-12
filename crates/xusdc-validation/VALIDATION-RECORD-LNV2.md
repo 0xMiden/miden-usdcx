@@ -1,8 +1,8 @@
 # LNV-2 VALIDATION RECORD — admin suite (rows C) + auth boundary (row F)
 
 **Slice:** LNV-2 (Phase-4 §11.2 local-node validation track, second slice — extends the LNV-1
-harness). **Authoritative spec:** `TASK-P5-01-PHASE4-LOCAL-NODE-VALIDATION-PLAN-BUILDER.md`
-(rows **C** + **F** of the A–L matrix).
+harness). **Scope:** rows **C** + **F** of the A–L local-node validation matrix (see
+`crates/xusdc-validation/README.md`).
 **Status:** rows **C1–C6** and **F** _PASS_ on a real, fresh, isolated local node (evidence §5).
 **Gate discipline:** this record feeds the HARD HUMAN GATE. Nothing here self-declares the §11.2
 gate — that is LNV-5. Validator-not-fixer: every reject below is a real on-chain trap the row exists

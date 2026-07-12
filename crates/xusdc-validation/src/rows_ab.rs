@@ -8,7 +8,7 @@
 //! 2. Assemble the client ([`crate::client`]) and the actors ([`crate::actors`]).
 //! 3. Build the production faucet account locally ([`crate::deploy`]) — its id exists before any
 //!    chain contact.
-//! 4. The OWNER emits `domain_init` note #1 (creator-committed §5.9 params). This is the owner
+//! 4. The OWNER emits `domain_init` note #1 (creator-committed domain-config params). This is the owner
 //!    wallet's first transaction, which also materializes the owner on-chain.
 //! 5. **Deploy = the faucet's first transaction consuming that note.** At v0.15.1 the user RPC
 //!    admits network-account transactions ONLY at first deployment, so `domain_init` rides the
@@ -55,7 +55,10 @@ const WATCH_TIMEOUT: Duration = Duration::from_secs(180);
 async fn wait_for_tx_commit(hc: &mut HarnessClient, tx_id: TransactionId) -> Result<u32> {
     let deadline = Instant::now() + TX_COMMIT_TIMEOUT;
     loop {
-        hc.client.sync_state().await.context("syncing while waiting for a transaction")?;
+        hc.client
+            .sync_state()
+            .await
+            .context("syncing while waiting for a transaction")?;
         let record = hc
             .client
             .get_transactions(TransactionFilter::Ids(vec![tx_id]))
@@ -84,8 +87,15 @@ async fn wait_for_tx_commit(hc: &mut HarnessClient, tx_id: TransactionId) -> Res
 async fn wait_for_blocks_past(hc: &mut HarnessClient, from_block: u32, blocks: u32) -> Result<u32> {
     let deadline = Instant::now() + WATCH_TIMEOUT;
     loop {
-        hc.client.sync_state().await.context("syncing while waiting for blocks")?;
-        let height = hc.client.get_sync_height().await.context("reading the sync height")?;
+        hc.client
+            .sync_state()
+            .await
+            .context("syncing while waiting for blocks")?;
+        let height = hc
+            .client
+            .get_sync_height()
+            .await
+            .context("reading the sync height")?;
         if height.as_u32() >= from_block + blocks {
             return Ok(height.as_u32());
         }
@@ -166,8 +176,13 @@ pub async fn run_rows_ab_on(cfg: &RunConfig, client_label: &str) -> Result<RowsA
     let owner_id = actors.owner.id();
 
     // 3. The production faucet account, locally composed (nonce 0, seed embedded).
-    let faucet =
-        build_faucet_account(owner_id, actors.pauser.id(), actors.manager.id(), cfg.max_supply, os_seed())?;
+    let faucet = build_faucet_account(
+        owner_id,
+        actors.pauser.id(),
+        actors.manager.id(),
+        cfg.max_supply,
+        os_seed(),
+    )?;
     let faucet_id = faucet.id();
 
     // 4. Owner emits domain_init #1 (also the owner wallet's materializing first transaction).
@@ -237,11 +252,10 @@ pub async fn run_rows_ab_on(cfg: &RunConfig, client_label: &str) -> Result<RowsA
     //    must be unchanged.
     wait_for_blocks_past(&mut hc, emit2_block, REINIT_WATCH_BLOCKS).await?;
     let second_note_consumed = note_consumed_on_chain(&hc, &note2).await?;
-    let after_reinit = hc
-        .rpc
-        .get_account_details(faucet_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("GetAccount({faucet_id}) after the reinit attempt: {e}"))?;
+    let after_reinit =
+        hc.rpc.get_account_details(faucet_id).await.map_err(|e| {
+            anyhow::anyhow!("GetAccount({faucet_id}) after the reinit attempt: {e}")
+        })?;
 
     Ok(RowsAbObservations {
         main_commit,

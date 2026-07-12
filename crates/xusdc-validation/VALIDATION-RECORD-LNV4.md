@@ -9,7 +9,7 @@ as a failing row, never a faucet hot-fix. No production MASM/Rust was changed.
 **Row H is a Circle/DEV-7 EVIDENCE packet — it records what survives a same-block burn against the
 PRODUCTION note; it makes NO acceptability decision and does NOT resolve DEV-7 (which stays OPEN).**
 
-Authoritative spec: `TASK-P5-01-PHASE4-LOCAL-NODE-VALIDATION-PLAN-BUILDER.md`, rows **G/H/I/J** + the
+Scope: rows **G/H/I/J** of the A–L local-node validation matrix (see `crates/xusdc-validation/README.md`) + the
 F7 grounding (`xreserve_burn.rs` same-block erasure; the MockChain analog is STOCK-`BurnNote`
 canary-only — this is the first RIV against the PRODUCTION `XReserveBurnNote`).
 

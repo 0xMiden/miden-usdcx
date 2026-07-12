@@ -1,14 +1,14 @@
-//! Shared test-support for the 01 faucet mint-precondition shell suite (P5-01 slice).
+//! Shared test-support for the faucet mint-precondition shell suite.
 //!
 //! OWNERSHIP NOTE: the `ERR_XRESERVE_*` constants and the config-slot labels below are
-//! FAUCET(01)-owned TEST-SIDE mirrors — the 04 library crate owns none of them (NS-2:
-//! 01 owns only mint-specific assertions). They are the single Rust source for both the
-//! fixture slot bindings and the generated-driver interpolation; once the shell module
-//! declares its production `word("…")` slot consts (staged C5 commits), the
-//! constant-parity suite pins the production labels against these.
+//! faucet-owned TEST-SIDE mirrors — the encoding library crate owns none of them (NS-2:
+//! the faucet owns only mint-specific assertions). They are the single Rust source for both the
+//! fixture slot bindings and the generated-driver interpolation; the shell modules declare
+//! byte-identical production `word("…")` slot consts, and the constant-parity suite pins the
+//! production labels against these.
 //!
 //! Harness mechanics mirror `tests/masm_dual.rs` (assemble → bind → MockChain →
-//! execute) extended per the approved plan: the shell reads config slots via
+//! execute), extended so that the shell reads config slots via
 //! `active_account::get_item`, which the kernel authenticates as account-origin, so the
 //! driver is a CALL-entered account component proc that stages the preimage in its own
 //! (account-context) memory and `exec`s the shell — exactly the production
@@ -20,29 +20,29 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use miden_processor::advice::AdviceInputs;
+use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
     Account, AccountComponent, AccountId, AccountIdVersion, AccountType, RoleSymbol, StorageMap,
     StorageMapKey, StorageSlot, StorageSlotName,
 };
-use miden_protocol::asset::{AssetAmount, FungibleAsset, TokenSymbol};
-use miden_protocol::note::{Note, NoteType};
-use miden_standards::testing::note::NoteBuilder;
 use miden_protocol::assembly::Library;
+use miden_protocol::asset::{AssetAmount, FungibleAsset, TokenSymbol};
 use miden_protocol::errors::MasmError;
+use miden_protocol::note::{Note, NoteType};
 use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote, TransactionKernel};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
-use miden_processor::advice::AdviceInputs;
-use miden_processor::crypto::random::RandomCoin;
 use miden_standards::account::access::{Authority, Ownable2Step, RoleBasedAccessControl};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::policies::{
     BurnPolicyConfig, MintPolicyConfig, PolicyRegistration, TokenPolicyManager,
 };
-use miden_standards::StandardsLib;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::{BurnNote, P2idNote};
+use miden_standards::testing::note::NoteBuilder;
+use miden_standards::StandardsLib;
 use miden_testing::{Auth, MockChain};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
@@ -50,21 +50,21 @@ use xusdc_encoding::account::xreserve::{
 };
 use xusdc_encoding::xreserve::encoding::masm_error_by_name;
 
-// D5d attestation vectors — IN-TEST deterministic secp256k1 generation (zero touch to the 04
+// D5d attestation vectors — IN-TEST deterministic secp256k1 generation (zero touch to the
 // canonical artifact), mirroring the precompile canary + gen_vectors att_* helpers: k256 the
 // keypair+signature, sha3 the keccak digest, miden-crypto `PublicKey::to_commitment` the
 // allowlist-key oracle, miden_protocol `bytes_to_packed_u32_elements` the advice felt packing.
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey};
 use miden_crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_crypto::utils::Deserializable;
-use rand::SeedableRng;
 use rand::rngs::StdRng;
+use rand::SeedableRng;
 use sha3::{Digest, Keccak256};
 
 // TEST-ONLY FAUCET CONFIG (Q-DOM-1 / DEV-10 OPEN)
 // ================================================================================================
 // Q-DOM-1: the real Miden domain id is Circle-assigned and OPEN — `TEST_DOMAIN` exists
-// solely to match the canonical 04 accept vectors' `remote_domain` (= 7) and must never
+// solely to match the canonical accept vectors' `remote_domain` (= 7) and must never
 // be presented as the real value. DEV-10: the AccountId↔bytes32 identifier encoding is
 // Circle-OPEN; the test identifier is the accept vector's remoteToken bytes, nothing
 // more.
@@ -76,11 +76,11 @@ pub const TEST_WRONG_DOMAIN: u32 = 8;
 
 /// Slot labels (frozen CMP-A6 `XReserveDomainConfig` field names under the product
 /// namespace). The MASM shell module must declare `word("…")` consts with byte-identical
-/// labels (parity-enforced from the C5 commits on).
+/// labels (parity-enforced).
 // RE-EXPORTED from the production crate (the MIN_BURN_SIZE_SLOT_LABEL precedent, single Rust
-// source: the builder's §5.13 slot-presence guard and these test bindings can never drift). The
+// source: the builder's slot-presence guard and these test bindings can never drift). The
 // MASM modules declare byte-identical `word("…")` consts (parity-enforced). The two
-// `xreserve_contract` slots carry the D-A6-XRC raw 8×u32-LE realization (hi = packed felts[0..4]
+// `xreserve_contract` slots carry the raw 8×u32-LE realization (hi = packed felts[0..4]
 // / wire bytes 0..16, lo = felts[4..8]); `identifier` stays the D5a-consumer-forced hash-Word;
 // `source_domain`/`xreserve_contract` are written ONLY by `domain_init` (off-chain identity,
 // `GetAccount`-readable).
@@ -89,10 +89,9 @@ pub use xusdc_encoding::account::xreserve::{
     XRESERVE_CONTRACT_HI_SLOT_LABEL, XRESERVE_CONTRACT_LO_SLOT_LABEL,
 };
 
-/// D5c `usedNonces` map-slot label (frozen §5.6 nonce registry). The MASM shell declares a
-/// `word("…")` const with the byte-identical label at the D5c green commit (parity-enforced
-/// from that commit). Re-exported from the production crate (single Rust source with the
-/// builder's §5.13 slot-presence guard).
+/// D5c `usedNonces` map-slot label (frozen nonce registry). The MASM shell declares a
+/// `word("…")` const with the byte-identical label (parity-enforced). Re-exported from the
+/// production crate (single Rust source with the builder's slot-presence guard).
 pub use xusdc_encoding::account::xreserve::USED_NONCES_SLOT_LABEL;
 
 /// D5e faucet `token_config` value-slot label — the slot the standard `FungibleFaucet` component
@@ -100,27 +99,25 @@ pub use xusdc_encoding::account::xreserve::USED_NONCES_SLOT_LABEL;
 /// `xreserve_mint.masm`. Bound here as the single Rust source for the constant-parity row.
 pub const TOKEN_CONFIG_SLOT_LABEL: &str = "miden::standards::faucets::fungible::token_config";
 
-/// D5d `xReserveAttesters` map-slot label (frozen §5.5 XReserveAttesterAdmin). The MASM
-/// `attestation_verify.masm` declares a `word("…")` const with the byte-identical label
-/// (parity-enforced); the later `set_attester` admin slice co-owns the SAME slot. Re-exported
-/// from the production crate (single Rust source with the builder's §5.13 slot-presence guard).
+/// D5d `xReserveAttesters` map-slot label (frozen; home of the XReserveAttesterAdmin allowlist).
+/// The MASM `attestation_verify.masm` declares a `word("…")` const with the byte-identical label
+/// (parity-enforced); the `set_attester` admin path co-owns the SAME slot. Re-exported
+/// from the production crate (single Rust source with the builder's slot-presence guard).
 pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 
-/// CMP-A10 `minBurnSize` value-slot label (§5.5 XReserveAttesterAdmin home, SPEC-OWNER RATIFIED).
+/// CMP-A10 `minBurnSize` value-slot label (home of the XReserveAttesterAdmin config).
 /// Re-exported from the production crate so the builder (which SEEDS the slot) and the tests share a
 /// SINGLE Rust source; `burn_policy.masm` declares a byte-identical `word("…")` const (parity-enforced)
-/// and the future CMP-F2 `set_min_burn_size` setter co-owns the SAME slot (twin of
+/// and the CMP-F2 `set_min_burn_size` setter co-owns the SAME slot (twin of
 /// [`XRESERVE_ATTESTERS_SLOT_LABEL`]).
 pub use xusdc_encoding::account::xreserve::MIN_BURN_SIZE_SLOT_LABEL;
 
-// FAUCET(01) ERROR MIRRORS (frozen names: 01 TEST-AND-VERIFICATION-HARNESS.md:72-73)
+// FAUCET ERROR MIRRORS (frozen names)
 // ================================================================================================
 
-/// Name → constant table for the faucet-owned shell errors (D-2 string `MasmError`
+/// Name → constant table for the faucet-owned shell errors (string `MasmError`
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
-/// D5b amount/fee errors (R-MINT-10/11) are PROPOSED names pending human approval
-/// (plan §7); the D5b green commit declares the matching MASM consts + adds them to
-/// `SHELL_ERRORS_DECLARED` for parity. The red-suite carries them here so the D5b
+/// D5b amount/fee errors (R-MINT-10/11) and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
 pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
     (
@@ -137,15 +134,13 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
         "ERR_XRESERVE_AMOUNT_BELOW_FEE",
         MasmError::from_static_str("deposit intent amount is below the max fee"),
     ),
-    // D5c R-MINT-12 nonce replay. Frozen name (spec R-MINT-12); the red-suite carries it
-    // here so the replay test can name its EXACT expected error. The D5c green commit
-    // declares the matching MASM const + adds it to `SHELL_ERRORS_DECLARED` for parity.
+    // D5c R-MINT-12 nonce replay. Frozen name; pinned here so the replay test can name its EXACT
+    // expected error, byte-identical to the MASM const.
     (
         "ERR_XRESERVE_NONCE_REPLAY",
         MasmError::from_static_str("deposit intent nonce has already been used"),
     ),
-    // D5d R-MINT-13 / R-MINT-14 (attestation_verify.masm). Wording proposed in the plan and
-    // user-selected; parity-pinned against the MASM consts.
+    // D5d R-MINT-13 / R-MINT-14 (attestation_verify.masm). Parity-pinned against the MASM consts.
     (
         "ERR_XRESERVE_BAD_PK_COMMITMENT",
         MasmError::from_static_str("deposit attester pubkey commitment is not allowlisted"),
@@ -154,7 +149,7 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
         "ERR_XRESERVE_SIG_INVALID",
         MasmError::from_static_str("deposit attestation signature verification failed"),
     ),
-    // D5e R-MINT-15 supply cap (xreserve_mint.masm). Proposed wording; parity-pinned.
+    // D5e R-MINT-15 supply cap (xreserve_mint.masm). Parity-pinned.
     (
         "ERR_XRESERVE_SUPPLY_CAP",
         MasmError::from_static_str("mint amount exceeds the faucet supply cap"),
@@ -165,12 +160,11 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
         "ERR_XRESERVE_FEE_NONZERO",
         MasmError::from_static_str("mint fee amount must be zero"),
     ),
-    // Slice-1 recipient AccountId helper (extract_recipient_account_id, xreserve_mint.masm). These
+    // recipient AccountId helper (extract_recipient_account_id, xreserve_mint.masm). These
     // are the LOCAL layout / field-range errors; the suffix-shape and unknown-version rejects
     // surface the PROTOCOL `account_id::validate` `ERR_ACCOUNT_ID_*` constants directly (asserted
-    // inline in the recipient test). The red-suite carries these mirrors so the behavior tests can
-    // name their EXACT expected error; the green commit declares the matching MASM consts and adds
-    // them to `SHELL_ERRORS_DECLARED` for parity.
+    // inline in the recipient test). Pinned here so the behavior tests can name their EXACT
+    // expected error, byte-identical to the MASM consts.
     (
         "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",
         MasmError::from_static_str("deposit intent remote recipient address pad is not zero"),
@@ -181,25 +175,29 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
     ),
     (
         "ERR_XRESERVE_RECIPIENT_NONCANONICAL",
-        MasmError::from_static_str("deposit intent remote recipient value does not fit in the field"),
+        MasmError::from_static_str(
+            "deposit intent remote recipient value does not fit in the field",
+        ),
     ),
     // R-MINT-16 mint-deny guard (mint_deny_guard.masm). The stock inherited `mint_and_send` is
-    // denied so `xreserve_mint` is the sole supply-increasing surface (INV-MINT-SECURITY, §5.2);
+    // denied so `xreserve_mint` is the sole supply-increasing surface (INV-MINT-SECURITY);
     // parity-pinned against the MASM const declared in mint_deny_guard.masm.
     (
         "ERR_XRESERVE_MINT_DENIED",
-        MasmError::from_static_str("stock mint_and_send is denied; only xreserve_mint may raise supply"),
+        MasmError::from_static_str(
+            "stock mint_and_send is denied; only xreserve_mint may raise supply",
+        ),
     ),
-    // R-ADMIN-4 domain-config init-once setter (domain_config.masm). The second write traps this; the
-    // red-suite carries it here so the reinit test can name its EXACT expected error. The GREEN commit
-    // declares the matching MASM const + adds it to `SHELL_ERRORS_DECLARED` for parity.
+    // R-ADMIN-4 domain-config init-once setter (domain_config.masm). The second write traps this;
+    // pinned here so the reinit test can name its EXACT expected error, byte-identical to the MASM
+    // const.
     (
         "ERR_XRESERVE_DOMAIN_REINIT",
         MasmError::from_static_str("domain config has already been initialized"),
     ),
-    // CMP-A10 R-BURN-1: a burn must move a strictly positive amount (burn_policy.masm). The red-suite
-    // carries it here so the zero-amount reject test can name its EXACT expected error; the GREEN
-    // commit references the matching MASM const (declared now for parity).
+    // CMP-A10 R-BURN-1: a burn must move a strictly positive amount (burn_policy.masm). Pinned here
+    // so the zero-amount reject test can name its EXACT expected error, byte-identical to the MASM
+    // const.
     (
         "ERR_XRESERVE_BURN_ZERO",
         MasmError::from_static_str("burn amount must be greater than zero"),
@@ -211,7 +209,7 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
     ),
     // CMP-B1 mint-note-entry transport-shape guards (xreserve_mint_note_entry.masm): the
     // note-storage header-length floor, the scheme-1 attestation + scheme-2 routing-target presence,
-    // the exactly-two-attachment count (F5 fix-slice A), and the 9-word size assert on the
+    // the exactly-two-attachment count (F5), and the 9-word size assert on the
     // hash-verified attestation attachment.
     (
         "ERR_XRESERVE_MINT_NOTE_STORAGE_TOO_SHORT",
@@ -229,21 +227,17 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
         "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_NUM_WORDS",
         MasmError::from_static_str("mint note attachment word count is invalid"),
     ),
-    // F5 fix-slice A: the 2-attachment reconciliation requires the scheme-2 NetworkAccountTarget
-    // routing attachment to be present (routing-only). The red-suite carries the error here so the
-    // scheme-aware negatives can name their EXACT expected error; the GREEN commit declares the
-    // matching MASM const in xreserve_mint_note_entry.masm + adds it to the constant_parity covered
-    // list. (The ATTACHMENT_COUNT string is reworded "exactly one"→"exactly two" in the GREEN commit,
-    // MASM + this table together, so parity stays consistent.)
+    // F5: the 2-attachment reconciliation requires the scheme-2 NetworkAccountTarget
+    // routing attachment to be present (routing-only). Pinned here so the scheme-aware negatives
+    // can name their EXACT expected error, byte-identical to the MASM const in
+    // xreserve_mint_note_entry.masm.
     (
         "ERR_XRESERVE_MINT_NOTE_TARGET_MISSING",
         MasmError::from_static_str("mint note routing target attachment is missing"),
     ),
-    // §5.9 scalar-u32 exactness (full-assembly slice, Round-P change 1): domain_init guards BOTH
-    // scalar fields as valid u32 values BEFORE any write (the spec types them u32,
-    // COMPONENT-SPEC.md:331). The red-suite carries the three guard errors here so the
-    // malformed-scalar/limb tests can name their EXACT expected error; the GREEN commit declares the
-    // matching MASM consts in domain_config.masm + adds them to SHELL_ERRORS_DECLARED for parity.
+    // scalar-u32 exactness: domain_init guards BOTH scalar fields as valid u32 values BEFORE any
+    // write (the spec types them u32). Pinned here so the malformed-scalar/limb tests can name their
+    // EXACT expected error, byte-identical to the MASM consts in domain_config.masm.
     (
         "ERR_XRESERVE_DOMAIN_NOT_U32",
         MasmError::from_static_str("domain is not a valid u32"),
@@ -252,24 +246,23 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
         "ERR_XRESERVE_SOURCE_DOMAIN_NOT_U32",
         MasmError::from_static_str("source domain is not a valid u32"),
     ),
-    // D-A6-XRC guard 2: every xreserve_contract limb must be a valid u32 before the two packed
-    // words are stored (the fail-closed on-chain mirror of `packed_felts_to_bytes32`).
+    // xreserve_contract limb guard: every xreserve_contract limb must be a valid u32 before the two
+    // packed words are stored (the fail-closed on-chain mirror of `packed_felts_to_bytes32`).
     (
         "ERR_XRESERVE_XRC_LIMB_NOT_U32",
         MasmError::from_static_str("xreserve contract limb is not a valid u32"),
     ),
-    // R-ADMIN-4 hardening (P5-01 hardening Item 4): the identifier IS the init-once sentinel; an
-    // EMPTY identifier would never arm it, leaving the "immutable" config silently
-    // re-initializable. The red-suite carries the error here so the empty-identifier test can name
-    // its EXACT expected error; the GREEN commit declares the matching MASM const in
-    // domain_config.masm + adds it to SHELL_ERRORS_DECLARED for parity.
+    // R-ADMIN-4 hardening: the identifier IS the init-once sentinel; an EMPTY identifier would never
+    // arm it, leaving the "immutable" config silently re-initializable. Pinned here so the
+    // empty-identifier test can name its EXACT expected error, byte-identical to the MASM const in
+    // domain_config.masm.
     (
         "ERR_XRESERVE_IDENTIFIER_EMPTY",
         MasmError::from_static_str("identifier must be non-empty"),
     ),
 ];
 
-/// Looks up an expected MASM error: faucet-owned shell errors first, then the 04
+/// Looks up an expected MASM error: faucet-owned shell errors first, then the encoding
 /// library's table (`ERR_DI_*` rows of the ratified seam mapping).
 pub fn shell_error_by_name(name: &str) -> &'static MasmError {
     SHELL_ERR_TABLE
@@ -320,7 +313,9 @@ pub fn assemble_xreserve_lib() -> Result<Library> {
     // MAST roots).
     let assembler = TransactionKernel::assembler()
         .with_dynamic_library(StandardsLib::default())
-        .map_err(|e| anyhow::anyhow!("linking the standards library into the xreserve assembler: {e}"))?
+        .map_err(|e| {
+            anyhow::anyhow!("linking the standards library into the xreserve assembler: {e}")
+        })?
         .with_warnings_as_errors(true);
     let lib = assembler
         .assemble_library_from_dir(xusdc_encoding::xreserve_asm_dir(), "xreserve")
@@ -335,7 +330,7 @@ pub fn assemble_xreserve_lib() -> Result<Library> {
 /// assembles the copy with the SAME assembler as [`assemble_xreserve_lib`].
 ///
 /// Visibility does not change a procedure's MAST, so this library's `apply_mint_effects` /
-/// `extract_recipient_account_id` carry the IDENTICAL MAST root to the shipped (post-fix: private)
+/// `extract_recipient_account_id` carry the IDENTICAL MAST root to the shipped (now private)
 /// ones. That is what lets the isolation tests reach the demoted procs via cross-module `exec`, and
 /// lets the procedure-root security test target the exact root the production faucet no longer
 /// exposes. This is NOT the shipped `xreserve` component — it is used only to drive the demoted
@@ -343,7 +338,8 @@ pub fn assemble_xreserve_lib() -> Result<Library> {
 pub fn assemble_xreserve_lib_effects_public() -> Result<Library> {
     let src_dir = xusdc_encoding::xreserve_asm_dir();
     let tmp_dir = unique_temp_dir("xusdc_xreserve_effects_public");
-    copy_dir_recursive(&src_dir, &tmp_dir).context("copying the xreserve asm tree to a temp dir")?;
+    copy_dir_recursive(&src_dir, &tmp_dir)
+        .context("copying the xreserve asm tree to a temp dir")?;
 
     // force the two demoted procs `pub` in the temp copy (idempotent: no-op when already `pub`).
     let mint_masm = tmp_dir.join("xreserve_mint.masm");
@@ -405,7 +401,10 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
 /// (from [`assemble_xreserve_lib`]) with the full seven-slot production storage set. Returns the
 /// composed `AccountComponent`s (the union whose exported procedure roots become the account's
 /// callable interface). Used by the procedure-root sole-surface test — NOT a bespoke harness.
-pub fn production_component_set(max_supply: u64, token_supply: u64) -> Result<Vec<AccountComponent>> {
+pub fn production_component_set(
+    max_supply: u64,
+    token_supply: u64,
+) -> Result<Vec<AccountComponent>> {
     let library = assemble_xreserve_lib()?;
     let empty = || Word::from([0u32, 0, 0, 0]);
     let xreserve_component = AccountComponent::new(
@@ -479,7 +478,7 @@ pub struct ShellHarness {
 
 /// Builds the MockChain account carrying [the xreserve component WITH the two named value
 /// config slots + the `usedNonces` map slot] + [the generated driver component], per the
-/// spike-proven Q4/Q5 binding (`StorageSlotName::new(label)` ↔ MASM `word("label")`) and the
+/// proven binding (`StorageSlotName::new(label)` ↔ MASM `word("label")`) and the
 /// canary-proven `StorageSlot::with_map` map-slot path. The `usedNonces` map starts EMPTY
 /// (unused nonces read `EMPTY_WORD`); use `setup_shell_account_with_nonce_seed` to
 /// pre-populate it for the D5c replay path.
@@ -573,7 +572,9 @@ fn setup_shell_account_with_lib(
         .with_dynamically_linked_library(&library)
         .context("linking the xreserve library into the driver component")?
         .compile_component_code(driver_path, driver_src)
-        .with_context(|| format!("driver component failed to compile\n--- driver ---\n{driver_src}"))?;
+        .with_context(|| {
+            format!("driver component failed to compile\n--- driver ---\n{driver_src}")
+        })?;
     let driver_component = AccountComponent::new(
         driver_code.clone(),
         vec![],
@@ -583,24 +584,37 @@ fn setup_shell_account_with_lib(
 
     let mut builder = MockChain::builder();
     let account = builder
-        .add_existing_account_from_components(Auth::IncrNonce, [xreserve_component, driver_component])
+        .add_existing_account_from_components(
+            Auth::IncrNonce,
+            [xreserve_component, driver_component],
+        )
         .context("adding the shell harness account")?;
     let mock_chain = builder.build().context("building the MockChain")?;
-    Ok(ShellHarness { mock_chain, account_id: account.id(), driver_code, driver_path })
+    Ok(ShellHarness {
+        mock_chain,
+        account_id: account.id(),
+        driver_code,
+        driver_path,
+    })
 }
 
-/// Executes `call.driver::<proc>` from a trivial tx script (spike alias-import pattern)
+/// Executes `call.driver::<proc>` from a trivial tx script (alias-import pattern)
 /// — the call enters the driver component proc in the ACCOUNT context.
 pub async fn run_call_driver(
     h: &ShellHarness,
     proc_name: &str,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let src = format!("use {path}->driver\nbegin\n    call.driver::{proc_name}\nend\n", path = h.driver_path);
+    let src = format!(
+        "use {path}->driver\nbegin\n    call.driver::{proc_name}\nend\n",
+        path = h.driver_path
+    );
     let tx_script = CodeBuilder::new()
         .with_dynamically_linked_library(&h.driver_code)
         .expect("linking the driver component into the tx script")
         .compile_tx_script(&src)
-        .unwrap_or_else(|e| panic!("driver call script failed to compile: {e}\n--- script ---\n{src}"));
+        .unwrap_or_else(|e| {
+            panic!("driver call script failed to compile: {e}\n--- script ---\n{src}")
+        });
     h.mock_chain
         .build_tx_context(h.account_id, &[], &[])
         .expect("building the tx context")
@@ -656,9 +670,12 @@ pub fn shell_driver_src(
     match expected_hook_data_len {
         // happy path: pin the shell's output, restoring the 16-depth call boundary
         Some(expected) => {
-            writeln!(src, "    push.{expected} assert_eq.err=\"driver: hook_data_len mismatch\"")
-                .unwrap();
-        },
+            writeln!(
+                src,
+                "    push.{expected} assert_eq.err=\"driver: hook_data_len mismatch\""
+            )
+            .unwrap();
+        }
         // reject path: balance the would-be output so an unexpected non-trapping run
         // returns cleanly and the test's exact-error assertion reports the mismatch
         None => src.push_str("    drop\n"),
@@ -699,7 +716,7 @@ pub fn slot_probe_src(domain: Word, identifier: Word) -> String {
     )
 }
 
-// D5B AMOUNT/FEE HELPERS (P5-01 slice 2)
+// D5B AMOUNT/FEE HELPERS
 // ================================================================================================
 
 /// Felt offsets of the `amount` (felt[2..9]) and `maxFee` (felt[43..50]) uint256 fields
@@ -711,8 +728,8 @@ pub const MAX_FEE_FELT_OFF: usize = 43;
 
 /// Clones a base accept preimage and overwrites the `amount` and `maxFee` fields with the
 /// 8 u32-LE limbs of the chosen canonical `amt-*` vectors (consumed BY REFERENCE — no
-/// copied vector tables, G1). The rest of the DepositIntent envelope (magic / version /
-/// nonzero fields / length) is unchanged, so the 04 structural parse stays valid and
+/// copied vector tables). The rest of the DepositIntent envelope (magic / version /
+/// nonzero fields / length) is unchanged, so the shared-encoding structural parse stays valid and
 /// execution reaches the D5b reduce+compare.
 pub fn splice_amounts(base: &[Felt], amount_limbs: [u32; 8], maxfee_limbs: [u32; 8]) -> Vec<Felt> {
     let mut preimage = base.to_vec();
@@ -727,7 +744,7 @@ pub fn splice_amounts(base: &[Felt], amount_limbs: [u32; 8], maxfee_limbs: [u32;
 
 /// The 8 u32-LE `feeAmount` limbs as advice-stack felts (`Felt::from(u32)`, infallible —
 /// `felt-construction`). `feeAmount == 0` is the operator EXPLICITLY supplying eight zero
-/// limbs — distinct from missing advice (which errors, §4 Option C / rule 3).
+/// limbs — distinct from missing advice (which errors).
 pub fn fee_advice_felts(limbs: [u32; 8]) -> Vec<Felt> {
     limbs.iter().map(|l| Felt::from(*l)).collect()
 }
@@ -758,20 +775,24 @@ pub fn mint_amounts_driver_src(preimage: &[Felt], scale_exp: u32) -> String {
 
 /// Like `run_call_driver`, but stages an optional `feeAmount` advice stack into the tx
 /// context (`extend_advice_inputs`). `None` ⇒ no advice staged (the missing-advice case,
-/// which must error — §4 Option C, rule 3). `AdviceInputs::with_stack` preserves order:
+/// which must error). `AdviceInputs::with_stack` preserves order:
 /// the first felt is the first one `adv_push` returns.
 pub async fn run_call_driver_with_advice(
     h: &ShellHarness,
     proc_name: &str,
     advice_stack: Option<Vec<Felt>>,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let src =
-        format!("use {path}->driver\nbegin\n    call.driver::{proc_name}\nend\n", path = h.driver_path);
+    let src = format!(
+        "use {path}->driver\nbegin\n    call.driver::{proc_name}\nend\n",
+        path = h.driver_path
+    );
     let tx_script = CodeBuilder::new()
         .with_dynamically_linked_library(&h.driver_code)
         .expect("linking the driver component into the tx script")
         .compile_tx_script(&src)
-        .unwrap_or_else(|e| panic!("driver call script failed to compile: {e}\n--- script ---\n{src}"));
+        .unwrap_or_else(|e| {
+            panic!("driver call script failed to compile: {e}\n--- script ---\n{src}")
+        });
     let mut ctx = h
         .mock_chain
         .build_tx_context(h.account_id, &[], &[])
@@ -780,10 +801,13 @@ pub async fn run_call_driver_with_advice(
     if let Some(stack) = advice_stack {
         ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack));
     }
-    ctx.build().expect("building the transaction").execute().await
+    ctx.build()
+        .expect("building the transaction")
+        .execute()
+        .await
 }
 
-// D5C NONCE REPLAY HELPERS (P5-01 slice 3)
+// D5C NONCE REPLAY HELPERS
 // ================================================================================================
 
 /// Generates the per-case D5c driver: stages the preimage in the account context, pushes
@@ -809,7 +833,7 @@ pub fn nonce_driver_src(preimage: &[Felt]) -> String {
     src
 }
 
-// D5D ATTESTATION VERIFY HELPERS (P5-01 slice 4)
+// D5D ATTESTATION VERIFY HELPERS
 // ================================================================================================
 
 /// A deterministically-generated attester: its 9-felt compressed pubkey + 17-felt signature (as
@@ -831,7 +855,11 @@ pub struct AttesterVector {
 impl AttesterVector {
     /// The advice stack `verify_attestation` reads: pubkey (9) then signature (17), in seed order.
     pub fn advice(&self) -> Vec<Felt> {
-        self.pubkey_felts.iter().chain(self.sig_felts.iter()).copied().collect()
+        self.pubkey_felts
+            .iter()
+            .chain(self.sig_felts.iter())
+            .copied()
+            .collect()
     }
 }
 
@@ -851,8 +879,9 @@ pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
     hasher.update(payload);
     let digest: [u8; 32] = hasher.finalize().into();
 
-    let (sig, recid): (K256Signature, RecoveryId) =
-        sk.sign_prehash_recoverable(&digest).expect("k256 prehash sign");
+    let (sig, recid): (K256Signature, RecoveryId) = sk
+        .sign_prehash_recoverable(&digest)
+        .expect("k256 prehash sign");
     let mut sig65 = [0u8; 65];
     sig65[..64].copy_from_slice(sig.to_bytes().as_slice());
     sig65[64] = recid.to_byte();
@@ -873,7 +902,7 @@ pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
 /// Builds the MockChain account carrying [the xreserve component WITH the `xReserveAttesters` map
 /// slot] + [the generated driver]. `attesters_seed = Some((commitment, marker))` pre-populates the
 /// allowlist (an enabled attester); `None` leaves it empty (no attester allowlisted). The seeding
-/// is a TEST fixture — the real `set_attester` admin setter is a separate (out-of-scope) slice.
+/// is a TEST fixture — the real `set_attester` admin setter is a separate path.
 pub fn setup_attestation_account(
     attesters_seed: Option<(Word, Word)>,
     driver_src: &str,
@@ -914,10 +943,18 @@ pub fn setup_attestation_account(
 
     let mut builder = MockChain::builder();
     let account = builder
-        .add_existing_account_from_components(Auth::IncrNonce, [xreserve_component, driver_component])
+        .add_existing_account_from_components(
+            Auth::IncrNonce,
+            [xreserve_component, driver_component],
+        )
         .context("adding the attestation harness account")?;
     let mock_chain = builder.build().context("building the MockChain")?;
-    Ok(ShellHarness { mock_chain, account_id: account.id(), driver_code, driver_path })
+    Ok(ShellHarness {
+        mock_chain,
+        account_id: account.id(),
+        driver_code,
+        driver_path,
+    })
 }
 
 /// Generates the per-case D5d driver: stages the DepositIntent payload preimage in the account
@@ -944,7 +981,7 @@ pub fn attestation_driver_src(preimage: &[Felt], len_bytes: u64) -> String {
     src
 }
 
-// D5E MINT WRITE-PHASE HELPERS (P5-01 slice 5)
+// D5E MINT WRITE-PHASE HELPERS
 // ================================================================================================
 
 /// Module path of the generated D5e mint-effects driver component.
@@ -954,7 +991,7 @@ pub const MINT_PROBE_PATH: &str = "xusdc::test_fixtures::mint_probe";
 
 /// A faucet harness for the D5e mint write-phase: a `FungibleFaucet` account carrying the mint
 /// driver (`drive`) AND a no-effects readback probe (`check`), so the over-cap reject can be
-/// proven to leave token_config / usedNonces unchanged on the SAME account (finding #3b).
+/// proven to leave token_config / usedNonces unchanged on the SAME account.
 pub struct MintHarness {
     pub mock_chain: MockChain,
     pub account_id: AccountId,
@@ -994,7 +1031,9 @@ pub fn setup_mint_faucet_account(
     let library = assemble_xreserve_lib_effects_public()?;
 
     let mut builder = MockChain::builder();
-    let recipient = builder.add_existing_wallet(Auth::IncrNonce).context("adding recipient")?;
+    let recipient = builder
+        .add_existing_wallet(Auth::IncrNonce)
+        .context("adding recipient")?;
     let driver_src = mint_effects_driver_src(inputs, recipient.id());
     let probe_src = mint_noeffect_probe_src(token_supply, inputs.key);
 
@@ -1042,7 +1081,12 @@ pub fn setup_mint_faucet_account(
     let account = builder
         .add_existing_account_from_components(
             Auth::IncrNonce,
-            [faucet.into(), xreserve_component, mint_driver_component, probe_driver_component],
+            [
+                faucet.into(),
+                xreserve_component,
+                mint_driver_component,
+                probe_driver_component,
+            ],
         )
         .context("adding the mint faucet account")?;
     let mock_chain = builder.build().context("building the MockChain")?;
@@ -1067,7 +1111,9 @@ async fn run_mint_driver(
         .with_dynamically_linked_library(driver_code)
         .expect("linking the driver into the tx script")
         .compile_tx_script(&src)
-        .unwrap_or_else(|e| panic!("driver call script failed to compile: {e}\n--- script ---\n{src}"));
+        .unwrap_or_else(|e| {
+            panic!("driver call script failed to compile: {e}\n--- script ---\n{src}")
+        });
     h.mock_chain
         .build_tx_context(h.account_id, &[], &[])
         .expect("building the tx context")
@@ -1087,7 +1133,7 @@ pub async fn run_mint(
 
 /// Runs the no-effects readback probe (asserts token_config / usedNonces unchanged). Used after a
 /// rejected over-cap mint on the SAME account (which traps and commits nothing) to concretely
-/// prove no nonce / supply effect landed (finding #3b).
+/// prove no nonce / supply effect landed.
 pub async fn run_noeffect_probe(
     h: &MintHarness,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
@@ -1157,7 +1203,7 @@ pub fn mint_noeffect_probe_src(expected_token_supply: u64, key: [u32; 4]) -> Str
     )
 }
 
-// RECIPIENT ACCOUNTID HELPER (P5-01 Slice 1) — extract_recipient_account_id
+// RECIPIENT ACCOUNTID HELPER — extract_recipient_account_id
 // ================================================================================================
 
 /// Felt offset of the `remoteRecipient` bytes32 field within the staged preimage (DC-1 byte offset
@@ -1168,7 +1214,7 @@ pub const REMOTE_RECIPIENT_FELT_OFF: usize = 19;
 /// Clones a base accept preimage and overwrites the 8-felt `remoteRecipient` field with the u32-LE
 /// packing of `recipient` (the protocol `bytes_to_packed_u32_elements` — the SAME packing the
 /// canonical preimage uses, so the helper's byte-swap recovers the big-endian AccountId). Consumed
-/// BY REFERENCE — no copied vector tables (G1).
+/// BY REFERENCE — no copied vector tables.
 pub fn splice_recipient(base: &[Felt], recipient: [u8; 32]) -> Vec<Felt> {
     let mut preimage = base.to_vec();
     for (i, limb) in bytes_to_packed_u32_elements(&recipient).iter().enumerate() {
@@ -1177,7 +1223,7 @@ pub fn splice_recipient(base: &[Felt], recipient: [u8; 32]) -> Vec<Felt> {
     preimage
 }
 
-/// Generates the per-case Slice-1 driver: a CALL-entered account proc that stages the (spliced)
+/// Generates the per-case recipient-extractor driver: a CALL-entered account proc that stages the (spliced)
 /// preimage in the account context, pushes `[intent_ptr]`, and `exec`s
 /// `xreserve_mint::extract_recipient_account_id`. The extractor returns `[suffix, prefix]`:
 /// `Some((suffix, prefix))` pins both (happy path, restoring the 16-depth `call` boundary); `None`
@@ -1201,11 +1247,17 @@ pub fn recipient_driver_src(preimage: &[Felt], expected: Option<(Felt, Felt)>) -
     match expected {
         // happy: the extractor returns [suffix, prefix]; pin both, restoring the call boundary
         Some((suffix, prefix)) => {
-            writeln!(src, "    push.{suffix} assert_eq.err=\"driver: recipient suffix mismatch\"")
-                .unwrap();
-            writeln!(src, "    push.{prefix} assert_eq.err=\"driver: recipient prefix mismatch\"")
-                .unwrap();
-        },
+            writeln!(
+                src,
+                "    push.{suffix} assert_eq.err=\"driver: recipient suffix mismatch\""
+            )
+            .unwrap();
+            writeln!(
+                src,
+                "    push.{prefix} assert_eq.err=\"driver: recipient prefix mismatch\""
+            )
+            .unwrap();
+        }
         // reject: the extractor traps; balance the would-be [suffix, prefix] for a non-trapping run
         None => src.push_str("    drop drop\n"),
     }
@@ -1213,7 +1265,7 @@ pub fn recipient_driver_src(preimage: &[Felt], expected: Option<(Felt, Felt)>) -
     src
 }
 
-// MINT COMPOSITION (P5-01 Slice 2) — xreserve_mint::mint
+// MINT COMPOSITION — xreserve_mint::mint
 // ================================================================================================
 
 /// Module path of the generated mint-composition driver component.
@@ -1237,7 +1289,10 @@ pub fn uint256_be(value: u64) -> [u8; 32] {
 /// The composition's combined advice stack, in the order the chain consumes it: `feeAmount` (8
 /// limbs, read by D5b) then the attester's pubkey (9) + signature (17) (read by D5d).
 pub fn composition_advice(fee_amount_limbs: [u32; 8], attester: &AttesterVector) -> Vec<Felt> {
-    fee_advice_felts(fee_amount_limbs).into_iter().chain(attester.advice()).collect()
+    fee_advice_felts(fee_amount_limbs)
+        .into_iter()
+        .chain(attester.advice())
+        .collect()
 }
 
 pub struct CompositionHarness {
@@ -1280,11 +1335,12 @@ pub fn setup_mint_composition_account(
                 domain,
             ),
             StorageSlot::with_value(
-                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL).context("identifier slot label")?,
+                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
+                    .context("identifier slot label")?,
                 identifier,
             ),
-            // §5.9 4-field closure: the two new scalar/bytes32 config slots, EMPTY at assembly
-            // (domain_init is the sole writer; per-slice fixtures never read them).
+            // 4-field domain-config closure: the two new scalar/bytes32 config slots, EMPTY at assembly
+            // (domain_init is the sole writer; the fixtures never read them).
             StorageSlot::with_value(
                 StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
                     .context("source_domain slot label")?,
@@ -1321,7 +1377,11 @@ pub fn setup_mint_composition_account(
             .compile_component_code(path, src)
             .with_context(|| format!("{what} failed to compile\n--- src ---\n{src}"))
     };
-    let driver_code = link(MINT_COMPOSITION_DRIVER_PATH, driver_src, "mint composition driver")?;
+    let driver_code = link(
+        MINT_COMPOSITION_DRIVER_PATH,
+        driver_src,
+        "mint composition driver",
+    )?;
     let probe_code = link(MINT_PROBE_PATH, probe_src, "no-effects probe")?;
     let driver_component = AccountComponent::new(
         driver_code.clone(),
@@ -1349,11 +1409,21 @@ pub fn setup_mint_composition_account(
     let account = builder
         .add_existing_account_from_components(
             Auth::IncrNonce,
-            [faucet.into(), xreserve_component, driver_component, probe_component],
+            [
+                faucet.into(),
+                xreserve_component,
+                driver_component,
+                probe_component,
+            ],
         )
         .context("adding the mint composition account")?;
     let mock_chain = builder.build().context("building the MockChain")?;
-    Ok(CompositionHarness { mock_chain, account_id: account.id(), driver_code, probe_code })
+    Ok(CompositionHarness {
+        mock_chain,
+        account_id: account.id(),
+        driver_code,
+        probe_code,
+    })
 }
 
 /// Assembles a MINIMAL, faucet-ONLY account with an IMMUTABLE `max_supply` — a builder-BYPASS fixture
@@ -1364,7 +1434,10 @@ pub fn setup_mint_composition_account(
 /// identically to a full production account. `driver_code` / `probe_code` are unused on this path
 /// (set_max_supply runs via a note, not the mint driver), so the faucet's own code stands in as a
 /// harmless placeholder for those [`CompositionHarness`] fields.
-pub fn setup_bare_immutable_faucet(token_supply: u64, max_supply: u64) -> Result<CompositionHarness> {
+pub fn setup_bare_immutable_faucet(
+    token_supply: u64,
+    max_supply: u64,
+) -> Result<CompositionHarness> {
     let faucet = FungibleFaucet::builder()
         .name(TokenName::new("USDCx")?)
         .symbol(TokenSymbol::new("USDCX")?)
@@ -1380,7 +1453,9 @@ pub fn setup_bare_immutable_faucet(token_supply: u64, max_supply: u64) -> Result
     let account = builder
         .add_existing_account_from_components(Auth::IncrNonce, [faucet.into()])
         .context("adding the bare immutable faucet account")?;
-    let mock_chain = builder.build().context("building the bare-faucet MockChain")?;
+    let mock_chain = builder
+        .build()
+        .context("building the bare-faucet MockChain")?;
     Ok(CompositionHarness {
         mock_chain,
         account_id: account.id(),
@@ -1478,7 +1553,9 @@ async fn run_composition_driver(
         .with_dynamically_linked_library(driver_code)
         .expect("linking the driver into the tx script")
         .compile_tx_script(&src)
-        .unwrap_or_else(|e| panic!("driver call script failed to compile: {e}\n--- script ---\n{src}"));
+        .unwrap_or_else(|e| {
+            panic!("driver call script failed to compile: {e}\n--- script ---\n{src}")
+        });
     let mut ctx = h
         .mock_chain
         .build_tx_context(h.account_id, &[], &[])
@@ -1487,7 +1564,10 @@ async fn run_composition_driver(
     if let Some(stack) = advice {
         ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack));
     }
-    ctx.build().expect("building the transaction").execute().await
+    ctx.build()
+        .expect("building the transaction")
+        .execute()
+        .await
 }
 
 /// Drives the `xreserve_mint::mint` composition with the combined advice stack.
@@ -1495,7 +1575,14 @@ pub async fn run_mint_composition(
     h: &CompositionHarness,
     advice: Vec<Felt>,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    run_composition_driver(h, &h.driver_code, MINT_COMPOSITION_DRIVER_PATH, "drive", Some(advice)).await
+    run_composition_driver(
+        h,
+        &h.driver_code,
+        MINT_COMPOSITION_DRIVER_PATH,
+        "drive",
+        Some(advice),
+    )
+    .await
 }
 
 /// Runs the no-effects readback probe on the SAME account after a rejected mint (the trapped tx
@@ -1514,7 +1601,12 @@ pub async fn run_composition_probe(
 /// sender (`active_note::get_sender`), so the sender is what the owner check tests. `enabled`
 /// is 1 (allowlist) or 0 (remove). The note script is compiled with the `xreserve` library linked so
 /// the `call` resolves to the same proc installed on the faucet account.
-pub fn set_attester_note(sender: AccountId, commitment: Word, enabled: u8, seed: u64) -> Result<Note> {
+pub fn set_attester_note(
+    sender: AccountId,
+    commitment: Word,
+    enabled: u8,
+    seed: u64,
+) -> Result<Note> {
     let lib = assemble_xreserve_lib()?;
     // Stack contract: [PK_COMMITMENT, enabled, pad(11)] (PK_COMMITMENT element-0 on top). Push the
     // 11 pad felts (deepest), then enabled, then the commitment so c0 ends on top: 11 + 1 + 4 = 16.
@@ -1583,7 +1675,7 @@ pub fn faucet_account(h: &CompositionHarness) -> Account {
 }
 
 /// Builds a note SENT BY `sender` whose script calls the stock `PausableManager::pause`. Under
-/// Option 1 (Domain-Pauser-only) the composition does NOT install `PausableManager`, so this note is
+/// the Domain-Pauser-only model the composition does NOT install `PausableManager`, so this note is
 /// the NEGATIVE PROBE for `owner_has_no_pause_path`: it assembles (StandardsLib is pre-linked) but
 /// executing it traps `UnknownAccountProcedure` (the root is not in the account code). No xreserve
 /// link is needed.
@@ -1611,8 +1703,8 @@ pub fn pause_note(sender: AccountId, seed: u64) -> Result<Note> {
 }
 
 /// Executes a stock `PausableManager::pause` note (sent by `sender`) against the faucet `account` —
-/// the CompositionHarness-shaped twin of [`run_pause_against`]. Under Option 1 this is a negative
-/// probe: the stock proc is not installed, so execution traps `UnknownAccountProcedure`.
+/// the CompositionHarness-shaped twin of [`run_pause_against`]. Under the Domain-Pauser-only model
+/// this is a negative probe: the stock proc is not installed, so execution traps `UnknownAccountProcedure`.
 pub async fn run_pause_tx(
     h: &CompositionHarness,
     account: &Account,
@@ -1629,12 +1721,12 @@ pub async fn run_pause_tx(
         .await
 }
 
-// domain_init — owner-gated init-once domain-config setter note (P5-01 R-ADMIN-4 slice)
+// domain_init — owner-gated init-once domain-config setter note (R-ADMIN-4)
 // ================================================================================================
 
 /// The exact stock error `ownable2step::assert_sender_is_owner` traps (ownable2step.masm:38
 /// ERR_SENDER_NOT_OWNER). Constructed inline (a stock protocol error, not an xusdc shell error, so it
-/// is not in `SHELL_ERR_TABLE`). Under the reconciled owner-gated model (DECISION-ADMIN-ROLE-MODEL)
+/// is not in `SHELL_ERR_TABLE`). Under the reconciled owner-gated model
 /// this is the SHARED trap for a non-owner sender across every setter (`set_attester` /
 /// `set_min_burn_size` / `set_max_supply` / `domain_init`).
 pub fn err_sender_not_owner() -> MasmError {
@@ -1642,11 +1734,11 @@ pub fn err_sender_not_owner() -> MasmError {
 }
 
 /// Builds an unauthenticated note SENT BY `sender` whose script `call`s the FOUR-FIELD
-/// `xreserve::domain_config::domain_init(IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain)` (§5.9
-/// closure). The Ownable2Step gate reads the note sender (`active_note::get_sender`), so the sender
+/// `xreserve::domain_config::domain_init(IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain)` (the
+/// 4-field domain config). The Ownable2Step gate reads the note sender (`active_note::get_sender`), so the sender
 /// is what the owner check tests. `domain`/`source_domain` are the u32 scalar fields (each stored as
 /// element 0 of its config word, u32-guarded on-chain before any write); `xreserve_contract` is the
-/// raw bytes32 packed via the 04 codec BY REFERENCE (`bytes32_to_packed_felts` — D-A6-XRC guard 1;
+/// raw bytes32 packed via the encoding-crate codec BY REFERENCE (`bytes32_to_packed_felts`;
 /// hi = felts[0..4], lo = felts[4..8]); `identifier` is the pre-hashed `bytes32_to_key` Word stored
 /// verbatim (unchanged). The note script links the `xreserve` library so the `call` resolves to the
 /// same proc installed on the faucet account.
@@ -1663,14 +1755,21 @@ pub fn domain_init_note(
     for (dst, felt) in xrc_u64.iter_mut().zip(xrc.iter()) {
         *dst = felt.as_canonical_u64();
     }
-    domain_init_note_raw(sender, u64::from(domain), u64::from(source_domain), &xrc_u64, identifier, seed)
+    domain_init_note_raw(
+        sender,
+        u64::from(domain),
+        u64::from(source_domain),
+        &xrc_u64,
+        identifier,
+        seed,
+    )
 }
 
 /// RAW-FELT variant of [`domain_init_note`]: stages `domain` / `source_domain` / the 8
 /// `xreserve_contract` limbs as raw u64 felt literals, BYPASSING the u32-typed builder above — the
 /// only way to stage the malformed (> `u32::MAX`) values the on-chain scalar/limb guards must trap
 /// (`ERR_XRESERVE_DOMAIN_NOT_U32` / `ERR_XRESERVE_SOURCE_DOMAIN_NOT_U32` /
-/// `ERR_XRESERVE_XRC_LIMB_NOT_U32`; §5.9 scalar-u32 exactness, Round-P change 1).
+/// `ERR_XRESERVE_XRC_LIMB_NOT_U32`; the scalar-u32 exactness guards).
 pub fn domain_init_note_raw(
     sender: AccountId,
     domain: u64,
@@ -1743,8 +1842,15 @@ pub async fn run_domain_init_tx(
     identifier: Word,
     seed: u64,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note = domain_init_note(sender, domain, source_domain, xreserve_contract, identifier, seed)
-        .expect("building the domain_init note (test-setup invariant)");
+    let note = domain_init_note(
+        sender,
+        domain,
+        source_domain,
+        xreserve_contract,
+        identifier,
+        seed,
+    )
+    .expect("building the domain_init note (test-setup invariant)");
     h.mock_chain
         .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
         .expect("building the domain_init tx context")
@@ -1777,7 +1883,7 @@ pub async fn run_domain_init_tx_raw(
 }
 
 /// Reads the FIVE domain-config words `[domain, source_domain, xrc_hi, xrc_lo, identifier]` from a
-/// committed/evolved account — the §5.9 4-field read-back (+ the no-write assert of the guard
+/// committed/evolved account — the 4-field read-back (+ the no-write assert of the guard
 /// tests). Missing-slot reads propagate as errors (the slots are always declared on the fixtures).
 pub fn read_domain_config_words(account: &Account) -> Result<[Word; 5]> {
     let read = |label: &str| -> Result<Word> {
@@ -1795,7 +1901,7 @@ pub fn read_domain_config_words(account: &Account) -> Result<[Word; 5]> {
     ])
 }
 
-// set_min_burn_size — owner-gated minBurnSize setter note + slot read-back (P5-01 CMP-F2 slice)
+// set_min_burn_size — owner-gated minBurnSize setter note + slot read-back (CMP-F2)
 // ================================================================================================
 
 /// Builds an unauthenticated note SENT BY `sender` whose script `call`s
@@ -1821,7 +1927,9 @@ pub fn set_min_burn_size_note(sender: AccountId, new_min: u64, seed: u64) -> Res
         .with_dynamically_linked_library(&lib)
         .context("linking xreserve into the set_min_burn_size note script")?
         .compile_note_script(src.clone())
-        .map_err(|e| anyhow::anyhow!("set_min_burn_size note script failed to compile: {e}\n{src}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("set_min_burn_size note script failed to compile: {e}\n{src}")
+        })?;
     // Deterministic note rng (serial only; never affects the gate). Distinct tail [7,8] keeps serials
     // disjoint from set_attester [1,2] / pause [3,4] / set_max_supply [5,6] / domain_init [9,10].
     let mut rng = RandomCoin::new(Word::from([
@@ -1869,7 +1977,7 @@ pub fn read_min_burn_size(account: &Account) -> Result<Word> {
         .map_err(|e| anyhow::anyhow!("reading the min_burn_size value slot: {e}"))
 }
 
-// set_max_supply — stock admin setter note + token_config read-back (P5-01 set_max_supply slice)
+// set_max_supply — stock admin setter note + token_config read-back
 // ================================================================================================
 
 /// The exact stock error `set_max_supply` traps when the faucet's max_supply is immutable
@@ -1947,7 +2055,9 @@ pub async fn run_set_max_supply_tx(
 pub fn read_token_config(account: &Account) -> Result<Word> {
     account
         .storage()
-        .get_item(&StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL).context("token_config slot label")?)
+        .get_item(
+            &StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL).context("token_config slot label")?,
+        )
         .map_err(|e| anyhow::anyhow!("reading the token_config value slot: {e}"))
 }
 
@@ -1965,7 +2075,9 @@ pub async fn run_mint_against(
         .with_dynamically_linked_library(&h.driver_code)
         .expect("linking the driver into the tx script")
         .compile_tx_script(&src)
-        .unwrap_or_else(|e| panic!("driver call script failed to compile: {e}\n--- script ---\n{src}"));
+        .unwrap_or_else(|e| {
+            panic!("driver call script failed to compile: {e}\n--- script ---\n{src}")
+        });
     h.mock_chain
         .build_tx_context(account.clone(), &[], &[])
         .expect("building the tx context")
@@ -2002,10 +2114,11 @@ pub fn setup_rotation_account(
                 domain,
             ),
             StorageSlot::with_value(
-                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL).context("identifier slot label")?,
+                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
+                    .context("identifier slot label")?,
                 identifier,
             ),
-            // §5.9 4-field closure: the two new scalar/bytes32 config slots, EMPTY at assembly
+            // 4-field domain-config closure: the two new scalar/bytes32 config slots, EMPTY at assembly
             // (domain_init is the sole writer).
             StorageSlot::with_value(
                 StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
@@ -2121,7 +2234,7 @@ pub async fn run_rotation_mint(
         .await
 }
 
-// R-MINT-16 MINT-DENY GUARD (P5-01) — guarded faucet composition + stock mint_and_send invocation
+// R-MINT-16 MINT-DENY GUARD — guarded faucet composition + stock mint_and_send invocation
 // ================================================================================================
 
 /// Which mint policy the guarded faucet fixture installs.
@@ -2138,7 +2251,7 @@ pub enum GuardSelection {
 /// active or allow-all per the [`GuardSelection`]), plus the resolved deny-guard proc root. The
 /// production deny path is composed by `XReserveStablecoinBuilder::build_components`; the
 /// allow-all/deny oracle pair is composed by the test-only [`oracle_components`] helper. No stock
-/// `PausableManager` anywhere (Option 1, Domain-Pauser-only): the `is_paused` slot is
+/// `PausableManager` anywhere (the Domain-Pauser-only model): the `is_paused` slot is
 /// FungibleFaucet-installed and pause is exclusively `xreserve::pause_admin`.
 pub struct GuardedMint {
     pub harness: CompositionHarness,
@@ -2186,11 +2299,12 @@ pub fn setup_guarded_mint_account(
                 domain,
             ),
             StorageSlot::with_value(
-                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL).context("identifier slot label")?,
+                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
+                    .context("identifier slot label")?,
                 identifier,
             ),
-            // §5.9 4-field closure: the two new scalar/bytes32 config slots, EMPTY at assembly
-            // (domain_init is the sole writer; per-slice fixtures never read them).
+            // 4-field domain-config closure: the two new scalar/bytes32 config slots, EMPTY at assembly
+            // (domain_init is the sole writer; the fixtures never read them).
             StorageSlot::with_value(
                 StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
                     .context("source_domain slot label")?,
@@ -2227,7 +2341,11 @@ pub fn setup_guarded_mint_account(
             .compile_component_code(path, src)
             .with_context(|| format!("{what} failed to compile\n--- src ---\n{src}"))
     };
-    let driver_code = link(MINT_COMPOSITION_DRIVER_PATH, driver_src, "mint composition driver")?;
+    let driver_code = link(
+        MINT_COMPOSITION_DRIVER_PATH,
+        driver_src,
+        "mint composition driver",
+    )?;
     let probe_code = link(MINT_PROBE_PATH, probe_src, "no-effects probe")?;
     let driver_component = AccountComponent::new(
         driver_code.clone(),
@@ -2275,15 +2393,17 @@ pub fn setup_guarded_mint_account(
             )
             .build_components()
             .map_err(|e| anyhow::anyhow!("composing the production deny faucet: {e}"))?
-        },
+        }
         // TEST-ONLY oracle (non-vacuity pair): both policies registered, deny ACTIVE.
-        GuardSelection::OracleDeny => oracle_components(faucet, xreserve_component, deny_root, true)
-            .context("composing the oracle deny faucet")?,
+        GuardSelection::OracleDeny => {
+            oracle_components(faucet, xreserve_component, deny_root, true)
+                .context("composing the oracle deny faucet")?
+        }
         // TEST-ONLY oracle (non-vacuity pair): both policies registered, allow-all ACTIVE.
         GuardSelection::OracleAllowAll => {
             oracle_components(faucet, xreserve_component, deny_root, false)
                 .context("composing the oracle allow-all faucet")?
-        },
+        }
     };
     components.push(driver_component);
     components.push(probe_component);
@@ -2333,7 +2453,7 @@ fn oracle_components(
         .map_err(|e| anyhow::anyhow!("oracle manager active mint policy: {e}"))?
         .with_mint_policy(reserved, PolicyRegistration::Reserved)
         .map_err(|e| anyhow::anyhow!("oracle manager reserved mint policy: {e}"))?;
-    // No PausableManager (Option 1, Domain-Pauser-only): the is_paused slot execute_mint_policy's
+    // No PausableManager (the Domain-Pauser-only model): the is_paused slot execute_mint_policy's
     // assert_not_paused reads is FungibleFaucet-installed (fungible/mod.rs:397, pinned v0.15.3).
     // Component order/contents mirror XReserveStablecoinBuilder::assemble_components.
     let mut components = vec![faucet.into(), xreserve_component];
@@ -2373,9 +2493,11 @@ pub async fn run_mint_and_send(
         faucet_id_prefix = h.account_id.prefix().as_felt(),
         faucet_id_suffix = h.account_id.suffix(),
     );
-    let tx_script = CodeBuilder::new().compile_tx_script(&src).unwrap_or_else(|e| {
-        panic!("mint_and_send script failed to compile: {e}\n--- script ---\n{src}")
-    });
+    let tx_script = CodeBuilder::new()
+        .compile_tx_script(&src)
+        .unwrap_or_else(|e| {
+            panic!("mint_and_send script failed to compile: {e}\n--- script ---\n{src}")
+        });
     h.mock_chain
         .build_tx_context(h.account_id, &[], &[])
         .expect("building the tx context")
@@ -2386,7 +2508,7 @@ pub async fn run_mint_and_send(
         .await
 }
 
-// CMP-A10 BURN POLICY (P5-01 R-BURN-1/2) — real-MockChain 2-block burn-consume oracle + direct driver
+// CMP-A10 BURN POLICY (R-BURN-1/2) — real-MockChain 2-block burn-consume oracle + direct driver
 // ================================================================================================
 
 /// Which burn policy the burn-oracle faucet fixture installs ACTIVE. Both selections compose a
@@ -2428,7 +2550,7 @@ pub struct BurnPolicyHarness {
 }
 
 /// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` for the burn oracle — a faithful
-/// replica of the production builder's private `seeded_dom_roles_rbac` (Option A: both stock RBAC maps
+/// replica of the production builder's private `seeded_dom_roles_rbac` (both stock RBAC maps
 /// direct-seeded with the two Circle Domain role members `DOM_PAUSER`→`pauser_holder` and
 /// `DOM_MANAGER`→`manager_holder`; `DOM_PAUSER` administration delegated to `DOM_MANAGER` — the CMP-F5
 /// seed `role_config[DOM_PAUSER] = [1, DOM_MANAGER, 0, 0]`). The burn oracle needs the RBAC foundation
@@ -2442,19 +2564,34 @@ fn seeded_dom_roles_rbac_component(
     manager_holder: AccountId,
 ) -> AccountComponent {
     let pauser = RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol");
-    let manager = RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol");
+    let manager =
+        RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol");
     let member_word = Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
     // [1, DOM_MANAGER, 0, 0]: member_count = 1 with administration delegated to DOM_MANAGER (CMP-F5).
-    let delegated_config_word =
-        Word::from([Felt::from(1u32), Felt::from(&manager), Felt::ZERO, Felt::ZERO]);
+    let delegated_config_word = Word::from([
+        Felt::from(1u32),
+        Felt::from(&manager),
+        Felt::ZERO,
+        Felt::ZERO,
+    ]);
 
     let role_config = StorageMap::with_entries([
         (
-            StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&pauser)])),
+            StorageMapKey::new(Word::from([
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::from(&pauser),
+            ])),
             delegated_config_word,
         ),
         (
-            StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&manager)])),
+            StorageMapKey::new(Word::from([
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::from(&manager),
+            ])),
             member_word,
         ),
     ])
@@ -2485,7 +2622,10 @@ fn seeded_dom_roles_rbac_component(
     AccountComponent::new(
         RoleBasedAccessControl::code().clone(),
         vec![
-            StorageSlot::with_map(RoleBasedAccessControl::role_config_slot().clone(), role_config),
+            StorageSlot::with_map(
+                RoleBasedAccessControl::role_config_slot().clone(),
+                role_config,
+            ),
             StorageSlot::with_map(
                 RoleBasedAccessControl::role_membership_slot().clone(),
                 role_membership,
@@ -2520,7 +2660,10 @@ fn oracle_burn_components(
         (BurnPolicyConfig::AllowAll, real_burn)
     };
     let manager = TokenPolicyManager::new()
-        .with_mint_policy(MintPolicyConfig::Custom(mint_deny_root), PolicyRegistration::Active)
+        .with_mint_policy(
+            MintPolicyConfig::Custom(mint_deny_root),
+            PolicyRegistration::Active,
+        )
         .map_err(|e| anyhow::anyhow!("oracle manager active mint policy: {e}"))?
         .with_burn_policy(active_burn, PolicyRegistration::Active)
         .map_err(|e| anyhow::anyhow!("oracle manager active burn policy: {e}"))?
@@ -2530,12 +2673,15 @@ fn oracle_burn_components(
     // Component order/contents mirror XReserveStablecoinBuilder::{assemble_components, build_components}:
     // faucet + xreserve + [policy-manager, BurnAllowAll] + the owner-gating foundation
     // (Ownable2Step + seeded DOM-roles RBAC + Authority::OwnerControlled). No PausableManager
-    // (Option 1, Domain-Pauser-only): the is_paused slot is FungibleFaucet-installed and pause is
+    // (the Domain-Pauser-only model): the is_paused slot is FungibleFaucet-installed and pause is
     // exclusively the DOM_PAUSER custom xreserve::pause_admin procs.
     let mut components = vec![faucet.into(), xreserve_component];
     components.extend(manager);
     components.push(Ownable2Step::new(owner).into());
-    components.push(seeded_dom_roles_rbac_component(pauser_holder, manager_holder));
+    components.push(seeded_dom_roles_rbac_component(
+        pauser_holder,
+        manager_holder,
+    ));
     components.push(Authority::OwnerControlled.into());
     Ok(components)
 }
@@ -2563,10 +2709,11 @@ pub fn setup_burn_policy_account(
                 Word::from([TEST_DOMAIN, 0, 0, 0]),
             ),
             StorageSlot::with_value(
-                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL).context("identifier slot label")?,
+                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
+                    .context("identifier slot label")?,
                 Word::from([11u32, 12, 13, 14]),
             ),
-            // §5.9 4-field closure: the two new scalar/bytes32 config slots, EMPTY at assembly
+            // 4-field domain-config closure: the two new scalar/bytes32 config slots, EMPTY at assembly
             // (domain_init is the sole writer; the burn fixtures never read them).
             StorageSlot::with_value(
                 StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
@@ -2593,8 +2740,14 @@ pub fn setup_burn_policy_account(
                 StorageMap::new(),
             ),
             StorageSlot::with_value(
-                StorageSlotName::new(MIN_BURN_SIZE_SLOT_LABEL).context("min_burn_size slot label")?,
-                Word::from([felt_from_u64(min_burn_size), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
+                StorageSlotName::new(MIN_BURN_SIZE_SLOT_LABEL)
+                    .context("min_burn_size slot label")?,
+                Word::from([
+                    felt_from_u64(min_burn_size),
+                    Felt::ZERO,
+                    Felt::ZERO,
+                    Felt::ZERO,
+                ]),
             ),
         ],
         AccountComponentMetadata::new("xusdc-burn-policy-harness"),
@@ -2645,7 +2798,7 @@ pub fn setup_burn_policy_account(
         .context("adding the burn user wallet")?;
     let user_id = user.id();
 
-    // The canonical burn note (random serial) — created while the builder rng is live (canary C1).
+    // The canonical burn note (random serial) — created while the builder rng is live (per the burn canary).
     let burn_note = BurnNote::create(
         user_id,
         faucet_id,
@@ -2655,7 +2808,9 @@ pub fn setup_burn_policy_account(
     )
     .context("creating the canonical burn note")?;
 
-    let chain = builder.build().context("building the burn-policy MockChain")?;
+    let chain = builder
+        .build()
+        .context("building the burn-policy MockChain")?;
     Ok(BurnPolicyHarness {
         chain,
         faucet_id,
@@ -2729,8 +2884,10 @@ end
 pub fn attachment_advice(note: &Note) -> AdviceInputs {
     let mut advice = AdviceInputs::default();
     for attachment in note.attachments().iter() {
-        advice = advice
-            .with_map([(attachment.content().to_commitment(), attachment.content().to_elements())]);
+        advice = advice.with_map([(
+            attachment.content().to_commitment(),
+            attachment.content().to_elements(),
+        )]);
     }
     advice
 }
@@ -2742,7 +2899,7 @@ pub fn committed_token_supply(chain: &MockChain, faucet_id: AccountId) -> Result
     Ok(FungibleFaucet::try_from(storage)?.token_supply())
 }
 
-/// CMP-B3 N1B — reads the ACTIVE burn-policy procedure root committed in the faucet account's
+/// CMP-B3 — reads the ACTIVE burn-policy procedure root committed in the faucet account's
 /// `TokenPolicyManager` storage slot (the burn-slot twin of the mint deny-root). Asserting this stored
 /// root equals the CMP-A10 `burn_policy_root()` is the storage-COMMITMENT proof that the sole
 /// supply-decrement path (stock `receive_and_burn`) is CMP-A10-gated — stronger than resolving the
@@ -2754,7 +2911,7 @@ pub fn read_active_burn_policy_root(account: &Account) -> Result<Word> {
         .map_err(|e| anyhow::anyhow!("reading the active burn policy root slot: {e}"))
 }
 
-/// CMP-B3 N1D — returns the names of the procedures in a vendored pinned-standards MASM source that
+/// CMP-B3 — returns the names of the procedures in a vendored pinned-standards MASM source that
 /// call `exec.faucet::burn` (the inherited supply-decrement primitive). A call's enclosing proc is the
 /// most recent `(pub )?proc <name>` declaration above it (MASM procs are top-level; inner block `end`s
 /// are irrelevant to which proc a line belongs to). Used to prove the sole inherited decrement surface
@@ -2778,7 +2935,7 @@ pub fn faucet_burn_caller_procs(src: &str) -> Vec<String> {
     callers
 }
 
-/// CMP-B3 N1D — returns the names of the procedures in a vendored pinned-standards MASM source that
+/// CMP-B3 — returns the names of the procedures in a vendored pinned-standards MASM source that
 /// perform a supply-DECREMENT write to `TOKEN_CONFIG_SLOT` (a `set_item` write whose written value is
 /// produced by a `sub`). For each `TOKEN_CONFIG_SLOT` `set_item` write it finds the nearest preceding
 /// arithmetic op (`add`/`sub`) within the enclosing proc and classifies the write `sub` => decrement,
@@ -2845,7 +3002,7 @@ pub async fn try_emit_burn_note(
         // F5: the attachment contents (routing target) keyed by commitment for `add_attachment`.
         .extend_advice_inputs(attachment_advice(burn_note))
         // Register the full note details so the kernel's `before_created` event can resolve the PUBLIC
-        // note's details when tx0 creates it (canary C1).
+        // note's details when tx0 creates it (per the burn canary).
         .extend_expected_output_notes(vec![RawOutputNote::Full(burn_note.clone())])
         .build()
         .expect("building the user emit tx")
@@ -2885,7 +3042,7 @@ pub async fn run_burn_consume(
 }
 
 /// Executes a stock `PausableManager::pause` note SENT BY `sender` against the faucet `account` on a
-/// bare `&MockChain` (the note is provided unauthenticated). Under Option 1 (Domain-Pauser-only) the
+/// bare `&MockChain` (the note is provided unauthenticated). Under the Domain-Pauser-only model the
 /// stock proc is NOT installed — this is the NEGATIVE PROBE `owner_has_no_pause_path` drives: the tx
 /// must trap `UnknownAccountProcedure` and never flip `is_paused`. To actually pause, use
 /// [`run_dom_pauser_pause`] (the DOM_PAUSER custom proc — the only pause surface).
@@ -2966,7 +3123,9 @@ pub fn assert_unknown_account_procedure(err: &TransactionExecutorError) {
         source = inner.source();
     }
     assert!(
-        messages.iter().any(|m| m.contains("is not in the account procedure index map")),
+        messages
+            .iter()
+            .any(|m| m.contains("is not in the account procedure index map")),
         "expected the exact UnknownAccountProcedure failure (the called proc root is not part of \
          the account code); actual error chain: {messages:?}"
     );
@@ -2976,7 +3135,7 @@ pub fn assert_unknown_account_procedure(err: &TransactionExecutorError) {
 // ================================================================================================
 
 /// Builds a note SENT BY `sender` whose script `call`s the CUSTOM `xreserve::pause_admin::{proc}`
-/// (DOM_PAUSER-gated, CMP-F3) — under Option 1 the ONLY installed pause surface. Unlike
+/// (DOM_PAUSER-gated, CMP-F3) — under the Domain-Pauser-only model the ONLY installed pause surface. Unlike
 /// [`pause_note`] (the stock negative probe, a pre-linked StandardsLib proc), this links the
 /// `xreserve` library so the `xreserve::pause_admin::*` path resolves. `pause`/`unpause` take
 /// `[pad(16)]` and return `[pad(16)]`, so the note pushes 16 pad felts, `call`s, and clears the
@@ -3002,7 +3161,9 @@ fn dom_pauser_pause_admin_note(
         .with_dynamically_linked_library(&lib)
         .context("linking xreserve into the dom_pauser pause_admin note script")?
         .compile_note_script(src.clone())
-        .map_err(|e| anyhow::anyhow!("dom_pauser {proc} note script failed to compile: {e}\n{src}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("dom_pauser {proc} note script failed to compile: {e}\n{src}")
+        })?;
     // Deterministic note rng (serial only; never affects the gate). Distinct tails ([21,22] pause /
     // [23,24] unpause) keep serials disjoint from set_attester [1,2] / pause [3,4] / set_max_supply
     // [5,6] / set_min_burn [7,8] / domain_init [9,10].
@@ -3067,7 +3228,8 @@ pub async fn run_dom_pauser_unpause(
 }
 
 /// Reads the FungibleFaucet-installed `is_paused` value slot (`[0,0,0,0]` unpaused, `[1,0,0,0]` paused)
-/// from a committed/evolved account — the CIR-ADMIN-4 `GetAccount` observability read. Mirrors
+/// from a committed/evolved account — the `GetAccount` pause-state observability read (Circle
+/// requires the pause state be publicly observable). Mirrors
 /// [`read_min_burn_size`] / [`read_token_config`]; the slot is installed by FungibleFaucet, so it is
 /// present on every production faucet (never a missing-slot artifact).
 pub fn read_is_paused(account: &Account) -> Result<Word> {
@@ -3117,7 +3279,9 @@ fn rbac_member_note(
     );
     let script = CodeBuilder::new()
         .compile_note_script(src.clone())
-        .map_err(|e| anyhow::anyhow!("rbac {proc_name} note script failed to compile: {e}\n{src}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("rbac {proc_name} note script failed to compile: {e}\n{src}")
+        })?;
     // Deterministic note rng (serial only; never affects the gate). Distinct tails ([11,12] grant /
     // [13,14] revoke / [15,16] set_role_admin) keep serials disjoint from set_attester [1,2] / pause
     // [3,4] / set_max_supply [5,6] / set_min_burn [7,8] / domain_init [9,10] / dom pause [21,22] /
@@ -3135,12 +3299,22 @@ fn rbac_member_note(
 }
 
 /// A `grant_role(role, member)` note sent by `sender` (stock gate: owner-or-role-admin, rbac.masm:411).
-pub fn grant_role_note(sender: AccountId, role: &RoleSymbol, member: AccountId, seed: u64) -> Result<Note> {
+pub fn grant_role_note(
+    sender: AccountId,
+    role: &RoleSymbol,
+    member: AccountId,
+    seed: u64,
+) -> Result<Note> {
     rbac_member_note(sender, "grant_role", role, member, seed, 11, 12)
 }
 
 /// A `revoke_role(role, member)` note sent by `sender` (same owner-or-role-admin gate).
-pub fn revoke_role_note(sender: AccountId, role: &RoleSymbol, member: AccountId, seed: u64) -> Result<Note> {
+pub fn revoke_role_note(
+    sender: AccountId,
+    role: &RoleSymbol,
+    member: AccountId,
+    seed: u64,
+) -> Result<Note> {
     rbac_member_note(sender, "revoke_role", role, member, seed, 13, 14)
 }
 
@@ -3154,7 +3328,9 @@ pub fn set_role_admin_note(
     seed: u64,
 ) -> Result<Note> {
     let role_felt = Felt::from(role).as_canonical_u64();
-    let admin_felt = admin_role.map(|r| Felt::from(r).as_canonical_u64()).unwrap_or(0);
+    let admin_felt = admin_role
+        .map(|r| Felt::from(r).as_canonical_u64())
+        .unwrap_or(0);
     let src = format!(
         "@note_script\n\
          pub proc main\n\
@@ -3284,7 +3460,7 @@ pub async fn run_renounce_role_against(
     run_rbac_note_against(chain, account, note, "renounce_role").await
 }
 
-// ITEM-6 OWNABLE2STEP TWO-STEP OWNER TRANSFER — notes + runners + owner-config read-back
+// OWNABLE2STEP TWO-STEP OWNER TRANSFER — notes + runners + owner-config read-back
 // ================================================================================================
 
 /// A `transfer_ownership(new_owner)` note sent by `sender` (stock gate: OWNER-only,
@@ -3402,7 +3578,11 @@ pub fn read_role_config(account: &Account, role: &RoleSymbol) -> Result<Word> {
 
 /// Reads a member's `role_membership` word `[is_member, 0, 0, 0]` from a committed/evolved account
 /// (stock key encoding `[0, role_symbol, account_suffix, account_prefix]`, rbac.masm:15).
-pub fn read_role_membership(account: &Account, role: &RoleSymbol, member: AccountId) -> Result<Word> {
+pub fn read_role_membership(
+    account: &Account,
+    role: &RoleSymbol,
+    member: AccountId,
+) -> Result<Word> {
     let key = Word::from([
         Felt::ZERO,
         Felt::from(role),
@@ -3453,14 +3633,22 @@ pub fn burn_policy_direct_driver_src(asset_key: Word, amount: u64) -> String {
 /// [`run_call_driver`]. Used by the R-BURN-1 zero-amount direct proof: only the minBurnSize slot is
 /// bound (the direct `check_policy` reads only `amount` + that slot; a zero amount traps before the
 /// slot is read).
-pub fn setup_burn_policy_direct_account(min_burn_size: u64, driver_src: &str) -> Result<ShellHarness> {
+pub fn setup_burn_policy_direct_account(
+    min_burn_size: u64,
+    driver_src: &str,
+) -> Result<ShellHarness> {
     let library = assemble_xreserve_lib()?;
 
     let xreserve_component = AccountComponent::new(
         library.clone(),
         vec![StorageSlot::with_value(
             StorageSlotName::new(MIN_BURN_SIZE_SLOT_LABEL).context("min_burn_size slot label")?,
-            Word::from([felt_from_u64(min_burn_size), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
+            Word::from([
+                felt_from_u64(min_burn_size),
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::ZERO,
+            ]),
         )],
         AccountComponentMetadata::new("xusdc-burn-policy-direct-harness"),
     )
@@ -3470,7 +3658,9 @@ pub fn setup_burn_policy_direct_account(min_burn_size: u64, driver_src: &str) ->
         .with_dynamically_linked_library(&library)
         .context("linking the xreserve library into the direct driver component")?
         .compile_component_code(BURN_POLICY_DRIVER_PATH, driver_src)
-        .with_context(|| format!("direct driver failed to compile\n--- driver ---\n{driver_src}"))?;
+        .with_context(|| {
+            format!("direct driver failed to compile\n--- driver ---\n{driver_src}")
+        })?;
     let driver_component = AccountComponent::new(
         driver_code.clone(),
         vec![],
@@ -3480,9 +3670,14 @@ pub fn setup_burn_policy_direct_account(min_burn_size: u64, driver_src: &str) ->
 
     let mut builder = MockChain::builder();
     let account = builder
-        .add_existing_account_from_components(Auth::IncrNonce, [xreserve_component, driver_component])
+        .add_existing_account_from_components(
+            Auth::IncrNonce,
+            [xreserve_component, driver_component],
+        )
         .context("adding the direct burn-policy account")?;
-    let mock_chain = builder.build().context("building the direct-policy MockChain")?;
+    let mock_chain = builder
+        .build()
+        .context("building the direct-policy MockChain")?;
     Ok(ShellHarness {
         mock_chain,
         account_id: account.id(),
@@ -3491,7 +3686,7 @@ pub fn setup_burn_policy_direct_account(min_burn_size: u64, driver_src: &str) ->
     })
 }
 
-// FULL-ASSEMBLY E2E HARNESS (P5-01 final on-chain slice) — the production-assembled faucet with
+// FULL-ASSEMBLY E2E HARNESS — the production-assembled faucet with
 // EMPTY domain config + a real recipient wallet, run sequentially through the whole lifecycle.
 // ================================================================================================
 
@@ -3500,7 +3695,7 @@ pub fn setup_burn_policy_direct_account(min_burn_size: u64, driver_src: &str) ->
 /// EMPTY (the E2E's `domain_init` tx is the writer — the production bring-up path, not a fixture
 /// seed), an EMPTY attester allowlist (the E2E's `set_attester` tx populates it), one mint driver
 /// per distinct-nonce payload (the rotation-harness pattern), and a REAL recipient wallet that
-/// consumes the minted P2ID note and emits the burn notes (D-E2E-ARC: the burn consumes the
+/// consumes the minted P2ID note and emits the burn notes (the burn consumes the
 /// actually-minted funds).
 pub struct AssembledFaucet {
     pub harness: CompositionHarness,
@@ -3527,7 +3722,7 @@ pub fn setup_assembled_faucet(
     Ok(assembled)
 }
 
-/// The TWO-recipient variant (Item 11 `second_mint_to_distinct_recipient`): identical composition,
+/// The TWO-recipient variant (the `second_mint_to_distinct_recipient` test): identical composition,
 /// but with a SECOND independent recipient wallet so a second attested mint can route funds to a
 /// DIFFERENT wallet (full-path recipient routing). Returns the fixture (whose `recipient_id` is
 /// the FIRST wallet) plus the second wallet's id; the closure receives both ids in order.
@@ -3697,8 +3892,12 @@ pub fn setup_production_faucet(
     seed_notes_for: impl FnOnce(AccountId) -> Vec<Note>,
 ) -> Result<ProductionFaucet> {
     let mut mc = MockChain::builder();
-    let recipient = mc.add_existing_wallet(Auth::IncrNonce).context("adding recipient wallet")?;
-    let producer = mc.add_existing_wallet(Auth::IncrNonce).context("adding producer wallet")?;
+    let recipient = mc
+        .add_existing_wallet(Auth::IncrNonce)
+        .context("adding recipient wallet")?;
+    let producer = mc
+        .add_existing_wallet(Auth::IncrNonce)
+        .context("adding producer wallet")?;
     let seeded_notes = seed_notes_for(recipient.id());
     for note in &seeded_notes {
         mc.add_output_note(RawOutputNote::Full(note.clone()));
@@ -3850,6 +4049,9 @@ pub async fn emit_note_with_attachments(
     );
     chain.add_pending_executed_transaction(&tx)?;
     chain.prove_next_block()?;
-    anyhow::ensure!(chain.is_note_committed(&note.id()), "the emitted note must be committed");
+    anyhow::ensure!(
+        chain.is_note_committed(&note.id()),
+        "the emitted note must be committed"
+    );
     Ok(())
 }

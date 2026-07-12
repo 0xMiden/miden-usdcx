@@ -1,26 +1,26 @@
 # xreserve::xreserve_mint
 #
-# FAUCET(01)-owned mint WRITE-phase (P5-01 D5e slice): `apply_mint_effects` — the supply-cap
-# guard (R-MINT-15) plus the atomic mint effects (nonce SET, P2ID recipient note carrying the
-# minted xUSDC, token_supply += amount). The only supply-increasing surface (CMP-A9, §5.1); a
-# CUSTOM proc that does NOT route through `execute_mint_policy` / the stock `mint_and_send`
-# (ASG-1 / C-7). Because it bypasses `execute_mint_policy` — where the stock pause gate lives — `mint`
-# runs its own `assert_not_paused` FIRST so a DOM_PAUSER pause halts deposits (CIR-ADMIN-4)
-# [RECONCILED → DECISION-CMPF3-MINT-PAUSE-GAP]. The write-side kernel primitives it consumes (token_config value-slot R/W,
-# native_account::set_map_item, note::compute_and_store_recipient + output_note::*,
-# faucet::create_fungible_asset + faucet::mint) are grounded by canary/mint-effects-grounding
-# (executes+commits under MockChain) and mirror mint_and_send (fungible.masm:264-364) +
-# notes/p2id.masm:90 (the recipient build is inlined here from miden::protocol::note so the
-# xreserve library stays core+protocol only — no standards link needed by the harness assembler;
-# the P2ID script root is passed in, the faucet.rs:538-600 pattern).
+# The custom mint — the faucet's ONLY supply-increasing surface (INV-MINT-SECURITY). `mint` chains
+# the verify stages (D5a..D5d) and the write stage (D5e = `apply_mint_effects`: the supply-cap guard
+# plus the atomic effects — nonce SET, a P2ID recipient note carrying the minted xUSDC, and
+# token_supply += amount) into one supply-gated mint. It is a CUSTOM procedure that does NOT route
+# through the stock mint policy / `mint_and_send` (that path is deny-guarded, R-MINT-16); it calls
+# the faucet kernel primitives directly. Because it bypasses the stock mint policy — where the pause
+# gate normally lives — `mint` runs its own `assert_not_paused` FIRST, so a DOM_PAUSER pause halts
+# deposits.
 #
-# BUILD STATE: implemented (D5e green commit). The supply-cap guard (R-MINT-15) does the three
-# ordered non-wrap asserts mirroring mint_and_send (fungible.masm:288-308), trapping the single
-# ERR_XRESERVE_SUPPLY_CAP; over-cap rejects BEFORE any effect (guard is first, so no nonce/note/
-# supply write). Then the atomic effects in spec order (COMPONENT-SPEC §5.1:260-264): nonce SET →
-# P2ID recipient note (amount - feeAmount) → token_supply += amount. The xreserve_mint COMPOSITION
-# (chaining D5a-e + the fail-closed property) is the NEXT slice. Loop history:
-# crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
+# The write-side kernel primitives it uses (token_config value-slot read/write,
+# native_account::set_map_item, note::compute_and_store_recipient + output_note::*,
+# faucet::create_fungible_asset + faucet::mint) are exercised end-to-end under a mock chain by
+# canary/mint-effects-grounding, and mirror the stock `mint_and_send` (fungible.masm) and the P2ID
+# recipient build (notes/p2id.masm). The recipient build is inlined here (from miden::protocol::note)
+# so the xreserve library depends only on the kernel/protocol and core libraries — no standards link
+# is needed by the assembler; the P2ID note script root is passed in rather than linked.
+#
+# The supply-cap guard (R-MINT-15) does three ordered non-wrap asserts (mirroring `mint_and_send`),
+# trapping ERR_XRESERVE_SUPPLY_CAP; an over-cap request rejects BEFORE any effect (the guard runs
+# first, so no nonce/note/supply write happens). Then the atomic effects run in order: nonce SET ->
+# P2ID recipient note (amount - feeAmount) -> token_supply += amount.
 
 use miden::protocol::active_account
 use miden::protocol::native_account
@@ -73,8 +73,8 @@ const ERR_XRESERVE_SUPPLY_CAP = "mint amount exceeds the faucet supply cap"
 # relayer-fee leg is deferred, DEV-8). `mint` hardcodes feeAmount = 0, so this rejects any other caller.
 const ERR_XRESERVE_FEE_NONZERO = "mint fee amount must be zero"
 
-# Slice-1 recipient AccountId extraction (extract_recipient_account_id). The local R-B layout /
-# field-range checks; the suffix-shape and unknown-version rejects surface the protocol
+# Recipient AccountId extraction (extract_recipient_account_id). The AccountId-in-bytes32 layout
+# (DEV-10) field-range checks; the suffix-shape and unknown-version rejects surface the protocol
 # account_id::validate ERR_ACCOUNT_ID_* constants directly. Parity-pinned against
 # support::SHELL_ERR_TABLE + SHELL_ERRORS_DECLARED (constant_parity.rs).
 const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient address pad is not zero"
@@ -85,7 +85,7 @@ const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient val
 # =================================================================================================
 
 #! Chains the accepted verify stages and the write stage into one supply-gating mint — the xUSDC
-#! mint composition entry (Slice 2): assert_deposit_intent (D5a) -> assert_mint_amounts (D5b) ->
+#! mint composition entry: assert_deposit_intent (D5a) -> assert_mint_amounts (D5b) ->
 #! assert_nonce_unused (D5c) -> verify_attestation (D5d) -> extract_recipient_account_id ->
 #! apply_mint_effects (D5e) — verify-once then write-once. Fail-closed: any verify / extraction trap
 #! aborts the whole tx with NO writes (no nonce SET, no recipient note, no token_supply change), so a
@@ -103,9 +103,9 @@ const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient val
 #!   the marshalled `amount` reduction).
 #!
 #! Panics if:
-#! - the faucet is paused (pausable::assert_not_paused, ERR_PAUSABLE_IS_PAUSED) — the CMP-F3 halt gate
-#!   (CIR-ADMIN-4; DECISION-CMPF3-MINT-PAUSE-GAP): the custom mint bypasses the deny'd mint policy where
-#!   the stock assert_not_paused lives, so this pause check makes a DOM_PAUSER pause halt deposits.
+#! - the faucet is paused (pausable::assert_not_paused, ERR_PAUSABLE_IS_PAUSED) — the pause halt gate:
+#!   the custom mint bypasses the deny'd mint policy where the stock assert_not_paused lives, so this
+#!   pause check makes a DOM_PAUSER pause halt deposits.
 #! - any verify stage (R-MINT-1..14) or the recipient extraction rejects (fail-closed), or the supply
 #!   cap is exceeded (R-MINT-15) — no effects are applied on any reject.
 #!
@@ -113,9 +113,9 @@ const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient val
 @locals(12)
 pub proc mint
     # => [intent_ptr, len_felts, scale_exp]
-    # halt gate (R-MINT pause, CMP-F3): a paused faucet must not mint. FIRST (before any verify), mirrors
-    # the sibling setters + the stock execute_mint_policy this custom mint bypasses; operand-stack-neutral
-    # (reads the FungibleFaucet-installed is_paused slot). See DECISION-CMPF3-MINT-PAUSE-GAP.
+    # halt gate (pause): a paused faucet must not mint. FIRST (before any verify), mirrors the sibling
+    # setters + the stock mint policy this custom mint bypasses; operand-stack-neutral (reads the
+    # is_paused slot that FungibleFaucet installs).
     exec.pausable::assert_not_paused
     # => [intent_ptr, len_felts, scale_exp]
 
@@ -241,8 +241,8 @@ end
 #!   amount - fee_amount).
 #! - KEY is the usedNonces storage-map key (already = bytes32_to_key(nonce) from D5c; consumed by
 #!   reference, never re-derived here).
-#! - recipient_id_{suffix,prefix} are the two AccountId felts of the P2ID target (D-5: consumed
-#!   directly; the remoteRecipient bytes32->felts extraction is the composition's job, DEV-10 OPEN).
+#! - recipient_id_{suffix,prefix} are the two AccountId felts of the P2ID target (consumed
+#!   directly; the remoteRecipient bytes32->felts extraction is done by the caller, DEV-10 OPEN).
 #! - SERIAL_NUM is the recipient note serial number.
 #! - P2ID_SCRIPT_ROOT is the P2ID note script root (identifies the recipient note as P2ID).
 #! - tag, note_type are the recipient note metadata (note_type 1 = public).
@@ -360,7 +360,8 @@ proc apply_mint_effects
 end
 
 #! Extracts and canonically validates the P2ID recipient's Miden AccountId felts from the staged
-#! DepositIntent's `remoteRecipient` bytes32 (R-B layout), feeding `apply_mint_effects` (Slice 1).
+#! DepositIntent's `remoteRecipient` bytes32 (the DEV-10 AccountId-in-bytes32 layout), feeding
+#! `apply_mint_effects`.
 #!
 #! Reads the eight u32-LE-packed `remoteRecipient` limbs at `intent_ptr + REMOTE_RECIPIENT_FELT_OFF`,
 #! asserts the 16-byte leading pad is zero, rebuilds the big-endian `prefix`/`suffix` u64s — each
@@ -388,7 +389,7 @@ proc extract_recipient_account_id
     push.REMOTE_RECIPIENT_FELT_OFF add
     # => [base]   (base = intent_ptr + REMOTE_RECIPIENT_FELT_OFF; the 8 limbs occupy base+0..7)
 
-    # ---- R-B leading pad: the 16-byte pad (limbs base+0..3) must be exactly zero ----
+    # ---- leading pad: the 16-byte pad (limbs base+0..3) of the AccountId-in-bytes32 layout must be exactly zero ----
     dup mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
     dup add.1 mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
     dup add.2 mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
@@ -428,7 +429,7 @@ end
 #! Builds a Miden field element from the two u32-LE-packed limbs of a big-endian u64, PROVING the
 #! value did not reduce mod the field (the canonical-range check mirroring Rust `Felt::try_from`;
 #! the `miden-agglayer` `eth_address.masm::build_felt` precedent, adapted with a local byte-swap so
-#! the faucet library depends on no private 04 export).
+#! the faucet library depends on no private export of the encoding library).
 #!
 #! Inputs:  [lo, hi]
 #! Outputs: [felt]
@@ -466,10 +467,10 @@ proc build_felt
     # => [felt]                    (no reduction: high 32 bits round-trip)
 end
 
-#! Reverses the byte order of a u32 (little-endian <-> big-endian). A generic u32 primitive (NOT
-#! 04-owned domain logic); reimplemented locally because the 04 `encoding::swap_u32_bytes` is a
-#! private `proc` and exporting it / adding to 04 is out of this slice's ownership. The caller
-#! asserts u32-ness (`build_felt`'s `u32assert2`) before invoking.
+#! Reverses the byte order of a u32 (little-endian <-> big-endian). A generic u32 primitive (not
+#! encoding-library domain logic); reimplemented locally because the encoding library's
+#! `swap_u32_bytes` is a private `proc` (not exported). The caller asserts u32-ness (`build_felt`'s
+#! `u32assert2`) before invoking.
 #!
 #! Inputs:  [value]
 #! Outputs: [swapped]
@@ -499,7 +500,8 @@ end
 #! the encoding reducers consume, preserving anything below `base`. Replicates the (private)
 #! deposit_intent_parser staging (reduce_uint256_field / assert_nonce_unused nonce load): single-felt
 #! loads because the DC-1 felt offsets are not word-aligned (word loads trap UnalignedWordAccess);
-#! the reduction / key-hash itself is the 04 `pub proc`, consumed by reference at the call site.
+#! the reduction / key-hash itself is the encoding library's `pub proc`, consumed by reference at the
+#! call site.
 #!
 #! Inputs:  [base, ...]
 #! Outputs: [W1, W0, ...]

@@ -1,18 +1,17 @@
 //! Committed generator of the ONE canonical golden-vector artifact
 //! (`tests/vectors/xreserve-encoding-vectors.json`).
 //!
-//! Provenance engine per the approved plan §8: arithmetic/layout expectations are derived
-//! here with exact integer math (formulas recorded per entry); hash/protocol-derived
-//! expectations (Poseidon2 Words, AccountIds) are computed ONCE against the pinned
-//! `protocol v0.15.3` crates (`Hasher::hash_elements`, `bytes_to_packed_u32_elements`,
-//! `AccountIdBuilder::build_with_seed`). This binary never calls the crate's mirror
-//! routines (derivation independence); it is derivation code, not routine logic.
-//! Regeneration is an explicit, reviewed act: `cargo run --bin gen_vectors`.
+//! Provenance engine: arithmetic/layout expectations are derived here with exact integer math
+//! (formulas recorded per entry); hash/protocol-derived expectations (Poseidon2 Words,
+//! AccountIds) are computed ONCE against the pinned `protocol v0.15.3` crates
+//! (`Hasher::hash_elements`, `bytes_to_packed_u32_elements`, `AccountIdBuilder::build_with_seed`).
+//! This binary never calls the crate's mirror routines (derivation independence); it is
+//! derivation code, not routine logic. Regeneration is an explicit, reviewed act:
+//! `cargo run --bin gen_vectors`.
 //!
-//! DC-1 byte offsets used below trace to the frozen 04 COMPONENT-SPEC DC-1 table
-//! (CIRCLE-DATA-SCHEMAS.md:21-32): magic@0, version@4, amount@8, remoteDomain@40,
+//! DC-1 byte offsets used below: magic@0, version@4, amount@8, remoteDomain@40,
 //! remoteToken@44, remoteRecipient@76, localToken@108, localDepositor@140, maxFee@172,
-//! nonce@204, hookDataLen@236, hookData@240; header = 240 bytes = 60 u32-LE felts (C-10).
+//! nonce@204, hookDataLen@236, hookData@240; header = 240 bytes = 60 u32-LE felts.
 
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey};
 use miden_crypto::dsa::ecdsa_k256_keccak::PublicKey;
@@ -20,12 +19,12 @@ use miden_crypto::utils::Deserializable;
 use miden_protocol::testing::account_id::AccountIdBuilder;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Hasher, Word};
-use rand::SeedableRng;
 use rand::rngs::StdRng;
-use serde_json::{Value, json};
+use rand::SeedableRng;
+use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
 
-const ASSET_AMOUNT_MAX: u128 = (1u128 << 63) - (1u128 << 31); // E-7: 2^63 - 2^31
+const ASSET_AMOUNT_MAX: u128 = (1u128 << 63) - (1u128 << 31); // 2^63 - 2^31
 
 fn hex_bytes(b: &[u8]) -> String {
     let mut s = String::with_capacity(2 + b.len() * 2);
@@ -64,9 +63,9 @@ fn packed(bytes: &[u8]) -> Vec<Felt> {
     bytes_to_packed_u32_elements(bytes)
 }
 
-// kept verbatim from the pre-cleanup source (structure-only rounds): clippy 1.93 flags the
-// `Word::from` as `useless_conversion` when the `vectors` feature compiles this generator,
-// but removing it would be an executable change outside the MASM-structure scope.
+// clippy 1.93 flags the `Word::from` as `useless_conversion` when the `vectors` feature compiles
+// this generator, but removing it would change executable behaviour, so the lint is suppressed in
+// place instead.
 #[allow(clippy::useless_conversion)]
 fn poseidon2_key(bytes32: &[u8; 32]) -> Word {
     Word::from(Hasher::hash_elements(&packed(bytes32)))
@@ -79,12 +78,15 @@ fn poseidon2_key(bytes32: &[u8; 32]) -> Word {
 fn amt_accept(id: &str, tv: &[&str], x: u128, scale_exp: u32, derivation: &str) -> Value {
     let b = u256_be_from_u128(x);
     let y = x / 10u128.pow(scale_exp);
-    assert!(y <= ASSET_AMOUNT_MAX, "{id}: accept vector must be within the cap");
+    assert!(
+        y <= ASSET_AMOUNT_MAX,
+        "{id}: accept vector must be within the cap"
+    );
     json!({
         "id": id, "tv": tv, "kind": "accept",
         "uint256_be": hex_bytes(&b), "le_limbs": le_limbs(&b), "scale_exp": scale_exp,
         "expected_y": y.to_string(),
-        "cite": "EL E-16 (:91), E-7 (:82); CIR-FEE-3 (:116)",
+        "cite": "CIR-FEE-3",
         "derivation": derivation,
     })
 }
@@ -134,8 +136,8 @@ fn pattern32(base: u8) -> [u8; 32] {
 impl IntentSpec {
     fn base(remote_recipient: [u8; 32]) -> Self {
         Self {
-            magic: 0x5a2e_0acd, // CIRCLE-DATA-SCHEMAS.md:21
-            version: 1,         // :22
+            magic: 0x5a2e_0acd, // DepositIntent magic
+            version: 1,         // DepositIntent version
             amount: u256_be_from_u128(1_000_000),
             remote_domain: 7,
             remote_token: pattern32(0xa0),
@@ -161,7 +163,9 @@ impl IntentSpec {
         out.extend_from_slice(&self.local_depositor); // @140
         out.extend_from_slice(&self.max_fee); // @172
         out.extend_from_slice(&self.nonce); // @204
-        let hdl = self.hook_data_len_override.unwrap_or(self.hook_data.len() as u32);
+        let hdl = self
+            .hook_data_len_override
+            .unwrap_or(self.hook_data.len() as u32);
         out.extend_from_slice(&hdl.to_be_bytes()); // @236
         out.extend_from_slice(&self.hook_data); // @240
         assert_eq!(out.len(), 240 + self.hook_data.len());
@@ -169,7 +173,7 @@ impl IntentSpec {
     }
 }
 
-/// Per-field felt offsets within the packed preimage (byte offset / 4; C-10 packing).
+/// Per-field felt offsets within the packed preimage (byte offset / 4; 4 bytes per felt).
 const FIELD_FELT_OFFS: [(&str, usize, usize); 12] = [
     ("magic", 0, 1),
     ("version", 1, 1),
@@ -192,7 +196,11 @@ fn di_accept(id: &str, tv: &[&str], spec: &IntentSpec, derivation: &str) -> Valu
     let packed_fields: Vec<Value> = FIELD_FELT_OFFS
         .iter()
         .map(|(name, off, len)| {
-            let len = if *name == "hook_data" { hook_felts } else { *len };
+            let len = if *name == "hook_data" {
+                hook_felts
+            } else {
+                *len
+            };
             json!({
                 "name": name, "felt_off": off,
                 "felts": felts_hex(&preimage[*off..*off + len]),
@@ -218,7 +226,7 @@ fn di_accept(id: &str, tv: &[&str], spec: &IntentSpec, derivation: &str) -> Valu
             "packed": packed_fields,
             "remote_token_felts": felts_hex(&preimage[11..19]),
         },
-        "cite": "DC-1 (CIRCLE-DATA-SCHEMAS.md:21-35); C-10 (:85)",
+        "cite": "DC-1",
         "derivation": derivation,
     })
 }
@@ -243,7 +251,7 @@ fn di_reject(
     })
 }
 
-// Attestation (ATT) entries — §6.7 dual surface
+// Attestation (ATT) entries — Rust + MASM dual surface
 // ================================================================================================
 // Independent generation (anti-circularity): the secp256k1 keypair + signature come from the
 // INDEPENDENT `k256` crate, the keccak digest from `sha3` — never a miden signer. The commitment
@@ -277,8 +285,9 @@ fn att_keccak256(msg: &[u8]) -> [u8; 32] {
 /// (r‖s‖v, v = recovery id). RAW secp256k1 over the keccak digest: NO EIP-712 domain, no
 /// struct (INV-DEPOSIT-ATTESTATION-RAW-KECCAK); v is carried, unused on-chain.
 fn att_sign65(sk: &SigningKey, digest: &[u8; 32]) -> [u8; 65] {
-    let (sig, recid): (K256Signature, RecoveryId) =
-        sk.sign_prehash_recoverable(digest).expect("k256 prehash sign");
+    let (sig, recid): (K256Signature, RecoveryId) = sk
+        .sign_prehash_recoverable(digest)
+        .expect("k256 prehash sign");
     let mut out = [0u8; 65];
     out[..64].copy_from_slice(sig.to_bytes().as_slice()); // 64-byte big-endian r || s
     out[64] = recid.to_byte(); // v in {0..3}
@@ -287,7 +296,7 @@ fn att_sign65(sk: &SigningKey, digest: &[u8; 32]) -> [u8; 65] {
 
 /// The canonical commitment oracle: deserialize the exact 33 compressed wire bytes into the
 /// miden-crypto `PublicKey` and take `to_commitment()` = Poseidon2 over the 9 u32-LE pubkey
-/// felts (miden-crypto-0.25.1/src/dsa/ecdsa_k256_keccak/mod.rs:253,:301; src/lib.rs:156-170).
+/// felts (miden-crypto `ecdsa_k256_keccak`).
 /// This is exactly what off-chain `set_attester` keys the `xReserveAttesters` allowlist by.
 fn att_commitment(pk33: &[u8; 33]) -> Word {
     PublicKey::read_from_bytes(pk33)
@@ -300,7 +309,11 @@ fn main() {
     let b32_inputs: [(&str, [u8; 32], &str); 3] = [
         ("b32-pos-1", [0u8; 32], "all-zero bytes32"),
         ("b32-pos-2", [0xffu8; 32], "all-0xff bytes32"),
-        ("b32-pos-3", core::array::from_fn(|i| i as u8), "bytes 0x00..0x1f"),
+        (
+            "b32-pos-3",
+            core::array::from_fn(|i| i as u8),
+            "bytes 0x00..0x1f",
+        ),
     ];
     let mut b32: Vec<Value> = b32_inputs
         .iter()
@@ -310,7 +323,7 @@ fn main() {
                 "bytes32": hex_bytes(b),
                 "packed_felts": felts_hex(&packed(b)),
                 "expected_key": word_hex(poseidon2_key(b)),
-                "cite": "EL E-4 (:79), E-6 (:81), E-12 (:87), E-13 (:88)",
+                "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
                 "derivation": format!(
                     "{what}; key = Hasher::hash_elements(bytes_to_packed_u32_elements(b)) @ protocol v0.15.3 (gen_vectors)"
                 ),
@@ -329,14 +342,20 @@ fn main() {
         "packed_felts": felts_hex(&packed(&ge_p)),
         "expected_key": word_hex(poseidon2_key(&ge_p)),
         "lossless_error": "LimbOutOfField",
-        "cite": "EL E-3 (:78); C-5 (ARCHITECTURE-DECISIONS-AND-CAVEATS.md:58-61)",
+        "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
         "derivation": "first 8-byte LE limb = u64::MAX >= p, so the fallible native path must reject while Option B hashes; key computed @ v0.15.3",
     }));
 
     // ---- amt family -------------------------------------------------------------------
     let max = ASSET_AMOUNT_MAX;
     let mut amt = vec![
-        amt_accept("amt-pos-1", &["TV-AMT-1", "TV-DUAL-2"], 1_000_000, 6, "x = 10^6, y = 1"),
+        amt_accept(
+            "amt-pos-1",
+            &["TV-AMT-1", "TV-DUAL-2"],
+            1_000_000,
+            6,
+            "x = 10^6, y = 1",
+        ),
         amt_accept(
             "amt-pos-2",
             &["TV-AMT-1", "TV-DUAL-2"],
@@ -344,7 +363,13 @@ fn main() {
             6,
             "x = 123456789012 * 10^6, y = 123456789012",
         ),
-        amt_accept("amt-pos-3", &["TV-AMT-1", "TV-DUAL-2"], 42, 0, "scale 0: y = x = 42"),
+        amt_accept(
+            "amt-pos-3",
+            &["TV-AMT-1", "TV-DUAL-2"],
+            42,
+            0,
+            "scale 0: y = x = 42",
+        ),
         amt_accept(
             "amt-pos-4",
             &["TV-AMT-1", "TV-DUAL-2"],
@@ -357,7 +382,7 @@ fn main() {
             &["TV-AMT-2", "TV-DUAL-2"],
             max * 1_000_000,
             6,
-            "cap boundary: x = (2^63 - 2^31) * 10^6, y = AssetAmount::MAX exactly (E-7)",
+            "cap boundary: x = (2^63 - 2^31) * 10^6, y = AssetAmount::MAX exactly",
         ),
         amt_reject(
             "amt-rej-cap",
@@ -366,7 +391,7 @@ fn main() {
             6,
             "AmountOverCap",
             "ERR_AMOUNT_OVER_CAP",
-            "EL E-7 (:82); 04 COMPONENT-SPEC :313",
+            "generated deterministically by gen_vectors @ protocol v0.15.3",
             "x = (2^63 - 2^31 + 1) * 10^6, post-scale y = MAX + 1 must reject (no saturation)",
         ),
         {
@@ -380,7 +405,7 @@ fn main() {
                 6,
                 "AmountTooLarge",
                 "ERR_X_TOO_LARGE",
-                "EL E-16 (:91)",
+                "generated deterministically by gen_vectors @ protocol v0.15.3",
                 "x = 2^130: high-4 limbs nonzero must reject (limb-overflow edge)",
             )
         },
@@ -391,15 +416,33 @@ fn main() {
             20,
             "ScaleExpTooLarge",
             "ERR_SCALE_EXP_TOO_LARGE",
-            "C-6 (:63-66); MIDEN-CRYPTO-AND-ENCODING.md:133; 04 :294 (scale 0..=18)",
+            "(scale 0..=18)",
             "scale_exp = 20 exceeds the 0..=18 bound / overflows 10^scale in u64",
         ),
     ];
     // reduced-ge pairs (TV-AMT-5).
     for (id, a, b, result, note) in [
-        ("amt-ge-lt", 1_000_000u128, 2_000_000u128, false, "1 < 2 after reduction"),
-        ("amt-ge-eq", 3_000_000, 3_000_000, true, "3 == 3 after reduction"),
-        ("amt-ge-gt", 5_000_000, 2_000_000, true, "5 > 2 after reduction"),
+        (
+            "amt-ge-lt",
+            1_000_000u128,
+            2_000_000u128,
+            false,
+            "1 < 2 after reduction",
+        ),
+        (
+            "amt-ge-eq",
+            3_000_000,
+            3_000_000,
+            true,
+            "3 == 3 after reduction",
+        ),
+        (
+            "amt-ge-gt",
+            5_000_000,
+            2_000_000,
+            true,
+            "5 > 2 after reduction",
+        ),
     ] {
         let ab = u256_be_from_u128(a);
         let bb = u256_be_from_u128(b);
@@ -408,7 +451,7 @@ fn main() {
             "uint256_be": hex_bytes(&ab), "le_limbs": le_limbs(&ab),
             "b_uint256_be": hex_bytes(&bb), "b_le_limbs": le_limbs(&bb),
             "scale_exp": 6, "ge_result": result,
-            "cite": "CIR-MINT-PRE-8/9 (:47-48); D5b (ARCHITECTURE-FLOWS.md:50)",
+            "cite": "CIR-MINT-PRE-8/9 ; D5b",
             "derivation": note,
         }));
     }
@@ -418,16 +461,16 @@ fn main() {
         "id": "amt-dust", "tv": ["TV-AMT-6"], "kind": "dust",
         "uint256_be": hex_bytes(&dust_b), "le_limbs": le_limbs(&dust_b), "scale_exp": 6,
         "expected_y": "1", "expected_dust": "500123",
-        "cite": "EL E-16 (:91); DEV-5 (CIRCLE-MIDEN-DEVIATIONS-AND-QUESTIONS.md:44-49)",
+        "cite": "DEV-5",
         "derivation": "x = 1500123, y = floor(x/10^6) = 1, z = 500123; dust POLICY is REQUIRES CIRCLE CONFIRMATION (DEV-5)",
     }));
-    // masm-only u32 guard staging (additive; G-MASM N11 — not a TV coverage claim).
+    // masm-only u32 guard staging (additive harness case, not a frozen TV coverage claim).
     amt.push(json!({
         "id": "amt-guard-limb-not-u32", "tv": [], "kind": "guard", "mode": "masm-only",
         "scale_exp": 6,
         "staging_felts": ["0x1", "0x0", "0x0", "0x0", "0x0", "0x100000000", "0x0", "0x0"],
         "masm_err": "ERR_FELT_OUT_OF_FIELD",
-        "cite": "BUILDER-GATES G-MASM (:28, u32-assert-before-u32-ops); 04 :237 (E-14 intent)",
+        "cite": "BUILDER-GATES G-MASM",
         "derivation": "staged 'limb' felt = 2^32 is not a valid u32; the reducer's input guard must trap (unrepresentable in the Rust [u32;8] API)",
     }));
 
@@ -455,7 +498,7 @@ fn main() {
             "tv": ["TV-AID-1", "TV-AID-4"],
             "bytes32": hex_bytes(&b32_bytes),
             "prefix_felt": felt_hex(prefix), "suffix_felt": felt_hex(suffix),
-            "cite": "EL E-9 (:84), E-10 (:85); MIDEN-CRYPTO-AND-ENCODING.md:148-157; DEV-10 + IMPL-ACCOUNTID-LAYOUT (R-B / Agglayer-mirroring draft, REQUIRES CIRCLE CONFIRMATION)",
+            "cite": "DEV-10 + IMPL-ACCOUNTID-LAYOUT (R-B / Agglayer-mirroring draft, REQUIRES CIRCLE CONFIRMATION)",
             "derivation": format!(
                 "AccountIdBuilder::new().build_with_seed([{}; 32]) @ v0.15.3; R-B layout: bytes[0..16]=0, [16..24]=prefix u64 BE, [24..32]=suffix u64 BE",
                 n + 1
@@ -470,7 +513,7 @@ fn main() {
             "id": "aid-rej-out-of-range", "tv": ["TV-AID-2"],
             "bytes32": hex_bytes(&bad),
             "expected_variant": "AccountIdOutOfRange",
-            "cite": "EL E-9 (:84), E-10 (:85)",
+            "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
             "derivation": "aid-rt-1 R-B bytes32 with byte[0] = 0x01 (non-zero in the leading 16-byte pad)",
         }));
     }
@@ -493,7 +536,7 @@ fn main() {
             "id": "aid-rej-non-canonical", "tv": ["TV-AID-2"],
             "bytes32": hex_bytes(&bad),
             "expected_variant": "NonCanonicalAccountId",
-            "cite": "EL E-9 (:84)",
+            "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
             "derivation": "R-B layout, zero pad; prefix=suffix=7 (in-field) rejected by AccountId::try_from_elements @ v0.15.3",
         }));
     }
@@ -530,7 +573,7 @@ fn main() {
             &spec.encode(),
             "BadMagic",
             Some("ERR_DI_BAD_MAGIC"),
-            "CIR-MINT-PRE-2 (:41); 04 :238",
+            "CIR-MINT-PRE-2",
             "magic = 0xdeadbeef != 0x5a2e0acd",
         ));
     }
@@ -543,14 +586,29 @@ fn main() {
             &spec.encode(),
             "BadVersion",
             Some("ERR_DI_BAD_VERSION"),
-            "CIR-MINT-PRE-3 (:42); 04 :239",
+            "CIR-MINT-PRE-3",
             "version = 2 != 1",
         ));
     }
     for (id, tv, field, variant) in [
-        ("di-rej-zero-amount", "TV-DI-4", "amount", "ZeroField:Amount"),
-        ("di-rej-zero-local-token", "TV-DI-5", "local_token", "ZeroField:LocalToken"),
-        ("di-rej-zero-local-depositor", "TV-DI-5", "local_depositor", "ZeroField:LocalDepositor"),
+        (
+            "di-rej-zero-amount",
+            "TV-DI-4",
+            "amount",
+            "ZeroField:Amount",
+        ),
+        (
+            "di-rej-zero-local-token",
+            "TV-DI-5",
+            "local_token",
+            "ZeroField:LocalToken",
+        ),
+        (
+            "di-rej-zero-local-depositor",
+            "TV-DI-5",
+            "local_depositor",
+            "ZeroField:LocalDepositor",
+        ),
     ] {
         let mut spec = IntentSpec::base(recipient_b32);
         match field {
@@ -565,7 +623,7 @@ fn main() {
             &spec.encode(),
             variant,
             Some("ERR_DI_ZERO_FIELD"),
-            "CIR-MINT-PRE-4/5 (:43-44); 04 :240",
+            "CIR-MINT-PRE-4/5",
             &format!("{field} = 0 must reject"),
         ));
     }
@@ -579,7 +637,7 @@ fn main() {
             &spec.encode(),
             "LengthMismatch",
             Some("ERR_DI_LENGTH"),
-            "CIR-MINT-PRE-11 (:50); 04 :241",
+            "CIR-MINT-PRE-11",
             "hookDataLen field = 10 but only 4 hookData bytes appended (total 244 != 250)",
         ));
     }
@@ -589,7 +647,7 @@ fn main() {
         &base_bytes[..100],
         "TruncatedHeader",
         Some("ERR_DI_LENGTH"),
-        "CIRCLE-DATA-SCHEMAS.md:35; 04 :241 (MASM folds both length violations into ERR_DI_LENGTH)",
+        "(MASM folds both length violations into ERR_DI_LENGTH)",
         "first 100 bytes only (< 240-byte header; 25 staged felts < 60)",
     ));
     {
@@ -602,7 +660,7 @@ fn main() {
             &spec.encode(),
             "HookDataTooLarge",
             None, // Rust-only: the 1024-felt bound lives in the Rust packer (04:344)
-            "C-10 (:85); N-4 (EL:100); DEV-6 (REQUIRES CIRCLE CONFIRMATION)",
+            "DEV-6 (REQUIRES CIRCLE CONFIRMATION)",
             "hookDataLen = 3860 => 60 + 965 = 1025 felts > 1024 NoteStorage bound",
         ));
     }
@@ -616,12 +674,12 @@ fn main() {
             "len_felts": preimage.len(),
             "staging_len_felts": 59,
             "expected_variant": "LengthMismatch", "masm_err": "ERR_DI_LENGTH",
-            "cite": "04 :348 (parser input contract)",
+            "cite": "(parser input contract)",
             "derivation": "valid 60-felt preimage staged with len_felts = 59; the felt-length relation must trap",
         }));
     }
 
-    // ---- att family (§6.7 attestation surface) ----------------------------------------
+    // ---- att family (attestation surface) ----------------------------------------
     // Each vector: an independent k256 keypair; the digest is keccak256 of a FULL DepositIntent
     // payload (raw keccak, NOT EIP-712, no struct — INV-DEPOSIT-ATTESTATION-RAW-KECCAK); the
     // 65-byte r||s||v signature over that digest; and the canonical commitment from miden-crypto
@@ -649,7 +707,7 @@ fn main() {
             "sig_felts": felts_hex(&packed(&sig)),
             "v_byte": sig[64],
             "payload_hex": hex_bytes(&payload),
-            "cite": "MIDEN-CRYPTO-AND-ENCODING.md:40-44,:53-54; 04 COMPONENT-SPEC §6.7,§7; miden-crypto-0.25.1 dsa/ecdsa_k256_keccak/mod.rs:253,:301 + src/lib.rs:156-170",
+            "cite": "miden-crypto-0.25.1 dsa/ecdsa_k256_keccak/mod.rs:253,:301 + src/lib.rs:156-170",
             "derivation": format!(
                 "k256 SigningKey::random(StdRng seed {seed}); pk = 33B compressed SEC1 (9 felts); sig = 65B r||s||v (17 felts, v carried) over keccak256(full {plen}B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.25.1 (Poseidon2 over the 9 pubkey felts)",
                 plen = payload.len(),
@@ -657,31 +715,36 @@ fn main() {
         }));
     }
 
-    // ---- bn family (§6.6 / DC-7 burn-note items) --------------------------------------
-    // §7 layout (:419): items = amount(1) + destDomain(1) + destRecipient(8 u32-LE) + salt(8 u32-LE)
+    // ---- bn family (DC-7 burn-note items) --------------------------------------
+    // items = amount(1) + destDomain(1) + destRecipient(8 u32-LE) + salt(8 u32-LE)
     // = 18 felts. Derived independently of the crate's encode: amount/destDomain are the canonical
     // felt of the integer; the two bytes32 fields use the same `packed` primitive as the b32 family.
-    let bn_items = |amount: u64, domain: u32, recipient: &[u8; 32], salt: &[u8; 32]| -> Vec<String> {
-        let mut out = Vec::with_capacity(18);
-        out.push(felt_hex(Felt::try_from(amount).expect("amount < p")));
-        out.push(felt_hex(Felt::from(domain)));
-        out.extend(felts_hex(&packed(recipient)));
-        out.extend(felts_hex(&packed(salt)));
-        out
-    };
-    let bn_accept =
-        |id: &str, amount: u64, domain: u32, recipient: [u8; 32], salt: [u8; 32], derivation: &str| {
-            json!({
-                "id": id, "tv": ["TV-BN-1", "TV-BN-2", "TV-BN-3"], "kind": "accept",
-                "amount": amount.to_string(),
-                "dest_domain": domain,
-                "dest_recipient": hex_bytes(&recipient),
-                "salt": hex_bytes(&salt),
-                "items": bn_items(amount, domain, &recipient, &salt),
-                "cite": "04 COMPONENT-SPEC §6.6 (:363-376), §7 (:419); DC-7 (:130-135)",
-                "derivation": derivation,
-            })
+    let bn_items =
+        |amount: u64, domain: u32, recipient: &[u8; 32], salt: &[u8; 32]| -> Vec<String> {
+            let mut out = Vec::with_capacity(18);
+            out.push(felt_hex(Felt::try_from(amount).expect("amount < p")));
+            out.push(felt_hex(Felt::from(domain)));
+            out.extend(felts_hex(&packed(recipient)));
+            out.extend(felts_hex(&packed(salt)));
+            out
         };
+    let bn_accept = |id: &str,
+                     amount: u64,
+                     domain: u32,
+                     recipient: [u8; 32],
+                     salt: [u8; 32],
+                     derivation: &str| {
+        json!({
+            "id": id, "tv": ["TV-BN-1", "TV-BN-2", "TV-BN-3"], "kind": "accept",
+            "amount": amount.to_string(),
+            "dest_domain": domain,
+            "dest_recipient": hex_bytes(&recipient),
+            "salt": hex_bytes(&salt),
+            "items": bn_items(amount, domain, &recipient, &salt),
+            "cite": "DC-7",
+            "derivation": derivation,
+        })
+    };
     let bn_max = ASSET_AMOUNT_MAX as u64; // 2^63 - 2^31, < u64::MAX
     let mut bn: Vec<Value> = vec![
         bn_accept(
@@ -718,7 +781,7 @@ fn main() {
             "id": id, "tv": ["TV-BN-4"], "kind": "reject",
             "items": items,
             "expected_variant": "BurnItemsMalformed",
-            "cite": "04 COMPONENT-SPEC §6.6 (:363-376), error-map (:476); ASG-13/ASG-17",
+            "cite": "error-map ; ASG-13/ASG-17",
             "derivation": derivation,
         })
     };
@@ -734,8 +797,16 @@ fn main() {
     recip_limb[5] = over_u32.clone(); // within destRecipient [2..10]
     let mut salt_limb = bn_base.clone();
     salt_limb[12] = over_u32; // within salt [10..18]
-    bn.push(bn_reject("bn-rej-len-short", short, "17 felts (< 18) → wrong length"));
-    bn.push(bn_reject("bn-rej-len-long", long, "19 felts (> 18) → wrong length"));
+    bn.push(bn_reject(
+        "bn-rej-len-short",
+        short,
+        "17 felts (< 18) → wrong length",
+    ));
+    bn.push(bn_reject(
+        "bn-rej-len-long",
+        long,
+        "19 felts (> 18) → wrong length",
+    ));
     bn.push(bn_reject(
         "bn-rej-amount-over-cap",
         amount_over,
@@ -760,7 +831,14 @@ fn main() {
     let file = json!({ "version": 1, "families": { "b32": b32, "amt": amt, "aid": aid, "di": di, "att": att, "bn": bn } });
     let path = xusdc_encoding::vectors_path();
     std::fs::create_dir_all(path.parent().unwrap()).expect("create vectors dir");
-    std::fs::write(&path, serde_json::to_string_pretty(&file).expect("serialize") + "\n")
-        .expect("write artifact");
-    println!("wrote {} ({} bytes)", path.display(), std::fs::metadata(&path).unwrap().len());
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&file).expect("serialize") + "\n",
+    )
+    .expect("write artifact");
+    println!(
+        "wrote {} ({} bytes)",
+        path.display(),
+        std::fs::metadata(&path).unwrap().len()
+    );
 }

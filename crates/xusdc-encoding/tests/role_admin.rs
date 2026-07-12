@@ -1,13 +1,13 @@
-//! P5-01 CMP-F5 role-management suite: `DOM_PAUSER` administration delegated to `DOM_MANAGER`
-//! (frozen faucet spec §5.12; CIR-ADMIN-3 "Domain Manager / Domain Pauser roles (rotation, pause
-//! control), `onlyDomainManager`/`onlyOwner` gated"; completes DECISION-ADMIN-ROLE-MODEL).
+//! Role-management suite (component CMP-F5): `DOM_PAUSER` administration delegated to `DOM_MANAGER`.
+//! Circle's admin model has Domain Manager and Domain Pauser roles (rotation, pause control), gated
+//! `onlyDomainManager`/`onlyOwner`.
 //!
 //! The delegation is a BUILD-TIME SEED: the production builder writes
 //! `role_config[DOM_PAUSER] = [member_count=1, admin_role=DOM_MANAGER, 0, 0]` — byte-identical to the
 //! post-state of an owner-sent stock `set_role_admin(DOM_PAUSER, DOM_MANAGER)` (rbac.masm:314-333).
 //! `DOM_MANAGER.admin_role` stays 0 (owner-administered — Circle keeps rotation of the Manager itself
 //! under the owner). All role-administration procs are the STOCK rbac procs the account already
-//! exposes (account_components/access/rbac.masm re-exports); this slice ships ZERO custom MASM.
+//! exposes (account_components/access/rbac.masm re-exports); it ships ZERO custom MASM.
 //!
 //! The load-bearing proof is the ROTATION CAPABILITY SEAM, never a config read-back alone:
 //! a DOM_MANAGER-sent `grant_role(DOM_PAUSER, new)` flips REAL pause power (the new member's pause
@@ -38,7 +38,7 @@ use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
-use xusdc_encoding::vectors::{DiFields, DiVector, load, parse_hex32};
+use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
 
 // The production builder seeds owner = id(1) (Ownable2Step), DOM_PAUSER = id(2), DOM_MANAGER = id(3).
@@ -62,8 +62,8 @@ fn stranger() -> AccountId {
     test_account_id(99)
 }
 
-// The ORCHESTRATOR-FIXED role aliases (DECISION-ADMIN-ROLE-MODEL), via the production Rust constants
-// (builder.rs) — the single source the seed, the notes, and the read-backs all share.
+// The fixed role aliases, via the production Rust constants (builder.rs) — the single source the
+// seed, the notes, and the read-backs all share.
 fn pauser_sym() -> RoleSymbol {
     RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol (<=12)")
 }
@@ -136,7 +136,10 @@ fn di(id: &str) -> &'static DiVector {
 }
 
 fn fields_of(id: &str) -> &'static DiFields {
-    di(id).fields.as_ref().expect("accept vector carries fields")
+    di(id)
+        .fields
+        .as_ref()
+        .expect("accept vector carries fields")
 }
 
 fn with_amounts(mut payload: Vec<u8>, amount: u64, max_fee: u64) -> Vec<u8> {
@@ -154,11 +157,15 @@ fn pack(bytes: &[u8]) -> Vec<Felt> {
 }
 
 fn identifier_of(id: &str) -> Word {
-    Word::from(bytes32_to_storage_map_key(&parse_hex32(&fields_of(id).remote_token_hex)))
+    Word::from(bytes32_to_storage_map_key(&parse_hex32(
+        &fields_of(id).remote_token_hex,
+    )))
 }
 
 fn nonce_key() -> Word {
-    Word::from(bytes32_to_storage_map_key(&fields_of(BASE_VECTOR).bytes32("nonce")))
+    Word::from(bytes32_to_storage_map_key(
+        &fields_of(BASE_VECTOR).bytes32("nonce"),
+    ))
 }
 
 /// A production faucet pre-configured for a VALID real `xreserve_mint` (the halt-seam target):
@@ -188,7 +195,7 @@ fn mint_ready() -> Result<(GuardedMint, AttesterVector)> {
 // THE ROTATION SEAMS (RED) — role administration must change REAL pause capability, end-to-end
 // ================================================================================================
 
-/// THE grant seam (CIR-ADMIN-3 "Domain Manager rotates the Pauser"): before the grant, id(4) has no
+/// THE grant seam (the Domain Manager rotates the Pauser): before the grant, id(4) has no
 /// pause power (exact role trap); a DOM_MANAGER-sent `grant_role(DOM_PAUSER, id4)` then flips REAL
 /// capability — id(4)'s pause HALTS a real `xreserve_mint` at the exact `ERR_PAUSABLE_IS_PAUSED`.
 /// RED: the shipped seed still has `DOM_PAUSER.admin_role == 0`, so the DOM_MANAGER grant itself
@@ -228,8 +235,12 @@ async fn dom_manager_grants_pauser_then_new_pauser_halts_mint() -> Result<()> {
     evolved.apply_delta(paused.account_delta())?;
 
     // ...and HALTS the real mint at the exact stock pause error — the capability change is REAL.
-    let result =
-        run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
+    let result = run_mint_against(
+        &gm.harness,
+        &evolved,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await;
     assert_transaction_executor_error!(result, err_paused());
     Ok(())
 }
@@ -262,7 +273,11 @@ async fn dom_manager_revokes_pauser_then_pause_rejects() -> Result<()> {
         "the revoked member's membership flag is cleared"
     );
     let config = read_role_config(&evolved, &pauser_sym())?;
-    assert_eq!(config[0], Felt::ZERO, "DOM_PAUSER member_count decremented to 0");
+    assert_eq!(
+        config[0],
+        Felt::ZERO,
+        "DOM_PAUSER member_count decremented to 0"
+    );
     assert_eq!(
         config[1],
         Felt::from(&manager_sym()),
@@ -272,7 +287,11 @@ async fn dom_manager_revokes_pauser_then_pause_rejects() -> Result<()> {
     // The revoked member's pause now REJECTS with the exact role error; is_paused is unchanged.
     let result = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, dom_pauser(), 35).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
-    assert_eq!(read_is_paused(&evolved)?[0], Felt::ZERO, "a failed pause leaves is_paused untouched");
+    assert_eq!(
+        read_is_paused(&evolved)?[0],
+        Felt::ZERO,
+        "a failed pause leaves is_paused untouched"
+    );
     Ok(())
 }
 
@@ -320,13 +339,17 @@ async fn dom_manager_rotates_pauser_revoke_then_grant() -> Result<()> {
         .await
         .expect("the rotated-in DOM_PAUSER member pauses the faucet");
     evolved.apply_delta(paused.account_delta())?;
-    let result =
-        run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
+    let result = run_mint_against(
+        &gm.harness,
+        &evolved,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await;
     assert_transaction_executor_error!(result, err_paused());
     Ok(())
 }
 
-// STOCK-BRANCH PINS (Item 11) — the grant no-op branch, the non-member revoke trap, self-renounce
+// STOCK-BRANCH PINS — the grant no-op branch, the non-member revoke trap, self-renounce
 // ================================================================================================
 
 /// A double-grant leaves NO ghost member: the stock `grant_role_internal` takes its
@@ -430,10 +453,15 @@ async fn dom_pauser_can_renounce_own_role() -> Result<()> {
     let gm = production_faucet()?;
     let account = faucet_account(&gm.harness);
 
-    let renounced =
-        run_renounce_role_against(&gm.harness.mock_chain, &account, dom_pauser(), &pauser_sym(), 55)
-            .await
-            .expect("a DOM_PAUSER holder self-renounces (stock renounce_role, self-only)");
+    let renounced = run_renounce_role_against(
+        &gm.harness.mock_chain,
+        &account,
+        dom_pauser(),
+        &pauser_sym(),
+        55,
+    )
+    .await
+    .expect("a DOM_PAUSER holder self-renounces (stock renounce_role, self-only)");
     let mut evolved = account.clone();
     evolved.apply_delta(renounced.account_delta())?;
     assert_eq!(
@@ -462,14 +490,26 @@ async fn shipped_delegation_reads_back() -> Result<()> {
     let account = faucet_account(&gm.harness);
 
     let pauser_config = read_role_config(&account, &pauser_sym())?;
-    assert_eq!(pauser_config[0], Felt::from(1u32), "DOM_PAUSER member_count == 1");
+    assert_eq!(
+        pauser_config[0],
+        Felt::from(1u32),
+        "DOM_PAUSER member_count == 1"
+    );
     assert_eq!(
         pauser_config[1],
         Felt::from(&manager_sym()),
         "DOM_PAUSER.admin_role == DOM_MANAGER (the CMP-F5 delegation, seeded at build)"
     );
-    assert_eq!(pauser_config[2], Felt::ZERO, "DOM_PAUSER config felt 2 is zero");
-    assert_eq!(pauser_config[3], Felt::ZERO, "DOM_PAUSER config felt 3 is zero");
+    assert_eq!(
+        pauser_config[2],
+        Felt::ZERO,
+        "DOM_PAUSER config felt 2 is zero"
+    );
+    assert_eq!(
+        pauser_config[3],
+        Felt::ZERO,
+        "DOM_PAUSER config felt 3 is zero"
+    );
 
     assert_eq!(
         read_role_config(&account, &manager_sym())?,
@@ -493,7 +533,7 @@ async fn shipped_delegation_reads_back() -> Result<()> {
 // THE OWNER BACKSTOP (GREEN pins) — Circle's onlyOwner rotation authority, asserted POSITIVE
 // ================================================================================================
 
-/// The Circle `onlyOwner` BACKSTOP as a POSITIVE (CIR-ADMIN-3 `onlyDomainManager`/`onlyOwner`): the
+/// The Circle owner-only BACKSTOP as a POSITIVE (the owner-only rotation authority): the
 /// owner grants id(5) and the new member's pause SUCCEEDS (`is_paused` flips) — capability-level, not
 /// a config read-back. The stock gate's owner leg is structural (rbac.masm:412-417) and must NEVER be
 /// stripped. GREEN at the red commit; must SURVIVE the delegation (the delegated admin does not
@@ -550,7 +590,11 @@ async fn owner_can_still_revoke_pauser() -> Result<()> {
 
     let result = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, dom_pauser(), 43).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
-    assert_eq!(read_is_paused(&evolved)?[0], Felt::ZERO, "a failed pause leaves is_paused untouched");
+    assert_eq!(
+        read_is_paused(&evolved)?[0],
+        Felt::ZERO,
+        "a failed pause leaves is_paused untouched"
+    );
     Ok(())
 }
 
@@ -735,7 +779,11 @@ async fn owner_set_role_admin_controls_delegation() -> Result<()> {
     evolved.apply_delta(cleared.account_delta())?;
     let config = read_role_config(&evolved, &pauser_sym())?;
     assert_eq!(config[1], Felt::ZERO, "the delegation is cleared");
-    assert_eq!(config[0], Felt::from(1u32), "member_count is preserved through set_role_admin");
+    assert_eq!(
+        config[0],
+        Felt::from(1u32),
+        "member_count is preserved through set_role_admin"
+    );
 
     // With the delegation cleared, the DOM_MANAGER holder can no longer grant.
     let denied = run_grant_role_against(

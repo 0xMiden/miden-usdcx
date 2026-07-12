@@ -1,4 +1,4 @@
-//! 01 faucet D5e mint write-phase suite (P5-01 slice 5): drives the FAUCET(01)-owned
+//! D5e mint write-phase suite: drives the faucet-owned
 //! `xreserve::xreserve_mint::apply_mint_effects` shell through MockChain `execute().await` via a
 //! CALL-entered driver on a `FungibleFaucet` account (the canary-proven construction). The shell
 //! consumes a verified intent's outputs (amount, feeAmount, the nonce key, the recipient
@@ -29,42 +29,69 @@ const MARKER: [u32; 4] = [1, 0, 0, 0];
 const SERIAL: [u32; 4] = [7, 7, 7, 7];
 
 fn inputs(amount: u64, fee_amount: u64, key: [u32; 4]) -> MintInputs {
-    MintInputs { amount, fee_amount, key, serial: SERIAL, tag: 0, note_type: 1 }
+    MintInputs {
+        amount,
+        fee_amount,
+        key,
+        serial: SERIAL,
+        tag: 0,
+        note_type: 1,
+    }
 }
 
 /// Reads the post-tx token_config value-slot word (panics if absent / not a Value delta).
 fn token_config_delta(executed: &miden_protocol::transaction::ExecutedTransaction) -> Word {
     let slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL).expect("cfg slot label");
-    match executed.account_delta().storage().get(&slot).expect("token_config slot delta") {
+    match executed
+        .account_delta()
+        .storage()
+        .get(&slot)
+        .expect("token_config slot delta")
+    {
         StorageSlotDelta::Value(w) => *w,
         StorageSlotDelta::Map(_) => panic!("token_config must be a Value slot delta"),
     }
 }
 
-// HAPPY / CONSERVATION (G4) — feeAmount == 0 MVP single recipient note
+// HAPPY / CONSERVATION — feeAmount == 0 MVP single recipient note
 // ================================================================================================
 
 #[tokio::test]
 async fn d5e_happy_conservation() -> Result<()> {
     let amount = 1000u64;
     let h = setup_mint_faucet_account(1_000_000, 0, &inputs(amount, 0, KEY))?;
-    let executed =
-        run_mint(&h).await.expect("apply_mint_effects must apply the effects on a valid mint");
+    let executed = run_mint(&h)
+        .await
+        .expect("apply_mint_effects must apply the effects on a valid mint");
 
     // recipient note carries amount - feeAmount (== amount at MVP), from this faucet.
-    assert_eq!(executed.output_notes().num_notes(), 1, "exactly one recipient note");
+    assert_eq!(
+        executed.output_notes().num_notes(),
+        1,
+        "exactly one recipient note"
+    );
     let note = executed.output_notes().get_note(0);
     let asset = note
         .assets()
         .iter_fungible()
         .next()
         .expect("the recipient note must carry a fungible asset");
-    assert_eq!(Felt::from(asset.amount()), Felt::from(amount as u32), "note asset == amount - feeAmount");
-    assert_eq!(asset.faucet_id(), h.account_id, "asset minted by this faucet");
+    assert_eq!(
+        Felt::from(asset.amount()),
+        Felt::from(amount as u32),
+        "note asset == amount - feeAmount"
+    );
+    assert_eq!(
+        asset.faucet_id(),
+        h.account_id,
+        "asset minted by this faucet"
+    );
 
     // the emitted note is the intended P2ID recipient note: canonical P2ID script root + storage
     // [target_id_suffix, target_id_prefix] for the intended recipient (not merely the right asset).
-    let recipient = note.recipient().expect("public output note must carry its recipient");
+    let recipient = note
+        .recipient()
+        .expect("public output note must carry its recipient");
     assert_eq!(
         recipient.script().root(),
         P2idNote::script_root(),
@@ -77,12 +104,19 @@ async fn d5e_happy_conservation() -> Result<()> {
     );
 
     // INV-SUPPLY-CONSERVATION: token_supply rose by exactly amount.
-    assert_eq!(token_config_delta(&executed)[0], Felt::from(amount as u32), "token_supply delta == amount");
+    assert_eq!(
+        token_config_delta(&executed)[0],
+        Felt::from(amount as u32),
+        "token_supply delta == amount"
+    );
 
     // nonce SET committed: usedNonces[KEY] == MARKER.
     let used = StorageSlotName::new(USED_NONCES_SLOT_LABEL)?;
-    let StorageSlotDelta::Map(map_delta) =
-        executed.account_delta().storage().get(&used).expect("usedNonces slot delta")
+    let StorageSlotDelta::Map(map_delta) = executed
+        .account_delta()
+        .storage()
+        .get(&used)
+        .expect("usedNonces slot delta")
     else {
         panic!("usedNonces must be a Map slot delta");
     };
@@ -107,7 +141,8 @@ async fn d5e_nonzero_fee_traps() -> Result<()> {
     let fee_amount = 250u64; // genuinely non-zero -> must trap the F2 guard
     let h = setup_mint_faucet_account(1_000_000, 0, &inputs(amount, fee_amount, KEY))?;
     let result = run_mint(&h).await;
-    let expected = miden_protocol::errors::MasmError::from_static_str("mint fee amount must be zero");
+    let expected =
+        miden_protocol::errors::MasmError::from_static_str("mint fee amount must be zero");
     assert_transaction_executor_error!(result, &expected);
     Ok(())
 }
@@ -120,7 +155,9 @@ async fn d5e_cap_boundary_accepts() -> Result<()> {
     let seeded = 400_000u64;
     let amount = max - seeded; // exactly hits the cap
     let h = setup_mint_faucet_account(max, seeded, &inputs(amount, 0, KEY))?;
-    let executed = run_mint(&h).await.expect("minting exactly to the cap is allowed");
+    let executed = run_mint(&h)
+        .await
+        .expect("minting exactly to the cap is allowed");
     assert_eq!(
         token_config_delta(&executed)[0],
         Felt::from((seeded + amount) as u32),
@@ -139,7 +176,9 @@ async fn d5e_near_max_boundary() -> Result<()> {
     let amount = 1000u64;
     let seeded = max - amount;
     let h = setup_mint_faucet_account(max, seeded, &inputs(amount, 0, KEY))?;
-    let executed = run_mint(&h).await.expect("minting to the AssetAmount cap must not wrap");
+    let executed = run_mint(&h)
+        .await
+        .expect("minting to the AssetAmount cap must not wrap");
     assert_eq!(
         token_config_delta(&executed)[0],
         miden_protocol::Felt::from(miden_protocol::asset::AssetAmount::new(max)?),
@@ -163,7 +202,7 @@ async fn d5e_over_cap_rejects() -> Result<()> {
     let result = run_mint(&h).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_SUPPLY_CAP"));
 
-    // No-effects proof (finding #3b): the rejected tx trapped at the guard (before any write) and
+    // No-effects proof: the rejected tx trapped at the guard (before any write) and
     // committed nothing; a follow-up readback on the SAME account confirms token_config and
     // usedNonces[KEY] are unchanged (genesis seed). It must execute cleanly (no assertion trap).
     run_noeffect_probe(&h)

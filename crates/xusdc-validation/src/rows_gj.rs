@@ -1,7 +1,7 @@
 //! The LNV-4 rows-G/H/I/J driver: one deterministic burn-lifecycle arc against a fresh local node,
 //! producing the [`RowsGjObservations`] the rows-G/H/I/J assertion suite judges.
 //!
-//! Execution model (LNV-1 §3.2 posture, LNV-2/3-confirmed, reused):
+//! Execution model (LNV-1 posture, LNV-2/3-confirmed, reused):
 //! - **The committed mint (to the holder) and the Row-G two-block burn commit via path N (the
 //!   ntx-builder).** The mint note is emitted from the owner/relayer wallet; the Row-G burn note is
 //!   emitted from the HOLDER wallet (a regular-account tx the user RPC accepts) carrying the burned

@@ -31,7 +31,10 @@ async fn main() -> Result<()> {
     let mut cfg = RunConfig::fresh(&repo_root(), &label);
     cfg.keep_stack = keep_stack;
 
-    println!("LNV-2 rows C/F — run root: {}", cfg.stack.run_root.display());
+    println!(
+        "LNV-2 rows C/F — run root: {}",
+        cfg.stack.run_root.display()
+    );
     let obs = run_rows_cf(&cfg).await?;
 
     let verdicts: Vec<(&str, Result<()>)> = vec![

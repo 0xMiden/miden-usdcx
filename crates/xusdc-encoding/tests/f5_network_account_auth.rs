@@ -2,9 +2,7 @@
 //!
 //! Human decision (2026-07-08, RATIFIED): the xUSDC/xReserve faucet ships composing the stock
 //! `AuthNetworkAccount` as its ONE production auth component — keyless, a frozen note-script
-//! allowlist, an EMPTY tx-script allowlist. Basis:
-//! `circle-integration/07-implementation-readiness/F5-PRODUCTION-AUTH-RESEARCH-AND-RECOMMENDATION.md`;
-//! plan: `~/.claude/plans/model-soft-crescent.md` (Round-P PASS + §4 allowlist ratified).
+//! allowlist, an EMPTY tx-script allowlist.
 //!
 //! The production faucet (`support::setup_production_faucet`) is finalized under
 //! `Auth::NetworkAccount` fed `builder.allowed_note_scripts()`, and the mint + burn notes carry the
@@ -36,19 +34,16 @@ use miden_protocol::account::{Account, AccountComponent};
 use miden_protocol::note::{NoteAttachmentScheme, NoteType};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::{
-    AuthNetworkAccount,
-    NetworkAccount,
-    NetworkAccountNoteAllowlist,
+    AuthNetworkAccount, NetworkAccount, NetworkAccountNoteAllowlist,
     NetworkAccountTxScriptAllowlist,
 };
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::errors::standards::{
-    ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED,
-    ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED,
+    ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED, ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED,
 };
 use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint};
 use miden_standards::testing::note::NoteBuilder;
-use miden_testing::{MockChain, assert_transaction_executor_error};
+use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_admin::{
@@ -117,9 +112,11 @@ fn production_faucet() -> Result<(MockChain, Account)> {
 /// allowlist storage contents; a dummy non-empty allowlist is used only to construct it).
 fn stock_network_auth_proc_root() -> Word {
     let component: AccountComponent =
-        AuthNetworkAccount::with_allowed_notes(BTreeSet::from_iter([XReserveMintNote::script_root()]))
-            .expect("non-empty allowlist constructs")
-            .into();
+        AuthNetworkAccount::with_allowed_notes(BTreeSet::from_iter([
+            XReserveMintNote::script_root(),
+        ]))
+        .expect("non-empty allowlist constructs")
+        .into();
     let (root, _is_auth) = component
         .procedures()
         .find(|(_, is_auth)| *is_auth)
@@ -189,7 +186,11 @@ fn production_faucet_note_allowlist_is_exactly_the_13_ratified_roots() -> Result
         XReserveAcceptOwnershipNote::script_root(),
         XReserveDomainInitNote::script_root(),
     ]);
-    assert_eq!(expected.len(), 13, "the ratified allowlist is exactly 13 distinct roots");
+    assert_eq!(
+        expected.len(),
+        13,
+        "the ratified allowlist is exactly 13 distinct roots"
+    );
 
     // Source layer: the builder's single-source allowlist == the 13 ratified roots.
     assert_eq!(
@@ -306,11 +307,18 @@ fn mint_note_carries_scheme1_attestation_and_scheme2_target_to_faucet() -> Resul
         .iter()
         .filter(|a| a.attachment_scheme() == scheme_one)
         .count();
-    assert_eq!(attestation_count, 1, "exactly one scheme-1 attestation attachment");
+    assert_eq!(
+        attestation_count, 1,
+        "exactly one scheme-1 attestation attachment"
+    );
 
     let target = NetworkAccountTarget::try_from(note.attachments())
         .map_err(|e| anyhow::anyhow!("the mint note must carry a scheme-2 routing target: {e}"))?;
-    assert_eq!(target.target_id(), faucet_id, "the routing target must be the faucet account");
+    assert_eq!(
+        target.target_id(),
+        faucet_id,
+        "the routing target must be the faucet account"
+    );
     assert_eq!(
         target.execution_hint(),
         NoteExecutionHint::Always,
@@ -340,7 +348,11 @@ fn burn_note_carries_scheme2_target_to_faucet() -> Result<()> {
     );
     let target = NetworkAccountTarget::try_from(note.attachments())
         .map_err(|e| anyhow::anyhow!("the burn note must carry a scheme-2 routing target: {e}"))?;
-    assert_eq!(target.target_id(), faucet_id, "the routing target must be the faucet account");
+    assert_eq!(
+        target.target_id(),
+        faucet_id,
+        "the routing target must be the faucet account"
+    );
     assert_eq!(
         target.execution_hint(),
         NoteExecutionHint::Always,

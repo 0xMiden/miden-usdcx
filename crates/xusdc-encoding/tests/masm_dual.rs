@@ -1,11 +1,11 @@
-//! MASM execution harness: TV-DUAL-1..3 cross-language conformance tests plus the
-//! harness probes/meta-tests. Protocol-derived mechanics (approved plan §4):
+//! MASM execution harness: the TV-DUAL-1..3 cross-language conformance tests plus the
+//! harness probes/meta-tests. Protocol-derived mechanics:
 //! `TransactionKernel::assembler().with_warnings_as_errors(true)` +
-//! `assemble_library_from_dir` (miden-standards/build.rs:45,:77), dynamic library
-//! linking into tx scripts (code_builder/mod.rs:224; test_array.rs:127-129), MockChain
-//! account + `build_tx_context(...).tx_script(...).execute()` (test_account.rs:158-162,
-//! :460-474; the grounding spike), exact-error assertion via
-//! `assert_transaction_executor_error!` (miden-testing/src/utils.rs).
+//! `assemble_library_from_dir` (miden-standards/build.rs), dynamic library
+//! linking into tx scripts (code_builder/mod.rs; test_array.rs), MockChain
+//! account + `build_tx_context(...).tx_script(...).execute()` (test_account.rs),
+//! exact-error assertion via `assert_transaction_executor_error!`
+//! (miden-testing/src/utils.rs).
 //!
 //! Every conformance assertion here is on the RESULT OF `execute().await` — there is no
 //! assemble-only assertion path, and the Rust mirror is never consulted: expected values
@@ -15,17 +15,17 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use miden_processor::operation::OperationError;
+use miden_processor::ExecutionError;
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::account::{AccountComponent, AccountId};
 use miden_protocol::assembly::Library;
 use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::{ExecutedTransaction, TransactionKernel};
-use miden_processor::ExecutionError;
-use miden_processor::operation::OperationError;
 use miden_protocol::{Felt, Word};
-use miden_standards::StandardsLib;
 use miden_standards::code_builder::CodeBuilder;
-use miden_testing::{Auth, MockChain, assert_transaction_executor_error};
+use miden_standards::StandardsLib;
+use miden_testing::{assert_transaction_executor_error, Auth, MockChain};
 use miden_tx::TransactionExecutorError;
 use serde::Deserialize;
 use xusdc_encoding::vectors::{felt_from_hex, load, word_from_hex};
@@ -45,7 +45,9 @@ fn assemble_xreserve_lib() -> Result<Library> {
     // the stock authority/pausable procs, which live in StandardsLib.
     let assembler = TransactionKernel::assembler()
         .with_dynamic_library(StandardsLib::default())
-        .map_err(|e| anyhow::anyhow!("linking the standards library into the xreserve assembler: {e}"))?
+        .map_err(|e| {
+            anyhow::anyhow!("linking the standards library into the xreserve assembler: {e}")
+        })?
         .with_warnings_as_errors(true);
     let lib = assembler
         .assemble_library_from_dir(xusdc_encoding::xreserve_asm_dir(), "xreserve")
@@ -60,7 +62,7 @@ struct Harness {
 }
 
 /// Builds the MockChain account that carries the encoding library (registering its MAST
-/// forest with the executor — the spike-proven availability mechanism).
+/// forest with the executor, which is what makes its procedures available to run).
 fn setup() -> Result<Harness> {
     let library = assemble_xreserve_lib()?;
     let component = AccountComponent::new(
@@ -74,7 +76,11 @@ fn setup() -> Result<Harness> {
         .add_existing_account_from_components(Auth::IncrNonce, [component])
         .context("adding the harness account")?;
     let mock_chain = builder.build().context("building the MockChain")?;
-    Ok(Harness { mock_chain, account_id: account.id(), library })
+    Ok(Harness {
+        mock_chain,
+        account_id: account.id(),
+        library,
+    })
 }
 
 /// Compiles a generated driver script with the encoding library dynamically linked and
@@ -142,7 +148,10 @@ end
             id = vec.id,
         );
         run_driver(&h, &src).await.unwrap_or_else(|e| {
-            panic!("vector {}: MASM bytes32_to_key must produce the canonical key: {e}", vec.id)
+            panic!(
+                "vector {}: MASM bytes32_to_key must produce the canonical key: {e}",
+                vec.id
+            )
         });
     }
     Ok(())
@@ -157,8 +166,7 @@ async fn tv_dual_2_uint256_reducer() -> Result<()> {
     for vec in &load().families.amt {
         match vec.kind.as_str() {
             "accept" => {
-                let limbs: Vec<Felt> =
-                    vec.le_limbs().iter().map(|l| Felt::from(*l)).collect();
+                let limbs: Vec<Felt> = vec.le_limbs().iter().map(|l| Felt::from(*l)).collect();
                 let (u0, u1) = (word_of(&limbs[0..4]), word_of(&limbs[4..8]));
                 let y: u64 = vec.expected_y.as_deref().unwrap().parse().unwrap();
                 let src = format!(
@@ -179,7 +187,7 @@ end
                 run_driver(&h, &src).await.unwrap_or_else(|e| {
                     panic!("vector {}: MASM reducer must accept and match: {e}", vec.id)
                 });
-            },
+            }
             "reject" | "guard" => {
                 let masm_err = vec
                     .masm_err
@@ -223,24 +231,24 @@ end
                 } else {
                     assert_transaction_executor_error!(result, expected_err(masm_err));
                 }
-            },
-            "ge" | "dust" => {}, // Rust-fn-only rows (frozen harness §1; plan §5)
+            }
+            "ge" | "dust" => {} // Rust-fn-only rows (no MASM leg by design)
             other => panic!("vector {}: unknown kind {other}", vec.id),
         }
     }
     Ok(())
 }
 
-// TV-DUAL-3 — parse_deposit_intent (every di vector; D-4A output contract + layout
-// memory assertions via the `layout` constants)
+// TV-DUAL-3 — parse_deposit_intent (every di vector; the parser stack-output contract +
+// layout memory assertions via the `layout` constants)
 // ================================================================================================
 
 /// Builds the shared `parse_deposit_intent` driver prefix: the layout-const imports,
-/// preimage staging, and the `exec` call — leaving the D-4A outputs
+/// preimage staging, and the `exec` call — leaving the parser's stack outputs
 /// `[remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]` on the stack. Shared by
 /// the canonical TV-DUAL-3 path and the Circle differential so both stage + exec via ONE
 /// code path. (Constants are imported individually — `push.` takes only unqualified
-/// constant identifiers, the protocol's single-const import style, report §2.3.)
+/// constant identifiers, the protocol's single-const import style.)
 fn build_parser_driver_prefix(preimage: &[Felt], len_felts: u64) -> String {
     let mut src = String::from("use xreserve::encoding\n");
     for c in [
@@ -287,11 +295,11 @@ fn layout_const_for(field: &str) -> &'static str {
 }
 
 /// Builds + runs an accept-path driver: stages the preimage, execs the parser, asserts the
-/// D-4A outputs, then asserts every DC-1 field reads back at its `layout::*` offset post-exec
-/// (⇒ staged memory unmutated). `packed` is `(field name, expected packed felts at that
-/// field's offset)`. Single-felt loads throughout: the DC-1 felt offsets are not word-aligned
-/// and word memory ops trap on unaligned addresses (processor `UnalignedWordAccess`,
-/// errors.rs:228-232). Shared by TV-DUAL-3 accepts and the Circle differential.
+/// parser's stack outputs, then asserts every DC-1 field reads back at its `layout::*` offset
+/// post-exec (⇒ staged memory unmutated). `packed` is `(field name, expected packed felts at
+/// that field's offset)`. Single-felt loads throughout: the DC-1 felt offsets are not
+/// word-aligned and word memory ops trap on unaligned addresses (processor
+/// `UnalignedWordAccess`). Shared by TV-DUAL-3 accepts and the Circle differential.
 async fn run_accept_driver(
     h: &Harness,
     label: &str,
@@ -304,11 +312,27 @@ async fn run_accept_driver(
     packed: &[(&str, Vec<Felt>)],
 ) {
     let mut src = build_parser_driver_prefix(preimage, len_felts);
-    // D-4A stack outputs: [remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len].
-    writeln!(src, "    push.{remote_domain} assert_eq.err=\"{label}: remote_domain\"").unwrap();
-    writeln!(src, "    push.{rt1} assert_eqw.err=\"{label}: remote_token_1\"").unwrap();
-    writeln!(src, "    push.{rt0} assert_eqw.err=\"{label}: remote_token_0\"").unwrap();
-    writeln!(src, "    push.{hook_data_len} assert_eq.err=\"{label}: hook_data_len\"").unwrap();
+    // parser stack outputs: [remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len].
+    writeln!(
+        src,
+        "    push.{remote_domain} assert_eq.err=\"{label}: remote_domain\""
+    )
+    .unwrap();
+    writeln!(
+        src,
+        "    push.{rt1} assert_eqw.err=\"{label}: remote_token_1\""
+    )
+    .unwrap();
+    writeln!(
+        src,
+        "    push.{rt0} assert_eqw.err=\"{label}: remote_token_0\""
+    )
+    .unwrap();
+    writeln!(
+        src,
+        "    push.{hook_data_len} assert_eq.err=\"{label}: hook_data_len\""
+    )
+    .unwrap();
     for (name, felts) in packed {
         let const_name = layout_const_for(name);
         for (i, felt) in felts.iter().enumerate() {
@@ -335,7 +359,7 @@ async fn tv_dual_3_parse_deposit_intent() -> Result<()> {
     let h = setup()?;
     for vec in &load().families.di {
         // The hookData-overflow reject is Rust-only (the 1024-felt bound lives in the
-        // Rust packer, 04:344) — no MASM leg by design (plan §5).
+        // Rust packer) — no MASM leg by design.
         if vec.kind == "reject" && vec.masm_err.is_none() {
             continue;
         }
@@ -345,14 +369,20 @@ async fn tv_dual_3_parse_deposit_intent() -> Result<()> {
         match vec.kind.as_str() {
             "accept" => {
                 let f = vec.fields.as_ref().expect("accept vector carries fields");
-                let rt: Vec<Felt> =
-                    f.remote_token_felts.iter().map(|s| felt_from_hex(s)).collect();
+                let rt: Vec<Felt> = f
+                    .remote_token_felts
+                    .iter()
+                    .map(|s| felt_from_hex(s))
+                    .collect();
                 let (rt0, rt1) = (word_of(&rt[0..4]), word_of(&rt[4..8]));
                 let packed: Vec<(&str, Vec<Felt>)> = f
                     .packed
                     .iter()
                     .map(|pf| {
-                        (pf.name.as_str(), pf.felts.iter().map(|s| felt_from_hex(s)).collect())
+                        (
+                            pf.name.as_str(),
+                            pf.felts.iter().map(|s| felt_from_hex(s)).collect(),
+                        )
                     })
                     .collect();
                 run_accept_driver(
@@ -367,7 +397,7 @@ async fn tv_dual_3_parse_deposit_intent() -> Result<()> {
                     &packed,
                 )
                 .await;
-            },
+            }
             "reject" => {
                 let mut src = build_parser_driver_prefix(&preimage, len_felts);
                 // Clean up the would-be outputs so a non-trapping run completes cleanly
@@ -376,7 +406,7 @@ async fn tv_dual_3_parse_deposit_intent() -> Result<()> {
                 let masm_err = vec.masm_err.as_deref().unwrap();
                 let result = run_driver(&h, &src).await;
                 assert_transaction_executor_error!(result, expected_err(masm_err));
-            },
+            }
             other => panic!("vector {}: unknown kind {other}", vec.id),
         }
     }
@@ -433,7 +463,7 @@ end
     Ok(())
 }
 
-// HARNESS META-TEST + PROBES (scaffold surfaces — allowed green in the red-suite)
+// HARNESS META-TEST + PROBES (scaffold surfaces)
 // ================================================================================================
 
 /// Meta-test: a deliberately-wrong expected value (constructed here, never in the
@@ -466,7 +496,7 @@ end
     Ok(())
 }
 
-/// P1 (D-1A check): the assembled library exports exactly the canonical flat proc paths.
+/// P1: the assembled library exports exactly the canonical flat proc paths.
 #[test]
 fn probe_p1_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
@@ -494,14 +524,15 @@ fn probe_p1_exports() -> Result<()> {
 #[tokio::test]
 async fn probe_p2_script_executes() -> Result<()> {
     let h = setup()?;
-    run_driver(&h, "begin push.1 drop end").await.expect("trivial driver must execute");
+    run_driver(&h, "begin push.1 drop end")
+        .await
+        .expect("trivial driver must execute");
     Ok(())
 }
 
-// probe_p3_placeholder_trap_surfaces was DELETED in R4 (pre-flagged in the R2 report and
-// the probe's own doc): it existed to prove trap plumbing against red-suite placeholders,
-// and R4 removed the last placeholder. The exact-error plumbing it proved is now
-// exercised continuously by every reject vector in tv_dual_2/tv_dual_3.
+// probe_p3_placeholder_trap_surfaces was removed: it existed to prove trap plumbing against
+// placeholder traps, and the last placeholder is now gone. The exact-error plumbing it proved
+// is now exercised continuously by every reject vector in tv_dual_2/tv_dual_3.
 
 /// P4: the packing primitive is reachable via the miden-protocol re-export.
 #[test]
@@ -521,8 +552,8 @@ fn probe_p4_packing_util() {
 // commit ships no golden-hex blob and no extraction script. EXPECTED field values here are
 // fixture/raw-byte-derived and source-verified against Circle's DC-1 layout (DepositIntent.sol
 // offsets) — this test does NOT run Circle's decoder. INPUTS are the Circle-encoder-produced
-// bytes; only the u32-LE staging packing and our parser are "ours". Validates the 04 PARSER
-// ENVELOPE (offsets, sizes, endianness, magic/version, length rule). It does NOT exercise the
+// bytes; only the u32-LE staging packing and our parser are "ours". Validates the
+// shared-encoding PARSER ENVELOPE (offsets, sizes, endianness, magic/version, length rule). It does NOT exercise the
 // faucet R-MINT-7 identifier compare against a real Miden identifier — Circle treats remoteToken /
 // remoteRecipient as opaque bytes32, so DEV-10 / Q-CRY-3/4 stay OPEN and out of scope here.
 
@@ -589,7 +620,10 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
     let pack = miden_protocol::utils::bytes_to_packed_u32_elements;
     let file: CircleFile =
         serde_json::from_str(CIRCLE_FIXTURE).expect("circle ground-truth fixture parses");
-    assert!(!file.vectors.is_empty(), "circle fixture must carry vectors");
+    assert!(
+        !file.vectors.is_empty(),
+        "circle fixture must carry vectors"
+    );
 
     for v in &file.vectors {
         let raw = circle_hexdec(&v.bytes_hex);
@@ -615,18 +649,48 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
             "{}: version @4",
             v.id
         );
-        assert_eq!(&raw[8..40], &be32_of_u128(f.amount)[..], "{}: amount @8", v.id);
+        assert_eq!(
+            &raw[8..40],
+            &be32_of_u128(f.amount)[..],
+            "{}: amount @8",
+            v.id
+        );
         assert_eq!(
             u32::from_be_bytes(raw[40..44].try_into().unwrap()) as u64,
             f.remote_domain,
             "{}: remoteDomain @40",
             v.id
         );
-        assert_eq!(circle_hex(&raw[44..76]), f.remote_token, "{}: remoteToken @44", v.id);
-        assert_eq!(circle_hex(&raw[76..108]), f.remote_recipient, "{}: remoteRecipient @76", v.id);
-        assert_eq!(circle_hex(&raw[108..140]), f.local_token, "{}: localToken @108", v.id);
-        assert_eq!(circle_hex(&raw[140..172]), f.local_depositor, "{}: localDepositor @140", v.id);
-        assert_eq!(&raw[172..204], &be32_of_u128(f.max_fee)[..], "{}: maxFee @172", v.id);
+        assert_eq!(
+            circle_hex(&raw[44..76]),
+            f.remote_token,
+            "{}: remoteToken @44",
+            v.id
+        );
+        assert_eq!(
+            circle_hex(&raw[76..108]),
+            f.remote_recipient,
+            "{}: remoteRecipient @76",
+            v.id
+        );
+        assert_eq!(
+            circle_hex(&raw[108..140]),
+            f.local_token,
+            "{}: localToken @108",
+            v.id
+        );
+        assert_eq!(
+            circle_hex(&raw[140..172]),
+            f.local_depositor,
+            "{}: localDepositor @140",
+            v.id
+        );
+        assert_eq!(
+            &raw[172..204],
+            &be32_of_u128(f.max_fee)[..],
+            "{}: maxFee @172",
+            v.id
+        );
         assert_eq!(circle_hex(&raw[204..236]), f.nonce, "{}: nonce @204", v.id);
         assert_eq!(
             u32::from_be_bytes(raw[236..240].try_into().unwrap()) as u64,
@@ -634,11 +698,15 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
             "{}: hookDataLength @236",
             v.id
         );
-        let hd = if raw.len() > 240 { circle_hex(&raw[240..]) } else { String::from("0x") };
+        let hd = if raw.len() > 240 {
+            circle_hex(&raw[240..])
+        } else {
+            String::from("0x")
+        };
         assert_eq!(hd, f.hook_data, "{}: hookData @240", v.id);
 
         // (2) MASM parser run — the Circle-encoder-produced bytes → u32-LE staging → our
-        // parser. The expected D-4A outputs are derived from the RAW bytes (big-endian), NOT
+        // parser. The expected parser outputs are derived from the RAW bytes (big-endian), NOT
         // by mirroring the parser's own LE-pack-then-byte-swap path, so a parser endianness or
         // offset bug surfaces as a mismatch rather than a silent pass.
         let preimage = pack(&raw);
@@ -665,11 +733,21 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
             ("hook_data_len", 236, 4),
             ("hook_data", 240, f.hook_data_length as usize),
         ];
-        let packed: Vec<(&str, Vec<Felt>)> =
-            spans.iter().map(|(name, off, size)| (*name, pack(&raw[*off..*off + *size]))).collect();
+        let packed: Vec<(&str, Vec<Felt>)> = spans
+            .iter()
+            .map(|(name, off, size)| (*name, pack(&raw[*off..*off + *size])))
+            .collect();
 
         run_accept_driver(
-            &h, &v.id, &preimage, len_felts, remote_domain, rt0, rt1, hook_data_len, &packed,
+            &h,
+            &v.id,
+            &preimage,
+            len_felts,
+            remote_domain,
+            rt0,
+            rt1,
+            hook_data_len,
+            &packed,
         )
         .await;
     }

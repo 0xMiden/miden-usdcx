@@ -1,10 +1,10 @@
 # xreserve_mint_note (CMP-B1 note script)
 #
-# The production `XReserveMintNote` consume script (spec §2 file layout; NoteType::Public, fixed
-# SCRIPT_ROOT). The kernel `dyncall`s `main` when the faucet's network transaction consumes the
-# committed mint note (created by the relayer in block N, consumed block ≥ N+1). The script is
-# deliberately MINIMAL — the stock-MintNote ADAPT rule ("the note itself never mints",
-# MASM-STRUCTURE-RESEARCH-REPORT §4.5): it only crosses into the account context, where the
+# The production `XReserveMintNote` consume script (NoteType::Public, fixed SCRIPT_ROOT). The kernel
+# `dyncall`s `main` when the faucet's network transaction consumes the committed mint note (created by
+# the relayer in block N, consumed block ≥ N+1). The script is deliberately MINIMAL — the
+# stock-MintNote ADAPT rule ("the note itself never mints", per
+# docs/governing/MASM-STRUCTURE-RESEARCH-REPORT.md): it only crosses into the account context, where the
 # `xreserve_mint_note_entry::receive_and_mint` transport shim stages the DepositIntent preimage,
 # hash-verifies + surfaces the attestation attachment, and execs the fully-gated
 # `xreserve_mint::mint` (F1's sole mint-family callable root).
@@ -12,7 +12,7 @@
 # Assembled with the `xreserve` component library linked (the agglayer claim-note precedent), so
 # `call.note_entry::receive_and_mint` resolves to the SAME proc installed on the faucet account.
 # The compiled MAST root is pinned Rust-side as `XRESERVE_MINT_NOTE_SCRIPT_ROOT_HEX`
-# (masm-rust-constant-parity; any edit here or in the wrapper trips the parity test).
+# (cross-language constant parity; any edit here or in the wrapper trips the parity test).
 
 use xreserve::xreserve_mint_note_entry->note_entry
 

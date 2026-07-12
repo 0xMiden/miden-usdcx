@@ -2,7 +2,7 @@
 //! assertion suite — written test-first, before the real-node driver (`crate::rows_gj`), judging the
 //! [`RowsGjObservations`] it produces.
 //!
-//! Matrix rows (authoritative spec, `TASK-P5-01-PHASE4-LOCAL-NODE-VALIDATION-PLAN-BUILDER.md`):
+//! Matrix rows:
 //! - **G burn two-block (the Circle read-path proof)** — a holder creates the production
 //!   `XReserveBurnNote` (block N committed) → the faucet consumes it (block N+1) ⇒
 //!   `token_supply -= amount`; the committed note + nullifier PERSIST; `SyncNotes` filtered by tag

@@ -1,11 +1,8 @@
 # xreserve::encoding
 #
-# Canonical 04-owned shared-encoding procedures (D-1A layout: the flat-named proc bodies
-# live in this directory module so the frozen `xreserve::encoding::<name>` paths resolve
-# exactly). Wire-layout constants live in the `layout` submodule.
-#
-# BUILD STATE: all three slice procedures are implemented (R1 bytes32_to_key,
-# R2 uint256_to_asset_amount, R4 parse_deposit_intent).
+# The canonical shared-encoding procedures. The flat-named proc bodies live in this directory module
+# so the `xreserve::encoding::<name>` paths resolve exactly. Wire-layout constants live in the
+# `layout` submodule.
 
 use miden::protocol::asset::FUNGIBLE_ASSET_MAX_AMOUNT
 use miden::core::crypto::hashes::poseidon2
@@ -27,7 +24,7 @@ use xreserve::encoding::layout::VERSION_FELT_OFF
 # CONSTANTS
 # =================================================================================================
 
-# frozen §6.4: scale_exp = EVM decimals − Miden decimals, bounded to 0..=18 (10^18 < 2^60)
+# scale_exp = EVM decimals − Miden decimals, bounded to 0..=18 (10^18 < 2^60)
 const SCALE_EXP_MAX = 18
 
 # the u32 limb base used to compose the output felt from two u32 quotient limbs
@@ -148,7 +145,7 @@ pub proc uint256_to_asset_amount
     u32assertw.err=ERR_FELT_OUT_OF_FIELD
     # => [U0, U1, scale_exp]
 
-    # frozen §8.2 step 2: the high half (wire bytes 0..16) must be zero — a limb
+    # step 2: the high half (wire bytes 0..16) must be zero — a limb
     # byte-swaps to zero iff it is zero, so the raw LE-packed limbs are checked directly
     exec.word::eqz
     assert.err=ERR_X_TOO_LARGE

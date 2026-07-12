@@ -1,14 +1,12 @@
 # xreserve::mint_deny_guard
 #
-# FAUCET(01)-owned mint-deny guard (P5-01 R-MINT-16 slice): the ACTIVE mint policy of the faucet's
-# TokenPolicyManager. The stock FungibleFaucet inherits `mint_and_send`, which routes through
+# The mint-deny guard (R-MINT-16): the ACTIVE mint policy of the faucet's TokenPolicyManager. The
+# stock FungibleFaucet inherits `mint_and_send`, which routes through
 # `policy_manager::execute_mint_policy` -> `dynexec` of the active mint-policy proc root
-# (fungible.masm:248; policy_manager.masm:283). Registering this `check_policy` as that active root
-# makes every stock `mint_and_send` against the faucet trap (ERR_XRESERVE_MINT_DENIED, R-MINT-16), so
-# the CUSTOM `xreserve_mint` -- which bypasses the policy manager, calling kernel `faucet::mint`
-# directly (xreserve_mint.masm:174) -- is the provably SOLE supply-increasing surface
-# (INV-MINT-SECURITY, §5.2 COMPONENT-SPEC.md:271). Module home + flat path per D-1A
-# (CANONICAL-OWNERSHIP-MAP.md:66). Loop history: crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
+# (fungible.masm; policy_manager.masm). Registering this `check_policy` as that active root makes
+# every stock `mint_and_send` against the faucet trap (ERR_XRESERVE_MINT_DENIED, R-MINT-16), so the
+# CUSTOM `xreserve_mint` -- which bypasses the policy manager, calling kernel `faucet::mint` directly
+# -- is the provably SOLE supply-increasing surface (INV-MINT-SECURITY).
 
 # ERRORS
 # =================================================================================================

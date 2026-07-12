@@ -1,7 +1,7 @@
 //! The production faucet composition + the account the harness deploys.
 //!
 //! EXACTLY the production shape, consumed by reference (single-owner rule — nothing here
-//! re-implements 04-owned encoding or 01-owned composition):
+//! re-implements the shared-encoding crate's encoding or the faucet component's composition):
 //! - the `xreserve` MASM library assembled from the shipped `asm/standards/xreserve` tree
 //!   (`xusdc_encoding::xreserve_asm_dir()`), all seven caller-declared slots EMPTY — `domain_init`
 //!   (the first admin note) is the production writer;
@@ -43,7 +43,7 @@ use crate::config::DomainParams;
 
 /// Assembles the shipped `xreserve` library and binds it with the seven caller-declared storage
 /// slots. With `domain: None` (the deploy path) all slots are EMPTY; with `Some(params)` the five
-/// §5.9 domain-config slots are pre-seeded at the params' values (synthetic fixtures only).
+/// domain-config slots are pre-seeded at the params' values (synthetic fixtures only).
 pub fn build_xreserve_component_seeded(domain: Option<&DomainParams>) -> Result<AccountComponent> {
     // The same assembler shape as the repo's F5 fixtures: kernel assembler + StandardsLib (the
     // admin procs call stock authority/pausable/ownable2step procs living there).
@@ -64,7 +64,12 @@ pub fn build_xreserve_component_seeded(domain: Option<&DomainParams>) -> Result<
             (
                 Word::from([Felt::from(p.domain), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
                 p.identifier_word(),
-                Word::from([Felt::from(p.source_domain), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
+                Word::from([
+                    Felt::from(p.source_domain),
+                    Felt::ZERO,
+                    Felt::ZERO,
+                    Felt::ZERO,
+                ]),
                 Word::from([packed[0], packed[1], packed[2], packed[3]]),
                 Word::from([packed[4], packed[5], packed[6], packed[7]]),
             )

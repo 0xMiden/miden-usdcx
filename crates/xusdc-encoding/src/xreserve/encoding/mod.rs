@@ -1,5 +1,5 @@
-//! Rust mirror of the 04 shared-encoding surface — module homes and signatures exactly
-//! per the frozen `COMPONENT-SPEC.md §6` (mirrored read-only in `docs/spec/`).
+//! Rust mirror of the shared-encoding surface — module homes and signatures exactly
+//! per the shared-encoding spec (mirrored read-only in `docs/spec/`).
 
 mod account_id;
 mod amount;

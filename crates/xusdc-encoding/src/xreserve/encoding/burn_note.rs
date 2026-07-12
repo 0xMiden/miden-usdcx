@@ -1,27 +1,28 @@
-//! Burn-note item codec — DC-7 / §6.6 (`COMPONENT-SPEC.md:363-376`): the burn-note
-//! `NoteStorage.items` payload `(amount, destDomain, destRecipient, salt)`.
+//! Burn-note item codec — DC-7: the burn-note `NoteStorage.items` payload
+//! `(amount, destDomain, destRecipient, salt)`.
 //!
-//! 04 owns the deterministic Rust item encode/decode ONLY. The on-chain `NoteStorage.items`
-//! write and TV-DUAL-4 (emit-vs-encode parity) are faucet-owned (CMP-B2), exercised through
-//! the faucet MockChain/local-node harness — there is NO MASM side in this slice. Consumers:
-//! the public burn note (CMP-B2, encode) and the off-chain withdrawal attester (decode).
+//! This crate owns the deterministic Rust item encode/decode ONLY. The on-chain
+//! `NoteStorage.items` write and TV-DUAL-4 (emit-vs-encode parity) are faucet-owned (CMP-B2),
+//! exercised through the faucet MockChain/local-node harness — there is NO MASM side in this
+//! slice. Consumers: the public burn note (CMP-B2, encode) and the off-chain withdrawal attester
+//! (decode).
 //! `destRecipient`/`salt` consume the `bytes32` codec by reference in both directions
 //! (`bytes32_to_packed_felts` / `packed_felts_to_bytes32`); no re-implementation here.
 
-use miden_protocol::Felt;
 use miden_protocol::asset::AssetAmount;
+use miden_protocol::Felt;
 
 use super::bytes32::{bytes32_to_packed_felts, packed_felts_to_bytes32};
 use super::error::EncodingError;
 
 /// Felt width of the burn-note `NoteStorage.items` payload: `amount` (1) then `destDomain`
 /// (1) then `destRecipient` (8 u32-LE) then `salt` (8 u32-LE), totalling 18 felts
-/// (`COMPONENT-SPEC.md:419`; ≤ 1024, anti-ASG-17).
+/// (≤ 1024, anti-ASG-17).
 pub const BURN_NOTE_ITEMS_FELTS: usize = 18;
 
 /// The burn-note public payload `(amount, destDomain, destRecipient, salt)` (frozen
-/// signature, `COMPONENT-SPEC.md:366-371`). Destination fields live in `NoteStorage.items`,
-/// never note metadata (`metadata.sender` = depositor only; anti-ASG-13).
+/// signature). Destination fields live in `NoteStorage.items`, never note metadata
+/// (`metadata.sender` = depositor only; anti-ASG-13).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XReserveBurnItems {
     pub amount: AssetAmount,
@@ -31,7 +32,7 @@ pub struct XReserveBurnItems {
 }
 
 /// Encodes `(amount, destDomain, destRecipient, salt)` into the `NoteStorage.items` felt
-/// layout (§7 `:419`). Infallible: `AssetAmount::MAX = 2^63 − 2^31 < p`, `destDomain` is a
+/// layout. Infallible: `AssetAmount::MAX = 2^63 − 2^31 < p`, `destDomain` is a
 /// `u32`, and both bytes32 fields pack via the existing `bytes32` codec.
 pub fn encode_burn_note_items(items: &XReserveBurnItems) -> Vec<Felt> {
     let mut out = Vec::with_capacity(BURN_NOTE_ITEMS_FELTS);
@@ -73,7 +74,7 @@ pub fn decode_burn_note_items(items: &[Felt]) -> Result<XReserveBurnItems, Encod
     })
 }
 
-// TESTS — TV-BN-1..4 (frozen 04 TEST-AND-VERIFICATION-HARNESS §2.5)
+// TESTS — TV-BN-1..4
 // ================================================================================================
 
 #[cfg(test)]
@@ -84,7 +85,7 @@ mod tests {
     use super::*;
     use crate::vectors::load;
 
-    /// TV-BN-1 (round-trip + golden layout): `encode` matches the §7 golden felts and
+    /// TV-BN-1 (round-trip + golden layout): `encode` matches the golden felts and
     /// `decode(encode(x)) == x` across the accept vectors (incl. boundary values).
     #[test]
     fn tv_bn_1_round_trip() {

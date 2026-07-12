@@ -1,8 +1,8 @@
-//! CMP-B3 burn-consume composition (`xreserve_receive_and_burn`, P5-01, §5.11).
+//! Burn-consume composition (component CMP-B3, `xreserve_receive_and_burn`).
 //!
-//! DETERMINATION (source-verified, plan §2): the stock `receive_and_burn` + the active CMP-A10 burn
+//! DETERMINATION (source-verified): the stock `receive_and_burn` + the active CMP-A10 burn
 //! policy + the CMP-B2 note ARE the complete burn-consume path — there is NO custom
-//! `xreserve_receive_and_burn.masm` (a needless proc is forbidden). So this slice is test/audit only.
+//! `xreserve_receive_and_burn.masm` (a needless proc is forbidden). So this is test/audit only.
 //!
 //! The load-bearing piece is the SOLE-SUPPLY-DECREMENT audit (the burn twin of the accepted mint
 //! sole-raise sweep): the built faucet has exactly ONE `token_supply`-lowering surface — the stock
@@ -45,13 +45,13 @@ const VALID_BURN: u64 = 5_000;
 const BELOW_MIN: u64 = 500;
 
 /// The Ownable2Step OWNER the burn oracle installs (id(1)). Under the reconciled Circle-faithful admin
-/// model (DECISION-ADMIN-ROLE-MODEL) the setters gate on the owner (`Authority::OwnerControlled`).
+/// model the setters gate on the owner (`Authority::OwnerControlled`).
 fn owner() -> AccountId {
     test_account_id(1)
 }
 
-/// The seeded DOM_PAUSER holder (id(2)) — the ONLY pause authority under Option 1 (CMP-F3,
-/// Domain-Pauser-only; the custom `xreserve::pause_admin` procs).
+/// The seeded DOM_PAUSER holder (id(2)) — the ONLY pause authority in the Domain-Pauser-only model
+/// (component CMP-F3; the custom `xreserve::pause_admin` procs).
 fn dom_pauser() -> AccountId {
     test_account_id(2)
 }
@@ -130,7 +130,8 @@ async fn allow_all_active_burn_policy_fails_sole_decrement_audit() -> Result<()>
 // ================================================================================================
 
 const PINNED_FUNGIBLE_MASM: &str = include_str!("fixtures/pinned-standards/fungible.masm");
-const PINNED_POLICY_MANAGER_MASM: &str = include_str!("fixtures/pinned-standards/policy_manager.masm");
+const PINNED_POLICY_MANAGER_MASM: &str =
+    include_str!("fixtures/pinned-standards/policy_manager.masm");
 
 /// N1D: across the vendored pinned standards faucet code, `exec.faucet::burn` (the inherited
 /// supply-decrement primitive) is called by exactly ONE proc — `receive_and_burn`. Combined with N1A
@@ -304,7 +305,8 @@ async fn burn_below_min_rejected_through_composition() -> Result<()> {
         MIN_BURN_SIZE,
         BELOW_MIN,
     )?;
-    let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items(BELOW_MIN)?, &mut note_rng(7))?;
+    let note =
+        XReserveBurnNote::create(h.user_id, h.faucet_id, items(BELOW_MIN)?, &mut note_rng(7))?;
     let mut chain = h.chain;
     let result = run_burn_consume(&mut chain, &note, &h.asset, h.faucet_id, h.user_id).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_BURN_BELOW_MIN"));
@@ -330,10 +332,10 @@ async fn burn_zero_rejected_through_composition() -> Result<()> {
 }
 
 /// N3 (R-BURN-3): a paused faucet halts the consume. After the DOM_PAUSER pauses the faucet (custom
-/// `xreserve::pause_admin::pause` — the ONLY pause surface under Option 1), consuming a committed
-/// (valid-amount) real `XReserveBurnNote` traps the stock `ERR_PAUSABLE_IS_PAUSED` ("the contract is
-/// paused") — `execute_burn_policy` runs `assert_not_paused` BEFORE the custom policy
-/// (DECISION-RBURN3). Mirrors `burn_policy::burn_paused_rejects` but through the real note.
+/// `xreserve::pause_admin::pause` — the ONLY pause surface in the Domain-Pauser-only model), consuming
+/// a committed (valid-amount) real `XReserveBurnNote` traps the stock `ERR_PAUSABLE_IS_PAUSED` ("the
+/// contract is paused") — `execute_burn_policy` runs `assert_not_paused` BEFORE the custom policy.
+/// Mirrors `burn_policy::burn_paused_rejects` but through the real note.
 #[tokio::test]
 async fn burn_paused_rejected_through_composition() -> Result<()> {
     let h = setup_burn_policy_account(
@@ -343,7 +345,12 @@ async fn burn_paused_rejected_through_composition() -> Result<()> {
         MIN_BURN_SIZE,
         VALID_BURN,
     )?;
-    let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items(VALID_BURN)?, &mut note_rng(99))?;
+    let note = XReserveBurnNote::create(
+        h.user_id,
+        h.faucet_id,
+        items(VALID_BURN)?,
+        &mut note_rng(99),
+    )?;
     let faucet_id = h.faucet_id;
     let user_id = h.user_id;
     let mut chain = h.chain;
@@ -371,7 +378,10 @@ async fn burn_paused_rejected_through_composition() -> Result<()> {
         .build()?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, MasmError::from_static_str("the contract is paused"));
+    assert_transaction_executor_error!(
+        result,
+        MasmError::from_static_str("the contract is paused")
+    );
     Ok(())
 }
 
@@ -394,7 +404,12 @@ async fn run_set_min_burn_then_consume(
         seed_floor,
         burn_amount,
     )?;
-    let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items(burn_amount)?, &mut note_rng(23))?;
+    let note = XReserveBurnNote::create(
+        h.user_id,
+        h.faucet_id,
+        items(burn_amount)?,
+        &mut note_rng(23),
+    )?;
     let faucet_id = h.faucet_id;
     let user_id = h.user_id;
     let mut chain = h.chain;

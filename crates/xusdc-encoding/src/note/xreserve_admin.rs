@@ -50,9 +50,10 @@ fn compile_admin_note_script(src: &str) -> NoteScript {
 /// Attaches the scheme-2 `NetworkAccountTarget` routing bind (routing-only) to a faucet-targeted
 /// admin note. Requires a PUBLIC faucet id.
 fn routing_attachments(faucet_id: AccountId) -> Result<NoteAttachments, NoteError> {
-    let target = NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always).map_err(|err| {
-        NoteError::other_with_source("faucet id is not a public network account", err)
-    })?;
+    let target =
+        NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always).map_err(|err| {
+            NoteError::other_with_source("faucet id is not a public network account", err)
+        })?;
     NoteAttachments::new(vec![NoteAttachment::from(target)])
 }
 
@@ -74,7 +75,12 @@ fn build_admin_note<R: FeltRng>(
     let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
         .with_tag(NoteTag::with_account_target(faucet_id));
     let attachments = routing_attachments(faucet_id)?;
-    Ok(Note::with_attachments(NoteAssets::new(vec![])?, metadata, recipient, attachments))
+    Ok(Note::with_attachments(
+        NoteAssets::new(vec![])?,
+        metadata,
+        recipient,
+        attachments,
+    ))
 }
 
 // SET_ATTESTER (allowlist row 3)
@@ -144,7 +150,12 @@ impl XReserveSetAttesterNote {
         let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
             .with_tag(NoteTag::with_account_target(faucet_id));
         let attachments = routing_attachments(faucet_id)?;
-        Ok(Note::with_attachments(NoteAssets::new(vec![])?, metadata, recipient, attachments))
+        Ok(Note::with_attachments(
+            NoteAssets::new(vec![])?,
+            metadata,
+            recipient,
+            attachments,
+        ))
     }
 }
 
@@ -192,8 +203,8 @@ impl XReserveDomainInitNote {
     }
 
     /// Builds a `domain_init` admin note: `sender` is the admin party (the owner, for success),
-    /// `faucet_id` the target faucet (PUBLIC), and the §5.9 config fields — `domain`/`source_domain`
-    /// (u32 scalars), `xreserve_contract` (raw bytes32, packed by the 04 codec into 8 u32-LE limbs),
+    /// `faucet_id` the target faucet (PUBLIC), and the domain-config fields — `domain`/`source_domain`
+    /// (u32 scalars), `xreserve_contract` (raw bytes32, packed by the shared-encoding codec into 8 u32-LE limbs),
     /// and `identifier` (the pre-hashed `bytes32_to_key` Word). The params live in note storage; the
     /// executor-controlled `NOTE_ARGS` are ignored by the script.
     pub fn create<R: FeltRng>(
@@ -231,7 +242,12 @@ impl XReserveDomainInitNote {
         let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
             .with_tag(NoteTag::with_account_target(faucet_id));
         let attachments = routing_attachments(faucet_id)?;
-        Ok(Note::with_attachments(NoteAssets::new(vec![])?, metadata, recipient, attachments))
+        Ok(Note::with_attachments(
+            NoteAssets::new(vec![])?,
+            metadata,
+            recipient,
+            attachments,
+        ))
     }
 }
 
@@ -281,8 +297,9 @@ impl XReserveSetMinBurnSizeNote {
         new_min: u64,
         rng: &mut R,
     ) -> Result<Note, NoteError> {
-        let new_min_felt = Felt::try_from(new_min)
-            .map_err(|e| NoteError::other_with_source("min burn size exceeds the field modulus", e))?;
+        let new_min_felt = Felt::try_from(new_min).map_err(|e| {
+            NoteError::other_with_source("min burn size exceeds the field modulus", e)
+        })?;
         build_admin_note(sender, faucet_id, Self::script(), vec![new_min_felt], rng)
     }
 }
@@ -480,7 +497,13 @@ impl XReserveSetRoleAdminNote {
         admin_role_symbol: Felt,
         rng: &mut R,
     ) -> Result<Note, NoteError> {
-        build_admin_note(sender, faucet_id, Self::script(), vec![role_symbol, admin_role_symbol], rng)
+        build_admin_note(
+            sender,
+            faucet_id,
+            Self::script(),
+            vec![role_symbol, admin_role_symbol],
+            rng,
+        )
     }
 }
 

@@ -1,4 +1,4 @@
-//! P5-01 hardening Item 6: the Ownable2Step OWNER-TRANSFER seam. The ENTIRE admin surface
+//! The Ownable2Step OWNER-TRANSFER seam. The ENTIRE admin surface
 //! (setters, role administration) hangs off the Ownable2Step owner, but no test exercised
 //! `transfer_ownership` / `accept_ownership` on the production composition. This smoke test drives
 //! the full two-step lifecycle on a production burn-policy faucet and pins the authority handover
@@ -60,7 +60,12 @@ fn owner_config_word(owner: AccountId, nominated: Option<AccountId>) -> Word {
     let (nom_suffix, nom_prefix) = nominated
         .map(|id| (id.suffix(), id.prefix().as_felt()))
         .unwrap_or((Felt::ZERO, Felt::ZERO));
-    Word::new([owner.suffix(), owner.prefix().as_felt(), nom_suffix, nom_prefix])
+    Word::new([
+        owner.suffix(),
+        owner.prefix().as_felt(),
+        nom_suffix,
+        nom_prefix,
+    ])
 }
 
 /// The full two-step owner-transfer lifecycle on the production composition, with the owner-gated
@@ -88,7 +93,11 @@ async fn owner_two_step_transfer_rotates_authority() -> Result<()> {
         .await
         .expect("the current owner's setter must still succeed while the transfer pends");
     evolved.apply_delta(set.account_delta())?;
-    assert_eq!(read_min_burn_size(&evolved)?, min_word(2_000), "old-owner write landed");
+    assert_eq!(
+        read_min_burn_size(&evolved)?,
+        min_word(2_000),
+        "old-owner write landed"
+    );
 
     // 3. The PENDING nominee has no authority yet.
     let pending = run_set_min_burn_size_against(&h.chain, &evolved, new_owner(), 3_000, 43).await;
@@ -115,7 +124,11 @@ async fn owner_two_step_transfer_rotates_authority() -> Result<()> {
         .await
         .expect("the new owner's setter must succeed after accept");
     evolved.apply_delta(new_set.account_delta())?;
-    assert_eq!(read_min_burn_size(&evolved)?, min_word(3_000), "new-owner write landed");
+    assert_eq!(
+        read_min_burn_size(&evolved)?,
+        min_word(3_000),
+        "new-owner write landed"
+    );
 
     let old = run_set_min_burn_size_against(&h.chain, &evolved, owner(), 4_000, 46).await;
     assert_transaction_executor_error!(old, err_sender_not_owner());

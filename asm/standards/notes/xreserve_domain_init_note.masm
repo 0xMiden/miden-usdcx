@@ -10,7 +10,7 @@
 #
 # Note storage layout (14 felts): [IDENTIFIER(4), XRC_HI(4), XRC_LO(4), source_domain, domain] —
 # `identifier` is the pre-hashed bytes32_to_key Word (verbatim); `xreserve_contract` is the raw
-# bytes32 packed via the 04 codec into 8 u32-LE limbs (hi = felts[0..4], lo = felts[4..8]);
+# bytes32 packed via the shared-encoding codec into 8 u32-LE limbs (hi = felts[0..4], lo = felts[4..8]);
 # `source_domain`/`domain` are the u32 scalars (u32-guarded on-chain before any write).
 
 use miden::protocol::active_note

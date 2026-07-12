@@ -10,13 +10,13 @@
 //!    check exists to reject and proves the check rejects it (a silently-weakened check — e.g. the
 //!    auditor's planted mutation — fails these). Plus green-shape acceptances (guard against an
 //!    always-failing suite). The record tests pin the HUMAN-GATE invariant: the generated
-//!    VALIDATION RECORD never self-declares the §11.2 gate passed — the per-row results are
+//!    VALIDATION RECORD never self-declares the acceptance gate passed — the per-row results are
 //!    machine verdicts; the GATE verdict is a human decision.
 //! 2. **The real-node E2E** (`lnv5_full_matrix_against_real_local_node`): boots ONE fresh local
 //!    v0.15.1 stack and drives the WHOLE A–L matrix on it (the LNV-1..4 drivers composed in order
 //!    on the same node, then rows K + L derived from that single run). `#[ignore]`d in the default
 //!    suite because it must bind loopback listener sockets (denied in hermetic audit sandboxes);
-//!    run it with `-- --include-ignored` or the `lnv5_full_matrix` binary. The §11.2 gate claim
+//!    run it with `-- --include-ignored` or the `lnv5_full_matrix` binary. The full-matrix acceptance-gate claim
 //!    rides ONLY on real runs + the HUMAN gate — a green default suite proves the logic layer only.
 
 use std::fs;
@@ -1050,7 +1050,7 @@ fn wallet_id(seed: u8) -> AccountId {
     AccountId::dummy([seed; 15], AccountIdVersion::Version1, AccountType::Public)
 }
 
-/// A production-shaped deployed faucet `Account` with the §5.9 domain slots pre-seeded (the
+/// A production-shaped deployed faucet `Account` with the domain-config slots pre-seeded (the
 /// tests/rows_ab.rs synthetic fixture, reused).
 fn synthetic_deployed_faucet(domain: &DomainParams) -> Result<Account> {
     let xreserve = build_xreserve_component_seeded(Some(domain))?;
@@ -1257,7 +1257,7 @@ fn record_lists_every_matrix_row_with_its_verdict() -> Result<()> {
 
 #[test]
 fn record_never_self_declares_the_gate() -> Result<()> {
-    // THE §11.2 invariant: the per-row results are machine verdicts; the GATE verdict is a HUMAN
+    // THE acceptance-gate invariant: the per-row results are machine verdicts; the GATE verdict is a HUMAN
     // decision. Even an all-green record must say PENDING HUMAN ACCEPTANCE and never GATE PASSED.
     let record = render_green_record()?;
     let upper = record.to_uppercase();
@@ -1440,7 +1440,7 @@ fn fresh_under_roots_the_run_under_the_named_track() {
         Path::new("/repo/local-node-data/lnv5/run-1"),
         "LNV-5 runs live under their own gitignored track"
     );
-    // The LNV-1..4 single-slice constructor keeps its historical layout.
+    // The LNV-1..4 single-run constructor keeps its historical layout.
     let legacy = RunConfig::fresh(Path::new("/repo"), "run-2");
     assert_eq!(
         legacy.stack.run_root,
@@ -1569,7 +1569,7 @@ fn validator_ntx_and_prover_args_are_unchanged_in_shape() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
-// THE REAL-NODE E2E — the consolidated §11.2 gate run (ignored in the default suite; see the
+// THE REAL-NODE E2E — the consolidated full-matrix acceptance-gate run (ignored in the default suite; see the
 // module docs. The gate claim rides ONLY on real runs + the HUMAN gate.)
 // ════════════════════════════════════════════════════════════════════════════════════════════
 

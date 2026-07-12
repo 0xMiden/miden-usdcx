@@ -132,7 +132,10 @@ pub fn write_evidence(
     };
     let path = cfg.stack.run_root.join("evidence.json");
     fs::create_dir_all(&cfg.stack.run_root).context("creating the run root")?;
-    fs::write(&path, serde_json::to_vec_pretty(&evidence).context("serializing evidence")?)
-        .with_context(|| format!("writing {}", path.display()))?;
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&evidence).context("serializing evidence")?,
+    )
+    .with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }

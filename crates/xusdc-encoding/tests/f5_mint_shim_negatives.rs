@@ -1,4 +1,4 @@
-//! F5 fix-slice A — scheme-aware mint-shim negatives.
+//! F5 — scheme-aware mint-shim negatives.
 //!
 //! The reconciled `xreserve_mint_note_entry.masm` accepts a mint note with EXACTLY one scheme-1
 //! attestation + EXACTLY one scheme-2 NetworkAccountTarget (routing-only), and rejects every other
@@ -9,9 +9,9 @@
 //!
 //! Against the reconciled shim: (a)/(d) → `TARGET_MISSING` (scheme-2 presence), (b)/(c0) →
 //! `ATTACHMENT_MISSING` (scheme-1 presence), (c3) → the `ATTACHMENT_COUNT` "exactly two". History:
-//! authored executing-red against the pre-fix `eq.1` shim (own commit before green). Non-vacuity:
-//! neutralizing the scheme-2 presence assert re-reds (a)+(d) (a bare `eq.2`→`eq.1` does not, since the
-//! scheme-2 assert fires first).
+//! authored executing-red against the pre-fix `eq.1` shim. Non-vacuity: neutralizing the scheme-2
+//! presence assert re-reds (a)+(d) (a bare `eq.2`→`eq.1` does not, since the scheme-2 assert fires
+//! first).
 
 mod support;
 
@@ -19,13 +19,13 @@ use core::slice;
 
 use anyhow::Result;
 use miden_processor::crypto::random::RandomCoin;
+use miden_protocol::account::AccountId;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{
     Note, NoteAssets, NoteAttachment, NoteAttachmentScheme, NoteAttachments, NoteRecipient,
     NoteStorage, NoteTag, NoteType, PartialNoteMetadata,
 };
-use miden_protocol::account::AccountId;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
 use miden_testing::assert_transaction_executor_error;
@@ -92,14 +92,23 @@ fn mint_note_with_attachments(
     let items = deposit_intent_to_packed_felts(&accept_payload())
         .map_err(|e| anyhow::anyhow!("packing the deposit intent: {e}"))?;
     let storage = NoteStorage::new(items)?;
-    let recipient = NoteRecipient::new(note_rng(seed).draw_word(), XReserveMintNote::script(), storage);
+    let recipient = NoteRecipient::new(
+        note_rng(seed).draw_word(),
+        XReserveMintNote::script(),
+        storage,
+    );
     let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
         .with_tag(NoteTag::with_account_target(faucet_id));
     let vault = NoteAssets::new(vec![])?;
     if attachments.is_empty() {
         Ok(Note::new(vault, metadata, recipient))
     } else {
-        Ok(Note::with_attachments(vault, metadata, recipient, NoteAttachments::new(attachments)?))
+        Ok(Note::with_attachments(
+            vault,
+            metadata,
+            recipient,
+            NoteAttachments::new(attachments)?,
+        ))
     }
 }
 
@@ -131,7 +140,10 @@ async fn consume_with_attachments(
 #[tokio::test]
 async fn mint_note_missing_scheme2_target_rejected() -> Result<()> {
     let result = consume_with_attachments(1, |_| vec![scheme1_attestation()]).await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_MINT_NOTE_TARGET_MISSING"));
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_TARGET_MISSING")
+    );
     Ok(())
 }
 
@@ -139,7 +151,10 @@ async fn mint_note_missing_scheme2_target_rejected() -> Result<()> {
 #[tokio::test]
 async fn mint_note_missing_scheme1_attestation_rejected() -> Result<()> {
     let result = consume_with_attachments(2, |f| vec![scheme2_target(f)]).await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_MINT_NOTE_ATTACHMENT_MISSING"));
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_ATTACHMENT_MISSING")
+    );
     Ok(())
 }
 
@@ -147,7 +162,10 @@ async fn mint_note_missing_scheme1_attestation_rejected() -> Result<()> {
 #[tokio::test]
 async fn mint_note_zero_attachments_rejected() -> Result<()> {
     let result = consume_with_attachments(3, |_| vec![]).await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_MINT_NOTE_ATTACHMENT_MISSING"));
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_ATTACHMENT_MISSING")
+    );
     Ok(())
 }
 
@@ -169,7 +187,11 @@ async fn mint_note_three_attachments_rejected() -> Result<()> {
 // (d) two scheme-1 attestations (no scheme-2) → TARGET_MISSING.
 #[tokio::test]
 async fn mint_note_two_scheme1_rejected() -> Result<()> {
-    let result = consume_with_attachments(5, |_| vec![scheme1_attestation(), scheme1_attestation()]).await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_MINT_NOTE_TARGET_MISSING"));
+    let result =
+        consume_with_attachments(5, |_| vec![scheme1_attestation(), scheme1_attestation()]).await;
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_TARGET_MISSING")
+    );
     Ok(())
 }

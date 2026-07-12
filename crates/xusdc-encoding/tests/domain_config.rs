@@ -1,36 +1,36 @@
-//! P5-01 `domain_init` (R-ADMIN-4) suite — RE-CALIBRATED to the §5.9 FOUR-FIELD closure (the
-//! full-assembly slice): the OWNER-gated, init-once setter now writes ALL FOUR frozen CMP-A6 fields
-//! (`domain:u32`, `source_domain:u32`, `xreserve_contract:bytes32` as two raw 8×u32-LE packed
-//! words, `identifier:bytes32` as the pre-hashed key-Word — D-A6-XRC). This file proves: 4-field
+//! `domain_init` suite (admin reject condition R-ADMIN-4): the four-field domain config. The
+//! OWNER-gated, init-once setter writes ALL FOUR frozen domain-config fields (component CMP-A6):
+//! `domain:u32`, `source_domain:u32`, `xreserve_contract:bytes32` as two raw 8×u32-LE packed
+//! words, and `identifier:bytes32` as the pre-hashed key-Word. This file proves: 4-field
 //! write integrity (full read-back of all FIVE slot words + the fail-closed bytes32 round-trip),
 //! init-once (a second write traps the EXACT ERR_XRESERVE_DOMAIN_REINIT and leaves every field
-//! unchanged), the on-chain scalar/limb u32 guards (§5.9 types the scalars u32; malformed values
+//! unchanged), the on-chain scalar/limb u32 guards (the scalars are typed u32; malformed values
 //! staged as RAW felts trap their EXACT error and write NOTHING), owner-SPECIFIC auth, the D5a
 //! CONSUMPTION SEAM re-proven byte-identical through the 4-field init, and the sole-writer static
 //! sweep (only `domain_init` writes the five domain-config slots).
 //!
-//! RED-SUITE (executing-red, full-assembly slice): the SHIPPED `domain_config.masm` writes only
+//! RED-SUITE (executing-red): the SHIPPED `domain_config.masm` writes only
 //! `domain` + `identifier` from the OLD `[IDENTIFIER, domain, pad(11)]` stack. Driven with the NEW
 //! 14-arg stack it still executes (the extra args are plain stack data): the identifier lands
 //! correctly (top word), but "domain" reads the first XRC_HI limb — so the 4-field read-backs, the
 //! matching-domain seam, and the guard/no-write tests all fail BEHAVIORALLY (real MockChain
 //! execution, wrong state), while the sentinel/owner-gate mechanics (unchanged code) stay
 //! green-on-arrival. Per-test red/green-on-arrival status is marked `RED:` / `GREEN-ON-ARRIVAL:` in
-//! each doc comment (the CMP-B3 precedent).
+//! each doc comment.
 
 mod support;
 
 use std::path::PathBuf;
 
 use anyhow::Result;
+use miden_processor::operation::OperationError;
+use miden_processor::ExecutionError;
 use miden_protocol::account::{AccountId, StorageSlotName};
 use miden_protocol::{Felt, Word};
-use miden_processor::ExecutionError;
-use miden_processor::operation::OperationError;
 use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::*;
-use xusdc_encoding::vectors::{DiFields, DiVector, load, parse_hex32};
+use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::{
     bytes32_to_packed_felts, bytes32_to_storage_map_key, packed_felts_to_bytes32,
 };
@@ -61,9 +61,9 @@ fn dummy_identifier() -> Word {
     Word::from([11u32, 12, 13, 14])
 }
 
-/// Test `source_domain` (Circle-owned VALUE stays OPEN — Ethereum source domains start at 0 per
-/// C-DOMAIN-1; this NONZERO fixture value keeps the read-back distinguishable from an unwritten
-/// `[0,0,0,0]` slot, which a legitimate source_domain=0 would alias).
+/// Test `source_domain` (Circle-owned VALUE stays OPEN — Ethereum source domains start at 0; this
+/// NONZERO fixture value keeps the read-back distinguishable from an unwritten `[0,0,0,0]` slot,
+/// which a legitimate source_domain=0 would alias).
 const TEST_SOURCE_DOMAIN: u32 = 3;
 
 /// Test `xreserve_contract` bytes32 (Circle's real address is OPEN/parameterized): sequential
@@ -73,8 +73,8 @@ fn test_xreserve_contract() -> [u8; 32] {
     core::array::from_fn(|i| 0x10 + i as u8)
 }
 
-/// The expected `[hi, lo]` slot words for a bytes32 under the D-A6-XRC raw 8×u32-LE realization
-/// (04 codec BY REFERENCE: hi = packed felts[0..4] / wire bytes 0..16, lo = felts[4..8]).
+/// The expected `[hi, lo]` slot words for a bytes32 under the raw 8×u32-LE encoding (from the
+/// shared encoding codec: hi = packed felts[0..4] / wire bytes 0..16, lo = felts[4..8]).
 fn expected_xrc_words(b: &[u8; 32]) -> (Word, Word) {
     let felts = bytes32_to_packed_felts(b);
     (
@@ -85,7 +85,10 @@ fn expected_xrc_words(b: &[u8; 32]) -> (Word, Word) {
 
 /// A trivial driver/probe pair for the pure-setter tests (no mint is run; domain_init goes via a note).
 fn trivial_driver_probe() -> (String, String) {
-    (mint_composition_driver_src(&[Felt::from(0u32)], 60, 6), composition_supply_probe_src(0))
+    (
+        mint_composition_driver_src(&[Felt::from(0u32)], 60, 6),
+        composition_supply_probe_src(0),
+    )
 }
 
 /// A guarded production faucet (Ownable2Step owner = id(1); DOM roles seeded) whose FIVE
@@ -153,7 +156,10 @@ fn di(id: &str) -> &'static DiVector {
 }
 
 fn fields_of(id: &str) -> &'static DiFields {
-    di(id).fields.as_ref().expect("accept vector carries fields")
+    di(id)
+        .fields
+        .as_ref()
+        .expect("accept vector carries fields")
 }
 
 fn base_payload() -> Vec<u8> {
@@ -180,14 +186,18 @@ fn pack(bytes: &[u8]) -> Vec<Felt> {
 /// `assert_eqw` compares against; the `config_of` idiom). This is what `domain_init` must store for the
 /// matching mint to pass the identifier compare.
 fn identifier_of(id: &str) -> Word {
-    Word::from(bytes32_to_storage_map_key(&parse_hex32(&fields_of(id).remote_token_hex)))
+    Word::from(bytes32_to_storage_map_key(&parse_hex32(
+        &fields_of(id).remote_token_hex,
+    )))
 }
 
 fn nonce_key() -> Word {
-    Word::from(bytes32_to_storage_map_key(&fields_of(BASE_VECTOR).bytes32("nonce")))
+    Word::from(bytes32_to_storage_map_key(
+        &fields_of(BASE_VECTOR).bytes32("nonce"),
+    ))
 }
 
-// EXPORT PROBE (declared green scaffold — D-1A flat-path check for the setter)
+// EXPORT PROBE (declared green scaffold — flat-path check for the setter)
 // ================================================================================================
 
 /// GREEN-ON-ARRIVAL: the flat canonical path resolves already (the shipped 2-field proc).
@@ -212,8 +222,8 @@ fn probe_domain_config_exports() -> Result<()> {
 
 /// The owner's 4-field `domain_init` succeeds and writes ALL FIVE config slots exactly: domain ==
 /// [D,0,0,0] (D5a reads element 0), source_domain == [SD,0,0,0], xreserve_contract hi/lo == the
-/// packed 8×u32-LE halves (04 codec by reference), identifier == I (full Word, verbatim). RED: the
-/// shipped 2-field proc leaves source_domain/xrc empty and writes the wrong "domain".
+/// packed 8×u32-LE halves (from the shared encoding codec), identifier == I (full Word, verbatim).
+/// RED: the shipped 2-field proc leaves source_domain/xrc empty and writes the wrong "domain".
 #[tokio::test]
 async fn domain_init_succeeds_and_configures() -> Result<()> {
     let gm = uninit_faucet()?;
@@ -240,16 +250,24 @@ async fn domain_init_succeeds_and_configures() -> Result<()> {
         Word::from([TEST_SOURCE_DOMAIN, 0, 0, 0]),
         "source_domain slot must be [source_domain, 0, 0, 0]"
     );
-    assert_eq!(xrc_hi_w, exp_hi, "xreserve_contract_hi must be packed felts[0..4]");
-    assert_eq!(xrc_lo_w, exp_lo, "xreserve_contract_lo must be packed felts[4..8]");
-    assert_eq!(identifier_w, identifier, "identifier slot must be the supplied Word verbatim");
+    assert_eq!(
+        xrc_hi_w, exp_hi,
+        "xreserve_contract_hi must be packed felts[0..4]"
+    );
+    assert_eq!(
+        xrc_lo_w, exp_lo,
+        "xreserve_contract_lo must be packed felts[4..8]"
+    );
+    assert_eq!(
+        identifier_w, identifier,
+        "identifier slot must be the supplied Word verbatim"
+    );
     Ok(())
 }
 
-/// Per-field read-back family (the task-named `domain_init_writes_all_four_fields`): after ONE
-/// 4-field init, EACH field reads back exactly; the bytes32 additionally round-trips through the
-/// FAIL-CLOSED inverse (`packed_felts_to_bytes32`, D-A6-XRC guard 1) back to the input bytes. RED:
-/// every case but `identifier` fails against the shipped 2-field proc.
+/// Per-field read-back family: after ONE 4-field init, EACH field reads back exactly; the bytes32
+/// additionally round-trips through the FAIL-CLOSED inverse (`packed_felts_to_bytes32`) back to the
+/// input bytes. RED: every case but `identifier` fails against the shipped 2-field proc.
 #[rstest]
 #[case::domain(0)]
 #[case::source_domain(1)]
@@ -274,7 +292,11 @@ async fn domain_init_writes_all_four_fields(#[case] field: usize) -> Result<()> 
 
     match field {
         0 => assert_eq!(words[0], Word::from([TEST_DOMAIN, 0, 0, 0]), "domain"),
-        1 => assert_eq!(words[1], Word::from([TEST_SOURCE_DOMAIN, 0, 0, 0]), "source_domain"),
+        1 => assert_eq!(
+            words[1],
+            Word::from([TEST_SOURCE_DOMAIN, 0, 0, 0]),
+            "source_domain"
+        ),
         2 => assert_eq!(words[2], exp_hi, "xreserve_contract_hi"),
         3 => assert_eq!(words[3], exp_lo, "xreserve_contract_lo"),
         4 => assert_eq!(words[4], identifier, "identifier"),
@@ -282,13 +304,19 @@ async fn domain_init_writes_all_four_fields(#[case] field: usize) -> Result<()> 
             // The lossless read-back: reconstruct the stored bytes32 via the FAIL-CLOSED inverse
             // (a >u32 stored limb would error, never truncate) and compare with the input.
             let stored: [Felt; 8] = [
-                words[2][0], words[2][1], words[2][2], words[2][3], words[3][0], words[3][1],
-                words[3][2], words[3][3],
+                words[2][0],
+                words[2][1],
+                words[2][2],
+                words[2][3],
+                words[3][0],
+                words[3][1],
+                words[3][2],
+                words[3][3],
             ];
             let recovered = packed_felts_to_bytes32(&stored)
                 .expect("stored xreserve_contract limbs must be valid u32s (fail-closed inverse)");
             assert_eq!(recovered, xrc, "GetAccount-readable bytes32 round-trip");
-        },
+        }
         _ => unreachable!(),
     }
     Ok(())
@@ -299,8 +327,8 @@ async fn domain_init_writes_all_four_fields(#[case] field: usize) -> Result<()> 
 
 /// First 4-field `domain_init` succeeds; a SECOND traps the EXACT ERR_XRESERVE_DOMAIN_REINIT (the
 /// init-once sentinel reads the now-non-empty identifier slot — ONE sentinel guarding the atomic
-/// 4-field write, D-A6-XRC guard 3). GREEN-ON-ARRIVAL mechanics (the sentinel code is unchanged and
-/// the identifier still lands in the top word), re-calibrated to the 4-field signature.
+/// 4-field write). GREEN-ON-ARRIVAL mechanics (the sentinel code is unchanged and the identifier
+/// still lands in the top word), re-calibrated to the 4-field signature.
 #[tokio::test]
 async fn domain_init_reinit_traps() -> Result<()> {
     let gm = uninit_faucet()?;
@@ -368,7 +396,7 @@ async fn domain_init_reinit_leaves_all_fields_unchanged() -> Result<()> {
     Ok(())
 }
 
-/// R-ADMIN-4 hardening (Item 4, tests-first): `domain_init` with `identifier = EMPTY_WORD` traps
+/// R-ADMIN-4 hardening: `domain_init` with `identifier = EMPTY_WORD` traps
 /// the EXACT ERR_XRESERVE_IDENTIFIER_EMPTY and writes NOTHING. The identifier IS the init-once
 /// sentinel — an EMPTY identifier would never arm it (the "immutable" config stays silently
 /// re-initializable, R-ADMIN-4 broken for that deploy) AND D5a would compare every intent's
@@ -400,8 +428,9 @@ async fn domain_init_empty_identifier_traps() -> Result<()> {
 /// init-once still holds because the sentinel keys on the IDENTIFIER slot, never the domain slot
 /// (`domain_config.masm:43-47`). Off-chain contract this test pins: a stored `[0,0,0,0]` aliases an
 /// unwritten slot, so `GetAccount` readers MUST disambiguate "initialized-to-0" vs "never
-/// initialized" via the **identifier** sentinel, never the domain/source_domain slots. Kills audit
-/// mutant M28 (sentinel retargeted to the domain slot → a domain=0 deploy becomes re-initializable).
+/// initialized" via the **identifier** sentinel, never the domain/source_domain slots. Kills the
+/// audit mutant where the sentinel is retargeted to the domain slot → a domain=0 deploy becomes
+/// re-initializable.
 #[tokio::test]
 async fn domain_init_with_zero_domain_is_still_init_once() -> Result<()> {
     let gm = uninit_faucet()?;
@@ -414,8 +443,15 @@ async fn domain_init_with_zero_domain_is_still_init_once() -> Result<()> {
     let mut evolved = account.clone();
     evolved.apply_delta(first.account_delta())?;
     let words = read_domain_config_words(&evolved)?;
-    assert_eq!(words[0], empty_word(), "stored domain=0 is byte-identical to an unwritten slot");
-    assert_eq!(words[4], identifier, "the identifier sentinel is armed despite domain=0");
+    assert_eq!(
+        words[0],
+        empty_word(),
+        "stored domain=0 is byte-identical to an unwritten slot"
+    );
+    assert_eq!(
+        words[4], identifier,
+        "the identifier sentinel is armed despite domain=0"
+    );
 
     let result = init_four_fields(&gm, &evolved, owner(), TEST_DOMAIN, identifier, 2).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_DOMAIN_REINIT"));
@@ -448,7 +484,11 @@ async fn domain_init_with_zero_source_domain_is_still_init_once() -> Result<()> 
     let mut evolved = account.clone();
     evolved.apply_delta(first.account_delta())?;
     let words = read_domain_config_words(&evolved)?;
-    assert_eq!(words[0], Word::from([TEST_DOMAIN, 0, 0, 0]), "domain written exactly");
+    assert_eq!(
+        words[0],
+        Word::from([TEST_DOMAIN, 0, 0, 0]),
+        "domain written exactly"
+    );
     assert_eq!(
         words[1],
         empty_word(),
@@ -460,7 +500,7 @@ async fn domain_init_with_zero_source_domain_is_still_init_once() -> Result<()> 
     Ok(())
 }
 
-/// Item 8: the `domain == u32::MAX` ACCEPT boundary (only the `u32::MAX + 1` trap side was
+/// The `domain == u32::MAX` ACCEPT boundary (only the `u32::MAX + 1` trap side was
 /// pinned). The maximal valid u32 passes the guard and reads back exactly `[u32::MAX,0,0,0]`.
 #[tokio::test]
 async fn domain_init_domain_at_u32_max_succeeds() -> Result<()> {
@@ -474,12 +514,16 @@ async fn domain_init_domain_at_u32_max_succeeds() -> Result<()> {
     let mut evolved = account.clone();
     evolved.apply_delta(executed.account_delta())?;
     let words = read_domain_config_words(&evolved)?;
-    assert_eq!(words[0], Word::from([u32::MAX, 0, 0, 0]), "domain == u32::MAX written exactly");
+    assert_eq!(
+        words[0],
+        Word::from([u32::MAX, 0, 0, 0]),
+        "domain == u32::MAX written exactly"
+    );
     assert_eq!(words[4], identifier, "the sentinel is armed");
     Ok(())
 }
 
-/// Item 8 sibling: the `source_domain == u32::MAX` ACCEPT boundary.
+/// The `source_domain == u32::MAX` ACCEPT boundary sibling.
 #[tokio::test]
 async fn domain_init_source_domain_at_u32_max_succeeds() -> Result<()> {
     let gm = uninit_faucet()?;
@@ -509,11 +553,11 @@ async fn domain_init_source_domain_at_u32_max_succeeds() -> Result<()> {
     Ok(())
 }
 
-/// Item 9: the ALL-ZERO `xreserve_contract` ACCEPT pin — spec §5.9 mandates NO zero-guard on the
+/// The ALL-ZERO `xreserve_contract` ACCEPT pin — the spec mandates NO zero-guard on the
 /// XRC field, so an all-zero bytes32 initializes successfully (both XRC slots read back
 /// `[0,0,0,0]`) and the sentinel still arms (re-init traps the EXACT reinit error). This PINS the
 /// no-guard behavior; it does NOT endorse it — an all-zero immutable XRC is a deploy footgun
-/// flagged for the orchestrator's register (spec-conformant, not a defect).
+/// (spec-conformant, not a defect).
 #[tokio::test]
 async fn domain_init_all_zero_xreserve_contract_succeeds() -> Result<()> {
     let gm = uninit_faucet()?;
@@ -535,15 +579,23 @@ async fn domain_init_all_zero_xreserve_contract_succeeds() -> Result<()> {
     let mut evolved = account.clone();
     evolved.apply_delta(executed.account_delta())?;
     let words = read_domain_config_words(&evolved)?;
-    assert_eq!(words[2], empty_word(), "xreserve_contract_hi reads back all-zero");
-    assert_eq!(words[3], empty_word(), "xreserve_contract_lo reads back all-zero");
+    assert_eq!(
+        words[2],
+        empty_word(),
+        "xreserve_contract_hi reads back all-zero"
+    );
+    assert_eq!(
+        words[3],
+        empty_word(),
+        "xreserve_contract_lo reads back all-zero"
+    );
 
     let result = init_four_fields(&gm, &evolved, owner(), TEST_DOMAIN, identifier, 2).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_DOMAIN_REINIT"));
     Ok(())
 }
 
-/// Item 10: `domain_init` SUCCEEDS while the faucet is paused — deploy-time config is deliberately
+/// `domain_init` SUCCEEDS while the faucet is paused — deploy-time config is deliberately
 /// NOT pause-gated (`domain_config.masm:10-11` "no pause gate — deploy-time config is orthogonal to
 /// the operational pause"), while the three operational setters ARE pause-gated; this asymmetry was
 /// pinned by no test. Anti-mutant: adding a pause gate to `domain_init` makes this fail with
@@ -560,7 +612,11 @@ async fn domain_init_succeeds_while_paused() -> Result<()> {
         .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
-    assert_eq!(read_is_paused(&evolved)?, Word::from([1u32, 0, 0, 0]), "paused before init");
+    assert_eq!(
+        read_is_paused(&evolved)?,
+        Word::from([1u32, 0, 0, 0]),
+        "paused before init"
+    );
 
     // domain_init on the PAUSED faucet succeeds and writes all four fields.
     let executed = init_four_fields(&gm, &evolved, owner(), TEST_DOMAIN, identifier, 6)
@@ -587,7 +643,7 @@ async fn domain_init_succeeds_while_paused() -> Result<()> {
     Ok(())
 }
 
-// §5.9 SCALAR/LIMB u32 GUARDS (Round-P change 1) — malformed values staged as RAW felts trap the
+// SCALAR/LIMB u32 GUARDS — malformed values staged as RAW felts trap the
 // EXACT error BEFORE any write
 // ================================================================================================
 
@@ -649,7 +705,7 @@ async fn assert_malformed_value_traps(
     Ok(())
 }
 
-/// §5.9 scalar exactness (Round-P change 1): domain > u32::MAX traps the EXACT
+/// Scalar exactness: domain > u32::MAX traps the EXACT
 /// ERR_XRESERVE_DOMAIN_NOT_U32, nothing written. RED (no guard shipped).
 #[tokio::test]
 async fn domain_init_domain_over_u32_traps() -> Result<()> {
@@ -663,7 +719,7 @@ async fn domain_init_domain_over_u32_traps() -> Result<()> {
     .await
 }
 
-/// §5.9 scalar exactness (symmetric leg): source_domain > u32::MAX traps the EXACT
+/// Scalar exactness (symmetric leg): source_domain > u32::MAX traps the EXACT
 /// ERR_XRESERVE_SOURCE_DOMAIN_NOT_U32, nothing written. RED (no guard shipped).
 #[tokio::test]
 async fn domain_init_source_domain_over_u32_traps() -> Result<()> {
@@ -677,7 +733,7 @@ async fn domain_init_source_domain_over_u32_traps() -> Result<()> {
     .await
 }
 
-/// D-A6-XRC guard 2: an xreserve_contract limb > u32::MAX (2^32 — a valid felt below the field
+/// An xreserve_contract limb > u32::MAX (2^32 — a valid felt below the field
 /// modulus p = 2^64 − 2^32 + 1, but not a valid u32) traps the EXACT
 /// ERR_XRESERVE_XRC_LIMB_NOT_U32, nothing written — at ANY limb position. The cases span BOTH
 /// stored words so BOTH `u32assertw` guards are load-bearing: index 0 = the HI word's first limb,
@@ -717,8 +773,13 @@ async fn domain_init_owner_not_admin_succeeds() -> Result<()> {
 
     let mut evolved = account.clone();
     evolved.apply_delta(executed.account_delta())?;
-    let stored = evolved.storage().get_item(&StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)?)?;
-    assert_eq!(stored, identifier, "the owner's write configured the identifier");
+    let stored = evolved
+        .storage()
+        .get_item(&StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)?)?;
+    assert_eq!(
+        stored, identifier,
+        "the owner's write configured the identifier"
+    );
     Ok(())
 }
 
@@ -731,8 +792,15 @@ async fn domain_init_admin_not_owner_rejects() -> Result<()> {
     let account = faucet_account(&gm.harness);
     let identifier = dummy_identifier();
 
-    let result =
-        init_four_fields(&gm, &account, role_holder_not_owner(), TEST_DOMAIN, identifier, 1).await;
+    let result = init_four_fields(
+        &gm,
+        &account,
+        role_holder_not_owner(),
+        TEST_DOMAIN,
+        identifier,
+        1,
+    )
+    .await;
     assert_transaction_executor_error!(result, err_sender_not_owner());
 
     // config unchanged: the owner's write on the original account still succeeds (had the role
@@ -750,8 +818,15 @@ async fn domain_init_stranger_rejects() -> Result<()> {
     let gm = uninit_faucet()?;
     let account = faucet_account(&gm.harness);
 
-    let result =
-        init_four_fields(&gm, &account, non_owner(), TEST_DOMAIN, dummy_identifier(), 1).await;
+    let result = init_four_fields(
+        &gm,
+        &account,
+        non_owner(),
+        TEST_DOMAIN,
+        dummy_identifier(),
+        1,
+    )
+    .await;
     assert_transaction_executor_error!(result, err_sender_not_owner());
     Ok(())
 }
@@ -793,17 +868,32 @@ async fn domain_init_then_matching_domain_mint_passes() -> Result<()> {
     let mut evolved = account.clone();
     evolved.apply_delta(set.account_delta())?;
 
-    // d5a_domain_identifier_seam_unchanged (byte-identity leg): the two D5a-read slots carry the
-    // EXACT 2-field-era encodings after the 4-field init.
+    // Byte-identity leg: the two D5a-read slots carry the EXACT 2-field-era encodings after the
+    // 4-field init.
     let words = read_domain_config_words(&evolved)?;
-    assert_eq!(words[0], Word::from([TEST_DOMAIN, 0, 0, 0]), "domain word byte-identical");
-    assert_eq!(words[4], identifier, "identifier word byte-identical (verbatim)");
+    assert_eq!(
+        words[0],
+        Word::from([TEST_DOMAIN, 0, 0, 0]),
+        "domain word byte-identical"
+    );
+    assert_eq!(
+        words[4], identifier,
+        "identifier word byte-identical (verbatim)"
+    );
 
     // tx2: the canonical deposit (remoteDomain == TEST_DOMAIN, remoteToken key == identifier) mints.
-    let minted = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester))
-        .await
-        .expect("after domain_init(D, ..), a deposit targeting D must pass D5a and mint (seam closes)");
-    assert_eq!(minted.output_notes().num_notes(), 1, "exactly one recipient note");
+    let minted = run_mint_against(
+        &gm.harness,
+        &evolved,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await
+    .expect("after domain_init(D, ..), a deposit targeting D must pass D5a and mint (seam closes)");
+    assert_eq!(
+        minted.output_notes().num_notes(),
+        1,
+        "exactly one recipient note"
+    );
     Ok(())
 }
 
@@ -847,7 +937,12 @@ async fn domain_init_then_wrong_domain_mint_rejects() -> Result<()> {
     );
 
     // tx2: the canonical deposit (remoteDomain == TEST_DOMAIN != TEST_WRONG_DOMAIN) traps at D5a.
-    let result = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
+    let result = run_mint_against(
+        &gm.harness,
+        &evolved,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_WRONG_DOMAIN"));
     Ok(())
 }
@@ -885,12 +980,20 @@ async fn domain_init_then_wrong_identifier_mint_rejects() -> Result<()> {
     evolved.apply_delta(set.account_delta())?;
 
     // tx2: domain matches (TEST_DOMAIN) so D5a reaches the identifier compare, which mismatches.
-    let result = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_WRONG_IDENTIFIER"));
+    let result = run_mint_against(
+        &gm.harness,
+        &evolved,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await;
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_WRONG_IDENTIFIER")
+    );
     Ok(())
 }
 
-/// Item-7 CHARACTERIZATION (surface, don't fix): a mint attempted BEFORE `domain_init`, crafted to
+/// CHARACTERIZATION (surface, don't fix): a mint attempted BEFORE `domain_init`, crafted to
 /// the audit-derived WORST-CASE shape — `remoteDomain = 0`. Pre-init the domain slot reads
 /// `[0,0,0,0]`, so the D5a domain compare (R-MINT-6) PASSES for a remoteDomain=0 intent (0 == the
 /// unwritten slot's 0 — the domain compare is NOT what forecloses this mint). The SOLE foreclosure
@@ -925,13 +1028,21 @@ async fn mint_before_domain_init_rejects() -> Result<()> {
     let account = faucet_account(&gm.harness);
 
     // NO domain_init: all five domain-config slots are the exact pre-init state (EMPTY).
-    let result = run_mint_against(&gm.harness, &account, composition_advice([0u32; 8], &attester)).await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_WRONG_IDENTIFIER"));
+    let result = run_mint_against(
+        &gm.harness,
+        &account,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await;
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_WRONG_IDENTIFIER")
+    );
     Ok(())
 }
 
 // SOLE-WRITER STATIC SWEEP — only domain_init writes the five domain-config slots (immutability's
-// structural leg; the N1A-family idiom)
+// structural leg)
 // ================================================================================================
 
 /// Collects `(basename, source)` for every `.masm` under the xreserve tree.
@@ -1003,7 +1114,9 @@ fn domain_config_sole_writer_sweep() -> Result<()> {
         .find(|(name, _)| name == "domain_config.masm")
         .expect("domain_config.masm present")
         .1;
-    let writes = domain_config.matches("exec.native_account::set_item").count();
+    let writes = domain_config
+        .matches("exec.native_account::set_item")
+        .count();
     assert_eq!(
         writes, 5,
         "domain_config.masm must perform exactly five set_item writes (one per §5.9 field slot)"

@@ -1,8 +1,8 @@
-//! P5-01 Slice 1 (F1/F3) — procedure-root sole-supply-surface suite. The charter's #1 invariant
-//! (CIR-DEPLOY-2: mintable ONLY with a valid Circle Deposit Attestation) must hold at the
+//! Procedure-root sole-supply-surface suite (F1). The core invariant — mintable ONLY with a valid
+//! Circle Deposit Attestation — must hold at the
 //! account-code-commitment / procedure-root level: the ONLY callable account-procedure root that
 //! raises `token_supply` is `mint` (the full verify-once -> write-once path). `apply_mint_effects`
-//! (the write stage) and `extract_recipient_account_id` (L1) must be reachable ONLY via same-module
+//! (the write stage) and `extract_recipient_account_id` must be reachable ONLY via same-module
 //! `exec` from `mint`, never as callable account roots.
 //!
 //! Two tests, both EXECUTING-RED at the `pub proc` HEAD and GREEN after the demotion:
@@ -26,12 +26,12 @@
 mod support;
 
 use anyhow::Result;
+use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::component::AccountComponentCode;
 use miden_protocol::account::{AccountId, StorageSlotDelta, StorageSlotName};
 use miden_protocol::note::{Note, NoteType};
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
-use miden_processor::crypto::random::RandomCoin;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::P2idNote;
 use miden_standards::testing::note::NoteBuilder;
@@ -75,9 +75,10 @@ const MINT_PATH: &str = "xreserve::xreserve_mint::mint";
 /// there, so addressable by path; their roots are identical to the shipped private ones).
 fn effects_public_root(path: &str) -> Result<Word> {
     let code = AccountComponentCode::from(assemble_xreserve_lib_effects_public()?);
-    Ok(Word::from(code.get_procedure_root_by_path(path).unwrap_or_else(|| {
-        panic!("the effects-public xreserve library must export {path}")
-    })))
+    Ok(Word::from(
+        code.get_procedure_root_by_path(path)
+            .unwrap_or_else(|| panic!("the effects-public xreserve library must export {path}")),
+    ))
 }
 
 /// A no-op driver so the assembled-faucet harness has its required (unused) driver; the root-surface
@@ -132,14 +133,19 @@ fn apply_mint_effects_exploit_note(
     );
     let script = CodeBuilder::new()
         .compile_note_script(src.clone())
-        .map_err(|e| anyhow::anyhow!("exploit note script failed to compile: {e}\n--- script ---\n{src}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("exploit note script failed to compile: {e}\n--- script ---\n{src}")
+        })?;
     let mut rng = RandomCoin::new(Word::from([
         Felt::from(seed as u32),
         Felt::from((seed >> 32) as u32),
         Felt::from(3u32),
         Felt::from(4u32),
     ]));
-    Ok(NoteBuilder::new(sender, &mut rng).note_type(NoteType::Private).script(script).build()?)
+    Ok(NoteBuilder::new(sender, &mut rng)
+        .note_type(NoteType::Private)
+        .script(script)
+        .build()?)
 }
 
 /// Executes `note` (unauthenticated input note) against the assembled faucet account.
@@ -175,7 +181,9 @@ async fn apply_mint_effects_root_is_not_a_callable_account_surface() -> Result<(
     const MAX_SUPPLY: u64 = 1_000_000;
     const AMOUNT: u64 = 1_000;
 
-    let af = setup_assembled_faucet(MAX_SUPPLY, 0, |_recipient| (vec![noop_driver_src()], vec![]))?;
+    let af = setup_assembled_faucet(MAX_SUPPLY, 0, |_recipient| {
+        (vec![noop_driver_src()], vec![])
+    })?;
     let apply_root = effects_public_root(APPLY_MINT_EFFECTS_PATH)?;
     let note = apply_mint_effects_exploit_note(
         test_account_id(99),
@@ -216,16 +224,23 @@ fn production_supply_raising_root_set_is_exactly_mint() -> Result<()> {
         .expect("a production component must export xreserve::xreserve_mint::mint");
 
     // the account's callable procedure roots (the code-commitment membership set).
-    let callable: std::collections::BTreeSet<Word> =
-        xreserve.procedures().map(|(root, _is_auth)| Word::from(root)).collect();
+    let callable: std::collections::BTreeSet<Word> = xreserve
+        .procedures()
+        .map(|(root, _is_auth)| Word::from(root))
+        .collect();
 
     let mint_root = Word::from(
-        xreserve.get_procedure_root_by_path(MINT_PATH).expect("mint root resolves"),
+        xreserve
+            .get_procedure_root_by_path(MINT_PATH)
+            .expect("mint root resolves"),
     );
     let apply_root = effects_public_root(APPLY_MINT_EFFECTS_PATH)?;
     let extract_root = effects_public_root(EXTRACT_RECIPIENT_PATH)?;
 
-    assert!(callable.contains(&mint_root), "mint must be a callable supply-raising root");
+    assert!(
+        callable.contains(&mint_root),
+        "mint must be a callable supply-raising root"
+    );
     assert!(
         !callable.contains(&apply_root),
         "apply_mint_effects must NOT be a callable account root — it is the ungated second supply \
@@ -244,7 +259,10 @@ fn production_supply_raising_root_set_is_exactly_mint() -> Result<()> {
         .map(|e| e.path().to_string())
         .collect();
     paths.sort();
-    let mut expected: Vec<String> = FROZEN_CALLABLE_ROOTS.iter().map(|s| (*s).to_string()).collect();
+    let mut expected: Vec<String> = FROZEN_CALLABLE_ROOTS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
     expected.sort();
     assert_eq!(
         paths, expected,

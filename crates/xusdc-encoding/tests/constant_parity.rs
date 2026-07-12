@@ -1,69 +1,64 @@
-//! Constant-parity test (decision D-3): the MASM constants and their Rust counterparts
+//! Constant-parity test: the MASM constants and their Rust counterparts
 //! must satisfy the DERIVED cross-language relations (felt offsets are byte offsets / 4;
 //! the packed magic/version are the u32-LE reinterpretations of the big-endian wire
 //! values; the error strings are byte-identical). One-sided edits fail mechanically —
-//! the `masm-rust-constant-parity` obligation (V2-05 seam closed at the constant layer).
+//! the `masm-rust-constant-parity` obligation, closed at the constant layer.
 //!
-//! CS-5 hardening: parity is BIDIRECTIONAL — every constant parsed from the MASM
+//! Bidirectional hardening: parity is BIDIRECTIONAL — every constant parsed from the MASM
 //! sources (numeric, string, and `word("…")` slot-name) must be covered by a parity row
 //! or a documented exemption, so a new MASM-only constant fails this suite; the
-//! `SCALE_EXP_MAX`/`MAX_SCALE_EXP` pair and `POW2_32` carry explicit rows; the 01 shell
-//! module is included by reference (the 04 crate's `lib.rs` embeds only 04-owned
+//! `SCALE_EXP_MAX`/`MAX_SCALE_EXP` pair and `POW2_32` carry explicit rows; the faucet shell
+//! module is included by reference (the encoding crate's `lib.rs` embeds only its own
 //! sources).
 
 mod support;
 
 use std::collections::BTreeMap;
 
-use xusdc_encoding::xreserve::encoding::{
-    DEPOSIT_INTENT_HEADER_FELTS, DEPOSIT_INTENT_HEADER_LEN, DEPOSIT_INTENT_MAGIC,
-    DEPOSIT_INTENT_VERSION, DepositIntentField, ERR_MESSAGES, MAX_SCALE_EXP, PUBKEY_FELTS,
-    deposit_intent_field_offset,
-};
-use xusdc_encoding::{ENCODING_MOD_MASM, LAYOUT_MASM};
 use miden_protocol::account::RoleSymbol;
 use xusdc_encoding::account::xreserve::DOM_PAUSER_ROLE;
 use xusdc_encoding::note::xreserve_mint::{
     XRESERVE_MINT_ATTACHMENT_NUM_WORDS, XRESERVE_MINT_ATTACHMENT_SCHEME,
 };
+use xusdc_encoding::xreserve::encoding::{
+    deposit_intent_field_offset, DepositIntentField, DEPOSIT_INTENT_HEADER_FELTS,
+    DEPOSIT_INTENT_HEADER_LEN, DEPOSIT_INTENT_MAGIC, DEPOSIT_INTENT_VERSION, ERR_MESSAGES,
+    MAX_SCALE_EXP, PUBKEY_FELTS,
+};
+use xusdc_encoding::{ENCODING_MOD_MASM, LAYOUT_MASM};
 
-/// The FAUCET(01) shell module source, read test-side by reference.
-const SHELL_MASM: &str =
-    include_str!("../../../asm/standards/xreserve/deposit_intent_parser.masm");
+/// The faucet shell module source, read test-side by reference.
+const SHELL_MASM: &str = include_str!("../../../asm/standards/xreserve/deposit_intent_parser.masm");
 
-/// The FAUCET(01) D5d attestation-verify shell module source, read test-side by reference.
+/// The faucet D5d attestation-verify shell module source, read test-side by reference.
 const ATTESTATION_VERIFY_MASM: &str =
     include_str!("../../../asm/standards/xreserve/attestation_verify.masm");
 
-/// The FAUCET(01) D5e mint write-phase shell module source, read test-side by reference.
-const XRESERVE_MINT_MASM: &str =
-    include_str!("../../../asm/standards/xreserve/xreserve_mint.masm");
+/// The faucet D5e mint write-phase shell module source, read test-side by reference.
+const XRESERVE_MINT_MASM: &str = include_str!("../../../asm/standards/xreserve/xreserve_mint.masm");
 
-/// The FAUCET(01) R-MINT-16 mint-deny guard module source, read test-side by reference.
+/// The faucet R-MINT-16 mint-deny guard module source, read test-side by reference.
 const MINT_DENY_GUARD_MASM: &str =
     include_str!("../../../asm/standards/xreserve/mint_deny_guard.masm");
 
-/// The FAUCET(01) P5-01 set_attester admin module source, read test-side by reference.
+/// The faucet set_attester admin module source, read test-side by reference.
 const ATTESTER_ADMIN_MASM: &str =
     include_str!("../../../asm/standards/xreserve/attester_admin.masm");
 
-/// The FAUCET(01) P5-01 R-ADMIN-4 domain-config init-once setter module source, read test-side by
+/// The faucet R-ADMIN-4 domain-config init-once setter module source, read test-side by
 /// reference.
-const DOMAIN_CONFIG_MASM: &str =
-    include_str!("../../../asm/standards/xreserve/domain_config.masm");
+const DOMAIN_CONFIG_MASM: &str = include_str!("../../../asm/standards/xreserve/domain_config.masm");
 
-/// The FAUCET(01) CMP-A10 R-BURN-1/2 burn-policy module source, read test-side by reference.
-const BURN_POLICY_MASM: &str =
-    include_str!("../../../asm/standards/xreserve/burn_policy.masm");
+/// The faucet CMP-A10 R-BURN-1/2 burn-policy module source, read test-side by reference.
+const BURN_POLICY_MASM: &str = include_str!("../../../asm/standards/xreserve/burn_policy.masm");
 
 const MIN_BURN_ADMIN_MASM: &str =
     include_str!("../../../asm/standards/xreserve/min_burn_admin.masm");
 
-/// The FAUCET(01) CMP-F3 DOM_PAUSER custom pause/unpause module source, read test-side by reference.
-const PAUSE_ADMIN_MASM: &str =
-    include_str!("../../../asm/standards/xreserve/pause_admin.masm");
+/// The faucet CMP-F3 DOM_PAUSER custom pause/unpause module source, read test-side by reference.
+const PAUSE_ADMIN_MASM: &str = include_str!("../../../asm/standards/xreserve/pause_admin.masm");
 
-/// The FAUCET(01) CMP-B1 mint-note-entry transport shim module source, read test-side by reference.
+/// The faucet CMP-B1 mint-note-entry transport shim module source, read test-side by reference.
 const MINT_NOTE_ENTRY_MASM: &str =
     include_str!("../../../asm/standards/xreserve/xreserve_mint_note_entry.masm");
 
@@ -85,7 +80,7 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     // F2 fee guard, declared in BOTH deposit_intent_parser.masm (D5b advice-gate) and
     // xreserve_mint.masm (D5e apply_mint_effects) — same string ⇒ shared felt code
     "ERR_XRESERVE_FEE_NONZERO",
-    // Slice-1 recipient AccountId extraction (xreserve_mint.masm)
+    // recipient AccountId extraction (xreserve_mint.masm)
     "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",
     "ERR_XRESERVE_RECIPIENT_BAD_LIMB",
     "ERR_XRESERVE_RECIPIENT_NONCANONICAL",
@@ -93,11 +88,11 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_MINT_DENIED",
     // R-ADMIN-4 domain-config init-once setter (domain_config.masm)
     "ERR_XRESERVE_DOMAIN_REINIT",
-    // §5.9 scalar/limb u32 guards (full-assembly slice, Round-P change 1; domain_config.masm)
+    // scalar/limb u32 guards (domain_config.masm)
     "ERR_XRESERVE_DOMAIN_NOT_U32",
     "ERR_XRESERVE_SOURCE_DOMAIN_NOT_U32",
     "ERR_XRESERVE_XRC_LIMB_NOT_U32",
-    // R-ADMIN-4 empty-identifier init guard (P5-01 hardening Item 4; domain_config.masm)
+    // R-ADMIN-4 empty-identifier init guard (domain_config.masm)
     "ERR_XRESERVE_IDENTIFIER_EMPTY",
     // CMP-A10 R-BURN-1 / R-BURN-2 burn policy (burn_policy.masm)
     "ERR_XRESERVE_BURN_ZERO",
@@ -107,7 +102,7 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_MISSING",
     "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT",
     "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_NUM_WORDS",
-    // F5 fix-slice A: the scheme-2 NetworkAccountTarget routing attachment presence guard.
+    // F5: the scheme-2 NetworkAccountTarget routing attachment presence guard.
     "ERR_XRESERVE_MINT_NOTE_TARGET_MISSING",
 ];
 
@@ -115,36 +110,52 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
 /// against the test-side label consts.
 const EXPECTED_SHELL_WORD_CONSTS: &[(&str, &str)] = &[
     ("DOMAIN_CONFIG_SLOT", support::DOMAIN_CONFIG_SLOT_LABEL),
-    ("IDENTIFIER_CONFIG_SLOT", support::IDENTIFIER_CONFIG_SLOT_LABEL),
+    (
+        "IDENTIFIER_CONFIG_SLOT",
+        support::IDENTIFIER_CONFIG_SLOT_LABEL,
+    ),
     ("USED_NONCES_SLOT", support::USED_NONCES_SLOT_LABEL),
 ];
 
 /// Expected `word("…")` slot-name constant of the D5d attestation-verify shell module.
-const EXPECTED_ATTESTATION_WORD_CONSTS: &[(&str, &str)] =
-    &[("XRESERVE_ATTESTERS_SLOT", support::XRESERVE_ATTESTERS_SLOT_LABEL)];
+const EXPECTED_ATTESTATION_WORD_CONSTS: &[(&str, &str)] = &[(
+    "XRESERVE_ATTESTERS_SLOT",
+    support::XRESERVE_ATTESTERS_SLOT_LABEL,
+)];
 
-/// Expected `word("…")` slot-name constant of the P5-01 set_attester admin module. Its
+/// Expected `word("…")` slot-name constant of the set_attester admin module. Its
 /// `XRESERVE_ATTESTERS_SLOT` MUST be byte-identical to attestation_verify's (the setter writes the
 /// SAME slot the D5d read path keys); the shared label is the single Rust source. (The
 /// `ATTESTER_ENABLED_MARKER` Word array literal is not parity-parsed, like `NONCE_USED_MARKER`.)
-const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] =
-    &[("XRESERVE_ATTESTERS_SLOT", support::XRESERVE_ATTESTERS_SLOT_LABEL)];
+const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] = &[(
+    "XRESERVE_ATTESTERS_SLOT",
+    support::XRESERVE_ATTESTERS_SLOT_LABEL,
+)];
 
 /// Expected `word("…")` slot-name constant of the D5e mint shell module. `TOKEN_CONFIG_SLOT` is
-/// hard-coded byte-identical to the standard FungibleFaucet slot label (CANONICAL-OWNERSHIP-MAP
-/// :41; fungible.masm:26); `USED_NONCES_SLOT` is IMPORTED from deposit_intent_parser (no
-/// redeclaration → not parsed here, no duplicate parity row, G1).
+/// hard-coded byte-identical to the standard FungibleFaucet slot label
+/// (docs/governing/CANONICAL-OWNERSHIP-MAP.md; fungible.masm:26); `USED_NONCES_SLOT` is IMPORTED
+/// from deposit_intent_parser (no redeclaration → not parsed here, no duplicate parity row).
 const EXPECTED_XRESERVE_MINT_WORD_CONSTS: &[(&str, &str)] =
     &[("TOKEN_CONFIG_SLOT", support::TOKEN_CONFIG_SLOT_LABEL)];
 
-/// Expected `word("…")` slot-name constants of the §5.9 4-field `domain_config.masm` (full-assembly
-/// slice): the THREE new slots it owns and writes (`source_domain`, `xreserve_contract_hi/lo` —
-/// D-A6-XRC raw 8×u32-LE realization). The `domain`/`identifier` consts stay IMPORTED from
-/// deposit_intent_parser (no redeclaration → no duplicate parity row, G1).
+/// Expected `word("…")` slot-name constants of the 4-field `domain_config.masm`: the THREE new
+/// slots it owns and writes (`source_domain`, `xreserve_contract_hi/lo` — the raw 8×u32-LE
+/// realization of the xreserve_contract bytes32). The `domain`/`identifier` consts stay IMPORTED
+/// from deposit_intent_parser (no redeclaration → no duplicate parity row).
 const EXPECTED_DOMAIN_CONFIG_WORD_CONSTS: &[(&str, &str)] = &[
-    ("SOURCE_DOMAIN_CONFIG_SLOT", support::SOURCE_DOMAIN_CONFIG_SLOT_LABEL),
-    ("XRESERVE_CONTRACT_HI_SLOT", support::XRESERVE_CONTRACT_HI_SLOT_LABEL),
-    ("XRESERVE_CONTRACT_LO_SLOT", support::XRESERVE_CONTRACT_LO_SLOT_LABEL),
+    (
+        "SOURCE_DOMAIN_CONFIG_SLOT",
+        support::SOURCE_DOMAIN_CONFIG_SLOT_LABEL,
+    ),
+    (
+        "XRESERVE_CONTRACT_HI_SLOT",
+        support::XRESERVE_CONTRACT_HI_SLOT_LABEL,
+    ),
+    (
+        "XRESERVE_CONTRACT_LO_SLOT",
+        support::XRESERVE_CONTRACT_LO_SLOT_LABEL,
+    ),
 ];
 
 /// Expected `word("…")` slot-name constant of the CMP-A10 burn-policy module. `MIN_BURN_SIZE_SLOT`
@@ -166,7 +177,7 @@ const ATTESTATION_COVERED_NUMS: &[&str] = &[];
 
 /// D5e mint-shell numeric constants (NONCE_USED_MARKER is a Word array literal, not parsed).
 /// P2ID_NUM_STORAGE_ITEMS is the local note-storage item count for the P2ID recipient build (2,
-/// matching notes/p2id.masm's storage format); no Rust counterpart, covered here (CS-5).
+/// matching notes/p2id.masm's storage format); no Rust counterpart, covered here.
 const XRESERVE_MINT_COVERED_NUMS: &[&str] = &["P2ID_NUM_STORAGE_ITEMS"];
 
 /// CMP-F3 pause-admin numeric const: DOM_PAUSER_ROLE (the encoded RoleSymbol felt), parity-asserted
@@ -177,14 +188,14 @@ const PAUSE_ADMIN_COVERED_NUMS: &[&str] = &["DOM_PAUSER_ROLE"];
 /// against the Rust `XRESERVE_MINT_ATTACHMENT_SCHEME` / `XRESERVE_MINT_ATTACHMENT_NUM_WORDS` in
 /// `masm_rust_constant_parity` below (the constructor builds what the wrapper verifies).
 /// `INTENT_PTR` (the account-frame staging address, the proven driver convention) and
-/// `DEPOSIT_SCALE_EXP` (the FAUCET-side DC-5 scale, DEV-5 parameterization point, MVP 6 — the
-/// canonical fixture scale) are wrapper-owned with no Rust counterpart, covered here (CS-5).
+/// `DEPOSIT_SCALE_EXP` (the faucet-side DC-5 scale, DEV-5 parameterization point, MVP 6 — the
+/// canonical fixture scale) are wrapper-owned with no Rust counterpart, covered here.
 const MINT_NOTE_ENTRY_COVERED_NUMS: &[&str] = &[
     "INTENT_PTR",
     "XRESERVE_MINT_ATTACHMENT_SCHEME",
     "XRESERVE_MINT_ATTACHMENT_NUM_WORDS",
     "DEPOSIT_SCALE_EXP",
-    // F5 fix-slice A: WORD_NUM_ELEMENTS for the indexed attachment-commitment address math.
+    // F5: WORD_NUM_ELEMENTS for the indexed attachment-commitment address math.
     "WORD_NUM_ELEMENTS",
 ];
 
@@ -216,17 +227,26 @@ const SHELL_COVERED_NUMS: &[&str] = &[];
 /// Returns (numeric constants, string constants, word("…") slot-name constants).
 fn parse_masm_consts(
     src: &str,
-) -> (BTreeMap<String, u64>, BTreeMap<String, String>, BTreeMap<String, String>) {
+) -> (
+    BTreeMap<String, u64>,
+    BTreeMap<String, String>,
+    BTreeMap<String, String>,
+) {
     let mut nums = BTreeMap::new();
     let mut strs = BTreeMap::new();
     let mut words = BTreeMap::new();
     for line in src.lines() {
         let line = line.trim();
-        let rest = match line.strip_prefix("pub const ").or_else(|| line.strip_prefix("const ")) {
+        let rest = match line
+            .strip_prefix("pub const ")
+            .or_else(|| line.strip_prefix("const "))
+        {
             Some(r) => r,
             None => continue,
         };
-        let Some((name, value)) = rest.split_once('=') else { continue };
+        let Some((name, value)) = rest.split_once('=') else {
+            continue;
+        };
         let (name, value) = (name.trim().to_string(), value.trim());
         if let Some(stripped) = value.strip_prefix('"') {
             if let Some(s) = stripped.strip_suffix('"') {
@@ -248,13 +268,15 @@ fn parse_masm_consts(
 }
 
 fn num(nums: &BTreeMap<String, u64>, name: &str, file: &str) -> u64 {
-    *nums.get(name).unwrap_or_else(|| panic!("{file} must define const {name}"))
+    *nums
+        .get(name)
+        .unwrap_or_else(|| panic!("{file} must define const {name}"))
 }
 
 /// DC-1 relation: every MASM felt offset × 4 equals the Rust byte offset, the packed
 /// magic/version equal the LE reinterpretation of the BE wire values, the header felt
-/// count matches both sides, the NoteStorage bound is the frozen 1024 (N-4), and the
-/// CS-5 rows pin the reducer's scale bound and limb base.
+/// count matches both sides, the NoteStorage bound is the frozen 1024, and the
+/// extra rows pin the reducer's scale bound and limb base.
 #[test]
 fn masm_rust_constant_parity() {
     let (nums, _, _) = parse_masm_consts(LAYOUT_MASM);
@@ -265,9 +287,15 @@ fn masm_rust_constant_parity() {
         ("AMOUNT_FELT_OFF", DepositIntentField::Amount),
         ("REMOTE_DOMAIN_FELT_OFF", DepositIntentField::RemoteDomain),
         ("REMOTE_TOKEN_FELT_OFF", DepositIntentField::RemoteToken),
-        ("REMOTE_RECIPIENT_FELT_OFF", DepositIntentField::RemoteRecipient),
+        (
+            "REMOTE_RECIPIENT_FELT_OFF",
+            DepositIntentField::RemoteRecipient,
+        ),
         ("LOCAL_TOKEN_FELT_OFF", DepositIntentField::LocalToken),
-        ("LOCAL_DEPOSITOR_FELT_OFF", DepositIntentField::LocalDepositor),
+        (
+            "LOCAL_DEPOSITOR_FELT_OFF",
+            DepositIntentField::LocalDepositor,
+        ),
         ("MAX_FEE_FELT_OFF", DepositIntentField::MaxFee),
         ("NONCE_FELT_OFF", DepositIntentField::Nonce),
         ("HOOK_DATA_LEN_FELT_OFF", DepositIntentField::HookDataLen),
@@ -299,15 +327,15 @@ fn masm_rust_constant_parity() {
     assert_eq!(
         DEPOSIT_INTENT_HEADER_LEN as u64,
         num(&nums, "DEPOSIT_INTENT_HEADER_FELTS", "layout.masm") * 4,
-        "header byte length must be 4x the felt count (C-10 packing)"
+        "header byte length must be 4x the felt count (4 bytes per felt)"
     );
     assert_eq!(
         num(&nums, "MAX_NOTE_STORAGE_FELTS", "layout.masm"),
         1024,
-        "NoteStorage felt bound is frozen at 1024 (EL N-4 :100)"
+        "NoteStorage felt bound is frozen at 1024"
     );
 
-    // CS-5 rows: the reducer's bound and limb base (names differ across languages for
+    // extra rows: the reducer's bound and limb base (names differ across languages for
     // the scale bound by frozen decision — MASM SCALE_EXP_MAX, Rust MAX_SCALE_EXP)
     let (enc_nums, _, _) = parse_masm_consts(ENCODING_MOD_MASM);
     assert_eq!(
@@ -345,12 +373,20 @@ fn masm_rust_constant_parity() {
     // and size-asserts (num_words == 9). A one-sided edit fails here.
     let (entry_nums, _, _) = parse_masm_consts(MINT_NOTE_ENTRY_MASM);
     assert_eq!(
-        num(&entry_nums, "XRESERVE_MINT_ATTACHMENT_SCHEME", "xreserve_mint_note_entry.masm"),
+        num(
+            &entry_nums,
+            "XRESERVE_MINT_ATTACHMENT_SCHEME",
+            "xreserve_mint_note_entry.masm"
+        ),
         XRESERVE_MINT_ATTACHMENT_SCHEME as u64,
         "mint-note attachment scheme parity (MASM wrapper == Rust constructor)"
     );
     assert_eq!(
-        num(&entry_nums, "XRESERVE_MINT_ATTACHMENT_NUM_WORDS", "xreserve_mint_note_entry.masm"),
+        num(
+            &entry_nums,
+            "XRESERVE_MINT_ATTACHMENT_NUM_WORDS",
+            "xreserve_mint_note_entry.masm"
+        ),
         XRESERVE_MINT_ATTACHMENT_NUM_WORDS as u64,
         "mint-note attachment word-count parity (MASM wrapper == Rust constructor)"
     );
@@ -372,8 +408,7 @@ fn masm_rust_error_string_parity() {
 
 /// Shell error-string parity, test-side Rust → MASM: every DECLARED faucet shell error
 /// has an identically-named shell-module constant with the byte-identical
-/// `support::SHELL_ERR_TABLE` message. (Staged: the list grows with the implementation
-/// commits that declare the MASM consts.)
+/// `support::SHELL_ERR_TABLE` message.
 #[test]
 fn masm_shell_error_string_parity() {
     // the faucet shell errors live across both shell modules (deposit_intent_parser.masm +
@@ -397,28 +432,38 @@ fn masm_shell_error_string_parity() {
             .find(|(n, _)| n == name)
             .map(|(_, e)| e.message())
             .unwrap_or_else(|| panic!("SHELL_ERR_TABLE must carry {name}"));
-        let masm = strs.get(*name).unwrap_or_else(|| {
-            panic!("a faucet shell module must define const {name} = \"...\"")
-        });
+        let masm = strs
+            .get(*name)
+            .unwrap_or_else(|| panic!("a faucet shell module must define const {name} = \"...\""));
         assert_eq!(masm, expected, "shell error message parity for {name}");
     }
 }
 
-/// CS-5 bidirectional sweep: every constant parsed from every MASM source must be
+/// Bidirectional sweep: every constant parsed from every MASM source must be
 /// covered by a parity row or a documented exemption — a new MASM-only constant
 /// (numeric, string, or `word("…")`) fails here until it gets a row.
 #[test]
 fn masm_constants_bidirectional() {
-    // every MASM-only string constant must be a known error (04 table or the faucet shell
-    // table); a new one fails here until it gets a row (CS-5)
+    // every MASM-only string constant must be a known error (the encoding table or the faucet
+    // shell table); a new one fails here until it gets a row
     let known_err = |name: &str| {
         ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
     };
     let sources: [(&str, &str, &[&str], &[(&str, &str)]); 12] = [
         ("layout.masm", LAYOUT_MASM, LAYOUT_COVERED_NUMS, &[]),
-        ("encoding/mod.masm", ENCODING_MOD_MASM, ENCODING_COVERED_NUMS, &[]),
-        ("deposit_intent_parser.masm", SHELL_MASM, SHELL_COVERED_NUMS, EXPECTED_SHELL_WORD_CONSTS),
+        (
+            "encoding/mod.masm",
+            ENCODING_MOD_MASM,
+            ENCODING_COVERED_NUMS,
+            &[],
+        ),
+        (
+            "deposit_intent_parser.masm",
+            SHELL_MASM,
+            SHELL_COVERED_NUMS,
+            EXPECTED_SHELL_WORD_CONSTS,
+        ),
         (
             "attestation_verify.masm",
             ATTESTATION_VERIFY_MASM,
@@ -434,7 +479,7 @@ fn masm_constants_bidirectional() {
         // R-MINT-16: the deny guard declares only ERR_XRESERVE_MINT_DENIED (a known shell error via
         // SHELL_ERR_TABLE); no numeric or word("…") constants.
         ("mint_deny_guard.masm", MINT_DENY_GUARD_MASM, &[], &[]),
-        // P5-01 set_attester: pins XRESERVE_ATTESTERS_SLOT to the shared label (no numeric consts;
+        // set_attester: pins XRESERVE_ATTESTERS_SLOT to the shared label (no numeric consts;
         // the owner-gate traps reuse the stock ERR_SENDER_NOT_OWNER / ERR_PAUSABLE_IS_PAUSED, not declared here).
         (
             "attester_admin.masm",
@@ -442,12 +487,17 @@ fn masm_constants_bidirectional() {
             &[],
             EXPECTED_ATTESTER_ADMIN_WORD_CONSTS,
         ),
-        // P5-01 §5.9 4-field domain_init (full-assembly slice): declares ERR_XRESERVE_DOMAIN_REINIT
-        // + the three u32-guard errors + the ERR_XRESERVE_IDENTIFIER_EMPTY init guard (hardening
-        // Item 4) — all known shell errors via SHELL_ERR_TABLE — and the THREE new slot consts it
+        // 4-field domain_init: declares ERR_XRESERVE_DOMAIN_REINIT
+        // + the three u32-guard errors + the ERR_XRESERVE_IDENTIFIER_EMPTY init guard
+        // — all known shell errors via SHELL_ERR_TABLE — and the THREE new slot consts it
         // owns (source_domain + xreserve_contract hi/lo); the domain/identifier consts stay
-        // IMPORTED from deposit_intent_parser (not redeclared -> no duplicate parity row, G1).
-        ("domain_config.masm", DOMAIN_CONFIG_MASM, &[], EXPECTED_DOMAIN_CONFIG_WORD_CONSTS),
+        // IMPORTED from deposit_intent_parser (not redeclared -> no duplicate parity row).
+        (
+            "domain_config.masm",
+            DOMAIN_CONFIG_MASM,
+            &[],
+            EXPECTED_DOMAIN_CONFIG_WORD_CONSTS,
+        ),
         // CMP-A10 burn policy: declares the two ERR_XRESERVE_BURN_* errors (known shell errors via
         // SHELL_ERR_TABLE) + the MIN_BURN_SIZE_SLOT word const (pinned to MIN_BURN_SIZE_SLOT_LABEL); no
         // numeric consts.
@@ -469,7 +519,12 @@ fn masm_constants_bidirectional() {
         // CMP-F3 pause_admin: declares the numeric DOM_PAUSER_ROLE role-symbol const (parity-asserted in
         // masm_rust_constant_parity); no word("…") consts, and no new string errors (the role gate reuses
         // the stock ERR_SENDER_LACKS_ROLE, the primitive reuses ERR_PAUSABLE_IS_PAUSED).
-        ("pause_admin.masm", PAUSE_ADMIN_MASM, PAUSE_ADMIN_COVERED_NUMS, &[]),
+        (
+            "pause_admin.masm",
+            PAUSE_ADMIN_MASM,
+            PAUSE_ADMIN_COVERED_NUMS,
+            &[],
+        ),
         // CMP-B1 note-entry transport shim: declares the four ERR_XRESERVE_MINT_NOTE_* transport
         // guards (known shell errors via SHELL_ERR_TABLE) + the four numeric consts covered/
         // parity-asserted above; no word("…") consts (it touches NO storage slot — a transport
@@ -487,21 +542,21 @@ fn masm_constants_bidirectional() {
             assert!(
                 covered_nums.contains(&name.as_str()),
                 "unmapped MASM numeric constant {name} in {file}: add a parity row or a \
-                 documented exemption (CS-5)"
+                 documented exemption"
             );
         }
         for name in strs.keys() {
             assert!(
                 known_err(name),
                 "unmapped MASM string constant {name} in {file}: add an error parity row \
-                 or a documented exemption (CS-5)"
+                 or a documented exemption"
             );
         }
         for name in words.keys() {
             assert!(
                 expected_words.iter().any(|(n, _)| n == name),
                 "unmapped MASM word(\"…\") constant {name} in {file}: add a slot-label \
-                 parity row (CS-5)"
+                 parity row"
             );
         }
         for (name, label) in expected_words {
@@ -513,8 +568,8 @@ fn masm_constants_bidirectional() {
     }
 }
 
-/// Parity for the installed authority mode: under the reconciled Circle-faithful model
-/// (DECISION-ADMIN-ROLE-MODEL) the production builder's `Authority` slot must carry exactly
+/// Parity for the installed authority mode: under the reconciled Circle-faithful owner-gated
+/// model the production builder's `Authority` slot must carry exactly
 /// `OwnerControlled` = `[OWNER_CONTROLLED, 0, 0, 0]`, so the account-wide gate resolves the setters
 /// (`set_attester` / `set_min_burn_size` / stock `set_max_supply`) to the Ownable2Step owner. The built
 /// `ATTEST_ADMIN` role + `RbacControlled` gate are removed; drifting the installed mode fails here.

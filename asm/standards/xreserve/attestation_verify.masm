@@ -1,14 +1,13 @@
 # xreserve::attestation_verify
 #
-# FAUCET(01)-owned mint-time deposit-attestation verify shell (P5-01 slice D5d): keccak the
-# DepositIntent payload, gate the candidate attester pubkey against the xReserveAttesters
-# allowlist (R-MINT-13), and ECDSA-verify the Circle signature over keccak256(payload)
-# (R-MINT-14). Built as ONE slice: the SAME word-aligned pubkey local region feeds BOTH the
-# allowlist-commitment lookup AND verify_prehash, so a pubkey checked against the allowlist can
-# only pass with its OWN signature (the load-bearing seam). Consumes the built/proven primitives
-# BY REFERENCE: xreserve::encoding::pubkey_commitment (04 ATT), keccak256::hash_bytes +
-# ecdsa_k256_keccak::verify_prehash (precompiles), active_account::get_map_item (kernel). Module
-# home + nested path per D-1A. Loop history: crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
+# The mint-time deposit-attestation verify (stage D5d): keccak the DepositIntent payload, gate the
+# candidate attester pubkey against the xReserveAttesters allowlist (R-MINT-13), and ECDSA-verify
+# the Circle signature over keccak256(payload) (R-MINT-14). The SAME word-aligned pubkey local
+# region feeds BOTH the allowlist-commitment lookup AND verify_prehash, so a pubkey checked against
+# the allowlist can only pass with its OWN signature (the load-bearing seam). Consumes the
+# built/proven primitives BY REFERENCE: xreserve::encoding::pubkey_commitment (the encoding
+# library's attestation packing), keccak256::hash_bytes + ecdsa_k256_keccak::verify_prehash
+# (precompiles), and active_account::get_map_item (kernel).
 
 use miden::protocol::active_account
 use miden::core::crypto::hashes::keccak256
@@ -19,7 +18,7 @@ use xreserve::encoding
 # CONSTANTS
 # =================================================================================================
 
-# Attester allowlist (frozen §5.5 XReserveAttesterAdmin): the xReserveAttesters StorageMap slot,
+# Attester allowlist: the xReserveAttesters StorageMap slot,
 # keyed by Poseidon2(33-byte compressed pubkey) -> enabled-marker Word (absent / EMPTY_WORD = not
 # allowlisted). The later set_attester admin setter co-owns this SAME slot. The map-slot
 # DECLARATION is Rust-side (StorageSlot::with_map; canary-proven); this const is the MASM slot id.
@@ -44,7 +43,7 @@ const ERR_XRESERVE_SIG_INVALID = "deposit attestation signature verification fai
 #! The candidate pubkey is materialized ONCE into the word-aligned pubkey local region; that same
 #! region feeds BOTH the allowlist commitment (pubkey_commitment) and the signature check
 #! (verify_prehash pk_ptr), so an allowlisted commitment cannot be paired with a foreign
-#! signature. Consumes the 04 / precompile / kernel primitives by reference.
+#! signature. Consumes the encoding-library / precompile / kernel primitives by reference.
 #!
 #! Locals (@locals(40), word-aligned sub-regions, mirroring the precompile-canary verify_prehash
 #! materialization): loc[0..9] candidate pubkey (9 felts), loc[12..20] keccak digest (8 felts),
@@ -93,7 +92,7 @@ pub proc verify_attestation
     # => [pad(16)]
 
     # allowlist gate (R-MINT-13): load the pubkey from loc[0..9] (the seam region) and consume the
-    # 04-owned pubkey_commitment to get COMM, then read xReserveAttesters[COMM].
+    # encoding-library pubkey_commitment to get COMM, then read xReserveAttesters[COMM].
     loc_load.8
     padw loc_loadw_le.4
     padw loc_loadw_le.0

@@ -59,7 +59,8 @@ pub fn write_cf_evidence(
         main_commit: obs.main_commit.clone(),
         node_version: "miden-node 0.15.1 (installed binaries)".to_string(),
         client_crate: "miden-client =0.15.3 (crates.io)".to_string(),
-        protocol_rev: "0xMiden/protocol 681fc90584131560b87db8f7487685f4fa8420a8 (v0.15.3)".to_string(),
+        protocol_rev: "0xMiden/protocol 681fc90584131560b87db8f7487685f4fa8420a8 (v0.15.3)"
+            .to_string(),
         rpc_port: cfg.stack.rpc_port,
         validator_port: cfg.stack.validator_port,
         ntx_builder_port: cfg.stack.ntx_builder_port,
@@ -71,7 +72,10 @@ pub fn write_cf_evidence(
     };
     let path = cfg.stack.run_root.join("evidence-cf.json");
     fs::create_dir_all(&cfg.stack.run_root).context("creating the run root")?;
-    fs::write(&path, serde_json::to_vec_pretty(&evidence).context("serializing rows-C/F evidence")?)
-        .with_context(|| format!("writing {}", path.display()))?;
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&evidence).context("serializing rows-C/F evidence")?,
+    )
+    .with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }

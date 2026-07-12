@@ -1,24 +1,22 @@
 # xreserve::domain_config
 #
-# FAUCET(01)-owned domain-config init-once setter (P5-01 R-ADMIN-4; §5.9 FOUR-FIELD closure, the
-# full-assembly slice): the owner-gated, one-time write of ALL FOUR frozen CMP-A6 fields --
-# `domain:u32` + `source_domain:u32` + `xreserve_contract:bytes32` + `identifier:bytes32`. The
-# `domain`/`identifier` slots are the ones the mint path's D5a compare
+# The owner-gated, init-once domain-config setter (R-ADMIN-4): a one-time write of ALL FOUR
+# domain-config fields (CMP-A6) -- `domain:u32` + `source_domain:u32` + `xreserve_contract:bytes32`
+# + `identifier:bytes32`. The `domain`/`identifier` slots are the ones the mint path's D5a compare
 # (deposit_intent_parser::assert_deposit_intent) reads to reject mis-addressed deposits (their
 # labels/encodings are BYTE-IDENTICAL to the accepted 2-field surface); `source_domain` and
 # `xreserve_contract` have NO on-chain consumer -- they are deploy-time identity configuration the
-# off-chain services read via `GetAccount` (frozen §5.9; recorded per §4b). A second write traps
-# ERR_XRESERVE_DOMAIN_REINIT. Owner-gated (Ownable2Step); no pause gate (deploy-time config is
-# orthogonal to the operational pause). The domain/identifier slot consts are IMPORTED from
-# deposit_intent_parser (the single source of truth with D5a); the three NEW slot consts live HERE
-# (their only user). Module home + flat path per D-1A (CANONICAL-OWNERSHIP-MAP.md).
+# off-chain services read via `GetAccount`. A second write traps ERR_XRESERVE_DOMAIN_REINIT.
+# Owner-gated (Ownable2Step); no pause gate (deploy-time config is orthogonal to the operational
+# pause). The domain/identifier slot consts are IMPORTED from deposit_intent_parser (the single
+# source of truth with D5a); the three NEW slot consts live HERE (their only user).
 #
-# FIELD-REPRESENTATION ASYMMETRY (D-A6-XRC, human-directed 2026-07-06): `identifier` is stored as
-# the Poseidon2 bytes32->key WORD -- consumer-forced, D5a's `assert_eqw` compares the hashed form.
-# `xreserve_contract` is stored LOSSLESSLY as its raw 8x u32-LE packed felts across TWO value slots
-# (hi = wire bytes 0..16, lo = bytes 16..32; the 04 `bytes32_to_packed_felts` packing, consumed by
-# reference on the Rust side): it has no on-chain compare, so the public identity must be READABLE
-# from storage (fail-closed `packed_felts_to_bytes32` round-trip), not merely verifiable.
+# FIELD-REPRESENTATION ASYMMETRY: `identifier` is stored as the Poseidon2 bytes32->key WORD --
+# consumer-forced, because D5a's `assert_eqw` compares the hashed form. `xreserve_contract` is stored
+# LOSSLESSLY as its raw 8x u32-LE packed felts across TWO value slots (hi = wire bytes 0..16, lo =
+# bytes 16..32; the encoding library's `bytes32_to_packed_felts` packing, consumed by reference on
+# the Rust side): it has no on-chain compare, so the public identity must be READABLE from storage
+# (fail-closed `packed_felts_to_bytes32` round-trip), not merely verifiable.
 
 use miden::protocol::active_account
 use miden::protocol::native_account
@@ -29,10 +27,10 @@ use xreserve::deposit_intent_parser::IDENTIFIER_CONFIG_SLOT
 # CONSTANTS
 # =================================================================================================
 
-# §5.9 `source_domain` (u32) value slot: `[source_domain, 0, 0, 0]`, mirroring the domain slot.
+# `source_domain` (u32) value slot: `[source_domain, 0, 0, 0]`, mirroring the domain slot.
 const SOURCE_DOMAIN_CONFIG_SLOT = word("xusdc::xreserve::domain_config::source_domain")
 
-# §5.9 `xreserve_contract` (bytes32) value slots: the raw 8x u32-LE packed felts, hi = packed
+# `xreserve_contract` (bytes32) value slots: the raw 8x u32-LE packed felts, hi = packed
 # felts[0..4] (wire bytes 0..16), lo = packed felts[4..8] (wire bytes 16..32).
 const XRESERVE_CONTRACT_HI_SLOT = word("xusdc::xreserve::domain_config::xreserve_contract_hi")
 const XRESERVE_CONTRACT_LO_SLOT = word("xusdc::xreserve::domain_config::xreserve_contract_lo")
@@ -47,16 +45,16 @@ const XRESERVE_CONTRACT_LO_SLOT = word("xusdc::xreserve::domain_config::xreserve
 # write, so no partial state exists for a second init to extend.
 const ERR_XRESERVE_DOMAIN_REINIT = "domain config has already been initialized"
 
-# §5.9 scalar-u32 exactness: the spec types `domain` and `source_domain` as u32; the guards trap a
+# scalar-u32 exactness: the spec types `domain` and `source_domain` as u32; the guards trap a
 # malformed (non-u32) felt BEFORE any write.
 const ERR_XRESERVE_DOMAIN_NOT_U32 = "domain is not a valid u32"
 const ERR_XRESERVE_SOURCE_DOMAIN_NOT_U32 = "source domain is not a valid u32"
 
-# D-A6-XRC guard 2: every xreserve_contract limb must be a valid u32 before the two packed words
+# guard 2: every xreserve_contract limb must be a valid u32 before the two packed words
 # are stored -- the fail-closed on-chain mirror of the Rust `packed_felts_to_bytes32` inverse.
 const ERR_XRESERVE_XRC_LIMB_NOT_U32 = "xreserve contract limb is not a valid u32"
 
-# R-ADMIN-4 hardening (P5-01 hardening Item 4): the identifier IS the init-once sentinel; an EMPTY
+# R-ADMIN-4 hardening: the identifier IS the init-once sentinel; an EMPTY
 # identifier would never arm it (the "immutable" config stays silently re-initializable) and D5a
 # would compare every intent's identifier against EMPTY. Trap rather than deploy that state.
 const ERR_XRESERVE_IDENTIFIER_EMPTY = "identifier must be non-empty"
@@ -64,7 +62,7 @@ const ERR_XRESERVE_IDENTIFIER_EMPTY = "identifier must be non-empty"
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Writes the FOUR §5.9 faucet domain-config fields, owner-gated and init-once: `domain` (u32) and
+#! Writes the FOUR faucet domain-config fields, owner-gated and init-once: `domain` (u32) and
 #! `identifier` (the pre-hashed bytes32->key Word) -- the slots the mint path's D5a compare reads
 #! to reject mis-addressed deposits -- plus `source_domain` (u32) and `xreserve_contract` (the raw
 #! 8x u32-LE packed bytes32 across two words), the off-chain-read identity fields. Gated on the
@@ -73,7 +71,7 @@ const ERR_XRESERVE_IDENTIFIER_EMPTY = "identifier must be non-empty"
 #! atomic (all validation precedes every write, and a trapped tx commits nothing), so all four
 #! fields are set together or not at all. The identifier is trusted verbatim (the set_attester
 #! discipline); D5a compares the stored Word directly. The scalars and every xreserve_contract limb
-#! are u32-guarded BEFORE any write (§5.9 types them u32 / the packing is u32-LE).
+#! are u32-guarded BEFORE any write (the spec types them u32; the packing is u32-LE).
 #!
 #! Inputs:  [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
 #! Outputs: [pad(16)]
@@ -82,7 +80,7 @@ const ERR_XRESERVE_IDENTIFIER_EMPTY = "identifier must be non-empty"
 #! - IDENTIFIER is the faucet identifier as the canonical bytes32->key Word (stored verbatim; D5a
 #!   asserts word equality against it).
 #! - XRC_HI / XRC_LO are the xreserve_contract bytes32 as its 8x u32-LE packed felts (hi = wire
-#!   bytes 0..16, lo = bytes 16..32; the 04 codec packing), stored verbatim after the limb guards.
+#!   bytes 0..16, lo = bytes 16..32; the encoding library's codec packing), stored verbatim after the limb guards.
 #! - source_domain is the u32 source (native-USDC) domain id, stored as element 0 of its word.
 #! - domain is the u32 domain id, stored as element 0 of the domain config word (D5a reads
 #!   element 0).
@@ -133,7 +131,7 @@ pub proc domain_init
     dropw
     # => [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
 
-    # §5.9 u32 guards -- ALL validation BEFORE ANY write (a trap here leaves every slot unwritten).
+    # u32 guards -- ALL validation BEFORE ANY write (a trap here leaves every slot unwritten).
     # domain sits at position 13, source_domain at 12; each is dup'd, asserted, and dropped so the
     # stack is untouched.
     dup.13 u32assert.err=ERR_XRESERVE_DOMAIN_NOT_U32 drop
@@ -142,7 +140,7 @@ pub proc domain_init
     dup.12 u32assert.err=ERR_XRESERVE_SOURCE_DOMAIN_NOT_U32 drop
     # => [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
 
-    # guard 2 (D-A6-XRC): all 8 xreserve_contract limbs are valid u32s (word positions 1 and 2).
+    # guard 2: all 8 xreserve_contract limbs are valid u32s (word positions 1 and 2).
     dupw.1 u32assertw.err=ERR_XRESERVE_XRC_LIMB_NOT_U32 dropw
     # => [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
 

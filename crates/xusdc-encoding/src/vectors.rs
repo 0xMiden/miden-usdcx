@@ -1,7 +1,7 @@
-//! Loader for the ONE canonical 04-owned golden-vector artifact
+//! Loader for the ONE canonical golden-vector artifact
 //! (`tests/vectors/xreserve-encoding-vectors.json`). Both the Rust unit tests and the
 //! MASM execution tests load the same file by reference through this module — no second
-//! vector table exists anywhere in the repo (G1).
+//! vector table exists anywhere in the repo.
 
 use std::sync::OnceLock;
 
@@ -131,7 +131,7 @@ pub struct DiFields {
     pub nonce_hex: String,
     /// field name → (felt offset within the preimage, packed felts at that offset).
     pub packed: Vec<PackedField>,
-    /// The D-4A stack-output expectation: [remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0,
+    /// The stack-output expectation: [remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0,
     /// hook_data_len] — the words as felt-hex.
     pub remote_token_felts: Vec<String>,
 }
@@ -143,7 +143,7 @@ pub struct PackedField {
     pub felts: Vec<String>,
 }
 
-/// Attestation (ATT) vectors (frozen §6.7 / §7). One independent secp256k1 keypair each:
+/// Attestation (ATT) vectors. One independent secp256k1 keypair each:
 /// the 33-byte compressed pubkey (→ 9 felts) and its `PublicKey::to_commitment` Word, the
 /// 32-byte keccak digest over a full DepositIntent payload (→ 8 felts), and the 65-byte
 /// `r‖s‖v` signature (→ 17 felts; `v` carried in felt 16, unused on-chain).
@@ -165,7 +165,7 @@ pub struct AttVector {
     pub derivation: String,
 }
 
-/// Burn-note item (BN) vectors (DC-7 / §6.6). `kind`: accept | reject. Accept entries carry
+/// Burn-note item (BN) vectors (DC-7). `kind`: accept | reject. Accept entries carry
 /// the four semantic inputs plus the 18-felt golden `items` layout; reject entries carry the
 /// malformed `items` felts plus `expected_variant` (`BurnItemsMalformed`).
 #[derive(Debug, Deserialize)]
@@ -181,7 +181,7 @@ pub struct BnVector {
     pub dest_recipient: Option<String>,
     #[serde(default)]
     pub salt: Option<String>,
-    /// Accept: the 18-felt §7 `NoteStorage.items` golden layout. Reject: the malformed felts.
+    /// Accept: the 18-felt `NoteStorage.items` golden layout. Reject: the malformed felts.
     pub items: Vec<String>,
     #[serde(default)]
     pub expected_variant: Option<String>,
@@ -208,7 +208,10 @@ pub fn load() -> &'static VectorFile {
 /// Parses a 0x-prefixed 32-byte hex string.
 pub fn parse_hex32(s: &str) -> [u8; 32] {
     let bytes = parse_hex(s);
-    bytes.as_slice().try_into().unwrap_or_else(|_| panic!("expected 32 bytes, got {}", bytes.len()))
+    bytes
+        .as_slice()
+        .try_into()
+        .unwrap_or_else(|_| panic!("expected 32 bytes, got {}", bytes.len()))
 }
 
 /// Parses a 0x-prefixed hex string of any length.
@@ -257,12 +260,21 @@ impl AmtVector {
     }
 
     pub fn expected_amount(&self) -> miden_protocol::asset::AssetAmount {
-        let y: u64 = self.expected_y.as_deref().expect("accept vector").parse().expect("u64");
+        let y: u64 = self
+            .expected_y
+            .as_deref()
+            .expect("accept vector")
+            .parse()
+            .expect("u64");
         miden_protocol::asset::AssetAmount::new(y).expect("vector amount within bounds")
     }
 
     pub fn expected_dust(&self) -> u128 {
-        self.expected_dust.as_deref().expect("dust vector").parse().expect("u128")
+        self.expected_dust
+            .as_deref()
+            .expect("dust vector")
+            .parse()
+            .expect("u128")
     }
 }
 
@@ -281,14 +293,19 @@ impl DiVector {
     }
 
     pub fn preimage_values(&self) -> Vec<Felt> {
-        self.preimage_felts.iter().map(|s| felt_from_hex(s)).collect()
+        self.preimage_felts
+            .iter()
+            .map(|s| felt_from_hex(s))
+            .collect()
     }
 }
 
 impl AttVector {
     pub fn pubkey(&self) -> [u8; 33] {
         let b = parse_hex(&self.pubkey_hex);
-        b.as_slice().try_into().unwrap_or_else(|_| panic!("expected 33 bytes, got {}", b.len()))
+        b.as_slice()
+            .try_into()
+            .unwrap_or_else(|_| panic!("expected 33 bytes, got {}", b.len()))
     }
 
     pub fn digest(&self) -> [u8; 32] {
@@ -297,7 +314,9 @@ impl AttVector {
 
     pub fn sig(&self) -> [u8; 65] {
         let b = parse_hex(&self.sig_hex);
-        b.as_slice().try_into().unwrap_or_else(|_| panic!("expected 65 bytes, got {}", b.len()))
+        b.as_slice()
+            .try_into()
+            .unwrap_or_else(|_| panic!("expected 65 bytes, got {}", b.len()))
     }
 
     pub fn payload(&self) -> Vec<u8> {
@@ -339,13 +358,21 @@ impl DiFields {
 
 impl BnVector {
     pub fn amount(&self) -> miden_protocol::asset::AssetAmount {
-        let a: u64 =
-            self.amount.as_deref().expect("accept vector carries amount").parse().expect("u64");
+        let a: u64 = self
+            .amount
+            .as_deref()
+            .expect("accept vector carries amount")
+            .parse()
+            .expect("u64");
         miden_protocol::asset::AssetAmount::new(a).expect("vector amount within bounds")
     }
 
     pub fn dest_recipient(&self) -> [u8; 32] {
-        parse_hex32(self.dest_recipient.as_deref().expect("accept vector carries dest_recipient"))
+        parse_hex32(
+            self.dest_recipient
+                .as_deref()
+                .expect("accept vector carries dest_recipient"),
+        )
     }
 
     pub fn salt(&self) -> [u8; 32] {
@@ -368,7 +395,7 @@ impl BnVector {
     }
 }
 
-// ARTIFACT GUARD (scaffold test — green in the red-suite by design)
+// ARTIFACT GUARD (scaffold / meta test)
 // ================================================================================================
 
 #[cfg(test)]
@@ -377,11 +404,10 @@ mod tests {
 
     /// Scaffold/meta test: the artifact parses, every family is non-empty, every entry
     /// carries provenance (`cite` + `derivation`), and every entry carries non-empty
-    /// `tv` tags unless it is on the explicit guard-vector allowlist (CS-5). Allowed
-    /// green in the red-suite.
+    /// `tv` tags unless it is on the explicit guard-vector allowlist.
     #[test]
     fn artifact_guard() {
-        // CS-5 allowlist: guard-only vectors that intentionally trace to no frozen TV
+        // guard-vector allowlist: guard-only vectors that intentionally trace to no frozen TV
         // row (they pin harness/trap mechanics, not a spec row).
         const TV_TAG_ALLOWLIST: [&str; 1] = ["amt-guard-limb-not-u32"];
 
@@ -394,31 +420,78 @@ mod tests {
         assert!(!v.families.att.is_empty(), "att family");
         assert!(!v.families.bn.is_empty(), "bn family");
         let no_provenance = |cite: &str, derivation: &str| cite.is_empty() || derivation.is_empty();
-        let tv_ok =
-            |id: &str, tv: &[String]| !tv.is_empty() || TV_TAG_ALLOWLIST.contains(&id);
+        let tv_ok = |id: &str, tv: &[String]| !tv.is_empty() || TV_TAG_ALLOWLIST.contains(&id);
         for e in &v.families.b32 {
-            assert!(!no_provenance(&e.cite, &e.derivation), "{} provenance", e.id);
-            assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
+            assert!(
+                !no_provenance(&e.cite, &e.derivation),
+                "{} provenance",
+                e.id
+            );
+            assert!(
+                tv_ok(&e.id, &e.tv),
+                "{}: empty tv tags and not allowlisted",
+                e.id
+            );
         }
         for e in &v.families.amt {
-            assert!(!no_provenance(&e.cite, &e.derivation), "{} provenance", e.id);
-            assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
+            assert!(
+                !no_provenance(&e.cite, &e.derivation),
+                "{} provenance",
+                e.id
+            );
+            assert!(
+                tv_ok(&e.id, &e.tv),
+                "{}: empty tv tags and not allowlisted",
+                e.id
+            );
         }
         for e in &v.families.aid {
-            assert!(!no_provenance(&e.cite, &e.derivation), "{} provenance", e.id);
-            assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
+            assert!(
+                !no_provenance(&e.cite, &e.derivation),
+                "{} provenance",
+                e.id
+            );
+            assert!(
+                tv_ok(&e.id, &e.tv),
+                "{}: empty tv tags and not allowlisted",
+                e.id
+            );
         }
         for e in &v.families.di {
-            assert!(!no_provenance(&e.cite, &e.derivation), "{} provenance", e.id);
-            assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
+            assert!(
+                !no_provenance(&e.cite, &e.derivation),
+                "{} provenance",
+                e.id
+            );
+            assert!(
+                tv_ok(&e.id, &e.tv),
+                "{}: empty tv tags and not allowlisted",
+                e.id
+            );
         }
         for e in &v.families.att {
-            assert!(!no_provenance(&e.cite, &e.derivation), "{} provenance", e.id);
-            assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
+            assert!(
+                !no_provenance(&e.cite, &e.derivation),
+                "{} provenance",
+                e.id
+            );
+            assert!(
+                tv_ok(&e.id, &e.tv),
+                "{}: empty tv tags and not allowlisted",
+                e.id
+            );
         }
         for e in &v.families.bn {
-            assert!(!no_provenance(&e.cite, &e.derivation), "{} provenance", e.id);
-            assert!(tv_ok(&e.id, &e.tv), "{}: empty tv tags and not allowlisted (CS-5)", e.id);
+            assert!(
+                !no_provenance(&e.cite, &e.derivation),
+                "{} provenance",
+                e.id
+            );
+            assert!(
+                tv_ok(&e.id, &e.tv),
+                "{}: empty tv tags and not allowlisted",
+                e.id
+            );
         }
     }
 }

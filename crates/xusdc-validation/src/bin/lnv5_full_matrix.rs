@@ -1,4 +1,4 @@
-//! LNV-5 — THE consolidated §11.2 full-matrix gate run: rows A–L, one command, one fresh node.
+//! LNV-5 — THE consolidated full-matrix gate run: rows A–L, one command, one fresh node.
 //!
 //! Boots ONE fresh local stack and composes the LNV-1..4 drivers on it in matrix order (deploy →
 //! admin → mint → burn → conservation), then settles row K (ntx-builder liveness / path N) and
@@ -8,7 +8,7 @@
 //! the machine evidence (`evidence-lnv5.json`) + archived logs under the gitignored run root —
 //! then tears the stack down. Exit code 0 = every row's assertion suite PASSED.
 //!
-//! **The gate itself is a HUMAN decision (§11.2): this binary never declares it.** A human
+//! **The gate itself is a HUMAN decision: this binary never declares it.** A human
 //! reproduces from a fresh node, inspects the record + logs + packets, and declares GATE PASS /
 //! GATE FAILED. **Validator-not-fixer:** a failing row is a SURFACED finding, never a hot-fix.
 //!

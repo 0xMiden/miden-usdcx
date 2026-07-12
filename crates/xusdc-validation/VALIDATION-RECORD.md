@@ -1,8 +1,8 @@
 # LNV-1 VALIDATION RECORD — harness foundation + matrix rows A/B
 
 **Slice:** LNV-1 (Phase-4 §11.2 local-node validation track, first slice).
-**Authoritative spec:** `TASK-P5-01-PHASE4-LOCAL-NODE-VALIDATION-PLAN-BUILDER.md` (A–L matrix; this
-slice runs rows **A** and **B**).
+**Scope:** the A–L local-node validation matrix (see `crates/xusdc-validation/README.md`); this
+slice runs rows **A** and **B**.
 **Status:** rows A + B **PASS** on a real, fresh, isolated local node (evidence §5).
 **Gate discipline:** this record feeds the LNV-1 HARD HUMAN GATE (first-run supervision + the
 `miden-client` re-pin acceptance). Nothing here self-declares the §11.2 gate — that is LNV-5.

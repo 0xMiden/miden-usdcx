@@ -1,6 +1,6 @@
 //! Row-A + row-B assertion suite (written test-first, before the drivers).
 //!
-//! Matrix rows (authoritative spec, `TASK-P5-01-PHASE4-LOCAL-NODE-VALIDATION-PLAN-BUILDER.md`):
+//! Matrix rows:
 //! - **A. Deploy + recognize** — the production faucet (post-F5 composition) deploys to the local
 //!   node; `GetAccount` returns it; the network-account allowlist slot is present + non-empty
 //!   on-chain; the account is PUBLIC.
@@ -52,10 +52,9 @@ fn storage_word(account: &Account, label: &str) -> Result<Word> {
 ///   missing roots are a composition defect).
 /// - The tx-script allowlist slot is present and EXACTLY empty (sole-mint-surface / F1).
 pub fn assert_row_a(obs: &RowsAbObservations) -> Result<()> {
-    let account = obs
-        .deployed
-        .as_ref()
-        .context("row A: GetAccount returned no account — the node does not recognize the deployed faucet")?;
+    let account = obs.deployed.as_ref().context(
+        "row A: GetAccount returned no account — the node does not recognize the deployed faucet",
+    )?;
 
     ensure!(
         account.id() == obs.faucet_id,
@@ -110,11 +109,17 @@ pub fn assert_row_a(obs: &RowsAbObservations) -> Result<()> {
     Ok(())
 }
 
-/// Asserts the five §5.9 domain-config slots of `account` hold exactly `params`' values.
+/// Asserts the five domain-config slots of `account` hold exactly `params`' values.
 fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &str) -> Result<()> {
     let domain = storage_word(account, DOMAIN_CONFIG_SLOT_LABEL)?;
     ensure!(
-        domain == Word::from([Felt::from(params.domain), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
+        domain
+            == Word::from([
+                Felt::from(params.domain),
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::ZERO
+            ]),
         "{ctx}: domain slot read-back mismatch (got {domain:?}, expected [{}, 0, 0, 0])",
         params.domain,
     );
@@ -134,7 +139,12 @@ fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &st
     let source_domain = storage_word(account, SOURCE_DOMAIN_CONFIG_SLOT_LABEL)?;
     ensure!(
         source_domain
-            == Word::from([Felt::from(params.source_domain), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
+            == Word::from([
+                Felt::from(params.source_domain),
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::ZERO
+            ]),
         "{ctx}: source_domain slot read-back mismatch (got {source_domain:?}, expected [{}, 0, 0, \
          0])",
         params.source_domain,
@@ -156,7 +166,7 @@ fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &st
 
 /// **Row B — domain_init init-once.**
 ///
-/// - The owner-sent first `domain_init` initialized the domain config: all five §5.9 slots read
+/// - The owner-sent first `domain_init` initialized the domain config: all five domain-config slots read
 ///   back from ON-CHAIN storage at exactly the creator-committed params (`domain`, `identifier`
 ///   — the spec's named read-backs — plus `source_domain` and the two `xreserve_contract` limbs).
 /// - The SECOND `domain_init` was REJECTED by the init-once gate: the consumption attempt failed

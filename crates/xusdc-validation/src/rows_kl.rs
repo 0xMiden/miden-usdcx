@@ -3,7 +3,7 @@
 //! **Row K (ntx-builder liveness / path N)** is derived, not re-driven: the LNV-2/3/4 sub-runs
 //! already commit every positive faucet consumption via path N (the routed allowlisted note is
 //! emitted from a wallet and the running ntx-builder auto-executes the faucet's consumption — the
-//! LNV-1 §3.2 posture), so the consolidated run EXTRACTS that on-chain evidence from the sub-run
+//! LNV-1 posture), so the consolidated run EXTRACTS that on-chain evidence from the sub-run
 //! observations ([`pathn_commits_from`]) and pairs it with the node-side execution markers from
 //! `ntx-builder.log` ([`ntx_execution_evidence`]). [`derive_row_k`] renders the verdict either
 //! way: YES needs mint AND burn commits plus node-side markers; anything less is NO with the
@@ -21,7 +21,7 @@
 //! SGR color codes into the log files), never by substring — an `INFO` line mentioning
 //! `error=…`/`failed` classifies as nothing, and multi-line entry continuations carry no token.
 //!
-//! [`run_full_matrix`] is the consolidated §11.2 driver: ONE fresh stack, the four LNV-1..4
+//! [`run_full_matrix`] is the consolidated full-matrix driver: ONE fresh stack, the four LNV-1..4
 //! drivers composed in matrix order against it (each namespaced under its own client store), then
 //! rows K + L derived from that single run. **Validator-not-fixer:** a failing sub-run or row is
 //! a SURFACED finding, never a hot-fix.

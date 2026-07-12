@@ -1,7 +1,7 @@
 //! The LNV-3 rows-D/E driver: one deterministic arc against a fresh local node, producing the
 //! [`RowsDeObservations`] the rows-D/E assertion suite judges.
 //!
-//! Execution model (LNV-1 §3.2 posture, LNV-2-confirmed, reused verbatim):
+//! Execution model (LNV-1 posture, LNV-2-confirmed, reused verbatim):
 //! - **Row D happy-path mints commit via path N (the ntx-builder).** Each `XReserveMintNote` is
 //!   emitted from the owner/relayer wallet (a regular-account tx the user RPC accepts) carrying the
 //!   routing attachment; the running ntx-builder auto-executes the faucet's consumption. The driver
@@ -125,7 +125,7 @@ fn wallet_balance(account: &Account, faucet_id: AccountId) -> u64 {
         .sum()
 }
 
-/// The recipient account-target tag the emitted P2ID note carries (Case-001: prefix HIGH u32 masked
+/// The recipient account-target tag the emitted P2ID note carries (prefix HIGH u32 masked
 /// `0xfffc0000` — `NoteTag::with_account_target`).
 fn expected_p2id_tag(recipient: AccountId) -> u32 {
     NoteTag::with_account_target(recipient).as_u32()

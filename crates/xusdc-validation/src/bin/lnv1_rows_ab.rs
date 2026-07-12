@@ -27,7 +27,10 @@ async fn main() -> Result<()> {
     let mut cfg = RunConfig::fresh(&repo_root(), &label);
     cfg.keep_stack = keep_stack;
 
-    println!("LNV-1 rows A/B — run root: {}", cfg.stack.run_root.display());
+    println!(
+        "LNV-1 rows A/B — run root: {}",
+        cfg.stack.run_root.display()
+    );
     let obs = run_rows_ab(&cfg).await?;
 
     let row_a = assert_row_a(&obs);
@@ -35,7 +38,10 @@ async fn main() -> Result<()> {
     let evidence_path = write_evidence(&cfg, &obs, &row_a, &row_b)?;
 
     println!("faucet:    {}", obs.faucet_id);
-    println!("deploy tx: {} (block {})", obs.deploy_tx_id, obs.deploy_block);
+    println!(
+        "deploy tx: {} (block {})",
+        obs.deploy_tx_id, obs.deploy_block
+    );
     println!("evidence:  {}", evidence_path.display());
     match &row_a {
         Ok(()) => println!("row A (deploy + recognize): PASS"),
@@ -48,7 +54,10 @@ async fn main() -> Result<()> {
 
     if row_a.is_err() || row_b.is_err() {
         // Validator-not-fixer: a failing row is a SURFACED finding — report loudly, never patch.
-        anyhow::bail!("LNV-1 rows A/B: at least one row FAILED — see evidence at {}", evidence_path.display());
+        anyhow::bail!(
+            "LNV-1 rows A/B: at least one row FAILED — see evidence at {}",
+            evidence_path.display()
+        );
     }
     Ok(())
 }

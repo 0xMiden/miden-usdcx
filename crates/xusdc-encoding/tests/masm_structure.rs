@@ -1,4 +1,4 @@
-//! MASM structure-conformance suite (Task A of the cleanup loop): mechanically enforces the
+//! MASM structure-conformance suite: mechanically enforces the
 //! 0xMiden/protocol MASM source conventions the repo is bound to — the adjudicated rules of
 //! `docs/governing/MASM-STRUCTURE-RESEARCH-REPORT.md` §2 (file/section structure, imports,
 //! doc-comment blocks, constants/errors organization, inline `# =>` trackers) as pinned by the
@@ -10,7 +10,7 @@
 //! file polices the source *shape* so a structural regression fails loud.
 //!
 //! Deliberate non-rules (repo-frozen decisions this suite must NOT fight):
-//! - `@locals` offsets stay literal in the parity-swept component modules — the CS-5 bidirectional
+//! - `@locals` offsets stay literal in the parity-swept component modules — the bidirectional
 //!   sweep (`constant_parity.rs`) pins the exact per-file numeric-constant sets and is frozen, so
 //!   promoting locals offsets to named constants is out of scope for a structure pass.
 //! - Note scripts keep their prose `#` file headers (content is load-bearing provenance; protocol's
@@ -570,7 +570,7 @@ fn section_banners_are_known_ordered_and_exhaustive() {
 }
 
 /// Public procedures come before non-`pub` helpers (masm-file-structure section order for the
-/// repo's standalone modules, the adjudicated PROJECT RULE of the research report §2.1).
+/// repo's standalone modules, the adjudicated project rule of the MASM structure research report).
 #[test]
 fn public_procedures_precede_helpers() {
     assert_rule("public-before-helpers", |rel, src, out| {
@@ -879,7 +879,7 @@ fn note_docs_declare_required_account_procedures() {
 /// carry storage consumed account-side by a shim (no direct read), `"none"` notes are
 /// storage-less. The storage-documentation rule keys off this registration, so removing a
 /// storage-carrying note's section fails even when the note never reads storage itself; a new
-/// note fails until it gets a row (the CS-5 registration pattern).
+/// note fails until it gets a row (the registration pattern).
 const NOTE_STORAGE_TABLE: [(&str, &str); 12] = [
     ("xreserve_accept_ownership_note.masm", "none"),
     ("xreserve_domain_init_note.masm", "read"),
@@ -990,7 +990,7 @@ fn check_doc_sections(rel: &str, src: &str, out: &mut Violations) {
                 ));
             }
             // the description opens with a capitalized present-tense verb (Returns, Computes,
-            // Asserts, … — research report §2.5). Mechanical proxy: `[A-Z][a-z]+` ending in
+            // Asserts, …). Mechanical proxy: `[A-Z][a-z]+` ending in
             // `s`, e.g. "Consumes" passes while the imperative "Consume" or a noun lead fails;
             // common non-verb sentence leads that also end in `s` are stop-listed.
             const NON_VERB_LEADS: [&str; 5] = ["This", "Thus", "Its", "These", "Whereas"];
@@ -1383,7 +1383,7 @@ fn stack_trackers_are_well_formed() {
 /// A `Where:` section, when present, defines the documented stack items: every bullet is an
 /// `is`/`are` definition, and every identifier named in the `Inputs:`/`Outputs:` marker-line
 /// stack lists is defined in the section (brace shorthand `name_{a,b}` expands)
-/// (masm-doc-comments; research report §2.5).
+/// (masm-doc-comments).
 fn check_where_definitions(rel: &str, src: &str, out: &mut Violations) {
     for proc in proc_docs(src) {
         let Some(where_at) = proc.doc.iter().position(|(_, l)| l == "#! Where:") else {
@@ -1460,8 +1460,7 @@ fn where_sections_define_the_documented_stack_items() {
 }
 
 /// Ordinary in-procedure `#` comments begin with a lowercase letter (or a non-letter such as a
-/// digit, bracket, or dash) — never an uppercase letter (masm-inline-comments rule 1;
-/// research report §2.6).
+/// digit, bracket, or dash) — never an uppercase letter (masm-inline-comments rule 1).
 fn check_inline_comment_case(rel: &str, src: &str, out: &mut Violations) {
     for proc in proc_docs(src) {
         for (off, line) in proc.body.iter().enumerate() {
@@ -1489,7 +1488,7 @@ fn inline_comments_start_lowercase() {
 }
 
 /// A stack-item NAME is UPPER_SNAKE (a Word) or lower_snake (a felt) — never mixed case, never
-/// punctuated (research report §2.10).
+/// punctuated (the repo's stack-item naming convention).
 fn valid_stack_name(name: &str) -> bool {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return false;
@@ -1533,7 +1532,7 @@ fn valid_stack_atom(atom: &str) -> bool {
 /// Stack items in doc stack lists and `# =>` trackers follow the three-tier grammar: each item is
 /// an UPPER_SNAKE Word or lower_snake felt (optionally spanned `name(N)` / `NAME[N]` or brace
 /// grouped), a numeric literal, `...`, or a spaced expression of such atoms — punctuated or
-/// mixed-case items are invalid (masm-formatting FMT capitalization; research report §2.10).
+/// mixed-case items are invalid (masm-formatting FMT capitalization).
 fn check_stack_item_naming(rel: &str, src: &str, out: &mut Violations) {
     let flag_items = |no: usize, context: &str, line: &str, out: &mut Violations| {
         let Some(list) = bracket_list(line) else {
@@ -1628,7 +1627,7 @@ fn files_open_with_their_canonical_header() {
 // ================================================================================================
 // Each negative case feeds a synthetic source that LOOKS conformant to a naive presence check but
 // violates the governing requirement; the rule must report it. Positive controls guard against
-// over-tightening. This is the same adversarial method the loop auditor applies (planted
+// over-tightening. This is the same adversarial method an auditor applies (planted
 // mutations), made a permanent part of the suite.
 
 /// Runs one checker over a synthetic source and returns its violations.
@@ -1869,7 +1868,7 @@ fn checker_accepts_conformant_component_proc() {
 #[test]
 fn checker_flags_non_verb_description_lead() {
     // "Consume entry point …" is an imperative label, not the required capitalized
-    // present-tense verb ("Consumes …") — research report §2.5.
+    // present-tense verb ("Consumes …").
     let src = "#! Consume entry point of the synthetic note: crosses into the account context.\n\
                #!\n\
                #! Inputs:  [value]\n\

@@ -70,5 +70,9 @@ pub async fn build_client(stack: &StackConfig, label: &str) -> Result<HarnessCli
         .await
         .context("building the miden client")?;
 
-    Ok(HarnessClient { client, keystore, rpc })
+    Ok(HarnessClient {
+        client,
+        keystore,
+        rpc,
+    })
 }

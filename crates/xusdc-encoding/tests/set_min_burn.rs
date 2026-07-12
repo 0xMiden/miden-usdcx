@@ -1,9 +1,9 @@
-//! P5-01 `set_min_burn_size` (CMP-F2) suite: the OWNER-gated setter for the `minBurnSize` value slot
-//! CMP-A10's `burn_policy::check_policy` reads for R-BURN-2. Under the ratified Circle-faithful admin
-//! model (DECISION-ADMIN-ROLE-MODEL), all three faucet setters gate on the Ownable2Step OWNER via the
+//! `set_min_burn_size` suite (component CMP-F2): the OWNER-gated setter for the `minBurnSize` value
+//! slot CMP-A10's `burn_policy::check_policy` reads for R-BURN-2. Under the ratified Circle-faithful
+//! admin model, all three faucet setters gate on the Ownable2Step OWNER via the
 //! account-wide `Authority::OwnerControlled`; the built `ATTEST_ADMIN` role is removed and the RBAC
 //! foundation is repurposed to seed `DOM_PAUSER` + `DOM_MANAGER` role MEMBERS (their consumers —
-//! custom pause CMP-F3, role management CMP-F5 — are built in later slices, NOT here).
+//! custom pause CMP-F3, role management CMP-F5 — are built later, NOT here).
 //!
 //! This file covers the setter's owner gate (the security core), write integrity, the pause gate, the
 //! owner-ONLY proof (a seeded non-owner DOM role-holder is rejected), and the DOM seed itself. The
@@ -40,8 +40,8 @@ fn plain_non_owner() -> AccountId {
     test_account_id(99)
 }
 
-// ORCHESTRATOR-FIXED role aliases (DECISION-ADMIN-ROLE-MODEL). Inlined as strings (not the green-only
-// Rust consts) so the red-suite compiles + executes against the un-flipped build.
+// The fixed role aliases. Inlined as strings (not the green-only Rust consts) so the red-suite
+// compiles + executes against the un-flipped build.
 const DOM_PAUSER_SYMBOL: &str = "DOM_PAUSER";
 const DOM_MANAGER_SYMBOL: &str = "DOM_MANAGER";
 
@@ -52,7 +52,12 @@ const SEED_MIN: u64 = 1_000;
 
 // Stock RBAC map-key encodings (miden-testing/tests/scripts/rbac.rs:57-63).
 fn role_membership_key(role: &RoleSymbol, id: AccountId) -> Word {
-    Word::from([Felt::ZERO, Felt::from(role), id.suffix(), id.prefix().as_felt()])
+    Word::from([
+        Felt::ZERO,
+        Felt::from(role),
+        id.suffix(),
+        id.prefix().as_felt(),
+    ])
 }
 fn role_config_key(role: &RoleSymbol) -> Word {
     Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(role)])
@@ -81,7 +86,7 @@ fn faucet(h: &BurnPolicyHarness) -> Result<Account> {
     Ok(h.chain.committed_account(h.faucet_id)?.clone())
 }
 
-// EXPORT PROBE (green scaffold — D-1A flat-path check for the new setter module)
+// EXPORT PROBE (green scaffold — flat-path check for the new setter module)
 // ================================================================================================
 
 #[test]
@@ -169,7 +174,8 @@ async fn assert_non_owner_rejected(sender: AccountId) -> Result<()> {
 // ================================================================================================
 
 /// After the DOM_PAUSER pauses the faucet (custom `xreserve::pause_admin::pause` — the ONLY pause
-/// surface under Option 1), an OWNER-sent `set_min_burn_size` SUCCEEDS while paused: F6 reconciles the
+/// surface in the Domain-Pauser-only model), an OWNER-sent `set_min_burn_size` SUCCEEDS while paused:
+/// F6 reconciles the
 /// setters to Circle's `onlyOwner` (deliberately NOT pause-gated), so the burn floor can be adjusted
 /// during a pause. The full word `[new_min,0,0,0]` lands despite is_paused == true; the owner gate still
 /// governs it (the `*_non_owner_rejects` tests above prove that half).
@@ -214,8 +220,10 @@ async fn set_min_burn_owner_succeeds_while_paused() -> Result<()> {
 /// `admin_role = 0`.
 #[tokio::test]
 async fn support_replica_carries_delegation_seed() -> Result<()> {
-    let pauser = RoleSymbol::new(DOM_PAUSER_SYMBOL).expect("DOM_PAUSER is a valid <=12 role symbol");
-    let manager = RoleSymbol::new(DOM_MANAGER_SYMBOL).expect("DOM_MANAGER is a valid <=12 role symbol");
+    let pauser =
+        RoleSymbol::new(DOM_PAUSER_SYMBOL).expect("DOM_PAUSER is a valid <=12 role symbol");
+    let manager =
+        RoleSymbol::new(DOM_MANAGER_SYMBOL).expect("DOM_MANAGER is a valid <=12 role symbol");
 
     let h = faucet_harness()?;
     let account = faucet(&h)?;
@@ -223,21 +231,35 @@ async fn support_replica_carries_delegation_seed() -> Result<()> {
     // role_config[{0,0,0,DOM_PAUSER}] = [member_count=1, admin_role=DOM_MANAGER, 0, 0] (the CMP-F5
     // delegation: the Domain Manager rotates the Pauser); DOM_MANAGER keeps admin_role=0
     // (owner-administered; set_role_admin is owner-only, rbac.masm:159).
-    let pauser_config = account
-        .storage()
-        .get_map_item(RoleBasedAccessControl::role_config_slot(), role_config_key(&pauser))?;
-    assert_eq!(pauser_config[0], Felt::from(1u32), "DOM_PAUSER member_count == 1");
+    let pauser_config = account.storage().get_map_item(
+        RoleBasedAccessControl::role_config_slot(),
+        role_config_key(&pauser),
+    )?;
+    assert_eq!(
+        pauser_config[0],
+        Felt::from(1u32),
+        "DOM_PAUSER member_count == 1"
+    );
     assert_eq!(
         pauser_config[1],
         Felt::from(&manager),
         "DOM_PAUSER admin_role == DOM_MANAGER (the CMP-F5 delegation, replica seed)"
     );
 
-    let manager_config = account
-        .storage()
-        .get_map_item(RoleBasedAccessControl::role_config_slot(), role_config_key(&manager))?;
-    assert_eq!(manager_config[0], Felt::from(1u32), "DOM_MANAGER member_count == 1");
-    assert_eq!(manager_config[1], Felt::ZERO, "DOM_MANAGER admin_role == 0 (owner-administered)");
+    let manager_config = account.storage().get_map_item(
+        RoleBasedAccessControl::role_config_slot(),
+        role_config_key(&manager),
+    )?;
+    assert_eq!(
+        manager_config[0],
+        Felt::from(1u32),
+        "DOM_MANAGER member_count == 1"
+    );
+    assert_eq!(
+        manager_config[1],
+        Felt::ZERO,
+        "DOM_MANAGER admin_role == 0 (owner-administered)"
+    );
 
     // role_membership[{0,<role>,holder.suffix,holder.prefix}] = [1,0,0,0] for each DOM holder.
     let pauser_membership = account.storage().get_map_item(
@@ -274,6 +296,10 @@ async fn dom_non_member_reads_empty() -> Result<()> {
         RoleBasedAccessControl::role_membership_slot(),
         role_membership_key(&pauser, plain_non_owner()),
     )?;
-    assert_eq!(non[0], Felt::ZERO, "a non-member id is not a DOM_PAUSER member");
+    assert_eq!(
+        non[0],
+        Felt::ZERO,
+        "a non-member id is not a DOM_PAUSER member"
+    );
     Ok(())
 }

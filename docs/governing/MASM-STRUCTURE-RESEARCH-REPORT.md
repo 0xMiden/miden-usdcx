@@ -1,19 +1,19 @@
-> **MIRROR — READ-ONLY (mirrored 2026-07-01).** Canonical source: `/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/07-implementation-readiness/MASM-STRUCTURE-RESEARCH-REPORT.md`. Do NOT edit this copy; if it diverges from the canonical source, the canonical source wins. Re-sync via `tools/sync-mirrors.sh`.
+> **Reference document** — adapted from the internal xUSDC spec program; the shipped code and tests in this repo are the source of truth.
 
 # MASM Structure & Tooling Research Report (Phase 4.3)
 
 ## Scope, Premise, and Sources
 
-> **BASELINE SUPERSESSION (rev-3, 2026-06-10 — Miden v0.15 + devnet; read this first).** The implementation/validation target is now **Miden v0.15 on devnet** (devnet runs v0.15; **testnet is v0.14 and is NOT the validation network**), per the human-authoritative correction and the verified pin matrix `07-implementation-readiness/V15-DEVNET-BASELINE.md`. This **reframes — it does not invalidate** the version narrative below. The mapping:
+> **BASELINE SUPERSESSION (rev-3, 2026-06-10 — Miden v0.15 + devnet; read this first).** The implementation/validation target is now **Miden v0.15 on devnet** (devnet runs v0.15; **testnet is v0.14 and is NOT the validation network**), per the human-authoritative correction and the verified pin matrix `V15-DEVNET-BASELINE.md`. This **reframes — it does not invalidate** the version narrative below. The mapping:
 > - **`protocol@0b662adfb` (labeled "v0.16.0" throughout this report) is actually on the v0.15 line:** `git describe` = **`v0.15.0-21-g0b662adfb27d`** (21 commits after the `v0.15.0` tag). Wherever this report says `protocol@0b662adfb` / "v0.16.0", read it as a **v0.15-line commit**, superseded as the canonical pin by the released tag **`protocol v0.15.3`** (`681fc9058`), which locks the `miden-assembly`/`miden-core-lib` **0.23.3** stack (the historical `v0.15.1` (`625b66dc4`) locked the **0.23.1** stack the spike's resolution was verified against; the spike verified Q1–Q4 identical on both 0.23.1 and 0.23.3) — so every component/note/`CodeBuilder`/MockChain convention cited below holds under v0.15.3.
 > - **The `0.23` assembler / core-lib versions are the v0.15 stack's DEPENDENCY**, not a stale top-level target. `protocol v0.15.3` locks `miden-assembly`/`miden-core`/`miden-core-lib`/`miden-processor` = **0.23.3** and `miden-crypto`/`miden-field` = **0.25.1** (the historical v0.15.1 locked 0.23.1) (`V15-DEVNET-BASELINE.md` §1). KEEP these internal versions; frame the top-level target as "Miden v0.15 + devnet."
 > - **The "0.23-vs-0.24 retarget" / "HUMAN RETARGET DECISION REQUIRED" thread below is MOOT under v0.15.** `miden-vm@328071990` (the "0.24" pin) was a separate VM-track reference, not the v0.15 target; v0.15 simply resolves the 0.23.x family (0.23.3 at v0.15.3; 0.23.1 historically at v0.15.1), and the spike (§8) + `V15-DEVNET-BASELINE.md` §3 re-confirmed the Keccak/ECDSA precompiles ARE present on **BOTH `miden-core-lib` 0.23.1 AND 0.23.3**. There is no 0.24 retarget to decide for v0.15. The §3.1/§3.3–§3.6/§5.1 "retarget" labels are retained for provenance but should be read as **resolved-on-v0.15** (0.23.3 is the current dependency, precompiles present on both).
 > - **The `0.23` line citations in §2–§5 (the spike-resolved facts) carry to the current v0.15.3-locked 0.23.3 stack** (spike Q1–Q4 verified identical on 0.23.1 and 0.23.3). Local-node validation (§3.9) now targets the **v0.15 devnet** node (`miden-node bundled start`).
-> - **Status under v0.15:** the gate (A)/(B) verdicts and this report's `READY FOR RE-AUDIT` status predate the retarget; an independent Codex re-audit under v0.15/devnet is required before finalization (`READINESS-STATUS.md`).
+> - **Status under v0.15:** the gate (A)/(B) verdicts and this report's `READY FOR RE-AUDIT` status predate the retarget; an independent Codex re-audit under v0.15/devnet is required before finalization.
 
-> **Revision note (rev-1, post-`AUDIT-MASM-STRUCTURE-RESEARCH.md` REVISE).** Re-grounds all version-sensitive guidance against the **Phase 4 archive-pinned** Miden baselines (not the originally-inspected heads), adjudicates the MASM convention conflicts into explicit project rules, corrects the shim-header overclaim, fixes the evidence counts (151/150/1), adds a Commands-run section, and downgrades the status from `RESEARCH COMPLETE` (§7). See the finding-by-finding closure map in §6.
+> **Revision note (rev-1, post-audit REVISE).** Re-grounds all version-sensitive guidance against the **Phase 4 archive-pinned** Miden baselines (not the originally-inspected heads), adjudicates the MASM convention conflicts into explicit project rules, corrects the shim-header overclaim, fixes the evidence counts (151/150/1), adds a Commands-run section, and downgrades the status from `RESEARCH COMPLETE` (§7). See the finding-by-finding closure map in §6.
 >
-> **Revision note (rev-2, post-`AUDIT-MASM-STRUCTURE-RESEARCH-RECHECK.md` REVISE).** Two narrow repairs: (1) §3.3–§3.6 split into a labeled **safe builder path** vs **target-dependent raw assembler/package APIs**, every raw row carrying a `PINNED BASELINE`/`HUMAN RETARGET DECISION REQUIRED` label, plus a **0.24 retarget-reference box** (`Box<Package>`/`with_package`/`.masp` from `miden-vm@328071990`); (2) the invalid bare-`core::` example citation moved off the wrong core-lib-README range (that file ends at L43) to `assembly/README.md:L88-L97` in §2.3 and §5.4. Status now `REVISION-2 COMPLETE — READY FOR RE-AUDIT`.
+> **Revision note (rev-2, post-recheck REVISE).** Two narrow repairs: (1) §3.3–§3.6 split into a labeled **safe builder path** vs **target-dependent raw assembler/package APIs**, every raw row carrying a `PINNED BASELINE`/`HUMAN RETARGET DECISION REQUIRED` label, plus a **0.24 retarget-reference box** (`Box<Package>`/`with_package`/`.masp` from `miden-vm@328071990`); (2) the invalid bare-`core::` example citation moved off the wrong core-lib-README range (that file ends at L43) to `assembly/README.md:L88-L97` in §2.3 and §5.4. Status now `REVISION-2 COMPLETE — READY FOR RE-AUDIT`.
 
 This report establishes the MASM monorepo layout and the Rust assemble/test harness pipeline for the xUSDC-on-Miden faucet, so a builder can lay out the repo and stand up a harness. The premise is **MASM-first**: the xUSDC custom contracts (faucet account components, mint/burn note scripts) are hand-written `.masm` assembled by a Rust harness via `miden-assembly`, NOT generated through `cargo miden build`. Rust exists only for the off-chain assemble/load/package/execute harness, storage construction, and tests.
 
@@ -21,7 +21,7 @@ Every convention below is carried with its exact source citation `repo/relpath:L
 
 ### Baselines — three distinct things (do not conflate)
 
-Phase 4 **pins** Miden baselines (`06-phase4-component-specs/00-foundation/PHASE4-SOURCE-MAP.md:64`; `06-phase4-component-specs/04-shared-encoding/COMPONENT-SPEC.md:3`). The original research was done against *different, separately-checked-out* local heads. Both are recorded below, and the **pinned baseline is the builder target** unless a human approves a retarget.
+Phase 4 **pins** Miden baselines (see `V15-DEVNET-BASELINE.md`). The original research was done against *different, separately-checked-out* local heads. Both are recorded below, and the **pinned baseline is the builder target** unless a human approves a retarget.
 
 | Role | Repo | Commit | Version | Used for |
 |---|---|---|---|---|
@@ -29,7 +29,7 @@ Phase 4 **pins** Miden baselines (`06-phase4-component-specs/00-foundation/PHASE
 | ~~ARCHIVE-PINNED (builder target)~~ **SUPERSEDED reference (not the v0.15 target)** | `miden-vm` | `328071990` | "v0.24" (`miden-core-lib` 0.24) — a separate VM-track pin, **NOT the v0.15 target** | Read-only retarget reference only. Under v0.15 there is no 0.24 retarget: v0.15 resolves the 0.23.x family (0.23.3 at v0.15.3; 0.23.1 historically at v0.15.1). Rows citing it below are provenance, not a builder target. |
 | originally-inspected | `protocol` | `2ef8056323` | v0.16.0, deps 0.23 | rev-0 research head. **Same v0.16.0 / assembly-0.23 family as the pinned `0b662adfb`** — its miden-standards conventions match the pin (re-verified below). |
 | originally-inspected | `miden-vm` | `f84b0fff83` (branch `next`) | ~v0.22.x | rev-0 research head. **Older (2026-04-24) than the pinned VM (2026-06-03)**; some raw-assembler APIs differ from the pin (see §3.1). |
-| skills (style only) | `agent-tools` | `e082708` | — | The 6 MASM skill files; one MISMATCH quarantined (STD-2). |
+| skills (style only) | `agent-tools` | `e082708` | — | The 6 MASM skill files; one MISMATCH quarantined (the core-library README index mismatch). |
 | secondary | `miden-tutorials` | `54bdcb96` | — | Corroborative only; never a builder gate. |
 
 **CORRECTED version fact (was wrong in rev-0).** rev-0 claimed the older pinned VM "likely still uses `std::*` / `miden-stdlib` / `StdLibrary`". **That is false.** The pinned `miden-vm@328071990` *already* uses the `miden::core::*` module roots, the `miden-core-lib` crate, and the `CoreLibrary` type, and already ships the Keccak/ECDSA precompiles (`miden-vm@328071990:crates/lib/core/README.md:L15-L37`; `:Cargo.toml:L68`; `:crates/lib/core/src/lib.rs:L142-L147`). The `std::*→miden::core::*` rename predates *both* baselines, so it is **not** a pinned-vs-current difference. The genuine pinned-vs-inspected delta is narrower — the **raw assembler-linking call** (§3.1) — and is encapsulated by `CodeBuilder`/`TransactionKernel::assembler()`, which a builder should use instead of a hand-built `Assembler`.
@@ -108,7 +108,7 @@ The spec sketched everything flat under `asm/standards/xreserve/...` plus `asm/s
 
 > **OPEN QUESTION (layout):** Whether the xUSDC harness should replicate the shim+standards-library split (re-export facade over a separately-assembled logic library) OR assemble a single self-contained `.masm` with proc bodies directly in the component file. Both assemble via `assemble_library` (`protocol/crates/miden-standards/build.rs:121-126`; component-with-bodies-or-facade choice at `src/account/mod.rs` macro / `fungible_faucet.masm:8-9`). This depends on the harness's `assemble_library` call shape and is a design decision, not dictated by source.
 
-> **RESOLVED (2026-06-09 — supersedes the former parser/attestation ownership question):** Reconciled against the frozen archive; **no longer an open decision — builders must NOT re-litigate the home.** The DepositIntent layout constants and the depositAttestation felt-packing are **shared-encoding(04)-owned** (`asm/standards/xreserve/encoding/layout.masm`, `…/encoding/attestation.masm`), while the **on-chain parse/verify ASSERTION logic is faucet(01)-owned at `asm/standards/xreserve/`** (`deposit_intent_parser.masm`, `attestation_verify.masm`), which **consumes** the 04 constants/staging — per the frozen faucet spec `01-onchain-xusdc-faucet/COMPONENT-SPEC.md:278`,`:294`. This split preserves ≤1 MASM impl per routine (04 owns the constants/staging; 01 owns the assertions). Canonical source of truth: `07-implementation-readiness/CANONICAL-OWNERSHIP-MAP.md` (§Resolved layout + owner table) and `08-masm-grounding-spike/GROUNDING-REPORT.md` (decisions table). *(The separate layout OPEN QUESTION above — shim vs self-contained — remains the human's open decision.)*
+> **RESOLVED (2026-06-09 — supersedes the former parser/attestation ownership question):** Reconciled against the frozen archive; **no longer an open decision — builders must NOT re-litigate the home.** The DepositIntent layout constants and the depositAttestation felt-packing are **shared-encoding(04)-owned** (`asm/standards/xreserve/encoding/layout.masm`, `…/encoding/attestation.masm`), while the **on-chain parse/verify ASSERTION logic is faucet(01)-owned at `asm/standards/xreserve/`** (`deposit_intent_parser.masm`, `attestation_verify.masm`), which **consumes** the 04 constants/staging — per the frozen faucet spec. This split preserves ≤1 MASM impl per routine (04 owns the constants/staging; 01 owns the assertions). Canonical source of truth: `CANONICAL-OWNERSHIP-MAP.md` (§Resolved layout + owner table) and `GROUNDING-REPORT.md` (decisions table). *(The separate layout OPEN QUESTION above — shim vs self-contained — remains the human's open decision.)*
 
 ---
 
@@ -121,7 +121,7 @@ Every row below is verified against the real `miden-standards` source and the ag
 The audit (Finding 3) correctly flagged that rev-0 presented two *contradictory* orderings as if both were fact. They are separated and adjudicated here. All three are `PINNED BASELINE` source-checked.
 
 **(a) `agent-tools` skill default** — a strict five-section order, **public interface before helpers**:
-1 Imports (`use` only, no header) → 2 Type aliases → 3 Constants (non-error first, then errors) → **4 Public interface (`pub proc`)** → **5 Helper procedures (non-`pub` `proc`)** (`agent-tools/skills/masm-file-structure/SKILL.md:L17-L21`). Empty sections omitted; "no helpers → public interface is last" (`:L90-L100`). Section headers = a `# SECTION NAME` line + a long `# ===…` separator (`:L8-L13`).
+1 Imports (`use` only, no header) → 2 Type aliases → 3 Constants (non-error first, then errors) → **4 Public interface (`pub proc`)** → **5 Helper procedures (non-`pub` `proc`)** (`.claude/skills/masm-file-structure/SKILL.md:L17-L21`). Empty sections omitted; "no helpers → public interface is last" (`:L90-L100`). Section headers = a `# SECTION NAME` line + a long `# ===…` separator (`:L8-L13`).
 
 **(b) Live `miden-standards` style** — **feature-grouped, NOT a single public-then-helpers split.** `fungible.masm` is organized into feature banners (`TOKEN CONFIG` → `SET MAX SUPPLY` → `MINT AND SEND` → `RECEIVE AND BURN`), and within the first block the two internal `proc *_internal` helpers (`:64`, `:75`) appear **before** the public getters (`pub proc get_token_config` `:93`+). So the live order is neither the skill's public-before-helpers nor a clean helpers-before-public — it is **helpers grouped next to the public procs they serve** (`protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:50-93`). Re-verified identical at the pinned `protocol@0b662adfb`.
 
@@ -143,7 +143,7 @@ The audit (Finding 3) correctly flagged that rev-0 presented two *contradictory*
 
 | Convention | Citation |
 |---|---|
-| Bare `use <path>` lines (no `.masm`, no header) immediately after the header, one per line, grouped by module, no blank lines between. | `protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:10-21`; `agent-tools/skills/masm-file-structure/SKILL.md:L90-L99` |
+| Bare `use <path>` lines (no `.masm`, no header) immediately after the header, one per line, grouped by module, no blank lines between. | `protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:10-21`; `.claude/skills/masm-file-structure/SKILL.md:L90-L99` |
 | Three import families: protocol kernel `miden::protocol::*` (active_account, native_account, faucet, output_note, asset, active_note), the crate's own `miden::standards::*`, and core lib `miden::core::*`. **`PINNED BASELINE`** — the `miden::core::*` root is present at the pinned `miden-vm@328071990`, not a `next`-only feature. | `protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:10-21` |
 | A single named const can be imported via its full path, e.g. `use miden::protocol::asset::FUNGIBLE_ASSET_MAX_AMOUNT`. | `protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:10-21` |
 | Note-script imports: same bare `use`, with alias via `->`, e.g. `use miden::standards::faucets::fungible->faucet` then `call.faucet::receive_and_burn`. | `protocol/crates/miden-standards/asm/standards/notes/mint.masm:L1-L3` |
@@ -162,43 +162,43 @@ The audit (Finding 3) correctly flagged that rev-0 presented two *contradictory*
 
 | Convention | Citation |
 |---|---|
-| Every `pub proc` carries a `#!` block with sections in fixed order: 1 Description, 2 Inputs/Outputs, 3 Where, 4 Panics if (when applicable), 5 Invocation (exec/call). | `agent-tools/skills/masm-doc-comments/SKILL.md:L10-L17`; confirmed in real code at `protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:217-247` |
-| Description starts with a capitalized present-tense verb, first sentence ends with a period. Canonical verbs: Returns, Creates, Increments, Computes, Copies, Asserts, Verifies, Hashes, Adds, Removes; Burns/Mints fit the same rule for a faucet (the skill checklist literally lists "Burns"). | `agent-tools/skills/masm-formatting/SKILL.md:L116-L116`; `agent-tools/skills/masm-doc-comments/SKILL.md:L183-L190` |
-| Stack notation: single felt = lowercase_with_underscores; Word = UPPERCASE_WITH_UNDERSCORES; multi-felt (2-3) = lowercase with `{parts}` suffix. Items listed left-to-right, top-of-stack first; empty stack `[]`. | `agent-tools/skills/masm-doc-comments/SKILL.md:L47-L62` |
-| `Where:` defines every Inputs/Outputs item; use "is" for single, "are" for multi-part; descriptions start lowercase (continue the sentence) and end with a period; group related items. | `agent-tools/skills/masm-doc-comments/SKILL.md:L82-L97` |
-| `Panics if:` lists direct conditions from `assert*`. <4 conditions → list them; 4+ propagated → reference the subprocedure with "if <procedure> fails to verify". Omit the section if the proc cannot panic. Bullets describe the CONDITION, not the error identifier. | `agent-tools/skills/masm-doc-comments/SKILL.md:L99-L162` |
-| `Invocation:` always specified. Rule of thumb: `call` if invoked via `call.<name>`, `exec` if via `exec.<name>`. For `call`, show padding in Inputs/Outputs. | `agent-tools/skills/masm-doc-comments/SKILL.md:L164-L179` |
-| Use the protocol uniform doc style for NEW protocol-style code: plural `Inputs:`/`Outputs:`, `Panics if:` bullet list, `Invocation:` line (NOT the miden-vm mixed variants). | `agent-tools/skills/masm-formatting/SKILL.md:L62-L62` |
+| Every `pub proc` carries a `#!` block with sections in fixed order: 1 Description, 2 Inputs/Outputs, 3 Where, 4 Panics if (when applicable), 5 Invocation (exec/call). | `.claude/skills/masm-doc-comments/SKILL.md:L10-L17`; confirmed in real code at `protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:217-247` |
+| Description starts with a capitalized present-tense verb, first sentence ends with a period. Canonical verbs: Returns, Creates, Increments, Computes, Copies, Asserts, Verifies, Hashes, Adds, Removes; Burns/Mints fit the same rule for a faucet (the skill checklist literally lists "Burns"). | `.claude/skills/masm-formatting/SKILL.md:L116-L116`; `.claude/skills/masm-doc-comments/SKILL.md:L183-L190` |
+| Stack notation: single felt = lowercase_with_underscores; Word = UPPERCASE_WITH_UNDERSCORES; multi-felt (2-3) = lowercase with `{parts}` suffix. Items listed left-to-right, top-of-stack first; empty stack `[]`. | `.claude/skills/masm-doc-comments/SKILL.md:L47-L62` |
+| `Where:` defines every Inputs/Outputs item; use "is" for single, "are" for multi-part; descriptions start lowercase (continue the sentence) and end with a period; group related items. | `.claude/skills/masm-doc-comments/SKILL.md:L82-L97` |
+| `Panics if:` lists direct conditions from `assert*`. <4 conditions → list them; 4+ propagated → reference the subprocedure with "if <procedure> fails to verify". Omit the section if the proc cannot panic. Bullets describe the CONDITION, not the error identifier. | `.claude/skills/masm-doc-comments/SKILL.md:L99-L162` |
+| `Invocation:` always specified. Rule of thumb: `call` if invoked via `call.<name>`, `exec` if via `exec.<name>`. For `call`, show padding in Inputs/Outputs. | `.claude/skills/masm-doc-comments/SKILL.md:L164-L179` |
+| Use the protocol uniform doc style for NEW protocol-style code: plural `Inputs:`/`Outputs:`, `Panics if:` bullet list, `Invocation:` line (NOT the miden-vm mixed variants). | `.claude/skills/masm-formatting/SKILL.md:L62-L62` |
 | Note-entry doc block also carries a `Requires that the account exposes:` list naming the exact proc the note calls, and a `Note storage is assumed to be as follows:` section (the latter only when the note carries storage). | `protocol/crates/miden-standards/asm/standards/notes/burn.masm:L3-L20` |
 
 ### 2.6 Inline `# => [...]` stack comments
 
 | Convention | Citation |
 |---|---|
-| Inline `# => [...]` trackers record the operand stack after an operation, top-of-stack first, using the **exact same** item names/capitalization/`(N)` span notation as the `#!` doc block. Composite names decompose into their felts in inline trackers. | `agent-tools/skills/masm-formatting/SKILL.md:L122-L122`, `:L7-L7` (FMT-7) |
-| Inline comments (single `#`) begin with a lowercase letter (descriptive comments and `# =>` alike). | `agent-tools/skills/masm-inline-comments/SKILL.md:L10-L21` |
-| Do not over-comment obvious ops (simple arithmetic, basic stack ops, standard control flow). DO comment: stack state after complex ops, block purpose, non-obvious business rules, TODO/spec refs. Apply skip-rule only to NEW code; never strip existing comments. | `agent-tools/skills/masm-inline-comments/SKILL.md:L23-L38` |
-| Insert a blank line after a `# => [...]` tracker EXCEPT when the next non-blank line is `end`, a control-flow keyword (`else`/`else.true`/`else.false`), another `# =>`, or a `#` continuation comment. | `agent-tools/skills/masm-inline-comments/SKILL.md:L41-L48` |
+| Inline `# => [...]` trackers record the operand stack after an operation, top-of-stack first, using the **exact same** item names/capitalization/`(N)` span notation as the `#!` doc block. Composite names decompose into their felts in inline trackers. | `.claude/skills/masm-formatting/SKILL.md:L122-L122`, `:L7-L7` |
+| Inline comments (single `#`) begin with a lowercase letter (descriptive comments and `# =>` alike). | `.claude/skills/masm-inline-comments/SKILL.md:L10-L21` |
+| Do not over-comment obvious ops (simple arithmetic, basic stack ops, standard control flow). DO comment: stack state after complex ops, block purpose, non-obvious business rules, TODO/spec refs. Apply skip-rule only to NEW code; never strip existing comments. | `.claude/skills/masm-inline-comments/SKILL.md:L23-L38` |
+| Insert a blank line after a `# => [...]` tracker EXCEPT when the next non-blank line is `end`, a control-flow keyword (`else`/`else.true`/`else.false`), another `# =>`, or a `#` continuation comment. | `.claude/skills/masm-inline-comments/SKILL.md:L41-L48` |
 | Pervasive in real procs; the primary readability mechanism — place after every non-trivial stack manipulation. | `protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:264-270`; `asm/standards/notes/p2id.masm:L53-L59` |
 
 ### 2.7 Constants & error-code naming
 
 | Convention | Citation |
 |---|---|
-| Constants at the top of the file, before any procedure, after imports/type aliases. The ERRORS section is dedicated and placed AFTER the non-error constants section. | `agent-tools/skills/masm-constants/SKILL.md:L9-L27` |
-| Group non-error constants by topic (Slot names, Memory pointer offsets, Magic numbers, Event ids) with blank lines between; most widely used first. | `agent-tools/skills/masm-constants/SKILL.md:L14-L24` |
-| Spaces around `=` (skill rule). **Caveat:** the live standards note files are not uniform — `swap.masm` and ERR consts use NO spaces while `p2id`/`mint` arithmetic-derived consts use spaces. Match the specific file/section you extend. (See Section 5.) | `agent-tools/skills/masm-constants/SKILL.md:L65-L84`; `protocol/crates/miden-standards/asm/standards/notes/swap.masm:L9-L15` |
-| Storage-slot constants: `pub const <NAME>_SLOT = word("<full::namespaced::label>")` — the slot id is a hash of a human-readable namespaced string, NOT a numeric index. `pub` makes it importable. | `protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:26-26`; `agent-tools/skills/masm-constants/SKILL.md:L65-L84` |
+| Constants at the top of the file, before any procedure, after imports/type aliases. The ERRORS section is dedicated and placed AFTER the non-error constants section. | `.claude/skills/masm-constants/SKILL.md:L9-L27` |
+| Group non-error constants by topic (Slot names, Memory pointer offsets, Magic numbers, Event ids) with blank lines between; most widely used first. | `.claude/skills/masm-constants/SKILL.md:L14-L24` |
+| Spaces around `=` (skill rule). **Caveat:** the live standards note files are not uniform — `swap.masm` and ERR consts use NO spaces while `p2id`/`mint` arithmetic-derived consts use spaces. Match the specific file/section you extend. (See Section 5.) | `.claude/skills/masm-constants/SKILL.md:L65-L84`; `protocol/crates/miden-standards/asm/standards/notes/swap.masm:L9-L15` |
+| Storage-slot constants: `pub const <NAME>_SLOT = word("<full::namespaced::label>")` — the slot id is a hash of a human-readable namespaced string, NOT a numeric index. `pub` makes it importable. | `protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:26-26`; `.claude/skills/masm-constants/SKILL.md:L65-L84` |
 | Error consts: `const ERR_<CATEGORY>_<DETAIL> = "<message>"` (string literal, no numeric codes). Category = first `_`-segment after `ERR_`. **Messages must NOT end with a period.** | `protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:40-48`; `asm/standards/notes/p2id.masm:L8-L13` |
-| Errors are used at the assertion site via `assert.err=ERR_NAME`, `assert_eqw.err=ERR_NAME`, or after a comparison op (`lte assert.err=ERR_…`). For protocol-style code, prefer the named-constant `ERR_*` form over inline strings. | `protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:198-199`; `agent-tools/skills/masm-formatting/SKILL.md:L97-L100` |
-| Chained u32 guards on one line followed by a single `assert.err=`, e.g. `u32assert2 u32lte.MAX_LEAF_SIZE assert.err="…"` (works with `u32lt`/`u32gte` too). | `agent-tools/skills/masm-formatting/SKILL.md:L102-L108` |
+| Errors are used at the assertion site via `assert.err=ERR_NAME`, `assert_eqw.err=ERR_NAME`, or after a comparison op (`lte assert.err=ERR_…`). For protocol-style code, prefer the named-constant `ERR_*` form over inline strings. | `protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:198-199`; `.claude/skills/masm-formatting/SKILL.md:L97-L100` |
+| Chained u32 guards on one line followed by a single `assert.err=`, e.g. `u32assert2 u32lte.MAX_LEAF_SIZE assert.err="…"` (works with `u32lt`/`u32gte` too). | `.claude/skills/masm-formatting/SKILL.md:L102-L108` |
 
 ### 2.8 Memory-pointer & locals naming
 
 | Convention | Citation |
 |---|---|
-| Memory pointer constants (shared/global offsets, not scoped to one proc) use descriptive names WITHOUT a procedure prefix, e.g. `ASSET_OFF = 0`, `AMOUNT_OFF = 1`, `NOTE_DATA_LEN = 16`. | `agent-tools/skills/masm-constants/SKILL.md:L32-L44` |
-| Memory **locals** offsets are procedure-scoped and MUST be prefixed with the owning proc name, e.g. `validate_note_NOTE_IDX_LOC = 0`. Generic unprefixed names are wrong (the prefix avoids collisions). | `agent-tools/skills/masm-constants/SKILL.md:L47-L62` |
+| Memory pointer constants (shared/global offsets, not scoped to one proc) use descriptive names WITHOUT a procedure prefix, e.g. `ASSET_OFF = 0`, `AMOUNT_OFF = 1`, `NOTE_DATA_LEN = 16`. | `.claude/skills/masm-constants/SKILL.md:L32-L44` |
+| Memory **locals** offsets are procedure-scoped and MUST be prefixed with the owning proc name, e.g. `validate_note_NOTE_IDX_LOC = 0`. Generic unprefixed names are wrong (the prefix avoids collisions). | `.claude/skills/masm-constants/SKILL.md:L47-L62` |
 | Real-source local-memory consts are plain integer consts (`const TOKEN_CONFIG_SLOT_LOCAL = 0`, `const MINT_ASSET_KEY_LOCAL = 4`), distinct from `word(...)` slot consts; they are offsets, not field elements with arithmetic meaning. | `protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:32-38` |
 | Local memory is declared via a `@locals(N)` attribute on the line directly above `pub proc`, accessed via `loc_storew_le.<CONST>` / `loc_loadw_le.<CONST>`; `mint_and_send` uses `@locals(8)`. | `protocol/crates/miden-standards/asm/standards/faucets/fungible.masm:247-251` |
 | Note-script base pointers: read note storage to memory from a base `STORAGE_PTR = 0`, derive word-aligned (4-apart) field pointers arithmetically, e.g. `const PRIVATE_ASSET_KEY_PTR = STORAGE_PTR + 4`. | `protocol/crates/miden-standards/asm/standards/notes/mint.masm:L14-L19` |
@@ -208,21 +208,21 @@ The audit (Finding 3) correctly flagged that rev-0 presented two *contradictory*
 
 | Convention | Citation |
 |---|---|
-| `call` procedures: EXPLICIT `pad(N)` in doc and inline comments, with EXACTLY 16 input/output elements. `exec` procedures: NO explicit padding, no fixed-16 requirement. | `agent-tools/skills/masm-padding/SKILL.md:L12-L16` |
-| VM minimum operand-stack depth is 16 (`MIN_STACK_DEPTH = 16`). Ops that would shrink the stack below 16 are auto-filled with zeros via the overflow table — actual depth stays 16, only visible content shrinks. Applies at entry of `call` procs and note/tx scripts (entered via `dyncall` at depth 16); NOT to mid-chain `exec`. | `agent-tools/skills/masm-padding/SKILL.md:L18-L26`; `miden-vm/docs/src/user_docs/assembly/execution_contexts.md:L24-L31` |
-| At a floor-enforcing boundary, the `# =>` tracker must reflect the actual auto-padded depth, not the naive count: after `dropw` on entry `[VALUE, pad(12)]` write `# => [pad(16)]` (NOT `pad(12)`). Common at the start of note scripts that drop unused ARGS. | `agent-tools/skills/masm-padding/SKILL.md:L30-L42` |
-| `call` doc comments show exactly 16 elements via `pad(N)` (e.g. `Inputs: [ASSET, pad(12)]`, `Outputs: [pad(16)]`); inline `# =>` tracks `pad(N)` through the proc. | `agent-tools/skills/masm-padding/SKILL.md:L62-L82`; real `Invocation: call` proc at `asm/standards/faucets/fungible.masm:217-247` |
-| `exec` procs must NOT have explicit padding (they share the caller's stack); if an `exec` proc's stack falls below the specified elements it consumes caller items — a bug to fix, not pad over. | `agent-tools/skills/masm-padding/SKILL.md:L86-L111` |
+| `call` procedures: EXPLICIT `pad(N)` in doc and inline comments, with EXACTLY 16 input/output elements. `exec` procedures: NO explicit padding, no fixed-16 requirement. | `.claude/skills/masm-padding/SKILL.md:L12-L16` |
+| VM minimum operand-stack depth is 16 (`MIN_STACK_DEPTH = 16`). Ops that would shrink the stack below 16 are auto-filled with zeros via the overflow table — actual depth stays 16, only visible content shrinks. Applies at entry of `call` procs and note/tx scripts (entered via `dyncall` at depth 16); NOT to mid-chain `exec`. | `.claude/skills/masm-padding/SKILL.md:L18-L26`; `miden-vm/docs/src/user_docs/assembly/execution_contexts.md:L24-L31` |
+| At a floor-enforcing boundary, the `# =>` tracker must reflect the actual auto-padded depth, not the naive count: after `dropw` on entry `[VALUE, pad(12)]` write `# => [pad(16)]` (NOT `pad(12)`). Common at the start of note scripts that drop unused ARGS. | `.claude/skills/masm-padding/SKILL.md:L30-L42` |
+| `call` doc comments show exactly 16 elements via `pad(N)` (e.g. `Inputs: [ASSET, pad(12)]`, `Outputs: [pad(16)]`); inline `# =>` tracks `pad(N)` through the proc. | `.claude/skills/masm-padding/SKILL.md:L62-L82`; real `Invocation: call` proc at `asm/standards/faucets/fungible.masm:217-247` |
+| `exec` procs must NOT have explicit padding (they share the caller's stack); if an `exec` proc's stack falls below the specified elements it consumes caller items — a bug to fix, not pad over. | `.claude/skills/masm-padding/SKILL.md:L86-L111` |
 | When MASM itself issues a `call`, pad BEFORE and clean AFTER: `padw padw swapdw` → `call.<proc>` → `dropw dropw`. Adapt the exact pad/movup sequence to the callee's documented input layout. | `protocol/crates/miden-standards/asm/standards/wallets/basic.masm:107-116` |
-| Debug aids (`debug.stack`, `debug.stack.N`, `sdepth`) cost zero cycles and are stripped unless run with `--debug`; remove or comment out all `debug.*` lines before committing production MASM. | `agent-tools/skills/masm-padding/SKILL.md:L126-L143` |
+| Debug aids (`debug.stack`, `debug.stack.N`, `sdepth`) cost zero cycles and are stripped unless run with `--debug`; remove or comment out all `debug.*` lines before committing production MASM. | `.claude/skills/masm-padding/SKILL.md:L126-L143` |
 
 ### 2.10 Capitalization (three-tier)
 
 | Convention | Citation |
 |---|---|
-| Word (4 felts) / Word-shaped commitment/root/constant → `UPPER_SNAKE_CASE` (`ASSET_KEY`, `EMPTY_WORD`). Single felt → `lower_snake_case` (`final_nonce`, `amount`). Multi-felt composite under one name → `lower_snake_case` with brace parts (`account_id_{suffix,prefix}`). | `agent-tools/skills/masm-formatting/SKILL.md:L26-L30` |
-| `EMPTY_WORD` denotes the all-zero Word `[0,0,0,0]` in trackers/Where/prose — a naming convention to convey absence of data, NOT a declared source constant. | `agent-tools/skills/masm-formatting/SKILL.md:L34-L34` |
-| The `(N)` span family: `pad(N)`, known-size felt-array params (`foreign_procedure_inputs(16)`), and a trailing `, ...` remainder. Words stay UPPERCASE without `(N)`; spans stay lowercase. | `agent-tools/skills/masm-formatting/SKILL.md:L40-L48` |
+| Word (4 felts) / Word-shaped commitment/root/constant → `UPPER_SNAKE_CASE` (`ASSET_KEY`, `EMPTY_WORD`). Single felt → `lower_snake_case` (`final_nonce`, `amount`). Multi-felt composite under one name → `lower_snake_case` with brace parts (`account_id_{suffix,prefix}`). | `.claude/skills/masm-formatting/SKILL.md:L26-L30` |
+| `EMPTY_WORD` denotes the all-zero Word `[0,0,0,0]` in trackers/Where/prose — a naming convention to convey absence of data, NOT a declared source constant. | `.claude/skills/masm-formatting/SKILL.md:L34-L34` |
+| The `(N)` span family: `pad(N)`, known-size felt-array params (`foreign_procedure_inputs(16)`), and a trailing `, ...` remainder. Words stay UPPERCASE without `(N)`; spans stay lowercase. | `.claude/skills/masm-formatting/SKILL.md:L40-L48` |
 
 ---
 
@@ -358,7 +358,7 @@ The MockChain harness path (Phase 4 testing) is fully grounded:
 
 ### 4.3 Nonce registry
 
-**ADAPT:** Use the storage-slot + `get_item`/`set_item` read/write pattern (§4.1) for the nonce registry slot(s). `Panics if:` bullets describe the CONDITION (e.g. "the nonce has already been incremented.") not the error identifier (`agent-tools/skills/masm-doc-comments/SKILL.md:L99-L162`). Concrete nonce-registry slot names are NOT covered by source — see Section 5.
+**ADAPT:** Use the storage-slot + `get_item`/`set_item` read/write pattern (§4.1) for the nonce registry slot(s). `Panics if:` bullets describe the CONDITION (e.g. "the nonce has already been incremented.") not the error identifier (`.claude/skills/masm-doc-comments/SKILL.md:L99-L162`). Concrete nonce-registry slot names are NOT covered by source — see Section 5.
 
 ### 4.4 Burn note (`xreserve_burn_note`) and burn flow
 
@@ -408,7 +408,7 @@ Do NOT resolve these by guessing into conventions.
 2. **`UNVERIFIED`:** whether the **0.23** `miden-core-lib` resolved by `miden-standards@0b662adfb` contains the `ecdsa_k256_keccak` / `keccak256` precompiles. They ARE present at the 0.24 pinned VM `328071990` (`:crates/lib/core/asm/crypto/dsa/ecdsa_k256_keccak.masm:L56-L67`, `:crates/lib/core/asm/crypto/hashes/keccak256.masm:L32`), but the 0.23 line was not resolved/inspected. If xUSDC needs secp256k1/keccak and the resolved 0.23 lacks it, that forces the §1 retarget decision or a hand-written fallback. → keep readiness item `PENDING MASM STRUCTURE RESEARCH` (owner: builder + human; trigger: choosing the assembler/VM target).
 
 **Verification MISMATCH (do NOT cite as fact):**
-3. **STD-2 (MISMATCH):** The extractor's verbatim quote for the core-library module index at `miden-vm/crates/lib/core/README.md:L15-L37` does NOT match — the README bullets are alphabetical and keccak256/poseidon2 are non-adjacent (poseidon2 at L20, keccak256 at L22), not the consecutive pair quoted. The *substantive* module index (which modules exist) was independently confirmed against the actual `asm/` tree, but the specific quoted line pair must NOT be presented as a verbatim citation. Use the module names only with the verified file-tree backing, not the README line-range quote.
+3. **The single MISMATCH:** The extractor's verbatim quote for the core-library module index at `miden-vm/crates/lib/core/README.md:L15-L37` does NOT match — the README bullets are alphabetical and keccak256/poseidon2 are non-adjacent (poseidon2 at L20, keccak256 at L22), not the consecutive pair quoted. The *substantive* module index (which modules exist) was independently confirmed against the actual `asm/` tree, but the specific quoted line pair must NOT be presented as a verbatim citation. Use the module names only with the verified file-tree backing, not the README line-range quote.
 
 **Namespace / attribute grammar (unconfirmed):**
 4. **Core-lib namespace root ambiguity (`UNVERIFIED`):** the pinned **core-lib** README lists modules as `miden::core::…` (`miden-vm@328071990:crates/lib/core/README.md:L15-L37`, which ends at L43) while the pinned **assembly** README's MASM example uses the bare `use core::math::u64` (`miden-vm@328071990:crates/assembly/README.md:L90-L97`, the `use` line at `:L91`). Confirm which root the linked `CoreLibrary` exposes for `use` lines — getting it wrong is an unresolved-symbol error.
@@ -471,13 +471,13 @@ All component/note/build.rs/CodeBuilder/MockChain conventions in §1–§4 were 
 
 **protocol — miden-tx:** `src/executor/mod.rs`.
 
-**miden-vm:** `crates/assembly/src/{lib.rs,assembler.rs}`, `crates/assembly/README.md`, `crates/lib/core/README.md`, `crates/lib/core/src/lib.rs`, `crates/lib/core/asm/{mod.masm, crypto/hashes/keccak256.masm, crypto/hashes/poseidon2.masm, crypto/dsa/ecdsa_k256_keccak.masm, math/u64.masm, math/u256.masm, mem.masm, sys/mod.masm, word.masm}`, `docs/src/user_docs/assembly/{execution_contexts,code_organization,instruction_reference}.md`, `CHANGELOG.md`.
+**miden-vm:** `crates/assembly/src/{lib.rs,assembler.rs}`, `crates/assembly/README.md`, `crates/lib/core/README.md`, `crates/lib/core/src/lib.rs`, `crates/lib/core/asm/{mod.masm, crypto/hashes/keccak256.masm, crypto/hashes/poseidon2.masm, crypto/dsa/ecdsa_k256_keccak.masm, math/u64.masm, math/u256.masm, mem.masm, sys/mod.masm, word.masm}`, `docs/src/user_docs/assembly/{execution_contexts,code_organization,instruction_reference}.md`, `miden-vm/CHANGELOG.md`.
 
 **miden-tutorials:** `rust-client/src/bin/counter_contract_deploy.rs`.
 
 ### Verification summary
 
-**Counts corrected (rev-1, Finding 4).** rev-0 reported `153/152/1`; the authoritative figure is the **actual row count of `MASM-STRUCTURE-RESEARCH-EVIDENCE-LEDGER.md` = 151 claims, 150 CONFIRMED, 1 MISMATCH**, which the per-area table below now matches exactly (the rev-0 per-area numbers were inflated by 2). Verified by the row-count commands in "Commands run" below.
+**Counts corrected (rev-1, Finding 4).** rev-0 reported `153/152/1`; the authoritative figure is the **actual row count of the research evidence ledger = 151 claims, 150 CONFIRMED, 1 MISMATCH**, which the per-area table below now matches exactly (the rev-0 per-area numbers were inflated by 2). Verified by the row-count commands in "Commands run" below.
 
 | Area (ledger section) | Claims | CONFIRMED | MISMATCH |
 |---|---|---|---|
@@ -485,15 +485,15 @@ All component/note/build.rs/CodeBuilder/MockChain conventions in §1–§4 were 
 | B. account-component-masm | 27 | 27 | 0 |
 | C. note-script-masm | 23 | 23 | 0 |
 | D. rust-assembly-pipeline | 27 | 27 | 0 |
-| E. miden-vm-assembler-stdlib | 20 | 19 | **1 (STD-2)** |
+| E. miden-vm-assembler-stdlib | 20 | 19 | **1** |
 | F. test-harness | 22 | 22 | 0 |
-| **Total** | **151** | **150** | **1 (STD-2)** |
+| **Total** | **151** | **150** | **1** |
 
-The single MISMATCH (STD-2) is a verbatim-quote defect on the core-library README index, NOT a content defect; it remains **quarantined** (not used as a factual citation in the report body — the module names are backed by the `asm/` file tree). Other flagged items are trivial line-offsets plus the file-dependent constants-spacing and composite-name-ordering inconsistencies surfaced in §5.
+The single MISMATCH is a verbatim-quote defect on the core-library README index, NOT a content defect; it remains **quarantined** (not used as a factual citation in the report body — the module names are backed by the `asm/` file tree). Other flagged items are trivial line-offsets plus the file-dependent constants-spacing and composite-name-ordering inconsistencies surfaced in §5.
 
 ### Commands run (source acquisition + verification)
 
-The rev-0 research used **pre-existing local clones** under `/Users/philipp/Documents/Work/Miden-Coding/` (no fetch/install/symlink; MASM skills read from the local `agent-tools/skills/` clone). The exact per-command provenance was **not recorded in rev-0**; the rev-1 revision re-ran the checks below (all read-only):
+The rev-0 research used **pre-existing local clones** (no fetch/install/symlink; MASM skills read from a local skills clone). The exact per-command provenance was **not recorded in rev-0**; the rev-1 revision re-ran the checks below (all read-only):
 
 ```bash
 # Baseline existence + relationships
@@ -519,13 +519,13 @@ git -C .../protocol  show 0b662adfb:crates/miden-protocol/src/note/script.rs | r
 git -C .../protocol  show 0b662adfb:crates/miden-standards/asm/account_components/faucets/fungible_faucet.masm | sed -n '1,12p'  # shim = prose header
 
 # Ledger count verification (Finding 4)
-rg '^\s*\| `[^`]+` \|' MASM-STRUCTURE-RESEARCH-EVIDENCE-LEDGER.md | wc -l                       # -> 151
-rg '^\s*\| `[^`]+` \|' MASM-STRUCTURE-RESEARCH-EVIDENCE-LEDGER.md | rg '\| CONFIRMED \|' | wc -l # -> 150
-rg '^\s*\| `[^`]+` \|' MASM-STRUCTURE-RESEARCH-EVIDENCE-LEDGER.md | rg '\| MISMATCH \|'  | wc -l # -> 1
+rg '^\s*\| `[^`]+` \|' <evidence-ledger> | wc -l                       # -> 151
+rg '^\s*\| `[^`]+` \|' <evidence-ledger> | rg '\| CONFIRMED \|' | wc -l # -> 150
+rg '^\s*\| `[^`]+` \|' <evidence-ledger> | rg '\| MISMATCH \|'  | wc -l # -> 1
 
-# Scope guard (no frozen-archive edits)
-find ai-tasks/circle-integration/06-phase4-component-specs -type f \
-  -newer ai-tasks/circle-integration/07-implementation-readiness/TASK-P4-3-MASM-STRUCTURE-RESEARCH.md -print   # -> (no output)
+# Scope guard (no frozen-archive edits): the frozen component-spec tree had no files
+# newer than this research task — i.e. the research made no edits to the frozen archive.
+find <frozen-component-spec-tree> -type f -newer <this-research-task> -print   # -> (no output)
 git status --short
 ```
 
@@ -536,7 +536,7 @@ git status --short
 | **1 (HIGH) version handling** | Re-grounded to the pinned baselines; added the three-way baseline table + status-label legend + the 0.23-vs-0.24 alignment caveat; corrected the false `std::*`/`StdLibrary` claim; corrected `with_dynamic_library` vs `with_package(.., Linkage::Dynamic)` (§Baselines, §2.3, §3.1, §3.2, §4.8, §5.1). |
 | **2 (HIGH) `RESEARCH COMPLETE` overstates readiness** | Status downgraded to `REVISION COMPLETE — READY FOR RE-AUDIT` (§7); builder-facing facts either re-grounded with pinned citations or explicitly kept `UNVERIFIED`/`PENDING MASM STRUCTURE RESEARCH` with owner+trigger (§5). |
 | **3 (MEDIUM) convention conflicts** | §2.1 split into skill-default / live-`miden-standards` / project-rule; §2.2 shim-header overclaim corrected (shim = prose header, not namespace line). |
-| **4 (MEDIUM) evidence accounting + provenance** | Report counts fixed to ledger truth `151/150/1`; STD-2 quarantine preserved; this "Commands run" section added. |
+| **4 (MEDIUM) evidence accounting + provenance** | Report counts fixed to ledger truth `151/150/1`; the single-MISMATCH quarantine preserved; this "Commands run" section added. |
 
 ---
 
@@ -544,7 +544,7 @@ git status --short
 
 **REVISION-2 COMPLETE — READY FOR RE-AUDIT**
 
-rev-2 (post-`AUDIT-MASM-STRUCTURE-RESEARCH-RECHECK.md`) closed the two narrow recheck findings: (1) §3.3–§3.6 raw assembler/package/load/artifact rows are now split into a **safe builder path** (`CodeBuilder`/`TransactionKernel::assembler()`, `PINNED BASELINE` protocol 0.23) and **target-dependent raw APIs** (every row labeled; `.masl`/`Arc<Library>` grounded in the 0.23 stack, with a `HUMAN RETARGET DECISION REQUIRED` **0.24 retarget-reference box** giving the `Box<Package>`/`with_package`/`.masp` shapes from `miden-vm@328071990`); (2) the invalid `core::` example citation was moved off the wrong core-lib-README range (that file ends at L43) to `assembly/README.md:L88-L97` (`use core::math::u64` at L91) in both §2.3 and §5.4. The rev-1 fixes (status downgrade, style adjudication, shim-header correction, ledger count `151/150/1`) are preserved.
+rev-2 (post-recheck) closed the two narrow recheck findings: (1) §3.3–§3.6 raw assembler/package/load/artifact rows are now split into a **safe builder path** (`CodeBuilder`/`TransactionKernel::assembler()`, `PINNED BASELINE` protocol 0.23) and **target-dependent raw APIs** (every row labeled; `.masl`/`Arc<Library>` grounded in the 0.23 stack, with a `HUMAN RETARGET DECISION REQUIRED` **0.24 retarget-reference box** giving the `Box<Package>`/`with_package`/`.masp` shapes from `miden-vm@328071990`); (2) the invalid `core::` example citation was moved off the wrong core-lib-README range (that file ends at L43) to `assembly/README.md:L88-L97` (`use core::math::u64` at L91) in both §2.3 and §5.4. The rev-1 fixes (status downgrade, style adjudication, shim-header correction, ledger count `151/150/1`) are preserved.
 
 Still downgraded from rev-0's `RESEARCH COMPLETE` (original audit Finding 2). The report is repaired against the four audit findings and re-grounded on the Phase 4 pinned baselines, but it is **not** `RESEARCH COMPLETE` because builder-facing decisions remain open and must not be de-PENDING-ed yet:
 
@@ -563,7 +563,7 @@ Still downgraded from rev-0's `RESEARCH COMPLETE` (original audit Finding 2). Th
 
 ## 8. Post-research spike addendum (2026-06-08 — supersedes the relevant §5 OPEN/UNVERIFIED rows)
 
-The grounding spike (`../08-masm-grounding-spike/`, status `GROUNDED`, Codex audit PASS) resolved several §5 items with running code. The body above is left intact (audited); these rows are now **RESOLVED on the v0.15 stack's assembler dependency (`miden-core-lib` — verified on 0.23.1, what the historical `v0.15.1` locked, AND on the current v0.15.3-locked 0.23.3)**, cited to the spike (the spike pin `0b662adfb` = `git describe` `v0.15.0-21`, on the v0.15 line — facts carry to the v0.15.3-locked 0.23.3 stack; spike Q1–Q4 verified identical on both):
+The grounding spike (status `GROUNDED`, Codex audit PASS; see `GROUNDING-REPORT.md`) resolved several §5 items with running code. The body above is left intact (audited); these rows are now **RESOLVED on the v0.15 stack's assembler dependency (`miden-core-lib` — verified on 0.23.1, what the historical `v0.15.1` locked, AND on the current v0.15.3-locked 0.23.3)**, cited to the spike (the spike pin `0b662adfb` = `git describe` `v0.15.0-21`, on the v0.15 line — facts carry to the v0.15.3-locked 0.23.3 stack; spike Q1–Q4 verified identical on both):
 - **§5.1 / §5.2 (the old retarget thread / precompiles UNVERIFIED on 0.23):** the resolved `miden-core-lib` **does** carry the `keccak256` + `ecdsa_k256_keccak::verify` precompiles — confirmed on BOTH 0.23.1 and the current v0.15.3-locked 0.23.3 (present + assembly-time linkable; execution-with-handlers is a later step). **Under v0.15 there is no 0.24 retarget — the 0.23.x dependency (0.23.3 at v0.15.3) is sufficient** (re-confirmed in `V15-DEVNET-BASELINE.md` §3).
 - **§5.4 (use-root ambiguity):** the linked `CoreLibrary` exposes `use miden::core::…` (bare `core::…` fails) on the safe `CodeBuilder` path.
 - **§5.5–§5.7 (attribute grammar / `word()` / `[0..2]` / export):** `@note_script` + `@locals(N)` lowercase line-above attrs with `loc_*_le` access; `word("ns::label")` + `[0..2]` slot-id; **`pub proc` alone exports** (no attribute).

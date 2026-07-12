@@ -7,7 +7,7 @@
 //! after an admin note committed. Keeping the two apart makes every rows-C/F assertion unit-testable
 //! against synthetic observations (the default suite) and keeps the driver free of pass/fail policy.
 //!
-//! The two real-node execution modes the verdicts come from (LNV-1 §3.2 posture finding):
+//! The two real-node execution modes the verdicts come from (LNV-1 posture finding):
 //! - **path N (ntx-builder)** — the ONLY way to *commit* a post-deploy faucet state change at
 //!   v0.15.1 (user RPC rejects post-deploy network-account txs; the client cannot present the
 //!   `x-miden-network-tx-auth` header). Every positive admin op (`set_attester`, `set_max_supply`,
@@ -69,11 +69,11 @@ pub const MARKER_CLEAR: Word4 = [0, 0, 0, 0];
 /// enable B); a mint attested by A is REJECTED (not allowlisted), by B ACCEPTED.
 #[derive(Debug, Clone, Serialize)]
 pub struct C1SetAttester {
-    /// A's committed allowlist marker right after `set_attester(A, enabled=1)` — must be [1,0,0,0].
+    /// A's committed allowlist marker right after `set_attester(A, enabled=1)` — must be `[1,0,0,0]`.
     pub a_marker_after_enable: Word4,
-    /// A's committed marker after the rotation (`set_attester(A, enabled=0)`) — must be [0,0,0,0].
+    /// A's committed marker after the rotation (`set_attester(A, enabled=0)`) — must be `[0,0,0,0]`.
     pub a_marker_after_rotate: Word4,
-    /// B's committed marker after the rotation (`set_attester(B, enabled=1)`) — must be [1,0,0,0].
+    /// B's committed marker after the rotation (`set_attester(B, enabled=1)`) — must be `[1,0,0,0]`.
     pub b_marker_after_rotate: Word4,
     /// A mint whose attestation is signed by the (now-rotated-out) A — must be REJECTED.
     pub mint_by_a: Verdict,
@@ -117,18 +117,18 @@ pub struct C3MaxSupply {
 /// REJECTED, but the owner's `set_attester` / `set_min_burn_size` STILL SUCCEED; unpause restores.
 #[derive(Debug, Clone, Serialize)]
 pub struct C4Pause {
-    /// The committed `is_paused` word after the DOM_PAUSER pause — must be [1,0,0,0].
+    /// The committed `is_paused` word after the DOM_PAUSER pause — must be `[1,0,0,0]`.
     pub is_paused_after_pause: Word4,
     /// A mint consumption while paused — must be REJECTED (the contract is paused).
     pub mint_while_paused: Verdict,
     /// A burn consumption while paused — must be REJECTED (the contract is paused).
     pub burn_while_paused: Verdict,
-    /// The owner's `set_attester` committed WHILE PAUSED — its marker must be [1,0,0,0] (F6: owner
+    /// The owner's `set_attester` committed WHILE PAUSED — its marker must be `[1,0,0,0]` (F6: owner
     /// setters are not halted by pause).
     pub owner_set_attester_while_paused_marker: Word4,
     /// The owner's `set_min_burn_size` committed WHILE PAUSED — the committed value (F6).
     pub owner_set_min_burn_while_paused: u64,
-    /// The committed `is_paused` word after the DOM_PAUSER unpause — must be [0,0,0,0].
+    /// The committed `is_paused` word after the DOM_PAUSER unpause — must be `[0,0,0,0]`.
     pub is_paused_after_unpause: Word4,
     /// A mint consumption after unpause — must be ACCEPTED (the halt lifted).
     pub mint_after_unpause: Verdict,
@@ -138,11 +138,11 @@ pub struct C4Pause {
 /// pauser can pause); revoke → it cannot.
 #[derive(Debug, Clone, Serialize)]
 pub struct C5RoleRotation {
-    /// The new pauser's committed `DOM_PAUSER` membership after the DOM_MANAGER grant — must be [1,0,0,0].
+    /// The new pauser's committed `DOM_PAUSER` membership after the DOM_MANAGER grant — must be `[1,0,0,0]`.
     pub new_pauser_membership_after_grant: Word4,
-    /// The committed `is_paused` word after the NEW pauser pauses — must be [1,0,0,0] (capability proven).
+    /// The committed `is_paused` word after the NEW pauser pauses — must be `[1,0,0,0]` (capability proven).
     pub is_paused_after_new_pauser_pause: Word4,
-    /// The new pauser's committed membership after the DOM_MANAGER revoke — must be [0,0,0,0].
+    /// The new pauser's committed membership after the DOM_MANAGER revoke — must be `[0,0,0,0]`.
     pub new_pauser_membership_after_revoke: Word4,
     /// A pause attempt by the REVOKED account — must be REJECTED (does not hold the required role).
     pub revoked_pauser_pause: Verdict,

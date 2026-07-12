@@ -8,7 +8,7 @@
 //! two apart makes every rows-D/E check unit-testable against synthetic observations (the default
 //! suite) and keeps the driver free of pass/fail policy.
 //!
-//! The two real-node execution modes the values come from (LNV-1 §3.2 / LNV-2 posture, reused):
+//! The two real-node execution modes the values come from (LNV-1 / LNV-2 posture, reused):
 //! - **path N (ntx-builder)** — the ONLY way to *commit* a post-deploy faucet state change at
 //!   v0.15.1. Row D's happy-path mints are emitted as routed, allowlisted `XReserveMintNote`s and
 //!   the running ntx-builder auto-executes the faucet's consumption; the driver reads the committed
@@ -44,7 +44,7 @@ pub struct MintHappy {
     pub supply_before: u64,
     /// Committed `token_supply` read AFTER — must equal `supply_before + amount_units`.
     pub supply_after: u64,
-    /// The `usedNonces[nonce]` marker read AFTER the mint committed — must be [1,0,0,0] (set).
+    /// The `usedNonces[nonce]` marker read AFTER the mint committed — must be `[1,0,0,0]` (set).
     pub nonce_marker_after: Word4,
     /// The emitted recipient note's serial number (must equal the nonce-derived `bytes32_to_key`).
     pub note_serial: Word4,
@@ -98,9 +98,9 @@ pub struct MintNegative {
     pub supply_after: u64,
     /// The `usedNonces[nonce]` marker for THIS negative's nonce, read AFTER the reject.
     pub nonce_marker_after: Word4,
-    /// Whether this negative's nonce is expected to be SET ([1,0,0,0]) — true only for the replay
+    /// Whether this negative's nonce is expected to be SET (`[1,0,0,0]`) — true only for the replay
     /// negative (which reuses an already-committed nonce); false for the fresh-nonce negatives
-    /// (whose nonce must remain [0,0,0,0], proving the reject wrote nothing).
+    /// (whose nonce must remain `[0,0,0,0]`, proving the reject wrote nothing).
     pub expects_nonce_set: bool,
 }
 

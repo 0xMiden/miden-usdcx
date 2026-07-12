@@ -14,7 +14,7 @@
 //!    proven by a client-side kernel trap + committed-state read-back), and judges the observations.
 //!    `#[ignore]`d in the default suite because it must bind loopback listener sockets (denied in
 //!    hermetic audit sandboxes); run it with `-- --include-ignored` or the `lnv3_rows_de` binary. The
-//!    §11.2 gate claim rides ONLY on real runs + the human gate — a green default suite proves the
+//!    full-matrix gate claim rides ONLY on real runs + the human gate — a green default suite proves the
 //!    assertion layer only.
 
 use anyhow::{Context, Result};

@@ -25,9 +25,9 @@ serde_json = { workspace = true }
 # provides PublicKey::to_commitment — the canonical attester-allowlist keying primitive the
 # ATT vectors pin (the TV-DUAL-5 oracle). `std` gates miden-crypto's `dsa` module
 # (miden-crypto-0.25.1/src/lib.rs:9).
-k256 = { version = "0.13", features = ["ecdsa"], optional = true }
-sha3 = { version = "0.10", optional = true }
-rand = { version = "0.8", optional = true }
+k256 = { workspace = true, optional = true }
+sha3 = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
 miden-crypto = { version = "0.25", default-features = false, features = ["std"], optional = true }
 
 [features]
@@ -56,10 +56,11 @@ assert_matches = { workspace = true }
 # D5d attestation test vectors: deterministic secp256k1 keypairs + signatures generated
 # IN-TEST (zero touch to the 04 canonical artifact), mirroring the precompile canary and the
 # gen_vectors att_* helpers — k256 the keypair+signature, sha3 the keccak digest, miden-crypto
-# the PublicKey::to_commitment allowlist key. Same versions as the `vectors` feature deps and the
-# canary (single workspace member, so kept crate-local; promote to [workspace.dependencies] if a
-# second crate adopts them).
-k256 = { version = "0.13", features = ["ecdsa"] }
-sha3 = "0.10"
-rand = "0.8"
+# the PublicKey::to_commitment allowlist key. The secp256k1/keccak trio now has a SECOND consumer
+# (the relayer's envelope binding + partner-key fixture), so — exactly as this comment previously
+# instructed — the versions were promoted to [workspace.dependencies] and are consumed from there;
+# they stay byte-identical to the precompile canary's.
+k256 = { workspace = true }
+sha3 = { workspace = true }
+rand = { workspace = true }
 miden-crypto = { version = "0.25", default-features = false, features = ["std"] }

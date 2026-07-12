@@ -31,8 +31,30 @@ xusdc-encoding = { path = "../xusdc-encoding" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Envelope binding (validate::envelope, DC-2 / INV-DEPOSIT-ATTESTATION-RAW-KECCAK):
+#   hex  — decodes the Circle-facing wire strings (payload / messageHash / attestation).
+#   sha3 — recomputes `keccak256(payload)` to bind the envelope's messageHash to the payload. This
+#          is RAW keccak over the FULL payload: no EIP-712 `\x19\x01` domain/struct framing, no
+#          personal-sign prefix, no Poseidon2. It is a LIVENESS check only.
+# k256 is deliberately NOT a library dependency: the relayer never verifies the ECDSA signature
+# off-chain — the attestation is verified ON-CHAIN at D5d (faucet-owned, R-MINT-13/14). It appears
+# below as a DEV-dependency, for signing the test fixture only.
+hex = { workspace = true }
+sha3 = { workspace = true }
 
 [dev-dependencies]
 # Exact-variant assertions + parameterized reject tables; versions from the workspace table.
 rstest = { workspace = true }
 assert_matches = { workspace = true }
+# Partner-held attestation test vector (tests/fixtures): a DETERMINISTIC secp256k1 key SIGNS
+# `keccak256(payload)` — k256 the keypair+signature, rand the seeded (reproducible) RNG. Signing
+# only, in tests only; the Poseidon2 pubkey commitment comes from unit-04's `pubkey_commitment`
+# (single-owner rule — this crate never re-derives it). Mirrors unit-04's own in-test D5d vectors.
+k256 = { workspace = true }
+rand = { workspace = true }
+# The fixture's allowlist key is a Miden `Word` (Poseidon2, computed by unit-04's
+# `pubkey_commitment`), and the Poseidon2 negative comparator hashes with the protocol `Hasher` —
+# both need the protocol types NAMED, so miden-protocol is a TEST-only dep here (same git rev as
+# the rest of the workspace, per V15-DEVNET-BASELINE). The production relayer library stays
+# Miden-free until the Miden-facing (mint-note builder / submit) slice.
+miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }

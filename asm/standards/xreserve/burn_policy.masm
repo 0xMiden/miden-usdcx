@@ -33,8 +33,8 @@ const ERR_XRESERVE_BURN_BELOW_MIN = "burn amount is below the minimum burn size"
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Burn-policy predicate: gates every burn on R-BURN-1 (amount > 0) + R-BURN-2 (amount >= minBurnSize).
-#! Registered as the ACTIVE burn policy of the faucet's TokenPolicyManager; invoked by
+#! Gates every burn on R-BURN-1 (amount > 0) + R-BURN-2 (amount >= minBurnSize) — the burn-policy
+#! predicate. Registered as the ACTIVE burn policy of the faucet's TokenPolicyManager; invoked by
 #! `policy_manager::execute_burn_policy` via `dynexec` on every `receive_and_burn`. Pause (R-BURN-3) is
 #! the stock wrapper's gate, run BEFORE this policy (DECISION-RBURN3) -- this policy does NOT check it.
 #!
@@ -42,6 +42,8 @@ const ERR_XRESERVE_BURN_BELOW_MIN = "burn amount is below the minimum burn size"
 #! Outputs: []
 #!
 #! Where:
+#! - ASSET_KEY is the burned asset's vault key (present per the dynexec burn-policy contract;
+#!   not read by this policy).
 #! - ASSET_VALUE = [amount, 0, 0, 0]; `amount` (the burn amount, a felt < 2^63) is element 0 of
 #!   ASSET_VALUE, i.e. stack depth 4 -- read non-destructively with `dup.4` (mirrors
 #!   util/asset.masm::fungible_to_amount). The accept path returns with the stack EMPTY (the dynexec
@@ -54,18 +56,20 @@ const ERR_XRESERVE_BURN_BELOW_MIN = "burn amount is below the minimum burn size"
 #! Invocation: dynexec
 pub proc check_policy
     # => [ASSET_KEY, ASSET_VALUE]
+
     dup.4
     # => [amount, ASSET_KEY, ASSET_VALUE]
 
-    # R-BURN-1: reject a zero burn amount (require amount > 0).
+    # reject a zero burn amount (R-BURN-1: require amount > 0).
     dup.0 eq.0 assertz.err=ERR_XRESERVE_BURN_ZERO
     # => [amount, ASSET_KEY, ASSET_VALUE]
 
-    # R-BURN-2: reject amount < min_burn_size. Load the minBurnSize slot word [min, 0, 0, 0], keep
+    # reject amount < min_burn_size (R-BURN-2). Load the minBurnSize slot word [min, 0, 0, 0], keep
     # element 0, and assert amount >= min (mirrors the stock burn `lte` amount comparison,
     # fungible.masm:436; both operands are AssetAmounts < 2^63, so the felt comparison is range-safe).
     push.MIN_BURN_SIZE_SLOT[0..2] exec.active_account::get_item
     # => [min_burn_size, 0, 0, 0, amount, ASSET_KEY, ASSET_VALUE]
+
     movdn.3 drop drop drop
     # => [min_burn_size, amount, ASSET_KEY, ASSET_VALUE]
     # `swap` is intentional: it puts `amount` on top so `lte` computes `min_burn_size <= amount`
@@ -74,6 +78,7 @@ pub proc check_policy
     # burn_at_min_* boundary tests).
     swap
     # => [amount, min_burn_size, ASSET_KEY, ASSET_VALUE]
+
     lte assert.err=ERR_XRESERVE_BURN_BELOW_MIN
     # => [ASSET_KEY, ASSET_VALUE]
 

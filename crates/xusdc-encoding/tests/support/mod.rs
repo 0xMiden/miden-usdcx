@@ -1132,6 +1132,7 @@ pub fn mint_effects_driver_src(inputs: &MintInputs, recipient: AccountId) -> Str
 /// (the rejected tx traps and commits nothing; this concretely observes the unchanged genesis
 /// state). Uses the proven `active_account::{get_item, get_map_item}` reads.
 pub fn mint_noeffect_probe_src(expected_token_supply: u64, key: [u32; 4]) -> String {
+    let key = format!("[{},{},{},{}]", key[0], key[1], key[2], key[3]);
     format!(
         "use miden::protocol::active_account\n\n\
          const PROBE_TOKEN_CONFIG_SLOT = word(\"{cfg}\")\n\
@@ -1152,7 +1153,7 @@ pub fn mint_noeffect_probe_src(expected_token_supply: u64, key: [u32; 4]) -> Str
         cfg = TOKEN_CONFIG_SLOT_LABEL,
         used = USED_NONCES_SLOT_LABEL,
         expected = expected_token_supply,
-        key = format!("[{},{},{},{}]", key[0], key[1], key[2], key[3]),
+        key = key,
     )
 }
 
@@ -2807,9 +2808,9 @@ pub fn faucet_supply_decrement_write_procs(src: &str) -> Vec<String> {
                 .filter(|l| !l.is_empty() && !l.starts_with('#'))
                 .find_map(|l| {
                     let toks: Vec<&str> = l.split_whitespace().collect();
-                    if toks.iter().any(|&t| t == "sub") {
+                    if toks.contains(&"sub") {
                         Some("sub")
-                    } else if toks.iter().any(|&t| t == "add") {
+                    } else if toks.contains(&"add") {
                         Some("add")
                     } else {
                         None
@@ -3447,10 +3448,11 @@ pub fn burn_policy_direct_driver_src(asset_key: Word, amount: u64) -> String {
     )
 }
 
-/// Builds a MockChain account carrying [the xreserve component WITH the seeded minBurnSize value slot]
-/// + [the generated direct burn-policy driver], reusing [`ShellHarness`] + [`run_call_driver`]. Used by
-/// the R-BURN-1 zero-amount direct proof: only the minBurnSize slot is bound (the direct
-/// `check_policy` reads only `amount` + that slot; a zero amount traps before the slot is read).
+/// Builds a MockChain account carrying [the xreserve component WITH the seeded minBurnSize value
+/// slot] + [the generated direct burn-policy driver], reusing [`ShellHarness`] +
+/// [`run_call_driver`]. Used by the R-BURN-1 zero-amount direct proof: only the minBurnSize slot is
+/// bound (the direct `check_policy` reads only `amount` + that slot; a zero amount traps before the
+/// slot is read).
 pub fn setup_burn_policy_direct_account(min_burn_size: u64, driver_src: &str) -> Result<ShellHarness> {
     let library = assemble_xreserve_lib()?;
 

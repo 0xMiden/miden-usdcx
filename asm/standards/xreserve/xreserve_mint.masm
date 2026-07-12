@@ -26,6 +26,7 @@ use miden::protocol::active_account
 use miden::protocol::native_account
 use miden::protocol::faucet
 use miden::protocol::note
+use miden::protocol::note::NOTE_TYPE_PUBLIC
 use miden::protocol::output_note
 use miden::protocol::account_id
 use miden::protocol::asset::FUNGIBLE_ASSET_MAX_AMOUNT
@@ -80,28 +81,19 @@ const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient add
 const ERR_XRESERVE_RECIPIENT_BAD_LIMB = "deposit intent remote recipient limb is not a valid u32"
 const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient value does not fit in the field"
 
-# LOCAL LAYOUT (felts)
-# =================================================================================================
-#   0..3   P2ID note storage ([target_id_suffix, target_id_prefix, _, _]) — word-aligned base for
-#          note::compute_and_store_recipient (reads P2ID_NUM_STORAGE_ITEMS felts from locaddr.0)
-#   4..7   KEY (usedNonces storage-map key; consumed by reference from D5c)
-#   8..11  SERIAL_NUM (recipient note serial)
-#   12..15 P2ID_SCRIPT_ROOT (the P2ID note script root; passed in, identifies the note as P2ID)
-#   16..19 token_config cache (the slot word, for the supply write-back)
-#   20 amount   21 feeAmount   22 tag   23 note_type
-
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! The xUSDC mint composition entry (Slice 2): chains the accepted verify stages and the write stage
-#! into one supply-gating mint — assert_deposit_intent (D5a) -> assert_mint_amounts (D5b) ->
+#! Chains the accepted verify stages and the write stage into one supply-gating mint — the xUSDC
+#! mint composition entry (Slice 2): assert_deposit_intent (D5a) -> assert_mint_amounts (D5b) ->
 #! assert_nonce_unused (D5c) -> verify_attestation (D5d) -> extract_recipient_account_id ->
 #! apply_mint_effects (D5e) — verify-once then write-once. Fail-closed: any verify / extraction trap
 #! aborts the whole tx with NO writes (no nonce SET, no recipient note, no token_supply change), so a
 #! failed mint never burns the nonce.
 #!
-#! Inputs (stack):  [intent_ptr, len_felts, scale_exp]
-#! Inputs (advice): [feeAmount(8 limbs), pubkey(9), signature(17)]   (MVP feeAmount = eight zero limbs)
+#! Inputs:
+#!   Operand stack: [intent_ptr, len_felts, scale_exp]
+#!   Advice stack: [fee_amount(8 limbs), pubkey(9), signature(17)]   (MVP fee_amount = eight zero limbs)
 #! Outputs: [pad(16)]
 #!
 #! Where:
@@ -132,39 +124,43 @@ pub proc mint
     # depth-16 floor, so nothing else may sit above it when it runs).
     movup.2 loc_store.1
     # => [intent_ptr, len_felts]
+
     dup loc_store.0
     # => [intent_ptr, len_felts]
 
     # ---- VERIFY (verify-once); any trap aborts the whole tx -> no writes reachable ----
 
-    # D5a (R-MINT-1..8): structural parse + domain/identifier compares -> [hook_data_len]
+    # stage D5a (R-MINT-1..8): structural parse + domain/identifier compares -> [hook_data_len]
     exec.deposit_intent_parser::assert_deposit_intent
     loc_store.2
     # => []   (loc 2 = hook_data_len, for the D5d keccak extent)
 
-    # D5b (R-MINT-9/10/11): amount/maxFee/feeAmount reduction + bounds (feeAmount from advice)
+    # stage D5b (R-MINT-9/10/11): amount/maxFee/feeAmount reduction + bounds (feeAmount from advice)
     loc_load.1 loc_load.0
     # => [intent_ptr, scale_exp]
+
     exec.deposit_intent_parser::assert_mint_amounts
     # => []
 
-    # D5c (R-MINT-12): nonce replay guard (assert-zero only; the SET is the first D5e write)
+    # stage D5c (R-MINT-12): nonce replay guard (assert-zero only; the SET is the first D5e write)
     loc_load.0
     exec.deposit_intent_parser::assert_nonce_unused
     # => []
 
-    # D5d (R-MINT-13/14): keccak the 240 + hook_data_len payload, allowlist gate + ECDSA verify
+    # stage D5d (R-MINT-13/14): keccak the 240 + hook_data_len payload, allowlist gate + ECDSA verify
     # (pubkey + signature from advice). len_bytes = DEPOSIT_INTENT_HEADER_FELTS*4 + hook_data_len.
     loc_load.2 push.DEPOSIT_INTENT_HEADER_FELTS mul.4 add
     # => [len_bytes]
+
     loc_load.0
     # => [intent_ptr, len_bytes]
+
     exec.attestation_verify::verify_attestation
     # => [pad(16)]   (depth-16 floor restored; operand stack logically empty)
 
     # ---- MARSHAL apply_mint_effects inputs (deterministic recompute from the UNMUTATED preimage) ----
 
-    # KEY = bytes32_to_key(nonce) (loc 4..7); == the key D5c checked and the one D5e SETs / serials
+    # the KEY = bytes32_to_key(nonce) (loc 4..7); == the key D5c checked and the one D5e SETs / serials
     loc_load.0 push.NONCE_FELT_OFF add
     exec.load_field_words
     exec.encoding::bytes32_to_key
@@ -175,38 +171,48 @@ pub proc mint
     loc_load.0
     exec.extract_recipient_account_id
     # => [recipient_id_suffix, recipient_id_prefix]
+
     loc_store.8 loc_store.9
     # => []
 
     # amount = reduce(amount field, scale_exp) (loc 3); == the value D5b verified >= maxFee
     loc_load.1 loc_load.0 push.AMOUNT_FELT_OFF add
     # => [amount_base, scale_exp]
+
     exec.load_field_words
     # => [U1, U0, scale_exp]
+
     exec.encoding::uint256_to_asset_amount
     loc_store.3
     # => []
 
     # ---- WRITE-ONCE: build apply_mint_effects inputs (push bottom-first) and apply the effects ----
-    # [amount, feeAmount, KEY, recip_suffix, recip_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
-    push.1
+    # [amount, fee_amount, KEY, recip_suffix, recip_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
+    push.NOTE_TYPE_PUBLIC
     # => [note_type]   (note_type 1 = public)
     # tag (best-effort routing; NoteTag::with_account_target): top 14 bits of the prefix's HIGH u32.
     # u32split -> [lo, hi] (lo on top); drop lo to keep hi = prefix >> 32, then mask the top 14 bits.
     loc_load.9 u32split drop u32and.0xfffc0000
     # => [tag, note_type]
+
     push.P2ID_SCRIPT_ROOT
     # => [P2ID_SCRIPT_ROOT, tag, note_type]
+
     padw loc_loadw_le.4
     # => [SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]   (SERIAL_NUM = the nonce-derived KEY)
+
     loc_load.9 loc_load.8
     # => [recip_suffix, recip_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
+
     padw loc_loadw_le.4
     # => [KEY, recip_suffix, recip_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
+
     push.0
-    # => [feeAmount, KEY, ...]   (MVP feeAmount == 0: the single recipient note carries the full amount)
+    # => [fee_amount, KEY, ...]   (MVP fee_amount == 0: the single recipient note carries the full amount)
+
     loc_load.3
-    # => [amount, feeAmount, KEY, recip_suffix, recip_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
+    # => [amount, fee_amount, KEY, recip_suffix, recip_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
+
     exec.apply_mint_effects
     # => [pad(16)]
 end
@@ -218,12 +224,21 @@ end
 #! token_config, sets the nonce marker, emits the P2ID recipient note carrying `amount - feeAmount`
 #! of the minted xUSDC to the target AccountId, and raises `token_supply` by the full `amount`.
 #!
-#! Inputs:  [amount, feeAmount, KEY, recipient_id_suffix, recipient_id_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
+#! Locals (@locals(24), word-aligned sub-regions): loc[0..4] P2ID note storage
+#! ([target_id_suffix, target_id_prefix, _, _] — the word-aligned base for
+#! note::compute_and_store_recipient, which reads P2ID_NUM_STORAGE_ITEMS felts from locaddr.0);
+#! loc[4..8] KEY (usedNonces storage-map key; consumed by reference from D5c); loc[8..12]
+#! SERIAL_NUM (recipient note serial); loc[12..16] P2ID_SCRIPT_ROOT (the P2ID note script root;
+#! passed in, identifies the note as P2ID); loc[16..20] token_config cache (the slot word, for the
+#! supply write-back); loc[20] amount, loc[21] feeAmount, loc[22] tag, loc[23] note_type.
+#!
+#! Inputs:  [amount, fee_amount, KEY, recipient_id_suffix, recipient_id_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type]
 #! Outputs: [pad(16)]
 #!
 #! Where:
 #! - amount is the reduced AssetAmount to mint (full amount added to token_supply).
-#! - feeAmount is the reduced operator fee (MVP == 0; the recipient note carries amount - feeAmount).
+#! - fee_amount is the reduced operator fee (MVP == 0; the recipient note carries
+#!   amount - fee_amount).
 #! - KEY is the usedNonces storage-map key (already = bytes32_to_key(nonce) from D5c; consumed by
 #!   reference, never re-derived here).
 #! - recipient_id_{suffix,prefix} are the two AccountId felts of the P2ID target (D-5: consumed
@@ -233,7 +248,7 @@ end
 #! - tag, note_type are the recipient note metadata (note_type 1 = public).
 #!
 #! Panics if:
-#! - feeAmount is non-zero (F2; the MVP requires feeAmount == 0) — rejected before any effect.
+#! - fee_amount is non-zero (F2; the MVP requires fee_amount == 0) — rejected before any effect.
 #! - token_supply + amount > max_supply, or max_supply > FUNGIBLE_ASSET_MAX_AMOUNT (R-MINT-15,
 #!   ERR_XRESERVE_SUPPLY_CAP) — the guard is first, so no effects are applied on reject.
 #!
@@ -244,14 +259,19 @@ proc apply_mint_effects
     # the recipient felts go to the word-aligned note-storage region at locals 0..1
     loc_store.20 loc_store.21
     # => [KEY, recipient_id_suffix, recipient_id_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type, ...]
+
     loc_storew_le.4 dropw
     # => [recipient_id_suffix, recipient_id_prefix, SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type, ...]
+
     loc_store.0 loc_store.1
     # => [SERIAL_NUM, P2ID_SCRIPT_ROOT, tag, note_type, ...]
+
     loc_storew_le.8 dropw
     # => [P2ID_SCRIPT_ROOT, tag, note_type, ...]
+
     loc_storew_le.12 dropw
     # => [tag, note_type, ...]
+
     loc_store.22 loc_store.23
     # => [...]
 
@@ -266,30 +286,41 @@ proc apply_mint_effects
     # the D5b reducer (amount <= FUNGIBLE_ASSET_MAX_AMOUNT) — so felt lte/sub behave as integers.
     push.TOKEN_CONFIG_SLOT[0..2] exec.active_account::get_item
     # => [token_supply, max_supply, decimals, token_symbol, ...]
+
     loc_storew_le.16
     # => [token_supply, max_supply, decimals, token_symbol, ...]   (cached for the write-back, kept on stack)
+
     swap movup.2 drop movup.2 drop
     # => [max_supply, token_supply, ...]
+
     loc_load.20 movdn.2
     # => [max_supply, token_supply, amount, ...]
+
     dup.1 dup.1 lte assert.err=ERR_XRESERVE_SUPPLY_CAP
     # => [max_supply, token_supply, amount, ...]   (token_supply <= max_supply: the no-wrap guard)
+
     dup lte.FUNGIBLE_ASSET_MAX_AMOUNT assert.err=ERR_XRESERVE_SUPPLY_CAP
     # => [max_supply, token_supply, amount, ...]   (max_supply <= FUNGIBLE_ASSET_MAX_AMOUNT)
+
     dup.2 swap dup.2 sub
     # => [max_mint_amount, amount, token_supply, amount, ...]   (max_mint_amount = max_supply - token_supply)
+
     lte assert.err=ERR_XRESERVE_SUPPLY_CAP
     # => [token_supply, amount, ...]   (amount <= max_mint_amount: token_supply + amount <= max_supply)
+
     drop drop
     # => [...]   (guard passed; the cached config word lives in locals 16..19)
 
     # ---- nonce SET (FIRST state write): usedNonces[KEY] := MARKER ----
     push.NONCE_USED_MARKER
     # => [MARKER]
+
     padw loc_loadw_le.4
     # => [KEY, MARKER]
+
     push.USED_NONCES_SLOT[0..2]
     # => [slot_id_suffix, slot_id_prefix, KEY, MARKER]
+
     exec.native_account::set_map_item dropw
     # => [...]
 
@@ -298,24 +329,32 @@ proc apply_mint_effects
     # and the P2ID script root (note::compute_and_store_recipient, mirrors p2id.masm:105-108)
     padw loc_loadw_le.12 padw loc_loadw_le.8 push.P2ID_NUM_STORAGE_ITEMS locaddr.0
     # => [storage_ptr, num_storage_items, SERIAL_NUM, P2ID_SCRIPT_ROOT, ...]
+
     exec.note::compute_and_store_recipient
     # => [RECIPIENT, ...]
+
     loc_load.23 loc_load.22 exec.output_note::create
     # => [note_idx, ...]
+
     loc_load.20 loc_load.21 sub
-    # => [amount - feeAmount, note_idx, ...]
+    # => [amount - fee_amount, note_idx, ...]
+
     exec.faucet::create_fungible_asset
     # => [ASSET_KEY, ASSET_VALUE, note_idx, ...]
+
     dupw.1 dupw.1 exec.faucet::mint
     # => [ASSET_KEY, ASSET_VALUE, note_idx, ...]
+
     exec.output_note::add_asset
     # => [...]   (the recipient note is emitted as a tx side effect)
 
     # ---- token_supply += amount (the FULL amount, exactly once) ----
     padw loc_loadw_le.16
     # => [token_supply, max_supply, decimals, token_symbol, ...]
+
     loc_load.20 add
     # => [new_token_supply, max_supply, decimals, token_symbol, ...]
+
     push.TOKEN_CONFIG_SLOT[0..2] exec.native_account::set_item dropw
     # => [...]
 end
@@ -359,16 +398,20 @@ proc extract_recipient_account_id
     # ---- prefix = build_felt(lo = limb base+5, hi = limb base+4)  (bytes[16..24], big-endian) ----
     dup add.4 mem_load
     # => [prefix_hi, base]
+
     dup.1 add.5 mem_load
     # => [prefix_lo, prefix_hi, base]
+
     exec.build_felt
     # => [prefix, base]
 
     # ---- suffix = build_felt(lo = limb base+7, hi = limb base+6)  (bytes[24..32], big-endian) ----
     dup.1 add.6 mem_load
     # => [suffix_hi, prefix, base]
+
     movup.2 add.7 mem_load
     # => [suffix_lo, suffix_hi, prefix]
+
     exec.build_felt
     # => [suffix, prefix]
 
@@ -377,6 +420,7 @@ proc extract_recipient_account_id
     # the originals are the returned [suffix, prefix] apply_mint_effects consumes
     dup.1 dup.1
     # => [suffix, prefix, suffix, prefix]
+
     exec.account_id::validate
     # => [suffix, prefix]
 end
@@ -402,16 +446,22 @@ end
 proc build_felt
     u32assert2.err=ERR_XRESERVE_RECIPIENT_BAD_LIMB
     # => [lo, hi]
+
     exec.swap_u32_bytes swap exec.swap_u32_bytes swap
     # => [lo_be, hi_be]   (each limb byte-swapped LE -> BE)
+
     dup.1 dup.1
     # => [lo_be, hi_be, lo_be, hi_be]
+
     swap mul.0x0100000000 add
     # => [felt, lo_be, hi_be]   (felt = hi_be * 2^32 + lo_be, in the field)
+
     dup u32split
     # => [felt_lo, felt_hi, felt, lo_be, hi_be]
+
     movup.3 assert_eq.err=ERR_XRESERVE_RECIPIENT_NONCANONICAL
     # => [felt_hi, felt, hi_be]   (no reduction: low 32 bits round-trip)
+
     movup.2 assert_eq.err=ERR_XRESERVE_RECIPIENT_NONCANONICAL
     # => [felt]                    (no reduction: high 32 bits round-trip)
 end
@@ -431,12 +481,16 @@ end
 proc swap_u32_bytes
     dup u32and.0xff u32shl.24
     # => [part0, value]   (byte 0 -> byte 3)
+
     dup.1 u32shr.8 u32and.0xff u32shl.16 u32or
     # => [part01, value]  (byte 1 -> byte 2)
+
     dup.1 u32shr.16 u32and.0xff u32shl.8 u32or
     # => [part012, value] (byte 2 -> byte 1)
+
     dup.1 u32shr.24 u32or
     # => [swapped, value] (byte 3 -> byte 0)
+
     swap drop
     # => [swapped]
 end
@@ -462,11 +516,13 @@ proc load_field_words
     dup.2 add.1 mem_load
     dup.3 mem_load
     # => [W0, base, ...]
+
     dup.4 add.7 mem_load
     dup.5 add.6 mem_load
     dup.6 add.5 mem_load
     dup.7 add.4 mem_load
     # => [W1, W0, base, ...]
+
     movup.8 drop
     # => [W1, W0, ...]
 end

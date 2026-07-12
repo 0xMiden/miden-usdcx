@@ -5,13 +5,15 @@
 # storage into memory, marshals the creator's param onto the stack in the proc's Inputs order, and
 # `call`s the owner-gated (via the account Authority) stock
 # `miden::standards::faucets::fungible::set_max_supply` (the gate lives in the proc; the note sender is
-# kernel-forced, so a non-owner creator traps there). The absolute-path `call` resolves to the SAME
+# kernel-forced, so a non-owner creator traps there). The `call` resolves to the SAME
 # proc root the faucet exposes via the FungibleFaucet component re-exports. A scheme-2
 # NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only).
 #
 # Note storage layout (1 felt): [new_max_supply].
 
 use miden::protocol::active_note
+use miden::standards::faucets::fungible
+use miden::core::sys
 
 # CONSTANTS
 # =================================================================================================
@@ -33,8 +35,14 @@ const ERR_XRESERVE_SET_MAX_SUPPLY_NOTE_STORAGE = "set_max_supply note storage it
 #! the stack as `[new_max_supply, pad(15)]`, and `call`s the stock `fungible::set_max_supply`. The
 #! note ARGS are unused (executor-controlled).
 #!
-#! Inputs:  [pad(16)]
+#! Requires that the account exposes:
+#! - miden::standards::faucets::fungible::set_max_supply procedure.
+#!
+#! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
+#!
+#! Note storage is assumed to be as follows:
+#! - new_max_supply is the new maximum supply as an AssetAmount felt (item 0).
 #!
 #! Panics if:
 #! - the note storage does not carry exactly 1 item.
@@ -57,8 +65,8 @@ pub proc main
     # => [new_max_supply, pad(16)]
     # (the call consumes the top 16: [new_max_supply, pad(15)])
 
-    call.::miden::standards::faucets::fungible::set_max_supply
+    call.fungible::set_max_supply
     # => [pad(16)]
 
-    exec.::miden::core::sys::truncate_stack
+    exec.sys::truncate_stack
 end

@@ -5,9 +5,12 @@
 # NOMINATED-owner-gated stock `miden::standards::access::ownable2step::accept_ownership` (step 2 of the
 # 2-step transfer). The gate reads the note sender (kernel-forced): only the pending/nominated owner
 # succeeds — the current owner and any third party trap. The executor-controlled NOTE_ARGS are dropped
-# and never read. The absolute-path `call` resolves to the SAME proc root the faucet exposes via the
+# and never read. The `call` resolves to the SAME proc root the faucet exposes via the
 # Ownable2Step component re-exports. A scheme-2 NetworkAccountTarget routing attachment addresses the
 # note at the faucet (routing-only, added by the Rust factory).
+
+use miden::standards::access::ownable2step
+use miden::core::sys
 
 # PUBLIC INTERFACE
 # =================================================================================================
@@ -15,9 +18,12 @@
 #! Consumes the `accept_ownership` admin note and promotes the nominated owner (step 2 of 2).
 #!
 #! Drops the executor-controlled note ARGS (the op is param-less) and `call`s the stock
-#! `ownable2step::accept_ownership` by its absolute path.
+#! `ownable2step::accept_ownership`.
 #!
-#! Inputs:  [pad(16)]
+#! Requires that the account exposes:
+#! - miden::standards::access::ownable2step::accept_ownership procedure.
+#!
+#! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
 #!
 #! Panics if:
@@ -30,8 +36,8 @@ pub proc main
     dropw
     # => [pad(16)]
 
-    call.::miden::standards::access::ownable2step::accept_ownership
+    call.ownable2step::accept_ownership
     # => [pad(16)]
 
-    exec.::miden::core::sys::truncate_stack
+    exec.sys::truncate_stack
 end

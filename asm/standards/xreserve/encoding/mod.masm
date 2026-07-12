@@ -7,6 +7,7 @@
 # BUILD STATE: all three slice procedures are implemented (R1 bytes32_to_key,
 # R2 uint256_to_asset_amount, R4 parse_deposit_intent).
 
+use miden::protocol::asset::FUNGIBLE_ASSET_MAX_AMOUNT
 use miden::core::crypto::hashes::poseidon2
 use miden::core::math::u128
 use miden::core::math::u64
@@ -22,7 +23,6 @@ use xreserve::encoding::layout::MAGIC_FELT_OFF
 use xreserve::encoding::layout::REMOTE_DOMAIN_FELT_OFF
 use xreserve::encoding::layout::REMOTE_TOKEN_FELT_OFF
 use xreserve::encoding::layout::VERSION_FELT_OFF
-use ::miden::protocol::asset::FUNGIBLE_ASSET_MAX_AMOUNT
 
 # CONSTANTS
 # =================================================================================================
@@ -97,7 +97,7 @@ end
 #! Invocation: exec
 @locals(12)
 pub proc pubkey_commitment
-    # Stage the 9 pubkey felts into word-aligned locals so poseidon2::hash_elements can absorb
+    # stage the 9 pubkey felts into word-aligned locals so poseidon2::hash_elements can absorb
     # them, mirroring the precompile verify wrapper's PK_COMM staging (miden-core-lib-0.23.3
     # asm/crypto/dsa/ecdsa_k256_keccak.masm:56-66). loc_storew_le places the top word's first
     # felt at the lowest address, so loc[0..9] = the 9 to_elements felts (f0..f8).
@@ -110,7 +110,7 @@ pub proc pubkey_commitment
     loc_store.8
     # => []
 
-    # COMM = Poseidon2(loc[0..9]); the sponge sets capacity[0] = 9 % 8 = 1 (domain tag),
+    # the output COMM = Poseidon2(loc[0..9]); the sponge sets capacity[0] = 9 % 8 = 1 (domain tag),
     # identical to miden-crypto PublicKey::to_commitment and the precompile PK_COMM.
     push.PUBKEY_FELTS locaddr.0 exec.poseidon2::hash_elements
     # => [COMM]
@@ -205,7 +205,7 @@ pub proc uint256_to_asset_amount
     # => [y]
 end
 
-#! Structurally validates a staged DepositIntent preimage and returns the caller-compare fields.
+#! Validates a staged DepositIntent preimage structurally and returns the caller-compare fields.
 #!
 #! Asserts the library-owned structural checks in D5a order over the u32-LE-packed preimage
 #! staged in memory: packed magic, packed version, amount nonzero, localToken nonzero,
@@ -246,7 +246,7 @@ pub proc parse_deposit_intent
     assert.err=ERR_DI_LENGTH
     # => [intent_ptr, len_felts]
 
-    # D5a step 1: packed magic
+    # step 1 (D5a): packed magic
     dup push.MAGIC_FELT_OFF add mem_load
     push.DEPOSIT_INTENT_MAGIC_PACKED assert_eq.err=ERR_DI_BAD_MAGIC
     # => [intent_ptr, len_felts]
@@ -394,7 +394,7 @@ end
 #! Modeled on the protocol's `agglayer::common::asset_conversion::pow10` at v0.15.3.
 #!
 #! Inputs:  [scale_exp]
-#! Outputs: [10^scale_exp]
+#! Outputs: [result]
 #!
 #! Panics if:
 #! - scale_exp is not a valid u32.

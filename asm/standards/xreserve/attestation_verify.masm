@@ -10,10 +10,10 @@
 # ecdsa_k256_keccak::verify_prehash (precompiles), active_account::get_map_item (kernel). Module
 # home + nested path per D-1A. Loop history: crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
 
+use miden::protocol::active_account
 use miden::core::crypto::hashes::keccak256
 use miden::core::crypto::dsa::ecdsa_k256_keccak
 use miden::core::word
-use miden::protocol::active_account
 use xreserve::encoding
 
 # CONSTANTS
@@ -111,15 +111,15 @@ pub proc verify_attestation
     swapw dropw
     # => [VALUE, pad(12)]
 
-    # R-MINT-13: the stored allowlist value must be a non-empty enabled marker -- an absent /
-    # EMPTY_WORD value means the candidate pubkey's commitment is not allowlisted.
+    # allowlist gate (R-MINT-13): the stored value must be a non-empty enabled marker -- an
+    # absent / EMPTY_WORD value means the candidate pubkey's commitment is not allowlisted.
     exec.word::eqz
     # => [is_empty, pad(12)]
 
     assertz.err=ERR_XRESERVE_BAD_PK_COMMITMENT
     # => [pad(16)]
 
-    # ECDSA verify (R-MINT-14): verify_prehash over the SAME pubkey region (loc[0..9]), the digest
+    # the ECDSA verify (R-MINT-14): verify_prehash over the SAME pubkey region (loc[0..9]), the digest
     # (loc[12..20]), and the signature (loc[20..37]).
     locaddr.20 locaddr.12 locaddr.0
     # => [pk_ptr, digest_ptr, sig_ptr, pad(16)]
@@ -127,7 +127,7 @@ pub proc verify_attestation
     exec.ecdsa_k256_keccak::verify_prehash
     # => [result, pad(16)]
 
-    # R-MINT-14: the signature must verify over the payload digest for the candidate pubkey.
+    # assert R-MINT-14: the signature must verify over the payload digest for the candidate pubkey.
     assert.err=ERR_XRESERVE_SIG_INVALID
     # => [pad(16)]
 end

@@ -20,9 +20,9 @@
 # reference on the Rust side): it has no on-chain compare, so the public identity must be READABLE
 # from storage (fail-closed `packed_felts_to_bytes32` round-trip), not merely verifiable.
 
-use miden::standards::access::ownable2step
 use miden::protocol::active_account
 use miden::protocol::native_account
+use miden::standards::access::ownable2step
 use xreserve::deposit_intent_parser::DOMAIN_CONFIG_SLOT
 use xreserve::deposit_intent_parser::IDENTIFIER_CONFIG_SLOT
 
@@ -64,7 +64,7 @@ const ERR_XRESERVE_IDENTIFIER_EMPTY = "identifier must be non-empty"
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Owner-gated, init-once writer of the FOUR §5.9 faucet domain-config fields: `domain` (u32) and
+#! Writes the FOUR §5.9 faucet domain-config fields, owner-gated and init-once: `domain` (u32) and
 #! `identifier` (the pre-hashed bytes32->key Word) -- the slots the mint path's D5a compare reads
 #! to reject mis-addressed deposits -- plus `source_domain` (u32) and `xreserve_contract` (the raw
 #! 8x u32-LE packed bytes32 across two words), the off-chain-read identity fields. Gated on the
@@ -114,18 +114,22 @@ pub proc domain_init
     # only when uninitialized; a second write finds the stored hash word and traps.
     push.IDENTIFIER_CONFIG_SLOT[0..2] exec.active_account::get_item
     # => [STORED_IDENTIFIER, IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
+
     padw assert_eqw.err=ERR_XRESERVE_DOMAIN_REINIT
     # => [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
 
-    # R-ADMIN-4 hardening: the input IDENTIFIER must be non-empty -- an EMPTY identifier would
+    # hardening (R-ADMIN-4): the input IDENTIFIER must be non-empty -- an EMPTY identifier would
     # never arm the sentinel above. Non-destructive compare: eqw pushes the flag WITHOUT consuming
     # the words, so IDENTIFIER reaches its verbatim write (and D5a's read) untouched.
     padw
     # => [EMPTY, IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
+
     eqw
     # => [is_empty, EMPTY, IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
+
     assertz.err=ERR_XRESERVE_IDENTIFIER_EMPTY
     # => [EMPTY, IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
+
     dropw
     # => [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
 
@@ -134,12 +138,14 @@ pub proc domain_init
     # stack is untouched.
     dup.13 u32assert.err=ERR_XRESERVE_DOMAIN_NOT_U32 drop
     # => [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
+
     dup.12 u32assert.err=ERR_XRESERVE_SOURCE_DOMAIN_NOT_U32 drop
     # => [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
 
-    # D-A6-XRC guard 2: all 8 xreserve_contract limbs are valid u32s (word positions 1 and 2).
+    # guard 2 (D-A6-XRC): all 8 xreserve_contract limbs are valid u32s (word positions 1 and 2).
     dupw.1 u32assertw.err=ERR_XRESERVE_XRC_LIMB_NOT_U32 dropw
     # => [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
+
     dupw.2 u32assertw.err=ERR_XRESERVE_XRC_LIMB_NOT_U32 dropw
     # => [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
 
@@ -158,6 +164,7 @@ pub proc domain_init
     # source_domain_config := [source_domain, 0, 0, 0] (element 0, mirroring the domain word).
     push.0.0.0 movup.3
     # => [source_domain, 0, 0, 0, domain, pad(2)]
+
     push.SOURCE_DOMAIN_CONFIG_SLOT[0..2] exec.native_account::set_item dropw
     # => [domain, pad(2)]
 
@@ -165,6 +172,7 @@ pub proc domain_init
     # accepted 2-field surface).
     push.0.0.0 movup.3
     # => [domain, 0, 0, 0, pad(2)]
+
     push.DOMAIN_CONFIG_SLOT[0..2] exec.native_account::set_item dropw
     # => [pad(2)]
 end

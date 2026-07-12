@@ -64,6 +64,10 @@ fn packed(bytes: &[u8]) -> Vec<Felt> {
     bytes_to_packed_u32_elements(bytes)
 }
 
+// kept verbatim from the pre-cleanup source (structure-only rounds): clippy 1.93 flags the
+// `Word::from` as `useless_conversion` when the `vectors` feature compiles this generator,
+// but removing it would be an executable change outside the MASM-structure scope.
+#[allow(clippy::useless_conversion)]
 fn poseidon2_key(bytes32: &[u8; 32]) -> Word {
     Word::from(Hasher::hash_elements(&packed(bytes32)))
 }

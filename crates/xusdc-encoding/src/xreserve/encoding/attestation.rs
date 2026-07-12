@@ -50,6 +50,10 @@ pub fn signature_felts(sig: &[u8; 65]) -> [Felt; 17] {
 /// protocol's Poseidon2 (same primitive as `bytes32_to_storage_map_key`); the 9-felt input
 /// engages the sponge capacity domain tag (`9 % 8 = 1`) — verified == `to_commitment` by
 /// TV-ATT-2 / TV-DUAL-5.
+// kept verbatim from the pre-cleanup source (structure-only round): clippy 1.93 flags the
+// `Word::from` as `useless_conversion`, but removing it would be an executable change outside
+// the MASM-structure scope, so the lint is acknowledged in place instead.
+#[allow(clippy::useless_conversion)]
 pub fn pubkey_commitment(pk: &[u8; 33]) -> Word {
     Word::from(Hasher::hash_elements(&compressed_pubkey_felts(pk)))
 }

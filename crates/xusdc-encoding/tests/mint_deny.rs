@@ -235,16 +235,16 @@ fn probe_mint_deny_guard_export() -> Result<()> {
     Ok(())
 }
 
-/// Static supply-DECREMENT surface enumeration over the `xreserve` MASM tree (CMP-B3): there is NO
-/// local `exec.faucet::burn` (the decrement primitive) and NO `xreserve_receive_and_burn.masm` — the
-/// burn decrement is the STOCK `receive_and_burn` (linked miden-standards), BY DESIGN (CMP-B3
-/// stock-suffices determination), not a deferred local proc.
-///
-/// The supply-RAISE sole-surface guarantee (only `mint` is a callable supply-raising root) is now
-/// enforced at the correct account-code-commitment / procedure-root level by
-/// `mint_root_surface::production_supply_raising_root_set_is_exactly_mint` — it replaced the former
-/// file-grep RAISE sweep (F3), a text proxy that could not see the over-exported `apply_mint_effects`
-/// (F1). Must be GREEN.
+// Static supply-DECREMENT surface enumeration over the `xreserve` MASM tree (CMP-B3): there is NO
+// local `exec.faucet::burn` (the decrement primitive) and NO `xreserve_receive_and_burn.masm` — the
+// burn decrement is the STOCK `receive_and_burn` (linked miden-standards), BY DESIGN (CMP-B3
+// stock-suffices determination), not a deferred local proc.
+//
+// The supply-RAISE sole-surface guarantee (only `mint` is a callable supply-raising root) is now
+// enforced at the correct account-code-commitment / procedure-root level by
+// `mint_root_surface::production_supply_raising_root_set_is_exactly_mint` — it replaced the former
+// file-grep RAISE sweep (F3), a text proxy that could not see the over-exported `apply_mint_effects`
+// (F1). Must be GREEN.
 
 /// Recursively collects every `*.masm` under the xreserve tree (skipping any `canary/` subtree)
 /// as file-name -> source. Shared by the two static sweeps below.

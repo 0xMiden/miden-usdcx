@@ -76,12 +76,6 @@ const ERR_XRESERVE_MINT_NOTE_ATTACHMENT_NUM_WORDS = "mint note attachment word c
 # be present alongside the attestation.
 const ERR_XRESERVE_MINT_NOTE_TARGET_MISSING = "mint note routing target attachment is missing"
 
-# LOCAL LAYOUT (felts)
-# =================================================================================================
-#   0..35   hash-verified attachment content ([feeAmount(8), pubkey(9), signature(17), pad(2)])
-#   36..51  attachment commitments list (≤ 4 words; the scheme-1 attestation's commitment is
-#           selected by its found index: word at 36 + sc1_idx * WORD_NUM_ELEMENTS)
-
 # PUBLIC INTERFACE
 # =================================================================================================
 
@@ -95,13 +89,19 @@ const ERR_XRESERVE_MINT_NOTE_TARGET_MISSING = "mint note routing target attachme
 #! `xreserve_mint::mint`. A pure transport shim: no storage writes, no supply arithmetic, no D5
 #! logic — every gate lives in `mint`.
 #!
+#! Locals (@locals(52), word-aligned sub-regions): loc[0..36] hash-verified attachment content
+#! ([feeAmount(8), pubkey(9), signature(17), pad(2)]); loc[36..52] attachment commitments list
+#! (≤ 4 words; the scheme-1 attestation's commitment is selected by its found index: word at
+#! 36 + sc1_idx * WORD_NUM_ELEMENTS).
+#!
 #! Inputs:  [pad(16)]
 #! Outputs: [pad(16)]
 #!
 #! Where:
 #! - the active note's storage is the DepositIntent preimage (60 header felts + hookData felts).
-#! - the active note carries a scheme-1 attestation [feeAmount(8), pubkey(9), signature(17), pad(2)]
-#!   and a scheme-2 NetworkAccountTarget routing attachment (routing-only, not read for effects).
+#! - the active note's attachments are a scheme-1 attestation [feeAmount(8), pubkey(9),
+#!   signature(17), pad(2)] and a scheme-2 NetworkAccountTarget routing attachment (routing-only,
+#!   not read for effects).
 #!
 #! Panics if:
 #! - the procedure is not called from a note context (active_note::* will fail).

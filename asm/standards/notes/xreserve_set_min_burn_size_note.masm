@@ -11,6 +11,7 @@
 # Note storage layout (1 felt): [new_min]. `new_min` is the new minimum burn size (AssetAmount).
 
 use miden::protocol::active_note
+use miden::core::sys
 use xreserve::min_burn_admin
 
 # CONSTANTS
@@ -38,8 +39,14 @@ const ERR_XRESERVE_SET_MIN_BURN_SIZE_NOTE_STORAGE = "set_min_burn_size note stor
 #! stack as `[new_min, pad(15)]`, and `call`s `min_burn_admin::set_min_burn_size`. The note ARGS are
 #! unused (executor-controlled).
 #!
-#! Inputs:  [pad(16)]
+#! Requires that the account exposes:
+#! - xreserve::min_burn_admin::set_min_burn_size procedure.
+#!
+#! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
+#!
+#! Note storage is assumed to be as follows:
+#! - new_min is the new minimum burn size as an AssetAmount felt (item 0).
 #!
 #! Panics if:
 #! - the note storage does not carry exactly 1 item.
@@ -65,5 +72,5 @@ pub proc main
     call.min_burn_admin::set_min_burn_size
     # => [pad(16)]
 
-    exec.::miden::core::sys::truncate_stack
+    exec.sys::truncate_stack
 end

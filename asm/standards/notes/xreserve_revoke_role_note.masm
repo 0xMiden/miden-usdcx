@@ -5,13 +5,15 @@
 # into memory, marshals the creator's params onto the stack in the proc's Inputs order, and `call`s the
 # owner-or-role-admin-gated stock `miden::standards::access::rbac::revoke_role` (the sender gate lives
 # in the proc; the note sender is kernel-forced, so an unauthorized creator traps there). The
-# absolute-path `call` resolves to the SAME proc root the faucet exposes via the RBAC component
+# `call` resolves to the SAME proc root the faucet exposes via the RBAC component
 # re-exports. A scheme-2 NetworkAccountTarget routing attachment addresses the note at the faucet
 # (routing-only).
 #
 # Note storage layout (3 felts): [role_symbol, account_suffix, account_prefix].
 
 use miden::protocol::active_note
+use miden::standards::access::rbac
+use miden::core::sys
 
 # CONSTANTS
 # =================================================================================================
@@ -33,8 +35,15 @@ const ERR_XRESERVE_REVOKE_ROLE_NOTE_STORAGE = "revoke_role note storage item cou
 #! at PARAM_PTR, marshals them onto the stack as `[role_symbol, account_suffix, account_prefix,
 #! pad(13)]`, and `call`s the stock `rbac::revoke_role`. The note ARGS are unused.
 #!
-#! Inputs:  [pad(16)]
+#! Requires that the account exposes:
+#! - miden::standards::access::rbac::revoke_role procedure.
+#!
+#! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
+#!
+#! Note storage is assumed to be as follows:
+#! - role_symbol is the RoleSymbol felt of the role to revoke (item 0).
+#! - account_suffix and account_prefix are the two AccountId felts of the member (items 1 and 2).
 #!
 #! Panics if:
 #! - the note storage does not carry exactly 3 items.
@@ -59,8 +68,8 @@ pub proc main
     # => [role_symbol, account_suffix, account_prefix, pad(16)]
     # (the call consumes the top 16: [role_symbol, account_suffix, account_prefix, pad(13)])
 
-    call.::miden::standards::access::rbac::revoke_role
+    call.rbac::revoke_role
     # => [pad(16)]
 
-    exec.::miden::core::sys::truncate_stack
+    exec.sys::truncate_stack
 end

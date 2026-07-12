@@ -14,6 +14,7 @@
 # `source_domain`/`domain` are the u32 scalars (u32-guarded on-chain before any write).
 
 use miden::protocol::active_note
+use miden::core::sys
 use xreserve::domain_config
 
 # CONSTANTS
@@ -43,8 +44,16 @@ const ERR_XRESERVE_DOMAIN_INIT_NOTE_STORAGE = "domain_init note storage item cou
 #! `[IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]`, and `call`s
 #! `domain_config::domain_init`. The note ARGS are unused (executor-controlled).
 #!
-#! Inputs:  [pad(16)]
+#! Requires that the account exposes:
+#! - xreserve::domain_config::domain_init procedure.
+#!
+#! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
+#!
+#! Note storage is assumed to be as follows:
+#! - IDENTIFIER is the pre-hashed bytes32_to_key Word, stored verbatim (4 felts, items 0..4).
+#! - XRC_HI / XRC_LO are the xreserve_contract bytes32 as its 8 u32-LE packed felts (items 4..12).
+#! - source_domain and domain are the u32 scalars (items 12 and 13), u32-guarded before any write.
 #!
 #! Panics if:
 #! - the note storage does not carry exactly 14 items.
@@ -95,5 +104,5 @@ pub proc main
     call.domain_config::domain_init
     # => [pad(16)]
 
-    exec.::miden::core::sys::truncate_stack
+    exec.sys::truncate_stack
 end

@@ -14,6 +14,7 @@
 //!     burn-policy STORAGE slot holds the CMP-A10 root, so the sole decrement path is policy-gated.
 //!   - N1D (`pinned_standards_*`): the inherited decrement primitive `exec.faucet::burn` has exactly
 //!     one standards caller (`receive_and_burn`) at the pinned dependency baseline.
+//!
 //! N2/N3 re-confirm the end-to-end composition (real `XReserveBurnNote` → `receive_and_burn` → CMP-A10):
 //! a valid burn decrements exactly once; invalid burns (below-min / zero / paused) trap the exact
 //! CMP-A10/stock error. They consume CMP-A10/CMP-B2 — they do not rebuild them.

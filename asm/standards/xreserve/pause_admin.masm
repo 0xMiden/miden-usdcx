@@ -25,8 +25,9 @@ const DOM_PAUSER_ROLE = 728098706988649
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! DOM_PAUSER-gated emergency pause: gates on the DOM_PAUSER role (the note sender must hold it), then
-#! sets the faucet is_paused flag via the unauthenticated pausable primitive. A paused faucet halts both
+#! Pauses the faucet — the DOM_PAUSER-gated emergency halt: gates on the DOM_PAUSER role (the note
+#! sender must hold it), then sets the is_paused flag via the unauthenticated pausable primitive. A
+#! paused faucet halts both
 #! deposits (the xreserve_mint assert_not_paused reconciliation) and withdrawals (execute_burn_policy's
 #! stock pause gate) — CIR-ADMIN-4.
 #!
@@ -40,13 +41,15 @@ const DOM_PAUSER_ROLE = 728098706988649
 pub proc pause
     push.DOM_PAUSER_ROLE
     # => [DOM_PAUSER_ROLE, pad(15)]
+
     exec.rbac::assert_sender_has_role
     # => [pad(16)]
+
     exec.pausable::pause
     # => [pad(16)]
 end
 
-#! DOM_PAUSER-gated unpause: the same DOM_PAUSER role gate, then clears the faucet is_paused flag via the
+#! Unpauses the faucet: the same DOM_PAUSER role gate, then clears the is_paused flag via the
 #! unauthenticated pausable primitive. The Circle multi-party co-approval for unpause is an OPS SOP
 #! (TASK-P4-MONITORING-ADMIN-OPS), NOT an on-chain check — deliberately not enforced here.
 #!
@@ -60,8 +63,10 @@ end
 pub proc unpause
     push.DOM_PAUSER_ROLE
     # => [DOM_PAUSER_ROLE, pad(15)]
+
     exec.rbac::assert_sender_has_role
     # => [pad(16)]
+
     exec.pausable::unpause
     # => [pad(16)]
 end

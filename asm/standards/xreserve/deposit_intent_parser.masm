@@ -11,8 +11,8 @@
 # BUILD STATE: implemented (C5a parser route, C5b domain compare, C5c identifier
 # compare + output contract). Loop history: crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
 
-use miden::core::math::u64
 use miden::protocol::active_account
+use miden::core::math::u64
 use xreserve::encoding
 use xreserve::encoding::layout::AMOUNT_FELT_OFF
 use xreserve::encoding::layout::MAX_FEE_FELT_OFF
@@ -78,7 +78,7 @@ pub proc assert_deposit_intent
     exec.encoding::parse_deposit_intent
     # => [remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]
 
-    # D5a step 5 (R-MINT-6): the configured domain lives in element 0 of the domain
+    # step 5 of D5a (R-MINT-6): the configured domain lives in element 0 of the domain
     # config slot word
     push.DOMAIN_CONFIG_SLOT[0..2]
     exec.active_account::get_item
@@ -90,7 +90,7 @@ pub proc assert_deposit_intent
     assert_eq.err=ERR_XRESERVE_WRONG_DOMAIN
     # => [REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]
 
-    # D5a step 6 (R-MINT-7): the parser's packed remoteToken words are already in the
+    # step 6 of D5a (R-MINT-7): the parser's packed remoteToken words are already in the
     # [B1, B0] orientation bytes32_to_key consumes
     exec.encoding::bytes32_to_key
     # => [KEY, hook_data_len]
@@ -140,12 +140,14 @@ pub proc assert_mint_amounts
     # reduce amount (felt[2..9]); keep [intent_ptr, scale_exp] live below for reuse
     dup.1 dup.1 push.AMOUNT_FELT_OFF add
     # => [amount_base, scale_exp, intent_ptr, scale_exp]
+
     exec.reduce_uint256_field
     # => [amount_y, intent_ptr, scale_exp]
 
     # reduce maxFee (felt[43..50])
     dup.2 dup.2 push.MAX_FEE_FELT_OFF add
     # => [maxfee_base, scale_exp, amount_y, intent_ptr, scale_exp]
+
     exec.reduce_uint256_field
     # => [maxfee_y, amount_y, intent_ptr, scale_exp]
 
@@ -153,17 +155,22 @@ pub proc assert_mint_amounts
     movup.2 drop
     # => [maxfee_y, amount_y, scale_exp]
 
-    # R-MINT-10: assert reduced amount >= maxFee (maxFee <= amount), keeping maxfee_y for
-    # R-MINT-11. Both reduced values are < 2^63 (felts are unordered) -> u64 limb compare.
+    # assert reduced amount >= maxFee (R-MINT-10; maxFee <= amount), keeping maxfee_y for the
+    # follow-on R-MINT-11 compare; both reduced values are < 2^63 (felts are unordered) -> u64
+    # limb compare.
     dup movup.2 swap
     # => [maxfee_y, amount_y, maxfee_y, scale_exp]
+
     u32split
     # => [maxfee_lo, maxfee_hi, amount_y, maxfee_y, scale_exp]
+
     movup.2 u32split
     # => [amount_lo, amount_hi, maxfee_lo, maxfee_hi, maxfee_y, scale_exp]
+
     # u64::lte over [b, a] (b on top) returns a <= b; here b = amount, a = maxFee
     exec.u64::lte
     # => [is_amount_ge_maxfee, maxfee_y, scale_exp]
+
     assert.err=ERR_XRESERVE_AMOUNT_BELOW_FEE
     # => [maxfee_y, scale_exp]
 
@@ -172,10 +179,13 @@ pub proc assert_mint_amounts
     # word traps (advice stack read), never defaults.
     adv_pushw
     # => [U0, maxfee_y, scale_exp]
+
     adv_pushw
     # => [U1, U0, maxfee_y, scale_exp]
+
     movup.9 movdn.8
     # => [U1, U0, scale_exp, maxfee_y]
+
     exec.encoding::uint256_to_asset_amount
     # => [feeamount_y, maxfee_y]
 
@@ -217,7 +227,7 @@ pub proc assert_nonce_unused
     push.NONCE_FELT_OFF add
     # => [nonce_base]
 
-    # B0: the nonce's first four packed limbs (wire bytes 0..16), element-0 on top — the
+    # load B0: the nonce's first four packed limbs (wire bytes 0..16), element-0 on top — the
     # [B1, B0] orientation bytes32_to_key consumes (mirrors the parser's remoteToken load)
     dup add.3 mem_load
     dup.1 add.2 mem_load
@@ -225,7 +235,7 @@ pub proc assert_nonce_unused
     dup.3 mem_load
     # => [B0, nonce_base]
 
-    # B1: the next four packed limbs (wire bytes 16..32)
+    # load B1: the next four packed limbs (wire bytes 16..32)
     dup.4 add.7 mem_load
     dup.5 add.6 mem_load
     dup.6 add.5 mem_load
@@ -245,8 +255,8 @@ pub proc assert_nonce_unused
     exec.active_account::get_map_item
     # => [VALUE]
 
-    # assert-zero: an unused nonce reads EMPTY_WORD; a used (non-empty) one traps. D5c does
-    # NOT write the registry -- consuming the nonce is deferred to D5e.
+    # assert-zero: an unused nonce reads EMPTY_WORD; a used (non-empty) one traps. D5c does not
+    # write the registry -- consuming the nonce is deferred to D5e.
     padw assert_eqw.err=ERR_XRESERVE_NONCE_REPLAY
     # => []
 end
@@ -278,14 +288,14 @@ end
 proc reduce_uint256_field
     # => [base, scale_exp]
 
-    # U0: the field's first four packed limbs at base+0..base+3 (element-0 on top)
+    # load U0: the field's first four packed limbs at base+0..base+3 (element-0 on top)
     dup add.3 mem_load
     dup.1 add.2 mem_load
     dup.2 add.1 mem_load
     dup.3 mem_load
     # => [U0, base, scale_exp]
 
-    # U1: the next four packed limbs at base+4..base+7
+    # load U1: the next four packed limbs at base+4..base+7
     dup.4 add.7 mem_load
     dup.5 add.6 mem_load
     dup.6 add.5 mem_load

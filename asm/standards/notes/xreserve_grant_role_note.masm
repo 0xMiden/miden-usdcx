@@ -5,7 +5,7 @@
 # controls). It stages the note storage into memory, marshals the creator's params onto the stack in
 # the proc's Inputs order, and `call`s the OWNER-or-role-admin-gated stock
 # `miden::standards::access::rbac::grant_role` (the sender gate lives in the proc; the note sender is
-# kernel-forced, so an unauthorized creator traps there). The absolute-path `call` resolves to the
+# kernel-forced, so an unauthorized creator traps there). The `call` resolves to the
 # SAME proc root the faucet exposes via the RBAC component re-exports
 # (`account_components/access/rbac.masm`). A scheme-2 NetworkAccountTarget routing attachment addresses
 # the note at the faucet (routing-only, added by the Rust factory).
@@ -13,6 +13,8 @@
 # Note storage layout (3 felts): [role_symbol, account_suffix, account_prefix].
 
 use miden::protocol::active_note
+use miden::standards::access::rbac
+use miden::core::sys
 
 # CONSTANTS
 # =================================================================================================
@@ -40,8 +42,15 @@ const ERR_XRESERVE_GRANT_ROLE_NOTE_STORAGE = "grant_role note storage item count
 #! at PARAM_PTR, marshals them onto the stack as `[role_symbol, account_suffix, account_prefix,
 #! pad(13)]`, and `call`s the stock `rbac::grant_role`. The note ARGS are unused (executor-controlled).
 #!
-#! Inputs:  [pad(16)]
+#! Requires that the account exposes:
+#! - miden::standards::access::rbac::grant_role procedure.
+#!
+#! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
+#!
+#! Note storage is assumed to be as follows:
+#! - role_symbol is the RoleSymbol felt of the role to grant (item 0).
+#! - account_suffix and account_prefix are the two AccountId felts of the member (items 1 and 2).
 #!
 #! Panics if:
 #! - the note storage does not carry exactly 3 items.
@@ -60,8 +69,8 @@ pub proc main
     eq.GRANT_ROLE_NOTE_NUM_ITEMS assert.err=ERR_XRESERVE_GRANT_ROLE_NOTE_STORAGE
     # => [pad(16)]
 
-    # marshal deepest-first (offset 2 down to 0) so role_symbol lands on top, matching the proc's
-    # Inputs [role_symbol, account_suffix, account_prefix, pad(13)].
+    # marshal deepest-first (offset 2 down to 0) so role_symbol lands on top, matching the
+    # proc's Inputs [role_symbol, account_suffix, account_prefix, pad(13)].
     push.PARAM_PTR add.2 mem_load
     # => [account_prefix, pad(16)]
 
@@ -72,8 +81,8 @@ pub proc main
     # => [role_symbol, account_suffix, account_prefix, pad(16)]
     # (the call consumes the top 16: [role_symbol, account_suffix, account_prefix, pad(13)])
 
-    call.::miden::standards::access::rbac::grant_role
+    call.rbac::grant_role
     # => [pad(16)]
 
-    exec.::miden::core::sys::truncate_stack
+    exec.sys::truncate_stack
 end

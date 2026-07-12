@@ -248,9 +248,9 @@ impl From<TokenPolicyManagerError> for XReserveStablecoinBuilderError {
     }
 }
 
-/// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library component
-/// + a `TokenPolicyManager` with the mint-deny guard active + the **owner-gating admin foundation**
-/// (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::OwnerControlled`;
+/// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library
+/// component + a `TokenPolicyManager` with the mint-deny guard active + the **owner-gating admin
+/// foundation** (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::OwnerControlled`;
 /// DECISION-ADMIN-ROLE-MODEL). The foundation ships in this production builder so the deployed faucet
 /// validates the real auth model: the setters (`set_attester` / `set_min_burn_size` / `set_max_supply`)
 /// are gated on the Ownable2Step owner, and the `DOM_PAUSER` / `DOM_MANAGER` role members are seeded.

@@ -16,15 +16,27 @@
 
 use xreserve::xreserve_mint_note_entry->note_entry
 
-#! Consume entry point of the XReserveMintNote: crosses into the faucet account context and
-#! drives the attested mint through the receive_and_mint transport shim.
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Consumes the XReserveMintNote (the note's consume entry point): crosses into the faucet account
+#! context and drives the attested mint through the receive_and_mint transport shim.
+#!
+#! Requires that the account exposes:
+#! - xreserve::xreserve_mint_note_entry::receive_and_mint procedure.
 #!
 #! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
 #!
+#! Note storage is assumed to be as follows:
+#! - the u32-LE-packed DepositIntent preimage (60 header felts + the packed hookData felts);
+#!   receive_and_mint stages it into the account call frame and the mint gates re-validate it.
+#!
 #! Panics if:
 #! - receive_and_mint panics (transport-shape guards, the attachment commitment binding, or any
 #!   mint gate — pause, D5a..D5e).
+#!
+#! Invocation: dyncall
 @note_script
 pub proc main
     # the transport is note storage + attachment; the note ARGS are unused

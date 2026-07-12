@@ -1,6 +1,18 @@
 [workspace]
 resolver = "2"
-members = ["crates/xusdc-encoding", "crates/xusdc-validation"]
+members = ["crates/xusdc-encoding", "crates/xusdc-validation", "crates/xreserve-deposit-relayer"]
+
+# Shared dependency versions defined once (workspace-shared-dependencies). Every member consumes
+# these with `dep = { workspace = true, features = [...] }`, adding crate-specific feature sets on
+# top. Base features are kept minimal here so a crate never inherits a feature it does not use;
+# `serde`'s `derive` is the one exception (every consumer needs it).
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1" }
+anyhow = "1"
+rstest = "0.26"
+assert_matches = "1.5"
 
 # LNV-1 toolchain resolution (ledger: crates/xusdc-validation/VALIDATION-RECORD.md §2).
 #

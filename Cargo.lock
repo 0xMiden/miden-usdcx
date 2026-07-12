@@ -3980,7 +3980,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -4821,6 +4821,18 @@ checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
 dependencies = [
  "curve25519-dalek",
  "rand_core 0.6.4",
+]
+
+[[package]]
+name = "xreserve-deposit-relayer"
+version = "0.0.0"
+dependencies = [
+ "assert_matches",
+ "rstest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "xusdc-encoding",
 ]
 
 [[package]]

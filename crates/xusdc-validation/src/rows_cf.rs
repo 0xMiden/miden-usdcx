@@ -1,17 +1,17 @@
 //! The LNV-2 rows-C/F driver: one deterministic arc against a fresh local node, producing the
 //! [`RowsCfObservations`] the rows-C/F assertion suite judges.
 //!
-//! Execution model (LNV-1 §3.2 posture finding, empirically re-confirmed for LNV-2):
+//! Execution model (LNV-1 posture finding, empirically re-confirmed for LNV-2):
 //! - **Positive admin state changes commit via path N (the ntx-builder).** Every `set_attester` /
 //!   `set_max_supply` / `set_min_burn_size` / `pause` / `unpause` / role grant/revoke is emitted as a
 //!   routed, allowlisted admin note from its (kernel-forced) sender wallet — a regular-account tx the
 //!   user RPC accepts — and the running ntx-builder auto-executes the faucet's consumption. The
-//!   driver polls `GetAccount` until the committed effect appears ([`Driver::commit_admin`]). (User
+//!   driver polls `GetAccount` until the committed effect appears (`Driver::commit_admin`). (User
 //!   RPC rejects post-deploy network-account txs, and the client cannot present the
 //!   `x-miden-network-tx-auth` header, so path N is the only commit path at v0.15.1.)
 //! - **Accept/reject PROBES run client-side (no submission).** A mint/burn/P2ID/tx-script
 //!   consumption is executed locally against the committed on-chain state
-//!   ([`Driver::probe_consume`] / [`Driver::probe_tx_script`]); executing Ok = ACCEPTED, a trap =
+//!   (`Driver::probe_consume` / `Driver::probe_tx_script`); executing Ok = ACCEPTED, a trap =
 //!   REJECTED with the captured error. This is the LNV-1 row-B kernel-trap technique — a reject needs
 //!   no submission path, and an accept proves the consumption is valid against the real chain state
 //!   without mutating it (so the arc stays deterministic: committed `token_supply` is fixed by the
@@ -99,7 +99,12 @@ const UNCONSUMED_WATCH_BLOCKS: u32 = 3;
 // ================================================================================================
 
 fn word4(w: Word) -> Word4 {
-    [w[0].as_canonical_u64(), w[1].as_canonical_u64(), w[2].as_canonical_u64(), w[3].as_canonical_u64()]
+    [
+        w[0].as_canonical_u64(),
+        w[1].as_canonical_u64(),
+        w[2].as_canonical_u64(),
+        w[3].as_canonical_u64(),
+    ]
 }
 
 fn value_slot(account: &Account, label: &str) -> Result<Word> {
@@ -119,7 +124,11 @@ fn map_item(account: &Account, label: &str, key: Word) -> Result<Word> {
 }
 
 fn attester_marker(account: &Account, commitment: Word) -> Result<Word4> {
-    Ok(word4(map_item(account, XRESERVE_ATTESTERS_SLOT_LABEL, commitment)?))
+    Ok(word4(map_item(
+        account,
+        XRESERVE_ATTESTERS_SLOT_LABEL,
+        commitment,
+    )?))
 }
 
 fn min_burn(account: &Account) -> Result<u64> {
@@ -128,19 +137,33 @@ fn min_burn(account: &Account) -> Result<u64> {
 
 fn max_supply(account: &Account) -> Result<u64> {
     // token_config = [token_supply, max_supply, decimals, symbol].
-    Ok(value_slot(account, "miden::standards::faucets::fungible::token_config")?[1].as_canonical_u64())
+    Ok(
+        value_slot(account, "miden::standards::faucets::fungible::token_config")?[1]
+            .as_canonical_u64(),
+    )
 }
 
 fn token_supply(account: &Account) -> Result<u64> {
-    Ok(value_slot(account, "miden::standards::faucets::fungible::token_config")?[0].as_canonical_u64())
+    Ok(
+        value_slot(account, "miden::standards::faucets::fungible::token_config")?[0]
+            .as_canonical_u64(),
+    )
 }
 
 fn is_paused(account: &Account) -> Result<Word4> {
-    Ok(word4(value_slot(account, "miden::standards::access::pausable::is_paused")?))
+    Ok(word4(value_slot(
+        account,
+        "miden::standards::access::pausable::is_paused",
+    )?))
 }
 
 fn role_membership(account: &Account, role: &RoleSymbol, member: AccountId) -> Result<Word4> {
-    let key = Word::from([Felt::ZERO, Felt::from(role), member.suffix(), member.prefix().as_felt()]);
+    let key = Word::from([
+        Felt::ZERO,
+        Felt::from(role),
+        member.suffix(),
+        member.prefix().as_felt(),
+    ]);
     account
         .storage()
         .get_map_item(RoleBasedAccessControl::role_membership_slot(), key)
@@ -161,7 +184,11 @@ impl Driver {
     /// The NODE's current view of the faucet account (`GetAccount`); errors if the node does not
     /// recognize it.
     async fn fetch(&mut self) -> Result<Account> {
-        self.hc.client.sync_state().await.context("syncing before a node read")?;
+        self.hc
+            .client
+            .sync_state()
+            .await
+            .context("syncing before a node read")?;
         self.hc
             .rpc
             .get_account_details(self.faucet_id)
@@ -173,7 +200,11 @@ impl Driver {
     async fn wait_commit(&mut self, tx_id: TransactionId) -> Result<u32> {
         let deadline = Instant::now() + TX_COMMIT_TIMEOUT;
         loop {
-            self.hc.client.sync_state().await.context("syncing while waiting for a tx")?;
+            self.hc
+                .client
+                .sync_state()
+                .await
+                .context("syncing while waiting for a tx")?;
             let record = self
                 .hc
                 .client
@@ -183,7 +214,9 @@ impl Driver {
                 .pop()
                 .with_context(|| format!("tx {tx_id} not tracked"))?;
             match record.status {
-                TransactionStatus::Committed { block_number, .. } => return Ok(block_number.as_u32()),
+                TransactionStatus::Committed { block_number, .. } => {
+                    return Ok(block_number.as_u32())
+                }
                 TransactionStatus::Discarded(cause) => bail!("tx {tx_id} DISCARDED: {cause:?}"),
                 TransactionStatus::Pending => {
                     if Instant::now() > deadline {
@@ -213,11 +246,19 @@ impl Driver {
 
     /// Commits a positive admin op via path N: emit the routed allowlisted note, then poll
     /// `GetAccount` until `ready` observes the committed effect. Returns the committed account.
-    async fn commit_admin<F>(&mut self, sender: AccountId, note: Note, op: &str, ready: F) -> Result<Account>
+    async fn commit_admin<F>(
+        &mut self,
+        sender: AccountId,
+        note: Note,
+        op: &str,
+        ready: F,
+    ) -> Result<Account>
     where
         F: Fn(&Account) -> bool,
     {
-        self.emit(sender, note).await.with_context(|| format!("emitting the {op} note"))?;
+        self.emit(sender, note)
+            .await
+            .with_context(|| format!("emitting the {op} note"))?;
         let deadline = Instant::now() + PATHN_TIMEOUT;
         loop {
             let account = self.fetch().await?;
@@ -237,29 +278,51 @@ impl Driver {
     /// Client-side execute of the faucet consuming `note` (no submission). Ok = ACCEPTED, a trap =
     /// REJECTED with the captured error.
     async fn probe_consume(&mut self, note: Note) -> Result<Verdict> {
-        self.hc.client.sync_state().await.context("syncing before a probe")?;
+        self.hc
+            .client
+            .sync_state()
+            .await
+            .context("syncing before a probe")?;
         let req = TransactionRequestBuilder::new()
             .input_notes(vec![(note, None)])
             .build()
             .context("building a probe consume request")?;
-        Ok(match self.hc.client.execute_transaction(self.faucet_id, req).await {
-            Ok(_) => Verdict::Accepted,
-            Err(e) => Verdict::Rejected(format!("{e:?}")),
-        })
+        Ok(
+            match self
+                .hc
+                .client
+                .execute_transaction(self.faucet_id, req)
+                .await
+            {
+                Ok(_) => Verdict::Accepted,
+                Err(e) => Verdict::Rejected(format!("{e:?}")),
+            },
+        )
     }
 
     /// Client-side execute of a tx-script transaction against the faucet (row F). Ok = ACCEPTED, a
     /// trap = REJECTED.
     async fn probe_tx_script(&mut self, script: TransactionScript) -> Result<Verdict> {
-        self.hc.client.sync_state().await.context("syncing before the tx-script probe")?;
+        self.hc
+            .client
+            .sync_state()
+            .await
+            .context("syncing before the tx-script probe")?;
         let req = TransactionRequestBuilder::new()
             .custom_script(script)
             .build()
             .context("building the tx-script request")?;
-        Ok(match self.hc.client.execute_transaction(self.faucet_id, req).await {
-            Ok(_) => Verdict::Accepted,
-            Err(e) => Verdict::Rejected(format!("{e:?}")),
-        })
+        Ok(
+            match self
+                .hc
+                .client
+                .execute_transaction(self.faucet_id, req)
+                .await
+            {
+                Ok(_) => Verdict::Accepted,
+                Err(e) => Verdict::Rejected(format!("{e:?}")),
+            },
+        )
     }
 
     /// Node-truth: is `note`'s nullifier in the node's spent set?
@@ -278,8 +341,18 @@ impl Driver {
     async fn wait_blocks_past(&mut self, from: u32, blocks: u32) -> Result<()> {
         let deadline = Instant::now() + PATHN_TIMEOUT;
         loop {
-            self.hc.client.sync_state().await.context("syncing while watching blocks")?;
-            let tip = self.hc.client.get_sync_height().await.context("reading sync height")?.as_u32();
+            self.hc
+                .client
+                .sync_state()
+                .await
+                .context("syncing while watching blocks")?;
+            let tip = self
+                .hc
+                .client
+                .get_sync_height()
+                .await
+                .context("reading sync height")?
+                .as_u32();
             if tip >= from + blocks {
                 return Ok(());
             }
@@ -301,18 +374,25 @@ impl Driver {
     fn owner(&self) -> AccountId {
         self.actors.owner.id()
     }
-    fn set_attester_note(&mut self, sender: AccountId, commitment: Word, enabled: u8) -> Result<Note> {
+    fn set_attester_note(
+        &mut self,
+        sender: AccountId,
+        commitment: Word,
+        enabled: u8,
+    ) -> Result<Note> {
         let f = self.faucet_id;
         XReserveSetAttesterNote::create(sender, f, commitment, enabled, self.rng())
             .context("building a set_attester note")
     }
     fn set_max_supply_note(&mut self, sender: AccountId, cap: u64) -> Result<Note> {
         let f = self.faucet_id;
-        XReserveSetMaxSupplyNote::create(sender, f, cap, self.rng()).context("building a set_max_supply note")
+        XReserveSetMaxSupplyNote::create(sender, f, cap, self.rng())
+            .context("building a set_max_supply note")
     }
     fn set_min_burn_note(&mut self, sender: AccountId, min: u64) -> Result<Note> {
         let f = self.faucet_id;
-        XReserveSetMinBurnSizeNote::create(sender, f, min, self.rng()).context("building a set_min_burn note")
+        XReserveSetMinBurnSizeNote::create(sender, f, min, self.rng())
+            .context("building a set_min_burn note")
     }
     fn pause_note(&mut self, sender: AccountId) -> Result<Note> {
         let f = self.faucet_id;
@@ -322,15 +402,29 @@ impl Driver {
         let f = self.faucet_id;
         XReserveUnpauseNote::create(sender, f, self.rng()).context("building an unpause note")
     }
-    fn mint_note(&mut self, attester_is_b: bool, recipient: AccountId, units: u64, salt: u8) -> Result<Note> {
+    fn mint_note(
+        &mut self,
+        attester_is_b: bool,
+        recipient: AccountId,
+        units: u64,
+        salt: u8,
+    ) -> Result<Note> {
         let f = self.faucet_id;
         let sender = self.owner();
-        let payload = mintburn::mint_payload(recipient, raw_for_units(units), raw_for_units(MAX_FEE_UNITS), salt);
+        let payload = mintburn::mint_payload(
+            recipient,
+            raw_for_units(units),
+            raw_for_units(MAX_FEE_UNITS),
+            salt,
+        );
         // Produce the owned attestation under an immutable borrow of `actors`, which ends here; the
         // mint-note builder then takes the (disjoint) mutable rng borrow — no field-split gymnastics.
         let attestation = {
-            let attester: &AttesterKey =
-                if attester_is_b { &self.actors.attester_b } else { &self.actors.attester };
+            let attester: &AttesterKey = if attester_is_b {
+                &self.actors.attester_b
+            } else {
+                &self.actors.attester
+            };
             attester.attestation_for(&payload)
         };
         XReserveMintNote::create(sender, f, &payload, &attestation, self.hc.client.rng())
@@ -390,8 +484,13 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
     let actors = create_actors(&mut hc, &actor_root).await?;
     let owner_id = actors.owner.id();
     let domain = lnv2_domain_params();
-    let faucet =
-        build_faucet_account(owner_id, actors.pauser.id(), actors.manager.id(), cfg.max_supply, os_seed())?;
+    let faucet = build_faucet_account(
+        owner_id,
+        actors.pauser.id(),
+        actors.manager.id(),
+        cfg.max_supply,
+        os_seed(),
+    )?;
     let faucet_id = faucet.id();
 
     // 3. Deploy: the faucet's first tx consumes the owner's domain_init (first-deploy exemption).
@@ -409,17 +508,36 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
         .own_output_notes(vec![note1.clone()])
         .build()
         .context("building the domain_init emit")?;
-    let emit1_tx = hc.client.submit_new_transaction(owner_id, emit1).await.context("emit domain_init")?;
+    let emit1_tx = hc
+        .client
+        .submit_new_transaction(owner_id, emit1)
+        .await
+        .context("emit domain_init")?;
     // Reuse the driver's wait after we build it; here we poll inline via a temporary.
-    let mut d = Driver { hc, actors, faucet_id };
-    d.wait_commit(emit1_tx).await.context("waiting for the domain_init emit")?;
-    d.hc.client.add_account(&faucet, false).await.context("registering the faucet with the client")?;
+    let mut d = Driver {
+        hc,
+        actors,
+        faucet_id,
+    };
+    d.wait_commit(emit1_tx)
+        .await
+        .context("waiting for the domain_init emit")?;
+    d.hc.client
+        .add_account(&faucet, false)
+        .await
+        .context("registering the faucet with the client")?;
     let deploy = TransactionRequestBuilder::new()
         .input_notes(vec![(note1.clone(), None)])
         .build()
         .context("building the deploy request")?;
-    let deploy_tx = d.hc.client.submit_new_transaction(faucet_id, deploy).await.context("deploy tx")?;
-    d.wait_commit(deploy_tx).await.context("waiting for the deploy")?;
+    let deploy_tx =
+        d.hc.client
+            .submit_new_transaction(faucet_id, deploy)
+            .await
+            .context("deploy tx")?;
+    d.wait_commit(deploy_tx)
+        .await
+        .context("waiting for the deploy")?;
 
     let recipient = d.actors.recipient.id();
     let pauser_id = d.actors.pauser.id();
@@ -433,7 +551,9 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
     let note = d.set_attester_note(owner_id, a_commitment, 1)?;
     let acct = d
         .commit_admin(owner_id, note, "set_attester(A, enabled=1)", |a| {
-            attester_marker(a, a_commitment).map(|m| m == crate::observations_cf::MARKER_SET).unwrap_or(false)
+            attester_marker(a, a_commitment)
+                .map(|m| m == crate::observations_cf::MARKER_SET)
+                .unwrap_or(false)
         })
         .await?;
     let c1_a_marker_after_enable = attester_marker(&acct, a_commitment)?;
@@ -500,14 +620,18 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
     let note = d.set_attester_note(owner_id, a_commitment, 0)?;
     let acct = d
         .commit_admin(owner_id, note, "set_attester(A, enabled=0)", |a| {
-            attester_marker(a, a_commitment).map(|m| m == crate::observations_cf::MARKER_CLEAR).unwrap_or(false)
+            attester_marker(a, a_commitment)
+                .map(|m| m == crate::observations_cf::MARKER_CLEAR)
+                .unwrap_or(false)
         })
         .await?;
     let c1_a_marker_after_rotate = attester_marker(&acct, a_commitment)?;
     let note = d.set_attester_note(owner_id, b_commitment, 1)?;
     let acct = d
         .commit_admin(owner_id, note, "set_attester(B, enabled=1)", |a| {
-            attester_marker(a, b_commitment).map(|m| m == crate::observations_cf::MARKER_SET).unwrap_or(false)
+            attester_marker(a, b_commitment)
+                .map(|m| m == crate::observations_cf::MARKER_SET)
+                .unwrap_or(false)
         })
         .await?;
     let c1_b_marker_after_rotate = attester_marker(&acct, b_commitment)?;
@@ -527,7 +651,9 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
     let note = d.pause_note(pauser_id)?;
     let acct = d
         .commit_admin(pauser_id, note, "pause", |a| {
-            is_paused(a).map(|p| p == crate::observations_cf::MARKER_SET).unwrap_or(false)
+            is_paused(a)
+                .map(|p| p == crate::observations_cf::MARKER_SET)
+                .unwrap_or(false)
         })
         .await?;
     let c4_paused = is_paused(&acct)?;
@@ -538,24 +664,36 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
     // F6: the owner's set_attester (re-enable A) still commits WHILE PAUSED.
     let note = d.set_attester_note(owner_id, a_commitment, 1)?;
     let acct = d
-        .commit_admin(owner_id, note, "owner set_attester WHILE PAUSED (F6)", |a| {
-            attester_marker(a, a_commitment).map(|m| m == crate::observations_cf::MARKER_SET).unwrap_or(false)
-        })
+        .commit_admin(
+            owner_id,
+            note,
+            "owner set_attester WHILE PAUSED (F6)",
+            |a| {
+                attester_marker(a, a_commitment)
+                    .map(|m| m == crate::observations_cf::MARKER_SET)
+                    .unwrap_or(false)
+            },
+        )
         .await?;
     let c4_owner_attester_paused = attester_marker(&acct, a_commitment)?;
     // F6: the owner's set_min_burn_size still commits WHILE PAUSED.
     let note = d.set_min_burn_note(owner_id, F6_MIN)?;
     let acct = d
-        .commit_admin(owner_id, note, "owner set_min_burn WHILE PAUSED (F6)", |a| {
-            min_burn(a).map(|m| m == F6_MIN).unwrap_or(false)
-        })
+        .commit_admin(
+            owner_id,
+            note,
+            "owner set_min_burn WHILE PAUSED (F6)",
+            |a| min_burn(a).map(|m| m == F6_MIN).unwrap_or(false),
+        )
         .await?;
     let c4_owner_min_paused = min_burn(&acct)?;
     // Unpause; a mint (attested by B) then ACCEPTS.
     let note = d.unpause_note(pauser_id)?;
     let acct = d
         .commit_admin(pauser_id, note, "unpause", |a| {
-            is_paused(a).map(|p| p == crate::observations_cf::MARKER_CLEAR).unwrap_or(false)
+            is_paused(a)
+                .map(|p| p == crate::observations_cf::MARKER_CLEAR)
+                .unwrap_or(false)
         })
         .await?;
     let c4_unpaused = is_paused(&acct)?;
@@ -575,31 +713,49 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
     let new_pauser = d.actors.new_pauser.id();
     let note = d.grant_pauser_note(new_pauser)?;
     let acct = d
-        .commit_admin(manager_id, note, "grant_role(DOM_PAUSER, new_pauser)", |a| {
-            role_membership(a, &pauser_role, new_pauser).map(|m| m == crate::observations_cf::MARKER_SET).unwrap_or(false)
-        })
+        .commit_admin(
+            manager_id,
+            note,
+            "grant_role(DOM_PAUSER, new_pauser)",
+            |a| {
+                role_membership(a, &pauser_role, new_pauser)
+                    .map(|m| m == crate::observations_cf::MARKER_SET)
+                    .unwrap_or(false)
+            },
+        )
         .await?;
     let c5_grant = role_membership(&acct, &pauser_role, new_pauser)?;
     // The new pauser can pause (capability proven).
     let note = d.pause_note(new_pauser)?;
     let acct = d
         .commit_admin(new_pauser, note, "new_pauser pause", |a| {
-            is_paused(a).map(|p| p == crate::observations_cf::MARKER_SET).unwrap_or(false)
+            is_paused(a)
+                .map(|p| p == crate::observations_cf::MARKER_SET)
+                .unwrap_or(false)
         })
         .await?;
     let c5_new_pause = is_paused(&acct)?;
     // Restore (unpause) so later state is clean.
     let note = d.unpause_note(new_pauser)?;
     d.commit_admin(new_pauser, note, "new_pauser unpause (restore)", |a| {
-        is_paused(a).map(|p| p == crate::observations_cf::MARKER_CLEAR).unwrap_or(false)
+        is_paused(a)
+            .map(|p| p == crate::observations_cf::MARKER_CLEAR)
+            .unwrap_or(false)
     })
     .await?;
     // Revoke; the revoked account can no longer pause.
     let note = d.revoke_pauser_note(new_pauser)?;
     let acct = d
-        .commit_admin(manager_id, note, "revoke_role(DOM_PAUSER, new_pauser)", |a| {
-            role_membership(a, &pauser_role, new_pauser).map(|m| m == crate::observations_cf::MARKER_CLEAR).unwrap_or(false)
-        })
+        .commit_admin(
+            manager_id,
+            note,
+            "revoke_role(DOM_PAUSER, new_pauser)",
+            |a| {
+                role_membership(a, &pauser_role, new_pauser)
+                    .map(|m| m == crate::observations_cf::MARKER_CLEAR)
+                    .unwrap_or(false)
+            },
+        )
         .await?;
     let c5_revoke = role_membership(&acct, &pauser_role, new_pauser)?;
     let revoked_pause = d.pause_note(new_pauser)?;
@@ -635,7 +791,11 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
 /// and a pause from a non-DOM_PAUSER. Each: client-side execute traps at the proc gate, AND the
 /// emitted (allowlisted, routed) note stays UNCONSUMED after a bounded watch (the ntx-builder
 /// attempted and failed the same gate).
-async fn run_c6(d: &mut Driver, stranger: AccountId, a_commitment: Word) -> Result<Vec<AdminGateReject>> {
+async fn run_c6(
+    d: &mut Driver,
+    stranger: AccountId,
+    a_commitment: Word,
+) -> Result<Vec<AdminGateReject>> {
     // Build the three negative notes (sent by the stranger).
     let n_attester = d.set_attester_note(stranger, a_commitment, 1)?;
     let n_max = d.set_max_supply_note(stranger, raw_for_units(CAP_UNITS))?;
@@ -652,7 +812,8 @@ async fn run_c6(d: &mut Driver, stranger: AccountId, a_commitment: Word) -> Resu
     let v_pause = d.probe_consume(n_pause.clone()).await?;
 
     // Node-side: after a bounded window none of the three was consumed.
-    d.wait_blocks_past(emit_block, UNCONSUMED_WATCH_BLOCKS).await?;
+    d.wait_blocks_past(emit_block, UNCONSUMED_WATCH_BLOCKS)
+        .await?;
     let u_attester = !d.note_consumed(&n_attester).await?;
     let u_max = !d.note_consumed(&n_max).await?;
     let u_pause = !d.note_consumed(&n_pause).await?;
@@ -706,7 +867,10 @@ async fn run_row_f(d: &mut Driver, sender: AccountId) -> Result<RowF> {
     let tx_script = TransactionScript::new(program);
     let tx_script_verdict = d.probe_tx_script(tx_script).await?;
 
-    Ok(RowF { non_allowlisted_note, tx_script: tx_script_verdict })
+    Ok(RowF {
+        non_allowlisted_note,
+        tx_script: tx_script_verdict,
+    })
 }
 
 /// The repo HEAD commit (ledger metadata; best-effort).

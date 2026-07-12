@@ -10,7 +10,7 @@
 //!    `#[ignore]`d in the DEFAULT suite because it requires loopback LISTENER binds, which
 //!    hermetic audit sandboxes deny (`Operation not permitted` on bind) — run it explicitly:
 //!    `cargo test -p xusdc-validation --locked -- --include-ignored` (or the `lnv1_rows_ab`
-//!    binary). The §11.2 gate claim ("rows A/B pass on a REAL node") rides ONLY on such real
+//!    binary). The full-matrix gate claim ("rows A/B pass on a REAL node") rides ONLY on such real
 //!    runs plus the LNV-1 human supervision gate — a green DEFAULT suite is NEVER the gate.
 //! 2. **Assertion negatives** (no node, sandbox-safe — the default suite): synthetic
 //!    observations built from REAL production-composition accounts, each proving one row-check
@@ -37,15 +37,20 @@ fn wallet_id(seed: u8) -> AccountId {
 }
 
 /// A production-shaped faucet `Account` with nonce 1 (as if deployed), optionally with the five
-/// §5.9 domain slots pre-seeded (`Some(params)` = post-init shape) and an optional REPLACEMENT
+/// domain-config slots pre-seeded (`Some(params)` = post-init shape) and an optional REPLACEMENT
 /// auth component (`None` = the frozen production auth).
 fn synthetic_deployed_faucet(
     domain: Option<&DomainParams>,
     auth_override: Option<AuthNetworkAccount>,
 ) -> Result<Account> {
     let xreserve = build_xreserve_component_seeded(domain)?;
-    let components =
-        production_components(xreserve, wallet_id(1), wallet_id(2), wallet_id(3), MAX_SUPPLY)?;
+    let components = production_components(
+        xreserve,
+        wallet_id(1),
+        wallet_id(2),
+        wallet_id(3),
+        MAX_SUPPLY,
+    )?;
     let auth = match auth_override {
         Some(auth) => auth,
         None => XReserveStablecoinBuilder::auth_component()?,
@@ -60,10 +65,7 @@ fn synthetic_deployed_faucet(
 
 /// A green-shaped observation set around `deployed`/`after_reinit` (callers then break exactly
 /// the one surface their test targets).
-fn synthetic_obs(
-    deployed: Option<Account>,
-    after_reinit: Option<Account>,
-) -> RowsAbObservations {
+fn synthetic_obs(deployed: Option<Account>, after_reinit: Option<Account>) -> RowsAbObservations {
     let faucet_id = deployed
         .as_ref()
         .or(after_reinit.as_ref())
@@ -115,7 +117,11 @@ fn row_a_rejects_a_thinned_allowlist() -> Result<()> {
     let mut thinned = XReserveStablecoinBuilder::allowed_note_scripts();
     let dropped = *thinned.iter().next().expect("the frozen set is non-empty");
     thinned.remove(&dropped);
-    assert_eq!(thinned.len(), 12, "the thinned fixture drops exactly one root");
+    assert_eq!(
+        thinned.len(),
+        12,
+        "the thinned fixture drops exactly one root"
+    );
     let auth = AuthNetworkAccount::with_allowed_notes(thinned)?;
 
     let params = DomainParams::lnv1();

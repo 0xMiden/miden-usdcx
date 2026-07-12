@@ -13,7 +13,7 @@
 //!    via the ntx-builder / path N; mint/burn + auth-boundary rejects proven by client-side kernel
 //!    traps), and judges the observations. `#[ignore]`d in the default suite because it must bind
 //!    loopback listener sockets (denied in hermetic audit sandboxes); run it with
-//!    `-- --include-ignored` or the `lnv2_rows_cf` binary. The §11.2 gate claim rides ONLY on real
+//!    `-- --include-ignored` or the `lnv2_rows_cf` binary. The full-matrix gate claim rides ONLY on real
 //!    runs + the human gate — a green default suite proves the assertion layer only.
 
 use anyhow::{Context, Result};
@@ -111,7 +111,9 @@ fn green_c6() -> Vec<AdminGateReject> {
 
 fn green_f() -> RowF {
     RowF {
-        non_allowlisted_note: rej("... input note script root is not in the note script allowlist ..."),
+        non_allowlisted_note: rej(
+            "... input note script root is not in the note script allowlist ...",
+        ),
         tx_script: rej("... transaction script root is not in the tx script allowlist ..."),
     }
 }
@@ -168,7 +170,10 @@ fn c1_rejects_mint_by_a_with_wrong_error() {
     let mut c1 = green_c1();
     c1.mint_by_a = rej("some unrelated failure"); // rejected, but not by the allowlist gate
     let e = assert_c1(&c1).expect_err("C1 must reject a mint-by-A failure that is not the gate");
-    assert!(format!("{e:#}").contains(ERR_ATTESTER_NOT_ALLOWLISTED), "got: {e:#}");
+    assert!(
+        format!("{e:#}").contains(ERR_ATTESTER_NOT_ALLOWLISTED),
+        "got: {e:#}"
+    );
 }
 
 #[test]
@@ -230,7 +235,10 @@ fn c4_rejects_not_paused_after_pause() {
     let mut c4 = green_c4();
     c4.is_paused_after_pause = MARKER_CLEAR; // the pause never took effect
     let e = assert_c4(&c4).expect_err("C4 must reject when is_paused is not set after pause");
-    assert!(format!("{e:#}").contains("is_paused after the DOM_PAUSER pause"), "got: {e:#}");
+    assert!(
+        format!("{e:#}").contains("is_paused after the DOM_PAUSER pause"),
+        "got: {e:#}"
+    );
 }
 
 #[test]
@@ -253,7 +261,8 @@ fn c4_rejects_burn_not_halted_while_paused() {
 fn c4_rejects_owner_setter_halted_while_paused() {
     let mut c4 = green_c4();
     c4.owner_set_attester_while_paused_marker = MARKER_CLEAR; // F6 violated: owner setter halted
-    let e = assert_c4(&c4).expect_err("C4/F6 must reject when the owner's setter did not commit while paused");
+    let e = assert_c4(&c4)
+        .expect_err("C4/F6 must reject when the owner's setter did not commit while paused");
     assert!(format!("{e:#}").contains("WHILE PAUSED"), "got: {e:#}");
 }
 
@@ -262,7 +271,10 @@ fn c4_rejects_still_paused_after_unpause() {
     let mut c4 = green_c4();
     c4.is_paused_after_unpause = MARKER_SET; // unpause did not lift the halt
     let e = assert_c4(&c4).expect_err("C4 must reject when still paused after unpause");
-    assert!(format!("{e:#}").contains("is_paused after the DOM_PAUSER unpause"), "got: {e:#}");
+    assert!(
+        format!("{e:#}").contains("is_paused after the DOM_PAUSER unpause"),
+        "got: {e:#}"
+    );
 }
 
 // ── C5 negatives ─────────────────────────────────────────────────────────────────────────────
@@ -272,7 +284,10 @@ fn c5_rejects_no_membership_after_grant() {
     let mut c5 = green_c5();
     c5.new_pauser_membership_after_grant = MARKER_CLEAR; // the grant did not seat the member
     let e = assert_c5(&c5).expect_err("C5 must reject when the grant did not seat the new pauser");
-    assert!(format!("{e:#}").contains("after the DOM_MANAGER grant"), "got: {e:#}");
+    assert!(
+        format!("{e:#}").contains("after the DOM_MANAGER grant"),
+        "got: {e:#}"
+    );
 }
 
 #[test]
@@ -288,7 +303,10 @@ fn c5_rejects_membership_not_cleared_after_revoke() {
     let mut c5 = green_c5();
     c5.new_pauser_membership_after_revoke = MARKER_SET; // the revoke did not clear the member
     let e = assert_c5(&c5).expect_err("C5 must reject when the revoke did not clear the member");
-    assert!(format!("{e:#}").contains("after the DOM_MANAGER revoke"), "got: {e:#}");
+    assert!(
+        format!("{e:#}").contains("after the DOM_MANAGER revoke"),
+        "got: {e:#}"
+    );
 }
 
 #[test]
@@ -296,7 +314,10 @@ fn c5_rejects_revoked_pauser_can_still_pause() {
     let mut c5 = green_c5();
     c5.revoked_pauser_pause = Verdict::Accepted; // the revoked account still paused
     let e = assert_c5(&c5).expect_err("C5 must reject when the revoked account can still pause");
-    assert!(format!("{e:#}").contains("required role") || format!("{e:#}").contains("ACCEPTED"), "got: {e:#}");
+    assert!(
+        format!("{e:#}").contains("required role") || format!("{e:#}").contains("ACCEPTED"),
+        "got: {e:#}"
+    );
 }
 
 // ── C6 negatives ─────────────────────────────────────────────────────────────────────────────
@@ -311,7 +332,8 @@ fn c6_rejects_empty_set() {
 fn c6_rejects_a_consumed_admin_note() {
     let mut c6 = green_c6();
     c6[0].note_unconsumed = false; // a non-authorized sender's note was CONSUMED
-    let e = assert_c6(&c6).expect_err("C6 must reject when a non-authorized admin note was consumed");
+    let e =
+        assert_c6(&c6).expect_err("C6 must reject when a non-authorized admin note was consumed");
     assert!(format!("{e:#}").contains("CONSUMED"), "got: {e:#}");
 }
 
@@ -354,7 +376,10 @@ fn f_rejects_wrong_reject_error() {
     let mut f = green_f();
     f.non_allowlisted_note = rej("some other trap"); // rejected, but not by the note allowlist
     let e = assert_f(&f).expect_err("F must reject a note failure that is not the allowlist gate");
-    assert!(format!("{e:#}").contains("note script allowlist"), "got: {e:#}");
+    assert!(
+        format!("{e:#}").contains("note script allowlist"),
+        "got: {e:#}"
+    );
 }
 
 // ── err_code derivation tripwire (stock-gate rejects carry only err_code, not the message) ───
@@ -369,7 +394,11 @@ fn f_rejects_wrong_reject_error() {
 fn stock_gate_err_codes_match_the_real_node_observed_values() {
     use miden_protocol::errors::MasmError;
     let code = |s: &str| MasmError::new(s.to_string()).code().as_canonical_u64();
-    assert_eq!(code("the contract is paused"), 13643929038179635348, "C4 pause gate");
+    assert_eq!(
+        code("the contract is paused"),
+        13643929038179635348,
+        "C4 pause gate"
+    );
     assert_eq!(code(ERR_NOT_OWNER), 7385238526269899403, "C6 owner gate");
     assert_eq!(code(ERR_LACKS_ROLE), 2534091087325248367, "C5 role gate");
     assert_eq!(
@@ -391,7 +420,9 @@ fn stock_gate_err_codes_match_the_real_node_observed_values() {
 /// genuine gate trap.
 fn rejected_code_only(expected_msg: &str) -> Verdict {
     use miden_protocol::errors::MasmError;
-    let code = MasmError::new(expected_msg.to_string()).code().as_canonical_u64();
+    let code = MasmError::new(expected_msg.to_string())
+        .code()
+        .as_canonical_u64();
     Verdict::Rejected(format!(
         "TransactionExecutorError(TransactionProgramExecutionFailed(OperationError {{ \
          err: FailedAssertion {{ err_code: {code}, err_msg: None }} }}))"
@@ -445,7 +476,10 @@ fn code_only_reject_with_the_wrong_code_is_rejected() {
     let mut f = green_f();
     f.non_allowlisted_note = rejected_code_only("some entirely unrelated assertion");
     let e = assert_f(&f).expect_err("F must reject a code-only reject bearing the WRONG err_code");
-    assert!(format!("{e:#}").contains("note script allowlist"), "got: {e:#}");
+    assert!(
+        format!("{e:#}").contains("note script allowlist"),
+        "got: {e:#}"
+    );
 }
 
 // ── the real-node E2E (the gate run for this slice) ──────────────────────────────────────────

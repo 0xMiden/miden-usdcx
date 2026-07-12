@@ -1,47 +1,43 @@
-//! P5-01 FULL FAUCET ASSEMBLY E2E (the final on-chain slice): the single-instance, sequential,
+//! FULL FAUCET ASSEMBLY E2E: the single-instance, sequential,
 //! full-lifecycle dress rehearsal for local-node validation. ONE faucet composed by the PRODUCTION
 //! `XReserveStablecoinBuilder` (empty domain config, empty allowlist) is driven through the whole
-//! §11-shaped lifecycle IN ORDER on ONE evolving MockChain — init (4-field §5.9) → re-init trap →
+//! lifecycle IN ORDER on ONE evolving MockChain — init (4-field domain config) → re-init trap →
 //! admin bring-up (attester / max_supply / min_burn, each with its non-owner reject) → a REAL
 //! attested mint (D5d in-test vectors) → nonce replay trap → stock mint_and_send deny → the
-//! recipient wallet consumes the minted P2ID note (D-E2E-ARC: custody-traced funds) → a below-min
+//! recipient wallet consumes the minted P2ID note (custody-traced funds) → a below-min
 //! burn reject → a real burn (two-block consume, DC-7 schema asserted) → DOM_PAUSER pause halts
 //! BOTH mint and burn (and the owner has NO pause path) → unpause resumes BOTH → CMP-F5 rotation
 //! (DOM_MANAGER grant → new pauser pauses; revoke → rejected). Every tx is COMMITTED
 //! (`add_pending_executed_transaction` + `prove_next_block`) so all stages run on one chain — no
-//! stitched per-slice fixtures. Every reject pins its EXACT error; every state change is read back;
+//! stitched fixtures. Every reject pins its EXACT error; every state change is read back;
 //! the final ledger asserts the exact whole-arc supply equation.
 //!
 //! MECHANICS: the admin notes are deterministic and pre-seeded ON-CHAIN at build
 //! (`setup_assembled_faucet` seeded_notes), so every admin step consumes its note BY ID as an
 //! authenticated input — block-provable, which commit-each-step requires (an unauthenticated note
 //! cannot be committed: no inclusion proof). Reject-path notes stay unconsumed after their tx
-//! traps. RED HISTORY (git-replayable): at the red commits the lifecycle died at S1b's 4-field
-//! read-backs against the shipped 2-field `domain_init` (it executed, wrote identifier + a junk
-//! "domain" from the wrong stack position, and left source_domain/xreserve_contract empty) — red
-//! for exactly the reason the slice exists; the green commit implements the 4-field
-//! `domain_config.masm` + the builder guards.
+//! traps.
 
 mod support;
 
 use anyhow::{Context, Result};
+use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::{Account, AccountId, RoleSymbol};
 use miden_protocol::asset::{AssetAmount, FungibleAsset};
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{NoteId, NoteType};
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
-use miden_processor::crypto::random::RandomCoin;
 use miden_standards::note::P2idNote;
-use miden_testing::{MockChain, assert_transaction_executor_error};
+use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use support::*;
-use xusdc_encoding::account::xreserve::{DOM_PAUSER_ROLE, DOM_MANAGER_ROLE};
-use xusdc_encoding::note::xreserve_burn::{FIXED_XUSDC_BURN_TAG, XReserveBurnNote};
-use xusdc_encoding::vectors::{DiFields, DiVector, load, parse_hex32};
+use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
+use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
+use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::{
-    XReserveBurnItems, account_id_to_bytes32, bytes32_to_packed_felts, bytes32_to_storage_map_key,
-    decode_burn_note_items,
+    account_id_to_bytes32, bytes32_to_packed_felts, bytes32_to_storage_map_key,
+    decode_burn_note_items, XReserveBurnItems,
 };
 
 // ACTORS (the builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3))
@@ -106,12 +102,15 @@ fn di(id: &str) -> &'static DiVector {
 }
 
 fn fields_of(id: &str) -> &'static DiFields {
-    di(id).fields.as_ref().expect("accept vector carries fields")
+    di(id)
+        .fields
+        .as_ref()
+        .expect("accept vector carries fields")
 }
 
 /// The canonical accept payload with amount/maxFee spliced and `remoteRecipient` REPLACED by the
-/// REAL recipient wallet's R-B bytes32 (so the emitted P2ID note targets an account that exists on
-/// this chain and can consume it — D-E2E-ARC).
+/// REAL recipient wallet's right-aligned bytes32 (so the emitted P2ID note targets an account that
+/// exists on this chain and can consume it).
 fn payload_for(recipient: AccountId) -> Vec<u8> {
     let mut payload = di(BASE_VECTOR).bytes();
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(MINT_AMOUNT_RAW));
@@ -131,7 +130,9 @@ fn payload2_for(recipient: AccountId) -> Vec<u8> {
 /// The identifier config word = the canonical key-Word of the payload's remoteToken (what D5a's
 /// `assert_eqw` compares against).
 fn identifier_word() -> Word {
-    Word::from(bytes32_to_storage_map_key(&parse_hex32(&fields_of(BASE_VECTOR).remote_token_hex)))
+    Word::from(bytes32_to_storage_map_key(&parse_hex32(
+        &fields_of(BASE_VECTOR).remote_token_hex,
+    )))
 }
 
 /// The usedNonces key for a payload's nonce bytes.
@@ -142,7 +143,7 @@ fn nonce_key_of_payload(payload: &[u8]) -> Word {
     Word::from(bytes32_to_storage_map_key(&nonce))
 }
 
-/// The expected P2ID tag for the recipient (Case-001: the HIGH u32 of the AccountId prefix, masked
+/// The expected P2ID tag for the recipient (the HIGH u32 of the AccountId prefix, masked
 /// `0xfffc0000` — `NoteTag::with_account_target`).
 fn expected_p2id_tag(recipient: AccountId) -> u32 {
     let prefix = recipient.prefix().as_felt().as_canonical_u64();
@@ -173,13 +174,18 @@ fn note_rng(seed: u64) -> RandomCoin {
 // ================================================================================================
 
 fn commit(chain: &mut MockChain, tx: &ExecutedTransaction) -> Result<()> {
-    chain.add_pending_executed_transaction(tx).context("queuing the executed tx into the block")?;
+    chain
+        .add_pending_executed_transaction(tx)
+        .context("queuing the executed tx into the block")?;
     chain.prove_next_block().context("proving the block")?;
     Ok(())
 }
 
 fn committed(chain: &MockChain, id: AccountId) -> Result<Account> {
-    Ok(chain.committed_account(id).context("fetching the committed account")?.clone())
+    Ok(chain
+        .committed_account(id)
+        .context("fetching the committed account")?
+        .clone())
 }
 
 /// Consumes a COMMITTED note (by id) with `account` as the executing/consuming account — the
@@ -221,7 +227,7 @@ fn read_map_word(account: &Account, slot_label: &str, key: Word) -> Result<Word>
 }
 
 /// The recipient wallet's total balance of the faucet's fungible asset (vault iteration — the
-/// custody read-back for S7/D-E2E-ARC).
+/// custody read-back for S7).
 fn wallet_balance(account: &Account, faucet_id: AccountId) -> u64 {
     account
         .vault()
@@ -229,7 +235,7 @@ fn wallet_balance(account: &Account, faucet_id: AccountId) -> u64 {
         .filter_map(|asset| match asset {
             miden_protocol::asset::Asset::Fungible(f) if f.faucet_id() == faucet_id => {
                 Some(u64::from(f.amount()))
-            },
+            }
             _ => None,
         })
         .sum()
@@ -243,8 +249,7 @@ fn marker() -> Word {
 // THE FULL LIFECYCLE
 // ================================================================================================
 
-/// The single-instance, sequential, full-lifecycle E2E on ONE production-assembled faucet. RED at
-/// S1b (the 4-field read-backs) against the shipped 2-field `domain_init`.
+/// The single-instance, sequential, full-lifecycle E2E on ONE production-assembled faucet.
 #[tokio::test]
 async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // ── S0 — ASSEMBLY: the production builder composes the faucet; domain config + allowlist EMPTY.
@@ -266,21 +271,66 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         };
         let notes = vec![
             // 0: S1a stranger domain_init (reject)
-            build("init-stranger", domain_init_note(stranger(), TEST_DOMAIN, TEST_SOURCE_DOMAIN, &xrc, identifier, 910)),
+            build(
+                "init-stranger",
+                domain_init_note(
+                    stranger(),
+                    TEST_DOMAIN,
+                    TEST_SOURCE_DOMAIN,
+                    &xrc,
+                    identifier,
+                    910,
+                ),
+            ),
             // 1: S1b owner domain_init
-            build("init-owner", domain_init_note(owner(), TEST_DOMAIN, TEST_SOURCE_DOMAIN, &xrc, identifier, 911)),
+            build(
+                "init-owner",
+                domain_init_note(
+                    owner(),
+                    TEST_DOMAIN,
+                    TEST_SOURCE_DOMAIN,
+                    &xrc,
+                    identifier,
+                    911,
+                ),
+            ),
             // 2: S2 owner re-init with different values (reject)
-            build("re-init", domain_init_note(owner(), TEST_WRONG_DOMAIN, TEST_SOURCE_DOMAIN + 1, &[0xEEu8; 32], Word::from([91u32, 92, 93, 94]), 912)),
+            build(
+                "re-init",
+                domain_init_note(
+                    owner(),
+                    TEST_WRONG_DOMAIN,
+                    TEST_SOURCE_DOMAIN + 1,
+                    &[0xEEu8; 32],
+                    Word::from([91u32, 92, 93, 94]),
+                    912,
+                ),
+            ),
             // 3: S3a stranger set_attester (reject)
-            build("attester-stranger", set_attester_note(stranger(), commitment, 1, 913)),
+            build(
+                "attester-stranger",
+                set_attester_note(stranger(), commitment, 1, 913),
+            ),
             // 4: S3a owner set_attester
-            build("attester-owner", set_attester_note(owner(), commitment, 1, 914)),
+            build(
+                "attester-owner",
+                set_attester_note(owner(), commitment, 1, 914),
+            ),
             // 5: S3b stranger set_max_supply (reject)
-            build("max-stranger", set_max_supply_note(stranger(), NEW_MAX_SUPPLY, 915)),
+            build(
+                "max-stranger",
+                set_max_supply_note(stranger(), NEW_MAX_SUPPLY, 915),
+            ),
             // 6: S3b owner set_max_supply
-            build("max-owner", set_max_supply_note(owner(), NEW_MAX_SUPPLY, 916)),
+            build(
+                "max-owner",
+                set_max_supply_note(owner(), NEW_MAX_SUPPLY, 916),
+            ),
             // 7: S3c stranger set_min_burn_size (reject)
-            build("min-stranger", set_min_burn_size_note(stranger(), MIN_BURN, 917)),
+            build(
+                "min-stranger",
+                set_min_burn_size_note(stranger(), MIN_BURN, 917),
+            ),
             // 8: S3c owner set_min_burn_size
             build("min-owner", set_min_burn_size_note(owner(), MIN_BURN, 918)),
             // 9: S10 DOM_PAUSER pause
@@ -292,13 +342,19 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
             // 12: S11 DOM_PAUSER unpause
             build("unpause-pauser", dom_pauser_unpause_note(pauser(), 922)),
             // 13: S12 DOM_MANAGER grant_role(DOM_PAUSER, new_pauser)
-            build("grant", grant_role_note(manager(), &psym, new_pauser(), 923)),
+            build(
+                "grant",
+                grant_role_note(manager(), &psym, new_pauser(), 923),
+            ),
             // 14: S12 new pauser pause
             build("pause-new", dom_pauser_pause_note(new_pauser(), 924)),
             // 15: S12 new pauser unpause
             build("unpause-new", dom_pauser_unpause_note(new_pauser(), 925)),
             // 16: S12 DOM_MANAGER revoke_role(DOM_PAUSER, new_pauser)
-            build("revoke", revoke_role_note(manager(), &psym, new_pauser(), 926)),
+            build(
+                "revoke",
+                revoke_role_note(manager(), &psym, new_pauser(), 926),
+            ),
             // 17: S12 revoked pauser pause attempt (reject)
             build("pause-revoked", dom_pauser_pause_note(new_pauser(), 927)),
         ];
@@ -330,7 +386,12 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_supply(&af.harness.mock_chain, faucet_id, 0, "S0 assembly")?;
     assert_eq!(
         read_role_config(&faucet0, &pauser_sym)?,
-        Word::new([Felt::from(1u32), Felt::from(&manager_sym), Felt::from(0u32), Felt::from(0u32)]),
+        Word::new([
+            Felt::from(1u32),
+            Felt::from(&manager_sym),
+            Felt::from(0u32),
+            Felt::from(0u32)
+        ]),
         "S0: role_config[DOM_PAUSER] carries the CMP-F5 delegation (admin_role = DOM_MANAGER)"
     );
     assert_eq!(
@@ -339,7 +400,11 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S0: role_config[DOM_MANAGER] is owner-administered ([1,0,0,0])"
     );
     assert_eq!(
-        read_map_word(&faucet0, XRESERVE_ATTESTERS_SLOT_LABEL, attester1.commitment)?,
+        read_map_word(
+            &faucet0,
+            XRESERVE_ATTESTERS_SLOT_LABEL,
+            attester1.commitment
+        )?,
         Word::from([0u32, 0, 0, 0]),
         "S0: the attester allowlist ships EMPTY (set_attester is the bring-up writer)"
     );
@@ -353,7 +418,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S1a: the rejected init left every slot empty"
     );
 
-    // ── S1b — INIT: the owner writes ALL FOUR §5.9 fields; each reads back exactly.
+    // ── S1b — INIT: the owner writes ALL FOUR domain-config fields; each reads back exactly.
     let init_tx = consume_committed_note(&af.harness.mock_chain, &faucet0, note_id(1))
         .await
         .expect("S1b: the owner's 4-field domain_init must succeed");
@@ -361,7 +426,11 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     faucet1.apply_delta(init_tx.account_delta())?;
     let words = read_domain_config_words(&faucet1)?;
     let xrc_felts = bytes32_to_packed_felts(&xrc);
-    assert_eq!(words[0], Word::from([TEST_DOMAIN, 0, 0, 0]), "S1b: domain read-back");
+    assert_eq!(
+        words[0],
+        Word::from([TEST_DOMAIN, 0, 0, 0]),
+        "S1b: domain read-back"
+    );
     assert_eq!(
         words[1],
         Word::from([TEST_SOURCE_DOMAIN, 0, 0, 0]),
@@ -378,10 +447,16 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S1b: xreserve_contract_lo read-back"
     );
     assert_eq!(words[4], identifier, "S1b: identifier read-back (verbatim)");
-    // D-A6-XRC guard 1 (lossless leg): the stored bytes32 round-trips through the FAIL-CLOSED
+    // lossless round-trip: the stored bytes32 round-trips through the FAIL-CLOSED
     // inverse back to the input — the GetAccount-readable public identity.
     let stored_xrc: [Felt; 8] = [
-        words[2][0], words[2][1], words[2][2], words[2][3], words[3][0], words[3][1], words[3][2],
+        words[2][0],
+        words[2][1],
+        words[2][2],
+        words[2][3],
+        words[3][0],
+        words[3][1],
+        words[3][2],
         words[3][3],
     ];
     assert_eq!(
@@ -450,7 +525,12 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let faucet = committed(&af.harness.mock_chain, faucet_id)?;
     assert_eq!(
         read_min_burn_size(&faucet)?,
-        Word::from([Felt::from(AssetAmount::new(MIN_BURN)?), Felt::from(0u32), Felt::from(0u32), Felt::from(0u32)]),
+        Word::from([
+            Felt::from(AssetAmount::new(MIN_BURN)?),
+            Felt::from(0u32),
+            Felt::from(0u32),
+            Felt::from(0u32)
+        ]),
         "S3c: min_burn_size read-back"
     );
 
@@ -463,7 +543,11 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     )
     .await
     .expect("S4: a fully valid deposit intent + attestation must mint on the assembled faucet");
-    assert_eq!(minted.output_notes().num_notes(), 1, "S4: exactly one recipient note");
+    assert_eq!(
+        minted.output_notes().num_notes(),
+        1,
+        "S4: exactly one recipient note"
+    );
     let note = minted.output_notes().get_note(0);
     let mint_note_id = note.id();
     let asset = note
@@ -471,9 +555,19 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         .iter_fungible()
         .next()
         .expect("S4: the recipient note carries a fungible asset");
-    assert_eq!(u64::from(asset.amount()), MINT_REDUCED, "S4: note asset == reduced amount");
-    assert_eq!(asset.faucet_id(), faucet_id, "S4: asset minted by this faucet");
-    let recipient_digest = note.recipient().expect("S4: public output note carries its recipient");
+    assert_eq!(
+        u64::from(asset.amount()),
+        MINT_REDUCED,
+        "S4: note asset == reduced amount"
+    );
+    assert_eq!(
+        asset.faucet_id(),
+        faucet_id,
+        "S4: asset minted by this faucet"
+    );
+    let recipient_digest = note
+        .recipient()
+        .expect("S4: public output note carries its recipient");
     assert_eq!(
         recipient_digest.serial_num(),
         nonce_key_of_payload(&payload1),
@@ -489,9 +583,18 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         expected_p2id_tag(recipient_id),
         "S4: Case-001 tag (recipient account-target, prefix HIGH u32)"
     );
-    assert_eq!(note.metadata().note_type(), NoteType::Public, "S4: recipient note is Public");
+    assert_eq!(
+        note.metadata().note_type(),
+        NoteType::Public,
+        "S4: recipient note is Public"
+    );
     commit(&mut af.harness.mock_chain, &minted)?;
-    assert_supply(&af.harness.mock_chain, faucet_id, MINT_REDUCED, "S4 after mint")?;
+    assert_supply(
+        &af.harness.mock_chain,
+        faucet_id,
+        MINT_REDUCED,
+        "S4 after mint",
+    )?;
     assert_eq!(
         read_map_word(
             &committed(&af.harness.mock_chain, faucet_id)?,
@@ -512,13 +615,22 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     )
     .await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_NONCE_REPLAY"));
-    assert_supply(&af.harness.mock_chain, faucet_id, MINT_REDUCED, "S5 after replay reject")?;
+    assert_supply(
+        &af.harness.mock_chain,
+        faucet_id,
+        MINT_REDUCED,
+        "S5 after replay reject",
+    )?;
 
     // ── S6 — DENY: stock mint_and_send traps the EXACT R-MINT-16 error; supply unchanged.
-    let result =
-        run_mint_and_send(&af.harness, Word::from([0u32, 1, 2, 3]), 0, 4, 100, 0).await;
+    let result = run_mint_and_send(&af.harness, Word::from([0u32, 1, 2, 3]), 0, 4, 100, 0).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_MINT_DENIED"));
-    assert_supply(&af.harness.mock_chain, faucet_id, MINT_REDUCED, "S6 after deny")?;
+    assert_supply(
+        &af.harness.mock_chain,
+        faucet_id,
+        MINT_REDUCED,
+        "S6 after deny",
+    )?;
 
     // ── S7 — P2ID CONSUME: the recipient wallet consumes the minted note (custody-traced funds).
     let recipient = committed(&af.harness.mock_chain, recipient_id)?;
@@ -545,17 +657,27 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         dest_recipient: [0xABu8; 32],
         salt: [0x01u8; 32],
     };
-    let low_note =
-        XReserveBurnNote::create(recipient_id, faucet_id, low_items, &mut note_rng(41))?;
+    let low_note = XReserveBurnNote::create(recipient_id, faucet_id, low_items, &mut note_rng(41))?;
     let low_asset = FungibleAsset::new(faucet_id, BURN_LOW)?;
-    let emit = try_emit_burn_note(&af.harness.mock_chain, &low_note, &low_asset, faucet_id, recipient_id)
-        .await
-        .expect("S8: emitting the below-min burn note succeeds (the reject is at consume)");
+    let emit = try_emit_burn_note(
+        &af.harness.mock_chain,
+        &low_note,
+        &low_asset,
+        faucet_id,
+        recipient_id,
+    )
+    .await
+    .expect("S8: emitting the below-min burn note succeeds (the reject is at consume)");
     commit(&mut af.harness.mock_chain, &emit)?;
     let faucet = committed(&af.harness.mock_chain, faucet_id)?;
     let result = consume_committed_note(&af.harness.mock_chain, &faucet, low_note.id()).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_BURN_BELOW_MIN"));
-    assert_supply(&af.harness.mock_chain, faucet_id, MINT_REDUCED, "S8 after below-min reject")?;
+    assert_supply(
+        &af.harness.mock_chain,
+        faucet_id,
+        MINT_REDUCED,
+        "S8 after below-min reject",
+    )?;
 
     // ── S9 — BURN: a real burn of the minted funds; DC-7 schema asserted; two-block consume;
     // supply -= amount exactly (whole-arc conservation).
@@ -565,14 +687,23 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         dest_recipient: [0xCDu8; 32],
         salt: [0x02u8; 32],
     };
-    let burn_note = XReserveBurnNote::create(recipient_id, faucet_id, items.clone(), &mut note_rng(42))?;
-    assert_eq!(burn_note.metadata().note_type(), NoteType::Public, "S9: burn note is Public");
+    let burn_note =
+        XReserveBurnNote::create(recipient_id, faucet_id, items.clone(), &mut note_rng(42))?;
+    assert_eq!(
+        burn_note.metadata().note_type(),
+        NoteType::Public,
+        "S9: burn note is Public"
+    );
     assert_eq!(
         burn_note.metadata().tag().as_u32(),
         FIXED_XUSDC_BURN_TAG,
         "S9: the fixed full-32-bit xUSDC burn tag"
     );
-    assert_eq!(burn_note.metadata().sender(), recipient_id, "S9: metadata.sender == depositor");
+    assert_eq!(
+        burn_note.metadata().sender(),
+        recipient_id,
+        "S9: metadata.sender == depositor"
+    );
     assert_eq!(
         decode_burn_note_items(burn_note.recipient().storage().items())
             .expect("S9: DC-7 items decode"),
@@ -580,14 +711,22 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S9: NoteStorage.items carries the exact DC-7 payload"
     );
     let burn_asset = FungibleAsset::new(faucet_id, BURN_OK)?;
-    let emit = try_emit_burn_note(&af.harness.mock_chain, &burn_note, &burn_asset, faucet_id, recipient_id)
-        .await
-        .expect("S9: emitting the burn note (block N)");
+    let emit = try_emit_burn_note(
+        &af.harness.mock_chain,
+        &burn_note,
+        &burn_asset,
+        faucet_id,
+        recipient_id,
+    )
+    .await
+    .expect("S9: emitting the burn note (block N)");
     commit(&mut af.harness.mock_chain, &emit)?;
     let faucet = committed(&af.harness.mock_chain, faucet_id)?;
     let consume = consume_committed_note(&af.harness.mock_chain, &faucet, burn_note.id())
         .await
-        .expect("S9: the faucet consumes the burn note at block >= N+1 (receive_and_burn -> CMP-A10)");
+        .expect(
+            "S9: the faucet consumes the burn note at block >= N+1 (receive_and_burn -> CMP-A10)",
+        );
     commit(&mut af.harness.mock_chain, &consume)?;
     assert_supply(
         &af.harness.mock_chain,
@@ -627,15 +766,20 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let paused_note =
         XReserveBurnNote::create(recipient_id, faucet_id, paused_items, &mut note_rng(43))?;
     let paused_asset = FungibleAsset::new(faucet_id, BURN_PAUSED)?;
-    let emit =
-        try_emit_burn_note(&af.harness.mock_chain, &paused_note, &paused_asset, faucet_id, recipient_id)
-            .await
-            .expect("S10b: emitting while paused succeeds (the halt is at the faucet consume)");
+    let emit = try_emit_burn_note(
+        &af.harness.mock_chain,
+        &paused_note,
+        &paused_asset,
+        faucet_id,
+        recipient_id,
+    )
+    .await
+    .expect("S10b: emitting while paused succeeds (the halt is at the faucet consume)");
     commit(&mut af.harness.mock_chain, &emit)?;
     let faucet = committed(&af.harness.mock_chain, faucet_id)?;
     let result = consume_committed_note(&af.harness.mock_chain, &faucet, paused_note.id()).await;
     assert_transaction_executor_error!(result, err_paused());
-    // S10c: the owner has NO direct pause path (Option 1 — the stock PausableManager is absent).
+    // S10c: the owner has NO direct pause path (Domain-Pauser-only model — the stock PausableManager is absent).
     let result = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(10)).await;
     let err = result.expect_err("S10c: the stock owner pause path must not exist");
     assert_unknown_account_procedure(&err);
@@ -663,7 +807,11 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     )
     .await
     .expect("S11a: after unpause the second attested mint must succeed");
-    assert_eq!(minted2.output_notes().num_notes(), 1, "S11a: one recipient note");
+    assert_eq!(
+        minted2.output_notes().num_notes(),
+        1,
+        "S11a: one recipient note"
+    );
     commit(&mut af.harness.mock_chain, &minted2)?;
     assert_supply(
         &af.harness.mock_chain,
@@ -757,12 +905,20 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S13: min_burn_size still the S3c value"
     );
     assert_eq!(
-        read_map_word(&faucet, USED_NONCES_SLOT_LABEL, nonce_key_of_payload(&payload1))?,
+        read_map_word(
+            &faucet,
+            USED_NONCES_SLOT_LABEL,
+            nonce_key_of_payload(&payload1)
+        )?,
         marker(),
         "S13: nonce 1 still marked"
     );
     assert_eq!(
-        read_map_word(&faucet, USED_NONCES_SLOT_LABEL, nonce_key_of_payload(&payload2))?,
+        read_map_word(
+            &faucet,
+            USED_NONCES_SLOT_LABEL,
+            nonce_key_of_payload(&payload2)
+        )?,
         marker(),
         "S13: nonce 2 still marked"
     );
@@ -773,7 +929,12 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     );
     assert_eq!(
         read_role_config(&faucet, &pauser_sym)?,
-        Word::new([Felt::from(1u32), Felt::from(&manager_sym), Felt::from(0u32), Felt::from(0u32)]),
+        Word::new([
+            Felt::from(1u32),
+            Felt::from(&manager_sym),
+            Felt::from(0u32),
+            Felt::from(0u32)
+        ]),
         "S13: the CMP-F5 delegation word survives the whole arc"
     );
     assert_eq!(
@@ -789,7 +950,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     Ok(())
 }
 
-// SECOND-RECIPIENT ROUTING (Item 11) — a second attested mint targets a DIFFERENT wallet
+// SECOND-RECIPIENT ROUTING — a second attested mint targets a DIFFERENT wallet
 // ================================================================================================
 
 /// Full-path RECIPIENT ROUTING: the lifecycle E2E's two mints target the SAME wallet (`payload2_for`
@@ -826,7 +987,10 @@ async fn second_mint_to_distinct_recipient() -> Result<()> {
                     ),
                 ),
                 // 1: owner set_attester (bring-up)
-                build("attester-owner", set_attester_note(owner(), commitment, 1, 931)),
+                build(
+                    "attester-owner",
+                    set_attester_note(owner(), commitment, 1, 931),
+                ),
             ];
             (drivers, notes)
         })?;
@@ -863,7 +1027,11 @@ async fn second_mint_to_distinct_recipient() -> Result<()> {
     )
     .await
     .expect("mint #1 (recipient1) must pass");
-    assert_eq!(mint1.output_notes().num_notes(), 1, "mint #1: exactly one recipient note");
+    assert_eq!(
+        mint1.output_notes().num_notes(),
+        1,
+        "mint #1: exactly one recipient note"
+    );
     let note1_id = mint1.output_notes().get_note(0).id();
     assert_eq!(
         mint1.output_notes().get_note(0).metadata().tag().as_u32(),
@@ -882,7 +1050,11 @@ async fn second_mint_to_distinct_recipient() -> Result<()> {
     )
     .await
     .expect("mint #2 (the DISTINCT recipient2) must pass");
-    assert_eq!(mint2.output_notes().num_notes(), 1, "mint #2: exactly one recipient note");
+    assert_eq!(
+        mint2.output_notes().num_notes(),
+        1,
+        "mint #2: exactly one recipient note"
+    );
     let note2_id = mint2.output_notes().get_note(0).id();
     assert_eq!(
         mint2.output_notes().get_note(0).metadata().tag().as_u32(),
@@ -890,7 +1062,12 @@ async fn second_mint_to_distinct_recipient() -> Result<()> {
         "mint #2's note targets the DISTINCT recipient2"
     );
     commit(&mut af.harness.mock_chain, &mint2)?;
-    assert_supply(&af.harness.mock_chain, faucet_id, 2 * MINT_REDUCED, "after both mints")?;
+    assert_supply(
+        &af.harness.mock_chain,
+        faucet_id,
+        2 * MINT_REDUCED,
+        "after both mints",
+    )?;
 
     // Each recipient consumes ITS note; each holds exactly its own minted amount.
     let r1 = committed(&af.harness.mock_chain, recipient1_id)?;
@@ -904,12 +1081,18 @@ async fn second_mint_to_distinct_recipient() -> Result<()> {
         .expect("recipient2 consumes ITS P2ID note");
     commit(&mut af.harness.mock_chain, &c2)?;
     assert_eq!(
-        wallet_balance(&committed(&af.harness.mock_chain, recipient1_id)?, faucet_id),
+        wallet_balance(
+            &committed(&af.harness.mock_chain, recipient1_id)?,
+            faucet_id
+        ),
         MINT_REDUCED,
         "recipient1 holds exactly its minted amount"
     );
     assert_eq!(
-        wallet_balance(&committed(&af.harness.mock_chain, recipient2_id)?, faucet_id),
+        wallet_balance(
+            &committed(&af.harness.mock_chain, recipient2_id)?,
+            faucet_id
+        ),
         MINT_REDUCED,
         "recipient2 holds exactly ITS minted amount — the intent's recipient bytes steer the funds"
     );

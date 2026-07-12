@@ -1,22 +1,20 @@
-//! uint256 → AssetAmount family, frozen signatures per `COMPONENT-SPEC.md §6.4`
-//! (INV-UINT256-TO-ASSETAMOUNT). Implemented (routine R2) per the frozen §8.2 order,
-//! modeled on the E-16 mechanic; checked arithmetic on every external-derived value.
-//! Cap/scale/dust values are `REQUIRES CIRCLE CONFIRMATION` (DEV-5) — the mechanic is
-//! implemented per the frozen spec, the policy stays OPEN.
+//! uint256 → AssetAmount family, frozen signatures per the shared-encoding spec
+//! (INV-UINT256-TO-ASSETAMOUNT). Implemented per the frozen reduction order, with checked
+//! arithmetic on every external-derived value. Cap/scale/dust values are
+//! `REQUIRES CIRCLE CONFIRMATION` (DEV-5) — the mechanic is implemented per the frozen spec, the
+//! policy stays OPEN.
 
 use miden_protocol::asset::AssetAmount;
 
 use super::error::EncodingError;
 
-/// The scale exponent bound (frozen `§6.4`: scale_exp = EVM decimals − Miden decimals,
-/// 0..=18; mirrored in MASM as `SCALE_EXP_MAX` — `pub` so the constant-parity suite
-/// pins the cross-language pair, CS-5).
+/// The scale exponent bound (scale_exp = EVM decimals − Miden decimals, 0..=18; mirrored in
+/// MASM as `SCALE_EXP_MAX` — `pub` so the constant-parity suite pins the cross-language pair).
 pub const MAX_SCALE_EXP: u32 = 18;
 
 /// The single reduction core shared by all three public routines (≤ 1 implementation of
-/// the owned mechanic): frozen §8.2 — byte-swap → high-4-zero → low-4 u128 → floor-divide
-/// by 10^scale_exp → (y, z). The AssetAmount cap is applied by the callers via
-/// [`AssetAmount::new`] (frozen step 5).
+/// the owned mechanic): byte-swap → high-4-zero → low-4 u128 → floor-divide by 10^scale_exp →
+/// (y, z). The AssetAmount cap is applied by the callers via [`AssetAmount::new`].
 fn reduce(le_limbs: [u32; 8], scale_exp: u32) -> Result<(u64, u128), EncodingError> {
     // steps 1–2: the high four limbs (wire bytes 0..16) must be zero; a limb byte-swaps
     // to zero iff it is zero, so the raw LE-packed limbs are checked directly
@@ -35,7 +33,9 @@ fn reduce(le_limbs: [u32; 8], scale_exp: u32) -> Result<(u64, u128), EncodingErr
     if scale_exp > MAX_SCALE_EXP {
         return Err(EncodingError::ScaleExpTooLarge);
     }
-    let divisor = 10u128.checked_pow(scale_exp).ok_or(EncodingError::ScaleExpTooLarge)?;
+    let divisor = 10u128
+        .checked_pow(scale_exp)
+        .ok_or(EncodingError::ScaleExpTooLarge)?;
     // the divisor is at least 1 by construction, so checked division cannot fail
     let y = x.checked_div(divisor).expect("divisor is at least 1");
     let z = x.checked_rem(divisor).expect("divisor is at least 1");
@@ -56,8 +56,8 @@ pub fn uint256_to_asset_amount(
     AssetAmount::new(y).map_err(|_| EncodingError::AmountOverCap)
 }
 
-/// The reduced-compare: reduce both operands, then compare as u64 (`amount >= maxFee`,
-/// `feeAmount <= maxFee` per CIR-MINT-PRE-8/9).
+/// The reduced-compare: reduce both operands, then compare as u64 (the mint's `amount >= maxFee`
+/// and `feeAmount <= maxFee` checks).
 pub fn reduced_ge(a: [u32; 8], b: [u32; 8], scale_exp: u32) -> Result<bool, EncodingError> {
     let (ya, _) = reduce(a, scale_exp)?;
     let (yb, _) = reduce(b, scale_exp)?;
@@ -75,7 +75,7 @@ pub fn uint256_to_asset_amount_with_dust(
     Ok((amount, z))
 }
 
-// TESTS — TV-AMT-1..7 (frozen 04 TEST-AND-VERIFICATION-HARNESS §2.2)
+// TESTS — TV-AMT-1..7
 // ================================================================================================
 
 #[cfg(test)]
@@ -91,11 +91,20 @@ mod tests {
     #[test]
     fn tv_amt_1_in_bound_scale6() {
         let v = load();
-        for vec in v.families.amt.iter().filter(|v| v.kind == "accept" && v.id != "amt-cap-accept")
+        for vec in v
+            .families
+            .amt
+            .iter()
+            .filter(|v| v.kind == "accept" && v.id != "amt-cap-accept")
         {
             let y = uint256_to_asset_amount(vec.le_limbs(), vec.scale_exp)
                 .unwrap_or_else(|e| panic!("vector {}: must accept, got {e}", vec.id));
-            assert_eq!(y, vec.expected_amount(), "vector {}: reduced amount", vec.id);
+            assert_eq!(
+                y,
+                vec.expected_amount(),
+                "vector {}: reduced amount",
+                vec.id
+            );
         }
     }
 
@@ -104,11 +113,20 @@ mod tests {
     #[test]
     fn tv_amt_2_cap_boundary_accept() {
         let v = load();
-        let vec = v.families.amt.iter().find(|v| v.id == "amt-cap-accept").expect("vector");
+        let vec = v
+            .families
+            .amt
+            .iter()
+            .find(|v| v.id == "amt-cap-accept")
+            .expect("vector");
         let y = uint256_to_asset_amount(vec.le_limbs(), vec.scale_exp)
             .unwrap_or_else(|e| panic!("vector {}: must accept at cap, got {e}", vec.id));
         assert_eq!(y, vec.expected_amount(), "vector {}: cap boundary", vec.id);
-        assert_eq!(y, AssetAmount::MAX, "cap boundary must equal AssetAmount::MAX (E-7)");
+        assert_eq!(
+            y,
+            AssetAmount::MAX,
+            "cap boundary must equal AssetAmount::MAX"
+        );
     }
 
     /// TV-AMT-3/4/7 (negative, parametrized): rejects pin their SPECIFIC variants —
@@ -119,18 +137,23 @@ mod tests {
     #[case::tv_amt_7_scale_overflow("amt-rej-scale-overflow")]
     fn tv_amt_rejects(#[case] id: &str) {
         let v = load();
-        let vec = v.families.amt.iter().find(|v| v.id == id).expect("vector present");
+        let vec = v
+            .families
+            .amt
+            .iter()
+            .find(|v| v.id == id)
+            .expect("vector present");
         let result = uint256_to_asset_amount(vec.le_limbs(), vec.scale_exp);
         match vec.expected_variant.as_deref() {
             Some("AmountOverCap") => {
                 assert_matches!(result, Err(EncodingError::AmountOverCap), "vector {id}")
-            },
+            }
             Some("AmountTooLarge") => {
                 assert_matches!(result, Err(EncodingError::AmountTooLarge), "vector {id}")
-            },
+            }
             Some("ScaleExpTooLarge") => {
                 assert_matches!(result, Err(EncodingError::ScaleExpTooLarge), "vector {id}")
-            },
+            }
             other => panic!("vector {id}: unexpected expected_variant {other:?}"),
         }
     }
@@ -152,11 +175,20 @@ mod tests {
     #[test]
     fn tv_amt_6_dust_surfaced_rcc() {
         let v = load();
-        let vec = v.families.amt.iter().find(|v| v.kind == "dust").expect("dust vector");
+        let vec = v
+            .families
+            .amt
+            .iter()
+            .find(|v| v.kind == "dust")
+            .expect("dust vector");
         let (y, z) = uint256_to_asset_amount_with_dust(vec.le_limbs(), vec.scale_exp)
             .unwrap_or_else(|e| panic!("vector {}: must accept, got {e}", vec.id));
         assert_eq!(y, vec.expected_amount(), "vector {}: quotient", vec.id);
         assert_eq!(z, vec.expected_dust(), "vector {}: remainder", vec.id);
-        assert!(z < 10u128.pow(vec.scale_exp), "vector {}: 0 <= z < 10^scale", vec.id);
+        assert!(
+            z < 10u128.pow(vec.scale_exp),
+            "vector {}: 0 <= z < 10^scale",
+            vec.id
+        );
     }
 }

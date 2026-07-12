@@ -5,8 +5,8 @@ Circle **xReserve / xUSDC** (NOT standard USDC, NOT CCTP) on Miden: native USDC 
 ## Non-negotiable ground rules
 
 1. **MASM-first.** All on-chain code (faucet, encoding module, note scripts) is **hand-written MASM**. Rust exists ONLY for off-chain services, mirrors, tests, harnesses, and tooling. There is NO `cargo miden build` / Rust-contract path in this repo (the `rust-sdk-patterns` skill family was deliberately excluded — see `.claude/skills/README.md`).
-2. **Plan first, build after approval.** Builders produce a plan + test matrix and STOP for human/audit approval before any source edit. The governing builder task lives at `agentic-template/ai-tasks/circle-integration/05-agent-tasks/TASK-P5-04-SHARED-ENCODING-BUILDER.md`.
-3. **The governing docs bind every builder:** `docs/governing/CANONICAL-OWNERSHIP-MAP.md` (owners, layout, names) and `docs/governing/BUILDER-GATES.md` (G0–G8, G-MASM, G-RUST). Read both before any work. `docs/` files are **read-only mirrors** — the canonical sources live in the agentic-template program tree (banner in each file); never edit mirrors, re-sync with `tools/sync-mirrors.sh`.
+2. **Plan first, build after approval.** Builders produce a plan + test matrix and STOP for human/audit approval before any source edit.
+3. **The governing docs bind every builder:** `docs/governing/CANONICAL-OWNERSHIP-MAP.md` (owners, layout, names) and `docs/governing/BUILDER-GATES.md` (G0–G8, G-MASM, G-RUST). Read both before any work. The specs and governing docs under `docs/` are the source of truth for this repository.
 4. **Frozen decisions (do not revisit, do not alias):**
    - NS-1: bytes32→Word MASM proc = `xreserve::encoding::bytes32_to_key` (the Rust routine keeps `bytes32_to_storage_map_key`).
    - NS-2: the shared DepositIntent parser = 04-owned `xreserve::encoding::parse_deposit_intent`; faucet owns only mint-specific assertions.
@@ -30,7 +30,7 @@ asm/standards/xreserve/           # product root (xreserve::*)
   notes/                          # note scripts (later units)
 asm/account_components/faucets/   # the xUSDC faucet component (later unit)
 <rust workspace>                  # off-chain mirror + test harness crates (shape per approved plan)
-docs/governing/  docs/spec/       # read-only mirrors (see rule 3)
+docs/governing/  docs/spec/       # governing docs + specs (see rule 3)
 ```
 
 Build order: **04 shared encoding → 01 faucet → 02 relayer → 03 listener → local-node/devnet validation → 05 monitoring** (frontend deferred). Each unit: plan → audit → build → consortium → Codex audit → human approval.

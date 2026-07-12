@@ -1,4 +1,4 @@
-//! 01 faucet `xreserve_mint` COMPOSITION suite (P5-01 Slice 2): drives the FAUCET(01)-owned
+//! `xreserve_mint` COMPOSITION suite: drives the faucet-owned
 //! `xreserve::xreserve_mint::mint` entry through MockChain `execute().await` via a CALL-entered
 //! driver on a `FungibleFaucet` account bound with ALL composition slots. `mint` chains the accepted
 //! stages verify-once -> write-once: assert_deposit_intent (D5a) -> assert_mint_amounts (D5b) ->
@@ -16,7 +16,7 @@
 //! RED-SUITE (executing-red): `xreserve_mint.masm` holds only the NAMED placeholder trap
 //! ("red-suite placeholder: xreserve_mint::mint is not implemented"). Each behavior test asserts its
 //! FINAL (green) expectation and is therefore RED here — the inputs are staged + reached, then the
-//! terminal placeholder reverts the tx (happy: no effects; rejects: wrong error). The Slice-2 green
+//! terminal placeholder reverts the tx (happy: no effects; rejects: wrong error). The green
 //! commit wires the chain and removes the trap. `probe_mint_composition_exports` is a declared green
 //! scaffold (the placeholder makes the `mint` path resolve).
 
@@ -29,7 +29,7 @@ use miden_protocol::{Felt, Word, ZERO};
 use miden_standards::note::P2idNote;
 use miden_testing::assert_transaction_executor_error;
 use support::*;
-use xusdc_encoding::vectors::{DiFields, DiVector, load, parse_hex32};
+use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
 
 // The canonical accept payload every fixture starts from (240 bytes, empty hookData, 60 felts; its
@@ -56,7 +56,10 @@ fn di(id: &str) -> &'static DiVector {
 }
 
 fn fields_of(id: &str) -> &'static DiFields {
-    di(id).fields.as_ref().expect("accept vector carries fields")
+    di(id)
+        .fields
+        .as_ref()
+        .expect("accept vector carries fields")
 }
 
 /// The expected P2ID note tag for a vector's recipient: protocol `NoteTag::with_account_target`
@@ -115,8 +118,9 @@ fn pack(bytes: &[u8]) -> Vec<Felt> {
 /// canonical key-Word of the vector's remoteToken (the masm_mint_shell `config_for` idiom).
 fn config_of(id: &str, domain: u32) -> (Word, Word) {
     let domain_word = Word::new([Felt::from(domain), ZERO, ZERO, ZERO]);
-    let identifier =
-        Word::from(bytes32_to_storage_map_key(&parse_hex32(&fields_of(id).remote_token_hex)));
+    let identifier = Word::from(bytes32_to_storage_map_key(&parse_hex32(
+        &fields_of(id).remote_token_hex,
+    )));
     (domain_word, identifier)
 }
 
@@ -124,7 +128,7 @@ fn config(domain: u32) -> (Word, Word) {
     config_of(BASE_VECTOR, domain)
 }
 
-/// The usedNonces map key for the base vector's nonce (04-owned Rust mirror, by reference; == the
+/// The usedNonces map key for the base vector's nonce (shared-encoding Rust mirror, by reference; == the
 /// MASM `bytes32_to_key(nonce)` by TV-DUAL-1).
 fn nonce_key_of(id: &str) -> Word {
     Word::from(bytes32_to_storage_map_key(&fields_of(id).bytes32("nonce")))
@@ -140,14 +144,17 @@ fn recipient_storage_of(id: &str) -> [Felt; 2] {
     let rr = parse_hex32(&fields_of(id).remote_recipient_hex);
     let prefix = u64::from_be_bytes(rr[16..24].try_into().expect("8 bytes"));
     let suffix = u64::from_be_bytes(rr[24..32].try_into().expect("8 bytes"));
-    [Felt::try_from(suffix).expect("suffix < p"), Felt::try_from(prefix).expect("prefix < p")]
+    [
+        Felt::try_from(suffix).expect("suffix < p"),
+        Felt::try_from(prefix).expect("prefix < p"),
+    ]
 }
 
 fn recipient_storage() -> [Felt; 2] {
     recipient_storage_of(BASE_VECTOR)
 }
 
-// EXPORT PROBE (declared green scaffold — D-1A path check for the composition entry)
+// EXPORT PROBE (declared green scaffold — path check for the composition entry)
 // ================================================================================================
 
 #[test]
@@ -166,7 +173,7 @@ fn probe_mint_composition_exports() -> Result<()> {
     Ok(())
 }
 
-// HAPPY PATH FIRST (G4) — one valid mint commits exactly the four effects
+// HAPPY PATH FIRST — one valid mint commits exactly the four effects
 // ================================================================================================
 
 #[tokio::test]
@@ -191,19 +198,33 @@ async fn happy_end_to_end_mints_once() -> Result<()> {
         .expect("a fully valid deposit intent + attestation must mint");
 
     // (1) exactly one P2ID recipient note carrying amount - feeAmount (== reduced amount at MVP).
-    assert_eq!(executed.output_notes().num_notes(), 1, "exactly one recipient note");
+    assert_eq!(
+        executed.output_notes().num_notes(),
+        1,
+        "exactly one recipient note"
+    );
     let note = executed.output_notes().get_note(0);
     let asset = note
         .assets()
         .iter_fungible()
         .next()
         .expect("the recipient note must carry a fungible asset");
-    assert_eq!(Felt::from(asset.amount()), Felt::from(REDUCED_AMOUNT), "note asset == reduced amount");
-    assert_eq!(asset.faucet_id(), h.account_id, "asset minted by this faucet");
+    assert_eq!(
+        Felt::from(asset.amount()),
+        Felt::from(REDUCED_AMOUNT),
+        "note asset == reduced amount"
+    );
+    assert_eq!(
+        asset.faucet_id(),
+        h.account_id,
+        "asset minted by this faucet"
+    );
 
     // (2) it is the intended P2ID note: nonce-derived serial, canonical script root + storage
     // [suffix, prefix], Public note type, and the faucet as sender.
-    let recipient = note.recipient().expect("public output note must carry its recipient");
+    let recipient = note
+        .recipient()
+        .expect("public output note must carry its recipient");
     assert_eq!(
         recipient.serial_num(),
         nonce_key(),
@@ -229,21 +250,35 @@ async fn happy_end_to_end_mints_once() -> Result<()> {
         miden_protocol::note::NoteType::Public,
         "recipient note must be Public"
     );
-    assert_eq!(note.metadata().sender(), h.account_id, "note sender is the faucet");
+    assert_eq!(
+        note.metadata().sender(),
+        h.account_id,
+        "note sender is the faucet"
+    );
 
     // (3) token_supply rose by exactly the reduced amount.
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) =
-        executed.account_delta().storage().get(&cfg_slot).expect("token_config slot delta")
+    let StorageSlotDelta::Value(cfg) = executed
+        .account_delta()
+        .storage()
+        .get(&cfg_slot)
+        .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
-    assert_eq!(cfg[0], Felt::from(REDUCED_AMOUNT), "token_supply delta == reduced amount");
+    assert_eq!(
+        cfg[0],
+        Felt::from(REDUCED_AMOUNT),
+        "token_supply delta == reduced amount"
+    );
 
     // (4) the nonce was marked: usedNonces[KEY] == MARKER.
     let used = StorageSlotName::new(USED_NONCES_SLOT_LABEL)?;
-    let StorageSlotDelta::Map(map_delta) =
-        executed.account_delta().storage().get(&used).expect("usedNonces slot delta")
+    let StorageSlotDelta::Map(map_delta) = executed
+        .account_delta()
+        .storage()
+        .get(&used)
+        .expect("usedNonces slot delta")
     else {
         panic!("usedNonces must be a Map slot delta");
     };
@@ -281,7 +316,9 @@ async fn reject_wrong_domain_fails_closed() -> Result<()> {
     )?;
     let result = run_mint_composition(&h, composition_advice([0u32; 8], &attester)).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_WRONG_DOMAIN"));
-    run_composition_probe(&h).await.expect("wrong-domain reject must leave token_config + usedNonces unchanged");
+    run_composition_probe(&h)
+        .await
+        .expect("wrong-domain reject must leave token_config + usedNonces unchanged");
     Ok(())
 }
 
@@ -303,8 +340,13 @@ async fn reject_amount_below_fee_fails_closed() -> Result<()> {
         &composition_noeffect_probe_src(0, nonce_key()),
     )?;
     let result = run_mint_composition(&h, composition_advice([0u32; 8], &attester)).await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_AMOUNT_BELOW_FEE"));
-    run_composition_probe(&h).await.expect("amount-below-fee reject must leave token_config + usedNonces unchanged");
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_AMOUNT_BELOW_FEE")
+    );
+    run_composition_probe(&h)
+        .await
+        .expect("amount-below-fee reject must leave token_config + usedNonces unchanged");
     Ok(())
 }
 
@@ -328,7 +370,9 @@ async fn reject_nonce_replay_fails_closed() -> Result<()> {
     )?;
     let result = run_mint_composition(&h, composition_advice([0u32; 8], &attester)).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_NONCE_REPLAY"));
-    run_composition_probe(&h).await.expect("replay reject must leave token_supply unchanged");
+    run_composition_probe(&h)
+        .await
+        .expect("replay reject must leave token_supply unchanged");
     Ok(())
 }
 
@@ -350,8 +394,13 @@ async fn reject_attestation_not_allowlisted_fails_closed() -> Result<()> {
         &composition_noeffect_probe_src(0, nonce_key()),
     )?;
     let result = run_mint_composition(&h, composition_advice([0u32; 8], &attester)).await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"));
-    run_composition_probe(&h).await.expect("non-allowlisted reject must leave token_config + usedNonces unchanged");
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT")
+    );
+    run_composition_probe(&h)
+        .await
+        .expect("non-allowlisted reject must leave token_config + usedNonces unchanged");
     Ok(())
 }
 
@@ -376,8 +425,13 @@ async fn reject_bad_recipient_fails_closed() -> Result<()> {
         &composition_noeffect_probe_src(0, nonce_key()),
     )?;
     let result = run_mint_composition(&h, composition_advice([0u32; 8], &attester)).await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE"));
-    run_composition_probe(&h).await.expect("bad-recipient reject must leave token_config + usedNonces unchanged");
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE")
+    );
+    run_composition_probe(&h)
+        .await
+        .expect("bad-recipient reject must leave token_config + usedNonces unchanged");
     Ok(())
 }
 
@@ -401,11 +455,13 @@ async fn reject_supply_cap_fails_closed() -> Result<()> {
     )?;
     let result = run_mint_composition(&h, composition_advice([0u32; 8], &attester)).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_SUPPLY_CAP"));
-    run_composition_probe(&h).await.expect("supply-cap reject must leave token_config + usedNonces unchanged");
+    run_composition_probe(&h)
+        .await
+        .expect("supply-cap reject must leave token_config + usedNonces unchanged");
     Ok(())
 }
 
-// ADDED ROWS (Codex red-suite re-audit) — forged sig, hookData happy, fee-over-max
+// ADDED ROWS — forged sig, hookData happy, fee-over-max
 // ================================================================================================
 
 /// D5d (R-MINT-14): an allowlisted attester's pubkey paired with a FOREIGN valid signature (key B's,
@@ -417,7 +473,10 @@ async fn reject_forged_signature_fails_closed() -> Result<()> {
     let payload = happy_payload();
     let a = gen_attester(1, &payload);
     let b = gen_attester(2, &payload);
-    assert_ne!(a.commitment, b.commitment, "seam keys A and B must have distinct commitments");
+    assert_ne!(
+        a.commitment, b.commitment,
+        "seam keys A and B must have distinct commitments"
+    );
     let (domain, identifier) = config(TEST_DOMAIN);
     let driver = mint_composition_driver_src(&pack(&payload), LEN_FELTS, SCALE_EXP);
     let h = setup_mint_composition_account(
@@ -438,7 +497,9 @@ async fn reject_forged_signature_fails_closed() -> Result<()> {
         .collect();
     let result = run_mint_composition(&h, advice).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_SIG_INVALID"));
-    run_composition_probe(&h).await.expect("forged-sig reject must leave token_config + usedNonces unchanged");
+    run_composition_probe(&h)
+        .await
+        .expect("forged-sig reject must leave token_config + usedNonces unchanged");
     Ok(())
 }
 
@@ -468,16 +529,30 @@ async fn happy_end_to_end_with_hookdata() -> Result<()> {
         .await
         .expect("a valid hookData deposit intent + attestation must mint");
 
-    assert_eq!(executed.output_notes().num_notes(), 1, "exactly one recipient note");
+    assert_eq!(
+        executed.output_notes().num_notes(),
+        1,
+        "exactly one recipient note"
+    );
     let note = executed.output_notes().get_note(0);
     let asset = note
         .assets()
         .iter_fungible()
         .next()
         .expect("the recipient note must carry a fungible asset");
-    assert_eq!(Felt::from(asset.amount()), Felt::from(REDUCED_AMOUNT), "note asset == reduced amount");
-    assert_eq!(asset.faucet_id(), h.account_id, "asset minted by this faucet");
-    let recipient = note.recipient().expect("public output note must carry its recipient");
+    assert_eq!(
+        Felt::from(asset.amount()),
+        Felt::from(REDUCED_AMOUNT),
+        "note asset == reduced amount"
+    );
+    assert_eq!(
+        asset.faucet_id(),
+        h.account_id,
+        "asset minted by this faucet"
+    );
+    let recipient = note
+        .recipient()
+        .expect("public output note must carry its recipient");
     assert_eq!(
         recipient.serial_num(),
         nonce_key_of("di-pos-hookdata"),
@@ -504,15 +579,25 @@ async fn happy_end_to_end_with_hookdata() -> Result<()> {
         "recipient note must be Public"
     );
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) =
-        executed.account_delta().storage().get(&cfg_slot).expect("token_config slot delta")
+    let StorageSlotDelta::Value(cfg) = executed
+        .account_delta()
+        .storage()
+        .get(&cfg_slot)
+        .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
-    assert_eq!(cfg[0], Felt::from(REDUCED_AMOUNT), "token_supply delta == reduced amount");
+    assert_eq!(
+        cfg[0],
+        Felt::from(REDUCED_AMOUNT),
+        "token_supply delta == reduced amount"
+    );
     let used = StorageSlotName::new(USED_NONCES_SLOT_LABEL)?;
-    let StorageSlotDelta::Map(map_delta) =
-        executed.account_delta().storage().get(&used).expect("usedNonces slot delta")
+    let StorageSlotDelta::Map(map_delta) = executed
+        .account_delta()
+        .storage()
+        .get(&used)
+        .expect("usedNonces slot delta")
     else {
         panic!("usedNonces must be a Map slot delta");
     };
@@ -551,14 +636,17 @@ async fn reject_fee_over_max_fails_closed() -> Result<()> {
     let advice: Vec<Felt> = fee.into_iter().chain(attester.advice()).collect();
     let result = run_mint_composition(&h, advice).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_FEE_NONZERO"));
-    run_composition_probe(&h).await.expect("fee-over-max reject must leave token_config + usedNonces unchanged");
+    run_composition_probe(&h)
+        .await
+        .expect("fee-over-max reject must leave token_config + usedNonces unchanged");
     Ok(())
 }
 
-/// F2 (LNV-3): a mint carrying a NONZERO advice `feeAmount` that is `<= maxFee` — the case the old
-/// R-MINT-11 accepted and the effects then SILENTLY IGNORED (LNV-3 drove feeAmount=3, maxFee=10) —
-/// must now fail closed with `ERR_XRESERVE_FEE_NONZERO` and ZERO writes. Structural sibling of
-/// `reject_fee_over_max_fails_closed`, but the fee is BELOW maxFee (the exact divergence F2 closes).
+/// F2: a mint carrying a NONZERO advice `feeAmount` that is `<= maxFee` — the case the old
+/// R-MINT-11 accepted and the effects then SILENTLY IGNORED (a real-node run drove feeAmount=3,
+/// maxFee=10) — must now fail closed with `ERR_XRESERVE_FEE_NONZERO` and ZERO writes. Structural
+/// sibling of `reject_fee_over_max_fails_closed`, but the fee is BELOW maxFee (the exact divergence
+/// F2 closes).
 #[tokio::test]
 async fn reject_nonzero_fee_below_maxfee_fails_closed() -> Result<()> {
     let payload = with_amounts(base_payload(), 20_000_000, 10_000_000); // reduced amount 20 >= maxFee 10
@@ -593,9 +681,9 @@ async fn reject_nonzero_fee_below_maxfee_fails_closed() -> Result<()> {
 /// faucet carries the mint-deny guard as its active mint policy (composed via
 /// `XReserveStablecoinBuilder`, deny oracle). `xreserve_mint` calls kernel `faucet::mint` directly
 /// and bypasses the `policy_manager`, so the deny guard (which gates only the stock `mint_and_send`)
-/// is irrelevant to it — all four happy effects must still hold. GREEN at the gate AND after Step 2
-/// (the guard never sits on this path). The structural sibling of the mint_deny deny tests: deny the
-/// stock surface, keep the custom surface fully working.
+/// is irrelevant to it — all four happy effects must still hold (the guard never sits on this path).
+/// The structural sibling of the mint_deny deny tests: deny the stock surface, keep the custom
+/// surface fully working.
 #[tokio::test]
 async fn xreserve_mint_still_mints_on_guarded_account() -> Result<()> {
     let payload = happy_payload();
@@ -617,22 +705,38 @@ async fn xreserve_mint_still_mints_on_guarded_account() -> Result<()> {
     )?;
     let executed = run_mint_composition(&gm.harness, composition_advice([0u32; 8], &attester))
         .await
-        .expect("a fully valid deposit intent + attestation must mint even on a deny-guarded faucet");
+        .expect(
+            "a fully valid deposit intent + attestation must mint even on a deny-guarded faucet",
+        );
 
     // (1) exactly one P2ID recipient note carrying amount - feeAmount (== reduced amount at MVP).
-    assert_eq!(executed.output_notes().num_notes(), 1, "exactly one recipient note");
+    assert_eq!(
+        executed.output_notes().num_notes(),
+        1,
+        "exactly one recipient note"
+    );
     let note = executed.output_notes().get_note(0);
     let asset = note
         .assets()
         .iter_fungible()
         .next()
         .expect("the recipient note must carry a fungible asset");
-    assert_eq!(Felt::from(asset.amount()), Felt::from(REDUCED_AMOUNT), "note asset == reduced amount");
-    assert_eq!(asset.faucet_id(), gm.harness.account_id, "asset minted by this faucet");
+    assert_eq!(
+        Felt::from(asset.amount()),
+        Felt::from(REDUCED_AMOUNT),
+        "note asset == reduced amount"
+    );
+    assert_eq!(
+        asset.faucet_id(),
+        gm.harness.account_id,
+        "asset minted by this faucet"
+    );
 
     // (2) it is the intended P2ID note: nonce-derived serial, canonical script root + storage
     // [suffix, prefix], Public note type, and the faucet as sender.
-    let recipient = note.recipient().expect("public output note must carry its recipient");
+    let recipient = note
+        .recipient()
+        .expect("public output note must carry its recipient");
     assert_eq!(
         recipient.serial_num(),
         nonce_key(),
@@ -658,21 +762,35 @@ async fn xreserve_mint_still_mints_on_guarded_account() -> Result<()> {
         miden_protocol::note::NoteType::Public,
         "recipient note must be Public"
     );
-    assert_eq!(note.metadata().sender(), gm.harness.account_id, "note sender is the faucet");
+    assert_eq!(
+        note.metadata().sender(),
+        gm.harness.account_id,
+        "note sender is the faucet"
+    );
 
     // (3) token_supply rose by exactly the reduced amount.
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) =
-        executed.account_delta().storage().get(&cfg_slot).expect("token_config slot delta")
+    let StorageSlotDelta::Value(cfg) = executed
+        .account_delta()
+        .storage()
+        .get(&cfg_slot)
+        .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
-    assert_eq!(cfg[0], Felt::from(REDUCED_AMOUNT), "token_supply delta == reduced amount");
+    assert_eq!(
+        cfg[0],
+        Felt::from(REDUCED_AMOUNT),
+        "token_supply delta == reduced amount"
+    );
 
     // (4) the nonce was marked: usedNonces[KEY] == MARKER.
     let used = StorageSlotName::new(USED_NONCES_SLOT_LABEL)?;
-    let StorageSlotDelta::Map(map_delta) =
-        executed.account_delta().storage().get(&used).expect("usedNonces slot delta")
+    let StorageSlotDelta::Map(map_delta) = executed
+        .account_delta()
+        .storage()
+        .get(&used)
+        .expect("usedNonces slot delta")
     else {
         panic!("usedNonces must be a Map slot delta");
     };
@@ -685,9 +803,9 @@ async fn xreserve_mint_still_mints_on_guarded_account() -> Result<()> {
     Ok(())
 }
 
-// set_attester -> verify SEAM (P5-01) — the load-bearing non-vacuity proof
+// set_attester -> verify SEAM — the load-bearing non-vacuity proof
 // ================================================================================================
-// The setter trusts the caller's commitment Word verbatim (§5.5), so a storage-delta check is
+// The setter trusts the caller's commitment Word verbatim, so a storage-delta check is
 // vacuous. Only an end-to-end attestation proves the key set_attester WROTE equals the key the D5d
 // read path COMPUTES. These run on the owner-gated production faucet (owner = id(1)) with an
 // EMPTY allowlist, then drive a real set_attester note tx (tx1) and a real mint tx (tx2) on the
@@ -719,34 +837,64 @@ async fn set_attester_enables_attestation() -> Result<()> {
     let account = faucet_account(&gm.harness);
 
     // negative-before: K is not allowlisted -> the D5d read traps R-MINT-13 (the "before" anchor).
-    let before = run_mint_against(&gm.harness, &account, composition_advice([0u32; 8], &attester)).await;
-    assert_transaction_executor_error!(before, shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"));
+    let before = run_mint_against(
+        &gm.harness,
+        &account,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await;
+    assert_transaction_executor_error!(
+        before,
+        shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT")
+    );
 
     // tx1: the owner (id(1)) allowlists K.
-    let set = run_set_attester_tx(&gm.harness, &account, test_account_id(1), attester.commitment, 1, 7)
-        .await
-        .expect("the owner's set_attester(K, true) must succeed");
+    let set = run_set_attester_tx(
+        &gm.harness,
+        &account,
+        test_account_id(1),
+        attester.commitment,
+        1,
+        7,
+    )
+    .await
+    .expect("the owner's set_attester(K, true) must succeed");
     let mut evolved = account.clone();
     evolved.apply_delta(set.account_delta())?;
 
     // positive seam: the SAME K-attestation now PASSES the gate and mints.
-    let minted = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester))
-        .await
-        .expect("set_attester(K, true) must enable K's attestation to mint (seam closes)");
-    assert_eq!(minted.output_notes().num_notes(), 1, "exactly one recipient note");
+    let minted = run_mint_against(
+        &gm.harness,
+        &evolved,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await
+    .expect("set_attester(K, true) must enable K's attestation to mint (seam closes)");
+    assert_eq!(
+        minted.output_notes().num_notes(),
+        1,
+        "exactly one recipient note"
+    );
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) =
-        minted.account_delta().storage().get(&cfg_slot).expect("token_config slot delta")
+    let StorageSlotDelta::Value(cfg) = minted
+        .account_delta()
+        .storage()
+        .get(&cfg_slot)
+        .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
-    assert_eq!(cfg[0], Felt::from(REDUCED_AMOUNT), "token_supply rose by the reduced amount");
+    assert_eq!(
+        cfg[0],
+        Felt::from(REDUCED_AMOUNT),
+        "token_supply rose by the reduced amount"
+    );
     Ok(())
 }
 
 /// Negative-after (remove denies): after the owner enables then `set_attester(K, false)` removes K,
 /// the SAME attestation traps R-MINT-13 — proving the removal write (EMPTY_WORD) genuinely closes the
-/// seam (forbidden #6: a remove that writes a still-non-empty value would keep K verifying).
+/// seam (a remove that writes a still-non-empty value would keep K verifying).
 #[tokio::test]
 async fn set_attester_remove_denies_attestation() -> Result<()> {
     let payload = happy_payload();
@@ -769,25 +917,47 @@ async fn set_attester_remove_denies_attestation() -> Result<()> {
     let account = faucet_account(&gm.harness);
 
     // tx1: enable K.
-    let enable = run_set_attester_tx(&gm.harness, &account, test_account_id(1), attester.commitment, 1, 7)
-        .await
-        .expect("enable must succeed");
+    let enable = run_set_attester_tx(
+        &gm.harness,
+        &account,
+        test_account_id(1),
+        attester.commitment,
+        1,
+        7,
+    )
+    .await
+    .expect("enable must succeed");
     let mut evolved = account.clone();
     evolved.apply_delta(enable.account_delta())?;
 
     // tx2: remove K (enabled = 0 -> EMPTY_WORD).
-    let remove = run_set_attester_tx(&gm.harness, &evolved, test_account_id(1), attester.commitment, 0, 9)
-        .await
-        .expect("remove must succeed");
+    let remove = run_set_attester_tx(
+        &gm.harness,
+        &evolved,
+        test_account_id(1),
+        attester.commitment,
+        0,
+        9,
+    )
+    .await
+    .expect("remove must succeed");
     evolved.apply_delta(remove.account_delta())?;
 
     // the SAME K-attestation now traps R-MINT-13 (K is no longer allowlisted).
-    let denied = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
-    assert_transaction_executor_error!(denied, shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"));
+    let denied = run_mint_against(
+        &gm.harness,
+        &evolved,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await;
+    assert_transaction_executor_error!(
+        denied,
+        shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT")
+    );
     Ok(())
 }
 
-/// 5-step add-then-retire rotation (§4.K) on ONE evolving account, each step proven via the seam:
+/// 5-step add-then-retire rotation on ONE evolving account, each step proven via the seam:
 /// (1) enable K_old -> K_old mints; (2) enable K_new -> K_new mints; (3) disable K_old; (4) K_old
 /// traps R-MINT-13; (5) K_new still mints. Three distinct-nonce payloads — each successful mint
 /// (steps 1, 2, 5) consumes its nonce; the denied K_old attempt (step 4) traps at D5d BEFORE the
@@ -802,7 +972,10 @@ async fn set_attester_add_then_retire_rotation() -> Result<()> {
     let new_b = gen_attester(2, &payload_b); // K_new over payload_b
     let old_c = gen_attester(1, &payload_c); // K_old over payload_c (same commitment as old_a)
     let new_c = gen_attester(2, &payload_c); // K_new over payload_c (same commitment as new_b)
-    assert_ne!(old_a.commitment, new_b.commitment, "K_old and K_new must be distinct keys");
+    assert_ne!(
+        old_a.commitment, new_b.commitment,
+        "K_old and K_new must be distinct keys"
+    );
 
     let (domain, identifier) = config(TEST_DOMAIN);
     // One driver per distinct-nonce payload (each successful mint consumes its nonce; the mint must
@@ -816,40 +989,71 @@ async fn set_attester_add_then_retire_rotation() -> Result<()> {
     let mut acct = faucet_account(h);
 
     // 1. enable K_old -> K_old mints (driver_a / payload_a, nonce_a).
-    let s1 = run_set_attester_tx(h, &acct, owner, old_a.commitment, 1, 11).await.expect("enable K_old");
-    acct.apply_delta(s1.account_delta())?;
-    let m1 = run_rotation_mint(h, &rh.drivers[0], &acct, composition_advice([0u32; 8], &old_a))
+    let s1 = run_set_attester_tx(h, &acct, owner, old_a.commitment, 1, 11)
         .await
-        .expect("K_old mints once enabled");
+        .expect("enable K_old");
+    acct.apply_delta(s1.account_delta())?;
+    let m1 = run_rotation_mint(
+        h,
+        &rh.drivers[0],
+        &acct,
+        composition_advice([0u32; 8], &old_a),
+    )
+    .await
+    .expect("K_old mints once enabled");
     assert_eq!(m1.output_notes().num_notes(), 1, "step 1: K_old mints");
     acct.apply_delta(m1.account_delta())?;
 
     // 2. enable K_new -> K_new mints (driver_b / payload_b, nonce_b).
-    let s2 = run_set_attester_tx(h, &acct, owner, new_b.commitment, 1, 12).await.expect("enable K_new");
-    acct.apply_delta(s2.account_delta())?;
-    let m2 = run_rotation_mint(h, &rh.drivers[1], &acct, composition_advice([0u32; 8], &new_b))
+    let s2 = run_set_attester_tx(h, &acct, owner, new_b.commitment, 1, 12)
         .await
-        .expect("K_new mints once enabled");
+        .expect("enable K_new");
+    acct.apply_delta(s2.account_delta())?;
+    let m2 = run_rotation_mint(
+        h,
+        &rh.drivers[1],
+        &acct,
+        composition_advice([0u32; 8], &new_b),
+    )
+    .await
+    .expect("K_new mints once enabled");
     assert_eq!(m2.output_notes().num_notes(), 1, "step 2: K_new mints");
     acct.apply_delta(m2.account_delta())?;
 
     // 3. disable K_old.
-    let s3 = run_set_attester_tx(h, &acct, owner, old_a.commitment, 0, 13).await.expect("disable K_old");
+    let s3 = run_set_attester_tx(h, &acct, owner, old_a.commitment, 0, 13)
+        .await
+        .expect("disable K_old");
     acct.apply_delta(s3.account_delta())?;
 
     // 4. K_old now traps R-MINT-13 (driver_c / payload_c; traps at D5d, so nonce_c is NOT consumed).
-    let m4 = run_rotation_mint(h, &rh.drivers[2], &acct, composition_advice([0u32; 8], &old_c)).await;
+    let m4 = run_rotation_mint(
+        h,
+        &rh.drivers[2],
+        &acct,
+        composition_advice([0u32; 8], &old_c),
+    )
+    .await;
     assert_transaction_executor_error!(m4, shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"));
 
     // 5. K_new still mints (driver_c / payload_c, nonce_c still fresh).
-    let m5 = run_rotation_mint(h, &rh.drivers[2], &acct, composition_advice([0u32; 8], &new_c))
-        .await
-        .expect("K_new still mints after K_old is retired");
-    assert_eq!(m5.output_notes().num_notes(), 1, "step 5: K_new still mints");
+    let m5 = run_rotation_mint(
+        h,
+        &rh.drivers[2],
+        &acct,
+        composition_advice([0u32; 8], &new_c),
+    )
+    .await
+    .expect("K_new still mints after K_old is retired");
+    assert_eq!(
+        m5.output_notes().num_notes(),
+        1,
+        "step 5: K_new still mints"
+    );
     Ok(())
 }
 
-// set_max_supply -> R-MINT-15 cap-enforcement SEAM (P5-01) — the load-bearing non-vacuity proof
+// set_max_supply -> R-MINT-15 cap-enforcement SEAM — the load-bearing non-vacuity proof
 // ================================================================================================
 // A token_config[max_supply] storage-delta is vacuous; only a real mint proves set_max_supply changed
 // what R-MINT-15 enforces (R-MINT-15 reads max_supply from the SAME token_config word set_max_supply
@@ -860,7 +1064,7 @@ async fn set_attester_add_then_retire_rotation() -> Result<()> {
 
 /// Lower-then-reject: start at cap 1_000_000 (a 2-unit mint is fine). The owner lowers
 /// the cap to 1; the SAME valid mint (amount 2) now exceeds it -> R-MINT-15 traps the EXACT
-/// ERR_XRESERVE_SUPPLY_CAP. Lowering tightened what the mint enforces (forbidden #2).
+/// ERR_XRESERVE_SUPPLY_CAP. Lowering tightened what the mint enforces.
 #[tokio::test]
 async fn set_max_supply_lower_then_over_cap_rejects() -> Result<()> {
     let payload = happy_payload();
@@ -890,8 +1094,12 @@ async fn set_max_supply_lower_then_over_cap_rejects() -> Result<()> {
     evolved.apply_delta(set.account_delta())?;
 
     // tx2: the SAME valid mint (amount 2) now exceeds the lowered cap -> R-MINT-15 traps.
-    let over_cap =
-        run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
+    let over_cap = run_mint_against(
+        &gm.harness,
+        &evolved,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await;
     assert_transaction_executor_error!(over_cap, shell_error_by_name("ERR_XRESERVE_SUPPLY_CAP"));
     Ok(())
 }
@@ -927,24 +1135,39 @@ async fn set_max_supply_at_cap_accepts() -> Result<()> {
     evolved.apply_delta(set.account_delta())?;
 
     // tx2: the mint (amount 2) is exactly at the new cap -> mints once, token_supply -> 2.
-    let minted = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester))
-        .await
-        .expect("a mint exactly at the new cap must succeed");
-    assert_eq!(minted.output_notes().num_notes(), 1, "exactly one recipient note");
+    let minted = run_mint_against(
+        &gm.harness,
+        &evolved,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await
+    .expect("a mint exactly at the new cap must succeed");
+    assert_eq!(
+        minted.output_notes().num_notes(),
+        1,
+        "exactly one recipient note"
+    );
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) =
-        minted.account_delta().storage().get(&cfg_slot).expect("token_config slot delta")
+    let StorageSlotDelta::Value(cfg) = minted
+        .account_delta()
+        .storage()
+        .get(&cfg_slot)
+        .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
-    assert_eq!(cfg[0], Felt::from(REDUCED_AMOUNT), "token_supply rose by the reduced amount");
+    assert_eq!(
+        cfg[0],
+        Felt::from(REDUCED_AMOUNT),
+        "token_supply rose by the reduced amount"
+    );
     Ok(())
 }
 
 /// Raise-then-accept (with a negative-before control): start at cap 1, where the 2-unit mint traps
 /// R-MINT-15 (in apply_mint_effects, BEFORE the nonce SET -> the nonce is NOT consumed). The holder
 /// raises the cap to 1_000_000; the SAME mint now fits and mints (nonce still fresh). Proves the accept
-/// is CAUSED by the raise (forbidden #2, the other direction).
+/// is CAUSED by the raise (the other direction).
 #[tokio::test]
 async fn set_max_supply_raise_then_accepts() -> Result<()> {
     let payload = happy_payload();
@@ -968,8 +1191,12 @@ async fn set_max_supply_raise_then_accepts() -> Result<()> {
 
     // negative-before: the cap is 1, so the 2-unit mint traps R-MINT-15 BEFORE the nonce SET (the nonce
     // is NOT consumed). The "before" anchor.
-    let before =
-        run_mint_against(&gm.harness, &account, composition_advice([0u32; 8], &attester)).await;
+    let before = run_mint_against(
+        &gm.harness,
+        &account,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await;
     assert_transaction_executor_error!(before, shell_error_by_name("ERR_XRESERVE_SUPPLY_CAP"));
 
     // tx1: the owner raises the cap well above the mint.
@@ -980,16 +1207,31 @@ async fn set_max_supply_raise_then_accepts() -> Result<()> {
     evolved.apply_delta(set.account_delta())?;
 
     // tx2: the SAME mint now fits under the raised cap and mints (nonce still fresh).
-    let minted = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester))
-        .await
-        .expect("after raising the cap, the same mint must succeed");
-    assert_eq!(minted.output_notes().num_notes(), 1, "exactly one recipient note");
+    let minted = run_mint_against(
+        &gm.harness,
+        &evolved,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await
+    .expect("after raising the cap, the same mint must succeed");
+    assert_eq!(
+        minted.output_notes().num_notes(),
+        1,
+        "exactly one recipient note"
+    );
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) =
-        minted.account_delta().storage().get(&cfg_slot).expect("token_config slot delta")
+    let StorageSlotDelta::Value(cfg) = minted
+        .account_delta()
+        .storage()
+        .get(&cfg_slot)
+        .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
-    assert_eq!(cfg[0], Felt::from(REDUCED_AMOUNT), "token_supply rose by the reduced amount");
+    assert_eq!(
+        cfg[0],
+        Felt::from(REDUCED_AMOUNT),
+        "token_supply rose by the reduced amount"
+    );
     Ok(())
 }

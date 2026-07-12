@@ -1,7 +1,7 @@
 //! Rows-D (mint happy path) + row-E (mint negatives) assertion suite — written test-first, before
 //! the real-node driver (`crate::rows_de`), judging the [`RowsDeObservations`] it produces.
 //!
-//! Matrix rows (authoritative spec, `TASK-P5-01-PHASE4-LOCAL-NODE-VALIDATION-PLAN-BUILDER.md`):
+//! Matrix rows:
 //! - **D mint happy path** — a real `XReserveMintNote` consumption raises `token_supply += amount`,
 //!   sets `usedNonces[nonce]`, and emits a recipient P2ID note; the RECIPIENT wallet consumes it
 //!   (balance += amount). Two variants: hookData-bearing AND no-hookData; `feeAmount = 0`; a genuine
@@ -81,7 +81,7 @@ fn assert_rejected_with(v: &Verdict, expected: &str, ctx: &str) -> Result<()> {
 /// matrix requires). For each committed variant:
 /// - `token_supply` rose by EXACTLY the minted amount (a real supply write, neither absent nor
 ///   over-counted);
-/// - `usedNonces[nonce]` is set ([1,0,0,0]) — the first atomic state write;
+/// - `usedNonces[nonce]` is set (`[1,0,0,0]`) — the first atomic state write;
 /// - the emitted recipient note is a canonical P2ID whose serial equals the nonce-derived key, whose
 ///   tag is the recipient account-target tag, and whose single asset is the reduced amount issued by
 ///   THIS faucet;
@@ -171,8 +171,8 @@ pub fn assert_d(variants: &[MintHappy]) -> Result<()> {
 /// - the consumption was REJECTED with ITS exact gate error (message OR derived err_code);
 /// - the committed `token_supply` is UNCHANGED (`supply_after == supply_before`);
 /// - the `usedNonces` marker matches the negative's kind — a FRESH-nonce negative (forged signature /
-///   bad attester / non-zero fee / tampered payload) left its nonce EMPTY ([0,0,0,0], proving the
-///   reject wrote nothing), while the replay negative's already-used nonce stayed SET ([1,0,0,0]).
+///   bad attester / non-zero fee / tampered payload) left its nonce EMPTY (`[0,0,0,0]`, proving the
+///   reject wrote nothing), while the replay negative's already-used nonce stayed SET (`[1,0,0,0]`).
 pub fn assert_e(negatives: &[MintNegative]) -> Result<()> {
     for n in negatives {
         let ctx = format!("E[{}]", n.label);

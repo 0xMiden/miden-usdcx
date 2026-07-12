@@ -1,8 +1,7 @@
-//! Frozen `EncodingError` surface (`COMPONENT-SPEC.md §6.1`) plus the MASM error-constant
-//! mirror (human decision D-2: string `MasmError` constants per the v0.15 protocol
-//! pattern; the frozen `u32` code type is not realizable against v0.15 — recorded in the
-//! approved plan). Deferred-family variants (burn-note / Circle JSON / binary) are part
-//! of the one frozen enum and stay unconstructed in this slice.
+//! Frozen `EncodingError` surface (per the shared-encoding spec) plus the MASM error-constant
+//! mirror (a human decision: string `MasmError` constants per the v0.15 protocol pattern; the
+//! frozen `u32` code type is not realizable against v0.15). Deferred-family variants (burn-note
+//! / Circle JSON / binary) are part of the one frozen enum and stay unconstructed in this slice.
 
 use core::fmt;
 
@@ -21,7 +20,9 @@ pub enum EncodingError {
     ScaleExpTooLarge,
     BadMagic,
     BadVersion,
-    ZeroField { field: DepositIntentField },
+    ZeroField {
+        field: DepositIntentField,
+    },
     TruncatedHeader,
     LengthMismatch,
     HookDataTooLarge,
@@ -39,7 +40,9 @@ impl fmt::Display for EncodingError {
             Self::LimbOutOfField => write!(f, "a u64 limb is not a valid field element"),
             Self::LimbNotU32 => write!(f, "packed felt exceeds u32 range"),
             Self::AmountTooLarge => write!(f, "larger than 2**128"),
-            Self::AmountOverCap => write!(f, "post-scale quotient exceeds the asset amount maximum"),
+            Self::AmountOverCap => {
+                write!(f, "post-scale quotient exceeds the asset amount maximum")
+            }
             Self::ScaleExpTooLarge => write!(f, "scale exponent exceeds 18"),
             Self::BadMagic => write!(f, "deposit intent magic mismatch"),
             Self::BadVersion => write!(f, "deposit intent version mismatch"),
@@ -52,10 +55,10 @@ impl fmt::Display for EncodingError {
                 // 16 bytes `bytes[16..32]` (prefix u64 BE + suffix u64 BE) behind a 16-byte zero
                 // pad — not the superseded left-aligned draft's 15-byte region.
                 write!(f, "bytes set outside the 16-byte account id region")
-            },
+            }
             Self::NonCanonicalAccountId => {
                 write!(f, "bytes do not decode to a canonical account id")
-            },
+            }
             Self::BurnItemsMalformed => write!(f, "burn note items have the wrong length or shape"),
             Self::JsonSchema(msg) => write!(f, "circle json does not match the schema: {msg}"),
             Self::BinaryMagic => write!(f, "circle binary decoder magic mismatch"),
@@ -66,11 +69,11 @@ impl fmt::Display for EncodingError {
 
 impl core::error::Error for EncodingError {}
 
-// MASM ERROR CONSTANTS (D-2)
+// MASM ERROR CONSTANTS
 // ================================================================================================
-// Names per the frozen spec's intent list plus the two plan-flagged additions
-// (`ERR_AMOUNT_OVER_CAP`, `ERR_SCALE_EXP_TOO_LARGE`, each 1:1 with a frozen enum variant).
-// The MASM side must declare identical strings; `tests/constant_parity.rs` enforces it.
+// Names per the frozen spec's intent list plus two additions (`ERR_AMOUNT_OVER_CAP`,
+// `ERR_SCALE_EXP_TOO_LARGE`, each 1:1 with a frozen enum variant). The MASM side must declare
+// identical strings; `tests/constant_parity.rs` enforces it.
 
 /// Single source for every MASM error name/message pair: the named constants, the
 /// name→constant lookup (MASM execution tests), and the name→message table (the

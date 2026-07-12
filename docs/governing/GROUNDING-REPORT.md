@@ -1,4 +1,4 @@
-> **MIRROR — READ-ONLY (mirrored 2026-07-01).** Canonical source: `/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/08-masm-grounding-spike/GROUNDING-REPORT.md`. Do NOT edit this copy; if it diverges from the canonical source, the canonical source wins. Re-sync via `tools/sync-mirrors.sh`.
+> **Reference document** — adapted from the internal xUSDC spec program; the shipped code and tests in this repo are the source of truth.
 
 # Phase 4.3 MASM Toolchain Grounding Spike — Report
 
@@ -10,7 +10,7 @@
 > tag **`protocol v0.15.3`** (`681fc9058`) — the latest v0.15 patch — which locks
 > **`miden-assembly`/`miden-core`/`miden-core-lib`/`miden-processor` = 0.23.3** (published from
 > `miden-vm@v0.23.3`) and `miden-crypto`/field = `0.25.1`
-> (`../07-implementation-readiness/V15-DEVNET-BASELINE.md` §1, §4). The earlier tag **`v0.15.1`**
+> (`V15-DEVNET-BASELINE.md` §1, §4). The earlier tag **`v0.15.1`**
 > (`625b66dc4`) is **historical**: it locked the `0.23.1` stack — the resolution this spike's
 > evidence was originally verified against. **The toolchain evidence in this report carries forward
 > to the current v0.15.3/0.23.3 stack**: the spike itself verified Q1–Q4 + the Q2 gate IDENTICAL on
@@ -42,7 +42,7 @@ no precompile-host wiring, layout/ownership, or version decision was made (all r
 | v0.15 builder target (released tag) | **`protocol v0.15.3` (`681fc9058`)** — current canonical pin (rev-2); supersedes the spike build pin `0b662adfb` (= `git describe` `v0.15.0-21`, on the v0.15 line) and the rev-1 `v0.15.1` (`625b66dc4`, historical — locked the `0.23.1` stack the spike verified; `v0.15.3` locks `0.23.3`, precompiles confirmed on both) |
 | Spike build pin (historical) | `protocol@0b662adfb27deecb6b6ede88d45ef0d0d4eb9068` (recorded "v0.16.0"; actually `v0.15.0-21`) — the worktree this spike was built against |
 | Reference (NOT the v0.15 target) | `miden-vm@328071990a6de3487c3189f08c7d8ad545c9d408` ("0.24") — read-only VM-track reference; not built against; not the v0.15 target (no 0.24 retarget under v0.15) |
-| Build source | a git **worktree** of `protocol` at the historical pin: `/Users/philipp/Documents/Work/Miden-Coding/protocol-pin-0b662adfb` (the user's working tree stays at `2ef805632`, untouched). Re-run against `v0.15.3` (the current canonical pin). |
+| Build source | a git **worktree** of `protocol` at the historical pin (a local checkout; the user's working tree stays at `2ef805632`, untouched). Re-run against `v0.15.3` (the current canonical pin). |
 | Resolved Miden stack (pinned) | `miden-protocol`/`miden-standards`/`miden-testing` **0.15.x** (recorded "0.16.0" at the v0.15-line build pin; = **0.15.1** at the historical `v0.15.1` tag — canonical tag now `v0.15.3` → `0.15.3`); `miden-assembly`/`miden-core`/`miden-core-lib` **0.23.1** — the historical v0.15.1-locked deps the spike built on, verified equal to the pin's own `Cargo.lock` (seeded into the scaffold) and to `v0.15.1`'s lockfile (the current `v0.15.3` locks **0.23.3**; precompiles confirmed on both — `V15-DEVNET-BASELINE.md` §1, §3) |
 | Resolved Miden stack (fresh, no seeded lock) | same crates at **0.23.3** (a newer 0.23 patch shipped since the pin's lock). **Q1–Q4 + the Q2 gate were verified IDENTICAL on both 0.23.1 and 0.23.3.** |
 | Safe path used | `CodeBuilder::new()` → `compile_component_code` / `compile_note_script` / `compile_tx_script` (`code_builder/mod.rs:103-112` pre-links kernel + core + protocol + `StandardsLib`). **No hand-built `Assembler`.** |
@@ -56,11 +56,11 @@ the precompiles are present.
 
 ## 1. Files created (scaffold tree)
 
-Untracked scratch at `ai-tasks/circle-integration/08-masm-grounding-spike/` (the permanent monorepo
-home on disk is a deferred **human decision** — this path is deliberately non-committal):
+Untracked scratch in the grounding-spike scaffold directory (the permanent monorepo home on disk
+was a deferred **human decision**):
 
 ```
-08-masm-grounding-spike/
+grounding-spike/
   GROUNDING-REPORT.md                 # this file
   README.md                           # how to recreate the worktree + run
   xusdc-masm/
@@ -241,7 +241,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 **Verification gates (task `<verification>`):**
 ```
-find 06-phase4-component-specs -type f -newer TASK-P4-3-MASM-GROUNDING-SPIKE.md   # empty -> PASS (no frozen edits)
+find <frozen-component-spec-tree> -type f -newer <this-grounding-task>   # empty -> PASS (no frozen edits)
 git status --porcelain | grep project-template                                   # empty -> PASS
 git status --porcelain | grep -v '^??'                                           # empty -> PASS (no tracked file changed)
 git -C .../protocol rev-parse --short HEAD                                        # 2ef805632 -> user's tree untouched
@@ -272,7 +272,7 @@ git -C .../protocol rev-parse --short HEAD                                      
 |---|---|
 | ✅ 0.23-vs-0.24 assembler retarget | **Moot under Miden v0.15.** `0.23.1` is the v0.15 stack's assembler dependency (what `protocol v0.15.1` resolves), not a target fork; the precompile-absence trigger is false (re-confirmed on the v0.15 core-lib, `V15-DEVNET-BASELINE.md` §3). There is no 0.24 retarget to choose for v0.15; the safe-path deferral is validated. |
 | 🟡 shim vs self-contained component layout | **OPEN** — spike used self-contained; shim is a skeleton placeholder. |
-| ✅ `deposit_intent_parser` / `attestation_verify` home (`encoding/` vs `xreserve/`) | **RESOLVED** (the spike did not adjudicate this) — conformed to the frozen faucet spec: at `asm/standards/xreserve/`, faucet(01)-owned assertion over 04's `encoding/layout.masm` (`01:278`,`:294`). See `07-implementation-readiness/CANONICAL-OWNERSHIP-MAP.md` §Resolved layout (consortium N5 cross-doc reconcile, 2026-06-09). |
+| ✅ `deposit_intent_parser` / `attestation_verify` home (`encoding/` vs `xreserve/`) | **RESOLVED** (the spike did not adjudicate this) — conformed to the frozen faucet spec: at `asm/standards/xreserve/`, faucet(01)-owned assertion over 04's `encoding/layout.masm` (`01:278`,`:294`). See `CANONICAL-OWNERSHIP-MAP.md` §Resolved layout (consortium N5 cross-doc reconcile, 2026-06-09). |
 | 🟡 permanent monorepo home on disk | **OPEN** — scaffold is scratch at `08-…`. |
 | 🟡 product decisions (mint-note modes; balance felt/u32; prebuilt `.masl` vs runtime compile) | **OPEN** — runtime compile demonstrated; prebuilt `.masl` not needed for the spike. |
 
@@ -312,7 +312,7 @@ Pipeline green on the safe path at the v0.15 stack's `0.23.1` assembler dependen
 Q6 resolved; **Q2 resolved in the affirmative — the precompiles are present on `miden-core-lib 0.23.1`
 (the version `protocol v0.15.1` resolves; re-confirmed in `V15-DEVNET-BASELINE.md` §3), so the v0.15
 assembler dependency is sufficient and there is no 0.24 retarget under v0.15.** Recommended next steps
-(human-gated, per `READINESS-STATUS.md`): **first an independent Codex re-audit of the v0.15/devnet
+(human-gated): **first an independent Codex re-audit of the v0.15/devnet
 retarget** (the gate verdicts predate it), then drop `.draft` on the two governing docs (folding in
 §5's two refinements + re-pinning the build source to `protocol v0.15.3`), confirm the layout/ownership
 OPEN questions, then build the first real component (shared-encoding(04) MASM module) under

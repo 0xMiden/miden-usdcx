@@ -1,7 +1,7 @@
-//! F5 admin note scripts — layered-auth E2E under the production `AuthNetworkAccount` (Option A,
-//! per-op red-before-green). Each shipped admin note is allowlisted (so it PASSES network auth) and
-//! reads its params from note STORAGE (never NOTE_ARGS); the sender-gated admin proc is the second
-//! layer. Reference op: `set_attester` (row 3).
+//! F5 admin note scripts — layered-auth E2E under the production `AuthNetworkAccount`. Each shipped
+//! admin note is allowlisted (so it PASSES network auth) and reads its params from note STORAGE
+//! (never NOTE_ARGS); the sender-gated admin proc is the second layer. Reference op: `set_attester`
+//! (row 3).
 
 mod support;
 
@@ -16,7 +16,7 @@ use miden_protocol::account::{
 use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
-use miden_testing::{MockChain, assert_transaction_executor_error};
+use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
@@ -88,11 +88,14 @@ async fn set_attester_admin_note_owner_writes_and_nonowner_traps() -> Result<()>
         .context("owner set_attester tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("owner-sent set_attester must succeed under network auth: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("owner-sent set_attester must succeed under network auth: {e}")
+        })?;
 
     // Marshaling correct: the account delta writes the enabled marker [1,0,0,0] at the CREATOR-
     // committed commitment key (a scrambled marshaling would write a different key).
-    let attesters = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL).context("attesters slot")?;
+    let attesters =
+        StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL).context("attesters slot")?;
     let StorageSlotDelta::Map(delta) = tx
         .account_delta()
         .storage()
@@ -114,8 +117,14 @@ async fn set_attester_admin_note_owner_writes_and_nonowner_traps() -> Result<()>
     );
 
     // Non-owner-sent: PASSES network auth (allowlisted script) but TRAPS at the proc owner gate.
-    let bad = XReserveSetAttesterNote::create(test_account_id(9), faucet_id, commitment, 0, &mut note_rng(2))
-        .context("building the non-owner set_attester note")?;
+    let bad = XReserveSetAttesterNote::create(
+        test_account_id(9),
+        faucet_id,
+        commitment,
+        0,
+        &mut note_rng(2),
+    )
+    .context("building the non-owner set_attester note")?;
     let result = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&bad))
         .context("non-owner set_attester tx context")?
@@ -138,7 +147,7 @@ fn set_attester_note_script_root_is_pinned() {
     );
 }
 
-// DOMAIN_INIT (allowlist row 13) — owner-gated, init-once §5.9 config setter
+// DOMAIN_INIT (allowlist row 13) — owner-gated, init-once config setter
 // ================================================================================================
 
 const DOMAIN: u32 = 7;
@@ -154,13 +163,23 @@ fn identifier() -> Word {
     Word::from([111u32, 222, 333, 444])
 }
 
-/// The five §5.9 config words as `read_domain_config_words` returns them:
+/// The five config words as `read_domain_config_words` returns them:
 /// `[domain, source_domain, xrc_hi, xrc_lo, identifier]`.
 fn expected_domain_config() -> [Word; 5] {
     let xrc = xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts(&xrc_bytes());
     [
-        Word::from([Felt::from(DOMAIN), Felt::from(0u32), Felt::from(0u32), Felt::from(0u32)]),
-        Word::from([Felt::from(SOURCE_DOMAIN), Felt::from(0u32), Felt::from(0u32), Felt::from(0u32)]),
+        Word::from([
+            Felt::from(DOMAIN),
+            Felt::from(0u32),
+            Felt::from(0u32),
+            Felt::from(0u32),
+        ]),
+        Word::from([
+            Felt::from(SOURCE_DOMAIN),
+            Felt::from(0u32),
+            Felt::from(0u32),
+            Felt::from(0u32),
+        ]),
         Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]),
         Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]),
         identifier(),
@@ -176,7 +195,7 @@ fn value_delta(tx: &ExecutedTransaction, label: &str) -> Word {
     }
 }
 
-/// Reads the FIVE §5.9 config words from a tx's account delta, in the order
+/// Reads the FIVE config words from a tx's account delta, in the order
 /// `[domain, source_domain, xrc_hi, xrc_lo, identifier]` (each is a value-slot write empty -> value).
 fn domain_config_delta(tx: &ExecutedTransaction) -> [Word; 5] {
     [
@@ -194,7 +213,7 @@ fn scalar_word(f: Felt) -> Word {
 }
 
 /// Consumes `owner`'s domain_init note against a fresh production faucet, PASSING network auth
-/// (allowlisted) AND the proc's owner gate, and writes all five §5.9 config slots at the creator-
+/// (allowlisted) AND the proc's owner gate, and writes all five config slots at the creator-
 /// committed params (read back from the account delta — the storage-param marshaling is correct).
 #[tokio::test]
 async fn domain_init_owner_writes_all_five_config_slots() -> Result<()> {
@@ -205,7 +224,13 @@ async fn domain_init_owner_writes_all_five_config_slots() -> Result<()> {
     let owner = test_account_id(1);
 
     let note = XReserveDomainInitNote::create(
-        owner, faucet_id, DOMAIN, SOURCE_DOMAIN, &xrc_bytes(), identifier(), &mut note_rng(13),
+        owner,
+        faucet_id,
+        DOMAIN,
+        SOURCE_DOMAIN,
+        &xrc_bytes(),
+        identifier(),
+        &mut note_rng(13),
     )
     .context("building the owner domain_init note")?;
     let tx = chain
@@ -215,7 +240,9 @@ async fn domain_init_owner_writes_all_five_config_slots() -> Result<()> {
         .context("owner domain_init tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("owner-sent domain_init must succeed under network auth: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("owner-sent domain_init must succeed under network auth: {e}")
+        })?;
     assert_eq!(
         domain_config_delta(&tx),
         expected_domain_config(),
@@ -231,7 +258,13 @@ async fn assert_domain_init_nonowner_traps(sender: AccountId, seed: u64) -> Resu
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let note = XReserveDomainInitNote::create(
-        sender, faucet_id, DOMAIN, SOURCE_DOMAIN, &xrc_bytes(), identifier(), &mut note_rng(seed),
+        sender,
+        faucet_id,
+        DOMAIN,
+        SOURCE_DOMAIN,
+        &xrc_bytes(),
+        identifier(),
+        &mut note_rng(seed),
     )
     .context("building the non-owner domain_init note")?;
     let result = chain
@@ -263,13 +296,16 @@ async fn domain_init_third_party_traps() -> Result<()> {
 async fn domain_init_reinit_traps_even_from_owner() -> Result<()> {
     let route = test_faucet_id(1);
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| {
-        vec![
-            XReserveDomainInitNote::create(
-                test_account_id(1), route, DOMAIN, SOURCE_DOMAIN, &xrc_bytes(), identifier(),
-                &mut note_rng(16),
-            )
-            .expect("building the seeded first domain_init note"),
-        ]
+        vec![XReserveDomainInitNote::create(
+            test_account_id(1),
+            route,
+            DOMAIN,
+            SOURCE_DOMAIN,
+            &xrc_bytes(),
+            identifier(),
+            &mut note_rng(16),
+        )
+        .expect("building the seeded first domain_init note")]
     })
     .context("building the production faucet with a seeded first domain_init")?;
     let mut chain = pf.mock_chain;
@@ -289,7 +325,12 @@ async fn domain_init_reinit_traps_even_from_owner() -> Result<()> {
     }
 
     let note2 = XReserveDomainInitNote::create(
-        test_account_id(1), faucet_id, DOMAIN, SOURCE_DOMAIN, &xrc_bytes(), identifier(),
+        test_account_id(1),
+        faucet_id,
+        DOMAIN,
+        SOURCE_DOMAIN,
+        &xrc_bytes(),
+        identifier(),
         &mut note_rng(17),
     )
     .context("building the second domain_init note")?;
@@ -315,7 +356,13 @@ async fn domain_init_note_args_are_inert() -> Result<()> {
     let owner = test_account_id(1);
 
     let note = XReserveDomainInitNote::create(
-        owner, faucet_id, DOMAIN, SOURCE_DOMAIN, &xrc_bytes(), identifier(), &mut note_rng(18),
+        owner,
+        faucet_id,
+        DOMAIN,
+        SOURCE_DOMAIN,
+        &xrc_bytes(),
+        identifier(),
+        &mut note_rng(18),
     )
     .context("building the owner domain_init note")?;
     let bogus_args = Word::from([424_242u32, 7, 7, 7]);
@@ -327,7 +374,9 @@ async fn domain_init_note_args_are_inert() -> Result<()> {
         .context("domain_init note-args tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("owner domain_init with bogus NOTE_ARGS must still succeed: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("owner domain_init with bogus NOTE_ARGS must still succeed: {e}")
+        })?;
     assert_eq!(
         domain_config_delta(&tx),
         expected_domain_config(),
@@ -365,8 +414,9 @@ async fn set_min_burn_size_owner_writes_slot() -> Result<()> {
     let faucet_id = pf.faucet_id;
     let owner = test_account_id(1);
 
-    let note = XReserveSetMinBurnSizeNote::create(owner, faucet_id, NEW_MIN_BURN, &mut note_rng(40))
-        .context("building the owner set_min_burn_size note")?;
+    let note =
+        XReserveSetMinBurnSizeNote::create(owner, faucet_id, NEW_MIN_BURN, &mut note_rng(40))
+            .context("building the owner set_min_burn_size note")?;
     let tx = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
         .context("owner set_min_burn_size tx context")?
@@ -374,7 +424,9 @@ async fn set_min_burn_size_owner_writes_slot() -> Result<()> {
         .context("owner set_min_burn_size tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("owner-sent set_min_burn_size must succeed under network auth: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("owner-sent set_min_burn_size must succeed under network auth: {e}")
+        })?;
     assert_eq!(
         value_delta(&tx, MIN_BURN_SIZE_SLOT_LABEL),
         expected_min_burn(),
@@ -389,8 +441,9 @@ async fn assert_set_min_burn_nonowner_traps(sender: AccountId, seed: u64) -> Res
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReserveSetMinBurnSizeNote::create(sender, faucet_id, NEW_MIN_BURN, &mut note_rng(seed))
-        .context("building the non-owner set_min_burn_size note")?;
+    let note =
+        XReserveSetMinBurnSizeNote::create(sender, faucet_id, NEW_MIN_BURN, &mut note_rng(seed))
+            .context("building the non-owner set_min_burn_size note")?;
     let result = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
         .context("non-owner set_min_burn_size tx context")?
@@ -426,8 +479,9 @@ async fn set_min_burn_size_note_args_are_inert() -> Result<()> {
     let faucet_id = pf.faucet_id;
     let owner = test_account_id(1);
 
-    let note = XReserveSetMinBurnSizeNote::create(owner, faucet_id, NEW_MIN_BURN, &mut note_rng(44))
-        .context("building the owner set_min_burn_size note")?;
+    let note =
+        XReserveSetMinBurnSizeNote::create(owner, faucet_id, NEW_MIN_BURN, &mut note_rng(44))
+            .context("building the owner set_min_burn_size note")?;
     let bogus_args = Word::from([999u32, 1, 2, 3]);
     let tx = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
@@ -437,7 +491,9 @@ async fn set_min_burn_size_note_args_are_inert() -> Result<()> {
         .context("set_min_burn_size note-args tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("set_min_burn_size with bogus NOTE_ARGS must still succeed: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("set_min_burn_size with bogus NOTE_ARGS must still succeed: {e}")
+        })?;
     assert_eq!(
         value_delta(&tx, MIN_BURN_SIZE_SLOT_LABEL),
         expected_min_burn(),
@@ -687,7 +743,11 @@ async fn assert_grant_role_authorized(sender: AccountId, seed: u64) -> Result<()
     let faucet_id = pf.faucet_id;
     let grantee = test_account_id(4);
     let note = XReserveGrantRoleNote::create(
-        sender, faucet_id, Felt::from(&pauser_sym()), grantee, &mut note_rng(seed),
+        sender,
+        faucet_id,
+        Felt::from(&pauser_sym()),
+        grantee,
+        &mut note_rng(seed),
     )
     .context("building the grant_role note")?;
     let tx = chain
@@ -697,8 +757,13 @@ async fn assert_grant_role_authorized(sender: AccountId, seed: u64) -> Result<()
         .context("grant_role tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("authorized grant_role must succeed under network auth: {e}"))?;
-    let mut evolved = chain.committed_account(faucet_id).context("committed faucet")?.clone();
+        .map_err(|e| {
+            anyhow::anyhow!("authorized grant_role must succeed under network auth: {e}")
+        })?;
+    let mut evolved = chain
+        .committed_account(faucet_id)
+        .context("committed faucet")?
+        .clone();
     evolved.apply_delta(tx.account_delta())?;
     assert_eq!(
         read_role_membership(&evolved, &pauser_sym(), grantee)?,
@@ -726,7 +791,10 @@ async fn grant_role_third_party_traps() -> Result<()> {
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let note = XReserveGrantRoleNote::create(
-        test_account_id(99), faucet_id, Felt::from(&pauser_sym()), test_account_id(4),
+        test_account_id(99),
+        faucet_id,
+        Felt::from(&pauser_sym()),
+        test_account_id(4),
         &mut note_rng(72),
     )
     .context("building the third-party grant_role note")?;
@@ -750,7 +818,11 @@ async fn grant_role_note_args_are_inert() -> Result<()> {
     let faucet_id = pf.faucet_id;
     let grantee = test_account_id(5);
     let note = XReserveGrantRoleNote::create(
-        test_account_id(1), faucet_id, Felt::from(&pauser_sym()), grantee, &mut note_rng(73),
+        test_account_id(1),
+        faucet_id,
+        Felt::from(&pauser_sym()),
+        grantee,
+        &mut note_rng(73),
     )
     .context("building the owner grant_role note")?;
     let bogus_args = Word::from([7u32, 7, 7, 7]);
@@ -763,7 +835,10 @@ async fn grant_role_note_args_are_inert() -> Result<()> {
         .execute()
         .await
         .map_err(|e| anyhow::anyhow!("grant_role with bogus NOTE_ARGS must still succeed: {e}"))?;
-    let mut evolved = chain.committed_account(faucet_id).context("committed faucet")?.clone();
+    let mut evolved = chain
+        .committed_account(faucet_id)
+        .context("committed faucet")?
+        .clone();
     evolved.apply_delta(tx.account_delta())?;
     assert_eq!(
         read_role_membership(&evolved, &pauser_sym(), grantee)?,
@@ -798,8 +873,13 @@ async fn set_max_supply_owner_writes_cap() -> Result<()> {
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReserveSetMaxSupplyNote::create(test_account_id(1), faucet_id, NEW_MAX_SUPPLY, &mut note_rng(90))
-        .context("building the owner set_max_supply note")?;
+    let note = XReserveSetMaxSupplyNote::create(
+        test_account_id(1),
+        faucet_id,
+        NEW_MAX_SUPPLY,
+        &mut note_rng(90),
+    )
+    .context("building the owner set_max_supply note")?;
     let tx = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
         .context("owner set_max_supply tx context")?
@@ -807,7 +887,9 @@ async fn set_max_supply_owner_writes_cap() -> Result<()> {
         .context("owner set_max_supply tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("owner-sent set_max_supply must succeed under network auth: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("owner-sent set_max_supply must succeed under network auth: {e}")
+        })?;
     assert_eq!(
         value_delta(&tx, TOKEN_CONFIG_SLOT_LABEL)[1],
         Felt::try_from(NEW_MAX_SUPPLY).expect("cap within the field"),
@@ -822,8 +904,9 @@ async fn assert_set_max_supply_nonowner_traps(sender: AccountId, seed: u64) -> R
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReserveSetMaxSupplyNote::create(sender, faucet_id, NEW_MAX_SUPPLY, &mut note_rng(seed))
-        .context("building the non-owner set_max_supply note")?;
+    let note =
+        XReserveSetMaxSupplyNote::create(sender, faucet_id, NEW_MAX_SUPPLY, &mut note_rng(seed))
+            .context("building the non-owner set_max_supply note")?;
     let result = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
         .context("non-owner set_max_supply tx context")?
@@ -857,8 +940,13 @@ async fn set_max_supply_note_args_are_inert() -> Result<()> {
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReserveSetMaxSupplyNote::create(test_account_id(1), faucet_id, NEW_MAX_SUPPLY, &mut note_rng(94))
-        .context("building the owner set_max_supply note")?;
+    let note = XReserveSetMaxSupplyNote::create(
+        test_account_id(1),
+        faucet_id,
+        NEW_MAX_SUPPLY,
+        &mut note_rng(94),
+    )
+    .context("building the owner set_max_supply note")?;
     let bogus_args = Word::from([3u32, 3, 3, 3]);
     let tx = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
@@ -868,7 +956,9 @@ async fn set_max_supply_note_args_are_inert() -> Result<()> {
         .context("set_max_supply note-args tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("set_max_supply with bogus NOTE_ARGS must still succeed: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("set_max_supply with bogus NOTE_ARGS must still succeed: {e}")
+        })?;
     assert_eq!(
         value_delta(&tx, TOKEN_CONFIG_SLOT_LABEL)[1],
         Felt::try_from(NEW_MAX_SUPPLY).expect("cap within the field"),
@@ -894,14 +984,20 @@ fn set_max_supply_note_script_root_is_pinned() {
 
 /// A production faucet where id(4) has been granted DOM_PAUSER by the owner, applied as a delta to an
 /// evolved (not-committed) account. Returns (chain, faucet_id, evolved account, grantee).
-async fn faucet_with_granted_pauser(grant_seed: u64) -> Result<(MockChain, AccountId, Account, AccountId)> {
+async fn faucet_with_granted_pauser(
+    grant_seed: u64,
+) -> Result<(MockChain, AccountId, Account, AccountId)> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let grantee = test_account_id(4);
     let grant = XReserveGrantRoleNote::create(
-        test_account_id(1), faucet_id, Felt::from(&pauser_sym()), grantee, &mut note_rng(grant_seed),
+        test_account_id(1),
+        faucet_id,
+        Felt::from(&pauser_sym()),
+        grantee,
+        &mut note_rng(grant_seed),
     )
     .context("building the owner grant note")?;
     let tx = chain
@@ -912,16 +1008,27 @@ async fn faucet_with_granted_pauser(grant_seed: u64) -> Result<(MockChain, Accou
         .execute()
         .await
         .map_err(|e| anyhow::anyhow!("seeding the owner grant must succeed: {e}"))?;
-    let mut evolved = chain.committed_account(faucet_id).context("committed faucet")?.clone();
+    let mut evolved = chain
+        .committed_account(faucet_id)
+        .context("committed faucet")?
+        .clone();
     evolved.apply_delta(tx.account_delta())?;
     Ok((chain, faucet_id, evolved, grantee))
 }
 
 /// Authorized revoke: `sender` (owner or DOM_MANAGER) revokes id(4)'s DOM_PAUSER; membership cleared.
-async fn assert_revoke_authorized(sender: AccountId, grant_seed: u64, revoke_seed: u64) -> Result<()> {
+async fn assert_revoke_authorized(
+    sender: AccountId,
+    grant_seed: u64,
+    revoke_seed: u64,
+) -> Result<()> {
     let (chain, faucet_id, evolved, grantee) = faucet_with_granted_pauser(grant_seed).await?;
     let note = XReserveRevokeRoleNote::create(
-        sender, faucet_id, Felt::from(&pauser_sym()), grantee, &mut note_rng(revoke_seed),
+        sender,
+        faucet_id,
+        Felt::from(&pauser_sym()),
+        grantee,
+        &mut note_rng(revoke_seed),
     )
     .context("building the revoke note")?;
     let tx = chain
@@ -957,7 +1064,11 @@ async fn revoke_role_dom_manager_authorized() -> Result<()> {
 async fn revoke_role_third_party_traps() -> Result<()> {
     let (chain, faucet_id, evolved, grantee) = faucet_with_granted_pauser(112).await?;
     let note = XReserveRevokeRoleNote::create(
-        test_account_id(99), faucet_id, Felt::from(&pauser_sym()), grantee, &mut note_rng(102),
+        test_account_id(99),
+        faucet_id,
+        Felt::from(&pauser_sym()),
+        grantee,
+        &mut note_rng(102),
     )
     .context("building the third-party revoke note")?;
     let result = chain
@@ -976,7 +1087,11 @@ async fn revoke_role_third_party_traps() -> Result<()> {
 async fn revoke_role_note_args_are_inert() -> Result<()> {
     let (chain, faucet_id, evolved, grantee) = faucet_with_granted_pauser(113).await?;
     let note = XReserveRevokeRoleNote::create(
-        test_account_id(1), faucet_id, Felt::from(&pauser_sym()), grantee, &mut note_rng(103),
+        test_account_id(1),
+        faucet_id,
+        Felt::from(&pauser_sym()),
+        grantee,
+        &mut note_rng(103),
     )
     .context("building the owner revoke note")?;
     let bogus_args = Word::from([6u32, 6, 6, 6]);
@@ -1023,7 +1138,10 @@ async fn set_role_admin_owner_updates_admin_role() -> Result<()> {
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let note = XReserveSetRoleAdminNote::create(
-        test_account_id(1), faucet_id, Felt::from(&manager_sym()), Felt::from(&pauser_sym()),
+        test_account_id(1),
+        faucet_id,
+        Felt::from(&manager_sym()),
+        Felt::from(&pauser_sym()),
         &mut note_rng(120),
     )
     .context("building the owner set_role_admin note")?;
@@ -1034,8 +1152,13 @@ async fn set_role_admin_owner_updates_admin_role() -> Result<()> {
         .context("owner set_role_admin tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("owner-sent set_role_admin must succeed under network auth: {e}"))?;
-    let mut evolved = chain.committed_account(faucet_id).context("committed faucet")?.clone();
+        .map_err(|e| {
+            anyhow::anyhow!("owner-sent set_role_admin must succeed under network auth: {e}")
+        })?;
+    let mut evolved = chain
+        .committed_account(faucet_id)
+        .context("committed faucet")?
+        .clone();
     evolved.apply_delta(tx.account_delta())?;
     assert_eq!(
         read_role_config(&evolved, &manager_sym())?[1],
@@ -1053,7 +1176,11 @@ async fn assert_set_role_admin_nonowner_traps(sender: AccountId, seed: u64) -> R
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let note = XReserveSetRoleAdminNote::create(
-        sender, faucet_id, Felt::from(&manager_sym()), Felt::from(&pauser_sym()), &mut note_rng(seed),
+        sender,
+        faucet_id,
+        Felt::from(&manager_sym()),
+        Felt::from(&pauser_sym()),
+        &mut note_rng(seed),
     )
     .context("building the non-owner set_role_admin note")?;
     let result = chain
@@ -1085,7 +1212,10 @@ async fn set_role_admin_note_args_are_inert() -> Result<()> {
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let note = XReserveSetRoleAdminNote::create(
-        test_account_id(1), faucet_id, Felt::from(&manager_sym()), Felt::from(&pauser_sym()),
+        test_account_id(1),
+        faucet_id,
+        Felt::from(&manager_sym()),
+        Felt::from(&pauser_sym()),
         &mut note_rng(123),
     )
     .context("building the owner set_role_admin note")?;
@@ -1098,8 +1228,13 @@ async fn set_role_admin_note_args_are_inert() -> Result<()> {
         .context("set_role_admin note-args tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("set_role_admin with bogus NOTE_ARGS must still succeed: {e}"))?;
-    let mut evolved = chain.committed_account(faucet_id).context("committed faucet")?.clone();
+        .map_err(|e| {
+            anyhow::anyhow!("set_role_admin with bogus NOTE_ARGS must still succeed: {e}")
+        })?;
+    let mut evolved = chain
+        .committed_account(faucet_id)
+        .context("committed faucet")?
+        .clone();
     evolved.apply_delta(tx.account_delta())?;
     assert_eq!(
         read_role_config(&evolved, &manager_sym())?[1],
@@ -1145,8 +1280,13 @@ async fn transfer_ownership_owner_nominates() -> Result<()> {
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let new_owner = test_account_id(5);
-    let note = XReserveTransferOwnershipNote::create(test_account_id(1), faucet_id, new_owner, &mut note_rng(130))
-        .context("building the owner transfer_ownership note")?;
+    let note = XReserveTransferOwnershipNote::create(
+        test_account_id(1),
+        faucet_id,
+        new_owner,
+        &mut note_rng(130),
+    )
+    .context("building the owner transfer_ownership note")?;
     let tx = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
         .context("owner transfer_ownership tx context")?
@@ -1154,7 +1294,9 @@ async fn transfer_ownership_owner_nominates() -> Result<()> {
         .context("owner transfer_ownership tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("owner-sent transfer_ownership must succeed under network auth: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("owner-sent transfer_ownership must succeed under network auth: {e}")
+        })?;
     assert_eq!(
         value_delta(&tx, OWNER_CONFIG_LABEL),
         owner_config_word(test_account_id(1), new_owner),
@@ -1169,8 +1311,13 @@ async fn assert_transfer_ownership_nonowner_traps(sender: AccountId, seed: u64) 
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReserveTransferOwnershipNote::create(sender, faucet_id, test_account_id(5), &mut note_rng(seed))
-        .context("building the non-owner transfer_ownership note")?;
+    let note = XReserveTransferOwnershipNote::create(
+        sender,
+        faucet_id,
+        test_account_id(5),
+        &mut note_rng(seed),
+    )
+    .context("building the non-owner transfer_ownership note")?;
     let result = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
         .context("non-owner transfer_ownership tx context")?
@@ -1205,8 +1352,13 @@ async fn transfer_ownership_note_args_are_inert() -> Result<()> {
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let new_owner = test_account_id(5);
-    let note = XReserveTransferOwnershipNote::create(test_account_id(1), faucet_id, new_owner, &mut note_rng(134))
-        .context("building the owner transfer_ownership note")?;
+    let note = XReserveTransferOwnershipNote::create(
+        test_account_id(1),
+        faucet_id,
+        new_owner,
+        &mut note_rng(134),
+    )
+    .context("building the owner transfer_ownership note")?;
     let bogus_args = Word::from([2u32, 2, 2, 2]);
     let tx = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
@@ -1216,7 +1368,9 @@ async fn transfer_ownership_note_args_are_inert() -> Result<()> {
         .context("transfer_ownership note-args tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("transfer_ownership with bogus NOTE_ARGS must still succeed: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("transfer_ownership with bogus NOTE_ARGS must still succeed: {e}")
+        })?;
     assert_eq!(
         value_delta(&tx, OWNER_CONFIG_LABEL),
         owner_config_word(test_account_id(1), new_owner),
@@ -1249,13 +1403,21 @@ fn err_sender_not_nominated_owner() -> MasmError {
 
 /// A production faucet with `nominee` set as the pending owner (an owner transfer_ownership applied as
 /// a delta to an evolved, not-committed account). Returns (chain, faucet_id, evolved account).
-async fn faucet_with_pending_owner(nominee: AccountId, transfer_seed: u64) -> Result<(MockChain, AccountId, Account)> {
+async fn faucet_with_pending_owner(
+    nominee: AccountId,
+    transfer_seed: u64,
+) -> Result<(MockChain, AccountId, Account)> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let transfer = XReserveTransferOwnershipNote::create(test_account_id(1), faucet_id, nominee, &mut note_rng(transfer_seed))
-        .context("building the owner transfer note")?;
+    let transfer = XReserveTransferOwnershipNote::create(
+        test_account_id(1),
+        faucet_id,
+        nominee,
+        &mut note_rng(transfer_seed),
+    )
+    .context("building the owner transfer note")?;
     let tx = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&transfer))
         .context("transfer seed tx context")?
@@ -1264,7 +1426,10 @@ async fn faucet_with_pending_owner(nominee: AccountId, transfer_seed: u64) -> Re
         .execute()
         .await
         .map_err(|e| anyhow::anyhow!("seeding the owner transfer must succeed: {e}"))?;
-    let mut evolved = chain.committed_account(faucet_id).context("committed faucet")?.clone();
+    let mut evolved = chain
+        .committed_account(faucet_id)
+        .context("committed faucet")?
+        .clone();
     evolved.apply_delta(tx.account_delta())?;
     Ok((chain, faucet_id, evolved))
 }
@@ -1293,7 +1458,9 @@ async fn accept_ownership_pending_owner_becomes_owner() -> Result<()> {
         .context("accept_ownership tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("pending-owner accept_ownership must succeed under network auth: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("pending-owner accept_ownership must succeed under network auth: {e}")
+        })?;
     let mut evolved2 = evolved.clone();
     evolved2.apply_delta(tx.account_delta())?;
     assert_eq!(
@@ -1348,7 +1515,9 @@ async fn accept_ownership_note_args_are_inert() -> Result<()> {
         .context("accept note-args tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("accept_ownership with bogus NOTE_ARGS must still succeed: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("accept_ownership with bogus NOTE_ARGS must still succeed: {e}")
+        })?;
     let mut evolved2 = evolved.clone();
     evolved2.apply_delta(tx.account_delta())?;
     assert_eq!(

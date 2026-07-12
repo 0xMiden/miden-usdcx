@@ -1,16 +1,17 @@
-//! CMP-B2 `XReserveBurnNote` suite (P5-01, DC-7): the Circle-facing public burn-event note.
+//! `XReserveBurnNote` suite (component CMP-B2, payload codec DC-7): the Circle-facing public
+//! burn-event note.
 //!
-//! Per `DECISION-CMP-B2` (RATIFIED): a FRESH note (N-11 / `P2idNote` idiom) that REUSES the stock
+//! A FRESH note (the `P2idNote` idiom) that REUSES the stock
 //! burn consume script (`receive_and_burn` → CMP-A10), mandates `NoteType::Public`, bears the fixed
 //! xUSDC burn tag, and writes the DC-7 `(amount, destDomain, destRecipient, salt)` payload into
-//! `NoteStorage.items` via the 04 codec (consumed by reference).
+//! `NoteStorage.items` via the shared encoding codec (consumed by reference).
 //!
-//! The load-bearing proof is OBSERVABILITY NON-VACUITY (Case-001): `note_type` AND the exact `tag`
+//! The load-bearing proof is OBSERVABILITY NON-VACUITY: `note_type` AND the exact `tag`
 //! are asserted DIRECTLY against an independent constant, never inferred from the payload — a wrong
 //! tag or a `Private` note must fail a named test. The create→consume seam proves the real note is
 //! consumable by the faucet (running CMP-A10) and decrements `token_supply` by exactly the amount.
 //! `burn_note_emitted_items_match_codec_vectors` is vector-driven EMITTED-note parity (TV-DUAL-4):
-//! the items as they land on-chain equal both the codec encode AND the golden §7 felts.
+//! the items as they land on-chain equal both the codec encode AND the golden vector felts.
 
 mod support;
 
@@ -87,7 +88,7 @@ async fn emitted_items_for(items: &XReserveBurnItems) -> anyhow::Result<Vec<Felt
     Ok(recipient.storage().items().to_vec())
 }
 
-// 1 — OBSERVABILITY NON-VACUITY (Case-001): Public + the exact fixed tag, asserted DIRECTLY
+// 1 — OBSERVABILITY NON-VACUITY: Public + the exact fixed tag, asserted DIRECTLY
 // ================================================================================================
 
 #[test]
@@ -302,7 +303,7 @@ async fn burn_note_insufficient_balance_rejects_create() -> anyhow::Result<()> {
     Ok(())
 }
 
-// 7 — R-BURN-5 `==balance` ACCEPT boundary (Item 11): the recipient burns 100% of holdings
+// 7 — R-BURN-5 `==balance` ACCEPT boundary: the recipient burns 100% of holdings
 // ================================================================================================
 
 /// The `== balance` ACCEPT side of R-BURN-5, pinned EXPLICITLY: the holder burns their ENTIRE
@@ -351,15 +352,15 @@ async fn recipient_burns_full_balance() -> anyhow::Result<()> {
     Ok(())
 }
 
-// 8 — §4.P same-block erasure with the PRODUCTION note (Item 11; the canary C2 mechanism)
+// 8 — same-block erasure with the PRODUCTION note (the canary erasure mechanism)
 // ================================================================================================
 
-/// R-BURN-4 / harness §4.P with the PRODUCTION `XReserveBurnNote` on the PRODUCTION burn-policy
-/// composition (the canary C2 proved this mechanism with the STOCK `BurnNote` on a canary
+/// R-BURN-4 with the PRODUCTION `XReserveBurnNote` on the PRODUCTION burn-policy
+/// composition (the burn canary proved this mechanism with the STOCK `BurnNote` on a canary
 /// fixture): the user emits the note and the faucet consumes it UNAUTHENTICATED in the SAME block
 /// — the note is erased (absent from the block's output notes, not retrievable, not committed, no
 /// nullifier), yet tx1's account delta COMMITS, so `token_supply` still drops by the burned
-/// amount. Pins the exact semantics C2 observed, now on the production note + policy.
+/// amount. Pins the exact semantics the canary observed, now on the production note + policy.
 #[tokio::test]
 async fn production_burn_note_same_block_consume_is_erased() -> anyhow::Result<()> {
     const MAX_SUPPLY: u64 = 1_000_000;
@@ -379,7 +380,7 @@ async fn production_burn_note_same_block_consume_is_erased() -> anyhow::Result<(
     let mut chain = h.chain;
 
     // tx0: the user emit-tx creates the production note in-block (executed, then dummy-proven —
-    // the canary C2 idiom; the create_*_proven_tx helpers are private to miden-testing).
+    // the canary idiom; the create_*_proven_tx helpers are private to miden-testing).
     let tx_script = CodeBuilder::new().compile_tx_script(send_burn_note_script(
         &note,
         &h.asset,
@@ -415,13 +416,22 @@ async fn production_burn_note_same_block_consume_is_erased() -> anyhow::Result<(
     chain.add_pending_proven_transaction(tx1p);
     let block = chain.prove_next_block()?;
 
-    // The C2 erasure quad, on the production note.
+    // The canary erasure quad, on the production note.
     assert!(
-        block.body().output_notes().all(|(_, on)| on.id() != note.id()),
+        block
+            .body()
+            .output_notes()
+            .all(|(_, on)| on.id() != note.id()),
         "the production burn note is erased from the block's output notes"
     );
-    assert!(chain.get_public_note(&note.id()).is_none(), "the erased note is not retrievable");
-    assert!(!chain.is_note_committed(&note.id()), "the erased note is not committed");
+    assert!(
+        chain.get_public_note(&note.id()).is_none(),
+        "the erased note is not retrievable"
+    );
+    assert!(
+        !chain.is_note_committed(&note.id()),
+        "the erased note is not committed"
+    );
     assert!(
         !chain.is_note_consumed(&note.nullifier()),
         "no nullifier is created for the erased note"

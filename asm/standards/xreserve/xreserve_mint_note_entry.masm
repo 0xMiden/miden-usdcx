@@ -1,6 +1,6 @@
 # xreserve::xreserve_mint_note_entry
 #
-# FAUCET(01)-owned CMP-B1 note-entry wrapper: `receive_and_mint` — the account-side transport
+# The CMP-B1 note-entry wrapper: `receive_and_mint` — the account-side transport
 # shim the production `XReserveMintNote` script `call`s. It stages the note's DepositIntent
 # preimage into the ACCOUNT call frame (`active_note::get_storage`; the `receive_and_burn`
 # context precedent, fungible.masm:370-403 — `exec` shares the call frame, so the data lands
@@ -36,7 +36,7 @@ use xreserve::encoding::layout::DEPOSIT_INTENT_HEADER_FELTS
 const INTENT_PTR = 1024
 
 # The mint-note attestation attachment scheme. The Rust constructor declares the same value
-# (`XRESERVE_MINT_ATTACHMENT_SCHEME`, masm-rust-constant-parity via constant_parity.rs); a
+# (`XRESERVE_MINT_ATTACHMENT_SCHEME`, cross-language constant parity via constant_parity.rs); a
 # scheme mismatch fail-closes in `find_attachment` below.
 const XRESERVE_MINT_ATTACHMENT_SCHEME = 1
 

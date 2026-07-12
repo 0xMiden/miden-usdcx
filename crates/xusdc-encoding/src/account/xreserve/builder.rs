@@ -1,21 +1,21 @@
-//! `XReserveStablecoinBuilder` — the faucet (01) account composition for the xUSDC faucet
-//! (CMP-A15, spec §5.13). First increment (R-MINT-16): wires the **mint-deny guard** as the active
+//! `XReserveStablecoinBuilder` — the faucet account composition for the xUSDC faucet
+//! (CMP-A15). First increment (R-MINT-16): wires the **mint-deny guard** as the active
 //! mint policy so the inherited stock `mint_and_send` traps and the custom `xreserve_mint` is the
-//! provably sole supply-increasing surface (INV-MINT-SECURITY, §5.2).
+//! provably sole supply-increasing surface (INV-MINT-SECURITY).
 //!
 //! Scope (cumulative): it composes `FungibleFaucet` + the assembled `xreserve` library component
 //! (carries `apply_mint_effects`, the deny-guard `check_policy`, the `set_attester` + `set_min_burn_size`
 //! admin procs, the DOM_PAUSER custom `pause`/`unpause`) + a `TokenPolicyManager` whose active mint
 //! policy is the deny guard + the **owner-gating admin foundation** (`Ownable2Step` + a seeded
-//! `RoleBasedAccessControl` + `Authority::OwnerControlled`; DECISION-ADMIN-ROLE-MODEL,
-//! the `AccessControl::Rbac{authority_role: None}` composition). The RBAC is SEEDED with the two Circle
+//! `RoleBasedAccessControl` + `Authority::OwnerControlled`; the
+//! `AccessControl::Rbac{authority_role: None}` composition). The RBAC is SEEDED with the two Circle
 //! Domain role members (`DOM_PAUSER` / `DOM_MANAGER`), with `DOM_PAUSER` administration DELEGATED to
-//! `DOM_MANAGER` (CMP-F5, CIR-ADMIN-3 "the Domain Manager rotates the Pauser": `admin_role =
-//! DOM_MANAGER` in the seed, so the stock `grant_role`/`revoke_role` accept the owner OR a
-//! `DOM_MANAGER` holder; `set_role_admin` stays owner-only). Pause is Domain-Pauser-ONLY (Option 1,
-//! CIRCLE-SPECIFICATION.md:121; IMPL-DEV-1 remediation): the stock `PausableManager` is NOT installed —
+//! `DOM_MANAGER` (CMP-F5 — a Circle admin-model requirement that the Domain Manager rotates the
+//! Pauser): `admin_role = DOM_MANAGER` in the seed, so the stock `grant_role`/`revoke_role` accept
+//! the owner OR a `DOM_MANAGER` holder; `set_role_admin` stays owner-only. Pause is
+//! Domain-Pauser-ONLY (IMPL-DEV-1 remediation): the stock `PausableManager` is NOT installed —
 //! the only pause surface is the DOM_PAUSER-gated `xreserve::pause_admin` procs; the `is_paused` slot
-//! the halt-gates read is installed by `FungibleFaucet` itself (see [`Self::assemble_components`]).
+//! the halt-gates read is installed by `FungibleFaucet` itself (see `Self::assemble_components`).
 //! STILL DEFERRED to later slices: the full faucet assembly. The builder yields the validated
 //! component composition; MockChain (tests) finalises it into a signed `Account`.
 //!
@@ -46,13 +46,13 @@ use miden_standards::note::BurnNote;
 
 use crate::note::xreserve_mint::XReserveMintNote;
 
-/// The two Circle Domain RoleSymbols this faucet seeds under the ratified Circle-faithful admin model
-/// (DECISION-ADMIN-ROLE-MODEL): `DOM_PAUSER` (custom pause/unpause, CMP-F3) and `DOM_MANAGER`
-/// (rotation / role management — the delegated admin of `DOM_PAUSER`, CMP-F5). Both are valid
-/// `RoleSymbol`s (≤12 chars, `A`–`Z`/`_`; `DOMAIN_PAUSER`(13)/`DOMAIN_MANAGER`(14) would be rejected).
-/// ORCHESTRATOR-FIXED — the pause gate hard-codes the `DOM_PAUSER` symbol in `pause_admin.masm`
-/// (parity-asserted); role management consumes the STOCK rbac procs, so no MASM references
-/// `DOM_MANAGER`. The setters are owner-gated (`Authority::OwnerControlled`), not role-gated.
+/// The two Circle Domain RoleSymbols this faucet seeds under the ratified Circle-faithful admin
+/// model: `DOM_PAUSER` (custom pause/unpause, CMP-F3) and `DOM_MANAGER` (rotation / role
+/// management — the delegated admin of `DOM_PAUSER`, CMP-F5). Both are valid `RoleSymbol`s
+/// (≤12 chars, `A`–`Z`/`_`; `DOMAIN_PAUSER`(13)/`DOMAIN_MANAGER`(14) would be rejected). The pause
+/// gate hard-codes the `DOM_PAUSER` symbol in `pause_admin.masm` (parity-asserted); role
+/// management consumes the STOCK rbac procs, so no MASM references `DOM_MANAGER`. The setters are
+/// owner-gated (`Authority::OwnerControlled`), not role-gated.
 pub const DOM_PAUSER_ROLE: &str = "DOM_PAUSER";
 pub const DOM_MANAGER_ROLE: &str = "DOM_MANAGER";
 
@@ -69,30 +69,30 @@ pub const MINT_DENY_GUARD_PROC_PATH: &str = "xreserve::mint_deny_guard::check_po
 pub const BURN_POLICY_PROC_PATH: &str = "xreserve::burn_policy::check_policy";
 
 /// Canonical Rust label of the `minBurnSize` value storage slot
-/// (`xusdc::xreserve::attester_admin::min_burn_size`, §5.5 XReserveAttesterAdmin home, SPEC-OWNER
-/// RATIFIED). The single Rust source of truth: `burn_policy.masm` declares a byte-identical
+/// (`xusdc::xreserve::attester_admin::min_burn_size`, the XReserveAttesterAdmin storage home).
+/// The single Rust source of truth: `burn_policy.masm` declares a byte-identical
 /// `word("…")` const (parity-enforced), the tests re-export this, and the future CMP-F2
 /// `set_min_burn_size` setter co-owns the SAME slot. [`XReserveStablecoinBuilder::build_components`]
 /// seeds it as `[min_burn_size, 0, 0, 0]`.
 pub const MIN_BURN_SIZE_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin::min_burn_size";
 
-/// The shipped on-chain `TokenSymbol` guard constant (§5.13 token config). The token's identity is
+/// The shipped on-chain `TokenSymbol` guard constant (token config). The token's identity is
 /// **USDCx** (human decision 2026-07-06) — a DISTINCT identity from the superseded "xUSDC" label;
-/// the two must not be confused. The pinned `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs:17`
+/// the two must not be confused. The pinned `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs`
 /// `ShortCapitalString`), so the on-chain symbol is `USDCX`, the VM-forced uppercase form of
 /// "USDCx"; the display `TokenName` keeps the mixed-case "USDCx".
 /// [`XReserveStablecoinBuilder::build_components`] rejects any other symbol so the deployed symbol
 /// is load-bearing.
 pub const USDCX_TOKEN_SYMBOL: &str = "USDCX";
 
-/// The spec-mandated token decimals (§5.13 `token_config` decimals=6; CIR-FEE-3 six decimal
-/// places — the D5b reducer scales to 6dp, so a mismatched faucet would silently mis-scale every
-/// minted amount).
+/// The spec-mandated token decimals (`token_config` decimals = 6; a Circle requirement of six
+/// decimal places — the D5b reducer scales to 6dp, so a mismatched faucet would silently
+/// mis-scale every minted amount).
 pub const USDCX_DECIMALS: u8 = 6;
 
 /// Canonical Rust labels of the seven caller-declared `xreserve` storage slots (the single Rust
 /// source, the [`MIN_BURN_SIZE_SLOT_LABEL`] precedent: the tests re-export these and the
-/// constant-parity suite pins them against the MASM `word("…")` consts). The five §5.9
+/// constant-parity suite pins them against the MASM `word("…")` consts). The five
 /// domain-config slots + the two registry maps.
 pub const DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::domain";
 pub const IDENTIFIER_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::identifier";
@@ -105,8 +105,8 @@ pub const USED_NONCES_SLOT_LABEL: &str = "xusdc::xreserve::nonce_registry::used_
 pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str =
     "xusdc::xreserve::attester_admin::xreserve_attesters";
 
-/// The SEVEN storage slots the supplied `xreserve` component must declare (§5.13
-/// validate-what-you-ship): a missing slot would ship a faucet whose reads/writes of it trap
+/// The SEVEN storage slots the supplied `xreserve` component must declare (the
+/// validate-what-you-ship check): a missing slot would ship a faucet whose reads/writes of it trap
 /// `ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME` at runtime;
 /// [`XReserveStablecoinBuilder::build_components`] rejects at build time instead (`min_burn_size`
 /// is builder-seeded, not caller-declared — see [`XReserveStablecoinBuilder::min_burn_size`]).
@@ -137,7 +137,7 @@ pub enum XReserveStablecoinBuilderError {
     /// at build time so packaging cannot produce an unobservable faucet.
     NonPublicAccountType(AccountType),
     /// The active mint policy does not resolve to the deny guard — packaging cannot bypass the
-    /// sole-supply-surface gate (INV-MINT-SECURITY, §5.2).
+    /// sole-supply-surface gate (INV-MINT-SECURITY).
     MissingMintDenyGuard,
     /// The supplied faucet was not built with a mutable `max_supply`, so the stock `set_max_supply`
     /// admin function would be permanently dead on the deployed faucet (every call traps the runtime
@@ -158,17 +158,18 @@ pub enum XReserveStablecoinBuilderError {
     /// valid burn amount / field element and cannot be seeded into the `MIN_BURN_SIZE_SLOT`. Carries
     /// the offending value.
     MinBurnSizeExceedsMax(u64),
-    /// The supplied `xreserve` component does not declare a required storage slot (§5.13
-    /// validate-what-you-ship, [`REQUIRED_XRESERVE_SLOT_LABELS`]: a missing slot would ship a
+    /// The supplied `xreserve` component does not declare a required storage slot (the
+    /// validate-what-you-ship check, [`REQUIRED_XRESERVE_SLOT_LABELS`]: a missing slot would ship a
     /// faucet whose reads/writes of that slot trap at runtime). Carries the missing slot's label.
     MissingXReserveSlot(&'static str),
-    /// The supplied faucet's `decimals` is not the spec-mandated [`USDCX_DECIMALS`] (= 6; §5.13
-    /// `token_config` decimals=6; CIR-FEE-3 six decimal places — the D5b reducer scales to 6dp,
-    /// so a mismatched faucet silently mis-scales every amount). Carries the offending value.
+    /// The supplied faucet's `decimals` is not the spec-mandated [`USDCX_DECIMALS`] (= 6;
+    /// `token_config` decimals = 6, a Circle requirement of six decimal places — the D5b reducer
+    /// scales to 6dp, so a mismatched faucet silently mis-scales every amount). Carries the
+    /// offending value.
     WrongDecimals(u8),
     /// The supplied faucet's `TokenSymbol` is not the shipped [`USDCX_TOKEN_SYMBOL`] guard
     /// constant. The token's identity is USDCx (human decision 2026-07-06, distinct from the
-    /// superseded "xUSDC"); the pinned `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs:17`),
+    /// superseded "xUSDC"); the pinned `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs`),
     /// so the on-chain symbol is the VM-forced uppercase `USDCX`; this guard pins the shipped
     /// constant so the deployed symbol is load-bearing and a drift fails the build.
     WrongTokenSymbol,
@@ -250,13 +251,13 @@ impl From<TokenPolicyManagerError> for XReserveStablecoinBuilderError {
 
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library
 /// component + a `TokenPolicyManager` with the mint-deny guard active + the **owner-gating admin
-/// foundation** (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::OwnerControlled`;
-/// DECISION-ADMIN-ROLE-MODEL). The foundation ships in this production builder so the deployed faucet
-/// validates the real auth model: the setters (`set_attester` / `set_min_burn_size` / `set_max_supply`)
-/// are gated on the Ownable2Step owner, and the `DOM_PAUSER` / `DOM_MANAGER` role members are seeded.
-/// Pause is Domain-Pauser-ONLY: the stock `PausableManager` is deliberately NOT part of the
-/// composition (Option 1, IMPL-DEV-1 remediation) — `xreserve::pause_admin::{pause,unpause}`
-/// (DOM_PAUSER-gated) is the sole pause surface.
+/// foundation** (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::OwnerControlled`).
+/// The foundation ships in this production builder so the deployed faucet validates the real auth
+/// model: the setters (`set_attester` / `set_min_burn_size` / `set_max_supply`) are gated on the
+/// Ownable2Step owner, and the `DOM_PAUSER` / `DOM_MANAGER` role members are seeded. Pause is
+/// Domain-Pauser-ONLY: the stock `PausableManager` is deliberately NOT part of the composition
+/// (IMPL-DEV-1 remediation) — `xreserve::pause_admin::{pause,unpause}` (DOM_PAUSER-gated) is the
+/// sole pause surface.
 ///
 /// Construct with [`XReserveStablecoinBuilder::new`] (the `owner` and the `DOM_PAUSER` / `DOM_MANAGER`
 /// holders are required), optionally override the account type (for the non-`Public` rejection test) or
@@ -280,7 +281,7 @@ pub struct XReserveStablecoinBuilder {
     /// The `minBurnSize` (R-BURN-2 threshold) the builder seeds into the `MIN_BURN_SIZE_SLOT`
     /// (`xusdc::xreserve::attester_admin::min_burn_size`) value slot as `[min_burn_size, 0, 0, 0]`.
     /// Default `0` (no minimum); override via [`Self::min_burn_size`]. The deferred CMP-F2
-    /// `set_min_burn_size` writes the SAME slot (plan §3.2).
+    /// `set_min_burn_size` writes the SAME slot.
     min_burn_size: u64,
 }
 
@@ -377,7 +378,7 @@ impl XReserveStablecoinBuilder {
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
         BTreeSet::from([
             // rows 1-2: the supply-side notes. The mint-note shim asserts exactly one scheme-1
-            // attestation + one scheme-2 routing target (eq.2, dynamic commitment) — F5 fix-slice A.
+            // attestation + one scheme-2 routing target (eq.2, dynamic commitment) — F5.
             XReserveMintNote::script_root(),
             BurnNote::script_root(),
             // row 3: set_attester admin note (reference op).
@@ -448,7 +449,7 @@ impl XReserveStablecoinBuilder {
         let active = self
             .requested_active_mint_policy
             .unwrap_or(MintPolicyConfig::Custom(deny_root));
-        // INV-MINT-SECURITY (§5.2): the active mint policy MUST resolve to the deny guard.
+        // INV-MINT-SECURITY: the active mint policy MUST resolve to the deny guard.
         if active.root() != deny_root {
             return Err(XReserveStablecoinBuilderError::MissingMintDenyGuard);
         }
@@ -459,11 +460,10 @@ impl XReserveStablecoinBuilder {
         if !self.faucet_max_supply_is_mutable() {
             return Err(XReserveStablecoinBuilderError::ImmutableMaxSupply);
         }
-        // §5.13 validate-what-you-ship (full-assembly slice): every required xreserve slot must be
-        // declared on the supplied component — a missing slot would ship a faucet whose reads /
-        // writes of it trap ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME at runtime. Presence-only (the
-        // per-slice fixtures legitimately pre-seed values; the E2E proves the empty->domain_init
-        // production path).
+        // validate-what-you-ship: every required xreserve slot must be declared on the supplied
+        // component — a missing slot would ship a faucet whose reads / writes of it trap
+        // ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME at runtime. Presence-only (the per-slice fixtures
+        // legitimately pre-seed values; the E2E proves the empty->domain_init production path).
         for label in REQUIRED_XRESERVE_SLOT_LABELS {
             let name = StorageSlotName::new(label)
                 .expect("the required xreserve slot labels are valid constants");
@@ -476,11 +476,13 @@ impl XReserveStablecoinBuilder {
                 return Err(XReserveStablecoinBuilderError::MissingXReserveSlot(label));
             }
         }
-        // §5.13 token-config exactness: decimals MUST be 6 (CIR-FEE-3; the D5b reducer scales to
-        // 6dp) and the symbol MUST be the shipped USDCX guard constant (the USDCx identity's
+        // token-config exactness: decimals MUST be 6 (a Circle requirement; the D5b reducer scales
+        // to 6dp) and the symbol MUST be the shipped USDCX guard constant (the USDCx identity's
         // VM-forced uppercase on-chain form — see USDCX_TOKEN_SYMBOL).
         if self.faucet.decimals() != USDCX_DECIMALS {
-            return Err(XReserveStablecoinBuilderError::WrongDecimals(self.faucet.decimals()));
+            return Err(XReserveStablecoinBuilderError::WrongDecimals(
+                self.faucet.decimals(),
+            ));
         }
         let expected_symbol = TokenSymbol::new(USDCX_TOKEN_SYMBOL)
             .expect("the shipped USDCX symbol guard constant is a valid TokenSymbol");
@@ -520,22 +522,26 @@ impl XReserveStablecoinBuilder {
         // `set_{send,receive}_policy` only accept a root already baked into the account + its
         // build-time allowed-roots map, both immutable post-deploy — any real change is a redeploy.
         //
-        // Re-wiring is a conscious re-decision gated on Q-PRV-5 (Circle confirmation) + a faucet-v2
-        // migration. See DECISION-F4-BASIC-ASSET-NO-TRANSFER-POLICY.md and IMPL-DEV-20. The
-        // `basic_asset_tripwire.rs` test enforces this invariant (it goes RED on any wire).
+        // Re-wiring is a conscious re-decision gated on Q-PRV-5 (Circle confirmation, OPEN) + a
+        // faucet-v2 migration (IMPL-DEV-20). The `basic_asset_tripwire.rs` test enforces this
+        // invariant (it goes RED on any wire).
 
-        // The owner-gating admin foundation (DECISION-ADMIN-ROLE-MODEL), appended AFTER the account-type
-        // / deny-guard early returns so a rejected build never reaches here. `Authority::OwnerControlled`
-        // gates the stock admin SETTERS (and `set_attester` / `set_min_burn_size`) on the Ownable2Step
-        // owner; mint execution / the deny path is `assert_authorized`-free (policy_manager.masm:284-297),
-        // so installing this leaves the R-MINT-16 deny behavior unchanged. This is exactly the
-        // `AccessControl::Rbac { authority_role: None }` composition (Ownable2Step + RoleBasedAccessControl
-        // + Authority::OwnerControlled, access/mod.rs:79) with the RBAC SEEDED with the two DOM role
-        // members (whose consumers — custom pause, role management — are later slices).
+        // The owner-gating admin foundation, appended AFTER the account-type / deny-guard early
+        // returns so a rejected build never reaches here. `Authority::OwnerControlled` gates the
+        // stock admin SETTERS (and `set_attester` / `set_min_burn_size`) on the Ownable2Step owner;
+        // mint execution / the deny path is `assert_authorized`-free (policy_manager.masm), so
+        // installing this leaves the R-MINT-16 deny behavior unchanged. This is exactly the
+        // `AccessControl::Rbac { authority_role: None }` composition (Ownable2Step +
+        // RoleBasedAccessControl + Authority::OwnerControlled, access/mod.rs) with the RBAC SEEDED
+        // with the two DOM role members (whose consumers — custom pause, role management — are later
+        // slices).
         let xreserve_component = self.xreserve_component_with_min_burn_size()?;
         let mut components = self.assemble_components(manager, xreserve_component);
         components.push(Ownable2Step::new(self.owner).into());
-        components.push(seeded_dom_roles_rbac(self.pauser_holder, self.manager_holder));
+        components.push(seeded_dom_roles_rbac(
+            self.pauser_holder,
+            self.manager_holder,
+        ));
         components.push(Authority::OwnerControlled.into());
         Ok(components)
     }
@@ -543,14 +549,15 @@ impl XReserveStablecoinBuilder {
     /// Reconstructs the supplied `xreserve` component with the `MIN_BURN_SIZE_SLOT` value slot
     /// appended (`[min_burn_size, 0, 0, 0]`) so the installed `burn_policy::check_policy` resolves its
     /// R-BURN-2 read on the deployed account. The caller supplies the component WITHOUT this slot (the
-    /// builder owns seeding it); the future CMP-F2 `set_min_burn_size` mutates the SAME slot (plan
-    /// §3.2). Uses the canonical `AssetAmount -> Felt` (no truncation); a `min_burn_size` exceeding
+    /// builder owns seeding it); the future CMP-F2 `set_min_burn_size` mutates the SAME slot.
+    /// Uses the canonical `AssetAmount -> Felt` (no truncation); a `min_burn_size` exceeding
     /// [`AssetAmount::MAX`] is rejected with [`XReserveStablecoinBuilderError::MinBurnSizeExceedsMax`].
     fn xreserve_component_with_min_burn_size(
         &self,
     ) -> Result<AccountComponent, XReserveStablecoinBuilderError> {
-        let min_burn = AssetAmount::new(self.min_burn_size)
-            .map_err(|_| XReserveStablecoinBuilderError::MinBurnSizeExceedsMax(self.min_burn_size))?;
+        let min_burn = AssetAmount::new(self.min_burn_size).map_err(|_| {
+            XReserveStablecoinBuilderError::MinBurnSizeExceedsMax(self.min_burn_size)
+        })?;
         let slot_name = StorageSlotName::new(MIN_BURN_SIZE_SLOT_LABEL)
             .expect("the min_burn_size slot label is a valid constant");
         let mut slots = self.xreserve_component.storage_slots().to_vec();
@@ -569,13 +576,13 @@ impl XReserveStablecoinBuilder {
     /// Assembles the final component list. Takes the `xreserve` component already augmented with the
     /// `MIN_BURN_SIZE_SLOT` (see [`Self::xreserve_component_with_min_burn_size`]).
     ///
-    /// PAUSE PROVENANCE (Option 1, Domain-Pauser-only — IMPL-DEV-1 remediation): the stock
-    /// `PausableManager` (owner-gated callable `pause`/`unpause`) is deliberately NOT installed; the
-    /// only pause surface is the DOM_PAUSER-gated `xreserve::pause_admin` procs carried by the
-    /// `xreserve` component. The `is_paused` slot every `assert_not_paused` halt-gate reads
+    /// PAUSE PROVENANCE (Domain-Pauser-only — IMPL-DEV-1 remediation): the stock `PausableManager`
+    /// (owner-gated callable `pause`/`unpause`) is deliberately NOT installed; the only pause
+    /// surface is the DOM_PAUSER-gated `xreserve::pause_admin` procs carried by the `xreserve`
+    /// component. The `is_paused` slot every `assert_not_paused` halt-gate reads
     /// (`execute_mint_policy`/`execute_burn_policy`, the setters, `xreserve_mint.masm`) is installed
-    /// by `FungibleFaucet::into_storage_slots` ITSELF at the pinned v0.15.3 (`fungible/mod.rs:397`) —
-    /// `PausableManager` installs ZERO storage (`manager.rs:78`), so its removal cannot drop the slot.
+    /// by `FungibleFaucet::into_storage_slots` ITSELF at the pinned v0.15.3 (`fungible/mod.rs`) —
+    /// `PausableManager` installs ZERO storage (`manager.rs`), so its removal cannot drop the slot.
     /// PIN-BUMP HAZARD: upstream v0.16 (#2944) moves the slot OUT of `FungibleFaucet` — at any pin
     /// bump the composition must add the base `Pausable` component (NOT `PausableManager`); the
     /// `production_components_carry_is_paused_slot` builder test is the loud tripwire. Do NOT add the
@@ -594,26 +601,23 @@ impl XReserveStablecoinBuilder {
     }
 }
 
-/// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` (Option A) with the TWO Circle
-/// Domain role members — `DOM_PAUSER` (→ `pauser_holder`) and `DOM_MANAGER` (→ `manager_holder`). Both
-/// stock RBAC maps are direct-seeded at build, consistent with the stock procs' post-state for a single
-/// first grant per role — `role_membership[{0, <role>, holder.suffix, holder.prefix}] = [1,0,0,0]` AND
-/// `role_config[{0,0,0,DOM_PAUSER}] = [member_count=1, admin_role=DOM_MANAGER, 0, 0]` (the CMP-F5
-/// delegation: the Domain Manager rotates the Pauser, CIR-ADMIN-3 — byte-identical to an owner-sent
-/// `set_role_admin(DOM_PAUSER, DOM_MANAGER)`, rbac.masm:314-333, so the faucet deploys with the
-/// rotation model already in force) while `role_config[{0,0,0,DOM_MANAGER}] = [1, 0, 0, 0]`
-/// (admin_role=0 = owner-administered; `set_role_admin` is owner-only, rbac.masm:159 — rotation of the
-/// Manager itself stays under the owner). It reuses the stock RBAC code + slot names + component
-/// metadata verbatim (NO custom RBAC logic); only the maps are non-empty (the stock
-/// `From<RoleBasedAccessControl>` seeds them empty). The key encodings mirror the stock readers
-/// (`miden-testing/tests/scripts/rbac.rs:57-63`). `grant_role` is NOT used (it would add a tx). Seed
-/// correctness is locked by the `shipped_delegation_reads_back` + rotation-seam + owner-ONLY tests,
-/// not by construction (`AccountComponent::new` does not validate slots against the metadata schema).
+/// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` with the TWO Circle Domain
+/// role members — `DOM_PAUSER` (→ `pauser_holder`) and `DOM_MANAGER` (→ `manager_holder`). Both
+/// stock RBAC maps are direct-seeded at build, consistent with the stock procs' post-state for a
+/// single first grant per role — `role_membership[{0, <role>, holder.suffix, holder.prefix}] =
+/// [1,0,0,0]` AND `role_config[{0,0,0,DOM_PAUSER}] = [member_count=1, admin_role=DOM_MANAGER, 0, 0]`
+/// (the CMP-F5 delegation: the Domain Manager rotates the Pauser — byte-identical to an owner-sent
+/// `set_role_admin(DOM_PAUSER, DOM_MANAGER)`, `rbac.masm`, so the faucet deploys with the rotation
+/// model already in force) while `role_config[{0,0,0,DOM_MANAGER}] = [1, 0, 0, 0]` (admin_role = 0 =
+/// owner-administered; `set_role_admin` is owner-only, `rbac.masm` — rotation of the Manager itself
+/// stays under the owner). It reuses the stock RBAC code + slot names + component metadata verbatim
+/// (NO custom RBAC logic); only the maps are non-empty (the stock `From<RoleBasedAccessControl>`
+/// seeds them empty). The key encodings mirror the stock readers (`miden-testing`
+/// `tests/scripts/rbac.rs`). `grant_role` is NOT used (it would add a tx). Seed correctness is
+/// locked by the `shipped_delegation_reads_back` + rotation-seam + owner-ONLY tests, not by
+/// construction (`AccountComponent::new` does not validate slots against the metadata schema).
 /// Construction failures are invariants, so this mirrors the stock `.expect()` pattern.
-fn seeded_dom_roles_rbac(
-    pauser_holder: AccountId,
-    manager_holder: AccountId,
-) -> AccountComponent {
+fn seeded_dom_roles_rbac(pauser_holder: AccountId, manager_holder: AccountId) -> AccountComponent {
     let pauser =
         RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol (≤12)");
     let manager =
@@ -621,16 +625,30 @@ fn seeded_dom_roles_rbac(
     // [1,0,0,0]: role_config member_count = 1 (owner-administered), and role_membership is_member = 1.
     let member_word = Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
     // [1, DOM_MANAGER, 0, 0]: member_count = 1 with administration delegated to DOM_MANAGER (CMP-F5).
-    let delegated_config_word =
-        Word::from([Felt::from(1u32), Felt::from(&manager), Felt::ZERO, Felt::ZERO]);
+    let delegated_config_word = Word::from([
+        Felt::from(1u32),
+        Felt::from(&manager),
+        Felt::ZERO,
+        Felt::ZERO,
+    ]);
 
     let role_config = StorageMap::with_entries([
         (
-            StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&pauser)])),
+            StorageMapKey::new(Word::from([
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::from(&pauser),
+            ])),
             delegated_config_word,
         ),
         (
-            StorageMapKey::new(Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(&manager)])),
+            StorageMapKey::new(Word::from([
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::from(&manager),
+            ])),
             member_word,
         ),
     ])
@@ -661,7 +679,10 @@ fn seeded_dom_roles_rbac(
     AccountComponent::new(
         RoleBasedAccessControl::code().clone(),
         vec![
-            StorageSlot::with_map(RoleBasedAccessControl::role_config_slot().clone(), role_config),
+            StorageSlot::with_map(
+                RoleBasedAccessControl::role_config_slot().clone(),
+                role_config,
+            ),
             StorageSlot::with_map(
                 RoleBasedAccessControl::role_membership_slot().clone(),
                 role_membership,

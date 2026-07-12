@@ -6,7 +6,7 @@
 //! command (`cargo run -p xusdc-validation --bin lnv5_full_matrix`) produces every artifact, so a
 //! human can reproduce the whole packet from a fresh node and diff it.
 //!
-//! **The §11.2 invariant (pinned by tests): the generated record NEVER self-declares the gate.**
+//! **The acceptance-gate invariant (pinned by tests): the generated record NEVER self-declares the gate.**
 //! Per-row PASS/FAIL lines are machine verdicts; the GATE verdict line is either
 //! `PENDING HUMAN ACCEPTANCE` (all rows green — a human reproduces, inspects, and declares) or
 //! `GATE CANNOT PASS` (a row failed — a surfaced finding; validator-not-fixer: the fix is a
@@ -32,10 +32,10 @@ use crate::observations_de::RowsDeObservations;
 use crate::observations_gj::{BurnTwoBlock, RowsGjObservations};
 use crate::observations_kl::{FullMatrixObservations, RowKObservations, RowLObservations};
 
-/// The twelve matrix rows, in the spec's order (rows C1–C6 aggregate under row C).
+/// The twelve matrix rows, in matrix order (rows C1–C6 aggregate under row C).
 pub const MATRIX_ROW_IDS: [&str; 12] = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L"];
 
-/// The matrix row titles (the spec's row names, condensed).
+/// The matrix row titles (the row names, condensed).
 const MATRIX_ROW_TITLES: [(&str, &str); 12] = [
     ("A", "deploy + recognize"),
     ("B", "domain_init init-once"),
@@ -182,7 +182,7 @@ fn verdict_cell(o: &RowOutcome) -> &'static str {
 }
 
 /// Renders the consolidated **VALIDATION RECORD** (markdown). Machine verdicts per row; the GATE
-/// verdict defers to the human (§11.2) — see the module docs for the pinned invariant.
+/// verdict defers to the human — see the module docs for the pinned invariant.
 pub fn render_validation_record(
     ctx: &RecordContext,
     outcomes: &[RowOutcome],

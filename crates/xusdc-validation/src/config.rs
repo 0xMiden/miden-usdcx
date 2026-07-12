@@ -28,7 +28,7 @@ pub const TX_PROVER_PORT: u16 = 57294;
 /// operational (row K exercises it; rows A/B do not depend on it).
 pub const NETWORK_TX_AUTH_TOKEN: &str = "lnv-local-network-tx-auth";
 
-/// The §5.9 domain-config parameters committed by the owner's `domain_init` note. LOCAL TEST
+/// The domain-config parameters committed by the owner's `domain_init` note. LOCAL TEST
 /// values (Circle's real domain assignment is DEV-gated and stays OPEN — these exist to prove the
 /// write/read-back path, not to bind a real domain).
 #[derive(Debug, Clone)]

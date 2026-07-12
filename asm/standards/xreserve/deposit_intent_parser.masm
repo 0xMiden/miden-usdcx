@@ -1,15 +1,10 @@
 # xreserve::deposit_intent_parser
 #
-# FAUCET(01)-owned DepositIntent mint-precondition assertion shell (P5-01 slice): the
-# D5a faucet-side entry that consumes the 04-owned shared parser BY REFERENCE (NS-2:
-# `xreserve::encoding::parse_deposit_intent` stays 04-owned; this module adds ONLY the
-# faucet-owned domain/identifier compares, D5a steps 5-6). Module home + nested path
-# ratified per D-1A rule 3 (plan decision D-A); the identifier slot stores the
-# canonical `bytes32_to_key` key-Word and the R-MINT-7 equality is realized as key
-# equality (ratified plan decision D-C).
-#
-# BUILD STATE: implemented (C5a parser route, C5b domain compare, C5c identifier
-# compare + output contract). Loop history: crates/xusdc-encoding/TEST-LEDGER-01-MINT-SHELL.md.
+# The faucet-side DepositIntent mint preconditions (stages D5a, D5b, D5c). It consumes the shared
+# parser (`xreserve::encoding::parse_deposit_intent`, NS-2) BY REFERENCE and adds only the
+# faucet-owned checks: the domain/identifier compares (D5a steps 5-6), the amount/fee bounds (D5b),
+# and the nonce replay guard (D5c). The identifier slot stores the canonical `bytes32_to_key`
+# key-Word, so the R-MINT-7 identifier equality is realized as key equality.
 
 use miden::protocol::active_account
 use miden::core::math::u64
@@ -27,7 +22,7 @@ use xreserve::encoding::layout::NONCE_FELT_OFF
 pub const DOMAIN_CONFIG_SLOT = word("xusdc::xreserve::domain_config::domain")
 pub const IDENTIFIER_CONFIG_SLOT = word("xusdc::xreserve::domain_config::identifier")
 
-# D5c nonce registry (frozen §5.6): the usedNonces StorageMap slot. The map-slot DECLARATION
+# D5c nonce registry: the usedNonces StorageMap slot. The map-slot DECLARATION
 # is Rust-side (StorageSlot::with_map; canary-proven); this const is the MASM-side slot id.
 pub const USED_NONCES_SLOT = word("xusdc::xreserve::nonce_registry::used_nonces")
 
@@ -37,8 +32,8 @@ pub const USED_NONCES_SLOT = word("xusdc::xreserve::nonce_registry::used_nonces"
 const ERR_XRESERVE_WRONG_DOMAIN = "deposit intent remote domain does not match the faucet domain"
 const ERR_XRESERVE_WRONG_IDENTIFIER = "deposit intent remote token does not match the faucet identifier"
 
-# D5b amount/fee (R-MINT-10 + F2). R-MINT-9 (ERR_X_TOO_LARGE) is CONSUMED from the 04
-# reducer, never redefined here. the F2 feeAmount==0 gate SUBSUMES the old R-MINT-11
+# D5b amount/fee (R-MINT-10 + F2). R-MINT-9 (ERR_X_TOO_LARGE) is CONSUMED from the encoding
+# library's reducer, never redefined here. the F2 feeAmount==0 gate SUBSUMES the old R-MINT-11
 # feeAmount<=maxFee compare (restored at the DEV-8 fee-split — see assert_mint_amounts); its
 # ERR string is byte-identical to xreserve_mint.masm's ERR_XRESERVE_FEE_NONZERO so the felt
 # code is shared (MASM consts are module-scoped — this parser declares its own).
@@ -53,7 +48,7 @@ const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
 
 #! Asserts the faucet-owned DepositIntent mint preconditions over a staged preimage.
 #!
-#! Delegates the structural validation (D5a steps 1-4, 7, 8) to the 04-owned
+#! Delegates the structural validation (D5a steps 1-4, 7, 8) to the encoding library's
 #! `xreserve::encoding::parse_deposit_intent`, then asserts the two faucet-owned
 #! compares (D5a steps 5-6) against the faucet config slots: the parsed remote domain
 #! must equal the configured domain, and the canonical key-Word of the parsed remote
@@ -105,14 +100,14 @@ end
 
 #! Asserts the faucet-owned D5b amount/fee mint preconditions over a staged preimage.
 #!
-#! Consumes the 04-owned `xreserve::encoding::uint256_to_asset_amount` BY REFERENCE to
+#! Consumes the encoding library's `xreserve::encoding::uint256_to_asset_amount` BY REFERENCE to
 #! reduce the `amount` (felt[2..9]) and `maxFee` (felt[43..50]) uint256 fields from the
 #! staged preimage and the operator `feeAmount` (8 u32-LE limbs read from the advice
 #! stack), then asserts reduced `amount >= maxFee` (R-MINT-10) and reduced
 #! `feeAmount == 0` (F2 MVP; SUBSUMES R-MINT-11 `feeAmount <= maxFee`). R-MINT-9
 #! (`ERR_X_TOO_LARGE`, high-4 limbs nonzero) PROPAGATES from the reducer on any of the three values.
 #!
-#! `feeAmount` advice-provider hygiene (human-ratified Option C): `feeAmount` is an
+#! `feeAmount` advice-provider hygiene: `feeAmount` is an
 #! operator-chosen free parameter with no in-scope kernel-trusted commitment, so the
 #! commitment/content-key hygiene rules are N/A; under the F2 MVP its bound is the
 #! `feeAmount == 0` gate (the DEV-8 fee-split restores the R-MINT-11 `<= maxFee` compare
@@ -193,8 +188,8 @@ pub proc assert_mint_amounts
     # (feeAmount <= maxFee) — under the MVP the only allowed fee is 0 and 0 <= maxFee always
     # holds, so the <= maxFee compare is unreachable and is removed. mirrors the F2 guard on
     # apply_mint_effects (xreserve_mint.masm) but fires on the advice feeAmount the hardcoded-0
-    # effects never see. DEV-8 upgrade point: when the relayer fee-split lands (CIR-FEE-2:
-    # recipient amount - feeAmount, relayer credited feeAmount) restore the feeAmount <= maxFee
+    # effects never see. DEV-8 upgrade point: when the relayer fee-split lands (the recipient note
+    # carries amount - feeAmount and the relayer is credited feeAmount) restore the feeAmount <= maxFee
     # compare here + add the relayer-credit leg to apply_mint_effects.
     assertz.err=ERR_XRESERVE_FEE_NONZERO
     # => [maxfee_y]
@@ -205,7 +200,7 @@ end
 
 #! Asserts the deposit intent's nonce has not been used (D5c replay guard, R-MINT-12).
 #!
-#! Derives the nonce key by CONSUMING the 04-owned `xreserve::encoding::bytes32_to_key` (no
+#! Derives the nonce key by CONSUMING the encoding library's `xreserve::encoding::bytes32_to_key` (no
 #! re-implemented hash) over the parsed nonce (felt[51..58]), reads `usedNonces[key]` via the
 #! canary-proven `active_account::get_map_item`, and asserts it is `EMPTY_WORD`. Marking the
 #! nonce as consumed is the first atomic write in D5e — D5c is assert-zero ONLY, so a failed
@@ -245,7 +240,7 @@ pub proc assert_nonce_unused
     movup.8 drop
     # => [B1, B0]
 
-    # consume the 04-owned hash-to-key BY REFERENCE (NS-1: bytes32_to_key); no re-impl
+    # consume the encoding library's hash-to-key BY REFERENCE (NS-1: bytes32_to_key); no re-impl
     exec.encoding::bytes32_to_key
     # => [KEY]
 
@@ -265,10 +260,10 @@ end
 # =================================================================================================
 
 #! Reduces the uint256 field at `base` (8 u32-LE packed felts) to an AssetAmount via the
-#! 04-owned reducer, consumed BY REFERENCE.
+#! encoding library's reducer, consumed BY REFERENCE.
 #!
 #! Single-felt loads: the DC-1 felt offsets are not word-aligned, so word loads trap
-#! (UnalignedWordAccess). The word orientation mirrors the 04 parser's remoteToken load
+#! (UnalignedWordAccess). The word orientation mirrors the encoding library's parser remoteToken load
 #! (`encoding::parse_deposit_intent`): U0 = the field's first four packed limbs (wire
 #! bytes 0..16), U1 = the next four (wire bytes 16..32), each element-0 on top — exactly
 #! the `[U1, U0, scale_exp]` shape the reducer consumes.

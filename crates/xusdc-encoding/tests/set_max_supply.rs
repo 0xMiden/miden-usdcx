@@ -1,5 +1,5 @@
-//! P5-01 `set_max_supply` admin slice, reconciled to the Circle-faithful OWNER-gated model
-//! (DECISION-ADMIN-ROLE-MODEL). This is STOCK reuse — the standard `FungibleFaucet` already exposes
+//! `set_max_supply` admin surface, reconciled to the Circle-faithful OWNER-gated model.
+//! This is STOCK reuse — the standard `FungibleFaucet` already exposes
 //! `set_max_supply`, gated (in this order) mutability -> `authority::assert_authorized` ->
 //! `assert_not_paused` -> below-current-supply. No new MASM. The reconciliation is a pure Authority
 //! config change: the account installs `Authority::OwnerControlled` (was `RbacControlled{ATTEST_ADMIN}`),
@@ -8,7 +8,7 @@
 //! cap-enforcement seam (that `set_max_supply` actually changes what R-MINT-15 enforces) lives in
 //! `xreserve_mint.rs`, alongside the shared mint-composition fixtures it reuses.
 //!
-//! The slice's net-new surface is the build-time mutability flag. The gate fixtures are built MUTABLE
+//! The net-new surface is the build-time mutability flag. The gate fixtures are built MUTABLE
 //! (`is_max_supply_mutable = true`), so each gate test exercises its intended gate: the owner's
 //! `set_max_supply` succeeds (write integrity), a non-owner (incl. a seeded DOM role-holder) traps
 //! ERR_SENDER_NOT_OWNER with no state change, a paused faucet traps ERR_PAUSABLE_IS_PAUSED, and a
@@ -46,7 +46,7 @@ fn dummy_config() -> (Word, Word) {
 
 /// An owner-gated production faucet (deny active) with cap 1_000_000 and a trivial unused driver/probe —
 /// the base for the gate tests. `token_supply` seeds the initial `token_config[token_supply]` (for the
-/// below-supply guard); `is_max_supply_mutable` is the slice's net-new flag.
+/// below-supply guard); `is_max_supply_mutable` is the net-new flag.
 fn guarded_faucet(token_supply: u64, is_max_supply_mutable: bool) -> Result<GuardedMint> {
     let driver = mint_composition_driver_src(&[Felt::from(0u32)], 60, 6);
     let probe = composition_supply_probe_src(0);
@@ -102,14 +102,24 @@ async fn set_max_supply_owner_succeeds() -> Result<()> {
 
     // write integrity: the token_config delta carries the FULL word with ONLY word[1] changed.
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(after) =
-        executed.account_delta().storage().get(&cfg_slot).expect("token_config slot delta")
+    let StorageSlotDelta::Value(after) = executed
+        .account_delta()
+        .storage()
+        .get(&cfg_slot)
+        .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
     let expected = Word::from([before[0], Felt::from(500_000u32), before[2], before[3]]);
-    assert_eq!(*after, expected, "set_max_supply writes word[1] only; token_supply/decimals/symbol preserved");
-    assert_eq!(after[1], Felt::from(500_000u32), "max_supply updated to 500_000");
+    assert_eq!(
+        *after, expected,
+        "set_max_supply writes word[1] only; token_supply/decimals/symbol preserved"
+    );
+    assert_eq!(
+        after[1],
+        Felt::from(500_000u32),
+        "max_supply updated to 500_000"
+    );
     Ok(())
 }
 
@@ -164,7 +174,8 @@ async fn set_max_supply_below_supply_rejects() -> Result<()> {
 // ================================================================================================
 
 /// After the DOM_PAUSER pauses the faucet (custom `xreserve::pause_admin::pause` — the ONLY pause
-/// surface under Option 1), an owner-sent `set_max_supply` passes mutability + auth but traps the EXACT
+/// surface in the Domain-Pauser-only model), an owner-sent `set_max_supply` passes mutability + auth
+/// but traps the EXACT
 /// ERR_PAUSABLE_IS_PAUSED — proving the pause guard is real (the `is_paused` slot is installed by the
 /// faucet, so this is never a missing-slot artifact).
 #[tokio::test]
@@ -181,6 +192,9 @@ async fn set_max_supply_paused_rejects() -> Result<()> {
 
     // tx2: set_max_supply by the owner now traps the EXACT pause error (mutability + auth pass).
     let result = run_set_max_supply_tx(&gm.harness, &evolved, owner(), 500_000, 7).await;
-    assert_transaction_executor_error!(result, MasmError::from_static_str("the contract is paused"));
+    assert_transaction_executor_error!(
+        result,
+        MasmError::from_static_str("the contract is paused")
+    );
     Ok(())
 }

@@ -56,7 +56,7 @@ pub const MINT_DOMAIN: u32 = 7;
 pub const SCALE_EXP: u32 = 6;
 const SCALE: u64 = 1_000_000; // 10^SCALE_EXP
 
-// DC-1 field byte offsets (felt offset × 4): the layout the 04 codec packs. Mirrors the MockChain
+// DC-1 field byte offsets (felt offset × 4): the layout the shared-encoding codec packs. Mirrors the MockChain
 // support constants (`AMOUNT_FELT_OFF` = 2, `REMOTE_RECIPIENT_FELT_OFF` = 19, `MAX_FEE_FELT_OFF` =
 // 43, nonce at felt 51).
 const AMOUNT_BYTE_OFF: usize = 2 * 4;
@@ -93,7 +93,7 @@ pub fn hook_data_len(vector_id: &str) -> u32 {
         .hook_data_len
 }
 
-/// The §5.9 `domain_init` parameters LNV-2 deploys with: `domain`/`identifier` MATCH the mint
+/// The `domain_init` domain-config parameters LNV-2 deploys with: `domain`/`identifier` MATCH the mint
 /// vector (so mints validate), `source_domain`/`xreserve_contract` are arbitrary distinct local
 /// test values (the mint path does not read them — they are off-chain withdrawal identity).
 pub fn lnv2_domain_params() -> DomainParams {
@@ -287,7 +287,7 @@ pub fn burn_note<R: FeltRng>(
 /// Builds an `XReserveBurnNote`-shaped note whose VAULT ASSET is issued by `asset_faucet` (a
 /// DIFFERENT faucet) while the note is still routed at `target_faucet` — the Row-I wrong-asset
 /// negative. It is the production burn transport (the reused stock `BurnNote` consume script, the
-/// fixed xUSDC burn tag, the DC-7 storage items via the 04 codec, the scheme-2 `NetworkAccountTarget`
+/// fixed xUSDC burn tag, the DC-7 storage items via the shared-encoding codec, the scheme-2 `NetworkAccountTarget`
 /// routing bind at `target_faucet`) with ONLY the vault asset's issuer swapped to `asset_faucet`, so
 /// the faucet's `receive_and_burn` → `faucet::burn` → `fungible_asset::validate_origin` trap fires
 /// (`ERR_FUNGIBLE_ASSET_FAUCET_IS_NOT_ORIGIN`: a faucet can only burn its OWN token). It never
@@ -313,11 +313,11 @@ pub fn burn_note_wrong_asset<R: FeltRng>(
         dest_recipient: [0xAB; 32],
         salt: [dest_salt; 32],
     };
-    // DC-7 payload → NoteStorage.items via the 04 codec (consumed by reference; no re-impl).
+    // DC-7 payload → NoteStorage.items via the shared-encoding codec (consumed by reference; no re-impl).
     let storage =
         NoteStorage::new(encode_burn_note_items(&items)).context("wrong-asset burn storage")?;
-    // Reuse the STOCK burn consume script (→ faucet::receive_and_burn → CMP-A10), exactly as the
-    // production factory does.
+    // Reuse the STOCK burn consume script (→ faucet::receive_and_burn → the burn security policy,
+    // CMP-A10), exactly as the production factory does.
     let recipient = NoteRecipient::new(rng.draw_word(), XReserveBurnNote::script(), storage);
     // Public mandate + the fixed xUSDC burn tag; metadata.sender = the depositor.
     let metadata = PartialNoteMetadata::new(sender, NoteType::Public)

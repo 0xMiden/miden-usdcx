@@ -204,8 +204,8 @@ $ cargo tree | grep -E "miden-core-lib v|miden-crypto v|k256 v|sha3 v"
 ```
 $ git show --stat 6e46d0f 744cdfa --name-only | grep -E "asm/standards/xreserve|crates/xusdc-encoding|docs/"
   (none)
-$ git status --porcelain        # the pre-existing docs/governing + docs/spec/04 edits remain, UNCOMMITTED
-   M docs/governing/...; M docs/spec/04-shared-encoding/...
+$ git status --porcelain        # the pre-existing docs/governing + docs/spec edits remain, UNCOMMITTED
+   M docs/governing/...; M docs/spec/...
 ```
 
 ---

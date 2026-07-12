@@ -1,22 +1,22 @@
-//! P5-01 CMP-F3 custom `pause`/`unpause` suite: the DOM_PAUSER-gated emergency halt (§5.12,
-//! CIR-ADMIN-3/4/5, per DECISION-ADMIN-ROLE-MODEL). The stock `PausableManager` gates pause on the
-//! account-wide `Authority` (= owner), so a distinct pause role needs a CUSTOM proc:
-//! `xreserve::pause_admin::{pause,unpause}` = `rbac::assert_sender_has_role(DOM_PAUSER)` +
-//! the unauthenticated `pausable::pause`/`unpause` primitives.
+//! Custom `pause`/`unpause` suite (component CMP-F3): the DOM_PAUSER-gated emergency halt. The stock
+//! `PausableManager` gates pause on the account-wide `Authority` (= owner), so a distinct pause role
+//! needs a CUSTOM proc: `xreserve::pause_admin::{pause,unpause}` =
+//! `rbac::assert_sender_has_role(DOM_PAUSER)` + the unauthenticated `pausable::pause`/`unpause`
+//! primitives.
 //!
 //! The load-bearing proof is the PAUSE-HALT SEAM — a DOM_PAUSER pause must actually HALT the real
 //! faucet, not just flip `is_paused`: a real `xreserve_mint` AND a real `receive_and_burn` trap
 //! `ERR_PAUSABLE_IS_PAUSED` while paused, and both resume on unpause. Discovery found the burn already
 //! halts (execute_burn_policy runs assert_not_paused first) but the custom `xreserve_mint` bypasses the
 //! mint policy and did NOT honor `is_paused` — closed by adding `assert_not_paused` to
-//! `xreserve_mint::mint` (the mint reconciliation; DECISION-CMPF3-MINT-PAUSE-GAP).
+//! `xreserve_mint::mint` (the mint reconciliation).
 //!
-//! OPTION-1 REVISION (IMPL-DEV-1 remediation): Circle's model is Domain-Pauser-ONLY
-//! (CIRCLE-SPECIFICATION.md:121 — the owner has NO direct pause path), so the stock `PausableManager`
-//! is REMOVED from the composition and the DOM_PAUSER custom procs are the ONLY pause surface.
+//! DOMAIN-PAUSER-ONLY MODEL (IMPL-DEV-1 remediation): Circle's model gives the owner NO direct pause
+//! path, so the stock `PausableManager` is REMOVED from the composition and the DOM_PAUSER custom
+//! procs are the ONLY pause surface.
 //! RED-SUITE (executing-red): `owner_has_no_pause_path` / `owner_has_no_unpause_path` assert an
 //! owner-sent STOCK `PausableManager::pause`/`unpause` note now fails with the exact
-//! `UnknownAccountProcedure` (the roots are gone from the account code) — RED while the Option-2
+//! `UnknownAccountProcedure` (the roots are gone from the account code) — RED while the prior
 //! baseline still installs the manager. `dom_pauser_pause_halts_mint`/`_burn` double as the
 //! `is_paused`-slot-survival guards (the slot is FungibleFaucet-installed, NOT manager-installed).
 
@@ -33,7 +33,7 @@ use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::XReservePauseNote;
-use xusdc_encoding::vectors::{DiFields, DiVector, load, parse_hex32};
+use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
 
 /// Deterministic note rng for the production admin notes (serial only; never affects the gate).
@@ -96,7 +96,10 @@ fn di(id: &str) -> &'static DiVector {
 }
 
 fn fields_of(id: &str) -> &'static DiFields {
-    di(id).fields.as_ref().expect("accept vector carries fields")
+    di(id)
+        .fields
+        .as_ref()
+        .expect("accept vector carries fields")
 }
 
 fn base_payload() -> Vec<u8> {
@@ -121,11 +124,15 @@ fn pack(bytes: &[u8]) -> Vec<Felt> {
 
 /// The configured identifier = the canonical key-Word of the vector's remoteToken (what D5a compares).
 fn identifier_of(id: &str) -> Word {
-    Word::from(bytes32_to_storage_map_key(&parse_hex32(&fields_of(id).remote_token_hex)))
+    Word::from(bytes32_to_storage_map_key(&parse_hex32(
+        &fields_of(id).remote_token_hex,
+    )))
 }
 
 fn nonce_key() -> Word {
-    Word::from(bytes32_to_storage_map_key(&fields_of(BASE_VECTOR).bytes32("nonce")))
+    Word::from(bytes32_to_storage_map_key(
+        &fields_of(BASE_VECTOR).bytes32("nonce"),
+    ))
 }
 
 /// A production faucet (owner=id(1), DOM_PAUSER=id(2)) pre-configured for a VALID mint: domain =
@@ -158,7 +165,7 @@ fn token_supply_of(account: &Account) -> Result<Felt> {
     Ok(read_token_config(account)?[0])
 }
 
-// EXPORT PROBE (declared green scaffold — D-1A flat-path check for the new pause procs)
+// EXPORT PROBE (declared green scaffold — flat-path check for the new pause procs)
 // ================================================================================================
 
 #[test]
@@ -169,7 +176,10 @@ fn probe_pause_admin_exports() -> Result<()> {
         .filter(|e| e.as_procedure().is_some())
         .map(|e| e.path().to_string())
         .collect();
-    for canonical in ["::xreserve::pause_admin::pause", "::xreserve::pause_admin::unpause"] {
+    for canonical in [
+        "::xreserve::pause_admin::pause",
+        "::xreserve::pause_admin::unpause",
+    ] {
         assert!(
             exports.iter().any(|e| e == canonical),
             "canonical pause proc path {canonical} missing; exports: {exports:?}"
@@ -181,13 +191,13 @@ fn probe_pause_admin_exports() -> Result<()> {
 // PAUSE-HALT SEAM — the non-vacuity must-have: a pause HALTS the real mint AND the real burn
 // ================================================================================================
 
-/// OPTION 1 (IMPL-DEV-1 remediation): the owner's STOCK pause path is GONE. An owner-sent stock
-/// `PausableManager::pause` note still ASSEMBLES (StandardsLib is pre-linked) but the production
-/// account no longer exposes the proc root, so execution fails with the EXACT
+/// In the Domain-Pauser-only model (IMPL-DEV-1 remediation): the owner's STOCK pause path is GONE. An
+/// owner-sent stock `PausableManager::pause` note still ASSEMBLES (StandardsLib is pre-linked) but the
+/// production account no longer exposes the proc root, so execution fails with the EXACT
 /// `UnknownAccountProcedure` host-event error ("… is not in the account procedure index map" — NOT
 /// a MASM assert) and `is_paused` stays untouched. Replaces `paused_mint_traps` (the owner-stock-
 /// pause → mint-trap scenario ceases to exist; its mint-halt purpose lives in
-/// `dom_pauser_pause_halts_mint`). RED at the Option-2 baseline: the owner stock pause SUCCEEDS.
+/// `dom_pauser_pause_halts_mint`). RED at the prior baseline: the owner stock pause SUCCEEDS.
 #[tokio::test]
 async fn owner_has_no_pause_path() -> Result<()> {
     let (gm, _attester) = guarded_mint_ready()?;
@@ -206,7 +216,7 @@ async fn owner_has_no_pause_path() -> Result<()> {
 
 /// The unpause twin: DOM_PAUSER pauses first (the flag REALLY flips), then an owner-sent stock
 /// `PausableManager::unpause` note fails with the EXACT `UnknownAccountProcedure` and the faucet
-/// STAYS paused — a surviving stock unpause would visibly clear the flag. RED at the Option-2
+/// STAYS paused — a surviving stock unpause would visibly clear the flag. RED at the prior
 /// baseline: the owner stock unpause SUCCEEDS (gated only on the owner Authority).
 #[tokio::test]
 async fn owner_has_no_unpause_path() -> Result<()> {
@@ -248,7 +258,12 @@ async fn dom_pauser_pause_halts_mint() -> Result<()> {
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
 
-    let result = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
+    let result = run_mint_against(
+        &gm.harness,
+        &evolved,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await;
     assert_transaction_executor_error!(result, err_paused());
     Ok(())
 }
@@ -277,7 +292,12 @@ async fn dom_pauser_production_pause_note_halts_mint() -> Result<()> {
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
 
-    let result = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester)).await;
+    let result = run_mint_against(
+        &gm.harness,
+        &evolved,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await;
     assert_transaction_executor_error!(result, err_paused());
     Ok(())
 }
@@ -293,7 +313,14 @@ async fn dom_pauser_production_pause_note_halts_burn() -> Result<()> {
         MIN_BURN_SIZE,
         VALID_BURN,
     )?;
-    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = bh;
+    let BurnPolicyHarness {
+        mut chain,
+        faucet_id,
+        user_id,
+        burn_note,
+        asset,
+        ..
+    } = bh;
 
     // Block N: the user emits + commits the (valid-amount) burn note (faucet not yet paused).
     let tx0 = try_emit_burn_note(&chain, &burn_note, &asset, faucet_id, user_id)
@@ -338,7 +365,14 @@ async fn dom_pauser_pause_halts_burn() -> Result<()> {
         MIN_BURN_SIZE,
         VALID_BURN,
     )?;
-    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = bh;
+    let BurnPolicyHarness {
+        mut chain,
+        faucet_id,
+        user_id,
+        burn_note,
+        asset,
+        ..
+    } = bh;
 
     // Block N: the user emits + commits the (valid-amount) burn note (faucet not yet paused).
     let tx0 = try_emit_burn_note(&chain, &burn_note, &asset, faucet_id, user_id)
@@ -385,17 +419,32 @@ async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
         .expect("DOM_PAUSER unpauses the mint faucet");
     evolved.apply_delta(unpaused.account_delta())?;
 
-    let minted = run_mint_against(&gm.harness, &evolved, composition_advice([0u32; 8], &attester))
-        .await
-        .expect("after unpause, the real xreserve_mint mints again");
-    assert_eq!(minted.output_notes().num_notes(), 1, "unpause resumes minting (one recipient note)");
+    let minted = run_mint_against(
+        &gm.harness,
+        &evolved,
+        composition_advice([0u32; 8], &attester),
+    )
+    .await
+    .expect("after unpause, the real xreserve_mint mints again");
+    assert_eq!(
+        minted.output_notes().num_notes(),
+        1,
+        "unpause resumes minting (one recipient note)"
+    );
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) =
-        minted.account_delta().storage().get(&cfg_slot).expect("token_config slot delta")
+    let StorageSlotDelta::Value(cfg) = minted
+        .account_delta()
+        .storage()
+        .get(&cfg_slot)
+        .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
-    assert_eq!(cfg[0], Felt::from(REDUCED_AMOUNT), "token_supply rose by the reduced amount");
+    assert_eq!(
+        cfg[0],
+        Felt::from(REDUCED_AMOUNT),
+        "token_supply rose by the reduced amount"
+    );
 
     // --- burn side ---
     let bh = setup_burn_policy_account(
@@ -405,7 +454,14 @@ async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
         MIN_BURN_SIZE,
         VALID_BURN,
     )?;
-    let BurnPolicyHarness { mut chain, faucet_id, user_id, burn_note, asset, .. } = bh;
+    let BurnPolicyHarness {
+        mut chain,
+        faucet_id,
+        user_id,
+        burn_note,
+        asset,
+        ..
+    } = bh;
     let tx0 = try_emit_burn_note(&chain, &burn_note, &asset, faucet_id, user_id)
         .await
         .expect("the user emits the burn note (test-setup invariant)");
@@ -472,12 +528,12 @@ async fn non_dom_pauser_pause_rejects() -> Result<()> {
 }
 
 /// The OWNER (id 1) is NOT a DOM_PAUSER holder, so the custom pause rejects the owner too — the custom
-/// surface is role-gated, not owner-gated. Under Option 1 (the stock `PausableManager` removed —
-/// `owner_has_no_pause_path`) this completes "the owner has no DIRECT pause path": neither the stock
-/// nor the custom surface accepts the owner. (The owner keeps Circle-conformant ROLE-ADMINISTRATION
-/// power — it could `grant_role` itself DOM_PAUSER, matching CIR-ADMIN-3's `onlyOwner` rotation
-/// backstop; the operational rotation path is the CMP-F5 `DOM_MANAGER` delegation, proven in
-/// `role_admin.rs` — a rotation concern, not a pause surface.)
+/// surface is role-gated, not owner-gated. In the Domain-Pauser-only model (the stock
+/// `PausableManager` removed — `owner_has_no_pause_path`) this completes "the owner has no DIRECT
+/// pause path": neither the stock nor the custom surface accepts the owner. (The owner keeps
+/// Circle-conformant ROLE-ADMINISTRATION power — it could `grant_role` itself DOM_PAUSER, matching
+/// Circle's owner-only rotation backstop; the operational rotation path is the component CMP-F5
+/// `DOM_MANAGER` delegation, proven in `role_admin.rs` — a rotation concern, not a pause surface.)
 #[tokio::test]
 async fn owner_is_not_dom_pauser_on_custom_pause() -> Result<()> {
     assert_custom_pause_rejects(owner()).await
@@ -493,7 +549,7 @@ async fn other_role_holder_cannot_pause() -> Result<()> {
 /// The custom `unpause` role gate, proven NEGATIVELY (audit HIGH finding): a non-DOM_PAUSER sender
 /// — stranger, owner, or a DIFFERENT role holder (DOM_MANAGER) — is rejected from `unpause` with
 /// the EXACT stock `ERR_SENDER_LACKS_ROLE`, and the faucet STAYS paused (no state change). Unpause
-/// is the security-critical direction (CIR-ADMIN-5 makes unpause joint-approval): an ungated
+/// is the security-critical direction (Circle designates unpause a joint-approval action): an ungated
 /// unpause would let anyone re-enable a paused — possibly compromised — bridge.
 #[rstest]
 #[case::stranger(plain_non_owner())]
@@ -551,7 +607,7 @@ async fn dom_pauser_cannot_call_owner_setters() -> Result<()> {
     Ok(())
 }
 
-// IDEMPOTENCY PINS (Item 11) — the stock pausable primitives are UNCONDITIONAL writes
+// IDEMPOTENCY PINS — the stock pausable primitives are UNCONDITIONAL writes
 // ================================================================================================
 
 /// `pause` when ALREADY paused is idempotent SUCCESS: the stock `pausable::pause` is an
@@ -575,7 +631,11 @@ async fn pause_when_already_paused_is_idempotent() -> Result<()> {
         .expect("the first DOM_PAUSER pause succeeds");
     let mut evolved = account.clone();
     evolved.apply_delta(paused.account_delta())?;
-    assert_eq!(read_is_paused(&evolved)?, Word::from([1u32, 0, 0, 0]), "paused after pause #1");
+    assert_eq!(
+        read_is_paused(&evolved)?,
+        Word::from([1u32, 0, 0, 0]),
+        "paused after pause #1"
+    );
 
     let again = run_dom_pauser_pause(&bh.chain, &evolved, dom_pauser(), 14)
         .await
@@ -602,7 +662,11 @@ async fn unpause_when_not_paused_is_idempotent() -> Result<()> {
         VALID_BURN,
     )?;
     let account = bh.chain.committed_account(bh.faucet_id)?.clone();
-    assert_eq!(read_is_paused(&account)?, Word::from([0u32, 0, 0, 0]), "fresh faucet is unpaused");
+    assert_eq!(
+        read_is_paused(&account)?,
+        Word::from([0u32, 0, 0, 0]),
+        "fresh faucet is unpaused"
+    );
 
     let unpaused = run_dom_pauser_unpause(&bh.chain, &account, dom_pauser(), 15)
         .await
@@ -617,7 +681,7 @@ async fn unpause_when_not_paused_is_idempotent() -> Result<()> {
     Ok(())
 }
 
-// OBSERVABILITY — is_paused reads back via GetAccount (CIR-ADMIN-4)
+// OBSERVABILITY — is_paused reads back via GetAccount
 // ================================================================================================
 
 /// `is_paused` is a network-observable value slot: it reads back unpaused pre-pause and paused after a

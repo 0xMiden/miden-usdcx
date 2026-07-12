@@ -1,10 +1,10 @@
 //! CMP-B1 `XReserveMintNote` — the executing-red suite (committed BEFORE implementation).
 //!
-//! The load-bearing proof (G1): a REAL `XReserveMintNote` — constructed by the production
+//! The load-bearing proof: a REAL `XReserveMintNote` — constructed by the production
 //! Rust factory, committed in block N by a producer tx, consumed by the PRODUCTION-component-set
 //! faucet in block ≥ N+1 with NO tx script and NO consume-side advice staging — drives the
 //! F1-fixed `xreserve_mint::mint` through ALL of D5a→D5e. This replaces the driver/advice
-//! transport (`run_mint_composition` + `extend_advice_inputs`) that constituted the G1 gap.
+//! transport (`run_mint_composition` + `extend_advice_inputs`) that constituted the transport gap.
 //!
 //! Fail-closed non-vacuity rides the SAME real-note path: a replayed nonce (D5c), a
 //! non-allowlisted signature (D5d), and a tampered attachment advice map (the transport's own
@@ -13,7 +13,7 @@
 //! RED-FOR-THE-RIGHT-REASON: at the red commit, `XReserveMintNote::create` is an executing stub
 //! returning `Err("xreserve mint note constructor unimplemented")` and the pinned script root is
 //! an all-zero placeholder — every test RUNS and fails behaviorally; nothing here is a compile
-//! error. The green loop implements against these tests AND the plan/spec.
+//! error. The green loop implements against these tests.
 
 mod support;
 
@@ -27,7 +27,7 @@ use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::note::P2idNote;
-use miden_testing::{MockChain, assert_transaction_executor_error};
+use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::{XReserveDomainInitNote, XReserveSetAttesterNote};
@@ -35,7 +35,7 @@ use xusdc_encoding::note::xreserve_mint::{
     MintAttestation, XReserveMintNote, XRESERVE_MINT_ATTACHMENT_NUM_WORDS,
     XRESERVE_MINT_ATTACHMENT_SCHEME,
 };
-use xusdc_encoding::vectors::{DiFields, DiVector, load, parse_hex32};
+use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::{
     account_id_to_bytes32, bytes32_to_storage_map_key, deposit_intent_to_packed_felts,
 };
@@ -76,7 +76,10 @@ fn di(id: &str) -> &'static DiVector {
 }
 
 fn fields_of(id: &str) -> &'static DiFields {
-    di(id).fields.as_ref().expect("accept vector carries fields")
+    di(id)
+        .fields
+        .as_ref()
+        .expect("accept vector carries fields")
 }
 
 /// The canonical accept payload with amount/maxFee spliced and `remoteRecipient` REPLACED by the
@@ -93,17 +96,20 @@ fn payload_for(recipient: AccountId) -> Vec<u8> {
 /// The identifier config word = the canonical key-Word of the payload's remoteToken (what D5a's
 /// `assert_eqw` compares against).
 fn identifier_word() -> Word {
-    Word::from(bytes32_to_storage_map_key(&parse_hex32(&fields_of(BASE_VECTOR).remote_token_hex)))
+    Word::from(bytes32_to_storage_map_key(&parse_hex32(
+        &fields_of(BASE_VECTOR).remote_token_hex,
+    )))
 }
 
 /// The usedNonces key for a payload's nonce bytes.
 fn nonce_key_of_payload(payload: &[u8]) -> Word {
-    let nonce: [u8; 32] =
-        payload[NONCE_BYTE_OFF..NONCE_BYTE_OFF + 32].try_into().expect("32 nonce bytes");
+    let nonce: [u8; 32] = payload[NONCE_BYTE_OFF..NONCE_BYTE_OFF + 32]
+        .try_into()
+        .expect("32 nonce bytes");
     Word::from(bytes32_to_storage_map_key(&nonce))
 }
 
-/// The expected P2ID tag for the recipient (Case-001: the HIGH u32 of the AccountId prefix,
+/// The expected P2ID tag for the recipient (the HIGH u32 of the AccountId prefix,
 /// masked `0xfffc0000` — `NoteTag::with_account_target`).
 fn expected_p2id_tag(recipient: AccountId) -> u32 {
     let prefix = recipient.prefix().as_felt().as_canonical_u64();
@@ -208,7 +214,10 @@ fn commit(chain: &mut MockChain, tx: &ExecutedTransaction) -> Result<()> {
 }
 
 fn committed(chain: &MockChain, id: AccountId) -> Result<Account> {
-    Ok(chain.committed_account(id).context("fetching the committed account")?.clone())
+    Ok(chain
+        .committed_account(id)
+        .context("fetching the committed account")?
+        .clone())
 }
 
 fn committed_token_supply(chain: &MockChain, faucet_id: AccountId) -> Result<AssetAmount> {
@@ -237,7 +246,7 @@ fn read_map_word(account: &Account, slot_label: &str, key: Word) -> Result<Word>
         .map_err(|e| anyhow::anyhow!("reading map slot {slot_label}: {e}"))
 }
 
-// 1 — THE REAL-NOTE END-TO-END MINT (the G1 closure; the must-have)
+// 1 — THE REAL-NOTE END-TO-END MINT (the must-have)
 // ================================================================================================
 
 #[tokio::test]
@@ -263,17 +272,31 @@ async fn mint_note_drives_attested_mint_end_to_end() -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("the real-note attested mint must succeed: {e}"))?;
 
-    // Case-001 non-vacuity: the recipient P2ID note's FULL observable surface.
-    assert_eq!(minted.output_notes().num_notes(), 1, "exactly one recipient note");
+    // Observability non-vacuity: the recipient P2ID note's FULL observable surface.
+    assert_eq!(
+        minted.output_notes().num_notes(),
+        1,
+        "exactly one recipient note"
+    );
     let p2id = minted.output_notes().get_note(0);
     let asset = p2id
         .assets()
         .iter_fungible()
         .next()
         .expect("the recipient note carries a fungible asset");
-    assert_eq!(u64::from(asset.amount()), MINT_REDUCED, "note asset == reduced amount");
-    assert_eq!(asset.faucet_id(), pf.faucet_id, "asset minted by this faucet");
-    let recipient_digest = p2id.recipient().expect("public output note carries its recipient");
+    assert_eq!(
+        u64::from(asset.amount()),
+        MINT_REDUCED,
+        "note asset == reduced amount"
+    );
+    assert_eq!(
+        asset.faucet_id(),
+        pf.faucet_id,
+        "asset minted by this faucet"
+    );
+    let recipient_digest = p2id
+        .recipient()
+        .expect("public output note carries its recipient");
     assert_eq!(
         recipient_digest.serial_num(),
         nonce_key_of_payload(&payload),
@@ -294,11 +317,20 @@ async fn mint_note_drives_attested_mint_end_to_end() -> Result<()> {
         expected_p2id_tag(pf.recipient_id),
         "Case-001 tag (recipient account-target, prefix HIGH u32) asserted directly"
     );
-    assert_eq!(p2id.metadata().note_type(), NoteType::Public, "recipient note is Public");
+    assert_eq!(
+        p2id.metadata().note_type(),
+        NoteType::Public,
+        "recipient note is Public"
+    );
 
     // Committed post-state: supply += amount EXACTLY; usedNonces[key] set; note consumed.
     commit(&mut pf.mock_chain, &minted)?;
-    assert_supply(&pf.mock_chain, pf.faucet_id, MINT_REDUCED, "after the real-note mint")?;
+    assert_supply(
+        &pf.mock_chain,
+        pf.faucet_id,
+        MINT_REDUCED,
+        "after the real-note mint",
+    )?;
     assert_eq!(
         read_map_word(
             &committed(&pf.mock_chain, pf.faucet_id)?,
@@ -339,7 +371,12 @@ async fn mint_note_replayed_nonce_rejects_no_writes() -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("the first real-note mint must succeed: {e}"))?;
     commit(&mut pf.mock_chain, &minted)?;
-    assert_supply(&pf.mock_chain, pf.faucet_id, MINT_REDUCED, "after the first mint")?;
+    assert_supply(
+        &pf.mock_chain,
+        pf.faucet_id,
+        MINT_REDUCED,
+        "after the first mint",
+    )?;
 
     // Replay: a SECOND real note (fresh serial), SAME payload/nonce -> the EXACT D5c error.
     let note_b = XReserveMintNote::create(
@@ -356,7 +393,12 @@ async fn mint_note_replayed_nonce_rejects_no_writes() -> Result<()> {
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_NONCE_REPLAY"));
 
     // Zero writes: supply unchanged; the nonce marker is exactly the first mint's.
-    assert_supply(&pf.mock_chain, pf.faucet_id, MINT_REDUCED, "after the replay reject")?;
+    assert_supply(
+        &pf.mock_chain,
+        pf.faucet_id,
+        MINT_REDUCED,
+        "after the replay reject",
+    )?;
     assert_eq!(
         read_map_word(
             &committed(&pf.mock_chain, pf.faucet_id)?,
@@ -396,7 +438,12 @@ async fn mint_note_forged_signature_rejects_no_writes() -> Result<()> {
     );
 
     // Zero writes: no supply, no nonce marker.
-    assert_supply(&pf.mock_chain, pf.faucet_id, 0, "after the forged-signature reject")?;
+    assert_supply(
+        &pf.mock_chain,
+        pf.faucet_id,
+        0,
+        "after the forged-signature reject",
+    )?;
     assert_eq!(
         read_map_word(
             &committed(&pf.mock_chain, pf.faucet_id)?,
@@ -446,14 +493,19 @@ fn mint_note_is_public_with_fixed_script_root() -> Result<()> {
         NoteTag::with_account_target(faucet_id),
         "the mint note carries the faucet account-target tag (TAG-1)"
     );
-    assert_eq!(note.assets().num_assets(), 0, "the mint note carries NO assets");
+    assert_eq!(
+        note.assets().num_assets(),
+        0,
+        "the mint note carries NO assets"
+    );
     assert_eq!(
         note.attachments().num_attachments(),
         2,
         "two attachments: the scheme-1 attestation + the scheme-2 NetworkAccountTarget routing bind (F5)"
     );
-    let scheme_one = miden_protocol::note::NoteAttachmentScheme::new(XRESERVE_MINT_ATTACHMENT_SCHEME)
-        .expect("scheme 1 is a valid attachment scheme");
+    let scheme_one =
+        miden_protocol::note::NoteAttachmentScheme::new(XRESERVE_MINT_ATTACHMENT_SCHEME)
+            .expect("scheme 1 is a valid attachment scheme");
     let attestation = note
         .attachments()
         .iter()
@@ -467,7 +519,7 @@ fn mint_note_is_public_with_fixed_script_root() -> Result<()> {
     Ok(())
 }
 
-// 5 — NoteStorage.items == THE 04 CODEC OUTPUT (consumed by reference, felt-exact)
+// 5 — NoteStorage.items == THE SHARED-ENCODING CODEC OUTPUT (consumed by reference, felt-exact)
 // ================================================================================================
 
 #[test]
@@ -549,7 +601,12 @@ async fn mint_note_tampered_attachment_advice_rejects_no_writes() -> Result<()> 
     );
 
     // Zero writes: no supply, no nonce marker.
-    assert_supply(&pf.mock_chain, pf.faucet_id, 0, "after the tampered-advice reject")?;
+    assert_supply(
+        &pf.mock_chain,
+        pf.faucet_id,
+        0,
+        "after the tampered-advice reject",
+    )?;
     assert_eq!(
         read_map_word(
             &committed(&pf.mock_chain, pf.faucet_id)?,

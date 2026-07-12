@@ -1,4 +1,4 @@
-//! # xusdc-validation — the Phase-4 §11.2 local-node validation harness (LNV track)
+//! # xusdc-validation — the local-node validation harness (LNV track)
 //!
 //! Real-node validation of the PRODUCTION xUSDC faucet (post-F5 composition, built by
 //! `XReserveStablecoinBuilder`) against a pinned local Miden node stack. This crate is
@@ -6,7 +6,6 @@
 //! outcomes — it never modifies production faucet code (validator-not-fixer), and a failing
 //! assertion here is a surfaced production finding, not something to patch around.
 //!
-//! Authoritative spec: `TASK-P5-01-PHASE4-LOCAL-NODE-VALIDATION-PLAN-BUILDER.md` (the A–L matrix).
 //! This slice (LNV-1) owns the harness foundation plus matrix rows A (deploy + recognize) and
 //! B (`domain_init` init-once). Evidence + pins: `VALIDATION-RECORD.md` next to this crate.
 //!

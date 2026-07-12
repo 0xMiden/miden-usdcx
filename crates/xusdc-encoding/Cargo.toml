@@ -6,7 +6,7 @@ publish = false
 description = "xUSDC-on-Miden 04 shared encoding: hand-written MASM + Rust mirror and test harness"
 
 # Pinned per docs/governing/V15-DEVNET-BASELINE.md: protocol v0.15.3 — git rev-pinned to
-# the released-tag commit 681fc90584131560b87db8f7487685f4fa8420a8 (CS-3; the repo is the
+# the released-tag commit 681fc90584131560b87db8f7487685f4fa8420a8 (the repo is the
 # protocol monorepo, formerly miden-base — both GitHub names resolve the same rev). The
 # lock keeps the v0.15.3-locked 0.23.3 assembler family. The `testing` feature on the main
 # miden-protocol dep is required by the committed vector generator (AccountIdBuilder).
@@ -17,7 +17,7 @@ miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "681fc905
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Vector-generator crates (RQ-3): OPTIONAL, gated behind the `vectors` feature; never
+# Vector-generator crates: OPTIONAL, gated behind the `vectors` feature; never
 # compiled for the library or the normal `cargo test`/`cargo build` path. The generator
 # binary requires this feature ([[bin]] below). The set mirrors the precompile canary
 # (canary/precompile-execution-grounding/Cargo.toml): k256 produces the secp256k1 keypair +
@@ -36,7 +36,7 @@ miden-crypto = { version = "0.25", default-features = false, features = ["std"],
 # regenerate the artifact with `cargo run --bin gen_vectors --features vectors`.
 vectors = ["dep:k256", "dep:sha3", "dep:rand", "dep:miden-crypto"]
 
-# The committed-artifact generator (RQ-3): a normal binary, so its deps are real
+# The committed-artifact generator: a normal binary, so its deps are real
 # [dependencies] (optional, feature-gated) — `cargo run --bin` cannot see dev-deps.
 [[bin]]
 name = "gen_vectors"

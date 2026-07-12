@@ -185,7 +185,7 @@ $ git status --porcelain        # the pre-existing docs/governing + docs/spec/04
 - **Isolation:** the canary commit changed only `canary/storage-map-grounding/*`; the faucet
   (`asm/standards/xreserve/`), 04 (`crates/xusdc-encoding`, `docs/spec/04-*`), D5a/D5b, and the
   `docs/governing` mirrors were not touched or staged.
-- **Skills:** the full `MASM-AUTHORING-RESOURCES.md` §1 set was loaded; the slice exercises
+- **Skills:** the full MASM-authoring resource set was loaded; the slice exercises
   `masm-formatting`/`-file-structure`/`-doc-comments`/`-inline-comments`/`-constants`/
   `-named-literals`/`-explicit-stack-inputs`/`-padding`/`cheap-masm-equivalents`,
   `masm-rust-constant-parity` (the dual-declared `TEST_KEY`/`MARKER` are checked by the passing

@@ -1,5 +1,5 @@
-//! bytes32 → Word family, frozen signatures per `COMPONENT-SPEC.md §6.2`
-//! (INV-BYTES32-HASH-TO-WORD). Implemented (routine R1).
+//! bytes32 → Word family, frozen signatures per the shared-encoding spec
+//! (INV-BYTES32-HASH-TO-WORD).
 
 use miden_protocol::account::StorageMapKey;
 use miden_protocol::utils::{bytes_to_packed_u32_elements, packed_u32_elements_to_bytes};
@@ -26,8 +26,8 @@ pub fn bytes32_to_packed_felts(b: &[u8; 32]) -> [Felt; 8] {
 /// Returns `Err(LimbOutOfField)` if any 8-byte LE limb >= p. Round-trip tests only.
 pub fn bytes32_to_word_lossless(b: &[u8; 32]) -> Result<Word, EncodingError> {
     // the frozen `EncodingError::LimbOutOfField` is a unit variant, so the inner
-    // `WordError` source cannot be carried (frozen signature takes precedence over the
-    // preserve-error-source checklist; conflict recorded in the approved plan)
+    // `WordError` source cannot be carried (the frozen signature takes precedence over the
+    // preserve-error-source convention)
     Word::try_from(*b).map_err(|_| EncodingError::LimbOutOfField)
 }
 
@@ -50,7 +50,7 @@ pub fn packed_felts_to_bytes32(felts: &[Felt; 8]) -> Result<[u8; 32], EncodingEr
         .expect("8 u32 limbs always unpack to exactly 32 bytes"))
 }
 
-// TESTS — TV-B32-1..4 (frozen 04 TEST-AND-VERIFICATION-HARNESS §2.1)
+// TESTS — TV-B32-1..4
 // ================================================================================================
 
 #[cfg(test)]
@@ -93,7 +93,12 @@ mod tests {
             vec.id
         );
         let key = bytes32_to_storage_map_key(&vec.bytes32());
-        assert_eq!(Word::from(key), word_from_hex(&vec.expected_key), "vector {}", vec.id);
+        assert_eq!(
+            Word::from(key),
+            word_from_hex(&vec.expected_key),
+            "vector {}",
+            vec.id
+        );
     }
 
     /// TV-B32-3 (replay/determinism): same input → identical key twice.
@@ -116,7 +121,12 @@ mod tests {
             let felts = bytes32_to_packed_felts(&vec.bytes32());
             assert_eq!(felts.len(), 8, "vector {}: packing width", vec.id);
             let expected: Vec<Felt> = vec.packed_felts_values();
-            assert_eq!(felts.as_slice(), expected.as_slice(), "vector {}: limbs", vec.id);
+            assert_eq!(
+                felts.as_slice(),
+                expected.as_slice(),
+                "vector {}: limbs",
+                vec.id
+            );
         }
     }
 
@@ -130,7 +140,12 @@ mod tests {
             let felts = bytes32_to_packed_felts(&b);
             let back = packed_felts_to_bytes32(&felts).expect("valid u32 limbs round-trip");
             assert_eq!(back, b, "vector {}: inverse round-trip", vec.id);
-            assert_eq!(bytes32_to_packed_felts(&back), felts, "vector {}: forward∘inverse", vec.id);
+            assert_eq!(
+                bytes32_to_packed_felts(&back),
+                felts,
+                "vector {}: forward∘inverse",
+                vec.id
+            );
         }
     }
 

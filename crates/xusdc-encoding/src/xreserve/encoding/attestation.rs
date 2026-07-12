@@ -1,4 +1,4 @@
-//! Attestation (ATT) surface — frozen signatures per `COMPONENT-SPEC.md §6.7`
+//! Attestation (ATT) surface — frozen signatures per the shared-encoding spec
 //! (INV-DEPOSIT-ATTESTATION-RAW-KECCAK, DC-2). This library owns the byte→felt packing of
 //! the digest / compressed pubkey / signature (relayer + harness, Rust-only) and the
 //! on-chain commitment-keying primitive `pubkey_commitment` — the canonical attester-
@@ -50,15 +50,14 @@ pub fn signature_felts(sig: &[u8; 65]) -> [Felt; 17] {
 /// protocol's Poseidon2 (same primitive as `bytes32_to_storage_map_key`); the 9-felt input
 /// engages the sponge capacity domain tag (`9 % 8 = 1`) — verified == `to_commitment` by
 /// TV-ATT-2 / TV-DUAL-5.
-// kept verbatim from the pre-cleanup source (structure-only round): clippy 1.93 flags the
-// `Word::from` as `useless_conversion`, but removing it would be an executable change outside
-// the MASM-structure scope, so the lint is acknowledged in place instead.
+// clippy 1.93 flags the `Word::from` as `useless_conversion`, but removing it would change
+// executable behaviour, so the lint is suppressed in place instead.
 #[allow(clippy::useless_conversion)]
 pub fn pubkey_commitment(pk: &[u8; 33]) -> Word {
     Word::from(Hasher::hash_elements(&compressed_pubkey_felts(pk)))
 }
 
-// TESTS — TV-ATT-1..3 (frozen 04 TEST-AND-VERIFICATION-HARNESS §2; harness rows :85-87)
+// TESTS — TV-ATT-1..3
 // ================================================================================================
 
 #[cfg(test)]
@@ -75,15 +74,30 @@ mod tests {
         for v in &load().families.att {
             let pk = compressed_pubkey_felts(&v.pubkey());
             assert_eq!(pk.len(), 9, "{}: pubkey felt width", v.id);
-            assert_eq!(pk.as_slice(), v.packed_felts_values().as_slice(), "{}: pubkey felts", v.id);
+            assert_eq!(
+                pk.as_slice(),
+                v.packed_felts_values().as_slice(),
+                "{}: pubkey felts",
+                v.id
+            );
 
             let d = keccak_digest_felts(&v.digest());
             assert_eq!(d.len(), 8, "{}: digest felt width", v.id);
-            assert_eq!(d.as_slice(), v.digest_felts_values().as_slice(), "{}: digest felts", v.id);
+            assert_eq!(
+                d.as_slice(),
+                v.digest_felts_values().as_slice(),
+                "{}: digest felts",
+                v.id
+            );
 
             let s = signature_felts(&v.sig());
             assert_eq!(s.len(), 17, "{}: signature felt width", v.id);
-            assert_eq!(s.as_slice(), v.sig_felts_values().as_slice(), "{}: signature felts", v.id);
+            assert_eq!(
+                s.as_slice(),
+                v.sig_felts_values().as_slice(),
+                "{}: signature felts",
+                v.id
+            );
         }
     }
 
@@ -125,7 +139,12 @@ mod tests {
                 v.payload().len()
             );
             // the input is the raw 65-byte r||s||v signature, NOT an EIP-712 typed-data sig.
-            assert_eq!(v.sig().len(), 65, "{}: raw r||s||v signature is 65 bytes", v.id);
+            assert_eq!(
+                v.sig().len(),
+                65,
+                "{}: raw r||s||v signature is 65 bytes",
+                v.id
+            );
             assert_eq!(
                 signature_felts(&v.sig())[16],
                 Felt::from(u32::from(v.v_byte)),

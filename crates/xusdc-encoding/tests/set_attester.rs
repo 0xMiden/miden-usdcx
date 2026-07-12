@@ -1,5 +1,5 @@
-//! P5-01 `set_attester` suite, reconciled to the Circle-faithful OWNER-gated model
-//! (DECISION-ADMIN-ROLE-MODEL). The allowlist setter's MASM is UNCHANGED — it calls the account-wide
+//! `set_attester` suite, reconciled to the Circle-faithful OWNER-gated model.
+//! The allowlist setter's MASM is UNCHANGED — it calls the account-wide
 //! `authority::assert_authorized`, which after the reconciliation (`Authority::OwnerControlled`, the
 //! built `ATTEST_ADMIN` role removed) resolves to the Ownable2Step owner. This file covers the owner
 //! gate (the security core), the production-deny regression, and the pause gate. The non-vacuity
@@ -62,7 +62,7 @@ fn read_attester(account: &miden_protocol::account::Account, commitment: Word) -
     Ok(account.storage().get_map_item(&slot, commitment)?)
 }
 
-// EXPORT PROBE (green scaffold — D-1A flat-path check for the setter)
+// EXPORT PROBE (green scaffold — flat-path check for the setter)
 // ================================================================================================
 
 #[test]
@@ -123,7 +123,11 @@ async fn set_attester_owner_succeeds() -> Result<()> {
         .get(&StorageMapKey::new(commitment))
         .copied()
         .expect("the commitment KEY must appear in the xReserveAttesters delta");
-    assert_eq!(written, Word::from([1u32, 0, 0, 0]), "enabled marker written");
+    assert_eq!(
+        written,
+        Word::from([1u32, 0, 0, 0]),
+        "enabled marker written"
+    );
     Ok(())
 }
 
@@ -164,7 +168,8 @@ async fn set_attester_dom_manager_non_owner_rejects() -> Result<()> {
 // ================================================================================================
 
 /// After the DOM_PAUSER pauses the faucet (custom `xreserve::pause_admin::pause` — the ONLY pause
-/// surface under Option 1), an OWNER-sent `set_attester` note SUCCEEDS while paused: F6 reconciles the
+/// surface in the Domain-Pauser-only model), an OWNER-sent `set_attester` note SUCCEEDS while paused:
+/// F6 reconciles the
 /// admin setters to Circle's `onlyOwner` (deliberately NOT pause-gated), so a compromised attester can
 /// be disabled during a pause. The enabled marker lands despite is_paused == true. The owner gate still
 /// governs it — the `*_non_owner_rejects` tests above prove that half.
@@ -201,6 +206,10 @@ async fn set_attester_owner_succeeds_while_paused() -> Result<()> {
         .get(&StorageMapKey::new(commitment))
         .copied()
         .expect("the commitment KEY must appear in the xReserveAttesters delta");
-    assert_eq!(written, Word::from([1u32, 0, 0, 0]), "enabled marker written while paused");
+    assert_eq!(
+        written,
+        Word::from([1u32, 0, 0, 0]),
+        "enabled marker written while paused"
+    );
     Ok(())
 }

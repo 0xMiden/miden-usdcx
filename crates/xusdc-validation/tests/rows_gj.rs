@@ -14,7 +14,7 @@
 //!    stack, deploys the production faucet, drives the whole G+H+I+J burn arc (Row-G/H/I via path N +
 //!    client-side, the F7 RIV, the conservation ledger), and judges the observations. `#[ignore]`d in
 //!    the default suite because it must bind loopback listener sockets (denied in hermetic audit
-//!    sandboxes); run it with `-- --include-ignored` or the `lnv4_rows_gj` binary. The §11.2 gate
+//!    sandboxes); run it with `-- --include-ignored` or the `lnv4_rows_gj` binary. The full-matrix acceptance-gate
 //!    claim rides ONLY on real runs + the human gate — a green default suite proves the assertion
 //!    layer only.
 
@@ -513,7 +513,7 @@ fn j_rejects_holder_balance_mismatch() {
     assert!(format!("{e:#}").contains("holder"), "got: {e:#}");
 }
 
-// ── the real-node E2E (the gate run for this slice) ──────────────────────────────────────────
+// ── the real-node E2E (the gate run for these rows) ──────────────────────────────────────────
 
 /// Rows G + H + I + J against a REAL fresh local node: bootstrap genesis, start the four services,
 /// deploy the production faucet, allowlist attester A, set a min burn size, mint to the holder, then

@@ -1,15 +1,15 @@
-//! 01 faucet recipient AccountId helper suite (P5-01 Slice 1): every behavior test drives the
-//! FAUCET(01)-owned `xreserve::xreserve_mint::extract_recipient_account_id` helper through MockChain
+//! Recipient AccountId helper suite: every behavior test drives the
+//! faucet-owned `xreserve::xreserve_mint::extract_recipient_account_id` helper through MockChain
 //! `execute().await` via a CALL-entered driver component (account context). The helper reads the
 //! eight u32-LE-packed `remoteRecipient` limbs at `intent_ptr + REMOTE_RECIPIENT_FELT_OFF` (= 19,
-//! the R-B layout: 16-byte zero pad, then big-endian `prefix`/`suffix` u64s), rebuilds each felt
-//! through a no-reduction `build_felt` (proving it did not reduce mod the field — Agglayer
-//! `eth_address.masm` precedent / Rust `Felt::try_from`), and delegates canonical AccountId
+//! the "R-B" right-aligned layout: 16-byte zero pad, then big-endian `prefix`/`suffix` u64s),
+//! rebuilds each felt through a no-reduction `build_felt` (proving it did not reduce mod the field —
+//! Agglayer `eth_address.masm` precedent / Rust `Felt::try_from`), and delegates canonical AccountId
 //! validation to the pinned-protocol `account_id::validate` (`use miden::protocol::account_id`).
 //! Returns `[recipient_id_suffix, recipient_id_prefix]` for `apply_mint_effects` (note: Rust
 //! `account_id_to_felts` is `[prefix, suffix]`; the MASM stack order is the reverse).
 //!
-//! Canonical `aid-*` / `di-*` vectors are loaded BY REFERENCE (G1); the field-modulus / suffix-MSB
+//! Canonical `aid-*` / `di-*` vectors are loaded BY REFERENCE; the field-modulus / suffix-MSB
 //! / bad-version / malformed-limb cases are constructed in-test from a valid `aid-rt-1` recipient
 //! (the `d5b_fee_advice_malformed_limb` precedent for constructed adversarial inputs).
 //!
@@ -17,26 +17,26 @@
 //! ("red-suite placeholder: extract_recipient_account_id is not implemented"). Each behavior case
 //! below asserts its FINAL (green) expectation and is therefore RED here — the placeholder trap
 //! (reached via real execution after the preimage is staged) reverts the tx with the wrong error /
-//! prevents the happy output — until the Slice-1 green commit lands. `probe_recipient_extract_exports`
+//! prevents the happy output — until it is implemented. `probe_recipient_extract_exports`
 //! is a declared green scaffold (the placeholder makes the proc path resolve).
 
 mod support;
 
 use anyhow::Result;
-use miden_processor::ExecutionError;
 use miden_processor::operation::OperationError;
+use miden_processor::ExecutionError;
 use miden_protocol::errors::MasmError;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::*;
-use xusdc_encoding::vectors::{AidVector, DiVector, load, parse_hex32};
+use xusdc_encoding::vectors::{load, parse_hex32, AidVector, DiVector};
 
 /// The Miden field (Goldilocks) modulus `p = 2^64 - 2^32 + 1`. A reconstructed `prefix`/`suffix`
 /// u64 equal to (or above) `p` must be rejected as out-of-field, mirroring Rust `Felt::try_from`.
 const FIELD_MODULUS: u64 = 0xFFFF_FFFF_0000_0001;
 
-/// Looks up a canonical 04 AccountId↔bytes32 vector by id (by-reference loading; G1).
+/// Looks up a canonical AccountId↔bytes32 vector by id (by-reference loading).
 fn aid(id: &str) -> &'static AidVector {
     load()
         .families
@@ -46,7 +46,7 @@ fn aid(id: &str) -> &'static AidVector {
         .unwrap_or_else(|| panic!("canonical artifact is missing aid vector {id}"))
 }
 
-/// Looks up a canonical 04 DepositIntent vector by id (by-reference loading; G1).
+/// Looks up a canonical DepositIntent vector by id (by-reference loading).
 fn di(id: &str) -> &'static DiVector {
     load()
         .families
@@ -80,11 +80,11 @@ fn harness(driver_src: &str) -> Result<ShellHarness> {
 }
 
 // The former `probe_recipient_extract_exports` (asserting `extract_recipient_account_id` IS a
-// library export) is retired by the L1 demotion: it is now a same-module `exec`-only internal.
+// library export) is retired by the demotion: it is now a same-module `exec`-only internal.
 // The production callable-root set is pinned by
 // `mint_root_surface::production_supply_raising_root_set_is_exactly_mint`.
 
-// HAPPY PATH FIRST (G4) — the worked vectors extract to their canonical [suffix, prefix]
+// HAPPY PATH FIRST — the worked vectors extract to their canonical [suffix, prefix]
 // ================================================================================================
 
 #[rstest]
@@ -101,7 +101,9 @@ async fn aid_rt_extracts_account_id(#[case] aid_id: &str) -> Result<()> {
     let h = harness(&driver_src)?;
     // the driver pins [suffix, prefix] internally; a clean run proves the extracted felts match
     run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
-        panic!("vector {aid_id}: the extractor must return the canonical [suffix, prefix] felts: {e}")
+        panic!(
+            "vector {aid_id}: the extractor must return the canonical [suffix, prefix] felts: {e}"
+        )
     });
     Ok(())
 }
@@ -115,10 +117,16 @@ async fn aid_rt_extracts_account_id(#[case] aid_id: &str) -> Result<()> {
 /// reject locally before any felt is built (mirrors Rust `AccountIdOutOfRange`).
 #[tokio::test]
 async fn aid_rej_out_of_range_traps() -> Result<()> {
-    let preimage = splice_recipient(&base_preimage(), parse_hex32(&aid("aid-rej-out-of-range").bytes32));
+    let preimage = splice_recipient(
+        &base_preimage(),
+        parse_hex32(&aid("aid-rej-out-of-range").bytes32),
+    );
     let h = harness(&recipient_driver_src(&preimage, None))?;
     let result = run_call_driver(&h, "drive").await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE"));
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE")
+    );
     Ok(())
 }
 
@@ -127,7 +135,10 @@ async fn aid_rej_out_of_range_traps() -> Result<()> {
 /// in MASM it surfaces the specific protocol low-byte constant.
 #[tokio::test]
 async fn aid_rej_non_canonical_traps_protocol_low_byte() -> Result<()> {
-    let preimage = splice_recipient(&base_preimage(), parse_hex32(&aid("aid-rej-non-canonical").bytes32));
+    let preimage = splice_recipient(
+        &base_preimage(),
+        parse_hex32(&aid("aid-rej-non-canonical").bytes32),
+    );
     let h = harness(&recipient_driver_src(&preimage, None))?;
     let result = run_call_driver(&h, "drive").await;
     let expected =
@@ -145,7 +156,10 @@ async fn prefix_eq_modulus_traps_noncanonical() -> Result<()> {
     let preimage = splice_recipient(&base_preimage(), recipient);
     let h = harness(&recipient_driver_src(&preimage, None))?;
     let result = run_call_driver(&h, "drive").await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_RECIPIENT_NONCANONICAL"));
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_RECIPIENT_NONCANONICAL")
+    );
     Ok(())
 }
 
@@ -158,7 +172,10 @@ async fn suffix_eq_modulus_traps_noncanonical() -> Result<()> {
     let preimage = splice_recipient(&base_preimage(), recipient);
     let h = harness(&recipient_driver_src(&preimage, None))?;
     let result = run_call_driver(&h, "drive").await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_RECIPIENT_NONCANONICAL"));
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_RECIPIENT_NONCANONICAL")
+    );
     Ok(())
 }
 
@@ -227,9 +244,9 @@ async fn extract_is_read_only() -> Result<()> {
     let preimage = splice_recipient(&base_preimage(), valid_recipient());
     let driver_src = recipient_driver_src(&preimage, Some((suffix, prefix)));
     let h = harness(&driver_src)?;
-    let executed = run_call_driver(&h, "drive")
-        .await
-        .unwrap_or_else(|e| panic!("the extractor must be read-only and succeed on a valid recipient: {e}"));
+    let executed = run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
+        panic!("the extractor must be read-only and succeed on a valid recipient: {e}")
+    });
     assert_eq!(
         executed.account_delta().nonce_delta(),
         miden_protocol::ONE,

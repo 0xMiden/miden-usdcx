@@ -6,7 +6,7 @@ LNV-1/2 toolchain, node topology, and path-N execution model (see `VALIDATION-RE
 `VALIDATION-RECORD-LNV2.md`). **Validator-not-fixer:** a defect surfaces as a failing row, never a
 faucet hot-fix. No production MASM/Rust was changed.
 
-Authoritative spec: `TASK-P5-01-PHASE4-LOCAL-NODE-VALIDATION-PLAN-BUILDER.md`, rows **D** and **E**.
+Scope: rows **D** and **E** of the A–L local-node validation matrix (see `crates/xusdc-validation/README.md`).
 
 ## Result: **GATE ROWS D + E PASS** (pending human acceptance)
 

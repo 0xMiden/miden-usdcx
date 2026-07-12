@@ -17,16 +17,15 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("up") => {
-            let label = args
-                .get(1)
-                .cloned()
-                .unwrap_or_else(|| format!(
+            let label = args.get(1).cloned().unwrap_or_else(|| {
+                format!(
                     "manual-{}",
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .expect("system clock after the epoch")
                         .as_secs()
-                ));
+                )
+            });
             let run_root = repo_root().join("local-node-data").join("lnv1").join(label);
             let config = StackConfig::new(run_root.clone());
             let mut stack = NodeStack::bootstrap_and_start(&config)?;
@@ -38,14 +37,19 @@ fn main() -> Result<()> {
                 .collect();
             fs::write(run_root.join("stack.pids"), pids.join("\n") + "\n")
                 .context("writing the pidfile")?;
-            println!("stack UP at {} (rpc {})", run_root.display(), config.rpc_url());
-            println!("stop with: cargo run -p xusdc-validation --bin lnv_stack -- down {}", run_root.display());
+            println!(
+                "stack UP at {} (rpc {})",
+                run_root.display(),
+                config.rpc_url()
+            );
+            println!(
+                "stop with: cargo run -p xusdc-validation --bin lnv_stack -- down {}",
+                run_root.display()
+            );
             Ok(())
         }
         Some("down") => {
-            let run_root = PathBuf::from(
-                args.get(1).context("usage: lnv_stack down <run-root>")?,
-            );
+            let run_root = PathBuf::from(args.get(1).context("usage: lnv_stack down <run-root>")?);
             let pidfile = run_root.join("stack.pids");
             let pids = fs::read_to_string(&pidfile)
                 .with_context(|| format!("reading {}", pidfile.display()))?;

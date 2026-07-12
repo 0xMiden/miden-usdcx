@@ -1,6 +1,6 @@
-//! R-MINT-16 mint-deny guard suite (P5-01): the inherited stock `mint_and_send` MUST be denied so
-//! the custom `xreserve_mint` is the provably SOLE supply-increasing surface (INV-MINT-SECURITY,
-//! §5.2). The guarded faucet is composed via `XReserveStablecoinBuilder` (deny guard = the active
+//! R-MINT-16 mint-deny guard suite: the inherited stock `mint_and_send` MUST be denied so
+//! the custom `xreserve_mint` is the provably SOLE supply-increasing surface (INV-MINT-SECURITY).
+//! The guarded faucet is composed via `XReserveStablecoinBuilder` (deny guard = the active
 //! mint policy of a `TokenPolicyManager`); `mint_and_send` routes through
 //! `policy_manager::execute_mint_policy` -> `dynexec` of the active mint-policy proc root, so the
 //! deny guard's `check_policy` gates every stock mint.
@@ -243,7 +243,7 @@ fn probe_mint_deny_guard_export() -> Result<()> {
 // The supply-RAISE sole-surface guarantee (only `mint` is a callable supply-raising root) is now
 // enforced at the correct account-code-commitment / procedure-root level by
 // `mint_root_surface::production_supply_raising_root_set_is_exactly_mint` — it replaced the former
-// file-grep RAISE sweep (F3), a text proxy that could not see the over-exported `apply_mint_effects`
+// file-grep RAISE sweep, a text proxy that could not see the over-exported `apply_mint_effects`
 // (F1). Must be GREEN.
 
 /// Recursively collects every `*.masm` under the xreserve tree (skipping any `canary/` subtree)
@@ -259,7 +259,11 @@ fn collect_xreserve_masm() -> BTreeMap<String, String> {
                 }
                 collect(&path, out);
             } else if path.extension().and_then(|e| e.to_str()) == Some("masm") {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap().to_string();
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap()
+                    .to_string();
                 let src = std::fs::read_to_string(&path).expect("reading a masm file");
                 out.insert(name, src);
             }
@@ -296,8 +300,8 @@ fn no_local_supply_decrement_surface() {
     );
 }
 
-/// L11 (P5-01 CMP-B1 ride-along): the RAISE-side static write-integrity sweep the F1 slice
-/// dropped, re-added as a COMPLEMENT to — not a replacement for — the procedure-root enumeration
+/// The RAISE-side static write-integrity sweep the F1 change dropped, re-added as a COMPLEMENT to —
+/// not a replacement for — the procedure-root enumeration
 /// (`mint_root_surface::production_supply_raising_root_set_is_exactly_mint`). The enumeration
 /// proves WHICH roots are callable; this sweep proves the WRITE SITE topology: across the whole
 /// local tree there is exactly one `token_supply` write, it is the RAISE, and the kernel mint

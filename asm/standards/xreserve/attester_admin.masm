@@ -1,13 +1,12 @@
 # xreserve::attester_admin
 #
-# FAUCET(01)-owned deposit-attester allowlist admin (P5-01 set_attester slice, owner-gated by
-# DECISION-ADMIN-ROLE-MODEL): the OWNER-gated `set_attester` setter that writes the xReserveAttesters
-# allowlist — the on-chain write completing the D5d read seam (attestation_verify.masm:95-119, R-MINT-13).
-# Reuses the stock access primitives BY REFERENCE: authority::assert_authorized (the account-wide
-# Authority::OwnerControlled gate -> ownable2step::assert_sender_is_owner on the note sender) +
-# native_account::set_map_item (the write). No custom owner/RBAC logic; the MASM is unchanged from the
-# RBAC era — only the installed Authority mode changed. The setter is intentionally NOT pause-gated
-# (Circle onlyOwner / F6). Module home + flat path per D-1A (CANONICAL-OWNERSHIP-MAP.md:59).
+# The owner-gated deposit-attester allowlist setter (set_attester): the `set_attester` setter writes
+# the xReserveAttesters allowlist — the on-chain write completing the D5d read seam
+# (attestation_verify.masm, R-MINT-13). Reuses the stock access primitives BY REFERENCE:
+# authority::assert_authorized (the account-wide Authority::OwnerControlled gate ->
+# ownable2step::assert_sender_is_owner on the note sender) + native_account::set_map_item (the write).
+# No custom owner/RBAC logic. The setter is intentionally NOT pause-gated (matching Circle's onlyOwner
+# model, F6).
 
 use miden::protocol::native_account
 use miden::standards::access::authority
@@ -29,8 +28,8 @@ const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
 # =================================================================================================
 
 #! Enables (enabled = 1) or disables (enabled = 0) a deposit attester keyed by its pubkey
-#! commitment — the OWNER-gated setter for the xReserveAttesters allowlist. The frozen §5.5 setter —
-#! it trusts the caller's commitment Word verbatim and does NOT recompute it from a raw pubkey.
+#! commitment — the OWNER-gated setter for the xReserveAttesters allowlist. It trusts the caller's
+#! commitment Word verbatim and does NOT recompute it from a raw pubkey.
 #!
 #! Inputs:  [PK_COMMITMENT, enabled, pad(11)]
 #! Outputs: [pad(16)]
@@ -49,13 +48,13 @@ const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
 pub proc set_attester
     # => [PK_COMMITMENT, enabled, pad(11)]
 
-    # gate: the Ownable2Step owner (sender-based) ONLY — intentionally NOT pause-gated (Circle
-    # onlyOwner / F6), so the owner may disable a compromised attester while the faucet is paused.
+    # gate: the Ownable2Step owner (sender-based) ONLY — intentionally NOT pause-gated (Circle's
+    # onlyOwner model, F6), so the owner may disable a compromised attester while the faucet is paused.
     # reads account storage and is operand-stack-neutral.
     exec.authority::assert_authorized
     # => [PK_COMMITMENT, enabled, pad(11)]
 
-    # stash the caller-supplied commitment (the map key) into loc[0..4], trusted verbatim (§5.5). The
+    # stash the caller-supplied commitment (the map key) into loc[0..4], trusted verbatim. The
     # `_le` store leaves the word on the stack, so drop the copy.
     loc_storew_le.0 dropw
     # => [enabled, pad(11)]

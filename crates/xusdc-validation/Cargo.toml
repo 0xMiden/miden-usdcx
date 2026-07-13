@@ -19,7 +19,10 @@ xusdc-encoding = { path = "../xusdc-encoding" }
 miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
 miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
 miden-tx        = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
-miden-client = { version = "=0.15.3", default-features = false, features = ["std", "tonic"] }
+# Version + base features come from the root [workspace.dependencies] (the relayer is the second
+# adopter); `tonic` is this crate's own addition — the RPC transport the local-node harness talks to
+# the node over.
+miden-client = { workspace = true, features = ["tonic"] }
 miden-client-sqlite-store = { version = "=0.15.3" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 anyhow = { workspace = true }

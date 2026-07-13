@@ -27,13 +27,21 @@
 //! per-remote-domain `Link` cursor a restart resumes from, and the `SubmissionStatus` machine that
 //! joins them (SQLite; the choice is recorded in `PERSISTENCE-CHOICE.md`). It dedups so that an
 //! attestation observed twice is minted at most once — a LIVENESS backstop, never a safety one: the
-//! authoritative duplicate defence stays the on-chain `usedNonces` assert-then-set. The mint-note
-//! builder and the Miden submit leg land in later slices, and the seam is what they will hang from.
+//! authoritative duplicate defence stays the on-chain `usedNonces` assert-then-set.
+//!
+//! This slice opens the **Miden-facing half** ([`miden`]): the mint-note builder, which turns a
+//! validated attestation into the production `XReserveMintNote` in the exact wire form the faucet's
+//! `receive_and_mint` shim consumes, and the advice-map witness that note's attachments are
+//! resolved from — keyed the way the faucet's on-chain reader keys it, not the way the pre-F5 spec
+//! paraphrased it (RIV-ADVICE-KEY; the reconciliation is recorded in `RIV-ADVICE-KEY.md`). The real
+//! submit leg (`TransactionRequestBuilder` + `submit_new_transaction` against a node) is the next
+//! slice; [`miden::advice::AdviceMapSink`] is the seam it plugs into.
 
 pub mod circle;
 pub mod config;
 pub mod error;
 pub mod idempotency;
+pub mod miden;
 pub mod observability;
 pub mod validate;
 

@@ -187,7 +187,14 @@ impl XReserveMintNote {
     /// `[feeAmount(8 zero limbs), pubkey(9), signature(17), pad(2)]` as 9 words — the exact
     /// order `mint` pops from the advice stack (element-0-first `adv.push_mapval` pop order,
     /// pinned by the transport canary).
-    fn attestation_attachment(attestation: &MintAttestation) -> Result<NoteAttachment, NoteError> {
+    ///
+    /// PUBLIC because this layout is 04-owned and the off-chain relayer must be able to CHECK a
+    /// note's attestation attachment against it without restating it (G1: a second definition of an
+    /// owned format — even a byte-identical one — is the cross-language drift seam the ownership map
+    /// exists to close). Consumers verify with it; only [`Self::create`] produces the attachment.
+    pub fn attestation_attachment(
+        attestation: &MintAttestation,
+    ) -> Result<NoteAttachment, NoteError> {
         let mut felts: Vec<Felt> = Vec::with_capacity(36);
         felts.extend([Felt::from(0u32); 8]);
         felts.extend(compressed_pubkey_felts(attestation.pubkey()));

@@ -301,6 +301,41 @@ pub enum RelayerError {
     /// is a cache wearing the store's name, and it would re-scan the attestation window and
     /// re-attempt every mint in it. An operator's typo must not be able to spell it.
     EphemeralStorePath { path: String, detail: String },
+
+    // MINT-NOTE FAMILY (the Miden-facing half; the note the faucet consumes)
+    // --------------------------------------------------------------------------------------------
+    /// The unit-04 mint-note factory refused to build the note, and the underlying `NoteError` is
+    /// PRESERVED as the source. The reachable cause in practice is a misconfigured faucet: the F5
+    /// routing attachment binds a NETWORK account, so a faucet id that is not `AccountType::Public`
+    /// cannot be targeted. (A malformed payload never reaches the factory — it is rejected with its
+    /// field-specific variant first, so a permanently-bad attestation is never mistaken for a
+    /// transient build failure.)
+    NoteBuild(Cause),
+    /// The built note's script root is not the PINNED `XRESERVE_MINT_NOTE_SCRIPT_ROOT_HEX`.
+    ///
+    /// The faucet is a v0.15 network account: its `AuthNetworkAccount` note-script allowlist is
+    /// fixed at account creation, and the ntx-builder runs ONLY notes whose script root is on it. A
+    /// note built against a drifted component library would therefore be minted by nobody — it
+    /// would sit in the pool, unexecutable, while the relayer reported success. So the mismatch is
+    /// a build-time refusal: it means this binary's linked xreserve library no longer produces the
+    /// script the deployed faucet allows, and the pin must be consciously re-cut.
+    ScriptRootMismatch { expected: String, actual: String },
+    /// The `(signature, pubkey)` handed to `populate_advice` is not the attestation the note
+    /// commits to in its scheme-1 attachment.
+    ///
+    /// A crossed wire between the fetch and the build. Publishing the mismatched witness would
+    /// produce a note that fails the shim's attachment hash-check on-chain — so the relayer refuses
+    /// to publish anything at all, and the fault surfaces off-chain, where it costs nothing.
+    AttestationMismatch,
+    /// The host could not produce the randomness the note's serial number is drawn from, and the
+    /// underlying `getrandom` failure is PRESERVED as the source.
+    ///
+    /// It is an error rather than a panic on purpose. `rand`'s ergonomic `fill` aborts the process
+    /// when the OS source fails; for a liveness service that is the worst available outcome — the
+    /// deposit is still valid, the attestation is still good, and the entropy pool will almost
+    /// certainly be there on the next attempt. So the relayer reports it, retries it, and alerts if
+    /// the host never recovers.
+    Entropy(Cause),
 }
 
 impl RelayerError {
@@ -388,6 +423,10 @@ impl RelayerError {
             // illegal transition and an unknown nonce are all caller/operator business, and retrying
             // them in a loop is how a relayer wedges without saying anything.
             Self::IdempotencyStore(_) => true,
+            // the entropy pool was empty, or not yet seeded: a host condition that clears. A mint is
+            // never worth abandoning over it — and a host where it does NOT clear is exactly what the
+            // attempt budget's alert is for.
+            Self::Entropy(_) => true,
             _ => false,
         }
     }
@@ -401,7 +440,9 @@ impl RelayerError {
     pub(crate) fn alerts_while_retrying(&self) -> bool {
         match self {
             Self::Http { status } => matches!(classify_status(*status), StatusClass::RetryAlert),
-            Self::Transport(_) | Self::RequestTimeout { .. } => true,
+            // an OS that cannot hand out randomness is a sick host, and no amount of patience in the
+            // relayer fixes it — the operator has to.
+            Self::Transport(_) | Self::RequestTimeout { .. } | Self::Entropy(_) => true,
             _ => false,
         }
     }
@@ -581,6 +622,22 @@ impl fmt::Display for RelayerError {
                 f,
                 "the idempotency store path `{path}` is not a durable file: {detail}"
             ),
+            Self::NoteBuild(source) => write!(f, "the mint note could not be built: {source}"),
+            // both roots are echoed: the operator diffs the deployed faucet's allowlisted root
+            // against the one this binary's linked library now produces
+            Self::ScriptRootMismatch { expected, actual } => write!(
+                f,
+                "the mint-note script root is {actual}, but the faucet allowlists the pinned \
+                 {expected}"
+            ),
+            Self::AttestationMismatch => write!(
+                f,
+                "the signature/pubkey do not match the attestation the mint note commits to"
+            ),
+            Self::Entropy(source) => write!(
+                f,
+                "the host could not produce the mint note's serial-number entropy: {source}"
+            ),
         }
     }
 }
@@ -597,6 +654,8 @@ impl core::error::Error for RelayerError {
             Self::Transport(source)
             | Self::Decode(source)
             | Self::IdempotencyStore(source)
+            | Self::NoteBuild(source)
+            | Self::Entropy(source)
             | Self::BadBaseUrl { source, .. }
             | Self::BadAuthHeader { source, .. } => Some(source.as_error()),
             _ => self

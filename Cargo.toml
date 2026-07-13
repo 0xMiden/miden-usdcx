@@ -26,6 +26,19 @@ k256 = { version = "0.13", features = ["ecdsa"] }
 sha3 = "0.10"
 rand = "0.8"
 
+# The Miden client. TWO members name it now — `xusdc-validation`'s real-local-node harness, and the
+# relayer, whose production advice-map sink IS `TransactionRequestBuilder` — so the version and the
+# BASE feature policy live here rather than in either crate (workspace-shared-dependencies). A drift
+# between the client the harness validates against and the client the relayer builds transactions
+# with is exactly the kind of seam that stays invisible until a real node rejects a real mint.
+#
+# `=0.15.3` is the release whose protocol family matches the pinned `681fc905…` protocol rev
+# (V15-DEVNET-BASELINE); it is an EXACT pin because the note wire form is version-bound to it.
+# `default-features = false` + `std` is the minimum that carries the transaction-request types; a
+# member adds only what it additionally needs (validation adds `tonic` for the RPC transport, which
+# the relayer's note-construction half has no use for).
+miden-client = { version = "=0.15.3", default-features = false, features = ["std"] }
+
 # Circle-facing HTTP (the relayer's `circle::client`, CMP-D1/D3/D4) + the offline mock Circle server
 # its contract tests run against. Both are pinned here, not in the crate, so the later off-chain
 # services (listener, monitoring) cannot drift onto a different HTTP stack.

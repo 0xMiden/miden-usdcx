@@ -56,6 +56,27 @@ sha3 = { workspace = true }
 # root [workspace.dependencies] (`bundled`: SQLite is compiled from the vendored amalgamation, so the
 # build depends on no system libsqlite3 and cannot drift with the host's version).
 rusqlite = { workspace = true }
+# The Miden-facing half (`miden::mint_note_builder`, `miden::advice`) — the slice the crate note
+# above promised would end the "production relayer library stays Miden-free" era. The note the
+# relayer builds IS a Miden `Note` (attachments, tag, recipient, `NoteStorage`), and its advice
+# witness is keyed by a Miden `Word`, so the protocol types are NAMED in the library's public API
+# and cannot stay test-only. Same git rev as the rest of the workspace (V15-DEVNET-BASELINE) — the
+# note's wire form is pinned to that protocol version, so a drift here is a drift against the
+# deployed faucet.
+#
+miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
+# `miden-client` is here for ONE production type: `TransactionRequestBuilder`, the real advice-map
+# sink `miden::advice` implements. A trait with no production implementor would have left the
+# advice-key contract provable only against a fake — and a fake cannot be the acceptance surface for
+# Miden behaviour. Version + base features come from the root [workspace.dependencies] (this crate is
+# the second adopter, so the pin was promoted there): no `tonic`, because this slice BUILDS the
+# transaction request, it does not send it — the RPC transport arrives with the submit leg.
+miden-client = { workspace = true }
+# The serial number of a mint note is drawn from the OS CSPRNG (`build_mint_note`): a serial number
+# is what makes two mints of the same DepositIntent two distinct notes, so it must be unpredictable
+# and must never repeat. In tests `rand` also signs the partner fixture (dev-dependency below, where
+# it is `k256`'s companion); here it is production entropy, and nothing else.
+rand = { workspace = true }
 
 [dev-dependencies]
 # Exact-variant assertions + parameterized reject tables; versions from the workspace table.
@@ -88,9 +109,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "ti
 # (single-owner rule — this crate never re-derives it). Mirrors unit-04's own in-test D5d vectors.
 k256 = { workspace = true }
 rand = { workspace = true }
-# The fixture's allowlist key is a Miden `Word` (Poseidon2, computed by unit-04's
-# `pubkey_commitment`), and the Poseidon2 negative comparator hashes with the protocol `Hasher` —
-# both need the protocol types NAMED, so miden-protocol is a TEST-only dep here (same git rev as
-# the rest of the workspace, per V15-DEVNET-BASELINE). The production relayer library stays
-# Miden-free until the Miden-facing (mint-note builder / submit) slice.
-miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
+# The `testing` feature on top of the library dependency above: the mint-note tests need account
+# ids of a KNOWN storage mode — a PUBLIC faucet (the F5 routing attachment can only bind a network
+# account) and a PRIVATE one to prove that path is refused — and `testing::account_id` is where the
+# protocol publishes them. `miden-standards` names `NetworkAccountTarget::ATTACHMENT_SCHEME`, the
+# scheme-2 routing attachment the tests assert the note carries.
+miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8", features = ["testing"] }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }

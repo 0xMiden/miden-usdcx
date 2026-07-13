@@ -1,7 +1,19 @@
-//! Structured-logging + metrics STUBS (scaffold). The full tracing/metrics-backend wiring lands
-//! with the poll loop; this slice provides the counters and the rejection-log surface so the
-//! non-negotiable "never silently drop a fetched attestation" obligation (§8.4) already has a home:
-//! every fetched-but-not-submitted attestation is surfaced with a reason, never dropped.
+//! Structured logging + metrics. The §8.4 obligation is non-negotiable: **no fetched attestation is
+//! ever silently dropped** — every fetched-but-not-submitted attestation is surfaced with a reason.
+//!
+//! Two surfaces serve it. [`RelayerMetrics`] counts (scaffold; the poll loop wires it), and
+//! [`EventSink`] receives one [`RelayerEvent`] per thing-that-happened-to-an-attestation: it is
+//! `Pending` while a transient failure is being retried, `Alert` when an operator must look, and
+//! `Rejected` when the input is permanently refused. The Circle client emits into whichever sink the
+//! operator installed; the concrete backend (tracing / a metrics exporter) is wired in the
+//! monitoring slice, and [`NoopSink`] is the default until then.
+//!
+//! The sink is a trait, not a concrete logger, for one reason beyond taste: a TEST can install a
+//! recording sink and assert the obligation directly — that a 404 really was logged `Pending` rather
+//! than swallowed, that a 400 really did alert. An obligation nothing can observe is an obligation
+//! nobody keeps.
+
+use core::fmt;
 
 /// Relayer metric counters (§4 single-responsibility: `observability`). Private fields mutated only
 /// through the `record_*` API and read only through the accessors — a counter cannot be set out of
@@ -101,4 +113,49 @@ impl RejectionRecord {
 /// preserved by construction.
 pub fn log_rejection(record: &RejectionRecord) {
     let _ = record;
+}
+
+/// One thing that happened to an attestation on its way through the Circle half. The §8.4 failure
+/// catalog maps one-to-one onto these three shapes, so every row of that table has an observable
+/// emission and none can be "handled" by dropping it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RelayerEvent {
+    /// A TRANSIENT failure is being retried — the attestation is NOT lost. A 404 (Circle has not
+    /// published it yet), a 429, a 5xx, or a transport failure, each attempt logged with the status
+    /// and attempt number so a stuck deposit is visible long before it is fatal.
+    Pending {
+        /// The Circle endpoint, e.g. `GET /v1/attestations/{depositMessageHash}`.
+        endpoint: String,
+        /// The HTTP status, when the failure had one (a transport failure does not).
+        status: Option<u16>,
+        /// 1-based attempt number that just failed.
+        attempt: u32,
+        /// The failure, rendered.
+        reason: String,
+    },
+    /// An operator must look: a permanent rejection, a transient failure that crossed the alert
+    /// threshold, or a retry budget that ran out.
+    Alert { endpoint: String, reason: String },
+    /// Permanently refused — a 400, a schema-decode failure, a `messageHash` that does not bind its
+    /// payload, a malformed request parameter. It will never be submitted, and it is recorded here
+    /// with its reason rather than dropped.
+    Rejected { endpoint: String, reason: String },
+}
+
+/// Where [`RelayerEvent`]s go. Implementations must be cheap and non-blocking (the client emits
+/// while holding no lock, but it does emit on the request path).
+pub trait EventSink: fmt::Debug + Send + Sync {
+    fn emit(&self, event: RelayerEvent);
+}
+
+/// The default sink: drops events. It exists so a `CircleClient` can be constructed before the
+/// monitoring backend exists (this slice) — NOT as a licence to run production without one. It is
+/// the only place in the relayer where an event may be discarded, and it is opt-out by installing a
+/// real sink.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopSink;
+
+impl EventSink for NoopSink {
+    fn emit(&self, _event: RelayerEvent) {}
 }

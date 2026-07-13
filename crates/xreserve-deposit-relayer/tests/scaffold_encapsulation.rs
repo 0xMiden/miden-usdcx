@@ -5,8 +5,29 @@
 //! mutator→field mapping, or an accessor is caught (they are not tautological: the metrics case
 //! would fail if any `record_*` mutator touched the wrong counter).
 
-use xreserve_deposit_relayer::config::RelayerConfig;
+use xreserve_deposit_relayer::config::{RelayerConfig, SecretString};
 use xreserve_deposit_relayer::observability::{RejectionRecord, RelayerMetrics};
+
+/// A credential is redacted by BOTH human-facing renderings — `Debug` (structs, panics, `{:?}` logs)
+/// and `Display` (a `{}` log line) — while `expose` remains the one deliberate way to read it. A
+/// secret that is only `Debug`-redacted leaks the moment someone writes `{}` instead of `{:?}`.
+#[test]
+fn secret_string_redacts_both_renderings_and_exposes_only_on_demand() {
+    let secret = SecretString::new("out-of-band-circle-key");
+
+    assert_eq!(secret.expose(), "out-of-band-circle-key");
+    assert!(!format!("{secret:?}").contains("out-of-band-circle-key"));
+    assert!(!format!("{secret}").contains("out-of-band-circle-key"));
+    assert!(format!("{secret:?}").contains("redacted"));
+    assert!(format!("{secret}").contains("redacted"));
+
+    // serde is TRANSPARENT (the operator's config file holds the real value) — the redaction is a
+    // property of the human-facing renderings, not of the wire format
+    let json = serde_json::to_string(&secret).expect("serializes");
+    assert_eq!(json, "\"out-of-band-circle-key\"");
+    let back: SecretString = serde_json::from_str(&json).expect("deserializes");
+    assert_eq!(back.expose(), secret.expose());
+}
 
 #[test]
 fn config_default_exposes_documented_values_via_accessors() {

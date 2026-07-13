@@ -11,4 +11,4 @@ pub mod deposit_intent;
 pub mod envelope;
 
 pub use deposit_intent::{decode_and_validate_deposit_intent, DepositIntent};
-pub use envelope::{validate_attestation_envelope, verify_message_hash};
+pub use envelope::{validate_attestation_envelope, verify_message_hash, verify_message_hash_bytes};

@@ -14,8 +14,8 @@ description = "xUSDC-on-Miden 04 shared encoding: hand-written MASM + Rust mirro
 [dependencies]
 miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8", features = ["testing"] }
 miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Vector-generator crates: OPTIONAL, gated behind the `vectors` feature; never
 # compiled for the library or the normal `cargo test`/`cargo build` path. The generator
@@ -49,10 +49,10 @@ miden-tx        = { git = "https://github.com/0xMiden/protocol", rev = "681fc905
 # exact-error matching for u32-assert traps (OperationError::U32AssertionFailed); same
 # 0.23.3 the v0.15.3 lock already resolves
 miden-processor = "=0.23.3"
-tokio = { version = "1", features = ["macros", "rt"] }
-anyhow = "1"
-rstest = "0.26"
-assert_matches = "1.5"
+tokio = { workspace = true, features = ["macros", "rt"] }
+anyhow = { workspace = true }
+rstest = { workspace = true }
+assert_matches = { workspace = true }
 # D5d attestation test vectors: deterministic secp256k1 keypairs + signatures generated
 # IN-TEST (zero touch to the 04 canonical artifact), mirroring the precompile canary and the
 # gen_vectors att_* helpers — k256 the keypair+signature, sha3 the keccak digest, miden-crypto

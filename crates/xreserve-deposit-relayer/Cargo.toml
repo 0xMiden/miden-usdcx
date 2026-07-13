@@ -1,0 +1,38 @@
+[package]
+name = "xreserve-deposit-relayer"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Phase-4 P4-RELAYER (CMP-C1): off-chain deposit-attestation relayer — a liveness service; this slice ships the crate scaffold + the DepositIntent structural decoder"
+
+# The DepositIntent layout, byte offsets, field checks, u32-LE packing, and the 1024-felt
+# NoteStorage bound are OWNED by unit-04 (`xusdc-encoding`, `xreserve::encoding`) and consumed here
+# BY REFERENCE (single-owner rule). This crate never re-derives an offset or re-implements the codec
+# (anti-ASG-16 — the 240-byte header is 60 u32-LE felts, never 240/8 = 30).
+#
+# tokio/serde are the async + serialization deps this scaffold slice wires and compiles.
+#
+# reqwest (the Circle HTTP client, CMP-D1/D3/D4) is NOT declared here — and cannot be under this
+# repository's constraints. The repo gate is offline against a PINNED cache (`--locked --offline`,
+# no crates.io — root CLAUDE.md ground rule 1 / G0). reqwest is not in that cache, and Cargo must
+# RESOLVE a declared registry package even when it is optional and its feature is disabled — so any
+# reqwest entry in the manifest/lock makes EVERY offline workspace command fail with
+# "no matching package named `reqwest` found" (verified across rounds 3–5). It therefore ships in
+# the Circle-facing slice, whose environment provisions reqwest offline (pre-seeded cache or vendor).
+# This deferral was ratified by the operator (Option 1). The full record — what/why/which-slice/how —
+# is in ./DEFERRED-DEPENDENCIES.md (enforced by tests/deferred_dependencies_doc.rs).
+# No Circle endpoint, credential, or Miden domain is committed — Q-API-AUTH / Q-DOM-1 stay OPEN
+# (REQUIRES CIRCLE CONFIRMATION).
+
+[dependencies]
+xusdc-encoding = { path = "../xusdc-encoding" }
+# Shared versions live in the root [workspace.dependencies]; crate-specific feature sets are added
+# on top of the workspace version.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# Exact-variant assertions + parameterized reject tables; versions from the workspace table.
+rstest = { workspace = true }
+assert_matches = { workspace = true }

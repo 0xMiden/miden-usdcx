@@ -4828,9 +4828,14 @@ name = "xreserve-deposit-relayer"
 version = "0.0.0"
 dependencies = [
  "assert_matches",
+ "hex",
+ "k256",
+ "miden-protocol",
+ "rand 0.8.6",
  "rstest",
  "serde",
  "serde_json",
+ "sha3 0.10.9",
  "tokio",
  "xusdc-encoding",
 ]

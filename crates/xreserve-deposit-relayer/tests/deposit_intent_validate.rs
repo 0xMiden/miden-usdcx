@@ -54,9 +54,11 @@ fn di_by_id(id: &str) -> &'static DiVector {
 /// BOTH the typed `encoding_source()` accessor and the std `Error::source()` chain, so corrupting
 /// the mapped source (e.g. `variant(err)` → `variant(EncodingError::BadMagic)`) fails a test.
 fn assert_exact_source(err: &RelayerError, expected: &EncodingError) {
+    // `encoding_source()` is an Option since the envelope family (DC-2) are leaf errors with no
+    // unit-04 cause; a DepositIntent-path variant must still carry its exact originating error.
     assert_eq!(
         err.encoding_source(),
-        expected,
+        Some(expected),
         "typed encoding_source() must be the originating EncodingError"
     );
     let std_source = err.source().and_then(|s| s.downcast_ref::<EncodingError>());

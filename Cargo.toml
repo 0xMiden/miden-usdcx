@@ -14,6 +14,18 @@ anyhow = "1"
 rstest = "0.26"
 assert_matches = "1.5"
 
+# Hex + attestation crypto. `hex` decodes the Circle-facing wire strings (payload / messageHash /
+# attestation) in the relayer. The secp256k1/keccak trio is shared by TWO members now — unit-04's
+# vector generator + its D5d in-test vectors, and the relayer's envelope binding (`sha3`, the
+# off-chain `keccak256(payload)` recomputation) and its partner-key test fixture (`k256`+`rand`,
+# signing ONLY — the relayer NEVER verifies ECDSA off-chain; that is on-chain, faucet-owned). Per
+# xusdc-encoding's own note, a second adopter promotes them here so the two crates cannot drift
+# onto different versions (workspace-shared-dependencies).
+hex = "0.4"
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha3 = "0.10"
+rand = "0.8"
+
 # LNV-1 toolchain resolution (ledger: crates/xusdc-validation/VALIDATION-RECORD.md §2).
 #
 # The validation harness consumes `miden-client 0.15.3` from crates.io, whose protocol-family

@@ -69,6 +69,11 @@ pub enum HexField {
     MessageHash,
     /// The `attestation` (`r‖s‖v`) hex.
     Attestation,
+    /// A Miden transaction id, as an operator pastes it back in (the idempotency log's
+    /// `submitted_tx_id`). It is not a Circle wire field — but it decodes through the SAME hex
+    /// taxonomy, because a second, parallel "bad hex" error family for the same failure is exactly
+    /// the drift the single-owner rule exists to prevent.
+    TxId,
 }
 
 impl fmt::Display for HexField {
@@ -77,6 +82,7 @@ impl fmt::Display for HexField {
             Self::Payload => write!(f, "payload"),
             Self::MessageHash => write!(f, "messageHash"),
             Self::Attestation => write!(f, "attestation"),
+            Self::TxId => write!(f, "transaction id"),
         }
     }
 }
@@ -231,6 +237,70 @@ pub enum RelayerError {
         requested: [u8; 32],
         returned: [u8; 32],
     },
+
+    // ---- the idempotency seam (`idempotency`) -------------------------------------------------
+    //
+    // The seam is a LIVENESS backstop (the safety backstop is the on-chain `usedNonces`
+    // assert-then-set), so its errors are about the two things a broken store can actually do:
+    // withhold a mint forever, or attempt one twice. None of them is a "just carry on" condition —
+    // that is why every one of them is a typed variant and not a logged warning.
+    /// The store's own persistence failed — SQLite or the filesystem underneath it (the database
+    /// cannot be opened or created, the disk is full, the file is locked past the busy timeout). The
+    /// originating `rusqlite::Error` is PRESERVED as the source, so an operator sees the SQLite
+    /// primary/extended code, not a flattened string.
+    ///
+    /// RETRYABLE: a busy database and a transient I/O fault both clear on their own. It is
+    /// deliberately NOT the variant a corrupt or foreign store gets ([`Self::CorruptStoreRecord`],
+    /// [`Self::UnsupportedStoreSchema`]) — retrying THOSE forever is how a relayer wedges silently.
+    IdempotencyStore(Cause),
+    /// A status transition was attempted on a nonce the store has never claimed. Recording a
+    /// submission for an unknown nonce would mean inserting a log row with no attestation behind it
+    /// — a mint the audit trail cannot explain. The caller must `claim_nonce` first.
+    UnknownNonce { nonce_key: [u8; 32] },
+    /// A transition the `SubmissionStatus` machine does not have an edge for — a settled record
+    /// (`Committed` / `AlreadyMinted`) being resurrected, a commit for a transaction that was never
+    /// submitted, or the double-submit of an in-flight one. Refused rather than applied: each of
+    /// these is a caller bug whose silent acceptance would either strand or re-attempt a mint.
+    IllegalStatusTransition {
+        from: crate::idempotency::SubmissionStatus,
+        to: crate::idempotency::SubmissionStatus,
+    },
+    /// A SECOND attestation, with a different `messageHash`, claiming a nonce the store has already
+    /// claimed. At most one of the two is the deposit that actually happened; the store keeps the
+    /// one it recorded (it never overwrites) and refuses the newcomer, so the operator — and the
+    /// on-chain nonce assert — get to decide. Both digests are carried: "which one did I mint?" must
+    /// be answerable from the error alone.
+    NonceMessageHashMismatch {
+        nonce_key: [u8; 32],
+        stored: [u8; 32],
+        observed: [u8; 32],
+    },
+    /// An empty (or whitespace-only) `Link` cursor token was handed to `advance_cursor`. It is not a
+    /// resume point: persisting it would send `pageAfter=` on the next poll, and — the real damage —
+    /// it would have destroyed the resume point that was there. Refused before the write.
+    EmptyCursor { remote_domain: u32 },
+    /// A row in the store cannot be read as the record it claims to be: a status string this build
+    /// does not know, a nonce/hash/transaction-id blob of the wrong length. It is CORRUPTION (a
+    /// foreign writer, a partial upgrade, a hand-edited row), and it is surfaced rather than
+    /// defaulted — defaulting it to "not submitted" re-mints a deposit, and defaulting it the other
+    /// way strands one.
+    CorruptStoreRecord { detail: String },
+    /// The store file carries a schema version this build does not know. Reading a layout written by
+    /// a different version of the relayer is the one way a store can silently misread (or lose) the
+    /// cursor, so the file is refused at open and the operator migrates it deliberately.
+    UnsupportedStoreSchema { found: u32, expected: u32 },
+    /// A Miden transaction id that is not 32 bytes. A truncated id in the log is a mint nobody can
+    /// look up again.
+    BadTxIdLength { actual: usize },
+    /// The configured idempotency-store path is not a durable file — SQLite would open it as an
+    /// in-memory or temporary database that vanishes when the connection closes (`:memory:`, an
+    /// empty filename, a `file:` URI whose parameters can select `mode=memory`).
+    ///
+    /// It is refused at CONSTRUCTION, because every one of those paths opens cleanly, accepts a
+    /// claim, accepts a cursor advance — and loses both on restart. That is not a degraded store; it
+    /// is a cache wearing the store's name, and it would re-scan the attestation window and
+    /// re-attempt every mint in it. An operator's typo must not be able to spell it.
+    EphemeralStorePath { path: String, detail: String },
 }
 
 impl RelayerError {
@@ -313,6 +383,11 @@ impl RelayerError {
             ),
             // the connection died, or the peer went quiet: both are conditions that can clear
             Self::Transport(_) | Self::RequestTimeout { .. } => true,
+            // the store was busy, or its disk was: a condition that clears. The store's PERMANENT
+            // failures are separate variants on purpose — a corrupt record, a foreign schema, an
+            // illegal transition and an unknown nonce are all caller/operator business, and retrying
+            // them in a loop is how a relayer wedges without saying anything.
+            Self::IdempotencyStore(_) => true,
             _ => false,
         }
     }
@@ -458,6 +533,54 @@ impl fmt::Display for RelayerError {
                 hex::encode(requested),
                 hex::encode(returned)
             ),
+            // the cause is also reachable via source(); it is inlined so one logged line explains
+            // itself (a SQLite code with no context is not an operator-actionable line)
+            Self::IdempotencyStore(source) => {
+                write!(f, "the idempotency store failed: {source}")
+            }
+            Self::UnknownNonce { nonce_key } => write!(
+                f,
+                "nonce 0x{} was never claimed — a submission cannot be recorded for it",
+                hex::encode(nonce_key)
+            ),
+            Self::IllegalStatusTransition { from, to } => write!(
+                f,
+                "a mint cannot go from {from} to {to}"
+            ),
+            // both digests are the diagnostic: WHICH attestation is in the log, and which one was
+            // refused, must be answerable from this line alone
+            Self::NonceMessageHashMismatch {
+                nonce_key,
+                stored,
+                observed,
+            } => write!(
+                f,
+                "a second attestation claims nonce 0x{}: the log holds messageHash 0x{}, this one \
+                 carries 0x{}",
+                hex::encode(nonce_key),
+                hex::encode(stored),
+                hex::encode(observed)
+            ),
+            Self::EmptyCursor { remote_domain } => write!(
+                f,
+                "an empty pagination cursor is not a resume point for remote domain {remote_domain}"
+            ),
+            Self::CorruptStoreRecord { detail } => {
+                write!(f, "the idempotency store holds an unreadable record: {detail}")
+            }
+            Self::UnsupportedStoreSchema { found, expected } => write!(
+                f,
+                "the idempotency store is at schema version {found}, this build speaks {expected}"
+            ),
+            Self::BadTxIdLength { actual } => {
+                write!(f, "a miden transaction id must be 32 bytes, got {actual}")
+            }
+            // the path is echoed verbatim: the operator has to find it in their config, and the
+            // detail says WHY sqlite would not have put it on disk
+            Self::EphemeralStorePath { path, detail } => write!(
+                f,
+                "the idempotency store path `{path}` is not a durable file: {detail}"
+            ),
         }
     }
 }
@@ -473,6 +596,7 @@ impl core::error::Error for RelayerError {
             Self::MalformedHex { source, .. } => Some(source),
             Self::Transport(source)
             | Self::Decode(source)
+            | Self::IdempotencyStore(source)
             | Self::BadBaseUrl { source, .. }
             | Self::BadAuthHeader { source, .. } => Some(source.as_error()),
             _ => self

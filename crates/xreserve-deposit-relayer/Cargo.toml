@@ -47,11 +47,27 @@ serde_json = { workspace = true }
 # below as a DEV-dependency, for signing the test fixture only.
 hex = { workspace = true }
 sha3 = { workspace = true }
+# The idempotency seam's persistence (`idempotency`): a single-file SQLite database holding the
+# submitted-nonce log and the per-remote-domain `Link` cursor. The choice is RECORDED, with the
+# alternatives weighed, in ./PERSISTENCE-CHOICE.md (guarded by tests/persistence_choice_doc.rs).
+# In one line: the dedup this seam exists for is a CLAIM — check-then-insert must be one atomic step
+# even with two observers running — and SQLite's `BEGIN IMMEDIATE` + a PRIMARY KEY on the nonce give
+# exactly that, where a JSON/bincode file's read-modify-write cannot. Version/features come from the
+# root [workspace.dependencies] (`bundled`: SQLite is compiled from the vendored amalgamation, so the
+# build depends on no system libsqlite3 and cannot drift with the host's version).
+rusqlite = { workspace = true }
 
 [dev-dependencies]
 # Exact-variant assertions + parameterized reject tables; versions from the workspace table.
 rstest = { workspace = true }
 assert_matches = { workspace = true }
+# Every idempotency test opens a REAL store on a REAL file (tempfile gives it a directory that is
+# deleted with the test): "durable across a restart" is only provable against a file that a second,
+# independent handle can reopen — so no test ever reaches for an in-memory database. (The corruption
+# tests reach past the store's own API — writing an unknown status string / a foreign `user_version`
+# straight into the file — through the `rusqlite` above, which test targets link like any other
+# dependency; it is not duplicated here.)
+tempfile = { workspace = true }
 # The schema-exact mock Circle server the contract tests run against (tests/mock_circle): an axum
 # Router driven IN PROCESS through tower's `ServiceExt::oneshot`, installed as the client's
 # `HttpTransport`. It binds NO socket — the audit/CI sandbox denies `bind(127.0.0.1:0)` (EPERM), so a

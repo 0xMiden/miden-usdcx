@@ -14,18 +14,26 @@
 //! keccak256(payload)` by RAW keccak (DC-2, INV-DEPOSIT-ATTESTATION-RAW-KECCAK) and the 65-byte
 //! `r‖s‖v` shape check — binding and shape only, NEVER an off-chain signature verification.
 //!
-//! This slice completes the **Circle-facing half** ([`circle`]): the HTTP transport with its
+//! The third slice completed the **Circle-facing half** ([`circle`]): the HTTP transport with its
 //! auth-header injection point (no credential is hardcoded — `Q-API-AUTH` is OPEN), the rate governor
 //! (5 QPS/IP, 35 QPS global), the exponential backoff, the HTTP-status policy (404 retries, 400
 //! rejects without retry, 5xx retries and alerts), the three attestation fetch shapes, and `GET
 //! /v1/info` discovery. It is exercised end to end against a schema-exact mock Circle server; no
 //! Circle endpoint is contacted live (§11 — every live Circle leg is `REQUIRES CIRCLE
-//! CONFIRMATION`). The idempotency seam (cursor + submitted-nonce persistence), the mint-note
-//! builder, and the Miden submit leg land in later slices.
+//! CONFIRMATION`).
+//!
+//! This slice ships the **idempotency seam** ([`idempotency`]) — the one-directional joint between
+//! that Circle half and the Miden half still to come: a durable submitted-nonce log, the
+//! per-remote-domain `Link` cursor a restart resumes from, and the `SubmissionStatus` machine that
+//! joins them (SQLite; the choice is recorded in `PERSISTENCE-CHOICE.md`). It dedups so that an
+//! attestation observed twice is minted at most once — a LIVENESS backstop, never a safety one: the
+//! authoritative duplicate defence stays the on-chain `usedNonces` assert-then-set. The mint-note
+//! builder and the Miden submit leg land in later slices, and the seam is what they will hang from.
 
 pub mod circle;
 pub mod config;
 pub mod error;
+pub mod idempotency;
 pub mod observability;
 pub mod validate;
 

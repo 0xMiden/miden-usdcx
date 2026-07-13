@@ -1,14 +1,62 @@
 //! The `RelayerError` taxonomy — STARTED in the scaffold slice with the DepositIntent
 //! structural-reject family (the off-chain mirror of D5a; INV-DEPOSITINTENT-PARSE) plus the
-//! NoteStorage felt-count guard, and EXTENDED here with the attestation-envelope family (DC-2,
+//! NoteStorage felt-count guard, EXTENDED with the attestation-envelope family (DC-2,
 //! INV-DEPOSIT-ATTESTATION-RAW-KECCAK): wire-hex decode, `messageHash` shape + raw-keccak binding,
-//! and attestation shape. Later slices add the remaining Circle-facing variants (HTTP status,
-//! schema decode, tx-hash shape) and the Miden-facing ones (note build, submit). The enum is
-//! `#[non_exhaustive]` so those additions are not breaking changes.
+//! and attestation shape — and EXTENDED here with the Circle TRANSPORT family: HTTP status, schema
+//! decode, transport failure, and the client-side request-shape pre-conditions (`txHash` /
+//! `depositMessageHash` patterns, `pageSize` bounds, rate/retry/auth/base-URL configuration). The
+//! Miden-facing variants (note build, submit) land in a later slice. The enum is `#[non_exhaustive]`
+//! so those additions are not breaking changes.
+//!
+//! **Retryability is a property of the error, not of the call site** ([`RelayerError::is_retryable`]):
+//! HTTP 404 (attestation not yet published), 429 (throttle), 5xx, and a transport failure are
+//! transient; HTTP 400, a schema-decode failure, a broken `messageHash` binding, and every
+//! structural rejection are permanent. A single classification (`circle::client::classify_status`)
+//! decides, so no call site can invent its own retry rule (§8.1 check 1, §8.4).
 
 use core::fmt;
+use std::sync::Arc;
 
 use xusdc_encoding::xreserve::encoding::{DepositIntentField, EncodingError};
+
+use crate::circle::status::{classify_status, StatusClass};
+
+/// A preserved lower-level cause whose own type is neither `Clone` nor `PartialEq` (a
+/// `reqwest::Error`, a `serde_json::Error`, a header/URL parse error). Wrapping it keeps
+/// [`RelayerError`]'s `Clone` + `PartialEq` contract intact while still handing the ORIGINAL typed
+/// error to [`Error::source`](core::error::Error) — so a caller can `downcast_ref::<reqwest::Error>`
+/// it and ask, say, `is_timeout()` (G-RUST preserve-error-source). The alternative — flattening the
+/// cause to a `String` — would have discarded exactly the information an operator needs.
+///
+/// `PartialEq` compares the rendered message: two causes are equal iff they render identically.
+/// That is the only equality that means anything for an opaque foreign error, and it keeps
+/// `assert_eq!` on relayer errors usable in tests.
+#[derive(Debug, Clone)]
+pub struct Cause(Arc<dyn core::error::Error + Send + Sync + 'static>);
+
+impl Cause {
+    /// Preserves `error` as an error source.
+    pub fn new(error: impl core::error::Error + Send + Sync + 'static) -> Self {
+        Self(Arc::new(error))
+    }
+
+    /// The preserved cause, as a `dyn Error` — `downcast_ref` recovers its concrete type.
+    pub fn as_error(&self) -> &(dyn core::error::Error + 'static) {
+        &*self.0
+    }
+}
+
+impl PartialEq for Cause {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || self.0.to_string() == other.0.to_string()
+    }
+}
+
+impl fmt::Display for Cause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 /// Which Circle-facing wire field failed to hex-decode. Named (not a string) so a caller — and a
 /// test — asserts the EXACT field, never a coarse "some hex was bad".
@@ -94,6 +142,95 @@ pub enum RelayerError {
     /// The attestation is not exactly 65 bytes (`r‖s‖v`). Note 64 bytes — a `v`-less signature — is
     /// rejected here, not silently zero-extended.
     BadAttestationLength { actual: usize },
+
+    // CIRCLE TRANSPORT FAMILY (§8.1 checks 1–2; §8.4)
+    // --------------------------------------------------------------------------------------------
+    /// A non-2xx HTTP status from Circle. The status ALONE decides what happens next
+    /// (`classify_status`): 404 → retry (the attestation is not published yet), 429 → back off, 5xx
+    /// → retry + alert, everything else (400 included) → permanent reject. **No error body is ever
+    /// parsed** — the OpenAPI documents status codes only, with no error-body schema, so inventing
+    /// one would be fiction.
+    Http { status: u16 },
+    /// The request never produced a status: connection refused, TLS failure, timeout, a body that
+    /// could not be read. Transient — retried under the same ceilings as a 5xx. Preserves the
+    /// originating `reqwest::Error`.
+    Transport(Cause),
+    /// A 2xx body did not match the documented schema (a missing/renamed field, a non-JSON body).
+    /// Rejected, never forwarded on-chain. Preserves the originating `serde_json::Error` (which
+    /// carries the line/column and the exact expectation that failed).
+    Decode(Cause),
+    /// `txHash` violates the documented `^0x[a-fA-F0-9]{64}$`. Rejected CLIENT-SIDE — no request is
+    /// issued (spec §7.1: the relayer does not spend a request, or a rate-limit token, on an input
+    /// the API cannot accept).
+    BadTxHashFormat { tx_hash: String },
+    /// `depositMessageHash` violates the documented `^0x[a-fA-F0-9]{64}$`. Rejected client-side, as
+    /// above.
+    BadMessageHashFormat { message_hash: String },
+    /// A `?txHash=` response element carries `remoteDomain < 1`, violating the documented
+    /// `minimum: 1`. A schema violation, so it is rejected rather than carried toward Miden.
+    BadRemoteDomain { actual: u32 },
+    /// `pageSize` outside the documented `1..=1000`. Refused at `BatchQuery` construction, so it
+    /// cannot reach the wire.
+    BadPageSize { actual: u16 },
+    /// The configured Circle base URL is not a URL. Refused at client construction — never
+    /// discovered mid-retry-loop. Preserves the originating parse error.
+    BadBaseUrl { url: String, source: Cause },
+    /// The configured auth header is not a legal HTTP header (an invalid name, or a value with a
+    /// control character — a header-injection attempt). Refused at client construction, so a
+    /// misconfigured key can never silently degrade into an unauthenticated request stream.
+    /// Preserves the originating `http` crate error; the header VALUE is never carried here (it is
+    /// the credential).
+    BadAuthHeader { name: String, source: Cause },
+    /// A rate ceiling of 0 QPS. Refused at construction: a 0-QPS window never opens, so a request
+    /// would block forever — a deadlock is not a rate limit.
+    BadRateLimit { qps_per_ip: u32, qps_global: u32 },
+    /// A retry policy that cannot run: fewer than one attempt, or an alert threshold of 0 (which
+    /// would alert before any attempt has failed).
+    BadRetryPolicy {
+        max_attempts: u32,
+        alert_after_attempts: u32,
+    },
+    /// A credential is configured and the base URL is not HTTPS. Refused at client construction: over
+    /// a plaintext transport the key is readable by anything on the path, and no amount of redaction
+    /// in the logs changes that. (A plaintext base URL with NO credential is fine — the documented
+    /// API declares no auth at all.)
+    InsecureAuthTransport { url: String },
+    /// One attempt exceeded the request deadline — the peer accepted the request and did not answer.
+    /// TRANSIENT: retried like a 5xx. Without this the relayer would wait forever and never even
+    /// reach its retry budget, so a single unresponsive peer could stall it silently.
+    RequestTimeout { after_ms: u64 },
+    /// The response body exceeds the configured ceiling. PERMANENT: re-requesting it would just
+    /// download it again. The bytes past the ceiling are never buffered — the production transport
+    /// refuses on the advertised `Content-Length`, and on the chunk that crosses the line if the
+    /// length lied or was absent.
+    ResponseTooLarge { limit: usize, actual: usize },
+    /// Transport bounds that cannot work: a zero deadline (never met) or a zero body ceiling (rejects
+    /// everything).
+    BadTransportLimits {
+        connect_timeout_ms: u64,
+        request_timeout_ms: u64,
+        max_response_bytes: usize,
+    },
+    /// A PRESENT `Link` header that cannot be parsed, or that advertises `next` without a cursor the
+    /// scan could follow. It is NOT treated as "no next page": that is indistinguishable from a
+    /// legitimate final page, so malformed metadata would silently truncate the scan and strand every
+    /// attestation after it (§8.4 — nothing is dropped without a reason).
+    BadPaginationMetadata { detail: String },
+    /// The response came back from a URL other than the one requested — a redirect was FOLLOWED.
+    /// The relayer follows none (`RedirectPolicy::Never`), so this can only mean that policy has
+    /// regressed; the response is refused rather than trusted, because it was served by an origin the
+    /// relayer never chose. PERMANENT: retrying would be redirected again, and every attempt is
+    /// another chance for the credential to land somewhere it should not.
+    RedirectFollowed { requested: String, followed: String },
+    /// The by-hash endpoint returned an attestation for a DIFFERENT `depositMessageHash` than the one
+    /// requested. It may be perfectly valid — a real attestation, for a real deposit — and it is
+    /// still the wrong answer: the endpoint is a lookup BY the requested hash, and minting from
+    /// someone else's DepositIntent is exactly what a buggy server, a mis-keyed cache, or a
+    /// substitution on the path would cause.
+    MessageHashNotRequested {
+        requested: [u8; 32],
+        returned: [u8; 32],
+    },
 }
 
 impl RelayerError {
@@ -141,10 +278,10 @@ impl RelayerError {
             | Self::ShortHeader(e)
             | Self::PreimageTooLarge(e)
             | Self::DepositIntentCodec(e) => Some(e),
-            Self::MalformedHex { .. }
-            | Self::BadMessageHashLength { .. }
-            | Self::MessageHashMismatch { .. }
-            | Self::BadAttestationLength { .. } => None,
+            // the envelope and transport families never involve a unit-04 codec — they preserve
+            // their own causes (`hex_source`, and the `Cause` carried by Transport/Decode/BadBaseUrl/
+            // BadAuthHeader, all reachable through `source()`).
+            _ => None,
         }
     }
 
@@ -156,6 +293,49 @@ impl RelayerError {
     pub fn hex_source(&self) -> Option<&hex::FromHexError> {
         match self {
             Self::MalformedHex { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+
+    /// Whether retrying the operation could plausibly succeed — the SINGLE retry decision in the
+    /// relayer, so no call site can invent its own (§8.1 check 1; §8.4).
+    ///
+    /// Transient: HTTP 404 (Circle has not published the attestation *yet*), 429 (throttled), 5xx,
+    /// and a transport failure. Permanent: HTTP 400 and every other 4xx, a schema-decode failure, a
+    /// broken `messageHash` binding, and every structural/config rejection — retrying those would
+    /// re-issue an identical request that must fail identically, burning the rate budget that the
+    /// retryable failures need.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::Http { status } => matches!(
+                classify_status(*status),
+                StatusClass::RetryPending | StatusClass::RetryThrottle | StatusClass::RetryAlert
+            ),
+            // the connection died, or the peer went quiet: both are conditions that can clear
+            Self::Transport(_) | Self::RequestTimeout { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Whether a RETRYABLE failure should raise an operator alert once the alert threshold is
+    /// crossed (§8.4). A 5xx or a transport failure means Circle (or the network) is unhealthy — the
+    /// operator wants to know. A 404 does NOT: "the attestation is not published yet" is the normal
+    /// state of a deposit that just landed, and it alerts only if it never resolves within the
+    /// attempt budget. A 429 is the rate governor's business, not the operator's, until it too runs
+    /// out of attempts.
+    pub(crate) fn alerts_while_retrying(&self) -> bool {
+        match self {
+            Self::Http { status } => matches!(classify_status(*status), StatusClass::RetryAlert),
+            Self::Transport(_) | Self::RequestTimeout { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// The HTTP status behind this error, when there is one — so an observability event can carry
+    /// it without re-deriving it from the message.
+    pub fn http_status(&self) -> Option<u16> {
+        match self {
+            Self::Http { status } => Some(*status),
             _ => None,
         }
     }
@@ -196,6 +376,88 @@ impl fmt::Display for RelayerError {
                 f,
                 "attestation must be 65 bytes (r||s||v), got {actual}"
             ),
+            Self::Http { status } => write!(f, "circle returned http {status}"),
+            Self::Transport(source) => write!(f, "circle request failed in transport: {source}"),
+            Self::Decode(source) => write!(f, "circle response does not match the schema: {source}"),
+            Self::BadTxHashFormat { tx_hash } => write!(
+                f,
+                "txHash must match ^0x[a-fA-F0-9]{{64}}$, got `{tx_hash}`"
+            ),
+            Self::BadMessageHashFormat { message_hash } => write!(
+                f,
+                "depositMessageHash must match ^0x[a-fA-F0-9]{{64}}$, got `{message_hash}`"
+            ),
+            Self::BadRemoteDomain { actual } => {
+                write!(f, "remoteDomain must be at least 1, got {actual}")
+            }
+            Self::BadPageSize { actual } => {
+                write!(f, "pageSize must be within 1..=1000, got {actual}")
+            }
+            Self::BadBaseUrl { url, source } => {
+                write!(f, "circle base url `{url}` is not a url: {source}")
+            }
+            // the header VALUE is the credential: it is never rendered, here or anywhere else
+            Self::BadAuthHeader { name, source } => {
+                write!(f, "auth header `{name}` is not a legal http header: {source}")
+            }
+            Self::BadRateLimit {
+                qps_per_ip,
+                qps_global,
+            } => write!(
+                f,
+                "rate ceilings must be non-zero, got {qps_per_ip} qps/ip and {qps_global} qps global"
+            ),
+            Self::BadRetryPolicy {
+                max_attempts,
+                alert_after_attempts,
+            } => write!(
+                f,
+                "retry policy needs at least one attempt and a non-zero alert threshold, got \
+                 max_attempts = {max_attempts} and alert_after_attempts = {alert_after_attempts}"
+            ),
+            Self::InsecureAuthTransport { url } => write!(
+                f,
+                "an api credential must not cross a plaintext transport: `{url}` is not https"
+            ),
+            Self::RequestTimeout { after_ms } => {
+                write!(f, "circle did not answer within {after_ms} ms")
+            }
+            Self::ResponseTooLarge { limit, actual } => write!(
+                f,
+                "circle response body exceeds the {limit}-byte ceiling (saw {actual} bytes)"
+            ),
+            Self::BadTransportLimits {
+                connect_timeout_ms,
+                request_timeout_ms,
+                max_response_bytes,
+            } => write!(
+                f,
+                "transport limits must be non-zero, got connect = {connect_timeout_ms} ms, \
+                 request = {request_timeout_ms} ms, max response = {max_response_bytes} bytes"
+            ),
+            Self::BadPaginationMetadata { detail } => {
+                write!(f, "malformed pagination metadata: {detail}")
+            }
+            // WHERE the response came from is the whole diagnostic: it names the origin that was
+            // handed the request (and, if one was configured, the credential)
+            Self::RedirectFollowed {
+                requested,
+                followed,
+            } => write!(
+                f,
+                "a redirect was followed: requested `{requested}`, response came from `{followed}`                  — the relayer follows no redirect"
+            ),
+            // both digests are rendered: "which attestation did they send me instead?" must be
+            // answerable straight from the log line
+            Self::MessageHashNotRequested {
+                requested,
+                returned,
+            } => write!(
+                f,
+                "circle returned an attestation for a different deposit: requested 0x{}, got 0x{}",
+                hex::encode(requested),
+                hex::encode(returned)
+            ),
         }
     }
 }
@@ -209,6 +471,10 @@ impl core::error::Error for RelayerError {
         // so no cause exists and none is invented.
         match self {
             Self::MalformedHex { source, .. } => Some(source),
+            Self::Transport(source)
+            | Self::Decode(source)
+            | Self::BadBaseUrl { source, .. }
+            | Self::BadAuthHeader { source, .. } => Some(source.as_error()),
             _ => self
                 .encoding_source()
                 .map(|e| e as &(dyn core::error::Error + 'static)),

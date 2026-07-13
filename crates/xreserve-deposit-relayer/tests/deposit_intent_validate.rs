@@ -17,10 +17,9 @@
 //!   * T-RLY-12 `decode_well_formed_deposit_intent`         — every field at its DC-1 offset.
 //!   * T-RLY-13 `deposit_intent_amount_not_reduced_offchain` — amount/maxFee carried RAW (no reduce).
 //!   * T-RLY-08 `deposit_intent_structural_reject`          — per-field rejects, EXACT variant + source.
-//!   * T-RLY-11 `deposit_intent_felt_count_guard`           — header is 60 felts (anti-ASG-16), the full
-//!                                                            preimage `60 + ceil(hookDataLen/4)`, the
-//!                                                            INCLUSIVE 1024-felt bound accepted, and
-//!                                                            the >1024-felt overflow → PreimageTooLarge.
+//!   * T-RLY-11 `deposit_intent_felt_count_guard`           — header is 60 felts (anti-ASG-16), the
+//!     full preimage `60 + ceil(hookDataLen/4)`, the INCLUSIVE 1024-felt bound accepted, and the
+//!     >1024-felt overflow → PreimageTooLarge.
 
 use std::error::Error;
 

@@ -57,6 +57,22 @@ pub fn verify_message_hash(
     payload_hex: &str,
     message_hash_hex: &str,
 ) -> Result<Vec<u8>, RelayerError> {
+    verify_message_hash_bytes(payload_hex, message_hash_hex).map(|(payload, _digest)| payload)
+}
+
+/// [`verify_message_hash`], returning the verified 32-byte digest alongside the decoded payload.
+///
+/// Identical check, strictly more of its result kept: a caller that needs the digest (the Circle
+/// fetch path, which carries it into the validated attestation) would otherwise have to re-decode
+/// the hex or re-run keccak256 over the payload — a second, drift-prone copy of the binding. There
+/// is exactly one binding computation, here.
+///
+/// # Errors
+/// Identical to [`verify_message_hash`].
+pub fn verify_message_hash_bytes(
+    payload_hex: &str,
+    message_hash_hex: &str,
+) -> Result<(Vec<u8>, [u8; MESSAGE_HASH_LEN]), RelayerError> {
     // The payload is the thing being bound, so it is decoded first: with both fields malformed, the
     // operator hears about the payload (deterministic precedence, no ambiguity in the logs).
     let payload = decode_hex(HexField::Payload, payload_hex)?;
@@ -80,7 +96,7 @@ pub fn verify_message_hash(
         return Err(RelayerError::MessageHashMismatch { expected, actual });
     }
 
-    Ok(payload)
+    Ok((payload, actual))
 }
 
 /// Validates the attestation envelope's shape: exactly 65 bytes (`r‖s‖v`), hex-valid.

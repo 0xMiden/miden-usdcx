@@ -5,14 +5,39 @@ slice and are intentionally **not declared** in `Cargo.toml` yet, because declar
 break this repository's offline build gate. This file records each such deferral — WHAT, WHY, WHICH
 slice introduces it, and HOW that slice must provision it — so the future slice does not hit the same
 wall. It is enforced by `tests/deferred_dependencies_doc.rs` (the guard fails if this record goes
-missing or loses a required element).
+missing or loses a required element, or if the discharge below is undone).
 
-Operator decision (round 5 escalation → round 6 ratification): **the reqwest deferral below is
-ACCEPTED.** Do not re-add reqwest — or any other crates.io dependency — to this slice.
+Operator decision (round 5 escalation → round 6 ratification): the reqwest deferral below was
+ACCEPTED. **It is now DISCHARGED** — see the status block.
 
 ---
 
-## `reqwest` — Circle HTTP client (DEFERRED)
+## `reqwest` — Circle HTTP client (DEFERRED → **DISCHARGED** in the Circle-facing slice)
+
+### Status: DISCHARGED (the Circle-facing HTTP client slice)
+
+The deferral named the **Circle-facing HTTP client slice** as the one that would declare `reqwest`,
+once its environment provisioned the crate offline (option 1 below: pre-seed the cargo cache). That
+slice is the one that ships `circle::{client, schema, attestation_fetch, info}`, and its environment
+now carries **`reqwest 0.13.4`** and its full `hyper`/`rustls`/`h2` closure in the pinned cargo
+cache. `reqwest` is therefore declared — in the **root `[workspace.dependencies]`** (so the later
+off-chain services cannot drift onto a different HTTP stack) and consumed by this crate — and the
+offline gate still passes: `cargo build/test/clippy --locked --offline` resolves the whole graph from
+the cache, with no crates.io access.
+
+Two facts the next reader needs:
+
+- **reqwest 0.13's feature names differ from 0.12's.** TLS is **`rustls`** (0.12: `rustls-tls`), and
+  `RequestBuilder::query` — how every Circle query param is built — sits behind its own **`query`**
+  feature. The declared set is `default-features = false, features = ["rustls", "json", "query"]`.
+- **The mock Circle server is built from `axum` + `tokio`** (dev-dependency), because `wiremock` /
+  `httpmock` / `mockito` are **not** in the pinned cache and would reintroduce exactly the failure
+  this deferral was about. Do not add them.
+
+The record below is kept verbatim as the WHY — it is the reason the earlier slices carry no reqwest,
+and the reason any future dependency must clear the offline gate before it is declared.
+
+### The original deferral (historical record)
 
 - **What.** The `reqwest` HTTP client. In the relayer design it is the Circle-facing transport used
   by `circle::client` to fetch deposit attestations (`GET /v1/info`, `/v1/attestations/*`,
@@ -60,9 +85,12 @@ ACCEPTED.** Do not re-add reqwest — or any other crates.io dependency — to t
   Either way, re-run the full offline gate (`build`/`test`/`clippy`/workspace-`clippy`/`fmt`, all
   `--locked --offline`) in the target environment to confirm `reqwest` resolves before handoff.
 
-- **Scope this slice keeps.** Circle HTTP behavior stays OUT of scope here; the scaffold only wires
-  `tokio`/`serde`. No Circle endpoint, credential, or Miden domain is committed — `Q-API-AUTH` /
-  `Q-DOM-1` stay OPEN (`REQUIRES CIRCLE CONFIRMATION`).
+- **Scope the scaffold slice kept.** Circle HTTP behavior stayed OUT of scope there; the scaffold
+  wired only `tokio`/`serde`. No Circle endpoint, credential, or Miden domain is committed even now —
+  `Q-API-AUTH` / `Q-DOM-1` stay OPEN (`REQUIRES CIRCLE CONFIRMATION`): the client ships an auth-header
+  *injection point* fed from config, never a baked-in key, and the base URL is configuration whose
+  default is the documented testnet host.
 
 - **Cross-references.** `crates/xreserve-deposit-relayer/Cargo.toml` (the `[dependencies]` comment
-  block points here); the relayer component spec §1.4 / §4 (`circle::client`, `CMP-D1`/`D3`/`D4`).
+  block points here); the root `Cargo.toml` `[workspace.dependencies]` (where `reqwest` and `axum`
+  are pinned); the relayer component spec §1.4 / §4 (`circle::client`, `CMP-D1`/`D3`/`D4`).

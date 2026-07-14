@@ -11,7 +11,7 @@
 mod support;
 
 use anyhow::Result;
-use miden_protocol::account::{AccountId, StorageMapKey, StorageSlotDelta, StorageSlotName};
+use miden_protocol::account::{AccountId, StorageMapKey, StorageSlotName, StorageSlotPatch};
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use support::*;
@@ -59,7 +59,9 @@ fn guarded_faucet() -> Result<GuardedMint> {
 /// when unset) — the no-state-change read-back the non-owner reject uses.
 fn read_attester(account: &miden_protocol::account::Account, commitment: Word) -> Result<Word> {
     let slot = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)?;
-    Ok(account.storage().get_map_item(&slot, commitment)?)
+    Ok(account
+        .storage()
+        .get_map_item(&slot, StorageMapKey::new(commitment))?)
 }
 
 // EXPORT PROBE (green scaffold — flat-path check for the setter)
@@ -69,8 +71,9 @@ fn read_attester(account: &miden_protocol::account::Account, commitment: Word) -
 fn probe_attester_admin_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     let exports: Vec<String> = lib
+        .manifest
         .exports()
-        .filter(|e| e.as_procedure().is_some())
+        .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
     let canonical = "::xreserve::attester_admin::set_attester";
@@ -89,7 +92,7 @@ fn probe_attester_admin_exports() -> Result<()> {
 #[tokio::test]
 async fn production_build_still_denies_stock_mint() -> Result<()> {
     let gm = guarded_faucet()?;
-    let result = run_mint_and_send(&gm.harness, Word::from([0u32, 1, 2, 3]), 0, 4, 100, 0).await;
+    let result = run_mint_and_send(&gm.harness, Word::from([0u32, 1, 2, 3]), 0, 4, 100).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_MINT_DENIED"));
     Ok(())
 }
@@ -110,8 +113,8 @@ async fn set_attester_owner_succeeds() -> Result<()> {
 
     // the allowlist entry landed: xReserveAttesters[K] == [1,0,0,0].
     let attesters = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)?;
-    let StorageSlotDelta::Map(delta) = executed
-        .account_delta()
+    let StorageSlotPatch::Map(delta) = executed
+        .account_patch()
         .storage()
         .get(&attesters)
         .expect("xReserveAttesters slot delta")
@@ -120,6 +123,8 @@ async fn set_attester_owner_succeeds() -> Result<()> {
     };
     let written = delta
         .entries()
+        .expect("map patch carries entries")
+        .as_map()
         .get(&StorageMapKey::new(commitment))
         .copied()
         .expect("the commitment KEY must appear in the xReserveAttesters delta");
@@ -184,7 +189,7 @@ async fn set_attester_owner_succeeds_while_paused() -> Result<()> {
         .await
         .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
 
     // tx2: the OWNER's set_attester(K, true) SUCCEEDS while paused (F6: setters are not pause-gated).
     let executed = run_set_attester_tx(&gm.harness, &evolved, owner(), commitment, 1, 7)
@@ -193,8 +198,8 @@ async fn set_attester_owner_succeeds_while_paused() -> Result<()> {
 
     // the allowlist entry landed despite the pause: xReserveAttesters[K] == [1,0,0,0].
     let attesters = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)?;
-    let StorageSlotDelta::Map(delta) = executed
-        .account_delta()
+    let StorageSlotPatch::Map(delta) = executed
+        .account_patch()
         .storage()
         .get(&attesters)
         .expect("xReserveAttesters slot delta")
@@ -203,6 +208,8 @@ async fn set_attester_owner_succeeds_while_paused() -> Result<()> {
     };
     let written = delta
         .entries()
+        .expect("map patch carries entries")
+        .as_map()
         .get(&StorageMapKey::new(commitment))
         .copied()
         .expect("the commitment KEY must appear in the xReserveAttesters delta");

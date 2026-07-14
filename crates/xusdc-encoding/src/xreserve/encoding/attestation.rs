@@ -1,24 +1,35 @@
 //! Attestation (ATT) surface — frozen signatures per the shared-encoding spec
-//! (INV-DEPOSIT-ATTESTATION-RAW-KECCAK, DC-2). This library owns the byte→felt packing of
-//! the digest / compressed pubkey / signature (relayer + harness, Rust-only) and the
-//! on-chain commitment-keying primitive `pubkey_commitment` — the canonical attester-
-//! allowlist key the faucet D5d verify (R-MINT-13) recomputes and looks up by reference
+//! (INV-DEPOSIT-ATTESTATION-RAW-KECCAK, DC-2 under its v16 supersession —
+//! MIGRATION-V16-ALPHA2.md S16). This library owns the byte→felt packing of the digest /
+//! pubkey / signature (relayer + harness, Rust-only), the DC-2 SEC1→affine pubkey
+//! decompression (the Circle-facing wire form stays the 33-byte compressed SEC1 key; the
+//! on-chain form is the 16 affine-coordinate felts since vm#3342), and the on-chain
+//! commitment-keying primitive `pubkey_commitment` — the canonical attester-allowlist key the
+//! faucet D5d verify (R-MINT-13) recomputes and looks up by reference
 //! (`xreserve::encoding::pubkey_commitment`, the ONLY on-chain proc of this surface). The
 //! `keccak256::hash_bytes` digest production and the `ecdsa_k256_keccak::verify_prehash`
 //! call are faucet-owned (flow D5d); this library owns only the packing + commitment keying.
 //!
-//! All four are infallible u32-LE packers / the Poseidon2 commitment — the same
-//! `bytes_to_packed_u32_elements` primitive miden-crypto uses for `to_elements`, so each
+//! The digest/signature packers are infallible u32-LE packers — the same
+//! `bytes_to_packed_u32_elements` primitive miden-crypto uses for byte streams, so each
 //! `Felt` is a `u32 < p` (`felt-construction`: `Felt::from(u32)`, never `Felt::new`, no
-//! truncation; lengths are type-guaranteed, not input-dependent).
+//! truncation; lengths are type-guaranteed, not input-dependent). The pubkey packer is
+//! FALLIBLE: it decompresses the SEC1 point first (an off-curve key rejects here — it could
+//! never verify on-chain either) and then packs the affine coordinates exactly as
+//! miden-crypto 0.28's `affine_point_to_elements` does (per-limb big-endian u32 reads in
+//! little-endian limb order: `qx_le_u32[8] || qy_le_u32[8]`).
 
+use k256::elliptic_curve::sec1::ToEncodedPoint;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Hasher, Word};
 
-/// Number of u32-LE field elements a 33-byte compressed secp256k1 public key packs to
-/// (`33.div_ceil(4) = 9`) — the element count the commitment hashes. Parity-pinned against
-/// the MASM `PUBKEY_FELTS` constant by `tests/constant_parity.rs` (`masm-rust-constant-parity`).
-pub const PUBKEY_FELTS: usize = 9;
+use super::error::EncodingError;
+
+/// Number of u32 field elements an affine secp256k1 public key packs to
+/// (`qx_le_u32[8] || qy_le_u32[8]`) — the element count the commitment hashes (vm#3342).
+/// Parity-pinned against the MASM `PUBKEY_FELTS` constant by `tests/constant_parity.rs`
+/// (`masm-rust-constant-parity`).
+pub const PUBKEY_FELTS: usize = 16;
 
 /// Packs a 32-byte keccak digest into 8 u32-LE field elements (4 bytes/felt).
 pub fn keccak_digest_felts(digest: &[u8; 32]) -> [Felt; 8] {
@@ -27,12 +38,38 @@ pub fn keccak_digest_felts(digest: &[u8; 32]) -> [Felt; 8] {
         .expect("32 bytes always pack to exactly 8 u32 felts")
 }
 
-/// Packs a 33-byte compressed secp256k1 public key into 9 u32-LE field elements (the final
-/// felt holds byte 32 with the upper 3 bytes zero-filled).
-pub fn compressed_pubkey_felts(pk: &[u8; 33]) -> [Felt; 9] {
-    bytes_to_packed_u32_elements(pk)
-        .try_into()
-        .expect("33 bytes always pack to exactly 9 u32 felts")
+/// Decompresses a 33-byte compressed SEC1 secp256k1 public key (the Circle-facing wire form)
+/// and packs its affine coordinates into the 16 u32 field elements the v16 on-chain
+/// attestation surface consumes (`qx_le_u32[8] || qy_le_u32[8]` — vm#3342; byte-order
+/// identical to miden-crypto 0.28 `affine_point_to_elements`: each 32-byte big-endian
+/// coordinate is read as eight big-endian u32 limbs emitted least-significant-limb first).
+///
+/// # Errors
+///
+/// Returns [`EncodingError::InvalidPubkey`] if the bytes do not decode to a curve point.
+pub fn affine_pubkey_felts(pk: &[u8; 33]) -> Result<[Felt; 16], EncodingError> {
+    let point = k256::PublicKey::from_sec1_bytes(pk)
+        .map_err(|_| EncodingError::InvalidPubkey)?
+        .to_encoded_point(false);
+    let qx: &[u8] = point
+        .x()
+        .expect("an uncompressed point carries x")
+        .as_slice();
+    let qy: &[u8] = point
+        .y()
+        .expect("an uncompressed point carries y")
+        .as_slice();
+    let limb = |coord: &[u8], idx: usize| {
+        let start = 32 - 4 * (idx + 1);
+        u32::from_be_bytes(coord[start..start + 4].try_into().expect("4-byte chunk"))
+    };
+    Ok(core::array::from_fn(|idx| {
+        if idx < 8 {
+            Felt::from(limb(qx, idx))
+        } else {
+            Felt::from(limb(qy, idx - 8))
+        }
+    }))
 }
 
 /// Packs a 65-byte `r‖s‖v` signature into 17 u32-LE field elements; `v` is carried in felt
@@ -43,18 +80,20 @@ pub fn signature_felts(sig: &[u8; 65]) -> [Felt; 17] {
         .expect("65 bytes always pack to exactly 17 u32 felts")
 }
 
-/// The attester-allowlist commitment key: Poseidon2 over the 9 u32-LE pubkey felts, identical
-/// to miden-crypto `PublicKey::to_commitment` (`Poseidon2::hash_elements(to_elements())`,
-/// `to_elements = bytes_to_packed_u32_elements(to_bytes())`) and to the MASM
+/// The attester-allowlist commitment key: Poseidon2 over the 16 affine pubkey felts,
+/// identical to miden-crypto 0.28 `PublicKey::to_commitment`
+/// (`Poseidon2::hash_elements(affine_point_to_elements())`) and to the MASM
 /// `xreserve::encoding::pubkey_commitment` the faucet D5d verify recomputes. `Hasher` is the
-/// protocol's Poseidon2 (same primitive as `bytes32_to_storage_map_key`); the 9-felt input
-/// engages the sponge capacity domain tag (`9 % 8 = 1`) — verified == `to_commitment` by
-/// TV-ATT-2 / TV-DUAL-5.
-// clippy 1.93 flags the `Word::from` as `useless_conversion`, but removing it would change
-// executable behaviour, so the lint is suppressed in place instead.
-#[allow(clippy::useless_conversion)]
-pub fn pubkey_commitment(pk: &[u8; 33]) -> Word {
-    Word::from(Hasher::hash_elements(&compressed_pubkey_felts(pk)))
+/// protocol's Poseidon2 (same primitive as `bytes32_to_storage_map_key`); the 16-felt input
+/// sets the sponge capacity domain tag to `16 % 8 = 0` — verified == `to_commitment` by
+/// TV-ATT-2 / TV-DUAL-5. Takes the 33-byte compressed wire form and decompresses internally
+/// (single-owner rule: unit-04 owns the SEC1→affine seam).
+///
+/// # Errors
+///
+/// Returns [`EncodingError::InvalidPubkey`] if the bytes do not decode to a curve point.
+pub fn pubkey_commitment(pk: &[u8; 33]) -> Result<Word, EncodingError> {
+    Ok(Hasher::hash_elements(&affine_pubkey_felts(pk)?))
 }
 
 // TESTS — TV-ATT-1..3
@@ -67,13 +106,13 @@ mod tests {
     use super::*;
     use crate::vectors::load;
 
-    /// TV-ATT-1 (felt shapes): the three packers yield exactly 8 / 9 / 17 felts and match
+    /// TV-ATT-1 (felt shapes): the three packers yield exactly 8 / 16 / 17 felts and match
     /// the canonical packing of every vector's digest / pubkey / signature.
     #[test]
     fn tv_att_1_felt_shapes() {
         for v in &load().families.att {
-            let pk = compressed_pubkey_felts(&v.pubkey());
-            assert_eq!(pk.len(), 9, "{}: pubkey felt width", v.id);
+            let pk = affine_pubkey_felts(&v.pubkey()).expect("vector pubkeys are valid points");
+            assert_eq!(pk.len(), 16, "{}: pubkey felt width", v.id);
             assert_eq!(
                 pk.as_slice(),
                 v.packed_felts_values().as_slice(),
@@ -108,7 +147,7 @@ mod tests {
     fn tv_att_2_commitment() {
         for v in &load().families.att {
             assert_eq!(
-                pubkey_commitment(&v.pubkey()),
+                pubkey_commitment(&v.pubkey()).expect("vector pubkeys are valid points"),
                 v.expected_commitment_word(),
                 "{}: pubkey_commitment must equal miden-crypto PublicKey::to_commitment",
                 v.id
@@ -152,5 +191,21 @@ mod tests {
                 v.id
             );
         }
+    }
+
+    /// The SEC1 decompression seam fail-closes: bytes that are not a curve point reject with
+    /// `InvalidPubkey` (an even-parity prefix with an x that has no square-root partner).
+    #[test]
+    fn invalid_pubkey_rejects() {
+        let mut bogus = [0xFFu8; 33];
+        bogus[0] = 0x02;
+        assert_eq!(
+            affine_pubkey_felts(&bogus).unwrap_err(),
+            EncodingError::InvalidPubkey,
+        );
+        assert_eq!(
+            pubkey_commitment(&bogus).unwrap_err(),
+            EncodingError::InvalidPubkey,
+        );
     }
 }

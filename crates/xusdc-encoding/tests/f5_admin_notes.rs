@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::{
-    Account, AccountId, RoleSymbol, StorageMapKey, StorageSlotDelta, StorageSlotName,
+    Account, AccountId, RoleSymbol, StorageMapKey, StorageSlotName, StorageSlotPatch,
 };
 use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::ExecutedTransaction;
@@ -32,9 +32,12 @@ fn err_sender_lacks_role() -> MasmError {
     MasmError::from_static_str("note sender does not hold the required role")
 }
 
-/// The exact stock RBAC delegation error (rbac.masm:51 ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN).
-fn err_not_owner_or_role_admin() -> MasmError {
-    MasmError::from_static_str("note sender is not the owner or a role admin")
+/// The exact stock RBAC delegation error (v0.16: rbac.masm:66 ERR_SENDER_NOT_ROLE_ADMIN — #3215
+/// re-keyed the v15 ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN and dropped its owner leg).
+fn err_not_role_admin() -> MasmError {
+    // v16 #3215: the owner path is gone — the stock error re-keyed from
+    // ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN to ERR_SENDER_NOT_ROLE_ADMIN (rbac.masm:66).
+    MasmError::from_static_str("note sender does not hold the role's admin role")
 }
 
 fn pauser_sym() -> RoleSymbol {
@@ -50,7 +53,8 @@ fn member_marker() -> Word {
     Word::from([1u32, 0, 0, 0])
 }
 
-/// The standardized stock `is_paused` value slot label (FungibleFaucet-installed).
+/// The standardized stock `is_paused` value slot label (installed by the base `Pausable`
+/// component at v0.16 — #2944 moved it out of `FungibleFaucet`).
 const IS_PAUSED_LABEL: &str = "miden::standards::access::pausable::is_paused";
 
 const MAX_SUPPLY: u64 = 1_000_000;
@@ -96,8 +100,8 @@ async fn set_attester_admin_note_owner_writes_and_nonowner_traps() -> Result<()>
     // committed commitment key (a scrambled marshaling would write a different key).
     let attesters =
         StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL).context("attesters slot")?;
-    let StorageSlotDelta::Map(delta) = tx
-        .account_delta()
+    let StorageSlotPatch::Map(delta) = tx
+        .account_patch()
         .storage()
         .get(&attesters)
         .context("xReserveAttesters slot delta")?
@@ -106,6 +110,8 @@ async fn set_attester_admin_note_owner_writes_and_nonowner_traps() -> Result<()>
     };
     let written = delta
         .entries()
+        .expect("map patch carries entries")
+        .as_map()
         .get(&StorageMapKey::new(commitment))
         .copied()
         .context("the commitment key must appear in the xReserveAttesters delta")?;
@@ -189,8 +195,8 @@ fn expected_domain_config() -> [Word; 5] {
 /// Reads a single value-slot's post-tx word from the account delta (the slot's new value).
 fn value_delta(tx: &ExecutedTransaction, label: &str) -> Word {
     let slot = StorageSlotName::new(label).expect("valid slot label");
-    match tx.account_delta().storage().get(&slot) {
-        Some(StorageSlotDelta::Value(w)) => *w,
+    match tx.account_patch().storage().get(&slot) {
+        Some(StorageSlotPatch::Value(w)) => w.value().expect("value patch carries a value"),
         other => panic!("value slot {label} expected a value delta, got {other:?}"),
     }
 }
@@ -736,7 +742,11 @@ fn unpause_note_script_root_is_pinned() {
 
 /// Authorized grant: `sender` grants DOM_PAUSER to id(4); the membership map is written. Proves the
 /// note's absolute-path `call` resolves to the installed stock `rbac::grant_role` root (the canary).
-async fn assert_grant_role_authorized(sender: AccountId, seed: u64) -> Result<()> {
+async fn assert_grant_role_authorized(
+    sender: AccountId,
+    role: RoleSymbol,
+    seed: u64,
+) -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
@@ -745,7 +755,7 @@ async fn assert_grant_role_authorized(sender: AccountId, seed: u64) -> Result<()
     let note = XReserveGrantRoleNote::create(
         sender,
         faucet_id,
-        Felt::from(&pauser_sym()),
+        Felt::from(&role),
         grantee,
         &mut note_rng(seed),
     )
@@ -764,23 +774,54 @@ async fn assert_grant_role_authorized(sender: AccountId, seed: u64) -> Result<()
         .committed_account(faucet_id)
         .context("committed faucet")?
         .clone();
-    evolved.apply_delta(tx.account_delta())?;
+    evolved.apply_patch(tx.account_patch())?;
     assert_eq!(
-        read_role_membership(&evolved, &pauser_sym(), grantee)?,
+        read_role_membership(&evolved, &role, grantee)?,
         member_marker(),
-        "authorized grant_role must make id(4) a DOM_PAUSER member",
+        "authorized grant_role must make id(4) a role member",
     );
     Ok(())
 }
 
+/// v16 #3215 (S2, operator-approved): the owner's role administration flows through its ADMIN
+/// membership — it administers DOM_MANAGER (whose effective admin defaults to ADMIN), no longer
+/// the delegated DOM_PAUSER.
 #[tokio::test]
 async fn grant_role_owner_authorized() -> Result<()> {
-    assert_grant_role_authorized(test_account_id(1), 70).await
+    assert_grant_role_authorized(test_account_id(1), manager_sym(), 70).await
 }
 
 #[tokio::test]
 async fn grant_role_dom_manager_authorized() -> Result<()> {
-    assert_grant_role_authorized(test_account_id(3), 71).await
+    assert_grant_role_authorized(test_account_id(3), pauser_sym(), 71).await
+}
+
+/// v16 #3215 (S2): delegation is EXCLUSIVE — the owner (an ADMIN member, not a DOM_MANAGER
+/// holder) can no longer grant the DOM_MANAGER-administered DOM_PAUSER; the delegation gate
+/// traps it like any non-admin sender.
+#[tokio::test]
+async fn grant_role_owner_on_delegated_role_traps() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let note = XReserveGrantRoleNote::create(
+        test_account_id(1),
+        faucet_id,
+        Felt::from(&pauser_sym()),
+        test_account_id(4),
+        &mut note_rng(73),
+    )
+    .context("building the owner grant-on-delegated-role note")?;
+    let result = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("owner delegated-role grant tx context")?
+        .build()
+        .context("owner delegated-role grant tx build")?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, err_not_role_admin());
+    Ok(())
 }
 
 /// A third party (neither owner nor DOM_MANAGER) PASSES auth but TRAPS at the delegation gate.
@@ -805,7 +846,7 @@ async fn grant_role_third_party_traps() -> Result<()> {
         .context("third-party grant_role tx build")?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, err_not_owner_or_role_admin());
+    assert_transaction_executor_error!(result, err_not_role_admin());
     Ok(())
 }
 
@@ -817,8 +858,9 @@ async fn grant_role_note_args_are_inert() -> Result<()> {
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let grantee = test_account_id(5);
+    // v16 #3215 (S2): DOM_PAUSER's effective admin is DOM_MANAGER — the grant is manager-sent.
     let note = XReserveGrantRoleNote::create(
-        test_account_id(1),
+        test_account_id(3),
         faucet_id,
         Felt::from(&pauser_sym()),
         grantee,
@@ -839,7 +881,7 @@ async fn grant_role_note_args_are_inert() -> Result<()> {
         .committed_account(faucet_id)
         .context("committed faucet")?
         .clone();
-    evolved.apply_delta(tx.account_delta())?;
+    evolved.apply_patch(tx.account_patch())?;
     assert_eq!(
         read_role_membership(&evolved, &pauser_sym(), grantee)?,
         member_marker(),
@@ -984,7 +1026,9 @@ fn set_max_supply_note_script_root_is_pinned() {
 
 /// A production faucet where id(4) has been granted DOM_PAUSER by the owner, applied as a delta to an
 /// evolved (not-committed) account. Returns (chain, faucet_id, evolved account, grantee).
-async fn faucet_with_granted_pauser(
+async fn faucet_with_granted_role(
+    role: RoleSymbol,
+    grantor: AccountId,
     grant_seed: u64,
 ) -> Result<(MockChain, AccountId, Account, AccountId)> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
@@ -992,14 +1036,16 @@ async fn faucet_with_granted_pauser(
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let grantee = test_account_id(4);
+    // v16 #3215 (S2): each role is seeded by its effective admin — DOM_PAUSER by the
+    // DOM_MANAGER holder (delegated admin), DOM_MANAGER by the owner (ADMIN member).
     let grant = XReserveGrantRoleNote::create(
-        test_account_id(1),
+        grantor,
         faucet_id,
-        Felt::from(&pauser_sym()),
+        Felt::from(&role),
         grantee,
         &mut note_rng(grant_seed),
     )
-    .context("building the owner grant note")?;
+    .context("building the seeding grant note")?;
     let tx = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&grant))
         .context("grant seed tx context")?
@@ -1007,26 +1053,31 @@ async fn faucet_with_granted_pauser(
         .context("grant seed tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("seeding the owner grant must succeed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("seeding the manager grant must succeed: {e}"))?;
     let mut evolved = chain
         .committed_account(faucet_id)
         .context("committed faucet")?
         .clone();
-    evolved.apply_delta(tx.account_delta())?;
+    evolved.apply_patch(tx.account_patch())?;
     Ok((chain, faucet_id, evolved, grantee))
 }
 
-/// Authorized revoke: `sender` (owner or DOM_MANAGER) revokes id(4)'s DOM_PAUSER; membership cleared.
+/// Authorized revoke: `sender` (the role's v16 effective admin) revokes id(4)'s `role`
+/// membership; membership cleared. v16 #3215 (S2): DOM_PAUSER revocation is DOM_MANAGER's
+/// (delegated admin); DOM_MANAGER revocation is the owner's (ADMIN member).
 async fn assert_revoke_authorized(
     sender: AccountId,
+    role: RoleSymbol,
+    grantor: AccountId,
     grant_seed: u64,
     revoke_seed: u64,
 ) -> Result<()> {
-    let (chain, faucet_id, evolved, grantee) = faucet_with_granted_pauser(grant_seed).await?;
+    let (chain, faucet_id, evolved, grantee) =
+        faucet_with_granted_role(role.clone(), grantor, grant_seed).await?;
     let note = XReserveRevokeRoleNote::create(
         sender,
         faucet_id,
-        Felt::from(&pauser_sym()),
+        Felt::from(&role),
         grantee,
         &mut note_rng(revoke_seed),
     )
@@ -1040,29 +1091,46 @@ async fn assert_revoke_authorized(
         .await
         .map_err(|e| anyhow::anyhow!("authorized revoke must succeed under network auth: {e}"))?;
     let mut evolved2 = evolved.clone();
-    evolved2.apply_delta(tx.account_delta())?;
+    evolved2.apply_patch(tx.account_patch())?;
     assert_eq!(
-        read_role_membership(&evolved2, &pauser_sym(), grantee)?,
+        read_role_membership(&evolved2, &role, grantee)?,
         Word::from([0u32, 0, 0, 0]),
-        "authorized revoke must clear id(4)'s DOM_PAUSER membership",
+        "authorized revoke must clear id(4)'s role membership",
     );
     Ok(())
 }
 
+/// v16 #3215 (S2): the owner (ADMIN member) administers DOM_MANAGER — grant seeded by the owner,
+/// revoked by the owner.
 #[tokio::test]
 async fn revoke_role_owner_authorized() -> Result<()> {
-    assert_revoke_authorized(test_account_id(1), 110, 100).await
+    assert_revoke_authorized(
+        test_account_id(1),
+        manager_sym(),
+        test_account_id(1),
+        110,
+        100,
+    )
+    .await
 }
 
 #[tokio::test]
 async fn revoke_role_dom_manager_authorized() -> Result<()> {
-    assert_revoke_authorized(test_account_id(3), 111, 101).await
+    assert_revoke_authorized(
+        test_account_id(3),
+        pauser_sym(),
+        test_account_id(3),
+        111,
+        101,
+    )
+    .await
 }
 
 /// A third party (neither owner nor DOM_MANAGER) PASSES auth but TRAPS at the delegation gate.
 #[tokio::test]
 async fn revoke_role_third_party_traps() -> Result<()> {
-    let (chain, faucet_id, evolved, grantee) = faucet_with_granted_pauser(112).await?;
+    let (chain, faucet_id, evolved, grantee) =
+        faucet_with_granted_role(pauser_sym(), test_account_id(3), 112).await?;
     let note = XReserveRevokeRoleNote::create(
         test_account_id(99),
         faucet_id,
@@ -1078,22 +1146,24 @@ async fn revoke_role_third_party_traps() -> Result<()> {
         .context("third-party revoke tx build")?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, err_not_owner_or_role_admin());
+    assert_transaction_executor_error!(result, err_not_role_admin());
     Ok(())
 }
 
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the revocation.
 #[tokio::test]
 async fn revoke_role_note_args_are_inert() -> Result<()> {
-    let (chain, faucet_id, evolved, grantee) = faucet_with_granted_pauser(113).await?;
+    let (chain, faucet_id, evolved, grantee) =
+        faucet_with_granted_role(pauser_sym(), test_account_id(3), 113).await?;
+    // v16 #3215 (S2): DOM_PAUSER's effective admin is DOM_MANAGER — the revoke is manager-sent.
     let note = XReserveRevokeRoleNote::create(
-        test_account_id(1),
+        test_account_id(3),
         faucet_id,
         Felt::from(&pauser_sym()),
         grantee,
         &mut note_rng(103),
     )
-    .context("building the owner revoke note")?;
+    .context("building the manager revoke note")?;
     let bogus_args = Word::from([6u32, 6, 6, 6]);
     let tx = chain
         .build_tx_context(evolved.clone(), &[], slice::from_ref(&note))
@@ -1105,7 +1175,7 @@ async fn revoke_role_note_args_are_inert() -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("revoke with bogus NOTE_ARGS must still succeed: {e}"))?;
     let mut evolved2 = evolved.clone();
-    evolved2.apply_delta(tx.account_delta())?;
+    evolved2.apply_patch(tx.account_patch())?;
     assert_eq!(
         read_role_membership(&evolved2, &pauser_sym(), grantee)?,
         Word::from([0u32, 0, 0, 0]),
@@ -1126,10 +1196,13 @@ fn revoke_role_note_script_root_is_pinned() {
     );
 }
 
-// SET_ROLE_ADMIN (allowlist row 10) — OWNER-ONLY (delegation does NOT extend here)
+// SET_ROLE_ADMIN (allowlist row 10) — gated on the MANAGED role's EFFECTIVE admin (v0.16 #3215):
+// DOM_MANAGER's admin is unset -> the built-in ADMIN, which the builder seeds on the OWNER, so the
+// owner administers it and the DOM_MANAGER holder does not (S2/S21).
 // ================================================================================================
 
-/// Owner-sent set_role_admin(DOM_MANAGER, DOM_PAUSER) PASSES auth + the owner-only gate and updates
+/// Owner-sent set_role_admin(DOM_MANAGER, DOM_PAUSER) PASSES auth + the ADMIN-role gate (the owner
+/// is the seeded ADMIN member, DOM_MANAGER's effective admin — v0.16 #3215/S2) and updates
 /// DOM_MANAGER's admin_role in its role_config (seeded 0 -> DOM_PAUSER).
 #[tokio::test]
 async fn set_role_admin_owner_updates_admin_role() -> Result<()> {
@@ -1159,7 +1232,7 @@ async fn set_role_admin_owner_updates_admin_role() -> Result<()> {
         .committed_account(faucet_id)
         .context("committed faucet")?
         .clone();
-    evolved.apply_delta(tx.account_delta())?;
+    evolved.apply_patch(tx.account_patch())?;
     assert_eq!(
         read_role_config(&evolved, &manager_sym())?[1],
         Felt::from(&pauser_sym()),
@@ -1168,9 +1241,11 @@ async fn set_role_admin_owner_updates_admin_role() -> Result<()> {
     Ok(())
 }
 
-/// A non-owner set_role_admin note PASSES auth but TRAPS at the owner-only gate — INCLUDING
-/// DOM_MANAGER (delegation does NOT extend to set_role_admin).
-async fn assert_set_role_admin_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
+/// A non-ADMIN set_role_admin note on DOM_MANAGER PASSES auth but TRAPS at the role-admin gate —
+/// INCLUDING the DOM_MANAGER holder itself (DOM_MANAGER's effective admin is the built-in ADMIN
+/// role, which the OWNER holds; v16 #3215 / S2 — the owner keeps this authority, the manager does
+/// not gain it).
+async fn assert_set_role_admin_nonadmin_traps(sender: AccountId, seed: u64) -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
@@ -1182,26 +1257,26 @@ async fn assert_set_role_admin_nonowner_traps(sender: AccountId, seed: u64) -> R
         Felt::from(&pauser_sym()),
         &mut note_rng(seed),
     )
-    .context("building the non-owner set_role_admin note")?;
+    .context("building the non-admin set_role_admin note")?;
     let result = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("non-owner set_role_admin tx context")?
+        .context("non-admin set_role_admin tx context")?
         .build()
-        .context("non-owner set_role_admin tx build")?
+        .context("non-admin set_role_admin tx build")?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_not_role_admin());
     Ok(())
 }
 
 #[tokio::test]
 async fn set_role_admin_dom_manager_traps() -> Result<()> {
-    assert_set_role_admin_nonowner_traps(test_account_id(3), 121).await
+    assert_set_role_admin_nonadmin_traps(test_account_id(3), 121).await
 }
 
 #[tokio::test]
 async fn set_role_admin_third_party_traps() -> Result<()> {
-    assert_set_role_admin_nonowner_traps(test_account_id(99), 122).await
+    assert_set_role_admin_nonadmin_traps(test_account_id(99), 122).await
 }
 
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the admin_role write.
@@ -1235,7 +1310,7 @@ async fn set_role_admin_note_args_are_inert() -> Result<()> {
         .committed_account(faucet_id)
         .context("committed faucet")?
         .clone();
-    evolved.apply_delta(tx.account_delta())?;
+    evolved.apply_patch(tx.account_patch())?;
     assert_eq!(
         read_role_config(&evolved, &manager_sym())?[1],
         Felt::from(&pauser_sym()),
@@ -1430,7 +1505,7 @@ async fn faucet_with_pending_owner(
         .committed_account(faucet_id)
         .context("committed faucet")?
         .clone();
-    evolved.apply_delta(tx.account_delta())?;
+    evolved.apply_patch(tx.account_patch())?;
     Ok((chain, faucet_id, evolved))
 }
 
@@ -1462,7 +1537,7 @@ async fn accept_ownership_pending_owner_becomes_owner() -> Result<()> {
             anyhow::anyhow!("pending-owner accept_ownership must succeed under network auth: {e}")
         })?;
     let mut evolved2 = evolved.clone();
-    evolved2.apply_delta(tx.account_delta())?;
+    evolved2.apply_patch(tx.account_patch())?;
     assert_eq!(
         read_owner_config(&evolved2)?,
         accepted_owner_config(nominee),
@@ -1519,7 +1594,7 @@ async fn accept_ownership_note_args_are_inert() -> Result<()> {
             anyhow::anyhow!("accept_ownership with bogus NOTE_ARGS must still succeed: {e}")
         })?;
     let mut evolved2 = evolved.clone();
-    evolved2.apply_delta(tx.account_delta())?;
+    evolved2.apply_patch(tx.account_patch())?;
     assert_eq!(
         read_owner_config(&evolved2)?,
         accepted_owner_config(nominee),

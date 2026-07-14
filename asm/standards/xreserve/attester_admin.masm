@@ -45,6 +45,7 @@ const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
 #!
 #! Invocation: call
 @locals(4)
+@account_procedure
 pub proc set_attester
     # => [PK_COMMITMENT, enabled, pad(11)]
 

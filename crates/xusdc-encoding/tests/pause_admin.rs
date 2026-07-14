@@ -18,7 +18,9 @@
 //! owner-sent STOCK `PausableManager::pause`/`unpause` note now fails with the exact
 //! `UnknownAccountProcedure` (the roots are gone from the account code) — RED while the prior
 //! baseline still installs the manager. `dom_pauser_pause_halts_mint`/`_burn` double as the
-//! `is_paused`-slot-survival guards (the slot is FungibleFaucet-installed, NOT manager-installed).
+//! `is_paused`-slot-survival guards (at v0.16 the slot is installed by the base `Pausable`
+//! component the builder adds — #2944 moved it out of `FungibleFaucet` — and NEVER by the
+//! deliberately-absent `PausableManager`, which installs zero storage).
 
 mod support;
 
@@ -26,7 +28,7 @@ use core::slice;
 
 use anyhow::Result;
 use miden_processor::crypto::random::RandomCoin;
-use miden_protocol::account::{Account, AccountId, StorageSlotDelta, StorageSlotName};
+use miden_protocol::account::{Account, AccountId, StorageSlotName, StorageSlotPatch};
 use miden_protocol::errors::MasmError;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
@@ -172,8 +174,9 @@ fn token_supply_of(account: &Account) -> Result<Felt> {
 fn probe_pause_admin_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     let exports: Vec<String> = lib
+        .manifest
         .exports()
-        .filter(|e| e.as_procedure().is_some())
+        .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
     for canonical in [
@@ -227,7 +230,7 @@ async fn owner_has_no_unpause_path() -> Result<()> {
         .await
         .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
     assert_eq!(
         read_is_paused(&evolved)?,
         Word::from([1u32, 0, 0, 0]),
@@ -256,7 +259,7 @@ async fn dom_pauser_pause_halts_mint() -> Result<()> {
         .await
         .expect("DOM_PAUSER pauses the mint faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
 
     let result = run_mint_against(
         &gm.harness,
@@ -290,7 +293,7 @@ async fn dom_pauser_production_pause_note_halts_mint() -> Result<()> {
         .await
         .expect("the DOM_PAUSER production pause note pauses the mint faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
 
     let result = run_mint_against(
         &gm.harness,
@@ -341,7 +344,7 @@ async fn dom_pauser_production_pause_note_halts_burn() -> Result<()> {
         .await
         .expect("the DOM_PAUSER production pause note pauses the burn faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
 
     // The faucet consumes the committed burn note against the paused account → assert_not_paused traps.
     let result = chain
@@ -387,7 +390,7 @@ async fn dom_pauser_pause_halts_burn() -> Result<()> {
         .await
         .expect("DOM_PAUSER pauses the burn faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
 
     // The faucet consumes the committed burn note against the paused account → execute_burn_policy's
     // assert_not_paused traps the stock pause error (the valid amount isolates the pause gate).
@@ -413,11 +416,11 @@ async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
         .await
         .expect("DOM_PAUSER pauses the mint faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
     let unpaused = run_dom_pauser_unpause(&gm.harness.mock_chain, &evolved, dom_pauser(), 6)
         .await
         .expect("DOM_PAUSER unpauses the mint faucet");
-    evolved.apply_delta(unpaused.account_delta())?;
+    evolved.apply_patch(unpaused.account_patch())?;
 
     let minted = run_mint_against(
         &gm.harness,
@@ -432,14 +435,15 @@ async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
         "unpause resumes minting (one recipient note)"
     );
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) = minted
-        .account_delta()
+    let StorageSlotPatch::Value(cfg) = minted
+        .account_patch()
         .storage()
         .get(&cfg_slot)
         .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
+    let cfg = cfg.value().expect("value patch carries a value");
     assert_eq!(
         cfg[0],
         Felt::from(REDUCED_AMOUNT),
@@ -473,11 +477,11 @@ async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
         .await
         .expect("DOM_PAUSER pauses the burn faucet");
     let mut bevolved = bacct.clone();
-    bevolved.apply_delta(bpaused.account_delta())?;
+    bevolved.apply_patch(bpaused.account_patch())?;
     let bunpaused = run_dom_pauser_unpause(&chain, &bevolved, dom_pauser(), 8)
         .await
         .expect("DOM_PAUSER unpauses the burn faucet");
-    bevolved.apply_delta(bunpaused.account_delta())?;
+    bevolved.apply_patch(bunpaused.account_patch())?;
 
     // The faucet consumes the committed burn note against the UNPAUSED account → the burn succeeds.
     let burned = chain
@@ -487,7 +491,7 @@ async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
         .await
         .expect("after unpause, the real receive_and_burn decrements supply");
     let mut bfinal = bevolved.clone();
-    bfinal.apply_delta(burned.account_delta())?;
+    bfinal.apply_patch(burned.account_patch())?;
     assert_eq!(
         token_supply_of(&bfinal)?,
         Felt::from((TOKEN_SUPPLY - VALID_BURN) as u32),
@@ -531,9 +535,10 @@ async fn non_dom_pauser_pause_rejects() -> Result<()> {
 /// surface is role-gated, not owner-gated. In the Domain-Pauser-only model (the stock
 /// `PausableManager` removed — `owner_has_no_pause_path`) this completes "the owner has no DIRECT
 /// pause path": neither the stock nor the custom surface accepts the owner. (The owner keeps
-/// Circle-conformant ROLE-ADMINISTRATION power — it could `grant_role` itself DOM_PAUSER, matching
-/// Circle's owner-only rotation backstop; the operational rotation path is the component CMP-F5
-/// `DOM_MANAGER` delegation, proven in `role_admin.rs` — a rotation concern, not a pause surface.)
+/// Circle-conformant ROLE-ADMINISTRATION power — at v0.16 it reaches DOM_PAUSER membership through
+/// the two-hop chain owner→ADMIN→DOM_MANAGER→DOM_PAUSER (#3215/S21, human-ratified), the CMP-F5
+/// delegation being the operational rotation path proven in `role_admin.rs` — a rotation concern,
+/// not a pause surface.)
 #[tokio::test]
 async fn owner_is_not_dom_pauser_on_custom_pause() -> Result<()> {
     assert_custom_pause_rejects(owner()).await
@@ -571,7 +576,7 @@ async fn non_dom_pauser_unpause_rejects(#[case] sender: AccountId) -> Result<()>
         .await
         .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
     assert_eq!(
         read_is_paused(&evolved)?,
         Word::from([1u32, 0, 0, 0]),
@@ -611,8 +616,8 @@ async fn dom_pauser_cannot_call_owner_setters() -> Result<()> {
 // ================================================================================================
 
 /// `pause` when ALREADY paused is idempotent SUCCESS: the stock `pausable::pause` is an
-/// unconditional `set_item` write with no already-paused guard (pinned v0.15.3
-/// `pausable/mod.masm:67-79`), so a redundant DOM_PAUSER pause succeeds and `is_paused` stays
+/// unconditional `set_item` write with no already-paused guard (pinned `=0.16.0-alpha.2`
+/// `pausable/mod.masm`), so a redundant DOM_PAUSER pause succeeds and `is_paused` stays
 /// `[1,0,0,0]`. Pin-bump drift tripwire: a future stock version that traps on a redundant pause
 /// would silently change ops semantics — it fails HERE instead.
 #[tokio::test]
@@ -630,7 +635,7 @@ async fn pause_when_already_paused_is_idempotent() -> Result<()> {
         .await
         .expect("the first DOM_PAUSER pause succeeds");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
     assert_eq!(
         read_is_paused(&evolved)?,
         Word::from([1u32, 0, 0, 0]),
@@ -640,7 +645,7 @@ async fn pause_when_already_paused_is_idempotent() -> Result<()> {
     let again = run_dom_pauser_pause(&bh.chain, &evolved, dom_pauser(), 14)
         .await
         .expect("a redundant pause is idempotent success (stock pause is an unconditional write)");
-    evolved.apply_delta(again.account_delta())?;
+    evolved.apply_patch(again.account_patch())?;
     assert_eq!(
         read_is_paused(&evolved)?,
         Word::from([1u32, 0, 0, 0]),
@@ -650,8 +655,8 @@ async fn pause_when_already_paused_is_idempotent() -> Result<()> {
 }
 
 /// `unpause` when NOT paused is idempotent SUCCESS: the stock `pausable::unpause` is an
-/// unconditional `set_item` write with no not-paused guard (pinned v0.15.3
-/// `pausable/mod.masm:89-101`) — the same pin-bump drift tripwire, in the unpause direction.
+/// unconditional `set_item` write with no not-paused guard (pinned `=0.16.0-alpha.2`
+/// `pausable/mod.masm`) — the same pin-bump drift tripwire, in the unpause direction.
 #[tokio::test]
 async fn unpause_when_not_paused_is_idempotent() -> Result<()> {
     let bh = setup_burn_policy_account(
@@ -672,7 +677,7 @@ async fn unpause_when_not_paused_is_idempotent() -> Result<()> {
         .await
         .expect("unpausing an unpaused faucet is idempotent success (unconditional write)");
     let mut evolved = account.clone();
-    evolved.apply_delta(unpaused.account_delta())?;
+    evolved.apply_patch(unpaused.account_patch())?;
     assert_eq!(
         read_is_paused(&evolved)?,
         Word::from([0u32, 0, 0, 0]),
@@ -707,7 +712,7 @@ async fn is_paused_publicly_readable() -> Result<()> {
         .await
         .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
     assert_eq!(
         read_is_paused(&evolved)?,
         Word::from([1u32, 0, 0, 0]),

@@ -23,7 +23,7 @@
 mod support;
 
 use anyhow::Result;
-use miden_protocol::account::{StorageMapKey, StorageSlotDelta, StorageSlotName};
+use miden_protocol::account::{StorageMapKey, StorageSlotName, StorageSlotPatch};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word, ZERO};
 use miden_standards::note::P2idNote;
@@ -161,8 +161,9 @@ fn recipient_storage() -> [Felt; 2] {
 fn probe_mint_composition_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     let exports: Vec<String> = lib
+        .manifest
         .exports()
-        .filter(|e| e.as_procedure().is_some())
+        .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
     let canonical = "::xreserve::xreserve_mint::mint";
@@ -258,14 +259,15 @@ async fn happy_end_to_end_mints_once() -> Result<()> {
 
     // (3) token_supply rose by exactly the reduced amount.
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) = executed
-        .account_delta()
+    let StorageSlotPatch::Value(cfg) = executed
+        .account_patch()
         .storage()
         .get(&cfg_slot)
         .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
+    let cfg = cfg.value().expect("value patch carries a value");
     assert_eq!(
         cfg[0],
         Felt::from(REDUCED_AMOUNT),
@@ -274,8 +276,8 @@ async fn happy_end_to_end_mints_once() -> Result<()> {
 
     // (4) the nonce was marked: usedNonces[KEY] == MARKER.
     let used = StorageSlotName::new(USED_NONCES_SLOT_LABEL)?;
-    let StorageSlotDelta::Map(map_delta) = executed
-        .account_delta()
+    let StorageSlotPatch::Map(map_delta) = executed
+        .account_patch()
         .storage()
         .get(&used)
         .expect("usedNonces slot delta")
@@ -284,6 +286,8 @@ async fn happy_end_to_end_mints_once() -> Result<()> {
     };
     let written = map_delta
         .entries()
+        .expect("map patch carries entries")
+        .as_map()
         .get(&StorageMapKey::new(nonce_key()))
         .copied()
         .expect("the nonce KEY must appear in the usedNonces delta");
@@ -579,22 +583,23 @@ async fn happy_end_to_end_with_hookdata() -> Result<()> {
         "recipient note must be Public"
     );
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) = executed
-        .account_delta()
+    let StorageSlotPatch::Value(cfg) = executed
+        .account_patch()
         .storage()
         .get(&cfg_slot)
         .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
+    let cfg = cfg.value().expect("value patch carries a value");
     assert_eq!(
         cfg[0],
         Felt::from(REDUCED_AMOUNT),
         "token_supply delta == reduced amount"
     );
     let used = StorageSlotName::new(USED_NONCES_SLOT_LABEL)?;
-    let StorageSlotDelta::Map(map_delta) = executed
-        .account_delta()
+    let StorageSlotPatch::Map(map_delta) = executed
+        .account_patch()
         .storage()
         .get(&used)
         .expect("usedNonces slot delta")
@@ -603,6 +608,8 @@ async fn happy_end_to_end_with_hookdata() -> Result<()> {
     };
     let written = map_delta
         .entries()
+        .expect("map patch carries entries")
+        .as_map()
         .get(&StorageMapKey::new(nonce_key_of("di-pos-hookdata")))
         .copied()
         .expect("the nonce KEY must appear in the usedNonces delta");
@@ -770,14 +777,15 @@ async fn xreserve_mint_still_mints_on_guarded_account() -> Result<()> {
 
     // (3) token_supply rose by exactly the reduced amount.
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) = executed
-        .account_delta()
+    let StorageSlotPatch::Value(cfg) = executed
+        .account_patch()
         .storage()
         .get(&cfg_slot)
         .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
+    let cfg = cfg.value().expect("value patch carries a value");
     assert_eq!(
         cfg[0],
         Felt::from(REDUCED_AMOUNT),
@@ -786,8 +794,8 @@ async fn xreserve_mint_still_mints_on_guarded_account() -> Result<()> {
 
     // (4) the nonce was marked: usedNonces[KEY] == MARKER.
     let used = StorageSlotName::new(USED_NONCES_SLOT_LABEL)?;
-    let StorageSlotDelta::Map(map_delta) = executed
-        .account_delta()
+    let StorageSlotPatch::Map(map_delta) = executed
+        .account_patch()
         .storage()
         .get(&used)
         .expect("usedNonces slot delta")
@@ -796,6 +804,8 @@ async fn xreserve_mint_still_mints_on_guarded_account() -> Result<()> {
     };
     let written = map_delta
         .entries()
+        .expect("map patch carries entries")
+        .as_map()
         .get(&StorageMapKey::new(nonce_key()))
         .copied()
         .expect("the nonce KEY must appear in the usedNonces delta");
@@ -860,7 +870,7 @@ async fn set_attester_enables_attestation() -> Result<()> {
     .await
     .expect("the owner's set_attester(K, true) must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(set.account_delta())?;
+    evolved.apply_patch(set.account_patch())?;
 
     // positive seam: the SAME K-attestation now PASSES the gate and mints.
     let minted = run_mint_against(
@@ -876,14 +886,15 @@ async fn set_attester_enables_attestation() -> Result<()> {
         "exactly one recipient note"
     );
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) = minted
-        .account_delta()
+    let StorageSlotPatch::Value(cfg) = minted
+        .account_patch()
         .storage()
         .get(&cfg_slot)
         .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
+    let cfg = cfg.value().expect("value patch carries a value");
     assert_eq!(
         cfg[0],
         Felt::from(REDUCED_AMOUNT),
@@ -928,7 +939,7 @@ async fn set_attester_remove_denies_attestation() -> Result<()> {
     .await
     .expect("enable must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(enable.account_delta())?;
+    evolved.apply_patch(enable.account_patch())?;
 
     // tx2: remove K (enabled = 0 -> EMPTY_WORD).
     let remove = run_set_attester_tx(
@@ -941,7 +952,7 @@ async fn set_attester_remove_denies_attestation() -> Result<()> {
     )
     .await
     .expect("remove must succeed");
-    evolved.apply_delta(remove.account_delta())?;
+    evolved.apply_patch(remove.account_patch())?;
 
     // the SAME K-attestation now traps R-MINT-13 (K is no longer allowlisted).
     let denied = run_mint_against(
@@ -992,7 +1003,7 @@ async fn set_attester_add_then_retire_rotation() -> Result<()> {
     let s1 = run_set_attester_tx(h, &acct, owner, old_a.commitment, 1, 11)
         .await
         .expect("enable K_old");
-    acct.apply_delta(s1.account_delta())?;
+    acct.apply_patch(s1.account_patch())?;
     let m1 = run_rotation_mint(
         h,
         &rh.drivers[0],
@@ -1002,13 +1013,13 @@ async fn set_attester_add_then_retire_rotation() -> Result<()> {
     .await
     .expect("K_old mints once enabled");
     assert_eq!(m1.output_notes().num_notes(), 1, "step 1: K_old mints");
-    acct.apply_delta(m1.account_delta())?;
+    acct.apply_patch(m1.account_patch())?;
 
     // 2. enable K_new -> K_new mints (driver_b / payload_b, nonce_b).
     let s2 = run_set_attester_tx(h, &acct, owner, new_b.commitment, 1, 12)
         .await
         .expect("enable K_new");
-    acct.apply_delta(s2.account_delta())?;
+    acct.apply_patch(s2.account_patch())?;
     let m2 = run_rotation_mint(
         h,
         &rh.drivers[1],
@@ -1018,13 +1029,13 @@ async fn set_attester_add_then_retire_rotation() -> Result<()> {
     .await
     .expect("K_new mints once enabled");
     assert_eq!(m2.output_notes().num_notes(), 1, "step 2: K_new mints");
-    acct.apply_delta(m2.account_delta())?;
+    acct.apply_patch(m2.account_patch())?;
 
     // 3. disable K_old.
     let s3 = run_set_attester_tx(h, &acct, owner, old_a.commitment, 0, 13)
         .await
         .expect("disable K_old");
-    acct.apply_delta(s3.account_delta())?;
+    acct.apply_patch(s3.account_patch())?;
 
     // 4. K_old now traps R-MINT-13 (driver_c / payload_c; traps at D5d, so nonce_c is NOT consumed).
     let m4 = run_rotation_mint(
@@ -1091,7 +1102,7 @@ async fn set_max_supply_lower_then_over_cap_rejects() -> Result<()> {
         .await
         .expect("the owner's set_max_supply(1) must succeed on a mutable faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(set.account_delta())?;
+    evolved.apply_patch(set.account_patch())?;
 
     // tx2: the SAME valid mint (amount 2) now exceeds the lowered cap -> R-MINT-15 traps.
     let over_cap = run_mint_against(
@@ -1132,7 +1143,7 @@ async fn set_max_supply_at_cap_accepts() -> Result<()> {
         .await
         .expect("the owner's set_max_supply(2) must succeed on a mutable faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(set.account_delta())?;
+    evolved.apply_patch(set.account_patch())?;
 
     // tx2: the mint (amount 2) is exactly at the new cap -> mints once, token_supply -> 2.
     let minted = run_mint_against(
@@ -1148,14 +1159,15 @@ async fn set_max_supply_at_cap_accepts() -> Result<()> {
         "exactly one recipient note"
     );
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) = minted
-        .account_delta()
+    let StorageSlotPatch::Value(cfg) = minted
+        .account_patch()
         .storage()
         .get(&cfg_slot)
         .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
+    let cfg = cfg.value().expect("value patch carries a value");
     assert_eq!(
         cfg[0],
         Felt::from(REDUCED_AMOUNT),
@@ -1204,7 +1216,7 @@ async fn set_max_supply_raise_then_accepts() -> Result<()> {
         .await
         .expect("the owner's set_max_supply(1_000_000) must succeed on a mutable faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(set.account_delta())?;
+    evolved.apply_patch(set.account_patch())?;
 
     // tx2: the SAME mint now fits under the raised cap and mints (nonce still fresh).
     let minted = run_mint_against(
@@ -1220,14 +1232,15 @@ async fn set_max_supply_raise_then_accepts() -> Result<()> {
         "exactly one recipient note"
     );
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) = minted
-        .account_delta()
+    let StorageSlotPatch::Value(cfg) = minted
+        .account_patch()
         .storage()
         .get(&cfg_slot)
         .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
+    let cfg = cfg.value().expect("value patch carries a value");
     assert_eq!(
         cfg[0],
         Felt::from(REDUCED_AMOUNT),

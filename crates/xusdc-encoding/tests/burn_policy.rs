@@ -255,7 +255,9 @@ async fn burn_zero_amount_rejects_direct() -> Result<()> {
 /// the burn consume traps the EXACT stock ERR_PAUSABLE_IS_PAUSED (`"the contract is paused"`) —
 /// enforced by `execute_burn_policy`'s `assert_not_paused` BEFORE the custom policy is dispatched.
 /// GREEN regardless of the policy body (the stock gate fires first); the
-/// FungibleFaucet-installed `is_paused` slot makes this a real gate, never a missing-slot artifact.
+/// `Pausable`-installed `is_paused` slot (v0.16 #2944 moved it out of `FungibleFaucet`) makes this
+/// a real gate, never a missing-slot artifact — which at v0.16 would be SILENT (#3047 no-ops
+/// `assert_not_paused` on a missing slot).
 /// Mirrors `set_attester_paused_rejects`.
 #[tokio::test]
 async fn burn_paused_rejects() -> Result<()> {
@@ -289,7 +291,7 @@ async fn burn_paused_rejects() -> Result<()> {
         .await
         .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
 
     // The faucet consumes the committed burn note against the EVOLVED (paused) account: execute_burn_policy
     // runs assert_not_paused BEFORE the custom policy, trapping the stock pause error (the valid amount
@@ -355,15 +357,17 @@ async fn zero_amount_burn_note_reachability() -> Result<()> {
 fn probe_burn_policy_export() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     assert!(
-        lib.exports()
-            .filter(|e| e.as_procedure().is_some())
+        lib.manifest
+            .exports()
+            .filter(|e| e.is_procedure())
             .any(|e| e
                 .path()
                 .to_string()
                 .ends_with("xreserve::burn_policy::check_policy")),
         "the xreserve library must export xreserve::burn_policy::check_policy; exports: {:?}",
-        lib.exports()
-            .filter(|e| e.as_procedure().is_some())
+        lib.manifest
+            .exports()
+            .filter(|e| e.is_procedure())
             .map(|e| e.path().to_string())
             .collect::<Vec<_>>()
     );

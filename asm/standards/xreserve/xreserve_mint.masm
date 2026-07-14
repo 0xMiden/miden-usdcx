@@ -11,7 +11,7 @@
 #
 # The write-side kernel primitives it uses (token_config value-slot read/write,
 # native_account::set_map_item, note::compute_and_store_recipient + output_note::*,
-# faucet::create_fungible_asset + faucet::mint) are exercised end-to-end under a mock chain by
+# fungible_asset::create + faucet::mint) are exercised end-to-end under a mock chain by
 # canary/mint-effects-grounding, and mirror the stock `mint_and_send` (fungible.masm) and the P2ID
 # recipient build (notes/p2id.masm). The recipient build is inlined here (from miden::protocol::note)
 # so the xreserve library depends only on the kernel/protocol and core libraries — no standards link
@@ -26,19 +26,17 @@ use miden::protocol::active_account
 use miden::protocol::native_account
 use miden::protocol::faucet
 use miden::protocol::note
-use miden::protocol::note::NOTE_TYPE_PUBLIC
+use {NOTE_TYPE_PUBLIC} from miden::protocol::note
 use miden::protocol::output_note
 use miden::protocol::account_id
-use miden::protocol::asset::FUNGIBLE_ASSET_MAX_AMOUNT
+use {FUNGIBLE_ASSET_MAX_AMOUNT} from miden::protocol::asset
 use miden::standards::access::pausable
+use miden::standards::assets::fungible_asset
 use xreserve::deposit_intent_parser
-use xreserve::deposit_intent_parser::USED_NONCES_SLOT
+use {USED_NONCES_SLOT} from xreserve::deposit_intent_parser
 use xreserve::attestation_verify
 use xreserve::encoding
-use xreserve::encoding::layout::AMOUNT_FELT_OFF
-use xreserve::encoding::layout::NONCE_FELT_OFF
-use xreserve::encoding::layout::REMOTE_RECIPIENT_FELT_OFF
-use xreserve::encoding::layout::DEPOSIT_INTENT_HEADER_FELTS
+use {AMOUNT_FELT_OFF, NONCE_FELT_OFF, REMOTE_RECIPIENT_FELT_OFF, DEPOSIT_INTENT_HEADER_FELTS} from xreserve::encoding::layout
 
 # CONSTANTS
 # =================================================================================================
@@ -60,7 +58,7 @@ const NONCE_USED_MARKER = [1, 0, 0, 0]
 # apply_mint_effects so the emitted recipient note is identifiable as P2ID. Array-literal const (not
 # parity-parsed, mirroring NONCE_USED_MARKER); functionally pinned by the composition happy tests
 # (recipient.script().root() == P2idNote::script_root()).
-const P2ID_SCRIPT_ROOT = [12857783041667862256, 16051201080474444825, 5045064883019570010, 12450335876814921250]
+const P2ID_SCRIPT_ROOT = [7131697192369665042, 13614976149584716721, 15020972229364874097, 1084006998777425639]
 
 # ERRORS
 # =================================================================================================
@@ -93,7 +91,7 @@ const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient val
 #!
 #! Inputs:
 #!   Operand stack: [intent_ptr, len_felts, scale_exp]
-#!   Advice stack: [fee_amount(8 limbs), pubkey(9), signature(17)]   (MVP fee_amount = eight zero limbs)
+#!   Advice stack: [fee_amount(8 limbs), pubkey(16), signature(17)]   (MVP fee_amount = eight zero limbs)
 #! Outputs: [pad(16)]
 #!
 #! Where:
@@ -111,11 +109,12 @@ const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient val
 #!
 #! Invocation: exec
 @locals(12)
+@account_procedure
 pub proc mint
     # => [intent_ptr, len_felts, scale_exp]
     # halt gate (pause): a paused faucet must not mint. FIRST (before any verify), mirrors the sibling
     # setters + the stock mint policy this custom mint bypasses; operand-stack-neutral (reads the
-    # is_paused slot that FungibleFaucet installs).
+    # is_paused slot the base Pausable component installs).
     exec.pausable::assert_not_paused
     # => [intent_ptr, len_felts, scale_exp]
 
@@ -339,11 +338,16 @@ proc apply_mint_effects
     loc_load.20 loc_load.21 sub
     # => [amount - fee_amount, note_idx, ...]
 
-    exec.faucet::create_fungible_asset
-    # => [ASSET_KEY, ASSET_VALUE, note_idx, ...]
+    # v0.16 (#3255): the faucet-relative create was removed — push the faucet's own id and call
+    # the standards fungible-asset constructor, exactly as the stock mint_and_send does.
+    exec.active_account::get_id
+    # => [faucet_id_suffix, faucet_id_prefix, amount - fee_amount, note_idx, ...]
+
+    exec.fungible_asset::create
+    # => [ASSET_ID, ASSET_VALUE, note_idx, ...]
 
     dupw.1 dupw.1 exec.faucet::mint
-    # => [ASSET_KEY, ASSET_VALUE, note_idx, ...]
+    # => [ASSET_ID, ASSET_VALUE, note_idx, ...]
 
     exec.output_note::add_asset
     # => [...]   (the recipient note is emitted as a tx side effect)

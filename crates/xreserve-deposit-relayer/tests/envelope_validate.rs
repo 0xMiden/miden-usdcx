@@ -220,7 +220,7 @@ fn t_rly_20_partner_attester_identity_is_deterministic_and_canonically_keyed() {
     assert_eq!(pk[0] & 0xfe, 0x02, "compressed SEC1 prefix is 0x02 or 0x03");
     assert_eq!(
         attester.commitment(),
-        pubkey_commitment(&pk),
+        pubkey_commitment(&pk).expect("the deterministic partner key is a valid point"),
         "the allowlist key must be unit-04's owned Poseidon2 commitment (DC-3), never re-derived"
     );
     // a second construction yields the identical key (no hidden RNG state / time dependence)

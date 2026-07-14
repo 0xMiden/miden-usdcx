@@ -22,7 +22,8 @@ const ERR_XRESERVE_MINT_DENIED = "stock mint_and_send is denied; only xreserve_m
 #! TokenPolicyManager; invoked by `policy_manager::execute_mint_policy` via `dynexec` on the stock
 #! `mint_and_send` path. The custom `xreserve_mint` never routes here.
 #!
-#! Inputs:  [amount, tag, note_type, RECIPIENT]
+#! Inputs:  [ASSET_VALUE, tag, note_type, RECIPIENT]   (v0.16 #3106: the full asset-value word
+#!          replaces the bare amount; this deny guard never reads the stack)
 #! Outputs: never returns -- unconditional trap (ERR_XRESERVE_MINT_DENIED).
 #!
 #! Panics if:
@@ -30,6 +31,7 @@ const ERR_XRESERVE_MINT_DENIED = "stock mint_and_send is denied; only xreserve_m
 #!   R-MINT-16); only the custom xreserve_mint surface may raise supply.
 #!
 #! Invocation: dynexec
+@account_procedure
 pub proc check_policy
     push.0 assert.err=ERR_XRESERVE_MINT_DENIED
 end

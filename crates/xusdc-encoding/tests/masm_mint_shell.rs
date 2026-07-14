@@ -69,12 +69,12 @@ async fn happy_path_mint_preconditions(#[case] vector_id: &str) -> Result<()> {
     });
     // the shell is read-only: the only account mutation is the auth nonce increment
     assert_eq!(
-        executed.account_delta().nonce_delta(),
+        (executed.final_account().nonce() - executed.initial_account().nonce()),
         miden_protocol::ONE,
         "auth must increment the nonce exactly once"
     );
     assert!(
-        executed.account_delta().storage().is_empty(),
+        executed.account_patch().storage().is_empty(),
         "the shell must not write account storage"
     );
     Ok(())
@@ -145,8 +145,9 @@ async fn r_mint_rejects(
 fn probe_shell_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     let exports: Vec<String> = lib
+        .manifest
         .exports()
-        .filter(|e| e.as_procedure().is_some())
+        .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
     let canonical = "::xreserve::deposit_intent_parser::assert_deposit_intent";
@@ -228,12 +229,12 @@ async fn d5b_happy_amount_fee(
         .unwrap_or_else(|e| panic!("D5b must accept these reduced amount/fee values: {e}"));
     // the shell is read-only: the only account mutation is the auth nonce increment
     assert_eq!(
-        executed.account_delta().nonce_delta(),
+        (executed.final_account().nonce() - executed.initial_account().nonce()),
         miden_protocol::ONE,
         "auth must increment the nonce exactly once"
     );
     assert!(
-        executed.account_delta().storage().is_empty(),
+        executed.account_patch().storage().is_empty(),
         "the D5b shell must not write account storage"
     );
     Ok(())
@@ -323,8 +324,9 @@ async fn d5b_fee_advice_malformed_limb() -> Result<()> {
 fn probe_mint_amounts_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     let exports: Vec<String> = lib
+        .manifest
         .exports()
-        .filter(|e| e.as_procedure().is_some())
+        .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
     let canonical = "::xreserve::deposit_intent_parser::assert_mint_amounts";
@@ -376,12 +378,12 @@ async fn d5c_happy_nonce_unused(#[case] vector_id: &str) -> Result<()> {
         panic!("vector {vector_id}: an unused nonce must pass the D5c guard: {e}")
     });
     assert_eq!(
-        executed.account_delta().nonce_delta(),
+        (executed.final_account().nonce() - executed.initial_account().nonce()),
         miden_protocol::ONE,
         "auth must increment the nonce exactly once"
     );
     assert!(
-        executed.account_delta().storage().is_empty(),
+        executed.account_patch().storage().is_empty(),
         "D5c is assert-zero only: it must not write account storage (no nonce SET)"
     );
     Ok(())
@@ -451,9 +453,12 @@ async fn d5c_unrelated_seeded_nonce_passes() -> Result<()> {
     let executed = run_call_driver(&h, "drive")
         .await
         .unwrap_or_else(|e| panic!("a seeded-but-unrelated nonce must not reject {run_id}: {e}"));
-    assert_eq!(executed.account_delta().nonce_delta(), miden_protocol::ONE);
+    assert_eq!(
+        (executed.final_account().nonce() - executed.initial_account().nonce()),
+        miden_protocol::ONE
+    );
     assert!(
-        executed.account_delta().storage().is_empty(),
+        executed.account_patch().storage().is_empty(),
         "D5c is assert-zero only: it must not write account storage (no nonce SET)"
     );
     Ok(())
@@ -468,8 +473,9 @@ async fn d5c_unrelated_seeded_nonce_passes() -> Result<()> {
 fn probe_nonce_unused_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     let exports: Vec<String> = lib
+        .manifest
         .exports()
-        .filter(|e| e.as_procedure().is_some())
+        .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
     let canonical = "::xreserve::deposit_intent_parser::assert_nonce_unused";
@@ -555,12 +561,12 @@ async fn d5d_happy_attestation() -> Result<()> {
         .unwrap_or_else(|e| panic!("an allowlisted attester + valid signature must pass D5d: {e}"));
     // the verify shell is read-only: the only account mutation is the auth nonce increment
     assert_eq!(
-        executed.account_delta().nonce_delta(),
+        (executed.final_account().nonce() - executed.initial_account().nonce()),
         miden_protocol::ONE,
         "auth must increment the nonce exactly once"
     );
     assert!(
-        executed.account_delta().storage().is_empty(),
+        executed.account_patch().storage().is_empty(),
         "the D5d verify shell must not write account storage"
     );
     Ok(())
@@ -665,8 +671,9 @@ async fn d5d_missing_advice_traps() -> Result<()> {
 fn probe_attestation_verify_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     let exports: Vec<String> = lib
+        .manifest
         .exports()
-        .filter(|e| e.as_procedure().is_some())
+        .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
     let canonical = "::xreserve::attestation_verify::verify_attestation";

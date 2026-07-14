@@ -3,7 +3,7 @@
 # The production admin surface for the STOCK `grant_role` under the network account: a fixed-root note
 # whose parameters are CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the network executor
 # controls). It stages the note storage into memory, marshals the creator's params onto the stack in
-# the proc's Inputs order, and `call`s the OWNER-or-role-admin-gated stock
+# the proc's Inputs order, and `call`s the role-admin-gated stock
 # `miden::standards::access::rbac::grant_role` (the sender gate lives in the proc; the note sender is
 # kernel-forced, so an unauthorized creator traps there). The `call` resolves to the
 # SAME proc root the faucet exposes via the RBAC component re-exports
@@ -36,7 +36,9 @@ const ERR_XRESERVE_GRANT_ROLE_NOTE_STORAGE = "grant_role note storage item count
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Consumes the `grant_role` admin note and drives the owner-or-role-admin-gated role grant.
+#! Consumes the `grant_role` admin note and drives the role-admin-gated role grant (v0.16 #3215:
+#! the gate is the granted role's EFFECTIVE admin — its delegated admin, else the built-in ADMIN
+#! role; the v15 owner leg is gone — MIGRATION-V16-ALPHA2.md S2/S21).
 #!
 #! Stages the creator-committed params (`[role_symbol, account_suffix, account_prefix]`) into memory
 #! at PARAM_PTR, marshals them onto the stack as `[role_symbol, account_suffix, account_prefix,
@@ -54,7 +56,8 @@ const ERR_XRESERVE_GRANT_ROLE_NOTE_STORAGE = "grant_role note storage item count
 #!
 #! Panics if:
 #! - the note storage does not carry exactly 3 items.
-#! - the note sender is neither the owner nor a role admin (grant_role's authorization gate).
+#! - the note sender does not hold the granted role's effective admin role (grant_role's
+#!   authorization gate, ERR_SENDER_NOT_ROLE_ADMIN).
 #!
 #! Invocation: dyncall
 @note_script

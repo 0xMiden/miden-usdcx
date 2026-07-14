@@ -24,26 +24,25 @@ use miden_processor::advice::AdviceInputs;
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
-    Account, AccountComponent, AccountId, AccountIdVersion, AccountType, RoleSymbol, StorageMap,
-    StorageMapKey, StorageSlot, StorageSlotName,
+    Account, AccountComponent, AccountId, AccountIdVersion, AccountProcedureRoot, AccountType,
+    AssetCallbackFlag, RoleSymbol, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
 };
-use miden_protocol::assembly::Library;
+use miden_protocol::assembly::{Library, Linkage, Path as MasmPath};
 use miden_protocol::asset::{AssetAmount, FungibleAsset, TokenSymbol};
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{Note, NoteType};
 use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote, TransactionKernel};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
-use miden_standards::account::access::{Authority, Ownable2Step, RoleBasedAccessControl};
+use miden_standards::account::access::{Authority, Ownable2Step, Pausable, RoleBasedAccessControl};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
-use miden_standards::account::policies::{
-    BurnPolicyConfig, MintPolicyConfig, PolicyRegistration, TokenPolicyManager,
-};
+use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
+use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::{BurnNote, P2idNote};
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::StandardsLib;
-use miden_testing::{Auth, MockChain};
+use miden_testing::{AccountState, Auth, MockChain};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
     BURN_POLICY_PROC_PATH, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE, MINT_DENY_GUARD_PROC_PATH,
@@ -295,14 +294,24 @@ pub const SLOT_PROBE_PATH: &str = "xusdc::test_fixtures::slot_probe";
 /// role-holder / non-holder note senders in the `set_attester` suite. Mirrors
 /// `miden-testing/tests/scripts/rbac.rs:49-51`.
 pub fn test_account_id(seed: u8) -> AccountId {
-    AccountId::dummy([seed; 15], AccountIdVersion::Version1, AccountType::Private)
+    AccountId::dummy(
+        [seed; 15],
+        AccountIdVersion::Version1,
+        AccountType::Private,
+        AssetCallbackFlag::Disabled,
+    )
 }
 
 /// A deterministic PUBLIC dummy account id — usable as a faucet target for the F5 scheme-2
 /// `NetworkAccountTarget` routing attachment (mint/burn/admin notes require a PUBLIC faucet id) and
 /// as a fungible-asset issuer in note-construction unit tests.
 pub fn test_faucet_id(seed: u8) -> AccountId {
-    AccountId::dummy([seed; 15], AccountIdVersion::Version1, AccountType::Public)
+    AccountId::dummy(
+        [seed; 15],
+        AccountIdVersion::Version1,
+        AccountType::Public,
+        AssetCallbackFlag::Disabled,
+    )
 }
 
 pub fn assemble_xreserve_lib() -> Result<Library> {
@@ -312,15 +321,18 @@ pub fn assemble_xreserve_lib() -> Result<Library> {
     // core+protocol-only; linking standards only adds resolvable symbols (it does not change their
     // MAST roots).
     let assembler = TransactionKernel::assembler()
-        .with_dynamic_library(StandardsLib::default())
+        .with_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
         .map_err(|e| {
             anyhow::anyhow!("linking the standards library into the xreserve assembler: {e}")
         })?
         .with_warnings_as_errors(true);
     let lib = assembler
-        .assemble_library_from_dir(xusdc_encoding::xreserve_asm_dir(), "xreserve")
+        .assemble_library_from_root(
+            xusdc_encoding::xreserve_asm_dir().join("mod.masm"),
+            Some(MasmPath::new("xreserve")),
+        )
         .map_err(|e| anyhow::anyhow!("xreserve library failed to assemble: {e}"))?;
-    Ok(Arc::unwrap_or_clone(lib))
+    Ok(*lib)
 }
 
 /// Assembles a TEST-ONLY variant of the `xreserve` library in which `apply_mint_effects` and
@@ -350,15 +362,15 @@ pub fn assemble_xreserve_lib_effects_public() -> Result<Library> {
     std::fs::write(&mint_masm, src).context("writing the effects-public xreserve_mint.masm")?;
 
     let assembler = TransactionKernel::assembler()
-        .with_dynamic_library(StandardsLib::default())
+        .with_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
         .map_err(|e| {
             anyhow::anyhow!("linking the standards library into the effects-public assembler: {e}")
         })?
         .with_warnings_as_errors(true);
     let lib = assembler
-        .assemble_library_from_dir(&tmp_dir, "xreserve")
+        .assemble_library_from_root(tmp_dir.join("mod.masm"), Some(MasmPath::new("xreserve")))
         .map_err(|e| anyhow::anyhow!("effects-public xreserve library failed to assemble: {e}"))?;
-    Ok(Arc::unwrap_or_clone(lib))
+    Ok(*lib)
 }
 
 /// Inserts `pub ` before the line-anchored `proc {name}` declaration iff it is not already
@@ -605,7 +617,7 @@ pub async fn run_call_driver(
     proc_name: &str,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     let src = format!(
-        "use {path}->driver\nbegin\n    call.driver::{proc_name}\nend\n",
+        "use {path} as driver\n@transaction_script\npub proc main\n    call.driver::{proc_name}\nend\n",
         path = h.driver_path
     );
     let tx_script = CodeBuilder::new()
@@ -661,6 +673,7 @@ pub fn shell_driver_src(
          #! Outputs: [pad(16)]\n\
          #!\n\
          #! Invocation: call\n\
+         @account_procedure\n\
          pub proc drive\n",
     );
     stage_preimage(&mut src, preimage);
@@ -701,6 +714,7 @@ pub fn slot_probe_src(domain: Word, identifier: Word) -> String {
          #! Outputs: [pad(16)]\n\
          #!\n\
          #! Invocation: call\n\
+         @account_procedure\n\
          pub proc read_slots\n\
              push.PROBE_DOMAIN_SLOT[0..2]\n\
              exec.active_account::get_item\n\
@@ -763,6 +777,7 @@ pub fn mint_amounts_driver_src(preimage: &[Felt], scale_exp: u32) -> String {
          #! Outputs: [pad(16)]\n\
          #!\n\
          #! Invocation: call\n\
+         @account_procedure\n\
          pub proc drive\n",
     );
     stage_preimage(&mut src, preimage);
@@ -783,7 +798,7 @@ pub async fn run_call_driver_with_advice(
     advice_stack: Option<Vec<Felt>>,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     let src = format!(
-        "use {path}->driver\nbegin\n    call.driver::{proc_name}\nend\n",
+        "use {path} as driver\n@transaction_script\npub proc main\n    call.driver::{proc_name}\nend\n",
         path = h.driver_path
     );
     let tx_script = CodeBuilder::new()
@@ -824,6 +839,7 @@ pub fn nonce_driver_src(preimage: &[Felt]) -> String {
          #! Outputs: [pad(16)]\n\
          #!\n\
          #! Invocation: call\n\
+         @account_procedure\n\
          pub proc drive\n",
     );
     stage_preimage(&mut src, preimage);
@@ -836,11 +852,13 @@ pub fn nonce_driver_src(preimage: &[Felt]) -> String {
 // D5D ATTESTATION VERIFY HELPERS
 // ================================================================================================
 
-/// A deterministically-generated attester: its 9-felt compressed pubkey + 17-felt signature (as
-/// advice felts) over a payload's keccak digest, and its `xReserveAttesters` allowlist commitment
-/// (the miden-crypto `PublicKey::to_commitment` oracle == the on-chain MASM `pubkey_commitment`).
+/// A deterministically-generated attester: its 16-felt affine pubkey (vm#3342) + 17-felt
+/// signature (as advice felts) over a payload's keccak digest, and its `xReserveAttesters`
+/// allowlist commitment (the miden-crypto `PublicKey::to_commitment` oracle == the on-chain MASM
+/// `pubkey_commitment`).
 pub struct AttesterVector {
-    /// 9-felt u32-LE-packed compressed SEC1 pubkey (the candidate-pubkey advice felts).
+    /// 16-felt affine pubkey coordinates `qx_le_u32[8] || qy_le_u32[8]` (the candidate-pubkey
+    /// advice felts; the Circle wire form stays the 33-byte compressed key below).
     pub pubkey_felts: Vec<Felt>,
     /// 17-felt u32-LE-packed r||s||v signature over keccak256(payload) (the signature advice felts).
     pub sig_felts: Vec<Felt>,
@@ -853,7 +871,8 @@ pub struct AttesterVector {
 }
 
 impl AttesterVector {
-    /// The advice stack `verify_attestation` reads: pubkey (9) then signature (17), in seed order.
+    /// The advice stack `verify_attestation` reads: pubkey (16 affine felts) then signature
+    /// (17), in seed order.
     pub fn advice(&self) -> Vec<Felt> {
         self.pubkey_felts
             .iter()
@@ -891,7 +910,9 @@ pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
         .to_commitment();
 
     AttesterVector {
-        pubkey_felts: bytes_to_packed_u32_elements(&pk33),
+        pubkey_felts: xusdc_encoding::xreserve::encoding::affine_pubkey_felts(&pk33)
+            .expect("the deterministic attester key is a valid curve point")
+            .to_vec(),
         sig_felts: bytes_to_packed_u32_elements(&sig65),
         commitment,
         pubkey_bytes: pk33,
@@ -971,6 +992,7 @@ pub fn attestation_driver_src(preimage: &[Felt], len_bytes: u64) -> String {
          #! Outputs: [pad(16)]\n\
          #!\n\
          #! Invocation: call\n\
+         @account_procedure\n\
          pub proc drive\n",
     );
     stage_preimage(&mut src, preimage);
@@ -1106,7 +1128,7 @@ async fn run_mint_driver(
     driver_path: &str,
     proc: &str,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let src = format!("use {driver_path}->driver\nbegin\n    call.driver::{proc}\nend\n");
+    let src = format!("use {driver_path} as driver\n@transaction_script\npub proc main\n    call.driver::{proc}\nend\n");
     let tx_script = CodeBuilder::new()
         .with_dynamically_linked_library(driver_code)
         .expect("linking the driver into the tx script")
@@ -1156,6 +1178,7 @@ pub fn mint_effects_driver_src(inputs: &MintInputs, recipient: AccountId) -> Str
          #! Outputs: [pad(16)]\n\
          #!\n\
          #! Invocation: call\n\
+         @account_procedure\n\
          pub proc drive\n",
     );
     writeln!(src, "    push.{}", inputs.note_type).unwrap();
@@ -1189,6 +1212,7 @@ pub fn mint_noeffect_probe_src(expected_token_supply: u64, key: [u32; 4]) -> Str
          #! Outputs: [pad(16)]\n\
          #!\n\
          #! Invocation: call\n\
+         @account_procedure\n\
          pub proc check\n\
          \x20\x20\x20\x20push.PROBE_TOKEN_CONFIG_SLOT[0..2] exec.active_account::get_item\n\
          \x20\x20\x20\x20push.{expected} assert_eq.err=\"no-effect: token_supply changed\"\n\
@@ -1239,6 +1263,7 @@ pub fn recipient_driver_src(preimage: &[Felt], expected: Option<(Felt, Felt)>) -
          #! Outputs: [pad(16)]\n\
          #!\n\
          #! Invocation: call\n\
+         @account_procedure\n\
          pub proc drive\n",
     );
     stage_preimage(&mut src, preimage);
@@ -1287,7 +1312,8 @@ pub fn uint256_be(value: u64) -> [u8; 32] {
 }
 
 /// The composition's combined advice stack, in the order the chain consumes it: `feeAmount` (8
-/// limbs, read by D5b) then the attester's pubkey (9) + signature (17) (read by D5d).
+/// limbs, read by D5b) then the attester's affine pubkey (16, vm#3342) + signature (17) (read by
+/// D5d).
 pub fn composition_advice(fee_amount_limbs: [u32; 8], attester: &AttesterVector) -> Vec<Felt> {
     fee_advice_felts(fee_amount_limbs)
         .into_iter()
@@ -1478,6 +1504,7 @@ pub fn mint_composition_driver_src(preimage: &[Felt], len_felts: u64, scale_exp:
          #! Outputs: [pad(16)]\n\
          #!\n\
          #! Invocation: call\n\
+         @account_procedure\n\
          pub proc drive\n",
     );
     stage_preimage(&mut src, preimage);
@@ -1504,6 +1531,7 @@ pub fn composition_noeffect_probe_src(expected_token_supply: u64, nonce_key: Wor
          #! Outputs: [pad(16)]\n\
          #!\n\
          #! Invocation: call\n\
+         @account_procedure\n\
          pub proc check\n\
          \x20\x20\x20\x20push.PROBE_TOKEN_CONFIG_SLOT[0..2] exec.active_account::get_item\n\
          \x20\x20\x20\x20push.{expected} assert_eq.err=\"no-effect: token_supply changed\"\n\
@@ -1531,6 +1559,7 @@ pub fn composition_supply_probe_src(expected_token_supply: u64) -> String {
          #! Outputs: [pad(16)]\n\
          #!\n\
          #! Invocation: call\n\
+         @account_procedure\n\
          pub proc check\n\
          \x20\x20\x20\x20push.PROBE_TOKEN_CONFIG_SLOT[0..2] exec.active_account::get_item\n\
          \x20\x20\x20\x20push.{expected} assert_eq.err=\"no-effect: token_supply changed\"\n\
@@ -1548,7 +1577,7 @@ async fn run_composition_driver(
     proc: &str,
     advice: Option<Vec<Felt>>,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let src = format!("use {driver_path}->driver\nbegin\n    call.driver::{proc}\nend\n");
+    let src = format!("use {driver_path} as driver\n@transaction_script\npub proc main\n    call.driver::{proc}\nend\n");
     let tx_script = CodeBuilder::new()
         .with_dynamically_linked_library(driver_code)
         .expect("linking the driver into the tx script")
@@ -2070,7 +2099,7 @@ pub async fn run_mint_against(
     advice: Vec<Felt>,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     let src =
-        format!("use {MINT_COMPOSITION_DRIVER_PATH}->driver\nbegin\n    call.driver::drive\nend\n");
+        format!("use {MINT_COMPOSITION_DRIVER_PATH} as driver\n@transaction_script\npub proc main\n    call.driver::drive\nend\n");
     let tx_script = CodeBuilder::new()
         .with_dynamically_linked_library(&h.driver_code)
         .expect("linking the driver into the tx script")
@@ -2217,7 +2246,9 @@ pub async fn run_rotation_mint(
     advice: Vec<Felt>,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     let (path, code) = driver;
-    let src = format!("use {path}->driver\nbegin\n    call.driver::drive\nend\n");
+    let src = format!(
+        "use {path} as driver\n@transaction_script\npub proc main\n    call.driver::drive\nend\n"
+    );
     let tx_script = CodeBuilder::new()
         .with_dynamically_linked_library(code)
         .expect("linking the rotation driver into the tx script")
@@ -2251,8 +2282,9 @@ pub enum GuardSelection {
 /// active or allow-all per the [`GuardSelection`]), plus the resolved deny-guard proc root. The
 /// production deny path is composed by `XReserveStablecoinBuilder::build_components`; the
 /// allow-all/deny oracle pair is composed by the test-only [`oracle_components`] helper. No stock
-/// `PausableManager` anywhere (the Domain-Pauser-only model): the `is_paused` slot is
-/// FungibleFaucet-installed and pause is exclusively `xreserve::pause_admin`.
+/// `PausableManager` anywhere (the Domain-Pauser-only model): the `is_paused` slot is installed by
+/// the base `Pausable` component (v0.16 #2944 moved it out of `FungibleFaucet`) and pause is
+/// exclusively `xreserve::pause_admin`.
 pub struct GuardedMint {
     pub harness: CompositionHarness,
     pub deny_root: Word,
@@ -2442,22 +2474,55 @@ fn oracle_components(
     deny_root: Word,
     deny_active: bool,
 ) -> Result<Vec<AccountComponent>> {
-    let deny = MintPolicyConfig::Custom(deny_root);
+    let deny = MintPolicy::custom(
+        AccountProcedureRoot::from_raw(deny_root),
+        [xreserve_component.clone()],
+    )
+    .map_err(|e| anyhow::anyhow!("oracle custom mint policy: {e}"))?;
+    let allow = MintPolicy::allow_all();
     let (active, reserved) = if deny_active {
-        (deny, MintPolicyConfig::AllowAll)
+        (deny, allow)
     } else {
-        (MintPolicyConfig::AllowAll, deny)
+        (allow, deny)
     };
-    let manager = TokenPolicyManager::new()
-        .with_mint_policy(active, PolicyRegistration::Active)
-        .map_err(|e| anyhow::anyhow!("oracle manager active mint policy: {e}"))?
-        .with_mint_policy(reserved, PolicyRegistration::Reserved)
-        .map_err(|e| anyhow::anyhow!("oracle manager reserved mint policy: {e}"))?;
-    // No PausableManager (the Domain-Pauser-only model): the is_paused slot execute_mint_policy's
-    // assert_not_paused reads is FungibleFaucet-installed (fungible/mod.rs:397, pinned v0.15.3).
-    // Component order/contents mirror XReserveStablecoinBuilder::assemble_components.
-    let mut components = vec![faucet.into(), xreserve_component];
-    components.extend(manager); // [policy-manager component, MintAllowAll]
+    // v16: `active_burn_policy` is a REQUIRED manager-builder param (a mint-only manager is no
+    // longer expressible); allow-all is the pinned harness-only choice — burn is out of scope for
+    // the mint oracle's tests and BOTH pair variants carry it identically, so the code-identity
+    // invariant is preserved (MIGRATION-V16-ALPHA2.md S18, operator-approved).
+    let manager = TokenPolicyManager::builder()
+        .active_mint_policy(active)
+        .allowed_mint_policy(reserved)
+        .active_burn_policy(BurnPolicy::allow_all())
+        .build();
+    // No PausableManager (the Domain-Pauser-only model); the base Pausable component installs the
+    // is_paused slot execute_mint_policy's assert_not_paused reads (v16 — #2944 moved it out of
+    // FungibleFaucet). Component order/contents mirror
+    // XReserveStablecoinBuilder::assemble_components, including its policy-companion seam: the
+    // manager iterator yields [manager, then one companion copy per distinct policy root]; the
+    // xreserve component is installed once here, so its single custom-policy copy is dropped
+    // (asserted), while the stock MintAllowAll/BurnAllowAll companions are kept — the
+    // code-identical pair NEEDS them present in both variants.
+    let xreserve_code = xreserve_component.component_code().clone();
+    let mut parts = manager.into_iter();
+    let manager_component = parts.next().expect("manager component first");
+    let companions: Vec<AccountComponent> = parts.collect();
+    let (dup, keep): (Vec<_>, Vec<_>) = companions
+        .into_iter()
+        .partition(|c| c.component_code().as_library() == xreserve_code.as_library());
+    anyhow::ensure!(
+        dup.len() == 1 && keep.len() == 2,
+        "mint-oracle seam: expected 1 xreserve companion copy + 2 stock policy companions, got \
+         {} + {}",
+        dup.len(),
+        keep.len()
+    );
+    let mut components = vec![
+        faucet.into(),
+        Pausable::unpaused().into(),
+        xreserve_component,
+    ];
+    components.push(manager_component);
+    components.extend(keep); // [MintAllowAll, BurnAllowAll]
     Ok(components)
 }
 
@@ -2473,19 +2538,18 @@ pub async fn run_mint_and_send(
     note_type: u8,
     tag: u32,
     amount: u64,
-    enable_callbacks: u8,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     let src = format!(
         "
-            begin
+            @transaction_script
+            pub proc main
                 push.{recipient}
                 push.{note_type}
                 push.{tag}
                 push.{amount}
                 push.{faucet_id_prefix}
                 push.{faucet_id_suffix}
-                push.{enable_callbacks}
-                exec.::miden::protocol::asset::create_fungible_asset
+                exec.::miden::standards::assets::fungible_asset::create
                 call.::miden::standards::faucets::fungible::mint_and_send
                 dropw dropw dropw dropw
             end
@@ -2560,12 +2624,16 @@ pub struct BurnPolicyHarness {
 /// `set_min_burn.rs::support_replica_carries_delegation_seed` (the production twin is
 /// `role_admin.rs::shipped_delegation_reads_back`).
 fn seeded_dom_roles_rbac_component(
+    owner: AccountId,
     pauser_holder: AccountId,
     manager_holder: AccountId,
 ) -> AccountComponent {
     let pauser = RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol");
     let manager =
         RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol");
+    // v16 (#3215): the owner has no implicit super-admin standing — the stock ADMIN role is
+    // seeded on the owner's account, mirroring the production seed (S2, operator-approved).
+    let admin = RoleBasedAccessControl::admin_role();
     let member_word = Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
     // [1, DOM_MANAGER, 0, 0]: member_count = 1 with administration delegated to DOM_MANAGER (CMP-F5).
     let delegated_config_word = Word::from([
@@ -2594,8 +2662,17 @@ fn seeded_dom_roles_rbac_component(
             ])),
             member_word,
         ),
+        (
+            StorageMapKey::new(Word::from([
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::from(&admin),
+            ])),
+            member_word,
+        ),
     ])
-    .expect("the two-role role_config seed is valid");
+    .expect("the three-role role_config seed is valid");
 
     let role_membership = StorageMap::with_entries([
         (
@@ -2616,8 +2693,17 @@ fn seeded_dom_roles_rbac_component(
             ])),
             member_word,
         ),
+        (
+            StorageMapKey::new(Word::from([
+                Felt::ZERO,
+                Felt::from(&admin),
+                owner.suffix(),
+                owner.prefix().as_felt(),
+            ])),
+            member_word,
+        ),
     ])
-    .expect("the two-role role_membership seed is valid");
+    .expect("the three-role role_membership seed is valid");
 
     AccountComponent::new(
         RoleBasedAccessControl::code().clone(),
@@ -2653,32 +2739,61 @@ fn oracle_burn_components(
     pauser_holder: AccountId,
     manager_holder: AccountId,
 ) -> Result<Vec<AccountComponent>> {
-    let real_burn = BurnPolicyConfig::Custom(burn_root);
+    let real_burn = BurnPolicy::custom(
+        AccountProcedureRoot::from_raw(burn_root),
+        [xreserve_component.clone()],
+    )
+    .map_err(|e| anyhow::anyhow!("oracle custom burn policy: {e}"))?;
+    let allow_burn = BurnPolicy::allow_all();
     let (active_burn, reserved_burn) = if burn_real_active {
-        (real_burn, BurnPolicyConfig::AllowAll)
+        (real_burn, allow_burn)
     } else {
-        (BurnPolicyConfig::AllowAll, real_burn)
+        (allow_burn, real_burn)
     };
-    let manager = TokenPolicyManager::new()
-        .with_mint_policy(
-            MintPolicyConfig::Custom(mint_deny_root),
-            PolicyRegistration::Active,
+    let manager = TokenPolicyManager::builder()
+        .active_mint_policy(
+            MintPolicy::custom(
+                AccountProcedureRoot::from_raw(mint_deny_root),
+                [xreserve_component.clone()],
+            )
+            .map_err(|e| anyhow::anyhow!("oracle custom mint policy: {e}"))?,
         )
-        .map_err(|e| anyhow::anyhow!("oracle manager active mint policy: {e}"))?
-        .with_burn_policy(active_burn, PolicyRegistration::Active)
-        .map_err(|e| anyhow::anyhow!("oracle manager active burn policy: {e}"))?
-        .with_burn_policy(reserved_burn, PolicyRegistration::Reserved)
-        .map_err(|e| anyhow::anyhow!("oracle manager reserved burn policy: {e}"))?;
+        .active_burn_policy(active_burn)
+        .allowed_burn_policy(reserved_burn)
+        .build();
 
-    // Component order/contents mirror XReserveStablecoinBuilder::{assemble_components, build_components}:
-    // faucet + xreserve + [policy-manager, BurnAllowAll] + the owner-gating foundation
-    // (Ownable2Step + seeded DOM-roles RBAC + Authority::OwnerControlled). No PausableManager
-    // (the Domain-Pauser-only model): the is_paused slot is FungibleFaucet-installed and pause is
+    // Component order/contents mirror XReserveStablecoinBuilder::{assemble_components,
+    // build_components}, including the v16 policy-companion seam: the manager iterator yields
+    // [manager, then one companion copy per distinct policy root] — here the mint-deny + real-burn
+    // customs each carry the xreserve component (dropped: it is installed once below) and the
+    // allow-all burn carries the stock BurnAllowAll (kept: the code-identical pair needs it in
+    // BOTH variants). The base Pausable component installs the is_paused slot (v16 — #2944 moved
+    // it out of FungibleFaucet); no PausableManager (the Domain-Pauser-only model) — pause is
     // exclusively the DOM_PAUSER custom xreserve::pause_admin procs.
-    let mut components = vec![faucet.into(), xreserve_component];
-    components.extend(manager);
+    let xreserve_code = xreserve_component.component_code().clone();
+    let mut parts = manager.into_iter();
+    let manager_component = parts.next().expect("manager component first");
+    let companions: Vec<AccountComponent> = parts.collect();
+    let (dup, keep): (Vec<_>, Vec<_>) = companions
+        .into_iter()
+        .partition(|c| c.component_code().as_library() == xreserve_code.as_library());
+    anyhow::ensure!(
+        dup.len() == 2 && keep.len() == 1,
+        "burn-oracle seam: expected 2 xreserve companion copies + 1 stock burn companion, got \
+         {} + {}",
+        dup.len(),
+        keep.len()
+    );
+    let mut components = vec![
+        faucet.into(),
+        Pausable::unpaused().into(),
+        xreserve_component,
+    ];
+    components.push(manager_component);
+    components.extend(keep); // [BurnAllowAll]
     components.push(Ownable2Step::new(owner).into());
     components.push(seeded_dom_roles_rbac_component(
+        owner,
         pauser_holder,
         manager_holder,
     ));
@@ -2793,20 +2908,21 @@ pub fn setup_burn_policy_account(
 
     // The user wallet seeded with exactly the burn asset (faucet_id known only now).
     let asset = FungibleAsset::new(faucet_id, burn_amount).context("invalid burn asset")?;
-    let user = builder
-        .add_existing_wallet_with_assets(Auth::IncrNonce, [asset.into()])
+    let user = add_emitting_wallet(&mut builder, Auth::IncrNonce, [asset.into()])
         .context("adding the burn user wallet")?;
     let user_id = user.id();
 
     // The canonical burn note (random serial) — created while the builder rng is live (per the burn canary).
-    let burn_note = BurnNote::create(
-        user_id,
-        faucet_id,
-        asset.into(),
-        Default::default(),
-        builder.rng_mut(),
-    )
-    .context("creating the canonical burn note")?;
+    // v16 (#2283): the stock BurnNote is a bon builder; the faucet id is derived from the
+    // asset itself and the builder yields a BurnNote that converts into the Note the harness
+    // threads around.
+    let burn_note: Note = BurnNote::builder()
+        .sender(user_id)
+        .asset(asset)
+        .generate_serial_number(builder.rng_mut())
+        .build()
+        .context("creating the canonical burn note")?
+        .into();
 
     let chain = builder
         .build()
@@ -2838,38 +2954,60 @@ pub fn send_burn_note_script(
     let recipient = burn_note.recipient().digest();
     let note_type = Felt::from(burn_note.metadata().note_type());
     let tag = Felt::from(burn_note.metadata().tag());
-    let asset_key = fungible_asset.to_key_word();
+    let asset_id = fungible_asset.id().to_word();
     let asset_value = fungible_asset.to_value_word();
-    // F5: reproduce the note's attachments (e.g. the scheme-2 NetworkAccountTarget) so the emitted
-    // note's id == burn_note.id() (NoteId commits to attachments). The content is supplied via the
-    // advice map keyed by its commitment (see `attachment_advice`, extended in `try_emit_burn_note`).
-    let mut attachments_src = String::new();
-    for attachment in burn_note.attachments().iter() {
-        let scheme = attachment.attachment_scheme().as_u16();
-        let commitment = attachment.content().to_commitment();
-        attachments_src.push_str(&format!(
-            "    dup\n    push.{commitment}\n    push.{scheme}\n    exec.output_note::add_attachment\n"
-        ));
-    }
+    // v0.16 #3204: output_note::create / add_attachment execute only from the active account's own
+    // procedures, so note creation runs in ACCOUNT context — the STOCK wallet's `create_note`
+    // (defined in `miden::standards::note::note_creator` and re-exported by the BasicWallet
+    // component, so the account exposes its root) for the attachment-less stock BurnNote, and the
+    // user-installed emit helper for the F5 single-attachment XReserveBurnNote (whose scheme-2 routing target must be reproduced so the
+    // emitted note's id == burn_note.id(); NoteId commits to attachments). The content is supplied
+    // via the advice map keyed by its commitment (`attachment_advice`, extended in
+    // `try_emit_burn_note`). The returned note_idx feeds move_asset_to_note.
+    let attachments: Vec<_> = burn_note.attachments().iter().collect();
+    let create_src = match attachments.as_slice() {
+        [] => "    repeat.10 push.0 end\n\
+               \x20\x20\x20\x20push.{recipient}\n\
+               \x20\x20\x20\x20push.{note_type}\n\
+               \x20\x20\x20\x20push.{tag}\n\
+               \x20\x20\x20\x20call.note_creator::create_note\n"
+            .to_string(),
+        [attachment] => format!(
+            "    repeat.5 push.0 end\n\
+             \x20\x20\x20\x20push.{commitment}\n\
+             \x20\x20\x20\x20push.{scheme}\n\
+             \x20\x20\x20\x20push.{{recipient}}\n\
+             \x20\x20\x20\x20push.{{note_type}}\n\
+             \x20\x20\x20\x20push.{{tag}}\n\
+             \x20\x20\x20\x20call.emit_helper::emit_note_with_attachment\n",
+            commitment = attachment.content().to_commitment(),
+            scheme = attachment.attachment_scheme().as_u16(),
+        ),
+        other => panic!(
+            "send_burn_note_script emits a 0- or 1-attachment burn note, got {}",
+            other.len()
+        ),
+    };
+    let create_src = create_src
+        .replace("{recipient}", &recipient.to_string())
+        .replace("{note_type}", &note_type.to_string())
+        .replace("{tag}", &tag.to_string());
     format!(
         r#"
-use miden::protocol::output_note
-use miden::standards::wallets::basic->wallet
+use miden::standards::note::note_creator
+use miden::standards::wallets::basic as wallet
+use xusdc::test_fixtures::emit_helper
 
-begin
-    # create the burn note (empty) carrying burn_note's recipient + metadata.
-    push.{recipient}
-    push.{note_type}
-    push.{tag}
-    exec.output_note::create
-    # => [note_idx]
+@transaction_script
+pub proc main
+    # create the burn note (empty) carrying burn_note's recipient + metadata (+ routing target).
+{create_src}
+    # => [note_idx, pad(15)]
 
-    # reproduce the note's attachments (routing target).
-{attachments_src}
     # move the user's single fungible asset from the vault into the note.
     push.{asset_value}
-    push.{asset_key}
-    # => [ASSET_KEY, ASSET_VALUE, note_idx]
+    push.{asset_id}
+    # => [ASSET_ID, ASSET_VALUE, note_idx, pad(15)]
     call.wallet::move_asset_to_note
     # => [pad(16)]
 
@@ -2993,6 +3131,13 @@ pub async fn try_emit_burn_note(
     user_id: AccountId,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(
+            &emit_helper_component()
+                .expect("the emit helper compiles")
+                .component_code()
+                .clone(),
+        )
+        .expect("linking the emit helper into the burn emit script")
         .compile_tx_script(send_burn_note_script(burn_note, asset, faucet_id))
         .expect("the user send-burn-note script compiles");
     chain
@@ -3227,10 +3372,11 @@ pub async fn run_dom_pauser_unpause(
         .await
 }
 
-/// Reads the FungibleFaucet-installed `is_paused` value slot (`[0,0,0,0]` unpaused, `[1,0,0,0]` paused)
+/// Reads the `Pausable`-installed `is_paused` value slot (v0.16 #2944 moved it out of
+/// `FungibleFaucet`; `[0,0,0,0]` unpaused, `[1,0,0,0]` paused)
 /// from a committed/evolved account — the `GetAccount` pause-state observability read (Circle
 /// requires the pause state be publicly observable). Mirrors
-/// [`read_min_burn_size`] / [`read_token_config`]; the slot is installed by FungibleFaucet, so it is
+/// [`read_min_burn_size`] / [`read_token_config`]; the slot is installed by the base `Pausable` component, so it is
 /// present on every production faucet (never a missing-slot artifact).
 pub fn read_is_paused(account: &Account) -> Result<Word> {
     account
@@ -3298,7 +3444,8 @@ fn rbac_member_note(
         .build()?)
 }
 
-/// A `grant_role(role, member)` note sent by `sender` (stock gate: owner-or-role-admin, rbac.masm:411).
+/// A `grant_role(role, member)` note sent by `sender` (stock gate at v0.16: the granted role's
+/// EFFECTIVE admin — #3215/S2; the v15 owner leg is gone).
 pub fn grant_role_note(
     sender: AccountId,
     role: &RoleSymbol,
@@ -3308,7 +3455,8 @@ pub fn grant_role_note(
     rbac_member_note(sender, "grant_role", role, member, seed, 11, 12)
 }
 
-/// A `revoke_role(role, member)` note sent by `sender` (same owner-or-role-admin gate).
+/// A `revoke_role(role, member)` note sent by `sender` (same role-admin gate: the revoked role's
+/// effective admin — v0.16 #3215/S2).
 pub fn revoke_role_note(
     sender: AccountId,
     role: &RoleSymbol,
@@ -3318,8 +3466,11 @@ pub fn revoke_role_note(
     rbac_member_note(sender, "revoke_role", role, member, seed, 13, 14)
 }
 
-/// A `set_role_admin(role, admin_role)` note sent by `sender` (stock gate: OWNER-ONLY, rbac.masm:163).
-/// `admin_role = None` pushes 0 — the stock "clear the delegation" sentinel (rbac.masm:147-148).
+/// A `set_role_admin(role, admin_role)` note sent by `sender`. Stock gate at v0.16: the MANAGED
+/// role's EFFECTIVE admin — its delegated admin, else the built-in `ADMIN` role
+/// (`assert_sender_is_role_admin`, rbac.masm:200; #3215 dropped the v15 owner-only gate — S21,
+/// human-ratified). `admin_role = None` pushes 0 — the stock "clear the delegation" sentinel, after
+/// which the role is `ADMIN`-administered.
 /// Stack contract: `[role_symbol, admin_role_symbol, pad(14)]` (role on top).
 pub fn set_role_admin_note(
     sender: AccountId,
@@ -3572,7 +3723,10 @@ pub fn read_role_config(account: &Account, role: &RoleSymbol) -> Result<Word> {
     let key = Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(role)]);
     account
         .storage()
-        .get_map_item(RoleBasedAccessControl::role_config_slot(), key)
+        .get_map_item(
+            RoleBasedAccessControl::role_config_slot(),
+            StorageMapKey::new(key),
+        )
         .map_err(|e| anyhow::anyhow!("reading the role_config entry: {e}"))
 }
 
@@ -3591,7 +3745,10 @@ pub fn read_role_membership(
     ]);
     account
         .storage()
-        .get_map_item(RoleBasedAccessControl::role_membership_slot(), key)
+        .get_map_item(
+            RoleBasedAccessControl::role_membership_slot(),
+            StorageMapKey::new(key),
+        )
         .map_err(|e| anyhow::anyhow!("reading the role_membership entry: {e}"))
 }
 
@@ -3620,6 +3777,7 @@ pub fn burn_policy_direct_driver_src(asset_key: Word, amount: u64) -> String {
          #! Outputs: [pad(16)]\n\
          #!\n\
          #! Invocation: call\n\
+         @account_procedure\n\
          pub proc drive\n\
          \x20\x20\x20\x20push.{asset_value}\n\
          \x20\x20\x20\x20push.{asset_key}\n\
@@ -3748,8 +3906,9 @@ fn setup_assembled_faucet_inner(
     // The recipient wallet(s) FIRST: their ids feed the payload/driver generation below.
     let mut recipient_ids = Vec::new();
     for i in 0..n_recipients {
-        let recipient = mc
-            .add_existing_wallet(Auth::IncrNonce)
+        // The recipients EMIT the burn note in the e2e lifecycle, so they carry the emit helper
+        // (v0.16 #3204: note creation runs in account context — MIGRATION-V16-ALPHA2.md S22).
+        let recipient = add_emitting_wallet(&mut mc, Auth::IncrNonce, [])
             .with_context(|| format!("adding recipient wallet {i}"))?;
         recipient_ids.push(recipient.id());
     }
@@ -3895,9 +4054,8 @@ pub fn setup_production_faucet(
     let recipient = mc
         .add_existing_wallet(Auth::IncrNonce)
         .context("adding recipient wallet")?;
-    let producer = mc
-        .add_existing_wallet(Auth::IncrNonce)
-        .context("adding producer wallet")?;
+    let producer =
+        add_emitting_wallet(&mut mc, Auth::IncrNonce, []).context("adding producer wallet")?;
     let seeded_notes = seed_notes_for(recipient.id());
     for note in &seeded_notes {
         mc.add_output_note(RawOutputNote::Full(note.clone()));
@@ -3998,6 +4156,89 @@ pub fn setup_production_faucet(
 /// advice is legitimate: the producer knows the data it is publishing). The full note details are
 /// registered via `RawOutputNote::Full` so the kernel resolves the PUBLIC note, mirroring
 /// `try_emit_burn_note`. Asset-less (the mint-note shape).
+/// Module path of the note-emission helper component (v0.16 #3204: `output_note::create` /
+/// `add_attachment` execute only from the active account's own procedures, so the emit tx
+/// scripts route through these call-exposed wrappers instead of exec'ing the kernel API
+/// directly — the same pattern as the stock `note_creator::create_note`).
+pub const EMIT_HELPER_PATH: &str = "xusdc::test_fixtures::emit_helper";
+
+/// The FIXED emit-helper component source: create-plus-two-attachments (the mint note's exact
+/// shape — 16 call-window felts, zero padding) and create-plus-one-attachment returning the
+/// note index (the burn note's shape; the index feeds the subsequent `move_asset_to_note`).
+fn emit_helper_src() -> String {
+    "use miden::protocol::output_note\n\
+     \n\
+     #! Creates an output note and adds its two attachments in account context.\n\
+     #!\n\
+     #! Inputs:  [tag, note_type, RECIPIENT, scheme_a, COMM_A, scheme_b, COMM_B]\n\
+     #! Outputs: [pad(16)]\n\
+     #!\n\
+     #! Invocation: call\n\
+     @account_procedure\n\
+     pub proc emit_note_with_two_attachments\n\
+     \x20\x20\x20\x20exec.output_note::create\n\
+     \x20\x20\x20\x20# => [note_idx, scheme_a, COMM_A, scheme_b, COMM_B]\n\
+     \x20\x20\x20\x20dup movdn.6\n\
+     \x20\x20\x20\x20# => [note_idx, scheme_a, COMM_A, note_idx, scheme_b, COMM_B]\n\
+     \x20\x20\x20\x20movdn.5\n\
+     \x20\x20\x20\x20# => [scheme_a, COMM_A, note_idx, note_idx, scheme_b, COMM_B]\n\
+     \x20\x20\x20\x20exec.output_note::add_attachment\n\
+     \x20\x20\x20\x20# => [note_idx, scheme_b, COMM_B]\n\
+     \x20\x20\x20\x20movdn.5\n\
+     \x20\x20\x20\x20# => [scheme_b, COMM_B, note_idx]\n\
+     \x20\x20\x20\x20exec.output_note::add_attachment\n\
+     end\n\
+     \n\
+     #! Creates an output note, adds its single attachment, and returns the note index.\n\
+     #!\n\
+     #! Inputs:  [tag, note_type, RECIPIENT, scheme, COMM, pad(5)]\n\
+     #! Outputs: [note_idx, pad(15)]\n\
+     #!\n\
+     #! Invocation: call\n\
+     @account_procedure\n\
+     pub proc emit_note_with_attachment\n\
+     \x20\x20\x20\x20exec.output_note::create\n\
+     \x20\x20\x20\x20# => [note_idx, scheme, COMM, pad(5)]\n\
+     \x20\x20\x20\x20dup movdn.6\n\
+     \x20\x20\x20\x20# => [note_idx, scheme, COMM, note_idx, pad(5)]\n\
+     \x20\x20\x20\x20movdn.5\n\
+     \x20\x20\x20\x20# => [scheme, COMM, note_idx, note_idx, pad(5)]\n\
+     \x20\x20\x20\x20exec.output_note::add_attachment\n\
+     \x20\x20\x20\x20# => [note_idx, pad(5)]\n\
+     end\n"
+        .to_string()
+}
+
+/// The compiled zero-storage emit-helper `AccountComponent`.
+pub fn emit_helper_component() -> Result<AccountComponent> {
+    let code = CodeBuilder::new()
+        .compile_component_code(EMIT_HELPER_PATH, emit_helper_src())
+        .context("emit helper component failed to compile")?;
+    AccountComponent::new(
+        code,
+        vec![],
+        AccountComponentMetadata::new("xusdc-emit-helper"),
+    )
+    .context("binding the emit helper component")
+}
+
+/// Adds an existing BasicWallet account CARRYING the emit helper (assets optional) — the
+/// note-emitting producer/user accounts the F5 emit-realness paths drive.
+pub fn add_emitting_wallet(
+    builder: &mut miden_testing::MockChainBuilder,
+    auth: Auth,
+    assets: impl IntoIterator<Item = miden_protocol::asset::Asset>,
+) -> Result<Account> {
+    let account_builder = Account::builder(rand::random())
+        .account_type(AccountType::Public)
+        .with_component(BasicWallet)
+        .with_component(emit_helper_component()?)
+        .with_assets(assets);
+    builder
+        .add_account_from_builder(auth, account_builder, AccountState::Exists)
+        .context("adding an emitting wallet")
+}
+
 pub async fn emit_note_with_attachments(
     chain: &mut MockChain,
     producer: AccountId,
@@ -4007,34 +4248,50 @@ pub async fn emit_note_with_attachments(
     let note_type = Felt::from(note.metadata().note_type());
     let tag = Felt::from(note.metadata().tag());
 
-    let mut src = format!(
-        "use miden::protocol::output_note\n\
+    // v0.16 #3204: output_note::create/add_attachment execute only from account procedures —
+    // the script calls the producer-installed emit helper (exactly two attachments = the mint
+    // note's F5 shape; the 16 call-window felts fit with zero padding).
+    let attachments: Vec<_> = note.attachments().iter().collect();
+    anyhow::ensure!(
+        attachments.len() == 2,
+        "emit_note_with_attachments emits the two-attachment mint-note shape, got {}",
+        attachments.len()
+    );
+    let (scheme_a, comm_a) = (
+        attachments[0].attachment_scheme().as_u16(),
+        attachments[0].content().to_commitment(),
+    );
+    let (scheme_b, comm_b) = (
+        attachments[1].attachment_scheme().as_u16(),
+        attachments[1].content().to_commitment(),
+    );
+    let mut advice = AdviceInputs::default();
+    for attachment in &attachments {
+        advice = advice.with_map([(
+            attachment.content().to_commitment(),
+            attachment.content().to_elements(),
+        )]);
+    }
+    let src = format!(
+        "use xusdc::test_fixtures::emit_helper\n\
          \n\
-         begin\n\
+         @transaction_script\n\
+         pub proc main\n\
+         \x20\x20\x20\x20push.{comm_b}\n\
+         \x20\x20\x20\x20push.{scheme_b}\n\
+         \x20\x20\x20\x20push.{comm_a}\n\
+         \x20\x20\x20\x20push.{scheme_a}\n\
          \x20\x20\x20\x20push.{recipient}\n\
          \x20\x20\x20\x20push.{note_type}\n\
          \x20\x20\x20\x20push.{tag}\n\
-         \x20\x20\x20\x20exec.output_note::create\n"
-    );
-    let mut advice = AdviceInputs::default();
-    for attachment in note.attachments().iter() {
-        let scheme = attachment.attachment_scheme().as_u16();
-        let commitment = attachment.content().to_commitment();
-        src.push_str(&format!(
-            "\x20\x20\x20\x20dup\n\
-             \x20\x20\x20\x20push.{commitment}\n\
-             \x20\x20\x20\x20push.{scheme}\n\
-             \x20\x20\x20\x20exec.output_note::add_attachment\n"
-        ));
-        advice = advice.with_map([(commitment, attachment.content().to_elements())]);
-    }
-    src.push_str(
-        "\x20\x20\x20\x20drop\n\
+         \x20\x20\x20\x20call.emit_helper::emit_note_with_two_attachments\n\
          \x20\x20\x20\x20exec.::miden::core::sys::truncate_stack\n\
-         end\n",
+         end\n"
     );
 
-    let tx_script = CodeBuilder::new().compile_tx_script(src)?;
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(&emit_helper_component()?.component_code().clone())?
+        .compile_tx_script(src)?;
     let tx = chain
         .build_tx_context(producer, &[], &[])?
         .tx_script(tx_script)

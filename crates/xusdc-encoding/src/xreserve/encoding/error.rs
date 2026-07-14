@@ -29,6 +29,10 @@ pub enum EncodingError {
     AccountIdOutOfRange,
     NonCanonicalAccountId,
     BurnItemsMalformed,
+    /// The 33-byte compressed SEC1 attester pubkey does not decode to a secp256k1 curve point
+    /// (the DC-2 SEC1→affine decompression the v16 affine commitment format requires —
+    /// MIGRATION-V16-ALPHA2.md S16; such a key could never verify on-chain either).
+    InvalidPubkey,
     JsonSchema(String),
     BinaryMagic,
     BinaryLength,
@@ -60,6 +64,9 @@ impl fmt::Display for EncodingError {
                 write!(f, "bytes do not decode to a canonical account id")
             }
             Self::BurnItemsMalformed => write!(f, "burn note items have the wrong length or shape"),
+            Self::InvalidPubkey => {
+                write!(f, "pubkey bytes do not decode to a secp256k1 curve point")
+            }
             Self::JsonSchema(msg) => write!(f, "circle json does not match the schema: {msg}"),
             Self::BinaryMagic => write!(f, "circle binary decoder magic mismatch"),
             Self::BinaryLength => write!(f, "circle binary length reconciliation failed"),

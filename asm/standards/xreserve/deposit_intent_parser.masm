@@ -9,9 +9,7 @@
 use miden::protocol::active_account
 use miden::core::math::u64
 use xreserve::encoding
-use xreserve::encoding::layout::AMOUNT_FELT_OFF
-use xreserve::encoding::layout::MAX_FEE_FELT_OFF
-use xreserve::encoding::layout::NONCE_FELT_OFF
+use {AMOUNT_FELT_OFF, MAX_FEE_FELT_OFF, NONCE_FELT_OFF} from xreserve::encoding::layout
 
 # CONSTANTS
 # =================================================================================================
@@ -69,6 +67,7 @@ const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
 #! - a config slot with the expected id does not exist in account storage.
 #!
 #! Invocation: exec
+@account_procedure
 pub proc assert_deposit_intent
     exec.encoding::parse_deposit_intent
     # => [remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]
@@ -129,6 +128,7 @@ end
 #! - reduced feeAmount != 0 (ERR_XRESERVE_FEE_NONZERO, F2 MVP; subsumes R-MINT-11 feeAmount <= maxFee).
 #!
 #! Invocation: exec
+@account_procedure
 pub proc assert_mint_amounts
     # => [intent_ptr, scale_exp]
 
@@ -216,6 +216,7 @@ end
 #! - usedNonces[key] is non-empty (the nonce was already used) -> ERR_XRESERVE_NONCE_REPLAY.
 #!
 #! Invocation: exec
+@account_procedure
 pub proc assert_nonce_unused
     # => [intent_ptr]
 

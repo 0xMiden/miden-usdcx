@@ -295,8 +295,9 @@ fn att_sign65(sk: &SigningKey, digest: &[u8; 32]) -> [u8; 65] {
 }
 
 /// The canonical commitment oracle: deserialize the exact 33 compressed wire bytes into the
-/// miden-crypto `PublicKey` and take `to_commitment()` = Poseidon2 over the 9 u32-LE pubkey
-/// felts (miden-crypto `ecdsa_k256_keccak`).
+/// miden-crypto `PublicKey` and take `to_commitment()` = Poseidon2 over the 16 affine-coordinate
+/// pubkey felts (miden-crypto 0.28 `ecdsa_k256_keccak`, vm#3342 — the v16 supersession of the
+/// 9-felt compressed preimage).
 /// This is exactly what off-chain `set_attester` keys the `xReserveAttesters` allowlist by.
 fn att_commitment(pk33: &[u8; 33]) -> Word {
     PublicKey::read_from_bytes(pk33)
@@ -699,7 +700,7 @@ fn main() {
             "id": format!("att-{seed}"),
             "tv": ["TV-ATT-1", "TV-ATT-2", "TV-ATT-3", "TV-DUAL-5"],
             "pubkey_hex": hex_bytes(&pk),
-            "packed_felts": felts_hex(&packed(&pk)),
+            "packed_felts": felts_hex(&xusdc_encoding::xreserve::encoding::affine_pubkey_felts(&pk).expect("generator keys are valid points")),
             "expected_commitment": word_hex(commitment),
             "digest_hex": hex_bytes(&digest),
             "digest_felts": felts_hex(&packed(&digest)),
@@ -709,7 +710,7 @@ fn main() {
             "payload_hex": hex_bytes(&payload),
             "cite": "miden-crypto-0.25.1 dsa/ecdsa_k256_keccak/mod.rs:253,:301 + src/lib.rs:156-170",
             "derivation": format!(
-                "k256 SigningKey::random(StdRng seed {seed}); pk = 33B compressed SEC1 (9 felts); sig = 65B r||s||v (17 felts, v carried) over keccak256(full {plen}B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.25.1 (Poseidon2 over the 9 pubkey felts)",
+                "k256 SigningKey::random(StdRng seed {seed}); pk = 33B compressed SEC1 wire key, decompressed to affine qx_le_u32[8]||qy_le_u32[8] (16 felts, vm#3342); sig = 65B r||s||v (17 felts, v carried) over keccak256(full {plen}B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.28.0 (Poseidon2 over the 16 affine pubkey felts)",
                 plen = payload.len(),
             ),
         }));

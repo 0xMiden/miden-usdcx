@@ -22,7 +22,7 @@ mod support;
 
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
-use miden_protocol::account::{Account, AccountId, RoleSymbol};
+use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey};
 use miden_protocol::asset::{AssetAmount, FungibleAsset};
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{NoteId, NoteType};
@@ -221,7 +221,7 @@ fn read_map_word(account: &Account, slot_label: &str, key: Word) -> Result<Word>
         .get_map_item(
             &miden_protocol::account::StorageSlotName::new(slot_label)
                 .with_context(|| format!("slot label {slot_label}"))?,
-            key,
+            StorageMapKey::new(key),
         )
         .map_err(|e| anyhow::anyhow!("reading map slot {slot_label}: {e}"))
 }
@@ -423,7 +423,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         .await
         .expect("S1b: the owner's 4-field domain_init must succeed");
     let mut faucet1 = faucet0.clone();
-    faucet1.apply_delta(init_tx.account_delta())?;
+    faucet1.apply_patch(init_tx.account_patch())?;
     let words = read_domain_config_words(&faucet1)?;
     let xrc_felts = bytes32_to_packed_felts(&xrc);
     assert_eq!(
@@ -623,7 +623,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     )?;
 
     // ── S6 — DENY: stock mint_and_send traps the EXACT R-MINT-16 error; supply unchanged.
-    let result = run_mint_and_send(&af.harness, Word::from([0u32, 1, 2, 3]), 0, 4, 100, 0).await;
+    let result = run_mint_and_send(&af.harness, Word::from([0u32, 1, 2, 3]), 0, 4, 100).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_MINT_DENIED"));
     assert_supply(
         &af.harness.mock_chain,

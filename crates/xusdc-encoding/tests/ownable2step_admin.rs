@@ -81,7 +81,7 @@ async fn owner_two_step_transfer_rotates_authority() -> Result<()> {
         .await
         .expect("the current owner's transfer_ownership must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(nominated.account_delta())?;
+    evolved.apply_patch(nominated.account_patch())?;
     assert_eq!(
         read_owner_config(&evolved)?,
         owner_config_word(owner(), Some(new_owner())),
@@ -92,7 +92,7 @@ async fn owner_two_step_transfer_rotates_authority() -> Result<()> {
     let set = run_set_min_burn_size_against(&h.chain, &evolved, owner(), 2_000, 42)
         .await
         .expect("the current owner's setter must still succeed while the transfer pends");
-    evolved.apply_delta(set.account_delta())?;
+    evolved.apply_patch(set.account_patch())?;
     assert_eq!(
         read_min_burn_size(&evolved)?,
         min_word(2_000),
@@ -112,7 +112,7 @@ async fn owner_two_step_transfer_rotates_authority() -> Result<()> {
     let accepted = run_accept_ownership_against(&h.chain, &evolved, new_owner(), 44)
         .await
         .expect("the nominated owner's accept_ownership must succeed");
-    evolved.apply_delta(accepted.account_delta())?;
+    evolved.apply_patch(accepted.account_patch())?;
     assert_eq!(
         read_owner_config(&evolved)?,
         owner_config_word(new_owner(), None),
@@ -123,7 +123,7 @@ async fn owner_two_step_transfer_rotates_authority() -> Result<()> {
     let new_set = run_set_min_burn_size_against(&h.chain, &evolved, new_owner(), 3_000, 45)
         .await
         .expect("the new owner's setter must succeed after accept");
-    evolved.apply_delta(new_set.account_delta())?;
+    evolved.apply_patch(new_set.account_patch())?;
     assert_eq!(
         read_min_burn_size(&evolved)?,
         min_word(3_000),

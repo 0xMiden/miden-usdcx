@@ -150,13 +150,14 @@ impl PartnerAttester {
             .expect("compressed secp256k1 pubkey is 33 bytes")
     }
 
-    /// The attester-allowlist key (DC-3): `Poseidon2(33-byte compressed pubkey)` → one `Word`.
+    /// The attester-allowlist key (DC-3, v16 supersession): `Poseidon2(affine pubkey felts)` →
+    /// one `Word` (the compressed wire key is decompressed inside the owned primitive).
     ///
     /// Delegated to unit-04's [`pubkey_commitment`] — the SINGLE owner of this keying primitive and
     /// the exact procedure the faucet's D5d verify recomputes on-chain. This fixture never
     /// re-implements it, so the local-node allowlist it seeds cannot drift from the on-chain lookup.
     pub fn commitment(&self) -> Word {
-        pubkey_commitment(&self.pubkey())
+        pubkey_commitment(&self.pubkey()).expect("the deterministic partner key is a valid point")
     }
 
     /// Signs `keccak256(payload)` — RAW secp256k1 over the raw keccak digest of the FULL payload.

@@ -19,7 +19,7 @@
 mod support;
 
 use anyhow::Result;
-use miden_protocol::account::{Account, AccountId, RoleSymbol};
+use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::RoleBasedAccessControl;
 use miden_testing::assert_transaction_executor_error;
@@ -93,8 +93,9 @@ fn faucet(h: &BurnPolicyHarness) -> Result<Account> {
 fn probe_min_burn_admin_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     let exports: Vec<String> = lib
+        .manifest
         .exports()
-        .filter(|e| e.as_procedure().is_some())
+        .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
     let canonical = "::xreserve::min_burn_admin::set_min_burn_size";
@@ -120,7 +121,7 @@ async fn set_min_burn_owner_succeeds() -> Result<()> {
         .await
         .expect("the owner's set_min_burn_size(M) must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(executed.account_delta())?;
+    evolved.apply_patch(executed.account_patch())?;
 
     assert_eq!(
         read_min_burn_size(&evolved)?,
@@ -190,13 +191,13 @@ async fn set_min_burn_owner_succeeds_while_paused() -> Result<()> {
         .await
         .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
 
     // tx2: the OWNER's set_min_burn_size(M) SUCCEEDS while paused (F6: setters are not pause-gated).
     let executed = run_set_min_burn_size_against(&h.chain, &evolved, owner(), NEW_MIN, 7)
         .await
         .expect("the owner's set_min_burn_size(M) must succeed while the faucet is paused");
-    evolved.apply_delta(executed.account_delta())?;
+    evolved.apply_patch(executed.account_patch())?;
 
     assert_eq!(
         read_min_burn_size(&evolved)?,
@@ -229,11 +230,13 @@ async fn support_replica_carries_delegation_seed() -> Result<()> {
     let account = faucet(&h)?;
 
     // role_config[{0,0,0,DOM_PAUSER}] = [member_count=1, admin_role=DOM_MANAGER, 0, 0] (the CMP-F5
-    // delegation: the Domain Manager rotates the Pauser); DOM_MANAGER keeps admin_role=0
-    // (owner-administered; set_role_admin is owner-only, rbac.masm:159).
+    // delegation: the Domain Manager rotates the Pauser); DOM_MANAGER keeps admin_role=0, which at
+    // v0.16 resolves to the built-in ADMIN role the builder seeds on the OWNER — so DOM_MANAGER
+    // stays owner-administered (#3215 replaced the v15 owner-only gate with the effective-admin
+    // gate; MIGRATION-V16-ALPHA2.md S2/S21).
     let pauser_config = account.storage().get_map_item(
         RoleBasedAccessControl::role_config_slot(),
-        role_config_key(&pauser),
+        StorageMapKey::new(role_config_key(&pauser)),
     )?;
     assert_eq!(
         pauser_config[0],
@@ -248,7 +251,7 @@ async fn support_replica_carries_delegation_seed() -> Result<()> {
 
     let manager_config = account.storage().get_map_item(
         RoleBasedAccessControl::role_config_slot(),
-        role_config_key(&manager),
+        StorageMapKey::new(role_config_key(&manager)),
     )?;
     assert_eq!(
         manager_config[0],
@@ -264,7 +267,7 @@ async fn support_replica_carries_delegation_seed() -> Result<()> {
     // role_membership[{0,<role>,holder.suffix,holder.prefix}] = [1,0,0,0] for each DOM holder.
     let pauser_membership = account.storage().get_map_item(
         RoleBasedAccessControl::role_membership_slot(),
-        role_membership_key(&pauser, dom_pauser()),
+        StorageMapKey::new(role_membership_key(&pauser, dom_pauser())),
     )?;
     assert_eq!(
         pauser_membership[0],
@@ -274,7 +277,7 @@ async fn support_replica_carries_delegation_seed() -> Result<()> {
 
     let manager_membership = account.storage().get_map_item(
         RoleBasedAccessControl::role_membership_slot(),
-        role_membership_key(&manager, dom_manager()),
+        StorageMapKey::new(role_membership_key(&manager, dom_manager())),
     )?;
     assert_eq!(
         manager_membership[0],
@@ -294,7 +297,7 @@ async fn dom_non_member_reads_empty() -> Result<()> {
 
     let non = account.storage().get_map_item(
         RoleBasedAccessControl::role_membership_slot(),
-        role_membership_key(&pauser, plain_non_owner()),
+        StorageMapKey::new(role_membership_key(&pauser, plain_non_owner())),
     )?;
     assert_eq!(
         non[0],

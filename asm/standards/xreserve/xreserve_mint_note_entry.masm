@@ -6,7 +6,7 @@
 # context precedent, fungible.masm:370-403 — `exec` shares the call frame, so the data lands
 # exactly where `mint` reads `intent_ptr`), hash-verifies the single fee/pubkey/signature
 # attachment against the note-committed attachment commitment (`find_attachment` +
-# `write_attachment_to_memory` with count + 9-word size asserts — the network_account_target
+# `write_attachment_to_memory` with count + 11-word size asserts — the network_account_target
 # idiom, network_account_target.masm:101-124), re-surfaces the SAME verified advice-map entry
 # onto the advice stack (`adv.push_mapval`, used ONLY after the hash check; no advice-map
 # mutation in between — the entry is proven to hash to the note-committed commitment), and hands
@@ -19,14 +19,16 @@
 # It IS a new callable account root (#17) — consciously registered in the frozen root-surface
 # tripwire (mint_root_surface.rs) and policed by the tree-wide supply write-integrity sweep.
 #
-# Grounded by canary/mint-note-transport-grounding (executes + commits under MockChain on the
-# pinned v0.15.3 / 0.23.3 stack; the element-0-first `adv.push_mapval` pop order and the
+# Grounded by canary/mint-note-transport-grounding (executes + commits under MockChain; the canary
+# is a v0.15.3 / 0.23.3 artifact and is NOT re-run at the v0.16 pin — the migration's own
+# assemble-and-execute gate re-proves this shim end to end. The element-0-first `adv.push_mapval`
+# pop order and the
 # tampered-advice fail-close are pinned there).
 
 use miden::protocol::active_note
-use miden::standards::attachments::network_account_target::NETWORK_ACCOUNT_TARGET_ATTACHMENT_SCHEME
+use {NETWORK_ACCOUNT_TARGET_ATTACHMENT_SCHEME} from miden::standards::attachments::network_account_target
 use xreserve::xreserve_mint
-use xreserve::encoding::layout::DEPOSIT_INTENT_HEADER_FELTS
+use {DEPOSIT_INTENT_HEADER_FELTS} from xreserve::encoding::layout
 
 # CONSTANTS
 # =================================================================================================
@@ -40,9 +42,10 @@ const INTENT_PTR = 1024
 # scheme mismatch fail-closes in `find_attachment` below.
 const XRESERVE_MINT_ATTACHMENT_SCHEME = 1
 
-# The attestation attachment word count: [feeAmount(8), pubkey(9), signature(17), pad(2)]
-# = 36 felts = 9 words, matching `mint`'s frozen advice contract order.
-const XRESERVE_MINT_ATTACHMENT_NUM_WORDS = 9
+# The attestation attachment word count: [feeAmount(8), pubkey(16), signature(17), pad(3)]
+# = 44 felts = 11 words, matching `mint`'s frozen advice contract order (the pubkey is the
+# 16-felt affine form since the v16 migration — vm#3342, MIGRATION-V16-ALPHA2.md S16).
+const XRESERVE_MINT_ATTACHMENT_NUM_WORDS = 11
 
 # The DC-5 uint256→AssetAmount decimal scale (`y = floor(x / 10^scale_exp)`), FAUCET-side by
 # design: a note-carried scale would let the producer diverge the minted amount from the attested
@@ -69,7 +72,7 @@ const ERR_XRESERVE_MINT_NOTE_ATTACHMENT_MISSING = "mint note attestation attachm
 # Exactly TWO attachments: the scheme-1 attestation + the scheme-2 NetworkAccountTarget routing bind.
 const ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT = "mint note must carry exactly two attachments"
 
-# The verified attachment must be exactly 9 words ([feeAmount(8), pubkey(9), signature(17), pad(2)]).
+# The verified attachment must be exactly 11 words ([feeAmount(8), pubkey(16), signature(17), pad(3)]).
 const ERR_XRESERVE_MINT_NOTE_ATTACHMENT_NUM_WORDS = "mint note attachment word count is invalid"
 
 # The scheme-2 NetworkAccountTarget routing attachment (routing-only — never read for effects) must
@@ -85,35 +88,36 @@ const ERR_XRESERVE_MINT_NOTE_TARGET_MISSING = "mint note routing target attachme
 #! frame at INTENT_PTR, hash-verifies the scheme-1 attestation attachment (selected by its found
 #! index) against the note-committed attachment commitment, asserts the scheme-2 routing target is
 #! also present (routing-only), re-surfaces the verified elements onto the advice stack
-#! in `mint`'s frozen order [feeAmount(8), pubkey(9), signature(17)], and execs
+#! in `mint`'s frozen order [feeAmount(8), pubkey(16), signature(17)], and execs
 #! `xreserve_mint::mint`. A pure transport shim: no storage writes, no supply arithmetic, no D5
 #! logic — every gate lives in `mint`.
 #!
-#! Locals (@locals(52), word-aligned sub-regions): loc[0..36] hash-verified attachment content
-#! ([feeAmount(8), pubkey(9), signature(17), pad(2)]); loc[36..52] attachment commitments list
+#! Locals (@locals(60), word-aligned sub-regions): loc[0..44] hash-verified attachment content
+#! ([feeAmount(8), pubkey(16), signature(17), pad(3)]); loc[44..60] attachment commitments list
 #! (≤ 4 words; the scheme-1 attestation's commitment is selected by its found index: word at
-#! 36 + sc1_idx * WORD_NUM_ELEMENTS).
+#! 44 + sc1_idx * WORD_NUM_ELEMENTS).
 #!
 #! Inputs:  [pad(16)]
 #! Outputs: [pad(16)]
 #!
 #! Where:
 #! - the active note's storage is the DepositIntent preimage (60 header felts + hookData felts).
-#! - the active note's attachments are a scheme-1 attestation [feeAmount(8), pubkey(9),
-#!   signature(17), pad(2)] and a scheme-2 NetworkAccountTarget routing attachment (routing-only,
+#! - the active note's attachments are a scheme-1 attestation [feeAmount(8), pubkey(16),
+#!   signature(17), pad(3)] and a scheme-2 NetworkAccountTarget routing attachment (routing-only,
 #!   not read for effects).
 #!
 #! Panics if:
 #! - the procedure is not called from a note context (active_note::* will fail).
 #! - the note storage is shorter than the 60-felt DepositIntent header.
 #! - the scheme-1 attestation attachment is missing, the scheme-2 routing target is missing, the
-#!   total attachment count is not two, or the attestation is not 9 words.
+#!   total attachment count is not two, or the attestation is not 11 words.
 #! - the attachment advice-map content does not hash to the note-committed attachment
 #!   commitment (the pipe_preimage_to_memory assert inside write_attachment_to_memory).
 #! - any `mint` gate rejects (pause, D5a..D5e).
 #!
 #! Invocation: call
-@locals(52)
+@locals(60)
+@account_procedure
 pub proc receive_and_mint
     # --- stage the DepositIntent preimage into the account call frame ---
     push.INTENT_PTR exec.active_note::get_storage
@@ -144,13 +148,13 @@ pub proc receive_and_mint
 
     # --- exactly two attachments total; with both schemes found this is one of each (a doubled
     #     scheme fails the other's find), so no per-scheme count is needed ---
-    locaddr.36 exec.active_note::write_attachment_commitments_to_memory
+    locaddr.44 exec.active_note::write_attachment_commitments_to_memory
     # => [num_attachments, sc1_idx, num_storage_items, pad(16)]
 
     eq.2 assert.err=ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT
     # => [sc1_idx, num_storage_items, pad(16)]
 
-    # --- the binding step: hash-verify the scheme-1 attestation content BY ITS INDEX + 9-word check ---
+    # --- the binding step: hash-verify the scheme-1 attestation content BY ITS INDEX + 11-word check ---
     dup locaddr.0 exec.active_note::write_attachment_to_memory
     # => [num_words, sc1_idx, num_storage_items, pad(16)]
 
@@ -158,9 +162,9 @@ pub proc receive_and_mint
     # => [sc1_idx, num_storage_items, pad(16)]
 
     # --- surface the scheme-1 attestation map entry to the advice stack (element-0-first pop order):
-    #     load its commitment BY INDEX (commitments_base 36 + sc1_idx * WORD_NUM_ELEMENTS), the pinned
+    #     load its commitment BY INDEX (commitments_base 44 + sc1_idx * WORD_NUM_ELEMENTS), the pinned
     #     note::write_indexed_attachment_to_memory address math ---
-    mul.WORD_NUM_ELEMENTS locaddr.36 add
+    mul.WORD_NUM_ELEMENTS locaddr.44 add
     # => [commitment_ptr, num_storage_items, pad(16)]
 
     padw movup.4 mem_loadw_le
@@ -168,7 +172,7 @@ pub proc receive_and_mint
 
     adv.push_mapval
     # => [ATTACHMENT_COMMITMENT, num_storage_items, pad(16)]
-    # advice stack => [feeAmount(8), pubkey(9), signature(17), pad(2)]
+    # advice stack => [feeAmount(8), pubkey(16), signature(17), pad(3)]
 
     dropw
     # => [num_storage_items, pad(16)]

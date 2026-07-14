@@ -37,6 +37,7 @@ pub const MIN_BURN_SIZE_SLOT = word("xusdc::xreserve::attester_admin::min_burn_s
 #!   ownable2step::assert_sender_is_owner, ERR_SENDER_NOT_OWNER).
 #!
 #! Invocation: call
+@account_procedure
 pub proc set_min_burn_size
     # => [new_min, pad(15)]
 

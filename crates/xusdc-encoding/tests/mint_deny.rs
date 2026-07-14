@@ -19,7 +19,7 @@ mod support;
 use std::collections::BTreeMap;
 
 use anyhow::Result;
-use miden_protocol::account::{StorageSlotDelta, StorageSlotName};
+use miden_protocol::account::{StorageSlotName, StorageSlotPatch};
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use support::*;
@@ -54,7 +54,6 @@ const MINT_NOTE_TYPE: u8 = 0;
 // Our composition installs NO transfer policies, so the faucet registers no asset callbacks -> the
 // minted asset key must carry has_callbacks=false (enable_callbacks = 0). The allow-all success test
 // is the empirical oracle for this bit (it must SUCCEED and raise supply).
-const ENABLE_CALLBACKS: u8 = 0;
 
 const MINT_AMOUNT: u64 = 100;
 
@@ -98,7 +97,6 @@ async fn mint_and_send_succeeds_under_allow_all() -> Result<()> {
         MINT_NOTE_TYPE,
         MINT_TAG,
         MINT_AMOUNT,
-        ENABLE_CALLBACKS,
     )
     .await
     .expect("allow-all mint_and_send must succeed");
@@ -110,14 +108,15 @@ async fn mint_and_send_succeeds_under_allow_all() -> Result<()> {
     );
 
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(cfg) = executed
-        .account_delta()
+    let StorageSlotPatch::Value(cfg) = executed
+        .account_patch()
         .storage()
         .get(&cfg_slot)
         .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
+    let cfg = cfg.value().expect("value patch carries a value");
     assert_eq!(
         cfg[0],
         Felt::from(MINT_AMOUNT as u32),
@@ -154,7 +153,6 @@ async fn deny_mint_and_send_traps() -> Result<()> {
         MINT_NOTE_TYPE,
         MINT_TAG,
         MINT_AMOUNT,
-        ENABLE_CALLBACKS,
     )
     .await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_MINT_DENIED"));
@@ -189,7 +187,6 @@ async fn denied_path_no_supply_effect() -> Result<()> {
         MINT_NOTE_TYPE,
         MINT_TAG,
         MINT_AMOUNT,
-        ENABLE_CALLBACKS,
     )
     .await;
 
@@ -198,8 +195,10 @@ async fn denied_path_no_supply_effect() -> Result<()> {
     // executed tx's delta must carry NO token_supply rise.
     if let Ok(executed) = result {
         let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-        let raised = match executed.account_delta().storage().get(&cfg_slot) {
-            Some(StorageSlotDelta::Value(cfg)) => cfg[0] != Felt::from(0u32),
+        let raised = match executed.account_patch().storage().get(&cfg_slot) {
+            Some(StorageSlotPatch::Value(cfg)) => {
+                cfg.value().expect("value patch carries a value")[0] != Felt::from(0u32)
+            }
             _ => false,
         };
         assert!(
@@ -220,15 +219,17 @@ async fn denied_path_no_supply_effect() -> Result<()> {
 fn probe_mint_deny_guard_export() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     assert!(
-        lib.exports()
-            .filter(|e| e.as_procedure().is_some())
+        lib.manifest
+            .exports()
+            .filter(|e| e.is_procedure())
             .any(|e| e
                 .path()
                 .to_string()
                 .ends_with("xreserve::mint_deny_guard::check_policy")),
         "the xreserve library must export xreserve::mint_deny_guard::check_policy; exports: {:?}",
-        lib.exports()
-            .filter(|e| e.as_procedure().is_some())
+        lib.manifest
+            .exports()
+            .filter(|e| e.is_procedure())
             .map(|e| e.path().to_string())
             .collect::<Vec<_>>()
     );
@@ -313,8 +314,11 @@ fn no_local_supply_decrement_surface() {
 fn token_supply_raise_write_integrity_static_sweep() {
     let files = collect_xreserve_masm();
 
-    // (1) the kernel mint primitives appear ONLY in xreserve_mint.masm.
-    for primitive in ["exec.faucet::mint", "exec.faucet::create_fungible_asset"] {
+    // (1) the kernel mint primitives appear ONLY in xreserve_mint.masm. v0.16 #3255 removed the
+    // faucet-relative `create_fungible_asset`; the asset constructor is now the standards
+    // `fungible_asset::create` (fed by `active_account::get_id`) — same supply-raising surface,
+    // new name (MIGRATION-V16-ALPHA2.md S3).
+    for primitive in ["exec.faucet::mint", "exec.fungible_asset::create"] {
         for (name, src) in &files {
             let hits = src.lines().filter(|l| l.contains(primitive)).count();
             if name == "xreserve_mint.masm" {

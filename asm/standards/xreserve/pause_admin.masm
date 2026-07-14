@@ -5,7 +5,8 @@
 # the account-wide Authority (= owner), which both fails Circle's distinct-pauser-role model AND gives
 # the owner a direct pause path — so it is NOT installed; these procs compose
 # rbac::assert_sender_has_role(DOM_PAUSER) with the UNAUTHENTICATED pausable::pause/unpause primitives
-# ("compose with access control in a wrapper"). The is_paused slot is FungibleFaucet-installed, so
+# ("compose with access control in a wrapper"). The is_paused slot is installed by the base
+# Pausable component (v16 — #2944 moved it out of FungibleFaucet), so
 # these write a real slot.
 
 use miden::standards::access::rbac
@@ -36,6 +37,7 @@ const DOM_PAUSER_ROLE = 728098706988649
 #! - the note sender does not hold DOM_PAUSER (rbac::assert_sender_has_role, ERR_SENDER_LACKS_ROLE).
 #!
 #! Invocation: call
+@account_procedure
 pub proc pause
     push.DOM_PAUSER_ROLE
     # => [DOM_PAUSER_ROLE, pad(15)]
@@ -58,6 +60,7 @@ end
 #! - the note sender does not hold DOM_PAUSER (rbac::assert_sender_has_role, ERR_SENDER_LACKS_ROLE).
 #!
 #! Invocation: call
+@account_procedure
 pub proc unpause
     push.DOM_PAUSER_ROLE
     # => [DOM_PAUSER_ROLE, pad(15)]

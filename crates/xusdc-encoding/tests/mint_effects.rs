@@ -18,7 +18,7 @@
 mod support;
 
 use anyhow::Result;
-use miden_protocol::account::{StorageMapKey, StorageSlotDelta, StorageSlotName};
+use miden_protocol::account::{StorageMapKey, StorageSlotName, StorageSlotPatch};
 use miden_protocol::{Felt, Word};
 use miden_standards::note::P2idNote;
 use miden_testing::assert_transaction_executor_error;
@@ -43,13 +43,13 @@ fn inputs(amount: u64, fee_amount: u64, key: [u32; 4]) -> MintInputs {
 fn token_config_delta(executed: &miden_protocol::transaction::ExecutedTransaction) -> Word {
     let slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL).expect("cfg slot label");
     match executed
-        .account_delta()
+        .account_patch()
         .storage()
         .get(&slot)
         .expect("token_config slot delta")
     {
-        StorageSlotDelta::Value(w) => *w,
-        StorageSlotDelta::Map(_) => panic!("token_config must be a Value slot delta"),
+        StorageSlotPatch::Value(w) => w.value().expect("value patch carries a value"),
+        StorageSlotPatch::Map(_) => panic!("token_config must be a Value slot delta"),
     }
 }
 
@@ -112,8 +112,8 @@ async fn d5e_happy_conservation() -> Result<()> {
 
     // nonce SET committed: usedNonces[KEY] == MARKER.
     let used = StorageSlotName::new(USED_NONCES_SLOT_LABEL)?;
-    let StorageSlotDelta::Map(map_delta) = executed
-        .account_delta()
+    let StorageSlotPatch::Map(map_delta) = executed
+        .account_patch()
         .storage()
         .get(&used)
         .expect("usedNonces slot delta")
@@ -122,6 +122,8 @@ async fn d5e_happy_conservation() -> Result<()> {
     };
     let written = map_delta
         .entries()
+        .expect("map patch carries entries")
+        .as_map()
         .get(&StorageMapKey::new(Word::from(KEY)))
         .copied()
         .expect("KEY must appear in the usedNonces delta");

@@ -13,8 +13,11 @@
 //! a DOM_MANAGER-sent `grant_role(DOM_PAUSER, new)` flips REAL pause power (the new member's pause
 //! HALTS a real `xreserve_mint` at the exact `ERR_PAUSABLE_IS_PAUSED`), and a DOM_MANAGER-sent
 //! `revoke_role` removes it (the revoked member's pause REJECTS the exact `ERR_SENDER_LACKS_ROLE`).
-//! The OWNER's rotation authority is Circle's `onlyOwner` BACKSTOP (the stock owner-or-role-admin
-//! gate's owner leg is structural, rbac.masm:411-417) — asserted as a POSITIVE, never stripped.
+//! The OWNER's rotation authority is Circle's BACKSTOP — at v0.16 (#3215 removed the owner's
+//! implicit super-admin standing) it runs through the built-in `ADMIN` role the builder seeds on the
+//! owner's account: owner (ADMIN) administers DOM_MANAGER, DOM_MANAGER administers DOM_PAUSER
+//! (MIGRATION-V16-ALPHA2.md S2/S21). It is still asserted as a POSITIVE ending in REAL pause power
+//! gained/lost, never a config read-back, and never stripped.
 //!
 //! FIXTURE RULE (shipped-build provenance): every test here runs on a PRODUCTION-composed account —
 //! `setup_guarded_mint_account(GuardSelection::ProductionDeny, ...)` = the real
@@ -25,9 +28,10 @@
 //! RED-SUITE (executing-red): at the red commit the production seed still writes
 //! `DOM_PAUSER.admin_role = 0`, so every delegation-dependent test (the seams + the provenance
 //! read-back) is RED for exactly that reason — the DOM_MANAGER-sent grant/revoke notes reach real
-//! MockChain execution and trap the exact `ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN` (rbac.masm:425, the
-//! zero-admin leg). The owner-backstop and non-admin-reject tests are GREEN invariant pins that must
-//! SURVIVE the green seed.
+//! MockChain execution and trap the exact role-admin error (at v0.16: `ERR_SENDER_NOT_ROLE_ADMIN`,
+//! rbac.masm:66 — the v15 `ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN` was re-keyed by #3215). The
+//! owner-backstop and non-admin-reject tests are GREEN invariant pins that must SURVIVE the green
+//! seed.
 
 mod support;
 
@@ -79,8 +83,10 @@ fn err_paused() -> MasmError {
 fn err_sender_lacks_role() -> MasmError {
     MasmError::from_static_str("note sender does not hold the required role")
 }
-fn err_not_owner_or_role_admin() -> MasmError {
-    MasmError::from_static_str("note sender is not the owner or a role admin")
+fn err_not_role_admin() -> MasmError {
+    // v16 #3215: the owner path is gone — the stock error re-keyed from
+    // ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN to ERR_SENDER_NOT_ROLE_ADMIN (rbac.masm:66).
+    MasmError::from_static_str("note sender does not hold the role's admin role")
 }
 fn err_account_not_in_role() -> MasmError {
     MasmError::from_static_str("account does not hold the role")
@@ -199,7 +205,8 @@ fn mint_ready() -> Result<(GuardedMint, AttesterVector)> {
 /// pause power (exact role trap); a DOM_MANAGER-sent `grant_role(DOM_PAUSER, id4)` then flips REAL
 /// capability — id(4)'s pause HALTS a real `xreserve_mint` at the exact `ERR_PAUSABLE_IS_PAUSED`.
 /// RED: the shipped seed still has `DOM_PAUSER.admin_role == 0`, so the DOM_MANAGER grant itself
-/// traps `ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN` (rbac.masm:425 — no delegation).
+/// traps `ERR_SENDER_NOT_ROLE_ADMIN` (the stock effective-admin gate with no delegation configured;
+/// v0.16 re-keyed the v15 `ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN` — S2/S21).
 #[tokio::test]
 async fn dom_manager_grants_pauser_then_new_pauser_halts_mint() -> Result<()> {
     let (gm, attester) = mint_ready()?;
@@ -221,7 +228,7 @@ async fn dom_manager_grants_pauser_then_new_pauser_halts_mint() -> Result<()> {
     .await
     .expect("the delegated DOM_MANAGER grant passes (DOM_PAUSER.admin_role == DOM_MANAGER)");
     let mut evolved = account.clone();
-    evolved.apply_delta(granted.account_delta())?;
+    evolved.apply_patch(granted.account_patch())?;
     assert_eq!(
         read_role_membership(&evolved, &pauser_sym(), new_pauser())?[0],
         Felt::from(1u32),
@@ -232,7 +239,7 @@ async fn dom_manager_grants_pauser_then_new_pauser_halts_mint() -> Result<()> {
     let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, new_pauser(), 33)
         .await
         .expect("the newly granted DOM_PAUSER member pauses the faucet");
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
 
     // ...and HALTS the real mint at the exact stock pause error — the capability change is REAL.
     let result = run_mint_against(
@@ -265,7 +272,7 @@ async fn dom_manager_revokes_pauser_then_pause_rejects() -> Result<()> {
     .await
     .expect("the delegated DOM_MANAGER revoke passes (DOM_PAUSER.admin_role == DOM_MANAGER)");
     let mut evolved = account.clone();
-    evolved.apply_delta(revoked.account_delta())?;
+    evolved.apply_patch(revoked.account_patch())?;
 
     assert_eq!(
         read_role_membership(&evolved, &pauser_sym(), dom_pauser())?[0],
@@ -316,7 +323,7 @@ async fn dom_manager_rotates_pauser_revoke_then_grant() -> Result<()> {
     .await
     .expect("the rotation's revoke leg passes under the delegation");
     let mut evolved = account.clone();
-    evolved.apply_delta(revoked.account_delta())?;
+    evolved.apply_patch(revoked.account_patch())?;
 
     let granted = run_grant_role_against(
         &gm.harness.mock_chain,
@@ -328,7 +335,7 @@ async fn dom_manager_rotates_pauser_revoke_then_grant() -> Result<()> {
     )
     .await
     .expect("the rotation's grant leg passes through the empty role (admin config retained)");
-    evolved.apply_delta(granted.account_delta())?;
+    evolved.apply_patch(granted.account_patch())?;
 
     // The OLD pauser's pause rejects — rotation genuinely removed the incumbent's power.
     let old = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, dom_pauser(), 38).await;
@@ -338,7 +345,7 @@ async fn dom_manager_rotates_pauser_revoke_then_grant() -> Result<()> {
     let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, new_pauser(), 39)
         .await
         .expect("the rotated-in DOM_PAUSER member pauses the faucet");
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
     let result = run_mint_against(
         &gm.harness,
         &evolved,
@@ -353,8 +360,8 @@ async fn dom_manager_rotates_pauser_revoke_then_grant() -> Result<()> {
 // ================================================================================================
 
 /// A double-grant leaves NO ghost member: the stock `grant_role_internal` takes its
-/// "Already a member — no-op" branch BEFORE the count increment (pinned v0.15.3 rbac.masm:445-496
-/// — `has_role → drop drop drop`; the `add.1` sits only in the else branch), so granting the
+/// "Already a member — no-op" branch BEFORE the count increment (the pinned `=0.16.0-alpha.2`
+/// `rbac.masm` — `has_role → drop drop drop`; the `add.1` sits only in the else branch), so granting the
 /// SEEDED DOM_PAUSER member a second time cannot double-increment `member_count`, and ONE revoke
 /// fully removes the member — their pause then rejects with the exact role error. (The existing
 /// pins cover count 1→0 and revoke-then-grant; neither touched the no-op branch.)
@@ -375,7 +382,7 @@ async fn double_grant_pauser_leaves_no_ghost_member() -> Result<()> {
     .await
     .expect("granting an existing member succeeds via the stock no-op branch");
     let mut evolved = account.clone();
-    evolved.apply_delta(granted.account_delta())?;
+    evolved.apply_patch(granted.account_patch())?;
 
     // ...with NO count increment (the ghost-member hazard this test forecloses).
     assert_eq!(
@@ -400,7 +407,7 @@ async fn double_grant_pauser_leaves_no_ghost_member() -> Result<()> {
     )
     .await
     .expect("one revoke removes the double-granted member");
-    evolved.apply_delta(revoked.account_delta())?;
+    evolved.apply_patch(revoked.account_patch())?;
     assert_eq!(
         read_role_config(&evolved, &pauser_sym())?[0],
         Felt::ZERO,
@@ -417,8 +424,8 @@ async fn double_grant_pauser_leaves_no_ghost_member() -> Result<()> {
 }
 
 /// Revoking a NON-member traps the EXACT stock `ERR_ACCOUNT_NOT_IN_ROLE`
-/// (pinned v0.15.3 rbac.masm:52, asserted in `revoke_role_internal` at :520) and leaves the role
-/// config untouched — the first pin of this stock constant in the repo.
+/// (the pinned `=0.16.0-alpha.2` `rbac.masm`, asserted inside `revoke_role_internal`) and leaves
+/// the role config untouched — the first pin of this stock constant in the repo.
 #[tokio::test]
 async fn revoke_role_non_member_traps() -> Result<()> {
     let gm = production_faucet()?;
@@ -463,7 +470,7 @@ async fn dom_pauser_can_renounce_own_role() -> Result<()> {
     .await
     .expect("a DOM_PAUSER holder self-renounces (stock renounce_role, self-only)");
     let mut evolved = account.clone();
-    evolved.apply_delta(renounced.account_delta())?;
+    evolved.apply_patch(renounced.account_patch())?;
     assert_eq!(
         read_role_config(&evolved, &pauser_sym())?[0],
         Felt::ZERO,
@@ -533,45 +540,111 @@ async fn shipped_delegation_reads_back() -> Result<()> {
 // THE OWNER BACKSTOP (GREEN pins) — Circle's onlyOwner rotation authority, asserted POSITIVE
 // ================================================================================================
 
-/// The Circle owner-only BACKSTOP as a POSITIVE (the owner-only rotation authority): the
-/// owner grants id(5) and the new member's pause SUCCEEDS (`is_paused` flips) — capability-level, not
-/// a config read-back. The stock gate's owner leg is structural (rbac.masm:412-417) and must NEVER be
-/// stripped. GREEN at the red commit; must SURVIVE the delegation (the delegated admin does not
-/// displace the owner).
+/// The Circle owner BACKSTOP as a POSITIVE, in its v16 shape (S2, operator-approved): the owner
+/// holds the stock `ADMIN` role, which is DOM_MANAGER's effective admin (#3215 removed the
+/// implicit owner super-admin; `admin_role = 0` now resolves to `ADMIN`, rbac.masm:427-438). The
+/// owner therefore rotates the MANAGER, and the manager rotates the PAUSER — the same ultimate
+/// authority, one hop longer. Capability-level: the chain ends in a REAL pause by an
+/// owner-rooted member (`is_paused` flips), not a config read-back.
 #[tokio::test]
 async fn owner_can_still_grant_pauser() -> Result<()> {
     let gm = production_faucet()?;
     let account = faucet_account(&gm.harness);
 
-    let granted = run_grant_role_against(
+    // Hop 1: the owner (ADMIN member) grants DOM_MANAGER to a new account.
+    let granted_manager = run_grant_role_against(
         &gm.harness.mock_chain,
         &account,
         owner(),
-        &pauser_sym(),
+        &manager_sym(),
         second_pauser(),
         40,
     )
     .await
-    .expect("the owner backstop grant passes (the stock owner leg is structural)");
+    .expect("the owner backstop grant of DOM_MANAGER passes (owner holds ADMIN)");
     let mut evolved = account.clone();
-    evolved.apply_delta(granted.account_delta())?;
+    evolved.apply_patch(granted_manager.account_patch())?;
 
-    let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, second_pauser(), 41)
+    // Hop 2: the owner-installed manager grants DOM_PAUSER to a new pauser.
+    let granted_pauser = run_grant_role_against(
+        &gm.harness.mock_chain,
+        &evolved,
+        second_pauser(),
+        &pauser_sym(),
+        new_pauser(),
+        41,
+    )
+    .await
+    .expect("the owner-installed DOM_MANAGER grants DOM_PAUSER (CMP-F5 delegation)");
+    evolved.apply_patch(granted_pauser.account_patch())?;
+
+    let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, new_pauser(), 42)
         .await
-        .expect("the owner-granted member pauses the faucet");
-    evolved.apply_delta(paused.account_delta())?;
+        .expect("the owner-rooted member pauses the faucet");
+    evolved.apply_patch(paused.account_patch())?;
     assert_eq!(
         read_is_paused(&evolved)?[0],
         Felt::from(1u32),
-        "the owner-granted pauser's pause is REAL (is_paused flipped)"
+        "the owner-rooted pauser's pause is REAL (is_paused flipped)"
     );
     Ok(())
 }
 
-/// The backstop's other direction: the owner revokes the seeded pauser id(2) and the revoked member's
-/// pause REJECTS the exact role error. GREEN at the red commit; must survive the delegation.
+/// The backstop's other direction — the v15 proof re-expressed through the v16 authority chain,
+/// ending (as it must) in a REAL loss of pause authority by an EXISTING pauser: the owner (ADMIN
+/// member) grants itself DOM_MANAGER — DOM_PAUSER's effective admin, #3215/S21 — then, so
+/// empowered, REVOKES DOM_PAUSER from the seeded pauser id(2); that pauser's pause is then
+/// REJECTED with the exact role error and `is_paused` never flips. The owner therefore retains
+/// Circle's backstop ability to strip a live pauser, one hop longer than at v15.
 #[tokio::test]
 async fn owner_can_still_revoke_pauser() -> Result<()> {
+    let gm = production_faucet()?;
+    let account = faucet_account(&gm.harness);
+
+    // Hop 1: the owner (ADMIN member) takes DOM_MANAGER — DOM_PAUSER's effective admin.
+    let self_manager = run_grant_role_against(
+        &gm.harness.mock_chain,
+        &account,
+        owner(),
+        &manager_sym(),
+        owner(),
+        42,
+    )
+    .await
+    .expect("the owner (ADMIN member) grants itself DOM_MANAGER");
+    let mut evolved = account.clone();
+    evolved.apply_patch(self_manager.account_patch())?;
+
+    // Hop 2: now DOM_MANAGER-holding, the owner revokes the SEEDED pauser id(2)'s DOM_PAUSER.
+    let revoked = run_revoke_role_against(
+        &gm.harness.mock_chain,
+        &evolved,
+        owner(),
+        &pauser_sym(),
+        dom_pauser(),
+        43,
+    )
+    .await
+    .expect("the DOM_MANAGER-holding owner revokes the seeded pauser's DOM_PAUSER");
+    evolved.apply_patch(revoked.account_patch())?;
+
+    // The REAL loss of authority: the revoked pauser's pause is rejected and is_paused stays 0.
+    let result = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, dom_pauser(), 44).await;
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
+    assert_eq!(
+        read_is_paused(&evolved)?[0],
+        Felt::ZERO,
+        "the revoked pauser's failed pause leaves is_paused untouched"
+    );
+    Ok(())
+}
+
+/// The backstop's OTHER lever (v16, additive): the owner (ADMIN member) can CUT the delegation
+/// chain outright — revoking DOM_MANAGER from the seeded manager id(3) leaves that holder unable
+/// to administer DOM_PAUSER at all (the exact role-admin error). Complements
+/// [`owner_can_still_revoke_pauser`], which strips an existing pauser directly.
+#[tokio::test]
+async fn owner_can_revoke_dom_manager_cutting_the_delegation_chain() -> Result<()> {
     let gm = production_faucet()?;
     let account = faucet_account(&gm.harness);
 
@@ -579,21 +652,29 @@ async fn owner_can_still_revoke_pauser() -> Result<()> {
         &gm.harness.mock_chain,
         &account,
         owner(),
-        &pauser_sym(),
-        dom_pauser(),
-        42,
+        &manager_sym(),
+        dom_manager(),
+        45,
     )
     .await
-    .expect("the owner backstop revoke passes");
+    .expect("the owner backstop revoke of DOM_MANAGER passes (owner holds ADMIN)");
     let mut evolved = account.clone();
-    evolved.apply_delta(revoked.account_delta())?;
+    evolved.apply_patch(revoked.account_patch())?;
 
-    let result = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, dom_pauser(), 43).await;
-    assert_transaction_executor_error!(result, err_sender_lacks_role());
+    let denied = run_grant_role_against(
+        &gm.harness.mock_chain,
+        &evolved,
+        dom_manager(),
+        &pauser_sym(),
+        new_pauser(),
+        46,
+    )
+    .await;
+    assert_transaction_executor_error!(denied, err_not_role_admin());
     assert_eq!(
         read_is_paused(&evolved)?[0],
         Felt::ZERO,
-        "a failed pause leaves is_paused untouched"
+        "a failed grant leaves is_paused untouched"
     );
     Ok(())
 }
@@ -602,9 +683,9 @@ async fn owner_can_still_revoke_pauser() -> Result<()> {
 // ================================================================================================
 
 /// Shared: a non-owner non-DOM_MANAGER `sender` can NEITHER grant NOR revoke DOM_PAUSER — both trap
-/// the exact `ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN` (rbac.masm:411; at the red commit via the
-/// zero-admin leg `:425`, post-green via the membership leg `:431` — same constant), and the failed
-/// txs leave the committed membership/config words untouched.
+/// the exact `ERR_SENDER_NOT_ROLE_ADMIN` (the stock `assert_sender_is_role_admin` gate — reached at
+/// the red commit via its zero-admin leg and post-green via its membership leg, the same constant
+/// either way), and the failed txs leave the committed membership/config words untouched.
 async fn assert_non_admin_cannot_administer_pauser(sender: AccountId, seed: u64) -> Result<()> {
     let gm = production_faucet()?;
     let account = faucet_account(&gm.harness);
@@ -618,7 +699,7 @@ async fn assert_non_admin_cannot_administer_pauser(sender: AccountId, seed: u64)
         seed,
     )
     .await;
-    assert_transaction_executor_error!(grant, err_not_owner_or_role_admin());
+    assert_transaction_executor_error!(grant, err_not_role_admin());
 
     let revoke = run_revoke_role_against(
         &gm.harness.mock_chain,
@@ -629,7 +710,7 @@ async fn assert_non_admin_cannot_administer_pauser(sender: AccountId, seed: u64)
         seed + 1,
     )
     .await;
-    assert_transaction_executor_error!(revoke, err_not_owner_or_role_admin());
+    assert_transaction_executor_error!(revoke, err_not_role_admin());
 
     // No state change: the rejected txs produced no delta; the committed words are intact.
     assert_eq!(
@@ -662,10 +743,11 @@ async fn stranger_cannot_grant_or_revoke() -> Result<()> {
     assert_non_admin_cannot_administer_pauser(stranger(), 46).await
 }
 
-/// Shared: a non-owner `sender` is rejected from `set_role_admin` with the exact
-/// `ERR_SENDER_NOT_OWNER` (the proc is OWNER-ONLY, rbac.masm:163-164) and the delegation word is
-/// untouched. The DOM_MANAGER cell is the load-bearing one: the Manager rotates MEMBERS, never the
-/// delegation itself.
+/// Shared: a sender who does NOT hold DOM_PAUSER's effective admin role is rejected from
+/// `set_role_admin(DOM_PAUSER, …)` with the exact `ERR_SENDER_NOT_ROLE_ADMIN`, and the delegation
+/// word is untouched. v16 #3215 (S21 — an upstream consequence beyond the S2 approval): the gate
+/// is the ROLE's effective admin, so DOM_PAUSER's `set_role_admin` is DOM_MANAGER's, NOT the
+/// owner's; the owner's re-delegation power now runs through DOM_MANAGER membership.
 async fn assert_set_role_admin_rejected(sender: AccountId, seed: u64) -> Result<()> {
     let gm = production_faucet()?;
     let account = faucet_account(&gm.harness);
@@ -680,7 +762,7 @@ async fn assert_set_role_admin_rejected(sender: AccountId, seed: u64) -> Result<
         seed,
     )
     .await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_not_role_admin());
     assert_eq!(
         read_role_config(&account, &pauser_sym())?,
         before,
@@ -689,10 +771,44 @@ async fn assert_set_role_admin_rejected(sender: AccountId, seed: u64) -> Result<
     Ok(())
 }
 
-/// DOM_MANAGER cannot re-delegate role administration (owner-only).
+/// v16 #3215 (S21, human-RATIFIED 2026-07-13): the OWNER — an ADMIN member but not a DOM_MANAGER
+/// holder — can no longer re-delegate DOM_PAUSER directly; the gate is DOM_PAUSER's effective admin
+/// (DOM_MANAGER). The owner's re-delegation authority survives by first taking DOM_MANAGER
+/// (`owner_reaches_set_role_admin_through_dom_manager`), and its backstop is unbreakable:
+/// DOM_MANAGER's own admin is ADMIN = the owner, so a rogue Manager cannot escape (CIR-ADMIN-3).
 #[tokio::test]
-async fn set_role_admin_dom_manager_rejects() -> Result<()> {
-    assert_set_role_admin_rejected(dom_manager(), 48).await
+async fn set_role_admin_owner_direct_rejects() -> Result<()> {
+    assert_set_role_admin_rejected(owner(), 48).await
+}
+
+/// v16 #3215 (S21): DOM_MANAGER — DOM_PAUSER's delegated admin — CAN re-delegate DOM_PAUSER (a
+/// capability it did not hold at v15, where `set_role_admin` was owner-only). Asserted as a
+/// POSITIVE so the change is loud and pinned, not silent.
+#[tokio::test]
+async fn set_role_admin_dom_manager_can_redelegate_pauser() -> Result<()> {
+    let gm = production_faucet()?;
+    let account = faucet_account(&gm.harness);
+
+    let cleared = run_set_role_admin_against(
+        &gm.harness.mock_chain,
+        &account,
+        dom_manager(),
+        &pauser_sym(),
+        None,
+        49,
+    )
+    .await
+    .expect("v16: DOM_PAUSER's delegated admin (DOM_MANAGER) may re-delegate it");
+    let mut evolved = account.clone();
+    evolved.apply_patch(cleared.account_patch())?;
+    let config = read_role_config(&evolved, &pauser_sym())?;
+    assert_eq!(config[1], Felt::ZERO, "the delegation is cleared");
+    assert_eq!(
+        config[0],
+        Felt::from(1u32),
+        "member_count is preserved through set_role_admin"
+    );
+    Ok(())
 }
 
 /// DOM_PAUSER cannot re-delegate role administration.
@@ -725,7 +841,7 @@ async fn dom_manager_cannot_administer_dom_manager() -> Result<()> {
         51,
     )
     .await;
-    assert_transaction_executor_error!(grant, err_not_owner_or_role_admin());
+    assert_transaction_executor_error!(grant, err_not_role_admin());
 
     let revoke = run_revoke_role_against(
         &gm.harness.mock_chain,
@@ -736,7 +852,7 @@ async fn dom_manager_cannot_administer_dom_manager() -> Result<()> {
         52,
     )
     .await;
-    assert_transaction_executor_error!(revoke, err_not_owner_or_role_admin());
+    assert_transaction_executor_error!(revoke, err_not_role_admin());
 
     assert_eq!(
         read_role_config(&account, &manager_sym())?[1],
@@ -760,23 +876,38 @@ async fn dom_manager_cannot_administer_dom_manager() -> Result<()> {
 /// writes (rbac.masm:168-174). GREEN at the red commit (the runtime machinery is stock); after the
 /// green seed the clear-leg additionally proves the SHIPPED delegation is clearable.
 #[tokio::test]
-async fn owner_set_role_admin_controls_delegation() -> Result<()> {
+async fn owner_reaches_set_role_admin_through_dom_manager() -> Result<()> {
     let gm = production_faucet()?;
     let account = faucet_account(&gm.harness);
 
-    // The owner clears the delegation (admin_role -> 0).
-    let cleared = run_set_role_admin_against(
+    // v16 #3215 (S21): `set_role_admin(DOM_PAUSER)` is gated on DOM_PAUSER's effective admin
+    // (DOM_MANAGER), so the owner reaches it by first granting ITSELF DOM_MANAGER — which it may
+    // do as the ADMIN member (DOM_MANAGER's own effective admin). Two hops, same end authority.
+    let self_manager = run_grant_role_against(
         &gm.harness.mock_chain,
         &account,
+        owner(),
+        &manager_sym(),
+        owner(),
+        52,
+    )
+    .await
+    .expect("the owner (ADMIN member) grants itself DOM_MANAGER");
+    let mut evolved = account.clone();
+    evolved.apply_patch(self_manager.account_patch())?;
+
+    // Now DOM_MANAGER-holding, the owner clears the delegation (admin_role -> 0).
+    let cleared = run_set_role_admin_against(
+        &gm.harness.mock_chain,
+        &evolved,
         owner(),
         &pauser_sym(),
         None,
         53,
     )
     .await
-    .expect("the owner clears the DOM_PAUSER delegation (set_role_admin is owner-only)");
-    let mut evolved = account.clone();
-    evolved.apply_delta(cleared.account_delta())?;
+    .expect("the DOM_MANAGER-holding owner clears the DOM_PAUSER delegation");
+    evolved.apply_patch(cleared.account_patch())?;
     let config = read_role_config(&evolved, &pauser_sym())?;
     assert_eq!(config[1], Felt::ZERO, "the delegation is cleared");
     assert_eq!(
@@ -795,7 +926,7 @@ async fn owner_set_role_admin_controls_delegation() -> Result<()> {
         54,
     )
     .await;
-    assert_transaction_executor_error!(denied, err_not_owner_or_role_admin());
+    assert_transaction_executor_error!(denied, err_not_role_admin());
 
     // The owner re-delegates; the DOM_MANAGER grant now passes.
     let reset = run_set_role_admin_against(
@@ -808,7 +939,7 @@ async fn owner_set_role_admin_controls_delegation() -> Result<()> {
     )
     .await
     .expect("the owner re-delegates DOM_PAUSER administration to DOM_MANAGER");
-    evolved.apply_delta(reset.account_delta())?;
+    evolved.apply_patch(reset.account_patch())?;
     assert_eq!(
         read_role_config(&evolved, &pauser_sym())?[1],
         Felt::from(&manager_sym()),
@@ -825,7 +956,7 @@ async fn owner_set_role_admin_controls_delegation() -> Result<()> {
     )
     .await
     .expect("with the delegation in place the DOM_MANAGER grant passes");
-    evolved.apply_delta(granted.account_delta())?;
+    evolved.apply_patch(granted.account_patch())?;
     assert_eq!(
         read_role_membership(&evolved, &pauser_sym(), new_pauser())?[0],
         Felt::from(1u32),

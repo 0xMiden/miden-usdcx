@@ -20,7 +20,7 @@ mod support;
 use anyhow::{Context, Result};
 use miden_processor::advice::AdviceInputs;
 use miden_processor::crypto::random::RandomCoin;
-use miden_protocol::account::{Account, AccountId};
+use miden_protocol::account::{Account, AccountId, StorageMapKey};
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::note::{NoteId, NoteTag, NoteType};
 use miden_protocol::transaction::ExecutedTransaction;
@@ -241,7 +241,7 @@ fn read_map_word(account: &Account, slot_label: &str, key: Word) -> Result<Word>
         .get_map_item(
             &miden_protocol::account::StorageSlotName::new(slot_label)
                 .with_context(|| format!("slot label {slot_label}"))?,
-            key,
+            StorageMapKey::new(key),
         )
         .map_err(|e| anyhow::anyhow!("reading map slot {slot_label}: {e}"))
 }

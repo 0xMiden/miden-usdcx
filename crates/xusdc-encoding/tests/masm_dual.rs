@@ -19,7 +19,7 @@ use miden_processor::operation::OperationError;
 use miden_processor::ExecutionError;
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::account::{AccountComponent, AccountId};
-use miden_protocol::assembly::Library;
+use miden_protocol::assembly::{Library, Linkage, Path as MasmPath};
 use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::{ExecutedTransaction, TransactionKernel};
 use miden_protocol::{Felt, Word};
@@ -44,15 +44,18 @@ fn assemble_xreserve_lib() -> Result<Library> {
     // Link StandardsLib (mirrors support::assemble_xreserve_lib): attester_admin::set_attester calls
     // the stock authority/pausable procs, which live in StandardsLib.
     let assembler = TransactionKernel::assembler()
-        .with_dynamic_library(StandardsLib::default())
+        .with_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
         .map_err(|e| {
             anyhow::anyhow!("linking the standards library into the xreserve assembler: {e}")
         })?
         .with_warnings_as_errors(true);
     let lib = assembler
-        .assemble_library_from_dir(xusdc_encoding::xreserve_asm_dir(), "xreserve")
+        .assemble_library_from_root(
+            xusdc_encoding::xreserve_asm_dir().join("mod.masm"),
+            Some(MasmPath::new("xreserve")),
+        )
         .map_err(|e| anyhow::anyhow!("xreserve library failed to assemble: {e}"))?;
-    Ok(Arc::unwrap_or_clone(lib))
+    Ok(*lib)
 }
 
 struct Harness {
@@ -137,7 +140,8 @@ async fn tv_dual_1_bytes32_to_key() -> Result<()> {
         let src = format!(
             r#"use xreserve::encoding
 
-begin
+@transaction_script
+pub proc main
     push.{b0}
     push.{b1}
     exec.encoding::bytes32_to_key
@@ -172,7 +176,8 @@ async fn tv_dual_2_uint256_reducer() -> Result<()> {
                 let src = format!(
                     r#"use xreserve::encoding
 
-begin
+@transaction_script
+pub proc main
     push.{scale}
     push.{u0}
     push.{u1}
@@ -202,7 +207,8 @@ end
                 let src = format!(
                     r#"use xreserve::encoding
 
-begin
+@transaction_script
+pub proc main
     push.{scale}
     push.{u0}
     push.{u1}
@@ -251,23 +257,16 @@ end
 /// constant identifiers, the protocol's single-const import style.)
 fn build_parser_driver_prefix(preimage: &[Felt], len_felts: u64) -> String {
     let mut src = String::from("use xreserve::encoding\n");
-    for c in [
-        "MAGIC_FELT_OFF",
-        "VERSION_FELT_OFF",
-        "AMOUNT_FELT_OFF",
-        "REMOTE_DOMAIN_FELT_OFF",
-        "REMOTE_TOKEN_FELT_OFF",
-        "REMOTE_RECIPIENT_FELT_OFF",
-        "LOCAL_TOKEN_FELT_OFF",
-        "LOCAL_DEPOSITOR_FELT_OFF",
-        "MAX_FEE_FELT_OFF",
-        "NONCE_FELT_OFF",
-        "HOOK_DATA_LEN_FELT_OFF",
-        "HOOK_DATA_FELT_OFF",
-    ] {
-        writeln!(src, "use xreserve::encoding::layout::{c}").unwrap();
-    }
-    src.push_str("\nbegin\n");
+    // v0.25 braced item-import form (bare `use module::CONST` no longer resolves constants).
+    writeln!(
+        src,
+        "use {{MAGIC_FELT_OFF, VERSION_FELT_OFF, AMOUNT_FELT_OFF, REMOTE_DOMAIN_FELT_OFF, \
+         REMOTE_TOKEN_FELT_OFF, REMOTE_RECIPIENT_FELT_OFF, LOCAL_TOKEN_FELT_OFF, \
+         LOCAL_DEPOSITOR_FELT_OFF, MAX_FEE_FELT_OFF, NONCE_FELT_OFF, HOOK_DATA_LEN_FELT_OFF, \
+         HOOK_DATA_FELT_OFF}} from xreserve::encoding::layout"
+    )
+    .unwrap();
+    src.push_str("\n@transaction_script\npub proc main\n");
     stage_preimage(&mut src, preimage);
     writeln!(src, "    push.{len_felts}").unwrap();
     writeln!(src, "    push.{INTENT_PTR}").unwrap();
@@ -423,27 +422,34 @@ async fn tv_dual_3_parse_deposit_intent() -> Result<()> {
 async fn tv_dual_5_pubkey_commitment() -> Result<()> {
     let h = setup()?;
     for vec in &load().families.att {
-        let limbs = vec.packed_felts_values(); // 9 felts f0..f8 (to_elements order)
-        let (pkw0, pkw1) = (word_of(&limbs[0..4]), word_of(&limbs[4..8]));
-        let pk8 = limbs[8].as_canonical_u64();
+        let limbs = vec.packed_felts_values(); // 16 affine felts f0..f15 (to_elements order, vm#3342)
+        let (pkw0, pkw1, pkw2, pkw3) = (
+            word_of(&limbs[0..4]),
+            word_of(&limbs[4..8]),
+            word_of(&limbs[8..12]),
+            word_of(&limbs[12..16]),
+        );
         let expected = vec.expected_commitment_word();
 
         // Rust mirror == the vector oracle (miden-crypto to_commitment): the third anti-drift
         // leg, asserted in-process so a mirror regression fails here too, not only in TV-ATT-2.
         assert_eq!(
-            xusdc_encoding::xreserve::encoding::pubkey_commitment(&vec.pubkey()),
+            xusdc_encoding::xreserve::encoding::pubkey_commitment(&vec.pubkey())
+                .expect("vector pubkeys are valid curve points"),
             expected,
             "vector {}: Rust pubkey_commitment must equal miden-crypto to_commitment",
             vec.id
         );
 
-        // MASM proc executed under MockChain: push [PK_W0, PK_W1, pk8] (PK_W0 on top, consumed
-        // first by loc_storew_le.0), exec, assert the returned Word equals the canonical oracle.
+        // MASM proc executed under MockChain: push [PK_W0, PK_W1, PK_W2, PK_W3] (PK_W0 on top,
+        // consumed first by loc_storew_le.0), exec, assert the returned Word equals the oracle.
         let src = format!(
             r#"use xreserve::encoding
 
-begin
-    push.{pk8}
+@transaction_script
+pub proc main
+    push.{pkw3}
+    push.{pkw2}
     push.{pkw1}
     push.{pkw0}
     exec.encoding::pubkey_commitment
@@ -479,7 +485,8 @@ async fn harness_detects_wrong_vector() -> Result<()> {
     let src = format!(
         r#"use xreserve::encoding
 
-begin
+@transaction_script
+pub proc main
     push.{b0}
     push.{b1}
     exec.encoding::bytes32_to_key
@@ -501,8 +508,9 @@ end
 fn probe_p1_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     let exports: Vec<String> = lib
+        .manifest
         .exports()
-        .filter(|e| e.as_procedure().is_some())
+        .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
     // exports render as ABSOLUTE paths (leading `::`) at this assembler version
@@ -524,9 +532,12 @@ fn probe_p1_exports() -> Result<()> {
 #[tokio::test]
 async fn probe_p2_script_executes() -> Result<()> {
     let h = setup()?;
-    run_driver(&h, "begin push.1 drop end")
-        .await
-        .expect("trivial driver must execute");
+    run_driver(
+        &h,
+        "@transaction_script\npub proc main\n    push.1 drop\nend\n",
+    )
+    .await
+    .expect("trivial driver must execute");
     Ok(())
 }
 

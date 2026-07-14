@@ -21,8 +21,7 @@
 use miden::protocol::active_account
 use miden::protocol::native_account
 use miden::standards::access::ownable2step
-use xreserve::deposit_intent_parser::DOMAIN_CONFIG_SLOT
-use xreserve::deposit_intent_parser::IDENTIFIER_CONFIG_SLOT
+use {DOMAIN_CONFIG_SLOT, IDENTIFIER_CONFIG_SLOT} from xreserve::deposit_intent_parser
 
 # CONSTANTS
 # =================================================================================================
@@ -101,6 +100,7 @@ const ERR_XRESERVE_IDENTIFIER_EMPTY = "identifier must be non-empty"
 #! - any xreserve_contract limb is not a valid u32 (ERR_XRESERVE_XRC_LIMB_NOT_U32).
 #!
 #! Invocation: call
+@account_procedure
 pub proc domain_init
     # => [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)]
 

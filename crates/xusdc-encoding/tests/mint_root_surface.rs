@@ -28,7 +28,7 @@ mod support;
 use anyhow::Result;
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::component::AccountComponentCode;
-use miden_protocol::account::{AccountId, StorageSlotDelta, StorageSlotName};
+use miden_protocol::account::{AccountId, StorageSlotName, StorageSlotPatch};
 use miden_protocol::note::{Note, NoteType};
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
@@ -91,6 +91,7 @@ fn noop_driver_src() -> String {
      #! Outputs: [pad(16)]\n\
      #!\n\
      #! Invocation: call\n\
+     @account_procedure\n\
      pub proc drive\n\
      \x20\x20\x20\x20push.0 drop\n\
      end\n"
@@ -167,8 +168,10 @@ async fn fire_note(
 /// The committed `token_supply` delta (token_config word element 0) of an executed tx, if any.
 fn token_supply_delta(executed: &ExecutedTransaction) -> Option<Felt> {
     let slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL).expect("token_config slot label");
-    match executed.account_delta().storage().get(&slot) {
-        Some(StorageSlotDelta::Value(w)) => Some(w[0]),
+    match executed.account_patch().storage().get(&slot) {
+        Some(StorageSlotPatch::Value(w)) => {
+            Some(w.value().expect("value patch carries a value")[0])
+        }
         _ => None,
     }
 }
@@ -251,11 +254,12 @@ fn production_supply_raising_root_set_is_exactly_mint() -> Result<()> {
         "extract_recipient_account_id must NOT be a callable account root (L1)"
     );
 
-    // Frozen tripwire: the exported-proc set is EXACTLY the 17 sanctioned roots.
+    // Frozen tripwire, source layer: the exported-proc set is EXACTLY the 17 sanctioned roots.
     let lib: &miden_protocol::assembly::Library = xreserve.component_code().as_ref();
     let mut paths: Vec<String> = lib
+        .manifest
         .exports()
-        .filter(|e| e.as_procedure().is_some())
+        .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
     paths.sort();
@@ -268,6 +272,32 @@ fn production_supply_raising_root_set_is_exactly_mint() -> Result<()> {
         paths, expected,
         "the xreserve callable-root set drifted from the frozen sanctioned set (a new export is a \
          potential new supply door)"
+    );
+
+    // Frozen tripwire, INTERFACE layer (v16 — MIGRATION-V16-ALPHA2.md S19): at alpha.2 the
+    // account interface is FILTERED by `@account_procedure` (`AccountComponentCode::exports`),
+    // while the raw `Library::exports()` above still lists every `pub proc` regardless of the
+    // attribute — so a missing annotation would leave the path-level compare green while the
+    // procedure silently vanished from the account. Resolve each frozen path to its MAST root
+    // and require SET-EQUALITY with the filtered interface (`callable`, computed above from
+    // `xreserve.procedures()`): any missing or extra annotation fails loudly.
+    let frozen_roots: std::collections::BTreeSet<Word> = FROZEN_CALLABLE_ROOTS
+        .iter()
+        .map(|path| {
+            Word::from(
+                xreserve
+                    .get_procedure_root_by_path(path.trim_start_matches("::"))
+                    .unwrap_or_else(|| {
+                        panic!("frozen path {path} must resolve in the xreserve library")
+                    }),
+            )
+        })
+        .collect();
+    assert_eq!(
+        callable, frozen_roots,
+        "the FILTERED account-interface root set (@account_procedure) must equal the 17 frozen \
+         roots exactly — a missing annotation drops a sanctioned proc from the account, an extra \
+         one opens an unsanctioned callable root"
     );
     Ok(())
 }

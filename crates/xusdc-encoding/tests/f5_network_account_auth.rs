@@ -259,7 +259,7 @@ async fn non_allowlisted_note_is_rejected_by_auth() -> Result<()> {
 async fn any_tx_script_is_rejected_by_empty_tx_allowlist() -> Result<()> {
     let (chain, account) = production_faucet()?;
     let tx_script = CodeBuilder::new()
-        .compile_tx_script("begin nop end")
+        .compile_tx_script("@transaction_script\npub proc main\n    nop\nend\n")
         .context("compiling the probe tx script")?;
 
     let result = chain

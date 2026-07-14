@@ -10,13 +10,13 @@ mod support;
 use anyhow::{Context, Result};
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::account::{
-    AccountComponent, AccountType, StorageMap, StorageSlot, StorageSlotName,
+    AccountComponent, AccountProcedureRoot, AccountType, StorageMap, StorageSlot, StorageSlotName,
 };
 use miden_protocol::asset::{AssetAmount, TokenSymbol};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{PausableManager, PausableStorage};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
-use miden_standards::account::policies::{BurnPolicyConfig, MintPolicyConfig};
+use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
 use miden_testing::assert_transaction_executor_error;
 use support::*;
 use xusdc_encoding::account::xreserve::{
@@ -155,7 +155,7 @@ async fn build_produces_deny_active_public_faucet() -> Result<()> {
         &probe,
         true,
     )?;
-    let result = run_mint_and_send(&gm.harness, Word::from([0u32, 1, 2, 3]), 0, 4, 100, 0).await;
+    let result = run_mint_and_send(&gm.harness, Word::from([0u32, 1, 2, 3]), 0, 4, 100).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_MINT_DENIED"));
     Ok(())
 }
@@ -200,7 +200,7 @@ fn build_rejects_missing_mint_deny_guard() -> Result<()> {
         test_account_id(2),
         test_account_id(3),
     )
-    .with_active_mint_policy(MintPolicyConfig::AllowAll)
+    .with_active_mint_policy(MintPolicy::allow_all())
     .build_components()
     .expect_err("a non-deny active mint policy must be rejected");
     assert!(
@@ -225,7 +225,7 @@ fn denies_non_policy_burn() -> Result<()> {
         test_account_id(2),
         test_account_id(3),
     )
-    .with_active_burn_policy(BurnPolicyConfig::AllowAll)
+    .with_active_burn_policy(BurnPolicy::allow_all())
     .build_components();
     assert!(
         matches!(
@@ -387,13 +387,16 @@ fn builder_installs_no_stock_pause_manager() -> Result<()> {
 }
 
 /// The `is_paused` slot SURVIVES the Domain-Pauser-only pause model: the production composition
-/// carries the value slot `miden::standards::access::pausable::is_paused`, installed by
-/// `FungibleFaucet` ITSELF at the pinned v0.15.3 (`fungible/mod.rs:397`) — NOT by the removed
-/// `PausableManager`, which installs zero storage (`manager.rs:78`). Without this slot the mint/burn
+/// carries the value slot `miden::standards::access::pausable::is_paused`, installed at v0.16 by
+/// the base `Pausable` component the builder adds (`Pausable::unpaused()`) — NOT by
+/// `FungibleFaucet` (protocol #2944 moved the slot OUT of the faucet; the v15 provenance this doc
+/// used to cite is superseded — MIGRATION-V16-ALPHA2.md S1) and NOT by the deliberately-absent
+/// `PausableManager`, which installs zero storage. Without this slot the mint/burn
 /// `assert_not_paused` halt-gates break, reopening the pause halt-gap (Circle requires a paused
-/// faucet halt mint and burn). This is also the structural TRIPWIRE for the upstream v0.16 change
-/// (#2944) that moves the slot OUT of `FungibleFaucet`: at any future pin bump this test fails
-/// loudly and the composition must add the base `Pausable` component instead.
+/// faucet halt mint and burn) — and at v0.16 that failure is SILENT rather than loud: #3047 made
+/// `pausable::assert_not_paused` a no-op on accounts lacking the slot instead of trapping. This
+/// test is therefore the load-bearing structural tripwire for the composition: it goes RED the
+/// moment `Pausable` leaves the component list.
 #[test]
 fn production_components_carry_is_paused_slot() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
@@ -413,16 +416,18 @@ fn production_components_carry_is_paused_slot() -> Result<()> {
             .iter()
             .flat_map(|c| c.storage_slots().iter())
             .any(|slot| slot.name() == is_paused),
-        "the production composition must carry the FungibleFaucet-installed is_paused slot \
-         (its absence breaks the mint/burn pause halt-gates — CIR-ADMIN-4)"
+        "the production composition must carry the Pausable-installed is_paused slot (v0.16 #2944 \
+         moved it out of FungibleFaucet); its absence SILENTLY disables the mint/burn pause \
+         halt-gates at v0.16 (#3047 no-ops assert_not_paused when the slot is missing) — \
+         CIR-ADMIN-4"
     );
     Ok(())
 }
 
 /// PIN-BUMP TRIPWIRE for the `mutability_config` slot: the
 /// builder's fail-closed `unwrap_or(false)` in `faucet_max_supply_is_mutable` (builder.rs) only
-/// arms when the slot is MISSING — unreachable at the pinned v0.15.3, where `FungibleFaucet`
-/// always installs it. This test pins the slot's presence AND its word layout on the production
+/// arms when the slot is MISSING — unreachable at the pinned `=0.16.0-alpha.2`, where
+/// `FungibleFaucet` still installs it (unlike `is_paused`, which #2944 moved out). This test pins the slot's presence AND its word layout on the production
 /// build, so a pin bump that drops, renames, or reshuffles it fails loudly here instead of
 /// silently arming the missing-slot default. The name string is DELIBERATELY duplicated from the
 /// builder's private `FAUCET_MUTABILITY_CONFIG_SLOT` (builder.rs) rather than taken from a stock
@@ -449,7 +454,7 @@ fn production_components_carry_mutability_config_slot() -> Result<()> {
         .map(|slot| slot.value())
         .expect(
             "the production composition must carry the FungibleFaucet-installed \
-             mutability_config slot (PIN-BUMP HAZARD: its absence arms the builder's \
+             mutability_config slot (PIN-BUMP TRIPWIRE: its absence arms the builder's \
              missing-slot default)",
         );
     // Layout tripwire: `[is_desc, is_logo, is_extlink, is_max_supply]` — the production build
@@ -553,6 +558,101 @@ fn build_rejects_wrong_token_symbol() -> Result<()> {
     assert!(
         matches!(err, XReserveStablecoinBuilderError::WrongTokenSymbol),
         "expected WrongTokenSymbol, got {err:?}"
+    );
+    Ok(())
+}
+
+// S18 — THE POLICY-COMPANION SEAM (MIGRATION-V16-ALPHA2.md S18)
+// ================================================================================================
+// At v0.16 the policy descriptors CARRY their `custom()` companion components, and the manager's
+// iterator emits one companion copy per DISTINCT policy root (deny + burn = two copies of the same
+// xreserve component) after the manager component itself. The builder installs the xreserve
+// component EXACTLY ONCE and drops those two recognized copies at the seam — anything else is a
+// loud `PolicyCompanionMismatch`, never a silent drop. These two tests pin both directions.
+
+/// POSITIVE shape: the production composition carries EXACTLY ONE component whose code is the
+/// installed xreserve library and EXACTLY ONE policy-manager component (no duplicate install, no
+/// dropped manager). A duplicate xreserve copy would hard-reject the account build with
+/// `DuplicateStorageSlotName`, so this is the build-time tripwire for that failure.
+#[test]
+fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> {
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
+    let xreserve_code = xreserve_component.component_code().clone();
+    let components = XReserveStablecoinBuilder::new(
+        faucet,
+        xreserve_component,
+        test_account_id(1),
+        test_account_id(2),
+        test_account_id(3),
+    )
+    .build_components()
+    .context("the production composition must build")?;
+
+    let xreserve_copies = components
+        .iter()
+        .filter(|c| c.component_code().as_library() == xreserve_code.as_library())
+        .count();
+    assert_eq!(
+        xreserve_copies, 1,
+        "the xreserve component must be installed EXACTLY once (the policy companions are dropped \
+         at the seam); a second copy hard-rejects the account build with DuplicateStorageSlotName"
+    );
+
+    let manager_components = components
+        .iter()
+        .filter(|c| c.metadata().name() == TokenPolicyManager::NAME)
+        .count();
+    assert_eq!(
+        manager_components, 1,
+        "the composition must carry EXACTLY one policy-manager component"
+    );
+    Ok(())
+}
+
+/// NEGATIVE (the anti-smuggling proof): a policy override whose root IS the deny guard — so it
+/// passes the `MissingMintDenyGuard` root check — but whose companion vector smuggles a FOREIGN
+/// component is rejected at the seam with the exact `PolicyCompanionMismatch`, and the diagnostic
+/// exposes the extra: the remainder holds 3 companions of which only 2 are the installed xreserve
+/// component. Without this seam the foreign component would ride into the account silently.
+#[test]
+fn seam_rejects_a_smuggled_foreign_policy_companion() -> Result<()> {
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
+    let builder = XReserveStablecoinBuilder::new(
+        faucet,
+        xreserve_component.clone(),
+        test_account_id(1),
+        test_account_id(2),
+        test_account_id(3),
+    );
+    let deny_root = builder
+        .mint_deny_guard_root()
+        .context("the deny-guard root resolves from the installed component")?;
+
+    // A stock component the production composition never installs through a POLICY — the smuggled
+    // payload. The override's ROOT is still the deny guard, so the INV-MINT-SECURITY check passes
+    // and the seam is the only thing standing between this component and the account.
+    let foreign: AccountComponent = PausableManager.into();
+    let smuggling_policy = MintPolicy::custom(
+        AccountProcedureRoot::from_raw(deny_root),
+        [xreserve_component, foreign],
+    )
+    .context("the smuggling policy still resolves to the deny-guard root")?;
+
+    let err = builder
+        .with_active_mint_policy(smuggling_policy)
+        .build_components()
+        .expect_err("a policy companion that is not the installed xreserve component must reject");
+    assert!(
+        matches!(
+            err,
+            XReserveStablecoinBuilderError::PolicyCompanionMismatch {
+                expected: 2,
+                found: 3,
+                recognized: 2,
+            }
+        ),
+        "expected PolicyCompanionMismatch{{expected:2, found:3, recognized:2}} (the foreign \
+         companion must be visible as found > recognized), got {err:?}"
     );
     Ok(())
 }

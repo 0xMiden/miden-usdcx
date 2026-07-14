@@ -131,14 +131,36 @@ async fn aid_rej_out_of_range_traps() -> Result<()> {
 }
 
 /// `aid-rej-non-canonical` (`prefix = suffix = 7`): the felts build cleanly (both < p), then
-/// `account_id::validate` rejects the non-zero suffix low byte. Mirrors Rust `NonCanonicalAccountId`;
-/// in MASM it surfaces the specific protocol low-byte constant.
+/// `account_id::validate` rejects it. Mirrors Rust `NonCanonicalAccountId`; in MASM it surfaces a
+/// specific protocol constant — at v0.16 the version gate runs FIRST (`validate` = version check
+/// then `validate_structure`, protocol #3188/#3216; account_id.masm:141-152), so this frozen
+/// Circle vector (whose prefix carries version bits ≠ 1) trips the exact
+/// `ERR_ACCOUNT_ID_UNKNOWN_VERSION`. The low-byte leg it hit at v0.15 stays covered by
+/// [`aid_low_byte_traps_protocol_low_byte`] below (a crafted, valid-version recipient), so this
+/// upstream re-ordering costs no coverage.
 #[tokio::test]
-async fn aid_rej_non_canonical_traps_protocol_low_byte() -> Result<()> {
+async fn aid_rej_non_canonical_traps_protocol_version() -> Result<()> {
     let preimage = splice_recipient(
         &base_preimage(),
         parse_hex32(&aid("aid-rej-non-canonical").bytes32),
     );
+    let h = harness(&recipient_driver_src(&preimage, None))?;
+    let result = run_call_driver(&h, "drive").await;
+    let expected = MasmError::from_static_str("unknown version in account ID");
+    assert_transaction_executor_error!(result, &expected);
+    Ok(())
+}
+
+/// The protocol low-byte leg, isolated: a VALID recipient (canonical version) whose suffix low
+/// byte is flipped non-zero passes the version gate and trips the exact protocol low-byte
+/// constant — the assertion `aid_rej_non_canonical_traps_protocol_version` covered at v0.15
+/// before the upstream check re-ordering.
+#[tokio::test]
+async fn aid_low_byte_traps_protocol_low_byte() -> Result<()> {
+    let mut recipient = valid_recipient();
+    // R-B layout: bytes[24..32] are the suffix (u64 BE) — its LAST byte is the low byte.
+    recipient[31] = 0x07;
+    let preimage = splice_recipient(&base_preimage(), recipient);
     let h = harness(&recipient_driver_src(&preimage, None))?;
     let result = run_call_driver(&h, "drive").await;
     let expected =
@@ -248,12 +270,12 @@ async fn extract_is_read_only() -> Result<()> {
         panic!("the extractor must be read-only and succeed on a valid recipient: {e}")
     });
     assert_eq!(
-        executed.account_delta().nonce_delta(),
+        (executed.final_account().nonce() - executed.initial_account().nonce()),
         miden_protocol::ONE,
         "auth must increment the nonce exactly once"
     );
     assert!(
-        executed.account_delta().storage().is_empty(),
+        executed.account_patch().storage().is_empty(),
         "the recipient extractor must not write account storage"
     );
     assert_eq!(

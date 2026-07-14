@@ -71,7 +71,9 @@ async fn emitted_items_for(items: &XReserveBurnItems) -> anyhow::Result<Vec<Felt
         Some(cap),
     )?;
     let seed_asset = FungibleAsset::new(faucet.id(), cap)?;
-    let user = builder.add_existing_wallet_with_assets(Auth::IncrNonce, [seed_asset.into()])?;
+    // The user EMITS the burn note, so it carries the emit helper (v0.16 #3204: note creation runs
+    // in account context — MIGRATION-V16-ALPHA2.md S22).
+    let user = add_emitting_wallet(&mut builder, Auth::IncrNonce, [seed_asset.into()])?;
 
     let note = XReserveBurnNote::create(user.id(), faucet.id(), items.clone(), builder.rng_mut())?;
     // The asset the emit moves equals the note's own NoteAssets asset (single-sourced from the amount).
@@ -340,7 +342,7 @@ async fn recipient_burns_full_balance() -> anyhow::Result<()> {
         chain
             .committed_account(h.user_id)?
             .vault()
-            .get_balance(h.asset.vault_key())?,
+            .get_balance(h.asset.id())?,
         AssetAmount::new(0)?,
         "the full-balance emit leaves the holder's vault EMPTY"
     );
@@ -381,11 +383,9 @@ async fn production_burn_note_same_block_consume_is_erased() -> anyhow::Result<(
 
     // tx0: the user emit-tx creates the production note in-block (executed, then dummy-proven —
     // the canary idiom; the create_*_proven_tx helpers are private to miden-testing).
-    let tx_script = CodeBuilder::new().compile_tx_script(send_burn_note_script(
-        &note,
-        &h.asset,
-        h.faucet_id,
-    ))?;
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_library(&emit_helper_component()?.component_code().clone())?
+        .compile_tx_script(send_burn_note_script(&note, &h.asset, h.faucet_id))?;
     let tx0 = chain
         .build_tx_context(h.user_id, &[], &[])?
         .tx_script(tx_script)

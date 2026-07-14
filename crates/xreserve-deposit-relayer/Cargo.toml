@@ -74,7 +74,8 @@ k256 = { workspace = true }
 rand = { workspace = true }
 # The fixture's allowlist key is a Miden `Word` (Poseidon2, computed by unit-04's
 # `pubkey_commitment`), and the Poseidon2 negative comparator hashes with the protocol `Hasher` —
-# both need the protocol types NAMED, so miden-protocol is a TEST-only dep here (same git rev as
-# the rest of the workspace, per V15-DEVNET-BASELINE). The production relayer library stays
-# Miden-free until the Miden-facing (mint-note builder / submit) slice.
-miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "681fc90584131560b87db8f7487685f4fa8420a8" }
+# both need the protocol types NAMED, so miden-protocol is a TEST-only dep here (same
+# `=0.16.0-alpha.2` crates.io pin as the rest of the workspace, per MIGRATION-V16-ALPHA2.md).
+# The production relayer library stays Miden-free until the Miden-facing (mint-note builder /
+# submit) slice.
+miden-protocol = { version = "=0.16.0-alpha.2" }

@@ -205,8 +205,9 @@ fn nonce_key() -> Word {
 fn probe_domain_config_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     let exports: Vec<String> = lib
+        .manifest
         .exports()
-        .filter(|e| e.as_procedure().is_some())
+        .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
     let canonical = "::xreserve::domain_config::domain_init";
@@ -235,7 +236,7 @@ async fn domain_init_succeeds_and_configures() -> Result<()> {
         .expect("the owner's 4-field domain_init must succeed");
 
     let mut evolved = account.clone();
-    evolved.apply_delta(executed.account_delta())?;
+    evolved.apply_patch(executed.account_patch())?;
 
     let [domain_w, source_domain_w, xrc_hi_w, xrc_lo_w, identifier_w] =
         read_domain_config_words(&evolved)?;
@@ -286,7 +287,7 @@ async fn domain_init_writes_all_four_fields(#[case] field: usize) -> Result<()> 
         .await
         .expect("the owner's 4-field domain_init must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(executed.account_delta())?;
+    evolved.apply_patch(executed.account_patch())?;
     let words = read_domain_config_words(&evolved)?;
     let (exp_hi, exp_lo) = expected_xrc_words(&xrc);
 
@@ -339,7 +340,7 @@ async fn domain_init_reinit_traps() -> Result<()> {
         .await
         .expect("first domain_init must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(first.account_delta())?;
+    evolved.apply_patch(first.account_patch())?;
 
     let result = init_four_fields(&gm, &evolved, owner(), TEST_DOMAIN, identifier, 2).await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_DOMAIN_REINIT"));
@@ -360,7 +361,7 @@ async fn domain_init_reinit_leaves_all_fields_unchanged() -> Result<()> {
         .await
         .expect("first domain_init must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(first.account_delta())?;
+    evolved.apply_patch(first.account_patch())?;
     let before = read_domain_config_words(&evolved)?;
     let (exp_hi, exp_lo) = expected_xrc_words(&test_xreserve_contract());
     assert_eq!(
@@ -441,7 +442,7 @@ async fn domain_init_with_zero_domain_is_still_init_once() -> Result<()> {
         .await
         .expect("domain_init with domain=0 (a legitimate Circle domain) must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(first.account_delta())?;
+    evolved.apply_patch(first.account_patch())?;
     let words = read_domain_config_words(&evolved)?;
     assert_eq!(
         words[0],
@@ -482,7 +483,7 @@ async fn domain_init_with_zero_source_domain_is_still_init_once() -> Result<()> 
     .await
     .expect("domain_init with source_domain=0 (the production Ethereum value) must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(first.account_delta())?;
+    evolved.apply_patch(first.account_patch())?;
     let words = read_domain_config_words(&evolved)?;
     assert_eq!(
         words[0],
@@ -512,7 +513,7 @@ async fn domain_init_domain_at_u32_max_succeeds() -> Result<()> {
         .await
         .expect("domain_init with domain == u32::MAX (the accept boundary) must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(executed.account_delta())?;
+    evolved.apply_patch(executed.account_patch())?;
     let words = read_domain_config_words(&evolved)?;
     assert_eq!(
         words[0],
@@ -543,7 +544,7 @@ async fn domain_init_source_domain_at_u32_max_succeeds() -> Result<()> {
     .await
     .expect("domain_init with source_domain == u32::MAX (the accept boundary) must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(executed.account_delta())?;
+    evolved.apply_patch(executed.account_patch())?;
     let words = read_domain_config_words(&evolved)?;
     assert_eq!(
         words[1],
@@ -577,7 +578,7 @@ async fn domain_init_all_zero_xreserve_contract_succeeds() -> Result<()> {
     .await
     .expect("domain_init with an all-zero xreserve_contract must succeed (spec §5.9: no guard)");
     let mut evolved = account.clone();
-    evolved.apply_delta(executed.account_delta())?;
+    evolved.apply_patch(executed.account_patch())?;
     let words = read_domain_config_words(&evolved)?;
     assert_eq!(
         words[2],
@@ -611,7 +612,7 @@ async fn domain_init_succeeds_while_paused() -> Result<()> {
         .await
         .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
     assert_eq!(
         read_is_paused(&evolved)?,
         Word::from([1u32, 0, 0, 0]),
@@ -622,7 +623,7 @@ async fn domain_init_succeeds_while_paused() -> Result<()> {
     let executed = init_four_fields(&gm, &evolved, owner(), TEST_DOMAIN, identifier, 6)
         .await
         .expect("domain_init must succeed while paused (deploy-time config is not pause-gated)");
-    evolved.apply_delta(executed.account_delta())?;
+    evolved.apply_patch(executed.account_patch())?;
     let (exp_hi, exp_lo) = expected_xrc_words(&test_xreserve_contract());
     assert_eq!(
         read_domain_config_words(&evolved)?,
@@ -772,7 +773,7 @@ async fn domain_init_owner_not_admin_succeeds() -> Result<()> {
         .expect("the owner (not a DOM role holder) must be authorized for domain_init");
 
     let mut evolved = account.clone();
-    evolved.apply_delta(executed.account_delta())?;
+    evolved.apply_patch(executed.account_patch())?;
     let stored = evolved
         .storage()
         .get_item(&StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)?)?;
@@ -866,7 +867,7 @@ async fn domain_init_then_matching_domain_mint_passes() -> Result<()> {
         .await
         .expect("owner domain_init must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(set.account_delta())?;
+    evolved.apply_patch(set.account_patch())?;
 
     // Byte-identity leg: the two D5a-read slots carry the EXACT 2-field-era encodings after the
     // 4-field init.
@@ -928,7 +929,7 @@ async fn domain_init_then_wrong_domain_mint_rejects() -> Result<()> {
         .await
         .expect("owner domain_init must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(set.account_delta())?;
+    evolved.apply_patch(set.account_patch())?;
     // The wrong domain was WRITTEN exactly (not junk): [D',0,0,0].
     assert_eq!(
         read_domain_config_words(&evolved)?[0],
@@ -977,7 +978,7 @@ async fn domain_init_then_wrong_identifier_mint_rejects() -> Result<()> {
         .await
         .expect("owner domain_init must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(set.account_delta())?;
+    evolved.apply_patch(set.account_patch())?;
 
     // tx2: domain matches (TEST_DOMAIN) so D5a reaches the identifier compare, which mismatches.
     let result = run_mint_against(

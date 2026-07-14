@@ -313,7 +313,7 @@ fn bracket_idents(line: &str) -> Vec<String> {
 
 /// No leading `::` path separator on `use` lines or inline `exec.`/`call.` targets: cross-module
 /// references resolve through a `use` import and the short module alias, the protocol form
-/// (`use miden::standards::faucets::fungible->faucet` + `call.faucet::…`, `notes/burn.masm`).
+/// (`use miden::standards::faucets::fungible as faucet` + `call.faucet::…`, `notes/burn.masm`).
 #[test]
 fn references_resolve_through_imports_not_absolute_paths() {
     assert_rule("no absolute-path references", |rel, src, out| {
@@ -346,6 +346,17 @@ fn use_lines_follow_protocol_group_order() {
         let mut last_rank = 0u8;
         for (n, line) in src.lines().enumerate() {
             if let Some(path) = line.strip_prefix("use ") {
+                // v0.25 item-import form: `use {A, B} from module` — the group is the MODULE
+                // after ` from ` (a multi-line braced import ranks on its closing line, where
+                // the module path appears; its member lines don't start with `use `).
+                let path = match path.split_once(" from ") {
+                    Some((_, module)) => module,
+                    None => path,
+                };
+                if path.trim().ends_with('{') {
+                    // opening line of a multi-line braced import: module unknown here.
+                    continue;
+                }
                 let rank = use_group_rank(path.trim());
                 if rank < last_rank {
                     out.push(format!(
@@ -368,15 +379,31 @@ fn use_block_is_contiguous() {
     assert_rule("contiguous use block", |rel, src, out| {
         let lines: Vec<&str> = src.lines().collect();
         let first = lines.iter().position(|l| l.starts_with("use "));
-        let last = lines.iter().rposition(|l| l.starts_with("use "));
+        let last = lines
+            .iter()
+            .rposition(|l| l.starts_with("use ") || l.trim_start().starts_with("} from "));
         if let (Some(first), Some(last)) = (first, last) {
-            for (i, line) in lines.iter().enumerate().take(last).skip(first + 1) {
-                if !line.starts_with("use ") {
-                    out.push(format!(
-                        "{rel}:{}: non-import line inside the `use` block",
-                        i + 1
-                    ));
+            let mut in_braced = false;
+            for (i, line) in lines.iter().enumerate().take(last).skip(first) {
+                if i == first {
+                    in_braced = line.starts_with("use {") && !line.contains('}');
+                    continue;
                 }
+                if in_braced {
+                    // member/closing lines of a v0.25 multi-line braced import.
+                    if line.trim_start().starts_with("} from ") {
+                        in_braced = false;
+                    }
+                    continue;
+                }
+                if line.starts_with("use ") {
+                    in_braced = line.starts_with("use {") && !line.contains('}');
+                    continue;
+                }
+                out.push(format!(
+                    "{rel}:{}: non-import line inside the `use` block",
+                    i + 1
+                ));
             }
         }
     });
@@ -780,7 +807,13 @@ fn import_aliases(src: &str) -> std::collections::BTreeMap<String, String> {
         let Some(path) = line.strip_prefix("use ") else {
             continue;
         };
-        let (path, alias) = match path.split_once("->") {
+        // v0.25 item-import form (`use {A, B} from module`): the braced items are constants /
+        // procedures referenced bare, not module aliases — skip (incl. multi-line openers).
+        if path.trim_start().starts_with('{') {
+            continue;
+        }
+        // v0.25 module-alias form: `use module as alias` (the v0.15 `->` arrow is gone).
+        let (path, alias) = match path.split_once(" as ") {
             Some((p, a)) => (p.trim(), Some(a.trim().to_string())),
             None => (path.trim(), None),
         };
@@ -1704,7 +1737,7 @@ fn checker_flags_missing_storage_section_on_transport_note() {
     )
     .replace(
         "use xreserve::pause_admin",
-        "use xreserve::xreserve_mint_note_entry->note_entry",
+        "use xreserve::xreserve_mint_note_entry as note_entry",
     )
     .replace("# xreserve_pause_note", "# xreserve_mint_note");
     let rel = "asm/standards/notes/xreserve_mint_note.masm";

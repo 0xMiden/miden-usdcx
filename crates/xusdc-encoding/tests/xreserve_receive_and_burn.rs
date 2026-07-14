@@ -173,8 +173,8 @@ fn pinned_standards_single_supply_decrement_write() {
 
 // FNV-1a (std-only, portable) drift tripwire on the vendored copies. Re-vendoring at a new rev requires
 // recomputing these (run the test; the assert prints `left` = the actual digest).
-const FUNGIBLE_FNV1A: u64 = 17252926805552427287;
-const POLICY_MANAGER_FNV1A: u64 = 12570707895715501309;
+const FUNGIBLE_FNV1A: u64 = 13171367163648116355;
+const POLICY_MANAGER_FNV1A: u64 = 17561546685770092653;
 
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -202,36 +202,42 @@ fn pinned_standards_fixture_unchanged() {
 }
 
 const CARGO_TOML: &str = include_str!("../Cargo.toml");
-const PINNED_STANDARDS_REV: &str = "681fc90584131560b87db8f7487685f4fa8420a8";
+const PINNED_STANDARDS_VERSION: &str = "=0.16.0-alpha.2";
 
-/// N1D provenance anchor: the vendored fixtures are a snapshot of `miden-standards` at this rev. If the
-/// Cargo dep rev is bumped, this fails — re-vendor + re-checksum (PROVENANCE.md) before trusting N1D.
-/// Extracts the `rev = "..."` value from every `miden-standards = { git = ..., rev = "..." }` entry in
-/// a Cargo manifest — binds to the `miden-standards` key SPECIFICALLY (the key left of the first `=`),
-/// so a sibling dep's rev (e.g. miden-protocol) can never satisfy the pin.
-fn miden_standards_revs(cargo_toml: &str) -> Vec<&str> {
+/// N1D provenance anchor: the vendored fixtures are a snapshot of the `miden-standards` REGISTRY
+/// release at this exact version pin (the v16 migration moved the dependency from a git rev to
+/// crates.io — MIGRATION-V16-ALPHA2.md S9). If the dep pin is bumped, this fails — re-vendor +
+/// re-checksum (PROVENANCE.md) before trusting N1D. Extracts the `version = "..."` value from
+/// every `miden-standards = { version = "...", ... }` entry in a Cargo manifest — binds to the
+/// `miden-standards` key SPECIFICALLY (the key left of the first `=`), so a sibling dep's pin
+/// (e.g. miden-protocol) can never satisfy the anchor.
+fn miden_standards_versions(cargo_toml: &str) -> Vec<&str> {
     cargo_toml
         .lines()
         .filter(|l| l.split('=').next().map(str::trim) == Some("miden-standards"))
-        .filter_map(|l| l.split("rev = \"").nth(1).and_then(|a| a.split('"').next()))
+        .filter_map(|l| {
+            l.split("version = \"")
+                .nth(1)
+                .and_then(|a| a.split('"').next())
+        })
         .collect()
 }
 
 /// N1D provenance anchor: every `miden-standards` dependency entry (the dep + the dev-dep) pins the
-/// vendored-fixture rev. A standards bump fails this even if a sibling dep still carries the old rev —
-/// re-vendor + re-checksum (PROVENANCE.md) before trusting N1D.
+/// vendored-fixture version. A standards bump fails this even if a sibling dep still carries the
+/// old pin — re-vendor + re-checksum (PROVENANCE.md) before trusting N1D.
 #[test]
 fn pinned_standards_rev_matches_cargo() {
-    let revs = miden_standards_revs(CARGO_TOML);
+    let versions = miden_standards_versions(CARGO_TOML);
     assert!(
-        !revs.is_empty(),
-        "Cargo.toml must declare a git-pinned miden-standards dependency (the fixtures' source crate)"
+        !versions.is_empty(),
+        "Cargo.toml must declare a version-pinned miden-standards dependency (the fixtures' source crate)"
     );
-    for rev in &revs {
+    for version in &versions {
         assert_eq!(
-            *rev, PINNED_STANDARDS_REV,
-            "the miden-standards dep rev must equal the vendored-fixture rev ({PINNED_STANDARDS_REV}); a \
-             bump was detected — re-vendor the pinned-standards fixtures and update the checksums"
+            *version, PINNED_STANDARDS_VERSION,
+            "the miden-standards dep pin must equal the vendored-fixture version ({PINNED_STANDARDS_VERSION}); \
+             a bump was detected — re-vendor the pinned-standards fixtures and update the checksums"
         );
     }
 }
@@ -241,16 +247,16 @@ fn pinned_standards_rev_matches_cargo() {
 /// miden-standards-specific parse extracts the bumped standards rev.
 #[test]
 fn rev_pin_binds_to_miden_standards_specifically() {
-    let synthetic = "miden-protocol  = { git = \"x\", rev = \"OLDREV\" }\n\
-                     miden-standards = { git = \"x\", rev = \"BUMPED\" }\n";
+    let synthetic = "miden-protocol  = { version = \"=OLDPIN\" }\n\
+                     miden-standards = { version = \"=BUMPED\" }\n";
     assert_eq!(
-        miden_standards_revs(synthetic),
-        vec!["BUMPED"],
-        "must extract the miden-standards rev, not a sibling dep's"
+        miden_standards_versions(synthetic),
+        vec!["=BUMPED"],
+        "must extract the miden-standards version pin, not a sibling dep's"
     );
     assert!(
-        synthetic.contains("OLDREV"),
-        "a naive contains(OLDREV) check would have falsely passed despite the miden-standards bump"
+        synthetic.contains("=OLDPIN"),
+        "a naive contains(OLDPIN) check would have falsely passed despite the miden-standards bump"
     );
 }
 
@@ -369,7 +375,7 @@ async fn burn_paused_rejected_through_composition() -> Result<()> {
         .await
         .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
 
     // The faucet consumes the committed note against the EVOLVED (paused) account: execute_burn_policy
     // runs assert_not_paused BEFORE the custom policy, trapping the stock pause error.
@@ -427,7 +433,7 @@ async fn run_set_min_burn_then_consume(
         .await
         .expect("the owner's set_min_burn_size must succeed");
     let mut evolved = account.clone();
-    evolved.apply_delta(set.account_delta())?;
+    evolved.apply_patch(set.account_patch())?;
 
     // The faucet consumes the committed note against the EVOLVED (floor-updated) faucet — CMP-A10 reads
     // the SAME MIN_BURN_SIZE_SLOT the setter wrote (the seam).

@@ -7,10 +7,11 @@
 //!   [`deposit_intent_to_packed_felts`] consumed BY REFERENCE (60 header felts +
 //!   ⌈hookDataLen/4⌉ hookData felts, ≤ 1024).
 //! - TWO [`NoteAttachments`] attachments (F5): (1) the scheme-1 attestation
-//!   ([`XRESERVE_MINT_ATTACHMENT_SCHEME`]) = 9 words `[feeAmount(8 limbs, MVP zero — DEV-8),
-//!   pubkey(9), signature(17), pad(2)]`, matching the frozen `mint` advice contract
-//!   `[feeAmount(8), pubkey(9), signature(17)]` (`xreserve_mint.masm` doc; byte→felt packing reuses
-//!   the shared-encoding codec [`compressed_pubkey_felts`] / [`signature_felts`] by reference); and
+//!   ([`XRESERVE_MINT_ATTACHMENT_SCHEME`]) = 11 words `[feeAmount(8 limbs, MVP zero — DEV-8),
+//!   pubkey(16 affine felts — vm#3342, the v16 DC-2 supersession), signature(17), pad(3)]`,
+//!   matching the frozen `mint` advice contract `[feeAmount(8), pubkey(16), signature(17)]`
+//!   (`xreserve_mint.masm` doc; byte→felt packing reuses the shared-encoding codec
+//!   [`affine_pubkey_felts`] / [`signature_felts`] by reference); and
 //!   (2) the scheme-2 `NetworkAccountTarget` routing bind to the faucet network account
 //!   (`NoteExecutionHint::Always`, routing-only). The entry shim asserts exactly one scheme-1
 //!   attestation + one scheme-2 target (`eq.2`) and hash-verifies the attestation content by its
@@ -31,6 +32,7 @@
 use std::sync::{Arc, LazyLock};
 
 use miden_protocol::account::AccountId;
+use miden_protocol::assembly::{Linkage, Path as MasmPath};
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{
@@ -44,7 +46,7 @@ use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
 use miden_standards::StandardsLib;
 
 use crate::xreserve::encoding::{
-    compressed_pubkey_felts, deposit_intent_to_packed_felts, signature_felts,
+    affine_pubkey_felts, deposit_intent_to_packed_felts, signature_felts,
 };
 
 /// The mint-note attestation attachment scheme (u16, project-chosen; 0 is reserved, ≤ 65534).
@@ -53,16 +55,18 @@ use crate::xreserve::encoding::{
 /// Circle-owned value.
 pub const XRESERVE_MINT_ATTACHMENT_SCHEME: u16 = 1;
 
-/// The attachment word count: `[feeAmount(8), pubkey(9), signature(17), pad(2)]` = 36 felts.
-/// Declared identically in `xreserve_mint_note_entry.masm` (parity-pinned).
-pub const XRESERVE_MINT_ATTACHMENT_NUM_WORDS: usize = 9;
+/// The attachment word count: `[feeAmount(8), pubkey(16), signature(17), pad(3)]` = 44 felts
+/// (the pubkey is the 16-felt affine form since the v16 migration — vm#3342,
+/// MIGRATION-V16-ALPHA2.md S16). Declared identically in `xreserve_mint_note_entry.masm`
+/// (parity-pinned).
+pub const XRESERVE_MINT_ATTACHMENT_NUM_WORDS: usize = 11;
 
 /// The PINNED mint-note script root (`masm-rust-constant-parity`): the MAST root of the compiled
 /// `xreserve_mint_note.masm` with the xreserve library linked. It binds transitively to
 /// `receive_and_mint`'s MAST digest, so ANY edit of the note script or the wrapper trips the
 /// parity assertion (`XReserveMintNote::script_root() == pinned`) and forces a conscious re-pin.
 pub const XRESERVE_MINT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xb4a510d89ef62eac1dd645fadeca1b00db000dddae8103e0220296ab208328c5";
+    "0x85c8cfd61de921bd272d7e39766447b52ad04febd868e2c64f1ab442bf0c37b8";
 
 /// The mint-note consume script source.
 const MINT_NOTE_SCRIPT_SRC: &str =
@@ -74,14 +78,15 @@ const MINT_NOTE_SCRIPT_SRC: &str =
 /// the test harness' `assemble_xreserve_lib`).
 static MINT_NOTE_SCRIPT: LazyLock<NoteScript> = LazyLock::new(|| {
     let assembler = TransactionKernel::assembler()
-        .with_dynamic_library(StandardsLib::default())
+        .with_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
         .expect("the standards library links into the xreserve assembler")
         .with_warnings_as_errors(true);
-    let library = Arc::unwrap_or_clone(
-        assembler
-            .assemble_library_from_dir(crate::xreserve_asm_dir(), "xreserve")
-            .expect("the shipped xreserve component library assembles"),
-    );
+    let library = *assembler
+        .assemble_library_from_root(
+            crate::xreserve_asm_dir().join("mod.masm"),
+            Some(MasmPath::new("xreserve")),
+        )
+        .expect("the shipped xreserve component library assembles");
     CodeBuilder::new()
         .with_dynamically_linked_library(&library)
         .expect("the xreserve library links into the mint-note script assembler")
@@ -183,16 +188,20 @@ impl XReserveMintNote {
         ))
     }
 
-    /// Builds the scheme-1 attestation attachment: 36 felts
-    /// `[feeAmount(8 zero limbs), pubkey(9), signature(17), pad(2)]` as 9 words — the exact
-    /// order `mint` pops from the advice stack (element-0-first `adv.push_mapval` pop order,
-    /// pinned by the transport canary).
+    /// Builds the scheme-1 attestation attachment: 44 felts
+    /// `[feeAmount(8 zero limbs), pubkey(16 affine felts), signature(17), pad(3)]` as 11 words —
+    /// the exact order `mint` pops from the advice stack (element-0-first `adv.push_mapval` pop
+    /// order, pinned by the transport canary). The 33-byte compressed wire pubkey is
+    /// decompressed to its affine coordinates here (vm#3342; an off-curve key rejects — it
+    /// could never verify on-chain).
     fn attestation_attachment(attestation: &MintAttestation) -> Result<NoteAttachment, NoteError> {
-        let mut felts: Vec<Felt> = Vec::with_capacity(36);
+        let mut felts: Vec<Felt> = Vec::with_capacity(44);
         felts.extend([Felt::from(0u32); 8]);
-        felts.extend(compressed_pubkey_felts(attestation.pubkey()));
+        felts.extend(affine_pubkey_felts(attestation.pubkey()).map_err(|source| {
+            NoteError::other_with_source("attestation pubkey rejected by the 04 codec", source)
+        })?);
         felts.extend(signature_felts(attestation.signature()));
-        felts.extend([Felt::from(0u32); 2]);
+        felts.extend([Felt::from(0u32); 3]);
         let words: Vec<Word> = felts
             .chunks_exact(4)
             .map(|chunk| Word::new([chunk[0], chunk[1], chunk[2], chunk[3]]))

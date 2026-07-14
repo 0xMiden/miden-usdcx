@@ -15,6 +15,7 @@
 use std::sync::{Arc, LazyLock};
 
 use miden_protocol::account::AccountId;
+use miden_protocol::assembly::{Linkage, Path as MasmPath};
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{
@@ -32,14 +33,15 @@ use miden_standards::StandardsLib;
 /// mint-note recipe / the test harness' `assemble_xreserve_lib`).
 fn compile_admin_note_script(src: &str) -> NoteScript {
     let assembler = TransactionKernel::assembler()
-        .with_dynamic_library(StandardsLib::default())
+        .with_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
         .expect("the standards library links into the xreserve assembler")
         .with_warnings_as_errors(true);
-    let library = Arc::unwrap_or_clone(
-        assembler
-            .assemble_library_from_dir(crate::xreserve_asm_dir(), "xreserve")
-            .expect("the shipped xreserve component library assembles"),
-    );
+    let library = *assembler
+        .assemble_library_from_root(
+            crate::xreserve_asm_dir().join("mod.masm"),
+            Some(MasmPath::new("xreserve")),
+        )
+        .expect("the shipped xreserve component library assembles");
     CodeBuilder::new()
         .with_dynamically_linked_library(&library)
         .expect("the xreserve library links into the admin-note script assembler")
@@ -98,7 +100,7 @@ static SET_ATTESTER_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// proc it calls trips the parity assertion (`script_root() == pinned_script_root()`) and forces a
 /// conscious re-pin.
 pub const XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xc324299a70124e4ca6c55130195e53b3aca9304e9d2a6ad1a1110252d6d27b0d";
+    "0xbeea4fe4c3bfac18f85ecdf8040816dc5aa3cc35c94177eff0a216fab12f9fba";
 
 /// The owner-gated `set_attester` admin note (F5). Storage layout: `[pk_commitment(4), enabled]`.
 /// Consumed against the faucet network account; `attester_admin::set_attester` gates on the (kernel-
@@ -173,7 +175,7 @@ static DOMAIN_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// to `domain_config::domain_init`'s digest, so ANY edit of the note script or the proc it calls trips
 /// the parity assertion (`script_root() == pinned_script_root()`) and forces a conscious re-pin.
 pub const XRESERVE_DOMAIN_INIT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xa0438e24f8af12db390d0fceb25d5f4a6a63b112f9c95a6efd3ad0aef85004fc";
+    "0xd9d34a653871533e6e557eda4949be4e00536be0abc48d97d841e89afe890e7f";
 
 /// The owner-gated, init-once `domain_init` admin note (F5). Storage layout:
 /// `[IDENTIFIER(4), XRC_HI(4), XRC_LO(4), source_domain, domain]`. Consumed against the faucet
@@ -264,7 +266,7 @@ static SET_MIN_BURN_SIZE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// transitively to `min_burn_admin::set_min_burn_size`'s digest, so any edit of the note or the proc
 /// it calls trips parity and forces a conscious re-pin.
 pub const XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x4d3c5d640754aeb3794db0f59214bace8083cd4280b46185fb13275e363ea265";
+    "0xd041591658388a760f56f2204050305cf1d0427e51e89d8d4b6218aa326087ae";
 
 /// The owner-gated `set_min_burn_size` admin note (F5). Storage layout: `[new_min]`.
 pub struct XReserveSetMinBurnSizeNote;
@@ -316,7 +318,7 @@ static PAUSE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED pause admin note-script root (`masm-rust-constant-parity`): binds transitively to
 /// `pause_admin::pause`'s digest.
 pub const XRESERVE_PAUSE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xe03c04229bd79856bfdccbba17d42ee23c0f6640abcf2391f3f82c4d89b1aaaa";
+    "0x19d28134c4c88b6462306df0ddc66b3ccd8fd1863b285b47442f6518b8bf5398";
 
 /// The DOM_PAUSER-gated, PARAM-LESS `pause` admin note (F5).
 pub struct XReservePauseNote;
@@ -363,7 +365,7 @@ static UNPAUSE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED unpause admin note-script root (`masm-rust-constant-parity`): binds transitively to
 /// `pause_admin::unpause`'s digest.
 pub const XRESERVE_UNPAUSE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x4c38df2fe68ed8779b70d9828568eab14177a825077e1752587a761f8c4f5c11";
+    "0x1ea7399d7d96f2749fbfa4a5b1e438ca2d03df0c8dbc98e41baeb39816a56ec4";
 
 /// The DOM_PAUSER-gated, PARAM-LESS `unpause` admin note (F5).
 pub struct XReserveUnpauseNote;
@@ -410,9 +412,11 @@ static GRANT_ROLE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED grant_role admin note-script root (`masm-rust-constant-parity`): binds transitively to
 /// the stock `rbac::grant_role`'s digest.
 pub const XRESERVE_GRANT_ROLE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x8ff13c53cbbe3752c9d245c5e4b38fe7d0f230928917ffd9606f6accb3a91400";
+    "0xae250bc50f2829d9613514d3b92e2bbc7ac67b391b16aa7d113b796c8266948f";
 
-/// The owner-or-role-admin-gated stock `grant_role` admin note (F5). Storage layout:
+/// The role-admin-gated stock `grant_role` admin note (F5; v0.16 #3215 — the sender must hold the
+/// granted role's EFFECTIVE admin: its delegated admin, else the built-in `ADMIN` role, which the
+/// builder seeds on the owner. MIGRATION-V16-ALPHA2.md S2/S21). Storage layout:
 /// `[role_symbol, account_suffix, account_prefix]`.
 pub struct XReserveGrantRoleNote;
 
@@ -435,7 +439,8 @@ impl XReserveGrantRoleNote {
         )
     }
 
-    /// Builds a `grant_role` admin note: `sender` is the admin party (owner or a role admin, for
+    /// Builds a `grant_role` admin note: `sender` is the admin party (a holder of the granted role's
+    /// effective admin role — v0.16 #3215; for
     /// success), `faucet_id` the target faucet (PUBLIC), `role_symbol` the RBAC role element, `member`
     /// the account to grant it to. The params live in note storage; NOTE_ARGS are ignored.
     pub fn create<R: FeltRng>(
@@ -462,9 +467,13 @@ static SET_ROLE_ADMIN_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED set_role_admin admin note-script root (`masm-rust-constant-parity`): binds transitively
 /// to the stock `rbac::set_role_admin`'s digest.
 pub const XRESERVE_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xf0f9033fb2dae352038fda2cea6861521def23b60e3d3151d6b4cb4b9677f3c6";
+    "0x0c69fe1a19ee27196780be8d7815920e6a5da49e05ee10b9a615c4ee7a778648";
 
-/// The OWNER-ONLY stock `set_role_admin` admin note (F5). Storage layout:
+/// The stock `set_role_admin` admin note (F5), gated at v0.16 on the MANAGED role's EFFECTIVE
+/// admin — its delegated admin, else the built-in `ADMIN` role (protocol #3215 removed the v15
+/// owner-only gate; the builder seeds `ADMIN` on the owner, so re-delegating DOM_MANAGER stays the
+/// owner's, while re-delegating DOM_PAUSER is DOM_MANAGER's — MIGRATION-V16-ALPHA2.md S21).
+/// Storage layout:
 /// `[role_symbol, admin_role_symbol]` (`admin_role_symbol = 0` clears the delegation).
 pub struct XReserveSetRoleAdminNote;
 
@@ -487,9 +496,15 @@ impl XReserveSetRoleAdminNote {
         )
     }
 
-    /// Builds a `set_role_admin` admin note: `sender` is the OWNER (for success), `faucet_id` the
-    /// target faucet (PUBLIC), `role_symbol` the RBAC role, `admin_role_symbol` the role that may
-    /// administer it (`0` clears the delegation). The params live in note storage; NOTE_ARGS ignored.
+    /// Builds a `set_role_admin` admin note: `sender` must hold the MANAGED role's EFFECTIVE admin
+    /// role for the call to succeed (v0.16 #3215 — its delegated admin, else the built-in `ADMIN`
+    /// role; MIGRATION-V16-ALPHA2.md S21, human-ratified 2026-07-13). On this faucet that means:
+    /// re-delegating `DOM_MANAGER` (admin unset -> `ADMIN`) is the OWNER's, since the builder seeds
+    /// `ADMIN` on the owner's account; re-delegating `DOM_PAUSER` (admin = `DOM_MANAGER`, the CMP-F5
+    /// seed) is a `DOM_MANAGER` holder's — the owner reaches it by first taking `DOM_MANAGER`.
+    /// `faucet_id` is the target faucet (PUBLIC), `role_symbol` the managed RBAC role, and
+    /// `admin_role_symbol` the role that may administer it (`0` clears the delegation, so the role
+    /// falls back to `ADMIN`-administered). The params live in note storage; NOTE_ARGS ignored.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -519,7 +534,7 @@ static TRANSFER_OWNERSHIP_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED transfer_ownership admin note-script root (`masm-rust-constant-parity`): binds
 /// transitively to the stock `ownable2step::transfer_ownership`'s digest.
 pub const XRESERVE_TRANSFER_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x151f76c6d72892f6880f7002c6d9032b97d954d4a8ec190a8de51443a2bd5425";
+    "0x4748df9b6115505630d08edcabea8f399783fa6fda18b5ca965fb726bbbda16c";
 
 /// The current-owner-gated stock `transfer_ownership` admin note (F5, step 1 of the 2-step transfer).
 /// Storage layout: `[new_owner_suffix, new_owner_prefix]`.
@@ -570,7 +585,7 @@ static ACCEPT_OWNERSHIP_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED accept_ownership admin note-script root (`masm-rust-constant-parity`): binds
 /// transitively to the stock `ownable2step::accept_ownership`'s digest.
 pub const XRESERVE_ACCEPT_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x0df50dc9f465a0bd22430afb8cafbd00636d8268004b0de11298784014e37da0";
+    "0x38feb73a79b2edf9f8864f58b34890b214a18b23659c1e25414e1de7127c949c";
 
 /// The nominated-owner-gated, PARAM-LESS stock `accept_ownership` admin note (F5, step 2 of the
 /// 2-step transfer).
@@ -619,7 +634,7 @@ static SET_MAX_SUPPLY_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED set_max_supply admin note-script root (`masm-rust-constant-parity`): binds transitively
 /// to the stock `fungible::set_max_supply`'s digest.
 pub const XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xa8cc3d64cf29f2ab91f32acce730bd007586094f17579b016076f1f8106d3aac";
+    "0xbb2a87e5c7a72d0c190599e504169b9e572ba601fd85307fc8af833344885c86";
 
 /// The owner-gated stock `set_max_supply` admin note (F5). Storage layout: `[new_max_supply]`.
 pub struct XReserveSetMaxSupplyNote;
@@ -670,9 +685,11 @@ static REVOKE_ROLE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED revoke_role admin note-script root (`masm-rust-constant-parity`): binds transitively to
 /// the stock `rbac::revoke_role`'s digest.
 pub const XRESERVE_REVOKE_ROLE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x760586945e215bc6c4ba58f5b613a7e62ab732fc20a3c7baab6e65c32323b538";
+    "0x261ffb8d1b1becf97a3a598a5190856eae578c22a3b63c8b5c478abb964f36ce";
 
-/// The owner-or-role-admin-gated stock `revoke_role` admin note (F5). Storage layout:
+/// The role-admin-gated stock `revoke_role` admin note (F5; v0.16 #3215 — the sender must hold the
+/// revoked role's EFFECTIVE admin: its delegated admin, else the built-in `ADMIN` role, which the
+/// builder seeds on the owner. MIGRATION-V16-ALPHA2.md S2/S21). Storage layout:
 /// `[role_symbol, account_suffix, account_prefix]`.
 pub struct XReserveRevokeRoleNote;
 
@@ -695,7 +712,8 @@ impl XReserveRevokeRoleNote {
         )
     }
 
-    /// Builds a `revoke_role` admin note: `sender` is the admin party (owner or a role admin, for
+    /// Builds a `revoke_role` admin note: `sender` is the admin party (a holder of the revoked role's
+    /// effective admin role — v0.16 #3215; for
     /// success), `faucet_id` the target faucet (PUBLIC), `role_symbol` the RBAC role element, `member`
     /// the account to revoke it from. The params live in note storage; NOTE_ARGS are ignored.
     pub fn create<R: FeltRng>(

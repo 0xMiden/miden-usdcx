@@ -19,7 +19,7 @@
 mod support;
 
 use anyhow::Result;
-use miden_protocol::account::{AccountId, StorageSlotDelta, StorageSlotName};
+use miden_protocol::account::{AccountId, StorageSlotName, StorageSlotPatch};
 use miden_protocol::errors::MasmError;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
@@ -102,17 +102,18 @@ async fn set_max_supply_owner_succeeds() -> Result<()> {
 
     // write integrity: the token_config delta carries the FULL word with ONLY word[1] changed.
     let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotDelta::Value(after) = executed
-        .account_delta()
+    let StorageSlotPatch::Value(after) = executed
+        .account_patch()
         .storage()
         .get(&cfg_slot)
         .expect("token_config slot delta")
     else {
         panic!("token_config must be a Value slot delta");
     };
+    let after = after.value().expect("value patch carries a value");
     let expected = Word::from([before[0], Felt::from(500_000u32), before[2], before[3]]);
     assert_eq!(
-        *after, expected,
+        after, expected,
         "set_max_supply writes word[1] only; token_supply/decimals/symbol preserved"
     );
     assert_eq!(
@@ -188,7 +189,7 @@ async fn set_max_supply_paused_rejects() -> Result<()> {
         .await
         .expect("DOM_PAUSER pauses the faucet");
     let mut evolved = account.clone();
-    evolved.apply_delta(paused.account_delta())?;
+    evolved.apply_patch(paused.account_patch())?;
 
     // tx2: set_max_supply by the owner now traps the EXACT pause error (mutability + auth pass).
     let result = run_set_max_supply_tx(&gm.harness, &evolved, owner(), 500_000, 7).await;

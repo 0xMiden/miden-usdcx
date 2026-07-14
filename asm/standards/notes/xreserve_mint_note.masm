@@ -14,7 +14,7 @@
 # The compiled MAST root is pinned Rust-side as `XRESERVE_MINT_NOTE_SCRIPT_ROOT_HEX`
 # (cross-language constant parity; any edit here or in the wrapper trips the parity test).
 
-use xreserve::xreserve_mint_note_entry->note_entry
+use xreserve::xreserve_mint_note_entry as note_entry
 
 # PUBLIC INTERFACE
 # =================================================================================================

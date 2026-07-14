@@ -22,18 +22,26 @@
 //! Circle endpoint is contacted live (§11 — every live Circle leg is `REQUIRES CIRCLE
 //! CONFIRMATION`).
 //!
-//! This slice ships the **idempotency seam** ([`idempotency`]) — the one-directional joint between
-//! that Circle half and the Miden half still to come: a durable submitted-nonce log, the
+//! The fourth slice shipped the **idempotency seam** ([`idempotency`]) — the one-directional joint
+//! between that Circle half and the Miden half: a durable submitted-nonce log, the
 //! per-remote-domain `Link` cursor a restart resumes from, and the `SubmissionStatus` machine that
 //! joins them (SQLite; the choice is recorded in `PERSISTENCE-CHOICE.md`). It dedups so that an
 //! attestation observed twice is minted at most once — a LIVENESS backstop, never a safety one: the
-//! authoritative duplicate defence stays the on-chain `usedNonces` assert-then-set. The mint-note
-//! builder and the Miden submit leg land in later slices, and the seam is what they will hang from.
+//! authoritative duplicate defence stays the on-chain `usedNonces` assert-then-set.
+//!
+//! This slice opens the **Miden-facing half** ([`miden`]): [`miden::build_mint_note`] turns a
+//! validated attestation plus the operator-configured attester key into the `XReserveMintNote` the
+//! faucet consumes. It is a DELEGATION — unit-04's `XReserveMintNote::create` owns every byte of the
+//! note's wire form and this crate restates none of it — and it stages no witness data for the
+//! consuming transaction, because it cannot: that transaction is the network's (the faucet is a
+//! keyless network account) and its witness provider is rebuilt from the note's own attachments. The
+//! Miden SUBMIT leg is what remains, and it waits on a `miden-client` release for v0.16.
 
 pub mod circle;
 pub mod config;
 pub mod error;
 pub mod idempotency;
+pub mod miden;
 pub mod observability;
 pub mod validate;
 

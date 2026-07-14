@@ -74,6 +74,10 @@ pub enum HexField {
     /// taxonomy, because a second, parallel "bad hex" error family for the same failure is exactly
     /// the drift the single-owner rule exists to prevent.
     TxId,
+    /// The operator-configured attester pubkey, as it is written in the relayer's config (33-byte
+    /// compressed SEC1, hex). Also not a Circle wire field — and for the same reason as [`Self::TxId`]
+    /// it decodes through the one hex taxonomy rather than growing a second one.
+    AttesterPubkey,
 }
 
 impl fmt::Display for HexField {
@@ -83,6 +87,7 @@ impl fmt::Display for HexField {
             Self::MessageHash => write!(f, "messageHash"),
             Self::Attestation => write!(f, "attestation"),
             Self::TxId => write!(f, "transaction id"),
+            Self::AttesterPubkey => write!(f, "attester pubkey"),
         }
     }
 }
@@ -292,6 +297,33 @@ pub enum RelayerError {
     /// A Miden transaction id that is not 32 bytes. A truncated id in the log is a mint nobody can
     /// look up again.
     BadTxIdLength { actual: usize },
+    // ---- the Miden-facing half (`miden::mint_note`) -------------------------------------------
+    //
+    // The relayer BUILDS a mint note; it does not define one. Every byte of the note's wire form is
+    // unit-04's (`XReserveMintNote::create`), so every failure here is unit-04's verdict on the
+    // inputs the relayer handed it — carried through, never re-judged and never re-worded.
+    /// Unit-04's mint-note factory refused the inputs: the DepositIntent payload is structurally
+    /// invalid or exceeds the 1024-felt `NoteStorage` bound (its `EncodingError` is the source), the
+    /// attester pubkey is not a curve point, or the faucet id cannot carry the scheme-2 routing bind
+    /// (it is not a public network account).
+    ///
+    /// PERMANENT. A payload that is not a DepositIntent does not become one on a retry, and a
+    /// misconfigured faucet id does not fix itself — so this is deliberately not retryable: looping
+    /// on it would park the relayer on one bad attestation and mint nothing else. The originating
+    /// `NoteError` is PRESERVED as the source (and unit-04's `EncodingError` under it), so an
+    /// operator reads WHICH rule the payload broke, not "note build failed".
+    MintNoteBuild(Cause),
+    /// The operator-configured attester pubkey is not 33 bytes. The allowlist the faucet checks
+    /// against is keyed by the COMPRESSED SEC1 key (33 bytes) — an uncompressed 65-byte key, or a
+    /// truncated one, is not that key, and is refused where it is configured rather than at the
+    /// first mint.
+    BadAttesterPubkeyLength { actual: usize },
+    /// The operator-configured attester pubkey is 33 bytes that do not decode to a secp256k1 point
+    /// (unit-04's SEC1 decompression is the judge — the same primitive that packs the affine felts
+    /// the faucet verifies against, consumed by reference). A key that is not a point could never
+    /// verify on-chain, so the relayer refuses to start a mint with it.
+    InvalidAttesterPubkey(Cause),
+
     /// The configured idempotency-store path is not a durable file — SQLite would open it as an
     /// in-memory or temporary database that vanishes when the connection closes (`:memory:`, an
     /// empty filename, a `file:` URI whose parameters can select `mode=memory`).
@@ -581,6 +613,17 @@ impl fmt::Display for RelayerError {
                 f,
                 "the idempotency store path `{path}` is not a durable file: {detail}"
             ),
+            // unit-04's refusal is quoted, not paraphrased — it names the rule the inputs broke
+            Self::MintNoteBuild(source) => {
+                write!(f, "the mint note could not be built: {source}")
+            }
+            Self::BadAttesterPubkeyLength { actual } => write!(
+                f,
+                "the attester pubkey must be a 33-byte compressed sec1 key, got {actual} bytes"
+            ),
+            Self::InvalidAttesterPubkey(source) => {
+                write!(f, "the attester pubkey is not a secp256k1 point: {source}")
+            }
         }
     }
 }
@@ -597,6 +640,8 @@ impl core::error::Error for RelayerError {
             Self::Transport(source)
             | Self::Decode(source)
             | Self::IdempotencyStore(source)
+            | Self::MintNoteBuild(source)
+            | Self::InvalidAttesterPubkey(source)
             | Self::BadBaseUrl { source, .. }
             | Self::BadAuthHeader { source, .. } => Some(source.as_error()),
             _ => self

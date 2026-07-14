@@ -48,8 +48,9 @@ fn storage_word(account: &Account, label: &str) -> Result<Word> {
 /// - The returned account id matches the harness-built id and is PUBLIC (full on-chain state).
 /// - The nonce is exactly 1 (the single deploy transaction; `AuthNetworkAccount` bumped 0 → 1).
 /// - The standardized network-account note-script allowlist slot is present and NON-EMPTY, and
-///   equals EXACTLY the frozen 13-root production set (`allowed_note_scripts()` — extra or
-///   missing roots are a composition defect).
+///   equals EXACTLY the frozen 12-root production set (`allowed_note_scripts()` — extra or
+///   missing roots are a composition defect; the runtime `set_role_admin` note was removed,
+///   S21 flip 2026-07-14).
 /// - The tx-script allowlist slot is present and EXACTLY empty (sole-mint-surface / F1).
 pub fn assert_row_a(obs: &RowsAbObservations) -> Result<()> {
     let account = obs.deployed.as_ref().context(

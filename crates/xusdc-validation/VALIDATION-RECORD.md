@@ -17,9 +17,9 @@ Verified on `main` @ **`aade6655f512b785534fefe24aca0ffee092f7ce`** (the branch 
 | F5 prerequisite | Where verified | Result |
 |---|---|---|
 | Production builder composes `AuthNetworkAccount` | `crates/xusdc-encoding/src/account/xreserve/builder.rs` `auth_component()` — stock `AuthNetworkAccount::with_allowed_notes(...)` | ✅ |
-| Frozen note-script allowlist (mint + burn + admin roots) | `allowed_note_scripts()` — the 13-root set (2 supply + 11 admin, incl. `domain_init`) | ✅ |
+| Frozen note-script allowlist (mint + burn + admin roots) | `allowed_note_scripts()` — the 13-root set (2 supply + 11 admin, incl. `domain_init`) at this record's commit. [SUPERSEDED 2026-07-14 → S21 flip: the runtime `set_role_admin` note was removed; the frozen set is now **12 roots** (2 supply + 10 admin)] | ✅ |
 | Tx-script allowlist EMPTY | `auth_component()` never calls `.with_allowed_tx_scripts` (doc: "EMPTY tx-script allowlist … never `.with_allowed_tx_scripts`") | ✅ |
-| Admin is note-driven | `asm/standards/notes/xreserve_*_note.masm` (11 admin note scripts) + `src/note/xreserve_admin.rs` factories | ✅ |
+| Admin is note-driven | `asm/standards/notes/xreserve_*_note.masm` (11 admin note scripts at this record's commit) + `src/note/xreserve_admin.rs` factories. [SUPERSEDED 2026-07-14 → S21 flip: `xreserve_set_role_admin_note.masm` deleted; **10 admin note scripts**] | ✅ |
 
 ## 2. Toolchain + dependency ledger
 
@@ -154,7 +154,9 @@ archived in that gitignored run root; `evidence.json` alongside).
 - `GetAccount` (direct RPC, node truth) returned the account: nonce **1**, id matches, public.
 - The standardized network-account note-script allowlist slot is present, non-empty, and equals
   **EXACTLY the frozen 13-root set** (`XReserveStablecoinBuilder::allowed_note_scripts()`); the
-  tx-script allowlist is present and **EXACTLY empty**.
+  tx-script allowlist is present and **EXACTLY empty**. [SUPERSEDED 2026-07-14 → S21 flip:
+  `allowed_note_scripts()` is now the 12-root set (the runtime `set_role_admin` note removed);
+  a re-run of Row A re-derives the expected set from the same single source.]
 
 ### 5.2 Row B — `domain_init` init-once: **PASS**
 - First `domain_init` (owner-sent note `0x907c9777…`, params: domain `1313`, source_domain `7`,

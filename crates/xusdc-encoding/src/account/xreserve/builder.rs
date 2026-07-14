@@ -13,11 +13,13 @@
 //! Domain Manager rotates the Pauser), plus — since the v16 migration (#3215 removed the owner's
 //! implicit super-admin standing) — the stock `ADMIN` role seeded on the OWNER's account, which
 //! keeps the owner-administers-roles model: the owner (as `ADMIN`) administers `DOM_MANAGER`, and
-//! `DOM_MANAGER` administers `DOM_PAUSER` (the CMP-F5 delegation). NOTE the v16 consequence
-//! (MIGRATION-V16-ALPHA2.md **S21**, HUMAN-RATIFIED): `set_role_admin(role)` is gated
-//! on the ROLE's effective admin, so the `DOM_MANAGER` holder — not the owner — re-delegates
-//! `DOM_PAUSER`; the owner reaches that power by first taking `DOM_MANAGER` (which it may, as the
-//! `ADMIN` member). Pause
+//! `DOM_MANAGER` administers `DOM_PAUSER` (the CMP-F5 delegation). NOTE the S21 disposition flip
+//! (human-ratified 2026-07-14): the runtime `set_role_admin` NOTE is REMOVED from the note-script
+//! allowlist, so the delegation graph deploys FROZEN at this build seed — no sender can re-point
+//! (or clear) any role's admin on-chain; role rotation is `grant_role`/`revoke_role` only
+//! (CIR-ADMIN-3, matching Circle's fixed `DomainManageable.sol` graph). The stock
+//! `rbac::set_role_admin` procedure stays composed but is present-but-unreachable
+//! (`tests/account_callable_surface.rs`). Pause
 //! is Domain-Pauser-ONLY (IMPL-DEV-1 remediation): the stock `PausableManager` is NOT installed —
 //! the only pause surface is the DOM_PAUSER-gated `xreserve::pause_admin` procs; the `is_paused`
 //! slot the halt-gates read is installed by the base `Pausable` component (v16 — #2944 moved it
@@ -411,12 +413,18 @@ impl XReserveStablecoinBuilder {
     /// asserts the built account's allowlist equals it exactly. The scheme-2 `NetworkAccountTarget`
     /// bind on the notes is routing-only, not a consume gate.
     ///
-    /// COMPLETE — the frozen 13-root set: rows 1-2 (the supply-side mint + burn notes), row 3
-    /// (`set_attester`, the reference op), and rows 4-13 (the remaining admin note scripts). The set
-    /// is IMMUTABLE post-deploy (`AuthNetworkAccount` exports no mutator); `renounce_role` is
-    /// deliberately OMITTED (human-ratified, grounded in Circle's xReserve EVM admin model, which has
-    /// no role self-renounce). The materialized 13 pinned roots still require explicit HUMAN
-    /// ratification before deploy.
+    /// COMPLETE — the frozen 12-root set: rows 1-2 (the supply-side mint + burn notes), row 3
+    /// (`set_attester`, the reference op), and rows 4-12 (the remaining admin note scripts). The set
+    /// is IMMUTABLE post-deploy (`AuthNetworkAccount` exports no mutator). Two capabilities are
+    /// deliberately OMITTED (both human-ratified, grounded in Circle's xReserve EVM admin model):
+    /// `renounce_role` (Circle has no role self-renounce) and — since the S21 disposition flip,
+    /// 2026-07-14 — the runtime `set_role_admin` note (Circle's `DomainManageable.sol` has no
+    /// function to change who administers a role; the delegation graph is BUILD-SEEDED by
+    /// [`seeded_dom_roles_rbac`] and deploys frozen; rotation is `grant_role`/`revoke_role`,
+    /// CIR-ADMIN-3 — see `DECISION-SETROLEADMIN-NOTE-REMOVAL.md`). The stock `rbac::set_role_admin`
+    /// account procedure stays composed but is present-but-UNREACHABLE (enforced by
+    /// `tests/account_callable_surface.rs`). The materialized 12 pinned roots still require explicit
+    /// HUMAN ratification before deploy.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
         BTreeSet::from([
             // rows 1-2: the supply-side notes. The mint-note shim asserts exactly one scheme-1
@@ -425,7 +433,7 @@ impl XReserveStablecoinBuilder {
             BurnNote::script_root(),
             // row 3: set_attester admin note (reference op).
             crate::note::xreserve_admin::XReserveSetAttesterNote::script_root(),
-            // row 13: domain_init admin note (owner-gated, init-once).
+            // row 12: domain_init admin note (owner-gated, init-once).
             crate::note::xreserve_admin::XReserveDomainInitNote::script_root(),
             // row 4: set_min_burn_size admin note (owner-gated).
             crate::note::xreserve_admin::XReserveSetMinBurnSizeNote::script_root(),
@@ -439,12 +447,12 @@ impl XReserveStablecoinBuilder {
             crate::note::xreserve_admin::XReserveSetMaxSupplyNote::script_root(),
             // row 9: revoke_role admin note (role-admin-gated, stock RBAC — v0.16 #3215/S2).
             crate::note::xreserve_admin::XReserveRevokeRoleNote::script_root(),
-            // row 10: set_role_admin admin note (gated on the MANAGED role's effective admin,
-            // stock RBAC — v0.16 #3215/S21, no longer owner-only).
-            crate::note::xreserve_admin::XReserveSetRoleAdminNote::script_root(),
-            // row 11: transfer_ownership admin note (current-owner-gated, stock Ownable2Step).
+            // NO set_role_admin row: REMOVED (S21 flip, 2026-07-14) — the role-admin graph is
+            // frozen at the build seed; re-adding it violates the ratified decision and turns
+            // the account_callable_surface enforcement tests RED.
+            // row 10: transfer_ownership admin note (current-owner-gated, stock Ownable2Step).
             crate::note::xreserve_admin::XReserveTransferOwnershipNote::script_root(),
-            // row 12: accept_ownership admin note (nominated-owner-gated, stock Ownable2Step).
+            // row 11: accept_ownership admin note (nominated-owner-gated, stock Ownable2Step).
             crate::note::xreserve_admin::XReserveAcceptOwnershipNote::script_root(),
         ])
     }
@@ -696,8 +704,11 @@ impl XReserveStablecoinBuilder {
 /// `ADMIN` role seeded with the OWNER's account as its single member. `ADMIN` is the built-in
 /// default admin role (`rbac.masm`): a role whose delegated admin is unset resolves to it, so
 /// this seed preserves the ratified owner-administers-roles model — the owner-held account
-/// administers `DOM_MANAGER` and every `set_role_admin`, now via its `ADMIN` membership rather
-/// than owner status (NO new capability: `ADMIN` resolves to the same owner account). KNOWN
+/// administers `DOM_MANAGER` (grant/revoke), now via its `ADMIN` membership rather
+/// than owner status (NO new capability: `ADMIN` resolves to the same owner account). This seed
+/// is the ENTIRE role-admin graph the faucet will ever have: the runtime `set_role_admin` note is
+/// not allowlisted (S21 flip, 2026-07-14), so `role_config[*].admin_role` is immutable
+/// post-deploy. KNOWN
 /// DIVERGENCE (documented, operator-approved): after `transfer_ownership`/`accept_ownership`,
 /// `ADMIN` membership does not auto-follow — the rotation runbook grants `ADMIN` to the new
 /// owner and revokes the old one via the existing grant/revoke admin notes.

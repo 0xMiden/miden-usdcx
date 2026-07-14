@@ -10,7 +10,8 @@
 //! - `XReserveStablecoinBuilder::build_components()` (deny-guard mint policy, burn policy,
 //!   Ownable2Step owner, seeded DOM roles, OwnerControlled authority);
 //! - finalized for deploy with `AccountBuilder::with_auth_component(auth_component())` — the
-//!   stock `AuthNetworkAccount` under the frozen 13-root note allowlist + EMPTY tx allowlist.
+//!   stock `AuthNetworkAccount` under the frozen 12-root note allowlist + EMPTY tx allowlist
+//!   (the runtime `set_role_admin` note was removed — S21 flip, 2026-07-14).
 //!
 //! MockChain finalizes the same composition via `Auth::NetworkAccount` in the repo's F5 suite;
 //! this is the REAL-deploy twin of that fixture. The `_seeded` variant exists for SYNTHETIC

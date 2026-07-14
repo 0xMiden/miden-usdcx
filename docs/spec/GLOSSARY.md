@@ -99,7 +99,7 @@ Labels for the faucet's functional pieces (originally built as incremental slice
 | CMP-B3 | `receive_and_burn` consumption of the burn note. |
 | CMP-F2 | The owner-gated `set_min_burn_size` setter. |
 | CMP-F3 | The custom `DOM_PAUSER`-gated pause/unpause. |
-| CMP-F5 | Role management (role-based access control: `grant_role`/`revoke_role`/`set_role_admin`, and the `DOM_PAUSER.admin_role = DOM_MANAGER` delegation). |
+| CMP-F5 | Role management (role-based access control): `grant_role`/`revoke_role` membership rotation (CIR-ADMIN-3) plus the BUILD-SEEDED `DOM_PAUSER.admin_role = DOM_MANAGER` delegation. The runtime `set_role_admin` note was REMOVED from the note-script allowlist (S21 disposition flip, human-ratified 2026-07-14) — the delegation graph deploys frozen at the seed; see IMPL-DEV-24. |
 
 ## Invariants — `INV-<name>`
 
@@ -212,15 +212,19 @@ Beyond these, `Q-<...>` labels in comments/fixtures mark a value or choice as aw
 - `Q-ADMIN-1` — is the canonical `xReserveAttesters` key type `address` or `bytes32`?
 - `Q-CRY-4` — does the AccountId↔bytes32 encoding (`DEV-10`) apply to `remoteToken` / the faucet's bytes32 identifier as well as to `remoteRecipient`?
 - `Q-DA-QUORUM` — is deposit attestation single-signer or a quorum (how many signatures must verify)?
+- `Q-FEE-MVP` — confirm the MVP's fail-loud `feeAmount==0` reject (the CIR-FEE-2 relayer-credit split is deferred to mainnet/production-final; see `F2`). Distinct from the narrower `Q-MIN-2`, which covers only the zero-fee note structure. Question to Circle pending (orchestrator-owned).
 
 ## Circle requirement ids — `CIR-<AREA>-<n>`
 
 `CIR-*` are numbered requirements from Circle's own requirements matrix (external material not in
-this repo). They survive only in a few test-assertion strings; the two referenced here:
+this repo). They survive only in a few test-assertion strings and register rows; the ones
+referenced here:
 
 | Id | Requirement |
 |---|---|
+| CIR-ADMIN-3 | Role rotation: the Domain Manager rotates the Domain Pauser; the owner is the rotation backstop (`onlyDomainManager`/`onlyOwner`). Satisfied by `grant_role`/`revoke_role` + the build-seeded delegation — NOT by any runtime `set_role_admin` (see IMPL-DEV-24). |
 | CIR-ADMIN-4 | Pausing must halt **both** deposits (mint) and withdrawals (burn-consume) — the pause halt-gates. |
+| CIR-FEE-2 | Circle credits the relayer `feeAmount` on mint (recipient `amount−feeAmount`, relayer `+feeAmount`) — DEFERRED to mainnet/production-final; the MVP fail-loud `feeAmount==0` reject stands in (see `F2` / `Q-FEE-MVP`). |
 | CIR-FEE-3 | xUSDC uses 6 decimals; the amount reducer scales to 6 dp. |
 
 `CIR-MINT-PRE-<n>` are Circle's numbered mint-precondition requirements, cited in the generated
@@ -253,8 +257,9 @@ are open items with Circle). The ones referenced in this repo:
 | IMPL-DEV-12 | Cosmetic fix: an `AccountId`-out-of-range error message once said "15-byte region" while the shipped layout is 16-byte-padded; the message now describes the shipped right-aligned bytes32 layout. |
 | IMPL-DEV-16 | `domain_init` uses `ownable2step::assert_sender_is_owner` directly while setters use `authority::assert_authorized`; both resolve to owner-only. |
 | IMPL-DEV-20 | xUSDC ships as a basic (callback-disabled) fungible asset with no on-token transfer policy — matches Circle's no-on-token-control model. |
-| IMPL-DEV-21 | v16 stock `OwnerControlled` bundles an owner-gated account-self-freeze; present-but-unreachable on the keyless allowlist faucet; F4/CIR-consistent; NOT holder control. (The v0.16 `Authority` component contributes `freeze`/`unfreeze` account procedures — upstream #3102 — which are callable roots but operationally inert here: the immutable 13-root note-script allowlist has no freeze note and the tx-script allowlist is empty, so `is_frozen` is never set and `ERR_AUTHORITY_FROZEN` never fires — the same disposition as `renounce_role`. Pinned by `tests/account_callable_surface.rs`; human-ratified 2026-07-13; map row S12.) |
-| IMPL-DEV-22 | Three further v0.16 stock callable roots the full-account pin exposed, human-ratified 2026-07-13 (map row S24; NOT under S12): `authority::get_authority` — a read-only view accessor (no state, no capability, not supply-raising); and the #3047 `policy_manager::invoke_send_policy`/`invoke_receive_policy` transfer-policy dispatch wrappers — INERT no-ops here. With no active send/receive policy the stock `invoke_transfer_policy` takes its empty-root branch, returns `ASSET_VALUE` unchanged, and SKIPS the pause check (no zero-root trap). F4 installs no transfer policy → `AssetCallbackFlag::Disabled` → the kernel never invokes them on a transfer; unreachable via the 13-root note allowlist (tx-allowlist empty). F1 (`{mint}`-only) and F4 (unpoliced transfers) both intact; the skipped pause is consistent with F4. Frozen in `tests/account_callable_surface.rs`. |
+| IMPL-DEV-21 | v16 stock `OwnerControlled` bundles an owner-gated account-self-freeze; present-but-unreachable on the keyless allowlist faucet; F4/CIR-consistent; NOT holder control. (The v0.16 `Authority` component contributes `freeze`/`unfreeze` account procedures — upstream #3102 — which are callable roots but operationally inert here: the immutable 12-root note-script allowlist has no freeze note and the tx-script allowlist is empty, so `is_frozen` is never set and `ERR_AUTHORITY_FROZEN` never fires — the same disposition as `renounce_role`. Pinned by `tests/account_callable_surface.rs`; human-ratified 2026-07-13; map row S12.) |
+| IMPL-DEV-22 | Three further v0.16 stock callable roots the full-account pin exposed, human-ratified 2026-07-13 (map row S24; NOT under S12): `authority::get_authority` — a read-only view accessor (no state, no capability, not supply-raising); and the #3047 `policy_manager::invoke_send_policy`/`invoke_receive_policy` transfer-policy dispatch wrappers — INERT no-ops here. With no active send/receive policy the stock `invoke_transfer_policy` takes its empty-root branch, returns `ASSET_VALUE` unchanged, and SKIPS the pause check (no zero-root trap). F4 installs no transfer policy → `AssetCallbackFlag::Disabled` → the kernel never invokes them on a transfer; unreachable via the 12-root note allowlist (tx-allowlist empty). F1 (`{mint}`-only) and F4 (unpoliced transfers) both intact; the skipped pause is consistent with F4. `get_authority` read-only is now EXECUTED proof, not documentation: `tests/account_callable_surface.rs::get_authority_is_read_only_on_the_account` drives it and asserts zero storage/vault mutation. Frozen in `tests/account_callable_surface.rs`. |
+| IMPL-DEV-24 | **The runtime `set_role_admin` note is REMOVED from the note-script allowlist** (13 → 12 roots; S21 disposition flip, human-ratified 2026-07-14 — two independent adversarial Circle-conformance audits, NO REFUTATION). The stock `rbac::set_role_admin` account procedure STAYS on the composed account's frozen 62-root surface but is present-but-UNREACHABLE — the same disposition as `renounce_role` (never allowlisted) and `freeze`/`unfreeze` (S12). Rationale: the `DOM_PAUSER.admin_role = DOM_MANAGER` delegation is BUILD-SEEDED (`seeded_dom_roles_rbac`, byte-identical to an owner-sent `set_role_admin(DOM_PAUSER, DOM_MANAGER)`), so removal changes NO deployed capability Circle requires; CIR-ADMIN-3 rotation is `grant_role`/`revoke_role` (mirroring `updateDomainManager`/`updateDomainPauser` address-slot updates); Circle's EVM reference (`DomainManageable.sol`) has NO function to change who administers a role — freezing the graph is MORE Circle-faithful. Removal makes owner self-lockout (re-pointing `DOM_MANAGER.admin_role` off `ADMIN`) and the v16 #3215 Manager re-delegation of DOM_PAUSER structurally unreachable (recoverability from either re-pointed state was UNVERIFIED). The owner's rotation backstop is the seeded fixed graph + grant/revoke — NOT any runtime re-delegation guarantee (prior "backstop unbreakable" wording was incorrect and is retracted). Enforced by `tests/account_callable_surface.rs` (MAST sweep + former-root non-membership: re-adding the note turns them RED) and `tests/f5_admin_notes.rs` (the preserved former note is consumed and REJECTED). Circle routing: FYI-only — freezing tightens the pending Q-ADMIN-RBAC-EQUIV equivalence question. Ratification artifact: `DECISION-SETROLEADMIN-NOTE-REMOVAL.md` (implementation-readiness tree); map row S21. |
 
 ## Revision findings — `F<n>` / `G<n>` / `L<n>`
 
@@ -264,7 +269,7 @@ name because the code or validation records anchor on them:
 | Id | Meaning |
 |---|---|
 | F1 | The mint-effects helpers (`apply_mint_effects`, `extract_recipient_account_id`) must stay **private** so they cannot become a second, ungated supply surface; only `xreserve_mint::mint` (and its note entry) is a callable mint-family root. |
-| F2 | Defensive fee guard: `apply_mint_effects` asserts `feeAmount == 0` (the MVP has no relayer-fee leg). |
+| F2 | Defensive fee guard: `apply_mint_effects` asserts `feeAmount == 0` (the MVP has no relayer-fee leg). RATIFIED DEFERRAL (2026-07-14): the fail-loud `feeAmount==0` reject IS the MVP contract; the relayer-credit fee split (CIR-FEE-2 / CIR-MINT-STATE-3 — recipient `amount−feeAmount`, relayer `+feeAmount`) is a documented, Circle-gated deferral, priority P2, gated on **mainnet/production-final** (NOT on the testnet MVP go-live). The "reject nonzero fee in MVP" decision needs its OWN explicit Circle confirmation — tracked as the pending **Q-FEE-MVP** (canonical Q-MIN-2 is narrower: it covers only the zero-fee note *structure*, and must not be cited as approving the reject). |
 | F4 | xUSDC ships with **no** on-token transfer policy (a basic, callback-disabled asset), so minted assets are exempt from any future on-token control — a registered deviation matching Circle's no-on-token-control model (see `CMP-A5` / `IMPL-DEV-20`). |
 | F5 | The transaction-level auth boundary for the permissionless-mint model (a non-allowlisted note and tx-script must both be rejected). |
 | F6 | The owner-gated setters are intentionally **not** pause-gated (matching Circle's `onlyOwner`). |

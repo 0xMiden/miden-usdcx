@@ -8,9 +8,11 @@
 //! params onto the stack and `call`s the unchanged sender-gated admin proc — the note sender is
 //! kernel-forced, so the proc's owner/role gate is sound under permissionless network execution.
 //!
-//! This module ships allowlist rows 3-13: the `set_attester` reference op and the remaining ratified
+//! This module ships allowlist rows 3-12: the `set_attester` reference op and the remaining ratified
 //! admin note scripts (`set_min_burn_size`, `set_max_supply`, `pause`, `unpause`, `grant_role`,
-//! `revoke_role`, `set_role_admin`, `transfer_ownership`, `accept_ownership`, `domain_init`).
+//! `revoke_role`, `transfer_ownership`, `accept_ownership`, `domain_init`). There is deliberately
+//! NO `set_role_admin` note (S21 disposition flip, human-ratified 2026-07-14): the role-admin
+//! delegation graph is build-seeded and deploys frozen — see the SET_ROLE_ADMIN section below.
 
 use std::sync::{Arc, LazyLock};
 
@@ -161,7 +163,7 @@ impl XReserveSetAttesterNote {
     }
 }
 
-// DOMAIN_INIT (allowlist row 13)
+// DOMAIN_INIT (allowlist row 12)
 // ================================================================================================
 
 const DOMAIN_INIT_NOTE_SCRIPT_SRC: &str =
@@ -190,7 +192,7 @@ impl XReserveDomainInitNote {
         DOMAIN_INIT_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 13). Must equal the pinned
+    /// The note-script root (allowlist row 12). Must equal the pinned
     /// [`XRESERVE_DOMAIN_INIT_NOTE_SCRIPT_ROOT_HEX`] (parity-tested).
     pub fn script_root() -> NoteScriptRoot {
         DOMAIN_INIT_NOTE_SCRIPT.root()
@@ -455,74 +457,17 @@ impl XReserveGrantRoleNote {
     }
 }
 
-// SET_ROLE_ADMIN (allowlist row 10)
+// SET_ROLE_ADMIN — NO FACTORY (S21 disposition flip, human-ratified 2026-07-14)
 // ================================================================================================
+// The former `XReserveSetRoleAdminNote` (allowlist row 10 of the old 13-root set, pinned root
+// 0x0c69fe1a19ee27196780be8d7815920e6a5da49e05ee10b9a615c4ee7a778648) was REMOVED together with
+// its note script, matching the `renounce_role` precedent (also no factory, never allowlisted):
+// the role-admin graph is BUILD-SEEDED (`seeded_dom_roles_rbac`) and deploys frozen; rotation is
+// `grant_role`/`revoke_role` (CIR-ADMIN-3). The stock `rbac::set_role_admin` account procedure
+// remains composed but is present-but-UNREACHABLE — enforced by `tests/account_callable_surface.rs`
+// and the preserved-former-note rejection tests in `tests/f5_admin_notes.rs`.
 
-const SET_ROLE_ADMIN_NOTE_SCRIPT_SRC: &str =
-    include_str!("../../../../asm/standards/notes/xreserve_set_role_admin_note.masm");
-
-static SET_ROLE_ADMIN_NOTE_SCRIPT: LazyLock<NoteScript> =
-    LazyLock::new(|| compile_admin_note_script(SET_ROLE_ADMIN_NOTE_SCRIPT_SRC));
-
-/// The PINNED set_role_admin admin note-script root (`masm-rust-constant-parity`): binds transitively
-/// to the stock `rbac::set_role_admin`'s digest.
-pub const XRESERVE_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x0c69fe1a19ee27196780be8d7815920e6a5da49e05ee10b9a615c4ee7a778648";
-
-/// The stock `set_role_admin` admin note (F5), gated at v0.16 on the MANAGED role's EFFECTIVE
-/// admin — its delegated admin, else the built-in `ADMIN` role (protocol #3215 removed the v15
-/// owner-only gate; the builder seeds `ADMIN` on the owner, so re-delegating DOM_MANAGER stays the
-/// owner's, while re-delegating DOM_PAUSER is DOM_MANAGER's — MIGRATION-V16-ALPHA2.md S21).
-/// Storage layout:
-/// `[role_symbol, admin_role_symbol]` (`admin_role_symbol = 0` clears the delegation).
-pub struct XReserveSetRoleAdminNote;
-
-impl XReserveSetRoleAdminNote {
-    /// The compiled, fixed-root note script.
-    pub fn script() -> NoteScript {
-        SET_ROLE_ADMIN_NOTE_SCRIPT.clone()
-    }
-
-    /// The note-script root (allowlist row 10). Must equal the pinned constant (parity-tested).
-    pub fn script_root() -> NoteScriptRoot {
-        SET_ROLE_ADMIN_NOTE_SCRIPT.root()
-    }
-
-    /// The PINNED note-script root ([`XRESERVE_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX`]).
-    pub fn pinned_script_root() -> NoteScriptRoot {
-        NoteScriptRoot::from_raw(
-            Word::parse(XRESERVE_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX)
-                .expect("the pinned set_role_admin note-script root hex is a valid word"),
-        )
-    }
-
-    /// Builds a `set_role_admin` admin note: `sender` must hold the MANAGED role's EFFECTIVE admin
-    /// role for the call to succeed (v0.16 #3215 — its delegated admin, else the built-in `ADMIN`
-    /// role; MIGRATION-V16-ALPHA2.md S21, human-ratified 2026-07-13). On this faucet that means:
-    /// re-delegating `DOM_MANAGER` (admin unset -> `ADMIN`) is the OWNER's, since the builder seeds
-    /// `ADMIN` on the owner's account; re-delegating `DOM_PAUSER` (admin = `DOM_MANAGER`, the CMP-F5
-    /// seed) is a `DOM_MANAGER` holder's — the owner reaches it by first taking `DOM_MANAGER`.
-    /// `faucet_id` is the target faucet (PUBLIC), `role_symbol` the managed RBAC role, and
-    /// `admin_role_symbol` the role that may administer it (`0` clears the delegation, so the role
-    /// falls back to `ADMIN`-administered). The params live in note storage; NOTE_ARGS ignored.
-    pub fn create<R: FeltRng>(
-        sender: AccountId,
-        faucet_id: AccountId,
-        role_symbol: Felt,
-        admin_role_symbol: Felt,
-        rng: &mut R,
-    ) -> Result<Note, NoteError> {
-        build_admin_note(
-            sender,
-            faucet_id,
-            Self::script(),
-            vec![role_symbol, admin_role_symbol],
-            rng,
-        )
-    }
-}
-
-// TRANSFER_OWNERSHIP (allowlist row 11)
+// TRANSFER_OWNERSHIP (allowlist row 10)
 // ================================================================================================
 
 const TRANSFER_OWNERSHIP_NOTE_SCRIPT_SRC: &str =
@@ -546,7 +491,7 @@ impl XReserveTransferOwnershipNote {
         TRANSFER_OWNERSHIP_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 11). Must equal the pinned constant (parity-tested).
+    /// The note-script root (allowlist row 10). Must equal the pinned constant (parity-tested).
     pub fn script_root() -> NoteScriptRoot {
         TRANSFER_OWNERSHIP_NOTE_SCRIPT.root()
     }
@@ -573,7 +518,7 @@ impl XReserveTransferOwnershipNote {
     }
 }
 
-// ACCEPT_OWNERSHIP (allowlist row 12)
+// ACCEPT_OWNERSHIP (allowlist row 11)
 // ================================================================================================
 
 const ACCEPT_OWNERSHIP_NOTE_SCRIPT_SRC: &str =
@@ -597,7 +542,7 @@ impl XReserveAcceptOwnershipNote {
         ACCEPT_OWNERSHIP_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 12). Must equal the pinned constant (parity-tested).
+    /// The note-script root (allowlist row 11). Must equal the pinned constant (parity-tested).
     pub fn script_root() -> NoteScriptRoot {
         ACCEPT_OWNERSHIP_NOTE_SCRIPT.root()
     }

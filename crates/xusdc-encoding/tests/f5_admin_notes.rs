@@ -2,28 +2,41 @@
 //! admin note is allowlisted (so it PASSES network auth) and reads its params from note STORAGE
 //! (never NOTE_ARGS); the sender-gated admin proc is the second layer. Reference op: `set_attester`
 //! (row 3).
+//!
+//! EXCEPTION — `set_role_admin` (S21 disposition flip, human-ratified 2026-07-14): its runtime
+//! note was REMOVED from the allowlist (the role-admin graph is build-seeded and frozen; rotation
+//! is `grant_role`/`revoke_role`). Its section below consumes the PRESERVED former note and proves
+//! the auth component now REJECTS it — negative coverage, not a driving suite.
 
 mod support;
 
 use core::slice;
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::{
     Account, AccountId, RoleSymbol, StorageMapKey, StorageSlotName, StorageSlotPatch,
 };
+use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::MasmError;
+use miden_protocol::note::{
+    Note, NoteAssets, NoteAttachment, NoteAttachments, NoteRecipient, NoteScript, NoteScriptRoot,
+    NoteStorage, NoteTag, NoteType, PartialNoteMetadata,
+};
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
+use miden_standards::code_builder::CodeBuilder;
+use miden_standards::errors::standards::ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED;
+use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
     XReserveAcceptOwnershipNote, XReserveDomainInitNote, XReserveGrantRoleNote, XReservePauseNote,
     XReserveRevokeRoleNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
-    XReserveSetMinBurnSizeNote, XReserveSetRoleAdminNote, XReserveTransferOwnershipNote,
-    XReserveUnpauseNote,
+    XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote, XReserveUnpauseNote,
 };
 
 /// The exact stock role error the DOM_PAUSER gate traps (rbac.masm:50 ERR_SENDER_LACKS_ROLE).
@@ -1196,68 +1209,258 @@ fn revoke_role_note_script_root_is_pinned() {
     );
 }
 
-// SET_ROLE_ADMIN (allowlist row 10) — gated on the MANAGED role's EFFECTIVE admin (v0.16 #3215):
-// DOM_MANAGER's admin is unset -> the built-in ADMIN, which the builder seeds on the OWNER, so the
-// owner administers it and the DOM_MANAGER holder does not (S2/S21).
+// SET_ROLE_ADMIN — REMOVED from the allowlist (S21 disposition flip, human-ratified 2026-07-14):
+// the runtime re-delegation capability is structurally unreachable. The role-admin graph the
+// faucet deploys with is the BUILD-TIME seed; rotation is grant_role/revoke_role (CIR-ADMIN-3).
+// The FORMER production note script is preserved VERBATIM below as a negative-coverage fixture:
+// these tests consume the exact removed note against the production network-auth faucet and prove
+// the auth component now REJECTS it (`ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED`) — the same
+// executing proof shape as `the_auth_component_rejects_a_non_allowlisted_note` (S12), specialized
+// to the removed root. Membership/MAST-sweep legs: `account_callable_surface.rs`.
 // ================================================================================================
 
-/// Owner-sent set_role_admin(DOM_MANAGER, DOM_PAUSER) PASSES auth + the ADMIN-role gate (the owner
-/// is the seeded ADMIN member, DOM_MANAGER's effective admin — v0.16 #3215/S2) and updates
-/// DOM_MANAGER's admin_role in its role_config (seeded 0 -> DOM_PAUSER).
+/// The FORMER `xreserve_set_role_admin_note.masm` source, preserved verbatim from the removed
+/// shipped file (git history: `asm/standards/notes/xreserve_set_role_admin_note.masm` before the
+/// S21 removal) so the rejection tests below drive the EXACT root that used to be allowlist row 10.
+/// It stages the creator-committed `[role_symbol, admin_role_symbol]` note storage and `call`s the
+/// stock `rbac::set_role_admin` — which the account still exposes (present-but-unreachable).
+const FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT_SRC: &str = r#"# xreserve_set_role_admin_note — the shipped, root-pinned set_role_admin admin note script (F5).
+#
+# The production admin surface for the STOCK `set_role_admin` under the network account: a fixed-root
+# note whose parameters are CREATOR-COMMITTED in note storage (never NOTE_ARGS). It stages the note
+# storage into memory, marshals the creator's params onto the stack in the proc's Inputs order, and
+# `call`s the stock `miden::standards::access::rbac::set_role_admin`. The `call` resolves to the SAME
+# proc root the faucet exposes via the RBAC component re-exports. A scheme-2 NetworkAccountTarget
+# routing attachment addresses the note at the faucet (routing-only).
+#
+# AUTHORIZATION (v0.16 — protocol #3215; MIGRATION-V16-ALPHA2.md S2/S21, the owner-only gate is
+# GONE): the stock proc gates on the MANAGED ROLE's EFFECTIVE ADMIN — the role's configured
+# delegated admin, else the built-in `ADMIN` role. On this faucet that means: re-delegating
+# DOM_PAUSER (whose admin is DOM_MANAGER, the CMP-F5 seed) requires a DOM_MANAGER holder, while
+# re-delegating DOM_MANAGER (admin unset -> ADMIN) requires an ADMIN member — the OWNER's account,
+# which the builder seeds into ADMIN. The owner reaches DOM_PAUSER's delegation by first taking
+# DOM_MANAGER (which it may, as the ADMIN member). The note sender is kernel-forced.
+#
+# Note storage layout (2 felts): [role_symbol, admin_role_symbol]. `admin_role_symbol = 0` clears the
+# delegation (the managed role falls back to ADMIN-administered) — the stock sentinel.
+
+use miden::protocol::active_note
+use miden::standards::access::rbac
+use miden::core::sys
+
+# CONSTANTS
+# =================================================================================================
+
+const PARAM_PTR = 1024
+const SET_ROLE_ADMIN_NOTE_NUM_ITEMS = 2
+
+# ERRORS
+# =================================================================================================
+
+const ERR_XRESERVE_SET_ROLE_ADMIN_NOTE_STORAGE = "set_role_admin note storage item count is invalid"
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Consumes the `set_role_admin` admin note and drives the role-admin write (gated on the managed
+#! role's effective admin — v0.16 #3215, see the module header).
+#!
+#! Stages the creator-committed params (`[role_symbol, admin_role_symbol]`) into memory at PARAM_PTR,
+#! marshals them onto the stack as `[role_symbol, admin_role_symbol, pad(14)]`, and `call`s the stock
+#! `rbac::set_role_admin`. The note ARGS are unused.
+#!
+#! Requires that the account exposes:
+#! - miden::standards::access::rbac::set_role_admin procedure.
+#!
+#! Inputs:  [ARGS, pad(12)]
+#! Outputs: [pad(16)]
+#!
+#! Note storage is assumed to be as follows:
+#! - role_symbol is the RoleSymbol felt of the managed role (item 0).
+#! - admin_role_symbol is the admin RoleSymbol felt (item 1); 0 clears the delegation (the stock
+#!   sentinel).
+#!
+#! Panics if:
+#! - the note storage does not carry exactly 2 items.
+#! - the note sender does not hold the managed role's effective admin role
+#!   (rbac::set_role_admin, ERR_SENDER_NOT_ROLE_ADMIN).
+#!
+#! Invocation: dyncall
+@note_script
+pub proc main
+    dropw
+    # => [pad(16)]
+
+    push.PARAM_PTR exec.active_note::get_storage
+    # => [num_items, pad(16)]
+
+    eq.SET_ROLE_ADMIN_NOTE_NUM_ITEMS assert.err=ERR_XRESERVE_SET_ROLE_ADMIN_NOTE_STORAGE
+    # => [pad(16)]
+
+    push.PARAM_PTR add.1 mem_load
+    push.PARAM_PTR mem_load
+    # => [role_symbol, admin_role_symbol, pad(16)]
+    # (the call consumes the top 16: [role_symbol, admin_role_symbol, pad(14)])
+
+    call.rbac::set_role_admin
+    # => [pad(16)]
+
+    exec.sys::truncate_stack
+end
+"#;
+
+/// The FORMER pinned `set_role_admin` note-script root (was
+/// `XRESERVE_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX`). The fixture-integrity test below asserts the
+/// preserved source still compiles to exactly this root, so the rejection tests provably drive the
+/// removed production root — not a lookalike.
+const FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0x0c69fe1a19ee27196780be8d7815920e6a5da49e05ee10b9a615c4ee7a778648";
+
+static FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT: LazyLock<NoteScript> = LazyLock::new(|| {
+    CodeBuilder::new()
+        .compile_note_script(FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT_SRC)
+        .expect("the preserved former set_role_admin note script compiles")
+});
+
+/// Builds the FORMER `set_role_admin` admin note exactly as the removed
+/// `XReserveSetRoleAdminNote::create` factory did: creator-committed
+/// `[role_symbol, admin_role_symbol]` note storage, PUBLIC, faucet-tagged, empty assets, and the
+/// scheme-2 `NetworkAccountTarget` routing attachment.
+fn former_set_role_admin_note(
+    sender: AccountId,
+    faucet_id: AccountId,
+    role_symbol: Felt,
+    admin_role_symbol: Felt,
+    rng: &mut RandomCoin,
+) -> Result<Note> {
+    let storage = NoteStorage::new(vec![role_symbol, admin_role_symbol])
+        .context("the former set_role_admin note storage")?;
+    let recipient = NoteRecipient::new(
+        rng.draw_word(),
+        FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT.clone(),
+        storage,
+    );
+    let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
+        .with_tag(NoteTag::with_account_target(faucet_id));
+    let target = NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always)
+        .context("the faucet id is a public network account")?;
+    let attachments = NoteAttachments::new(vec![NoteAttachment::from(target)])
+        .context("the former set_role_admin note attachments")?;
+    Ok(Note::with_attachments(
+        NoteAssets::new(vec![]).context("empty note assets")?,
+        metadata,
+        recipient,
+        attachments,
+    ))
+}
+
+/// FIXTURE INTEGRITY (masm-rust-constant-parity, inverted): the PRESERVED former source still
+/// compiles to the FORMER pinned root — so the rejection tests below demonstrably consume the
+/// exact note the allowlist used to admit (a drifting fixture would silently weaken them to a
+/// generic non-allowlisted probe).
+#[test]
+fn former_set_role_admin_note_script_still_compiles_to_the_former_root() {
+    let root = FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT.root();
+    assert_eq!(
+        root,
+        NoteScriptRoot::from_raw(
+            Word::parse(FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX)
+                .expect("the former set_role_admin note-script root hex is a valid word"),
+        ),
+        "the preserved former set_role_admin note script must still compile to the former pinned \
+         root (actual = {})",
+        root.to_hex(),
+    );
+}
+
+/// REJECTED (the S21 executing proof, formerly the owner-sent SUCCESS test): the exact former
+/// set_role_admin note — owner-sent, well-formed, previously allowlist row 10 — now FAILS network
+/// auth with the allowlist error. The note script itself EXECUTES (the allowlist is an epilogue
+/// `@auth_script`) and the owner passes the ADMIN-role proc gate, so the rejection is attributable
+/// ONLY to the removed allowlist membership; the committed delegation graph stays the build seed.
 #[tokio::test]
-async fn set_role_admin_owner_updates_admin_role() -> Result<()> {
+async fn set_role_admin_note_is_rejected_as_non_allowlisted() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReserveSetRoleAdminNote::create(
+    let note = former_set_role_admin_note(
         test_account_id(1),
         faucet_id,
         Felt::from(&manager_sym()),
         Felt::from(&pauser_sym()),
         &mut note_rng(120),
     )
-    .context("building the owner set_role_admin note")?;
-    let tx = chain
+    .context("building the former owner set_role_admin note")?;
+    let result = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
         .context("owner set_role_admin tx context")?
         .build()
         .context("owner set_role_admin tx build")?
         .execute()
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!("owner-sent set_role_admin must succeed under network auth: {e}")
-        })?;
-    let mut evolved = chain
+        .await;
+    assert_transaction_executor_error!(result, ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED);
+
+    // The committed role-admin graph is untouched: DOM_MANAGER stays ADMIN-administered (the
+    // build seed), so the runtime graph is provably frozen.
+    let committed = chain
         .committed_account(faucet_id)
-        .context("committed faucet")?
-        .clone();
-    evolved.apply_patch(tx.account_patch())?;
+        .context("committed faucet")?;
     assert_eq!(
-        read_role_config(&evolved, &manager_sym())?[1],
-        Felt::from(&pauser_sym()),
-        "owner set_role_admin must set DOM_MANAGER's admin_role to DOM_PAUSER",
+        read_role_config(committed, &manager_sym())?[1],
+        Felt::ZERO,
+        "a rejected set_role_admin note must leave DOM_MANAGER's admin_role at the build seed \
+         (ADMIN-administered)",
     );
     Ok(())
 }
 
-/// A non-ADMIN set_role_admin note on DOM_MANAGER PASSES auth but TRAPS at the role-admin gate —
-/// INCLUDING the DOM_MANAGER holder itself (DOM_MANAGER's effective admin is the built-in ADMIN
-/// role, which the OWNER holds; v16 #3215 / S2 — the owner keeps this authority, the manager does
-/// not gain it).
+/// REJECTED regardless of executor NOTE_ARGS (formerly the NOTE_ARGS-inert SUCCESS test): a bogus
+/// NOTE_ARGS word changes nothing — the former note still fails the allowlist check.
+#[tokio::test]
+async fn set_role_admin_note_is_rejected_regardless_of_note_args() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let note = former_set_role_admin_note(
+        test_account_id(1),
+        faucet_id,
+        Felt::from(&manager_sym()),
+        Felt::from(&pauser_sym()),
+        &mut note_rng(123),
+    )
+    .context("building the former owner set_role_admin note")?;
+    let bogus_args = Word::from([4u32, 4, 4, 4]);
+    let result = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("set_role_admin note-args tx context")?
+        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
+        .build()
+        .context("set_role_admin note-args tx build")?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED);
+    Ok(())
+}
+
+/// LAYER-ORDER pin (preserved negative coverage): a NON-admin-sent former set_role_admin note
+/// still traps at the stock role-admin PROC gate — the note body executes BEFORE the epilogue
+/// allowlist check, so the proc's own gate fires first (`ERR_SENDER_NOT_ROLE_ADMIN`). Identical
+/// behavior before and after the S21 removal: the inner authorization layer never weakened.
 async fn assert_set_role_admin_nonadmin_traps(sender: AccountId, seed: u64) -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReserveSetRoleAdminNote::create(
+    let note = former_set_role_admin_note(
         sender,
         faucet_id,
         Felt::from(&manager_sym()),
         Felt::from(&pauser_sym()),
         &mut note_rng(seed),
     )
-    .context("building the non-admin set_role_admin note")?;
+    .context("building the former non-admin set_role_admin note")?;
     let result = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
         .context("non-admin set_role_admin tx context")?
@@ -1277,58 +1480,6 @@ async fn set_role_admin_dom_manager_traps() -> Result<()> {
 #[tokio::test]
 async fn set_role_admin_third_party_traps() -> Result<()> {
     assert_set_role_admin_nonadmin_traps(test_account_id(99), 122).await
-}
-
-/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the admin_role write.
-#[tokio::test]
-async fn set_role_admin_note_args_are_inert() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
-        .context("building the production network-auth faucet")?;
-    let chain = pf.mock_chain;
-    let faucet_id = pf.faucet_id;
-    let note = XReserveSetRoleAdminNote::create(
-        test_account_id(1),
-        faucet_id,
-        Felt::from(&manager_sym()),
-        Felt::from(&pauser_sym()),
-        &mut note_rng(123),
-    )
-    .context("building the owner set_role_admin note")?;
-    let bogus_args = Word::from([4u32, 4, 4, 4]);
-    let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("set_role_admin note-args tx context")?
-        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
-        .build()
-        .context("set_role_admin note-args tx build")?
-        .execute()
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!("set_role_admin with bogus NOTE_ARGS must still succeed: {e}")
-        })?;
-    let mut evolved = chain
-        .committed_account(faucet_id)
-        .context("committed faucet")?
-        .clone();
-    evolved.apply_patch(tx.account_patch())?;
-    assert_eq!(
-        read_role_config(&evolved, &manager_sym())?[1],
-        Felt::from(&pauser_sym()),
-        "set_role_admin must write the storage-committed admin_role regardless of executor NOTE_ARGS",
-    );
-    Ok(())
-}
-
-/// masm-rust-constant-parity for the set_role_admin note (the failure prints the actual hex).
-#[test]
-fn set_role_admin_note_script_root_is_pinned() {
-    let root = XReserveSetRoleAdminNote::script_root();
-    assert_eq!(
-        root,
-        XReserveSetRoleAdminNote::pinned_script_root(),
-        "masm-rust-constant-parity: set_role_admin note-script root == the pinned constant (actual = {})",
-        root.to_hex(),
-    );
 }
 
 // TRANSFER_OWNERSHIP (allowlist row 11) — current-owner-gated, step 1 of the 2-step transfer

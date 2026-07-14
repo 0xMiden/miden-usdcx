@@ -13,8 +13,9 @@ to prove; NO production faucet code was touched.
 ## 1. Launch gate + toolchain
 
 Unchanged from LNV-1 (`VALIDATION-RECORD.md` §1–2): F5 is on `main` (production builder composes
-`AuthNetworkAccount`; the frozen 13-root note allowlist; empty tx-script allowlist; note-driven
-admin). Pins: protocol `681fc905…` (= v0.15.3), node binaries **v0.15.1** in `/usr/local/bin`,
+`AuthNetworkAccount`; the frozen 13-root note allowlist at this record's commit — [SUPERSEDED
+2026-07-14 → S21 flip: now 12 roots, the runtime `set_role_admin` note removed]; empty tx-script
+allowlist; note-driven admin). Pins: protocol `681fc905…` (= v0.15.3), node binaries **v0.15.1** in `/usr/local/bin`,
 `miden-client =0.15.3`, the `[patch.crates-io]` type-unification. LNV-2 adds NO new dependencies and
 NO new MASM — it drives the SAME shipped faucet composition + admin notes by reference.
 

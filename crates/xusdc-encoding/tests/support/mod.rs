@@ -3468,9 +3468,12 @@ pub fn revoke_role_note(
 
 /// A `set_role_admin(role, admin_role)` note sent by `sender`. Stock gate at v0.16: the MANAGED
 /// role's EFFECTIVE admin — its delegated admin, else the built-in `ADMIN` role
-/// (`assert_sender_is_role_admin`, rbac.masm:200; #3215 dropped the v15 owner-only gate — S21,
-/// human-ratified). `admin_role = None` pushes 0 — the stock "clear the delegation" sentinel, after
-/// which the role is `ADMIN`-administered.
+/// (`assert_sender_is_role_admin`, rbac.masm:200; #3215 dropped the v15 owner-only gate — S21).
+/// `admin_role = None` pushes 0 — the stock "clear the delegation" sentinel, after which the role
+/// is `ADMIN`-administered. PROC-LEVEL CHARACTERIZATION ONLY (permissive-auth fixtures): in
+/// production the `set_role_admin` capability is structurally unreachable — its note was removed
+/// from the allowlist (S21 disposition flip, 2026-07-14), so the deployed role-admin graph is
+/// frozen at the build seed.
 /// Stack contract: `[role_symbol, admin_role_symbol, pad(14)]` (role on top).
 pub fn set_role_admin_note(
     sender: AccountId,

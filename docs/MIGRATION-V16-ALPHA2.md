@@ -1,5 +1,18 @@
 # MIGRATION-V16-ALPHA2 — protocol v0.15.3 → crates.io `=0.16.0-alpha.2`
 
+> **[AMENDMENT 2026-07-14 — S21 DISPOSITION FLIP (post-migration, human-ratified).]** This
+> historical record repeatedly pins the note-script allowlist at **13 roots** and treats the
+> runtime `set_role_admin` note as a kept-with-changed-gate member of the note set. That was true
+> at migration close (2026-07-13). It is **SUPERSEDED**: on 2026-07-14 the runtime
+> `set_role_admin` note was **REMOVED from the allowlist (13 → 12 roots)** and its note
+> script/factory deleted — the same disposition as `renounce_role` and S12 `freeze`/`unfreeze`
+> (present-but-unreachable account proc; the role-admin graph is frozen at the build seed;
+> rotation is `grant_role`/`revoke_role`, CIR-ADMIN-3). Every "13-root" count and every
+> "`set_role_admin` note kept" statement below reads through this amendment. See
+> `docs/spec/GLOSSARY.md` IMPL-DEV-24 and `DECISION-SETROLEADMIN-NOTE-REMOVAL.md`
+> (implementation-readiness tree); enforcement: `tests/account_callable_surface.rs` +
+> `tests/f5_admin_notes.rs`.
+
 **Status: PHASES 0-5 COMPLETE — ALL DECISIONS RATIFIED. The three gate decisions were approved
 2026-07-13 (ADJUDICATION block, §10), and the one consequence that surfaced during Phase 3 —
 **S21** (upstream #3215 gives the DOM_MANAGER holder `set_role_admin` over DOM_PAUSER and removes
@@ -320,7 +333,8 @@ per the task rules).
   operator-side (it folds into the already-open `Q-ADMIN-RBAC-EQUIV`, which already names
   `set_role_admin`) — an FYI, NOT a sign-off gate. Supply / F1 `{mint}`-only surface untouched;
   the 13-root allowlist count is unchanged (S21 changes the on-chain GATE of the existing
-  `set_role_admin` note, not the note set).
+  `set_role_admin` note, not the note set). [SUPERSEDED 2026-07-14 → S21 flip (top amendment):
+  the runtime `set_role_admin` note was subsequently REMOVED — the allowlist is now 12 roots.]
 
 ### S3 — #3255: `protocol::faucet::create_fungible_asset` REMOVED (MASM edit) — recipe verified
 
@@ -504,7 +518,8 @@ per the task rules).
 - INVARIANTS (unchanged shape, Phase 4): note-script allowlist EXACTLY 13 roots (set-equality at
   source + on-chain layers); supply-raising callable-root set EXACTLY `{mint}` by enumeration;
   tx-script allowlist EMPTY. The freeze/unfreeze addition changes the on-chain GATE surface, NOT
-  the note set — the 13-root count is unchanged.
+  the note set — the 13-root count is unchanged. [SUPERSEDED 2026-07-14 → S21 flip (top
+  amendment): the standing invariant is now EXACTLY 12 roots.]
 
 ### S13 — #3222: unified stock BURN note reflects via `has_procedure` — resolved
 
@@ -949,7 +964,9 @@ here. Copying hexes out of failure messages without the derivation is forbidden.
 
 Set-shaped invariants that must survive Phase 4 UNCHANGED: 13-root note allowlist (set-equality,
 both layers, factory-derived — the 13 identities may only re-key); supply-raising set exactly
-`{mint}`; tx-script allowlist EMPTY. Membership changes = STOP.
+`{mint}`; tx-script allowlist EMPTY. Membership changes = STOP. [SUPERSEDED 2026-07-14 → S21
+flip (top amendment): the allowlist invariant is now the 12-root set — the one ratified
+membership change was the `set_role_admin` note removal.]
 
 NOT re-pin sites (protocol-independent, must NOT change): the relayer's Circle wire fixtures
 (`PARTNER_PUBKEY_HEX`, `TEST_VECTOR_MESSAGE_HASH_HEX`, `TEST_VECTOR_ATTESTATION_HEX` — pure
@@ -1093,7 +1110,8 @@ Conditions attached by the operator (Round-F enforces these alongside the standi
 **Standing STOP conditions (unchanged):**
 
 4. Any test passable only by an assertion change NOT covered by a row here.
-5. **The 13-root allowlist count, the `{mint}`-only supply surface, or the empty tx-allowlist
+5. **The 13-root allowlist count [SUPERSEDED 2026-07-14 → S21 flip (top amendment): now the
+   12-root count], the `{mint}`-only supply surface, or the empty tx-allowlist
    cannot be preserved exactly as shaped — OR ANY STOCK-COMPONENT CALLABLE-SURFACE CHANGE
    (a new/removed exported-and-callable procedure from any stock component) is observed.**
    The full-account callable surface is FROZEN as a literal set in

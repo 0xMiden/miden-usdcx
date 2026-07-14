@@ -745,9 +745,16 @@ async fn stranger_cannot_grant_or_revoke() -> Result<()> {
 
 /// Shared: a sender who does NOT hold DOM_PAUSER's effective admin role is rejected from
 /// `set_role_admin(DOM_PAUSER, …)` with the exact `ERR_SENDER_NOT_ROLE_ADMIN`, and the delegation
-/// word is untouched. v16 #3215 (S21 — an upstream consequence beyond the S2 approval): the gate
-/// is the ROLE's effective admin, so DOM_PAUSER's `set_role_admin` is DOM_MANAGER's, NOT the
-/// owner's; the owner's re-delegation power now runs through DOM_MANAGER membership.
+/// word is untouched. v16 #3215 (S21): the gate is the ROLE's effective admin.
+///
+/// NOTE (S21 disposition flip, human-ratified 2026-07-14): every `set_role_admin` test in this
+/// file is a PROC-LEVEL CHARACTERIZATION pin under the permissive-auth fixture — the same
+/// treatment as `dom_pauser_can_renounce_own_role`. In PRODUCTION the proc is
+/// present-but-UNREACHABLE: the runtime `set_role_admin` note was REMOVED from the note-script
+/// allowlist (12 roots, no set_role_admin; tx-script allowlist empty), so the role-admin graph is
+/// frozen at the build seed and rotation is `grant_role`/`revoke_role` only. Proofs:
+/// `account_callable_surface.rs` (membership + MAST sweep) and `f5_admin_notes.rs` (the preserved
+/// former note is consumed and rejected).
 async fn assert_set_role_admin_rejected(sender: AccountId, seed: u64) -> Result<()> {
     let gm = production_faucet()?;
     let account = faucet_account(&gm.harness);
@@ -771,19 +778,24 @@ async fn assert_set_role_admin_rejected(sender: AccountId, seed: u64) -> Result<
     Ok(())
 }
 
-/// v16 #3215 (S21, human-RATIFIED 2026-07-13): the OWNER — an ADMIN member but not a DOM_MANAGER
-/// holder — can no longer re-delegate DOM_PAUSER directly; the gate is DOM_PAUSER's effective admin
-/// (DOM_MANAGER). The owner's re-delegation authority survives by first taking DOM_MANAGER
-/// (`owner_reaches_set_role_admin_through_dom_manager`), and its backstop is unbreakable:
-/// DOM_MANAGER's own admin is ADMIN = the owner, so a rogue Manager cannot escape (CIR-ADMIN-3).
+/// v16 #3215 (S21): the OWNER — an ADMIN member but not a DOM_MANAGER holder — is rejected by the
+/// STOCK PROC's gate on a direct `set_role_admin(DOM_PAUSER, …)`; the gate is DOM_PAUSER's
+/// effective admin (DOM_MANAGER). Proc-level characterization only: in production NO sender
+/// reaches this proc at all (the note is not allowlisted — S21 removal). The owner's rotation
+/// backstop is the build-seeded fixed graph + `grant_role`/`revoke_role` (CIR-ADMIN-3), not any
+/// runtime re-delegation guarantee.
 #[tokio::test]
 async fn set_role_admin_owner_direct_rejects() -> Result<()> {
     assert_set_role_admin_rejected(owner(), 48).await
 }
 
-/// v16 #3215 (S21): DOM_MANAGER — DOM_PAUSER's delegated admin — CAN re-delegate DOM_PAUSER (a
-/// capability it did not hold at v15, where `set_role_admin` was owner-only). Asserted as a
-/// POSITIVE so the change is loud and pinned, not silent.
+/// CHARACTERIZATION pin of the STOCK PROC's v16 gate (#3215/S21): at proc level, DOM_MANAGER —
+/// DOM_PAUSER's delegated admin — passes the `set_role_admin(DOM_PAUSER, …)` gate (a capability
+/// the proc did not expose to it at v15, where the gate was owner-only). Kept loud so the stock
+/// semantics are pinned, exactly like `dom_pauser_can_renounce_own_role`. In PRODUCTION this path
+/// is structurally unreachable — the runtime `set_role_admin` note was removed from the allowlist
+/// (S21 flip, 2026-07-14) precisely so this Manager re-delegation (and owner self-lockout) cannot
+/// occur on-chain.
 #[tokio::test]
 async fn set_role_admin_dom_manager_can_redelegate_pauser() -> Result<()> {
     let gm = production_faucet()?;
@@ -867,14 +879,17 @@ async fn dom_manager_cannot_administer_dom_manager() -> Result<()> {
     Ok(())
 }
 
-// RUNTIME DELEGATION CONTROL (GREEN pin) — the shipped seed is config-driven, owner-rotatable state
+// DELEGATION SEED SEMANTICS (proc-level characterization) — the seed is stock-config-shaped state
 // ================================================================================================
 
-/// The delegation is CONFIG-DRIVEN state under runtime owner control, not baked-in behavior: the
-/// owner CLEARS it (`set_role_admin(DOM_PAUSER, 0)`) and a DOM_MANAGER grant REJECTS; the owner
-/// RE-SETS it and the same grant SUCCEEDS. `member_count` is preserved through both `set_role_admin`
-/// writes (rbac.masm:168-174). GREEN at the red commit (the runtime machinery is stock); after the
-/// green seed the clear-leg additionally proves the SHIPPED delegation is clearable.
+/// PROC-LEVEL CHARACTERIZATION (permissive-auth fixture): the seeded delegation word is exactly
+/// the state the stock procs operate on — the (DOM_MANAGER-holding) owner CLEARS it
+/// (`set_role_admin(DOM_PAUSER, 0)`) and a DOM_MANAGER grant REJECTS; re-SETTING it makes the same
+/// grant SUCCEED. `member_count` is preserved through both `set_role_admin` writes
+/// (rbac.masm:168-174). This proves the build seed is byte-faithful stock-RBAC state, NOT that the
+/// graph is runtime-rotatable in production: there the `set_role_admin` note is not allowlisted
+/// (S21 removal, 2026-07-14), so the deployed graph is FROZEN at the seed and only membership
+/// (`grant_role`/`revoke_role`) rotates.
 #[tokio::test]
 async fn owner_reaches_set_role_admin_through_dom_manager() -> Result<()> {
     let gm = production_faucet()?;

@@ -45,6 +45,23 @@ rand = "0.8"
 # declares it; the pinned cargo cache now carries reqwest + its hyper/rustls/h2 closure, so the
 # offline `--locked` gate still resolves).
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
+# The relayer's idempotency seam (`idempotency::IdempotencyStore`) — the submitted-nonce log + the
+# per-remote-domain `Link` cursor that must survive a restart. SQLite is the persistence choice
+# (rationale + the alternatives weighed: crates/xreserve-deposit-relayer/PERSISTENCE-CHOICE.md); it
+# is pinned here, not in the crate, because the withdrawal listener needs the same durable-cursor
+# store and the two must not drift onto different engines.
+#
+# `bundled` compiles SQLite from the amalgamation that ships inside `libsqlite3-sys` — the same
+# feature `miden-client-sqlite-store` (already in this workspace's graph, on the same rusqlite 0.37)
+# uses. It is not a preference: this box has `libsqlite3.so.0` but no `libsqlite3.so` link target, so
+# a system-linked build would not link at all, and a bundled build additionally cannot drift with the
+# host's SQLite version. `array`/`vtab` are deliberately NOT enabled — the store needs neither.
+rusqlite = { version = "0.37", features = ["bundled"] }
+# Test-only: the on-disk stores every idempotency test opens, in a directory that is removed when the
+# test ends. The restart tests need a REAL file (a store that cannot lose the cursor is the point),
+# so an in-memory database is not an option — not even in tests.
+tempfile = "3"
+
 # axum ROUTES the schema-exact mock Circle server in the relayer's contract tests, and tower's
 # `ServiceExt::oneshot` drives that router IN PROCESS: the mock is an `HttpTransport`, not a socket
 # server. That is not a preference — the audit/CI sandbox denies `bind(127.0.0.1:0)` with EPERM, so a

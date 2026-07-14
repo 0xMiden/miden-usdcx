@@ -1,0 +1,73 @@
+[package]
+name = "withdrawal-listener-attester"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Phase-4 P4-WITHDRAWAL (CMP-C2/C3): off-chain burn-listener / attester — this slice ships the crate scaffold, the Circle withdrawal wire types, the schema-frozen mock fixtures, and the auth posture"
+
+# The burn-note payload layout (DC-7) and the AccountId↔bytes32 codec (DC-6) are OWNED by unit-04
+# (`xusdc-encoding`, `xreserve::encoding`) and consumed here BY REFERENCE (single-owner rule). In
+# particular `types::BurnPayload` IS unit-04's `XReserveBurnItems` — an alias, not a second copy —
+# so the two cannot drift. This crate re-derives no offset and re-implements no codec.
+#
+# This service RELEASES REAL USDC: it observes a Miden burn, has it signed, and hands Circle the
+# evidence that unlocks native USDC on the source chain. Precision on the Circle wire shapes is
+# load-bearing, which is why the fixtures are frozen against the OpenAPI and not against these types
+# (tests/fixtures/README.md).
+
+[dependencies]
+xusdc-encoding = { path = "../xusdc-encoding" }
+# Shared versions live in the root [workspace.dependencies]; crate-specific feature sets are added on
+# top (workspace-shared-dependencies).
+#   serde/serde_json — the Circle wire codecs (§10.3) and the operator's config file.
+#   tokio            — the service runtime the async Circle transport seam runs on.
+#   reqwest          — the Circle HTTP transport type the `HttpTransport` seam is defined over. This
+#                      slice builds NO driver and makes NO call (that is W6); it fixes the seam the
+#                      drivers plug into, mirroring the relayer's.
+#   hex              — renders the burn-evidence 32-byte fields (note id, nullifier) into the 0x-hex
+#                      the Circle wire carries (DC-8).
+#   bon              — `PrepareBurnIntentInput` has eleven fields, five of them optional, and a
+#                      positional constructor for it would be a line of eleven arguments where
+#                      swapping `remoteDepositor` and `finalDestinationRecipient` still compiles.
+#                      The builder makes each field named and each required one compile-time-checked
+#                      (use-bon-builder).
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+reqwest = { workspace = true }
+hex = { workspace = true }
+bon = { workspace = true }
+# k256 is a LIBRARY dependency here, and the difference from the relayer is deliberate. The relayer
+# keeps k256 DEV-only because it never verifies a signature off-chain — the attestation is verified
+# ON-CHAIN by the faucet. This service is the mirror image: the burn attester's off-chain secp256k1
+# ECDSA signature over Circle's `messageHashToSign` IS the product (INV-OFFCHAIN-BURN-SIGNING, DC-11;
+# Circle's own verification is on the source chain), so the signing core is library code. Its call
+# site arrives with the signing slice (T-LA-08); the POSTURE is fixed now — and guarded by
+# tests/crate_posture.rs — so that slice cannot quietly ship it as a dev dependency.
+k256 = { workspace = true }
+# `AccountId` (the faucet id in config, and the `metadata.sender → remoteDepositor` encoding's input)
+# and `AssetAmount` (the burn payload's amount) are NAMED in this crate's public API, at the same
+# crates.io pin the rest of the workspace resolves the protocol family at (MIGRATION-V16-ALPHA2.md).
+#
+# `miden-client` is deliberately ABSENT: it has no v0.16 release, so every real Miden read (the
+# SyncNotes tag scan, GetNotesById retrieval, the evidence reads) is PARKED to a later slice. This
+# slice needs none of them — it is serde wire types, JSON fixtures, and config.
+miden-protocol = { version = "=0.16.0-alpha.2" }
+
+[dev-dependencies]
+# Exact-variant assertions + parameterized reject tables; versions from the workspace table.
+rstest = { workspace = true }
+assert_matches = { workspace = true }
+# Declared now, consumed from W6 (the Circle drivers). The relayer proved the pattern this crate's
+# `HttpTransport` seam is shaped for: a schema-exact mock Circle server routed by axum and driven IN
+# PROCESS through tower's `ServiceExt::oneshot`, installed as the client's transport. It binds NO
+# socket, because the audit/CI sandbox denies `bind(127.0.0.1:0)` (EPERM) — a loopback-server mock
+# could not run in a gate that has to be green in every environment. `rand` seeds the deterministic
+# attester keypairs the signing slice (T-LA-08) signs its vectors with. None of the three has a call
+# site in THIS slice, which builds no driver and makes no call; they are pinned here so W6 inherits
+# the settled stack rather than re-litigating it (and wiremock/httpmock/mockito are absent from the
+# pinned offline cache besides — declaring one would break the offline gate outright).
+axum = { workspace = true }
+tower = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

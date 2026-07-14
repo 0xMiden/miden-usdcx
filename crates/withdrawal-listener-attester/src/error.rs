@@ -14,6 +14,8 @@
 use core::fmt;
 use std::sync::Arc;
 
+use xusdc_encoding::xreserve::encoding::EncodingError;
+
 /// A preserved lower-level cause whose own type is neither `Clone` nor `PartialEq` (a
 /// `reqwest::Error`, a header/URL parse error). Wrapping it keeps [`ListenerError`]'s `Clone` +
 /// `PartialEq` contract intact while still handing the ORIGINAL typed error to
@@ -136,6 +138,76 @@ impl core::error::Error for ListenerError {
             Self::InsecureAuthTransport { .. }
             | Self::AuthHeaderNameRequired
             | Self::ResponseTooLarge { .. } => None,
+        }
+    }
+}
+
+/// Everything [`note_decode`](crate::note_decode) can refuse to decode — the `DecodeError` §10.2
+/// names. Kept a type of its own rather than a [`ListenerError`] family: a decode failure is a
+/// statement about ONE note's bytes, and the caller's response to it (skip the note, alert) is not
+/// the response to a Circle transport failure.
+///
+/// Every variant is a REFUSAL. There is no lossy/partial success here by construction: a burn note
+/// whose payload or sender does not decode yields no [`BurnPayload`](crate::types::BurnPayload) and
+/// no depositor — never a zero-filled or otherwise fabricated one, which would hand Circle a
+/// `remoteDepositor` no Miden account ever authorized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DecodeError {
+    /// The `NoteStorage.items` felts are not a `DC-7` burn payload — a felt count other than
+    /// `BURN_NOTE_ITEMS_FELTS = 18`, an out-of-range `amount`/`destDomain`, or a non-`u32` bytes32
+    /// limb.
+    ///
+    /// The unit-04 codec is the sole judge of that, and its verdict is carried here UNFLATTENED:
+    /// the exact [`EncodingError`] it returned is the preserved source (`preserve-error-source`),
+    /// so a caller that wants the codec's own answer can ask for it instead of parsing a string.
+    BurnItemsMalformed { source: EncodingError },
+
+    /// The discovered note carries no metadata at all, so there is no `metadata.sender` to read —
+    /// what a PRIVATE or erased note looks like from `GetNotesById` (`details = None`,
+    /// `INV-PUBLIC-BURN-OBSERVABILITY`). Such a note is unacceptable for Circle observability, and
+    /// it is refused rather than defaulted.
+    SenderAbsent,
+
+    /// The reported `metadata.sender` is the zero felt pair. No account has the zero id; a node (or
+    /// a bug) reporting one is reporting nothing, and the ONE thing that must not happen next is
+    /// its silent promotion into a zero `remoteDepositor` (`INV-BURN-SENDER-PRIVACY-LEAK` names the
+    /// sender as the exposed depositor — a zero there would be a burn attributed to nobody).
+    SenderZero,
+
+    /// The reported `metadata.sender` felts are not a canonical [`AccountId`](miden_protocol::account::AccountId)
+    /// (an unknown id version, an out-of-field felt, a violated id constraint). The underlying
+    /// `AccountIdError` is preserved as the source.
+    SenderMalformed { source: Cause },
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BurnItemsMalformed { source } => {
+                write!(f, "burn note storage items are malformed: {source}")
+            }
+            Self::SenderAbsent => write!(
+                f,
+                "the discovered burn note carries no metadata, so it has no sender to read"
+            ),
+            Self::SenderZero => write!(f, "the burn note sender is the zero account id"),
+            Self::SenderMalformed { source } => {
+                write!(
+                    f,
+                    "the burn note sender is not a valid account id: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl core::error::Error for DecodeError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::BurnItemsMalformed { source } => Some(source),
+            Self::SenderMalformed { source } => Some(source.as_error()),
+            Self::SenderAbsent | Self::SenderZero => None,
         }
     }
 }

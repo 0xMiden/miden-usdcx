@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/xusdc-encoding", "crates/xreserve-deposit-relayer"]
+members = [
+  "crates/xusdc-encoding",
+  "crates/xreserve-deposit-relayer",
+  "crates/withdrawal-listener-attester",
+]
 # PARKED (v16 migration, MIGRATION-V16-ALPHA2.md R1): `crates/xusdc-validation` consumes
 # `miden-client`, which has no v0.16 release yet. The exclude keeps cargo invocations inside the
 # parked directory from claiming workspace membership ("believes it's in a workspace"). The crate
@@ -29,6 +33,14 @@ assert_matches = "1.5"
 # onto different versions (workspace-shared-dependencies).
 hex = "0.4"
 k256 = { version = "0.13", features = ["ecdsa"] }
+# Generated builders (use-bon-builder). The withdrawal listener's Circle request types are the first
+# adopter: `PrepareBurnIntentInput` carries eleven fields, five of them optional, and a positional
+# constructor for it would be a line of eleven arguments in which swapping `remoteDepositor` and
+# `finalDestinationRecipient` — two same-typed 32-byte hex strings with opposite meanings — still
+# compiles. The generated builder makes every field named and every required one compile-time
+# checked. Pinned here rather than in the crate because the later off-chain services build the same
+# wide Circle request shapes and must not drift onto a different builder.
+bon = "3"
 sha3 = "0.10"
 rand = "0.8"
 

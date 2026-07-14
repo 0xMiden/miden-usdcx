@@ -4507,6 +4507,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
+name = "withdrawal-listener-attester"
+version = "0.0.0"
+dependencies = [
+ "assert_matches",
+ "axum",
+ "bon",
+ "hex",
+ "k256 0.13.4",
+ "miden-protocol",
+ "rand 0.8.7",
+ "reqwest",
+ "rstest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "xusdc-encoding",
+]
+
+[[package]]
 name = "wnaf"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

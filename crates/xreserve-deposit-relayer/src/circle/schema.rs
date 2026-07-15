@@ -212,7 +212,7 @@ impl ValidatedAttestationByTxHash {
 }
 
 /// One page of the batch (`CMP-D4`) poll: its validated attestations. The cursors live in
-/// [`PageCursors`], parsed from the `Link` header, because that is where Circle puts them.
+/// [`PageCursors`](super::pagination::PageCursors), parsed from the `Link` header, because that is where Circle puts them.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AttestationPage {
     attestations: Vec<ValidatedAttestation>,

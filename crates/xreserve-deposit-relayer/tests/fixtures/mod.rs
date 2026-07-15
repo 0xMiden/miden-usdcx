@@ -139,8 +139,9 @@ impl PartnerAttester {
         }
     }
 
-    /// The 33-byte compressed SEC1 public key — the wire form the allowlist commitment is taken
-    /// over, and the form `set_attester` is called with.
+    /// The 33-byte compressed SEC1 public key — the wire form the allowlist commitment is derived
+    /// from (decompressed to 16 affine felts before hashing since v16, vm#3342), and the form
+    /// `set_attester` is called with.
     pub fn pubkey(&self) -> [u8; 33] {
         self.signing_key
             .verifying_key()

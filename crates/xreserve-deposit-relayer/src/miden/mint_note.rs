@@ -10,8 +10,9 @@
 //! **Why the pubkey is a parameter and the signature is not.** Circle's attestation object carries
 //! three fields: `payload`, `messageHash`, `attestation` (the 65-byte `r‖s‖v`). It does NOT carry
 //! the attester's public key. But the faucet's D5d verify needs the candidate pubkey in the note, so
-//! the 33-byte compressed key comes from the relayer's own configuration — it is the key the
-//! operator was told the faucet's `xReserveAttesters` allowlist is keyed by. The payload and the
+//! the 33-byte compressed key comes from the relayer's own configuration — it is the key whose
+//! DC-3 commitment (Poseidon2 over the 16 affine felts it decompresses to, v16 vm#3342) the
+//! operator was told is enabled in the faucet's `xReserveAttesters` allowlist. The payload and the
 //! signature, in contrast, are Circle's, and they come through the validated boundary and nowhere
 //! else: there is no public entry point here that accepts them as raw bytes (a note built from bytes
 //! whose `messageHash == keccak256(payload)` binding was never checked is a transaction spent on an
@@ -34,7 +35,9 @@ use xusdc_encoding::xreserve::encoding::affine_pubkey_felts;
 use crate::circle::schema::ValidatedAttestation;
 use crate::error::{Cause, HexField, RelayerError};
 
-/// The 33-byte compressed SEC1 length — the ONLY attester-key form the allowlist is keyed by.
+/// The 33-byte compressed SEC1 length — the ONLY attester-key form the relayer handles (the
+/// allowlist itself is keyed by the DC-3 Poseidon2 commitment over the affine coordinates this
+/// key decompresses to — 16 felts since v16, vm#3342).
 const COMPRESSED_PUBKEY_LEN: usize = 33;
 
 /// The attester public key the relayer is configured with: 33 compressed SEC1 bytes that ARE a
@@ -75,7 +78,8 @@ impl AttesterPubkey {
     /// # Errors
     /// * [`RelayerError::MalformedHex`] — not hex ([`HexField::AttesterPubkey`]).
     /// * [`RelayerError::BadAttesterPubkeyLength`] — not 33 bytes (an uncompressed 65-byte key lands
-    ///   here: it is a different encoding of the point, and not the one the allowlist is keyed by).
+    ///   here: it is a different encoding of the point, and not the form the allowlist commitment
+    ///   (DC-3) is derived from).
     /// * [`RelayerError::InvalidAttesterPubkey`] — 33 bytes that are not a curve point.
     pub fn from_hex(hex: &str) -> Result<Self, RelayerError> {
         let bytes = hex::decode(hex.strip_prefix("0x").unwrap_or(hex)).map_err(|source| {

@@ -117,6 +117,17 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
 - **Pause**: `pause`/`unpause` are gated on the `DOM_PAUSER` role (not the owner) — Circle's
   distinct-pauser-role model. A pause halts both mint and burn-consume.
 - **Roles**: role-based access control with a `DOM_MANAGER` role that administers `DOM_PAUSER`.
+  Since v16 (protocol #3215) the stock RBAC gates `grant_role`/`revoke_role`/`set_role_admin` on
+  the managed role's *effective admin* — its delegated admin role, else the built-in `ADMIN`,
+  which the builder seeds to the owner's account — so membership rotation runs owner (`ADMIN`) →
+  `DOM_MANAGER` → `DOM_PAUSER`. (`ADMIN` membership is account-bound: it does not auto-follow an
+  ownership transfer — the ratified rotation runbook re-seats it via grant/revoke; see
+  `IMPL-DEV-23`.) The delegation graph itself is **build-seeded and frozen**: the
+  runtime `set_role_admin` note was removed from the note-script allowlist (S21 disposition flip,
+  human-ratified 2026-07-14), so no on-chain sender can re-point or clear any role's admin. The
+  stock `rbac::set_role_admin` procedure remains composed but is present-but-unreachable
+  (`tests/account_callable_surface.rs`), and role rotation is `grant_role`/`revoke_role` only —
+  matching Circle's fixed `DomainManageable.sol` admin graph (see `IMPL-DEV-24` in the glossary).
 - **Domain config** (`domain_init`, `R-ADMIN-4`): a single init-once write of four fields —
   `domain` and `identifier` (read by the mint's `D5a` compare) plus `source_domain` and
   `xreserve_contract` (deploy-time identity, read off-chain). The `identifier` slot doubles as

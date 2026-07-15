@@ -29,7 +29,7 @@ definitions). In summary:
 |---|---|
 | DC-1 | **DepositIntent** — a fixed 240-byte big-endian header + variable `hookData`; on-chain it is 60 u32-LE-packed felts (4 wire bytes per felt). Field offsets are in `layout.masm` / `deposit_intent.rs`. |
 | DC-2 | **depositAttestation** — the raw 65-byte `r‖s‖v` secp256k1 signature over `keccak256(payload)` (not EIP-712). |
-| DC-3 | **Attester commitment** — `Poseidon2(33-byte compressed pubkey)` → one Word, used as the `xReserveAttesters` allowlist key. |
+| DC-3 | **Attester commitment** — `Poseidon2(affine pubkey, 16 u32-LE felts: qx_le_u32[8] ‖ qy_le_u32[8])` → one Word, used as the `xReserveAttesters` allowlist key. The Circle-facing ingress form stays the 33-byte compressed SEC1 pubkey; this crate owns the SEC1→affine decompression (v16 supersession, vm#3342 — the v15 preimage was the 33 compressed bytes as 9 felts). |
 | DC-4 | **Nonce keying** — the DepositIntent `nonce` (bytes32) → Poseidon2 hash-to-Word → storage-map key. |
 | DC-5 | **amount/fee reduction** — a uint256 → `AssetAmount`: byte-swap to numeric order, assert the high half is zero, floor-divide by `10^scale_exp`, and reject if the quotient exceeds `AssetAmount::MAX`. It traps; it never saturates. |
 | DC-6 | **AccountId ↔ bytes32** — the right-aligned layout (16 zero bytes ‖ prefix u64 BE ‖ suffix u64 BE); lossless, fail-closed decode. See `DEV-10` (OPEN). |
@@ -40,7 +40,7 @@ definitions). In summary:
 | Routine | Contract |
 |---|---|
 | `bytes32_to_key` (MASM) / `bytes32_to_storage_map_key` (Rust) | Poseidon2 `hash_elements` over the 8 u32-LE limbs of a bytes32 → one canonical Word. The raw fallible `TryFrom<[u8;32]>` is **not** used on this path (`NS-1`, `DC-4`, `INV-BYTES32-HASH-TO-WORD`). |
-| `pubkey_commitment` | Poseidon2 over the 9 u32-LE limbs of a 33-byte compressed pubkey → the allowlist commitment Word (`DC-3`; note the sponge capacity domain tag `9 % 8 = 1`, so this is not `hmerge`). |
+| `pubkey_commitment` | Poseidon2 over the 16 u32-LE affine-coordinate limbs of the pubkey → the allowlist commitment Word (`DC-3`; sponge capacity domain tag `16 % 8 = 0`), identical to miden-crypto 0.28 `PublicKey::to_commitment`. The Rust side takes the 33-byte compressed wire key and decompresses to affine internally; the MASM side hashes the 16 already-staged felts. |
 | `uint256_to_asset_amount` | The `DC-5` reduction (`INV-UINT256-TO-ASSETAMOUNT`). `scale_exp` is bounded to `0..=18`. |
 | `parse_deposit_intent` | Structural DepositIntent validation (magic, version, non-zero `amount`/`localToken`/`localDepositor`, the length relation) and the returned compare fields. The faucet adds the domain/identifier compares (`NS-2`, `INV-DEPOSITINTENT-PARSE`). |
 | AccountId ↔ bytes32 (`account_id.rs`) | The `DC-6` lossless encode/decode with a fail-closed inverse. |

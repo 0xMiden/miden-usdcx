@@ -161,9 +161,11 @@ could `call`, or a lost one the faucet relied on) and it MUST be:
    silently inherited.
 2. SURFACED for ratification in ITS OWN map row (never folded into another root's ratification)
    and, for shipped deviations, the GLOSSARY IMPL-DEV register. Each v16 surface addition took
-   this path under a SEPARATE row: `freeze`/`unfreeze` → **S12** (GLOSSARY IMPL-DEV-21);
+   this path under a SEPARATE row: `freeze`/`unfreeze` → **S12** (GLOSSARY IMPL-DEV-21
+   [renumbered → IMPL-DEV-25 by the CDR-3 register reconciliation, 2026-07-14]);
    `has_procedure` → **S13**; `get_authority` + `invoke_send_policy` + `invoke_receive_policy` →
-   **S24** (GLOSSARY IMPL-DEV-22). The three S24 roots were NOT ratified under S12 — attributing
+   **S24** (GLOSSARY IMPL-DEV-22 [renumbered → IMPL-DEV-26, same reconciliation]). The three S24
+   roots were NOT ratified under S12 — attributing
    them to S12 would be the exact self-sanctioning this discipline forbids.
 3. NEVER waved through under STOP-condition-5's "mechanical" reading. STOP-condition 5 is tightened
    accordingly (§10): a stock callable-surface change is itself a STOP-and-surface trigger.
@@ -284,6 +286,18 @@ per the task rules).
   non-ADMIN owner-lookalike cannot administer (the new error constant asserted exactly).
 
 ### S21 — #3215 CONSEQUENCE FOUND DURING PHASE 3: `set_role_admin` is gated on the ROLE's effective admin — **HUMAN-RATIFIED 2026-07-13** (operator, via the approval bridge)
+
+> **[SUPERSEDED 2026-07-14 → S21 DISPOSITION FLIP (see top amendment).]** The
+> Phase-3 conclusion in this section — that the manager's new `set_role_admin`
+> power is "UPSTREAM-FORCED" and that "the only way to eliminate it is to DROP
+> the CMP-F5 delegation" — was FALSE. The `DOM_PAUSER.admin_role = DOM_MANAGER`
+> delegation is BUILD-SEEDED (`seeded_dom_roles_rbac`), so removing the runtime
+> `set_role_admin` NOTE from the note-script allowlist eliminates the on-chain
+> re-pointing power WITHOUT touching the seed or CIR-ADMIN-3 rotation
+> (`grant_role`/`revoke_role`). That is exactly what was done (12-root allowlist,
+> human-ratified 2026-07-14, two adversarial Circle-conformance audits, NO
+> REFUTATION). Read the analysis below as historical Phase-3 context only; the
+> binding record is `GLOSSARY IMPL-DEV-24` + `DECISION-SETROLEADMIN-NOTE-REMOVAL.md`.
 
 - Source-verified (alpha.2 `standards/access/rbac.masm:196-210` + `assert_sender_is_role_admin`
   :453 + `get_effective_role_admin` :427-438): `set_role_admin(role, new_admin)` gates on the
@@ -485,7 +499,8 @@ per the task rules).
   account-self-freeze (NOT holder/on-token control) is a secondary comfort. No F4 contradiction,
   no Circle no-freeze conflict. EXCLUDE was NOT chosen (would need an upstream/custom `Authority`,
   out of migration scope, and buys nothing over unreachable-inert). Recorded as GLOSSARY
-  **IMPL-DEV-21** (the CDR mirror). Circle disclosure folds into the already-open
+  **IMPL-DEV-21** [renumbered → **IMPL-DEV-25** by the CDR-3 register reconciliation, 2026-07-14]
+  (the CDR mirror). Circle disclosure folds into the already-open
   `Q-ADMIN-RBAC-EQUIV` — an FYI, not a gate.
 - Source-verified: alpha.2 `authority.masm` exports `freeze` (:124) and `unfreeze` (:142) as
   account procedures (v15 exported ONLY `assert_authorized`); under `OwnerControlled` both are
@@ -713,7 +728,8 @@ per the task rules).
     the "skips pause" behavior is CONSISTENT with F4 — transfers are unpoliced by design.
   - EXCLUDE was NOT chosen (would need an upstream/custom `Authority`/`TokenPolicyManager`, out
     of migration scope, and buys nothing over inert-unreachable).
-- **RECORDED** like S12/`renounce_role`: GLOSSARY **IMPL-DEV-22** (the CDR mirror). Circle
+- **RECORDED** like S12/`renounce_role`: GLOSSARY **IMPL-DEV-22** [renumbered → **IMPL-DEV-26**
+  by the CDR-3 register reconciliation, 2026-07-14] (the CDR mirror). Circle
   disclosure folds into the register (stock bundles them; we ship inert/unreachable, no
   on-token/holder control) — an FYI, not a gate.
 - **PIN + CONFIRMATION (`tests/account_callable_surface.rs`):** all three roots are part of the

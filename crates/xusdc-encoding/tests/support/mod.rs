@@ -208,8 +208,8 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
     ),
     // CMP-B1 mint-note-entry transport-shape guards (xreserve_mint_note_entry.masm): the
     // note-storage header-length floor, the scheme-1 attestation + scheme-2 routing-target presence,
-    // the exactly-two-attachment count (F5), and the 9-word size assert on the
-    // hash-verified attestation attachment.
+    // the exactly-two-attachment count (F5), and the 11-word size assert on the
+    // hash-verified attestation attachment (9 words at v15; grew with the 16-felt affine pubkey, S16).
     (
         "ERR_XRESERVE_MINT_NOTE_STORAGE_TOO_SHORT",
         MasmError::from_static_str("mint note storage is shorter than the deposit intent header"),

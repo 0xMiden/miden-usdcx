@@ -420,12 +420,17 @@ impl XReserveStablecoinBuilder {
     /// `renounce_role` (Circle has no role self-renounce) and — since the S21 disposition flip,
     /// 2026-07-14 — the runtime `set_role_admin` note (Circle's `DomainManageable.sol` has no
     /// function to change who administers a role; the delegation graph is BUILD-SEEDED by
-    /// [`seeded_dom_roles_rbac`] and deploys frozen; rotation is `grant_role`/`revoke_role`,
+    /// `seeded_dom_roles_rbac` (crate-private) and deploys frozen; rotation is `grant_role`/`revoke_role`,
     /// CIR-ADMIN-3 — see `DECISION-SETROLEADMIN-NOTE-REMOVAL.md`). The stock `rbac::set_role_admin`
     /// account procedure stays composed but is present-but-UNREACHABLE (enforced by
     /// `tests/account_callable_surface.rs`). The materialized 12 pinned roots still require explicit
     /// HUMAN ratification before deploy.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
+        // The "row N" labels below are the notes' STABLE allowlist identities (1-12, shared with
+        // `note::xreserve_admin` and the tests), NOT positions in this initializer: the entries
+        // are listed in historical insertion order, and the set is unordered anyway (BTreeSet
+        // sorts by root). Renumbered 13→12 at the S21 flip, when the set_role_admin row was
+        // removed (formerly row 10; transfer/accept/domain_init shifted down by one).
         BTreeSet::from([
             // rows 1-2: the supply-side notes. The mint-note shim asserts exactly one scheme-1
             // attestation + one scheme-2 routing target (eq.2, dynamic commitment) — F5.

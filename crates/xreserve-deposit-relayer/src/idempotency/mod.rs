@@ -81,10 +81,10 @@
 //!
 //! # Layout
 //!
-//! [`clock`] the time source (injectable, so a test can assert an exact `timestamp`); [`record`] the
-//! value types and the status machine; [`store`] the SQLite store, the claim, and the transitions;
-//! [`cursor`] the per-domain resume point; [`recovery`] the two liveness paths (the stale-claim
-//! reclaim and the retry work list); [`rows`] the row↔record codec that refuses a row it cannot read.
+//! `clock` the time source (injectable, so a test can assert an exact `timestamp`); `record` the
+//! value types and the status machine; `store` the SQLite store, the claim, and the transitions;
+//! `cursor` the per-domain resume point; `recovery` the two liveness paths (the stale-claim
+//! reclaim and the retry work list); `rows` the row↔record codec that refuses a row it cannot read.
 
 mod clock;
 mod cursor;

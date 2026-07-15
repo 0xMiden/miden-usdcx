@@ -144,7 +144,8 @@ pub struct PackedField {
 }
 
 /// Attestation (ATT) vectors. One independent secp256k1 keypair each:
-/// the 33-byte compressed pubkey (→ 9 felts) and its `PublicKey::to_commitment` Word, the
+/// the 33-byte compressed pubkey (decompressed → 16 affine felts, vm#3342) and its
+/// `PublicKey::to_commitment` Word, the
 /// 32-byte keccak digest over a full DepositIntent payload (→ 8 felts), and the 65-byte
 /// `r‖s‖v` signature (→ 17 felts; `v` carried in felt 16, unused on-chain).
 #[derive(Debug, Deserialize)]

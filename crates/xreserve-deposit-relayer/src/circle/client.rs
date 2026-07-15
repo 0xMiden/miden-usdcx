@@ -12,7 +12,7 @@
 //!    after the key has already been sent. A plaintext base URL with NO credential is fine: the
 //!    documented API declares no auth at all, and the relayer does not invent a TLS requirement it
 //!    does not have; it protects the key it was given.
-//! 2. **No redirect is ever followed** (see [`build_http_client`]), so there is no code path on which
+//! 2. **No redirect is ever followed** (see the crate-private `build_http_client`), so there is no code path on which
 //!    the key is re-sent to an origin the peer chose.
 
 use std::fmt;

@@ -127,7 +127,7 @@ pub enum RelayerError {
     PreimageTooLarge(EncodingError),
     /// An encoding-layer error the DepositIntent path does not map to a specific field. Defensive
     /// catch-all; unit-04's DepositIntent parser/packer only emit the mapped variants above, so in
-    /// practice this is never constructed by [`Self::from_deposit_intent`].
+    /// practice this is never constructed by the crate-private `Self::from_deposit_intent`.
     DepositIntentCodec(EncodingError),
 
     // ATTESTATION-ENVELOPE FAMILY (DC-2; INV-DEPOSIT-ATTESTATION-RAW-KECCAK)
@@ -313,10 +313,11 @@ pub enum RelayerError {
     /// `NoteError` is PRESERVED as the source (and unit-04's `EncodingError` under it), so an
     /// operator reads WHICH rule the payload broke, not "note build failed".
     MintNoteBuild(Cause),
-    /// The operator-configured attester pubkey is not 33 bytes. The allowlist the faucet checks
-    /// against is keyed by the COMPRESSED SEC1 key (33 bytes) — an uncompressed 65-byte key, or a
-    /// truncated one, is not that key, and is refused where it is configured rather than at the
-    /// first mint.
+    /// The operator-configured attester pubkey is not 33 bytes. The attester identity the faucet
+    /// checks is derived from the COMPRESSED SEC1 key (33 bytes; the `xReserveAttesters` key is the
+    /// DC-3 Poseidon2 commitment over the affine coordinates it decompresses to) — an uncompressed
+    /// 65-byte key, or a truncated one, is not that key, and is refused where it is configured
+    /// rather than at the first mint.
     BadAttesterPubkeyLength { actual: usize },
     /// The operator-configured attester pubkey is 33 bytes that do not decode to a secp256k1 point
     /// (unit-04's SEC1 decompression is the judge — the same primitive that packs the affine felts

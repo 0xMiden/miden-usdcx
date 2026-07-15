@@ -4,9 +4,13 @@
 //!
 //! The delegation is a BUILD-TIME SEED: the production builder writes
 //! `role_config[DOM_PAUSER] = [member_count=1, admin_role=DOM_MANAGER, 0, 0]` — byte-identical to the
-//! post-state of an owner-sent stock `set_role_admin(DOM_PAUSER, DOM_MANAGER)` (rbac.masm:314-333).
-//! `DOM_MANAGER.admin_role` stays 0 (owner-administered — Circle keeps rotation of the Manager itself
-//! under the owner). All role-administration procs are the STOCK rbac procs the account already
+//! post-state of a stock `set_role_admin(DOM_PAUSER, DOM_MANAGER)` (alpha.2 rbac.masm:196-211).
+//! `DOM_MANAGER.admin_role` stays 0 (owner-administered via the seeded `ADMIN` role — Circle keeps
+//! rotation of the Manager itself under the owner), and since the S21 disposition flip
+//! (human-ratified 2026-07-14) the whole delegation graph deploys FROZEN at this seed: the runtime
+//! `set_role_admin` note is removed from the allowlist, so no on-chain sender can re-point or clear
+//! any role's admin (GLOSSARY IMPL-DEV-24; enforced by `account_callable_surface.rs`). All
+//! role-administration procs are the STOCK rbac procs the account already
 //! exposes (account_components/access/rbac.masm re-exports); it ships ZERO custom MASM.
 //!
 //! The load-bearing proof is the ROTATION CAPABILITY SEAM, never a config read-back alone:
@@ -17,7 +21,14 @@
 //! implicit super-admin standing) it runs through the built-in `ADMIN` role the builder seeds on the
 //! owner's account: owner (ADMIN) administers DOM_MANAGER, DOM_MANAGER administers DOM_PAUSER
 //! (MIGRATION-V16-ALPHA2.md S2/S21). It is still asserted as a POSITIVE ending in REAL pause power
-//! gained/lost, never a config read-back, and never stripped.
+//! gained/lost, never a config read-back. Since the S21 flip the backstop cannot be stripped
+//! on-chain: stock delegation is EXCLUSIVE (alpha.2 rbac.masm:20-22), but with the `set_role_admin`
+//! note removed the delegation configuration is immutable post-deploy, so `ADMIN`'s authority over
+//! `DOM_MANAGER` (and `DOM_MANAGER`'s over `DOM_PAUSER`) is structurally fixed at the seed. The
+//! HOLDER side is account-bound (S2, operator-approved): `ADMIN` membership sits on the owner
+//! ACCOUNT and does NOT auto-follow `transfer_ownership`/`accept_ownership` — the rotation
+//! runbook re-seats it (grant-new BEFORE revoke-old, so there is no zero-ADMIN window); until
+//! then a post-transfer owner lacks RBAC administration (builder.rs KNOWN DIVERGENCE).
 //!
 //! FIXTURE RULE (shipped-build provenance): every test here runs on a PRODUCTION-composed account —
 //! `setup_guarded_mint_account(GuardSelection::ProductionDeny, ...)` = the real
@@ -521,7 +532,7 @@ async fn shipped_delegation_reads_back() -> Result<()> {
     assert_eq!(
         read_role_config(&account, &manager_sym())?,
         Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
-        "DOM_MANAGER stays owner-administered: [member_count=1, admin_role=0, 0, 0]"
+        "DOM_MANAGER stays ADMIN-administered (the seeded owner account's account-bound membership): [member_count=1, admin_role=0, 0, 0]"
     );
 
     assert_eq!(
@@ -541,10 +552,11 @@ async fn shipped_delegation_reads_back() -> Result<()> {
 // ================================================================================================
 
 /// The Circle owner BACKSTOP as a POSITIVE, in its v16 shape (S2, operator-approved): the owner
-/// holds the stock `ADMIN` role, which is DOM_MANAGER's effective admin (#3215 removed the
-/// implicit owner super-admin; `admin_role = 0` now resolves to `ADMIN`, rbac.masm:427-438). The
-/// owner therefore rotates the MANAGER, and the manager rotates the PAUSER — the same ultimate
-/// authority, one hop longer. Capability-level: the chain ends in a REAL pause by an
+/// ACCOUNT holds the stock `ADMIN` role (an account-bound membership — it does not auto-follow an
+/// ownership transfer; runbook re-seat, S2), which is DOM_MANAGER's effective admin (#3215 removed
+/// the implicit owner super-admin; `admin_role = 0` now resolves to `ADMIN`, rbac.masm:427-438).
+/// The ADMIN-holding owner therefore rotates the MANAGER, and the manager rotates the PAUSER —
+/// the same ultimate authority, one hop longer. Capability-level: the chain ends in a REAL pause by an
 /// owner-rooted member (`is_paused` flips), not a config read-back.
 #[tokio::test]
 async fn owner_can_still_grant_pauser() -> Result<()> {
@@ -594,8 +606,9 @@ async fn owner_can_still_grant_pauser() -> Result<()> {
 /// ending (as it must) in a REAL loss of pause authority by an EXISTING pauser: the owner (ADMIN
 /// member) grants itself DOM_MANAGER — DOM_PAUSER's effective admin, #3215/S21 — then, so
 /// empowered, REVOKES DOM_PAUSER from the seeded pauser id(2); that pauser's pause is then
-/// REJECTED with the exact role error and `is_paused` never flips. The owner therefore retains
-/// Circle's backstop ability to strip a live pauser, one hop longer than at v15.
+/// REJECTED with the exact role error and `is_paused` never flips. The (seeded-ADMIN-member)
+/// owner therefore retains Circle's backstop ability to strip a live pauser, one hop longer than
+/// at v15 (account-bound across ownership transfer — S2 runbook re-seat).
 #[tokio::test]
 async fn owner_can_still_revoke_pauser() -> Result<()> {
     let gm = production_faucet()?;
@@ -835,9 +848,10 @@ async fn set_role_admin_stranger_rejects() -> Result<()> {
     assert_set_role_admin_rejected(stranger(), 50).await
 }
 
-/// SEPARATION: `DOM_MANAGER.admin_role` stays 0 (owner-administered), so a DOM_MANAGER holder cannot
-/// administer DOM_MANAGER itself — self-expansion of the manager set is owner territory (Circle keeps
-/// rotation of the Manager under the owner). Both ops trap the exact gate error; the seeded manager
+/// SEPARATION: `DOM_MANAGER.admin_role` stays 0 (→ ADMIN = the seeded owner account), so a
+/// DOM_MANAGER holder cannot administer DOM_MANAGER itself — self-expansion of the manager set is
+/// ADMIN territory, i.e. the seeded owner account's (Circle keeps rotation of the Manager under
+/// the owner; account-bound per S2). Both ops trap the exact gate error; the seeded manager
 /// state is untouched.
 #[tokio::test]
 async fn dom_manager_cannot_administer_dom_manager() -> Result<()> {
@@ -869,7 +883,7 @@ async fn dom_manager_cannot_administer_dom_manager() -> Result<()> {
     assert_eq!(
         read_role_config(&account, &manager_sym())?[1],
         Felt::ZERO,
-        "DOM_MANAGER.admin_role stays 0 (owner-administered)"
+        "DOM_MANAGER.admin_role stays 0 (ADMIN-administered: the seeded owner account)"
     );
     assert_eq!(
         read_role_membership(&account, &manager_sym(), dom_manager())?[0],

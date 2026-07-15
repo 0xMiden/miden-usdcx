@@ -367,3 +367,153 @@ impl fmt::Display for QuorumError {
 }
 
 impl core::error::Error for QuorumError {}
+
+/// Why [`validate_discovery`](crate::validate::validate_discovery) refused a discovered note at the
+/// **B3** checklist — the ORDERED discovery gate that runs before Circle is ever asked to prepare
+/// intents (`INV-PUBLIC-BURN-OBSERVABILITY`).
+///
+/// The order is load-bearing and reflected in the variants' priority: the tag is matched FIRST (a
+/// wrong-tag note is not this listener's note at all), THEN observability (a private note has
+/// nothing to read), and only then is the payload decoded. Every case is a REFUSAL — no partial or
+/// defaulted burn ever leaves this gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DiscoveryReject {
+    /// The note's tag is not the configured burn tag. Matched by **exact full-32-bit equality**,
+    /// never a prefix (`SyncNotes` does not prefix-scan; the 16-bit prefix belongs to
+    /// `SyncNullifiers` — anti-`ASG-3`). A note sharing only the high 16 bits is a DIFFERENT note.
+    TagMismatch { expected: u32, actual: u32 },
+
+    /// `GetNotesById` returned `details = None` — a PRIVATE or erased note, unobservable to Circle
+    /// (`INV-PUBLIC-BURN-OBSERVABILITY`). A withdrawal must be backed by a `NoteType::Public` burn;
+    /// a note Circle cannot see is refused rather than attested to.
+    PrivateNoteUnobservable,
+
+    /// The note came back public and tagged, but its `NoteStorage.items` payload or its
+    /// `metadata.sender` did not decode — the unit-04 codec's / sender read's verdict, carried
+    /// through UNFLATTENED as the preserved [`DecodeError`] (`preserve-error-source`).
+    Decode(DecodeError),
+}
+
+impl fmt::Display for DiscoveryReject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TagMismatch { expected, actual } => write!(
+                f,
+                "note tag {actual:#010x} is not the configured burn tag {expected:#010x}"
+            ),
+            Self::PrivateNoteUnobservable => write!(
+                f,
+                "the discovered burn note is private (details = none) and unobservable for circle"
+            ),
+            Self::Decode(source) => write!(f, "the discovered burn note did not decode: {source}"),
+        }
+    }
+}
+
+impl core::error::Error for DiscoveryReject {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Decode(source) => Some(source),
+            Self::TagMismatch { .. } | Self::PrivateNoteUnobservable => None,
+        }
+    }
+}
+
+/// Why the **B5** gate [`validate_returned`](crate::validate::validate_returned) refused Circle's
+/// returned data — the field-by-field mismatch that MUST abort before any attester signs
+/// (`INV-CIRCLE-CANONICAL-WITHDRAWAL`: B5 gates B6).
+///
+/// Every variant carries the batch index it fired on, so a mismatch in a LATER batch (not just
+/// `batches[0]`) is named precisely. An `Err` here is a hard "DO NOT SIGN": control never reaches
+/// the signer, and — because [`validate_returned`] mints the proof-of-validation token ONLY on a
+/// full match — no signature over mismatching data can be produced structurally, not by convention.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ValidationMismatch {
+    /// The response carried no batches at all — there is nothing to validate or sign, and an empty
+    /// prepare response is not a match of any withdrawal. Refused rather than signed vacuously.
+    NoBatches,
+
+    /// A batch carried an EMPTY `burnIntents` array — no `spec` to compare against the payload, so
+    /// its `messageHashToSign` would be bound to no amount/domain/recipient. Circle's schema requires
+    /// `burnIntents` be non-empty (`minItems: 1`); an empty list is refused here rather than allowed
+    /// to mint a signing token vacuously (the `check_spec` loop must not be skippable into `Ok`).
+    EmptyBurnIntents { batch: usize },
+
+    /// A returned `burnIntents[].spec.value` (the amount, in the smallest token unit) does not equal
+    /// the burn-note payload's `amount`.
+    Amount {
+        batch: usize,
+        expected: u64,
+        returned: String,
+    },
+
+    /// A returned `destinationDomain` does not equal the burn-note payload's `destDomain`.
+    DestinationDomain {
+        batch: usize,
+        expected: u32,
+        returned: u32,
+    },
+
+    /// A returned `destinationRecipient` does not equal the burn-note payload's `destRecipient`.
+    DestinationRecipient {
+        batch: usize,
+        expected: String,
+        returned: String,
+    },
+
+    /// The batch's `messageHashToSign` is absent/empty — there is no digest to sign. (A TRULY
+    /// missing field is refused earlier, at schema deserialization; this is the present-but-empty
+    /// case.)
+    MissingMessageHash { batch: usize },
+
+    /// The batch's `messageHashToSign` is present but not a 32-byte digest (bad hex, or the wrong
+    /// length). `attester::sign` requires exactly 32 bytes, so a non-signable digest is refused
+    /// BEFORE signing rather than handed to the signer — a reject, not a sign.
+    MalformedMessageHash { batch: usize, len: usize },
+}
+
+impl fmt::Display for ValidationMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoBatches => write!(f, "circle returned no batches to validate"),
+            Self::EmptyBurnIntents { batch } => {
+                write!(f, "batch {batch}: contains no burn intents to validate")
+            }
+            Self::Amount {
+                batch,
+                expected,
+                returned,
+            } => write!(
+                f,
+                "batch {batch}: returned amount `{returned}` does not match the burn payload amount {expected}"
+            ),
+            Self::DestinationDomain {
+                batch,
+                expected,
+                returned,
+            } => write!(
+                f,
+                "batch {batch}: returned destination domain {returned} does not match the burn payload domain {expected}"
+            ),
+            Self::DestinationRecipient {
+                batch,
+                expected,
+                returned,
+            } => write!(
+                f,
+                "batch {batch}: returned destination recipient `{returned}` does not match the burn payload recipient `{expected}`"
+            ),
+            Self::MissingMessageHash { batch } => {
+                write!(f, "batch {batch}: response is missing a message hash to sign")
+            }
+            Self::MalformedMessageHash { batch, len } => write!(
+                f,
+                "batch {batch}: message hash to sign must be exactly 32 bytes, got {len}"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for ValidationMismatch {}

@@ -19,7 +19,10 @@
 //!
 //! * **Miden reads** (the exact-tag `SyncNotes` scan, `GetNotesById` retrieval, the evidence reads) —
 //!   they need `miden-client`, which has **no v0.16 release**, so they are parked to a later slice.
-//!   The dependency is absent from the manifest entirely, not feature-gated.
+//!   The dependency is absent from the manifest entirely, not feature-gated. What a discovered note
+//!   *says* is already decodable without any of that, and [`note_decode`] does it: the `DC-7`
+//!   payload (through unit-04's codec) and the `metadata.sender` read. Its tests are therefore
+//!   NON-GATING — the GATING `T-LA-01`/`T-LA-04` local-node runs are parked with the discovery leg.
 //! * **The Circle drivers** (`prepare` / `withdraw` / status poll) — W6, against the seam above.
 //! * **Signing and quorum assembly** — the off-chain `k256` ECDSA over Circle's `messageHashToSign`
 //!   (`INV-OFFCHAIN-BURN-SIGNING`, `DC-11`). `k256` is a LIBRARY dependency here, unlike in the
@@ -51,6 +54,7 @@
 pub mod circle;
 pub mod config;
 pub mod error;
+pub mod note_decode;
 pub mod types;
 
-pub use error::ListenerError;
+pub use error::{DecodeError, ListenerError};

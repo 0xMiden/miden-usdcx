@@ -13,8 +13,10 @@ use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
 /// wire format drifts, and this one decides how much USDC a user gets back. Consumers pin the shared
 /// shape by reference (single-owner rule); the alias exists only so the spec's name resolves.
 ///
-/// The decode itself (`note_decode.rs`) lands with the Miden-facing slice — it needs a note, and
-/// notes need a client.
+/// The decode itself is [`note_decode::decode_burn_payload`](crate::note_decode::decode_burn_payload),
+/// which is that same codec called by reference. What still waits on a client is only the
+/// DISCOVERY of the note whose felts it decodes (the exact-tag scan and the retrieval — PARKED to
+/// the `miden-client` slice).
 pub type BurnPayload = XReserveBurnItems;
 
 /// How strongly a piece of burn evidence is proven — reproduced from the evidence table (§10.7),

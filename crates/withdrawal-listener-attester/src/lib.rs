@@ -25,6 +25,16 @@
 //!   NON-GATING — the GATING `T-LA-01`/`T-LA-04` local-node runs are parked with the discovery leg.
 //! * **The Circle drivers** (`prepare` / `withdraw` / status poll) — W6, against the seam above.
 //!
+//! # What this slice ADDS (W5)
+//!
+//! The PURE request builders, [`withdrawal_api`]: [`withdrawal_api::build_prepare_request`] (the
+//! `DC-9` `PrepareWithdrawalRequest` the partner authors — `remoteDepositor` from the burn note's
+//! `metadata.sender` through unit-04's `DC-6` codec, `sourceDepositor` structurally absent,
+//! `INV-REMOTEDEPOSITOR-VS-SOURCEDEPOSITOR`) and [`withdrawal_api::build_withdraw_request`] (the
+//! `POST /v1/withdraw` `{ batches: [..] }` wrapper, `1..=5`). Both build ONLY the API JSON — never
+//! the binary `TransferSpec`/`BurnIntent`, which Circle encodes server-side. The Circle HTTP drivers
+//! that carry these (`prepare` / `withdraw` / status poll) are W6.
+//!
 //! # What this slice ADDS (W4)
 //!
 //! The PURE validation gate, [`validate`]: the ordered **B3** discovery checklist
@@ -76,6 +86,7 @@ pub mod error;
 pub mod note_decode;
 pub mod types;
 pub mod validate;
+pub mod withdrawal_api;
 
 pub use error::{
     DecodeError, DiscoveryReject, ListenerError, QuorumError, SignError, SignatureError,

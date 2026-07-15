@@ -24,7 +24,16 @@
 //!   payload (through unit-04's codec) and the `metadata.sender` read. Its tests are therefore
 //!   NON-GATING — the GATING `T-LA-01`/`T-LA-04` local-node runs are parked with the discovery leg.
 //! * **The Circle drivers** (`prepare` / `withdraw` / status poll) — W6, against the seam above.
-//! * **The B3/B5 validation checklists** and the "DO NOT SIGN" abort — `validate.rs`.
+//!
+//! # What this slice ADDS (W4)
+//!
+//! The PURE validation gate, [`validate`]: the ordered **B3** discovery checklist
+//! ([`validate::validate_discovery`]) and the **B5** field-by-field gate
+//! ([`validate::validate_returned`]) that compares Circle's returned `burnIntents[].spec` against
+//! the burn payload for EVERY batch and, on a full match, mints the [`validate::ValidatedWithdrawal`]
+//! proof-of-validation token. The withdrawal flow's signer, [`validate::sign_validated`], consumes
+//! that token — so a mismatch cannot reach signing (B5 gates B6, `INV-CIRCLE-CANONICAL-WITHDRAWAL`),
+//! and "sign a response that failed validation" is untypeable, not merely unreached.
 //!
 //! # What this slice ADDS (W3)
 //!
@@ -66,5 +75,9 @@ pub mod config;
 pub mod error;
 pub mod note_decode;
 pub mod types;
+pub mod validate;
 
-pub use error::{DecodeError, ListenerError, QuorumError, SignError, SignatureError};
+pub use error::{
+    DecodeError, DiscoveryReject, ListenerError, QuorumError, SignError, SignatureError,
+    ValidationMismatch,
+};

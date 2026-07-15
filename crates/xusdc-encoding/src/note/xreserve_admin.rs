@@ -102,7 +102,7 @@ static SET_ATTESTER_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// proc it calls trips the parity assertion (`script_root() == pinned_script_root()`) and forces a
 /// conscious re-pin.
 pub const XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xbeea4fe4c3bfac18f85ecdf8040816dc5aa3cc35c94177eff0a216fab12f9fba";
+    "0x442a0c19b0bbce60630f7c52758b296a4ba74e6b7b02b6603f94481c161bc962";
 
 /// The owner-gated `set_attester` admin note (F5). Storage layout: `[pk_commitment(4), enabled]`.
 /// Consumed against the faucet network account; `attester_admin::set_attester` gates on the (kernel-
@@ -177,7 +177,7 @@ static DOMAIN_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// to `domain_config::domain_init`'s digest, so ANY edit of the note script or the proc it calls trips
 /// the parity assertion (`script_root() == pinned_script_root()`) and forces a conscious re-pin.
 pub const XRESERVE_DOMAIN_INIT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xd9d34a653871533e6e557eda4949be4e00536be0abc48d97d841e89afe890e7f";
+    "0x04f024d51f121941346180c762b18521505c3d42ab3cea43ebffe6e07041619d";
 
 /// The owner-gated, init-once `domain_init` admin note (F5). Storage layout:
 /// `[IDENTIFIER(4), XRC_HI(4), XRC_LO(4), source_domain, domain]`. Consumed against the faucet
@@ -268,7 +268,7 @@ static SET_MIN_BURN_SIZE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// transitively to `min_burn_admin::set_min_burn_size`'s digest, so any edit of the note or the proc
 /// it calls trips parity and forces a conscious re-pin.
 pub const XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xd041591658388a760f56f2204050305cf1d0427e51e89d8d4b6218aa326087ae";
+    "0x87e7bb5161151a5d8f06dbace738b19116f7adc6f3e17efdaced03a84837cf84";
 
 /// The owner-gated `set_min_burn_size` admin note (F5). Storage layout: `[new_min]`.
 pub struct XReserveSetMinBurnSizeNote;
@@ -320,7 +320,7 @@ static PAUSE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED pause admin note-script root (`masm-rust-constant-parity`): binds transitively to
 /// `pause_admin::pause`'s digest.
 pub const XRESERVE_PAUSE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x19d28134c4c88b6462306df0ddc66b3ccd8fd1863b285b47442f6518b8bf5398";
+    "0xf505ce1232e61d9829825ee65a7db8d0cd5de182a7f16593aa212d5cf0d198a8";
 
 /// The DOM_PAUSER-gated, PARAM-LESS `pause` admin note (F5).
 pub struct XReservePauseNote;
@@ -367,7 +367,7 @@ static UNPAUSE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED unpause admin note-script root (`masm-rust-constant-parity`): binds transitively to
 /// `pause_admin::unpause`'s digest.
 pub const XRESERVE_UNPAUSE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x1ea7399d7d96f2749fbfa4a5b1e438ca2d03df0c8dbc98e41baeb39816a56ec4";
+    "0x8df1f866ebc97f423119ab04400e2c09a8680aac3bbb03f91a4fe271dfa9578c";
 
 /// The DOM_PAUSER-gated, PARAM-LESS `unpause` admin note (F5).
 pub struct XReserveUnpauseNote;
@@ -414,7 +414,7 @@ static GRANT_ROLE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED grant_role admin note-script root (`masm-rust-constant-parity`): binds transitively to
 /// the stock `rbac::grant_role`'s digest.
 pub const XRESERVE_GRANT_ROLE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xae250bc50f2829d9613514d3b92e2bbc7ac67b391b16aa7d113b796c8266948f";
+    "0x39e47eb27d42b5eb91ff800800bf43b64f0c6ee761ddb02ed197112809513d8e";
 
 /// The role-admin-gated stock `grant_role` admin note (F5; v0.16 #3215 — the sender must hold the
 /// granted role's EFFECTIVE admin: its delegated admin, else the built-in `ADMIN` role, which the
@@ -479,7 +479,7 @@ static TRANSFER_OWNERSHIP_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED transfer_ownership admin note-script root (`masm-rust-constant-parity`): binds
 /// transitively to the stock `ownable2step::transfer_ownership`'s digest.
 pub const XRESERVE_TRANSFER_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x4748df9b6115505630d08edcabea8f399783fa6fda18b5ca965fb726bbbda16c";
+    "0x5bd39b30a487d6a385acd220c43a82980e63cfe37ba4d86efd58ffbd7a6c7c0a";
 
 /// The current-owner-gated stock `transfer_ownership` admin note (F5, step 1 of the 2-step transfer).
 /// Storage layout: `[new_owner_suffix, new_owner_prefix]`.
@@ -530,7 +530,7 @@ static ACCEPT_OWNERSHIP_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED accept_ownership admin note-script root (`masm-rust-constant-parity`): binds
 /// transitively to the stock `ownable2step::accept_ownership`'s digest.
 pub const XRESERVE_ACCEPT_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x38feb73a79b2edf9f8864f58b34890b214a18b23659c1e25414e1de7127c949c";
+    "0x4480f83f0c08d6c0d7e3480c62f0dc296a29489fd631ce78615bacb017352104";
 
 /// The nominated-owner-gated, PARAM-LESS stock `accept_ownership` admin note (F5, step 2 of the
 /// 2-step transfer).
@@ -579,7 +579,7 @@ static SET_MAX_SUPPLY_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED set_max_supply admin note-script root (`masm-rust-constant-parity`): binds transitively
 /// to the stock `fungible::set_max_supply`'s digest.
 pub const XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xbb2a87e5c7a72d0c190599e504169b9e572ba601fd85307fc8af833344885c86";
+    "0x70b18f7063f760b727dd194df5699fd5aa3453ed53ffb317b91711d4c597e018";
 
 /// The owner-gated stock `set_max_supply` admin note (F5). Storage layout: `[new_max_supply]`.
 pub struct XReserveSetMaxSupplyNote;
@@ -630,7 +630,7 @@ static REVOKE_ROLE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// The PINNED revoke_role admin note-script root (`masm-rust-constant-parity`): binds transitively to
 /// the stock `rbac::revoke_role`'s digest.
 pub const XRESERVE_REVOKE_ROLE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x261ffb8d1b1becf97a3a598a5190856eae578c22a3b63c8b5c478abb964f36ce";
+    "0x109245c8d4f8c2873ff3c244fecf6db931e00d1ee0c7d61863107f4b78a4d9ba";
 
 /// The role-admin-gated stock `revoke_role` admin note (F5; v0.16 #3215 — the sender must hold the
 /// revoked role's EFFECTIVE admin: its delegated admin, else the built-in `ADMIN` role, which the

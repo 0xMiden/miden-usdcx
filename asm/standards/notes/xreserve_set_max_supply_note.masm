@@ -13,7 +13,6 @@
 
 use miden::protocol::active_note
 use miden::standards::faucets::fungible
-use miden::core::sys
 
 # CONSTANTS
 # =================================================================================================
@@ -66,7 +65,10 @@ pub proc main
     # (the call consumes the top 16: [new_max_supply, pad(15)])
 
     call.fungible::set_max_supply
-    # => [pad(16)]
+    # => [pad(17)]
 
-    exec.sys::truncate_stack
+    # rebalance to the dyncall depth-16-on-return rule: the param push above displaced 1 pad zero
+    # into the overflow table (the callee's window is balanced), so drop 1 to end at depth 16.
+    drop
+    # => [pad(16)]
 end

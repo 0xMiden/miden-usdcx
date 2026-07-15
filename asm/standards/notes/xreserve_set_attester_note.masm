@@ -11,7 +11,6 @@
 # Note storage layout (5 felts): [pk_commitment(4), enabled]. `enabled` is 1 (allowlist) or 0 (remove).
 
 use miden::protocol::active_note
-use miden::core::sys
 use xreserve::attester_admin
 
 # CONSTANTS
@@ -86,7 +85,10 @@ pub proc main
     # (the call consumes the top 16: [PK_COMMITMENT, enabled, pad(11)])
 
     call.attester_admin::set_attester
-    # => [pad(16)]
+    # => [pad(21)]
 
-    exec.sys::truncate_stack
+    # rebalance to the dyncall depth-16-on-return rule: the 5 param pushes above displaced 5 pad
+    # zeros into the overflow table (the callee's window is balanced), so drop 5 to end at depth 16.
+    dropw drop
+    # => [pad(16)]
 end

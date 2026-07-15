@@ -7,7 +7,6 @@
 # A scheme-2 NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only,
 # added by the Rust factory).
 
-use miden::core::sys
 use xreserve::pause_admin
 
 # PUBLIC INTERFACE
@@ -34,6 +33,4 @@ pub proc main
 
     call.pause_admin::pause
     # => [pad(16)]
-
-    exec.sys::truncate_stack
 end

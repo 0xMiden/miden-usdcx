@@ -11,7 +11,6 @@
 # Note storage layout (1 felt): [new_min]. `new_min` is the new minimum burn size (AssetAmount).
 
 use miden::protocol::active_note
-use miden::core::sys
 use xreserve::min_burn_admin
 
 # CONSTANTS
@@ -70,7 +69,10 @@ pub proc main
     # (the call consumes the top 16: [new_min, pad(15)])
 
     call.min_burn_admin::set_min_burn_size
-    # => [pad(16)]
+    # => [pad(17)]
 
-    exec.sys::truncate_stack
+    # rebalance to the dyncall depth-16-on-return rule: the param push above displaced 1 pad zero
+    # into the overflow table (the callee's window is balanced), so drop 1 to end at depth 16.
+    drop
+    # => [pad(16)]
 end

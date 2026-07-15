@@ -14,7 +14,6 @@
 
 use miden::protocol::active_note
 use miden::standards::access::ownable2step
-use miden::core::sys
 
 # CONSTANTS
 # =================================================================================================
@@ -68,7 +67,10 @@ pub proc main
     # (the call consumes the top 16: [new_owner_suffix, new_owner_prefix, pad(14)])
 
     call.ownable2step::transfer_ownership
-    # => [pad(16)]
+    # => [pad(18)]
 
-    exec.sys::truncate_stack
+    # rebalance to the dyncall depth-16-on-return rule: the 2 param pushes above displaced 2 pad
+    # zeros into the overflow table (the callee's window is balanced), so drop 2 to end at depth 16.
+    drop drop
+    # => [pad(16)]
 end

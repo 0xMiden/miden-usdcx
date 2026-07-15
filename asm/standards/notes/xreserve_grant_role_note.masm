@@ -14,7 +14,6 @@
 
 use miden::protocol::active_note
 use miden::standards::access::rbac
-use miden::core::sys
 
 # CONSTANTS
 # =================================================================================================
@@ -85,7 +84,10 @@ pub proc main
     # (the call consumes the top 16: [role_symbol, account_suffix, account_prefix, pad(13)])
 
     call.rbac::grant_role
-    # => [pad(16)]
+    # => [pad(19)]
 
-    exec.sys::truncate_stack
+    # rebalance to the dyncall depth-16-on-return rule: the 3 param pushes above displaced 3 pad
+    # zeros into the overflow table (the callee's window is balanced), so drop 3 to end at depth 16.
+    drop drop drop
+    # => [pad(16)]
 end

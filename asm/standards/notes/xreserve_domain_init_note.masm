@@ -14,7 +14,6 @@
 # `source_domain`/`domain` are the u32 scalars (u32-guarded on-chain before any write).
 
 use miden::protocol::active_note
-use miden::core::sys
 use xreserve::domain_config
 
 # CONSTANTS
@@ -102,7 +101,10 @@ pub proc main
     # (the call consumes the top 16: [IDENTIFIER, XRC_HI, XRC_LO, source_domain, domain, pad(2)])
 
     call.domain_config::domain_init
-    # => [pad(16)]
+    # => [pad(30)]
 
-    exec.sys::truncate_stack
+    # rebalance to the dyncall depth-16-on-return rule: the 14 param pushes above displaced 14 pad
+    # zeros into the overflow table (the callee's window is balanced), so drop 14 to end at depth 16.
+    dropw dropw dropw drop drop
+    # => [pad(16)]
 end

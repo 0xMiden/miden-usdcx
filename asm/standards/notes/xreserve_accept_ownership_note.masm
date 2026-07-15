@@ -10,7 +10,6 @@
 # note at the faucet (routing-only, added by the Rust factory).
 
 use miden::standards::access::ownable2step
-use miden::core::sys
 
 # PUBLIC INTERFACE
 # =================================================================================================
@@ -38,6 +37,4 @@ pub proc main
 
     call.ownable2step::accept_ownership
     # => [pad(16)]
-
-    exec.sys::truncate_stack
 end

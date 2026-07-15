@@ -287,6 +287,18 @@ per the task rules).
 
 ### S21 — #3215 CONSEQUENCE FOUND DURING PHASE 3: `set_role_admin` is gated on the ROLE's effective admin — **HUMAN-RATIFIED 2026-07-13** (operator, via the approval bridge)
 
+> **[SUPERSEDED 2026-07-14 → S21 DISPOSITION FLIP (see top amendment).]** The
+> Phase-3 conclusion in this section — that the manager's new `set_role_admin`
+> power is "UPSTREAM-FORCED" and that "the only way to eliminate it is to DROP
+> the CMP-F5 delegation" — was FALSE. The `DOM_PAUSER.admin_role = DOM_MANAGER`
+> delegation is BUILD-SEEDED (`seeded_dom_roles_rbac`), so removing the runtime
+> `set_role_admin` NOTE from the note-script allowlist eliminates the on-chain
+> re-pointing power WITHOUT touching the seed or CIR-ADMIN-3 rotation
+> (`grant_role`/`revoke_role`). That is exactly what was done (12-root allowlist,
+> human-ratified 2026-07-14, two adversarial Circle-conformance audits, NO
+> REFUTATION). Read the analysis below as historical Phase-3 context only; the
+> binding record is `GLOSSARY IMPL-DEV-24` + `DECISION-SETROLEADMIN-NOTE-REMOVAL.md`.
+
 - Source-verified (alpha.2 `standards/access/rbac.masm:196-210` + `assert_sender_is_role_admin`
   :453 + `get_effective_role_admin` :427-438): `set_role_admin(role, new_admin)` gates on the
   **role's own effective admin** — the role's configured delegated admin, else the built-in

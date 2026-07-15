@@ -397,7 +397,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_role_config(&faucet0, &manager_sym)?,
         marker(),
-        "S0: role_config[DOM_MANAGER] is owner-administered ([1,0,0,0])"
+        "S0: role_config[DOM_MANAGER] resolves to ADMIN, the seeded owner account ([1,0,0,0])"
     );
     assert_eq!(
         read_map_word(

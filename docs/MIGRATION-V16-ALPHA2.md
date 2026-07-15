@@ -161,9 +161,11 @@ could `call`, or a lost one the faucet relied on) and it MUST be:
    silently inherited.
 2. SURFACED for ratification in ITS OWN map row (never folded into another root's ratification)
    and, for shipped deviations, the GLOSSARY IMPL-DEV register. Each v16 surface addition took
-   this path under a SEPARATE row: `freeze`/`unfreeze` → **S12** (GLOSSARY IMPL-DEV-21);
+   this path under a SEPARATE row: `freeze`/`unfreeze` → **S12** (GLOSSARY IMPL-DEV-21
+   [renumbered → IMPL-DEV-25 by the CDR-3 register reconciliation, 2026-07-14]);
    `has_procedure` → **S13**; `get_authority` + `invoke_send_policy` + `invoke_receive_policy` →
-   **S24** (GLOSSARY IMPL-DEV-22). The three S24 roots were NOT ratified under S12 — attributing
+   **S24** (GLOSSARY IMPL-DEV-22 [renumbered → IMPL-DEV-26, same reconciliation]). The three S24
+   roots were NOT ratified under S12 — attributing
    them to S12 would be the exact self-sanctioning this discipline forbids.
 3. NEVER waved through under STOP-condition-5's "mechanical" reading. STOP-condition 5 is tightened
    accordingly (§10): a stock callable-surface change is itself a STOP-and-surface trigger.
@@ -485,7 +487,8 @@ per the task rules).
   account-self-freeze (NOT holder/on-token control) is a secondary comfort. No F4 contradiction,
   no Circle no-freeze conflict. EXCLUDE was NOT chosen (would need an upstream/custom `Authority`,
   out of migration scope, and buys nothing over unreachable-inert). Recorded as GLOSSARY
-  **IMPL-DEV-21** (the CDR mirror). Circle disclosure folds into the already-open
+  **IMPL-DEV-21** [renumbered → **IMPL-DEV-25** by the CDR-3 register reconciliation, 2026-07-14]
+  (the CDR mirror). Circle disclosure folds into the already-open
   `Q-ADMIN-RBAC-EQUIV` — an FYI, not a gate.
 - Source-verified: alpha.2 `authority.masm` exports `freeze` (:124) and `unfreeze` (:142) as
   account procedures (v15 exported ONLY `assert_authorized`); under `OwnerControlled` both are
@@ -713,7 +716,8 @@ per the task rules).
     the "skips pause" behavior is CONSISTENT with F4 — transfers are unpoliced by design.
   - EXCLUDE was NOT chosen (would need an upstream/custom `Authority`/`TokenPolicyManager`, out
     of migration scope, and buys nothing over inert-unreachable).
-- **RECORDED** like S12/`renounce_role`: GLOSSARY **IMPL-DEV-22** (the CDR mirror). Circle
+- **RECORDED** like S12/`renounce_role`: GLOSSARY **IMPL-DEV-22** [renumbered → **IMPL-DEV-26**
+  by the CDR-3 register reconciliation, 2026-07-14] (the CDR mirror). Circle
   disclosure folds into the register (stock bundles them; we ship inert/unreachable, no
   on-token/holder control) — an FYI, not a gate.
 - **PIN + CONFIRMATION (`tests/account_callable_surface.rs`):** all three roots are part of the

@@ -54,8 +54,9 @@ fn accept_payload() -> Vec<u8> {
         .bytes()
 }
 
-/// A scheme-1 attestation-shaped attachment (9 words; content immaterial — the shim traps on
-/// count/scheme selection before hash-verifying the content in these negatives).
+/// A scheme-1 attestation-shaped attachment (9 zero words — deliberately NOT the v16 11-word
+/// attestation shape; immaterial here: the shim traps on count/scheme selection before any
+/// size/hash check runs in these negatives).
 fn scheme1_attestation() -> NoteAttachment {
     NoteAttachment::with_words(
         NoteAttachmentScheme::new(XRESERVE_MINT_ATTACHMENT_SCHEME).expect("scheme 1 valid"),

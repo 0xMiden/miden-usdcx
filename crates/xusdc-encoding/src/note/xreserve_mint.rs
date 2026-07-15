@@ -149,7 +149,7 @@ impl XReserveMintNote {
     /// the consuming faucet (account-target tag), `deposit_intent` the RAW DepositIntent payload
     /// bytes (validated + packed via the shared-encoding codec by reference — structural rejects and the
     /// 1024-felt bound surface as [`NoteError`] with the codec error as source), `attestation`
-    /// the raw sig + candidate pubkey (packed 17 + 9 felts into the scheme-1 attestation attachment
+    /// the raw sig + candidate pubkey (packed 17 + 16 felts into the scheme-1 attestation attachment
     /// after the MVP-zero feeAmount limbs — DEV-8, hardcoded: a non-zero fee would only ever trap
     /// the F2 guard on-chain). The note carries TWO attachments (F5): that scheme-1 attestation plus
     /// the scheme-2 `NetworkAccountTarget` routing bind to `faucet_id` (`NoteExecutionHint::Always`).

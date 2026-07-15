@@ -214,7 +214,7 @@ async fn set_min_burn_owner_succeeds_while_paused() -> Result<()> {
 /// `setup_burn_policy_account` composition installs the test-side `seeded_dom_roles_rbac_component`,
 /// NOT the production builder) and pins that replica to the PRODUCTION seed shape — `DOM_PAUSER`
 /// config `[1, DOM_MANAGER, 0, 0]` (the CMP-F5 delegation), `DOM_MANAGER` config `[1, 0, 0, 0]`
-/// (owner-administered), and both seeded memberships `[1,0,0,0]`. It is the SOLE tripwire for
+/// (admin_role 0 → ADMIN, the seeded owner account), and both seeded memberships `[1,0,0,0]`. It is the SOLE tripwire for
 /// replica drift: every burn-oracle-fixture test (pause rejects, setter rejects here) leans on this
 /// replica. The PRODUCTION-account twin of these assertions is
 /// `role_admin.rs::shipped_delegation_reads_back`. RED (CMP-F5): the replica still seeds
@@ -231,9 +231,10 @@ async fn support_replica_carries_delegation_seed() -> Result<()> {
 
     // role_config[{0,0,0,DOM_PAUSER}] = [member_count=1, admin_role=DOM_MANAGER, 0, 0] (the CMP-F5
     // delegation: the Domain Manager rotates the Pauser); DOM_MANAGER keeps admin_role=0, which at
-    // v0.16 resolves to the built-in ADMIN role the builder seeds on the OWNER — so DOM_MANAGER
-    // stays owner-administered (#3215 replaced the v15 owner-only gate with the effective-admin
-    // gate; MIGRATION-V16-ALPHA2.md S2/S21).
+    // v0.16 resolves to the built-in ADMIN role the builder seeds on the OWNER's ACCOUNT — so
+    // DOM_MANAGER stays ADMIN-administered by that account-bound membership (#3215 replaced the
+    // v15 owner-only gate with the effective-admin gate; the membership does not auto-follow an
+    // ownership transfer — S2 runbook re-seat; MIGRATION-V16-ALPHA2.md S2/S21).
     let pauser_config = account.storage().get_map_item(
         RoleBasedAccessControl::role_config_slot(),
         StorageMapKey::new(role_config_key(&pauser)),
@@ -261,7 +262,7 @@ async fn support_replica_carries_delegation_seed() -> Result<()> {
     assert_eq!(
         manager_config[1],
         Felt::ZERO,
-        "DOM_MANAGER admin_role == 0 (owner-administered)"
+        "DOM_MANAGER admin_role == 0 (resolves to ADMIN = the seeded owner account)"
     );
 
     // role_membership[{0,<role>,holder.suffix,holder.prefix}] = [1,0,0,0] for each DOM holder.

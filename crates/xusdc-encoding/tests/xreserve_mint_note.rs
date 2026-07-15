@@ -514,7 +514,7 @@ fn mint_note_is_public_with_fixed_script_root() -> Result<()> {
     assert_eq!(
         attestation.content().as_words().len(),
         XRESERVE_MINT_ATTACHMENT_NUM_WORDS,
-        "the attestation is exactly 9 words: [fee(8), pubkey(9), sig(17), pad(2)]"
+        "the attestation is exactly 11 words: [fee(8), pubkey(16), sig(17), pad(3)]"
     );
     Ok(())
 }

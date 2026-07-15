@@ -82,8 +82,8 @@ pub fn private_faucet_id() -> AccountId {
 /// The operator-configured attester key: the partner fixture's 33-byte compressed SEC1 pubkey.
 ///
 /// It is CONFIGURATION, not a Circle response field — Circle's attestation object carries only
-/// `payload` / `messageHash` / `attestation`, so the key the faucet's allowlist is keyed by reaches
-/// the relayer through its config, and the builder takes it as an argument.
+/// `payload` / `messageHash` / `attestation`, so the key the faucet's allowlist commitment (DC-3)
+/// is derived from reaches the relayer through its config, and the builder takes it as an argument.
 pub fn attester_pubkey() -> AttesterPubkey {
     AttesterPubkey::new(PartnerAttester::new().pubkey()).expect("the partner key is a curve point")
 }

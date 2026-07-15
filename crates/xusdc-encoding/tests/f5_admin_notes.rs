@@ -166,7 +166,7 @@ fn set_attester_note_script_root_is_pinned() {
     );
 }
 
-// DOMAIN_INIT (allowlist row 13) — owner-gated, init-once config setter
+// DOMAIN_INIT (allowlist row 12) — owner-gated, init-once config setter
 // ================================================================================================
 
 const DOMAIN: u32 = 7;
@@ -1482,7 +1482,7 @@ async fn set_role_admin_third_party_traps() -> Result<()> {
     assert_set_role_admin_nonadmin_traps(test_account_id(99), 122).await
 }
 
-// TRANSFER_OWNERSHIP (allowlist row 11) — current-owner-gated, step 1 of the 2-step transfer
+// TRANSFER_OWNERSHIP (allowlist row 10) — current-owner-gated, step 1 of the 2-step transfer
 // ================================================================================================
 
 const OWNER_CONFIG_LABEL: &str = "miden::standards::access::ownable2step::owner_config";
@@ -1617,7 +1617,7 @@ fn transfer_ownership_note_script_root_is_pinned() {
     );
 }
 
-// ACCEPT_OWNERSHIP (allowlist row 12) — nominated-owner-gated, step 2 of the 2-step transfer
+// ACCEPT_OWNERSHIP (allowlist row 11) — nominated-owner-gated, step 2 of the 2-step transfer
 // ================================================================================================
 
 /// The exact stock error accept_ownership traps for a non-nominated sender

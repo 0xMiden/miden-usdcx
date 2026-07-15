@@ -122,8 +122,8 @@ fn t_a_private_faucet_id_is_refused() {
 // ================================================================================================
 //
 // The attester pubkey is CONFIGURATION, not a Circle response field: Circle's attestation object
-// carries `payload` / `messageHash` / `attestation` and nothing else. So the 33-byte key the faucet's
-// allowlist is keyed by reaches the relayer from its operator — and an operator's typo must be caught
+// carries `payload` / `messageHash` / `attestation` and nothing else. So the 33-byte key the
+// faucet's allowlist commitment (DC-3) is derived from reaches the relayer from its operator — and an operator's typo must be caught
 // where it is typed, not on the first mint attempt six hours later.
 
 #[test]
@@ -161,7 +161,7 @@ fn t_a_non_hex_attester_key_is_refused() {
 #[case::too_short("03a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d")] // 32 bytes
 #[case::uncompressed_length(
     "04a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3fa13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3f"
-)] // 65 bytes — the UNCOMPRESSED SEC1 form, which is not what the allowlist is keyed by
+)] // 65 bytes — the UNCOMPRESSED SEC1 form, not the form the allowlist commitment is derived from
 fn t_an_attester_key_of_the_wrong_length_is_refused(#[case] hex: &str) {
     let error = AttesterPubkey::from_hex(hex).expect_err("only a 33-byte compressed key is a key");
 

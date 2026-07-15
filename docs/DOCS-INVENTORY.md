@@ -20,6 +20,15 @@ are out of scope and are not listed.
 | (removed) shared-encoding test-and-verification-harness mirror | REPLACE (removed) | The test plan it described is realized by the actual crate tests; the `TV-*` catalog is in the glossary. |
 | (removed) shared-encoding claim-evidence-matrix mirror | REMOVE | A planning-QA claim→evidence matrix; build-process artifact with no standalone reader value. |
 
+## Migration & reconciliation (`docs/`)
+
+| Doc | Disposition | Notes |
+|---|---|---|
+| `MIGRATION-V16-ALPHA2.md` | KEEP (new) | The v0.16.0-alpha.2 migration map: pin ledger, mechanical + semantic inventories (the S-rows), re-pin ledger, gate decisions, count parity. The historical record of the migration — not edited after the fact. |
+| `reconciliation/CDR-1-CONFORMANCE-REWALK.md` | KEEP (new) | Post-migration conformance re-walk: every load-bearing `CIR-*`/Miden-family/`DEV-*`/`Q-*`/`INV-*`/`IMPL-DEV-*` id with a v16 verdict + evidence. |
+| `reconciliation/V16-DOC-DELTA.md` | KEEP (new) | The doc/comment reconciliation record: per-S-row greps, every corrected prose site, every verified-current adjudication. |
+| `reconciliation/CDR-RECONCILIATION-REPORT.md` | KEEP (new) | The consolidated CDR verdict (CDR-1/2/3 roll-up, NEEDS-HUMAN items, residual risk). |
+
 ## Governing (`docs/governing/`)
 
 These are the conventions, pins, and grounding the code is built against; several are referenced by
@@ -60,6 +69,14 @@ pinned toolchain — real toolchain facts, KEEP.
 | `tests/fixtures/pinned-standards/PROVENANCE.md` | KEEP | Documents the vendored, read-only pinned-standards test fixtures. |
 | `tests/vectors/circle-extraction/README.md` | KEEP | Provenance of a locally-generated test vector (explicitly not shipped by Circle). |
 
+## `crates/xreserve-deposit-relayer/`
+
+| Doc | Disposition | Notes |
+|---|---|---|
+| `DEFERRED-DEPENDENCIES.md` | KEEP | The relayer's deferred-dependency record (reqwest declaration discharged at the Circle-facing slice; cross-referenced by `deferred_dependencies_doc.rs` tests). |
+| `PERSISTENCE-CHOICE.md` | KEEP (new, relayer R4) | The idempotency-store persistence decision record (SQLite; durable-path rules); cross-referenced by the `persistence_choice_doc.rs` tests. |
+| `RIV-ADVICE-KEY.md` | KEEP (new, relayer R5) | The advice-key reconciliation record (the mint-note attachment advice-map key); carries an explicit up-front v16 disclaimer over its v15-era shape figures (adjudicated in `docs/reconciliation/V16-DOC-DELTA.md` §3). |
+
 ## `crates/xusdc-validation/`
 
 Real-local-node validation evidence. The records prove the faucet works against a real node. Each
@@ -69,6 +86,7 @@ plain in-repo scope reference (`crates/xusdc-validation/README.md`).
 | Doc | Disposition | Notes |
 |---|---|---|
 | `README.md` | KEEP | Crate orientation. |
+| `PARKED-V15.md` | KEEP (new, v16 migration R1) | Why the crate is parked (no v16 `miden-client` yet), what still works, the re-enable trigger + steps. |
 | `VALIDATION-RECORD.md` (LNV-1) | KEEP / REWRITE (citation cleaned) | Harness + rows A/B. |
 | `VALIDATION-RECORD-LNV2.md` | KEEP / REWRITE (citation cleaned) | Admin suite (rows C) + auth boundary (row F). |
 | `VALIDATION-RECORD-LNV3.md` | KEEP / REWRITE (citation cleaned) | Mint rows D/E. |
@@ -84,4 +102,5 @@ plain in-repo scope reference (`crates/xusdc-validation/README.md`).
 |---|---|---|
 | `README.md` | REWRITE (done) | Now orients a fresh reader (what this is, how to build/test, where the spec + glossary are). Previously claimed "pre-implementation, no source yet". |
 | `CLAUDE.md` | KEEP / REWRITE (citations cleaned) | The repo's authoring ground rules; the two references to the internal program tree were removed. |
+| `AGENTS.md` | KEEP (canonical copy) | Byte-identical mirror of `CLAUDE.md` (kept in sync by rule — CLAUDE.md is canonical, edited first, then copied over AGENTS.md) so a local agent gets the same onboarding whichever file its tooling reads. |
 | `docs/DOCS-INVENTORY.md` | KEEP (new) | This file. |

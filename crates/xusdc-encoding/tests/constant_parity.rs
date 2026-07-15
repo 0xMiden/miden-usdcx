@@ -351,7 +351,7 @@ fn masm_rust_constant_parity() {
     assert_eq!(
         num(&enc_nums, "PUBKEY_FELTS", "encoding/mod.masm"),
         PUBKEY_FELTS as u64,
-        "compressed-pubkey felt count parity (33 bytes -> 9 u32-LE felts; ATT commitment input)"
+        "affine-pubkey felt count parity (qx||qy -> 16 u32-LE felts; ATT commitment input)"
     );
 
     // CMP-F3: the DOM_PAUSER role-symbol MASM const must equal the Rust encoding

@@ -46,8 +46,9 @@ this account mints xUSDC against a Circle-attested deposit and burns it on withd
   already-packed pubkey felts) — with a cross-implementation test (`TV-DUAL-1`/`-2`/`-3`/`-5`) proving
   they agree on every golden vector. The remaining codecs are **Rust-only** (the relayer/harness side):
   the burn-note payload (`DC-7`, checked for Rust emit-vs-decode parity), the AccountId↔bytes32 mapping
-  (`DC-6`), and the attestation byte→felt packing of the **digest, compressed pubkey, and signature**
-  (`DC-2`). `TV-DUAL-5` compares each side's final `pubkey_commitment` Word against the miden-crypto
+  (`DC-6`), and the attestation byte→felt packing of the **digest and signature** plus the pubkey's
+  SEC1→affine decompression and packing (`DC-2`/`DC-3`; the 33-byte compressed wire key stages as
+  16 affine felts since v16). `TV-DUAL-5` compares each side's final `pubkey_commitment` Word against the miden-crypto
   oracle — the MASM proc hashes the vector's pre-packed felts (there is no MASM pubkey packer), while
   the Rust leg packs the raw key itself — so the byte→felt packing runs only in Rust, with no MASM
   counterpart to diff against. The keccak digest and the ECDSA signature check themselves are not
@@ -83,15 +84,27 @@ The primary gate (`cargo test -p xusdc-encoding --release`) assembles every `.ma
 the faucet account, and runs the mint/burn/admin behaviour — including the Rust↔MASM
 cross-implementation vectors — against a mock chain.
 
-### Real-local-node validation
+### Real-local-node validation — **PARKED at v15 (inherited evidence)**
 
 `crates/xusdc-validation` deploys the production faucet to a **real Miden node** and drives the
-mint/burn/admin acceptance matrix (rows `A`–`L`). It is **not** part of the offline gate above. Each
-gate binary is self-contained: it **bootstraps genesis, starts the four-service node stack (validator,
-ntx-builder, sequencer, tx prover), runs its rows, and tears the stack down**. The only prerequisites
-are the four v0.15.1 node binaries on `PATH` and loopback ports `57291–57294` free.
+mint/burn/admin acceptance matrix (rows `A`–`L`). Since the v0.16.0-alpha.2 migration the crate is
+**parked and excluded from the workspace** (root `Cargo.toml`; see
+[`crates/xusdc-validation/PARKED-V15.md`](crates/xusdc-validation/PARKED-V15.md)): it consumes
+`miden-client`, which has no v16 release yet, so it does **not** build against this tree and none of
+its commands run from this workspace today. The completed **v15 run record stands as the inherited
+real-node evidence** — see
+[`crates/xusdc-validation/VALIDATION-RECORD-LNV5.md`](crates/xusdc-validation/VALIDATION-RECORD-LNV5.md)
+(the consolidated rows `A`–`L` gate run, 12/12) and the per-slice `VALIDATION-RECORD*.md` files.
+
+When the v16-alpha `miden-client` (+ node) ships, the crate is re-enabled per `PARKED-V15.md`
+(restore workspace membership, bump its pins, re-run the row gates). The commands below are those
+**re-enable-time** instructions, preserved from the proven v15 procedure — each gate binary
+bootstraps genesis, starts the four-service node stack (validator, ntx-builder, sequencer,
+tx prover), runs its rows, and tears the stack down (at v15: the four v0.15.1 node binaries on
+`PATH`, loopback ports `57291–57294` free):
 
 ```sh
+# RE-ENABLE-TIME commands (do not run against the parked v16 workspace):
 cargo run -p xusdc-validation --bin lnv1_rows_ab      # rows A/B — deploy + domain_init init-once
 cargo run -p xusdc-validation --bin lnv2_rows_cf      # rows C/F — admin suite + auth boundary
 cargo run -p xusdc-validation --bin lnv3_rows_de      # rows D/E — mint lifecycle + negatives
@@ -100,12 +113,8 @@ cargo run -p xusdc-validation --bin lnv5_full_matrix  # the consolidated A–L �
 cargo run -p xusdc-validation --bin lnv_stack -- up [label]   # bring a stack up and leave it running (`-- down <run-root>` to stop)
 ```
 
-`cargo test -p xusdc-validation` on its own is sandbox-safe (synthetic negatives only, no node); the
-real-node E2Es are `#[ignore]`d and run with `-- --include-ignored` on a network-enabled box. See
-[`crates/xusdc-validation/README.md`](crates/xusdc-validation/README.md) for the full run notes and
-[`crates/xusdc-validation/VALIDATION-RECORD-LNV5.md`](crates/xusdc-validation/VALIDATION-RECORD-LNV5.md)
-for the proven procedure and the durable evidence record. **The gate PASS is a human decision — the
-binaries never declare it.**
+See [`crates/xusdc-validation/README.md`](crates/xusdc-validation/README.md) for the full run
+notes. **The gate PASS is a human decision — the binaries never declare it.**
 
 ## Key design points
 

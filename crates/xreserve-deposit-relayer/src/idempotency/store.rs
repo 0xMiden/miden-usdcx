@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS domain_cursor (
 ///
 /// The connection is behind a `Mutex` so the store is `Sync` and one `Arc<IdempotencyStore>` can be
 /// shared by the poll task and the submit task. Cross-PROCESS serialization is SQLite's own (a
-/// `BEGIN IMMEDIATE` write transaction + [`BUSY_TIMEOUT`]) — which is what makes the claim atomic for
+/// `BEGIN IMMEDIATE` write transaction + the crate-private `BUSY_TIMEOUT`) — which is what makes the claim atomic for
 /// two relayers pointed at one file, not merely for two tasks in one.
 #[derive(Debug)]
 pub struct IdempotencyStore {
@@ -79,7 +79,7 @@ pub struct IdempotencyStore {
 impl IdempotencyStore {
     /// Opens (creating if absent) the store at `path`, on the host's wall clock.
     ///
-    /// `path` must be a real file. It is validated ([`durable_path`]) BEFORE anything is opened, and
+    /// `path` must be a real file. It is validated (the crate-private `durable_path`) BEFORE anything is opened, and
     /// the opened database is then checked to have a file behind it — because SQLite's names for a
     /// database that vanishes on close (`:memory:`, an empty filename, a `mode=memory` URI) are
     /// ordinary-looking filenames that an operator's config can carry, and every one of them would

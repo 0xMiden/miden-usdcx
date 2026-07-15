@@ -205,7 +205,8 @@ fn t_rly_20_binding_is_payload_specific() {
 }
 
 /// The fixture's attester identity is the one the allowlist is keyed by: the commitment is unit-04's
-/// `pubkey_commitment` (DC-3) over the 33-byte compressed pubkey, and the pubkey is deterministic
+/// `pubkey_commitment` (DC-3) — Poseidon2 over the affine coordinates the 33-byte compressed pubkey
+/// decompresses to (16 felts since v16, vm#3342) — and the pubkey is deterministic
 /// (pinned). This is what the later local-node rows seed via `set_attester`.
 #[test]
 fn t_rly_20_partner_attester_identity_is_deterministic_and_canonically_keyed() {

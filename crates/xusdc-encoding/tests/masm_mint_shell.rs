@@ -532,7 +532,7 @@ fn seam_keys(payload: &[u8]) -> (AttesterVector, AttesterVector) {
 }
 
 /// Advice stack pairing one attester's pubkey with another's signature (the seam attack input):
-/// `[pubkey(9), sig(17)]`.
+/// `[pubkey(16), sig(17)]`.
 fn paired_advice(pubkey_of: &AttesterVector, sig_of: &AttesterVector) -> Vec<Felt> {
     pubkey_of
         .pubkey_felts

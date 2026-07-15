@@ -16,6 +16,8 @@ use std::sync::Arc;
 
 use xusdc_encoding::xreserve::encoding::EncodingError;
 
+use crate::attester::Address;
+
 /// A preserved lower-level cause whose own type is neither `Clone` nor `PartialEq` (a
 /// `reqwest::Error`, a header/URL parse error). Wrapping it keeps [`ListenerError`]'s `Clone` +
 /// `PartialEq` contract intact while still handing the ORIGINAL typed error to
@@ -211,3 +213,157 @@ impl core::error::Error for DecodeError {
         }
     }
 }
+
+/// Why [`attester::sign`](crate::attester::sign) refused to produce a signature.
+///
+/// `sign` consumes Circle's returned `messageHashToSign` as an OPAQUE 32-byte digest
+/// (`INV-OFFCHAIN-BURN-SIGNING`, `Q-CRY-2` — OPEN): it never re-derives the digest locally (no
+/// EIP-712, no personal-sign, no Poseidon2), so the only thing it can reject about the input is its
+/// length. A non-32-byte digest is a caller bug — a truncated hash, a hex string passed where raw
+/// bytes were meant — and signing it anyway would put an attester signature over the wrong 32 bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SignError {
+    /// The digest handed to `sign` is not exactly 32 bytes. The signing input is Circle's returned
+    /// digest, treated opaquely — `sign` does not hash, pad, or truncate it into shape.
+    DigestLength { actual: usize },
+
+    /// `k256` refused to produce a recoverable signature over the (valid, 32-byte) digest. Not
+    /// reachable with a well-formed secret key and a 32-byte prehash; carried so a curve-level
+    /// failure surfaces as a typed error with its `k256` cause preserved, never a `panic`.
+    Ecdsa { source: Cause },
+
+    /// The signature's recovery id is **x-reduced** (`2`/`3`) and so has no Ethereum `v`
+    /// representation: OpenZeppelin-style `ECDSA.recover` on Circle's source chain accepts only `v`
+    /// `27`/`28`. Rather than emit a `v = 29`/`30` signature the verifier would reject at the
+    /// fund-release boundary, `sign` refuses. An x-reduced recovery id requires the signature's `r` to
+    /// have wrapped the curve order, which happens with probability ≈ `2^-128` for a random key/digest
+    /// — so this is a defensive refusal, not a path real inputs take.
+    UnrepresentableRecoveryId { recovery_id: u8 },
+}
+
+impl fmt::Display for SignError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DigestLength { actual } => write!(
+                f,
+                "message hash to sign must be exactly 32 bytes, got {actual}"
+            ),
+            Self::Ecdsa { source } => write!(f, "ecdsa signing failed: {source}"),
+            Self::UnrepresentableRecoveryId { recovery_id } => write!(
+                f,
+                "recovery id {recovery_id} is x-reduced and has no evm v (27/28) representation"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for SignError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Ecdsa { source } => Some(source.as_error()),
+            Self::DigestLength { .. } | Self::UnrepresentableRecoveryId { .. } => None,
+        }
+    }
+}
+
+/// Why a [`Signature65`](crate::attester::Signature65) could not be built from raw bytes.
+///
+/// The Circle wire form is fixed: secp256k1 ECDSA, 65 bytes `r‖s‖v`
+/// (`CIRCLE-DATA-SCHEMAS.md:184`). A DER blob, a 64-byte `r‖s` with the recovery id dropped, or any
+/// other length is not that form, and is refused at construction so a mis-shaped signature can never
+/// reach [`assemble_quorum`](crate::attester::assemble_quorum) or the `/v1/withdraw` wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SignatureError {
+    /// The bytes are not exactly 65 (`r‖s‖v`). A 64-byte `r‖s`, a DER encoding, or a truncated
+    /// signature all land here.
+    Length { actual: usize },
+}
+
+impl fmt::Display for SignatureError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Length { actual } => write!(
+                f,
+                "a burn signature must be exactly 65 bytes (r‖s‖v), got {actual}"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for SignatureError {}
+
+/// Why [`assemble_quorum`](crate::attester::assemble_quorum) refused to assemble a `burnSignatures`
+/// bundle.
+///
+/// The bundle Circle verifies on the source chain must be **exactly-threshold count, every signature
+/// verifying to its claimed signer, ascending signer-address order, no duplicates**
+/// (`MIN_SIGNATURE_THRESHOLD = 2`; `CIRCLE-DATA-SCHEMAS.md:196`; the recover-then-authorize step at
+/// `:46`). This assembler enforces that contract BEFORE anything is submitted, so a set Circle would
+/// reject — or worse, a single-key set that must NEVER be submitted (`INV-OFFCHAIN-BURN-SIGNING`;
+/// §10.9) — fails here as a typed `Err` rather than on Circle's wire. Every rejection is exact: a
+/// duplicate signer is refused, NEVER silently de-duplicated (a silent dedupe could shrink a 2-signer
+/// set to one and submit a single-key quorum).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum QuorumError {
+    /// Fewer than `MIN_SIGNATURE_THRESHOLD` signatures. A single-key set is a non-gating local
+    /// primitive and is NEVER submitted to Circle (§10.9). Foreclosing the "threshold treated as ≥1"
+    /// bug is the whole point of this variant.
+    BelowThreshold { have: usize, need: usize },
+
+    /// More than `MIN_SIGNATURE_THRESHOLD` signatures. Circle's source-chain verifier is
+    /// **exactly-threshold** (`Attestable.sol:75,333-381`; `CIRCLE-DATA-SCHEMAS.md:196`), so an
+    /// over-threshold bundle Circle would reject is refused here rather than at the fund-release
+    /// boundary. Selecting an authorized exactly-threshold subset from a larger set of signatures is a
+    /// separate, owner-specified concern; this assembler does not silently truncate.
+    AboveThreshold { have: usize, need: usize },
+
+    /// A signature does not verify against its CLAIMED signer address: `ECDSA.recover(digest, sig)`
+    /// (the same recovery Circle performs) either fails outright — a `v` outside `27`/`28`, a
+    /// malformed `r`/`s`, a digest the signature does not cover — or recovers a DIFFERENT address than
+    /// the one it was paired with. Either way the signature is excluded from the quorum
+    /// (`TEST-AND-VERIFICATION-HARNESS.md:157`); `at` is its index in the input.
+    SignatureDoesNotVerify { at: usize },
+
+    /// The same signer address appears more than once. Refused, not de-duplicated — Circle rejects a
+    /// duplicate, and a silent dedupe here could collapse the count below threshold unnoticed.
+    DuplicateSigner { address: Address },
+
+    /// The signer addresses are not in strictly ascending order at the given index (`sigs[at]`'s
+    /// address is not greater than `sigs[at - 1]`'s). Ordering is by the 20-byte signer ADDRESS
+    /// (`ECDSA.recover` → address), never by pubkey or signature bytes.
+    NotAscending { at: usize },
+}
+
+impl fmt::Display for QuorumError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BelowThreshold { have, need } => write!(
+                f,
+                "a burn-signature quorum needs exactly {need} signatures, got {have}"
+            ),
+            Self::AboveThreshold { have, need } => write!(
+                f,
+                "a burn-signature quorum takes exactly {need} signatures, got {have}"
+            ),
+            Self::SignatureDoesNotVerify { at } => write!(
+                f,
+                "the signature at index {at} does not verify against its claimed signer address"
+            ),
+            Self::DuplicateSigner { address } => {
+                write!(
+                    f,
+                    "signer address {address} appears more than once in the quorum"
+                )
+            }
+            Self::NotAscending { at } => write!(
+                f,
+                "signer addresses are not in ascending order at index {at}"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for QuorumError {}

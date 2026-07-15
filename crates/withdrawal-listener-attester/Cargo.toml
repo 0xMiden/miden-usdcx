@@ -45,6 +45,13 @@ bon = { workspace = true }
 # site arrives with the signing slice (T-LA-08); the POSTURE is fixed now — and guarded by
 # tests/crate_posture.rs — so that slice cannot quietly ship it as a dev dependency.
 k256 = { workspace = true }
+# sha3 (keccak256) is a LIBRARY dependency for the ONE fund-safety step that needs it: recovering the
+# 20-byte Ethereum signer address from a burn signature (`keccak256(uncompressed pubkey)[12..]`) so
+# `attester::assemble_quorum` can enforce the source-chain `ECDSA.recover`-then-authorize check — a
+# signature paired with the wrong signer is refused off-chain, not at Circle's fund-release boundary.
+# It is NOT used to derive the signing digest: `attester::sign` still consumes Circle's
+# `messageHashToSign` opaquely (no hashing on the input path).
+sha3 = { workspace = true }
 # `AccountId` (the faucet id in config, and the `metadata.sender → remoteDepositor` encoding's input)
 # and `AssetAmount` (the burn payload's amount) are NAMED in this crate's public API, at the same
 # crates.io pin the rest of the workspace resolves the protocol family at (MIGRATION-V16-ALPHA2.md).
@@ -58,6 +65,10 @@ miden-protocol = { version = "=0.16.0-alpha.2" }
 # Exact-variant assertions + parameterized reject tables; versions from the workspace table.
 rstest = { workspace = true }
 assert_matches = { workspace = true }
+# The signing fixture derives each attester's 20-byte Ethereum-style address the same way the library
+# recovers it (`keccak256(uncompressed pubkey)[12..]`), so a fixture address and a recovered address
+# are the same 20 bytes. `sha3` is a normal (library) dependency now — see [dependencies] — and is
+# available to the tests through it.
 # Declared now, consumed from W6 (the Circle drivers). The relayer proved the pattern this crate's
 # `HttpTransport` seam is shaped for: a schema-exact mock Circle server routed by axum and driven IN
 # PROCESS through tower's `ServiceExt::oneshot`, installed as the client's transport. It binds NO

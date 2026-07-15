@@ -24,11 +24,20 @@
 //!   payload (through unit-04's codec) and the `metadata.sender` read. Its tests are therefore
 //!   NON-GATING — the GATING `T-LA-01`/`T-LA-04` local-node runs are parked with the discovery leg.
 //! * **The Circle drivers** (`prepare` / `withdraw` / status poll) — W6, against the seam above.
-//! * **Signing and quorum assembly** — the off-chain `k256` ECDSA over Circle's `messageHashToSign`
-//!   (`INV-OFFCHAIN-BURN-SIGNING`, `DC-11`). `k256` is a LIBRARY dependency here, unlike in the
-//!   deposit relayer where it is dev-only: the relayer never verifies a signature off-chain, whereas
-//!   this service's off-chain signature IS the product.
 //! * **The B3/B5 validation checklists** and the "DO NOT SIGN" abort — `validate.rs`.
+//!
+//! # What this slice ADDS (W3)
+//!
+//! The PURE signing core, [`attester`]: [`attester::sign`] (a single `k256` ECDSA over Circle's
+//! opaque `messageHashToSign`, emitting the Ethereum-shaped `r‖s‖v` with `v = 27`/`28` the
+//! source-chain `ECDSA.recover` requires — `INV-OFFCHAIN-BURN-SIGNING`, `DC-11`, `Q-CRY-2` OPEN) and
+//! [`attester::assemble_quorum`] (the exactly-threshold, every-signature-verifies-to-its-claimed-signer,
+//! ascending-address, no-duplicate `burnSignatures` bundle, `DC-11`). `k256` (and `sha3`, for signer
+//! address recovery) are LIBRARY dependencies here, unlike in the deposit relayer where they are
+//! dev-only: the relayer never verifies a signature off-chain, whereas this service's off-chain
+//! signature IS the product. A single signature is a non-gating local primitive that is NEVER
+//! submitted to Circle on its own; the real keys the interface will drive (KMS/HSM, ≥2 attesters) are
+//! human/ops-owned (W11) and no real key material lives here.
 //!
 //! # The invariants this slice's types carry
 //!
@@ -51,10 +60,11 @@
 //! and `DEV-7` (whether a Miden tx id is an acceptable `burnTxId`). None of them is answered here;
 //! each is parameterized and left open.
 
+pub mod attester;
 pub mod circle;
 pub mod config;
 pub mod error;
 pub mod note_decode;
 pub mod types;
 
-pub use error::{DecodeError, ListenerError};
+pub use error::{DecodeError, ListenerError, QuorumError, SignError, SignatureError};

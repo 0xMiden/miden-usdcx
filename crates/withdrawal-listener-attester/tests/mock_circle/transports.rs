@@ -12,6 +12,7 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum::body::Body;
 use axum::http::Request;
@@ -78,6 +79,50 @@ impl HttpTransport for MockTransport {
                 .to_vec();
 
             Ok(RawResponse::new(status, headers, body))
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// A transport that fails the way a dead network does — no status, ever — and COUNTS how many times it
+/// was asked.
+///
+/// The count is the oracle for the money-path rule that a status-less failure must be attempted
+/// EXACTLY ONCE: a timeout can strike after Circle accepted the withdrawal and before the response got
+/// back, so a driver that "just retries the connection error" is issuing a second, blind
+/// `POST /v1/withdraw`. Nothing else in the suite can see that — the axum mock never receives the
+/// request at all when the transport itself fails, so the mock's own call log stays empty and would
+/// report a retry storm as zero calls.
+#[derive(Debug, Default)]
+pub struct CountingFailingTransport {
+    attempts: AtomicUsize,
+}
+
+impl CountingFailingTransport {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many times a driver asked this transport to execute a request.
+    pub fn attempts(&self) -> usize {
+        self.attempts.load(Ordering::SeqCst)
+    }
+}
+
+impl HttpTransport for CountingFailingTransport {
+    fn execute<'a>(
+        &'a self,
+        _request: reqwest::Request,
+    ) -> Pin<Box<dyn Future<Output = Result<RawResponse, ListenerError>> + Send + 'a>> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Err(ListenerError::Transport(Cause::new(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out waiting for a response",
+            ))))
         })
     }
 

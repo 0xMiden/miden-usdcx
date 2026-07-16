@@ -1,17 +1,24 @@
 //! The Circle-facing half: the constrained wire scalars, the schema built on them, the auth posture,
-//! and the transport seam.
+//! the transport seam, and the two policies every request runs under — the documented [`rate`]
+//! ceilings and the bounded [`retry`] backoff.
 //!
 //! The drivers themselves — `POST /v1/prepare-withdrawal` (`CMP-D5`), `POST /v1/withdraw`
-//! (`CMP-D6`), `GET /v1/withdrawal/{id}` (`CMP-D7`) — land with W6, built on [`transport`]. This
-//! slice contacts no Circle endpoint: every live Circle leg is `REQUIRES CIRCLE CONFIRMATION`, and
-//! the surfaces are exercised against the schema-exact mock fixtures (§12 mock policy — "Circle API
-//! may be mocked; Miden behavior must not be faked for final acceptance").
+//! (`CMP-D6`), `GET /v1/withdrawal/{id}` (`CMP-D7`) — live in
+//! [`withdrawal_api`](crate::withdrawal_api), built on [`transport`]; the submission path that carries
+//! the `409` conflict-recovery is [`submit`](crate::submit). No Circle endpoint is ever contacted
+//! live: every Circle leg is `REQUIRES CIRCLE CONFIRMATION`, and the surfaces are exercised against
+//! the schema-exact in-process mock (§12 mock policy — "Circle API may be mocked; Miden behavior must
+//! not be faked for final acceptance").
 
 pub mod auth;
 pub mod client;
+pub mod rate;
+pub mod retry;
 pub mod schema;
 pub mod transport;
 pub mod wire;
 
 pub use client::{CircleClient, PollPolicy};
+pub use rate::RateGovernor;
+pub use retry::RetryPolicy;
 pub use transport::{HttpTransport, RawResponse, ReqwestTransport};

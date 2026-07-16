@@ -86,6 +86,11 @@ fn the_shared_dependencies_are_consumed_from_the_workspace_table() {
         "hex",
         "k256",
         "bon",
+        // the idempotency ledger's engine. It is the sharpest case for this rule in the workspace:
+        // the relayer's submitted-nonce store and this crate's submitted-burn ledger are the same
+        // pattern against the same recorded persistence choice, and two SQLite versions in one graph
+        // is exactly the drift the workspace table exists to prevent.
+        "rusqlite",
     ] {
         let line = deps
             .lines()
@@ -257,21 +262,28 @@ fn no_source_file_exceeds_the_governing_rust_line_ceiling() {
     // and split before continuing." The Circle schema crossed it once the wire constraints landed, and
     // was split into `circle::schema::{prepare, intents, withdraw}`. This keeps the gate mechanical
     // rather than something a reviewer has to remember to eyeball.
+    //
+    // `tests/` is swept too, and that is not pedantry: G3 says "Rust", not "Rust that ships". The W7
+    // suite reached 1,232 lines in ONE file before this sweep covered the directory that held it — the
+    // gate could not catch what it did not look at. It is now split into `conflict_recovery` /
+    // `submit_idempotency` / `retry_policy` over a shared `submit_support` fixture module.
     const CEILING: usize = 700;
 
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut oversized = Vec::new();
 
-    for file in rust_files(&src) {
-        let lines = std::fs::read_to_string(&file).unwrap().lines().count();
-        if lines > CEILING {
-            oversized.push(format!("{}: {lines} lines", file.display()));
+    for dir in ["src", "tests"] {
+        for file in rust_files(&root.join(dir)) {
+            let lines = std::fs::read_to_string(&file).unwrap().lines().count();
+            if lines > CEILING {
+                oversized.push(format!("{}: {lines} lines", file.display()));
+            }
         }
     }
 
     assert!(
         oversized.is_empty(),
-        "G3 caps a Rust source file at ~{CEILING} lines; split these:\n{}",
+        "G3 caps a Rust file at ~{CEILING} lines; split these:\n{}",
         oversized.join("\n")
     );
 }

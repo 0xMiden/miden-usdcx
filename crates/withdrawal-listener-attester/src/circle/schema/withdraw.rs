@@ -155,6 +155,57 @@ impl WithdrawBatch {
 /// array. Modelling it as an object would fail to decode every real response.
 pub type WithdrawSubmissionResponse = Vec<WithdrawalStatus>;
 
+/// The `POST /v1/withdraw` **`409` conflict** body: the `burnTxId` is already tied to an active
+/// withdrawal (`CIRCLE-API-SURFACE.md:74`).
+///
+/// # What this type is for, and what it must never enable
+///
+/// A `409` is a **duplicate conflict requiring recovery/reconciliation — NOT a success**, and never a
+/// blind re-send (§10.10). This body is the only thing that says which withdrawal the duplicate
+/// collided with, so decoding it is the difference between recovering the real state and guessing.
+///
+/// * `burnTxId` is **required**. It is the idempotency key, and the ONLY thing that binds this
+///   conflict to the burn that was submitted — §10.10's "a 409 body that does not echo the original
+///   `burnTxId` → treat as a defect" is uncheckable without it. A `409` whose body carries no
+///   `burnTxId` therefore does not decode, becomes an exact
+///   [`ListenerError::MalformedResponse`](crate::error::ListenerError::MalformedResponse), and (like
+///   every ambiguity on this path) stops the submission rather than retrying it.
+/// * `withdrawalId` is **optional**, because the two cases are genuinely different actions: present →
+///   recover by polling `GET /v1/withdrawal/{withdrawalId}`; absent → stop resubmission and mark
+///   reconciliation required. Modelling it as required would turn the second case into a decode error
+///   and lose the distinction the spec draws.
+///
+/// Unknown fields are ACCEPTED here, unlike the request types. The OpenAPI documents status codes only
+/// — there is no error-body schema at all (§10.11) — so this shape is inferred from the frozen fixture,
+/// and refusing a field Circle happens to add would push an otherwise recoverable conflict into
+/// reconciliation for no safety gain. The two fields that decide anything are still validated newtypes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WithdrawConflict {
+    #[serde(
+        default,
+        deserialize_with = "present_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    withdrawal_id: Option<Uuid>,
+
+    burn_tx_id: HexTxId,
+}
+
+impl WithdrawConflict {
+    /// The withdrawal the duplicate collided with, when Circle named one — the id a recovery polls.
+    /// `None` is the "stop and reconcile" case, not an error.
+    pub fn withdrawal_id(&self) -> Option<&Uuid> {
+        self.withdrawal_id.as_ref()
+    }
+
+    /// The `burnTxId` the conflict is keyed on. It MUST echo the submitted burn; a mismatch is a
+    /// defect (§10.10), never a recovery and never a success.
+    pub fn burn_tx_id(&self) -> &str {
+        self.burn_tx_id.as_str()
+    }
+}
+
 /// The withdrawal object — returned inside the `POST /v1/withdraw` array, and returned singly by
 /// `GET /v1/withdrawal/{withdrawalId}`.
 ///

@@ -10,185 +10,38 @@
 //! The fund-safety token is bound to the B5 [`ValidatedWithdrawal`] digests and the config-owned
 //! [`AttesterAllowlist`], and consumed by value on submit, so a proof cannot be forged from ad-hoc
 //! inputs or reused.
+//!
+//! # Why the `withdraw` cases drive `submit_withdraw`
+//!
+//! They used to drive a public raw `withdrawal_api::withdraw` — one POST, `201`-or-`Err`, no ledger.
+//! That driver is GONE: it was a public path that could POST a withdrawal without a durable
+//! idempotency claim (mint two `AuthorizedWithdrawal`s for one burn — `WithdrawRequest` is `Clone` and
+//! `authorize_submission` is public — and submit it twice), and no doc comment naming
+//! `submit::submit_withdraw` "the production entry point" made that unrepresentable. Deleting it did.
+//!
+//! Nothing here lost coverage in the move: `submit_withdraw` builds the request through the same
+//! `build_post`, decodes through the same `decode_withdraw_created`, and applies the same `201`
+//! cardinality rule — so these cases now assert the wire contract on the path production actually
+//! takes. (`submit_withdraw`'s own error handling — the `409` recovery, the retry policy, the ledger —
+//! is `T-LA-13`: `conflict_recovery` / `submit_idempotency` / `retry_policy`.)
 
 use assert_matches::assert_matches;
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use miden_protocol::asset::AssetAmount;
-use withdrawal_listener_attester::attester::{
-    recover_address, sign, Address, AttesterAllowlist, SecretKey, Signature65,
-};
-use withdrawal_listener_attester::circle::schema::{
-    BurnIntent, PrepareWithdrawalRequest, PrepareWithdrawalResponse, WithdrawBatch,
-};
 use withdrawal_listener_attester::circle::wire::HexBytes;
 use withdrawal_listener_attester::circle::CircleClient;
 use withdrawal_listener_attester::config::{ListenerConfig, SecretString};
 use withdrawal_listener_attester::error::{ListenerError, SubmitGateError};
-use withdrawal_listener_attester::types::BurnPayload;
-use withdrawal_listener_attester::validate::{validate_returned, ValidatedWithdrawal};
+use withdrawal_listener_attester::submit::{submit_withdraw, SubmitError, SubmitOutcome};
 use withdrawal_listener_attester::withdrawal_api::{
-    authorize_submission, build_withdraw_request, prepare, withdraw, AuthorizedWithdrawal,
+    authorize_submission, build_withdraw_request, prepare,
 };
-use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
 
-#[path = "mock_circle/mod.rs"]
-mod mock_circle;
-#[path = "support/mod.rs"]
-mod support;
+#[path = "submit_support/mod.rs"]
+mod submit_support;
 
-use mock_circle::{Endpoint, MockCircle, Reply, Script};
-
-// FIXTURES / HELPERS
-// ================================================================================================
-
-/// A single canonical burn intent, cloned from the 200 fixture.
-fn burn_intents(n: usize) -> Vec<BurnIntent> {
-    let prepared = support::fixture_json("prepare_withdrawal_200");
-    let one: Vec<BurnIntent> =
-        serde_json::from_value(prepared["batches"][0]["burnIntents"].clone())
-            .expect("the fixture burnIntents deserialize");
-    let template = one[0].clone();
-    std::iter::repeat_with(|| template.clone())
-        .take(n)
-        .collect()
-}
-
-/// The `PrepareWithdrawalRequest` wrapper the driver sends — any schema-valid single-batch request
-/// exercises the wire.
-fn a_prepare_request() -> PrepareWithdrawalRequest {
-    use withdrawal_listener_attester::circle::schema::PrepareBurnIntentInput;
-    use withdrawal_listener_attester::circle::wire::{DecimalAmount, Hex32};
-
-    let input = PrepareBurnIntentInput::builder()
-        .value_including_fees(DecimalAmount::new("10000000").unwrap())
-        .remote_domain(10_001)
-        .remote_depositor(Hex32::new(format!("0x{}", "11".repeat(32))).unwrap())
-        .final_destination_domain(0)
-        .final_destination_recipient(Hex32::new(format!("0x{}", "22".repeat(32))).unwrap())
-        .use_circle_forwarding(false)
-        .build()
-        .expect("a valid prepare input");
-    PrepareWithdrawalRequest::new(vec![input])
-}
-
-/// A deterministic secret key from a single repeated byte (well below the curve order for any byte).
-fn key(byte: u8) -> SecretKey {
-    SecretKey::from_slice(&[byte; 32]).expect("a valid secp256k1 scalar")
-}
-
-/// Signs `digest` with `key(byte)` and returns the recovered signer address and the 65-byte signature.
-fn signer(byte: u8, digest: &[u8; 32]) -> (Address, Signature65) {
-    let sk = key(byte);
-    let sig = sign(digest, &sk).expect("sign");
-    let addr = recover_address(digest, &sig).expect("recoverable");
-    (addr, sig)
-}
-
-/// A `WithdrawBatch` carrying `signatures` verbatim (order preserved) over one canonical intent.
-fn batch_with(signatures: Vec<HexBytes>) -> WithdrawBatch {
-    WithdrawBatch::new(
-        burn_intents(1),
-        signatures,
-        "0x82a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7e6052443".to_string(),
-        false,
-    )
-    .expect("a 1-intent, 2-signature batch")
-}
-
-fn hexbytes(sig: &Signature65) -> HexBytes {
-    HexBytes::new(sig.to_hex()).expect("a 65-byte signature renders to valid 0x-hex")
-}
-
-fn decode_hex32(s: &str) -> [u8; 32] {
-    let body = s.strip_prefix("0x").unwrap_or(s);
-    hex::decode(body).unwrap().as_slice().try_into().unwrap()
-}
-
-/// The fixed batch digest the single-batch fund-safety cases sign over.
-const DIGEST: [u8; 32] = [0x5a; 32];
-
-/// A burn payload that MATCHES the 200 fixture's returned spec (value / destinationDomain /
-/// destinationRecipient), so `validate_returned` (B5) accepts the fixture response.
-fn payload_matching_fixture() -> BurnPayload {
-    let fixture = support::fixture_json("prepare_withdrawal_200");
-    let spec = &fixture["batches"][0]["burnIntents"][0]["spec"];
-    let value: u64 = spec["value"].as_str().unwrap().parse().unwrap();
-    XReserveBurnItems {
-        amount: AssetAmount::new(value).unwrap(),
-        dest_domain: spec["destinationDomain"].as_u64().unwrap() as u32,
-        dest_recipient: decode_hex32(spec["destinationRecipient"].as_str().unwrap()),
-        salt: [0u8; 32],
-    }
-}
-
-/// A `ValidatedWithdrawal` carrying exactly `digests`, minted through the REAL B5 gate
-/// (`validate_returned`) against a fixture-derived prepare response — so the gate's digests come from
-/// B5, never from ad-hoc test input.
-fn validated(digests: &[[u8; 32]]) -> ValidatedWithdrawal {
-    let template = support::fixture_json("prepare_withdrawal_200")["batches"][0].clone();
-    let batches: Vec<Value> = digests
-        .iter()
-        .map(|d| {
-            let mut b = template.clone();
-            b["messageHashToSign"] = Value::String(format!("0x{}", hex::encode(d)));
-            b
-        })
-        .collect();
-    let resp: PrepareWithdrawalResponse =
-        serde_json::from_value(json!({ "batches": batches })).expect("a valid prepare response");
-    validate_returned(
-        &resp,
-        &payload_matching_fixture(),
-        &ListenerConfig::default(),
-    )
-    .expect("the fixture response passes B5")
-}
-
-/// A `ListenerConfig` whose attester allowlist is exactly `addrs`.
-fn config_with_allowlist(addrs: impl IntoIterator<Item = Address>) -> ListenerConfig {
-    ListenerConfig::builder()
-        .attester_allowlist(AttesterAllowlist::new(addrs))
-        .build()
-        .expect("a valid config")
-}
-
-/// The happy-path token: one batch, both signers registered, bound to the B5 digest and config.
-fn authorized_two_of_two() -> AuthorizedWithdrawal {
-    let (a0, s0) = signer(0x11, &DIGEST);
-    let (a1, s1) = signer(0x22, &DIGEST);
-    let config = config_with_allowlist([a0, a1]);
-    let request =
-        build_withdraw_request(vec![batch_with(vec![hexbytes(&s0), hexbytes(&s1)])]).unwrap();
-    authorize_submission(request, &validated(&[DIGEST]), &config).expect("both signers registered")
-}
-
-/// A two-batch token: each batch's two signers registered, each bound to its own B5 digest.
-fn authorized_two_batches() -> AuthorizedWithdrawal {
-    let da = [0x5a; 32];
-    let db = [0x5b; 32];
-    let (a0, s0) = signer(0x11, &da);
-    let (a1, s1) = signer(0x22, &da);
-    let (b0, t0) = signer(0x33, &db);
-    let (b1, t1) = signer(0x44, &db);
-    let config = config_with_allowlist([a0, a1, b0, b1]);
-    let request = build_withdraw_request(vec![
-        batch_with(vec![hexbytes(&s0), hexbytes(&s1)]),
-        batch_with(vec![hexbytes(&t0), hexbytes(&t1)]),
-    ])
-    .unwrap();
-    authorize_submission(request, &validated(&[da, db]), &config).expect("all four registered")
-}
-
-/// A client pointed at the mock, no auth.
-fn client_for(mock: &MockCircle) -> CircleClient {
-    CircleClient::new(
-        mock.base_url(),
-        withdrawal_listener_attester::circle::auth::AuthPosture::None,
-    )
-    .expect("client builds against the mock base url")
-    .with_transport(mock.transport())
-}
+use submit_support::mock_circle::{Endpoint, MockCircle, Reply, Script};
+use submit_support::*;
 
 // PREPARE — POST /v1/prepare-withdrawal (CMP-D5)
 // ================================================================================================
@@ -256,17 +109,16 @@ async fn a_malformed_prepare_200_body_is_rejected_not_coerced() {
     )]));
     let client = client_for(&mock);
 
-    let err = prepare(&client, &a_prepare_request()).await.unwrap_err();
     assert_matches!(
-        err,
-        ListenerError::MalformedResponse {
+        prepare(&client, &a_prepare_request()).await,
+        Err(ListenerError::MalformedResponse {
             context: "prepare-withdrawal",
             ..
-        }
+        })
     );
 }
 
-// WITHDRAW — POST /v1/withdraw (CMP-D6): the ARRAY response, one element per batch
+// WITHDRAW — POST /v1/withdraw (CMP-D6), through the production submit path
 // ================================================================================================
 
 #[tokio::test]
@@ -275,17 +127,16 @@ async fn withdraw_submits_the_wrapper_and_decodes_the_201_array() {
         201,
         support::fixture_json("withdraw_201"),
     )]));
+    let dir = tempfile::tempdir().unwrap();
     let client = client_for(&mock);
 
-    let resp = withdraw(&client, authorized_two_of_two())
+    let outcome = submit_withdraw(&client, &ledger_in(&dir), authorized_two_of_two())
         .await
         .expect("a 201 withdraw decodes");
+    let resp = outcome.submitted().expect("a 201 is a submission");
 
     assert_eq!(resp.len(), 1, "the 201 body is an array of length 1");
-    assert_eq!(
-        resp[0].withdrawal_id(),
-        "6f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8"
-    );
+    assert_eq!(resp[0].withdrawal_id(), CONFLICT_WITHDRAWAL_ID);
 
     let reqs = mock.requests_to(Endpoint::Withdraw);
     assert_eq!(reqs.len(), 1);
@@ -301,17 +152,18 @@ async fn withdraw_submits_the_wrapper_and_decodes_the_201_array() {
 #[tokio::test]
 async fn withdraw_decodes_a_two_element_array_for_a_two_batch_submission() {
     // Two batches submitted → a two-element array (one WithdrawalStatus per batch). Modelling the
-    // response as an object would decode neither.
-    let element = support::fixture_json("withdraw_201")[0].clone();
+    // response as an object would decode neither. Each element echoes ITS OWN burn, as Circle's would.
     let mock = MockCircle::start(Script::new().withdraw(vec![Reply::json(
         201,
-        Value::Array(vec![element.clone(), element]),
+        created_body_for_all(&[BURN_TX_ID, OTHER_BURN_TX_ID]),
     )]));
+    let dir = tempfile::tempdir().unwrap();
     let client = client_for(&mock);
 
-    let resp = withdraw(&client, authorized_two_batches())
+    let outcome = submit_withdraw(&client, &ledger_in(&dir), authorized_two_batches())
         .await
         .expect("a two-element 201 array decodes for a two-batch submission");
+    let resp = outcome.submitted().expect("a 201 is a submission");
     assert_eq!(resp.len(), 2, "one WithdrawalStatus per submitted batch");
 }
 
@@ -324,17 +176,18 @@ async fn withdraw_rejects_a_response_with_more_elements_than_batches() {
         201,
         Value::Array(vec![element.clone(), element]),
     )]));
+    let dir = tempfile::tempdir().unwrap();
     let client = client_for(&mock);
 
-    let err = withdraw(&client, authorized_two_of_two())
+    let err = submit_withdraw(&client, &ledger_in(&dir), authorized_two_of_two())
         .await
         .unwrap_err();
     assert_matches!(
         err,
-        ListenerError::WithdrawResponseCardinality {
+        SubmitError::Circle(ListenerError::WithdrawResponseCardinality {
             submitted: 1,
             returned: 2
-        }
+        })
     );
 }
 
@@ -344,17 +197,18 @@ async fn withdraw_rejects_an_empty_response_array() {
     // must not read as success.
     let mock =
         MockCircle::start(Script::new().withdraw(vec![Reply::json(201, Value::Array(vec![]))]));
+    let dir = tempfile::tempdir().unwrap();
     let client = client_for(&mock);
 
-    let err = withdraw(&client, authorized_two_of_two())
+    let err = submit_withdraw(&client, &ledger_in(&dir), authorized_two_of_two())
         .await
         .unwrap_err();
     assert_matches!(
         err,
-        ListenerError::WithdrawResponseCardinality {
+        SubmitError::Circle(ListenerError::WithdrawResponseCardinality {
             submitted: 1,
             returned: 0
-        }
+        })
     );
 }
 
@@ -365,40 +219,54 @@ async fn a_withdraw_201_object_body_fails_to_decode_as_the_array() {
         201,
         support::fixture_json("withdrawal_status_200"),
     )]));
+    let dir = tempfile::tempdir().unwrap();
     let client = client_for(&mock);
 
-    let err = withdraw(&client, authorized_two_of_two())
+    let err = submit_withdraw(&client, &ledger_in(&dir), authorized_two_of_two())
         .await
         .unwrap_err();
     assert_matches!(
         err,
-        ListenerError::MalformedResponse {
+        SubmitError::Circle(ListenerError::MalformedResponse {
             context: "withdraw",
             ..
-        }
+        })
     );
 }
 
 #[tokio::test]
-async fn a_withdraw_409_is_a_generic_http_error_never_reported_as_success() {
-    // 409 conflict-recovery is W7; here a 409 must surface as a refusal, never as a success value.
-    let mock = MockCircle::start(Script::new().withdraw(vec![Reply::json(
-        409,
-        support::fixture_json("withdraw_409"),
-    )]));
+async fn a_withdraw_409_is_never_reported_as_success() {
+    // The 409 conflict-recovery contract itself is T-LA-13 (`conflict_recovery.rs`); what this pins at
+    // the driver's own boundary is the floor beneath all of it: whatever else a 409 becomes, it is
+    // never a submission.
+    let mock = MockCircle::start(
+        Script::new()
+            .withdraw(vec![Reply::json(
+                409,
+                support::fixture_json("withdraw_409"),
+            )])
+            .status(vec![Reply::json(200, status_body("finalized"))]),
+    );
+    let dir = tempfile::tempdir().unwrap();
     let client = client_for(&mock);
 
-    let result = withdraw(&client, authorized_two_of_two()).await;
-    assert_matches!(result, Err(ListenerError::Http { status: 409 }));
+    let outcome = submit_withdraw(&client, &ledger_in(&dir), authorized_two_of_two())
+        .await
+        .expect("a 409 is handled, not surfaced as a transport failure");
+
+    assert!(!matches!(outcome, SubmitOutcome::Submitted(_)));
+    assert!(outcome.submitted().is_none());
+    assert_eq!(withdraw_posts(&mock), 1, "and never re-sent");
 }
 
 #[tokio::test]
 async fn a_withdraw_400_is_a_generic_http_error() {
     let mock = MockCircle::start(Script::new().withdraw(vec![Reply::Status(400)]));
+    let dir = tempfile::tempdir().unwrap();
     let client = client_for(&mock);
     assert_matches!(
-        withdraw(&client, authorized_two_of_two()).await,
-        Err(ListenerError::Http { status: 400 })
+        submit_withdraw(&client, &ledger_in(&dir), authorized_two_of_two()).await,
+        Err(SubmitError::Circle(ListenerError::Http { status: 400 }))
     );
 }
 
@@ -409,7 +277,7 @@ async fn a_withdraw_400_is_a_generic_http_error() {
 async fn a_configured_key_is_injected_under_its_header_at_the_transport_seam() {
     const KEY: &str = "circle-out-of-band-key-Ic4RaK9v";
     let cfg = ListenerConfig::builder()
-        .circle_base_url(mock_circle::MOCK_BASE_URL)
+        .circle_base_url(submit_support::mock_circle::MOCK_BASE_URL)
         .api_auth_token(SecretString::new(KEY))
         .api_auth_header("X-Circle-Key")
         .build()
@@ -419,11 +287,14 @@ async fn a_configured_key_is_injected_under_its_header_at_the_transport_seam() {
         201,
         support::fixture_json("withdraw_201"),
     )]));
+    let dir = tempfile::tempdir().unwrap();
     let client = CircleClient::from_config(&cfg)
         .unwrap()
         .with_transport(mock.transport());
 
-    withdraw(&client, authorized_two_of_two()).await.unwrap();
+    submit_withdraw(&client, &ledger_in(&dir), authorized_two_of_two())
+        .await
+        .unwrap();
 
     let reqs = mock.requests_to(Endpoint::Withdraw);
     assert_eq!(reqs[0].header("x-circle-key"), Some(KEY));
@@ -452,9 +323,10 @@ async fn all_signers_registered_authorizes_and_submits_exactly_once() {
         201,
         support::fixture_json("withdraw_201"),
     )]));
+    let dir = tempfile::tempdir().unwrap();
     let client = client_for(&mock);
 
-    withdraw(&client, authorized_two_of_two())
+    submit_withdraw(&client, &ledger_in(&dir), authorized_two_of_two())
         .await
         .expect("a fully-registered submission goes through");
     assert_eq!(mock.requests_to(Endpoint::Withdraw).len(), 1);
@@ -463,7 +335,7 @@ async fn all_signers_registered_authorizes_and_submits_exactly_once() {
 #[tokio::test]
 async fn a_non_allowlisted_signer_refuses_the_submission_with_zero_withdraw_calls() {
     // Two signers; only the first is a registered attester. The gate refuses, no token is minted, so
-    // `withdraw` cannot even be called — ZERO /v1/withdraw requests reach the mock.
+    // the submission cannot even be attempted — ZERO /v1/withdraw requests reach the mock.
     let (a0, s0) = signer(0x11, &DIGEST);
     let (_a1, s1) = signer(0x22, &DIGEST); // NOT registered
     let config = config_with_allowlist([a0]);
@@ -480,8 +352,8 @@ async fn a_non_allowlisted_signer_refuses_the_submission_with_zero_withdraw_call
         }
     );
 
-    // there is structurally no way to have submitted: withdraw takes an AuthorizedWithdrawal, which was
-    // never produced.
+    // there is structurally no way to have submitted: `submit_withdraw` takes an AuthorizedWithdrawal,
+    // which was never produced.
     let mock = MockCircle::start(Script::new().withdraw(vec![Reply::Status(201)]));
     assert_eq!(mock.request_count(), 0);
 }

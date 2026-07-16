@@ -52,6 +52,24 @@ k256 = { workspace = true }
 # It is NOT used to derive the signing digest: `attester::sign` still consumes Circle's
 # `messageHashToSign` opaquely (no hashing on the input path).
 sha3 = { workspace = true }
+# The per-burn idempotency ledger's persistence (`idempotency::SubmitLedger`): a single-file SQLite
+# database holding the submitted-burn log. This MIRRORS the relayer's `idempotency` seam and its
+# recorded persistence choice (`crates/xreserve-deposit-relayer/PERSISTENCE-CHOICE.md`) — the two must
+# not drift onto different engines, which is why the version/features come from the root
+# [workspace.dependencies] rather than being re-pinned here.
+#
+# The reason is the same one, and it is sharper on this side: the dedup is a CLAIM — check-then-insert
+# must be ONE atomic step even with two observers (two discovery passes, two processes during a deploy
+# overlap) — and SQLite's `BEGIN IMMEDIATE` + a PRIMARY KEY on the burn give exactly that, where a
+# JSON file's read-modify-write cannot. Where the relayer's store is a LIVENESS backstop (the faucet's
+# `usedNonces` assert is the real safety), this ledger has no on-chain backstop behind it: Circle's
+# `409` is the only other guard, and the whole point of W7 is that a `409` must never be answered by
+# re-sending. The claim IS the safety property here.
+#
+# `bundled` compiles SQLite from the amalgamation inside `libsqlite3-sys`: this box has
+# `libsqlite3.so.0` but no `libsqlite3.so` link target, so a system-linked build would not link, and a
+# bundled build cannot drift with the host's SQLite version.
+rusqlite = { workspace = true }
 # `AccountId` (the faucet id in config, and the `metadata.sender → remoteDepositor` encoding's input)
 # and `AssetAmount` (the burn payload's amount) are NAMED in this crate's public API, at the same
 # crates.io pin the rest of the workspace resolves the protocol family at (MIGRATION-V16-ALPHA2.md).
@@ -82,3 +100,8 @@ axum = { workspace = true }
 tower = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+# Every idempotency-ledger test opens a REAL ledger on a REAL file, in a directory tempfile removes
+# with the test. "Durable across a restart" is only provable against a file a second, independent
+# handle can reopen — so no test here reaches for an in-memory database, which is precisely the thing
+# `SubmitLedger::open` refuses.
+tempfile = { workspace = true }

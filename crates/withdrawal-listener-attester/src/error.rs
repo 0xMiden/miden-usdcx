@@ -91,7 +91,14 @@ pub enum ListenerError {
     BadFaucetId { value: String, source: Cause },
 
     /// A request that produced NO HTTP status — a connection failure, a timeout, a body that could
-    /// not be read. Transient: the retry policy (a later slice) treats it as such.
+    /// not be read.
+    ///
+    /// **This is AMBIGUOUS, not transient, and the difference decides money.** No status means no
+    /// evidence either way: on a `POST /v1/withdraw` the withdrawal may already have been created and
+    /// be releasing, with only the response lost. So the submission path does NOT retry it
+    /// ([`is_retryable`](crate::circle::retry::is_retryable) answers `false`) — it surfaces the failure
+    /// and leaves the burn reconciliation-required. Reading this variant as "just try again" is the
+    /// blind resubmission the `409` rule exists to prevent (§10.10).
     Transport(Cause),
 
     /// The response exceeded the configured body ceiling. NOT transient — a peer that returns an
@@ -99,9 +106,14 @@ pub enum ListenerError {
     ResponseTooLarge { limit: usize, actual: usize },
 
     /// A Circle response carried a non-success HTTP status the driver refuses. The OpenAPI documents
-    /// status codes only — no error-body schema — so the status ALONE decides, and the body is never
-    /// parsed (§10.11). The `409` conflict-recovery and the `5xx` bounded-retry policies are a later
-    /// slice (W7); here every non-2xx (that is not the poll's own `404`) is this generic refusal.
+    /// status codes only — no error-body schema — so for the RAW drivers the status ALONE decides and
+    /// the body is never parsed (§10.11): every non-2xx that is not the poll's own `404` is this
+    /// generic refusal.
+    ///
+    /// [`submit_withdraw`](crate::submit::submit_withdraw) is the one exception, and only for the
+    /// `409`, whose body it MUST read: the conflict is the sole statement of which withdrawal the
+    /// duplicate hit (§10.10). Everything else it sees still lands here — an exhausted `5xx` budget, a
+    /// deterministic `400`, an undocumented status — and none of them is ever a withdrawal.
     Http { status: u16 },
 
     /// `GET /v1/withdrawal/{withdrawalId}` answered `404` — no withdrawal under that id (`CMP-D7`,

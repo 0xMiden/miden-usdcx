@@ -27,6 +27,38 @@
 //!   payload (through unit-04's codec) and the `metadata.sender` read. Its tests are therefore
 //!   NON-GATING — the GATING `T-LA-01`/`T-LA-04` local-node runs are parked with the discovery leg.
 //!
+//! # What this slice ADDS (W8) — the burn evidence, and the honesty of its labels
+//!
+//! [`evidence::assemble_evidence`]: the `DC-8` package (`burnTxId`, `note_id`, `nullifier`,
+//! `block_num`), each element carrying BOTH how strongly it is proved ([`types::ProofStrength`]) and
+//! WHAT it proves ([`types::ProvenFact`]). The second half is the fund-safety point, and it is
+//! `DEV-7`, the HIGHEST-RISK deviation, still **OPEN**:
+//!
+//! * **A `GetNotesById` inclusion proof is cryptographic, and it proves the note was CREATED.** It is
+//!   silent on consumption. "This note exists" is not "this burn happened", so no element is ever both
+//!   CRYPTOGRAPHIC and a consumption claim, and [`types::EvidencePackage::consumption_trust`] — how
+//!   well the BURN is proved — is NODE-TRUSTED, always, today. The tx-linkage (`SyncTransactions`) and
+//!   the spend observation (`SyncNullifiers`) carry no inclusion proof; they are labelled to Circle as
+//!   node-trusted, which is the substance of `DEV-7` (`INV-BURN-EVIDENCE-TRUST`).
+//! * **No `burnTxId`-only path, structurally.** `GetTransactionById` does not exist on Miden (R-8), so
+//!   [`evidence::BurnEvidenceReads`] has no by-hash method and the assembler's only entry key is a
+//!   `NoteId` (anti-`ASG-4`). `U1` (`OPTIONAL-UPSTREAM`) stays OPEN.
+//! * **A package cannot be manufactured.** [`types::EvidencePackage`]'s constructor is `pub(crate)`
+//!   and [`evidence::assemble_evidence`] is its only caller, so holding one outside this crate is
+//!   proof the checks ran rather than proof someone typed four plausible values. Every fail-closed
+//!   rule below lives in the assembler; a public constructor would be a door around all of them.
+//! * **Fail-closed.** Missing, ambiguous, or self-contradicting evidence yields
+//!   [`evidence::EvidenceError::ReconciliationRequired`] — W7's vocabulary, deliberately reused — and
+//!   never a package. Only Circle's terminal `finalized` settles a withdrawal.
+//! * **No invented transport.** `note_id`/`nullifier`/`block_num` go nowhere on the wire: `burnTxId`
+//!   is the only evidence field `POST /v1/withdraw` documents, and whether Circle would accept more is
+//!   `DEV-7`'s to answer, not this crate's to assume.
+//!
+//! The reads behind [`evidence::BurnEvidenceReads`] are a crate-local port with a unit adapter — the
+//! real v16-client leg is **W10**, parked, and this slice's tests are therefore NON-GATING. The
+//! optional full-block upgrade ([`evidence::full_block_upgrade`], `IMPL-FULLBLOCK-PATH`) is P2: it
+//! returns its typed deferral error rather than a panicking placeholder.
+//!
 //! # What this slice ADDS (W7) — the money path's error handling
 //!
 //! [`submit::submit_withdraw`], the production `POST /v1/withdraw` entry point, and the two policies
@@ -126,6 +158,7 @@ pub mod attester;
 pub mod circle;
 pub mod config;
 pub mod error;
+pub mod evidence;
 pub mod idempotency;
 pub mod note_decode;
 pub mod submit;
@@ -137,5 +170,6 @@ pub use error::{
     DecodeError, DiscoveryReject, ListenerError, QuorumError, SignError, SignatureError,
     SubmitGateError, ValidationMismatch,
 };
+pub use evidence::{EvidenceError, EvidenceReadError};
 pub use idempotency::LedgerError;
 pub use submit::SubmitError;

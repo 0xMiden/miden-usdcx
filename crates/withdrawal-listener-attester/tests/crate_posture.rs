@@ -12,9 +12,18 @@ use miden_protocol::account::AccountId;
 use rstest::rstest;
 use withdrawal_listener_attester::config::{AttesterKeyHandle, ListenerConfig};
 use withdrawal_listener_attester::error::ListenerError;
-use withdrawal_listener_attester::types::{BurnPayload, EvidencePackage, ProofStrength};
+use withdrawal_listener_attester::evidence::assemble_evidence;
+use withdrawal_listener_attester::types::{BurnPayload, ProofStrength};
 
 use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, XReserveBurnItems};
+
+// The `T-LA-11` unit adapter — the only way to obtain an `EvidencePackage` now that its constructor
+// is sealed. Shared rather than re-declared, so this file and `evidence_trust_labeling.rs` cannot
+// drift onto two different ideas of what an honest set of reads looks like (G4: shared fixtures).
+#[path = "evidence_support/mod.rs"]
+mod evidence_support;
+
+use evidence_support::{burn_note_id, burn_nullifier, faucet_id, UnitPort, CREATE_BLOCK};
 
 /// This repo's own LNV4 local-node-validated xUSDC faucet
 /// (`crates/xusdc-validation/VALIDATION-RECORD-LNV4.md`) — a real, parseable id, not a fabricated one.
@@ -219,12 +228,14 @@ fn the_evidence_package_labels_each_element_with_its_documented_proof_strength()
     // `burnTxId` is NODE-TRUSTED (there is no GetTransactionById, R-8), while the note id and block
     // number are CRYPTOGRAPHIC via the inclusion proof. Telling Circle otherwise would overstate what
     // Miden proves.
-    let evidence = EvidencePackage::new(
-        "0x".to_string() + &"11".repeat(32),
-        [0x22; 32],
-        [0x33; 32],
-        4_242,
-    );
+    //
+    // The package is ASSEMBLED rather than constructed from literals, because it can no longer be
+    // constructed from literals: `EvidencePackage::new` is `pub(crate)`, so the only package that
+    // exists outside the crate is one whose consumption evidence was actually read and checked. This
+    // test used to mint one from four made-up values — which is precisely the bypass that narrowing
+    // closed, and the labels are worth more asserted on a package that came through the real gate.
+    let evidence = assemble_evidence(&UnitPort::honest(), burn_note_id(), faucet_id())
+        .expect("the honest port assembles");
 
     assert_eq!(evidence.note_id_strength(), ProofStrength::Cryptographic);
     assert_eq!(evidence.block_num_strength(), ProofStrength::Cryptographic);
@@ -232,9 +243,15 @@ fn the_evidence_package_labels_each_element_with_its_documented_proof_strength()
     assert_eq!(evidence.nullifier_strength(), ProofStrength::NodeTrusted);
 
     // the Circle wire wants 0x-hex, and the package renders it rather than making each caller do it
-    assert_eq!(evidence.note_id_hex(), format!("0x{}", "22".repeat(32)));
-    assert_eq!(evidence.nullifier_hex(), format!("0x{}", "33".repeat(32)));
-    assert_eq!(evidence.block_num(), 4_242);
+    assert_eq!(
+        evidence.note_id_hex(),
+        format!("0x{}", hex::encode(burn_note_id().as_word().as_bytes()))
+    );
+    assert_eq!(
+        evidence.nullifier_hex(),
+        format!("0x{}", hex::encode(burn_nullifier().as_word().as_bytes()))
+    );
+    assert_eq!(evidence.block_num(), CREATE_BLOCK);
 }
 
 #[test]
@@ -253,8 +270,62 @@ fn the_remote_depositor_encoding_is_unit_04s_account_id_codec_consumed_by_refere
     );
 }
 
-// THE GOVERNING FILE-SIZE GATE (G3)
+// THE GOVERNING FILE-SIZE + STRUCTURE GATE (G3)
 // ================================================================================================
+
+/// BUILDER-GATES G3: "Tests live in their **own module/file**, not inline with implementation."
+///
+/// The gate is structural, and the pressure against it is real: when a `pub(crate)` narrowing puts a
+/// function out of reach of `tests/` (another crate), the tempting fix is a `#[cfg(test)] mod tests`
+/// at the bottom of the implementation file. G3 says no — and it does not have to be inline, because
+/// a test module in its OWN file (`store_tests.rs`, declared `#[cfg(test)] mod store_tests;`) is
+/// still inside the crate and still reaches `pub(crate)`, while keeping tests out of the
+/// implementation.
+///
+/// So: an implementation file may DECLARE a test module (`#[cfg(test)] mod store_tests;` — a
+/// one-line pointer at the file that holds them), but must not CONTAIN one (`#[cfg(test)] mod tests
+/// { … }`). The distinction is the whole gate, and it is what the scan below looks for: the item
+/// following a `#[cfg(test)]` must be a declaration ending in `;`, not a block opening a `{`.
+#[test]
+fn no_implementation_file_carries_an_inline_test_module() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut inline = Vec::new();
+
+    for file in rust_files(&root.join("src")) {
+        // a `*_tests.rs` file IS the test module — it is the compliant destination, not a violation
+        let is_test_module = file
+            .file_stem()
+            .is_some_and(|s| s.to_string_lossy().ends_with("_tests"));
+        if is_test_module {
+            continue;
+        }
+
+        let text = std::fs::read_to_string(&file).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim() != "#[cfg(test)]" {
+                continue;
+            }
+            // the declared item, skipping any attributes between the gate and it (`#[path = …]`)
+            let item = lines[i + 1..]
+                .iter()
+                .map(|l| l.trim())
+                .find(|l| !l.starts_with("#[") && !l.starts_with("//") && !l.is_empty())
+                .unwrap_or("");
+            if !item.ends_with(';') {
+                inline.push(format!("{}:{}: {item}", file.display(), i + 1));
+            }
+        }
+    }
+
+    assert!(
+        inline.is_empty(),
+        "G3: tests live in their own module/file, not inline with implementation. Move these into a \
+         sibling `<name>_tests.rs` declared `#[cfg(test)] mod <name>_tests;` — it keeps pub(crate) \
+         access without putting tests in the implementation:\n{}",
+        inline.join("\n")
+    );
+}
 
 #[test]
 fn no_source_file_exceeds_the_governing_rust_line_ceiling() {

@@ -8,6 +8,10 @@
 //! may be mocked; Miden behavior must not be faked for final acceptance").
 
 pub mod auth;
+pub mod client;
 pub mod schema;
 pub mod transport;
 pub mod wire;
+
+pub use client::{CircleClient, PollPolicy};
+pub use transport::{HttpTransport, RawResponse, ReqwestTransport};

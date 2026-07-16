@@ -225,24 +225,31 @@ fn an_off_enum_status_is_rejected_and_the_six_documented_ones_are_not() {
 
 #[test]
 fn the_terminal_and_retryable_status_partitions_match_the_documented_contract() {
-    // "finalized/expired/failed are terminal; expired retryable, failed not"
-    // (CIRCLE-API-SURFACE.md, WithdrawalResponse.status).
+    // Only `finalized`/`failed` are TERMINAL — polling stops there
+    // (TEST-AND-VERIFICATION-HARNESS.md:191-195). `expired` is NOT terminal: it is a RETRYABLE
+    // (resubmit) outcome, never a completed withdrawal, so treating it as terminal would strand a
+    // recoverable withdrawal as though it were done.
     for kind in [
         WithdrawalStatusKind::Finalized,
-        WithdrawalStatusKind::Expired,
         WithdrawalStatusKind::Failed,
     ] {
-        assert!(kind.is_terminal(), "{kind:?} is documented as terminal");
+        assert!(kind.is_terminal(), "{kind:?} is a terminal completion");
     }
     for kind in [
         WithdrawalStatusKind::Created,
         WithdrawalStatusKind::Verified,
         WithdrawalStatusKind::Confirmed,
+        WithdrawalStatusKind::Expired,
     ] {
-        assert!(!kind.is_terminal(), "{kind:?} is a non-terminal poll state");
+        assert!(!kind.is_terminal(), "{kind:?} is NOT a terminal completion");
     }
 
+    // `expired` is the only retryable status; it is retryable AND non-terminal.
     assert!(WithdrawalStatusKind::Expired.is_retryable());
+    assert!(
+        !WithdrawalStatusKind::Expired.is_terminal(),
+        "expired is retryable, never terminal — the round-1 forbidden-impl"
+    );
     assert!(!WithdrawalStatusKind::Failed.is_retryable());
 }
 

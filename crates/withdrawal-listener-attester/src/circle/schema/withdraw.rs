@@ -263,23 +263,31 @@ pub enum WithdrawalStatusKind {
     Created,
     Verified,
     Confirmed,
-    /// Terminal, and the success case.
+    /// **Terminal** (polling stops here), and the success case.
     Finalized,
-    /// Terminal — but **retryable**: the withdrawal may be resubmitted.
+    /// **Retryable, and NOT terminal.** The withdrawal window closed and a NEW withdrawal must be
+    /// resubmitted (`TEST-AND-VERIFICATION-HARNESS.md:191`-`195`: only `finalized`/`failed` are
+    /// terminal). Polling of THIS id stops because it cannot progress, but `expired` is a distinct
+    /// resubmit outcome — never a completed withdrawal — so it is deliberately excluded from
+    /// [`is_terminal`](Self::is_terminal) and reported through [`is_retryable`](Self::is_retryable).
     Expired,
-    /// Terminal and NOT retryable.
+    /// **Terminal** (polling stops here) and NOT retryable.
     Failed,
 }
 
 impl WithdrawalStatusKind {
-    /// Whether polling can stop: `finalized`, `expired` and `failed` are terminal.
+    /// Whether this is a TERMINAL completion — only `finalized` (success) and `failed` (terminal
+    /// failure). `expired` is deliberately **excluded**: the task and `TEST-AND-VERIFICATION-HARNESS.md`
+    /// (`:191`-`:195`) define only `finalized`/`failed` as terminal, and treating `expired` as terminal
+    /// would hand a resubmittable withdrawal to callers as though it were done. `expired`'s "stop
+    /// polling" behavior is captured by [`is_retryable`](Self::is_retryable) instead.
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Finalized | Self::Expired | Self::Failed)
+        matches!(self, Self::Finalized | Self::Failed)
     }
 
-    /// Whether a terminal failure may be resubmitted. `expired` may; `failed` may NOT — and reading
-    /// that the wrong way round would either strand a recoverable withdrawal or replay one Circle has
-    /// already refused.
+    /// Whether the status is a RETRYABLE (resubmit) outcome — `expired` only. It is NOT terminal; a
+    /// caller that sees it submits a NEW withdrawal. Reading this the wrong way round would either
+    /// strand a recoverable withdrawal or replay one Circle has already refused.
     pub fn is_retryable(self) -> bool {
         matches!(self, Self::Expired)
     }

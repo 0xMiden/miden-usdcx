@@ -1,7 +1,8 @@
 //! `withdrawal_api` — the two request bodies the partner AUTHORS for Circle (the `DC-9`
 //! [`PrepareWithdrawalRequest`], `CMP-D5`, and the `POST /v1/withdraw` [`WithdrawRequest`] wrapper,
-//! `CMP-D6`) **and** the three Circle HTTP drivers that carry them: [`prepare`] (`CMP-D5`),
-//! [`withdraw`] (`CMP-D6`), and [`poll_status`] (`CMP-D7`).
+//! `CMP-D6`), the READ-ONLY Circle drivers ([`prepare`], `CMP-D5`; [`poll_status`], `CMP-D7`), and the
+//! `CMP-D6` pieces the submission is assembled from — the pre-submit fund-safety gate
+//! ([`authorize_submission`]) and the `201` response contract (`decode_withdraw_created`).
 //!
 //! # The drivers, and the shapes that are load-bearing (§10.8)
 //!
@@ -11,17 +12,26 @@
 //!
 //! * [`prepare`] — `POST /v1/prepare-withdrawal`; `200` → the top-level `batches[]`
 //!   [`PrepareWithdrawalResponse`] wrapper.
-//! * [`withdraw`] — `POST /v1/withdraw`; **`201`** → an **array** ([`WithdrawSubmissionResponse`]), one
-//!   [`WithdrawalStatus`](crate::circle::schema::WithdrawalStatus) per submitted batch. Modelling the
-//!   response as an object would fail to decode every real reply.
 //! * [`poll_status`] — `GET /v1/withdrawal/{withdrawalId}`; polls until it stops, which happens on a
 //!   TERMINAL status (`finalized` success or `failed`) OR on the distinct RETRYABLE `expired` outcome
 //!   (resubmit a new withdrawal — `expired` is NOT terminal). A `404` is its own exact
 //!   [`ListenerError::WithdrawalNotFound`]; a `status` outside the six-member enum is a hard decode
 //!   error, never defaulted.
 //!
-//! The `409` conflict-recovery and the `5xx` bounded-retry/rate-governor policies are a LATER slice
-//! (W7): here every non-2xx (other than the poll's own `404`) is a generic [`ListenerError::Http`].
+//! # `POST /v1/withdraw` is NOT driven from here — deliberately
+//!
+//! The submission lives in [`submit`](crate::submit), whole: the `409` conflict-recovery, the bounded
+//! `5xx` retry, the rate ceilings, and — the reason it cannot be split — the **durable per-burn
+//! idempotency claim** that must be taken before a request is even built (§10.10).
+//!
+//! A raw `withdraw` driver did sit here once, so the endpoint's shape could be tested one request at a
+//! time. It was a bypass: [`WithdrawRequest`] is `Clone` and [`authorize_submission`] is public, so a
+//! caller could mint two authorizations for ONE burn and submit it twice without the ledger ever
+//! hearing about it. It is gone rather than hidden, and what it proved — the `batches[]` wrapper on the
+//! wire, the `201` ARRAY (one [`WithdrawalStatus`] per
+//! submitted batch; modelling it as an object would fail to decode every real reply), the cardinality
+//! rule — is proved through [`submit_withdraw`](crate::submit::submit_withdraw), which builds with this
+//! module's [`CircleClient`] and decodes with this module's `decode_withdraw_created`.
 //!
 //! # Fund-safety: the pre-submit signer-allowlist gate ([`authorize_submission`])
 //!
@@ -30,7 +40,8 @@
 //! `/v1/withdraw` submission, [`authorize_submission`] re-does that recovery OFF-chain against the
 //! same `messageHashToSign` digests and requires every recovered signer to be a configured, registered
 //! attester ([`AttesterAllowlist`](crate::attester::AttesterAllowlist)). It mints an
-//! [`AuthorizedWithdrawal`] only on a full pass; [`withdraw`] takes that token and nothing else, so a
+//! [`AuthorizedWithdrawal`] only on a full pass; [`submit_withdraw`](crate::submit::submit_withdraw)
+//! takes that token and nothing else, so a
 //! submission whose signers are not all registered attesters — or one with no allowlist configured at
 //! all (fail-closed) — is **untypeable, not merely unreached**: the refusal happens before the client
 //! is touched, guaranteeing ZERO `/v1/withdraw` calls. This is the W3/W4-audit fund-safety
@@ -96,14 +107,18 @@ use crate::validate::ValidatedWithdrawal;
 /// `POST /v1/prepare-withdrawal` (`CMP-D5`).
 const PATH_PREPARE_WITHDRAWAL: &str = "/v1/prepare-withdrawal";
 /// `POST /v1/withdraw` (`CMP-D6`).
-const PATH_WITHDRAW: &str = "/v1/withdraw";
+pub(crate) const PATH_WITHDRAW: &str = "/v1/withdraw";
 /// `GET /v1/withdrawal/{withdrawalId}` (`CMP-D7`) — prefix; the id is appended.
 const PATH_WITHDRAWAL: &str = "/v1/withdrawal/";
 
 /// `POST /v1/prepare-withdrawal` success status (§10.8: `200`).
 const STATUS_PREPARE_OK: u16 = 200;
 /// `POST /v1/withdraw` success status (§10.8: **`201`**).
-const STATUS_WITHDRAW_CREATED: u16 = 201;
+pub(crate) const STATUS_WITHDRAW_CREATED: u16 = 201;
+/// `POST /v1/withdraw` duplicate-conflict status (§10.8: **`409`** — "burnTxId already tied to an
+/// active withdrawal"). Handled by [`submit_withdraw`](crate::submit::submit_withdraw), NEVER as a
+/// success and never by re-sending (§10.10).
+pub(crate) const STATUS_WITHDRAW_CONFLICT: u16 = 409;
 /// `GET /v1/withdrawal/{id}` success / not-found statuses (§10.8: `200`, `404`).
 const STATUS_WITHDRAWAL_OK: u16 = 200;
 const STATUS_WITHDRAWAL_NOT_FOUND: u16 = 404;
@@ -198,41 +213,39 @@ pub async fn prepare(
     decode(response.body(), "prepare-withdrawal")
 }
 
-/// `POST /v1/withdraw` (`CMP-D6`): submit an [`AuthorizedWithdrawal`] and decode the **array**
-/// response, one [`WithdrawalStatus`](crate::circle::schema::WithdrawalStatus) per batch.
+/// The `201` body's decode + cardinality rule, owned here (it is the `CMP-D6` response contract) and
+/// applied by [`submit_withdraw`](crate::submit::submit_withdraw)'s attempt.
 ///
-/// It takes an [`AuthorizedWithdrawal`] BY VALUE, not a bare [`WithdrawRequest`] by reference, on
-/// purpose: the token can only be minted by [`authorize_submission`] (so every submission has cleared
-/// the signer-allowlist fund-safety gate), it is not `Clone`, and it is CONSUMED here — a single
-/// authorization is spent on a single submission and cannot be reused. There is no way to call this
-/// with an un-gated request.
+/// # There is deliberately no `pub async fn withdraw` beside it
+///
+/// There used to be: a raw public driver that took an [`AuthorizedWithdrawal`] and POSTed it, with no
+/// idempotency ledger involved. Its token discipline was real but insufficient — [`WithdrawRequest`] is
+/// `Clone` and [`authorize_submission`] is public, so a caller could mint two authorizations for ONE
+/// burn and submit it twice, or submit once here and again through
+/// [`submit_withdraw`](crate::submit::submit_withdraw) while the ledger still believed the burn
+/// unseen. That is the double-release the W7 slice exists to prevent, reachable without touching the
+/// ledger at all, and a doc comment calling `submit_withdraw` "the production entry point" did not make
+/// it unrepresentable.
+///
+/// So the driver is gone, not hidden: [`submit_withdraw`](crate::submit::submit_withdraw) — which
+/// CLAIMS every burn durably before it builds a request — is now the only code in the crate that can
+/// execute a `POST /v1/withdraw`, and there is no public function that will do it without a claim.
 ///
 /// # Errors
-/// * [`ListenerError::Http`] — a non-`201` status. The `409` conflict-recovery is a later slice (W7);
-///   here a `409` is a generic refusal, never reported as success.
-/// * [`ListenerError::MalformedResponse`] — a `201` body that is not the array shape (an object would
-///   be a forbidden mis-model).
-/// * [`ListenerError::WithdrawResponseCardinality`] — the `201` array does not carry exactly one status
-///   object per submitted batch (§10.8). A mismatch is refused rather than mis-associated.
-/// * [`ListenerError::Transport`] / [`ListenerError::ResponseTooLarge`].
-pub async fn withdraw(
-    circle: &CircleClient,
-    authorized: AuthorizedWithdrawal,
+/// # Errors
+/// * [`ListenerError::MalformedResponse`] — the body is not the ARRAY shape (an object would be a
+///   forbidden mis-model), or an element does not decode. Refused, never coerced (§10.11).
+/// * [`ListenerError::WithdrawResponseCardinality`] — not exactly one status object per submitted
+///   batch (§10.8). A short array leaves a batch unaccounted for; a long one associates a batch with
+///   the wrong status, or trusts an unrelated withdrawal.
+pub(crate) fn decode_withdraw_created(
+    body: &[u8],
+    submitted: usize,
 ) -> Result<WithdrawSubmissionResponse, ListenerError> {
-    let request = circle.build_post(PATH_WITHDRAW, authorized.request())?;
-    let response = circle.execute(request).await?;
-    if response.status() != STATUS_WITHDRAW_CREATED {
-        return Err(ListenerError::Http {
-            status: response.status(),
-        });
-    }
     // decodes into a Vec<WithdrawalStatus> — the ARRAY, one element per submitted batch. An object
     // body here fails to decode rather than being silently accepted.
-    let statuses: WithdrawSubmissionResponse = decode(response.body(), "withdraw")?;
+    let statuses: WithdrawSubmissionResponse = decode(body, "withdraw")?;
 
-    // one status object per submitted batch (§10.8). A short array leaves a batch unaccounted for; a
-    // long one associates a batch with the wrong status or trusts an unrelated withdrawal.
-    let submitted = authorized.request().batches().len();
     if statuses.len() != submitted {
         return Err(ListenerError::WithdrawResponseCardinality {
             submitted,
@@ -339,7 +352,10 @@ pub async fn poll_status(
 /// Decodes a 2xx body into `T`, mapping a schema violation (including a value outside a closed enum)
 /// to [`ListenerError::MalformedResponse`] with its serde cause preserved. A malformed Circle response
 /// is refused, never coerced (§10.11).
-fn decode<T: DeserializeOwned>(body: &[u8], context: &'static str) -> Result<T, ListenerError> {
+pub(crate) fn decode<T: DeserializeOwned>(
+    body: &[u8],
+    context: &'static str,
+) -> Result<T, ListenerError> {
     serde_json::from_slice(body).map_err(|source| ListenerError::MalformedResponse {
         context,
         source: Cause::new(source),
@@ -354,7 +370,8 @@ fn decode<T: DeserializeOwned>(body: &[u8], context: &'static str) -> Result<T, 
 /// `burnSignatures` signer in every batch recovered, over the batch's B5-validated `messageHashToSign`
 /// digest, to a configured registered attester ([`AttesterAllowlist`](crate::attester::AttesterAllowlist)).
 ///
-/// Its ONLY constructor is [`authorize_submission`]'s full-pass path, and [`withdraw`] consumes it BY
+/// Its ONLY constructor is [`authorize_submission`]'s full-pass path, and
+/// [`submit_withdraw`](crate::submit::submit_withdraw) consumes it BY
 /// VALUE, so "submit a withdrawal whose signers are not all registered attesters" is not a state this
 /// API can represent — the same structural-gate discipline
 /// [`ValidatedWithdrawal`](crate::validate::ValidatedWithdrawal) uses for B5→B6 signing.
@@ -409,8 +426,8 @@ impl AuthorizedWithdrawal {
 /// * [`SubmitGateError::SignerNotAllowlisted`] — a signature whose recovered signer is not a registered
 ///   attester (the core refusal).
 ///
-/// On ANY error no [`AuthorizedWithdrawal`] is produced, so [`withdraw`] cannot run: ZERO
-/// `/v1/withdraw` calls.
+/// On ANY error no [`AuthorizedWithdrawal`] is produced, so
+/// [`submit_withdraw`](crate::submit::submit_withdraw) cannot run: ZERO `/v1/withdraw` calls.
 pub fn authorize_submission(
     request: WithdrawRequest,
     validated: &ValidatedWithdrawal,

@@ -67,6 +67,6 @@ pub use intents::{
 };
 pub use prepare::{ForwardingOptions, PrepareBurnIntentInput, PrepareWithdrawalRequest};
 pub use withdraw::{
-    WithdrawBatch, WithdrawRequest, WithdrawSubmissionResponse, WithdrawalStatus,
+    WithdrawBatch, WithdrawConflict, WithdrawRequest, WithdrawSubmissionResponse, WithdrawalStatus,
     WithdrawalStatusKind,
 };

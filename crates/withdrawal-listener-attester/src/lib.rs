@@ -13,8 +13,8 @@
 //! The Circle-facing half, end to end: the static [`config`], the [`circle::schema`] wire types (the
 //! §10.3 shapes, matched field-for-field to the OpenAPI), the schema-exact mock fixtures, the
 //! [`circle::auth`] posture, the [`circle::transport`] seam **with its production bounded-streaming
-//! transport**, the [`circle::client::CircleClient`], and the three Circle HTTP drivers
-//! ([`withdrawal_api::prepare`], [`withdrawal_api::withdraw`], [`withdrawal_api::poll_status`]). No
+//! transport**, the [`circle::client::CircleClient`], and the three Circle endpoints
+//! ([`withdrawal_api::prepare`], [`submit::submit_withdraw`], [`withdrawal_api::poll_status`]). No
 //! Miden read is made — the drivers are exercised against the in-process mock (§12), and the live
 //! Circle legs stay `REQUIRES CIRCLE CONFIRMATION`.
 //!
@@ -26,13 +26,41 @@
 //!   *says* is already decodable without any of that, and [`note_decode`] does it: the `DC-7`
 //!   payload (through unit-04's codec) and the `metadata.sender` read. Its tests are therefore
 //!   NON-GATING — the GATING `T-LA-01`/`T-LA-04` local-node runs are parked with the discovery leg.
-//! * **The `409` conflict-recovery and the `5xx` bounded-retry / rate-governor policies** (W7).
+//!
+//! # What this slice ADDS (W7) — the money path's error handling
+//!
+//! [`submit::submit_withdraw`], the production `POST /v1/withdraw` entry point, and the two policies
+//! and one ledger it runs on:
+//!
+//! * **The `409` conflict-recovery contract (§10.10).** A `409` ("burnTxId already tied to an active
+//!   withdrawal") is a **duplicate conflict requiring recovery/reconciliation, NOT success**, and is
+//!   NEVER answered by re-sending. With `conflict.withdrawalId` → recover by POLLING
+//!   `GET /v1/withdrawal/{withdrawalId}`; with only `conflict.burnTxId` → stop and mark reconciliation
+//!   required; echoing a DIFFERENT `burnTxId` → a defect. [`submit::SubmitOutcome`] is closed and has
+//!   no path from a `409` to its success variant, so the rule is structural rather than remembered.
+//! * **Per-burn cross-invocation idempotency** ([`idempotency::SubmitLedger`]) — a durable SQLite
+//!   claim, keyed on the `burnTxId`, mirroring the deposit relayer's seam. It is what makes "the same
+//!   burn, re-discovered or re-submitted after a restart, is submitted at most once" true of the
+//!   process rather than of one call. Unlike the relayer's, it is a SAFETY property, not a liveness
+//!   backstop: there is no on-chain assert behind it.
+//! * **Bounded retry + the documented rate ceilings** ([`circle::retry`], [`circle::rate`]) — a `5xx`
+//!   retried within a bound and then SURFACED; a deterministic `400` attempted exactly once; a
+//!   **status-less transport failure attempted exactly once too** (a timeout carries no evidence that
+//!   Circle did not act, so re-POSTing a withdrawal on one is a blind resubmission — §10.10 names `5xx`
+//!   and only `5xx` as retryable); 5 QPS/IP and 35 QPS global, a permit taken before every attempt.
+//!   No `Retry-After`/`429` is documented, so none is invented.
+//!
+//! Everything ambiguous — an exhausted budget, an unreadable `201`, a conflict naming no withdrawal —
+//! fails CLOSED: the burn is blocked for an operator rather than retried into a possible second
+//! release. Only a terminal `finalized` settles a burn as done.
 //!
 //! # What this slice ADDS (W6)
 //!
 //! The three Circle HTTP drivers in [`withdrawal_api`], on the [`circle::client::CircleClient`]:
-//! [`withdrawal_api::prepare`] (`POST /v1/prepare-withdrawal`), [`withdrawal_api::withdraw`]
-//! (`POST /v1/withdraw`, the **array** response, one status per batch), and
+//! [`withdrawal_api::prepare`] (`POST /v1/prepare-withdrawal`), the `POST /v1/withdraw` submission
+//! (the **array** response, one status per batch — W7 folded it into [`submit::submit_withdraw`], which
+//! additionally takes the durable idempotency claim, and deleted the raw driver that could POST
+//! without one), and
 //! [`withdrawal_api::poll_status`] (`GET /v1/withdrawal/{id}`, poll-to-terminal; a validated
 //! [`circle::wire::Uuid`] id, and the response bound to it). Plus the fund-safety pre-submit
 //! signer-allowlist gate ([`withdrawal_api::authorize_submission`] → [`withdrawal_api::AuthorizedWithdrawal`]),
@@ -98,7 +126,9 @@ pub mod attester;
 pub mod circle;
 pub mod config;
 pub mod error;
+pub mod idempotency;
 pub mod note_decode;
+pub mod submit;
 pub mod types;
 pub mod validate;
 pub mod withdrawal_api;
@@ -107,3 +137,5 @@ pub use error::{
     DecodeError, DiscoveryReject, ListenerError, QuorumError, SignError, SignatureError,
     SubmitGateError, ValidationMismatch,
 };
+pub use idempotency::LedgerError;
+pub use submit::SubmitError;

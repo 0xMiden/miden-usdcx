@@ -10,10 +10,13 @@
 //!
 //! # What this slice ships
 //!
-//! The scaffold: the static [`config`], the [`circle::schema`] wire types (the §10.3 shapes, matched
-//! field-for-field to the OpenAPI), the 13 schema-exact mock fixtures, the [`circle::auth`] posture,
-//! and the [`circle::transport`] seam the drivers plug into. Everything in it is offline: no Circle
-//! call, no Miden read.
+//! The Circle-facing half, end to end: the static [`config`], the [`circle::schema`] wire types (the
+//! §10.3 shapes, matched field-for-field to the OpenAPI), the schema-exact mock fixtures, the
+//! [`circle::auth`] posture, the [`circle::transport`] seam **with its production bounded-streaming
+//! transport**, the [`circle::client::CircleClient`], and the three Circle HTTP drivers
+//! ([`withdrawal_api::prepare`], [`withdrawal_api::withdraw`], [`withdrawal_api::poll_status`]). No
+//! Miden read is made — the drivers are exercised against the in-process mock (§12), and the live
+//! Circle legs stay `REQUIRES CIRCLE CONFIRMATION`.
 //!
 //! # What it deliberately does not ship
 //!
@@ -23,7 +26,19 @@
 //!   *says* is already decodable without any of that, and [`note_decode`] does it: the `DC-7`
 //!   payload (through unit-04's codec) and the `metadata.sender` read. Its tests are therefore
 //!   NON-GATING — the GATING `T-LA-01`/`T-LA-04` local-node runs are parked with the discovery leg.
-//! * **The Circle drivers** (`prepare` / `withdraw` / status poll) — W6, against the seam above.
+//! * **The `409` conflict-recovery and the `5xx` bounded-retry / rate-governor policies** (W7).
+//!
+//! # What this slice ADDS (W6)
+//!
+//! The three Circle HTTP drivers in [`withdrawal_api`], on the [`circle::client::CircleClient`]:
+//! [`withdrawal_api::prepare`] (`POST /v1/prepare-withdrawal`), [`withdrawal_api::withdraw`]
+//! (`POST /v1/withdraw`, the **array** response, one status per batch), and
+//! [`withdrawal_api::poll_status`] (`GET /v1/withdrawal/{id}`, poll-to-terminal; a validated
+//! [`circle::wire::Uuid`] id, and the response bound to it). Plus the fund-safety pre-submit
+//! signer-allowlist gate ([`withdrawal_api::authorize_submission`] → [`withdrawal_api::AuthorizedWithdrawal`]),
+//! which requires every recovered `burnSignatures` signer to be a configured registered attester
+//! before any submission, and the production response-size ceiling enforced while streaming
+//! ([`circle::transport::collect_bounded`]).
 //!
 //! # What this slice ADDS (W5)
 //!
@@ -90,5 +105,5 @@ pub mod withdrawal_api;
 
 pub use error::{
     DecodeError, DiscoveryReject, ListenerError, QuorumError, SignError, SignatureError,
-    ValidationMismatch,
+    SubmitGateError, ValidationMismatch,
 };

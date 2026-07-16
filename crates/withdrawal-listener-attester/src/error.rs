@@ -97,6 +97,48 @@ pub enum ListenerError {
     /// The response exceeded the configured body ceiling. NOT transient — a peer that returns an
     /// oversized body will do it again, and the bytes past the ceiling are never buffered.
     ResponseTooLarge { limit: usize, actual: usize },
+
+    /// A Circle response carried a non-success HTTP status the driver refuses. The OpenAPI documents
+    /// status codes only — no error-body schema — so the status ALONE decides, and the body is never
+    /// parsed (§10.11). The `409` conflict-recovery and the `5xx` bounded-retry policies are a later
+    /// slice (W7); here every non-2xx (that is not the poll's own `404`) is this generic refusal.
+    Http { status: u16 },
+
+    /// `GET /v1/withdrawal/{withdrawalId}` answered `404` — no withdrawal under that id (`CMP-D7`,
+    /// §10.8). Its OWN exact variant, distinct from [`Self::Http`]: a poll `404` is a meaningful
+    /// terminal answer ("unknown id"), not an opaque transport-level refusal.
+    WithdrawalNotFound { withdrawal_id: String },
+
+    /// A 2xx Circle body did not decode into the expected schema type — a malformed response, or a
+    /// value outside a closed enum (a `status` string the six-member enum does not contain). Refused,
+    /// never coerced or defaulted (§10.11: "malformed Circle response → reject, not signed"). The
+    /// serde error is the preserved source. `context` names which decode failed (`prepare-withdrawal`,
+    /// `withdraw`, `withdrawal-status`).
+    MalformedResponse {
+        context: &'static str,
+        source: Cause,
+    },
+
+    /// A status poll ran to its attempt ceiling without the status settling — neither a TERMINAL
+    /// completion (`finalized`/`failed`) nor the RETRYABLE `expired` outcome (`expired` is not
+    /// terminal). NOT a settled answer — polling stopped because the bound was hit, so the caller must
+    /// not read it as any final state.
+    PollExhausted { after: u32 },
+
+    /// A `POST /v1/withdraw` `201` array did not carry exactly one status object per submitted batch
+    /// (§10.8: the response is "one element per submitted batch"). A shorter array leaves a batch's
+    /// outcome unaccounted for; a longer one associates a batch with the wrong status (or trusts an
+    /// unrelated withdrawal). Refused rather than mis-associated.
+    WithdrawResponseCardinality { submitted: usize, returned: usize },
+
+    /// A `GET /v1/withdrawal/{id}` `200` decoded to a [`WithdrawalStatus`] whose `withdrawalId` is NOT
+    /// the id that was requested. A schema-valid status for a DIFFERENT withdrawal must never be
+    /// reported as the requested one's outcome — that would attribute another withdrawal's
+    /// `finalized`/`failed` state to this id. The response is bound to the request; a mismatch is
+    /// refused.
+    ///
+    /// [`WithdrawalStatus`]: crate::circle::schema::WithdrawalStatus
+    WithdrawalIdMismatch { requested: String, returned: String },
 }
 
 impl fmt::Display for ListenerError {
@@ -126,6 +168,34 @@ impl fmt::Display for ListenerError {
                 f,
                 "circle response of {actual} bytes exceeds the {limit}-byte ceiling"
             ),
+            Self::Http { status } => {
+                write!(f, "circle answered with http status {status}")
+            }
+            Self::WithdrawalNotFound { withdrawal_id } => {
+                write!(f, "no withdrawal found for id `{withdrawal_id}`")
+            }
+            Self::MalformedResponse { context, source } => {
+                write!(f, "circle {context} response did not decode: {source}")
+            }
+            Self::PollExhausted { after } => write!(
+                f,
+                "status poll reached no terminal status after {after} attempts"
+            ),
+            Self::WithdrawResponseCardinality {
+                submitted,
+                returned,
+            } => write!(
+                f,
+                "circle withdraw returned {returned} status objects for {submitted} submitted batches \
+                 (expected one per batch)"
+            ),
+            Self::WithdrawalIdMismatch {
+                requested,
+                returned,
+            } => write!(
+                f,
+                "circle returned a withdrawal status for id `{returned}`, not the requested `{requested}`"
+            ),
         }
     }
 }
@@ -137,9 +207,15 @@ impl core::error::Error for ListenerError {
             | Self::BadAuthHeader { source, .. }
             | Self::BadFaucetId { source, .. }
             | Self::Transport(source) => Some(source.as_error()),
+            Self::MalformedResponse { source, .. } => Some(source.as_error()),
             Self::InsecureAuthTransport { .. }
             | Self::AuthHeaderNameRequired
-            | Self::ResponseTooLarge { .. } => None,
+            | Self::ResponseTooLarge { .. }
+            | Self::Http { .. }
+            | Self::WithdrawalNotFound { .. }
+            | Self::PollExhausted { .. }
+            | Self::WithdrawResponseCardinality { .. }
+            | Self::WithdrawalIdMismatch { .. } => None,
         }
     }
 }
@@ -517,3 +593,94 @@ impl fmt::Display for ValidationMismatch {
 }
 
 impl core::error::Error for ValidationMismatch {}
+
+/// Why the **pre-submit signer-allowlist gate**
+/// ([`authorize_submission`](crate::withdrawal_api::authorize_submission)) refused to authorize a
+/// `POST /v1/withdraw` — the OFF-chain, fund-safety defense-in-depth that runs BEFORE any submission.
+///
+/// # The invariant this gate enforces
+///
+/// Circle's source-chain verifier already does `ECDSA.recover(digest, sig) → addr` and
+/// `require(attesters[addr])` — but that is the LAST line of defense, at the fund-release boundary.
+/// This gate re-does the recovery off-chain against the SAME `messageHashToSign` digests and requires
+/// every recovered signer to be a **configured, registered attester**
+/// ([`AttesterAllowlist`](crate::attester::AttesterAllowlist)). A signature from a key that is not a
+/// registered attester — or a set with no configured allowlist at all — is refused here, and no
+/// [`AuthorizedWithdrawal`](crate::withdrawal_api::AuthorizedWithdrawal) is minted, so `withdraw`
+/// cannot be reached: **zero `/v1/withdraw` calls** on any rejection, structurally.
+///
+/// [`assemble_quorum`](crate::attester::assemble_quorum) already proves each signature recovers to
+/// its CLAIMED signer; this gate is the complementary check that the claimed/recovered signer is one
+/// the operator actually registered. The two together close the gap the quorum assembler leaves open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SubmitGateError {
+    /// No attester is configured in the allowlist. **Fail-closed**: an empty allowlist would authorize
+    /// an UNBOUNDED signer set, so a submission is refused rather than sent, and the missing
+    /// configuration is surfaced — never silently treated as "allow all".
+    NoAttestersConfigured,
+
+    /// The per-batch `messageHashToSign` digests do not line up 1:1 with the request's batches, so a
+    /// batch's signatures cannot be checked against the digest they were produced over. Refused rather
+    /// than guessing an alignment.
+    BatchDigestCountMismatch { batches: usize, digests: usize },
+
+    /// A `burnSignatures[at]` in `batches[batch]` is not a decodable byte string (odd-length hex). The
+    /// wire newtype permits `^0x[a-fA-F0-9]*$` including an odd digit count; a signer cannot be
+    /// recovered from bytes that do not decode, so it is refused.
+    BadSignatureHex { batch: usize, at: usize },
+
+    /// A `burnSignatures[at]` in `batches[batch]` is not exactly 65 bytes (`r‖s‖v`) — no signer can be
+    /// recovered from it.
+    MalformedSignature { batch: usize, at: usize, len: usize },
+
+    /// A `burnSignatures[at]` in `batches[batch]` does not recover to ANY signer over the batch's
+    /// digest — a `v` outside `27`/`28`, an `r`/`s` that is not a valid signature, or a digest the
+    /// signature does not cover. It cannot be attributed to a registered attester, so it is refused.
+    SignerUnrecoverable { batch: usize, at: usize },
+
+    /// A `burnSignatures[at]` in `batches[batch]` recovered to `signer`, which is NOT in the configured
+    /// attester allowlist. This is the core fund-safety refusal: a signature from an unregistered key
+    /// must never ride a submission.
+    SignerNotAllowlisted {
+        batch: usize,
+        at: usize,
+        signer: Address,
+    },
+}
+
+impl fmt::Display for SubmitGateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoAttestersConfigured => write!(
+                f,
+                "no attester is configured in the allowlist; refusing to submit with an unbounded \
+                 signer set (fail-closed)"
+            ),
+            Self::BatchDigestCountMismatch { batches, digests } => write!(
+                f,
+                "the withdraw request has {batches} batches but {digests} per-batch digests were \
+                 supplied; they must line up 1:1"
+            ),
+            Self::BadSignatureHex { batch, at } => write!(
+                f,
+                "batch {batch}: burn signature {at} is not decodable hex"
+            ),
+            Self::MalformedSignature { batch, at, len } => write!(
+                f,
+                "batch {batch}: burn signature {at} is {len} bytes, not the 65-byte r‖s‖v form"
+            ),
+            Self::SignerUnrecoverable { batch, at } => write!(
+                f,
+                "batch {batch}: burn signature {at} does not recover to any signer over the batch digest"
+            ),
+            Self::SignerNotAllowlisted { batch, at, signer } => write!(
+                f,
+                "batch {batch}: burn signature {at} recovered signer {signer}, which is not a \
+                 configured attester"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for SubmitGateError {}

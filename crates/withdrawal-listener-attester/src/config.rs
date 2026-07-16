@@ -22,6 +22,7 @@ use bon::Builder;
 use miden_protocol::account::AccountId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::attester::AttesterAllowlist;
 use crate::error::{Cause, ListenerError};
 
 /// The documented Circle testnet host (`CIRCLE-API-SURFACE.md`, "Base URLs & transport"). Mainnet is
@@ -154,6 +155,21 @@ pub struct ListenerConfig {
     #[serde(default)]
     attester_key_handles: Vec<AttesterKeyHandle>,
 
+    /// The **registered attester addresses** — the off-chain mirror of Circle's on-chain
+    /// `attesters[addr]` registry. The pre-submit fund-safety gate
+    /// ([`authorize_submission`](crate::withdrawal_api::authorize_submission)) checks every recovered
+    /// `burnSignatures` signer against this set BEFORE any `POST /v1/withdraw`: a signature from a key
+    /// that is not a registered attester is refused off-chain, not left to Circle's source-chain
+    /// `require(attesters[addr])` alone.
+    ///
+    /// The default is EMPTY, and that is deliberate — an empty allowlist makes the submit gate fail
+    /// closed (it refuses to submit with an unbounded signer set) rather than authorize everything. A
+    /// real deployment lists its attester addresses; a `[handle]` in `attester_key_handles` is a KMS
+    /// identifier, NOT an address, so the two are distinct fields.
+    #[builder(default)]
+    #[serde(default, skip_serializing_if = "AttesterAllowlist::is_empty")]
+    attester_allowlist: AttesterAllowlist,
+
     /// The optional out-of-band API auth token. NEVER hardcoded; `None` (the default) builds requests
     /// against the DOCUMENTED no-auth contract. `Q-API-AUTH` is OPEN (`REQUIRES CIRCLE
     /// CONFIRMATION`).
@@ -191,6 +207,8 @@ struct ListenerConfigRaw {
     #[serde(default)]
     attester_key_handles: Vec<AttesterKeyHandle>,
     #[serde(default)]
+    attester_allowlist: AttesterAllowlist,
+    #[serde(default)]
     api_auth_token: Option<SecretString>,
     #[serde(default)]
     api_auth_header: Option<String>,
@@ -206,6 +224,7 @@ impl TryFrom<ListenerConfigRaw> for ListenerConfig {
             miden_domain: raw.miden_domain,
             circle_base_url: raw.circle_base_url,
             attester_key_handles: raw.attester_key_handles,
+            attester_allowlist: raw.attester_allowlist,
             api_auth_token: raw.api_auth_token,
             api_auth_header: raw.api_auth_header,
         };
@@ -331,6 +350,12 @@ impl ListenerConfig {
     /// The configured attester key handles — identifiers only, never key material.
     pub fn attester_key_handles(&self) -> &[AttesterKeyHandle] {
         &self.attester_key_handles
+    }
+
+    /// The registered attester addresses the pre-submit fund-safety gate checks signers against. An
+    /// EMPTY allowlist (the default) makes that gate fail closed.
+    pub fn attester_allowlist(&self) -> &AttesterAllowlist {
+        &self.attester_allowlist
     }
 
     /// The optional out-of-band API auth token (`Q-API-AUTH`, OPEN). `None` is the documented case,

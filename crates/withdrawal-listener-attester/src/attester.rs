@@ -177,9 +177,109 @@ impl Address {
         Self(bytes)
     }
 
+    /// Parses a `0x`-prefixed 20-byte hex address — the form an operator writes a registered attester
+    /// as in the config allowlist.
+    ///
+    /// # Errors
+    /// [`AddressParseError`] — a missing `0x` prefix, a non-hex digit, or a length other than 20
+    /// bytes.
+    pub fn from_hex(s: &str) -> Result<Self, AddressParseError> {
+        let body = s.strip_prefix("0x").ok_or(AddressParseError)?;
+        let bytes = hex::decode(body).map_err(|_| AddressParseError)?;
+        let array: [u8; ADDRESS_LEN] =
+            bytes.as_slice().try_into().map_err(|_| AddressParseError)?;
+        Ok(Self(array))
+    }
+
     /// The 20 raw address bytes.
     pub fn as_bytes(&self) -> &[u8; ADDRESS_LEN] {
         &self.0
+    }
+
+    /// The `0x`-prefixed lower-case hex rendering (the same form [`Self::from_hex`] parses).
+    pub fn to_hex(&self) -> String {
+        format!("0x{}", hex::encode(self.0))
+    }
+}
+
+/// A string that is not a `0x`-prefixed 20-byte hex Ethereum-style address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressParseError;
+
+impl core::fmt::Display for AddressParseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("not a 0x-prefixed 20-byte hex address")
+    }
+}
+
+impl core::error::Error for AddressParseError {}
+
+/// The configured set of **registered attester addresses** — the off-chain mirror of Circle's
+/// on-chain `attesters[addr]` registry, and the allowlist the pre-submit fund-safety gate
+/// ([`authorize_submission`](crate::withdrawal_api::authorize_submission)) checks every recovered
+/// signer against.
+///
+/// It is a SET (deduplicated, ordered by address), because membership — not order or multiplicity —
+/// is the only question the gate asks it. An EMPTY allowlist is a legal value that means exactly what
+/// it says: no attester is registered, so the gate must fail closed rather than authorize an unbounded
+/// signer set.
+///
+/// serde renders it as a sequence of `0x`-hex address strings (the form an operator writes), so a
+/// config file can carry the registry directly; a malformed address fails the load rather than
+/// silently dropping an attester.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttesterAllowlist {
+    addresses: std::collections::BTreeSet<Address>,
+}
+
+impl AttesterAllowlist {
+    /// The allowlist of the given addresses (deduplicated).
+    pub fn new(addresses: impl IntoIterator<Item = Address>) -> Self {
+        Self {
+            addresses: addresses.into_iter().collect(),
+        }
+    }
+
+    /// Whether `address` is a registered attester.
+    pub fn contains(&self, address: &Address) -> bool {
+        self.addresses.contains(address)
+    }
+
+    /// Whether NO attester is registered — the fail-closed condition the gate refuses on.
+    pub fn is_empty(&self) -> bool {
+        self.addresses.is_empty()
+    }
+
+    /// How many attesters are registered.
+    pub fn len(&self) -> usize {
+        self.addresses.len()
+    }
+
+    /// The registered addresses, in ascending order.
+    pub fn addresses(&self) -> impl Iterator<Item = &Address> {
+        self.addresses.iter()
+    }
+}
+
+impl serde::Serialize for AttesterAllowlist {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut seq = s.serialize_seq(Some(self.addresses.len()))?;
+        for address in &self.addresses {
+            seq.serialize_element(&address.to_hex())?;
+        }
+        seq.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AttesterAllowlist {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let hexes = Vec::<String>::deserialize(d)?;
+        let mut addresses = std::collections::BTreeSet::new();
+        for hex in hexes {
+            addresses.insert(Address::from_hex(&hex).map_err(serde::de::Error::custom)?);
+        }
+        Ok(Self { addresses })
     }
 }
 

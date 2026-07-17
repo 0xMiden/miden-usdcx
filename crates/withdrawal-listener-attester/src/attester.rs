@@ -335,6 +335,33 @@ pub fn sign(msg_hash_to_sign: &[u8], key: &SecretKey) -> Result<Signature65, Sig
     Ok(Signature65::from_array(out))
 }
 
+/// The 20-byte Ethereum-style address of `key`'s public key — the address
+/// [`recover_address`] yields for every signature `key` produces over any digest.
+///
+/// It exists so a caller that HOLDS the key does not have to sign-then-recover to learn which signer
+/// its signature will be attributed to. That matters at exactly one place: the orchestration's B6
+/// step pairs each signature with the address it claims signed it, and [`assemble_quorum`] then
+/// proves the claim by recovery. Deriving the claim from the key rather than from the signature keeps
+/// the two sides of that proof independent — a bug in one cannot cancel out a bug in the other — and
+/// it is total, so the signing path has no "the key I just signed with does not recover" branch to
+/// invent an error for.
+///
+/// The derivation is `keccak256(uncompressed pubkey X‖Y)[12..]`, shared with [`recover_address`] so
+/// the two cannot drift onto different address rules.
+pub fn address_of(key: &SecretKey) -> Address {
+    address_from_verifying_key(SigningKey::from(key.clone()).verifying_key())
+}
+
+/// `keccak256(uncompressed pubkey X‖Y)[12..]` — the ONE place a secp256k1 public key becomes an
+/// Ethereum-style address, so recovery and key-side derivation cannot disagree.
+fn address_from_verifying_key(key: &VerifyingKey) -> Address {
+    let point = key.to_encoded_point(false); // 0x04 ‖ X(32) ‖ Y(32)
+    let hash: [u8; 32] = Keccak256::digest(&point.as_bytes()[1..]).into();
+    let mut addr = [0u8; ADDRESS_LEN];
+    addr.copy_from_slice(&hash[12..]);
+    Address::new(addr)
+}
+
 /// Recovers the 20-byte Ethereum signer address from `digest` + a 65-byte `r‖s‖v` signature — the
 /// exact `ECDSA.recover(digest, signature)` Circle runs on the source chain: decode `r‖s`, read the
 /// EVM `v` (`27`/`28`) back to a k256 recovery id, recover the secp256k1 pubkey over `digest`, then
@@ -360,11 +387,59 @@ pub fn recover_address(digest: &[u8; DIGEST_LEN], sig: &Signature65) -> Option<A
     let recovery_id = RecoveryId::from_byte(recovery_id_byte)?;
     let verifying_key = VerifyingKey::recover_from_prehash(digest, &signature, recovery_id).ok()?;
 
-    let point = verifying_key.to_encoded_point(false); // 0x04 ‖ X(32) ‖ Y(32)
-    let hash: [u8; 32] = Keccak256::digest(&point.as_bytes()[1..]).into();
-    let mut addr = [0u8; ADDRESS_LEN];
-    addr.copy_from_slice(&hash[12..]);
-    Some(Address::new(addr))
+    Some(address_from_verifying_key(&verifying_key))
+}
+
+/// The `burnSignatures[]` bundle **in the exact shape Circle's source-chain verifier requires** —
+/// exactly [`MIN_SIGNATURE_THRESHOLD`] signatures, strictly ascending by signer address, no
+/// duplicate signer, each proven to recover to its claimed signer over the batch digest.
+///
+/// # Why the shape is a TYPE and not a check someone remembers to run
+///
+/// The shape is Circle's on-chain rule (`Attestable.sol:75,333-381`), and this crate mirrors it
+/// OFF-chain so a bundle Circle would reject fails here rather than at the fund-release boundary.
+/// But the wire type that carries the bundle —
+/// [`WithdrawBatch`](crate::circle::schema::WithdrawBatch) — cannot enforce it: `burnSignatures` is
+/// a JSON array, its schema says only `minItems: 2`, and the type must stay able to DECODE whatever
+/// Circle sends. So `WithdrawBatch::new` accepts three signatures, or two in descending order, or
+/// the same signer twice. Every one of those is a submission Circle rejects, and none of them is a
+/// shape the wire type can refuse.
+///
+/// The pre-submit allowlist gate
+/// ([`authorize_submission`](crate::withdrawal_api::authorize_submission)) does not close that gap
+/// either, and the distinction is worth naming precisely: it checks **membership** — is every
+/// recovered signer a registered attester — and membership is not shape. Two signatures from the
+/// same registered attester pass membership and fail Circle's verifier.
+///
+/// This newtype is the seam that binds the two. [`assemble_quorum`]'s full-pass path is its only
+/// constructor, and
+/// [`build_withdraw_batch`](crate::withdrawal_api::build_withdraw_batch) — the crate's assembly step
+/// from signatures to a submittable batch — takes one BY REFERENCE and renders it. So a batch built
+/// through the orchestration carries `assemble_quorum`'s shape by construction, rather than by a
+/// reviewer noticing that the call happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuorumBundle {
+    signatures: Vec<Signature65>,
+}
+
+impl QuorumBundle {
+    /// The signatures, in the ascending signer-address order Circle expects.
+    pub fn signatures(&self) -> &[Signature65] {
+        &self.signatures
+    }
+
+    /// How many signatures the bundle carries — always [`MIN_SIGNATURE_THRESHOLD`], since that is
+    /// the only count [`assemble_quorum`] mints one for.
+    pub fn len(&self) -> usize {
+        self.signatures.len()
+    }
+
+    /// Always `false`: an empty bundle is not a shape [`assemble_quorum`] can produce. The accessor
+    /// exists because clippy pairs it with [`Self::len`], and it is written out rather than derived
+    /// so the guarantee is stated instead of implied.
+    pub fn is_empty(&self) -> bool {
+        self.signatures.is_empty()
+    }
 }
 
 /// Assembles the `burnSignatures[]` bundle Circle verifies on the source chain: **exactly
@@ -373,8 +448,12 @@ pub fn recover_address(digest: &[u8; DIGEST_LEN], sig: &Signature65) -> Option<A
 ///
 /// `msg_hash_to_sign` is the same opaque digest [`sign`] signed. Each input pair is a signature and
 /// the 20-byte address the caller EXPECTS signed it (the registered attester). On success the
-/// addresses are stripped and the signatures returned in the SAME order — which, having been
-/// validated ascending, is the ascending-address order Circle expects.
+/// addresses are stripped and the signatures are carried, in the SAME order — which, having been
+/// validated ascending, is the ascending-address order Circle expects — inside a [`QuorumBundle`],
+/// this function's exclusive output type. That bundle is what
+/// [`build_withdraw_batch`](crate::withdrawal_api::build_withdraw_batch) requires, so the shape
+/// checked here is the shape submitted: a `Vec<Signature65>` assembled some other way has nowhere to
+/// go.
 ///
 /// Checks, in order:
 ///
@@ -399,7 +478,7 @@ pub fn recover_address(digest: &[u8; DIGEST_LEN], sig: &Signature65) -> Option<A
 pub fn assemble_quorum(
     msg_hash_to_sign: &[u8; DIGEST_LEN],
     sigs: Vec<(Address, Signature65)>,
-) -> Result<Vec<Signature65>, QuorumError> {
+) -> Result<QuorumBundle, QuorumError> {
     if sigs.len() < MIN_SIGNATURE_THRESHOLD {
         return Err(QuorumError::BelowThreshold {
             have: sigs.len(),
@@ -441,5 +520,7 @@ pub fn assemble_quorum(
         }
     }
 
-    Ok(sigs.into_iter().map(|(_, sig)| sig).collect())
+    Ok(QuorumBundle {
+        signatures: sigs.into_iter().map(|(_, sig)| sig).collect(),
+    })
 }

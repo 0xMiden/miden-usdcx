@@ -27,6 +27,35 @@
 //!   payload (through unit-04's codec) and the `metadata.sender` read. Its tests are therefore
 //!   NON-GATING — the GATING `T-LA-01`/`T-LA-04` local-node runs are parked with the discovery leg.
 //!
+//! # What this slice ADDS (W9) — the orchestration, and the order that is the product
+//!
+//! [`listener::run_once`]: the **B3→B10 flow**, composing every unit above into the sequence that
+//! releases a user's money. It re-implements none of them; what it owns is the ORDER, and the order
+//! is enforced by types rather than by the order of its own lines:
+//!
+//! * **B5 gates B6, structurally.** [`validate::validate_returned`] mints the
+//!   [`ValidatedWithdrawal`](crate::validate::ValidatedWithdrawal), and [`listener::QuorumSigner`] —
+//!   the orchestration's only signing entry — takes one. On a mismatch no token exists, so the signer
+//!   is not merely un-called: it is uncallable (`INV-CIRCLE-CANONICAL-WITHDRAWAL`).
+//! * **The submitted batch carries Circle's ON-CHAIN quorum shape.** W6's submit gate checks signer
+//!   MEMBERSHIP, and membership is not shape: two signatures from one registered attester pass it and
+//!   fail Circle's exactly-2 / strictly-ascending / no-duplicate verifier. So
+//!   [`attester::assemble_quorum`] now mints an [`attester::QuorumBundle`] — the shape as a TYPE —
+//!   and [`withdrawal_api::build_withdraw_batch`] is the only assembly path, and it demands one.
+//! * **The payload and the depositor come from ONE note.**
+//!   [`withdrawal_api::build_prepare_request`] takes a
+//!   [`DiscoveredBurn`](crate::validate::DiscoveredBurn), not a payload and a sender: shipping burn
+//!   A's amount under burn B's depositor is a mistake nothing downstream could catch, so it is
+//!   untypeable rather than avoided.
+//! * **One burn ↔ one payload ↔ one batch** ([`listener::ONE_BATCH_PER_BURN`]) — a prepare response
+//!   with any other batch count is refused BEFORE the signer.
+//! * **Fail-closed at every stage**, and the ledger's durable claim still decides the submission, so
+//!   a re-discovered burn makes zero calls.
+//!
+//! The Miden reads stay PORTS ([`listener::DiscoveredNote`], [`evidence::BurnEvidenceReads`]): they
+//! are **W10, PARKED** on a `miden-client` with no v0.16 release, and nothing here fakes one — so
+//! this slice's suites are NON-GATING, and W10's real-node leg is the gating one.
+//!
 //! # What this slice ADDS (W8) — the burn evidence, and the honesty of its labels
 //!
 //! [`evidence::assemble_evidence`]: the `DC-8` package (`burnTxId`, `note_id`, `nullifier`,
@@ -160,6 +189,7 @@ pub mod config;
 pub mod error;
 pub mod evidence;
 pub mod idempotency;
+pub mod listener;
 pub mod note_decode;
 pub mod submit;
 pub mod types;

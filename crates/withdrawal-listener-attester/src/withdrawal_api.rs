@@ -87,22 +87,21 @@
 //!   `withdraw` body carries whatever `burnTxId` the batch was built with, imposing no pattern the
 //!   OpenAPI does not (the request-side field has none).
 
-use miden_protocol::account::AccountId;
 use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
 
 use serde::de::DeserializeOwned;
 
-use crate::attester::{recover_address, Signature65};
+use crate::attester::{recover_address, QuorumBundle, Signature65};
 use crate::circle::client::CircleClient;
 use crate::circle::schema::{
-    PrepareBurnIntentInput, PrepareWithdrawalRequest, PrepareWithdrawalResponse, WithdrawBatch,
-    WithdrawRequest, WithdrawSubmissionResponse, WithdrawalStatus, WithdrawalStatusKind,
+    BurnIntent, PrepareBurnIntentInput, PrepareWithdrawalRequest, PrepareWithdrawalResponse,
+    WithdrawBatch, WithdrawRequest, WithdrawSubmissionResponse, WithdrawalStatus,
+    WithdrawalStatusKind,
 };
-use crate::circle::wire::{DecimalAmount, Hex32, SchemaError, Uuid};
+use crate::circle::wire::{DecimalAmount, Hex32, HexBytes, SchemaError, Uuid};
 use crate::config::ListenerConfig;
 use crate::error::{Cause, ListenerError, SubmitGateError};
-use crate::types::BurnPayload;
-use crate::validate::ValidatedWithdrawal;
+use crate::validate::{DiscoveredBurn, ValidatedWithdrawal};
 
 /// `POST /v1/prepare-withdrawal` (`CMP-D5`).
 const PATH_PREPARE_WITHDRAWAL: &str = "/v1/prepare-withdrawal";
@@ -124,8 +123,22 @@ const STATUS_WITHDRAWAL_OK: u16 = 200;
 const STATUS_WITHDRAWAL_NOT_FOUND: u16 = 404;
 
 /// Builds the `DC-9` [`PrepareWithdrawalRequest`] — the API JSON the partner sends to
-/// `POST /v1/prepare-withdrawal` — from a decoded burn payload, the note's `metadata.sender`, and
-/// the static config. The single [`PrepareBurnIntentInput`] is wrapped in the top-level `batches[]`.
+/// `POST /v1/prepare-withdrawal` — from ONE B3-validated burn and the static config. The single
+/// [`PrepareBurnIntentInput`] is wrapped in the top-level `batches[]`.
+///
+/// # The payload and the sender arrive together, and that is the signature's job
+///
+/// The two values this request is built out of are the burn's `(amount, destDomain,
+/// destRecipient, salt)` and the burner that `remoteDepositor` names. They came off ONE note, and
+/// they have to stay off one note: shipping burn A's amount under burn B's depositor asks Circle to
+/// release A's money and debit B for it. Nothing downstream can catch that — Circle returns the
+/// spec it was asked for, so B5 compares A's amount against A's amount and passes, and the
+/// signatures sign a canonical intent that is wrong in the one field nobody checked.
+///
+/// So the builder does not take them as two arguments. It takes a [`DiscoveredBurn`], whose only
+/// constructor is [`validate_discovery`](crate::validate::validate_discovery)'s B3 pass, and reads
+/// both out of it. There is no independent-argument form to reach past it — the mismatch is not
+/// avoided here, it is untypeable.
 ///
 /// The field mapping (per the `DC-9` table):
 /// * `token` = `USDC`;
@@ -145,10 +158,10 @@ const STATUS_WITHDRAWAL_NOT_FOUND: u16 = 404;
 ///   placeholder while `Q-DOM-1` is OPEN);
 /// * [`SchemaError::DomainsMustDiffer`] — `remoteDomain == finalDestinationDomain`.
 pub fn build_prepare_request(
-    payload: &BurnPayload,
-    sender: AccountId,
+    burn: &DiscoveredBurn,
     cfg: &ListenerConfig,
 ) -> Result<PrepareWithdrawalRequest, SchemaError> {
+    let payload = burn.payload();
     let value = DecimalAmount::new(payload.amount.as_u64().to_string())
         .expect("a smallest-unit integer is a valid decimal amount");
 
@@ -156,7 +169,8 @@ pub fn build_prepare_request(
         // `token` defaults to USDC — the one enum member.
         .value_including_fees(value)
         .remote_domain(cfg.miden_domain())
-        .remote_depositor(hex32_of(&account_id_to_bytes32(sender)))
+        // the depositor comes out of the SAME `DiscoveredBurn` as the payload above
+        .remote_depositor(hex32_of(&account_id_to_bytes32(burn.depositor())))
         .final_destination_domain(payload.dest_domain)
         .final_destination_recipient(hex32_of(&payload.dest_recipient))
         .salt(hex32_of(&payload.salt))
@@ -164,6 +178,71 @@ pub fn build_prepare_request(
         .build()?;
 
     Ok(PrepareWithdrawalRequest::new(vec![input]))
+}
+
+/// Builds the ONE `POST /v1/withdraw` [`WithdrawBatch`] for ONE burn: Circle's returned burn intent,
+/// the [`QuorumBundle`]'s signatures, and the burn's `burnTxId`.
+///
+/// # This is the crate's only quorum-shaped path onto the wire
+///
+/// [`WithdrawBatch::new`] cannot enforce the quorum shape — it is the wire type, its schema says
+/// only `burnSignatures: minItems 2`, and it must stay able to decode whatever Circle sends. So it
+/// accepts three signatures, or two in descending order, or the same signer twice: each a submission
+/// Circle's exactly-2 / strictly-ascending / no-duplicate-signer verifier rejects
+/// (`Attestable.sol:75,333-381`), and none of them a shape the JSON schema can refuse.
+/// [`authorize_submission`] does not cover it either — it checks signer MEMBERSHIP against the
+/// allowlist, and membership is not shape.
+///
+/// This function is where the two meet: it takes a [`QuorumBundle`], whose only constructor is
+/// [`assemble_quorum`](crate::attester::assemble_quorum)'s full-pass path, and renders its
+/// signatures into the batch. A batch built through here therefore carries the on-chain shape by
+/// construction.
+///
+/// # …and it takes ONE burn intent, not a vector
+///
+/// The wire's `burnIntents` is `1..=10` — "either a single burn intent or a burn intent set". This
+/// builder deliberately cannot express the set, and the reason is the fan-in the batch count is blind
+/// to: a batch carrying the same burn's intent twice passes B5's field-by-field compare on both
+/// copies, and the batch's single `messageHashToSign` covers both, so one attester signature would
+/// authorize two releases of one burn. `DC-8` cannot even describe that — its evidence resolves ONE
+/// `burnTxId` from ONE note.
+///
+/// So the type says one. A genuine intent-SET batch would need its own evidence story and its own
+/// Circle-facing decision (`DEV-7`), and it would land as a deliberate widening of this signature —
+/// which is exactly the review this rule wants, rather than a `.to_vec()` nobody looked twice at.
+///
+/// The `burnTxId` is `DC-8`'s (whether Circle accepts a Miden tx id there is `DEV-7`, OPEN — this
+/// builder carries whatever it is given and asserts nothing about that question), and
+/// `use_circle_forwarding` is carried from the prepare request the intent was returned for, so the
+/// submission cannot claim a forwarding posture the preparation never asked for.
+///
+/// # Errors
+/// [`SchemaError`] from the wire type's own construction. Both of its rules are in fact unreachable
+/// through this entry point — one intent is inside `1..=10`, and a [`QuorumBundle`] always carries
+/// exactly the threshold — but the `Result` is kept rather than `expect`ed away: the wire type owns
+/// those rules, and a builder that swore they could not fire would be asserting something about a
+/// type it does not control.
+pub fn build_withdraw_batch(
+    burn_intent: BurnIntent,
+    quorum: &QuorumBundle,
+    burn_tx_id: &str,
+    use_circle_forwarding: bool,
+) -> Result<WithdrawBatch, SchemaError> {
+    let signatures = quorum
+        .signatures()
+        .iter()
+        .map(|signature| {
+            HexBytes::new(signature.to_hex())
+                .expect("a 65-byte signature renders to a valid 0x-hex string")
+        })
+        .collect();
+
+    WithdrawBatch::new(
+        vec![burn_intent],
+        signatures,
+        burn_tx_id.to_string(),
+        use_circle_forwarding,
+    )
 }
 
 /// Wraps `WithdrawBatch[]` in the top-level [`WithdrawRequest`] `{ batches: [..] }` for

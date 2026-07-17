@@ -8,6 +8,12 @@
 //! merely absent from the struct), and `remoteDepositor` is pinned to the `0x`-hex of unit-04's
 //! `DC-6` `account_id_to_bytes32(sender)` on a golden pair.
 //!
+//! The builder takes ONE `DiscoveredBurn` — B3's own output — rather than a payload and a sender as
+//! independent arguments, so "burn A's payload under burn B's depositor" is not a pairing this API
+//! can express (W9). Every case below therefore mints its burn through the real `validate_discovery`
+//! gate (`discovered_burn`), which also means the fixtures here are burns a real discovery pass could
+//! have produced rather than hand-assembled structs.
+//!
 //! What is enforced:
 //! * the top-level `{ batches: [..] }` wrapper is real (never a bare batch);
 //! * `remoteDepositor` == `encode(metadata.sender)` via the `DC-6` helper, `^0x[a-fA-F0-9]{64}$`;
@@ -25,8 +31,13 @@ use withdrawal_listener_attester::circle::schema::PrepareBurnIntentInput;
 use withdrawal_listener_attester::circle::wire::{DecimalAmount, Hex32, SchemaError};
 use withdrawal_listener_attester::config::ListenerConfig;
 use withdrawal_listener_attester::types::BurnPayload;
+use withdrawal_listener_attester::validate::{
+    validate_discovery, DiscoveredBurn, DiscoveredDetails, DiscoveryRecord,
+};
 use withdrawal_listener_attester::withdrawal_api::build_prepare_request;
-use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
+use xusdc_encoding::xreserve::encoding::{
+    account_id_to_bytes32, account_id_to_felts, encode_burn_note_items,
+};
 
 // ================================================================================================
 // FIXTURES
@@ -78,6 +89,32 @@ fn hex32_str(bytes: &[u8; 32]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
+/// The `DiscoveredBurn` for `(payload, sender)` — minted through the REAL B3 gate, because that is
+/// the only way to mint one.
+///
+/// `build_prepare_request` takes a `DiscoveredBurn` rather than a payload and a sender precisely so
+/// that a caller cannot pair burn A's payload with burn B's depositor (W9's fund-safety gate). This
+/// helper is therefore not a shortcut around that: it encodes the payload with unit-04's own `DC-7`
+/// codec, carries `sender` as the raw `metadata.sender` felt pair, and runs
+/// `validate_discovery` — so the burn under test here is one a real discovery pass could have
+/// produced, and the two halves provably came off one note.
+fn discovered_burn(
+    payload: &BurnPayload,
+    sender: AccountId,
+    cfg: &ListenerConfig,
+) -> DiscoveredBurn {
+    let [prefix, suffix] = account_id_to_felts(sender);
+    let record = DiscoveryRecord::new(
+        cfg.burn_tag(),
+        Some(DiscoveredDetails::from_raw_sender(
+            encode_burn_note_items(payload),
+            prefix,
+            suffix,
+        )),
+    );
+    validate_discovery(&record, cfg).expect("a well-formed public burn note passes B3")
+}
+
 /// The one `PrepareBurnIntentInput` inside a freshly built request (asserting the wrapper carries
 /// exactly one batch on the way).
 fn only_input(
@@ -85,7 +122,8 @@ fn only_input(
     sender: AccountId,
     cfg: &ListenerConfig,
 ) -> PrepareBurnIntentInput {
-    let request = build_prepare_request(payload, sender, cfg).expect("a valid request builds");
+    let request = build_prepare_request(&discovered_burn(payload, sender, cfg), cfg)
+        .expect("a valid request builds");
     assert_eq!(
         request.batches().len(),
         1,
@@ -227,7 +265,8 @@ fn value_xor_rejects_both_and_neither() {
 /// principle, serialize one under a rename; asserting on the JSON string forecloses that.
 #[test]
 fn serialized_request_has_no_source_depositor_key() {
-    let request = build_prepare_request(&a_payload(), a_sender(), &cfg()).unwrap();
+    let request =
+        build_prepare_request(&discovered_burn(&a_payload(), a_sender(), &cfg()), &cfg()).unwrap();
     let json = serde_json::to_string(&request).expect("the request serializes");
 
     let lower = json.to_lowercase();
@@ -257,7 +296,8 @@ fn serialized_request_has_no_source_depositor_key() {
 /// "local binary TransferSpec/BurnIntent construction".
 #[test]
 fn serialized_request_has_no_binary_or_response_artifacts() {
-    let request = build_prepare_request(&a_payload(), a_sender(), &cfg()).unwrap();
+    let request =
+        build_prepare_request(&discovered_burn(&a_payload(), a_sender(), &cfg()), &cfg()).unwrap();
     let json = serde_json::to_string(&request).expect("the request serializes");
 
     for banned in [
@@ -287,8 +327,8 @@ fn rebuild_is_stable_including_salt() {
     let sender = a_sender();
     let cfg = cfg();
 
-    let first = build_prepare_request(&payload, sender, &cfg).unwrap();
-    let second = build_prepare_request(&payload, sender, &cfg).unwrap();
+    let first = build_prepare_request(&discovered_burn(&payload, sender, &cfg), &cfg).unwrap();
+    let second = build_prepare_request(&discovered_burn(&payload, sender, &cfg), &cfg).unwrap();
 
     assert_eq!(
         first, second,
@@ -313,7 +353,7 @@ fn rejects_when_domains_are_equal() {
     let mut payload = a_payload();
     payload.dest_domain = 5;
     let cfg = cfg_with_domain(5); // remoteDomain forced equal to finalDestinationDomain
-    let result = build_prepare_request(&payload, a_sender(), &cfg);
+    let result = build_prepare_request(&discovered_burn(&payload, a_sender(), &cfg), &cfg);
     assert_matches!(result, Err(SchemaError::DomainsMustDiffer(5)));
 }
 
@@ -325,7 +365,7 @@ fn rejects_when_remote_domain_below_minimum() {
     let mut payload = a_payload();
     payload.dest_domain = 7; // distinct, so the failure is the minimum, not the collision
     let cfg = cfg_with_domain(0);
-    let result = build_prepare_request(&payload, a_sender(), &cfg);
+    let result = build_prepare_request(&discovered_burn(&payload, a_sender(), &cfg), &cfg);
     assert_matches!(result, Err(SchemaError::RemoteDomainBelowMinimum(0)));
 }
 

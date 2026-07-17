@@ -62,19 +62,24 @@ fn assembles_exactly_two_ascending_verifying_signatures() {
 
     let bundle = assemble_quorum(&MESSAGE_HASH_TO_SIGN, pairs).expect("a valid 2-of-n quorum");
 
-    assert_eq!(bundle, expected, "signatures returned in address order");
+    assert_eq!(
+        bundle.signatures(),
+        expected.as_slice(),
+        "signatures carried in address order"
+    );
     assert_eq!(bundle.len(), MIN_SIGNATURE_THRESHOLD);
+    assert!(!bundle.is_empty());
     assert!(verify(
         &signers[0].pubkey_compressed(),
         &MESSAGE_HASH_TO_SIGN,
-        &bundle[0]
+        &bundle.signatures()[0]
     ));
     assert!(verify(
         &signers[1].pubkey_compressed(),
         &MESSAGE_HASH_TO_SIGN,
-        &bundle[1]
+        &bundle.signatures()[1]
     ));
-    for s in &bundle {
+    for s in bundle.signatures() {
         assert!(s
             .to_hex()
             .strip_prefix("0x")

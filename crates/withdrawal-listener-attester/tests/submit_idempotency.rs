@@ -9,13 +9,11 @@
 //! Every case asserts on the mock's CALL LOG — an outcome alone would pass for a driver that submitted
 //! twice and reported tidily.
 
-use std::slice;
-
 use assert_matches::assert_matches;
 use rstest::rstest;
 
 use withdrawal_listener_attester::idempotency::{
-    BurnKey, ClaimOutcome, LedgerError, SubmissionStatus, SubmitLedger,
+    BurnKey, LedgerError, SubmissionStatus, SubmitLedger,
 };
 use withdrawal_listener_attester::submit::{submit_withdraw, SubmitError, SubmitOutcome};
 
@@ -79,6 +77,45 @@ fn no_public_api_can_post_a_withdrawal_without_the_ledger() {
         submit.contains("claim_burns"),
         "and it must claim before it builds"
     );
+}
+
+/// **The two transitions that can re-open a mid-flight burn are not reachable from outside the
+/// crate.**
+///
+/// `claim_burns` is the submit decision, and `record_failure` is the ONE edge that puts a burn back
+/// into the re-claimable pool (`Pending`/`Failed` → `Failed`). Between them they are the whole
+/// authority to say "this burn may be sent to Circle". While they were `pub`, a caller outside this
+/// crate — the W9 orchestration being the concrete one — could take a burn that `submit_withdraw`
+/// had claimed and was mid-request on, walk it to `Failed`, and re-claim it. Circle would then be
+/// asked to release the same burn twice, and the ledger that exists to prevent exactly that would
+/// have handed over the key.
+///
+/// Narrowing them to `pub(crate)` makes the call a compile error rather than a review catch. This is
+/// an ABSENCE test for the same reason as the one above: no test can call a function that must not be
+/// callable, so the guard reads the source.
+///
+/// Note the honest limit of the narrowing: it stops callers OUTSIDE the crate. A future in-crate
+/// caller still compiles, and the in-crate discipline — `submit_withdraw` is the only claimer — stays
+/// pinned by `no_public_api_can_post_a_withdrawal_without_the_ledger` above.
+#[test]
+fn the_ledgers_reopening_transitions_are_not_callable_from_outside_the_crate() {
+    let store = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/idempotency/store.rs"),
+    )
+    .unwrap();
+
+    for transition in ["claim_burns", "record_failure"] {
+        assert!(
+            store.contains(&format!("pub(crate) fn {transition}(")),
+            "`{transition}` must be pub(crate): it can re-open a mid-flight burn for resubmission, \
+             and no caller outside this crate has any business doing that"
+        );
+        assert!(
+            !store.contains(&format!("pub fn {transition}(")),
+            "`{transition}` is `pub` again — that hands an external caller the authority to re-send \
+             a burn Circle may already be releasing"
+        );
+    }
 }
 
 /// How many times `ident` appears in `source` as a whole identifier.
@@ -333,43 +370,13 @@ fn the_ledger_refuses_a_memory_uri_because_sqlite_interprets_it() {
     );
 }
 
-/// The claim is the decision point, and it is atomic: of two claims on the same burn exactly one is
-/// `Claimed`.
-#[test]
-fn claiming_the_same_burn_twice_yields_claimed_then_already_seen() {
-    let dir = tempfile::tempdir().unwrap();
-    let ledger = ledger_in(&dir);
-    let key = BurnKey::new(BURN_TX_ID);
-
-    assert_matches!(
-        ledger.claim_burns(slice::from_ref(&key)).unwrap(),
-        ClaimOutcome::Claimed(_)
-    );
-    assert_matches!(
-        ledger.claim_burns(&[key]).unwrap(),
-        ClaimOutcome::AlreadySeen(r) if r.status() == SubmissionStatus::Pending
-    );
-}
-
-/// An all-or-nothing multi-key claim: if ANY key in the set is already seen, NOTHING is claimed.
-/// Otherwise a partial claim would strand the other burns in `Pending` forever.
-#[test]
-fn a_multi_burn_claim_that_hits_an_already_seen_burn_claims_nothing() {
-    let dir = tempfile::tempdir().unwrap();
-    let ledger = ledger_in(&dir);
-    let taken = BurnKey::new(BURN_TX_ID);
-    let fresh = BurnKey::new(OTHER_BURN_TX_ID);
-
-    ledger.claim_burns(slice::from_ref(&taken)).unwrap();
-    let outcome = ledger.claim_burns(&[fresh.clone(), taken]).unwrap();
-
-    assert_matches!(outcome, ClaimOutcome::AlreadySeen(_));
-    assert_eq!(
-        ledger.record(&fresh).unwrap().map(|r| r.status()),
-        None,
-        "the fresh burn must NOT be left claimed by a rolled-back attempt"
-    );
-}
+// The three tests that drove `claim_burns` / `record_failure` DIRECTLY — the atomic claim, the
+// all-or-nothing multi-key claim, and the refusal of `Submitted → Failed` — moved to
+// `src/idempotency/store.rs`'s `mod tests`, unchanged, when those two transitions became
+// `pub(crate)` (see `the_ledgers_reopening_transitions_are_not_callable_from_outside_the_crate`
+// above). This file is another crate and can no longer call them; the properties are still asserted,
+// on the same real files, by the same assertions. Everything reachable through the ledger's PUBLIC
+// surface stays here.
 
 /// The status machine has no edge that could authorize a second release: a `Submitted` burn cannot be
 /// walked back to a re-claimable state.
@@ -388,28 +395,6 @@ fn every_status_but_failed_blocks_resubmission(#[case] status: SubmissionStatus)
 #[test]
 fn only_a_failed_burn_is_re_claimable() {
     assert!(!SubmissionStatus::Failed.blocks_resubmission());
-}
-
-#[test]
-fn a_submitted_burn_cannot_be_walked_back_to_failed() {
-    // Failed is the RE-CLAIMABLE state. If a submitted burn could reach it, a retry driver would
-    // re-POST a burn Circle may already be releasing — the exact double-withdrawal this ledger exists
-    // to prevent.
-    let dir = tempfile::tempdir().unwrap();
-    let ledger = ledger_in(&dir);
-    let key = BurnKey::new(BURN_TX_ID);
-    ledger.claim_burns(slice::from_ref(&key)).unwrap();
-    ledger
-        .record_submission(&key, Some(CONFLICT_WITHDRAWAL_ID))
-        .unwrap();
-
-    assert_matches!(
-        ledger.record_failure(&key),
-        Err(LedgerError::IllegalStatusTransition {
-            from: SubmissionStatus::Submitted,
-            to: SubmissionStatus::Failed
-        })
-    );
 }
 
 #[test]

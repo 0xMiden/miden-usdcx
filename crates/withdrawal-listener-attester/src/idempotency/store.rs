@@ -142,6 +142,13 @@ impl SubmitLedger {
     /// atomically and all-or-nothing. The caller submits on [`ClaimOutcome::Claimed`] and on nothing
     /// else.
     ///
+    /// `pub(crate)`, and that is a fund-safety boundary rather than tidiness. This function IS the
+    /// authority to send a burn to Circle. Exposed publicly, any caller — the W9 orchestration being
+    /// the concrete one — could claim a burn outside the one code path that then actually submits it,
+    /// or race the claim that [`submit_withdraw`](crate::submit::submit_withdraw) is mid-request on.
+    /// In-crate, the discipline that `submit_withdraw` is the only caller is checkable in one module;
+    /// across a crate boundary it is a convention nobody can enforce.
+    ///
     /// The check and the write are ONE `BEGIN IMMEDIATE` transaction, so of two callers racing on the
     /// same burn — two discovery passes, two processes mid-deploy — exactly one gets `Claimed`.
     ///
@@ -166,7 +173,7 @@ impl SubmitLedger {
     ///   absent.
     /// * [`LedgerError::IllegalStatusTransition`] — the re-claim edge was refused.
     /// * [`LedgerError::Store`] — the write failed.
-    pub fn claim_burns(&self, keys: &[BurnKey]) -> Result<ClaimOutcome, LedgerError> {
+    pub(crate) fn claim_burns(&self, keys: &[BurnKey]) -> Result<ClaimOutcome, LedgerError> {
         let now = self.clock.unix_seconds();
 
         self.write(|conn| {
@@ -275,10 +282,17 @@ impl SubmitLedger {
     /// `Pending → Failed`: Circle rejected the request deterministically, so nothing was created. The
     /// burn goes back into the re-claimable pool — the next [`Self::claim_burns`] re-acquires it.
     ///
+    /// `pub(crate)`, for the same reason as [`Self::claim_burns`] and with a sharper edge: this is the
+    /// ONE transition that makes a claimed burn re-claimable again. The status machine already refuses
+    /// it from [`SubmissionStatus::Submitted`], but `Pending` is the dangerous state — a burn mid-POST,
+    /// which may already have reached Circle. An external caller walking a `Pending` burn to `Failed`
+    /// would put it straight back in the pool for a second submission; only the code that owns the
+    /// request knows the request deterministically failed, and that code is in this crate.
+    ///
     /// # Errors
     /// [`LedgerError::UnknownBurn`]; [`LedgerError::IllegalStatusTransition`] — most importantly from
     /// [`SubmissionStatus::Submitted`]: a burn Circle has ACCEPTED must never become re-claimable.
-    pub fn record_failure(&self, key: &BurnKey) -> Result<SubmissionRecord, LedgerError> {
+    pub(crate) fn record_failure(&self, key: &BurnKey) -> Result<SubmissionRecord, LedgerError> {
         self.transition(key, SubmissionStatus::Failed, None)
     }
 
@@ -536,3 +550,16 @@ fn assert_backed_by_a_file(conn: &Connection, path: &Path) -> Result<(), LedgerE
 
     Ok(())
 }
+
+// TESTS
+// ================================================================================================
+//
+// In their own file (G3: tests live in their own module/file, not inline with the implementation),
+// and inside the crate because they drive the `pub(crate)` transitions `tests/` cannot reach.
+//
+// `#[path]` because `store.rs` is a leaf module: without it a child would have to live at
+// `store/store_tests.rs`, burying the file one directory away from the code it tests for no reason
+// other than rustc's lookup rule.
+#[cfg(test)]
+#[path = "store_tests.rs"]
+mod store_tests;

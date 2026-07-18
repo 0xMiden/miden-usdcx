@@ -19,7 +19,12 @@ use crate::error::RelayerError;
 /// other version is REFUSED at open ([`RelayerError::UnsupportedStoreSchema`]) rather than read with
 /// the wrong layout — silently misreading a cursor is exactly the failure the store exists to
 /// prevent, and a migration is an operator's deliberate act, not a side effect of a restart.
-pub const STORE_SCHEMA_VERSION: u32 = 1;
+///
+/// Bumped to 2 when the terminal `rejected` status token was added ([`SubmissionStatus::Rejected`]):
+/// a store this build writes can now hold a token an older build's `from_token` would read as
+/// corruption, so an older binary opening a newer file must be refused with the clean
+/// "unsupported schema" verdict, not left to trip over the unknown token row by row.
+pub const STORE_SCHEMA_VERSION: u32 = 2;
 
 /// How long a write waits for a database another process holds before giving up. It exists for the
 /// two-relayers-one-file case: the loser of a race for the same nonce must wait for the winner's
@@ -135,7 +140,19 @@ impl IdempotencyStore {
             }
             // our own file
             v if v == STORE_SCHEMA_VERSION => {}
-            // somebody else's layout: refuse it rather than read a cursor out of the wrong columns
+            // a v1 file from a base build: MIGRATE it. The table layout is byte-identical to v2 and
+            // every v1 status token (`pending`/`submitted`/`committed`/`already_minted`/`failed`) is a
+            // subset of v2's — v2 only ADDED `rejected`, which a v1 file cannot contain — so every v1
+            // row is already a valid v2 row and the migration is a version re-stamp, no data
+            // transform. It preserves the nonce log and the cursor: an operator upgrading the durable
+            // relayer must not lose the replay-prevention state, and deleting the file to recover
+            // would discard exactly that. The re-stamp is a single atomic pragma write.
+            1 => {
+                conn.pragma_update(None, "user_version", STORE_SCHEMA_VERSION)
+                    .map_err(store_failed)?;
+            }
+            // a version this build does not know (a NEWER layout): refuse it rather than read a cursor
+            // out of the wrong columns. Migration is for the known past, never a blind accept.
             found => {
                 return Err(RelayerError::UnsupportedStoreSchema {
                     found,
@@ -319,6 +336,56 @@ impl IdempotencyStore {
     /// already-minted nonce cannot fail after the fact).
     pub fn record_failure(&self, nonce_key: &[u8; 32]) -> Result<IdempotencyRecord, RelayerError> {
         self.transition(nonce_key, SubmissionStatus::Failed, None, None)
+    }
+
+    /// `Pending → Rejected`: the mint was PERMANENTLY refused — a fatal node submit, or a note
+    /// unit-04's factory would not build. Terminal, and the deliberate counterpart of
+    /// [`Self::record_failure`]: a `Rejected` nonce is NOT re-claimable and NOT in the
+    /// [`Self::retryable`] work list, so a permanently-refused transaction is never re-fetched and
+    /// re-submitted on a later cycle. That is the whole reason the two are different transitions —
+    /// recording a fatal refusal as `Failed` would loop the retry driver on it forever.
+    ///
+    /// # Errors
+    /// [`RelayerError::UnknownNonce`] — the nonce was never claimed.
+    /// [`RelayerError::IllegalStatusTransition`] — from any state other than `Pending`: a rejection
+    /// can only settle a claimed-but-not-yet-submitted attempt, never overwrite a `Submitted` or an
+    /// already-settled record.
+    pub fn record_rejected(&self, nonce_key: &[u8; 32]) -> Result<IdempotencyRecord, RelayerError> {
+        self.transition(nonce_key, SubmissionStatus::Rejected, None, None)
+    }
+
+    /// **Atomically re-stamp a `Failed` row's timestamp — but ONLY while it is still `Failed`.** The
+    /// retry driver calls this to rotate a row it just re-attempted to the back of the timestamp-ordered
+    /// work list, so a persistently-unfetchable head cannot starve the tail.
+    ///
+    /// The conditional is the whole point. [`Self::retryable`] is a NON-owning read that two drivers may
+    /// observe, and the status machine permits `Pending → Failed` and `Submitted → Failed`. An
+    /// unconditional re-stamp would let a late driver drag a row another driver has since CLAIMED
+    /// (`Pending`) or SUBMITTED (`Submitted`) back into the retryable pool — losing that driver's mint
+    /// and re-advertising the nonce. So the read and the conditional update are ONE `BEGIN IMMEDIATE`
+    /// transaction: if the row is no longer `Failed`, nothing is written and `Ok(false)` is returned.
+    ///
+    /// Returns `Ok(true)` if the row was `Failed` and re-stamped, `Ok(false)` if it is gone or no longer
+    /// `Failed` (a concurrent driver owns it — leave it be).
+    ///
+    /// # Errors
+    /// [`RelayerError::CorruptStoreRecord`] — the row is unreadable (a foreign writer / a partial
+    /// upgrade); PROPAGATED, never swallowed, because defaulting corruption either way strands or
+    /// double-drives the deposit.
+    /// [`RelayerError::IdempotencyStore`] — the read or the write failed.
+    pub fn touch_failed_timestamp(&self, nonce_key: &[u8; 32]) -> Result<bool, RelayerError> {
+        let now = self.clock.unix_seconds();
+        self.write(|conn| match read_record(conn, nonce_key)? {
+            // still Failed → re-stamp through the machine (the `Failed → Failed` edge re-timestamps).
+            // A concurrent transition cannot slip between the read and the write: they are one
+            // `BEGIN IMMEDIATE` transaction.
+            Some(record) if record.status() == SubmissionStatus::Failed => {
+                apply_transition(conn, &record, SubmissionStatus::Failed, None, None, now)?;
+                Ok(true)
+            }
+            // gone, claimed, submitted, or settled — another driver owns it now; do not overwrite it
+            _ => Ok(false),
+        })
     }
 
     // ---- internals ------------------------------------------------------------------------------

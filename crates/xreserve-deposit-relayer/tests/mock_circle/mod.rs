@@ -44,6 +44,11 @@ use xreserve_deposit_relayer::circle::HttpTransport;
 use xreserve_deposit_relayer::observability::{EventSink, RelayerEvent};
 
 pub use bodies::*;
+// The same reason as this module's `dead_code` allowance, one level up: these are re-exports of a
+// SHARED fixture module, and each test target uses the subset it needs. The Circle-facing suites
+// build their client through `support`; the cycle suites build theirs through `cycle_support`, so for
+// them this glob resolves to nothing used — which is a fact about the target, not a stale import.
+#[allow(unused_imports)]
 pub use support::*;
 pub use transports::MockTransport;
 

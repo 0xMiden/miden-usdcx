@@ -72,6 +72,13 @@ rusqlite = { workspace = true }
 # advice provider the relayer can reach, at any protocol version. The submit leg (which is what
 # would need a client) is a later slice, and no v0.16 client exists yet.
 miden-protocol = { version = "=0.16.0-alpha.2" }
+# OS entropy for the mint note's SERIAL NUMBER (the binary's `entropy_seed`). The serial number is
+# what makes a re-mint of the same DepositIntent a distinct note rather than a collision, so it must
+# not be reproducible across restarts — which is why the RNG is a parameter of `RelayerCtx` (a test
+# seeds it deterministically) and the OS draw happens only in `main`. Promoted from
+# [dev-dependencies], where it seeded the partner-attester fixture, at the SAME workspace pin; it is
+# not new to the workspace graph, so the offline `--locked` gate resolves unchanged.
+rand = { workspace = true }
 
 [dev-dependencies]
 # Exact-variant assertions + parameterized reject tables; versions from the workspace table.

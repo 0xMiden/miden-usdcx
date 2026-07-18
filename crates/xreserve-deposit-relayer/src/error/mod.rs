@@ -21,6 +21,12 @@ use xusdc_encoding::xreserve::encoding::{DepositIntentField, EncodingError};
 
 use crate::circle::status::{classify_status, StatusClass};
 
+// The `Display` and `Error` (source-chain) renderings live in a sibling module, so this file
+// stays the taxonomy — the enum, its construction, its classification — under the G3 file ceiling.
+// The split is by RESPONSIBILITY, not by variant: `render` adds no variant and owns none, it only
+// renders the ones defined here.
+mod render;
+
 /// A preserved lower-level cause whose own type is neither `Clone` nor `PartialEq` (a
 /// `reqwest::Error`, a `serde_json::Error`, a header/URL parse error). Wrapping it keeps
 /// [`RelayerError`]'s `Clone` + `PartialEq` contract intact while still handing the ORIGINAL typed
@@ -201,6 +207,24 @@ pub enum RelayerError {
         max_attempts: u32,
         alert_after_attempts: u32,
     },
+    /// A recovery policy the relayer would be unsafe to run under (§ crash recovery): a
+    /// `retry_batch_size` of 0 (which makes the retry work list return nothing forever, stranding every
+    /// deposit behind the forward cursor) or a `stale_claim_secs` below the safety floor (which would
+    /// reclaim another process's LIVE `Pending` claim, racing an in-flight submit). Refused at
+    /// construction and at startup, never clamped: an operator's unsafe value must fail loudly, not be
+    /// silently corrected into a different policy than the one they wrote.
+    BadRecoveryPolicy {
+        retry_batch_size: usize,
+        stale_claim_secs: u64,
+        /// The smallest `stale_claim_secs` this config would accept — the larger of the absolute floor
+        /// and one second beyond the submit envelope. Carried so the operator is told what to set.
+        required_min_stale_secs: u64,
+    },
+    /// A submit deadline of 0 ms — refused. `submit_with_retry` would build `Duration::from_millis(0)`,
+    /// so every async submit that yields is classified as an instant timeout and every deposit is
+    /// deferred back to `Failed` forever: the same silent-liveness failure the validated recovery
+    /// policy exists to reject. Refused at startup and at the cycle's config gate.
+    BadSubmitDeadline { submit_deadline_ms: u64 },
     /// A credential is configured and the base URL is not HTTPS. Refused at client construction: over
     /// a plaintext transport the key is readable by anything on the path, and no amount of redaction
     /// in the logs changes that. (A plaintext base URL with NO credential is fine — the documented
@@ -334,6 +358,68 @@ pub enum RelayerError {
     /// is a cache wearing the store's name, and it would re-scan the attestation window and
     /// re-attempt every mint in it. An operator's typo must not be able to spell it.
     EphemeralStorePath { path: String, detail: String },
+
+    // ---- the Miden SUBMIT port (`cycle::MintSubmit`) -------------------------------------------
+    //
+    // The relayer hands a built note to a Miden node through a PORT. These are the answers the port
+    // may give, and the seam's own absence. Which of them a real failure IS, is R6's mapping to make
+    // against a real `miden-client`; the split — one retryable, one not — is the orchestration's
+    // contract, and it is what keeps a node's sync lag from becoming a stranded deposit and a
+    // permanent refusal from becoming an infinite loop.
+    /// The node did not accept the transaction, for a reason that CAN clear: it is behind, it is
+    /// syncing, the connection dropped mid-submit. RETRYABLE — and the deposit intent has no expiry,
+    /// so the attestation is still valid whenever the node catches up (§8.2).
+    TransientSubmit(Cause),
+    /// The node refused the transaction permanently — the built transaction is not one it will ever
+    /// accept. NOT retryable: looping on it would park the relayer on one deposit and mint nothing
+    /// else. The nonce is recorded `Failed` and an operator is alerted (§8.4).
+    FatalSubmit(Cause),
+    /// **There is no production Miden submit adapter.** The port ([`crate::cycle::MintSubmit`]) is
+    /// defined and the orchestration composes against it; its real implementation needs a
+    /// `miden-client` for v0.16, which has no release.
+    ///
+    /// It is a typed refusal rather than a stub that returns success, and `main` fails on it at
+    /// STARTUP rather than mid-flight: a relayer that starts, polls, validates and then silently
+    /// never mints looks healthy for exactly as long as nobody checks the chain. Faking the leg
+    /// instead is the one thing the mock boundary forbids outright (§11: Miden behaviour must not be
+    /// faked for final acceptance).
+    MintSubmitPortUnavailable,
+
+    // ---- the OPTIONAL domain/token fast-fail (§8.1 check 5, `validate::domain_token`) ----------
+    //
+    // Every expected value here is Circle-owned and OPEN, and every one of these refusals is a
+    // LIVENESS fast-fail: the authoritative compare is on-chain at D5a, and a relayer that skipped
+    // all three would mint exactly the same set of deposits, one block later.
+    /// The attestation's `remoteDomain` is not the domain the relayer is configured for. The
+    /// expected value is `Q-DOM-1` (`REQUIRES CIRCLE CONFIRMATION`) — Circle has assigned Miden no
+    /// domain id, so the configured value is a placeholder, which is why the check ships OFF.
+    DomainMismatch { expected: u32, actual: u32 },
+    /// The attestation's `remoteToken` is not the xUSDC identifier the relayer is configured for.
+    /// The expected value AND its encoding are `DEV-10` (`REQUIRES CIRCLE CONFIRMATION` · `NO
+    /// EVIDENCE OF CIRCLE APPROVAL`).
+    TokenMismatch {
+        expected: [u8; 32],
+        actual: [u8; 32],
+    },
+    /// `GET /v1/info` does not advertise the remote domain the relayer is configured to expect —
+    /// so the fast-fail's expected value is not Circle's, and it would refuse every honest deposit.
+    /// Surfaced as the misconfiguration it is, rather than left to look like a flood of bad
+    /// attestations.
+    InfoDomainNotAdvertised { domain: u32 },
+
+    /// A configured Miden account id (the faucet, or the relayer's own) is not a valid `AccountId`.
+    /// Refused where it is CONFIGURED — at startup — because the alternative is discovering it on
+    /// the first deposit that arrives.
+    BadAccountId {
+        field: &'static str,
+        value: String,
+        source: Cause,
+    },
+    /// The operator's config file cannot be read, or is not the documented shape. The binary's only
+    /// I/O error: `config` itself does none, so this is raised where the file is read and nowhere
+    /// else. The originating `io::Error`/`serde_json::Error` is preserved — "config invalid" without
+    /// the line and column is a message that costs an operator an hour.
+    BadConfigFile { path: String, source: Cause },
 }
 
 impl RelayerError {
@@ -421,6 +507,11 @@ impl RelayerError {
             // illegal transition and an unknown nonce are all caller/operator business, and retrying
             // them in a loop is how a relayer wedges without saying anything.
             Self::IdempotencyStore(_) => true,
+            // the node was behind, or the submit connection died: both clear on their own, and the
+            // deposit intent has no expiry to run out while they do (§8.2). `FatalSubmit` is the
+            // deliberate other half — the node's permanent refusals are NOT retried, because a
+            // relayer looping on one deposit mints nothing else.
+            Self::TransientSubmit(_) => true,
             _ => false,
         }
     }
@@ -435,6 +526,9 @@ impl RelayerError {
         match self {
             Self::Http { status } => matches!(classify_status(*status), StatusClass::RetryAlert),
             Self::Transport(_) | Self::RequestTimeout { .. } => true,
+            // §8.4 "Miden transient submit error (sync lag)": retry, and do NOT alert until the
+            // threshold — a node briefly behind is the normal state of a node, not an incident.
+            Self::TransientSubmit(_) => true,
             _ => false,
         }
     }
@@ -445,209 +539,6 @@ impl RelayerError {
         match self {
             Self::Http { status } => Some(*status),
             _ => None,
-        }
-    }
-}
-
-impl fmt::Display for RelayerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BadMagic(_) => write!(f, "deposit intent magic mismatch"),
-            Self::BadVersion(_) => write!(f, "deposit intent version mismatch"),
-            Self::LengthMismatch(_) => write!(f, "deposit intent length relation violated"),
-            Self::ZeroAmount(_) => write!(f, "deposit intent amount is zero"),
-            Self::ZeroLocalToken(_) => write!(f, "deposit intent local token is zero"),
-            Self::ZeroLocalDepositor(_) => write!(f, "deposit intent local depositor is zero"),
-            Self::ShortHeader(_) => write!(f, "deposit intent payload is shorter than 240 bytes"),
-            Self::PreimageTooLarge(_) => write!(
-                f,
-                "deposit intent preimage exceeds the 1024-felt note storage bound"
-            ),
-            Self::DepositIntentCodec(e) => write!(f, "deposit intent codec error: {e}"),
-            // the cause is also reachable via source(); it is inlined here so a single logged line
-            // is self-explanatory
-            Self::MalformedHex { field, source } => {
-                write!(f, "malformed {field} hex: {source}")
-            }
-            Self::BadMessageHashLength { actual } => write!(
-                f,
-                "message hash must be 32 bytes (keccak256), got {actual}"
-            ),
-            // the digests are the whole point of the diagnostic, so they are rendered in full
-            Self::MessageHashMismatch { expected, actual } => write!(
-                f,
-                "message hash does not bind the payload: expected keccak256(payload) = 0x{}, got 0x{}",
-                hex::encode(expected),
-                hex::encode(actual)
-            ),
-            Self::BadAttestationLength { actual } => write!(
-                f,
-                "attestation must be 65 bytes (r||s||v), got {actual}"
-            ),
-            Self::Http { status } => write!(f, "circle returned http {status}"),
-            Self::Transport(source) => write!(f, "circle request failed in transport: {source}"),
-            Self::Decode(source) => write!(f, "circle response does not match the schema: {source}"),
-            Self::BadTxHashFormat { tx_hash } => write!(
-                f,
-                "txHash must match ^0x[a-fA-F0-9]{{64}}$, got `{tx_hash}`"
-            ),
-            Self::BadMessageHashFormat { message_hash } => write!(
-                f,
-                "depositMessageHash must match ^0x[a-fA-F0-9]{{64}}$, got `{message_hash}`"
-            ),
-            Self::BadRemoteDomain { actual } => {
-                write!(f, "remoteDomain must be at least 1, got {actual}")
-            }
-            Self::BadPageSize { actual } => {
-                write!(f, "pageSize must be within 1..=1000, got {actual}")
-            }
-            Self::BadBaseUrl { url, source } => {
-                write!(f, "circle base url `{url}` is not a url: {source}")
-            }
-            // the header VALUE is the credential: it is never rendered, here or anywhere else
-            Self::BadAuthHeader { name, source } => {
-                write!(f, "auth header `{name}` is not a legal http header: {source}")
-            }
-            Self::BadRateLimit {
-                qps_per_ip,
-                qps_global,
-            } => write!(
-                f,
-                "rate ceilings must be non-zero, got {qps_per_ip} qps/ip and {qps_global} qps global"
-            ),
-            Self::BadRetryPolicy {
-                max_attempts,
-                alert_after_attempts,
-            } => write!(
-                f,
-                "retry policy needs at least one attempt and a non-zero alert threshold, got \
-                 max_attempts = {max_attempts} and alert_after_attempts = {alert_after_attempts}"
-            ),
-            Self::InsecureAuthTransport { url } => write!(
-                f,
-                "an api credential must not cross a plaintext transport: `{url}` is not https"
-            ),
-            Self::RequestTimeout { after_ms } => {
-                write!(f, "circle did not answer within {after_ms} ms")
-            }
-            Self::ResponseTooLarge { limit, actual } => write!(
-                f,
-                "circle response body exceeds the {limit}-byte ceiling (saw {actual} bytes)"
-            ),
-            Self::BadTransportLimits {
-                connect_timeout_ms,
-                request_timeout_ms,
-                max_response_bytes,
-            } => write!(
-                f,
-                "transport limits must be non-zero, got connect = {connect_timeout_ms} ms, \
-                 request = {request_timeout_ms} ms, max response = {max_response_bytes} bytes"
-            ),
-            Self::BadPaginationMetadata { detail } => {
-                write!(f, "malformed pagination metadata: {detail}")
-            }
-            // WHERE the response came from is the whole diagnostic: it names the origin that was
-            // handed the request (and, if one was configured, the credential)
-            Self::RedirectFollowed {
-                requested,
-                followed,
-            } => write!(
-                f,
-                "a redirect was followed: requested `{requested}`, response came from `{followed}`                  — the relayer follows no redirect"
-            ),
-            // both digests are rendered: "which attestation did they send me instead?" must be
-            // answerable straight from the log line
-            Self::MessageHashNotRequested {
-                requested,
-                returned,
-            } => write!(
-                f,
-                "circle returned an attestation for a different deposit: requested 0x{}, got 0x{}",
-                hex::encode(requested),
-                hex::encode(returned)
-            ),
-            // the cause is also reachable via source(); it is inlined so one logged line explains
-            // itself (a SQLite code with no context is not an operator-actionable line)
-            Self::IdempotencyStore(source) => {
-                write!(f, "the idempotency store failed: {source}")
-            }
-            Self::UnknownNonce { nonce_key } => write!(
-                f,
-                "nonce 0x{} was never claimed — a submission cannot be recorded for it",
-                hex::encode(nonce_key)
-            ),
-            Self::IllegalStatusTransition { from, to } => write!(
-                f,
-                "a mint cannot go from {from} to {to}"
-            ),
-            // both digests are the diagnostic: WHICH attestation is in the log, and which one was
-            // refused, must be answerable from this line alone
-            Self::NonceMessageHashMismatch {
-                nonce_key,
-                stored,
-                observed,
-            } => write!(
-                f,
-                "a second attestation claims nonce 0x{}: the log holds messageHash 0x{}, this one \
-                 carries 0x{}",
-                hex::encode(nonce_key),
-                hex::encode(stored),
-                hex::encode(observed)
-            ),
-            Self::EmptyCursor { remote_domain } => write!(
-                f,
-                "an empty pagination cursor is not a resume point for remote domain {remote_domain}"
-            ),
-            Self::CorruptStoreRecord { detail } => {
-                write!(f, "the idempotency store holds an unreadable record: {detail}")
-            }
-            Self::UnsupportedStoreSchema { found, expected } => write!(
-                f,
-                "the idempotency store is at schema version {found}, this build speaks {expected}"
-            ),
-            Self::BadTxIdLength { actual } => {
-                write!(f, "a miden transaction id must be 32 bytes, got {actual}")
-            }
-            // the path is echoed verbatim: the operator has to find it in their config, and the
-            // detail says WHY sqlite would not have put it on disk
-            Self::EphemeralStorePath { path, detail } => write!(
-                f,
-                "the idempotency store path `{path}` is not a durable file: {detail}"
-            ),
-            // unit-04's refusal is quoted, not paraphrased — it names the rule the inputs broke
-            Self::MintNoteBuild(source) => {
-                write!(f, "the mint note could not be built: {source}")
-            }
-            Self::BadAttesterPubkeyLength { actual } => write!(
-                f,
-                "the attester pubkey must be a 33-byte compressed sec1 key, got {actual} bytes"
-            ),
-            Self::InvalidAttesterPubkey(source) => {
-                write!(f, "the attester pubkey is not a secp256k1 point: {source}")
-            }
-        }
-    }
-}
-
-impl core::error::Error for RelayerError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        // Every variant that HAS a lower-level cause exposes it here, so `source()` traverses to the
-        // real typed error (`EncodingError` on the DepositIntent path, `hex::FromHexError` on the
-        // wire-decode path) and callers can `downcast_ref` it. The remaining envelope variants
-        // (length / binding mismatch) are genuine leaves — the relayer itself is the authority there,
-        // so no cause exists and none is invented.
-        match self {
-            Self::MalformedHex { source, .. } => Some(source),
-            Self::Transport(source)
-            | Self::Decode(source)
-            | Self::IdempotencyStore(source)
-            | Self::MintNoteBuild(source)
-            | Self::InvalidAttesterPubkey(source)
-            | Self::BadBaseUrl { source, .. }
-            | Self::BadAuthHeader { source, .. } => Some(source.as_error()),
-            _ => self
-                .encoding_source()
-                .map(|e| e as &(dyn core::error::Error + 'static)),
         }
     }
 }

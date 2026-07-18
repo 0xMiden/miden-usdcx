@@ -111,6 +111,77 @@ fn already_minted_is_reachable_from_any_live_status_and_is_terminal(
     assert!(store.is_nonce_submitted(&nonce(1)).expect("lookup"));
 }
 
+/// `Rejected` — the mint attempt was PERMANENTLY refused (a fatal node submit, or a note unit-04's
+/// factory would not build) — is TERMINAL and blocks resubmission. It is the durable counterpart of
+/// `Failed`: both mean "did not mint", but `Failed` is the retryable pool a later cycle re-drives,
+/// while `Rejected` is the deposit no retry can help. Keeping them apart is what stops a permanently
+/// refused transaction from being re-submitted every cycle forever.
+#[test]
+fn rejected_is_terminal_and_blocks_resubmission() {
+    let clock = ManualClock::at(1_000);
+    let (_dir, store) = fresh_store(&clock);
+
+    claim(&store, &nonce(1), &message_hash(1));
+    let rejected = store
+        .record_rejected(&nonce(1))
+        .expect("pending -> rejected");
+
+    assert_eq!(rejected.status(), SubmissionStatus::Rejected);
+    assert!(
+        rejected.status().is_terminal(),
+        "a permanent refusal is settled"
+    );
+    assert!(
+        rejected.status().blocks_resubmission(),
+        "a rejected nonce must not be re-submitted"
+    );
+    // the store answers "do not submit again" for it — the same answer it gives a committed nonce
+    assert!(store.is_nonce_submitted(&nonce(1)).expect("lookup"));
+}
+
+/// A `Rejected` nonce is NOT in the retry work list — that is the whole point of the split from
+/// `Failed`. The retry driver re-fetches and re-submits everything `retryable()` returns, so a
+/// permanently-refused deposit appearing there would be re-submitted on every pass.
+#[test]
+fn rejected_records_are_absent_from_the_retry_queue() {
+    let clock = ManualClock::at(1_000);
+    let (_dir, store) = fresh_store(&clock);
+
+    // one Failed (retryable) nonce and one Rejected (terminal) nonce
+    claim(&store, &nonce(1), &message_hash(1));
+    store.record_failure(&nonce(1)).expect("-> failed");
+    claim(&store, &nonce(2), &message_hash(2));
+    store.record_rejected(&nonce(2)).expect("-> rejected");
+
+    let retryable = store.retryable(100).expect("read the retry queue");
+    let keys: Vec<[u8; 32]> = retryable.iter().map(|r| *r.nonce_key()).collect();
+    assert!(keys.contains(&nonce(1)), "the Failed nonce is retryable");
+    assert!(
+        !keys.contains(&nonce(2)),
+        "a Rejected nonce leaked into the retry queue — it would be re-submitted forever"
+    );
+}
+
+/// A second observation of a `Rejected` nonce is `AlreadySeen`, never a re-claim — so a re-poll of a
+/// page that carried a permanently-refused attestation does not mint it again.
+#[test]
+fn a_rejected_nonce_is_not_reclaimable() {
+    let clock = ManualClock::at(1_000);
+    let (_dir, store) = fresh_store(&clock);
+
+    claim(&store, &nonce(1), &message_hash(1));
+    store.record_rejected(&nonce(1)).expect("-> rejected");
+
+    let outcome = store
+        .claim_nonce(&nonce(1), &message_hash(1))
+        .expect("re-observing a rejected nonce is not an error");
+    assert!(
+        !outcome.is_claimed(),
+        "a rejected nonce was re-claimed — the terminal state did not hold"
+    );
+    assert_eq!(outcome.record().status(), SubmissionStatus::Rejected);
+}
+
 // -------------------------------------------------------------------------------------------------
 // the edges that do not exist
 // -------------------------------------------------------------------------------------------------
@@ -125,6 +196,8 @@ fn already_minted_is_reachable_from_any_live_status_and_is_terminal(
 /// * `Submitted → Submitted` is the double-submit the seam exists to prevent;
 /// * `Failed → Submitted` is the read-then-write retry race: the way out of `Failed` is the atomic
 ///   re-claim (`claim_nonce`), never a bare submission.
+/// * `Rejected` is terminal — a permanently-refused mint has no outgoing edge, exactly like a
+///   settled one, so none of `Submit`/`Commit`/`AlreadyMinted`/`Fail`/`Reject` may leave it.
 #[rstest]
 #[case::committed_to_submitted(SubmissionStatus::Committed, Transition::Submit)]
 #[case::committed_to_failed(SubmissionStatus::Committed, Transition::Fail)]
@@ -136,6 +209,12 @@ fn already_minted_is_reachable_from_any_live_status_and_is_terminal(
 #[case::submitted_to_submitted(SubmissionStatus::Submitted, Transition::Submit)]
 #[case::failed_to_submitted(SubmissionStatus::Failed, Transition::Submit)]
 #[case::failed_to_committed(SubmissionStatus::Failed, Transition::Commit)]
+#[case::rejected_to_submitted(SubmissionStatus::Rejected, Transition::Submit)]
+#[case::rejected_to_failed(SubmissionStatus::Rejected, Transition::Fail)]
+#[case::rejected_to_already_minted(SubmissionStatus::Rejected, Transition::AlreadyMinted)]
+#[case::rejected_to_rejected(SubmissionStatus::Rejected, Transition::Reject)]
+#[case::committed_to_rejected(SubmissionStatus::Committed, Transition::Reject)]
+#[case::submitted_to_rejected(SubmissionStatus::Submitted, Transition::Reject)]
 fn an_illegal_transition_is_refused_and_leaves_the_record_untouched(
     #[case] from: SubmissionStatus,
     #[case] attempt: Transition,

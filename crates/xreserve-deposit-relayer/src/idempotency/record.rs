@@ -84,9 +84,15 @@ impl fmt::Display for TxId {
 /// * `Committed` — that transaction is in a block. Terminal.
 /// * `AlreadyMinted` — the chain says the nonce is already in `usedNonces`: the on-chain safety
 ///   backstop already fired. Terminal, because another attempt could only fail the same assert.
-/// * `Failed` — the attempt did not mint. It is the ONE status that does not block a retry: treating
-///   a transient submit failure as "submitted" would strand the deposit forever, and a redundant
-///   attempt is bounded by the on-chain nonce assert.
+/// * `Failed` — the attempt did not mint, TRANSIENTLY. It is the ONE status that does not block a
+///   retry: treating a transient submit failure as "submitted" would strand the deposit forever, and
+///   a redundant attempt is bounded by the on-chain nonce assert. A later cycle re-drives it from
+///   `retryable()`.
+/// * `Rejected` — the attempt did not mint, PERMANENTLY (a fatal node submit, or a note the factory
+///   refused). Terminal, and reachable only `Pending → Rejected`, so it can never overwrite a
+///   submitted or settled record. It is the durable half of the fatal/transient split: unlike
+///   `Failed`, it is NOT re-claimed and NOT in the retry work list, so a permanently-refused
+///   transaction is not re-submitted every cycle.
 ///
 /// The edges that are deliberately ABSENT are the design:
 /// * nothing leaves a terminal status — a settled mint cannot be re-opened;
@@ -104,6 +110,12 @@ pub enum SubmissionStatus {
     Committed,
     AlreadyMinted,
     Failed,
+    /// The mint was PERMANENTLY refused — a fatal node submit, or a note unit-04's factory would not
+    /// build. It is the durable counterpart of [`Self::Failed`]: both mean "did not mint", but
+    /// `Failed` is the retryable pool a later cycle re-drives, while `Rejected` is TERMINAL — the
+    /// deposit no retry can help. Keeping the two apart is what stops a permanently-refused
+    /// transaction from being re-fetched and re-submitted on every cycle forever.
+    Rejected,
 }
 
 impl SubmissionStatus {
@@ -116,6 +128,7 @@ impl SubmissionStatus {
             Self::Committed => "committed",
             Self::AlreadyMinted => "already_minted",
             Self::Failed => "failed",
+            Self::Rejected => "rejected",
         }
     }
 
@@ -129,6 +142,7 @@ impl SubmissionStatus {
             "committed" => Ok(Self::Committed),
             "already_minted" => Ok(Self::AlreadyMinted),
             "failed" => Ok(Self::Failed),
+            "rejected" => Ok(Self::Rejected),
             unknown => Err(RelayerError::CorruptStoreRecord {
                 detail: format!("`{unknown}` is not a submission status this build knows"),
             }),
@@ -146,10 +160,12 @@ impl SubmissionStatus {
         !matches!(self, Self::Failed)
     }
 
-    /// Whether the mint is settled: on chain ([`Self::Committed`]), or the chain has told us the
-    /// nonce was already minted ([`Self::AlreadyMinted`]). A settled record has no outgoing edge.
+    /// Whether the record is SETTLED — no outgoing edge. Three ways: the mint is on chain
+    /// ([`Self::Committed`]), the chain reports the nonce already minted ([`Self::AlreadyMinted`]),
+    /// or the attempt was permanently refused ([`Self::Rejected`]). The first two are settled as
+    /// DONE; the third is settled as WILL-NOT-HAPPEN — but all three are the end of the record.
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Committed | Self::AlreadyMinted)
+        matches!(self, Self::Committed | Self::AlreadyMinted | Self::Rejected)
     }
 
     /// The machine, in one place — every edge in the diagram above, and nothing else.
@@ -161,6 +177,10 @@ impl SubmissionStatus {
             (Self::Failed, Self::Pending) => true,
             // the mint went out
             (Self::Pending, Self::Submitted) => true,
+            // the mint was permanently refused before it ever went out (a fatal node submit, or a
+            // note the factory would not build): terminal, and reachable only from the claimed-but-
+            // not-yet-submitted state, so it can never overwrite a Submitted/settled record
+            (Self::Pending, Self::Rejected) => true,
             // ... and landed
             (Self::Submitted, Self::Committed) => true,
             // it did not mint: back into the retryable pool. A failure can be recorded whether the

@@ -29,16 +29,32 @@
 //! attestation observed twice is minted at most once — a LIVENESS backstop, never a safety one: the
 //! authoritative duplicate defence stays the on-chain `usedNonces` assert-then-set.
 //!
-//! This slice opens the **Miden-facing half** ([`miden`]): [`miden::build_mint_note`] turns a
+//! The fifth slice opened the **Miden-facing half** ([`miden`]): [`miden::build_mint_note`] turns a
 //! validated attestation plus the operator-configured attester key into the `XReserveMintNote` the
 //! faucet consumes. It is a DELEGATION — unit-04's `XReserveMintNote::create` owns every byte of the
 //! note's wire form and this crate restates none of it — and it stages no witness data for the
 //! consuming transaction, because it cannot: that transaction is the network's (the faucet is a
-//! keyless network account) and its witness provider is rebuilt from the note's own attachments. The
-//! Miden SUBMIT leg is what remains, and it waits on a `miden-client` release for v0.16.
+//! keyless network account) and its witness provider is rebuilt from the note's own attachments.
+//!
+//! This slice WIRES them together ([`cycle`]): [`cycle::run_relayer_cycle`] is the eight-step
+//! poll→validate→build→submit→track pipeline (§7.6), and [`cycle::run_relayer_loop`] runs it. Its
+//! subject is the §8.4 obligation — **no fetched attestation is ever silently dropped** — which is
+//! held structurally rather than by convention: the per-attestation step returns a
+//! [`cycle::CycleEntry`] and not a `Result`, so there is no `?` that can skip a recording, and every
+//! reason is derived from a typed value, so an entry with nothing to say is not constructible.
+//!
+//! The Miden SUBMIT leg is the one thing still open, and it is open ON PURPOSE: it is a PORT
+//! ([`cycle::MintSubmit`]) with no production implementation, because implementing it needs a
+//! `miden-client` for v0.16 and there is no such release. The orchestration composes against the
+//! port; the adapter is a later slice, proven against a real local node (T-RLY-14/T-RLY-15). Nothing
+//! here fakes it — [`cycle::production_submit_port`] refuses by name and the binary fails at startup
+//! on it, because a relayer that started with a no-op submit would look healthy in every log and
+//! every metric except the chain's (§11: Circle API may be mocked; Miden behaviour must not be faked
+//! for final acceptance).
 
 pub mod circle;
 pub mod config;
+pub mod cycle;
 pub mod error;
 pub mod idempotency;
 pub mod miden;

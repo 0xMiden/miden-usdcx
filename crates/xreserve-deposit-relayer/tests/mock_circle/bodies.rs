@@ -96,6 +96,17 @@ pub fn batch_href(
     }
 }
 
+/// [`info_body`], advertising an arbitrary remote domain + xUSDC identifier — so a test can point
+/// discovery at the domain/token a fixture DepositIntent actually carries. Both values are
+/// placeholders (`Q-DOM-1` / `DEV-10` are OPEN — `REQUIRES CIRCLE CONFIRMATION`); parameterizing
+/// them is what keeps a fixture from reading as a settled assignment.
+pub fn info_body_for(remote_domain: u32, xusdc_identifier_hex: &str) -> Value {
+    let mut body = info_body();
+    body["remoteDomains"][0]["domain"] = json!(remote_domain);
+    body["remoteDomains"][0]["tokens"][0]["remoteTokenIdentifier"] = json!(xusdc_identifier_hex);
+    body
+}
+
 /// `GET /v1/info` — `sourceDomains[]` + `remoteDomains[]` with the exact nested token shape
 /// (CIRCLE-API-SURFACE.md:30).
 pub fn info_body() -> Value {

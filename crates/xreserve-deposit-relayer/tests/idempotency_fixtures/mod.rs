@@ -141,6 +141,9 @@ pub fn drive_to(store: &IdempotencyStore, key: &[u8; 32], target: SubmissionStat
         SubmissionStatus::Failed => {
             store.record_failure(key).expect("pending -> failed");
         }
+        SubmissionStatus::Rejected => {
+            store.record_rejected(key).expect("pending -> rejected");
+        }
     }
 
     assert_eq!(
@@ -157,6 +160,7 @@ pub enum Transition {
     Commit,
     AlreadyMinted,
     Fail,
+    Reject,
 }
 
 impl Transition {
@@ -170,6 +174,7 @@ impl Transition {
             Self::Commit => store.record_commit(key, 99)?,
             Self::AlreadyMinted => store.record_already_minted(key)?,
             Self::Fail => store.record_failure(key)?,
+            Self::Reject => store.record_rejected(key)?,
         };
         Ok(record.status())
     }
@@ -181,6 +186,7 @@ impl Transition {
             Self::Commit => SubmissionStatus::Committed,
             Self::AlreadyMinted => SubmissionStatus::AlreadyMinted,
             Self::Fail => SubmissionStatus::Failed,
+            Self::Reject => SubmissionStatus::Rejected,
         }
     }
 }

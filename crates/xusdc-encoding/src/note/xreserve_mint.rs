@@ -65,8 +65,15 @@ pub const XRESERVE_MINT_ATTACHMENT_NUM_WORDS: usize = 11;
 /// `xreserve_mint_note.masm` with the xreserve library linked. It binds transitively to
 /// `receive_and_mint`'s MAST digest, so ANY edit of the note script or the wrapper trips the
 /// parity assertion (`XReserveMintNote::script_root() == pinned`) and forces a conscious re-pin.
+/// Re-pinned when `DEPOSIT_SCALE_EXP` moved 6 -> 0 (DEV-5 answered: 6-decimal wire == 6-decimal
+/// asset, so the mint applies no rescale). A MASM `const` is a compile-time literal, so
+/// `push.DEPOSIT_SCALE_EXP` in `receive_and_mint` assembles to `push.0` instead of `push.6`,
+/// moving that proc's MAST digest and transitively this script root — from
+/// `0x85c8cfd61de921bd272d7e39766447b52ad04febd868e2c64f1ab442bf0c37b8` to the value below. The
+/// move is attributable to the value flip ALONE: re-deriving with the same source but the value
+/// restored to 6 reproduces the previous root exactly.
 pub const XRESERVE_MINT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x85c8cfd61de921bd272d7e39766447b52ad04febd868e2c64f1ab442bf0c37b8";
+    "0x530e20b39e77a111f00a162835823ff503202d05c182b98728387853e07d19d5";
 
 /// The mint-note consume script source.
 const MINT_NOTE_SCRIPT_SRC: &str =

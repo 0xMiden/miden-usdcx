@@ -49,9 +49,14 @@ const XRESERVE_MINT_ATTACHMENT_NUM_WORDS = 11
 
 # The DC-5 uint256→AssetAmount decimal scale (`y = floor(x / 10^scale_exp)`), FAUCET-side by
 # design: a note-carried scale would let the producer diverge the minted amount from the attested
-# amount. MVP value 6 (the canonical fixture scale; DEV-5 OPEN — this constant is the
-# parameterization point).
-const DEPOSIT_SCALE_EXP = 6
+# amount. DEV-5 ANSWERED: Circle's on-wire deposit `amount` is denominated in 6-decimal smallest
+# units and xUSDC is likewise 6-decimal, so the two denominations coincide and NO rescale applies —
+# scale 0, `y = floor(x / 10^0) = x`, an identity with no floored dust. (`0` is inside the reducer's
+# `[0, SCALE_EXP_MAX=18]` bound.) This constant remains the parameterization point should a
+# future deployment pair a wire denomination with a differently-scaled asset; the identity is
+# pinned behaviourally by tests/mint_scale_conformance.rs, which drives `receive_and_mint` and
+# asserts a Circle-format deposit mints the same number of smallest units.
+const DEPOSIT_SCALE_EXP = 0
 
 # The number of felts in a Word — for the indexed attachment-commitment address math
 # (`commitment_ptr = commitments_base + sc1_idx * WORD_NUM_ELEMENTS`), mirroring the pinned

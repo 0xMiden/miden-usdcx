@@ -46,13 +46,19 @@ use xusdc_encoding::xreserve::encoding::{
 
 const BASE_VECTOR: &str = "di-pos-empty-hookdata";
 
-/// uint256 mint amount 100_000_000, reduced on-chain by the wrapper's scale_exp=6 -> 100 units.
+/// uint256 mint amount 100_000_000 (100.000000 USDC in Circle's 6-decimal smallest units). The
+/// wrapper's `DEPOSIT_SCALE_EXP` is 0 (DEV-5 answered: 6-decimal wire == 6-decimal asset), so the
+/// mint is an identity and the delivered asset amount is the wire amount verbatim. The identity
+/// itself is pinned, with its RED/GREEN intuition, in `mint_scale_conformance.rs`; here it is just
+/// the expected value the transport must carry through.
 const MINT_AMOUNT_RAW: u64 = 100_000_000;
-const MINT_REDUCED: u64 = 100;
+const MINT_DELIVERED: u64 = MINT_AMOUNT_RAW;
 /// maxFee 1_000_000 (amount >= maxFee holds); feeAmount stays 0 (DEV-8 MVP).
 const MAX_FEE_RAW: u64 = 1_000_000;
 
-const MAX_SUPPLY: u64 = 1_000_000;
+/// Headroom for two unrescaled `MINT_AMOUNT_RAW` mints — the supply cap is not what these
+/// transport tests are gating on.
+const MAX_SUPPLY: u64 = 1_000_000_000_000;
 
 /// Test `source_domain` (config-only; nonzero so read-backs are distinguishable).
 const TEST_SOURCE_DOMAIN: u32 = 3;
@@ -286,7 +292,7 @@ async fn mint_note_drives_attested_mint_end_to_end() -> Result<()> {
         .expect("the recipient note carries a fungible asset");
     assert_eq!(
         u64::from(asset.amount()),
-        MINT_REDUCED,
+        MINT_DELIVERED,
         "note asset == reduced amount"
     );
     assert_eq!(
@@ -328,7 +334,7 @@ async fn mint_note_drives_attested_mint_end_to_end() -> Result<()> {
     assert_supply(
         &pf.mock_chain,
         pf.faucet_id,
-        MINT_REDUCED,
+        MINT_DELIVERED,
         "after the real-note mint",
     )?;
     assert_eq!(
@@ -374,7 +380,7 @@ async fn mint_note_replayed_nonce_rejects_no_writes() -> Result<()> {
     assert_supply(
         &pf.mock_chain,
         pf.faucet_id,
-        MINT_REDUCED,
+        MINT_DELIVERED,
         "after the first mint",
     )?;
 
@@ -396,7 +402,7 @@ async fn mint_note_replayed_nonce_rejects_no_writes() -> Result<()> {
     assert_supply(
         &pf.mock_chain,
         pf.faucet_id,
-        MINT_REDUCED,
+        MINT_DELIVERED,
         "after the replay reject",
     )?;
     assert_eq!(

@@ -1,3 +1,13 @@
+> **[SUPERSEDED 2026-07-21 — UN-PARKED (P1b-a).]** The re-enable trigger below has fired: the
+> v16-alpha `miden-client` / `miden-client-sqlite-store` `=0.16.0-alpha.1` releases (which pin
+> protocol `=0.16.0-alpha.4`, matching the workspace) now exist. This crate has been restored to
+> `workspace.members`, its manifest bumped to the v16 family, and its client- and protocol-touching
+> call sites ported (steps 1–3 below, DONE). `cargo build --workspace --locked` compiles the lib,
+> the `lnv*` binaries, and the `#[ignore]`d `tests/rows_*.rs`; `cargo test --workspace --locked`
+> runs its non-ignored tests. Step 4 (re-running the live LNV row gates against a **v16** node stack
+> and extending `VALIDATION-RECORD.md`) is the operator-run **P1b-b** step and remains open. This
+> file is kept as the historical parking record; the binding status is the un-park itself.
+
 # PARKED at v0.15.3 — the LNV harness awaits a v0.16 `miden-client`
 
 **Status (2026-07-13, the v16 migration — `docs/MIGRATION-V16-ALPHA2.md` rows R1/R2):** this

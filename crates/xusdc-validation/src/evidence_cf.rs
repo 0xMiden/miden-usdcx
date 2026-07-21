@@ -58,9 +58,8 @@ pub fn write_cf_evidence(
     let evidence = CfRunEvidence {
         main_commit: obs.main_commit.clone(),
         node_version: "miden-node 0.15.1 (installed binaries)".to_string(),
-        client_crate: "miden-client =0.15.3 (crates.io)".to_string(),
-        protocol_rev: "0xMiden/protocol 681fc90584131560b87db8f7487685f4fa8420a8 (v0.15.3)"
-            .to_string(),
+        client_crate: "miden-client =0.16.0-alpha.1 (crates.io)".to_string(),
+        protocol_rev: "0xMiden/protocol crates.io =0.16.0-alpha.4".to_string(),
         rpc_port: cfg.stack.rpc_port,
         validator_port: cfg.stack.validator_port,
         ntx_builder_port: cfg.stack.ntx_builder_port,

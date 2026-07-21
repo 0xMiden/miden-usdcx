@@ -24,7 +24,7 @@ use anyhow::{bail, Context, Result};
 use miden_client::rpc::NodeRpcClient;
 use miden_client::store::TransactionFilter;
 use miden_client::transaction::{TransactionId, TransactionRequestBuilder, TransactionStatus};
-use miden_protocol::account::{Account, AccountId, StorageSlotName};
+use miden_protocol::account::{Account, AccountId, StorageMapKey, StorageSlotName};
 use miden_protocol::asset::Asset;
 use miden_protocol::note::{Note, NoteTag};
 use miden_protocol::transaction::InputNote;
@@ -108,7 +108,7 @@ fn used_nonce_marker(account: &Account, key: Word) -> Result<Word4> {
     let name = StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?;
     account
         .storage()
-        .get_map_item(&name, key)
+        .get_map_item(&name, StorageMapKey::new(key))
         .map(word4)
         .map_err(|e| anyhow::anyhow!("reading usedNonces[{key:?}]: {e}"))
 }
@@ -781,7 +781,12 @@ fn attester_enabled(account: &Account, commitment: Word) -> bool {
     use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
     StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
         .ok()
-        .and_then(|name| account.storage().get_map_item(&name, commitment).ok())
+        .and_then(|name| {
+            account
+                .storage()
+                .get_map_item(&name, StorageMapKey::new(commitment))
+                .ok()
+        })
         .map(|w| word4(w) == crate::observations_cf::MARKER_SET)
         .unwrap_or(false)
 }

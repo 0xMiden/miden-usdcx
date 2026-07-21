@@ -1,4 +1,4 @@
-//! The pinned `miden-client 0.15.3` assembly used for path-C execution.
+//! The `miden-client 0.16.0-alpha.1` assembly used for path-C execution.
 //!
 //! gRPC against the local sequencer RPC + SQLite store + filesystem keystore (all under the
 //! gitignored run root) + the client's local transaction prover. The harness keeps its own
@@ -12,7 +12,6 @@ use anyhow::{Context, Result};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::{Endpoint, GrpcClient};
-use miden_client::DebugMode;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::Felt;
@@ -64,7 +63,6 @@ pub async fn build_client(stack: &StackConfig, label: &str) -> Result<HarnessCli
         .rng(Box::new(rng))
         .sqlite_store(client_root.join("store.sqlite3"))
         .authenticator(Arc::new(keystore.clone()))
-        .in_debug_mode(DebugMode::Disabled)
         .tx_discard_delta(None)
         .build()
         .await

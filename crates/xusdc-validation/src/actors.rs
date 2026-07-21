@@ -13,13 +13,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey};
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
+use miden_client::auth::{Approver, AuthSchemeId, AuthSecretKey, AuthSingleSig};
 use miden_client::keystore::Keystore;
 use miden_crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_crypto::utils::Deserializable;
 use miden_protocol::account::{Account, AccountBuilder, AccountType};
 use miden_protocol::Word;
-use miden_standards::account::metadata::AccountBuilderSchemaCommitmentExt;
+use miden_standards::account::inspection::AccountBuilderSchemaCommitmentExt;
 use miden_standards::account::wallets::BasicWallet;
 use rand::rngs::OsRng;
 use sha3::{Digest, Keccak256};
@@ -111,10 +111,12 @@ pub struct Actors {
 /// account with the client. The wallet materializes on-chain with its first transaction.
 async fn create_wallet(hc: &mut HarnessClient) -> Result<Account> {
     let key = AuthSecretKey::new_falcon512_poseidon2();
-    let auth = AuthSingleSig::new(
+    // v16: `AuthSingleSig::new` now takes an `Approver` (pubkey commitment + auth scheme) rather
+    // than the two loose args (miden-standards 0.16 auth/singlesig.rs; approver.rs `Approver::new`).
+    let auth = AuthSingleSig::new(Approver::new(
         key.public_key().to_commitment(),
         AuthSchemeId::Falcon512Poseidon2,
-    );
+    ));
 
     let account = AccountBuilder::new(os_seed())
         .account_type(AccountType::Public)

@@ -12,8 +12,9 @@
 //! - **C5 role rotation** — DOM_MANAGER grants DOM_PAUSER to a new account (new pauser can pause,
 //!   revoked cannot) — the CMP-F5 seam on a real node.
 //! - **C6 negatives** — every admin note from a NON-authorized sender rejects at the proc gate.
-//! - **Row F** — a non-allowlisted note is rejected by `AuthNetworkAccount`; a tx-script transaction
-//!   is rejected (empty tx-script allowlist).
+//! - **Row F** — a non-allowlisted note is rejected by `AuthNetworkAccount`; a non-allowlisted
+//!   (`nop`) tx-script transaction is rejected (the v16 tx-script allowlist admits ONLY the S12
+//!   expiration root, so any other script traps).
 //!
 //! Every check reads the NODE-fetched verdicts/read-backs carried by [`RowsCfObservations`] — a green
 //! here is a statement about the real chain, not about the client's local store.
@@ -314,8 +315,9 @@ pub fn assert_c6(rejects: &[AdminGateReject]) -> Result<()> {
 ///
 /// - The faucet consuming a stock P2ID note (whose script root is NOT allowlisted) is REJECTED by
 ///   `AuthNetworkAccount` with the note-allowlist error.
-/// - A tx-script transaction executed against the faucet is REJECTED with the tx-script-allowlist
-///   error (the tx-script allowlist ships EXACTLY empty — F1 sole-mint-surface).
+/// - A non-allowlisted (`nop`) tx-script transaction executed against the faucet is REJECTED with
+///   the tx-script-allowlist error (the v16 tx-script allowlist admits ONLY the S12 expiration
+///   root — F1 sole-mint-surface preserved; any other script traps).
 pub fn assert_f(o: &RowF) -> Result<()> {
     assert_rejected_with(
         &o.non_allowlisted_note,

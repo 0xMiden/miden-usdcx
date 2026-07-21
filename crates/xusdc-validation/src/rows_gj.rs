@@ -37,8 +37,9 @@ use miden_client::rpc::domain::note::FetchedNote;
 use miden_client::rpc::NodeRpcClient;
 use miden_client::store::TransactionFilter;
 use miden_client::transaction::{TransactionId, TransactionRequestBuilder, TransactionStatus};
-use miden_protocol::account::delta::StorageSlotDelta;
-use miden_protocol::account::{Account, AccountId, StorageSlotName};
+use miden_protocol::account::{
+    Account, AccountId, StorageMapKey, StorageSlotName, StorageSlotPatch,
+};
 use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{Note, NoteId, NoteInclusionProof, NoteTag};
@@ -345,8 +346,13 @@ impl Driver {
             .await
         {
             Ok(result) => {
-                let new_supply = match result.account_delta().storage().get(&token_config_slot()) {
-                    Some(StorageSlotDelta::Value(word)) => Some(word[0].as_canonical_u64()),
+                // v16: `account_delta()`→`account_patch()`; `StorageSlotDelta::Value(word)`→
+                // `StorageSlotPatch::Value(StorageValuePatch)` read via `.value() -> Option<Word>`
+                // (MIGRATION-V16-ALPHA2.md M1/M2).
+                let new_supply = match result.account_patch().storage().get(&token_config_slot()) {
+                    Some(StorageSlotPatch::Value(vp)) => {
+                        vp.value().map(|w| w[0].as_canonical_u64())
+                    }
                     _ => None,
                 };
                 let delta = new_supply.map(|s| supply_before.saturating_sub(s));
@@ -1007,7 +1013,12 @@ fn attester_enabled(account: &Account, commitment: Word) -> bool {
     use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
     StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
         .ok()
-        .and_then(|name| account.storage().get_map_item(&name, commitment).ok())
+        .and_then(|name| {
+            account
+                .storage()
+                .get_map_item(&name, StorageMapKey::new(commitment))
+                .ok()
+        })
         .map(|w| word4(w) == MARKER_SET)
         .unwrap_or(false)
 }

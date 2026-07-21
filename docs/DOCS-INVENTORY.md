@@ -86,7 +86,7 @@ plain in-repo scope reference (`crates/xusdc-validation/README.md`).
 | Doc | Disposition | Notes |
 |---|---|---|
 | `README.md` | KEEP | Crate orientation. |
-| `PARKED-V15.md` | KEEP (new, v16 migration R1) | Why the crate is parked (no v16 `miden-client` yet), what still works, the re-enable trigger + steps. |
+| `PARKED-V15.md` | SUPERSEDED (un-parked, P1b-a) | Historical record of why the crate was parked at v15 + the re-enable steps; now executed — the crate is a workspace member again on the v16 family (`miden-client =0.16.0-alpha.1`, protocol `=0.16.0-alpha.4`). The file carries a SUPERSEDED banner. |
 | `VALIDATION-RECORD.md` (LNV-1) | KEEP / REWRITE (citation cleaned) | Harness + rows A/B. |
 | `VALIDATION-RECORD-LNV2.md` | KEEP / REWRITE (citation cleaned) | Admin suite (rows C) + auth boundary (row F). |
 | `VALIDATION-RECORD-LNV3.md` | KEEP / REWRITE (citation cleaned) | Mint rows D/E. |

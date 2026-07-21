@@ -213,11 +213,10 @@ pub fn render_validation_record(
         ctx.main_commit, ctx.run_root
     ));
     s.push_str(
-        "- Pins (unchanged from LNV-1; full toolchain/dep ledger: `VALIDATION-RECORD.md` §2 — \
-         LNV-5 adds NO new dependencies): `miden-node` **v0.15.1** installed binaries, \
-         four-service loopback stack (sequencer RPC 57291, validator 57292, ntx-builder 57293, \
-         tx-prover 57294), isolated local genesis; `miden-client` **=0.15.3** (crates.io); \
-         protocol family git `681fc905…` (= v0.15.3 tag).\n\n",
+        "- Pins (full toolchain/dep ledger: `VALIDATION-RECORD.md` §2): `miden-node` **v0.15.1** \
+         installed binaries, four-service loopback stack (sequencer RPC 57291, validator 57292, \
+         ntx-builder 57293, tx-prover 57294), isolated local genesis; `miden-client` \
+         **=0.16.0-alpha.1** (crates.io); protocol family crates.io **=0.16.0-alpha.4**.\n\n",
     );
 
     s.push_str("## Reproduction (the one command)\n\n");
@@ -563,7 +562,7 @@ pub fn render_f7_packet(gj: &RowsGjObservations, main_commit: &str) -> String {
          on this stack)\n\n\
          The faucet is a network account: post-deployment user-RPC submissions against it are \
          rejected by `miden-node v0.15.1` (captured verbatim above), the stock \
-         `miden-client 0.15.3` cannot present the sequencer's `x-miden-network-tx-auth` header, \
+         `miden-client 0.16.0-alpha.1` cannot present the sequencer's `x-miden-network-tx-auth` header, \
          and the ntx-builder — the only commit path — consumes only COMMITTED notes, which \
          makes every committed burn consumption strictly-later-block (lifecycle 1). The \
          same-block-erasure hazard therefore does not materialize through any path available on \
@@ -756,9 +755,8 @@ pub fn write_lnv5_artifacts(
     let evidence = Lnv5RunEvidence {
         main_commit: ctx.main_commit.clone(),
         node_version: "miden-node 0.15.1 (installed binaries)".to_string(),
-        client_crate: "miden-client =0.15.3 (crates.io)".to_string(),
-        protocol_rev: "0xMiden/protocol 681fc90584131560b87db8f7487685f4fa8420a8 (v0.15.3)"
-            .to_string(),
+        client_crate: "miden-client =0.16.0-alpha.1 (crates.io)".to_string(),
+        protocol_rev: "0xMiden/protocol crates.io =0.16.0-alpha.4".to_string(),
         rpc_port: cfg.stack.rpc_port,
         validator_port: cfg.stack.validator_port,
         ntx_builder_port: cfg.stack.ntx_builder_port,

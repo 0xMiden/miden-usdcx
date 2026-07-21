@@ -4,8 +4,10 @@ The Phase-4 §11.2 **local-node validation harness** (LNV track): deploys the PR
 faucet to a fresh, isolated local Miden node and drives the validation matrix against real RPC.
 Validation-only — it never modifies faucet code; a red assertion here is a surfaced finding.
 
-- **Pins:** protocol v0.15.3 (git `681fc905…`), node binaries v0.15.1 (installed in
-  `/usr/local/bin`), `miden-client =0.15.3`. Ledger + discovered mechanics + evidence:
+- **Pins:** protocol family crates.io `=0.16.0-alpha.4`, `miden-client` /
+  `miden-client-sqlite-store` `=0.16.0-alpha.1` (P1b-a un-park); node binaries v0.15.1 for the
+  live-node rows (their run against a v16 node is the operator-run P1b-b step). Ledger + discovered
+  mechanics + evidence:
   [`VALIDATION-RECORD.md`](VALIDATION-RECORD.md) (LNV-1),
   [`VALIDATION-RECORD-LNV2.md`](VALIDATION-RECORD-LNV2.md) (LNV-2),
   [`VALIDATION-RECORD-LNV3.md`](VALIDATION-RECORD-LNV3.md) (LNV-3),
@@ -66,7 +68,10 @@ hermetic audit sandboxes deny (`bind: Operation not permitted`). Run it explicit
 (`1 ignored` = it did NOT run). The §11.2 gate claim rides only on real runs (evidence +
 archived logs under `local-node-data/`) plus the LNV-1 human supervision gate.
 
-Requirements for the gate run: the four v0.15.1 node binaries on `PATH`, loopback ports
-57291–57294 free. Run artifacts (node data, stores, keystores, logs, `evidence.json`) land under
+Requirements for the gate run (operator-run, **P1b-b**): the four node binaries on `PATH`, loopback
+ports 57291–57294 free. The harness (`src/stack.rs`) as currently coded targets the **v0.15.1** node
+binaries; running these rows against a **v16** node — and any node-CLI-flag updates that requires —
+is the P1b-b step (this offline un-park, P1b-a, only restores the crate to the v16 workspace and the
+green offline gate). Run artifacts (node data, stores, keystores, logs, `evidence.json`) land under
 the gitignored `local-node-data/lnv1/<label>/`. The E2E takes ~6 minutes: three Falcon-signed
 transactions proven client-side (path C) plus bounded block waits.

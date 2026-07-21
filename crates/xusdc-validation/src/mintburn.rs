@@ -29,7 +29,7 @@ use xusdc_encoding::note::xreserve_mint::{
 };
 use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, bytes32_to_storage_map_key, compressed_pubkey_felts,
+    account_id_to_bytes32, affine_pubkey_felts, bytes32_to_storage_map_key,
     deposit_intent_to_packed_felts, signature_felts, XReserveBurnItems,
 };
 
@@ -213,11 +213,11 @@ pub fn fee_limbs_for(fee_raw: u64) -> [Felt; 8] {
 /// Builds an `XReserveMintNote` with a CUSTOM scheme-1 attestation attachment: the same transport
 /// shape the production [`XReserveMintNote::create`] emits (custom mint script, DepositIntent
 /// storage, scheme-2 `NetworkAccountTarget` routing bind) but with the attestation attachment's
-/// `[feeAmount(8), pubkey(9), signature(17), pad(2)]` words assembled from the caller-supplied
-/// `fee_limbs` + `attestation`. This is the harness's ADVERSARIAL note builder — it exists solely to
-/// stage Row-E negatives the production factory cannot (a non-zero feeAmount, a payload the
-/// attestation did not sign); it never re-implements any faucet gate. Mirrors the F5-suite
-/// `mint_note_with_attachments` helper (public-API note assembly, unchanged script root).
+/// `[feeAmount(8), pubkey(16 affine), signature(17), pad(3)]` words assembled from the
+/// caller-supplied `fee_limbs` + `attestation`. This is the harness's ADVERSARIAL note builder — it
+/// exists solely to stage Row-E negatives the production factory cannot (a non-zero feeAmount, a
+/// payload the attestation did not sign); it never re-implements any faucet gate. Mirrors the
+/// F5-suite `mint_note_with_attachments` helper (public-API note assembly, unchanged script root).
 pub fn mint_note_with_fee<R: FeltRng>(
     sender: AccountId,
     faucet: AccountId,
@@ -226,14 +226,19 @@ pub fn mint_note_with_fee<R: FeltRng>(
     fee_limbs: [Felt; 8],
     rng: &mut R,
 ) -> Result<Note> {
-    // The scheme-1 attestation content: [feeAmount(8), pubkey(9), signature(17), pad(2)] = 36 felts
-    // = 9 words — the exact order `mint` pops from the advice stack. Identical to the production
-    // `attestation_attachment`, save the caller-chosen fee limbs (production hardcodes eight zeros).
-    let mut felts: Vec<Felt> = Vec::with_capacity(36);
+    // The scheme-1 attestation content: [feeAmount(8), pubkey(16 affine), signature(17), pad(3)] =
+    // 44 felts = 11 words — the exact order `mint` pops from the advice stack. Identical to the
+    // production `attestation_attachment` (v16: the 33-byte compressed wire pubkey is decompressed
+    // to its 16 affine-coordinate felts, vm#3342 / MIGRATION-V16-ALPHA2.md S16), save the
+    // caller-chosen fee limbs (production hardcodes eight zeros).
+    let mut felts: Vec<Felt> = Vec::with_capacity(44);
     felts.extend(fee_limbs);
-    felts.extend(compressed_pubkey_felts(attestation.pubkey()));
+    felts.extend(
+        affine_pubkey_felts(attestation.pubkey())
+            .map_err(|e| anyhow::anyhow!("attestation pubkey rejected by the 04 codec: {e}"))?,
+    );
     felts.extend(signature_felts(attestation.signature()));
-    felts.extend([Felt::from(0u32); 2]);
+    felts.extend([Felt::from(0u32); 3]);
     let words: Vec<Word> = felts
         .chunks_exact(4)
         .map(|c| Word::new([c[0], c[1], c[2], c[3]]))

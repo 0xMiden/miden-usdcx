@@ -18,7 +18,9 @@
 //!    fails these.
 
 use anyhow::Result;
-use miden_protocol::account::{Account, AccountBuilder, AccountId, AccountIdVersion, AccountType};
+use miden_protocol::account::{
+    Account, AccountBuilder, AccountId, AccountIdVersion, AccountType, AssetCallbackFlag,
+};
 use miden_standards::account::auth::AuthNetworkAccount;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_validation::assertions::{assert_row_a, assert_row_b, ERR_DOMAIN_REINIT_TEXT};
@@ -33,7 +35,14 @@ const MAX_SUPPLY: u64 = 1_000_000_000_000;
 // ── synthetic-fixture helpers ────────────────────────────────────────────────────────────────
 
 fn wallet_id(seed: u8) -> AccountId {
-    AccountId::dummy([seed; 15], AccountIdVersion::Version1, AccountType::Public)
+    // v16: `AccountId::dummy` gained an `AssetCallbackFlag` param (#3167 / MIGRATION-V16-ALPHA2.md
+    // S6). These synthetic wallets register no transfer policy, so the flag is `Disabled`.
+    AccountId::dummy(
+        [seed; 15],
+        AccountIdVersion::Version1,
+        AccountType::Public,
+        AssetCallbackFlag::Disabled,
+    )
 }
 
 /// A production-shaped faucet `Account` with nonce 1 (as if deployed), optionally with the five
@@ -110,16 +119,18 @@ fn row_a_rejects_unrecognized_account() -> Result<()> {
     Ok(())
 }
 
-/// Row A must reject an on-chain allowlist that lost a root (12 of the frozen 13) — an exact-set
-/// check, not a non-empty check.
+/// Row A must reject an on-chain allowlist that lost exactly one root of the frozen production set
+/// — an exact-set check, not a non-empty check. The fixture size is derived from the frozen set
+/// (owned by `XReserveStablecoinBuilder`) so this tripwire tracks it without a magic number.
 #[test]
 fn row_a_rejects_a_thinned_allowlist() -> Result<()> {
-    let mut thinned = XReserveStablecoinBuilder::allowed_note_scripts();
+    let full = XReserveStablecoinBuilder::allowed_note_scripts();
+    let mut thinned = full.clone();
     let dropped = *thinned.iter().next().expect("the frozen set is non-empty");
     thinned.remove(&dropped);
     assert_eq!(
         thinned.len(),
-        12,
+        full.len() - 1,
         "the thinned fixture drops exactly one root"
     );
     let auth = AuthNetworkAccount::with_allowed_notes(thinned)?;

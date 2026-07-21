@@ -15,7 +15,7 @@
 //!   including the local isolated genesis (`bootstrap --file`, never `--network`).
 //! - [`actors`] — local test identities: the five keyed wallets (owner / DOM_PAUSER / DOM_MANAGER
 //!   holders / recipient / holder) and a locally generated secp256k1 attester (NEVER Circle keys).
-//! - [`client`] — the pinned `miden-client 0.15.3` assembly (gRPC + SQLite store + filesystem
+//! - [`client`] — the `miden-client 0.16.0-alpha.1` assembly (gRPC + SQLite store + filesystem
 //!   keystore) used for path-C (client-side build+prove+submit) execution.
 //! - [`deploy`] — the production faucet composition (the `XReserveStablecoinBuilder` output under
 //!   the frozen `AuthNetworkAccount` allowlist) and the deploy/domain_init drivers.

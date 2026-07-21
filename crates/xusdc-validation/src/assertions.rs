@@ -11,12 +11,15 @@
 //! Every check reads the NODE-fetched state carried by [`RowsAbObservations`] — a green here is a
 //! statement about the real chain, not about the client's local store.
 
+use std::collections::BTreeSet;
+
 use anyhow::{bail, ensure, Context, Result};
 use miden_protocol::account::{Account, StorageSlotName};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::{
     NetworkAccountNoteAllowlist, NetworkAccountTxScriptAllowlist,
 };
+use miden_standards::tx_script::ExpirationTransactionScript;
 use xusdc_encoding::account::xreserve::{
     XReserveStablecoinBuilder, DOMAIN_CONFIG_SLOT_LABEL, IDENTIFIER_CONFIG_SLOT_LABEL,
     SOURCE_DOMAIN_CONFIG_SLOT_LABEL, XRESERVE_CONTRACT_HI_SLOT_LABEL,
@@ -51,7 +54,11 @@ fn storage_word(account: &Account, label: &str) -> Result<Word> {
 ///   equals EXACTLY the frozen 12-root production set (`allowed_note_scripts()` — extra or
 ///   missing roots are a composition defect; the runtime `set_role_admin` note was removed,
 ///   S21 flip 2026-07-14).
-/// - The tx-script allowlist slot is present and EXACTLY empty (sole-mint-surface / F1).
+/// - The tx-script allowlist slot is present and equals EXACTLY the frozen v16 production set — the
+///   one canonical `ExpirationTransactionScript::script_root()` (S12, RATIFIED). v16 no longer
+///   ships an EMPTY tx-script allowlist: `XReserveStablecoinBuilder::auth_component()` allowlists
+///   exactly the expiration root, so the sole-mint-surface / F1 invariant is now "exactly the
+///   expiration root", not "exactly empty".
 pub fn assert_row_a(obs: &RowsAbObservations) -> Result<()> {
     let account = obs.deployed.as_ref().context(
         "row A: GetAccount returned no account — the node does not recognize the deployed faucet",
@@ -94,16 +101,22 @@ pub fn assert_row_a(obs: &RowsAbObservations) -> Result<()> {
         allowlist.allowed_script_roots().len(),
     );
 
-    // The tx-script allowlist must exist and be EXACTLY empty (sole-mint-surface / F1).
+    // The tx-script allowlist must exist and equal EXACTLY the frozen v16 production set — the one
+    // canonical ExpirationTransactionScript root (S12, RATIFIED; the v15 EMPTY tx-script allowlist
+    // gained the expiration root at v16 — MIGRATION-V16-ALPHA2.md). Extra or missing roots are a
+    // composition defect.
     let tx_allowlist =
         NetworkAccountTxScriptAllowlist::try_from(account.storage()).map_err(|e| {
             anyhow::anyhow!(
                 "row A: the on-chain account carries no readable tx-script allowlist slot: {e}"
             )
         })?;
+    let expected_tx = BTreeSet::from([ExpirationTransactionScript::script_root()]);
     ensure!(
-        tx_allowlist.allowed_script_roots().is_empty(),
-        "row A: the tx-script allowlist must be EXACTLY empty on-chain, found {} root(s)",
+        tx_allowlist.allowed_script_roots() == &expected_tx,
+        "row A: the on-chain tx-script allowlist must equal EXACTLY the frozen {}-root production \
+         set (the S12 expiration script), found {} root(s)",
+        expected_tx.len(),
         tx_allowlist.allowed_script_roots().len(),
     );
 

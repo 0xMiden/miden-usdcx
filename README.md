@@ -84,27 +84,30 @@ The primary gate (`cargo test -p xusdc-encoding --release`) assembles every `.ma
 the faucet account, and runs the mint/burn/admin behaviour — including the Rust↔MASM
 cross-implementation vectors — against a mock chain.
 
-### Real-local-node validation — **PARKED at v15 (inherited evidence)**
+### Real-local-node validation — **un-parked to v16 (offline); live-node rows operator-run**
 
 `crates/xusdc-validation` deploys the production faucet to a **real Miden node** and drives the
-mint/burn/admin acceptance matrix (rows `A`–`L`). Since the v0.16.0-alpha.2 migration the crate is
-**parked and excluded from the workspace** (root `Cargo.toml`; see
-[`crates/xusdc-validation/PARKED-V15.md`](crates/xusdc-validation/PARKED-V15.md)): it consumes
-`miden-client`, which has no v16 release yet, so it does **not** build against this tree and none of
-its commands run from this workspace today. The completed **v15 run record stands as the inherited
-real-node evidence** — see
+mint/burn/admin acceptance matrix (rows `A`–`L`). Since the v16-alpha `miden-client`
+(`=0.16.0-alpha.1`, which itself pins protocol `=0.16.0-alpha.4`) shipped, the crate is a
+**workspace member again** and builds against this tree (P1b-a; the former
+[`PARKED-V15.md`](crates/xusdc-validation/PARKED-V15.md) is superseded). The **offline** half runs
+in the normal workspace gate — `cargo build --workspace --locked` compiles the lib, the `lnv*`
+binaries, and the row test files, and `cargo test --workspace --locked` runs the crate's
+non-ignored (sandbox-safe, no-node) tests.
+
+The **live-node** rows — the real four-service-stack deploy/drive that needs the node binaries on
+`PATH` and loopback ports `57291–57294` free — stay `#[ignore]`d in the default suite and are
+**operator-run** (P1b-b); their execution against a real **v16** node (and the node harness's
+v16-CLI correctness) is a separate step. Until P1b-b regenerates the v16 record, the completed
+**v15 run record stands as the inherited real-node evidence** — see
 [`crates/xusdc-validation/VALIDATION-RECORD-LNV5.md`](crates/xusdc-validation/VALIDATION-RECORD-LNV5.md)
 (the consolidated rows `A`–`L` gate run, 12/12) and the per-slice `VALIDATION-RECORD*.md` files.
 
-When the v16-alpha `miden-client` (+ node) ships, the crate is re-enabled per `PARKED-V15.md`
-(restore workspace membership, bump its pins, re-run the row gates). The commands below are those
-**re-enable-time** instructions, preserved from the proven v15 procedure — each gate binary
-bootstraps genesis, starts the four-service node stack (validator, ntx-builder, sequencer,
-tx prover), runs its rows, and tears the stack down (at v15: the four v0.15.1 node binaries on
-`PATH`, loopback ports `57291–57294` free):
+Each gate binary bootstraps genesis, starts the four-service node stack (validator, ntx-builder,
+sequencer, tx prover), runs its rows, and tears the stack down:
 
 ```sh
-# RE-ENABLE-TIME commands (do not run against the parked v16 workspace):
+# LIVE-NODE commands (operator-run, P1b-b — need the node binaries on PATH):
 cargo run -p xusdc-validation --bin lnv1_rows_ab      # rows A/B — deploy + domain_init init-once
 cargo run -p xusdc-validation --bin lnv2_rows_cf      # rows C/F — admin suite + auth boundary
 cargo run -p xusdc-validation --bin lnv3_rows_de      # rows D/E — mint lifecycle + negatives

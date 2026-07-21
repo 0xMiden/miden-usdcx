@@ -23,7 +23,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use miden_protocol::account::{Account, AccountBuilder, AccountId, AccountIdVersion, AccountType};
+use miden_protocol::account::{
+    Account, AccountBuilder, AccountId, AccountIdVersion, AccountType, AssetCallbackFlag,
+};
+use tempfile::TempDir;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_validation::assertions::ERR_DOMAIN_REINIT_TEXT;
 use xusdc_validation::assertions_cf::{ERR_LACKS_ROLE, ERR_NOT_OWNER};
@@ -306,14 +309,20 @@ fn expected_patterns_cover_the_complete_real_archived_vocabulary() {
 // Row-L directory scan (scan_logs) + assert_l
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-/// A fresh fixture dir under the cargo-provided integration-test tmpdir.
-fn fixture_dir(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("rows-kl-{name}"));
-    if dir.exists() {
-        fs::remove_dir_all(&dir).expect("clearing a previous fixture dir");
-    }
-    fs::create_dir_all(&dir).expect("creating the fixture dir");
-    dir
+/// A fresh, auto-cleaned fixture dir under the cargo integration-test tmpdir.
+///
+/// Uses `tempfile` — a RANDOM, collision-resistant name plus RAII removal on drop — rather than a
+/// fixed or PID-derived name: `CARGO_TARGET_TMPDIR` can be a SHARED `target/tmp` written by more
+/// than one OS user (the anneal builder and auditor run this suite as different users), and any
+/// predictable, persistent name left whoever ran second unable to clear or write into the other
+/// user's dir (`remove_dir_all` → EPERM). A random name never collides across users, PID reuse, or
+/// concurrent runs; the dir is removed when the returned handle drops. Callers keep the handle in
+/// scope for the test body and read the path via `.path()`.
+fn fixture_dir(prefix: &str) -> TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("rows-kl-{prefix}-"))
+        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .expect("creating a unique fixture dir")
 }
 
 /// Writes a green four-service log dir (each required log non-empty and clean, plus a bootstrap
@@ -336,13 +345,13 @@ fn write_green_logs(dir: &Path) {
 #[test]
 fn scan_logs_builds_manifest_and_classifications() -> Result<()> {
     let dir = fixture_dir("manifest");
-    write_green_logs(&dir);
+    write_green_logs(dir.path());
     // One real ANSI ERROR (expected) + one embedded-word INFO (not an error) in the sequencer log.
     fs::write(
-        dir.join("sequencer.log"),
+        dir.path().join("sequencer.log"),
         format!("2026-07-10T08:00:00Z  INFO started\n{REAL_SUBMIT_REJECT}\n2026-07-10T08:00:02Z  INFO retry err=ERROR_LIKE\n"),
     )?;
-    let l = scan_logs(&dir, EXPECTED_LOG_LINES)?;
+    let l = scan_logs(dir.path(), EXPECTED_LOG_LINES)?;
 
     // Manifest: all *.log files scanned (4 required + 1 bootstrap), with line counts + bytes.
     assert!(
@@ -376,16 +385,17 @@ fn scan_logs_builds_manifest_and_classifications() -> Result<()> {
 
 #[test]
 fn scan_logs_errors_on_a_missing_dir() {
-    let dir = fixture_dir("missing-dir").join("does-not-exist");
-    assert!(scan_logs(&dir, EXPECTED_LOG_LINES).is_err());
+    let dir = fixture_dir("missing-dir");
+    let missing = dir.path().join("does-not-exist");
+    assert!(scan_logs(&missing, EXPECTED_LOG_LINES).is_err());
 }
 
 #[test]
 fn assert_l_fails_on_a_missing_required_service_log() -> Result<()> {
     let dir = fixture_dir("missing-sequencer");
-    write_green_logs(&dir);
-    fs::remove_file(dir.join("sequencer.log"))?;
-    let l = scan_logs(&dir, EXPECTED_LOG_LINES)?;
+    write_green_logs(dir.path());
+    fs::remove_file(dir.path().join("sequencer.log"))?;
+    let l = scan_logs(dir.path(), EXPECTED_LOG_LINES)?;
     let err = assert_l(&l).expect_err("row L must fail when a required service log is missing");
     assert!(
         format!("{err:#}").contains("sequencer"),
@@ -397,9 +407,9 @@ fn assert_l_fails_on_a_missing_required_service_log() -> Result<()> {
 #[test]
 fn assert_l_fails_on_an_empty_required_service_log() -> Result<()> {
     let dir = fixture_dir("empty-txprover");
-    write_green_logs(&dir);
-    fs::write(dir.join("tx-prover.log"), "")?;
-    let l = scan_logs(&dir, EXPECTED_LOG_LINES)?;
+    write_green_logs(dir.path());
+    fs::write(dir.path().join("tx-prover.log"), "")?;
+    let l = scan_logs(dir.path(), EXPECTED_LOG_LINES)?;
     let err = assert_l(&l).expect_err("row L must fail when a required service log is empty");
     assert!(
         format!("{err:#}").contains("tx-prover"),
@@ -1047,7 +1057,14 @@ fn pathn_commits_feed_a_passing_row_k() {
 const MAX_SUPPLY: u64 = 1_000_000_000_000;
 
 fn wallet_id(seed: u8) -> AccountId {
-    AccountId::dummy([seed; 15], AccountIdVersion::Version1, AccountType::Public)
+    // v16: `AccountId::dummy` gained an `AssetCallbackFlag` param (#3167 / MIGRATION-V16-ALPHA2.md
+    // S6). These synthetic wallets register no transfer policy, so the flag is `Disabled`.
+    AccountId::dummy(
+        [seed; 15],
+        AccountIdVersion::Version1,
+        AccountType::Public,
+        AssetCallbackFlag::Disabled,
+    )
 }
 
 /// A production-shaped deployed faucet `Account` with the domain-config slots pre-seeded (the

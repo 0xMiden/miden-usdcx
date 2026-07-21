@@ -11,7 +11,7 @@ use miden_protocol::Word;
 use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
 
 /// Sequencer public RPC port — the standard local Miden RPC port the pinned
-/// `miden-client 0.15.3` `for_localhost()` preset also expects.
+/// `miden-client 0.16.0-alpha.1` `for_localhost()` preset also expects.
 pub const RPC_PORT: u16 = 57291;
 /// Validator gRPC port (harness-assigned, loopback).
 pub const VALIDATOR_PORT: u16 = 57292;

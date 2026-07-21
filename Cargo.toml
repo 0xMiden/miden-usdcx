@@ -4,13 +4,13 @@ members = [
   "crates/xusdc-encoding",
   "crates/xreserve-deposit-relayer",
   "crates/withdrawal-listener-attester",
+  "crates/xusdc-validation",
 ]
-# PARKED (v16 migration, MIGRATION-V16-ALPHA2.md R1): `crates/xusdc-validation` consumes
-# `miden-client`, which has no v0.16 release yet. The exclude keeps cargo invocations inside the
-# parked directory from claiming workspace membership ("believes it's in a workspace"). The crate
-# directory itself is byte-intact; see crates/xusdc-validation/PARKED-V15.md for the re-enable
-# trigger and steps.
-exclude = ["crates/xusdc-validation"]
+# UN-PARKED (P1b-a, 2026-07-21): `crates/xusdc-validation` is a workspace member again. The v16
+# `miden-client`/`miden-client-sqlite-store` `=0.16.0-alpha.1` releases now exist (they pin
+# protocol `=0.16.0-alpha.4`, matching the workspace), so the crate compiles against the v16
+# family and rejoins the offline `--locked` gate. The live-node LNV rows stay `#[ignore]`d
+# (P1b-b, operator-run). The former `exclude` entry was removed with the un-park.
 
 # Shared dependency versions defined once (workspace-shared-dependencies). Every member consumes
 # these with `dep = { workspace = true, features = [...] }`, adding crate-specific feature sets on
@@ -84,8 +84,10 @@ tower = { version = "0.5", features = ["util"] }
 
 # The former [patch.crates-io] git-pin block (v0.15.3 rev 681fc905…) was REMOVED at the v16
 # migration (MIGRATION-V16-ALPHA2.md R2): its sole purpose was unifying `miden-client 0.15.3`'s
-# crates.io protocol-family requirements onto the one git-pinned copy, and the only miden-client
-# consumer (`crates/xusdc-validation`) is parked (R1). Every member now consumes the protocol
-# family uniformly from crates.io at `=0.16.0-alpha.2`; `miden-tx-batch-prover` (never published
-# past 0.15.3) left the graph with the rename to `miden-tx-batch` (protocol #3035), which arrives
-# transitively via `miden-testing`.
+# crates.io protocol-family requirements onto the one git-pinned copy. Since P1b-a un-parked
+# `crates/xusdc-validation` onto the v16 client (`miden-client =0.16.0-alpha.1`, which itself pins
+# protocol `=0.16.0-alpha.4`), the block is STILL not needed: every member — the validation
+# consumer included — resolves the protocol family uniformly from crates.io at `=0.16.0-alpha.4`,
+# so exactly one copy of each protocol crate is in the graph. `miden-tx-batch-prover` (never
+# published past 0.15.3) left the graph with the rename to `miden-tx-batch` (protocol #3035), which
+# arrives transitively via `miden-testing`.

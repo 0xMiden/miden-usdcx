@@ -30,13 +30,14 @@ use miden_client::store::TransactionFilter;
 use miden_client::transaction::{
     TransactionId, TransactionRequestBuilder, TransactionScript, TransactionStatus,
 };
-use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageSlotName};
-use miden_protocol::asset::Asset;
+use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey, StorageSlotName};
+use miden_protocol::asset::FungibleAsset;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{Note, NoteAttachments, NoteType};
-use miden_protocol::transaction::TransactionKernel;
+use miden_protocol::crypto::rand::FeltRng;
+use miden_protocol::note::{Note, NoteType};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::RoleBasedAccessControl;
+use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::P2idNote;
 use xusdc_encoding::account::xreserve::{
     DOM_PAUSER_ROLE, MIN_BURN_SIZE_SLOT_LABEL, XRESERVE_ATTESTERS_SLOT_LABEL,
@@ -119,7 +120,7 @@ fn map_item(account: &Account, label: &str, key: Word) -> Result<Word> {
     let name = StorageSlotName::new(label).with_context(|| format!("slot label '{label}'"))?;
     account
         .storage()
-        .get_map_item(&name, key)
+        .get_map_item(&name, StorageMapKey::new(key))
         .map_err(|e| anyhow::anyhow!("reading map slot '{label}': {e}"))
 }
 
@@ -166,7 +167,10 @@ fn role_membership(account: &Account, role: &RoleSymbol, member: AccountId) -> R
     ]);
     account
         .storage()
-        .get_map_item(RoleBasedAccessControl::role_membership_slot(), key)
+        .get_map_item(
+            RoleBasedAccessControl::role_membership_slot(),
+            StorageMapKey::new(key),
+        )
         .map(word4)
         .map_err(|e| anyhow::anyhow!("reading role_membership: {e}"))
 }
@@ -843,28 +847,35 @@ async fn run_c6(
     ])
 }
 
-/// Row F: the faucet consuming a stock P2ID note (non-allowlisted script root) rejects; a tx-script
-/// transaction against the faucet rejects (empty tx-script allowlist).
+/// Row F: the faucet consuming a stock P2ID note (non-allowlisted script root) rejects; a
+/// non-allowlisted (`nop`) tx-script transaction against the faucet rejects (the v16 tx-script
+/// allowlist admits ONLY the S12 expiration root — any other script traps).
 async fn run_row_f(d: &mut Driver, sender: AccountId) -> Result<RowF> {
     let faucet_id = d.faucet_id;
-    // A stock P2ID note targeting the faucet — its script root is NOT in the note allowlist.
-    let p2id = P2idNote::create(
-        sender,
-        faucet_id,
-        Vec::<Asset>::new(),
-        NoteType::Public,
-        NoteAttachments::new(vec![]).context("empty P2ID attachments")?,
-        d.rng(),
-    )
-    .context("building the stock P2ID note")?;
+    // A stock P2ID note targeting the faucet — its script root is NOT in the note allowlist. v16:
+    // `P2idNote::create(...)` → the bon `P2idNote::builder()`, and a P2ID must now carry ≥1 asset
+    // (MIGRATION-V16-ALPHA2.md M3/S7), so it carries a nominal 1 unit of the faucet's own token; the
+    // rejection under test is the script-root allowlist gate, upstream of any asset handling.
+    let serial = d.rng().draw_word();
+    let p2id: Note = P2idNote::builder()
+        .sender(sender)
+        .target(faucet_id)
+        .asset(FungibleAsset::new(faucet_id, 1).context("nominal P2ID asset")?)
+        .serial_number(serial)
+        .note_type(NoteType::Public)
+        .build()
+        .context("building the stock P2ID note")?
+        .into();
     let non_allowlisted_note = d.probe_consume(p2id).await?;
 
-    // A trivial tx-script — the empty tx-script allowlist rejects any tx-script transaction.
-    let assembler = TransactionKernel::assembler();
-    let program = assembler
-        .assemble_program("begin push.1 drop end")
-        .map_err(|e| anyhow::anyhow!("assembling the trivial tx-script: {e}"))?;
-    let tx_script = TransactionScript::new(program);
+    // A non-allowlisted (`nop`) tx-script — the v16 tx-script allowlist admits ONLY the S12
+    // expiration root, so any OTHER script is rejected. v16 recipe: the raw `begin…end` program +
+    // `TransactionScript::new` → `CodeBuilder::compile_tx_script` over a `@transaction_script`
+    // module (the canonical `nop` probe; the exact body is irrelevant — any non-expiration tx
+    // script trips the allowlist gate).
+    let tx_script = CodeBuilder::new()
+        .compile_tx_script("@transaction_script\npub proc main\n    nop\nend\n")
+        .map_err(|e| anyhow::anyhow!("compiling the trivial tx-script: {e}"))?;
     let tx_script_verdict = d.probe_tx_script(tx_script).await?;
 
     Ok(RowF {

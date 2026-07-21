@@ -10,8 +10,10 @@
 //! - `XReserveStablecoinBuilder::build_components()` (deny-guard mint policy, burn policy,
 //!   Ownable2Step owner, seeded DOM roles, OwnerControlled authority);
 //! - finalized for deploy with `AccountBuilder::with_auth_component(auth_component())` — the
-//!   stock `AuthNetworkAccount` under the frozen 12-root note allowlist + EMPTY tx allowlist
-//!   (the runtime `set_role_admin` note was removed — S21 flip, 2026-07-14).
+//!   stock `AuthNetworkAccount` under the frozen 12-root note allowlist + the single-root tx-script
+//!   allowlist (the S12 `ExpirationTransactionScript` root; v16 no longer ships an EMPTY tx-script
+//!   allowlist — MIGRATION-V16-ALPHA2.md. The runtime `set_role_admin` note was removed — S21
+//!   flip, 2026-07-14).
 //!
 //! MockChain finalizes the same composition via `Auth::NetworkAccount` in the repo's F5 suite;
 //! this is the REAL-deploy twin of that fixture. The `_seeded` variant exists for SYNTHETIC
@@ -26,11 +28,12 @@ use miden_protocol::account::{
     Account, AccountBuilder, AccountComponent, AccountId, AccountType, StorageMap, StorageSlot,
     StorageSlotName,
 };
+use miden_protocol::assembly::{Linkage, Path as MasmPath};
 use miden_protocol::asset::{AssetAmount, TokenSymbol};
 use miden_protocol::transaction::TransactionKernel;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
-use miden_standards::account::metadata::AccountBuilderSchemaCommitmentExt;
+use miden_standards::account::inspection::AccountBuilderSchemaCommitmentExt;
 use miden_standards::StandardsLib;
 use xusdc_encoding::account::xreserve::{
     XReserveStablecoinBuilder, DOMAIN_CONFIG_SLOT_LABEL, IDENTIFIER_CONFIG_SLOT_LABEL,
@@ -48,14 +51,20 @@ use crate::config::DomainParams;
 pub fn build_xreserve_component_seeded(domain: Option<&DomainParams>) -> Result<AccountComponent> {
     // The same assembler shape as the repo's F5 fixtures: kernel assembler + StandardsLib (the
     // admin procs call stock authority/pausable/ownable2step procs living there).
+    // v16 assembler API (MIGRATION-V16-ALPHA2.md; worked reference:
+    // crates/xusdc-encoding/src/note/xreserve_mint.rs): `with_dynamic_library(lib)` →
+    // `with_package(Arc<Package>, Linkage::Dynamic)`, and `assemble_library_from_dir(dir, name)` →
+    // `assemble_library_from_root(dir/mod.masm, Some(MasmPath))` (returns a `Box<Library>`).
     let assembler = TransactionKernel::assembler()
-        .with_dynamic_library(StandardsLib::default())
+        .with_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
         .map_err(|e| anyhow::anyhow!("linking StandardsLib into the xreserve assembler: {e}"))?
         .with_warnings_as_errors(true);
-    let library = assembler
-        .assemble_library_from_dir(xusdc_encoding::xreserve_asm_dir(), "xreserve")
+    let library = *assembler
+        .assemble_library_from_root(
+            xusdc_encoding::xreserve_asm_dir().join("mod.masm"),
+            Some(MasmPath::new("xreserve")),
+        )
         .map_err(|e| anyhow::anyhow!("the shipped xreserve library failed to assemble: {e}"))?;
-    let library = Arc::unwrap_or_clone(library);
 
     let empty = Word::empty();
     let (domain_w, identifier_w, source_domain_w, xrc_hi_w, xrc_lo_w) = match domain {

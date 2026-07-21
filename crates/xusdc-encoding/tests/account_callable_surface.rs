@@ -21,13 +21,15 @@
 //!
 //! S12 DISPOSITION — `freeze`/`unfreeze` are PRESENT but OPERATIONALLY UNREACHABLE, and this file
 //! proves it rather than asserting it: the faucet is a keyless network account whose
-//! `AuthNetworkAccount` admits ONLY the immutable 12-root note-script allowlist and an EMPTY
-//! tx-script allowlist (F5). `freeze_and_unfreeze_are_unreachable_from_every_allowlisted_note`
+//! `AuthNetworkAccount` admits ONLY the immutable 12-root note-script allowlist and a tx-script
+//! allowlist of EXACTLY the one canonical `ExpirationTransactionScript` (S12, RATIFIED 2026-07-20 —
+//! F5). `freeze_and_unfreeze_are_unreachable_from_every_allowlisted_note`
 //! scans the MAST of all 12 allowlisted note scripts and shows not one of them references the
 //! freeze/unfreeze roots; `freeze_and_unfreeze_are_not_admissible_via_either_allowlist` shows the
 //! roots are not among the 12 note-script roots; and `the_auth_component_rejects_a_non_allowlisted_note`
-//! / `the_auth_component_rejects_any_tx_script_via_the_empty_allowlist` EXECUTE the two (and only
-//! two) entry vectors and watch the auth component reject them. (The allowlist is an epilogue
+//! / `the_auth_component_rejects_non_expiration_tx_scripts_and_admits_expiration` EXECUTE the two
+//! (and only two) entry vectors and watch the auth component reject every non-admitted script (the
+//! sole admitted tx-script — the expiration bounder — cannot reach freeze). (The allowlist is an epilogue
 //! `@auth_script`, checked AFTER note/tx-script execution, so a note that itself calls `freeze`
 //! would trap on freeze's own owner-gate before the allowlist check — the allowlist's decision on
 //! such a note is the root-membership one, which is why the freeze-specific proof is membership,
@@ -39,7 +41,8 @@
 //! treatment: the runtime `set_role_admin` admin note was REMOVED from the allowlist (13 → 12
 //! roots), so the account procedure stays a callable root of the composed account (stock RBAC,
 //! row 62-of-62 unchanged) but is OPERATIONALLY UNREACHABLE — no allowlisted note references its
-//! root and the tx-script allowlist is empty. The role-admin graph the faucet deploys with is the
+//! root and the tx-script allowlist admits only the canonical expiration bounder (which cannot reach
+//! it). The role-admin graph the faucet deploys with is the
 //! BUILD-TIME seed (`role_config[DOM_PAUSER].admin_role = DOM_MANAGER`, byte-identical to an
 //! owner-sent `set_role_admin(DOM_PAUSER, DOM_MANAGER)`), and role rotation is
 //! `grant_role`/`revoke_role` (CIR-ADMIN-3) — Circle's EVM reference (`DomainManageable.sol`) has
@@ -54,6 +57,7 @@
 
 mod support;
 
+use core::num::NonZeroU16;
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
@@ -71,7 +75,9 @@ use miden_standards::errors::standards::{
 };
 use miden_standards::note::BurnNote;
 use miden_standards::testing::note::NoteBuilder;
+use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_testing::assert_transaction_executor_error;
+use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_admin::{
@@ -367,10 +373,11 @@ fn freeze_and_unfreeze_are_unreachable_from_every_allowlisted_note() -> Result<(
 /// UNREACHABLE, cross-reference (freeze-specific): the freeze/unfreeze roots are not ADMISSIBLE via
 /// either entry vector. `AuthNetworkAccount` admits an input note only if its script root is one of
 /// the 12 allowlisted roots, and admits a tx script only if its root is in the tx-script allowlist —
-/// which is EMPTY. There is no freeze/unfreeze NOTE FACTORY at all (the 12 are the two supply notes
-/// + the 10 admin notes; none carries freeze), so no freeze-bearing note root can be among the 12,
-/// and the empty tx-script allowlist admits nothing. Combined with the MAST sweep above (no
-/// allowlisted note even references the roots) both entry vectors are provably closed.
+/// which admits EXACTLY the one canonical `ExpirationTransactionScript` (S12), never freeze/unfreeze.
+/// There is no freeze/unfreeze NOTE FACTORY at all (the 12 are the two supply notes + the 10 admin
+/// notes; none carries freeze), so no freeze-bearing note root can be among the 12, and the one-root
+/// tx-script allowlist admits only the expiration bounder (not freeze). Combined with the MAST sweep
+/// above (no allowlisted note even references the roots) both entry vectors are provably closed.
 #[test]
 fn freeze_and_unfreeze_are_not_admissible_via_either_allowlist() -> Result<()> {
     let note_allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
@@ -385,11 +392,12 @@ fn freeze_and_unfreeze_are_not_admissible_via_either_allowlist() -> Result<()> {
              (there is no freeze note factory; a freeze-bearing note is inadmissible)"
         );
     }
-    // The tx-script entry vector is closed by the EMPTY tx-script allowlist — pinned + executed by
-    // `the_auth_component_rejects_any_tx_script_via_the_empty_allowlist` below (and the canonical
-    // `f5_network_account_auth::production_faucet_tx_script_allowlist_is_exactly_empty`). Together
-    // with the note-root non-membership above, no freeze/unfreeze call is admissible via either
-    // entry vector.
+    // The tx-script entry vector is closed to freeze by the one-root tx-script allowlist (it admits
+    // ONLY the canonical expiration bounder, not freeze) — pinned + executed by
+    // `the_auth_component_rejects_non_expiration_tx_scripts_and_admits_expiration` below (and the
+    // canonical `f5_network_account_auth::production_faucet_tx_script_allowlist_is_exactly_the_expiration_root`).
+    // Together with the note-root non-membership above, no freeze/unfreeze call is admissible via
+    // either entry vector.
     Ok(())
 }
 
@@ -428,28 +436,61 @@ async fn the_auth_component_rejects_a_non_allowlisted_note() -> Result<()> {
 }
 
 /// UNREACHABLE, executing (entry vector 2 — TX SCRIPT): the auth component rejects any transaction
-/// script against the EMPTY tx-script allowlist (a clean, non-self-trapping probe script, same
-/// reasoning as the note vector). With both entry vectors closed — every note must be one of the 12
-/// (none touches freeze) and every tx script must be in an allowlist that is empty — `freeze` is
-/// operationally unreachable on this faucet, `is_frozen` is never set, and `ERR_AUTHORITY_FROZEN`
-/// never fires: the mechanism is INERT (S12, the ratified `renounce_role` disposition).
+/// script EXCEPT the one canonical `ExpirationTransactionScript` (S12, RATIFIED 2026-07-20) against
+/// the one-root tx-script allowlist (a clean, non-self-trapping probe script, same reasoning as the
+/// note vector). With both entry vectors closed — every note must be one of the 12 (none touches
+/// freeze) and every tx script must be the single allowlisted expiration bounder (which cannot touch
+/// nonce/state/assets) — `freeze` is operationally unreachable on this faucet, `is_frozen` is never
+/// set, and `ERR_AUTHORITY_FROZEN` never fires: the mechanism is INERT (S12, the ratified
+/// `renounce_role` disposition).
 #[tokio::test]
-async fn the_auth_component_rejects_any_tx_script_via_the_empty_allowlist() -> Result<()> {
+async fn the_auth_component_rejects_non_expiration_tx_scripts_and_admits_expiration() -> Result<()>
+{
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
         .context("building the production network-auth faucet")?;
-    let tx_script = CodeBuilder::new()
+
+    // NEGATIVE — a non-expiration (nop) tx script is rejected by the one-root allowlist.
+    let bogus = CodeBuilder::new()
         .compile_tx_script("@transaction_script\npub proc main\n    nop\nend\n")
         .context("compiling the probe tx script")?;
-    let result = pf
+    let rejected = pf
         .mock_chain
         .build_tx_context(pf.faucet_id, &[], &[])
         .context("tx-script tx context")?
-        .tx_script(tx_script)
+        .tx_script(bogus)
         .build()
         .context("tx-script tx build")?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED);
+    assert_transaction_executor_error!(rejected, ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED);
+
+    // POSITIVE — the canonical expiration script CLEARS the allowlist gate. An expiration-only tx
+    // changes no account state and consumes no notes, so the kernel then rejects it with the empty-tx
+    // epilogue assertion — downstream of, and orthogonal to, the allowlist gate. The precise S12
+    // invariant: the expiration script is NOT rejected by the tx-script allowlist (a mutation
+    // dropping the expiration root flips this back to the allowlist error — RED — caught here).
+    let expiration = ExpirationTransactionScript::new(NonZeroU16::new(64).expect("64 is non-zero"));
+    let admitted = pf
+        .mock_chain
+        .build_tx_context(pf.faucet_id, &[], &[])
+        .context("expiration tx-script tx context")?
+        .tx_script(expiration.into())
+        .tx_script_args(expiration.tx_script_args())
+        .build()
+        .context("expiration tx-script tx build")?
+        .execute()
+        .await;
+    match admitted {
+        Ok(_) => {}
+        Err(TransactionExecutorError::TransactionProgramExecutionFailed(actual)) => assert!(
+            !ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED.matches_execution_error(&actual),
+            "the canonical ExpirationTransactionScript must be ADMITTED by the S12 allowlist, but \
+             it was rejected by the tx-script allowlist: {actual}",
+        ),
+        Err(other) => {
+            panic!("the expiration tx failed with an unexpected non-execution error: {other}")
+        }
+    }
     Ok(())
 }
 
@@ -582,8 +623,9 @@ fn set_role_admin_is_unreachable_from_every_allowlisted_note() -> Result<()> {
 
 /// UNREACHABLE, cross-reference (set_role_admin-specific): neither entry vector admits the removed
 /// capability. The FORMER pinned `set_role_admin` note root is NOT a member of the 12-root
-/// note-script allowlist (re-adding it turns this test RED), and the tx-script allowlist is EMPTY
-/// (pinned + executed by `the_auth_component_rejects_any_tx_script_via_the_empty_allowlist`).
+/// note-script allowlist (re-adding it turns this test RED), and the tx-script allowlist admits ONLY
+/// the canonical expiration bounder — never `set_role_admin` (pinned + executed by
+/// `the_auth_component_rejects_non_expiration_tx_scripts_and_admits_expiration`).
 /// The executing leg — the preserved former note is consumed and REJECTED by the auth component —
 /// lives in `f5_admin_notes.rs::set_role_admin_note_is_rejected_as_non_allowlisted`.
 #[test]

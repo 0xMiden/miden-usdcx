@@ -11,8 +11,8 @@ description = "xUSDC-on-Miden 04 shared encoding: hand-written MASM + Rust mirro
 # dep is required by the committed vector generator (AccountIdBuilder).
 
 [dependencies]
-miden-protocol  = { version = "=0.16.0-alpha.2", features = ["testing"] }
-miden-standards = { version = "=0.16.0-alpha.2" }
+miden-protocol  = { version = "=0.16.0-alpha.4", features = ["testing"] }
+miden-standards = { version = "=0.16.0-alpha.4" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # k256 is a REGULAR dependency since the v16 migration (MIGRATION-V16-ALPHA2.md S16): the
@@ -48,9 +48,9 @@ name = "gen_vectors"
 required-features = ["vectors"]
 
 [dev-dependencies]
-miden-standards = { version = "=0.16.0-alpha.2", features = ["testing"] }
+miden-standards = { version = "=0.16.0-alpha.4", features = ["testing"] }
 miden-testing   = { version = "=0.16.0-alpha.2" }
-miden-tx        = { version = "=0.16.0-alpha.2" }
+miden-tx        = { version = "=0.16.0-alpha.4" }
 # exact-error matching for u32-assert traps (OperationError::U32AssertionFailed); same
 # 0.25.3 the alpha.2 family resolves — the pin moves in lockstep with the protocol family so
 # exactly one processor copy exists and the error downcasts unify (MIGRATION-V16-ALPHA2.md R3)

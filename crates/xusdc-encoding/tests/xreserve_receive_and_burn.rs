@@ -202,7 +202,7 @@ fn pinned_standards_fixture_unchanged() {
 }
 
 const CARGO_TOML: &str = include_str!("../Cargo.toml");
-const PINNED_STANDARDS_VERSION: &str = "=0.16.0-alpha.2";
+const PINNED_STANDARDS_VERSION: &str = "=0.16.0-alpha.4";
 
 /// N1D provenance anchor: the vendored fixtures are a snapshot of the `miden-standards` REGISTRY
 /// release at this exact version pin (the v16 migration moved the dependency from a git rev to

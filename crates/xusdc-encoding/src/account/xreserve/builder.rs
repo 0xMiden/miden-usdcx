@@ -50,6 +50,7 @@ use miden_standards::account::policies::{
     BurnPolicy, BurnPolicyError, MintPolicy, MintPolicyError, TokenPolicyManager,
 };
 use miden_standards::note::BurnNote;
+use miden_standards::tx_script::ExpirationTransactionScript;
 
 use crate::note::xreserve_mint::XReserveMintNote;
 
@@ -463,12 +464,23 @@ impl XReserveStablecoinBuilder {
     }
 
     /// The stock `AuthNetworkAccount` production auth component, initialized with the frozen
-    /// note-script allowlist (`Self::allowed_note_scripts`) and an EMPTY tx-script allowlist
-    /// (sole-mint-surface / F1 — never `.with_allowed_tx_scripts`). Composed into the account's
-    /// dedicated auth slot at finalization (deploy: `AccountBuilder::with_auth_component`; tests:
-    /// `Auth::NetworkAccount`).
+    /// note-script allowlist (`Self::allowed_note_scripts`) and a tx-script allowlist containing
+    /// EXACTLY the one canonical `ExpirationTransactionScript::script_root()` (S12, RATIFIED
+    /// 2026-07-20). That single root is the protocol-standard expiration bounder a network account
+    /// allowlists so the ntx-builder can bound how long a submitted tx stays valid; it is safe on
+    /// an open network account because the submitter-controlled delta only bounds the inclusion
+    /// window of the submitter's own transaction (kernel-capped at `0xFFFF` blocks) and can touch
+    /// neither the account's nonce, state, nor assets. Every OTHER tx-script is still rejected
+    /// (sole-mint-surface / F1 posture, now expressed as a one-root allowlist rather than an empty
+    /// one). Composed into the account's dedicated auth slot at finalization (deploy:
+    /// `AccountBuilder::with_auth_component`; tests: `Auth::NetworkAccount`).
     pub fn auth_component() -> Result<AuthNetworkAccount, NetworkAccountNoteAllowlistError> {
-        AuthNetworkAccount::with_allowed_notes(Self::allowed_note_scripts())
+        Ok(
+            AuthNetworkAccount::with_allowed_notes(Self::allowed_note_scripts())?
+                .with_allowed_tx_scripts(BTreeSet::from([
+                    ExpirationTransactionScript::script_root(),
+                ])),
+        )
     }
 
     /// Reads the supplied faucet's `is_max_supply_mutable` flag from its assembled storage. The stock

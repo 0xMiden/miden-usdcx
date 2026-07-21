@@ -41,6 +41,7 @@ use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::{BurnNote, P2idNote};
 use miden_standards::testing::note::NoteBuilder;
+use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_standards::StandardsLib;
 use miden_testing::{AccountState, Auth, MockChain};
 use miden_tx::TransactionExecutorError;
@@ -4129,15 +4130,20 @@ pub fn setup_production_faucet(
     .build_components()
     .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
 
-    // F5: the production faucet is finalized under the stock AuthNetworkAccount (keyless network
-    // account) with the frozen note-script allowlist and an EMPTY tx-script allowlist — the same
-    // single-source frozen set the deploy path composes via `AccountBuilder::with_auth_component`.
+    // F5/S12: the production faucet is finalized under the stock AuthNetworkAccount (keyless network
+    // account) with the frozen note-script allowlist and a tx-script allowlist of EXACTLY the one
+    // canonical `ExpirationTransactionScript::script_root()` (S12, RATIFIED 2026-07-20) — mirroring
+    // the deploy path's `XReserveStablecoinBuilder::auth_component()` composed via
+    // `AccountBuilder::with_auth_component`. (alpha.4's `NetworkAccount::new` REQUIRES the expiration
+    // root, so an empty tx-script allowlist would no longer be a valid network account.)
     let account = mc
         .add_existing_account_from_components(
             Auth::NetworkAccount {
                 allowed_script_roots:
                     xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::allowed_note_scripts(),
-                allowed_tx_script_roots: std::collections::BTreeSet::new(),
+                allowed_tx_script_roots: std::collections::BTreeSet::from([
+                    ExpirationTransactionScript::script_root(),
+                ]),
             },
             components,
         )

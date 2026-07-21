@@ -2,7 +2,8 @@
 //!
 //! Human decision (2026-07-08, RATIFIED): the xUSDC/xReserve faucet ships composing the stock
 //! `AuthNetworkAccount` as its ONE production auth component — keyless, a frozen note-script
-//! allowlist, an EMPTY tx-script allowlist.
+//! allowlist, and a tx-script allowlist of EXACTLY the one canonical `ExpirationTransactionScript`
+//! (S12, RATIFIED 2026-07-20).
 //!
 //! The production faucet (`support::setup_production_faucet`) is finalized under
 //! `Auth::NetworkAccount` fed `builder.allowed_note_scripts()`, and the mint + burn notes carry the
@@ -13,8 +14,10 @@
 //!   `AuthNetworkAccount` (its auth procedure root is present in the account code).
 //! - proof #5: the note-script allowlist equals EXACTLY the 12 ratified roots (2 supply + 10 admin
 //!   — NO `set_role_admin` note: removed by the S21 disposition flip, human-ratified 2026-07-14);
-//!   the tx-script allowlist is present AND EXACTLY empty (0 roots).
-//! - proof #1: a non-allowlisted note is rejected by auth; any tx script is rejected.
+//!   the tx-script allowlist is present AND equals EXACTLY the one canonical
+//!   `ExpirationTransactionScript::script_root()` (S12, RATIFIED 2026-07-20).
+//! - proof #1: a non-allowlisted note is rejected by auth; any tx script OTHER than the canonical
+//!   expiration script is rejected, and that expiration script is admitted.
 //! - proof #2/#3: exact routing-attachment wire form + semantics — the mint carries the scheme-1
 //!   attestation AND a scheme-2 `NetworkAccountTarget` to the faucet with `NoteExecutionHint::Always`;
 //!   the burn carries the scheme-2 target to the faucet with `Always`.
@@ -26,6 +29,7 @@
 
 mod support;
 
+use core::num::NonZeroU16;
 use core::slice;
 use std::collections::BTreeSet;
 
@@ -44,7 +48,9 @@ use miden_standards::errors::standards::{
 };
 use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint};
 use miden_standards::testing::note::NoteBuilder;
+use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_testing::{assert_transaction_executor_error, MockChain};
+use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_admin::{
@@ -159,7 +165,7 @@ fn production_faucet_auth_component_is_stock_network_account() -> Result<()> {
     Ok(())
 }
 
-// PROOF #5 — the frozen note-script allowlist + an EXACTLY-EMPTY tx-script allowlist
+// PROOF #5 — the frozen note-script allowlist + a tx-script allowlist of EXACTLY the expiration root
 // ================================================================================================
 
 /// The note-script allowlist must equal EXACTLY the 12 ratified roots (2 supply + 10 admin) — an
@@ -212,16 +218,21 @@ fn production_faucet_note_allowlist_is_exactly_the_12_ratified_roots() -> Result
     Ok(())
 }
 
-/// The tx-script allowlist must exist and be EXACTLY empty (0 roots) — the sole-mint-surface
-/// invariant (reinforces F1).
+/// The tx-script allowlist must exist and equal EXACTLY the one canonical
+/// `ExpirationTransactionScript::script_root()` (S12, RATIFIED 2026-07-20) — the sole-mint-surface
+/// posture (F1), now expressed as a ONE-root allowlist that admits only the protocol-standard
+/// expiration bounder rather than an empty set. Extra/missing = RED.
 #[test]
-fn production_faucet_tx_script_allowlist_is_exactly_empty() -> Result<()> {
+fn production_faucet_tx_script_allowlist_is_exactly_the_expiration_root() -> Result<()> {
     let (_chain, account) = production_faucet()?;
     let tx_allowlist = NetworkAccountTxScriptAllowlist::try_from(account.storage())
         .map_err(|e| anyhow::anyhow!("the faucet must carry a tx-script allowlist slot: {e}"))?;
-    assert!(
-        tx_allowlist.allowed_script_roots().is_empty(),
-        "the tx-script allowlist must be EXACTLY empty (sole-mint-surface / F1); found {} root(s)",
+    let expected = BTreeSet::from([ExpirationTransactionScript::script_root()]);
+    assert_eq!(
+        tx_allowlist.allowed_script_roots(),
+        &expected,
+        "the tx-script allowlist must equal EXACTLY {{ ExpirationTransactionScript::script_root() }} \
+         (S12 sole-mint-surface); found {} root(s)",
         tx_allowlist.allowed_script_roots().len(),
     );
     Ok(())
@@ -256,24 +267,54 @@ async fn non_allowlisted_note_is_rejected_by_auth() -> Result<()> {
     Ok(())
 }
 
-/// Any transaction script must be rejected by the EMPTY tx-script allowlist.
+/// Any transaction script OTHER than the canonical `ExpirationTransactionScript` must be rejected
+/// by the one-root tx-script allowlist, AND that canonical expiration script must be ADMITTED
+/// (S12): the `nop` probe still trips `ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED`, while the
+/// expiration script clears the allowlist gate and executes.
 #[tokio::test]
-async fn any_tx_script_is_rejected_by_empty_tx_allowlist() -> Result<()> {
+async fn non_expiration_tx_script_is_rejected_and_expiration_is_admitted() -> Result<()> {
     let (chain, account) = production_faucet()?;
-    let tx_script = CodeBuilder::new()
+
+    // NEGATIVE — an arbitrary (nop) tx script is NOT the expiration root, so the allowlist rejects it.
+    let bogus = CodeBuilder::new()
         .compile_tx_script("@transaction_script\npub proc main\n    nop\nend\n")
         .context("compiling the probe tx script")?;
-
-    let result = chain
+    let rejected = chain
         .build_tx_context(account.id(), &[], &[])
         .context("building the tx-script tx context")?
-        .tx_script(tx_script)
+        .tx_script(bogus)
         .build()
         .context("building the tx-script tx")?
         .execute()
         .await;
+    assert_transaction_executor_error!(rejected, ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED);
 
-    assert_transaction_executor_error!(result, ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED);
+    // POSITIVE — the canonical expiration script IS allowlisted, so it CLEARS the allowlist gate.
+    // An expiration-only tx changes no account state and consumes no notes, so the kernel rejects it
+    // with the empty-tx epilogue assertion — downstream of, and orthogonal to, the allowlist gate.
+    // The precise S12 invariant: the expiration script is NOT rejected by the tx-script allowlist (a
+    // mutation dropping the expiration root flips this back to the allowlist error — RED — caught here).
+    let expiration = ExpirationTransactionScript::new(NonZeroU16::new(64).expect("64 is non-zero"));
+    let admitted = chain
+        .build_tx_context(account.id(), &[], &[])
+        .context("building the expiration tx-script tx context")?
+        .tx_script(expiration.into())
+        .tx_script_args(expiration.tx_script_args())
+        .build()
+        .context("building the expiration tx-script tx")?
+        .execute()
+        .await;
+    match admitted {
+        Ok(_) => {}
+        Err(TransactionExecutorError::TransactionProgramExecutionFailed(actual)) => assert!(
+            !ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED.matches_execution_error(&actual),
+            "the canonical ExpirationTransactionScript must be ADMITTED by the S12 allowlist, but \
+             it was rejected by the tx-script allowlist: {actual}",
+        ),
+        Err(other) => {
+            panic!("the expiration tx failed with an unexpected non-execution error: {other}")
+        }
+    }
     Ok(())
 }
 

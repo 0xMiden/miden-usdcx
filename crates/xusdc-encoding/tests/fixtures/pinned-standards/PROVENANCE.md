@@ -11,30 +11,36 @@ hence this vendored fixture + checksum + Cargo-pin anchor.
 
 ## Pinned version
 
-`miden-standards` (and `miden-protocol`, `miden-testing`, `miden-tx`) are pinned in
+`miden-standards` (and `miden-protocol`, `miden-tx`) are pinned in
 `crates/xusdc-encoding/Cargo.toml` to:
 
-    version = "=0.16.0-alpha.2"
+    version = "=0.16.0-alpha.4"
+
+(`miden-testing` stays `=0.16.0-alpha.2`; its caret dependency on `miden-protocol` unifies to the
+alpha.4 pin — see the proto-alpha4 migration.)
 
 `tests/xreserve_receive_and_burn.rs::pinned_standards_rev_matches_cargo` asserts that pin still
 holds; if the dependency pin is bumped, that test fails — **re-vendor and re-checksum** before
-proceeding.
+proceeding. The alpha.2 → alpha.4 bump was re-vendored per the steps below: both LOGIC libraries
+(`asm/standards/faucets/fungible.masm` and `.../policies/policy_manager.masm`) are **byte-identical**
+between alpha.2 and alpha.4, so the committed fixtures and their FNV-1a checksums are unchanged and
+only the version pin above moved.
 
 ## Source paths (in the resolved cargo registry checkout)
 
-The alpha.2 crate ships the faucet MASM twice: the LOGIC libraries under `asm/standards/…`
+The crate ships the faucet MASM twice: the LOGIC libraries under `asm/standards/…`
 (where `receive_and_burn`, `faucet::burn`, the supply write-back, and the policy dispatchers
 live — the N1D anchors) and thin component RE-EXPORT wrappers under `asm/components/…` (no
 burn/supply code). The vendored copies are the LOGIC libraries:
 
-    <cargo-registry>/miden-standards-0.16.0-alpha.2/asm/standards/faucets/fungible.masm
-    <cargo-registry>/miden-standards-0.16.0-alpha.2/asm/standards/faucets/policies/policy_manager.masm
+    <cargo-registry>/miden-standards-0.16.0-alpha.4/asm/standards/faucets/fungible.masm
+    <cargo-registry>/miden-standards-0.16.0-alpha.4/asm/standards/faucets/policies/policy_manager.masm
 
 where `<cargo-registry>` = `~/.cargo/registry/src/index.crates.io-<hash>/`.
 
 ## Re-derivation (auditable; produces a byte-identical diff)
 
-    SRC=~/.cargo/registry/src/index.crates.io-*/miden-standards-0.16.0-alpha.2/asm/standards/faucets
+    SRC=~/.cargo/registry/src/index.crates.io-*/miden-standards-0.16.0-alpha.4/asm/standards/faucets
     DST=crates/xusdc-encoding/tests/fixtures/pinned-standards
     cp "$SRC/fungible.masm"                "$DST/fungible.masm"
     cp "$SRC/policies/policy_manager.masm" "$DST/policy_manager.masm"

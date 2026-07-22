@@ -18,6 +18,11 @@ description = "Phase-4 §11.2 local-node validation harness (LNV): real-node lif
 
 [dependencies]
 xusdc-encoding = { path = "../xusdc-encoding" }
+# The withdrawal attester's OWN decode/discovery code — the sanity gate drives its `validate_discovery`
+# + `decode_burn_payload` over the real burn note to prove attester-consumability (readiness == the
+# note is findable + decodable by the attester, no running service). It pins the same protocol family
+# (=0.16.0-alpha.4) and carries no miden-client dep (W10 parked), so it adds no new graph tension.
+withdrawal-listener-attester = { path = "../withdrawal-listener-attester" }
 miden-protocol  = { version = "=0.16.0-alpha.4" }
 miden-standards = { version = "=0.16.0-alpha.4" }
 miden-tx        = { version = "=0.16.0-alpha.4" }
@@ -27,6 +32,9 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Hex encode/decode for the devnet credential bundle (--deploy-only export / --credentials import):
+# the faucet id, the owner/DOM_PAUSER Falcon `AuthSecretKey` bytes, and the attester secret scalar.
+hex = { workspace = true }
 # Local test-attester keygen (never Circle keys): same crates + versions as the xusdc-encoding
 # attestation vectors — k256 for the secp256k1 keypair, sha3 for the keccak digest of the SEC1
 # pubkey, miden-crypto for PublicKey::to_commitment (the attester-allowlist keying primitive).

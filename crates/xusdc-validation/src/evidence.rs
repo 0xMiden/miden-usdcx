@@ -111,7 +111,8 @@ pub fn write_evidence(
     };
     let evidence = RunEvidence {
         main_commit: obs.main_commit.clone(),
-        node_version: "miden-node 0.15.1 (installed binaries)".to_string(),
+        node_version: "miden-node 0.16.0-alpha.2 (v16 four-service stack via start-test-node.sh)"
+            .to_string(),
         client_crate: "miden-client =0.16.0-alpha.1 (crates.io)".to_string(),
         protocol_rev: "0xMiden/protocol crates.io =0.16.0-alpha.4".to_string(),
         rpc_port: cfg.stack.rpc_port,

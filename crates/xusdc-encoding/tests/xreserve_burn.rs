@@ -384,7 +384,7 @@ async fn production_burn_note_same_block_consume_is_erased() -> anyhow::Result<(
     // tx0: the user emit-tx creates the production note in-block (executed, then dummy-proven —
     // the canary idiom; the create_*_proven_tx helpers are private to miden-testing).
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(&emit_helper_component()?.component_code().clone())?
+        .with_dynamically_linked_library(emit_helper_component()?.component_code().clone())?
         .compile_tx_script(send_burn_note_script(&note, &h.asset, h.faucet_id))?;
     let tx0 = chain
         .build_tx_context(h.user_id, &[], &[])?

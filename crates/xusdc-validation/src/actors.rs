@@ -8,7 +8,6 @@
 //! GENERATED and RECORDED here (harness foundation); its first on-chain use (`set_attester`) is
 //! LNV-2 scope.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -107,7 +106,7 @@ pub struct Actors {
     pub attester_b: AttesterKey,
 }
 
-/// Builds one Falcon-keyed public `BasicWallet`, registers its key with the keystore and the
+/// Builds one Falcon-keyed public `BasicWallet`, registering its key with the keystore and the
 /// account with the client. The wallet materializes on-chain with its first transaction.
 async fn create_wallet(hc: &mut HarnessClient) -> Result<Account> {
     let key = AuthSecretKey::new_falcon512_poseidon2();
@@ -140,42 +139,128 @@ async fn create_wallet(hc: &mut HarnessClient) -> Result<Account> {
 /// `attester-<label>.secret.hex`. Keeps the `SigningKey` in memory so the harness can sign real
 /// mint attestations during the run.
 fn create_attester(run_root: &Path, label: &str) -> Result<AttesterKey> {
-    let signing_key = SigningKey::random(&mut OsRng);
-    let sec1 = signing_key.verifying_key().to_encoded_point(true);
-    let pubkey_sec1: [u8; 33] = sec1
-        .as_bytes()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("compressed secp256k1 pubkey must be 33 bytes"))?;
-    let pubkey_sec1_hex = hex_lower(&pubkey_sec1);
+    // Throwaway local key — persisted (0600) so a run can be reproduced/inspected.
+    AttesterKey::from_signing_key(SigningKey::random(&mut OsRng), run_root, label, true)
+}
 
-    // The canonical allowlist keying primitive (the gen_vectors / TV-DUAL-5 oracle): miden-crypto's
-    // PublicKey parsed from the SEC1 bytes, then its commitment word.
-    let public_key = PublicKey::read_from_bytes(&pubkey_sec1)
-        .map_err(|e| anyhow::anyhow!("parsing the SEC1 pubkey into miden-crypto: {e}"))?;
-    let commitment: Word = public_key.to_commitment();
-    let commitment_hex = commitment.to_hex();
+impl AttesterKey {
+    /// Builds an [`AttesterKey`] from an explicit secp256k1 `signing_key`, deriving the SEC1 pubkey +
+    /// `to_commitment` allowlist key. When `persist` is true the secret scalar is written under
+    /// `run_root` as `attester-<label>.secret.hex` with **owner-only (0600)** permissions (throwaway
+    /// local keys); the SUPPLIED devnet key is NEVER persisted (`persist = false`) — it stays only in
+    /// memory for the run, so a mint-authorizing secret is not copied to disk.
+    fn from_signing_key(
+        signing_key: SigningKey,
+        run_root: &Path,
+        label: &str,
+        persist: bool,
+    ) -> Result<Self> {
+        let sec1 = signing_key.verifying_key().to_encoded_point(true);
+        let pubkey_sec1: [u8; 33] = sec1
+            .as_bytes()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("compressed secp256k1 pubkey must be 33 bytes"))?;
+        let pubkey_sec1_hex = hex_lower(&pubkey_sec1);
 
-    let secret_path = run_root.join(format!("attester-{label}.secret.hex"));
-    fs::write(&secret_path, hex_lower(&signing_key.to_bytes()))
-        .with_context(|| format!("writing {}", secret_path.display()))?;
+        // The canonical allowlist keying primitive (the gen_vectors / TV-DUAL-5 oracle):
+        // miden-crypto's PublicKey parsed from the SEC1 bytes, then its commitment word.
+        let public_key = PublicKey::read_from_bytes(&pubkey_sec1)
+            .map_err(|e| anyhow::anyhow!("parsing the SEC1 pubkey into miden-crypto: {e}"))?;
+        let commitment: Word = public_key.to_commitment();
+        let commitment_hex = commitment.to_hex();
 
-    Ok(AttesterKey {
-        signing_key,
-        pubkey_sec1,
-        pubkey_sec1_hex,
-        commitment,
-        commitment_hex,
-        secret_path,
-    })
+        let secret_path = run_root.join(format!("attester-{label}.secret.hex"));
+        if persist {
+            // Created 0600 ATOMICALLY (never briefly group/world-readable in the shared run root).
+            write_secret_file(&secret_path, hex_lower(&signing_key.to_bytes()).as_bytes())?;
+        }
+
+        Ok(AttesterKey {
+            signing_key,
+            pubkey_sec1,
+            pubkey_sec1_hex,
+            commitment,
+            commitment_hex,
+            secret_path,
+        })
+    }
+
+    /// Reconstructs an attester from a supplied 32-byte secp256k1 secret scalar (the DEVNET re-run:
+    /// the deployed faucet's ALREADY-ALLOWLISTED attester key, provided by the operator out of band —
+    /// so the same mint checks authenticate against a real faucet). NEVER used for the local gate
+    /// (which generates a throwaway key). `label` names the persisted copy under `run_root`.
+    pub fn from_secret_scalar(scalar: &[u8; 32], run_root: &Path, label: &str) -> Result<Self> {
+        let signing_key = SigningKey::from_slice(scalar).map_err(|e| {
+            anyhow::anyhow!("the supplied attester secret is not a valid secp256k1 scalar: {e}")
+        })?;
+        // NEVER persist the operator's real, allowlisted devnet key to disk.
+        Self::from_signing_key(signing_key, run_root, label, false)
+    }
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Generates all actors: five Falcon-keyed public wallets registered with the client + keystore
-/// (their on-chain materialization happens with their first transaction), and the secp256k1
-/// attester persisted under `run_root`.
+/// Writes `bytes` to `path` as a FRESH file with owner-only (0600) permissions, and REFUSES to
+/// overwrite an existing target — fails CLOSED. A secret is never written over (or through) a
+/// pre-existing regular file or symlink, so a stale bundle, an attacker-planted path, or an operator
+/// typo returns an error instead of clobbering unrelated data or inheriting foreign permissions. On
+/// Unix the file is created with `O_CREAT | O_EXCL | O_NOFOLLOW` and mode `0600`: `O_EXCL` fails if
+/// the path already exists at all (regular file OR symlink), `O_NOFOLLOW` additionally refuses a
+/// final-component symlink, and the fresh inode is `0600` from creation (never briefly
+/// group/world-readable in the umask-0002 shared run root). To REWRITE, the caller must remove the
+/// old path first, deliberately.
+pub(crate) fn write_secret_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        // Linux O_NOFOLLOW = 0o400000 — refuse to follow a symlink as the final path component.
+        const O_NOFOLLOW: i32 = 0o400000;
+        let mut f = match std::fs::OpenOptions::new()
+            .write(true)
+            // O_CREAT | O_EXCL: a FRESH inode only (so mode 0600 is honored), and fail closed if
+            // ANYTHING already occupies the path — never overwrite an existing target.
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(O_NOFOLLOW)
+            .open(path)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                anyhow::bail!(
+                    "refusing to write a secret to {} — the path already exists (a secret is never \
+                     written over an existing file or symlink). Remove it deliberately or choose a \
+                     fresh path.",
+                    path.display()
+                );
+            }
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("creating {} fresh with mode 0600", path.display()));
+            }
+        };
+        f.write_all(bytes)
+            .with_context(|| format!("writing {}", path.display()))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        if path.symlink_metadata().is_ok() {
+            anyhow::bail!(
+                "refusing to write a secret to {} — the path already exists.",
+                path.display()
+            );
+        }
+        std::fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))
+    }
+}
+
+/// Generates all actors (fresh keys). All wallets are throwaway local test identities — NEVER Circle
+/// keys. On the fresh-deploy path they are the faucet's own roles (owner / DOM_PAUSER / DOM_MANAGER)
+/// exercised by the full admin suite; on the existing-faucet non-destructive subset the admin surface
+/// never runs against the deployed faucet, so the role wallets are simply unused for mutation.
 pub async fn create_actors(hc: &mut HarnessClient, run_root: &Path) -> Result<Actors> {
     let owner = create_wallet(hc)
         .await

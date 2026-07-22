@@ -10,15 +10,19 @@ use std::path::{Path, PathBuf};
 use miden_protocol::Word;
 use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
 
+// The v16 node's ACTUAL loopback ports, exactly as the client repo's `start-test-node.sh` binds
+// them (script lines 33-37). The harness only ever dials the sequencer RPC (57291); the other three
+// are the script's internal service ports — recorded truthfully in the evidence so a reproduction
+// frees the right ports, never the old harness-assigned 57292–57294 (which nothing binds).
 /// Sequencer public RPC port — the standard local Miden RPC port the pinned
 /// `miden-client 0.16.0-alpha.1` `for_localhost()` preset also expects.
 pub const RPC_PORT: u16 = 57291;
-/// Validator gRPC port (harness-assigned, loopback).
-pub const VALIDATOR_PORT: u16 = 57292;
-/// ntx-builder gRPC port (harness-assigned, loopback).
-pub const NTX_BUILDER_PORT: u16 = 57293;
-/// Remote tx-prover port (harness-assigned, loopback; the ntx-builder REQUIRES a prover URL).
-pub const TX_PROVER_PORT: u16 = 57294;
+/// Validator gRPC port (`start-test-node.sh` binds `127.0.0.1:50101`).
+pub const VALIDATOR_PORT: u16 = 50101;
+/// ntx-builder gRPC port (`start-test-node.sh` binds `127.0.0.1:50301`).
+pub const NTX_BUILDER_PORT: u16 = 50301;
+/// Remote tx-prover port (`start-test-node.sh` binds `127.0.0.1:50051`).
+pub const TX_PROVER_PORT: u16 = 50051;
 
 /// The shared network-transaction authorization token. v0.15.1 rejects post-deployment
 /// user-RPC transactions against network accounts ("Network transactions may not be submitted by
@@ -75,24 +79,38 @@ impl DomainParams {
     }
 }
 
-/// Where the three services + prover live and how they are wired.
+/// The provisioned v16 client-repo path (holds `scripts/start-test-node.sh`); override with
+/// `MIDEN_V16_NODE_DIR`.
+pub const DEFAULT_V16_NODE_DIR: &str = "/home/agent/work/miden-client-v16";
+
+/// Where the v16 node lives + how the harness reaches it. The node itself is brought up by the
+/// client repo's `start-test-node.sh` (see [`crate::stack`]); `run_root` holds only the client
+/// store/keystore/evidence.
 #[derive(Debug, Clone)]
 pub struct StackConfig {
-    /// Root directory of this run (gitignored). Genesis, data dirs, logs, store, keystore all
-    /// live underneath it.
+    /// Root directory of this run (gitignored): client store, keystore, evidence.
     pub run_root: PathBuf,
+    /// The v16 client-repo dir whose `scripts/start-test-node.sh` brings up the node.
+    pub client_repo_dir: PathBuf,
     pub rpc_port: u16,
+    /// Nominal loopback ports (evidence metadata; the v16 node's real internal ports are the
+    /// script's own — the harness only ever talks to `rpc_port`).
     pub validator_port: u16,
     pub ntx_builder_port: u16,
     pub tx_prover_port: u16,
-    /// The shared `x-miden-network-tx-auth` token (sequencer expects it; ntx-builder presents it).
+    /// The shared `x-miden-network-tx-auth` token (the v16 script wires it into the sequencer +
+    /// ntx-builder; the harness never presents it).
     pub network_tx_auth_token: String,
 }
 
 impl StackConfig {
     pub fn new(run_root: PathBuf) -> Self {
+        let client_repo_dir = std::env::var("MIDEN_V16_NODE_DIR")
+            .unwrap_or_else(|_| DEFAULT_V16_NODE_DIR.to_string())
+            .into();
         Self {
             run_root,
+            client_repo_dir,
             rpc_port: RPC_PORT,
             validator_port: VALIDATOR_PORT,
             ntx_builder_port: NTX_BUILDER_PORT,
@@ -113,8 +131,10 @@ impl StackConfig {
     pub fn tx_prover_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.tx_prover_port)
     }
+    /// The v16 node's service-log directory (`start-test-node.sh` writes
+    /// `validator/sequencer/ntx-builder/prover.log` here).
     pub fn log_dir(&self) -> PathBuf {
-        self.run_root.join("logs")
+        self.client_repo_dir.join("target/test-node/data/logs")
     }
 }
 

@@ -5716,6 +5716,7 @@ name = "xusdc-validation"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "hex",
  "k256 0.13.4",
  "miden-client",
  "miden-client-sqlite-store",
@@ -5729,6 +5730,7 @@ dependencies = [
  "sha3 0.10.9",
  "tempfile",
  "tokio",
+ "withdrawal-listener-attester",
  "xusdc-encoding",
 ]
 

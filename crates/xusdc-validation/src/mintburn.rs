@@ -51,10 +51,15 @@ pub const HOOKDATA_VECTOR: &str = "di-pos-hookdata";
 /// must write this so the D5a domain compare passes.
 pub const MINT_DOMAIN: u32 = 7;
 
-/// The scale exponent the D5b reducer applies (= the faucet's 6 decimals): a raw uint256 amount is
-/// divided by 10^6 to the on-chain asset amount.
-pub const SCALE_EXP: u32 = 6;
-const SCALE: u64 = 1_000_000; // 10^SCALE_EXP
+/// The scale exponent the D5b reducer applies. `masm-rust-constant-parity` mirror of the shipped
+/// `xreserve_mint_note_entry.masm`'s `DEPOSIT_SCALE_EXP` — set to **0** by the P0 fix (commit
+/// 75ece89): Circle sends a 6-decimal deposit amount and Miden xUSDC is ALSO 6 decimals, so the
+/// EVM-minus-Miden decimal delta is 0. The reducer therefore computes `floor(x / 10^0) = x`: the
+/// on-chain minted asset amount EQUALS the raw uint256 deposit amount (scale-0 identity, NO 10^6
+/// division). Must stay equal to the MASM constant, or the harness would build mints expecting the
+/// wrong on-chain amount.
+pub const SCALE_EXP: u32 = 0;
+const SCALE: u64 = 1; // 10^SCALE_EXP
 
 // DC-1 field byte offsets (felt offset × 4): the layout the shared-encoding codec packs. Mirrors the MockChain
 // support constants (`AMOUNT_FELT_OFF` = 2, `REMOTE_RECIPIENT_FELT_OFF` = 19, `MAX_FEE_FELT_OFF` =
@@ -160,12 +165,15 @@ pub fn nonce_key(payload: &[u8]) -> Word {
     bytes32_to_storage_map_key(&nonce).into()
 }
 
-/// The reduced (on-chain) asset amount for a raw uint256 amount (÷ 10^SCALE_EXP).
+/// The reduced (on-chain) asset amount for a raw uint256 amount (÷ 10^SCALE_EXP). Under the P0
+/// scale-0 identity ([`SCALE_EXP`] == 0, `SCALE` == 1) this is the identity: the minted units equal
+/// the raw deposit amount.
 pub fn reduced(amount_raw: u64) -> u64 {
     amount_raw / SCALE
 }
 
-/// The raw uint256 amount that reduces to exactly `units` on-chain.
+/// The raw uint256 amount that reduces to exactly `units` on-chain. Under the P0 scale-0 identity
+/// ([`SCALE_EXP`] == 0, `SCALE` == 1) this is the identity: `raw_for_units(u) == u`.
 pub fn raw_for_units(units: u64) -> u64 {
     units * SCALE
 }

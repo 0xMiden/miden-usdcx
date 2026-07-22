@@ -3133,7 +3133,7 @@ pub async fn try_emit_burn_note(
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     let tx_script = CodeBuilder::new()
         .with_dynamically_linked_library(
-            &emit_helper_component()
+            emit_helper_component()
                 .expect("the emit helper compiles")
                 .component_code()
                 .clone(),
@@ -4299,7 +4299,7 @@ pub async fn emit_note_with_attachments(
     );
 
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(&emit_helper_component()?.component_code().clone())?
+        .with_dynamically_linked_library(emit_helper_component()?.component_code().clone())?
         .compile_tx_script(src)?;
     let tx = chain
         .build_tx_context(producer, &[], &[])?

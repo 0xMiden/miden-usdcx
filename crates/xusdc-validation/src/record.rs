@@ -199,8 +199,14 @@ pub fn render_validation_record(
         "# LNV-5 Validation Record — the consolidated §11.2 full-matrix gate run (rows A–L)\n\n",
     );
     s.push_str(
+        "> This LNV-5 matrix is the EXHAUSTIVE A–L gate; the pre-deploy confidence gate is the \
+         leaner `sanity_e2e` (`VALIDATION-RECORD-SANITY.md`). Both run against the **v16 node** \
+         (0.16.0-alpha.2) — `stack.rs` brings it up via the client repo's `start-test-node.sh` \
+         (`MIDEN_V16_NODE_DIR`). The LNV-5 live rows are `#[ignore]`d (operator-run).\n\n",
+    );
+    s.push_str(
         "One deterministic pass over the WHOLE validation matrix on ONE fresh local \
-         `miden-node v0.15.1` stack: deploy → admin → mint → burn → conservation (the LNV-1..4 \
+         `miden-node v0.16.0-alpha.2` stack: deploy → admin → mint → burn → conservation (the LNV-1..4 \
          drivers composed in matrix order on the same node), then row K (ntx-builder liveness) \
          and row L (clean logs) derived from that single run. Generated deterministically by the \
          gate command below — re-running it on a fresh node regenerates this record. \
@@ -213,16 +219,17 @@ pub fn render_validation_record(
         ctx.main_commit, ctx.run_root
     ));
     s.push_str(
-        "- Pins (full toolchain/dep ledger: `VALIDATION-RECORD.md` §2): `miden-node` **v0.15.1** \
-         installed binaries, four-service loopback stack (sequencer RPC 57291, validator 57292, \
-         ntx-builder 57293, tx-prover 57294), isolated local genesis; `miden-client` \
+        "- Pins (full toolchain/dep ledger: `VALIDATION-RECORD.md` §2): `miden-node` **v0.16.0-alpha.2** \
+         (the client repo's `start-test-node.sh` cached binaries), four-service loopback stack \
+         (sequencer RPC 57291, validator 50101, \
+         ntx-builder 50301, tx-prover 50051 — the v16 script's bindings), isolated local genesis; `miden-client` \
          **=0.16.0-alpha.1** (crates.io); protocol family crates.io **=0.16.0-alpha.4**.\n\n",
     );
 
     s.push_str("## Reproduction (the one command)\n\n");
     s.push_str("```bash\ncargo run -p xusdc-validation --bin lnv5_full_matrix\n```\n\n");
     s.push_str(
-        "Requirements: the four v0.15.1 node binaries on `PATH`, loopback ports 57291–57294 \
+        "Requirements: `MIDEN_V16_NODE_DIR` set to the v16 client repo (its `start-test-node.sh` brings up the node), loopback ports 57291 / 50101 / 50301 / 50051 \
          free. The command bootstraps a FRESH genesis, runs the whole A–L matrix, tears the \
          stack down, and writes this record + the three evidence packets + \
          `evidence-lnv5.json`.\n\n",
@@ -524,7 +531,7 @@ pub fn render_f7_packet(gj: &RowsGjObservations, main_commit: &str) -> String {
     format!(
         "# LNV-5 F7 Evidence Packet — same-block burn erasure RIV (Circle / DEV-7 input)\n\n\
          **This packet is EVIDENCE ONLY: it makes NO acceptability decision. DEV-7 stays OPEN — \
-         a Circle-owned decision.** Produced on a fresh local `miden-node v0.15.1` stack from \
+         a Circle-owned decision.** Produced on a fresh local `miden-node v0.16.0-alpha.2` stack from \
          `main` @ `{main_commit}` by `cargo run -p xusdc-validation --bin lnv5_full_matrix` \
          (faucet `{faucet}`, holder `{holder}`).\n\n\
          The RIV question (F7): can the production `XReserveBurnNote` be created + consumed \
@@ -561,7 +568,7 @@ pub fn render_f7_packet(gj: &RowsGjObservations, main_commit: &str) -> String {
          ## The real-node constraint (why a COMMITTED same-block create+consume is unreachable \
          on this stack)\n\n\
          The faucet is a network account: post-deployment user-RPC submissions against it are \
-         rejected by `miden-node v0.15.1` (captured verbatim above), the stock \
+         rejected by `miden-node v0.16.0-alpha.2` (captured verbatim above), the stock \
          `miden-client 0.16.0-alpha.1` cannot present the sequencer's `x-miden-network-tx-auth` header, \
          and the ntx-builder — the only commit path — consumes only COMMITTED notes, which \
          makes every committed burn consumption strictly-later-block (lifecycle 1). The \
@@ -754,7 +761,8 @@ pub fn write_lnv5_artifacts(
 
     let evidence = Lnv5RunEvidence {
         main_commit: ctx.main_commit.clone(),
-        node_version: "miden-node 0.15.1 (installed binaries)".to_string(),
+        node_version: "miden-node 0.16.0-alpha.2 (v16 four-service stack via start-test-node.sh)"
+            .to_string(),
         client_crate: "miden-client =0.16.0-alpha.1 (crates.io)".to_string(),
         protocol_rev: "0xMiden/protocol crates.io =0.16.0-alpha.4".to_string(),
         rpc_port: cfg.stack.rpc_port,

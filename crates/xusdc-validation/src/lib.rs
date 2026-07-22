@@ -49,6 +49,7 @@ pub mod rows_cf;
 pub mod rows_de;
 pub mod rows_gj;
 pub mod rows_kl;
+pub mod sanity;
 pub mod stack;
 
 pub use config::{DomainParams, RunConfig, StackConfig};
@@ -62,3 +63,4 @@ pub use rows_cf::run_rows_cf;
 pub use rows_de::run_rows_de;
 pub use rows_gj::run_rows_gj;
 pub use rows_kl::run_full_matrix;
+pub use sanity::{run_sanity, SanityConfig, SanityReport};

@@ -427,7 +427,7 @@ pub fn derive_row_k(commits: Vec<PathNCommit>, ntx_log_evidence: Vec<String>) ->
         }
         (
             Some(format!(
-                "{} — stack: miden-node v0.15.1 four-service topology with the network-tx auth \
+                "{} — stack: the v0.16.0-alpha.2 four-service topology with the network-tx auth \
                  token wired (sequencer --rpc.network-tx-auth-header-value / ntx-builder \
                  --rpc.auth-header-value; see VALIDATION-RECORD.md §3)",
                 missing.join("; ")

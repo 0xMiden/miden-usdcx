@@ -1474,115 +1474,49 @@ fn fresh_under_roots_the_run_under_the_named_track() {
 // it within a gate run — while the row-L panic detector stays byte-for-byte as strict.
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-use xusdc_validation::config::StackConfig;
-use xusdc_validation::stack::{
-    ntx_builder_start_args, sequencer_start_args, tx_prover_start_args, validator_start_args,
-    SEQUENCER_MAX_CONNECTION_AGE,
-};
+use xusdc_validation::config::{StackConfig, DEFAULT_V16_NODE_DIR};
+use xusdc_validation::stack::{NodeStack, V16_SERVICES};
 
-fn stack_cfg() -> StackConfig {
-    StackConfig::new(PathBuf::from("/repo/local-node-data/lnv5/run-x"))
-}
-
-/// The value of the flag `flag` in an argument vector (the token right after it).
-fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
-    args.iter()
-        .position(|a| a == flag)
-        .and_then(|i| args.get(i + 1))
-        .map(String::as_str)
-}
-
+/// The v16 stack config resolves the client-repo dir (env-overridable) and points `log_dir` at the
+/// v16 node's service-log directory — NOT the run root (the node is brought up by the client repo's
+/// `start-test-node.sh`, so its logs live under the client repo's `target/test-node/data/logs`).
 #[test]
-fn sequencer_args_extend_the_grpc_connection_age_beyond_any_full_run() {
-    let args = sequencer_start_args(&stack_cfg());
-    let value = arg_value(&args, "--rpc.grpc.max-connection-age")
-        .expect("the sequencer start args must override the 30-minute default connection age");
-    // The rendered value is `<secs>s` (humantime-parseable) and mirrors the policy constant.
-    let secs: u64 = value
-        .strip_suffix('s')
-        .expect("the connection age renders as whole seconds")
-        .parse()
-        .expect("the connection age value is numeric");
+fn v16_stack_config_targets_the_node_repo_logs() {
+    // Env may be unset in the offline gate → the default provisioned path is used.
+    std::env::remove_var("MIDEN_V16_NODE_DIR");
+    let cfg = StackConfig::new(PathBuf::from("/repo/local-node-data/lnv5/run-x"));
+    assert_eq!(cfg.client_repo_dir, PathBuf::from(DEFAULT_V16_NODE_DIR));
     assert_eq!(
-        secs,
-        SEQUENCER_MAX_CONNECTION_AGE.as_secs(),
-        "the flag value mirrors the policy constant"
+        cfg.log_dir(),
+        PathBuf::from(DEFAULT_V16_NODE_DIR).join("target/test-node/data/logs"),
+        "the v16 log dir must be the node repo's data-log dir, not the run root"
     );
-    // The policy floor: the age must EXCEED any full consolidated run by a wide margin (the
-    // round-1 run took ~70 minutes; the node default of 30 minutes is what panicked it).
-    assert!(
-        SEQUENCER_MAX_CONNECTION_AGE >= std::time::Duration::from_secs(4 * 60 * 60),
-        "the connection age must exceed a full gate run by a wide margin, got {SEQUENCER_MAX_CONNECTION_AGE:?}"
-    );
+    assert_eq!(cfg.rpc_url(), "http://127.0.0.1:57291");
 }
 
+/// `MIDEN_V16_NODE_DIR` overrides the client-repo path.
 #[test]
-fn sequencer_args_keep_the_full_wiring() {
-    let cfg = stack_cfg();
-    let args = sequencer_start_args(&cfg);
-    assert_eq!(args.first().map(String::as_str), Some("sequencer"));
+fn v16_node_dir_env_override() {
+    std::env::set_var("MIDEN_V16_NODE_DIR", "/custom/miden-node");
+    let cfg = StackConfig::new(PathBuf::from("/repo/run"));
+    assert_eq!(cfg.client_repo_dir, PathBuf::from("/custom/miden-node"));
     assert_eq!(
-        arg_value(&args, "--rpc.listen"),
-        Some(format!("127.0.0.1:{}", cfg.rpc_port).as_str()),
-        "the public RPC listen address is preserved"
+        cfg.log_dir(),
+        PathBuf::from("/custom/miden-node/target/test-node/data/logs")
     );
-    assert_eq!(
-        arg_value(&args, "--validator.url"),
-        Some(cfg.validator_url().as_str())
-    );
-    assert_eq!(
-        arg_value(&args, "--ntx-builder.url"),
-        Some(cfg.ntx_builder_url().as_str())
-    );
-    assert_eq!(
-        arg_value(&args, "--rpc.network-tx-auth-header-value"),
-        Some(cfg.network_tx_auth_token.as_str()),
-        "the network-tx auth token wiring is preserved (path N depends on it)"
-    );
-    assert!(
-        args.iter().any(|a| a == "--data-directory"),
-        "the data dir is preserved"
-    );
+    std::env::remove_var("MIDEN_V16_NODE_DIR");
 }
 
+/// The four v16 services are named exactly as `start-test-node.sh` writes their logs.
 #[test]
-fn validator_ntx_and_prover_args_are_unchanged_in_shape() {
-    let cfg = stack_cfg();
-
-    let v = validator_start_args(&cfg);
-    assert_eq!(v.first().map(String::as_str), Some("start"));
-    assert_eq!(
-        arg_value(&v, "--listen"),
-        Some(format!("127.0.0.1:{}", cfg.validator_port).as_str())
-    );
-    assert!(
-        !v.iter().any(|a| a.contains("max-connection-age")),
-        "the v0.15.1 validator exposes no connection-age flag — none may be passed"
-    );
-
-    let n = ntx_builder_start_args(&cfg);
-    assert_eq!(n.first().map(String::as_str), Some("start"));
-    assert_eq!(arg_value(&n, "--rpc.url"), Some(cfg.rpc_url().as_str()));
-    assert_eq!(
-        arg_value(&n, "--rpc.auth-header-value"),
-        Some(cfg.network_tx_auth_token.as_str()),
-        "the ntx-builder presents the shared token (path N depends on it)"
-    );
-    assert_eq!(
-        arg_value(&n, "--tx-prover.url"),
-        Some(cfg.tx_prover_url().as_str())
-    );
-    assert!(
-        !n.iter().any(|a| a.contains("max-connection-age")),
-        "the v0.15.1 ntx-builder exposes no connection-age flag — none may be passed"
-    );
-
-    let p = tx_prover_start_args(&cfg);
-    assert_eq!(arg_value(&p, "--kind"), Some("transaction"));
-    assert_eq!(
-        arg_value(&p, "--port"),
-        Some(cfg.tx_prover_port.to_string().as_str())
-    );
+fn v16_services_are_the_four_node_processes() {
+    assert_eq!(V16_SERVICES.len(), 4);
+    for s in ["validator", "sequencer", "ntx-builder", "prover"] {
+        assert!(V16_SERVICES.contains(&s), "missing v16 service {s}");
+    }
+    // A stack instance is not booted here (that needs a live node); the type is exercised by the
+    // `#[ignore]`d live gate below and the `lnv_stack` binary.
+    let _ = NodeStack::bootstrap_and_start; // symbol presence
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════

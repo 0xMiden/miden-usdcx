@@ -27,6 +27,11 @@ use super::{
 };
 use crate::mintburn;
 
+// The A6 `--faucet-id` mint-config tests live in a dedicated submodule (`sanity/tests/a6.rs`) to keep
+// this file under the BUILDER-GATES G3 size ceiling; they reuse this module's `dummy_id` / `faucet_id`
+// / `rng` fixtures below.
+mod a6;
+
 fn dummy_id(seed: u8) -> AccountId {
     AccountId::dummy(
         [seed; 15],

@@ -37,8 +37,10 @@ use miden_client::rpc::NodeRpcClient;
 use miden_client::store::TransactionFilter;
 use miden_client::transaction::{TransactionId, TransactionRequestBuilder, TransactionStatus};
 use miden_protocol::account::AccountId;
+use miden_protocol::Word;
 
 use xusdc_encoding::note::xreserve_admin::XReserveDomainInitNote;
+use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
 
 use crate::actors::{create_actors, Actors, AttesterKey};
 use crate::client::{os_seed, HarnessClient};
@@ -294,7 +296,16 @@ pub async fn run_sanity(cfg: &SanityConfig, node_version: &str) -> Result<Sanity
         None => deploy_fresh_faucet(&mut hc, &actors).await?,
     };
 
-    let mut d = SanityDriver { hc, faucet_id };
+    let mut d = SanityDriver {
+        hc,
+        faucet_id,
+        // Fresh-LOCAL: mints use the BASE_VECTOR header unchanged (its domain 7 / token match the
+        // fresh faucet's own domain_init). Existing-faucet: resolved from the DEPLOYED faucet below.
+        mint_config: None,
+    };
+    if !deployed_fresh {
+        d.mint_config = Some(resolve_deployed_mint_config(&mut d, faucet_id).await?);
+    }
     let mut led = Ledger::new();
 
     // A fresh deploy allowlists its throwaway attester; an existing faucet's supplied attester is
@@ -439,6 +450,37 @@ fn log_check(led: &mut Ledger, log_dir: &Path) {
             format!("could not scan {}: {e:#}", log_dir.display()),
         ),
     }
+}
+
+/// Resolves the DEPLOYED faucet's mint domain config for the `--faucet-id` re-check (the thin
+/// slot-read adapter; the node-free logic lives in [`mintburn::MintDomainConfig`]). Reads the on-chain
+/// `domain` and pairs it with `remote_token = account_id_to_bytes32(faucet_id)` — the two fields the
+/// D5a mint gate compares. Then VERIFIES the faucet's stored identifier key equals
+/// `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))`: if it does not, the deployed
+/// identifier is NOT `account_id_to_bytes32(faucet_id)` and every mint would be rejected at D5a, so we
+/// bail HERE with an explicit message instead of letting the operator hit the 300s path-N timeout (the
+/// A6 failure mode). The `domain` compare cannot be pre-verified the same way (the mint payload IS what
+/// establishes the domain), so a wrong stored domain is caught by the resolved config making the mint
+/// carry exactly it.
+async fn resolve_deployed_mint_config(
+    d: &mut SanityDriver,
+    faucet_id: AccountId,
+) -> Result<mintburn::MintDomainConfig> {
+    let faucet = d.fetch_faucet().await?;
+    let domain = driver::domain_config(&faucet)?;
+    let config = mintburn::MintDomainConfig::for_deployed_faucet(domain, faucet_id);
+    let stored_identifier = driver::identifier_config(&faucet)?;
+    let expected_identifier: Word = bytes32_to_storage_map_key(&config.remote_token).into();
+    if stored_identifier != expected_identifier {
+        bail!(
+            "the deployed faucet {faucet_id}'s stored identifier key {stored_identifier:?} does not \
+             match bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id)) {expected_identifier:?}: \
+             the mint gate (D5a) would reject every mint with WRONG_IDENTIFIER. The --faucet-id \
+             re-check requires the identifier A5's domain_init set from account_id_to_bytes32(faucet.id())."
+        );
+    }
+    println!("resolved deployed-faucet mint config: domain={domain}, identifier verified");
+    Ok(config)
 }
 
 /// Registers a deployed faucet (existing-faucet re-check) with the client so the client-side negative

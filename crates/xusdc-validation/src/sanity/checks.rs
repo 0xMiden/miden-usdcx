@@ -19,7 +19,7 @@ use xusdc_encoding::note::xreserve_mint::{MintAttestation, XReserveMintNote};
 use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
 
 use crate::actors::AttesterKey;
-use crate::mintburn::{mint_payload, nonce_key};
+use crate::mintburn::{mint_payload_opt, nonce_key, MintDomainConfig};
 use crate::observations_cf::Verdict;
 
 use super::driver::{
@@ -44,7 +44,10 @@ const BURN_DEST_DOMAIN: u32 = 3;
 // ================================================================================================
 
 /// A production mint note for `amount_units` (raw==minted under scale-0) to `recipient`, signed by
-/// `attester`. Returns `(note, payload)` so the caller can derive the nonce key.
+/// `attester`. Returns `(note, payload)` so the caller can derive the nonce key. `config` is the
+/// deployed faucet's domain config on the `--faucet-id` path (its `remoteDomain`/`remoteToken` are
+/// spliced so the D5a gate accepts the mint) and `None` on the fresh-LOCAL gate (the BASE_VECTOR
+/// header is used unchanged).
 pub(crate) fn mint_note_for(
     sender: AccountId,
     faucet_id: AccountId,
@@ -52,10 +55,11 @@ pub(crate) fn mint_note_for(
     recipient: AccountId,
     amount_units: u64,
     nonce_salt: u8,
+    config: Option<MintDomainConfig>,
     rng: &mut impl miden_protocol::crypto::rand::FeltRng,
 ) -> Result<(Note, Vec<u8>)> {
     // maxFee = 0 (R-MINT-10: maxFee ≤ amount trivially holds); scale-0 ⇒ raw amount == minted units.
-    let payload = mint_payload(recipient, amount_units, 0, nonce_salt);
+    let payload = mint_payload_opt(config.as_ref(), recipient, amount_units, 0, nonce_salt);
     let attestation = attester.attestation_for(&payload);
     let note = XReserveMintNote::create(sender, faucet_id, &payload, &attestation, rng)
         .context("building a production mint note")?;
@@ -71,9 +75,12 @@ fn mint_note_forged_sig(
     recipient: AccountId,
     amount_units: u64,
     nonce_salt: u8,
+    config: Option<MintDomainConfig>,
     rng: &mut impl miden_protocol::crypto::rand::FeltRng,
 ) -> Result<Note> {
-    let payload = mint_payload(recipient, amount_units, 0, nonce_salt);
+    // Carry the deployed faucet's domain/identifier too, so the mint reaches the D5d signature gate
+    // (a wrong domain would reject earlier at D5a, hiding the signature negative under WRONG_DOMAIN).
+    let payload = mint_payload_opt(config.as_ref(), recipient, amount_units, 0, nonce_salt);
     let forged: MintAttestation = attester.attestation_over_digest([0xEE; 32]);
     XReserveMintNote::create(sender, faucet_id, &payload, &forged, rng)
         .context("building a forged-signature mint note")
@@ -261,6 +268,7 @@ pub(crate) async fn mint_and_assert(
         recipient_id,
         amount,
         salt,
+        d.mint_config,
         d.hc.client.rng(),
     )?;
     let key = nonce_key(&payload);
@@ -342,6 +350,7 @@ pub(crate) async fn negatives_suite(
         recipient_id,
         MINT_ROUND_UNITS,
         SALT_WRONG_ATTESTER,
+        d.mint_config,
         d.hc.client.rng(),
     )?;
     let v = d.probe_consume(wrong).await?;
@@ -361,6 +370,7 @@ pub(crate) async fn negatives_suite(
         recipient_id,
         MINT_ROUND_UNITS,
         SALT_FORGED_SIG,
+        d.mint_config,
         d.hc.client.rng(),
     )?;
     let v = d.probe_consume(forged).await?;
@@ -381,6 +391,7 @@ pub(crate) async fn negatives_suite(
         recipient_id,
         MINT_ROUND_UNITS,
         SALT_MINT_ROUND,
+        d.mint_config,
         d.hc.client.rng(),
     )?;
     let v = d.probe_consume(replay).await?;
@@ -407,6 +418,7 @@ pub(crate) async fn negatives_suite(
         recipient_id,
         over_cap_amount,
         SALT_OVER_CAP,
+        d.mint_config,
         d.hc.client.rng(),
     )?;
     let v = d.probe_consume(overcap).await?;
@@ -455,6 +467,7 @@ pub(crate) async fn fund_and_burn(
         holder_id,
         amount,
         mint_salt,
+        d.mint_config,
         d.hc.client.rng(),
     )?;
     let supply_before_fund = token_supply(&d.fetch_faucet().await?)?;

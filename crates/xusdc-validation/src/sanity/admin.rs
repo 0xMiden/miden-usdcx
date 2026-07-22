@@ -165,6 +165,7 @@ async fn admin_checks(
         recipient_id,
         MINT_ROUND_UNITS,
         SALT_PAUSED_MINT,
+        d.mint_config,
         d.hc.client.rng(),
     )?;
     let v = d.probe_consume(m).await?;
@@ -244,6 +245,7 @@ async fn admin_checks(
         recipient_id,
         MINT_ROUND_UNITS,
         SALT_DISABLED_ATTESTER,
+        d.mint_config,
         d.hc.client.rng(),
     )?;
     let v = d.probe_consume(by_disabled).await?;
@@ -383,6 +385,7 @@ async fn admin_checks(
         recipient_id,
         BURN_UNITS * 2, // supply_now + 2·BURN_UNITS > tight_cap = supply_now + BURN_UNITS
         SALT_ENFORCE_CAP,
+        d.mint_config,
         d.hc.client.rng(),
     )?;
     let v = d.probe_consume(over_new_cap).await?;

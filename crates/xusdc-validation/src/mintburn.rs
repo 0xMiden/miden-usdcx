@@ -30,7 +30,8 @@ use xusdc_encoding::note::xreserve_mint::{
 use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::{
     account_id_to_bytes32, affine_pubkey_felts, bytes32_to_storage_map_key,
-    deposit_intent_to_packed_felts, signature_felts, XReserveBurnItems,
+    deposit_intent_field_offset, deposit_intent_to_packed_felts, signature_felts,
+    DepositIntentField, XReserveBurnItems,
 };
 
 use crate::actors::AttesterKey;
@@ -68,6 +69,12 @@ const AMOUNT_BYTE_OFF: usize = 2 * 4;
 const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
 const MAX_FEE_BYTE_OFF: usize = 43 * 4;
 const NONCE_BYTE_OFF: usize = 51 * 4;
+// The two fields the mint gate (D5a `deposit_intent_parser::assert_deposit_intent`) compares against
+// the faucet's stored domain config are `remoteDomain` (felt 10, a big-endian u32) and `remoteToken`
+// (felt 11..18, a bytes32). Their wire offsets are NOT restated here: the DepositIntent layout owner
+// is `xusdc-encoding`, so `mint_payload_for` reads them from `deposit_intent_field_offset(...)` (the
+// single source of truth, pinned by reference). There is deliberately NO `sourceDomain`: it is not a
+// DepositIntent field and the mint proc never reads it — the gate compares ONLY those two fields.
 
 fn vector(id: &str) -> &'static DiVector {
     load()
@@ -153,6 +160,103 @@ pub fn mint_payload_from(
         payload[NONCE_BYTE_OFF] ^= nonce_salt;
     }
     payload
+}
+
+/// The two DepositIntent fields the mint gate (D5a `deposit_intent_parser::assert_deposit_intent`)
+/// compares against the faucet's stored domain config: `remoteDomain` and `remoteToken`. This is the
+/// config a mint payload must carry so D5a's compares pass.
+///
+/// - Fresh-LOCAL full gate: the config equals the [`BASE_VECTOR`]'s own `remoteDomain` ([`MINT_DOMAIN`])
+///   and `remoteToken` ([`MintDomainConfig::local_vector`]) — because the fresh faucet's `domain_init`
+///   is seeded from that same vector ([`lnv2_domain_params`]). Splicing THIS reproduces the untouched
+///   [`BASE_VECTOR`] payload byte-for-byte, so the fresh-local vectors are unchanged.
+/// - Existing-faucet (`--faucet-id`) re-check: the config is resolved from the DEPLOYED faucet —
+///   `domain` read from its on-chain domain-config slot, `remote_token` recomputed as
+///   `account_id_to_bytes32(faucet_id)` (the identifier A5's `domain_init` set from
+///   `account_id_to_bytes32(faucet.id())`). This is the A6 fix: the fixed vector's `remoteDomain` (7)
+///   did not match a production faucet's stored `domain` (e.g. 10007), so D5a rejected every mint.
+///
+/// There is deliberately NO `source_domain` field: the DepositIntent has no `sourceDomain` field and
+/// the mint proc never reads one (the faucet's `source_domain` config slot is off-chain withdrawal
+/// identity, not a mint gate). The mint gate compares ONLY `remoteDomain` + `remoteToken`.
+///
+/// `pub(crate)` (type, fields, and constructors): every consumer is intra-crate (the driver, the
+/// runner, and the offline tests), so the harness-only config is not part of the library's public API
+/// and its field layout stays free to evolve (private-fields-with-accessors intent, scoped to the
+/// crate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MintDomainConfig {
+    /// The faucet's configured `domain` — spliced into `remoteDomain` (felt 10, big-endian u32).
+    pub(crate) domain: u32,
+    /// The faucet's identifier bytes32 — spliced into `remoteToken` (felt 11..18); the mint gate
+    /// compares `bytes32_to_key(remoteToken)` against the stored identifier key.
+    pub(crate) remote_token: [u8; 32],
+}
+
+impl MintDomainConfig {
+    /// The config the fresh-LOCAL deploy commits: the [`BASE_VECTOR`]'s own `remoteDomain`
+    /// ([`MINT_DOMAIN`]) and `remoteToken`. Splicing this is a no-op on the [`BASE_VECTOR`] payload,
+    /// which is exactly the byte-for-byte invariant the offline suite asserts — so this exists ONLY
+    /// for that test (production's fresh-local path passes `None`, never this config).
+    #[cfg(test)]
+    pub(crate) fn local_vector() -> Self {
+        Self {
+            domain: MINT_DOMAIN,
+            remote_token: parse_hex32(&base_fields().remote_token_hex),
+        }
+    }
+
+    /// The config of a DEPLOYED faucet on the `--faucet-id` path: the operator-read on-chain `domain`
+    /// paired with `remote_token = account_id_to_bytes32(faucet_id)` — the identifier A5's
+    /// `domain_init` stored (recomputable from `faucet_id` alone, no guessing).
+    pub(crate) fn for_deployed_faucet(domain: u32, faucet_id: AccountId) -> Self {
+        Self {
+            domain,
+            remote_token: account_id_to_bytes32(faucet_id),
+        }
+    }
+}
+
+/// Builds a mint DepositIntent that carries `config`'s `remoteDomain` + `remoteToken` (the two D5a
+/// gated fields) in addition to the amount/maxFee/recipient/nonce splice of [`mint_payload_from`].
+/// The existing-faucet (`--faucet-id`) mint builder: the payload must match the DEPLOYED faucet's
+/// stored domain config, or D5a rejects it (`WRONG_DOMAIN` / `WRONG_IDENTIFIER`) before any later
+/// gate — the root cause of the A6 300s path-N timeout. The attestation is re-signed over this
+/// modified payload by the caller's `attestation_for` (keccak covers the whole preimage).
+pub(crate) fn mint_payload_for(
+    config: &MintDomainConfig,
+    recipient: AccountId,
+    amount_raw: u64,
+    max_fee_raw: u64,
+    nonce_salt: u8,
+) -> Vec<u8> {
+    let mut payload =
+        mint_payload_from(BASE_VECTOR, recipient, amount_raw, max_fee_raw, nonce_salt);
+    // The two gated fields' wire offsets come from the DepositIntent layout owner (xusdc-encoding),
+    // never a local restatement of DC-1: remoteDomain (felt 10, a 4-byte big-endian u32) and
+    // remoteToken (felt 11..18, a 32-byte bytes32).
+    let remote_domain_off = deposit_intent_field_offset(DepositIntentField::RemoteDomain);
+    let remote_token_off = deposit_intent_field_offset(DepositIntentField::RemoteToken);
+    payload[remote_domain_off..remote_domain_off + 4].copy_from_slice(&config.domain.to_be_bytes());
+    payload[remote_token_off..remote_token_off + 32].copy_from_slice(&config.remote_token);
+    payload
+}
+
+/// Selects the mint-payload builder for the run mode: the existing-faucet path splices `config`'s
+/// domain/identifier ([`mint_payload_for`]); the fresh-LOCAL path (`None`) leaves the [`BASE_VECTOR`]
+/// header untouched ([`mint_payload`]). One seam so every mint call site chooses the right builder
+/// from the driver's resolved config without duplicating the match.
+pub(crate) fn mint_payload_opt(
+    config: Option<&MintDomainConfig>,
+    recipient: AccountId,
+    amount_raw: u64,
+    max_fee_raw: u64,
+    nonce_salt: u8,
+) -> Vec<u8> {
+    match config {
+        Some(c) => mint_payload_for(c, recipient, amount_raw, max_fee_raw, nonce_salt),
+        None => mint_payload_from(BASE_VECTOR, recipient, amount_raw, max_fee_raw, nonce_salt),
+    }
 }
 
 /// The `usedNonces[nonce]` storage-map key for a payload's nonce field (`bytes32_to_key(nonce)`) —

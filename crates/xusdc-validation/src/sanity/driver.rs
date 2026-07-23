@@ -21,10 +21,12 @@ use miden_protocol::transaction::InputNote;
 use miden_protocol::Word;
 
 use xusdc_encoding::account::xreserve::{
-    MIN_BURN_SIZE_SLOT_LABEL, USED_NONCES_SLOT_LABEL, XRESERVE_ATTESTERS_SLOT_LABEL,
+    DOMAIN_CONFIG_SLOT_LABEL, IDENTIFIER_CONFIG_SLOT_LABEL, MIN_BURN_SIZE_SLOT_LABEL,
+    USED_NONCES_SLOT_LABEL, XRESERVE_ATTESTERS_SLOT_LABEL,
 };
 
 use crate::client::HarnessClient;
+use crate::mintburn::MintDomainConfig;
 use crate::observations_cf::Verdict;
 
 /// Bounded wait for a submitted (regular-account) tx to commit.
@@ -75,6 +77,23 @@ pub(crate) fn max_supply(account: &Account) -> Result<u64> {
 
 pub(crate) fn min_burn(account: &Account) -> Result<u64> {
     Ok(value_slot(account, MIN_BURN_SIZE_SLOT_LABEL)?[0].as_canonical_u64())
+}
+
+/// The faucet's configured `domain` (element 0 of the domain-config slot) — the value the D5a mint
+/// gate compares a mint's `remoteDomain` against. Read from the DEPLOYED faucet so the `--faucet-id`
+/// mint carries the RIGHT domain (a domain id is a u32, so an out-of-u32 slot value is an error).
+pub(crate) fn domain_config(account: &Account) -> Result<u32> {
+    let raw = value_slot(account, DOMAIN_CONFIG_SLOT_LABEL)?[0].as_canonical_u64();
+    u32::try_from(raw).map_err(|_| {
+        anyhow::anyhow!("faucet domain-config slot holds {raw}, which does not fit a u32 domain id")
+    })
+}
+
+/// The faucet's configured identifier key (the D5a `remoteToken` compare target): the stored
+/// `bytes32_to_key(identifier_bytes)` Word. Used to VERIFY a resolved mint config's `remote_token`
+/// hashes to what the deployed faucet actually stored, before any mint is emitted.
+pub(crate) fn identifier_config(account: &Account) -> Result<Word> {
+    value_slot(account, IDENTIFIER_CONFIG_SLOT_LABEL)
 }
 
 /// `true` iff the faucet's `is_paused` slot is set (non-zero element 0).
@@ -136,6 +155,12 @@ fn wallet_balance(account: &Account, faucet_id: AccountId) -> u64 {
 pub(crate) struct SanityDriver {
     pub(crate) hc: HarnessClient,
     pub(crate) faucet_id: AccountId,
+    /// The domain config every mint payload must carry so the D5a gate accepts it. `None` on the
+    /// fresh-LOCAL full gate (mints use the [`crate::mintburn::BASE_VECTOR`] header unchanged);
+    /// `Some` on the existing-faucet (`--faucet-id`) re-check — resolved once from the DEPLOYED
+    /// faucet's on-chain `domain` + `account_id_to_bytes32(faucet_id)`, then applied to EVERY mint
+    /// (positives, negatives, and burn-funding), since all target the same faucet.
+    pub(crate) mint_config: Option<MintDomainConfig>,
 }
 
 impl SanityDriver {

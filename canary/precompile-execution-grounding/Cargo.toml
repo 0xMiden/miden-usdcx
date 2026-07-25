@@ -1,0 +1,38 @@
+[package]
+name = "xusdc-canary-precompile-execution"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Precompile-execution grounding canary (P5-01): proves the Keccak256 + secp256k1-ECDSA-over-keccak precompiles EXECUTE (not just assemble/link) under MockChain on the pinned Miden v0.15.3 / assembler 0.23.3 stack. Scratch — isolated from the xusdc-miden faucet build."
+
+# Isolated workspace. This empty [workspace] table makes the crate its own workspace root, so it
+# is fully decoupled from the parent xusdc-miden workspace (members = ["crates/xusdc-encoding"]).
+# The parent Cargo.toml is NOT touched.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+# Path-deps point at the pinned protocol clone (a sibling of xusdc-miden under Miden-Coding).
+# Cargo.lock is seeded from that clone's lockfile so the Miden stack resolves to the v0.15.3-locked
+# 0.23.3 assembler family + miden-crypto 0.25.1 (BUILDER-GATES G-MASM). The path is
+# environment-specific; the clone must sit at ../../../protocol-pin-v0.15.3 relative to this manifest.
+[dependencies]
+miden-protocol  = { path = "../../../protocol-pin-v0.15.3/crates/miden-protocol" }
+miden-standards = { path = "../../../protocol-pin-v0.15.3/crates/miden-standards" }
+
+[dev-dependencies]
+miden-protocol  = { path = "../../../protocol-pin-v0.15.3/crates/miden-protocol", features = ["testing"] }
+miden-standards = { path = "../../../protocol-pin-v0.15.3/crates/miden-standards", features = ["testing"] }
+miden-testing   = { path = "../../../protocol-pin-v0.15.3/crates/miden-testing" }
+tokio  = { version = "1", features = ["macros", "rt"] }
+anyhow = "1"
+
+# Vector generation — dev-deps ONLY, never in the component. The ECDSA keypair + signature are
+# produced by the INDEPENDENT `k256` (RustCrypto secp256k1) crate; the expected Keccak digest by the
+# INDEPENDENT `sha3` crate. `miden-crypto` is used only as a serialization format-compat check and for
+# the Poseidon2 PK_COMM parity helper — never to sign the vector under test.
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha3 = "0.10"
+rand = "0.8"
+miden-crypto = { version = "0.25", default-features = false }

@@ -1,0 +1,93 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/xusdc-encoding",
+  "crates/xreserve-deposit-relayer",
+  "crates/withdrawal-listener-attester",
+  "crates/xusdc-validation",
+]
+# UN-PARKED (P1b-a, 2026-07-21): `crates/xusdc-validation` is a workspace member again. The v16
+# `miden-client`/`miden-client-sqlite-store` `=0.16.0-alpha.1` releases now exist (they pin
+# protocol `=0.16.0-alpha.4`, matching the workspace), so the crate compiles against the v16
+# family and rejoins the offline `--locked` gate. The live-node LNV rows stay `#[ignore]`d
+# (P1b-b, operator-run). The former `exclude` entry was removed with the un-park.
+
+# Shared dependency versions defined once (workspace-shared-dependencies). Every member consumes
+# these with `dep = { workspace = true, features = [...] }`, adding crate-specific feature sets on
+# top. Base features are kept minimal here so a crate never inherits a feature it does not use;
+# `serde`'s `derive` is the one exception (every consumer needs it).
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1" }
+anyhow = "1"
+rstest = "0.26"
+assert_matches = "1.5"
+
+# Hex + attestation crypto. `hex` decodes the Circle-facing wire strings (payload / messageHash /
+# attestation) in the relayer. The secp256k1/keccak trio is shared by TWO members now — unit-04's
+# vector generator + its D5d in-test vectors, and the relayer's envelope binding (`sha3`, the
+# off-chain `keccak256(payload)` recomputation) and its partner-key test fixture (`k256`+`rand`,
+# signing ONLY — the relayer NEVER verifies ECDSA off-chain; that is on-chain, faucet-owned). Per
+# xusdc-encoding's own note, a second adopter promotes them here so the two crates cannot drift
+# onto different versions (workspace-shared-dependencies).
+hex = "0.4"
+k256 = { version = "0.13", features = ["ecdsa"] }
+# Generated builders (use-bon-builder). The withdrawal listener's Circle request types are the first
+# adopter: `PrepareBurnIntentInput` carries eleven fields, five of them optional, and a positional
+# constructor for it would be a line of eleven arguments in which swapping `remoteDepositor` and
+# `finalDestinationRecipient` — two same-typed 32-byte hex strings with opposite meanings — still
+# compiles. The generated builder makes every field named and every required one compile-time
+# checked. Pinned here rather than in the crate because the later off-chain services build the same
+# wide Circle request shapes and must not drift onto a different builder.
+bon = "3"
+sha3 = "0.10"
+rand = "0.8"
+
+# Circle-facing HTTP (the relayer's `circle::client`, CMP-D1/D3/D4) + the offline mock Circle server
+# its contract tests run against. Both are pinned here, not in the crate, so the later off-chain
+# services (listener, monitoring) cannot drift onto a different HTTP stack.
+#
+# reqwest 0.13 renamed features vs 0.12: the TLS feature is `rustls` (NOT `rustls-tls`), and
+# `RequestBuilder::query` — how every Circle query param (`txHash`, `pageSize`, `pageAfter`, …) is
+# built and percent-encoded — now sits behind its own `query` feature. `default-features = false`
+# keeps the graph off system OpenSSL and off the default TLS backend; `json` pulls the serde_json
+# body codec. This discharges the reqwest deferral recorded in
+# crates/xreserve-deposit-relayer/DEFERRED-DEPENDENCIES.md (the Circle-facing slice is the one that
+# declares it; the pinned cargo cache now carries reqwest + its hyper/rustls/h2 closure, so the
+# offline `--locked` gate still resolves).
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
+# The relayer's idempotency seam (`idempotency::IdempotencyStore`) — the submitted-nonce log + the
+# per-remote-domain `Link` cursor that must survive a restart. SQLite is the persistence choice
+# (rationale + the alternatives weighed: crates/xreserve-deposit-relayer/PERSISTENCE-CHOICE.md); it
+# is pinned here, not in the crate, because the withdrawal listener needs the same durable-cursor
+# store and the two must not drift onto different engines.
+#
+# `bundled` compiles SQLite from the amalgamation that ships inside `libsqlite3-sys`. It is not a
+# preference: this box has `libsqlite3.so.0` but no `libsqlite3.so` link target, so a system-linked
+# build would not link at all, and a bundled build additionally cannot drift with the host's SQLite
+# version. `array`/`vtab` are deliberately NOT enabled — the store needs neither.
+rusqlite = { version = "0.37", features = ["bundled"] }
+# Test-only: the on-disk stores every idempotency test opens, in a directory that is removed when the
+# test ends. The restart tests need a REAL file (a store that cannot lose the cursor is the point),
+# so an in-memory database is not an option — not even in tests.
+tempfile = "3"
+# axum ROUTES the schema-exact mock Circle server in the relayer's contract tests, and tower's
+# `ServiceExt::oneshot` drives that router IN PROCESS: the mock is an `HttpTransport`, not a socket
+# server. That is not a preference — the audit/CI sandbox denies `bind(127.0.0.1:0)` with EPERM, so a
+# loopback-server mock cannot be part of a gate that has to be green in every environment. Both are
+# DEV-dependencies: no relayer binary ever serves HTTP. wiremock/httpmock/mockito are NOT in the
+# pinned cache (they would break the offline gate) — and being socket servers, they could not run in
+# the sandbox either.
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query"] }
+tower = { version = "0.5", features = ["util"] }
+
+# The former [patch.crates-io] git-pin block (v0.15.3 rev 681fc905…) was REMOVED at the v16
+# migration (MIGRATION-V16-ALPHA2.md R2): its sole purpose was unifying `miden-client 0.15.3`'s
+# crates.io protocol-family requirements onto the one git-pinned copy. Since P1b-a un-parked
+# `crates/xusdc-validation` onto the v16 client (`miden-client =0.16.0-alpha.1`, which itself pins
+# protocol `=0.16.0-alpha.4`), the block is STILL not needed: every member — the validation
+# consumer included — resolves the protocol family uniformly from crates.io at `=0.16.0-alpha.4`,
+# so exactly one copy of each protocol crate is in the graph. `miden-tx-batch-prover` (never
+# published past 0.15.3) left the graph with the rename to `miden-tx-batch` (protocol #3035), which
+# arrives transitively via `miden-testing`.

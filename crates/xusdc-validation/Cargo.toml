@@ -1,0 +1,53 @@
+[package]
+name = "xusdc-validation"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Phase-4 §11.2 local-node validation harness (LNV): real-node lifecycle, drivers, and assertions for the xUSDC faucet"
+
+# LNV-1 dep ledger (VALIDATION-RECORD.md §2), UN-PARKED to the v16 family (P1b-a, 2026-07-21).
+# The protocol trio comes from crates.io at `=0.16.0-alpha.4` — the SAME pin `xusdc-encoding` and
+# the rest of the workspace carry — and `miden-client` / `miden-client-sqlite-store` from crates.io
+# at `=0.16.0-alpha.1`, the first v16-alpha client release, which itself pins protocol
+# `=0.16.0-alpha.4`. Because the client and the workspace agree on the protocol family, NO
+# `[patch.crates-io]` unification block is needed (the v15 git-pin block left with the v16
+# migration, MIGRATION-V16-ALPHA2.md R2) — one copy of each protocol crate resolves from crates.io.
+# k256/rand/miden-crypto mirror the versions `xusdc-encoding` uses for its attestation vectors
+# (miden-crypto moved to the family's 0.28); promoting k256/rand/miden-crypto to
+# [workspace.dependencies] is a deliberate later cleanup, not this un-park slice.
+
+[dependencies]
+xusdc-encoding = { path = "../xusdc-encoding" }
+# The withdrawal attester's OWN decode/discovery code — the sanity gate drives its `validate_discovery`
+# + `decode_burn_payload` over the real burn note to prove attester-consumability (readiness == the
+# note is findable + decodable by the attester, no running service). It pins the same protocol family
+# (=0.16.0-alpha.4) and carries no miden-client dep (W10 parked), so it adds no new graph tension.
+withdrawal-listener-attester = { path = "../withdrawal-listener-attester" }
+miden-protocol  = { version = "=0.16.0-alpha.4" }
+miden-standards = { version = "=0.16.0-alpha.4" }
+miden-tx        = { version = "=0.16.0-alpha.4" }
+miden-client = { version = "=0.16.0-alpha.1", default-features = false, features = ["std", "tonic"] }
+miden-client-sqlite-store = { version = "=0.16.0-alpha.1" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Hex encode/decode for the devnet credential bundle (--deploy-only export / --credentials import):
+# the faucet id, the owner/DOM_PAUSER Falcon `AuthSecretKey` bytes, and the attester secret scalar.
+hex = { workspace = true }
+# Local test-attester keygen (never Circle keys): same crates + versions as the xusdc-encoding
+# attestation vectors — k256 for the secp256k1 keypair, sha3 for the keccak digest of the SEC1
+# pubkey, miden-crypto for PublicKey::to_commitment (the attester-allowlist keying primitive).
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha3 = "0.10"
+rand = "0.8"
+miden-crypto = { version = "0.28", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# `AccountId::dummy` for synthetic assertion fixtures (tests only; same crates.io v16 pin).
+miden-protocol = { version = "=0.16.0-alpha.4", features = ["testing"] }
+# Row-L log-scanner fixtures: a per-test temp dir with a random, collision-resistant name that is
+# removed on drop. The shared version lives in [workspace.dependencies] (the relayer/attester
+# idempotency tests use it for the same reason — an on-disk store dir removed when the test ends);
+# a fixed/PID name in the shared `target/tmp` collided across the builder/auditor OS users.
+tempfile = { workspace = true }

@@ -1,0 +1,6 @@
+# Lint thresholds matching the repo's de-facto style: the MockChain test-harness builders
+# (`tests/support/mod.rs`, `masm_dual.rs`) take up to 10 positional parameters by design, and the
+# The bidirectional-sweep table in `constant_parity.rs` (a frozen suite — do not edit) uses a
+# nested slice-of-tuples type. Thresholds instead of `#[allow]`s so the frozen file stays unedited.
+too-many-arguments-threshold = 10
+type-complexity-threshold = 1000

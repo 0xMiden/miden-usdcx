@@ -1,0 +1,32 @@
+[package]
+name = "xusdc-canary-mint-note-transport"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Mint-note transport grounding canary (P5-01 CMP-B1): proves the real-note transport primitives the XReserveMintNote wrapper builds on EXECUTE under MockChain on the pinned Miden v0.15.3 / assembler 0.23.3 stack — active_note::get_storage staged from a call-entered account proc, find_attachment by scheme, the hash-verified write_attachment_to_memory content read (num_words check), the post-verification adv.push_mapval advice-stack surfacing with element-0-first pop order, the tampered-advice-map commitment-mismatch trap, and the create-side output_note::create + add_attachment emit. PLACEHOLDER sentinels; isolated from the xusdc-miden faucet build, no real DepositIntent schema."
+
+# Isolated workspace. This empty [workspace] table makes the crate its own workspace root, so it
+# is fully decoupled from the parent xusdc-miden workspace (members = ["crates/xusdc-encoding"]).
+# The parent Cargo.toml is NOT touched.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+# Path-deps point at the pinned protocol clone (a sibling of xusdc-miden under Miden-Coding).
+# Cargo.lock is seeded from the burn-lifecycle canary's lockfile so the Miden stack resolves to the
+# v0.15.3-locked 0.23.3 assembler family (BUILDER-GATES G-MASM). The path is environment-specific;
+# the clone must sit at ../../../protocol-pin-v0.15.3 relative to this manifest.
+[dependencies]
+miden-protocol  = { path = "../../../protocol-pin-v0.15.3/crates/miden-protocol" }
+miden-standards = { path = "../../../protocol-pin-v0.15.3/crates/miden-standards" }
+
+[dev-dependencies]
+miden-protocol  = { path = "../../../protocol-pin-v0.15.3/crates/miden-protocol", features = ["testing"] }
+miden-standards = { path = "../../../protocol-pin-v0.15.3/crates/miden-standards", features = ["testing"] }
+miden-testing   = { path = "../../../protocol-pin-v0.15.3/crates/miden-testing" }
+# assert_transaction_executor_error! expands to a miden_tx::... path, so the macro's caller must
+# link miden-tx directly (same as the burn-lifecycle canary).
+miden-tx        = { path = "../../../protocol-pin-v0.15.3/crates/miden-tx", features = ["testing"] }
+tokio  = { version = "1", features = ["macros", "rt"] }
+anyhow = "1"

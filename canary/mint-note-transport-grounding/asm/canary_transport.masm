@@ -1,0 +1,151 @@
+# xusdc::canary::mint_note_transport
+#
+# Mint-note transport grounding canary (P5-01 CMP-B1). TRIVIAL scratch component that proves the
+# note-transport primitive chain the real `receive_and_mint` wrapper will use EXECUTES end to end
+# under MockChain on the pinned Miden v0.15.3 / assembler 0.23.3 stack, with SENTINEL data:
+#
+#   1. `active_note::get_storage` exec'd from a CALL-entered account proc stages the note storage
+#      into the ACCOUNT call frame at an absolute pointer (the receive_and_burn analog for storage;
+#      the stock precedent proves get_assets, not get_storage, from this context).
+#   2. `active_note::find_attachment` locates the attachment by scheme from the note metadata.
+#   3. `active_note::write_attachment_commitments_to_memory` — count check + commitment-key
+#      retrieval ONLY (it validates the commitment LIST, not the content).
+#   4. `active_note::write_attachment_to_memory` — the HASH-VERIFIED content read (traps if the
+#      advice-map content does not hash to the note-committed attachment commitment), plus the
+#      num_words check (upstream idiom: network_account_target.masm:101-124).
+#   5. `adv.push_mapval` on the SAME verified commitment key surfaces the content to the advice
+#      stack; the sentinel asserts pin the pop ORDER as element-0-first (the one semantic no
+#      first-party doc line states).
+#
+# Proc bodies mirror the live protocol precedents: receive_and_burn (fungible.masm:370-403,
+# call-entered account proc reading active-note data), p2id.masm:45-50 (get_storage + count
+# assert), network_account_target.masm:101-124 (find_attachment -> write_attachment_to_memory ->
+# num_words assert), and note.masm:198-201 (`padw` + `loc_loadw_le` commitment load feeding the
+# advice-map key).
+#
+# The Rust harness declares the SAME sentinel literals — the passing test IS the parity check.
+
+use miden::protocol::active_note
+
+# CONSTANTS
+# =================================================================================================
+
+# Absolute staging address in the account call frame — mirrors the real wrapper's INTENT_PTR
+# convention (word-aligned; the proven driver convention).
+const STORAGE_PTR = 1024
+# Address of the LAST sentinel storage felt (STORAGE_PTR + EXPECTED_NUM_STORAGE_ITEMS - 1).
+const STORAGE_LAST_PTR = 1029
+
+# Sentinel note-storage contract: 6 felts [1101, 1102, 1103, 1104, 1105, 1106].
+const EXPECTED_NUM_STORAGE_ITEMS = 6
+const STORAGE_SENTINEL_FIRST = 1101
+const STORAGE_SENTINEL_LAST = 1106
+
+# Sentinel attachment: scheme 7, 9 words = 36 felts [2001..2036] (9 words mirrors the real
+# [feeAmount(8), pubkey(9), signature(17), pad(2)] layout size).
+const ATTACHMENT_SCHEME = 7
+const EXPECTED_ATTACHMENT_NUM_WORDS = 9
+const ATTACHMENT_SENTINEL_FIRST = 2001
+const ATTACHMENT_SENTINEL_SECOND = 2002
+const ATTACHMENT_SENTINEL_LAST = 2036
+
+# LOCAL LAYOUT (felts)
+# =================================================================================================
+# 0..35   verified attachment content (9 words)
+# 36..51  attachment commitments list (up to 4 words; one used)
+
+# ERRORS
+# =================================================================================================
+
+const ERR_CANARY_WRONG_NUM_STORAGE_ITEMS = "canary: unexpected number of note storage items"
+const ERR_CANARY_STORAGE_CONTENT_MISMATCH = "canary: staged note storage content mismatch"
+const ERR_CANARY_ATTACHMENT_MISSING = "canary: attachment with the expected scheme is missing"
+const ERR_CANARY_WRONG_ATTACHMENT_COUNT = "canary: expected exactly one attachment"
+const ERR_CANARY_WRONG_ATTACHMENT_NUM_WORDS = "canary: unexpected attachment word count"
+const ERR_CANARY_ATTACHMENT_CONTENT_MISMATCH = "canary: verified attachment content mismatch"
+const ERR_CANARY_ADVICE_POP_ORDER = "canary: adv.push_mapval pop order is not element-0-first"
+
+# PUBLIC API
+# =================================================================================================
+
+#! Probes the full mint-note transport primitive chain from inside the account call frame: stages
+#! the note storage at STORAGE_PTR (asserting count + first/last sentinel felts), locates the
+#! sentinel attachment by scheme, count-checks the commitments list, hash-verifies the attachment
+#! content into locals (asserting num_words + first/last sentinel felts), then re-surfaces the
+#! verified advice-map entry onto the advice stack with adv.push_mapval and pins the element-0-first
+#! pop order.
+#!
+#! Inputs:  [pad(16)]
+#! Outputs: [pad(16)]
+#!
+#! Panics if:
+#! - the procedure is not called from a note context (active_note::* will fail).
+#! - any sentinel count/content assert fails (see ERR_CANARY_*).
+#! - the advice-map content does not hash to the note-committed attachment commitment
+#!   (pipe_preimage_to_memory's assert_eqw inside write_attachment_to_memory).
+#!
+#! Invocation: call
+@locals(52)
+pub proc receive_and_probe
+    # --- 1. stage the note storage into the account call frame ---
+    push.STORAGE_PTR exec.active_note::get_storage
+    # => [num_storage_items, pad(16)]
+
+    eq.EXPECTED_NUM_STORAGE_ITEMS assert.err=ERR_CANARY_WRONG_NUM_STORAGE_ITEMS
+    # => [pad(16)]
+
+    mem_load.STORAGE_PTR eq.STORAGE_SENTINEL_FIRST assert.err=ERR_CANARY_STORAGE_CONTENT_MISMATCH
+    mem_load.STORAGE_LAST_PTR eq.STORAGE_SENTINEL_LAST assert.err=ERR_CANARY_STORAGE_CONTENT_MISMATCH
+    # => [pad(16)]
+
+    # --- 2. locate the attachment by scheme ---
+    push.ATTACHMENT_SCHEME exec.active_note::find_attachment
+    # => [is_found, attachment_idx, pad(16)]
+
+    assert.err=ERR_CANARY_ATTACHMENT_MISSING
+    # => [attachment_idx, pad(16)]
+
+    # --- 3. commitments list: count check + commitment-key retrieval ONLY (not content binding) ---
+    locaddr.36 exec.active_note::write_attachment_commitments_to_memory
+    # => [num_attachments, attachment_idx, pad(16)]
+
+    eq.1 assert.err=ERR_CANARY_WRONG_ATTACHMENT_COUNT
+    # => [attachment_idx, pad(16)]
+
+    # --- 4. hash-verified content read (the binding step) + size check ---
+    locaddr.0
+    # => [dest_ptr, attachment_idx, pad(16)]
+
+    exec.active_note::write_attachment_to_memory
+    # => [num_words, pad(16)]
+
+    eq.EXPECTED_ATTACHMENT_NUM_WORDS assert.err=ERR_CANARY_WRONG_ATTACHMENT_NUM_WORDS
+    # => [pad(16)]
+
+    loc_load.0 eq.ATTACHMENT_SENTINEL_FIRST assert.err=ERR_CANARY_ATTACHMENT_CONTENT_MISMATCH
+    loc_load.35 eq.ATTACHMENT_SENTINEL_LAST assert.err=ERR_CANARY_ATTACHMENT_CONTENT_MISMATCH
+    # => [pad(16)]
+
+    # --- 5. surface the SAME verified map entry to the advice stack; pin the pop order ---
+    # load the (list-verified) attachment commitment exactly as note.masm:198-201 does
+    padw loc_loadw_le.36
+    # => [ATTACHMENT_COMMITMENT, pad(16)]
+
+    adv.push_mapval
+    # => [ATTACHMENT_COMMITMENT, pad(16)]   (advice stack now holds the 36 verified felts)
+
+    dropw
+    # => [pad(16)]
+
+    adv_push eq.ATTACHMENT_SENTINEL_FIRST assert.err=ERR_CANARY_ADVICE_POP_ORDER
+    adv_push eq.ATTACHMENT_SENTINEL_SECOND assert.err=ERR_CANARY_ADVICE_POP_ORDER
+    # => [pad(16)]   (element 0 pops first, then element 1)
+
+    repeat.33
+        adv_push drop
+    end
+    # => [pad(16)]   (elements 2..34 drained)
+
+    adv_push eq.ATTACHMENT_SENTINEL_LAST assert.err=ERR_CANARY_ADVICE_POP_ORDER
+    # => [pad(16)]   (element 35 pops last — in-order confirmed end to end)
+end

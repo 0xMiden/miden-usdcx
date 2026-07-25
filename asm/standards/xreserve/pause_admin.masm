@@ -1,0 +1,73 @@
+# xreserve::pause_admin
+#
+# The DOM_PAUSER-gated custom pause/unpause (CMP-F3): under Circle's Domain-Pauser-only model
+# (IMPL-DEV-1) this is the ONLY pause surface on the faucet. The stock PausableManager gates pause on
+# the account-wide Authority (= owner), which both fails Circle's distinct-pauser-role model AND gives
+# the owner a direct pause path — so it is NOT installed; these procs compose
+# rbac::assert_sender_has_role(DOM_PAUSER) with the UNAUTHENTICATED pausable::pause/unpause primitives
+# ("compose with access control in a wrapper"). The is_paused slot is installed by the base
+# Pausable component (v16 — #2944 moved it out of FungibleFaucet), so
+# these write a real slot.
+
+use miden::standards::access::rbac
+use miden::standards::access::pausable
+
+# CONSTANTS
+# =================================================================================================
+
+# The DOM_PAUSER RoleSymbol encoded as a Felt (RoleSymbol::as_element, base-27 over A-Z/_). HARD-CODED
+# here (never caller-supplied) so no role a caller merely holds can be substituted for DOM_PAUSER.
+# Parity-asserted against the Rust RoleSymbol::new(DOM_PAUSER_ROLE).as_element() in constant_parity.rs
+# (cross-language constant parity); a drift silently breaks the role gate. DOM_PAUSER is seeded role id 2.
+const DOM_PAUSER_ROLE = 728098706988649
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Pauses the faucet — the DOM_PAUSER-gated emergency halt: gates on the DOM_PAUSER role (the note
+#! sender must hold it), then sets the is_paused flag via the unauthenticated pausable primitive. A
+#! paused faucet halts both
+#! deposits (the xreserve_mint assert_not_paused check) and withdrawals (execute_burn_policy's
+#! stock pause gate).
+#!
+#! Inputs:  [pad(16)]
+#! Outputs: [pad(16)]
+#!
+#! Panics if:
+#! - the note sender does not hold DOM_PAUSER (rbac::assert_sender_has_role, ERR_SENDER_LACKS_ROLE).
+#!
+#! Invocation: call
+@account_procedure
+pub proc pause
+    push.DOM_PAUSER_ROLE
+    # => [DOM_PAUSER_ROLE, pad(15)]
+
+    exec.rbac::assert_sender_has_role
+    # => [pad(16)]
+
+    exec.pausable::pause
+    # => [pad(16)]
+end
+
+#! Unpauses the faucet: the same DOM_PAUSER role gate, then clears the is_paused flag via the
+#! unauthenticated pausable primitive. The Circle multi-party co-approval for unpause is an
+#! operational procedure, NOT an on-chain check — deliberately not enforced here.
+#!
+#! Inputs:  [pad(16)]
+#! Outputs: [pad(16)]
+#!
+#! Panics if:
+#! - the note sender does not hold DOM_PAUSER (rbac::assert_sender_has_role, ERR_SENDER_LACKS_ROLE).
+#!
+#! Invocation: call
+@account_procedure
+pub proc unpause
+    push.DOM_PAUSER_ROLE
+    # => [DOM_PAUSER_ROLE, pad(15)]
+
+    exec.rbac::assert_sender_has_role
+    # => [pad(16)]
+
+    exec.pausable::unpause
+    # => [pad(16)]
+end

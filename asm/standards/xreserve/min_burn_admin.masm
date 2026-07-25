@@ -1,0 +1,62 @@
+# xreserve::min_burn_admin
+#
+# The owner-gated minBurnSize setter (CMP-F2, set_min_burn_size): it writes the minBurnSize value slot
+# that CMP-A10's burn_policy.masm reads for R-BURN-2 (ERR_XRESERVE_BURN_BELOW_MIN). Reuses the stock
+# access primitives BY REFERENCE: authority::assert_authorized (the Authority::OwnerControlled gate ->
+# the Ownable2Step owner) + native_account::set_item (the write). No custom owner/RBAC logic; the
+# setter is intentionally NOT pause-gated (matching Circle's onlyOwner model, F6).
+
+use miden::protocol::native_account
+use miden::standards::access::authority
+
+# CONSTANTS
+# =================================================================================================
+
+# The minBurnSize value StorageSlot. Byte-identical to
+# burn_policy.masm:22 (the R-BURN-2 read keys the SAME slot) — this setter and that reader target one
+# canonical slot; a mismatch would silently break the seam (parity-asserted against the Rust
+# MIN_BURN_SIZE_SLOT_LABEL in constant_parity.rs). Holds the Word [min_burn_size, 0, 0, 0].
+pub const MIN_BURN_SIZE_SLOT = word("xusdc::xreserve::attester_admin::min_burn_size")
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Writes [new_min, 0, 0, 0] to MIN_BURN_SIZE_SLOT — the OWNER-gated setter for the minBurnSize
+#! floor. The floor is trusted verbatim — there is no `new_min`
+#! validation bound (the spec/Circle mandate none; R-BURN-1 `amount > 0` in the burn policy rejects
+#! zero burns regardless).
+#!
+#! Inputs:  [new_min, pad(15)]
+#! Outputs: [pad(16)]
+#!
+#! Where:
+#! - new_min is the new minimum burn size (an AssetAmount felt), written as element 0 of the slot Word.
+#!
+#! Panics if:
+#! - the note sender is not the registered owner (authority::assert_authorized ->
+#!   ownable2step::assert_sender_is_owner, ERR_SENDER_NOT_OWNER).
+#!
+#! Invocation: call
+@account_procedure
+pub proc set_min_burn_size
+    # => [new_min, pad(15)]
+
+    # gate: the Ownable2Step owner (sender-based) ONLY — intentionally NOT pause-gated (Circle's
+    # onlyOwner model, F6), so the owner may adjust the burn floor while the faucet is paused.
+    # reads account storage and is operand-stack-neutral.
+    exec.authority::assert_authorized
+    # => [new_min, pad(15)]
+
+    # the written VALUE := [new_min, 0, 0, 0], built EXPLICITLY so slot felts 1..3 are provably zero (matching the
+    # builder seed + the reader's element-0 read) rather than trusting the caller's pad. `push.0.0.0`
+    # then `movup.3` lifts new_min back to the top.
+    push.0 push.0 push.0 movup.3
+    # => [new_min, 0, 0, 0, pad(15)]
+
+    # minBurnSize := [new_min, 0, 0, 0].
+    push.MIN_BURN_SIZE_SLOT[0..2]
+    # => [slot_id_suffix, slot_id_prefix, new_min, 0, 0, 0, pad(15)]
+
+    exec.native_account::set_item dropw
+    # => [pad(16)]
+end

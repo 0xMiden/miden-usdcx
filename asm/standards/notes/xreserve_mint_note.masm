@@ -1,0 +1,48 @@
+# xreserve_mint_note (CMP-B1 note script)
+#
+# The production `XReserveMintNote` consume script (NoteType::Public, fixed SCRIPT_ROOT). The kernel
+# `dyncall`s `main` when the faucet's network transaction consumes the committed mint note (created by
+# the relayer in block N, consumed block ≥ N+1). The script is deliberately MINIMAL — the
+# stock-MintNote ADAPT rule ("the note itself never mints", per
+# docs/governing/MASM-STRUCTURE-RESEARCH-REPORT.md): it only crosses into the account context, where the
+# `xreserve_mint_note_entry::receive_and_mint` transport shim stages the DepositIntent preimage,
+# hash-verifies + surfaces the attestation attachment, and execs the fully-gated
+# `xreserve_mint::mint` (F1's sole mint-family callable root).
+#
+# Assembled with the `xreserve` component library linked (the agglayer claim-note precedent), so
+# `call.note_entry::receive_and_mint` resolves to the SAME proc installed on the faucet account.
+# The compiled MAST root is pinned Rust-side as `XRESERVE_MINT_NOTE_SCRIPT_ROOT_HEX`
+# (cross-language constant parity; any edit here or in the wrapper trips the parity test).
+
+use xreserve::xreserve_mint_note_entry as note_entry
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Consumes the XReserveMintNote (the note's consume entry point): crosses into the faucet account
+#! context and drives the attested mint through the receive_and_mint transport shim.
+#!
+#! Requires that the account exposes:
+#! - xreserve::xreserve_mint_note_entry::receive_and_mint procedure.
+#!
+#! Inputs:  [ARGS, pad(12)]
+#! Outputs: [pad(16)]
+#!
+#! Note storage is assumed to be as follows:
+#! - the u32-LE-packed DepositIntent preimage (60 header felts + the packed hookData felts);
+#!   receive_and_mint stages it into the account call frame and the mint gates re-validate it.
+#!
+#! Panics if:
+#! - receive_and_mint panics (transport-shape guards, the attachment commitment binding, or any
+#!   mint gate — pause, D5a..D5e).
+#!
+#! Invocation: dyncall
+@note_script
+pub proc main
+    # the transport is note storage + attachment; the note ARGS are unused
+    dropw
+    # => [pad(16)]
+
+    call.note_entry::receive_and_mint
+    # => [pad(16)]
+end

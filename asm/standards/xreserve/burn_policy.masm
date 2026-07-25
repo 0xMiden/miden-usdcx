@@ -1,0 +1,88 @@
+# xreserve::burn_policy
+#
+# The faucet's burn security policy (CMP-A10, R-BURN-1/2): the ACTIVE burn policy of the faucet's
+# TokenPolicyManager. Stock `receive_and_burn` (fungible.masm) routes every burn through
+# `policy_manager::execute_burn_policy`, which -- AFTER the stock pause gate -- `dynexec`s the active
+# burn-policy proc root (policy_manager.masm). Registering this `check_policy` as that active root
+# gates every burn on the real security predicate: R-BURN-1 (amount > 0) + R-BURN-2 (amount >=
+# minBurnSize). R-BURN-3 (a paused faucet halts the burn) is enforced by the stock
+# `execute_burn_policy` wrapper BEFORE this policy is dispatched, so this policy does NOT check pause
+# -- it never runs when paused.
+
+use miden::protocol::active_account
+
+# CONSTANTS
+# =================================================================================================
+
+# The minBurnSize value StorageSlot. Holds the
+# Word [min_burn_size, 0, 0, 0]; R-BURN-2 reads element 0. The Rust MIN_BURN_SIZE_SLOT_LABEL binds the
+# identical label string (the single source of truth); the CMP-F2 set_min_burn_size setter
+# writes the SAME slot, so reader (this policy) and setter target one canonical slot (no silent seam).
+pub const MIN_BURN_SIZE_SLOT = word("xusdc::xreserve::attester_admin::min_burn_size")
+
+# ERRORS
+# =================================================================================================
+
+# R-BURN-1: a burn must move a strictly positive amount.
+const ERR_XRESERVE_BURN_ZERO = "burn amount must be greater than zero"
+
+# R-BURN-2: a burn must be at least the configured minimum burn size.
+const ERR_XRESERVE_BURN_BELOW_MIN = "burn amount is below the minimum burn size"
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Gates every burn on R-BURN-1 (amount > 0) + R-BURN-2 (amount >= minBurnSize) — the burn-policy
+#! predicate. Registered as the ACTIVE burn policy of the faucet's TokenPolicyManager; invoked by
+#! `policy_manager::execute_burn_policy` via `dynexec` on every `receive_and_burn`. Pause (R-BURN-3) is
+#! the stock wrapper's gate, run BEFORE this policy -- this policy does NOT check it.
+#!
+#! Inputs:  [ASSET_ID, ASSET_VALUE]
+#! Outputs: []
+#!
+#! Where:
+#! - ASSET_ID is the burned asset's id (v0.16 #3186 renamed the vault key; present per the
+#!   dynexec burn-policy contract; not read by this policy).
+#! - ASSET_VALUE = [amount, 0, 0, 0]; `amount` (the burn amount, a felt < 2^63) is element 0 of
+#!   ASSET_VALUE, i.e. stack depth 4 -- read non-destructively with `dup.4` (mirrors the
+#!   standards fungible_asset::to_amount). The accept path returns with the stack EMPTY (the dynexec
+#!   burn-policy contract), unlike the mint-deny twin which traps and never returns.
+#!
+#! Panics if:
+#! - amount == 0 (ERR_XRESERVE_BURN_ZERO, R-BURN-1).
+#! - amount < min_burn_size (ERR_XRESERVE_BURN_BELOW_MIN, R-BURN-2).
+#!
+#! Invocation: dynexec
+@account_procedure
+pub proc check_policy
+    # => [ASSET_ID, ASSET_VALUE]
+
+    dup.4
+    # => [amount, ASSET_ID, ASSET_VALUE]
+
+    # reject a zero burn amount (R-BURN-1: require amount > 0).
+    dup.0 eq.0 assertz.err=ERR_XRESERVE_BURN_ZERO
+    # => [amount, ASSET_ID, ASSET_VALUE]
+
+    # reject amount < min_burn_size (R-BURN-2). Load the minBurnSize slot word [min, 0, 0, 0], keep
+    # element 0, and assert amount >= min (mirrors the stock burn `lte` amount comparison,
+    # fungible.masm:436; both operands are AssetAmounts < 2^63, so the felt comparison is range-safe).
+    push.MIN_BURN_SIZE_SLOT[0..2] exec.active_account::get_item
+    # => [min_burn_size, 0, 0, 0, amount, ASSET_ID, ASSET_VALUE]
+
+    movdn.3 drop drop drop
+    # => [min_burn_size, amount, ASSET_ID, ASSET_VALUE]
+    # `swap` is intentional: it puts `amount` on top so `lte` computes `min_burn_size <= amount`
+    # (i.e. amount >= min). This is the deliberate FLIP of the stock burn's `amount <= token_supply`
+    # (fungible.masm:436) -- do NOT remove the swap or the >= boundary inverts (see the
+    # burn_at_min_* boundary tests).
+    swap
+    # => [amount, min_burn_size, ASSET_ID, ASSET_VALUE]
+
+    lte assert.err=ERR_XRESERVE_BURN_BELOW_MIN
+    # => [ASSET_ID, ASSET_VALUE]
+
+    # accept: clear the 8-cell burn-policy stack -> [].
+    dropw dropw
+    # => []
+end

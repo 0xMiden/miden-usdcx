@@ -47,6 +47,7 @@ fn faucet_id(seed: u8) -> AccountId {
         dummy_id(1),
         dummy_id(2),
         dummy_id(3),
+        dummy_id(4),
         DEPLOY_MAX_SUPPLY,
         [seed; 32],
     )

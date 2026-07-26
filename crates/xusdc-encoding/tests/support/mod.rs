@@ -28,7 +28,7 @@ use miden_protocol::account::{
     AssetCallbackFlag, RoleSymbol, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
 };
 use miden_protocol::assembly::{Library, Linkage, Path as MasmPath};
-use miden_protocol::asset::{AssetAmount, FungibleAsset, TokenSymbol};
+use miden_protocol::asset::{AssetAmount, AssetCallbacks, FungibleAsset, TokenSymbol};
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{Note, NoteType};
 use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote, TransactionKernel};
@@ -43,10 +43,11 @@ use miden_standards::note::{BurnNote, P2idNote};
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_standards::StandardsLib;
-use miden_testing::{AccountState, Auth, MockChain};
+use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
-    BURN_POLICY_PROC_PATH, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE, MINT_DENY_GUARD_PROC_PATH,
+    BLK_MANAGER_ROLE, BURN_POLICY_PROC_PATH, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    MINT_DENY_GUARD_PROC_PATH,
 };
 use xusdc_encoding::xreserve::encoding::masm_error_by_name;
 
@@ -303,16 +304,52 @@ pub fn test_account_id(seed: u8) -> AccountId {
     )
 }
 
-/// A deterministic PUBLIC dummy account id — usable as a faucet target for the F5 scheme-2
-/// `NetworkAccountTarget` routing attachment (mint/burn/admin notes require a PUBLIC faucet id) and
-/// as a fungible-asset issuer in note-construction unit tests.
+/// A deterministic PUBLIC dummy account id representing THIS (policed) faucet — usable as a faucet
+/// target for the F5 scheme-2 `NetworkAccountTarget` routing attachment (mint/burn/admin notes require
+/// a PUBLIC faucet id) and as a fungible-asset issuer in note-construction unit tests. Carries
+/// `AssetCallbackFlag::Enabled` (F4-reversal): the deployed faucet is Enabled, so a dummy standing in
+/// for it must not misrepresent it as a basic (callback-disabled) asset issuer.
 pub fn test_faucet_id(seed: u8) -> AccountId {
     AccountId::dummy(
         [seed; 15],
         AccountIdVersion::Version1,
         AccountType::Public,
-        AssetCallbackFlag::Disabled,
+        AssetCallbackFlag::Enabled,
     )
+}
+
+/// Adds a faucet account to the mock chain from its composed `components`, deriving the immutable
+/// `AssetCallbackFlag` FROM THE COMPOSITION: `Enabled` when a protocol asset-callback slot is present
+/// (a transfer policy is wired — the F4-reversal policed asset), else `Disabled` (basic asset). This
+/// mirrors what a real `AccountBuilder` deploy does. The stock
+/// `MockChainBuilder::add_existing_account_from_components` hardcodes `Disabled`, which would leave a
+/// policed faucet's transfer-policy callbacks silently never firing (the audited foot-gun, §1.3), so
+/// every PRODUCTION-builder faucet fixture routes through here instead.
+pub fn add_faucet_account(
+    builder: &mut MockChainBuilder,
+    auth: Auth,
+    components: Vec<AccountComponent>,
+) -> Result<Account> {
+    let has_callbacks = components.iter().any(|c| {
+        c.storage_slots().iter().any(|s| {
+            s.name() == AssetCallbacks::on_before_asset_added_to_note_slot()
+                || s.name() == AssetCallbacks::on_before_asset_added_to_account_slot()
+        })
+    });
+    let flag = if has_callbacks {
+        AssetCallbackFlag::Enabled
+    } else {
+        AssetCallbackFlag::Disabled
+    };
+    let mut account_builder = Account::builder(rand::random())
+        .account_type(AccountType::Public)
+        .with_asset_callbacks(flag);
+    for component in components {
+        account_builder = account_builder.with_component(component);
+    }
+    builder
+        .add_account_from_builder(auth, account_builder, AccountState::Exists)
+        .context("adding a faucet account from its composed components (callback-flag derived)")
 }
 
 pub fn assemble_xreserve_lib() -> Result<Library> {
@@ -477,6 +514,7 @@ pub fn production_component_set(
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .build_components()
     .map_err(|e| anyhow::anyhow!("composing the production faucet components: {e}"))
@@ -2216,14 +2254,14 @@ pub fn setup_rotation_account(
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .build_components()
     .map_err(|e| anyhow::anyhow!("composing the rotation faucet: {e}"))?;
     components.extend(driver_components);
 
     let mut mc = MockChain::builder();
-    let account = mc
-        .add_existing_account_from_components(Auth::IncrNonce, components)
+    let account = add_faucet_account(&mut mc, Auth::IncrNonce, components)
         .context("adding the rotation account")?;
     let mock_chain = mc.build().context("building the rotation MockChain")?;
     let first = drivers[0].1.clone();
@@ -2423,6 +2461,7 @@ pub fn setup_guarded_mint_account(
                 test_account_id(1),
                 test_account_id(2),
                 test_account_id(3),
+                test_account_id(4),
             )
             .build_components()
             .map_err(|e| anyhow::anyhow!("composing the production deny faucet: {e}"))?
@@ -2442,8 +2481,7 @@ pub fn setup_guarded_mint_account(
     components.push(probe_component);
 
     let mut mc = MockChain::builder();
-    let account = mc
-        .add_existing_account_from_components(Auth::IncrNonce, components)
+    let account = add_faucet_account(&mut mc, Auth::IncrNonce, components)
         .context("adding guarded faucet")?;
     let mock_chain = mc.build().context("building MockChain")?;
     Ok(GuardedMint {
@@ -2628,10 +2666,13 @@ fn seeded_dom_roles_rbac_component(
     owner: AccountId,
     pauser_holder: AccountId,
     manager_holder: AccountId,
+    blocklist_manager_holder: AccountId,
 ) -> AccountComponent {
     let pauser = RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol");
     let manager =
         RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol");
+    let blk_manager =
+        RoleSymbol::new(BLK_MANAGER_ROLE).expect("BLK_MANAGER is a fixed valid role symbol");
     // v16 (#3215): the owner has no implicit super-admin standing — the stock ADMIN role is
     // seeded on the owner's account, mirroring the production seed (S2, operator-approved).
     let admin = RoleBasedAccessControl::admin_role();
@@ -2672,8 +2713,17 @@ fn seeded_dom_roles_rbac_component(
             ])),
             member_word,
         ),
+        (
+            StorageMapKey::new(Word::from([
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::ZERO,
+                Felt::from(&blk_manager),
+            ])),
+            member_word,
+        ),
     ])
-    .expect("the three-role role_config seed is valid");
+    .expect("the four-role role_config seed is valid");
 
     let role_membership = StorageMap::with_entries([
         (
@@ -2703,8 +2753,17 @@ fn seeded_dom_roles_rbac_component(
             ])),
             member_word,
         ),
+        (
+            StorageMapKey::new(Word::from([
+                Felt::ZERO,
+                Felt::from(&blk_manager),
+                blocklist_manager_holder.suffix(),
+                blocklist_manager_holder.prefix().as_felt(),
+            ])),
+            member_word,
+        ),
     ])
-    .expect("the three-role role_membership seed is valid");
+    .expect("the four-role role_membership seed is valid");
 
     AccountComponent::new(
         RoleBasedAccessControl::code().clone(),
@@ -2739,6 +2798,7 @@ fn oracle_burn_components(
     owner: AccountId,
     pauser_holder: AccountId,
     manager_holder: AccountId,
+    blocklist_manager_holder: AccountId,
 ) -> Result<Vec<AccountComponent>> {
     let real_burn = BurnPolicy::custom(
         AccountProcedureRoot::from_raw(burn_root),
@@ -2797,6 +2857,7 @@ fn oracle_burn_components(
         owner,
         pauser_holder,
         manager_holder,
+        blocklist_manager_holder,
     ));
     components.push(Authority::OwnerControlled.into());
     Ok(components)
@@ -2899,6 +2960,7 @@ pub fn setup_burn_policy_account(
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )?;
 
     let mut builder = MockChain::builder();
@@ -3141,7 +3203,7 @@ pub async fn try_emit_burn_note(
         .expect("linking the emit helper into the burn emit script")
         .compile_tx_script(send_burn_note_script(burn_note, asset, faucet_id))
         .expect("the user send-burn-note script compiles");
-    chain
+    let mut ctx = chain
         .build_tx_context(user_id, &[], &[])
         .expect("building the user emit tx context")
         .tx_script(tx_script)
@@ -3149,8 +3211,18 @@ pub async fn try_emit_burn_note(
         .extend_advice_inputs(attachment_advice(burn_note))
         // Register the full note details so the kernel's `before_created` event can resolve the PUBLIC
         // note's details when tx0 creates it (per the burn canary).
-        .extend_expected_output_notes(vec![RawOutputNote::Full(burn_note.clone())])
-        .build()
+        .extend_expected_output_notes(vec![RawOutputNote::Full(burn_note.clone())]);
+    // F4-reversal: a POLICED (callback-Enabled) faucet's asset fires the SEND callback when the holder
+    // emits a note moving it out of their vault (native = the holder), so the kernel dyncalls the
+    // issuing faucet to run `basic_blocklist::check_policy` — attach it as a foreign account. A basic
+    // (Disabled) faucet — e.g. the burn oracle fixtures — fires no callback, so it is skipped.
+    if faucet_id.asset_callback_flag() == AssetCallbackFlag::Enabled {
+        let foreign = chain
+            .get_foreign_account_inputs(faucet_id)
+            .expect("faucet foreign-account inputs (committed)");
+        ctx = ctx.foreign_accounts([foreign]);
+    }
+    ctx.build()
         .expect("building the user emit tx")
         .execute()
         .await
@@ -4002,13 +4074,13 @@ fn setup_assembled_faucet_inner(
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .build_components()
     .map_err(|e| anyhow::anyhow!("composing the assembled faucet: {e}"))?;
     components.extend(driver_components);
 
-    let account = mc
-        .add_existing_account_from_components(Auth::IncrNonce, components)
+    let account = add_faucet_account(&mut mc, Auth::IncrNonce, components)
         .context("adding the assembled faucet account")?;
     let mock_chain = mc.build().context("building the assembled MockChain")?;
     let first = drivers[0].1.clone();
@@ -4126,6 +4198,7 @@ pub fn setup_production_faucet(
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .build_components()
     .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
@@ -4136,18 +4209,18 @@ pub fn setup_production_faucet(
     // the deploy path's `XReserveStablecoinBuilder::auth_component()` composed via
     // `AccountBuilder::with_auth_component`. (alpha.4's `NetworkAccount::new` REQUIRES the expiration
     // root, so an empty tx-script allowlist would no longer be a valid network account.)
-    let account = mc
-        .add_existing_account_from_components(
-            Auth::NetworkAccount {
-                allowed_script_roots:
-                    xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::allowed_note_scripts(),
-                allowed_tx_script_roots: std::collections::BTreeSet::from([
-                    ExpirationTransactionScript::script_root(),
-                ]),
-            },
-            components,
-        )
-        .context("adding the production faucet account")?;
+    let account = add_faucet_account(
+        &mut mc,
+        Auth::NetworkAccount {
+            allowed_script_roots:
+                xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::allowed_note_scripts(),
+            allowed_tx_script_roots: std::collections::BTreeSet::from([
+                ExpirationTransactionScript::script_root(),
+            ]),
+        },
+        components,
+    )
+    .context("adding the production faucet account")?;
     let mock_chain = mc.build().context("building the production MockChain")?;
     Ok(ProductionFaucet {
         mock_chain,

@@ -34,7 +34,9 @@ use miden_standards::account::faucets::FungibleFaucet;
 use miden_testing::MockChain;
 use miden_tx::TransactionExecutorError;
 use support::*;
-use xusdc_encoding::note::xreserve_admin::{XReserveDomainInitNote, XReserveSetAttesterNote};
+use xusdc_encoding::note::xreserve_admin::{
+    XReserveBlockAccountNote, XReserveDomainInitNote, XReserveSetAttesterNote,
+};
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XReserveMintNote};
 use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, bytes32_to_storage_map_key};
@@ -86,6 +88,11 @@ const NONCE_BYTE_OFF: usize = 51 * 4;
 
 fn owner() -> AccountId {
     test_account_id(1)
+}
+
+/// The BLK_MANAGER holder seeded by the production builder (role id 4).
+fn blk_manager() -> AccountId {
+    test_account_id(4)
 }
 
 fn di(id: &str) -> &'static DiVector {
@@ -356,10 +363,17 @@ async fn production_mint_delivers_the_circle_amount_unrescaled() -> Result<()> {
 
     let p2id_id = minted.output_notes().get_note(0).id();
     let recipient = committed(&pf.mock_chain, pf.recipient_id)?;
+    // F4-reversal: the recipient consuming policed xUSDC fires the receive callback, so the faucet
+    // must be attached as a foreign account for the kernel to run basic_blocklist::check_policy.
+    let faucet_foreign = pf
+        .mock_chain
+        .get_foreign_account_inputs(pf.faucet_id)
+        .context("faucet foreign-account inputs")?;
     let consume = pf
         .mock_chain
         .build_tx_context(recipient.clone(), &[p2id_id], &[])
         .context("building the recipient consume context")?
+        .foreign_accounts([faucet_foreign])
         .build()
         .context("building the recipient consume tx")?
         .execute()
@@ -480,6 +494,97 @@ fn shipped_faucet_declares_identity_deposit_scale() -> Result<()> {
         decl, "const DEPOSIT_SCALE_EXP = 0",
         "the faucet must apply NO rescale: Circle's on-wire amount is 6-decimal and xUSDC is \
          6-decimal, so y = floor(x / 10^0) = x (DEV-5, answered)"
+    );
+    Ok(())
+}
+
+// F4-REVERSAL — mint TO a blocked recipient SUCCEEDS, then STRANDS at the recipient's consume
+// ================================================================================================
+
+/// The §1.5 mint row, on the REAL attested-mint path: the faucet's mint fires the SEND callback with
+/// the native account = the FAUCET (never blocked), so a mint to a BLOCKED recipient still creates the
+/// P2ID (the target is not inspected at mint time). The blocked recipient then CANNOT consume it —
+/// the receive callback traps the exact stock `"account is blocked"` and the minted funds STRAND
+/// (unspent, recipient vault empty). Uses the production fixture but seeds a third bring-up note that
+/// blocks the recipient before the mint.
+#[tokio::test]
+async fn mint_to_a_blocked_recipient_succeeds_then_strands() -> anyhow::Result<()> {
+    use miden_protocol::errors::MasmError;
+    use miden_testing::assert_transaction_executor_error;
+
+    // A fixture that additionally seeds a BLK_MANAGER block note targeting the recipient; bring_up
+    // consumes domain_init, set_attester, AND the block note (so the recipient is blocked pre-mint).
+    let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |recipient| {
+        let commitment =
+            gen_attester(1, &payload_for(recipient, CIRCLE_DEPOSIT_100_USDC, 0)).commitment;
+        let route = test_faucet_id(1);
+        vec![
+            XReserveDomainInitNote::create(
+                owner(),
+                route,
+                TEST_DOMAIN,
+                TEST_SOURCE_DOMAIN,
+                &test_xreserve_contract(),
+                identifier_word(),
+                &mut note_rng(961),
+            )
+            .expect("building the owner domain_init note"),
+            XReserveSetAttesterNote::create(owner(), route, commitment, 1, &mut note_rng(962))
+                .expect("building the owner set_attester note"),
+            XReserveBlockAccountNote::create(blk_manager(), route, recipient, &mut note_rng(963))
+                .expect("building the BLK_MANAGER block note targeting the recipient"),
+        ]
+    })?;
+    bring_up(&mut pf).await?;
+
+    // MINT to the (now blocked) recipient — the mint SUCCEEDS: the send callback's native is the
+    // faucet, so the recipient's block does not stop note creation.
+    let payload = payload_for(pf.recipient_id, CIRCLE_DEPOSIT_100_USDC, 0);
+    let minted = mint_via_production_note(&mut pf, &payload, 61)
+        .await
+        .context(
+            "the mint to a blocked recipient must SUCCEED (the target is not checked at mint)",
+        )?;
+    assert_eq!(
+        minted.output_notes().num_notes(),
+        1,
+        "the mint to a blocked recipient still creates exactly one recipient P2ID"
+    );
+    commit(&mut pf.mock_chain, &minted)?;
+    assert_eq!(
+        committed_token_supply(&pf.mock_chain, pf.faucet_id)?,
+        CIRCLE_DEPOSIT_100_USDC,
+        "the mint really executed (token_supply rose by the deposit amount)"
+    );
+
+    // The BLOCKED recipient CANNOT consume the minted P2ID (receive callback) → it strands.
+    let p2id_id = minted.output_notes().get_note(0).id();
+    let recipient = committed(&pf.mock_chain, pf.recipient_id)?;
+    let faucet_foreign = pf
+        .mock_chain
+        .get_foreign_account_inputs(pf.faucet_id)
+        .context("faucet foreign-account inputs")?;
+    let result = pf
+        .mock_chain
+        .build_tx_context(recipient.clone(), &[p2id_id], &[])
+        .context("blocked-recipient consume tx context")?
+        .foreign_accounts([faucet_foreign])
+        .build()
+        .context("blocked-recipient consume tx")?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, MasmError::from_static_str("account is blocked"));
+
+    // The funds strand: the note is unspent and the recipient's vault holds nothing.
+    assert!(
+        pf.mock_chain.is_note_committed(&p2id_id),
+        "the minted P2ID strands (still committed; the stock P2ID has NO sender/faucet reclaim, so \
+         recovery is by unblocking the recipient)"
+    );
+    assert_eq!(
+        wallet_balance(&committed(&pf.mock_chain, pf.recipient_id)?, pf.faucet_id),
+        0,
+        "the blocked recipient received nothing (the mint stranded at consume)"
     );
     Ok(())
 }

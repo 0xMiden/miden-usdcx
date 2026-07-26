@@ -12,7 +12,7 @@
 //! COVERAGE (this file):
 //! - proof #6: the production faucet IS a network account AND its auth component is the stock
 //!   `AuthNetworkAccount` (its auth procedure root is present in the account code).
-//! - proof #5: the note-script allowlist equals EXACTLY the 12 ratified roots (2 supply + 10 admin
+//! - proof #5: the note-script allowlist equals EXACTLY the 14 ratified roots (2 supply + 12 admin
 //!   — NO `set_role_admin` note: removed by the S21 disposition flip, human-ratified 2026-07-14);
 //!   the tx-script allowlist is present AND equals EXACTLY the one canonical
 //!   `ExpirationTransactionScript::script_root()` (S12, RATIFIED 2026-07-20).
@@ -54,9 +54,10 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveAcceptOwnershipNote, XReserveDomainInitNote, XReserveGrantRoleNote, XReservePauseNote,
-    XReserveRevokeRoleNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
-    XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote, XReserveUnpauseNote,
+    XReserveAcceptOwnershipNote, XReserveBlockAccountNote, XReserveDomainInitNote,
+    XReserveGrantRoleNote, XReservePauseNote, XReserveRevokeRoleNote, XReserveSetAttesterNote,
+    XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
+    XReserveUnblockAccountNote, XReserveUnpauseNote,
 };
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
@@ -168,7 +169,7 @@ fn production_faucet_auth_component_is_stock_network_account() -> Result<()> {
 // PROOF #5 — the frozen note-script allowlist + a tx-script allowlist of EXACTLY the expiration root
 // ================================================================================================
 
-/// The note-script allowlist must equal EXACTLY the 12 ratified roots (2 supply + 10 admin) — an
+/// The note-script allowlist must equal EXACTLY the 14 ratified roots (2 supply + 12 admin) — an
 /// extra OR a missing root is RED (the allowlist is IMMUTABLE post-deploy). Asserted at BOTH layers:
 /// the builder's single-source `allowed_note_scripts()` and the built account's on-chain allowlist
 /// map. The 12 roots come from the shipped note factories (pinned + parity-tested individually).
@@ -176,7 +177,7 @@ fn production_faucet_auth_component_is_stock_network_account() -> Result<()> {
 /// role-admin graph is build-seeded and frozen; rotation is `grant_role`/`revoke_role`
 /// (CIR-ADMIN-3) — the same removal disposition as `renounce_role` and `freeze`/`unfreeze`.
 #[test]
-fn production_faucet_note_allowlist_is_exactly_the_12_ratified_roots() -> Result<()> {
+fn production_faucet_note_allowlist_is_exactly_the_14_ratified_roots() -> Result<()> {
     let (_chain, account) = production_faucet()?;
     let expected: BTreeSet<_> = BTreeSet::from([
         // rows 1-2: the supply-side notes.
@@ -193,27 +194,30 @@ fn production_faucet_note_allowlist_is_exactly_the_12_ratified_roots() -> Result
         XReserveTransferOwnershipNote::script_root(),
         XReserveAcceptOwnershipNote::script_root(),
         XReserveDomainInitNote::script_root(),
+        // rows 13-14: the F4-reversal transfer-blocklist admin notes (BLK_MANAGER-gated).
+        XReserveBlockAccountNote::script_root(),
+        XReserveUnblockAccountNote::script_root(),
     ]);
     assert_eq!(
         expected.len(),
-        12,
-        "the ratified allowlist is exactly 12 distinct roots"
+        14,
+        "the ratified allowlist is exactly 14 distinct roots"
     );
 
-    // Source layer: the builder's single-source allowlist == the 12 ratified roots.
+    // Source layer: the builder's single-source allowlist == the 14 ratified roots.
     assert_eq!(
         XReserveStablecoinBuilder::allowed_note_scripts(),
         expected,
-        "allowed_note_scripts() must equal EXACTLY the 12 ratified roots (extra/missing = RED)",
+        "allowed_note_scripts() must equal EXACTLY the 14 ratified roots (extra/missing = RED)",
     );
 
-    // On-chain layer: the built faucet's allowlist storage map == the 12 ratified roots.
+    // On-chain layer: the built faucet's allowlist storage map == the 14 ratified roots.
     let allowlist = NetworkAccountNoteAllowlist::try_from(account.storage())
         .map_err(|e| anyhow::anyhow!("the faucet must carry a note-script allowlist slot: {e}"))?;
     assert_eq!(
         allowlist.allowed_script_roots(),
         &expected,
-        "the built faucet's on-chain allowlist map must equal EXACTLY the 12 ratified roots",
+        "the built faucet's on-chain allowlist map must equal EXACTLY the 14 ratified roots",
     );
     Ok(())
 }

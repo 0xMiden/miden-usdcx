@@ -16,7 +16,7 @@ mod support;
 use std::collections::BTreeMap;
 
 use miden_protocol::account::RoleSymbol;
-use xusdc_encoding::account::xreserve::DOM_PAUSER_ROLE;
+use xusdc_encoding::account::xreserve::{BLK_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_mint::{
     XRESERVE_MINT_ATTACHMENT_NUM_WORDS, XRESERVE_MINT_ATTACHMENT_SCHEME,
 };
@@ -57,6 +57,10 @@ const MIN_BURN_ADMIN_MASM: &str =
 
 /// The faucet CMP-F3 DOM_PAUSER custom pause/unpause module source, read test-side by reference.
 const PAUSE_ADMIN_MASM: &str = include_str!("../../../asm/standards/xreserve/pause_admin.masm");
+
+/// The faucet F4-reversal BLK_MANAGER custom block/unblock module source, read test-side by reference.
+const BLOCKLIST_ADMIN_MASM: &str =
+    include_str!("../../../asm/standards/xreserve/blocklist_admin.masm");
 
 /// The faucet CMP-B1 mint-note-entry transport shim module source, read test-side by reference.
 const MINT_NOTE_ENTRY_MASM: &str =
@@ -183,6 +187,11 @@ const XRESERVE_MINT_COVERED_NUMS: &[&str] = &["P2ID_NUM_STORAGE_ITEMS"];
 /// CMP-F3 pause-admin numeric const: DOM_PAUSER_ROLE (the encoded RoleSymbol felt), parity-asserted
 /// against `RoleSymbol::new(DOM_PAUSER_ROLE).as_element()` in `masm_rust_constant_parity` below.
 const PAUSE_ADMIN_COVERED_NUMS: &[&str] = &["DOM_PAUSER_ROLE"];
+
+/// F4-reversal blocklist-admin numeric const: BLK_MANAGER_ROLE (the encoded RoleSymbol felt),
+/// parity-asserted against `RoleSymbol::new(BLK_MANAGER_ROLE).as_element()` in
+/// `masm_rust_constant_parity` below.
+const BLOCKLIST_ADMIN_COVERED_NUMS: &[&str] = &["BLK_MANAGER_ROLE"];
 
 /// CMP-B1 mint-note-entry numeric consts: the attachment scheme + word count are parity-asserted
 /// against the Rust `XRESERVE_MINT_ATTACHMENT_SCHEME` / `XRESERVE_MINT_ATTACHMENT_NUM_WORDS` in
@@ -368,6 +377,19 @@ fn masm_rust_constant_parity() {
         "DOM_PAUSER role-symbol felt parity (MASM const == RoleSymbol::new(DOM_PAUSER_ROLE).as_element())"
     );
 
+    // F4-reversal: the BLK_MANAGER role-symbol MASM const must equal the Rust encoding
+    // RoleSymbol::new(BLK_MANAGER_ROLE).as_element() (base-27 over A-Z/_). A one-sided edit — the
+    // exact mutation check (d) — fails here, so the transfer-blocklist role gate cannot silently drift.
+    let (blocklist_nums, _, _) = parse_masm_consts(BLOCKLIST_ADMIN_MASM);
+    assert_eq!(
+        num(&blocklist_nums, "BLK_MANAGER_ROLE", "blocklist_admin.masm"),
+        RoleSymbol::new(BLK_MANAGER_ROLE)
+            .expect("BLK_MANAGER is a valid RoleSymbol")
+            .as_element()
+            .as_canonical_u64(),
+        "BLK_MANAGER role-symbol felt parity (MASM const == RoleSymbol::new(BLK_MANAGER_ROLE).as_element())"
+    );
+
     // CMP-B1: the mint-note attachment scheme + word count must match across languages — the
     // Rust constructor builds exactly what the MASM wrapper locates (find_attachment by scheme)
     // and size-asserts (num_words == 9). A one-sided edit fails here.
@@ -450,7 +472,7 @@ fn masm_constants_bidirectional() {
         ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
     };
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 12] = [
+    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 13] = [
         ("layout.masm", LAYOUT_MASM, LAYOUT_COVERED_NUMS, &[]),
         (
             "encoding/mod.masm",
@@ -523,6 +545,16 @@ fn masm_constants_bidirectional() {
             "pause_admin.masm",
             PAUSE_ADMIN_MASM,
             PAUSE_ADMIN_COVERED_NUMS,
+            &[],
+        ),
+        // F4-reversal blocklist_admin: declares the numeric BLK_MANAGER_ROLE role-symbol const
+        // (parity-asserted in masm_rust_constant_parity); no word("…") consts, and no new string
+        // errors (the role gate reuses the stock ERR_SENDER_LACKS_ROLE, the primitive reuses the
+        // stock ERR_ACCOUNT_IS_BLOCKED).
+        (
+            "blocklist_admin.masm",
+            BLOCKLIST_ADMIN_MASM,
+            BLOCKLIST_ADMIN_COVERED_NUMS,
             &[],
         ),
         // CMP-B1 note-entry transport shim: declares the four ERR_XRESERVE_MINT_NOTE_* transport

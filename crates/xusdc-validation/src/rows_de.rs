@@ -21,9 +21,12 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use miden_client::rpc::domain::account::AccountStorageRequirements;
 use miden_client::rpc::NodeRpcClient;
 use miden_client::store::TransactionFilter;
-use miden_client::transaction::{TransactionId, TransactionRequestBuilder, TransactionStatus};
+use miden_client::transaction::{
+    ForeignAccount, TransactionId, TransactionRequestBuilder, TransactionStatus,
+};
 use miden_protocol::account::{Account, AccountId, StorageMapKey, StorageSlotName};
 use miden_protocol::asset::Asset;
 use miden_protocol::note::{Note, NoteTag};
@@ -341,9 +344,15 @@ impl Driver {
     }
 
     /// The recipient wallet consumes `note` (a regular-account tx the user RPC accepts). Returns the
-    /// consume block.
+    /// consume block. xUSDC is POLICED (F4-reversal): the receive callback dyncalls the faucet's
+    /// `basic_blocklist::check_policy`, so the faucet MUST be declared as a foreign account.
     async fn recipient_consume(&mut self, recipient: AccountId, note: Note) -> Result<u32> {
         let req = TransactionRequestBuilder::new()
+            .foreign_accounts([ForeignAccount::public(
+                self.faucet_id,
+                AccountStorageRequirements::default(),
+            )
+            .context("declaring the faucet as a foreign account for the policed consume")?])
             .build_consume_notes(vec![note])
             .context("building the recipient consume request")?;
         let tx = self
@@ -674,6 +683,7 @@ pub async fn run_rows_de_on(cfg: &RunConfig, client_label: &str) -> Result<RowsD
         owner_id,
         actors.pauser.id(),
         actors.manager.id(),
+        actors.blk_manager.id(),
         cfg.max_supply,
         os_seed(),
     )?;

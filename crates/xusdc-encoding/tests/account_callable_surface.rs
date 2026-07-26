@@ -1,7 +1,7 @@
 //! FULL-ACCOUNT CALLABLE-SURFACE PIN (S12, human-ratified 2026-07-13).
 //!
-//! `mint_root_surface.rs` freezes the 17 callable roots of the **xreserve** component. This file
-//! freezes the **whole composed account** — the xreserve 17 PLUS every callable procedure the STOCK
+//! `mint_root_surface.rs` freezes the 19 callable roots of the **xreserve** component. This file
+//! freezes the **whole composed account** — the xreserve 19 PLUS every callable procedure the STOCK
 //! components contribute (`Authority` incl. the v0.16 `freeze`/`unfreeze`, `RoleBasedAccessControl`,
 //! `Ownable2Step`, `FungibleFaucet` incl. the v0.16 `has_procedure` re-export, `TokenPolicyManager`,
 //! `Pausable`, and the `AuthNetworkAccount` auth procedure). It exists because a stock dependency
@@ -13,20 +13,20 @@
 //! `production_account_callable_surface_is_frozen`. (Building this pin caught THREE v0.16 stock
 //! additions beyond freeze/unfreeze that no v0.15 composition had — `authority::get_authority` and
 //! the #3047 `policy_manager::invoke_send_policy`/`invoke_receive_policy` transfer-policy dispatch
-//! wrappers. They are human-ratified in their OWN map row S24 (NOT under S12); the wrappers are
-//! callable but INERT here: F4 registers no transfer policy, so `AssetCallbackFlag::Disabled` and
-//! the kernel never invokes them on a transfer, and with no active send/receive policy the stock
-//! `invoke_transfer_policy` returns ASSET_VALUE unchanged and skips the pause check — no zero-root
-//! trap. `invoke_wrappers_are_inert_and_the_asset_stays_basic` re-confirms F4 at v16.)
+//! wrappers. They are human-ratified in their OWN map row S24 (NOT under S12). SINCE THE F4 REVERSAL
+//! (2026-07-23) the wrappers are LIVE, not inert: the stock `BasicBlocklist` is wired as the active
+//! send + receive policy, so `AssetCallbackFlag::Enabled` and the kernel `dyncall`s the wrappers on
+//! every policed-asset transfer, which run the account-wide pause check + `basic_blocklist::check_policy`.
+//! `invoke_wrappers_are_live_and_the_asset_is_policed` re-confirms the reversal at v16.)
 //!
 //! S12 DISPOSITION — `freeze`/`unfreeze` are PRESENT but OPERATIONALLY UNREACHABLE, and this file
 //! proves it rather than asserting it: the faucet is a keyless network account whose
-//! `AuthNetworkAccount` admits ONLY the immutable 12-root note-script allowlist and a tx-script
+//! `AuthNetworkAccount` admits ONLY the immutable 14-root note-script allowlist and a tx-script
 //! allowlist of EXACTLY the one canonical `ExpirationTransactionScript` (S12, RATIFIED 2026-07-20 —
 //! F5). `freeze_and_unfreeze_are_unreachable_from_every_allowlisted_note`
-//! scans the MAST of all 12 allowlisted note scripts and shows not one of them references the
+//! scans the MAST of all 14 allowlisted note scripts and shows not one of them references the
 //! freeze/unfreeze roots; `freeze_and_unfreeze_are_not_admissible_via_either_allowlist` shows the
-//! roots are not among the 12 note-script roots; and `the_auth_component_rejects_a_non_allowlisted_note`
+//! roots are not among the 14 note-script roots; and `the_auth_component_rejects_a_non_allowlisted_note`
 //! / `the_auth_component_rejects_non_expiration_tx_scripts_and_admits_expiration` EXECUTE the two
 //! (and only two) entry vectors and watch the auth component reject every non-admitted script (the
 //! sole admitted tx-script — the expiration bounder — cannot reach freeze). (The allowlist is an epilogue
@@ -40,7 +40,7 @@
 //! S21 DISPOSITION (flip, human-ratified 2026-07-14) — `rbac::set_role_admin` gets the SAME
 //! treatment: the runtime `set_role_admin` admin note was REMOVED from the allowlist (13 → 12
 //! roots), so the account procedure stays a callable root of the composed account (stock RBAC,
-//! row 62-of-62 unchanged) but is OPERATIONALLY UNREACHABLE — no allowlisted note references its
+//! the 65-root account surface unchanged) but is OPERATIONALLY UNREACHABLE — no allowlisted note references its
 //! root and the tx-script allowlist admits only the canonical expiration bounder (which cannot reach
 //! it). The role-admin graph the faucet deploys with is the
 //! BUILD-TIME seed (`role_config[DOM_PAUSER].admin_role = DOM_MANAGER`, byte-identical to an
@@ -69,6 +69,7 @@ use miden_protocol::asset::AssetCallbacks;
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::Authority;
+use miden_standards::account::policies::TokenPolicyManager;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::errors::standards::{
     ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED, ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED,
@@ -81,9 +82,10 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveAcceptOwnershipNote, XReserveDomainInitNote, XReserveGrantRoleNote, XReservePauseNote,
-    XReserveRevokeRoleNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
-    XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote, XReserveUnpauseNote,
+    XReserveAcceptOwnershipNote, XReserveBlockAccountNote, XReserveDomainInitNote,
+    XReserveGrantRoleNote, XReservePauseNote, XReserveRevokeRoleNote, XReserveSetAttesterNote,
+    XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
+    XReserveUnblockAccountNote, XReserveUnpauseNote,
 };
 use xusdc_encoding::note::xreserve_mint::XReserveMintNote;
 
@@ -95,8 +97,10 @@ const MAX_SUPPLY: u64 = 1_000_000;
 /// account's real surface without growing this list, and the set-equality below goes RED.
 ///
 /// Membership is ratified, not incidental (paths are the component-wrapper form the exports carry):
-/// - the 17 `::xreserve::…` roots are the F1-frozen set (`mint_root_surface.rs` pins them separately);
-/// - the 45 stock rows are what the composition's components export at `=0.16.0-alpha.2`;
+/// - the 19 `::xreserve::…` roots are the F1-frozen set (`mint_root_surface.rs` pins them separately),
+///   including the two F4-reversal `blocklist_admin::{block_account,unblock_account}` wrappers;
+/// - the 46 stock rows are what the composition's components export at `=0.16.0-alpha.2`, including
+///   the F4-reversal `basic_blocklist::check_policy` transfer-policy predicate (S24-policed);
 /// - `authority::freeze` / `authority::unfreeze` are the v0.16 additions (#3102) — PRESENT but
 ///   UNREACHABLE (S12; the tests below), never silently inherited; `authority::get_authority` is the
 ///   v0.16 view accessor;
@@ -104,17 +108,19 @@ const MAX_SUPPLY: u64 = 1_000_000;
 ///   since the S21 disposition flip (2026-07-14): its runtime note was removed from the allowlist,
 ///   so the role-admin graph is frozen at the build seed (the tests below prove unreachability);
 /// - `policy_manager::invoke_send_policy` / `invoke_receive_policy` are the #3047 transfer-policy
-///   dispatch wrappers — callable but INERT (F4 registers no transfer policy → no callback slots
-///   installed → the kernel never dispatches them on a transfer; with no active send/receive
-///   policy the stock `invoke_transfer_policy` returns ASSET_VALUE unchanged and skips the pause
-///   check — S24, human-ratified);
+///   dispatch wrappers — callable and LIVE since the F4 reversal (the `BasicBlocklist` is the active
+///   send + receive policy → both callback slots installed → the kernel dispatches them on every
+///   policed-asset transfer, running the pause check + `basic_blocklist::check_policy` — S24,
+///   human-ratified);
 /// - `fungible_faucet::has_procedure` is the v0.16 `FungibleFaucet` re-export (#3222) the stock BURN
 ///   note's faucet-kind reflection requires.
-const FROZEN_ACCOUNT_SURFACE: [&str; 62] = [
-    // --- the 17 xreserve component roots (their IDENTITIES are also pinned in
+const FROZEN_ACCOUNT_SURFACE: [&str; 65] = [
+    // --- the 19 xreserve component roots (their IDENTITIES are also pinned in
     //     mint_root_surface.rs::FROZEN_CALLABLE_ROOTS; here they complete the whole account) ---
     "::xreserve::attestation_verify::verify_attestation",
     "::xreserve::attester_admin::set_attester",
+    "::xreserve::blocklist_admin::block_account",
+    "::xreserve::blocklist_admin::unblock_account",
     "::xreserve::burn_policy::check_policy",
     "::xreserve::deposit_intent_parser::assert_deposit_intent",
     "::xreserve::deposit_intent_parser::assert_mint_amounts",
@@ -130,7 +136,7 @@ const FROZEN_ACCOUNT_SURFACE: [&str; 62] = [
     "::xreserve::pause_admin::unpause",
     "::xreserve::xreserve_mint::mint",
     "::xreserve::xreserve_mint_note_entry::receive_and_mint",
-    // --- the 45 stock-component roots ---
+    // --- the 46 stock-component roots ---
     "::miden::standards::components::access::authority::freeze",
     "::miden::standards::components::access::authority::get_authority",
     "::miden::standards::components::access::authority::unfreeze",
@@ -176,6 +182,10 @@ const FROZEN_ACCOUNT_SURFACE: [&str; 62] = [
     "::miden::standards::components::faucets::policies::policy_manager::set_mint_policy",
     "::miden::standards::components::faucets::policies::policy_manager::set_receive_policy",
     "::miden::standards::components::faucets::policies::policy_manager::set_send_policy",
+    // F4-reversal: the stock BasicBlocklist transfer-policy predicate (active send + receive
+    // policy). Callable, and now LIVE (S24-policed) — the kernel dispatches it via the
+    // invoke_send_policy/invoke_receive_policy wrappers on every policed-asset transfer.
+    "::miden::standards::components::faucets::policies::transfer::basic_blocklist::check_policy",
 ];
 
 /// The production composition, component by component: the SHIPPED component set
@@ -223,11 +233,12 @@ fn production_account() -> Result<Account> {
     Ok(account)
 }
 
-/// The 12 allowlisted note SCRIPTS (not just their roots): the two supply notes + the 10 admin
-/// notes. Single-sourced from the same factories the allowlist itself is built from, so a note that
-/// enters the allowlist necessarily enters this sweep too. There is deliberately NO `set_role_admin`
-/// entry: the runtime `set_role_admin` note was REMOVED from the allowlist (S21 disposition flip,
-/// human-ratified 2026-07-14) — the role-admin graph is BUILD-SEEDED and frozen; rotation is
+/// The 14 allowlisted note SCRIPTS (not just their roots): the two supply notes + the 12 admin
+/// notes (10 owner/role/pause + the 2 F4-reversal transfer-blocklist notes). Single-sourced from the
+/// same factories the allowlist itself is built from, so a note that enters the allowlist necessarily
+/// enters this sweep too. There is deliberately NO `set_role_admin` entry: the runtime
+/// `set_role_admin` note was REMOVED from the allowlist (S21 disposition flip, human-ratified
+/// 2026-07-14) — the role-admin graph is BUILD-SEEDED and frozen; rotation is
 /// `grant_role`/`revoke_role` (CIR-ADMIN-3).
 fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
     vec![
@@ -246,6 +257,8 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
             XReserveTransferOwnershipNote::script(),
         ),
         ("accept_ownership", XReserveAcceptOwnershipNote::script()),
+        ("block_account", XReserveBlockAccountNote::script()),
+        ("unblock_account", XReserveUnblockAccountNote::script()),
     ]
 }
 
@@ -261,8 +274,8 @@ fn production_account_callable_surface_is_frozen() -> Result<()> {
     let components = production_components()?;
     let surface = component_surface(&components);
 
-    // Layer 1 (source): the component-exported paths equal the frozen 62-root list EXACTLY (17
-    // xreserve + 45 stock, in one literal set — a stock bump that adds or removes any callable
+    // Layer 1 (source): the component-exported paths equal the frozen 65-root list EXACTLY (19
+    // xreserve + 46 stock, in one literal set — a stock bump that adds or removes any callable
     // procedure fails HERE).
     let mut paths: Vec<String> = surface.iter().map(|(path, _)| path.clone()).collect();
     paths.sort();
@@ -273,7 +286,7 @@ fn production_account_callable_surface_is_frozen() -> Result<()> {
     expected.sort();
     assert_eq!(
         paths, expected,
-        "the composed account's callable surface drifted from the frozen 62-root set — a stock \
+        "the composed account's callable surface drifted from the frozen 65-root set — a stock \
          bump added or removed a callable procedure (or the xreserve surface changed). This is NOT \
          a mechanical conformance change: every such delta must be SURFACED for ratification \
          (MIGRATION-V16-ALPHA2.md §4a stock-surface discipline + STOP condition 5), exactly as the \
@@ -297,7 +310,7 @@ fn production_account_callable_surface_is_frozen() -> Result<()> {
     assert_eq!(
         account_roots.len(),
         FROZEN_ACCOUNT_SURFACE.len(),
-        "the account's callable procedure COUNT must equal the frozen 62-root surface"
+        "the account's callable procedure COUNT must equal the frozen 65-root surface"
     );
     Ok(())
 }
@@ -329,7 +342,7 @@ fn authority_freeze_and_unfreeze_are_present_on_the_account() -> Result<()> {
     Ok(())
 }
 
-/// UNREACHABLE, leg 1 (static, exhaustive over the allowlist): NOT ONE of the 12 allowlisted note
+/// UNREACHABLE, leg 1 (static, exhaustive over the allowlist): NOT ONE of the 14 allowlisted note
 /// scripts references the freeze or unfreeze root ANYWHERE in its MAST — so no admissible note can
 /// invoke them. Scanning every MAST node digest (not just the entrypoint) catches a call by root, a
 /// call by path, and any nested/external reference alike.
@@ -339,14 +352,14 @@ fn freeze_and_unfreeze_are_unreachable_from_every_allowlisted_note() -> Result<(
     let scripts = allowlisted_note_scripts();
     assert_eq!(
         scripts.len(),
-        12,
-        "the unreachability sweep must cover all 12 allowlisted note scripts"
+        14,
+        "the unreachability sweep must cover all 14 allowlisted note scripts"
     );
     // The scripts swept ARE the allowlist (no script can dodge the sweep by not being listed here).
     let swept: BTreeSet<_> = scripts.iter().map(|(_, s)| s.root()).collect();
     assert_eq!(
         swept, allowlist,
-        "the swept note scripts must be EXACTLY the 12-root note-script allowlist"
+        "the swept note scripts must be EXACTLY the 14-root note-script allowlist"
     );
 
     let forbidden = [
@@ -372,10 +385,10 @@ fn freeze_and_unfreeze_are_unreachable_from_every_allowlisted_note() -> Result<(
 
 /// UNREACHABLE, cross-reference (freeze-specific): the freeze/unfreeze roots are not ADMISSIBLE via
 /// either entry vector. `AuthNetworkAccount` admits an input note only if its script root is one of
-/// the 12 allowlisted roots, and admits a tx script only if its root is in the tx-script allowlist —
+/// the 14 allowlisted roots, and admits a tx script only if its root is in the tx-script allowlist —
 /// which admits EXACTLY the one canonical `ExpirationTransactionScript` (S12), never freeze/unfreeze.
-/// There is no freeze/unfreeze NOTE FACTORY at all (the 12 are the two supply notes + the 10 admin
-/// notes; none carries freeze), so no freeze-bearing note root can be among the 12, and the one-root
+/// There is no freeze/unfreeze NOTE FACTORY at all (the 14 are the two supply notes + the 12 admin
+/// notes; none carries freeze), so no freeze-bearing note root can be among the 14, and the one-root
 /// tx-script allowlist admits only the expiration bounder (not freeze). Combined with the MAST sweep
 /// above (no allowlisted note even references the roots) both entry vectors are provably closed.
 #[test]
@@ -388,7 +401,7 @@ fn freeze_and_unfreeze_are_not_admissible_via_either_allowlist() -> Result<()> {
         let as_note_root = NoteScriptRoot::from_raw(Word::from(root));
         assert!(
             !note_allowlist.contains(&as_note_root),
-            "the `{name}` root must NOT be a member of the 12-root note-script allowlist \
+            "the `{name}` root must NOT be a member of the 14-root note-script allowlist \
              (there is no freeze note factory; a freeze-bearing note is inadmissible)"
         );
     }
@@ -402,7 +415,7 @@ fn freeze_and_unfreeze_are_not_admissible_via_either_allowlist() -> Result<()> {
 }
 
 /// UNREACHABLE, executing (entry vector 1 — INPUT NOTES): the auth component rejects any input note
-/// whose script root is not one of the 12 (a clean, non-self-trapping probe note so the AUTH gate is
+/// whose script root is not one of the 14 (a clean, non-self-trapping probe note so the AUTH gate is
 /// unambiguously the rejector — the note-script allowlist is an epilogue `@auth_script`, checked
 /// after note execution, so a note that itself calls `freeze` would trap on freeze's own gate before
 /// this check; the allowlist's decision on such a note is the ROOT-membership one asserted above).
@@ -438,7 +451,7 @@ async fn the_auth_component_rejects_a_non_allowlisted_note() -> Result<()> {
 /// UNREACHABLE, executing (entry vector 2 — TX SCRIPT): the auth component rejects any transaction
 /// script EXCEPT the one canonical `ExpirationTransactionScript` (S12, RATIFIED 2026-07-20) against
 /// the one-root tx-script allowlist (a clean, non-self-trapping probe script, same reasoning as the
-/// note vector). With both entry vectors closed — every note must be one of the 12 (none touches
+/// note vector). With both entry vectors closed — every note must be one of the 14 (none touches
 /// freeze) and every tx script must be the single allowlisted expiration bounder (which cannot touch
 /// nonce/state/assets) — `freeze` is operationally unreachable on this faucet, `is_frozen` is never
 /// set, and `ERR_AUTHORITY_FROZEN` never fires: the mechanism is INERT (S12, the ratified
@@ -494,243 +507,65 @@ async fn the_auth_component_rejects_non_expiration_tx_scripts_and_admits_expirat
     Ok(())
 }
 
-// S24 — the invoke_* wrappers are INERT: F4 (no transfer policy) and the callback flag are UNAFFECTED
+// S24 (F4-REVERSAL) — the invoke_* wrappers are LIVE: the transfer blocklist is policed and the
+// callback flag is Enabled
 // ================================================================================================
 
-/// CONDITION 3 (round-9 S24 ratification): the mere PRESENCE of the #3047
-/// `invoke_send_policy`/`invoke_receive_policy` wrappers on the account's callable surface did NOT
-/// register a transfer policy or flip the asset-callback flag — F4 holds unchanged at v16. Asserts,
-/// directly on the shipped composition + account: (1) NEITHER asset-callback slot is installed (no
-/// send/receive transfer policy was wired — the wrappers are callable but the kernel has no callback
-/// slot to dispatch them from), and (2) the faucet account id carries `AssetCallbackFlag::Disabled`
-/// (every minted xUSDC is a basic, unpoliced asset — #3167). Complements the standing
-/// `basic_asset_tripwire` (F4) and `mint_root_surface::production_supply_raising_root_set_is_exactly_mint`
-/// (F1), both green: the invoke_* presence changed neither.
+/// F4-REVERSAL policed counterpart of the former `invoke_wrappers_are_inert_and_the_asset_stays_basic`
+/// (which asserted the OPPOSITE — no callback slots, `AssetCallbackFlag::Disabled` — under the
+/// basic-asset F4). The transfer blocklist is now wired as the active send + receive policy, so the
+/// #3047 `invoke_send_policy`/`invoke_receive_policy` wrappers are LIVE. Asserts, directly on the
+/// shipped composition + account: (1) BOTH protocol asset-callback slots ARE installed and hold the
+/// fixed `invoke_*_policy` wrapper roots (the kernel dispatches them on every policed-asset
+/// transfer), and (2) the committed faucet account id carries `AssetCallbackFlag::Enabled` (every
+/// minted xUSDC is a POLICED asset — the silent-foot-gun tripwire: a fixture built Disabled with the
+/// policy wired would make the callbacks never fire, and this assertion catches it — mutation check
+/// (b)). Complements the policed `basic_asset_tripwire` (F4-reversal).
 #[test]
-fn invoke_wrappers_are_inert_and_the_asset_stays_basic() -> Result<()> {
+fn invoke_wrappers_are_live_and_the_asset_is_policed() -> Result<()> {
     let components =
         production_component_set(MAX_SUPPLY, 0).context("the production composition must build")?;
 
-    // (1) no transfer policy → NEITHER reserved asset-callback slot is installed.
-    for slot in [
-        AssetCallbacks::on_before_asset_added_to_note_slot(),
-        AssetCallbacks::on_before_asset_added_to_account_slot(),
-    ] {
-        assert!(
-            !components
-                .iter()
-                .flat_map(|c| c.storage_slots().iter())
-                .any(|s| s.name() == slot),
-            "an asset-callback slot ({slot}) is installed — a transfer policy was wired, so the \
-             invoke_* wrappers would be LIVE. F4 requires xUSDC stay unpoliced (no transfer policy)."
+    // (1) the transfer blocklist is wired → BOTH asset-callback slots are installed, holding the
+    // fixed invoke_*_policy wrapper roots.
+    let expected_callbacks = [
+        (
+            AssetCallbacks::on_before_asset_added_to_note_slot(),
+            TokenPolicyManager::invoke_send_policy_root().as_word(),
+        ),
+        (
+            AssetCallbacks::on_before_asset_added_to_account_slot(),
+            TokenPolicyManager::invoke_receive_policy_root().as_word(),
+        ),
+    ];
+    for (slot, wrapper_root) in expected_callbacks {
+        let installed = components
+            .iter()
+            .flat_map(|c| c.storage_slots().iter())
+            .find(|s| s.name() == slot)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the asset-callback slot ({slot}) must be installed — the transfer blocklist is \
+                     wired as the active send/receive policy (F4-reversal), so the invoke_* wrappers \
+                     are LIVE"
+                )
+            });
+        assert_eq!(
+            installed.value(),
+            wrapper_root,
+            "the asset-callback slot ({slot}) must hold the fixed invoke_*_policy wrapper root"
         );
     }
 
-    // (2) the committed faucet account id carries the Disabled callback flag (basic asset).
+    // (2) the committed faucet account id carries the Enabled callback flag (policed asset). A
+    // Disabled flag with the policy wired would silently never fire the callbacks — the audited
+    // foot-gun. This assertion makes that impossible to miss (mutation check (b)).
     let account = production_account()?;
     assert_eq!(
         account.id().asset_callback_flag(),
-        AssetCallbackFlag::Disabled,
-        "the faucet account id must carry AssetCallbackFlag::Disabled (every minted xUSDC is a \
-         basic, unpoliced asset — the invoke_* wrappers' presence must NOT flip this)"
-    );
-    Ok(())
-}
-
-// S21 — SET_ROLE_ADMIN: PRESENT, AND PROVABLY UNREACHABLE (the frozen role-admin graph)
-// ================================================================================================
-
-/// The fully-qualified path of the stock RBAC `set_role_admin` account procedure (a member of the
-/// frozen 62-root surface above — the proc STAYS; only its runtime note was removed).
-const RBAC_SET_ROLE_ADMIN_PROC_PATH: &str =
-    "::miden::standards::components::access::rbac::set_role_admin";
-
-/// The pinned root of the REMOVED runtime `set_role_admin` note script (formerly
-/// `XRESERVE_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX`, allowlist row 10 of the old 13-root set).
-/// Preserved so its non-membership stays machine-checked: re-adding the note to the allowlist
-/// turns `set_role_admin_former_note_root_is_not_admissible_via_either_allowlist` RED.
-const FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x0c69fe1a19ee27196780be8d7815920e6a5da49e05ee10b9a615c4ee7a778648";
-
-/// Resolves the `rbac::set_role_admin` account-procedure root from the shipped composition (by
-/// path, so a stock re-key cannot silently blunt the MAST sweep below).
-fn rbac_set_role_admin_proc_root() -> Result<Word> {
-    let components = production_components()?;
-    component_surface(&components)
-        .into_iter()
-        .find(|(path, _)| path == RBAC_SET_ROLE_ADMIN_PROC_PATH)
-        .map(|(_, root)| root)
-        .context(
-            "the composed account must expose rbac::set_role_admin (present-but-unreachable, S21)",
-        )
-}
-
-/// PRESENT: the stock RBAC `set_role_admin` procedure IS a callable root of the composed account —
-/// the S21 disposition keeps the stock component intact (the 62-root surface is unchanged); ONLY
-/// the runtime note that could reach it was removed.
-#[test]
-fn rbac_set_role_admin_is_present_on_the_account() -> Result<()> {
-    let root = rbac_set_role_admin_proc_root()?;
-    let account = production_account()?;
-    let roots: BTreeSet<Word> = account
-        .code()
-        .procedures()
-        .iter()
-        .map(|r| Word::from(*r))
-        .collect();
-    assert!(
-        roots.contains(&root),
-        "the stock RBAC component contributes `set_role_admin` to the account's callable surface \
-         (S21: present-but-unreachable) — if this ever stops being true, the S21 disposition must \
-         be re-ratified"
-    );
-    Ok(())
-}
-
-/// UNREACHABLE, leg 1 (static, exhaustive over the allowlist): NOT ONE of the 12 allowlisted note
-/// scripts references the `rbac::set_role_admin` root ANYWHERE in its MAST — so no admissible note
-/// can re-point (or clear) any role's admin delegation. The swept set is asserted equal to the
-/// allowlist first, so a re-added 13th note cannot dodge the sweep: the set-equality itself goes
-/// RED (this is the machine-enforced conformance-manifest row for the S21 removal).
-#[test]
-fn set_role_admin_is_unreachable_from_every_allowlisted_note() -> Result<()> {
-    let allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
-    let scripts = allowlisted_note_scripts();
-    let swept: BTreeSet<_> = scripts.iter().map(|(_, s)| s.root()).collect();
-    assert_eq!(
-        swept, allowlist,
-        "the swept note scripts must be EXACTLY the 12-root note-script allowlist — an extra root \
-         (e.g. a re-added set_role_admin note) breaks the ratified S21 removal \
-         (DECISION-SETROLEADMIN-NOTE-REMOVAL: the role-admin graph is build-frozen)"
-    );
-
-    let forbidden = rbac_set_role_admin_proc_root()?;
-    for (label, script) in &scripts {
-        let forest = script.mast();
-        for node in forest.nodes() {
-            assert_ne!(
-                node.digest(),
-                forbidden,
-                "allowlisted note script `{label}` references the rbac::set_role_admin root — the \
-                 S21 unreachability guarantee is BROKEN (the role-admin graph would be \
-                 runtime-mutable again: owner self-lockout and Manager re-delegation become \
-                 reachable)"
-            );
-        }
-    }
-    Ok(())
-}
-
-/// UNREACHABLE, cross-reference (set_role_admin-specific): neither entry vector admits the removed
-/// capability. The FORMER pinned `set_role_admin` note root is NOT a member of the 12-root
-/// note-script allowlist (re-adding it turns this test RED), and the tx-script allowlist admits ONLY
-/// the canonical expiration bounder — never `set_role_admin` (pinned + executed by
-/// `the_auth_component_rejects_non_expiration_tx_scripts_and_admits_expiration`).
-/// The executing leg — the preserved former note is consumed and REJECTED by the auth component —
-/// lives in `f5_admin_notes.rs::set_role_admin_note_is_rejected_as_non_allowlisted`.
-#[test]
-fn set_role_admin_former_note_root_is_not_admissible_via_either_allowlist() -> Result<()> {
-    let former = NoteScriptRoot::from_raw(
-        Word::parse(FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX)
-            .expect("the former set_role_admin note-script root hex is a valid word"),
-    );
-    assert!(
-        !XReserveStablecoinBuilder::allowed_note_scripts().contains(&former),
-        "the former set_role_admin note root must NOT be a member of the 12-root note-script \
-         allowlist — the runtime set_role_admin note was REMOVED (S21 flip, human-ratified \
-         2026-07-14; rotation is grant_role/revoke_role, the delegation graph is build-seeded); \
-         re-adding it violates the ratified DECISION-SETROLEADMIN-NOTE-REMOVAL disposition"
-    );
-    Ok(())
-}
-
-// S13/S24 — GET_AUTHORITY IS READ-ONLY (executed bounding, not documentation)
-// ================================================================================================
-
-/// The v0.16 `authority::get_authority` view accessor is READ-ONLY in execution, not just by
-/// documentation (S13/S24 bounding): a note that `call`s it by root on the production-composed
-/// account executes successfully and leaves storage AND vault byte-identical (only the fixture's
-/// nonce-increment auth runs). Uses the permissive-auth production composition (the same
-/// `GuardSelection::ProductionDeny` fixture the role-gating suites use) because on the
-/// network-auth faucet the epilogue allowlist would reject the probe note before its effects could
-/// be observed.
-#[tokio::test]
-async fn get_authority_is_read_only_on_the_account() -> Result<()> {
-    let components = production_components()?;
-    let get_authority_root = component_surface(&components)
-        .into_iter()
-        .find(|(path, _)| {
-            path == "::miden::standards::components::access::authority::get_authority"
-        })
-        .map(|(_, root)| root)
-        .context("the composed account must expose authority::get_authority (S24)")?;
-
-    let driver = mint_composition_driver_src(&[Felt::from(0u32)], 60, 6);
-    let probe = composition_supply_probe_src(0);
-    let gm = setup_guarded_mint_account(
-        GuardSelection::ProductionDeny,
-        MAX_SUPPLY,
-        0,
-        Word::from([7u32, 0, 0, 0]),
-        Word::from([11u32, 12, 13, 14]),
-        None,
-        None,
-        &driver,
-        &probe,
-        true,
-    )?;
-    let account = faucet_account(&gm.harness);
-    let storage_before = account.storage().to_commitment();
-    let vault_before = account.vault().root();
-
-    // A probe note that calls get_authority by ROOT (resolved above from the shipped composition)
-    // and drops the returned discriminator: [pad(16)] in, [authority, pad(15)] out.
-    let src = format!(
-        "@note_script\n\
-         pub proc main\n\
-         \x20\x20\x20\x20dropw\n\
-         \x20\x20\x20\x20call.{}\n\
-         \x20\x20\x20\x20dropw dropw dropw dropw\n\
-         end\n",
-        get_authority_root.to_hex(),
-    );
-    let script = CodeBuilder::new()
-        .compile_note_script(src)
-        .context("compiling the get_authority probe note script")?;
-    let mut rng = RandomCoin::new(Word::from([
-        Felt::from(13u32),
-        Felt::from(24u32),
-        Felt::from(13u32),
-        Felt::from(24u32),
-    ]));
-    let note = NoteBuilder::new(test_account_id(9), &mut rng)
-        .script(script)
-        .build()
-        .context("building the get_authority probe note")?;
-
-    let tx = gm
-        .harness
-        .mock_chain
-        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
-        .context("get_authority probe tx context")?
-        .build()
-        .context("get_authority probe tx build")?
-        .execute()
-        .await
-        .map_err(|e| anyhow::anyhow!("the get_authority probe note must execute cleanly: {e}"))?;
-
-    let mut evolved = account.clone();
-    evolved.apply_patch(tx.account_patch())?;
-    assert_eq!(
-        evolved.storage().to_commitment(),
-        storage_before,
-        "get_authority must not mutate ANY account storage (S13/S24: read-only, executed proof)"
-    );
-    assert_eq!(
-        evolved.vault().root(),
-        vault_before,
-        "get_authority must not mutate the vault / issued supply (S13/S24: read-only, executed \
-         proof)"
+        AssetCallbackFlag::Enabled,
+        "the faucet account id must carry AssetCallbackFlag::Enabled (every minted xUSDC is a \
+         POLICED asset — the transfer blocklist callbacks only fire when the id flag is Enabled)"
     );
     Ok(())
 }

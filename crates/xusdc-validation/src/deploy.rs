@@ -10,7 +10,7 @@
 //! - `XReserveStablecoinBuilder::build_components()` (deny-guard mint policy, burn policy,
 //!   Ownable2Step owner, seeded DOM roles, OwnerControlled authority);
 //! - finalized for deploy with `AccountBuilder::with_auth_component(auth_component())` — the
-//!   stock `AuthNetworkAccount` under the frozen 12-root note allowlist + the single-root tx-script
+//!   stock `AuthNetworkAccount` under the frozen 14-root note allowlist + the single-root tx-script
 //!   allowlist (the S12 `ExpirationTransactionScript` root; v16 no longer ships an EMPTY tx-script
 //!   allowlist — MIGRATION-V16-ALPHA2.md. The runtime `set_role_admin` note was removed — S21
 //!   flip, 2026-07-14).
@@ -25,8 +25,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::account::{
-    Account, AccountBuilder, AccountComponent, AccountId, AccountType, StorageMap, StorageSlot,
-    StorageSlotName,
+    Account, AccountBuilder, AccountComponent, AccountId, AccountType, AssetCallbackFlag,
+    StorageMap, StorageSlot, StorageSlotName,
 };
 use miden_protocol::assembly::{Linkage, Path as MasmPath};
 use miden_protocol::asset::{AssetAmount, TokenSymbol};
@@ -128,6 +128,7 @@ pub fn production_components(
     owner: AccountId,
     pauser: AccountId,
     manager: AccountId,
+    blk_manager: AccountId,
     max_supply: u64,
 ) -> Result<Vec<AccountComponent>> {
     let faucet = FungibleFaucet::builder()
@@ -140,27 +141,47 @@ pub fn production_components(
         .build()
         .context("building the FungibleFaucet component")?;
 
-    XReserveStablecoinBuilder::new(faucet, xreserve_component, owner, pauser, manager)
-        .build_components()
-        .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))
+    XReserveStablecoinBuilder::new(
+        faucet,
+        xreserve_component,
+        owner,
+        pauser,
+        manager,
+        blk_manager,
+    )
+    .build_components()
+    .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))
 }
 
 /// Builds the deployable production faucet `Account` (new, nonce 0, seed embedded) under the
 /// frozen `AuthNetworkAccount` auth component, using `init_seed` for the account-id derivation.
+/// The account id is created `AssetCallbackFlag::Enabled` (F4-reversal): the transfer blocklist is
+/// wired as the active send + receive policy, so the kernel dispatches the policy callbacks on every
+/// transfer — a REQUIREMENT that is an immutable property of the account id (building Disabled would
+/// silently disable the callbacks, the audited foot-gun).
 pub fn build_faucet_account(
     owner: AccountId,
     pauser: AccountId,
     manager: AccountId,
+    blk_manager: AccountId,
     max_supply: u64,
     init_seed: [u8; 32],
 ) -> Result<Account> {
     let xreserve_component = build_xreserve_component()?;
-    let components = production_components(xreserve_component, owner, pauser, manager, max_supply)?;
+    let components = production_components(
+        xreserve_component,
+        owner,
+        pauser,
+        manager,
+        blk_manager,
+        max_supply,
+    )?;
     let auth = XReserveStablecoinBuilder::auth_component()
         .map_err(|e| anyhow::anyhow!("building the frozen AuthNetworkAccount component: {e}"))?;
 
     AccountBuilder::new(init_seed)
         .account_type(AccountType::Public)
+        .with_asset_callbacks(AssetCallbackFlag::Enabled)
         .with_auth_component(auth)
         .with_components(components)
         .build_with_schema_commitment()

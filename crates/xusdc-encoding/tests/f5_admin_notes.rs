@@ -34,9 +34,10 @@ use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveAcceptOwnershipNote, XReserveDomainInitNote, XReserveGrantRoleNote, XReservePauseNote,
-    XReserveRevokeRoleNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
-    XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote, XReserveUnpauseNote,
+    XReserveAcceptOwnershipNote, XReserveBlockAccountNote, XReserveDomainInitNote,
+    XReserveGrantRoleNote, XReservePauseNote, XReserveRevokeRoleNote, XReserveSetAttesterNote,
+    XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
+    XReserveUnblockAccountNote, XReserveUnpauseNote,
 };
 
 /// The exact stock role error the DOM_PAUSER gate traps (rbac.masm:50 ERR_SENDER_LACKS_ROLE).
@@ -628,6 +629,33 @@ fn pause_note_script_root_is_pinned() {
         root,
         XReservePauseNote::pinned_script_root(),
         "masm-rust-constant-parity: pause note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
+    );
+}
+
+/// masm-rust-constant-parity for the F4-reversal block_account note (allowlist row 13). Binds
+/// transitively to `blocklist_admin::block_account`'s digest — any edit of the note or the proc it
+/// calls trips this and forces a conscious re-pin.
+#[test]
+fn block_account_note_script_root_is_pinned() {
+    let root = XReserveBlockAccountNote::script_root();
+    assert_eq!(
+        root,
+        XReserveBlockAccountNote::pinned_script_root(),
+        "masm-rust-constant-parity: block_account note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
+    );
+}
+
+/// masm-rust-constant-parity for the F4-reversal unblock_account note (allowlist row 14). Binds
+/// transitively to `blocklist_admin::unblock_account`'s digest.
+#[test]
+fn unblock_account_note_script_root_is_pinned() {
+    let root = XReserveUnblockAccountNote::script_root();
+    assert_eq!(
+        root,
+        XReserveUnblockAccountNote::pinned_script_root(),
+        "masm-rust-constant-parity: unblock_account note-script root == the pinned constant (actual = {})",
         root.to_hex(),
     );
 }

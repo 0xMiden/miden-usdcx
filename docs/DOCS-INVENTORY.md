@@ -29,6 +29,13 @@ are out of scope and are not listed.
 | `reconciliation/V16-DOC-DELTA.md` | KEEP (new) | The doc/comment reconciliation record: per-S-row greps, every corrected prose site, every verified-current adjudication. |
 | `reconciliation/CDR-RECONCILIATION-REPORT.md` | KEEP (new) | The consolidated CDR verdict (CDR-1/2/3 roll-up, NEEDS-HUMAN items, residual risk). |
 
+## Decision records (`docs/`)
+
+| Doc | Disposition | Notes |
+|---|---|---|
+| `DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md` | KEEP (new) | The F4-reversal decision record: wiring the stock v0.16 `BasicBlocklist` as the active send+receive policy + the dedicated external `BLK_MANAGER` role. Carries the human ratification table (the materialized 14 note-script roots, the 65-root callable surface delta, the allowed-maps, the BLK_MANAGER role row + felt, the module-registration rows MOD-1/2, the Enabled-flag statement) and the follow-up checklist. Supersedes the (unmaterialized) `DECISION-F4-BASIC-ASSET-NO-TRANSFER-POLICY.md`; provenance is an in-repo summary of the adversarially-audited research pass (no outside path). |
+| `CIRCLE-SEMANTICS-TRANSFER-BLOCKLIST.md` | KEEP (new) | The Circle-facing plain-language semantics note (for Q-BLK-1 confirmation): blocked = full freeze incl. redemption; mint/transfer to a blocked recipient strands at consume (stock P2ID has NO sender reclaim — recovery is by unblocking); pause = chain-wide transfer freeze; the external BLK_MANAGER admin; the client-side foreign-account coupling. |
+
 ## Governing (`docs/governing/`)
 
 These are the conventions, pins, and grounding the code is built against; several are referenced by

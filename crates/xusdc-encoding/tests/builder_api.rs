@@ -128,6 +128,7 @@ async fn build_produces_deny_active_public_faucet() -> Result<()> {
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .build_components();
     assert!(
@@ -174,6 +175,7 @@ fn build_rejects_non_public_account_type() -> Result<()> {
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .account_type(AccountType::Private)
     .build_components()
@@ -199,6 +201,7 @@ fn build_rejects_missing_mint_deny_guard() -> Result<()> {
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .with_active_mint_policy(MintPolicy::allow_all())
     .build_components()
@@ -224,6 +227,7 @@ fn denies_non_policy_burn() -> Result<()> {
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .with_active_burn_policy(BurnPolicy::allow_all())
     .build_components();
@@ -254,6 +258,7 @@ fn build_rejects_immutable_max_supply() -> Result<()> {
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .build_components()
     .expect_err("an immutable-max-supply faucet must be rejected at build time");
@@ -291,6 +296,7 @@ fn production_seeds_min_burn_size() -> Result<()> {
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .min_burn_size(MIN_BURN)
     .build_components()
@@ -336,6 +342,7 @@ fn build_rejects_min_burn_size_exceeding_max() -> Result<()> {
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .min_burn_size(over_max)
     .build_components()
@@ -364,6 +371,7 @@ fn builder_installs_no_stock_pause_manager() -> Result<()> {
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .build_components()
     .context("production build_components must compose")?;
@@ -406,6 +414,7 @@ fn production_components_carry_is_paused_slot() -> Result<()> {
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .build_components()
     .context("production build_components must compose")?;
@@ -441,6 +450,7 @@ fn production_components_carry_mutability_config_slot() -> Result<()> {
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .build_components()
     .context("production build_components must compose")?;
@@ -500,6 +510,7 @@ fn build_rejects_missing_xreserve_slot(#[case] omitted: usize) -> Result<()> {
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .build_components()
     .expect_err("a component missing a required xreserve slot must be rejected at build time");
@@ -526,6 +537,7 @@ fn build_rejects_wrong_decimals() -> Result<()> {
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .build_components()
     .expect_err("a faucet with decimals != 6 must be rejected at build time");
@@ -552,6 +564,7 @@ fn build_rejects_wrong_token_symbol() -> Result<()> {
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .build_components()
     .expect_err("a faucet whose symbol is not the shipped USDCX must be rejected at build time");
@@ -584,6 +597,7 @@ fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> 
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     )
     .build_components()
     .context("the production composition must build")?;
@@ -623,6 +637,7 @@ fn seam_rejects_a_smuggled_foreign_policy_companion() -> Result<()> {
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
+        test_account_id(4),
     );
     let deny_root = builder
         .mint_deny_guard_root()
@@ -642,17 +657,24 @@ fn seam_rejects_a_smuggled_foreign_policy_companion() -> Result<()> {
         .with_active_mint_policy(smuggling_policy)
         .build_components()
         .expect_err("a policy companion that is not the installed xreserve component must reject");
+    // With the F4-reversal transfer blocklist wired, the manager's companion remainder is the two
+    // recognized xreserve copies (mint + burn) + one recognized BasicBlocklist companion; the
+    // smuggled foreign PausableManager rides in via the mint policy, so `found` is 4 with only 3
+    // recognized — the foreign is visible as `found > xreserve_recognized + blocklist_recognized`.
     assert!(
         matches!(
             err,
             XReserveStablecoinBuilderError::PolicyCompanionMismatch {
-                expected: 2,
-                found: 3,
-                recognized: 2,
+                expected_xreserve: 2,
+                expected_blocklist: 1,
+                found: 4,
+                xreserve_recognized: 2,
+                blocklist_recognized: 1,
             }
         ),
-        "expected PolicyCompanionMismatch{{expected:2, found:3, recognized:2}} (the foreign \
-         companion must be visible as found > recognized), got {err:?}"
+        "expected PolicyCompanionMismatch{{expected_xreserve:2, expected_blocklist:1, found:4, \
+         xreserve_recognized:2, blocklist_recognized:1}} (the foreign companion must be visible as \
+         found > xreserve_recognized + blocklist_recognized), got {err:?}"
     );
     Ok(())
 }

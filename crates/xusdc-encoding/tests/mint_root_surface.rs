@@ -43,13 +43,18 @@ use support::*;
 /// `receive_and_mint` note-entry transport shim = 17 — the account-side proc the production
 /// `XReserveMintNote` script `call`s; it only stages the preimage, hash-verifies + surfaces the
 /// attestation attachment, and `exec`s `mint` (no storage writes, no supply arithmetic; policed by
-/// the tree-wide supply write-integrity sweep). `apply_mint_effects` and
-/// `extract_recipient_account_id` are ABSENT (demoted to same-module `exec`-only). Any drift (a new
-/// export, i.e. a new supply door) trips `production_supply_raising_root_set_is_exactly_mint`.
+/// the tree-wide supply write-integrity sweep). Plus (F4-reversal, CONSCIOUS registrations) the two
+/// `blocklist_admin::{block_account,unblock_account}` BLK_MANAGER-gated wrapper procs = 19. Neither
+/// raises supply (both only write the `blocked_accounts` map behind a role gate).
+/// `apply_mint_effects` and `extract_recipient_account_id` are ABSENT (demoted to same-module
+/// `exec`-only). Any drift (a new export, i.e. a new supply door) trips
+/// `production_supply_raising_root_set_is_exactly_mint`.
 /// Paths render absolute (leading `::`) at assembler 0.23.3.
-const FROZEN_CALLABLE_ROOTS: [&str; 17] = [
+const FROZEN_CALLABLE_ROOTS: [&str; 19] = [
     "::xreserve::attestation_verify::verify_attestation",
     "::xreserve::attester_admin::set_attester",
+    "::xreserve::blocklist_admin::block_account",
+    "::xreserve::blocklist_admin::unblock_account",
     "::xreserve::burn_policy::check_policy",
     "::xreserve::deposit_intent_parser::assert_deposit_intent",
     "::xreserve::deposit_intent_parser::assert_mint_amounts",
@@ -254,7 +259,7 @@ fn production_supply_raising_root_set_is_exactly_mint() -> Result<()> {
         "extract_recipient_account_id must NOT be a callable account root (L1)"
     );
 
-    // Frozen tripwire, source layer: the exported-proc set is EXACTLY the 17 sanctioned roots.
+    // Frozen tripwire, source layer: the exported-proc set is EXACTLY the 19 sanctioned roots.
     let lib: &miden_protocol::assembly::Library = xreserve.component_code().as_ref();
     let mut paths: Vec<String> = lib
         .manifest
@@ -295,7 +300,7 @@ fn production_supply_raising_root_set_is_exactly_mint() -> Result<()> {
         .collect();
     assert_eq!(
         callable, frozen_roots,
-        "the FILTERED account-interface root set (@account_procedure) must equal the 17 frozen \
+        "the FILTERED account-interface root set (@account_procedure) must equal the 19 frozen \
          roots exactly — a missing annotation drops a sanctioned proc from the account, an extra \
          one opens an unsanctioned callable root"
     );

@@ -1076,11 +1076,13 @@ fn synthetic_deployed_faucet(domain: &DomainParams) -> Result<Account> {
         wallet_id(1),
         wallet_id(2),
         wallet_id(3),
+        wallet_id(4),
         MAX_SUPPLY,
     )?;
     let auth = XReserveStablecoinBuilder::auth_component()?;
     let account = AccountBuilder::new([7u8; 32])
         .account_type(AccountType::Public)
+        .with_asset_callbacks(AssetCallbackFlag::Enabled)
         .with_auth_component(auth)
         .with_components(components)
         .build_existing()?;

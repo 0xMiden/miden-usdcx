@@ -43,9 +43,10 @@ pub const ERR_BURN_BELOW_MIN: &str = "burn amount is below the minimum burn size
 /// R-BURN-3 / the stock pause gate (`pausable::assert_not_paused`, `ERR_PAUSABLE_IS_PAUSED`): the
 /// faucet is paused, so `execute_burn_policy` halts the burn before the policy runs.
 pub const ERR_PAUSED: &str = "the contract is paused";
-/// The stock kernel fungible-asset origin gate (`fungible_asset::validate_origin`,
-/// `ERR_FUNGIBLE_ASSET_FAUCET_IS_NOT_ORIGIN`): the burned asset was not issued by this faucet, so
-/// `faucet::burn` traps — a faucet can only burn its own token.
+/// The stock kernel asset origin gate (`asset::validate_origin`, `ERR_FAUCET_IS_NOT_ASSET_ORIGIN`;
+/// v16 faucet.masm:72 — v15 routed through `fungible_asset::validate_origin` instead): the burned
+/// asset was not issued by this faucet, so `faucet::burn` traps — a faucet can only burn its own
+/// token.
 pub const ERR_WRONG_ASSET_ORIGIN: &str = "the faucet is not the origin of the asset";
 
 // SHARED CHECK HELPERS

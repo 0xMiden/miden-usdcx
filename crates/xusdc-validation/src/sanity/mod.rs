@@ -507,6 +507,7 @@ async fn deploy_fresh_faucet(hc: &mut HarnessClient, actors: &Actors) -> Result<
         owner_id,
         actors.pauser.id(),
         actors.manager.id(),
+        actors.blk_manager.id(),
         DEPLOY_MAX_SUPPLY,
         os_seed(),
     )?;

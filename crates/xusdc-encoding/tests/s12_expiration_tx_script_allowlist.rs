@@ -10,7 +10,7 @@
 //! Invariant (three checks):
 //! - the auth component's tx-script allowlist slot carries EXACTLY `{ script_root() }` (the "only"
 //!   property — extra or missing = RED);
-//! - the note-script allowlist slot is UNCHANGED — still 12 non-empty roots (S12 must not touch it);
+//! - the note-script allowlist slot is UNCHANGED by S12 — 14 non-empty roots (S12 must not touch it);
 //! - on-chain enforcement: the canonical expiration script is ADMITTED and executes, while an
 //!   arbitrary (nop) tx-script is REJECTED with `ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED`.
 
@@ -74,7 +74,8 @@ fn auth_component_tx_script_allowlist_is_exactly_the_expiration_root() -> Result
     Ok(())
 }
 
-/// S12 must NOT touch the note-script allowlist: the note slot still carries the frozen 12 roots.
+/// S12 must NOT touch the note-script allowlist: the note slot still carries the frozen 14 roots
+/// (12 owner/role/pause + the 2 F4-reversal transfer-blocklist notes).
 #[test]
 fn auth_component_note_script_allowlist_is_untouched_by_s12() -> Result<()> {
     let component: AccountComponent = XReserveStablecoinBuilder::auth_component()
@@ -84,11 +85,11 @@ fn auth_component_note_script_allowlist_is_untouched_by_s12() -> Result<()> {
     let note_keys = allowlisted_keys(&component, AuthNetworkAccount::allowed_note_scripts_slot());
     assert_eq!(
         note_keys.len(),
-        12,
-        "S12 must leave the note-script allowlist at EXACTLY the frozen 12 roots; found {}",
+        14,
+        "S12 must leave the note-script allowlist at EXACTLY the frozen 14 roots; found {}",
         note_keys.len(),
     );
-    // The exact-12-root set (source + on-chain) is pinned by f5; here we only prove S12 did not
+    // The exact-14-root set (source + on-chain) is pinned by f5; here we only prove S12 did not
     // add/remove a note root while flipping the tx-script allowlist.
     Ok(())
 }

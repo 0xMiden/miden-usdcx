@@ -1,20 +1,23 @@
-//! Basic-asset tripwire — locks in the human decision (2026-07-08) that xUSDC ships as a
-//! BASIC, transfer-free fungible asset: the production faucet composition registers NO send/receive
-//! transfer policy, so minted xUSDC carries `AssetCallbackFlag::Disabled` and holder-to-holder
-//! transfers are unpoliced — behaviourally identical to Circle's reference `USDCx.sol`.
+//! Policed-asset tripwire (F4 REVERSAL, human-ratified 2026-07-23) — locks in the decision that
+//! xUSDC ships as a POLICED fungible asset carrying the stock `BasicBlocklist` as the ACTIVE send AND
+//! receive transfer policy (one root, both kinds, empty initial blocklist). This SUPERSEDES the former
+//! basic-asset tripwire (which asserted the OPPOSITE: no transfer policy, `AssetCallbackFlag::Disabled`
+//! — the 2026-07-08 decision reversed here; see `DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md`).
 //!
-//! This test is GREEN on the shipped build and flips RED the moment anyone wires a transfer policy
-//! (`with_send_policy` / `with_receive_policy`, Active OR Reserved) into `build_components`.
-//! Registering a policy would (a) insert its root into an `allowed_{send,receive}_policy_proc_roots`
-//! map and (b) install the protocol asset-callback slots — this test asserts BOTH are absent, so
-//! either facet of a wire trips it. It is the executable half of the decision; the prose half
-//! is the `build_components` comment in `builder.rs`.
+//! This test is GREEN on the shipped (policed) build and flips RED the moment anyone un-wires the
+//! transfer blocklist (drops `active_send_policy`/`active_receive_policy` from `build_components`).
+//! Un-wiring would (a) empty the `allowed_{send,receive}_policy_proc_roots` maps and (b) drop the
+//! protocol asset-callback slots — this test asserts BOTH are present (with exactly the one blocklist
+//! root, and holding the wrapper roots), so either facet of an un-wire trips it. It is the executable
+//! half of the reversal; the prose half is the `build_components` comment in `builder.rs`. The
+//! Enabled-flag half of the invariant is proven on the BUILT account by
+//! `account_callable_surface::invoke_wrappers_are_live_and_the_asset_is_policed`.
 //!
-//! Why absence-of-callback-slots proves callback-DISABLED minting: `faucet::has_callbacks`
-//! (protocol `faucet.masm`) returns 1 only when a callback storage slot is present AND non-empty;
-//! with no transfer policy the manager omits those slots entirely, so `create_fungible_asset`
-//! stamps `AssetCallbackFlag::Disabled` on every minted asset — no foreign-account (FPI) dispatch on
-//! any transfer/consume.
+//! Why callback-slots-present proves callback-ENABLED minting: `faucet::has_callbacks` (protocol
+//! `faucet.masm`) returns 1 only when a callback storage slot is present AND non-empty; with the
+//! transfer policy wired the manager installs those slots holding the `invoke_*_policy` wrapper
+//! roots, so `create_fungible_asset` stamps `AssetCallbackFlag::Enabled` on every minted asset (given
+//! the account id is Enabled) and the kernel dispatches the policy on transfer/consume (FPI).
 
 mod support;
 
@@ -23,7 +26,8 @@ use miden_protocol::account::{
     AccountComponent, StorageMap, StorageSlot, StorageSlotContent, StorageSlotName,
 };
 use miden_protocol::asset::AssetCallbacks;
-use miden_standards::account::policies::TokenPolicyManager;
+use miden_protocol::Word;
+use miden_standards::account::policies::{BasicBlocklist, TokenPolicyManager};
 use support::production_component_set;
 
 const MAX_SUPPLY: u64 = 1_000_000;
@@ -53,52 +57,82 @@ fn map_slot<'a>(
     }
 }
 
-/// TRIPWIRE: the production faucet composition registers NO transfer policy — neither the
-/// `allowed_{send,receive}_policy_proc_roots` maps carry a root, nor are the protocol
-/// asset-callback slots installed. Wiring any send/receive policy (Active or Reserved) flips this
-/// RED. Do not "fix" it by adding a policy — read the module docs and the decision record.
+/// The value of a value slot named `name`, if present.
+fn value_slot(components: &[AccountComponent], name: &StorageSlotName) -> Result<Word> {
+    let slot = find_slot(components, name)
+        .with_context(|| format!("the policy manager must register the '{name}' slot"))?;
+    match slot.content() {
+        StorageSlotContent::Value(v) => Ok(*v),
+        StorageSlotContent::Map(_) => anyhow::bail!("'{name}' must be a VALUE slot"),
+    }
+}
+
+/// TRIPWIRE: the production faucet composition wires the stock `BasicBlocklist` as the ACTIVE send AND
+/// receive transfer policy — the `allowed_{send,receive}_policy_proc_roots` maps carry EXACTLY the
+/// one blocklist root, the active send/receive policy slots hold that same root, and BOTH protocol
+/// asset-callback slots are installed holding the `invoke_*_policy` wrapper roots. Un-wiring the
+/// blocklist flips this RED. Do not "fix" it by dropping the policy — read the module docs and the
+/// decision record.
 #[test]
-fn production_build_registers_no_transfer_policy() -> Result<()> {
+fn production_build_wires_the_transfer_blocklist() -> Result<()> {
     let components = production_component_set(MAX_SUPPLY, 0)?;
+    let blocklist_root = BasicBlocklist::root().as_word();
 
-    // (1) No send/receive transfer policy is registered: the allowed-roots maps are EMPTY. A wire —
-    // even a Reserved one that never becomes active — inserts its root here.
-    let send = map_slot(
-        &components,
-        TokenPolicyManager::allowed_send_policies_slot(),
-    )?;
-    let receive = map_slot(
-        &components,
-        TokenPolicyManager::allowed_receive_policies_slot(),
-    )?;
-    assert_eq!(
-        send.num_entries(),
-        0,
-        "a SEND transfer policy has been wired into build_components — xUSDC must ship transfer-free \
-         (basic asset). See F4 / IMPL-DEV-20 in docs/spec/GLOSSARY.md before changing this."
-    );
-    assert_eq!(
-        receive.num_entries(),
-        0,
-        "a RECEIVE transfer policy has been wired into build_components — xUSDC must ship \
-         transfer-free (basic asset). See F4 / IMPL-DEV-20 in docs/spec/GLOSSARY.md."
-    );
+    // (1) the send + receive transfer policy is registered: each allowed-roots map carries EXACTLY
+    // the one blocklist root. Un-wiring the policy empties these.
+    for (name, kind) in [
+        (TokenPolicyManager::allowed_send_policies_slot(), "SEND"),
+        (
+            TokenPolicyManager::allowed_receive_policies_slot(),
+            "RECEIVE",
+        ),
+    ] {
+        let map = map_slot(&components, name)?;
+        assert_eq!(
+            map.num_entries(),
+            1,
+            "the {kind} allowed-policy map must carry EXACTLY the one BasicBlocklist root — the \
+             transfer blocklist must be wired (F4-reversal). See DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md."
+        );
+    }
 
-    // (2) No protocol asset-callback slots are installed → `faucet::has_callbacks` returns 0 → every
-    // minted xUSDC carries AssetCallbackFlag::Disabled (no FPI dispatch on transfer/consume).
-    assert!(
-        find_slot(&components, AssetCallbacks::on_before_asset_added_to_note_slot()).is_none(),
-        "the on_before_asset_added_to_note callback slot is installed — a transfer policy was wired; \
-         minted xUSDC would be a POLICED asset. xUSDC must stay callback-disabled (basic asset)."
-    );
-    assert!(
-        find_slot(
-            &components,
-            AssetCallbacks::on_before_asset_added_to_account_slot()
-        )
-        .is_none(),
-        "the on_before_asset_added_to_account callback slot is installed — a transfer policy was \
-         wired; minted xUSDC would be a POLICED asset. xUSDC must stay callback-disabled."
-    );
+    // (2) the active send + receive policy slots hold the BasicBlocklist root (both kinds share the
+    // one descriptor root, so the companion installs once).
+    for (name, kind) in [
+        (TokenPolicyManager::active_send_policy_slot(), "SEND"),
+        (TokenPolicyManager::active_receive_policy_slot(), "RECEIVE"),
+    ] {
+        assert_eq!(
+            value_slot(&components, name)?,
+            blocklist_root,
+            "the active {kind} policy slot must resolve to the BasicBlocklist root"
+        );
+    }
+
+    // (3) both protocol asset-callback slots are installed, holding the fixed invoke_*_policy wrapper
+    // roots → `faucet::has_callbacks` returns 1 → minted xUSDC is a POLICED asset (FPI dispatch on
+    // transfer/consume). Un-wiring the policy drops these slots.
+    for (slot, wrapper_root) in [
+        (
+            AssetCallbacks::on_before_asset_added_to_note_slot(),
+            TokenPolicyManager::invoke_send_policy_root().as_word(),
+        ),
+        (
+            AssetCallbacks::on_before_asset_added_to_account_slot(),
+            TokenPolicyManager::invoke_receive_policy_root().as_word(),
+        ),
+    ] {
+        let installed = find_slot(&components, slot).with_context(|| {
+            format!(
+                "the {slot} asset-callback slot must be installed — the transfer blocklist is wired \
+                 (F4-reversal), so minted xUSDC is a POLICED asset"
+            )
+        })?;
+        assert_eq!(
+            installed.value(),
+            wrapper_root,
+            "the {slot} callback slot must hold the fixed invoke_*_policy wrapper root"
+        );
+    }
     Ok(())
 }

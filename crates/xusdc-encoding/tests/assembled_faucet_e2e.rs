@@ -189,7 +189,8 @@ fn committed(chain: &MockChain, id: AccountId) -> Result<Account> {
 }
 
 /// Consumes a COMMITTED note (by id) with `account` as the executing/consuming account — the
-/// recipient's P2ID consume and the faucet's `receive_and_burn` consume both ride this.
+/// faucet's own `receive_and_burn` consume rides this (the faucet is the native account, so no
+/// foreign attachment is needed; the stock burn flow fires no receive callback either).
 async fn consume_committed_note(
     chain: &MockChain,
     account: &Account,
@@ -198,6 +199,31 @@ async fn consume_committed_note(
     chain
         .build_tx_context(account.clone(), &[note_id], &[])
         .expect("building the consume tx context")
+        .build()
+        .expect("building the consume tx")
+        .execute()
+        .await
+}
+
+/// Consumes a COMMITTED P2ID note carrying POLICED xUSDC with a NON-faucet `account` as the consumer.
+/// The receive callback (`on_before_asset_added_to_account`) fires with the consumer as the native
+/// account, so the kernel dyncalls the issuing faucet to run `basic_blocklist::check_policy` — the
+/// faucet MUST be attached as a foreign account (F4-reversal client-side coupling). This is what a
+/// real wallet consuming policed xUSDC has to do; the coupling is pinned executable by
+/// `transfer_blocklist_e2e::send_without_faucet_foreign_account_fails`.
+async fn consume_committed_note_with_faucet_foreign(
+    chain: &MockChain,
+    account: &Account,
+    note_id: NoteId,
+    faucet_id: AccountId,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let foreign = chain
+        .get_foreign_account_inputs(faucet_id)
+        .expect("faucet foreign-account inputs (committed)");
+    chain
+        .build_tx_context(account.clone(), &[note_id], &[])
+        .expect("building the consume tx context")
+        .foreign_accounts([foreign])
         .build()
         .expect("building the consume tx")
         .execute()
@@ -639,9 +665,14 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         0,
         "S7: the recipient holds nothing before consuming the mint note"
     );
-    let consume = consume_committed_note(&af.harness.mock_chain, &recipient, mint_note_id)
-        .await
-        .expect("S7: the recipient consumes its P2ID mint note");
+    let consume = consume_committed_note_with_faucet_foreign(
+        &af.harness.mock_chain,
+        &recipient,
+        mint_note_id,
+        faucet_id,
+    )
+    .await
+    .expect("S7: the recipient consumes its P2ID mint note");
     commit(&mut af.harness.mock_chain, &consume)?;
     assert_eq!(
         wallet_balance(&committed(&af.harness.mock_chain, recipient_id)?, faucet_id),
@@ -756,7 +787,13 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     )
     .await;
     assert_transaction_executor_error!(result, err_paused());
-    // S10b: a further burn consume traps (emit first — the recipient-side emit has no pause gate).
+    // S10b (F4-reversal pause semantics): with an active transfer policy, PAUSE halts ALL transfers.
+    // The recipient's emit of a burn note fires the SEND callback, whose wrapper runs
+    // `pausable::assert_not_paused` BEFORE the blocklist check, so the emit itself now TRAPS while
+    // paused — the halt moved from the faucet consume to the holder-side send (a chain-wide freeze on
+    // xUSDC movement). This is the deliberate reversal semantic; see
+    // DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md.
+    let paused_asset = FungibleAsset::new(faucet_id, BURN_PAUSED)?;
     let paused_items = XReserveBurnItems {
         amount: AssetAmount::new(BURN_PAUSED)?,
         dest_domain: TEST_SOURCE_DOMAIN,
@@ -765,19 +802,14 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     };
     let paused_note =
         XReserveBurnNote::create(recipient_id, faucet_id, paused_items, &mut note_rng(43))?;
-    let paused_asset = FungibleAsset::new(faucet_id, BURN_PAUSED)?;
-    let emit = try_emit_burn_note(
+    let result = try_emit_burn_note(
         &af.harness.mock_chain,
         &paused_note,
         &paused_asset,
         faucet_id,
         recipient_id,
     )
-    .await
-    .expect("S10b: emitting while paused succeeds (the halt is at the faucet consume)");
-    commit(&mut af.harness.mock_chain, &emit)?;
-    let faucet = committed(&af.harness.mock_chain, faucet_id)?;
-    let result = consume_committed_note(&af.harness.mock_chain, &faucet, paused_note.id()).await;
+    .await;
     assert_transaction_executor_error!(result, err_paused());
     // S10c: the owner has NO direct pause path (Domain-Pauser-only model — the stock PausableManager is absent).
     let result = consume_committed_note(&af.harness.mock_chain, &faucet, note_id(10)).await;
@@ -819,11 +851,31 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         2 * MINT_REDUCED - BURN_OK,
         "S11a after the second mint",
     )?;
-    // S11b: the burn note emitted during the pause is now consumable — the burn path resumed.
+    // S11b: with the faucet unpaused, a burn now EMITS and CONSUMES again — the burn path resumed.
+    // (Under the F4-reversal pause semantics the S10b pause-era emit trapped at emit, so no note was
+    // created then; this fresh burn proves the whole holder→note→faucet path is live again.)
+    let resumed_items = XReserveBurnItems {
+        amount: AssetAmount::new(BURN_PAUSED)?,
+        dest_domain: TEST_SOURCE_DOMAIN,
+        dest_recipient: [0xEFu8; 32],
+        salt: [0x04u8; 32],
+    };
+    let resumed_note =
+        XReserveBurnNote::create(recipient_id, faucet_id, resumed_items, &mut note_rng(44))?;
+    let emit = try_emit_burn_note(
+        &af.harness.mock_chain,
+        &resumed_note,
+        &paused_asset,
+        faucet_id,
+        recipient_id,
+    )
+    .await
+    .expect("S11b: after unpause the holder can emit a burn note again (send callback passes)");
+    commit(&mut af.harness.mock_chain, &emit)?;
     let faucet = committed(&af.harness.mock_chain, faucet_id)?;
-    let consume = consume_committed_note(&af.harness.mock_chain, &faucet, paused_note.id())
+    let consume = consume_committed_note(&af.harness.mock_chain, &faucet, resumed_note.id())
         .await
-        .expect("S11b: after unpause the paused-era burn note consumes");
+        .expect("S11b: after unpause the resumed burn note consumes");
     commit(&mut af.harness.mock_chain, &consume)?;
     assert_supply(
         &af.harness.mock_chain,
@@ -1071,14 +1123,24 @@ async fn second_mint_to_distinct_recipient() -> Result<()> {
 
     // Each recipient consumes ITS note; each holds exactly its own minted amount.
     let r1 = committed(&af.harness.mock_chain, recipient1_id)?;
-    let c1 = consume_committed_note(&af.harness.mock_chain, &r1, note1_id)
-        .await
-        .expect("recipient1 consumes its P2ID note");
+    let c1 = consume_committed_note_with_faucet_foreign(
+        &af.harness.mock_chain,
+        &r1,
+        note1_id,
+        faucet_id,
+    )
+    .await
+    .expect("recipient1 consumes its P2ID note");
     commit(&mut af.harness.mock_chain, &c1)?;
     let r2 = committed(&af.harness.mock_chain, recipient2_id)?;
-    let c2 = consume_committed_note(&af.harness.mock_chain, &r2, note2_id)
-        .await
-        .expect("recipient2 consumes ITS P2ID note");
+    let c2 = consume_committed_note_with_faucet_foreign(
+        &af.harness.mock_chain,
+        &r2,
+        note2_id,
+        faucet_id,
+    )
+    .await
+    .expect("recipient2 consumes ITS P2ID note");
     commit(&mut af.harness.mock_chain, &c2)?;
     assert_eq!(
         wallet_balance(

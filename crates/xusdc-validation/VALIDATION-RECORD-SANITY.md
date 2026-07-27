@@ -3,9 +3,9 @@
 The pre-deploy confidence gate: a cohesive run driving the xUSDC faucet's core on-chain functionality against a real Miden node, with fund-correctness (the P0 scale-0 identity, mint/burn amounts + destinations, replay, supply-cap, attestation gates) proven end-to-end, plus DC-8 burn-evidence readiness and a clean-node-log gate. The DESTRUCTIVE admin surface runs ONLY on a fresh LOCAL faucet we own — NEVER against a deployed faucet. **Validator-not-fixer:** a failing check is a SURFACED finding that BLOCKS the deploy, never a faucet hot-fix.
 
 - Node: **miden-node 0.16.0-alpha.2 (v16 start-test-node.sh cached binaries)** — RPC `http://127.0.0.1:57291`.
-- Faucet under test: `0x22c015510392b09170dc544bce3549` (a FRESH production faucet deployed on the running LOCAL node — the FULL suite incl. the destructive admin surface, against a faucet we own and throw away with the test node).
-- Owner `0xc6004a53d10b7391027185188db6d2`; mint recipient `0xfa03e7698062e411671a871cf773db`; burn holder `0xc35e42311c36f0917ec2fb9c0a07b5`.
-- Local test attester commitment `0x0cbce74e398d0ff87f5b3a512f90f790961171eee23e1c7dbff475db18038825` (a throwaway key the harness generated + allowlisted — NEVER a Circle key).
+- Faucet under test: `0xcbf32bc6933110b1400f4c2b0118d2` (a FRESH production faucet deployed on the running LOCAL node — the FULL suite incl. the destructive admin surface, against a faucet we own and throw away with the test node).
+- Owner `0x0c4f83356ae24b914bd78b23a362fe`; mint recipient `0x6542cbcc0d02ced110ae0550342af7`; burn holder `0x21939a49ebe579515bc9256f399004`.
+- Local test attester commitment `0x17bcd95ec4d360d2b8381b346d6769e04b09d79d6f4b4031c12ae78e244ec350` (a throwaway key the harness generated + allowlisted — NEVER a Circle key).
 
 ## Mandated amounts + the scale-0 identity (P0 regression)
 
@@ -23,10 +23,10 @@ The shipped faucet mints under `DEPOSIT_SCALE_EXP = 0` — the reducer does NO 1
 |---|---|---|---|---|
 | MINT-ROUND | mint | 100 xUSDC (round): token_supply rises by EXACTLY the deposit amount (scale-0 identity) | PASS | supply 0 → 100000000 (Δ 100000000, expected 100000000) |
 | MINT-ROUND-NONCE | mint | 100 xUSDC (round): usedNonces[nonce] marker written | PASS | marker [1, 0, 0, 0] |
-| MINT-ROUND-DEST | mint | 100 xUSDC (round): recipient receives a P2ID of EXACTLY 100000000 units | PASS | recipient 0xfa03e7698062e411671a871cf773db ← 100000000 units |
+| MINT-ROUND-DEST | mint | 100 xUSDC (round): recipient receives a P2ID of EXACTLY 100000000 units | PASS | recipient 0x6542cbcc0d02ced110ae0550342af7 ← 100000000 units |
 | MINT-NONROUND | mint | 123.456789 xUSDC (P0 regression): token_supply rises by EXACTLY the deposit amount (scale-0 identity) | PASS | supply 100000000 → 223456789 (Δ 123456789, expected 123456789) |
 | MINT-NONROUND-NONCE | mint | 123.456789 xUSDC (P0 regression): usedNonces[nonce] marker written | PASS | marker [1, 0, 0, 0] |
-| MINT-NONROUND-DEST | mint | 123.456789 xUSDC (P0 regression): recipient receives a P2ID of EXACTLY 123456789 units | PASS | recipient 0xfa03e7698062e411671a871cf773db ← 123456789 units |
+| MINT-NONROUND-DEST | mint | 123.456789 xUSDC (P0 regression): recipient receives a P2ID of EXACTLY 123456789 units | PASS | recipient 0x6542cbcc0d02ced110ae0550342af7 ← 123456789 units |
 | NEG-WRONG-ATTESTER | attestation | a mint by a non-allowlisted attester is REJECTED | PASS | REJECTED with the 'deposit attester pubkey commitment is not allowlisted' gate (err_code: 3646155793185588349) |
 | NEG-FORGED-SIG | attestation | a mint with a forged signature is REJECTED | PASS | REJECTED with the 'deposit attestation signature verification failed' gate (err_code: 15407036517211357943) |
 | NEG-REPLAY | fund-safety | a replayed nonce is REJECTED (no double-mint) | PASS | REJECTED with the 'deposit intent nonce has already been used' gate (err_code: 13740426797483372479) |
@@ -35,16 +35,16 @@ The shipped faucet mints under `DEPOSIT_SCALE_EXP = 0` — the reducer does NO 1
 | BURN-FUND | burn | the holder holds the minted xUSDC before burning | PASS | holder balance 50000000 (need ≥ 50000000) |
 | BURN-AMOUNT | burn | token_supply decrements by EXACTLY the burned amount | PASS | supply 273456789 → 223456789 (Δ -50000000 expected) |
 | BURN-STRUCT | burn | the burn note is a correct public XReserveBurnNote | PASS | tag 0x4255524E, one NetworkAccountTarget → faucet, amount=50000000 destDomain=3 (DC-7 decoded) |
-| BURN-ATTESTER | burn | the burn note is discoverable + decodable by the withdrawal attester | PASS | attester validate_discovery ACCEPTED (depositor 0xc35e42311c36f0917ec2fb9c0a07b5, amount 50000000); decode_burn_payload OK |
-| BURN-DISCOVER | burn | the committed burn note is discoverable by exact-tag SyncNotes on the node | PASS | SyncNotes(tag 0x4255524E) returned note 0x962ec34a43b75fa951313593a2e1d24996383fe3adec0d0cfac016688a396f5e |
-| BURN-EVIDENCE | burn | the DC-8 evidence packet (note_id/nullifier/block_num/burnTxId) assembles via the attester's assemble_evidence | PASS | DC-8 packet assembled: note_id=0x962ec34a43b75fa951313593a2e1d24996383fe3adec0d0cfac016688a396f5e, nullifier=0x4899693d8328bce22c43c75529ce1334dca4fd0eceb7fc7bb96420fa4c639674, block_num=94, burnTxId=0x25212ba928ee73900594656e6e0d55c9a195e83329d950afb634e3d3532c70e8 |
+| BURN-ATTESTER | burn | the burn note is discoverable + decodable by the withdrawal attester | PASS | attester validate_discovery ACCEPTED (depositor 0x21939a49ebe579515bc9256f399004, amount 50000000); decode_burn_payload OK |
+| BURN-DISCOVER | burn | the committed burn note is discoverable by exact-tag SyncNotes on the node | PASS | SyncNotes(tag 0x4255524E) returned note 0x6b2519c8b2261bd5091bdf6d1a540bfdf3aa579d840ba939f0930224dc45c52f |
+| BURN-EVIDENCE | burn | the DC-8 evidence packet (note_id/nullifier/block_num/burnTxId) assembles via the attester's assemble_evidence | PASS | DC-8 packet assembled: note_id=0x6b2519c8b2261bd5091bdf6d1a540bfdf3aa579d840ba939f0930224dc45c52f, nullifier=0x5cfdcab9f781eda042298c10081538d11384e642245557afd54583f5bee1c189, block_num=41, burnTxId=0x5e9ab5246cde0ebf8abb39ca273a578d520a1ca1963ba3287e2294d4d70078cd |
 | ADMIN-PAUSE | admin | pause sets is_paused | PASS | is_paused = true |
 | ADMIN-PAUSE-MINT | admin | a mint while paused is REJECTED | PASS | REJECTED with the 'the contract is paused' gate (err_code: 13643929038179635348) |
 | ADMIN-PAUSE-BURN | admin | a burn while paused is REJECTED | PASS | REJECTED with the 'the contract is paused' gate (err_code: 13643929038179635348) |
 | ADMIN-UNPAUSE | admin | unpause clears is_paused | PASS | is_paused = false |
 | ADMIN-UNPAUSE-MINT | mint | mint after unpause: token_supply rises by EXACTLY the deposit amount (scale-0 identity) | PASS | supply 223456789 → 323456789 (Δ 100000000, expected 100000000) |
 | ADMIN-UNPAUSE-MINT-NONCE | mint | mint after unpause: usedNonces[nonce] marker written | PASS | marker [1, 0, 0, 0] |
-| ADMIN-UNPAUSE-MINT-DEST | mint | mint after unpause: recipient receives a P2ID of EXACTLY 100000000 units | PASS | recipient 0xfa03e7698062e411671a871cf773db ← 100000000 units |
+| ADMIN-UNPAUSE-MINT-DEST | mint | mint after unpause: recipient receives a P2ID of EXACTLY 100000000 units | PASS | recipient 0x6542cbcc0d02ced110ae0550342af7 ← 100000000 units |
 | ADMIN-ATTESTER-DISABLE | admin | set_attester(enabled=0) removes the attester from the allowlist | PASS | attester allowlist marker cleared |
 | ADMIN-ATTESTER-ROTATED-OUT | admin | a mint by the rotated-out (disabled) attester is REJECTED | PASS | REJECTED with the 'deposit attester pubkey commitment is not allowlisted' gate (err_code: 3646155793185588349) |
 | ADMIN-ATTESTER-REENABLE | admin | set_attester(enabled=1) re-adds the attester to the allowlist | PASS | attester allowlist marker set again |
@@ -57,11 +57,11 @@ The shipped faucet mints under `DEPOSIT_SCALE_EXP = 0` — the reducer does NO 1
 | ADMIN-MAXSUPPLY-ENFORCE | admin | a mint exceeding the MUTATED (tightened) max_supply is REJECTED | PASS | REJECTED with the 'mint amount exceeds the faucet supply cap' gate (err_code: 6332190719720770534) |
 | ADMIN-MAXSUPPLY-BELOW-SUPPLY | admin | set_max_supply BELOW the current token_supply is REJECTED (the mutability guard) | PASS | REJECTED with the 'new max supply is less than current token supply' gate (err_code: 12945332764232818723) |
 | ADMIN-OWNER-GATE | admin | a non-owner admin note is REJECTED | PASS | REJECTED with the 'note sender is not the owner' gate (err_code: 7385238526269899403) |
-| ADMIN-OWNER-TRANSFER | admin | transfer_ownership (step 1) commits | PASS | pending owner ← 0xb082dba0f816701161fcae85ee0993 |
-| ADMIN-OWNER-ACCEPT | admin | accept_ownership (step 2) completes the 2-step transfer | PASS | owner ← 0xb082dba0f816701161fcae85ee0993 |
-| ADMIN-OWNER-RESTORE | admin | ownership restored to the ORIGINAL owner (the ephemeral wallet retains no control) | PASS | owner = 0xc6004a53d10b7391027185188db6d2; the ephemeral wallet retains no control [transfer-back from the ephemeral wallet: committed] |
+| ADMIN-OWNER-TRANSFER | admin | transfer_ownership (step 1) commits | PASS | pending owner ← 0x252e290b6f1865910b0aca5fe1783b |
+| ADMIN-OWNER-ACCEPT | admin | accept_ownership (step 2) completes the 2-step transfer | PASS | owner ← 0x252e290b6f1865910b0aca5fe1783b |
+| ADMIN-OWNER-RESTORE | admin | ownership restored to the ORIGINAL owner (the ephemeral wallet retains no control) | PASS | owner = 0x0c4f83356ae24b914bd78b23a362fe; the ephemeral wallet retains no control [transfer-back from the ephemeral wallet: committed] |
 | ADMIN-POLICY-RESTORE | admin | faucet policy restored to the pre-run deployment values (unpaused, attester allowlisted, min/max) | PASS | min_burn_size ← 0; max_supply ← 1000000000000 |
-| NODE-LOGS-CLEAN | logs | the node's four v16 service logs are present, non-empty, and free of unexpected ERROR / panic / untriaged-WARN lines | PASS | all 4 required service logs present + non-empty; 0 unexpected ERROR, 0 panic, 0 untriaged WARN (5 triaged-WARN lines) |
+| NODE-LOGS-CLEAN | logs | the node's four v16 service logs are present, non-empty, and free of unexpected ERROR / panic / untriaged-WARN lines | PASS | all 4 required service logs present + non-empty; 0 unexpected ERROR, 0 panic, 0 untriaged WARN (4 triaged-WARN lines) |
 
 **GATE VERDICT: PENDING HUMAN ACCEPTANCE.** Every check passed its assertion on this run. Per the charter the PASS is a HUMAN decision: a human reproduces from a fresh node, inspects this record + the node logs, and declares the gate outcome (and only then does the deploy proceed).
 
@@ -96,5 +96,5 @@ cargo run --release --locked -p xusdc-validation --bin sanity_e2e -- --rpc-url h
 ```bash
 SANITY_ATTESTER_SECRET=$(cat allowlisted-attester.hex) \
 cargo run --release --locked -p xusdc-validation --bin sanity_e2e -- \
-    --rpc-url https://rpc.devnet.miden.io --faucet-id <DEPLOYED_FAUCET_ID>
+--rpc-url https://rpc.devnet.miden.io --faucet-id <DEPLOYED_FAUCET_ID>
 ```

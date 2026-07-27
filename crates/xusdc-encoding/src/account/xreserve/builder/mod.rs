@@ -33,26 +33,30 @@
 //! is resolved from that same installed code via [`AccountComponent::get_procedure_root_by_path`], so
 //! the `dynexec` root the policy manager stores always equals the installed proc's MAST root.
 
-use core::fmt;
 use std::collections::BTreeSet;
 
 use miden_protocol::account::{
-    AccountComponent, AccountId, AccountProcedureRoot, AccountType, RoleSymbol, StorageMap,
-    StorageMapKey, StorageSlot, StorageSlotName,
+    AccountComponent, AccountId, AccountProcedureRoot, AccountType, StorageSlot, StorageSlotName,
 };
 use miden_protocol::asset::{AssetAmount, TokenSymbol};
 use miden_protocol::note::NoteScriptRoot;
 use miden_protocol::{Felt, Word};
-use miden_standards::account::access::{Authority, Ownable2Step, Pausable, RoleBasedAccessControl};
+use miden_standards::account::access::{Authority, Ownable2Step, Pausable};
 use miden_standards::account::auth::{AuthNetworkAccount, NetworkAccountNoteAllowlistError};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::{
-    BurnPolicy, BurnPolicyError, MintPolicy, MintPolicyError, TokenPolicyManager,
+    BasicBlocklist, BurnPolicy, MintPolicy, TokenPolicyManager, TransferPolicy,
 };
 use miden_standards::note::BurnNote;
 use miden_standards::tx_script::ExpirationTransactionScript;
 
 use crate::note::xreserve_mint::XReserveMintNote;
+
+mod error;
+mod rbac_seed;
+
+pub use error::XReserveStablecoinBuilderError;
+use rbac_seed::seeded_dom_roles_rbac;
 
 /// The two Circle Domain RoleSymbols this faucet seeds under the ratified Circle-faithful admin
 /// model: `DOM_PAUSER` (custom pause/unpause, CMP-F3) and `DOM_MANAGER` (rotation / role
@@ -63,6 +67,18 @@ use crate::note::xreserve_mint::XReserveMintNote;
 /// owner-gated (`Authority::OwnerControlled`), not role-gated.
 pub const DOM_PAUSER_ROLE: &str = "DOM_PAUSER";
 pub const DOM_MANAGER_ROLE: &str = "DOM_MANAGER";
+
+/// The dedicated blocklist-administration RoleSymbol this faucet seeds under the F4-reversal
+/// transfer-blocklist decision (Phil, 2026-07-23): `BLK_MANAGER` is held by an EXTERNAL entity that
+/// manages the transfer blocklist for Miden and has NO other admin capability (capability isolation
+/// is two-way — the holder can ONLY block/unblock, and the owner, lacking the role, cannot). The
+/// stock `BlocklistOwnerControlled` is owner-gated (the wrong identity) and is deliberately NOT
+/// installed; instead `xreserve::blocklist_admin::{block_account,unblock_account}` hard-code this
+/// symbol (parity-asserted). `BLK_MANAGER` is a valid `RoleSymbol` (≤12 chars, `A`–`Z`/`_`). Its
+/// admin is left unset → resolves to the built-in `ADMIN` (the owner-held account), so Miden rotates
+/// or revokes the external entity through the EXISTING allowlisted `grant_role`/`revoke_role` notes —
+/// no new rotation machinery. `BLK_MANAGER` is seeded role id 4.
+pub const BLK_MANAGER_ROLE: &str = "BLK_MANAGER";
 
 /// Flat library path of the mint-deny guard's `check_policy` procedure within the assembled
 /// `xreserve` library (namespace `xreserve`, module `mint_deny_guard`). This is the
@@ -139,160 +155,6 @@ const FAUCET_MUTABILITY_CONFIG_SLOT: &str = "miden::standards::faucets::mutabili
 /// `token_metadata.rs` at the pinned `=0.16.0-alpha.2`).
 const MAX_SUPPLY_MUTABLE_WORD_INDEX: usize = 3;
 
-/// Errors returned while composing the xUSDC faucet account.
-#[derive(Debug)]
-pub enum XReserveStablecoinBuilderError {
-    /// The xUSDC faucet must be public (network-observable). A non-`Public` account type is rejected
-    /// at build time so packaging cannot produce an unobservable faucet.
-    NonPublicAccountType(AccountType),
-    /// The active mint policy does not resolve to the deny guard — packaging cannot bypass the
-    /// sole-supply-surface gate (INV-MINT-SECURITY).
-    MissingMintDenyGuard,
-    /// The supplied faucet was not built with a mutable `max_supply`, so the stock `set_max_supply`
-    /// admin function would be permanently dead on the deployed faucet (every call traps the runtime
-    /// mutability gate). Rejected at build time so packaging cannot silently ship a faucet whose
-    /// `set_max_supply` is inoperable — build the faucet with `.is_max_supply_mutable(true)`.
-    ImmutableMaxSupply,
-    /// The supplied `xreserve` component does not export the deny-guard procedure (assembly/path
-    /// drift). Carries the expected path for diagnosis.
-    DenyGuardProcNotFound,
-    /// The active burn policy does not resolve to the installed `burn_policy::check_policy` — packaging
-    /// cannot ship a faucet whose burns bypass the R-BURN-1/2 security predicate (CMP-A10). The burn-slot
-    /// twin of [`Self::MissingMintDenyGuard`].
-    MissingBurnPolicyGuard,
-    /// The supplied `xreserve` component does not export the burn-policy procedure (assembly/path
-    /// drift). The burn-slot twin of [`Self::DenyGuardProcNotFound`].
-    BurnPolicyProcNotFound,
-    /// The requested `min_burn_size` exceeds [`AssetAmount::MAX`] (`2^63 - 2^31`), so it is not a
-    /// valid burn amount / field element and cannot be seeded into the `MIN_BURN_SIZE_SLOT`. Carries
-    /// the offending value.
-    MinBurnSizeExceedsMax(u64),
-    /// The supplied `xreserve` component does not declare a required storage slot (the
-    /// validate-what-you-ship check, [`REQUIRED_XRESERVE_SLOT_LABELS`]: a missing slot would ship a
-    /// faucet whose reads/writes of that slot trap at runtime). Carries the missing slot's label.
-    MissingXReserveSlot(&'static str),
-    /// The supplied faucet's `decimals` is not the spec-mandated [`USDCX_DECIMALS`] (= 6;
-    /// `token_config` decimals = 6, a Circle requirement of six decimal places — the D5b reducer
-    /// scales to 6dp, so a mismatched faucet silently mis-scales every amount). Carries the
-    /// offending value.
-    WrongDecimals(u8),
-    /// The supplied faucet's `TokenSymbol` is not the shipped [`USDCX_TOKEN_SYMBOL`] guard
-    /// constant. The token's identity is USDCx (human decision 2026-07-06, distinct from the
-    /// superseded "xUSDC"); the pinned `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs`),
-    /// so the on-chain symbol is the VM-forced uppercase `USDCX`; this guard pins the shipped
-    /// constant so the deployed symbol is load-bearing and a drift fails the build.
-    WrongTokenSymbol,
-    /// The mint-policy descriptor rejected its construction (v16 `MintPolicy::custom` validates
-    /// the root against the supplied companion components).
-    MintPolicy(MintPolicyError),
-    /// The burn-policy descriptor rejected its construction — the burn-slot twin of
-    /// [`Self::MintPolicy`].
-    BurnPolicy(BurnPolicyError),
-    /// The policy manager's companion components did not have the pinned shape at the
-    /// composition seam (exactly the manager component first, then one xreserve-component copy
-    /// per custom policy — MIGRATION-V16-ALPHA2.md S18). Never dropped silently. `found` is the
-    /// FULL companion remainder the manager emitted and `recognized` how many of those were the
-    /// already-installed xreserve component, so a smuggled foreign companion shows up as
-    /// `found > recognized` instead of hiding behind a matching recognized count.
-    PolicyCompanionMismatch {
-        expected: usize,
-        found: usize,
-        recognized: usize,
-    },
-}
-
-impl fmt::Display for XReserveStablecoinBuilderError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NonPublicAccountType(account_type) => {
-                write!(
-                    f,
-                    "xusdc faucet must be AccountType::Public, got {account_type:?}"
-                )
-            }
-            Self::MissingMintDenyGuard => write!(
-                f,
-                "active mint policy is not the mint-deny guard; packaging cannot bypass the \
-                 sole-supply-surface gate"
-            ),
-            Self::ImmutableMaxSupply => write!(
-                f,
-                "xusdc faucet must be built with a mutable max supply \
-                 (is_max_supply_mutable=true) so the deployed faucet's set_max_supply stays operable"
-            ),
-            Self::DenyGuardProcNotFound => write!(
-                f,
-                "the xreserve component does not export the mint-deny guard procedure \
-                 '{MINT_DENY_GUARD_PROC_PATH}'"
-            ),
-            Self::MissingBurnPolicyGuard => write!(
-                f,
-                "active burn policy is not the xreserve burn policy; packaging cannot bypass the \
-                 burn security predicate (R-BURN-1/2)"
-            ),
-            Self::BurnPolicyProcNotFound => write!(
-                f,
-                "the xreserve component does not export the burn policy procedure \
-                 '{BURN_POLICY_PROC_PATH}'"
-            ),
-            Self::MinBurnSizeExceedsMax(value) => write!(
-                f,
-                "min_burn_size {value} exceeds the maximum representable asset amount \
-                 (AssetAmount::MAX = 2^63 - 2^31)"
-            ),
-            Self::MissingXReserveSlot(label) => write!(
-                f,
-                "the xreserve component does not declare the required storage slot '{label}'"
-            ),
-            Self::WrongDecimals(decimals) => write!(
-                f,
-                "xusdc faucet decimals must be 6 (CIR-FEE-3; the reducer scales to 6dp), got \
-                 {decimals}"
-            ),
-            Self::WrongTokenSymbol => write!(
-                f,
-                "xusdc faucet token symbol must be the shipped USDCX guard constant"
-            ),
-            Self::MintPolicy(_) => write!(f, "mint policy descriptor construction failed"),
-            Self::BurnPolicy(_) => write!(f, "burn policy descriptor construction failed"),
-            Self::PolicyCompanionMismatch {
-                expected,
-                found,
-                recognized,
-            } => write!(
-                f,
-                "token policy manager emitted an unexpected companion-component shape: expected \
-                 exactly {expected} xreserve-component copies after the manager component; the \
-                 remainder held {found} companions, {recognized} of them the installed xreserve \
-                 component ({} foreign)",
-                found.saturating_sub(*recognized)
-            ),
-        }
-    }
-}
-
-impl core::error::Error for XReserveStablecoinBuilderError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::MintPolicy(source) => Some(source),
-            Self::BurnPolicy(source) => Some(source),
-            _ => None,
-        }
-    }
-}
-
-impl From<MintPolicyError> for XReserveStablecoinBuilderError {
-    fn from(source: MintPolicyError) -> Self {
-        Self::MintPolicy(source)
-    }
-}
-
-impl From<BurnPolicyError> for XReserveStablecoinBuilderError {
-    fn from(source: BurnPolicyError) -> Self {
-        Self::BurnPolicy(source)
-    }
-}
-
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library
 /// component + a `TokenPolicyManager` with the mint-deny guard active + the **owner-gating admin
 /// foundation** (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::OwnerControlled`).
@@ -317,6 +179,11 @@ pub struct XReserveStablecoinBuilder {
     pauser_holder: AccountId,
     /// The seeded `DOM_MANAGER` role member (its consumer — role management — is a later slice).
     manager_holder: AccountId,
+    /// The seeded `BLK_MANAGER` role member — the EXTERNAL entity that administers the transfer
+    /// blocklist (block/unblock) and holds NO other admin capability (F4-reversal). Its concrete
+    /// account id is supplied at deploy time; the built-in `ADMIN` (the owner) rotates/revokes it via
+    /// the existing `grant_role`/`revoke_role` notes.
+    blocklist_manager_holder: AccountId,
     account_type: AccountType,
     requested_active_mint_policy: Option<MintPolicy>,
     /// Overridden active burn policy (default: the installed `burn_policy::check_policy` as a
@@ -333,15 +200,17 @@ pub struct XReserveStablecoinBuilder {
 impl XReserveStablecoinBuilder {
     /// Creates a builder from a built `FungibleFaucet` and the assembled `xreserve` library
     /// component (which must carry the deny-guard `check_policy`), the `owner` (top-level authority for
-    /// the owner-gated setters), and the `pauser_holder` / `manager_holder` seeded as the sole members
-    /// of `DOM_PAUSER` / `DOM_MANAGER`. Defaults to `AccountType::Public` and the deny guard as the
-    /// active mint policy.
+    /// the owner-gated setters), the `pauser_holder` / `manager_holder` seeded as the sole members of
+    /// `DOM_PAUSER` / `DOM_MANAGER`, and the `blocklist_manager_holder` seeded as the sole member of
+    /// `BLK_MANAGER` (the external transfer-blocklist administrator — F4-reversal). Defaults to
+    /// `AccountType::Public` and the deny guard as the active mint policy.
     pub fn new(
         faucet: FungibleFaucet,
         xreserve_component: AccountComponent,
         owner: AccountId,
         pauser_holder: AccountId,
         manager_holder: AccountId,
+        blocklist_manager_holder: AccountId,
     ) -> Self {
         Self {
             faucet,
@@ -349,6 +218,7 @@ impl XReserveStablecoinBuilder {
             owner,
             pauser_holder,
             manager_holder,
+            blocklist_manager_holder,
             account_type: AccountType::Public,
             requested_active_mint_policy: None,
             requested_active_burn_policy: None,
@@ -414,9 +284,12 @@ impl XReserveStablecoinBuilder {
     /// asserts the built account's allowlist equals it exactly. The scheme-2 `NetworkAccountTarget`
     /// bind on the notes is routing-only, not a consume gate.
     ///
-    /// COMPLETE — the frozen 12-root set: rows 1-2 (the supply-side mint + burn notes), row 3
-    /// (`set_attester`, the reference op), and rows 4-12 (the remaining admin note scripts). The set
-    /// is IMMUTABLE post-deploy (`AuthNetworkAccount` exports no mutator). Two capabilities are
+    /// COMPLETE — the frozen 14-root set: rows 1-2 (the supply-side mint + burn notes), row 3
+    /// (`set_attester`, the reference op), rows 4-12 (the remaining owner/role/pause admin note
+    /// scripts), and rows 13-14 (the F4-reversal transfer-blocklist admin notes `block_account` /
+    /// `unblock_account`, BLK_MANAGER-gated). The set is IMMUTABLE post-deploy (`AuthNetworkAccount`
+    /// exports no mutator). The materialized 14 pinned roots require HUMAN ratification before deploy.
+    /// Two capabilities are
     /// deliberately OMITTED (both human-ratified, grounded in Circle's xReserve EVM admin model):
     /// `renounce_role` (Circle has no role self-renounce) and — since the S21 disposition flip,
     /// 2026-07-14 — the runtime `set_role_admin` note (Circle's `DomainManageable.sol` has no
@@ -424,7 +297,7 @@ impl XReserveStablecoinBuilder {
     /// `seeded_dom_roles_rbac` (crate-private) and deploys frozen; rotation is `grant_role`/`revoke_role`,
     /// CIR-ADMIN-3 — see `DECISION-SETROLEADMIN-NOTE-REMOVAL.md`). The stock `rbac::set_role_admin`
     /// account procedure stays composed but is present-but-UNREACHABLE (enforced by
-    /// `tests/account_callable_surface.rs`). The materialized 12 pinned roots still require explicit
+    /// `tests/account_callable_surface.rs`). The materialized 14 pinned roots still require explicit
     /// HUMAN ratification before deploy.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
         // The "row N" labels below are the notes' STABLE allowlist identities (1-12, shared with
@@ -460,6 +333,10 @@ impl XReserveStablecoinBuilder {
             crate::note::xreserve_admin::XReserveTransferOwnershipNote::script_root(),
             // row 11: accept_ownership admin note (nominated-owner-gated, stock Ownable2Step).
             crate::note::xreserve_admin::XReserveAcceptOwnershipNote::script_root(),
+            // row 13: block_account admin note (BLK_MANAGER-gated — F4-reversal transfer blocklist).
+            crate::note::xreserve_admin::XReserveBlockAccountNote::script_root(),
+            // row 14: unblock_account admin note (BLK_MANAGER-gated — F4-reversal transfer blocklist).
+            crate::note::xreserve_admin::XReserveUnblockAccountNote::script_root(),
         ])
     }
 
@@ -512,6 +389,31 @@ impl XReserveStablecoinBuilder {
             return Err(XReserveStablecoinBuilderError::NonPublicAccountType(
                 self.account_type,
             ));
+        }
+        // F4-reversal capability isolation: the BLK_MANAGER holder (transfer-blocklist administrator)
+        // MUST be an external entity with no other faucet-admin capability. Reject at build time if it
+        // collides with the owner (also ADMIN — would gain a direct block/unblock path), the DOM_PAUSER
+        // holder, or the DOM_MANAGER holder — the two-way isolation the reversal decision requires.
+        if self.blocklist_manager_holder == self.owner {
+            return Err(
+                XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
+                    collides_with: "owner",
+                },
+            );
+        }
+        if self.blocklist_manager_holder == self.pauser_holder {
+            return Err(
+                XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
+                    collides_with: "DOM_PAUSER",
+                },
+            );
+        }
+        if self.blocklist_manager_holder == self.manager_holder {
+            return Err(
+                XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
+                    collides_with: "DOM_MANAGER",
+                },
+            );
         }
         let deny_root = self.mint_deny_guard_root()?;
         // v16 (#2974): the policy descriptors are non-Copy and own their companion components —
@@ -584,30 +486,35 @@ impl XReserveStablecoinBuilder {
         if Word::from(active_burn.root()) != burn_root {
             return Err(XReserveStablecoinBuilderError::MissingBurnPolicyGuard);
         }
+        // F4 REVERSAL (transfer-blocklist decision, ratified 2026-07-23; supersedes the 2026-07-08
+        // basic-asset decision in DECISION-F4-BASIC-ASSET-NO-TRANSFER-POLICY.md — see
+        // DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md and the adversarially-audited research report
+        // RESEARCH-TRANSFER-BLOCKLIST-INTEGRATION.md). Miden head-of-product + Philipp concluded xUSDC
+        // needs an ON-CHAIN transfer blocklist, so the stock `BasicBlocklist` is wired as the ACTIVE
+        // policy for BOTH the send and receive kinds, starting with an EMPTY blocklist. Both kinds
+        // reference the SAME descriptor root (`BasicBlocklist::root()`), so the manager installs the
+        // `BasicBlocklist` companion (and its `blocked_accounts` slot) exactly ONCE and dedups by root
+        // (`assemble_components` recognizes + installs that single companion).
+        //
+        // Consequences this DELIBERATELY accepts (the reversal of the F4 basic-asset posture):
+        // registering these policies makes the manager install the two protocol asset-callback slots
+        // (the fixed `invoke_send_policy`/`invoke_receive_policy` wrapper roots), which REQUIRES the
+        // account be built `AssetCallbackFlag::Enabled` (a NEW account id ⇒ faucet v2, Circle
+        // re-registration). xUSDC becomes a POLICED asset: the kernel `call`s this faucet's policy on
+        // every send/receive, so every counterparty must attach this faucet as a foreign account (FPI)
+        // on transfer/consume. A blocked account can neither send, receive, nor burn/redeem (a FULL
+        // freeze incl. redemption); pause now halts ALL transfers while the policy is active. No
+        // allow-all reserved alternate is registered (mirrors the F1 no-re-activation posture — the
+        // blocklist can never be swapped out at runtime; `set_{send,receive}_policy` stay
+        // composed-but-pointless, the only allowed root being the active blocklist one). The
+        // `basic_asset_tripwire.rs` (now the policed-asset tripwire) + `account_callable_surface.rs`
+        // (Enabled flag) tripwires enforce this wiring — they go RED on any un-wire.
         let manager = TokenPolicyManager::builder()
             .active_mint_policy(active)
             .active_burn_policy(active_burn)
+            .active_send_policy(TransferPolicy::empty_basic_blocklist())
+            .active_receive_policy(TransferPolicy::empty_basic_blocklist())
             .build();
-        // xUSDC ships as a BASIC (transfer-free) fungible asset — DELIBERATELY no send/receive
-        // transfer policy is registered here (human decision 2026-07-08, RATIFIED). With no transfer
-        // policy the manager installs no asset-callback slots, so every minted xUSDC carries
-        // `AssetCallbackFlag::Disabled` and holder-to-holder transfers are unpoliced — behaviourally
-        // identical to Circle's reference `USDCx.sol`, which has no transfer logic.
-        //
-        // Do NOT add `.with_send_policy(...)` / `.with_receive_policy(...)` here. Registering ANY
-        // transfer policy (even `TransferPolicy::AllowAll`, and even `Reserved`) stamps callbacks
-        // Enabled and turns xUSDC into a "policed" asset: the kernel then `call`s this faucet's
-        // policy proc on every send/receive, forcing every counterparty to attach this faucet as a
-        // foreign account (FPI) on every transfer/consume. That breaks P2ID / basic-wallet / SWAP /
-        // deposit-relayer composability supply-wide, for a capability Circle does NOT require —
-        // xUSDC compliance lives at the bridge boundary (attestation-gated mint + pause + reserve
-        // redemption), all already built. The "swap a custom policy in later" option is illusory:
-        // `set_{send,receive}_policy` only accept a root already baked into the account + its
-        // build-time allowed-roots map, both immutable post-deploy — any real change is a redeploy.
-        //
-        // Re-wiring is a conscious re-decision gated on Q-PRV-5 (Circle confirmation, OPEN) + a
-        // faucet-v2 migration (IMPL-DEV-20). The `basic_asset_tripwire.rs` test enforces this
-        // invariant (it goes RED on any wire).
 
         // The owner-gating admin foundation, appended AFTER the account-type / deny-guard early
         // returns so a rejected build never reaches here. `Authority::OwnerControlled` gates the
@@ -625,6 +532,7 @@ impl XReserveStablecoinBuilder {
             self.owner,
             self.pauser_holder,
             self.manager_holder,
+            self.blocklist_manager_holder,
         ));
         components.push(Authority::OwnerControlled.into());
         Ok(components)
@@ -671,13 +579,20 @@ impl XReserveStablecoinBuilder {
     /// are name-addressed, so the position is auditability-only). `PausableManager` still installs
     /// ZERO storage. The `production_components_carry_is_paused_slot` tripwire pins the slot.
     ///
-    /// POLICY-COMPANION SEAM (v16 — MIGRATION-V16-ALPHA2.md S18): the alpha.2 policy descriptors
-    /// carry the xreserve component as their `custom()` companion, and the manager's iterator
-    /// emits one companion copy per DISTINCT policy root (deny + burn = two copies) after the
-    /// manager component itself. The xreserve component is installed exactly ONCE (here); the
-    /// seam consumes the iterator, keeps its head (the manager component), asserts the remainder
-    /// is exactly the two code-commitment-equal copies, and drops them — any other shape is a
-    /// loud [`XReserveStablecoinBuilderError::PolicyCompanionMismatch`], never a silent drop.
+    /// POLICY-COMPANION SEAM (v16 — MIGRATION-V16-ALPHA2.md S18; F4-reversal rework): the alpha.2
+    /// policy descriptors carry their `custom()` companion, and the manager's iterator emits one
+    /// companion copy per DISTINCT policy root after the manager component itself. With the
+    /// transfer blocklist wired the remainder is EXACTLY THREE: two xreserve-component copies (the
+    /// custom mint deny-guard + burn policy) plus one `BasicBlocklist` companion (the send + receive
+    /// transfer policy, which share the descriptor root, so it appears once). The seam consumes the
+    /// iterator, keeps its head (the manager component), asserts the remainder is exactly those two
+    /// recognized xreserve copies + one recognized `BasicBlocklist` companion, DROPS the redundant
+    /// xreserve copies (the xreserve component is installed exactly ONCE, here), and INSTALLS the
+    /// `BasicBlocklist` companion emitted by the manager (it carries the `blocked_accounts` storage
+    /// the policy + `blocklist_admin` procs read/write). Any other shape — a foreign companion, a
+    /// missing blocklist companion (which would ship a faucet whose `blocked_accounts` accesses
+    /// trap), or the wrong copy counts — is a loud
+    /// [`XReserveStablecoinBuilderError::PolicyCompanionMismatch`], never a silent drop.
     fn assemble_components(
         &self,
         manager: TokenPolicyManager,
@@ -689,156 +604,47 @@ impl XReserveStablecoinBuilder {
             "the manager iterator yields the manager component first (manager.rs IntoIterator doc)",
         );
         let companions: Vec<AccountComponent> = manager_parts.collect();
-        let expected = 2;
-        let recognized = companions
+        // the two custom-policy companions (mint deny-guard + burn policy) are both the installed
+        // xreserve component; the one transfer-policy companion is the stock BasicBlocklist.
+        let expected_xreserve = 2;
+        let expected_blocklist = 1;
+        let xreserve_recognized = companions
             .iter()
             .filter(|c| c.component_code().as_library() == xreserve_code.as_library())
             .count();
-        // `found` is the FULL remainder the manager emitted (not just the recognized copies), so a
-        // smuggled foreign companion shows up as `found > recognized` instead of hiding behind a
-        // matching recognized count.
-        if recognized != expected || companions.len() != expected {
+        let mut blocklist_companion: Option<AccountComponent> = None;
+        let mut blocklist_recognized = 0usize;
+        for companion in &companions {
+            if companion.component_code().as_library() == BasicBlocklist::code().as_library() {
+                blocklist_recognized += 1;
+                blocklist_companion = Some(companion.clone());
+            }
+        }
+        // `found` is the FULL remainder the manager emitted, so a smuggled foreign companion shows up
+        // as `found > xreserve_recognized + blocklist_recognized`, and a missing/duplicated blocklist
+        // companion as `blocklist_recognized != expected_blocklist`.
+        if xreserve_recognized != expected_xreserve
+            || blocklist_recognized != expected_blocklist
+            || companions.len() != expected_xreserve + expected_blocklist
+        {
             return Err(XReserveStablecoinBuilderError::PolicyCompanionMismatch {
-                expected,
+                expected_xreserve,
+                expected_blocklist,
                 found: companions.len(),
-                recognized,
+                xreserve_recognized,
+                blocklist_recognized,
             });
         }
-        // both companions recognized as the already-installed xreserve component: drop them.
+        // the two xreserve copies are the already-installed component: drop them and install the
+        // single recognized BasicBlocklist companion (checked non-None by the guard above).
+        let blocklist = blocklist_companion
+            .expect("the guard above guarantees exactly one recognized BasicBlocklist companion");
         Ok(vec![
             self.faucet.clone().into(),
             Pausable::unpaused().into(),
             xreserve_component,
+            blocklist,
             manager_component,
         ])
     }
-}
-
-/// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` with the TWO Circle Domain
-/// role members — `DOM_PAUSER` (→ `pauser_holder`) and `DOM_MANAGER` (→ `manager_holder`) — plus,
-/// since the v16 migration (#3215 removed the Ownable2Step owner's implicit super-admin standing
-/// over the role graph; MIGRATION-V16-ALPHA2.md S2, operator-approved 2026-07-13), the stock
-/// `ADMIN` role seeded with the OWNER's account as its single member. `ADMIN` is the built-in
-/// default admin role (`rbac.masm`): a role whose delegated admin is unset resolves to it, so
-/// this seed preserves the ratified owner-administers-roles model — the owner-held account
-/// administers `DOM_MANAGER` (grant/revoke), now via its `ADMIN` membership rather
-/// than owner status (NO new capability: `ADMIN` resolves to the same owner account). This seed
-/// is the ENTIRE role-admin graph the faucet will ever have: the runtime `set_role_admin` note is
-/// not allowlisted (S21 flip, 2026-07-14), so `role_config[*].admin_role` is immutable
-/// post-deploy. KNOWN
-/// DIVERGENCE (documented, operator-approved): after `transfer_ownership`/`accept_ownership`,
-/// `ADMIN` membership does not auto-follow — the rotation runbook grants `ADMIN` to the new
-/// owner and revokes the old one via the existing grant/revoke admin notes.
-///
-/// Both stock RBAC maps are direct-seeded at build, consistent with the stock procs' post-state
-/// for a single first grant per role — `role_membership[{0, <role>, holder.suffix,
-/// holder.prefix}] = [1,0,0,0]` AND `role_config[{0,0,0,DOM_PAUSER}] = [member_count=1,
-/// admin_role=DOM_MANAGER, 0, 0]` (the CMP-F5 delegation: the Domain Manager rotates the Pauser)
-/// while `role_config[{0,0,0,DOM_MANAGER}] = [1, 0, 0, 0]` and `role_config[{0,0,0,ADMIN}] =
-/// [1, 0, 0, 0]` (admin_role = 0 → resolves to the built-in `ADMIN`; `ADMIN` is thereby
-/// self-administered). It reuses the stock RBAC code + slot names + component metadata verbatim
-/// (NO custom RBAC logic); only the maps are non-empty (the stock `From<RoleBasedAccessControl>`
-/// seeds them empty). The key encodings mirror the stock readers. `grant_role` is NOT used (it
-/// would add a tx). Seed correctness is locked by the `shipped_delegation_reads_back` +
-/// rotation-seam + ADMIN-gating tests, not by construction (`AccountComponent::new` does not
-/// validate slots against the metadata schema). Construction failures are invariants, so this
-/// mirrors the stock `.expect()` pattern.
-fn seeded_dom_roles_rbac(
-    owner: AccountId,
-    pauser_holder: AccountId,
-    manager_holder: AccountId,
-) -> AccountComponent {
-    let pauser =
-        RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol (≤12)");
-    let manager =
-        RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol (≤12)");
-    let admin = RoleBasedAccessControl::admin_role();
-    // [1,0,0,0]: role_config member_count = 1 (admin_role = 0 → the built-in ADMIN), and
-    // role_membership is_member = 1.
-    let member_word = Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-    // [1, DOM_MANAGER, 0, 0]: member_count = 1 with administration delegated to DOM_MANAGER (CMP-F5).
-    let delegated_config_word = Word::from([
-        Felt::from(1u32),
-        Felt::from(&manager),
-        Felt::ZERO,
-        Felt::ZERO,
-    ]);
-
-    let role_config = StorageMap::with_entries([
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::from(&pauser),
-            ])),
-            delegated_config_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::from(&manager),
-            ])),
-            member_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::from(&admin),
-            ])),
-            member_word,
-        ),
-    ])
-    .expect("the three-role role_config seed is valid");
-
-    let role_membership = StorageMap::with_entries([
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::from(&pauser),
-                pauser_holder.suffix(),
-                pauser_holder.prefix().as_felt(),
-            ])),
-            member_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::from(&manager),
-                manager_holder.suffix(),
-                manager_holder.prefix().as_felt(),
-            ])),
-            member_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::from(&admin),
-                owner.suffix(),
-                owner.prefix().as_felt(),
-            ])),
-            member_word,
-        ),
-    ])
-    .expect("the three-role role_membership seed is valid");
-
-    AccountComponent::new(
-        RoleBasedAccessControl::code().clone(),
-        vec![
-            StorageSlot::with_map(
-                RoleBasedAccessControl::role_config_slot().clone(),
-                role_config,
-            ),
-            StorageSlot::with_map(
-                RoleBasedAccessControl::role_membership_slot().clone(),
-                role_membership,
-            ),
-        ],
-        RoleBasedAccessControl::component_metadata(),
-    )
-    .expect("the seeded DOM-roles RBAC component mirrors the stock From impl and is valid")
 }

@@ -1,0 +1,72 @@
+# xreserve::blocklist_admin
+#
+# The BLK_MANAGER-gated custom block/unblock (F4-reversal): under Circle's dedicated-manager model
+# (Phil, 2026-07-23) the on-chain transfer blocklist is administered by an EXTERNAL entity holding
+# ONLY the BLK_MANAGER role — NOT the owner. The stock BlocklistOwnerControlled gates block/unblock
+# on the Ownable2Step owner (the wrong identity — the owner also controls set_attester/max_supply/
+# ownership), so it is NOT installed; these procs compose rbac::assert_sender_has_role(BLK_MANAGER)
+# with the UNAUTHENTICATED blocklist::block_account/unblock_account primitives ("compose with access
+# control in a wrapper" — the ratified pause_admin pattern). The blocked_accounts slot these write is
+# installed by the BasicBlocklist companion component (wired as the active send + receive policy).
+
+use miden::standards::access::rbac
+use miden::standards::faucets::policies::transfer::blocklist
+
+# CONSTANTS
+# =================================================================================================
+
+# The BLK_MANAGER RoleSymbol encoded as a Felt (RoleSymbol::as_element, base-27 over A-Z/_). HARD-CODED
+# here (never caller-supplied) so no role a caller merely holds can be substituted for BLK_MANAGER.
+# Parity-asserted against the Rust RoleSymbol::new(BLK_MANAGER_ROLE).as_element() in constant_parity.rs
+# (cross-language constant parity); a drift silently breaks the role gate. BLK_MANAGER is seeded role id 4.
+const BLK_MANAGER_ROLE = 7907587873290749
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Blocks an account on this faucet — the BLK_MANAGER-gated blocklist add: gates on the BLK_MANAGER
+#! role (the note sender must hold it), then adds the account to the blocked_accounts map via the
+#! unauthenticated blocklist primitive. A blocked account can neither send, receive, nor
+#! burn/redeem policed xUSDC (the send + receive transfer policy checks the native account).
+#!
+#! Inputs:  [account_id_suffix, account_id_prefix, pad(14)]
+#! Outputs: [pad(16)]
+#!
+#! Panics if:
+#! - the note sender does not hold BLK_MANAGER (rbac::assert_sender_has_role, ERR_SENDER_LACKS_ROLE).
+#!
+#! Invocation: call
+@account_procedure
+pub proc block_account
+    push.BLK_MANAGER_ROLE
+    # => [BLK_MANAGER_ROLE, account_id_suffix, account_id_prefix, pad(13)]
+
+    exec.rbac::assert_sender_has_role
+    # => [account_id_suffix, account_id_prefix, pad(14)]
+
+    exec.blocklist::block_account
+    # => [pad(16)]
+end
+
+#! Unblocks an account on this faucet: the same BLK_MANAGER role gate, then removes the account from
+#! the blocked_accounts map via the unauthenticated blocklist primitive, restoring its ability to
+#! send, receive, and burn/redeem policed xUSDC.
+#!
+#! Inputs:  [account_id_suffix, account_id_prefix, pad(14)]
+#! Outputs: [pad(16)]
+#!
+#! Panics if:
+#! - the note sender does not hold BLK_MANAGER (rbac::assert_sender_has_role, ERR_SENDER_LACKS_ROLE).
+#!
+#! Invocation: call
+@account_procedure
+pub proc unblock_account
+    push.BLK_MANAGER_ROLE
+    # => [BLK_MANAGER_ROLE, account_id_suffix, account_id_prefix, pad(13)]
+
+    exec.rbac::assert_sender_has_role
+    # => [account_id_suffix, account_id_prefix, pad(14)]
+
+    exec.blocklist::unblock_account
+    # => [pad(16)]
+end

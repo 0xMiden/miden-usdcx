@@ -441,7 +441,8 @@ fn code_only_reject_with_the_wrong_code_is_rejected() {
 // ── the real-node E2E (the gate run for this slice) ──────────────────────────────────────────
 
 /// Rows D + E against a REAL fresh local node: bootstrap genesis, start the four services, deploy
-/// the production faucet (domain_init matching the mint vector), allowlist attester A, drive both
+/// the production faucet (domain config build-seeded to match the mint vector, identifier_init as
+/// the first admin note), allowlist attester A, drive both
 /// happy-path mints (empty-hookData + hookData-bearing) committed via the ntx-builder / path N with
 /// the recipient consuming each emitted P2ID note, then every negative (replay, forged signature,
 /// non-allowlisted attester, non-zero fee, tampered payload) proven by a client-side kernel trap +

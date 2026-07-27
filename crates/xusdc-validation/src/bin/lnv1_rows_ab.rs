@@ -1,6 +1,6 @@
 //! LNV-1 deploy smoke + rows A/B: the one-command gate run for this slice.
 //!
-//! Boots a FRESH local stack, deploys the production faucet, drives `domain_init` (init +
+//! Boots a FRESH local stack, deploys the production faucet, drives `identifier_init` (init +
 //! init-once reject), applies the row-A/B assertion suite, writes `evidence.json`, and tears the
 //! stack down. Exit code 0 = both rows PASS.
 //!
@@ -48,8 +48,8 @@ async fn main() -> Result<()> {
         Err(e) => println!("row A (deploy + recognize): FAIL\n  {e:#}"),
     }
     match &row_b {
-        Ok(()) => println!("row B (domain_init init-once): PASS"),
-        Err(e) => println!("row B (domain_init init-once): FAIL\n  {e:#}"),
+        Ok(()) => println!("row B (identifier_init init-once): PASS"),
+        Err(e) => println!("row B (identifier_init init-once): FAIL\n  {e:#}"),
     }
 
     if row_a.is_err() || row_b.is_err() {

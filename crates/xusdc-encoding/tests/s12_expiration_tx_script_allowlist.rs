@@ -98,7 +98,7 @@ fn auth_component_note_script_allowlist_is_untouched_by_s12() -> Result<()> {
 /// executes) while an arbitrary nop tx-script is REJECTED. RED before S12 (both rejected).
 #[tokio::test]
 async fn expiration_is_admitted_and_every_other_tx_script_is_rejected() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
 
     // NEGATIVE — a nop tx script is not the expiration root, so the one-root allowlist rejects it.

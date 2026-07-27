@@ -1,6 +1,6 @@
 //! ANTI-DRIFT GUARD (round-6 finding #2): the audit-facing COUNT PROSE in the callable-surface
 //! conformance modules must match the EXECUTABLE surface, not a superseded value. These are
-//! security-reasoning tests; stale "17 / 62 / 12" prose next to a `[&str; 65]` constant makes a
+//! security-reasoning tests; stale "17 / 62 / 12" prose next to a `[&str; 64]` constant makes a
 //! failure message lie about what the account actually exposes.
 //!
 //! This guard DERIVES the authoritative counts from the shipped composition (so it cannot itself go
@@ -66,7 +66,7 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
     // surface ever changes, this fails loudly (and the whole point below — the prose — must follow).
     assert_eq!(
         (xreserve, stock, total, notes),
-        (19, 46, 65, 14),
+        (15, 49, 64, 14),
         "the executable callable surface changed ({xreserve} xreserve + {stock} stock = {total} \
          roots, {notes}-note allowlist) — update the ratified constants AND every count-phrase in \
          the conformance prose together (MIGRATION-V16-ALPHA2.md stock-surface discipline)"
@@ -93,8 +93,9 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
     }
 
     // The SUPERSEDED count-phrases must be gone from EACH source (a stale token is a lie about the
-    // real surface). Each is a value the surface DID carry before this feature (17 xreserve roots,
-    // 62-root account surface, 12-note allowlist, 10 admin notes, 45 stock rows).
+    // real surface). Each is a value the surface DID carry earlier: the pre-F4 era (17 xreserve
+    // roots, 62-root account surface, 12-note allowlist, 10 admin notes, 45 stock rows) and the
+    // pre-Wave-1-S1 era (19 xreserve roots, 46 stock rows, 65-root account surface).
     let superseded = [
         "62-root",
         "12-root",
@@ -103,6 +104,11 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
         "the 17 frozen",
         "45 stock",
         "the 10 admin",
+        "65-root",
+        "the 19 callable roots",
+        "the 19 sanctioned roots",
+        "the 19 frozen",
+        "46 stock",
     ];
     for (name, src) in SOURCES {
         for bad in superseded {

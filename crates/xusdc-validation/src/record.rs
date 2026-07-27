@@ -38,7 +38,7 @@ pub const MATRIX_ROW_IDS: [&str; 12] = ["A", "B", "C", "D", "E", "F", "G", "H", 
 /// The matrix row titles (the row names, condensed).
 const MATRIX_ROW_TITLES: [(&str, &str); 12] = [
     ("A", "deploy + recognize"),
-    ("B", "domain_init init-once"),
+    ("B", "identifier_init init-once"),
     ("C", "admin suite (C1–C6)"),
     ("D", "mint happy path"),
     ("E", "mint negatives"),

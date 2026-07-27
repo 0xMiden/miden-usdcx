@@ -1,14 +1,17 @@
-//! R-MINT-16 `XReserveStablecoinBuilder` API suite: the production builder must compose a
-//! deny-active PUBLIC faucet and reject the two packaging mistakes that would re-open the stock
-//! mint surface — a non-`Public` account type and an active mint policy that is not the deny guard
-//! (INV-MINT-SECURITY: `xreserve_mint` is the only supply-increasing surface). The build-validation
-//! tests assert the two rejections (pure builder logic); the behavior test asserts a production-deny
-//! faucet actually traps stock `mint_and_send` with the exact ERR_XRESERVE_MINT_DENIED, end to end.
+//! R-MINT-16 `XReserveStablecoinBuilder` API suite (Wave-1 S1 recomposition): the production
+//! builder must compose an ATTESTATION-gated PUBLIC faucet and reject the packaging mistakes that
+//! would weaken the mint/burn posture — a non-`Public` account type, an active mint policy that is
+//! not the attestation policy (INV-MINT-SECURITY restated: every supply increase passes
+//! `xreserve::mint_policy::check_policy`), an active burn policy that is not the stock
+//! `MinBurnAmount`, a sub-floor `min_burn_size`, and a missing build-seeded domain config (DEC-4).
+//! The build-validation tests assert the exact rejection variants (pure builder logic); the
+//! composed-set tests pin the posture the builder ships (active-policy slot, component seam,
+//! domain-config seeding).
 
 mod support;
 
 use anyhow::{Context, Result};
-use miden_protocol::account::component::AccountComponentMetadata;
+use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
     AccountComponent, AccountProcedureRoot, AccountType, StorageMap, StorageSlot, StorageSlotName,
 };
@@ -16,24 +19,32 @@ use miden_protocol::asset::{AssetAmount, TokenSymbol};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{PausableManager, PausableStorage};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
-use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
-use miden_testing::assert_transaction_executor_error;
+use miden_standards::account::policies::{
+    BasicBlocklist, BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager,
+};
 use support::*;
 use xusdc_encoding::account::xreserve::{
-    XReserveStablecoinBuilder, XReserveStablecoinBuilderError,
+    XReserveStablecoinBuilder, XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH,
 };
+use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
 
 // Dummy faucet config words (the builder does not read them; they only bind the xreserve component's
 // value slots so it assembles, exactly as the composition harness does).
 const DUMMY_DOMAIN: u32 = 7;
 
+// R2-F2: the identifier value slot is the DEC-4 account-id fixpoint — it ships EMPTY at
+// composition and the builder REJECTS a non-empty seed (the faucet-bound `identifier_init` note
+// is its only writer). The fixtures below therefore declare an empty identifier; the
+// `build_rejects_nonempty_identifier_seed` test drives a non-empty one via
+// `xreserve_component_with_identifier`.
+
 /// Builds a fresh `(FungibleFaucet, AccountComponent)` pair from the assembled `xreserve` library —
 /// the two inputs `XReserveStablecoinBuilder::new` consumes. The component carries the standard
-/// 4-slot composition layout (so it binds) AND exports the deny-guard `check_policy` (so
-/// `mint_deny_guard_root` resolves). A fresh pair per call because `new` takes them by value.
-/// `is_max_supply_mutable` selects the faucet's stock mutability flag: production builds pass `true`
-/// (the builder now rejects immutable `max_supply`); the rejection tests whose own check fires first
-/// (non-public / missing-deny) and the immutable-rejection test pass `false`.
+/// 7-slot composition layout (so it binds) AND exports the attestation mint policy `check_policy`
+/// (so `attestation_mint_policy_root` resolves). A fresh pair per call because `new` takes them by
+/// value. `is_max_supply_mutable` selects the faucet's stock mutability flag: production builds pass
+/// `true` (the builder rejects immutable `max_supply`); the rejection tests whose own check fires
+/// first (non-public / missing-attestation-policy) and the immutable-rejection test pass `false`.
 fn faucet_and_component(is_max_supply_mutable: bool) -> Result<(FungibleFaucet, AccountComponent)> {
     Ok((
         production_faucet(is_max_supply_mutable, 6, "USDCX")?,
@@ -69,7 +80,8 @@ fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
                 StorageSlot::with_value(name, Word::from([DUMMY_DOMAIN, 0, 0, 0]))
             }
             l if l == IDENTIFIER_CONFIG_SLOT_LABEL => {
-                StorageSlot::with_value(name, Word::from([11u32, 12, 13, 14]))
+                // R2-F2: the identifier fixpoint ships EMPTY (the builder requires it).
+                StorageSlot::with_value(name, Word::empty())
             }
             _ => StorageSlot::with_value(name, Word::from([0u32, 0, 0, 0])),
         };
@@ -81,6 +93,34 @@ fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
         AccountComponentMetadata::new("xusdc-builder-api-xreserve"),
     )
     .context("binding the xreserve library + composition slots as a component")
+}
+
+/// The full 7-slot `xreserve` component but with the identifier value slot seeded to `identifier`
+/// (the fixture for the R2-F2 non-empty-identifier rejection test — every other slot matches the
+/// default fixture, so the ONLY difference exercised is the identifier value).
+fn xreserve_component_with_identifier(identifier: Word) -> Result<AccountComponent> {
+    let library = assemble_xreserve_lib()?;
+    let mut slots = Vec::new();
+    for label in ALL_XRESERVE_SLOT_LABELS {
+        let name = StorageSlotName::new(label).with_context(|| format!("slot label {label}"))?;
+        let slot = match label {
+            USED_NONCES_SLOT_LABEL | XRESERVE_ATTESTERS_SLOT_LABEL => {
+                StorageSlot::with_map(name, StorageMap::new())
+            }
+            l if l == DOMAIN_CONFIG_SLOT_LABEL => {
+                StorageSlot::with_value(name, Word::from([DUMMY_DOMAIN, 0, 0, 0]))
+            }
+            l if l == IDENTIFIER_CONFIG_SLOT_LABEL => StorageSlot::with_value(name, identifier),
+            _ => StorageSlot::with_value(name, Word::from([0u32, 0, 0, 0])),
+        };
+        slots.push(slot);
+    }
+    AccountComponent::new(
+        library,
+        slots,
+        AccountComponentMetadata::new("xusdc-builder-api-xreserve-identifier"),
+    )
+    .context("binding the xreserve library + composition slots (seeded identifier) as a component")
 }
 
 /// Builds a `FungibleFaucet` with configurable decimals/symbol — the fixture for the builder's
@@ -101,28 +141,15 @@ fn production_faucet(
         .context("failed to build FungibleFaucet")
 }
 
-/// Dummy config for the behavior fixture (the production-deny faucet drives stock mint_and_send,
-/// which does not read these).
-fn dummy_config() -> (Word, Word) {
-    (
-        Word::from([DUMMY_DOMAIN, 0, 0, 0]),
-        Word::from([11u32, 12, 13, 14]),
-    )
-}
-
-// BUILD + BEHAVIOR — production deny faucet
-// ================================================================================================
-
-/// The production `build_components` composes a deny-active PUBLIC faucet without error (the
-/// build-validation half). The BEHAVIOR half installs that exact production composition
-/// (`GuardSelection::ProductionDeny`) and asserts the stock `mint_and_send` traps with the exact
-/// ERR_XRESERVE_MINT_DENIED — i.e. the production deny composition genuinely denies, end to end.
-#[tokio::test]
-async fn build_produces_deny_active_public_faucet() -> Result<()> {
-    // build-validation half: the default builder (Public + deny active, mutable max_supply) composes
-    // cleanly.
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let components = XReserveStablecoinBuilder::new(
+/// The standard production builder over `(faucet, component)`: the seeded principal ids
+/// (owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3), BLK_MANAGER = id(4)) plus the REQUIRED
+/// build-seeded domain config (DEC-4) — every construction in this suite goes through here unless
+/// the test's very point is omitting the domain config.
+fn production_builder(
+    faucet: FungibleFaucet,
+    xreserve_component: AccountComponent,
+) -> XReserveStablecoinBuilder {
+    XReserveStablecoinBuilder::new(
         faucet,
         xreserve_component,
         test_account_id(1),
@@ -130,34 +157,52 @@ async fn build_produces_deny_active_public_faucet() -> Result<()> {
         test_account_id(3),
         test_account_id(4),
     )
-    .build_components();
-    assert!(
-        components.is_ok(),
-        "the default production builder must compose a deny-active Public faucet: {:?}",
-        components.err()
-    );
+    .with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN, test_xreserve_contract())
+}
 
-    // behavior half: the production-deny faucet must deny stock mint_and_send.
-    let (driver, probe) = {
-        let driver = mint_composition_driver_src(&[Felt::from(0u32)], 60, 6);
-        let probe = composition_supply_probe_src(0);
-        (driver, probe)
-    };
-    let (domain, identifier) = dummy_config();
-    let gm = setup_guarded_mint_account(
-        GuardSelection::ProductionDeny,
-        1_000_000,
-        0,
-        domain,
-        identifier,
-        None,
-        None,
-        &driver,
-        &probe,
-        true,
-    )?;
-    let result = run_mint_and_send(&gm.harness, Word::from([0u32, 1, 2, 3]), 0, 4, 100).await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_MINT_DENIED"));
+/// Resolves a library-path procedure root across the composed component set (the
+/// `wave1_recomposition.rs` resolve-helper pattern).
+fn resolve_proc_root(components: &[AccountComponent], path: &str) -> Option<Word> {
+    components
+        .iter()
+        .find_map(|c| c.get_procedure_root_by_path(path))
+        .map(Word::from)
+}
+
+/// Finds a named VALUE slot's word across the composed component set.
+fn find_value_slot(components: &[AccountComponent], name: &StorageSlotName) -> Option<Word> {
+    components
+        .iter()
+        .flat_map(|c| c.storage_slots().iter())
+        .find(|slot| slot.name() == name)
+        .map(|slot| slot.value())
+}
+
+// BUILD + POSTURE — the production attestation-gated faucet
+// ================================================================================================
+
+/// The production `build_components` composes an attestation-gated PUBLIC faucet without error (the
+/// build-validation half), and the composed set's ACTIVE mint-policy slot holds the attestation
+/// policy root resolved from the installed `xreserve` component — the builder-API half of the
+/// restated INV-MINT-SECURITY (the E2E halves live in `wave1_recomposition.rs` /
+/// `mint_policy_e2e.rs`).
+#[test]
+fn build_produces_attestation_gated_public_faucet() -> Result<()> {
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
+    let components = production_builder(faucet, xreserve_component)
+        .build_components()
+        .context(
+            "the default production builder must compose an attestation-gated Public faucet",
+        )?;
+
+    let attestation_root = resolve_proc_root(&components, ATTESTATION_MINT_POLICY_PROC_PATH)
+        .context("the composed set must carry the attestation mint policy proc")?;
+    let active = find_value_slot(&components, TokenPolicyManager::active_mint_policy_slot())
+        .context("the composed set must carry the active-mint-policy slot")?;
+    assert_eq!(
+        active, attestation_root,
+        "the ACTIVE mint policy slot must hold the attestation policy root (INV-MINT-SECURITY)"
+    );
     Ok(())
 }
 
@@ -165,21 +210,14 @@ async fn build_produces_deny_active_public_faucet() -> Result<()> {
 // ================================================================================================
 
 /// A non-`Public` account type is rejected at build time (packaging cannot produce an unobservable
-/// faucet). The non-public check runs before the guard resolution, so this fails fast. GREEN.
+/// faucet). The non-public check runs before the policy resolution, so this fails fast. GREEN.
 #[test]
 fn build_rejects_non_public_account_type() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(false)?;
-    let err = XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .account_type(AccountType::Private)
-    .build_components()
-    .expect_err("a non-Public account type must be rejected");
+    let err = production_builder(faucet, xreserve_component)
+        .account_type(AccountType::Private)
+        .build_components()
+        .expect_err("a non-Public account type must be rejected");
     assert!(
         matches!(
             err,
@@ -190,78 +228,139 @@ fn build_rejects_non_public_account_type() -> Result<()> {
     Ok(())
 }
 
-/// An active mint policy that is not the deny guard is rejected — packaging cannot silently drop the
-/// deny guard (the only mint policy production allows). GREEN.
+/// An active mint policy that is not the attestation policy is rejected — packaging cannot silently
+/// swap out the attestation gate (INV-MINT-SECURITY restated: the attestation policy is the only
+/// mint policy production allows). GREEN.
 #[test]
-fn build_rejects_missing_mint_deny_guard() -> Result<()> {
+fn build_rejects_missing_attestation_mint_policy() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(false)?;
-    let err = XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .with_active_mint_policy(MintPolicy::allow_all())
-    .build_components()
-    .expect_err("a non-deny active mint policy must be rejected");
+    let err = production_builder(faucet, xreserve_component)
+        .with_active_mint_policy(MintPolicy::allow_all())
+        .build_components()
+        .expect_err("a non-attestation active mint policy must be rejected");
     assert!(
-        matches!(err, XReserveStablecoinBuilderError::MissingMintDenyGuard),
-        "expected MissingMintDenyGuard, got {err:?}"
+        matches!(
+            err,
+            XReserveStablecoinBuilderError::MissingAttestationMintPolicy
+        ),
+        "expected MissingAttestationMintPolicy, got {err:?}"
     );
     Ok(())
 }
 
-/// An active burn policy that is not the installed `burn_policy::check_policy` is rejected (the
-/// burn-slot twin of [`build_rejects_missing_mint_deny_guard`]): packaging cannot drop the burn
-/// security predicate (CMP-A10, R-BURN-1/2). The faucet is otherwise valid (Public + deny mint active +
-/// mutable max_supply) so the burn guard is the SOLE reason for rejection — removing the guard makes
-/// this build succeed (removal-based non-vacuity).
+/// An active burn policy that is not the stock `MinBurnAmount` is rejected (the burn-slot twin of
+/// [`build_rejects_missing_attestation_mint_policy`]): packaging cannot drop the minimum-burn floor
+/// predicate (R-BURN-1/2 preserved through the stock policy since the Wave-1 S1 swap). The faucet is
+/// otherwise valid (Public + attestation mint active + mutable max_supply) so the burn policy is the
+/// SOLE reason for rejection — removing the guard makes this build succeed (removal-based
+/// non-vacuity).
 #[test]
-fn denies_non_policy_burn() -> Result<()> {
+fn build_rejects_non_min_burn_amount_burn_policy() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let result = XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .with_active_burn_policy(BurnPolicy::allow_all())
-    .build_components();
+    let result = production_builder(faucet, xreserve_component)
+        .with_active_burn_policy(BurnPolicy::allow_all())
+        .build_components();
     assert!(
         matches!(
             result,
-            Err(XReserveStablecoinBuilderError::MissingBurnPolicyGuard)
+            Err(XReserveStablecoinBuilderError::MissingMinBurnAmountPolicy)
         ),
         "production build_components must reject an AllowAll active burn policy with \
-         MissingBurnPolicyGuard (the burn-slot twin of MissingMintDenyGuard); got Ok/other: {:?}",
+         MissingMinBurnAmountPolicy (the burn-slot twin of MissingAttestationMintPolicy); got \
+         Ok/other: {:?}",
         result.as_ref().map(|c| c.len())
+    );
+    Ok(())
+}
+
+/// R2-F1 (the same-root zero-floor bypass): an explicit `with_active_burn_policy` override that
+/// carries the STOCK `MinBurnAmount` root — so it slips past the root check — but a ZERO-valued
+/// companion must be rejected with the EXACT `BurnPolicyFloorMismatch`. Without this guard the
+/// override installs its own zero-floor `MinBurnAmount` companion, and the stock predicate is
+/// `min <= amount`, so it restores zero-amount burns despite the builder's `min_burn_size`
+/// validation. This is the adversarial companion the burn-side lacked (only AllowAll and
+/// `min_burn_size(0)` were covered).
+#[test]
+fn build_rejects_same_root_zero_seeded_min_burn_override() -> Result<()> {
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
+    // a SAME-ROOT override (MinBurnAmount::root()) carrying a ZERO floor companion; the default
+    // validated min_burn_size is 1.
+    let zero_override = BurnPolicy::min_burn_amount(AssetAmount::new(0)?);
+    let err = production_builder(faucet, xreserve_component)
+        .with_active_burn_policy(zero_override)
+        .build_components()
+        .expect_err("a same-root zero-seeded MinBurnAmount override must be rejected");
+    assert!(
+        matches!(
+            err,
+            XReserveStablecoinBuilderError::BurnPolicyFloorMismatch {
+                requested: 0,
+                expected: 1
+            }
+        ),
+        "expected BurnPolicyFloorMismatch {{ requested: 0, expected: 1 }}, got {err:?}"
+    );
+    Ok(())
+}
+
+/// R2-F1 (positive control): a same-root override whose companion floor MATCHES the validated
+/// `min_burn_size` is accepted, and the shipped faucet's floor slot is exactly that value — the
+/// override cannot lower the floor, only restate it.
+#[test]
+fn build_accepts_matching_min_burn_override() -> Result<()> {
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
+    let matching = BurnPolicy::min_burn_amount(AssetAmount::new(7)?);
+    let components = production_builder(faucet, xreserve_component)
+        .min_burn_size(7)
+        .with_active_burn_policy(matching)
+        .build_components()
+        .context("a matching-floor override must be accepted")?;
+    let floor = components
+        .iter()
+        .flat_map(|c| c.storage_slots().iter())
+        .find(|s| s.name() == MinBurnAmount::slot_name())
+        .map(|s| s.value())
+        .context("the shipped set must carry the MinBurnAmount floor slot")?;
+    assert_eq!(
+        floor,
+        Word::from([7u32, 0, 0, 0]),
+        "the shipped floor must be the validated min_burn_size (7)"
+    );
+    Ok(())
+}
+
+/// R2-F2 (the identifier fixpoint): a build whose supplied `xreserve` component declares a
+/// NON-EMPTY identifier value slot must be rejected with the EXACT `IdentifierNotEmpty`. The
+/// identifier is the DEC-4 account-id fixpoint (the account id derives from the initial storage
+/// commitment), so it can never be build-seeded — a non-empty identifier would ship an
+/// already-initialized, potentially misbound faucet and make `identifier_init` trap as a reinit.
+#[test]
+fn build_rejects_nonempty_identifier_seed() -> Result<()> {
+    let faucet = production_faucet(true, 6, "USDCX")?;
+    // the component ships a NON-EMPTY identifier — exactly what the fixpoint forbids.
+    let xreserve_component = xreserve_component_with_identifier(Word::from([11u32, 12, 13, 14]))?;
+    let err = production_builder(faucet, xreserve_component)
+        .build_components()
+        .expect_err("a non-empty declared identifier must be rejected (DEC-4 fixpoint)");
+    assert!(
+        matches!(err, XReserveStablecoinBuilderError::IdentifierNotEmpty),
+        "expected IdentifierNotEmpty, got {err:?}"
     );
     Ok(())
 }
 
 /// An immutable-`max_supply` faucet is rejected at build time: the stock `set_max_supply` admin
 /// function would otherwise ship permanently dead (every call traps the runtime mutability gate). The
-/// faucet here is otherwise valid (Public + deny active) and differs ONLY in mutability, so the guard
-/// is the sole reason for rejection — and deleting the guard makes this build succeed (removal-based
-/// non-vacuity). `faucet_and_component(false)` builds an IMMUTABLE faucet, exactly the misconfiguration
-/// the guard exists to reject.
+/// faucet here is otherwise valid (Public + attestation active) and differs ONLY in mutability, so the
+/// guard is the sole reason for rejection — and deleting the guard makes this build succeed
+/// (removal-based non-vacuity). `faucet_and_component(false)` builds an IMMUTABLE faucet, exactly the
+/// misconfiguration the guard exists to reject.
 #[test]
 fn build_rejects_immutable_max_supply() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(false)?;
-    let err = XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .build_components()
-    .expect_err("an immutable-max-supply faucet must be rejected at build time");
+    let err = production_builder(faucet, xreserve_component)
+        .build_components()
+        .expect_err("an immutable-max-supply faucet must be rejected at build time");
     assert!(
         matches!(err, XReserveStablecoinBuilderError::ImmutableMaxSupply),
         "expected ImmutableMaxSupply, got {err:?}"
@@ -269,15 +368,16 @@ fn build_rejects_immutable_max_supply() -> Result<()> {
     Ok(())
 }
 
-// PRODUCTION minBurnSize SEEDING (CMP-A10)
+// PRODUCTION minBurnSize SEEDING (the stock MinBurnAmount floor slot since Wave-1 S1)
 // ================================================================================================
 
-/// Production `build_components` SEEDS the minBurnSize config slot
-/// (`xusdc::xreserve::attester_admin::min_burn_size` = `[min_burn_size, 0, 0, 0]`) so the burn policy's
-/// R-BURN-2 read resolves on a real production faucet — the builder owns a `min_burn_size`
-/// default/override and binds the slot onto the xreserve component (the future CMP-F2 `set_min_burn_size`
-/// co-owns the SAME slot). The expected value uses the canonical full-u64 `AssetAmount -> Felt`, so an
-/// `as u32` truncation in the seed would fail this test (see the MIN_BURN choice below).
+/// Production `build_components` SEEDS the STOCK `MinBurnAmount` floor slot
+/// (`MinBurnAmount::slot_name()` = `[min_burn_size, 0, 0, 0]`, carried by the policy companion
+/// component the manager emits) so the stock burn policy's floor read resolves on a real production
+/// faucet — the builder owns a `min_burn_size` default/override, and the reworked
+/// `set_min_burn_size` admin note mutates the SAME slot at runtime. The expected value uses the
+/// canonical full-u64 `AssetAmount -> Felt`, so an `as u32` truncation in the seed would fail this
+/// test (see the MIN_BURN choice below).
 #[test]
 fn production_seeds_min_burn_size() -> Result<()> {
     // Anti-truncation: minBurnSize is a FULL `u64` `AssetAmount` (`AssetAmount::MAX` =
@@ -290,51 +390,83 @@ fn production_seeds_min_burn_size() -> Result<()> {
         "MIN_BURN must exceed u32::MAX so the encoding test catches u32 truncation",
     );
     let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let components = XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .min_burn_size(MIN_BURN)
-    .build_components()
-    .context("production build_components must compose")?;
+    let components = production_builder(faucet, xreserve_component)
+        .min_burn_size(MIN_BURN)
+        .build_components()
+        .context("production build_components must compose")?;
 
-    let slot_name =
-        StorageSlotName::new(MIN_BURN_SIZE_SLOT_LABEL).context("min_burn_size slot label")?;
-    let slot = components
-        .iter()
-        .flat_map(|c| c.storage_slots().iter())
-        .find(|s| s.name() == &slot_name)
-        .with_context(|| {
-            format!(
-                "production build_components must seed the minBurnSize slot \
-                 '{MIN_BURN_SIZE_SLOT_LABEL}' (GREEN); none of the {} composed components carries it",
-                components.len()
-            )
-        })?;
-    // Canonical FULL-u64 encoding via the protocol's own `AssetAmount -> Felt` (asset_amount.rs:129
-    // `Felt::try_from(u64)`), NOT `MIN_BURN as u32` — so a green seed that truncated the high bits
-    // would mismatch and fail here.
+    let floor = find_value_slot(&components, MinBurnAmount::slot_name()).with_context(|| {
+        format!(
+            "production build_components must install the stock MinBurnAmount floor slot \
+             '{}' (the policy companion); none of the {} composed components carries it",
+            MinBurnAmount::slot_name(),
+            components.len()
+        )
+    })?;
+    // Canonical FULL-u64 encoding via the protocol's own `AssetAmount -> Felt`, NOT `MIN_BURN as
+    // u32` — so a seed that truncated the high bits would mismatch and fail here.
     let expected_min_burn =
         Felt::from(AssetAmount::new(MIN_BURN).context("MIN_BURN must be within AssetAmount::MAX")?);
     assert_eq!(
-        slot.value(),
+        floor,
         Word::from([expected_min_burn, Felt::ZERO, Felt::ZERO, Felt::ZERO]),
-        "the seeded minBurnSize slot must carry the FULL-u64 [min_burn_size, 0, 0, 0] (no u32 truncation)"
+        "the seeded MinBurnAmount floor slot must carry the FULL-u64 [min_burn_size, 0, 0, 0] (no \
+         u32 truncation)"
+    );
+    Ok(())
+}
+
+/// A `min_burn_size` below the floor (= 1) is rejected with the EXACT `MinBurnSizeBelowFloor(0)`:
+/// the stock `MinBurnAmount` asserts only `min <= amount` (its stock setter even accepts 0), so a
+/// zero seed would silently drop the R-BURN-1 zero-burn invariant — the builder half of the
+/// zero-floor guard (the runtime half is the reworked `set_min_burn_size` note's assert). The faucet
+/// is otherwise valid, so the sub-floor seed is the SOLE reason for rejection.
+#[test]
+fn build_rejects_zero_min_burn_size() -> Result<()> {
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
+    let err = production_builder(faucet, xreserve_component)
+        .min_burn_size(0)
+        .build_components()
+        .expect_err("a min_burn_size of 0 must be rejected at build time (zero-floor invariant)");
+    assert!(
+        matches!(
+            err,
+            XReserveStablecoinBuilderError::MinBurnSizeBelowFloor(0)
+        ),
+        "expected MinBurnSizeBelowFloor(0), got {err:?}"
     );
     Ok(())
 }
 
 /// A `min_burn_size` exceeding `AssetAmount::MAX` (`2^63 - 2^31`) cannot be a valid burn amount / field
 /// element, so `build_components` REJECTS it with `MinBurnSizeExceedsMax` rather than panicking or
-/// silently truncating it into the `MIN_BURN_SIZE_SLOT`. The faucet is otherwise valid (Public + deny
-/// mint active + mutable max_supply), so the oversized minBurnSize is the SOLE reason for rejection.
+/// silently truncating it into the stock `MinBurnAmount` floor slot. The faucet is otherwise valid
+/// (Public + attestation mint active + mutable max_supply), so the oversized minBurnSize is the SOLE
+/// reason for rejection.
 #[test]
 fn build_rejects_min_burn_size_exceeding_max() -> Result<()> {
     let over_max = AssetAmount::MAX.as_u64() + 1;
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
+    let err = production_builder(faucet, xreserve_component)
+        .min_burn_size(over_max)
+        .build_components()
+        .expect_err("a min_burn_size exceeding AssetAmount::MAX must be rejected at build time");
+    assert!(
+        matches!(err, XReserveStablecoinBuilderError::MinBurnSizeExceedsMax(v) if v == over_max),
+        "expected MinBurnSizeExceedsMax({over_max}), got {err:?}"
+    );
+    Ok(())
+}
+
+// DEC-4 DOMAIN-CONFIG SEEDING — required input + build-time slot writes
+// ================================================================================================
+
+/// Omitting `with_domain_config` is rejected with the EXACT `MissingDomainConfig`: DEC-4 moved the
+/// three non-identifier domain-config fields to build time, so a build without them would ship a
+/// faucet whose D5a domain compare reads an empty slot. The builder is otherwise fully valid, so the
+/// missing domain config is the SOLE reason for rejection.
+#[test]
+fn build_rejects_missing_domain_config() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
     let err = XReserveStablecoinBuilder::new(
         faucet,
@@ -344,12 +476,60 @@ fn build_rejects_min_burn_size_exceeding_max() -> Result<()> {
         test_account_id(3),
         test_account_id(4),
     )
-    .min_burn_size(over_max)
     .build_components()
-    .expect_err("a min_burn_size exceeding AssetAmount::MAX must be rejected at build time");
+    .expect_err("a build without with_domain_config must be rejected (DEC-4)");
     assert!(
-        matches!(err, XReserveStablecoinBuilderError::MinBurnSizeExceedsMax(v) if v == over_max),
-        "expected MinBurnSizeExceedsMax({over_max}), got {err:?}"
+        matches!(err, XReserveStablecoinBuilderError::MissingDomainConfig),
+        "expected MissingDomainConfig, got {err:?}"
+    );
+    Ok(())
+}
+
+/// The build SEEDS the three DEC-4 domain-config fields into the declared xreserve slots —
+/// `[domain, 0, 0, 0]`, `[source_domain, 0, 0, 0]`, and the packed `xreserve_contract` hi/lo words
+/// (hi = packed felts 0..4 / wire bytes 0..16, lo = felts 4..8) — while the `identifier` slot stays
+/// EMPTY through the build (the account-id fixpoint: the builder never seeds it, and the
+/// faucet-bound `identifier_init` note is its only writer).
+#[test]
+fn build_seeds_the_domain_config_slots() -> Result<()> {
+    let (faucet, xreserve_component) = faucet_and_component(true)?;
+    let components = production_builder(faucet, xreserve_component)
+        .build_components()
+        .context("production build_components must compose")?;
+
+    let slot = |label: &str| -> Result<Word> {
+        find_value_slot(
+            &components,
+            &StorageSlotName::new(label).with_context(|| format!("slot label {label}"))?,
+        )
+        .with_context(|| format!("the composed set must carry the '{label}' slot"))
+    };
+    assert_eq!(
+        slot(DOMAIN_CONFIG_SLOT_LABEL)?,
+        Word::from([TEST_DOMAIN, 0, 0, 0]),
+        "the domain slot must hold the build-seeded [domain, 0, 0, 0]"
+    );
+    assert_eq!(
+        slot(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)?,
+        Word::from([TEST_SOURCE_DOMAIN, 0, 0, 0]),
+        "the source_domain slot must hold the build-seeded [source_domain, 0, 0, 0]"
+    );
+    let xrc = bytes32_to_packed_felts(&test_xreserve_contract());
+    assert_eq!(
+        slot(XRESERVE_CONTRACT_HI_SLOT_LABEL)?,
+        Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]),
+        "the xreserve_contract_hi slot must hold the packed wire bytes 0..16"
+    );
+    assert_eq!(
+        slot(XRESERVE_CONTRACT_LO_SLOT_LABEL)?,
+        Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]),
+        "the xreserve_contract_lo slot must hold the packed wire bytes 16..32"
+    );
+    assert_eq!(
+        slot(IDENTIFIER_CONFIG_SLOT_LABEL)?,
+        Word::empty(),
+        "the identifier slot must stay EMPTY through the build (DEC-4 fixpoint: the builder never \
+         seeds it — the faucet-bound identifier_init note is its only writer)"
     );
     Ok(())
 }
@@ -365,16 +545,9 @@ fn build_rejects_min_burn_size_exceeding_max() -> Result<()> {
 #[test]
 fn builder_installs_no_stock_pause_manager() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let components = XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .build_components()
-    .context("production build_components must compose")?;
+    let components = production_builder(faucet, xreserve_component)
+        .build_components()
+        .context("production build_components must compose")?;
 
     let banned = [
         PausableManager::pause_root(),
@@ -408,16 +581,9 @@ fn builder_installs_no_stock_pause_manager() -> Result<()> {
 #[test]
 fn production_components_carry_is_paused_slot() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let components = XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .build_components()
-    .context("production build_components must compose")?;
+    let components = production_builder(faucet, xreserve_component)
+        .build_components()
+        .context("production build_components must compose")?;
 
     let is_paused = PausableStorage::is_paused_slot();
     assert!(
@@ -444,16 +610,9 @@ fn production_components_carry_is_paused_slot() -> Result<()> {
 #[test]
 fn production_components_carry_mutability_config_slot() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let components = XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .build_components()
-    .context("production build_components must compose")?;
+    let components = production_builder(faucet, xreserve_component)
+        .build_components()
+        .context("production build_components must compose")?;
 
     let mutability = StorageSlotName::new("miden::standards::faucets::mutability_config")
         .context("the pinned mutability_config slot name")?;
@@ -504,16 +663,9 @@ fn build_rejects_missing_xreserve_slot(#[case] omitted: usize) -> Result<()> {
         .collect();
     let component = xreserve_component_with_slots(&labels)?;
     let faucet = production_faucet(true, 6, "USDCX")?;
-    let err = XReserveStablecoinBuilder::new(
-        faucet,
-        component,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .build_components()
-    .expect_err("a component missing a required xreserve slot must be rejected at build time");
+    let err = production_builder(faucet, component)
+        .build_components()
+        .expect_err("a component missing a required xreserve slot must be rejected at build time");
     let missing = ALL_XRESERVE_SLOT_LABELS[omitted];
     assert!(
         matches!(err, XReserveStablecoinBuilderError::MissingXReserveSlot(l) if l == missing),
@@ -531,16 +683,9 @@ fn build_rejects_missing_xreserve_slot(#[case] omitted: usize) -> Result<()> {
 fn build_rejects_wrong_decimals() -> Result<()> {
     let component = xreserve_component_with_slots(&ALL_XRESERVE_SLOT_LABELS)?;
     let faucet = production_faucet(true, 7, "USDCX")?;
-    let err = XReserveStablecoinBuilder::new(
-        faucet,
-        component,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .build_components()
-    .expect_err("a faucet with decimals != 6 must be rejected at build time");
+    let err = production_builder(faucet, component)
+        .build_components()
+        .expect_err("a faucet with decimals != 6 must be rejected at build time");
     assert!(
         matches!(err, XReserveStablecoinBuilderError::WrongDecimals(7)),
         "expected WrongDecimals(7), got {err:?}"
@@ -558,16 +703,11 @@ fn build_rejects_wrong_decimals() -> Result<()> {
 fn build_rejects_wrong_token_symbol() -> Result<()> {
     let component = xreserve_component_with_slots(&ALL_XRESERVE_SLOT_LABELS)?;
     let faucet = production_faucet(true, 6, "XUSDC")?;
-    let err = XReserveStablecoinBuilder::new(
-        faucet,
-        component,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .build_components()
-    .expect_err("a faucet whose symbol is not the shipped USDCX must be rejected at build time");
+    let err = production_builder(faucet, component)
+        .build_components()
+        .expect_err(
+            "a faucet whose symbol is not the shipped USDCX must be rejected at build time",
+        );
     assert!(
         matches!(err, XReserveStablecoinBuilderError::WrongTokenSymbol),
         "expected WrongTokenSymbol, got {err:?}"
@@ -575,43 +715,59 @@ fn build_rejects_wrong_token_symbol() -> Result<()> {
     Ok(())
 }
 
-// S18 — THE POLICY-COMPANION SEAM (MIGRATION-V16-ALPHA2.md S18)
+// S18 — THE POLICY-COMPANION SEAM (MIGRATION-V16-ALPHA2.md S18; Wave-1 S1 rework)
 // ================================================================================================
-// At v0.16 the policy descriptors CARRY their `custom()` companion components, and the manager's
-// iterator emits one companion copy per DISTINCT policy root (deny + burn = two copies of the same
-// xreserve component) after the manager component itself. The builder installs the xreserve
-// component EXACTLY ONCE and drops those two recognized copies at the seam — anything else is a
-// loud `PolicyCompanionMismatch`, never a silent drop. These two tests pin both directions.
+// At v0.16 the policy descriptors CARRY their companion components, and the manager's iterator
+// emits the companions per DISTINCT policy root after the manager component itself. With the
+// recomposed policy set the remainder is EXACTLY THREE: one xreserve copy (the custom attestation
+// mint policy), one stock `MinBurnAmount` companion (the burn floor), and one `BasicBlocklist`
+// companion (the shared send/receive transfer policy). The builder installs the xreserve component
+// EXACTLY ONCE (dropping the recognized copy) and INSTALLS the two stock companions — anything
+// else is a loud `PolicyCompanionMismatch`, never a silent drop. These two tests pin both
+// directions.
 
 /// POSITIVE shape: the production composition carries EXACTLY ONE component whose code is the
-/// installed xreserve library and EXACTLY ONE policy-manager component (no duplicate install, no
-/// dropped manager). A duplicate xreserve copy would hard-reject the account build with
+/// installed xreserve library, EXACTLY ONE policy-manager component, and EXACTLY ONE each of the
+/// stock `MinBurnAmount` + `BasicBlocklist` companions — in the pinned install order
+/// [faucet, Pausable, xreserve, MinBurnAmount, BasicBlocklist, manager, Ownable2Step, RBAC,
+/// Authority]. A duplicate xreserve copy would hard-reject the account build with
 /// `DuplicateStorageSlotName`, so this is the build-time tripwire for that failure.
 #[test]
 fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
     let xreserve_code = xreserve_component.component_code().clone();
-    let components = XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .build_components()
-    .context("the production composition must build")?;
+    let components = production_builder(faucet, xreserve_component)
+        .build_components()
+        .context("the production composition must build")?;
 
-    let xreserve_copies = components
-        .iter()
-        .filter(|c| c.component_code().as_library() == xreserve_code.as_library())
-        .count();
     assert_eq!(
-        xreserve_copies, 1,
-        "the xreserve component must be installed EXACTLY once (the policy companions are dropped \
-         at the seam); a second copy hard-rejects the account build with DuplicateStorageSlotName"
+        components.len(),
+        9,
+        "the recomposed production set is exactly the nine pinned components"
     );
-
+    let count_by_code = |code: &AccountComponentCode| {
+        components
+            .iter()
+            .filter(|c| c.component_code().as_library() == code.as_library())
+            .count()
+    };
+    assert_eq!(
+        count_by_code(&xreserve_code),
+        1,
+        "the xreserve component must be installed EXACTLY once (the policy companion copy is \
+         dropped at the seam); a second copy hard-rejects the account build with \
+         DuplicateStorageSlotName"
+    );
+    assert_eq!(
+        count_by_code(MinBurnAmount::code()),
+        1,
+        "the composition must carry EXACTLY one stock MinBurnAmount companion (the burn floor)"
+    );
+    assert_eq!(
+        count_by_code(BasicBlocklist::code()),
+        1,
+        "the composition must carry EXACTLY one BasicBlocklist companion (send + receive share it)"
+    );
     let manager_components = components
         .iter()
         .filter(|c| c.metadata().name() == TokenPolicyManager::NAME)
@@ -620,61 +776,79 @@ fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> 
         manager_components, 1,
         "the composition must carry EXACTLY one policy-manager component"
     );
+
+    // the pinned install ORDER of the identifiable middle run: xreserve at index 2, then the
+    // MinBurnAmount + BasicBlocklist companions, then the manager (Wave-1 S1 component order).
+    assert!(
+        components[2].component_code().as_library() == xreserve_code.as_library(),
+        "component 2 must be the xreserve component"
+    );
+    assert!(
+        components[3].component_code().as_library() == MinBurnAmount::code().as_library(),
+        "component 3 must be the stock MinBurnAmount companion"
+    );
+    assert!(
+        components[4].component_code().as_library() == BasicBlocklist::code().as_library(),
+        "component 4 must be the BasicBlocklist companion"
+    );
+    assert_eq!(
+        components[5].metadata().name(),
+        TokenPolicyManager::NAME,
+        "component 5 must be the policy-manager component"
+    );
     Ok(())
 }
 
-/// NEGATIVE (the anti-smuggling proof): a policy override whose root IS the deny guard — so it
-/// passes the `MissingMintDenyGuard` root check — but whose companion vector smuggles a FOREIGN
-/// component is rejected at the seam with the exact `PolicyCompanionMismatch`, and the diagnostic
-/// exposes the extra: the remainder holds 3 companions of which only 2 are the installed xreserve
-/// component. Without this seam the foreign component would ride into the account silently.
+/// NEGATIVE (the anti-smuggling proof): a policy override whose root IS the attestation policy — so
+/// it passes the `MissingAttestationMintPolicy` root check — but whose companion vector smuggles a
+/// FOREIGN component is rejected at the seam with the exact `PolicyCompanionMismatch`, and the
+/// diagnostic exposes the extra: the remainder holds 4 companions of which only 3 are recognized
+/// (1 xreserve + 1 MinBurnAmount + 1 BasicBlocklist). Without this seam the foreign component would
+/// ride into the account silently.
 #[test]
 fn seam_rejects_a_smuggled_foreign_policy_companion() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let builder = XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component.clone(),
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    );
-    let deny_root = builder
-        .mint_deny_guard_root()
-        .context("the deny-guard root resolves from the installed component")?;
+    let builder = production_builder(faucet, xreserve_component.clone());
+    let attestation_root = builder
+        .attestation_mint_policy_root()
+        .context("the attestation-policy root resolves from the installed component")?;
 
     // A stock component the production composition never installs through a POLICY — the smuggled
-    // payload. The override's ROOT is still the deny guard, so the INV-MINT-SECURITY check passes
-    // and the seam is the only thing standing between this component and the account.
+    // payload. The override's ROOT is still the attestation policy, so the INV-MINT-SECURITY check
+    // passes and the seam is the only thing standing between this component and the account.
     let foreign: AccountComponent = PausableManager.into();
     let smuggling_policy = MintPolicy::custom(
-        AccountProcedureRoot::from_raw(deny_root),
+        AccountProcedureRoot::from_raw(attestation_root),
         [xreserve_component, foreign],
     )
-    .context("the smuggling policy still resolves to the deny-guard root")?;
+    .context("the smuggling policy still resolves to the attestation-policy root")?;
 
     let err = builder
         .with_active_mint_policy(smuggling_policy)
         .build_components()
-        .expect_err("a policy companion that is not the installed xreserve component must reject");
-    // With the F4-reversal transfer blocklist wired, the manager's companion remainder is the two
-    // recognized xreserve copies (mint + burn) + one recognized BasicBlocklist companion; the
-    // smuggled foreign PausableManager rides in via the mint policy, so `found` is 4 with only 3
-    // recognized — the foreign is visible as `found > xreserve_recognized + blocklist_recognized`.
+        .expect_err("a policy companion that is not a recognized companion must reject");
+    // The manager's companion remainder for the smuggled build: the mint policy emits its TWO
+    // companions (the xreserve copy + the foreign PausableManager), the stock burn policy its ONE
+    // MinBurnAmount companion, and the transfer policies their ONE shared BasicBlocklist — so
+    // `found` is 4 with only 3 recognized: the foreign is visible as
+    // `found > xreserve_recognized + min_burn_recognized + blocklist_recognized`.
     assert!(
         matches!(
             err,
             XReserveStablecoinBuilderError::PolicyCompanionMismatch {
-                expected_xreserve: 2,
+                expected_xreserve: 1,
+                expected_min_burn: 1,
                 expected_blocklist: 1,
                 found: 4,
-                xreserve_recognized: 2,
+                xreserve_recognized: 1,
+                min_burn_recognized: 1,
                 blocklist_recognized: 1,
             }
         ),
-        "expected PolicyCompanionMismatch{{expected_xreserve:2, expected_blocklist:1, found:4, \
-         xreserve_recognized:2, blocklist_recognized:1}} (the foreign companion must be visible as \
-         found > xreserve_recognized + blocklist_recognized), got {err:?}"
+        "expected PolicyCompanionMismatch{{expected_xreserve:1, expected_min_burn:1, \
+         expected_blocklist:1, found:4, xreserve_recognized:1, min_burn_recognized:1, \
+         blocklist_recognized:1}} (the foreign companion must be visible as found > the recognized \
+         sum), got {err:?}"
     );
     Ok(())
 }

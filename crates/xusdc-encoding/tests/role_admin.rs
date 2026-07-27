@@ -15,7 +15,8 @@
 //!
 //! The load-bearing proof is the ROTATION CAPABILITY SEAM, never a config read-back alone:
 //! a DOM_MANAGER-sent `grant_role(DOM_PAUSER, new)` flips REAL pause power (the new member's pause
-//! HALTS a real `xreserve_mint` at the exact `ERR_PAUSABLE_IS_PAUSED`), and a DOM_MANAGER-sent
+//! HALTS a real attested mint — the Wave-1 S1 stock-`MintNote` transport — at the exact
+//! `ERR_PAUSABLE_IS_PAUSED`), and a DOM_MANAGER-sent
 //! `revoke_role` removes it (the revoked member's pause REJECTS the exact `ERR_SENDER_LACKS_ROLE`).
 //! The OWNER's rotation authority is Circle's BACKSTOP — at v0.16 (#3215 removed the owner's
 //! implicit super-admin standing) it runs through the built-in `ADMIN` role the builder seeds on the
@@ -31,8 +32,9 @@
 //! then a post-transfer owner lacks RBAC administration (builder.rs KNOWN DIVERGENCE).
 //!
 //! FIXTURE RULE (shipped-build provenance): every test here runs on a PRODUCTION-composed account —
-//! `setup_guarded_mint_account(GuardSelection::ProductionDeny, ...)` = the real
-//! `XReserveStablecoinBuilder::build_components()`. The burn-oracle support-replica fixture
+//! the pure gating cells on `setup_guarded_mint_account(GuardSelection::ProductionAttestation, ...)`
+//! and the mint-capability seams on `setup_production_faucet(...)`, BOTH of which compose via the
+//! real `XReserveStablecoinBuilder::build_components()`. The burn-oracle support-replica fixture
 //! (`setup_burn_policy_account`) is used by NO test in this file; replica fidelity is pinned
 //! separately in `set_min_burn.rs::support_replica_carries_delegation_seed`.
 //!
@@ -46,15 +48,24 @@
 
 mod support;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::{AccountId, RoleSymbol};
 use miden_protocol::errors::MasmError;
+use miden_protocol::note::Note;
+use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
+use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
-use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
-use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
+use xusdc_encoding::note::xreserve_admin::{
+    XReserveGrantRoleNote, XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote,
+    XReserveSetAttesterNote,
+};
+use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
+use xusdc_encoding::vectors::{load, DiVector};
+use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
 
 // The production builder seeds owner = id(1) (Ownable2Step), DOM_PAUSER = id(2), DOM_MANAGER = id(3).
 // id(4)/id(5) are fresh member candidates the rotation grants; id(99) is a plain stranger.
@@ -108,19 +119,37 @@ fn err_account_not_in_role() -> MasmError {
 // (set_attester.rs `guarded_faucet`, pause_admin.rs `guarded_mint_ready` are private to their files).
 // ================================================================================================
 
-/// Config words the builder does not read (the gating tests invoke rbac procs via notes, never the
-/// mint driver). Mirrors set_attester.rs.
+/// Config words the builder does not read (the gating tests invoke rbac procs via notes, never a
+/// mint). Mirrors set_attester.rs.
 fn dummy_config() -> (Word, Word) {
     (Word::from([7u32, 0, 0, 0]), Word::from([11u32, 12, 13, 14]))
 }
 
+/// A compilable stand-in for the DELETED custom mint driver (the Wave-1 S1 recomposition removed
+/// `xreserve::xreserve_mint`, so the former generated driver no longer assembles): the gating cells
+/// never invoke the driver proc — the guarded fixture only needs a component that compiles.
+fn placeholder_driver_src() -> String {
+    "#! Test driver stand-in: never invoked by this suite (the custom mint entry was deleted by\n\
+     #! the Wave-1 S1 recomposition); the guarded fixture only requires a compilable component.\n\
+     #!\n\
+     #! Inputs:  [pad(16)]\n\
+     #! Outputs: [pad(16)]\n\
+     #!\n\
+     #! Invocation: call\n\
+     @account_procedure\n\
+     pub proc drive\n\
+     \x20\x20\x20\x20push.0 drop\n\
+     end\n"
+        .to_string()
+}
+
 /// The LEAN production faucet — the base for the gating-matrix cells that never execute a mint.
 fn production_faucet() -> Result<GuardedMint> {
-    let driver = mint_composition_driver_src(&[Felt::from(0u32)], 60, 6);
+    let driver = placeholder_driver_src();
     let probe = composition_supply_probe_src(0);
     let (domain, identifier) = dummy_config();
     setup_guarded_mint_account(
-        GuardSelection::ProductionDeny,
+        GuardSelection::ProductionAttestation,
         1_000_000,
         0,
         domain,
@@ -133,15 +162,20 @@ fn production_faucet() -> Result<GuardedMint> {
     )
 }
 
-// MINT-SEAM FIXTURES (reconstructed from the canonical accept payload — mirrors pause_admin.rs)
+// MINT-SEAM FIXTURES (the recomposed REAL stock-MintNote transport — mirrors mint_policy_e2e.rs)
 // ================================================================================================
 
 const BASE_VECTOR: &str = "di-pos-empty-hookdata";
-const LEN_FELTS: u64 = 60;
-const SCALE_EXP: u32 = 6;
-const HAPPY_AMOUNT_RAW: u64 = 2_000_000;
-const HAPPY_MAX_FEE_RAW: u64 = 1_000_000;
-const MARKER: [u32; 4] = [1, 0, 0, 0];
+const MINT_MAX_SUPPLY: u64 = 1_000_000_000_000;
+const MINT_AMOUNT: u64 = 250_000_000;
+const MAX_FEE_RAW: u64 = 1;
+
+/// First byte of the 32-byte `remoteRecipient` field (felt 19 x 4 bytes; DC-1).
+const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
+/// First byte of the 32-byte `remoteToken` field (felt 11 x 4 bytes; DC-1).
+const REMOTE_TOKEN_BYTE_OFF: usize = 11 * 4;
+/// First byte of the 32-byte `nonce` field (felt 51 x 4 bytes; DC-1).
+const NONCE_BYTE_OFF: usize = 51 * 4;
 
 fn di(id: &str) -> &'static DiVector {
     load()
@@ -152,113 +186,187 @@ fn di(id: &str) -> &'static DiVector {
         .unwrap_or_else(|| panic!("canonical artifact is missing di vector {id}"))
 }
 
-fn fields_of(id: &str) -> &'static DiFields {
-    di(id)
-        .fields
-        .as_ref()
-        .expect("accept vector carries fields")
-}
-
-fn with_amounts(mut payload: Vec<u8>, amount: u64, max_fee: u64) -> Vec<u8> {
+/// The canonical accept payload with the wire amount / maxFee spliced in, `remoteRecipient`
+/// replaced by the real recipient wallet, `remoteToken` replaced by
+/// `account_id_to_bytes32(faucet_id)` (the own-id fixpoint the seeded identifier_init writes, so
+/// D5a's identifier compare passes), and one nonce byte perturbed per variant so each mint consumes
+/// a fresh D5c nonce.
+fn payload_for(
+    recipient: AccountId,
+    amount: u64,
+    nonce_variant: u8,
+    faucet_id: AccountId,
+) -> Vec<u8> {
+    let mut payload = di(BASE_VECTOR).bytes();
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
-    payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(max_fee));
+    payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
+    payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
+        .copy_from_slice(&account_id_to_bytes32(recipient));
+    payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32]
+        .copy_from_slice(&account_id_to_bytes32(faucet_id));
+    payload[NONCE_BYTE_OFF] ^= nonce_variant;
     payload
 }
 
-fn happy_payload() -> Vec<u8> {
-    with_amounts(di(BASE_VECTOR).bytes(), HAPPY_AMOUNT_RAW, HAPPY_MAX_FEE_RAW)
+/// Deterministic note rng for the production admin/mint notes (serial only; never affects a gate).
+fn note_rng(seed: u64) -> RandomCoin {
+    RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(3u32),
+        Felt::from(4u32),
+    ]))
 }
 
-fn pack(bytes: &[u8]) -> Vec<Felt> {
-    miden_protocol::utils::bytes_to_packed_u32_elements(bytes)
+/// The production faucet brought up for the rotation-capability seams (the REAL stock-note
+/// transport, network-auth): the identifier seeded (DEC-4 minimized init), attester 1 allowlisted,
+/// plus the caller's extra admin notes — all seeded at genesis so each admin tx is block-provable.
+/// Mirrors `mint_policy_e2e.rs`.
+fn mint_fixture(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<ProductionFaucet> {
+    setup_production_faucet(MINT_MAX_SUPPLY, 0, |recipient, faucet_id| {
+        let commitment =
+            gen_attester(1, &payload_for(recipient, MINT_AMOUNT, 0, faucet_id)).commitment;
+        let route = faucet_id;
+        let mut notes = vec![
+            XReserveIdentifierInitNote::create(owner(), route, &mut note_rng(951))
+                .expect("building the owner identifier_init note"),
+            XReserveSetAttesterNote::create(owner(), route, commitment, 1, &mut note_rng(952))
+                .expect("building the owner set_attester note"),
+        ];
+        notes.extend(extra_notes(recipient));
+        notes
+    })
 }
 
-fn identifier_of(id: &str) -> Word {
-    Word::from(bytes32_to_storage_map_key(&parse_hex32(
-        &fields_of(id).remote_token_hex,
-    )))
+/// Consumes the seeded bring-up notes `0..count`, committing a block each.
+async fn bring_up(pf: &mut ProductionFaucet, count: usize) -> Result<()> {
+    for (i, note) in pf.seeded_notes.clone().iter().take(count).enumerate() {
+        let tx = pf
+            .mock_chain
+            .build_tx_context(pf.faucet_id, &[note.id()], &[])
+            .with_context(|| format!("bring-up note {i}: tx context"))?
+            .build()
+            .with_context(|| format!("bring-up note {i}: tx build"))?
+            .execute()
+            .await
+            .map_err(|e| anyhow::anyhow!("bring-up note {i} must succeed: {e}"))?;
+        pf.mock_chain.add_pending_executed_transaction(&tx)?;
+        pf.mock_chain.prove_next_block()?;
+    }
+    Ok(())
 }
 
-fn nonce_key() -> Word {
-    Word::from(bytes32_to_storage_map_key(
-        &fields_of(BASE_VECTOR).bytes32("nonce"),
-    ))
+/// Consumes a committed (seeded) note on the faucet, returning the raw result so callers assert
+/// success or the exact trap. A REJECTED consume leaves the note unspent, so the SAME note can be
+/// re-consumed after a capability change — exactly the rotation-seam artifact.
+async fn consume_note(
+    pf: &ProductionFaucet,
+    note: &Note,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    pf.mock_chain
+        .build_tx_context(pf.faucet_id, &[note.id()], &[])
+        .expect("building the consume tx context")
+        .build()
+        .expect("building the consume tx")
+        .execute()
+        .await
 }
 
-/// A production faucet pre-configured for a VALID real `xreserve_mint` (the halt-seam target):
-/// domain = TEST_DOMAIN, identifier = the canonical remoteToken key, the attester allowlisted.
-fn mint_ready() -> Result<(GuardedMint, AttesterVector)> {
-    let payload = happy_payload();
-    let attester = gen_attester(1, &payload);
-    let identifier = identifier_of(BASE_VECTOR);
-    let domain = Word::from([Felt::from(TEST_DOMAIN), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-    let driver = mint_composition_driver_src(&pack(&payload), LEN_FELTS, SCALE_EXP);
-    let probe = composition_noeffect_probe_src(0, nonce_key());
-    let gm = setup_guarded_mint_account(
-        GuardSelection::ProductionDeny,
-        1_000_000,
-        0,
-        domain,
-        identifier,
-        None,
-        Some((attester.commitment, Word::from(MARKER))),
-        &driver,
-        &probe,
-        true,
-    )?;
-    Ok((gm, attester))
+/// Consumes a committed note expecting success, committing a block.
+async fn consume_and_commit(pf: &mut ProductionFaucet, note: &Note, what: &str) -> Result<()> {
+    let tx = consume_note(pf, note)
+        .await
+        .map_err(|e| anyhow::anyhow!("{what}: {e}"))?;
+    pf.mock_chain.add_pending_executed_transaction(&tx)?;
+    pf.mock_chain.prove_next_block()?;
+    Ok(())
+}
+
+/// Builds, emits, and consumes the REAL stock mint note over an attested payload (the production
+/// `XUsdcMintNote` factory transport), returning the consume result.
+async fn emit_and_consume_mint(
+    pf: &mut ProductionFaucet,
+    payload: &[u8],
+    rng_seed: u64,
+) -> Result<std::result::Result<ExecutedTransaction, TransactionExecutorError>> {
+    let attester = gen_attester(1, payload);
+    let note = XUsdcMintNote::create(
+        pf.producer_id,
+        pf.faucet_id,
+        payload,
+        &MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes),
+        &mut note_rng(rng_seed),
+    )
+    .map_err(|e| anyhow::anyhow!("building the attested stock mint note: {e}"))?;
+    emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
+    Ok(pf
+        .mock_chain
+        .build_tx_context(pf.faucet_id, &[note.id()], &[])
+        .context("building the mint consume tx context")?
+        .build()
+        .context("building the mint consume tx")?
+        .execute()
+        .await)
 }
 
 // THE ROTATION SEAMS (RED) — role administration must change REAL pause capability, end-to-end
 // ================================================================================================
 
 /// THE grant seam (the Domain Manager rotates the Pauser): before the grant, id(4) has no
-/// pause power (exact role trap); a DOM_MANAGER-sent `grant_role(DOM_PAUSER, id4)` then flips REAL
-/// capability — id(4)'s pause HALTS a real `xreserve_mint` at the exact `ERR_PAUSABLE_IS_PAUSED`.
-/// RED: the shipped seed still has `DOM_PAUSER.admin_role == 0`, so the DOM_MANAGER grant itself
-/// traps `ERR_SENDER_NOT_ROLE_ADMIN` (the stock effective-admin gate with no delegation configured;
-/// v0.16 re-keyed the v15 `ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN` — S2/S21).
+/// pause power (exact role trap on the seeded production pause note); a DOM_MANAGER-sent
+/// `grant_role(DOM_PAUSER, id4)` then flips REAL capability — the SAME pause note (left unspent by
+/// the rejected consume) now succeeds, and id(4)'s pause HALTS a real attested mint (the
+/// recomposed stock-`MintNote` transport) at the exact `ERR_PAUSABLE_IS_PAUSED`.
 #[tokio::test]
 async fn dom_manager_grants_pauser_then_new_pauser_halts_mint() -> Result<()> {
-    let (gm, attester) = mint_ready()?;
-    let account = faucet_account(&gm.harness);
+    let mut pf = mint_fixture(|_| {
+        vec![
+            XReserveGrantRoleNote::create(
+                dom_manager(),
+                test_faucet_id(1),
+                Felt::from(&pauser_sym()),
+                new_pauser(),
+                &mut note_rng(31),
+            )
+            .expect("building the DOM_MANAGER grant_role note"),
+            XReservePauseNote::create(new_pauser(), test_faucet_id(1), &mut note_rng(32))
+                .expect("building the candidate's pause note"),
+        ]
+    })?;
+    bring_up(&mut pf, 2).await?; // identifier_init + set_attester
+    let grant_note = pf.seeded_notes[2].clone();
+    let pause_note = pf.seeded_notes[3].clone();
 
     // Pre-grant: the candidate's pause REJECTS — the capability is genuinely absent before the grant.
-    let pre = run_dom_pauser_pause(&gm.harness.mock_chain, &account, new_pauser(), 31).await;
+    let pre = consume_note(&pf, &pause_note).await;
     assert_transaction_executor_error!(pre, err_sender_lacks_role());
 
     // The DOM_MANAGER holder grants DOM_PAUSER to id(4) (the delegated operational rotation path).
-    let granted = run_grant_role_against(
-        &gm.harness.mock_chain,
-        &account,
-        dom_manager(),
-        &pauser_sym(),
-        new_pauser(),
-        32,
+    consume_and_commit(
+        &mut pf,
+        &grant_note,
+        "the delegated DOM_MANAGER grant must pass (DOM_PAUSER.admin_role == DOM_MANAGER)",
     )
-    .await
-    .expect("the delegated DOM_MANAGER grant passes (DOM_PAUSER.admin_role == DOM_MANAGER)");
-    let mut evolved = account.clone();
-    evolved.apply_patch(granted.account_patch())?;
+    .await?;
+    let faucet = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
     assert_eq!(
-        read_role_membership(&evolved, &pauser_sym(), new_pauser())?[0],
+        read_role_membership(&faucet, &pauser_sym(), new_pauser())?[0],
         Felt::from(1u32),
         "the delegated grant landed the membership flag"
     );
 
-    // The NEW member's pause now succeeds...
-    let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, new_pauser(), 33)
-        .await
-        .expect("the newly granted DOM_PAUSER member pauses the faucet");
-    evolved.apply_patch(paused.account_patch())?;
-
-    // ...and HALTS the real mint at the exact stock pause error — the capability change is REAL.
-    let result = run_mint_against(
-        &gm.harness,
-        &evolved,
-        composition_advice([0u32; 8], &attester),
+    // The SAME pause note now succeeds...
+    consume_and_commit(
+        &mut pf,
+        &pause_note,
+        "the newly granted DOM_PAUSER member's pause must succeed",
     )
-    .await;
+    .await?;
+
+    // ...and HALTS the real attested mint at the exact stock pause error — the capability change
+    // is REAL.
+    let payload = payload_for(pf.recipient_id, MINT_AMOUNT, 1, pf.faucet_id);
+    let result = emit_and_consume_mint(&mut pf, &payload, 33).await?;
     assert_transaction_executor_error!(result, err_paused());
     Ok(())
 }
@@ -317,52 +425,66 @@ async fn dom_manager_revokes_pauser_then_pause_rejects() -> Result<()> {
 /// revokes the incumbent id(2) (member_count -> 0), THEN grants the successor id(4) — possible only
 /// because the admin config is retained when the last member is revoked (rbac.rs:79-82; a wiped
 /// delegation would deadlock rotation). The OLD pauser's pause rejects; the NEW pauser's pause HALTS
-/// a real mint. RED: the first revoke traps (no delegation).
+/// a real attested mint (the recomposed stock-`MintNote` transport).
 #[tokio::test]
 async fn dom_manager_rotates_pauser_revoke_then_grant() -> Result<()> {
-    let (gm, attester) = mint_ready()?;
-    let account = faucet_account(&gm.harness);
+    let mut pf = mint_fixture(|_| {
+        let route = test_faucet_id(1);
+        vec![
+            XReserveRevokeRoleNote::create(
+                dom_manager(),
+                route,
+                Felt::from(&pauser_sym()),
+                dom_pauser(),
+                &mut note_rng(36),
+            )
+            .expect("building the DOM_MANAGER revoke_role note"),
+            XReserveGrantRoleNote::create(
+                dom_manager(),
+                route,
+                Felt::from(&pauser_sym()),
+                new_pauser(),
+                &mut note_rng(37),
+            )
+            .expect("building the DOM_MANAGER grant_role note"),
+            XReservePauseNote::create(dom_pauser(), route, &mut note_rng(38))
+                .expect("building the OLD pauser's pause note"),
+            XReservePauseNote::create(new_pauser(), route, &mut note_rng(39))
+                .expect("building the NEW pauser's pause note"),
+        ]
+    })?;
+    bring_up(&mut pf, 2).await?; // identifier_init + set_attester
+    let revoke_note = pf.seeded_notes[2].clone();
+    let grant_note = pf.seeded_notes[3].clone();
+    let old_pause_note = pf.seeded_notes[4].clone();
+    let new_pause_note = pf.seeded_notes[5].clone();
 
-    let revoked = run_revoke_role_against(
-        &gm.harness.mock_chain,
-        &account,
-        dom_manager(),
-        &pauser_sym(),
-        dom_pauser(),
-        36,
+    consume_and_commit(
+        &mut pf,
+        &revoke_note,
+        "the rotation's revoke leg must pass under the delegation",
     )
-    .await
-    .expect("the rotation's revoke leg passes under the delegation");
-    let mut evolved = account.clone();
-    evolved.apply_patch(revoked.account_patch())?;
-
-    let granted = run_grant_role_against(
-        &gm.harness.mock_chain,
-        &evolved,
-        dom_manager(),
-        &pauser_sym(),
-        new_pauser(),
-        37,
+    .await?;
+    consume_and_commit(
+        &mut pf,
+        &grant_note,
+        "the rotation's grant leg must pass through the empty role (admin config retained)",
     )
-    .await
-    .expect("the rotation's grant leg passes through the empty role (admin config retained)");
-    evolved.apply_patch(granted.account_patch())?;
+    .await?;
 
     // The OLD pauser's pause rejects — rotation genuinely removed the incumbent's power.
-    let old = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, dom_pauser(), 38).await;
+    let old = consume_note(&pf, &old_pause_note).await;
     assert_transaction_executor_error!(old, err_sender_lacks_role());
 
-    // The NEW pauser pauses, and the pause halts a REAL mint.
-    let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, new_pauser(), 39)
-        .await
-        .expect("the rotated-in DOM_PAUSER member pauses the faucet");
-    evolved.apply_patch(paused.account_patch())?;
-    let result = run_mint_against(
-        &gm.harness,
-        &evolved,
-        composition_advice([0u32; 8], &attester),
+    // The NEW pauser pauses, and the pause halts a REAL attested mint.
+    consume_and_commit(
+        &mut pf,
+        &new_pause_note,
+        "the rotated-in DOM_PAUSER member's pause must succeed",
     )
-    .await;
+    .await?;
+    let payload = payload_for(pf.recipient_id, MINT_AMOUNT, 2, pf.faucet_id);
+    let result = emit_and_consume_mint(&mut pf, &payload, 40).await?;
     assert_transaction_executor_error!(result, err_paused());
     Ok(())
 }

@@ -12,8 +12,8 @@ plus the Rust encoding library and validation harness that support it.
 
 | Path | What it is |
 |---|---|
-| `asm/standards/xreserve/` | The faucet account component — hand-written MASM. Custom mint (`xreserve_mint`), burn policy, admin setters (pause, attester allowlist, min-burn, domain config), and the shared `encoding/` library. |
-| `asm/standards/notes/` | The public note scripts: the mint note and the admin notes. |
+| `asm/standards/xreserve/` | The faucet account component — hand-written MASM. The **attestation mint policy** (`mint_policy` — the active mint policy the stock `mint_and_send` dispatches), the minimized `identifier_init`, admin setters (pause, attester allowlist, blocklist), and the shared `encoding/` library. |
+| `asm/standards/notes/` | The public admin note scripts (the mint note is the STOCK miden-standards `MintNote`). |
 | `crates/xusdc-encoding/` | Rust crate: the encoding library (the Rust mirror of the MASM codecs — bytes32 hashing, uint256→amount reduction, DepositIntent parse), the `XReserveStablecoinBuilder` that composes the faucet account, golden test vectors, and the assemble-and-**execute** test suite. |
 | `crates/xusdc-validation/` | Rust crate: the local-node validation harness that deploys the production faucet to a real Miden node and drives the mint/burn/admin acceptance matrix (rows `A`–`L`). |
 | `docs/spec/` | The specification: the faucet component spec, the shared-encoding spec, and the **identifier glossary**. |
@@ -22,24 +22,31 @@ plus the Rust encoding library and validation harness that support it.
 
 ## How it works
 
-xUSDC is a Miden fungible-faucet account whose **supply-changing surfaces are replaced with custom,
-fully-gated MASM**. Native USDC stays locked 1:1 in Circle's xReserve contract on the source chain;
-this account mints xUSDC against a Circle-attested deposit and burns it on withdrawal.
+xUSDC is a Miden fungible-faucet account built the way the canonical stock bridge faucet is built —
+**stock transport and effects, custom fully-gated policies**. Native USDC stays locked 1:1 in
+Circle's xReserve contract on the source chain; this account mints xUSDC against a Circle-attested
+deposit and burns it on withdrawal.
 
-- **Mint.** A relayer submits a Circle-attested `DepositIntent` plus an attestation attachment (fee,
-  attester pubkey, signature) through the public mint note. The account runs `xreserve_mint` as a
-  strict **verify-once-then-write-once** pipeline: pause gate → structural/addressing checks →
-  amount/fee reduction → nonce replay guard → keccak-then-ECDSA attestation check against the attester
-  allowlist → supply-cap guard; then, atomically, it marks the nonce used, emits a P2ID note carrying
-  the minted xUSDC to the recipient, and raises `token_supply`. Any check that fails aborts the whole
-  transaction with no writes, so a failed mint never consumes its nonce. The stock `mint_and_send`
-  path is denied, which makes `xreserve_mint` the **only** surface that can raise supply.
+- **Mint.** A relayer submits a STOCK miden-standards `MintNote` whose storage embeds the attested
+  output (the P2ID recipe to the intent's recipient, the reduced amount, the recipient's tag) and
+  whose attachments carry the Circle-signed transport (the `DepositIntent`, the attestation — fee,
+  attester pubkey, signature —, and the network routing target). The stock script calls the stock
+  `mint_and_send`, which dispatches the faucet's **attestation mint policy** first — a strict
+  **verify-once-then-write-once** pipeline: pause gate (the dispatcher's) → attachment hash-verify →
+  structural/addressing checks → amount/fee reduction → nonce replay guard → keccak-then-ECDSA
+  attestation check against the attester allowlist → the assert-match binding (the note's claimed
+  output must EQUAL its attested derivation); the policy marks the nonce used, and the stock path
+  enforces the supply cap, emits the P2ID note, and raises `token_supply`. Any check that fails
+  aborts the whole transaction with no writes, so a failed mint never consumes its nonce. The
+  attestation policy is the only allowed mint policy, which makes it the gate **every** supply
+  increase passes.
 - **Burn.** A holder creates a **Public** `XReserveBurnNote` carrying `(amount, destDomain,
   destRecipient, salt)`; creating the note moves the assets out of the holder's vault (so the balance
   is checked at creation). In a **later block** the faucet consumes the note (`receive_and_burn`):
-  pause is checked, then a custom burn policy requires `amount > 0` and `amount ≥ minBurnSize`, and
-  consuming the note decrements `token_supply`. The note is always public and two-block so Circle can
-  observe the withdrawal.
+  pause is checked, then the STOCK `MinBurnAmount` policy requires `amount ≥ minBurnSize` (the floor
+  is always ≥ 1 — builder-rejected below one and note-guarded at the setter — so zero burns are
+  unacceptable on every path), and consuming the note decrements `token_supply`. The note is always
+  public and two-block so Circle can observe the withdrawal.
 - **Encoding.** The codecs that translate Circle's wire formats to Miden types are **written once** in
   `xreserve::encoding` (MASM) and mirrored in Rust — `bytes32` hashing, `uint256`→amount reduction,
   the `DepositIntent` parse, and the attester **pubkey commitment** (`DC-3`, a Poseidon2 hash over the
@@ -53,9 +60,10 @@ this account mints xUSDC against a Circle-attested deposit and burns it on withd
   the Rust leg packs the raw key itself — so the byte→felt packing runs only in Rust, with no MASM
   counterpart to diff against. The keccak digest and the ECDSA signature check themselves are not
   encoding codecs — they run on-chain in the faucet's attestation verifier.
-- **Admin.** `Ownable2Step` ownership, owner-gated setters (`set_attester`, `set_min_burn_size`,
-  `domain_init`), and a separate `DOM_PAUSER`-gated pause/unpause that halts both mint and
-  burn-consume.
+- **Admin.** `Ownable2Step` ownership, owner-gated setters (`set_attester`, the floor-guarded
+  `set_min_burn_size` targeting the stock `set_min_burn_amount`, and the minimized init-once
+  `identifier_init` — the other domain-config fields are build-seeded), and a separate
+  `DOM_PAUSER`-gated pause/unpause that halts both mint and burn-consume.
 
 See [`docs/spec/FAUCET-COMPONENT-SPEC.md`](docs/spec/FAUCET-COMPONENT-SPEC.md) for the full pipeline.
 
@@ -108,7 +116,7 @@ sequencer, tx prover), runs its rows, and tears the stack down:
 
 ```sh
 # LIVE-NODE commands (operator-run, P1b-b — need the node binaries on PATH):
-cargo run -p xusdc-validation --bin lnv1_rows_ab      # rows A/B — deploy + domain_init init-once
+cargo run -p xusdc-validation --bin lnv1_rows_ab      # rows A/B — deploy + identifier init-once
 cargo run -p xusdc-validation --bin lnv2_rows_cf      # rows C/F — admin suite + auth boundary
 cargo run -p xusdc-validation --bin lnv3_rows_de      # rows D/E — mint lifecycle + negatives
 cargo run -p xusdc-validation --bin lnv4_rows_gj      # rows G/H/I/J — burn two-block + F7 + conservation
@@ -121,7 +129,7 @@ notes. **The gate PASS is a human decision — the binaries never declare it.**
 
 ## Key design points
 
-- **`xreserve_mint` is the only surface that can raise supply**, and it requires a valid attester
+- **Every supply increase passes the attestation mint policy**, and it requires a valid attester
   signature; the stock `mint_and_send` path is deny-guarded.
 - **Burns are public, two-block notes** so Circle can observe them.
 - **The dual codecs are written once** in `xreserve::encoding` (MASM) and mirrored in Rust — bytes32

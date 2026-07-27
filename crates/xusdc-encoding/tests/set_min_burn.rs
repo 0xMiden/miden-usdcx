@@ -1,20 +1,22 @@
-//! `set_min_burn_size` suite (component CMP-F2): the OWNER-gated setter for the `minBurnSize` value
-//! slot CMP-A10's `burn_policy::check_policy` reads for R-BURN-2. Under the ratified Circle-faithful
-//! admin model, all three faucet setters gate on the Ownable2Step OWNER via the
-//! account-wide `Authority::OwnerControlled`; the built `ATTEST_ADMIN` role is removed and the RBAC
-//! foundation is repurposed to seed `DOM_PAUSER` + `DOM_MANAGER` role MEMBERS (their consumers —
-//! custom pause CMP-F3, role management CMP-F5 — are built later, NOT here).
+//! `set_min_burn_size` suite (component CMP-F2): the OWNER-gated setter path for the burn floor.
+//! Since the Wave-1 S1 recomposition the floor lives in the STOCK `MinBurnAmount` policy's value
+//! slot (`MinBurnAmount::slot_name()`, `[min,0,0,0]`) — the slot the stock `check_policy` reads for
+//! R-BURN-2 — and the setter is the STOCK `min_burn_amount::set_min_burn_amount` (the former custom
+//! `min_burn_admin.masm` is deleted). Under the ratified Circle-faithful admin model the setter
+//! gates on the Ownable2Step OWNER via the account-wide `Authority::OwnerControlled`; the RBAC
+//! foundation seeds `DOM_PAUSER` + `DOM_MANAGER` role MEMBERS (their consumers — custom pause
+//! CMP-F3, role management CMP-F5 — live in their own suites).
 //!
-//! This file covers the setter's owner gate (the security core), write integrity, the pause gate, the
-//! owner-ONLY proof (a seeded non-owner DOM role-holder is rejected), and the DOM seed itself. The
-//! burn-min SEAM (set the floor, then a below-floor burn traps R-BURN-2 end-to-end) lives in
-//! `xreserve_receive_and_burn.rs`, alongside the burn-note machinery it reuses.
+//! The gate tests drive the RAW support-local note (`run_set_min_burn_size_against`), which calls
+//! the STOCK setter directly — deliberately BYPASSING the production note script's `new_min >= 1`
+//! floor guard so the stock proc itself is probed. The floor-guard behavior is covered through the
+//! production `XReserveSetMinBurnSizeNote` factory (`wave1_recomposition.rs`).
 //!
-//! RED-SUITE (executing-red): `min_burn_admin.masm` holds only a NON-SECURING placeholder (no gate, no
-//! write), and the builder still seeds `ATTEST_ADMIN` (not the owner gate, not the DOM roles). Every
-//! behavior test asserts its FINAL (green) expectation and is therefore RED here — the notes reach real
-//! MockChain execution against the placeholder / un-flipped Authority. `probe_min_burn_admin_exports`
-//! is a green scaffold (the placeholder still exports the proc path).
+//! This file covers the setter's owner gate (the security core), write integrity, the
+//! not-pause-gated proof, the owner-ONLY proof (a seeded non-owner DOM role-holder is rejected),
+//! and the DOM seed itself. The burn-min SEAM (set the floor, then a below-floor burn traps
+//! R-BURN-2 end-to-end) lives in `xreserve_receive_and_burn.rs`, alongside the burn-note machinery
+//! it reuses.
 
 mod support;
 
@@ -22,6 +24,7 @@ use anyhow::Result;
 use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::RoleBasedAccessControl;
+use miden_standards::account::policies::MinBurnAmount;
 use miden_testing::assert_transaction_executor_error;
 use support::*;
 
@@ -47,7 +50,8 @@ const DOM_MANAGER_SYMBOL: &str = "DOM_MANAGER";
 
 const MAX_SUPPLY: u64 = 1_000_000;
 const TOKEN_SUPPLY: u64 = 100_000;
-/// The initial (builder-seeded) minBurnSize floor for the setter tests.
+/// The initial (fixture-seeded) burn floor for the setter tests (always `>= 1` — the zero-floor
+/// invariant the production surface enforces at build and note level).
 const SEED_MIN: u64 = 1_000;
 
 // Stock RBAC map-key encodings (miden-testing/tests/scripts/rbac.rs:57-63).
@@ -63,14 +67,15 @@ fn role_config_key(role: &RoleSymbol) -> Word {
     Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(role)])
 }
 
-/// The `MIN_BURN_SIZE_SLOT` value word for a floor `v` (`[v,0,0,0]`) — the read-back the write-integrity
-/// and no-state-change tests compare against. Test floors are small, so `as u32` is exact.
+/// The STOCK `MinBurnAmount` floor-slot value word for a floor `v` (`[v,0,0,0]`) — the read-back
+/// the write-integrity and no-state-change tests compare against (via [`read_min_burn_size`]).
+/// Test floors are small, so `as u32` is exact.
 fn min_word(v: u64) -> Word {
     Word::from([Felt::from(v as u32), Felt::ZERO, Felt::ZERO, Felt::ZERO])
 }
 
-/// A burn-policy production faucet (owner-gated post-green, deny active) with the `minBurnSize` slot
-/// seeded `SEED_MIN`. The burn_amount arg only feeds the (unconsumed here) canonical burn note.
+/// A burn-oracle faucet (stock `MinBurnAmount` active) with the STOCK floor slot seeded
+/// `SEED_MIN`. The burn_amount arg only feeds the (unconsumed here) canonical burn note.
 fn faucet_harness() -> Result<BurnPolicyHarness> {
     setup_burn_policy_account(
         BurnGuardSelection::OracleBurnReal,
@@ -86,31 +91,31 @@ fn faucet(h: &BurnPolicyHarness) -> Result<Account> {
     Ok(h.chain.committed_account(h.faucet_id)?.clone())
 }
 
-// EXPORT PROBE (green scaffold — flat-path check for the new setter module)
+// SETTER-INSTALLED PROBE (the stock setter is part of the composed production surface)
 // ================================================================================================
 
+/// The composed PRODUCTION component set exposes the STOCK `min_burn_amount::set_min_burn_amount`
+/// account procedure (`MinBurnAmount::set_min_burn_amount_root()`) — the setter the production
+/// `XReserveSetMinBurnSizeNote` targets is INSTALLED. (The former custom
+/// `xreserve::min_burn_admin::set_min_burn_size` is deleted — Wave-1 S1.)
 #[test]
-fn probe_min_burn_admin_exports() -> Result<()> {
-    let lib = assemble_xreserve_lib()?;
-    let exports: Vec<String> = lib
-        .manifest
-        .exports()
-        .filter(|e| e.is_procedure())
-        .map(|e| e.path().to_string())
-        .collect();
-    let canonical = "::xreserve::min_burn_admin::set_min_burn_size";
+fn probe_stock_min_burn_setter_installed() -> Result<()> {
+    let components = production_component_set(MAX_SUPPLY, 0)?;
     assert!(
-        exports.iter().any(|e| e == canonical),
-        "canonical setter path {canonical} missing; exports: {exports:?}"
+        components
+            .iter()
+            .any(|c| c.has_procedure(MinBurnAmount::set_min_burn_amount_root())),
+        "the production component set must expose the stock MinBurnAmount::set_min_burn_amount \
+         root (the setter the production admin note targets)"
     );
     Ok(())
 }
 
-// OWNER GATE + WRITE INTEGRITY (the security core) — RED until green wires assert_authorized + set_item
+// OWNER GATE + WRITE INTEGRITY (the security core) — against the STOCK setter
 // ================================================================================================
 
-/// An OWNER-sent `set_min_burn_size(M)` succeeds and writes the FULL word `[M,0,0,0]` to the shared
-/// slot (write integrity). RED: the placeholder performs no write, so the read-back stays `SEED_MIN`.
+/// An OWNER-sent `set_min_burn_size(M)` succeeds and writes the FULL word `[M,0,0,0]` to the STOCK
+/// `MinBurnAmount` floor slot (write integrity).
 #[tokio::test]
 async fn set_min_burn_owner_succeeds() -> Result<()> {
     let h = faucet_harness()?;
@@ -126,13 +131,14 @@ async fn set_min_burn_owner_succeeds() -> Result<()> {
     assert_eq!(
         read_min_burn_size(&evolved)?,
         min_word(NEW_MIN),
-        "set_min_burn_size writes the full [new_min,0,0,0] word to MIN_BURN_SIZE_SLOT"
+        "the stock set_min_burn_amount writes the full [new_min,0,0,0] word to the stock \
+         MinBurnAmount floor slot"
     );
     Ok(())
 }
 
-/// A PLAIN non-owner-sent `set_min_burn_size` traps the EXACT `ERR_SENDER_NOT_OWNER` and leaves the slot
-/// unchanged (no partial write before the trap). RED: the placeholder has no gate, so the tx succeeds.
+/// A PLAIN non-owner-sent `set_min_burn_size` traps the EXACT `ERR_SENDER_NOT_OWNER` and leaves the
+/// slot unchanged (no partial write before the trap).
 #[tokio::test]
 async fn set_min_burn_plain_non_owner_rejects() -> Result<()> {
     assert_non_owner_rejected(plain_non_owner()).await
@@ -153,8 +159,9 @@ async fn set_min_burn_dom_manager_non_owner_rejects() -> Result<()> {
     assert_non_owner_rejected(dom_manager()).await
 }
 
-/// Shared non-owner assertion: `sender` (a non-owner) traps the EXACT `ERR_SENDER_NOT_OWNER`, AND the
-/// `MIN_BURN_SIZE_SLOT` reads back the seeded `[SEED_MIN,0,0,0]` (byte-identical) — no partial write.
+/// Shared non-owner assertion: `sender` (a non-owner) traps the EXACT `ERR_SENDER_NOT_OWNER`, AND
+/// the STOCK `MinBurnAmount` floor slot reads back the seeded `[SEED_MIN,0,0,0]` (byte-identical)
+/// — no partial write.
 async fn assert_non_owner_rejected(sender: AccountId) -> Result<()> {
     let h = faucet_harness()?;
     let account = faucet(&h)?;
@@ -166,7 +173,7 @@ async fn assert_non_owner_rejected(sender: AccountId) -> Result<()> {
     assert_eq!(
         read_min_burn_size(&account)?,
         min_word(SEED_MIN),
-        "a rejected non-owner set_min_burn_size leaves MIN_BURN_SIZE_SLOT unchanged"
+        "a rejected non-owner set_min_burn_size leaves the stock MinBurnAmount floor slot unchanged"
     );
     Ok(())
 }
@@ -202,7 +209,8 @@ async fn set_min_burn_owner_succeeds_while_paused() -> Result<()> {
     assert_eq!(
         read_min_burn_size(&evolved)?,
         min_word(NEW_MIN),
-        "set_min_burn_size writes [new_min,0,0,0] to MIN_BURN_SIZE_SLOT while paused"
+        "the stock set_min_burn_amount writes [new_min,0,0,0] to the stock MinBurnAmount floor \
+         slot while paused"
     );
     Ok(())
 }

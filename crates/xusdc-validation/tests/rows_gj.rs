@@ -103,7 +103,7 @@ fn green_i() -> Vec<BurnNegative> {
         neg(
             "below-min",
             ERR_BURN_BELOW_MIN,
-            rej("... burn amount is below the minimum burn size ..."),
+            rej("... amount to be burned must exceed specified minimum burn amount ..."),
         ),
         // v16 kernel moved burn origin-validation from fungible_asset::validate_origin (v15
         // faucet.masm:61) to asset::validate_origin (v16 faucet.masm:72); the v15-era expectation

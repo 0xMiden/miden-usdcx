@@ -1,37 +1,40 @@
 //! Mint/burn note builders — the C-row PROBES.
 //!
-//! Rows C1/C3/C4 use real `XReserveMintNote`s and C2/C4 use real `XReserveBurnNote`s as instruments
+//! Rows C1/C3/C4 use real `XUsdcMintNote`s and C2/C4 use real `XReserveBurnNote`s as instruments
 //! to prove an admin change took effect (a rotated-out attester can no longer mint, an over-cap mint
 //! rejects, a paused faucet halts both, a raised minimum rejects a small burn). These are NOT the
 //! mint/burn matrix rows (D/E/G/H — LNV-3/4); they are the smallest real notes that exercise the
 //! gate each C row changes.
 //!
 //! The mint note carries a Circle DepositIntent whose `remoteDomain` + `remoteToken` must match the
-//! faucet's domain config, so LNV-2's `domain_init` is seeded from the SAME canonical accept vector
-//! the payload is built from ([`lnv2_domain_params`]). Amount/maxFee/recipient/nonce are spliced
-//! into the vector payload (the `assembled_faucet_e2e` recipe); the attestation is signed by a local
-//! test attester (`crate::actors::AttesterKey`), never Circle's key.
+//! faucet's domain config, so LNV-2's build seed + `identifier_init` come from the SAME canonical
+//! accept vector the payload is built from ([`lnv2_domain_params`]). Amount/maxFee/recipient/nonce
+//! are spliced into the vector payload (the `assembled_faucet_e2e` recipe); the attestation is
+//! signed by a local test attester (`crate::actors::AttesterKey`), never Circle's key.
 
 use anyhow::{Context, Result};
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::AssetAmount;
+use miden_protocol::asset::{AssetAmount, FungibleAsset};
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::{
     Note, NoteAssets, NoteAttachment, NoteAttachmentScheme, NoteAttachments, NoteRecipient,
     NoteStorage, NoteTag, NoteType, PartialNoteMetadata,
 };
 use miden_protocol::{Felt, Word};
-use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
+use miden_standards::note::{
+    MintNote, MintNoteStorage, NetworkAccountTarget, NoteExecutionHint, P2idNoteStorage,
+};
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
-    MintAttestation, XReserveMintNote, XRESERVE_MINT_ATTACHMENT_NUM_WORDS,
-    XRESERVE_MINT_ATTACHMENT_SCHEME,
+    MintAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
+    XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME, XUSDC_MINT_ATTESTATION_NUM_WORDS,
+    XUSDC_MINT_INTENT_ATTACHMENT_SCHEME,
 };
 use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, affine_pubkey_felts, bytes32_to_storage_map_key,
-    deposit_intent_field_offset, deposit_intent_to_packed_felts, signature_felts,
-    DepositIntentField, XReserveBurnItems,
+    account_id_to_bytes32, affine_pubkey_felts, bytes32_to_account_id, bytes32_to_storage_map_key,
+    deposit_intent_field_offset, deposit_intent_to_packed_felts, parse_deposit_intent_header,
+    signature_felts, uint256_to_asset_amount, DepositIntentField, XReserveBurnItems,
 };
 
 use crate::actors::AttesterKey;
@@ -44,22 +47,22 @@ pub const BASE_VECTOR: &str = "di-pos-empty-hookdata";
 
 /// The canonical accept vector carrying a NON-empty hookData tail (`hook_data_len == 10`; a 250-byte
 /// payload = the 240-byte header + 10 hookData bytes). Shares `remoteDomain` 7 and the SAME
-/// `remoteToken` as [`BASE_VECTOR`], so ONE `domain_init` validates BOTH the empty-hookData and the
+/// `remoteToken` as [`BASE_VECTOR`], so ONE domain config validates BOTH the empty-hookData and the
 /// hookData-bearing Row-D mints — the second variant (bounded hookData) the mint matrix requires.
 pub const HOOKDATA_VECTOR: &str = "di-pos-hookdata";
 
-/// The vector's `remoteDomain` (Q-DOM-1 OPEN; `TEST_DOMAIN` in the MockChain suite). `domain_init`
-/// must write this so the D5a domain compare passes.
+/// The vector's `remoteDomain` (Q-DOM-1 OPEN; `TEST_DOMAIN` in the MockChain suite). The build
+/// seed must carry this so the D5a domain compare passes.
 pub const MINT_DOMAIN: u32 = 7;
 
-/// The scale exponent the D5b reducer applies. `masm-rust-constant-parity` mirror of the shipped
-/// `xreserve_mint_note_entry.masm`'s `DEPOSIT_SCALE_EXP` — set to **0** by the P0 fix (commit
-/// 75ece89): Circle sends a 6-decimal deposit amount and Miden xUSDC is ALSO 6 decimals, so the
-/// EVM-minus-Miden decimal delta is 0. The reducer therefore computes `floor(x / 10^0) = x`: the
-/// on-chain minted asset amount EQUALS the raw uint256 deposit amount (scale-0 identity, NO 10^6
-/// division). Must stay equal to the MASM constant, or the harness would build mints expecting the
-/// wrong on-chain amount.
-pub const SCALE_EXP: u32 = 0;
+/// The scale exponent the D5b reducer applies — pinned BY REFERENCE to the factory-side
+/// [`XUSDC_DEPOSIT_SCALE_EXP`], which is itself parity-pinned against the shipped
+/// `mint_policy.masm`'s `DEPOSIT_SCALE_EXP` (the Wave-1 S1 home of the former
+/// `xreserve_mint_note_entry.masm` constant). Set to **0** by the P0 fix (commit 75ece89): Circle
+/// sends a 6-decimal deposit amount and Miden xUSDC is ALSO 6 decimals, so the EVM-minus-Miden
+/// decimal delta is 0. The reducer therefore computes `floor(x / 10^0) = x`: the on-chain minted
+/// asset amount EQUALS the raw uint256 deposit amount (scale-0 identity, NO 10^6 division).
+pub const SCALE_EXP: u32 = XUSDC_DEPOSIT_SCALE_EXP;
 const SCALE: u64 = 1; // 10^SCALE_EXP
 
 // DC-1 field byte offsets (felt offset × 4): the layout the shared-encoding codec packs. Mirrors the MockChain
@@ -105,16 +108,22 @@ pub fn hook_data_len(vector_id: &str) -> u32 {
         .hook_data_len
 }
 
-/// The `domain_init` domain-config parameters LNV-2 deploys with: `domain`/`identifier` MATCH the mint
-/// vector (so mints validate), `source_domain`/`xreserve_contract` are arbitrary distinct local
-/// test values (the mint path does not read them — they are off-chain withdrawal identity).
+/// The BUILD-SEEDED domain-config parameters LNV-2 deploys with: `domain` MATCHES the mint vector's
+/// `remoteDomain` (so the D5a domain compare passes), `source_domain`/`xreserve_contract` are
+/// arbitrary distinct local test values (the mint path does not read them — they are off-chain
+/// withdrawal identity). The `identifier` is NO LONGER build-seeded from these params: the fresh
+/// faucet's identifier is derived at init from its OWN id
+/// (`XReserveIdentifierInitNote::identifier_for(faucet_id)`), so a fresh mint carries `remoteToken =
+/// account_id_to_bytes32(faucet_id)` ([`mint_payload_own_id`] / [`MintDomainConfig::for_deployed_faucet`]),
+/// NOT the vector token. `identifier_bytes` is retained only as the legacy synthetic-fixture value
+/// (`DomainParams::identifier_word`); the fresh-init assertions compute the own-id key directly.
 pub fn lnv2_domain_params() -> DomainParams {
     DomainParams {
         domain: MINT_DOMAIN,
         source_domain: 3,
         xreserve_contract: core::array::from_fn(|i| 0x10 + i as u8),
-        // The identifier bytes32 = the vector's remoteToken; DomainParams::identifier_word() hashes
-        // it to the same key the D5a identifier compare reads.
+        // Legacy vector-token identifier bytes — no longer the fresh faucet's identifier (that is
+        // the own-id fixpoint, derived at init). Kept so DomainParams stays fully populated.
         identifier_bytes: parse_hex32(&base_fields().remote_token_hex),
     }
 }
@@ -162,17 +171,41 @@ pub fn mint_payload_from(
     payload
 }
 
+/// A mint payload for a FRESH-deployed faucet: [`mint_payload_from`] spliced with the faucet's
+/// OWN-ID `remoteToken` (`account_id_to_bytes32(faucet_id)`). The fresh faucet's identifier is the
+/// note-derived own-id fixpoint (`XReserveIdentifierInitNote::identifier_for(faucet_id)` =
+/// `bytes32_to_key(account_id_to_bytes32(faucet_id))`), so a mint's `remoteToken` MUST be
+/// `account_id_to_bytes32(faucet_id)` for D5a's identifier compare to pass — NOT the static
+/// golden-vector `remoteToken` the vectors carry (the R2 identifier-binding fix). `remoteDomain`
+/// already equals the build-seed [`MINT_DOMAIN`] on the fresh vectors, so only the token is spliced.
+pub fn mint_payload_own_id(
+    faucet_id: AccountId,
+    vector_id: &str,
+    recipient: AccountId,
+    amount_raw: u64,
+    max_fee_raw: u64,
+    nonce_salt: u8,
+) -> Vec<u8> {
+    let mut payload = mint_payload_from(vector_id, recipient, amount_raw, max_fee_raw, nonce_salt);
+    let remote_token_off = deposit_intent_field_offset(DepositIntentField::RemoteToken);
+    payload[remote_token_off..remote_token_off + 32]
+        .copy_from_slice(&account_id_to_bytes32(faucet_id));
+    payload
+}
+
 /// The two DepositIntent fields the mint gate (D5a `deposit_intent_parser::assert_deposit_intent`)
 /// compares against the faucet's stored domain config: `remoteDomain` and `remoteToken`. This is the
 /// config a mint payload must carry so D5a's compares pass.
 ///
-/// - Fresh-LOCAL full gate: the config equals the [`BASE_VECTOR`]'s own `remoteDomain` ([`MINT_DOMAIN`])
-///   and `remoteToken` ([`MintDomainConfig::local_vector`]) — because the fresh faucet's `domain_init`
-///   is seeded from that same vector ([`lnv2_domain_params`]). Splicing THIS reproduces the untouched
-///   [`BASE_VECTOR`] payload byte-for-byte, so the fresh-local vectors are unchanged.
+/// - Fresh-LOCAL full gate: the config is [`MintDomainConfig::for_deployed_faucet`]`(MINT_DOMAIN,
+///   fresh_faucet_id)` — the build-seed `remoteDomain` ([`MINT_DOMAIN`]) paired with the OWN-ID
+///   `remoteToken` (`account_id_to_bytes32(faucet_id)`), because the fresh faucet's identifier is the
+///   own-id fixpoint the `identifier_init` note derives (NOT the golden-vector token — the R2
+///   identifier-binding fix). The `remoteDomain` splice is a no-op on [`BASE_VECTOR`]; the `remoteToken`
+///   splice is what binds the mint to the fresh identity.
 /// - Existing-faucet (`--faucet-id`) re-check: the config is resolved from the DEPLOYED faucet —
 ///   `domain` read from its on-chain domain-config slot, `remote_token` recomputed as
-///   `account_id_to_bytes32(faucet_id)` (the identifier A5's `domain_init` set from
+///   `account_id_to_bytes32(faucet_id)` (the identifier A5's `identifier_init` set from
 ///   `account_id_to_bytes32(faucet.id())`). This is the A6 fix: the fixed vector's `remoteDomain` (7)
 ///   did not match a production faucet's stored `domain` (e.g. 10007), so D5a rejected every mint.
 ///
@@ -194,10 +227,12 @@ pub(crate) struct MintDomainConfig {
 }
 
 impl MintDomainConfig {
-    /// The config the fresh-LOCAL deploy commits: the [`BASE_VECTOR`]'s own `remoteDomain`
-    /// ([`MINT_DOMAIN`]) and `remoteToken`. Splicing this is a no-op on the [`BASE_VECTOR`] payload,
-    /// which is exactly the byte-for-byte invariant the offline suite asserts — so this exists ONLY
-    /// for that test (production's fresh-local path passes `None`, never this config).
+    /// A config carrying the [`BASE_VECTOR`]'s OWN `remoteDomain` ([`MINT_DOMAIN`]) and `remoteToken`:
+    /// splicing it is a no-op on the [`BASE_VECTOR`] payload. Retained ONLY for the offline
+    /// splice-correctness test (splicing a config equal to what the vector already carries must be
+    /// byte-for-byte identical). It is NOT the fresh-local deploy config — that is
+    /// [`MintDomainConfig::for_deployed_faucet`] (own-id `remoteToken`), since the fresh faucet's
+    /// identifier is the own-id fixpoint, not the vector token.
     #[cfg(test)]
     pub(crate) fn local_vector() -> Self {
         Self {
@@ -208,7 +243,7 @@ impl MintDomainConfig {
 
     /// The config of a DEPLOYED faucet on the `--faucet-id` path: the operator-read on-chain `domain`
     /// paired with `remote_token = account_id_to_bytes32(faucet_id)` — the identifier A5's
-    /// `domain_init` stored (recomputable from `faucet_id` alone, no guessing).
+    /// `identifier_init` stored (recomputable from `faucet_id` alone, no guessing).
     pub(crate) fn for_deployed_faucet(domain: u32, faucet_id: AccountId) -> Self {
         Self {
             domain,
@@ -282,7 +317,8 @@ pub fn raw_for_units(units: u64) -> u64 {
     units * SCALE
 }
 
-/// Builds a production `XReserveMintNote`: `sender` the producer/relayer, `faucet` the target,
+/// Builds a production `XUsdcMintNote` (the STOCK standards `MintNote` carrying the attested
+/// transport as attachments — Wave-1 S1): `sender` the producer/relayer, `faucet` the target,
 /// `attester` the local key that signs `keccak256(payload)`, and a payload minting `reduced(amount_raw)`
 /// units to `recipient`. `max_fee_raw` must reduce to ≤ the reduced amount (R-MINT-10); `feeAmount`
 /// stays MVP-zero. `nonce_salt` distinguishes otherwise-identical mints.
@@ -299,8 +335,8 @@ pub fn mint_note<R: FeltRng>(
 ) -> Result<Note> {
     let payload = mint_payload(recipient, amount_raw, max_fee_raw, nonce_salt);
     let attestation = attester.attestation_for(&payload);
-    XReserveMintNote::create(sender, faucet, &payload, &attestation, rng)
-        .context("building the XReserveMintNote probe")
+    XUsdcMintNote::create(sender, faucet, &payload, &attestation, rng)
+        .context("building the XUsdcMintNote probe")
 }
 
 /// The 8 u32-LE `feeAmount` attachment limbs encoding a raw uint256 `fee_raw` — extracted from the
@@ -322,14 +358,16 @@ pub fn fee_limbs_for(fee_raw: u64) -> [Felt; 8] {
     core::array::from_fn(|i| packed[felt_off + i])
 }
 
-/// Builds an `XReserveMintNote` with a CUSTOM scheme-1 attestation attachment: the same transport
-/// shape the production [`XReserveMintNote::create`] emits (custom mint script, DepositIntent
-/// storage, scheme-2 `NetworkAccountTarget` routing bind) but with the attestation attachment's
-/// `[feeAmount(8), pubkey(16 affine), signature(17), pad(3)]` words assembled from the
-/// caller-supplied `fee_limbs` + `attestation`. This is the harness's ADVERSARIAL note builder — it
-/// exists solely to stage Row-E negatives the production factory cannot (a non-zero feeAmount, a
-/// payload the attestation did not sign); it never re-implements any faucet gate. Mirrors the
-/// F5-suite `mint_note_with_attachments` helper (public-API note assembly, unchanged script root).
+/// Builds an `XUsdcMintNote`-shaped mint note with a CUSTOM scheme-5 attestation attachment: the
+/// same STOCK-`MintNote` transport shape the production [`XUsdcMintNote::create`] emits (the stock
+/// standards MINT script via [`XUsdcMintNote::script`], the `FungiblePublic` storage embedding the
+/// ATTESTED output — P2ID recipe to the payload's `remoteRecipient` with the nonce-key serial, the
+/// scale-0-reduced [`FungibleAsset`], the recipient account-target tag — plus the scheme-4
+/// DepositIntent attachment and the scheme-2 `NetworkAccountTarget` routing bind) but with the
+/// attestation attachment's `[feeAmount(8), pubkey(16 affine), signature(17), pad(3)]` words
+/// assembled from the caller-supplied `fee_limbs` + `attestation`. This is the harness's
+/// ADVERSARIAL note builder — it exists solely to stage Row-E negatives the production factory
+/// cannot (a non-zero feeAmount the F2 gate must trap); it never re-implements any faucet gate.
 pub fn mint_note_with_fee<R: FeltRng>(
     sender: AccountId,
     faucet: AccountId,
@@ -338,11 +376,46 @@ pub fn mint_note_with_fee<R: FeltRng>(
     fee_limbs: [Felt; 8],
     rng: &mut R,
 ) -> Result<Note> {
-    // The scheme-1 attestation content: [feeAmount(8), pubkey(16 affine), signature(17), pad(3)] =
-    // 44 felts = 11 words — the exact order `mint` pops from the advice stack. Identical to the
-    // production `attestation_attachment` (v16: the 33-byte compressed wire pubkey is decompressed
-    // to its 16 affine-coordinate felts, vm#3342 / MIGRATION-V16-ALPHA2.md S16), save the
-    // caller-chosen fee limbs (production hardcodes eight zeros).
+    // The ATTESTED storage ingredients, derived from the payload exactly as the production factory
+    // does (and as the on-chain policy re-derives them), so the note passes every ASSERT-MATCH
+    // binding leg and the probe traps at exactly the F2 fee gate.
+    let header = parse_deposit_intent_header(payload)
+        .map_err(|e| anyhow::anyhow!("deposit intent payload rejected by the 04 codec: {e}"))?;
+    let recipient_id = bytes32_to_account_id(&header.remote_recipient)
+        .map_err(|e| anyhow::anyhow!("remoteRecipient is not a valid account id: {e}"))?;
+    let amount = uint256_to_asset_amount(uint256_le_limbs(&header.amount), SCALE_EXP)
+        .map_err(|e| anyhow::anyhow!("amount rejected by the 04 reducer: {e}"))?;
+    let asset = FungibleAsset::new(faucet, u64::from(amount))
+        .map_err(|e| anyhow::anyhow!("attested amount: {e}"))?;
+    let serial = Word::from(bytes32_to_storage_map_key(&header.nonce));
+    let recipient = P2idNoteStorage::new(recipient_id).into_recipient(serial);
+    let tag = NoteTag::with_account_target(recipient_id);
+    let storage = MintNoteStorage::new_fungible_public(recipient, asset, tag)
+        .context("mint-note fungible-public storage")?;
+
+    // The scheme-4 DepositIntent attachment: the u32-LE-packed payload felts, zero-padded to the
+    // word boundary (identical to the production intent attachment).
+    let mut intent_felts = deposit_intent_to_packed_felts(payload)
+        .map_err(|e| anyhow::anyhow!("packing the deposit intent: {e}"))?;
+    while intent_felts.len() % 4 != 0 {
+        intent_felts.push(Felt::from(0u32));
+    }
+    let intent_words: Vec<Word> = intent_felts
+        .chunks_exact(4)
+        .map(|c| Word::new([c[0], c[1], c[2], c[3]]))
+        .collect();
+    let intent_attachment = NoteAttachment::with_words(
+        NoteAttachmentScheme::new(XUSDC_MINT_INTENT_ATTACHMENT_SCHEME)
+            .context("scheme-4 intent attachment scheme")?,
+        intent_words,
+    )
+    .context("building the scheme-4 DepositIntent attachment")?;
+
+    // The scheme-5 attestation content: [feeAmount(8), pubkey(16 affine), signature(17), pad(3)] =
+    // 44 felts = 11 words — the exact advice order the policy's D5b/D5d stages consume. Identical
+    // to the production `attestation_attachment` (v16: the 33-byte compressed wire pubkey is
+    // decompressed to its 16 affine-coordinate felts, vm#3342 / MIGRATION-V16-ALPHA2.md S16), save
+    // the caller-chosen fee limbs (production hardcodes eight zeros — DEV-8).
     let mut felts: Vec<Felt> = Vec::with_capacity(44);
     felts.extend(fee_limbs);
     felts.extend(
@@ -355,31 +428,39 @@ pub fn mint_note_with_fee<R: FeltRng>(
         .chunks_exact(4)
         .map(|c| Word::new([c[0], c[1], c[2], c[3]]))
         .collect();
-    debug_assert_eq!(words.len(), XRESERVE_MINT_ATTACHMENT_NUM_WORDS);
+    debug_assert_eq!(words.len(), XUSDC_MINT_ATTESTATION_NUM_WORDS);
     let attestation_attachment = NoteAttachment::with_words(
-        NoteAttachmentScheme::new(XRESERVE_MINT_ATTACHMENT_SCHEME)
-            .context("scheme-1 attachment scheme")?,
+        NoteAttachmentScheme::new(XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME)
+            .context("scheme-5 attestation attachment scheme")?,
         words,
     )
-    .context("building the custom scheme-1 attestation attachment")?;
+    .context("building the custom scheme-5 attestation attachment")?;
 
-    let items = deposit_intent_to_packed_felts(payload)
-        .map_err(|e| anyhow::anyhow!("packing the deposit intent: {e}"))?;
-    let storage = NoteStorage::new(items).context("mint-note storage")?;
-    let recipient_note = NoteRecipient::new(rng.draw_word(), XReserveMintNote::script(), storage);
-    let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
-        .with_tag(NoteTag::with_account_target(faucet));
     let target = NetworkAccountTarget::new(faucet, NoteExecutionHint::Always)
         .map_err(|e| anyhow::anyhow!("faucet id is not a public network account: {e}"))?;
-    let attachments =
-        NoteAttachments::new(vec![attestation_attachment, NoteAttachment::from(target)])
-            .context("mint-note attachments")?;
-    Ok(Note::with_attachments(
-        NoteAssets::new(vec![]).context("empty mint-note vault")?,
-        metadata,
-        recipient_note,
-        attachments,
-    ))
+    let mint_note = MintNote::builder()
+        .sender(sender)
+        .mint_storage(storage)
+        .serial_number(rng.draw_word())
+        .attachment(intent_attachment)
+        .attachment(attestation_attachment)
+        .attachment(NoteAttachment::from(target))
+        .build()
+        .context("building the adversarial stock MintNote")?;
+    Ok(Note::from(mint_note))
+}
+
+/// The 8 u32-LE packed limbs of a big-endian uint256 wire field (limb i = LE-u32 of wire bytes
+/// `[4i, 4i+4)`) — the limb form the shared-encoding reducer consumes (the factory-side helper,
+/// restated for the adversarial builder).
+fn uint256_le_limbs(bytes: &[u8; 32]) -> [u32; 8] {
+    core::array::from_fn(|i| {
+        u32::from_le_bytes(
+            bytes[4 * i..4 * i + 4]
+                .try_into()
+                .expect("4-byte window of a 32-byte field"),
+        )
+    })
 }
 
 /// Builds a production `XReserveBurnNote` carrying `amount` units of the faucet's xUSDC (the note's
@@ -419,7 +500,6 @@ pub fn burn_note_wrong_asset<R: FeltRng>(
     dest_salt: u8,
     rng: &mut R,
 ) -> Result<Note> {
-    use miden_protocol::asset::FungibleAsset;
     use xusdc_encoding::note::xreserve_burn::FIXED_XUSDC_BURN_TAG;
     use xusdc_encoding::xreserve::encoding::encode_burn_note_items;
 

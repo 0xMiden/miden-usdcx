@@ -1,0 +1,95 @@
+# xreserve::identifier_init
+#
+# The owner-gated, init-once IDENTIFIER seeding (R-ADMIN-4, minimized per DEC-4): a one-time write
+# of the ONE domain-config field that provably cannot be build-seeded — the faucet identifier. The
+# account id derives from the initial storage commitment (account_id/v1: the id is a hash over
+# seed + code commitment + storage commitment), and the identifier is (pending Q-CRY-4) the
+# faucet's OWN id as bytes32 — a fixpoint, so the slot must start EMPTY and be seeded after the
+# id exists. The other three domain-config fields (`domain`, `source_domain`,
+# `xreserve_contract`) are BUILD-SEEDED by the Rust account builder and have no runtime writer.
+#
+# The identifier slot is the one the mint path's D5a compare
+# (deposit_intent_parser::assert_deposit_intent) reads to reject mis-addressed deposits; it stores
+# the Poseidon2 bytes32->key WORD (consumer-forced — D5a's `assert_eqw` compares the hashed
+# form). A second write traps ERR_XRESERVE_IDENTIFIER_REINIT. Owner-gated (Ownable2Step); no
+# pause gate (deploy-time config is orthogonal to the operational pause). The slot const is
+# IMPORTED from deposit_intent_parser (the single source of truth with D5a).
+
+use miden::protocol::active_account
+use miden::protocol::native_account
+use miden::standards::access::ownable2step
+use {IDENTIFIER_CONFIG_SLOT} from xreserve::deposit_intent_parser
+
+# ERRORS
+# =================================================================================================
+
+# R-ADMIN-4: the identifier is init-once; a second write traps. The init-once sentinel is the
+# identifier slot itself — a Poseidon2 bytes32->key hash, non-empty by construction once set.
+const ERR_XRESERVE_IDENTIFIER_REINIT = "identifier has already been initialized"
+
+# R-ADMIN-4 hardening: an EMPTY input identifier would never arm the init-once sentinel (the
+# "immutable" identifier would stay silently re-initializable) and D5a would compare every
+# intent's identifier against EMPTY. Trap rather than deploy that state.
+const ERR_XRESERVE_IDENTIFIER_EMPTY = "identifier must be non-empty"
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Writes the faucet identifier config slot, owner-gated and init-once: the ONE domain-config
+#! field the account-id fixpoint forces past build time (DEC-4). Gated on the Ownable2Step owner
+#! — NOT an operational role — because the identifier is deploy-time identity. Init-once
+#! (R-ADMIN-4): a second call finds the slot non-empty and traps; a trapped tx commits nothing.
+#! The identifier is trusted verbatim (the set_attester discipline); D5a compares the stored Word
+#! directly.
+#!
+#! Inputs:  [IDENTIFIER, pad(12)]
+#! Outputs: [pad(16)]
+#!
+#! Where:
+#! - IDENTIFIER is the faucet identifier as the canonical bytes32->key Word (stored verbatim;
+#!   D5a asserts word equality against it).
+#!
+#! Panics if:
+#! - the note sender is not the Ownable2Step owner (ownable2step::assert_sender_is_owner,
+#!   ERR_SENDER_NOT_OWNER).
+#! - the identifier was already initialized — the slot is non-empty
+#!   (ERR_XRESERVE_IDENTIFIER_REINIT, R-ADMIN-4).
+#! - the input IDENTIFIER is the empty word — it could never arm the init-once sentinel
+#!   (ERR_XRESERVE_IDENTIFIER_EMPTY).
+#!
+#! Invocation: call
+@account_procedure
+pub proc init_identifier
+    # => [IDENTIFIER, pad(12)]
+
+    # gate: owner-only. Identifier binding is deploy-time identity, off the operational roles.
+    exec.ownable2step::assert_sender_is_owner
+    # => [IDENTIFIER, pad(12)]
+
+    # init-once (R-ADMIN-4): the identifier slot must be EMPTY. assert_eqw against EMPTY_WORD
+    # passes only when uninitialized; a second write finds the stored hash word and traps.
+    push.IDENTIFIER_CONFIG_SLOT[0..2] exec.active_account::get_item
+    # => [STORED_IDENTIFIER, IDENTIFIER, pad(12)]
+
+    padw assert_eqw.err=ERR_XRESERVE_IDENTIFIER_REINIT
+    # => [IDENTIFIER, pad(12)]
+
+    # hardening (R-ADMIN-4): the input IDENTIFIER must be non-empty — an EMPTY identifier would
+    # never arm the sentinel above. Non-destructive compare: eqw pushes the flag WITHOUT
+    # consuming the words, so IDENTIFIER reaches its verbatim write (and D5a's read) untouched.
+    padw
+    # => [EMPTY, IDENTIFIER, pad(12)]
+
+    eqw
+    # => [is_empty, EMPTY, IDENTIFIER, pad(12)]
+
+    assertz.err=ERR_XRESERVE_IDENTIFIER_EMPTY
+    # => [EMPTY, IDENTIFIER, pad(12)]
+
+    dropw
+    # => [IDENTIFIER, pad(12)]
+
+    # identifier_config := IDENTIFIER (the verbatim Word D5a's assert_eqw reads).
+    push.IDENTIFIER_CONFIG_SLOT[0..2] exec.native_account::set_item dropw
+    # => [pad(12)]
+end

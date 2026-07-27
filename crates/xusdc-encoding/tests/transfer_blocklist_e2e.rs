@@ -92,13 +92,31 @@ fn unblocked_word() -> Word {
 // PART A — the delegation contract (role gate on block_account / unblock_account)
 // ================================================================================================
 
-/// A policed + Enabled production faucet (deny-only production composition), IncrNonce auth so admin
-/// notes execute directly and the BLK_MANAGER role gate is the only gate under test.
+/// A compilable stand-in for the DELETED custom mint driver (the Wave-1 S1 recomposition removed
+/// `xreserve::xreserve_mint`, so the former generated driver no longer assembles): these tests
+/// never invoke the driver proc — the guarded fixture only needs a driver component that compiles.
+fn placeholder_driver_src() -> String {
+    "#! Test driver stand-in: never invoked by this suite (the custom mint entry was deleted by\n\
+     #! the Wave-1 S1 recomposition); the guarded fixture only requires a compilable component.\n\
+     #!\n\
+     #! Inputs:  [pad(16)]\n\
+     #! Outputs: [pad(16)]\n\
+     #!\n\
+     #! Invocation: call\n\
+     @account_procedure\n\
+     pub proc drive\n\
+     \x20\x20\x20\x20push.0 drop\n\
+     end\n"
+        .to_string()
+}
+
+/// A policed + Enabled production faucet (attestation-gated production composition), IncrNonce auth
+/// so admin notes execute directly and the BLK_MANAGER role gate is the only gate under test.
 fn policed_faucet() -> Result<GuardedMint> {
-    let driver = mint_composition_driver_src(&[Felt::from(0u32)], 60, 6);
+    let driver = placeholder_driver_src();
     let probe = composition_supply_probe_src(0);
     setup_guarded_mint_account(
-        GuardSelection::ProductionDeny,
+        GuardSelection::ProductionAttestation,
         MAX_SUPPLY,
         0,
         Word::from([7u32, 0, 0, 0]),

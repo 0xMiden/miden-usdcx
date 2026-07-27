@@ -16,22 +16,23 @@ pub struct RowsAbObservations {
     pub main_commit: String,
     /// The deployed faucet's account id (derived at build from the seed + composition).
     pub faucet_id: AccountId,
-    /// `GetAccount` response AFTER the deploy(+domain_init) transaction committed.
+    /// `GetAccount` response AFTER the deploy(+identifier_init) transaction committed.
     /// `None` = the node does not recognize the account (row A fails).
     pub deployed: Option<Account>,
     /// The deploy transaction id (hex) and the block it committed in.
     pub deploy_tx_id: String,
     pub deploy_block: u32,
-    /// The owner account id (the `domain_init` sender the proc's owner gate checked).
+    /// The owner account id (the `identifier_init` sender the proc's owner gate checked).
     pub owner_id: AccountId,
-    /// The FIRST `domain_init` note's params (expected in storage post-init).
+    /// The run params: the three BUILD-SEEDED domain-config fields + the FIRST
+    /// `identifier_init` note's identifier (all five expected in storage post-init).
     pub domain_params: DomainParams,
-    /// The SECOND `domain_init` note's params (must NOT appear in storage).
+    /// The SECOND `identifier_init` note's params (its identifier must NOT appear in storage).
     pub reinit_params: DomainParams,
-    /// Note ids (hex) of the two owner-sent `domain_init` notes.
+    /// Note ids (hex) of the two owner-sent `identifier_init` notes.
     pub first_note_id: String,
     pub second_note_id: String,
-    /// The exact client-side execution error from attempting to consume the SECOND `domain_init`
+    /// The exact client-side execution error from attempting to consume the SECOND `identifier_init`
     /// against the deployed faucet state. `None` = the attempt did NOT fail (row B fails).
     pub reinit_error: Option<String>,
     /// `GetAccount` response re-fetched AFTER the reinit attempt window (state-unchanged check).

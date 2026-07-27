@@ -1,9 +1,10 @@
-//! LNV-1 test suite — matrix rows A (deploy + recognize) and B (`domain_init` init-once),
-//! written TEST-FIRST against the assertion suite + driver API.
+//! LNV-1 test suite — matrix rows A (deploy + recognize) and B (`identifier_init` init-once —
+//! the Wave-1 S1 retarget of the former `domain_init` row), written TEST-FIRST against the
+//! assertion suite + driver API.
 //!
 //! Two layers:
 //! 1. **The real-node E2E** (`lnv1_rows_ab_against_real_local_node`): boots a FRESH local
-//!    v0.15.1 stack, deploys the production faucet via path C, drives `domain_init` #1/#2, and
+//!    v0.15.1 stack, deploys the production faucet via path C, drives `identifier_init` #1/#2, and
 //!    judges the observations with the row-A/B assertion suite. This is the gate run for this
 //!    slice; it needs the pinned node binaries installed (`miden-node`/`miden-validator`/
 //!    `miden-ntx-builder`/`miden-remote-prover`) and free loopback ports 57291–57294. It is
@@ -20,10 +21,13 @@
 use anyhow::Result;
 use miden_protocol::account::{
     Account, AccountBuilder, AccountId, AccountIdVersion, AccountType, AssetCallbackFlag,
+    StorageSlotName,
 };
+use miden_protocol::Word;
 use miden_standards::account::auth::AuthNetworkAccount;
-use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
-use xusdc_validation::assertions::{assert_row_a, assert_row_b, ERR_DOMAIN_REINIT_TEXT};
+use xusdc_encoding::account::xreserve::{XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL};
+use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
+use xusdc_validation::assertions::{assert_row_a, assert_row_b, ERR_IDENTIFIER_REINIT_TEXT};
 use xusdc_validation::config::{repo_root, DomainParams, RunConfig};
 use xusdc_validation::deploy::{build_xreserve_component_seeded, production_components};
 use xusdc_validation::evidence::write_evidence;
@@ -45,14 +49,36 @@ fn wallet_id(seed: u8) -> AccountId {
     )
 }
 
-/// A production-shaped faucet `Account` with nonce 1 (as if deployed), optionally with the five
-/// domain-config slots pre-seeded (`Some(params)` = post-init shape) and an optional REPLACEMENT
-/// auth component (`None` = the frozen production auth).
+/// The identifier-slot shape of a synthetic post-deploy faucet. The identifier is BOUND to the
+/// faucet id (the R2 identifier-binding fix): it is DERIVED from the id, never caller-chosen. This
+/// mirrors the real deploy — the account id is fixed by the EMPTY-identifier component, then
+/// `identifier_init` writes the own-id key into the (immutable-id) account.
+#[derive(Clone, Copy)]
+enum Identifier {
+    /// Empty slot — `identifier_init` never executed.
+    Uninitialized,
+    /// The own-id fixpoint key `identifier_for(faucet_id)` — the correct post-init shape.
+    OwnId,
+    /// An explicit WRONG value in the slot — a corrupted / breached identifier (a negative fixture).
+    Wrong(Word),
+}
+
+/// A production-shaped faucet `Account` with nonce 1 (as if deployed). The three build-seeded fields
+/// always come from `build_seed` (the recomposed builder REQUIRES them — they exist from
+/// construction and have no runtime writer). `auth_override` optionally REPLACES the frozen
+/// production auth. The identifier slot is written POST-BUILD per `identifier`: the account id is
+/// derived from the EMPTY-identifier component (exactly as the real deploy fixes it), then the
+/// identifier is set into the account whose id is now immutable — the faithful twin of the
+/// post-deploy `identifier_init` write (which cannot be a build seed: the own-id key is a fixpoint of
+/// the id the build produces).
 fn synthetic_deployed_faucet(
-    domain: Option<&DomainParams>,
+    identifier: Identifier,
+    build_seed: &DomainParams,
     auth_override: Option<AuthNetworkAccount>,
 ) -> Result<Account> {
-    let xreserve = build_xreserve_component_seeded(domain)?;
+    // Ship the identifier EMPTY so the id is derived from the empty-identifier component (as the real
+    // deploy does); the builder still seeds domain/source_domain/xreserve_contract from `build_seed`.
+    let xreserve = build_xreserve_component_seeded(None)?;
     let components = production_components(
         xreserve,
         wallet_id(1),
@@ -60,18 +86,37 @@ fn synthetic_deployed_faucet(
         wallet_id(3),
         wallet_id(4),
         MAX_SUPPLY,
+        build_seed,
     )?;
     let auth = match auth_override {
         Some(auth) => auth,
         None => XReserveStablecoinBuilder::auth_component()?,
     };
-    let account = AccountBuilder::new([7u8; 32])
+    let mut account = AccountBuilder::new([7u8; 32])
         .account_type(AccountType::Public)
         .with_asset_callbacks(AssetCallbackFlag::Enabled)
         .with_auth_component(auth)
         .with_components(components)
         .build_existing()?;
+
+    // Post-build identifier write — the id is fixed now, so this is the exact post-deploy
+    // `identifier_init` shape (the own-id key, or a negative value, without changing the id).
+    let value = match identifier {
+        Identifier::Uninitialized => None,
+        Identifier::OwnId => Some(XReserveIdentifierInitNote::identifier_for(account.id())),
+        Identifier::Wrong(word) => Some(word),
+    };
+    if let Some(word) = value {
+        let slot = StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)?;
+        account.storage_mut().set_item(&slot, word)?;
+    }
     Ok(account)
+}
+
+/// A foreign own-id identifier (a DIFFERENT account's key) — guaranteed distinct from any faucet's
+/// own-id key, so it is a valid "wrong identifier" negative for the post-reinit read-back.
+fn foreign_identifier() -> Word {
+    XReserveIdentifierInitNote::identifier_for(wallet_id(9))
 }
 
 /// A green-shaped observation set around `deployed`/`after_reinit` (callers then break exactly
@@ -93,7 +138,7 @@ fn synthetic_obs(deployed: Option<Account>, after_reinit: Option<Account>) -> Ro
         reinit_params: DomainParams::lnv1_reinit_attempt(),
         first_note_id: "0xnote1".to_string(),
         second_note_id: "0xnote2".to_string(),
-        reinit_error: Some(format!("executor trap: {ERR_DOMAIN_REINIT_TEXT}")),
+        reinit_error: Some(format!("executor trap: {ERR_IDENTIFIER_REINIT_TEXT}")),
         after_reinit,
         second_note_consumed: false,
     }
@@ -102,8 +147,8 @@ fn synthetic_obs(deployed: Option<Account>, after_reinit: Option<Account>) -> Ro
 /// The fully green synthetic shape (post-init faucet, reinit rejected, nothing changed).
 fn green_obs() -> Result<RowsAbObservations> {
     let params = DomainParams::lnv1();
-    let deployed = synthetic_deployed_faucet(Some(&params), None)?;
-    let after = synthetic_deployed_faucet(Some(&params), None)?;
+    let deployed = synthetic_deployed_faucet(Identifier::OwnId, &params, None)?;
+    let after = synthetic_deployed_faucet(Identifier::OwnId, &params, None)?;
     Ok(synthetic_obs(Some(deployed), Some(after)))
 }
 
@@ -138,7 +183,7 @@ fn row_a_rejects_a_thinned_allowlist() -> Result<()> {
     let auth = AuthNetworkAccount::with_allowed_notes(thinned)?;
 
     let params = DomainParams::lnv1();
-    let account = synthetic_deployed_faucet(Some(&params), Some(auth))?;
+    let account = synthetic_deployed_faucet(Identifier::OwnId, &params, Some(auth))?;
     let obs = synthetic_obs(Some(account), None);
     let err = assert_row_a(&obs).expect_err("row A must fail on a thinned allowlist");
     assert!(
@@ -160,13 +205,15 @@ fn row_a_accepts_the_production_shape() -> Result<()> {
 
 // ── row B negatives ──────────────────────────────────────────────────────────────────────────
 
-/// Row B must reject an UNINITIALIZED domain config (empty slots = domain_init never executed).
+/// Row B must reject an UNINITIALIZED identifier (an empty identifier slot = identifier_init never
+/// executed; the three build-seeded fields exist from construction — Wave-1 S1).
 #[test]
-fn row_b_rejects_uninitialized_domain_config() -> Result<()> {
-    let deployed = synthetic_deployed_faucet(None, None)?;
-    let after = synthetic_deployed_faucet(None, None)?;
+fn row_b_rejects_uninitialized_identifier() -> Result<()> {
+    let params = DomainParams::lnv1();
+    let deployed = synthetic_deployed_faucet(Identifier::Uninitialized, &params, None)?;
+    let after = synthetic_deployed_faucet(Identifier::Uninitialized, &params, None)?;
     let obs = synthetic_obs(Some(deployed), Some(after));
-    let err = assert_row_b(&obs).expect_err("row B must fail when the domain slots are empty");
+    let err = assert_row_b(&obs).expect_err("row B must fail when the identifier slot is empty");
     assert!(
         format!("{err:#}").contains("read-back"),
         "the failure must name the read-back mismatch, got: {err:#}"
@@ -174,7 +221,7 @@ fn row_b_rejects_uninitialized_domain_config() -> Result<()> {
     Ok(())
 }
 
-/// Row B must reject a run whose second domain_init did NOT fail (init-once did not hold).
+/// Row B must reject a run whose second identifier_init did NOT fail (init-once did not hold).
 #[test]
 fn row_b_requires_a_reinit_failure() -> Result<()> {
     let mut obs = green_obs()?;
@@ -195,23 +242,26 @@ fn row_b_requires_the_exact_reinit_gate_error() -> Result<()> {
     obs.reinit_error = Some("Network transactions may not be submitted by users yet".to_string());
     let err = assert_row_b(&obs).expect_err("row B must fail on a non-gate failure");
     assert!(
-        format!("{err:#}").contains(ERR_DOMAIN_REINIT_TEXT),
+        format!("{err:#}").contains(ERR_IDENTIFIER_REINIT_TEXT),
         "the failure must name the expected gate error, got: {err:#}"
     );
     Ok(())
 }
 
-/// Row B must reject any write of the SECOND note's params (the init-once gate leaked).
+/// Row B must reject any post-reinit identifier that is NOT the own-id key (a leaked / corrupted
+/// slot). Post-recomposition the second `identifier_init` derives the SAME own-id key as the first,
+/// so a breach cannot present as a distinct "second identifier" — it shows up as ANY identifier !=
+/// `identifier_for(faucet_id)`, which the post-attempt read-back catches.
 #[test]
-fn row_b_rejects_second_params_written() -> Result<()> {
-    let first = DomainParams::lnv1();
-    let second = DomainParams::lnv1_reinit_attempt();
-    let deployed = synthetic_deployed_faucet(Some(&first), None)?;
-    // After the "attempt", storage suddenly holds the SECOND note's params.
-    let after = synthetic_deployed_faucet(Some(&second), None)?;
+fn row_b_rejects_wrong_post_reinit_identifier() -> Result<()> {
+    let params = DomainParams::lnv1();
+    let deployed = synthetic_deployed_faucet(Identifier::OwnId, &params, None)?;
+    // The breached shape: a FOREIGN identifier (a different account's own-id key) in the slot after
+    // the rejected reinit — it must NOT equal this faucet's own-id key.
+    let after = synthetic_deployed_faucet(Identifier::Wrong(foreign_identifier()), &params, None)?;
     let obs = synthetic_obs(Some(deployed), Some(after));
     let err = assert_row_b(&obs)
-        .expect_err("row B must fail when the second note's params reached storage");
+        .expect_err("row B must fail when the post-reinit identifier is not the own-id key");
     assert!(
         format!("{err:#}").contains("post-reinit-attempt"),
         "the failure must name the post-attempt state, got: {err:#}"
@@ -244,8 +294,9 @@ fn row_b_accepts_the_initialized_shape() -> Result<()> {
 
 /// Rows A + B against a REAL fresh local node: bootstrap genesis, start
 /// validator/ntx-builder/sequencer/prover, deploy the production faucet (its first transaction
-/// consumes the owner's `domain_init` — the first admin note), verify recognition + read-backs,
-/// prove init-once, tear down. Writes `evidence.json` under the gitignored run root either way.
+/// consumes the owner's `identifier_init` — the first admin note; the other three domain-config
+/// fields are build-seeded), verify recognition + read-backs, prove init-once, tear down. Writes
+/// `evidence.json` under the gitignored run root either way.
 ///
 /// Ignored by default (NOT optional for the gate): it must bind loopback listener sockets for
 /// the four node services, which hermetic audit sandboxes forbid. The gate record requires this

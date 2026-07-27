@@ -1,27 +1,35 @@
 # xreserve_set_min_burn_size_note — the shipped, root-pinned set_min_burn_size admin note script (F5).
 #
-# The production admin surface for `set_min_burn_size` under the network account: a fixed-root note
-# whose parameter is CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the network executor
-# controls). It stages the note storage into memory, marshals the creator's param onto the stack in
-# the proc's Inputs order, and `call`s the OWNER-gated `min_burn_admin::set_min_burn_size` (the sender
-# gate lives in the proc; the note sender is kernel-forced, so a non-owner creator traps there). A
-# scheme-2 NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only,
-# added by the Rust factory).
+# The production admin surface for the minimum burn size under the network account: a fixed-root
+# note whose parameter is CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the network
+# executor controls). Since the MinBurnAmount swap the note targets the STOCK
+# `min_burn_amount::set_min_burn_amount` account procedure (authority-gated: under
+# `Authority::OwnerControlled` the sender gate resolves to the Ownable2Step owner, and it lives
+# in the proc — a non-owner creator traps there). The stock setter itself accepts `new_min = 0`,
+# so THIS SCRIPT carries the zero-floor guard (the R-BURN-1 zero-burn invariant preserved at the
+# only runtime write path): `new_min >= 1` is asserted BEFORE the call. A scheme-2
+# NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only, added
+# by the Rust factory).
 #
 # Note storage layout (1 felt): [new_min]. `new_min` is the new minimum burn size (AssetAmount).
 
 use miden::protocol::active_note
-use xreserve::min_burn_admin
+use miden::standards::faucets::policies::burn::min_burn_amount
 
 # CONSTANTS
 # =================================================================================================
 
-# Absolute memory address where the creator-committed param is staged (word-aligned; the mint-note
-# INTENT_PTR convention, shared with the set_attester reference note).
+# Absolute memory address where the creator-committed param is staged (word-aligned; the
+# admin-note convention shared with the set_attester reference note).
 const PARAM_PTR = 1024
 
 # The exact note-storage item count for this admin op: [new_min] = 1 felt.
 const SET_MIN_BURN_SIZE_NOTE_NUM_ITEMS = 1
+
+# The smallest admissible minimum burn size. The stock MinBurnAmount policy asserts
+# `min <= amount`, so a floor of one rejects zero-amount burns (R-BURN-1) without a bespoke
+# burn policy; the builder seeds the slot under the same floor.
+const MIN_BURN_SIZE_FLOOR = 1
 
 # ERRORS
 # =================================================================================================
@@ -29,27 +37,36 @@ const SET_MIN_BURN_SIZE_NOTE_NUM_ITEMS = 1
 # The note must carry exactly the 1 param felt; a wrong count is a malformed admin note.
 const ERR_XRESERVE_SET_MIN_BURN_SIZE_NOTE_STORAGE = "set_min_burn_size note storage item count is invalid"
 
+# The zero-floor guard (R-BURN-1 preserved): the stock setter accepts 0, so the note rejects any
+# new_min below the floor BEFORE calling it.
+const ERR_XRESERVE_MIN_BURN_BELOW_FLOOR = "minimum burn size must be at least one"
+
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Consumes the `set_min_burn_size` admin note and drives the owner-gated minBurnSize write.
+#! Consumes the `set_min_burn_size` admin note and drives the owner-gated minimum-burn write
+#! through the STOCK `set_min_burn_amount`, enforcing the zero floor first.
 #!
-#! Stages the creator-committed param (`[new_min]`) into memory at PARAM_PTR, marshals it onto the
-#! stack as `[new_min, pad(15)]`, and `call`s `min_burn_admin::set_min_burn_size`. The note ARGS are
-#! unused (executor-controlled).
+#! Stages the creator-committed param (`[new_min]`) into memory at PARAM_PTR, asserts
+#! `new_min >= 1` (the zero-floor guard — the stock setter itself accepts 0), marshals it onto
+#! the stack as `[new_min, pad(15)]`, and `call`s `min_burn_amount::set_min_burn_amount`. The
+#! note ARGS are unused (executor-controlled).
 #!
 #! Requires that the account exposes:
-#! - xreserve::min_burn_admin::set_min_burn_size procedure.
+#! - miden::standards::faucets::policies::burn::min_burn_amount::set_min_burn_amount procedure.
 #!
 #! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
 #!
 #! Note storage is assumed to be as follows:
-#! - new_min is the new minimum burn size as an AssetAmount felt (item 0).
+#! - new_min is the new minimum burn size as an AssetAmount felt (item 0), at least 1.
 #!
 #! Panics if:
 #! - the note storage does not carry exactly 1 item.
-#! - the note sender is not the registered owner (min_burn_admin::set_min_burn_size's owner gate).
+#! - new_min is not a valid u32-range AssetAmount felt below the floor check, or is below the
+#!   floor (ERR_XRESERVE_MIN_BURN_BELOW_FLOOR).
+#! - the note sender is not authorized per the installed Authority (the stock setter's
+#!   authority::assert_authorized -> the Ownable2Step owner).
 #!
 #! Invocation: dyncall
 @note_script
@@ -66,9 +83,15 @@ pub proc main
 
     push.PARAM_PTR mem_load
     # => [new_min, pad(16)]
+
+    # the zero-floor guard (R-BURN-1 preserved): new_min >= 1, asserted BEFORE the stock call.
+    # `neq.0` suffices for the floor of one — an AssetAmount felt is non-negative, so
+    # `new_min != 0` is exactly `new_min >= 1`.
+    dup neq.0 assert.err=ERR_XRESERVE_MIN_BURN_BELOW_FLOOR
+    # => [new_min, pad(16)]
     # (the call consumes the top 16: [new_min, pad(15)])
 
-    call.min_burn_admin::set_min_burn_size
+    call.min_burn_amount::set_min_burn_amount
     # => [pad(17)]
 
     # rebalance to the dyncall depth-16-on-return rule: the param push above displaced 1 pad zero

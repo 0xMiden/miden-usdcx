@@ -2,19 +2,22 @@
 //! The allowlist setter's MASM is UNCHANGED — it calls the account-wide
 //! `authority::assert_authorized`, which after the reconciliation (`Authority::OwnerControlled`, the
 //! built `ATTEST_ADMIN` role removed) resolves to the Ownable2Step owner. This file covers the owner
-//! gate (the security core), the production-deny regression, and the pause gate. The non-vacuity
-//! set->verify seam (`set_attester_enables_attestation`, remove-denies, and the 5-step rotation) lives
-//! in `xreserve_mint.rs`, alongside the shared mint-composition fixtures it reuses. The DOM role SEED
-//! itself is proven in `role_admin.rs` (`shipped_delegation_reads_back`, production builder) and
-//! `set_min_burn.rs` (`support_replica_carries_delegation_seed`, the burn-oracle replica).
+//! gate (the security core), the production attestation-gate posture pin, and the pause gate. The
+//! non-vacuity set->verify seam (attestation enable/remove/rotation through the REAL transport)
+//! lives in the mint E2E suites (`mint_policy_e2e.rs` / `wave1_recomposition.rs`), alongside the
+//! production-faucet fixtures they own. The DOM role SEED itself is proven in `role_admin.rs`
+//! (`shipped_delegation_reads_back`, production builder) and `set_min_burn.rs`
+//! (`support_replica_carries_delegation_seed`, the burn-oracle replica).
 
 mod support;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use miden_protocol::account::{AccountId, StorageMapKey, StorageSlotName, StorageSlotPatch};
-use miden_protocol::{Felt, Word};
+use miden_protocol::Word;
+use miden_standards::account::policies::TokenPolicyManager;
 use miden_testing::assert_transaction_executor_error;
 use support::*;
+use xusdc_encoding::account::xreserve::ATTESTATION_MINT_POLICY_PROC_PATH;
 
 // The seeded principals the reconciled builder installs: owner = id(1) (Ownable2Step); the two seeded
 // DOM role-holders DOM_PAUSER = id(2) (also the FORMER ATTEST_ADMIN holder) and DOM_MANAGER = id(3) —
@@ -35,14 +38,32 @@ fn dummy_config() -> (Word, Word) {
     (Word::from([7u32, 0, 0, 0]), Word::from([11u32, 12, 13, 14]))
 }
 
-/// A guarded production faucet (owner-gated, deny active) with a trivial driver/probe — the base for the
-/// owner-gate tests. `attesters_seed = None` (empty allowlist).
+/// A compilable stand-in for the DELETED custom mint driver (the Wave-1 S1 recomposition removed
+/// `xreserve::xreserve_mint`, so the former generated driver no longer assembles): these tests
+/// never invoke the driver proc — the guarded fixture only needs a driver component that compiles.
+fn placeholder_driver_src() -> String {
+    "#! Test driver stand-in: never invoked by this suite (the custom mint entry was deleted by\n\
+     #! the Wave-1 S1 recomposition); the guarded fixture only requires a compilable component.\n\
+     #!\n\
+     #! Inputs:  [pad(16)]\n\
+     #! Outputs: [pad(16)]\n\
+     #!\n\
+     #! Invocation: call\n\
+     @account_procedure\n\
+     pub proc drive\n\
+     \x20\x20\x20\x20push.0 drop\n\
+     end\n"
+        .to_string()
+}
+
+/// A guarded production faucet (owner-gated, attestation-policy active) with a trivial driver/probe
+/// — the base for the owner-gate tests. `attesters_seed = None` (empty allowlist).
 fn guarded_faucet() -> Result<GuardedMint> {
-    let driver = mint_composition_driver_src(&[Felt::from(0u32)], 60, 6);
+    let driver = placeholder_driver_src();
     let probe = composition_supply_probe_src(0);
     let (domain, identifier) = dummy_config();
     setup_guarded_mint_account(
-        GuardSelection::ProductionDeny,
+        GuardSelection::ProductionAttestation,
         1_000_000,
         0,
         domain,
@@ -84,16 +105,33 @@ fn probe_attester_admin_exports() -> Result<()> {
     Ok(())
 }
 
-// PRODUCTION REGRESSION GATE — the owner-gated build must not perturb the R-MINT-16 deny path
+// PRODUCTION REGRESSION GATE — the owner-gated build must not perturb the mint-gate posture
 // ================================================================================================
 
-/// The owner-gated production builder still denies stock `mint_and_send` at the EXACT
-/// ERR_XRESERVE_MINT_DENIED (mint execution is Authority-independent: policy_manager.masm:284-297).
-#[tokio::test]
-async fn production_build_still_denies_stock_mint() -> Result<()> {
-    let gm = guarded_faucet()?;
-    let result = run_mint_and_send(&gm.harness, Word::from([0u32, 1, 2, 3]), 0, 4, 100).await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_MINT_DENIED"));
+/// The owner-gated production builder gates the mint on the ATTESTATION policy: the composed set's
+/// ACTIVE mint-policy slot (`TokenPolicyManager::active_mint_policy_slot()`) holds exactly the root
+/// resolved via `ATTESTATION_MINT_POLICY_PROC_PATH` from the installed `xreserve` component
+/// (INV-MINT-SECURITY restated — every supply increase passes the attestation gate; the executing
+/// halves are `mint_policy_e2e.rs` / `wave1_recomposition.rs`).
+#[test]
+fn production_build_gates_mint_on_the_attestation_policy() -> Result<()> {
+    let components = production_component_set(1_000_000, 0)?;
+    let attestation_root = components
+        .iter()
+        .find_map(|c| c.get_procedure_root_by_path(ATTESTATION_MINT_POLICY_PROC_PATH))
+        .map(Word::from)
+        .context("the composed set must carry the attestation mint policy proc")?;
+    let active = components
+        .iter()
+        .flat_map(|c| c.storage_slots().iter())
+        .find(|slot| slot.name() == TokenPolicyManager::active_mint_policy_slot())
+        .context("the composed set must carry the active-mint-policy slot")?
+        .value();
+    assert_eq!(
+        active, attestation_root,
+        "the ACTIVE mint policy slot must hold the attestation policy root (the owner-gated build \
+         leaves the mint gate on the attestation policy)"
+    );
     Ok(())
 }
 

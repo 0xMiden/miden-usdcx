@@ -44,22 +44,33 @@ fn dummy_config() -> (Word, Word) {
     (Word::from([7u32, 0, 0, 0]), Word::from([11u32, 12, 13, 14]))
 }
 
-/// An owner-gated production faucet (deny active) with cap 1_000_000 and a trivial unused driver/probe —
-/// the base for the gate tests. `token_supply` seeds the initial `token_config[token_supply]` (for the
-/// below-supply guard); `is_max_supply_mutable` is the net-new flag.
+/// An owner-gated production faucet (attestation policy active) with cap 1_000_000 and a trivial
+/// unused driver/probe — the base for the gate tests. `token_supply` seeds the initial
+/// `token_config[token_supply]` (for the below-supply guard); `is_max_supply_mutable` is the
+/// net-new flag.
 fn guarded_faucet(token_supply: u64, is_max_supply_mutable: bool) -> Result<GuardedMint> {
-    let driver = mint_composition_driver_src(&[Felt::from(0u32)], 60, 6);
+    // a no-op placeholder driver: these tests invoke set_max_supply via a note, never a driver.
+    let driver = "#! No-op placeholder driver (unused by the set_max_supply gate tests).\n\
+                  #!\n\
+                  #! Inputs:  [pad(16)]\n\
+                  #! Outputs: [pad(16)]\n\
+                  #!\n\
+                  #! Invocation: call\n\
+                  @account_procedure\n\
+                  pub proc drive\n\
+                  \x20\x20\x20\x20push.0 drop\n\
+                  end\n";
     let probe = composition_supply_probe_src(0);
     let (domain, identifier) = dummy_config();
     setup_guarded_mint_account(
-        GuardSelection::ProductionDeny,
+        GuardSelection::ProductionAttestation,
         1_000_000,
         token_supply,
         domain,
         identifier,
         None,
         None,
-        &driver,
+        driver,
         &probe,
         is_max_supply_mutable,
     )

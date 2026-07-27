@@ -34,8 +34,8 @@ use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveAcceptOwnershipNote, XReserveBlockAccountNote, XReserveDomainInitNote,
-    XReserveGrantRoleNote, XReservePauseNote, XReserveRevokeRoleNote, XReserveSetAttesterNote,
+    XReserveAcceptOwnershipNote, XReserveBlockAccountNote, XReserveGrantRoleNote,
+    XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote, XReserveSetAttesterNote,
     XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
     XReserveUnblockAccountNote, XReserveUnpauseNote,
 };
@@ -88,7 +88,7 @@ fn note_rng(seed: u64) -> RandomCoin {
 /// allowlisted) but TRAPS at the proc's owner gate — the layered-auth proof.
 #[tokio::test]
 async fn set_attester_admin_note_owner_writes_and_nonowner_traps() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -167,42 +167,24 @@ fn set_attester_note_script_root_is_pinned() {
     );
 }
 
-// DOMAIN_INIT (allowlist row 12) — owner-gated, init-once config setter
+// IDENTIFIER_INIT (allowlist row 12) — owner-gated, init-once identifier seeding (DEC-4: the
+// minimized replacement of the former four-field domain_init; domain / source_domain /
+// xreserve_contract are BUILD-SEEDED by the production builder's `with_domain_config`)
 // ================================================================================================
 
-const DOMAIN: u32 = 7;
-const SOURCE_DOMAIN: u32 = 3;
-
-/// A distinct-bytes test `xreserve_contract` (mirrors `xreserve_mint_note.rs::test_xreserve_contract`).
-fn xrc_bytes() -> [u8; 32] {
-    core::array::from_fn(|i| 0x10 + i as u8)
-}
-
-/// A pre-hashed test identifier Word (stored verbatim by `domain_init`).
-fn identifier() -> Word {
-    Word::from([111u32, 222, 333, 444])
-}
-
-/// The five config words as `read_domain_config_words` returns them:
-/// `[domain, source_domain, xrc_hi, xrc_lo, identifier]`.
-fn expected_domain_config() -> [Word; 5] {
-    let xrc = xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts(&xrc_bytes());
+/// The five config words as `read_domain_config_words` returns them after the owner's init:
+/// indexes 0-3 are the PRODUCTION BUILD-SEED (`with_domain_config(TEST_DOMAIN,
+/// TEST_SOURCE_DOMAIN, test_xreserve_contract())` — never touched by the init note), index 4 the
+/// note-committed identifier.
+fn expected_domain_config(faucet_id: AccountId) -> [Word; 5] {
+    let xrc =
+        xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts(&test_xreserve_contract());
     [
-        Word::from([
-            Felt::from(DOMAIN),
-            Felt::from(0u32),
-            Felt::from(0u32),
-            Felt::from(0u32),
-        ]),
-        Word::from([
-            Felt::from(SOURCE_DOMAIN),
-            Felt::from(0u32),
-            Felt::from(0u32),
-            Felt::from(0u32),
-        ]),
+        scalar_word(Felt::from(TEST_DOMAIN)),
+        scalar_word(Felt::from(TEST_SOURCE_DOMAIN)),
         Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]),
         Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]),
-        identifier(),
+        XReserveIdentifierInitNote::identifier_for(faucet_id),
     ]
 }
 
@@ -215,16 +197,14 @@ fn value_delta(tx: &ExecutedTransaction, label: &str) -> Word {
     }
 }
 
-/// Reads the FIVE config words from a tx's account delta, in the order
-/// `[domain, source_domain, xrc_hi, xrc_lo, identifier]` (each is a value-slot write empty -> value).
-fn domain_config_delta(tx: &ExecutedTransaction) -> [Word; 5] {
-    [
-        value_delta(tx, DOMAIN_CONFIG_SLOT_LABEL),
-        value_delta(tx, SOURCE_DOMAIN_CONFIG_SLOT_LABEL),
-        value_delta(tx, XRESERVE_CONTRACT_HI_SLOT_LABEL),
-        value_delta(tx, XRESERVE_CONTRACT_LO_SLOT_LABEL),
-        value_delta(tx, IDENTIFIER_CONFIG_SLOT_LABEL),
-    ]
+/// Asserts the tx's storage patch does NOT touch the value slot `label` (the minimized init
+/// writes ONLY the identifier slot; the four build-seeded config slots stay delta-free).
+fn assert_no_value_delta(tx: &ExecutedTransaction, label: &str) {
+    let slot = StorageSlotName::new(label).expect("valid slot label");
+    assert!(
+        tx.account_patch().storage().get(&slot).is_none(),
+        "the identifier_init tx must not touch the build-seeded {label} slot",
+    );
 }
 
 /// A single felt as its value-slot word `[f, 0, 0, 0]`.
@@ -232,66 +212,71 @@ fn scalar_word(f: Felt) -> Word {
     Word::from([f, Felt::from(0u32), Felt::from(0u32), Felt::from(0u32)])
 }
 
-/// Consumes `owner`'s domain_init note against a fresh production faucet, PASSING network auth
-/// (allowlisted) AND the proc's owner gate, and writes all five config slots at the creator-
-/// committed params (read back from the account delta — the storage-param marshaling is correct).
+/// Consumes `owner`'s identifier_init note against a fresh production faucet, PASSING network auth
+/// (allowlisted) AND the proc's owner gate: it writes ONLY the identifier slot at the creator-
+/// committed param (the four build-seeded config slots stay delta-free), and the evolved account
+/// reads back the production build-seed + the committed identifier (the storage-param marshaling
+/// is correct).
 #[tokio::test]
-async fn domain_init_owner_writes_all_five_config_slots() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+async fn identifier_init_owner_writes_only_the_identifier_slot() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let owner = test_account_id(1);
 
-    let note = XReserveDomainInitNote::create(
-        owner,
-        faucet_id,
-        DOMAIN,
-        SOURCE_DOMAIN,
-        &xrc_bytes(),
-        identifier(),
-        &mut note_rng(13),
-    )
-    .context("building the owner domain_init note")?;
+    let note = XReserveIdentifierInitNote::create(owner, faucet_id, &mut note_rng(13))
+        .context("building the owner identifier_init note")?;
     let tx = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("owner domain_init tx context")?
+        .context("owner identifier_init tx context")?
         .build()
-        .context("owner domain_init tx build")?
+        .context("owner identifier_init tx build")?
         .execute()
         .await
         .map_err(|e| {
-            anyhow::anyhow!("owner-sent domain_init must succeed under network auth: {e}")
+            anyhow::anyhow!("owner-sent identifier_init must succeed under network auth: {e}")
         })?;
     assert_eq!(
-        domain_config_delta(&tx),
-        expected_domain_config(),
-        "owner domain_init must write all five §5.9 config slots at the creator-committed params",
+        value_delta(&tx, IDENTIFIER_CONFIG_SLOT_LABEL),
+        XReserveIdentifierInitNote::identifier_for(faucet_id),
+        "owner identifier_init must write the creator-committed identifier verbatim",
+    );
+    for label in [
+        DOMAIN_CONFIG_SLOT_LABEL,
+        SOURCE_DOMAIN_CONFIG_SLOT_LABEL,
+        XRESERVE_CONTRACT_HI_SLOT_LABEL,
+        XRESERVE_CONTRACT_LO_SLOT_LABEL,
+    ] {
+        assert_no_value_delta(&tx, label);
+    }
+    let mut evolved = chain
+        .committed_account(faucet_id)
+        .context("committed faucet")?
+        .clone();
+    evolved.apply_patch(tx.account_patch())?;
+    assert_eq!(
+        read_domain_config_words(&evolved)?,
+        expected_domain_config(faucet_id),
+        "the five config words = the four production build-seeded words + the committed identifier",
     );
     Ok(())
 }
 
-/// A non-owner domain_init note PASSES network auth (allowlisted) but TRAPS at the proc's owner gate.
-async fn assert_domain_init_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+/// A non-owner identifier_init note PASSES network auth (allowlisted) but TRAPS at the proc's
+/// owner gate.
+async fn assert_identifier_init_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReserveDomainInitNote::create(
-        sender,
-        faucet_id,
-        DOMAIN,
-        SOURCE_DOMAIN,
-        &xrc_bytes(),
-        identifier(),
-        &mut note_rng(seed),
-    )
-    .context("building the non-owner domain_init note")?;
+    let note = XReserveIdentifierInitNote::create(sender, faucet_id, &mut note_rng(seed))
+        .context("building the non-owner identifier_init note")?;
     let result = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("non-owner domain_init tx context")?
+        .context("non-owner identifier_init tx context")?
         .build()
-        .context("non-owner domain_init tx build")?
+        .context("non-owner identifier_init tx build")?
         .execute()
         .await;
     assert_transaction_executor_error!(result, err_sender_not_owner());
@@ -299,123 +284,109 @@ async fn assert_domain_init_nonowner_traps(sender: AccountId, seed: u64) -> Resu
 }
 
 #[tokio::test]
-async fn domain_init_dom_pauser_traps() -> Result<()> {
-    assert_domain_init_nonowner_traps(test_account_id(2), 14).await
+async fn identifier_init_dom_pauser_traps() -> Result<()> {
+    assert_identifier_init_nonowner_traps(test_account_id(2), 14).await
 }
 
 #[tokio::test]
-async fn domain_init_third_party_traps() -> Result<()> {
-    assert_domain_init_nonowner_traps(test_account_id(99), 15).await
+async fn identifier_init_third_party_traps() -> Result<()> {
+    assert_identifier_init_nonowner_traps(test_account_id(99), 15).await
 }
 
-/// init-once: a SECOND domain_init — even from the owner — traps `ERR_XRESERVE_DOMAIN_REINIT`. The
-/// first init is SEEDED on-chain (block-provable) so the second sees initialized state. The seeded
-/// note's routing target is a placeholder PUBLIC id (routing-only, not consume-gated; the script
-/// root — hence the allowlist entry — is attachment-independent, so it still passes auth).
+/// init-once: a SECOND identifier_init — even from the owner — traps
+/// `ERR_XRESERVE_IDENTIFIER_REINIT` (the identifier slot IS the init-once sentinel). The first
+/// init is SEEDED on-chain (block-provable) so the second sees initialized state. Both notes are
+/// built against the REAL faucet id (the seed closure receives it), so both derive the SAME own-id
+/// identifier key — the second write hits the armed sentinel regardless of the value.
 #[tokio::test]
-async fn domain_init_reinit_traps_even_from_owner() -> Result<()> {
-    let route = test_faucet_id(1);
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| {
-        vec![XReserveDomainInitNote::create(
-            test_account_id(1),
-            route,
-            DOMAIN,
-            SOURCE_DOMAIN,
-            &xrc_bytes(),
-            identifier(),
-            &mut note_rng(16),
-        )
-        .expect("building the seeded first domain_init note")]
+async fn identifier_init_reinit_traps_even_from_owner() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, faucet_id| {
+        vec![
+            XReserveIdentifierInitNote::create(test_account_id(1), faucet_id, &mut note_rng(16))
+                .expect("building the seeded first identifier_init note"),
+        ]
     })
-    .context("building the production faucet with a seeded first domain_init")?;
+    .context("building the production faucet with a seeded first identifier_init")?;
     let mut chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
 
     for note in pf.seeded_notes.clone() {
         let tx = chain
             .build_tx_context(faucet_id, &[note.id()], &[])
-            .context("first domain_init bring-up tx context")?
+            .context("first identifier_init bring-up tx context")?
             .build()
-            .context("first domain_init bring-up tx build")?
+            .context("first identifier_init bring-up tx build")?
             .execute()
             .await
-            .map_err(|e| anyhow::anyhow!("first domain_init bring-up must succeed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("first identifier_init bring-up must succeed: {e}"))?;
         chain.add_pending_executed_transaction(&tx)?;
         chain.prove_next_block()?;
     }
 
-    let note2 = XReserveDomainInitNote::create(
-        test_account_id(1),
-        faucet_id,
-        DOMAIN,
-        SOURCE_DOMAIN,
-        &xrc_bytes(),
-        identifier(),
-        &mut note_rng(17),
-    )
-    .context("building the second domain_init note")?;
+    let note2 =
+        XReserveIdentifierInitNote::create(test_account_id(1), faucet_id, &mut note_rng(17))
+            .context("building the second identifier_init note")?;
     let result = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note2))
-        .context("second domain_init tx context")?
+        .context("second identifier_init tx context")?
         .build()
-        .context("second domain_init tx build")?
+        .context("second identifier_init tx build")?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_DOMAIN_REINIT"));
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_IDENTIFIER_REINIT")
+    );
     Ok(())
 }
 
-/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the written config (params
-/// come from note storage, never NOTE_ARGS).
+/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the written identifier
+/// (the param comes from note storage, never NOTE_ARGS).
 #[tokio::test]
-async fn domain_init_note_args_are_inert() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+async fn identifier_init_note_args_are_inert() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let owner = test_account_id(1);
 
-    let note = XReserveDomainInitNote::create(
-        owner,
-        faucet_id,
-        DOMAIN,
-        SOURCE_DOMAIN,
-        &xrc_bytes(),
-        identifier(),
-        &mut note_rng(18),
-    )
-    .context("building the owner domain_init note")?;
+    let note = XReserveIdentifierInitNote::create(owner, faucet_id, &mut note_rng(18))
+        .context("building the owner identifier_init note")?;
     let bogus_args = Word::from([424_242u32, 7, 7, 7]);
     let tx = chain
         .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("domain_init note-args tx context")?
+        .context("identifier_init note-args tx context")?
         .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
         .build()
-        .context("domain_init note-args tx build")?
+        .context("identifier_init note-args tx build")?
         .execute()
         .await
         .map_err(|e| {
-            anyhow::anyhow!("owner domain_init with bogus NOTE_ARGS must still succeed: {e}")
+            anyhow::anyhow!("owner identifier_init with bogus NOTE_ARGS must still succeed: {e}")
         })?;
     assert_eq!(
-        domain_config_delta(&tx),
-        expected_domain_config(),
-        "domain_init must write the storage-committed params regardless of executor NOTE_ARGS",
+        value_delta(&tx, IDENTIFIER_CONFIG_SLOT_LABEL),
+        XReserveIdentifierInitNote::identifier_for(faucet_id),
+        "identifier_init must write the storage-committed identifier regardless of executor \
+         NOTE_ARGS",
     );
     Ok(())
 }
 
-/// masm-rust-constant-parity: the compiled domain_init note-script root must equal the pinned const.
+/// masm-rust-constant-parity: the compiled identifier_init note-script root must equal the pinned
+/// const (`XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX`).
 #[test]
-fn domain_init_note_script_root_is_pinned() {
+fn identifier_init_note_script_root_is_pinned() {
     assert_eq!(
-        XReserveDomainInitNote::script_root(),
-        XReserveDomainInitNote::pinned_script_root(),
-        "masm-rust-constant-parity: compiled domain_init note-script root == the pinned constant",
+        XReserveIdentifierInitNote::script_root(),
+        XReserveIdentifierInitNote::pinned_script_root(),
+        "masm-rust-constant-parity: compiled identifier_init note-script root == the pinned constant",
     );
 }
 
-// SET_MIN_BURN_SIZE (allowlist row 4) — owner-gated minBurnSize setter
+// SET_MIN_BURN_SIZE (allowlist row 4) — owner-gated floor setter (Wave-1 S1: the note asserts
+// `new_min >= 1` then calls the STOCK `min_burn_amount::set_min_burn_amount`, which writes the
+// STOCK `MinBurnAmount` slot)
 // ================================================================================================
 
 const NEW_MIN_BURN: u64 = 5_000;
@@ -425,10 +396,10 @@ fn expected_min_burn() -> Word {
 }
 
 /// Owner-sent set_min_burn_size PASSES auth (allowlisted) + the proc owner gate and writes
-/// `[new_min,0,0,0]` at `MIN_BURN_SIZE_SLOT`.
+/// `[new_min,0,0,0]` into the STOCK `MinBurnAmount` slot.
 #[tokio::test]
 async fn set_min_burn_size_owner_writes_slot() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -447,17 +418,22 @@ async fn set_min_burn_size_owner_writes_slot() -> Result<()> {
         .map_err(|e| {
             anyhow::anyhow!("owner-sent set_min_burn_size must succeed under network auth: {e}")
         })?;
+    let mut evolved = chain
+        .committed_account(faucet_id)
+        .context("committed faucet")?
+        .clone();
+    evolved.apply_patch(tx.account_patch())?;
     assert_eq!(
-        value_delta(&tx, MIN_BURN_SIZE_SLOT_LABEL),
+        read_min_burn_size(&evolved)?,
         expected_min_burn(),
-        "owner set_min_burn_size must write [new_min,0,0,0] at MIN_BURN_SIZE_SLOT",
+        "owner set_min_burn_size must write [new_min,0,0,0] into the STOCK MinBurnAmount slot",
     );
     Ok(())
 }
 
 /// A non-owner set_min_burn_size note PASSES auth but TRAPS at the proc's owner gate.
 async fn assert_set_min_burn_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -493,7 +469,7 @@ async fn set_min_burn_size_third_party_traps() -> Result<()> {
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the written min burn size.
 #[tokio::test]
 async fn set_min_burn_size_note_args_are_inert() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -514,10 +490,50 @@ async fn set_min_burn_size_note_args_are_inert() -> Result<()> {
         .map_err(|e| {
             anyhow::anyhow!("set_min_burn_size with bogus NOTE_ARGS must still succeed: {e}")
         })?;
+    let mut evolved = chain
+        .committed_account(faucet_id)
+        .context("committed faucet")?
+        .clone();
+    evolved.apply_patch(tx.account_patch())?;
     assert_eq!(
-        value_delta(&tx, MIN_BURN_SIZE_SLOT_LABEL),
+        read_min_burn_size(&evolved)?,
         expected_min_burn(),
         "set_min_burn_size must write the storage-committed param regardless of executor NOTE_ARGS",
+    );
+    Ok(())
+}
+
+/// The production note script's zero-floor guard: an OWNER-sent note carrying `new_min = 0` PASSES
+/// network auth (allowlisted) AND the owner gate would admit the sender, but the note-side
+/// `new_min >= 1` assert fires BEFORE the stock `set_min_burn_amount` call (the stock setter
+/// itself accepts 0) — the EXACT floor error, and the STOCK slot stays at the build seed.
+#[tokio::test]
+async fn set_min_burn_size_zero_floor_from_owner_traps() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+    let owner = test_account_id(1);
+
+    let note = XReserveSetMinBurnSizeNote::create(owner, faucet_id, 0, &mut note_rng(45))
+        .context("building the owner zero-floor set_min_burn_size note")?;
+    let result = chain
+        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
+        .context("owner zero-floor set_min_burn_size tx context")?
+        .build()
+        .context("owner zero-floor set_min_burn_size tx build")?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, err_min_burn_below_floor());
+
+    // fail-closed: the committed STOCK floor slot stays at the builder's `>= 1` seed.
+    let committed = chain
+        .committed_account(faucet_id)
+        .context("committed faucet")?;
+    assert_eq!(
+        read_min_burn_size(committed)?,
+        scalar_word(Felt::from(1u32)),
+        "a trapped zero-floor note must leave the stock MinBurnAmount slot at the build seed",
     );
     Ok(())
 }
@@ -540,7 +556,7 @@ fn set_min_burn_size_note_script_root_is_pinned() {
 /// DOM_PAUSER-sent pause PASSES auth (allowlisted) + the proc's DOM_PAUSER gate and sets is_paused=1.
 #[tokio::test]
 async fn pause_dom_pauser_sets_is_paused() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -566,7 +582,7 @@ async fn pause_dom_pauser_sets_is_paused() -> Result<()> {
 /// A non-DOM_PAUSER pause note PASSES auth but TRAPS at the proc's role gate — including the OWNER
 /// (Circle model: the owner has NO pause path).
 async fn assert_pause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -596,7 +612,7 @@ async fn pause_third_party_traps() -> Result<()> {
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the pause effect.
 #[tokio::test]
 async fn pause_note_args_are_inert() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -667,7 +683,7 @@ fn unblock_account_note_script_root_is_pinned() {
 /// tx has a 1 -> 0 `is_paused` transition to observe. Placeholder PUBLIC routing target (routing-only).
 async fn paused_faucet() -> Result<(MockChain, AccountId)> {
     let route = test_faucet_id(1);
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| {
         vec![
             XReservePauseNote::create(test_account_id(2), route, &mut note_rng(60))
                 .expect("building the seeded pause note"),
@@ -715,7 +731,7 @@ async fn unpause_dom_pauser_clears_is_paused() -> Result<()> {
 
 /// A non-DOM_PAUSER unpause note PASSES auth but TRAPS at the proc's role gate (owner included).
 async fn assert_unpause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -788,7 +804,7 @@ async fn assert_grant_role_authorized(
     role: RoleSymbol,
     seed: u64,
 ) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -842,7 +858,7 @@ async fn grant_role_dom_manager_authorized() -> Result<()> {
 /// traps it like any non-admin sender.
 #[tokio::test]
 async fn grant_role_owner_on_delegated_role_traps() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -868,7 +884,7 @@ async fn grant_role_owner_on_delegated_role_traps() -> Result<()> {
 /// A third party (neither owner nor DOM_MANAGER) PASSES auth but TRAPS at the delegation gate.
 #[tokio::test]
 async fn grant_role_third_party_traps() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -894,7 +910,7 @@ async fn grant_role_third_party_traps() -> Result<()> {
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the granted membership.
 #[tokio::test]
 async fn grant_role_note_args_are_inert() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -952,7 +968,7 @@ const NEW_MAX_SUPPLY: u64 = 2_000_000;
 /// max-supply-mutable + unpaused) and writes word[1] (max_supply) of the token_config slot.
 #[tokio::test]
 async fn set_max_supply_owner_writes_cap() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -983,7 +999,7 @@ async fn set_max_supply_owner_writes_cap() -> Result<()> {
 
 /// A non-owner set_max_supply note PASSES auth but TRAPS at the owner Authority gate.
 async fn assert_set_max_supply_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -1019,7 +1035,7 @@ async fn set_max_supply_third_party_traps() -> Result<()> {
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the written cap.
 #[tokio::test]
 async fn set_max_supply_note_args_are_inert() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -1072,7 +1088,7 @@ async fn faucet_with_granted_role(
     grantor: AccountId,
     grant_seed: u64,
 ) -> Result<(MockChain, AccountId, Account, AccountId)> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -1408,7 +1424,7 @@ fn former_set_role_admin_note_script_still_compiles_to_the_former_root() {
 /// ONLY to the removed allowlist membership; the committed delegation graph stays the build seed.
 #[tokio::test]
 async fn set_role_admin_note_is_rejected_as_non_allowlisted() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -1447,7 +1463,7 @@ async fn set_role_admin_note_is_rejected_as_non_allowlisted() -> Result<()> {
 /// NOTE_ARGS word changes nothing — the former note still fails the allowlist check.
 #[tokio::test]
 async fn set_role_admin_note_is_rejected_regardless_of_note_args() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -1477,7 +1493,7 @@ async fn set_role_admin_note_is_rejected_regardless_of_note_args() -> Result<()>
 /// allowlist check, so the proc's own gate fires first (`ERR_SENDER_NOT_ROLE_ADMIN`). Identical
 /// behavior before and after the S21 removal: the inner authorization layer never weakened.
 async fn assert_set_role_admin_nonadmin_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -1529,7 +1545,7 @@ fn owner_config_word(owner: AccountId, nominee: AccountId) -> Word {
 /// half is UNCHANGED (the 2-step invariant).
 #[tokio::test]
 async fn transfer_ownership_owner_nominates() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -1561,7 +1577,7 @@ async fn transfer_ownership_owner_nominates() -> Result<()> {
 
 /// A non-owner transfer_ownership note PASSES auth but TRAPS at the owner gate.
 async fn assert_transfer_ownership_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -1601,7 +1617,7 @@ async fn transfer_ownership_third_party_traps() -> Result<()> {
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the nomination.
 #[tokio::test]
 async fn transfer_ownership_note_args_are_inert() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -1661,7 +1677,7 @@ async fn faucet_with_pending_owner(
     nominee: AccountId,
     transfer_seed: u64,
 ) -> Result<(MockChain, AccountId, Account)> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;

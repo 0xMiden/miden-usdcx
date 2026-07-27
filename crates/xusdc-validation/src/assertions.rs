@@ -4,9 +4,11 @@
 //! - **A. Deploy + recognize** — the production faucet (post-F5 composition) deploys to the local
 //!   node; `GetAccount` returns it; the network-account allowlist slot is present + non-empty
 //!   on-chain; the account is PUBLIC.
-//! - **B. domain_init** — the owner-sent first admin note initializes the domain config; a SECOND
-//!   `domain_init` is REJECTED (init-once); `domain` + `identifier` read back from on-chain
-//!   storage.
+//! - **B. identifier_init** (the Wave-1 S1 retarget of the former `domain_init` row — same
+//!   init-once semantics, minimized subject per DEC-4) — the owner-sent first admin note
+//!   initializes the IDENTIFIER (the other three domain-config fields are BUILD-SEEDED); a SECOND
+//!   `identifier_init` is REJECTED (init-once); all five domain-config slots read back from
+//!   on-chain storage.
 //!
 //! Every check reads the NODE-fetched state carried by [`RowsAbObservations`] — a green here is a
 //! statement about the real chain, not about the client's local store.
@@ -25,15 +27,17 @@ use xusdc_encoding::account::xreserve::{
     SOURCE_DOMAIN_CONFIG_SLOT_LABEL, XRESERVE_CONTRACT_HI_SLOT_LABEL,
     XRESERVE_CONTRACT_LO_SLOT_LABEL,
 };
+use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
 use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
 
 use crate::config::DomainParams;
 use crate::observations::RowsAbObservations;
 
-/// The exact error string `domain_config::domain_init`'s init-once gate traps with
-/// (`ERR_XRESERVE_DOMAIN_REINIT` in `asm/standards/xreserve/domain_config.masm`); the reinit
-/// rejection must carry THIS error — any other failure is not the init-once gate.
-pub const ERR_DOMAIN_REINIT_TEXT: &str = "domain config has already been initialized";
+/// The exact error string `identifier_init::init_identifier`'s init-once gate traps with
+/// (`ERR_XRESERVE_IDENTIFIER_REINIT` in `asm/standards/xreserve/identifier_init.masm` — the
+/// Wave-1 S1 replacement of the former `domain_config` reinit gate); the reinit rejection must
+/// carry THIS error — any other failure is not the init-once gate.
+pub const ERR_IDENTIFIER_REINIT_TEXT: &str = "identifier has already been initialized";
 
 /// Reads a named value slot from a fetched account's storage.
 fn storage_word(account: &Account, label: &str) -> Result<Word> {
@@ -123,7 +127,9 @@ pub fn assert_row_a(obs: &RowsAbObservations) -> Result<()> {
     Ok(())
 }
 
-/// Asserts the five domain-config slots of `account` hold exactly `params`' values.
+/// Asserts the five domain-config slots of `account` are correct: the three BUILD-SEEDED fields hold
+/// `params`' values, and the `identifier_init`-committed identifier holds the OWN-ID fixpoint key
+/// `identifier_for(account.id())` (derived from the faucet id, NOT from `params` — R2 binding fix).
 fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &str) -> Result<()> {
     let domain = storage_word(account, DOMAIN_CONFIG_SLOT_LABEL)?;
     ensure!(
@@ -138,11 +144,16 @@ fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &st
         params.domain,
     );
 
+    // The identifier is BOUND to the faucet identity: the `identifier_init` note derives it from the
+    // faucet's OWN id (`identifier_for(faucet_id)` = `bytes32_to_key(account_id_to_bytes32(faucet_id))`,
+    // the own-id fixpoint), NOT from any caller-chosen `params` value (the R2 identifier-binding fix;
+    // the deployed-faucet re-check in `sanity` enforces the SAME key). So the expected identifier is
+    // derived from `account.id()`, not `params.identifier_word()`.
     let identifier = storage_word(account, IDENTIFIER_CONFIG_SLOT_LABEL)?;
-    let expected_identifier = params.identifier_word();
+    let expected_identifier = XReserveIdentifierInitNote::identifier_for(account.id());
     ensure!(
         identifier == expected_identifier,
-        "{ctx}: identifier slot read-back mismatch (got {identifier:?}, expected \
+        "{ctx}: identifier slot read-back mismatch (got {identifier:?}, expected the own-id key \
          {expected_identifier:?})",
     );
     ensure!(
@@ -178,33 +189,37 @@ fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &st
     Ok(())
 }
 
-/// **Row B — domain_init init-once.**
+/// **Row B — identifier_init init-once** (the Wave-1 S1 retarget: the row proves the SAME
+/// init-once invariant, whose surviving runtime subject is the minimized `identifier_init` note —
+/// the other three domain-config fields are build-seeded and have NO runtime writer at all).
 ///
-/// - The owner-sent first `domain_init` initialized the domain config: all five domain-config slots read
-///   back from ON-CHAIN storage at exactly the creator-committed params (`domain`, `identifier`
-///   — the spec's named read-backs — plus `source_domain` and the two `xreserve_contract` limbs).
-/// - The SECOND `domain_init` was REJECTED by the init-once gate: the consumption attempt failed
-///   with EXACTLY the `ERR_XRESERVE_DOMAIN_REINIT` error.
-/// - The rejection changed NOTHING: the re-fetched account still carries the FIRST params (never
-///   the second note's), the nonce is unchanged, and the second note was never consumed on-chain.
+/// - The owner-sent first `identifier_init` initialized the identifier to the OWN-ID fixpoint key
+///   (`identifier_for(faucet_id)`), and the build seed carried the other three fields: all five
+///   domain-config slots read back from ON-CHAIN storage (`domain`, `identifier` — the spec's named
+///   read-backs — plus `source_domain` and the two `xreserve_contract` limbs).
+/// - The SECOND `identifier_init` was REJECTED by the init-once gate: the consumption attempt
+///   failed with EXACTLY the `ERR_XRESERVE_IDENTIFIER_REINIT` error (the second note derives the
+///   SAME own-id key, so it traps as a reinit regardless of value).
+/// - The rejection changed NOTHING: the re-fetched account still carries the own-id identifier +
+///   build seed, the nonce is unchanged, and the second note was never consumed on-chain.
 pub fn assert_row_b(obs: &RowsAbObservations) -> Result<()> {
     let account = obs
         .deployed
         .as_ref()
         .context("row B: no deployed account to read the domain config back from")?;
 
-    // Init happened: the five slots hold the FIRST note's params.
+    // Init happened: the five slots hold the run params (build seed + first note's identifier).
     assert_domain_config_slots(account, &obs.domain_params, "row B (post-init read-back)")?;
 
     // Init-once: the second consumption attempt trapped with EXACTLY the reinit error.
     let err = obs.reinit_error.as_ref().context(
-        "row B: the SECOND domain_init consumption attempt did not fail — the init-once gate did \
-         not hold",
+        "row B: the SECOND identifier_init consumption attempt did not fail — the init-once gate \
+         did not hold",
     )?;
     ensure!(
-        err.contains(ERR_DOMAIN_REINIT_TEXT),
-        "row B: the second domain_init failed, but not with the init-once gate error \
-         ('{ERR_DOMAIN_REINIT_TEXT}'); got: {err}",
+        err.contains(ERR_IDENTIFIER_REINIT_TEXT),
+        "row B: the second identifier_init failed, but not with the init-once gate error \
+         ('{ERR_IDENTIFIER_REINIT_TEXT}'); got: {err}",
     );
 
     // Nothing changed: the post-attempt state still carries the FIRST params + nonce 1.
@@ -220,27 +235,17 @@ pub fn assert_row_b(obs: &RowsAbObservations) -> Result<()> {
     );
     assert_domain_config_slots(after, &obs.domain_params, "row B (post-reinit-attempt)")?;
 
-    // Belt-and-braces: had the second note's params been written, the first-params compare above
-    // would already have failed; make the negative explicit anyway when the two sets differ.
-    if obs.reinit_params.domain != obs.domain_params.domain {
-        let domain = storage_word(after, DOMAIN_CONFIG_SLOT_LABEL)?;
-        ensure!(
-            domain
-                != Word::from([
-                    Felt::from(obs.reinit_params.domain),
-                    Felt::ZERO,
-                    Felt::ZERO,
-                    Felt::ZERO
-                ]),
-            "row B: the SECOND domain_init's domain value appeared in storage — the init-once \
-             gate did not hold",
-        );
-    }
+    // The post-attempt read-back above already re-asserts the identifier is STILL the own-id key
+    // (unchanged by the rejected reinit). There is no distinct "second identifier" to detect: the
+    // second `identifier_init` derives the SAME own-id key from the SAME faucet_id (the R2
+    // identifier-binding fix), so the init-once proof rests on the trap error, the unchanged nonce,
+    // this unchanged read-back, and the note never being consumed on-chain (below) — not on a value
+    // mismatch between two notes.
 
     if obs.second_note_consumed {
         bail!(
-            "row B: the SECOND domain_init note was consumed on-chain — the init-once gate did \
-             not hold (note {})",
+            "row B: the SECOND identifier_init note was consumed on-chain — the init-once gate \
+             did not hold (note {})",
             obs.second_note_id,
         );
     }

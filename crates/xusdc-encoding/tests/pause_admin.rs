@@ -5,11 +5,10 @@
 //! primitives.
 //!
 //! The load-bearing proof is the PAUSE-HALT SEAM — a DOM_PAUSER pause must actually HALT the real
-//! faucet, not just flip `is_paused`: a real `xreserve_mint` AND a real `receive_and_burn` trap
-//! `ERR_PAUSABLE_IS_PAUSED` while paused, and both resume on unpause. Discovery found the burn already
-//! halts (execute_burn_policy runs assert_not_paused first) but the custom `xreserve_mint` bypasses the
-//! mint policy and did NOT honor `is_paused` — closed by adding `assert_not_paused` to
-//! `xreserve_mint::mint` (the mint reconciliation).
+//! faucet, not just flip `is_paused`: a REAL attested mint (the Wave-1 S1 stock-`MintNote`
+//! transport consumed by the production faucet, whose `execute_mint_policy` runs
+//! `assert_not_paused` FIRST) AND a real `receive_and_burn` trap `ERR_PAUSABLE_IS_PAUSED` while
+//! paused, and both resume on unpause (execute_burn_policy runs the same stock gate).
 //!
 //! DOMAIN-PAUSER-ONLY MODEL (IMPL-DEV-1 remediation): Circle's model gives the owner NO direct pause
 //! path, so the stock `PausableManager` is REMOVED from the composition and the DOM_PAUSER custom
@@ -26,17 +25,23 @@ mod support;
 
 use core::slice;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
-use miden_protocol::account::{Account, AccountId, StorageSlotName, StorageSlotPatch};
+use miden_protocol::account::{Account, AccountId};
 use miden_protocol::errors::MasmError;
+use miden_protocol::note::Note;
+use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
+use miden_tx::TransactionExecutorError;
 use rstest::rstest;
 use support::*;
-use xusdc_encoding::note::xreserve_admin::XReservePauseNote;
-use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
-use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
+use xusdc_encoding::note::xreserve_admin::{
+    XReserveIdentifierInitNote, XReservePauseNote, XReserveSetAttesterNote, XReserveUnpauseNote,
+};
+use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
+use xusdc_encoding::vectors::{load, DiVector};
+use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
 
 /// Deterministic note rng for the production admin notes (serial only; never affects the gate).
 fn prod_note_rng(seed: u64) -> RandomCoin {
@@ -76,17 +81,20 @@ fn err_sender_lacks_role() -> MasmError {
     MasmError::from_static_str("note sender does not hold the required role")
 }
 
-// MINT-SEAM FIXTURES (reconstructed from the canonical accept payload — mirrors domain_config.rs)
+// MINT-SEAM FIXTURES (the recomposed REAL stock-MintNote transport — mirrors mint_policy_e2e.rs)
 // ================================================================================================
 
 const BASE_VECTOR: &str = "di-pos-empty-hookdata";
-const LEN_FELTS: u64 = 60;
-const SCALE_EXP: u32 = 6;
-const HAPPY_AMOUNT_RAW: u64 = 2_000_000;
-const HAPPY_MAX_FEE_RAW: u64 = 1_000_000;
-/// amount 2_000_000 reduced by scale_exp=6 → 2 (the token_supply delta a successful mint commits).
-const REDUCED_AMOUNT: u32 = 2;
-const MARKER: [u32; 4] = [1, 0, 0, 0];
+const MINT_MAX_SUPPLY: u64 = 1_000_000_000_000;
+const MINT_AMOUNT: u64 = 250_000_000;
+const MAX_FEE_RAW: u64 = 1;
+
+/// First byte of the 32-byte `remoteRecipient` field (felt 19 x 4 bytes; DC-1).
+const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
+/// First byte of the 32-byte `remoteToken` field (felt 11 x 4 bytes; DC-1).
+const REMOTE_TOKEN_BYTE_OFF: usize = 11 * 4;
+/// First byte of the 32-byte `nonce` field (felt 51 x 4 bytes; DC-1).
+const NONCE_BYTE_OFF: usize = 51 * 4;
 
 fn di(id: &str) -> &'static DiVector {
     load()
@@ -97,69 +105,135 @@ fn di(id: &str) -> &'static DiVector {
         .unwrap_or_else(|| panic!("canonical artifact is missing di vector {id}"))
 }
 
-fn fields_of(id: &str) -> &'static DiFields {
-    di(id)
-        .fields
-        .as_ref()
-        .expect("accept vector carries fields")
-}
-
-fn base_payload() -> Vec<u8> {
-    di(BASE_VECTOR).bytes()
-}
-
-/// Splices `amount`/`maxFee` (uint256 BE) into a payload's byte image (so the keccak'd attestation
-/// payload stays consistent with what the attester signs).
-fn with_amounts(mut payload: Vec<u8>, amount: u64, max_fee: u64) -> Vec<u8> {
+/// The canonical accept payload with the wire amount / maxFee spliced in, `remoteRecipient`
+/// replaced by the real recipient wallet, `remoteToken` replaced by
+/// `account_id_to_bytes32(faucet_id)` (the own-id fixpoint the seeded identifier_init writes, so
+/// D5a's identifier compare passes), and one nonce byte perturbed per variant so each mint consumes
+/// a fresh D5c nonce.
+fn payload_for(
+    recipient: AccountId,
+    amount: u64,
+    nonce_variant: u8,
+    faucet_id: AccountId,
+) -> Vec<u8> {
+    let mut payload = di(BASE_VECTOR).bytes();
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
-    payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(max_fee));
+    payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
+    payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
+        .copy_from_slice(&account_id_to_bytes32(recipient));
+    payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32]
+        .copy_from_slice(&account_id_to_bytes32(faucet_id));
+    payload[NONCE_BYTE_OFF] ^= nonce_variant;
     payload
 }
 
-fn happy_payload() -> Vec<u8> {
-    with_amounts(base_payload(), HAPPY_AMOUNT_RAW, HAPPY_MAX_FEE_RAW)
+/// A compilable stand-in for the DELETED custom mint driver (the Wave-1 S1 recomposition removed
+/// `xreserve::xreserve_mint`, so the former generated driver no longer assembles): the stock-pause
+/// negative probes never invoke the driver proc — the guarded fixture only needs a component that
+/// compiles.
+fn placeholder_driver_src() -> String {
+    "#! Test driver stand-in: never invoked by this suite (the custom mint entry was deleted by\n\
+     #! the Wave-1 S1 recomposition); the guarded fixture only requires a compilable component.\n\
+     #!\n\
+     #! Inputs:  [pad(16)]\n\
+     #! Outputs: [pad(16)]\n\
+     #!\n\
+     #! Invocation: call\n\
+     @account_procedure\n\
+     pub proc drive\n\
+     \x20\x20\x20\x20push.0 drop\n\
+     end\n"
+        .to_string()
 }
 
-fn pack(bytes: &[u8]) -> Vec<Felt> {
-    miden_protocol::utils::bytes_to_packed_u32_elements(bytes)
-}
-
-/// The configured identifier = the canonical key-Word of the vector's remoteToken (what D5a compares).
-fn identifier_of(id: &str) -> Word {
-    Word::from(bytes32_to_storage_map_key(&parse_hex32(
-        &fields_of(id).remote_token_hex,
-    )))
-}
-
-fn nonce_key() -> Word {
-    Word::from(bytes32_to_storage_map_key(
-        &fields_of(BASE_VECTOR).bytes32("nonce"),
-    ))
-}
-
-/// A production faucet (owner=id(1), DOM_PAUSER=id(2)) pre-configured for a VALID mint: domain =
-/// TEST_DOMAIN, identifier = the canonical remoteToken key, the attester allowlisted, cap 1_000_000,
-/// supply 0. Returns the harness + the attester so a real `xreserve_mint` can be driven.
-fn guarded_mint_ready() -> Result<(GuardedMint, AttesterVector)> {
-    let payload = happy_payload();
-    let attester = gen_attester(1, &payload);
-    let identifier = identifier_of(BASE_VECTOR);
-    let domain = Word::from([Felt::from(TEST_DOMAIN), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-    let driver = mint_composition_driver_src(&pack(&payload), LEN_FELTS, SCALE_EXP);
-    let probe = composition_noeffect_probe_src(0, nonce_key());
-    let gm = setup_guarded_mint_account(
-        GuardSelection::ProductionDeny,
-        1_000_000,
+/// A PRODUCTION-composed faucet under permissive (IncrNonce) auth — the fixture for the stock-pause
+/// negative probes, where the missing stock PROC (not note-script auth) must be what fails.
+fn production_pause_fixture() -> Result<GuardedMint> {
+    let driver = placeholder_driver_src();
+    let probe = composition_supply_probe_src(0);
+    setup_guarded_mint_account(
+        GuardSelection::ProductionAttestation,
+        MAX_SUPPLY,
         0,
-        domain,
-        identifier,
+        Word::from([Felt::from(TEST_DOMAIN), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
+        Word::from([11u32, 12, 13, 14]),
         None,
-        Some((attester.commitment, Word::from(MARKER))),
+        None,
         &driver,
         &probe,
         true,
-    )?;
-    Ok((gm, attester))
+    )
+}
+
+/// The production faucet brought up for the mint-halt seams (the REAL stock-note transport,
+/// network-auth): the identifier seeded (DEC-4 minimized init), attester 1 allowlisted, plus the
+/// caller's extra admin notes — all seeded at genesis so each admin tx is block-provable. Mirrors
+/// `mint_policy_e2e.rs`.
+fn mint_fixture(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<ProductionFaucet> {
+    setup_production_faucet(MINT_MAX_SUPPLY, 0, |recipient, faucet_id| {
+        let commitment =
+            gen_attester(1, &payload_for(recipient, MINT_AMOUNT, 0, faucet_id)).commitment;
+        let route = faucet_id;
+        let mut notes = vec![
+            XReserveIdentifierInitNote::create(owner(), route, &mut prod_note_rng(951))
+                .expect("building the owner identifier_init note"),
+            XReserveSetAttesterNote::create(owner(), route, commitment, 1, &mut prod_note_rng(952))
+                .expect("building the owner set_attester note"),
+        ];
+        notes.extend(extra_notes(recipient));
+        notes
+    })
+}
+
+/// Consumes the seeded bring-up notes `0..count`, committing a block each.
+async fn bring_up(pf: &mut ProductionFaucet, count: usize) -> Result<()> {
+    for (i, note) in pf.seeded_notes.clone().iter().take(count).enumerate() {
+        let tx = pf
+            .mock_chain
+            .build_tx_context(pf.faucet_id, &[note.id()], &[])
+            .with_context(|| format!("bring-up note {i}: tx context"))?
+            .build()
+            .with_context(|| format!("bring-up note {i}: tx build"))?
+            .execute()
+            .await
+            .map_err(|e| anyhow::anyhow!("bring-up note {i} must succeed: {e}"))?;
+        pf.mock_chain.add_pending_executed_transaction(&tx)?;
+        pf.mock_chain.prove_next_block()?;
+    }
+    Ok(())
+}
+
+/// Builds the REAL stock mint note over an attested payload (the production `XUsdcMintNote`
+/// factory transport: intent + attestation + routing attachments).
+fn attested_mint_note(pf: &ProductionFaucet, payload: &[u8], rng_seed: u64) -> Result<Note> {
+    let attester = gen_attester(1, payload);
+    XUsdcMintNote::create(
+        pf.producer_id,
+        pf.faucet_id,
+        payload,
+        &MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes),
+        &mut prod_note_rng(rng_seed),
+    )
+    .map_err(|e| anyhow::anyhow!("building the attested stock mint note: {e}"))
+}
+
+/// Emits the attested mint note from the producer and consumes it on the faucet by id (the REAL
+/// stock-note transport), returning the consume result for success- or exact-trap assertions.
+async fn emit_and_consume_mint(
+    pf: &mut ProductionFaucet,
+    payload: &[u8],
+    rng_seed: u64,
+) -> Result<std::result::Result<ExecutedTransaction, TransactionExecutorError>> {
+    let note = attested_mint_note(pf, payload, rng_seed)?;
+    emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
+    Ok(pf
+        .mock_chain
+        .build_tx_context(pf.faucet_id, &[note.id()], &[])
+        .context("building the mint consume tx context")?
+        .build()
+        .context("building the mint consume tx")?
+        .execute()
+        .await)
 }
 
 /// Reads the committed `token_supply` (token_config word element 0) of a burn faucet.
@@ -203,7 +277,7 @@ fn probe_pause_admin_exports() -> Result<()> {
 /// `dom_pauser_pause_halts_mint`). RED at the prior baseline: the owner stock pause SUCCEEDS.
 #[tokio::test]
 async fn owner_has_no_pause_path() -> Result<()> {
-    let (gm, _attester) = guarded_mint_ready()?;
+    let gm = production_pause_fixture()?;
     let account = faucet_account(&gm.harness);
 
     let result = run_pause_against(&gm.harness.mock_chain, &account, owner(), 5).await;
@@ -223,7 +297,7 @@ async fn owner_has_no_pause_path() -> Result<()> {
 /// baseline: the owner stock unpause SUCCEEDS (gated only on the owner Authority).
 #[tokio::test]
 async fn owner_has_no_unpause_path() -> Result<()> {
-    let (gm, _attester) = guarded_mint_ready()?;
+    let gm = production_pause_fixture()?;
     let account = faucet_account(&gm.harness);
 
     let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &account, dom_pauser(), 5)
@@ -248,42 +322,51 @@ async fn owner_has_no_unpause_path() -> Result<()> {
     Ok(())
 }
 
-/// A DOM_PAUSER-triggered pause HALTS the real mint: DOM_PAUSER (id 2) pauses, then a real
-/// `xreserve_mint` traps the EXACT `ERR_PAUSABLE_IS_PAUSED`. RED: the pause placeholder traps first.
+/// A DOM_PAUSER-triggered pause HALTS the real mint: the seeded production `XReservePauseNote`
+/// (DOM_PAUSER-sent, consumed by id under the network auth) pauses the faucet, then a REAL attested
+/// stock mint note (the recomposed transport, emitted and consumed by id) traps the EXACT
+/// `ERR_PAUSABLE_IS_PAUSED` at the policy dispatcher's stock pause gate — fail-closed (no supply
+/// raised).
 #[tokio::test]
 async fn dom_pauser_pause_halts_mint() -> Result<()> {
-    let (gm, attester) = guarded_mint_ready()?;
-    let account = faucet_account(&gm.harness);
+    let mut pf = mint_fixture(|_| {
+        vec![
+            XReservePauseNote::create(dom_pauser(), test_faucet_id(1), &mut prod_note_rng(7))
+                .expect("building the DOM_PAUSER pause note"),
+        ]
+    })?;
+    bring_up(&mut pf, 3).await?; // identifier_init + set_attester + pause
+    assert_eq!(
+        read_is_paused(&pf.mock_chain.committed_account(pf.faucet_id)?.clone())?,
+        Word::from([1u32, 0, 0, 0]),
+        "precondition: the DOM_PAUSER pause really flipped is_paused"
+    );
 
-    let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &account, dom_pauser(), 5)
-        .await
-        .expect("DOM_PAUSER pauses the mint faucet");
-    let mut evolved = account.clone();
-    evolved.apply_patch(paused.account_patch())?;
-
-    let result = run_mint_against(
-        &gm.harness,
-        &evolved,
-        composition_advice([0u32; 8], &attester),
-    )
-    .await;
+    let payload = payload_for(pf.recipient_id, MINT_AMOUNT, 1, pf.faucet_id);
+    let result = emit_and_consume_mint(&mut pf, &payload, 71).await?;
     assert_transaction_executor_error!(result, err_paused());
+    assert_eq!(
+        committed_token_supply(&pf.mock_chain, pf.faucet_id)?,
+        miden_protocol::asset::AssetAmount::new(0)?,
+        "a halted mint must not raise supply"
+    );
     Ok(())
 }
 
 /// F5 — the ALLOWLISTED PRODUCTION `XReservePauseNote` (DOM_PAUSER-sent) HALTS the real attested
-/// mint: the note-driven twin of `dom_pauser_pause_halts_mint`, proving the shipped production note
-/// (not just an inline probe) drives the emergency stop. Routing target is a placeholder PUBLIC id
-/// (routing-only); this guarded harness is not network-auth, so the note executes directly and its
-/// `is_paused=1` delta is applied to the evolved faucet the mint runs against.
+/// mint through the UNAUTHENTICATED-note transport: the pause note executes as an unauthenticated
+/// input (never block-committed first — routing target a placeholder PUBLIC id, routing-only), its
+/// `is_paused=1` delta is applied to the evolved faucet, and the REAL stock mint note consumed
+/// (unauthenticated) against that paused faucet traps the exact stock pause error — the emergency
+/// stop reaches the mint gate whichever note transport carries it.
 #[tokio::test]
 async fn dom_pauser_production_pause_note_halts_mint() -> Result<()> {
-    let (gm, attester) = guarded_mint_ready()?;
-    let account = faucet_account(&gm.harness);
+    let mut pf = mint_fixture(|_| vec![])?;
+    bring_up(&mut pf, 2).await?; // identifier_init + set_attester
 
-    let note = XReservePauseNote::create(dom_pauser(), test_faucet_id(1), &mut prod_note_rng(7))?;
-    let paused = gm
-        .harness
+    let account = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
+    let note = XReservePauseNote::create(dom_pauser(), test_faucet_id(1), &mut prod_note_rng(8))?;
+    let paused = pf
         .mock_chain
         .build_tx_context(account.clone(), &[], slice::from_ref(&note))
         .expect("production pause tx context")
@@ -294,13 +377,22 @@ async fn dom_pauser_production_pause_note_halts_mint() -> Result<()> {
         .expect("the DOM_PAUSER production pause note pauses the mint faucet");
     let mut evolved = account.clone();
     evolved.apply_patch(paused.account_patch())?;
+    assert_eq!(
+        read_is_paused(&evolved)?,
+        Word::from([1u32, 0, 0, 0]),
+        "precondition: the production pause note really flipped is_paused"
+    );
 
-    let result = run_mint_against(
-        &gm.harness,
-        &evolved,
-        composition_advice([0u32; 8], &attester),
-    )
-    .await;
+    let payload = payload_for(pf.recipient_id, MINT_AMOUNT, 2, pf.faucet_id);
+    let mint_note = attested_mint_note(&pf, &payload, 72)?;
+    let result = pf
+        .mock_chain
+        .build_tx_context(evolved, &[], slice::from_ref(&mint_note))
+        .expect("mint consume tx context")
+        .build()
+        .expect("mint consume tx build")
+        .execute()
+        .await;
     assert_transaction_executor_error!(result, err_paused());
     Ok(())
 }
@@ -403,51 +495,42 @@ async fn dom_pauser_pause_halts_burn() -> Result<()> {
     Ok(())
 }
 
-/// UNPAUSE RESUMES both surfaces: after a DOM_PAUSER pause→unpause, a real mint mints again (one
-/// recipient note, token_supply += reduced amount) AND a real burn decrements token_supply. RED: the
-/// pause/unpause placeholders trap.
+/// UNPAUSE RESUMES both surfaces: after a DOM_PAUSER pause→unpause (both the seeded production
+/// admin notes), a REAL attested stock mint mints again (one recipient note, token_supply += the
+/// attested amount) AND a real burn decrements token_supply.
 #[tokio::test]
 async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
     // --- mint side ---
-    let (gm, attester) = guarded_mint_ready()?;
-    let account = faucet_account(&gm.harness);
+    let mut pf = mint_fixture(|_| {
+        vec![
+            XReservePauseNote::create(dom_pauser(), test_faucet_id(1), &mut prod_note_rng(9))
+                .expect("building the DOM_PAUSER pause note"),
+            XReserveUnpauseNote::create(dom_pauser(), test_faucet_id(1), &mut prod_note_rng(10))
+                .expect("building the DOM_PAUSER unpause note"),
+        ]
+    })?;
+    bring_up(&mut pf, 4).await?; // identifier_init + set_attester + pause + unpause
+    assert_eq!(
+        read_is_paused(&pf.mock_chain.committed_account(pf.faucet_id)?.clone())?,
+        Word::from([0u32, 0, 0, 0]),
+        "precondition: the pause→unpause round trip leaves the faucet unpaused"
+    );
 
-    let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &account, dom_pauser(), 5)
-        .await
-        .expect("DOM_PAUSER pauses the mint faucet");
-    let mut evolved = account.clone();
-    evolved.apply_patch(paused.account_patch())?;
-    let unpaused = run_dom_pauser_unpause(&gm.harness.mock_chain, &evolved, dom_pauser(), 6)
-        .await
-        .expect("DOM_PAUSER unpauses the mint faucet");
-    evolved.apply_patch(unpaused.account_patch())?;
-
-    let minted = run_mint_against(
-        &gm.harness,
-        &evolved,
-        composition_advice([0u32; 8], &attester),
-    )
-    .await
-    .expect("after unpause, the real xreserve_mint mints again");
+    let payload = payload_for(pf.recipient_id, MINT_AMOUNT, 3, pf.faucet_id);
+    let minted = emit_and_consume_mint(&mut pf, &payload, 73)
+        .await?
+        .map_err(|e| anyhow::anyhow!("after unpause, the real attested mint mints again: {e}"))?;
     assert_eq!(
         minted.output_notes().num_notes(),
         1,
         "unpause resumes minting (one recipient note)"
     );
-    let cfg_slot = StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL)?;
-    let StorageSlotPatch::Value(cfg) = minted
-        .account_patch()
-        .storage()
-        .get(&cfg_slot)
-        .expect("token_config slot delta")
-    else {
-        panic!("token_config must be a Value slot delta");
-    };
-    let cfg = cfg.value().expect("value patch carries a value");
+    pf.mock_chain.add_pending_executed_transaction(&minted)?;
+    pf.mock_chain.prove_next_block()?;
     assert_eq!(
-        cfg[0],
-        Felt::from(REDUCED_AMOUNT),
-        "token_supply rose by the reduced amount"
+        committed_token_supply(&pf.mock_chain, pf.faucet_id)?,
+        miden_protocol::asset::AssetAmount::new(MINT_AMOUNT)?,
+        "token_supply rose by exactly the attested amount"
     );
 
     // --- burn side ---

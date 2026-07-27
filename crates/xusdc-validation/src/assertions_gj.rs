@@ -46,7 +46,7 @@ pub const ERR_PAUSED: &str = "the contract is paused";
 /// The stock kernel fungible-asset origin gate (`fungible_asset::validate_origin`,
 /// `ERR_FUNGIBLE_ASSET_FAUCET_IS_NOT_ORIGIN`): the burned asset was not issued by this faucet, so
 /// `faucet::burn` traps — a faucet can only burn its own token.
-pub const ERR_WRONG_ASSET_ORIGIN: &str = "the origin of the fungible asset is not this faucet";
+pub const ERR_WRONG_ASSET_ORIGIN: &str = "the faucet is not the origin of the asset";
 
 // SHARED CHECK HELPERS
 // ================================================================================================

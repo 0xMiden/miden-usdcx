@@ -145,7 +145,7 @@ public APIs; no faucet gate re-implemented.
 |---|---|---|---|
 | below-min (burn 5 < `min_burn_size` 10) | `burn_policy::check_policy` R-BURN-2 `ERR_XRESERVE_BURN_BELOW_MIN` ("burn amount is below the minimum burn size") | REJECTED | 100 → 100 |
 | while-paused (burn 50 while paused) | stock `pausable::assert_not_paused` `ERR_PAUSABLE_IS_PAUSED` ("the contract is paused"; code-only trap) | REJECTED | 100 → 100 |
-| wrong-asset (asset issued by a different faucet) | stock kernel `fungible_asset::validate_origin` `ERR_FUNGIBLE_ASSET_FAUCET_IS_NOT_ORIGIN` ("the origin of the fungible asset is not this faucet"; code-only trap) | REJECTED | 100 → 100 |
+| wrong-asset (asset issued by a different faucet) | stock kernel `asset::validate_origin` (v16 faucet.masm:72; v15 used `fungible_asset::validate_origin`) `ERR_FAUCET_IS_NOT_ASSET_ORIGIN` ("the faucet is not the origin of the asset"; code-only trap) | REJECTED | 100 → 100 |
 
 Negative construction:
 - **below-min** — `min_burn_size` was raised to 10 via a real `set_min_burn_size` admin note (path N);

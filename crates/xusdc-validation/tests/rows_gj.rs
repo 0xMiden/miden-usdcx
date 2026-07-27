@@ -105,10 +105,14 @@ fn green_i() -> Vec<BurnNegative> {
             ERR_BURN_BELOW_MIN,
             rej("... burn amount is below the minimum burn size ..."),
         ),
+        // v16 kernel moved burn origin-validation from fungible_asset::validate_origin (v15
+        // faucet.masm:61) to asset::validate_origin (v16 faucet.masm:72); the v15-era expectation
+        // was stale. Unrelated to the blocklist/callback change; the stock burn flow fires no
+        // asset callbacks.
         neg(
             "wrong-asset",
             ERR_WRONG_ASSET_ORIGIN,
-            rej("... the origin of the fungible asset is not this faucet ..."),
+            rej("... the faucet is not the origin of the asset ..."),
         ),
         neg(
             "while-paused",

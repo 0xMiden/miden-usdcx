@@ -940,10 +940,14 @@ fn green_gj() -> RowsGjObservations {
                 supply_before: 100,
                 supply_after: 100,
             },
+            // v16 kernel moved burn origin-validation from fungible_asset::validate_origin (v15
+            // faucet.masm:61) to asset::validate_origin (v16 faucet.masm:72); the v15-era
+            // expectation was stale. Unrelated to the blocklist/callback change; the stock burn
+            // flow fires no asset callbacks.
             BurnNegative {
                 label: "wrong-asset".to_string(),
                 expected_error: ERR_WRONG_ASSET_ORIGIN.to_string(),
-                verdict: rej("... the origin of the fungible asset is not this faucet ..."),
+                verdict: rej("... the faucet is not the origin of the asset ..."),
                 supply_before: 100,
                 supply_after: 100,
             },

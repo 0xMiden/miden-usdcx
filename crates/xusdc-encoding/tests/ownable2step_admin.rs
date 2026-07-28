@@ -32,8 +32,9 @@ const MAX_SUPPLY: u64 = 1_000_000;
 const TOKEN_SUPPLY: u64 = 100_000;
 const SEED_MIN: u64 = 1_000;
 
-/// A burn-policy production faucet (Ownable2Step owner = id(1), deny active) — carries the
-/// owner-gated `set_min_burn_size` used as the authority probe.
+/// A burn-policy production faucet (Ownable2Step owner = id(1)) — carries the owner-gated
+/// `set_min_burn_size` note path (since Wave-1 S1 it drives the STOCK `set_min_burn_amount`)
+/// used as the authority probe.
 fn faucet_harness() -> Result<BurnPolicyHarness> {
     setup_burn_policy_account(
         BurnGuardSelection::OracleBurnReal,
@@ -49,7 +50,8 @@ fn faucet(h: &BurnPolicyHarness) -> Result<Account> {
     Ok(h.chain.committed_account(h.faucet_id)?.clone())
 }
 
-/// The `MIN_BURN_SIZE_SLOT` value word for a floor `v` (`[v,0,0,0]`).
+/// The STOCK `MinBurnAmount` floor-slot word for a floor `v` (`[v,0,0,0]` — the slot
+/// `support::read_min_burn_size` reads since the Wave-1 S1 swap).
 fn min_word(v: u64) -> Word {
     Word::from([Felt::from(v as u32), Felt::ZERO, Felt::ZERO, Felt::ZERO])
 }

@@ -18,14 +18,15 @@
 //!   `ExpirationTransactionScript::script_root()` (S12, RATIFIED 2026-07-20).
 //! - proof #1: a non-allowlisted note is rejected by auth; any tx script OTHER than the canonical
 //!   expiration script is rejected, and that expiration script is admitted.
-//! - proof #2/#3: exact routing-attachment wire form + semantics — the mint carries the scheme-1
-//!   attestation AND a scheme-2 `NetworkAccountTarget` to the faucet with `NoteExecutionHint::Always`;
-//!   the burn carries the scheme-2 target to the faucet with `Always`.
+//! - proof #2/#3: exact routing-attachment wire form + semantics — the mint (a STOCK `MintNote`
+//!   since the Wave-1 S1 recomposition) carries the three xUSDC attachments (scheme-4
+//!   DepositIntent + scheme-5 attestation + scheme-2 `NetworkAccountTarget` to the faucet with
+//!   `NoteExecutionHint::Always`); the burn carries the scheme-2 target to the faucet with `Always`.
 //!
 //! Related coverage lives in sibling suites: the admin layered-auth E2E per op (owner/role-gated
 //! writes + wrong-sender traps + NOTE_ARGS-inert) in `f5_admin_notes.rs`, and the scheme-aware mint
-//! negatives (missing scheme-1 / missing scheme-2 / wrong count / tampered attestation, under the
-//! reconciled `eq.2` shim) in `f5_mint_shim_negatives.rs`.
+//! transport negatives (missing scheme-4/5/2 attachments / wrong count / tampered attestation,
+//! through the attestation mint policy) in `mint_policy_e2e.rs`.
 
 mod support;
 
@@ -46,7 +47,7 @@ use miden_standards::code_builder::CodeBuilder;
 use miden_standards::errors::standards::{
     ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED, ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED,
 };
-use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint};
+use miden_standards::note::{BurnNote, MintNote, NetworkAccountTarget, NoteExecutionHint};
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_testing::{assert_transaction_executor_error, MockChain};
@@ -54,16 +55,17 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveAcceptOwnershipNote, XReserveBlockAccountNote, XReserveDomainInitNote,
-    XReserveGrantRoleNote, XReservePauseNote, XReserveRevokeRoleNote, XReserveSetAttesterNote,
+    XReserveAcceptOwnershipNote, XReserveBlockAccountNote, XReserveGrantRoleNote,
+    XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote, XReserveSetAttesterNote,
     XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
     XReserveUnblockAccountNote, XReserveUnpauseNote,
 };
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
-    MintAttestation, XReserveMintNote, XRESERVE_MINT_ATTACHMENT_SCHEME,
+    MintAttestation, XUsdcMintNote, XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME,
+    XUSDC_MINT_ATTESTATION_NUM_WORDS, XUSDC_MINT_INTENT_ATTACHMENT_SCHEME,
 };
-use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
+use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, XReserveBurnItems};
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -90,22 +92,37 @@ fn sample_burn_items(amount: u64) -> XReserveBurnItems {
     }
 }
 
-/// A valid deposit-intent payload (any accepted vector; the recipient encoded inside is immaterial
-/// to the note's attachment set).
-fn accept_deposit_intent_payload() -> Vec<u8> {
+/// First byte of the 32-byte `remoteRecipient` field (felt 19 x 4 bytes; DC-1).
+const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
+
+/// The attested wire amount spliced into the payload (any in-range value; the factory re-derives
+/// the note storage from it).
+const MINT_AMOUNT: u64 = 5_000;
+
+/// A valid attested deposit-intent payload: the canonical accept vector with an in-range
+/// amount/maxFee and a factory-decodable `remoteRecipient` (the DEV-10 bytes32 form of
+/// `recipient`) spliced in — `XUsdcMintNote::create` re-derives the stock mint storage from
+/// these fields, so they must be valid (the mint_policy_e2e.rs payload construction).
+fn attested_deposit_intent_payload(recipient: miden_protocol::account::AccountId) -> Vec<u8> {
     let v = xusdc_encoding::vectors::load();
-    v.families
+    let mut payload = v
+        .families
         .di
         .iter()
         .find(|d| d.kind == "accept")
         .expect("at least one accepted deposit-intent vector")
-        .bytes()
+        .bytes();
+    payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(MINT_AMOUNT));
+    payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(1));
+    payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
+        .copy_from_slice(&account_id_to_bytes32(recipient));
+    payload
 }
 
 /// Builds the current PRODUCTION faucet and returns its MockChain + committed faucet account object.
 /// The faucet id (`account.id()`) is PUBLIC — usable as a `NetworkAccountTarget` target.
 fn production_faucet() -> Result<(MockChain, Account)> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production faucet")?;
     let account = pf
         .mock_chain
@@ -119,11 +136,9 @@ fn production_faucet() -> Result<(MockChain, Account)> {
 /// allowlist storage contents; a dummy non-empty allowlist is used only to construct it).
 fn stock_network_auth_proc_root() -> Word {
     let component: AccountComponent =
-        AuthNetworkAccount::with_allowed_notes(BTreeSet::from_iter([
-            XReserveMintNote::script_root(),
-        ]))
-        .expect("non-empty allowlist constructs")
-        .into();
+        AuthNetworkAccount::with_allowed_notes(BTreeSet::from_iter([MintNote::script_root()]))
+            .expect("non-empty allowlist constructs")
+            .into();
     let (root, _is_auth) = component
         .procedures()
         .find(|(_, is_auth)| *is_auth)
@@ -180,8 +195,8 @@ fn production_faucet_auth_component_is_stock_network_account() -> Result<()> {
 fn production_faucet_note_allowlist_is_exactly_the_14_ratified_roots() -> Result<()> {
     let (_chain, account) = production_faucet()?;
     let expected: BTreeSet<_> = BTreeSet::from([
-        // rows 1-2: the supply-side notes.
-        XReserveMintNote::script_root(),
+        // rows 1-2: the supply-side notes (row 1 = the STOCK MintNote since Wave-1 S1).
+        MintNote::script_root(),
         BurnNote::script_root(),
         // rows 3-12: the 10 admin note scripts (NO set_role_admin — S21).
         XReserveSetAttesterNote::script_root(),
@@ -193,7 +208,7 @@ fn production_faucet_note_allowlist_is_exactly_the_14_ratified_roots() -> Result
         XReserveRevokeRoleNote::script_root(),
         XReserveTransferOwnershipNote::script_root(),
         XReserveAcceptOwnershipNote::script_root(),
-        XReserveDomainInitNote::script_root(),
+        XReserveIdentifierInitNote::script_root(),
         // rows 13-14: the F4-reversal transfer-blocklist admin notes (BLK_MANAGER-gated).
         XReserveBlockAccountNote::script_root(),
         XReserveUnblockAccountNote::script_root(),
@@ -325,15 +340,18 @@ async fn non_expiration_tx_script_is_rejected_and_expiration_is_admitted() -> Re
 // PROOF #2 / #3 — exact routing-attachment wire form + NetworkAccountTarget semantics
 // ================================================================================================
 
-/// The mint note must carry EXACTLY the scheme-1 attestation attachment AND a scheme-2
-/// `NetworkAccountTarget` routing attachment addressed to the faucet with `NoteExecutionHint::Always`.
+/// The mint note (the STOCK `MintNote` built by `XUsdcMintNote::create`) must carry EXACTLY the
+/// three xUSDC attachments — the scheme-4 DepositIntent preimage, the scheme-5 attestation
+/// (11 words: `[feeAmount(8), pubkey(16), signature(17), pad(3)]`), and the scheme-2
+/// `NetworkAccountTarget` routing attachment addressed to the faucet with
+/// `NoteExecutionHint::Always`.
 #[test]
-fn mint_note_carries_scheme1_attestation_and_scheme2_target_to_faucet() -> Result<()> {
+fn mint_note_carries_the_three_xusdc_attachments() -> Result<()> {
     let (_chain, faucet) = production_faucet()?;
     let faucet_id = faucet.id();
-    let payload = accept_deposit_intent_payload();
+    let payload = attested_deposit_intent_payload(test_account_id(3));
     let att = gen_attester(1, &payload);
-    let note = XReserveMintNote::create(
+    let note = XUsdcMintNote::create(
         test_account_id(3),
         faucet_id,
         &payload,
@@ -344,19 +362,45 @@ fn mint_note_carries_scheme1_attestation_and_scheme2_target_to_faucet() -> Resul
 
     assert_eq!(
         note.attachments().num_attachments(),
-        2,
-        "the mint note must carry exactly two attachments: the attestation + the routing target",
+        3,
+        "the mint note must carry exactly three attachments: the intent + the attestation + the \
+         routing target",
     );
-    let scheme_one = NoteAttachmentScheme::new(XRESERVE_MINT_ATTACHMENT_SCHEME)
-        .expect("scheme 1 is a valid attachment scheme");
-    let attestation_count = note
+    let scheme_four = NoteAttachmentScheme::new(XUSDC_MINT_INTENT_ATTACHMENT_SCHEME)
+        .expect("scheme 4 is a valid attachment scheme");
+    let scheme_five = NoteAttachmentScheme::new(XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME)
+        .expect("scheme 5 is a valid attachment scheme");
+    let count_of = |scheme: NoteAttachmentScheme| {
+        note.attachments()
+            .iter()
+            .filter(|a| a.attachment_scheme() == scheme)
+            .count()
+    };
+    assert_eq!(
+        count_of(scheme_four),
+        1,
+        "exactly one scheme-4 DepositIntent attachment"
+    );
+    assert_eq!(
+        count_of(scheme_five),
+        1,
+        "exactly one scheme-5 attestation attachment"
+    );
+    assert_eq!(
+        count_of(NetworkAccountTarget::ATTACHMENT_SCHEME),
+        1,
+        "exactly one scheme-2 routing attachment"
+    );
+
+    let attestation = note
         .attachments()
         .iter()
-        .filter(|a| a.attachment_scheme() == scheme_one)
-        .count();
+        .find(|a| a.attachment_scheme() == scheme_five)
+        .context("the scheme-5 attestation attachment is present")?;
     assert_eq!(
-        attestation_count, 1,
-        "exactly one scheme-1 attestation attachment"
+        usize::from(attestation.num_words()),
+        XUSDC_MINT_ATTESTATION_NUM_WORDS,
+        "the attestation attachment is [feeAmount(8), pubkey(16), signature(17), pad(3)] = 11 words",
     );
 
     let target = NetworkAccountTarget::try_from(note.attachments())

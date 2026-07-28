@@ -66,7 +66,7 @@ supply-cap check of `D5e`; `R-MINT-16` the deny of the stock mint path.
 | R-ADMIN-1 | `set_attester` is owner-gated (a non-owner sender is rejected). |
 | R-ADMIN-2 | `set_min_burn_size` is owner-gated. |
 | R-ADMIN-3 | `pause` / `unpause` require the `DOM_PAUSER` role. |
-| R-ADMIN-4 | Domain config is init-once: a second `domain_init` traps. |
+| R-ADMIN-4 | Domain config is init-once. [Wave-1 S1 → DEC-4: the runtime init is the minimized `identifier_init` (identifier-only; a second init traps); the other three fields are build-seeded with no runtime writer.] |
 
 ## Mint pipeline stages — `D5a`–`D5e`
 
@@ -92,7 +92,7 @@ Labels for the faucet's functional pieces (originally built as incremental slice
 | CMP-A5 | On-token transfer policy. ~~deliberately **not** wired (xUSDC ships as a basic, transfer-policy-free asset).~~ **[SUPERSEDED 2026-07-23 → F4 REVERSAL]** now WIRED: the stock `BasicBlocklist` is the active send + receive policy (BLK_MANAGER-administered). See `F4` / `docs/DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md`. |
 | CMP-A6 | `XReserveDomainConfig` — the faucet's domain-config fields (`domain`, `source_domain`, `xreserve_contract`, `identifier`). |
 | CMP-A9 | The mint supply-increasing surface (`apply_mint_effects`) — the only place `token_supply` rises. |
-| CMP-A10 | The burn security policy (`burn_policy::check_policy`), run on every `receive_and_burn`. |
+| CMP-A10 | The burn security policy, run on every `receive_and_burn`. [Wave-1 S1 → the STOCK `MinBurnAmount::check_policy` with the ≥1 floor invariant (builder + note guard) — the custom `burn_policy.masm` is deleted.] |
 | CMP-A15 | `XReserveStablecoinBuilder` — the Rust builder that composes the full faucet account and rejects an invalid wiring (e.g. no deny guard, non-Public faucet) at build time. |
 | CMP-B1 | The `XReserveMintNote` script + account-side transport shim (`receive_and_mint`). |
 | CMP-B2 | `XReserveBurnNote` construction (the public withdrawal note). |
@@ -255,7 +255,7 @@ are open items with Circle). The ones referenced in this repo:
 | IMPL-DEV-7 | The burn note uses a fixed placeholder tag until Circle assigns one. |
 | IMPL-DEV-8 | The burn payload carries `{amount, dest_domain, dest_recipient, salt}` with the depositor in `metadata.sender`. |
 | IMPL-DEV-12 | Cosmetic fix: an `AccountId`-out-of-range error message once said "15-byte region" while the shipped layout is 16-byte-padded; the message now describes the shipped right-aligned bytes32 layout. |
-| IMPL-DEV-16 | `domain_init` uses `ownable2step::assert_sender_is_owner` directly while setters use `authority::assert_authorized`; both resolve to owner-only. |
+| IMPL-DEV-16 | `identifier_init` (formerly `domain_init`) uses `ownable2step::assert_sender_is_owner` directly while setters use `authority::assert_authorized`; both resolve to owner-only. |
 | IMPL-DEV-20 | ~~xUSDC ships as a basic (callback-disabled) fungible asset with no on-token transfer policy — matches Circle's no-on-token-control model.~~ **[SUPERSEDED 2026-07-23 → F4 REVERSAL]** xUSDC ships as a POLICED (callback-**Enabled**) asset carrying the stock `BasicBlocklist` (active send + receive), administered by the dedicated `BLK_MANAGER` role. The pre-encoded reversal path (a conscious re-decision + a faucet-v2 migration) was taken. See `F4` / `docs/DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md`. |
 | IMPL-DEV-21 | Mint rejects any nonzero `feeAmount` (the MVP has no relayer-fee split): `assert_mint_amounts` traps `ERR_XRESERVE_FEE_NONZERO` instead of the `feeAmount ≤ maxFee` compare. A fail-loud, RATIFIED DEFERRAL (2026-07-14) of Circle's relayer-credit MUST (CIR-FEE-2 / CIR-MINT-STATE-3), priority P2, gated on **mainnet/production-final** (not the testnet MVP go-live) and on the pending `Q-FEE-MVP` Circle confirmation (NOT the narrower `Q-MIN-2`, which covers only the zero-fee note structure); see `F2`/`DEV-8`. |
 | IMPL-DEV-22 | No on-chain role self-renounce: `renounce_role` is omitted from the immutable note-script allowlist (the stock procedure is present but unreachable), and the owner cannot renounce ownership (no note). Matches Circle's model (xReserve has no AccessControl self-renounce); ratified OMIT 2026-07-10, PERMANENT (13 allowlist roots then; 12 since the S21 flip — see IMPL-DEV-24). Circle confirm open (`Q-ADMIN-RENOUNCE`). |
@@ -286,7 +286,7 @@ The `xusdc-validation` crate runs a real-local-node acceptance matrix. Each row 
 | Row | Scenario |
 |---|---|
 | A | Deploy the production faucet to a fresh node; the node recognizes the account. |
-| B | `domain_init` init-once (first succeeds, second rejected). |
+| B | Identifier init-once (first succeeds, second rejected). [Wave-1 S1 → the row's subject is `identifier_init`; the former four-field `domain_init` is superseded by build-seeding + the minimized init.] |
 | C | Admin suite: attester set/rotation, `set_min_burn_size`, `set_max_supply`, pause/unpause, role rotation, non-authorized negatives. |
 | D | Mint happy path (both hookData variants); recipient consumes the emitted P2ID note. |
 | E | Mint negatives: replayed nonce, forged sig, non-allowlisted attester, non-zero fee, tampered payload — each rejected with no state change. |
@@ -302,7 +302,7 @@ The matrix was built in slices `LNV-1`–`LNV-5` (each recorded in a `VALIDATION
 
 | Slice | Rows covered |
 |---|---|
-| LNV-1 | The harness foundation + rows `A`/`B` (deploy the faucet; `domain_init` init-once). |
+| LNV-1 | The harness foundation + rows `A`/`B` (deploy the faucet; identifier init-once — formerly `domain_init`). |
 | LNV-2 | The admin suite (row `C`) + the auth boundary (row `F`). |
 | LNV-3 | The mint lifecycle (rows `D`/`E`). |
 | LNV-4 | The burn lifecycle (rows `G`/`H`/`I`/`J`). |
@@ -416,7 +416,7 @@ sections:
 | §5.2 | The sole-supply-surface property (`INV-MINT-SECURITY`). |
 | §5.5 | `XReserveAttesterAdmin` — home of the `xReserveAttesters` allowlist and `minBurnSize` slots. |
 | §5.6 | The `usedNonces` nonce registry. |
-| §5.9 | The four-field domain config (`domain_init`). |
+| §5.9 | The domain config. [Wave-1 S1 → three fields build-seeded; the identifier via the minimized `identifier_init` note (DEC-4).] |
 | §5.12 | The admin setters and pause. |
 | §5.13 | The builder's slot-presence guard. |
 | §6.6 | (shared-encoding spec) the `burn_note` item codec (`DC-7`). |

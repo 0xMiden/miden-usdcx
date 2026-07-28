@@ -7,7 +7,7 @@ use core::fmt;
 use miden_protocol::account::AccountType;
 use miden_standards::account::policies::{BurnPolicyError, MintPolicyError};
 
-use super::{BURN_POLICY_PROC_PATH, MINT_DENY_GUARD_PROC_PATH};
+use super::{ATTESTATION_MINT_POLICY_PROC_PATH, MIN_BURN_SIZE_FLOOR};
 
 /// Errors returned while composing the xUSDC faucet account.
 #[derive(Debug)]
@@ -15,29 +15,55 @@ pub enum XReserveStablecoinBuilderError {
     /// The xUSDC faucet must be public (network-observable). A non-`Public` account type is rejected
     /// at build time so packaging cannot produce an unobservable faucet.
     NonPublicAccountType(AccountType),
-    /// The active mint policy does not resolve to the deny guard — packaging cannot bypass the
-    /// sole-supply-surface gate (INV-MINT-SECURITY).
-    MissingMintDenyGuard,
+    /// The active mint policy does not resolve to the attestation mint policy — packaging cannot
+    /// bypass the attestation gate (INV-MINT-SECURITY, restated: every supply increase passes the
+    /// attestation policy).
+    MissingAttestationMintPolicy,
     /// The supplied faucet was not built with a mutable `max_supply`, so the stock `set_max_supply`
     /// admin function would be permanently dead on the deployed faucet (every call traps the runtime
     /// mutability gate). Rejected at build time so packaging cannot silently ship a faucet whose
     /// `set_max_supply` is inoperable — build the faucet with `.is_max_supply_mutable(true)`.
     ImmutableMaxSupply,
-    /// The supplied `xreserve` component does not export the deny-guard procedure (assembly/path
-    /// drift). Carries the expected path for diagnosis.
-    DenyGuardProcNotFound,
-    /// The active burn policy does not resolve to the installed `burn_policy::check_policy` — packaging
-    /// cannot ship a faucet whose burns bypass the R-BURN-1/2 security predicate (CMP-A10). The burn-slot
-    /// twin of [`Self::MissingMintDenyGuard`].
-    MissingBurnPolicyGuard,
-    /// The supplied `xreserve` component does not export the burn-policy procedure (assembly/path
-    /// drift). The burn-slot twin of [`Self::DenyGuardProcNotFound`].
-    BurnPolicyProcNotFound,
+    /// The supplied `xreserve` component does not export the attestation mint policy procedure
+    /// (assembly/path drift). Carries the expected path for diagnosis.
+    AttestationPolicyProcNotFound,
+    /// The active burn policy does not resolve to the stock
+    /// [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) — packaging cannot
+    /// ship a faucet whose burns bypass the floor predicate (the burn-side twin of
+    /// [`Self::MissingAttestationMintPolicy`]).
+    MissingMinBurnAmountPolicy,
+    /// The requested `min_burn_size` is below [`MIN_BURN_SIZE_FLOOR`](super::MIN_BURN_SIZE_FLOOR)
+    /// (= 1). The stock `MinBurnAmount` policy asserts only `min <= amount` and its stock setter
+    /// accepts `0`, so a sub-floor seed would silently drop the R-BURN-1 zero-burn invariant;
+    /// rejected at build time (the runtime twin is the `set_min_burn_size` note's floor assert).
+    /// Carries the offending value.
+    MinBurnSizeBelowFloor(u64),
     /// The requested `min_burn_size` exceeds [`AssetAmount::MAX`](miden_protocol::asset::AssetAmount::MAX)
-    /// (`2^63 - 2^31`), so it is not a
-    /// valid burn amount / field element and cannot be seeded into the `MIN_BURN_SIZE_SLOT`. Carries
-    /// the offending value.
+    /// (`2^63 - 2^31`), so it is not a valid burn amount / field element and cannot be seeded into
+    /// the stock `MinBurnAmount` floor slot. Carries the offending value.
     MinBurnSizeExceedsMax(u64),
+    /// An explicit
+    /// [`with_active_burn_policy`](super::XReserveStablecoinBuilder::with_active_burn_policy)
+    /// override carries the stock `MinBurnAmount` root but a companion floor that disagrees with
+    /// the builder-validated `min_burn_size`. Rejected so a same-root override cannot smuggle a
+    /// sub-floor (e.g. zero) floor slot past the `min_burn_size` validation — the stock predicate
+    /// is `min <= amount`, so a zero-seeded companion would restore zero-amount burns. `requested`
+    /// is the override's companion floor; `expected` the validated `min_burn_size`.
+    BurnPolicyFloorMismatch { requested: u64, expected: u64 },
+    /// The supplied `xreserve` component declares a NON-EMPTY identifier value slot. The identifier
+    /// is the DEC-4 account-id fixpoint (the account id derives from the initial storage
+    /// commitment; the identifier is, provisionally pending Q-CRY-4, the faucet's own id as
+    /// bytes32), so it can NEVER be build-seeded — a non-empty declared identifier would ship an
+    /// already-initialized, potentially misbound faucet and make the init-once `identifier_init`
+    /// note trap as a reinitialization. The identifier slot must ship EMPTY; the faucet-bound
+    /// `identifier_init` note is its only writer.
+    IdentifierNotEmpty,
+    /// The three build-seeded domain-config fields (`domain`, `source_domain`,
+    /// `xreserve_contract`) were not supplied — see
+    /// [`XReserveStablecoinBuilder::with_domain_config`](super::XReserveStablecoinBuilder::with_domain_config).
+    /// DEC-4 moved these to build time (only the identifier fixpoint stays a runtime init), so a
+    /// build without them would ship a faucet whose D5a domain compare reads an empty slot.
+    MissingDomainConfig,
     /// The supplied `xreserve` component does not declare a required storage slot (the
     /// validate-what-you-ship check, [`REQUIRED_XRESERVE_SLOT_LABELS`](super::REQUIRED_XRESERVE_SLOT_LABELS):
     /// a missing slot would ship a
@@ -72,21 +98,24 @@ pub enum XReserveStablecoinBuilderError {
     /// [`Self::MintPolicy`].
     BurnPolicy(BurnPolicyError),
     /// The policy manager's companion components did not have the pinned shape at the
-    /// composition seam (the manager component first, then EXACTLY two xreserve-component copies —
-    /// one per custom mint/burn policy — plus EXACTLY one `BasicBlocklist` companion, the
-    /// transfer-blocklist policy shared by the send and receive kinds — F4-reversal, MIGRATION-V16-
-    /// ALPHA2.md S18). Never dropped silently. `found` is the FULL companion remainder the manager
-    /// emitted; `xreserve_recognized`/`blocklist_recognized` count how many of those were the
-    /// already-installed xreserve component and the `BasicBlocklist` companion respectively, so a
-    /// smuggled foreign companion shows up as `found > xreserve_recognized + blocklist_recognized`
-    /// instead of hiding behind a matching count, and a missing blocklist companion (which would
-    /// ship a faucet whose `blocked_accounts` reads/writes trap) shows up as
-    /// `blocklist_recognized != expected_blocklist`.
+    /// composition seam (the manager component first, then EXACTLY one xreserve-component copy —
+    /// the custom attestation mint policy — plus EXACTLY one stock `MinBurnAmount` companion (the
+    /// burn floor) and EXACTLY one `BasicBlocklist` companion (the transfer-blocklist policy
+    /// shared by the send and receive kinds — F4-reversal); MIGRATION-V16-ALPHA2.md S18, Wave-1 S1
+    /// rework). Never dropped silently. `found` is the FULL companion remainder the manager
+    /// emitted; the `*_recognized` counters say how many of those were the already-installed
+    /// xreserve component, the `MinBurnAmount` companion, and the `BasicBlocklist` companion
+    /// respectively, so a smuggled foreign companion shows up as
+    /// `found > xreserve_recognized + min_burn_recognized + blocklist_recognized` instead of
+    /// hiding behind a matching count, and a missing stock companion (which would ship a faucet
+    /// whose floor/`blocked_accounts` accesses trap) shows up in its own counter.
     PolicyCompanionMismatch {
         expected_xreserve: usize,
+        expected_min_burn: usize,
         expected_blocklist: usize,
         found: usize,
         xreserve_recognized: usize,
+        min_burn_recognized: usize,
         blocklist_recognized: usize,
     },
 }
@@ -100,35 +129,52 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                     "xusdc faucet must be AccountType::Public, got {account_type:?}"
                 )
             }
-            Self::MissingMintDenyGuard => write!(
+            Self::MissingAttestationMintPolicy => write!(
                 f,
-                "active mint policy is not the mint-deny guard; packaging cannot bypass the \
-                 sole-supply-surface gate"
+                "active mint policy is not the attestation mint policy; packaging cannot bypass \
+                 the attestation gate (INV-MINT-SECURITY)"
             ),
             Self::ImmutableMaxSupply => write!(
                 f,
                 "xusdc faucet must be built with a mutable max supply \
                  (is_max_supply_mutable=true) so the deployed faucet's set_max_supply stays operable"
             ),
-            Self::DenyGuardProcNotFound => write!(
+            Self::AttestationPolicyProcNotFound => write!(
                 f,
-                "the xreserve component does not export the mint-deny guard procedure \
-                 '{MINT_DENY_GUARD_PROC_PATH}'"
+                "the xreserve component does not export the attestation mint policy procedure \
+                 '{ATTESTATION_MINT_POLICY_PROC_PATH}'"
             ),
-            Self::MissingBurnPolicyGuard => write!(
+            Self::MissingMinBurnAmountPolicy => write!(
                 f,
-                "active burn policy is not the xreserve burn policy; packaging cannot bypass the \
-                 burn security predicate (R-BURN-1/2)"
+                "active burn policy is not the stock MinBurnAmount; packaging cannot bypass the \
+                 minimum-burn floor predicate"
             ),
-            Self::BurnPolicyProcNotFound => write!(
+            Self::MinBurnSizeBelowFloor(value) => write!(
                 f,
-                "the xreserve component does not export the burn policy procedure \
-                 '{BURN_POLICY_PROC_PATH}'"
+                "min_burn_size {value} is below the floor {MIN_BURN_SIZE_FLOOR}; the stock \
+                 MinBurnAmount accepts zero, so the zero-burn invariant (R-BURN-1) requires the \
+                 seeded floor be at least {MIN_BURN_SIZE_FLOOR}"
             ),
             Self::MinBurnSizeExceedsMax(value) => write!(
                 f,
                 "min_burn_size {value} exceeds the maximum representable asset amount \
                  (AssetAmount::MAX = 2^63 - 2^31)"
+            ),
+            Self::BurnPolicyFloorMismatch { requested, expected } => write!(
+                f,
+                "the active burn policy override carries a MinBurnAmount floor of {requested}, but \
+                 the validated min_burn_size is {expected}; an override may not diverge (nor lower) \
+                 the shipped burn floor"
+            ),
+            Self::IdentifierNotEmpty => write!(
+                f,
+                "the identifier config slot must be EMPTY at composition (the DEC-4 account-id \
+                 fixpoint can never be build-seeded; the identifier_init note is its only writer)"
+            ),
+            Self::MissingDomainConfig => write!(
+                f,
+                "the build-seeded domain config (domain, source_domain, xreserve_contract) was \
+                 not supplied; call with_domain_config before build_components (DEC-4)"
             ),
             Self::MissingXReserveSlot(label) => write!(
                 f,
@@ -153,18 +199,23 @@ impl fmt::Display for XReserveStablecoinBuilderError {
             Self::BurnPolicy(_) => write!(f, "burn policy descriptor construction failed"),
             Self::PolicyCompanionMismatch {
                 expected_xreserve,
+                expected_min_burn,
                 expected_blocklist,
                 found,
                 xreserve_recognized,
+                min_burn_recognized,
                 blocklist_recognized,
             } => write!(
                 f,
                 "token policy manager emitted an unexpected companion-component shape: expected \
-                 exactly {expected_xreserve} xreserve-component copies + {expected_blocklist} \
-                 BasicBlocklist companion after the manager component; the remainder held {found} \
-                 companions, {xreserve_recognized} of them the installed xreserve component and \
-                 {blocklist_recognized} the BasicBlocklist companion ({} foreign)",
-                found.saturating_sub(xreserve_recognized + blocklist_recognized)
+                 exactly {expected_xreserve} xreserve-component copy + {expected_min_burn} \
+                 MinBurnAmount companion + {expected_blocklist} BasicBlocklist companion after the \
+                 manager component; the remainder held {found} companions, {xreserve_recognized} \
+                 of them the installed xreserve component, {min_burn_recognized} the MinBurnAmount \
+                 companion, and {blocklist_recognized} the BasicBlocklist companion ({} foreign)",
+                found.saturating_sub(
+                    xreserve_recognized + min_burn_recognized + blocklist_recognized
+                )
             ),
         }
     }

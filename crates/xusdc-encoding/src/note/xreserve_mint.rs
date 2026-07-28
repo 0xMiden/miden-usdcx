@@ -1,109 +1,78 @@
-//! `XReserveMintNote` (CMP-B1): the production mint note — carries a signed Circle
-//! DepositIntent to the faucet, whose network transaction consumes it and drives the fully-gated
-//! `xreserve_mint::mint` (D5a→D5e) end to end.
+//! `XUsdcMintNote` (CMP-B1, Wave-1 S1 recomposition): the production mint-note FACTORY for the
+//! xUSDC faucet — a STOCK miden-standards [`MintNote`] carrying the Circle-signed transport as
+//! attachments. The former custom `XReserveMintNote` (bespoke script + note-storage preimage +
+//! transport shim) is DELETED: the stock MINT script drives the stock
+//! `FungibleFaucet::mint_and_send`, and the ENTIRE attestation gate lives in the faucet's active
+//! attestation mint policy (`xreserve::mint_policy::check_policy`), which hash-verifies these
+//! attachments and enforces the ASSERT-MATCH binding against the storage this factory builds.
 //!
-//! Transport layout (DC-1/DC-2/DC-3):
-//! - `NoteStorage.items` = the u32-LE-packed DepositIntent preimage — the shared-encoding codec
-//!   [`deposit_intent_to_packed_felts`] consumed BY REFERENCE (60 header felts +
-//!   ⌈hookDataLen/4⌉ hookData felts, ≤ 1024).
-//! - TWO [`NoteAttachments`] attachments (F5): (1) the scheme-1 attestation
-//!   ([`XRESERVE_MINT_ATTACHMENT_SCHEME`]) = 11 words `[feeAmount(8 limbs, MVP zero — DEV-8),
-//!   pubkey(16 affine felts — vm#3342, the v16 DC-2 supersession), signature(17), pad(3)]`,
-//!   matching the frozen `mint` advice contract `[feeAmount(8), pubkey(16), signature(17)]`
-//!   (`xreserve_mint.masm` doc; byte→felt packing reuses the shared-encoding codec
-//!   [`affine_pubkey_felts`] / [`signature_felts`] by reference); and
-//!   (2) the scheme-2 `NetworkAccountTarget` routing bind to the faucet network account
-//!   (`NoteExecutionHint::Always`, routing-only). The entry shim asserts exactly one scheme-1
-//!   attestation + one scheme-2 target (`eq.2`) and hash-verifies the attestation content by its
-//!   found index (F5).
-//! - `NoteType::Public` is FORCED (network-tx observability mandate); the tag is the faucet
-//!   account-target tag (`NoteTag::with_account_target` — burn notes carry the fixed
-//!   `0x4255524E` tag instead precisely so mint notes own the account-target routing identity).
-//! - The note script (`asm/standards/notes/xreserve_mint_note.masm`) `call`s the account-side
-//!   `receive_and_mint` note-entry wrapper, which stages storage into the account call frame,
-//!   hash-verifies the attachment content, surfaces it to the advice stack, and
-//!   `exec.xreserve_mint::mint`s. Its root is pinned as [`XRESERVE_MINT_NOTE_SCRIPT_ROOT_HEX`]
-//!   (`masm-rust-constant-parity`; the parity test recompiles and compares).
+//! Transport layout:
+//! - STOCK [`MintNoteStorage::FungiblePublic`]: the P2ID output-note recipe (target = the
+//!   intent's `remoteRecipient` account, serial = the canonical nonce key — the policy re-derives
+//!   and `assert_eqw`s the full recipe), the [`FungibleAsset`] of the ATTESTED reduced amount for
+//!   the target faucet, and the output-note tag targeting the attested recipient.
+//! - THREE [`NoteAttachments`] attachments: (1) the scheme-4 DepositIntent preimage
+//!   ([`XUSDC_MINT_INTENT_ATTACHMENT_SCHEME`]) — the u32-LE-packed felts of the RAW payload,
+//!   zero-padded to the word boundary (the policy re-derives the exact felt length from the
+//!   embedded hookDataLen and binds it to the committed word count); (2) the scheme-5 attestation
+//!   ([`XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME`]) = 11 words `[feeAmount(8 limbs, MVP zero —
+//!   DEV-8), pubkey(16 affine felts — vm#3342), signature(17), pad(3)]`, the frozen advice order
+//!   the D5b/D5d stages consume (packing reuses the shared-encoding codec
+//!   [`affine_pubkey_felts`] / [`signature_felts`] by reference); and (3) the scheme-2
+//!   `NetworkAccountTarget` routing bind to the faucet network account
+//!   (`NoteExecutionHint::Always`, routing-only). Schemes 4/5 clear the reserved value 1 and the
+//!   standard values 2/3 (rider A8); the policy asserts exactly these three attachments.
+//! - The stock `MintNote` conversion FORCES `NoteType::Public` and tags the note itself with the
+//!   faucet account target (`NoteTag::with_account_target(faucet_id)` — network routing).
 //!
-//! Like the sibling [`super::xreserve_burn::XReserveBurnNote`] this is a standalone unit-struct
-//! factory; the one divergence is the CUSTOM note script + pinned root (burn reuses the stock
-//! `BurnNote` script; mint has no stock analog — stock `mint_and_send` is denied, R-MINT-16).
-
-use std::sync::{Arc, LazyLock};
+//! The relayer stages NO advice: attachment content is public note data the executor feeds to
+//! the advice provider; the policy hash-verifies it against the note-committed commitments.
 
 use miden_protocol::account::AccountId;
-use miden_protocol::assembly::{Linkage, Path as MasmPath};
+use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{
-    Note, NoteAssets, NoteAttachment, NoteAttachmentScheme, NoteAttachments, NoteRecipient,
-    NoteScript, NoteScriptRoot, NoteStorage, NoteTag, NoteType, PartialNoteMetadata,
+    Note, NoteAttachment, NoteAttachmentScheme, NoteScript, NoteScriptRoot, NoteTag,
 };
-use miden_protocol::transaction::TransactionKernel;
 use miden_protocol::{Felt, Word};
-use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
-use miden_standards::StandardsLib;
+use miden_standards::note::{
+    MintNote, MintNoteStorage, NetworkAccountTarget, NoteExecutionHint, P2idNoteStorage,
+};
 
 use crate::xreserve::encoding::{
-    affine_pubkey_felts, deposit_intent_to_packed_felts, signature_felts,
+    affine_pubkey_felts, bytes32_to_account_id, bytes32_to_storage_map_key,
+    deposit_intent_to_packed_felts, parse_deposit_intent_header, signature_felts,
+    uint256_to_asset_amount,
 };
 
-/// The mint-note attestation attachment scheme (u16, project-chosen; 0 is reserved, ≤ 65534).
-/// Declared identically in `xreserve_mint_note_entry.masm` (`masm-rust-constant-parity` via
-/// `constant_parity.rs`); the wrapper's `find_attachment` fail-closes on a mismatch. Not a
+/// The mint-note DepositIntent attachment scheme (u16, project-chosen; rider A8: >= 4, clear of
+/// the reserved "none" value 1 and the standard values 2 `NetworkAccountTarget` / 3 `Pswap`).
+/// Declared identically in `mint_policy.masm` (`masm-rust-constant-parity` via
+/// `constant_parity.rs`); the policy's `find_attachment` fail-closes on a mismatch. Not a
 /// Circle-owned value.
-pub const XRESERVE_MINT_ATTACHMENT_SCHEME: u16 = 1;
+pub const XUSDC_MINT_INTENT_ATTACHMENT_SCHEME: u16 = 4;
 
-/// The attachment word count: `[feeAmount(8), pubkey(16), signature(17), pad(3)]` = 44 felts
-/// (the pubkey is the 16-felt affine form since the v16 migration — vm#3342,
-/// MIGRATION-V16-ALPHA2.md S16). Declared identically in `xreserve_mint_note_entry.masm`
-/// (parity-pinned).
-pub const XRESERVE_MINT_ATTACHMENT_NUM_WORDS: usize = 11;
+/// The mint-note attestation attachment scheme (rider A8; see the intent scheme above).
+/// Declared identically in `mint_policy.masm` (parity-pinned).
+pub const XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME: u16 = 5;
 
-/// The PINNED mint-note script root (`masm-rust-constant-parity`): the MAST root of the compiled
-/// `xreserve_mint_note.masm` with the xreserve library linked. It binds transitively to
-/// `receive_and_mint`'s MAST digest, so ANY edit of the note script or the wrapper trips the
-/// parity assertion (`XReserveMintNote::script_root() == pinned`) and forces a conscious re-pin.
-/// Re-pinned when `DEPOSIT_SCALE_EXP` moved 6 -> 0 (DEV-5 answered: 6-decimal wire == 6-decimal
-/// asset, so the mint applies no rescale). A MASM `const` is a compile-time literal, so
-/// `push.DEPOSIT_SCALE_EXP` in `receive_and_mint` assembles to `push.0` instead of `push.6`,
-/// moving that proc's MAST digest and transitively this script root — from
-/// `0x85c8cfd61de921bd272d7e39766447b52ad04febd868e2c64f1ab442bf0c37b8` to the value below. The
-/// move is attributable to the value flip ALONE: re-deriving with the same source but the value
-/// restored to 6 reproduces the previous root exactly.
-pub const XRESERVE_MINT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x530e20b39e77a111f00a162835823ff503202d05c182b98728387853e07d19d5";
+/// The attestation attachment word count: `[feeAmount(8), pubkey(16), signature(17), pad(3)]`
+/// = 44 felts (the pubkey is the 16-felt affine form since the v16 migration — vm#3342,
+/// MIGRATION-V16-ALPHA2.md S16). Declared identically in `mint_policy.masm` (parity-pinned).
+pub const XUSDC_MINT_ATTESTATION_NUM_WORDS: usize = 11;
 
-/// The mint-note consume script source.
-const MINT_NOTE_SCRIPT_SRC: &str =
-    include_str!("../../../../asm/standards/notes/xreserve_mint_note.masm");
-
-/// The compiled mint-note script: the `xreserve` component library is assembled from the shipped
-/// tree and linked so `call.note_entry::receive_and_mint` resolves to the SAME proc installed on
-/// the faucet account (the agglayer claim-note precedent; the in-repo assembler recipe mirrors
-/// the test harness' `assemble_xreserve_lib`).
-static MINT_NOTE_SCRIPT: LazyLock<NoteScript> = LazyLock::new(|| {
-    let assembler = TransactionKernel::assembler()
-        .with_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
-        .expect("the standards library links into the xreserve assembler")
-        .with_warnings_as_errors(true);
-    let library = *assembler
-        .assemble_library_from_root(
-            crate::xreserve_asm_dir().join("mod.masm"),
-            Some(MasmPath::new("xreserve")),
-        )
-        .expect("the shipped xreserve component library assembles");
-    CodeBuilder::new()
-        .with_dynamically_linked_library(&library)
-        .expect("the xreserve library links into the mint-note script assembler")
-        .compile_note_script(MINT_NOTE_SCRIPT_SRC)
-        .expect("the mint-note script compiles")
-});
+/// The DC-5 uint256 -> AssetAmount decimal scale the faucet applies. DEV-5 (cap / scale / dust)
+/// remains Circle-OPEN; the faucet ships the PROVISIONAL scale-0 position because Circle's on-wire
+/// deposit `amount` is 6-decimal smallest units and xUSDC is 6-decimal, so the reduction is the
+/// identity. Declared identically in `mint_policy.masm` (`DEPOSIT_SCALE_EXP`, parity-pinned); this
+/// factory reduces the attested amount with the SAME scale so the storage it builds passes the
+/// policy's ASSERT-MATCH amount compare.
+pub const XUSDC_DEPOSIT_SCALE_EXP: u32 = 0;
 
 /// The Circle deposit attestation crossing the note boundary (DC-2/DC-3): the raw 65-byte
 /// `r‖s‖v` ECDSA signature over `keccak256(payload)` and the raw 33-byte compressed SEC1
-/// candidate pubkey. Lengths are type-enforced; felt packing happens in [`XReserveMintNote`]
+/// candidate pubkey. Lengths are type-enforced; felt packing happens in [`XUsdcMintNote`]
 /// via the shared-encoding codec by reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MintAttestation {
@@ -128,39 +97,32 @@ impl MintAttestation {
     }
 }
 
-/// The production mint note (CMP-B1). A standalone unit-struct note factory.
-pub struct XReserveMintNote;
+/// The production mint-note factory (CMP-B1): builds the STOCK [`MintNote`] carrying the xUSDC
+/// attested transport. A standalone unit-struct factory like its siblings; the note script is the
+/// STOCK standards MINT script (no custom root to pin — [`Self::script_root`] delegates to
+/// [`MintNote::script_root`], which is what the note-script allowlist row 1 holds).
+pub struct XUsdcMintNote;
 
-impl XReserveMintNote {
-    /// The custom mint-note consume script (compiled from
-    /// `asm/standards/notes/xreserve_mint_note.masm` with the xreserve component library linked).
+impl XUsdcMintNote {
+    /// The STOCK standards MINT note script the transport rides on.
     pub fn script() -> NoteScript {
-        MINT_NOTE_SCRIPT.clone()
+        MintNote::script()
     }
 
-    /// The mint-note script root (must equal the pinned
-    /// [`XRESERVE_MINT_NOTE_SCRIPT_ROOT_HEX`]; parity-tested).
+    /// The STOCK MINT note script root (the allowlist row-1 identity).
     pub fn script_root() -> NoteScriptRoot {
-        MINT_NOTE_SCRIPT.root()
-    }
-
-    /// The pinned root constant as a [`NoteScriptRoot`].
-    pub fn pinned_script_root() -> NoteScriptRoot {
-        NoteScriptRoot::from_raw(
-            Word::parse(XRESERVE_MINT_NOTE_SCRIPT_ROOT_HEX)
-                .expect("the pinned mint-note script root hex is a valid word"),
-        )
+        MintNote::script_root()
     }
 
     /// Creates the production mint note: `sender` is the producer/relayer account, `faucet_id`
-    /// the consuming faucet (account-target tag), `deposit_intent` the RAW DepositIntent payload
-    /// bytes (validated + packed via the shared-encoding codec by reference — structural rejects and the
-    /// 1024-felt bound surface as [`NoteError`] with the codec error as source), `attestation`
-    /// the raw sig + candidate pubkey (packed 17 + 16 felts into the scheme-1 attestation attachment
-    /// after the MVP-zero feeAmount limbs — DEV-8, hardcoded: a non-zero fee would only ever trap
-    /// the F2 guard on-chain). The note carries TWO attachments (F5): that scheme-1 attestation plus
-    /// the scheme-2 `NetworkAccountTarget` routing bind to `faucet_id` (`NoteExecutionHint::Always`).
-    /// Asset-less; `NoteType::Public` forced.
+    /// the consuming faucet, `deposit_intent` the RAW Circle-signed DepositIntent payload bytes
+    /// (validated + packed via the shared-encoding codec by reference — structural rejects
+    /// surface as [`NoteError`] with the codec error as source), `attestation` the raw sig +
+    /// candidate pubkey. The storage embeds the ATTESTED values (P2ID recipe to the intent's
+    /// `remoteRecipient` with the nonce-key serial; the scale-0-reduced amount as a
+    /// [`FungibleAsset`] of `faucet_id`; the recipient's account-target tag) so the faucet's
+    /// attestation policy accepts it under the ASSERT-MATCH binding. Asset-less on the wire;
+    /// `NoteType::Public` forced by the stock conversion.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -168,39 +130,75 @@ impl XReserveMintNote {
         attestation: &MintAttestation,
         rng: &mut R,
     ) -> Result<Note, NoteError> {
-        let items = deposit_intent_to_packed_felts(deposit_intent).map_err(|source| {
+        let header = parse_deposit_intent_header(deposit_intent).map_err(|source| {
             NoteError::other_with_source("deposit intent payload rejected by the 04 codec", source)
         })?;
-        let storage = NoteStorage::new(items)?;
-        let serial_num = rng.draw_word();
-        let recipient = NoteRecipient::new(serial_num, Self::script(), storage);
-        let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
-            .with_tag(NoteTag::with_account_target(faucet_id));
-        // F5: two attachments — the scheme-1 attestation (hash-verified by the shim) + the scheme-2
-        // NetworkAccountTarget routing bind to the faucet network account (routing only; the shim's
-        // `eq.2` accepts exactly these two). Requires a PUBLIC faucet id.
+        // the attested output-note ingredients: recipient account, reduced amount, nonce-key
+        // serial — the SAME derivations the on-chain policy re-computes and assert-matches.
+        let recipient_id = bytes32_to_account_id(&header.remote_recipient).map_err(|source| {
+            NoteError::other_with_source(
+                "deposit intent remoteRecipient is not a valid account id",
+                source,
+            )
+        })?;
+        let amount =
+            uint256_to_asset_amount(uint256_le_limbs(&header.amount), XUSDC_DEPOSIT_SCALE_EXP)
+                .map_err(|source| {
+                    NoteError::other_with_source(
+                        "deposit intent amount rejected by the 04 reducer",
+                        source,
+                    )
+                })?;
+        let asset = FungibleAsset::new(faucet_id, u64::from(amount))
+            .map_err(|source| NoteError::other_with_source("attested amount", source))?;
+        let serial = Word::from(bytes32_to_storage_map_key(&header.nonce));
+        let recipient = P2idNoteStorage::new(recipient_id).into_recipient(serial);
+        let tag = NoteTag::with_account_target(recipient_id);
+        let storage = MintNoteStorage::new_fungible_public(recipient, asset, tag)?;
         let target =
             NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always).map_err(|err| {
                 NoteError::other_with_source("faucet id is not a public network account", err)
             })?;
-        let attachments = NoteAttachments::new(vec![
-            Self::attestation_attachment(attestation)?,
-            NoteAttachment::from(target),
-        ])?;
-        Ok(Note::with_attachments(
-            NoteAssets::new(vec![])?,
-            metadata,
-            recipient,
-            attachments,
-        ))
+        let mint_note = MintNote::builder()
+            .sender(sender)
+            .mint_storage(storage)
+            .serial_number(rng.draw_word())
+            .attachment(Self::intent_attachment(deposit_intent)?)
+            .attachment(Self::attestation_attachment(attestation)?)
+            .attachment(NoteAttachment::from(target))
+            .build()?;
+        Ok(Note::from(mint_note))
     }
 
-    /// Builds the scheme-1 attestation attachment: 44 felts
+    /// Builds the scheme-4 DepositIntent attachment: the u32-LE-packed payload felts (60 header
+    /// felts + ⌈hookDataLen/4⌉ hookData felts, via the shared-encoding codec by reference),
+    /// zero-padded to the word boundary — attachment content is word-granular, and the on-chain
+    /// policy re-derives the exact felt length from the embedded hookDataLen and binds it to
+    /// this attachment's committed word count.
+    fn intent_attachment(deposit_intent: &[u8]) -> Result<NoteAttachment, NoteError> {
+        let mut felts = deposit_intent_to_packed_felts(deposit_intent).map_err(|source| {
+            NoteError::other_with_source("deposit intent payload rejected by the 04 codec", source)
+        })?;
+        while !felts.len().is_multiple_of(4) {
+            felts.push(Felt::from(0u32));
+        }
+        let words: Vec<Word> = felts
+            .chunks_exact(4)
+            .map(|chunk| Word::new([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        NoteAttachment::with_words(
+            NoteAttachmentScheme::new(XUSDC_MINT_INTENT_ATTACHMENT_SCHEME)?,
+            words,
+        )
+    }
+
+    /// Builds the scheme-5 attestation attachment: 44 felts
     /// `[feeAmount(8 zero limbs), pubkey(16 affine felts), signature(17), pad(3)]` as 11 words —
-    /// the exact order `mint` pops from the advice stack (element-0-first `adv.push_mapval` pop
-    /// order, pinned by the transport canary). The 33-byte compressed wire pubkey is
-    /// decompressed to its affine coordinates here (vm#3342; an off-curve key rejects — it
-    /// could never verify on-chain).
+    /// the exact order the policy's advice re-surfacing hands to the D5b/D5d stages
+    /// (element-0-first `adv.push_mapval` pop order, pinned by the transport canary). The
+    /// feeAmount limbs are MVP-zero (DEV-8, hardcoded: a non-zero fee would only ever trap the
+    /// F2 guard on-chain). The 33-byte compressed wire pubkey is decompressed to its affine
+    /// coordinates here (vm#3342; an off-curve key rejects — it could never verify on-chain).
     fn attestation_attachment(attestation: &MintAttestation) -> Result<NoteAttachment, NoteError> {
         let mut felts: Vec<Felt> = Vec::with_capacity(44);
         felts.extend([Felt::from(0u32); 8]);
@@ -213,10 +211,22 @@ impl XReserveMintNote {
             .chunks_exact(4)
             .map(|chunk| Word::new([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect();
-        debug_assert_eq!(words.len(), XRESERVE_MINT_ATTACHMENT_NUM_WORDS);
+        debug_assert_eq!(words.len(), XUSDC_MINT_ATTESTATION_NUM_WORDS);
         NoteAttachment::with_words(
-            NoteAttachmentScheme::new(XRESERVE_MINT_ATTACHMENT_SCHEME)?,
+            NoteAttachmentScheme::new(XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME)?,
             words,
         )
     }
+}
+
+/// The 8 u32-LE packed limbs of a big-endian uint256 wire field (limb i = LE-u32 of wire bytes
+/// `[4i, 4i+4)`) — the limb form the shared-encoding reducer consumes.
+fn uint256_le_limbs(bytes: &[u8; 32]) -> [u32; 8] {
+    core::array::from_fn(|i| {
+        u32::from_le_bytes(
+            bytes[4 * i..4 * i + 4]
+                .try_into()
+                .expect("4-byte window of a 32-byte field"),
+        )
+    })
 }

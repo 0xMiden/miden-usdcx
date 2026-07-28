@@ -1,0 +1,368 @@
+//! WAVE-1 S1 RECOMPOSITION TRIPWIRES — the new-posture PINS for the faucet recomposition
+//! (stock `MintNote` transport + attestation MintPolicy + build-seeded config with an
+//! identifier-only init note + stock `MinBurnAmount` with a zero-floor guard).
+//!
+//! Written RED-FIRST (anneal test-first protocol): every test below FAILED against the pre-slice
+//! composition (mint-deny guard active, custom `XReserveMintNote` transport, custom burn policy,
+//! four-field `domain_init`, custom `min_burn_admin`) and flipped GREEN when the recomposition
+//! landed. The file STAYS in the suite as the permanent posture tripwire set:
+//!
+//! - INV-MINT-SECURITY (restated): every supply increase passes the attestation mint policy —
+//!   the active mint policy IS `xreserve::mint_policy::check_policy`, the allowed-mint map is
+//!   EXACTLY that one root, and a build with any other active mint policy is rejected with the
+//!   CONCRETE `MissingAttestationMintPolicy` builder variant.
+//! - The mint-deny guard DISSOLVES (its job — trapping the stock path — dissolves because the
+//!   stock path IS now the attestation-gated path).
+//! - The burn floor: the ACTIVE burn policy is the stock `MinBurnAmount`, its floor slot is
+//!   seeded `>= 1` (R-BURN-1 zero-burn invariant preserved by construction: `amount >= min >= 1`),
+//!   the builder REJECTS `min_burn_size < 1` with the CONCRETE `MinBurnSizeBelowFloor` variant,
+//!   and the reworked admin note (targeting the stock `set_min_burn_amount`) asserts
+//!   `new_min >= 1` before calling it.
+//! - The note-script allowlist pins the STOCK `MintNote` root (row 1) and drops the custom
+//!   mint-note root; the four-field `domain_init` surface is replaced by the minimized
+//!   identifier-only init (DEC-4 — the identifier is a provable fixpoint of the account id).
+//!
+//! The e2e legs that drive the NEW transport end-to-end (happy mint + the recipient/fee/replay
+//! binding negatives + the runtime min-burn floor guard) live in `wave1_recomposition_e2e.rs`
+//! (G3 split; the shared production-transport harness is `support::mint_transport`). All tests
+//! here are security tripwires and hold the tripwire serial guard (they flake under parallel
+//! `cargo test`).
+
+mod support;
+
+use anyhow::{Context, Result};
+use assert_matches::assert_matches;
+use miden_protocol::account::{
+    AccountComponent, StorageMapKey, StorageSlot, StorageSlotContent, StorageSlotName,
+};
+use miden_protocol::{Felt, Word};
+use miden_standards::account::policies::{MinBurnAmount, MintPolicy, TokenPolicyManager};
+use miden_standards::note::MintNote;
+use support::*;
+use xusdc_encoding::account::xreserve::XReserveStablecoinBuilderError;
+
+// THE RATIFIED TO-BE CONSTANTS (independent test-side pins; the production Rust/MASM constants
+// are parity-tested against each other — these literals keep the RATIFIED values honest)
+// ================================================================================================
+
+/// The attestation mint policy's library path inside the assembled `xreserve` component.
+const ATTESTATION_MINT_POLICY_PROC_PATH: &str = "xreserve::mint_policy::check_policy";
+
+/// The dissolved mint-deny guard's former library path (must resolve NOWHERE post-slice).
+const FORMER_MINT_DENY_GUARD_PROC_PATH: &str = "xreserve::mint_deny_guard::check_policy";
+
+/// The former custom mint-note script root (`XRESERVE_MINT_NOTE_SCRIPT_ROOT_HEX` before the
+/// slice) — pinned as a LITERAL so the allowlist test can prove its removal after the factory
+/// type itself is deleted.
+const FORMER_CUSTOM_MINT_NOTE_ROOT_HEX: &str =
+    "0x530e20b39e77a111f00a162835823ff503202d05c182b98728387853e07d19d5";
+
+const MAX_SUPPLY: u64 = 1_000_000_000_000;
+
+// COMPONENT-SET INSPECTION HELPERS (the basic_asset_tripwire pattern)
+// ================================================================================================
+
+fn find_slot<'a>(
+    components: &'a [AccountComponent],
+    name: &StorageSlotName,
+) -> Option<&'a StorageSlot> {
+    components
+        .iter()
+        .flat_map(|c| c.storage_slots().iter())
+        .find(|s| s.name() == name)
+}
+
+fn map_slot<'a>(
+    components: &'a [AccountComponent],
+    name: &StorageSlotName,
+) -> Result<&'a miden_protocol::account::StorageMap> {
+    let slot = find_slot(components, name)
+        .with_context(|| format!("the policy manager must register the '{name}' slot"))?;
+    match slot.content() {
+        StorageSlotContent::Map(map) => Ok(map),
+        StorageSlotContent::Value(_) => anyhow::bail!("'{name}' must be a MAP slot"),
+    }
+}
+
+fn value_slot(components: &[AccountComponent], name: &StorageSlotName) -> Result<Word> {
+    let slot = find_slot(components, name)
+        .with_context(|| format!("the composition must register the '{name}' slot"))?;
+    match slot.content() {
+        StorageSlotContent::Value(v) => Ok(*v),
+        StorageSlotContent::Map(_) => anyhow::bail!("'{name}' must be a VALUE slot"),
+    }
+}
+
+/// Resolves a library-path procedure root across the composed component set.
+fn resolve_proc_root(components: &[AccountComponent], path: &str) -> Option<Word> {
+    components
+        .iter()
+        .find_map(|c| c.get_procedure_root_by_path(path))
+        .map(Word::from)
+}
+
+fn shipped_masm_path(rel: &str) -> std::path::PathBuf {
+    xusdc_encoding::xreserve_asm_dir().join(rel)
+}
+
+fn shipped_note_masm_path(file: &str) -> std::path::PathBuf {
+    xusdc_encoding::xreserve_asm_dir()
+        .parent()
+        .expect("asm/standards/xreserve has a parent")
+        .join("notes")
+        .join(file)
+}
+
+// 1 — POSTURE: the attestation policy IS the active mint policy (INV-MINT-SECURITY restated)
+// ================================================================================================
+
+/// TRIPWIRE: the production composition's ACTIVE mint policy resolves to the attestation policy
+/// (`xreserve::mint_policy::check_policy`) installed on the xreserve component — every supply
+/// increase passes the attestation gate.
+#[test]
+fn active_mint_policy_is_the_attestation_policy() -> Result<()> {
+    let _serial = tripwire_serial_guard_blocking();
+    let components = production_component_set(MAX_SUPPLY, 0)?;
+    let attestation_root = resolve_proc_root(&components, ATTESTATION_MINT_POLICY_PROC_PATH)
+        .context(
+        "the composed set must carry the attestation mint policy (xreserve::mint_policy::check_policy)",
+    )?;
+    let active = value_slot(&components, TokenPolicyManager::active_mint_policy_slot())?;
+    assert_eq!(
+        active, attestation_root,
+        "the ACTIVE mint policy slot must hold the attestation policy root (INV-MINT-SECURITY: \
+         every supply increase passes the attestation policy)"
+    );
+    Ok(())
+}
+
+/// TRIPWIRE: the allowed-mint-policy map is EXACTLY {the attestation policy root} — no reserved
+/// alternate mint policy exists, so the attestation gate can never be swapped out at runtime.
+#[test]
+fn allowed_mint_policy_map_is_exactly_the_attestation_root() -> Result<()> {
+    let _serial = tripwire_serial_guard_blocking();
+    let components = production_component_set(MAX_SUPPLY, 0)?;
+    let attestation_root = resolve_proc_root(&components, ATTESTATION_MINT_POLICY_PROC_PATH)
+        .context("the composed set must carry the attestation mint policy")?;
+    let map = map_slot(
+        &components,
+        TokenPolicyManager::allowed_mint_policies_slot(),
+    )?;
+    assert_eq!(
+        map.num_entries(),
+        1,
+        "the allowed-mint map must carry EXACTLY one root (the attestation policy) — a superset \
+         would leave a runtime path to a weaker mint policy"
+    );
+    let flag = map.get(&StorageMapKey::new(attestation_root));
+    assert_ne!(
+        flag,
+        Word::empty(),
+        "the allowed-mint map's single entry must be the attestation policy root"
+    );
+    Ok(())
+}
+
+/// TRIPWIRE: a build whose active mint policy is NOT the attestation policy CANNOT exist — the
+/// builder rejects it with the CONCRETE `MissingAttestationMintPolicy` variant (the
+/// mutation-test half of the restated INV-MINT-SECURITY; G4 — the exact variant, not a
+/// stringified word search).
+#[test]
+fn builder_rejects_a_non_attestation_mint_policy() -> Result<()> {
+    let _serial = tripwire_serial_guard_blocking();
+    let outcome = production_builder_outcome(MAX_SUPPLY, 0, None, Some(MintPolicy::allow_all()))?;
+    assert_matches!(
+        outcome,
+        Err(XReserveStablecoinBuilderError::MissingAttestationMintPolicy),
+        "a build with MintPolicy::allow_all() as the active mint policy MUST be rejected with \
+         the exact missing-attestation-policy variant"
+    );
+    Ok(())
+}
+
+/// TRIPWIRE: the mint-deny guard is fully dissolved — its module resolves nowhere in the
+/// composition and its source file is gone (its job dissolved: the stock path IS the gated path).
+#[test]
+fn mint_deny_guard_is_fully_dissolved() -> Result<()> {
+    let _serial = tripwire_serial_guard_blocking();
+    let components = production_component_set(MAX_SUPPLY, 0)?;
+    assert!(
+        resolve_proc_root(&components, FORMER_MINT_DENY_GUARD_PROC_PATH).is_none(),
+        "the mint-deny guard must not resolve anywhere in the composed set"
+    );
+    assert!(
+        !shipped_masm_path("mint_deny_guard.masm").exists(),
+        "asm/standards/xreserve/mint_deny_guard.masm must be deleted"
+    );
+    Ok(())
+}
+
+// 2 — POSTURE: the custom mint transport deletes; the attestation policy + identifier init land
+// ================================================================================================
+
+/// TRIPWIRE: the custom mint transport MASM is deleted and the attestation mint policy module is
+/// its replacement (the deletion ledger, executable).
+#[test]
+fn custom_mint_transport_masm_is_deleted() -> Result<()> {
+    let _serial = tripwire_serial_guard_blocking();
+    for gone in [
+        "xreserve_mint.masm",
+        "xreserve_mint_note_entry.masm",
+        "mint_deny_guard.masm",
+    ] {
+        assert!(
+            !shipped_masm_path(gone).exists(),
+            "asm/standards/xreserve/{gone} must be deleted by the recomposition"
+        );
+    }
+    assert!(
+        !shipped_note_masm_path("xreserve_mint_note.masm").exists(),
+        "the custom mint note script must be deleted (the stock MintNote is the transport)"
+    );
+    assert!(
+        shipped_masm_path("mint_policy.masm").exists(),
+        "asm/standards/xreserve/mint_policy.masm (the attestation mint policy) must exist"
+    );
+    Ok(())
+}
+
+/// TRIPWIRE: the legacy config/burn admin MASM is replaced — `domain_config`/`min_burn_admin`/
+/// `burn_policy` delete; the minimized `identifier_init` module + note land (DEC-4: the
+/// identifier is a provable fixpoint of the account id, so ONLY it gets an init note; the other
+/// three domain-config fields are build-seeded).
+#[test]
+fn legacy_config_and_burn_masm_are_replaced() -> Result<()> {
+    let _serial = tripwire_serial_guard_blocking();
+    for gone in [
+        "domain_config.masm",
+        "min_burn_admin.masm",
+        "burn_policy.masm",
+    ] {
+        assert!(
+            !shipped_masm_path(gone).exists(),
+            "asm/standards/xreserve/{gone} must be deleted by the recomposition"
+        );
+    }
+    assert!(
+        shipped_masm_path("identifier_init.masm").exists(),
+        "asm/standards/xreserve/identifier_init.masm (the minimized init surface) must exist"
+    );
+    assert!(
+        !shipped_note_masm_path("xreserve_domain_init_note.masm").exists(),
+        "the four-field domain_init note script must be deleted"
+    );
+    assert!(
+        shipped_note_masm_path("xreserve_identifier_init_note.masm").exists(),
+        "the identifier-only init note script must exist"
+    );
+    Ok(())
+}
+
+// 3 — POSTURE: the burn side is the stock MinBurnAmount with the zero floor preserved
+// ================================================================================================
+
+/// TRIPWIRE: the ACTIVE burn policy is the STOCK `MinBurnAmount` (allowed-map exactly that one
+/// root) and its floor slot ships seeded `>= 1` — the R-BURN-1 zero-burn invariant preserved by
+/// construction (`amount >= min >= 1`).
+#[test]
+fn burn_policy_is_stock_min_burn_amount_with_a_positive_floor() -> Result<()> {
+    let _serial = tripwire_serial_guard_blocking();
+    let components = production_component_set(MAX_SUPPLY, 0)?;
+    let active = value_slot(&components, TokenPolicyManager::active_burn_policy_slot())?;
+    assert_eq!(
+        active,
+        MinBurnAmount::root().as_word(),
+        "the ACTIVE burn policy slot must hold the stock MinBurnAmount root"
+    );
+    let map = map_slot(
+        &components,
+        TokenPolicyManager::allowed_burn_policies_slot(),
+    )?;
+    assert_eq!(
+        map.num_entries(),
+        1,
+        "the allowed-burn map must carry EXACTLY the one MinBurnAmount root"
+    );
+    let floor = value_slot(&components, MinBurnAmount::slot_name())?;
+    assert!(
+        floor[0].as_canonical_u64() >= 1,
+        "the MinBurnAmount floor slot must ship >= 1 (zero-floor invariant), got {floor}"
+    );
+    assert_eq!(
+        Word::from([
+            floor[0],
+            Felt::from(0u32),
+            Felt::from(0u32),
+            Felt::from(0u32)
+        ]),
+        floor,
+        "the floor slot layout is [min_burn_amount, 0, 0, 0]"
+    );
+    Ok(())
+}
+
+/// TRIPWIRE: the builder REJECTS `min_burn_size < 1` at build time with the CONCRETE
+/// `MinBurnSizeBelowFloor(0)` variant (the build-side half of the zero-floor guard; G4 — the
+/// exact variant carrying the offending value, not a stringified word search).
+#[test]
+fn builder_rejects_a_zero_min_burn_floor() -> Result<()> {
+    let _serial = tripwire_serial_guard_blocking();
+    let outcome = production_builder_outcome(MAX_SUPPLY, 0, Some(0), None)?;
+    assert_matches!(
+        outcome,
+        Err(XReserveStablecoinBuilderError::MinBurnSizeBelowFloor(0)),
+        "a build with min_burn_size = 0 MUST be rejected with the exact below-floor variant \
+         carrying the offending value (zero-floor invariant)"
+    );
+    Ok(())
+}
+
+/// TRIPWIRE: the min-burn admin note script targets the STOCK `set_min_burn_amount` and carries
+/// the note-side zero-floor assert (the runtime half of the guard; the stock setter itself
+/// accepts 0, so the note MUST reject it first).
+#[test]
+fn min_burn_note_targets_the_stock_setter_with_a_floor_guard() -> Result<()> {
+    let _serial = tripwire_serial_guard_blocking();
+    let src = std::fs::read_to_string(shipped_note_masm_path(
+        "xreserve_set_min_burn_size_note.masm",
+    ))
+    .context("reading the shipped set_min_burn_size note script")?;
+    assert!(
+        src.contains("call.min_burn_amount::set_min_burn_amount"),
+        "the min-burn admin note must call the STOCK set_min_burn_amount account procedure"
+    );
+    assert!(
+        src.contains("ERR_XRESERVE_MIN_BURN_BELOW_FLOOR"),
+        "the min-burn admin note must declare the zero-floor guard error"
+    );
+    assert!(
+        !src.contains("min_burn_admin::set_min_burn_size"),
+        "the custom min_burn_admin target is deleted — the note must not reference it"
+    );
+    Ok(())
+}
+
+// 4 — POSTURE: the note-script allowlist pins the stock MintNote (row 1 re-materialized)
+// ================================================================================================
+
+/// TRIPWIRE: the frozen 14-root allowlist's mint row is the STOCK `MintNote::script_root()`; the
+/// former custom mint-note root is gone.
+#[test]
+fn note_allowlist_pins_the_stock_mint_note() -> Result<()> {
+    let _serial = tripwire_serial_guard_blocking();
+    let allowlist =
+        xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::allowed_note_scripts();
+    assert_eq!(allowlist.len(), 14, "the ratified allowlist stays 14 rows");
+    assert!(
+        allowlist.contains(&MintNote::script_root()),
+        "row 1 must be the STOCK miden-standards MintNote script root"
+    );
+    let former = miden_protocol::note::NoteScriptRoot::from_raw(
+        Word::parse(FORMER_CUSTOM_MINT_NOTE_ROOT_HEX).expect("pinned former root hex parses"),
+    );
+    assert!(
+        !allowlist.contains(&former),
+        "the former custom XReserveMintNote root must be REMOVED from the allowlist"
+    );
+    Ok(())
+}

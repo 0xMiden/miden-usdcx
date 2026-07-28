@@ -1,4 +1,4 @@
-//! Config / setter admin note factories: `set_attester`, `domain_init`,
+//! Config / setter admin note factories: `set_attester`, `identifier_init`,
 //! `set_min_burn_size`, `set_max_supply`, `pause`, `unpause`.
 
 use std::sync::LazyLock;
@@ -90,95 +90,85 @@ impl XReserveSetAttesterNote {
     }
 }
 
-// DOMAIN_INIT (allowlist row 12)
+// IDENTIFIER_INIT (allowlist row 12)
 // ================================================================================================
 
-const DOMAIN_INIT_NOTE_SCRIPT_SRC: &str =
-    include_str!("../../../../../asm/standards/notes/xreserve_domain_init_note.masm");
+const IDENTIFIER_INIT_NOTE_SCRIPT_SRC: &str =
+    include_str!("../../../../../asm/standards/notes/xreserve_identifier_init_note.masm");
 
-static DOMAIN_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
-    LazyLock::new(|| compile_admin_note_script(DOMAIN_INIT_NOTE_SCRIPT_SRC));
+static IDENTIFIER_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
+    LazyLock::new(|| compile_admin_note_script(IDENTIFIER_INIT_NOTE_SCRIPT_SRC));
 
-/// The PINNED domain_init admin note-script root (`masm-rust-constant-parity`): the MAST root of the
-/// compiled `xreserve_domain_init_note.masm` with the xreserve library linked. It binds transitively
-/// to `domain_config::domain_init`'s digest, so ANY edit of the note script or the proc it calls trips
-/// the parity assertion (`script_root() == pinned_script_root()`) and forces a conscious re-pin.
-pub const XRESERVE_DOMAIN_INIT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x04f024d51f121941346180c762b18521505c3d42ab3cea43ebffe6e07041619d";
+/// The PINNED identifier_init admin note-script root (`masm-rust-constant-parity`): the MAST root
+/// of the compiled `xreserve_identifier_init_note.masm` with the xreserve library linked. It binds
+/// transitively to `identifier_init::init_identifier`'s digest, so ANY edit of the note script or
+/// the proc it calls trips the parity assertion (`script_root() == pinned_script_root()`) and
+/// forces a conscious re-pin. Re-pinned at the round-3 own-id binding (the proc now derives
+/// `bytes32_to_key(account_id_to_bytes32(get_id()))` on-chain and rejects a mismatched committed
+/// identifier), replacing `0x4fb4fcba9ca98176d2ccbaadcf8399f7ccdaa0312630a9b29a0d76058d515b82`.
+pub const XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0xaf63dbcec4e79c6dd1d731f7f6b245401d733b0e14e58f885b53321f416c348b";
 
-/// The owner-gated, init-once `domain_init` admin note (F5). Storage layout:
-/// `[IDENTIFIER(4), XRC_HI(4), XRC_LO(4), source_domain, domain]`. Consumed against the faucet
-/// network account; `domain_config::domain_init` gates on the (kernel-forced) note sender being the
-/// owner AND rejects a second initialization.
-pub struct XReserveDomainInitNote;
+/// The owner-gated, init-once `identifier_init` admin note (F5; DEC-4 — the minimized
+/// replacement of the former four-field `domain_init`: the identifier is the ONE domain-config
+/// field the account-id fixpoint forces past build time, the other three are build-seeded by the
+/// `XReserveStablecoinBuilder`). Storage layout: `[IDENTIFIER(4)]`. Consumed against the faucet
+/// network account; `identifier_init::init_identifier` gates on the (kernel-forced) note sender
+/// being the owner AND rejects a second initialization.
+pub struct XReserveIdentifierInitNote;
 
-impl XReserveDomainInitNote {
-    /// The compiled, fixed-root note script (the shipped `xreserve_domain_init_note.masm` with the
-    /// xreserve library linked).
+impl XReserveIdentifierInitNote {
+    /// The compiled, fixed-root note script (the shipped `xreserve_identifier_init_note.masm`
+    /// with the xreserve library linked).
     pub fn script() -> NoteScript {
-        DOMAIN_INIT_NOTE_SCRIPT.clone()
+        IDENTIFIER_INIT_NOTE_SCRIPT.clone()
     }
 
     /// The note-script root (allowlist row 12). Must equal the pinned
-    /// [`XRESERVE_DOMAIN_INIT_NOTE_SCRIPT_ROOT_HEX`] (parity-tested).
+    /// [`XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX`] (parity-tested).
     pub fn script_root() -> NoteScriptRoot {
-        DOMAIN_INIT_NOTE_SCRIPT.root()
+        IDENTIFIER_INIT_NOTE_SCRIPT.root()
     }
 
-    /// The PINNED note-script root ([`XRESERVE_DOMAIN_INIT_NOTE_SCRIPT_ROOT_HEX`]).
+    /// The PINNED note-script root ([`XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX`]).
     pub fn pinned_script_root() -> NoteScriptRoot {
         NoteScriptRoot::from_raw(
-            Word::parse(XRESERVE_DOMAIN_INIT_NOTE_SCRIPT_ROOT_HEX)
-                .expect("the pinned domain_init note-script root hex is a valid word"),
+            Word::parse(XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX)
+                .expect("the pinned identifier_init note-script root hex is a valid word"),
         )
     }
 
-    /// Builds a `domain_init` admin note: `sender` is the admin party (the owner, for success),
-    /// `faucet_id` the target faucet (PUBLIC), and the domain-config fields — `domain`/`source_domain`
-    /// (u32 scalars), `xreserve_contract` (raw bytes32, packed by the shared-encoding codec into 8 u32-LE limbs),
-    /// and `identifier` (the pre-hashed `bytes32_to_key` Word). The params live in note storage; the
-    /// executor-controlled `NOTE_ARGS` are ignored by the script.
+    /// Builds an `identifier_init` admin note: `sender` is the admin party (the owner, for
+    /// success) and `faucet_id` the target faucet (PUBLIC). The seeded identifier is DERIVED from
+    /// `faucet_id` — `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))`, the canonical
+    /// key of the faucet's own account id as bytes32 — so the init is BOUND to its target and
+    /// cannot seed a token that belongs to another identity (the deployed-faucet re-check path
+    /// already expects exactly this key). This is the PROVISIONAL DEV-10/Q-CRY-4 position (the
+    /// AccountId↔bytes32 codec and the identifier==own-id equivalence stay Circle-OPEN); it is
+    /// changeable if Circle assigns a different identifier. The derived key lives in note storage;
+    /// the executor-controlled `NOTE_ARGS` are ignored by the script.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
-        domain: u32,
-        source_domain: u32,
-        xreserve_contract: &[u8; 32],
-        identifier: Word,
         rng: &mut R,
     ) -> Result<Note, NoteError> {
-        // Storage order = the proc Inputs order (offset 0 = Inputs top): IDENTIFIER(4), then the
-        // packed XRESERVE_CONTRACT hi/lo (8), then source_domain, then domain. The note script
-        // marshals these deepest-first so IDENTIFIER element 0 lands on top of the call frame.
-        let xrc = crate::xreserve::encoding::bytes32_to_packed_felts(xreserve_contract);
-        let items = vec![
-            identifier[0],
-            identifier[1],
-            identifier[2],
-            identifier[3],
-            xrc[0],
-            xrc[1],
-            xrc[2],
-            xrc[3],
-            xrc[4],
-            xrc[5],
-            xrc[6],
-            xrc[7],
-            Felt::from(source_domain),
-            Felt::from(domain),
-        ];
-        let storage = NoteStorage::new(items)?;
-        let serial_num = rng.draw_word();
-        let recipient = NoteRecipient::new(serial_num, Self::script(), storage);
-        let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
-            .with_tag(NoteTag::with_account_target(faucet_id));
-        let attachments = routing_attachments(faucet_id)?;
-        Ok(Note::with_attachments(
-            NoteAssets::new(vec![])?,
-            metadata,
-            recipient,
-            attachments,
-        ))
+        let identifier: Word = crate::xreserve::encoding::bytes32_to_storage_map_key(
+            &crate::xreserve::encoding::account_id_to_bytes32(faucet_id),
+        )
+        .into();
+        let items = vec![identifier[0], identifier[1], identifier[2], identifier[3]];
+        build_admin_note(sender, faucet_id, Self::script(), items, rng)
+    }
+
+    /// The provisional DEC-4 identifier this factory seeds for `faucet_id`: the canonical
+    /// `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))` key (the own-id fixpoint,
+    /// pending Q-CRY-4). Exposed so tests and validation flows can assert the seeded identity and
+    /// splice a matching `remoteToken` into the mint payload the faucet's D5a compare reads.
+    pub fn identifier_for(faucet_id: AccountId) -> Word {
+        crate::xreserve::encoding::bytes32_to_storage_map_key(
+            &crate::xreserve::encoding::account_id_to_bytes32(faucet_id),
+        )
+        .into()
     }
 }
 
@@ -192,12 +182,14 @@ static SET_MIN_BURN_SIZE_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(SET_MIN_BURN_SIZE_NOTE_SCRIPT_SRC));
 
 /// The PINNED set_min_burn_size admin note-script root (`masm-rust-constant-parity`): binds
-/// transitively to `min_burn_admin::set_min_burn_size`'s digest, so any edit of the note or the proc
-/// it calls trips parity and forces a conscious re-pin.
+/// transitively to the STOCK `min_burn_amount::set_min_burn_amount`'s digest (the Wave-1 S1
+/// retarget) plus the note-side zero-floor guard, so any edit of the note or the stock proc it
+/// calls trips parity and forces a conscious re-pin.
 pub const XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x87e7bb5161151a5d8f06dbace738b19116f7adc6f3e17efdaced03a84837cf84";
+    "0x294eaebba6996fc3b0ffd6dd2869c6f36701c63de852010be0b5224c576d4bd6";
 
-/// The owner-gated `set_min_burn_size` admin note (F5). Storage layout: `[new_min]`.
+/// The owner-gated `set_min_burn_size` admin note (F5). Storage layout: `[new_min]` with
+/// `new_min >= 1` (the note script's zero-floor guard — the stock setter itself accepts 0).
 pub struct XReserveSetMinBurnSizeNote;
 
 impl XReserveSetMinBurnSizeNote {

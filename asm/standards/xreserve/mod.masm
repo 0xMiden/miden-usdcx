@@ -4,19 +4,16 @@
 # only modules declared via `mod`/`pub mod` in an artifact (vm#3220 — module structure is
 # explicit; the v0.15 directory-walk assembly is gone), so this root module declares the
 # library tree: the faucet component modules, the shared-encoding library (`encoding`, with its
-# `layout` constants submodule declared in `encoding/mod.masm`), and the note-entry transport
-# shim. It carries no procedures of its own — the callable surface lives in the submodules and
-# is frozen by the 19-root tripwire (mint_root_surface.rs).
+# `layout` constants submodule declared in `encoding/mod.masm`), the attestation mint policy
+# (the ACTIVE mint policy the stock `mint_and_send` dispatches), and the minimized
+# identifier-init surface. It carries no procedures of its own — the callable surface lives in
+# the submodules and is frozen by the root-surface tripwire (mint_root_surface.rs).
 
 pub mod attestation_verify
 pub mod attester_admin
 pub mod blocklist_admin
-pub mod burn_policy
 pub mod deposit_intent_parser
-pub mod domain_config
 pub mod encoding
-pub mod min_burn_admin
-pub mod mint_deny_guard
+pub mod identifier_init
+pub mod mint_policy
 pub mod pause_admin
-pub mod xreserve_mint
-pub mod xreserve_mint_note_entry

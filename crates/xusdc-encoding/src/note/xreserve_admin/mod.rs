@@ -9,12 +9,14 @@
 //! kernel-forced, so the proc's owner/role gate is sound under permissionless network execution.
 //!
 //! This module ships allowlist rows 3-14: the `set_attester` reference op, the ratified owner/role/
-//! pause admin note scripts (`set_min_burn_size`, `set_max_supply`, `pause`, `unpause`, `grant_role`,
-//! `revoke_role`, `transfer_ownership`, `accept_ownership`, `domain_init`), and the F4-reversal
-//! transfer-blocklist admin notes (`block_account`, `unblock_account`, BLK_MANAGER-gated). There is
-//! deliberately NO `set_role_admin` note (S21 disposition flip, human-ratified 2026-07-14): the
-//! role-admin delegation graph is build-seeded and deploys frozen — see the SET_ROLE_ADMIN section
-//! below.
+//! pause admin note scripts (`set_min_burn_size` — retargeted at the STOCK `set_min_burn_amount`
+//! with a note-side zero-floor guard since the Wave-1 S1 recomposition —, `set_max_supply`,
+//! `pause`, `unpause`, `grant_role`, `revoke_role`, `transfer_ownership`, `accept_ownership`,
+//! `identifier_init` — the minimized DEC-4 replacement of the former four-field `domain_init`),
+//! and the F4-reversal transfer-blocklist admin notes (`block_account`, `unblock_account`,
+//! BLK_MANAGER-gated). There is deliberately NO `set_role_admin` note (S21 disposition flip,
+//! human-ratified 2026-07-14): the role-admin delegation graph is build-seeded and deploys frozen
+//! — see the SET_ROLE_ADMIN section below.
 
 use std::sync::Arc;
 

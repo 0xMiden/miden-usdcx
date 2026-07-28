@@ -23,9 +23,10 @@ use miden_protocol::note::{Note, NoteId, NoteTag};
 use miden_protocol::transaction::InputNote;
 use miden_protocol::Word;
 
+use miden_standards::account::policies::MinBurnAmount;
 use xusdc_encoding::account::xreserve::{
-    DOMAIN_CONFIG_SLOT_LABEL, IDENTIFIER_CONFIG_SLOT_LABEL, MIN_BURN_SIZE_SLOT_LABEL,
-    USED_NONCES_SLOT_LABEL, XRESERVE_ATTESTERS_SLOT_LABEL,
+    DOMAIN_CONFIG_SLOT_LABEL, IDENTIFIER_CONFIG_SLOT_LABEL, USED_NONCES_SLOT_LABEL,
+    XRESERVE_ATTESTERS_SLOT_LABEL,
 };
 
 use crate::client::HarnessClient;
@@ -78,8 +79,15 @@ pub(crate) fn max_supply(account: &Account) -> Result<u64> {
     Ok(value_slot(account, TOKEN_CONFIG_SLOT_LABEL)?[1].as_canonical_u64())
 }
 
+/// The committed minimum burn size — read from the STOCK [`MinBurnAmount`] floor slot
+/// (`[min,0,0,0]`; Wave-1 S1: the custom `min_burn_size` slot is gone — the stock policy
+/// companion owns the floor the stock `set_min_burn_amount` setter writes).
 pub(crate) fn min_burn(account: &Account) -> Result<u64> {
-    Ok(value_slot(account, MIN_BURN_SIZE_SLOT_LABEL)?[0].as_canonical_u64())
+    account
+        .storage()
+        .get_item(MinBurnAmount::slot_name())
+        .map(|w| w[0].as_canonical_u64())
+        .context("reading the stock MinBurnAmount floor slot")
 }
 
 /// The faucet's configured `domain` (element 0 of the domain-config slot) — the value the D5a mint

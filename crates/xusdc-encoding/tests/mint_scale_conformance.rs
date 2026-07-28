@@ -6,16 +6,17 @@
 //! `mint_composition_driver_src(...)`. Both are green for ANY value of the faucet's
 //! `DEPOSIT_SCALE_EXP`, which is how an incorrect scale stayed deploy-reachable.
 //!
-//! Everything here instead rides the REAL `XReserveMintNote` consumed by the production faucet, so
-//! the only scale in play is the one the shipped `xreserve_mint_note_entry.masm` pushes
-//! (`push.DEPOSIT_SCALE_EXP`) before `exec.xreserve_mint::mint`. NOTHING in this file injects,
+//! Everything here instead rides the REAL stock `MintNote` (built by the `XUsdcMintNote`
+//! factory) consumed by the production faucet, so the only scale in play is the one the shipped
+//! `mint_policy.masm` pushes (`push.DEPOSIT_SCALE_EXP`) into its amount reductions. NOTHING in
+//! this file injects,
 //! derives, or even names a test-side scale — grep-provable, and deliberately so: the assertions
 //! below are only meaningful because they depend on the production constant.
 //!
-//! THE INVARIANT (DEV-5, answered): Circle's on-wire deposit `amount` is denominated in xUSDC
-//! smallest units (6 decimals) and the Miden xUSDC asset is 6-decimal, so the faucet must mint
-//! `y = x` — `DEPOSIT_SCALE_EXP = 0`, `y = floor(x / 10^0)`, an identity with no rescale and no
-//! dust. Just-inside/just-outside intuition: at `DEPOSIT_SCALE_EXP = 0` a wire amount of
+//! THE INVARIANT (the PROVISIONAL scale-0 position — DEV-5 cap/scale/dust remains Circle-OPEN):
+//! Circle's on-wire deposit `amount` is denominated in xUSDC smallest units (6 decimals) and the
+//! Miden xUSDC asset is 6-decimal, so the faucet mints `y = x` — `DEPOSIT_SCALE_EXP = 0`,
+//! `y = floor(x / 10^0)`, an identity with no rescale and no dust. Just-inside/just-outside intuition: at `DEPOSIT_SCALE_EXP = 0` a wire amount of
 //! `100_000_000` (= 100.000000 USDC) mints `100_000_000` smallest units (GREEN); at the former
 //! placeholder `= 6` the same deposit would mint `100_000_000 / 10^6 = 100` smallest units — a
 //! 100-USDC deposit landing as 0.000100 xUSDC, 10^6 too small (RED). The non-round amounts below
@@ -35,10 +36,10 @@ use miden_testing::MockChain;
 use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveBlockAccountNote, XReserveDomainInitNote, XReserveSetAttesterNote,
+    XReserveBlockAccountNote, XReserveIdentifierInitNote, XReserveSetAttesterNote,
 };
-use xusdc_encoding::note::xreserve_mint::{MintAttestation, XReserveMintNote};
-use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
+use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
+use xusdc_encoding::vectors::{load, DiVector};
 use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, bytes32_to_storage_map_key};
 
 // CIRCLE-FORMAT FIXTURE VALUES
@@ -78,11 +79,10 @@ const MAX_FEE_RAW: u64 = 1;
 /// what fails a case here.
 const MAX_SUPPLY: u64 = 1_000_000_000_000;
 
-/// Test `source_domain` (config-only; nonzero so read-backs are distinguishable).
-const TEST_SOURCE_DOMAIN: u32 = 3;
-
 /// First byte of the 32-byte `remoteRecipient` field (felt 19 x 4 bytes; DC-1).
 const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
+/// First byte of the 32-byte `remoteToken` field (felt 11 x 4 bytes; DC-1).
+const REMOTE_TOKEN_BYTE_OFF: usize = 11 * 4;
 /// First byte of the 32-byte `nonce` field (felt 51 x 4 bytes; DC-1).
 const NONCE_BYTE_OFF: usize = 51 * 4;
 
@@ -104,32 +104,25 @@ fn di(id: &str) -> &'static DiVector {
         .unwrap_or_else(|| panic!("canonical artifact is missing di vector {id}"))
 }
 
-fn fields_of(id: &str) -> &'static DiFields {
-    di(id)
-        .fields
-        .as_ref()
-        .expect("accept vector carries fields")
-}
-
 /// The canonical accept payload with the Circle `amount` / `maxFee` spliced in, `remoteRecipient`
-/// replaced by the real recipient wallet, and one nonce byte perturbed by `nonce_variant` so each
-/// mint in a sweep consumes a fresh D5c nonce.
-fn payload_for(recipient: AccountId, amount: u64, nonce_variant: u8) -> Vec<u8> {
+/// replaced by the real recipient wallet, `remoteToken` bound to the faucet's own-id identifier
+/// fixpoint (what D5a's `assert_eqw` compares against), and one nonce byte perturbed by
+/// `nonce_variant` so each mint in a sweep consumes a fresh D5c nonce.
+fn payload_for(
+    recipient: AccountId,
+    faucet_id: AccountId,
+    amount: u64,
+    nonce_variant: u8,
+) -> Vec<u8> {
     let mut payload = di(BASE_VECTOR).bytes();
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
         .copy_from_slice(&account_id_to_bytes32(recipient));
+    payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32]
+        .copy_from_slice(&account_id_to_bytes32(faucet_id));
     payload[NONCE_BYTE_OFF] ^= nonce_variant;
     payload
-}
-
-/// The identifier config word = the canonical key-Word of the payload's remoteToken (what D5a's
-/// `assert_eqw` compares against).
-fn identifier_word() -> Word {
-    Word::from(bytes32_to_storage_map_key(&parse_hex32(
-        &fields_of(BASE_VECTOR).remote_token_hex,
-    )))
 }
 
 /// The usedNonces key for a payload's nonce bytes.
@@ -138,11 +131,6 @@ fn nonce_key_of_payload(payload: &[u8]) -> Word {
         .try_into()
         .expect("32 nonce bytes");
     Word::from(bytes32_to_storage_map_key(&nonce))
-}
-
-/// Test `xreserve_contract` bytes32: sequential distinct bytes.
-fn test_xreserve_contract() -> [u8; 32] {
-    core::array::from_fn(|i| 0x10 + i as u8)
 }
 
 fn note_rng(seed: u64) -> RandomCoin {
@@ -164,22 +152,16 @@ fn marker() -> Word {
 /// The production-faucet fixture with owner `domain_init` + owner `set_attester` seeded on-chain.
 /// The allowlisted attester is `gen_attester(1, ..)`, whose commitment is payload-independent.
 fn fixture() -> Result<ProductionFaucet> {
-    setup_production_faucet(MAX_SUPPLY, 0, |recipient| {
-        let commitment =
-            gen_attester(1, &payload_for(recipient, CIRCLE_DEPOSIT_100_USDC, 0)).commitment;
-        let route = test_faucet_id(1);
+    setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
+        let commitment = gen_attester(
+            1,
+            &payload_for(recipient, faucet_id, CIRCLE_DEPOSIT_100_USDC, 0),
+        )
+        .commitment;
         vec![
-            XReserveDomainInitNote::create(
-                owner(),
-                route,
-                TEST_DOMAIN,
-                TEST_SOURCE_DOMAIN,
-                &test_xreserve_contract(),
-                identifier_word(),
-                &mut note_rng(951),
-            )
-            .expect("building the owner domain_init note"),
-            XReserveSetAttesterNote::create(owner(), route, commitment, 1, &mut note_rng(952))
+            XReserveIdentifierInitNote::create(owner(), faucet_id, &mut note_rng(951))
+                .expect("building the owner identifier_init note"),
+            XReserveSetAttesterNote::create(owner(), faucet_id, commitment, 1, &mut note_rng(952))
                 .expect("building the owner set_attester note"),
         ]
     })
@@ -268,14 +250,14 @@ fn wallet_balance(account: &Account, faucet_id: AccountId) -> u64 {
         .sum()
 }
 
-/// Emits a REAL `XReserveMintNote` for `payload` and consumes it on the faucet, returning the
+/// Emits a REAL stock mint note (the `XUsdcMintNote` factory) for `payload` and consumes it on the faucet, returning the
 /// minted transaction. Every scale decision inside is the production faucet's own.
 async fn mint_via_production_note(
     pf: &mut ProductionFaucet,
     payload: &[u8],
     rng_seed: u64,
 ) -> Result<ExecutedTransaction> {
-    let note = XReserveMintNote::create(
+    let note = XUsdcMintNote::create(
         pf.producer_id,
         pf.faucet_id,
         payload,
@@ -322,7 +304,7 @@ fn minted_amount(tx: &ExecutedTransaction, faucet_id: AccountId) -> u64 {
 /// in the recipient's wallet as EXACTLY 100_000_000 xUSDC smallest units.
 ///
 /// This assertion is load-bearing precisely because nothing here supplies a scale: the value used
-/// is whatever `receive_and_mint` pushes from `DEPOSIT_SCALE_EXP`. At `= 0` (correct) the mint is
+/// is whatever the attestation policy pushes from `DEPOSIT_SCALE_EXP`. At `= 0` (correct) the mint is
 /// an identity and this passes; at the former placeholder `= 6` the faucet mints
 /// `100_000_000 / 10^6 = 100` and this fails on the amount assertion — a 100-USDC deposit
 /// delivered as 0.000100 xUSDC.
@@ -331,7 +313,7 @@ async fn production_mint_delivers_the_circle_amount_unrescaled() -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf).await?;
 
-    let payload = payload_for(pf.recipient_id, CIRCLE_DEPOSIT_100_USDC, 0);
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, CIRCLE_DEPOSIT_100_USDC, 0);
     let minted = mint_via_production_note(&mut pf, &payload, 61).await?;
 
     assert_eq!(
@@ -407,7 +389,7 @@ async fn production_mint_is_an_identity_across_circle_amounts() -> Result<()> {
     let mut expected_supply = 0u64;
     for (i, amount) in CIRCLE_DEPOSITS.iter().copied().enumerate() {
         // A distinct nonce byte per case -> a fresh D5c nonce; the amount is spliced verbatim.
-        let payload = payload_for(pf.recipient_id, amount, (i as u8) + 1);
+        let payload = payload_for(pf.recipient_id, pf.faucet_id, amount, (i as u8) + 1);
         let minted = mint_via_production_note(&mut pf, &payload, 70 + i as u64)
             .await
             .with_context(|| format!("minting Circle deposit #{i} ({amount} smallest units)"))?;
@@ -448,7 +430,12 @@ async fn production_mint_leaves_no_fractional_remainder() -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf).await?;
 
-    let payload = payload_for(pf.recipient_id, CIRCLE_DEPOSIT_NON_ROUND, 0x5A);
+    let payload = payload_for(
+        pf.recipient_id,
+        pf.faucet_id,
+        CIRCLE_DEPOSIT_NON_ROUND,
+        0x5A,
+    );
     let minted = mint_via_production_note(&mut pf, &payload, 80).await?;
     let delivered = minted_amount(&minted, pf.faucet_id);
 
@@ -482,7 +469,7 @@ async fn production_mint_leaves_no_fractional_remainder() -> Result<()> {
 fn shipped_faucet_declares_identity_deposit_scale() -> Result<()> {
     let src = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../asm/standards/xreserve/xreserve_mint_note_entry.masm"),
+            .join("../../asm/standards/xreserve/mint_policy.masm"),
     )
     .context("reading the shipped mint-note entry source")?;
     let decl = src
@@ -493,7 +480,7 @@ fn shipped_faucet_declares_identity_deposit_scale() -> Result<()> {
     assert_eq!(
         decl, "const DEPOSIT_SCALE_EXP = 0",
         "the faucet must apply NO rescale: Circle's on-wire amount is 6-decimal and xUSDC is \
-         6-decimal, so y = floor(x / 10^0) = x (DEV-5, answered)"
+         6-decimal, so y = floor(x / 10^0) = x (the provisional scale-0 position; DEV-5 OPEN)"
     );
     Ok(())
 }
@@ -513,33 +500,33 @@ async fn mint_to_a_blocked_recipient_succeeds_then_strands() -> anyhow::Result<(
     use miden_testing::assert_transaction_executor_error;
 
     // A fixture that additionally seeds a BLK_MANAGER block note targeting the recipient; bring_up
-    // consumes domain_init, set_attester, AND the block note (so the recipient is blocked pre-mint).
-    let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |recipient| {
-        let commitment =
-            gen_attester(1, &payload_for(recipient, CIRCLE_DEPOSIT_100_USDC, 0)).commitment;
-        let route = test_faucet_id(1);
+    // consumes identifier_init, set_attester, AND the block note (so the recipient is blocked
+    // pre-mint).
+    let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
+        let commitment = gen_attester(
+            1,
+            &payload_for(recipient, faucet_id, CIRCLE_DEPOSIT_100_USDC, 0),
+        )
+        .commitment;
         vec![
-            XReserveDomainInitNote::create(
-                owner(),
-                route,
-                TEST_DOMAIN,
-                TEST_SOURCE_DOMAIN,
-                &test_xreserve_contract(),
-                identifier_word(),
-                &mut note_rng(961),
-            )
-            .expect("building the owner domain_init note"),
-            XReserveSetAttesterNote::create(owner(), route, commitment, 1, &mut note_rng(962))
+            XReserveIdentifierInitNote::create(owner(), faucet_id, &mut note_rng(961))
+                .expect("building the owner identifier_init note"),
+            XReserveSetAttesterNote::create(owner(), faucet_id, commitment, 1, &mut note_rng(962))
                 .expect("building the owner set_attester note"),
-            XReserveBlockAccountNote::create(blk_manager(), route, recipient, &mut note_rng(963))
-                .expect("building the BLK_MANAGER block note targeting the recipient"),
+            XReserveBlockAccountNote::create(
+                blk_manager(),
+                faucet_id,
+                recipient,
+                &mut note_rng(963),
+            )
+            .expect("building the BLK_MANAGER block note targeting the recipient"),
         ]
     })?;
     bring_up(&mut pf).await?;
 
     // MINT to the (now blocked) recipient — the mint SUCCEEDS: the send callback's native is the
     // faucet, so the recipient's block does not stop note creation.
-    let payload = payload_for(pf.recipient_id, CIRCLE_DEPOSIT_100_USDC, 0);
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, CIRCLE_DEPOSIT_100_USDC, 0);
     let minted = mint_via_production_note(&mut pf, &payload, 61)
         .await
         .context(

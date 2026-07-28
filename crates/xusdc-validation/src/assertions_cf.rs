@@ -28,18 +28,25 @@ use crate::observations_cf::{
 };
 
 // EXACT on-chain error substrings the rejects must carry (single source of truth in the shipped
-// MASM: `deposit_intent_parser.masm`, `burn_policy.masm`, `xreserve_mint.masm`, `pause_admin.masm`,
-// the owner/role gates, and the stock note/tx-script allowlist primitives). A reject that does not
-// carry ITS error is not the gate the row proves — the assertion rejects it.
+// MASM: `deposit_intent_parser.masm` / `attestation_verify.masm` / `mint_policy.masm` /
+// `pause_admin.masm` for the xreserve-owned gates, and — since the Wave-1 S1 recomposition — the
+// STOCK miden-standards MASM for the burn floor (`min_burn_amount.masm`), the supply cap
+// (`fungible.masm` distribute), the owner/role gates, and the note/tx-script allowlist
+// primitives). A reject that does not carry ITS error is not the gate the row proves — the
+// assertion rejects it.
 // ================================================================================================
 
 /// D5d: the attester pubkey commitment is not in the on-chain `xReserveAttesters` allowlist.
 pub const ERR_ATTESTER_NOT_ALLOWLISTED: &str =
     "deposit attester pubkey commitment is not allowlisted";
-/// R-BURN-2: the burn amount is below the configured minimum burn size.
-pub const ERR_BURN_BELOW_MIN: &str = "burn amount is below the minimum burn size";
-/// R-MINT (`ERR_XRESERVE_SUPPLY_CAP`): the mint amount exceeds the faucet supply cap.
-pub const ERR_SUPPLY_CAP: &str = "mint amount exceeds the faucet supply cap";
+/// R-BURN-2 — the STOCK `MinBurnAmount::check_policy` floor gate (Wave-1 S1: the custom
+/// `burn_policy.masm` below-min error is gone; the stock policy asserts `min <= amount`).
+pub const ERR_BURN_BELOW_MIN: &str =
+    "amount to be burned must exceed specified minimum burn amount";
+/// R-MINT-15 semantics, now STOCK-owned (Wave-1 S1): the supply cap fires in the stock
+/// `fungible.masm` distribute discipline, not a custom xreserve gate.
+pub const ERR_SUPPLY_CAP: &str =
+    "token_supply plus the amount passed to distribute would exceed the maximum supply";
 /// R-BURN-3 / the mint pause gate: the contract is paused.
 pub const ERR_PAUSED: &str = "the contract is paused";
 /// The owner gate on the owner-controlled admin setters.

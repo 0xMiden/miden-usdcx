@@ -5,7 +5,8 @@
 //!
 //! REAL: the `CircleClient` (a real `reqwest::Request` against the schema-exact mock Circle router),
 //! the raw-keccak envelope binding, unit-04's DepositIntent codec, unit-04's
-//! `XReserveMintNote::create`, and the SQLite idempotency store on a real file.
+//! `XUsdcMintNote::create` (the stock-`MintNote` factory), and the SQLite idempotency store on a
+//! real file.
 //!
 //! MOCKED: the Circle endpoints (`CMP-D1`/`CMP-D3`/`CMP-D4`) — sanctioned: Circle API may be mocked,
 //! and every live Circle leg is `REQUIRES CIRCLE CONFIRMATION` (`Q-API-AUTH`, `Q-DOM-1`,
@@ -13,7 +14,7 @@
 //!
 //! ADAPTED, and **NON-GATING**: the Miden submit leg, through the [`MintSubmit`] PORT. Miden
 //! behaviour is not faked here — the adapter executes no transaction and claims no commit. The
-//! GATING leg (a real `XReserveMintNote` committing in block N against a real local node,
+//! GATING leg (a real `XUsdcMintNote` committing in block N against a real local node,
 //! T-RLY-14/T-RLY-15) is R6's and is blocked on a `miden-client` release for v0.16. This whole suite
 //! is therefore NON-GATING for the Miden half and GATING for the orchestration around it.
 //!

@@ -1,6 +1,7 @@
 //! LNV-4 burn-lifecycle gate: the one-command rows-G/H/I/J run.
 //!
-//! Boots a FRESH local stack, deploys the production faucet (domain_init matching the mint vector),
+//! Boots a FRESH local stack, deploys the production faucet (domain config build-seeded to match
+//! the mint vector, identifier_init as the first admin note),
 //! allowlists attester A, sets a minimum burn size, mints to the holder, then drives the whole
 //! burn arc — the Row-G two-block burn committed via the ntx-builder (path N) with the holder
 //! creating the production `XReserveBurnNote`; the Row-H F7 same-block-erasure RIV captured

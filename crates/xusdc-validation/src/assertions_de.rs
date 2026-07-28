@@ -2,7 +2,7 @@
 //! the real-node driver (`crate::rows_de`), judging the [`RowsDeObservations`] it produces.
 //!
 //! Matrix rows:
-//! - **D mint happy path** — a real `XReserveMintNote` consumption raises `token_supply += amount`,
+//! - **D mint happy path** — a real `XUsdcMintNote` consumption raises `token_supply += amount`,
 //!   sets `usedNonces[nonce]`, and emits a recipient P2ID note; the RECIPIENT wallet consumes it
 //!   (balance += amount). Two variants: hookData-bearing AND no-hookData; `feeAmount = 0`; a genuine
 //!   two-block flow on the real node.
@@ -20,10 +20,11 @@ use crate::observations_de::{
 };
 
 // EXACT on-chain error substrings the Row-E rejects must carry (single source of truth in the
-// shipped MASM: `deposit_intent_parser.masm`, `attestation_verify.masm`, `xreserve_mint.masm`). A
-// reject that does not carry ITS error is not the gate the negative proves — the assertion rejects
-// it. All four are xreserve-OWNED gates and carry the message on a client-side trap (LNV-2 posture:
-// only STOCK miden-standards gates surface code-only); the matcher still also accepts the derived
+// shipped MASM: `deposit_intent_parser.masm`, `attestation_verify.masm`, `mint_policy.masm` — the
+// Wave-1 S1 home of the attestation pipeline the former `xreserve_mint.masm` drove). A reject that
+// does not carry ITS error is not the gate the negative proves — the assertion rejects it. All
+// four are xreserve-OWNED gates and carry the message on a client-side trap (LNV-2 posture: only
+// STOCK miden-standards gates surface code-only); the matcher still also accepts the derived
 // `err_code` for robustness against a future protocol string/pin drift.
 // ================================================================================================
 

@@ -37,7 +37,8 @@ const ALL_XRESERVE_SLOT_LABELS: [&str; 7] = [
 ];
 
 /// Assembles the xreserve component carrying exactly `labels` (the composition fixture; the two
-/// well-known map labels get empty maps, the domain/identifier pair a dummy word).
+/// well-known map labels get empty maps, the domain a dummy word, and the identifier fixpoint the
+/// EMPTY word the builder requires — R2-F2).
 fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
     let library = assemble_xreserve_lib()?;
     let mut slots = Vec::new();
@@ -51,7 +52,8 @@ fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
                 StorageSlot::with_value(name, Word::from([DUMMY_DOMAIN, 0, 0, 0]))
             }
             l if l == IDENTIFIER_CONFIG_SLOT_LABEL => {
-                StorageSlot::with_value(name, Word::from([11u32, 12, 13, 14]))
+                // R2-F2: the identifier fixpoint ships EMPTY (the builder rejects a non-empty seed).
+                StorageSlot::with_value(name, Word::empty())
             }
             _ => StorageSlot::with_value(name, Word::from([0u32, 0, 0, 0])),
         };
@@ -110,6 +112,7 @@ fn build_rejects_blk_manager_colliding_with_a_privileged_role(
         test_account_id(3), // DOM_MANAGER
         blk_manager,
     )
+    .with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN, test_xreserve_contract())
     .build_components()
     .expect_err("a BLK_MANAGER holder colliding with a privileged role must be rejected");
     match err {
@@ -137,6 +140,7 @@ fn build_accepts_isolated_blk_manager() -> Result<()> {
         test_account_id(3),
         test_account_id(4), // distinct external BLK_MANAGER
     )
+    .with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN, test_xreserve_contract())
     .build_components()
     .context("a properly isolated BLK_MANAGER holder must build")?;
     Ok(())

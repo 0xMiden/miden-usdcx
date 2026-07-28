@@ -15,6 +15,56 @@
 const BUILDER_ERROR_SRC: &str = include_str!("../src/account/xreserve/builder/error.rs");
 const DECISION_F4: &str = include_str!("../../../docs/DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md");
 
+/// The Wave-1 S1 sources that introduce or discuss the DC-5 scale — the ones the R2-F4 governance
+/// scan guards against marking the Circle-owned DEV-5 decision as answered/resolved/approved.
+const DEV5_SCANNED_SOURCES: &[(&str, &str)] = &[
+    (
+        "asm/standards/xreserve/mint_policy.masm",
+        include_str!("../../../asm/standards/xreserve/mint_policy.masm"),
+    ),
+    (
+        "src/note/xreserve_mint.rs",
+        include_str!("../src/note/xreserve_mint.rs"),
+    ),
+    (
+        "docs/WAVE1-S1-RECOMPOSITION.md",
+        include_str!("../../../docs/WAVE1-S1-RECOMPOSITION.md"),
+    ),
+    (
+        "tests/mint_scale_conformance.rs",
+        include_str!("mint_scale_conformance.rs"),
+    ),
+];
+
+/// R2-F4 (BUILDER-GATES G6 / ground rule 6): a Circle-owned `DEV-*`/`Q-*` open decision may never
+/// be marked approved/accepted/resolved/answered. DEV-5 (amount cap / scale / dust tolerance) is
+/// Circle-OPEN; the faucet ships only the PROVISIONAL scale-0 position. This scan asserts no
+/// Wave-1 S1 source line that mentions `DEV-5` also carries a resolution word — so the provisional
+/// wording cannot silently drift into an implied Circle approval.
+#[test]
+fn dev5_stays_open_in_the_wave1_sources() {
+    // resolution words (lower-cased match) that must never sit on a DEV-5 line.
+    const FORBIDDEN: [&str; 5] = ["answered", "resolved", "approved", "accepted", "closed"];
+    for (path, src) in DEV5_SCANNED_SOURCES {
+        for (lineno, line) in src.lines().enumerate() {
+            if !line.contains("DEV-5") {
+                continue;
+            }
+            let lower = line.to_lowercase();
+            for word in FORBIDDEN {
+                assert!(
+                    !lower.contains(word),
+                    "{path}:{} marks the Circle-owned DEV-5 decision '{word}': `{}` — DEV-5 \
+                     (cap/scale/dust) stays OPEN; describe only the provisional scale-0 position \
+                     (BUILDER-GATES G6 / ground rule 6)",
+                    lineno + 1,
+                    line.trim()
+                );
+            }
+        }
+    }
+}
+
 /// finding #2: every out-of-scope intra-doc link in the moved error module carries an explicit
 /// path destination, so rustdoc resolves it under `-D warnings`. The four items are the ones the
 /// split moved out of scope (`AssetAmount::MAX` from `miden_protocol`, and the three `pub const`s

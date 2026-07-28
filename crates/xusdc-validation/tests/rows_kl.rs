@@ -25,10 +25,12 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use miden_protocol::account::{
     Account, AccountBuilder, AccountId, AccountIdVersion, AccountType, AssetCallbackFlag,
+    StorageSlotName,
 };
 use tempfile::TempDir;
-use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
-use xusdc_validation::assertions::ERR_DOMAIN_REINIT_TEXT;
+use xusdc_encoding::account::xreserve::{XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL};
+use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
+use xusdc_validation::assertions::ERR_IDENTIFIER_REINIT_TEXT;
 use xusdc_validation::assertions_cf::{ERR_LACKS_ROLE, ERR_NOT_OWNER};
 use xusdc_validation::assertions_de::{
     ERR_XRESERVE_BAD_PK_COMMITMENT, ERR_XRESERVE_FEE_NONZERO, ERR_XRESERVE_NONCE_REPLAY,
@@ -727,7 +729,7 @@ fn green_cf() -> RowsCfObservations {
         c2: C2MinBurn {
             raised_min: 50,
             committed_after_raise: 50,
-            burn_below_raised: rej("... burn amount is below the minimum burn size ..."),
+            burn_below_raised: rej("... amount to be burned must exceed specified minimum burn amount ..."),
             lowered_min: 10,
             committed_after_lower: 10,
             burn_at_lowered: Verdict::Accepted,
@@ -735,7 +737,7 @@ fn green_cf() -> RowsCfObservations {
         c3: C3MaxSupply {
             committed_cap: 500,
             max_supply_readback: 500,
-            over_cap_mint: rej("... mint amount exceeds the faucet supply cap ..."),
+            over_cap_mint: rej("... token_supply plus the amount passed to distribute would exceed the maximum supply ..."),
             within_cap_mint: Verdict::Accepted,
         },
         c4: C4Pause {
@@ -936,7 +938,9 @@ fn green_gj() -> RowsGjObservations {
             BurnNegative {
                 label: "below-min".to_string(),
                 expected_error: ERR_BURN_BELOW_MIN.to_string(),
-                verdict: rej("... burn amount is below the minimum burn size ..."),
+                verdict: rej(
+                    "... amount to be burned must exceed specified minimum burn amount ...",
+                ),
                 supply_before: 100,
                 supply_after: 100,
             },
@@ -1071,10 +1075,14 @@ fn wallet_id(seed: u8) -> AccountId {
     )
 }
 
-/// A production-shaped deployed faucet `Account` with the domain-config slots pre-seeded (the
-/// tests/rows_ab.rs synthetic fixture, reused).
+/// A production-shaped deployed faucet `Account` in the post-`identifier_init` shape: the three
+/// build-seeded fields supplied to the recomposed builder, and the identifier the OWN-ID fixpoint
+/// key `identifier_for(faucet_id)` written POST-BUILD. The identifier ships EMPTY at composition (the
+/// builder REJECTS a build-seeded identifier — the DEC-4 account-id fixpoint can never be
+/// build-seeded), so the id is fixed by the empty-identifier build, then the own-id key is written
+/// into the (immutable-id) account — the faithful twin of the post-deploy `identifier_init` write.
 fn synthetic_deployed_faucet(domain: &DomainParams) -> Result<Account> {
-    let xreserve = build_xreserve_component_seeded(Some(domain))?;
+    let xreserve = build_xreserve_component_seeded(None)?;
     let components = production_components(
         xreserve,
         wallet_id(1),
@@ -1082,14 +1090,18 @@ fn synthetic_deployed_faucet(domain: &DomainParams) -> Result<Account> {
         wallet_id(3),
         wallet_id(4),
         MAX_SUPPLY,
+        domain,
     )?;
     let auth = XReserveStablecoinBuilder::auth_component()?;
-    let account = AccountBuilder::new([7u8; 32])
+    let mut account = AccountBuilder::new([7u8; 32])
         .account_type(AccountType::Public)
         .with_asset_callbacks(AssetCallbackFlag::Enabled)
         .with_auth_component(auth)
         .with_components(components)
         .build_existing()?;
+    let slot = StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)?;
+    let key = XReserveIdentifierInitNote::identifier_for(account.id());
+    account.storage_mut().set_item(&slot, key)?;
     Ok(account)
 }
 
@@ -1109,7 +1121,7 @@ fn green_ab() -> Result<RowsAbObservations> {
         reinit_params: DomainParams::lnv1_reinit_attempt(),
         first_note_id: "0xnote1".to_string(),
         second_note_id: "0xnote2".to_string(),
-        reinit_error: Some(format!("executor trap: {ERR_DOMAIN_REINIT_TEXT}")),
+        reinit_error: Some(format!("executor trap: {ERR_IDENTIFIER_REINIT_TEXT}")),
         after_reinit: Some(after_reinit),
         second_note_consumed: false,
     })

@@ -30,7 +30,7 @@ use crate::client::{os_seed, HarnessClient};
 /// for signing during the run and its scalar is also written to a file under the gitignored run
 /// root (never in git, never in the evidence JSON); the public forms are recorded. This is the
 /// harness twin of the `gen_attester` MockChain fixture — same keccak256(payload) + SEC1 recipe,
-/// the `PublicKey::to_commitment` allowlist key — but signing REAL production `XReserveMintNote`
+/// the `PublicKey::to_commitment` allowlist key — but signing REAL production `XUsdcMintNote`
 /// attestations against the deployed faucet. NEVER Circle's keys.
 pub struct AttesterKey {
     /// The secp256k1 signing key (kept in memory to sign mint attestations during the run).
@@ -55,7 +55,7 @@ impl AttesterKey {
 
     /// Signs `keccak256(payload)` with this attester and bundles the raw 65-byte `r‖s‖v` signature
     /// with the 33-byte compressed pubkey into the production [`MintAttestation`] the relayer hands
-    /// [`xusdc_encoding::note::xreserve_mint::XReserveMintNote::create`] (same recipe as the
+    /// [`xusdc_encoding::note::xreserve_mint::XUsdcMintNote::create`] (same recipe as the
     /// `gen_attester` MockChain fixture).
     pub fn attestation_for(&self, payload: &[u8]) -> MintAttestation {
         let mut hasher = Keccak256::new();

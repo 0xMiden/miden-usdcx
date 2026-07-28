@@ -1,37 +1,40 @@
 //! `XReserveStablecoinBuilder` — the faucet account composition for the xUSDC faucet
-//! (CMP-A15). First increment (R-MINT-16): wires the **mint-deny guard** as the active
-//! mint policy so the inherited stock `mint_and_send` traps and the custom `xreserve_mint` is the
-//! provably sole supply-increasing surface (INV-MINT-SECURITY).
+//! (CMP-A15). Wave-1 S1 recomposition: the mint path is the STOCK
+//! `FungibleFaucet::mint_and_send` gated by the custom **attestation mint policy**
+//! (`xreserve::mint_policy::check_policy` — the ENTIRE D5a-e attestation pipeline relocated into
+//! the policy dispatch), so every supply increase passes the attestation gate
+//! (INV-MINT-SECURITY, restated). The former mint-deny guard is DISSOLVED — its job (trapping
+//! the stock path) dissolved because the stock path IS now the gated path.
 //!
-//! Scope (cumulative): it composes `FungibleFaucet` + the assembled `xreserve` library component
-//! (carries `apply_mint_effects`, the deny-guard `check_policy`, the `set_attester` + `set_min_burn_size`
-//! admin procs, the DOM_PAUSER custom `pause`/`unpause`) + a `TokenPolicyManager` whose active mint
-//! policy is the deny guard + the **owner-gating admin foundation** (`Ownable2Step` + a seeded
-//! `RoleBasedAccessControl` + `Authority::OwnerControlled` composition). The RBAC is SEEDED with
-//! the two Circle Domain role members (`DOM_PAUSER` / `DOM_MANAGER`), with `DOM_PAUSER`
-//! administration DELEGATED to `DOM_MANAGER` (CMP-F5 — a Circle admin-model requirement that the
-//! Domain Manager rotates the Pauser), plus — since the v16 migration (#3215 removed the owner's
-//! implicit super-admin standing) — the stock `ADMIN` role seeded on the OWNER's account, which
-//! keeps the owner-administers-roles model: the owner (as `ADMIN`) administers `DOM_MANAGER`, and
-//! `DOM_MANAGER` administers `DOM_PAUSER` (the CMP-F5 delegation). NOTE the S21 disposition flip
-//! (human-ratified 2026-07-14): the runtime `set_role_admin` NOTE is REMOVED from the note-script
-//! allowlist, so the delegation graph deploys FROZEN at this build seed — no sender can re-point
-//! (or clear) any role's admin on-chain; role rotation is `grant_role`/`revoke_role` only
-//! (CIR-ADMIN-3, matching Circle's fixed `DomainManageable.sol` graph). The stock
-//! `rbac::set_role_admin` procedure stays composed but is present-but-unreachable
-//! (`tests/account_callable_surface.rs`). Pause
-//! is Domain-Pauser-ONLY (IMPL-DEV-1 remediation): the stock `PausableManager` is NOT installed —
-//! the only pause surface is the DOM_PAUSER-gated `xreserve::pause_admin` procs; the `is_paused`
-//! slot the halt-gates read is installed by the base `Pausable` component (v16 — #2944 moved it
-//! out of `FungibleFaucet`; see `Self::assemble_components`).
-//! STILL DEFERRED to later slices: the full faucet assembly. The builder yields the validated
-//! component composition; MockChain (tests) finalises it into a signed `Account`.
+//! Scope (cumulative): it composes the `FungibleFaucet`, the assembled `xreserve` library
+//! component (carrying the attestation mint policy, the minimized `identifier_init`, the
+//! `set_attester` admin proc, the DOM_PAUSER custom `pause`/`unpause`, and the BLK_MANAGER
+//! `blocklist_admin`), a `TokenPolicyManager` whose ACTIVE mint policy is the attestation
+//! policy and whose ACTIVE burn policy is the STOCK [`MinBurnAmount`] (floor-seeded `>= 1`,
+//! preserving the R-BURN-1 zero-burn invariant by construction), and the **owner-gating admin
+//! foundation** (`Ownable2Step` with a seeded `RoleBasedAccessControl` under
+//! `Authority::OwnerControlled`). The RBAC is SEEDED with the two Circle Domain role members
+//! (`DOM_PAUSER` / `DOM_MANAGER`), with `DOM_PAUSER` administration DELEGATED to `DOM_MANAGER`
+//! (CMP-F5), plus the stock `ADMIN` role seeded on the OWNER's account, and the external
+//! `BLK_MANAGER` transfer-blocklist administrator (F4-reversal). NOTE the S21 disposition flip
+//! (human-ratified 2026-07-14): the runtime `set_role_admin` NOTE is REMOVED from the
+//! note-script allowlist, so the delegation graph deploys FROZEN at this build seed. Pause is
+//! Domain-Pauser-ONLY (IMPL-DEV-1 remediation): the stock `PausableManager` is NOT installed —
+//! the only pause surface is the DOM_PAUSER-gated `xreserve::pause_admin` procs; the
+//! `is_paused` slot the halt-gates read is installed by the base `Pausable` component.
 //!
-//! Packaging: the deny guard is **runtime-assembled** MASM (no `.masl` asset / `account_component_code!`
-//! here — that is a miden-standards-internal pipeline). The caller assembles the `xreserve` library
-//! (namespace `xreserve`) into an `AccountComponent` and passes it in; the deny-guard procedure root
-//! is resolved from that same installed code via [`AccountComponent::get_procedure_root_by_path`], so
-//! the `dynexec` root the policy manager stores always equals the installed proc's MAST root.
+//! Domain config is BUILD-SEEDED except the identifier (DEC-4): `domain`, `source_domain`, and
+//! `xreserve_contract` are required builder inputs written into the declared slots at
+//! composition time; the `identifier` slot is a provable FIXPOINT of the account id (the id
+//! derives from the initial storage commitment), so it ships EMPTY and is seeded post-deploy by
+//! the ONE minimized `identifier_init` admin note (owner-gated, init-once).
+//!
+//! Packaging: the attestation policy is **runtime-assembled** MASM (no `.masl` asset /
+//! `account_component_code!` here — that is a miden-standards-internal pipeline). The caller
+//! assembles the `xreserve` library (namespace `xreserve`) into an `AccountComponent` and passes
+//! it in; the policy procedure root is resolved from that same installed code via
+//! [`AccountComponent::get_procedure_root_by_path`], so the `dynexec` root the policy manager
+//! stores always equals the installed proc's MAST root.
 
 use std::collections::BTreeSet;
 
@@ -45,12 +48,12 @@ use miden_standards::account::access::{Authority, Ownable2Step, Pausable};
 use miden_standards::account::auth::{AuthNetworkAccount, NetworkAccountNoteAllowlistError};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::{
-    BasicBlocklist, BurnPolicy, MintPolicy, TokenPolicyManager, TransferPolicy,
+    BasicBlocklist, BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager, TransferPolicy,
 };
-use miden_standards::note::BurnNote;
+use miden_standards::note::{BurnNote, MintNote};
 use miden_standards::tx_script::ExpirationTransactionScript;
 
-use crate::note::xreserve_mint::XReserveMintNote;
+use crate::xreserve::encoding::bytes32_to_packed_felts;
 
 mod error;
 mod rbac_seed;
@@ -80,25 +83,19 @@ pub const DOM_MANAGER_ROLE: &str = "DOM_MANAGER";
 /// no new rotation machinery. `BLK_MANAGER` is seeded role id 4.
 pub const BLK_MANAGER_ROLE: &str = "BLK_MANAGER";
 
-/// Flat library path of the mint-deny guard's `check_policy` procedure within the assembled
-/// `xreserve` library (namespace `xreserve`, module `mint_deny_guard`). This is the
+/// Flat library path of the attestation mint policy's `check_policy` procedure within the
+/// assembled `xreserve` library (namespace `xreserve`, module `mint_policy`). This is the
 /// no-leading-`::` form [`AccountComponent::get_procedure_root_by_path`] expects (matching the
 /// `procedure_root!` macro and the protocol callback wiring).
-pub const MINT_DENY_GUARD_PROC_PATH: &str = "xreserve::mint_deny_guard::check_policy";
+pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str = "xreserve::mint_policy::check_policy";
 
-/// Flat library path of the burn policy's `check_policy` procedure within the assembled `xreserve`
-/// library (namespace `xreserve`, module `burn_policy`). The burn-slot twin of
-/// [`MINT_DENY_GUARD_PROC_PATH`]; resolved via [`AccountComponent::get_procedure_root_by_path`] so the
-/// `dynexec` root the policy manager stores equals the installed proc's MAST root (CMP-A10).
-pub const BURN_POLICY_PROC_PATH: &str = "xreserve::burn_policy::check_policy";
-
-/// Canonical Rust label of the `minBurnSize` value storage slot
-/// (`xusdc::xreserve::attester_admin::min_burn_size`, the XReserveAttesterAdmin storage home).
-/// The single Rust source of truth: `burn_policy.masm` declares a byte-identical
-/// `word("…")` const (parity-enforced), the tests re-export this, and the future CMP-F2
-/// `set_min_burn_size` setter co-owns the SAME slot. [`XReserveStablecoinBuilder::build_components`]
-/// seeds it as `[min_burn_size, 0, 0, 0]`.
-pub const MIN_BURN_SIZE_SLOT_LABEL: &str = "xusdc::xreserve::attester_admin::min_burn_size";
+/// The smallest admissible `min_burn_size` (the zero floor). The stock [`MinBurnAmount`] policy
+/// asserts `min <= amount` ONLY (its authority-gated stock setter even accepts `0`), so the
+/// R-BURN-1 zero-burn invariant is preserved structurally: the builder rejects a floor below
+/// this at build time, and the reworked `set_min_burn_size` admin note asserts `new_min >= 1`
+/// BEFORE calling the stock setter — together the floor is `>= 1` at all times, which makes a
+/// zero-amount burn (`0 < min`) unacceptable on every path.
+pub const MIN_BURN_SIZE_FLOOR: u64 = 1;
 
 /// The shipped on-chain `TokenSymbol` guard constant (token config). The token's identity is
 /// **USDCx** (human decision 2026-07-06) — a DISTINCT identity from the superseded "xUSDC" label;
@@ -115,9 +112,11 @@ pub const USDCX_TOKEN_SYMBOL: &str = "USDCX";
 pub const USDCX_DECIMALS: u8 = 6;
 
 /// Canonical Rust labels of the seven caller-declared `xreserve` storage slots (the single Rust
-/// source, the [`MIN_BURN_SIZE_SLOT_LABEL`] precedent: the tests re-export these and the
-/// constant-parity suite pins them against the MASM `word("…")` consts). The five
-/// domain-config slots + the two registry maps.
+/// source: the tests re-export these and the constant-parity suite pins them against the MASM
+/// `word("…")` consts where a MASM reader exists). The five domain-config slots + the two
+/// registry maps. `domain` / `source_domain` / `xreserve_contract_{hi,lo}` are BUILD-SEEDED by
+/// this builder (no runtime writer); `identifier` ships EMPTY (the `identifier_init` note is its
+/// only writer — DEC-4).
 pub const DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::domain";
 pub const IDENTIFIER_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::identifier";
 pub const SOURCE_DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::source_domain";
@@ -132,8 +131,9 @@ pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str =
 /// The SEVEN storage slots the supplied `xreserve` component must declare (the
 /// validate-what-you-ship check): a missing slot would ship a faucet whose reads/writes of it trap
 /// `ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME` at runtime;
-/// [`XReserveStablecoinBuilder::build_components`] rejects at build time instead (`min_burn_size`
-/// is builder-seeded, not caller-declared — see [`XReserveStablecoinBuilder::min_burn_size`]).
+/// [`XReserveStablecoinBuilder::build_components`] rejects at build time instead. The stock
+/// [`MinBurnAmount`] floor slot is NOT in this set — it rides the policy companion component the
+/// manager emits, not the `xreserve` component.
 pub const REQUIRED_XRESERVE_SLOT_LABELS: [&str; 7] = [
     DOMAIN_CONFIG_SLOT_LABEL,
     IDENTIFIER_CONFIG_SLOT_LABEL,
@@ -155,29 +155,54 @@ const FAUCET_MUTABILITY_CONFIG_SLOT: &str = "miden::standards::faucets::mutabili
 /// `token_metadata.rs` at the pinned `=0.16.0-alpha.2`).
 const MAX_SUPPLY_MUTABLE_WORD_INDEX: usize = 3;
 
+/// The three build-seeded domain-config fields (`domain`, `source_domain`, `xreserve_contract`)
+/// — everything of the former four-field `domain_init` EXCEPT the identifier fixpoint (DEC-4).
+#[derive(Debug, Clone, Copy)]
+struct DomainConfigSeed {
+    domain: u32,
+    source_domain: u32,
+    xreserve_contract: [u8; 32],
+}
+
+/// Reads the burn floor (element 0 of the value word) from a `BurnPolicy`'s stock [`MinBurnAmount`]
+/// companion, or `None` if the descriptor carries no such companion. Used to reject a same-root
+/// burn-policy override whose seeded floor disagrees with the builder-validated `min_burn_size`
+/// (the same-root zero-floor bypass). Inspects a clone (the descriptor's components are private,
+/// exposed only by its consuming `IntoIterator`).
+fn min_burn_amount_floor_of(policy: &BurnPolicy) -> Option<u64> {
+    policy.clone().into_iter().find_map(|component| {
+        if component.component_code().as_library() != MinBurnAmount::code().as_library() {
+            return None;
+        }
+        component
+            .storage_slots()
+            .iter()
+            .find(|slot| slot.name() == MinBurnAmount::slot_name())
+            .map(|slot| slot.value()[0].as_canonical_u64())
+    })
+}
+
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library
-/// component + a `TokenPolicyManager` with the mint-deny guard active + the **owner-gating admin
-/// foundation** (`Ownable2Step` + a seeded `RoleBasedAccessControl` + `Authority::OwnerControlled`).
-/// The foundation ships in this production builder so the deployed faucet validates the real auth
-/// model: the setters (`set_attester` / `set_min_burn_size` / `set_max_supply`) are gated on the
-/// Ownable2Step owner, and the `DOM_PAUSER` / `DOM_MANAGER` role members are seeded. Pause is
-/// Domain-Pauser-ONLY: the stock `PausableManager` is deliberately NOT part of the composition
-/// (IMPL-DEV-1 remediation) — `xreserve::pause_admin::{pause,unpause}` (DOM_PAUSER-gated) is the
-/// sole pause surface.
+/// component (attestation mint policy, identifier init, admin procs) + a `TokenPolicyManager`
+/// with the attestation policy active on the mint side and the stock [`MinBurnAmount`] active on
+/// the burn side + the **owner-gating admin foundation** (`Ownable2Step` + a seeded
+/// `RoleBasedAccessControl` + `Authority::OwnerControlled`).
 ///
-/// Construct with [`XReserveStablecoinBuilder::new`] (the `owner` and the `DOM_PAUSER` / `DOM_MANAGER`
-/// holders are required), optionally override the account type (for the non-`Public` rejection test) or
-/// the requested active mint policy (for the missing-guard rejection test), then call
-/// [`XReserveStablecoinBuilder::build_components`].
+/// Construct with [`XReserveStablecoinBuilder::new`] (the `owner` and the role holders are
+/// required), supply the three build-seeded domain-config fields via
+/// [`XReserveStablecoinBuilder::with_domain_config`] (required — a build without them is
+/// rejected), optionally override the account type / policies (for the rejection tests) or the
+/// min-burn floor, then call [`XReserveStablecoinBuilder::build_components`].
 pub struct XReserveStablecoinBuilder {
     faucet: FungibleFaucet,
     xreserve_component: AccountComponent,
     /// Top-level authority (the `Ownable2Step` owner) — the sole authority for the owner-gated setters
-    /// (`set_attester` / `set_min_burn_size` / stock `set_max_supply`) under `Authority::OwnerControlled`.
+    /// (`set_attester` / the stock `set_min_burn_amount` / stock `set_max_supply`) under
+    /// `Authority::OwnerControlled`.
     owner: AccountId,
-    /// The seeded `DOM_PAUSER` role member (its consumer — custom pause/unpause — is a later slice).
+    /// The seeded `DOM_PAUSER` role member (the custom pause/unpause holder).
     pauser_holder: AccountId,
-    /// The seeded `DOM_MANAGER` role member (its consumer — role management — is a later slice).
+    /// The seeded `DOM_MANAGER` role member (role management — the delegated admin of `DOM_PAUSER`).
     manager_holder: AccountId,
     /// The seeded `BLK_MANAGER` role member — the EXTERNAL entity that administers the transfer
     /// blocklist (block/unblock) and holds NO other admin capability (F4-reversal). Its concrete
@@ -186,24 +211,29 @@ pub struct XReserveStablecoinBuilder {
     blocklist_manager_holder: AccountId,
     account_type: AccountType,
     requested_active_mint_policy: Option<MintPolicy>,
-    /// Overridden active burn policy (default: the installed `burn_policy::check_policy` as a
-    /// custom `BurnPolicy` descriptor). A non-burn-policy choice exercises the
-    /// missing-burn-guard rejection.
+    /// Overridden active burn policy (default: the stock [`MinBurnAmount`] descriptor). A
+    /// non-MinBurnAmount choice exercises the missing-burn-policy rejection.
     requested_active_burn_policy: Option<BurnPolicy>,
-    /// The `minBurnSize` (R-BURN-2 threshold) the builder seeds into the `MIN_BURN_SIZE_SLOT`
-    /// (`xusdc::xreserve::attester_admin::min_burn_size`) value slot as `[min_burn_size, 0, 0, 0]`.
-    /// Default `0` (no minimum); override via [`Self::min_burn_size`]. The deferred CMP-F2
-    /// `set_min_burn_size` writes the SAME slot.
+    /// The minimum burn size (the R-BURN-2 threshold) seeded into the stock [`MinBurnAmount`]
+    /// companion's floor slot. Default [`MIN_BURN_SIZE_FLOOR`] (= 1 — the zero floor: burns must
+    /// move at least one unit, preserving the former R-BURN-1 semantics); a value below the
+    /// floor is rejected at build. The reworked `set_min_burn_size` admin note (which asserts
+    /// the same floor) mutates the SAME slot at runtime.
     min_burn_size: u64,
+    /// The three build-seeded domain-config fields — REQUIRED before
+    /// [`Self::build_components`]; see [`Self::with_domain_config`].
+    domain_config: Option<DomainConfigSeed>,
 }
 
 impl XReserveStablecoinBuilder {
     /// Creates a builder from a built `FungibleFaucet` and the assembled `xreserve` library
-    /// component (which must carry the deny-guard `check_policy`), the `owner` (top-level authority for
-    /// the owner-gated setters), the `pauser_holder` / `manager_holder` seeded as the sole members of
-    /// `DOM_PAUSER` / `DOM_MANAGER`, and the `blocklist_manager_holder` seeded as the sole member of
-    /// `BLK_MANAGER` (the external transfer-blocklist administrator — F4-reversal). Defaults to
-    /// `AccountType::Public` and the deny guard as the active mint policy.
+    /// component (which must carry the attestation mint policy `check_policy`), the `owner`
+    /// (top-level authority for the owner-gated setters), the `pauser_holder` / `manager_holder`
+    /// seeded as the sole members of `DOM_PAUSER` / `DOM_MANAGER`, and the
+    /// `blocklist_manager_holder` seeded as the sole member of `BLK_MANAGER` (the external
+    /// transfer-blocklist administrator — F4-reversal). Defaults to `AccountType::Public`, the
+    /// attestation policy as the active mint policy, the stock [`MinBurnAmount`] as the active
+    /// burn policy, and a min-burn floor of [`MIN_BURN_SIZE_FLOOR`].
     pub fn new(
         faucet: FungibleFaucet,
         xreserve_component: AccountComponent,
@@ -222,7 +252,8 @@ impl XReserveStablecoinBuilder {
             account_type: AccountType::Public,
             requested_active_mint_policy: None,
             requested_active_burn_policy: None,
-            min_burn_size: 0,
+            min_burn_size: MIN_BURN_SIZE_FLOOR,
+            domain_config: None,
         }
     }
 
@@ -232,50 +263,65 @@ impl XReserveStablecoinBuilder {
         self
     }
 
-    /// Overrides the requested active mint policy (default: the deny guard). A non-deny choice is
-    /// rejected by [`Self::build_components`] with [`XReserveStablecoinBuilderError::MissingMintDenyGuard`]
-    /// — packaging cannot silently drop the deny guard.
+    /// Overrides the requested active mint policy (default: the attestation policy). A
+    /// non-attestation choice is rejected by [`Self::build_components`] with
+    /// [`XReserveStablecoinBuilderError::MissingAttestationMintPolicy`] — packaging cannot
+    /// silently drop the attestation gate (INV-MINT-SECURITY).
     pub fn with_active_mint_policy(mut self, policy: MintPolicy) -> Self {
         self.requested_active_mint_policy = Some(policy);
         self
     }
 
-    /// Overrides the requested active burn policy (default: the installed `burn_policy::check_policy`).
-    /// The burn-slot twin of [`Self::with_active_mint_policy`]; a non-burn-policy choice (e.g.
-    /// [`BurnPolicy::allow_all`]) is rejected by [`Self::build_components`] with
-    /// [`XReserveStablecoinBuilderError::MissingBurnPolicyGuard`] — packaging cannot drop the burn
-    /// security predicate (CMP-A10, R-BURN-1/2).
+    /// Overrides the requested active burn policy (default: the stock [`MinBurnAmount`]).
+    /// A non-MinBurnAmount choice (e.g. [`BurnPolicy::allow_all`]) is rejected by
+    /// [`Self::build_components`] with
+    /// [`XReserveStablecoinBuilderError::MissingMinBurnAmountPolicy`] — packaging cannot drop
+    /// the burn floor predicate.
     pub fn with_active_burn_policy(mut self, policy: BurnPolicy) -> Self {
         self.requested_active_burn_policy = Some(policy);
         self
     }
 
-    /// Sets the `minBurnSize` (the R-BURN-2 threshold) the builder seeds into the `MIN_BURN_SIZE_SLOT`
-    /// value slot as `[min_burn_size, 0, 0, 0]` (default `0` — no minimum). The burn policy's R-BURN-2
-    /// check reads element 0 of this slot.
+    /// Sets the minimum burn size seeded into the stock [`MinBurnAmount`] floor slot (default
+    /// [`MIN_BURN_SIZE_FLOOR`] = 1). A value below the floor is rejected by
+    /// [`Self::build_components`] with
+    /// [`XReserveStablecoinBuilderError::MinBurnSizeBelowFloor`] (the zero-floor invariant);
+    /// a value above [`AssetAmount::MAX`] with
+    /// [`XReserveStablecoinBuilderError::MinBurnSizeExceedsMax`].
     pub fn min_burn_size(mut self, min_burn_size: u64) -> Self {
         self.min_burn_size = min_burn_size;
         self
     }
 
-    /// Resolves the deny-guard procedure root from the installed `xreserve` component. The same root
-    /// is registered as the active mint policy, so the policy manager's stored `dynexec` root equals
-    /// the installed proc's MAST root.
-    pub fn mint_deny_guard_root(&self) -> Result<Word, XReserveStablecoinBuilderError> {
-        self.xreserve_component
-            .get_procedure_root_by_path(MINT_DENY_GUARD_PROC_PATH)
-            .map(Word::from)
-            .ok_or(XReserveStablecoinBuilderError::DenyGuardProcNotFound)
+    /// Supplies the three BUILD-SEEDED domain-config fields (DEC-4): the u32 `domain` and
+    /// `source_domain` ids and the `xreserve_contract` bytes32. REQUIRED — a build without them
+    /// is rejected with [`XReserveStablecoinBuilderError::MissingDomainConfig`]. The values are
+    /// written into the declared `domain` / `source_domain` / `xreserve_contract_{hi,lo}` slots
+    /// at composition time (`[domain, 0, 0, 0]` / `[source_domain, 0, 0, 0]` / the raw 8x
+    /// u32-LE packed felts, hi = wire bytes 0..16, lo = bytes 16..32); the `identifier` slot is
+    /// NOT seeded (the account-id fixpoint — the `identifier_init` note is its only writer).
+    pub fn with_domain_config(
+        mut self,
+        domain: u32,
+        source_domain: u32,
+        xreserve_contract: [u8; 32],
+    ) -> Self {
+        self.domain_config = Some(DomainConfigSeed {
+            domain,
+            source_domain,
+            xreserve_contract,
+        });
+        self
     }
 
-    /// Resolves the burn-policy procedure root from the installed `xreserve` component. The same root
-    /// is registered as the active burn policy, so the policy manager's stored `dynexec` root equals
-    /// the installed proc's MAST root. The burn-slot twin of [`Self::mint_deny_guard_root`].
-    pub fn burn_policy_root(&self) -> Result<Word, XReserveStablecoinBuilderError> {
+    /// Resolves the attestation mint policy's procedure root from the installed `xreserve`
+    /// component. The same root is registered as the active mint policy, so the policy manager's
+    /// stored `dynexec` root equals the installed proc's MAST root.
+    pub fn attestation_mint_policy_root(&self) -> Result<Word, XReserveStablecoinBuilderError> {
         self.xreserve_component
-            .get_procedure_root_by_path(BURN_POLICY_PROC_PATH)
+            .get_procedure_root_by_path(ATTESTATION_MINT_POLICY_PROC_PATH)
             .map(Word::from)
-            .ok_or(XReserveStablecoinBuilderError::BurnPolicyProcNotFound)
+            .ok_or(XReserveStablecoinBuilderError::AttestationPolicyProcNotFound)
     }
 
     /// The note-script allowlist for the production faucet's `AuthNetworkAccount` auth component
@@ -284,37 +330,38 @@ impl XReserveStablecoinBuilder {
     /// asserts the built account's allowlist equals it exactly. The scheme-2 `NetworkAccountTarget`
     /// bind on the notes is routing-only, not a consume gate.
     ///
-    /// COMPLETE — the frozen 14-root set: rows 1-2 (the supply-side mint + burn notes), row 3
-    /// (`set_attester`, the reference op), rows 4-12 (the remaining owner/role/pause admin note
-    /// scripts), and rows 13-14 (the F4-reversal transfer-blocklist admin notes `block_account` /
-    /// `unblock_account`, BLK_MANAGER-gated). The set is IMMUTABLE post-deploy (`AuthNetworkAccount`
-    /// exports no mutator). The materialized 14 pinned roots require HUMAN ratification before deploy.
-    /// Two capabilities are
-    /// deliberately OMITTED (both human-ratified, grounded in Circle's xReserve EVM admin model):
-    /// `renounce_role` (Circle has no role self-renounce) and — since the S21 disposition flip,
-    /// 2026-07-14 — the runtime `set_role_admin` note (Circle's `DomainManageable.sol` has no
-    /// function to change who administers a role; the delegation graph is BUILD-SEEDED by
-    /// `seeded_dom_roles_rbac` (crate-private) and deploys frozen; rotation is `grant_role`/`revoke_role`,
-    /// CIR-ADMIN-3 — see `DECISION-SETROLEADMIN-NOTE-REMOVAL.md`). The stock `rbac::set_role_admin`
-    /// account procedure stays composed but is present-but-UNREACHABLE (enforced by
-    /// `tests/account_callable_surface.rs`). The materialized 14 pinned roots still require explicit
-    /// HUMAN ratification before deploy.
+    /// COMPLETE — the frozen 14-root set: rows 1-2 (the supply-side STOCK `MintNote` + STOCK
+    /// `BurnNote`), row 3 (`set_attester`, the reference op), rows 4-12 (the remaining
+    /// owner/role/pause admin note scripts, with row 12 the minimized `identifier_init` note —
+    /// DEC-4), and rows 13-14 (the F4-reversal transfer-blocklist admin notes `block_account` /
+    /// `unblock_account`, BLK_MANAGER-gated). The set is IMMUTABLE post-deploy
+    /// (`AuthNetworkAccount` exports no mutator). Two capabilities are deliberately OMITTED
+    /// (both human-ratified, grounded in Circle's xReserve EVM admin model): `renounce_role`
+    /// (Circle has no role self-renounce) and — since the S21 disposition flip, 2026-07-14 — the
+    /// runtime `set_role_admin` note (the delegation graph is BUILD-SEEDED by
+    /// `seeded_dom_roles_rbac` and deploys frozen; rotation is `grant_role`/`revoke_role`,
+    /// CIR-ADMIN-3 — see `DECISION-SETROLEADMIN-NOTE-REMOVAL.md`). The stock
+    /// `rbac::set_role_admin` account procedure stays composed but is present-but-UNREACHABLE
+    /// (enforced by `tests/account_callable_surface.rs`). The materialized 14 pinned roots
+    /// require explicit HUMAN ratification before deploy.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
-        // The "row N" labels below are the notes' STABLE allowlist identities (1-12, shared with
+        // The "row N" labels below are the notes' STABLE allowlist identities (1-14, shared with
         // `note::xreserve_admin` and the tests), NOT positions in this initializer: the entries
         // are listed in historical insertion order, and the set is unordered anyway (BTreeSet
-        // sorts by root). Renumbered 13→12 at the S21 flip, when the set_role_admin row was
-        // removed (formerly row 10; transfer/accept/domain_init shifted down by one).
+        // sorts by root).
         BTreeSet::from([
-            // rows 1-2: the supply-side notes. The mint-note shim asserts exactly one scheme-1
-            // attestation + one scheme-2 routing target (eq.2, dynamic commitment) — F5.
-            XReserveMintNote::script_root(),
+            // rows 1-2: the supply-side notes — BOTH STOCK since the Wave-1 S1 recomposition.
+            // The mint row is the standards MintNote (attestation + intent ride as attachments;
+            // the attestation mint policy is the gate); the burn row is the standards BurnNote.
+            MintNote::script_root(),
             BurnNote::script_root(),
             // row 3: set_attester admin note (reference op).
             crate::note::xreserve_admin::XReserveSetAttesterNote::script_root(),
-            // row 12: domain_init admin note (owner-gated, init-once).
-            crate::note::xreserve_admin::XReserveDomainInitNote::script_root(),
-            // row 4: set_min_burn_size admin note (owner-gated).
+            // row 12: identifier_init admin note (owner-gated, init-once — the minimized DEC-4
+            // replacement of the former four-field domain_init).
+            crate::note::xreserve_admin::XReserveIdentifierInitNote::script_root(),
+            // row 4: set_min_burn_size admin note (owner-gated; retargeted at the STOCK
+            // set_min_burn_amount with the note-side zero-floor guard).
             crate::note::xreserve_admin::XReserveSetMinBurnSizeNote::script_root(),
             // row 6: pause admin note (DOM_PAUSER-gated).
             crate::note::xreserve_admin::XReservePauseNote::script_root(),
@@ -378,10 +425,11 @@ impl XReserveStablecoinBuilder {
             .unwrap_or(false)
     }
 
-    /// Production composition: validates `AccountType::Public` and that the active mint policy is the
-    /// deny guard, then composes the account components with the deny guard as the **only** mint
-    /// policy (no reserved allow-all — production carries no re-activation path for the denied stock
-    /// mint).
+    /// Production composition: validates `AccountType::Public`, that the active mint policy is the
+    /// attestation policy and the active burn policy the stock [`MinBurnAmount`], seeds the three
+    /// build-time domain-config fields, then composes the account components. No reserved
+    /// alternate policies are registered — production carries no runtime path to a weaker mint or
+    /// burn gate.
     pub fn build_components(
         &self,
     ) -> Result<Vec<AccountComponent>, XReserveStablecoinBuilderError> {
@@ -415,34 +463,36 @@ impl XReserveStablecoinBuilder {
                 },
             );
         }
-        let deny_root = self.mint_deny_guard_root()?;
+        let attestation_root = self.attestation_mint_policy_root()?;
         // v16 (#2974): the policy descriptors are non-Copy and own their companion components —
         // clone the override, or construct the default custom descriptor from the installed
-        // xreserve component (whose `has_procedure` check cannot fail here: `deny_root` was just
-        // resolved FROM that component).
+        // xreserve component (whose `has_procedure` check cannot fail here: `attestation_root`
+        // was just resolved FROM that component).
         let active = match &self.requested_active_mint_policy {
             Some(policy) => policy.clone(),
             None => MintPolicy::custom(
-                AccountProcedureRoot::from_raw(deny_root),
+                AccountProcedureRoot::from_raw(attestation_root),
                 [self.xreserve_component.clone()],
             )
             .map_err(XReserveStablecoinBuilderError::MintPolicy)?,
         };
-        // INV-MINT-SECURITY: the active mint policy MUST resolve to the deny guard.
-        if Word::from(active.root()) != deny_root {
-            return Err(XReserveStablecoinBuilderError::MissingMintDenyGuard);
+        // INV-MINT-SECURITY (restated): the active mint policy MUST resolve to the attestation
+        // policy — every supply increase passes the attestation gate.
+        if Word::from(active.root()) != attestation_root {
+            return Err(XReserveStablecoinBuilderError::MissingAttestationMintPolicy);
         }
         // Validate-what-you-ship: the supplied faucet's max_supply must be mutable, else the stock
         // `set_max_supply` admin function ships permanently dead (it traps the runtime mutability gate
-        // on every call). Placed AFTER the account-type / deny-guard rejections so those keep their
+        // on every call). Placed AFTER the account-type / policy rejections so those keep their
         // precedence. Reject — never mutate the supplied faucet.
         if !self.faucet_max_supply_is_mutable() {
             return Err(XReserveStablecoinBuilderError::ImmutableMaxSupply);
         }
         // validate-what-you-ship: every required xreserve slot must be declared on the supplied
         // component — a missing slot would ship a faucet whose reads / writes of it trap
-        // ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME at runtime. Presence-only (the per-slice fixtures
-        // legitimately pre-seed values; the E2E proves the empty->domain_init production path).
+        // ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME at runtime. Presence-only for the two maps (the
+        // per-slice fixtures legitimately pre-seed values); the three build-seeded fields are
+        // overwritten below and the identifier is checked EMPTY just after.
         for label in REQUIRED_XRESERVE_SLOT_LABELS {
             let name = StorageSlotName::new(label)
                 .expect("the required xreserve slot labels are valid constants");
@@ -454,6 +504,23 @@ impl XReserveStablecoinBuilder {
             {
                 return Err(XReserveStablecoinBuilderError::MissingXReserveSlot(label));
             }
+        }
+        // DEC-4 fixpoint (identifier can NEVER be build-seeded): the account id derives from the
+        // initial storage commitment, and the identifier is (provisionally, pending Q-CRY-4) the
+        // faucet's own id as bytes32 — a fixpoint. A non-empty declared identifier would ship an
+        // already-initialized, potentially misbound faucet AND make the init-once `identifier_init`
+        // note trap as a reinitialization. Require the declared identifier value slot EMPTY at
+        // composition; the `identifier_init` note (bound to the faucet id) is its only writer.
+        let identifier_name = StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
+            .expect("the identifier slot label is a valid constant");
+        let identifier_value = self
+            .xreserve_component
+            .storage_slots()
+            .iter()
+            .find(|slot| slot.name() == &identifier_name)
+            .map(|slot| slot.value());
+        if identifier_value != Some(Word::empty()) {
+            return Err(XReserveStablecoinBuilderError::IdentifierNotEmpty);
         }
         // token-config exactness: decimals MUST be 6 (a Circle requirement; the D5b reducer scales
         // to 6dp) and the symbol MUST be the shipped USDCX guard constant (the USDCx identity's
@@ -468,47 +535,59 @@ impl XReserveStablecoinBuilder {
         if self.faucet.symbol() != &expected_symbol {
             return Err(XReserveStablecoinBuilderError::WrongTokenSymbol);
         }
-        // CMP-A10 burn slot: wire the installed `burn_policy::check_policy` as the ACTIVE burn policy so
-        // every `receive_and_burn` is gated on the R-BURN-1/2 predicate (the burn-slot twin of the
-        // active mint deny guard above).
-        let burn_root = self.burn_policy_root()?;
-        let active_burn = match &self.requested_active_burn_policy {
-            Some(policy) => policy.clone(),
-            None => BurnPolicy::custom(
-                AccountProcedureRoot::from_raw(burn_root),
-                [self.xreserve_component.clone()],
-            )
-            .map_err(XReserveStablecoinBuilderError::BurnPolicy)?,
-        };
-        // INV (CMP-A10): the active burn policy MUST resolve to the installed `burn_policy::check_policy`
-        // — packaging cannot ship a faucet whose burns bypass the R-BURN-1/2 predicate (the burn-slot
-        // twin of the mint deny-guard check above).
-        if Word::from(active_burn.root()) != burn_root {
-            return Err(XReserveStablecoinBuilderError::MissingBurnPolicyGuard);
+        // The zero floor (R-BURN-1 preserved): the seeded min-burn floor must be at least
+        // MIN_BURN_SIZE_FLOOR (= 1) and a representable AssetAmount. The runtime twin is the
+        // reworked set_min_burn_size note's `new_min >= 1` assert.
+        if self.min_burn_size < MIN_BURN_SIZE_FLOOR {
+            return Err(XReserveStablecoinBuilderError::MinBurnSizeBelowFloor(
+                self.min_burn_size,
+            ));
         }
+        let min_burn = AssetAmount::new(self.min_burn_size).map_err(|_| {
+            XReserveStablecoinBuilderError::MinBurnSizeExceedsMax(self.min_burn_size)
+        })?;
+        // Burn side (Wave-1 S1): the ACTIVE burn policy the manager receives is ALWAYS the STOCK
+        // MinBurnAmount seeded with the VALIDATED floor (`min_burn`, already `>= 1`). An explicit
+        // override exists only to exercise the rejection paths and can NEVER lower the shipped
+        // floor: a wrong-root override is rejected (MissingMinBurnAmountPolicy), and a same-root
+        // override whose MinBurnAmount companion floor disagrees with the validated min_burn_size
+        // is rejected (BurnPolicyFloorMismatch). This closes the same-root zero-floor bypass —
+        // `with_active_burn_policy(BurnPolicy::min_burn_amount(0))` shares MinBurnAmount::root() and
+        // would otherwise smuggle a zero-valued companion that restores zero-amount burns (the
+        // stock predicate is `min <= amount`).
+        if let Some(policy) = &self.requested_active_burn_policy {
+            if policy.root() != MinBurnAmount::root() {
+                return Err(XReserveStablecoinBuilderError::MissingMinBurnAmountPolicy);
+            }
+            let requested = min_burn_amount_floor_of(policy)
+                .ok_or(XReserveStablecoinBuilderError::MissingMinBurnAmountPolicy)?;
+            if requested != self.min_burn_size {
+                return Err(XReserveStablecoinBuilderError::BurnPolicyFloorMismatch {
+                    requested,
+                    expected: self.min_burn_size,
+                });
+            }
+        }
+        let active_burn = BurnPolicy::min_burn_amount(min_burn);
+        // DEC-4 build seeding: the three non-identifier domain-config fields are REQUIRED
+        // builder inputs written into the declared slots; the identifier slot stays as declared
+        // (EMPTY in production — the identifier_init note is its only writer).
+        let domain_config = self
+            .domain_config
+            .ok_or(XReserveStablecoinBuilderError::MissingDomainConfig)?;
+        let xreserve_component = self.xreserve_component_with_domain_seed(domain_config);
         // F4 REVERSAL (transfer-blocklist decision, ratified 2026-07-23; supersedes the 2026-07-08
-        // basic-asset decision in DECISION-F4-BASIC-ASSET-NO-TRANSFER-POLICY.md — see
-        // DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md and the adversarially-audited research report
-        // RESEARCH-TRANSFER-BLOCKLIST-INTEGRATION.md). Miden head-of-product + Philipp concluded xUSDC
-        // needs an ON-CHAIN transfer blocklist, so the stock `BasicBlocklist` is wired as the ACTIVE
-        // policy for BOTH the send and receive kinds, starting with an EMPTY blocklist. Both kinds
-        // reference the SAME descriptor root (`BasicBlocklist::root()`), so the manager installs the
-        // `BasicBlocklist` companion (and its `blocked_accounts` slot) exactly ONCE and dedups by root
-        // (`assemble_components` recognizes + installs that single companion).
-        //
-        // Consequences this DELIBERATELY accepts (the reversal of the F4 basic-asset posture):
-        // registering these policies makes the manager install the two protocol asset-callback slots
-        // (the fixed `invoke_send_policy`/`invoke_receive_policy` wrapper roots), which REQUIRES the
-        // account be built `AssetCallbackFlag::Enabled` (a NEW account id ⇒ faucet v2, Circle
-        // re-registration). xUSDC becomes a POLICED asset: the kernel `call`s this faucet's policy on
-        // every send/receive, so every counterparty must attach this faucet as a foreign account (FPI)
-        // on transfer/consume. A blocked account can neither send, receive, nor burn/redeem (a FULL
-        // freeze incl. redemption); pause now halts ALL transfers while the policy is active. No
-        // allow-all reserved alternate is registered (mirrors the F1 no-re-activation posture — the
-        // blocklist can never be swapped out at runtime; `set_{send,receive}_policy` stay
-        // composed-but-pointless, the only allowed root being the active blocklist one). The
-        // `basic_asset_tripwire.rs` (now the policed-asset tripwire) + `account_callable_surface.rs`
-        // (Enabled flag) tripwires enforce this wiring — they go RED on any un-wire.
+        // basic-asset decision — see DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md and the
+        // adversarially-audited RESEARCH-TRANSFER-BLOCKLIST-INTEGRATION.md). The stock
+        // `BasicBlocklist` is wired as the ACTIVE policy for BOTH the send and receive kinds,
+        // starting with an EMPTY blocklist. Both kinds reference the SAME descriptor root, so the
+        // manager installs the `BasicBlocklist` companion (and its `blocked_accounts` slot)
+        // exactly ONCE and dedups by root. Registering these policies makes the manager install
+        // the two protocol asset-callback slots, which REQUIRES the account be built
+        // `AssetCallbackFlag::Enabled`; xUSDC is a POLICED asset. No allow-all reserved alternate
+        // is registered for ANY kind (the F1 no-re-activation posture: the attestation gate, the
+        // burn floor, and the blocklist can never be swapped out at runtime). The
+        // `basic_asset_tripwire.rs` + `account_callable_surface.rs` tripwires enforce this wiring.
         let manager = TokenPolicyManager::builder()
             .active_mint_policy(active)
             .active_burn_policy(active_burn)
@@ -516,16 +595,14 @@ impl XReserveStablecoinBuilder {
             .active_receive_policy(TransferPolicy::empty_basic_blocklist())
             .build();
 
-        // The owner-gating admin foundation, appended AFTER the account-type / deny-guard early
-        // returns so a rejected build never reaches here. `Authority::OwnerControlled` gates the
-        // stock admin SETTERS (and `set_attester` / `set_min_burn_size`) on the Ownable2Step owner;
-        // mint execution / the deny path is `assert_authorized`-free (policy_manager.masm), so
-        // installing this leaves the R-MINT-16 deny behavior unchanged. This is exactly the
+        // The owner-gating admin foundation, appended AFTER the early returns so a rejected build
+        // never reaches here. `Authority::OwnerControlled` gates the stock admin SETTERS (and
+        // `set_attester` / the stock `set_min_burn_amount`) on the Ownable2Step owner; mint
+        // execution is `assert_authorized`-free (policy_manager.masm), so installing this leaves
+        // the attestation-gate behavior unchanged. This is exactly the
         // `AccessControl::Rbac { authority_role: None }` composition (Ownable2Step +
         // RoleBasedAccessControl + Authority::OwnerControlled, access/mod.rs) with the RBAC SEEDED
-        // with the two DOM role members (whose consumers — custom pause, role management — are later
-        // slices).
-        let xreserve_component = self.xreserve_component_with_min_burn_size()?;
+        // with the DOM role members + the external BLK_MANAGER.
         let mut components = self.assemble_components(manager, xreserve_component)?;
         components.push(Ownable2Step::new(self.owner).into());
         components.push(seeded_dom_roles_rbac(
@@ -538,60 +615,79 @@ impl XReserveStablecoinBuilder {
         Ok(components)
     }
 
-    /// Reconstructs the supplied `xreserve` component with the `MIN_BURN_SIZE_SLOT` value slot
-    /// appended (`[min_burn_size, 0, 0, 0]`) so the installed `burn_policy::check_policy` resolves its
-    /// R-BURN-2 read on the deployed account. The caller supplies the component WITHOUT this slot (the
-    /// builder owns seeding it); the future CMP-F2 `set_min_burn_size` mutates the SAME slot.
-    /// Uses the canonical `AssetAmount -> Felt` (no truncation); a `min_burn_size` exceeding
-    /// [`AssetAmount::MAX`] is rejected with [`XReserveStablecoinBuilderError::MinBurnSizeExceedsMax`].
-    fn xreserve_component_with_min_burn_size(
-        &self,
-    ) -> Result<AccountComponent, XReserveStablecoinBuilderError> {
-        let min_burn = AssetAmount::new(self.min_burn_size).map_err(|_| {
-            XReserveStablecoinBuilderError::MinBurnSizeExceedsMax(self.min_burn_size)
-        })?;
-        let slot_name = StorageSlotName::new(MIN_BURN_SIZE_SLOT_LABEL)
-            .expect("the min_burn_size slot label is a valid constant");
-        let mut slots = self.xreserve_component.storage_slots().to_vec();
-        slots.push(StorageSlot::with_value(
-            slot_name,
-            Word::from([Felt::from(min_burn), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
-        ));
-        Ok(AccountComponent::new(
+    /// Reconstructs the supplied `xreserve` component with the three BUILD-SEEDED domain-config
+    /// values written into their declared slots (`[domain, 0, 0, 0]`, `[source_domain, 0, 0, 0]`,
+    /// and the packed `xreserve_contract` hi/lo words — the same realizations the former
+    /// `domain_init` wrote). Every other slot — the identifier (the account-id fixpoint, seeded
+    /// post-deploy by `identifier_init`) and the two registry maps — is carried through as
+    /// declared.
+    fn xreserve_component_with_domain_seed(&self, seed: DomainConfigSeed) -> AccountComponent {
+        let domain_name = StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL)
+            .expect("the domain slot label is a valid constant");
+        let source_name = StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
+            .expect("the source_domain slot label is a valid constant");
+        let hi_name = StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
+            .expect("the xreserve_contract_hi slot label is a valid constant");
+        let lo_name = StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
+            .expect("the xreserve_contract_lo slot label is a valid constant");
+        let scalar_word =
+            |value: u32| Word::from([Felt::from(value), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
+        let xrc = bytes32_to_packed_felts(&seed.xreserve_contract);
+        let hi_word = Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]);
+        let lo_word = Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]);
+        let slots = self
+            .xreserve_component
+            .storage_slots()
+            .iter()
+            .map(|slot| {
+                if slot.name() == &domain_name {
+                    StorageSlot::with_value(domain_name.clone(), scalar_word(seed.domain))
+                } else if slot.name() == &source_name {
+                    StorageSlot::with_value(source_name.clone(), scalar_word(seed.source_domain))
+                } else if slot.name() == &hi_name {
+                    StorageSlot::with_value(hi_name.clone(), hi_word)
+                } else if slot.name() == &lo_name {
+                    StorageSlot::with_value(lo_name.clone(), lo_word)
+                } else {
+                    slot.clone()
+                }
+            })
+            .collect();
+        AccountComponent::new(
             self.xreserve_component.component_code().clone(),
             slots,
             self.xreserve_component.metadata().clone(),
         )
-        .expect("the xreserve component augmented with the min_burn_size slot has < 256 slots"))
+        .expect(
+            "the xreserve component reseeded with the domain-config values keeps a valid slot set",
+        )
     }
 
-    /// Assembles the final component list. Takes the `xreserve` component already augmented with the
-    /// `MIN_BURN_SIZE_SLOT` (see [`Self::xreserve_component_with_min_burn_size`]).
+    /// Assembles the final component list from the manager and the domain-seeded `xreserve`
+    /// component.
     ///
     /// PAUSE PROVENANCE (Domain-Pauser-only — IMPL-DEV-1 remediation): the stock `PausableManager`
     /// (owner-gated callable `pause`/`unpause`) is deliberately NOT installed; the only pause
     /// surface is the DOM_PAUSER-gated `xreserve::pause_admin` procs carried by the `xreserve`
     /// component. The `is_paused` slot every `assert_not_paused` halt-gate reads
-    /// (`execute_mint_policy`/`execute_burn_policy`, the setters, `xreserve_mint.masm`) is
-    /// installed by the base `Pausable` component — the v15 PIN-BUMP HAZARD resolved as predicted:
-    /// upstream v0.16 (#2944) moved the slot OUT of `FungibleFaucet`, so `Pausable::unpaused()`
-    /// now sits immediately after the faucet component (whose slot block carried it at v15; slots
-    /// are name-addressed, so the position is auditability-only). `PausableManager` still installs
-    /// ZERO storage. The `production_components_carry_is_paused_slot` tripwire pins the slot.
+    /// (`execute_mint_policy`/`execute_burn_policy`, the setters) is installed by the base
+    /// `Pausable` component (v16 — #2944 moved it out of `FungibleFaucet`). `PausableManager`
+    /// still installs ZERO storage. The `production_components_carry_is_paused_slot` tripwire
+    /// pins the slot.
     ///
-    /// POLICY-COMPANION SEAM (v16 — MIGRATION-V16-ALPHA2.md S18; F4-reversal rework): the alpha.2
-    /// policy descriptors carry their `custom()` companion, and the manager's iterator emits one
+    /// POLICY-COMPANION SEAM (v16 — MIGRATION-V16-ALPHA2.md S18; Wave-1 S1 rework): the alpha
+    /// policy descriptors carry their companion components, and the manager's iterator emits one
     /// companion copy per DISTINCT policy root after the manager component itself. With the
-    /// transfer blocklist wired the remainder is EXACTLY THREE: two xreserve-component copies (the
-    /// custom mint deny-guard + burn policy) plus one `BasicBlocklist` companion (the send + receive
-    /// transfer policy, which share the descriptor root, so it appears once). The seam consumes the
-    /// iterator, keeps its head (the manager component), asserts the remainder is exactly those two
-    /// recognized xreserve copies + one recognized `BasicBlocklist` companion, DROPS the redundant
-    /// xreserve copies (the xreserve component is installed exactly ONCE, here), and INSTALLS the
-    /// `BasicBlocklist` companion emitted by the manager (it carries the `blocked_accounts` storage
-    /// the policy + `blocklist_admin` procs read/write). Any other shape — a foreign companion, a
-    /// missing blocklist companion (which would ship a faucet whose `blocked_accounts` accesses
-    /// trap), or the wrong copy counts — is a loud
+    /// recomposed policy set the remainder is EXACTLY THREE: ONE xreserve-component copy (the
+    /// custom attestation mint policy), ONE stock [`MinBurnAmount`] companion (the burn policy —
+    /// it carries the floor slot the policy reads and the stock setter writes), and ONE
+    /// `BasicBlocklist` companion (the send + receive transfer policy, which share the descriptor
+    /// root, so it appears once). The seam consumes the iterator, keeps its head (the manager
+    /// component), asserts the remainder is exactly those three recognized companions, DROPS the
+    /// redundant xreserve copy (the xreserve component is installed exactly ONCE, here), and
+    /// INSTALLS the [`MinBurnAmount`] + `BasicBlocklist` companions emitted by the manager. Any
+    /// other shape — a foreign companion, a missing floor/blocklist companion (which would ship a
+    /// faucet whose slot accesses trap), or the wrong copy counts — is a loud
     /// [`XReserveStablecoinBuilderError::PolicyCompanionMismatch`], never a silent drop.
     fn assemble_components(
         &self,
@@ -604,45 +700,56 @@ impl XReserveStablecoinBuilder {
             "the manager iterator yields the manager component first (manager.rs IntoIterator doc)",
         );
         let companions: Vec<AccountComponent> = manager_parts.collect();
-        // the two custom-policy companions (mint deny-guard + burn policy) are both the installed
-        // xreserve component; the one transfer-policy companion is the stock BasicBlocklist.
-        let expected_xreserve = 2;
+        let expected_xreserve = 1;
+        let expected_min_burn = 1;
         let expected_blocklist = 1;
         let xreserve_recognized = companions
             .iter()
             .filter(|c| c.component_code().as_library() == xreserve_code.as_library())
             .count();
+        let mut min_burn_companion: Option<AccountComponent> = None;
+        let mut min_burn_recognized = 0usize;
         let mut blocklist_companion: Option<AccountComponent> = None;
         let mut blocklist_recognized = 0usize;
         for companion in &companions {
-            if companion.component_code().as_library() == BasicBlocklist::code().as_library() {
+            if companion.component_code().as_library() == MinBurnAmount::code().as_library() {
+                min_burn_recognized += 1;
+                min_burn_companion = Some(companion.clone());
+            } else if companion.component_code().as_library() == BasicBlocklist::code().as_library()
+            {
                 blocklist_recognized += 1;
                 blocklist_companion = Some(companion.clone());
             }
         }
         // `found` is the FULL remainder the manager emitted, so a smuggled foreign companion shows up
-        // as `found > xreserve_recognized + blocklist_recognized`, and a missing/duplicated blocklist
-        // companion as `blocklist_recognized != expected_blocklist`.
+        // as `found > xreserve_recognized + min_burn_recognized + blocklist_recognized`, and a
+        // missing/duplicated stock companion as its `*_recognized != expected_*`.
         if xreserve_recognized != expected_xreserve
+            || min_burn_recognized != expected_min_burn
             || blocklist_recognized != expected_blocklist
-            || companions.len() != expected_xreserve + expected_blocklist
+            || companions.len() != expected_xreserve + expected_min_burn + expected_blocklist
         {
             return Err(XReserveStablecoinBuilderError::PolicyCompanionMismatch {
                 expected_xreserve,
+                expected_min_burn,
                 expected_blocklist,
                 found: companions.len(),
                 xreserve_recognized,
+                min_burn_recognized,
                 blocklist_recognized,
             });
         }
-        // the two xreserve copies are the already-installed component: drop them and install the
-        // single recognized BasicBlocklist companion (checked non-None by the guard above).
+        // the xreserve copy is the already-installed component: drop it and install the two
+        // recognized stock companions (checked non-None by the guard above).
+        let min_burn = min_burn_companion
+            .expect("the guard above guarantees exactly one recognized MinBurnAmount companion");
         let blocklist = blocklist_companion
             .expect("the guard above guarantees exactly one recognized BasicBlocklist companion");
         Ok(vec![
             self.faucet.clone().into(),
             Pausable::unpaused().into(),
             xreserve_component,
+            min_burn,
             blocklist,
             manager_component,
         ])

@@ -17,9 +17,9 @@
 //!   without mutating it (so the arc stays deterministic: committed `token_supply` is fixed by the
 //!   single path-N supply mint).
 //!
-//! The arc (single evolving chain): deploy (domain_init) → allowlist A → commit one supply mint (A) →
-//! C3 cap → C2 min-burn → C1 rotation A→B → C4 pause/unpause (+F6 owner-setters-while-paused) → C5
-//! DOM_MANAGER role rotation → C6 non-authorized-sender negatives → row-F auth boundary.
+//! The arc (single evolving chain): deploy (identifier_init) → allowlist A → commit one supply mint
+//! (A) → C3 cap → C2 min-burn → C1 rotation A→B → C4 pause/unpause (+F6 owner-setters-while-paused)
+//! → C5 DOM_MANAGER role rotation → C6 non-authorized-sender negatives → row-F auth boundary.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -37,17 +37,16 @@ use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::{Note, NoteType};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::RoleBasedAccessControl;
+use miden_standards::account::policies::MinBurnAmount;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::P2idNote;
-use xusdc_encoding::account::xreserve::{
-    DOM_PAUSER_ROLE, MIN_BURN_SIZE_SLOT_LABEL, XRESERVE_ATTESTERS_SLOT_LABEL,
-};
+use xusdc_encoding::account::xreserve::{DOM_PAUSER_ROLE, XRESERVE_ATTESTERS_SLOT_LABEL};
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveDomainInitNote, XReserveGrantRoleNote, XReservePauseNote, XReserveRevokeRoleNote,
+    XReserveGrantRoleNote, XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote,
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
     XReserveUnpauseNote,
 };
-use xusdc_encoding::note::xreserve_mint::XReserveMintNote;
+use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
 
 use crate::actors::{create_actors, Actors, AttesterKey};
 use crate::assertions_cf::{ERR_LACKS_ROLE, ERR_NOT_OWNER};
@@ -132,8 +131,14 @@ fn attester_marker(account: &Account, commitment: Word) -> Result<Word4> {
     )?))
 }
 
+/// The committed minimum burn size — read from the STOCK [`MinBurnAmount`] floor slot (`[min,0,0,0]`;
+/// Wave-1 S1: the custom `min_burn_size` slot is gone — the stock policy companion owns the floor).
 fn min_burn(account: &Account) -> Result<u64> {
-    Ok(value_slot(account, MIN_BURN_SIZE_SLOT_LABEL)?[0].as_canonical_u64())
+    account
+        .storage()
+        .get_item(MinBurnAmount::slot_name())
+        .map(|w| w[0].as_canonical_u64())
+        .context("reading the stock MinBurnAmount floor slot")
 }
 
 fn max_supply(account: &Account) -> Result<u64> {
@@ -415,7 +420,11 @@ impl Driver {
     ) -> Result<Note> {
         let f = self.faucet_id;
         let sender = self.owner();
-        let payload = mintburn::mint_payload(
+        // Fresh faucet: the mint must carry the OWN-ID remoteToken so D5a's identifier compare passes
+        // against the note-derived own-id identifier (the R2 identifier-binding fix).
+        let payload = mintburn::mint_payload_own_id(
+            f,
+            mintburn::BASE_VECTOR,
             recipient,
             raw_for_units(units),
             raw_for_units(MAX_FEE_UNITS),
@@ -431,8 +440,8 @@ impl Driver {
             };
             attester.attestation_for(&payload)
         };
-        XReserveMintNote::create(sender, f, &payload, &attestation, self.hc.client.rng())
-            .context("building the XReserveMintNote probe")
+        XUsdcMintNote::create(sender, f, &payload, &attestation, self.hc.client.rng())
+            .context("building the XUsdcMintNote probe")
     }
     fn burn_note(&mut self, units: u64, salt: u8) -> Result<Note> {
         let f = self.faucet_id;
@@ -481,7 +490,8 @@ pub async fn run_rows_cf(cfg: &RunConfig) -> Result<RowsCfObservations> {
 pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsCfObservations> {
     let main_commit = git_head_commit();
 
-    // 2. Client + actors + the production faucet account (domain_init matching the mint vector).
+    // 2. Client + actors + the production faucet account (domain config BUILD-SEEDED to match the
+    //    mint vector; the identifier committed by the identifier_init note below).
     let mut hc = build_client(&cfg.stack, client_label).await?;
     hc.client.sync_state().await.context("initial sync")?;
     let actor_root = cfg.stack.run_root.join(format!("client-{client_label}"));
@@ -494,30 +504,24 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
         actors.manager.id(),
         actors.blk_manager.id(),
         cfg.max_supply,
+        &domain,
         os_seed(),
     )?;
     let faucet_id = faucet.id();
 
-    // 3. Deploy: the faucet's first tx consumes the owner's domain_init (first-deploy exemption).
-    let note1 = XReserveDomainInitNote::create(
-        owner_id,
-        faucet_id,
-        domain.domain,
-        domain.source_domain,
-        &domain.xreserve_contract,
-        domain.identifier_word(),
-        hc.client.rng(),
-    )
-    .context("building the domain_init note")?;
+    // 3. Deploy: the faucet's first tx consumes the owner's identifier_init (first-deploy exemption).
+    //    The seeded identifier is the faucet's own-id fixpoint (derived from faucet_id).
+    let note1 = XReserveIdentifierInitNote::create(owner_id, faucet_id, hc.client.rng())
+        .context("building the identifier_init note")?;
     let emit1 = TransactionRequestBuilder::new()
         .own_output_notes(vec![note1.clone()])
         .build()
-        .context("building the domain_init emit")?;
+        .context("building the identifier_init emit")?;
     let emit1_tx = hc
         .client
         .submit_new_transaction(owner_id, emit1)
         .await
-        .context("emit domain_init")?;
+        .context("emit identifier_init")?;
     // Reuse the driver's wait after we build it; here we poll inline via a temporary.
     let mut d = Driver {
         hc,
@@ -526,7 +530,7 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
     };
     d.wait_commit(emit1_tx)
         .await
-        .context("waiting for the domain_init emit")?;
+        .context("waiting for the identifier_init emit")?;
     d.hc.client
         .add_account(&faucet, false)
         .await

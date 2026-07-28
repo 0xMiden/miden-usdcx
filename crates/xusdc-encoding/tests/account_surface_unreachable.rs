@@ -25,17 +25,16 @@ use miden_protocol::assembly::mast::MastNodeExt;
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::{Felt, Word};
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::BurnNote;
+use miden_standards::note::{BurnNote, MintNote};
 use miden_standards::testing::note::NoteBuilder;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveAcceptOwnershipNote, XReserveBlockAccountNote, XReserveDomainInitNote,
-    XReserveGrantRoleNote, XReservePauseNote, XReserveRevokeRoleNote, XReserveSetAttesterNote,
+    XReserveAcceptOwnershipNote, XReserveBlockAccountNote, XReserveGrantRoleNote,
+    XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote, XReserveSetAttesterNote,
     XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
     XReserveUnblockAccountNote, XReserveUnpauseNote,
 };
-use xusdc_encoding::note::xreserve_mint::XReserveMintNote;
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -74,7 +73,7 @@ fn component_surface(components: &[AccountComponent]) -> Vec<(String, Word)> {
 /// The committed production faucet ACCOUNT (the real composed, auth-carrying account the network
 /// executes against).
 fn production_account() -> Result<Account> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_| Vec::new())
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let account = pf
         .mock_chain
@@ -84,8 +83,10 @@ fn production_account() -> Result<Account> {
     Ok(account)
 }
 
-/// The 14 allowlisted note SCRIPTS (not just their roots): the two supply notes + the 12 admin
-/// notes (10 owner/role/pause + the 2 F4-reversal transfer-blocklist notes). Single-sourced from the
+/// The 14 allowlisted note SCRIPTS (not just their roots): the two STOCK supply notes (the Wave-1
+/// S1 `MintNote` transport + the `BurnNote`) + the 12 admin notes (10 owner/role/pause — with the
+/// minimized `identifier_init` in the former `domain_init` row (DEC-4) — + the 2 F4-reversal
+/// transfer-blocklist notes). Single-sourced from the
 /// same factories the allowlist itself is built from, so a note that enters the allowlist necessarily
 /// enters this sweep too. There is deliberately NO `set_role_admin` entry: the runtime
 /// `set_role_admin` note was REMOVED from the allowlist (S21 disposition flip, human-ratified
@@ -93,10 +94,10 @@ fn production_account() -> Result<Account> {
 /// `grant_role`/`revoke_role` (CIR-ADMIN-3).
 fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
     vec![
-        ("xreserve_mint_note", XReserveMintNote::script()),
+        ("stock_mint_note", MintNote::script()),
         ("stock_burn_note", BurnNote::script()),
         ("set_attester", XReserveSetAttesterNote::script()),
-        ("domain_init", XReserveDomainInitNote::script()),
+        ("identifier_init", XReserveIdentifierInitNote::script()),
         ("set_min_burn_size", XReserveSetMinBurnSizeNote::script()),
         ("pause", XReservePauseNote::script()),
         ("unpause", XReserveUnpauseNote::script()),
@@ -117,7 +118,7 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
 // ================================================================================================
 
 /// The fully-qualified path of the stock RBAC `set_role_admin` account procedure (a member of the
-/// frozen 65-root surface above — the proc STAYS; only its runtime note was removed).
+/// frozen 64-root surface — the proc STAYS; only its runtime note was removed).
 const RBAC_SET_ROLE_ADMIN_PROC_PATH: &str =
     "::miden::standards::components::access::rbac::set_role_admin";
 
@@ -142,7 +143,7 @@ fn rbac_set_role_admin_proc_root() -> Result<Word> {
 }
 
 /// PRESENT: the stock RBAC `set_role_admin` procedure IS a callable root of the composed account —
-/// the S21 disposition keeps the stock component intact (the 65-root surface is unchanged); ONLY
+/// the S21 disposition keeps the stock component intact (the 64-root surface is unchanged); ONLY
 /// the runtime note that could reach it was removed.
 #[test]
 fn rbac_set_role_admin_is_present_on_the_account() -> Result<()> {
@@ -227,7 +228,7 @@ fn set_role_admin_former_note_root_is_not_admissible_via_either_allowlist() -> R
 /// documentation (S13/S24 bounding): a note that `call`s it by root on the production-composed
 /// account executes successfully and leaves storage AND vault byte-identical (only the fixture's
 /// nonce-increment auth runs). Uses the permissive-auth production composition (the same
-/// `GuardSelection::ProductionDeny` fixture the role-gating suites use) because on the
+/// `GuardSelection::ProductionAttestation` fixture the role-gating suites use) because on the
 /// network-auth faucet the epilogue allowlist would reject the probe note before its effects could
 /// be observed.
 #[tokio::test]
@@ -241,10 +242,23 @@ async fn get_authority_is_read_only_on_the_account() -> Result<()> {
         .map(|(_, root)| root)
         .context("the composed account must expose authority::get_authority (S24)")?;
 
-    let driver = mint_composition_driver_src(&[Felt::from(0u32)], 60, 6);
+    // a no-op driver: the guarded-mint harness requires at least one driver component, but the
+    // probe below calls `get_authority` by root through its own note, never this driver.
+    let driver = "#! A no-op driver — the get_authority probe fires a standalone note, not this\n\
+                  #! driver; the guarded-mint harness merely requires one driver component.\n\
+                  #!\n\
+                  #! Inputs:  [pad(16)]\n\
+                  #! Outputs: [pad(16)]\n\
+                  #!\n\
+                  #! Invocation: call\n\
+                  @account_procedure\n\
+                  pub proc drive\n\
+                  \x20\x20\x20\x20push.0 drop\n\
+                  end\n"
+        .to_string();
     let probe = composition_supply_probe_src(0);
     let gm = setup_guarded_mint_account(
-        GuardSelection::ProductionDeny,
+        GuardSelection::ProductionAttestation,
         MAX_SUPPLY,
         0,
         Word::from([7u32, 0, 0, 0]),

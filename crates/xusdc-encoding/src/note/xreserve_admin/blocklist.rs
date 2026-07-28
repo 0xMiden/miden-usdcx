@@ -25,7 +25,7 @@ static BLOCK_ACCOUNT_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// proc it calls trips the parity assertion (`script_root() == pinned_script_root()`) and forces a
 /// conscious re-pin.
 pub const XRESERVE_BLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xed7e56fde54ba1ffa244b92e048560db8233e3a744c4af95b8f363fc4214d9dc";
+    "0xd92cf7cc23c84d29ebe9486d55845ede7fb2126e135a0d2ef87f5bfc090aefb2";
 
 /// The BLK_MANAGER-gated `block_account` admin note (F4-reversal). Storage layout:
 /// `[account_suffix, account_prefix]` — the account to block. Consumed against the faucet network

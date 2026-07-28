@@ -186,7 +186,7 @@ static SET_MIN_BURN_SIZE_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// retarget) plus the note-side zero-floor guard, so any edit of the note or the stock proc it
 /// calls trips parity and forces a conscious re-pin.
 pub const XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x294eaebba6996fc3b0ffd6dd2869c6f36701c63de852010be0b5224c576d4bd6";
+    "0x7ae46ecf82c7968a867c88d982659ba55989c49238c5e1ba6fa1a8c6a1008566";
 
 /// The owner-gated `set_min_burn_size` admin note (F5). Storage layout: `[new_min]` with
 /// `new_min >= 1` (the note script's zero-floor guard — the stock setter itself accepts 0).

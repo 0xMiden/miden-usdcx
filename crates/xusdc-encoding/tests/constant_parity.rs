@@ -522,9 +522,9 @@ fn masm_constants_bidirectional() {
             &[],
         ),
         // F4-reversal blocklist_admin: declares the numeric BLK_MANAGER_ROLE role-symbol const
-        // (parity-asserted in masm_rust_constant_parity); no word("…") consts, and no new string
-        // errors (the role gate reuses the stock ERR_SENDER_LACKS_ROLE, the primitive reuses the
-        // stock ERR_ACCOUNT_IS_BLOCKED).
+        // (parity-asserted in masm_rust_constant_parity); no word("…") consts. The role gate reuses
+        // the stock ERR_SENDER_LACKS_ROLE and the primitive reuses the stock ERR_ACCOUNT_IS_BLOCKED;
+        // the PA2 self-block guard adds ERR_XRESERVE_CANNOT_BLOCK_SELF (a SHELL_ERR_TABLE row).
         (
             "blocklist_admin.masm",
             BLOCKLIST_ADMIN_MASM,

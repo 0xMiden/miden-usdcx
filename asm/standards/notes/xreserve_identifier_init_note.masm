@@ -11,8 +11,10 @@
 # NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only, added
 # by the Rust factory).
 #
-# Note storage layout (4 felts): [IDENTIFIER] — the pre-hashed bytes32_to_key Word (verbatim;
-# D5a's assert_eqw compares the stored form).
+# Note storage layout (4 felts): [IDENTIFIER] — the pre-hashed bytes32_to_key Word (D5a's
+# assert_eqw compares the stored form). Since the round-3 own-id binding the proc additionally
+# derives `bytes32_to_key(account_id_to_bytes32(get_id()))` ON-CHAIN and rejects a committed
+# identifier that does not equal it, so this note can only ever seed its target's own identity.
 
 use miden::protocol::active_note
 use xreserve::identifier_init
@@ -57,6 +59,8 @@ const ERR_XRESERVE_IDENTIFIER_INIT_NOTE_STORAGE = "identifier_init note storage 
 #! - the note sender is not the registered owner (init_identifier's owner gate).
 #! - the identifier was already initialized (init_identifier's init-once gate).
 #! - the committed identifier is the empty word (init_identifier's non-empty guard).
+#! - the committed identifier is not the faucet's own-id key (init_identifier's round-3
+#!   own-id binding).
 #!
 #! Invocation: dyncall
 @note_script

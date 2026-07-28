@@ -397,7 +397,7 @@ pub fn mint_note_with_fee<R: FeltRng>(
     // word boundary (identical to the production intent attachment).
     let mut intent_felts = deposit_intent_to_packed_felts(payload)
         .map_err(|e| anyhow::anyhow!("packing the deposit intent: {e}"))?;
-    while intent_felts.len() % 4 != 0 {
+    while !intent_felts.len().is_multiple_of(4) {
         intent_felts.push(Felt::from(0u32));
     }
     let intent_words: Vec<Word> = intent_felts

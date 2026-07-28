@@ -28,7 +28,7 @@ use miden_protocol::account::{
 use miden_protocol::asset::AssetCallbacks;
 use miden_protocol::Word;
 use miden_standards::account::policies::{BasicBlocklist, TokenPolicyManager};
-use support::production_component_set;
+use support::{production_component_set, tripwire_serial_guard_blocking};
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -75,6 +75,7 @@ fn value_slot(components: &[AccountComponent], name: &StorageSlotName) -> Result
 /// decision record.
 #[test]
 fn production_build_wires_the_transfer_blocklist() -> Result<()> {
+    let _serial = tripwire_serial_guard_blocking();
     let components = production_component_set(MAX_SUPPLY, 0)?;
     let blocklist_root = BasicBlocklist::root().as_word();
 

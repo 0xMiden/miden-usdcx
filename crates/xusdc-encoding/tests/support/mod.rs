@@ -16,6 +16,8 @@
 
 #![allow(dead_code)]
 
+pub mod mint_transport;
+
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -46,7 +48,8 @@ use miden_standards::StandardsLib;
 use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
-    ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE,
+    DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::xreserve::encoding::masm_error_by_name;
 
@@ -125,7 +128,7 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
 /// D5b amount/fee errors (R-MINT-10/11) and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 25] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -247,7 +250,9 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
     ),
     // R-ADMIN-4 identifier init-once (identifier_init.masm; DEC-4 — the minimized replacement of
     // the former four-field domain_init). The second write traps REINIT; an EMPTY input
-    // identifier (which could never arm the sentinel) traps EMPTY.
+    // identifier (which could never arm the sentinel) traps EMPTY; a note-committed identifier
+    // that is not the faucet's OWN on-chain-derived id key traps MISMATCH (the round-3 anti-
+    // front-run binding: `bytes32_to_key(account_id_to_bytes32(get_id()))` derived in-proc).
     (
         "ERR_XRESERVE_IDENTIFIER_REINIT",
         MasmError::from_static_str("identifier has already been initialized"),
@@ -255,6 +260,10 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
     (
         "ERR_XRESERVE_IDENTIFIER_EMPTY",
         MasmError::from_static_str("identifier must be non-empty"),
+    ),
+    (
+        "ERR_XRESERVE_IDENTIFIER_MISMATCH",
+        MasmError::from_static_str("identifier does not match the faucet's own account id key"),
     ),
 ];
 
@@ -283,6 +292,30 @@ pub fn shell_error_by_name(name: &str) -> &'static MasmError {
         .map(|(_, e)| e)
         .or_else(|| masm_error_by_name(name))
         .unwrap_or_else(|| panic!("test names unknown MASM error constant {name}"))
+}
+
+// TRIPWIRE SERIALIZATION (anneal round-3 item 5)
+// ================================================================================================
+
+/// Serializes the security-tripwire tests: they flake under parallel `cargo test`, so every
+/// tripwire holds this lock for its whole body — the in-tree equivalent of `serial_test`'s
+/// `#[serial]` (that crate is not in the pinned offline `Cargo.lock`, so the guard lives here
+/// instead of a new dependency; cargo runs test BINARIES sequentially, so a per-binary process
+/// lock is exactly the scope `serial_test` would give). The async-aware `tokio::sync::Mutex`
+/// is deliberate: an async tripwire holds its guard across `.await` points
+/// (`clippy::await_holding_lock` forbids a `std` guard there), and tokio's mutex has no
+/// poisoning, so a panicking holder cannot cascade spurious failures into later tripwires.
+static TRIPWIRE_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The async-test guard: `let _serial = tripwire_serial_guard().await;`.
+pub async fn tripwire_serial_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    TRIPWIRE_SERIAL.lock().await
+}
+
+/// The sync-test guard (blocks the test thread; sync tests run outside any tokio runtime, which
+/// `blocking_lock` requires): `let _serial = tripwire_serial_guard_blocking();`.
+pub fn tripwire_serial_guard_blocking() -> tokio::sync::MutexGuard<'static, ()> {
+    TRIPWIRE_SERIAL.blocking_lock()
 }
 
 // HARNESS (assemble → bind components+slots → MockChain account)
@@ -388,37 +421,23 @@ pub fn production_component_set(
     max_supply: u64,
     token_supply: u64,
 ) -> Result<Vec<AccountComponent>> {
-    production_component_set_with_min_burn(max_supply, token_supply, None)
+    production_builder_outcome(max_supply, token_supply, None, None)?
+        .map_err(|e| anyhow::anyhow!("composing the production faucet components: {e}"))
 }
 
-/// [`production_component_set`] with an EXPLICIT `min_burn_size` override (`None` keeps the
-/// builder default). The zero-floor rejection tests drive `Some(0)` through the REAL builder
-/// validation path.
-pub fn production_component_set_with_min_burn(
-    max_supply: u64,
-    token_supply: u64,
-    min_burn_size: Option<u64>,
-) -> Result<Vec<AccountComponent>> {
-    production_component_set_inner(max_supply, token_supply, min_burn_size, None)
-}
-
-/// [`production_component_set`] with an EXPLICIT active-mint-policy override — the
-/// INV-MINT-SECURITY mutation leg: the builder must REJECT any active mint policy that is not
-/// the attestation policy.
-pub fn production_component_set_with_policy_override(
-    max_supply: u64,
-    token_supply: u64,
-    policy: MintPolicy,
-) -> Result<Vec<AccountComponent>> {
-    production_component_set_inner(max_supply, token_supply, None, Some(policy))
-}
-
-fn production_component_set_inner(
+/// The PRODUCTION builder verdict with the fixture SETUP errors separated from the builder's own
+/// typed outcome: the outer `Result` carries test-fixture setup failures (library assembly, slot
+/// binding, faucet construction), the inner `Result` is `build_components`' typed
+/// [`XReserveStablecoinBuilderError`] verdict — so the builder-reject tripwires can
+/// `assert_matches!` the CONCRETE variant (G4: the specific error, never a stringified word
+/// search). `min_burn_size = None` keeps the builder default; `mint_policy_override = None`
+/// keeps the attestation policy (the production shape).
+pub fn production_builder_outcome(
     max_supply: u64,
     token_supply: u64,
     min_burn_size: Option<u64>,
     mint_policy_override: Option<MintPolicy>,
-) -> Result<Vec<AccountComponent>> {
+) -> Result<std::result::Result<Vec<AccountComponent>, XReserveStablecoinBuilderError>> {
     let library = assemble_xreserve_lib()?;
     let empty = || Word::from([0u32, 0, 0, 0]);
     let xreserve_component = AccountComponent::new(
@@ -487,9 +506,7 @@ fn production_component_set_inner(
     if let Some(policy) = mint_policy_override {
         builder = builder.with_active_mint_policy(policy);
     }
-    builder
-        .build_components()
-        .map_err(|e| anyhow::anyhow!("composing the production faucet components: {e}"))
+    Ok(builder.build_components())
 }
 
 pub struct ShellHarness {

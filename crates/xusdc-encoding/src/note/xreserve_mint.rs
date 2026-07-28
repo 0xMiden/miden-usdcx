@@ -179,7 +179,7 @@ impl XUsdcMintNote {
         let mut felts = deposit_intent_to_packed_felts(deposit_intent).map_err(|source| {
             NoteError::other_with_source("deposit intent payload rejected by the 04 codec", source)
         })?;
-        while felts.len() % 4 != 0 {
+        while !felts.len().is_multiple_of(4) {
             felts.push(Felt::from(0u32));
         }
         let words: Vec<Word> = felts

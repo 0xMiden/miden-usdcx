@@ -103,9 +103,11 @@ static IDENTIFIER_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// of the compiled `xreserve_identifier_init_note.masm` with the xreserve library linked. It binds
 /// transitively to `identifier_init::init_identifier`'s digest, so ANY edit of the note script or
 /// the proc it calls trips the parity assertion (`script_root() == pinned_script_root()`) and
-/// forces a conscious re-pin.
+/// forces a conscious re-pin. Re-pinned at the round-3 own-id binding (the proc now derives
+/// `bytes32_to_key(account_id_to_bytes32(get_id()))` on-chain and rejects a mismatched committed
+/// identifier), replacing `0x4fb4fcba9ca98176d2ccbaadcf8399f7ccdaa0312630a9b29a0d76058d515b82`.
 pub const XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x4fb4fcba9ca98176d2ccbaadcf8399f7ccdaa0312630a9b29a0d76058d515b82";
+    "0xaf63dbcec4e79c6dd1d731f7f6b245401d733b0e14e58f885b53321f416c348b";
 
 /// The owner-gated, init-once `identifier_init` admin note (F5; DEC-4 — the minimized
 /// replacement of the former four-field `domain_init`: the identifier is the ONE domain-config

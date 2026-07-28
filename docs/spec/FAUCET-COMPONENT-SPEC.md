@@ -158,7 +158,10 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
   — a provable fixpoint of the account id (the id derives from the initial storage commitment,
   and the identifier is, pending `Q-CRY-4`, the faucet's own id as bytes32) — is seeded
   post-deploy by the minimized init-once `identifier_init` note. The `identifier` slot doubles
-  as the init-once sentinel, so a second init traps.
+  as the init-once sentinel, so a second init traps. `init_identifier` derives the own-id key
+  ON-CHAIN (`bytes32_to_key(account_id_to_bytes32(get_id()))`) and rejects any other committed
+  value, so an init note cannot seed a foreign identity (the provisional `Q-CRY-4` own-id
+  position, enforced but still Circle-OPEN).
 
 ## 6. Domain-config field representation
 
@@ -167,7 +170,8 @@ form. `xreserve_contract` is stored losslessly as its raw 8×u32-LE packed limbs
 slots, because it has no on-chain compare and must be readable from storage by off-chain
 services. `domain` and `source_domain` are u32 scalars in element 0 of their slot words. The
 three build-seeded fields are typed u32/bytes32 at the builder boundary (Rust-validated); the
-runtime-seeded identifier is guarded non-empty on-chain.
+runtime-seeded identifier is guarded non-empty AND own-id-bound on-chain (the proc derives the
+faucet's own key and rejects a mismatched committed value).
 
 ## 7. What is consumed from the encoding library
 

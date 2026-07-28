@@ -95,9 +95,11 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_MINT_AMOUNT_MISMATCH",
     "ERR_XRESERVE_MINT_TAG_MISMATCH",
     "ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC",
-    // R-ADMIN-4 identifier init-once + non-empty guards (identifier_init.masm; DEC-4)
+    // R-ADMIN-4 identifier init-once + non-empty + own-id binding guards (identifier_init.masm;
+    // DEC-4 + the round-3 on-chain derivation)
     "ERR_XRESERVE_IDENTIFIER_REINIT",
     "ERR_XRESERVE_IDENTIFIER_EMPTY",
+    "ERR_XRESERVE_IDENTIFIER_MISMATCH",
 ];
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned

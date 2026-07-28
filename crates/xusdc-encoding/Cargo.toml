@@ -55,7 +55,7 @@ miden-tx        = { version = "=0.16.0-alpha.4" }
 # 0.25.3 the alpha.2 family resolves — the pin moves in lockstep with the protocol family so
 # exactly one processor copy exists and the error downcasts unify (MIGRATION-V16-ALPHA2.md R3)
 miden-processor = "=0.25.3"
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 anyhow = { workspace = true }
 rstest = { workspace = true }
 assert_matches = { workspace = true }

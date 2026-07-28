@@ -14,6 +14,7 @@
 # Note storage layout (1 felt): [new_min]. `new_min` is the new minimum burn size (AssetAmount).
 
 use miden::protocol::active_note
+use {FUNGIBLE_ASSET_MAX_AMOUNT} from miden::protocol::asset
 use miden::standards::faucets::policies::burn::min_burn_amount
 
 # CONSTANTS
@@ -41,15 +42,22 @@ const ERR_XRESERVE_SET_MIN_BURN_SIZE_NOTE_STORAGE = "set_min_burn_size note stor
 # new_min below the floor BEFORE calling it.
 const ERR_XRESERVE_MIN_BURN_BELOW_FLOOR = "minimum burn size must be at least one"
 
+# The upper-range guard (PA3): the stock check_policy asserts `min_burn_amount <= amount`, and every
+# real burn amount is <= FUNGIBLE_ASSET_MAX_AMOUNT, so a min above that maximum can never be
+# satisfied — no burn would pass and all redemptions would halt. The stock setter does no range
+# check, so the note rejects `new_min > FUNGIBLE_ASSET_MAX_AMOUNT` BEFORE calling it.
+const ERR_XRESERVE_MIN_BURN_ABOVE_MAX = "min burn size exceeds the maximum asset amount"
+
 # PUBLIC INTERFACE
 # =================================================================================================
 
 #! Consumes the `set_min_burn_size` admin note and drives the owner-gated minimum-burn write
-#! through the STOCK `set_min_burn_amount`, enforcing the zero floor first.
+#! through the STOCK `set_min_burn_amount`, enforcing both range bounds first.
 #!
 #! Stages the creator-committed param (`[new_min]`) into memory at PARAM_PTR, asserts
-#! `new_min >= 1` (the zero-floor guard — the stock setter itself accepts 0), marshals it onto
-#! the stack as `[new_min, pad(15)]`, and `call`s `min_burn_amount::set_min_burn_amount`. The
+#! `1 <= new_min <= FUNGIBLE_ASSET_MAX_AMOUNT` (the zero-floor guard — the stock setter itself
+#! accepts 0 — plus the PA3 upper-range guard against an all-redemptions-halting floor), marshals it
+#! onto the stack as `[new_min, pad(15)]`, and `call`s `min_burn_amount::set_min_burn_amount`. The
 #! note ARGS are unused (executor-controlled).
 #!
 #! Requires that the account exposes:
@@ -63,8 +71,9 @@ const ERR_XRESERVE_MIN_BURN_BELOW_FLOOR = "minimum burn size must be at least on
 #!
 #! Panics if:
 #! - the note storage does not carry exactly 1 item.
-#! - new_min is not a valid u32-range AssetAmount felt below the floor check, or is below the
-#!   floor (ERR_XRESERVE_MIN_BURN_BELOW_FLOOR).
+#! - new_min is below the floor (ERR_XRESERVE_MIN_BURN_BELOW_FLOOR).
+#! - new_min exceeds FUNGIBLE_ASSET_MAX_AMOUNT (ERR_XRESERVE_MIN_BURN_ABOVE_MAX, the PA3
+#!   upper-range guard — an out-of-range floor would halt all redemptions).
 #! - the note sender is not authorized per the installed Authority (the stock setter's
 #!   authority::assert_authorized -> the Ownable2Step owner).
 #!
@@ -88,6 +97,13 @@ pub proc main
     # `neq.0` suffices for the floor of one — an AssetAmount felt is non-negative, so
     # `new_min != 0` is exactly `new_min >= 1`.
     dup neq.0 assert.err=ERR_XRESERVE_MIN_BURN_BELOW_FLOOR
+    # => [new_min, pad(16)]
+
+    # the upper-range guard (PA3): new_min <= FUNGIBLE_ASSET_MAX_AMOUNT, asserted BEFORE the stock
+    # call. `lte.CONST` compares the AssetAmount felt against the max (the stock fungible-asset
+    # bound-check idiom); a value above the max would make the stock `min <= amount` policy
+    # unsatisfiable for every burn.
+    dup lte.FUNGIBLE_ASSET_MAX_AMOUNT assert.err=ERR_XRESERVE_MIN_BURN_ABOVE_MAX
     # => [new_min, pad(16)]
     # (the call consumes the top 16: [new_min, pad(15)])
 

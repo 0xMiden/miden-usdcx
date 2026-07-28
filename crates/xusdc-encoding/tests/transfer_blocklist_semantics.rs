@@ -99,8 +99,10 @@ struct SemanticsFixture {
     incoming_p2id_nullifier: Nullifier,
     /// A committed DOM_PAUSER pause admin note (to exercise the pause-halts-transfer semantic).
     pause_note_id: NoteId,
-    /// A committed BLK_MANAGER block note targeting the FAUCET ITSELF — the callback-only sentinel for
-    /// the faucet-side burn consume (a receive callback would trap on the blocked faucet).
+    /// A committed TEST-ONLY raw self-block note (`raw_self_block_note`) that blocks the FAUCET ITSELF
+    /// — the callback-only sentinel for the faucet-side burn consume (a receive callback would trap on
+    /// the blocked faucet). Uses the raw primitive because the PA2 guard now rejects a faucet-self
+    /// target on the production admin path.
     block_faucet_note_id: NoteId,
 }
 
@@ -112,7 +114,11 @@ struct SemanticsFixture {
 fn semantics_fixture() -> Result<SemanticsFixture> {
     // token_supply seeded at HOLDER_BALANCE so the faucet-side burn-consume test can decrement it
     // without underflow (a holder consume never touches token_supply, so this is neutral elsewhere).
-    let components = production_component_set(MAX_SUPPLY, HOLDER_BALANCE)?;
+    let mut components = production_component_set(MAX_SUPPLY, HOLDER_BALANCE)?;
+    // TEST-ONLY: install the unguarded raw self-block proc so the burn-callback sentinel can arm
+    // `blocked_accounts[faucet]=1` past the PA2 self-block guard (the production admin surface can no
+    // longer block the faucet). Adds one callable proc; the other semantics tests never invoke it.
+    components.push(raw_blocklist_component()?);
     let mut builder = MockChain::builder();
     let faucet = add_faucet_account(&mut builder, Auth::IncrNonce, components)?;
     let faucet_id = faucet.id();
@@ -136,9 +142,12 @@ fn semantics_fixture() -> Result<SemanticsFixture> {
     )?;
     // A DOM_PAUSER pause admin note (DOM_PAUSER = id(2), seeded by the production builder).
     let pause_note = XReservePauseNote::create(dom_pauser(), faucet_id, &mut note_rng(102))?;
-    // A BLK_MANAGER block note targeting the FAUCET ITSELF (the burn-callback sentinel).
-    let block_faucet_note =
-        XReserveBlockAccountNote::create(blk_manager(), faucet_id, faucet_id, &mut note_rng(104))?;
+    // The burn-callback sentinel's faucet-blocked arming note. After the PA2 self-block guard the
+    // production `block_account` admin note REJECTS a faucet-self target, so the sentinel is armed via
+    // the TEST-ONLY unguarded raw self-block proc — the same underlying `blocklist::block_account`
+    // primitive the admin wrapper delegates to, minus the new guard (which is exercised by
+    // `wave1_sec_hardening::block_account_targeting_the_faucet_itself_is_rejected`).
+    let block_faucet_note = raw_self_block_note(blk_manager(), 104)?;
     // A policed P2ID carrying SEND_AMOUNT xUSDC TO the holder (an incoming transfer to consume).
     let incoming_p2id: Note = P2idNote::builder()
         .sender(test_account_id(77))
@@ -584,8 +593,10 @@ async fn faucet_side_burn_consume_is_callback_unaffected() -> Result<()> {
     f.chain.add_pending_executed_transaction(&emit)?;
     f.chain.prove_next_block()?;
 
-    // SENTINEL: block the FAUCET ITSELF. `check_policy` checks the native account; if a receive
-    // callback dispatched on the burn consume (native = faucet), it would now trap "account is blocked".
+    // SENTINEL: block the FAUCET ITSELF via the TEST-ONLY raw primitive (the PA2 guard rejects a
+    // faucet-self target on the production admin path). `check_policy` checks the native account; if a
+    // receive callback dispatched on the burn consume (native = faucet), it would now trap "account is
+    // blocked".
     commit_faucet_consume(&mut f.chain, f.faucet_id, f.block_faucet_note_id).await?;
     let faucet = f.chain.committed_account(f.faucet_id)?.clone();
     assert_eq!(

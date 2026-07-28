@@ -9,6 +9,8 @@
 # control in a wrapper" — the ratified pause_admin pattern). The blocked_accounts slot these write is
 # installed by the BasicBlocklist companion component (wired as the active send + receive policy).
 
+use miden::protocol::native_account
+use miden::protocol::account_id
 use miden::standards::access::rbac
 use miden::standards::faucets::policies::transfer::blocklist
 
@@ -20,6 +22,16 @@ use miden::standards::faucets::policies::transfer::blocklist
 # Parity-asserted against the Rust RoleSymbol::new(BLK_MANAGER_ROLE).as_element() in constant_parity.rs
 # (cross-language constant parity); a drift silently breaks the role gate. BLK_MANAGER is seeded role id 4.
 const BLK_MANAGER_ROLE = 7907587873290749
+
+# ERRORS
+# =================================================================================================
+
+# The self-block guard (PA2): BasicBlocklist is the ACTIVE send AND receive transfer policy, so a
+# blocked account can neither send, receive, nor burn/redeem. Blocking the faucet's OWN id would
+# therefore freeze the faucet as a transfer party (mint-and-send and burn/redeem both trap) and halt
+# the core faucet function, so `block_account` rejects the native faucet id as its target. Only
+# `block_account` carries the guard — unblocking the faucet is harmless.
+const ERR_XRESERVE_CANNOT_BLOCK_SELF = "cannot block the faucet's own account"
 
 # PUBLIC INTERFACE
 # =================================================================================================
@@ -34,6 +46,8 @@ const BLK_MANAGER_ROLE = 7907587873290749
 #!
 #! Panics if:
 #! - the note sender does not hold BLK_MANAGER (rbac::assert_sender_has_role, ERR_SENDER_LACKS_ROLE).
+#! - the target account id is the faucet's OWN account id (ERR_XRESERVE_CANNOT_BLOCK_SELF, the PA2
+#!   self-block guard — blocking the faucet freezes it as a transfer party).
 #!
 #! Invocation: call
 @account_procedure
@@ -42,6 +56,19 @@ pub proc block_account
     # => [BLK_MANAGER_ROLE, account_id_suffix, account_id_prefix, pad(13)]
 
     exec.rbac::assert_sender_has_role
+    # => [account_id_suffix, account_id_prefix, pad(14)]
+
+    # self-block guard (PA2): reject target == the native faucet id BEFORE the delegated add.
+    # `native_account::get_id` is the transaction's own account (the faucet the admin note is
+    # consumed against). Compare COPIES via the stock `account_id::eq` so the original target is
+    # left intact for `blocklist::block_account`; `assertz` traps when the two ids are equal.
+    exec.native_account::get_id
+    # => [own_id_suffix, own_id_prefix, account_id_suffix, account_id_prefix, pad(14)]
+
+    dup.3 dup.3 exec.account_id::eq
+    # => [is_self, account_id_suffix, account_id_prefix, pad(14)]
+
+    assertz.err=ERR_XRESERVE_CANNOT_BLOCK_SELF
     # => [account_id_suffix, account_id_prefix, pad(14)]
 
     exec.blocklist::block_account

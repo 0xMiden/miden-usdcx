@@ -9,14 +9,14 @@
 //! be driven and counted: that a rejected attestation never reaches submit at all, that a replayed
 //! one is submitted once, that a transient answer retries and a fatal one does not.
 //!
-//! The GATING leg — a real `XReserveMintNote` committing in block N against a real local node
+//! The GATING leg — a real `XUsdcMintNote` committing in block N against a real local node
 //! (T-RLY-14/T-RLY-15) — is R6's, and it is blocked on a `miden-client` release for v0.16. R6
 //! implements this same port; nothing here stands in for it, and no test in this crate claims it
 //! does.
 //!
 //! Everything else in the pipeline is REAL: a real `CircleClient` over the schema-exact mock Circle
 //! router, the real envelope binding, the real unit-04 DepositIntent codec, the real SQLite
-//! idempotency store on a real file, and the real unit-04 `XReserveMintNote::create`.
+//! idempotency store on a real file, and the real unit-04 `XUsdcMintNote::create`.
 
 #![allow(dead_code)] // a shared fixture module: each test target uses the subset it needs.
 

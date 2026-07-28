@@ -46,7 +46,9 @@ fn green_c2() -> C2MinBurn {
     C2MinBurn {
         raised_min: 50,
         committed_after_raise: 50,
-        burn_below_raised: rej("... burn amount is below the minimum burn size ..."),
+        burn_below_raised: rej(
+            "... amount to be burned must exceed specified minimum burn amount ...",
+        ),
         lowered_min: 10,
         committed_after_lower: 10,
         burn_at_lowered: Verdict::Accepted,
@@ -57,7 +59,7 @@ fn green_c3() -> C3MaxSupply {
     C3MaxSupply {
         committed_cap: 500,
         max_supply_readback: 500,
-        over_cap_mint: rej("... mint amount exceeds the faucet supply cap ..."),
+        over_cap_mint: rej("... token_supply plus the amount passed to distribute would exceed the maximum supply ..."),
         within_cap_mint: Verdict::Accepted,
     }
 }
@@ -205,7 +207,7 @@ fn c2_rejects_below_min_burn_accepted() {
 #[test]
 fn c2_rejects_at_min_burn_rejected() {
     let mut c2 = green_c2();
-    c2.burn_at_lowered = rej("burn amount is below the minimum burn size"); // at-min wrongly rejected
+    c2.burn_at_lowered = rej("amount to be burned must exceed specified minimum burn amount"); // at-min wrongly rejected
     let e = assert_c2(&c2).expect_err("C2 must reject when an at-min burn is rejected");
     assert!(format!("{e:#}").contains("ACCEPTED"), "got: {e:#}");
 }
@@ -485,7 +487,8 @@ fn code_only_reject_with_the_wrong_code_is_rejected() {
 // ── the real-node E2E (the gate run for this slice) ──────────────────────────────────────────
 
 /// Rows C + F against a REAL fresh local node: bootstrap genesis, start the four services, deploy
-/// the production faucet (domain_init matching the mint vector), drive the whole admin + auth-boundary
+/// the production faucet (domain config build-seeded to match the mint vector, identifier_init as
+/// the first admin note), drive the whole admin + auth-boundary
 /// arc (admin state changes committed via the ntx-builder / path N; mint/burn + auth rejects proven by
 /// client-side kernel traps), and judge every row. Writes `evidence-cf.json` under the gitignored run
 /// root either way.

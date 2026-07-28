@@ -1,11 +1,17 @@
 //! The mint-note builder (`miden::mint_note::build_mint_note`) — the DELEGATION contract.
 //!
 //! The builder's entire job is to hand unit-04's owned factory
-//! ([`XReserveMintNote::create`]) the inputs the relayer has validated, and return the note it
-//! produces. Every byte of the note's wire form — the u32-LE-packed DepositIntent storage (DC-1),
-//! the scheme-1 attestation attachment, the scheme-2 `NetworkAccountTarget` routing bind (F5), the
-//! forced `NoteType::Public`, the account-target tag, the pinned script root — belongs to unit-04
-//! (single-owner rule). The relayer restates NONE of it, and this suite is what pins that:
+//! ([`XUsdcMintNote::create`]) the inputs the relayer has validated, and return the note it
+//! produces. Since the Wave-1 S1 recomposition that note is a STOCK miden-standards `MintNote`:
+//! its storage is the stock `MintNoteStorage::FungiblePublic` embedding the ATTESTED output (the
+//! P2ID recipe to the intent's `remoteRecipient` under the canonical nonce-key serial, the
+//! scale-0-reduced amount as a `FungibleAsset` of the faucet, the recipient's account-target tag),
+//! and the Circle-signed transport rides as THREE attachments — the scheme-4 DepositIntent
+//! preimage (DC-1), the scheme-5 attestation, the scheme-2 `NetworkAccountTarget` routing bind
+//! (F5). Every byte of that wire form belongs to unit-04 (single-owner rule); the note script is
+//! the STOCK standards MINT script, and the faucet's attestation mint policy — not a custom note
+//! script — is what verifies the attachments and assert-matches the storage. The relayer restates
+//! NONE of it, and this suite is what pins that:
 //!
 //! * [`t_delegation_is_byte_for_byte_unit04_create`] is the load-bearing one — the note the relayer
 //!   builds must be EQUAL (`Note: PartialEq` — header, details, storage, attachments, metadata) to
@@ -14,10 +20,12 @@
 //!   tag, or a locally-drawn serial number.
 //! * The remaining tests read the note back through the PROTOCOL's / the STANDARD's own accessors
 //!   (`note.attachments().find(scheme)`, `NetworkAccountTarget::try_from`, `note.storage().items()`,
-//!   `XReserveMintNote::script_root()`) and through unit-04's own codecs
-//!   (`deposit_intent_to_packed_felts`, `signature_felts`, `affine_pubkey_felts`) — never against a
-//!   layout re-derived here. An assertion that restated the layout would be a SECOND definition of
-//!   an owned format, i.e. exactly the drift seam the ownership map exists to close.
+//!   `MintNote::script_root()`, `P2idNote::script_root()`) and through unit-04's own codecs
+//!   (`parse_deposit_intent_header`, `deposit_intent_to_packed_felts`, `bytes32_to_account_id`,
+//!   `bytes32_to_storage_map_key`, `uint256_to_asset_amount`, `signature_felts`,
+//!   `affine_pubkey_felts`) — never against a layout re-derived here. An assertion that restated
+//!   the layout would be a SECOND definition of an owned format, i.e. exactly the drift seam the
+//!   ownership map exists to close.
 //!
 //! **There is no advice map in any of this.** The attestation travels INSIDE the note, as a note
 //! attachment; the consuming transaction (the network's ntx-builder — the faucet is a keyless
@@ -29,23 +37,28 @@
 //! **What this suite does NOT prove:** that the faucet ACCEPTS the note. Only a real-node mint does
 //! (`REQUIRES IMPLEMENTATION VALIDATION`; the submit leg is parked until a v0.16 `miden-client`
 //! exists). What it proves is that the note the relayer emits IS the note unit-04's factory emits —
-//! and unit-04 proves THAT note mints, on a mock chain, in its own executing suite
-//! (`crates/xusdc-encoding/tests/xreserve_mint_note.rs`).
+//! and unit-04 proves THAT note mints, on a mock chain, in its own executing suites
+//! (`crates/xusdc-encoding/tests/mint_policy_e2e.rs` and friends).
 
 mod fixtures;
 mod mint_support;
 
 use assert_matches::assert_matches;
-use miden_protocol::note::{NoteTag, NoteType};
-use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
+use miden_protocol::asset::FungibleAsset;
+use miden_protocol::note::{NoteAttachmentScheme, NoteTag, NoteType};
+use miden_protocol::{Felt, Word};
+use miden_standards::note::{MintNote, NetworkAccountTarget, NoteExecutionHint, P2idNote};
 
 use xreserve_deposit_relayer::miden::build_mint_note;
 use xusdc_encoding::note::xreserve_mint::{
-    MintAttestation, XReserveMintNote, XRESERVE_MINT_ATTACHMENT_NUM_WORDS,
-    XRESERVE_MINT_ATTACHMENT_SCHEME,
+    MintAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
+    XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME, XUSDC_MINT_ATTESTATION_NUM_WORDS,
+    XUSDC_MINT_INTENT_ATTACHMENT_SCHEME,
 };
 use xusdc_encoding::xreserve::encoding::{
-    affine_pubkey_felts, deposit_intent_to_packed_felts, signature_felts,
+    affine_pubkey_felts, bytes32_to_account_id, bytes32_to_packed_felts,
+    bytes32_to_storage_map_key, deposit_intent_to_packed_felts, parse_deposit_intent_header,
+    signature_felts, uint256_to_asset_amount,
 };
 
 use mint_support::*;
@@ -54,7 +67,7 @@ use mint_support::*;
 // ================================================================================================
 
 /// The load-bearing proof: `build_mint_note` produces EXACTLY the note
-/// `XReserveMintNote::create` produces from the same validated inputs and the same RNG seed.
+/// `XUsdcMintNote::create` produces from the same validated inputs and the same RNG seed.
 ///
 /// `Note`'s `PartialEq` covers the header (id, metadata: sender / tag / type / execution hint), the
 /// details (serial number, script root, storage items, assets) and the attachments. So this single
@@ -76,7 +89,7 @@ fn t_delegation_is_byte_for_byte_unit04_create() {
     .expect("the canonical vector builds a mint note");
 
     // unit-04's factory, called directly — the same inputs, the same seed.
-    let unit04 = XReserveMintNote::create(
+    let unit04 = XUsdcMintNote::create(
         relayer_sender_id(),
         faucet_id(),
         attestation.payload(),
@@ -87,57 +100,81 @@ fn t_delegation_is_byte_for_byte_unit04_create() {
 
     assert_eq!(
         built, unit04,
-        "build_mint_note must BE XReserveMintNote::create — not a second implementation of it"
+        "build_mint_note must BE XUsdcMintNote::create — not a second implementation of it"
     );
 }
 
-/// The note script is unit-04's — and it is the PINNED root (`masm-rust-constant-parity`), so a
-/// relayer that ever compiled its own note script (or pinned its own root) fails here.
+/// The note script is the STOCK standards MINT script — there is NO custom pinned-root constant
+/// anymore (the Wave-1 S1 recomposition deleted the bespoke script). The identity that used to be
+/// a `pinned_script_root` is now held by the faucet's note-script allowlist: its row 1 pins
+/// `MintNote::script_root()`, so a relayer (or a factory) that ever compiled its own note script
+/// would emit a note the faucet refuses — and fails here first.
 #[test]
-fn t_script_root_is_unit04s_pinned_root() {
+fn t_script_root_is_the_stock_mint_root() {
     let note = build_note();
 
     assert_eq!(
         note.script().root(),
-        XReserveMintNote::script_root(),
-        "the note must carry unit-04's compiled mint-note script"
+        XUsdcMintNote::script_root(),
+        "the note must carry the script unit-04's factory rides the transport on"
     );
     assert_eq!(
         note.script().root(),
-        XReserveMintNote::pinned_script_root(),
-        "…which is the PINNED root the faucet's shim is built against"
+        MintNote::script_root(),
+        "…which IS the stock standards MINT root — the identity the note-script allowlist row 1 \
+         pins on-chain"
     );
 }
 
-// THE TWO ATTACHMENTS (F5)
+// THE THREE ATTACHMENTS (F5)
 // ================================================================================================
 
-/// Exactly TWO attachments — the scheme-1 attestation and the scheme-2 routing target — asserted
-/// through the note's own attachment API (`num_attachments` / `find`), never by indexing a layout
-/// this crate re-derived. The entry shim's `eq.2` is what makes the count load-bearing: a third
+/// Exactly THREE attachments — the scheme-4 DepositIntent preimage, the scheme-5 attestation and
+/// the scheme-2 routing target — asserted through the note's own attachment API
+/// (`num_attachments` / `find`), never by indexing a layout this crate re-derived. The faucet's
+/// attestation mint policy asserts exactly these three, so the count is load-bearing: a fourth
 /// attachment, or a missing one, fails the mint on-chain.
 #[test]
-fn t_note_carries_exactly_the_two_attachments() {
+fn t_note_carries_exactly_the_three_attachments() {
+    let attestation = validated_test_vector();
     let note = build_note();
     let attachments = note.attachments();
 
     assert_eq!(
         attachments.num_attachments(),
-        2,
-        "the mint note carries exactly the scheme-1 attestation + the scheme-2 routing target"
+        3,
+        "the mint note carries exactly the scheme-4 intent + the scheme-5 attestation + the \
+         scheme-2 routing target"
+    );
+
+    let intent_attachment = attachments
+        .find(
+            NoteAttachmentScheme::new(XUSDC_MINT_INTENT_ATTACHMENT_SCHEME)
+                .expect("unit-04's intent scheme id is a valid scheme"),
+        )
+        .expect("the scheme-4 DepositIntent attachment is present");
+
+    // the intent attachment is word-granular: ⌈packed payload felts / 4⌉ words, the packed length
+    // computed by unit-04's OWNED codec — not a number restated here
+    let packed_felts =
+        deposit_intent_to_packed_felts(attestation.payload()).expect("the canonical payload packs");
+    assert_eq!(
+        usize::from(intent_attachment.content().num_words()),
+        packed_felts.len().div_ceil(4),
+        "the intent attachment is the packed payload, zero-padded to the word boundary"
     );
 
     let attestation_attachment = attachments
         .find(
-            miden_protocol::note::NoteAttachmentScheme::new(XRESERVE_MINT_ATTACHMENT_SCHEME)
-                .expect("unit-04's scheme id is a valid scheme"),
+            NoteAttachmentScheme::new(XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME)
+                .expect("unit-04's attestation scheme id is a valid scheme"),
         )
-        .expect("the scheme-1 attestation attachment is present");
+        .expect("the scheme-5 attestation attachment is present");
 
     // the WIDTH is unit-04's constant, consumed by reference — not a number restated here
     assert_eq!(
         usize::from(attestation_attachment.content().num_words()),
-        XRESERVE_MINT_ATTACHMENT_NUM_WORDS,
+        XUSDC_MINT_ATTESTATION_NUM_WORDS,
         "the attestation attachment is unit-04's width"
     );
 
@@ -203,68 +240,153 @@ fn t_the_faucet_argument_drives_the_route_and_the_tag() {
     );
 }
 
-// THE STORAGE — THE VALIDATED DEPOSITINTENT PREIMAGE (DC-1)
+// THE STORAGE — THE STOCK LAYOUT EMBEDDING THE ATTESTED OUTPUT
 // ================================================================================================
 
-/// The note's storage IS the validated DepositIntent, packed by unit-04's OWNED codec
-/// (`deposit_intent_to_packed_felts`, consumed here BY REFERENCE — the test does not restate the
-/// 60-felt header / ⌈hookDataLen/4⌉ packing, it calls the owner).
+/// The note's storage is the STOCK `MintNoteStorage::FungiblePublic` layout —
+/// `SCRIPT_ROOT(4) + SERIAL(4) + ASSET_ID(4) + ASSET_VALUE(4) + tag(1) + pad(3) +
+/// P2ID storage(2)` — and every attested value embedded in it is derived from the VALIDATED
+/// payload by unit-04's own codecs, consumed by reference: the P2ID recipe targets the intent's
+/// `remoteRecipient` (`bytes32_to_account_id`) under the canonical nonce-key serial
+/// (`bytes32_to_storage_map_key`), the asset is the scale-0-reduced attested amount
+/// (`uint256_to_asset_amount` at `XUSDC_DEPOSIT_SCALE_EXP`) bound to the faucet, and the
+/// output-note tag targets the attested recipient. This is the storage the faucet's attestation
+/// mint policy re-derives on-chain and `assert_eqw`s — a value invented by the relayer instead of
+/// taken from the payload would fail the ASSERT-MATCH binding there, and fails here first.
 #[test]
-fn t_storage_is_the_validated_deposit_intent_preimage() {
+fn t_storage_embeds_the_attested_output() {
     let attestation = validated_test_vector();
     let note = build_note();
 
-    let expected =
-        deposit_intent_to_packed_felts(attestation.payload()).expect("the canonical payload packs");
+    // the attested ingredients, re-derived through unit-04's OWNED codecs (by reference)
+    let header =
+        parse_deposit_intent_header(attestation.payload()).expect("the canonical payload parses");
+    let recipient_id = bytes32_to_account_id(&header.remote_recipient)
+        .expect("the canonical payload's remoteRecipient is a valid account id");
+    let limbs: [u32; 8] = bytes32_to_packed_felts(&header.amount)
+        .map(|limb| u32::try_from(limb.as_canonical_u64()).expect("a packed u32 limb"));
+    let amount = uint256_to_asset_amount(limbs, XUSDC_DEPOSIT_SCALE_EXP)
+        .expect("the attested amount reduces at unit-04's scale");
+    let asset = FungibleAsset::new(faucet_id(), u64::from(amount))
+        .expect("the reduced amount is a fungible asset of the faucet");
 
+    let items = note.storage().items();
     assert_eq!(
-        note.storage().items(),
-        expected.as_slice(),
-        "the note's storage is the packed preimage of the payload the relayer validated"
+        items.len(),
+        MintNote::MIN_NUM_STORAGE_ITEMS_PUBLIC + P2idNote::NUM_STORAGE_ITEMS,
+        "the stock fungible-public MINT layout with a P2ID output recipe: 22 items"
+    );
+
+    // SCRIPT_ROOT(4): the output-note recipe is a P2ID note — the stock standards root
+    assert_eq!(
+        &items[0..4],
+        P2idNote::script_root().as_elements(),
+        "the output recipe rides the stock P2ID script"
+    );
+
+    // SERIAL(4): the canonical nonce key — unit-04's owned bytes32→Word keying primitive over the
+    // payload's nonce, the SAME derivation the on-chain policy recomputes
+    assert_eq!(
+        &items[4..8],
+        Word::from(bytes32_to_storage_map_key(&header.nonce)).as_elements(),
+        "the output recipe's serial is the canonical nonce key"
+    );
+
+    // ASSET_ID(4) + ASSET_VALUE(4): the scale-0-reduced attested amount, bound to the faucet
+    assert_eq!(
+        &items[8..12],
+        asset.to_id_word().as_elements(),
+        "ASSET_ID binds the note to the faucet the asset is minted from"
+    );
+    assert_eq!(
+        &items[12..16],
+        asset.to_value_word().as_elements(),
+        "ASSET_VALUE carries the reduced attested amount"
+    );
+    // …and ASSET_VALUE[0] really is the PAYLOAD's amount (the DC-5 scale-0 identity): the u64 at
+    // the tail of the 32-byte big-endian wire amount
+    let wire_amount = u64::from_be_bytes(
+        header.amount[24..32]
+            .try_into()
+            .expect("the 8-byte tail of the 32-byte amount field"),
+    );
+    assert_eq!(
+        items[12],
+        Felt::try_from(wire_amount).expect("the canonical amount fits the field"),
+        "the embedded amount is the payload's attested amount, unreduced (scale 0)"
+    );
+
+    // tag(1) + pad(3): the output-note tag targets the ATTESTED recipient
+    assert_eq!(
+        items[16],
+        Felt::from(NoteTag::with_account_target(recipient_id)),
+        "the output-note tag targets the payload's remoteRecipient"
+    );
+    assert_eq!(&items[17..20], &[Felt::ZERO; 3], "word-alignment padding");
+
+    // P2ID storage(2): [suffix, prefix] — the attested recipient is the only account that can
+    // consume the minted output note
+    assert_eq!(
+        &items[20..22],
+        &[recipient_id.suffix(), recipient_id.prefix().as_felt()],
+        "the P2ID output recipe targets the payload's remoteRecipient account"
     );
 }
 
-/// …and the payload really comes from the ValidatedAttestation that was handed in: a validated
-/// attestation over a DIFFERENT canonical payload produces DIFFERENT storage.
+/// The validated DepositIntent payload travels VERBATIM in the scheme-4 attachment: its elements
+/// are unit-04's OWNED packing (`deposit_intent_to_packed_felts`, consumed here BY REFERENCE — the
+/// test does not restate the 60-felt header / ⌈hookDataLen/4⌉ packing, it calls the owner),
+/// zero-padded to the word boundary. And the attachment really tracks the VALIDATED payload that
+/// was handed in: attestations over two DIFFERENT canonical payloads produce different
+/// attachments.
 #[test]
-fn t_storage_follows_the_validated_payload() {
+fn t_the_intent_attachment_is_the_validated_payload() {
     let attester = attester_pubkey();
+    let scheme = NoteAttachmentScheme::new(XUSDC_MINT_INTENT_ATTACHMENT_SCHEME)
+        .expect("unit-04's intent scheme id is a valid scheme");
 
-    let with_hookdata = build_mint_note(
-        relayer_sender_id(),
-        faucet_id(),
-        &validated_over_vector_id("di-pos-hookdata"),
-        &attester,
-        &mut note_rng(1),
-    )
-    .expect("builds");
+    let intent_elements = |vector_id: &str, seed: u64| {
+        let note = build_mint_note(
+            relayer_sender_id(),
+            faucet_id(),
+            &validated_over_vector_id(vector_id),
+            &attester,
+            &mut note_rng(seed),
+        )
+        .expect("the canonical vector builds");
+        note.attachments()
+            .find(scheme)
+            .expect("the scheme-4 intent attachment is present")
+            .content()
+            .to_elements()
+    };
 
-    let empty_hookdata = build_mint_note(
-        relayer_sender_id(),
-        faucet_id(),
-        &validated_over_vector_id("di-pos-empty-hookdata"),
-        &attester,
-        &mut note_rng(1),
-    )
-    .expect("builds");
+    for vector_id in ["di-pos-hookdata", "di-pos-empty-hookdata"] {
+        let mut expected = deposit_intent_to_packed_felts(&fixtures::canonical_payload(vector_id))
+            .expect("the canonical payload packs");
+        while !expected.len().is_multiple_of(4) {
+            expected.push(Felt::ZERO);
+        }
+
+        assert_eq!(
+            intent_elements(vector_id, 1),
+            expected,
+            "vector {vector_id}: the attachment is the packed preimage of the payload the relayer \
+             validated, zero-padded to the word boundary"
+        );
+    }
 
     assert_ne!(
-        with_hookdata.storage().items(),
-        empty_hookdata.storage().items(),
-        "the storage tracks the validated payload, not a fixed blob"
-    );
-    assert_eq!(
-        empty_hookdata.storage().items(),
-        deposit_intent_to_packed_felts(&fixtures::canonical_payload("di-pos-empty-hookdata"))
-            .expect("packs")
-            .as_slice()
+        intent_elements("di-pos-hookdata", 1),
+        intent_elements("di-pos-empty-hookdata", 1),
+        "the attachment tracks the validated payload, not a fixed blob"
     );
 }
 
 // THE ATTESTATION ATTACHMENT — THE VALIDATED SIGNATURE + THE CONFIGURED PUBKEY
 // ================================================================================================
 
-/// The scheme-1 attachment carries the 65-byte signature the relayer VALIDATED (from
+/// The scheme-5 attachment carries the 65-byte signature the relayer VALIDATED (from
 /// `ValidatedAttestation`, never from a raw-bytes side door) and the 33-byte attester pubkey the
 /// OPERATOR configured — both in unit-04's felt encoding, checked by looking for the owner's own
 /// packing (`signature_felts` / `affine_pubkey_felts`) inside the attachment's elements. The test
@@ -279,7 +401,7 @@ fn t_attestation_attachment_carries_the_validated_signature_and_configured_pubke
     let elements = note
         .attachments()
         .find(
-            miden_protocol::note::NoteAttachmentScheme::new(XRESERVE_MINT_ATTACHMENT_SCHEME)
+            NoteAttachmentScheme::new(XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME)
                 .expect("valid scheme"),
         )
         .expect("the attestation attachment is present")
@@ -381,8 +503,8 @@ fn t_the_validated_signature_is_the_one_that_travels() {
 // THE NOTE'S SHAPE (unit-04's contract, observed — not restated)
 // ================================================================================================
 
-/// Public (the network-tx observability mandate), asset-less, sent by the relayer, tagged at the
-/// faucet.
+/// Public (the network-tx observability mandate — the stock `MintNote` conversion FORCES it),
+/// asset-less, sent by the relayer, tagged at the faucet.
 #[test]
 fn t_note_is_public_assetless_and_addressed_to_the_faucet() {
     let note = build_note();
@@ -395,7 +517,8 @@ fn t_note_is_public_assetless_and_addressed_to_the_faucet() {
     );
     assert!(
         note.assets().is_empty(),
-        "the mint note carries no assets — the faucet MINTS the amount, it is not transported"
+        "the mint note carries no assets — the faucet MINTS the amount (embedded in the storage's \
+         FungibleAsset), it is not transported"
     );
 }
 

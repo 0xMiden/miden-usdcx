@@ -74,7 +74,7 @@ Mint negatives (each client-side REJECTED, zero state change):
 - Row H (F7 same-block RIV — EVIDENCE for Circle/DEV-7, which stays OPEN): note `0x78fb8e84cdb1ccd6e0ebd1ca0207e3bad190e7a23b47666dff0ada6e7b2d44d8`; client-side consume accepted true, executed supply delta Some(100); user-RPC submission REJECTED true; on-chain supply 100 → 100 (unchanged); committed note found false, nullifier false, SyncNotes false. Full packet: `LNV5-F7-EVIDENCE-PACKET.md`.
 - Row I burn negatives (each client-side REJECTED, zero state change):
   - below-min → `burn amount is below the minimum burn size` (supply 100 → 100).
-  - wrong-asset → `the origin of the fungible asset is not this faucet` (supply 100 → 100).
+  - wrong-asset → `the faucet is not the origin of the asset` (v16 asset::validate_origin; supply 100 → 100).
   - while-paused → `the contract is paused` (supply 100 → 100).
 - Row J conservation: Σminted 100 − Σburned 100 == final token_supply 0; holder final balance 0.
 

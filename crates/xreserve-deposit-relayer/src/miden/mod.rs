@@ -7,7 +7,7 @@
 //! u32-LE-packed DepositIntent storage (DC-1), the scheme-1 attestation attachment, the scheme-2
 //! `NetworkAccountTarget` routing bind (F5), the forced `NoteType::Public`, the account-target tag,
 //! the compiled note script and its pinned root — is unit-04's, whole and entire
-//! (`XReserveMintNote::create`, `crates/xusdc-encoding/src/note/xreserve_mint.rs`). This module
+//! (`XUsdcMintNote::create`, `crates/xusdc-encoding/src/note/xreserve_mint.rs`). This module
 //! consumes it BY REFERENCE and restates none of it (single-owner rule): the faucet that must
 //! CONSUME the note and the library that BUILDS it are two halves of one contract, and a relayer
 //! that re-derived a single offset would be a second, silently drifting definition of it.

@@ -39,7 +39,7 @@ use miden_client::transaction::{TransactionId, TransactionRequestBuilder, Transa
 use miden_protocol::account::AccountId;
 use miden_protocol::Word;
 
-use xusdc_encoding::note::xreserve_admin::XReserveDomainInitNote;
+use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
 use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
 
 use crate::actors::{create_actors, Actors, AttesterKey};
@@ -299,9 +299,15 @@ pub async fn run_sanity(cfg: &SanityConfig, node_version: &str) -> Result<Sanity
     let mut d = SanityDriver {
         hc,
         faucet_id,
-        // Fresh-LOCAL: mints use the BASE_VECTOR header unchanged (its domain 7 / token match the
-        // fresh faucet's own domain_init). Existing-faucet: resolved from the DEPLOYED faucet below.
-        mint_config: None,
+        // Fresh-LOCAL: the fresh faucet's identifier is the own-id fixpoint the `identifier_init`
+        // note derives (`identifier_for(faucet_id)`), so mints must carry `remoteToken =
+        // account_id_to_bytes32(faucet_id)` — the OWN-ID config, not the vector token. `remoteDomain`
+        // already equals the build-seed MINT_DOMAIN. Existing-faucet: resolved from the DEPLOYED
+        // faucet below (same own-id shape, read from chain).
+        mint_config: Some(mintburn::MintDomainConfig::for_deployed_faucet(
+            mintburn::MINT_DOMAIN,
+            faucet_id,
+        )),
     };
     if !deployed_fresh {
         d.mint_config = Some(resolve_deployed_mint_config(&mut d, faucet_id).await?);
@@ -476,7 +482,7 @@ async fn resolve_deployed_mint_config(
             "the deployed faucet {faucet_id}'s stored identifier key {stored_identifier:?} does not \
              match bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id)) {expected_identifier:?}: \
              the mint gate (D5a) would reject every mint with WRONG_IDENTIFIER. The --faucet-id \
-             re-check requires the identifier A5's domain_init set from account_id_to_bytes32(faucet.id())."
+             re-check requires the identifier A5's identifier_init set from account_id_to_bytes32(faucet.id())."
         );
     }
     println!("resolved deployed-faucet mint config: domain={domain}, identifier verified");
@@ -499,41 +505,37 @@ async fn register_existing_faucet(hc: &mut HarnessClient, id: AccountId) -> Resu
     Ok(())
 }
 
-/// Deploys the production faucet on the running node: owner emits `domain_init` (matching the mint
-/// vector's domain), the faucet's first tx consumes it (first-deploy exemption), registered w/ client.
+/// Deploys the production faucet on the running node: the three non-identifier domain-config
+/// fields are BUILD-SEEDED from the mint vector's params (Wave-1 S1 / DEC-4), the owner emits
+/// `identifier_init` (the one post-deploy domain-config write), and the faucet's first tx consumes
+/// it (first-deploy exemption); registered w/ client.
 async fn deploy_fresh_faucet(hc: &mut HarnessClient, actors: &Actors) -> Result<AccountId> {
     let owner_id = actors.owner.id();
+    let domain = mintburn::lnv2_domain_params();
     let faucet = build_faucet_account(
         owner_id,
         actors.pauser.id(),
         actors.manager.id(),
+        actors.blk_manager.id(),
         DEPLOY_MAX_SUPPLY,
+        &domain,
         os_seed(),
     )?;
     let faucet_id = faucet.id();
     println!("deploying fresh faucet {faucet_id}");
 
-    let domain = mintburn::lnv2_domain_params();
-    let note1 = XReserveDomainInitNote::create(
-        owner_id,
-        faucet_id,
-        domain.domain,
-        domain.source_domain,
-        &domain.xreserve_contract,
-        domain.identifier_word(),
-        hc.client.rng(),
-    )
-    .context("building the domain_init note")?;
+    let note1 = XReserveIdentifierInitNote::create(owner_id, faucet_id, hc.client.rng())
+        .context("building the identifier_init note")?;
 
     let emit1 = TransactionRequestBuilder::new()
         .own_output_notes(vec![note1.clone()])
         .build()
-        .context("building the owner domain_init emit")?;
+        .context("building the owner identifier_init emit")?;
     let emit1_tx = hc
         .client
         .submit_new_transaction(owner_id, emit1)
         .await
-        .context("submitting the owner domain_init emit")?;
+        .context("submitting the owner identifier_init emit")?;
     wait_commit_bare(hc, emit1_tx).await?;
 
     hc.client
@@ -548,9 +550,9 @@ async fn deploy_fresh_faucet(hc: &mut HarnessClient, actors: &Actors) -> Result<
         .client
         .submit_new_transaction(faucet_id, deploy)
         .await
-        .context("submitting the faucet deploy (+domain_init) transaction")?;
+        .context("submitting the faucet deploy (+identifier_init) transaction")?;
     wait_commit_bare(hc, deploy_tx).await?;
-    println!("faucet deployed + domain_init committed");
+    println!("faucet deployed + identifier_init committed");
     Ok(faucet_id)
 }
 

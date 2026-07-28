@@ -94,7 +94,7 @@ pub const EXPECTED_LOG_LINES: &[ExpectedLogLine] = &[
         level: "ERROR",
         pattern: "all notes failed to be executed",
         explanation: "the ntx-builder attempting a deliberately-unconsumable routed allowlisted \
-                      note — the rows-A/B second domain_init (init-once) and the rows-C6 \
+                      note — the rows-A/B second identifier_init (init-once) and the rows-C6 \
                       non-authorized-sender admin notes; the on-chain MASM gate rejecting them \
                       NODE-SIDE is the negative's evidence (doomed notes are retried with \
                       backoff, so the line recurs). A failing POSITIVE cannot hide here: every \
@@ -105,7 +105,7 @@ pub const EXPECTED_LOG_LINES: &[ExpectedLogLine] = &[
         pattern: "network transaction failed",
         explanation: "the wrapper line of the same deliberately-unconsumable routed-note \
                       attempts (see 'all notes failed to be executed'): rows-A/B second \
-                      domain_init + rows-C6 non-authorized-sender admin notes, rejected by the \
+                      identifier_init + rows-C6 non-authorized-sender admin notes, rejected by the \
                       on-chain MASM gates node-side",
     },
     ExpectedLogLine {
@@ -462,7 +462,7 @@ pub async fn run_full_matrix(cfg: &RunConfig) -> Result<FullMatrixObservations> 
 
     let ab = run_rows_ab_on(cfg, "ab")
         .await
-        .context("rows A/B sub-run (deploy + domain_init)")?;
+        .context("rows A/B sub-run (deploy + identifier_init)")?;
     let cf = run_rows_cf_on(cfg, "cf")
         .await
         .context("rows C/F sub-run (admin + auth boundary)")?;

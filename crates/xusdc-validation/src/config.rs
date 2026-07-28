@@ -32,9 +32,12 @@ pub const TX_PROVER_PORT: u16 = 50051;
 /// operational (row K exercises it; rows A/B do not depend on it).
 pub const NETWORK_TX_AUTH_TOKEN: &str = "lnv-local-network-tx-auth";
 
-/// The domain-config parameters committed by the owner's `domain_init` note. LOCAL TEST
-/// values (Circle's real domain assignment is DEV-gated and stays OPEN — these exist to prove the
-/// write/read-back path, not to bind a real domain).
+/// The domain-config parameters of a run. Since the Wave-1 S1 recomposition the three fields
+/// `domain`/`source_domain`/`xreserve_contract` are BUILD-SEEDED via the builder's required
+/// `with_domain_config` (DEC-4), and ONLY the `identifier` is committed post-deploy by the owner's
+/// `identifier_init` note (the minimized replacement of the former four-field `domain_init`).
+/// LOCAL TEST values (Circle's real domain assignment is DEV-gated and stays OPEN — these exist to
+/// prove the seed/write/read-back path, not to bind a real domain).
 #[derive(Debug, Clone)]
 pub struct DomainParams {
     /// `domain` (u32) — the Miden-side domain id, element 0 of the domain slot.
@@ -43,14 +46,18 @@ pub struct DomainParams {
     pub source_domain: u32,
     /// `xreserve_contract` — the raw bytes32, stored as 8 u32-LE packed felts across two slots.
     pub xreserve_contract: [u8; 32],
-    /// `identifier` — the raw bytes32 whose `bytes32_to_key` Word is stored (the init-once
-    /// sentinel; must be non-empty).
+    /// `identifier` — a LEGACY raw bytes32 value. It is NO LONGER the faucet's identifier: since the
+    /// R2 identifier-binding fix the identifier is DERIVED from the faucet's own id at init
+    /// (`XReserveIdentifierInitNote::identifier_for(faucet_id)`, the account-id fixpoint), never from
+    /// this field. Retained only so `DomainParams` stays fully populated for the record/fixtures.
     pub identifier_bytes: [u8; 32],
 }
 
 impl DomainParams {
-    /// The identifier as the canonical `bytes32_to_key` Word — what `domain_init` stores and what
-    /// the D5a mint-path compare later reads.
+    /// The LEGACY vector-token identifier as the canonical `bytes32_to_key` Word. NOT the faucet's
+    /// actual identifier (that is the own-id fixpoint `identifier_for(faucet_id)`, derived at init) —
+    /// retained only for record/fixture completeness; the fresh-init assertions compute the own-id
+    /// key from `account.id()` directly.
     pub fn identifier_word(&self) -> Word {
         bytes32_to_storage_map_key(&self.identifier_bytes).into()
     }
@@ -66,9 +73,11 @@ impl DomainParams {
         }
     }
 
-    /// A SECOND, everywhere-different parameter set for the init-once negative: if the reinit
-    /// gate ever failed and the second note's values were written, every read-back assertion
-    /// would mismatch loudly.
+    /// A SECOND, everywhere-different parameter set for the init-once negative: the second
+    /// `identifier_init` note carries THIS set's identifier — if the reinit gate ever failed and
+    /// the second identifier were written, the read-back assertion would mismatch loudly. (The
+    /// other three fields stay everywhere-different too, documenting that no runtime writer for
+    /// them exists at all post-recomposition.)
     pub fn lnv1_reinit_attempt() -> Self {
         Self {
             domain: 9999,
@@ -144,9 +153,11 @@ pub struct RunConfig {
     pub stack: StackConfig,
     /// The faucet's `max_supply` at build (mutable post-deploy via `set_max_supply`).
     pub max_supply: u64,
-    /// The owner-committed domain params for the FIRST (succeeding) `domain_init`.
+    /// The run's domain params: the three build-seeded fields + the identifier the FIRST
+    /// (succeeding) `identifier_init` commits.
     pub domain_params: DomainParams,
-    /// The everywhere-different params for the SECOND (rejected) `domain_init`.
+    /// The everywhere-different params whose identifier the SECOND (rejected) `identifier_init`
+    /// carries.
     pub reinit_params: DomainParams,
     /// Keep the node stack running after the run (supervised/manual inspection); default false —
     /// the stack MUST be torn down so port 57291 is free for the next run.

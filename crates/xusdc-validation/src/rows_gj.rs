@@ -21,7 +21,7 @@
 //!   canary `c2_same_block_erasure_...` starvation, against the PRODUCTION note). Each Row-I negative
 //!   is a client-side trap + committed read-back proving zero state change.
 //!
-//! The arc: deploy (domain_init) → allowlist attester A (path N) → set_min_burn_size (path N) →
+//! The arc: deploy (identifier_init) → allowlist attester A (path N) → set_min_burn_size (path N) →
 //! mint to the holder (path N, holder consumes the P2ID) → Row-I negatives (below-min, wrong-asset,
 //! while-paused — the last pauses + unpauses via path N) → Row-H RIV (client-side execute + user-RPC
 //! submit-rejection) → Row-G two-block burn (path N) → Row-J conservation ledger.
@@ -33,10 +33,13 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use miden_client::rpc::domain::account::AccountStorageRequirements;
 use miden_client::rpc::domain::note::FetchedNote;
 use miden_client::rpc::NodeRpcClient;
 use miden_client::store::TransactionFilter;
-use miden_client::transaction::{TransactionId, TransactionRequestBuilder, TransactionStatus};
+use miden_client::transaction::{
+    ForeignAccount, TransactionId, TransactionRequestBuilder, TransactionStatus,
+};
 use miden_protocol::account::{
     Account, AccountId, StorageMapKey, StorageSlotName, StorageSlotPatch,
 };
@@ -46,10 +49,10 @@ use miden_protocol::note::{Note, NoteId, NoteInclusionProof, NoteTag};
 use miden_protocol::transaction::InputNote;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::Word;
-use xusdc_encoding::account::xreserve::MIN_BURN_SIZE_SLOT_LABEL;
+use miden_standards::account::policies::MinBurnAmount;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveDomainInitNote, XReservePauseNote, XReserveSetAttesterNote, XReserveSetMinBurnSizeNote,
-    XReserveUnpauseNote,
+    XReserveIdentifierInitNote, XReservePauseNote, XReserveSetAttesterNote,
+    XReserveSetMinBurnSizeNote, XReserveUnpauseNote,
 };
 use xusdc_encoding::note::xreserve_burn::FIXED_XUSDC_BURN_TAG;
 
@@ -133,8 +136,14 @@ fn token_supply(account: &Account) -> Result<u64> {
     )
 }
 
+/// The committed minimum burn size — read from the STOCK [`MinBurnAmount`] floor slot (`[min,0,0,0]`;
+/// Wave-1 S1: the custom `min_burn_size` slot is gone — the stock policy companion owns the floor).
 fn min_burn(account: &Account) -> Result<u64> {
-    Ok(value_slot(account, MIN_BURN_SIZE_SLOT_LABEL)?[0].as_canonical_u64())
+    account
+        .storage()
+        .get_item(MinBurnAmount::slot_name())
+        .map(|w| w[0].as_canonical_u64())
+        .context("reading the stock MinBurnAmount floor slot")
 }
 
 fn is_paused(account: &Account) -> Result<Word4> {
@@ -154,6 +163,28 @@ fn wallet_balance(account: &Account, faucet_id: AccountId) -> u64 {
             _ => None,
         })
         .sum()
+}
+
+/// Declares the faucet as a foreign account IFF `note` carries the faucet's (policed) xUSDC asset —
+/// the F4-reversal client-side coupling: a policed send/consume by a non-faucet account dyncalls the
+/// faucet's `basic_blocklist::check_policy`, so the faucet must be a foreign account. Admin notes
+/// (mint/domain/pause) carry no faucet asset and need none.
+fn policed_faucet_foreign(note: &Note, faucet_id: AccountId) -> Result<Vec<ForeignAccount>> {
+    let policed = note
+        .assets()
+        .iter()
+        .any(|a| matches!(a, Asset::Fungible(f) if f.faucet_id() == faucet_id));
+    if policed {
+        Ok(vec![ForeignAccount::public(
+            faucet_id,
+            AccountStorageRequirements::default(),
+        )
+        .context(
+            "declaring the faucet as a foreign account for the policed transfer",
+        )?])
+    } else {
+        Ok(vec![])
+    }
 }
 
 // THE DRIVER
@@ -243,7 +274,9 @@ impl Driver {
     /// Emits a note from `sender` (a regular-account tx the user RPC accepts) and waits for the emit
     /// to commit. Returns the emit block.
     async fn emit(&mut self, sender: AccountId, note: Note) -> Result<u32> {
+        let foreign = policed_faucet_foreign(&note, self.faucet_id)?;
         let req = TransactionRequestBuilder::new()
+            .foreign_accounts(foreign)
             .own_output_notes(vec![note])
             .build()
             .context("building an emit request")?;
@@ -504,7 +537,9 @@ impl Driver {
     /// The target wallet consumes `note` (a regular-account tx the user RPC accepts). Returns the
     /// consume block.
     async fn target_consume(&mut self, target: AccountId, note: Note) -> Result<u32> {
+        let foreign = policed_faucet_foreign(&note, self.faucet_id)?;
         let req = TransactionRequestBuilder::new()
+            .foreign_accounts(foreign)
             .build_consume_notes(vec![note])
             .context("building the target consume request")?;
         let tx = self
@@ -550,7 +585,8 @@ pub async fn run_rows_gj(cfg: &RunConfig) -> Result<RowsGjObservations> {
 pub async fn run_rows_gj_on(cfg: &RunConfig, client_label: &str) -> Result<RowsGjObservations> {
     let main_commit = git_head_commit();
 
-    // 2. Client + actors + the production faucet account (domain_init matching the mint vector).
+    // 2. Client + actors + the production faucet account (domain config BUILD-SEEDED to match the
+    //    mint vector; the identifier committed by the identifier_init note below).
     let mut hc = build_client(&cfg.stack, client_label).await?;
     hc.client.sync_state().await.context("initial sync")?;
     let actor_root = cfg.stack.run_root.join(format!("client-{client_label}"));
@@ -561,7 +597,9 @@ pub async fn run_rows_gj_on(cfg: &RunConfig, client_label: &str) -> Result<RowsG
         owner_id,
         actors.pauser.id(),
         actors.manager.id(),
+        actors.blk_manager.id(),
         cfg.max_supply,
+        &domain,
         os_seed(),
     )?;
     let faucet_id = faucet.id();
@@ -571,31 +609,26 @@ pub async fn run_rows_gj_on(cfg: &RunConfig, client_label: &str) -> Result<RowsG
         owner_id,
         actors.pauser.id(),
         actors.manager.id(),
+        actors.blk_manager.id(),
         cfg.max_supply,
+        &domain,
         os_seed(),
     )?;
     let other_faucet_id = other_faucet.id();
 
-    // 3. Deploy: the faucet's first tx consumes the owner's domain_init (first-deploy exemption).
-    let note1 = XReserveDomainInitNote::create(
-        owner_id,
-        faucet_id,
-        domain.domain,
-        domain.source_domain,
-        &domain.xreserve_contract,
-        domain.identifier_word(),
-        hc.client.rng(),
-    )
-    .context("building the domain_init note")?;
+    // 3. Deploy: the faucet's first tx consumes the owner's identifier_init (first-deploy exemption).
+    //    The seeded identifier is the faucet's own-id fixpoint (derived from faucet_id).
+    let note1 = XReserveIdentifierInitNote::create(owner_id, faucet_id, hc.client.rng())
+        .context("building the identifier_init note")?;
     let emit1 = TransactionRequestBuilder::new()
         .own_output_notes(vec![note1.clone()])
         .build()
-        .context("building the domain_init emit")?;
+        .context("building the identifier_init emit")?;
     let emit1_tx = hc
         .client
         .submit_new_transaction(owner_id, emit1)
         .await
-        .context("emit domain_init")?;
+        .context("emit identifier_init")?;
     let mut d = Driver {
         hc,
         actors,
@@ -604,7 +637,7 @@ pub async fn run_rows_gj_on(cfg: &RunConfig, client_label: &str) -> Result<RowsG
     };
     d.wait_commit(emit1_tx)
         .await
-        .context("waiting for the domain_init emit")?;
+        .context("waiting for the identifier_init emit")?;
     d.hc.client
         .add_account(&faucet, false)
         .await
@@ -701,8 +734,11 @@ async fn mint_to_holder(d: &mut Driver, units: u64, salt: u8) -> Result<u64> {
     let faucet_id = d.faucet_id;
     let supply_before = token_supply(&d.fetch_faucet().await?)?;
 
-    // Produce the attestation under an immutable borrow that ends before the rng borrow.
-    let payload = mintburn::mint_payload_from(
+    // Produce the attestation under an immutable borrow that ends before the rng borrow. Fresh
+    // faucet: splice the OWN-ID remoteToken so D5a's identifier compare passes against the
+    // note-derived own-id identifier (R2 identifier-binding fix).
+    let payload = mintburn::mint_payload_own_id(
+        faucet_id,
         BASE_VECTOR,
         holder,
         raw_for_units(units),
@@ -710,7 +746,7 @@ async fn mint_to_holder(d: &mut Driver, units: u64, salt: u8) -> Result<u64> {
         salt,
     );
     let attestation = d.actors.attester.attestation_for(&payload);
-    let note = xusdc_encoding::note::xreserve_mint::XReserveMintNote::create(
+    let note = xusdc_encoding::note::xreserve_mint::XUsdcMintNote::create(
         owner,
         faucet_id,
         &payload,

@@ -10,7 +10,7 @@
 //!
 //! The two real-node execution modes the values come from (LNV-1 / LNV-2 posture, reused):
 //! - **path N (ntx-builder)** — the ONLY way to *commit* a post-deploy faucet state change at
-//!   v0.15.1. Row D's happy-path mints are emitted as routed, allowlisted `XReserveMintNote`s and
+//!   v0.15.1. Row D's happy-path mints are emitted as routed, allowlisted `XUsdcMintNote`s and
 //!   the running ntx-builder auto-executes the faucet's consumption; the driver reads the committed
 //!   `token_supply` + `usedNonces[nonce]` back and captures the emitted P2ID recipient note.
 //! - **client-side execute** — Row E's negatives (and the recipient's committed P2ID consume). Each

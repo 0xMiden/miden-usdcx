@@ -1,6 +1,7 @@
 //! LNV-2 admin-suite + auth-boundary gate: the one-command rows-C/F run.
 //!
-//! Boots a FRESH local stack, deploys the production faucet (domain_init matching the mint vector),
+//! Boots a FRESH local stack, deploys the production faucet (domain config build-seeded to match
+//! the mint vector, identifier_init as the first admin note),
 //! drives the whole rows-C (admin suite) + row-F (auth boundary) arc — admin state changes committed
 //! via the ntx-builder (path N); mint/burn + auth-boundary rejects proven by client-side kernel traps
 //! — applies the rows-C/F assertion suite, writes `evidence-cf.json`, and tears the stack down.

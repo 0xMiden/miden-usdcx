@@ -4,8 +4,11 @@
 //! The builder is thin ON PURPOSE. It performs exactly two acts: it bundles the attestation the
 //! relayer VALIDATED (`ValidatedAttestation` — the type that has passed the §8.1 raw-keccak binding
 //! and the 65-byte shape check) with the attester pubkey the OPERATOR configured, and it hands both,
-//! plus the payload, to unit-04's [`XReserveMintNote::create`]. Everything a mint note IS — the
-//! packed storage, the two attachments, the tag, the note type, the script — is decided there.
+//! plus the payload, to unit-04's [`XUsdcMintNote::create`]. Everything a mint note IS — the
+//! STOCK MintNote storage (the attested P2ID recipe + amount + tag), the three attachments
+//! (scheme-4 intent, scheme-5 attestation, scheme-2 routing), the note type, the stock script —
+//! is decided there (Wave-1 S1: the transport is the standards MintNote; the faucet's attestation
+//! mint policy verifies these attachments and assert-matches the storage).
 //!
 //! **Why the pubkey is a parameter and the signature is not.** Circle's attestation object carries
 //! three fields: `payload`, `messageHash`, `attestation` (the 65-byte `r‖s‖v`). It does NOT carry
@@ -29,7 +32,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::Note;
 
-use xusdc_encoding::note::xreserve_mint::{MintAttestation, XReserveMintNote};
+use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::xreserve::encoding::affine_pubkey_felts;
 
 use crate::circle::schema::ValidatedAttestation;
@@ -107,7 +110,7 @@ impl AttesterPubkey {
 }
 
 /// Builds the mint note for a validated Circle deposit attestation — by DELEGATION to unit-04's
-/// [`XReserveMintNote::create`], which owns every byte of the note's form.
+/// [`XUsdcMintNote::create`], which owns every byte of the note's form.
 ///
 /// `sender` is the relayer's own account (the note's producer), `faucet_id` the xUSDC faucet the
 /// note is routed at (a PUBLIC network account — the scheme-2 routing attachment can bind nothing
@@ -135,7 +138,7 @@ pub fn build_mint_note<R: FeltRng>(
 ) -> Result<Note, RelayerError> {
     let mint_attestation = MintAttestation::new(attestation.attestation(), *attester.as_bytes());
 
-    XReserveMintNote::create(
+    XUsdcMintNote::create(
         sender,
         faucet_id,
         attestation.payload(),

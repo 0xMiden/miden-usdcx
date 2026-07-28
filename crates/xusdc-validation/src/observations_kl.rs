@@ -124,7 +124,7 @@ pub struct RowLObservations {
 /// (rows A–J, each driven on the SAME fresh node in matrix order) plus the derived rows K and L.
 #[derive(Debug)]
 pub struct FullMatrixObservations {
-    /// Rows A/B (deploy + recognize; `domain_init` init-once).
+    /// Rows A/B (deploy + recognize; `identifier_init` init-once).
     pub ab: RowsAbObservations,
     /// Rows C/F (admin suite; F5 auth boundary).
     pub cf: RowsCfObservations,

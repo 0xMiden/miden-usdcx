@@ -10,9 +10,12 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use miden_client::rpc::domain::account::AccountStorageRequirements;
 use miden_client::rpc::NodeRpcClient;
 use miden_client::store::TransactionFilter;
-use miden_client::transaction::{TransactionId, TransactionRequestBuilder, TransactionStatus};
+use miden_client::transaction::{
+    ForeignAccount, TransactionId, TransactionRequestBuilder, TransactionStatus,
+};
 use miden_protocol::account::{Account, AccountId, StorageMapKey, StorageSlotName};
 use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
@@ -20,9 +23,10 @@ use miden_protocol::note::{Note, NoteId, NoteTag};
 use miden_protocol::transaction::InputNote;
 use miden_protocol::Word;
 
+use miden_standards::account::policies::MinBurnAmount;
 use xusdc_encoding::account::xreserve::{
-    DOMAIN_CONFIG_SLOT_LABEL, IDENTIFIER_CONFIG_SLOT_LABEL, MIN_BURN_SIZE_SLOT_LABEL,
-    USED_NONCES_SLOT_LABEL, XRESERVE_ATTESTERS_SLOT_LABEL,
+    DOMAIN_CONFIG_SLOT_LABEL, IDENTIFIER_CONFIG_SLOT_LABEL, USED_NONCES_SLOT_LABEL,
+    XRESERVE_ATTESTERS_SLOT_LABEL,
 };
 
 use crate::client::HarnessClient;
@@ -75,8 +79,15 @@ pub(crate) fn max_supply(account: &Account) -> Result<u64> {
     Ok(value_slot(account, TOKEN_CONFIG_SLOT_LABEL)?[1].as_canonical_u64())
 }
 
+/// The committed minimum burn size — read from the STOCK [`MinBurnAmount`] floor slot
+/// (`[min,0,0,0]`; Wave-1 S1: the custom `min_burn_size` slot is gone — the stock policy
+/// companion owns the floor the stock `set_min_burn_amount` setter writes).
 pub(crate) fn min_burn(account: &Account) -> Result<u64> {
-    Ok(value_slot(account, MIN_BURN_SIZE_SLOT_LABEL)?[0].as_canonical_u64())
+    account
+        .storage()
+        .get_item(MinBurnAmount::slot_name())
+        .map(|w| w[0].as_canonical_u64())
+        .context("reading the stock MinBurnAmount floor slot")
 }
 
 /// The faucet's configured `domain` (element 0 of the domain-config slot) — the value the D5a mint
@@ -149,6 +160,28 @@ fn wallet_balance(account: &Account, faucet_id: AccountId) -> u64 {
         .sum()
 }
 
+/// Declares the faucet as a foreign account IFF `note` carries the faucet's (policed) xUSDC asset —
+/// the F4-reversal client-side coupling: a policed send/consume by a non-faucet account dyncalls the
+/// faucet's `basic_blocklist::check_policy`, so the faucet must be a foreign account. Admin notes
+/// (mint/domain/pause) carry no faucet asset and need none.
+fn policed_faucet_foreign(note: &Note, faucet_id: AccountId) -> Result<Vec<ForeignAccount>> {
+    let policed = note
+        .assets()
+        .iter()
+        .any(|a| matches!(a, Asset::Fungible(f) if f.faucet_id() == faucet_id));
+    if policed {
+        Ok(vec![ForeignAccount::public(
+            faucet_id,
+            AccountStorageRequirements::default(),
+        )
+        .context(
+            "declaring the faucet as a foreign account for the policed transfer",
+        )?])
+    } else {
+        Ok(vec![])
+    }
+}
+
 // THE DRIVER
 // ================================================================================================
 
@@ -214,7 +247,9 @@ impl SanityDriver {
 
     /// Emits `note` from `sender` (a regular-account tx the user RPC accepts). Returns the emit block.
     pub(crate) async fn emit(&mut self, sender: AccountId, note: Note) -> Result<u32> {
+        let foreign = policed_faucet_foreign(&note, self.faucet_id)?;
         let req = TransactionRequestBuilder::new()
+            .foreign_accounts(foreign)
             .own_output_notes(vec![note])
             .build()
             .context("building an emit request")?;
@@ -389,8 +424,11 @@ impl SanityDriver {
     }
 
     /// `target` consumes `note` (a regular-account tx the user RPC accepts). Returns the consume block.
+    /// The consumed note carries policed xUSDC (F4-reversal), so the faucet is declared foreign.
     pub(crate) async fn target_consume(&mut self, target: AccountId, note: Note) -> Result<u32> {
+        let foreign = policed_faucet_foreign(&note, self.faucet_id)?;
         let req = TransactionRequestBuilder::new()
+            .foreign_accounts(foreign)
             .build_consume_notes(vec![note])
             .context("building the target consume request")?;
         let tx = self

@@ -15,7 +15,7 @@
 //! ([`StackConfig::log_dir`]).
 
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -55,8 +55,29 @@ fn port_open(port: u16) -> bool {
     .is_ok()
 }
 
+/// The cargo target directory the v16 node-bootstrap script builds `gen-genesis` into.
+///
+/// `scripts/start-test-node.sh` runs `cargo build --release -p test-node-genesis --bin gen-genesis`
+/// (no `--target-dir`) and resolves the binary at `${CARGO_TARGET_DIR:-$ROOT/target}/release/
+/// gen-genesis`. Left at its default that build writes into the EXTERNAL client-repo `target/`,
+/// which in a restricted sandbox is read-only / owned by another user — bootstrap then dies with
+/// `failed to open .../target/release/.cargo-build-lock: Permission denied` BEFORE any node service
+/// starts (the LNV real-node bootstrap blocker documented across rounds 4-8). This redirects the
+/// build into a WRITABLE, harness-owned dir under the per-run `run_root`, so it never touches the
+/// external checkout. A non-empty caller-set `CARGO_TARGET_DIR` (an operator-provisioned writable
+/// target) is honored as-is; a blank one falls back to the safe default. The script's `cargo
+/// install` step uses an explicit `--target-dir` and is unaffected by this variable.
+pub fn node_build_target_dir(run_root: &Path, caller_override: Option<&str>) -> PathBuf {
+    match caller_override {
+        Some(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
+        _ => run_root.join("node-cargo-target"),
+    }
+}
+
 /// Runs a client-repo node script (`start-test-node.sh` / `stop-test-node.sh`) from the client-repo
-/// dir with the node toolchain on `PATH` and a writable `TMPDIR`.
+/// dir with the node toolchain on `PATH`, a writable `TMPDIR`, and a writable `CARGO_TARGET_DIR`
+/// (see [`node_build_target_dir`] — so the `gen-genesis` build never touches the cross-owned
+/// external checkout target).
 fn run_node_script(config: &StackConfig, script: &str, extra_arg: Option<&str>) -> Result<()> {
     let script_path = config.client_repo_dir.join("scripts").join(script);
     if !script_path.exists() {
@@ -73,11 +94,18 @@ fn run_node_script(config: &StackConfig, script: &str, extra_arg: Option<&str>) 
         std::env::var("PATH").unwrap_or_default()
     );
     let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| format!("{home}/tmp"));
+    // Redirect the script's `gen-genesis` release build off the (often read-only / cross-owned)
+    // external checkout target and into a writable, harness-owned dir under `run_root` — otherwise
+    // bootstrap dies on `.cargo-build-lock: Permission denied` before any node service starts.
+    let caller_target = std::env::var("CARGO_TARGET_DIR").ok();
+    let target_dir = node_build_target_dir(&config.run_root, caller_target.as_deref());
+    std::fs::create_dir_all(&target_dir).ok();
     let mut cmd = Command::new("bash");
     cmd.arg(&script_path)
         .current_dir(&config.client_repo_dir)
         .env("PATH", path)
-        .env("TMPDIR", tmpdir);
+        .env("TMPDIR", tmpdir)
+        .env("CARGO_TARGET_DIR", &target_dir);
     if let Some(a) = extra_arg {
         cmd.arg(a);
     }

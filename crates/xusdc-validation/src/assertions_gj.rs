@@ -30,23 +30,27 @@ use crate::observations_gj::{
 pub use xusdc_encoding::note::xreserve_burn::FIXED_XUSDC_BURN_TAG;
 
 // EXACT on-chain error substrings the Row-I rejects must carry (single source of truth in the
-// shipped MASM: `burn_policy.masm` for below-min, the stock `pausable` primitive for pause, the
-// stock kernel `fungible_asset::validate_origin` for the wrong-asset origin gate). A reject that
-// does not carry ITS error is not the gate the negative proves — the assertion rejects it. Below-min
-// is an xreserve-OWNED gate (carries the message); pause + wrong-asset are STOCK/KERNEL gates that
+// shipped MASM — since the Wave-1 S1 recomposition ALL THREE are STOCK/KERNEL gates: the stock
+// `min_burn_amount.masm` floor policy for below-min, the stock `pausable` primitive for pause, and
+// the stock kernel `asset::validate_origin` for the wrong-asset origin gate). A reject that does
+// not carry ITS error is not the gate the negative proves — the assertion rejects it. Stock gates
 // surface a client-side trap CODE-only (LNV-2 posture), so the matcher also accepts the derived
 // `err_code`.
 // ================================================================================================
 
-/// R-BURN-2 (`burn_policy::check_policy`): the burn amount is below the configured minimum burn size.
-pub const ERR_BURN_BELOW_MIN: &str = "burn amount is below the minimum burn size";
+/// R-BURN-2 — the STOCK `MinBurnAmount::check_policy` floor gate (Wave-1 S1: the custom
+/// `burn_policy.masm` is deleted; the stock policy asserts `min <= amount` against the
+/// `MinBurnAmount::slot_name()` floor slot).
+pub const ERR_BURN_BELOW_MIN: &str =
+    "amount to be burned must exceed specified minimum burn amount";
 /// R-BURN-3 / the stock pause gate (`pausable::assert_not_paused`, `ERR_PAUSABLE_IS_PAUSED`): the
 /// faucet is paused, so `execute_burn_policy` halts the burn before the policy runs.
 pub const ERR_PAUSED: &str = "the contract is paused";
-/// The stock kernel fungible-asset origin gate (`fungible_asset::validate_origin`,
-/// `ERR_FUNGIBLE_ASSET_FAUCET_IS_NOT_ORIGIN`): the burned asset was not issued by this faucet, so
-/// `faucet::burn` traps — a faucet can only burn its own token.
-pub const ERR_WRONG_ASSET_ORIGIN: &str = "the origin of the fungible asset is not this faucet";
+/// The stock kernel asset origin gate (`asset::validate_origin`, `ERR_FAUCET_IS_NOT_ASSET_ORIGIN`;
+/// v16 faucet.masm:72 — v15 routed through `fungible_asset::validate_origin` instead): the burned
+/// asset was not issued by this faucet, so `faucet::burn` traps — a faucet can only burn its own
+/// token.
+pub const ERR_WRONG_ASSET_ORIGIN: &str = "the faucet is not the origin of the asset";
 
 // SHARED CHECK HELPERS
 // ================================================================================================

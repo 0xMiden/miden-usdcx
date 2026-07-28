@@ -7,19 +7,20 @@
 //! 1. Bootstrap + start the fresh four-process stack ([`crate::stack`]).
 //! 2. Assemble the client ([`crate::client`]) and the actors ([`crate::actors`]).
 //! 3. Build the production faucet account locally ([`crate::deploy`]) — its id exists before any
-//!    chain contact.
-//! 4. The OWNER emits `domain_init` note #1 (creator-committed domain-config params). This is the owner
-//!    wallet's first transaction, which also materializes the owner on-chain.
+//!    chain contact. The three non-identifier domain-config fields are BUILD-SEEDED into it
+//!    (Wave-1 S1 / DEC-4); only the identifier awaits its admin note.
+//! 4. The OWNER emits `identifier_init` note #1 (the creator-committed identifier). This is the
+//!    owner wallet's first transaction, which also materializes the owner on-chain.
 //! 5. **Deploy = the faucet's first transaction consuming that note.** At v0.15.1 the user RPC
-//!    admits network-account transactions ONLY at first deployment, so `domain_init` rides the
+//!    admits network-account transactions ONLY at first deployment, so `identifier_init` rides the
 //!    deploy transaction — this IS "the first admin note" realized against the real node. The
 //!    scriptless request consumes note #1 under `AuthNetworkAccount` (allowlisted note, new
 //!    account → nonce 0→1).
 //! 6. Fetch the account from the NODE (`GetAccount`) → row-A + row-B read-back observations.
-//! 7. The OWNER emits `domain_init` note #2 (everywhere-different params) and the harness
-//!    attempts the faucet-side consumption client-side: the kernel must trap the init-once gate
-//!    (`ERR_XRESERVE_DOMAIN_REINIT`) during execution — no provable second-init transaction
-//!    exists. The error text is captured verbatim.
+//! 7. The OWNER emits `identifier_init` note #2 (an everywhere-different identifier) and the
+//!    harness attempts the faucet-side consumption client-side: the kernel must trap the init-once
+//!    gate (`ERR_XRESERVE_IDENTIFIER_REINIT`) during execution — no provable second-init
+//!    transaction exists. The error text is captured verbatim.
 //! 8. Watch a bounded window: note #2 must stay unconsumed on-chain (checked against the NODE's
 //!    nullifier set — nothing, including the node's own ntx-builder, which sees an allowlisted
 //!    note routed at a network account, may execute it), and the re-fetched account state must be
@@ -34,11 +35,11 @@ use miden_client::store::TransactionFilter;
 use miden_client::transaction::{TransactionId, TransactionRequestBuilder, TransactionStatus};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::Note;
-use xusdc_encoding::note::xreserve_admin::XReserveDomainInitNote;
+use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
 
 use crate::actors::create_actors;
 use crate::client::{build_client, os_seed, HarnessClient};
-use crate::config::{DomainParams, RunConfig};
+use crate::config::RunConfig;
 use crate::deploy::build_faucet_account;
 use crate::observations::RowsAbObservations;
 use crate::stack::NodeStack;
@@ -121,23 +122,18 @@ async fn note_consumed_on_chain(hc: &HarnessClient, note: &Note) -> Result<bool>
     Ok(heights.get(&nullifier).copied().flatten().is_some())
 }
 
-/// Builds a `domain_init` note from `params` (owner-sent, faucet-targeted).
-fn domain_init_note(
+/// Builds an `identifier_init` note (owner-sent, faucet-targeted). The seeded identifier is DERIVED
+/// from `faucet` — `identifier_for(faucet)` = `bytes32_to_key(account_id_to_bytes32(faucet))`, the
+/// own-id fixpoint — so it is BOUND to its target (the R2 identifier-binding fix; no caller-chosen
+/// identifier). The minimized DEC-4 admin note: the OTHER three domain-config fields are build-seeded
+/// and have no runtime writer.
+fn identifier_init_note(
     hc: &mut HarnessClient,
     owner: miden_protocol::account::AccountId,
     faucet: miden_protocol::account::AccountId,
-    params: &DomainParams,
 ) -> Result<Note> {
-    XReserveDomainInitNote::create(
-        owner,
-        faucet,
-        params.domain,
-        params.source_domain,
-        &params.xreserve_contract,
-        params.identifier_word(),
-        hc.client.rng(),
-    )
-    .context("building a domain_init note")
+    XReserveIdentifierInitNote::create(owner, faucet, hc.client.rng())
+        .context("building an identifier_init note")
 }
 
 /// Runs the full LNV-1 row-A/B flow on its own fresh stack. See the module docs for the step
@@ -175,18 +171,22 @@ pub async fn run_rows_ab_on(cfg: &RunConfig, client_label: &str) -> Result<RowsA
     let actors = create_actors(&mut hc, &actor_root).await?;
     let owner_id = actors.owner.id();
 
-    // 3. The production faucet account, locally composed (nonce 0, seed embedded).
+    // 3. The production faucet account, locally composed (nonce 0, seed embedded; the three
+    //    non-identifier domain-config fields BUILD-SEEDED from the run params).
     let faucet = build_faucet_account(
         owner_id,
         actors.pauser.id(),
         actors.manager.id(),
+        actors.blk_manager.id(),
         cfg.max_supply,
+        &cfg.domain_params,
         os_seed(),
     )?;
     let faucet_id = faucet.id();
 
-    // 4. Owner emits domain_init #1 (also the owner wallet's materializing first transaction).
-    let note1 = domain_init_note(&mut hc, owner_id, faucet_id, &cfg.domain_params)?;
+    // 4. Owner emits identifier_init #1 (also the owner wallet's materializing first transaction).
+    //    The seeded identifier is the faucet's own-id fixpoint (derived from faucet_id).
+    let note1 = identifier_init_note(&mut hc, owner_id, faucet_id)?;
     let emit1 = TransactionRequestBuilder::new()
         .own_output_notes(vec![note1.clone()])
         .build()
@@ -195,7 +195,7 @@ pub async fn run_rows_ab_on(cfg: &RunConfig, client_label: &str) -> Result<RowsA
         .client
         .submit_new_transaction(owner_id, emit1)
         .await
-        .context("submitting the owner's domain_init #1 emit transaction")?;
+        .context("submitting the owner's identifier_init #1 emit transaction")?;
     wait_for_tx_commit(&mut hc, emit1_tx).await?;
 
     // 5. Deploy: the faucet's FIRST transaction consumes the first admin note (path C; the
@@ -212,7 +212,7 @@ pub async fn run_rows_ab_on(cfg: &RunConfig, client_label: &str) -> Result<RowsA
         .client
         .submit_new_transaction(faucet_id, deploy)
         .await
-        .context("submitting the faucet deploy (+domain_init) transaction")?;
+        .context("submitting the faucet deploy (+identifier_init) transaction")?;
     let deploy_block = wait_for_tx_commit(&mut hc, deploy_tx).await?;
 
     // 6. Node-truth fetch (GetAccount) for rows A + B.
@@ -222,9 +222,11 @@ pub async fn run_rows_ab_on(cfg: &RunConfig, client_label: &str) -> Result<RowsA
         .await
         .map_err(|e| anyhow::anyhow!("GetAccount({faucet_id}) after deploy: {e}"))?;
 
-    // 7. Owner emits domain_init #2 (everywhere-different params), then the harness attempts the
-    //    faucet-side consumption CLIENT-SIDE: the init-once gate must trap during execution.
-    let note2 = domain_init_note(&mut hc, owner_id, faucet_id, &cfg.reinit_params)?;
+    // 7. Owner emits identifier_init #2 (a DISTINCT note — fresh serial — but carrying the SAME
+    //    own-id identifier, since it too is derived from faucet_id), then the harness attempts the
+    //    faucet-side consumption CLIENT-SIDE: the init-once gate must trap during execution (a second
+    //    init of the same faucet derives the same key → traps as reinit, regardless of value).
+    let note2 = identifier_init_note(&mut hc, owner_id, faucet_id)?;
     let emit2 = TransactionRequestBuilder::new()
         .own_output_notes(vec![note2.clone()])
         .build()
@@ -233,7 +235,7 @@ pub async fn run_rows_ab_on(cfg: &RunConfig, client_label: &str) -> Result<RowsA
         .client
         .submit_new_transaction(owner_id, emit2)
         .await
-        .context("submitting the owner's domain_init #2 emit transaction")?;
+        .context("submitting the owner's identifier_init #2 emit transaction")?;
     let emit2_block = wait_for_tx_commit(&mut hc, emit2_tx).await?;
 
     let reinit = TransactionRequestBuilder::new()

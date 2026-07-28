@@ -2,7 +2,8 @@
 //! [`RowsDeObservations`] the rows-D/E assertion suite judges.
 //!
 //! Execution model (LNV-1 posture, LNV-2-confirmed, reused verbatim):
-//! - **Row D happy-path mints commit via path N (the ntx-builder).** Each `XReserveMintNote` is
+//! - **Row D happy-path mints commit via path N (the ntx-builder).** Each `XUsdcMintNote` (the
+//!   STOCK standards MintNote carrying the attested transport as attachments — Wave-1 S1) is
 //!   emitted from the owner/relayer wallet (a regular-account tx the user RPC accepts) carrying the
 //!   routing attachment; the running ntx-builder auto-executes the faucet's consumption. The driver
 //!   polls `GetAccount` until the committed `token_supply` rose, reads `usedNonces[nonce]` back,
@@ -13,7 +14,7 @@
 //!   because nothing is submitted the committed `token_supply` / nonce registry cannot move — which
 //!   the driver reads back before/after to prove zero state change.
 //!
-//! The arc: deploy (domain_init) → allowlist attester A (path N) → Row D variant 1 (empty-hookData,
+//! The arc: deploy (identifier_init) → allowlist attester A (path N) → Row D variant 1 (empty-hookData,
 //! committed + recipient-consumed) → Row D variant 2 (hookData-bearing, committed + recipient-consumed)
 //! → Row E negatives (replay, forged signature, non-allowlisted attester, non-zero fee, tampered
 //! payload) each a client-side reject + read-back.
@@ -21,9 +22,12 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use miden_client::rpc::domain::account::AccountStorageRequirements;
 use miden_client::rpc::NodeRpcClient;
 use miden_client::store::TransactionFilter;
-use miden_client::transaction::{TransactionId, TransactionRequestBuilder, TransactionStatus};
+use miden_client::transaction::{
+    ForeignAccount, TransactionId, TransactionRequestBuilder, TransactionStatus,
+};
 use miden_protocol::account::{Account, AccountId, StorageMapKey, StorageSlotName};
 use miden_protocol::asset::Asset;
 use miden_protocol::note::{Note, NoteTag};
@@ -31,15 +35,15 @@ use miden_protocol::transaction::InputNote;
 use miden_protocol::Word;
 use miden_standards::note::P2idNote;
 use xusdc_encoding::account::xreserve::USED_NONCES_SLOT_LABEL;
-use xusdc_encoding::note::xreserve_admin::{XReserveDomainInitNote, XReserveSetAttesterNote};
-use xusdc_encoding::note::xreserve_mint::XReserveMintNote;
+use xusdc_encoding::note::xreserve_admin::{XReserveIdentifierInitNote, XReserveSetAttesterNote};
+use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
 
 use crate::actors::{create_actors, Actors};
 use crate::client::{build_client, os_seed, HarnessClient};
 use crate::config::RunConfig;
 use crate::deploy::build_faucet_account;
 use crate::mintburn::{
-    self, fee_limbs_for, hook_data_len, mint_note_with_fee, mint_payload_from, nonce_key,
+    self, fee_limbs_for, hook_data_len, mint_note_with_fee, mint_payload_own_id, nonce_key,
     raw_for_units, BASE_VECTOR, HOOKDATA_VECTOR,
 };
 use crate::observations_cf::{Verdict, Word4};
@@ -341,9 +345,15 @@ impl Driver {
     }
 
     /// The recipient wallet consumes `note` (a regular-account tx the user RPC accepts). Returns the
-    /// consume block.
+    /// consume block. xUSDC is POLICED (F4-reversal): the receive callback dyncalls the faucet's
+    /// `basic_blocklist::check_policy`, so the faucet MUST be declared as a foreign account.
     async fn recipient_consume(&mut self, recipient: AccountId, note: Note) -> Result<u32> {
         let req = TransactionRequestBuilder::new()
+            .foreign_accounts([ForeignAccount::public(
+                self.faucet_id,
+                AccountStorageRequirements::default(),
+            )
+            .context("declaring the faucet as a foreign account for the policed consume")?])
             .build_consume_notes(vec![note])
             .context("building the recipient consume request")?;
         let tx = self
@@ -362,12 +372,15 @@ impl Driver {
         self.actors.recipient.id()
     }
 
-    /// Builds a valid `XReserveMintNote` attested by attester `A` to the recipient.
+    /// Builds a valid `XUsdcMintNote` attested by attester `A` to the recipient.
     fn valid_mint(&mut self, vector_id: &str, units: u64, salt: u8) -> Result<(Note, Vec<u8>)> {
         let f = self.faucet_id;
         let sender = self.owner();
         let recipient = self.recipient();
-        let payload = mint_payload_from(
+        // Fresh faucet: splice the OWN-ID remoteToken so D5a's identifier compare passes against the
+        // note-derived own-id identifier (R2 identifier-binding fix).
+        let payload = mint_payload_own_id(
+            f,
             vector_id,
             recipient,
             raw_for_units(units),
@@ -375,9 +388,8 @@ impl Driver {
             salt,
         );
         let attestation = self.actors.attester.attestation_for(&payload);
-        let note =
-            XReserveMintNote::create(sender, f, &payload, &attestation, self.hc.client.rng())
-                .context("building a valid XReserveMintNote")?;
+        let note = XUsdcMintNote::create(sender, f, &payload, &attestation, self.hc.client.rng())
+            .context("building a valid XUsdcMintNote")?;
         Ok((note, payload))
     }
 }
@@ -457,7 +469,7 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
         let sender = d.owner();
         let attestation = d.actors.attester.attestation_for(replay_payload);
         let note =
-            XReserveMintNote::create(sender, f, replay_payload, &attestation, d.hc.client.rng())
+            XUsdcMintNote::create(sender, f, replay_payload, &attestation, d.hc.client.rng())
                 .context("building the replay mint note")?;
         let key = nonce_key(replay_payload);
         out.push(
@@ -478,7 +490,8 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
         let f = d.faucet_id;
         let sender = d.owner();
         let recipient = d.recipient();
-        let payload = mint_payload_from(
+        let payload = mint_payload_own_id(
+            f,
             BASE_VECTOR,
             recipient,
             raw_for_units(E_UNITS),
@@ -487,7 +500,7 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
         );
         // A well-formed ECDSA signature over a digest that is NOT keccak256(payload).
         let attestation = d.actors.attester.attestation_over_digest([0xAB; 32]);
-        let note = XReserveMintNote::create(sender, f, &payload, &attestation, d.hc.client.rng())
+        let note = XUsdcMintNote::create(sender, f, &payload, &attestation, d.hc.client.rng())
             .context("building the forged-signature mint note")?;
         let key = nonce_key(&payload);
         out.push(
@@ -508,7 +521,8 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
         let f = d.faucet_id;
         let sender = d.owner();
         let recipient = d.recipient();
-        let payload = mint_payload_from(
+        let payload = mint_payload_own_id(
+            f,
             BASE_VECTOR,
             recipient,
             raw_for_units(E_UNITS),
@@ -516,7 +530,7 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
             SALT_E_BAD_ATTESTER,
         );
         let attestation = d.actors.attester_b.attestation_for(&payload);
-        let note = XReserveMintNote::create(sender, f, &payload, &attestation, d.hc.client.rng())
+        let note = XUsdcMintNote::create(sender, f, &payload, &attestation, d.hc.client.rng())
             .context("building the non-allowlisted-attester mint note")?;
         let key = nonce_key(&payload);
         out.push(
@@ -537,7 +551,8 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
         let f = d.faucet_id;
         let sender = d.owner();
         let recipient = d.recipient();
-        let payload = mint_payload_from(
+        let payload = mint_payload_own_id(
+            f,
             BASE_VECTOR,
             recipient,
             raw_for_units(E_UNITS),
@@ -574,7 +589,8 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
         let f = d.faucet_id;
         let sender = d.owner();
         let recipient = d.recipient();
-        let signed_payload = mint_payload_from(
+        let signed_payload = mint_payload_own_id(
+            f,
             BASE_VECTOR,
             recipient,
             raw_for_units(E_UNITS),
@@ -583,16 +599,16 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
         );
         let attestation = d.actors.attester.attestation_for(&signed_payload);
         // The note carries the SAME nonce (salt) but an INFLATED amount the attestation never signed.
-        let note_payload = mint_payload_from(
+        let note_payload = mint_payload_own_id(
+            f,
             BASE_VECTOR,
             recipient,
             raw_for_units(E_UNITS * 2),
             raw_for_units(MAX_FEE_UNITS),
             SALT_E_TAMPERED,
         );
-        let note =
-            XReserveMintNote::create(sender, f, &note_payload, &attestation, d.hc.client.rng())
-                .context("building the tampered-payload mint note")?;
+        let note = XUsdcMintNote::create(sender, f, &note_payload, &attestation, d.hc.client.rng())
+            .context("building the tampered-payload mint note")?;
         let key = nonce_key(&note_payload);
         out.push(
             negative(
@@ -663,7 +679,8 @@ pub async fn run_rows_de(cfg: &RunConfig) -> Result<RowsDeObservations> {
 pub async fn run_rows_de_on(cfg: &RunConfig, client_label: &str) -> Result<RowsDeObservations> {
     let main_commit = git_head_commit();
 
-    // 2. Client + actors + the production faucet account (domain_init matching the mint vector).
+    // 2. Client + actors + the production faucet account (domain config BUILD-SEEDED to match the
+    //    mint vector; the identifier committed by the identifier_init note below).
     let mut hc = build_client(&cfg.stack, client_label).await?;
     hc.client.sync_state().await.context("initial sync")?;
     let actor_root = cfg.stack.run_root.join(format!("client-{client_label}"));
@@ -674,31 +691,26 @@ pub async fn run_rows_de_on(cfg: &RunConfig, client_label: &str) -> Result<RowsD
         owner_id,
         actors.pauser.id(),
         actors.manager.id(),
+        actors.blk_manager.id(),
         cfg.max_supply,
+        &domain,
         os_seed(),
     )?;
     let faucet_id = faucet.id();
 
-    // 3. Deploy: the faucet's first tx consumes the owner's domain_init (first-deploy exemption).
-    let note1 = XReserveDomainInitNote::create(
-        owner_id,
-        faucet_id,
-        domain.domain,
-        domain.source_domain,
-        &domain.xreserve_contract,
-        domain.identifier_word(),
-        hc.client.rng(),
-    )
-    .context("building the domain_init note")?;
+    // 3. Deploy: the faucet's first tx consumes the owner's identifier_init (first-deploy exemption).
+    //    The seeded identifier is the faucet's own-id fixpoint (derived from faucet_id).
+    let note1 = XReserveIdentifierInitNote::create(owner_id, faucet_id, hc.client.rng())
+        .context("building the identifier_init note")?;
     let emit1 = TransactionRequestBuilder::new()
         .own_output_notes(vec![note1.clone()])
         .build()
-        .context("building the domain_init emit")?;
+        .context("building the identifier_init emit")?;
     let emit1_tx = hc
         .client
         .submit_new_transaction(owner_id, emit1)
         .await
-        .context("emit domain_init")?;
+        .context("emit identifier_init")?;
     let mut d = Driver {
         hc,
         actors,
@@ -706,7 +718,7 @@ pub async fn run_rows_de_on(cfg: &RunConfig, client_label: &str) -> Result<RowsD
     };
     d.wait_commit(emit1_tx)
         .await
-        .context("waiting for the domain_init emit")?;
+        .context("waiting for the identifier_init emit")?;
     d.hc.client
         .add_account(&faucet, false)
         .await

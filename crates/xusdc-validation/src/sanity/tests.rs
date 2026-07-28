@@ -41,13 +41,17 @@ fn dummy_id(seed: u8) -> AccountId {
     )
 }
 
-/// A real production faucet id (a valid public network account) built offline.
+/// A real production faucet id (a valid public network account) built offline. The recomposed
+/// builder requires the three build-seeded domain-config fields, so the fixture seeds them from
+/// the same LNV-2 params the sanity deploy path uses.
 fn faucet_id(seed: u8) -> AccountId {
     crate::deploy::build_faucet_account(
         dummy_id(1),
         dummy_id(2),
         dummy_id(3),
+        dummy_id(4),
         DEPLOY_MAX_SUPPLY,
+        &mintburn::lnv2_domain_params(),
         [seed; 32],
     )
     .expect("building an offline production faucet")

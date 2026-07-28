@@ -30,7 +30,7 @@ use crate::client::{os_seed, HarnessClient};
 /// for signing during the run and its scalar is also written to a file under the gitignored run
 /// root (never in git, never in the evidence JSON); the public forms are recorded. This is the
 /// harness twin of the `gen_attester` MockChain fixture — same keccak256(payload) + SEC1 recipe,
-/// the `PublicKey::to_commitment` allowlist key — but signing REAL production `XReserveMintNote`
+/// the `PublicKey::to_commitment` allowlist key — but signing REAL production `XUsdcMintNote`
 /// attestations against the deployed faucet. NEVER Circle's keys.
 pub struct AttesterKey {
     /// The secp256k1 signing key (kept in memory to sign mint attestations during the run).
@@ -55,7 +55,7 @@ impl AttesterKey {
 
     /// Signs `keccak256(payload)` with this attester and bundles the raw 65-byte `r‖s‖v` signature
     /// with the 33-byte compressed pubkey into the production [`MintAttestation`] the relayer hands
-    /// [`xusdc_encoding::note::xreserve_mint::XReserveMintNote::create`] (same recipe as the
+    /// [`xusdc_encoding::note::xreserve_mint::XUsdcMintNote::create`] (same recipe as the
     /// `gen_attester` MockChain fixture).
     pub fn attestation_for(&self, payload: &[u8]) -> MintAttestation {
         let mut hasher = Keccak256::new();
@@ -96,6 +96,9 @@ pub struct Actors {
     pub owner: Account,
     pub pauser: Account,
     pub manager: Account,
+    /// The F4-reversal BLK_MANAGER holder — the EXTERNAL transfer-blocklist administrator (distinct
+    /// from the owner; capability-isolated to block/unblock only).
+    pub blk_manager: Account,
     pub recipient: Account,
     pub holder: Account,
     /// The C5 rotation target: DOM_MANAGER grants it DOM_PAUSER, then revokes it.
@@ -271,6 +274,9 @@ pub async fn create_actors(hc: &mut HarnessClient, run_root: &Path) -> Result<Ac
     let manager = create_wallet(hc)
         .await
         .context("creating the DOM_MANAGER wallet")?;
+    let blk_manager = create_wallet(hc)
+        .await
+        .context("creating the BLK_MANAGER wallet")?;
     let recipient = create_wallet(hc)
         .await
         .context("creating the recipient wallet")?;
@@ -286,6 +292,7 @@ pub async fn create_actors(hc: &mut HarnessClient, run_root: &Path) -> Result<Ac
         owner,
         pauser,
         manager,
+        blk_manager,
         recipient,
         holder,
         new_pauser,

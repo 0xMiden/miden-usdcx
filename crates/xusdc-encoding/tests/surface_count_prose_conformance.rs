@@ -37,10 +37,9 @@ const SOURCES: [(&str, &str); 3] = [
 fn derive_surface_counts() -> Result<(usize, usize, usize, usize)> {
     let mut components =
         production_component_set(MAX_SUPPLY, 0).context("the production composition must build")?;
-    components.push(
+    components.extend(
         XReserveStablecoinBuilder::auth_component()
-            .context("the production auth component must build")?
-            .into(),
+            .context("the production auth component must build")?,
     );
     let mut total = 0usize;
     let mut xreserve = 0usize;
@@ -66,7 +65,7 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
     // surface ever changes, this fails loudly (and the whole point below — the prose — must follow).
     assert_eq!(
         (xreserve, stock, total, notes),
-        (15, 49, 64, 14),
+        (15, 60, 75, 14),
         "the executable callable surface changed ({xreserve} xreserve + {stock} stock = {total} \
          roots, {notes}-note allowlist) — update the ratified constants AND every count-phrase in \
          the conformance prose together (MIGRATION-V16-ALPHA2.md stock-surface discipline)"
@@ -94,9 +93,13 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
 
     // The SUPERSEDED count-phrases must be gone from EACH source (a stale token is a lie about the
     // real surface). Each is a value the surface DID carry earlier: the pre-F4 era (17 xreserve
-    // roots, 62-root account surface, 12-note allowlist, 10 admin notes, 45 stock rows) and the
-    // pre-Wave-1-S1 era (19 xreserve roots, 46 stock rows, 65-root account surface).
+    // roots, 62-root account surface, 12-note allowlist, 10 admin notes, 45 stock rows), the
+    // pre-Wave-1-S1 era (19 xreserve roots, 46 stock rows, 65-root account surface), and the
+    // pre-V16-NOW era (64-root account surface, 49 stock rows — before the ratified temporary
+    // growth).
     let superseded = [
+        "64-root",
+        "49 stock",
         "62-root",
         "12-root",
         "the 17 callable roots",

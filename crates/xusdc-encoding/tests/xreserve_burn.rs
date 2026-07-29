@@ -15,8 +15,6 @@
 
 mod support;
 
-use core::slice;
-
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::auth::AuthScheme;
 use miden_protocol::asset::{AssetAmount, FungibleAsset};
@@ -384,14 +382,14 @@ async fn production_burn_note_same_block_consume_is_erased() -> anyhow::Result<(
     // tx0: the user emit-tx creates the production note in-block (executed, then dummy-proven —
     // the canary idiom; the create_*_proven_tx helpers are private to miden-testing).
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(emit_helper_component()?.component_code().clone())?
+        .with_dynamically_linked_package(emit_helper_component()?.component_code().clone())?
         .compile_tx_script(send_burn_note_script(&note, &h.asset, h.faucet_id))?;
     let tx0 = chain
-        .build_tx_context(h.user_id, &[], &[])?
+        .build_transaction(h.user_id)
         .tx_script(tx_script)
         // F5: the routing-target attachment content (keyed by commitment) for `add_attachment`.
         .extend_advice_inputs(attachment_advice(&note))
-        .extend_expected_output_notes(vec![RawOutputNote::Full(note.clone())])
+        .expected_output_note(RawOutputNote::Full(note.clone()))
         .build()?
         .execute()
         .await?;
@@ -405,7 +403,8 @@ async fn production_burn_note_same_block_consume_is_erased() -> anyhow::Result<(
     // tx1: the faucet consumes the note UNAUTHENTICATED (not yet committed) — running the real
     // `receive_and_burn` behind the PRODUCTION burn policy.
     let tx1 = chain
-        .build_tx_context(h.faucet_id, &[], slice::from_ref(&note))?
+        .build_transaction(h.faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()?
         .execute()
         .await?;

@@ -243,8 +243,8 @@ async fn bring_up(pf: &mut ProductionFaucet, count: usize) -> Result<()> {
     for (i, note) in pf.seeded_notes.clone().iter().take(count).enumerate() {
         let tx = pf
             .mock_chain
-            .build_tx_context(pf.faucet_id, &[note.id()], &[])
-            .with_context(|| format!("bring-up note {i}: tx context"))?
+            .build_transaction(pf.faucet_id)
+            .authenticated_input_note(note.id())
             .build()
             .with_context(|| format!("bring-up note {i}: tx build"))?
             .execute()
@@ -264,8 +264,8 @@ async fn consume_note(
     note: &Note,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     pf.mock_chain
-        .build_tx_context(pf.faucet_id, &[note.id()], &[])
-        .expect("building the consume tx context")
+        .build_transaction(pf.faucet_id)
+        .authenticated_input_note(note.id())
         .build()
         .expect("building the consume tx")
         .execute()
@@ -301,8 +301,8 @@ async fn emit_and_consume_mint(
     emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
     Ok(pf
         .mock_chain
-        .build_tx_context(pf.faucet_id, &[note.id()], &[])
-        .context("building the mint consume tx context")?
+        .build_transaction(pf.faucet_id)
+        .authenticated_input_note(note.id())
         .build()
         .context("building the mint consume tx")?
         .execute()

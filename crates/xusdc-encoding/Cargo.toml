@@ -5,14 +5,16 @@ edition = "2021"
 publish = false
 description = "xUSDC-on-Miden 04 shared encoding: hand-written MASM + Rust mirror and test harness"
 
-# Pinned per docs/MIGRATION-V16-ALPHA2.md (supersedes the V15-DEVNET-BASELINE pin for this
-# branch): protocol family from crates.io at `=0.16.0-alpha.2`, which resolves the 0.25.3
-# assembler/VM family and miden-crypto 0.28. The `testing` feature on the main miden-protocol
+# Pinned per docs/MIGRATION-V16-NEXT.md (supersedes the MIGRATION-V16-ALPHA2 crates.io pins for
+# this branch): the four protocol-monorepo crates come from git at ONE frozen rev of the `next`
+# branch — always the rev key, never a floating branch pin, which would make the build
+# non-reproducible. The frozen graph resolves the 0.25.8 assembler/VM family (0.25.0–0.25.7 are
+# yanked on crates.io) and miden-crypto 0.28. The `testing` feature on the main miden-protocol
 # dep is required by the committed vector generator (AccountIdBuilder).
 
 [dependencies]
-miden-protocol  = { version = "=0.16.0-alpha.4", features = ["testing"] }
-miden-standards = { version = "=0.16.0-alpha.4" }
+miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "dbe4e38797207ce09fee1668ea204aafec275f63", features = ["testing"] }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "dbe4e38797207ce09fee1668ea204aafec275f63" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # k256 is a REGULAR dependency since the v16 migration (MIGRATION-V16-ALPHA2.md S16): the
@@ -48,13 +50,14 @@ name = "gen_vectors"
 required-features = ["vectors"]
 
 [dev-dependencies]
-miden-standards = { version = "=0.16.0-alpha.4", features = ["testing"] }
-miden-testing   = { version = "=0.16.0-alpha.2" }
-miden-tx        = { version = "=0.16.0-alpha.4" }
-# exact-error matching for u32-assert traps (OperationError::U32AssertionFailed); same
-# 0.25.3 the alpha.2 family resolves — the pin moves in lockstep with the protocol family so
-# exactly one processor copy exists and the error downcasts unify (MIGRATION-V16-ALPHA2.md R3)
-miden-processor = "=0.25.3"
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "dbe4e38797207ce09fee1668ea204aafec275f63", features = ["testing"] }
+miden-testing   = { git = "https://github.com/0xMiden/protocol", rev = "dbe4e38797207ce09fee1668ea204aafec275f63" }
+miden-tx        = { git = "https://github.com/0xMiden/protocol", rev = "dbe4e38797207ce09fee1668ea204aafec275f63" }
+# exact-error matching for u32-assert traps (OperationError::U32AssertionFailed); 0.25.8 is the
+# version the frozen protocol graph resolves AND the only live 0.25.x on crates.io (0.25.0–0.25.7
+# are yanked) — the pin moves in lockstep with the protocol family so exactly one processor copy
+# exists and the error downcasts unify
+miden-processor = "=0.25.8"
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 anyhow = { workspace = true }
 rstest = { workspace = true }

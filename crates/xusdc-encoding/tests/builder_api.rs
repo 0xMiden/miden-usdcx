@@ -748,7 +748,7 @@ fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> 
     let count_by_code = |code: &AccountComponentCode| {
         components
             .iter()
-            .filter(|c| c.component_code().as_library() == code.as_library())
+            .filter(|c| c.component_code().as_package() == code.as_package())
             .count()
     };
     assert_eq!(
@@ -780,15 +780,15 @@ fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> 
     // the pinned install ORDER of the identifiable middle run: xreserve at index 2, then the
     // MinBurnAmount + BasicBlocklist companions, then the manager (Wave-1 S1 component order).
     assert!(
-        components[2].component_code().as_library() == xreserve_code.as_library(),
+        components[2].component_code().as_package() == xreserve_code.as_package(),
         "component 2 must be the xreserve component"
     );
     assert!(
-        components[3].component_code().as_library() == MinBurnAmount::code().as_library(),
+        components[3].component_code().as_package() == MinBurnAmount::code().as_package(),
         "component 3 must be the stock MinBurnAmount companion"
     );
     assert!(
-        components[4].component_code().as_library() == BasicBlocklist::code().as_library(),
+        components[4].component_code().as_package() == BasicBlocklist::code().as_package(),
         "component 4 must be the BasicBlocklist companion"
     );
     assert_eq!(

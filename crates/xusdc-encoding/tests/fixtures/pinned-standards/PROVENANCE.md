@@ -1,46 +1,47 @@
 # Vendored pinned-standards MASM fixtures (read-only test data)
 
 These `.masm` files are **byte-identical** copies of the pinned `miden-standards` faucet source at
-the crates.io release this crate builds against. They are NOT production MASM and are NOT compiled
-into any account — they exist only so the CMP-B3 sole-supply-decrement audit
+the frozen protocol-monorepo git rev this crate builds against. They are NOT production MASM and
+are NOT compiled into any account — they exist only so the CMP-B3 sole-supply-decrement audit
 (`tests/xreserve_receive_and_burn.rs`) can prove, in CI, that the inherited supply-decrement
 primitive `exec.faucet::burn` has exactly one standards caller (`receive_and_burn`) at the
-dependency baseline. The build dependency is a **registry version pin**, so the real source lives
-in the non-portable cargo registry cache and cannot be reached from a test by a relative path —
+dependency baseline. The build dependency is a **frozen git-rev pin**, so the real source lives in
+the non-portable cargo git checkout cache and cannot be reached from a test by a relative path —
 hence this vendored fixture + checksum + Cargo-pin anchor.
 
-## Pinned version
+## Pinned rev
 
-`miden-standards` (and `miden-protocol`, `miden-tx`) are pinned in
-`crates/xusdc-encoding/Cargo.toml` to:
+`miden-standards` (and `miden-protocol`, `miden-tx`, `miden-testing`) are pinned in
+`crates/xusdc-encoding/Cargo.toml` to the protocol monorepo at:
 
-    version = "=0.16.0-alpha.4"
+    git = "https://github.com/0xMiden/protocol"
+    rev = "dbe4e38797207ce09fee1668ea204aafec275f63"
 
-(`miden-testing` stays `=0.16.0-alpha.2`; its caret dependency on `miden-protocol` unifies to the
-alpha.4 pin — see the proto-alpha4 migration.)
+(one frozen rev of the `next` branch — the V16-NOW migration, `docs/MIGRATION-V16-NEXT.md`; all
+four protocol-repo crates carry the identical rev, so the standards source is unambiguous.)
 
 `tests/xreserve_receive_and_burn.rs::pinned_standards_rev_matches_cargo` asserts that pin still
 holds; if the dependency pin is bumped, that test fails — **re-vendor and re-checksum** before
-proceeding. The alpha.2 → alpha.4 bump was re-vendored per the steps below: both LOGIC libraries
-(`asm/standards/faucets/fungible.masm` and `.../policies/policy_manager.masm`) are **byte-identical**
-between alpha.2 and alpha.4, so the committed fixtures and their FNV-1a checksums are unchanged and
-only the version pin above moved.
+proceeding. At the alpha.4 → `next`-rev bump, `fungible.masm` stayed **byte-identical** (checksum
+unchanged) while `policy_manager.masm` changed shape only (public-interface section reorg + doc
+wording; no procedure added, removed, or re-signatured), so its committed copy and FNV-1a checksum
+were re-derived per the steps below.
 
-## Source paths (in the resolved cargo registry checkout)
+## Source paths (in the resolved cargo git checkout)
 
 The crate ships the faucet MASM twice: the LOGIC libraries under `asm/standards/…`
 (where `receive_and_burn`, `faucet::burn`, the supply write-back, and the policy dispatchers
 live — the N1D anchors) and thin component RE-EXPORT wrappers under `asm/components/…` (no
 burn/supply code). The vendored copies are the LOGIC libraries:
 
-    <cargo-registry>/miden-standards-0.16.0-alpha.4/asm/standards/faucets/fungible.masm
-    <cargo-registry>/miden-standards-0.16.0-alpha.4/asm/standards/faucets/policies/policy_manager.masm
+    <cargo-git>/protocol-<hash>/dbe4e38/crates/miden-standards/asm/standards/faucets/fungible.masm
+    <cargo-git>/protocol-<hash>/dbe4e38/crates/miden-standards/asm/standards/faucets/policies/policy_manager.masm
 
-where `<cargo-registry>` = `~/.cargo/registry/src/index.crates.io-<hash>/`.
+where `<cargo-git>` = `~/.cargo/git/checkouts/`.
 
 ## Re-derivation (auditable; produces a byte-identical diff)
 
-    SRC=~/.cargo/registry/src/index.crates.io-*/miden-standards-0.16.0-alpha.4/asm/standards/faucets
+    SRC=~/.cargo/git/checkouts/protocol-*/dbe4e38/crates/miden-standards/asm/standards/faucets
     DST=crates/xusdc-encoding/tests/fixtures/pinned-standards
     cp "$SRC/fungible.masm"                "$DST/fungible.masm"
     cp "$SRC/policies/policy_manager.masm" "$DST/policy_manager.masm"

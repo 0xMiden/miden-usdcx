@@ -10,7 +10,6 @@
 
 mod support;
 
-use core::slice;
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
@@ -100,8 +99,8 @@ async fn set_attester_admin_note_owner_writes_and_nonowner_traps() -> Result<()>
     let note = XReserveSetAttesterNote::create(owner, faucet_id, commitment, 1, &mut note_rng(1))
         .context("building the owner set_attester note")?;
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("owner set_attester tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("owner set_attester tx build")?
         .execute()
@@ -146,8 +145,8 @@ async fn set_attester_admin_note_owner_writes_and_nonowner_traps() -> Result<()>
     )
     .context("building the non-owner set_attester note")?;
     let result = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&bad))
-        .context("non-owner set_attester tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(bad.clone())
         .build()
         .context("non-owner set_attester tx build")?
         .execute()
@@ -228,8 +227,8 @@ async fn identifier_init_owner_writes_only_the_identifier_slot() -> Result<()> {
     let note = XReserveIdentifierInitNote::create(owner, faucet_id, &mut note_rng(13))
         .context("building the owner identifier_init note")?;
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("owner identifier_init tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("owner identifier_init tx build")?
         .execute()
@@ -273,8 +272,8 @@ async fn assert_identifier_init_nonowner_traps(sender: AccountId, seed: u64) -> 
     let note = XReserveIdentifierInitNote::create(sender, faucet_id, &mut note_rng(seed))
         .context("building the non-owner identifier_init note")?;
     let result = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("non-owner identifier_init tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("non-owner identifier_init tx build")?
         .execute()
@@ -312,8 +311,8 @@ async fn identifier_init_reinit_traps_even_from_owner() -> Result<()> {
 
     for note in pf.seeded_notes.clone() {
         let tx = chain
-            .build_tx_context(faucet_id, &[note.id()], &[])
-            .context("first identifier_init bring-up tx context")?
+            .build_transaction(faucet_id)
+            .authenticated_input_note(note.id())
             .build()
             .context("first identifier_init bring-up tx build")?
             .execute()
@@ -327,8 +326,8 @@ async fn identifier_init_reinit_traps_even_from_owner() -> Result<()> {
         XReserveIdentifierInitNote::create(test_account_id(1), faucet_id, &mut note_rng(17))
             .context("building the second identifier_init note")?;
     let result = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note2))
-        .context("second identifier_init tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note2.clone())
         .build()
         .context("second identifier_init tx build")?
         .execute()
@@ -354,8 +353,8 @@ async fn identifier_init_note_args_are_inert() -> Result<()> {
         .context("building the owner identifier_init note")?;
     let bogus_args = Word::from([424_242u32, 7, 7, 7]);
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("identifier_init note-args tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
         .build()
         .context("identifier_init note-args tx build")?
@@ -409,8 +408,8 @@ async fn set_min_burn_size_owner_writes_slot() -> Result<()> {
         XReserveSetMinBurnSizeNote::create(owner, faucet_id, NEW_MIN_BURN, &mut note_rng(40))
             .context("building the owner set_min_burn_size note")?;
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("owner set_min_burn_size tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("owner set_min_burn_size tx build")?
         .execute()
@@ -441,8 +440,8 @@ async fn assert_set_min_burn_nonowner_traps(sender: AccountId, seed: u64) -> Res
         XReserveSetMinBurnSizeNote::create(sender, faucet_id, NEW_MIN_BURN, &mut note_rng(seed))
             .context("building the non-owner set_min_burn_size note")?;
     let result = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("non-owner set_min_burn_size tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("non-owner set_min_burn_size tx build")?
         .execute()
@@ -480,8 +479,8 @@ async fn set_min_burn_size_note_args_are_inert() -> Result<()> {
             .context("building the owner set_min_burn_size note")?;
     let bogus_args = Word::from([999u32, 1, 2, 3]);
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("set_min_burn_size note-args tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
         .build()
         .context("set_min_burn_size note-args tx build")?
@@ -518,8 +517,8 @@ async fn set_min_burn_size_zero_floor_from_owner_traps() -> Result<()> {
     let note = XReserveSetMinBurnSizeNote::create(owner, faucet_id, 0, &mut note_rng(45))
         .context("building the owner zero-floor set_min_burn_size note")?;
     let result = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("owner zero-floor set_min_burn_size tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("owner zero-floor set_min_burn_size tx build")?
         .execute()
@@ -564,8 +563,8 @@ async fn pause_dom_pauser_sets_is_paused() -> Result<()> {
     let note = XReservePauseNote::create(test_account_id(2), faucet_id, &mut note_rng(50))
         .context("building the DOM_PAUSER pause note")?;
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("DOM_PAUSER pause tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("DOM_PAUSER pause tx build")?
         .execute()
@@ -589,8 +588,8 @@ async fn assert_pause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<()
     let note = XReservePauseNote::create(sender, faucet_id, &mut note_rng(seed))
         .context("building the non-pauser pause note")?;
     let result = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("non-pauser pause tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("non-pauser pause tx build")?
         .execute()
@@ -621,8 +620,8 @@ async fn pause_note_args_are_inert() -> Result<()> {
         .context("building the DOM_PAUSER pause note")?;
     let bogus_args = Word::from([5u32, 5, 5, 5]);
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("pause note-args tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
         .build()
         .context("pause note-args tx build")?
@@ -694,8 +693,8 @@ async fn paused_faucet() -> Result<(MockChain, AccountId)> {
     let faucet_id = pf.faucet_id;
     for note in pf.seeded_notes.clone() {
         let tx = chain
-            .build_tx_context(faucet_id, &[note.id()], &[])
-            .context("pause bring-up tx context")?
+            .build_transaction(faucet_id)
+            .authenticated_input_note(note.id())
             .build()
             .context("pause bring-up tx build")?
             .execute()
@@ -714,8 +713,8 @@ async fn unpause_dom_pauser_clears_is_paused() -> Result<()> {
     let note = XReserveUnpauseNote::create(test_account_id(2), faucet_id, &mut note_rng(61))
         .context("building the DOM_PAUSER unpause note")?;
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("DOM_PAUSER unpause tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("DOM_PAUSER unpause tx build")?
         .execute()
@@ -738,8 +737,8 @@ async fn assert_unpause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<
     let note = XReserveUnpauseNote::create(sender, faucet_id, &mut note_rng(seed))
         .context("building the non-pauser unpause note")?;
     let result = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("non-pauser unpause tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("non-pauser unpause tx build")?
         .execute()
@@ -766,8 +765,8 @@ async fn unpause_note_args_are_inert() -> Result<()> {
         .context("building the DOM_PAUSER unpause note")?;
     let bogus_args = Word::from([8u32, 8, 8, 8]);
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("unpause note-args tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
         .build()
         .context("unpause note-args tx build")?
@@ -818,8 +817,8 @@ async fn assert_grant_role_authorized(
     )
     .context("building the grant_role note")?;
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("grant_role tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("grant_role tx build")?
         .execute()
@@ -871,8 +870,8 @@ async fn grant_role_owner_on_delegated_role_traps() -> Result<()> {
     )
     .context("building the owner grant-on-delegated-role note")?;
     let result = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("owner delegated-role grant tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("owner delegated-role grant tx build")?
         .execute()
@@ -897,8 +896,8 @@ async fn grant_role_third_party_traps() -> Result<()> {
     )
     .context("building the third-party grant_role note")?;
     let result = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("third-party grant_role tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("third-party grant_role tx build")?
         .execute()
@@ -926,8 +925,8 @@ async fn grant_role_note_args_are_inert() -> Result<()> {
     .context("building the owner grant_role note")?;
     let bogus_args = Word::from([7u32, 7, 7, 7]);
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("grant_role note-args tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
         .build()
         .context("grant_role note-args tx build")?
@@ -980,8 +979,8 @@ async fn set_max_supply_owner_writes_cap() -> Result<()> {
     )
     .context("building the owner set_max_supply note")?;
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("owner set_max_supply tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("owner set_max_supply tx build")?
         .execute()
@@ -1007,8 +1006,8 @@ async fn assert_set_max_supply_nonowner_traps(sender: AccountId, seed: u64) -> R
         XReserveSetMaxSupplyNote::create(sender, faucet_id, NEW_MAX_SUPPLY, &mut note_rng(seed))
             .context("building the non-owner set_max_supply note")?;
     let result = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("non-owner set_max_supply tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("non-owner set_max_supply tx build")?
         .execute()
@@ -1048,8 +1047,8 @@ async fn set_max_supply_note_args_are_inert() -> Result<()> {
     .context("building the owner set_max_supply note")?;
     let bogus_args = Word::from([3u32, 3, 3, 3]);
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("set_max_supply note-args tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
         .build()
         .context("set_max_supply note-args tx build")?
@@ -1104,8 +1103,8 @@ async fn faucet_with_granted_role(
     )
     .context("building the seeding grant note")?;
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&grant))
-        .context("grant seed tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(grant.clone())
         .build()
         .context("grant seed tx build")?
         .execute()
@@ -1140,8 +1139,8 @@ async fn assert_revoke_authorized(
     )
     .context("building the revoke note")?;
     let tx = chain
-        .build_tx_context(evolved.clone(), &[], slice::from_ref(&note))
-        .context("authorized revoke tx context")?
+        .build_transaction(evolved.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("authorized revoke tx build")?
         .execute()
@@ -1197,8 +1196,8 @@ async fn revoke_role_third_party_traps() -> Result<()> {
     )
     .context("building the third-party revoke note")?;
     let result = chain
-        .build_tx_context(evolved, &[], slice::from_ref(&note))
-        .context("third-party revoke tx context")?
+        .build_transaction(evolved)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("third-party revoke tx build")?
         .execute()
@@ -1223,8 +1222,8 @@ async fn revoke_role_note_args_are_inert() -> Result<()> {
     .context("building the manager revoke note")?;
     let bogus_args = Word::from([6u32, 6, 6, 6]);
     let tx = chain
-        .build_tx_context(evolved.clone(), &[], slice::from_ref(&note))
-        .context("revoke note-args tx context")?
+        .build_transaction(evolved.clone())
+        .unauthenticated_input_note(note.clone())
         .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
         .build()
         .context("revoke note-args tx build")?
@@ -1437,8 +1436,8 @@ async fn set_role_admin_note_is_rejected_as_non_allowlisted() -> Result<()> {
     )
     .context("building the former owner set_role_admin note")?;
     let result = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("owner set_role_admin tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("owner set_role_admin tx build")?
         .execute()
@@ -1477,8 +1476,8 @@ async fn set_role_admin_note_is_rejected_regardless_of_note_args() -> Result<()>
     .context("building the former owner set_role_admin note")?;
     let bogus_args = Word::from([4u32, 4, 4, 4]);
     let result = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("set_role_admin note-args tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
         .build()
         .context("set_role_admin note-args tx build")?
@@ -1506,8 +1505,8 @@ async fn assert_set_role_admin_nonadmin_traps(sender: AccountId, seed: u64) -> R
     )
     .context("building the former non-admin set_role_admin note")?;
     let result = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("non-admin set_role_admin tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("non-admin set_role_admin tx build")?
         .execute()
@@ -1558,8 +1557,8 @@ async fn transfer_ownership_owner_nominates() -> Result<()> {
     )
     .context("building the owner transfer_ownership note")?;
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("owner transfer_ownership tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("owner transfer_ownership tx build")?
         .execute()
@@ -1589,8 +1588,8 @@ async fn assert_transfer_ownership_nonowner_traps(sender: AccountId, seed: u64) 
     )
     .context("building the non-owner transfer_ownership note")?;
     let result = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("non-owner transfer_ownership tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("non-owner transfer_ownership tx build")?
         .execute()
@@ -1631,8 +1630,8 @@ async fn transfer_ownership_note_args_are_inert() -> Result<()> {
     .context("building the owner transfer_ownership note")?;
     let bogus_args = Word::from([2u32, 2, 2, 2]);
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&note))
-        .context("transfer_ownership note-args tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
         .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
         .build()
         .context("transfer_ownership note-args tx build")?
@@ -1689,8 +1688,8 @@ async fn faucet_with_pending_owner(
     )
     .context("building the owner transfer note")?;
     let tx = chain
-        .build_tx_context(faucet_id, &[], slice::from_ref(&transfer))
-        .context("transfer seed tx context")?
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(transfer.clone())
         .build()
         .context("transfer seed tx build")?
         .execute()
@@ -1722,8 +1721,8 @@ async fn accept_ownership_pending_owner_becomes_owner() -> Result<()> {
     let note = XReserveAcceptOwnershipNote::create(nominee, faucet_id, &mut note_rng(141))
         .context("building the pending-owner accept note")?;
     let tx = chain
-        .build_tx_context(evolved.clone(), &[], slice::from_ref(&note))
-        .context("accept_ownership tx context")?
+        .build_transaction(evolved.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("accept_ownership tx build")?
         .execute()
@@ -1749,8 +1748,8 @@ async fn assert_accept_wrong_sender_traps(sender: AccountId, seed: u64) -> Resul
     let note = XReserveAcceptOwnershipNote::create(sender, faucet_id, &mut note_rng(seed))
         .context("building the wrong-sender accept note")?;
     let result = chain
-        .build_tx_context(evolved, &[], slice::from_ref(&note))
-        .context("wrong-sender accept tx context")?
+        .build_transaction(evolved)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("wrong-sender accept tx build")?
         .execute()
@@ -1778,8 +1777,8 @@ async fn accept_ownership_note_args_are_inert() -> Result<()> {
         .context("building the pending-owner accept note")?;
     let bogus_args = Word::from([9u32, 9, 9, 9]);
     let tx = chain
-        .build_tx_context(evolved.clone(), &[], slice::from_ref(&note))
-        .context("accept note-args tx context")?
+        .build_transaction(evolved.clone())
+        .unauthenticated_input_note(note.clone())
         .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
         .build()
         .context("accept note-args tx build")?

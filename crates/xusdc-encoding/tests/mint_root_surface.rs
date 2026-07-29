@@ -76,7 +76,7 @@ fn production_xreserve_callable_root_set_is_frozen() -> Result<()> {
         .collect();
 
     // Frozen tripwire, source layer: the exported-proc set is EXACTLY the 15 sanctioned roots.
-    let lib: &miden_protocol::assembly::Library = xreserve.component_code().as_ref();
+    let lib: &miden_protocol::assembly::Package = xreserve.component_code().as_package();
     let mut paths: Vec<String> = lib
         .manifest
         .exports()
@@ -97,7 +97,7 @@ fn production_xreserve_callable_root_set_is_frozen() -> Result<()> {
 
     // Frozen tripwire, INTERFACE layer (v16 — MIGRATION-V16-ALPHA2.md S19): at alpha.2 the
     // account interface is FILTERED by `@account_procedure` (`AccountComponentCode::exports`),
-    // while the raw `Library::exports()` above still lists every `pub proc` regardless of the
+    // while the raw package-manifest `exports()` above still lists every `pub proc` regardless of the
     // attribute — so a missing annotation would leave the path-level compare green while the
     // procedure silently vanished from the account. Resolve each frozen path to its MAST root
     // and require SET-EQUALITY with the filtered interface (`callable`, computed above from

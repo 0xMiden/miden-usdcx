@@ -29,7 +29,7 @@ use miden_protocol::account::{
     Account, AccountComponent, AccountId, AccountIdVersion, AccountProcedureRoot, AccountType,
     AssetCallbackFlag, RoleSymbol, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
 };
-use miden_protocol::assembly::{Library, Linkage, Path as MasmPath};
+use miden_protocol::assembly::{Linkage, Package, Path as MasmPath};
 use miden_protocol::asset::{AssetAmount, AssetCallbacks, FungibleAsset, TokenSymbol};
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{Note, NoteType};
@@ -43,7 +43,6 @@ use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::BurnNote;
 use miden_standards::testing::note::NoteBuilder;
-use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_standards::StandardsLib;
 use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
@@ -403,7 +402,50 @@ pub fn add_faucet_account(
         .context("adding a faucet account from its composed components (callback-flag derived)")
 }
 
-pub fn assemble_xreserve_lib() -> Result<Library> {
+/// Adds the production network faucet to the chain under the PRODUCTION auth composition —
+/// `XReserveStablecoinBuilder::auth_component()`, the `custom()`-based `AuthNetworkAccount` plus
+/// its fee-policy companions — instead of the `miden-testing` `Auth::NetworkAccount` fixture. The
+/// fixture routes through `AuthNetworkAccount::new()`, which force-inserts the config-note and
+/// fee-sponsorship script roots into the note allowlist; the preserved posture is the EXACT
+/// 14-root allowlist, so the composition must go through `custom()` (which inserts nothing) —
+/// `config_note_absence.rs` is the tripwire. Registering the account without an authenticator
+/// matches the fixture's behavior for the keyless network account (its authenticator is `None`
+/// either way). The callback flag is derived exactly as in [`add_faucet_account`].
+pub fn add_network_faucet_account(
+    builder: &mut MockChainBuilder,
+    components: Vec<AccountComponent>,
+) -> Result<Account> {
+    let has_callbacks = components.iter().any(|c| {
+        c.storage_slots().iter().any(|s| {
+            s.name() == AssetCallbacks::on_before_asset_added_to_note_slot()
+                || s.name() == AssetCallbacks::on_before_asset_added_to_account_slot()
+        })
+    });
+    let flag = if has_callbacks {
+        AssetCallbackFlag::Enabled
+    } else {
+        AssetCallbackFlag::Disabled
+    };
+    let mut account_builder = Account::builder(rand::random())
+        .account_type(AccountType::Public)
+        .with_asset_callbacks(flag);
+    for component in components {
+        account_builder = account_builder.with_component(component);
+    }
+    account_builder = account_builder.with_components(
+        xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::auth_component()
+            .map_err(|e| anyhow::anyhow!("the production auth component must build: {e}"))?,
+    );
+    let account = account_builder
+        .build_existing()
+        .context("building the production network faucet account")?;
+    builder
+        .add_account(account.clone())
+        .context("registering the production network faucet account")?;
+    Ok(account)
+}
+
+pub fn assemble_xreserve_lib() -> Result<Package> {
     // Link the standards library (mirrors CodeBuilder's own `with_dynamic_library(StandardsLib)`):
     // attester_admin::set_attester calls the stock `authority::assert_authorized` /
     // `pausable::assert_not_paused`, which live in StandardsLib. The other xreserve modules stay
@@ -561,7 +603,7 @@ pub fn setup_shell_account_with_nonce_seed(
 }
 
 fn setup_shell_account_with_lib(
-    library: Library,
+    library: Package,
     domain: Word,
     identifier: Word,
     nonce_seed: Option<(Word, Word)>,
@@ -596,7 +638,7 @@ fn setup_shell_account_with_lib(
     .context("binding the xreserve library + config slots as a component")?;
 
     let driver_code = CodeBuilder::new()
-        .with_dynamically_linked_library(&library)
+        .with_dynamically_linked_package(&library)
         .context("linking the xreserve library into the driver component")?
         .compile_component_code(driver_path, driver_src)
         .with_context(|| {
@@ -636,15 +678,14 @@ pub async fn run_call_driver(
         path = h.driver_path
     );
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(&h.driver_code)
+        .with_dynamically_linked_package(&h.driver_code)
         .expect("linking the driver component into the tx script")
         .compile_tx_script(&src)
         .unwrap_or_else(|e| {
             panic!("driver call script failed to compile: {e}\n--- script ---\n{src}")
         });
     h.mock_chain
-        .build_tx_context(h.account_id, &[], &[])
-        .expect("building the tx context")
+        .build_transaction(h.account_id)
         .tx_script(tx_script)
         .build()
         .expect("building the transaction")
@@ -817,7 +858,7 @@ pub async fn run_call_driver_with_advice(
         path = h.driver_path
     );
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(&h.driver_code)
+        .with_dynamically_linked_package(&h.driver_code)
         .expect("linking the driver component into the tx script")
         .compile_tx_script(&src)
         .unwrap_or_else(|e| {
@@ -825,8 +866,7 @@ pub async fn run_call_driver_with_advice(
         });
     let mut ctx = h
         .mock_chain
-        .build_tx_context(h.account_id, &[], &[])
-        .expect("building the tx context")
+        .build_transaction(h.account_id)
         .tx_script(tx_script);
     if let Some(stack) = advice_stack {
         ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack));
@@ -964,7 +1004,7 @@ pub fn setup_attestation_account(
     .context("binding the xreserve library + attester allowlist slot as a component")?;
 
     let driver_code = CodeBuilder::new()
-        .with_dynamically_linked_library(&library)
+        .with_dynamically_linked_package(&library)
         .context("linking the xreserve library into the driver component")?
         .compile_component_code(driver_path, driver_src)
         .with_context(|| {
@@ -1126,7 +1166,7 @@ pub fn set_attester_note(
         c3 = commitment[3],
     );
     let script = CodeBuilder::new()
-        .with_dynamically_linked_library(&lib)
+        .with_dynamically_linked_package(&lib)
         .context("linking xreserve into the set_attester note script")?
         .compile_note_script(src.clone())
         .map_err(|e| anyhow::anyhow!("set_attester note script failed to compile: {e}\n{src}"))?;
@@ -1158,8 +1198,8 @@ pub async fn run_set_attester_tx(
     let note = set_attester_note(sender, commitment, enabled, seed)
         .expect("building the set_attester note (test-setup invariant)");
     h.mock_chain
-        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
-        .expect("building the set_attester tx context")
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .expect("building the set_attester transaction")
         .execute()
@@ -1213,8 +1253,8 @@ pub async fn run_pause_tx(
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     let note = pause_note(sender, seed).expect("building the pause note (test-setup invariant)");
     h.mock_chain
-        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
-        .expect("building the pause tx context")
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .expect("building the pause transaction")
         .execute()
@@ -1281,7 +1321,7 @@ pub fn raw_self_block_note(sender: AccountId, seed: u64) -> Result<Note> {
         path = RAW_BLOCKLIST_PATH,
     );
     let script = CodeBuilder::new()
-        .with_dynamically_linked_library(component.component_code().clone())
+        .with_dynamically_linked_package(component.component_code().clone())
         .context("linking the raw-blocklist test component into the note script")?
         .compile_note_script(src.clone())
         .map_err(|e| anyhow::anyhow!("raw self-block note script failed to compile: {e}\n{src}"))?;
@@ -1335,7 +1375,7 @@ pub fn identifier_init_note(sender: AccountId, identifier: Word, seed: u64) -> R
         i3 = identifier[3],
     );
     let script = CodeBuilder::new()
-        .with_dynamically_linked_library(&lib)
+        .with_dynamically_linked_package(&lib)
         .context("linking xreserve into the identifier_init note script")?
         .compile_note_script(src.clone())
         .map_err(|e| {
@@ -1368,8 +1408,8 @@ pub async fn run_identifier_init_tx(
     let note = identifier_init_note(sender, identifier, seed)
         .expect("building the identifier_init note (test-setup invariant)");
     h.mock_chain
-        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
-        .expect("building the identifier_init tx context")
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .expect("building the identifier_init transaction")
         .execute()
@@ -1450,8 +1490,8 @@ pub async fn run_set_min_burn_size_against(
     let note = set_min_burn_size_note(sender, new_min, seed)
         .expect("building the set_min_burn_size note (test-setup invariant)");
     chain
-        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
-        .expect("building the set_min_burn_size tx context")
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .expect("building the set_min_burn_size transaction")
         .execute()
@@ -1534,8 +1574,8 @@ pub async fn run_set_max_supply_tx(
     let note = set_max_supply_note(sender, new_max_supply, seed)
         .expect("building the set_max_supply note (test-setup invariant)");
     h.mock_chain
-        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
-        .expect("building the set_max_supply tx context")
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .expect("building the set_max_supply transaction")
         .execute()
@@ -1661,7 +1701,7 @@ pub fn setup_guarded_mint_account(
 
     let link = |path: &'static str, src: &str, what: &str| -> Result<AccountComponentCode> {
         CodeBuilder::new()
-            .with_dynamically_linked_library(&library)
+            .with_dynamically_linked_package(&library)
             .with_context(|| format!("linking the xreserve library into the {what}"))?
             .compile_component_code(path, src)
             .with_context(|| format!("{what} failed to compile\n--- src ---\n{src}"))
@@ -2005,7 +2045,7 @@ fn oracle_burn_components(
     let companions: Vec<AccountComponent> = parts.collect();
     let (dup, keep): (Vec<_>, Vec<_>) = companions
         .into_iter()
-        .partition(|c| c.component_code().as_library() == xreserve_code.as_library());
+        .partition(|c| c.component_code().as_package() == xreserve_code.as_package());
     anyhow::ensure!(
         dup.len() == 1 && keep.len() == 2,
         "burn-oracle seam: expected 1 xreserve companion copy + 2 stock burn companions, got \
@@ -2346,7 +2386,7 @@ pub async fn try_emit_burn_note(
     user_id: AccountId,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(
+        .with_dynamically_linked_package(
             emit_helper_component()
                 .expect("the emit helper compiles")
                 .component_code()
@@ -2356,14 +2396,13 @@ pub async fn try_emit_burn_note(
         .compile_tx_script(send_burn_note_script(burn_note, asset, faucet_id))
         .expect("the user send-burn-note script compiles");
     let mut ctx = chain
-        .build_tx_context(user_id, &[], &[])
-        .expect("building the user emit tx context")
+        .build_transaction(user_id)
         .tx_script(tx_script)
         // F5: the attachment contents (routing target) keyed by commitment for `add_attachment`.
         .extend_advice_inputs(attachment_advice(burn_note))
         // Register the full note details so the kernel's `before_created` event can resolve the PUBLIC
         // note's details when tx0 creates it (per the burn canary).
-        .extend_expected_output_notes(vec![RawOutputNote::Full(burn_note.clone())]);
+        .expected_output_note(RawOutputNote::Full(burn_note.clone()));
     // F4-reversal: a POLICED (callback-Enabled) faucet's asset fires the SEND callback when the holder
     // emits a note moving it out of their vault (native = the holder), so the kernel dyncalls the
     // issuing faucet to run `basic_blocklist::check_policy` — attach it as a foreign account. A basic
@@ -2403,8 +2442,8 @@ pub async fn run_burn_consume(
     // tx1: the faucet consumes the committed burn note (runs receive_and_burn -> execute_burn_policy ->
     // the active burn policy).
     chain
-        .build_tx_context(faucet_id, &[burn_note.id()], &[])
-        .expect("building the faucet consume tx context")
+        .build_transaction(faucet_id)
+        .authenticated_input_note(burn_note.id())
         .build()
         .expect("building the faucet consume tx")
         .execute()
@@ -2424,8 +2463,8 @@ pub async fn run_pause_against(
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     let note = pause_note(sender, seed).expect("building the pause note (test-setup invariant)");
     chain
-        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
-        .expect("building the pause tx context")
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .expect("building the pause transaction")
         .execute()
@@ -2469,8 +2508,8 @@ pub async fn run_stock_unpause_against(
     let note = stock_unpause_note(sender, seed)
         .expect("building the stock unpause note (test-setup invariant)");
     chain
-        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
-        .expect("building the stock unpause tx context")
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .expect("building the stock unpause transaction")
         .execute()
@@ -2528,7 +2567,7 @@ fn dom_pauser_pause_admin_note(
          end\n",
     );
     let script = CodeBuilder::new()
-        .with_dynamically_linked_library(&lib)
+        .with_dynamically_linked_package(&lib)
         .context("linking xreserve into the dom_pauser pause_admin note script")?
         .compile_note_script(src.clone())
         .map_err(|e| {
@@ -2571,8 +2610,8 @@ pub async fn run_dom_pauser_pause(
     let note = dom_pauser_pause_note(sender, seed)
         .expect("building the dom_pauser pause note (test-setup invariant)");
     chain
-        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
-        .expect("building the dom_pauser pause tx context")
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .expect("building the dom_pauser pause transaction")
         .execute()
@@ -2589,8 +2628,8 @@ pub async fn run_dom_pauser_unpause(
     let note = dom_pauser_unpause_note(sender, seed)
         .expect("building the dom_pauser unpause note (test-setup invariant)");
     chain
-        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
-        .expect("building the dom_pauser unpause tx context")
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .expect("building the dom_pauser unpause transaction")
         .execute()
@@ -2745,8 +2784,8 @@ async fn run_rbac_note_against(
     what: &str,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     chain
-        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
-        .unwrap_or_else(|e| panic!("building the {what} tx context: {e}"))
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .unwrap_or_else(|e| panic!("building the {what} transaction: {e}"))
         .execute()
@@ -3148,24 +3187,15 @@ pub fn setup_production_faucet(
     .build_components()
     .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
 
-    // F5/S12: the production faucet is finalized under the stock AuthNetworkAccount (keyless network
-    // account) with the frozen note-script allowlist and a tx-script allowlist of EXACTLY the one
-    // canonical `ExpirationTransactionScript::script_root()` (S12, RATIFIED 2026-07-20) — mirroring
-    // the deploy path's `XReserveStablecoinBuilder::auth_component()` composed via
-    // `AccountBuilder::with_auth_component`. (alpha.4's `NetworkAccount::new` REQUIRES the expiration
-    // root, so an empty tx-script allowlist would no longer be a valid network account.)
-    let account = add_faucet_account(
-        &mut mc,
-        Auth::NetworkAccount {
-            allowed_script_roots:
-                xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::allowed_note_scripts(),
-            allowed_tx_script_roots: std::collections::BTreeSet::from([
-                ExpirationTransactionScript::script_root(),
-            ]),
-        },
-        components,
-    )
-    .context("adding the production faucet account")?;
+    // F5/S12: the production faucet is finalized under the stock AuthNetworkAccount (keyless
+    // network account) with the frozen note-script allowlist, a tx-script allowlist of EXACTLY
+    // the one canonical `ExpirationTransactionScript::script_root()` (S12, RATIFIED 2026-07-20),
+    // and the provisional zero-fee configuration — installed via the deploy path's OWN
+    // `XReserveStablecoinBuilder::auth_component()` (the `custom()`-based composition; the
+    // `Auth::NetworkAccount` fixture is deliberately bypassed because it routes through the
+    // force-inserting `new()` constructor and would grow the 14-root allowlist).
+    let account = add_network_faucet_account(&mut mc, components)
+        .context("adding the production faucet account")?;
     // R2-F3: the faucet id is now known, so the seed-notes closure binds its notes (the
     // identifier_init note derives the identifier from THIS faucet id — the own-id fixpoint) and
     // its mint payloads (`remoteToken = account_id_to_bytes32(faucet_id)`) to the REAL faucet
@@ -3358,13 +3388,13 @@ pub async fn emit_note_with_attachments(
     );
 
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(emit_helper_component()?.component_code().clone())?
+        .with_dynamically_linked_package(emit_helper_component()?.component_code().clone())?
         .compile_tx_script(src)?;
     let tx = chain
-        .build_tx_context(producer, &[], &[])?
+        .build_transaction(producer)
         .tx_script(tx_script)
         .extend_advice_inputs(advice)
-        .extend_expected_output_notes(vec![RawOutputNote::Full(note.clone())])
+        .expected_output_note(RawOutputNote::Full(note.clone()))
         .build()?
         .execute()
         .await?;

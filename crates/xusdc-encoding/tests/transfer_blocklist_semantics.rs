@@ -220,8 +220,8 @@ async fn consume_incoming_p2id(
         .get_foreign_account_inputs(faucet_id)
         .expect("faucet foreign-account inputs (committed)");
     chain
-        .build_tx_context(holder.clone(), &[note_id], &[])
-        .expect("building the recipient consume tx context")
+        .build_transaction(holder.clone())
+        .authenticated_input_note(note_id)
         .foreign_accounts([foreign])
         .build()
         .expect("building the recipient consume tx")
@@ -239,8 +239,8 @@ async fn commit_faucet_consume(
 ) -> Result<()> {
     let faucet = chain.committed_account(faucet_id)?.clone();
     let tx = chain
-        .build_tx_context(faucet, &[note_id], &[])
-        .context("building the faucet admin-note consume tx context")?
+        .build_transaction(faucet)
+        .authenticated_input_note(note_id)
         .build()
         .context("building the faucet admin-note consume tx")?
         .execute()
@@ -283,7 +283,7 @@ async fn emit_without_faucet_foreign(
     holder_id: AccountId,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     let tx_script = miden_standards::code_builder::CodeBuilder::new()
-        .with_dynamically_linked_library(
+        .with_dynamically_linked_package(
             emit_helper_component()
                 .expect("emit helper compiles")
                 .component_code()
@@ -297,11 +297,10 @@ async fn emit_without_faucet_foreign(
         ))
         .expect("the holder send script compiles");
     chain
-        .build_tx_context(holder_id, &[], &[])
-        .expect("building the holder emit tx context")
+        .build_transaction(holder_id)
         .tx_script(tx_script)
         .extend_advice_inputs(attachment_advice(&bundle.note))
-        .extend_expected_output_notes(vec![RawOutputNote::Full(bundle.note.clone())])
+        .expected_output_note(RawOutputNote::Full(bundle.note.clone()))
         .build()
         .expect("building the holder emit tx")
         .execute()
@@ -611,8 +610,8 @@ async fn faucet_side_burn_consume_is_callback_unaffected() -> Result<()> {
     let supply_before = faucet_supply(&f.chain, f.faucet_id)?;
     let burned = f
         .chain
-        .build_tx_context(faucet, &[bundle.note.id()], &[])
-        .context("faucet burn-consume tx context")?
+        .build_transaction(faucet)
+        .authenticated_input_note(bundle.note.id())
         .build()
         .context("faucet burn-consume tx")?
         .execute()

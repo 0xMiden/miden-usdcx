@@ -60,7 +60,9 @@ fn allowlisted_keys(component: &AccountComponent, slot: &StorageSlotName) -> BTr
 fn auth_component_tx_script_allowlist_is_exactly_the_expiration_root() -> Result<()> {
     let component: AccountComponent = XReserveStablecoinBuilder::auth_component()
         .map_err(|e| anyhow::anyhow!("auth_component() must build: {e}"))?
-        .into();
+        .into_iter()
+        .next()
+        .expect("the auth component is yielded first");
 
     let tx_keys = allowlisted_keys(&component, AuthNetworkAccount::allowed_tx_scripts_slot());
     let expected = BTreeSet::from([ExpirationTransactionScript::script_root().as_word()]);
@@ -80,7 +82,9 @@ fn auth_component_tx_script_allowlist_is_exactly_the_expiration_root() -> Result
 fn auth_component_note_script_allowlist_is_untouched_by_s12() -> Result<()> {
     let component: AccountComponent = XReserveStablecoinBuilder::auth_component()
         .map_err(|e| anyhow::anyhow!("auth_component() must build: {e}"))?
-        .into();
+        .into_iter()
+        .next()
+        .expect("the auth component is yielded first");
 
     let note_keys = allowlisted_keys(&component, AuthNetworkAccount::allowed_note_scripts_slot());
     assert_eq!(
@@ -107,8 +111,7 @@ async fn expiration_is_admitted_and_every_other_tx_script_is_rejected() -> Resul
         .context("compiling the nop probe tx script")?;
     let rejected = pf
         .mock_chain
-        .build_tx_context(pf.faucet_id, &[], &[])
-        .context("nop tx-script context")?
+        .build_transaction(pf.faucet_id)
         .tx_script(bogus)
         .build()
         .context("nop tx-script build")?
@@ -125,8 +128,7 @@ async fn expiration_is_admitted_and_every_other_tx_script_is_rejected() -> Resul
     let expiration = ExpirationTransactionScript::new(NonZeroU16::new(64).expect("64 is non-zero"));
     let admitted = pf
         .mock_chain
-        .build_tx_context(pf.faucet_id, &[], &[])
-        .context("expiration tx-script context")?
+        .build_transaction(pf.faucet_id)
         .tx_script(expiration.into())
         .tx_script_args(expiration.tx_script_args())
         .build()

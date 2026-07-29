@@ -59,7 +59,7 @@ pub(super) fn compile_admin_note_script(src: &str) -> NoteScript {
         )
         .expect("the shipped xreserve component library assembles");
     CodeBuilder::new()
-        .with_dynamically_linked_library(&library)
+        .with_dynamically_linked_package(&library)
         .expect("the xreserve library links into the admin-note script assembler")
         .compile_note_script(src)
         .expect("the admin note script compiles")

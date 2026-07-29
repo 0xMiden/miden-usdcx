@@ -4,13 +4,17 @@ members = [
   "crates/xusdc-encoding",
   "crates/xreserve-deposit-relayer",
   "crates/withdrawal-listener-attester",
+]
+# PARKED AGAIN (V16-NOW migration, 2026-07-28): `crates/xusdc-validation` left the workspace a
+# second time. The three members above moved to the protocol monorepo's `next` branch at a frozen
+# git rev, but the validation crate needs `miden-client`/`miden-client-sqlite-store`, whose newest
+# releases (`=0.16.0-alpha.1`) pin protocol `=0.16.0-alpha.4` — no client exists for the `next`
+# graph, so the crate cannot cross with the rest. The crate directory is byte-intact; the parking
+# record (why, re-enable trigger, un-park steps) is `crates/xusdc-validation/PARKED-V16-NEXT.md`.
+# It un-parks at the V16-FINAL migration onto the released `v0.16.0` crates with a client/node pair.
+exclude = [
   "crates/xusdc-validation",
 ]
-# UN-PARKED (P1b-a, 2026-07-21): `crates/xusdc-validation` is a workspace member again. The v16
-# `miden-client`/`miden-client-sqlite-store` `=0.16.0-alpha.1` releases now exist (they pin
-# protocol `=0.16.0-alpha.4`, matching the workspace), so the crate compiles against the v16
-# family and rejoins the offline `--locked` gate. The live-node LNV rows stay `#[ignore]`d
-# (P1b-b, operator-run). The former `exclude` entry was removed with the un-park.
 
 # Shared dependency versions defined once (workspace-shared-dependencies). Every member consumes
 # these with `dep = { workspace = true, features = [...] }`, adding crate-specific feature sets on
@@ -84,10 +88,12 @@ tower = { version = "0.5", features = ["util"] }
 
 # The former [patch.crates-io] git-pin block (v0.15.3 rev 681fc905…) was REMOVED at the v16
 # migration (MIGRATION-V16-ALPHA2.md R2): its sole purpose was unifying `miden-client 0.15.3`'s
-# crates.io protocol-family requirements onto the one git-pinned copy. Since P1b-a un-parked
-# `crates/xusdc-validation` onto the v16 client (`miden-client =0.16.0-alpha.1`, which itself pins
-# protocol `=0.16.0-alpha.4`), the block is STILL not needed: every member — the validation
-# consumer included — resolves the protocol family uniformly from crates.io at `=0.16.0-alpha.4`,
-# so exactly one copy of each protocol crate is in the graph. `miden-tx-batch-prover` (never
-# published past 0.15.3) left the graph with the rename to `miden-tx-batch` (protocol #3035), which
-# arrives transitively via `miden-testing`.
+# crates.io protocol-family requirements onto the one git-pinned copy. At the V16-NOW migration
+# (MIGRATION-V16-NEXT.md) the block is STILL not needed, for the opposite reason: the three
+# remaining members resolve the whole protocol family from the ONE frozen protocol-monorepo git
+# rev their manifests pin, and the only crates.io consumer of that family — the `miden-client`
+# stack of the now-parked `crates/xusdc-validation` (`workspace.exclude`) — is outside the graph,
+# so nothing pulls a second protocol copy that a patch block would have to unify. Exactly one
+# copy of each protocol crate is in the graph (the migration doc's `cargo tree` record).
+# `miden-tx-batch-prover` (never published past 0.15.3) left the graph with the rename to
+# `miden-tx-batch` (protocol #3035), which arrives transitively via `miden-testing`.

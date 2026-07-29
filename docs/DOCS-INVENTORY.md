@@ -24,6 +24,8 @@ are out of scope and are not listed.
 
 | Doc | Disposition | Notes |
 |---|---|---|
+| `MIGRATION-V16-NEXT.md` | KEEP (new) | The V16-NOW migration record (v16-alpha family → the frozen protocol-`next` git rev, migration #1 of 2): pin ledger, claim-verification table, re-pin ledger, the ROOT-DELTA + GROWTH ratification table, the temporary-ratification framing and its revert contents. Not edited after the fact. |
+| `MIGRATION-V16-NEXT-EVIDENCE.md` | KEEP (new) | The V16-NOW migration's verbatim evidence: full gate stdout/stderr (every suite, suite-by-suite) + the complete one-row-per-`@@`-hunk tripwire classification ledger (guarded executably by `tests/migration_evidence_ledger.rs`). Not edited after the fact. |
 | `MIGRATION-V16-ALPHA2.md` | KEEP (new) | The v0.16.0-alpha.2 migration map: pin ledger, mechanical + semantic inventories (the S-rows), re-pin ledger, gate decisions, count parity. The historical record of the migration — not edited after the fact. |
 | `reconciliation/CDR-1-CONFORMANCE-REWALK.md` | KEEP (new) | Post-migration conformance re-walk: every load-bearing `CIR-*`/Miden-family/`DEV-*`/`Q-*`/`INV-*`/`IMPL-DEV-*` id with a v16 verdict + evidence. |
 | `reconciliation/V16-DOC-DELTA.md` | KEEP (new) | The doc/comment reconciliation record: per-S-row greps, every corrected prose site, every verified-current adjudication. |
@@ -94,7 +96,8 @@ plain in-repo scope reference (`crates/xusdc-validation/README.md`).
 | Doc | Disposition | Notes |
 |---|---|---|
 | `README.md` | KEEP | Crate orientation. |
-| `PARKED-V15.md` | SUPERSEDED (un-parked, P1b-a) | Historical record of why the crate was parked at v15 + the re-enable steps; now executed — the crate is a workspace member again on the v16 family (`miden-client =0.16.0-alpha.1`, protocol `=0.16.0-alpha.4`). The file carries a SUPERSEDED banner. |
+| `PARKED-V16-NEXT.md` | KEEP (new) | The second parking record: the LNV harness cannot join the protocol-`next` graph (no client release exists for it); re-enable trigger = the V16-FINAL migration with a client/node pair. |
+| `PARKED-V15.md` | HISTORICAL (superseded twice, byte-intact) | Record of the v15 park and its P1b-a un-park, kept byte-intact by the V16-NOW park (which touches nothing in this crate except adding the new record); the crate is parked AGAIN and the binding record is `PARKED-V16-NEXT.md`. |
 | `VALIDATION-RECORD.md` (LNV-1) | KEEP / REWRITE (citation cleaned) | Harness + rows A/B. |
 | `VALIDATION-RECORD-LNV2.md` | KEEP / REWRITE (citation cleaned) | Admin suite (rows C) + auth boundary (row F). |
 | `VALIDATION-RECORD-LNV3.md` | KEEP / REWRITE (citation cleaned) | Mint rows D/E. |

@@ -5,9 +5,11 @@
 //! allowlist, and a tx-script allowlist of EXACTLY the one canonical `ExpirationTransactionScript`
 //! (S12, RATIFIED 2026-07-20).
 //!
-//! The production faucet (`support::setup_production_faucet`) is finalized under
-//! `Auth::NetworkAccount` fed `builder.allowed_note_scripts()`, and the mint + burn notes carry the
-//! scheme-2 `NetworkAccountTarget` routing attachment.
+//! The production faucet (`support::setup_production_faucet`) is finalized under the deploy
+//! path's own `XReserveStablecoinBuilder::auth_component()` (the `custom()`-based composition —
+//! the `Auth::NetworkAccount` fixture routes through the force-inserting `new()` and is
+//! deliberately bypassed), and the mint + burn notes carry the scheme-2 `NetworkAccountTarget`
+//! routing attachment.
 //!
 //! COVERAGE (this file):
 //! - proof #6: the production faucet IS a network account AND its auth component is the stock
@@ -31,7 +33,6 @@
 mod support;
 
 use core::num::NonZeroU16;
-use core::slice;
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
@@ -135,10 +136,14 @@ fn production_faucet() -> Result<(MockChain, Account)> {
 /// The auth-procedure MAST root of the stock `AuthNetworkAccount` component (independent of the
 /// allowlist storage contents; a dummy non-empty allowlist is used only to construct it).
 fn stock_network_auth_proc_root() -> Word {
-    let component: AccountComponent =
-        AuthNetworkAccount::with_allowed_notes(BTreeSet::from_iter([MintNote::script_root()]))
-            .expect("non-empty allowlist constructs")
-            .into();
+    let component: AccountComponent = AuthNetworkAccount::custom(
+        BTreeSet::from_iter([MintNote::script_root()]),
+        XReserveStablecoinBuilder::provisional_fee_policy_manager(),
+    )
+    .expect("non-empty allowlist constructs")
+    .into_iter()
+    .next()
+    .expect("the auth component is yielded first");
     let (root, _is_auth) = component
         .procedures()
         .find(|(_, is_auth)| *is_auth)
@@ -275,8 +280,8 @@ async fn non_allowlisted_note_is_rejected_by_auth() -> Result<()> {
         .context("building the non-allowlisted probe note")?;
 
     let result = chain
-        .build_tx_context(account.id(), &[], slice::from_ref(&bogus))
-        .context("building the consume tx context")?
+        .build_transaction(account.id())
+        .unauthenticated_input_note(bogus.clone())
         .build()
         .context("building the consume tx")?
         .execute()
@@ -299,8 +304,7 @@ async fn non_expiration_tx_script_is_rejected_and_expiration_is_admitted() -> Re
         .compile_tx_script("@transaction_script\npub proc main\n    nop\nend\n")
         .context("compiling the probe tx script")?;
     let rejected = chain
-        .build_tx_context(account.id(), &[], &[])
-        .context("building the tx-script tx context")?
+        .build_transaction(account.id())
         .tx_script(bogus)
         .build()
         .context("building the tx-script tx")?
@@ -315,8 +319,7 @@ async fn non_expiration_tx_script_is_rejected_and_expiration_is_admitted() -> Re
     // mutation dropping the expiration root flips this back to the allowlist error — RED — caught here).
     let expiration = ExpirationTransactionScript::new(NonZeroU16::new(64).expect("64 is non-zero"));
     let admitted = chain
-        .build_tx_context(account.id(), &[], &[])
-        .context("building the expiration tx-script tx context")?
+        .build_transaction(account.id())
         .tx_script(expiration.into())
         .tx_script_args(expiration.tx_script_args())
         .build()

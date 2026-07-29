@@ -72,12 +72,14 @@ sha3 = { workspace = true }
 rusqlite = { workspace = true }
 # `AccountId` (the faucet id in config, and the `metadata.sender → remoteDepositor` encoding's input)
 # and `AssetAmount` (the burn payload's amount) are NAMED in this crate's public API, at the same
-# crates.io pin the rest of the workspace resolves the protocol family at (MIGRATION-V16-ALPHA2.md).
+# frozen protocol-monorepo git rev the rest of the workspace resolves the protocol family at
+# (MIGRATION-V16-NEXT.md).
 #
-# `miden-client` is deliberately ABSENT: it has no v0.16 release, so every real Miden read (the
-# SyncNotes tag scan, GetNotesById retrieval, the evidence reads) is PARKED to a later slice. This
-# slice needs none of them — it is serde wire types, JSON fixtures, and config.
-miden-protocol = { version = "=0.16.0-alpha.4" }
+# `miden-client` is deliberately ABSENT: no client release exists for the protocol-`next` graph, so
+# every real Miden read (the SyncNotes tag scan, GetNotesById retrieval, the evidence reads) is
+# PARKED to a later slice. This slice needs none of them — it is serde wire types, JSON fixtures,
+# and config.
+miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "dbe4e38797207ce09fee1668ea204aafec275f63" }
 
 [dev-dependencies]
 # Exact-variant assertions + parameterized reject tables; versions from the workspace table.

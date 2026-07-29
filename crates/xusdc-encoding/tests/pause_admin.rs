@@ -23,8 +23,6 @@
 
 mod support;
 
-use core::slice;
-
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::{Account, AccountId};
@@ -190,8 +188,8 @@ async fn bring_up(pf: &mut ProductionFaucet, count: usize) -> Result<()> {
     for (i, note) in pf.seeded_notes.clone().iter().take(count).enumerate() {
         let tx = pf
             .mock_chain
-            .build_tx_context(pf.faucet_id, &[note.id()], &[])
-            .with_context(|| format!("bring-up note {i}: tx context"))?
+            .build_transaction(pf.faucet_id)
+            .authenticated_input_note(note.id())
             .build()
             .with_context(|| format!("bring-up note {i}: tx build"))?
             .execute()
@@ -228,8 +226,8 @@ async fn emit_and_consume_mint(
     emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
     Ok(pf
         .mock_chain
-        .build_tx_context(pf.faucet_id, &[note.id()], &[])
-        .context("building the mint consume tx context")?
+        .build_transaction(pf.faucet_id)
+        .authenticated_input_note(note.id())
         .build()
         .context("building the mint consume tx")?
         .execute()
@@ -368,8 +366,8 @@ async fn dom_pauser_production_pause_note_halts_mint() -> Result<()> {
     let note = XReservePauseNote::create(dom_pauser(), test_faucet_id(1), &mut prod_note_rng(8))?;
     let paused = pf
         .mock_chain
-        .build_tx_context(account.clone(), &[], slice::from_ref(&note))
-        .expect("production pause tx context")
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .expect("production pause tx build")
         .execute()
@@ -387,8 +385,8 @@ async fn dom_pauser_production_pause_note_halts_mint() -> Result<()> {
     let mint_note = attested_mint_note(&pf, &payload, 72)?;
     let result = pf
         .mock_chain
-        .build_tx_context(evolved, &[], slice::from_ref(&mint_note))
-        .expect("mint consume tx context")
+        .build_transaction(evolved)
+        .unauthenticated_input_note(mint_note.clone())
         .build()
         .expect("mint consume tx build")
         .execute()
@@ -428,8 +426,8 @@ async fn dom_pauser_production_pause_note_halts_burn() -> Result<()> {
     let account = chain.committed_account(faucet_id)?.clone();
     let note = XReservePauseNote::create(dom_pauser(), test_faucet_id(1), &mut prod_note_rng(8))?;
     let paused = chain
-        .build_tx_context(account.clone(), &[], slice::from_ref(&note))
-        .expect("production pause tx context")
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .expect("production pause tx build")
         .execute()
@@ -440,7 +438,8 @@ async fn dom_pauser_production_pause_note_halts_burn() -> Result<()> {
 
     // The faucet consumes the committed burn note against the paused account → assert_not_paused traps.
     let result = chain
-        .build_tx_context(evolved, &[burn_note.id()], &[])?
+        .build_transaction(evolved)
+        .authenticated_input_note(burn_note.id())
         .build()?
         .execute()
         .await;
@@ -487,7 +486,8 @@ async fn dom_pauser_pause_halts_burn() -> Result<()> {
     // The faucet consumes the committed burn note against the paused account → execute_burn_policy's
     // assert_not_paused traps the stock pause error (the valid amount isolates the pause gate).
     let result = chain
-        .build_tx_context(evolved, &[burn_note.id()], &[])?
+        .build_transaction(evolved)
+        .authenticated_input_note(burn_note.id())
         .build()?
         .execute()
         .await;
@@ -568,7 +568,8 @@ async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
 
     // The faucet consumes the committed burn note against the UNPAUSED account → the burn succeeds.
     let burned = chain
-        .build_tx_context(bevolved.clone(), &[burn_note.id()], &[])?
+        .build_transaction(bevolved.clone())
+        .authenticated_input_note(burn_note.id())
         .build()?
         .execute()
         .await

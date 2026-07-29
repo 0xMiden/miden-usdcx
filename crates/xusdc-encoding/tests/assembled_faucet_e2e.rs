@@ -217,8 +217,8 @@ async fn consume_committed_note(
     note_id: NoteId,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     chain
-        .build_tx_context(account.clone(), &[note_id], &[])
-        .expect("building the consume tx context")
+        .build_transaction(account.clone())
+        .authenticated_input_note(note_id)
         .build()
         .expect("building the consume tx")
         .execute()
@@ -241,8 +241,8 @@ async fn consume_committed_note_with_faucet_foreign(
         .get_foreign_account_inputs(faucet_id)
         .expect("faucet foreign-account inputs (committed)");
     chain
-        .build_tx_context(account.clone(), &[note_id], &[])
-        .expect("building the consume tx context")
+        .build_transaction(account.clone())
+        .authenticated_input_note(note_id)
         .foreign_accounts([foreign])
         .build()
         .expect("building the consume tx")
@@ -703,8 +703,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("mint_and_send tx script: {e}"))?;
     let result = pf
         .mock_chain
-        .build_tx_context(faucet_id, &[], &[])
-        .context("S6: tx context")?
+        .build_transaction(faucet_id)
         .tx_script(tx_script)
         .build()
         .context("S6: tx build")?

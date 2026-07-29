@@ -311,7 +311,8 @@ async fn burn_paused_rejects() -> Result<()> {
     // runs assert_not_paused BEFORE the active policy, trapping the stock pause error (the valid amount
     // isolates the gate). GREEN regardless of the policy body.
     let result = chain
-        .build_tx_context(evolved, &[burn_note.id()], &[])?
+        .build_transaction(evolved)
+        .authenticated_input_note(burn_note.id())
         .build()?
         .execute()
         .await;

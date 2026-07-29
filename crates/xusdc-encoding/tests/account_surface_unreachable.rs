@@ -7,7 +7,14 @@
 //!     note was removed from the allowlist, human-ratified 2026-07-14; the role-admin graph is
 //!     build-seeded and frozen — rotation is grant_role/revoke_role only, CIR-ADMIN-3);
 //!   * S13/S24 — `authority::get_authority` is READ-ONLY in execution (executed bounding, not
-//!     documentation).
+//!     documentation);
+//!   * V16-NOW temporary growth — the 11 mutator/fee procedures the protocol-`next` stock
+//!     components add, in TWO ratified reachability tiers: Tier A (the 4 allowlist mutators)
+//!     truly unreachable, the S12/S21 disposition; Tier B (the 6 fee procedures + the
+//!     `compute_note_fee` callback) direct-entry-unreachable — no external entry point — while
+//!     the fee-estimation path runs INTERNALLY on every input note, computing the scheduled
+//!     zero fee (internally active but inert). TEMPORARY — reverted at V16-FINAL together with
+//!     the provisional fee configuration; see `docs/MIGRATION-V16-NEXT.md`.
 //!
 //! The small conformance helpers (`production_components`/`component_surface`/`production_account`/
 //! `allowlisted_note_scripts`) are duplicated here (as in the round-5 test splits) so this module is
@@ -20,10 +27,11 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
-use miden_protocol::account::{Account, AccountComponent};
+use miden_protocol::account::{Account, AccountComponent, StorageSlotContent};
 use miden_protocol::assembly::mast::MastNodeExt;
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::{Felt, Word};
+use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::{BurnNote, MintNote};
 use miden_standards::testing::note::NoteBuilder;
@@ -45,10 +53,9 @@ const MAX_SUPPLY: u64 = 1_000_000;
 fn production_components() -> Result<Vec<AccountComponent>> {
     let mut components =
         production_component_set(MAX_SUPPLY, 0).context("the production composition must build")?;
-    components.push(
+    components.extend(
         XReserveStablecoinBuilder::auth_component()
-            .context("the production auth component must build")?
-            .into(),
+            .context("the production auth component must build")?,
     );
     Ok(components)
 }
@@ -118,7 +125,7 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
 // ================================================================================================
 
 /// The fully-qualified path of the stock RBAC `set_role_admin` account procedure (a member of the
-/// frozen 64-root surface — the proc STAYS; only its runtime note was removed).
+/// frozen 75-root surface — the proc STAYS; only its runtime note was removed).
 const RBAC_SET_ROLE_ADMIN_PROC_PATH: &str =
     "::miden::standards::components::access::rbac::set_role_admin";
 
@@ -143,7 +150,8 @@ fn rbac_set_role_admin_proc_root() -> Result<Word> {
 }
 
 /// PRESENT: the stock RBAC `set_role_admin` procedure IS a callable root of the composed account —
-/// the S21 disposition keeps the stock component intact (the 64-root surface is unchanged); ONLY
+/// the S21 disposition keeps the stock component intact (the frozen surface membership is
+/// otherwise unchanged); ONLY
 /// the runtime note that could reach it was removed.
 #[test]
 fn rbac_set_role_admin_is_present_on_the_account() -> Result<()> {
@@ -301,8 +309,8 @@ async fn get_authority_is_read_only_on_the_account() -> Result<()> {
     let tx = gm
         .harness
         .mock_chain
-        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
-        .context("get_authority probe tx context")?
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("get_authority probe tx build")?
         .execute()
@@ -322,5 +330,211 @@ async fn get_authority_is_read_only_on_the_account() -> Result<()> {
         "get_authority must not mutate the vault / issued supply (S13/S24: read-only, executed \
          proof)"
     );
+    Ok(())
+}
+
+// V16-NOW TEMPORARY GROWTH — THE RATIFIED FEE/MUTATOR ROWS: TWO REACHABILITY TIERS
+// ================================================================================================
+//
+// The 11 forced additions fall in two reachability tiers (Phil's ratified wording, verified
+// against the protocol source at the pin):
+//
+// Tier A — truly unreachable: the 4 `#3355` admin mutators. No note or tx can reach them under
+// the frozen 14-root note-script allowlist + 1-root tx-script allowlist (same disposition as the
+// S12 freeze/unfreeze + S21 set_role_admin precedents).
+//
+// Tier B — internally-active-but-inert, direct-entry-unreachable: the 6 `#3351` fee procedures +
+// the `compute_note_fee` policy callback. None is a new externally-authorized entry point (none
+// in the note/tx-script allowlist, so no outside caller reaches them directly). BUT the
+// fee-estimation path IS executed internally on every input note during
+// `auth_network_transaction` (`collect_sponsored_fees` -> `estimate_note_fee_internal` -> dyncall
+// to `compute_note_fee`). With `BasicConstantFeePolicy` scheduling an explicit ZERO fee for all
+// 14 allowlisted roots, that execution computes a zero fee and is functionally inert (doubly so
+// on the zero-base-fee MockChain). The 14-root schedule is required precisely because this path
+// runs on every note.
+//
+// Both tiers are TEMPORARY: a later slice reverts the growth together with the provisional fee
+// configuration (see `docs/MIGRATION-V16-NEXT.md`).
+
+/// Tier A — the four `#3355` allowlist mutators: truly unreachable (the S12/S21 disposition).
+const TIER_A_MUTATOR_ROWS: [&str; 4] = [
+    "::miden::standards::components::auth::network_account::add_allowed_note_script",
+    "::miden::standards::components::auth::network_account::remove_allowed_note_script",
+    "::miden::standards::components::auth::network_account::add_allowed_tx_script",
+    "::miden::standards::components::auth::network_account::remove_allowed_tx_script",
+];
+
+/// Tier B — the six `#3351` fee procedures + the fee-policy callback: no external entry point
+/// (not in either allowlist), while the estimation path (`estimate_note_fee_internal` -> dyncall
+/// `compute_note_fee`) runs INTERNALLY on every input note, computing the scheduled zero fee.
+const TIER_B_FEE_ROWS: [&str; 7] = [
+    "::miden::standards::components::auth::network_account::estimate_note_fee",
+    "::miden::standards::components::auth::network_account::get_fee_asset_id",
+    "::miden::standards::components::auth::network_account::get_fee_policy",
+    "::miden::standards::components::auth::network_account::set_fee_policy",
+    "::miden::standards::components::auth::network_account::add_allowed_fee_policy",
+    "::miden::standards::components::auth::network_account::remove_allowed_fee_policy",
+    "::miden::standards::components::fees::policies::basic_constant_fee::compute_note_fee",
+];
+
+/// Resolves the given growth rows' account-procedure roots from the shipped composition (by
+/// path, so a stock re-key cannot silently blunt the sweeps below).
+fn growth_row_roots(paths: &[&'static str]) -> Result<Vec<(&'static str, Word)>> {
+    let components = production_components()?;
+    let surface = component_surface(&components);
+    paths
+        .iter()
+        .map(|path| {
+            surface
+                .iter()
+                .find(|(p, _)| p == path)
+                .map(|(_, root)| (*path, *root))
+                .with_context(|| {
+                    format!("the composed account must expose {path} (ratified temporary growth)")
+                })
+        })
+        .collect()
+}
+
+/// All 11 ratified growth rows (Tier A + Tier B), for the asserts that span both tiers.
+fn ratified_growth_row_roots() -> Result<Vec<(&'static str, Word)>> {
+    let mut rows = growth_row_roots(&TIER_A_MUTATOR_ROWS)?;
+    rows.extend(growth_row_roots(&TIER_B_FEE_ROWS)?);
+    Ok(rows)
+}
+
+/// PRESENT: each of the 11 ratified growth rows IS a callable root of the composed account — the
+/// fact the ratification covers, stated explicitly rather than left implicit in the 75-root count.
+/// If any row disappears, the temporary-growth ratification must be re-visited (the revert slice
+/// expects to remove exactly these).
+#[test]
+fn ratified_growth_rows_are_present_on_the_account() -> Result<()> {
+    let rows = ratified_growth_row_roots()?;
+    let account = production_account()?;
+    let roots: BTreeSet<Word> = account
+        .code()
+        .procedures()
+        .iter()
+        .map(|r| Word::from(*r))
+        .collect();
+    for (path, root) in rows {
+        assert!(
+            roots.contains(&root),
+            "the composed account must carry `{path}` on-chain (ratified temporary growth)"
+        );
+    }
+    Ok(())
+}
+
+/// Tier A, UNREACHABLE, leg 1 (static, exhaustive over the allowlist): NOT ONE of the 14
+/// allowlisted note scripts references ANY of the 4 mutator roots ANYWHERE in its MAST — so no
+/// admissible note can mutate the allowlists. The swept set is asserted equal to the allowlist
+/// first, so a new note cannot dodge the sweep.
+#[test]
+fn tier_a_mutators_are_unreachable_from_every_allowlisted_note() -> Result<()> {
+    let allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
+    let scripts = allowlisted_note_scripts();
+    let swept: BTreeSet<_> = scripts.iter().map(|(_, s)| s.root()).collect();
+    assert_eq!(
+        swept, allowlist,
+        "the swept note scripts must be EXACTLY the 14-root note-script allowlist"
+    );
+
+    let rows = growth_row_roots(&TIER_A_MUTATOR_ROWS)?;
+    for (label, script) in &scripts {
+        let forest = script.mast();
+        for node in forest.nodes() {
+            for (path, root) in &rows {
+                assert_ne!(
+                    node.digest(),
+                    *root,
+                    "allowlisted note script `{label}` references the Tier-A mutator root \
+                     `{path}` — the unreachability guarantee is BROKEN (an admissible note could \
+                     mutate the frozen allowlists)"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Tier B, NO DIRECT REFERENCE (static, exhaustive over the allowlist): NOT ONE of the 14
+/// allowlisted note scripts references ANY of the 7 fee-tier roots ANYWHERE in its MAST — no
+/// admissible note calls the fee machinery ITSELF. This is deliberately NOT an unreachability
+/// claim: the fee-estimation path runs INTERNALLY on every input note (the auth procedure's
+/// `collect_sponsored_fees` -> `estimate_note_fee_internal` -> dyncall `compute_note_fee`),
+/// computing the scheduled zero fee — internally active but inert. What this sweep proves is
+/// that the only executor is that internal dispatch, never an admissible script.
+#[test]
+fn tier_b_fee_rows_are_not_referenced_by_any_allowlisted_note() -> Result<()> {
+    let allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
+    let scripts = allowlisted_note_scripts();
+    let swept: BTreeSet<_> = scripts.iter().map(|(_, s)| s.root()).collect();
+    assert_eq!(
+        swept, allowlist,
+        "the swept note scripts must be EXACTLY the 14-root note-script allowlist"
+    );
+
+    let rows = growth_row_roots(&TIER_B_FEE_ROWS)?;
+    for (label, script) in &scripts {
+        let forest = script.mast();
+        for node in forest.nodes() {
+            for (path, root) in &rows {
+                assert_ne!(
+                    node.digest(),
+                    *root,
+                    "allowlisted note script `{label}` references the Tier-B fee root `{path}` \
+                     directly — the fee machinery must only ever run via the auth procedure's \
+                     internal dispatch, never from an admissible script"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// NO EXTERNAL ENTRY POINT (both tiers): no growth root is a member of EITHER allowlist — the
+/// 14-root note-script allowlist or the tx-script allowlist (read directly from the production
+/// auth component's slot; it holds EXACTLY the one canonical expiration root, per the s12 pins).
+/// For Tier A this closes both entry vectors outright (with the MAST sweep above: truly
+/// unreachable). For Tier B it establishes exactly the ratified posture: no outside caller
+/// reaches the fee procedures directly; their only execution is the auth procedure's internal
+/// zero-fee dispatch.
+#[test]
+fn ratified_growth_rows_are_not_admissible_via_either_allowlist() -> Result<()> {
+    let note_allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
+
+    // the production auth component's materialized tx-script allowlist keys (non-empty values
+    // mark membership, matching the MASM `word::eqz` check — the s12 view).
+    let auth_component: AccountComponent = XReserveStablecoinBuilder::auth_component()
+        .map_err(|e| anyhow::anyhow!("auth_component() must build: {e}"))?
+        .into_iter()
+        .next()
+        .expect("the auth component is yielded first");
+    let tx_slot = auth_component
+        .storage_slots()
+        .iter()
+        .find(|s| s.name() == AuthNetworkAccount::allowed_tx_scripts_slot())
+        .expect("the auth component must carry the tx-script allowlist slot");
+    let StorageSlotContent::Map(tx_map) = tx_slot.content() else {
+        panic!("the tx-script allowlist slot must be a MAP slot");
+    };
+    let tx_allowlist: BTreeSet<Word> = tx_map
+        .entries()
+        .filter(|(_key, value)| **value != Word::empty())
+        .map(|(key, _value)| key.as_word())
+        .collect();
+
+    for (path, root) in ratified_growth_row_roots()? {
+        let as_note_root = NoteScriptRoot::from_raw(root);
+        assert!(
+            !note_allowlist.contains(&as_note_root),
+            "the `{path}` root must NOT be a member of the 14-root note-script allowlist"
+        );
+        assert!(
+            !tx_allowlist.contains(&root),
+            "the `{path}` root must NOT be a member of the tx-script allowlist"
+        );
+    }
     Ok(())
 }

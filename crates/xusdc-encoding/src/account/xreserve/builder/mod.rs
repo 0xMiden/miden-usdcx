@@ -47,6 +47,7 @@ use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Authority, Ownable2Step, Pausable};
 use miden_standards::account::auth::{AuthNetworkAccount, NetworkAccountNoteAllowlistError};
 use miden_standards::account::faucets::FungibleFaucet;
+use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
 use miden_standards::account::policies::{
     BasicBlocklist, BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager, TransferPolicy,
 };
@@ -171,7 +172,7 @@ struct DomainConfigSeed {
 /// exposed only by its consuming `IntoIterator`).
 fn min_burn_amount_floor_of(policy: &BurnPolicy) -> Option<u64> {
     policy.clone().into_iter().find_map(|component| {
-        if component.component_code().as_library() != MinBurnAmount::code().as_library() {
+        if component.component_code().as_package() != MinBurnAmount::code().as_package() {
             return None;
         }
         component
@@ -326,16 +327,21 @@ impl XReserveStablecoinBuilder {
 
     /// The note-script allowlist for the production faucet's `AuthNetworkAccount` auth component
     /// (F5). It is the SINGLE SOURCE OF TRUTH — the production auth component (`Self::auth_component`)
-    /// and the MockChain `Auth::NetworkAccount` fixture both consume it, and the allowlist tripwire
-    /// asserts the built account's allowlist equals it exactly. The scheme-2 `NetworkAccountTarget`
-    /// bind on the notes is routing-only, not a consume gate.
+    /// consumes it (and the test fixtures compose through that same component), and the allowlist
+    /// tripwire asserts the built account's allowlist equals it exactly. The scheme-2
+    /// `NetworkAccountTarget` bind on the notes is routing-only, not a consume gate.
     ///
     /// COMPLETE — the frozen 14-root set: rows 1-2 (the supply-side STOCK `MintNote` + STOCK
     /// `BurnNote`), row 3 (`set_attester`, the reference op), rows 4-12 (the remaining
     /// owner/role/pause admin note scripts, with row 12 the minimized `identifier_init` note —
     /// DEC-4), and rows 13-14 (the F4-reversal transfer-blocklist admin notes `block_account` /
-    /// `unblock_account`, BLK_MANAGER-gated). The set is IMMUTABLE post-deploy
-    /// (`AuthNetworkAccount` exports no mutator). Two capabilities are deliberately OMITTED
+    /// `unblock_account`, BLK_MANAGER-gated). The set is IMMUTABLE IN EFFECT post-deploy: the
+    /// stock component does export allowlist mutators at this protocol version, but they are
+    /// present-but-UNREACHABLE — no allowlisted note references them and the tx-script allowlist
+    /// admits only the expiration bounder (enforced by `tests/account_surface_unreachable.rs`;
+    /// a temporary, ratified state — see `docs/MIGRATION-V16-NEXT.md`). The config note that
+    /// could drive them is deliberately NOT allowlisted (`tests/config_note_absence.rs`).
+    /// Two capabilities are deliberately OMITTED
     /// (both human-ratified, grounded in Circle's xReserve EVM admin model): `renounce_role`
     /// (Circle has no role self-renounce) and — since the S21 disposition flip, 2026-07-14 — the
     /// runtime `set_role_admin` note (the delegation graph is BUILD-SEEDED by
@@ -387,24 +393,71 @@ impl XReserveStablecoinBuilder {
         ])
     }
 
+    /// The PLACEHOLDER fee-faucet account id of the provisional fee configuration, as a hex
+    /// literal (a valid public account id; parsed and validated where it is consumed).
+    ///
+    /// PROVISIONAL — deploy-time configuration replaces this value: fee economics for the keyless
+    /// xReserve faucet are an OPEN Circle-owned decision (the real fee asset and policy are
+    /// chosen by Circle before any deploy to a fee-charging chain), and the faucet's own id — the
+    /// intended fee asset under the current thinking — cannot exist yet at composition time (the
+    /// id derives from the very storage this value initializes). On MockChain, the only harness
+    /// this workspace runs, the whole fee configuration is inert: the verification base fee is 0,
+    /// so no fee note is ever created, and every allowlisted note is scheduled at an explicit
+    /// zero fee. `tests/fee_policy_provisional_pin.rs` pins the exact materialized storage.
+    pub const TBD_DEPLOY_FEE_FAUCET_ID_HEX: &'static str = "0xaaaaaaaaaaaaaa112aaaaaaaaaaaaa";
+
+    /// The PROVISIONAL zero-fee policy configuration every `AuthNetworkAccount` constructor at
+    /// this protocol version requires (there is no none-variant): the stock
+    /// `BasicConstantFeePolicy` scheduling an EXPLICIT ZERO fee for every allowlisted note script
+    /// root, charging in the asset of the [`Self::TBD_DEPLOY_FEE_FAUCET_ID_HEX`] placeholder
+    /// faucet.
+    ///
+    /// PROVISIONAL — the real fee economics are an open Circle-owned decision and replace this
+    /// configuration before any deploy to a fee-charging chain; until then it is inert on
+    /// MockChain (zero verification base fee, zero per-note fee). The zero fee is expressed as an
+    /// explicit schedule entry per allowlisted root, not an empty schedule, because the auth
+    /// procedure prices EVERY consumed note through the active policy and an unscheduled root
+    /// aborts consumption. `tests/fee_policy_provisional_pin.rs` pins the exact materialized
+    /// storage this configuration produces.
+    pub fn provisional_fee_policy_manager() -> FeePolicyManager {
+        let fee_faucet_id = AccountId::from_hex(Self::TBD_DEPLOY_FEE_FAUCET_ID_HEX)
+            .expect("the placeholder fee-faucet id hex is a valid account id");
+        let mut policy = BasicConstantFeePolicy::new();
+        for root in Self::allowed_note_scripts() {
+            policy = policy.with_fee(root, AssetAmount::ZERO);
+        }
+        FeePolicyManager::builder()
+            .fee_faucet_id(fee_faucet_id)
+            .active_fee_policy(policy.into())
+            .build()
+    }
+
     /// The stock `AuthNetworkAccount` production auth component, initialized with the frozen
-    /// note-script allowlist (`Self::allowed_note_scripts`) and a tx-script allowlist containing
+    /// note-script allowlist (`Self::allowed_note_scripts`), a tx-script allowlist containing
     /// EXACTLY the one canonical `ExpirationTransactionScript::script_root()` (S12, RATIFIED
-    /// 2026-07-20). That single root is the protocol-standard expiration bounder a network account
-    /// allowlists so the ntx-builder can bound how long a submitted tx stays valid; it is safe on
-    /// an open network account because the submitter-controlled delta only bounds the inclusion
-    /// window of the submitter's own transaction (kernel-capped at `0xFFFF` blocks) and can touch
-    /// neither the account's nonce, state, nor assets. Every OTHER tx-script is still rejected
-    /// (sole-mint-surface / F1 posture, now expressed as a one-root allowlist rather than an empty
-    /// one). Composed into the account's dedicated auth slot at finalization (deploy:
-    /// `AccountBuilder::with_auth_component`; tests: `Auth::NetworkAccount`).
+    /// 2026-07-20), and the provisional zero-fee configuration
+    /// ([`Self::provisional_fee_policy_manager`]). That single tx-script root is the
+    /// protocol-standard expiration bounder a network account allowlists so the ntx-builder can
+    /// bound how long a submitted tx stays valid; it is safe on an open network account because
+    /// the submitter-controlled delta only bounds the inclusion window of the submitter's own
+    /// transaction (kernel-capped at `0xFFFF` blocks) and can touch neither the account's nonce,
+    /// state, nor assets. Every OTHER tx-script is still rejected (sole-mint-surface / F1
+    /// posture, now expressed as a one-root allowlist rather than an empty one).
+    ///
+    /// Constructed via `AuthNetworkAccount::custom`, NEVER `new`: the default constructor
+    /// force-inserts the config-note and fee-sponsorship script roots into the note allowlist,
+    /// which would grow the frozen 14-root set and hand the (present-but-unreachable) allowlist
+    /// mutators a runtime entry vector; `custom` inserts nothing, so the preserved allowlist
+    /// stays exact (`tests/config_note_absence.rs` is the tripwire). Composed into the account at
+    /// finalization; the value expands into the auth component plus its registered fee-policy
+    /// components (`IntoIterator`), so callers install everything with one `with_components` /
+    /// `extend`.
     pub fn auth_component() -> Result<AuthNetworkAccount, NetworkAccountNoteAllowlistError> {
-        Ok(
-            AuthNetworkAccount::with_allowed_notes(Self::allowed_note_scripts())?
-                .with_allowed_tx_scripts(BTreeSet::from([
-                    ExpirationTransactionScript::script_root(),
-                ])),
-        )
+        Ok(AuthNetworkAccount::custom(
+            Self::allowed_note_scripts(),
+            Self::provisional_fee_policy_manager(),
+        )?
+        .with_allowed_tx_scripts(BTreeSet::from([ExpirationTransactionScript::script_root()])))
     }
 
     /// Reads the supplied faucet's `is_max_supply_mutable` flag from its assembled storage. The stock
@@ -705,17 +758,17 @@ impl XReserveStablecoinBuilder {
         let expected_blocklist = 1;
         let xreserve_recognized = companions
             .iter()
-            .filter(|c| c.component_code().as_library() == xreserve_code.as_library())
+            .filter(|c| c.component_code().as_package() == xreserve_code.as_package())
             .count();
         let mut min_burn_companion: Option<AccountComponent> = None;
         let mut min_burn_recognized = 0usize;
         let mut blocklist_companion: Option<AccountComponent> = None;
         let mut blocklist_recognized = 0usize;
         for companion in &companions {
-            if companion.component_code().as_library() == MinBurnAmount::code().as_library() {
+            if companion.component_code().as_package() == MinBurnAmount::code().as_package() {
                 min_burn_recognized += 1;
                 min_burn_companion = Some(companion.clone());
-            } else if companion.component_code().as_library() == BasicBlocklist::code().as_library()
+            } else if companion.component_code().as_package() == BasicBlocklist::code().as_package()
             {
                 blocklist_recognized += 1;
                 blocklist_companion = Some(companion.clone());

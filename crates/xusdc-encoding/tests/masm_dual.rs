@@ -19,7 +19,7 @@ use miden_processor::operation::OperationError;
 use miden_processor::ExecutionError;
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::account::{AccountComponent, AccountId};
-use miden_protocol::assembly::{Library, Linkage, Path as MasmPath};
+use miden_protocol::assembly::{Linkage, Package, Path as MasmPath};
 use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::{ExecutedTransaction, TransactionKernel};
 use miden_protocol::{Felt, Word};
@@ -40,7 +40,7 @@ const INTENT_PTR: u64 = 1024;
 
 /// Assembles the `asm/standards/xreserve` tree into one library under namespace
 /// `xreserve` — mirrors `miden-standards/build.rs:45,:77` verbatim.
-fn assemble_xreserve_lib() -> Result<Library> {
+fn assemble_xreserve_lib() -> Result<Package> {
     // Link StandardsLib (mirrors support::assemble_xreserve_lib): attester_admin::set_attester calls
     // the stock authority/pausable procs, which live in StandardsLib.
     let assembler = TransactionKernel::assembler()
@@ -61,7 +61,7 @@ fn assemble_xreserve_lib() -> Result<Library> {
 struct Harness {
     mock_chain: MockChain,
     account_id: AccountId,
-    library: Library,
+    library: Package,
 }
 
 /// Builds the MockChain account that carries the encoding library (registering its MAST
@@ -93,13 +93,12 @@ async fn run_driver(
     src: &str,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(&h.library)
+        .with_dynamically_linked_package(&h.library)
         .expect("linking the encoding library into the driver script")
         .compile_tx_script(src)
         .unwrap_or_else(|e| panic!("driver script failed to compile: {e}\n--- driver ---\n{src}"));
     h.mock_chain
-        .build_tx_context(h.account_id, &[], &[])
-        .expect("building the tx context")
+        .build_transaction(h.account_id)
         .tx_script(tx_script)
         .build()
         .expect("building the transaction")

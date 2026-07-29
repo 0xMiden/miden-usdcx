@@ -498,8 +498,7 @@ async fn tx_script_mint_and_send_cannot_mint() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("mint_and_send tx script: {e}"))?;
     let result = pf
         .mock_chain
-        .build_tx_context(pf.faucet_id, &[], &[])
-        .context("tx context")?
+        .build_transaction(pf.faucet_id)
         .tx_script(tx_script)
         .build()
         .context("tx build")?

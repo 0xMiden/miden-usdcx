@@ -329,8 +329,8 @@ pub async fn bring_up(pf: &mut ProductionFaucet, count: usize) -> Result<()> {
     for (i, note) in pf.seeded_notes.clone().iter().take(count).enumerate() {
         let tx = pf
             .mock_chain
-            .build_tx_context(pf.faucet_id, &[note.id()], &[])
-            .with_context(|| format!("bring-up note {i}: tx context"))?
+            .build_transaction(pf.faucet_id)
+            .authenticated_input_note(note.id())
             .build()
             .with_context(|| format!("bring-up note {i}: tx build"))?
             .execute()
@@ -362,8 +362,8 @@ pub async fn consume_note(
     note_id: NoteId,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     chain
-        .build_tx_context(faucet_id, &[note_id], &[])
-        .expect("building the consume tx context")
+        .build_transaction(faucet_id)
+        .authenticated_input_note(note_id)
         .build()
         .expect("building the consume tx")
         .execute()

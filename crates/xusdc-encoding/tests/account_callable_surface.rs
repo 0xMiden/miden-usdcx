@@ -41,7 +41,7 @@
 //! S21 DISPOSITION (flip, human-ratified 2026-07-14) — `rbac::set_role_admin` gets the SAME
 //! treatment: the runtime `set_role_admin` admin note was REMOVED from the allowlist (13 → 12
 //! roots), so the account procedure stays a callable root of the composed account (stock RBAC,
-//! the 64-root account surface unchanged) but is OPERATIONALLY UNREACHABLE — no allowlisted note references its
+//! the frozen account surface unchanged) but is OPERATIONALLY UNREACHABLE — no allowlisted note references its
 //! root and the tx-script allowlist admits only the canonical expiration bounder (which cannot reach
 //! it). The role-admin graph the faucet deploys with is the
 //! BUILD-TIME seed (`role_config[DOM_PAUSER].admin_role = DOM_MANAGER`, byte-identical to an
@@ -102,7 +102,8 @@ const MAX_SUPPLY: u64 = 1_000_000;
 ///   `blocklist_admin::{block_account,unblock_account}` wrappers, the attestation
 ///   `mint_policy::check_policy` (the ACTIVE mint policy), and the minimized
 ///   `identifier_init::init_identifier` (DEC-4);
-/// - the 49 stock rows are what the composition's components export at `=0.16.0-alpha.2`, including
+/// - the 60 stock rows are what the composition's components export at the frozen
+///   protocol-`next` rev, including
 ///   the F4-reversal `basic_blocklist::check_policy` transfer-policy predicate (S24-policed) and
 ///   the three Wave-1 S1 `burn::min_burn_amount` rows (`check_policy` / `set_min_burn_amount` /
 ///   `get_min_burn_amount`) of the stock `MinBurnAmount` component wired as the ACTIVE burn policy
@@ -120,7 +121,7 @@ const MAX_SUPPLY: u64 = 1_000_000;
 ///   human-ratified);
 /// - `fungible_faucet::has_procedure` is the v0.16 `FungibleFaucet` re-export (#3222) the stock BURN
 ///   note's faucet-kind reflection requires.
-const FROZEN_ACCOUNT_SURFACE: [&str; 64] = [
+const FROZEN_ACCOUNT_SURFACE: [&str; 75] = [
     // --- the 15 xreserve component roots (their IDENTITIES are also pinned in
     //     mint_root_surface.rs::FROZEN_CALLABLE_ROOTS; here they complete the whole account) ---
     "::xreserve::attestation_verify::verify_attestation",
@@ -138,7 +139,7 @@ const FROZEN_ACCOUNT_SURFACE: [&str; 64] = [
     "::xreserve::mint_policy::check_policy",
     "::xreserve::pause_admin::pause",
     "::xreserve::pause_admin::unpause",
-    // --- the 49 stock-component roots ---
+    // --- the 60 stock-component roots ---
     "::miden::standards::components::access::authority::freeze",
     "::miden::standards::components::access::authority::get_authority",
     "::miden::standards::components::access::authority::unfreeze",
@@ -155,7 +156,25 @@ const FROZEN_ACCOUNT_SURFACE: [&str; 64] = [
     "::miden::standards::components::access::rbac::renounce_role",
     "::miden::standards::components::access::rbac::revoke_role",
     "::miden::standards::components::access::rbac::set_role_admin",
+    // V16-NOW temporary growth (ratified, TWO reachability tiers, reverted at V16-FINAL): the
+    // protocol-`next` stock AuthNetworkAccount unconditionally exports the four allowlist
+    // mutators (Tier A — truly unreachable, the S12/S21 disposition) and six fee procedures
+    // (Tier B — no external entry point; the fee-estimation path runs INTERNALLY on every input
+    // note via the auth procedure, computing the scheduled zero fee — internally active but
+    // inert) alongside the auth procedure. The note/tx-script allowlists stay
+    // membership-identical and exact; `account_surface_unreachable.rs` proves each tier's
+    // posture.
+    "::miden::standards::components::auth::network_account::add_allowed_fee_policy",
+    "::miden::standards::components::auth::network_account::add_allowed_note_script",
+    "::miden::standards::components::auth::network_account::add_allowed_tx_script",
     "::miden::standards::components::auth::network_account::auth_network_transaction",
+    "::miden::standards::components::auth::network_account::estimate_note_fee",
+    "::miden::standards::components::auth::network_account::get_fee_asset_id",
+    "::miden::standards::components::auth::network_account::get_fee_policy",
+    "::miden::standards::components::auth::network_account::remove_allowed_fee_policy",
+    "::miden::standards::components::auth::network_account::remove_allowed_note_script",
+    "::miden::standards::components::auth::network_account::remove_allowed_tx_script",
+    "::miden::standards::components::auth::network_account::set_fee_policy",
     "::miden::standards::components::faucets::fungible_faucet::get_decimals",
     "::miden::standards::components::faucets::fungible_faucet::get_max_supply",
     "::miden::standards::components::faucets::fungible_faucet::get_mutability_config",
@@ -194,6 +213,10 @@ const FROZEN_ACCOUNT_SURFACE: [&str; 64] = [
     // policy). Callable, and now LIVE (S24-policed) — the kernel dispatches it via the
     // invoke_send_policy/invoke_receive_policy wrappers on every policed-asset transfer.
     "::miden::standards::components::faucets::policies::transfer::basic_blocklist::check_policy",
+    // V16-NOW temporary growth (ratified, Tier B like the fee rows above): the mandatory
+    // provisional fee policy's dispatch target. No external entry point; the auth procedure
+    // dyncalls it internally on every input note, where it computes the scheduled zero fee.
+    "::miden::standards::components::fees::policies::basic_constant_fee::compute_note_fee",
 ];
 
 /// The production composition, component by component: the SHIPPED component set
@@ -203,10 +226,9 @@ const FROZEN_ACCOUNT_SURFACE: [&str; 64] = [
 fn production_components() -> Result<Vec<AccountComponent>> {
     let mut components =
         production_component_set(MAX_SUPPLY, 0).context("the production composition must build")?;
-    components.push(
+    components.extend(
         XReserveStablecoinBuilder::auth_component()
-            .context("the production auth component must build")?
-            .into(),
+            .context("the production auth component must build")?,
     );
     Ok(components)
 }
@@ -284,8 +306,8 @@ fn production_account_callable_surface_is_frozen() -> Result<()> {
     let components = production_components()?;
     let surface = component_surface(&components);
 
-    // Layer 1 (source): the component-exported paths equal the frozen 64-root list EXACTLY (15
-    // xreserve + 49 stock, in one literal set — a stock bump that adds or removes any callable
+    // Layer 1 (source): the component-exported paths equal the frozen 75-root list EXACTLY (15
+    // xreserve + 60 stock, in one literal set — a stock bump that adds or removes any callable
     // procedure fails HERE).
     let mut paths: Vec<String> = surface.iter().map(|(path, _)| path.clone()).collect();
     paths.sort();
@@ -296,7 +318,7 @@ fn production_account_callable_surface_is_frozen() -> Result<()> {
     expected.sort();
     assert_eq!(
         paths, expected,
-        "the composed account's callable surface drifted from the frozen 64-root set — a stock \
+        "the composed account's callable surface drifted from the frozen 75-root set — a stock \
          bump added or removed a callable procedure (or the xreserve surface changed). This is NOT \
          a mechanical conformance change: every such delta must be SURFACED for ratification \
          (MIGRATION-V16-ALPHA2.md §4a stock-surface discipline + STOP condition 5), exactly as the \
@@ -320,7 +342,7 @@ fn production_account_callable_surface_is_frozen() -> Result<()> {
     assert_eq!(
         account_roots.len(),
         FROZEN_ACCOUNT_SURFACE.len(),
-        "the account's callable procedure COUNT must equal the frozen 64-root surface"
+        "the account's callable procedure COUNT must equal the frozen 75-root surface"
     );
     Ok(())
 }
@@ -448,8 +470,8 @@ async fn the_auth_component_rejects_a_non_allowlisted_note() -> Result<()> {
         .context("building the non-allowlisted probe note")?;
     let result = pf
         .mock_chain
-        .build_tx_context(pf.faucet_id, &[], core::slice::from_ref(&note))
-        .context("non-allowlisted note tx context")?
+        .build_transaction(pf.faucet_id)
+        .unauthenticated_input_note(note.clone())
         .build()
         .context("non-allowlisted note tx build")?
         .execute()
@@ -478,8 +500,7 @@ async fn the_auth_component_rejects_non_expiration_tx_scripts_and_admits_expirat
         .context("compiling the probe tx script")?;
     let rejected = pf
         .mock_chain
-        .build_tx_context(pf.faucet_id, &[], &[])
-        .context("tx-script tx context")?
+        .build_transaction(pf.faucet_id)
         .tx_script(bogus)
         .build()
         .context("tx-script tx build")?
@@ -495,8 +516,7 @@ async fn the_auth_component_rejects_non_expiration_tx_scripts_and_admits_expirat
     let expiration = ExpirationTransactionScript::new(NonZeroU16::new(64).expect("64 is non-zero"));
     let admitted = pf
         .mock_chain
-        .build_tx_context(pf.faucet_id, &[], &[])
-        .context("expiration tx-script tx context")?
+        .build_transaction(pf.faucet_id)
         .tx_script(expiration.into())
         .tx_script_args(expiration.tx_script_args())
         .build()

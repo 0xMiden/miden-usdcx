@@ -172,8 +172,8 @@ async fn bring_up(pf: &mut ProductionFaucet) -> Result<()> {
     for (i, note) in pf.seeded_notes.clone().iter().enumerate() {
         let tx = pf
             .mock_chain
-            .build_tx_context(pf.faucet_id, &[note.id()], &[])
-            .with_context(|| format!("bring-up note {i}: tx context"))?
+            .build_transaction(pf.faucet_id)
+            .authenticated_input_note(note.id())
             .build()
             .with_context(|| format!("bring-up note {i}: tx build"))?
             .execute()
@@ -199,8 +199,8 @@ async fn consume_mint_note(
     note_id: NoteId,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
     chain
-        .build_tx_context(faucet_id, &[note_id], &[])
-        .expect("building the consume tx context")
+        .build_transaction(faucet_id)
+        .authenticated_input_note(note_id)
         .build()
         .expect("building the consume tx")
         .execute()
@@ -353,8 +353,8 @@ async fn production_mint_delivers_the_circle_amount_unrescaled() -> Result<()> {
         .context("faucet foreign-account inputs")?;
     let consume = pf
         .mock_chain
-        .build_tx_context(recipient.clone(), &[p2id_id], &[])
-        .context("building the recipient consume context")?
+        .build_transaction(recipient.clone())
+        .authenticated_input_note(p2id_id)
         .foreign_accounts([faucet_foreign])
         .build()
         .context("building the recipient consume tx")?
@@ -553,8 +553,8 @@ async fn mint_to_a_blocked_recipient_succeeds_then_strands() -> anyhow::Result<(
         .context("faucet foreign-account inputs")?;
     let result = pf
         .mock_chain
-        .build_tx_context(recipient.clone(), &[p2id_id], &[])
-        .context("blocked-recipient consume tx context")?
+        .build_transaction(recipient.clone())
+        .authenticated_input_note(p2id_id)
         .foreign_accounts([faucet_foreign])
         .build()
         .context("blocked-recipient consume tx")?

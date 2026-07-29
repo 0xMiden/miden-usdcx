@@ -142,8 +142,8 @@ async fn run_block(
         XReserveBlockAccountNote::create(sender, test_faucet_id(1), target, &mut note_rng(seed))
             .expect("building the block_account note (test-setup invariant)");
     chain
-        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
-        .expect("building the block tx context")
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .expect("building the block tx")
         .execute()
@@ -162,8 +162,8 @@ async fn run_unblock(
         XReserveUnblockAccountNote::create(sender, test_faucet_id(1), target, &mut note_rng(seed))
             .expect("building the unblock_account note (test-setup invariant)");
     chain
-        .build_tx_context(account.clone(), &[], core::slice::from_ref(&note))
-        .expect("building the unblock tx context")
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(note.clone())
         .build()
         .expect("building the unblock tx")
         .execute()

@@ -12,8 +12,8 @@ description = "xUSDC-on-Miden 04 shared encoding: hand-written MASM + Rust mirro
 # dep is required by the committed vector generator (AccountIdBuilder).
 
 [dependencies]
-miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "dbe4e38797207ce09fee1668ea204aafec275f63", features = ["testing"] }
-miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "dbe4e38797207ce09fee1668ea204aafec275f63" }
+miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c", features = ["testing"] }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # k256 is a REGULAR dependency (not vectors-gated): the attester commitment is computed over
@@ -49,9 +49,9 @@ name = "gen_vectors"
 required-features = ["vectors"]
 
 [dev-dependencies]
-miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "dbe4e38797207ce09fee1668ea204aafec275f63", features = ["testing"] }
-miden-testing   = { git = "https://github.com/0xMiden/protocol", rev = "dbe4e38797207ce09fee1668ea204aafec275f63" }
-miden-tx        = { git = "https://github.com/0xMiden/protocol", rev = "dbe4e38797207ce09fee1668ea204aafec275f63" }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c", features = ["testing"] }
+miden-testing   = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c" }
+miden-tx        = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c" }
 # exact-error matching for u32-assert traps (OperationError::U32AssertionFailed); 0.25.8 is the
 # version the frozen protocol graph resolves AND the only live 0.25.x on crates.io (0.25.0–0.25.7
 # are yanked) — the pin moves in lockstep with the protocol family so exactly one processor copy

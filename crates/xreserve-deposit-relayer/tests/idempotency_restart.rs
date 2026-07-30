@@ -1,5 +1,5 @@
-//! `tests/idempotency_restart.rs` — `T-RLY-03`: durability across a restart, the per-remote-domain
-//! `Link` cursor, and the refusal to read a store this build did not write.
+//! `tests/idempotency_restart.rs`: durability across a restart, the per-remote-domain `Link`
+//! cursor, and the refusal to read a store this build did not write.
 //!
 //! Every "restart" here is a real one: the store handle is DROPPED and the same path is reopened
 //! with a fresh handle. That is the only way the claim "the cursor survives a restart" means
@@ -8,8 +8,8 @@
 //!
 //! The cursor is the anti-rescan device: a restart must resume at the persisted `pageAfter` instead
 //! of re-walking the window. The crash-ordering test pins the other side of the same coin — a page
-//! whose nonces were recorded but whose cursor was NOT advanced is re-scanned on the next start, and
-//! the nonce log turns that replay into zero second mint attempts.
+//! whose nonces were recorded but whose cursor was NOT advanced is re-scanned on the next start,
+//! and the nonce log turns that replay into zero second mint attempts.
 
 mod idempotency_fixtures;
 
@@ -42,8 +42,8 @@ fn a_fresh_store_has_no_cursor() {
     assert_matches!(store.read_cursor(7), Ok(None));
 }
 
-/// `advance_cursor` persists the `Link`-header `next` token and REPLACES the previous one: a forward
-/// scan has exactly one resume point per domain, not a growing list.
+/// `advance_cursor` persists the `Link`-header `next` token and REPLACES the previous one: a
+/// forward scan has exactly one resume point per domain, not a growing list.
 #[test]
 fn advance_cursor_persists_and_replaces_the_token() {
     let clock = ManualClock::at(1_000);
@@ -111,8 +111,8 @@ fn cursors_are_isolated_per_remote_domain() {
 }
 
 /// An empty (or whitespace) token is not a cursor. Persisting one would be sent as `pageAfter=` (a
-/// request the endpoint rejects) or read back as "resume from nothing" — and, worst of all, it would
-/// have DESTROYED the real resume point on its way in. So it is refused before the write.
+/// request the endpoint rejects) or read back as "resume from nothing" — and, worst of all, it
+/// would have DESTROYED the real resume point on its way in. So it is refused before the write.
 #[rstest]
 #[case::empty("")]
 #[case::whitespace("   ")]
@@ -143,7 +143,7 @@ fn an_empty_cursor_token_is_refused_and_does_not_clobber_the_stored_one(#[case] 
 }
 
 // -------------------------------------------------------------------------------------------------
-// T-RLY-03 — the restart
+// the restart
 // -------------------------------------------------------------------------------------------------
 
 /// Everything the seam knows survives the process. Drop the store (the restart), reopen the SAME
@@ -242,8 +242,8 @@ fn a_restart_resumes_at_the_persisted_cursor_instead_of_rescanning_the_window() 
     );
 }
 
-/// The crash-ordering property the poll loop is built on. The relayer records a page's nonces BEFORE
-/// it advances the cursor past that page; a crash in between therefore re-scans the page
+/// The crash-ordering property the poll loop is built on. The relayer records a page's nonces
+/// BEFORE it advances the cursor past that page; a crash in between therefore re-scans the page
 /// (at-least-once observation) — and the nonce log turns the replay into zero second mint attempts
 /// (exactly-once mint).
 ///

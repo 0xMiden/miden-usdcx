@@ -1,37 +1,38 @@
 //! **The orchestration** — `run_relayer_cycle`, the eight-step poll→validate→build→submit→track
-//! pipeline (§7.6), and the loop that runs it.
+//! pipeline, and the loop that runs it.
 //!
 //! # The one obligation this module exists to keep
 //!
-//! **No fetched attestation is ever silently dropped** (§8.4). Every attestation the relayer pulls
-//! off a Circle page leaves with a [`CycleEntry`] naming its fate and a reason for it, and raises one
+//! **No fetched attestation is ever silently dropped**. Every attestation the relayer pulls off a
+//! Circle page leaves with a [`CycleEntry`] naming its fate and a reason for it, and raises one
 //! [`RelayerEvent::Attestation`]. That is not a convention here; it is the shape of the code:
 //!
-//! * [`classify_one`] returns a `CycleEntry` — **not** a `Result`. There is no error to propagate, so
-//!   there is no `?` in the loop, so there is no path on which a fetched attestation ends without a
-//!   disposition. Every failure below is a DISPOSITION, not a return.
-//! * The loop consumes the page BY VALUE and pushes one entry per element. It is a total map: it has
-//!   no arity through which to lose an element. Reintroducing a drop would take a `filter`, a
-//!   `continue`, or a `Result` on that path — each a visible edit, and each pinned by
-//!   `tests/cycle_no_silent_drops.rs`.
+//! * `classify_one` returns a `CycleEntry` — **not** a `Result`. There is no error to propagate,
+//!   so there is no `?` in the loop, so there is no path on which a fetched attestation ends
+//!   without a disposition. Every failure below is a DISPOSITION, not a return.
+//! * The loop consumes the page BY VALUE and pushes one entry per element. It is a total map: it
+//!   has no arity through which to lose an element. Reintroducing a drop would take a `filter`, a
+//!   `continue`, or a `Result` on that path — each a visible edit, and each one a source sweep
+//!   refuses.
 //! * A reason is DERIVED from a typed value ([`Disposition::reason`]), so an entry with nothing to
 //!   say is not constructible.
 //!
-//! A drop is not an error a caller could handle — it is an attestation that leaves no trace. So it is
-//! designed out rather than tested for.
+//! A drop is not an error a caller could handle — it is an attestation that leaves no trace. So it
+//! is designed out rather than tested for.
 //!
 //! # What a bug in here can and cannot do
 //!
 //! It can withhold a mint. It cannot authorize one. The authoritative parse, the amount reduction,
-//! the nonce assert-then-set, the attester allowlist check, and the ECDSA verify are all on-chain in
-//! `xreserve_mint` (§1.2). Every gate below is the liveness mirror of one of them, and the chain
-//! re-enforces all of them.
+//! the nonce assert-then-set, the attester allowlist check, and the signature verification all
+//! happen on-chain, inside the faucet's mint policy. Every gate below is the liveness mirror of one
+//! of them, and the chain re-enforces all of them regardless of what the relayer decided.
 //!
 //! # The submit leg is a PORT
 //!
 //! [`MintSubmit`] has no production implementation — it needs a `miden-client` for v0.16, which has
-//! no release. R6 implements it. Nothing here fakes it (§11: Miden behaviour must not be faked), and
-//! `main` refuses to start without an adapter rather than mint nothing while looking healthy.
+//! no release. a later slice implements it. Nothing here fakes it (Miden behaviour must never be
+//! faked), and `main` refuses to start without an adapter rather than mint nothing while looking
+//! healthy.
 
 pub mod submit;
 
@@ -58,11 +59,11 @@ mod report;
 
 pub use report::{CycleEntry, CycleReport, Disposition};
 
-/// The Miden identities a mint note is built from — fixed for the relayer's whole life, and every one
-/// of them refused at STARTUP if it is malformed rather than at the first deposit.
+/// The Miden identities a mint note is built from — fixed for the relayer's whole life, and every
+/// one of them refused at STARTUP if it is malformed rather than at the first deposit.
 ///
-/// Bundled because they travel together and are meaningless apart: the note is built BY `sender` FOR
-/// `faucet` carrying `attester`'s key, and a builder taking three loose arguments — two of them
+/// Bundled because they travel together and are meaningless apart: the note is built BY `sender`
+/// FOR `faucet` carrying `attester`'s key, and a builder taking three loose arguments — two of them
 /// same-typed `AccountId`s with opposite meanings — is a builder in which swapping them still
 /// compiles.
 #[derive(Debug, Clone, Copy)]
@@ -109,8 +110,8 @@ impl MintIdentities {
         self.faucet
     }
 
-    /// The operator-configured attester public key (DC-3). It is a KEY, not an authority: whether it
-    /// is allowlisted is the faucet's `xReserveAttesters` to say, on-chain.
+    /// The operator-configured attester public key (33-byte compressed SEC1). It is a KEY, not an
+    /// authority: whether it is allowlisted is the faucet's `xReserveAttesters` to say, on-chain.
     pub fn attester(&self) -> &AttesterPubkey {
         &self.attester
     }
@@ -129,9 +130,10 @@ fn account_id(field: &'static str, value: &str) -> Result<AccountId, RelayerErro
 /// Everything one [`run_relayer_cycle`] needs.
 ///
 /// Borrowed and assembled by the caller, for the reason the withdrawal listener's `RunContext` is:
-/// the seam that is PARKED (the submit adapter, R6) is supplied from outside rather than constructed
-/// here, so this module cannot grow a default for it. There is no default Circle client, no default
-/// store, and above all no default submit port — a relayer missing one must not start.
+/// the seam that is PARKED (the submit adapter) is supplied from outside rather than
+/// constructed here, so this module cannot grow a default for it. There is no default Circle
+/// client, no default store, and above all no default submit port — a relayer missing one must not
+/// start.
 ///
 /// The metrics live here (owned, not borrowed) because they are the cycle's own running account of
 /// what it did, and `&mut` is what keeps a counter from being bumped from two places at once.
@@ -179,15 +181,15 @@ impl<'a, R: FeltRng> RelayerCtx<'a, R> {
 // THE ORCHESTRATION
 // ================================================================================================
 
-/// **Run ONE cycle: the eight steps of §7.6.**
+/// **Run ONE cycle: the eight steps below, in order.**
 ///
-/// 1. **Poll** — `GET /v1/remote-domains/{d}/attestations` from the persisted cursor (`CMP-D4`). Its
-///    envelope checks (raw-keccak `messageHash == keccak256(payload)`, the 65-byte `r‖s‖v` shape —
-///    §8.1 checks 2–3) run inside the fetch, so what comes back is already `ValidatedAttestation`:
-///    step 2 is the type, not a call.
-/// 3. **Discovery** — `GET /v1/info` ONCE, and only if the optional fast-fail is on (`CMP-D1`).
+/// 1. **Poll** — `GET /v1/remote-domains/{d}/attestations` from the persisted cursor. Its envelope
+///    checks (raw-keccak `messageHash == keccak256(payload)`, the 65-byte `r‖s‖v` shape — the
+///    schema-decode and digest-binding checks) run inside the fetch, so what comes back is already
+///    `ValidatedAttestation`: step 2 is the type, not a call.
+/// 3. **Discovery** — `GET /v1/info` ONCE, and only if the optional fast-fail is on.
 ///
-/// Steps 4–8 run per attestation, in [`classify_one`], and then the cursor advances.
+/// Steps 4–8 run per attestation, in `classify_one`, and then the cursor advances.
 ///
 /// # Errors
 /// A [`RelayerError`] from the PAGE fetch or the discovery fetch — the two steps that happen before
@@ -245,7 +247,7 @@ async fn run_cycle_inner<R: FeltRng>(
     // The cursor only moves forward, so a transient submit failure sits on a page the poll has
     // already passed and forward polling will never re-observe its attestation. `retryable()` is the
     // work list built for exactly this: each Failed record carries the `messageHash` its attestation
-    // can be re-fetched by (CMP-D3). Driven FIRST, so the oldest owed deposits are retried before new
+    // can be re-fetched by. Driven FIRST, so the oldest owed deposits are retried before new
     // ones are polled. A store-read failure here fails the cycle (nothing was fetched, so nothing is
     // dropped), the same as the cursor read below.
     drive_retry_queue(
@@ -280,7 +282,7 @@ async fn run_cycle_inner<R: FeltRng>(
     }
 
     // ---- step 8 — advance the cursor ------------------------------------------------------------
-    // An ABSENT `next` is the documented final page (§8.2): the cursor is left where it is, because
+    // An ABSENT `next` is the documented final page: the cursor is left where it is, because
     // there is no resume point past the end and writing an empty one would destroy the real one.
     let next_cursor = cursors.next_cursor().map(str::to_string);
     if let Some(next) = next_cursor.as_deref() {
@@ -290,21 +292,21 @@ async fn run_cycle_inner<R: FeltRng>(
     Ok(CycleReport::new(remote_domain, entries, next_cursor))
 }
 
-/// **Step 0 — re-drive the retry work list.** Re-fetch each stranded attestation by its `messageHash`
-/// (CMP-D3), and run it through the SAME pipeline as a freshly-polled one.
+/// **Step 0 — re-drive the retry work list.** Re-fetch each stranded attestation by its
+/// `messageHash`, and run it through the SAME pipeline as a freshly-polled one.
 ///
 /// This is what makes a transient submit failure independent of the forward-only cursor. A `Failed`
-/// record carries only its nonce and `messageHash` — not the payload or the signature — so the retry
-/// cannot rebuild the note from the store alone; it re-fetches the attestation from Circle by hash and
-/// hands the result to [`classify_one`], which re-claims (the `Failed → Pending` edge), rebuilds, and
-/// resubmits. A terminal `Rejected` record is NOT in this list, so a permanently-refused deposit is
-/// never re-driven.
+/// record carries only its nonce and `messageHash` — not the payload or the signature — so the
+/// retry cannot rebuild the note from the store alone; it re-fetches the attestation from Circle by
+/// hash and hands the result to `classify_one`, which re-claims (the `Failed → Pending` edge),
+/// rebuilds, and resubmits. A terminal `Rejected` record is NOT in this list, so a
+/// permanently-refused deposit is never re-driven.
 ///
-/// It is BOUNDED at [`RelayerConfig::retry_batch_size`] per cycle: the queue is drained a batch at a
-/// time across cycles so one enormous backlog cannot starve the forward poll. The batch cannot be
+/// It is BOUNDED at [`RelayerConfig::retry_batch_size`] per cycle: the queue is drained a batch at
+/// a time across cycles so one enormous backlog cannot starve the forward poll. The batch cannot be
 /// monopolized by a stuck head, because every retry ATTEMPT re-stamps its row's timestamp, rotating
-/// the tried rows behind the untried ones — so a persistently-unfetchable prefix does not starve the
-/// tail. Every un-drained record stays `Failed` and is picked up a later cycle.
+/// the tried rows behind the untried ones — so a persistently-unfetchable prefix does not starve
+/// the tail. Every un-drained record stays `Failed` and is picked up a later cycle.
 ///
 /// Every processed record pushes exactly one entry — a re-fetch that itself fails is reported
 /// (`Deferred`) and leaves the record `Failed` (still owed), never dropped. No `filter`/`continue`
@@ -361,18 +363,19 @@ async fn drive_retry_queue<R: FeltRng>(
 /// **Steps 4–7 for ONE attestation** — and the reason a drop is not expressible.
 ///
 /// It returns a [`CycleEntry`], not a `Result<CycleEntry, _>`. Every refusal below becomes a
-/// disposition; nothing propagates. So the caller's loop has no `?`, and an attestation that reaches
-/// this function reaches a report.
+/// disposition; nothing propagates. So the caller's loop has no `?`, and an attestation that
+/// reaches this function reaches a report.
 ///
-/// The gates, in §8.1 order:
+/// The gates, in the documented order:
 ///
-/// 4. **DepositIntent structural parse** through unit-04's codec — the liveness mirror of the
-///    on-chain D5a parse, which stays authoritative.
-/// 5. **domain/token fast-fail**, if the operator turned it on (its expected values are `Q-DOM-1` /
-///    `DEV-10` and both are OPEN).
+/// 4. **DepositIntent structural parse** through the shared encoding crate's codec — the liveness
+///    mirror of the on-chain parse, which stays authoritative.
+/// 5. **domain/token fast-fail**, if the operator turned it on (its expected values — the Miden
+///    remote-domain id and the xUSDC identifier — are both Circle-owned and OPEN).
 /// 6. **the idempotency claim** — atomic check-then-insert. The mint happens on `Claimed` and on
 ///    nothing else: the whole dedup, expressed as a type rather than as a discipline.
-/// 7. build the note (unit-04's factory), submit it through the port, record the outcome.
+/// 7. build the note (the shared encoding crate's factory), submit it through the port, record the
+///    outcome.
 async fn classify_one<R: FeltRng>(
     ctx: &mut RelayerCtx<'_, R>,
     attestation: ValidatedAttestation,
@@ -381,7 +384,7 @@ async fn classify_one<R: FeltRng>(
     let message_hash = attestation.message_hash();
     let entry = |disposition| CycleEntry::new(message_hash, disposition);
 
-    // ---- step 4 — the DepositIntent, through unit-04's codec ------------------------------------
+    // ---- step 4 — the DepositIntent, through the shared encoding crate's codec ------------------------------------
     // The envelope layer validated the BINDING, never the structure — Circle can and does sign a
     // payload this codec refuses — so this is where a non-DepositIntent stops.
     let intent = match decode_and_validate_deposit_intent(attestation.payload()) {
@@ -419,7 +422,7 @@ async fn classify_one<R: FeltRng>(
         Err(error) => return entry(Disposition::Rejected(error)),
     }
 
-    // ---- step 7a — build the note (unit-04 owns every byte of it) -------------------------------
+    // ---- step 7a — build the note (the shared encoding crate owns every byte of it) -------------------------------
     let note = match build_mint_note(
         ctx.identities.sender(),
         ctx.identities.faucet(),
@@ -445,15 +448,15 @@ async fn classify_one<R: FeltRng>(
     entry(settle(ctx, &nonce, disposition))
 }
 
-/// Submits through the port, retrying [`RelayerError::TransientSubmit`] under the configured attempt
-/// budget with the same exponential backoff the Circle half uses.
+/// Submits through the port, retrying [`RelayerError::TransientSubmit`] under the configured
+/// attempt budget with the same exponential backoff the Circle half uses.
 ///
-/// The Circle rate governor is deliberately NOT held here: its ceilings are Circle's (5 QPS/IP, 35
-/// QPS global — `CIR-API-4`), and a Miden node is not Circle. Spending a Circle rate token on a Miden
-/// submit would throttle the fetches that other deposits are waiting on.
+/// The Circle rate governor is deliberately NOT held here: its ceilings are Circle's documented
+/// ones (5 QPS/IP, 35 QPS global), and a Miden node is not Circle. Spending a Circle rate token on
+/// a Miden submit would throttle the fetches that other deposits are waiting on.
 ///
 /// A budget that runs out DEFERS rather than rejects: the deposit intent has no expiry, so a node
-/// that is behind now is a node that will accept this same attestation later (§8.2).
+/// that is behind now is a node that will accept this same attestation later.
 async fn submit_with_retry<R: FeltRng>(
     ctx: &mut RelayerCtx<'_, R>,
     note: &miden_protocol::note::Note,
@@ -503,21 +506,22 @@ async fn submit_with_retry<R: FeltRng>(
 /// Writes what happened to the idempotency log, and turns a store failure into an honest
 /// disposition.
 ///
-/// The log write is not bookkeeping: it is what makes the next cycle's dedup — and its retry — true.
-/// The terminal-vs-retryable split lives HERE:
+/// The log write is not bookkeeping: it is what makes the next cycle's dedup — and its retry —
+/// true. The terminal-vs-retryable split lives HERE:
 ///
 /// * a `Deferred` transient failure is `record_failure` → `Failed`, the RETRYABLE pool the next
 ///   cycle re-drives from `retryable()`;
-/// * a `Rejected` PERMANENT failure is `record_rejected` → `Rejected`, TERMINAL — not re-claimable and
-///   not in the retry work list, so a node's permanent refusal is not re-fetched and re-submitted on
-///   every subsequent cycle.
+/// * a `Rejected` PERMANENT failure is `record_rejected` → `Rejected`, TERMINAL — not re-claimable
+///   and not in the retry work list, so a node's permanent refusal is not re-fetched and
+///   re-submitted on every subsequent cycle.
 ///
-/// Conflating the two (round 1 recorded both as `Failed`) is what let a fatal submit loop forever and
-/// left a transient one's classification meaningless across cycles.
+/// Conflating the two (recording both as `Failed`) would let a fatal submit loop forever and
+/// leave a transient one's classification meaningless across cycles.
 ///
-/// A write that FAILS after a successful submit is reported as [`Disposition::ReconciliationRequired`]
-/// — the mint went out and the store does not know it, which is precisely the state a relayer must not
-/// paper over, because its next cycle would re-mint.
+/// A write that FAILS after a successful submit is reported as
+/// [`Disposition::ReconciliationRequired`] — the mint went out and the store does not know it,
+/// which is precisely the state a relayer must not paper over, because its next cycle would
+/// re-mint.
 fn settle<R: FeltRng>(
     ctx: &mut RelayerCtx<'_, R>,
     nonce: &[u8; 32],
@@ -548,16 +552,17 @@ fn settle<R: FeltRng>(
     }
 }
 
-/// Settles a nonce whose mint note unit-04's factory would not build, and reports the refusal.
+/// Settles a nonce whose mint note the shared encoding crate's factory would not build, and reports
+/// the refusal.
 ///
-/// A note-build failure is PERMANENT — a payload that is not a structurally valid DepositIntent does
-/// not become one on a retry (`RelayerError::MintNoteBuild` is not retryable) — so the nonce is
-/// TERMINALIZED (`record_rejected`), not returned to the retryable pool. Recording it `Failed` would
-/// put it in the retry work list, where the next cycle would re-fetch it, re-decode it, re-fail the
-/// build, and churn forever.
+/// A note-build failure is PERMANENT — a payload that is not a structurally valid DepositIntent
+/// does not become one on a retry (`RelayerError::MintNoteBuild` is not retryable) — so the nonce
+/// is TERMINALIZED (`record_rejected`), not returned to the retryable pool. Recording it `Failed`
+/// would put it in the retry work list, where the next cycle would re-fetch it, re-decode it,
+/// re-fail the build, and churn forever.
 ///
-/// A store failure while terminalizing does not overwrite the reason the build was refused — that is
-/// the fact the operator needs; the nonce stays `Pending` and the recovery sweep reclaims it.
+/// A store failure while terminalizing does not overwrite the reason the build was refused — that
+/// is the fact the operator needs; the nonce stays `Pending` and the recovery sweep reclaims it.
 fn fail_and_reject<R: FeltRng>(
     ctx: &mut RelayerCtx<'_, R>,
     nonce: &[u8; 32],
@@ -567,14 +572,14 @@ fn fail_and_reject<R: FeltRng>(
     Disposition::Rejected(error)
 }
 
-/// Accounts for ONE processed attestation — the §8.4 obligation, discharged in ONE place, so there is
-/// no disposition that can be produced without being counted AND observed.
+/// Accounts for ONE processed attestation — the no-silent-drops obligation, discharged in ONE
+/// place, so there is no disposition that can be produced without being counted AND observed.
 ///
 /// It is the single accounting point on purpose: it records the attestation as processed
 /// (`record_fetched`) AND increments exactly one terminal counter, so the metrics partition
-/// (`attestations_fetched == the six terminal counters summed`) holds BY CONSTRUCTION — for a freshly
-/// polled attestation and a re-driven one alike. A retry whose re-fetch failed is one processed
-/// attestation too: it is counted here (as `deferred`) and reported, never dropped.
+/// (`attestations_fetched == the six terminal counters summed`) holds BY CONSTRUCTION — for a
+/// freshly polled attestation and a re-driven one alike. A retry whose re-fetch failed is one
+/// processed attestation too: it is counted here (as `deferred`) and reported, never dropped.
 fn record<R: FeltRng>(ctx: &mut RelayerCtx<'_, R>, entry: &CycleEntry) {
     ctx.metrics.record_fetched();
     match entry.disposition() {
@@ -610,12 +615,13 @@ fn record<R: FeltRng>(ctx: &mut RelayerCtx<'_, R>, entry: &CycleEntry) {
 /// and waits `poll_interval_ms` once the scan reaches its end — a deposit intent has no expiry, so
 /// polling harder buys nothing but rate-limit pressure.
 ///
-/// A cycle that FAILS does not stop the loop: a 500 from Circle, or a transport blip, is exactly what
-/// the next cycle is for, and the cursor was not advanced, so nothing was skipped. But the failure is
-/// EMITTED — the round-1 loop matched `Err(_)` and logged nothing, so a store/cursor/discovery failure
-/// left the relayer making no progress with no operator signal. Every cycle now emits its outcome: a
-/// `completed` event carrying the counts (so throughput is visible), or a `failed` event carrying the
-/// error. The loop backs off before retrying rather than spinning on it.
+/// A cycle that FAILS does not stop the loop: a 500 from Circle, or a transport blip, is exactly
+/// what the next cycle is for, and the cursor was not advanced, so nothing was skipped. But the
+/// failure is EMITTED — a loop that matched `Err(_)` and logged nothing would leave a
+/// store/cursor/discovery failure making no progress with no operator signal. Every cycle therefore
+/// emits its outcome: a `completed` event carrying the counts (so throughput is visible), or a
+/// `failed` event carrying the error. The loop backs off before retrying rather than spinning on
+/// it.
 pub async fn run_relayer_loop<R: FeltRng>(
     ctx: &mut RelayerCtx<'_, R>,
     mut shutdown: impl FnMut() -> bool,

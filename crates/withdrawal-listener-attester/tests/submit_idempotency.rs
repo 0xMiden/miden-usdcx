@@ -1,13 +1,14 @@
-//! `T-LA-13` — **per-burn cross-invocation idempotency**: the durable claim, and the fact that
-//! there is NO way around it.
+//! **Per-burn cross-invocation idempotency**: the durable claim, and the fact that there is NO
+//! way around it.
 //!
-//! The property: the same burn — re-discovered, retried, or met again after a restart — is submitted to
-//! Circle **at most once, ever**. Unlike the deposit relayer's nonce log (whose real backstop is the
-//! faucet's on-chain `usedNonces` assert), this ledger has nothing behind it but Circle's `409`, and
-//! §10.10 forbids answering a `409` by re-sending. So the claim IS the safety property.
+//! The property: the same burn — re-discovered, retried, or met again after a restart — is
+//! submitted to Circle **at most once, ever**. Unlike the deposit relayer's nonce log (whose real
+//! backstop is the faucet's on-chain `usedNonces` assert), this ledger has nothing behind it but
+//! Circle's `409`, and Circle's documentation forbids answering a `409` by re-sending. So the claim
+//! IS the safety property.
 //!
-//! Every case asserts on the mock's CALL LOG — an outcome alone would pass for a driver that submitted
-//! twice and reported tidily.
+//! Every case asserts on the mock's CALL LOG — an outcome alone would pass for a driver that
+//! submitted twice and reported tidily.
 
 use assert_matches::assert_matches;
 use rstest::rstest;
@@ -29,16 +30,16 @@ use submit_support::*;
 
 /// **The claim cannot be bypassed, because there is no public function that submits without it.**
 ///
-/// This is a source-level guard, and it is here because the property is an ABSENCE — no test can call
-/// a function that must not exist. The crate already guards decisions this way where the compiler
-/// cannot (`crate_posture.rs` reads the manifest to pin `k256` as a library dependency).
+/// This is a source-level guard, and it is here because the property is an ABSENCE — no test can
+/// call a function that must not exist. The crate already guards decisions this way where the
+/// compiler cannot (`crate_posture.rs` reads the manifest to pin `k256` as a library dependency).
 ///
-/// The history it pins: `withdrawal_api::withdraw` used to be a PUBLIC raw driver that POSTed straight
+/// The absence it pins: a PUBLIC raw driver (`withdrawal_api::withdraw`) that POSTs straight
 /// from an `AuthorizedWithdrawal` with no ledger. `WithdrawRequest` is `Clone` and
-/// `authorize_submission` is public, so a caller could mint two tokens for one burn and submit it
-/// twice — the exact double-release the ledger exists to prevent, reachable without touching the
-/// ledger at all. Calling `submit_withdraw` "the production entry point" in a doc comment did not
-/// make that unrepresentable; deleting the driver did.
+/// `authorize_submission` is public, so such a driver would let a caller mint two tokens for one
+/// burn and submit it twice — the exact double-release the ledger exists to prevent, reachable
+/// without touching the ledger at all. Calling `submit_withdraw` "the production entry point" in
+/// a doc comment would not make that unrepresentable; the driver's absence does.
 #[test]
 fn no_public_api_can_post_a_withdrawal_without_the_ledger() {
     let withdrawal_api = std::fs::read_to_string(
@@ -85,18 +86,18 @@ fn no_public_api_can_post_a_withdrawal_without_the_ledger() {
 /// `claim_burns` is the submit decision, and `record_failure` is the ONE edge that puts a burn back
 /// into the re-claimable pool (`Pending`/`Failed` → `Failed`). Between them they are the whole
 /// authority to say "this burn may be sent to Circle". While they were `pub`, a caller outside this
-/// crate — the W9 orchestration being the concrete one — could take a burn that `submit_withdraw`
+/// crate — the orchestration being the concrete one — could take a burn that `submit_withdraw`
 /// had claimed and was mid-request on, walk it to `Failed`, and re-claim it. Circle would then be
 /// asked to release the same burn twice, and the ledger that exists to prevent exactly that would
 /// have handed over the key.
 ///
-/// Narrowing them to `pub(crate)` makes the call a compile error rather than a review catch. This is
-/// an ABSENCE test for the same reason as the one above: no test can call a function that must not be
-/// callable, so the guard reads the source.
+/// Narrowing them to `pub(crate)` makes the call a compile error rather than a review catch. This
+/// is an ABSENCE test for the same reason as the one above: no test can call a function that must
+/// not be callable, so the guard reads the source.
 ///
 /// Note the honest limit of the narrowing: it stops callers OUTSIDE the crate. A future in-crate
-/// caller still compiles, and the in-crate discipline — `submit_withdraw` is the only claimer — stays
-/// pinned by `no_public_api_can_post_a_withdrawal_without_the_ledger` above.
+/// caller still compiles, and the in-crate discipline — `submit_withdraw` is the only claimer —
+/// stays pinned by `no_public_api_can_post_a_withdrawal_without_the_ledger` above.
 #[test]
 fn the_ledgers_reopening_transitions_are_not_callable_from_outside_the_crate() {
     let store = std::fs::read_to_string(
@@ -121,8 +122,8 @@ fn the_ledgers_reopening_transitions_are_not_callable_from_outside_the_crate() {
 /// How many times `ident` appears in `source` as a whole identifier.
 ///
 /// Whole-identifier, because the paths this file reasons about are `PATH_WITHDRAW` and
-/// `PATH_WITHDRAWAL` — one is a prefix of the other, and a substring count would silently conflate the
-/// money path with the read-only status poll.
+/// `PATH_WITHDRAWAL` — one is a prefix of the other, and a substring count would silently conflate
+/// the money path with the read-only status poll.
 fn mentions_of(ident: &str, source: &str) -> usize {
     source
         .match_indices(ident)
@@ -137,8 +138,8 @@ fn mentions_of(ident: &str, source: &str) -> usize {
 // THE SAME BURN IS SUBMITTED AT MOST ONCE
 // ================================================================================================
 
-/// The core fund-safety property: a re-discovered burn, re-authorized and re-submitted, produces ZERO
-/// second POSTs.
+/// The core fund-safety property: a re-discovered burn, re-authorized and re-submitted, produces
+/// ZERO second POSTs.
 #[tokio::test]
 async fn the_same_burn_is_never_submitted_twice() {
     let mock = MockCircle::start(Script::new().withdraw(vec![Reply::json(
@@ -173,9 +174,9 @@ async fn the_same_burn_is_never_submitted_twice() {
     );
 }
 
-/// Durability: a RESTARTED process (a second, independent handle on the same file) still refuses. An
-/// in-memory store would pass every test above and fail exactly here — which is why the ledger insists
-/// on a real file.
+/// Durability: a RESTARTED process (a second, independent handle on the same file) still refuses.
+/// An in-memory store would pass every test above and fail exactly here — which is why the ledger
+/// insists on a real file.
 #[tokio::test]
 async fn a_restarted_process_reopens_the_ledger_and_still_refuses_the_same_burn() {
     let mock = MockCircle::start(Script::new().withdraw(vec![Reply::json(
@@ -232,9 +233,9 @@ async fn a_burn_that_hit_a_409_is_blocked_from_a_later_resubmission() {
 /// A DIFFERENT burn is not blocked — the ledger keys per burn, it is not a global stop switch. (The
 /// negative control: a ledger that blocked everything would pass every "never twice" test above.)
 ///
-/// The mock is scripted with a `201` per burn, each echoing the burn it answers — because the driver
-/// BINDS the returned status to the burn it submitted, a dishonest reply here would be caught as an
-/// echo mismatch rather than proving anything about the ledger.
+/// The mock is scripted with a `201` per burn, each echoing the burn it answers — because the
+/// driver BINDS the returned status to the burn it submitted, a dishonest reply here would be
+/// caught as an echo mismatch rather than proving anything about the ledger.
 #[tokio::test]
 async fn a_different_burn_is_submitted_normally() {
     let mock = MockCircle::start(Script::new().withdraw(vec![
@@ -256,8 +257,8 @@ async fn a_different_burn_is_submitted_normally() {
     assert_eq!(withdraw_posts(&mock), 2, "two burns, two submissions");
 }
 
-/// The key is the `burnTxId` as an IDENTIFIER, not as bytes-on-the-wire: hex is case-insensitive, so
-/// the SAME burn written in upper case is the same burn and is still refused.
+/// The key is the `burnTxId` as an IDENTIFIER, not as bytes-on-the-wire: hex is case-insensitive,
+/// so the SAME burn written in upper case is the same burn and is still refused.
 #[tokio::test]
 async fn the_same_burn_in_different_hex_case_is_the_same_burn() {
     let mock = MockCircle::start(Script::new().withdraw(vec![Reply::json(
@@ -281,7 +282,8 @@ async fn the_same_burn_in_different_hex_case_is_the_same_burn() {
 }
 
 /// A request carrying the same burn in TWO batches is refused OUTRIGHT — zero POSTs. It would ask
-/// Circle to release the same burn twice inside one call, and the 409 would fire on our own request.
+/// Circle to release the same burn twice inside one call, and the 409 would fire on our own
+/// request.
 #[tokio::test]
 async fn a_request_carrying_the_same_burn_twice_is_refused_before_any_call() {
     let mock = MockCircle::start(Script::new().withdraw(vec![Reply::json(
@@ -308,8 +310,8 @@ async fn a_request_carrying_the_same_burn_twice_is_refused_before_any_call() {
     );
 }
 
-/// A multi-burn request in which ONE burn is already accounted for is refused ENTIRELY — zero POSTs,
-/// and the fresh burns are left unclaimed rather than stranded in `Pending`.
+/// A multi-burn request in which ONE burn is already accounted for is refused ENTIRELY — zero
+/// POSTs, and the fresh burns are left unclaimed rather than stranded in `Pending`.
 #[tokio::test]
 async fn a_multi_burn_request_touching_one_seen_burn_makes_no_call_and_strands_nothing() {
     let mock = MockCircle::start(Script::new().withdraw(vec![Reply::json(
@@ -347,8 +349,8 @@ async fn a_multi_burn_request_touching_one_seen_burn_makes_no_call_and_strands_n
 // ================================================================================================
 
 /// SQLite's ephemeral databases are spelled as ordinary filenames, so an operator's config can hand
-/// one in — and it would take every claim and lose them all on restart: a cache wearing the ledger's
-/// name. It is refused.
+/// one in — and it would take every claim and lose them all on restart: a cache wearing the
+/// ledger's name. It is refused.
 #[rstest]
 #[case::memory(":memory:")]
 #[case::memory_upper(":MEMORY:")]
@@ -378,8 +380,8 @@ fn the_ledger_refuses_a_memory_uri_because_sqlite_interprets_it() {
 // on the same real files, by the same assertions. Everything reachable through the ledger's PUBLIC
 // surface stays here.
 
-/// The status machine has no edge that could authorize a second release: a `Submitted` burn cannot be
-/// walked back to a re-claimable state.
+/// The status machine has no edge that could authorize a second release: a `Submitted` burn cannot
+/// be walked back to a re-claimable state.
 #[rstest]
 #[case::submitted(SubmissionStatus::Submitted)]
 #[case::finalized(SubmissionStatus::Finalized)]

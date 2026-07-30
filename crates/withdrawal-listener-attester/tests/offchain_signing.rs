@@ -1,16 +1,16 @@
-//! `T-LA-08` — off-chain `k256` signing (`attester::sign`).
+//! Off-chain `k256` signing (`attester::sign`).
 //!
-//! **`INV-OFFCHAIN-BURN-SIGNING` / `Q-CRY-2` (OPEN).** The burn path signs OFF-CHAIN: a single
-//! attester `k256`-ECDSA-signs Circle's `messageHashToSign`, which is consumed as an OPAQUE 32-byte
-//! digest — no local re-hashing, no EIP-712 re-derivation. There is NO on-chain Miden typed-data
-//! hashing on the burn path.
+//! **Opaque-and-sign; the digest's derivation stays OPEN with Circle.** The burn path signs
+//! OFF-CHAIN: a single attester `k256`-ECDSA-signs Circle's `messageHashToSign`, which is consumed
+//! as an OPAQUE 32-byte digest — no local re-hashing, no EIP-712 re-derivation. There is NO
+//! on-chain Miden typed-data hashing on the burn path.
 //!
-//! The gating check (§12) is that the produced signature VERIFIES against the supplied attester
-//! pubkey — not merely that it is 65 bytes long. Every negative is exact-variant (`assert_matches!`),
-//! never `is_err()`.
+//! The gating check is that the produced signature VERIFIES against the supplied attester pubkey —
+//! not merely that it is 65 bytes long. Every negative is exact-variant (`assert_matches!`), never
+//! `is_err()`.
 //!
 //! Single-key signing is a non-gating local primitive / unit-test only — NEVER submitted to Circle;
-//! the assembly gate (`T-LA-09`) is what a `/v1/withdraw` submission must clear.
+//! the assembly gate  is what a `/v1/withdraw` submission must clear.
 
 use assert_matches::assert_matches;
 use k256::ecdsa::{RecoveryId, Signature as K256Signature};
@@ -26,7 +26,7 @@ mod attester_vectors;
 use attester_vectors::{attesters, recover, verify, MESSAGE_HASH_TO_SIGN, OTHER_MESSAGE_HASH};
 
 /// A signature over Circle's opaque digest is exactly 65 bytes `r‖s‖v`, and VERIFIES against the
-/// signer's pubkey — the non-vacuity oracle (§12): the bytes actually cover the digest, they are not
+/// signer's pubkey — the non-vacuity oracle: the bytes actually cover the digest, they are not
 /// just the right length.
 #[test]
 fn sign_produces_65_bytes_that_verify_against_the_pubkey() {
@@ -40,10 +40,10 @@ fn sign_produces_65_bytes_that_verify_against_the_pubkey() {
     );
 }
 
-/// The signature covers the EXACT opaque digest, signed as-is: recovering the pubkey from the digest
-/// and `r‖s‖v` yields the signer's own pubkey. This forecloses any local re-hashing of the input (a
-/// signature over `keccak(digest)`, or an EIP-712 re-derivation, would recover a different signer or
-/// fail to recover), and proves `v` is the true EVM recovery byte.
+/// The signature covers the EXACT opaque digest, signed as-is: recovering the pubkey from the
+/// digest and `r‖s‖v` yields the signer's own pubkey. This forecloses any local re-hashing of the
+/// input (a signature over `keccak(digest)`, or an EIP-712 re-derivation, would recover a different
+/// signer or fail to recover), and proves `v` is the true EVM recovery byte.
 #[test]
 fn sign_signs_the_digest_opaquely_recoverable_to_the_signer() {
     let attester = &attesters()[0];
@@ -56,8 +56,8 @@ fn sign_signs_the_digest_opaquely_recoverable_to_the_signer() {
     );
 }
 
-/// A signature over one digest does NOT verify against a DIFFERENT digest — the wrong-hash negative
-/// (`T-LA-08`): the listener must not treat a signature over the wrong message as valid.
+/// A signature over one digest does NOT verify against a DIFFERENT digest — the wrong-hash
+/// negative: the listener must not treat a signature over the wrong message as valid.
 #[test]
 fn signature_over_one_hash_does_not_verify_against_another() {
     let attester = &attesters()[0];
@@ -82,8 +82,8 @@ fn signature_does_not_verify_under_a_foreign_pubkey() {
     );
 }
 
-/// A digest that is not exactly 32 bytes → `Err(SignError::DigestLength { actual })`, exact variant.
-/// `sign` treats the digest opaquely and refuses to hash/pad/truncate it into shape.
+/// A digest that is not exactly 32 bytes → `Err(SignError::DigestLength { actual })`, exact
+/// variant. `sign` treats the digest opaquely and refuses to hash/pad/truncate it into shape.
 #[rstest]
 #[case::empty(0)]
 #[case::one_short(31)]
@@ -99,8 +99,8 @@ fn non_32_byte_digest_is_rejected(#[case] len: usize) {
     );
 }
 
-/// secp256k1 signing here is RFC 6979 deterministic: signing the same digest with the same key twice
-/// yields byte-identical signatures (deterministic test vectors, §12).
+/// secp256k1 signing here is RFC 6979 deterministic: signing the same digest with the same key
+/// twice yields byte-identical signatures (deterministic test vectors, Circle's documentation).
 #[test]
 fn signing_is_deterministic() {
     let attester = &attesters()[0];
@@ -127,8 +127,8 @@ fn distinct_signers_produce_distinct_signatures() {
 
 /// `v` is the **EVM** recovery byte `27`/`28` (`EVM_V_OFFSET + recid`), NOT k256's raw `0`/`1` —
 /// what OpenZeppelin-style `ECDSA.recover` on Circle's source chain requires
-/// (`CIRCLE-DATA-SCHEMAS.md:46`,`:196`). A raw `0`/`1` would be rejected at the fund-release boundary
-/// even though the local k256 oracle accepts it.
+/// (`CIRCLE-DATA-SCHEMAS.md:46`,`:196`). A raw `0`/`1` would be rejected at the fund-release
+/// boundary even though the local k256 oracle accepts it.
 #[test]
 fn signature_v_is_evm_27_or_28() {
     assert_eq!(EVM_V_OFFSET, 27);
@@ -143,10 +143,10 @@ fn signature_v_is_evm_27_or_28() {
 }
 
 /// The recovery-id → EVM `v` mapping (the single source of truth [`sign`] uses): the non-x-reduced
-/// ids `0`/`1` map to `27`/`28`, and the **x-reduced ids `2`/`3` map to `None`** — so `sign` refuses
-/// to emit a `v = 29`/`30` the source-chain verifier would reject. This tests the sign-side guard's
-/// logic directly (an x-reduced recovery id cannot be produced deterministically from a real signing
-/// call, ~2^-128, so the mapping is the testable boundary).
+/// ids `0`/`1` map to `27`/`28`, and the **x-reduced ids `2`/`3` map to `None`** — so `sign`
+/// refuses to emit a `v = 29`/`30` the source-chain verifier would reject. This tests the sign-side
+/// guard's logic directly (an x-reduced recovery id cannot be produced deterministically from a
+/// real signing call, ~2^-128, so the mapping is the testable boundary).
 #[rstest]
 #[case(0, Some(27))]
 #[case(1, Some(28))]
@@ -160,9 +160,9 @@ fn evm_v_mapping_rejects_x_reduced_recovery_ids(
     assert_eq!(evm_v_from_recovery_id(recovery_id), expected);
 }
 
-/// The signature is low-`s`-normalized — the malleability form the same OpenZeppelin `ECDSA.recover`
-/// verifier requires (it rejects an `s` in the upper half of the curve order). k256 normalizes on
-/// signing; this pins that a produced signature would not be rejected as malleable.
+/// The signature is low-`s`-normalized — the malleability form the same OpenZeppelin
+/// `ECDSA.recover` verifier requires (it rejects an `s` in the upper half of the curve order). k256
+/// normalizes on signing; this pins that a produced signature would not be rejected as malleable.
 #[test]
 fn signature_is_low_s_normalized() {
     for attester in &attesters() {
@@ -192,9 +192,9 @@ fn signature_wire_form_is_r_s_v_hex() {
     assert!(body.chars().all(|c| c.is_ascii_hexdigit()));
 }
 
-/// `Signature65::from_bytes` accepts exactly 65 bytes and round-trips them; a DER/64-byte/other-length
-/// blob is refused with the exact `SignatureError::Length` variant (the "non-65-byte / DER form"
-/// foreclosure).
+/// `Signature65::from_bytes` accepts exactly 65 bytes and round-trips them; a
+/// DER/64-byte/other-length blob is refused with the exact `SignatureError::Length` variant (the
+/// "non-65-byte / DER form" foreclosure).
 #[rstest]
 #[case::empty(0)]
 #[case::r_s_only(64)]

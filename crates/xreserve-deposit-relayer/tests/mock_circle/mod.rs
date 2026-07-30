@@ -1,17 +1,19 @@
 //! `tests/mock_circle/` — the **schema-exact mock Circle server** the Circle-facing contract suites
-//! run against (§11 mock disclosure: every live Circle leg is `REQUIRES CIRCLE CONFIRMATION`, so the
-//! Circle endpoints `CMP-D1`/`CMP-D3`/`CMP-D4` are exercised against this mock and never contacted
-//! live; the Miden leg — which must NOT be faked — is a later slice).
+//! run against (mock-boundary disclosure: every live Circle leg is `REQUIRES CIRCLE CONFIRMATION`,
+//! so the Circle endpoints — info discovery, the attestation fetches, and the batch poll — are
+//! exercised against this mock and never contacted live; the Miden leg — which must NOT be faked —
+//! is a later slice).
 //!
 //! # A real router, driven in process — binding no socket
 //!
 //! The mock is an axum `Router` (real routing, real status codes, real headers, real JSON bodies)
 //! installed as the client's `HttpTransport` ([`transports::MockTransport`]). The relayer builds a
 //! **real `reqwest::Request`** and the mock receives exactly that. So the rate governor, the
-//! exponential backoff, the HTTP-status policy, the request deadline, the response-size ceiling, the
-//! `Link`-header cursor parse, and the serde decode are all exercised end to end. The one thing NOT
-//! exercised is reqwest's socket write — reqwest's contract, not the relayer's — and the audit/CI
-//! sandbox denies `bind(127.0.0.1:0)` outright, so a loopback-server mock could not run there at all.
+//! exponential backoff, the HTTP-status policy, the request deadline, the response-size ceiling,
+//! the `Link`-header cursor parse, and the serde decode are all exercised end to end. The one thing
+//! NOT exercised is reqwest's socket write — reqwest's contract, not the relayer's — and the
+//! audit/CI sandbox denies `bind(127.0.0.1:0)` outright, so a loopback-server mock could not run
+//! there at all.
 //!
 //! # Fixture fidelity is the point
 //!
@@ -52,8 +54,8 @@ pub use bodies::*;
 pub use support::*;
 pub use transports::MockTransport;
 
-/// The origin the mock answers for. **HTTPS**, because a configured credential may only cross a
-/// TLS transport (the client refuses to attach one to a plaintext base URL) — and because nothing is
+/// The origin the mock answers for. **HTTPS**, because a configured credential may only cross a TLS
+/// transport (the client refuses to attach one to a plaintext base URL) — and because nothing is
 /// ever dialed, the scheme costs the mock nothing.
 pub const MOCK_BASE_URL: &str = "https://circle.mock";
 
@@ -61,13 +63,13 @@ pub const MOCK_BASE_URL: &str = "https://circle.mock";
 /// request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Endpoint {
-    /// `GET /v1/info` (CMP-D1).
+    /// `GET /v1/info`.
     Info,
-    /// `GET /v1/attestations/{depositMessageHash}` (CMP-D3) — the WRAPPER shape.
+    /// `GET /v1/attestations/{depositMessageHash}` — the WRAPPER shape.
     ByHash,
-    /// `GET /v1/attestations?txHash=` (CMP-D3 variant) — a LIST shape.
+    /// `GET /v1/attestations?txHash=` — a LIST shape.
     ByTxHash,
-    /// `GET /v1/remote-domains/{remoteDomain}/attestations` (CMP-D4) — a LIST shape + `Link`.
+    /// `GET /v1/remote-domains/{remoteDomain}/attestations` — a LIST shape + `Link`.
     Batch,
     /// Anything else — recorded so a stray request cannot pass unnoticed.
     Unexpected,
@@ -428,9 +430,9 @@ async fn unexpected_handler(
 // EVENT SINK — the observability oracle
 // ================================================================================================
 
-/// An [`EventSink`] that records everything the relayer emits, so a test can assert the §8.4
-/// obligations directly: that a 404 was logged `Pending` (and therefore NOT silently dropped), that
-/// a 400 raised an `Alert`, that a 500 alerted only after the threshold.
+/// An [`EventSink`] that records everything the relayer emits, so a test can assert the
+/// documented policy obligations directly: that a 404 was logged `Pending` (and therefore NOT
+/// silently dropped), that a 400 raised an `Alert`, that a 500 alerted only after the threshold.
 #[derive(Debug, Default)]
 pub struct RecordingSink {
     events: Mutex<Vec<RelayerEvent>>,

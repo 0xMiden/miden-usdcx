@@ -1,23 +1,32 @@
-//! Attestation (ATT) surface — frozen signatures per the shared-encoding spec
-//! (INV-DEPOSIT-ATTESTATION-RAW-KECCAK, DC-2 under its v16 supersession —
-//! MIGRATION-V16-ALPHA2.md S16). This library owns the byte→felt packing of the digest /
-//! pubkey / signature (relayer + harness, Rust-only), the DC-2 SEC1→affine pubkey
-//! decompression (the Circle-facing wire form stays the 33-byte compressed SEC1 key; the
-//! on-chain form is the 16 affine-coordinate felts since vm#3342), and the on-chain
-//! commitment-keying primitive `pubkey_commitment` — the canonical attester-allowlist key the
-//! faucet D5d verify (R-MINT-13) recomputes and looks up by reference
-//! (`xreserve::encoding::pubkey_commitment`, the ONLY on-chain proc of this surface). The
-//! `keccak256::hash_bytes` digest production and the `ecdsa_k256_keccak::verify_prehash`
-//! call are faucet-owned (flow D5d); this library owns only the packing + commitment keying.
+//! Attestation encoding: turning Circle's signature material into the form the faucet verifies
+//! against.
 //!
-//! The digest/signature packers are infallible u32-LE packers — the same
-//! `bytes_to_packed_u32_elements` primitive miden-crypto uses for byte streams, so each
-//! `Felt` is a `u32 < p` (`felt-construction`: `Felt::from(u32)`, never `Felt::new`, no
-//! truncation; lengths are type-guaranteed, not input-dependent). The pubkey packer is
-//! FALLIBLE: it decompresses the SEC1 point first (an off-curve key rejects here — it could
-//! never verify on-chain either) and then packs the affine coordinates exactly as
-//! miden-crypto 0.28's `affine_point_to_elements` does (per-limb big-endian u32 reads in
-//! little-endian limb order: `qx_le_u32[8] || qy_le_u32[8]`).
+//! A deposit attestation is a raw secp256k1 ECDSA signature over `keccak256` of the full deposit
+//! payload — 65 bytes of `r‖s‖v` — and deliberately not EIP-712. The signature is what makes a mint
+//! legitimate, so how it is packed matters as much as the cryptography: the faucet recomputes the
+//! digest on-chain and looks the signer up in its attester allowlist, and both sides have to agree
+//! byte for byte or a valid attestation would be rejected (or, worse, the wrong key would be looked
+//! up).
+//!
+//! This module owns the packing, in both directions of the wire:
+//!
+//! - The digest and the signature are packed into u32-little-endian field elements with the same
+//!   primitive miden-crypto uses for byte streams, four bytes per element. These conversions cannot
+//!   fail: every element is a `u32`, which is always below the field modulus, and the lengths come
+//!   from fixed-size arrays rather than from input.
+//! - The public key is different, and its packing IS fallible. Circle hands over the 33-byte
+//!   compressed SEC1 form, while the chain works with the point's affine coordinates as sixteen
+//!   field elements. Decompressing is where a malformed or off-curve key is caught — rejecting it
+//!   here is honest, since such a key could never verify on-chain either. The element order matches
+//!   miden-crypto's own affine-point conversion: the x coordinate's eight limbs followed by the y
+//!   coordinate's, each limb read big-endian, the limbs themselves in little-endian order.
+//! - `pubkey_commitment` hashes those sixteen elements into the single Word that keys the attester
+//!   allowlist. It is the one routine here with an on-chain twin: the faucet's verify recomputes the
+//!   same commitment from the key presented to it and looks up that Word, so a mismatch between the
+//!   two implementations would silently un-allowlist every attester. The cross-language conformance
+//!   test is what holds them together.
+//!
+//! Producing the digest and running the signature check are the faucet's job, not this module's.
 
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
@@ -26,9 +35,9 @@ use miden_protocol::{Felt, Hasher, Word};
 use super::error::EncodingError;
 
 /// Number of u32 field elements an affine secp256k1 public key packs to
-/// (`qx_le_u32[8] || qy_le_u32[8]`) — the element count the commitment hashes (vm#3342).
-/// Parity-pinned against the MASM `PUBKEY_FELTS` constant by `tests/constant_parity.rs`
-/// (`masm-rust-constant-parity`).
+/// (`qx_le_u32[8] || qy_le_u32[8]`) — the element count the commitment hashes.
+/// The MASM side declares a `PUBKEY_FELTS` constant with the same value, and a parity test fails
+/// if the two ever diverge.
 pub const PUBKEY_FELTS: usize = 16;
 
 /// Packs a 32-byte keccak digest into 8 u32-LE field elements (4 bytes/felt).
@@ -39,8 +48,8 @@ pub fn keccak_digest_felts(digest: &[u8; 32]) -> [Felt; 8] {
 }
 
 /// Decompresses a 33-byte compressed SEC1 secp256k1 public key (the Circle-facing wire form)
-/// and packs its affine coordinates into the 16 u32 field elements the v16 on-chain
-/// attestation surface consumes (`qx_le_u32[8] || qy_le_u32[8]` — vm#3342; byte-order
+/// and packs its affine coordinates into the 16 u32 field elements the on-chain
+/// attestation surface consumes (`qx_le_u32[8] || qy_le_u32[8]`; byte-order
 /// identical to miden-crypto 0.28 `affine_point_to_elements`: each 32-byte big-endian
 /// coordinate is read as eight big-endian u32 limbs emitted least-significant-limb first).
 ///
@@ -83,11 +92,11 @@ pub fn signature_felts(sig: &[u8; 65]) -> [Felt; 17] {
 /// The attester-allowlist commitment key: Poseidon2 over the 16 affine pubkey felts,
 /// identical to miden-crypto 0.28 `PublicKey::to_commitment`
 /// (`Poseidon2::hash_elements(affine_point_to_elements())`) and to the MASM
-/// `xreserve::encoding::pubkey_commitment` the faucet D5d verify recomputes. `Hasher` is the
+/// `xreserve::encoding::pubkey_commitment` the faucet's attestation verify recomputes. `Hasher` is the
 /// protocol's Poseidon2 (same primitive as `bytes32_to_storage_map_key`); the 16-felt input
 /// sets the sponge capacity domain tag to `16 % 8 = 0` — verified == `to_commitment` by
-/// TV-ATT-2 / TV-DUAL-5. Takes the 33-byte compressed wire form and decompresses internally
-/// (single-owner rule: unit-04 owns the SEC1→affine seam).
+/// TV-ATT-2 and the cross-implementation vector check. Takes the 33-byte compressed wire form
+/// and decompresses internally (single-owner rule: this encoding crate owns the SEC1→affine seam).
 ///
 /// # Errors
 ///
@@ -142,7 +151,7 @@ mod tests {
 
     /// TV-ATT-2 (commitment): `pubkey_commitment(pk)` equals miden-crypto
     /// `PublicKey::to_commitment` (the value the generator baked into each vector — the
-    /// attester-allowlist keying primitive D5d looks up).
+    /// attester-allowlist keying primitive the faucet's attestation verify looks up).
     #[test]
     fn tv_att_2_commitment() {
         for v in &load().families.att {

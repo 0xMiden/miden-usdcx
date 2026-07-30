@@ -1,29 +1,31 @@
-//! Burn-consume composition (component CMP-B3, `xreserve_receive_and_burn`).
+//! Audit of the burn-consume path: how a burn note is destroyed and supply is lowered.
 //!
-//! DETERMINATION (source-verified): the stock `receive_and_burn` + the active STOCK `MinBurnAmount`
-//! burn policy (the Wave-1 S1 replacement of the former custom CMP-A10 `burn_policy.masm`) + the
-//! CMP-B2 note ARE the complete burn-consume path — there is NO custom
-//! `xreserve_receive_and_burn.masm` (a needless proc is forbidden). So this is test/audit only.
+//! The faucet writes no code of its own for this. Consuming a burn note runs the standard
+//! `receive_and_burn` script, which applies the standard minimum-burn policy the builder installs
+//! as the faucet's active burn policy. There is no custom burn proc in this repository, so nothing
+//! here is a unit test of xUSDC code — the suite exists to hold the COMPOSITION in place.
 //!
-//! The load-bearing piece is the SOLE-SUPPLY-DECREMENT audit (the burn twin of the accepted mint
-//! sole-raise sweep): the built faucet has exactly ONE `token_supply`-lowering surface — the stock
-//! `receive_and_burn`, gated by the stock `MinBurnAmount` policy — and no other proc decrements
-//! supply. It is asserted at the code/storage-COMMITMENT level (not a supply-delta):
-//!   - N1A (`xreserve_tree_has_no_supply_surface`, STRENGTHENED post-recomposition): the LOCAL
-//!     xreserve tree carries NO supply surface AT ALL — no file calls `exec.faucet::burn` and no
-//!     file writes (or even names) the faucet `token_config` slot; supply arithmetic is
-//!     exclusively the stock standards code.
-//!   - N1B (`only_receive_and_burn_lowers_supply` + the allow-all negative): the built faucet's
-//!     ACTIVE burn-policy STORAGE slot holds the stock `MinBurnAmount::root()`, so the sole
-//!     decrement path is policy-gated.
-//!   - N1D (`pinned_standards_*`): the inherited decrement primitive `exec.faucet::burn` has exactly
-//!     one standards caller (`receive_and_burn`) at the pinned dependency baseline.
+//! The property it protects is that the faucet has exactly one way to lower `token_supply`. A
+//! second, ungated decrement path would let tokens be destroyed without a public burn note, and
+//! the off-chain listener would have nothing to show Circle for tokens that no longer exist. The
+//! proof is made against code and storage commitments rather than by observing supply deltas,
+//! because a delta test can only find the paths it thinks to exercise:
 //!
-//! N2/N3 re-confirm the end-to-end composition (real `XReserveBurnNote` → `receive_and_burn` →
-//! stock `MinBurnAmount`): a valid burn decrements exactly once; invalid burns (below-min / zero /
-//! paused) trap the exact stock error — the zero case rejects via the always-`>= 1` floor (the
-//! former custom zero/below-min errors died with the custom policy). They consume the stock
-//! policy/CMP-B2 — they do not rebuild them.
+//!   - The faucet's own MASM tree contains no supply surface at all: no file calls the standard
+//!     burn primitive, and no file writes — or even names — the faucet's token-config slot. All
+//!     supply arithmetic lives in the standard library code.
+//!   - The built account's active burn-policy storage slot holds the standard minimum-burn
+//!     policy's root, so the one decrement path that does exist is policy-gated. A companion test
+//!     shows the assertion is not vacuous by building a faucet with an allow-all policy and
+//!     watching it fail.
+//!   - Within the pinned standard library itself, the burn primitive has exactly one caller,
+//!     `receive_and_burn`. That is what makes "one entry point" true of the dependency too, and it
+//!     is re-checked at the pinned baseline so an upgrade that adds a caller is caught.
+//!
+//! The remaining tests re-confirm the composition end to end with a real note: a valid burn lowers
+//! supply exactly once, and a burn that is below the minimum, zero, or attempted while the faucet
+//! is paused traps with the standard library's own error. Zero is rejected because the minimum is
+//! held at one or above — the faucet has no separate zero-amount check to fail.
 
 mod support;
 
@@ -41,8 +43,9 @@ use support::*;
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
 
-// PLACEHOLDER magnitudes (the suite asserts composition/commitment behavior, not magnitudes), mirroring
-// the CMP-A10 / CMP-B2 suites so the shared harness behaves identically.
+// Amounts are arbitrary: this suite asserts which code path runs and what it is gated by, never
+// the magnitudes themselves. They match the ones the burn-policy and burn-note suites use so the
+// shared harness behaves identically across all three.
 const MAX_SUPPLY: u64 = 1_000_000;
 const TOKEN_SUPPLY: u64 = 100_000;
 const MIN_BURN_SIZE: u64 = 1_000;
@@ -57,13 +60,14 @@ fn owner() -> AccountId {
     test_account_id(1)
 }
 
-/// The seeded DOM_PAUSER holder (id(2)) — the ONLY pause authority in the Domain-Pauser-only model
-/// (component CMP-F3; the custom `xreserve::pause_admin` procs).
+/// The account seeded with the Domain Pauser role, which is the only authority that can pause or
+/// unpause the faucet. Pausing is a custom `xreserve::pause_admin` proc, not a standard one.
 fn dom_pauser() -> AccountId {
     test_account_id(2)
 }
 
-/// A deterministic standalone note rng (only the serial number depends on it; never the schema/tag).
+/// A fixed-seed rng for standalone note construction. It feeds only the note's serial number, so
+/// the payload layout and tag are unaffected by the seed.
 fn note_rng(seed: u64) -> RandomCoin {
     RandomCoin::new(Word::from([
         Felt::from(seed as u32),
@@ -73,8 +77,8 @@ fn note_rng(seed: u64) -> RandomCoin {
     ]))
 }
 
-/// A DC-7 payload with an arbitrary round-trippable destination + salt (off-chain observability; does
-/// not affect the consume).
+/// A withdrawal payload for the given amount, with an arbitrary destination and salt. Those fields
+/// exist for the off-chain listener to read; consuming the note does not look at them.
 fn items(amount: u64) -> Result<XReserveBurnItems> {
     Ok(XReserveBurnItems {
         amount: AssetAmount::new(amount)?,
@@ -84,12 +88,13 @@ fn items(amount: u64) -> Result<XReserveBurnItems> {
     })
 }
 
-// N1B — SOLE-SUPPLY-DECREMENT, STORAGE-COMMITMENT WIRING
+// THE ACTIVE BURN POLICY — read off the built account's storage, not inferred from behavior
 // ================================================================================================
 
-/// N1B (the mandated sole-decrement test): the built faucet's ACTIVE burn-policy storage slot holds
+/// The built faucet's ACTIVE burn-policy storage slot holds
 /// the STOCK `MinBurnAmount::root()` — so the sole supply-decrement path (stock `receive_and_burn`,
-/// the only `faucet::burn` caller, see N1D) is gated by the stock floor policy. This reads what the
+/// the only caller of the standard burn primitive, pinned below) is gated by the standard floor
+/// policy. This reads what the
 /// account WIRED (storage commitment), which is stronger than resolving the merely-EXPORTED proc
 /// root, and pins the slot DIRECTLY against the stock constant (not a harness-echoed root).
 #[tokio::test]
@@ -113,7 +118,7 @@ async fn only_receive_and_burn_lowers_supply() -> Result<()> {
     Ok(())
 }
 
-/// N1B negative (required non-vacuity): a CODE-IDENTICAL faucet with `BurnAllowAll` ACTIVE stores a
+/// The non-vacuity twin: a CODE-IDENTICAL faucet with `BurnAllowAll` ACTIVE stores a
 /// DIFFERENT active root, so the sole-decrement clause (`stored == MinBurnAmount root`) FAILS here —
 /// proving the clause catches a repointed burn policy. (The dropped/zero-root case cannot be built:
 /// the production `XReserveStablecoinBuilder` installs the MinBurnAmount policy unconditionally —
@@ -138,7 +143,7 @@ async fn allow_all_active_burn_policy_fails_sole_decrement_audit() -> Result<()>
     Ok(())
 }
 
-// N1A — LOCAL TREE: NO SUPPLY SURFACE AT ALL (post-recomposition strengthening)
+// THE FAUCET'S OWN MASM TREE — no supply surface anywhere in it
 // ================================================================================================
 
 /// Every shipped `.masm` source under `asm/standards/xreserve` (recursively), by path.
@@ -160,12 +165,13 @@ fn xreserve_masm_sources() -> Result<Vec<(std::path::PathBuf, String)>> {
     Ok(sources)
 }
 
-/// N1A (STRENGTHENED, Wave-1 S1): the LOCAL xreserve tree carries NO supply surface at all — NO
-/// file under `asm/standards/xreserve` calls `exec.faucet::burn` (the inherited decrement
-/// primitive) and NO file writes (or even names) the faucet `token_config` slot. The former custom
-/// mint/burn supply code is deleted; supply arithmetic is exclusively the stock standards code,
-/// whose sole decrement surface is pinned by the N1D sweeps below. (Supersedes the pre-slice
-/// exactly-one-RAISE sweep: the local write count is now ZERO.)
+/// No file the faucet ships can move supply at all.
+///
+/// Every `.masm` file under `asm/standards/xreserve` is read and checked for the two ways supply
+/// could be touched: calling the standard burn primitive, and writing — or even naming — the
+/// faucet's token-config slot, where the supply figure lives. Neither appears anywhere. That makes
+/// the sole-decrement claim structural rather than behavioral: supply arithmetic happens only in
+/// the standard library code, whose own single decrement caller is pinned by the sweeps below.
 #[test]
 fn xreserve_tree_has_no_supply_surface() -> Result<()> {
     let sources = xreserve_masm_sources()?;
@@ -188,15 +194,16 @@ fn xreserve_tree_has_no_supply_surface() -> Result<()> {
     Ok(())
 }
 
-// N1D — INHERITED-UNIQUENESS (vendored-fixture sweep + checksum + Cargo-rev pin)
+// THE INHERITED CODE — the standard library's own decrement path, swept, checksummed, and pinned
 // ================================================================================================
 
 const PINNED_FUNGIBLE_MASM: &str = include_str!("fixtures/pinned-standards/fungible.masm");
 const PINNED_POLICY_MANAGER_MASM: &str =
     include_str!("fixtures/pinned-standards/policy_manager.masm");
 
-/// N1D: across the vendored pinned standards faucet code, `exec.faucet::burn` (the inherited
-/// supply-decrement primitive) is called by exactly ONE proc — `receive_and_burn`. Combined with N1A
+/// Across the vendored snapshot of the standard faucet code, `exec.faucet::burn` (the inherited
+/// supply-decrement primitive) is called by exactly ONE proc — `receive_and_burn`. Combined with the
+/// sweep of the faucet's own tree
 /// (no LOCAL lowering surface) this proves the SOLE supply-decrement surface is the stock
 /// `receive_and_burn`.
 #[test]
@@ -213,7 +220,7 @@ fn pinned_standards_single_faucet_burn_caller() {
     );
 }
 
-/// N1D (decrement-WRITE twin): across the vendored standards faucet code, exactly ONE
+/// The write-side twin: across the vendored standard faucet code, exactly ONE
 /// `TOKEN_CONFIG_SLOT` supply-DECREMENT write (a `set_item` write whose value is produced by `sub`)
 /// exists, inside `receive_and_burn`. Together with `pinned_standards_single_faucet_burn_caller` this
 /// proves the SOLE inherited supply-lowering surface is the stock `receive_and_burn` — both the burn
@@ -247,7 +254,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// N1D drift tripwire: the vendored fixtures are unchanged from the baseline snapshot. A local edit of a
+/// Drift tripwire: the vendored fixtures are unchanged from the baseline snapshot. A local edit of a
 /// committed copy (or a stale re-vendor) trips this.
 #[test]
 fn pinned_standards_fixture_unchanged() {
@@ -266,10 +273,15 @@ fn pinned_standards_fixture_unchanged() {
 const CARGO_TOML: &str = include_str!("../Cargo.toml");
 const PINNED_STANDARDS_REV: &str = "dbe4e38797207ce09fee1668ea204aafec275f63";
 
-/// N1D provenance anchor: the vendored fixtures are a snapshot of the `miden-standards` source at
-/// this exact protocol-monorepo git rev (the V16-NOW migration moved the dependency from crates.io
-/// back to a FROZEN git rev — MIGRATION-V16-NEXT.md). If the dep pin is bumped, this fails —
-/// re-vendor + re-checksum (PROVENANCE.md) before trusting N1D. Extracts the `rev = "..."` value
+/// Ties the vendored fixture copies to the dependency they were taken from.
+///
+/// The sweeps above reason about the standard library's source, but they read a vendored snapshot
+/// of it rather than the dependency itself. That snapshot is only meaningful while it matches the
+/// exact git revision the crate actually builds against, so this test extracts the pinned revision
+/// from the manifest and compares. Bumping the dependency fails here first: re-vendor the fixtures
+/// and re-checksum them (see their `PROVENANCE.md`) before the sweeps can be believed again.
+///
+/// It extracts the `rev = "..."` value
 /// from every `miden-standards = { git = "...", rev = "...", ... }` entry in a Cargo manifest —
 /// binds to the `miden-standards` key SPECIFICALLY (the key left of the first `=`), so a sibling
 /// dep's pin (e.g. miden-protocol) can never satisfy the anchor.
@@ -281,9 +293,9 @@ fn miden_standards_revs(cargo_toml: &str) -> Vec<&str> {
         .collect()
 }
 
-/// N1D provenance anchor: every `miden-standards` dependency entry (the dep + the dev-dep) pins the
+/// Provenance anchor: every `miden-standards` dependency entry (the dep + the dev-dep) pins the
 /// vendored-fixture rev. A standards bump fails this even if a sibling dep still carries the
-/// old pin — re-vendor + re-checksum (PROVENANCE.md) before trusting N1D.
+/// old pin — re-vendor and re-checksum (see their `PROVENANCE.md`) before trusting the sweeps above.
 #[test]
 fn pinned_standards_rev_matches_cargo() {
     let revs = miden_standards_revs(CARGO_TOML);
@@ -318,10 +330,10 @@ fn rev_pin_binds_to_miden_standards_specifically() {
     );
 }
 
-// N2 — END-TO-END COMPOSITION + CONSERVATION (re-confirm; do not rebuild)
+// END TO END — the whole composition on a real note, and the supply arithmetic it produces
 // ================================================================================================
 
-/// N2: a real `XReserveBurnNote` consumed by the faucet runs `receive_and_burn` → the stock
+/// A real `XReserveBurnNote` consumed by the faucet runs `receive_and_burn` → the stock
 /// `MinBurnAmount` policy and decrements committed `token_supply` by EXACTLY the burned amount, ONCE
 /// (no double-count). The stock exactly-one-asset assert
 /// (`ERR_FUNGIBLE_BURN_WRONG_NUMBER_OF_ASSETS`) forecloses a multi-asset drain.
@@ -359,11 +371,14 @@ async fn burn_consume_composition_decrements_once() -> Result<()> {
     Ok(())
 }
 
-// N3 — INVALID-BURN REJECTS THROUGH THE COMPOSITION (re-confirm the stock policy fires; no rebuild)
+// INVALID BURNS THROUGH THE FULL COMPOSITION — the standard policy fires on a real note
 // ================================================================================================
 
-/// N3 (R-BURN-2): a real `XReserveBurnNote` with `0 < amount < minBurnSize` consumed through the
-/// composition traps the EXACT stock below-min error.
+/// A burn below the configured minimum is rejected when a real note is consumed.
+///
+/// The amount is above zero but under the floor, so this isolates the minimum-burn policy from the
+/// zero case below, and it traps with the standard library's own below-minimum error rather than
+/// anything the faucet defines.
 #[tokio::test]
 async fn burn_below_min_rejected_through_composition() -> Result<()> {
     let h = setup_burn_policy_account(
@@ -381,9 +396,12 @@ async fn burn_below_min_rejected_through_composition() -> Result<()> {
     Ok(())
 }
 
-/// N3 (R-BURN-1): a real `XReserveBurnNote` with `amount == 0` consumed through the composition
-/// traps the EXACT stock below-min error — the zero-burn invariant now IS the floor (`>= 1`
-/// always, so `0 < min`); the former custom `ERR_XRESERVE_BURN_ZERO` died with the custom policy.
+/// A zero-amount burn is rejected too — by the same minimum-burn check, not a separate one.
+///
+/// The faucet has no dedicated zero-amount error. It does not need one: the minimum burn size is
+/// held at one or above everywhere it can be set, so zero is always below the floor and trips the
+/// standard below-minimum error. The floor guards are what make that reasoning safe, and they are
+/// tested where the floor is set.
 #[tokio::test]
 async fn burn_zero_rejected_through_composition() -> Result<()> {
     let h = setup_burn_policy_account(
@@ -400,11 +418,14 @@ async fn burn_zero_rejected_through_composition() -> Result<()> {
     Ok(())
 }
 
-/// N3 (R-BURN-3): a paused faucet halts the consume. After the DOM_PAUSER pauses the faucet (custom
-/// `xreserve::pause_admin::pause` — the ONLY pause surface in the Domain-Pauser-only model), consuming
-/// a committed (valid-amount) real `XReserveBurnNote` traps the stock `ERR_PAUSABLE_IS_PAUSED` ("the
-/// contract is paused") — `execute_burn_policy` runs `assert_not_paused` BEFORE the active policy.
-/// Mirrors `burn_policy::burn_paused_rejects` but through the real note.
+/// A paused faucet halts withdrawals, not just deposits.
+///
+/// The Domain Pauser pauses the faucet through the custom `xreserve::pause_admin::pause` — the
+/// account's only pause authority — and then a real burn note carrying a perfectly valid amount is
+/// consumed. It traps with the standard "the contract is paused" error, because the standard burn
+/// wrapper checks the pause flag before it ever reaches the minimum-burn policy. The equivalent
+/// case in the burn-policy suite drives a synthetic note; this one drives the production note
+/// through the production composition.
 #[tokio::test]
 async fn burn_paused_rejected_through_composition() -> Result<()> {
     let h = setup_burn_policy_account(
@@ -455,7 +476,8 @@ async fn burn_paused_rejected_through_composition() -> Result<()> {
     Ok(())
 }
 
-// CMP-F2 BURN-MIN SEAM — set the floor, then the SAME stock slot check_policy reads decides the burn
+// THE SEAM BETWEEN SETTING THE FLOOR AND ENFORCING IT — the setter writes the very slot the
+// burn policy reads, so a change takes effect on the next burn
 // ================================================================================================
 
 /// Two-tx apply_delta plumbing shared by both seam directions: emit + commit the burn note, run an
@@ -510,9 +532,11 @@ async fn run_set_min_burn_then_consume(
     Ok(result)
 }
 
-/// SEAM (negative = raise): floor seeded `MIN_BURN_SIZE`, owner RAISES it above a burn that passed
-/// before; that burn now traps the EXACT stock below-min error via the stock `check_policy`.
-/// `VALID_BURN` (5_000) passes at the seeded 1_000 floor but is below the new 10_000 floor.
+/// Raising the floor immediately starts rejecting a burn that was fine a moment earlier.
+///
+/// The amount used (5,000) passes at the seeded floor of 1,000 and fails at the new floor of
+/// 10,000, so the only thing that changed between accept and reject is the setter's write. This is
+/// the direction that matters for safety: the owner can tighten the limit and it binds at once.
 #[tokio::test]
 async fn set_min_burn_raise_then_below_new_min_rejects() -> Result<()> {
     let result = run_set_min_burn_then_consume(MIN_BURN_SIZE, 10_000, VALID_BURN).await?;
@@ -520,9 +544,12 @@ async fn set_min_burn_raise_then_below_new_min_rejects() -> Result<()> {
     Ok(())
 }
 
-/// SEAM (positive = lower): floor seeded HIGH (10_000), owner LOWERS it to exactly the burn amount
-/// (2_000); the burn that would trap at the seeded floor now PASSES (consume succeeds). Proves the
-/// setter's write actually relaxes the stock policy's R-BURN-2 gate.
+/// Lowering the floor immediately admits a burn that would have been rejected.
+///
+/// The mirror of the test above, and the one that proves the seam is not vacuous: seeded at 10,000
+/// the burn of 2,000 would trap, and after the setter lowers the floor to exactly 2,000 the same
+/// consume succeeds — so the setter's write genuinely relaxes the minimum the burn policy
+/// enforces, rather than the burn passing for some unrelated reason.
 #[tokio::test]
 async fn set_min_burn_lower_then_at_new_min_passes() -> Result<()> {
     let result = run_set_min_burn_then_consume(10_000, 2_000, 2_000).await?;

@@ -1,15 +1,26 @@
-//! ATTESTATION MINT POLICY E2E — the BINDING + TRANSPORT-SHAPE half of the recomposed
-//! mint-semantics matrix (Wave-1 S1), the sibling of `mint_policy_e2e.rs` (one G3-sized module
-//! per concern; the shared production-transport harness is `support::mint_transport`).
+//! End-to-end mint binding: what the attestation says must be what actually gets minted.
 //!
-//! This file carries the ratified ASSERT-MATCH binding negatives (amount / tag / note-type — the
-//! recipient leg lives with the replay/fee legs in `wave1_recomposition_e2e.rs`), the
-//! attested-recipient extraction guards (the DEV-10 pad guard + the >= modulus canonicality
-//! reject table), the transport-shape negatives (the consciously re-materialized F5 posture:
-//! missing/extra attachments, word counts, length binding, truncation), the pause halt, the F1
-//! restatement (a policy-less mint path cannot mint — asserted on the EXACT kernel input-note
-//! bound error), and the MockChain half of the network-routing proof. Every negative asserts its
-//! EXACT error (never `is_err()`) and the payload-based rejects prove fail-closure.
+//! The companion to `mint_policy_e2e.rs`, sharing the same production transport harness. Where
+//! that file asks whether a deposit is allowed at all, this one asks whether the note the faucet
+//! acts on is faithfully bound to the attested deposit — a mint that passed every check but paid
+//! out a different amount, or to a different account, would be just as much a loss of funds.
+//!
+//! It covers:
+//!
+//! - The binding checks themselves: a mint note whose amount, tag, or note type does not match
+//!   what the attestation committed to is rejected. (The recipient binding is tested alongside the
+//!   replay and fee cases in the recomposition end-to-end suite.)
+//! - Recipient extraction: the attested `remoteRecipient` is a 32-byte field carrying a Miden
+//!   account id in its low bytes, so the leading pad must be zero and each id half must be below
+//!   the field modulus. Both guards get their own reject cases — a non-canonical value must fail,
+//!   never be silently reduced into a different, valid account id.
+//! - Transport shape: attachments missing, attachments duplicated, wrong word counts, a length
+//!   that disagrees with the payload, a truncated payload.
+//! - The pause halt, the routing proof on a MockChain, and the restatement that a mint path with
+//!   no policy installed cannot mint at all.
+//!
+//! Every negative asserts its exact error rather than merely failing, and the payload-driven
+//! rejects also assert fail-closure — nothing minted, no nonce consumed.
 
 mod support;
 
@@ -59,7 +70,7 @@ async fn mint_rejects_an_amount_mismatch() -> Result<()> {
 }
 
 /// A note whose output tag does not target the attested recipient rejects with the tag binding
-/// error (A13: the policy derives the expected tag with the standards helper).
+/// error — the policy derives the expected tag with the standards helper and compares.
 #[tokio::test]
 async fn mint_rejects_a_tag_mismatch() -> Result<()> {
     let mut pf = fixture()?;
@@ -120,11 +131,15 @@ async fn mint_rejects_a_private_output_note() -> Result<()> {
     .await
 }
 
-// THE ATTESTED-RECIPIENT EXTRACTION (DEV-10 layout guards, through the policy)
+// EXTRACTING THE RECIPIENT FROM THE ATTESTED PAYLOAD — the layout guards, run through the policy
 // ================================================================================================
 
-/// An attested payload whose remoteRecipient carries a NON-ZERO leading pad rejects in the
-/// policy's recipient extraction (the DEV-10 AccountId-in-bytes32 layout guard).
+/// A recipient field with a non-zero leading pad is rejected rather than truncated.
+///
+/// A Miden account id occupies only the low 16 bytes of the 32-byte `remoteRecipient`; the high
+/// bytes must be zero. If the policy ignored them instead of asserting, two different attested
+/// payloads would extract to the same account, and the attestation would no longer pin who gets
+/// paid.
 #[tokio::test]
 async fn mint_rejects_a_malformed_attested_recipient() -> Result<()> {
     let mut pf = fixture()?;
@@ -155,7 +170,7 @@ async fn mint_rejects_a_malformed_attested_recipient() -> Result<()> {
     .await
 }
 
-/// The NONCANONICAL reject family (one `#[rstest]` case table per G4): an attested
+/// The NONCANONICAL reject family, parametrized into one case table: an attested
 /// `remoteRecipient` whose prefix or suffix u64 region (bytes 16..24 / 24..32 of the bytes32)
 /// holds `u64::MAX` — a value `>= p` that would REDUCE mod the field — rejects in the policy's
 /// no-reduction `build_felt` round-trip (`ERR_XRESERVE_RECIPIENT_NONCANONICAL`, mirroring Rust
@@ -198,7 +213,7 @@ async fn mint_rejects_a_noncanonical_recipient(
     .await
 }
 
-// TRANSPORT SHAPE — the attachment negatives (consciously re-materialized F5 posture)
+// TRANSPORT SHAPE — what happens when the note's three attachments are wrong
 // ================================================================================================
 
 /// Dropping the scheme-4 intent attachment rejects.
@@ -457,7 +472,7 @@ async fn mint_halts_while_paused() -> Result<()> {
     .await
 }
 
-// F1 RESTATED — without the attested transport there is no acceptable mint
+// WITHOUT THE ATTESTED TRANSPORT THERE IS NO ACCEPTABLE MINT
 // ================================================================================================
 
 /// A tx-script `mint_and_send` (no active note, no attachments) CANNOT mint: the attestation

@@ -1,23 +1,24 @@
-//! S21 + S13/S24 dispositions of the FULL-ACCOUNT CALLABLE SURFACE — the PRESENT-BUT-UNREACHABLE
-//! and READ-ONLY halves of the pin, split out of `account_callable_surface.rs` for the G3 file-size
-//! ceiling. `account_callable_surface.rs` holds the frozen-surface equality pin + the S12
-//! freeze/unfreeze disposition + the S24 asset-callback (transfer-blocklist-live) proof; THIS file
+//! The PRESENT-BUT-UNREACHABLE and READ-ONLY halves of the FULL-ACCOUNT CALLABLE-SURFACE pin,
+//! split out of `account_callable_surface.rs` to respect the file-size
+//! ceiling. `account_callable_surface.rs` holds the frozen-surface equality pin + the
+//! freeze/unfreeze disposition + the asset-callback (transfer-blocklist-live) proof; THIS file
 //! holds:
-//!   * S21 — `rbac::set_role_admin` is a callable root but OPERATIONALLY UNREACHABLE (its runtime
-//!     note was removed from the allowlist, human-ratified 2026-07-14; the role-admin graph is
-//!     build-seeded and frozen — rotation is grant_role/revoke_role only, CIR-ADMIN-3);
-//!   * S13/S24 — `authority::get_authority` is READ-ONLY in execution (executed bounding, not
+//!   * `rbac::set_role_admin` is a callable root but OPERATIONALLY UNREACHABLE (its runtime
+//!     note was removed from the allowlist; the role-admin graph is
+//!     build-seeded and frozen — rotation is grant_role/revoke_role only);
+//!   * `authority::get_authority` is READ-ONLY in execution (executed bounding, not
 //!     documentation);
-//!   * V16-NOW temporary growth — the 11 mutator/fee procedures the protocol-`next` stock
+//!   * temporary v0.16 growth — the 11 mutator/fee procedures the protocol-`next` stock
 //!     components add, in TWO ratified reachability tiers: Tier A (the 4 allowlist mutators)
-//!     truly unreachable, the S12/S21 disposition; Tier B (the 6 fee procedures + the
+//!     truly unreachable, the same disposition as freeze/unfreeze and set_role_admin; Tier B
+//!     (the 6 fee procedures + the
 //!     `compute_note_fee` callback) direct-entry-unreachable — no external entry point — while
 //!     the fee-estimation path runs INTERNALLY on every input note, computing the scheduled
-//!     zero fee (internally active but inert). TEMPORARY — reverted at V16-FINAL together with
-//!     the provisional fee configuration; see `docs/MIGRATION-V16-NEXT.md`.
+//!     zero fee (internally active but inert). TEMPORARY — a later slice reverts this growth
+//!     together with the provisional fee configuration.
 //!
 //! The small conformance helpers (`production_components`/`component_surface`/`production_account`/
-//! `allowlisted_note_scripts`) are duplicated here (as in the round-5 test splits) so this module is
+//! `allowlisted_note_scripts`) are duplicated here so this module is
 //! self-contained; both copies are single-sourced from `XReserveStablecoinBuilder`, so neither can
 //! drift from what ships.
 
@@ -61,7 +62,7 @@ fn production_components() -> Result<Vec<AccountComponent>> {
 }
 
 /// Every callable procedure of the composed account, as `(path, root)` — read from each component's
-/// FILTERED interface (the `@account_procedure` / `@auth_script` exports; v0.16 #3171).
+/// FILTERED interface (the `@account_procedure` / `@auth_script` exports).
 fn component_surface(components: &[AccountComponent]) -> Vec<(String, Word)> {
     let mut surface = Vec::new();
     for component in components {
@@ -90,15 +91,15 @@ fn production_account() -> Result<Account> {
     Ok(account)
 }
 
-/// The 14 allowlisted note SCRIPTS (not just their roots): the two STOCK supply notes (the Wave-1
-/// S1 `MintNote` transport + the `BurnNote`) + the 12 admin notes (10 owner/role/pause — with the
-/// minimized `identifier_init` in the former `domain_init` row (DEC-4) — + the 2 F4-reversal
+/// The 14 allowlisted note SCRIPTS (not just their roots): the two STOCK supply notes (the stock
+/// `MintNote` transport + the `BurnNote`) + the 12 admin notes (10 owner/role/pause — with the
+/// identifier-only `identifier_init` — + the 2
 /// transfer-blocklist notes). Single-sourced from the
 /// same factories the allowlist itself is built from, so a note that enters the allowlist necessarily
 /// enters this sweep too. There is deliberately NO `set_role_admin` entry: the runtime
-/// `set_role_admin` note was REMOVED from the allowlist (S21 disposition flip, human-ratified
-/// 2026-07-14) — the role-admin graph is BUILD-SEEDED and frozen; rotation is
-/// `grant_role`/`revoke_role` (CIR-ADMIN-3).
+/// `set_role_admin` note was REMOVED from the
+/// allowlist — the role-admin graph is BUILD-SEEDED and frozen; rotation is
+/// `grant_role`/`revoke_role` (the Domain Manager rotates the Pauser, the owner is the backstop).
 fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
     vec![
         ("stock_mint_note", MintNote::script()),
@@ -121,7 +122,7 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
     ]
 }
 
-// S21 — SET_ROLE_ADMIN: PRESENT, AND PROVABLY UNREACHABLE (the frozen role-admin graph)
+// SET_ROLE_ADMIN: PRESENT, AND PROVABLY UNREACHABLE (the frozen role-admin graph)
 // ================================================================================================
 
 /// The fully-qualified path of the stock RBAC `set_role_admin` account procedure (a member of the
@@ -129,8 +130,7 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
 const RBAC_SET_ROLE_ADMIN_PROC_PATH: &str =
     "::miden::standards::components::access::rbac::set_role_admin";
 
-/// The pinned root of the REMOVED runtime `set_role_admin` note script (formerly
-/// `XRESERVE_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX`, allowlist row 10 of the old 13-root set).
+/// The pinned root of the REMOVED runtime `set_role_admin` note script.
 /// Preserved so its non-membership stays machine-checked: re-adding the note to the allowlist
 /// turns `set_role_admin_former_note_root_is_not_admissible_via_either_allowlist` RED.
 const FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX: &str =
@@ -150,7 +150,7 @@ fn rbac_set_role_admin_proc_root() -> Result<Word> {
 }
 
 /// PRESENT: the stock RBAC `set_role_admin` procedure IS a callable root of the composed account —
-/// the S21 disposition keeps the stock component intact (the frozen surface membership is
+/// the ratified disposition keeps the stock component intact (the frozen surface membership is
 /// otherwise unchanged); ONLY
 /// the runtime note that could reach it was removed.
 #[test]
@@ -176,7 +176,7 @@ fn rbac_set_role_admin_is_present_on_the_account() -> Result<()> {
 /// scripts references the `rbac::set_role_admin` root ANYWHERE in its MAST — so no admissible note
 /// can re-point (or clear) any role's admin delegation. The swept set is asserted equal to the
 /// allowlist first, so a re-added note cannot dodge the sweep: the set-equality itself goes
-/// RED (this is the machine-enforced conformance-manifest row for the S21 removal).
+/// RED (this is the machine-enforced check that the note's removal holds).
 #[test]
 fn set_role_admin_is_unreachable_from_every_allowlisted_note() -> Result<()> {
     let allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
@@ -229,11 +229,11 @@ fn set_role_admin_former_note_root_is_not_admissible_via_either_allowlist() -> R
     Ok(())
 }
 
-// S13/S24 — GET_AUTHORITY IS READ-ONLY (executed bounding, not documentation)
+// GET_AUTHORITY IS READ-ONLY (executed bounding, not documentation)
 // ================================================================================================
 
 /// The v0.16 `authority::get_authority` view accessor is READ-ONLY in execution, not just by
-/// documentation (S13/S24 bounding): a note that `call`s it by root on the production-composed
+/// documentation: a note that `call`s it by root on the production-composed
 /// account executes successfully and leaves storage AND vault byte-identical (only the fixture's
 /// nonce-increment auth runs). Uses the permissive-auth production composition (the same
 /// `GuardSelection::ProductionAttestation` fixture the role-gating suites use) because on the
@@ -333,17 +333,17 @@ async fn get_authority_is_read_only_on_the_account() -> Result<()> {
     Ok(())
 }
 
-// V16-NOW TEMPORARY GROWTH — THE RATIFIED FEE/MUTATOR ROWS: TWO REACHABILITY TIERS
+// TEMPORARY V16 GROWTH — THE RATIFIED FEE/MUTATOR ROWS: TWO REACHABILITY TIERS
 // ================================================================================================
 //
-// The 11 forced additions fall in two reachability tiers (Phil's ratified wording, verified
+// The 11 forced additions fall in two reachability tiers (ratified wording, verified
 // against the protocol source at the pin):
 //
-// Tier A — truly unreachable: the 4 `#3355` admin mutators. No note or tx can reach them under
-// the frozen 14-root note-script allowlist + 1-root tx-script allowlist (same disposition as the
-// S12 freeze/unfreeze + S21 set_role_admin precedents).
+// Tier A — truly unreachable: the 4 stock admin allowlist mutators. No note or tx can reach them
+// under the frozen 14-root note-script allowlist + 1-root tx-script allowlist (the same
+// disposition as the freeze/unfreeze + set_role_admin precedents).
 //
-// Tier B — internally-active-but-inert, direct-entry-unreachable: the 6 `#3351` fee procedures +
+// Tier B — internally-active-but-inert, direct-entry-unreachable: the 6 stock fee procedures +
 // the `compute_note_fee` policy callback. None is a new externally-authorized entry point (none
 // in the note/tx-script allowlist, so no outside caller reaches them directly). BUT the
 // fee-estimation path IS executed internally on every input note during
@@ -354,9 +354,10 @@ async fn get_authority_is_read_only_on_the_account() -> Result<()> {
 // runs on every note.
 //
 // Both tiers are TEMPORARY: a later slice reverts the growth together with the provisional fee
-// configuration (see `docs/MIGRATION-V16-NEXT.md`).
+// configuration.
 
-/// Tier A — the four `#3355` allowlist mutators: truly unreachable (the S12/S21 disposition).
+/// Tier A — the four stock allowlist mutators: truly unreachable (the same disposition as
+/// freeze/unfreeze and set_role_admin).
 const TIER_A_MUTATOR_ROWS: [&str; 4] = [
     "::miden::standards::components::auth::network_account::add_allowed_note_script",
     "::miden::standards::components::auth::network_account::remove_allowed_note_script",
@@ -364,7 +365,7 @@ const TIER_A_MUTATOR_ROWS: [&str; 4] = [
     "::miden::standards::components::auth::network_account::remove_allowed_tx_script",
 ];
 
-/// Tier B — the six `#3351` fee procedures + the fee-policy callback: no external entry point
+/// Tier B — the six stock fee procedures + the fee-policy callback: no external entry point
 /// (not in either allowlist), while the estimation path (`estimate_note_fee_internal` -> dyncall
 /// `compute_note_fee`) runs INTERNALLY on every input note, computing the scheduled zero fee.
 const TIER_B_FEE_ROWS: [&str; 7] = [
@@ -495,7 +496,8 @@ fn tier_b_fee_rows_are_not_referenced_by_any_allowlisted_note() -> Result<()> {
 
 /// NO EXTERNAL ENTRY POINT (both tiers): no growth root is a member of EITHER allowlist — the
 /// 14-root note-script allowlist or the tx-script allowlist (read directly from the production
-/// auth component's slot; it holds EXACTLY the one canonical expiration root, per the s12 pins).
+/// auth component's slot; it holds EXACTLY the one canonical expiration root, as the
+/// expiration-allowlist tests pin).
 /// For Tier A this closes both entry vectors outright (with the MAST sweep above: truly
 /// unreachable). For Tier B it establishes exactly the ratified posture: no outside caller
 /// reaches the fee procedures directly; their only execution is the auth procedure's internal

@@ -1,25 +1,24 @@
-//! Custom `pause`/`unpause` suite (component CMP-F3): the DOM_PAUSER-gated emergency halt. The stock
-//! `PausableManager` gates pause on the account-wide `Authority` (= owner), so a distinct pause role
-//! needs a CUSTOM proc: `xreserve::pause_admin::{pause,unpause}` =
-//! `rbac::assert_sender_has_role(DOM_PAUSER)` + the unauthenticated `pausable::pause`/`unpause`
-//! primitives.
+//! The emergency halt: who can pause the faucet, and what pausing actually stops.
 //!
-//! The load-bearing proof is the PAUSE-HALT SEAM — a DOM_PAUSER pause must actually HALT the real
-//! faucet, not just flip `is_paused`: a REAL attested mint (the Wave-1 S1 stock-`MintNote`
-//! transport consumed by the production faucet, whose `execute_mint_policy` runs
-//! `assert_not_paused` FIRST) AND a real `receive_and_burn` trap `ERR_PAUSABLE_IS_PAUSED` while
-//! paused, and both resume on unpause (execute_burn_policy runs the same stock gate).
+//! Circle's model gives pausing to a dedicated Domain Pauser, and gives the owner no direct pause
+//! path at all. The standard `PausableManager` cannot express that — it gates pausing on the
+//! account-wide authority, which is the owner — so the faucet ships its own `pause` and `unpause`
+//! procs, each of which asserts the sender holds the Domain Pauser role and then calls the
+//! unauthenticated standard pause primitive. The standard manager is left out of the composition
+//! entirely, which is what makes the custom procs the account's ONLY pause surface. Two tests here
+//! pin that absence directly: an owner-sent standard pause note fails with "unknown account
+//! procedure", because those procedure roots are genuinely not in the account's code.
 //!
-//! DOMAIN-PAUSER-ONLY MODEL (IMPL-DEV-1 remediation): Circle's model gives the owner NO direct pause
-//! path, so the stock `PausableManager` is REMOVED from the composition and the DOM_PAUSER custom
-//! procs are the ONLY pause surface.
-//! RED-SUITE (executing-red): `owner_has_no_pause_path` / `owner_has_no_unpause_path` assert an
-//! owner-sent STOCK `PausableManager::pause`/`unpause` note now fails with the exact
-//! `UnknownAccountProcedure` (the roots are gone from the account code) — RED while the prior
-//! baseline still installs the manager. `dom_pauser_pause_halts_mint`/`_burn` double as the
-//! `is_paused`-slot-survival guards (at v0.16 the slot is installed by the base `Pausable`
-//! component the builder adds — #2944 moved it out of `FungibleFaucet` — and NEVER by the
-//! deliberately-absent `PausableManager`, which installs zero storage).
+//! The load-bearing proof is not that pausing flips a flag — it is that pausing HALTS the faucet.
+//! A real attested mint and a real burn are both driven against a paused faucet and both trap with
+//! the standard paused error, because the standard mint and burn wrappers check the pause flag
+//! before they run their policies. Both resume after unpause. That covers Circle's requirement
+//! that a pause stops deposits and withdrawals alike.
+//!
+//! Those two halt tests double as guards on the `is_paused` slot's provenance: the slot is
+//! installed by the base pausable component the builder adds, never by the deliberately absent
+//! manager (which installs no storage at all). If the slot ever went missing, the halt would
+//! silently stop happening.
 
 mod support;
 
@@ -87,11 +86,11 @@ const MINT_MAX_SUPPLY: u64 = 1_000_000_000_000;
 const MINT_AMOUNT: u64 = 250_000_000;
 const MAX_FEE_RAW: u64 = 1;
 
-/// First byte of the 32-byte `remoteRecipient` field (felt 19 x 4 bytes; DC-1).
+/// Byte offset of the 32-byte `remoteRecipient` field in a DepositIntent (felt 19, 4 bytes/felt).
 const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
-/// First byte of the 32-byte `remoteToken` field (felt 11 x 4 bytes; DC-1).
+/// Byte offset of the 32-byte `remoteToken` field in a DepositIntent (felt 11, 4 bytes/felt).
 const REMOTE_TOKEN_BYTE_OFF: usize = 11 * 4;
-/// First byte of the 32-byte `nonce` field (felt 51 x 4 bytes; DC-1).
+/// Byte offset of the 32-byte `nonce` field in a DepositIntent (felt 51, 4 bytes/felt).
 const NONCE_BYTE_OFF: usize = 51 * 4;
 
 fn di(id: &str) -> &'static DiVector {
@@ -106,8 +105,8 @@ fn di(id: &str) -> &'static DiVector {
 /// The canonical accept payload with the wire amount / maxFee spliced in, `remoteRecipient`
 /// replaced by the real recipient wallet, `remoteToken` replaced by
 /// `account_id_to_bytes32(faucet_id)` (the own-id fixpoint the seeded identifier_init writes, so
-/// D5a's identifier compare passes), and one nonce byte perturbed per variant so each mint consumes
-/// a fresh D5c nonce.
+/// the identifier compare passes), and one nonce byte perturbed per variant so each mint consumes
+/// a nonce the replay guard has not seen.
 fn payload_for(
     recipient: AccountId,
     amount: u64,
@@ -125,10 +124,11 @@ fn payload_for(
     payload
 }
 
-/// A compilable stand-in for the DELETED custom mint driver (the Wave-1 S1 recomposition removed
-/// `xreserve::xreserve_mint`, so the former generated driver no longer assembles): the stock-pause
-/// negative probes never invoke the driver proc — the guarded fixture only needs a component that
-/// compiles.
+/// A do-nothing component that satisfies the shared fixture's requirement for a driver.
+///
+/// The fixture used by the standard-pause negative probes takes a driver component, but those
+/// probes never invoke it — they only need the account to build. Rather than assemble a real mint
+/// driver for tests that will not call it, this supplies something that merely compiles.
 fn placeholder_driver_src() -> String {
     "#! Test driver stand-in: never invoked by this suite (the custom mint entry was deleted by\n\
      #! the Wave-1 S1 recomposition); the guarded fixture only requires a compilable component.\n\
@@ -163,10 +163,13 @@ fn production_pause_fixture() -> Result<GuardedMint> {
     )
 }
 
-/// The production faucet brought up for the mint-halt seams (the REAL stock-note transport,
-/// network-auth): the identifier seeded (DEC-4 minimized init), attester 1 allowlisted, plus the
-/// caller's extra admin notes — all seeded at genesis so each admin tx is block-provable. Mirrors
-/// `mint_policy_e2e.rs`.
+/// Brings up a production faucet ready to run a real mint, for the tests that check a pause
+/// actually halts one.
+///
+/// It uses the real note transport and the account's own network authentication, seeds the domain
+/// identifier through the runtime init note, allowlists one attester, and adds whatever extra admin
+/// notes the caller needs. Everything is seeded at genesis so each admin transaction can be proved
+/// into its own block. The same shape is used by `mint_policy_e2e.rs`.
 fn mint_fixture(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<ProductionFaucet> {
     setup_production_faucet(MINT_MAX_SUPPLY, 0, |recipient, faucet_id| {
         let commitment =
@@ -266,13 +269,17 @@ fn probe_pause_admin_exports() -> Result<()> {
 // PAUSE-HALT SEAM — the non-vacuity must-have: a pause HALTS the real mint AND the real burn
 // ================================================================================================
 
-/// In the Domain-Pauser-only model (IMPL-DEV-1 remediation): the owner's STOCK pause path is GONE. An
-/// owner-sent stock `PausableManager::pause` note still ASSEMBLES (StandardsLib is pre-linked) but the
-/// production account no longer exposes the proc root, so execution fails with the EXACT
-/// `UnknownAccountProcedure` host-event error ("… is not in the account procedure index map" — NOT
-/// a MASM assert) and `is_paused` stays untouched. Replaces `paused_mint_traps` (the owner-stock-
-/// pause → mint-trap scenario ceases to exist; its mint-halt purpose lives in
-/// `dom_pauser_pause_halts_mint`). RED at the prior baseline: the owner stock pause SUCCEEDS.
+/// The owner has no standard pause path: the procedure is not in the account at all.
+///
+/// A note calling the standard `PausableManager::pause` still ASSEMBLES, because the standards
+/// library is linked in regardless — so the interesting failure is at execution. The production
+/// account does not expose that procedure's root, and the host rejects the call with
+/// `UnknownAccountProcedure` ("… is not in the account procedure index map"). That is a structural
+/// absence, not an authorization check: no MASM assert runs, and `is_paused` is left untouched.
+///
+/// Distinguishing the two failure kinds is the point. A rejected-by-assert result would mean the
+/// manager is installed and merely refusing this caller, which is a weaker property than the
+/// manager not being there.
 #[tokio::test]
 async fn owner_has_no_pause_path() -> Result<()> {
     let gm = production_pause_fixture()?;
@@ -351,7 +358,7 @@ async fn dom_pauser_pause_halts_mint() -> Result<()> {
     Ok(())
 }
 
-/// F5 — the ALLOWLISTED PRODUCTION `XReservePauseNote` (DOM_PAUSER-sent) HALTS the real attested
+/// The shipped, allowlisted `XReservePauseNote`, sent by the Domain Pauser, HALTS the real attested
 /// mint through the UNAUTHENTICATED-note transport: the pause note executes as an unauthenticated
 /// input (never block-committed first — routing target a placeholder PUBLIC id, routing-only), its
 /// `is_paused=1` delta is applied to the evolved faucet, and the REAL stock mint note consumed
@@ -395,8 +402,8 @@ async fn dom_pauser_production_pause_note_halts_mint() -> Result<()> {
     Ok(())
 }
 
-/// F5 — the ALLOWLISTED PRODUCTION `XReservePauseNote` HALTS the real burn: the note-driven twin of
-/// `dom_pauser_pause_halts_burn`.
+/// The shipped, allowlisted `XReservePauseNote` HALTS the real burn — the note-driven twin of
+/// `dom_pauser_pause_halts_burn`, which pauses through the procedure directly.
 #[tokio::test]
 async fn dom_pauser_production_pause_note_halts_burn() -> Result<()> {
     let bh = setup_burn_policy_account(
@@ -615,21 +622,24 @@ async fn non_dom_pauser_pause_rejects() -> Result<()> {
     assert_custom_pause_rejects(plain_non_owner()).await
 }
 
-/// The OWNER (id 1) is NOT a DOM_PAUSER holder, so the custom pause rejects the owner too — the custom
-/// surface is role-gated, not owner-gated. In the Domain-Pauser-only model (the stock
-/// `PausableManager` removed — `owner_has_no_pause_path`) this completes "the owner has no DIRECT
-/// pause path": neither the stock nor the custom surface accepts the owner. (The owner keeps
-/// Circle-conformant ROLE-ADMINISTRATION power — at v0.16 it reaches DOM_PAUSER membership through
-/// the two-hop chain owner→ADMIN→DOM_MANAGER→DOM_PAUSER (#3215/S21, human-ratified), the CMP-F5
-/// delegation being the operational rotation path proven in `role_admin.rs` — a rotation concern,
-/// not a pause surface.)
+/// The owner cannot pause either — the custom proc is role-gated, not owner-gated.
+///
+/// Together with the test that the standard pause procedures are absent from the account, this
+/// completes the claim that the owner has no direct pause path at all: neither surface accepts
+/// them. What the owner keeps is administration of the roles, reaching the Domain Pauser's
+/// membership indirectly by administering the Domain Manager that administers it. That is a
+/// rotation power, exercised in `role_admin.rs`, and it is deliberately not a pause power: the
+/// owner can appoint a pauser, but cannot pause.
 #[tokio::test]
 async fn owner_is_not_dom_pauser_on_custom_pause() -> Result<()> {
     assert_custom_pause_rejects(owner()).await
 }
 
-/// A DIFFERENT role holder (DOM_MANAGER id 3) cannot pause — forecloses a caller-supplied/spoofable role
-/// symbol: only the hard-coded DOM_PAUSER symbol passes the gate.
+/// Holding a different role is not enough: the Domain Manager cannot pause.
+///
+/// This forecloses the gate ever being satisfied by "the sender holds some role". The role symbol
+/// the proc checks is hard-coded in the MASM, not taken from the caller, so only an actual Domain
+/// Pauser passes.
 #[tokio::test]
 async fn other_role_holder_cannot_pause() -> Result<()> {
     assert_custom_pause_rejects(dom_manager()).await
@@ -677,9 +687,11 @@ async fn non_dom_pauser_unpause_rejects(#[case] sender: AccountId) -> Result<()>
     Ok(())
 }
 
-/// SEPARATION: the DOM_PAUSER holder (id 2) can pause but is NOT the owner — an owner-gated setter
-/// (`set_min_burn_size`) rejects it with the EXACT `ERR_SENDER_NOT_OWNER` (reuses the CMP-F2 owner gate,
-/// so this is a GREEN separation regression guard).
+/// The separation holds in the other direction too: the pauser is not an owner.
+///
+/// The Domain Pauser can halt the faucet, but sending an owner-gated setter — here the minimum-burn
+/// setter — is rejected with the standard not-owner error. Without this, a compromised pauser key
+/// would be a compromised admin key.
 #[tokio::test]
 async fn dom_pauser_cannot_call_owner_setters() -> Result<()> {
     let bh = setup_burn_policy_account(

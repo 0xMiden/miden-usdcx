@@ -1,32 +1,33 @@
-//! WAVE-1 S1 RECOMPOSITION TRIPWIRES — the new-posture PINS for the faucet recomposition
+//! FAUCET-RECOMPOSITION TRIPWIRES — the posture PINS for the shipped faucet composition
 //! (stock `MintNote` transport + attestation MintPolicy + build-seeded config with an
 //! identifier-only init note + stock `MinBurnAmount` with a zero-floor guard).
 //!
-//! Written RED-FIRST (anneal test-first protocol): every test below FAILED against the pre-slice
-//! composition (mint-deny guard active, custom `XReserveMintNote` transport, custom burn policy,
-//! four-field `domain_init`, custom `min_burn_admin`) and flipped GREEN when the recomposition
-//! landed. The file STAYS in the suite as the permanent posture tripwire set:
+//! The file is the permanent posture tripwire set:
 //!
-//! - INV-MINT-SECURITY (restated): every supply increase passes the attestation mint policy —
+//! - The sole-supply-surface invariant (restated): every supply increase passes the attestation
+//!   mint policy —
 //!   the active mint policy IS `xreserve::mint_policy::check_policy`, the allowed-mint map is
 //!   EXACTLY that one root, and a build with any other active mint policy is rejected with the
 //!   CONCRETE `MissingAttestationMintPolicy` builder variant.
-//! - The mint-deny guard DISSOLVES (its job — trapping the stock path — dissolves because the
-//!   stock path IS now the attestation-gated path).
+//! - There is NO mint-deny guard (nothing needs trapping: the
+//!   stock path IS the attestation-gated path).
 //! - The burn floor: the ACTIVE burn policy is the stock `MinBurnAmount`, its floor slot is
-//!   seeded `>= 1` (R-BURN-1 zero-burn invariant preserved by construction: `amount >= min >= 1`),
+//!   seeded `>= 1` (the zero-burn reject preserved by construction: `amount >= min >= 1`),
 //!   the builder REJECTS `min_burn_size < 1` with the CONCRETE `MinBurnSizeBelowFloor` variant,
-//!   and the reworked admin note (targeting the stock `set_min_burn_amount`) asserts
+//!   and the admin note (targeting the stock `set_min_burn_amount`) asserts
 //!   `new_min >= 1` before calling it.
-//! - The note-script allowlist pins the STOCK `MintNote` root (row 1) and drops the custom
-//!   mint-note root; the four-field `domain_init` surface is replaced by the minimized
-//!   identifier-only init (DEC-4 — the identifier is a provable fixpoint of the account id).
+//! - The note-script allowlist pins the STOCK `MintNote` root and carries NO custom
+//!   mint-note root; there is no four-field `domain_init` surface — the runtime init is the
+//!   minimized
+//!   identifier-only init (the identifier is a provable fixpoint of the account id).
 //!
-//! The e2e legs that drive the NEW transport end-to-end (happy mint + the recipient/fee/replay
-//! binding negatives + the runtime min-burn floor guard) live in `wave1_recomposition_e2e.rs`
-//! (G3 split; the shared production-transport harness is `support::mint_transport`). All tests
-//! here are security tripwires and hold the tripwire serial guard (they flake under parallel
-//! `cargo test`).
+//! The end-to-end legs that drive the transport for real — a successful mint, the recipient, fee
+//! and replay binding negatives, and the runtime minimum-burn floor guard — live in the
+//! recomposition end-to-end suite alongside this one, split only for file size; both share the
+//! production-transport harness in `support::mint_transport`.
+//!
+//! Every test here is a security tripwire and holds the tripwire serial guard: they contend for
+//! shared fixture state and flake if run in parallel.
 
 mod support;
 
@@ -48,12 +49,12 @@ use xusdc_encoding::account::xreserve::XReserveStablecoinBuilderError;
 /// The attestation mint policy's library path inside the assembled `xreserve` component.
 const ATTESTATION_MINT_POLICY_PROC_PATH: &str = "xreserve::mint_policy::check_policy";
 
-/// The dissolved mint-deny guard's former library path (must resolve NOWHERE post-slice).
+/// The dissolved mint-deny guard's former library path (must resolve NOWHERE in the shipped
+/// composition).
 const FORMER_MINT_DENY_GUARD_PROC_PATH: &str = "xreserve::mint_deny_guard::check_policy";
 
-/// The former custom mint-note script root (`XRESERVE_MINT_NOTE_SCRIPT_ROOT_HEX` before the
-/// slice) — pinned as a LITERAL so the allowlist test can prove its removal after the factory
-/// type itself is deleted.
+/// The former custom mint-note script root — pinned as a LITERAL so the allowlist test can
+/// prove its removal (the factory type itself no longer exists).
 const FORMER_CUSTOM_MINT_NOTE_ROOT_HEX: &str =
     "0x530e20b39e77a111f00a162835823ff503202d05c182b98728387853e07d19d5";
 
@@ -113,7 +114,7 @@ fn shipped_note_masm_path(file: &str) -> std::path::PathBuf {
         .join(file)
 }
 
-// 1 — POSTURE: the attestation policy IS the active mint policy (INV-MINT-SECURITY restated)
+// 1 — POSTURE: the attestation policy IS the active mint policy (the sole supply gate restated)
 // ================================================================================================
 
 /// TRIPWIRE: the production composition's ACTIVE mint policy resolves to the attestation policy
@@ -165,7 +166,7 @@ fn allowed_mint_policy_map_is_exactly_the_attestation_root() -> Result<()> {
 
 /// TRIPWIRE: a build whose active mint policy is NOT the attestation policy CANNOT exist — the
 /// builder rejects it with the CONCRETE `MissingAttestationMintPolicy` variant (the
-/// mutation-test half of the restated INV-MINT-SECURITY; G4 — the exact variant, not a
+/// mutation-test half of the restated sole-supply-surface invariant — the exact variant, not a
 /// stringified word search).
 #[test]
 fn builder_rejects_a_non_attestation_mint_policy() -> Result<()> {
@@ -227,7 +228,7 @@ fn custom_mint_transport_masm_is_deleted() -> Result<()> {
 }
 
 /// TRIPWIRE: the legacy config/burn admin MASM is replaced — `domain_config`/`min_burn_admin`/
-/// `burn_policy` delete; the minimized `identifier_init` module + note land (DEC-4: the
+/// `burn_policy` delete; the minimized `identifier_init` module + note land (the
 /// identifier is a provable fixpoint of the account id, so ONLY it gets an init note; the other
 /// three domain-config fields are build-seeded).
 #[test]
@@ -262,7 +263,7 @@ fn legacy_config_and_burn_masm_are_replaced() -> Result<()> {
 // ================================================================================================
 
 /// TRIPWIRE: the ACTIVE burn policy is the STOCK `MinBurnAmount` (allowed-map exactly that one
-/// root) and its floor slot ships seeded `>= 1` — the R-BURN-1 zero-burn invariant preserved by
+/// root) and its floor slot ships seeded `>= 1` — the zero-burn reject preserved by
 /// construction (`amount >= min >= 1`).
 #[test]
 fn burn_policy_is_stock_min_burn_amount_with_a_positive_floor() -> Result<()> {
@@ -302,7 +303,7 @@ fn burn_policy_is_stock_min_burn_amount_with_a_positive_floor() -> Result<()> {
 }
 
 /// TRIPWIRE: the builder REJECTS `min_burn_size < 1` at build time with the CONCRETE
-/// `MinBurnSizeBelowFloor(0)` variant (the build-side half of the zero-floor guard; G4 — the
+/// `MinBurnSizeBelowFloor(0)` variant (the build-side half of the zero-floor guard — the
 /// exact variant carrying the offending value, not a stringified word search).
 #[test]
 fn builder_rejects_a_zero_min_burn_floor() -> Result<()> {
@@ -342,7 +343,7 @@ fn min_burn_note_targets_the_stock_setter_with_a_floor_guard() -> Result<()> {
     Ok(())
 }
 
-// 4 — POSTURE: the note-script allowlist pins the stock MintNote (row 1 re-materialized)
+// 4 — POSTURE: the note-script allowlist pins the stock MintNote
 // ================================================================================================
 
 /// TRIPWIRE: the frozen 14-root allowlist's mint row is the STOCK `MintNote::script_root()`; the

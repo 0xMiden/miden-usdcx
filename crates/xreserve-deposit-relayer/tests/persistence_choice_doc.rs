@@ -3,9 +3,10 @@
 //!
 //! The component spec leaves the store's persistence technology `RIV` (requires implementer's
 //! validation), so the slice that implements the seam must CHOOSE one and record the choice — what
-//! was picked, what it was picked over, and the property that decided it. `PERSISTENCE-CHOICE.md` is
-//! that record; this guard keeps it from drifting away from the manifest it describes (a document
-//! that says "SQLite" while the crate has quietly moved to a JSON file is worse than no document).
+//! was picked, what it was picked over, and the property that decided it. `PERSISTENCE-CHOICE.md`
+//! is that record; this guard keeps it from drifting away from the manifest it describes (a
+//! document that says "SQLite" while the crate has quietly moved to a JSON file is worse than no
+//! document).
 //!
 //! It asserts the two ends agree, not the prose in between: the record names the chosen engine, the
 //! alternatives it weighed, and the durability property that ruled the cache-only options out — and
@@ -119,9 +120,9 @@ fn the_manifests_declare_the_recorded_engine() {
     );
 }
 
-/// The offline-hostile durable stores stay out. `sled` / `redb` / `sqlx` are NOT in the pinned cargo
-/// cache: declaring one would break every `--locked --offline` command in the repository — the same
-/// wall `DEFERRED-DEPENDENCIES.md` was written about.
+/// The offline-hostile durable stores stay out. `sled` / `redb` / `sqlx` are NOT in the pinned
+/// cargo cache: declaring one would break every `--locked --offline` command in the repository —
+/// the same wall `DEFERRED-DEPENDENCIES.md` was written about.
 #[test]
 fn no_offline_hostile_store_crate_is_declared() {
     let manifest = read_crate_file("Cargo.toml");

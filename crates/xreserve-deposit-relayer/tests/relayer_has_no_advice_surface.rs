@@ -10,7 +10,7 @@
 //! and that transaction's witness provider is rebuilt from the note's ATTACHMENTS. The relayer
 //! never touches it, at any protocol version. The in-repo proof is the driver that committed real
 //! mints against a live node (`crates/xusdc-validation/src/mintburn.rs`): it calls
-//! `XReserveMintNote::create` and nothing else.
+//! `XUsdcMintNote::create` and nothing else.
 //!
 //! Prose cannot keep that out of the crate; a gate can. This one fails the build the moment any of
 //! the rejected surface (or the `miden-client` dependency it needed) comes back — including through

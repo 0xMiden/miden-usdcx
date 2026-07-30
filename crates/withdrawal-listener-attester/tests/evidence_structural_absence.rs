@@ -1,22 +1,23 @@
-//! `T-LA-11`, structural half — **the things that must NOT exist.**
+//! The structural half: **the things that must NOT exist.**
 //!
-//! Its companion `evidence_trust_labeling.rs` asserts what the assembler DOES. This file asserts what
-//! nothing can do, which needs a different kind of test: no test can call a function that must not be
-//! callable, so these read the source and the wire instead. That is the crate's established idiom for
-//! a property that is an ABSENCE (`submit_idempotency.rs`'s
+//! Its companion `evidence_trust_labeling.rs` asserts what the assembler DOES. This file asserts
+//! what nothing can do, which needs a different kind of test: no test can call a function that must
+//! not be callable, so these read the source and the wire instead. That is the crate's established
+//! idiom for a property that is an ABSENCE (`submit_idempotency.rs`'s
 //! `no_public_api_can_post_a_withdrawal_without_the_ledger`; `crate_posture.rs`'s manifest reads) —
 //! a decision the compiler cannot hold is pinned mechanically, so it cannot quietly revert.
 //!
 //! Three absences, each of which would be a fund-safety defect:
 //!
-//! * **No `burnTxId`-only resolution** (anti-`ASG-4`). `GetTransactionById` does not exist on Miden
-//!   (R-8), so there is nothing to resolve a burn from a transaction id with.
+//! * **No `burnTxId`-only resolution** (never a transaction id). `GetTransactionById` does not
+//!   exist on Miden, so there is nothing to resolve a burn from a transaction id with.
 //! * **No way to manufacture an `EvidencePackage`.** Every fail-closed check lives inside
 //!   `assemble_evidence`; a public constructor would be a door around all of them.
 //! * **No invented wire transport.** `burnTxId` is the only evidence field `POST /v1/withdraw`
-//!   documents, and whether Circle would take more is `DEV-7` — OPEN, and not this crate's to assume.
+//!   documents, and whether Circle would take more is OPEN with Circle, and not this crate's to
+//!   assume.
 //!
-//! Split from `evidence_trust_labeling.rs` under G3's ~700-line Rust ceiling.
+//! Split from `evidence_trust_labeling.rs` to stay within the ~700-line Rust file ceiling.
 
 use assert_matches::assert_matches;
 use rstest::rstest;
@@ -34,17 +35,13 @@ mod evidence_support;
 use evidence_support::support;
 use evidence_support::*;
 
-// ANTI-ASG-4 — there is no `burnTxId`-only path, and it is absent rather than merely unused
+// ANTI-the evidence-labelling trap — there is no `burnTxId`-only path, and it is absent rather than
+// merely unused
 // ================================================================================================
 
-/// `GetTransactionById` / tx-by-hash **DOES NOT EXIST** on Miden (R-8). A path that resolved a burn
-/// from a `burnTxId` alone therefore could not exist either — and the guard has to be an ABSENCE
-/// test, because no test can call a function that must not be there.
-///
-/// This is the crate's established idiom for exactly that shape of property
-/// (`submit_idempotency.rs`'s `no_public_api_can_post_a_withdrawal_without_the_ledger`,
-/// `crate_posture.rs`'s manifest reads): a decision the compiler cannot hold is pinned at the source
-/// level, so it cannot quietly revert.
+/// `GetTransactionById` / tx-by-hash **DOES NOT EXIST** on Miden. A path that resolved a burn
+/// from a `burnTxId` alone therefore could not exist either — so the port's own source is read
+/// here for the method names that must be absent from it.
 #[test]
 fn no_port_method_resolves_a_transaction_by_its_hash() {
     let source = evidence_source();
@@ -66,12 +63,13 @@ fn no_port_method_resolves_a_transaction_by_its_hash() {
 
 /// **An `EvidencePackage` cannot be manufactured — the assembler is the only way to get one.**
 ///
-/// This is the load-bearing half of every other assertion in this file. All the fail-closed checks —
-/// the observed spend, the linkage, the block agreement — live inside `assemble_evidence`, and a
-/// public `EvidencePackage::new` would let a caller skip every one of them and hand Circle a package
-/// whose `burnTxId`, nullifier and block are literals nobody read from a node. The value would be
-/// indistinguishable from an assembled one: same type, same labels, same `consumption_trust()`
-/// reporting NODE-TRUSTED for consumption evidence that was never observed at all.
+/// This is the load-bearing half of every other assertion in this file. All the fail-closed checks
+/// — the observed spend, the linkage, the block agreement — live inside `assemble_evidence`, and a
+/// public `EvidencePackage::new` would let a caller skip every one of them and hand Circle a
+/// package whose `burnTxId`, nullifier and block are literals nobody read from a node. The value
+/// would be indistinguishable from an assembled one: same type, same labels, same
+/// `consumption_trust()` reporting NODE-TRUSTED for consumption evidence that was never observed at
+/// all.
 ///
 /// So the constructor is `pub(crate)`: a package outside this crate is proof the checks ran. The
 /// honest limit is the same as the ledger's — in-crate code can still call it, and in-crate the one
@@ -177,7 +175,7 @@ fn a_burn_tx_id_and_a_spend_observation_without_the_note_yield_no_evidence() {
 // THE FULL-BLOCK UPGRADE — deferred, and deferred as a typed error
 // ================================================================================================
 
-/// P2, deliberately not built (`IMPL-FULLBLOCK-PATH`, `REQUIRES IMPLEMENTATION VALIDATION`, OPEN).
+/// P2, deliberately not built (`REQUIRES IMPLEMENTATION VALIDATION`, still open).
 /// The skeleton returns its exact deferral `Err`; a panicking placeholder would take down a service
 /// that releases money, on a path a caller is free to try (`return-error-not-panic`).
 #[test]
@@ -201,8 +199,8 @@ fn the_deferred_upgrade_leaves_the_tx_linkage_node_trusted() {
     assert_eq!(package.consumption_trust(), ProofStrength::NodeTrusted);
 }
 
-/// No panicking placeholder anywhere in the module — the sweep the gate runs, as a test, so it fails
-/// in CI rather than in a review.
+/// No panicking placeholder anywhere in the module — the sweep the gate runs, as a test, so it
+/// fails in CI rather than in a review.
 ///
 /// These two `contains` calls are the only place either macro's name is written in this crate: a
 /// `grep -rn "todo!\|unimplemented!"` over the crate finds this test asserting their absence, and
@@ -219,8 +217,8 @@ fn the_module_has_no_panicking_placeholder() {
 /// `src/evidence.rs` with its comments stripped — the DECLARATIONS, not the prose about them.
 ///
 /// The module documents at length that `GetTransactionById` does not exist and must never be relied
-/// on, which is exactly the string these absence tests hunt for. A sweep that read the explanation as
-/// the thing it forbids would assert the opposite of what it means to — the same trap
+/// on, which is exactly the string these absence tests hunt for. A sweep that read the explanation
+/// as the thing it forbids would assert the opposite of what it means to — the same trap
 /// `crate_posture.rs` sidesteps with `manifest_declarations()`.
 fn evidence_source() -> String {
     std::fs::read_to_string(
@@ -233,8 +231,8 @@ fn evidence_source() -> String {
     .join("\n")
 }
 
-/// The comment-stripper above must not be a way to hide a violation in a trailing comment, nor may it
-/// strip so much that the sweeps run against an empty string. This pins both ends: the real
+/// The comment-stripper above must not be a way to hide a violation in a trailing comment, nor may
+/// it strip so much that the sweeps run against an empty string. This pins both ends: the real
 /// declarations survive, the prose does not.
 #[test]
 fn the_source_sweep_reads_declarations_and_not_prose() {
@@ -255,7 +253,7 @@ fn the_source_sweep_reads_declarations_and_not_prose() {
 
 /// **`burnTxId` is the only evidence field `POST /v1/withdraw` has.** `note_id`, `nullifier` and
 /// `block_num` are assembled, labelled, and go NOWHERE on the wire — because whether Circle accepts
-/// them, or accepts a Miden tx id as a `burnTxId` at all, is `DEV-7`: **OPEN**, `REQUIRES CIRCLE
+/// them, or accepts a Miden tx id as a `burnTxId` at all, is **OPEN**: `REQUIRES CIRCLE
 /// CONFIRMATION`. Inventing a field for them would be answering a Circle-owned question by shipping
 /// an assumption, and the shipped assumption would be the thing money moves against.
 ///
@@ -299,7 +297,7 @@ fn an_invented_evidence_field_is_refused_by_the_withdraw_schema(#[case] field: &
     let error = serde_json::from_value::<WithdrawBatch>(body)
         .expect_err("an undocumented evidence field must be refused");
 
-    // G4: pin the SPECIFIC failure, not `is_err()`. `serde_json::Error` is opaque rather than an enum
+    // Pin the SPECIFIC failure, not `is_err()`. `serde_json::Error` is opaque rather than an enum
     // this crate can `assert_matches!` on, so the two things that identify the intended rejection are
     // asserted directly: the DATA category (a schema violation — not a syntax error, not an I/O
     // error), and the unknown-field refusal naming the field that was injected. Accepting any error

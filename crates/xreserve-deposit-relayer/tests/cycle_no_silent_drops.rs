@@ -1,4 +1,4 @@
-//! **No fetched attestation is ever silently dropped** (§8.4) — the obligation this slice exists to
+//! **No fetched attestation is ever silently dropped** — the obligation this slice exists to
 //! keep, tested as an ABSENCE.
 //!
 //! A silent drop is not an error the relayer returns; it is an attestation that leaves no trace. So
@@ -7,19 +7,20 @@
 //!
 //! Three layers, weakest to strongest:
 //!
-//! 1. **Behavioural** — drive a page holding one attestation of EVERY disposition the failure catalog
-//!    (§8.4) names, and assert the report accounts for every one of them, each with a reason and each
-//!    with an emitted event. A drop would show as `fetched > entries`.
+//! 1. **Behavioural** — drive a page holding one attestation of EVERY disposition the failure
+//!    catalog names, and assert the report accounts for every one of them, each with a reason and
+//!    each with an emitted event. A drop would show as `fetched > entries`.
 //! 2. **Structural (types)** — the per-attestation step returns a `CycleEntry`, not a
 //!    `Result<CycleEntry, _>`. There is no `?` that can skip a recording, because there is no error
-//!    to propagate: every failure is a DISPOSITION. And the reason is derived from a typed error, so
-//!    an empty one is not constructible.
-//! 3. **Structural (source)** — the loop consumes the page BY VALUE and pushes one entry per element.
-//!    A `filter`/`continue`/`flat_map` on that path would be the edit that reintroduces a drop, so it
-//!    is pinned mechanically, the way `listener_structural_absence.rs` (W9) pins the raw signer.
+//!    to propagate: every failure is a DISPOSITION. And the reason is derived from a typed error,
+//!    so an empty one is not constructible.
+//! 3. **Structural (source)** — the loop consumes the page BY VALUE and pushes one entry per
+//!    element. A `filter`/`continue`/`flat_map` on that path would be the edit that reintroduces a
+//!    drop, so it is pinned mechanically, the way `listener_structural_absence.rs` pins the raw
+//!    signer.
 //!
-//! The third layer is here because the first two are properties of code that a later edit can quietly
-//! change. A decision the compiler cannot hold is pinned in a test, or it is not held.
+//! The third layer is here because the first two are properties of code that a later edit can
+//! quietly change. A decision the compiler cannot hold is pinned in a test, or it is not held.
 
 mod cycle_support;
 mod fixtures;
@@ -41,8 +42,8 @@ use mock_circle::{attestation_page, MockCircle, RecordingSink, Reply, Script};
 // LAYER 1 — BEHAVIOURAL: a page of every disposition, and not one of them lost
 // ================================================================================================
 
-/// A page carrying one attestation for EVERY §8.4 row the cycle can reach, mixed together — the
-/// shape a real window produces and the shape a hand-written `continue` gets wrong.
+/// A page carrying one attestation for EVERY outcome the cycle can reach, mixed together — the
+/// shape a real window produces, and the shape a hand-written `continue` gets wrong.
 ///
 /// Every one is fetched; every one is reported, with a reason; every one raises exactly one
 /// observability event. Nothing is inferred from the happy path.
@@ -226,9 +227,9 @@ async fn the_dispositions_partition_the_fetched_attestations() {
 // LAYER 2 — STRUCTURAL (types): a reason cannot be empty, and a disposition cannot be absent
 // ================================================================================================
 
-/// Every [`Disposition`] renders a non-empty reason. The reason is DERIVED — from the typed error for
-/// the refusing arms, from the outcome for the settling ones — so there is no constructor that can
-/// produce an entry with nothing to say.
+/// Every [`Disposition`] renders a non-empty reason. The reason is DERIVED — from the typed error
+/// for the refusing arms, from the outcome for the settling ones — so there is no constructor that
+/// can produce an entry with nothing to say.
 #[test]
 fn no_disposition_can_render_an_empty_reason() {
     let dispositions = [
@@ -301,10 +302,11 @@ fn the_outcome_slugs_are_distinct() {
 
 /// **The page is consumed by value, one entry pushed per element.**
 ///
-/// `Vec<ValidatedAttestation> → Vec<CycleEntry>` through a `for … in page` that pushes unconditionally
-/// is a TOTAL map: it has no arity to lose an element through. A `filter`, a `filter_map`, a
-/// `flat_map` or a bare `continue` on that path is precisely the edit that reintroduces a silent
-/// drop, and each is a visible one — so it is pinned here rather than trusted.
+/// `Vec<ValidatedAttestation> → Vec<CycleEntry>` through a `for … in page` that pushes
+/// unconditionally is a TOTAL map: it has no arity to lose an element through. A `filter`, a
+/// `filter_map`, a `flat_map` or a bare `continue` on that path is precisely the edit that
+/// reintroduces a silent drop, and each is a visible one — so it is pinned here rather than
+/// trusted.
 #[test]
 fn the_cycle_cannot_filter_the_page() {
     let source = cycle_source();
@@ -343,13 +345,13 @@ fn the_per_attestation_step_returns_a_disposition_not_a_result() {
 }
 
 /// **The retry driver rotates via the ATOMIC CONDITIONAL touch, never a bare re-stamp.** A re-fetch
-/// failure re-stamps its row through `touch_failed_timestamp`, which updates the timestamp ONLY while
-/// the row is still `Failed`. A single-threaded test cannot behaviourally distinguish that from an
-/// unconditional `record_failure` (both re-stamp a `Failed` row identically) — the difference is only
-/// visible under the concurrent race `idempotency_touch.rs` proves at the store level — so the drive's
-/// USE of the conditional primitive is pinned here mechanically, the way `listener_structural_absence`
-/// pins the gated signer. Removing it (reverting to `record_failure`) would let this driver clobber a
-/// concurrent driver's live claim.
+/// failure re-stamps its row through `touch_failed_timestamp`, which updates the timestamp ONLY
+/// while the row is still `Failed`. A single-threaded test cannot behaviourally distinguish that
+/// from an unconditional `record_failure` (both re-stamp a `Failed` row identically) — the
+/// difference is only visible under the concurrent race `idempotency_touch.rs` proves at the store
+/// level — so the drive's USE of the conditional primitive is pinned here mechanically, the way
+/// `listener_structural_absence` pins the gated signer. Removing it (reverting to `record_failure`)
+/// would let this driver clobber a concurrent driver's live claim.
 #[test]
 fn the_retry_driver_uses_the_atomic_conditional_touch() {
     let source = cycle_source();
@@ -361,9 +363,9 @@ fn the_retry_driver_uses_the_atomic_conditional_touch() {
     );
 }
 
-/// **The relayer never fakes a Miden submit.** The submit leg is a PORT with no production adapter —
-/// R6 implements it once a `miden-client` for v0.16 exists — and the crate must not grow a stand-in
-/// in the meantime: a simulated commit is a mint the operator believes happened.
+/// **The relayer never fakes a Miden submit.** The submit leg is a PORT with no production adapter
+/// — a later slice implements it once a `miden-client` for v0.16 exists — and the crate must not
+/// grow a stand-in in the meantime: a simulated commit is a mint the operator believes happened.
 #[test]
 fn the_crate_has_no_miden_client_and_no_simulated_submit() {
     let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
@@ -393,7 +395,8 @@ fn the_crate_has_no_miden_client_and_no_simulated_submit() {
 /// The production submit port is UNAVAILABLE, and says so — it does not silently succeed.
 ///
 /// This is the seam, stated as a value a caller must handle. `main` fails at startup on it rather
-/// than starting a relayer that would never mint, and no test may substitute for R6's real-node leg.
+/// than starting a relayer that would never mint, and no test may substitute for the real-node
+/// leg.
 #[test]
 fn the_production_submit_port_refuses_rather_than_pretending() {
     let error = xreserve_deposit_relayer::cycle::production_submit_port()
@@ -425,8 +428,8 @@ fn cycle_source() -> String {
     source
 }
 
-/// Removes `//`-comments and `/* */` blocks — the sweeps above assert on code, not on the prose that
-/// explains it.
+/// Removes `//`-comments and `/* */` blocks — the sweeps above assert on code, not on the prose
+/// that explains it.
 fn strip_comments(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -475,8 +478,8 @@ fn strip_comments(text: &str) -> String {
     out
 }
 
-/// The comment stripper is itself tested — a sweep that silently stopped reading the file would pass
-/// every absence assertion above.
+/// The comment stripper is itself tested — a sweep that silently stopped reading the file would
+/// pass every absence assertion above.
 #[test]
 fn the_source_sweep_reads_code_and_not_prose() {
     let stripped = strip_comments("let a = 1; // filter( here\n/* filter( */ let b = \"filter(\";");
@@ -496,18 +499,18 @@ fn the_source_sweep_reads_code_and_not_prose() {
 
 /// A page holding one attestation for every disposition the cycle can reach without a second cycle:
 /// the honest one, the one the chain minted first, the one the node fatally refused, and the one
-/// unit-04's codec refuses. Each is a REAL, envelope-valid attestation — Circle signed all four —
-/// because the drop this file is about happens AFTER the envelope, not before it.
+/// the shared encoding crate's codec refuses. Each is a REAL, envelope-valid attestation — Circle
+/// signed all four — because the drop this file is about happens AFTER the envelope, not before it.
 fn mixed_page() -> Vec<(&'static str, AttestationVector)> {
     let attester = PartnerAttester::new();
 
     // three structurally VALID but distinct DepositIntents — distinct nonces, so none dedups the
-    // others. The nonce sits at DC-1 offset 208 (read via the decoder below, never restated).
+    // others. The nonce sits at header offset 208 (read via the decoder below, never restated).
     let honest = attester.attest(&canonical_payload(TEST_VECTOR_PAYLOAD_ID));
     let already_minted = attester.attest(&with_nonce_tweak(1));
     let fatal = attester.attest(&with_nonce_tweak(2));
 
-    // …and one Circle signed that unit-04's codec refuses: a wrong `version`.
+    // …and one Circle signed that the shared encoding crate's codec refuses: a wrong `version`.
     let mut bad_version = canonical_payload(TEST_VECTOR_PAYLOAD_ID);
     bad_version[4] ^= 0xFF;
     let structural = attester.attest(&bad_version);
@@ -521,8 +524,8 @@ fn mixed_page() -> Vec<(&'static str, AttestationVector)> {
 }
 
 /// The canonical payload with its `nonce` perturbed — a distinct deposit, still structurally valid.
-/// The nonce's offset comes from the decoder's own view of the canonical payload, not from a literal
-/// this crate restates (DC-1 is unit-04's).
+/// The nonce's offset comes from the decoder's own view of the canonical payload, not from a
+/// literal this crate restates (the DepositIntent layout is the shared encoding crate's).
 fn with_nonce_tweak(tweak: u8) -> Vec<u8> {
     let payload = canonical_payload(TEST_VECTOR_PAYLOAD_ID);
     let nonce = *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(&payload)

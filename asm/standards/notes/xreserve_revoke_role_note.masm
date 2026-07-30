@@ -1,12 +1,12 @@
-# xreserve_revoke_role_note — the shipped, root-pinned revoke_role admin note script (F5).
+# xreserve_revoke_role_note — the shipped, root-pinned revoke_role admin note script.
 #
 # The production admin surface for the STOCK `revoke_role` under the network account: a fixed-root note
 # whose parameters are CREATOR-COMMITTED in note storage (never NOTE_ARGS). It stages the note storage
 # into memory, marshals the creator's params onto the stack in the proc's Inputs order, and `call`s the
-# role-admin-gated stock `miden::standards::access::rbac::revoke_role` (v0.16 #3215: the gate is the
-# revoked role's EFFECTIVE admin — its delegated admin, else the built-in ADMIN role; the v15 owner
-# leg is gone — MIGRATION-V16-ALPHA2.md S2/S21; the sender gate lives
-# in the proc; the note sender is kernel-forced, so an unauthorized creator traps there). The
+# role-admin-gated stock `miden::standards::access::rbac::revoke_role` (the gate is the
+# revoked role's EFFECTIVE admin — its delegated admin, else the built-in ADMIN role; the sender
+# gate lives in the proc; the note sender is kernel-forced, so an unauthorized creator traps
+# there). The
 # `call` resolves to the SAME proc root the faucet exposes via the RBAC component
 # re-exports. A scheme-2 NetworkAccountTarget routing attachment addresses the note at the faucet
 # (routing-only).
@@ -30,8 +30,8 @@ const ERR_XRESERVE_REVOKE_ROLE_NOTE_STORAGE = "revoke_role note storage item cou
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Consumes the `revoke_role` admin note and drives the role-admin-gated role revocation (v0.16
-#! #3215: the gate is the revoked role's EFFECTIVE admin — see the module header).
+#! Consumes the `revoke_role` admin note and drives the role-admin-gated role revocation (the
+#! gate is the revoked role's EFFECTIVE admin — see the module header).
 #!
 #! Stages the creator-committed params (`[role_symbol, account_suffix, account_prefix]`) into memory
 #! at PARAM_PTR, marshals them onto the stack as `[role_symbol, account_suffix, account_prefix,
@@ -42,6 +42,10 @@ const ERR_XRESERVE_REVOKE_ROLE_NOTE_STORAGE = "revoke_role note storage item cou
 #!
 #! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
+#!
+#! Where:
+#! - ARGS is the executor-controlled note-argument word, which this script drops unread.
+#! - pad(16) is the 16-element call-boundary pad the note script hands the account procedure.
 #!
 #! Note storage is assumed to be as follows:
 #! - role_symbol is the RoleSymbol felt of the role to revoke (item 0).
@@ -69,13 +73,11 @@ pub proc main
     push.PARAM_PTR add.1 mem_load
     push.PARAM_PTR mem_load
     # => [role_symbol, account_suffix, account_prefix, pad(16)]
-    # (the call consumes the top 16: [role_symbol, account_suffix, account_prefix, pad(13)])
 
+    # (the call consumes the top 16: [role_symbol, account_suffix, account_prefix, pad(13)])
     call.rbac::revoke_role
     # => [pad(19)]
 
-    # rebalance to the dyncall depth-16-on-return rule: the 3 param pushes above displaced 3 pad
-    # zeros into the overflow table (the callee's window is balanced), so drop 3 to end at depth 16.
     drop drop drop
     # => [pad(16)]
 end

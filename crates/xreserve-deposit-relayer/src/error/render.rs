@@ -1,8 +1,9 @@
 //! The human- and machine-facing renderings of [`RelayerError`](super::RelayerError): its `Display`
-//! one-liners and its `Error::source` chain (which preserves the typed cause — an `EncodingError`, a
-//! `hex::FromHexError`, a `reqwest`/`serde_json`/`rusqlite` error — for a caller to `downcast_ref`).
+//! one-liners and its `Error::source` chain (which preserves the typed cause — an `EncodingError`,
+//! a `hex::FromHexError`, a `reqwest`/`serde_json`/`rusqlite` error — for a caller to
+//! `downcast_ref`).
 //!
-//! Split out of `error/mod.rs` so the taxonomy stays under the G3 Rust file ceiling. This module adds
+//! Split out of `error/mod.rs` so the taxonomy stays within its file-size ceiling. This module adds
 //! NO variant and owns none: it only renders the ones the parent defines, so there is no duplicated
 //! ownership to drift.
 
@@ -191,7 +192,8 @@ impl fmt::Display for RelayerError {
                 f,
                 "the idempotency store path `{path}` is not a durable file: {detail}"
             ),
-            // unit-04's refusal is quoted, not paraphrased — it names the rule the inputs broke
+            // the shared encoding crate's refusal is quoted, not paraphrased — it names the rule
+            // the inputs broke
             Self::MintNoteBuild(source) => {
                 write!(f, "the mint note could not be built: {source}")
             }

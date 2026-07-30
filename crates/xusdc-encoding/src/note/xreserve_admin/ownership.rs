@@ -24,7 +24,7 @@ static TRANSFER_OWNERSHIP_NOTE_SCRIPT: LazyLock<NoteScript> =
 pub const XRESERVE_TRANSFER_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x5bd39b30a487d6a385acd220c43a82980e63cfe37ba4d86efd58ffbd7a6c7c0a";
 
-/// The current-owner-gated stock `transfer_ownership` admin note (F5, step 1 of the 2-step transfer).
+/// The current-owner-gated `transfer_ownership` admin note — step one of the two-step handover.
 /// Storage layout: `[new_owner_suffix, new_owner_prefix]`.
 pub struct XReserveTransferOwnershipNote;
 
@@ -70,18 +70,16 @@ const ACCEPT_OWNERSHIP_NOTE_SCRIPT_SRC: &str =
 static ACCEPT_OWNERSHIP_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(ACCEPT_OWNERSHIP_NOTE_SCRIPT_SRC));
 
-/// The PINNED accept_ownership admin note-script root (`masm-rust-constant-parity`): binds
-/// transitively to the stock `ownable2step::accept_ownership`'s digest. Re-pinned at the
-/// protocol-`next` migration: upstream removed `accept_ownership`'s dedicated no-nomination
-/// assert (the sender-vs-nominated-owner compare already covers that case, since a note sender is
-/// never the zero address), which changed the stock procedure's digest and therefore this note's
-/// root — the only pinned root the migration moved. The no-nomination case still REJECTS, now via
-/// "note sender is not the nominated owner".
+/// The pinned `accept_ownership` note-script root, which binds transitively to the digest of the
+/// standard `ownable2step::accept_ownership` it calls.
+///
+/// Accepting with no nomination outstanding rejects on the sender-versus-nominated-owner compare:
+/// a note sender is never the zero address, so an unset nomination can never match.
 pub const XRESERVE_ACCEPT_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX: &str =
     "0xbd3521ade61e55d119662701fb02c171177a698711ac1a1bfd7ae36f839152c1";
 
-/// The nominated-owner-gated, PARAM-LESS stock `accept_ownership` admin note (F5, step 2 of the
-/// 2-step transfer).
+/// The nominated-owner-gated, parameter-less `accept_ownership` admin note — step two of the
+/// two-step transfer.
 pub struct XReserveAcceptOwnershipNote;
 
 impl XReserveAcceptOwnershipNote {

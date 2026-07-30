@@ -1,5 +1,19 @@
-//! bytes32 → Word family, frozen signatures per the shared-encoding spec
-//! (INV-BYTES32-HASH-TO-WORD).
+//! Turning an arbitrary 32-byte value into the Word that keys a storage map.
+//!
+//! Several faucet lookups are keyed by values that originate outside Miden — the deposit nonce
+//! that guards against replay, the token identifier the faucet compares deposits against. Those
+//! are opaque bytes32 values with no guarantee that they fit a field element, so they cannot be
+//! reinterpreted as a Word directly; a value whose limbs exceed the field modulus would have to be
+//! rejected or reduced, and reducing would let two distinct nonces collide onto one key.
+//!
+//! The canonical answer is to HASH instead of reinterpret: pack the bytes into eight
+//! u32-little-endian field elements and take their Poseidon2 hash. That is total — every possible
+//! bytes32 has a key — and collision-resistant, so distinct nonces stay distinct. The faucet's MASM
+//! computes the identical key on-chain, and the cross-language vectors are what keep the two
+//! implementations from drifting.
+//!
+//! The fallible direct conversion also lives here, for the paths that genuinely need the original
+//! bytes back rather than a one-way key.
 
 use miden_protocol::account::StorageMapKey;
 use miden_protocol::utils::{bytes_to_packed_u32_elements, packed_u32_elements_to_bytes};
@@ -7,8 +21,11 @@ use miden_protocol::{Felt, Hasher, Word};
 
 use super::error::EncodingError;
 
-/// Option B (canonical for arbitrary external bytes32): infallible Poseidon2 hash-to-Word.
-/// `felts = bytes_to_packed_u32_elements(b)` (8 felts); `key = Hasher::hash_elements(&felts)`.
+/// Derives the canonical storage-map key for an arbitrary 32-byte value.
+///
+/// The bytes are packed into eight u32 field elements and hashed with Poseidon2. It cannot fail:
+/// any 32 bytes pack to valid u32s, so every input has a key — which is what makes it safe for
+/// values that arrive from outside Miden. The faucet's `bytes32_to_key` computes the same Word.
 pub fn bytes32_to_storage_map_key(b: &[u8; 32]) -> StorageMapKey {
     let felts = bytes32_to_packed_felts(b);
     StorageMapKey::new(Hasher::hash_elements(&felts))
@@ -31,11 +48,12 @@ pub fn bytes32_to_word_lossless(b: &[u8; 32]) -> Result<Word, EncodingError> {
     Word::try_from(*b).map_err(|_| EncodingError::LimbOutOfField)
 }
 
-/// Inverse of [`bytes32_to_packed_felts`]: 8 u32-LE-packed felts → the 32-byte value
-/// (additive DC-7 increment; the forward packer above is unchanged). Fail-closed — any felt
+/// Inverse of [`bytes32_to_packed_felts`]: 8 u32-LE-packed felts → the 32-byte value.
+/// Fail-closed — any felt
 /// `> u32::MAX` is not a valid packed limb and returns [`EncodingError::LimbNotU32`] rather
 /// than truncating. Round-trip: `packed_felts_to_bytes32(bytes32_to_packed_felts(b)) == b`.
-/// Consumed by reference from the DC-7 burn-note decode and the off-chain withdrawal attester.
+/// Both the burn-note item decode and the off-chain withdrawal attester unpack through this, so
+/// there is one definition of the inverse.
 pub fn packed_felts_to_bytes32(felts: &[Felt; 8]) -> Result<[u8; 32], EncodingError> {
     // Fail-closed: the upstream unpacker truncates a felt >= 2^32 to its low 32 bits, so the
     // valid-u32 guard must run first (never silently narrow a malformed limb).

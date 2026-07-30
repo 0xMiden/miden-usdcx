@@ -16,14 +16,15 @@ use super::{
 use crate::error::RelayerError;
 
 /// The store layout this build speaks, stamped into the file's `user_version`. A file carrying any
-/// other version is REFUSED at open ([`RelayerError::UnsupportedStoreSchema`]) rather than read with
-/// the wrong layout — silently misreading a cursor is exactly the failure the store exists to
+/// other version is REFUSED at open ([`RelayerError::UnsupportedStoreSchema`]) rather than read
+/// with the wrong layout — silently misreading a cursor is exactly the failure the store exists to
 /// prevent, and a migration is an operator's deliberate act, not a side effect of a restart.
 ///
-/// Bumped to 2 when the terminal `rejected` status token was added ([`SubmissionStatus::Rejected`]):
-/// a store this build writes can now hold a token an older build's `from_token` would read as
-/// corruption, so an older binary opening a newer file must be refused with the clean
-/// "unsupported schema" verdict, not left to trip over the unknown token row by row.
+/// Bumped to 2 when the terminal `rejected` status token was added
+/// ([`SubmissionStatus::Rejected`]): a store this build writes can now hold a token an older
+/// build's `from_token` would read as corruption, so an older binary opening a newer file must be
+/// refused with the clean "unsupported schema" verdict, not left to trip over the unknown token row
+/// by row.
 pub const STORE_SCHEMA_VERSION: u32 = 2;
 
 /// How long a write waits for a database another process holds before giving up. It exists for the
@@ -34,24 +35,25 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Read-write, create-if-absent — `rusqlite`'s default set minus `SQLITE_OPEN_URI`, which it turns
 /// on and this store has no use for.
 ///
-/// **Clearing that flag does not disable URI filenames, and the store does not pretend it does.** The
-/// pinned `libsqlite3-sys` compiles the bundled amalgamation with `-DSQLITE_USE_URI`, which enables
-/// URI interpretation for every connection regardless of the open flags. So a *filename* like
-/// `file:idempotency?mode=memory` really is read as a URI, and really does open a database that is
-/// never written to disk — the flag is intent, not enforcement. The enforcement is
+/// **Clearing that flag does not disable URI filenames, and the store does not pretend it does.**
+/// The pinned `libsqlite3-sys` compiles the bundled amalgamation with `-DSQLITE_USE_URI`, which
+/// enables URI interpretation for every connection regardless of the open flags. So a *filename*
+/// like `file:idempotency?mode=memory` really is read as a URI, and really does open a database
+/// that is never written to disk — the flag is intent, not enforcement. The enforcement is
 /// [`assert_backed_by_a_file`], which asks SQLite where the database actually landed.
 const OPEN_FLAGS: OpenFlags = OpenFlags::SQLITE_OPEN_READ_WRITE
     .union(OpenFlags::SQLITE_OPEN_CREATE)
     .union(OpenFlags::SQLITE_OPEN_NO_MUTEX);
 
 /// The store's tables. Both are `STRICT` (SQLite enforces the column types, so a foreign writer
-/// cannot leave a string where a blob belongs) and both `CHECK` the width of every digest they hold.
+/// cannot leave a string where a blob belongs) and both `CHECK` the width of every digest they
+/// hold.
 ///
-/// The `status` column deliberately carries NO `CHECK (status IN (…))`. That is not an oversight: the
-/// authority on what a status means is [`SubmissionStatus`], and a token it does not know must reach
-/// [`RelayerError::CorruptStoreRecord`] — a typed, operator-visible refusal — rather than be bounced
-/// at the storage layer of whichever writer produced it. The Rust parser is the one guard, and it is
-/// the guard the tests exercise.
+/// The `status` column deliberately carries NO `CHECK (status IN (…))`. That is not an oversight:
+/// the authority on what a status means is [`SubmissionStatus`], and a token it does not know must
+/// reach [`RelayerError::CorruptStoreRecord`] — a typed, operator-visible refusal — rather than be
+/// bounced at the storage layer of whichever writer produced it. The Rust parser is the one guard,
+/// and it is the guard the tests exercise.
 const SCHEMA: &str = "\
 CREATE TABLE IF NOT EXISTS submitted_nonce (
     nonce_key                BLOB    NOT NULL PRIMARY KEY CHECK (length(nonce_key) = 32),
@@ -73,8 +75,8 @@ CREATE TABLE IF NOT EXISTS domain_cursor (
 ///
 /// The connection is behind a `Mutex` so the store is `Sync` and one `Arc<IdempotencyStore>` can be
 /// shared by the poll task and the submit task. Cross-PROCESS serialization is SQLite's own (a
-/// `BEGIN IMMEDIATE` write transaction + the crate-private `BUSY_TIMEOUT`) — which is what makes the claim atomic for
-/// two relayers pointed at one file, not merely for two tasks in one.
+/// `BEGIN IMMEDIATE` write transaction + the crate-private `BUSY_TIMEOUT`) — which is what makes
+/// the claim atomic for two relayers pointed at one file, not merely for two tasks in one.
 #[derive(Debug)]
 pub struct IdempotencyStore {
     pub(super) conn: Mutex<Connection>,
@@ -84,11 +86,12 @@ pub struct IdempotencyStore {
 impl IdempotencyStore {
     /// Opens (creating if absent) the store at `path`, on the host's wall clock.
     ///
-    /// `path` must be a real file. It is validated (the crate-private `durable_path`) BEFORE anything is opened, and
-    /// the opened database is then checked to have a file behind it — because SQLite's names for a
-    /// database that vanishes on close (`:memory:`, an empty filename, a `mode=memory` URI) are
-    /// ordinary-looking filenames that an operator's config can carry, and every one of them would
-    /// have opened cleanly, taken a claim, taken a cursor advance, and lost both on restart.
+    /// `path` must be a real file. It is validated (the crate-private `durable_path`) BEFORE
+    /// anything is opened, and the opened database is then checked to have a file behind it —
+    /// because SQLite's names for a database that vanishes on close (`:memory:`, an empty filename,
+    /// a `mode=memory` URI) are ordinary-looking filenames that an operator's config can carry, and
+    /// every one of them would have opened cleanly, taken a claim, taken a cursor advance, and lost
+    /// both on restart.
     ///
     /// # Errors
     /// [`RelayerError::EphemeralStorePath`] — `path` is one of those: it is refused rather than
@@ -181,9 +184,9 @@ impl IdempotencyStore {
     ///   This is why there is no `Failed → Submitted` edge: the retry is acquired here, atomically,
     ///   or not at all — reading "not submitted" and then submitting is the race this module exists
     ///   to prevent.
-    /// * **anything else** (in flight, submitted, committed, already minted) → `AlreadySeen`, and the
-    ///   stored record is not touched: not its status, not its timestamp. The log says when the mint
-    ///   happened, not when it was last looked at.
+    /// * **anything else** (in flight, submitted, committed, already minted) → `AlreadySeen`, and
+    ///   the stored record is not touched: not its status, not its timestamp. The log says when the
+    ///   mint happened, not when it was last looked at.
     ///
     /// # Errors
     /// [`RelayerError::NonceMessageHashMismatch`] — the nonce is claimed by an attestation with a
@@ -248,12 +251,12 @@ impl IdempotencyStore {
         })
     }
 
-    /// Whether a second mint attempt for `nonce_key` must NOT be made — true for every status except
-    /// [`SubmissionStatus::Failed`], and false for a nonce the store has never seen.
+    /// Whether a second mint attempt for `nonce_key` must NOT be made — true for every status
+    /// except [`SubmissionStatus::Failed`], and false for a nonce the store has never seen.
     ///
-    /// This is a READ. On its own it is not a dedup: between this call and the mint that follows it,
-    /// another observer can claim the same nonce. Decide with [`Self::claim_nonce`]; use this to
-    /// answer questions.
+    /// This is a READ. On its own it is not a dedup: between this call and the mint that follows
+    /// it, another observer can claim the same nonce. Decide with [`Self::claim_nonce`]; use this
+    /// to answer questions.
     ///
     /// # Errors
     /// [`RelayerError::CorruptStoreRecord`] — the row's status is unreadable. It is NOT reported as
@@ -338,8 +341,8 @@ impl IdempotencyStore {
         self.transition(nonce_key, SubmissionStatus::Failed, None, None)
     }
 
-    /// `Pending → Rejected`: the mint was PERMANENTLY refused — a fatal node submit, or a note
-    /// unit-04's factory would not build. Terminal, and the deliberate counterpart of
+    /// `Pending → Rejected`: the mint was PERMANENTLY refused — a fatal node submit, or a note the
+    /// shared encoding crate's factory would not build. Terminal, and the deliberate counterpart of
     /// [`Self::record_failure`]: a `Rejected` nonce is NOT re-claimable and NOT in the
     /// [`Self::retryable`] work list, so a permanently-refused transaction is never re-fetched and
     /// re-submitted on a later cycle. That is the whole reason the two are different transitions —
@@ -354,19 +357,20 @@ impl IdempotencyStore {
         self.transition(nonce_key, SubmissionStatus::Rejected, None, None)
     }
 
-    /// **Atomically re-stamp a `Failed` row's timestamp — but ONLY while it is still `Failed`.** The
-    /// retry driver calls this to rotate a row it just re-attempted to the back of the timestamp-ordered
-    /// work list, so a persistently-unfetchable head cannot starve the tail.
+    /// **Atomically re-stamp a `Failed` row's timestamp — but ONLY while it is still `Failed`.**
+    /// The retry driver calls this to rotate a row it just re-attempted to the back of the
+    /// timestamp-ordered work list, so a persistently-unfetchable head cannot starve the tail.
     ///
-    /// The conditional is the whole point. [`Self::retryable`] is a NON-owning read that two drivers may
-    /// observe, and the status machine permits `Pending → Failed` and `Submitted → Failed`. An
-    /// unconditional re-stamp would let a late driver drag a row another driver has since CLAIMED
-    /// (`Pending`) or SUBMITTED (`Submitted`) back into the retryable pool — losing that driver's mint
-    /// and re-advertising the nonce. So the read and the conditional update are ONE `BEGIN IMMEDIATE`
-    /// transaction: if the row is no longer `Failed`, nothing is written and `Ok(false)` is returned.
+    /// The conditional is the whole point. [`Self::retryable`] is a NON-owning read that two
+    /// drivers may observe, and the status machine permits `Pending → Failed` and `Submitted →
+    /// Failed`. An unconditional re-stamp would let a late driver drag a row another driver has
+    /// since CLAIMED (`Pending`) or SUBMITTED (`Submitted`) back into the retryable pool — losing
+    /// that driver's mint and re-advertising the nonce. So the read and the conditional update are
+    /// ONE `BEGIN IMMEDIATE` transaction: if the row is no longer `Failed`, nothing is written and
+    /// `Ok(false)` is returned.
     ///
-    /// Returns `Ok(true)` if the row was `Failed` and re-stamped, `Ok(false)` if it is gone or no longer
-    /// `Failed` (a concurrent driver owns it — leave it be).
+    /// Returns `Ok(true)` if the row was `Failed` and re-stamped, `Ok(false)` if it is gone or no
+    /// longer `Failed` (a concurrent driver owns it — leave it be).
     ///
     /// # Errors
     /// [`RelayerError::CorruptStoreRecord`] — the row is unreadable (a foreign writer / a partial
@@ -390,10 +394,10 @@ impl IdempotencyStore {
 
     // ---- internals ------------------------------------------------------------------------------
 
-    /// The ONE place a status changes from outside a claim: read the record, ask the machine whether
-    /// the edge exists, write — all inside one write transaction, so a concurrent transition cannot
-    /// slip between the check and the write. A refused transition leaves the record untouched (the
-    /// transaction rolls back).
+    /// The ONE place a status changes from outside a claim: read the record, ask the machine
+    /// whether the edge exists, write — all inside one write transaction, so a concurrent
+    /// transition cannot slip between the check and the write. A refused transition leaves the
+    /// record untouched (the transaction rolls back).
     pub(super) fn transition(
         &self,
         nonce_key: &[u8; 32],
@@ -413,9 +417,9 @@ impl IdempotencyStore {
     }
 
     /// Runs `f` inside a `BEGIN IMMEDIATE` transaction: the write lock is taken UP FRONT, so a
-    /// read-then-write (the claim, every transition) cannot interleave with another process's. On any
-    /// error the transaction rolls back — a refused claim or a refused transition leaves the store
-    /// exactly as it was.
+    /// read-then-write (the claim, every transition) cannot interleave with another process's. On
+    /// any error the transaction rolls back — a refused claim or a refused transition leaves the
+    /// store exactly as it was.
     pub(super) fn write<T>(
         &self,
         f: impl FnOnce(&Connection) -> Result<T, RelayerError>,
@@ -439,9 +443,9 @@ impl IdempotencyStore {
     }
 
     /// The connection, RECOVERING a poisoned lock rather than propagating the panic: a panic in one
-    /// caller's transaction (which SQLite rolls back anyway) must not take the whole relayer's store
-    /// offline. The state behind the lock is SQLite's, and SQLite's own transaction guarantees it —
-    /// there is no half-updated Rust state a poisoned guard would be protecting.
+    /// caller's transaction (which SQLite rolls back anyway) must not take the whole relayer's
+    /// store offline. The state behind the lock is SQLite's, and SQLite's own transaction
+    /// guarantees it — there is no half-updated Rust state a poisoned guard would be protecting.
     pub(super) fn lock(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -456,16 +460,16 @@ impl IdempotencyStore {
 /// * an **empty** filename — a private temporary database, which SQLite deletes on close.
 ///
 /// The comparison trims surrounding whitespace and ignores case. That is deliberately STRICTER than
-/// SQLite, which would happily create files literally named `:MEMORY:` or `  ` — because an operator
+/// SQLite, which would happily create files literally named `:MEMORY:` or ` ` — because an operator
 /// who writes `:MEMORY:` in a config means the in-memory database, and a store that honoured the
-/// typo by creating a bizarrely-named file would be obeying the letter of the request while betraying
-/// its intent. A path whose name merely RESEMBLES a special one (`memory.sqlite3`,
-/// `weird:name.sqlite3`) is a perfectly ordinary file and is accepted: this rejects the two reserved
-/// names, not every path with a colon in it.
+/// typo by creating a bizarrely-named file would be obeying the letter of the request while
+/// betraying its intent. A path whose name merely RESEMBLES a special one (`memory.sqlite3`,
+/// `weird:name.sqlite3`) is a perfectly ordinary file and is accepted: this rejects the two
+/// reserved names, not every path with a colon in it.
 ///
 /// The `file:` URI forms are NOT rejected here — a `file:` URI can be a perfectly durable database,
-/// and only SQLite can say whether a given one ended up on disk. That is [`assert_backed_by_a_file`]'s
-/// job.
+/// and only SQLite can say whether a given one ended up on disk. That is
+/// [`assert_backed_by_a_file`]'s job.
 ///
 /// # Errors
 /// [`RelayerError::EphemeralStorePath`] — with the path echoed back (the operator has to find it in
@@ -502,8 +506,8 @@ fn durable_path(path: &Path) -> Result<(), RelayerError> {
 /// pinned `libsqlite3-sys` builds SQLite with `-DSQLITE_USE_URI`, so URI filenames are interpreted
 /// whatever [`OPEN_FLAGS`] says.
 ///
-/// It is what makes the store's promise checkable rather than assumed: the database the relayer just
-/// opened is on disk, or the relayer does not start.
+/// It is what makes the store's promise checkable rather than assumed: the database the relayer
+/// just opened is on disk, or the relayer does not start.
 ///
 /// # Errors
 /// [`RelayerError::EphemeralStorePath`] — the open database has no file behind it.
@@ -530,8 +534,8 @@ fn assert_backed_by_a_file(conn: &Connection, path: &Path) -> Result<(), Relayer
 }
 
 /// The machine check + the write, for a record already read inside the caller's transaction. Every
-/// status change in the store — the transitions AND the retry claim — funnels through here, so there
-/// is exactly one place that can move a mint.
+/// status change in the store — the transitions AND the retry claim — funnels through here, so
+/// there is exactly one place that can move a mint.
 ///
 /// # Errors
 /// [`RelayerError::IllegalStatusTransition`] — the machine has no `current → to` edge.

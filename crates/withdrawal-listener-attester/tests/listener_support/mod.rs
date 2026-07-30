@@ -1,21 +1,22 @@
-//! Shared fixtures for the `T-LA-07` **orchestration** suites — the B3→B10 flow driven end to end
-//! against the in-process Circle mock and the unit evidence adapter.
+//! Shared fixtures for the **orchestration** suites — the discovery-to-status flow driven end to
+//! end against the in-process Circle mock and the unit evidence adapter.
 //!
 //! # NON-GATING, and honest about why
 //!
-//! Nothing here touches a Miden node. `miden-client` has no v0.16 release, so B3's exact-tag
-//! `SyncNotes`/`GetNotesById` leg and `DC-8`'s evidence reads are **W10, PARKED**: this module hands
-//! the orchestration a [`DiscoveredNote`] and a unit `BurnEvidenceReads` adapter through the very
-//! ports W10 will fill, and fakes no node behind them. The GATING real-node leg is W10's; this suite
-//! is labelled NON-GATING accordingly.
+//! Nothing here touches a Miden node. `miden-client` has no v0.16 release, so the discovery gate's
+//! exact-tag `SyncNotes`/`GetNotesById` leg and the burn-evidence reads are **PARKED**: this module
+//! hands the orchestration a [`DiscoveredNote`] and a unit `BurnEvidenceReads` adapter through the
+//! very ports the node-backed slice will fill, and fakes no node behind them. The GATING real-node
+//! leg is the parked one; this suite is labelled NON-GATING accordingly.
 //!
 //! # Everything goes through the REAL units
 //!
-//! No token, payload, digest or signature is fabricated. The burn payload is encoded with unit-04's
-//! `DC-7` codec and decoded back through the real B3 gate; the digest is the frozen
-//! `prepare_withdrawal_200` fixture's own `messageHashToSign`; the signatures are produced by the
-//! production signer over that digest; the allowlist holds the addresses those keys actually recover
-//! to. A fixture that shortcut any of them would prove something about a flow that cannot exist.
+//! No token, payload, digest or signature is fabricated. The burn payload is encoded with the
+//! shared encoding crate's burn-note codec and decoded back through the real discovery gate; the
+//! digest is the frozen `prepare_withdrawal_200` fixture's own `messageHashToSign`; the signatures
+//! are produced by the production signer over that digest; the allowlist holds the addresses those
+//! keys actually recover to. A fixture that shortcut any of them would prove something about a flow
+//! that cannot exist.
 
 #![allow(dead_code)] // a shared fixture module: each test target uses the subset it needs.
 
@@ -68,19 +69,19 @@ use mock_circle::{Endpoint, MockCircle, Reply, Script};
 pub const BURN_TAG: u32 = 0xB0_1E_5A_FE;
 
 /// Miden's remote domain in the config. `>= 1` (else `RemoteDomainBelowMinimum`) and different from
-/// the burn's `destDomain` (else `DomainsMustDiffer`), so the happy path builds a valid `DC-9`.
+/// the burn's `destDomain` (else `DomainsMustDiffer`), so the happy path builds a valid request.
 pub const MIDEN_DOMAIN: u32 = 10_001;
 
-/// A `destinationDomain` that is NOT the burn payload's — the B5 domain-mismatch injection.
+/// A `destinationDomain` that is NOT the burn payload's — the domain-mismatch injection.
 pub const WRONG_DOMAIN: u32 = 7;
 
-/// A `destinationRecipient` that is NOT the burn payload's — the B5 recipient-mismatch injection.
+/// A `destinationRecipient` that is NOT the burn payload's — the recipient-mismatch injection.
 /// Well-formed 32-byte hex, so what the gate refuses is the VALUE rather than the shape.
 pub const WRONG_RECIPIENT: &str =
     "0x0000000000000000000000000000000000000000000000000000000000000001";
 
-/// The poll attempt ceiling `client_for` configures — so a `PollExhausted` assertion names the bound
-/// the test actually set rather than a number copied out of the library.
+/// The poll attempt ceiling `client_for` configures — so a `PollExhausted` assertion names the
+/// bound the test actually set rather than a number copied out of the library.
 pub const POLL_ATTEMPTS: u32 = 20;
 
 /// The `messageHashToSign` the frozen `prepare_withdrawal_200` fixture carries — the digest the
@@ -94,8 +95,8 @@ pub fn fixture_digest() -> [u8; 32] {
     decode_hex32(&hash)
 }
 
-/// The burn payload that MATCHES the fixture's returned spec, so B5 accepts the fixture response.
-/// Every field is read out of the fixture; nothing is typed twice.
+/// The burn payload that MATCHES the fixture's returned spec, so the gate accepts the fixture
+/// response. Every field is read out of the fixture; nothing is typed twice.
 pub fn payload() -> BurnPayload {
     let fixture = support::fixture_json("prepare_withdrawal_200");
     let spec = &fixture["batches"][0]["burnIntents"][0]["spec"];
@@ -107,7 +108,7 @@ pub fn payload() -> BurnPayload {
     }
 }
 
-/// The `DC-8` `burnTxId` the unit evidence port resolves for this burn — the value the batch is
+/// The evidence `burnTxId` the unit evidence port resolves for this burn — the value the batch is
 /// keyed on and the mock echoes. Derived from the evidence fixtures, never hand-typed, so the wire
 /// and the assembler cannot disagree.
 pub fn burn_tx_id() -> String {
@@ -118,14 +119,14 @@ pub fn note_id() -> NoteId {
     evidence_support::burn_note_id()
 }
 
-/// The B3 discovery report for the burn under test: the configured tag, the `DC-7` payload encoded
-/// with unit-04's own codec, and the LNV4 holder account as `metadata.sender`.
+/// The discovery report for the burn under test: the configured tag, the burn payload encoded
+/// with the shared encoding crate's own codec, and the LNV4 holder account as `metadata.sender`.
 pub fn discovered() -> DiscoveredNote {
     discovered_with(BURN_TAG, Some(payload()))
 }
 
 /// A discovery report with an arbitrary `tag`, and `None` for a PRIVATE/erased note (`details =
-/// None`) — the two B3 rejects that must stop the flow before Circle is touched.
+/// None`) — the two discovery rejects that must stop the flow before Circle is touched.
 pub fn discovered_with(tag: u32, payload: Option<BurnPayload>) -> DiscoveredNote {
     let details = payload.map(|p| {
         let [prefix, suffix] = account_id_to_felts(evidence_support::other_account_id());
@@ -137,7 +138,8 @@ pub fn discovered_with(tag: u32, payload: Option<BurnPayload>) -> DiscoveredNote
 // KEYS, ADDRESSES, THE CONFIG
 // ================================================================================================
 
-/// A deterministic secret key from a single repeated byte (well below the curve order for any byte).
+/// A deterministic secret key from a single repeated byte (well below the curve order for any
+/// byte).
 pub fn key(byte: u8) -> SecretKey {
     SecretKey::from_slice(&[byte; 32]).expect("a valid secp256k1 scalar")
 }
@@ -166,9 +168,9 @@ pub fn production_signer() -> LocalKeyQuorumSigner {
 }
 
 /// The listener config for these runs: the burn tag, Miden's domain, and the attester allowlist.
-/// The faucet id is the package default — this repo's LNV4-validated xUSDC faucet — which is the same
-/// id the evidence fixtures' transaction stream runs against, so `assemble_evidence`'s faucet filter
-/// is exercised against a matching id rather than being vacuously satisfied.
+/// The faucet id is the package default — this repo's LNV4-validated xUSDC faucet — which is the
+/// same id the evidence fixtures' transaction stream runs against, so `assemble_evidence`'s faucet
+/// filter is exercised against a matching id rather than being vacuously satisfied.
 pub fn config_allowing(attesters: &[u8]) -> ListenerConfig {
     ListenerConfig::builder()
         .burn_tag(BURN_TAG)
@@ -191,8 +193,8 @@ pub fn config() -> ListenerConfig {
 /// A [`QuorumSigner`] that COUNTS its invocations and delegates to whatever `pairs` says.
 ///
 /// It is THE oracle of the mismatch cases: an `Err` from `run_once` proves the run stopped, but not
-/// that it stopped BEFORE B6. Only "the signer was invoked zero times" proves that, and only an
-/// interface that counts can say so.
+/// that it stopped BEFORE signing. Only "the signer was invoked zero times" proves that, and only
+/// an interface that counts can say so.
 pub struct CountingSigner {
     calls: Mutex<usize>,
     behaviour: Behaviour,
@@ -245,8 +247,8 @@ impl QuorumSigner for CountingSigner {
 // THE EVENT SINK
 // ================================================================================================
 
-/// Captures every emitted event, so a test can assert what was reported — and, for the secrets case,
-/// what was not.
+/// Captures every emitted event, so a test can assert what was reported — and, for the secrets
+/// case, what was not.
 #[derive(Default)]
 pub struct CapturingEvents {
     events: Mutex<Vec<ListenerEvent>>,
@@ -289,7 +291,7 @@ impl ListenerEvents for CapturingEvents {
 // THE MOCK, THE CLIENT, THE LEDGER
 // ================================================================================================
 
-/// The frozen `prepare_withdrawal_200` body — what B5 validates against.
+/// The frozen `prepare_withdrawal_200` body — what the gate validates against.
 pub fn prepare_200() -> Value {
     support::fixture_json("prepare_withdrawal_200")
 }
@@ -304,13 +306,13 @@ pub fn prepare_200_with_batches(n: usize) -> Value {
 /// The prepare body whose SOLE prepared batch carries the matching `burnIntents[0]` repeated `n`
 /// times — the **single-batch fan-in**.
 ///
-/// This is the shape that makes the batch count a liar. Every repeat matches the burn payload, so B5
-/// compares each one and passes each one; the batch's `messageHashToSign` covers the whole intent
-/// SET, so one signature authorizes all of them; and there is still exactly ONE batch, so a gate that
-/// counts batches sees nothing wrong. One burn would fund `n` releases.
+/// This is the shape that makes the batch count a liar. Every repeat matches the burn payload, so
+/// the gate compares each one and passes each one; the batch's `messageHashToSign` covers the whole
+/// intent SET, so one signature authorizes all of them; and there is still exactly ONE batch, so a
+/// gate that counts batches sees nothing wrong. One burn would fund `n` releases.
 ///
-/// `n = 0` is the other direction — a batch with no intent at all, whose digest would be bound to no
-/// amount, no domain and no recipient.
+/// `n = 0` is the other direction — a batch with no intent at all, whose digest would be bound to
+/// no amount, no domain and no recipient.
 pub fn prepare_200_with_intents(n: usize) -> Value {
     let mut body = prepare_200();
     let intent = body["batches"][0]["burnIntents"][0].clone();
@@ -318,8 +320,8 @@ pub fn prepare_200_with_intents(n: usize) -> Value {
     body
 }
 
-/// The prepare body with one field of the returned `spec` replaced — each mismatch class B5 must
-/// abort on.
+/// The prepare body with one field of the returned `spec` replaced — each mismatch class the gate
+/// must abort on.
 pub fn prepare_200_with_spec_field(field: &str, value: Value) -> Value {
     let mut body = prepare_200();
     body["batches"][0]["burnIntents"][0]["spec"][field] = value;
@@ -390,7 +392,8 @@ pub fn ledger_in(dir: &tempfile::TempDir) -> SubmitLedger {
 // THE CALL-LOG ORACLE
 // ================================================================================================
 
-/// How many `POST /v1/prepare-withdrawal` calls went out. Zero is what a B3 reject must produce.
+/// How many `POST /v1/prepare-withdrawal` calls went out. Zero is what a discovery reject must
+/// produce.
 pub fn prepare_posts(mock: &MockCircle) -> usize {
     mock.requests_to(Endpoint::Prepare).len()
 }
@@ -426,8 +429,8 @@ pub fn ledger_status(ledger: &SubmitLedger, burn_tx_id: &str) -> Option<Submissi
 /// counting signer — the two halves of nearly every assertion in the suites.
 ///
 /// A case that needs to keep the ledger alive past the run (the idempotency family) builds its
-/// context inline instead; this covers the ones whose whole question is "what came out, and was B6
-/// reached".
+/// context inline instead; this covers the ones whose whole question is "what came out, and was the
+/// signer reached".
 pub async fn run_against(
     mock: &MockCircle,
     cfg: ListenerConfig,

@@ -1,6 +1,9 @@
-//! F4-REVERSAL transfer-blocklist SEMANTICS suite (MockChain) — the §1.5 flow matrix (split out of
-//! `transfer_blocklist_e2e.rs` for the G3 file-size ceiling; the role-gating delegation contract lives
-//! there). With the asset POLICED (callback-Enabled faucet + active `BasicBlocklist`): a BLOCKED holder
+//! Transfer blocklist — what being blocked actually prevents, run against a MockChain.
+//!
+//! The authorization side (who may block) lives in the sibling `transfer_blocklist_e2e.rs`; the two
+//! are split only to keep each file within its size ceiling.
+//!
+//! With the asset POLICED (callback-Enabled faucet + active `BasicBlocklist`): a BLOCKED holder
 //! cannot SEND (incl. a burn note — full freeze incl. redemption); a BLOCKED recipient cannot CONSUME
 //! (the note strands, supply/vaults unmoved); a mint/transfer TO a blocked recipient strands at consume;
 //! UNBLOCK restores both directions; PAUSE halts holder transfers (send + a real holder→holder P2ID);
@@ -101,7 +104,7 @@ struct SemanticsFixture {
     pause_note_id: NoteId,
     /// A committed TEST-ONLY raw self-block note (`raw_self_block_note`) that blocks the FAUCET ITSELF
     /// — the callback-only sentinel for the faucet-side burn consume (a receive callback would trap on
-    /// the blocked faucet). Uses the raw primitive because the PA2 guard now rejects a faucet-self
+    /// the blocked faucet). Uses the raw primitive because the admin note rejects a faucet-self
     /// target on the production admin path.
     block_faucet_note_id: NoteId,
 }
@@ -116,7 +119,7 @@ fn semantics_fixture() -> Result<SemanticsFixture> {
     // without underflow (a holder consume never touches token_supply, so this is neutral elsewhere).
     let mut components = production_component_set(MAX_SUPPLY, HOLDER_BALANCE)?;
     // TEST-ONLY: install the unguarded raw self-block proc so the burn-callback sentinel can arm
-    // `blocked_accounts[faucet]=1` past the PA2 self-block guard (the production admin surface can no
+    // `blocked_accounts[faucet]=1` past the self-block guard (the production admin surface can no
     // longer block the faucet). Adds one callable proc; the other semantics tests never invoke it.
     components.push(raw_blocklist_component()?);
     let mut builder = MockChain::builder();
@@ -142,11 +145,11 @@ fn semantics_fixture() -> Result<SemanticsFixture> {
     )?;
     // A DOM_PAUSER pause admin note (DOM_PAUSER = id(2), seeded by the production builder).
     let pause_note = XReservePauseNote::create(dom_pauser(), faucet_id, &mut note_rng(102))?;
-    // The burn-callback sentinel's faucet-blocked arming note. After the PA2 self-block guard the
-    // production `block_account` admin note REJECTS a faucet-self target, so the sentinel is armed via
-    // the TEST-ONLY unguarded raw self-block proc — the same underlying `blocklist::block_account`
-    // primitive the admin wrapper delegates to, minus the new guard (which is exercised by
-    // `wave1_sec_hardening::block_account_targeting_the_faucet_itself_is_rejected`).
+    // Arms the sentinel that shows the burn path is unaffected by the blocklist callback, by
+    // blocking the faucet itself. The production admin note refuses a faucet-self target — blocking
+    // the faucet would freeze redemption for everyone — so this reaches the same underlying
+    // `blocklist::block_account` primitive through a test-only proc without that guard. The guard
+    // itself is exercised in the security-hardening suite.
     let block_faucet_note = raw_self_block_note(blk_manager(), 104)?;
     // A policed P2ID carrying SEND_AMOUNT xUSDC TO the holder (an incoming transfer to consume).
     let incoming_p2id: Note = P2idNote::builder()
@@ -328,7 +331,7 @@ async fn unblocked_holder_can_send_with_faucet_foreign() -> Result<()> {
 
 /// A BLOCKED holder CANNOT send policed xUSDC: after the BLK_MANAGER blocks the holder, the holder's
 /// emit of a burn note (a SEND) fires the send callback, which traps the EXACT stock
-/// `"account is blocked"` — blocking is a FULL freeze, incl. burn/redemption (§1.5).
+/// `"account is blocked"` — blocking is a FULL freeze: a blocked holder cannot even redeem.
 #[tokio::test]
 async fn blocked_holder_cannot_send_or_redeem() -> Result<()> {
     let mut f = semantics_fixture()?;
@@ -395,7 +398,7 @@ async fn send_without_faucet_foreign_account_fails() -> Result<()> {
         "a policed-asset send WITHOUT the faucet foreign account must fail (the kernel cannot load \
          the faucet to run the transfer policy)",
     );
-    // G4: DESTRUCTURE the typed error chain (no Debug-substring matching). The kernel fires the
+    // DESTRUCTURE the typed error chain rather than matching on a Debug string. The kernel fires the
     // `before_foreign_load` host event and fails to obtain the (undeclared) faucet foreign account,
     // surfaced as
     //   TransactionExecutorError::TransactionProgramExecutionFailed(
@@ -435,14 +438,14 @@ async fn send_without_faucet_foreign_account_fails() -> Result<()> {
     Ok(())
 }
 
-// PART C — the RECEIVE side + pause + faucet-side burn (the rest of the §1.5 flow matrix)
+// PART C — the RECEIVE side, pause, and the faucet-side burn
 // ================================================================================================
 
 /// A BLOCKED recipient CANNOT consume an incoming policed-xUSDC note: the receive callback (native =
 /// the consumer) traps the EXACT stock `"account is blocked"`. The note STRANDS — it stays committed
 /// (its nullifier unspent — the stock P2ID has NO sender reclaim, so recovery is by unblocking the
 /// recipient), the recipient's vault is unchanged, and the
-/// faucet's token_supply is unchanged (a consume never moves supply). §1.5 receive row.
+/// faucet's token_supply is unchanged, because consuming a transfer never moves supply.
 #[tokio::test]
 async fn blocked_recipient_cannot_consume_and_the_note_strands() -> Result<()> {
     let mut f = semantics_fixture()?;
@@ -485,7 +488,7 @@ async fn blocked_recipient_cannot_consume_and_the_note_strands() -> Result<()> {
 /// MINT/transfer TO a blocked recipient SUCCEEDS at creation, then STRANDS at consume. The incoming
 /// P2ID carrying policed xUSDC to the (later-blocked) recipient was created and committed regardless
 /// of the recipient's state (the send/mint side checks the SENDER, never the target); once the
-/// recipient is blocked, its consume traps and the funds strand — the §1.5 "mint to a blocked
+/// recipient is blocked, its consume traps and the funds strand — the "mint to a blocked
 /// recipient strands" row. (The faucet's own mint is the special case where the send-side native is
 /// the faucet, which is never blocked, so a mint to a blocked recipient always creates the note.)
 #[tokio::test]
@@ -544,7 +547,7 @@ async fn unblock_restores_the_recipient_consume() -> Result<()> {
 /// PAUSE halts a holder's policed transfer even for a NON-blocked holder: with an active transfer
 /// policy the send callback runs `pausable::assert_not_paused` BEFORE the blocklist check, so while
 /// paused a holder→note SEND traps the EXACT stock `"the contract is paused"` — pause is a chain-wide
-/// freeze on xUSDC movement, not just mint/burn (§1.5 pause row).
+/// freeze on xUSDC movement, not only on minting and burning.
 #[tokio::test]
 async fn pause_halts_a_holder_policed_transfer() -> Result<()> {
     let mut f = semantics_fixture()?;
@@ -572,7 +575,7 @@ async fn pause_halts_a_holder_policed_transfer() -> Result<()> {
 /// the faucet being blocked. This distinguishes the intended absence of a receive callback from an
 /// erroneous receive callback that runs and (mis)permits: had a receive callback dispatched with
 /// native = the blocked faucet, it would trap `"account is blocked"` and this test would FAIL. (Not
-/// attaching a foreign account is irrelevant — the faucet is the native consuming account.) §1.5 burn row.
+/// attaching a foreign account is irrelevant — the faucet is the native consuming account.)
 #[tokio::test]
 async fn faucet_side_burn_consume_is_callback_unaffected() -> Result<()> {
     let mut f = semantics_fixture()?;
@@ -592,7 +595,7 @@ async fn faucet_side_burn_consume_is_callback_unaffected() -> Result<()> {
     f.chain.add_pending_executed_transaction(&emit)?;
     f.chain.prove_next_block()?;
 
-    // SENTINEL: block the FAUCET ITSELF via the TEST-ONLY raw primitive (the PA2 guard rejects a
+    // SENTINEL: block the FAUCET ITSELF via the TEST-ONLY raw primitive (the self-block guard rejects a
     // faucet-self target on the production admin path). `check_policy` checks the native account; if a
     // receive callback dispatched on the burn consume (native = faucet), it would now trap "account is
     // blocked".
@@ -635,7 +638,7 @@ async fn faucet_side_burn_consume_is_callback_unaffected() -> Result<()> {
 /// PAUSE halts an actual HOLDER-TO-HOLDER P2ID transfer (not merely a burn-note send): while paused,
 /// a holder sending `SEND_AMOUNT` policed xUSDC to ANOTHER holder via the stock P2ID note traps the
 /// EXACT `"the contract is paused"` — the send callback's pause check fires before the blocklist check
-/// for a wallet→wallet transfer (§1.5 pause row, the explicit holder-to-holder case).
+/// for a wallet-to-wallet transfer — the explicit holder-to-holder case of the pause freeze.
 #[tokio::test]
 async fn pause_halts_a_holder_to_holder_p2id_transfer() -> Result<()> {
     let mut f = semantics_fixture()?;

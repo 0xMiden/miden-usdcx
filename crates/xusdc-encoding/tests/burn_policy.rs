@@ -1,20 +1,21 @@
-//! Burn floor-policy suite (reject conditions R-BURN-1/2/3): the STOCK `MinBurnAmount` burn policy
+//! Burn floor-policy suite (the below-minimum, zero-amount, and paused-burn rejects): the STOCK
+//! `MinBurnAmount` burn policy
 //! (`miden_standards::account::policies::MinBurnAmount`) wired as the ACTIVE burn policy of the
-//! `XReserveStablecoinBuilder` faucet's `TokenPolicyManager` — the Wave-1 S1 recomposition replaced
-//! the former custom CMP-A10 `burn_policy.masm` with the stock component. Stock `receive_and_burn`
+//! `XReserveStablecoinBuilder` faucet's `TokenPolicyManager`. Stock `receive_and_burn`
 //! routes every burn through `policy_manager::execute_burn_policy`, which (after the stock pause
 //! gate) `dynexec`s the active burn policy — the stock `check_policy` reads its own floor slot
-//! (`MinBurnAmount::slot_name()`) and asserts `minBurnAmount <= amount` ONLY (R-BURN-2). R-BURN-1
+//! (`MinBurnAmount::slot_name()`) and asserts `minBurnAmount <= amount` ONLY (the below-minimum
+//! reject). The zero-burn reject
 //! (`amount > 0`) is preserved BY CONSTRUCTION: the floor is ALWAYS `>= 1` (builder-seeded `>= 1`;
-//! the reworked set_min_burn_size admin note asserts `new_min >= 1` before calling the stock
+//! the set_min_burn_size admin note asserts `new_min >= 1` before calling the stock
 //! setter), so a zero-amount burn rejects with the SAME stock below-min error. The pause reject
-//! R-BURN-3 is the stock wrapper's gate, run BEFORE the policy dispatch.
+//! is the stock wrapper's gate, run BEFORE the policy dispatch.
 //!
 //! Non-vacuity: the policy-defining rejects (`burn_below_min_rejects`, `burn_zero_amount_rejects`,
 //! `burn_zero_amount_rejects_direct`) trap the EXACT stock below-min error on the
 //! MinBurnAmount-active account, while the SAME invalid burn SUCCEEDS on a CODE-IDENTICAL
 //! `BurnAllowAll`-active account (`burn_below_min_passes_under_allow_all`) — proving each trap is
-//! policy-caused, not a fixture artifact. The harness is the burn canary's real MockChain 2-block
+//! policy-caused, not a fixture artifact. The harness is the real MockChain 2-block
 //! lifecycle (the user emits an asset-bearing BurnNote at block N → the faucet consumes it via
 //! `receive_and_burn` at block N+1), composed via the TEST-ONLY `support::oracle_burn_components`
 //! oracle (MinBurnAmount-vs-allow-all, code-identical, differing only in
@@ -41,7 +42,7 @@ const VALID_BURN: u64 = 5_000;
 const BELOW_MIN: u64 = 500;
 
 /// The seeded DOM_PAUSER holder (id(2)) — the ONLY pause authority in the Domain-Pauser-only model
-/// (component CMP-F3; the custom `xreserve::pause_admin` procs). The Ownable2Step owner (id(1))
+/// (the custom `xreserve::pause_admin` procs). The Ownable2Step owner (id(1))
 /// has no direct pause path and no other role in this suite.
 fn dom_pauser() -> AccountId {
     test_account_id(2)
@@ -122,10 +123,10 @@ async fn burn_below_min_passes_under_allow_all() -> Result<()> {
     Ok(())
 }
 
-// POLICY-DEFINING REJECTS (R-BURN-1/2) — exact-error traps on the MinBurnAmount-active account
+// POLICY-DEFINING REJECTS — exact-error traps on the MinBurnAmount-active account
 // ================================================================================================
 
-/// R-BURN-2: a `0 < amount < minBurnSize` burn (against the seeded floor slot) on the
+/// Below-minimum reject: a `0 < amount < minBurnSize` burn (against the seeded floor slot) on the
 /// MinBurnAmount-active account traps the EXACT stock below-min error — the stock `check_policy`
 /// reads `MinBurnAmount::slot_name()` and asserts `minBurnAmount <= amount`. Paired with
 /// `burn_below_min_passes_under_allow_all` for non-vacuity.
@@ -152,8 +153,9 @@ async fn burn_below_min_rejects() -> Result<()> {
     Ok(())
 }
 
-/// R-BURN-2 boundary (ACCEPT side): a burn of EXACTLY `minBurnSize` PASSES and decrements
-/// `committed_token_supply` by that amount — R-BURN-2 is `amount >= minBurnSize`, so `== min` is
+/// Floor boundary (ACCEPT side): a burn of EXACTLY `minBurnSize` PASSES and decrements
+/// `committed_token_supply` by that amount — the floor predicate is `amount >= minBurnSize`, so
+/// `== min` is
 /// accepted. Paired with `burn_at_min_minus_one_rejects`, this pins the `>=` boundary exactly: a
 /// `lte`->`lt` regression in the stock `check_policy` (which would reject `== min`) flips THIS
 /// test red.
@@ -189,7 +191,7 @@ async fn burn_at_min_passes_and_decrements() -> Result<()> {
     Ok(())
 }
 
-/// R-BURN-2 boundary (REJECT side): a burn of `minBurnSize - 1` — the largest below-minimum amount,
+/// Floor boundary (REJECT side): a burn of `minBurnSize - 1` — the largest below-minimum amount,
 /// one unit under the threshold — traps the EXACT stock below-min error. With
 /// `burn_at_min_passes_and_decrements` this pins `amount >= minBurnSize` exactly (not `> min`, not
 /// `>= min - 1`), so an off-by-one or `lte`->`lt` regression is caught.
@@ -216,10 +218,11 @@ async fn burn_at_min_minus_one_rejects() -> Result<()> {
     Ok(())
 }
 
-/// R-BURN-1 (note-driven): a real 0-amount burn note consumed by the faucet traps the EXACT stock
-/// below-min error — the zero-burn invariant now IS the floor: the seeded floor is `>= 1`, so
-/// `amount == 0` is always below it (`0 < min`). The former custom `ERR_XRESERVE_BURN_ZERO`
-/// died with the custom policy. The 0-amount burn is note-reachable (see
+/// Zero-amount reject (note-driven): a real 0-amount burn note consumed by the faucet traps the
+/// EXACT stock
+/// below-min error — the zero-burn invariant IS the floor: the seeded floor is `>= 1`, so
+/// `amount == 0` is always below it (`0 < min`). There is no custom zero-burn
+/// error. The 0-amount burn is note-reachable (see
 /// `zero_amount_burn_note_reachability`), so this is a real `receive_and_burn` consume on the
 /// MinBurnAmount-active account, not a synthetic one.
 #[tokio::test]
@@ -245,7 +248,7 @@ async fn burn_zero_amount_rejects() -> Result<()> {
     Ok(())
 }
 
-/// R-BURN-1 (direct-policy defensive proof): `exec` the STOCK `min_burn_amount::check_policy` with
+/// Zero-amount reject (direct-policy defensive proof): `exec` the STOCK `min_burn_amount::check_policy` with
 /// a crafted `[ASSET_ID, [0,0,0,0]]` stack — the faucet-independent floor proof. With the floor
 /// seeded `>= 1` the policy traps the stock below-min error on `amount == 0` in isolation
 /// (`0 < min` always), complementing the note-driven `burn_zero_amount_rejects` (the 0-amount burn
@@ -260,10 +263,10 @@ async fn burn_zero_amount_rejects_direct() -> Result<()> {
     Ok(())
 }
 
-// PAUSE GATE (GREEN) — R-BURN-3 traps the stock error BEFORE the active policy runs
+// PAUSE GATE (GREEN) — the paused-burn reject traps the stock error BEFORE the active policy runs
 // ================================================================================================
 
-/// R-BURN-3: a paused faucet halts the burn. After the DOM_PAUSER pauses the MinBurnAmount-active
+/// Paused-burn reject: a paused faucet halts the burn. After the DOM_PAUSER pauses the MinBurnAmount-active
 /// faucet (custom `xreserve::pause_admin::pause` — the ONLY pause surface in the Domain-Pauser-only
 /// model), the burn consume traps the EXACT stock ERR_PAUSABLE_IS_PAUSED (`"the contract is
 /// paused"`) — enforced by `execute_burn_policy`'s `assert_not_paused` BEFORE the active policy is
@@ -323,14 +326,15 @@ async fn burn_paused_rejects() -> Result<()> {
     Ok(())
 }
 
-// R-BURN-1 ZERO-AMOUNT REACHABILITY PROBE (GREEN diagnostic)
+// ZERO-AMOUNT REACHABILITY PROBE (GREEN diagnostic)
 // ================================================================================================
 
-/// Empirically resolves R-BURN-1's note-reachability. A 0-amount fungible asset is
+/// Empirically resolves the zero-amount burn's note-reachability. A 0-amount fungible asset is
 /// constructible (only the UPPER bound is checked) AND note-reachable: the user emits a 0-amount burn
 /// note (tx0), and the faucet's `receive_and_burn` reaches the burn policy with `amount == 0` (one
 /// asset, `0 <= token_supply`). On a CODE-IDENTICAL `BurnAllowAll`-active account the consume therefore
-/// SUCCEEDS — proving the 0-amount burn DOES reach the policy. So R-BURN-1 is proven by a real
+/// SUCCEEDS — proving the 0-amount burn DOES reach the policy. So the zero-amount reject is
+/// proven by a real
 /// note-driven consume (`burn_zero_amount_rejects`) AND, defensively, by the direct-policy driver
 /// (`burn_zero_amount_rejects_direct`). This is the non-vacuity mirror for the zero case: allow-all
 /// accepts the 0-amount burn the MinBurnAmount floor rejects.
@@ -368,8 +372,8 @@ async fn zero_amount_burn_note_reachability() -> Result<()> {
 
 /// The composed PRODUCTION component set carries the STOCK `MinBurnAmount` policy component: one
 /// component's code exposes `MinBurnAmount::root()` (the stock `check_policy`), so the policy the
-/// active-burn slot points at is INSTALLED on the faucet. (The former custom
-/// `xreserve::burn_policy` module is deleted — Wave-1 S1.)
+/// active-burn slot points at is INSTALLED on the faucet. (There is no custom
+/// `xreserve::burn_policy` module.)
 #[test]
 fn probe_stock_burn_policy_installed() -> Result<()> {
     let components = production_component_set(1_000_000, 0)?;

@@ -5,8 +5,7 @@ edition = "2021"
 publish = false
 description = "xUSDC-on-Miden 04 shared encoding: hand-written MASM + Rust mirror and test harness"
 
-# Pinned per docs/MIGRATION-V16-NEXT.md (supersedes the MIGRATION-V16-ALPHA2 crates.io pins for
-# this branch): the four protocol-monorepo crates come from git at ONE frozen rev of the `next`
+# The four protocol-monorepo crates come from git at ONE frozen rev of the `next`
 # branch — always the rev key, never a floating branch pin, which would make the build
 # non-reproducible. The frozen graph resolves the 0.25.8 assembler/VM family (0.25.0–0.25.7 are
 # yanked on crates.io) and miden-crypto 0.28. The `testing` feature on the main miden-protocol
@@ -17,8 +16,8 @@ miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "dbe4e387
 miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "dbe4e38797207ce09fee1668ea204aafec275f63" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# k256 is a REGULAR dependency since the v16 migration (MIGRATION-V16-ALPHA2.md S16): the
-# vm#3342 affine commitment format makes unit-04 the owner of the SEC1→affine decompression
+# k256 is a REGULAR dependency (not vectors-gated): the attester commitment is computed over
+# the affine pubkey form, which makes this crate the owner of the SEC1→affine decompression
 # (the Circle ingress stays the 33-byte compressed pubkey; the on-chain staging is the 16
 # affine-coordinate felts), and the decompression needs k256's curve arithmetic in the library
 # itself — not just in the generator.
@@ -26,12 +25,12 @@ k256 = { workspace = true }
 
 # Vector-generator crates: OPTIONAL, gated behind the `vectors` feature; never
 # compiled for the library or the normal `cargo test`/`cargo build` path. The generator
-# binary requires this feature ([[bin]] below). The set mirrors the precompile canary
-# (canary/precompile-execution-grounding/Cargo.toml): k256 (above, now a regular dep) produces
+# binary requires this feature ([[bin]] below). k256 (above, a regular dep) produces
 # the secp256k1 keypair + signature independently of miden-crypto's signer, sha3 the keccak
 # digest, and miden-crypto provides PublicKey::to_commitment — the canonical
-# attester-allowlist keying primitive the ATT vectors pin (the TV-DUAL-5 oracle). `std` gates
-# miden-crypto's `dsa` module.
+# attester-allowlist keying primitive the attestation vectors pin (the oracle the
+# cross-implementation commitment test checks against). `std` gates miden-crypto's `dsa`
+# module.
 sha3 = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 miden-crypto = { version = "0.28", default-features = false, features = ["std"], optional = true }
@@ -39,7 +38,7 @@ miden-crypto = { version = "0.28", default-features = false, features = ["std"],
 [features]
 # Enables the canonical golden-vector generator binary. Its keccak/commitment crates live
 # behind this feature so they never enter the library or the normal test build (k256 is a
-# regular dependency since S16); regenerate the artifact with
+# regular dependency); regenerate the artifact with
 # `cargo run --bin gen_vectors --features vectors`.
 vectors = ["dep:sha3", "dep:rand", "dep:miden-crypto"]
 
@@ -62,13 +61,12 @@ tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 anyhow = { workspace = true }
 rstest = { workspace = true }
 assert_matches = { workspace = true }
-# D5d attestation test vectors: deterministic secp256k1 keypairs + signatures generated
-# IN-TEST (zero touch to the 04 canonical artifact), mirroring the precompile canary and the
-# gen_vectors att_* helpers — k256 the keypair+signature (a regular dependency since S16),
+# Attestation test vectors: deterministic secp256k1 keypairs + signatures generated
+# IN-TEST (zero touch to the canonical committed artifact), matching the
+# gen_vectors att_* helpers — k256 the keypair+signature (a regular dependency),
 # sha3 the keccak digest, miden-crypto the PublicKey::to_commitment allowlist key. The
 # secp256k1/keccak trio has a second consumer (the relayer's envelope binding + partner-key
-# fixture); the versions live in [workspace.dependencies] and stay byte-identical to the
-# precompile canary's.
+# fixture); the versions live in [workspace.dependencies].
 sha3 = { workspace = true }
 rand = { workspace = true }
 miden-crypto = { version = "0.28", default-features = false, features = ["std"] }

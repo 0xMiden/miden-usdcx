@@ -2,24 +2,25 @@
 //!
 //! # Why this refuses to start
 //!
-//! Every part below is wired for real — the config, the Circle client with its auth posture and rate
-//! ceilings, the durable idempotency store, the Miden identities, the event sink — and then the last
-//! binding fails: the **Miden submit port has no production adapter**, because it needs a
-//! `miden-client` for v0.16 and there is no such release. So `main` reports that and exits non-zero.
+//! Every part below is wired for real — the config, the Circle client with its auth posture and
+//! rate ceilings, the durable idempotency store, the Miden identities, the event sink — and then
+//! the last binding fails: the **Miden submit port has no production adapter**, because it needs a
+//! `miden-client` for v0.16 and there is no such release. So `main` reports that and exits
+//! non-zero.
 //!
 //! That is deliberate, and it is the honest end of this slice rather than a gap in it. The two
 //! alternatives are both worse than not starting:
 //!
 //! * A no-op submit would let the relayer poll Circle, validate attestations, claim nonces, build
-//!   notes — and mint nothing. It would look healthy in every log and every metric except the chain's,
-//!   which is the one nobody watches until a user asks where their money is.
+//!   notes — and mint nothing. It would look healthy in every log and every metric except the
+//!   chain's, which is the one nobody watches until a user asks where their money is.
 //! * A simulated submit would make the service's own tests evidence about themselves. The mock
-//!   boundary forbids it outright: **Circle API may be mocked**; Miden behaviour must not be faked for
-//!   final acceptance (§11).
+//!   boundary forbids it outright: **Circle API may be mocked**; Miden behaviour must not be faked
+//!   for final acceptance
 //!
 //! A later slice implements [`MintSubmit`](xreserve_deposit_relayer::cycle::MintSubmit) against a
-//! real client and proves it against a real local node (T-RLY-14/T-RLY-15). The one line that changes
-//! here is the port binding; everything else below is what will run behind it.
+//! real client and proves it against a real local node. The one line that changes here is the port
+//! binding; everything else below is what will run behind it.
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -64,8 +65,8 @@ async fn run() -> Result<(), RelayerError> {
 
     // ONE real event sink, shared behind an Arc, installed into BOTH the Circle client (so its
     // retry/rejection events are logged) and the RelayerCtx below (so every terminal per-attestation
-    // event is). This is R7's observability half made real: round 1 shipped the seam but installed
-    // `NoopSink`, so the service that must never silently drop an attestation emitted nothing. This
+    // event is). Installing the event-dropping `NoopSink` here would mean the service that must
+    // never silently drop an attestation emits nothing. This
     // writes one structured line per event to stderr — the honest floor until the monitoring slice
     // (`P4-OPS`) wires a structured backend behind the same `EventSink` trait.
     let events = Arc::new(WriteEventSink::stderr());
@@ -132,9 +133,9 @@ fn load_config() -> Result<RelayerConfig, RelayerError> {
 
 /// A 128-bit seed for the note serial numbers, from OS entropy.
 ///
-/// The serial number is what makes a re-mint of the same DepositIntent a DISTINCT note rather than a
-/// collision, so it must NOT be reproducible across restarts — which is exactly the opposite of what
-/// a test wants, and why the RNG is a parameter of the context rather than a global here.
+/// The serial number is what makes a re-mint of the same DepositIntent a DISTINCT note rather than
+/// a collision, so it must NOT be reproducible across restarts — which is exactly the opposite of
+/// what a test wants, and why the RNG is a parameter of the context rather than a global here.
 ///
 /// Built from `u32`s: every one is a felt exactly, so the seed is the entropy that was drawn rather
 /// than that entropy silently reduced modulo the field.

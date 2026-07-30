@@ -1,11 +1,11 @@
 //! The [`HttpTransport`] the withdrawal-driver contract tests install on the client.
 //!
-//! [`MockTransport`] takes the **real `reqwest::Request` the driver built** — its own base-URL join,
-//! its own JSON body codec, its own auth-header injection — converts it verbatim to an `http::Request`
-//! (BODY included, so a POST's serialized JSON reaches the handler), and drives the axum router with it
-//! via `tower`'s `oneshot`. No socket is bound (the audit/CI sandbox denies `bind(127.0.0.1:0)` with
-//! EPERM), and nothing is stubbed on the driver's side of the seam: the status policy and the serde
-//! decoders all run for real.
+//! [`MockTransport`] takes the **real `reqwest::Request` the driver built** — its own base-URL
+//! join, its own JSON body codec, its own auth-header injection — converts it verbatim to an
+//! `http::Request` (BODY included, so a POST's serialized JSON reaches the handler), and drives the
+//! axum router with it via `tower`'s `oneshot`. No socket is bound (the audit/CI sandbox denies
+//! `bind(127.0.0.1:0)` with EPERM), and nothing is stubbed on the driver's side of the seam: the
+//! status policy and the serde decoders all run for real.
 
 #![allow(dead_code)]
 
@@ -87,15 +87,15 @@ impl HttpTransport for MockTransport {
     }
 }
 
-/// A transport that fails the way a dead network does — no status, ever — and COUNTS how many times it
-/// was asked.
+/// A transport that fails the way a dead network does — no status, ever — and COUNTS how many times
+/// it was asked.
 ///
 /// The count is the oracle for the money-path rule that a status-less failure must be attempted
-/// EXACTLY ONCE: a timeout can strike after Circle accepted the withdrawal and before the response got
-/// back, so a driver that "just retries the connection error" is issuing a second, blind
-/// `POST /v1/withdraw`. Nothing else in the suite can see that — the axum mock never receives the
-/// request at all when the transport itself fails, so the mock's own call log stays empty and would
-/// report a retry storm as zero calls.
+/// EXACTLY ONCE: a timeout can strike after Circle accepted the withdrawal and before the response
+/// got back, so a driver that "just retries the connection error" is issuing a second, blind `POST
+/// /v1/withdraw`. Nothing else in the suite can see that — the axum mock never receives the request
+/// at all when the transport itself fails, so the mock's own call log stays empty and would report
+/// a retry storm as zero calls.
 #[derive(Debug, Default)]
 pub struct CountingFailingTransport {
     attempts: AtomicUsize,

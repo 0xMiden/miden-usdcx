@@ -1,15 +1,15 @@
-//! WAVE-1 S1 RECOMPOSITION E2E TRIPWIRES — the end-to-end legs of the posture set in
-//! `wave1_recomposition.rs` (G3 split; the shared production-transport harness is
-//! `support::mint_transport`, consumed by reference — G4 shared fixtures, no copy-pasted
-//! engine).
+//! Faucet-composition tripwires, driven end to end — the executing half of the structural posture
+//! its sibling recomposition suite pins. The two are split only for file size and share the
+//! production-transport harness in `support::mint_transport`, so neither carries its own copy of
+//! the note-building engine.
 //!
-//! The recomposed transport driven END TO END: a REAL stock `MintNote` carrying the
+//! The production transport driven END TO END: a REAL stock `MintNote` carrying the
 //! DepositIntent (scheme 4) + attestation (scheme 5) + `NetworkAccountTarget` (scheme 2)
 //! attachments mints EXACTLY the attested amount, and the ratified ASSERT-MATCH binding
 //! (the policy asserts the note-supplied RECIPIENT equals the attested derivation, never
-//! overrides) rejects a tampered recipient with its EXACT error; fee != 0 (DEC-2 keep-zero)
-//! and nonce replay (R-MINT-12) keep their frozen errors through the new transport; and the
-//! reworked min-burn admin note enforces the `>= 1` floor at runtime. All tests here are
+//! overrides) rejects a tampered recipient with its EXACT error; fee != 0 (the keep-zero fee
+//! gate) and nonce replay keep their frozen errors through the transport; and the
+//! min-burn admin note enforces the `>= 1` floor at runtime. All tests here are
 //! security tripwires and hold the tripwire serial guard (they flake under parallel
 //! `cargo test`).
 
@@ -137,7 +137,7 @@ async fn stock_mint_note_rejects_a_recipient_mismatch() -> Result<()> {
     .await
 }
 
-/// E2E NEGATIVE (DEC-2 keep-zero): a nonzero feeAmount in the attestation attachment trips the
+/// E2E NEGATIVE (the keep-zero fee gate): a nonzero feeAmount in the attestation attachment trips the
 /// frozen `ERR_XRESERVE_FEE_NONZERO` through the new transport.
 #[tokio::test]
 async fn stock_mint_note_rejects_a_nonzero_fee() -> Result<()> {
@@ -169,7 +169,7 @@ async fn stock_mint_note_rejects_a_nonzero_fee() -> Result<()> {
     .await
 }
 
-/// E2E NEGATIVE (R-MINT-12): replaying an attested nonce through the new transport trips the
+/// E2E NEGATIVE (nonce replay): replaying an attested nonce through the transport trips the
 /// frozen `ERR_XRESERVE_NONCE_REPLAY` — the policy's nonce-ledger write is load-bearing.
 #[tokio::test]
 async fn stock_mint_note_rejects_a_replay() -> Result<()> {
@@ -195,10 +195,10 @@ async fn stock_mint_note_rejects_a_replay() -> Result<()> {
     Ok(())
 }
 
-// THE REWORKED MIN-BURN ADMIN NOTE — the floor enforced at runtime
+// THE MIN-BURN ADMIN NOTE — the floor enforced at runtime
 // ================================================================================================
 
-/// E2E: the PRODUCTION min-burn admin note (retargeted at the stock `set_min_burn_amount`)
+/// E2E: the PRODUCTION min-burn admin note (targeting the stock `set_min_burn_amount`)
 /// REJECTS `new_min = 0` with the exact floor error, and a valid `new_min >= 1` write lands in
 /// the STOCK MinBurnAmount slot.
 #[tokio::test]

@@ -1,8 +1,8 @@
 //! The Circle wire's **constrained scalars** — the OpenAPI's regexes and enums, as types.
 //!
 //! Every field in `CIRCLE-API-SURFACE.md`'s schema tables carries a pattern (`^0x[a-fA-F0-9]{64}$`,
-//! `^\d+$`, `format: uuid`, `enum: ["USDC"]`, …). Modelling them all as `String` makes the wire types
-//! check JSON *shape* and nothing else: a `token` of `"DAI"`, a 31-byte `transferSpecHash`, a
+//! `^\d+$`, `format: uuid`, `enum: ["USDC"]`, …). Modelling them all as `String` makes the wire
+//! types check JSON *shape* and nothing else: a `token` of `"DAI"`, a 31-byte `transferSpecHash`, a
 //! `remoteDomain` of `0`, an amount of `"10.00"` where the smallest-unit `"10000000"` belongs — all
 //! decode, and the first anyone hears of it is Circle's 400, or (worse) a settlement for the wrong
 //! amount.
@@ -15,14 +15,14 @@
 //! # What is deliberately NOT constrained
 //!
 //! A constraint the OpenAPI does not document is not invented here — that is the same defect as
-//! inventing a field. `encoded` and `messageHashToSign` are typed `string` with **no pattern** (Circle
-//! encodes them server-side and the partner treats them as opaque), and the **request-side**
-//! `burnTxId` likewise has no documented pattern, even though the *response-side* one is
-//! `^0x[a-fA-F0-9]+$`. That asymmetry is the OpenAPI's; this module reproduces it rather than
-//! tidying it up.
+//! inventing a field. `encoded` and `messageHashToSign` are typed `string` with **no pattern**
+//! (Circle encodes them server-side and the partner treats them as opaque), and the
+//! **request-side** `burnTxId` likewise has no documented pattern, even though the *response-side*
+//! one is `^0x[a-fA-F0-9]+$`. That asymmetry is the OpenAPI's; this module reproduces it rather
+//! than tidying it up.
 //!
 //! Nor is *semantic* validation here. Whether a returned burn intent matches the burn note's
-//! amount/domain/recipient is the B5 gate (`INV-CIRCLE-CANONICAL-WITHDRAWAL`, T-LA-06) — a schema-valid
+//! amount/domain/recipient is the pre-signing compare — a schema-valid
 //! response can still be a lie, and catching that is a different job from catching a malformed one.
 
 use core::fmt;
@@ -33,7 +33,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 ///
 /// Each variant names ONE rule, so a test — and an operator reading a log line — can tell exactly
 /// which constraint bit, rather than getting a generic "invalid input". The offending value is
-/// carried in the error: these are wire-format fields (hashes, amounts, domains), never credentials.
+/// carried in the error: these are wire-format fields (hashes, amounts, domains), never
+/// credentials.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SchemaError {
@@ -53,20 +54,20 @@ pub enum SchemaError {
     BadDecimalUint(String),
     /// Not `^\d+(\.\d+)?$` — the request's decimal amount form.
     BadDecimalAmount(String),
-    /// Not `^\d+(\.\d{1,6})?$` — `forwardingOptions.maxFee`. USDC has six decimals; a seventh cannot
-    /// be represented.
+    /// Not `^\d+(\.\d{1,6})?$` — `forwardingOptions.maxFee`. USDC has six decimals; a seventh
+    /// cannot be represented.
     BadForwardingFee(String),
     /// Not a uuid (`8-4-4-4-12` hex).
     BadUuid(String),
     /// Not the one member of `enum: ["USDC"]`.
     UnknownToken(String),
-    /// `valueExcludingFees` XOR `valueIncludingFees` — "pass one, not both". Both, or neither, leaves
-    /// the amount ambiguous in the field that decides how much USDC is released.
+    /// `valueExcludingFees` XOR `valueIncludingFees` — "pass one, not both". Both, or neither,
+    /// leaves the amount ambiguous in the field that decides how much USDC is released.
     ValueXor,
     /// `remoteDomain: minimum 1`.
     RemoteDomainBelowMinimum(u32),
-    /// "`remoteDomain` must differ from `finalDestinationDomain`" — a withdrawal to the domain it came
-    /// from is not a withdrawal.
+    /// "`remoteDomain` must differ from `finalDestinationDomain`" — a withdrawal to the domain it
+    /// came from is not a withdrawal.
     DomainsMustDiffer(u32),
     /// `WithdrawRequest.batches`: `minItems 1`, `maxItems 5`.
     BatchCountOutOfRange(usize),
@@ -170,8 +171,8 @@ macro_rules! wire_string {
             }
         }
 
-        /// Deserialization runs the SAME constructor. That is the whole point: there is no path — not
-        /// a config file, not a Circle response — that yields one of these without the check.
+        /// Deserialization runs the SAME constructor. That is the whole point: there is no path —
+        /// not a config file, not a Circle response — that yields one of these without the check.
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
                 let raw = String::deserialize(d)?;
@@ -218,14 +219,14 @@ wire_string!(
 );
 
 wire_string!(
-    /// `^0x[a-fA-F0-9]{40}$` — the JSON `StructuredHookData.forwardingContractAddress`, a 20-byte EVM
-    /// address.
+    /// `^0x[a-fA-F0-9]{40}$` — the JSON `StructuredHookData.forwardingContractAddress`, a 20-byte
+    /// EVM address.
     ///
-    /// Note the size. The **binary** `WithdrawHookData.forwardingContract` is `bytes32`, and the JSON
-    /// form is `bytes20`; Circle left-pads during its server-side encoding
-    /// (`CIRCLE-DATA-SCHEMAS.md` §3.4, "DO NOT CONFLATE"). And note that the OpenAPI's own prose —
-    /// "if you are not forwarding funds, set to `0x0`" — does not satisfy its own regex: the zero
-    /// address here is forty zero digits. Where prose and regex disagree, the regex is the schema.
+    /// Note the size. The **binary** `WithdrawHookData.forwardingContract` is `bytes32`, and the
+    /// JSON form is `bytes20`; Circle left-pads during its server-side encoding (Circle's data
+    /// schemas, "DO NOT CONFLATE"). And note that the OpenAPI's own prose "if you are not
+    /// forwarding funds, set to `0x0`" — does not satisfy its own regex: the zero address here is
+    /// forty zero digits. Where prose and regex disagree, the regex is the schema.
     Hex20,
     |v| hex_body_of_len(v, 40),
     SchemaError::BadHex20
@@ -240,19 +241,20 @@ wire_string!(
 );
 
 wire_string!(
-    /// `^0x[a-fA-F0-9]+$` — the RESPONSE-side `burnTxId`: hex, at least one digit, no length bound (a
-    /// Miden transaction id; whether that is what Circle will accept is `DEV-7`, OPEN).
+    /// `^0x[a-fA-F0-9]+$` — the RESPONSE-side `burnTxId`: hex, at least one digit, no length bound
+    /// (a Miden transaction id; whether that is what Circle will accept is still OPEN, pending
+    /// Circle confirmation).
     ///
-    /// The request-side `burnTxId` has NO documented pattern and is therefore a plain `String` — the
-    /// asymmetry is the OpenAPI's.
+    /// The request-side `burnTxId` has NO documented pattern and is therefore a plain `String` —
+    /// the asymmetry is the OpenAPI's.
     HexTxId,
     |v| is_hex(v) && v.len() > 2,
     SchemaError::EmptyHex
 );
 
 wire_string!(
-    /// `^0x([a-fA-F0-9]{8}[a-fA-F0-9]*)?$` — `forwardingCalldata`: bare `0x` when not forwarding, else
-    /// a 4-byte selector plus optional data.
+    /// `^0x([a-fA-F0-9]{8}[a-fA-F0-9]*)?$` — `forwardingCalldata`: bare `0x` when not forwarding,
+    /// else a 4-byte selector plus optional data.
     Calldata,
     |v: &str| match v.strip_prefix("0x") {
         None => false,
@@ -266,8 +268,8 @@ wire_string!(
     /// `^\d+$` — an amount in the smallest token unit (`TransferSpec.value`, `BurnIntent.maxFee`,
     /// `maxBlockHeight`), as a decimal STRING: a `uint256` does not survive a JSON number.
     ///
-    /// This is NOT the request's decimal form. `"10.00"` and `"10000000"` are the same amount written
-    /// two ways, and mixing them up is a 10^6 error in a money field.
+    /// This is NOT the request's decimal form. `"10.00"` and `"10000000"` are the same amount
+    /// written two ways, and mixing them up is a 10^6 error in a money field.
     DecimalUint,
     is_decimal_digits,
     SchemaError::BadDecimalUint
@@ -305,10 +307,10 @@ wire_string!(
 /// never leave this process.
 ///
 /// It is deliberately NOT `#[non_exhaustive]`. The repo's non-exhaustive-public-types rule exempts
-/// protocol/schema enums whose closed set is contractual: adding a member here would be a CIRCLE WIRE
-/// CHANGE, not a compatible library extension, and downstream code should be forced to confront it —
-/// an exhaustive `match` that stops compiling is exactly the alarm you want when the wire contract
-/// moves. The same reasoning applies to `WithdrawalStatusKind`.
+/// protocol/schema enums whose closed set is contractual: adding a member here would be a CIRCLE
+/// WIRE CHANGE, not a compatible library extension, and downstream code should be forced to
+/// confront it an exhaustive `match` that stops compiling is exactly the alarm you want when the
+/// wire contract moves. The same reasoning applies to `WithdrawalStatusKind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Token {
     #[default]
@@ -352,8 +354,8 @@ impl<'de> Deserialize<'de> for Token {
     }
 }
 
-/// Deserializes an optional property that is **not nullable**: absent is legal, present-and-`null` is
-/// not.
+/// Deserializes an optional property that is **not nullable**: absent is legal, present-and-`null`
+/// is not.
 ///
 /// Serde's plain `Option<T>` conflates the two — it reads `null` as `None`, i.e. as absence. The
 /// OpenAPI does not: these properties may be OMITTED, and when they are PRESENT they must carry a

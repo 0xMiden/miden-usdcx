@@ -1,9 +1,16 @@
-//! F4-REVERSAL capability-isolation suite for `XReserveStablecoinBuilder` (split out of
-//! `builder_api.rs` for the G3 file-size ceiling). The transfer-blocklist administrator
-//! (`blocklist_manager_holder`, the seeded `BLK_MANAGER` member) MUST be an EXTERNAL entity with NO
-//! other faucet-admin capability. `build_components` rejects a `BLK_MANAGER` holder that collides with
-//! the owner, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder — packaging cannot ship a faucet
-//! whose blocklist admin also holds another privileged role (two-way capability isolation).
+//! Capability isolation for the transfer-blocklist administrator, enforced when the account is
+//! built.
+//!
+//! The account that may block transfers is meant to be an external party — a compliance function —
+//! and it must hold no other privilege over the faucet. Concentrating blocking power in an account
+//! that can also pause, rotate roles, or spend would defeat the separation the blocklist exists to
+//! provide, in both directions: the blocklist admin must not gain other powers, and the other
+//! admins must not gain blocking power.
+//!
+//! Rather than trusting deployment to get this right, `build_components` refuses to compose an
+//! account at all when the blocklist manager collides with the owner, the Domain Pauser, or the
+//! Domain Manager. These tests pin each refusal and the specific error naming the collided role.
+//! (They live apart from `builder_api.rs` only to keep that file within its size ceiling.)
 
 mod support;
 
@@ -38,7 +45,7 @@ const ALL_XRESERVE_SLOT_LABELS: [&str; 7] = [
 
 /// Assembles the xreserve component carrying exactly `labels` (the composition fixture; the two
 /// well-known map labels get empty maps, the domain a dummy word, and the identifier fixpoint the
-/// EMPTY word the builder requires — R2-F2).
+/// EMPTY word the builder requires, because the identifier is written by its init note, not seeded).
 fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
     let library = assemble_xreserve_lib()?;
     let mut slots = Vec::new();
@@ -52,7 +59,8 @@ fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
                 StorageSlot::with_value(name, Word::from([DUMMY_DOMAIN, 0, 0, 0]))
             }
             l if l == IDENTIFIER_CONFIG_SLOT_LABEL => {
-                // R2-F2: the identifier fixpoint ships EMPTY (the builder rejects a non-empty seed).
+                // the identifier slot ships EMPTY — the builder rejects a pre-seeded value, because
+                // only the on-chain init may derive it from the account's own id.
                 StorageSlot::with_value(name, Word::empty())
             }
             _ => StorageSlot::with_value(name, Word::from([0u32, 0, 0, 0])),
@@ -91,10 +99,12 @@ fn faucet_and_component(is_max_supply_mutable: bool) -> Result<(FungibleFaucet, 
 // The production builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3), BLK_MANAGER =
 // id(4). A BLK_MANAGER holder equal to id(1)/(2)/(3) collides with the owner/DOM_PAUSER/DOM_MANAGER.
 
-/// A `BLK_MANAGER` holder colliding with a privileged identity (owner / DOM_PAUSER / DOM_MANAGER) is
-/// rejected at build time with the SPECIFIC error naming the collided role — the two-way capability
-/// isolation the F4-reversal decision requires. Parametrized over the three collisions (G4 /
-/// parametrize-related-tests).
+/// A blocklist manager that collides with any privileged identity is rejected at build time, with
+/// an error naming which one it collided with.
+///
+/// Naming the role matters operationally: a generic "invalid configuration" would leave a deployer
+/// guessing which of the three accounts they reused. The three collisions are parametrized rather
+/// than copy-pasted.
 #[rstest]
 #[case::owner(test_account_id(1), "owner")]
 #[case::dom_pauser(test_account_id(2), "DOM_PAUSER")]

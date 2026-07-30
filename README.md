@@ -70,8 +70,11 @@ See [`docs/spec/FAUCET-COMPONENT-SPEC.md`](docs/spec/FAUCET-COMPONENT-SPEC.md) f
 ## Start here
 
 - **What the faucet does and how it's built:** [`docs/spec/FAUCET-COMPONENT-SPEC.md`](docs/spec/FAUCET-COMPONENT-SPEC.md).
-- **What every short identifier in the code means** (`R-MINT-15`, `D5c`, `DEV-10`, …):
+- **What every short identifier means** (`R-MINT-15`, `D5c`, `DEV-10`, …):
   [`docs/spec/GLOSSARY.md`](docs/spec/GLOSSARY.md).
+- **Where each id is implemented and verified:** [`docs/REQUIREMENTS-TRACEABILITY.md`](docs/REQUIREMENTS-TRACEABILITY.md)
+  maps every requirement/invariant/decision id to its procedure/function and test (inline code
+  comments deliberately carry prose, not ids).
 - **The encoding contracts** (`DC-1`..`DC-7`): [`docs/spec/ENCODING-COMPONENT-SPEC.md`](docs/spec/ENCODING-COMPONENT-SPEC.md).
 - **What each doc in the repo is for:** [`docs/DOCS-INVENTORY.md`](docs/DOCS-INVENTORY.md).
 

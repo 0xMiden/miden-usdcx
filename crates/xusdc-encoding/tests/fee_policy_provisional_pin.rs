@@ -1,8 +1,8 @@
 //! The PROVISIONAL fee-configuration pin: the faucet's fee-policy storage holds exactly the
-//! zero-fee placeholder configuration the V16-NOW migration wired, and nothing else.
+//! zero-fee placeholder configuration it is composed with, and nothing else.
 //!
-//! At protocol-`next`, every `AuthNetworkAccount` constructor requires a `FeePolicyManager` (an
-//! active fee policy plus the fee-asset faucet id) — there is no none-variant. Fee economics for
+//! Every `AuthNetworkAccount` requires a `FeePolicyManager` — an active fee policy plus the
+//! fee-asset faucet id — with no none-variant. Fee economics for
 //! the keyless xReserve faucet are a Circle-owned OPEN decision, so the composition pins a
 //! PROVISIONAL configuration: the stock `BasicConstantFeePolicy` charging an EXPLICIT ZERO fee
 //! for every note script the account can consume (the auth procedure prices EVERY input note
@@ -12,11 +12,9 @@
 //! the verification base fee is 0, so no fee note is ever created, and every admissible note
 //! prices to 0, so no sponsorship is ever required.
 //!
-//! This file is the executable tripwire the later revert flips: when the temporary state this
-//! migration ratified is unwound (the surface re-tightening + Circle's real fee economics), the
-//! values pinned here are exactly what changes. Until then, any drift — a different active
-//! policy, an extra allowed policy, a nonzero or missing schedule entry, a changed fee-asset
-//! id — is RED.
+//! Because the configuration is provisional, this file pins it exactly, so that replacing it is a
+//! deliberate act: any drift — a different active policy, an extra allowed policy, a nonzero or
+//! missing schedule entry, a changed fee-asset id — is RED.
 
 mod support;
 

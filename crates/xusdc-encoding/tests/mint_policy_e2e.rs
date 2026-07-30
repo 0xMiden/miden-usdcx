@@ -1,19 +1,26 @@
-//! ATTESTATION MINT POLICY E2E — the VERIFY-CHAIN + CAP/ADMIN half of the recomposed
-//! mint-semantics matrix (Wave-1 S1): REAL stock `MintNote`s (DepositIntent scheme-4 +
-//! attestation scheme-5 + `NetworkAccountTarget` scheme-2 attachments) consumed by the
-//! PRODUCTION-composed faucet, whose stock `mint_and_send` dispatches
-//! `xreserve::mint_policy::check_policy` as the ACTIVE mint policy.
+//! End-to-end mint rejects, driven through the real note transport.
 //!
-//! This file carries the relocated D5a–D5d verify-stage negatives (attester allowlist +
-//! REMOVE/rotation, forged signature, wrong domain / wrong identifier, amount-below-maxFee) and
-//! the stock cap discipline (over-cap, plus the `set_max_supply` x mint admin interplay:
-//! lower-then-reject, at-cap boundary accept, raise-then-accept). The ASSERT-MATCH binding,
-//! recipient-extraction, transport-shape, pause, F1-restatement, and routing legs live in
-//! `mint_policy_binding_e2e.rs` (one G3-sized module per concern); the shared
-//! production-transport harness (tamper engine + fixtures + drivers) is
-//! `support::mint_transport`, consumed by reference. Every negative asserts its EXACT error
-//! (never `is_err()`), and the security-critical rejects prove fail-closure (no nonce burned,
-//! no supply raised).
+//! Every test here mints — or fails to mint — the way production does: a real standard mint note
+//! carrying the deposit intent, the attestation, and the network-account target, consumed by a
+//! faucet composed by the production builder, whose standard `mint_and_send` dispatches the
+//! faucet's `check_policy` as its active mint policy. Nothing is stubbed, so a reject proves the
+//! whole chain refuses, not just one procedure in isolation.
+//!
+//! This file covers the verification failures and the supply cap: an attester who is not
+//! allowlisted, an attester whose allowlist entry was removed, a forged signature, an intent for
+//! the wrong remote domain, an intent for the wrong identifier, an amount that cannot cover its
+//! own maxFee, and amounts that exceed the faucet's remaining headroom (including the interplay
+//! with the max-supply setter — lowering the cap below the pending mint, minting exactly at the
+//! cap, and raising it again).
+//!
+//! The other half of the matrix — how the note's fields bind to what is actually minted, recipient
+//! extraction, transport shape, pause behavior, and routing — lives in `mint_policy_binding_e2e.rs`.
+//! Both share the transport harness in `support::mint_transport`, which owns the fixtures and the
+//! tampering helpers.
+//!
+//! Two rules hold throughout: every negative asserts its exact error rather than merely failing,
+//! and the security-critical rejects also assert fail-closure — no nonce consumed, no supply
+//! raised — so a reject cannot leave the faucet in a state the attacker wanted.
 
 mod support;
 
@@ -23,10 +30,10 @@ use support::mint_transport::*;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMaxSupplyNote};
 
-// D5d — ATTESTER ALLOWLIST + SIGNATURE (through the new transport)
+// ATTESTER ALLOWLIST AND SIGNATURE — who signed, and were they allowed to
 // ================================================================================================
 
-/// A NON-allowlisted attester's (valid) attestation rejects: R-MINT-13 through the policy.
+/// A stranger's signature is refused even though it verifies: their key is not allowlisted.
 #[tokio::test]
 async fn mint_rejects_a_non_allowlisted_attester() -> Result<()> {
     let mut pf = fixture()?;
@@ -56,7 +63,8 @@ async fn mint_rejects_a_non_allowlisted_attester() -> Result<()> {
     .await
 }
 
-/// The ALLOWLISTED attester's key with a signature over DIFFERENT bytes rejects: R-MINT-14.
+/// An allowlisted attester's key paired with a signature over different bytes is refused: the
+/// signature does not verify against the digest of the deposit actually presented.
 #[tokio::test]
 async fn mint_rejects_a_forged_signature() -> Result<()> {
     let mut pf = fixture()?;
@@ -87,10 +95,13 @@ async fn mint_rejects_a_forged_signature() -> Result<()> {
     .await
 }
 
-/// A REMOVED attester's attestation rejects: the bring-up allowlists attester 1, then a THIRD
-/// owner `set_attester` note REMOVES it (`enabled = 0` writes the EMPTY word back). The mint
-/// attested by the removed key then trips the same R-MINT-13 allowlist gate, fail-closed —
-/// proving the disable write actually clears the allowlist marker through the new transport.
+/// Removing an attester really revokes them, end to end.
+///
+/// The account starts with attester 1 allowlisted; a further owner-sent `set_attester` note with
+/// `enabled = 0` writes the empty Word back over their entry. A mint attested by that key is then
+/// refused by the same allowlist check a never-allowlisted key hits. This is the test that proves
+/// the disable path clears the marker rather than merely overwriting it with something else
+/// non-empty — key rotation depends on it.
 #[tokio::test]
 async fn mint_rejects_a_removed_attester() -> Result<()> {
     let mut pf = fixture_with(MAX_SUPPLY, |recipient, faucet_id| {
@@ -196,11 +207,11 @@ async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<
     Ok(())
 }
 
-// D5a — DOMAIN / IDENTIFIER COMPARES (build-seeded domain; note-seeded identifier)
+// DOMAIN AND IDENTIFIER COMPARES — is this deposit even addressed to this faucet?
 // ================================================================================================
 
-/// A deposit intent addressed to a DIFFERENT remote domain rejects: R-MINT-6 against the
-/// BUILD-SEEDED domain config (DEC-4).
+/// A deposit intent naming a different remote domain is refused, compared against the domain the
+/// builder seeded into the account.
 #[tokio::test]
 async fn mint_rejects_a_wrong_domain() -> Result<()> {
     let mut pf = fixture()?;
@@ -218,8 +229,8 @@ async fn mint_rejects_a_wrong_domain() -> Result<()> {
     .await
 }
 
-/// A deposit intent whose remoteToken is not THIS faucet's identifier rejects: R-MINT-7 against
-/// the identifier the minimized init note seeded.
+/// A deposit intent whose `remoteToken` is not this faucet's identifier is refused, compared
+/// against the identifier the init note seeded.
 #[tokio::test]
 async fn mint_rejects_a_wrong_identifier() -> Result<()> {
     let mut pf = fixture()?;
@@ -236,11 +247,11 @@ async fn mint_rejects_a_wrong_identifier() -> Result<()> {
     .await
 }
 
-// D5b — AMOUNT/FEE BOUNDS (relocated into the policy dispatch)
+// AMOUNT AND FEE BOUNDS — checked inside the policy, before anything is minted
 // ================================================================================================
 
-/// An attested amount STRICTLY BELOW the attested maxFee rejects: R-MINT-10 through the policy's
-/// relocated D5b stage (`assert_mint_amounts` — the fee could never be covered).
+/// An attested amount strictly below its own attested maxFee is refused: the deposit could never
+/// cover the fee it declares.
 #[tokio::test]
 async fn mint_rejects_an_amount_below_max_fee() -> Result<()> {
     let mut pf = fixture()?;
@@ -260,8 +271,9 @@ async fn mint_rejects_an_amount_below_max_fee() -> Result<()> {
 // SUPPLY CAP — the STOCK mint_and_send discipline (the policy carries no supply arithmetic)
 // ================================================================================================
 
-/// An attested amount above the remaining supply headroom rejects in the STOCK `mint_and_send`
-/// cap discipline (the R-MINT-15 semantics, now stock-owned), fail-closed.
+/// A mint that would push total supply past the faucet's maximum is refused by the standard
+/// `mint_and_send` cap check — the faucet's own policy does no supply arithmetic at all — and
+/// fails closed.
 #[tokio::test]
 async fn mint_rejects_an_over_cap_amount() -> Result<()> {
     let mut pf = fixture_with(MINT_AMOUNT - 1, |_, _| vec![])?;

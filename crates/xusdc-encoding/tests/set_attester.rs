@@ -3,11 +3,11 @@
 //! `authority::assert_authorized`, which after the reconciliation (`Authority::OwnerControlled`, the
 //! built `ATTEST_ADMIN` role removed) resolves to the Ownable2Step owner. This file covers the owner
 //! gate (the security core), the production attestation-gate posture pin, and the pause gate. The
-//! non-vacuity set->verify seam (attestation enable/remove/rotation through the REAL transport)
-//! lives in the mint E2E suites (`mint_policy_e2e.rs` / `wave1_recomposition.rs`), alongside the
-//! production-faucet fixtures they own. The DOM role SEED itself is proven in `role_admin.rs`
-//! (`shipped_delegation_reads_back`, production builder) and `set_min_burn.rs`
-//! (`support_replica_carries_delegation_seed`, the burn-oracle replica).
+//! non-vacuity seam — that enabling, removing, and rotating an attester actually changes which
+//! attestations a real mint accepts — lives in the mint end-to-end suites, alongside the
+//! production-faucet fixtures they own. The role seeding this file's non-owner rejects rely on is
+//! proven in `role_admin.rs::shipped_delegation_reads_back` against a production-built account and
+//! in `set_min_burn.rs::support_replica_carries_delegation_seed` against the test replica.
 
 mod support;
 
@@ -38,9 +38,10 @@ fn dummy_config() -> (Word, Word) {
     (Word::from([7u32, 0, 0, 0]), Word::from([11u32, 12, 13, 14]))
 }
 
-/// A compilable stand-in for the DELETED custom mint driver (the Wave-1 S1 recomposition removed
-/// `xreserve::xreserve_mint`, so the former generated driver no longer assembles): these tests
-/// never invoke the driver proc — the guarded fixture only needs a driver component that compiles.
+/// A do-nothing component that satisfies the shared fixture's requirement for a driver.
+///
+/// These tests reach the account through admin notes and never invoke it, so it only has to
+/// compile.
 fn placeholder_driver_src() -> String {
     "#! Test driver stand-in: never invoked by this suite (the custom mint entry was deleted by\n\
      #! the Wave-1 S1 recomposition); the guarded fixture only requires a compilable component.\n\
@@ -108,11 +109,13 @@ fn probe_attester_admin_exports() -> Result<()> {
 // PRODUCTION REGRESSION GATE — the owner-gated build must not perturb the mint-gate posture
 // ================================================================================================
 
-/// The owner-gated production builder gates the mint on the ATTESTATION policy: the composed set's
-/// ACTIVE mint-policy slot (`TokenPolicyManager::active_mint_policy_slot()`) holds exactly the root
-/// resolved via `ATTESTATION_MINT_POLICY_PROC_PATH` from the installed `xreserve` component
-/// (INV-MINT-SECURITY restated — every supply increase passes the attestation gate; the executing
-/// halves are `mint_policy_e2e.rs` / `wave1_recomposition.rs`).
+/// Making the attester setter owner-gated did not disturb what actually guards minting.
+///
+/// The composed account's active mint-policy slot must still hold exactly the root of the
+/// attestation policy resolved from the installed component. That is the structural form of the
+/// property everything else depends on: every increase in supply goes through the attestation
+/// gate. The executing halves — real mints accepted and rejected — live in the mint end-to-end
+/// suites.
 #[test]
 fn production_build_gates_mint_on_the_attestation_policy() -> Result<()> {
     let components = production_component_set(1_000_000, 0)?;
@@ -207,14 +210,13 @@ async fn set_attester_dom_manager_non_owner_rejects() -> Result<()> {
     assert_set_attester_non_owner_rejected(dom_manager(), 30).await
 }
 
-// SETTER NOT PAUSE-GATED (F6) — the OWNER may set_attester while the faucet is paused
+// THE SETTER IS NOT PAUSE-GATED — the OWNER may set_attester while the faucet is paused
 // ================================================================================================
 
 /// After the DOM_PAUSER pauses the faucet (custom `xreserve::pause_admin::pause` — the ONLY pause
 /// surface in the Domain-Pauser-only model), an OWNER-sent `set_attester` note SUCCEEDS while paused:
-/// F6 reconciles the
-/// admin setters to Circle's `onlyOwner` (deliberately NOT pause-gated), so a compromised attester can
-/// be disabled during a pause. The enabled marker lands despite is_paused == true. The owner gate still
+/// the admin setters follow Circle's owner-only model and are deliberately NOT pause-gated, so a
+/// compromised attester can be disabled during a pause — which is exactly when it is needed. The enabled marker lands despite is_paused == true. The owner gate still
 /// governs it — the `*_non_owner_rejects` tests above prove that half.
 #[tokio::test]
 async fn set_attester_owner_succeeds_while_paused() -> Result<()> {
@@ -229,7 +231,7 @@ async fn set_attester_owner_succeeds_while_paused() -> Result<()> {
     let mut evolved = account.clone();
     evolved.apply_patch(paused.account_patch())?;
 
-    // tx2: the OWNER's set_attester(K, true) SUCCEEDS while paused (F6: setters are not pause-gated).
+    // tx2: the OWNER's set_attester(K, true) SUCCEEDS while paused — setters are not pause-gated.
     let executed = run_set_attester_tx(&gm.harness, &evolved, owner(), commitment, 1, 7)
         .await
         .expect("the owner's set_attester(K, true) must succeed while the faucet is paused");

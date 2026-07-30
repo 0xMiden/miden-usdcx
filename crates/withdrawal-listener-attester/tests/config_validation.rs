@@ -1,11 +1,12 @@
 //! The config's invariants hold on **every** construction path — the builder *and* serde.
 //!
-//! Round 1 validated in `ListenerConfigBuilder::build` and derived `Deserialize` straight onto the
-//! struct. That left a hole with teeth: an operator's config file carrying a real API key and an
-//! `http://` base URL was **accepted**, because deserialization populated the private fields without
-//! ever passing through the check that would have refused it — and `AuthPosture::from_config` would
-//! then have handed that credential to the header injector, in the clear. The builder said no; the
-//! config file said yes; the config file is the path production actually uses.
+//! Validating only in `ListenerConfigBuilder::build` while deriving `Deserialize` straight onto
+//! the struct would leave a hole with teeth: an operator's config file carrying a real API key and
+//! an `http://` base URL would be **accepted**, because deserialization populates the private
+//! fields without ever passing through the check that would refuse it — and
+//! `AuthPosture::from_config` would then hand that credential to the header injector, in the
+//! clear. The builder would say no; the config file would say yes; the config file is the path
+//! production actually uses.
 //!
 //! So the property under test is not "the builder validates". It is **"every `ListenerConfig` that
 //! exists is valid, however it was made"** — and the parity test below is the one that says so: for
@@ -101,14 +102,15 @@ fn a_plaintext_base_url_without_a_credential_is_still_allowed() {
     assert!(serde_json::from_value::<ListenerConfig>(config).is_ok());
 }
 
-// NO AUTH HEADER IS INVENTED — Q-API-AUTH stays OPEN
+// NO AUTH HEADER IS INVENTED — the credential scheme stays OPEN
 // ================================================================================================
 
 #[test]
 fn the_package_default_names_no_auth_header_at_all() {
-    // Round 1 defaulted this to `Authorization`, which meant that configuring only a token silently
-    // SELECTED an undocumented scheme — the exact thing §10.12 forbids ("do NOT invent an auth
-    // header"). There is now no default: the OpenAPI documents no scheme, so neither does this crate.
+    // Defaulting this to `Authorization` would mean that configuring only a token silently
+    // SELECTS an undocumented scheme — the exact thing Circle's documentation forbids ("do NOT
+    // invent an auth
+    // header"). There is no default: the OpenAPI documents no scheme, so neither does this crate.
     let config = ListenerConfig::default();
 
     assert!(config.api_auth_token().is_none());

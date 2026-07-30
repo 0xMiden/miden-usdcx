@@ -1,12 +1,19 @@
-//! F5 admin note scripts — layered-auth E2E under the production `AuthNetworkAccount`. Each shipped
-//! admin note is allowlisted (so it PASSES network auth) and reads its params from note STORAGE
-//! (never NOTE_ARGS); the sender-gated admin proc is the second layer. Reference op: `set_attester`
-//! (row 3).
+//! Admin notes end to end: both layers of authorization, on the production network account.
 //!
-//! EXCEPTION — `set_role_admin` (S21 disposition flip, human-ratified 2026-07-14): its runtime
-//! note was REMOVED from the allowlist (the role-admin graph is build-seeded and frozen; rotation
-//! is `grant_role`/`revoke_role`). Its section below consumes the PRESERVED former note and proves
-//! the auth component now REJECTS it — negative coverage, not a driving suite.
+//! Every admin operation reaches the faucet as a note, and two independent things must hold for it
+//! to take effect. The note's script must be allowlisted, or network auth refuses it before any of
+//! its code runs; and the admin procedure it calls must accept the sender, which is the owner or a
+//! specific role depending on the operation. Each test here drives a real shipped note and pins
+//! both layers, so neither can start carrying the other.
+//!
+//! Parameters travel in note STORAGE, committed by whoever created the note — never in note
+//! arguments, which the network executor controls and could therefore rewrite. The `set_attester`
+//! note is the worked example the others follow.
+//!
+//! One operation is covered by its absence. There is no admissible note for `set_role_admin`: the
+//! role-delegation graph is seeded when the account is built and frozen there, and rotation happens
+//! through grant and revoke. Its section below builds that exact note anyway and shows auth
+//! rejecting it — negative coverage of a capability the faucet deliberately does not have.
 
 mod support;
 
@@ -166,9 +173,10 @@ fn set_attester_note_script_root_is_pinned() {
     );
 }
 
-// IDENTIFIER_INIT (allowlist row 12) — owner-gated, init-once identifier seeding (DEC-4: the
-// minimized replacement of the former four-field domain_init; domain / source_domain /
-// xreserve_contract are BUILD-SEEDED by the production builder's `with_domain_config`)
+// IDENTIFIER_INIT (allowlist row 12) — owner-gated, init-once seeding of the one domain-config
+// field that cannot be known at build time. The domain, source domain, and xReserve contract
+// address are all seeded by the builder; only the identifier, which derives from the account's own
+// id, is written after deployment
 // ================================================================================================
 
 /// The five config words as `read_domain_config_words` returns them after the owner's init:
@@ -383,9 +391,9 @@ fn identifier_init_note_script_root_is_pinned() {
     );
 }
 
-// SET_MIN_BURN_SIZE (allowlist row 4) — owner-gated floor setter (Wave-1 S1: the note asserts
-// `new_min >= 1` then calls the STOCK `min_burn_amount::set_min_burn_amount`, which writes the
-// STOCK `MinBurnAmount` slot)
+// SET_MIN_BURN_SIZE (allowlist row 4) — owner-gated floor setter. The note first asserts the new
+// floor is at least 1 (which is what makes a zero-amount burn impossible) and then calls the
+// standard `min_burn_amount::set_min_burn_amount`, which writes the standard policy's own slot
 // ================================================================================================
 
 const NEW_MIN_BURN: u64 = 5_000;
@@ -648,9 +656,11 @@ fn pause_note_script_root_is_pinned() {
     );
 }
 
-/// masm-rust-constant-parity for the F4-reversal block_account note (allowlist row 13). Binds
-/// transitively to `blocklist_admin::block_account`'s digest — any edit of the note or the proc it
-/// calls trips this and forces a conscious re-pin.
+/// The compiled block-account note script matches its pinned root constant.
+///
+/// The pin binds transitively to the digest of `blocklist_admin::block_account`, which the note
+/// calls, so editing either the note or the procedure changes the root and fails here — forcing the
+/// re-pin to be a deliberate act rather than a silent drift between the Rust constant and the MASM.
 #[test]
 fn block_account_note_script_root_is_pinned() {
     let root = XReserveBlockAccountNote::script_root();
@@ -662,8 +672,8 @@ fn block_account_note_script_root_is_pinned() {
     );
 }
 
-/// masm-rust-constant-parity for the F4-reversal unblock_account note (allowlist row 14). Binds
-/// transitively to `blocklist_admin::unblock_account`'s digest.
+/// The compiled unblock-account note script matches its pinned root constant, binding transitively
+/// to the digest of `blocklist_admin::unblock_account` as above.
 #[test]
 fn unblock_account_note_script_root_is_pinned() {
     let root = XReserveUnblockAccountNote::script_root();
@@ -839,7 +849,7 @@ async fn assert_grant_role_authorized(
     Ok(())
 }
 
-/// v16 #3215 (S2, operator-approved): the owner's role administration flows through its ADMIN
+/// The owner's role administration flows through its ADMIN
 /// membership — it administers DOM_MANAGER (whose effective admin defaults to ADMIN), no longer
 /// the delegated DOM_PAUSER.
 #[tokio::test]
@@ -852,7 +862,7 @@ async fn grant_role_dom_manager_authorized() -> Result<()> {
     assert_grant_role_authorized(test_account_id(3), pauser_sym(), 71).await
 }
 
-/// v16 #3215 (S2): delegation is EXCLUSIVE — the owner (an ADMIN member, not a DOM_MANAGER
+/// Delegation is EXCLUSIVE — the owner (an ADMIN member, not a DOM_MANAGER
 /// holder) can no longer grant the DOM_MANAGER-administered DOM_PAUSER; the delegation gate
 /// traps it like any non-admin sender.
 #[tokio::test]
@@ -914,7 +924,7 @@ async fn grant_role_note_args_are_inert() -> Result<()> {
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let grantee = test_account_id(5);
-    // v16 #3215 (S2): DOM_PAUSER's effective admin is DOM_MANAGER — the grant is manager-sent.
+    // DOM_PAUSER's effective admin is DOM_MANAGER, so the grant must be manager-sent.
     let note = XReserveGrantRoleNote::create(
         test_account_id(3),
         faucet_id,
@@ -1092,7 +1102,7 @@ async fn faucet_with_granted_role(
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let grantee = test_account_id(4);
-    // v16 #3215 (S2): each role is seeded by its effective admin — DOM_PAUSER by the
+    // each role is seeded by its effective admin — DOM_PAUSER by the
     // DOM_MANAGER holder (delegated admin), DOM_MANAGER by the owner (ADMIN member).
     let grant = XReserveGrantRoleNote::create(
         grantor,
@@ -1119,7 +1129,7 @@ async fn faucet_with_granted_role(
 }
 
 /// Authorized revoke: `sender` (the role's v16 effective admin) revokes id(4)'s `role`
-/// membership; membership cleared. v16 #3215 (S2): DOM_PAUSER revocation is DOM_MANAGER's
+/// membership; membership cleared. DOM_PAUSER revocation is DOM_MANAGER's
 /// (delegated admin); DOM_MANAGER revocation is the owner's (ADMIN member).
 async fn assert_revoke_authorized(
     sender: AccountId,
@@ -1156,7 +1166,7 @@ async fn assert_revoke_authorized(
     Ok(())
 }
 
-/// v16 #3215 (S2): the owner (ADMIN member) administers DOM_MANAGER — grant seeded by the owner,
+/// The owner (ADMIN member) administers DOM_MANAGER — grant seeded by the owner,
 /// revoked by the owner.
 #[tokio::test]
 async fn revoke_role_owner_authorized() -> Result<()> {
@@ -1211,7 +1221,7 @@ async fn revoke_role_third_party_traps() -> Result<()> {
 async fn revoke_role_note_args_are_inert() -> Result<()> {
     let (chain, faucet_id, evolved, grantee) =
         faucet_with_granted_role(pauser_sym(), test_account_id(3), 113).await?;
-    // v16 #3215 (S2): DOM_PAUSER's effective admin is DOM_MANAGER — the revoke is manager-sent.
+    // DOM_PAUSER's effective admin is DOM_MANAGER, so the revoke must be manager-sent.
     let note = XReserveRevokeRoleNote::create(
         test_account_id(3),
         faucet_id,
@@ -1252,19 +1262,27 @@ fn revoke_role_note_script_root_is_pinned() {
     );
 }
 
-// SET_ROLE_ADMIN — REMOVED from the allowlist (S21 disposition flip, human-ratified 2026-07-14):
-// the runtime re-delegation capability is structurally unreachable. The role-admin graph the
-// faucet deploys with is the BUILD-TIME seed; rotation is grant_role/revoke_role (CIR-ADMIN-3).
-// The FORMER production note script is preserved VERBATIM below as a negative-coverage fixture:
-// these tests consume the exact removed note against the production network-auth faucet and prove
-// the auth component now REJECTS it (`ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED`) — the same
-// executing proof shape as `the_auth_component_rejects_a_non_allowlisted_note` (S12), specialized
-// to the removed root. Membership/MAST-sweep legs: `account_callable_surface.rs`.
+// SET_ROLE_ADMIN — deliberately NOT in the allowlist, and proven unreachable
+// ================================================================================================
+// The faucet ships no way to re-point a role's administrator at runtime. The delegation graph is
+// seeded when the account is built and frozen there; rotating who holds a role is done with
+// grant_role and revoke_role, which is the operation Circle's model actually calls for.
+//
+// Proving a capability is absent needs the capability's exact artifact, so the note script that
+// would have exercised it is kept verbatim below as a fixture. The tests build that exact note and
+// send it to a production network-auth faucet, which rejects it at the allowlist check before any
+// of its code runs. Keeping the real script — rather than an approximation — is what makes the
+// rejection meaningful: it is the genuine root that would have worked had it been allowlisted.
+//
+// The complementary evidence, that the underlying procedure is also unreachable through the
+// account's callable surface, lives in `account_callable_surface.rs`.
 // ================================================================================================
 
-/// The FORMER `xreserve_set_role_admin_note.masm` source, preserved verbatim from the removed
-/// shipped file (git history: `asm/standards/notes/xreserve_set_role_admin_note.masm` before the
-/// S21 removal) so the rejection tests below drive the EXACT root that used to be allowlist row 10.
+/// The set-role-admin note script, preserved verbatim so the rejection tests below drive the exact
+/// root such a note would have.
+///
+/// It is not shipped in `asm/standards/notes/` — it lives here precisely because it is not part of
+/// the account's surface.
 /// It stages the creator-committed `[role_symbol, admin_role_symbol]` note storage and `call`s the
 /// stock `rbac::set_role_admin` — which the account still exposes (present-but-unreachable).
 const FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT_SRC: &str = r#"# xreserve_set_role_admin_note — the shipped, root-pinned set_role_admin admin note script (F5).
@@ -1416,7 +1434,7 @@ fn former_set_role_admin_note_script_still_compiles_to_the_former_root() {
     );
 }
 
-/// REJECTED (the S21 executing proof, formerly the owner-sent SUCCESS test): the exact former
+/// REJECTED — the executing proof that the capability is gone: the exact
 /// set_role_admin note — owner-sent, well-formed, previously allowlist row 10 — now FAILS network
 /// auth with the allowlist error. The note script itself EXECUTES (the allowlist is an epilogue
 /// `@auth_script`) and the owner passes the ADMIN-role proc gate, so the rejection is attributable
@@ -1490,7 +1508,7 @@ async fn set_role_admin_note_is_rejected_regardless_of_note_args() -> Result<()>
 /// LAYER-ORDER pin (preserved negative coverage): a NON-admin-sent former set_role_admin note
 /// still traps at the stock role-admin PROC gate — the note body executes BEFORE the epilogue
 /// allowlist check, so the proc's own gate fires first (`ERR_SENDER_NOT_ROLE_ADMIN`). Identical
-/// behavior before and after the S21 removal: the inner authorization layer never weakened.
+/// behavior whether or not the note is admissible: the inner authorization layer never weakened.
 async fn assert_set_role_admin_nonadmin_traps(sender: AccountId, seed: u64) -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;

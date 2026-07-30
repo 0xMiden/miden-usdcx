@@ -1,6 +1,6 @@
 //! MASM structure-conformance suite: mechanically enforces the
 //! 0xMiden/protocol MASM source conventions the repo is bound to — the adjudicated rules of
-//! `docs/governing/MASM-STRUCTURE-RESEARCH-REPORT.md` §2 (file/section structure, imports,
+//! the repository's MASM structure conventions (file/section structure, imports,
 //! doc-comment blocks, constants/errors organization, inline `# =>` trackers) as pinned by the
 //! `.claude/skills/masm-*` skill set and grounded against `protocol@v0.15.3` (`681fc9058`).
 //!

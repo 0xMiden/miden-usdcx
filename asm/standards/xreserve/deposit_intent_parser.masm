@@ -1,10 +1,32 @@
 # xreserve::deposit_intent_parser
 #
-# The faucet-side DepositIntent mint preconditions (stages D5a, D5b, D5c). It consumes the shared
-# parser (`xreserve::encoding::parse_deposit_intent`, NS-2) BY REFERENCE and adds only the
-# faucet-owned checks: the domain/identifier compares (D5a steps 5-6), the amount/fee bounds (D5b),
-# and the nonce replay guard (D5c). The identifier slot stores the canonical `bytes32_to_key`
-# key-Word, so the R-MINT-7 identifier equality is realized as key equality.
+# The faucet-side DepositIntent mint preconditions. It consumes the shared parser
+# (`xreserve::encoding::parse_deposit_intent`) and adds only the faucet-owned
+# checks: the domain and identifier equality compares, the amount/fee bounds, and the nonce
+# replay guard. The identifier slot stores the canonical `bytes32_to_key` key-Word, so the
+# identifier equality is realized as key equality.
+#
+# A DepositIntent is the Circle-signed message that authorizes one mint. Its wire form is a
+# fixed 240-byte big-endian header followed by variable-length hookData; on-chain it is staged
+# as u32-LE-packed felts (4 wire bytes per felt). The header fields, by wire byte offset:
+# - magic (bytes 0..4): a fixed sentinel identifying a DepositIntent; set by Circle.
+# - version (bytes 4..8): the wire-format version, currently 1; set by Circle.
+# - amount (bytes 8..40): the deposited amount as a uint256 in the token's 6-decimal smallest
+#   units; set by Circle from the source-chain deposit.
+# - remoteDomain (bytes 40..44): the destination-domain id Circle assigns this chain; the
+#   faucet accepts only its configured domain.
+# - remoteToken (bytes 44..76): the destination token identifier as bytes32; the faucet
+#   accepts only its configured identifier.
+# - remoteRecipient (bytes 76..108): the destination account to mint to, as bytes32 (the
+#   right-aligned account-id packaging); chosen by the depositor.
+# - localToken (bytes 108..140): the source-chain token contract as bytes32; set by Circle.
+# - localDepositor (bytes 140..172): the source-chain depositor as bytes32; set by Circle.
+# - maxFee (bytes 172..204): the depositor-authorized fee ceiling as a uint256.
+# - nonce (bytes 204..236): Circle's unique deposit nonce as bytes32; drives the replay guard.
+# - hookDataLen (bytes 236..240): the byte length of the trailing hookData; the staged length
+#   must satisfy len == 240 + hookDataLen.
+# - hookData (bytes 240..): an optional opaque payload; parsed only for length, never for
+#   effects.
 
 use miden::protocol::active_account
 use miden::core::math::u64
@@ -14,14 +36,13 @@ use {AMOUNT_FELT_OFF, MAX_FEE_FELT_OFF, NONCE_FELT_OFF} from xreserve::encoding:
 # CONSTANTS
 # =================================================================================================
 
-# Slots — ids derive from the namespaced labels (the Rust fixtures bind the same labels
-# via StorageSlotName; hard-coded slots are source-approved for the self-contained
-# faucet, ownership map slot-binding note / fungible.masm precedent)
+# Slots — ids derive from the namespaced label strings below. The Rust account builder binds
+# the identical label strings, so both sides derive the same slot ids.
 pub const DOMAIN_CONFIG_SLOT = word("xusdc::xreserve::domain_config::domain")
 pub const IDENTIFIER_CONFIG_SLOT = word("xusdc::xreserve::domain_config::identifier")
 
-# D5c nonce registry: the usedNonces StorageMap slot. The map-slot DECLARATION
-# is Rust-side (StorageSlot::with_map; canary-proven); this const is the MASM-side slot id.
+# The usedNonces StorageMap slot (the nonce replay registry). The map slot itself is declared
+# by the Rust account builder; this const is the MASM-side slot id.
 pub const USED_NONCES_SLOT = word("xusdc::xreserve::nonce_registry::used_nonces")
 
 # ERRORS
@@ -30,15 +51,15 @@ pub const USED_NONCES_SLOT = word("xusdc::xreserve::nonce_registry::used_nonces"
 const ERR_XRESERVE_WRONG_DOMAIN = "deposit intent remote domain does not match the faucet domain"
 const ERR_XRESERVE_WRONG_IDENTIFIER = "deposit intent remote token does not match the faucet identifier"
 
-# D5b amount/fee (R-MINT-10 + F2). R-MINT-9 (ERR_X_TOO_LARGE) is CONSUMED from the encoding
-# library's reducer, never redefined here. the F2 feeAmount==0 gate SUBSUMES the old R-MINT-11
-# feeAmount<=maxFee compare (restored at the DEV-8 fee-split — see assert_mint_amounts); its
-# ERR string is byte-identical to xreserve_mint.masm's ERR_XRESERVE_FEE_NONZERO so the felt
-# code is shared (MASM consts are module-scoped — this parser declares its own).
+# Amount/fee errors. The too-large reject (ERR_X_TOO_LARGE) is CONSUMED from the encoding
+# library's reducer, never redefined here. The fee gate requires feeAmount == 0 — the MVP has
+# no relayer-fee leg — which subsumes the feeAmount <= maxFee compare (see
+# assert_mint_amounts for the gate and its upgrade path).
 const ERR_XRESERVE_AMOUNT_BELOW_FEE = "deposit intent amount is below the max fee"
 const ERR_XRESERVE_FEE_NONZERO = "mint fee amount must be zero"
 
-# D5c nonce replay (R-MINT-12). Assert-zero only; the registry write is deferred to D5e.
+# Nonce replay: assert-zero only; marking the nonce used is the mint policy's accept-path
+# write, so a failed mint never consumes a nonce.
 const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
 
 # PUBLIC INTERFACE
@@ -46,11 +67,11 @@ const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
 
 #! Asserts the faucet-owned DepositIntent mint preconditions over a staged preimage.
 #!
-#! Delegates the structural validation (D5a steps 1-4, 7, 8) to the encoding library's
+#! Delegates the structural validation to the encoding library's
 #! `xreserve::encoding::parse_deposit_intent`, then asserts the two faucet-owned
-#! compares (D5a steps 5-6) against the faucet config slots: the parsed remote domain
-#! must equal the configured domain, and the canonical key-Word of the parsed remote
-#! token must equal the configured identifier key.
+#! compares against the faucet config slots: the parsed remote domain must equal the
+#! configured domain, and the canonical key-Word of the parsed remote token must equal
+#! the configured identifier key.
 #!
 #! Inputs:  [intent_ptr, len_felts]
 #! Outputs: [hook_data_len]
@@ -70,22 +91,21 @@ const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
 @account_procedure
 pub proc assert_deposit_intent
     exec.encoding::parse_deposit_intent
-    # => [remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]
+    # => [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len]
 
-    # step 5 of D5a (R-MINT-6): the configured domain lives in element 0 of the domain
-    # config slot word
+    # domain compare: the configured domain lives in element 0 of the domain config slot word
     push.DOMAIN_CONFIG_SLOT[0..2]
     exec.active_account::get_item
-    # => [domain, d1, d2, d3, remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]
+    # => [domain, d1, d2, d3, remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len]
 
     movdn.3 drop drop drop
-    # => [domain, remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]
+    # => [domain, remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len]
 
     assert_eq.err=ERR_XRESERVE_WRONG_DOMAIN
-    # => [REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]
+    # => [REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len]
 
-    # step 6 of D5a (R-MINT-7): the parser's packed remoteToken words are already in the
-    # [B1, B0] orientation bytes32_to_key consumes
+    # identifier compare: the parser's packed remoteToken words are already in the
+    # [B_UPPER, B_LOWER] orientation bytes32_to_key consumes
     exec.encoding::bytes32_to_key
     # => [KEY, hook_data_len]
 
@@ -97,41 +117,33 @@ pub proc assert_deposit_intent
     # => [hook_data_len]
 end
 
-#! Asserts the faucet-owned D5b amount/fee mint preconditions over a staged preimage.
+#! Asserts the faucet-owned amount and fee mint preconditions over a staged preimage.
 #!
-#! Consumes the encoding library's `xreserve::encoding::uint256_to_asset_amount` BY REFERENCE to
-#! reduce the `amount` (felt[2..9]) and `maxFee` (felt[43..50]) uint256 fields from the
-#! staged preimage and the operator `feeAmount` (8 u32-LE limbs read from the advice
-#! stack), then asserts reduced `amount >= maxFee` (R-MINT-10) and reduced
-#! `feeAmount == 0` (F2 MVP; SUBSUMES R-MINT-11 `feeAmount <= maxFee`). R-MINT-9
-#! (`ERR_X_TOO_LARGE`, high-4 limbs nonzero) PROPAGATES from the reducer on any of the three values.
+#! `amount` (felt[2..9]) and `maxFee` (felt[43..50]) come from the staged preimage; `feeAmount`
+#! does not travel in the intent at all and is read from the advice stack as 8 u32-LE limbs.
+#! All three go through the encoding library's `uint256_to_asset_amount`.
 #!
-#! `feeAmount` advice-provider hygiene: `feeAmount` is an
-#! operator-chosen free parameter with no in-scope kernel-trusted commitment, so the
-#! commitment/content-key hygiene rules are N/A; under the F2 MVP its bound is the
-#! `feeAmount == 0` gate (the DEV-8 fee-split restores the R-MINT-11 `<= maxFee` compare
-#! against the Circle-signed `maxFee`). Missing advice ERRORS (the `adv_push` read traps),
-#! never defaults; a malformed (non-u32) limb traps `ERR_FELT_OUT_OF_FIELD` in the
-#! reducer's `u32assertw` guard. `feeAmount == 0` is the operator pushing eight zero limbs.
+#! The advice read is the part worth care: `feeAmount` is caller-supplied with no commitment
+#! backing it, so its only bound is the zero gate below. An absent advice value traps rather than
+#! defaulting to zero, which is what keeps "supplied no fee" and "claimed a zero fee" distinct.
 #!
 #! Inputs:  [intent_ptr, scale_exp]
 #! Outputs: []
 #!
 #! Where:
 #! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
-#! - scale_exp is the decimal scale exponent forwarded to the reducer (DEV-5 OPEN).
+#! - scale_exp is the decimal scale exponent forwarded to the reducer (the cap/scale choice
+#!   is OPEN, pending Circle confirmation).
 #!
 #! Panics if:
 #! - the reducer rejects amount, maxFee, or feeAmount (ERR_X_TOO_LARGE / ERR_AMOUNT_OVER_CAP).
 #! - a feeAmount advice limb is not a valid u32 (ERR_FELT_OUT_OF_FIELD), or feeAmount advice is absent.
-#! - reduced amount < maxFee (ERR_XRESERVE_AMOUNT_BELOW_FEE, R-MINT-10).
-#! - reduced feeAmount != 0 (ERR_XRESERVE_FEE_NONZERO, F2 MVP; subsumes R-MINT-11 feeAmount <= maxFee).
+#! - reduced amount < maxFee (ERR_XRESERVE_AMOUNT_BELOW_FEE).
+#! - reduced feeAmount != 0 (ERR_XRESERVE_FEE_NONZERO).
 #!
 #! Invocation: exec
 @account_procedure
 pub proc assert_mint_amounts
-    # => [intent_ptr, scale_exp]
-
     # reduce amount (felt[2..9]); keep [intent_ptr, scale_exp] live below for reuse
     dup.1 dup.1 push.AMOUNT_FELT_OFF add
     # => [amount_base, scale_exp, intent_ptr, scale_exp]
@@ -150,9 +162,9 @@ pub proc assert_mint_amounts
     movup.2 drop
     # => [maxfee_y, amount_y, scale_exp]
 
-    # assert reduced amount >= maxFee (R-MINT-10; maxFee <= amount), keeping maxfee_y for the
-    # follow-on R-MINT-11 compare; both reduced values are < 2^63 (felts are unordered) -> u64
-    # limb compare.
+    # assert reduced amount >= maxFee over copies; both reduced values are < 2^63 (felts are
+    # unordered) -> u64 limb compare. the surviving maxfee_y copy below is dropped after the
+    # fee gate.
     dup movup.2 swap
     # => [maxfee_y, amount_y, maxfee_y, scale_exp]
 
@@ -169,28 +181,25 @@ pub proc assert_mint_amounts
     assert.err=ERR_XRESERVE_AMOUNT_BELOW_FEE
     # => [maxfee_y, scale_exp]
 
-    # reduce feeAmount from the advice stack: the first adv_pushw pops limbs 0..3 (-> U0),
-    # the next pops limbs 4..7 (-> U1), matching the reducer's [U1, U0] shape. A missing
-    # word traps (advice stack read), never defaults.
+    # reduce feeAmount from the advice stack: the first adv_pushw pops limbs 0..3
+    # (-> U_LOWER), the next pops limbs 4..7 (-> U_UPPER), matching the reducer's
+    # [U_UPPER, U_LOWER] shape. A missing word traps (advice stack read), never defaults.
     adv_pushw
-    # => [U0, maxfee_y, scale_exp]
+    # => [U_LOWER, maxfee_y, scale_exp]
 
     adv_pushw
-    # => [U1, U0, maxfee_y, scale_exp]
+    # => [U_UPPER, U_LOWER, maxfee_y, scale_exp]
 
     movup.9 movdn.8
-    # => [U1, U0, scale_exp, maxfee_y]
+    # => [U_UPPER, U_LOWER, scale_exp, maxfee_y]
 
     exec.encoding::uint256_to_asset_amount
     # => [feeamount_y, maxfee_y]
 
-    # fail-loud MVP (F2): the operator feeAmount must be zero. this subsumes R-MINT-11
-    # (feeAmount <= maxFee) — under the MVP the only allowed fee is 0 and 0 <= maxFee always
-    # holds, so the <= maxFee compare is unreachable and is removed. mirrors the F2 guard on
-    # apply_mint_effects (xreserve_mint.masm) but fires on the advice feeAmount the hardcoded-0
-    # effects never see. DEV-8 upgrade point: when the relayer fee-split lands (the recipient note
-    # carries amount - feeAmount and the relayer is credited feeAmount) restore the feeAmount <= maxFee
-    # compare here + add the relayer-credit leg to apply_mint_effects.
+    # fail-loud fee gate: the operator feeAmount must be zero. the only allowed fee is zero, which
+    # is always <= maxFee, so no feeAmount-vs-maxFee compare is reachable, and the mint pipeline
+    # credits the recipient the whole amount with no relayer-fee leg. the relayer fee split stays
+    # open, pending Circle confirmation.
     assertz.err=ERR_XRESERVE_FEE_NONZERO
     # => [maxfee_y]
 
@@ -198,13 +207,13 @@ pub proc assert_mint_amounts
     # => []
 end
 
-#! Asserts the deposit intent's nonce has not been used (D5c replay guard, R-MINT-12).
+#! Asserts the deposit intent's nonce has not been used (the mint replay guard).
 #!
 #! Derives the nonce key by CONSUMING the encoding library's `xreserve::encoding::bytes32_to_key` (no
-#! re-implemented hash) over the parsed nonce (felt[51..58]), reads `usedNonces[key]` via the
-#! canary-proven `active_account::get_map_item`, and asserts it is `EMPTY_WORD`. Marking the
-#! nonce as consumed is the first atomic write in D5e — D5c is assert-zero ONLY, so a failed
-#! mint never consumes a nonce.
+#! re-implemented hash) over the parsed nonce (felt[51..58]), reads `usedNonces[key]` via
+#! `active_account::get_map_item`, and asserts it is `EMPTY_WORD`. Marking the nonce as
+#! consumed is the mint policy's accept-path write — this guard is assert-zero ONLY, so a
+#! failed mint never consumes a nonce.
 #!
 #! Inputs:  [intent_ptr]
 #! Outputs: []
@@ -218,30 +227,29 @@ end
 #! Invocation: exec
 @account_procedure
 pub proc assert_nonce_unused
-    # => [intent_ptr]
-
     push.NONCE_FELT_OFF add
     # => [nonce_base]
 
-    # load B0: the nonce's first four packed limbs (wire bytes 0..16), element-0 on top — the
-    # [B1, B0] orientation bytes32_to_key consumes (mirrors the parser's remoteToken load)
+    # load B_LOWER: the nonce's first four packed limbs (wire bytes 0..16), element-0 on top —
+    # the [B_UPPER, B_LOWER] orientation bytes32_to_key consumes (the same staging as the
+    # parser's remoteToken load)
     dup add.3 mem_load
     dup.1 add.2 mem_load
     dup.2 add.1 mem_load
     dup.3 mem_load
-    # => [B0, nonce_base]
+    # => [B_LOWER, nonce_base]
 
-    # load B1: the next four packed limbs (wire bytes 16..32)
+    # load B_UPPER: the next four packed limbs (wire bytes 16..32)
     dup.4 add.7 mem_load
     dup.5 add.6 mem_load
     dup.6 add.5 mem_load
     dup.7 add.4 mem_load
-    # => [B1, B0, nonce_base]
+    # => [B_UPPER, B_LOWER, nonce_base]
 
     movup.8 drop
-    # => [B1, B0]
+    # => [B_UPPER, B_LOWER]
 
-    # consume the encoding library's hash-to-key BY REFERENCE (NS-1: bytes32_to_key); no re-impl
+    # call the encoding library's bytes32_to_key; the hash is never re-implemented here
     exec.encoding::bytes32_to_key
     # => [KEY]
 
@@ -251,8 +259,8 @@ pub proc assert_nonce_unused
     exec.active_account::get_map_item
     # => [VALUE]
 
-    # assert-zero: an unused nonce reads EMPTY_WORD; a used (non-empty) one traps. D5c does not
-    # write the registry -- consuming the nonce is deferred to D5e.
+    # assert-zero: an unused nonce reads EMPTY_WORD; a used (non-empty) one traps. this guard
+    # does not write the registry -- consuming the nonce is the mint policy's accept-path write.
     padw assert_eqw.err=ERR_XRESERVE_NONCE_REPLAY
     # => []
 end
@@ -261,13 +269,13 @@ end
 # =================================================================================================
 
 #! Reduces the uint256 field at `base` (8 u32-LE packed felts) to an AssetAmount via the
-#! encoding library's reducer, consumed BY REFERENCE.
+#! encoding library's reducer.
 #!
-#! Single-felt loads: the DC-1 felt offsets are not word-aligned, so word loads trap
-#! (UnalignedWordAccess). The word orientation mirrors the encoding library's parser remoteToken load
-#! (`encoding::parse_deposit_intent`): U0 = the field's first four packed limbs (wire
-#! bytes 0..16), U1 = the next four (wire bytes 16..32), each element-0 on top — exactly
-#! the `[U1, U0, scale_exp]` shape the reducer consumes.
+#! Single-felt loads: the header felt offsets are not word-aligned, so word loads would trap.
+#! The word orientation matches the shared parser's remoteToken load: U_LOWER = the field's
+#! positionally lower four packed limbs (wire bytes 0..16), U_UPPER = the positionally upper
+#! four (wire bytes 16..32), each element-0 on top — exactly the `[U_UPPER, U_LOWER,
+#! scale_exp]` shape the reducer consumes.
 #!
 #! Inputs:  [base, scale_exp]
 #! Outputs: [y]
@@ -282,24 +290,22 @@ end
 #!
 #! Invocation: exec
 proc reduce_uint256_field
-    # => [base, scale_exp]
-
-    # load U0: the field's first four packed limbs at base+0..base+3 (element-0 on top)
+    # load U_LOWER: the field's first four packed limbs at base+0..base+3 (element-0 on top)
     dup add.3 mem_load
     dup.1 add.2 mem_load
     dup.2 add.1 mem_load
     dup.3 mem_load
-    # => [U0, base, scale_exp]
+    # => [U_LOWER, base, scale_exp]
 
-    # load U1: the next four packed limbs at base+4..base+7
+    # load U_UPPER: the next four packed limbs at base+4..base+7
     dup.4 add.7 mem_load
     dup.5 add.6 mem_load
     dup.6 add.5 mem_load
     dup.7 add.4 mem_load
-    # => [U1, U0, base, scale_exp]
+    # => [U_UPPER, U_LOWER, base, scale_exp]
 
     movup.8 drop
-    # => [U1, U0, scale_exp]
+    # => [U_UPPER, U_LOWER, scale_exp]
 
     exec.encoding::uint256_to_asset_amount
     # => [y]

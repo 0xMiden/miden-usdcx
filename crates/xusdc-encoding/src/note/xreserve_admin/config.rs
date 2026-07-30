@@ -31,7 +31,7 @@ static SET_ATTESTER_NOTE_SCRIPT: LazyLock<NoteScript> =
 pub const XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x442a0c19b0bbce60630f7c52758b296a4ba74e6b7b02b6603f94481c161bc962";
 
-/// The owner-gated `set_attester` admin note (F5). Storage layout: `[pk_commitment(4), enabled]`.
+/// The owner-gated `set_attester` admin note. Storage layout: `[pk_commitment(4), enabled]`.
 /// Consumed against the faucet network account; `attester_admin::set_attester` gates on the (kernel-
 /// forced) note sender being the owner.
 pub struct XReserveSetAttesterNote;
@@ -103,14 +103,14 @@ static IDENTIFIER_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// of the compiled `xreserve_identifier_init_note.masm` with the xreserve library linked. It binds
 /// transitively to `identifier_init::init_identifier`'s digest, so ANY edit of the note script or
 /// the proc it calls trips the parity assertion (`script_root() == pinned_script_root()`) and
-/// forces a conscious re-pin. Re-pinned at the round-3 own-id binding (the proc now derives
+/// forces a conscious re-pin. The pinned root covers the own-id binding: the proc derives
 /// `bytes32_to_key(account_id_to_bytes32(get_id()))` on-chain and rejects a mismatched committed
-/// identifier), replacing `0x4fb4fcba9ca98176d2ccbaadcf8399f7ccdaa0312630a9b29a0d76058d515b82`.
+/// identifier.
 pub const XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX: &str =
     "0xaf63dbcec4e79c6dd1d731f7f6b245401d733b0e14e58f885b53321f416c348b";
 
-/// The owner-gated, init-once `identifier_init` admin note (F5; DEC-4 — the minimized
-/// replacement of the former four-field `domain_init`: the identifier is the ONE domain-config
+/// The owner-gated, init-once `identifier_init` admin note (the minimized
+/// identifier-only init: the identifier is the ONE domain-config
 /// field the account-id fixpoint forces past build time, the other three are build-seeded by the
 /// `XReserveStablecoinBuilder`). Storage layout: `[IDENTIFIER(4)]`. Consumed against the faucet
 /// network account; `identifier_init::init_identifier` gates on the (kernel-forced) note sender
@@ -143,8 +143,8 @@ impl XReserveIdentifierInitNote {
     /// `faucet_id` — `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))`, the canonical
     /// key of the faucet's own account id as bytes32 — so the init is BOUND to its target and
     /// cannot seed a token that belongs to another identity (the deployed-faucet re-check path
-    /// already expects exactly this key). This is the PROVISIONAL DEV-10/Q-CRY-4 position (the
-    /// AccountId↔bytes32 codec and the identifier==own-id equivalence stay Circle-OPEN); it is
+    /// already expects exactly this key). This is a PROVISIONAL position (the
+    /// AccountId↔bytes32 codec and the identifier==own-id equivalence stay OPEN with Circle); it is
     /// changeable if Circle assigns a different identifier. The derived key lives in note storage;
     /// the executor-controlled `NOTE_ARGS` are ignored by the script.
     pub fn create<R: FeltRng>(
@@ -160,10 +160,10 @@ impl XReserveIdentifierInitNote {
         build_admin_note(sender, faucet_id, Self::script(), items, rng)
     }
 
-    /// The provisional DEC-4 identifier this factory seeds for `faucet_id`: the canonical
+    /// The provisional identifier this factory seeds for `faucet_id`: the canonical
     /// `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))` key (the own-id fixpoint,
-    /// pending Q-CRY-4). Exposed so tests and validation flows can assert the seeded identity and
-    /// splice a matching `remoteToken` into the mint payload the faucet's D5a compare reads.
+    /// pending Circle confirmation). Exposed so tests and validation flows can assert the seeded identity and
+    /// splice a matching `remoteToken` into the mint payload the faucet's identifier compare reads.
     pub fn identifier_for(faucet_id: AccountId) -> Word {
         crate::xreserve::encoding::bytes32_to_storage_map_key(
             &crate::xreserve::encoding::account_id_to_bytes32(faucet_id),
@@ -182,13 +182,13 @@ static SET_MIN_BURN_SIZE_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(SET_MIN_BURN_SIZE_NOTE_SCRIPT_SRC));
 
 /// The PINNED set_min_burn_size admin note-script root (`masm-rust-constant-parity`): binds
-/// transitively to the STOCK `min_burn_amount::set_min_burn_amount`'s digest (the Wave-1 S1
-/// retarget) plus the note-side zero-floor guard, so any edit of the note or the stock proc it
+/// transitively to the STOCK `min_burn_amount::set_min_burn_amount`'s
+/// digest plus the note-side zero-floor guard, so any edit of the note or the stock proc it
 /// calls trips parity and forces a conscious re-pin.
 pub const XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x7ae46ecf82c7968a867c88d982659ba55989c49238c5e1ba6fa1a8c6a1008566";
 
-/// The owner-gated `set_min_burn_size` admin note (F5). Storage layout: `[new_min]` with
+/// The owner-gated `set_min_burn_size` admin note. Storage layout: `[new_min]` with
 /// `new_min >= 1` (the note script's zero-floor guard — the stock setter itself accepts 0).
 pub struct XReserveSetMinBurnSizeNote;
 
@@ -241,7 +241,7 @@ static SET_MAX_SUPPLY_NOTE_SCRIPT: LazyLock<NoteScript> =
 pub const XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x70b18f7063f760b727dd194df5699fd5aa3453ed53ffb317b91711d4c597e018";
 
-/// The owner-gated stock `set_max_supply` admin note (F5). Storage layout: `[new_max_supply]`.
+/// The owner-gated stock `set_max_supply` admin note. Storage layout: `[new_max_supply]`.
 pub struct XReserveSetMaxSupplyNote;
 
 impl XReserveSetMaxSupplyNote {
@@ -292,7 +292,7 @@ static PAUSE_NOTE_SCRIPT: LazyLock<NoteScript> =
 pub const XRESERVE_PAUSE_NOTE_SCRIPT_ROOT_HEX: &str =
     "0xf505ce1232e61d9829825ee65a7db8d0cd5de182a7f16593aa212d5cf0d198a8";
 
-/// The DOM_PAUSER-gated, PARAM-LESS `pause` admin note (F5).
+/// The DOM_PAUSER-gated, PARAM-LESS `pause` admin note.
 pub struct XReservePauseNote;
 
 impl XReservePauseNote {
@@ -339,7 +339,7 @@ static UNPAUSE_NOTE_SCRIPT: LazyLock<NoteScript> =
 pub const XRESERVE_UNPAUSE_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x8df1f866ebc97f423119ab04400e2c09a8680aac3bbb03f91a4fe271dfa9578c";
 
-/// The DOM_PAUSER-gated, PARAM-LESS `unpause` admin note (F5).
+/// The DOM_PAUSER-gated, PARAM-LESS `unpause` admin note.
 pub struct XReserveUnpauseNote;
 
 impl XReserveUnpauseNote {

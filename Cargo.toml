@@ -5,13 +5,13 @@ members = [
   "crates/xreserve-deposit-relayer",
   "crates/withdrawal-listener-attester",
 ]
-# PARKED AGAIN (V16-NOW migration, 2026-07-28): `crates/xusdc-validation` left the workspace a
-# second time. The three members above moved to the protocol monorepo's `next` branch at a frozen
-# git rev, but the validation crate needs `miden-client`/`miden-client-sqlite-store`, whose newest
-# releases (`=0.16.0-alpha.1`) pin protocol `=0.16.0-alpha.4` — no client exists for the `next`
-# graph, so the crate cannot cross with the rest. The crate directory is byte-intact; the parking
+# PARKED: `crates/xusdc-validation` sits outside the workspace. The three members above resolve
+# the protocol family from the protocol monorepo's `next` branch at a frozen git rev, but the
+# validation crate needs `miden-client`/`miden-client-sqlite-store`, whose newest releases
+# (`=0.16.0-alpha.1`) pin protocol `=0.16.0-alpha.4` — no client exists for the `next` graph,
+# so the crate cannot build alongside the rest. The crate directory is byte-intact; the parking
 # record (why, re-enable trigger, un-park steps) is `crates/xusdc-validation/PARKED-V16-NEXT.md`.
-# It un-parks at the V16-FINAL migration onto the released `v0.16.0` crates with a client/node pair.
+# It un-parks at the migration onto the released `v0.16.0` crates with a client/node pair.
 exclude = [
   "crates/xusdc-validation",
 ]
@@ -29,12 +29,12 @@ rstest = "0.26"
 assert_matches = "1.5"
 
 # Hex + attestation crypto. `hex` decodes the Circle-facing wire strings (payload / messageHash /
-# attestation) in the relayer. The secp256k1/keccak trio is shared by TWO members now — unit-04's
-# vector generator + its D5d in-test vectors, and the relayer's envelope binding (`sha3`, the
-# off-chain `keccak256(payload)` recomputation) and its partner-key test fixture (`k256`+`rand`,
-# signing ONLY — the relayer NEVER verifies ECDSA off-chain; that is on-chain, faucet-owned). Per
-# xusdc-encoding's own note, a second adopter promotes them here so the two crates cannot drift
-# onto different versions (workspace-shared-dependencies).
+# attestation) in the relayer. The secp256k1/keccak trio is shared by TWO members — the encoding
+# crate's vector generator + its in-test attestation vectors, and the relayer's envelope binding
+# (`sha3`, the off-chain `keccak256(payload)` recomputation) and its partner-key test fixture
+# (`k256`+`rand`, signing ONLY — the relayer NEVER verifies ECDSA off-chain; that is on-chain,
+# faucet-owned). Pinned here so the two crates cannot drift onto different versions
+# (workspace-shared-dependencies).
 hex = "0.4"
 k256 = { version = "0.13", features = ["ecdsa"] }
 # Generated builders (use-bon-builder). The withdrawal listener's Circle request types are the first
@@ -48,18 +48,18 @@ bon = "3"
 sha3 = "0.10"
 rand = "0.8"
 
-# Circle-facing HTTP (the relayer's `circle::client`, CMP-D1/D3/D4) + the offline mock Circle server
-# its contract tests run against. Both are pinned here, not in the crate, so the later off-chain
-# services (listener, monitoring) cannot drift onto a different HTTP stack.
+# Circle-facing HTTP (the relayer's `circle::client` info/attestation-fetch drivers) + the offline
+# mock Circle server its contract tests run against. Both are pinned here, not in the crate, so the
+# later off-chain services (listener, monitoring) cannot drift onto a different HTTP stack.
 #
-# reqwest 0.13 renamed features vs 0.12: the TLS feature is `rustls` (NOT `rustls-tls`), and
+# reqwest 0.13 feature names: the TLS feature is `rustls` (NOT `rustls-tls`), and
 # `RequestBuilder::query` — how every Circle query param (`txHash`, `pageSize`, `pageAfter`, …) is
-# built and percent-encoded — now sits behind its own `query` feature. `default-features = false`
+# built and percent-encoded — sits behind its own `query` feature. `default-features = false`
 # keeps the graph off system OpenSSL and off the default TLS backend; `json` pulls the serde_json
-# body codec. This discharges the reqwest deferral recorded in
-# crates/xreserve-deposit-relayer/DEFERRED-DEPENDENCIES.md (the Circle-facing slice is the one that
-# declares it; the pinned cargo cache now carries reqwest + its hyper/rustls/h2 closure, so the
-# offline `--locked` gate still resolves).
+# body codec. The reqwest deferral recorded in
+# crates/xreserve-deposit-relayer/DEFERRED-DEPENDENCIES.md is discharged by this pin (the pinned
+# cargo cache carries reqwest + its hyper/rustls/h2 closure, so the offline `--locked` gate
+# resolves).
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
 # The relayer's idempotency seam (`idempotency::IdempotencyStore`) — the submitted-nonce log + the
 # per-remote-domain `Link` cursor that must survive a restart. SQLite is the persistence choice
@@ -86,14 +86,9 @@ tempfile = "3"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query"] }
 tower = { version = "0.5", features = ["util"] }
 
-# The former [patch.crates-io] git-pin block (v0.15.3 rev 681fc905…) was REMOVED at the v16
-# migration (MIGRATION-V16-ALPHA2.md R2): its sole purpose was unifying `miden-client 0.15.3`'s
-# crates.io protocol-family requirements onto the one git-pinned copy. At the V16-NOW migration
-# (MIGRATION-V16-NEXT.md) the block is STILL not needed, for the opposite reason: the three
-# remaining members resolve the whole protocol family from the ONE frozen protocol-monorepo git
-# rev their manifests pin, and the only crates.io consumer of that family — the `miden-client`
-# stack of the now-parked `crates/xusdc-validation` (`workspace.exclude`) — is outside the graph,
-# so nothing pulls a second protocol copy that a patch block would have to unify. Exactly one
-# copy of each protocol crate is in the graph (the migration doc's `cargo tree` record).
-# `miden-tx-batch-prover` (never published past 0.15.3) left the graph with the rename to
-# `miden-tx-batch` (protocol #3035), which arrives transitively via `miden-testing`.
+# No [patch.crates-io] git-pin block is needed: the three members resolve the whole protocol
+# family from the ONE frozen protocol-monorepo git rev their manifests pin, and the only
+# crates.io consumer of that family — the `miden-client` stack of the parked
+# `crates/xusdc-validation` (`workspace.exclude`) — is outside the graph, so nothing pulls a
+# second protocol copy that a patch block would have to unify. Exactly one copy of each
+# protocol crate is in the graph.

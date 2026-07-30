@@ -1,5 +1,5 @@
 //! Attestation-envelope validation — binds Circle's envelope to the payload it claims to attest
-//! (DC-2, INV-DEPOSIT-ATTESTATION-RAW-KECCAK).
+//! (raw keccak over the full payload, not EIP-712).
 //!
 //! Circle publishes three wire fields: the DepositIntent `payload`, a `messageHash`, and a 65-byte
 //! `attestation`. This module answers the two structural questions the relayer must answer BEFORE
@@ -8,19 +8,20 @@
 //!   1. [`verify_message_hash`] — does `messageHash` actually equal `keccak256(payload)`? The
 //!      digest is **RAW keccak256 over the FULL payload**: no EIP-712 `\x19\x01` domain separator
 //!      or typed-data struct hash, no `personal_sign` prefix, no Poseidon2. This is not a stylistic
-//!      choice — it is the digest the faucet recomputes on-chain at D5d with the keccak precompile
-//!      and verifies the signature against (R-MINT-14). An envelope bound by any other digest
-//!      attests a DIFFERENT message than the one that would be minted, so it is refused here.
+//!      choice — it is the digest the faucet recomputes on-chain in the faucet's attestation check
+//!      with the keccak precompile and verifies the signature against. An envelope bound by any
+//!      other digest attests a DIFFERENT message than the one that would be minted, so it is
+//!      refused here.
 //!   2. [`validate_attestation_envelope`] — is `attestation` exactly 65 bytes (`r‖s‖v`)?
 //!
 //! **What this module deliberately does NOT do: verify the signature.** The relayer is a LIVENESS
-//! service (§1.2). ECDSA verification and the attester-allowlist gate are ON-CHAIN and faucet-owned
-//! (R-MINT-13/14, D5d) — the sole authority on whether a mint is authorized. Verifying off-chain
-//! here would add a rejection surface that could WITHHOLD a mint the chain would have accepted,
-//! while adding no security (a relayer that skipped the check could not authorize anything either).
-//! So the checks here are shape + binding only, and `k256` is not a dependency of this crate's
-//! library. Both functions are fast-fail liveness filters: they stop the relayer from wasting a
-//! Miden transaction on an envelope the chain would certainly reject.
+//! service. ECDSA verification and the attester-allowlist gate are ON-CHAIN and faucet-owned (in
+//! the faucet's attestation check) — the sole authority on whether a mint is authorized. Verifying
+//! off-chain here would add a rejection surface that could WITHHOLD a mint the chain would have
+//! accepted, while adding no security (a relayer that skipped the check could not authorize
+//! anything either). So the checks here are shape + binding only, and `k256` is not a dependency of
+//! this crate's library. Both functions are fast-fail liveness filters: they stop the relayer from
+//! wasting a Miden transaction on an envelope the chain would certainly reject.
 
 use sha3::{Digest, Keccak256};
 
@@ -30,12 +31,13 @@ use crate::error::{HexField, RelayerError};
 const MESSAGE_HASH_LEN: usize = 32;
 
 /// A raw secp256k1 attestation is exactly 65 bytes: `r` (32) ‖ `s` (32) ‖ `v` (1). `v` is the
-/// recovery id — carried on the wire, unused on-chain (IMPL-DEV-6).
+/// recovery id — carried on the wire, unused on-chain (the faucet verifies against a supplied
+/// candidate pubkey, so no key recovery is performed).
 const ATTESTATION_LEN: usize = 65;
 
-/// Verifies that the envelope's `messageHash` binds the payload: `messageHash == keccak256(payload)`
-/// (RAW keccak over the FULL payload — NOT EIP-712, NOT `personal_sign`, NOT Poseidon2;
-/// INV-DEPOSIT-ATTESTATION-RAW-KECCAK).
+/// Verifies that the envelope's `messageHash` binds the payload: `messageHash ==
+/// keccak256(payload)` (RAW keccak over the FULL payload — NOT EIP-712, NOT `personal_sign`, NOT
+/// Poseidon2).
 ///
 /// Both arguments are the Circle wire hex strings, with or without a `0x` prefix. Returns the
 /// decoded payload bytes, so a caller that goes on to the DepositIntent structural decode does not
@@ -89,8 +91,9 @@ pub fn verify_message_hash_bytes(
             })?;
 
     // THE binding: raw keccak256 over the FULL payload — the exact digest the faucet recomputes
-    // on-chain (D5d) and verifies the attestation against. Every byte of the payload is covered
-    // (ASG-12: never hash a field subset), and the comparison is over all 32 digest bytes.
+    // on-chain (the faucet's attestation check) and verifies the attestation against. Every byte of
+    // the payload is covered
+    // (never a subset of the fields), and the comparison is over all 32 digest bytes.
     let expected = keccak256(&payload);
     if actual != expected {
         return Err(RelayerError::MessageHashMismatch { expected, actual });
@@ -101,20 +104,21 @@ pub fn verify_message_hash_bytes(
 
 /// Validates the attestation envelope's shape: exactly 65 bytes (`r‖s‖v`), hex-valid.
 ///
-/// Returns the raw 65 bytes verbatim (`r` = `[..32]`, `s` = `[32..64]`, `v` = `[64]`), ready for the
-/// mint-note builder to hand to the faucet, which packs them into 17 u32-LE felts (unit-04's
-/// [`signature_felts`](xusdc_encoding::xreserve::encoding::signature_felts)) and verifies them
-/// on-chain.
+/// Returns the raw 65 bytes verbatim (`r` = `[..32]`, `s` = `[32..64]`, `v` = `[64]`), ready for
+/// the mint-note builder to hand to the faucet, which packs them into 17 u32-LE felts (the shared
+/// encoding crate's [`signature_felts`](xusdc_encoding::xreserve::encoding::signature_felts)) and
+/// verifies them on-chain.
 ///
 /// SHAPE ONLY — this never verifies the signature, and never inspects `r`/`s`/`v` for
 /// well-formedness beyond the length (see the module docs: the relayer must not be able to withhold
 /// a mint the chain would accept). A 65-byte attestation that is cryptographic nonsense passes here
-/// and is rejected on-chain at D5d, which is the correct division of authority.
+/// and is rejected on-chain in the faucet's attestation check, which is the correct division of
+/// authority.
 ///
 /// # Errors
 /// * [`RelayerError::MalformedHex`] — not valid hex.
-/// * [`RelayerError::BadAttestationLength`] — not exactly 65 bytes (a 64-byte, `v`-less signature is
-///   rejected, not zero-extended).
+/// * [`RelayerError::BadAttestationLength`] — not exactly 65 bytes (a 64-byte, `v`-less signature
+///   is rejected, not zero-extended).
 pub fn validate_attestation_envelope(
     attestation_hex: &str,
 ) -> Result<[u8; ATTESTATION_LEN], RelayerError> {

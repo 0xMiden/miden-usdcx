@@ -1,7 +1,7 @@
-# xreserve_identifier_init_note — the shipped, root-pinned identifier_init admin note script (F5).
+# xreserve_identifier_init_note — the shipped, root-pinned identifier_init admin note script.
 #
 # The production admin surface for the minimized `init_identifier` under the network account
-# (DEC-4: the identifier is the ONE domain-config field the account-id fixpoint forces past build
+# (the identifier is the ONE domain-config field the account-id fixpoint forces past build
 # time; `domain`/`source_domain`/`xreserve_contract` are build-seeded and have no runtime
 # writer). A fixed-root note whose parameter is CREATOR-COMMITTED in note storage (never
 # NOTE_ARGS, which the network executor controls). It stages the note storage into memory,
@@ -11,8 +11,8 @@
 # NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only, added
 # by the Rust factory).
 #
-# Note storage layout (4 felts): [IDENTIFIER] — the pre-hashed bytes32_to_key Word (D5a's
-# assert_eqw compares the stored form). Since the round-3 own-id binding the proc additionally
+# Note storage layout (4 felts): [IDENTIFIER] — the pre-hashed bytes32_to_key Word (the mint
+# path's identifier compare reads the stored form). The proc additionally
 # derives `bytes32_to_key(account_id_to_bytes32(get_id()))` ON-CHAIN and rejects a committed
 # identifier that does not equal it, so this note can only ever seed its target's own identity.
 
@@ -23,7 +23,7 @@ use xreserve::identifier_init
 # =================================================================================================
 
 # Absolute memory address where the creator-committed param is staged (word-aligned; the
-# admin-note convention shared with the set_attester reference note).
+# admin-note convention the other admin notes share).
 const PARAM_PTR = 1024
 
 # The exact note-storage item count for this admin op: [IDENTIFIER] = 4 felts.
@@ -51,6 +51,10 @@ const ERR_XRESERVE_IDENTIFIER_INIT_NOTE_STORAGE = "identifier_init note storage 
 #! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
 #!
+#! Where:
+#! - ARGS is the executor-controlled note-argument word, which this script drops unread.
+#! - pad(16) is the 16-element call-boundary pad the note script hands the account procedure.
+#!
 #! Note storage is assumed to be as follows:
 #! - IDENTIFIER is the pre-hashed bytes32_to_key Word, stored verbatim (4 felts, items 0..4).
 #!
@@ -59,7 +63,7 @@ const ERR_XRESERVE_IDENTIFIER_INIT_NOTE_STORAGE = "identifier_init note storage 
 #! - the note sender is not the registered owner (init_identifier's owner gate).
 #! - the identifier was already initialized (init_identifier's init-once gate).
 #! - the committed identifier is the empty word (init_identifier's non-empty guard).
-#! - the committed identifier is not the faucet's own-id key (init_identifier's round-3
+#! - the committed identifier is not the faucet's own-id key (init_identifier's
 #!   own-id binding).
 #!
 #! Invocation: dyncall
@@ -75,21 +79,19 @@ pub proc main
     eq.IDENTIFIER_INIT_NOTE_NUM_ITEMS assert.err=ERR_XRESERVE_IDENTIFIER_INIT_NOTE_STORAGE
     # => [pad(16)]
 
-    # marshal the identifier Word with the word-load primitive (the binding MASM rule; the stock
-    # mint_fungible convention for a get_storage'd note-storage word). The identifier is word-
-    # aligned at PARAM_PTR, so `padw` grows the stack by one word and `mem_loadw_le` overwrites it
-    # with mem[PARAM_PTR..PARAM_PTR+4] — element-0-on-top, matching the Rust factory's
-    # `[identifier[0], identifier[1], identifier[2], identifier[3]]` storage order (proven by the
-    # identifier_init write-verbatim execution test).
+    # marshal the identifier Word with the word-load primitive (the stock convention
+    # for a note-storage word staged by get_storage). The identifier is word- aligned
+    # at PARAM_PTR, so `padw` grows the stack by one word and `mem_loadw_le` overwrites
+    # it with mem[PARAM_PTR..PARAM_PTR+4] — element-0-on-top, matching the Rust
+    # factory's `[identifier[0], identifier[1], identifier[2], identifier[3]]` storage
+    # order.
     padw mem_loadw_le.PARAM_PTR
     # => [IDENTIFIER, pad(16)]
-    # (the call consumes the top 16: [IDENTIFIER, pad(12)])
 
+    # (the call consumes the top 16: [IDENTIFIER, pad(12)])
     call.identifier_init::init_identifier
     # => [pad(20)]
 
-    # rebalance to the dyncall depth-16-on-return rule: the 4 param pushes above displaced 4 pad
-    # zeros into the overflow table (the callee's window is balanced), so drop 4 to end at depth 16.
     dropw
     # => [pad(16)]
 end

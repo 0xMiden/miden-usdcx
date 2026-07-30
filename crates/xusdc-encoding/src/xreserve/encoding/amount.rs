@@ -1,8 +1,22 @@
-//! uint256 → AssetAmount family, frozen signatures per the shared-encoding spec
-//! (INV-UINT256-TO-ASSETAMOUNT). Implemented per the frozen reduction order, with checked
-//! arithmetic on every external-derived value. Cap/scale/dust values are
-//! `REQUIRES CIRCLE CONFIRMATION` (DEV-5) — the mechanic is implemented per the frozen spec, the
-//! policy stays OPEN.
+//! Reducing a deposit's uint256 amount to a Miden asset amount.
+//!
+//! Circle states deposit amounts as 256-bit values in the source token's smallest units; a Miden
+//! fungible asset amount is a `u64` bounded by `AssetAmount::MAX`. Every mint therefore has to
+//! cross that gap, and this is the only place it happens. The MASM faucet performs the identical
+//! reduction on-chain, so the two implementations are held together by cross-language vectors —
+//! a disagreement here would mean the relayer and the faucet mint different numbers.
+//!
+//! The reduction is deliberately conservative at each step. The value arrives as eight
+//! little-endian-packed 32-bit limbs of a big-endian wire field, so the first thing checked is
+//! that the top half is entirely zero: anything above 2^128 is refused outright rather than
+//! wrapped. The remaining half is composed into a `u128`, floor-divided by ten to the scale
+//! exponent to convert decimal places, and the quotient is then handed to `AssetAmount::new`,
+//! which rejects anything past the asset-amount ceiling. Nothing saturates and nothing truncates
+//! silently: every path out is either an exact value or an error.
+//!
+//! The exact cap, the scale factor, and how much dust rounding may discard are still Circle's to
+//! decide. The mechanism is implemented; the numbers it is parameterized with remain open, and
+//! nothing here should be read as settling them.
 
 use miden_protocol::asset::AssetAmount;
 
@@ -16,20 +30,22 @@ pub const MAX_SCALE_EXP: u32 = 18;
 /// the owned mechanic): byte-swap → high-4-zero → low-4 u128 → floor-divide by 10^scale_exp →
 /// (y, z). The AssetAmount cap is applied by the callers via [`AssetAmount::new`].
 fn reduce(le_limbs: [u32; 8], scale_exp: u32) -> Result<(u64, u128), EncodingError> {
-    // steps 1–2: the high four limbs (wire bytes 0..16) must be zero; a limb byte-swaps
-    // to zero iff it is zero, so the raw LE-packed limbs are checked directly
+    // the numerically high half — the positionally LOWER four limbs, wire bytes 0..16 of the
+    // big-endian value — must be zero; a limb byte-swaps to zero iff it is zero, so the raw
+    // LE-packed limbs are checked directly
     if le_limbs[..4].iter().any(|&limb| limb != 0) {
         return Err(EncodingError::AmountTooLarge);
     }
 
-    // steps 1 + 3: byte-swap the low four limbs to numeric order and compose x
-    // (limb 4 holds wire bytes 16..20 — the most significant of the low half)
+    // byte-swap the numerically-low-half limbs (the positionally UPPER four, wire
+    // bytes 16..32) to numeric order and compose x (limb 4 holds wire bytes 16..20 — the
+    // most significant of that half)
     let mut x: u128 = 0;
     for &limb in &le_limbs[4..8] {
         x = (x << 32) | u128::from(limb.swap_bytes());
     }
 
-    // step 4: y = floor(x / 10^scale_exp); the divisor is bounded first (TV-AMT-7)
+    // y = floor(x / 10^scale_exp); the divisor is bounded first (TV-AMT-7)
     if scale_exp > MAX_SCALE_EXP {
         return Err(EncodingError::ScaleExpTooLarge);
     }
@@ -45,8 +61,9 @@ fn reduce(le_limbs: [u32; 8], scale_exp: u32) -> Result<(u64, u128), EncodingErr
     Ok((y, z))
 }
 
-/// uint256 (8 LE u32 limbs) → AssetAmount: byte-swap → assert high 4 limbs zero (else
-/// `AmountTooLarge`) → low 4 as u128 x → y = floor(x / 10^scale_exp) → reject if y
+/// uint256 (8 LE u32 limbs) → AssetAmount: byte-swap → assert the numerically high half
+/// (the positionally lower four limbs) zero (else `AmountTooLarge`) → the numerically low
+/// half as u128 x → y = floor(x / 10^scale_exp) → reject if y
 /// exceeds `AssetAmount::MAX` (`AmountOverCap`). No saturation or clamping.
 pub fn uint256_to_asset_amount(
     le_limbs: [u32; 8],
@@ -56,15 +73,15 @@ pub fn uint256_to_asset_amount(
     AssetAmount::new(y).map_err(|_| EncodingError::AmountOverCap)
 }
 
-/// The reduced-compare: reduce both operands, then compare as u64 (the mint's `amount >= maxFee`
-/// and `feeAmount <= maxFee` checks).
+/// The reduced-compare: reduce both operands, then compare as u64 (the mint's
+/// `amount >= maxFee` check).
 pub fn reduced_ge(a: [u32; 8], b: [u32; 8], scale_exp: u32) -> Result<bool, EncodingError> {
     let (ya, _) = reduce(a, scale_exp)?;
     let (yb, _) = reduce(b, scale_exp)?;
     Ok(ya >= yb)
 }
 
-/// The non-zero division remainder (dust), surfaced so the caller can apply the DEV-5
+/// The non-zero division remainder (dust), surfaced so the caller can apply the
 /// dust policy (`REQUIRES CIRCLE CONFIRMATION` — not resolved here).
 pub fn uint256_to_asset_amount_with_dust(
     le_limbs: [u32; 8],
@@ -171,7 +188,7 @@ mod tests {
     }
 
     /// TV-AMT-6 (boundary/dust): the remainder is surfaced, 0 <= z < 10^scale. The dust
-    /// POLICY is `REQUIRES CIRCLE CONFIRMATION` (DEV-5) — this test surfaces z only.
+    /// POLICY is `REQUIRES CIRCLE CONFIRMATION` — this test surfaces z only.
     #[test]
     fn tv_amt_6_dust_surfaced_rcc() {
         let v = load();

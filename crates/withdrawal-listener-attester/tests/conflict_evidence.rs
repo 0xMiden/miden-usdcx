@@ -1,27 +1,28 @@
-//! `T-LA-13` — **which burn each piece of Circle evidence is durably attached to.**
+//! Pins **which burn each piece of Circle evidence is durably attached to**.
 //!
-//! `conflict_recovery` pins what a `409` RETURNS and what it does on the wire. This file pins what it
-//! WRITES DOWN, which is a separate question with its own way of going wrong.
+//! `conflict_recovery` pins what a `409` RETURNS and what it does on the wire. This file pins what
+//! it WRITES DOWN, which is a separate question with its own way of going wrong.
 //!
 //! # Why a `withdrawalId` in the wrong record is a fund-safety defect, not untidiness
 //!
-//! [`SubmissionRecord::withdrawal_id`] is the handle an operator polls. It is the answer to "this burn
-//! is blocked — what happened to it?", and reconciliation starts from it. So writing burn A's
+//! [`SubmissionRecord::withdrawal_id`] is the handle an operator polls. It is the answer to "this
+//! burn is blocked — what happened to it?", and reconciliation starts from it. So writing burn A's
 //! `withdrawalId` into burn B's record is not a cosmetic slip: it is **durable false evidence**. An
 //! operator reconciling B would poll A's withdrawal, read A's `finalized`, and conclude that B was
-//! released — a conclusion Circle never supported, reached through a record this service fabricated.
+//! released — a conclusion Circle never supported, reached through a record this service
+//! fabricated.
 //!
 //! The rule this file enforces, on every branch:
 //!
 //! * a `withdrawalId` is stored **only** on a burn the conflict evidence actually binds it to — the
 //!   ONE burn the `409` named;
 //! * every other burn is blocked with **`None`**: no claim, because there is no evidence;
-//! * a conflict that echoes a burn we never submitted binds its id to **nothing at all** — it is about
-//!   someone else's withdrawal entirely.
+//! * a conflict that echoes a burn we never submitted binds its id to **nothing at all** — it is
+//!   about someone else's withdrawal entirely.
 //!
 //! Blocking and attributing are different acts. Every burn here ends up blocked either way; what
-//! separates a correct implementation from a dishonest one is what it CLAIMS about each of them, and
-//! only an assertion on the stored id can tell the two apart.
+//! separates a correct implementation from a dishonest one is what it CLAIMS about each of them,
+//! and only an assertion on the stored id can tell the two apart.
 
 use assert_matches::assert_matches;
 use serde_json::json;
@@ -35,8 +36,8 @@ mod submit_support;
 use submit_support::mock_circle::{MockCircle, Reply, Script};
 use submit_support::*;
 
-/// Every burn is blocked, and NONE of them claims a withdrawal — asserted together, because "blocked"
-/// is the easy half and the ledger is only honest if both hold.
+/// Every burn is blocked, and NONE of them claims a withdrawal — asserted together, because
+/// "blocked" is the easy half and the ledger is only honest if both hold.
 fn assert_blocked_with_no_withdrawal(
     ledger: &withdrawal_listener_attester::idempotency::SubmitLedger,
     burns: &[&str],
@@ -99,7 +100,8 @@ async fn a_multi_burn_conflict_echo_mismatch_binds_its_withdrawal_id_to_no_burn(
     assert_blocked_with_no_withdrawal(&ledger, &[BURN_TX_ID, OTHER_BURN_TX_ID]);
 }
 
-/// A `409` with no `withdrawalId` at all has nothing to bind: every burn blocked, none claiming one.
+/// A `409` with no `withdrawalId` at all has nothing to bind: every burn blocked, none claiming
+/// one.
 #[tokio::test]
 async fn a_conflict_without_a_withdrawal_id_binds_none_to_any_burn() {
     let mock = MockCircle::start(
@@ -166,9 +168,9 @@ async fn a_failed_recovery_poll_binds_the_id_only_to_the_conflict_named_burn() {
 
 /// **A recovered-status burn mismatch must not smear the id either.**
 ///
-/// The conflict named `BURN_TX_ID`; the status came back about a different burn, so the recovery is a
-/// defect. Everything is blocked — but the neighbours were never mentioned by anything, so they must
-/// claim nothing.
+/// The conflict named `BURN_TX_ID`; the status came back about a different burn, so the recovery is
+/// a defect. Everything is blocked — but the neighbours were never mentioned by anything, so they
+/// must claim nothing.
 #[tokio::test]
 async fn a_recovered_status_mismatch_binds_the_id_only_to_the_conflict_named_burn() {
     let mock = MockCircle::start(
@@ -199,8 +201,8 @@ async fn a_recovered_status_mismatch_binds_the_id_only_to_the_conflict_named_bur
     assert_blocked_with_no_withdrawal(&ledger, &[OTHER_BURN_TX_ID]);
 }
 
-/// The successful recovery, checked the same way: `finalized` settles the named burn WITH its id, and
-/// the neighbours are blocked claiming nothing.
+/// The successful recovery, checked the same way: `finalized` settles the named burn WITH its id,
+/// and the neighbours are blocked claiming nothing.
 #[tokio::test]
 async fn a_successful_recovery_binds_the_id_only_to_the_named_burn() {
     let mock = MockCircle::start(
@@ -233,8 +235,8 @@ async fn a_successful_recovery_binds_the_id_only_to_the_named_burn() {
     assert_blocked_with_no_withdrawal(&ledger, &[OTHER_BURN_TX_ID]);
 }
 
-/// A non-`finalized` recovery: the named burn keeps the id (it is real evidence, and the operator will
-/// need it), the neighbours still claim nothing.
+/// A non-`finalized` recovery: the named burn keeps the id (it is real evidence, and the operator
+/// will need it), the neighbours still claim nothing.
 #[tokio::test]
 async fn a_non_finalized_recovery_binds_the_id_only_to_the_named_burn() {
     let mock = MockCircle::start(

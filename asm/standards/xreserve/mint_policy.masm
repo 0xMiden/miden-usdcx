@@ -1,27 +1,13 @@
 # xreserve::mint_policy
 #
-# The attestation mint policy — the ACTIVE mint policy of the faucet's TokenPolicyManager and the
-# faucet's ONLY supply-increasing gate (INV-MINT-SECURITY, restated: every supply increase passes
-# this policy). The stock `FungibleFaucet::mint_and_send` routes every MINT-note consumption
-# through `policy_manager::execute_mint_policy`, which — AFTER the stock pause gate (so a
-# DOM_PAUSER pause halts deposits before this policy is dispatched) — `dynexec`s the active
-# mint-policy proc root with the note-supplied `[ASSET_VALUE, tag, note_type, RECIPIENT]`.
-# Registering `check_policy` as that active root relocates the ENTIRE attestation gate (D5a-e
-# verify stages) into the policy dispatch: the stock MintNote carries the Circle-signed
-# DepositIntent (scheme-4 attachment) and the attestation (scheme-5 attachment; the reserved
-# value 1 and the standard values 2/3 are avoided — rider A8), the policy hash-verifies both
-# against the note-committed attachment commitments, runs the audited verify core BY REFERENCE
-# (deposit_intent_parser D5a/D5b/D5c + attestation_verify D5d), and then enforces the ratified
-# ASSERT-MATCH binding: the note-supplied output-note RECIPIENT/ASSET_VALUE/tag/note_type must
-# EQUAL the values derived from the attested intent (P2ID recipe with the nonce-derived serial,
-# the reduced amount, the recipient account target, a public note) — the policy never overrides,
-# it keeps the note honest. On accept it marks the nonce used (its ONLY state write; the supply
-# arithmetic, cap discipline, issuer binding, and note emission stay stock in `mint_and_send`).
+# The faucet's only supply-increasing gate. `check_policy` is registered as the account's ACTIVE
+# mint policy, so the stock `mint_and_send` dispatches it on every mint; its contract is documented
+# on the proc itself.
 #
-# Fail-closed: any verify or binding trap aborts the whole tx with NO writes — a failed mint
-# never burns the nonce. An execution reaching this policy outside note processing (e.g. a
-# tx-script `mint_and_send`) traps in the kernel's active-note accessors: without the attested
-# transport there is no acceptable mint.
+# Two properties are worth stating here because neither is local to any one step. Fail-closed: any
+# trap aborts the whole transaction with NO writes, so a failed mint never burns its nonce. And
+# reaching this policy outside note processing — a tx-script `mint_and_send`, say — traps in the
+# kernel's active-note accessors, so there is no mint path that skips the attested transport.
 
 use miden::protocol::account_id
 use miden::protocol::active_note
@@ -44,22 +30,22 @@ use {
 # =================================================================================================
 
 # Absolute account-call-frame address where the DepositIntent preimage is staged (word-aligned;
-# the proven driver convention shared with the composition harness). The policy runs inside
-# `mint_and_send`'s account frame, whose only other memory use is FMP-based locals, so the low
-# absolute region is free.
+# the admin note scripts stage their params at the same address by convention). The policy runs
+# inside `mint_and_send`'s account frame, whose only other memory use is FMP-based locals, so
+# the low absolute region is free.
 const INTENT_PTR = 1024
 
-# The mint-note DepositIntent attachment scheme (rider A8: >= 4 — clear of the reserved "none"
+# The mint-note DepositIntent attachment scheme (>= 4 — clear of the reserved "none"
 # value 1 and the standard values 2 `NetworkAccountTarget` / 3 `Pswap`). The Rust constructor
 # declares the same value (cross-language constant parity via constant_parity.rs).
 const XUSDC_MINT_INTENT_ATTACHMENT_SCHEME = 4
 
-# The mint-note attestation attachment scheme (rider A8; see the intent scheme above).
+# The mint-note attestation attachment scheme (see the intent scheme above).
 const XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME = 5
 
 # The attestation attachment word count: [feeAmount(8), pubkey(16), signature(17), pad(3)]
-# = 44 felts = 11 words, matching the frozen advice contract order (the pubkey is the 16-felt
-# affine form since the v16 migration — vm#3342, MIGRATION-V16-ALPHA2.md S16).
+# = 44 felts = 11 words, matching the frozen advice contract order (the pubkey is the
+# 16-felt affine form).
 const XUSDC_MINT_ATTESTATION_NUM_WORDS = 11
 
 # The 60-felt DepositIntent header packed into words (60 / 4): the attachment word-count floor
@@ -71,22 +57,21 @@ const DEPOSIT_INTENT_HEADER_WORDS = 15
 # pinned `note::write_indexed_attachment_to_memory`.
 const WORD_NUM_ELEMENTS = 4
 
-# The DC-5 uint256->AssetAmount decimal scale (`y = floor(x / 10^scale_exp)`), FAUCET-side by
-# design: a note-carried scale would let the producer diverge the minted amount from the attested
-# amount. DEV-5 (cap / scale / dust tolerance) remains Circle-OPEN; the faucet ships the
-# PROVISIONAL scale-0 position because Circle's on-wire deposit `amount` is denominated in
-# 6-decimal smallest units and xUSDC is likewise 6-decimal, so the two denominations coincide and
-# no rescale applies — scale 0, `y = floor(x / 10^0) = x`, an identity with no floored dust.
-# (`0` is inside the reducer's `[0, SCALE_EXP_MAX=18]` bound.) This constant is the
-# parameterization point should Circle pair a wire denomination with a differently-scaled asset;
-# the identity is pinned behaviourally by tests/mint_scale_conformance.rs.
+# The uint256->AssetAmount decimal scale (`y = floor(x / 10^scale_exp)`), FAUCET-side by design: a
+# note-carried scale would let the producer diverge the minted amount from the attested amount. The
+# amount cap / scale / dust tolerance are OPEN, pending Circle confirmation; the faucet ships the
+# PROVISIONAL scale-0 position because Circle's on-wire deposit `amount` is denominated in 6-decimal
+# smallest units and xUSDC is likewise 6-decimal, so the two denominations coincide and no rescale
+# applies — scale 0, `y = floor(x / 10^0) = x`, an identity with no floored dust. (`0` is inside the
+# reducer's `[0, SCALE_EXP_MAX=18]` bound.) Changing this constant is how the faucet would be
+# repointed at a wire denomination whose asset is scaled differently.
 const DEPOSIT_SCALE_EXP = 0
 
 # Number of P2ID note-storage items ([target_id_suffix, target_id_prefix]; p2id.masm storage fmt).
 const P2ID_NUM_STORAGE_ITEMS = 2
 
-# The non-empty Word written into usedNonces[KEY] (the D5c read asserts EMPTY_WORD, so any
-# non-empty marker flips it). DEV-9 / Q-CRY-5: the marker stays a plain flag (OPEN).
+# The non-empty Word written into usedNonces[KEY] (the replay guard asserts EMPTY_WORD, so any non-empty marker
+# flips it). Whether the marker should carry more than a plain flag is OPEN, pending Circle confirmation.
 const NONCE_USED_MARKER = [1, 0, 0, 0]
 
 # The canonical P2ID note script root (miden_standards::note::P2idNote::script_root), consumed by
@@ -142,10 +127,10 @@ const ERR_XRESERVE_MINT_TAG_MISMATCH = "mint note tag does not match the atteste
 # The ASSERT-MATCH binding: the attested output note is always public.
 const ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC = "mint note output note type must be public"
 
-# Recipient AccountId extraction (extract_recipient_account_id). The AccountId-in-bytes32 layout
-# (DEV-10) field-range checks; the suffix-shape and unknown-version rejects surface the protocol
-# account_id::validate ERR_ACCOUNT_ID_* constants directly. Parity-pinned against
-# support::SHELL_ERR_TABLE + SHELL_ERRORS_DECLARED (constant_parity.rs).
+# Recipient AccountId extraction (extract_recipient_account_id): the field-range checks of the right-aligned
+# AccountId-in-bytes32 layout (the packaging is OPEN, pending Circle confirmation); the suffix-shape and
+# unknown-version rejects surface the protocol account_id::validate ERR_ACCOUNT_ID_* constants directly.
+# Parity-pinned against support::SHELL_ERR_TABLE + SHELL_ERRORS_DECLARED (constant_parity.rs).
 const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient address pad is not zero"
 const ERR_XRESERVE_RECIPIENT_BAD_LIMB = "deposit intent remote recipient limb is not a valid u32"
 const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient value does not fit in the field"
@@ -155,29 +140,26 @@ const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient val
 
 #! Gates every stock `mint_and_send` on the full attestation pipeline and the ASSERT-MATCH
 #! binding — the attestation mint policy predicate. Registered as the ACTIVE mint policy of the
-#! faucet's TokenPolicyManager; invoked by `policy_manager::execute_mint_policy` via `dynexec` on
-#! every MINT-note consumption (the dispatcher's pause gate runs BEFORE this policy — a paused
-#! faucet never dispatches it).
+#! faucet's TokenPolicyManager and invoked by `policy_manager::execute_mint_policy` via `dynexec`
+#! on every MINT-note consumption (the dispatcher's pause gate runs BEFORE this policy, so a
+#! paused faucet never dispatches it).
 #!
-#! Pipeline: locate the three attachments (intent scheme 4, attestation scheme 5, routing
-#! target scheme 2; exactly three) -> hash-verify the intent into the account frame + bind its
-#! committed word count to the embedded hookDataLen -> hash-verify the attestation (11 words) and
-#! re-surface it onto the advice stack (element-0-first pop order, the proven transport-canary
-#! read-path) -> D5a assert_deposit_intent (structural parse + domain/identifier compares) ->
-#! D5b assert_mint_amounts (amount/maxFee reduction + the F2 feeAmount == 0 gate) -> D5c
-#! assert_nonce_unused (replay guard) -> D5d verify_attestation (keccak + attester allowlist +
-#! ECDSA) -> ASSERT-MATCH (RECIPIENT == the attested P2ID recipe, ASSET_VALUE ==
-#! [attested_amount, 0, 0, 0], tag == the attested recipient's account target, note_type ==
-#! public) -> mark the nonce used (the policy's ONLY state write) -> return the inputs unchanged.
+#! It hash-verifies the note's three attachments, runs the verify stages over the attested intent,
+#! then requires every value the note supplies to EQUAL the value derived from the attestation:
+#! the policy never overrides a note, it only refuses one that disagrees. On accept it marks the
+#! nonce used — its only state write — and returns its inputs unchanged.
 #!
-#! Locals (@locals(84), word-aligned sub-regions): loc[0..4] the parked note ASSET_VALUE;
-#! loc[4..8] the parked note RECIPIENT; loc[8] the parked tag, loc[9] the parked note_type;
-#! loc[12..28] the attachment commitments list (<= 4 words; the attestation's commitment is
-#! selected by its found index: word at 12 + attachment_idx * WORD_NUM_ELEMENTS); loc[28..72]
-#! the hash-verified attestation content ([feeAmount(8), pubkey(16), signature(17), pad(3)]);
-#! loc[72..76] the nonce KEY (usedNonces storage-map key == the attested output-note serial);
-#! loc[76..80] the P2ID note-storage region ([target_id_suffix, target_id_prefix]); loc[80]
-#! hook_data_len, loc[81] len_felts, loc[82] the reduced attested amount.
+#! Locals (@locals(84), word-aligned sub-regions):
+#! - loc[0..4] the parked note ASSET_VALUE, loc[4..8] the parked note RECIPIENT, loc[8] the parked
+#!   tag, loc[9] the parked note_type.
+#! - loc[12..28] the attachment commitments list (at most 4 words; the attestation's commitment is
+#!   selected by its found index, the word at 12 + attachment_idx * WORD_NUM_ELEMENTS).
+#! - loc[28..72] the hash-verified attestation content ([feeAmount(8), pubkey(16), signature(17),
+#!   pad(3)]).
+#! - loc[72..76] the nonce KEY: the usedNonces storage-map key, which is the attested output-note
+#!   serial.
+#! - loc[76..80] the P2ID note-storage region ([target_id_suffix, target_id_prefix]).
+#! - loc[80] hook_data_len, loc[81] len_felts, loc[82] the reduced attested amount.
 #!
 #! Inputs:  [ASSET_VALUE, tag, note_type, RECIPIENT]
 #! Outputs: [ASSET_VALUE, tag, note_type, RECIPIENT]
@@ -199,8 +181,8 @@ const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient val
 #! - the attestation attachment is not exactly 11 words.
 #! - an attachment's advice-map content does not hash to its note-committed commitment (the
 #!   pipe_preimage_to_memory assert inside write_attachment_to_memory).
-#! - any relocated verify stage rejects (D5a structural/domain/identifier, D5b amount/fee with
-#!   feeAmount != 0, D5c nonce replay, D5d attester allowlist/signature).
+#! - any consumed verify stage rejects (structural/domain/identifier, amount/fee with
+#!   feeAmount != 0, nonce replay, attester allowlist/signature).
 #! - the recipient extraction rejects the attested remoteRecipient (pad/limb/canonicity or
 #!   account_id::validate).
 #! - a note-supplied value diverges from its attested derivation (the ASSERT-MATCH errors).
@@ -209,10 +191,10 @@ const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient val
 @locals(84)
 @account_procedure
 pub proc check_policy
-    # => [ASSET_VALUE, tag, note_type, RECIPIENT]
-
-    # park the policy interface: every note-supplied value is compared against its attested
-    # derivation below, then restored verbatim for the return
+    # park the policy interface: every note-supplied
+    # value is compared against its attested
+    # derivation below, then restored verbatim for the
+    # return
     loc_storew_le.0 dropw
     # => [tag, note_type, RECIPIENT]
 
@@ -256,7 +238,7 @@ pub proc check_policy
     swap push.INTENT_PTR exec.active_note::write_attachment_to_memory
     # => [num_words, attestation_idx]
 
-    # transport-shape floor: at least the 60-felt header (content is D5a's job)
+    # transport-shape floor: at least the 60-felt header (content is the parser's job)
     dup u32assert.err=ERR_XRESERVE_MINT_NOTE_INTENT_TOO_SHORT
     u32gte.DEPOSIT_INTENT_HEADER_WORDS assert.err=ERR_XRESERVE_MINT_NOTE_INTENT_TOO_SHORT
     # => [num_words, attestation_idx]
@@ -321,10 +303,10 @@ pub proc check_policy
     dropw
     # => []
 
-    # ---- VERIFY (verify-once, relocated D5a..D5d); any trap aborts the whole tx -> no writes ----
+    # ---- VERIFY (verify once); any trap aborts the whole tx -> no writes ----
 
-    # stage D5a (R-MINT-1..8): structural parse + domain/identifier compares; its returned
-    # hook_data_len (the same embedded field the derivation above read) feeds the D5d extent
+    # deposit-intent preconditions: structural parse + domain/identifier compares; the returned
+    # hook_data_len (the same embedded field the derivation above read) feeds the keccak extent
     loc_load.81 push.INTENT_PTR
     # => [intent_ptr, len_felts]
 
@@ -332,21 +314,21 @@ pub proc check_policy
     loc_store.80
     # => []
 
-    # stage D5b (R-MINT-9/10/11): amount/maxFee/feeAmount reduction + bounds (feeAmount from the
-    # re-surfaced advice; the F2 feeAmount == 0 gate is DEC-2 keep-zero)
+    # amount/maxFee/feeAmount reduction + bounds (feeAmount comes from the re-surfaced advice;
+    # the MVP requires feeAmount == 0)
     push.DEPOSIT_SCALE_EXP push.INTENT_PTR
     # => [intent_ptr, scale_exp]
 
     exec.deposit_intent_parser::assert_mint_amounts
     # => []
 
-    # stage D5c (R-MINT-12): nonce replay guard (assert-zero only; the SET is the accept-path
-    # write below)
+    # nonce replay guard (assert-zero only; the SET is the accept-path write
+    # below)
     push.INTENT_PTR
     exec.deposit_intent_parser::assert_nonce_unused
     # => []
 
-    # stage D5d (R-MINT-13/14): keccak the 240 + hook_data_len payload, allowlist gate + ECDSA
+    # attestation verify: keccak the 240 + hook_data_len payload, allowlist gate + ECDSA
     # verify (pubkey + signature from the re-surfaced advice)
     loc_load.80 push.DEPOSIT_INTENT_HEADER_FELTS mul.4 add
     # => [len_bytes]
@@ -380,7 +362,7 @@ pub proc check_policy
     # => [amount_base, scale_exp]
 
     exec.load_field_words
-    # => [U1, U0, scale_exp]
+    # => [U_UPPER, U_LOWER, scale_exp]
 
     exec.encoding::uint256_to_asset_amount
     loc_store.82
@@ -419,7 +401,7 @@ pub proc check_policy
     assertz.err=ERR_XRESERVE_MINT_AMOUNT_MISMATCH
     # => []
 
-    # tag binding: the attested recipient's account target (A13 — the standards tag helper)
+    # tag binding: the attested recipient's account target (the standards tag helper)
     loc_load.77
     exec.note_tag::create_account_target
     # => [expected_tag]
@@ -471,8 +453,8 @@ end
 # =================================================================================================
 
 #! Extracts and canonically validates the P2ID recipient's Miden AccountId felts from the staged
-#! DepositIntent's `remoteRecipient` bytes32 (the DEV-10 AccountId-in-bytes32 layout), feeding
-#! the ASSERT-MATCH recipe derivation.
+#! DepositIntent's `remoteRecipient` bytes32 (the right-aligned AccountId-in-bytes32 layout),
+#! feeding the ASSERT-MATCH recipe derivation.
 #!
 #! Reads the eight u32-LE-packed `remoteRecipient` limbs at `intent_ptr + REMOTE_RECIPIENT_FELT_OFF`,
 #! asserts the 16-byte leading pad is zero, rebuilds the big-endian `prefix`/`suffix` u64s — each
@@ -529,7 +511,7 @@ proc extract_recipient_account_id
     # => [suffix, prefix]
 
     # ---- canonical AccountId validation (suffix low byte == 0, suffix MSB == 0, version == 1) ----
-    # delegate to the pinned protocol validator (consumed BY REFERENCE) over a copy of the felts;
+    # delegate to the protocol's own account-id validator over a copy of the felts;
     # the originals are the returned [suffix, prefix] the recipe derivation consumes
     dup.1 dup.1
     # => [suffix, prefix, suffix, prefix]
@@ -540,8 +522,8 @@ end
 
 #! Builds a Miden field element from the two u32-LE-packed limbs of a big-endian u64, PROVING the
 #! value did not reduce mod the field (the canonical-range check mirroring Rust `Felt::try_from`;
-#! the `miden-agglayer` `eth_address.masm::build_felt` precedent, adapted with a local byte-swap so
-#! the faucet library depends on no private export of the encoding library).
+#! adapted from the agglayer library's `build_felt` with a local byte-swap so the faucet
+#! library depends on no private export of the encoding library).
 #!
 #! Inputs:  [lo, hi]
 #! Outputs: [felt]
@@ -608,19 +590,19 @@ proc swap_u32_bytes
     # => [swapped]
 end
 
-#! Loads the 8 u32-LE-packed limbs of a 32-byte field at `base` into the [W1, W0] word orientation
-#! the encoding reducers consume. Replicates the (private) deposit_intent_parser staging
-#! (reduce_uint256_field / assert_nonce_unused nonce load): single-felt loads because the DC-1
-#! felt offsets are not word-aligned (word loads trap UnalignedWordAccess); the reduction /
-#! key-hash itself is the encoding library's `pub proc`, consumed by reference at the call site.
+#! Loads the 8 u32-LE-packed limbs of a 32-byte field at `base` into the [W_UPPER, W_LOWER] word
+#! orientation the encoding reducers consume. Replicates the (private) deposit_intent_parser staging
+#! (reduce_uint256_field / assert_nonce_unused nonce load): single-felt loads because the header
+#! felt offsets are not word-aligned (word loads would trap); the reduction / key-hash itself is the
+#! encoding library's `pub proc`, consumed by reference at the call site.
 #!
 #! Inputs:  [base]
-#! Outputs: [W1, W0]
+#! Outputs: [W_UPPER, W_LOWER]
 #!
 #! Where:
 #! - base is the memory address of the field's first packed limb.
-#! - W0 is the field's first four packed limbs (wire bytes 0..16), W1 the next four (wire bytes
-#!   16..32), each element-0 on top.
+#! - W_LOWER is the field's positionally lower four packed limbs (wire bytes 0..16), W_UPPER
+#!   is the positionally upper four (wire bytes 16..32), each element-0 on top.
 #!
 #! Invocation: exec
 proc load_field_words
@@ -628,14 +610,14 @@ proc load_field_words
     dup.1 add.2 mem_load
     dup.2 add.1 mem_load
     dup.3 mem_load
-    # => [W0, base]
+    # => [W_LOWER, base]
 
     dup.4 add.7 mem_load
     dup.5 add.6 mem_load
     dup.6 add.5 mem_load
     dup.7 add.4 mem_load
-    # => [W1, W0, base]
+    # => [W_UPPER, W_LOWER, base]
 
     movup.8 drop
-    # => [W1, W0]
+    # => [W_UPPER, W_LOWER]
 end

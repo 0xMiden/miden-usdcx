@@ -1,24 +1,24 @@
 //! **Cross-cycle submit recovery** — the two halves of the terminal-vs-retryable split, driven
 //! across more than one cycle, plus the loop-level failure emission.
 //!
-//! Round 1 recorded BOTH a fatal submit and a budget-exhausted transient submit as
-//! `SubmissionStatus::Failed`, which the store makes re-claimable — and `run_relayer_cycle` advanced
-//! the page cursor without ever consuming `IdempotencyStore::retryable`. So two opposite bugs lived
-//! together:
+//! A driver that recorded BOTH a fatal submit and a budget-exhausted transient submit as
+//! `SubmissionStatus::Failed` (which the store makes re-claimable) — and advanced
+//! the page cursor without ever consuming `IdempotencyStore::retryable` — would host two opposite
+//! bugs at once:
 //!
-//! * a **transient** failure on a page WITH a next cursor was stranded: the cursor moved past its
-//!   page and forward-only polling never re-observed its attestation, while the retry work list that
-//!   was built for exactly this (`retryable()`) went unused;
-//! * a **fatal** failure on a re-polled or final page was re-claimed and re-submitted, because
-//!   `Failed` is retryable — the fatal/transient split meant nothing across cycles.
+//! * a **transient** failure on a page WITH a next cursor would be stranded: the cursor moves past
+//!   its page and forward-only polling never re-observes its attestation, while the retry work list
+//!   that was built for exactly this (`retryable()`) goes unused;
+//! * a **fatal** failure on a re-polled or final page would be re-claimed and re-submitted, because
+//!   `Failed` is retryable — the fatal/transient split would mean nothing across cycles.
 //!
-//! This suite drives real multi-cycle sequences and asserts the fix: transient failures are retried
-//! by re-fetching their attestation by `messageHash` (CMP-D3) regardless of the cursor, and fatal
+//! This suite drives real multi-cycle sequences and asserts neither happens: transient failures are
+//! retried by re-fetching their attestation by `messageHash` regardless of the cursor, and fatal
 //! failures are TERMINAL — never re-submitted, whether the page is re-polled or not.
 //!
-//! Every leg here is real except the Miden submit PORT (NON-GATING — it executes no transaction; §11
-//! mock disclosure). The dedup and retry are LIVENESS backstops; the authoritative duplicate defence
-//! is the on-chain `usedNonces` assert (INV-MINT-SECURITY).
+//! Every leg here is real except the Miden submit PORT (NON-GATING — it executes no transaction;
+//! the mock boundary mock disclosure). The dedup and retry are LIVENESS backstops; the
+//! authoritative duplicate defence is the on-chain `usedNonces` assert.
 
 mod cycle_support;
 mod fixtures;
@@ -49,9 +49,9 @@ use mock_circle::{
 
 /// **A transient submit failure is NOT stranded behind the cursor.**
 ///
-/// Cycle 1 polls page 1 (which advertises a `next` cursor), the lone attestation exhausts its submit
-/// budget with transient failures, and the cursor advances to page 2. Forward polling will never
-/// re-observe that attestation. Cycle 2 must therefore RE-FETCH it by `messageHash` (CMP-D3) from the
+/// Cycle 1 polls page 1 (which advertises a `next` cursor), the lone attestation exhausts its
+/// submit budget with transient failures, and the cursor advances to page 2. Forward polling will
+/// never re-observe that attestation. Cycle 2 must therefore RE-FETCH it by `messageHash` from the
 /// retry work list and re-submit it — and this time it lands.
 #[tokio::test]
 async fn a_transient_failure_is_retried_across_cycles_not_stranded_behind_the_cursor() {
@@ -72,7 +72,7 @@ async fn a_transient_failure_is_retried_across_cycles_not_stranded_behind_the_cu
                 // page 2, terminal — cycle 2's forward poll, which does NOT carry the stranded one
                 Reply::ok(attestation_page(&[&page_two])),
             ])
-            // CMP-D3: the retry re-fetches the stranded attestation by its messageHash
+            // the retry re-fetches the stranded attestation by its messageHash
             .by_hash(vec![Reply::ok(by_hash_wrapper(&stranded))]),
     );
 
@@ -230,10 +230,10 @@ async fn a_retry_whose_refetch_fails_stays_retryable_and_is_reported() {
 
 /// **A fatal submit failure is TERMINAL and is not re-submitted on a final-page re-poll.**
 ///
-/// Cycle 1 polls a final page (no `next` cursor, so the cursor does not advance) and the attestation
-/// fatally fails. Cycle 2 re-polls the SAME final page. The fatal attestation must be recorded
-/// terminally and recognized as already-decided on the re-poll — never built and submitted a second
-/// time.
+/// Cycle 1 polls a final page (no `next` cursor, so the cursor does not advance) and the
+/// attestation fatally fails. Cycle 2 re-polls the SAME final page. The fatal attestation must be
+/// recorded terminally and recognized as already-decided on the re-poll — never built and submitted
+/// a second time.
 #[tokio::test]
 async fn a_fatal_failure_is_terminal_and_not_resubmitted_on_a_final_page_repoll() {
     let doomed = test_vector();
@@ -363,8 +363,8 @@ fn test_vector() -> AttestationVector {
 }
 
 /// A DIFFERENT deposit (distinct nonce), still structurally valid — the canonical payload with its
-/// nonce perturbed. Located by searching the payload for the nonce the decoder reports, so no DC-1
-/// offset unit-04 owns is restated here.
+/// nonce perturbed. Located by searching the payload for the nonce the decoder reports, so no
+/// layout offset the shared encoding crate owns is restated here.
 fn with_distinct_nonce(tweak: u8) -> Vec<u8> {
     let payload = canonical_payload(TEST_VECTOR_PAYLOAD_ID);
     let nonce = nonce_of(&PartnerAttester::new().attest(&payload));

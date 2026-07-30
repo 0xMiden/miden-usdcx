@@ -1,34 +1,32 @@
-//! F5 — production transaction auth: the faucet is a Miden NETWORK ACCOUNT.
+//! Production transaction authorization: the faucet is a Miden NETWORK ACCOUNT.
 //!
-//! Human decision (2026-07-08, RATIFIED): the xUSDC/xReserve faucet ships composing the stock
-//! `AuthNetworkAccount` as its ONE production auth component — keyless, a frozen note-script
-//! allowlist, and a tx-script allowlist of EXACTLY the one canonical `ExpirationTransactionScript`
-//! (S12, RATIFIED 2026-07-20).
+//! The faucet ships with the standard network-account auth component as its one and only
+//! authorization surface. That choice has three consequences this file pins, because together they
+//! define the entire attack surface of "what can be sent to this account".
 //!
-//! The production faucet (`support::setup_production_faucet`) is finalized under the deploy
-//! path's own `XReserveStablecoinBuilder::auth_component()` (the `custom()`-based composition —
-//! the `Auth::NetworkAccount` fixture routes through the force-inserting `new()` and is
-//! deliberately bypassed), and the mint + burn notes carry the scheme-2 `NetworkAccountTarget`
-//! routing attachment.
+//! It is KEYLESS. There is no signing key that could be stolen or lost; a transaction is authorized
+//! by what it does, not by who signed it.
 //!
-//! COVERAGE (this file):
-//! - proof #6: the production faucet IS a network account AND its auth component is the stock
-//!   `AuthNetworkAccount` (its auth procedure root is present in the account code).
-//! - proof #5: the note-script allowlist equals EXACTLY the 14 ratified roots (2 supply + 12 admin
-//!   — NO `set_role_admin` note: removed by the S21 disposition flip, human-ratified 2026-07-14);
-//!   the tx-script allowlist is present AND equals EXACTLY the one canonical
-//!   `ExpirationTransactionScript::script_root()` (S12, RATIFIED 2026-07-20).
-//! - proof #1: a non-allowlisted note is rejected by auth; any tx script OTHER than the canonical
-//!   expiration script is rejected, and that expiration script is admitted.
-//! - proof #2/#3: exact routing-attachment wire form + semantics — the mint (a STOCK `MintNote`
-//!   since the Wave-1 S1 recomposition) carries the three xUSDC attachments (scheme-4
-//!   DepositIntent + scheme-5 attestation + scheme-2 `NetworkAccountTarget` to the faucet with
-//!   `NoteExecutionHint::Always`); the burn carries the scheme-2 target to the faucet with `Always`.
+//! Its note-script allowlist is FIXED at deployment and cannot be changed afterwards. Only the two
+//! supply notes (mint and burn) and the twelve admin notes are admissible; any other note script is
+//! refused by auth before its code runs. Both the exact membership and the exact count are asserted,
+//! at two layers — the builder's single source of truth and the allowlist map inside the built
+//! account — because an extra entry is as much a defect as a missing one. `set_role_admin` is
+//! deliberately not among them: the role-delegation graph is seeded at build time and frozen, and
+//! rotation happens through grant and revoke instead.
 //!
-//! Related coverage lives in sibling suites: the admin layered-auth E2E per op (owner/role-gated
-//! writes + wrong-sender traps + NOTE_ARGS-inert) in `f5_admin_notes.rs`, and the scheme-aware mint
-//! transport negatives (missing scheme-4/5/2 attachments / wrong count / tampered attestation,
-//! through the attestation mint policy) in `mint_policy_e2e.rs`.
+//! Its transaction-script allowlist contains exactly one entry, the canonical expiration script.
+//! Any other transaction script is rejected. This is what stops an arbitrary script from being run
+//! against the faucet's own procedures.
+//!
+//! The remaining tests cover the routing attachments that make a network account reachable: a mint
+//! note carries three attachments — the deposit intent, the attestation, and the target routing the
+//! note to the faucet with an always-execute hint — and a burn note carries the routing attachment.
+//! Both the wire form and the semantics are checked.
+//!
+//! Sibling suites cover the rest: per-operation admin authorization in `f5_admin_notes.rs`, and the
+//! mint transport negatives — missing or miscounted attachments, tampered attestations — in
+//! `mint_policy_e2e.rs`.
 
 mod support;
 
@@ -83,7 +81,8 @@ fn note_rng(seed: u64) -> RandomCoin {
     ]))
 }
 
-/// A sample DC-7 burn payload (round-trippable; only the amount is material here).
+/// A representative burn payload. Only the amount matters to these tests; the destination fields
+/// are arbitrary values that simply have to round-trip.
 fn sample_burn_items(amount: u64) -> XReserveBurnItems {
     XReserveBurnItems {
         amount: miden_protocol::asset::AssetAmount::new(amount).expect("amount within bounds"),
@@ -93,17 +92,19 @@ fn sample_burn_items(amount: u64) -> XReserveBurnItems {
     }
 }
 
-/// First byte of the 32-byte `remoteRecipient` field (felt 19 x 4 bytes; DC-1).
+/// Byte offset of the 32-byte `remoteRecipient` field in a DepositIntent (felt 19, 4 bytes/felt).
 const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
 
 /// The attested wire amount spliced into the payload (any in-range value; the factory re-derives
 /// the note storage from it).
 const MINT_AMOUNT: u64 = 5_000;
 
-/// A valid attested deposit-intent payload: the canonical accept vector with an in-range
-/// amount/maxFee and a factory-decodable `remoteRecipient` (the DEV-10 bytes32 form of
-/// `recipient`) spliced in — `XUsdcMintNote::create` re-derives the stock mint storage from
-/// these fields, so they must be valid (the mint_policy_e2e.rs payload construction).
+/// Builds a deposit-intent payload that a real mint note can be constructed from.
+///
+/// It starts from the canonical accept vector and splices in an in-range amount and maxFee plus a
+/// `remoteRecipient` holding the given account id in its bytes32 form. Those fields have to be
+/// genuinely valid, because the note factory decodes them to derive the mint note's storage — a
+/// payload that merely looks well-formed would fail at construction, not at the check under test.
 fn attested_deposit_intent_payload(recipient: miden_protocol::account::AccountId) -> Vec<u8> {
     let v = xusdc_encoding::vectors::load();
     let mut payload = v
@@ -189,21 +190,26 @@ fn production_faucet_auth_component_is_stock_network_account() -> Result<()> {
 // PROOF #5 — the frozen note-script allowlist + a tx-script allowlist of EXACTLY the expiration root
 // ================================================================================================
 
-/// The note-script allowlist must equal EXACTLY the 14 ratified roots (2 supply + 12 admin) — an
-/// extra OR a missing root is RED (the allowlist is IMMUTABLE post-deploy). Asserted at BOTH layers:
-/// the builder's single-source `allowed_note_scripts()` and the built account's on-chain allowlist
-/// map. The 12 roots come from the shipped note factories (pinned + parity-tested individually).
-/// `set_role_admin` is deliberately ABSENT (S21 disposition flip, human-ratified 2026-07-14): the
-/// role-admin graph is build-seeded and frozen; rotation is `grant_role`/`revoke_role`
-/// (CIR-ADMIN-3) — the same removal disposition as `renounce_role` and `freeze`/`unfreeze`.
+/// The note-script allowlist is exactly the fourteen intended roots — two supply notes and twelve
+/// admin notes — with nothing extra and nothing missing.
+///
+/// The allowlist cannot be changed after deployment, so its contents at build time are its contents
+/// forever; an accidental extra entry would be a permanent hole. It is checked at both layers that
+/// could drift apart: the builder's list, which is the single source, and the allowlist map inside
+/// the account that auth actually consults. The expected roots are taken from the shipped note
+/// factories rather than written out as literals.
+///
+/// `set_role_admin` is deliberately absent, together with `renounce_role` and freeze/unfreeze: the
+/// role-delegation graph is seeded at build time and frozen, and rotation goes through grant and
+/// revoke.
 #[test]
 fn production_faucet_note_allowlist_is_exactly_the_14_ratified_roots() -> Result<()> {
     let (_chain, account) = production_faucet()?;
     let expected: BTreeSet<_> = BTreeSet::from([
-        // rows 1-2: the supply-side notes (row 1 = the STOCK MintNote since Wave-1 S1).
+        // the two supply-side notes: minting uses the standard mint note
         MintNote::script_root(),
         BurnNote::script_root(),
-        // rows 3-12: the 10 admin note scripts (NO set_role_admin — S21).
+        // the ten configuration and role admin notes (no set_role_admin — see the doc comment)
         XReserveSetAttesterNote::script_root(),
         XReserveSetMinBurnSizeNote::script_root(),
         XReserveSetMaxSupplyNote::script_root(),
@@ -214,7 +220,7 @@ fn production_faucet_note_allowlist_is_exactly_the_14_ratified_roots() -> Result
         XReserveTransferOwnershipNote::script_root(),
         XReserveAcceptOwnershipNote::script_root(),
         XReserveIdentifierInitNote::script_root(),
-        // rows 13-14: the F4-reversal transfer-blocklist admin notes (BLK_MANAGER-gated).
+        // the two transfer-blocklist notes, gated on the blocklist manager role
         XReserveBlockAccountNote::script_root(),
         XReserveUnblockAccountNote::script_root(),
     ]);
@@ -243,8 +249,8 @@ fn production_faucet_note_allowlist_is_exactly_the_14_ratified_roots() -> Result
 }
 
 /// The tx-script allowlist must exist and equal EXACTLY the one canonical
-/// `ExpirationTransactionScript::script_root()` (S12, RATIFIED 2026-07-20) — the sole-mint-surface
-/// posture (F1), now expressed as a ONE-root allowlist that admits only the protocol-standard
+/// `ExpirationTransactionScript::script_root()` — the sole-mint-surface
+/// posture, expressed as a ONE-root allowlist that admits only the protocol-standard
 /// expiration bounder rather than an empty set. Extra/missing = RED.
 #[test]
 fn production_faucet_tx_script_allowlist_is_exactly_the_expiration_root() -> Result<()> {
@@ -293,7 +299,7 @@ async fn non_allowlisted_note_is_rejected_by_auth() -> Result<()> {
 
 /// Any transaction script OTHER than the canonical `ExpirationTransactionScript` must be rejected
 /// by the one-root tx-script allowlist, AND that canonical expiration script must be ADMITTED
-/// (S12): the `nop` probe still trips `ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED`, while the
+/// the `nop` probe still trips `ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED`, while the
 /// expiration script clears the allowlist gate and executes.
 #[tokio::test]
 async fn non_expiration_tx_script_is_rejected_and_expiration_is_admitted() -> Result<()> {
@@ -315,7 +321,7 @@ async fn non_expiration_tx_script_is_rejected_and_expiration_is_admitted() -> Re
     // POSITIVE — the canonical expiration script IS allowlisted, so it CLEARS the allowlist gate.
     // An expiration-only tx changes no account state and consumes no notes, so the kernel rejects it
     // with the empty-tx epilogue assertion — downstream of, and orthogonal to, the allowlist gate.
-    // The precise S12 invariant: the expiration script is NOT rejected by the tx-script allowlist (a
+    // The precise invariant: the expiration script is NOT rejected by the tx-script allowlist (a
     // mutation dropping the expiration root flips this back to the allowlist error — RED — caught here).
     let expiration = ExpirationTransactionScript::new(NonZeroU16::new(64).expect("64 is non-zero"));
     let admitted = chain

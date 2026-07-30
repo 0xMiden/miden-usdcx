@@ -1,4 +1,4 @@
-//! Faucet-owned ADMIN note factories (F5): the production, root-pinned, storage-param admin notes
+//! Faucet-owned ADMIN note factories: the production, root-pinned, storage-param admin notes
 //! the faucet network account consumes to drive its owner/role-gated admin procs.
 //!
 //! Each admin note (a) carries its parameters CREATOR-COMMITTED in `NoteStorage.items` (never
@@ -9,13 +9,13 @@
 //! kernel-forced, so the proc's owner/role gate is sound under permissionless network execution.
 //!
 //! This module ships allowlist rows 3-14: the `set_attester` reference op, the ratified owner/role/
-//! pause admin note scripts (`set_min_burn_size` — retargeted at the STOCK `set_min_burn_amount`
-//! with a note-side zero-floor guard since the Wave-1 S1 recomposition —, `set_max_supply`,
+//! pause admin note scripts (`set_min_burn_size` — targeting the STOCK `set_min_burn_amount`
+//! with a note-side zero-floor guard —, `set_max_supply`,
 //! `pause`, `unpause`, `grant_role`, `revoke_role`, `transfer_ownership`, `accept_ownership`,
-//! `identifier_init` — the minimized DEC-4 replacement of the former four-field `domain_init`),
-//! and the F4-reversal transfer-blocklist admin notes (`block_account`, `unblock_account`,
-//! BLK_MANAGER-gated). There is deliberately NO `set_role_admin` note (S21 disposition flip,
-//! human-ratified 2026-07-14): the role-admin delegation graph is build-seeded and deploys frozen
+//! `identifier_init` — the minimized identifier-only init; the other domain-config fields are
+//! build-seeded), and the transfer-blocklist admin notes (`block_account`, `unblock_account`,
+//! BLK_MANAGER-gated). There is deliberately NO `set_role_admin`
+//! note: the role-admin delegation graph is build-seeded and deploys frozen
 //! — see the SET_ROLE_ADMIN section below.
 
 use std::sync::Arc;
@@ -101,12 +101,14 @@ pub(super) fn build_admin_note<R: FeltRng>(
     ))
 }
 
-// SET_ROLE_ADMIN — NO FACTORY (S21 disposition flip, human-ratified 2026-07-14)
+// SET_ROLE_ADMIN — NO FACTORY (a deliberate, human-ratified omission)
 // ================================================================================================
-// The former `XReserveSetRoleAdminNote` (allowlist row 10 of the old 13-root set, pinned root
-// 0x0c69fe1a19ee27196780be8d7815920e6a5da49e05ee10b9a615c4ee7a778648) was REMOVED together with
-// its note script, matching the `renounce_role` precedent (also no factory, never allowlisted):
+// There is no `XReserveSetRoleAdminNote`. The FORMER set_role_admin note (pinned root
+// 0x0c69fe1a19ee27196780be8d7815920e6a5da49e05ee10b9a615c4ee7a778648) is not admissible —
+// tests consume the preserved former note and assert it is REJECTED. This matches the
+// `renounce_role` precedent (also no factory, never allowlisted):
 // the role-admin graph is BUILD-SEEDED (`seeded_dom_roles_rbac`) and deploys frozen; rotation is
-// `grant_role`/`revoke_role` (CIR-ADMIN-3). The stock `rbac::set_role_admin` account procedure
-// remains composed but is present-but-UNREACHABLE — enforced by `tests/account_callable_surface.rs`
-// and the preserved-former-note rejection tests in `tests/f5_admin_notes.rs`.
+// `grant_role`/`revoke_role`, with the owner as the rotation backstop. The stock
+// `rbac::set_role_admin` account procedure
+// remains composed but is present-but-UNREACHABLE: no allowlisted note reaches it, and consuming
+// the preserved former note is asserted to be rejected.

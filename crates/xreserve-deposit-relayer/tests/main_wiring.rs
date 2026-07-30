@@ -1,13 +1,12 @@
-//! **The binary wires a real sink** — a source-level pin, the way `cycle_no_silent_drops.rs` pins the
-//! no-drop loop.
+//! **The binary wires a real sink** — a source-level pin, the way `cycle_no_silent_drops.rs` pins
+//! the no-drop loop.
 //!
 //! A behavioural test cannot easily drive `main` (it is a binary that runs an unbounded loop and
 //! exits on a missing submit adapter), and `WriteEventSink`'s own emission is proven in
-//! `observability_sink.rs`. What is left, and what round 1 got wrong, is the WIRING: the binary must
-//! install that real sink into BOTH the Circle client (so retry/rejection events are logged) and the
-//! `RelayerCtx` (so every terminal per-attestation event is), and must not fall back to the
-//! event-dropping `NoopSink` for either. A decision the compiler cannot hold is pinned mechanically,
-//! or it is not held.
+//! `observability_sink.rs`. What is left is the WIRING: the binary must install that real sink into
+//! BOTH the Circle client (so retry/rejection events are logged) and the `RelayerCtx` (so every
+//! terminal per-attestation event is), and must not fall back to the event-dropping `NoopSink` for
+//! either. A decision the compiler cannot hold is pinned mechanically, or it is not held.
 
 /// `main.rs`, comments stripped, so the sweep reads code and not the prose that explains it.
 fn main_source() -> String {
@@ -37,8 +36,8 @@ fn the_binary_installs_a_real_sink_into_the_client_and_context() {
     );
 }
 
-/// The sink the binary builds is the SAME handle it hands the client and the context — not two sinks,
-/// one of which is silently a no-op. It is shared behind an `Arc` and passed to both.
+/// The sink the binary builds is the SAME handle it hands the client and the context — not two
+/// sinks, one of which is silently a no-op. It is shared behind an `Arc` and passed to both.
 #[test]
 fn the_binary_shares_one_sink_between_the_client_and_the_context() {
     let source = main_source();
@@ -53,8 +52,8 @@ fn the_binary_shares_one_sink_between_the_client_and_the_context() {
     );
 }
 
-/// Removes `//` line comments and `/* */` blocks (string literals preserved) — the sweeps above read
-/// declarations, not the doc prose that names `NoopSink` to explain why it is gone.
+/// Removes `//` line comments and `/* */` blocks (string literals preserved) — the sweeps above
+/// read declarations, not the doc prose that names `NoopSink` to explain why it is gone.
 fn strip_comments(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -103,7 +102,8 @@ fn strip_comments(text: &str) -> String {
     out
 }
 
-/// The stripper is itself checked — a sweep that stopped reading the file would pass every pin above.
+/// The stripper is itself checked — a sweep that stopped reading the file would pass every pin
+/// above.
 #[test]
 fn the_comment_stripper_reads_code_not_prose() {
     let stripped = strip_comments("let a = 1; // NoopSink here\n/* NoopSink */ let b = 2;");

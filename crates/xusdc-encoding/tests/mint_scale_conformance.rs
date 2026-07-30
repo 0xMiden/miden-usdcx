@@ -13,7 +13,8 @@
 //! derives, or even names a test-side scale — grep-provable, and deliberately so: the assertions
 //! below are only meaningful because they depend on the production constant.
 //!
-//! THE INVARIANT (the PROVISIONAL scale-0 position — DEV-5 cap/scale/dust remains Circle-OPEN):
+//! THE INVARIANT (the PROVISIONAL scale-0 position — the cap/scale/dust decision stays OPEN,
+//! pending Circle confirmation):
 //! Circle's on-wire deposit `amount` is denominated in xUSDC smallest units (6 decimals) and the
 //! Miden xUSDC asset is 6-decimal, so the faucet mints `y = x` — `DEPOSIT_SCALE_EXP = 0`,
 //! `y = floor(x / 10^0)`, an identity with no rescale and no dust. Just-inside/just-outside intuition: at `DEPOSIT_SCALE_EXP = 0` a wire amount of
@@ -71,19 +72,19 @@ const CIRCLE_DEPOSITS: [u64; 4] = [
 ];
 
 /// `maxFee` in the SAME 6-decimal wire units. Kept at or below the smallest swept deposit so
-/// R-MINT-10 (`amount >= maxFee`) holds for every case at every scale — the amount assertion, not
-/// the fee gate, is what must decide these tests.
+/// the amount-covers-fee reject (`amount >= maxFee`) holds for every case at every scale — the
+/// amount assertion, not the fee gate, is what must decide these tests.
 const MAX_FEE_RAW: u64 = 1;
 
 /// Headroom for the whole sweep at the CORRECT (identity) scale — the supply cap must never be
 /// what fails a case here.
 const MAX_SUPPLY: u64 = 1_000_000_000_000;
 
-/// First byte of the 32-byte `remoteRecipient` field (felt 19 x 4 bytes; DC-1).
+/// First byte of the 32-byte `remoteRecipient` field (felt 19 x 4 bytes of the fixed header).
 const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
-/// First byte of the 32-byte `remoteToken` field (felt 11 x 4 bytes; DC-1).
+/// First byte of the 32-byte `remoteToken` field (felt 11 x 4 bytes of the fixed header).
 const REMOTE_TOKEN_BYTE_OFF: usize = 11 * 4;
-/// First byte of the 32-byte `nonce` field (felt 51 x 4 bytes; DC-1).
+/// First byte of the 32-byte `nonce` field (felt 51 x 4 bytes of the fixed header).
 const NONCE_BYTE_OFF: usize = 51 * 4;
 
 fn owner() -> AccountId {
@@ -106,8 +107,8 @@ fn di(id: &str) -> &'static DiVector {
 
 /// The canonical accept payload with the Circle `amount` / `maxFee` spliced in, `remoteRecipient`
 /// replaced by the real recipient wallet, `remoteToken` bound to the faucet's own-id identifier
-/// fixpoint (what D5a's `assert_eqw` compares against), and one nonce byte perturbed by
-/// `nonce_variant` so each mint in a sweep consumes a fresh D5c nonce.
+/// fixpoint (what the identifier compare checks against), and one nonce byte perturbed by
+/// `nonce_variant` so each mint in a sweep consumes a nonce the replay guard has not seen.
 fn payload_for(
     recipient: AccountId,
     faucet_id: AccountId,
@@ -190,9 +191,10 @@ fn attestation_for(seed: u64, payload: &[u8]) -> MintAttestation {
     MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes)
 }
 
-/// Consumes a committed mint note on the faucet with NO tx script and NO consume-side advice —
-/// the production `xreserve_mint_note.masm` -> `call.note_entry::receive_and_mint` transport,
-/// which is the ONLY place a scale exponent enters the mint.
+/// Consumes a committed mint note on the faucet with no transaction script and no consume-side
+/// advice — the production path, in which the standard mint-note script drives the standard
+/// `mint_and_send`, which dispatches the faucet's `check_policy`. That policy is the only place a
+/// scale exponent enters a mint, so consuming this way is what makes the sweep meaningful.
 async fn consume_mint_note(
     chain: &MockChain,
     faucet_id: AccountId,
@@ -345,7 +347,7 @@ async fn production_mint_delivers_the_circle_amount_unrescaled() -> Result<()> {
 
     let p2id_id = minted.output_notes().get_note(0).id();
     let recipient = committed(&pf.mock_chain, pf.recipient_id)?;
-    // F4-reversal: the recipient consuming policed xUSDC fires the receive callback, so the faucet
+    // Consuming policed xUSDC fires the receive callback, so the faucet
     // must be attached as a foreign account for the kernel to run basic_blocklist::check_policy.
     let faucet_foreign = pf
         .mock_chain
@@ -388,7 +390,7 @@ async fn production_mint_is_an_identity_across_circle_amounts() -> Result<()> {
 
     let mut expected_supply = 0u64;
     for (i, amount) in CIRCLE_DEPOSITS.iter().copied().enumerate() {
-        // A distinct nonce byte per case -> a fresh D5c nonce; the amount is spliced verbatim.
+        // A distinct nonce byte per case, so the replay guard never fires; the amount is spliced verbatim.
         let payload = payload_for(pf.recipient_id, pf.faucet_id, amount, (i as u8) + 1);
         let minted = mint_via_production_note(&mut pf, &payload, 70 + i as u64)
             .await
@@ -485,10 +487,11 @@ fn shipped_faucet_declares_identity_deposit_scale() -> Result<()> {
     Ok(())
 }
 
-// F4-REVERSAL — mint TO a blocked recipient SUCCEEDS, then STRANDS at the recipient's consume
+// TRANSFER BLOCKLIST — mint TO a blocked recipient SUCCEEDS, then STRANDS at the recipient's
+// consume
 // ================================================================================================
 
-/// The §1.5 mint row, on the REAL attested-mint path: the faucet's mint fires the SEND callback with
+/// The blocked-recipient mint semantics, on the REAL attested-mint path: the mint fires the SEND callback with
 /// the native account = the FAUCET (never blocked), so a mint to a BLOCKED recipient still creates the
 /// P2ID (the target is not inspected at mint time). The blocked recipient then CANNOT consume it —
 /// the receive callback traps the exact stock `"account is blocked"` and the minted funds STRAND

@@ -1,9 +1,10 @@
-//! `T-LA-09` — quorum assembly (`attester::assemble_quorum`, `DC-11`).
+//! Quorum assembly (`attester::assemble_quorum`).
 //!
 //! The `burnSignatures[]` bundle Circle verifies on the source chain must be **exactly-threshold
-//! count (`MIN_SIGNATURE_THRESHOLD = 2`), every signature verifying to its claimed signer, ascending
-//! signer-address order, no duplicates** (`CIRCLE-DATA-SCHEMAS.md:196`; the recover-then-authorize
-//! step at `:46`). This assembler enforces that contract off-chain, BEFORE submit.
+//! count (`MIN_SIGNATURE_THRESHOLD = 2`), every signature verifying to its claimed signer,
+//! ascending signer-address order, no duplicates** (`CIRCLE-DATA-SCHEMAS.md:196`; the
+//! recover-then-authorize step at `:46`). This assembler enforces that contract off-chain, BEFORE
+//! submit.
 //!
 //! These tests drive the assembler with REAL signatures (produced by `attester::sign`) paired with
 //! the addresses they actually recover to — never synthetic address/signature bytes — so the
@@ -164,9 +165,9 @@ fn duplicate_signer_is_rejected() {
 // ================================================================================================
 
 /// A signature paired with the WRONG signer address (signer B's signature attributed to signer A's
-/// address) is excluded with `Err(SignatureDoesNotVerify)` — the `ECDSA.recover`-then-authorize rule
-/// (`TEST-AND-VERIFICATION-HARNESS.md:157`). The check runs before ordering/duplicate, so the exact
-/// index is reported.
+/// address) is excluded with `Err(SignatureDoesNotVerify)` — the `ECDSA.recover`-then-authorize
+/// rule (`TEST-AND-VERIFICATION-HARNESS.md:157`). The check runs before ordering/duplicate, so the
+/// exact index is reported.
 #[test]
 fn signature_not_from_claimed_signer_is_rejected() {
     let all = attesters();
@@ -185,8 +186,9 @@ fn signature_not_from_claimed_signer_is_rejected() {
 
 /// A signature carrying any non-EVM recovery byte (a real signature with `v` retagged to a value
 /// outside `27`/`28`) does not verify against its claimed signer → `Err(SignatureDoesNotVerify)`.
-/// Covers the raw k256 ids `0`/`1`, the x-reduced wire values `29`/`30`, and out-of-band bytes. This
-/// ties the `v` range to the quorum gate: a signature Circle would reject is refused off-chain.
+/// Covers the raw k256 ids `0`/`1`, the x-reduced wire values `29`/`30`, and out-of-band bytes.
+/// This ties the `v` range to the quorum gate: a signature Circle would reject is refused
+/// off-chain.
 #[rstest]
 #[case::raw_zero(0)]
 #[case::raw_one(1)]
@@ -210,10 +212,11 @@ fn signature_with_non_evm_v_does_not_verify(#[case] bad_v: u8) {
 }
 
 /// The discriminating v=29/30 case: a crafted signature whose x-reduced recovery id (`2`/`3`, wire
-/// `v = 29`/`30`) a RANGE-UNCHECKED recovery WOULD accept — paired with the very address that recovery
-/// yields. A correct `recover_address` rejects it on the `v` range alone (never recovering), so it is
-/// refused; the pre-fix `v - 27 → RecoveryId::from_byte` path would have blessed it. This is the exact
-/// gap the auditor's scratch probe exercised (`accepted v=29/30, assembled 2 non-EVM signatures`).
+/// `v = 29`/`30`) a RANGE-UNCHECKED recovery WOULD accept — paired with the very address that
+/// recovery yields. A correct `recover_address` rejects it on the `v` range alone (never
+/// recovering), so it is refused; the pre-fix `v - 27 → RecoveryId::from_byte` path would have
+/// blessed it. This is the exact gap the auditor's scratch probe exercised (`accepted v=29/30,
+/// assembled 2 non-EVM signatures`).
 #[rstest]
 #[case::v29(2)]
 #[case::v30(3)]
@@ -236,8 +239,8 @@ fn recover_address_rejects_x_reduced_v(#[case] recid_byte: u8) {
     );
 }
 
-/// A real (EVM `v` `27`/`28`) signature DOES recover to its signer — the positive counterpart to the
-/// boundary rejections, so `recover_address` is not vacuously returning `None`.
+/// A real (EVM `v` `27`/`28`) signature DOES recover to its signer — the positive counterpart to
+/// the boundary rejections, so `recover_address` is not vacuously returning `None`.
 #[test]
 fn recover_address_accepts_a_real_evm_signature() {
     let a = &attesters()[0];

@@ -1,8 +1,8 @@
-//! xUSDC-on-Miden Rust mirror + test harness. Originally the shared-encoding unit (a Rust mirror of
-//! the hand-written MASM encoding module plus the canonical golden-vector loader / generator); now
-//! also hosts the faucet account composition (the
-//! [`account::xreserve::XReserveStablecoinBuilder`], which wires the stock-mint-deny guard so the
-//! custom path is the sole supply-increasing surface, R-MINT-16).
+//! The xUSDC-on-Miden Rust mirror and test harness: the Rust mirror of the hand-written MASM encoding
+//! module, the canonical golden-vector loader / generator, and the faucet account composition
+//! (the [`account::xreserve::XReserveStablecoinBuilder`], which validates at build time that
+//! the attestation mint policy is the active mint policy, so the attestation-gated path is the
+//! sole supply-increasing surface).
 //!
 //! The four encoding routines (bytes32 hashing, the uint256 → AssetAmount reducer, the Rust-primary
 //! AccountId codec, and the DepositIntent layout + parser) are implemented; the faucet composition

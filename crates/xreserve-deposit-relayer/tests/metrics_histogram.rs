@@ -1,12 +1,11 @@
-//! **The cycle-duration histogram, surfaced AND correct at the top bound** (round-4 finding 1 +
-//! round-5 finding 1).
+//! **The cycle-duration histogram, surfaced AND correct at the top bound.**
 //!
-//! Round 4 surfaced the bucket series, but `Histogram::bucket` returned the TOTAL count for any `le`
-//! at or above the last finite bound — so `cycle_ms_le_30000` silently included cycles LONGER than 30
-//! seconds and was always identical to `cycle_ms_le_inf`, hiding exactly the long-tail stalls the
-//! histogram exists to expose. The finite buckets now sum only the samples actually binned (≤ their
-//! bound); the total (`+Inf`) is returned ONLY for the explicit `u64::MAX` query. These tests use an
-//! OVER-BOUND sample so the two genuinely differ.
+//! A `Histogram::bucket` that returned the TOTAL count for any `le` at or above the last finite
+//! bound would make `cycle_ms_le_30000` silently include cycles LONGER than 30 seconds — always
+//! identical to `cycle_ms_le_inf`, hiding exactly the long-tail stalls the histogram exists to
+//! expose. The finite buckets sum only the samples actually binned (≤ their bound); the total
+//! (`+Inf`) is returned ONLY for the explicit `u64::MAX` query. These tests use an OVER-BOUND
+//! sample so the two genuinely differ.
 
 use xreserve_deposit_relayer::observability::{Histogram, RelayerMetrics};
 
@@ -14,9 +13,9 @@ use xreserve_deposit_relayer::observability::{Histogram, RelayerMetrics};
 const TOP_BOUND_MS: u64 = 30_000;
 const OVER_BOUND_MS: u64 = 45_000;
 
-/// **The adversarial overflow case, at the `Histogram` level.** A sample above the top bound is in the
-/// `+Inf` total but in NO finite bucket — so `bucket(TOP_BOUND)` must EXCLUDE it while `bucket(u64::MAX)`
-/// includes it. Round 4 returned the total for both, collapsing the long tail.
+/// **The adversarial overflow case, at the `Histogram` level.** A sample above the top bound is in
+/// the `+Inf` total but in NO finite bucket — so `bucket(TOP_BOUND)` must EXCLUDE it while
+/// `bucket(u64::MAX)` includes it. Returning the total for both would collapse the long tail.
 #[test]
 fn the_top_finite_bucket_excludes_over_bound_samples() {
     let mut h = Histogram::cycle_duration_ms();
@@ -41,8 +40,8 @@ fn the_top_finite_bucket_excludes_over_bound_samples() {
     );
 }
 
-/// The exported snapshot carries the SAME corrected semantics: the top finite cumulative excludes the
-/// over-bound sample, and `cycle_duration_samples` (the `+Inf`) includes it.
+/// The exported snapshot carries the SAME corrected semantics: the top finite cumulative excludes
+/// the over-bound sample, and `cycle_duration_samples` (the `+Inf`) includes it.
 #[test]
 fn the_snapshot_top_bucket_excludes_over_bound_samples() {
     let mut metrics = RelayerMetrics::new();
@@ -80,7 +79,8 @@ fn the_snapshot_top_bucket_excludes_over_bound_samples() {
     );
 }
 
-/// `render` emits the corrected series: the top finite bound and `+Inf` differ when a sample overflows.
+/// `render` emits the corrected series: the top finite bound and `+Inf` differ when a sample
+/// overflows.
 #[test]
 fn the_render_distinguishes_the_top_bound_from_inf() {
     let mut metrics = RelayerMetrics::new();
@@ -103,7 +103,8 @@ fn the_render_distinguishes_the_top_bound_from_inf() {
     );
 }
 
-/// All-under-bound samples still behave: every finite bucket at/above the max sample equals the total.
+/// All-under-bound samples still behave: every finite bucket at/above the max sample equals the
+/// total.
 #[test]
 fn samples_under_the_top_bound_fill_the_finite_buckets() {
     let mut h = Histogram::cycle_duration_ms();

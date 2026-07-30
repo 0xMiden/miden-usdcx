@@ -1,22 +1,25 @@
-//! `set_min_burn_size` suite (component CMP-F2): the OWNER-gated setter path for the burn floor.
-//! Since the Wave-1 S1 recomposition the floor lives in the STOCK `MinBurnAmount` policy's value
-//! slot (`MinBurnAmount::slot_name()`, `[min,0,0,0]`) — the slot the stock `check_policy` reads for
-//! R-BURN-2 — and the setter is the STOCK `min_burn_amount::set_min_burn_amount` (the former custom
-//! `min_burn_admin.masm` is deleted). Under the ratified Circle-faithful admin model the setter
-//! gates on the Ownable2Step OWNER via the account-wide `Authority::OwnerControlled`; the RBAC
-//! foundation seeds `DOM_PAUSER` + `DOM_MANAGER` role MEMBERS (their consumers — custom pause
-//! CMP-F3, role management CMP-F5 — live in their own suites).
+//! Setting the minimum burn size: who may change the floor, and what changing it writes.
 //!
-//! The gate tests drive the RAW support-local note (`run_set_min_burn_size_against`), which calls
-//! the STOCK setter directly — deliberately BYPASSING the production note script's `new_min >= 1`
-//! floor guard so the stock proc itself is probed. The floor-guard behavior is covered through the
-//! production `XReserveSetMinBurnSizeNote` factory (`wave1_recomposition.rs`).
+//! The floor is not stored by the faucet. It lives in the standard minimum-burn policy's own value
+//! slot as `[min, 0, 0, 0]`, which is exactly the slot the standard `check_policy` reads when it
+//! decides whether a burn is large enough. The setter is the standard
+//! `min_burn_amount::set_min_burn_amount`; the faucet contributes no setter of its own.
 //!
-//! This file covers the setter's owner gate (the security core), write integrity, the
-//! not-pause-gated proof, the owner-ONLY proof (a seeded non-owner DOM role-holder is rejected),
-//! and the DOM seed itself. The burn-min SEAM (set the floor, then a below-floor burn traps
-//! R-BURN-2 end-to-end) lives in `xreserve_receive_and_burn.rs`, alongside the burn-note machinery
-//! it reuses.
+//! Authority follows Circle's admin model: this setter is gated on the account OWNER, through the
+//! account-wide owner-controlled authority, rather than on a role. The account does seed two roles
+//! — Domain Pauser and Domain Manager — but neither may set the floor, and their own powers are
+//! tested in the pause and role suites.
+//!
+//! The gate tests here call the standard setter directly through a bare test-local note, on
+//! purpose: the production note script also enforces its own "never below one" floor guard, and
+//! going through it would mean testing that guard instead of the setter's authorization. The floor
+//! guard itself is covered where the production note factory is exercised.
+//!
+//! So this file covers the owner gate, that a successful write lands the right value in the right
+//! slot, that the setter is deliberately NOT blocked while the faucet is paused, that a seeded
+//! role-holder who is not the owner is still rejected, and that the role seeding it relies on is
+//! itself correct. The end-to-end consequence — set the floor, then watch a below-floor burn trap —
+//! lives with the burn-note machinery in `xreserve_receive_and_burn.rs`.
 
 mod support;
 
@@ -94,10 +97,12 @@ fn faucet(h: &BurnPolicyHarness) -> Result<Account> {
 // SETTER-INSTALLED PROBE (the stock setter is part of the composed production surface)
 // ================================================================================================
 
-/// The composed PRODUCTION component set exposes the STOCK `min_burn_amount::set_min_burn_amount`
-/// account procedure (`MinBurnAmount::set_min_burn_amount_root()`) — the setter the production
-/// `XReserveSetMinBurnSizeNote` targets is INSTALLED. (The former custom
-/// `xreserve::min_burn_admin::set_min_burn_size` is deleted — Wave-1 S1.)
+/// The production component set actually installs the setter the production note targets.
+///
+/// The note script calls the standard `min_burn_amount::set_min_burn_amount` by root, so if the
+/// composition ever stopped including that procedure the note would fail at runtime with an
+/// unhelpful "procedure not found". Checking the installed procedure roots here turns that into a
+/// build-time-shaped failure with an obvious cause.
 #[test]
 fn probe_stock_min_burn_setter_installed() -> Result<()> {
     let components = production_component_set(MAX_SUPPLY, 0)?;
@@ -178,14 +183,13 @@ async fn assert_non_owner_rejected(sender: AccountId) -> Result<()> {
     Ok(())
 }
 
-// SETTER NOT PAUSE-GATED (F6) — the OWNER may set_min_burn_size while the faucet is paused
+// THE SETTER IS NOT PAUSE-GATED — the OWNER may set_min_burn_size while the faucet is paused
 // ================================================================================================
 
 /// After the DOM_PAUSER pauses the faucet (custom `xreserve::pause_admin::pause` — the ONLY pause
 /// surface in the Domain-Pauser-only model), an OWNER-sent `set_min_burn_size` SUCCEEDS while paused:
-/// F6 reconciles the
-/// setters to Circle's `onlyOwner` (deliberately NOT pause-gated), so the burn floor can be adjusted
-/// during a pause. The full word `[new_min,0,0,0]` lands despite is_paused == true; the owner gate still
+/// the admin setters follow Circle's owner-only model and are deliberately NOT pause-gated, so the
+/// burn floor can be adjusted during a pause. The full word `[new_min,0,0,0]` lands despite is_paused == true; the owner gate still
 /// governs it (the `*_non_owner_rejects` tests above prove that half).
 #[tokio::test]
 async fn set_min_burn_owner_succeeds_while_paused() -> Result<()> {
@@ -200,7 +204,7 @@ async fn set_min_burn_owner_succeeds_while_paused() -> Result<()> {
     let mut evolved = account.clone();
     evolved.apply_patch(paused.account_patch())?;
 
-    // tx2: the OWNER's set_min_burn_size(M) SUCCEEDS while paused (F6: setters are not pause-gated).
+    // tx2: the OWNER's set_min_burn_size(M) SUCCEEDS while paused — setters are not pause-gated.
     let executed = run_set_min_burn_size_against(&h.chain, &evolved, owner(), NEW_MIN, 7)
         .await
         .expect("the owner's set_min_burn_size(M) must succeed while the faucet is paused");
@@ -218,15 +222,16 @@ async fn set_min_burn_owner_succeeds_while_paused() -> Result<()> {
 // DOM ROLE SEEDING (owner-ONLY foundation) — the DOM_PAUSER/DOM_MANAGER members are seeded + valid
 // ================================================================================================
 
-/// REPLICA FIDELITY (CMP-F5): this test reads the burn-oracle SUPPORT-REPLICA account (the
-/// `setup_burn_policy_account` composition installs the test-side `seeded_dom_roles_rbac_component`,
-/// NOT the production builder) and pins that replica to the PRODUCTION seed shape — `DOM_PAUSER`
-/// config `[1, DOM_MANAGER, 0, 0]` (the CMP-F5 delegation), `DOM_MANAGER` config `[1, 0, 0, 0]`
-/// (admin_role 0 → ADMIN, the seeded owner account), and both seeded memberships `[1,0,0,0]`. It is the SOLE tripwire for
-/// replica drift: every burn-oracle-fixture test (pause rejects, setter rejects here) leans on this
-/// replica. The PRODUCTION-account twin of these assertions is
-/// `role_admin.rs::shipped_delegation_reads_back`. RED (CMP-F5): the replica still seeds
-/// `admin_role = 0`.
+/// The test-side role seeding matches the shape the production builder seeds.
+///
+/// Several suites — the pause rejects, the non-owner setter reject below — run against a support
+/// harness that installs its own role-seeding component rather than the production builder. Those
+/// tests are only meaningful while the replica seeds the same thing production does, and nothing
+/// else checks that. So this reads the replica's storage directly and pins all three facts: the
+/// Domain Pauser role is administered by the Domain Manager (one member, admin role = Domain
+/// Manager), the Domain Manager is administered by the built-in admin role (one member, admin role
+/// 0), and both memberships are present. The equivalent assertions against a production-built
+/// account live in `role_admin.rs::shipped_delegation_reads_back`.
 #[tokio::test]
 async fn support_replica_carries_delegation_seed() -> Result<()> {
     let pauser =
@@ -237,12 +242,12 @@ async fn support_replica_carries_delegation_seed() -> Result<()> {
     let h = faucet_harness()?;
     let account = faucet(&h)?;
 
-    // role_config[{0,0,0,DOM_PAUSER}] = [member_count=1, admin_role=DOM_MANAGER, 0, 0] (the CMP-F5
-    // delegation: the Domain Manager rotates the Pauser); DOM_MANAGER keeps admin_role=0, which at
-    // v0.16 resolves to the built-in ADMIN role the builder seeds on the OWNER's ACCOUNT — so
-    // DOM_MANAGER stays ADMIN-administered by that account-bound membership (#3215 replaced the
-    // v15 owner-only gate with the effective-admin gate; the membership does not auto-follow an
-    // ownership transfer — S2 runbook re-seat; MIGRATION-V16-ALPHA2.md S2/S21).
+    // The Domain Pauser's config records one member and names the Domain Manager as its admin
+    // role — that delegation is what lets the Manager rotate the Pauser without owner involvement.
+    // The Domain Manager itself records admin role 0, the built-in admin role, whose membership the
+    // builder seeds on the owner's account. Note that this admin membership is bound to that
+    // ACCOUNT, not to whoever currently holds ownership: transferring ownership does not move it,
+    // so an ownership handover has to re-seat the role explicitly.
     let pauser_config = account.storage().get_map_item(
         RoleBasedAccessControl::role_config_slot(),
         StorageMapKey::new(role_config_key(&pauser)),

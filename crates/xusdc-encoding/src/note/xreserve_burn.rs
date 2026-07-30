@@ -1,18 +1,21 @@
-//! `XReserveBurnNote` (CMP-B2, DC-7): the Circle-facing public burn-event note.
+//! `XReserveBurnNote`: the Circle-facing public burn-event note.
 //!
 //! A withdrawing xUSDC holder creates this note carrying the burned xUSDC; Circle's off-chain
 //! withdrawal attester discovers it by its FIXED full-32-bit tag (`SyncNotes` exact-match) and
 //! reads its `NoteStorage.items` payload `(amount, destDomain, destRecipient, salt)` to release
 //! USDC on the source chain.
 //!
-//! This is a FRESH note following the `P2idNote` pattern (a standalone note factory), NOT a
-//! struct extension of the stock `BurnNote` (which is a sealed unit struct that hardcodes an
-//! empty payload + an account-target tag). It REUSES the stock burn consume script
-//! (`BurnNote::script()` → `faucet::receive_and_burn` → the CMP-A10 burn policy), mandates
-//! `NoteType::Public`, sets the fixed xUSDC burn tag, and writes the DC-7 items via the
-//! shared-encoding codec `encode_burn_note_items` (consumed by reference). The destination
-//! payload is off-chain observability — there is no on-chain burn-items parser, hence no custom
-//! consume MASM.
+//! It is built as a standalone note factory, following the same pattern as the standard
+//! pay-to-id note, rather than by extending the standard `BurnNote` — that type is sealed and
+//! hardcodes an empty payload and an account-target tag, neither of which works here. What it does
+//! reuse is the standard burn consume script, so consuming one of these notes runs
+//! `faucet::receive_and_burn` and the faucet's active burn policy exactly as any other burn would.
+//! The note is forced public, carries the fixed xUSDC burn tag, and writes its payload through the
+//! shared codec so the listener decodes precisely what was encoded.
+//!
+//! Nothing on-chain reads that payload: there is no burn-items parser in MASM and no custom consume
+//! script. The destination fields exist purely so the burn is legible off-chain, which is what makes
+//! the note evidence rather than just an accounting entry.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::FungibleAsset;
@@ -26,18 +29,22 @@ use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint};
 
 use crate::xreserve::encoding::{encode_burn_note_items, XReserveBurnItems, BURN_NOTE_ITEMS_FELTS};
 
-/// The fixed, enumerated xUSDC burn-event note tag (DC-7). It is a FULL 32-bit exact-match value
-/// (Circle's `SyncNotes` discovery is exact equality, not a prefix). ASCII `"BURN"`. The low 18
-/// bits are nonzero, so it can never collide with a `NoteTag::with_account_target` faucet tag
-/// (which zeroes the low 18 bits) — structurally an enumerated use-case tag, not per-faucet
-/// routing. PLACEHOLDER pending Q-BUR-1 / Circle confirmation; not a Circle-owned value.
+/// The fixed tag every xUSDC burn note carries — ASCII `"BURN"`.
+///
+/// The off-chain listener discovers burn notes by asking the node for this exact 32-bit value, so
+/// it has to be a constant shared by every burn note rather than anything per-account. Its low 18
+/// bits are non-zero, which means it can never be mistaken for an account-target tag: those are
+/// built with the low 18 bits zeroed. It identifies a use case, not a destination.
+///
+/// The specific value is provisional and awaits Circle's confirmation — it is not a value Circle
+/// has assigned.
 pub const FIXED_XUSDC_BURN_TAG: u32 = 0x4255_524E;
 
-/// The public burn-event note (CMP-B2). A standalone unit-struct note factory.
+/// The public burn-event note. A standalone unit-struct note factory.
 pub struct XReserveBurnNote;
 
 impl XReserveBurnNote {
-    /// Number of `NoteStorage.items` felts in the DC-7 payload (18), owned by the shared-encoding codec.
+    /// Number of `NoteStorage.items` felts in the burn-note payload (18), owned by the shared-encoding codec.
     pub const NUM_STORAGE_ITEMS: usize = BURN_NOTE_ITEMS_FELTS;
 
     /// Returns the (reused) stock burn note consume script — targets `faucet::receive_and_burn`.
@@ -52,7 +59,7 @@ impl XReserveBurnNote {
 
     /// Builds an `XReserveBurnNote`: `NoteType::Public`, the fixed xUSDC burn tag,
     /// `metadata.sender = sender` (the depositor), `NoteAssets` = the burned xUSDC
-    /// `FungibleAsset` (`amount` issued by `faucet_id`), and `NoteStorage.items` = the DC-7
+    /// `FungibleAsset` (`amount` issued by `faucet_id`), and `NoteStorage.items` = the shared-codec
     /// encoding of `items`. The note's amount is single-sourced from `items.amount`.
     pub fn create<R: FeltRng>(
         sender: AccountId,
@@ -62,13 +69,15 @@ impl XReserveBurnNote {
     ) -> Result<Note, NoteError> {
         let serial_num = rng.draw_word();
 
-        // DC-7 payload → NoteStorage.items via the shared-encoding codec (consumed by reference; no re-impl).
+        // The payload is written into NoteStorage.items by the shared codec — the same routine the
+        // off-chain attester decodes with, so encode and decode cannot drift apart.
         let storage = NoteStorage::new(encode_burn_note_items(&items))?;
-        // Reuse the STOCK burn consume script (→ faucet::receive_and_burn → CMP-A10).
+        // Reuse the STOCK burn consume script (→ faucet::receive_and_burn → the active burn policy).
         let recipient = NoteRecipient::new(serial_num, BurnNote::script(), storage);
 
-        // Public mandate (R-BURN-6, no note_type parameter) + the fixed xUSDC burn tag;
-        // metadata.sender = the depositor (destination fields stay in NoteStorage; anti-ASG-13).
+        // Public mandate (the burn note is always Public — no note_type parameter) + the fixed xUSDC burn tag;
+        // The sender is the burning holder. The withdrawal destination stays in NoteStorage, so
+        // the listener reads it from the payload rather than inferring it from a metadata field.
         let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
             .with_tag(NoteTag::new(FIXED_XUSDC_BURN_TAG));
 
@@ -78,9 +87,9 @@ impl XReserveBurnNote {
             .map_err(|err| NoteError::other_with_source("invalid burned xUSDC asset", err))?;
         let vault = NoteAssets::new(vec![asset.into()])?;
 
-        // F5: the scheme-2 NetworkAccountTarget routing attachment addresses the note at the faucet
+        // The scheme-2 NetworkAccountTarget routing attachment addresses the note at the faucet
         // network account (routing only — the stock consume script ignores attachments; the burn is
-        // still gated by receive_and_burn / CMP-A10). Requires a PUBLIC faucet id.
+        // still gated by receive_and_burn and the burn policy). Requires a PUBLIC faucet id.
         let target =
             NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always).map_err(|err| {
                 NoteError::other_with_source("faucet id is not a public network account", err)

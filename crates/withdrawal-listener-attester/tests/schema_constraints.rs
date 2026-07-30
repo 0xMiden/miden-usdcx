@@ -1,20 +1,20 @@
 //! The OpenAPI's own constraints, enforced at the wire boundary — one isolated negative per rule.
 //!
-//! Round 1 typed every constrained field as a bare `String`/`u32`, so the structs checked JSON
-//! *shape* and nothing else: a `token` of `"DAI"`, a `remoteDomain` of `0`, both fee fields at once,
-//! a 31-byte `transferSpecHash` — all decoded happily. This file is the executable statement that
-//! they no longer do.
+//! Typing every constrained field as a bare `String`/`u32` would make the structs check JSON
+//! *shape* and nothing else: a `token` of `"DAI"`, a `remoteDomain` of `0`, both fee fields at
+//! once, a 31-byte `transferSpecHash` — all would decode happily. This file is the executable
+//! statement that they do not.
 //!
 //! **Where the line sits.** A constraint the OpenAPI *documents* — a regex, an enum, a `minimum`, a
 //! `minItems`, the value XOR — is a **schema** property, and a body violating it is one Circle will
-//! reject (outbound) or one the listener must refuse to act on (inbound, §10.11 "malformed Circle
-//! response → reject, not signed"). Those are enforced here, at decode. A constraint the OpenAPI does
-//! NOT document is not invented: `encoded`, `messageHashToSign` and the *request-side* `burnTxId` are
-//! typed `string` with no pattern, so they stay `String`.
+//! reject (outbound) or one the listener must refuse to act on (inbound, Circle's documentation
+//! "malformed Circle response → reject, not signed"). Those are enforced here, at decode. A
+//! constraint the OpenAPI does NOT document is not invented: `encoded`, `messageHashToSign` and the
+//! *request-side* `burnTxId` are typed `string` with no pattern, so they stay `String`.
 //!
 //! What is emphatically NOT here is *semantic* validation — "does this burn intent match the burn
-//! note's amount/domain/recipient". That is the B5 gate (`INV-CIRCLE-CANONICAL-WITHDRAWAL`,
-//! T-LA-06), and `prepare_withdrawal_validation_mismatch.json` is schema-valid precisely so that it
+//! note's amount/domain/recipient". That is the pre-signing gate's job, and
+//! `prepare_withdrawal_validation_mismatch.json` is schema-valid precisely so that the mismatch
 //! must be caught there rather than here.
 //!
 //! Every rejection pins the exact [`SchemaError`] variant, never `is_err()`.
@@ -40,8 +40,8 @@ fn hex(bytes: usize) -> String {
     format!("0x{}", "ab".repeat(bytes))
 }
 
-/// A decode that must fail, with the serde error class pinned. Returns the message so the caller can
-/// assert WHICH rule bit.
+/// A decode that must fail, with the serde error class pinned. Returns the message so the caller
+/// can assert WHICH rule bit.
 fn reject<T: serde::de::DeserializeOwned>(source: &Value, what: &str) -> String {
     let error = serde_json::from_value::<T>(source.clone())
         .err()
@@ -101,8 +101,8 @@ fn hex20_accepts_the_json_forwarding_address(#[case] input: &str) {
 // so the zero address is forty zero digits.
 #[case::prose_form_0x0("0x0")]
 // …and the 32-byte form is the BINARY WithdrawHookData.forwardingContract, a different
-// representation entirely (CIRCLE-DATA-SCHEMAS §3.4 "DO NOT CONFLATE"). Accepting it here would be
-// the conflation.
+// representation entirely, which Circle's own schema documentation warns must not be conflated
+// with this one. Accepting it here would be that conflation.
 #[case::binary_32_byte_form(&hex(32))]
 #[case::empty("")]
 fn hex20_rejects_the_binary_form_and_the_prose_form_as_bad_hex20(#[case] input: &str) {
@@ -422,7 +422,7 @@ fn a_withdraw_batch_carries_one_to_ten_burn_intents(#[case] count: usize, #[case
 fn a_batch_below_the_two_signature_threshold_is_refused_at_the_wire() {
     // `burnSignatures: minItems 2` — the partner's 2-of-n attester quorum. This is a SCHEMA rule, so
     // it is refused here; the ORDERING rules (ascending signer address, no duplicates) are not
-    // expressible in the schema and remain the quorum assembler's job (T-LA-09).
+    // expressible in the schema and remain the quorum assembler's job.
     let mut batch = valid_withdraw_batch();
     batch["burnSignatures"] = json!([hex(65)]);
 
@@ -436,8 +436,8 @@ fn a_batch_below_the_two_signature_threshold_is_refused_at_the_wire() {
 #[test]
 fn the_threshold_violating_fixture_is_refused_as_a_whole_and_its_ordering_variants_survive_decode()
 {
-    // §11.2's T-LA-09 fixture carries three violations. The FIRST batch (one signature) breaks a
-    // schema rule, so the request as a whole is now refused at the wire — which is the correct
+    // the threshold-violating fixture carries three violations. The FIRST batch (one signature)
+    // breaks a schema rule, so the request as a whole is refused at the wire — which is the correct
     // outcome: it is a body Circle would reject.
     let body = fixture_json("withdraw_threshold_violating_sigs");
     reject::<WithdrawRequest>(&body, "the threshold-violating fixture");
@@ -494,7 +494,9 @@ fn a_malformed_required_response_field_is_refused_in_isolation(
     #[case] field: &str,
     #[case] expected_rule: &str,
 ) {
-    // §10.11: "Malformed Circle response → reject, not signed." Each field is broken ALONE, and the
+    // Circle's documentation: "Malformed Circle response → reject, not signed." Each field is
+    // broken
+    // ALONE, and the
     // rejection must cite the rule THAT field broke — not merely "some data was bad".
     let mut status = valid_status();
     status[field] = json!("not-a-valid-value");
@@ -522,9 +524,10 @@ fn a_transfer_spec_value_in_the_decimal_form_is_refused() {
 
 #[test]
 fn a_32_byte_forwarding_contract_address_is_refused_in_the_json_hook_data() {
-    // The §3.4 conflation, caught: the JSON `forwardingContractAddress` is TWENTY bytes; the 32-byte
-    // form belongs to the BINARY WithdrawHookData. A type that accepted both would let the two
-    // representations blur exactly where Circle says not to.
+    // The conflation Circle's documentation warns against, caught here: the JSON
+    // `forwardingContractAddress` is TWENTY bytes, while the 32-byte form belongs to the BINARY
+    // WithdrawHookData. A type that accepted both would let the two representations blur exactly
+    // where Circle says not to.
     let mut body = fixture_json("prepare_withdrawal_200");
     body["batches"][0]["burnIntents"][0]["spec"]["hookData"]["forwardingContractAddress"] =
         json!(hex(32));

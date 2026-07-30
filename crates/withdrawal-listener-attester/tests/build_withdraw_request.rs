@@ -1,10 +1,10 @@
-//! `T-LA-10` (request-shape leg) — build the `POST /v1/withdraw` [`WithdrawRequest`] wrapper.
+//! Builds the `POST /v1/withdraw` [`WithdrawRequest`] wrapper.
 //!
-//! The builder wraps `WithdrawBatch[]` in the top-level `{ batches: [..] }` (never a bare array or a
-//! bare batch) and enforces the schema's `minItems 1` / `maxItems 5` on the batch list. The inner
-//! `burnIntents` `1..=10` bound is the `WithdrawBatch` constructor's, exercised here so the "batches/
-//! intents bounds ignored" forbidden impl is foreclosed at both levels. Every out-of-range case pins
-//! the exact [`SchemaError`] variant.
+//! The builder wraps `WithdrawBatch[]` in the top-level `{ batches: [..] }` (never a bare array or
+//! a bare batch) and enforces the schema's `minItems 1` / `maxItems 5` on the batch list. The inner
+//! `burnIntents` `1..=10` bound is the `WithdrawBatch` constructor's, exercised here so the
+//! "batches/ intents bounds ignored" forbidden impl is foreclosed at both levels. Every
+//! out-of-range case pins the exact [`SchemaError`] variant.
 
 use assert_matches::assert_matches;
 use serde_json::Value;
@@ -73,8 +73,8 @@ fn builds_the_maximum_five_batches() {
     assert_eq!(request.batches().len(), 5);
 }
 
-/// The serialized body is the top-level `{ "batches": [...] }` OBJECT — never a bare array. Flattening
-/// the wrapper is the classic simplification that produces a body Circle rejects.
+/// The serialized body is the top-level `{ "batches": [...] }` OBJECT — never a bare array.
+/// Flattening the wrapper is the classic simplification that produces a body Circle rejects.
 #[test]
 fn serialized_request_is_the_batches_wrapper_not_a_bare_array() {
     let request = build_withdraw_request(vec![a_batch()]).unwrap();
@@ -147,8 +147,8 @@ fn batch_accepts_ten_burn_intents() {
     assert_eq!(request.batches()[0].burn_intents().len(), 10);
 }
 
-/// Guard the fixture the whole file leans on: its `burnIntents` array is non-empty, so `burn_intents`
-/// has a template to clone.
+/// Guard the fixture the whole file leans on: its `burnIntents` array is non-empty, so
+/// `burn_intents` has a template to clone.
 #[test]
 fn fixture_burn_intents_are_nonempty() {
     let v = burn_intents_value();

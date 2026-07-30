@@ -1,11 +1,13 @@
-//! The auth posture (`Q-API-AUTH` — OPEN).
+//! The auth posture — still Circle's to confirm, so this module parameterizes it rather than
+//! choosing one.
 //!
-//! The OpenAPI declares **no security scheme at all** (no `security`, no `securitySchemes`). Whether
-//! production needs an out-of-band key is `REQUIRES CIRCLE CONFIRMATION`. The relayer therefore ships
-//! an *injection point*, not a scheme: [`AuthPosture::None`] (the default) builds requests against
-//! the documented no-auth contract, and [`AuthPosture::Header`] attaches an operator-supplied key
-//! under an operator-supplied header NAME — the name is configurable precisely because presuming an
-//! `Authorization`/`Bearer` scheme would be presuming an answer Circle has not given.
+//! The OpenAPI declares **no security scheme at all** (no `security`, no `securitySchemes`).
+//! Whether production needs an out-of-band key is `REQUIRES CIRCLE CONFIRMATION`. The relayer
+//! therefore ships an *injection point*, not a scheme: [`AuthPosture::None`] (the default) builds
+//! requests against the documented no-auth contract, and [`AuthPosture::Header`] attaches an
+//! operator-supplied key under an operator-supplied header NAME — the name is configurable
+//! precisely because presuming an `Authorization`/`Bearer` scheme would be presuming an answer
+//! Circle has not given.
 //!
 //! Three properties hold whatever Circle answers, and each is pinned by a test:
 //!
@@ -30,9 +32,9 @@ pub enum AuthPosture {
     /// The DOCUMENTED contract: no auth header at all. The OpenAPI declares no security scheme, so
     /// this is what a request against the published API looks like, and it is the default.
     None,
-    /// An out-of-band key, injected under an operator-chosen header name. The value is a credential:
-    /// it is never logged, never rendered by `Debug`, never baked into the source, and never sent
-    /// over a plaintext transport.
+    /// An out-of-band key, injected under an operator-chosen header name. The value is a
+    /// credential: it is never logged, never rendered by `Debug`, never baked into the source, and
+    /// never sent over a plaintext transport.
     Header { name: String, value: String },
 }
 

@@ -1,4 +1,4 @@
-//! T-LA-14 — the auth posture (`Q-API-AUTH`, which stays **OPEN**).
+//! The auth posture, which stays **OPEN**.
 //!
 //! The OpenAPI declares **no security scheme at all**: no top-level `security`, no
 //! `components.securitySchemes`, no per-operation `security` (verified against the raw 1026-line
@@ -10,11 +10,12 @@
 //!
 //! 1. **No credential is hardcoded** anywhere in the crate — asserted against the source, not just
 //!    the API.
-//! 2. **No auth header is invented.** The default posture sends none; a configured key rides under an
-//!    operator-supplied header NAME, because presuming `Authorization: Bearer` would presume the
-//!    answer to `Q-API-AUTH`.
-//! 3. **Auth is never mandatory.** A config with no key must be fully usable — the documented contract
-//!    works. A client that could only function under an undocumented scheme would be the defect.
+//! 2. **No auth header is invented.** The default posture sends none; a configured key rides under
+//!    an operator-supplied header NAME, because presuming `Authorization: Bearer` would presume the
+//!    answer to the credential question.
+//! 3. **Auth is never mandatory.** A config with no key must be fully usable — the documented
+//!    contract works. A client that could only function under an undocumented scheme would be the
+//!    defect.
 //!
 //! Plus the one that makes the other three survive contact with a log file: a credential, once
 //! configured, is **never rendered** by `Debug`/`Display`, and never travels over a transport that
@@ -55,9 +56,10 @@ fn the_default_config_carries_no_credential_and_the_default_posture_sends_no_hea
     );
 }
 
-/// The identifiers that, assigned a string literal, would BE a hardcoded credential. Deliberately not
-/// the bare word `token`: `TOKEN_USDC` is the `token: "USDC"` schema enum, and flagging it would train
-/// a future reader to ignore this sweep — which is how a real key eventually slips through.
+/// The identifiers that, assigned a string literal, would BE a hardcoded credential. Deliberately
+/// not the bare word `token`: `TOKEN_USDC` is the `token: "USDC"` schema enum, and flagging it
+/// would train a future reader to ignore this sweep — which is how a real key eventually slips
+/// through.
 const SECRET_IDENTS: [&str; 6] = [
     "api_auth_token",
     "auth_token",
@@ -67,9 +69,9 @@ const SECRET_IDENTS: [&str; 6] = [
     "credential",
 ];
 
-/// Every credential-shaped literal in one file's source. A line is an offender if it bakes in an auth
-/// SCHEME, constructs a non-empty [`SecretString`], hands [`AuthPosture::header`] a literal value, or
-/// assigns a secret-named binding a non-empty string literal.
+/// Every credential-shaped literal in one file's source. A line is an offender if it bakes in an
+/// auth SCHEME, constructs a non-empty [`SecretString`], hands [`AuthPosture::header`] a literal
+/// value, or assigns a secret-named binding a non-empty string literal.
 fn scan_for_credentials(source: &str) -> Vec<String> {
     let mut offenders = Vec::new();
 
@@ -329,7 +331,7 @@ fn no_debug_or_display_rendering_can_print_the_key() {
     assert!(format!("{posture:?}").contains("X-Circle-Key"));
 }
 
-// Q-API-AUTH STAYS OPEN
+// THE CREDENTIAL SCHEME STAYS OPEN
 // ================================================================================================
 
 #[test]

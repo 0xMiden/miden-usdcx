@@ -12,9 +12,9 @@ use crate::error::RelayerError;
 /// A remote domain's resume point: the `pageAfter` token of the last `Link` page the relayer
 /// finished, and when it was stored.
 ///
-/// The token is opaque — Circle's, base64, ordered by nothing the relayer can inspect — so the store
-/// keeps exactly one per domain and REPLACES it. There is no "highest cursor wins" rule to be had,
-/// and inventing one would be a fiction.
+/// The token is opaque — Circle's, base64, ordered by nothing the relayer can inspect — so the
+/// store keeps exactly one per domain and REPLACES it. There is no "highest cursor wins" rule to be
+/// had, and inventing one would be a fiction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cursor {
     pub(super) remote_domain: u32,
@@ -76,9 +76,9 @@ impl IdempotencyStore {
     /// Persists `page_after` as `remote_domain`'s resume point, REPLACING the previous one. Domains
     /// are independent: advancing one never moves another.
     ///
-    /// Call it only AFTER every nonce on the page has been claimed — see the module docs on ordering.
-    /// A crash between the two re-scans the page, which the nonce log absorbs; the reverse order
-    /// would skip it, which nothing absorbs.
+    /// Call it only AFTER every nonce on the page has been claimed — see the module docs on
+    /// ordering. A crash between the two re-scans the page, which the nonce log absorbs; the
+    /// reverse order would skip it, which nothing absorbs.
     ///
     /// # Errors
     /// [`RelayerError::EmptyCursor`] — an empty or whitespace-only token. It is not a resume point,

@@ -1,9 +1,10 @@
-//! `note_decode` — the PURE parts of `T-LA-01` (burn-payload decode) and `T-LA-04` (sender read).
+//! `note_decode` — the PURE parts of the burn-note decode path: the burn-payload decode and the
+//! sender read.
 //!
-//! **NON-GATING.** The GATING versions of `T-LA-01`/`T-LA-04` are the real-local-node runs
+//! **NON-GATING.** The GATING versions of these are the real-local-node runs
 //! (`tests/local_node/tag_scan_retrieval.rs`, `tests/local_node/sender_exposure.rs`): a real public
 //! `XReserveBurnNote`, discovered by an exact-tag `SyncNotes` scan and retrieved by `GetNotesById`.
-//! Those need `miden-client`, which has no v0.16 release — they are PARKED to W10
+//! Those need `miden-client`, which has no v0.16 release — they are PARKED
 //! (`PHASE4-VERIFICATION-HARNESS.md:28`,`:65`-`68`: a non-node leg is NON-GATING and must be paired
 //! with a real-node run). What is testable purely, and is tested here, is the decode itself: given
 //! the felts and the sender a node WILL hand over, the module must produce the exact `BurnPayload`
@@ -11,8 +12,8 @@
 //!
 //! The inputs are the ONE canonical golden-vector artifact
 //! (`crates/xusdc-encoding/tests/vectors/xreserve-encoding-vectors.json`, families `bn` and `aid`),
-//! never a table re-typed here: `DC-7` is unit-04's format, and a second copy of its vectors would
-//! be a second source of truth for how much USDC a burn releases.
+//! never a table re-typed here: the burn-note payload is the shared encoding crate's format, and a
+//! second copy of its vectors would be a second source of truth for how much USDC a burn releases.
 
 use assert_matches::assert_matches;
 use miden_protocol::account::AccountId;
@@ -48,8 +49,9 @@ fn accept_vectors() -> Vec<&'static BnVector> {
     v
 }
 
-/// Real, canonical `AccountId`s, reconstructed from the `aid` round-trip vectors through unit-04's
-/// `DC-6` codec — the same ids whose `bytes32` form becomes `remoteDepositor`.
+/// Real, canonical `AccountId`s, reconstructed from the `aid` round-trip vectors through the shared
+/// encoding crate's `AccountId↔bytes32` codec — the same ids whose `bytes32` form becomes
+/// `remoteDepositor`.
 fn golden_senders() -> Vec<(AccountId, [u8; 32])> {
     let v: Vec<_> = load()
         .families
@@ -66,8 +68,8 @@ fn golden_senders() -> Vec<(AccountId, [u8; 32])> {
     v
 }
 
-/// An in-field `Felt` — `Felt::new` is fallible at the v16 base (values ≥ p are rejected), and every
-/// value these tests build is a literal well inside the field.
+/// An in-field `Felt` — `Felt::new` is fallible at the v16 base (values ≥ p are rejected), and
+/// every value these tests build is a literal well inside the field.
 fn felt(value: u64) -> Felt {
     Felt::new(value).expect("test value is in the field")
 }
@@ -79,7 +81,7 @@ fn public_metadata(sender: AccountId) -> NoteMetadata {
     )
 }
 
-// T-LA-01 (PURE) — BURN-PAYLOAD DECODE VIA THE UNIT-04 DC-7 CODEC
+// (PURE) — BURN-PAYLOAD DECODE VIA THE UNIT-04 BURN-NOTE CODEC
 // ================================================================================================
 
 /// Every accept vector's golden felts decode to exactly the four fields the burn wrote — asserted
@@ -108,9 +110,9 @@ fn t_la_01_decode_golden_items_field_by_field() {
     }
 }
 
-/// The decode is unit-04's decode — not a second one that happens to agree on these vectors. The
-/// mapping into `BurnPayload` is 1:1 with `XReserveBurnItems`, asserted against the codec's own
-/// output on the same felts (`DC-7` single-owner).
+/// The decode is the shared encoding crate's decode — not a second one that happens to agree on
+/// these vectors. The mapping into `BurnPayload` is 1:1 with `XReserveBurnItems`, asserted against
+/// the codec's own output on the same felts (single-owner codec).
 #[test]
 fn t_la_01_decode_is_the_unit_04_codec_by_reference() {
     for vector in accept_vectors() {
@@ -209,8 +211,9 @@ fn t_la_01_malformed_items_are_refused_exactly(#[case] id: &str) {
     );
 }
 
-/// The unit-04 verdict is PRESERVED as the error's source, not flattened into a message: a caller
-/// can recover the concrete [`EncodingError`] the codec returned (`preserve-error-source`).
+/// The shared encoding crate's verdict is PRESERVED as the error's source, not flattened into a
+/// message: a caller can recover the concrete [`EncodingError`] the codec returned
+/// (`preserve-error-source`).
 #[test]
 fn t_la_01_unit_04_error_is_preserved_as_the_source() {
     use core::error::Error;
@@ -267,11 +270,12 @@ fn t_la_01_felt_count_boundaries_are_refused() {
     }
 }
 
-// T-LA-04 (PURE) — SENDER READ (`metadata.sender` → the burner → `remoteDepositor`)
+// (PURE) — SENDER READ (`metadata.sender` → the burner →
+// `remoteDepositor`)
 // ================================================================================================
 
-/// `metadata.sender` is read and surfaced as the depositor, exactly (`INV-BURN-SENDER-PRIVACY-LEAK`:
-/// the burner IS exposed — the spec must not claim otherwise, and the read must not lose it).
+/// `metadata.sender` is read and surfaced as the depositor, exactly (the burner IS exposed by
+/// protocol — the spec must not claim otherwise, and the read must not lose it).
 #[test]
 fn t_la_04_sender_is_read_from_metadata() {
     for (sender, _) in golden_senders() {
@@ -286,10 +290,10 @@ fn t_la_04_sender_is_read_from_metadata() {
     }
 }
 
-/// The value the read surfaces is the one that later becomes `remoteDepositor`: its `DC-6` bytes32
-/// form (unit-04's codec, consumed by reference) equals the golden vector's bytes32.
-/// `INV-REMOTEDEPOSITOR-VS-SOURCEDEPOSITOR` — `sourceDepositor` is Circle's to fill (`Q-DOM-3`,
-/// OPEN); this is the partner-built side of that pair.
+/// The value the read surfaces is the one that later becomes `remoteDepositor`: its bytes32 form
+/// (the shared encoding crate's codec, consumed by reference) equals the golden vector's bytes32.
+/// `sourceDepositor` is Circle's to fill server-side (and stays OPEN); this is the partner-built
+/// side of that pair.
 #[test]
 fn t_la_04_sender_feeds_remote_depositor() {
     for (sender, bytes32) in golden_senders() {
@@ -304,7 +308,7 @@ fn t_la_04_sender_feeds_remote_depositor() {
 }
 
 /// A note that came back with no metadata at all — a PRIVATE or erased note (`details = None`,
-/// `INV-PUBLIC-BURN-OBSERVABILITY`) — yields NO depositor. Not a default, not a zero: an `Err`.
+/// unobservable to Circle) — yields NO depositor. Not a default, not a zero: an `Err`.
 #[test]
 fn t_la_04_absent_sender_is_refused() {
     assert_matches!(

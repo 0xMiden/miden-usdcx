@@ -17,16 +17,18 @@ use withdrawal_listener_attester::types::{BurnPayload, ProofStrength};
 
 use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, XReserveBurnItems};
 
-// The `T-LA-11` unit adapter — the only way to obtain an `EvidencePackage` now that its constructor
+// The unit adapter — the only way to obtain an `EvidencePackage` now
+// that its constructor
 // is sealed. Shared rather than re-declared, so this file and `evidence_trust_labeling.rs` cannot
-// drift onto two different ideas of what an honest set of reads looks like (G4: shared fixtures).
+// drift onto two different ideas of what an honest set of reads looks like (shared fixtures).
 #[path = "evidence_support/mod.rs"]
 mod evidence_support;
 
 use evidence_support::{burn_note_id, burn_nullifier, faucet_id, UnitPort, CREATE_BLOCK};
 
 /// This repo's own LNV4 local-node-validated xUSDC faucet
-/// (`crates/xusdc-validation/VALIDATION-RECORD-LNV4.md`) — a real, parseable id, not a fabricated one.
+/// (`crates/xusdc-validation/VALIDATION-RECORD-LNV4.md`) — a real, parseable id, not a fabricated
+/// one.
 const FAUCET_ID_HEX: &str = "0xbb405fd9fe431bd1135a292de098cb";
 
 fn manifest() -> String {
@@ -63,9 +65,9 @@ fn dependencies_section() -> String {
 fn k256_is_a_library_dependency_because_the_attester_signs_in_production() {
     // The relayer's k256 is DEV-only on purpose — it never verifies a signature off-chain. This
     // service is the opposite: the burn attester's off-chain ECDSA signature over `messageHashToSign`
-    // is the product (INV-OFFCHAIN-BURN-SIGNING), so k256 belongs in the library, and copying the
-    // relayer's posture here would be a real mistake. Its call site lands with the signing slice
-    // (T-LA-08); the posture is fixed now so that slice cannot quietly ship it as a dev dependency.
+    // is the product (burn signing happens off-chain), so k256 belongs in the library, and copying the
+    // relayer's posture here would be a real mistake. The posture is fixed now, so the signing
+    // call site cannot quietly arrive with k256 declared as a dev dependency.
     assert!(
         dependencies_section().contains("k256"),
         "k256 must be declared under [dependencies], not [dev-dependencies]"
@@ -117,7 +119,8 @@ fn the_shared_dependencies_are_consumed_from_the_workspace_table() {
 
 #[test]
 fn the_config_carries_the_five_static_parameters_the_spec_names() {
-    // §10.1 config.rs: "PURE — static config: faucet_id, fixed burn tag (u32), Miden domain, Circle
+    // Circle's documentation config.rs: "PURE — static config: faucet_id, fixed burn tag (u32),
+    // Miden domain, Circle
     // base URL, attester key handles".
     let config = ListenerConfig::builder()
         .faucet_id(AccountId::from_hex(FAUCET_ID_HEX).unwrap())
@@ -191,9 +194,9 @@ fn the_config_round_trips_through_serde_with_the_faucet_id_as_hex() {
 
 #[test]
 fn the_burn_tag_is_a_full_32_bit_value_carried_verbatim() {
-    // §10.5: SyncNotes matches tags by EXACT full-32-bit equality, never by prefix. The config must
-    // therefore be able to hold any u32 — including one whose high bits would be lost to a
-    // 16-bit-prefix design (the ASG-3 trap).
+    // Circle's documentation: SyncNotes matches tags by EXACT full-32-bit equality, never by
+    // prefix. The config must therefore be able to hold any u32 — including one whose high bits
+    // would be lost to a 16-bit-prefix design (the documented trap).
     for tag in [0u32, 1, 0x0000_ffff, 0xffff_0000, u32::MAX] {
         let config = ListenerConfig::builder().burn_tag(tag).build().unwrap();
         assert_eq!(config.burn_tag(), tag, "the full 32 bits survive");
@@ -205,8 +208,9 @@ fn the_burn_tag_is_a_full_32_bit_value_carried_verbatim() {
 
 #[test]
 fn the_burn_payload_is_unit_04s_type_not_a_second_copy_of_it() {
-    // §10.3's BurnPayload is field-for-field unit-04's `XReserveBurnItems` — the type the burn-note
-    // codec already owns (DC-7, single-owner rule). Re-declaring it here would create two structs
+    // Circle's documented BurnPayload is field-for-field the shared encoding crate's
+    // `XReserveBurnItems` — the type the burn-note
+    // codec already owns (single-owner rule). Re-declaring it here would create two structs
     // that must be kept in sync by hand, which is exactly how a wire format drifts. The alias makes
     // that impossible: they are the same type.
     let items = XReserveBurnItems {
@@ -224,16 +228,17 @@ fn the_burn_payload_is_unit_04s_type_not_a_second_copy_of_it() {
 
 #[test]
 fn the_evidence_package_labels_each_element_with_its_documented_proof_strength() {
-    // DC-8 / §10.7 — the labels are reproduced from the evidence table, and they are not decoration:
-    // `burnTxId` is NODE-TRUSTED (there is no GetTransactionById, R-8), while the note id and block
+    // Circle's documentation — the labels are reproduced from the evidence table, and they are not
+    // decoration:
+    // `burnTxId` is NODE-TRUSTED (there is no GetTransactionById), while the note id and block
     // number are CRYPTOGRAPHIC via the inclusion proof. Telling Circle otherwise would overstate what
     // Miden proves.
     //
     // The package is ASSEMBLED rather than constructed from literals, because it can no longer be
     // constructed from literals: `EvidencePackage::new` is `pub(crate)`, so the only package that
-    // exists outside the crate is one whose consumption evidence was actually read and checked. This
-    // test used to mint one from four made-up values — which is precisely the bypass that narrowing
-    // closed, and the labels are worth more asserted on a package that came through the real gate.
+    // exists outside the crate is one whose consumption evidence was actually read and checked.
+    // Minting one from four made-up values is precisely the bypass that narrowing closed, and the
+    // labels are worth more asserted on a package that came through the real gate.
     let evidence = assemble_evidence(&UnitPort::honest(), burn_note_id(), faucet_id())
         .expect("the honest port assembles");
 
@@ -256,7 +261,7 @@ fn the_evidence_package_labels_each_element_with_its_documented_proof_strength()
 
 #[test]
 fn the_remote_depositor_encoding_is_unit_04s_account_id_codec_consumed_by_reference() {
-    // DC-6: `metadata.sender → remoteDepositor` goes through the shared AccountId↔bytes32 helper.
+    // `metadata.sender → remoteDepositor` goes through the shared AccountId↔bytes32 helper.
     // This crate does not redefine that encoding — it calls it, and this test pins that the wire
     // string the request carries is exactly what that codec produces.
     let faucet = AccountId::from_hex(FAUCET_ID_HEX).unwrap();
@@ -270,17 +275,17 @@ fn the_remote_depositor_encoding_is_unit_04s_account_id_codec_consumed_by_refere
     );
 }
 
-// THE GOVERNING FILE-SIZE + STRUCTURE GATE (G3)
+// THE GOVERNING FILE-SIZE AND STRUCTURE RULE
 // ================================================================================================
 
-/// BUILDER-GATES G3: "Tests live in their **own module/file**, not inline with implementation."
+/// The rule: tests live in their **own file**, not inline with the implementation.
 ///
-/// The gate is structural, and the pressure against it is real: when a `pub(crate)` narrowing puts a
-/// function out of reach of `tests/` (another crate), the tempting fix is a `#[cfg(test)] mod tests`
-/// at the bottom of the implementation file. G3 says no — and it does not have to be inline, because
-/// a test module in its OWN file (`store_tests.rs`, declared `#[cfg(test)] mod store_tests;`) is
-/// still inside the crate and still reaches `pub(crate)`, while keeping tests out of the
-/// implementation.
+/// The gate is structural, and the pressure against it is real: when a `pub(crate)` narrowing puts
+/// a function out of reach of `tests/` (another crate), the tempting fix is a `#[cfg(test)] mod
+/// tests` at the bottom of the implementation file. The rule says no — and it does not have to be
+/// inline, because a test module in its OWN file (`store_tests.rs`, declared `#[cfg(test)] mod
+/// store_tests;`) is still inside the crate and still reaches `pub(crate)`, while keeping tests out
+/// of the implementation.
 ///
 /// So: an implementation file may DECLARE a test module (`#[cfg(test)] mod store_tests;` — a
 /// one-line pointer at the file that holds them), but must not CONTAIN one (`#[cfg(test)] mod tests
@@ -329,12 +334,12 @@ fn no_implementation_file_carries_an_inline_test_module() {
 
 #[test]
 fn no_source_file_exceeds_the_governing_rust_line_ceiling() {
-    // BUILDER-GATES G3: "Default file ceiling ~500-700 lines for Rust. […] Past a Rust ceiling → stop
-    // and split before continuing." The Circle schema crossed it once the wire constraints landed, and
+    // The rule: a Rust file is capped at roughly 500-700 lines; past that ceiling, stop and split
+    // before continuing. The Circle schema crossed it once the wire constraints landed, and
     // was split into `circle::schema::{prepare, intents, withdraw}`. This keeps the gate mechanical
     // rather than something a reviewer has to remember to eyeball.
     //
-    // `tests/` is swept too, and that is not pedantry: G3 says "Rust", not "Rust that ships". The W7
+    // `tests/` is swept too, and that is not pedantry: the ceiling is about Rust files, not only shipping ones. The idempotency
     // suite reached 1,232 lines in ONE file before this sweep covered the directory that held it — the
     // gate could not catch what it did not look at. It is now split into `conflict_recovery` /
     // `submit_idempotency` / `retry_policy` over a shared `submit_support` fixture module.

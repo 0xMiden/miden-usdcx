@@ -1,13 +1,13 @@
 # xreserve::blocklist_admin
 #
-# The BLK_MANAGER-gated custom block/unblock (F4-reversal): under Circle's dedicated-manager model
-# (Phil, 2026-07-23) the on-chain transfer blocklist is administered by an EXTERNAL entity holding
-# ONLY the BLK_MANAGER role — NOT the owner. The stock BlocklistOwnerControlled gates block/unblock
-# on the Ownable2Step owner (the wrong identity — the owner also controls set_attester/max_supply/
-# ownership), so it is NOT installed; these procs compose rbac::assert_sender_has_role(BLK_MANAGER)
-# with the UNAUTHENTICATED blocklist::block_account/unblock_account primitives ("compose with access
-# control in a wrapper" — the ratified pause_admin pattern). The blocked_accounts slot these write is
-# installed by the BasicBlocklist companion component (wired as the active send + receive policy).
+# Block and unblock, gated on BLK_MANAGER.
+#
+# Circle's model puts the transfer blocklist under an EXTERNAL entity holding only that role — not
+# the owner, who also controls set_attester, the supply cap and ownership itself. The stock
+# BlocklistOwnerControlled gates on the owner, which is the wrong identity, so it is not
+# installed: these procs wrap the unauthenticated blocklist primitives in a role check instead.
+# The blocked_accounts slot they write belongs to the BasicBlocklist companion, wired as the
+# active send and receive policy.
 
 use miden::protocol::native_account
 use miden::protocol::account_id
@@ -26,7 +26,7 @@ const BLK_MANAGER_ROLE = 7907587873290749
 # ERRORS
 # =================================================================================================
 
-# The self-block guard (PA2): BasicBlocklist is the ACTIVE send AND receive transfer policy, so a
+# The self-block guard: BasicBlocklist is the ACTIVE send AND receive transfer policy, so a
 # blocked account can neither send, receive, nor burn/redeem. Blocking the faucet's OWN id would
 # therefore freeze the faucet as a transfer party (mint-and-send and burn/redeem both trap) and halt
 # the core faucet function, so `block_account` rejects the native faucet id as its target. Only
@@ -36,17 +36,17 @@ const ERR_XRESERVE_CANNOT_BLOCK_SELF = "cannot block the faucet's own account"
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Blocks an account on this faucet — the BLK_MANAGER-gated blocklist add: gates on the BLK_MANAGER
-#! role (the note sender must hold it), then adds the account to the blocked_accounts map via the
-#! unauthenticated blocklist primitive. A blocked account can neither send, receive, nor
-#! burn/redeem policed xUSDC (the send + receive transfer policy checks the native account).
+#! Adds an account to the transfer blocklist: it can then neither send, receive, nor redeem.
 #!
 #! Inputs:  [account_id_suffix, account_id_prefix, pad(14)]
 #! Outputs: [pad(16)]
 #!
+#! Where:
+#! - account_id_suffix and account_id_prefix are the AccountId felts of the account to block.
+#!
 #! Panics if:
 #! - the note sender does not hold BLK_MANAGER (rbac::assert_sender_has_role, ERR_SENDER_LACKS_ROLE).
-#! - the target account id is the faucet's OWN account id (ERR_XRESERVE_CANNOT_BLOCK_SELF, the PA2
+#! - the target account id is the faucet's OWN account id (ERR_XRESERVE_CANNOT_BLOCK_SELF, the
 #!   self-block guard — blocking the faucet freezes it as a transfer party).
 #!
 #! Invocation: call
@@ -58,10 +58,10 @@ pub proc block_account
     exec.rbac::assert_sender_has_role
     # => [account_id_suffix, account_id_prefix, pad(14)]
 
-    # self-block guard (PA2): reject target == the native faucet id BEFORE the delegated add.
-    # `native_account::get_id` is the transaction's own account (the faucet the admin note is
-    # consumed against). Compare COPIES via the stock `account_id::eq` so the original target is
-    # left intact for `blocklist::block_account`; `assertz` traps when the two ids are equal.
+    # self-block guard: blocking the faucet itself would freeze every redemption, so a target
+    # equal to the transaction's own account id is rejected before the add is delegated. the
+    # compare runs on copies, leaving the original target on the stack for the add below.
+    # `native_account::get_id` is the account the admin note is being consumed against.
     exec.native_account::get_id
     # => [own_id_suffix, own_id_prefix, account_id_suffix, account_id_prefix, pad(14)]
 
@@ -75,12 +75,12 @@ pub proc block_account
     # => [pad(16)]
 end
 
-#! Unblocks an account on this faucet: the same BLK_MANAGER role gate, then removes the account from
-#! the blocked_accounts map via the unauthenticated blocklist primitive, restoring its ability to
-#! send, receive, and burn/redeem policed xUSDC.
-#!
+#! Removes an account from the transfer blocklist. Same role gate as `block_account`.
 #! Inputs:  [account_id_suffix, account_id_prefix, pad(14)]
 #! Outputs: [pad(16)]
+#!
+#! Where:
+#! - account_id_suffix and account_id_prefix are the AccountId felts of the account to unblock.
 #!
 #! Panics if:
 #! - the note sender does not hold BLK_MANAGER (rbac::assert_sender_has_role, ERR_SENDER_LACKS_ROLE).

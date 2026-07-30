@@ -1,11 +1,11 @@
 //! `tests/deferred_dependencies_doc.rs` — guards the reqwest deferral **and its discharge**.
 //!
-//! reqwest (the Circle HTTP client) could not be resolved under this repository's offline `--locked`
-//! gate from the pinned cache, so — by explicit operator decision (round 5 escalation → round 6
-//! ratification) — it was deferred to the Circle-facing slice, with `DEFERRED-DEPENDENCIES.md`
-//! recording WHAT / WHY / WHICH-slice / HOW.
+//! reqwest (the Circle HTTP client) could not be resolved under this repository's offline
+//! `--locked` gate from the pinned cache, so — by explicit operator decision — it was deferred to
+//! the Circle-facing slice, with `DEFERRED-DEPENDENCIES.md` recording WHAT / WHY / WHICH-slice /
+//! HOW.
 //!
-//! **This IS that slice**, and the deferral is now discharged: the cache carries `reqwest 0.13.4`
+//! **This IS that slice**, and the deferral is discharged: the cache carries `reqwest 0.13.4`
 //! and its closure, so the dependency is declared and the offline gate still passes. The guard
 //! therefore flipped WITH the decision it guards — it no longer asserts reqwest's ABSENCE (that
 //! would now be asserting the deferral was never discharged, i.e. that this slice does not exist);
@@ -38,7 +38,8 @@ fn read_workspace_manifest() -> String {
 }
 
 /// The deferral record exists and carries the operator-required elements: (a) WHAT + WHY, (b) WHICH
-/// slice introduces it, (c) HOW it is provisioned offline there — and now (d) that it is DISCHARGED.
+/// slice introduces it, (c) HOW it is provisioned offline there — and now (d) that it is
+/// DISCHARGED.
 #[test]
 fn deferred_dependencies_doc_exists_and_is_complete() {
     let doc = read_crate_file("DEFERRED-DEPENDENCIES.md");

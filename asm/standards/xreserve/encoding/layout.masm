@@ -1,15 +1,15 @@
 # xreserve::encoding::layout
 #
-# DepositIntent wire-layout constants (DC-1): felt offsets of every header field within the
+# DepositIntent wire-layout constants: felt offsets of every header field within the
 # u32-LE-packed on-chain preimage (4 bytes per felt; byte offset / 4), the packed magic and
 # version compare constants, and the preimage size bounds. Owned by the shared-encoding library;
 # the faucet consumes these constants for its mint-side assertions.
 #
-# Values per the DC-1 table (a 240-byte header packs to 60 u32-LE felts, 4 bytes per felt).
-# Cross-language parity with the Rust constants is enforced by
-# `crates/xusdc-encoding/tests/constant_parity.rs`.
+# The wire format is a fixed 240-byte big-endian header (60 u32-LE-packed felts) followed by
+# variable-length hookData. Every offset below has a Rust counterpart holding the same value, and
+# a parity test in the encoding crate fails if the two ever diverge.
 
-# CONSTANTS — DepositIntent felt offsets (DC-1 byte offset / 4)
+# CONSTANTS — DepositIntent felt offsets (byte offset / 4)
 # =================================================================================================
 
 pub const MAGIC_FELT_OFF = 0

@@ -1,15 +1,14 @@
-//! WAVE-1 SECURITY HARDENING — the two admin-path guards (partylikeits1983 review, PA2 + PA3).
+//! SECURITY HARDENING — the two admin-path guards adopted from external security review.
 //!
-//! Written RED-FIRST (anneal test-first protocol): every negative below FAILS against the
-//! un-guarded build (the guard does not exist yet, so the operation SUCCEEDS instead of trapping)
-//! and flips GREEN once the guard lands. Each guard has its EXACT-error negative plus the positive
+//! Without each guard the operation below would SUCCEED instead of trapping.
+//! Each guard has its EXACT-error negative plus the positive
 //! that proves the guard is not over-broad (a legitimate block / a legitimate in-range set_min_burn
 //! still succeeds), and the floor boundary is re-proven so FIX 2 cannot silently weaken the
 //! pre-existing lower guard.
 //!
-//! FIX 1 (PA2) — `xreserve::blocklist_admin::block_account` must reject blocking the faucet's OWN
+//! FIX 1 — `xreserve::blocklist_admin::block_account` must reject blocking the faucet's OWN
 //! account id (blocking the faucet freezes it as a transfer party: mint-and-send and burn/redeem
-//! both trap). FIX 2 (PA3) — the runtime `set_min_burn_size` note must reject
+//! both trap). FIX 2 — the runtime `set_min_burn_size` note must reject
 //! `new_min > FUNGIBLE_ASSET_MAX_AMOUNT` (an out-of-range floor makes the stock
 //! `check_policy` (`min_burn_amount <= amount`) unsatisfiable for every real burn, halting all
 //! redemptions).
@@ -32,7 +31,7 @@ use xusdc_encoding::note::xreserve_admin::{XReserveBlockAccountNote, XReserveSet
 
 // The maximum representable fungible-asset amount = 2^63 - 2^31 (miden::protocol::asset
 // FUNGIBLE_ASSET_MAX_AMOUNT = 0x7fffffff80000000). Inlined here (not the MASM const) so the
-// red-suite compiles + executes against the un-guarded build; parity with the MASM guard's imported
+// test stands independent of the guard's own constant; parity with the MASM guard's imported
 // constant is what FIX 2 asserts end-to-end.
 const FUNGIBLE_ASSET_MAX_AMOUNT: u64 = 0x7fffffff_80000000;
 
@@ -83,12 +82,12 @@ fn min_word(v: u64) -> Word {
     ])
 }
 
-// FIX 1 (PA2) — the blocklist self-block guard
+// FIX 1 — the blocklist self-block guard
 // ================================================================================================
 
 /// A `BLK_MANAGER`-sent `block_account` targeting the faucet's OWN account id is REJECTED with the
 /// EXACT `ERR_XRESERVE_CANNOT_BLOCK_SELF`. Without the guard this SUCCEEDS (freezing the faucet as a
-/// transfer party) — the red-suite proof this tests something real.
+/// transfer party) — the proof this tests something real.
 #[tokio::test]
 async fn block_account_targeting_the_faucet_itself_is_rejected() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
@@ -147,7 +146,7 @@ async fn block_account_targeting_a_different_account_still_succeeds() -> Result<
     Ok(())
 }
 
-// FIX 2 (PA3) — the min-burn upper-range guard
+// FIX 2 — the min-burn upper-range guard
 // ================================================================================================
 
 /// A `set_min_burn_size` note with `new_min = FUNGIBLE_ASSET_MAX_AMOUNT + 1` is REJECTED with the

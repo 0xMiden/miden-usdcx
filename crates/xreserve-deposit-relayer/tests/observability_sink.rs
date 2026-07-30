@@ -1,9 +1,11 @@
-//! The **real** event sink — the one the binary installs — and the proof it emits rather than drops.
+//! The **real** event sink — the one the binary installs — and the proof it emits rather than
+//! drops.
 //!
-//! Round 1 shipped the observability SEAM (the `EventSink` trait) and a `RecordingSink` for tests,
-//! but the binary installed `NoopSink`, so the service that is supposed to never silently drop an
-//! attestation emitted nothing at all. `RecordingSink` proves only that an injected sink is called;
-//! it says nothing about the production sink actually rendering an event to an operator.
+//! The observability SEAM (the `EventSink` trait) and the test-side `RecordingSink` alone prove
+//! nothing about production emission: a binary that installed `NoopSink` would mean the service
+//! that is supposed to never silently drop an attestation emits nothing at all. `RecordingSink`
+//! proves only that an injected sink is called; it says nothing about the production sink actually
+//! rendering an event to an operator.
 //!
 //! `WriteEventSink<W>` is that production sink, parameterized over its `io::Write` so a test can
 //! point it at a buffer and read exactly what an operator would see on stderr. Every one of these
@@ -75,7 +77,7 @@ fn one_of_each_event() -> Vec<RelayerEvent> {
 
 /// The sink renders EVERY event kind to a non-empty line — and one line per event, so nothing is
 /// coalesced or dropped. A sink that silently ignored a variant it did not recognize would be the
-/// §8.4 silent drop, moved from the cycle into the logger.
+/// silent drop this crate exists to prevent, just relocated into the logger.
 #[test]
 fn the_write_sink_renders_every_event_kind_to_its_own_nonempty_line() {
     let buffer = SharedBuffer::default();
@@ -141,9 +143,9 @@ fn the_rendered_lines_carry_the_identifying_fields() {
     );
 }
 
-/// The sink does not drop under volume: N events in, N lines out. This is the sink-level restatement
-/// of the no-silent-drops obligation — the cycle produces one event per attestation, and the sink
-/// must not be where they disappear.
+/// The sink does not drop under volume: N events in, N lines out. This is the sink-level
+/// restatement of the no-silent-drops obligation — the cycle produces one event per attestation,
+/// and the sink must not be where they disappear.
 #[test]
 fn the_write_sink_drops_nothing_under_volume() {
     let buffer = SharedBuffer::default();
@@ -164,9 +166,9 @@ fn the_write_sink_drops_nothing_under_volume() {
     );
 }
 
-/// `WriteEventSink` is a real `EventSink` — it can be installed where the binary installs it (behind
-/// `Arc<dyn EventSink>`), which is the whole point: the production wiring and the tested type are the
-/// same type.
+/// `WriteEventSink` is a real `EventSink` — it can be installed where the binary installs it
+/// (behind `Arc<dyn EventSink>`), which is the whole point: the production wiring and the tested
+/// type are the same type.
 #[test]
 fn the_write_sink_is_installable_as_a_dyn_event_sink() {
     let buffer = SharedBuffer::default();

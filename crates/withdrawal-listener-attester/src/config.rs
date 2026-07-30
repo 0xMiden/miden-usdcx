@@ -1,6 +1,6 @@
-//! `ListenerConfig` — the static operational parameters the listener/attester holds (§10.1:
-//! "PURE — static config: faucet_id, fixed burn tag (u32), Miden domain, Circle base URL, attester
-//! key handles").
+//! `ListenerConfig` — the static operational parameters the listener/attester holds (the documented
+//! policy: "PURE — static config: faucet_id, fixed burn tag (u32), Miden domain, Circle base URL,
+//! attester key handles").
 //!
 //! Parse-only: this module does no I/O. It is a serde-(de)serializable struct an operator's config
 //! file populates, with PRIVATE fields and read-only accessors — live configuration cannot be
@@ -8,13 +8,13 @@
 //! base URL that is not a usable `http(s)` URL, and refuses an out-of-band credential paired with a
 //! base URL that cannot protect it.
 //!
-//! Every Circle-owned value carried here stays OPEN (`REQUIRES CIRCLE CONFIRMATION`): the auth token
-//! (`Q-API-AUTH`), the Miden domain (`Q-DOM-1`/`Q-DOM-2`), and the burn-evidence field (`DEV-7`) are
+//! Every Circle-owned value carried here stays OPEN (`REQUIRES CIRCLE CONFIRMATION`): the auth
+//! token, the Miden domain and forwarding scope, and the burn-evidence field are
 //! package-default placeholders, never settled decisions.
 //!
 //! **Key material never lives here.** The attester keys are held as [`AttesterKeyHandle`]s —
-//! KMS/HSM identifiers. Custody (rotation, ≥2 keys, the HSM boundary) is `P4-OPS`'s concern
-//! (§10.9); this crate owns the *signing interface*, not the custody SOP.
+//! identifiers naming a key in a KMS or HSM, never the key bytes. Custody — rotation, the two-key minimum, the HSM boundary — is the
+//! operations owner's concern; this crate owns the *signing interface*, not the custody SOP.
 
 use core::fmt;
 
@@ -25,8 +25,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::attester::AttesterAllowlist;
 use crate::error::{Cause, ListenerError};
 
-/// The documented Circle testnet host (`CIRCLE-API-SURFACE.md`, "Base URLs & transport"). Mainnet is
-/// `https://xreserve-api.circle.com`. Mirrored, never invented.
+/// The documented Circle testnet host (`CIRCLE-API-SURFACE.md`, "Base URLs & transport"). Mainnet
+/// is `https://xreserve-api.circle.com`. Mirrored, never invented.
 pub const CIRCLE_TESTNET_BASE_URL: &str = "https://xreserve-api-testnet.circle.com";
 pub const CIRCLE_MAINNET_BASE_URL: &str = "https://xreserve-api.circle.com";
 
@@ -38,9 +38,9 @@ const PLACEHOLDER_FAUCET_ID: &str = "0xbb405fd9fe431bd1135a292de098cb";
 
 /// A configured credential — held, used, and NEVER rendered.
 ///
-/// `Debug` and `Display` both print `<redacted>`. A config object is the single most likely thing to
-/// be `{:?}`-logged at startup or swept into a panic message, so the redaction lives on the value
-/// itself rather than on the things that hold it.
+/// `Debug` and `Display` both print `<redacted>`. A config object is the single most likely thing
+/// to be `{:?}`-logged at startup or swept into a panic message, so the redaction lives on the
+/// value itself rather than on the things that hold it.
 ///
 /// Only [`Self::expose`] hands the plaintext out, and it is deliberately awkward to type, so every
 /// place the secret escapes is greppable.
@@ -79,10 +79,10 @@ impl fmt::Display for SecretString {
 /// name). Never key material.
 ///
 /// The distinction is the custody boundary. The attester signs `messageHashToSign` with a secp256k1
-/// key (`INV-OFFCHAIN-BURN-SIGNING`), and Circle requires ≥2 signatures — but where those keys live,
-/// how they rotate, and who can reach them is `P4-OPS`'s problem. What this config holds is the
-/// *name* of a key, which is why the type renders itself in `Debug` instead of hiding: a handle is
-/// not a secret, and an operator needs to see which key is configured.
+/// key — the signing happens off-chain — and Circle requires ≥2 signatures; but where those keys
+/// live, how they rotate, and who can reach them is `P4-OPS`'s problem. What this config holds is
+/// the *name* of a key, which is why the type renders itself in `Debug` instead of hiding: a handle
+/// is not a secret, and an operator needs to see which key is configured.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AttesterKeyHandle(String);
@@ -128,18 +128,18 @@ pub struct ListenerConfig {
     #[serde(with = "account_id_hex")]
     faucet_id: AccountId,
 
-    /// The fixed, well-known **full-32-bit** xUSDC burn-note tag (`DC-7`).
+    /// The fixed, well-known **full-32-bit** xUSDC burn-note tag.
     ///
-    /// `SyncNotes` matches tags by exact full-32-bit equality, **never by prefix** (§10.5) — the
-    /// 16-bit prefix belongs to `SyncNullifiers`. A "use-case prefix + per-note payload" tag scheme
-    /// expecting the node to prefix-scan it is the `ASG-3`/C-3 trap, so this is one `u32`, carried
+    /// `SyncNotes` matches tags by exact full-32-bit equality, **never by prefix** — the 16-bit
+    /// prefix belongs to `SyncNullifiers`. A "use-case prefix + per-note payload" tag scheme
+    /// expecting the node to prefix-scan it is a trap worth naming, so this is one `u32`, carried
     /// whole.
     #[builder(default = 0)]
     burn_tag: u32,
 
-    /// Miden's remote domain, as Circle assigns it. `Q-DOM-1`/`Q-DOM-2` are OPEN (`REQUIRES CIRCLE
-    /// CONFIRMATION`) — the value is discovered from `GET /v1/info`, never assumed, and the default
-    /// here is a placeholder.
+    /// Miden's remote domain, as Circle assigns it. Which domain id Circle assigns Miden, and the
+    /// forwarding scope, are OPEN (`REQUIRES CIRCLE CONFIRMATION`) — the value is discovered from
+    /// `GET /v1/info`, never assumed, and the default here is a placeholder.
     #[builder(default = 0)]
     miden_domain: u32,
 
@@ -148,8 +148,8 @@ pub struct ListenerConfig {
     #[builder(default = default_circle_base_url())]
     circle_base_url: String,
 
-    /// The attester keys, by handle. Circle requires `burnSignatures.len() >= 2` on any
-    /// `/v1/withdraw` submission, so production runs ≥2 (§10.9) — but the *count* is an operational
+    /// The attester keys, by handle. Circle requires `burnSignatures.len >= 2` on any
+    /// `/v1/withdraw` submission, so production runs ≥2 — but the *count* is an operational
     /// property, enforced at quorum assembly (a later slice), not a shape this config can assert.
     #[builder(default)]
     #[serde(default)]
@@ -157,43 +157,43 @@ pub struct ListenerConfig {
 
     /// The **registered attester addresses** — the off-chain mirror of Circle's on-chain
     /// `attesters[addr]` registry. The pre-submit fund-safety gate
-    /// ([`authorize_submission`](crate::withdrawal_api::authorize_submission)) checks every recovered
-    /// `burnSignatures` signer against this set BEFORE any `POST /v1/withdraw`: a signature from a key
-    /// that is not a registered attester is refused off-chain, not left to Circle's source-chain
-    /// `require(attesters[addr])` alone.
+    /// ([`authorize_submission`](crate::withdrawal_api::authorize_submission)) checks every
+    /// recovered `burnSignatures` signer against this set BEFORE any `POST /v1/withdraw`: a
+    /// signature from a key that is not a registered attester is refused off-chain, not left to
+    /// Circle's source-chain `require(attesters[addr])` alone.
     ///
     /// The default is EMPTY, and that is deliberate — an empty allowlist makes the submit gate fail
-    /// closed (it refuses to submit with an unbounded signer set) rather than authorize everything. A
-    /// real deployment lists its attester addresses; a `[handle]` in `attester_key_handles` is a KMS
-    /// identifier, NOT an address, so the two are distinct fields.
+    /// closed (it refuses to submit with an unbounded signer set) rather than authorize everything.
+    /// A real deployment lists its attester addresses; a `[handle]` in `attester_key_handles` is a
+    /// KMS identifier, NOT an address, so the two are distinct fields.
     #[builder(default)]
     #[serde(default, skip_serializing_if = "AttesterAllowlist::is_empty")]
     attester_allowlist: AttesterAllowlist,
 
-    /// The optional out-of-band API auth token. NEVER hardcoded; `None` (the default) builds requests
-    /// against the DOCUMENTED no-auth contract. `Q-API-AUTH` is OPEN (`REQUIRES CIRCLE
-    /// CONFIRMATION`).
+    /// The optional out-of-band API auth token. NEVER hardcoded; `None` (the default) builds
+    /// requests against the DOCUMENTED no-auth contract. The credential scheme itself is
+    /// `REQUIRES CIRCLE CONFIRMATION`.
     #[serde(default)]
     api_auth_token: Option<SecretString>,
 
     /// The header name an out-of-band token is injected under — supplied by the OPERATOR, with **no
-    /// package default**, because `Q-API-AUTH` is OPEN.
+    /// package default**, because Circle has not documented an auth scheme.
     ///
     /// The OpenAPI declares no security scheme at all. A default here (this crate shipped
     /// `Authorization` once) does not merely pick a convention: it means that configuring a *token*
-    /// silently SELECTS an undocumented scheme, which is exactly what §10.12 forbids — "do NOT invent
-    /// an auth header". So a token without a header name is a configuration ERROR
-    /// ([`ListenerError::AuthHeaderNameRequired`]), not an invitation to guess. When Circle answers,
-    /// the operator writes the answer down; until then, nothing is presumed.
+    /// silently SELECTS an undocumented scheme, which is exactly what Circle's documentation
+    /// forbids — "do NOT invent an auth header". So a token without a header name is a
+    /// configuration ERROR ([`ListenerError::AuthHeaderNameRequired`]), not an invitation to guess.
+    /// When Circle answers, the operator writes the answer down; until then, nothing is presumed.
     ///
     /// With no token set, no auth header is sent at all and this value is irrelevant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     api_auth_header: Option<String>,
 }
 
-/// The undecorated shape serde parses into, before [`ListenerConfig::validate`] runs. It exists so
-/// `try_from` has somewhere to land — see the note on the derive above for why the direct derive was
-/// a credential-disclosure path.
+/// The undecorated shape serde parses into, before `ListenerConfig::validate` runs. It exists so
+/// `try_from` has somewhere to land — see the note on the derive above for why the direct derive
+/// was a credential-disclosure path.
 #[derive(Deserialize)]
 struct ListenerConfigRaw {
     #[serde(default = "default_faucet_id", with = "account_id_hex")]
@@ -251,10 +251,10 @@ impl Default for ListenerConfig {
 }
 
 impl<S: listener_config_builder::IsComplete> ListenerConfigBuilder<S> {
-    /// Builds the config, validating it — the same [`ListenerConfig::validate`] serde runs.
+    /// Builds the config, validating it — the same `ListenerConfig::validate` serde runs.
     ///
     /// # Errors
-    /// Every variant [`ListenerConfig::validate`] can return.
+    /// Every variant `ListenerConfig::validate` can return.
     pub fn build(self) -> Result<ListenerConfig, ListenerError> {
         let config = self.build_internal();
         config.validate()?;
@@ -263,18 +263,19 @@ impl<S: listener_config_builder::IsComplete> ListenerConfigBuilder<S> {
 }
 
 impl ListenerConfig {
-    /// The config's invariants. ONE implementation, reached from BOTH construction paths (the builder
-    /// and `Deserialize`), so neither can be the lenient one.
+    /// The config's invariants. ONE implementation, reached from BOTH construction paths (the
+    /// builder and `Deserialize`), so neither can be the lenient one.
     ///
     /// None of the three is ceremony:
     ///
-    /// * A base URL that cannot be parsed fails on the first Circle call — in production, at the worst
-    ///   moment — instead of at startup.
+    /// * A base URL that cannot be parsed fails on the first Circle call — in production, at the
+    ///   worst moment — instead of at startup.
     /// * An out-of-band key over a plaintext base URL is a credential DISCLOSED the first time the
-    ///   service runs. `Q-API-AUTH` is OPEN, so the key may ride under any header name at all, and no
-    ///   HTTP library's strip-on-redirect list of standard header names would cover it.
-    /// * A key with no header name has nowhere documented to go. Guessing `Authorization` is inventing
-    ///   the scheme (§10.12).
+    ///   service runs. Circle documents no auth scheme, so the key may ride under any header name at
+    ///   all, and
+    ///   no HTTP library's strip-on-redirect list of standard header names would cover it.
+    /// * A key with no header name has nowhere documented to go. Guessing `Authorization` is
+    ///   inventing the scheme.
     ///
     /// # Errors
     /// * [`ListenerError::BadBaseUrl`] — the base URL is not a usable `http`/`https` URL.
@@ -332,12 +333,12 @@ impl ListenerConfig {
         self.faucet_id
     }
 
-    /// The fixed full-32-bit burn-note tag. Matched by EXACT equality — never a prefix (§10.5).
+    /// The fixed full-32-bit burn-note tag. Matched by EXACT equality — never a prefix.
     pub fn burn_tag(&self) -> u32 {
         self.burn_tag
     }
 
-    /// Miden's Circle-assigned remote domain (`Q-DOM-1`, OPEN).
+    /// Miden's Circle-assigned remote domain (which id Circle assigns is still OPEN).
     pub fn miden_domain(&self) -> u32 {
         self.miden_domain
     }
@@ -358,7 +359,8 @@ impl ListenerConfig {
         &self.attester_allowlist
     }
 
-    /// The optional out-of-band API auth token (`Q-API-AUTH`, OPEN). `None` is the documented case,
+    /// The optional out-of-band API auth token (the scheme is still Circle's to confirm). `None` is
+    /// the documented case,
     /// not an error.
     ///
     /// This EXPOSES the secret — the auth-header injection point needs the plaintext. It is the one
@@ -369,16 +371,17 @@ impl ListenerConfig {
     }
 
     /// The header name an out-of-band token is injected under, if the operator named one. `None` is
-    /// the default, and — while `Q-API-AUTH` is OPEN — the only honest one: this crate names no
+    /// the default, and — while Circle documents no scheme — the only honest one: this crate names
+    /// no
     /// header. The config invariant guarantees this is `Some` whenever a token is set.
     pub fn api_auth_header(&self) -> Option<&str> {
         self.api_auth_header.as_deref()
     }
 }
 
-/// `AccountId` has no serde impl of its own, so the config renders it the way an operator writes it:
-/// the canonical hex (`0x` + 30 digits). Deserialization goes through `AccountId::from_hex`, so a
-/// config file naming a malformed id FAILS TO LOAD rather than silently defaulting — a listener
+/// `AccountId` has no serde impl of its own, so the config renders it the way an operator writes
+/// it: the canonical hex (`0x` + 30 digits). Deserialization goes through `AccountId::from_hex`, so
+/// a config file naming a malformed id FAILS TO LOAD rather than silently defaulting — a listener
 /// watching the wrong faucet would see no burns at all.
 mod account_id_hex {
     use super::*;

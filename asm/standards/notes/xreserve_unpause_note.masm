@@ -1,4 +1,4 @@
-# xreserve_unpause_note — the shipped, root-pinned unpause admin note script (F5).
+# xreserve_unpause_note — the shipped, root-pinned unpause admin note script.
 #
 # The production admin surface for `unpause` under the network account: a fixed-root, PARAM-LESS note
 # whose sole job is to cross into the faucet account context and `call` the DOM_PAUSER-gated
@@ -21,6 +21,10 @@ use xreserve::pause_admin
 #!
 #! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
+#!
+#! Where:
+#! - ARGS is the executor-controlled note-argument word, which this script drops unread.
+#! - pad(16) is the 16-element call-boundary pad the note script hands the account procedure.
 #!
 #! Panics if:
 #! - the note sender does not hold the DOM_PAUSER role (pause_admin::unpause's role gate).

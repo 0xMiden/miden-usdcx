@@ -1,18 +1,17 @@
-//! Shared fixtures for the `POST /v1/withdraw` suites — `T-LA-10` (the drivers + the fund-safety
-//! gate) and `T-LA-13` (conflict-recovery, idempotency, retry).
+//! Shared fixtures for the `POST /v1/withdraw` suites (the drivers + the fund-safety gate) and
+//! conflict-recovery, idempotency, retry.
 //!
 //! It exists because those suites were splitting one 1,200-line file's worth of setup between them
-//! (BUILDER-GATES G3 caps a Rust file at ~500-700 lines), and a fixture copied per target is a fixture
-//! that drifts per target. The families now live in focused modules —
-//! `conflict_recovery` / `submit_idempotency` / `retry_policy` / `submit_withdraw` — over ONE set of
-//! fixtures.
+//! (a Rust file is capped at roughly 500-700 lines), and a fixture copied per target is a fixture
+//! that drifts per target. The families now live in focused modules — `conflict_recovery` /
+//! `submit_idempotency` / `retry_policy` / `submit_withdraw` — over ONE set of fixtures.
 //!
 //! # Everything here goes through the REAL gates
 //!
-//! No token is fabricated. [`authorized_for_burns`] mints its [`AuthorizedWithdrawal`] through the real
-//! B5 validation ([`validate_returned`]) and the real pre-submit allowlist gate
-//! ([`authorize_submission`]), so a test cannot accidentally prove something about a submission that
-//! could not exist in production.
+//! No token is fabricated. [`authorized_for_burns`] mints its [`AuthorizedWithdrawal`] through the
+//! real validation gate ([`validate_returned`]) and the real pre-submit allowlist gate
+//! ([`authorize_submission`]), so a test cannot accidentally prove something about a submission
+//! that could not exist in production.
 
 #![allow(dead_code)] // a shared fixture module: each test target uses the subset it needs.
 
@@ -54,11 +53,11 @@ use mock_circle::{Endpoint, MockCircle};
 // FIXTURE CONSTANTS
 // ================================================================================================
 
-/// The `burnTxId` the `withdraw_201` / `withdraw_409` / `withdrawal_status_200` fixtures all carry —
-/// so a scripted reply echoes the burn the request was actually built with.
+/// The `burnTxId` the `withdraw_201` / `withdraw_409` / `withdrawal_status_200` fixtures all carry
+/// — so a scripted reply echoes the burn the request was actually built with.
 pub const BURN_TX_ID: &str = "0x82a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7e6052443";
-/// A second, DIFFERENT well-formed `burnTxId` — the echo-mismatch defect case, and the second batch of
-/// every multi-burn request.
+/// A second, DIFFERENT well-formed `burnTxId` — the echo-mismatch defect case, and the second batch
+/// of every multi-burn request.
 pub const OTHER_BURN_TX_ID: &str =
     "0x1111111111111111111111111111111111111111111111111111111111111111";
 /// A third — so a multi-burn request can carry a burn that is neither of the above.
@@ -70,8 +69,8 @@ pub const CONFLICT_WITHDRAWAL_ID: &str = "6f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8";
 /// The batch digest a single-batch fund-safety token is minted over.
 pub const DIGEST: [u8; 32] = digest_for(0);
 
-/// A distinct per-batch digest, so a multi-batch request's signatures are bound to their OWN batch —
-/// as B5 produces them.
+/// A distinct per-batch digest, so a multi-batch request's signatures are bound to their OWN batch
+/// — as the gate produces them.
 pub const fn digest_for(batch: usize) -> [u8; 32] {
     [0x5a + batch as u8; 32]
 }
@@ -90,12 +89,14 @@ pub fn burn_intents(n: usize) -> Vec<BurnIntent> {
         .collect()
 }
 
-/// A deterministic secret key from a single repeated byte (well below the curve order for any byte).
+/// A deterministic secret key from a single repeated byte (well below the curve order for any
+/// byte).
 pub fn key(byte: u8) -> SecretKey {
     SecretKey::from_slice(&[byte; 32]).expect("a valid secp256k1 scalar")
 }
 
-/// Signs `digest` with `key(byte)` and returns the recovered signer address and the 65-byte signature.
+/// Signs `digest` with `key(byte)` and returns the recovered signer address and the 65-byte
+/// signature.
 pub fn signer(byte: u8, digest: &[u8; 32]) -> (Address, Signature65) {
     let sk = key(byte);
     let sig = sign(digest, &sk).expect("sign");
@@ -112,8 +113,8 @@ pub fn decode_hex32(s: &str) -> [u8; 32] {
     hex::decode(body).unwrap().as_slice().try_into().unwrap()
 }
 
-/// A `WithdrawBatch` carrying `signatures` verbatim (order preserved) over one canonical intent, keyed
-/// on the fixture's `burnTxId`.
+/// A `WithdrawBatch` carrying `signatures` verbatim (order preserved) over one canonical intent,
+/// keyed on the fixture's `burnTxId`.
 pub fn batch_with(signatures: Vec<HexBytes>) -> WithdrawBatch {
     batch_for(BURN_TX_ID, signatures)
 }
@@ -123,7 +124,7 @@ pub fn batch_for(burn_tx_id: &str, signatures: Vec<HexBytes>) -> WithdrawBatch {
         .expect("a 1-intent, 2-signature batch")
 }
 
-/// A burn payload that MATCHES the 200 fixture's returned spec, so `validate_returned` (B5) accepts
+/// A burn payload that MATCHES the 200 fixture's returned spec, so `validate_returned` accepts
 /// the fixture response.
 pub fn payload_matching_fixture() -> BurnPayload {
     let fixture = support::fixture_json("prepare_withdrawal_200");
@@ -137,8 +138,9 @@ pub fn payload_matching_fixture() -> BurnPayload {
     }
 }
 
-/// A `ValidatedWithdrawal` carrying exactly `digests`, minted through the REAL B5 gate against a
-/// fixture-derived prepare response — so the digests come from B5, never from ad-hoc test input.
+/// A `ValidatedWithdrawal` carrying exactly `digests`, minted through the REAL validation gate
+/// against a fixture-derived prepare response — so the digests come from the gate, never from
+/// ad-hoc test input.
 pub fn validated(digests: &[[u8; 32]]) -> ValidatedWithdrawal {
     let template = support::fixture_json("prepare_withdrawal_200")["batches"][0].clone();
     let batches: Vec<Value> = digests
@@ -168,11 +170,11 @@ pub fn config_with_allowlist(addrs: impl IntoIterator<Item = Address>) -> Listen
 }
 
 /// A fund-safety-gated submission carrying ONE batch per entry of `burns`, each keyed on its own
-/// `burnTxId` and signed by two registered attesters over its OWN B5 digest.
+/// `burnTxId` and signed by two registered attesters over its OWN validated digest.
 ///
-/// Multi-burn is the interesting case and the reason this takes a slice: a `POST /v1/withdraw` carries
-/// 1-5 batches, and a conflict or a status names ONE of them — so "which burn does this answer bind
-/// to?" is only a real question when there is more than one.
+/// Multi-burn is the interesting case and the reason this takes a slice: a `POST /v1/withdraw`
+/// carries 1-5 batches, and a conflict or a status names ONE of them — so "which burn does this
+/// answer bind to?" is only a real question when there is more than one.
 pub fn authorized_for_burns(burns: &[&str]) -> AuthorizedWithdrawal {
     let mut batches = Vec::new();
     let mut digests = Vec::new();
@@ -235,9 +237,9 @@ pub fn a_prepare_request() -> PrepareWithdrawalRequest {
 // THE CLIENT AND THE LEDGER
 // ================================================================================================
 
-/// A client against the mock whose retry backoff and poll interval do not really sleep, and whose rate
-/// ceilings are set far too high to bind — so a timing assertion elsewhere is about the ONE policy it
-/// names.
+/// A client against the mock whose retry backoff and poll interval do not really sleep, and whose
+/// rate ceilings are set far too high to bind — so a timing assertion elsewhere is about the ONE
+/// policy it names.
 pub fn client_for(mock: &MockCircle) -> CircleClient {
     CircleClient::new(mock.base_url(), AuthPosture::None)
         .expect("client builds against the mock base url")
@@ -248,8 +250,8 @@ pub fn client_for(mock: &MockCircle) -> CircleClient {
 }
 
 /// A ledger on a REAL file in `dir` — "durable across a restart" is only provable against a file a
-/// second, independent handle can reopen, so no test here reaches for an in-memory database (which is
-/// precisely what `SubmitLedger::open` refuses).
+/// second, independent handle can reopen, so no test here reaches for an in-memory database (which
+/// is precisely what `SubmitLedger::open` refuses).
 pub fn ledger_in(dir: &tempfile::TempDir) -> SubmitLedger {
     SubmitLedger::open(dir.path().join("submitted_burns.sqlite3")).expect("the ledger opens")
 }
@@ -275,15 +277,16 @@ pub fn conflict_body_echoing_another_burn() -> Value {
     conflict_body_for(OTHER_BURN_TX_ID)
 }
 
-/// The `withdraw_201` fixture (the one-element ARRAY) re-pointed at `burn_tx_id` — an honest `201` for
-/// a burn other than the fixture's own.
+/// The `withdraw_201` fixture (the one-element ARRAY) re-pointed at `burn_tx_id` — an honest `201`
+/// for a burn other than the fixture's own.
 pub fn created_body_for(burn_tx_id: &str) -> Value {
     let mut body = support::fixture_json("withdraw_201");
     body[0]["burnTxId"] = json!(burn_tx_id);
     body
 }
 
-/// A `201` ARRAY with one honest element per burn — what Circle returns for a multi-batch submission.
+/// A `201` ARRAY with one honest element per burn — what Circle returns for a multi-batch
+/// submission.
 pub fn created_body_for_all(burns: &[&str]) -> Value {
     Value::Array(
         burns

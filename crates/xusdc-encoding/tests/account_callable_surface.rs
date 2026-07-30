@@ -1,7 +1,7 @@
 //! FULL-ACCOUNT CALLABLE-SURFACE PIN (S12, human-ratified 2026-07-13).
 //!
-//! `mint_root_surface.rs` freezes the 15 callable roots of the **xreserve** component. This file
-//! freezes the **whole composed account** — the xreserve 15 PLUS every callable procedure the STOCK
+//! `mint_root_surface.rs` freezes the 14 callable roots of the **xreserve** component. This file
+//! freezes the **whole composed account** — the xreserve 14 PLUS every callable procedure the STOCK
 //! components contribute (`Authority` incl. the v0.16 `freeze`/`unfreeze`, `RoleBasedAccessControl`,
 //! `Ownable2Step`, `FungibleFaucet` incl. the v0.16 `has_procedure` re-export, `TokenPolicyManager`,
 //! `MinBurnAmount` (the Wave-1 S1 stock burn policy), `Pausable`, and the `AuthNetworkAccount`
@@ -97,7 +97,7 @@ const MAX_SUPPLY: u64 = 1_000_000;
 /// account's real surface without growing this list, and the set-equality below goes RED.
 ///
 /// Membership is ratified, not incidental (paths are the component-wrapper form the exports carry):
-/// - the 15 `::xreserve::…` roots are the Wave-1 S1 recomposed set (`mint_root_surface.rs` pins
+/// - the 14 `::xreserve::…` roots are the Wave-1 S1 recomposed set (`mint_root_surface.rs` pins
 ///   them separately), including the two F4-reversal
 ///   `blocklist_admin::{block_account,unblock_account}` wrappers, the attestation
 ///   `mint_policy::check_policy` (the ACTIVE mint policy), and the minimized
@@ -121,8 +121,8 @@ const MAX_SUPPLY: u64 = 1_000_000;
 ///   human-ratified);
 /// - `fungible_faucet::has_procedure` is the v0.16 `FungibleFaucet` re-export (#3222) the stock BURN
 ///   note's faucet-kind reflection requires.
-const FROZEN_ACCOUNT_SURFACE: [&str; 75] = [
-    // --- the 15 xreserve component roots (their IDENTITIES are also pinned in
+const FROZEN_ACCOUNT_SURFACE: [&str; 74] = [
+    // --- the 14 xreserve component roots (their IDENTITIES are also pinned in
     //     mint_root_surface.rs::FROZEN_CALLABLE_ROOTS; here they complete the whole account) ---
     "::xreserve::attestation_verify::verify_attestation",
     "::xreserve::attester_admin::set_attester",
@@ -133,7 +133,6 @@ const FROZEN_ACCOUNT_SURFACE: [&str; 75] = [
     "::xreserve::deposit_intent_parser::assert_nonce_unused",
     "::xreserve::encoding::bytes32_to_key",
     "::xreserve::encoding::parse_deposit_intent",
-    "::xreserve::encoding::pubkey_commitment",
     "::xreserve::encoding::uint256_to_asset_amount",
     "::xreserve::identifier_init::init_identifier",
     "::xreserve::mint_policy::check_policy",
@@ -306,7 +305,7 @@ fn production_account_callable_surface_is_frozen() -> Result<()> {
     let components = production_components()?;
     let surface = component_surface(&components);
 
-    // Layer 1 (source): the component-exported paths equal the frozen 75-root list EXACTLY (15
+    // Layer 1 (source): the component-exported paths equal the frozen 74-root list EXACTLY (14
     // xreserve + 60 stock, in one literal set — a stock bump that adds or removes any callable
     // procedure fails HERE).
     let mut paths: Vec<String> = surface.iter().map(|(path, _)| path.clone()).collect();
@@ -318,7 +317,7 @@ fn production_account_callable_surface_is_frozen() -> Result<()> {
     expected.sort();
     assert_eq!(
         paths, expected,
-        "the composed account's callable surface drifted from the frozen 75-root set — a stock \
+        "the composed account's callable surface drifted from the frozen 74-root set — a stock \
          bump added or removed a callable procedure (or the xreserve surface changed). This is NOT \
          a mechanical conformance change: every such delta must be SURFACED for ratification \
          (MIGRATION-V16-ALPHA2.md §4a stock-surface discipline + STOP condition 5), exactly as the \
@@ -342,7 +341,7 @@ fn production_account_callable_surface_is_frozen() -> Result<()> {
     assert_eq!(
         account_roots.len(),
         FROZEN_ACCOUNT_SURFACE.len(),
-        "the account's callable procedure COUNT must equal the frozen 75-root surface"
+        "the account's callable procedure COUNT must equal the frozen 74-root surface"
     );
     Ok(())
 }

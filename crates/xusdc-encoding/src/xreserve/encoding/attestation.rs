@@ -92,7 +92,7 @@ pub fn signature_felts(sig: &[u8; 65]) -> [Felt; 17] {
 /// The attester-allowlist commitment key: Poseidon2 over the 16 affine pubkey felts,
 /// identical to miden-crypto 0.28 `PublicKey::to_commitment`
 /// (`Poseidon2::hash_elements(affine_point_to_elements())`) and to the MASM
-/// `xreserve::encoding::pubkey_commitment` the faucet's attestation verify recomputes. `Hasher` is the
+/// `xreserve::attestation_verify::pubkey_commitment` the faucet recomputes. `Hasher` is the
 /// protocol's Poseidon2 (same primitive as `bytes32_to_storage_map_key`); the 16-felt input
 /// sets the sponge capacity domain tag to `16 % 8 = 0` — verified == `to_commitment` by
 /// TV-ATT-2 and the cross-implementation vector check. Takes the 33-byte compressed wire form

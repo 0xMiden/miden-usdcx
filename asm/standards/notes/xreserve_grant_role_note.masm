@@ -18,8 +18,8 @@ use miden::standards::access::rbac
 # CONSTANTS
 # =================================================================================================
 
-# Absolute memory address where the creator-committed params are staged (word-aligned; the mint-note
-# INTENT_PTR convention the admin notes share).
+# Absolute memory address where the creator-committed params are staged (word-aligned; the
+# staging convention the admin notes share).
 const PARAM_PTR = 1024
 
 # The exact note-storage item count for this admin op:

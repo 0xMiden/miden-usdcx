@@ -128,28 +128,47 @@ const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] = &[(
     support::XRESERVE_ATTESTERS_SLOT_LABEL,
 )];
 
-/// The D5d attestation-verify shell declares no numeric constants (word-aligned `@locals`
-/// offsets are literal, matching `encoding/mod.masm::pubkey_commitment` and the precompile canary).
-const ATTESTATION_COVERED_NUMS: &[&str] = &[];
+/// The D5d attestation-verify shell's numeric constants: its `@locals` offsets (the keccak
+/// digest's two words — procedure-local addresses with no Rust counterpart) and `PUBKEY_FELTS`,
+/// which IS parity-asserted against the Rust codec in `masm_rust_constant_parity` below.
+const ATTESTATION_COVERED_NUMS: &[&str] = &["DIGEST_LO_LOC", "DIGEST_HI_LOC", "PUBKEY_FELTS"];
 
 /// Wave-1 S1 attestation mint-policy numeric consts: the two attachment schemes + the
 /// attestation word count + the DC-5 scale are parity-asserted against the `XUsdcMintNote`
 /// factory constants in `masm_rust_constant_parity` below (the constructor builds what the
 /// policy verifies); `DEPOSIT_INTENT_HEADER_WORDS` carries a derived relation row (x 4 == the
-/// header felt count). `INTENT_PTR` (the account-frame staging address, the proven driver
-/// convention), `WORD_NUM_ELEMENTS` (the indexed commitment address math), the
-/// `P2ID_NUM_STORAGE_ITEMS` note-storage count (2, matching notes/p2id.masm), and the
+/// header felt count). The `P2ID_NUM_STORAGE_ITEMS` note-storage count (2, matching
+/// notes/p2id.masm), the `*_LOC` procedure-local offsets of `check_policy` (including the four
+/// derived from the shared layout's field offsets), and the
 /// `NONCE_USED_MARKER`/`P2ID_SCRIPT_ROOT` Word array literals (not parity-parsed) are
 /// policy-owned with no Rust counterpart, covered here.
 const MINT_POLICY_COVERED_NUMS: &[&str] = &[
-    "INTENT_PTR",
     "XUSDC_MINT_INTENT_ATTACHMENT_SCHEME",
     "XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME",
     "XUSDC_MINT_ATTESTATION_NUM_WORDS",
     "DEPOSIT_INTENT_HEADER_WORDS",
-    "WORD_NUM_ELEMENTS",
     "DEPOSIT_SCALE_EXP",
     "P2ID_NUM_STORAGE_ITEMS",
+    "ASSET_VALUE_LOC",
+    "RECIPIENT_LOC",
+    "TAG_LOC",
+    "NOTE_TYPE_LOC",
+    "ATTACHMENT_COMMITMENTS_LOC",
+    "ATTESTATION_LOC",
+    "ATTESTATION_FEE_AMOUNT_LOC",
+    "ATTESTATION_PUBKEY_LOC",
+    "ATTESTATION_SIGNATURE_LOC",
+    "NONCE_KEY_LOC",
+    "P2ID_TARGET_ID_SUFFIX_LOC",
+    "P2ID_TARGET_ID_PREFIX_LOC",
+    "HOOK_DATA_LEN_LOC",
+    "LEN_FELTS_LOC",
+    "ATTESTED_AMOUNT_LOC",
+    "INTENT_LOC",
+    "INTENT_AMOUNT_LOC",
+    "INTENT_REMOTE_RECIPIENT_LOC",
+    "INTENT_NONCE_LOC",
+    "INTENT_HOOK_DATA_LEN_LOC",
 ];
 
 /// CMP-F3 pause-admin numeric const: DOM_PAUSER_ROLE (the encoded RoleSymbol felt), parity-asserted
@@ -182,7 +201,7 @@ const LAYOUT_COVERED_NUMS: &[&str] = &[
     "DEPOSIT_INTENT_HEADER_FELTS",
     "MAX_NOTE_STORAGE_FELTS",
 ];
-const ENCODING_COVERED_NUMS: &[&str] = &["SCALE_EXP_MAX", "POW2_32", "PUBKEY_FELTS"];
+const ENCODING_COVERED_NUMS: &[&str] = &["SCALE_EXP_MAX", "POW2_32"];
 const SHELL_COVERED_NUMS: &[&str] = &[];
 
 /// Parses `const NAME = <value>` / `pub const NAME = <value>` lines from a MASM source.
@@ -301,6 +320,7 @@ fn masm_rust_constant_parity() {
     // extra rows: the reducer's bound and limb base (names differ across languages for
     // the scale bound by frozen decision — MASM SCALE_EXP_MAX, Rust MAX_SCALE_EXP)
     let (enc_nums, _, _) = parse_masm_consts(ENCODING_MOD_MASM);
+    let (att_nums, _, _) = parse_masm_consts(ATTESTATION_VERIFY_MASM);
     assert_eq!(
         num(&enc_nums, "SCALE_EXP_MAX", "encoding/mod.masm"),
         MAX_SCALE_EXP as u64,
@@ -312,7 +332,7 @@ fn masm_rust_constant_parity() {
         "u32 limb base must be 2^32"
     );
     assert_eq!(
-        num(&enc_nums, "PUBKEY_FELTS", "encoding/mod.masm"),
+        num(&att_nums, "PUBKEY_FELTS", "attestation_verify.masm"),
         PUBKEY_FELTS as u64,
         "affine-pubkey felt count parity (qx||qy -> 16 u32-LE felts; ATT commitment input)"
     );

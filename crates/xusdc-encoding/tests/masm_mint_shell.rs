@@ -243,11 +243,15 @@ fn amt(id: &str) -> &'static AmtVector {
 /// Builds a D5b harness over a base accept preimage with `amount`/`maxFee` spliced from the
 /// given limbs. The shell does not read config slots, but the component still binds them;
 /// the matching `di-pos-empty-hookdata` config is reused for tidiness.
-fn d5b_harness(amount_limbs: [u32; 8], maxfee_limbs: [u32; 8]) -> Result<ShellHarness> {
+fn d5b_harness(
+    amount_limbs: [u32; 8],
+    maxfee_limbs: [u32; 8],
+    fee_amount: &[Felt],
+) -> Result<ShellHarness> {
     let base = di("di-pos-empty-hookdata").preimage_values();
     let preimage = splice_amounts(&base, amount_limbs, maxfee_limbs);
     let (domain, identifier) = config_for("di-pos-empty-hookdata", TEST_DOMAIN, false);
-    let driver_src = mint_amounts_driver_src(&preimage, D5B_SCALE_EXP);
+    let driver_src = mint_amounts_driver_src(&preimage, fee_amount, D5B_SCALE_EXP);
     setup_shell_account(domain, identifier, &driver_src, SHELL_DRIVER_PATH)
 }
 
@@ -256,19 +260,19 @@ fn d5b_harness(amount_limbs: [u32; 8], maxfee_limbs: [u32; 8]) -> Result<ShellHa
 
 #[rstest]
 // feeAmount == 0 (MVP default) accepted; amount (amt-ge-gt.a) > maxFee (amt-ge-gt.b)
-#[case::fee_zero(amt("amt-ge-gt").le_limbs(), amt("amt-ge-gt").b_le_limbs(), fee_advice_felts([0u32; 8]))]
+#[case::fee_zero(amt("amt-ge-gt").le_limbs(), amt("amt-ge-gt").b_le_limbs(), fee_amount_felts([0u32; 8]))]
 // boundary: amount exactly equal to maxFee is accepted — the reject fires below maxFee, not at it
-#[case::amount_eq_maxfee(amt("amt-ge-eq").le_limbs(), amt("amt-ge-eq").b_le_limbs(), fee_advice_felts([0u32; 8]))]
+#[case::amount_eq_maxfee(amt("amt-ge-eq").le_limbs(), amt("amt-ge-eq").b_le_limbs(), fee_amount_felts([0u32; 8]))]
 // value at AssetAmount::MAX accepted at the cap; amount (cap) >= maxFee (amt-pos-1)
-#[case::cap_value(amt("amt-cap-accept").le_limbs(), amt("amt-pos-1").le_limbs(), fee_advice_felts([0u32; 8]))]
+#[case::cap_value(amt("amt-cap-accept").le_limbs(), amt("amt-pos-1").le_limbs(), fee_amount_felts([0u32; 8]))]
 #[tokio::test]
 async fn d5b_happy_amount_fee(
     #[case] amount_limbs: [u32; 8],
     #[case] maxfee_limbs: [u32; 8],
-    #[case] fee_advice: Vec<Felt>,
+    #[case] fee_amount: Vec<Felt>,
 ) -> Result<()> {
-    let h = d5b_harness(amount_limbs, maxfee_limbs)?;
-    let executed = run_call_driver_with_advice(&h, "drive", Some(fee_advice))
+    let h = d5b_harness(amount_limbs, maxfee_limbs, &fee_amount)?;
+    let executed = run_call_driver(&h, "drive")
         .await
         .unwrap_or_else(|e| panic!("D5b must accept these reduced amount/fee values: {e}"));
     // the shell is read-only: the only account mutation is the auth nonce increment
@@ -294,61 +298,49 @@ async fn d5b_happy_amount_fee(
 
 #[rstest]
 // too large to reduce: the AMOUNT's top four u32 limbs are nonzero, i.e. it exceeds 2^128
-#[case::r_mint_9_amount_overflow(amt("amt-rej-limb-overflow").le_limbs(), amt("amt-pos-1").le_limbs(), fee_advice_felts([0u32; 8]), "ERR_X_TOO_LARGE")]
+#[case::r_mint_9_amount_overflow(amt("amt-rej-limb-overflow").le_limbs(), amt("amt-pos-1").le_limbs(), fee_amount_felts([0u32; 8]), "ERR_X_TOO_LARGE")]
 // same overflow on MAXFEE — ordered so the amount reduces cleanly first and the trap is maxFee's
-#[case::r_mint_9_maxfee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-rej-limb-overflow").le_limbs(), fee_advice_felts([0u32; 8]), "ERR_X_TOO_LARGE")]
-// same overflow on the advice-supplied FEEAMOUNT — the third reduction is guarded too
-#[case::r_mint_9_fee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-pos-1").le_limbs(), fee_advice_felts(amt("amt-rej-limb-overflow").le_limbs()), "ERR_X_TOO_LARGE")]
+#[case::r_mint_9_maxfee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-rej-limb-overflow").le_limbs(), fee_amount_felts([0u32; 8]), "ERR_X_TOO_LARGE")]
+// same overflow on the separately staged FEEAMOUNT — the third reduction is guarded too
+#[case::r_mint_9_fee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-pos-1").le_limbs(), fee_amount_felts(amt("amt-rej-limb-overflow").le_limbs()), "ERR_X_TOO_LARGE")]
 // relation broken: the reduced amount is strictly below maxFee, so the mint could not cover its fee
-#[case::r_mint_10_amount_below_fee(amt("amt-ge-lt").le_limbs(), amt("amt-ge-lt").b_le_limbs(), fee_advice_felts([0u32; 8]), "ERR_XRESERVE_AMOUNT_BELOW_FEE")]
+#[case::r_mint_10_amount_below_fee(amt("amt-ge-lt").le_limbs(), amt("amt-ge-lt").b_le_limbs(), fee_amount_felts([0u32; 8]), "ERR_XRESERVE_AMOUNT_BELOW_FEE")]
 // amount >= maxFee passes, then a NONZERO feeAmount is rejected: the faucet pays no relayer fee,
 // so any nonzero fee is refused regardless of how it compares to maxFee
-#[case::r_mint_11_fee_over_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-lt").le_limbs(), fee_advice_felts(amt("amt-ge-lt").b_le_limbs()), "ERR_XRESERVE_FEE_NONZERO")]
+#[case::r_mint_11_fee_over_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-lt").le_limbs(), fee_amount_felts(amt("amt-ge-lt").b_le_limbs()), "ERR_XRESERVE_FEE_NONZERO")]
 // the same refusal at the tightest point: a feeAmount that exactly equals maxFee is still nonzero,
 // so it is still rejected — the gate is "zero", not "within maxFee"
-#[case::fee_eq_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-eq").le_limbs(), fee_advice_felts(amt("amt-ge-eq").le_limbs()), "ERR_XRESERVE_FEE_NONZERO")]
+#[case::fee_eq_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-eq").le_limbs(), fee_amount_felts(amt("amt-ge-eq").le_limbs()), "ERR_XRESERVE_FEE_NONZERO")]
 #[tokio::test]
 async fn d5b_amount_fee_rejects(
     #[case] amount_limbs: [u32; 8],
     #[case] maxfee_limbs: [u32; 8],
-    #[case] fee_advice: Vec<Felt>,
+    #[case] fee_amount: Vec<Felt>,
     #[case] expected_err: &str,
 ) -> Result<()> {
-    let h = d5b_harness(amount_limbs, maxfee_limbs)?;
-    let result = run_call_driver_with_advice(&h, "drive", Some(fee_advice)).await;
+    let h = d5b_harness(amount_limbs, maxfee_limbs, &fee_amount)?;
+    let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
     Ok(())
 }
 
-// REJECTS — advice-provider hygiene: missing + malformed advice
+// REJECTS — a malformed staged feeAmount limb
 // ------------------------------------------------------------------------------------------------
-
-/// Missing `feeAmount` advice must ERROR (never default): the advice-stack read traps with
-/// `AdviceError::StackReadFailed` ("advice stack read failed"). Pinned on the exact
-/// `ExecutionError::AdviceError` variant + message (not `is_err()`).
-#[tokio::test]
-async fn d5b_fee_advice_missing() -> Result<()> {
-    // amount (amt-ge-gt.a) >= maxFee (amt-ge-gt.b) so execution reaches the feeAmount read
-    let h = d5b_harness(amt("amt-ge-gt").le_limbs(), amt("amt-ge-gt").b_le_limbs())?;
-    let result = run_call_driver_with_advice(&h, "drive", None).await;
-    assert_transaction_executor_error!(
-        result,
-        matches ExecutionError::AdviceError { ref err, .. }
-            if format!("{err}").contains("advice stack read failed")
-    );
-    Ok(())
-}
 
 /// A malformed (non-u32) `feeAmount` limb must ERROR: the reducer's `u32assertw` guard
 /// traps `ERR_FELT_OUT_OF_FIELD`. `u32assert*` surfaces as `OperationError::U32AssertionFailed`
 /// (not `FailedAssertion`), so the named error is pinned on that variant's code AND message
 /// — same strength as `masm_dual.rs`'s `amt-guard-limb-not-u32` row.
 #[tokio::test]
-async fn d5b_fee_advice_malformed_limb() -> Result<()> {
-    let h = d5b_harness(amt("amt-ge-gt").le_limbs(), amt("amt-ge-gt").b_le_limbs())?;
+async fn d5b_fee_amount_malformed_limb() -> Result<()> {
     // a felt at 2^32 is a valid field element but NOT a valid u32 limb
     let malformed = vec![Felt::try_from(1u64 << 32).expect("2^32 is within the field"); 8];
-    let result = run_call_driver_with_advice(&h, "drive", Some(malformed)).await;
+    let h = d5b_harness(
+        amt("amt-ge-gt").le_limbs(),
+        amt("amt-ge-gt").b_le_limbs(),
+        &malformed,
+    )?;
+    let result = run_call_driver(&h, "drive").await;
     let expected = shell_error_by_name("ERR_FELT_OUT_OF_FIELD");
     assert_transaction_executor_error!(
         result,
@@ -592,16 +584,20 @@ fn seam_keys(payload: &[u8]) -> (AttesterVector, AttesterVector) {
     (a, b)
 }
 
-/// Stages an advice stack that pairs one attester's public key with a different attester's
-/// signature — the mix-and-match input an attacker would try. Layout is the proc's expected
-/// `[pubkey (16 felts), signature (17 felts)]`.
-fn paired_advice(pubkey_of: &AttesterVector, sig_of: &AttesterVector) -> Vec<Felt> {
-    pubkey_of
-        .pubkey_felts
-        .iter()
-        .chain(sig_of.sig_felts.iter())
-        .copied()
-        .collect()
+/// Builds a driver that stages one attester's public key together with a different attester's
+/// signature — the mix-and-match input an attacker would try.
+fn paired_driver_src(
+    preimage: &[Felt],
+    len_bytes: u64,
+    pubkey_of: &AttesterVector,
+    sig_of: &AttesterVector,
+) -> String {
+    attestation_driver_src(
+        preimage,
+        len_bytes,
+        &pubkey_of.pubkey_felts,
+        &sig_of.sig_felts,
+    )
 }
 
 // HAPPY PATH FIRST — an allowlisted attester with its own valid signature
@@ -611,14 +607,14 @@ fn paired_advice(pubkey_of: &AttesterVector, sig_of: &AttesterVector) -> Vec<Fel
 async fn d5d_happy_attestation() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, _b) = seam_keys(&bytes);
-    let driver_src = attestation_driver_src(&preimage, len_bytes);
+    let driver_src = paired_driver_src(&preimage, len_bytes, &a, &a);
     // seed the allowlist with A's commitment -> A is an enabled attester
     let h = setup_attestation_account(
         Some((a.commitment, Word::from(ATTESTER_MARKER))),
         &driver_src,
         SHELL_DRIVER_PATH,
     )?;
-    let executed = run_call_driver_with_advice(&h, "drive", Some(a.advice()))
+    let executed = run_call_driver(&h, "drive")
         .await
         .unwrap_or_else(|e| panic!("an allowlisted attester + valid signature must pass D5d: {e}"));
     // the verify shell is read-only: the only account mutation is the auth nonce increment
@@ -639,20 +635,20 @@ async fn d5d_happy_attestation() -> Result<()> {
 
 /// A signature that does not belong to the presented key is rejected.
 ///
-/// The advice stack carries allowlisted key A together with B's signature. B's signature is
+/// The driver stages allowlisted key A together with B's signature. B's signature is
 /// perfectly well-formed — this is a genuine ECDSA verification failure, not a decode abort on
 /// junk bytes — so the case proves the signature check itself, not input validation.
 #[tokio::test]
 async fn d5d_forged_sig_rejects() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, b) = seam_keys(&bytes);
-    let driver_src = attestation_driver_src(&preimage, len_bytes);
+    let driver_src = paired_driver_src(&preimage, len_bytes, &a, &b);
     let h = setup_attestation_account(
         Some((a.commitment, Word::from(ATTESTER_MARKER))),
         &driver_src,
         SHELL_DRIVER_PATH,
     )?;
-    let result = run_call_driver_with_advice(&h, "drive", Some(paired_advice(&a, &b))).await;
+    let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_SIG_INVALID"));
     Ok(())
 }
@@ -666,13 +662,13 @@ async fn d5d_forged_sig_rejects() -> Result<()> {
 async fn d5d_non_allowlisted_rejects() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, b) = seam_keys(&bytes);
-    let driver_src = attestation_driver_src(&preimage, len_bytes);
+    let driver_src = paired_driver_src(&preimage, len_bytes, &b, &b);
     let h = setup_attestation_account(
         Some((a.commitment, Word::from(ATTESTER_MARKER))),
         &driver_src,
         SHELL_DRIVER_PATH,
     )?;
-    let result = run_call_driver_with_advice(&h, "drive", Some(b.advice())).await;
+    let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(
         result,
         shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT")
@@ -694,44 +690,45 @@ async fn d5d_non_allowlisted_rejects() -> Result<()> {
 async fn d5d_seam_both_arrangements_reject() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, b) = seam_keys(&bytes);
-    let driver_src = attestation_driver_src(&preimage, len_bytes);
     let allowlist_a = Some((a.commitment, Word::from(ATTESTER_MARKER)));
 
     // arrangement 1: allowlisted key A carries the allowlist check, B's signature fails the verify
-    let h1 = setup_attestation_account(allowlist_a, &driver_src, SHELL_DRIVER_PATH)?;
-    let r1 = run_call_driver_with_advice(&h1, "drive", Some(paired_advice(&a, &b))).await;
+    let mixed_src = paired_driver_src(&preimage, len_bytes, &a, &b);
+    let h1 = setup_attestation_account(allowlist_a, &mixed_src, SHELL_DRIVER_PATH)?;
+    let r1 = run_call_driver(&h1, "drive").await;
     assert_transaction_executor_error!(r1, shell_error_by_name("ERR_XRESERVE_SIG_INVALID"));
 
     // arrangement 2: B's key and B's own valid signature, but B was never allowlisted
-    let h2 = setup_attestation_account(allowlist_a, &driver_src, SHELL_DRIVER_PATH)?;
-    let r2 = run_call_driver_with_advice(&h2, "drive", Some(b.advice())).await;
+    let b_only_src = paired_driver_src(&preimage, len_bytes, &b, &b);
+    let h2 = setup_attestation_account(allowlist_a, &b_only_src, SHELL_DRIVER_PATH)?;
+    let r2 = run_call_driver(&h2, "drive").await;
     assert_transaction_executor_error!(r2, shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"));
     Ok(())
 }
 
-// ADVICE-PROVIDER HYGIENE — missing advice must fail closed
+// UNSTAGED OPERANDS — an all-zero pubkey region must fail closed
 // ------------------------------------------------------------------------------------------------
 
-/// With no key or signature staged, the proc errors instead of proceeding.
+/// A caller that stages no key and no signature must be rejected, not waved through.
 ///
-/// Advice-stack data is caller-supplied and unauthenticated, so the failure mode matters: an
-/// empty stack must abort the transaction, never silently materialize zeros that could be
-/// treated as a key. The read itself traps with `AdviceError::StackReadFailed`.
+/// Miden memory reads back as zero, so "nothing staged" is not a read error here — it is sixteen
+/// zero felts that could be mistaken for a key. The allowlist gate is what refuses it: the zero
+/// pubkey's commitment was never enabled, so the lookup reads the empty Word and the proc traps
+/// before the signature check.
 #[tokio::test]
-async fn d5d_missing_advice_traps() -> Result<()> {
+async fn d5d_unstaged_pubkey_rejects() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, _b) = seam_keys(&bytes);
-    let driver_src = attestation_driver_src(&preimage, len_bytes);
+    let driver_src = attestation_driver_src(&preimage, len_bytes, &[], &[]);
     let h = setup_attestation_account(
         Some((a.commitment, Word::from(ATTESTER_MARKER))),
         &driver_src,
         SHELL_DRIVER_PATH,
     )?;
-    let result = run_call_driver_with_advice(&h, "drive", None).await;
+    let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(
         result,
-        matches ExecutionError::AdviceError { ref err, .. }
-            if format!("{err}").contains("advice stack read failed")
+        shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT")
     );
     Ok(())
 }

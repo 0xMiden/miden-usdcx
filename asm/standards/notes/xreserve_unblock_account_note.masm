@@ -16,8 +16,8 @@ use xreserve::blocklist_admin
 # CONSTANTS
 # =================================================================================================
 
-# Absolute memory address where the creator-committed params are staged (word-aligned; the mint-note
-# INTENT_PTR convention).
+# Absolute memory address where the creator-committed params are staged (word-aligned; the
+# staging convention the admin notes share).
 const PARAM_PTR = 1024
 
 # The exact note-storage item count for this admin op: [account_id_suffix, account_id_prefix] = 2 felts.

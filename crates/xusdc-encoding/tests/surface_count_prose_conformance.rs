@@ -65,7 +65,7 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
     // surface ever changes, this fails loudly (and the whole point below — the prose — must follow).
     assert_eq!(
         (xreserve, stock, total, notes),
-        (15, 60, 75, 14),
+        (14, 60, 74, 14),
         "the executable callable surface changed ({xreserve} xreserve + {stock} stock = {total} \
          roots, {notes}-note allowlist) — update the ratified constants AND every count-phrase in \
          the conformance prose together (MIGRATION-V16-ALPHA2.md stock-surface discipline)"
@@ -110,6 +110,10 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
         "the 19 sanctioned roots",
         "the 19 frozen",
         "46 stock",
+        "75-root",
+        "the 15 callable roots",
+        "the 15 sanctioned roots",
+        "the 15 frozen",
     ];
     for (name, src) in SOURCES {
         for bad in superseded {

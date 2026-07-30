@@ -1,19 +1,19 @@
-//! (shared across test targets — each uses a subset, hence the allow)
 #![allow(dead_code)]
 
-//! Shared test support: the fixture loader and the OpenAPI pattern predicates.
+//! Shared test support: the fixture loader and the OpenAPI pattern predicates, shared across the
+//! test targets — each uses a subset, which is what the allow above is for.
 //!
 //! The predicates are hand-rolled rather than pulled from a regex crate — the patterns in
-//! `CIRCLE-API-SURFACE.md` are simple enough to express directly, and a new dependency would have to
-//! clear the offline-cache gate for no gain. Each one names the exact OpenAPI pattern it enforces, so
-//! a reader can diff it against the schema table without leaving the file.
+//! `CIRCLE-API-SURFACE.md` are simple enough to express directly, and a new dependency would have
+//! to clear the offline-cache gate for no gain. Each one names the exact OpenAPI pattern it
+//! enforces, so a reader can diff it against the schema table without leaving the file.
 
 use std::path::PathBuf;
 
 use serde_json::Value;
 
-/// Every fixture in `tests/fixtures/`, by stem. The count is pinned by `fixture_fidelity.rs`: 13 —
-/// 3 happy-path + 10 error/malformed (§11.2).
+/// Every fixture in `tests/fixtures/`, by stem: 13 in all — 3 happy-path and 10 error or
+/// malformed responses, the corpus the mock boundary is exercised with.
 pub const HAPPY_PATH_FIXTURES: [&str; 3] = [
     "prepare_withdrawal_200",
     "withdraw_201",
@@ -54,7 +54,7 @@ pub fn fixture_json(stem: &str) -> Value {
 // ================================================================================================
 
 /// `^0x[a-fA-F0-9]{64}$` — the 32-byte hex every identifier/hash field uses
-/// (`CIRCLE-API-SURFACE.md` §`TransferSpec`/`WithdrawalResponse`).
+/// (Circle's documented `TransferSpec` / `WithdrawalResponse`).
 pub fn is_hex32(s: &str) -> bool {
     is_prefixed_hex_of_len(s, 64)
 }
@@ -72,7 +72,8 @@ pub fn is_hex_any(s: &str) -> bool {
         .is_some_and(|body| body.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
-/// `^0x[a-fA-F0-9]+$` — `burnTxId`: hex, at least one digit, no length bound (a Miden tx id, DEV-7).
+/// `^0x[a-fA-F0-9]+$` — `burnTxId`: hex, at least one digit, no length bound (a Miden tx id;
+/// whether Circle accepts one is still OPEN).
 pub fn is_hex_nonempty(s: &str) -> bool {
     is_hex_any(s) && s.len() > 2
 }
@@ -129,8 +130,8 @@ pub const STATUS_ENUM: [&str; 6] = [
 // JSON NAVIGATION HELPERS
 // ================================================================================================
 
-/// The string at `key`, or a panic naming the fixture — a missing required field is a fixture defect,
-/// not a soft failure.
+/// The string at `key`, or a panic naming the fixture — a missing required field is a fixture
+/// defect, not a soft failure.
 pub fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key)
         .unwrap_or_else(|| panic!("missing required field `{key}` in {v}"))

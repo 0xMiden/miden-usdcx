@@ -1,37 +1,38 @@
-//! `T-LA-11` — **burn-evidence trust labeling** (`DEV-7`, the HIGHEST-RISK deviation).
+//! **Burn-evidence trust labeling** — the highest-risk Circle-owned open deviation.
 //!
-//! NON-GATING. The Miden-real half of `T-LA-11` — the same assembler driven against a live node
-//! through the real v16 client — is W10, parked on a `miden-client` that has no v0.16 release. What
-//! runs here is the assembler's LOGIC over a unit adapter standing in for the read port. That is a
-//! deliberate boundary, not a shortcut: what this file is testing is not whether the node answers,
-//! it is whether the answers are described to Circle honestly.
+//! NON-GATING. The Miden-real half of the same assembler driven against a live node through the
+//! real v16 client — is parked on a `miden-client` that has no v0.16 release. What runs here is the
+//! assembler's LOGIC over a unit adapter standing in for the read port. That is a deliberate
+//! boundary, not a shortcut: what this file is testing is not whether the node answers, it is
+//! whether the answers are described to Circle honestly.
 //!
 //! # Why the labels are the product
 //!
 //! Circle releases native USDC against this package. Every element of it is a claim the partner
-//! makes, and `INV-BURN-EVIDENCE-TRUST` is one sentence: **retrievable ≠ cryptographically proved**.
+//! makes, and the governing trust rule is one sentence: **retrievable ≠ cryptographically proved**.
 //! Two ways to lie, both of which release money that was never burned:
 //!
-//! 1. **Overclaiming strength.** `SyncTransactions` tx-linkage (R-9/R-10) and the `SyncNullifiers`
-//!    spend observation (R-5) carry NO inclusion proof — the node simply says so. Labelling either
+//! 1. **Overclaiming strength.** `SyncTransactions` tx-linkage and the `SyncNullifiers`
+//!    spend observation carry NO inclusion proof — the node simply says so. Labelling either
 //!    CRYPTOGRAPHIC tells Circle the partner can prove what it can only repeat.
-//! 2. **Overclaiming SCOPE.** The subtler one, and the reason this file has a whole family for it: a
-//!    `GetNotesById` inclusion proof is cryptographic, and it proves the note was **CREATED**. It
+//! 2. **Overclaiming SCOPE.** The subtler one, and the reason this file has a whole family for it:
+//!    a `GetNotesById` inclusion proof is cryptographic, and it proves the note was **CREATED**. It
 //!    says nothing about whether the note was ever consumed. "This note exists" is not "this burn
-//!    happened", and a CRYPTOGRAPHIC label sitting next to a creation fact must never be readable as
-//!    a confirmed burn.
+//!    happened", and a CRYPTOGRAPHIC label sitting next to a creation fact must never be readable
+//!    as a confirmed burn.
 //!
 //! So a genuine burn record is `note_id` (**what**, creation, CRYPTOGRAPHIC) **plus** a consumption
 //! signal (**that it burned**, NODE-TRUSTED). `burnTxId` alone proves nothing at all —
-//! `GetTransactionById` does not exist on Miden (R-8), so there is no by-hash resolution to fall back
-//! on. That structural anti-`ASG-4` rule, and the other absences, are asserted in the sibling
-//! `evidence_structural_absence.rs`.
+//! `GetTransactionById` does not exist on Miden, so there is no by-hash resolution to fall
+//! back on. That structural never a transaction id rule, and the other absences, are asserted in
+//! the sibling `evidence_structural_absence.rs`.
 //!
 //! # Fail-closed
 //!
-//! Uncertain, missing, or self-contradicting evidence is never rounded up to "confirmed". It becomes
-//! `reconciliation-required` — the same vocabulary and the same conservatism W7 established for a
-//! `409` naming no withdrawal, deliberately reused rather than re-invented under a second name.
+//! Uncertain, missing, or self-contradicting evidence is never rounded up to "confirmed". It
+//! becomes `reconciliation-required` — the same vocabulary and the same conservatism the
+//! idempotency ledger established for a `409` naming no withdrawal, deliberately reused rather than
+//! re-invented under a second name.
 
 use assert_matches::assert_matches;
 use rstest::rstest;
@@ -51,12 +52,13 @@ mod evidence_support;
 
 use evidence_support::*;
 
-// THE LABELS — the per-element proof strengths, verbatim from the §10.7 evidence table
+// THE LABELS — the per-element proof strengths, verbatim from Circle's documented evidence
+// table
 // ================================================================================================
 
-/// The four labels the evidence table pins (`MIDEN-RPC-BURN-EVIDENCE.md:69`-`:72`, quoted in §10.7 /
-/// `DC-8`). Asserted as one table because the failure that matters is a SINGLE element drifting
-/// upward while the other three stay honest.
+/// The four labels the evidence table pins (`MIDEN-RPC-BURN-EVIDENCE.md:69`-`:72`, quoted in
+/// Circle's documentation). Asserted as one table because the failure that matters is a SINGLE
+/// element drifting upward while the other three stay honest.
 #[test]
 fn the_package_carries_the_documented_per_element_proof_strengths() {
     let package = assemble(&UnitPort::honest()).expect("the honest port assembles");
@@ -96,9 +98,9 @@ fn the_package_carries_the_four_elements_it_read() {
 /// `block_num` is the CREATION block, read out of the inclusion proof that makes it cryptographic —
 /// not the consuming transaction's block, which is node-trusted hearsay sitting right next to it.
 ///
-/// The two differ by construction (`INV-TWO-BLOCK-BURN`), so an implementation that took the block
-/// from the linkage would return `CONSUME_BLOCK` here and be labelling a node-trusted number
-/// CRYPTOGRAPHIC.
+/// The two differ by construction (creation and consumption are always in different blocks), so an
+/// implementation that took the block from the linkage would return `CONSUME_BLOCK` here and be
+/// labelling a node-trusted number CRYPTOGRAPHIC.
 #[test]
 fn block_num_is_read_from_the_inclusion_proof_not_from_the_node_trusted_linkage() {
     let package = assemble(&UnitPort::honest()).expect("the honest port assembles");
@@ -111,9 +113,9 @@ fn block_num_is_read_from_the_inclusion_proof_not_from_the_node_trusted_linkage(
     );
 }
 
-/// Re-assembly is deterministic and the labels are stable (`T-LA-11` replay/idempotency case). A
-/// label that moved between two reads of the same burn would mean the strength is a function of the
-/// node's mood rather than of what Miden proves.
+/// Re-assembly is deterministic and the labels are stable. A label that moved between two reads of
+/// the same burn would mean the strength is a function of the node's mood rather than of what Miden
+/// proves.
 #[test]
 fn the_package_and_its_labels_are_stable_across_reassembly() {
     let port = UnitPort::honest();
@@ -181,7 +183,7 @@ fn a_creation_fact_is_not_a_consumption_claim(
 
 /// The package's *burn-happened* claim is NODE-TRUSTED — always, today. It is derived from the
 /// consumption elements' own labels rather than asserted as a constant, so the day one of them is
-/// upgraded (the full-block path, `IMPL-FULLBLOCK-PATH`) this answer moves with it and cannot be
+/// upgraded (the full-block path) this answer moves with it and cannot be
 /// left behind as a stale promise.
 #[test]
 fn the_burn_happened_claim_is_node_trusted_however_strong_the_creation_proof_is() {
@@ -197,12 +199,12 @@ fn the_burn_happened_claim_is_node_trusted_however_strong_the_creation_proof_is(
 // THE MISLABEL NEGATIVE — an output-note proof is not proof of consumption
 // ================================================================================================
 
-/// The non-vacuity oracle (`T-LA-11` malformed-input case). The faucet's transaction stream contains
-/// the tx that CREATED the burn note, carrying that very note in `output_note_proofs`. An assembler
-/// that matched a tx on "does it mention our note" would pick it, and publish the note's own MINT as
-/// the `burnTxId` — a cryptographically-proof-backed transaction id for a burn that never happened.
+/// The non-vacuity oracle. The faucet's transaction stream contains the tx that CREATED the burn
+/// note, carrying that very note in `output_note_proofs`. An assembler that matched a tx on "does
+/// it mention our note" would pick it, and publish the note's own MINT as the `burnTxId` — a
+/// cryptographically-proof-backed transaction id for a burn that never happened.
 ///
-/// Output-note proofs do NOT prove input-note consumption (R-9/R-10). With only the creating tx
+/// Output-note proofs do NOT prove input-note consumption. With only the creating tx
 /// present, there is no linkage, and the answer is `reconciliation-required` — never a package.
 #[test]
 fn a_transaction_that_merely_created_the_note_is_never_accepted_as_the_burn() {
@@ -235,9 +237,9 @@ fn the_burn_tx_id_is_the_consuming_transaction_not_the_creating_one() {
     );
 }
 
-/// A transaction belonging to some other account is not the faucet's burn, however tidily it matches
-/// the nullifier. `SyncTransactions` is filtered by account for a reason; the assembler re-checks it
-/// rather than trusting the port to have honoured the filter.
+/// A transaction belonging to some other account is not the faucet's burn, however tidily it
+/// matches the nullifier. `SyncTransactions` is filtered by account for a reason; the assembler
+/// re-checks it rather than trusting the port to have honoured the filter.
 #[test]
 fn another_accounts_transaction_is_not_accepted_as_the_faucets_burn() {
     let port = UnitPort {
@@ -304,8 +306,8 @@ fn a_spend_block_that_disagrees_with_the_linkage_is_refused() {
     );
 }
 
-/// A note cannot be consumed in or before the block that created it (`INV-TWO-BLOCK-BURN`). A node
-/// reporting otherwise is reporting something the chain does not do — so the report is not evidence.
+/// A note cannot be consumed in or before the block that created it. A node reporting otherwise is
+/// reporting something the chain does not do — so the report is not evidence.
 #[rstest]
 #[case::same_block(CREATE_BLOCK)]
 #[case::before(CREATE_BLOCK - 1)]
@@ -332,8 +334,9 @@ fn a_spend_at_or_before_the_creation_block_is_refused(#[case] spent_in: u32) {
 }
 
 /// Two distinct transactions both claiming to consume the same nullifier. One of them is wrong and
-/// nothing here can say which — so neither is published. A first-match implementation would pick one
-/// and be right half the time, at the cost of a release against a fabricated tx id the other half.
+/// nothing here can say which — so neither is published. A first-match implementation would pick
+/// one and be right half the time, at the cost of a release against a fabricated tx id the other
+/// half.
 #[test]
 fn two_transactions_claiming_the_same_burn_are_refused_rather_than_picked_between() {
     let impostor = TransactionRecord {
@@ -378,7 +381,8 @@ fn the_same_transaction_reported_twice_is_not_an_ambiguity() {
 /// refused. That is nondeterministic re-assembly on the fund-safety path, and half the time it
 /// publishes a linkage that came from a row the node itself contradicted. Both orders must refuse.
 ///
-/// Parameterized over the order precisely because the order is the bug (`parametrize-related-tests`).
+/// Parameterized over the order precisely because the order is the bug
+/// (`parametrize-related-tests`).
 #[rstest]
 #[case::honest_row_first(false)]
 #[case::conflicting_row_first(true)]
@@ -456,7 +460,7 @@ fn a_failing_read_surfaces_rather_than_reading_as_no_burn(#[case] rpc: &'static 
 // THE NOTE ITSELF — unobservable and unknown notes
 // ================================================================================================
 
-/// A private note: `GetNotesById` returns `details = None` and the burn is unobservable (§10.11).
+/// A private note: `GetNotesById` returns `details = None` and the burn is unobservable.
 /// There is no payload, no nullifier, and therefore no evidence to assemble.
 #[test]
 fn a_private_note_is_rejected_as_unobservable() {

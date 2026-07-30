@@ -1,15 +1,17 @@
-//! `tests/circle_fetch_contract.rs` — the attestation FETCH shapes and what they refuse:
-//! `T-RLY-01` (by `depositMessageHash` — the wrapper shape, and the response's binding to the hash
-//! that was ASKED for), `T-RLY-02` (by source-chain `txHash` — the list shape + the client-side
-//! pattern reject), `T-RLY-05` (a `messageHash` that does not bind its payload), and `T-RLY-06` (one
-//! sub-case per malformed field).
+//! The attestation FETCH shapes, and what each of them refuses.
 //!
-//! No live Circle leg (§11): every Circle endpoint is `REQUIRES CIRCLE CONFIRMATION` and is
-//! exercised against the in-process schema-exact mock ([`mock_circle`]) — the relayer builds a real
-//! `reqwest::Request` and the mock's axum router answers it, binding no socket. The attestation wire
-//! data is the partner test vector from [`fixtures`] — a real secp256k1 signature over the real
-//! raw-keccak digest of a canonical DC-1 DepositIntent payload — so the keccak binding these tests
-//! assert is a genuine binding, not a self-consistent invention.
+//! Three shapes are covered: by `depositMessageHash` (the wrapper response, plus the check that the
+//! returned hash IS the one asked for), by source-chain `txHash` (the list response, plus the
+//! client-side format reject), and the cursor-paged batch poll. The refusals covered are a
+//! `messageHash` that does not bind its own payload, and a malformed response — one sub-case per
+//! field that can be malformed.
+//!
+//! No live Circle leg (the mock boundary): every Circle endpoint is `REQUIRES CIRCLE CONFIRMATION`
+//! and is exercised against the in-process schema-exact mock ([`mock_circle`]) — the relayer builds
+//! a real `reqwest::Request` and the mock's axum router answers it, binding no socket. The
+//! attestation wire data is the partner test vector from [`fixtures`] — a real secp256k1 signature
+//! over the real raw-keccak digest of a canonical DepositIntent payload — so the keccak binding
+//! these tests assert is a genuine binding, not a self-consistent invention.
 
 mod fixtures;
 mod mock_circle;
@@ -29,7 +31,7 @@ use xreserve_deposit_relayer::circle::{
 };
 use xreserve_deposit_relayer::error::{HexField, RelayerError};
 
-// T-RLY-01 — fetch_attestation_by_message_hash (the WRAPPER shape)
+// fetch_attestation_by_message_hash (the WRAPPER shape)
 // ================================================================================================
 
 #[tokio::test]
@@ -122,7 +124,8 @@ async fn t_rly_01_by_hash_rejects_a_malformed_hash_client_side_without_issuing_a
     );
 }
 
-// T-RLY-02 — fetch_attestations_by_tx_hash (LIST + remoteDomain, client-side txHash reject)
+// fetch_attestations_by_tx_hash (LIST + remoteDomain, client-side
+// txHash reject)
 // ================================================================================================
 
 #[tokio::test]
@@ -171,7 +174,7 @@ async fn t_rly_02_by_tx_hash_returns_the_list_shape_with_remote_domain() {
 }
 
 /// The `txHash` pattern is enforced CLIENT-SIDE: a non-conforming value must produce
-/// `Err(BadTxHashFormat)` with **no request issued** (spec §7.1 pre-condition).
+/// `Err(BadTxHashFormat)` with **no request issued** (spec Circle's documentation pre-condition).
 #[rstest]
 #[case::missing_0x_prefix("2222222222222222222222222222222222222222222222222222222222222222")]
 #[case::one_hex_digit_short("0x222222222222222222222222222222222222222222222222222222222222222")]
@@ -240,7 +243,7 @@ async fn t_rly_02_rejects_a_remote_domain_below_the_documented_minimum() {
     assert_eq!(sink.rejections().len(), 1);
 }
 
-// T-RLY-05 — messageHash mismatch aborts (the raw-keccak binding, over the wire)
+// messageHash mismatch aborts (the raw-keccak binding, over the wire)
 // ================================================================================================
 
 #[tokio::test]
@@ -266,7 +269,7 @@ async fn t_rly_05_message_hash_that_does_not_bind_the_payload_aborts_and_alerts(
     assert_eq!(sink.alerts().len(), 1, "a binding mismatch alerts (§8.4)");
 }
 
-// T-RLY-06 — malformed response rejected: ONE sub-case PER invalid field
+// malformed response rejected: ONE sub-case PER invalid field
 // ================================================================================================
 
 /// Runs the by-hash fetch against a wrapper body whose inner object was mutated, and returns the
@@ -398,7 +401,7 @@ async fn t_rly_06_reject_non_json_body() {
     );
 }
 
-// T-RLY-01 (cont.) — the response must answer the question that was ASKED
+// (cont.) — the response must answer the question that was ASKED
 // ================================================================================================
 
 /// `GET /v1/attestations/{depositMessageHash}` is a LOOKUP BY that hash. A response whose

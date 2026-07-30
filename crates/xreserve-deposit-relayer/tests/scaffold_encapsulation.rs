@@ -1,16 +1,17 @@
 //! `tests/scaffold_encapsulation.rs` — the scaffold data types (`RelayerConfig`, `RelayerMetrics`,
 //! `RejectionRecord`) are ENCAPSULATED: private fields, read-only accessors, and controlled
-//! construction (per the repo's private-fields-with-accessors + validate-in-constructor checklists).
-//! These tests exercise the encapsulated public APIs so a regression in a constructor, a
-//! mutator→field mapping, or an accessor is caught (they are not tautological: the metrics case
+//! construction (per the repo's private-fields-with-accessors + validate-in-constructor
+//! checklists). These tests exercise the encapsulated public APIs so a regression in a constructor,
+//! a mutator→field mapping, or an accessor is caught (they are not tautological: the metrics case
 //! would fail if any `record_*` mutator touched the wrong counter).
 
 use xreserve_deposit_relayer::config::{RelayerConfig, SecretString};
 use xreserve_deposit_relayer::observability::{RejectionRecord, RelayerMetrics};
 
-/// A credential is redacted by BOTH human-facing renderings — `Debug` (structs, panics, `{:?}` logs)
-/// and `Display` (a `{}` log line) — while `expose` remains the one deliberate way to read it. A
-/// secret that is only `Debug`-redacted leaks the moment someone writes `{}` instead of `{:?}`.
+/// A credential is redacted by BOTH human-facing renderings — `Debug` (structs, panics, `{:?}`
+/// logs) and `Display` (a `{}` log line) — while `expose` remains the one deliberate way to read
+/// it. A secret that is only `Debug`-redacted leaks the moment someone writes `{}` instead of
+/// `{:?}`.
 #[test]
 fn secret_string_redacts_both_renderings_and_exposes_only_on_demand() {
     let secret = SecretString::new("out-of-band-circle-key");
@@ -32,7 +33,7 @@ fn secret_string_redacts_both_renderings_and_exposes_only_on_demand() {
 #[test]
 fn config_default_exposes_documented_values_via_accessors() {
     let cfg = RelayerConfig::default();
-    // CIR-API-4 rate ceilings and the Q-API-AUTH "no credential embedded" posture, read-only.
+    // Circle's documented rate ceilings and the "no credential embedded" auth posture, read-only.
     assert_eq!(cfg.rate_qps_per_ip(), 5);
     assert_eq!(cfg.rate_qps_global(), 35);
     assert_eq!(cfg.api_auth_token(), None);
@@ -76,7 +77,7 @@ fn metrics_start_at_zero_and_each_mutator_targets_its_own_counter() {
 
 #[test]
 fn rejection_record_round_trips_through_accessors() {
-    // A fetched-but-not-submitted attestation is surfaced with a traceable id + reason (§8.4).
+    // A fetched-but-not-submitted attestation is surfaced with a traceable id + reason.
     let rec = RejectionRecord::new("0xdeadbeef", "deposit intent magic mismatch");
     assert_eq!(rec.payload_id(), "0xdeadbeef");
     assert_eq!(rec.reason(), "deposit intent magic mismatch");

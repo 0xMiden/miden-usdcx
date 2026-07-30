@@ -1,25 +1,25 @@
 //! `tests/circle_production_transport.rs` — the two behaviors that live INSIDE the production
 //! transport, bound to tests that a regression cannot survive.
 //!
-//! Both were previously shadowed by the mock: the contract suite installs `MockTransport`, so a
-//! change to `ReqwestTransport`'s body-streaming loop, or to the redirect policy the production
-//! `reqwest::Client` is built with, left every test green. That is over-mocking, and it is exactly
-//! where a memory-exhaustion lever and a credential-exfiltration path would hide.
+//! Without these tests, both are shadowed by the mock: the contract suite installs `MockTransport`,
+//! so a change to `ReqwestTransport`'s body-streaming loop, or to the redirect policy the
+//! production `reqwest::Client` is built with, would leave every test green. That is over-mocking,
+//! and it is exactly where a memory-exhaustion lever and a credential-exfiltration path would hide.
 //!
 //! **Why not just drive the real client at a real server?** Because it cannot be done here: this
-//! sandbox denies `bind()` (`EPERM`), so no listener — TCP or Unix — can exist, and reqwest offers no
-//! way to hand it a connection (`connect::Conn` is sealed; `redirect::Attempt` cannot be
+//! sandbox denies `bind()` (`EPERM`), so no listener — TCP or Unix — can exist, and reqwest offers
+//! no way to hand it a connection (`connect::Conn` is sealed; `redirect::Attempt` cannot be
 //! constructed). The answer is not to fake the behavior in a test but to move it out of the
 //! unreachable layer:
 //!
 //! * the response-size ceiling is now enforced by [`collect_bounded`] over an **injectable**
 //!   [`ChunkSource`] — the same function the production transport streams through — so a test feeds
-//!   it a hostile body (endless, or with a lying `Content-Length`) and asserts it stops READING, not
-//!   merely that it rejects afterwards;
-//! * the redirect decision is now a named seam ([`RedirectPolicy`]) whose reqwest value is asserted,
-//!   and the transport additionally refuses any response whose final URL is not the one it requested
-//!   ([`check_not_redirected`]) — so a policy regression fails closed instead of silently following a
-//!   peer's `Location` with the credential attached.
+//!   it a hostile body (endless, or with a lying `Content-Length`) and asserts it stops READING,
+//!   not merely that it rejects afterwards;
+//! * the redirect decision is now a named seam ([`RedirectPolicy`]) whose reqwest value is
+//!   asserted, and the transport additionally refuses any response whose final URL is not the one
+//!   it requested ([`check_not_redirected`]) — so a policy regression fails closed instead of
+//!   silently following a peer's `Location` with the credential attached.
 //!
 //! What remains outside these tests is the adapter that pulls chunks out of a `reqwest::Response`:
 //! plumbing with no policy in it.
@@ -247,14 +247,14 @@ async fn collect_bounded_accepts_an_empty_body() {
 // REDIRECTS — the production policy, and the transport's fail-closed backstop
 // ================================================================================================
 
-/// The value the production `reqwest::Client` is actually built with. A redirect is the cheapest way
-/// to move a credential to an origin that should not have it: the client re-issues the request at the
-/// `Location` the PEER chose, and reqwest strips only a fixed set of standard header names on a
-/// cross-origin hop (`Authorization`, `Cookie`, `Proxy-Authorization`, `WWW-Authenticate`).
-/// `Q-API-AUTH` is OPEN, so the relayer's credential header may be called anything at all
-/// (`X-Circle-Api-Key`, …) — a name that list does not cover. So the relayer follows NO redirect, and
-/// this pins the policy object itself: `Policy::limited(n)` (or reqwest's default, which follows up
-/// to 10) renders differently and fails here.
+/// The value the production `reqwest::Client` is actually built with. A redirect is the cheapest
+/// way to move a credential to an origin that should not have it: the client re-issues the request
+/// at the `Location` the PEER chose, and reqwest strips only a fixed set of standard header names
+/// on a cross-origin hop (`Authorization`, `Cookie`, `Proxy-Authorization`, `WWW-Authenticate`).
+/// With no documented auth scheme, the relayer's credential header may be called anything at all
+/// (`X-Circle-Api-Key`, …) — a name that list does not cover. So the relayer follows NO redirect,
+/// and this pins the policy object itself: `Policy::limited(n)` (or reqwest's default, which
+/// follows up to 10) renders differently and fails here.
 #[test]
 fn the_production_redirect_policy_follows_nothing() {
     let rendered = format!("{:?}", RedirectPolicy::Never.to_reqwest());
@@ -268,8 +268,8 @@ fn the_production_redirect_policy_follows_nothing() {
 }
 
 /// The policy is used in exactly one place, and nothing else builds an HTTP client — so a redirect
-/// policy cannot be reintroduced by a second `Client::builder()` somewhere else in the crate, and the
-/// call site cannot quietly inline a different policy than the one asserted above.
+/// policy cannot be reintroduced by a second `Client::builder()` somewhere else in the crate, and
+/// the call site cannot quietly inline a different policy than the one asserted above.
 #[test]
 fn the_crate_builds_exactly_one_http_client_and_it_takes_the_no_redirect_policy() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -304,8 +304,8 @@ fn the_crate_builds_exactly_one_http_client_and_it_takes_the_no_redirect_policy(
 }
 
 /// The fail-closed backstop. `Policy::none()` is what PREVENTS a redirect being followed; this is
-/// what happens if that policy is ever weakened: the transport compares the URL it asked for with the
-/// URL the response actually came from (`reqwest::Response::url()` is the FINAL url, after any
+/// what happens if that policy is ever weakened: the transport compares the URL it asked for with
+/// the URL the response actually came from (`reqwest::Response::url()` is the FINAL url, after any
 /// redirect chain) and refuses anything that moved. The relayer then rejects and alerts instead of
 /// trusting a body served by an origin it never chose.
 #[rstest]

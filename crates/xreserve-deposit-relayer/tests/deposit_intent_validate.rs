@@ -1,25 +1,25 @@
 //! `tests/deposit_intent_validate.rs` — structural-validation harness for the off-chain
-//! DepositIntent decoder (COMPONENT-SPEC §4 module `deposit_intent_validate`; harness §4). No
-//! Circle call, no Miden: deterministic unit tests on `decode_and_validate_deposit_intent`, the
-//! fast-fail mirror of the on-chain D5a parse.
+//! DepositIntent decoder (the component spec's module `deposit_intent_validate`; harness the
+//! documented policy). No Circle call, no Miden: deterministic unit tests on
+//! `decode_and_validate_deposit_intent`, the fast-fail mirror of the on-chain parse.
 //!
 //! **Oracle discipline.** Every accept/reject case is driven by the ONE canonical golden-vector
-//! artifact (`xusdc_encoding::vectors::load()`, the DC-1 `di` family) — the SAME artifact that
-//! drives unit-04's own MASM + Rust tests. Field expectations come from the vectors' independently
-//! generated `fields` / `len_felts` / `expected_variant`, NEVER from the decoder's own offset
-//! accessor, so a drift between the relayer and the canonical DC-1 layout is detectable. Every
-//! rejection asserts the EXACT `RelayerError` variant (never `is_err()`) AND that the EXACT
-//! originating `EncodingError` is preserved as its source (both via the typed `encoding_source()`
-//! accessor and the std `Error::source()` chain) — a corruption of the mapped source is caught.
+//! artifact (`xusdc_encoding::vectors::load()`, the DepositIntent `di` family) — the SAME artifact
+//! that drives the shared encoding crate's own MASM + Rust tests. Field expectations come from the
+//! vectors' independently generated `fields` / `len_felts` / `expected_variant`, NEVER from the
+//! decoder's own offset accessor, so a drift between the relayer and the canonical DepositIntent
+//! layout is detectable. Every rejection asserts the EXACT `RelayerError` variant (never
+//! `is_err()`) AND that the EXACT originating `EncodingError` is preserved as its source (both via
+//! the typed `encoding_source()` accessor and the std `Error::source()` chain) — a corruption of
+//! the mapped source is caught.
 //!
-//! Covered (harness §4 + §3.2 co-located per the harness note that T-RLY-08's per-field rejects may
-//! live in this module):
-//!   * T-RLY-12 `decode_well_formed_deposit_intent`         — every field at its DC-1 offset.
-//!   * T-RLY-13 `deposit_intent_amount_not_reduced_offchain` — amount/maxFee carried RAW (no reduce).
-//!   * T-RLY-08 `deposit_intent_structural_reject`          — per-field rejects, EXACT variant + source.
-//!   * T-RLY-11 `deposit_intent_felt_count_guard`           — header is 60 felts (anti-ASG-16), the
-//!     full preimage `60 + ceil(hookDataLen/4)`, the INCLUSIVE 1024-felt bound accepted, and the
-//!     >1024-felt overflow → PreimageTooLarge.
+//! What this file covers — the harness and the per-field rejects live together here:
+//! * `decode_well_formed_deposit_intent` — every field at its canonical offset.
+//! * `deposit_intent_amount_not_reduced_offchain` — amount/maxFee carried RAW (no reduce).
+//! * `deposit_intent_structural_reject` — per-field rejects, EXACT variant + source.
+//! * `deposit_intent_felt_count_guard` — header is 60 felts (four bytes per felt, so 60 and never
+//!   30), the full preimage `60 + ceil(hookDataLen/4)`, the INCLUSIVE 1024-felt bound accepted, and
+//!   the >1024-felt overflow → PreimageTooLarge.
 
 use std::error::Error;
 
@@ -34,8 +34,8 @@ use xusdc_encoding::xreserve::encoding::{
     DEPOSIT_INTENT_HEADER_LEN,
 };
 
-/// The fixed DC-1 header length (bytes), taken from unit-04 (the single owner of the 240-byte
-/// header) — the canonical `len_felts` independently confirms it as 60 felts.
+/// The fixed DepositIntent header length (bytes), taken from the shared encoding crate (the single
+/// owner of the 240-byte header) — the canonical `len_felts` independently confirms it as 60 felts.
 const HEADER_LEN: usize = DEPOSIT_INTENT_HEADER_LEN;
 
 /// Fetches a canonical `di`-family vector by id (the artifact is the single source of test data).
@@ -48,13 +48,15 @@ fn di_by_id(id: &str) -> &'static DiVector {
         .unwrap_or_else(|| panic!("canonical DI vector `{id}` present in the artifact"))
 }
 
-/// Asserts a relayer rejection preserves the EXACT originating unit-04 `EncodingError` (G-RUST
-/// preserve-error-source). Pins the specific variant — not merely "some EncodingError" — through
-/// BOTH the typed `encoding_source()` accessor and the std `Error::source()` chain, so corrupting
-/// the mapped source (e.g. `variant(err)` → `variant(EncodingError::BadMagic)`) fails a test.
+/// Asserts a relayer rejection preserves the EXACT originating `EncodingError` from the shared
+/// encoding crate. Pins the specific variant — not merely "some EncodingError" — through BOTH the
+/// typed `encoding_source()` accessor and the std
+/// `Error::source()` chain, so corrupting the mapped source (e.g. `variant(err)` →
+/// `variant(EncodingError::BadMagic)`) fails a test.
 fn assert_exact_source(err: &RelayerError, expected: &EncodingError) {
-    // `encoding_source()` is an Option since the envelope family (DC-2) are leaf errors with no
-    // unit-04 cause; a DepositIntent-path variant must still carry its exact originating error.
+    // `encoding_source()` is an Option since the envelope-family variants are leaf errors with no
+    // cause from the shared encoding crate; a DepositIntent-path variant must still carry its
+    // exact originating error.
     assert_eq!(
         err.encoding_source(),
         Some(expected),
@@ -69,7 +71,8 @@ fn assert_exact_source(err: &RelayerError, expected: &EncodingError) {
 }
 
 // ================================================================================================
-// T-RLY-12 — decode_well_formed_deposit_intent (every field at its exact DC-1 offset).
+// decode_well_formed_deposit_intent (every field at its exact
+// canonical offset).
 // The oracle is the vector's independently generated `fields`, NOT the decoder's offset accessor.
 // ================================================================================================
 
@@ -155,7 +158,7 @@ fn decoded_type_is_internally_consistent(#[case] id: &str) {
 }
 
 // ================================================================================================
-// T-RLY-13 — amount/maxFee NOT reduced off-chain (carried raw).
+// amount/maxFee NOT reduced off-chain (carried raw).
 // The canonical amount 0x0f4240 (1_000_000) has non-zero low bytes: any uint256 → AssetAmount
 // reduction (÷ 10^scale) would change these bytes (e.g. to 0x01), so raw preservation catches it.
 // ================================================================================================
@@ -178,7 +181,8 @@ fn t_rly_13_amount_and_maxfee_carried_raw(#[case] id: &str) {
 }
 
 // ================================================================================================
-// T-RLY-08 — deposit_intent_structural_reject (one rstest case per field, EXACT variant + source).
+// deposit_intent_structural_reject (one rstest case per field, EXACT
+// variant + source).
 // Driven by the canonical DI rejection vectors; the expected relayer variant AND the exact
 // originating EncodingError source are both pinned per case.
 // ================================================================================================
@@ -218,7 +222,7 @@ fn t_rly_08_structural_reject(
     let err = decode_and_validate_deposit_intent(&di_by_id(id).bytes())
         .expect_err("a canonical reject vector must be rejected");
 
-    // (1) the exact field-specific outer variant ...
+    // (1) the exact field-specific outer variant...
     match expect {
         Expect::BadMagic => assert_matches!(&err, RelayerError::BadMagic(_)),
         Expect::BadVersion => assert_matches!(&err, RelayerError::BadVersion(_)),
@@ -228,7 +232,7 @@ fn t_rly_08_structural_reject(
         Expect::ZeroLocalDepositor => assert_matches!(&err, RelayerError::ZeroLocalDepositor(_)),
         Expect::ShortHeader => assert_matches!(&err, RelayerError::ShortHeader(_)),
     }
-    // (2) ... and the EXACT originating EncodingError preserved as its source.
+    // (2)... and the EXACT originating EncodingError preserved as its source.
     assert_exact_source(&err, &expected_source);
 }
 
@@ -242,9 +246,10 @@ fn t_rly_08_empty_payload_is_short_header() {
 }
 
 // ================================================================================================
-// T-RLY-11 — deposit_intent_felt_count_guard (anti-ASG-16 + the 1024-felt NoteStorage bound).
+// deposit_intent_felt_count_guard (the same trap + the 1024-felt
+// NoteStorage bound).
 // The oracle is the vector's independent `len_felts` (60 / 63 / 1025); cross-checked against
-// unit-04's authoritative packing.
+// the shared encoding crate's authoritative packing.
 // ================================================================================================
 
 #[rstest]
@@ -254,7 +259,7 @@ fn t_rly_11_preimage_felt_count(#[case] id: &str, #[case] expected_felts: usize)
     let vector = di_by_id(id);
 
     // The canonical artifact independently states the felt count (60 for the header, 63 with 10
-    // bytes of hookData) — anti-ASG-16: 60, never 240/8 = 30.
+    // bytes of hookData) — 60, never 240/8 = 30.
     assert_eq!(
         vector.len_felts as usize, expected_felts,
         "canonical len_felts"
@@ -262,9 +267,9 @@ fn t_rly_11_preimage_felt_count(#[case] id: &str, #[case] expected_felts: usize)
     assert_ne!(vector.len_felts, 30, "anti-ASG-16: never 240/8 = 30");
 
     let di = decode_and_validate_deposit_intent(&vector.bytes()).expect("decodes");
-    // the decoder's own count matches the canonical artifact ...
+    // the decoder's own count matches the canonical artifact...
     assert_eq!(di.preimage_felt_len(), expected_felts);
-    // ... and matches unit-04's authoritative packing of the same payload.
+    //... and matches the shared encoding crate's authoritative packing of the same payload.
     let packed = deposit_intent_to_packed_felts(&vector.bytes()).expect("packs");
     assert_eq!(di.preimage_felt_len(), packed.len());
 }
@@ -276,8 +281,8 @@ fn t_rly_11_preimage_exactly_1024_felts_accepted() {
     // is a relayer-specific boundary fixture: take a canonical accept vector (240-byte header,
     // hookDataLen = 0) and extend it to 240 + 3856 = 4096 bytes = exactly 1024 u32-LE felts
     // (60 header felts + ceil(3856/4) = 60 + 964). Only the hookDataLen field is edited, at
-    // unit-04's authoritative offset — the field-decode oracle stays the canonical-vector-driven
-    // T-RLY-12; this case pins the felt-count bound alone.
+    // the shared encoding crate's authoritative offset, so the field-decode oracle stays
+    // canonical-vector-driven and this case pins the felt-count bound alone.
     const HOOK_LEN: u32 = 3856;
     let mut payload = di_by_id("di-pos-empty-hookdata").bytes();
     assert_eq!(payload.len(), HEADER_LEN, "base vector is a bare header");

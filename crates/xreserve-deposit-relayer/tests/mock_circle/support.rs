@@ -13,10 +13,10 @@ use crate::fixtures::AttestationVector;
 use crate::mock_circle::{MockCircle, RecordingSink};
 
 /// A `depositMessageHash` in the documented `^0x[a-fA-F0-9]{64}$` form that is NOT the fixture's
-/// hash — for the paths where the response never gets as far as the requested-hash binding (a 404, a
-/// 400, a malformed body). A SUCCESSFUL by-hash fetch must request [`requested_hash`] instead: the
-/// endpoint answers a lookup BY that hash, so the relayer refuses a response carrying a different
-/// one.
+/// hash — for the paths where the response never gets as far as the requested-hash binding (a 404,
+/// a 400, a malformed body). A SUCCESSFUL by-hash fetch must request [`requested_hash`] instead:
+/// the endpoint answers a lookup BY that hash, so the relayer refuses a response carrying a
+/// different one.
 pub const HASH_PARAM: &str = "0x1111111111111111111111111111111111111111111111111111111111111111";
 
 /// A source-chain `txHash` in the documented `^0x[a-fA-F0-9]{64}$` form.
@@ -34,9 +34,9 @@ pub fn requested_hash(vector: &AttestationVector) -> String {
     vector.message_hash_hex()
 }
 
-/// A client pointed at the mock, with a fast retry policy and a rate ceiling high enough not to bind
-/// (the 5 QPS/IP + 35 QPS global ceilings are asserted by the governor tests, and their wiring from
-/// config by the transport suite).
+/// A client pointed at the mock, with a fast retry policy and a rate ceiling high enough not to
+/// bind (the 5 QPS/IP + 35 QPS global ceilings are asserted by the governor tests, and their wiring
+/// from config by the transport suite).
 pub fn client_for(mock: &MockCircle, auth: AuthPosture) -> (CircleClient, Arc<RecordingSink>) {
     let sink = RecordingSink::new();
     let client = CircleClient::new(mock.base_url(), auth)

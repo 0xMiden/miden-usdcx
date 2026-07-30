@@ -1,29 +1,29 @@
-//! `T-LA-10` — the `POST /v1/prepare-withdrawal` (`CMP-D5`) and `POST /v1/withdraw` (`CMP-D6`) HTTP
-//! drivers, against the in-process schema-exact mock, **plus** the fund-safety pre-submit
-//! signer-allowlist gate.
+//! The `POST /v1/prepare-withdrawal` and `POST /v1/withdraw` HTTP drivers, exercised against the
+//! in-process schema-exact mock, **plus** the fund-safety pre-submit signer-allowlist gate.
 //!
 //! Non-vacuity: the mock asserts on the REAL built `reqwest::Request` (URL join, JSON body, the
 //! `batches[]` wrapper shape); the withdraw response cardinality is required to match the submitted
 //! batch count; and every allowlist refusal produces an EXACT error variant and — because no
 //! [`AuthorizedWithdrawal`] token is minted — ZERO `/v1/withdraw` calls.
 //!
-//! The fund-safety token is bound to the B5 [`ValidatedWithdrawal`] digests and the config-owned
-//! [`AttesterAllowlist`], and consumed by value on submit, so a proof cannot be forged from ad-hoc
-//! inputs or reused.
+//! The fund-safety token is bound to the validated [`ValidatedWithdrawal`] digests and the
+//! config-owned [`AttesterAllowlist`], and consumed by value on submit, so a proof cannot be forged
+//! from ad-hoc inputs or reused.
 //!
 //! # Why the `withdraw` cases drive `submit_withdraw`
 //!
-//! They used to drive a public raw `withdrawal_api::withdraw` — one POST, `201`-or-`Err`, no ledger.
-//! That driver is GONE: it was a public path that could POST a withdrawal without a durable
-//! idempotency claim (mint two `AuthorizedWithdrawal`s for one burn — `WithdrawRequest` is `Clone` and
-//! `authorize_submission` is public — and submit it twice), and no doc comment naming
-//! `submit::submit_withdraw` "the production entry point" made that unrepresentable. Deleting it did.
+//! There is no public raw `withdrawal_api::withdraw` — one POST, `201`-or-`Err`, no ledger — for
+//! them to drive: such a driver would be a public path that could POST a withdrawal without a
+//! durable idempotency claim (mint two `AuthorizedWithdrawal`s for one burn — `WithdrawRequest` is
+//! `Clone` and `authorize_submission` is public — and submit it twice), and no doc comment naming
+//! `submit::submit_withdraw` "the production entry point" would make that unrepresentable. Its
+//! absence does.
 //!
-//! Nothing here lost coverage in the move: `submit_withdraw` builds the request through the same
-//! `build_post`, decodes through the same `decode_withdraw_created`, and applies the same `201`
-//! cardinality rule — so these cases now assert the wire contract on the path production actually
-//! takes. (`submit_withdraw`'s own error handling — the `409` recovery, the retry policy, the ledger —
-//! is `T-LA-13`: `conflict_recovery` / `submit_idempotency` / `retry_policy`.)
+//! Driving the production path loses no coverage: `submit_withdraw` builds the request through the
+//! same `build_post`, decodes through the same `decode_withdraw_created`, and applies the same
+//! `201` cardinality rule — so these cases assert the wire contract on the path production actually
+//! takes. (`submit_withdraw`'s own error handling — the `409` recovery, the retry policy, the
+//! ledger — is covered by: `conflict_recovery` / `submit_idempotency` / `retry_policy`.)
 
 use assert_matches::assert_matches;
 use serde_json::Value;
@@ -43,7 +43,7 @@ mod submit_support;
 use submit_support::mock_circle::{Endpoint, MockCircle, Reply, Script};
 use submit_support::*;
 
-// PREPARE — POST /v1/prepare-withdrawal (CMP-D5)
+// PREPARE — POST /v1/prepare-withdrawal
 // ================================================================================================
 
 #[tokio::test]
@@ -118,7 +118,7 @@ async fn a_malformed_prepare_200_body_is_rejected_not_coerced() {
     );
 }
 
-// WITHDRAW — POST /v1/withdraw (CMP-D6), through the production submit path
+// WITHDRAW — POST /v1/withdraw, through the production submit path
 // ================================================================================================
 
 #[tokio::test]
@@ -236,7 +236,7 @@ async fn a_withdraw_201_object_body_fails_to_decode_as_the_array() {
 
 #[tokio::test]
 async fn a_withdraw_409_is_never_reported_as_success() {
-    // The 409 conflict-recovery contract itself is T-LA-13 (`conflict_recovery.rs`); what this pins at
+    // The 409 conflict-recovery contract itself is (`conflict_recovery.rs`); what this pins at
     // the driver's own boundary is the floor beneath all of it: whatever else a 409 becomes, it is
     // never a submission.
     let mock = MockCircle::start(
@@ -270,7 +270,7 @@ async fn a_withdraw_400_is_a_generic_http_error() {
     );
 }
 
-// AUTH INJECTION AT THE TRANSPORT SEAM (T-LA-14 parity)
+// AUTH INJECTION AT THE TRANSPORT SEAM (parity with the transport suite)
 // ================================================================================================
 
 #[tokio::test]

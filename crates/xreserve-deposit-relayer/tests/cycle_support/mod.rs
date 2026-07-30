@@ -3,20 +3,19 @@
 //! # The Miden submit ADAPTER — and what it deliberately is not
 //!
 //! [`ScriptedSubmit`] is a test adapter for the [`MintSubmit`] PORT: it is the seam's test-side
-//! implementation, and it is **NON-GATING** (§11 mock disclosure). It fakes no Miden behaviour — it
-//! does not execute a transaction, does not build one, and does not pretend a note committed. It
-//! answers the port's four documented answers on a script, so the ORCHESTRATION around the port can
-//! be driven and counted: that a rejected attestation never reaches submit at all, that a replayed
-//! one is submitted once, that a transient answer retries and a fatal one does not.
+//! implementation, and it is **NON-GATING** (mock-boundary disclosure). It fakes no Miden behaviour
+//! — it does not execute a transaction, does not build one, and does not pretend a note committed.
+//! It answers the port's four documented answers on a script, so the ORCHESTRATION around the port
+//! can be driven and counted: that a rejected attestation never reaches submit at all, that a
+//! replayed one is submitted once, that a transient answer retries and a fatal one does not.
 //!
-//! The GATING leg — a real `XUsdcMintNote` committing in block N against a real local node
-//! (T-RLY-14/T-RLY-15) — is R6's, and it is blocked on a `miden-client` release for v0.16. R6
-//! implements this same port; nothing here stands in for it, and no test in this crate claims it
-//! does.
+//! The GATING leg — a real `XUsdcMintNote` committing in block N against a real local node — is a
+//! later slice's, and it is blocked on a `miden-client` release for v0.16. That slice implements
+//! this same port; nothing here stands in for it, and no test in this crate claims it does.
 //!
 //! Everything else in the pipeline is REAL: a real `CircleClient` over the schema-exact mock Circle
-//! router, the real envelope binding, the real unit-04 DepositIntent codec, the real SQLite
-//! idempotency store on a real file, and the real unit-04 `XUsdcMintNote::create`.
+//! router, the real envelope binding, the DepositIntent codec and `XUsdcMintNote::create` from the
+//! shared encoding crate, and a real SQLite idempotency store on a real file.
 
 #![allow(dead_code)] // a shared fixture module: each test target uses the subset it needs.
 
@@ -36,8 +35,8 @@ use xreserve_deposit_relayer::idempotency::{IdempotencyStore, TxId};
 use crate::mint_support::{attester_pubkey, faucet_id, relayer_sender_id};
 use crate::mock_circle::{MockCircle, RecordingSink, MOCK_BASE_URL};
 
-/// The Miden remote domain the cycle suites poll. **Placeholder — `Q-DOM-1` is OPEN (`REQUIRES
-/// CIRCLE CONFIRMATION`)**: Circle has assigned Miden no domain id. Matches the mock's fixture
+/// The Miden remote domain the cycle suites poll. **Placeholder — the Miden domain id is OPEN
+/// (`REQUIRES CIRCLE CONFIRMATION`)**: Circle has assigned Miden none. Matches the mock's fixture
 /// domain so the polled path and the advertised `/v1/info` domain are the same one.
 pub const CYCLE_DOMAIN: u32 = crate::mock_circle::FIXTURE_MIDEN_DOMAIN;
 
@@ -46,7 +45,8 @@ pub const CYCLE_DOMAIN: u32 = crate::mock_circle::FIXTURE_MIDEN_DOMAIN;
 pub enum SubmitReply {
     /// The node accepted the transaction.
     Accepted(TxId),
-    /// The on-chain `usedNonces` assert fired (D5c) — a competing relayer minted this nonce first.
+    /// The on-chain `usedNonces` assert fired (the on-chain replay guard) — a competing relayer
+    /// minted this nonce first.
     AlreadyMinted,
     /// A TRANSIENT submit failure (node sync lag) — retryable.
     Transient,
@@ -64,9 +64,9 @@ pub struct RecordedSubmission {
 
 /// The scripted, recording [`MintSubmit`] adapter (NON-GATING — see the module docs).
 ///
-/// Replies are consumed in order; the LAST reply repeats forever, so `vec![Transient, Accepted(..)]`
-/// is "transient once, then accepted". An empty script is a FATAL answer, so a test that forgot to
-/// script the port fails loudly rather than silently passing.
+/// Replies are consumed in order; the LAST reply repeats forever, so `vec![Transient,
+/// Accepted(..)]` is "transient once, then accepted". An empty script is a FATAL answer, so a test
+/// that forgot to script the port fails loudly rather than silently passing.
 #[derive(Debug)]
 pub struct ScriptedSubmit {
     script: Vec<SubmitReply>,
@@ -132,10 +132,10 @@ impl MintSubmit for ScriptedSubmit {
     }
 }
 
-/// A [`MintSubmit`] whose submit NEVER completes on its own — it awaits a very long sleep. Paired with
-/// a paused tokio clock, it lets a test prove the submit DEADLINE bounds a hung node: the deadline
-/// fires (virtual time), the attempt is treated as transient, and the retry budget is spent — none of
-/// which happens if the submit future is awaited with no timeout.
+/// A [`MintSubmit`] whose submit NEVER completes on its own — it awaits a very long sleep. Paired
+/// with a paused tokio clock, it lets a test prove the submit DEADLINE bounds a hung node: the
+/// deadline fires (virtual time), the attempt is treated as transient, and the retry budget is
+/// spent — none of which happens if the submit future is awaited with no timeout.
 #[derive(Debug)]
 pub struct HangingSubmit {
     calls: Mutex<usize>,
@@ -167,10 +167,10 @@ impl MintSubmit for HangingSubmit {
     }
 }
 
-/// A [`MintSubmit`] whose submit is HELD IN FLIGHT until a test releases it. It is the pauseable live
-/// submit the two-driver boundary needs: driver A runs a REAL `run_relayer_cycle`, claims its nonce,
-/// and parks inside this submit (its claim genuinely `Pending`) while a second driver attempts
-/// reclamation — then the test releases it and A's cycle completes its mint.
+/// A [`MintSubmit`] whose submit is HELD IN FLIGHT until a test releases it. It is the pauseable
+/// live submit the two-driver boundary needs: driver A runs a REAL `run_relayer_cycle`, claims its
+/// nonce, and parks inside this submit (its claim genuinely `Pending`) while a second driver
+/// attempts reclamation — then the test releases it and A's cycle completes its mint.
 ///
 /// `wait_until_in_flight().await` returns once A's cycle has claimed and entered the submit;
 /// `release()` lets the held submit resolve to `Accepted(tx_id)`.
@@ -241,9 +241,9 @@ pub fn tx_id(tag: u8) -> TxId {
     TxId::new([tag; 32])
 }
 
-/// The mock's `DEV-10` xUSDC identifier as the 32 raw bytes the config carries (the fixture holds
-/// the `0x`-hex wire form the `/v1/info` body advertises). **`DEV-10` is OPEN (`REQUIRES CIRCLE
-/// CONFIRMATION`)** — a placeholder, never a settled encoding.
+/// The mock's xUSDC identifier as the 32 raw bytes the config carries (the fixture holds
+/// the `0x`-hex wire form the `/v1/info` body advertises). **The identifier and its encoding are
+/// OPEN (`REQUIRES CIRCLE CONFIRMATION`)** — a placeholder, never a settled encoding.
 pub fn fixture_xusdc_identifier_bytes() -> Vec<u8> {
     hex::decode(
         crate::mock_circle::FIXTURE_XUSDC_IDENTIFIER
@@ -255,8 +255,8 @@ pub fn fixture_xusdc_identifier_bytes() -> Vec<u8> {
 
 /// The cycle suites' config: the mock's origin, the fixture domain, page size 10, ZERO backoff (the
 /// retry SEMANTICS are the subject, not the wall-clock delay), and the optional domain/token
-/// fast-fail OFF — the package default, because its expected values are `Q-DOM-1` / `DEV-10` and
-/// both are OPEN (`REQUIRES CIRCLE CONFIRMATION`).
+/// fast-fail OFF — the package default, because its expected values (the Miden domain id and the
+/// xUSDC identifier) are both OPEN (`REQUIRES CIRCLE CONFIRMATION`).
 pub fn cycle_config() -> RelayerConfig {
     serde_json::from_value(serde_json::json!({
         "circle_base_url": MOCK_BASE_URL,
@@ -275,9 +275,9 @@ pub fn cycle_config() -> RelayerConfig {
     .expect("the cycle config deserializes")
 }
 
-/// [`cycle_config`] with `mutate` applied to its JSON before deserialization — for a test that needs
-/// to turn a knob (a small `retry_batch_size`, a `stale_claim_secs`, the fast-fail flag) without
-/// re-spelling the whole config.
+/// [`cycle_config`] with `mutate` applied to its JSON before deserialization — for a test that
+/// needs to turn a knob (a small `retry_batch_size`, a `stale_claim_secs`, the fast-fail flag)
+/// without re-spelling the whole config.
 pub fn cycle_config_with(mutate: impl FnOnce(&mut serde_json::Value)) -> RelayerConfig {
     let mut value = serde_json::json!({
         "circle_base_url": MOCK_BASE_URL,
@@ -337,8 +337,8 @@ pub fn cycle_store_with_clock(dir: &tempfile::TempDir, clock: Arc<TestClock>) ->
         .expect("the store opens")
 }
 
-/// A manually-advanced [`Clock`](xreserve_deposit_relayer::idempotency::Clock): the seam a test drives
-/// to make "older than the threshold" and "re-stamped just now" deterministic.
+/// A manually-advanced [`Clock`](xreserve_deposit_relayer::idempotency::Clock): the seam a test
+/// drives to make "older than the threshold" and "re-stamped just now" deterministic.
 #[derive(Debug)]
 pub struct TestClock(Mutex<u64>);
 

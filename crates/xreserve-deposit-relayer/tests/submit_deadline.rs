@@ -1,16 +1,17 @@
-//! **The submit deadline bounds a hung node** (round-5 finding 2).
+//! **The submit deadline bounds a hung node.**
 //!
 //! The recovery threshold can only be validated to exceed the "longest legitimate submit" if that
-//! duration is actually BOUNDED. Round 4 awaited the `MintSubmit` future with no timeout, so a hung
-//! node could keep a driver `Pending` indefinitely — no finite `stale_claim_secs` would be safe. Each
-//! submit attempt is now wrapped in the configured `submit_deadline_ms`; a hang becomes a transient
-//! failure and is retried, and the whole `submit_with_retry` is bounded by
-//! `max_retry_attempts × submit_deadline + backoff`, which is exactly the envelope
-//! `RecoveryPolicy` validates against.
+//! duration is actually BOUNDED. Awaiting the `MintSubmit` future with no timeout would let a hung
+//! node keep a driver `Pending` indefinitely — no finite `stale_claim_secs` would be safe. Each
+//! submit attempt is therefore wrapped in the configured `submit_deadline_ms`; a hang becomes a
+//! transient failure and is retried, and the whole `submit_with_retry` is bounded by
+//! `max_retry_attempts × submit_deadline + backoff`, which is exactly the envelope `RecoveryPolicy`
+//! validates against.
 //!
 //! The deadline is a short 100 ms while the hung submit awaits an hour, so the timeout ALWAYS wins
 //! deterministically regardless of machine load (the hung future never completes within the test) —
-//! the outcome does not depend on wall-clock timing, only the total runtime does (≈ attempts × 100 ms).
+//! the outcome does not depend on wall-clock timing, only the total runtime does (≈ attempts × 100
+//! ms).
 
 mod cycle_support;
 mod fixtures;
@@ -29,9 +30,9 @@ use mint_support::note_rng;
 use mock_circle::{attestation_page, MockCircle, RecordingSink, Reply, Script};
 
 /// A submit that never completes on its own is bounded by the deadline: each attempt times out
-/// (transient), the retry budget is spent, and the attestation ends `Deferred` (retryable next cycle)
-/// — never an unbounded `Pending` wait. The submit port is reached exactly `max_retry_attempts` times,
-/// each attempt ended by the deadline rather than the hung future.
+/// (transient), the retry budget is spent, and the attestation ends `Deferred` (retryable next
+/// cycle) — never an unbounded `Pending` wait. The submit port is reached exactly
+/// `max_retry_attempts` times, each attempt ended by the deadline rather than the hung future.
 #[tokio::test]
 async fn a_hung_submit_is_bounded_by_the_deadline_and_deferred() {
     let vector = fixtures::test_vector();

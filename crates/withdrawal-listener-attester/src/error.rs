@@ -1,15 +1,13 @@
-//! The `ListenerError` taxonomy — STARTED in this scaffold slice with the configuration family (the
-//! base URL, the auth-header injection point, the transport bounds) and the transport failure the
-//! Circle seam surfaces.
+//! The `ListenerError` taxonomy, grouped by which part of the flow refused: configuration (base
+//! URL, auth-header injection, transport bounds), the Circle wire (HTTP status, schema decode, the
+//! `409` conflict), the Miden reads (tag scan, note retrieval, evidence), validation (the discovery
+//! and pre-signing checklists, and the do-not-sign abort), and the signature quorum.
 //!
-//! The Circle-facing families (HTTP status, schema decode, the 409 conflict), the Miden-facing ones
-//! (tag scan, note retrieval, evidence reads), the validation family (the B3/B5 checklists and the
-//! "DO NOT SIGN" abort) and the quorum family land with their slices. The enum is `#[non_exhaustive]`
-//! so those additions are not breaking changes.
+//! The enum is `#[non_exhaustive]`, so a new failure mode can be added without breaking callers.
 //!
-//! Errors are hand-rolled — the repo does not depend on `thiserror` — with lowercase, unpunctuated
-//! messages (the Rust convention), and every variant preserves its underlying cause through
-//! [`Error::source`](core::error::Error) rather than flattening it to a string.
+//! Errors are hand-rolled — this repository does not depend on `thiserror` — with lowercase,
+//! unpunctuated messages per the Rust convention, and every variant preserves its underlying cause
+//! through [`Error::source`](core::error::Error) rather than flattening it to a string.
 
 use core::fmt;
 use std::sync::Arc;
@@ -22,14 +20,13 @@ use crate::attester::Address;
 /// `reqwest::Error`, a header/URL parse error). Wrapping it keeps [`ListenerError`]'s `Clone` +
 /// `PartialEq` contract intact while still handing the ORIGINAL typed error to
 /// [`Error::source`](core::error::Error) — so a caller can `downcast_ref` it and ask the concrete
-/// question (`is_timeout()`, say). Flattening the cause to a `String` would discard exactly the
-/// information an operator needs.
+/// question (`is_timeout`, say). Flattening it to a `String` would discard exactly what an
+/// operator needs.
 ///
-/// The idiom mirrors the deposit relayer's `Cause`. It is duplicated rather than shared because it
-/// is an error-plumbing convention, not a wire format — the single-owner rule binds the formats and
-/// codecs the two services must agree on (all of which live in `xusdc-encoding` and are consumed by
-/// reference here), and a cross-dependency between two sibling services just to share twelve lines
-/// of `Arc<dyn Error>` would couple them for no protection.
+/// The deposit relayer has the same idiom, deliberately duplicated rather than shared: it is an
+/// error-plumbing convention, not a wire format. Only the formats and codecs the two services must
+/// agree on are single-owned (in `xusdc-encoding`); coupling two sibling services to share twelve
+/// lines of `Arc<dyn Error>` would buy no protection.
 #[derive(Debug, Clone)]
 pub struct Cause(Arc<dyn core::error::Error + Send + Sync + 'static>);
 
@@ -63,13 +60,13 @@ impl fmt::Display for Cause {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ListenerError {
-    /// The configured Circle base URL is not a usable `http`/`https` URL. Refused when the config is
-    /// built, not on the first request.
+    /// The configured Circle base URL is not a usable `http`/`https` URL. Refused when the config
+    /// is built, not on the first request.
     BadBaseUrl { url: String, source: Cause },
 
     /// An out-of-band API key is configured against a base URL that cannot protect it. A credential
-    /// sent in the clear is a credential disclosed — and `Q-API-AUTH` being OPEN means the key could
-    /// ride under any header name, so no transport-level convention will save it.
+    /// sent in the clear is a credential disclosed — and with no documented auth scheme the key
+    /// could ride under any header name, so no transport-level convention will save it.
     InsecureAuthTransport { base_url: String },
 
     /// The configured auth header is not a legal header: an illegal NAME, or a value carrying a
@@ -81,10 +78,10 @@ pub enum ListenerError {
 
     /// An out-of-band API key is configured with no header name to send it under.
     ///
-    /// `Q-API-AUTH` is OPEN: the OpenAPI documents NO auth scheme, so there is no header this crate
-    /// could pick that would not be an invention (§10.12: "do NOT invent an auth header"). A key with
-    /// nowhere documented to go is therefore a configuration error, not a prompt to guess
-    /// `Authorization`. When Circle answers, the operator writes the answer into the config.
+    /// The OpenAPI documents NO auth scheme, so there is no header this crate
+    /// could pick that would not be an invention (Circle documents "do NOT invent an auth header").
+    /// A key with nowhere documented to go is therefore a configuration error, not a prompt to
+    /// guess `Authorization`. When Circle answers, the operator writes the answer into the config.
     AuthHeaderNameRequired,
 
     /// A configured faucet account id that is not an account id at all.
@@ -94,38 +91,38 @@ pub enum ListenerError {
     /// not be read.
     ///
     /// **This is AMBIGUOUS, not transient, and the difference decides money.** No status means no
-    /// evidence either way: on a `POST /v1/withdraw` the withdrawal may already have been created and
-    /// be releasing, with only the response lost. So the submission path does NOT retry it
-    /// ([`is_retryable`](crate::circle::retry::is_retryable) answers `false`) — it surfaces the failure
-    /// and leaves the burn reconciliation-required. Reading this variant as "just try again" is the
-    /// blind resubmission the `409` rule exists to prevent (§10.10).
+    /// evidence either way: on a `POST /v1/withdraw` the withdrawal may already have been created
+    /// and be releasing, with only the response lost. So the submission path does NOT retry it
+    /// ([`is_retryable`](crate::circle::retry::is_retryable) answers `false`) — it surfaces the
+    /// failure and leaves the burn reconciliation-required. Reading this variant as "just try
+    /// again" is the blind resubmission the `409` rule exists to prevent.
     Transport(Cause),
 
     /// The response exceeded the configured body ceiling. NOT transient — a peer that returns an
     /// oversized body will do it again, and the bytes past the ceiling are never buffered.
     ResponseTooLarge { limit: usize, actual: usize },
 
-    /// A Circle response carried a non-success HTTP status the driver refuses. The OpenAPI documents
-    /// status codes only — no error-body schema — so for the RAW drivers the status ALONE decides and
-    /// the body is never parsed (§10.11): every non-2xx that is not the poll's own `404` is this
+    /// A Circle response carried a non-success HTTP status the driver refuses. The OpenAPI
+    /// documents status codes only — no error-body schema — so for the RAW drivers the status ALONE
+    /// decides and the body is never parsed: every non-2xx that is not the poll's own `404` is this
     /// generic refusal.
     ///
     /// [`submit_withdraw`](crate::submit::submit_withdraw) is the one exception, and only for the
     /// `409`, whose body it MUST read: the conflict is the sole statement of which withdrawal the
-    /// duplicate hit (§10.10). Everything else it sees still lands here — an exhausted `5xx` budget, a
+    /// duplicate hit. Everything else it sees still lands here — an exhausted `5xx` budget, a
     /// deterministic `400`, an undocumented status — and none of them is ever a withdrawal.
     Http { status: u16 },
 
-    /// `GET /v1/withdrawal/{withdrawalId}` answered `404` — no withdrawal under that id (`CMP-D7`,
-    /// §10.8). Its OWN exact variant, distinct from [`Self::Http`]: a poll `404` is a meaningful
-    /// terminal answer ("unknown id"), not an opaque transport-level refusal.
+    /// `GET /v1/withdrawal/{withdrawalId}` answered `404` — no withdrawal under that id. It has its
+    /// OWN variant, distinct from [`Self::Http`], because a poll `404` is a meaningful terminal
+    /// answer ("unknown id"), not an opaque transport-level refusal.
     WithdrawalNotFound { withdrawal_id: String },
 
     /// A 2xx Circle body did not decode into the expected schema type — a malformed response, or a
-    /// value outside a closed enum (a `status` string the six-member enum does not contain). Refused,
-    /// never coerced or defaulted (§10.11: "malformed Circle response → reject, not signed"). The
-    /// serde error is the preserved source. `context` names which decode failed (`prepare-withdrawal`,
-    /// `withdraw`, `withdrawal-status`).
+    /// value outside a closed enum (a `status` string the six-member enum does not contain).
+    /// Refused, never coerced or defaulted (Circle documents "malformed Circle response → reject,
+    /// not signed"). The serde error is the preserved source. `context` names which decode failed
+    /// (`prepare-withdrawal`, `withdraw`, `withdrawal-status`).
     MalformedResponse {
         context: &'static str,
         source: Cause,
@@ -133,19 +130,19 @@ pub enum ListenerError {
 
     /// A status poll ran to its attempt ceiling without the status settling — neither a TERMINAL
     /// completion (`finalized`/`failed`) nor the RETRYABLE `expired` outcome (`expired` is not
-    /// terminal). NOT a settled answer — polling stopped because the bound was hit, so the caller must
-    /// not read it as any final state.
+    /// terminal). NOT a settled answer — polling stopped because the bound was hit, so the caller
+    /// must not read it as any final state.
     PollExhausted { after: u32 },
 
-    /// A `POST /v1/withdraw` `201` array did not carry exactly one status object per submitted batch
-    /// (§10.8: the response is "one element per submitted batch"). A shorter array leaves a batch's
-    /// outcome unaccounted for; a longer one associates a batch with the wrong status (or trusts an
-    /// unrelated withdrawal). Refused rather than mis-associated.
+    /// A `POST /v1/withdraw` `201` array did not carry exactly one status object per submitted
+    /// batch (Circle documents the response is "one element per submitted batch"). A shorter array
+    /// leaves a batch's outcome unaccounted for; a longer one associates a batch with the wrong
+    /// status (or trusts an unrelated withdrawal). Refused rather than mis-associated.
     WithdrawResponseCardinality { submitted: usize, returned: usize },
 
-    /// A `GET /v1/withdrawal/{id}` `200` decoded to a [`WithdrawalStatus`] whose `withdrawalId` is NOT
-    /// the id that was requested. A schema-valid status for a DIFFERENT withdrawal must never be
-    /// reported as the requested one's outcome — that would attribute another withdrawal's
+    /// A `GET /v1/withdrawal/{id}` `200` decoded to a [`WithdrawalStatus`] whose `withdrawalId` is
+    /// NOT the id that was requested. A schema-valid status for a DIFFERENT withdrawal must never
+    /// be reported as the requested one's outcome — that would attribute another withdrawal's
     /// `finalized`/`failed` state to this id. The response is bound to the request; a mismatch is
     /// refused.
     ///
@@ -232,10 +229,10 @@ impl core::error::Error for ListenerError {
     }
 }
 
-/// Everything [`note_decode`](crate::note_decode) can refuse to decode — the `DecodeError` §10.2
-/// names. Kept a type of its own rather than a [`ListenerError`] family: a decode failure is a
-/// statement about ONE note's bytes, and the caller's response to it (skip the note, alert) is not
-/// the response to a Circle transport failure.
+/// Everything [`note_decode`](crate::note_decode) can refuse to decode — the `DecodeError` the
+/// documented policy names. Kept a type of its own rather than a [`ListenerError`] family: a decode
+/// failure is a statement about ONE note's bytes, and the caller's response to it (skip the note,
+/// alert) is not the response to a Circle transport failure.
 ///
 /// Every variant is a REFUSAL. There is no lossy/partial success here by construction: a burn note
 /// whose payload or sender does not decode yields no [`BurnPayload`](crate::types::BurnPayload) and
@@ -244,30 +241,31 @@ impl core::error::Error for ListenerError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DecodeError {
-    /// The `NoteStorage.items` felts are not a `DC-7` burn payload — a felt count other than
+    /// The `NoteStorage.items` felts are not a well-formed burn payload — a felt count other than
     /// `BURN_NOTE_ITEMS_FELTS = 18`, an out-of-range `amount`/`destDomain`, or a non-`u32` bytes32
     /// limb.
     ///
-    /// The unit-04 codec is the sole judge of that, and its verdict is carried here UNFLATTENED:
-    /// the exact [`EncodingError`] it returned is the preserved source (`preserve-error-source`),
-    /// so a caller that wants the codec's own answer can ask for it instead of parsing a string.
+    /// The shared encoding crate's codec is the sole judge of that, and its verdict is carried
+    /// here UNFLATTENED: the exact [`EncodingError`] it returned is the preserved source
+    /// (`preserve-error-source`), so a caller that wants the codec's own answer can ask for it
+    /// instead of parsing a string.
     BurnItemsMalformed { source: EncodingError },
 
-    /// The discovered note carries no metadata at all, so there is no `metadata.sender` to read —
-    /// what a PRIVATE or erased note looks like from `GetNotesById` (`details = None`,
-    /// `INV-PUBLIC-BURN-OBSERVABILITY`). Such a note is unacceptable for Circle observability, and
-    /// it is refused rather than defaulted.
+    /// The discovered note carries no metadata at all, so there is no `metadata.sender` to read
+    /// what a PRIVATE or erased note looks like from `GetNotesById` (`details = None`, where the
+    /// design requires a Public burn note). Such a note is unacceptable for Circle observability,
+    /// and it is refused rather than defaulted.
     SenderAbsent,
 
     /// The reported `metadata.sender` is the zero felt pair. No account has the zero id; a node (or
     /// a bug) reporting one is reporting nothing, and the ONE thing that must not happen next is
-    /// its silent promotion into a zero `remoteDepositor` (`INV-BURN-SENDER-PRIVACY-LEAK` names the
-    /// sender as the exposed depositor — a zero there would be a burn attributed to nobody).
+    /// its silent promotion into a zero `remoteDepositor` (`metadata.sender` is the exposed
+    /// depositor by design — a zero there would be a burn attributed to nobody).
     SenderZero,
 
-    /// The reported `metadata.sender` felts are not a canonical [`AccountId`](miden_protocol::account::AccountId)
-    /// (an unknown id version, an out-of-field felt, a violated id constraint). The underlying
-    /// `AccountIdError` is preserved as the source.
+    /// The reported `metadata.sender` felts are not a canonical
+    /// [`AccountId`](miden_protocol::account::AccountId) (an unknown id version, an out-of-field
+    /// felt, a violated id constraint). The underlying `AccountIdError` is preserved as the source.
     SenderMalformed { source: Cause },
 }
 
@@ -304,11 +302,11 @@ impl core::error::Error for DecodeError {
 
 /// Why [`attester::sign`](crate::attester::sign) refused to produce a signature.
 ///
-/// `sign` consumes Circle's returned `messageHashToSign` as an OPAQUE 32-byte digest
-/// (`INV-OFFCHAIN-BURN-SIGNING`, `Q-CRY-2` — OPEN): it never re-derives the digest locally (no
-/// EIP-712, no personal-sign, no Poseidon2), so the only thing it can reject about the input is its
-/// length. A non-32-byte digest is a caller bug — a truncated hash, a hex string passed where raw
-/// bytes were meant — and signing it anyway would put an attester signature over the wrong 32 bytes.
+/// `sign` consumes Circle's returned `messageHashToSign` as an OPAQUE 32-byte digest (its exact
+/// derivation is still OPEN with Circle): it never re-derives the digest locally (no EIP-712, no
+/// personal-sign, no Poseidon2), so the only thing it can reject about the input is its length. A
+/// non-32-byte digest is a caller bug — a truncated hash, a hex string passed where raw bytes were
+/// meant — and signing it anyway would put an attester signature over the wrong 32 bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SignError {
@@ -324,9 +322,9 @@ pub enum SignError {
     /// The signature's recovery id is **x-reduced** (`2`/`3`) and so has no Ethereum `v`
     /// representation: OpenZeppelin-style `ECDSA.recover` on Circle's source chain accepts only `v`
     /// `27`/`28`. Rather than emit a `v = 29`/`30` signature the verifier would reject at the
-    /// fund-release boundary, `sign` refuses. An x-reduced recovery id requires the signature's `r` to
-    /// have wrapped the curve order, which happens with probability ≈ `2^-128` for a random key/digest
-    /// — so this is a defensive refusal, not a path real inputs take.
+    /// fund-release boundary, `sign` refuses. An x-reduced recovery id requires the signature's `r`
+    /// to have wrapped the curve order, which happens with probability ≈ `2^-128` for a random
+    /// key/digest — so this is a defensive refusal, not a path real inputs take.
     UnrepresentableRecoveryId { recovery_id: u8 },
 }
 
@@ -357,10 +355,10 @@ impl core::error::Error for SignError {
 
 /// Why a [`Signature65`](crate::attester::Signature65) could not be built from raw bytes.
 ///
-/// The Circle wire form is fixed: secp256k1 ECDSA, 65 bytes `r‖s‖v`
-/// (`CIRCLE-DATA-SCHEMAS.md:184`). A DER blob, a 64-byte `r‖s` with the recovery id dropped, or any
-/// other length is not that form, and is refused at construction so a mis-shaped signature can never
-/// reach [`assemble_quorum`](crate::attester::assemble_quorum) or the `/v1/withdraw` wire.
+/// The Circle wire form is fixed: secp256k1 ECDSA, 65 bytes `r‖s‖v` (`CIRCLE-DATA-SCHEMAS.md:184`).
+/// A DER blob, a 64-byte `r‖s` with the recovery id dropped, or any other length is not that form,
+/// and is refused at construction so a mis-shaped signature can never reach
+/// [`assemble_quorum`](crate::attester::assemble_quorum) or the `/v1/withdraw` wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SignatureError {
@@ -385,38 +383,38 @@ impl core::error::Error for SignatureError {}
 /// Why [`assemble_quorum`](crate::attester::assemble_quorum) refused to assemble a `burnSignatures`
 /// bundle.
 ///
-/// The bundle Circle verifies on the source chain must be **exactly-threshold count, every signature
-/// verifying to its claimed signer, ascending signer-address order, no duplicates**
+/// The bundle Circle verifies on the source chain must be **exactly-threshold count, every
+/// signature verifying to its claimed signer, ascending signer-address order, no duplicates**
 /// (`MIN_SIGNATURE_THRESHOLD = 2`; `CIRCLE-DATA-SCHEMAS.md:196`; the recover-then-authorize step at
-/// `:46`). This assembler enforces that contract BEFORE anything is submitted, so a set Circle would
-/// reject — or worse, a single-key set that must NEVER be submitted (`INV-OFFCHAIN-BURN-SIGNING`;
-/// §10.9) — fails here as a typed `Err` rather than on Circle's wire. Every rejection is exact: a
-/// duplicate signer is refused, NEVER silently de-duplicated (a silent dedupe could shrink a 2-signer
-/// set to one and submit a single-key quorum).
+/// `:46`). This assembler enforces that contract BEFORE anything is submitted, so a set Circle
+/// would reject — or worse, a single-key set that must NEVER be submitted — fails here as a typed
+/// `Err` rather than on Circle's wire. Every rejection is exact: a duplicate signer is refused,
+/// NEVER silently de-duplicated (a silent dedupe could shrink a 2-signer set to one and submit a
+/// single-key quorum).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum QuorumError {
     /// Fewer than `MIN_SIGNATURE_THRESHOLD` signatures. A single-key set is a non-gating local
-    /// primitive and is NEVER submitted to Circle (§10.9). Foreclosing the "threshold treated as ≥1"
+    /// primitive and is NEVER submitted to Circle. Foreclosing the "threshold treated as ≥1"
     /// bug is the whole point of this variant.
     BelowThreshold { have: usize, need: usize },
 
     /// More than `MIN_SIGNATURE_THRESHOLD` signatures. Circle's source-chain verifier is
     /// **exactly-threshold** (`Attestable.sol:75,333-381`; `CIRCLE-DATA-SCHEMAS.md:196`), so an
     /// over-threshold bundle Circle would reject is refused here rather than at the fund-release
-    /// boundary. Selecting an authorized exactly-threshold subset from a larger set of signatures is a
-    /// separate, owner-specified concern; this assembler does not silently truncate.
+    /// boundary. Selecting an authorized exactly-threshold subset from a larger set of signatures
+    /// is a separate, owner-specified concern; this assembler does not silently truncate.
     AboveThreshold { have: usize, need: usize },
 
     /// A signature does not verify against its CLAIMED signer address: `ECDSA.recover(digest, sig)`
     /// (the same recovery Circle performs) either fails outright — a `v` outside `27`/`28`, a
-    /// malformed `r`/`s`, a digest the signature does not cover — or recovers a DIFFERENT address than
-    /// the one it was paired with. Either way the signature is excluded from the quorum
+    /// malformed `r`/`s`, a digest the signature does not cover — or recovers a DIFFERENT address
+    /// than the one it was paired with. Either way the signature is excluded from the quorum
     /// (`TEST-AND-VERIFICATION-HARNESS.md:157`); `at` is its index in the input.
     SignatureDoesNotVerify { at: usize },
 
-    /// The same signer address appears more than once. Refused, not de-duplicated — Circle rejects a
-    /// duplicate, and a silent dedupe here could collapse the count below threshold unnoticed.
+    /// The same signer address appears more than once. Refused, not de-duplicated — Circle rejects
+    /// a duplicate, and a silent dedupe here could collapse the count below threshold unnoticed.
     DuplicateSigner { address: Address },
 
     /// The signer addresses are not in strictly ascending order at the given index (`sigs[at]`'s
@@ -456,9 +454,8 @@ impl fmt::Display for QuorumError {
 
 impl core::error::Error for QuorumError {}
 
-/// Why [`validate_discovery`](crate::validate::validate_discovery) refused a discovered note at the
-/// **B3** checklist — the ORDERED discovery gate that runs before Circle is ever asked to prepare
-/// intents (`INV-PUBLIC-BURN-OBSERVABILITY`).
+/// Why [`validate_discovery`](crate::validate::validate_discovery) refused a discovered note — the
+/// ordered checklist that runs before Circle is ever asked to prepare intents.
 ///
 /// The order is load-bearing and reflected in the variants' priority: the tag is matched FIRST (a
 /// wrong-tag note is not this listener's note at all), THEN observability (a private note has
@@ -469,17 +466,19 @@ impl core::error::Error for QuorumError {}
 pub enum DiscoveryReject {
     /// The note's tag is not the configured burn tag. Matched by **exact full-32-bit equality**,
     /// never a prefix (`SyncNotes` does not prefix-scan; the 16-bit prefix belongs to
-    /// `SyncNullifiers` — anti-`ASG-3`). A note sharing only the high 16 bits is a DIFFERENT note.
+    /// `SyncNullifiers` — an exact match, never a prefix). A note sharing only the high 16 bits is
+    /// a DIFFERENT note.
     TagMismatch { expected: u32, actual: u32 },
 
-    /// `GetNotesById` returned `details = None` — a PRIVATE or erased note, unobservable to Circle
-    /// (`INV-PUBLIC-BURN-OBSERVABILITY`). A withdrawal must be backed by a `NoteType::Public` burn;
+    /// `GetNotesById` returned `details = None` — a PRIVATE or erased note, unobservable to
+    /// Circle. A withdrawal must be backed by a `NoteType::Public` burn;
     /// a note Circle cannot see is refused rather than attested to.
     PrivateNoteUnobservable,
 
     /// The note came back public and tagged, but its `NoteStorage.items` payload or its
-    /// `metadata.sender` did not decode — the unit-04 codec's / sender read's verdict, carried
-    /// through UNFLATTENED as the preserved [`DecodeError`] (`preserve-error-source`).
+    /// `metadata.sender` did not decode — the shared encoding crate's codec's / sender read's
+    /// verdict, carried through UNFLATTENED as the preserved [`DecodeError`]
+    /// (`preserve-error-source`).
     Decode(DecodeError),
 }
 
@@ -508,13 +507,13 @@ impl core::error::Error for DiscoveryReject {
     }
 }
 
-/// Why the **B5** gate [`validate_returned`](crate::validate::validate_returned) refused Circle's
-/// returned data — the field-by-field mismatch that MUST abort before any attester signs
-/// (`INV-CIRCLE-CANONICAL-WITHDRAWAL`: B5 gates B6).
+/// Why the pre-signing gate `validate_returned` refused
+/// Circle's returned data — the field-by-field mismatch that MUST abort before any attester signs
+/// (validation gates signing).
 ///
 /// Every variant carries the batch index it fired on, so a mismatch in a LATER batch (not just
 /// `batches[0]`) is named precisely. An `Err` here is a hard "DO NOT SIGN": control never reaches
-/// the signer, and — because [`validate_returned`] mints the proof-of-validation token ONLY on a
+/// the signer, and — because `validate_returned` mints the proof-of-validation token ONLY on a
 /// full match — no signature over mismatching data can be produced structurally, not by convention.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -524,13 +523,14 @@ pub enum ValidationMismatch {
     NoBatches,
 
     /// A batch carried an EMPTY `burnIntents` array — no `spec` to compare against the payload, so
-    /// its `messageHashToSign` would be bound to no amount/domain/recipient. Circle's schema requires
-    /// `burnIntents` be non-empty (`minItems: 1`); an empty list is refused here rather than allowed
-    /// to mint a signing token vacuously (the `check_spec` loop must not be skippable into `Ok`).
+    /// its `messageHashToSign` would be bound to no amount/domain/recipient. Circle's schema
+    /// requires `burnIntents` be non-empty (`minItems: 1`); an empty list is refused here rather
+    /// than allowed to mint a signing token vacuously (the `check_spec` loop must not be skippable
+    /// into `Ok`).
     EmptyBurnIntents { batch: usize },
 
-    /// A returned `burnIntents[].spec.value` (the amount, in the smallest token unit) does not equal
-    /// the burn-note payload's `amount`.
+    /// A returned `burnIntents[].spec.value` (the amount, in the smallest token unit) does not
+    /// equal the burn-note payload's `amount`.
     Amount {
         batch: usize,
         expected: u64,
@@ -608,52 +608,54 @@ impl core::error::Error for ValidationMismatch {}
 
 /// Why the **pre-submit signer-allowlist gate**
 /// ([`authorize_submission`](crate::withdrawal_api::authorize_submission)) refused to authorize a
-/// `POST /v1/withdraw` — the OFF-chain, fund-safety defense-in-depth that runs BEFORE any submission.
+/// `POST /v1/withdraw` — the off-chain fund-safety check that runs before any submission.
 ///
 /// # The invariant this gate enforces
 ///
 /// Circle's source-chain verifier already does `ECDSA.recover(digest, sig) → addr` and
 /// `require(attesters[addr])` — but that is the LAST line of defense, at the fund-release boundary.
-/// This gate re-does the recovery off-chain against the SAME `messageHashToSign` digests and requires
-/// every recovered signer to be a **configured, registered attester**
-/// ([`AttesterAllowlist`](crate::attester::AttesterAllowlist)). A signature from a key that is not a
-/// registered attester — or a set with no configured allowlist at all — is refused here, and no
+/// This gate re-does the recovery off-chain against the SAME `messageHashToSign` digests and
+/// requires every recovered signer to be a **configured, registered attester**
+/// ([`AttesterAllowlist`](crate::attester::AttesterAllowlist)). A signature from a key that is not
+/// a registered attester — or a set with no configured allowlist at all — is refused here, and no
 /// [`AuthorizedWithdrawal`](crate::withdrawal_api::AuthorizedWithdrawal) is minted, so `withdraw`
 /// cannot be reached: **zero `/v1/withdraw` calls** on any rejection, structurally.
 ///
 /// [`assemble_quorum`](crate::attester::assemble_quorum) already proves each signature recovers to
-/// its CLAIMED signer; this gate is the complementary check that the claimed/recovered signer is one
-/// the operator actually registered. The two together close the gap the quorum assembler leaves open.
+/// its CLAIMED signer; this gate is the complementary check that the claimed/recovered signer is
+/// one the operator actually registered. The two together close the gap the quorum assembler leaves
+/// open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SubmitGateError {
-    /// No attester is configured in the allowlist. **Fail-closed**: an empty allowlist would authorize
-    /// an UNBOUNDED signer set, so a submission is refused rather than sent, and the missing
-    /// configuration is surfaced — never silently treated as "allow all".
+    /// No attester is configured in the allowlist. **Fail-closed**: an empty allowlist would
+    /// authorize an UNBOUNDED signer set, so a submission is refused rather than sent, and the
+    /// missing configuration is surfaced — never silently treated as "allow all".
     NoAttestersConfigured,
 
-    /// The per-batch `messageHashToSign` digests do not line up 1:1 with the request's batches, so a
-    /// batch's signatures cannot be checked against the digest they were produced over. Refused rather
-    /// than guessing an alignment.
+    /// The per-batch `messageHashToSign` digests do not line up 1:1 with the request's batches, so
+    /// a batch's signatures cannot be checked against the digest they were produced over. Refused
+    /// rather than guessing an alignment.
     BatchDigestCountMismatch { batches: usize, digests: usize },
 
-    /// A `burnSignatures[at]` in `batches[batch]` is not a decodable byte string (odd-length hex). The
-    /// wire newtype permits `^0x[a-fA-F0-9]*$` including an odd digit count; a signer cannot be
+    /// A `burnSignatures[at]` in `batches[batch]` is not a decodable byte string (odd-length hex).
+    /// The wire newtype permits `^0x[a-fA-F0-9]*$` including an odd digit count; a signer cannot be
     /// recovered from bytes that do not decode, so it is refused.
     BadSignatureHex { batch: usize, at: usize },
 
-    /// A `burnSignatures[at]` in `batches[batch]` is not exactly 65 bytes (`r‖s‖v`) — no signer can be
-    /// recovered from it.
+    /// A `burnSignatures[at]` in `batches[batch]` is not exactly 65 bytes (`r‖s‖v`) — no signer can
+    /// be recovered from it.
     MalformedSignature { batch: usize, at: usize, len: usize },
 
     /// A `burnSignatures[at]` in `batches[batch]` does not recover to ANY signer over the batch's
     /// digest — a `v` outside `27`/`28`, an `r`/`s` that is not a valid signature, or a digest the
-    /// signature does not cover. It cannot be attributed to a registered attester, so it is refused.
+    /// signature does not cover. It cannot be attributed to a registered attester, so it is
+    /// refused.
     SignerUnrecoverable { batch: usize, at: usize },
 
-    /// A `burnSignatures[at]` in `batches[batch]` recovered to `signer`, which is NOT in the configured
-    /// attester allowlist. This is the core fund-safety refusal: a signature from an unregistered key
-    /// must never ride a submission.
+    /// A `burnSignatures[at]` in `batches[batch]` recovered to `signer`, which is NOT in the
+    /// configured attester allowlist. This is the core fund-safety refusal: a signature from an
+    /// unregistered key must never ride a submission.
     SignerNotAllowlisted {
         batch: usize,
         at: usize,

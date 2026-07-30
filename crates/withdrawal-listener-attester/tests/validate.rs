@@ -1,22 +1,22 @@
-//! `T-LA-06` / `T-LA-07` — the B3 discovery checklist, the B5 `validate_returned` field-by-field
-//! gate, and the **DO-NOT-SIGN** abort (`validate.rs`).
+//! The discovery checklist, the `validate_returned` field-by-field gate, and the **DO-NOT-SIGN**
+//! abort.
 //!
-//! **`INV-CIRCLE-CANONICAL-WITHDRAWAL` — B5 gates B6.** This service releases real USDC, and this
+//! **Validation gates signing.** This service releases real USDC, and this
 //! is the last check before an attester signature is produced. The gate is proven two ways here:
 //!
-//! * **Field-by-field (`T-LA-06`).** Circle's returned `burnIntents[].spec` (`value`,
+//! * **Field-by-field.** Circle's returned `burnIntents[].spec` (`value`,
 //!   `destinationDomain`, `destinationRecipient`) is compared against the burn-note payload for
 //!   EVERY batch — a mismatch in ANY batch (not just `batches[0]`) rejects; a missing
 //!   `messageHashToSign` rejects.
-//! * **Control-flow (`T-LA-07`, the non-vacuity oracle).** The mismatch is driven through the REAL
+//! * **Control-flow (the non-vacuity oracle).** The mismatch is driven through the REAL
 //!   gate: on `Err`, NO signature is produced and NO withdraw call is reachable. The proof is
 //!   structural — the flow-level signer takes a [`ValidatedWithdrawal`], which ONLY a full-match
 //!   [`validate_returned`] can mint, so "signed anyway" is untypeable, not merely unreached.
 //!
 //! These are PURE tests (no node, no Circle): the mock `PrepareWithdrawalResponse` is parsed from
 //! the schema-frozen fixtures, the burn payload is constructed locally, and the abort is exercised
-//! through `validate_returned` + `sign_validated`. `Q-CRY-2` (the `messageHashToSign` digest) and
-//! `Q-DOM-3` (`sourceDepositor`) stay OPEN — parameterized, never resolved.
+//! through `validate_returned` + `sign_validated`. The `messageHashToSign` digest derivation and
+//! the Circle-assigned `sourceDepositor` stay OPEN — parameterized, never resolved.
 
 use assert_matches::assert_matches;
 use rstest::rstest;
@@ -45,7 +45,8 @@ use attester_vectors::attesters;
 // FIXTURE HELPERS
 // ================================================================================================
 
-/// The 32 hex bytes behind a `0x…` string (panics on a malformed fixture — the fixtures are frozen).
+/// The 32 hex bytes behind a `0x…` string (panics on a malformed fixture — the fixtures are
+/// frozen).
 fn hex32(s: &str) -> [u8; 32] {
     let body = s.strip_prefix("0x").expect("0x-prefixed hex");
     let bytes = hex::decode(body).expect("valid hex");
@@ -90,7 +91,7 @@ fn a_key() -> SecretKey {
 }
 
 // ================================================================================================
-// T-LA-06 — validate_returned: the B5 field-by-field gate
+// validate_returned: the field-by-field gate
 // ================================================================================================
 
 /// Positive: on a full match, the top-level `batches[]` wrapper is parsed (NOT a bare batch), the
@@ -184,8 +185,9 @@ fn validate_returned_rejects_no_batches() {
 }
 
 /// A batch whose `burnIntents` array is EMPTY is refused — with no intent to compare, its digest is
-/// bound to no amount/domain/recipient, so allowing it would mint a signing token vacuously. This is
-/// the fund-safety hole the audit surfaced: the `check_spec` loop must not be skippable into `Ok`.
+/// bound to no amount/domain/recipient, so allowing it would mint a signing token vacuously. This
+/// is the fund-safety hole the audit surfaced: the `check_spec` loop must not be skippable into
+/// `Ok`.
 #[test]
 fn validate_returned_rejects_an_empty_burn_intents_batch() {
     let mut v = base_200_json();
@@ -229,8 +231,9 @@ fn empty_burn_intents_aborts_the_signing_flow() {
 }
 
 /// A present-but-malformed `messageHashToSign` — invalid hex, or the wrong byte length (31/33) — is
-/// refused as `MalformedMessageHash`, BEFORE signing: a non-signable digest never reaches the signer
-/// (`messageHashToSign` is an unconstrained external `String`, so these boundaries are real risk).
+/// refused as `MalformedMessageHash`, BEFORE signing: a non-signable digest never reaches the
+/// signer (`messageHashToSign` is an unconstrained external `String`, so these boundaries are real
+/// risk).
 #[test]
 fn validate_returned_rejects_malformed_message_hash() {
     let valid = "0x90afceed0c2b4a6988a7c6e504234261809fbeddfc1b3a597897b6d5f4133251";
@@ -298,9 +301,9 @@ fn validate_returned_rejects_empty_message_hash() {
     );
 }
 
-/// The optional local binary reconstruction is OFF the critical path (anti-`ASG-5`): the gate
-/// validates against the JSON `spec` fields alone, so a garbage `encoded` blob does NOT stop a
-/// full match — the partner never decodes it as the required path.
+/// The optional local binary reconstruction is OFF the critical path (and deliberately not a
+/// re-derivation): the gate validates against the JSON `spec` fields alone, so a garbage `encoded`
+/// blob does NOT stop a full match — the partner never decodes it as the required path.
 #[test]
 fn validate_returned_does_not_depend_on_the_encoded_blob() {
     let mut v = base_200_json();
@@ -333,12 +336,12 @@ fn validate_returned_is_deterministic() {
 }
 
 // ================================================================================================
-// T-LA-07 — the DO-NOT-SIGN abort (B5 gates B6), control-flow proof
+// the DO-NOT-SIGN abort — validation gates signing — control-flow proof
 // ================================================================================================
 
 /// The withdrawal flow's ONLY signing entry: validate, then sign every cleared digest. `sign` is
 /// reached ONLY inside the `Ok` branch — on a mismatch the `?` short-circuits before any signature
-/// is produced. This is the executable enforcement that B5 gates B6.
+/// is produced. This is the executable enforcement that validation gates signing.
 fn attempt_sign_flow(
     resp: &PrepareWithdrawalResponse,
     payload: &BurnPayload,
@@ -445,7 +448,7 @@ fn abort_is_idempotent_on_retry() {
 }
 
 // ================================================================================================
-// B3 — validate_discovery (order load-bearing)
+// DISCOVERY — validate_discovery (order load-bearing)
 // ================================================================================================
 
 /// Builds a public discovery record whose items decode to `payload` and whose sender is a genuine
@@ -471,7 +474,7 @@ fn discovery_ok_on_matching_public_note() {
 }
 
 /// A PRIVATE note (`details = None`) is rejected as unobservable — the exact
-/// `PrivateNoteUnobservable` variant (`INV-PUBLIC-BURN-OBSERVABILITY`).
+/// `PrivateNoteUnobservable` variant.
 #[test]
 fn discovery_rejects_a_private_note() {
     let record = DiscoveryRecord::new(cfg().burn_tag(), None);
@@ -496,7 +499,7 @@ fn discovery_rejects_a_wrong_tag() {
 }
 
 /// A tag sharing the configured tag's 16-bit PREFIX but differing in the low bits still rejects:
-/// `SyncNotes` matches the FULL 32 bits, never a prefix (anti-`ASG-3`).
+/// `SyncNotes` matches the FULL 32 bits, never a prefix (an exact match, never a prefix).
 #[test]
 fn discovery_rejects_a_prefix_only_tag_match() {
     let cfg = ListenerConfig::builder()
@@ -512,8 +515,8 @@ fn discovery_rejects_a_prefix_only_tag_match() {
     );
 }
 
-/// Malformed `NoteStorage.items` (wrong felt count) is rejected — the unit-04 codec's verdict,
-/// carried through unflattened.
+/// Malformed `NoteStorage.items` (wrong felt count) is rejected — the shared encoding crate's
+/// codec's verdict, carried through unflattened.
 #[test]
 fn discovery_rejects_malformed_items() {
     let [prefix, suffix] = account_id_to_felts(ListenerConfig::default().faucet_id());
@@ -532,7 +535,7 @@ fn discovery_rejects_malformed_items() {
 }
 
 /// A zero sender is refused, never promoted to a zero `remoteDepositor`
-/// (`INV-BURN-SENDER-PRIVACY-LEAK`).
+/// (the sender is the exposed depositor; a zero there would attribute the burn to nobody).
 #[test]
 fn discovery_rejects_a_zero_sender() {
     let items = encode_burn_note_items(&matching_payload());

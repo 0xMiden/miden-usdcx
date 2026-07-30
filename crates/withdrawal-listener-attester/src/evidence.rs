@@ -1,58 +1,45 @@
-//! The burn-evidence assembler (`DC-8`, §10.7) — and the honesty of what it tells Circle.
+//! The burn-evidence assembler — and the honesty of what it tells Circle.
 //!
-//! `INV-BURN-EVIDENCE-TRUST` is one sentence: **retrievable ≠ cryptographically proved.** Circle
-//! releases native USDC against the package this module builds, so every label on it is a claim the
-//! partner is making about what Miden can and cannot prove. Getting one wrong in the generous
-//! direction releases money against a burn that did not happen. This is `DEV-7`, the **HIGHEST-RISK**
-//! deviation in the integration, and it is **OPEN** — the tx-linkage is labelled to Circle as
-//! node-trusted, and whether Circle accepts a Miden tx id as a `burnTxId` at all, with or without the
-//! evidence behind it, is Circle's to answer.
+//! The governing rule is one sentence: **retrievable ≠ cryptographically proved.** Circle releases
+//! native USDC against the package built here, so every label on it is a claim about what Miden can
+//! prove. A label that is generous in the wrong direction releases money against a burn that did
+//! not happen. The format is the highest-risk deviation in the integration and is still OPEN with
+//! Circle: whether a Miden transaction id is acceptable as a `burnTxId` at all is Circle's to say.
 //!
-//! # The two overclaims this module exists to make impossible
+//! # The two overclaims this module makes impossible
 //!
-//! **Strength.** `SyncTransactions` tx-linkage (R-9/R-10) and the `SyncNullifiers` spend observation
-//! (R-5) come with no inclusion proof — the node says so and that is the whole of it. Labelling
-//! either CRYPTOGRAPHIC would tell Circle the partner can prove what it can only repeat.
+//! **Strength.** `SyncTransactions` linkage and the `SyncNullifiers` spend observation carry no
+//! inclusion proof — the node asserts them. Labelling either CRYPTOGRAPHIC would tell Circle the
+//! partner can prove what it can only repeat.
 //!
-//! **Scope**, which is subtler and worse. A `GetNotesById` inclusion proof IS cryptographic, and what
-//! it proves is that the note was **created**. It is silent on whether the note was ever consumed.
-//! "This note exists and was created in block N" is not "this burn happened" — so a CRYPTOGRAPHIC
-//! label must never be readable as a confirmed burn. [`ProvenFact`] is the type-level answer: every
-//! element carries what it proves alongside how strongly, and no element is both cryptographic and a
-//! consumption claim. [`EvidencePackage::consumption_trust`] answers the question Circle actually
-//! cares about — how well the *burn* is proved — and today the answer is always NODE-TRUSTED.
+//! **Scope**, which is subtler. A `GetNotesById` inclusion proof IS cryptographic, but what it
+//! proves is that the note was **created** — it is silent on consumption. So no element may be
+//! both cryptographic and a consumption claim, and `EvidencePackage::consumption_trust` answers
+//! the question Circle actually cares about, which today is always NODE-TRUSTED. A genuine record
+//! is the note id PLUS a consumption signal; neither half suffices, and only Circle's terminal
+//! `finalized` settles a withdrawal.
 //!
-//! A genuine burn record is therefore `note_id` (**what** — creation, cryptographic) **plus** a
-//! consumption signal (**that it burned** — node-trusted). Neither half is sufficient. And nothing
-//! here settles a withdrawal: only Circle's own terminal `finalized` does that (§10.10).
+//! # A `burnTxId`-only path is structurally absent
 //!
-//! # There is no `burnTxId`-only path, and its absence is structural
-//!
-//! `GetTransactionById` / tx-by-hash **DOES NOT EXIST** on Miden (R-8) — so a `burnTxId`-only
-//! redemption is not merely discouraged, it is unresolvable. `burnTxId` alone proves nothing. This
-//! module encodes that as an absence rather than a rule to remember: [`BurnEvidenceReads`] has no
-//! by-hash method, and [`assemble_evidence`]'s only entry key is a [`NoteId`], so there is no call
-//! that could resolve a burn from a transaction id (anti-`ASG-4`). If Circle ever requires
-//! cryptographic by-hash resolution, the paths are sponsoring `U1` (`OPTIONAL-UPSTREAM`) or running
-//! the full-block upgrade — both `DEV-7`-gated, neither assumed here.
+//! Miden has no `GetTransactionById`, so resolving a burn from a transaction id is not merely
+//! discouraged — it is impossible. That is encoded as an absence rather than a rule to remember:
+//! [`BurnEvidenceReads`] has no by-hash method and [`assemble_evidence`] keys on a `NoteId`, so no
+//! such call exists to be written.
 //!
 //! # Fail-closed
 //!
 //! Evidence that is missing, ambiguous, or self-contradicting yields
-//! [`EvidenceError::ReconciliationRequired`], never a package. The vocabulary is deliberately W7's —
-//! the posture it established for a `409` that names no withdrawal — because "the safe answer when we
-//! cannot tell" should have exactly one name in this service.
+//! [`EvidenceError::ReconciliationRequired`], never a package — the same name the idempotency store
+//! uses for a `409` it cannot attribute, because "the safe answer when we cannot tell" should have
+//! exactly one name in this service.
 //!
-//! # This slice's boundary
+//! # Boundary
 //!
-//! [`BurnEvidenceReads`] is a crate-local port, and the adapter behind it in the tests is a unit
-//! stand-in. `miden-client` has no v0.16 release, so the real reads are **W10** (PARKED). The port is
-//! shaped as a 1:1 image of the three RPCs the real client will expose — `GetNotesById`,
-//! `SyncTransactions(faucet_id)`, `SyncNullifiers` — so W10 maps onto it without reshaping the
-//! assembler. The labels below encode the researched v15/`next` trust model; W10 re-verifies them
-//! against the real v16 node. **If v16 evidence ever contradicts a label — stronger OR weaker — that
-//! is a spec-level event: stop and surface it. Labels change through a `DEV-7` decision, never
-//! silently.**
+//! [`BurnEvidenceReads`] is a port; the real reads are PARKED until `miden-client` has a v0.16
+//! release. It is shaped as a 1:1 image of the three RPCs that client will expose, so those reads
+//! map onto it without reshaping the assembler. **If node evidence ever contradicts a label —
+//! stronger OR weaker — stop and surface it. Labels change through a deliberate Circle-facing
+//! decision, never silently.**
 
 use core::fmt;
 
@@ -68,12 +55,13 @@ use crate::types::EvidencePackage;
 // ================================================================================================
 
 /// The three Miden reads the evidence rests on — the crate's port onto a v16 client that does not
-/// exist yet (W10, PARKED).
+/// exist yet (parked for the node-backed slice).
 ///
-/// Each method is one RPC, kept a 1:1 image of it so the real adapter is a translation rather than a
-/// redesign. Note what is **not** here, and cannot be added: there is no by-transaction-hash lookup,
-/// because Miden has none (`GetTransactionById` does not exist, R-8). A `burnTxId` is something this
-/// module *outputs*; it is never something it can look anything up by (anti-`ASG-4`).
+/// Each method is one RPC, kept a 1:1 image of it so the real adapter is a translation rather than
+/// a redesign. Note what is **not** here, and cannot be added: there is no by-transaction-hash
+/// lookup, because Miden has none (`GetTransactionById` does not exist). A `burnTxId` is
+/// something this module *outputs*; it is never something it can look anything up by (anti-`the
+/// evidence-labelling trap`).
 pub trait BurnEvidenceReads {
     /// `GetNotesById([note_id])` — the note, its details, and its inclusion proof.
     ///
@@ -82,7 +70,7 @@ pub trait BurnEvidenceReads {
     fn note_by_id(&self, note_id: NoteId) -> Result<NoteRecord, EvidenceReadError>;
 
     /// `SyncTransactions(account_ids = [faucet_id])` — the faucet's transactions. **NODE-TRUSTED**:
-    /// the node reports these and nothing proves them (R-9/R-10).
+    /// the node reports these and nothing proves them.
     ///
     /// The stream contains the transaction that CREATED the burn note as well as the one that
     /// consumed it. Telling them apart is [`assemble_evidence`]'s job and is not optional.
@@ -96,7 +84,7 @@ pub trait BurnEvidenceReads {
 
     /// `SyncNullifiers([nullifier])` — whether the node has seen the nullifier spent.
     /// **NODE-TRUSTED**: there is no inclusion proof for a spend, and no `CheckNullifiers` RPC to
-    /// cross-check it with (R-5).
+    /// cross-check it with.
     ///
     /// # Errors
     /// The read failed.
@@ -110,8 +98,8 @@ pub struct NoteRecord {
     /// asked about — attaching another burn's evidence to this one would be durable false evidence.
     pub note_id: NoteId,
 
-    /// `None` for a PRIVATE note: the node holds no details, so the burn is unobservable and there is
-    /// nothing to assemble (§10.11, V-2).
+    /// `None` for a PRIVATE note: the node holds no details, so the burn is unobservable and there
+    /// is nothing to assemble (Circle documents: V-2).
     pub details: Option<PublicNoteDetails>,
 }
 
@@ -122,16 +110,16 @@ pub struct PublicNoteDetails {
     /// the tx-linkage are both looked up by.
     pub nullifier: Nullifier,
 
-    /// The proof of the note's membership in its block's note root (R-2) — **CRYPTOGRAPHIC**, and it
-    /// proves CREATION. The package's `block_num` is read out of this proof's location and out of
-    /// nothing else, which is what entitles that field to a cryptographic label.
+    /// The proof of the note's membership in its block's note root — **CRYPTOGRAPHIC**, and
+    /// it proves CREATION. The package's `block_num` is read out of this proof's location and out
+    /// of nothing else, which is what entitles that field to a cryptographic label.
     pub inclusion_proof: NoteInclusionProof,
 }
 
 /// One `SyncTransactions` record. **NODE-TRUSTED** in its entirety.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransactionRecord {
-    /// The transaction id — a candidate `burnTxId` (`DEV-7`: whether Circle accepts one is OPEN).
+    /// The transaction id — a candidate `burnTxId` (whether Circle accepts one is OPEN).
     pub transaction_id: TransactionId,
 
     /// The account the transaction ran against.
@@ -140,47 +128,45 @@ pub struct TransactionRecord {
     /// The block it landed in — node-reported, and never the source of the package's `block_num`.
     pub block_num: BlockNumber,
 
-    /// The nullifiers of the notes this transaction CONSUMED. This is the only field that can link a
-    /// transaction to a burn.
+    /// The nullifiers of the notes this transaction CONSUMED. This is the only field that can link
+    /// a transaction to a burn.
     pub input_note_nullifiers: Vec<Nullifier>,
 
     /// Proofs for the notes this transaction CREATED.
     ///
-    /// **These do not prove input-note consumption** (R-9/R-10) — the field is here because the real
-    /// RPC carries it, and it is named `output_note_proofs` rather than `note_proofs` so that reading
-    /// it as consumption evidence has to be a deliberate act. The burn note's own creating
+    /// **These do not prove input-note consumption** — the field is here because the
+    /// real RPC carries it, and it is named `output_note_proofs` rather than `note_proofs` so that
+    /// reading it as consumption evidence has to be a deliberate act. The burn note's own creating
     /// transaction appears in the faucet's stream carrying the burn note right here; matching a
     /// transaction on "does it mention our note" would select it and publish the note's MINT as the
     /// transaction that burned it.
     pub output_note_proofs: Vec<(NoteId, NoteInclusionProof)>,
 }
 
-/// A `SyncNullifiers` observation. **NODE-TRUSTED** (R-5).
+/// A `SyncNullifiers` observation. **NODE-TRUSTED**.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NullifierRecord {
     /// The nullifier the node is answering about.
     pub nullifier: Nullifier,
 
-    /// `Some(block)` — the node reports the nullifier spent there. `None` — the node does not report
-    /// it spent, which is not proof it was not: it is the absence of a signal, and absence is
-    /// handled by refusing to assemble rather than by guessing.
+    /// `Some(block)` — the node reports the nullifier spent there. `None` — the node does not
+    /// report it spent, which is not proof it was not: it is the absence of a signal, and absence
+    /// is handled by refusing to assemble rather than by guessing.
     pub spent_in_block: Option<BlockNumber>,
 }
 
 // THE ASSEMBLER
 // ================================================================================================
 
-/// Assembles the `DC-8` burn-evidence package for the burn note `note_id` burned by `faucet_id`.
+/// Assembles the burn-evidence package (burn tx id, note id, nullifier, block number, per-element
+/// trust labels) for the burn note `note_id` burned by `faucet_id`.
 ///
-/// The entry key is the **note id**, and that is the anti-`ASG-4` rule in the signature: evidence is
-/// resolved from the note outward. There is no by-`burnTxId` entry point, because Miden offers no
-/// by-hash lookup to build one on (R-8).
-///
-/// What it does, and why in this order:
+/// Evidence is resolved from the note outward — the module docs explain why there is no
+/// by-`burnTxId` entry point. The order of the three reads is load-bearing:
 ///
 /// 1. **`GetNotesById`** — the note must be public and committed. Its inclusion proof is the
 ///    CRYPTOGRAPHIC creation evidence, and the package's `block_num` comes from that proof's
-///    location. This step proves the note EXISTS; it proves nothing about a burn.
+///    location.
 /// 2. **`SyncNullifiers`** — the spend observation. Without it there is no reason to believe the
 ///    note was ever consumed, and a note that exists is not a burn.
 /// 3. **`SyncTransactions(faucet_id)`** — the linkage, resolved by finding the faucet transaction
@@ -193,11 +179,12 @@ pub struct NullifierRecord {
 /// # Errors
 /// * [`EvidenceError::Read`] — one of the three reads failed. Not an answer; not "no burn".
 /// * [`EvidenceError::NoteNotObservable`] — the note is private (`details = None`), so the burn is
-///   unobservable (§10.11).
+///   unobservable.
 /// * [`EvidenceError::WrongNoteAnswered`] / [`EvidenceError::WrongNullifierAnswered`] — the port
 ///   answered about something else.
 /// * [`EvidenceError::ReconciliationRequired`] — the reads are incomplete, ambiguous, or mutually
-///   inconsistent. Fail-closed: an operator reconciles it, and no half-evidenced burn goes to Circle.
+///   inconsistent. Fail-closed: an operator reconciles it, and no half-evidenced burn goes to
+///   Circle.
 pub fn assemble_evidence<P>(
     port: &P,
     note_id: NoteId,
@@ -234,7 +221,7 @@ where
         .spent_in_block
         .ok_or_else(|| reconciliation(AmbiguityReason::NoSpendObserved))?;
 
-    // A note is created in one block and can only be consumed in a later one (INV-TWO-BLOCK-BURN).
+    // A note is created in one block and can only be consumed in a later one.
     // A node reporting otherwise is reporting something the chain does not do, so the report is not
     // evidence of anything.
     if spend_block <= create_block {
@@ -247,8 +234,8 @@ where
     }
 
     // 3. The linkage — the faucet transaction that CONSUMED this note. Matched on input nullifiers
-    //    and on nothing else: `output_note_proofs` would match the transaction that created the note
-    //    (R-9/R-10), which is in this very stream.
+    // and on nothing else: `output_note_proofs` would match the transaction that CREATED the note,
+    // which is in this very stream.
     let transactions = port.faucet_transactions(faucet_id)?;
     let consuming = transactions
         .iter()
@@ -325,23 +312,24 @@ where
     ))
 }
 
-/// The OPTIONAL full-block path (§10.7, `IMPL-FULLBLOCK-PATH`) — **deferred, and not implemented.**
+/// The OPTIONAL full-block path — **deferred, and
+/// not implemented.**
 ///
 /// It is the one route that would upgrade the tx-linkage from node-trusted to cryptographic:
 /// `GetBlockByNumber{include_proof}` → validate the `SignedBlock` → recompute the header's
 /// `tx_commitment` from `OrderedTransactionHeaders` (a sequential hash over `(transaction_id,
 /// account_id)` tuples) → confirm `(burnTxId, faucet_id)` is committed → confirm that header's
-/// `input_notes` contains the burn nullifier (R-11..R-13). It is P2, it is labelled `REQUIRES
-/// IMPLEMENTATION VALIDATION`, and the question of whether Circle needs it is `DEV-7`. All of that
-/// stays OPEN, so the path is not built — [`BurnEvidenceReads`] deliberately exposes no block read to
-/// build it on.
+/// `input_notes` contains the burn nullifier. It is P2, it is labelled `REQUIRES
+/// IMPLEMENTATION VALIDATION`, and whether Circle needs it is part of the still-open burn-evidence
+/// question. All of that stays OPEN, so the path is not built — [`BurnEvidenceReads`] deliberately
+/// exposes no block read to build it on.
 ///
 /// It returns a typed error rather than a panicking placeholder. A panic is not a deferral: this
-/// service releases money, the function is public, and a caller reaching a path that was never built
-/// should get a refusal it can handle, not a dead process (`return-error-not-panic`).
+/// service releases money, the function is public, and a caller reaching a path that was never
+/// built should get a refusal it can handle, not a dead process (`return-error-not-panic`).
 ///
 /// # Errors
-/// Always [`EvidenceError::FullBlockUpgradeNotImplemented`]. The labels on `package` are unchanged —
+/// Always [`EvidenceError::FullBlockUpgradeNotImplemented`]. The labels on `package` are unchanged
 /// nothing ran, so nothing is upgraded.
 pub fn full_block_upgrade(package: &EvidencePackage) -> Result<EvidencePackage, EvidenceError> {
     let _ = package;
@@ -360,8 +348,7 @@ pub enum EvidenceError {
     Read(EvidenceReadError),
 
     /// The note is private: `GetNotesById` returned `details = None`, so the burn is unobservable
-    /// (§10.11, V-2). A burn note must be `NoteType::Public` to be evidence at all
-    /// (`INV-PUBLIC-BURN-OBSERVABILITY`).
+    /// (Circle documents: V-2). A burn note must be `NoteType::Public` to be evidence at all.
     NoteNotObservable { note_id: NoteId },
 
     /// The port answered about a different note than the one asked about.
@@ -373,57 +360,58 @@ pub enum EvidenceError {
         answered: Nullifier,
     },
 
-    /// The evidence is incomplete, ambiguous, or self-contradicting — **so the burn is blocked for an
-    /// operator rather than reported as anything.**
+    /// The evidence is incomplete, ambiguous, or self-contradicting — **so the burn is blocked for
+    /// an operator rather than reported as anything.**
     ///
-    /// This is the fail-closed posture W7 established for a `409` that names no withdrawal, under the
-    /// same name on purpose. A withheld withdrawal costs a burn its latency; a withdrawal released on
-    /// evidence nobody could stand behind costs the reserve.
+    /// This is the fail-closed posture established for a `409` that names no withdrawal, under the
+    /// same name on purpose. A withheld withdrawal costs a burn its latency; a withdrawal released
+    /// on evidence nobody could stand behind costs the reserve.
     ReconciliationRequired {
         note_id: NoteId,
         reason: AmbiguityReason,
     },
 
-    /// The full-block upgrade is deferred (P2, `IMPL-FULLBLOCK-PATH`, OPEN).
+    /// The optional full-block upgrade path is not implemented; it stays open.
     FullBlockUpgradeNotImplemented,
 }
 
-/// What about the evidence could not be resolved. Each variant is a state in which an honest package
-/// cannot be built, named so an operator knows what to go and look at.
+/// What about the evidence could not be resolved. Each variant is a state in which an honest
+/// package cannot be built, named so an operator knows what to go and look at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AmbiguityReason {
-    /// The node does not report the nullifier spent. The note's creation is cryptographically proved
-    /// and that is not a burn — the note may simply be sitting there unspent.
+    /// The node does not report the nullifier spent. The note's creation is cryptographically
+    /// proved and that is not a burn — the note may simply be sitting there unspent.
     NoSpendObserved,
 
     /// The nullifier is reported spent, but no transaction of the faucet's claims to have consumed
-    /// it. The `burnTxId` is unresolved, and there is no by-hash lookup to resolve it with (R-8).
+    /// it. The `burnTxId` is unresolved, and there is no by-hash lookup to resolve it with.
     NoConsumingTransaction,
 
     /// Two or more DIFFERENT transactions claim to have consumed the same nullifier. One of them is
     /// wrong and nothing available here can say which.
     AmbiguousConsumingTransactions { count: usize },
 
-    /// The node reported ONE transaction id with two or more different bodies — same id, disagreeing
-    /// on the block it landed in, on what it consumed, or on whose account it ran against.
+    /// The node reported ONE transaction id with two or more different bodies — same id,
+    /// disagreeing on the block it landed in, on what it consumed, or on whose account it ran
+    /// against.
     ///
     /// This is a contradiction rather than a duplicate, and the difference is the whole point: an
     /// identical row repeated is a node artifact and collapses harmlessly, whereas two different
     /// stories about one transaction mean at least one of them is false. Picking either — including
-    /// by the accident of which arrived first — publishes a linkage the node itself contradicted, and
-    /// makes the package's contents depend on row order.
+    /// by the accident of which arrived first — publishes a linkage the node itself contradicted,
+    /// and makes the package's contents depend on row order.
     ContradictoryTransactionRows { count: usize },
 
-    /// The spend observation and the tx-linkage name different blocks. Both are node-trusted, neither
-    /// is checkable, and they contradict each other.
+    /// The spend observation and the tx-linkage name different blocks. Both are node-trusted,
+    /// neither is checkable, and they contradict each other.
     SpendBlockDisagreesWithLinkage {
         spend_block: u32,
         linkage_block: u32,
     },
 
     /// The reported spend is in the creation block or earlier — a state the chain does not produce
-    /// (`INV-TWO-BLOCK-BURN`).
+    /// (a burn note is created in block N and consumed in block ≥ N+1).
     ConsumptionPrecedesCreation { create_block: u32, spend_block: u32 },
 }
 

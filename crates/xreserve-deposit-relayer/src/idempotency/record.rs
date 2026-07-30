@@ -85,9 +85,9 @@ impl fmt::Display for TxId {
 /// * `AlreadyMinted` — the chain says the nonce is already in `usedNonces`: the on-chain safety
 ///   backstop already fired. Terminal, because another attempt could only fail the same assert.
 /// * `Failed` — the attempt did not mint, TRANSIENTLY. It is the ONE status that does not block a
-///   retry: treating a transient submit failure as "submitted" would strand the deposit forever, and
-///   a redundant attempt is bounded by the on-chain nonce assert. A later cycle re-drives it from
-///   `retryable()`.
+///   retry: treating a transient submit failure as "submitted" would strand the deposit forever,
+///   and a redundant attempt is bounded by the on-chain nonce assert. A later cycle re-drives it
+///   from `retryable()`.
 /// * `Rejected` — the attempt did not mint, PERMANENTLY (a fatal node submit, or a note the factory
 ///   refused). Terminal, and reachable only `Pending → Rejected`, so it can never overwrite a
 ///   submitted or settled record. It is the durable half of the fatal/transient split: unlike
@@ -98,11 +98,11 @@ impl fmt::Display for TxId {
 /// * nothing leaves a terminal status — a settled mint cannot be re-opened;
 /// * there is no `Submitted → Submitted` — that is the double-submit the seam exists to prevent;
 /// * there is no `Failed → Submitted` — the way out of `Failed` is the ATOMIC re-claim
-///   (`claim_nonce`, the `Failed → Pending` edge), never a bare submission. A caller that reads "not
-///   submitted" and then submits is running the read-then-write race, and this is what makes that
-///   spelling impossible rather than merely discouraged;
-/// * `Pending` is reachable ONLY from a claim (fresh insert, or the retry edge) — a record cannot be
-///   pushed back into an owned state by any other API.
+///   (`claim_nonce`, the `Failed → Pending` edge), never a bare submission. A caller that reads
+///   "not submitted" and then submits is running the read-then-write race, and this is what makes
+///   that spelling impossible rather than merely discouraged;
+/// * `Pending` is reachable ONLY from a claim (fresh insert, or the retry edge) — a record cannot
+///   be pushed back into an owned state by any other API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SubmissionStatus {
     Pending,
@@ -110,11 +110,12 @@ pub enum SubmissionStatus {
     Committed,
     AlreadyMinted,
     Failed,
-    /// The mint was PERMANENTLY refused — a fatal node submit, or a note unit-04's factory would not
-    /// build. It is the durable counterpart of [`Self::Failed`]: both mean "did not mint", but
-    /// `Failed` is the retryable pool a later cycle re-drives, while `Rejected` is TERMINAL — the
-    /// deposit no retry can help. Keeping the two apart is what stops a permanently-refused
-    /// transaction from being re-fetched and re-submitted on every cycle forever.
+    /// The mint was PERMANENTLY refused — a fatal node submit, or a note the shared encoding
+    /// crate's factory would not build. It is the durable counterpart of [`Self::Failed`]: both
+    /// mean "did not mint", but `Failed` is the retryable pool a later cycle re-drives, while
+    /// `Rejected` is TERMINAL — the deposit no retry can help. Keeping the two apart is what stops
+    /// a permanently-refused transaction from being re-fetched and re-submitted on every cycle
+    /// forever.
     Rejected,
 }
 
@@ -181,7 +182,7 @@ impl SubmissionStatus {
             // note the factory would not build): terminal, and reachable only from the claimed-but-
             // not-yet-submitted state, so it can never overwrite a Submitted/settled record
             (Self::Pending, Self::Rejected) => true,
-            // ... and landed
+            //... and landed
             (Self::Submitted, Self::Committed) => true,
             // it did not mint: back into the retryable pool. A failure can be recorded whether the
             // transaction was sent or not, and a repeated failure just re-stamps the record
@@ -220,21 +221,24 @@ pub struct IdempotencyRecord {
 }
 
 impl IdempotencyRecord {
-    /// The DepositIntent `nonce` (DC-1 field 9) — the key the on-chain `usedNonces` map is keyed by
-    /// (through unit-04's `bytes32_to_storage_map_key`, which this crate never re-derives).
+    /// The DepositIntent `nonce` (header field 9) — the key the on-chain `usedNonces` map is keyed
+    /// by (through the shared encoding crate's `bytes32_to_storage_map_key`, which this crate never
+    /// re-derives).
     pub fn nonce_key(&self) -> &[u8; 32] {
         &self.nonce_key
     }
 
-    /// The attestation envelope's `messageHash` — `keccak256(payload)` (DC-2). It BINDS the record to
-    /// one attestation: a second attestation claiming the same nonce with a different hash is refused
-    /// rather than allowed to overwrite it. It is also the handle a retry re-fetches the payload by.
+    /// The attestation envelope's `messageHash` — `keccak256(payload)`, raw keccak. It BINDS the
+    /// record to one attestation: a second attestation claiming the same nonce with a different
+    /// hash is refused rather than allowed to overwrite it. It is also the handle a retry
+    /// re-fetches the payload by.
     pub fn attestation_message_hash(&self) -> &[u8; 32] {
         &self.attestation_message_hash
     }
 
-    /// The Miden transaction the mint went out in — `None` until it does. It SURVIVES a failure and a
-    /// retry claim: it is the evidence of what was actually sent, and a new submission replaces it.
+    /// The Miden transaction the mint went out in — `None` until it does. It SURVIVES a failure and
+    /// a retry claim: it is the evidence of what was actually sent, and a new submission replaces
+    /// it.
     pub fn submitted_tx_id(&self) -> Option<&TxId> {
         self.submitted_tx_id.as_ref()
     }
@@ -262,11 +266,11 @@ impl IdempotencyRecord {
 pub enum ClaimOutcome {
     /// This observer owns the nonce and must mint it. Either it was never seen before (a fresh
     /// `Pending` record), or its previous attempt FAILED and this observer won the retry — the two
-    /// are the same instruction, so they are the same variant. (The record tells them apart: a retry
-    /// claim carries the failed attempt's transaction id.)
+    /// are the same instruction, so they are the same variant. (The record tells them apart: a
+    /// retry claim carries the failed attempt's transaction id.)
     Claimed(IdempotencyRecord),
-    /// The nonce is already owned or already settled — a re-poll of the same attestation, or another
-    /// observer got there first. NO second mint attempt follows.
+    /// The nonce is already owned or already settled — a re-poll of the same attestation, or
+    /// another observer got there first. NO second mint attempt follows.
     AlreadySeen(IdempotencyRecord),
 }
 

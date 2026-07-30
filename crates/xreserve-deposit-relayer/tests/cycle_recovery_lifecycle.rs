@@ -1,21 +1,22 @@
-//! **The two permanent-stranding paths the round-2 recovery driver still had** (round-3 finding 1):
+//! **The two permanent-stranding paths a recovery driver must not have:**
 //!
-//! 1. **A crashed claim strands forever.** A process death — or a terminal-state write that failed —
-//!    between `claim_nonce` and settle leaves a `Pending` record. `claim_nonce` blocks a re-claim of
-//!    it (Pending blocks resubmission) and `retryable()` never returns it (it is not `Failed`), so
-//!    nothing ever retries it. `reclaim_stale_pending` frees such a record, but round 2 never called
-//!    it from the cycle. This suite drives the cycle and asserts a stale `Pending` is reclaimed and
-//!    retried — and that a YOUNG `Pending` (a submit that may still be in flight) is left alone.
+//! 1. **A crashed claim strands forever.** A process death — or a terminal-state write that failed
+//!    — between `claim_nonce` and settle leaves a `Pending` record. `claim_nonce` blocks a re-claim
+//!    of it (Pending blocks resubmission) and `retryable()` never returns it (it is not `Failed`),
+//!    so nothing ever retries it. `reclaim_stale_pending` frees such a record — but only if the
+//!    cycle actually calls it. This suite drives the cycle and asserts a stale `Pending` is
+//!    reclaimed and retried — and that a YOUNG `Pending` (a submit that may still be in flight) is
+//!    left alone.
 //!
 //! 2. **A persistently-unfetchable head starves the tail.** The bounded retry queue selects the
-//!    oldest `retry_batch_size` `Failed` rows by timestamp. Round 2 left a re-fetch-failed row's
-//!    timestamp unchanged, so a full batch of permanently-unfetchable rows monopolized every cycle and
-//!    starved row `batch+1` onward. This suite seeds more than one batch, keeps the head unfetchable,
-//!    and asserts the tail still gets a turn — because every retry ATTEMPT now re-stamps the row,
-//!    rotating it behind the ones not yet tried.
+//!    oldest `retry_batch_size` `Failed` rows by timestamp. If a failed re-fetch left its row's
+//!    timestamp unchanged, a full batch of permanently-unfetchable rows would monopolize every
+//!    cycle and starve row `batch+1` onward. This suite seeds more than one batch, keeps the head
+//!    unfetchable, and asserts the tail still gets a turn — because every retry ATTEMPT re-stamps
+//!    the row, rotating it behind the ones not yet tried.
 //!
-//! Real everywhere except the Miden submit PORT (NON-GATING; §11). The store runs on a controllable
-//! clock so "older than the threshold" and "re-stamped just now" are deterministic.
+//! Real everywhere except the Miden submit PORT (NON-GATING; the mock boundary). The store runs on
+//! a controllable clock so "older than the threshold" and "re-stamped just now" are deterministic.
 
 mod cycle_support;
 mod fixtures;
@@ -38,9 +39,9 @@ use mock_circle::{
 // STALE-CLAIM RECOVERY — a crashed claim does not strand a deposit forever
 // ================================================================================================
 
-/// A `Pending` record older than the stale-claim threshold is RECLAIMED (→ `Failed`) by the cycle and
-/// then retried to success. Without the reclaim wiring it would sit `Pending` forever: unreclaimable
-/// (`claim_nonce` blocks it) and invisible to `retryable()`.
+/// A `Pending` record older than the stale-claim threshold is RECLAIMED (→ `Failed`) by the cycle
+/// and then retried to success. Without the reclaim wiring it would sit `Pending` forever:
+/// unreclaimable (`claim_nonce` blocks it) and invisible to `retryable()`.
 #[tokio::test]
 async fn a_stale_pending_claim_is_reclaimed_and_retried() {
     let stranded = fixtures::test_vector();
@@ -94,8 +95,8 @@ async fn a_stale_pending_claim_is_reclaimed_and_retried() {
     );
 }
 
-/// A `Pending` record YOUNGER than the threshold is NOT reclaimed — its submit may still be in flight,
-/// and reclaiming it would race a live attempt. It stays `Pending` and is not re-fetched.
+/// A `Pending` record YOUNGER than the threshold is NOT reclaimed — its submit may still be in
+/// flight, and reclaiming it would race a live attempt. It stays `Pending` and is not re-fetched.
 #[tokio::test]
 async fn a_young_pending_claim_is_left_in_flight() {
     let in_flight = fixtures::test_vector();
@@ -150,11 +151,11 @@ async fn a_young_pending_claim_is_left_in_flight() {
 // ================================================================================================
 
 /// With `retry_batch_size = 2` and THREE stranded deposits whose re-fetch always fails, the third
-/// (tail) deposit still gets a retry attempt within two cycles — because every attempt re-stamps the
-/// row it tried, rotating the tried ones behind the untried one.
+/// (tail) deposit still gets a retry attempt within two cycles — because every attempt re-stamps
+/// the row it tried, rotating the tried ones behind the untried one.
 ///
-/// Round 2 left a re-fetch-failed row's timestamp unchanged, so the first two rows (oldest) were
-/// selected every cycle and the third was never reached. The oracle is the by-hash request log: the
+/// Were a re-fetch-failed row's timestamp left unchanged, the first two rows (oldest) would be
+/// selected every cycle and the third never reached. The oracle is the by-hash request log: the
 /// tail deposit's `messageHash` must appear.
 #[tokio::test]
 async fn the_retry_queue_rotates_so_a_stuck_head_does_not_starve_the_tail() {
@@ -226,9 +227,9 @@ async fn the_retry_queue_rotates_so_a_stuck_head_does_not_starve_the_tail() {
 // ================================================================================================
 
 /// Stale-claim reclamation must run BEFORE the optional `/v1/info` discovery, so a broken discovery
-/// endpoint cannot prevent local crash recovery. Here the fast-fail is ON and `/v1/info` returns 400
-/// (the cycle will fail on it) — but the stale `Pending` claim must ALREADY have been reclaimed to
-/// `Failed` by the time discovery is attempted.
+/// endpoint cannot prevent local crash recovery. Here the fast-fail is ON and `/v1/info` returns
+/// 400 (the cycle will fail on it) — but the stale `Pending` claim must ALREADY have been reclaimed
+/// to `Failed` by the time discovery is attempted.
 #[tokio::test]
 async fn stale_reclamation_runs_before_a_broken_discovery_fetch() {
     let stranded = fixtures::test_vector();
@@ -292,9 +293,9 @@ async fn stale_reclamation_runs_before_a_broken_discovery_fetch() {
 // ================================================================================================
 
 /// A cycle built on an INVALID recovery config (a zero retry batch, which would strand every retry)
-/// refuses to run — it returns the validation error and reaches neither the store nor the submit port.
-/// The binary fails on the same error at startup; this is the belt-and-suspenders for a directly
-/// invoked cycle.
+/// refuses to run — it returns the validation error and reaches neither the store nor the submit
+/// port. The binary fails on the same error at startup; this is the belt-and-suspenders for a
+/// directly invoked cycle.
 #[tokio::test]
 async fn an_invalid_recovery_config_fails_the_cycle_closed() {
     let mock = MockCircle::start(Script::new().batch(vec![Reply::ok(attestation_page(&[]))]));
@@ -350,8 +351,9 @@ fn nonce_of(vector: &AttestationVector) -> [u8; 32] {
         .nonce()
 }
 
-/// The canonical payload with its nonce perturbed — a distinct, still-valid deposit. The nonce offset
-/// is located by searching for the nonce the decoder reports, so no DC-1 offset is restated.
+/// The canonical payload with its nonce perturbed — a distinct, still-valid deposit. The nonce
+/// offset is located by searching for the nonce the decoder reports, so no layout offset is
+/// restated.
 fn with_distinct_nonce(tweak: u8) -> Vec<u8> {
     let payload = canonical_payload(TEST_VECTOR_PAYLOAD_ID);
     let nonce = nonce_of(&PartnerAttester::new().attest(&payload));

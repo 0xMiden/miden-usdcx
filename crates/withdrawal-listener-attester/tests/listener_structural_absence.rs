@@ -1,17 +1,19 @@
-//! `T-LA-07`, structural half — **the things the orchestration must not be able to do.**
+//! The structural half: **the things the orchestration must not be able
+//! to do.**
 //!
 //! Its companion `listener_orchestration.rs` drives the flow and counts what happened. This file
 //! asserts what nothing can do, which needs a different kind of test: no test can call a function
 //! that must not be callable, or observe a route that does not exist. So these read the SOURCE, the
-//! way `evidence_structural_absence.rs` (W8) and `submit_idempotency.rs`'s
-//! `no_public_api_can_post_a_withdrawal_without_the_ledger` (W7) do — a decision the compiler cannot
+//! way `evidence_structural_absence.rs` and `submit_idempotency.rs`'s
+//! `no_public_api_can_post_a_withdrawal_without_the_ledger` do — a decision the compiler cannot
 //! hold is pinned mechanically, so it cannot quietly revert.
 //!
 //! Four absences, each of which would be a fund-safety defect:
 //!
 //! * **The orchestration cannot reach the raw signer.** `attester::sign` signs any 32 bytes by
-//!   design, and it stays public because `T-LA-08` is its subject — but the withdrawal flow routes
-//!   through `validate::sign_validated`, which consumes the B5 token, and through nothing else.
+//!   design, and it stays public because the structural test is its subject — but the withdrawal
+//!   flow routes through `validate::sign_validated`, which consumes the validation token, and
+//!   through nothing else.
 //! * **The orchestration cannot build a batch beside the quorum.** `WithdrawBatch::new` accepts any
 //!   `burnSignatures.len() >= 2` — the wire schema's rule, not Circle's verifier's. Only
 //!   `build_withdraw_batch`, which takes a `QuorumBundle`, may assemble the submission.
@@ -29,13 +31,13 @@ use withdrawal_listener_attester::circle::schema::WithdrawBatch;
 /// **The orchestration never calls `attester::sign`.**
 ///
 /// `sign` takes `&[u8]` and a key: it will sign anything, which is exactly right for the primitive
-/// `T-LA-08` tests and exactly wrong for the money path. The withdrawal flow's signing entry is
-/// `validate::sign_validated`, which cannot be called without the `ValidatedWithdrawal` that only a
-/// full B5 match mints — so routing through it is what makes "signed a response that failed
-/// validation" untypeable rather than merely unreached.
+/// the structural tests and exactly wrong for the money path. The withdrawal flow's signing entry
+/// is `validate::sign_validated`, which cannot be called without the `ValidatedWithdrawal` that
+/// only a full field-by-field match mints — so routing through it is what makes "signed a response
+/// that failed validation" untypeable rather than merely unreached.
 ///
 /// Narrowing `sign` itself to `pub(crate)` would be the stronger fix and is deliberately NOT done:
-/// it would break `tests/offchain_signing.rs`, which is `T-LA-08`'s whole subject and an in-scope
+/// it would break `tests/offchain_signing.rs`, which covers it's whole subject and an in-scope
 /// caller. So the escape hatch stays, and its absence from THIS path is pinned here instead.
 #[test]
 fn the_orchestration_never_calls_the_raw_signer() {
@@ -68,12 +70,12 @@ fn the_orchestration_never_calls_the_raw_signer() {
 /// `WithdrawBatch` is the wire type. Its schema says `burnSignatures: minItems 2`, so its
 /// constructor accepts three signatures, two in descending order, or the same signer twice — each a
 /// submission Circle's exactly-2 / strictly-ascending / no-duplicate-signer verifier rejects
-/// (`Attestable.sol:75,333-381`). It cannot refuse them: it must stay able to DECODE whatever Circle
-/// sends.
+/// (`Attestable.sol:75,333-381`). It cannot refuse them: it must stay able to DECODE whatever
+/// Circle sends.
 ///
-/// The pre-submit allowlist gate does not cover the gap either, and this is the distinction the whole
-/// slice turns on: it checks signer MEMBERSHIP, and **membership is not shape**. Two signatures from
-/// one registered attester pass membership and fail the verifier.
+/// The pre-submit allowlist gate does not cover the gap either, and this is the distinction the
+/// whole slice turns on: it checks signer MEMBERSHIP, and **membership is not shape**. Two
+/// signatures from one registered attester pass membership and fail the verifier.
 ///
 /// So the orchestration builds through `withdrawal_api::build_withdraw_batch`, which takes a
 /// `QuorumBundle` — a value only `assemble_quorum`'s full pass mints.
@@ -99,14 +101,15 @@ fn the_orchestration_never_constructs_a_batch_beside_the_quorum() {
 /// **The batch builder takes ONE burn intent, not a vector.**
 ///
 /// The wire's `burnIntents` is `1..=10`, and the fan-in it permits is invisible to every check
-/// upstream: a batch carrying the burn's own intent twice passes B5 on both copies, and the batch's
-/// single digest covers both, so one signature authorizes two releases of one burn.
+/// upstream: a batch carrying the burn's own intent twice passes the field-by-field compare on both
+/// copies, and the batch's single digest covers both, so one signature authorizes two releases of
+/// one burn.
 ///
 /// `listener_orchestration.rs` proves the runtime gate refuses that response. This pins the other
 /// half — that even with the gate removed, a set could not be *expressed* on the wire, because the
 /// builder's parameter is a single `BurnIntent`. The two are deliberately different mechanisms: the
-/// gate is what refuses (and it must, so no signature is produced), and the type is what stops a later
-/// edit from quietly restoring `.to_vec()`.
+/// gate is what refuses (and it must, so no signature is produced), and the type is what stops a
+/// later edit from quietly restoring `.to_vec()`.
 #[test]
 fn the_batch_builder_cannot_express_an_intent_set() {
     let source = strip_comments(&read_src("withdrawal_api.rs"));
@@ -128,11 +131,11 @@ fn the_batch_builder_cannot_express_an_intent_set() {
     );
 }
 
-/// …and a `QuorumBundle` cannot be manufactured: `assemble_quorum` is its only construction site, so
-/// every bundle that exists passed the exactly-2 / verifies-to-its-claimed-signer / ascending /
+/// …and a `QuorumBundle` cannot be manufactured: `assemble_quorum` is its only construction site,
+/// so every bundle that exists passed the exactly-2 / verifies-to-its-claimed-signer / ascending /
 /// no-duplicate checks. A second site anywhere would be a bundle built beside them, with the same
 /// type and none of the guarantees — exactly what `EvidencePackage`'s sealed constructor forecloses
-/// for `DC-8`.
+/// for the burn evidence.
 #[test]
 fn the_assembler_is_the_only_construction_site_for_a_quorum_bundle() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -159,13 +162,13 @@ fn the_assembler_is_the_only_construction_site_for_a_quorum_bundle() {
     );
 }
 
-/// The functional half of the two absences above: the wire type genuinely DOES accept a shape Circle
-/// rejects, so the structural routing is doing real work rather than guarding a door that is already
-/// locked.
+/// The functional half of the two absences above: the wire type genuinely DOES accept a shape
+/// Circle rejects, so the structural routing is doing real work rather than guarding a door that is
+/// already locked.
 ///
 /// If this test ever fails because `WithdrawBatch::new` grew a shape check, that is a change to the
-/// DECODE path — Circle's responses would start being refused for a rule the schema does not state —
-/// and it should be a deliberate decision, not a silent one.
+/// DECODE path — Circle's responses would start being refused for a rule the schema does not state
+/// — and it should be a deliberate decision, not a silent one.
 #[test]
 fn the_wire_type_alone_would_accept_a_shape_circle_rejects() {
     let intents = withdraw_intents();
@@ -216,14 +219,15 @@ fn the_assembler_mints_a_bundle_for_the_honest_shape() {
 
 /// **There is no independent-argument prepare-request builder.**
 ///
-/// `build_prepare_request` used to take `(&BurnPayload, AccountId, &Config)`, which made "burn A's
-/// amount under burn B's depositor" a two-character mistake — and an undetectable one: Circle returns
-/// the spec it was asked for, so B5 compares A's amount against A's amount and passes, and the
-/// attesters sign a canonical intent that is wrong in the one field nothing checks.
+/// A `build_prepare_request` taking `(&BurnPayload, AccountId, &Config)` would make "burn A's
+/// amount under burn B's depositor" a two-character mistake — and an undetectable one: Circle
+/// returns the spec it was asked for, so the gate compares A's amount against A's amount and
+/// passes, and the attesters sign a canonical intent that is wrong in the one field nothing checks.
 ///
-/// It now takes a `&DiscoveredBurn`, whose only constructor is B3's pass, so both values come off one
-/// note by construction. This test pins the ABSENCE of the two-argument form, because a builder kept
-/// "for convenience" beside it would restore the mistake with the convention intact.
+/// The builder takes a `&DiscoveredBurn`, whose only constructor is the discovery gate's pass, so
+/// both values come off one note by construction. This test pins the ABSENCE of the two-argument
+/// form, because a builder kept "for convenience" beside it would restore the mistake with the
+/// convention intact.
 #[test]
 fn there_is_no_independent_argument_prepare_request_builder() {
     let source = strip_comments(&read_src("withdrawal_api.rs"));
@@ -243,8 +247,8 @@ fn there_is_no_independent_argument_prepare_request_builder() {
     );
 }
 
-/// The orchestration reads neither half out of the burn to re-pair them: `build_prepare_request` gets
-/// the `DiscoveredBurn` whole.
+/// The orchestration reads neither half out of the burn to re-pair them: `build_prepare_request`
+/// gets the `DiscoveredBurn` whole.
 #[test]
 fn the_orchestration_passes_the_discovered_burn_whole() {
     let source = listener_source();
@@ -267,9 +271,9 @@ fn the_orchestration_passes_the_discovered_burn_whole() {
 /// public: a caller reaching an unbuilt path should get a refusal it can handle, not a dead process
 /// (`return-error-not-panic`).
 ///
-/// These two `contains` calls are the only place either macro's name is written in this file, so the
-/// gate's `grep -rn "todo!\|unimplemented!"` over the crate finds this test asserting their absence
-/// and nothing else.
+/// These two `contains` calls are the only place either macro's name is written in this file, so
+/// the gate's `grep -rn "todo!\|unimplemented!"` over the crate finds this test asserting their
+/// absence and nothing else.
 #[test]
 fn the_orchestration_has_no_panicking_placeholder() {
     let source = listener_source();
@@ -284,13 +288,13 @@ fn the_orchestration_has_no_panicking_placeholder() {
 /// The WHOLE `src/listener/` module — every file of it — with comments stripped, so what the sweeps
 /// read is the DECLARATIONS rather than the prose about them.
 ///
-/// Two things here are load-bearing. It reads the whole DIRECTORY, not `mod.rs`: the module was split
-/// under G3, and a sweep pointed at one file would silently stop covering whatever moved out of it —
-/// which is precisely where a call to the raw signer would end up living. And it strips comments,
-/// because the module documents at length that the raw signer must never be reached and that the
-/// batch is never built beside the quorum, which is exactly the text these sweeps hunt for; reading
-/// the explanation as the thing it forbids would assert the opposite of what it means to
-/// (`evidence_structural_absence.rs` sidesteps the same trap the same way).
+/// Two things here are load-bearing. It reads the whole DIRECTORY, not `mod.rs`: the module was
+/// split under that ceiling, and a sweep pointed at one file would silently stop covering whatever
+/// moved out of it — which is precisely where a call to the raw signer would end up living. And it
+/// strips comments, because the module documents at length that the raw signer must never be
+/// reached and that the batch is never built beside the quorum, which is exactly the text these
+/// sweeps hunt for; reading the explanation as the thing it forbids would assert the opposite of
+/// what it means to (`evidence_structural_absence.rs` sidesteps the same trap the same way).
 fn listener_source() -> String {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/listener");
     let files = walk_rust_files(&dir);
@@ -392,8 +396,8 @@ fn walk_rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-/// The frozen fixture's canonical burn intents — the same construction the other suites use, so this
-/// file cannot drift onto a private idea of the shape.
+/// The frozen fixture's canonical burn intents — the same construction the other suites use, so
+/// this file cannot drift onto a private idea of the shape.
 fn withdraw_intents() -> Vec<withdrawal_listener_attester::circle::schema::BurnIntent> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/prepare_withdrawal_200.json");

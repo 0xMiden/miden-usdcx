@@ -1,21 +1,22 @@
-//! Structured logging + metrics. The §8.4 obligation is non-negotiable: **no fetched attestation is
-//! ever silently dropped** — every fetched-but-not-submitted attestation is surfaced with a reason.
+//! Structured logging + metrics. The no-silent-drops obligation is non-negotiable: **no fetched
+//! attestation is ever silently dropped** — every fetched-but-not-submitted attestation is surfaced
+//! with a reason.
 //!
 //! Two surfaces serve it. [`RelayerMetrics`] counts (scaffold; the poll loop wires it), and
 //! [`EventSink`] receives one [`RelayerEvent`] per thing-that-happened-to-an-attestation: it is
 //! `Pending` while a transient failure is being retried, `Alert` when an operator must look, and
-//! `Rejected` when the input is permanently refused. The Circle client emits into whichever sink the
-//! operator installed; the concrete backend (tracing / a metrics exporter) is wired in the
+//! `Rejected` when the input is permanently refused. The Circle client emits into whichever sink
+//! the operator installed; the concrete backend (tracing / a metrics exporter) is wired in the
 //! monitoring slice, and [`NoopSink`] is the default until then.
 //!
 //! The sink is a trait, not a concrete logger, for one reason beyond taste: a TEST can install a
-//! recording sink and assert the obligation directly — that a 404 really was logged `Pending` rather
-//! than swallowed, that a 400 really did alert. An obligation nothing can observe is an obligation
-//! nobody keeps.
+//! recording sink and assert the obligation directly — that a 404 really was logged `Pending`
+//! rather than swallowed, that a 400 really did alert. An obligation nothing can observe is an
+//! obligation nobody keeps.
 
 use core::fmt;
 
-/// Relayer metric counters (§4 single-responsibility: `observability`). Private fields mutated only
+/// Relayer metric counters — observability only. Private fields mutated only
 /// through the `record_*` API and read only through the accessors — a counter cannot be set out of
 /// band. Counters saturate rather than overflow: a metric is diagnostic, never load-bearing.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -63,8 +64,8 @@ impl RelayerMetrics {
         self.attestations_duplicate = self.attestations_duplicate.saturating_add(1);
     }
 
-    /// The on-chain `usedNonces` assert fired (D5c) — the SAFETY backstop, observed from the
-    /// liveness side. Counted apart from a rejection: nothing is wrong.
+    /// The on-chain `usedNonces` assert fired (the on-chain replay guard) — the SAFETY backstop,
+    /// observed from the liveness side. Counted apart from a rejection: nothing is wrong.
     pub fn record_already_minted(&mut self) {
         self.attestations_already_minted = self.attestations_already_minted.saturating_add(1);
     }
@@ -88,9 +89,9 @@ impl RelayerMetrics {
 
     /// Attestations the cycle PROCESSED — freshly polled from a page, or re-driven from the retry
     /// work list. The six terminal counters below partition this total (one per processed
-    /// attestation), so `attestations_fetched == submitted + rejected + duplicate + already_minted +
-    /// deferred + reconciliation_required` holds by construction; a break in that equality is a
-    /// silent drop.
+    /// attestation), so `attestations_fetched` equals the sum of `submitted`, `rejected`,
+    /// `duplicate`, `already_minted`, `deferred`, and `reconciliation_required` by construction; a
+    /// break in that equality is a silent drop.
     pub fn attestations_fetched(&self) -> u64 {
         self.attestations_fetched
     }
@@ -141,8 +142,8 @@ impl RelayerMetrics {
     }
 
     /// A flat, `Copy` snapshot of the cumulative counters — what the loop surfaces each cycle
-    /// ([`RelayerEvent::Metrics`]) and what a test reads to assert throughput. It is a snapshot, not a
-    /// handle: reading it cannot mutate a counter, and a caller cannot bump one out of band.
+    /// ([`RelayerEvent::Metrics`]) and what a test reads to assert throughput. It is a snapshot,
+    /// not a handle: reading it cannot mutate a counter, and a caller cannot bump one out of band.
     pub fn snapshot(&self) -> MetricsSnapshot {
         let bounds = self.cycle_duration_ms.bounds();
         MetricsSnapshot {
@@ -168,9 +169,9 @@ impl RelayerMetrics {
     }
 }
 
-/// A cumulative snapshot of [`RelayerMetrics`] — the counters AND the cycle-duration distribution the
-/// loop surfaces per cycle. It carries a `Vec` of cumulative bucket counts, so it is `Clone` (not
-/// `Copy`); it is read once per cycle, so that costs nothing that matters.
+/// A cumulative snapshot of [`RelayerMetrics`] — the counters AND the cycle-duration distribution
+/// the loop surfaces per cycle. It carries a `Vec` of cumulative bucket counts, so it is `Clone`
+/// (not `Copy`); it is read once per cycle, so that costs nothing that matters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetricsSnapshot {
     pub attestations_fetched: u64,
@@ -186,7 +187,8 @@ pub struct MetricsSnapshot {
     pub cycle_duration_samples: u64,
     /// The sum of every cycle's duration, in milliseconds.
     pub cycle_duration_ms_sum: u64,
-    /// The histogram's `le` upper bounds, ascending (aligned with [`Self::cycle_duration_cumulative`]).
+    /// The histogram's `le` upper bounds, ascending (aligned with
+    /// [`Self::cycle_duration_cumulative`]).
     pub cycle_duration_bounds: &'static [u64],
     /// The CUMULATIVE count at each bound — `cycle_duration_cumulative[i]` is the number of cycles
     /// whose duration was `<= cycle_duration_bounds[i]`. Monotonic non-decreasing; the last equals
@@ -195,10 +197,10 @@ pub struct MetricsSnapshot {
 }
 
 impl MetricsSnapshot {
-    /// A one-line `key=value` rendering — the body of the [`RelayerEvent::Metrics`] the loop emits. It
-    /// carries the counters AND the full cycle-duration bucket series (`cycle_ms_le_<bound>=<cum>` for
-    /// every bound, then `cycle_ms_le_inf=<count>` and `cycle_ms_sum=<sum>`), so the latency
-    /// distribution is on the wire, not just the totals.
+    /// A one-line `key=value` rendering — the body of the [`RelayerEvent::Metrics`] the loop emits.
+    /// It carries the counters AND the full cycle-duration bucket series
+    /// (`cycle_ms_le_<bound>=<cum>` for every bound, then `cycle_ms_le_inf=<count>` and
+    /// `cycle_ms_sum=<sum>`), so the latency distribution is on the wire, not just the totals.
     pub fn render(&self) -> String {
         let mut line = format!(
             "fetched={} submitted={} built={} rejected={} duplicate={} already_minted={} \
@@ -232,16 +234,18 @@ impl MetricsSnapshot {
 
 /// A CUMULATIVE bucket histogram — the Prometheus reading of the word, where `bucket(le)` holds
 /// every sample `<= le`. Fixed bounds, no allocation per observation, saturating counters: a metric
-/// is diagnostic, never load-bearing, and one that could panic on overflow would be worse than none.
+/// is diagnostic, never load-bearing, and one that could panic on overflow would be worse than
+/// none.
 ///
-/// It is a plain type rather than an exporter's: this crate names no metrics backend (the monitoring
-/// slice owns that choice), and a test that must prove a distribution was recorded needs to READ the
-/// buckets, not scrape a global registry.
+/// It is a plain type rather than an exporter's: this crate names no metrics backend (the
+/// monitoring slice owns that choice), and a test that must prove a distribution was recorded needs
+/// to READ the buckets, not scrape a global registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Histogram {
     /// Upper bounds, ascending. The implicit final `+Inf` bucket is [`Self::count`].
     bounds: &'static [u64],
-    /// Per-bound counts (NOT cumulative on the way in; [`Self::bucket`] accumulates on the way out).
+    /// Per-bound counts (NOT cumulative on the way in; [`Self::bucket`] accumulates on the way
+    /// out).
     counts: Vec<u64>,
     count: u64,
     sum: u64,
@@ -280,15 +284,16 @@ impl Histogram {
     /// Samples `<= le`, cumulative.
     ///
     /// `bucket(u64::MAX)` is the explicit `+Inf` query and returns [`Self::count`] — EVERY sample,
-    /// including the over-bound overflow that `observe` binned into no finite bucket. Any FINITE `le`
-    /// (including the last configured bound) sums only the finite bins whose bound is `<= le`, so a
-    /// sample past the top bound is EXCLUDED from `bucket(top_bound)`. This is the fix for the round-4
-    /// bug where `bucket(top_bound)` returned the total and thus hid the long tail: `cycle_ms_le_30000`
-    /// must count cycles `<= 30 s`, not all cycles.
+    /// including the over-bound overflow that `observe` binned into no finite bucket. Any FINITE
+    /// `le` (including the last configured bound) sums only the finite bins whose bound is `<= le`,
+    /// so a sample past the top bound is EXCLUDED from `bucket(top_bound)`. A `bucket(top_bound)`
+    /// that returned the total would hide the long tail: `cycle_ms_le_30000` must count cycles `<=
+    /// 30 s`, not all cycles.
     ///
     /// (A finite `le` above the top bound resolves to the same finite sum as the top bound — the
-    /// histogram retains no per-value data past its last bound, so only the `+Inf` query can account
-    /// for the overflow. That is the documented Prometheus contract for a bounded histogram.)
+    /// histogram retains no per-value data past its last bound, so only the `+Inf` query can
+    /// account for the overflow. That is the documented Prometheus contract for a bounded
+    /// histogram.)
     pub fn bucket(&self, le: u64) -> u64 {
         if le == u64::MAX {
             return self.count;
@@ -324,8 +329,9 @@ impl Default for Histogram {
 }
 
 /// A structured record of a fetched-but-not-submitted attestation. Constructing and emitting one
-/// (never dropping silently) is the §8.4 obligation; the concrete log/alert sink is wired in a
-/// later slice. Fields are private with read-only accessors; build one via [`Self::new`].
+/// (never dropping silently) is the no-silent-drops obligation; the concrete log/alert sink is
+/// wired in a later slice. Fields are private with read-only accessors; build one via
+/// [`Self::new`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RejectionRecord {
     payload_id: String,
@@ -360,7 +366,7 @@ pub fn log_rejection(record: &RejectionRecord) {
     let _ = record;
 }
 
-/// One thing that happened to an attestation on its way through the Circle half. The §8.4 failure
+/// One thing that happened to an attestation on its way through the Circle half. The failure
 /// catalog maps one-to-one onto these three shapes, so every row of that table has an observable
 /// emission and none can be "handled" by dropping it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -386,14 +392,15 @@ pub enum RelayerEvent {
     /// payload, a malformed request parameter. It will never be submitted, and it is recorded here
     /// with its reason rather than dropped.
     Rejected { endpoint: String, reason: String },
-    /// **The terminal fate of ONE fetched attestation** — the §8.4 no-silent-drops obligation, as an
+    /// **The terminal fate of ONE fetched attestation** — the no-silent-drops rule, as an
     /// emission. The orchestration raises exactly one of these per attestation it fetched, whatever
     /// happened to it, so "was this deposit dropped?" is answerable from the log alone.
     ///
-    /// The three variants above are the CIRCLE half's vocabulary (an endpoint answered, or did not);
-    /// this one is the CYCLE's (a deposit was minted, refused, deferred, or left for an operator).
-    /// They are separate because a 404 on a page fetch and a deposit the chain already minted are not
-    /// the same kind of fact, and an alert that could not tell them apart would fire on both.
+    /// The three variants above are the CIRCLE half's vocabulary (an endpoint answered, or did
+    /// not); this one is the CYCLE's (a deposit was minted, refused, deferred, or left for an
+    /// operator). They are separate because a 404 on a page fetch and a deposit the chain already
+    /// minted are not the same kind of fact, and an alert that could not tell them apart would fire
+    /// on both.
     Attestation {
         /// The attestation's `messageHash`, `0x`-hex — what an operator greps for.
         message_hash: String,
@@ -403,11 +410,12 @@ pub enum RelayerEvent {
         /// Why — rendered from the typed disposition, and never empty.
         reason: String,
     },
-    /// **A whole cycle's outcome** — the loop's own lifecycle event, distinct from the per-attestation
-    /// ones a cycle emits inside itself. `"completed"` carries the cycle's counts so an operator sees
-    /// throughput move; `"failed"` carries the error a cycle returned (a broken poll, discovery,
-    /// cursor, or store) — the event the round-1 loop dropped by matching `Err(_)` and logging
-    /// nothing. A cycle that failed silently is a relayer that stopped making progress with no signal.
+    /// **A whole cycle's outcome** — the loop's own lifecycle event, distinct from the
+    /// per-attestation ones a cycle emits inside itself. `"completed"` carries the cycle's counts
+    /// so an operator sees throughput move; `"failed"` carries the error a cycle returned (a broken
+    /// poll, discovery, cursor, or store) — the event a loop that matched `Err(_)` and logged
+    /// nothing would drop. A cycle that failed silently is a relayer that stopped making progress
+    /// with no signal.
     Cycle {
         /// `"completed"` or `"failed"` — stable, so an alert can match on the failing one.
         outcome: &'static str,
@@ -416,8 +424,8 @@ pub enum RelayerEvent {
     },
     /// **The cumulative metrics snapshot** the loop surfaces after every cycle — the counters,
     /// submit-retry count, and cycle-duration totals an operator watches for throughput and stalls.
-    /// Distinct from [`Self::Cycle`]'s per-cycle disposition summary: this is the running total, so a
-    /// dashboard can read it without differencing successive cycle lines.
+    /// Distinct from [`Self::Cycle`]'s per-cycle disposition summary: this is the running total, so
+    /// a dashboard can read it without differencing successive cycle lines.
     Metrics {
         /// The rendered snapshot ([`MetricsSnapshot::render`]).
         detail: String,
@@ -457,9 +465,10 @@ impl RelayerEvent {
     }
 
     /// Renders the event as ONE structured, single-line record — `key=value` fields, so it is both
-    /// human-scannable and machine-greppable, and every field an operator acts on is present. Newlines
-    /// in a reason are collapsed so one event is always one line (a multi-line record read as several
-    /// is how a downstream parser miscounts, and miscounting is the silent drop moved into the reader).
+    /// human-scannable and machine-greppable, and every field an operator acts on is present.
+    /// Newlines in a reason are collapsed so one event is always one line (a multi-line record read
+    /// as several is how a downstream parser miscounts, and miscounting is the silent drop moved
+    /// into the reader).
     pub fn render(&self) -> String {
         let one_line = |s: &str| s.replace(['\n', '\r'], " ");
         match self {
@@ -510,15 +519,15 @@ impl RelayerEvent {
 /// The **production** event sink: it WRITES each event, one structured line per event, to an
 /// [`io::Write`](std::io::Write) — the binary installs one over stderr.
 ///
-/// It is the counterpart of [`NoopSink`], and the point of R7's observability half: the service that
-/// must never silently drop an attestation needs a sink that actually emits, not one that discards.
-/// It is parameterized over its writer so a test can point it at a buffer and read exactly what an
-/// operator would see (`tests/observability_sink.rs`) — the production wiring and the tested type are
-/// the SAME type, so the test is evidence about the binary's logging and not about an injected fake.
+/// It is the counterpart of [`NoopSink`], and the point of the observability half: the service
+/// that must never silently drop an attestation needs a sink that actually emits, not one that
+/// discards. It is parameterized over its writer so a test can point it at a buffer and read
+/// exactly what an operator would see — the production wiring and the tested type are the SAME
+/// type, so the test is evidence about the binary's logging and not about an injected fake.
 ///
 /// This crate names no logging framework — that choice is the monitoring slice's (`P4-OPS`). A
-/// line-per-event stderr writer is the honest floor: real, greppable, and replaceable by a structured
-/// backend behind the same [`EventSink`] trait without touching the orchestration.
+/// line-per-event stderr writer is the honest floor: real, greppable, and replaceable by a
+/// structured backend behind the same [`EventSink`] trait without touching the orchestration.
 ///
 /// A write that FAILS is dropped rather than propagated: observability must never fail the
 /// withdrawal it observes, and a relayer that aborted a mint because stderr was full would have let

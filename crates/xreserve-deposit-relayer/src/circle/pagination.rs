@@ -1,4 +1,4 @@
-//! Pagination for the batch poll (`CMP-D4`): the query the relayer sends, the `Link`-header cursors
+//! Pagination for the batch poll: the query the relayer sends, the `Link`-header cursors
 //! Circle answers with, and the rule that keeps a broken header from silently ending a scan.
 //!
 //! # Malformed metadata is not a final page
@@ -7,7 +7,8 @@
 //! and it is exactly why a `Link` header the relayer cannot parse must not be quietly discarded:
 //! discarding it produces the same `next == None` as a legitimate final page, so a corrupted,
 //! truncated, or hostile header would stop the relayer mid-stream. Attestations already published
-//! would simply never be minted, and nothing would be logged — the silent drop §8.4 forbids.
+//! would simply never be minted, and nothing would be logged — the silent drop the no-silent-drops
+//! rule forbids.
 //!
 //! So the rule is: an **absent** `Link` header is the documented final page. A **present** one must
 //! parse, must carry at least one relation the relayer understands, and — if it advertises `next` —
@@ -52,11 +53,11 @@ impl PageCursor {
 /// `pageSize` (1–1000), `pageAfter` (base64 cursor), `pageBefore` (base64 cursor), `from`
 /// (ISO-8601), `to` (ISO-8601) — `CIRCLE-API-SURFACE.md:57`,`:94`.
 ///
-/// All five are modeled even though the relayer's steady-state forward poll ([`Self::forward`]) sets
-/// only `pageSize` + `pageAfter`. `from`/`to`/`pageBefore` are INTENTIONALLY UNUSED by that poll, and
-/// modeling them anyway is the point: the type and the mock fixtures cover the whole documented
-/// surface, so a fixture cannot quietly drift away from the OpenAPI and a later slice that needs a
-/// bounded window does not have to re-derive the parameter names.
+/// All five are modeled even though the relayer's steady-state forward poll ([`Self::forward`])
+/// sets only `pageSize` + `pageAfter`. `from`/`to`/`pageBefore` are INTENTIONALLY UNUSED by that
+/// poll, and modeling them anyway is the point: the type and the mock fixtures cover the whole
+/// documented surface, so a fixture cannot quietly drift away from the OpenAPI and a later slice
+/// that needs a bounded window does not have to re-derive the parameter names.
 ///
 /// The two cursors share ONE slot ([`PageCursor`]) because Circle forbids sending them together.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,12 +183,13 @@ impl BatchQuery {
     }
 }
 
-/// One `Link`-header relation: the href Circle returned, and the pagination cursor extracted from it.
+/// One `Link`-header relation: the href Circle returned, and the pagination cursor extracted from
+/// it.
 ///
-/// Both are kept deliberately. The relayer PERSISTS the cursor (`pageAfter`/`pageBefore` — an opaque
-/// base64 token) as its restart point, so it must be able to hand back the token itself, not a URL.
-/// But an href with no cursor (`rel="first"`) is still a real link, and collapsing it to `None` would
-/// lose the fact that the relation exists at all.
+/// Both are kept deliberately. The relayer PERSISTS the cursor (`pageAfter`/`pageBefore` — an
+/// opaque base64 token) as its restart point, so it must be able to hand back the token itself, not
+/// a URL. But an href with no cursor (`rel="first"`) is still a real link, and collapsing it to
+/// `None` would lose the fact that the relation exists at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageLink {
     href: String,
@@ -212,9 +214,9 @@ impl PageLink {
 }
 
 /// The four `Link`-header relations Circle documents: `self`, `first`, `next`, `prev`
-/// (`CIRCLE-API-SURFACE.md:58`). Absent relations are `None` — and `next == None` is what TERMINATES
-/// a forward scan, which is why a header that cannot be parsed is an ERROR rather than an empty
-/// `PageCursors` (see the module docs).
+/// (`CIRCLE-API-SURFACE.md:58`). Absent relations are `None` — and `next == None` is what
+/// TERMINATES a forward scan, which is why a header that cannot be parsed is an ERROR rather than
+/// an empty `PageCursors` (see the module docs).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PageCursors {
     self_: Option<PageLink>,
@@ -241,7 +243,7 @@ impl PageCursors {
     }
 
     /// The forward cursor: the `pageAfter` token of the `next` link. `None` means the scan is
-    /// complete — the caller stops (§8.2 pagination boundary).
+    /// complete — the caller stops (the documented end-of-scan condition).
     pub fn next_cursor(&self) -> Option<&str> {
         self.next.as_ref().and_then(PageLink::cursor)
     }
@@ -251,8 +253,8 @@ impl PageCursors {
 ///
 /// `<https://…/attestations?pageSize=2&pageAfter=Y3Vyc29yLTI%3D>; rel="next", <…>; rel="self"`
 ///
-/// Each href yields its pagination CURSOR — the `pageAfter` (or `pageBefore`) query param — which is
-/// what the relayer feeds back and persists; the href is kept alongside it. A relative href is
+/// Each href yields its pagination CURSOR — the `pageAfter` (or `pageBefore`) query param — which
+/// is what the relayer feeds back and persists; the href is kept alongside it. A relative href is
 /// resolved against the client's base URL (RFC 8288 permits one, and a parser that only handled
 /// absolute URLs would silently lose the cursor).
 ///

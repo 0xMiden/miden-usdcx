@@ -3,12 +3,12 @@
 //! `claim_burns` and `record_failure` are `pub(crate)` — a fund-safety boundary (see
 //! [`SubmitLedger::claim_burns`]), so `tests/`, which is a separate crate, cannot call them. These
 //! tests therefore live inside the crate; they live in this FILE, and not at the bottom of
-//! `store.rs`, because BUILDER-GATES G3 requires tests in their own module/file rather than inline
+//! `store.rs`, because tests live in their own file rather than inline
 //! with the implementation. A sibling test module gets `pub(crate)` access without putting tests in
 //! the implementation file, and `crate_posture.rs` pins that structure mechanically.
 //!
-//! Everything reachable through the ledger's PUBLIC surface stays in `tests/submit_idempotency.rs`,
-//! driven through `submit_withdraw`.
+//! Everything reachable through the ledger's PUBLIC surface is tested from outside the crate
+//! instead, driven through `submit_withdraw`.
 //!
 //! Each test opens a REAL ledger on a REAL file, exactly as those do: durability is only provable
 //! against a file a second handle can reopen, which is why [`SubmitLedger::open`] refuses an

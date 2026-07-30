@@ -1,13 +1,13 @@
-//! `tests/idempotency_status_machine.rs` — the `SubmissionStatus` machine: the edges that exist, the
-//! edges that do not, and the recovery transition that keeps a crashed claim from stranding a
+//! `tests/idempotency_status_machine.rs` — the `SubmissionStatus` machine: the edges that exist,
+//! the edges that do not, and the recovery transition that keeps a crashed claim from stranding a
 //! deposit.
 //!
-//! The machine is the store's whole opinion about what may happen to a mint. Its edges are chosen so
-//! that the two failure modes the seam can actually cause stay bounded: a mint attempted twice (no
-//! `Submitted → Submitted`, no way out of a settled record, no way to Pending except the atomic
-//! claim) and a mint withheld forever (`Failed` is retryable, and a `Pending` stranded by a crash is
-//! reclaimable). Every illegal edge is refused with the exact `from → to` it refused — and, just as
-//! importantly, leaves the record untouched.
+//! The machine is the store's whole opinion about what may happen to a mint. Its edges are chosen
+//! so that the two failure modes the seam can actually cause stay bounded: a mint attempted twice
+//! (no `Submitted → Submitted`, no way out of a settled record, no way to Pending except the atomic
+//! claim) and a mint withheld forever (`Failed` is retryable, and a `Pending` stranded by a crash
+//! is reclaimable). Every illegal edge is refused with the exact `from → to` it refused — and, just
+//! as importantly, leaves the record untouched.
 
 mod idempotency_fixtures;
 
@@ -85,10 +85,10 @@ fn a_failure_can_be_recorded_from_pending_or_submitted(
     assert!(!failed.status().is_terminal());
 }
 
-/// `AlreadyMinted` — the chain answered "this nonce is already in `usedNonces`" — is TERMINAL. It is
-/// the store learning that the on-chain safety backstop already fired; another attempt could only
-/// burn a transaction on an assert that must fail. It is reachable from every pre-terminal status,
-/// because the chain can tell us at any point.
+/// `AlreadyMinted` — the chain answered "this nonce is already in `usedNonces`" — is TERMINAL. It
+/// is the store learning that the on-chain safety backstop already fired; another attempt could
+/// only burn a transaction on an assert that must fail. It is reachable from every pre-terminal
+/// status, because the chain can tell us at any point.
 #[rstest]
 #[case::from_pending(SubmissionStatus::Pending)]
 #[case::from_submitted(SubmissionStatus::Submitted)]
@@ -111,11 +111,11 @@ fn already_minted_is_reachable_from_any_live_status_and_is_terminal(
     assert!(store.is_nonce_submitted(&nonce(1)).expect("lookup"));
 }
 
-/// `Rejected` — the mint attempt was PERMANENTLY refused (a fatal node submit, or a note unit-04's
-/// factory would not build) — is TERMINAL and blocks resubmission. It is the durable counterpart of
-/// `Failed`: both mean "did not mint", but `Failed` is the retryable pool a later cycle re-drives,
-/// while `Rejected` is the deposit no retry can help. Keeping them apart is what stops a permanently
-/// refused transaction from being re-submitted every cycle forever.
+/// `Rejected` — the mint attempt was PERMANENTLY refused (a fatal node submit, or a note the shared
+/// encoding crate's factory would not build) — is TERMINAL and blocks resubmission. It is the
+/// durable counterpart of `Failed`: both mean "did not mint", but `Failed` is the retryable pool a
+/// later cycle re-drives, while `Rejected` is the deposit no retry can help. Keeping them apart is
+/// what stops a permanently refused transaction from being re-submitted every cycle forever.
 #[test]
 fn rejected_is_terminal_and_blocks_resubmission() {
     let clock = ManualClock::at(1_000);
@@ -162,8 +162,8 @@ fn rejected_records_are_absent_from_the_retry_queue() {
     );
 }
 
-/// A second observation of a `Rejected` nonce is `AlreadySeen`, never a re-claim — so a re-poll of a
-/// page that carried a permanently-refused attestation does not mint it again.
+/// A second observation of a `Rejected` nonce is `AlreadySeen`, never a re-claim — so a re-poll of
+/// a page that carried a permanently-refused attestation does not mint it again.
 #[test]
 fn a_rejected_nonce_is_not_reclaimable() {
     let clock = ManualClock::at(1_000);
@@ -244,8 +244,8 @@ fn an_illegal_transition_is_refused_and_leaves_the_record_untouched(
 }
 
 /// A transition on a nonce that was never claimed is a caller bug, not a silent insert: recording a
-/// submission for an unknown nonce would create a log row with no attestation behind it (there is no
-/// `messageHash` to put in it) — exactly the row an audit would later have to explain.
+/// submission for an unknown nonce would create a log row with no attestation behind it (there is
+/// no `messageHash` to put in it) — exactly the row an audit would later have to explain.
 #[rstest]
 #[case::submit(Transition::Submit)]
 #[case::commit(Transition::Commit)]
@@ -278,9 +278,9 @@ fn a_transition_on_an_unclaimed_nonce_is_refused(#[case] attempt: Transition) {
 /// thing this store can do. `reclaim_stale_pending` is the explicit recovery: `Pending` records
 /// older than the threshold become `Failed` (i.e. re-claimable).
 ///
-/// It touches NOTHING else — not a young `Pending` (its submit may be in flight this second) and not
-/// a `Submitted` (its transaction may still land; whether to abandon it is the submit leg's call,
-/// made against the chain, not this store's against a clock).
+/// It touches NOTHING else — not a young `Pending` (its submit may be in flight this second) and
+/// not a `Submitted` (its transaction may still land; whether to abandon it is the submit leg's
+/// call, made against the chain, not this store's against a clock).
 #[test]
 fn reclaim_stale_pending_frees_only_stranded_claims() {
     let clock = ManualClock::at(1_000);

@@ -16,8 +16,8 @@ pub trait Clock: fmt::Debug + Send + Sync {
 ///
 /// A clock that steps BACKWARDS (an NTP correction) can only mis-stamp a `timestamp`, which is
 /// diagnostic. It cannot trigger a [`crate::idempotency::IdempotencyStore::reclaim_stale_pending`]
-/// early — the record's age is computed from this same clock, so a backwards step makes records look
-/// *younger*, delaying a reclaim rather than firing a spurious one.
+/// early — the record's age is computed from this same clock, so a backwards step makes records
+/// look *younger*, delaying a reclaim rather than firing a spurious one.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemClock;
 

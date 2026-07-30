@@ -1,4 +1,4 @@
-//! The HTTP-status policy (§8.1 check 1, §8.4) — stated once, for the whole relayer.
+//! The HTTP-status policy — stated once, for the whole relayer.
 //!
 //! | status | class | behavior |
 //! |---|---|---|
@@ -15,11 +15,12 @@
 //! handled identically to one whose body is JSON. Inventing a schema for it would be fiction.
 //!
 //! **A redirect is a rejection, not a hop.** The relayer does not follow redirects (the production
-//! transport is built with `redirect::Policy::none()`), so a 3xx arrives here and is refused. That is
-//! deliberate: following one would re-issue the request at an origin the PEER chose, carrying the
-//! credential with it — and since `Q-API-AUTH` is OPEN, that credential may ride in a header of any
-//! name, which no HTTP stack's cross-origin strip list covers. Circle's documented API redirects
-//! nowhere, so nothing legitimate is lost.
+//! transport is built with `redirect::Policy::none()`), so a 3xx arrives here and is refused. That
+//! is deliberate: following one would re-issue the request at an origin the PEER chose, carrying
+//! the credential with it — and since Circle documents no auth scheme, that credential may ride in
+//! a header of
+//! any name, which no HTTP stack's cross-origin strip list covers. Circle's documented API
+//! redirects nowhere, so nothing legitimate is lost.
 
 /// What a Circle HTTP status means for the relayer. See the module table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

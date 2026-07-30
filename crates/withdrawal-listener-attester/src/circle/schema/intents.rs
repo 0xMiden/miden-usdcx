@@ -1,4 +1,4 @@
-//! `POST /v1/prepare-withdrawal` — the RESPONSE Circle returns (`DC-10`).
+//! `POST /v1/prepare-withdrawal` — the RESPONSE Circle returns.
 //!
 //! The burn intents, the `TransferSpec`s they embed, the `encoded` binary blob, and the digest the
 //! attesters sign.
@@ -25,17 +25,17 @@ impl PrepareWithdrawalResponse {
 pub struct PreparedBatch {
     burn_intents: Vec<BurnIntent>,
 
-    /// The binary burn intent Circle encoded — **opaque to the partner**, and typed `string` with NO
-    /// pattern in the OpenAPI, so none is imposed. The JSON→binary transform is `REQUIRES CIRCLE
+    /// The binary burn intent Circle encoded — **opaque to the partner**, and typed `string` with
+    /// NO pattern in the OpenAPI, so none is imposed. The JSON→binary transform is `REQUIRES CIRCLE
     /// CONFIRMATION` and is off the partner's critical path precisely because Circle returns this
-    /// (`CIRCLE-DATA-SCHEMAS.md` §3.4). Never reconstructed here.
+    /// (Circle's data schemas). Never reconstructed here.
     encoded: String,
 
     /// The EIP-712 final digest the attesters sign (domain name `"GatewayWallet"`, version `"1"`,
-    /// omitting `chainId`/`verifyingContract`). Also typed `string` with no documented pattern. That
-    /// it equals the Gateway pipeline's step-3 digest is `Q-CRY-2` — OPEN — so the partner treats it
-    /// as **opaque-and-sign** and does NO on-chain typed-data hashing on Miden
-    /// (`INV-OFFCHAIN-BURN-SIGNING`).
+    /// omitting `chainId`/`verifyingContract`). Also typed `string` with no documented pattern.
+    /// That it equals the Gateway pipeline's step-3 digest is still OPEN with Circle — so the
+    /// partner treats it as **opaque-and-sign** and does NO on-chain typed-data hashing on Miden:
+    /// burn signing happens off-chain over Circle's opaque digest.
     message_hash_to_sign: String,
 }
 
@@ -84,9 +84,9 @@ impl BurnIntent {
 /// The API (JSON) `TransferSpec` — 14 required fields.
 ///
 /// Its `hookData` is a **structured object** ([`StructuredHookData`]), NOT the hex bytes string the
-/// binary `WithdrawHookData` is. `CIRCLE-DATA-SCHEMAS.md` §3.4 spells out the difference field by
-/// field and labels it "DO NOT CONFLATE"; the JSON form omits the binary `magic`, `version` and
-/// length prefixes, and types the forwarding contract as 20 bytes where the binary form uses 32.
+/// binary `WithdrawHookData` is. Circle's data schemas spells out the difference field by field and
+/// labels it "DO NOT CONFLATE"; the JSON form omits the binary `magic`, `version` and length
+/// prefixes, and types the forwarding contract as 20 bytes where the binary form uses 32.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransferSpec {
@@ -98,8 +98,9 @@ pub struct TransferSpec {
     source_token: Hex32,
     destination_token: Hex32,
 
-    /// The address debited on the source side — **Circle assigns this** (`Q-DOM-3`). It appears here,
-    /// on the RESPONSE, and never on [`PrepareBurnIntentInput`](super::PrepareBurnIntentInput).
+    /// The address debited on the source side — **Circle assigns this server-side**. It appears
+    /// here, on the RESPONSE, and never on
+    /// [`PrepareBurnIntentInput`](super::PrepareBurnIntentInput).
     source_depositor: Hex32,
 
     destination_recipient: Hex32,
@@ -124,7 +125,8 @@ impl TransferSpec {
         self.source_domain
     }
 
-    /// Compared against the burn note's `destDomain` at the B5 gate.
+    /// Compared against the burn note's `destDomain` by the pre-signing compare against the burn
+    /// note.
     pub fn destination_domain(&self) -> u32 {
         self.destination_domain
     }
@@ -145,12 +147,13 @@ impl TransferSpec {
         self.destination_token.as_str()
     }
 
-    /// Circle-assigned (`Q-DOM-3`) — never partner-supplied.
+    /// Circle-assigned server-side — never partner-supplied.
     pub fn source_depositor(&self) -> &str {
         self.source_depositor.as_str()
     }
 
-    /// Compared against the burn note's `destRecipient` at the B5 gate.
+    /// Compared against the burn note's `destRecipient` by the pre-signing compare against the burn
+    /// note.
     pub fn destination_recipient(&self) -> &str {
         self.destination_recipient.as_str()
     }
@@ -163,7 +166,7 @@ impl TransferSpec {
         self.destination_caller.as_str()
     }
 
-    /// Compared against the burn note's `amount` at the B5 gate.
+    /// Compared against the burn note's `amount` by the pre-signing compare against the burn note.
     pub fn value(&self) -> &str {
         self.value.as_str()
     }
@@ -177,7 +180,7 @@ impl TransferSpec {
     }
 }
 
-/// The JSON form of `TransferSpec.hookData`. **Not** the binary `WithdrawHookData` (§3.4).
+/// The JSON form of `TransferSpec.hookData`. **Not** the binary `WithdrawHookData`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StructuredHookData {

@@ -1,9 +1,10 @@
-//! `T-LA-12` — `GET /v1/withdrawal/{withdrawalId}` (`CMP-D7`): the status poll across the FULL status
-//! enum, the poll-to-terminal loop, the `404` variant, and the hard refusal of an unknown status.
+//! `GET /v1/withdrawal/{withdrawalId}`: the status poll across the FULL status enum, the
+//! poll-to-terminal loop, the `404` variant, and the hard refusal of an unknown status.
 //!
-//! Non-vacuity: each enum value round-trips through the real driver; the loop is proven to STOP at a
-//! terminal status (an exact request count, not "eventually"); an unknown status is proven to become an
-//! EXACT error, never a default; and the `404` is its own variant, not a generic HTTP refusal.
+//! Non-vacuity: each enum value round-trips through the real driver; the loop is proven to STOP at
+//! a terminal status (an exact request count, not "eventually"); an unknown status is proven to
+//! become an EXACT error, never a default; and the `404` is its own variant, not a generic HTTP
+//! refusal.
 
 use std::time::Duration;
 
@@ -146,7 +147,9 @@ async fn poll_stops_at_failed_and_surfaces_the_failure_reason() {
 
 #[tokio::test]
 async fn poll_returns_expired_as_a_retryable_resubmit_outcome_not_a_terminal_success() {
-    // §10.10 / T-LA-12: `expired` is RETRYABLE (resubmit a NEW withdrawal), NOT a finalized success
+    // Circle's documentation /: `expired` is RETRYABLE (resubmit a NEW
+    // withdrawal), NOT a
+    // finalized success
     // and NOT a non-retryable failure. Reading it the wrong way round would strand a recoverable
     // withdrawal or replay a refused one. The poll stops on it (further polling of this id cannot
     // progress), but the outcome must carry the resubmit signal — never be conflated with `finalized`.

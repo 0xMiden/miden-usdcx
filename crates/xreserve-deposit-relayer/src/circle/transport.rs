@@ -3,27 +3,27 @@
 //!
 //! # The bounds
 //!
-//! **A request deadline.** A peer that accepts a request and then says nothing is not an error state
-//! the relayer can observe: it is just… waiting. Without a deadline it waits forever — `max_attempts`
-//! is never reached, the attestation is never submitted, and no alert is ever raised, because nothing
-//! has *gone wrong* yet. [`TransportLimits::request_timeout`] turns that into an ordinary transient
-//! failure: bounded, logged `Pending`, retried, and finally surfaced. It is enforced in the CLIENT
-//! (around whatever transport is installed) and again inside [`ReqwestTransport`] by reqwest's own
-//! connect/request deadlines.
+//! **A request deadline.** A peer that accepts a request and then says nothing is not an error
+//! state the relayer can observe: it is just… waiting. Without a deadline it waits forever —
+//! `max_attempts` is never reached, the attestation is never submitted, and no alert is ever
+//! raised, because nothing has *gone wrong* yet. [`TransportLimits::request_timeout`] turns that
+//! into an ordinary transient failure: bounded, logged `Pending`, retried, and finally surfaced. It
+//! is enforced in the CLIENT (around whatever transport is installed) and again inside
+//! [`ReqwestTransport`] by reqwest's own connect/request deadlines.
 //!
-//! **A response-size ceiling.** A body has no natural end. Buffering one whole, unbounded, hands any
-//! peer — or anything on the path — a memory-exhaustion lever. [`BodyLimit`] refuses an oversized
-//! response on its advertised `Content-Length` *before reading a byte*, and re-checks every chunk as
-//! the body streams in, because a `Content-Length` can lie or be absent entirely.
+//! **A response-size ceiling.** A body has no natural end. Buffering one whole, unbounded, hands
+//! any peer — or anything on the path — a memory-exhaustion lever. [`BodyLimit`] refuses an
+//! oversized response on its advertised `Content-Length` *before reading a byte*, and re-checks
+//! every chunk as the body streams in, because a `Content-Length` can lie or be absent entirely.
 //!
 //! # The seam
 //!
 //! [`HttpTransport`] exists because the *interesting* behavior — the URL and query the relayer
 //! builds, the auth header it injects, the status policy, the backoff, the rate ceilings, the
 //! decoders — lives on both sides of the socket, and only the socket itself needs a network. Making
-//! it injectable lets the whole contract suite exercise the relayer's real `reqwest::Request` against
-//! a real router, in process, in any environment (the audit/CI sandbox denies `bind(127.0.0.1:0)`
-//! outright, so a loopback-server test cannot run there at all).
+//! it injectable lets the whole contract suite exercise the relayer's real `reqwest::Request`
+//! against a real router, in process, in any environment (the audit/CI sandbox denies
+//! `bind(127.0.0.1:0)` outright, so a loopback-server test cannot run there at all).
 
 use std::fmt;
 use std::future::Future;
@@ -191,9 +191,9 @@ impl RawResponse {
 /// default; the contract tests install the mock Circle server as an alternative.
 ///
 /// An error returned here is a request that produced NO HTTP status — a connection failure, a
-/// timeout, a body that could not be read — and must be [`RelayerError::Transport`], which the retry
-/// policy treats as transient. An oversized body is [`RelayerError::ResponseTooLarge`], which it
-/// does not.
+/// timeout, a body that could not be read — and must be [`RelayerError::Transport`], which the
+/// retry policy treats as transient. An oversized body is [`RelayerError::ResponseTooLarge`], which
+/// it does not.
 pub trait HttpTransport: fmt::Debug + Send + Sync {
     fn execute<'a>(
         &'a self,
@@ -201,7 +201,8 @@ pub trait HttpTransport: fmt::Debug + Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<RawResponse, RelayerError>> + Send + 'a>>;
 }
 
-/// The production transport: `reqwest` over the network. The ONLY place the relayer touches a socket.
+/// The production transport: `reqwest` over the network. The ONLY place the relayer touches a
+/// socket.
 #[derive(Debug, Clone)]
 pub struct ReqwestTransport {
     http: reqwest::Client,
@@ -289,8 +290,8 @@ pub trait ChunkSource: Send {
 /// # Errors
 /// * [`RelayerError::ResponseTooLarge`] — the body exceeds `max_bytes`. The rest of it is never read.
 /// * [`RelayerError::Transport`] — the body could not be read to its end. A truncated body is never
-///   returned as a success: half a JSON document decodes into nonsense, or worse, into a valid-looking
-///   prefix.
+///   returned as a success: half a JSON document decodes into nonsense, or worse, into a
+///   valid-looking prefix.
 pub async fn collect_bounded(
     source: &mut dyn ChunkSource,
     max_bytes: usize,
@@ -335,17 +336,18 @@ impl ChunkSource for ReqwestChunks {
     }
 }
 
-/// The relayer's redirect policy — a named seam, so the value the production client is built with can
-/// be asserted (the client itself cannot be introspected, and no redirect can be exercised without a
-/// network).
+/// The relayer's redirect policy — a named seam, so the value the production client is built with
+/// can be asserted (the client itself cannot be introspected, and no redirect can be exercised
+/// without a network).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedirectPolicy {
     /// Follow nothing. Following a redirect re-issues the request at an origin the PEER chose,
-    /// carrying the credential with it — and reqwest strips only a fixed set of STANDARD header names
-    /// on a cross-origin hop (`Authorization`, `Cookie`, `Proxy-Authorization`, `WWW-Authenticate`).
-    /// `Q-API-AUTH` is OPEN, so the relayer's credential header may be called anything at all, and
-    /// that list would not cover it. Circle's documented API redirects nowhere, so nothing legitimate
-    /// is lost — and a 3xx simply becomes a permanent rejection.
+    /// carrying the credential with it — and reqwest strips only a fixed set of STANDARD header
+    /// names on a cross-origin hop (`Authorization`, `Cookie`, `Proxy-Authorization`,
+    /// `WWW-Authenticate`). With no documented auth scheme, the relayer's credential header may be
+    /// called
+    /// anything at all, and that list would not cover it. Circle's documented API redirects
+    /// nowhere, so nothing legitimate is lost — and a 3xx simply becomes a permanent rejection.
     Never,
 }
 
@@ -364,8 +366,8 @@ impl RedirectPolicy {
 /// This is a BACKSTOP, and it is worth being precise about what it does and does not do:
 /// [`RedirectPolicy::Never`] is what *prevents* a redirect from being followed (and therefore
 /// prevents the credential from ever being re-sent). This check is what makes a regression of that
-/// policy FAIL CLOSED instead of passing silently: the relayer refuses a body served by an origin it
-/// never chose, rejects, and alerts.
+/// policy FAIL CLOSED instead of passing silently: the relayer refuses a body served by an origin
+/// it never chose, rejects, and alerts.
 ///
 /// # Errors
 /// [`RelayerError::RedirectFollowed`] — the final URL is not the requested one.
@@ -385,8 +387,8 @@ pub fn check_not_redirected(requested: &Url, responded: &Url) -> Result<(), Rela
 /// Two settings are load-bearing, and neither is a default:
 ///
 /// * **connect + request deadlines** — reqwest's defaults are `None` (wait forever).
-/// * **[`RedirectPolicy::Never`]** — reqwest's default follows up to 10 redirects. See that type for
-///   why following even one is a credential-exfiltration path here.
+/// * **[`RedirectPolicy::Never`]** — reqwest's default follows up to 10 redirects. See that type
+///   for why following even one is a credential-exfiltration path here.
 ///
 /// # Errors
 /// [`RelayerError::Transport`] — the HTTP stack could not be built.

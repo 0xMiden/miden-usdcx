@@ -1,24 +1,25 @@
 //! `tests/mock_circle/` — the **schema-exact mock Circle server** the withdrawal-driver contract
-//! suites (T-LA-10, T-LA-12) run against.
+//! suites run against.
 //!
-//! Every live Circle leg is `REQUIRES CIRCLE CONFIRMATION` (§12), so the withdrawal endpoints
-//! `CMP-D5`/`CMP-D6`/`CMP-D7` are exercised against this mock and never contacted live.
+//! Every live Circle leg is `REQUIRES CIRCLE CONFIRMATION`, so the three withdrawal
+//! endpoints are exercised against this mock and never contacted live.
 //!
 //! # A real router, driven in process — binding no socket
 //!
 //! The mock is an axum `Router` (real routing, real status codes, real headers, real JSON bodies)
 //! installed as the client's [`HttpTransport`] ([`MockTransport`]). The driver builds a **real
-//! `reqwest::Request`** — its own base-URL join, its own JSON body codec, its own auth-header injection
-//! — and the mock receives exactly that, including the request BODY, so a test can assert on the wire
-//! shape the driver actually produced (the `{ batches: [..] }` wrapper, not a bare array). No socket is
-//! bound: the audit/CI sandbox denies `bind(127.0.0.1:0)` (EPERM), so a loopback-server mock could not
-//! run in a gate at all — the request is driven through `tower`'s `ServiceExt::oneshot`.
+//! `reqwest::Request`** — its own base-URL join, its own JSON body codec, its own auth-header
+//! injection — and the mock receives exactly that, including the request BODY, so a test can assert
+//! on the wire shape the driver actually produced (the `{ batches: [..] }` wrapper, not a bare
+//! array). No socket is bound: the audit/CI sandbox denies `bind(127.0.0.1:0)` (EPERM), so a
+//! loopback-server mock could not run in a gate at all — the request is driven through `tower`'s
+//! `ServiceExt::oneshot`.
 //!
 //! # Scripted replies, per endpoint
 //!
 //! Each endpoint has a reply QUEUE consumed in order, with the LAST reply repeating forever — so a
-//! status poll can be scripted `created → verified → confirmed → finalized` across successive `GET`s,
-//! and a single-element queue is "always this".
+//! status poll can be scripted `created → verified → confirmed → finalized` across successive
+//! `GET`s, and a single-element queue is "always this".
 
 #![allow(dead_code)] // a shared fixture module: each test target uses the subset it needs.
 
@@ -39,18 +40,18 @@ use withdrawal_listener_attester::circle::HttpTransport;
 pub use transports::MockTransport;
 
 /// The origin the mock answers for. **HTTPS**, because a configured credential may only cross a TLS
-/// transport (the client refuses to attach one to a plaintext base URL) — and because nothing is ever
-/// dialed, the scheme costs the mock nothing.
+/// transport (the client refuses to attach one to a plaintext base URL) — and because nothing is
+/// ever dialed, the scheme costs the mock nothing.
 pub const MOCK_BASE_URL: &str = "https://xreserve-api.mock";
 
 /// The three withdrawal endpoints the driver consumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Endpoint {
-    /// `POST /v1/prepare-withdrawal` (`CMP-D5`).
+    /// `POST /v1/prepare-withdrawal`.
     Prepare,
-    /// `POST /v1/withdraw` (`CMP-D6`).
+    /// `POST /v1/withdraw`.
     Withdraw,
-    /// `GET /v1/withdrawal/{withdrawalId}` (`CMP-D7`).
+    /// `GET /v1/withdrawal/{withdrawalId}`.
     Status,
     /// Anything else — recorded so a stray request cannot pass unnoticed.
     Unexpected,
@@ -232,7 +233,8 @@ impl MockCircle {
         Self { state, router }
     }
 
-    /// The transport to install on the [`CircleClient`](withdrawal_listener_attester::circle::CircleClient).
+    /// The transport to install on the
+    /// [`CircleClient`](withdrawal_listener_attester::circle::CircleClient).
     pub fn transport(&self) -> Arc<dyn HttpTransport> {
         Arc::new(MockTransport::new(self.router.clone()))
     }

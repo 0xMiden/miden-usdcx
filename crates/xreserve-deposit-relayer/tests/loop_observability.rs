@@ -1,16 +1,16 @@
-//! **The assembled loop's observability, tested behaviourally** (round-3 finding 2).
+//! **The assembled loop's observability, tested behaviourally.**
 //!
-//! Round 2's wiring test only grepped `main.rs` for substrings — it would have passed if two DIFFERENT
-//! real sinks were supplied, and it never checked that metrics are surfaced. And round 2 surfaced only
-//! a per-cycle disposition summary, not the cumulative counters/retries/histogram, and recorded a
-//! cycle's duration only on the success path.
+//! A wiring test that only grepped `main.rs` for substrings would pass even if two DIFFERENT real
+//! sinks were supplied, and would never check that metrics are surfaced — nor that the cumulative
+//! counters/retries/histogram are, nor that a cycle's duration is recorded on more than the
+//! success path.
 //!
 //! This suite assembles the relayer the way the binary does — ONE real `WriteEventSink` (over a
-//! buffer, so the test reads exactly what an operator would) installed into BOTH the Circle client and
-//! the `RelayerCtx` — runs the real loop, and asserts on the bytes: per-attestation events, the
-//! cycle event, and a cumulative METRICS snapshot all land in the one buffer, and a Circle-level retry
-//! event lands there too (proving the client and the context share the sink). Duration is asserted on
-//! the failure path directly.
+//! buffer, so the test reads exactly what an operator would) installed into BOTH the Circle client
+//! and the `RelayerCtx` — runs the real loop, and asserts on the bytes: per-attestation events, the
+//! cycle event, and a cumulative METRICS snapshot all land in the one buffer, and a Circle-level
+//! retry event lands there too (proving the client and the context share the sink). Duration is
+//! asserted on the failure path directly.
 
 mod cycle_support;
 mod fixtures;
@@ -134,7 +134,7 @@ async fn the_assembled_loop_surfaces_events_and_metrics_into_one_shared_sink() {
 }
 
 /// The metrics snapshot is CUMULATIVE across cycles, and carries the submit-retry count and the
-/// cycle-duration sample count — the counters round 2 never surfaced.
+/// cycle-duration sample count — not just a per-cycle disposition summary.
 #[tokio::test]
 async fn the_metrics_snapshot_accumulates_across_cycles() {
     let first = fixtures::test_vector();
@@ -192,8 +192,9 @@ async fn the_metrics_snapshot_accumulates_across_cycles() {
     );
 }
 
-/// A FAILED cycle still records its duration — round 2 returned early on error, before the duration
-/// was observed, so a relayer that only ever failed would show an empty latency histogram.
+/// A FAILED cycle still records its duration — a loop that returned early on error, before the
+/// duration was observed, would leave a relayer that only ever failed showing an empty latency
+/// histogram.
 #[tokio::test]
 async fn a_failed_cycle_still_records_its_duration() {
     let mock = MockCircle::start(Script::new().batch(vec![Reply::Status(400)]));
@@ -226,8 +227,8 @@ async fn a_failed_cycle_still_records_its_duration() {
     );
 }
 
-/// The loop emits a metrics snapshot even when the cycle FAILS — an operator watching throughput must
-/// still see the counters (and the failure) when nothing is being minted.
+/// The loop emits a metrics snapshot even when the cycle FAILS — an operator watching throughput
+/// must still see the counters (and the failure) when nothing is being minted.
 #[tokio::test]
 async fn the_loop_surfaces_metrics_on_a_failed_cycle_too() {
     let mock = MockCircle::start(Script::new().batch(vec![Reply::Status(500)]));

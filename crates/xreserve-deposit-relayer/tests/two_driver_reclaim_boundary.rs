@@ -1,15 +1,16 @@
-//! **Two drivers at the reclaim boundary** (round-6 finding 1).
+//! **Two drivers at the reclaim boundary.**
 //!
 //! `retryable()` and `reclaim_stale_pending()` are non-owning reads two relayer processes may run
-//! against one store file. The safety property is: while driver A's submit is legitimately in flight
-//! (its claim `Pending`, up to the worst-case submit envelope), driver B must NOT reclaim it. That is
-//! guaranteed by validating `stale_claim_secs` STRICTLY beyond the backoff-inclusive envelope — so this
-//! suite drives TWO store handles on one file and asserts the boundary, with the envelope tied to a
-//! NON-ZERO backoff so a mutation that drops the backoff (or the deadline) term is caught.
+//! against one store file. The safety property is: while driver A's submit is legitimately in
+//! flight (its claim `Pending`, up to the worst-case submit envelope), driver B must NOT reclaim
+//! it. That is guaranteed by validating `stale_claim_secs` STRICTLY beyond the backoff-inclusive
+//! envelope — so this suite drives TWO store handles on one file and asserts the boundary, with the
+//! envelope tied to a NON-ZERO backoff so a mutation that drops the backoff (or the deadline) term
+//! is caught.
 //!
 //! The deterministic case uses a shared controllable clock so "A at its worst-case submit time" is
-//! exact; the concurrent case interleaves two handles under a real clock via `tokio::join!` to show the
-//! store stays consistent when they overlap for real.
+//! exact; the concurrent case interleaves two handles under a real clock via `tokio::join!` to show
+//! the store stays consistent when they overlap for real.
 
 mod cycle_support;
 mod fixtures;
@@ -47,7 +48,8 @@ fn boundary_config(stale_claim_secs: u64) -> xreserve_deposit_relayer::config::R
 
 /// **The two-driver boundary, with backoff.** Driver A claims a nonce (models the start of a submit
 /// that runs up to the worst-case envelope). At A's worst-case time, driver B's reclaim — using the
-/// validated threshold — must NOT free A's live claim. Only well past the threshold does B reclaim it.
+/// validated threshold — must NOT free A's live claim. Only well past the threshold does B reclaim
+/// it.
 ///
 /// The envelope is asserted exactly (130 s, WITH backoff) and the at-envelope threshold is asserted
 /// refused, so dropping either the backoff or the deadline term from the envelope fails this test.
@@ -112,9 +114,9 @@ async fn a_live_submit_is_not_reclaimed_within_the_backoff_inclusive_envelope() 
 }
 
 /// **Two drivers overlapping for real.** Under a real clock, driver A holds a fresh claim (a live
-/// submit) while driver B repeatedly reclaims, interleaved via `tokio::join!`. Because the claim is far
-/// younger than any valid threshold, B never frees it, and A records its submission successfully — two
-/// handles on one file do not corrupt each other.
+/// submit) while driver B repeatedly reclaims, interleaved via `tokio::join!`. Because the claim is
+/// far younger than any valid threshold, B never frees it, and A records its submission
+/// successfully — two handles on one file do not corrupt each other.
 #[tokio::test]
 async fn two_concurrent_drivers_do_not_clobber_a_live_claim() {
     let vector = fixtures::test_vector();
@@ -170,12 +172,12 @@ async fn two_concurrent_drivers_do_not_clobber_a_live_claim() {
 // THE REAL LIFECYCLE — driver A runs a live cycle whose submit is held in flight
 // ================================================================================================
 
-/// **The requested delayed live-submit boundary.** Driver A runs a REAL `run_relayer_cycle`: it polls
-/// Circle, claims its nonce, builds the note, and PARKS inside a held submit — its claim genuinely
-/// `Pending` through the real submit/deadline lifecycle. While A is in flight, driver B (a second
-/// handle on the same file) advances the shared clock to A's worst-case (backoff-inclusive) envelope
-/// and reclaims at the VALIDATED 131 s threshold. B must NOT free A's live claim; A is then released
-/// and completes its mint.
+/// **The requested delayed live-submit boundary.** Driver A runs a REAL `run_relayer_cycle`: it
+/// polls Circle, claims its nonce, builds the note, and PARKS inside a held submit — its claim
+/// genuinely `Pending` through the real submit/deadline lifecycle. While A is in flight, driver B
+/// (a second handle on the same file) advances the shared clock to A's worst-case
+/// (backoff-inclusive) envelope and reclaims at the VALIDATED 131 s threshold. B must NOT free A's
+/// live claim; A is then released and completes its mint.
 ///
 /// This is the highest-risk overlap the earlier store-only tests did not exercise: a live submit
 /// lifecycle in one driver against another driver's reclamation, synchronized so the reclaim lands
@@ -257,11 +259,11 @@ async fn a_live_submit_cycle_is_not_reclaimed_by_a_second_driver_within_the_enve
     );
 }
 
-/// **The outside-boundary recovery case, through the real lifecycle.** Driver A runs a real cycle and
-/// parks in the submit (claim `Pending`), then CRASHES — its cycle future is dropped mid-submit, so the
-/// claim is stranded exactly as a `kill -9` between claim and settle would leave it. Past the validated
-/// threshold, driver B reclaims it to `Failed` — crash recovery works, and it is tied to the same
-/// backoff-inclusive boundary.
+/// **The outside-boundary recovery case, through the real lifecycle.** Driver A runs a real cycle
+/// and parks in the submit (claim `Pending`), then CRASHES — its cycle future is dropped
+/// mid-submit, so the claim is stranded exactly as a `kill -9` between claim and settle would leave
+/// it. Past the validated threshold, driver B reclaims it to `Failed` — crash recovery works, and
+/// it is tied to the same backoff-inclusive boundary.
 #[tokio::test]
 async fn a_crashed_live_submit_is_reclaimed_by_a_second_driver_past_the_boundary() {
     let vector = fixtures::test_vector();

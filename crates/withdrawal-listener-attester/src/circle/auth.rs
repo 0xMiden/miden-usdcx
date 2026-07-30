@@ -8,22 +8,21 @@
 //!
 //! What ships is therefore an *injection point*, not a scheme. [`AuthPosture::None`] (the default)
 //! builds requests against the documented no-auth contract; [`AuthPosture::Header`] attaches an
-//! operator-supplied key under an operator-supplied header NAME — the name is configurable precisely
-//! because presuming `Authorization: Bearer` would presume the answer.
+//! operator-supplied key under an operator-supplied header NAME — the name is configurable
+//! precisely because presuming `Authorization: Bearer` would presume the answer.
 //!
-//! Three properties hold whatever Circle answers, and each is pinned by a test in
-//! `tests/auth_posture.rs` (T-LA-14):
+//! Three properties hold whatever Circle answers, and each is pinned by a test:
 //!
 //! 1. **No credential is hardcoded** anywhere in this crate.
 //! 2. **No credential is rendered.** `Debug` redacts the value here, and the token is a
-//!    [`SecretString`](crate::config::SecretString) in the config, so no `{:?}` of a config can print
-//!    it.
+//!    [`SecretString`](crate::config::SecretString) in the config, so no `{:?}` of a config can
+//!    print it.
 //! 3. **No credential crosses a transport that cannot protect it.** A configured key requires an
 //!    HTTPS base URL, enforced when the config is built.
 //!
 //! The posture mirrors the deposit relayer's, deliberately: the two services face the same Circle
-//! API under the same open question, and answering it differently in each would guarantee that one of
-//! them is wrong.
+//! API under the same open question, and answering it differently in each would guarantee that one
+//! of them is wrong.
 
 use core::fmt;
 
@@ -40,9 +39,9 @@ pub enum AuthPosture {
     /// API looks like, and it is the default.
     None,
 
-    /// An out-of-band key, injected under an operator-chosen header name. The value is a credential:
-    /// never logged, never rendered by `Debug`, never baked into the source, and never sent over a
-    /// plaintext transport.
+    /// An out-of-band key, injected under an operator-chosen header name. The value is a
+    /// credential: never logged, never rendered by `Debug`, never baked into the source, and never
+    /// sent over a plaintext transport.
     Header { name: String, value: String },
 }
 
@@ -55,13 +54,13 @@ impl AuthPosture {
         }
     }
 
-    /// The posture the operator's config asks for: a header injection iff a token AND the header name
-    /// to carry it are configured, otherwise the documented no-auth contract. A *missing* token is not
-    /// an error — it is the documented case.
+    /// The posture the operator's config asks for: a header injection iff a token AND the header
+    /// name to carry it are configured, otherwise the documented no-auth contract. A *missing*
+    /// token is not an error — it is the documented case.
     ///
     /// A token with no header name cannot reach here: [`ListenerConfig`] refuses to exist in that
-    /// state ([`ListenerError::AuthHeaderNameRequired`]). Should it ever slip through, this falls back
-    /// to the DOCUMENTED no-auth contract rather than inventing a header — failing toward the
+    /// state ([`ListenerError::AuthHeaderNameRequired`]). Should it ever slip through, this falls
+    /// back to the DOCUMENTED no-auth contract rather than inventing a header — failing toward the
     /// published API, never toward a guessed scheme.
     pub fn from_config(config: &ListenerConfig) -> Self {
         match (config.api_auth_token(), config.api_auth_header()) {
@@ -106,8 +105,8 @@ impl AuthPosture {
 }
 
 /// Renders the header NAME — an operator needs to see WHICH header is configured — and redacts the
-/// VALUE. `Debug` is how a credential ends up in a log line or a panic message; the derive would have
-/// printed the key.
+/// VALUE. `Debug` is how a credential ends up in a log line or a panic message; the derive would
+/// have printed the key.
 impl fmt::Debug for AuthPosture {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

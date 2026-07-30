@@ -1,5 +1,5 @@
-//! `tests/idempotency_claim.rs` — **the claim**: the store-level portion of `T-RLY-09` (a
-//! re-observed nonce yields no second submission) and the atomic acquisition that makes it real.
+//! **The claim**: the store-level half of the no-double-mint guarantee — a re-observed nonce
+//! yields no second submission — and the atomic acquisition that makes it real.
 //!
 //! `claim_nonce` is the ONE mint-decision point: a caller mints on [`ClaimOutcome::Claimed`] and on
 //! nothing else. Everything this suite asserts follows from that:
@@ -7,16 +7,16 @@
 //! * a nonce nobody has seen is claimed once, by exactly one observer, and is `Pending` afterwards;
 //! * a nonce that is claimed, submitted, committed or already-minted comes back `AlreadySeen` — no
 //!   second mint attempt, and the stored record is not touched by the re-observation;
-//! * a nonce whose attempt **failed** is RE-claimable, atomically: exactly one observer moves it out
-//!   of `Failed` into an owned `Pending` and gets `Claimed`. Without that, a failed mint could only
-//!   be retried by reading "not submitted" and then writing — the read-then-write race this module
-//!   exists to prevent — or not at all, which strands the deposit;
+//! * a nonce whose attempt **failed** is RE-claimable, atomically: exactly one observer moves it
+//!   out of `Failed` into an owned `Pending` and gets `Claimed`. Without that, a failed mint could
+//!   only be retried by reading "not submitted" and then writing — the read-then-write race this
+//!   module exists to prevent — or not at all, which strands the deposit;
 //! * two attestations claiming one nonce with different `messageHash`es is an anomaly, refused, and
 //!   the stored hash is never overwritten.
 //!
-//! The concurrency tests race real observers through their own store handles on ONE file — the shape
-//! of two relayer processes during a deploy overlap. A JSON/bincode store's read-modify-write would
-//! fail exactly there, which is the point of the persistence choice.
+//! The concurrency tests race real observers through their own store handles on ONE file — the
+//! shape of two relayer processes during a deploy overlap. A JSON/bincode store's read-modify-write
+//! would fail exactly there, which is the point of the persistence choice.
 
 mod idempotency_fixtures;
 
@@ -41,9 +41,9 @@ use xreserve_deposit_relayer::{
 // the first observation
 // -------------------------------------------------------------------------------------------------
 
-/// The empty store knows nothing: an unseen nonce is not submitted and has no record. (`None`, not a
-/// fabricated `Pending` — "never observed" and "mid-flight" are different states, and a caller must
-/// be able to tell them apart.)
+/// The empty store knows nothing: an unseen nonce is not submitted and has no record. (`None`, not
+/// a fabricated `Pending` — "never observed" and "mid-flight" are different states, and a caller
+/// must be able to tell them apart.)
 #[test]
 fn an_unseen_nonce_is_not_submitted_and_has_no_record() {
     let clock = ManualClock::at(1_000);
@@ -77,7 +77,7 @@ fn the_first_observation_claims_the_nonce_as_pending() {
 }
 
 // -------------------------------------------------------------------------------------------------
-// T-RLY-09 — the re-observation
+// the re-observation
 // -------------------------------------------------------------------------------------------------
 
 /// The SECOND observation of the same nonce — the same attestation on the next poll — is
@@ -176,8 +176,8 @@ fn only_a_failed_nonce_is_re_claimed(
     assert!(store.is_nonce_submitted(&nonce(1)).expect("lookup"));
 }
 
-/// `is_nonce_submitted` — the READ of the same decision. It blocks every status except `Failed` (and
-/// answers `false` for a nonce nobody has seen).
+/// `is_nonce_submitted` — the READ of the same decision. It blocks every status except `Failed`
+/// (and answers `false` for a nonce nobody has seen).
 #[rstest]
 #[case::pending(SubmissionStatus::Pending, true)]
 #[case::submitted(SubmissionStatus::Submitted, true)]
@@ -259,8 +259,8 @@ fn a_failed_nonce_is_re_claimed_and_the_retry_can_commit() {
     assert_eq!(committed.block_num(), Some(12));
 }
 
-/// The retry claim is the ONLY way out of `Failed`. Submitting straight from a failed record —
-/// "I read that it was not submitted, so I submit" — is the read-then-write race, and it is refused:
+/// The retry claim is the ONLY way out of `Failed`. Submitting straight from a failed record — "I
+/// read that it was not submitted, so I submit" — is the read-then-write race, and it is refused:
 /// the caller must go back through the atomic claim.
 #[test]
 fn a_failed_nonce_cannot_be_submitted_without_re_claiming_it() {
@@ -395,8 +395,8 @@ fn the_retryable_work_list_holds_exactly_the_failed_records_oldest_first() {
 
 /// Two DIFFERENT attestations claiming the SAME nonce is an anomaly — one of them is not what it
 /// says it is (a re-issued attestation, a mis-keyed cache, a substitution on the path). The store
-/// refuses it with a typed error naming both digests and does NOT overwrite the stored hash: the log
-/// must keep saying what was actually claimed and minted.
+/// refuses it with a typed error naming both digests and does NOT overwrite the stored hash: the
+/// log must keep saying what was actually claimed and minted.
 ///
 /// It is refused in EVERY status, including `Failed`: the retry claim is not a way in for an
 /// impostor.
@@ -464,8 +464,8 @@ fn only_one_of_many_concurrent_observers_claims_a_fresh_nonce() {
 
 /// The same race, on a FAILED nonce — the retry path. Several observers (the poller re-seeing the
 /// attestation, the retry driver working its list) reach for the same failed record at once, and
-/// exactly ONE re-acquires it. A retry claim that was not atomic would let two of them mint the same
-/// deposit again, which is precisely what the seam is for.
+/// exactly ONE re-acquires it. A retry claim that was not atomic would let two of them mint the
+/// same deposit again, which is precisely what the seam is for.
 #[test]
 fn only_one_of_many_concurrent_observers_re_claims_a_failed_nonce() {
     let clock = ManualClock::at(1_000);
@@ -495,8 +495,8 @@ fn only_one_of_many_concurrent_observers_re_claims_a_failed_nonce() {
     );
 }
 
-/// Eight observers, eight independent store handles on one file, all claiming `key` at once. Returns
-/// how many of them won the claim — which must always be exactly one.
+/// Eight observers, eight independent store handles on one file, all claiming `key` at once.
+/// Returns how many of them won the claim — which must always be exactly one.
 fn race_to_claim(path: &std::path::Path, clock: &Arc<ManualClock>, key: [u8; 32]) -> usize {
     const OBSERVERS: usize = 8;
 
@@ -524,9 +524,9 @@ fn race_to_claim(path: &std::path::Path, clock: &Arc<ManualClock>, key: [u8; 32]
         .count()
 }
 
-/// Two live handles on one file share ONE log — a write through either is immediately visible to the
-/// other. (A per-process in-memory cache would pass every single-handle test in this suite and fail
-/// exactly here.)
+/// Two live handles on one file share ONE log — a write through either is immediately visible to
+/// the other. (A per-process in-memory cache would pass every single-handle test in this suite and
+/// fail exactly here.)
 #[test]
 fn two_handles_on_the_same_file_share_one_log() {
     let clock = ManualClock::at(1_000);

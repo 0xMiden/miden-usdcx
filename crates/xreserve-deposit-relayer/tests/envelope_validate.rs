@@ -1,32 +1,32 @@
-//! `tests/envelope_validate.rs` — the attestation-envelope binding harness (COMPONENT-SPEC
-//! § envelope validation; harness T-RLY-20 / T-RLY-05 / T-RLY-06). No Circle call, no Miden, no
-//! network: deterministic unit tests on `validate::envelope`.
+//! The attestation-envelope binding harness: no Circle call, no Miden, no network, just
+//! deterministic unit tests on `validate::envelope`.
 //!
-//! **The invariant under test.** INV-DEPOSIT-ATTESTATION-RAW-KECCAK (DC-2): the envelope's
+//! **The invariant under test.** The raw-keccak attestation-envelope binding: the envelope's
 //! `messageHash` binds the payload by **raw keccak256 over the FULL payload** — NOT EIP-712, NOT
 //! personal-sign, NOT Poseidon2 — and the attestation is a raw 65-byte `r‖s‖v` secp256k1 signature.
 //! A binding check that accepted a plausible-but-wrong digest would let the relayer carry a
 //! signature over a DIFFERENT message than the one the faucet keccaks and mints on-chain.
 //!
 //! **Oracle discipline.** The accept path is not judged against the implementation's own keccak: it
-//! is judged against the ONE canonical golden artifact (`xusdc_encoding::vectors`, the DC-2 `att`
-//! family), whose digests were generated independently by unit-04's `gen_vectors` and are pinned
-//! against the on-chain MASM keccak precompile by unit-04's dual tests. So these tests fail if the
-//! relayer's off-chain keccak ever diverges from the digest the FAUCET verifies against.
+//! is judged against the ONE canonical golden artifact (`xusdc_encoding::vectors`, the attestation
+//! `att` family), whose digests were generated independently by the shared encoding crate's
+//! `gen_vectors` and are pinned against the on-chain MASM keccak precompile by the shared encoding
+//! crate's dual tests. So these tests fail if the relayer's off-chain keccak ever diverges from the
+//! digest the FAUCET verifies against.
 //!
 //! **Rejects are exact.** Every rejection asserts the precise `RelayerError` variant (never
-//! `is_err()`), and the mismatch variant's `expected` is asserted to be the true raw-keccak digest —
-//! so a check that rejected for the wrong reason, or that compared against the wrong digest family,
-//! fails.
+//! `is_err()`), and the mismatch variant's `expected` is asserted to be the true raw-keccak digest
+//! — so a check that rejected for the wrong reason, or that compared against the wrong digest
+//! family, fails.
 //!
 //! Covered:
-//!   * T-RLY-20 `attestation_envelope_raw_keccak` — accept the raw-keccak vector; REJECT the three
-//!     negatives computed over the SAME payload (EIP-712 digest, personal-sign prefix, Poseidon2
-//!     word); binding is payload-specific.
-//!   * T-RLY-05 `message_hash_mismatch_abort`      — every mismatch class aborts with the exact
-//!     variant: per-byte digest corruption, tampered/truncated/extended payload, bad length, bad hex.
-//!   * T-RLY-06 `attestation_length_reject`        — attestation ≠ 65B → `BadAttestationLength`;
-//!     65B accepted shape-only (NO off-chain ECDSA verification — that is on-chain, faucet-owned).
+//! * `attestation_envelope_raw_keccak` — accept the raw-keccak vector; REJECT the three
+//!   negatives computed over the SAME payload (EIP-712 digest, personal-sign prefix, Poseidon2
+//!   word); binding is payload-specific.
+//! * `message_hash_mismatch_abort` — every mismatch class aborts with the exact
+//!   variant: per-byte digest corruption, tampered/truncated/extended payload, bad length, bad hex.
+//! * `attestation_length_reject` — attestation ≠ 65B → `BadAttestationLength`;
+//!   65B accepted shape-only (NO off-chain ECDSA verification — that is on-chain, faucet-owned).
 
 mod fixtures;
 
@@ -49,7 +49,7 @@ use xreserve_deposit_relayer::validate::envelope::{
 use xusdc_encoding::vectors::{load, AttVector};
 use xusdc_encoding::xreserve::encoding::pubkey_commitment;
 
-/// The canonical DC-2 attestation vectors — the independent oracle (see the module docs).
+/// The canonical attestation vectors — the independent oracle (see the module docs).
 fn att_vectors() -> &'static [AttVector] {
     &load().families.att
 }
@@ -76,13 +76,13 @@ fn assert_malformed_hex(err: &RelayerError, field: HexField, cause: FromHexError
 }
 
 // ================================================================================================
-// T-RLY-20 — attestation_envelope_raw_keccak (the INV-DEPOSIT-ATTESTATION-RAW-KECCAK gate)
+// attestation_envelope_raw_keccak (the raw-keccak binding gate)
 // ================================================================================================
 
-/// ACCEPT: for every canonical `att` vector, the envelope binds when `messageHash` is the artifact's
-/// INDEPENDENTLY generated raw-keccak digest of the full payload. This is the oracle test: it pins
-/// the relayer's off-chain keccak to the exact digest the faucet's on-chain keccak precompile
-/// verifies against — not to the relayer's own recomputation.
+/// ACCEPT: for every canonical `att` vector, the envelope binds when `messageHash` is the
+/// artifact's INDEPENDENTLY generated raw-keccak digest of the full payload. This is the oracle
+/// test: it pins the relayer's off-chain keccak to the exact digest the faucet's on-chain keccak
+/// precompile verifies against — not to the relayer's own recomputation.
 #[test]
 fn t_rly_20_accept_canonical_raw_keccak_vectors() {
     for v in att_vectors() {
@@ -131,10 +131,10 @@ fn t_rly_20_accept_partner_fixture(#[case] prefixed: bool, #[case] upper: bool) 
     assert_eq!(bound, tv.payload());
 }
 
-/// REJECT (the heart of T-RLY-20): the three plausible-but-WRONG digests, each computed over the
-/// SAME payload. Each must abort with `MessageHashMismatch`, and the error's `expected` must be the
-/// true raw-keccak digest while `actual` is exactly the wrong digest that was presented — so the
-/// check is proven to compare against the raw-keccak family and no other.
+/// REJECT (the heart of): the three plausible-but-WRONG digests, each computed over the SAME
+/// payload. Each must abort with `MessageHashMismatch`, and the error's `expected` must be the true
+/// raw-keccak digest while `actual` is exactly the wrong digest that was presented — so the check
+/// is proven to compare against the raw-keccak family and no other.
 #[rstest]
 #[case::eip712_typed_data(eip712_digest as fn(&[u8]) -> [u8; 32])]
 #[case::personal_sign_prefix(personal_sign_digest)]
@@ -165,7 +165,8 @@ fn t_rly_20_reject_non_raw_keccak_digest(#[case] wrong_digest: fn(&[u8]) -> [u8;
 }
 
 /// The three negative comparators are pairwise distinct and none equals the raw-keccak digest —
-/// they are three genuinely different constructions over one payload, not the same bytes relabelled.
+/// they are three genuinely different constructions over one payload, not the same bytes
+/// relabelled.
 #[test]
 fn t_rly_20_negative_comparators_are_distinct_constructions() {
     let payload = canonical_payload(TEST_VECTOR_PAYLOAD_ID_EMPTY_HOOKDATA);
@@ -185,7 +186,8 @@ fn t_rly_20_negative_comparators_are_distinct_constructions() {
 }
 
 /// The binding is PAYLOAD-SPECIFIC: the raw-keccak digest of payload A does not bind payload B.
-/// (Cross-payload swap — a check that merely validated "some 32-byte keccak-shaped hash" would pass.)
+/// (Cross-payload swap — a check that merely validated "some 32-byte keccak-shaped hash" would
+/// pass.)
 #[test]
 fn t_rly_20_binding_is_payload_specific() {
     let a = test_vector();
@@ -204,10 +206,10 @@ fn t_rly_20_binding_is_payload_specific() {
     });
 }
 
-/// The fixture's attester identity is the one the allowlist is keyed by: the commitment is unit-04's
-/// `pubkey_commitment` (DC-3) — Poseidon2 over the affine coordinates the 33-byte compressed pubkey
-/// decompresses to (16 felts since v16, vm#3342) — and the pubkey is deterministic
-/// (pinned). This is what the later local-node rows seed via `set_attester`.
+/// The fixture's attester identity is the one the allowlist is keyed by: the commitment is the
+/// shared encoding crate's `pubkey_commitment` — Poseidon2 over the 16 affine felts the 33-byte
+/// compressed pubkey decompresses to — and the pubkey is deterministic (pinned). This is what the
+/// later local-node rows seed via `set_attester`.
 #[test]
 fn t_rly_20_partner_attester_identity_is_deterministic_and_canonically_keyed() {
     let attester = PartnerAttester::new();
@@ -229,8 +231,8 @@ fn t_rly_20_partner_attester_identity_is_deterministic_and_canonically_keyed() {
 }
 
 /// The fixture signs the RAW keccak digest (not a prefixed/typed one): the attestation it produces
-/// for an arbitrary payload always binds through `verify_message_hash`, and is a well-formed 65-byte
-/// envelope. This is the reusable path R3/R5/R6 build their attestations with.
+/// for an arbitrary payload always binds through `verify_message_hash`, and is a well-formed
+/// 65-byte envelope. This is the reusable path the attestation-building suites share.
 ///
 /// NOTE this asserts SHAPE and REPORTED binding only — that the signature actually COVERS the
 /// reported digest is proven cryptographically by
@@ -268,10 +270,11 @@ fn t_rly_20_fixture_signs_raw_keccak_for_arbitrary_payloads() {
 ///
 /// Reporting `message_hash = keccak256(payload)` proves nothing on its own: a fixture could report
 /// the right digest while having signed a different one, and every shape/binding test would still
-/// pass while the "partner vector signs raw keccak" claim silently died. So the signature is checked
-/// with a real ECDSA verification (TEST-ONLY — `k256` is a dev-dependency; the production relayer
-/// still never verifies a signature off-chain, that is on-chain at D5d), and is then shown NOT to
-/// verify against the three wrong digest families or a single-bit-flipped digest.
+/// pass while the "partner vector signs raw keccak" claim silently died. So the signature is
+/// checked with a real ECDSA verification (TEST-ONLY — `k256` is a dev-dependency; the production
+/// relayer still never verifies a signature off-chain, that is on-chain in the faucet's attestation
+/// check), and is then shown NOT to verify against the three wrong digest families or a
+/// single-bit-flipped digest.
 #[test]
 fn t_rly_20_fixture_signature_cryptographically_covers_the_raw_keccak_digest() {
     let attester = PartnerAttester::new();
@@ -291,7 +294,7 @@ fn t_rly_20_fixture_signature_cryptographically_covers_the_raw_keccak_digest() {
             "{id}: the attestation must verify over keccak256(full payload) under the partner pubkey"
         );
 
-        // ...and over nothing else: not the wrong hash families,
+        //...and over nothing else: not the wrong hash families,
         for (name, wrong) in [
             ("eip712", eip712_digest(&payload)),
             ("personal-sign", personal_sign_digest(&payload)),
@@ -303,7 +306,7 @@ fn t_rly_20_fixture_signature_cryptographically_covers_the_raw_keccak_digest() {
             );
         }
 
-        // ...and not a digest that differs by a single bit.
+        //...and not a digest that differs by a single bit.
         let mut flipped = raw;
         flipped[0] ^= 0x01;
         assert!(
@@ -322,8 +325,8 @@ fn t_rly_20_fixture_signature_cryptographically_covers_the_raw_keccak_digest() {
 }
 
 /// The verification oracle used above is itself sound: it accepts the canonical `att` vectors'
-/// INDEPENDENTLY generated (pubkey, digest, signature) triples — data this crate did not produce. An
-/// oracle that vacuously returned `true` (or `false`) would fail here or in the negatives above.
+/// INDEPENDENTLY generated (pubkey, digest, signature) triples — data this crate did not produce.
+/// An oracle that vacuously returned `true` (or `false`) would fail here or in the negatives above.
 #[test]
 fn t_rly_20_signature_oracle_accepts_canonical_att_vectors() {
     for v in att_vectors() {
@@ -343,8 +346,9 @@ fn t_rly_20_signature_oracle_accepts_canonical_att_vectors() {
 
 /// The reusable test vector is BYTE-PINNED. secp256k1 signing here is deterministic (RFC 6979), so
 /// the partner key's signature over the canonical payload is a fixed 65-byte value: an independent
-/// golden pin that catches ANY drift in the key, the digest, or the signing convention — including a
-/// fixture that started signing a different digest while still reporting the right `message_hash`.
+/// golden pin that catches ANY drift in the key, the digest, or the signing convention — including
+/// a fixture that started signing a different digest while still reporting the right
+/// `message_hash`.
 #[test]
 fn t_rly_20_test_vector_is_byte_pinned() {
     let tv = test_vector();
@@ -368,7 +372,7 @@ fn t_rly_20_test_vector_is_byte_pinned() {
 }
 
 // ================================================================================================
-// T-RLY-05 — message_hash_mismatch_abort (every mismatch class, exact variant)
+// message_hash_mismatch_abort (every mismatch class, exact variant)
 // ================================================================================================
 
 /// A single flipped bit ANYWHERE in the 32-byte digest aborts. Runs all 32 byte positions — a check
@@ -393,8 +397,8 @@ fn t_rly_05_single_bit_flip_in_any_digest_byte_aborts() {
 }
 
 /// The payload is bound too: tampering with the payload while presenting the ORIGINAL `messageHash`
-/// aborts (a flipped byte, a truncation, and an appended byte). This is the ASG-12 shape — the hash
-/// must cover the full payload, so no payload edit can slip past the binding.
+/// aborts (a flipped byte, a truncation, and an appended byte). This is the documented trap shape —
+/// the hash must cover the full payload, so no payload edit can slip past the binding.
 #[rstest]
 #[case::flipped_byte_first(0)]
 #[case::flipped_byte_middle(120)]
@@ -499,7 +503,8 @@ fn t_rly_05_payload_hex_error_takes_precedence() {
 }
 
 // ================================================================================================
-// T-RLY-06 (attestation-length sub-case) — attestation ≠ 65B → BadAttestationLength
+// (attestation-length sub-case) — attestation ≠ 65B →
+// BadAttestationLength
 // ================================================================================================
 
 /// ACCEPT: exactly 65 bytes, returned byte-for-byte (`r‖s‖v` preserved, `v` carried).
@@ -529,8 +534,8 @@ fn t_rly_06_accept_65_byte_attestation() {
     );
 }
 
-/// REJECT: any length other than 65 → `BadAttestationLength`, carrying the actual length.
-/// 64 (the `v`-less form) and 66 are the two dangerous neighbours; 0/1/32 cover the degenerate ones.
+/// REJECT: any length other than 65 → `BadAttestationLength`, carrying the actual length. 64 (the
+/// `v`-less form) and 66 are the two dangerous neighbours; 0/1/32 cover the degenerate ones.
 #[rstest]
 #[case::empty(0)]
 #[case::one_byte(1)]
@@ -564,12 +569,13 @@ fn t_rly_06_reject_malformed_attestation_hex(
 
 /// The envelope check is SHAPE-ONLY — it must NOT verify the ECDSA signature off-chain.
 ///
-/// This is a deliberate, load-bearing behavioural pin (INV: the relayer is a LIVENESS service; the
-/// attestation is verified ON-CHAIN at D5d against the attester allowlist, R-MINT-13/14). A 65-byte
-/// attestation that is cryptographic nonsense — all zeros, all 0xff, or a valid signature by a
-/// DIFFERENT key — is accepted HERE and rejected on-chain. If someone later "helpfully" adds
-/// off-chain signature verification, this test fails and tells them why: the relayer must not be
-/// able to withhold a mint that the chain would accept, nor authorize one it would not.
+/// This is a deliberate, load-bearing behavioural pin (the relayer is a LIVENESS service; the
+/// attestation is verified ON-CHAIN in the faucet's attestation check against the attester
+/// allowlist). A 65-byte attestation that is cryptographic nonsense — all zeros, all 0xff, or a
+/// valid signature by a DIFFERENT key — is accepted HERE and rejected on-chain. If someone later
+/// "helpfully" adds off-chain signature verification, this test fails and tells them why: the
+/// relayer must not be able to withhold a mint that the chain would accept, nor authorize one it
+/// would not.
 #[rstest]
 #[case::all_zeros([0u8; 65])]
 #[case::all_ones([0xffu8; 65])]
@@ -580,11 +586,11 @@ fn t_rly_06_shape_only_never_verifies_ecdsa_offchain(#[case] bytes: [u8; 65]) {
 }
 
 /// A signature by a GENUINELY DIFFERENT (non-allowlisted) key passes the envelope check — the
-/// attester-allowlist gate is on-chain (D5d, R-MINT-13), not here. The foreign attester is a second
-/// key with its own seed, so this really is a different signer (not merely a different message);
-/// the assertions below pin that: different pubkey, different commitment, and its signature does NOT
-/// verify under the partner pubkey — yet the envelope still accepts it, because shape is all the
-/// envelope may judge.
+/// attester-allowlist gate is on-chain (in the faucet's attestation check), not here. The foreign
+/// attester is a second key with its own seed, so this really is a different signer (not merely a
+/// different message); the assertions below pin that: different pubkey, different commitment, and
+/// its signature does NOT verify under the partner pubkey — yet the envelope still accepts it,
+/// because shape is all the envelope may judge.
 #[test]
 fn t_rly_06_foreign_key_signature_passes_shape_check() {
     let partner = PartnerAttester::new();
@@ -614,7 +620,7 @@ fn t_rly_06_foreign_key_signature_passes_shape_check() {
         "it is a valid signature — just by the wrong (non-allowlisted) key"
     );
 
-    // ...and the envelope accepts it anyway: authority over WHO signed is on-chain.
+    //...and the envelope accepts it anyway: authority over WHO signed is on-chain.
     assert_eq!(
         validate_attestation_envelope(&att.attestation_hex()).expect("shape-only"),
         att.attestation()

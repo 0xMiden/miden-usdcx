@@ -1,23 +1,23 @@
-//! `T-LA-07`, part 2 — the **quorum shape on the wire**, the **pre-submit allowlist gate**, **B3's
-//! refusals**, the **`409` contract**, **idempotency**, **`DC-8` fail-closed**, and the
-//! **secret-free event trace**. **NON-GATING** (the real-node leg is W10).
+//! The **quorum shape on the wire**, the **pre-submit allowlist gate**, **the discovery gate's
+//! refusals**, the **`409` contract**, **idempotency**, **fail-closed evidence**, and the
+//! **secret-free event trace**. **NON-GATING** (the real-node leg is parked).
 //!
 //! Its siblings: `listener_orchestration.rs` (the happy path, the DO-NOT-SIGN abort, cardinality)
-//! and `listener_structural_absence.rs`. Split under G3's ~700-line Rust ceiling, over one
-//! `listener_support` fixture module.
+//! and `listener_structural_absence.rs`. Split to stay within the ~700-line Rust file ceiling, over
+//! one `listener_support` fixture module.
 //!
-//! The oracle is the same and for the same reason: an outcome cannot distinguish a run that recovered
-//! a `409` by polling from one that re-POSTed it and reported the answer. Only the mock's CALL LOG
-//! can, so that is what every case here asserts on.
+//! The oracle is the same and for the same reason: an outcome cannot distinguish a run that
+//! recovered a `409` by polling from one that re-POSTed it and reported the answer. Only the mock's
+//! CALL LOG can, so that is what every case here asserts on.
 //!
 //! # The invariants this half maps to
 //!
-//! * The quorum contract (`DC-11`, `Attestable.sol:75,333-381` — exactly-2 / strictly-ascending /
+//! * The quorum contract (`Attestable.sol:75,333-381` — exactly-2 / strictly-ascending /
 //!   no-duplicate-signer) BOUND to the submitted batch.
-//! * §10.10's `409` contract (recover by polling, never re-send, never success-from-409) and the
-//!   per-burn idempotency claim.
-//! * `INV-BURN-EVIDENCE-TRUST` fail-closed (`DC-8`), and `INV-PUBLIC-BURN-OBSERVABILITY` /
-//!   anti-`ASG-3` at B3.
+//! * Circle's documented `409` contract (recover by polling, never re-send, never success-from-409)
+//!   and the per-burn idempotency claim.
+//! * Fail-closed burn evidence, and burn-note observability /
+//!   an exact match, never a prefix, at discovery.
 use assert_matches::assert_matches;
 use rstest::rstest;
 use serde_json::json;
@@ -47,15 +47,15 @@ use listener_support::*;
 /// Every signature-set shape Circle's source-chain verifier rejects is refused HERE, off-chain, and
 /// **none of them reaches `POST /v1/withdraw`**.
 ///
-/// The signer is driven to produce each shape deliberately, so the case is about the orchestration's
-/// binding to `assemble_quorum` rather than about the production signer happening to behave. In
-/// particular the single-signature case is the "≥2 treated as enough" bug and the three-signature
-/// case is the "more is safer" one — Circle's verifier is exactly-2 (`Attestable.sol:75,333-381`).
-/// Each case pins its EXACT `QuorumError` (G4). The distinction is not cosmetic: a below-threshold
-/// set reported as `NotAscending`, or a duplicate silently reported as `BelowThreshold`, would mean
-/// the count check and the duplicate check had swapped places — and `DuplicateSigner` in particular
-/// must never degrade into a count error, because "de-duplicate then count" is exactly how a 2-signer
-/// set collapses into a submitted single-key quorum.
+/// The signer is driven to produce each shape deliberately, so the case is about the
+/// orchestration's binding to `assemble_quorum` rather than about the production signer happening
+/// to behave. In particular the single-signature case is the "≥2 treated as enough" bug and the
+/// three-signature case is the "more is safer" one — Circle's verifier is exactly-2
+/// (`Attestable.sol:75,333-381`). Each case pins its EXACT `QuorumError`. The distinction is not
+/// cosmetic: a below-threshold set reported as `NotAscending`, or a duplicate silently reported as
+/// `BelowThreshold`, would mean the count check and the duplicate check had swapped places — and
+/// `DuplicateSigner` in particular must never degrade into a count error, because "de-duplicate
+/// then count" is exactly how a 2-signer set collapses into a submitted single-key quorum.
 #[rstest]
 #[case::below_threshold(
     vec![ATTESTER_A],
@@ -165,8 +165,9 @@ async fn a_signature_that_does_not_verify_to_its_claimed_signer_never_reaches_th
 // THE PRE-SUBMIT ALLOWLIST GATE — sign happens, submit does not
 // ================================================================================================
 
-/// A signature from a key that is not a registered attester: the run signs (B6 legitimately runs —
-/// B5 passed) and then the gate refuses, so **zero** `/v1/withdraw` calls go out.
+/// A signature from a key that is not a registered attester: the run does sign — validation passed,
+/// so signing legitimately happens — and then the allowlist gate refuses, so **zero**
+/// `/v1/withdraw` calls go out.
 ///
 /// The signer count being ONE here is as load-bearing as the zeros above: it proves the pipeline
 /// really is validate → sign → authorize → submit, and that the refusal is the AUTHORIZE stage
@@ -225,12 +226,12 @@ async fn an_empty_allowlist_fails_closed_and_never_submits() {
 }
 
 // ================================================================================================
-// B3 — nothing leaves the process before discovery passes
+// DISCOVERY — nothing leaves the process before discovery passes
 // ================================================================================================
 
-/// A wrong-tag note is not this listener's note. Circle is never asked about it — the tag is matched
-/// by exact full-32-bit equality, so a note sharing the high 16 bits is a DIFFERENT note
-/// (anti-`ASG-3`).
+/// A wrong-tag note is not this listener's note. Circle is never asked about it — the tag is
+/// matched by exact full-32-bit equality, so a note sharing the high 16 bits is a DIFFERENT note
+/// (an exact match, never a prefix).
 #[tokio::test]
 async fn a_wrong_tag_note_is_refused_before_circle_is_touched() {
     let mock = mock(happy_script());
@@ -257,7 +258,7 @@ async fn a_wrong_tag_note_is_refused_before_circle_is_touched() {
 }
 
 /// A private/erased note (`details = None`) is unobservable to Circle and is refused, not attested
-/// to (`INV-PUBLIC-BURN-OBSERVABILITY`).
+/// to.
 #[tokio::test]
 async fn a_private_note_is_refused_before_circle_is_touched() {
     let mock = mock(happy_script());
@@ -282,11 +283,11 @@ async fn a_private_note_is_refused_before_circle_is_touched() {
 }
 
 // ================================================================================================
-// THE 409 — recovered by polling, NEVER re-sent (§10.10)
+// THE 409 — recovered by polling, NEVER re-sent
 // ================================================================================================
 
-/// A `409` naming a `withdrawalId` is RECOVERED by polling it. The oracle is the call log: **exactly
-/// one** `POST /v1/withdraw` ever went out, and the recovery is a `GET`.
+/// A `409` naming a `withdrawalId` is RECOVERED by polling it. The oracle is the call log:
+/// **exactly one** `POST /v1/withdraw` ever went out, and the recovery is a `GET`.
 #[tokio::test]
 async fn a_409_recovers_via_poll_and_never_re_sends() {
     let mock = mock(
@@ -310,8 +311,8 @@ async fn a_409_recovers_via_poll_and_never_re_sends() {
 }
 
 /// A `409` carrying only `conflict.burnTxId` has no withdrawal to recover through: resubmission
-/// STOPS and the burn is left for an operator. No second POST, and no poll either — there is nothing
-/// to poll.
+/// STOPS and the burn is left for an operator. No second POST, and no poll either — there is
+/// nothing to poll.
 #[tokio::test]
 async fn a_409_naming_no_withdrawal_stops_and_requires_reconciliation() {
     let mock = mock(happy_script().withdraw(vec![Reply::json(409, conflict_409(false))]));
@@ -356,9 +357,9 @@ async fn a_409_echoing_another_burn_is_a_defect_and_is_not_chased() {
 // IDEMPOTENCY — one burn is submitted at most once, ever
 // ================================================================================================
 
-/// Re-running an already-withdrawn burn does **not** double-submit. The second pass re-does B3→B6
-/// (the flow is stateless up to the ledger) and then the durable claim answers: `AlreadySubmitted`,
-/// with **zero** further `POST /v1/withdraw` calls.
+/// Re-running an already-withdrawn burn does **not** double-submit. The second pass re-does
+/// discovery through signing (the flow is stateless up to the ledger) and then the durable claim
+/// answers: `AlreadySubmitted`, with **zero** further `POST /v1/withdraw` calls.
 #[tokio::test]
 async fn re_running_an_already_withdrawn_burn_does_not_double_submit() {
     let mock = mock(happy_script());
@@ -425,7 +426,7 @@ async fn a_restarted_process_does_not_re_submit_a_claimed_burn() {
 }
 
 // ================================================================================================
-// DC-8 — evidence fails closed, and a burn with no honest evidence is never submitted
+// THE EVIDENCE FAILS CLOSED — a burn with no honest evidence is never submitted
 // ================================================================================================
 
 /// The nullifier is not reported spent: the note's CREATION is cryptographically proved and that is
@@ -482,11 +483,12 @@ async fn a_failed_evidence_read_never_submits() {
 // ================================================================================================
 
 /// **No emitted event carries key material or a credential.** The run is driven with a config
-/// holding a real out-of-band API token and with signers holding real secret keys; every event, as an
-/// operator's log would render it, is swept for the token, the key bytes, and the derived signatures.
+/// holding a real out-of-band API token and with signers holding real secret keys; every event, as
+/// an operator's log would render it, is swept for the token, the key bytes, and the derived
+/// signatures.
 ///
-/// The oracle is the RENDERED event (`Debug`), not the struct's field list: a field that stringifies
-/// a secret would pass a shape check and leak anyway.
+/// The oracle is the RENDERED event (`Debug`), not the struct's field list: a field that
+/// stringifies a secret would pass a shape check and leak anyway.
 #[tokio::test]
 async fn no_emitted_event_carries_key_material_or_a_credential() {
     const TOKEN: &str = "sk-live-the-circle-credential-that-must-never-be-logged";

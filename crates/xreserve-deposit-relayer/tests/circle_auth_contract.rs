@@ -1,17 +1,17 @@
-//! `tests/circle_auth_contract.rs` — `T-RLY-10`, the auth posture: a configurable header-injection
-//! point, no hardcoded credential, no credential in any human-facing rendering, and no credential
-//! over a transport that cannot protect it.
+//! `tests/circle_auth_contract.rs` — the auth posture: a configurable header-injection point, no
+//! hardcoded credential, no credential in any human-facing rendering, and no credential over a
+//! transport that cannot protect it.
 //!
-//! `Q-API-AUTH` is OPEN (`REQUIRES CIRCLE CONFIRMATION`): the OpenAPI declares no security scheme at
-//! all, so the relayer ships an injection point — not a scheme — and these tests pin the properties
-//! that must hold whatever Circle answers.
+//! the credential scheme is `REQUIRES CIRCLE CONFIRMATION`: the OpenAPI declares no security scheme
+//! at all, so the relayer ships an injection point — not a scheme — and these tests pin the
+//! properties that must hold whatever Circle answers.
 //!
-//! No live Circle leg (§11): every Circle endpoint is `REQUIRES CIRCLE CONFIRMATION` and is
-//! exercised against the in-process schema-exact mock ([`mock_circle`]) — the relayer builds a real
-//! `reqwest::Request` and the mock's axum router answers it, binding no socket. The attestation wire
-//! data is the partner test vector from [`fixtures`] — a real secp256k1 signature over the real
-//! raw-keccak digest of a canonical DC-1 DepositIntent payload — so the keccak binding these tests
-//! assert is a genuine binding, not a self-consistent invention.
+//! No live Circle leg (the mock boundary): every Circle endpoint is `REQUIRES CIRCLE CONFIRMATION`
+//! and is exercised against the in-process schema-exact mock ([`mock_circle`]) — the relayer builds
+//! a real `reqwest::Request` and the mock's axum router answers it, binding no socket. The
+//! attestation wire data is the partner test vector from [`fixtures`] — a real secp256k1 signature
+//! over the real raw-keccak digest of a canonical DepositIntent payload — so the keccak binding
+//! these tests assert is a genuine binding, not a self-consistent invention.
 
 mod fixtures;
 mod mock_circle;
@@ -31,7 +31,7 @@ use xreserve_deposit_relayer::circle::{
 use xreserve_deposit_relayer::config::RelayerConfig;
 use xreserve_deposit_relayer::error::RelayerError;
 
-// T-RLY-10 — auth posture: configurable header injection, no hardcoded credential
+// auth posture: configurable header injection, no hardcoded credential
 // ================================================================================================
 
 /// (3) With NO key configured the client still builds requests against the DOCUMENTED (no-auth)
@@ -72,8 +72,8 @@ async fn t_rly_10_with_no_key_configured_no_auth_header_is_sent_and_the_request_
     }
 }
 
-/// (1) The header-injection point exists: an out-of-band key supplied by the operator is attached to
-/// every request, under the operator-chosen header name.
+/// (1) The header-injection point exists: an out-of-band key supplied by the operator is attached
+/// to every request, under the operator-chosen header name.
 #[tokio::test]
 async fn t_rly_10_a_configured_out_of_band_key_is_injected_as_a_header() {
     let vector = test_vector();
@@ -94,8 +94,8 @@ async fn t_rly_10_a_configured_out_of_band_key_is_injected_as_a_header() {
     );
 }
 
-/// The header NAME is configurable too — the production scheme is `Q-API-AUTH` (OPEN), so the client
-/// must not presume `Authorization`/`Bearer`.
+/// The header NAME is configurable too — the production scheme is still Circle's to confirm, so the
+/// client must not presume `Authorization`/`Bearer`.
 #[tokio::test]
 async fn t_rly_10_the_auth_header_name_is_configurable() {
     let vector = test_vector();
@@ -192,10 +192,10 @@ fn t_rly_10_a_configured_key_does_not_leak_through_relayer_config_debug() {
     value["api_auth_token"] = json!(OPERATOR_KEY);
     let config: RelayerConfig = serde_json::from_value(value).expect("config deserializes");
 
-    // the key is USABLE (redaction must not neuter the injection point) ...
+    // the key is USABLE (redaction must not neuter the injection point)...
     assert_eq!(config.api_auth_token(), Some(OPERATOR_KEY));
 
-    // ... and yet unprintable
+    //... and yet unprintable
     let rendered = format!("{config:?}");
     assert!(
         !rendered.contains(OPERATOR_KEY),
@@ -285,7 +285,8 @@ fn walk_rust_sources(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     out
 }
 
-// T-RLY-10 (cont.) — a credential may not cross a transport that cannot protect it
+// (cont.) — a credential may not cross a transport that cannot protect
+// it
 // ================================================================================================
 
 /// **A configured key requires HTTPS.** With a plaintext base URL the credential would be readable

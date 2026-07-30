@@ -46,13 +46,21 @@ New here? Read the specs before the code. `README.md` is the top-level orientati
 `docs/spec/FAUCET-COMPONENT-SPEC.md` is what the faucet does, `docs/spec/ENCODING-COMPONENT-SPEC.md`
 is the shared codecs, and `docs/DOCS-INVENTORY.md` maps every doc in the repo.
 
+**Looking for where a requirement, invariant, or decision id is implemented and verified?
+`docs/REQUIREMENTS-TRACEABILITY.md` is the index** — it maps every id (`CIR-*`, `INV-*`, `DEV-*`,
+`R-MINT-*`, `DC-*`, …) to the procedure or function that implements it and the test that verifies
+it. Inline comments deliberately carry prose, not ids, so this index is the only place the two are
+tied together.
+
 ### Code comments ↔ docs
 
-Code comments use short, stable IDs as **labels** — a requirement (`R-MINT-15`), an invariant
-(`INV-MINT-SECURITY`), a mint pipeline stage (`D5c`), a data contract (`DC-1`), or a still-Circle-owned
-open question (`DEV-10`). Every one resolves in `docs/spec/GLOSSARY.md`, the single place they are
-defined. The prose around an anchor always stands on its own — the ID is a label, not a pointer you
-must chase to understand the line.
+Inline code comments carry plain-English prose only — each comment stands on its own with no
+external lookups. The short stable IDs — a requirement (`R-MINT-15`), an invariant
+(`INV-MINT-SECURITY`), a mint pipeline stage (`D5c`), a data contract (`DC-1`), or a
+still-Circle-owned open question (`DEV-10`) — are defined in `docs/spec/GLOSSARY.md` and mapped
+to their implementing procedure/function and verifying test in
+`docs/REQUIREMENTS-TRACEABILITY.md`. A tripwire test
+(`crates/xusdc-encoding/tests/comment_hygiene_tripwire.rs`) keeps the ids out of comments.
 
 ### Build / test / validate
 

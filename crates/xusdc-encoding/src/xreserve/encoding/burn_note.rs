@@ -1,13 +1,18 @@
-//! Burn-note item codec — DC-7: the burn-note `NoteStorage.items` payload
+//! Burn-note item codec: the burn-note `NoteStorage.items` payload
 //! `(amount, destDomain, destRecipient, salt)`.
 //!
-//! This crate owns the deterministic Rust item encode/decode ONLY. The on-chain
-//! `NoteStorage.items` write and TV-DUAL-4 (emit-vs-encode parity) are faucet-owned (CMP-B2),
-//! exercised through the faucet MockChain/local-node harness — there is NO MASM side in this
-//! slice. Consumers: the public burn note (CMP-B2, encode) and the off-chain withdrawal attester
-//! (decode).
-//! `destRecipient`/`salt` consume the `bytes32` codec by reference in both directions
-//! (`bytes32_to_packed_felts` / `packed_felts_to_bytes32`); no re-implementation here.
+//! This codec is Rust-only and has no MASM counterpart, because nothing on-chain ever reads the
+//! payload: the faucet burns the asset, and the destination fields exist for the off-chain
+//! withdrawal attester to act on. So there are exactly two participants — the burn note encodes,
+//! the attester decodes — and the encoding has to be exactly reversible between them.
+//!
+//! Whether the bytes that land on-chain match what this encodes is verified where the note is
+//! emitted, against a real note on a MockChain, since that is the only place the two can be
+//! compared.
+//!
+//! The `destRecipient` and `salt` fields are packed and unpacked with the shared bytes32 codec in
+//! both directions rather than being repacked here, so there is one definition of how 32 bytes
+//! become field elements.
 
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::Felt;
@@ -17,12 +22,12 @@ use super::error::EncodingError;
 
 /// Felt width of the burn-note `NoteStorage.items` payload: `amount` (1) then `destDomain`
 /// (1) then `destRecipient` (8 u32-LE) then `salt` (8 u32-LE), totalling 18 felts
-/// (≤ 1024, anti-ASG-17).
+/// (≤ 1024, the note-storage bound).
 pub const BURN_NOTE_ITEMS_FELTS: usize = 18;
 
 /// The burn-note public payload `(amount, destDomain, destRecipient, salt)` (frozen
 /// signature). Destination fields live in `NoteStorage.items`, never note metadata
-/// (`metadata.sender` = depositor only; anti-ASG-13).
+/// (`metadata.sender` carries the burner and nothing else).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XReserveBurnItems {
     pub amount: AssetAmount,
@@ -32,7 +37,7 @@ pub struct XReserveBurnItems {
 }
 
 /// Encodes `(amount, destDomain, destRecipient, salt)` into the `NoteStorage.items` felt
-/// layout. Infallible: `AssetAmount::MAX = 2^63 − 2^31 < p`, `destDomain` is a
+/// layout. Infallible: `AssetAmount::MAX = 2^63 − 2^31`, `destDomain` is a
 /// `u32`, and both bytes32 fields pack via the existing `bytes32` codec.
 pub fn encode_burn_note_items(items: &XReserveBurnItems) -> Vec<Felt> {
     let mut out = Vec::with_capacity(BURN_NOTE_ITEMS_FELTS);
@@ -54,8 +59,9 @@ pub fn decode_burn_note_items(items: &[Felt]) -> Result<XReserveBurnItems, Encod
         .map_err(|_| EncodingError::BurnItemsMalformed)?;
     let dest_domain = u32::try_from(items[1].as_canonical_u64())
         .map_err(|_| EncodingError::BurnItemsMalformed)?;
-    // length is checked above, so each slice is exactly 8 felts; the bytes32 inverse is
-    // consumed by reference and any non-u32 limb is normalized to BurnItemsMalformed.
+    // The length was checked above, so each slice is exactly 8 felts. Unpacking goes through the
+    // shared bytes32 inverse; a limb that is not a valid u32 is reported as a malformed payload
+    // rather than being truncated into a plausible-looking address.
     let recipient_felts: [Felt; 8] = items[2..10]
         .try_into()
         .expect("len == 18 ⇒ items[2..10] is exactly 8 felts");
@@ -122,7 +128,7 @@ mod tests {
         }
     }
 
-    /// TV-BN-2 (destination-in-items, anti-ASG-13): the destination fields land in the
+    /// TV-BN-2 (destination-in-items): the destination fields land in the
     /// `NoteStorage.items` felt layout (`destDomain` at `[1]`, `destRecipient` at `[2..10]`,
     /// `salt` at `[10..18]`). `encode` has no metadata path — its only output is `Vec<Felt>`,
     /// so `metadata.sender` is structurally reserved for the depositor.
@@ -148,7 +154,7 @@ mod tests {
         }
     }
 
-    /// TV-BN-3 (note-model placement, anti-ASG-17): the payload targets `NoteStorage.items`
+    /// TV-BN-3 (note-model placement): the payload targets `NoteStorage.items`
     /// (≤ 1024 felts), not `NoteInputs`/`aux`.
     #[test]
     fn tv_bn_3_note_storage_placement() {

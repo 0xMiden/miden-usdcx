@@ -3,9 +3,9 @@
 //! populates from a config source. Fields are PRIVATE with read-only accessors (encapsulation) — a
 //! caller cannot mutate live configuration out of band; construction is via [`Default`] (the
 //! package-default baseline) or serde deserialization (the operator's config file). Every
-//! Circle-owned value carried here stays OPEN (`REQUIRES CIRCLE CONFIRMATION`): the auth token
-//! (Q-API-AUTH), the Miden remote domain (Q-DOM-1), and the xUSDC identifier / its encoding
-//! (DEV-10) are package-default placeholders, never settled decisions.
+//! Circle-owned value carried here stays OPEN (`REQUIRES CIRCLE CONFIRMATION`): the auth token,
+//! the Miden remote domain, and the xUSDC identifier / its encoding are package-default
+//! placeholders, never settled decisions.
 
 use core::fmt;
 
@@ -13,15 +13,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::RelayerError;
 
-/// The crash-recovery parameters, VALIDATED — the one place `retry_batch_size` and `stale_claim_secs`
-/// are checked for the two values that would silently defeat recovery.
+/// The crash-recovery parameters, VALIDATED — the one place `retry_batch_size` and
+/// `stale_claim_secs` are checked for the two values that would silently defeat recovery.
 ///
-/// It is a validated type rather than two loose config fields because both defaults an operator might
-/// reach for are unsafe: a zero batch makes the retry work list return nothing forever (every deposit
-/// stranded behind the forward cursor), and a too-small stale threshold reclaims another process's LIVE
-/// `Pending` claim mid-submit. Construction ([`Self::new`]) enforces the bounds, so a relayer cannot
-/// hold an unsafe recovery policy — the binary fails at startup on an invalid one, and a directly
-/// invoked cycle fails closed on it, rather than running with a policy that cannot recover.
+/// It is a validated type rather than two loose config fields because both defaults an operator
+/// might reach for are unsafe: a zero batch makes the retry work list return nothing forever (every
+/// deposit stranded behind the forward cursor), and a too-small stale threshold reclaims another
+/// process's LIVE `Pending` claim mid-submit. Construction ([`Self::new`]) enforces the bounds, so
+/// a relayer cannot hold an unsafe recovery policy — the binary fails at startup on an invalid one,
+/// and a directly invoked cycle fails closed on it, rather than running with a policy that cannot
+/// recover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecoveryPolicy {
     retry_batch_size: usize,
@@ -29,19 +30,20 @@ pub struct RecoveryPolicy {
 }
 
 impl RecoveryPolicy {
-    /// The ABSOLUTE smallest `stale_claim_secs` the relayer will run under, independent of how fast a
-    /// submit is. Even a sub-second submit envelope does not make a sub-minute reclaim threshold safe:
-    /// clock skew between two relayer hosts, a GC/scheduler pause, or a slow fsync can leave a claim's
-    /// timestamp looking older than it is. One minute is the floor; the BINDING minimum is the larger
-    /// of this and one second beyond the submit envelope ([`RelayerConfig::submit_worst_case_secs`]).
+    /// The ABSOLUTE smallest `stale_claim_secs` the relayer will run under, independent of how fast
+    /// a submit is. Even a sub-second submit envelope does not make a sub-minute reclaim threshold
+    /// safe: clock skew between two relayer hosts, a GC/scheduler pause, or a slow fsync can leave
+    /// a claim's timestamp looking older than it is. One minute is the floor; the BINDING minimum
+    /// is the larger of this and one second beyond the submit envelope
+    /// ([`RelayerConfig::submit_worst_case_secs`]).
     pub const MIN_STALE_CLAIM_SECS: u64 = 60;
 
-    /// Validates and builds a recovery policy against a minimum stale threshold. The EFFECTIVE minimum
-    /// is `max([`Self::MIN_STALE_CLAIM_SECS`], min_stale_claim_secs)` — the absolute floor ALWAYS binds,
-    /// even for a caller who passes a smaller minimum, so the type's invariant that
-    /// [`Self::stale_claim_secs`] is `>= MIN_STALE_CLAIM_SECS` holds for every constructed value. The
-    /// production path ([`RelayerConfig::recovery_policy`]) supplies one second beyond the submit
-    /// envelope as the caller minimum.
+    /// Validates and builds a recovery policy against a minimum stale threshold. The EFFECTIVE
+    /// minimum is `max([`Self::MIN_STALE_CLAIM_SECS`], min_stale_claim_secs)` — the absolute floor
+    /// ALWAYS binds, even for a caller who passes a smaller minimum, so the type's invariant that
+    /// [`Self::stale_claim_secs`] is `>= MIN_STALE_CLAIM_SECS` holds for every constructed value.
+    /// The production path ([`RelayerConfig::recovery_policy`]) supplies one second beyond the
+    /// submit envelope as the caller minimum.
     ///
     /// # Errors
     /// [`RelayerError::BadRecoveryPolicy`] — `retry_batch_size == 0`, or `stale_claim_secs` below the
@@ -72,7 +74,8 @@ impl RecoveryPolicy {
         self.retry_batch_size
     }
 
-    /// How old a `Pending` claim must be before it is reclaimed — always >= [`Self::MIN_STALE_CLAIM_SECS`].
+    /// How old a `Pending` claim must be before it is reclaimed — always >=
+    /// [`Self::MIN_STALE_CLAIM_SECS`].
     pub fn stale_claim_secs(&self) -> u64 {
         self.stale_claim_secs
     }
@@ -83,8 +86,9 @@ impl RecoveryPolicy {
 /// `Debug` and `Display` both print `<redacted>`. That is the whole type: the credential the
 /// operator supplies out of band lives inside the config object, and a config object is the single
 /// most likely thing to be `{:?}`-logged at startup or swept into a panic message. Redacting the
-/// auth *posture* and the *client* while leaving the config printable would have left the front door
-/// open — the plaintext key would still reach the first log line that dumped its own configuration.
+/// auth *posture* and the *client* while leaving the config printable would have left the front
+/// door open — the plaintext key would still reach the first log line that dumped its own
+/// configuration.
 ///
 /// Only [`Self::expose`] hands the plaintext out, and it is deliberately awkward to type, so every
 /// place the secret escapes is greppable.
@@ -125,7 +129,7 @@ impl From<String> for SecretString {
     }
 }
 
-/// All operational parameters, held with no I/O (§4 single-responsibility: `config`). Private
+/// All operational parameters, held with no I/O — configuration only, no I/O. Private
 /// fields + read-only accessors; adding a field is non-breaking.
 ///
 /// `Debug` is DERIVED and safe to derive: the only credential it carries is a [`SecretString`],
@@ -194,14 +198,14 @@ fn default_max_response_bytes() -> usize {
 }
 
 /// The header an out-of-band key would ride in, IF Circle requires one. `Authorization` is the
-/// commonest convention, so it is the package default — but Q-API-AUTH is OPEN (`REQUIRES CIRCLE
-/// CONFIRMATION`): the OpenAPI declares no security scheme at all, so this is a configurable
+/// commonest convention, so it is the package default — but the scheme is `REQUIRES CIRCLE
+/// CONFIRMATION`: the OpenAPI declares no security scheme at all, so this is a configurable
 /// placeholder, not an implemented scheme. With no token set (the default) NO auth header is sent.
 fn default_api_auth_header() -> String {
     "Authorization".to_string()
 }
 
-/// Consecutive failed attempts before a retryable failure alerts (§8.4: HTTP 500 "alerts after a
+/// Consecutive failed attempts before a retryable failure alerts (an HTTP 500 "alerts after a
 /// threshold").
 fn default_alert_after_attempts() -> u32 {
     3
@@ -233,18 +237,18 @@ fn default_retry_batch_size() -> usize {
     100
 }
 
-/// How old a `Pending` claim must be before the cycle reclaims it (→ `Failed`, re-claimable). It must
-/// exceed the longest a legitimate submit can be in flight, so a live attempt is never reclaimed out
-/// from under itself; five minutes is far past a synchronous submit and still bounds how long a
-/// crash-stranded claim sits before it is retried.
+/// How old a `Pending` claim must be before the cycle reclaims it (→ `Failed`, re-claimable). It
+/// must exceed the longest a legitimate submit can be in flight, so a live attempt is never
+/// reclaimed out from under itself; five minutes is far past a synchronous submit and still bounds
+/// how long a crash-stranded claim sits before it is retried.
 fn default_stale_claim_secs() -> u64 {
     300
 }
 
-/// The per-attempt DEADLINE for one Miden submit. It is what makes the submit envelope FINITE: without
-/// it, a hung node keeps a claim `Pending` forever and no reclaim threshold is safe. A submit that
-/// exceeds it is treated as a transient failure and retried. 30 s mirrors the Circle per-attempt
-/// request deadline — generous for a healthy node, bounded for a hung one.
+/// The per-attempt DEADLINE for one Miden submit. It is what makes the submit envelope FINITE:
+/// without it, a hung node keeps a claim `Pending` forever and no reclaim threshold is safe. A
+/// submit that exceeds it is treated as a transient failure and retried. 30 s mirrors the Circle
+/// per-attempt request deadline — generous for a healthy node, bounded for a hung one.
 fn default_submit_deadline_ms() -> u64 {
     30_000
 }
@@ -281,20 +285,22 @@ impl Default for RelayerConfig {
 
 impl RelayerConfig {
     /// Circle xReserve REST base URL (the testnet host is the default; production is a separate
-    /// host). No credential is embedded — Q-API-AUTH stays OPEN (REQUIRES CIRCLE CONFIRMATION).
+    /// host). No credential is embedded — the credential scheme stays OPEN (REQUIRES CIRCLE
+    /// CONFIRMATION).
     pub fn circle_base_url(&self) -> &str {
         &self.circle_base_url
     }
 
     /// The configured Miden remote domain the relayer accepts in the OPTIONAL domain fast-fail. The
-    /// authoritative compare is on-chain at D5a; this value is Q-DOM-1 (REQUIRES CIRCLE
-    /// CONFIRMATION).
+    /// authoritative compare is on-chain in the faucet's deposit-intent parse; which remote-domain
+    /// id Circle assigns Miden is still OPEN (REQUIRES CIRCLE CONFIRMATION), so this value is a
+    /// placeholder.
     pub fn remote_domain(&self) -> u32 {
         self.remote_domain
     }
 
     /// The configured 32-byte xUSDC identifier for the OPTIONAL token fast-fail. Both the value and
-    /// its AccountId↔bytes32 encoding are owned by DEV-10 (REQUIRES CIRCLE CONFIRMATION).
+    /// its AccountId↔bytes32 encoding are Circle-owned and OPEN (REQUIRES CIRCLE CONFIRMATION).
     pub fn xusdc_identifier(&self) -> &[u8; 32] {
         &self.xusdc_identifier
     }
@@ -306,7 +312,7 @@ impl RelayerConfig {
     }
 
     /// Optional out-of-band API auth token. NEVER hardcoded; `None` builds requests against the
-    /// documented no-auth contract. Q-API-AUTH (REQUIRES CIRCLE CONFIRMATION).
+    /// documented no-auth contract. The scheme is `REQUIRES CIRCLE CONFIRMATION`.
     ///
     /// This EXPOSES the secret (the auth-header injection point needs the plaintext). It is the one
     /// deliberate exit; the token is a [`SecretString`] everywhere else, so no `Debug`/`Display` of
@@ -316,19 +322,19 @@ impl RelayerConfig {
     }
 
     /// The header name the optional out-of-band token is injected under. Configurable because the
-    /// production scheme is Q-API-AUTH (REQUIRES CIRCLE CONFIRMATION) — the client must not presume
+    /// production scheme is `REQUIRES CIRCLE CONFIRMATION` — the client must not presume
     /// an `Authorization`/`Bearer` scheme. Irrelevant when no token is set (no header is sent at
     /// all).
     pub fn api_auth_header(&self) -> &str {
         &self.api_auth_header
     }
 
-    /// Circle rate ceiling: 5 QPS per IP (CIR-API-4).
+    /// Circle's documented rate ceiling: 5 QPS per IP.
     pub fn rate_qps_per_ip(&self) -> u32 {
         self.rate_qps_per_ip
     }
 
-    /// Circle rate ceiling: 35 QPS global (CIR-API-4).
+    /// Circle's documented rate ceiling: 35 QPS global.
     pub fn rate_qps_global(&self) -> u32 {
         self.rate_qps_global
     }
@@ -344,8 +350,9 @@ impl RelayerConfig {
         self.backoff_base_ms
     }
 
-    /// Consecutive failed attempts before a RETRYABLE failure alerts the operator (§8.4: a 500
-    /// "alerts after a threshold"; a 404 does not alert until its attempts are exhausted).
+    /// Consecutive failed attempts before a RETRYABLE failure alerts the operator (the documented
+    /// policy: a 500 "alerts after a threshold"; a 404 does not alert until its attempts are
+    /// exhausted).
     pub fn alert_after_attempts(&self) -> u32 {
         self.alert_after_attempts
     }
@@ -355,8 +362,8 @@ impl RelayerConfig {
         self.connect_timeout_ms
     }
 
-    /// End-to-end deadline for one attempt — the bound that keeps an unresponsive peer from stalling
-    /// the relayer forever.
+    /// End-to-end deadline for one attempt — the bound that keeps an unresponsive peer from
+    /// stalling the relayer forever.
     pub fn request_timeout_ms(&self) -> u64 {
         self.request_timeout_ms
     }
@@ -380,10 +387,11 @@ impl RelayerConfig {
 
     /// The operator-configured attester public key (33-byte compressed SEC1, hex).
     ///
-    /// It is CONFIGURATION, not a Circle wire field: Circle's attestation object carries `payload` /
-    /// `messageHash` / `attestation` and no key, but the faucet's D5d verify needs the candidate
-    /// pubkey inside the note. This is the key whose DC-3 commitment the operator was told is in the
-    /// faucet's `xReserveAttesters` allowlist — a claim only the chain can check.
+    /// It is CONFIGURATION, not a Circle wire field: Circle's attestation object carries `payload`
+    /// / `messageHash` / `attestation` and no key, but the faucet's on-chain attestation check
+    /// needs the candidate pubkey inside the note. This is the key whose Poseidon2 commitment the
+    /// operator was told is in the faucet's `xReserveAttesters` allowlist — a claim only the chain
+    /// can check.
     pub fn attester_pubkey_hex(&self) -> &str {
         &self.attester_pubkey_hex
     }
@@ -398,14 +406,14 @@ impl RelayerConfig {
         self.poll_interval_ms
     }
 
-    /// Whether the OPTIONAL domain/token fast-fail (§8.1 check 5) runs.
+    /// Whether the OPTIONAL domain/token fast-fail (the optional domain/token fast-fail) runs.
     ///
     /// **Default OFF, and that is not laziness.** Its expected values are [`Self::remote_domain`]
-    /// (`Q-DOM-1`) and [`Self::xusdc_identifier`] (`DEV-10`), and both are OPEN (`REQUIRES CIRCLE
-    /// CONFIRMATION`): a fast-fail comparing against a placeholder would refuse every honest deposit
-    /// on the grounds that it does not match a value nobody has decided. The check is a LIVENESS
-    /// optimization — the authoritative compare is on-chain at D5a — so leaving it off costs a block
-    /// per deposit and nothing else. An operator turns it on when Circle answers.
+    /// and [`Self::xusdc_identifier`], and both are OPEN (`REQUIRES CIRCLE CONFIRMATION`): a
+    /// fast-fail comparing against a placeholder would refuse every honest deposit on the grounds
+    /// that it does not match a value nobody has decided. The check is a LIVENESS optimization —
+    /// the authoritative compare is on-chain in the faucet's deposit-intent parse — so leaving it
+    /// off costs a block per deposit and nothing else. An operator turns it on when Circle answers.
     ///
     /// With it ON, the cycle also fetches `GET /v1/info` once per cycle to corroborate that Circle
     /// advertises the configured domain at all.
@@ -418,8 +426,8 @@ impl RelayerConfig {
         self.retry_batch_size
     }
 
-    /// How old a `Pending` claim must be before the cycle reclaims it (→ re-claimable `Failed`) — the
-    /// crash-recovery threshold, set past the longest a legitimate submit can be in flight.
+    /// How old a `Pending` claim must be before the cycle reclaims it (→ re-claimable `Failed`) —
+    /// the crash-recovery threshold, set past the longest a legitimate submit can be in flight.
     pub fn stale_claim_secs(&self) -> u64 {
         self.stale_claim_secs
     }
@@ -429,15 +437,15 @@ impl RelayerConfig {
         self.submit_deadline_ms
     }
 
-    /// The WORST-CASE duration of one `submit_with_retry`, in whole seconds (rounded up) — the "longest
-    /// legitimate submit" the stale-claim threshold must exceed.
+    /// The WORST-CASE duration of one `submit_with_retry`, in whole seconds (rounded up) — the
+    /// "longest legitimate submit" the stale-claim threshold must exceed.
     ///
     /// It is `max_retry_attempts` attempts, each bounded by [`Self::submit_deadline_ms`], plus the
     /// exponential backoff between them (`base · 2^(n-1)` per gap, the same curve the submit loop
-    /// applies, capped like it). This is what turns "the threshold must exceed the longest submit" from
-    /// prose into a computed bound that [`Self::recovery_policy`] validates against — so a config that
-    /// permits a longer submit (more retries, a longer deadline, more backoff) demands a
-    /// correspondingly larger threshold, rather than trusting a fixed constant.
+    /// applies, capped like it). This is what turns "the threshold must exceed the longest submit"
+    /// from prose into a computed bound that [`Self::recovery_policy`] validates against — so a
+    /// config that permits a longer submit (more retries, a longer deadline, more backoff) demands
+    /// a correspondingly larger threshold, rather than trusting a fixed constant.
     pub fn submit_worst_case_secs(&self) -> u64 {
         let attempts = u64::from(self.max_retry_attempts.max(1));
         let submit_ms = attempts.saturating_mul(self.submit_deadline_ms);
@@ -454,9 +462,9 @@ impl RelayerConfig {
     }
 
     /// The VALIDATED crash-recovery policy — the safe form of [`Self::retry_batch_size`] and
-    /// [`Self::stale_claim_secs`]. The binary calls this at startup and fails on an invalid operator
-    /// value; the cycle calls it and fails closed. There is no path that runs the recovery machinery
-    /// with an unvalidated batch size or threshold.
+    /// [`Self::stale_claim_secs`]. The binary calls this at startup and fails on an invalid
+    /// operator value; the cycle calls it and fails closed. There is no path that runs the recovery
+    /// machinery with an unvalidated batch size or threshold.
     ///
     /// The stale threshold is validated STRICTLY beyond the submit envelope
     /// ([`Self::submit_worst_case_secs`]) — so a claim can never be reclaimed while its submit is

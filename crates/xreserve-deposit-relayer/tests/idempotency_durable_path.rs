@@ -2,33 +2,34 @@
 //!
 //! The seam's whole contract is that the submitted-nonce log and the `Link` cursor survive a
 //! restart, and the module says in as many words that there is no in-memory mode. But SQLite has
-//! several spellings for a database that lives only as long as the connection, and they are ordinary
-//! *filenames* — so an operator's config file, a typo, or a copied snippet could hand one in:
+//! several spellings for a database that lives only as long as the connection, and they are
+//! ordinary *filenames* — so an operator's config file, a typo, or a copied snippet could hand one
+//! in:
 //!
 //! * `:memory:` — an in-memory database, gone when the connection closes;
 //! * an **empty** filename — a private temporary database, which SQLite deletes on close;
-//! * a `file:` **URI** with `mode=memory` (or `cache=shared` variants of it) — never written to disk.
-//!   These are read as URIs rather than as filenames because the pinned `libsqlite3-sys` compiles
-//!   SQLite with `-DSQLITE_USE_URI`, which enables URI interpretation for every connection — so it is
-//!   not something the open flags can switch off.
+//! * a `file:` **URI** with `mode=memory` (or `cache=shared` variants of it) — never written to
+//!   disk. These are read as URIs rather than as filenames because the pinned `libsqlite3-sys`
+//!   compiles SQLite with `-DSQLITE_USE_URI`, which enables URI interpretation for every connection
+//!   — so it is not something the open flags can switch off.
 //!
 //! Every one of them would have opened cleanly, accepted a claim, accepted a cursor advance — and
-//! lost both on restart. A store that can lose the cursor is exactly what this component must not be,
-//! and "the operator should not type that" is not an engineering control. So the constructor refuses
-//! them, before any state is written.
+//! lost both on restart. A store that can lose the cursor is exactly what this component must not
+//! be, and "the operator should not type that" is not an engineering control. So the constructor
+//! refuses them, before any state is written.
 //!
 //! The refusal has two independent doors, and the cases below exercise both:
 //!
 //! * the **reserved names** (`:memory:`, an empty filename) are refused before anything is opened;
 //! * every other ephemeral spelling is caught AFTER the open, by asking SQLite where the database
-//!   actually landed (`pragma_database_list` reports no file for one that is not on disk). That door
-//!   is the load-bearing one for the URI forms, and it cannot be replaced by clearing
+//!   actually landed (`pragma_database_list` reports no file for one that is not on disk). That
+//!   door is the load-bearing one for the URI forms, and it cannot be replaced by clearing
 //!   `SQLITE_OPEN_URI`: the pinned `libsqlite3-sys` compiles SQLite with `-DSQLITE_USE_URI`, so URI
 //!   filenames are interpreted no matter what the open flags say.
 //!
-//! What is NOT refused is a URI that is perfectly durable — `file:` + a real path writes a real file,
-//! and locking an operator out of it would be a guard punishing syntax instead of the thing that
-//! actually hurts. The positive tests pin that boundary from the other side.
+//! What is NOT refused is a URI that is perfectly durable — `file:` + a real path writes a real
+//! file, and locking an operator out of it would be a guard punishing syntax instead of the thing
+//! that actually hurts. The positive tests pin that boundary from the other side.
 
 use std::sync::Arc;
 
@@ -42,7 +43,7 @@ use xreserve_deposit_relayer::{
 
 /// Every SQLite spelling of "a database that is not a file". Each is refused by the constructor.
 ///
-/// The first group is the reserved names (door 1). `:MEMORY:` and a padded ` :memory: ` are in the
+/// The first group is the reserved names (door 1). `:MEMORY:` and a padded `:memory: ` are in the
 /// table on purpose: SQLite itself would create files with those literal names, but an operator who
 /// writes them means the in-memory database — and a guard that can be walked past by holding down
 /// shift is not a guard.
@@ -89,8 +90,8 @@ fn an_in_memory_store_cannot_be_opened_at_all() {
 
 /// What the refusal is FOR, demonstrated on the real thing. This is the same sequence the auditor's
 /// probe ran — claim a nonce, advance the cursor, restart — except against a durable path, where it
-/// must hold. If `:memory:` were accepted, this exact sequence would come back empty, and the relayer
-/// would re-scan the window and re-mint every nonce in it.
+/// must hold. If `:memory:` were accepted, this exact sequence would come back empty, and the
+/// relayer would re-scan the window and re-mint every nonce in it.
 #[test]
 fn a_real_file_path_is_accepted_and_keeps_the_cursor_across_a_restart() {
     let dir = TempDir::new().expect("temp dir");
@@ -127,10 +128,10 @@ fn a_real_file_path_is_accepted_and_keeps_the_cursor_across_a_restart() {
 /// The premise of the whole guard, checked against the pinned SQLite rather than assumed: a
 /// `mode=memory` URI really does open a database that writes nothing and loses everything on close.
 ///
-/// If SQLite ever stopped behaving this way, this test would fail — and that is the point. The guard
-/// exists because of this behaviour; a test that only asserted "the store says no" would keep passing
-/// long after the reason had evaporated, and nobody would know whether the refusal was still earning
-/// its keep.
+/// If SQLite ever stopped behaving this way, this test would fail — and that is the point. The
+/// guard exists because of this behaviour; a test that only asserted "the store says no" would keep
+/// passing long after the reason had evaporated, and nobody would know whether the refusal was
+/// still earning its keep.
 #[test]
 fn a_memory_uri_really_does_lose_everything_and_the_store_refuses_it() {
     const EPHEMERAL: &str = "file:xusdc-idempotency-probe?mode=memory";
@@ -169,16 +170,16 @@ fn a_memory_uri_really_does_lose_everything_and_the_store_refuses_it() {
         "the written data survived the close — this is exactly what the store must never accept"
     );
 
-    // ...and that is the path the store refuses. (No file is left behind: nothing was ever written.)
+    //...and that is the path the store refuses. (No file is left behind: nothing was ever written.)
     assert_matches!(
         IdempotencyStore::open(EPHEMERAL),
         Err(RelayerError::EphemeralStorePath { .. })
     );
 }
 
-/// A `file:` URI that names a REAL file is durable, and is accepted. The guard rejects databases that
-/// vanish, not a syntax: refusing every URI would lock out an operator whose config is unusual but
-/// perfectly safe — and would be a rule nobody could explain from first principles.
+/// A `file:` URI that names a REAL file is durable, and is accepted. The guard rejects databases
+/// that vanish, not a syntax: refusing every URI would lock out an operator whose config is unusual
+/// but perfectly safe — and would be a rule nobody could explain from first principles.
 #[test]
 fn a_uri_that_names_a_real_file_is_accepted_and_is_durable() {
     let dir = TempDir::new().expect("temp dir");
@@ -208,9 +209,9 @@ fn a_uri_that_names_a_real_file_is_accepted_and_is_durable() {
     );
 }
 
-/// A file whose NAME merely resembles a special one is still a file, and is accepted. The guard must
-/// reject the databases SQLite treats as ephemeral, not every path with a colon or the word `memory`
-/// in it — an over-eager check would lock an operator out of a perfectly good store.
+/// A file whose NAME merely resembles a special one is still a file, and is accepted. The guard
+/// must reject the databases SQLite treats as ephemeral, not every path with a colon or the word
+/// `memory` in it — an over-eager check would lock an operator out of a perfectly good store.
 #[rstest]
 #[case::contains_memory("memory.sqlite3")]
 #[case::mode_memory_in_the_name("idempotency-mode=memory.sqlite3")]

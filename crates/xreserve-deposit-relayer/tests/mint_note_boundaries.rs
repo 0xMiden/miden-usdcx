@@ -1,21 +1,22 @@
 //! The mint-note builder — the FAIL-CLOSED boundary: every input the builder can be handed that
-//! unit-04's factory refuses, and the operator-configured attester key.
+//! the shared encoding crate's factory refuses, and the operator-configured attester key.
 //!
 //! Why these paths are real, not hypothetical: the relayer's envelope validation
-//! ([`ValidatedAttestation`]) binds `messageHash == keccak256(payload)` and shape-checks the 65-byte
-//! signature — it does NOT parse the DepositIntent. So a payload Circle really signed, whose digest
-//! really binds it, can still be structurally invalid (bad magic, a zero amount, hookData past the
-//! 1024-felt NoteStorage bound). Those reach the builder, and the builder must surface them as a
-//! typed, NON-retryable error — never as a panic, never as a malformed note, and never as an
-//! infinite retry loop that wedges the relayer on one bad attestation.
+//! ([`ValidatedAttestation`]) binds `messageHash == keccak256(payload)` and shape-checks the
+//! 65-byte signature — it does NOT parse the DepositIntent. So a payload Circle really signed,
+//! whose digest really binds it, can still be structurally invalid (bad magic, a zero amount,
+//! hookData past the 1024-felt NoteStorage bound). Those reach the builder, and the builder must
+//! surface them as a typed, NON-retryable error — never as a panic, never as a malformed note, and
+//! never as an infinite retry loop that wedges the relayer on one bad attestation.
 //!
 //! The reject payloads are the canonical golden-artifact vectors (`di-rej-*`), consumed BY
-//! REFERENCE from the ONE artifact that drives unit-04's own MASM and Rust suites — never a blob
-//! hand-rolled here (which would be a second, drifting definition of the DC-1 layout).
+//! REFERENCE from the ONE artifact that drives the shared encoding crate's own MASM and Rust suites
+//! — never a blob hand-rolled here (which would be a second, drifting definition of the
+//! DepositIntent layout).
 //!
 //! Errors are asserted by EXACT variant AND by their preserved source chain: an operator must be
-//! able to `downcast_ref` back to unit-04's `EncodingError` and read WHICH structural rule the
-//! payload broke. A flattened string would have thrown that away.
+//! able to `downcast_ref` back to the shared encoding crate's `EncodingError` and read WHICH
+//! structural rule the payload broke. A flattened string would have thrown that away.
 
 mod fixtures;
 mod mint_support;
@@ -31,7 +32,8 @@ use xusdc_encoding::xreserve::encoding::{DepositIntentField, EncodingError};
 use fixtures::{PartnerAttester, PARTNER_PUBKEY_HEX};
 use mint_support::*;
 
-// STRUCTURALLY-INVALID DEPOSITINTENTS (they pass the envelope; unit-04's codec refuses them)
+// STRUCTURALLY-INVALID DEPOSITINTENTS (they pass the envelope; the shared encoding crate's codec
+// refuses them)
 // ================================================================================================
 
 #[rstest]
@@ -93,9 +95,9 @@ fn t_the_reject_payloads_pass_the_envelope_boundary(#[case] vector_id: &str) {
 // ================================================================================================
 
 /// A PRIVATE faucet id cannot carry the scheme-2 routing bind (a network transaction cannot be
-/// routed at an account whose state is not public), so unit-04's factory refuses it — and the
-/// relayer surfaces that refusal rather than emitting a note no network transaction would ever pick
-/// up.
+/// routed at an account whose state is not public), so the shared encoding crate's factory refuses
+/// it — and the relayer surfaces that refusal rather than emitting a note no network transaction
+/// would ever pick up.
 #[test]
 fn t_a_private_faucet_id_is_refused() {
     let error = build_mint_note(
@@ -123,7 +125,7 @@ fn t_a_private_faucet_id_is_refused() {
 //
 // The attester pubkey is CONFIGURATION, not a Circle response field: Circle's attestation object
 // carries `payload` / `messageHash` / `attestation` and nothing else. So the 33-byte key the
-// faucet's allowlist commitment (DC-3) is derived from reaches the relayer from its operator — and an operator's typo must be caught
+// faucet's allowlist commitment is derived from reaches the relayer from its operator — and an operator's typo must be caught
 // where it is typed, not on the first mint attempt six hours later.
 
 #[test]
@@ -171,10 +173,10 @@ fn t_an_attester_key_of_the_wrong_length_is_refused(#[case] hex: &str) {
     );
 }
 
-/// 33 bytes of the right SHAPE that are not a curve point: refused at CONFIGURATION time, by
-/// unit-04's own SEC1 decompression (the same primitive that packs the affine felts, consumed by
-/// reference — the relayer does not re-implement point decompression). Such a key could never
-/// verify on-chain, so a relayer that started with it would mint nothing and say nothing.
+/// 33 bytes of the right SHAPE that are not a curve point: refused at CONFIGURATION time, by the
+/// shared encoding crate's own SEC1 decompression (the same primitive that packs the affine felts,
+/// consumed by reference — the relayer does not re-implement point decompression). Such a key could
+/// never verify on-chain, so a relayer that started with it would mint nothing and say nothing.
 #[rstest]
 #[case::off_curve("03ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")]
 #[case::bad_prefix("00a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3f")]
@@ -199,8 +201,8 @@ fn t_an_attester_key_that_is_not_a_curve_point_is_refused(#[case] hex: &str) {
 // helpers
 // ================================================================================================
 
-/// Walks a `RelayerError`'s source chain looking for unit-04's `EncodingError` — the assertion that
-/// the codec's exact verdict was PRESERVED (not flattened into a message).
+/// Walks a `RelayerError`'s source chain looking for the shared encoding crate's `EncodingError` —
+/// the assertion that the codec's exact verdict was PRESERVED (not flattened into a message).
 fn encoding_error_in_chain(error: &RelayerError) -> Option<EncodingError> {
     let mut source = std::error::Error::source(error);
     while let Some(err) = source {

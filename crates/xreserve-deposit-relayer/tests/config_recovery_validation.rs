@@ -1,18 +1,18 @@
-//! **Recovery-policy validation** (round-3 finding 3 + round-4/5/6 hardening).
+//! **Recovery-policy validation.**
 //!
 //! The stale-claim threshold is validated STRICTLY beyond the computed submit envelope
 //! (`max_retry_attempts × submit_deadline_ms + exponential backoff`), so a live driver can never be
-//! reclaimed while its submit is legitimately in flight. Round 6 closes three gaps the earlier tests
-//! left:
+//! reclaimed while its submit is legitimately in flight. Three gaps a looser suite would leave are
+//! closed here:
 //!
-//! * the envelope's BACKOFF term is now exercised with NON-ZERO `backoff_base_ms` and asserted exactly
-//!   (a mutation that drops the backoff contribution must fail here);
+//! * the envelope's BACKOFF term is now exercised with NON-ZERO `backoff_base_ms` and asserted
+//!   exactly (a mutation that drops the backoff contribution must fail here);
 //! * a ZERO `submit_deadline_ms` — which would make every submit time out instantly and defer every
 //!   deposit forever — is refused with a specific typed error;
-//! * `RecoveryPolicy::new` enforces its documented ABSOLUTE floor even for a caller-supplied minimum
-//!   below it.
+//! * `RecoveryPolicy::new` enforces its documented ABSOLUTE floor even for a caller-supplied
+//!   minimum below it.
 //!
-//! Every negative case asserts the SPECIFIC error and its relevant fields (G4 /
+//! Every negative case asserts the SPECIFIC error and its relevant fields (
 //! assert-specific-error-in-tests), not a bare `is_err()`.
 
 use assert_matches::assert_matches;
@@ -77,9 +77,9 @@ fn a_zero_stale_claim_threshold_is_refused() {
     );
 }
 
-/// **The envelope INCLUDES the exponential backoff — exactly.** 3 attempts × 30 s + backoff
-/// (`5 s · (2^0 + 2^1)` capped, upper-bounded as 2 gaps × `5 s · 2^2` = 40 s) = 130 s. This value is
-/// what the threshold is validated against; a mutation that drops the backoff term makes it 90 s, so
+/// **The envelope INCLUDES the exponential backoff — exactly.** 3 attempts × 30 s + backoff (`5 s ·
+/// (2^0 + 2^1)` capped, upper-bounded as 2 gaps × `5 s · 2^2` = 40 s) = 130 s. This value is what
+/// the threshold is validated against; a mutation that drops the backoff term makes it 90 s, so
 /// this exact assertion fails.
 #[test]
 fn the_submit_envelope_includes_the_backoff_term_exactly() {
@@ -100,10 +100,10 @@ fn the_submit_envelope_includes_the_backoff_term_exactly() {
     );
 }
 
-/// **The cross-field boundary WITH backoff.** With the 130 s envelope above, a threshold at or below it
-/// is refused (the error names 131 as the required minimum) and one second beyond is accepted. Crucially
-/// a threshold of 100 s — which WOULD be accepted if the envelope ignored backoff (90 s) — is REFUSED,
-/// so dropping the backoff term is caught here too.
+/// **The cross-field boundary WITH backoff.** With the 130 s envelope above, a threshold at or
+/// below it is refused (the error names 131 as the required minimum) and one second beyond is
+/// accepted. Crucially a threshold of 100 s — which WOULD be accepted if the envelope ignored
+/// backoff (90 s) — is REFUSED, so dropping the backoff term is caught here too.
 #[test]
 fn the_stale_threshold_must_exceed_the_backoff_inclusive_envelope() {
     let attempts = 3;
@@ -184,8 +184,9 @@ fn the_absolute_floor_is_enforced_when_the_envelope_is_small() {
     .expect("at the absolute floor with a tiny envelope is accepted");
 }
 
-/// `RecoveryPolicy::new` enforces its documented ABSOLUTE floor even when the caller supplies a smaller
-/// minimum — it must not be a hole in the validated type's invariant that `stale_claim_secs() >= 60`.
+/// `RecoveryPolicy::new` enforces its documented ABSOLUTE floor even when the caller supplies a
+/// smaller minimum — it must not be a hole in the validated type's invariant that
+/// `stale_claim_secs() >= 60`.
 #[test]
 fn the_constructor_enforces_the_absolute_floor_regardless_of_the_caller_minimum() {
     // the caller passes a minimum of 0, but the floor (60) still binds

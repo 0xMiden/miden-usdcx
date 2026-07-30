@@ -1,26 +1,26 @@
-//! **`T-RLY-09`** (`duplicate_attestation_no_double_submit`, INV-MINT-SECURITY) and the
+//! `duplicate_attestation_no_double_submit`, the no-double-mint dedup and the
 //! cycle-level integration run — the 8-step `run_relayer_cycle` pipeline, driven end to end.
 //!
-//! # What is real here, and what is not (§11 mock disclosure)
+//! # What is real here, and what is not (mock-boundary disclosure)
 //!
-//! REAL: the `CircleClient` (a real `reqwest::Request` against the schema-exact mock Circle router),
-//! the raw-keccak envelope binding, unit-04's DepositIntent codec, unit-04's
-//! `XUsdcMintNote::create` (the stock-`MintNote` factory), and the SQLite idempotency store on a
-//! real file.
+//! REAL: the `CircleClient` (a real `reqwest::Request` against the schema-exact mock Circle
+//! router), the raw-keccak envelope binding, the shared encoding crate's DepositIntent codec, the
+//! shared encoding crate's `XUsdcMintNote::create` (the stock-`MintNote` factory), and the SQLite
+//! idempotency store on a real file.
 //!
-//! MOCKED: the Circle endpoints (`CMP-D1`/`CMP-D3`/`CMP-D4`) — sanctioned: Circle API may be mocked,
-//! and every live Circle leg is `REQUIRES CIRCLE CONFIRMATION` (`Q-API-AUTH`, `Q-DOM-1`,
-//! `Q-INFO-PARAM` are OPEN).
+//! MOCKED: the Circle endpoints (info discovery, the attestation fetches, the batch poll) —
+//! sanctioned: Circle API may be mocked, and every live Circle leg is `REQUIRES CIRCLE
+//! CONFIRMATION` (the credential, the Miden domain id, and the info shape are all OPEN).
 //!
 //! ADAPTED, and **NON-GATING**: the Miden submit leg, through the [`MintSubmit`] PORT. Miden
 //! behaviour is not faked here — the adapter executes no transaction and claims no commit. The
-//! GATING leg (a real `XUsdcMintNote` committing in block N against a real local node,
-//! T-RLY-14/T-RLY-15) is R6's and is blocked on a `miden-client` release for v0.16. This whole suite
-//! is therefore NON-GATING for the Miden half and GATING for the orchestration around it.
+//! GATING leg — a real `XUsdcMintNote` committing in block N against a real local node — is a
+//! later slice's, and it is blocked on a `miden-client` release for v0.16. This whole suite is
+//! therefore NON-GATING for the Miden half and GATING for the orchestration around it.
 //!
-//! The dedup this file proves is a **LIVENESS** backstop. The authoritative duplicate defence is the
-//! on-chain `usedNonces` assert-then-set at D5c (INV-MINT-SECURITY): a relayer bug here can only
-//! withhold a mint, never authorize one.
+//! The dedup this file proves is a **LIVENESS** backstop. The authoritative duplicate defence is
+//! the on-chain `usedNonces` assert-then-set in the faucet's replay guard: a relayer bug here can
+//! only withhold a mint, never authorize one.
 
 mod cycle_support;
 mod fixtures;
@@ -47,9 +47,9 @@ use mock_circle::{
 // THE HAPPY PATH — one page, one attestation, minted once
 // ================================================================================================
 
-/// **The cycle-level integration run.** One fetched attestation goes all eight steps: poll → envelope
-/// + hash bind → DepositIntent validate → idempotency claim → build note → submit → record → advance
-/// cursor.
+/// **The cycle-level integration run.** One fetched attestation goes all eight steps: poll →
+/// envelope + hash bind → DepositIntent validate → idempotency claim → build note → submit → record
+/// → advance cursor.
 #[tokio::test]
 async fn one_cycle_fetches_validates_builds_submits_records_and_advances() {
     let vector = test_vector();
@@ -116,8 +116,8 @@ async fn one_cycle_fetches_validates_builds_submits_records_and_advances() {
     assert_eq!(cursor.page_after(), "cursor-page-2");
 }
 
-/// A page whose `Link` header advertises no `next` ENDS the scan (§8.2 pagination boundary) — and
-/// the cursor is NOT advanced past it, because there is nothing to resume from.
+/// A page whose `Link` header advertises no `next` ENDS the scan (the documented end-of-scan
+/// condition) — and the cursor is NOT advanced past it, because there is nothing to resume from.
 #[tokio::test]
 async fn a_page_without_a_next_cursor_ends_the_scan() {
     let vector = test_vector();
@@ -138,8 +138,8 @@ async fn a_page_without_a_next_cursor_ends_the_scan() {
     );
 }
 
-/// The cursor is READ back into the next poll: a second cycle asks Circle for the page AFTER the one
-/// the first cycle finished. This is what a restart does, and it is why the whole window is not
+/// The cursor is READ back into the next poll: a second cycle asks Circle for the page AFTER the
+/// one the first cycle finished. This is what a restart does, and it is why the whole window is not
 /// re-scanned.
 #[tokio::test]
 async fn the_next_cycle_polls_from_the_persisted_cursor() {
@@ -197,12 +197,12 @@ async fn the_next_cycle_polls_from_the_persisted_cursor() {
     assert_eq!(submit.call_count(), 2, "two distinct nonces, two mints");
 }
 
-// T-RLY-09 — THE DEDUP: a replayed attestation produces NO second mint
+// THE DEDUP: a replayed attestation produces NO second mint
 // ================================================================================================
 
-/// A structurally invalid DepositIntent is REJECTED pre-submission (§8.1 check 4) — and reported
-/// with the field that failed, never dropped. The on-chain D5a parse stays authoritative; this is
-/// its liveness mirror.
+/// A structurally invalid DepositIntent is REJECTED pre-submission (the structural DepositIntent
+/// check) — and reported with the field that failed, never dropped. The on-chain parse stays
+/// authoritative; this is its liveness mirror.
 #[tokio::test]
 async fn a_structural_deposit_intent_reject_never_reaches_submit() {
     // a payload Circle signed (the envelope binds) whose magic is wrong — the shape that proves the
@@ -228,12 +228,12 @@ async fn a_structural_deposit_intent_reject_never_reaches_submit() {
     );
     assert!(!report.entries()[0].reason().is_empty());
 
-    // §8.4: a structural error ALERTS — an operator must see it
+    // Circle's documentation: a structural error ALERTS — an operator must see it
     assert_eq!(sink.alerts().len(), 1, "a structural reject alerts");
 }
 
 /// A transient submit failure RETRIES within the cycle and the eventual success commits — the
-/// attestation stays valid across the retry, because a deposit intent has no expiry (§8.2).
+/// attestation stays valid across the retry, because a deposit intent has no expiry.
 #[tokio::test]
 async fn a_transient_submit_failure_retries_and_then_succeeds() {
     let vector = test_vector();
@@ -301,12 +301,11 @@ async fn a_transient_submit_failure_that_exhausts_the_budget_defers() {
     );
 }
 
-/// A FATAL submit failure records a TERMINAL `Rejected`, alerts, and does NOT loop (§8.4 "Miden fatal
-/// submit error" row).
+/// A FATAL submit failure records a TERMINAL `Rejected`, alerts, and does NOT loop.
 ///
-/// Terminal, not `Failed`: a permanently-refused transaction that were left re-claimable would be
-/// re-fetched and re-submitted by the retry driver on every subsequent cycle (proven across cycles in
-/// `cycle_recovery.rs`). The fatal/transient split is only real if it survives to the durable record.
+/// Terminal, not `Failed`: a permanently-refused transaction left re-claimable would be re-fetched
+/// and re-submitted by the retry driver on every subsequent cycle. The fatal/transient split is
+/// only real if it survives to the durable record.
 #[tokio::test]
 async fn a_fatal_submit_failure_records_rejected_and_does_not_retry() {
     let vector = test_vector();
@@ -336,10 +335,9 @@ async fn a_fatal_submit_failure_records_rejected_and_does_not_retry() {
     assert_eq!(sink.alerts().len(), 1, "a fatal submit error alerts");
 }
 
-/// The on-chain nonce trap fired first — another relayer minted this deposit (§8.2 "Attestation
-/// arrives after a competing relayer already minted"). The relayer records `AlreadyMinted`, does not
-/// retry, and the cursor still advances. This is the SAFETY backstop doing its job, observed from
-/// the liveness side; it is not a defect.
+/// The on-chain nonce trap fired first — a competing relayer had already minted this deposit. The
+/// relayer records `AlreadyMinted`, does not retry, and the cursor still advances. This is the
+/// SAFETY backstop doing its job, observed from the liveness side; it is not a defect.
 #[tokio::test]
 async fn a_nonce_already_minted_on_chain_is_recorded_not_retried() {
     let vector = test_vector();
@@ -535,9 +533,9 @@ fn test_vector() -> AttestationVector {
     fixtures::test_vector()
 }
 
-/// The canonical payload with its `nonce` perturbed — a DIFFERENT deposit, still structurally valid.
-/// The nonce's offset is located by SEARCHING the payload for the nonce the decoder reports, so the
-/// test never restates a DC-1 offset unit-04 owns.
+/// The canonical payload with its `nonce` perturbed — a DIFFERENT deposit, still structurally
+/// valid. The nonce's offset is located by SEARCHING the payload for the nonce the decoder reports,
+/// so the test never restates a layout offset the shared encoding crate owns.
 fn with_distinct_nonce(tweak: u8) -> Vec<u8> {
     let payload = canonical_payload(TEST_VECTOR_PAYLOAD_ID);
     let nonce = nonce_of(&PartnerAttester::new().attest(&payload));
@@ -551,8 +549,8 @@ fn with_distinct_nonce(tweak: u8) -> Vec<u8> {
     tweaked
 }
 
-/// The `DepositIntent.nonce` a vector's payload carries — read through the relayer's OWN decoder, so
-/// the test never restates a DC-1 offset unit-04 owns.
+/// The `DepositIntent.nonce` a vector's payload carries — read through the relayer's OWN decoder,
+/// so the test never restates a layout offset the shared encoding crate owns.
 fn nonce_of(vector: &AttestationVector) -> [u8; 32] {
     *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(vector.payload())
         .expect("the fixture payload is a valid DepositIntent")

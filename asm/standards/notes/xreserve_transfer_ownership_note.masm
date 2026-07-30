@@ -1,4 +1,4 @@
-# xreserve_transfer_ownership_note — the shipped, root-pinned transfer_ownership admin note (F5).
+# xreserve_transfer_ownership_note — the shipped, root-pinned transfer_ownership admin note.
 #
 # The production admin surface for the STOCK `transfer_ownership` under the network account: a
 # fixed-root note whose parameters are CREATOR-COMMITTED in note storage (never NOTE_ARGS). It stages
@@ -41,6 +41,9 @@ const ERR_XRESERVE_TRANSFER_OWNERSHIP_NOTE_STORAGE = "transfer_ownership note st
 #! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
 #!
+#! Where:
+#! - ARGS is executor-controlled and dropped unread.
+#!
 #! Note storage is assumed to be as follows:
 #! - new_owner_suffix and new_owner_prefix are the two AccountId felts of the nominated owner
 #!   (items 0 and 1).
@@ -64,13 +67,11 @@ pub proc main
     push.PARAM_PTR add.1 mem_load
     push.PARAM_PTR mem_load
     # => [new_owner_suffix, new_owner_prefix, pad(16)]
-    # (the call consumes the top 16: [new_owner_suffix, new_owner_prefix, pad(14)])
 
+    # => [new_owner_suffix, new_owner_prefix, pad(14)]
     call.ownable2step::transfer_ownership
     # => [pad(18)]
 
-    # rebalance to the dyncall depth-16-on-return rule: the 2 param pushes above displaced 2 pad
-    # zeros into the overflow table (the callee's window is balanced), so drop 2 to end at depth 16.
     drop drop
     # => [pad(16)]
 end

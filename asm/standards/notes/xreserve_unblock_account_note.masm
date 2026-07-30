@@ -1,4 +1,4 @@
-# xreserve_unblock_account_note — the shipped, root-pinned unblock_account admin note script (F5).
+# xreserve_unblock_account_note — the shipped, root-pinned unblock_account admin note script.
 #
 # The production admin surface for `unblock_account` under the network account: a fixed-root note whose
 # parameter (the account id to unblock) is CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the
@@ -44,6 +44,9 @@ const ERR_XRESERVE_UNBLOCK_ACCOUNT_NOTE_STORAGE = "unblock_account note storage 
 #! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
 #!
+#! Where:
+#! - ARGS is executor-controlled and dropped unread.
+#!
 #! Note storage is assumed to be as follows:
 #! - account_id_suffix is item 0 and account_id_prefix is item 1 — the account to unblock.
 #!
@@ -72,13 +75,11 @@ pub proc main
 
     push.PARAM_PTR mem_load
     # => [account_id_suffix, account_id_prefix, pad(16)]
-    # (the call consumes the top 16: [account_id_suffix, account_id_prefix, pad(14)])
 
+    # => [account_id_suffix, account_id_prefix, pad(14)]
     call.blocklist_admin::unblock_account
     # => [pad(18)]
 
-    # rebalance to the dyncall depth-16-on-return rule: the 2 param pushes above displaced 2 pad
-    # zeros into the overflow table (the callee's window is balanced), so drop 2 to end at depth 16.
     drop drop
     # => [pad(16)]
 end

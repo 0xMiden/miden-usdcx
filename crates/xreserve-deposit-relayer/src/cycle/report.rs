@@ -1,10 +1,10 @@
 //! The OUTCOME types the orchestration produces: what became of one attestation ([`Disposition`]),
 //! the reported record of it ([`CycleEntry`]), and a whole cycle's account ([`CycleReport`]).
 //!
-//! Split out of `cycle/mod.rs` so the orchestration stays under the G3 Rust file ceiling. These are
-//! the vocabulary the §8.4 no-silent-drops obligation is stated in — a `Disposition` renders a
-//! non-empty reason for every arm, and a `CycleReport`'s terminal counters partition its `fetched()`
-//! — so they live together, apart from the control flow that produces them.
+//! Split out of `cycle/mod.rs` so the orchestration stays within its file-size ceiling. These are
+//! the vocabulary the no-silent-drops rule is stated in — a `Disposition` renders a non-empty
+//! reason for every arm, and a `CycleReport`'s terminal counters partition its `fetched()` — so
+//! they live together, apart from the control flow that produces them.
 
 use crate::error::RelayerError;
 use crate::idempotency::{SubmissionStatus, TxId};
@@ -14,31 +14,33 @@ use crate::idempotency::{SubmissionStatus, TxId};
 
 /// What happened to ONE fetched attestation. **Every** fetched attestation gets exactly one.
 ///
-/// Closed, and NOT `#[non_exhaustive]`: five of the six are not a mint, and they are exactly the ones
-/// a catch-all arm would flatten into "handled". Nothing here means the deposit is on chain except
-/// [`Self::Submitted`] — and even that means "the node took the transaction", which is why the
-/// idempotency log records `Submitted` and not `Committed`.
+/// Closed, and NOT `#[non_exhaustive]`: five of the six are not a mint, and they are exactly the
+/// ones a catch-all arm would flatten into "handled". Nothing here means the deposit is on chain
+/// except [`Self::Submitted`] — and even that means "the node took the transaction", which is why
+/// the idempotency log records `Submitted` and not `Committed`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Disposition {
     /// A mint note was built and the node accepted it, in `tx_id`. The log holds it.
     Submitted { tx_id: TxId },
-    /// The on-chain `usedNonces` assert fired (D5c) — this deposit was already minted, by an earlier
-    /// attempt or a competing relayer. The SAFETY backstop, observed. Terminal, and not a defect.
+    /// The on-chain `usedNonces` assert fired (the on-chain replay guard) — this deposit was
+    /// already minted, by an earlier attempt or a competing relayer. The SAFETY backstop, observed.
+    /// Terminal, and not a defect.
     AlreadyMinted,
     /// The idempotency store had already recorded this nonce, in `status` — a re-poll of the same
     /// window, another observer's claim, or a restart. **No second mint was attempted.** A LIVENESS
     /// backstop: the authoritative one is the on-chain nonce assert above.
     Duplicate { status: SubmissionStatus },
-    /// Permanently refused: a structurally invalid DepositIntent (§8.1 check 4), a domain/token
-    /// fast-fail (check 5), a note unit-04's factory would not build, or a node's permanent refusal.
-    /// It will never be submitted, and the error says why.
+    /// Permanently refused: a structurally invalid DepositIntent (the structural DepositIntent
+    /// check), a domain/token fast-fail (check 5), a note the shared encoding crate's factory would
+    /// not build, or a node's permanent refusal. It will never be submitted, and the error says
+    /// why.
     Rejected(RelayerError),
-    /// A TRANSIENT failure left it for a later cycle — the store was busy, the node was behind. It is
-    /// neither minted nor refused, and the deposit intent has no expiry, so the next cycle re-claims
-    /// it (§8.2).
+    /// A TRANSIENT failure left it for a later cycle — the store was busy, the node was behind. It
+    /// is neither minted nor refused, and the deposit intent has no expiry, so the next cycle
+    /// re-claims it.
     Deferred(RelayerError),
-    /// An operator must resolve it: an answer this relayer is not allowed to guess at. Today the one
-    /// case is two different attestations claiming one nonce — at most one is the deposit that
+    /// An operator must resolve it: an answer this relayer is not allowed to guess at. Today the
+    /// one case is two different attestations claiming one nonce — at most one is the deposit that
     /// happened, and picking wrong either strands a deposit or re-mints one.
     ReconciliationRequired(RelayerError),
 }
@@ -57,7 +59,7 @@ impl Disposition {
         }
     }
 
-    /// Why, in one line — the §8.4 obligation, rendered.
+    /// Why, in one line — the no-silent-drops obligation, rendered.
     ///
     /// DERIVED, never stored: the refusing arms render their typed error, the settling arms render
     /// the fact. So there is no constructor that can produce a disposition with nothing to say, and
@@ -78,7 +80,7 @@ impl Disposition {
     }
 
     /// Whether an operator must be told. A refusal and a conflict yes; a duplicate, a mint, and the
-    /// chain's own nonce trap no — those are the system working (§8.4's alert column).
+    /// chain's own nonce trap no — those are the system working (the alert policy).
     pub(crate) fn alerts(&self) -> bool {
         matches!(self, Self::Rejected(_) | Self::ReconciliationRequired(_))
     }
@@ -86,8 +88,8 @@ impl Disposition {
 
 /// One fetched attestation and what became of it.
 ///
-/// Constructed only by [`classify_one`], so an entry cannot exist without an attestation behind it —
-/// and an attestation cannot pass through the loop without producing one.
+/// Constructed only by `classify_one`, so an entry cannot exist without an attestation behind it
+/// — and an attestation cannot pass through the loop without producing one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CycleEntry {
     message_hash: [u8; 32],
@@ -145,8 +147,8 @@ pub struct CycleReport {
 
 impl CycleReport {
     /// Assembles a cycle's report from its ordered entries and the cursor it advanced to. The ONLY
-    /// constructor — `fetched()` is derived from `entries`, never tracked apart, so a count that could
-    /// disagree with the entries (the shape of a silent drop) is not representable.
+    /// constructor — `fetched()` is derived from `entries`, never tracked apart, so a count that
+    /// could disagree with the entries (the shape of a silent drop) is not representable.
     pub(crate) fn new(
         remote_domain: u32,
         entries: Vec<CycleEntry>,
@@ -169,9 +171,9 @@ impl CycleReport {
         &self.entries
     }
 
-    /// How many attestations were fetched. Equal to `entries().len()` BY CONSTRUCTION — the count is
-    /// not tracked separately, because a count that could disagree with the entries is a count that
-    /// eventually does, and the gap between them would be exactly the silent drop.
+    /// How many attestations were fetched. Equal to `entries().len()` BY CONSTRUCTION — the count
+    /// is not tracked separately, because a count that could disagree with the entries is a count
+    /// that eventually does, and the gap between them would be exactly the silent drop.
     pub fn fetched(&self) -> usize {
         self.entries.len()
     }
@@ -181,15 +183,16 @@ impl CycleReport {
         self.next_cursor.as_deref()
     }
 
-    /// Whether this page was the last one (§8.2 pagination boundary: `next == None`).
+    /// Whether this page was the last one (the documented end-of-scan condition: `next == None`).
     pub fn scan_complete(&self) -> bool {
         self.next_cursor.is_none()
     }
 
-    /// Entries whose outcome is `outcome`. A `fold` rather than a `filter().count()` on purpose: the
-    /// no-silent-drops sweep (`tests/cycle_no_silent_drops.rs`) reads this file for the shapes that
-    /// can lose an element, and it cannot tell a `filter` over reported entries from a `filter` over
-    /// the fetched page. Keeping the file free of them keeps the sweep exact instead of clever.
+    /// Entries whose outcome is `outcome`. A `fold` rather than a `filter().count()` on purpose:
+    /// the no-silent-drops sweep reads this file for the shapes that can lose an element, and it
+    /// cannot tell a `filter` over reported entries from a `filter` over the fetched page. Keeping
+    /// the file free of them keeps the sweep exact instead
+    /// of clever.
     fn count(&self, outcome: &str) -> usize {
         self.entries
             .iter()
@@ -227,7 +230,8 @@ impl CycleReport {
     }
 
     /// A one-line count summary the loop emits per cycle, so an operator sees throughput move. The
-    /// terminal counters partition `fetched()`, so this line is also the no-drop invariant, visible.
+    /// terminal counters partition `fetched()`, so this line is also the no-drop invariant,
+    /// visible.
     pub fn summary(&self) -> String {
         format!(
             "domain={} fetched={} submitted={} rejected={} duplicate={} already_minted={} \

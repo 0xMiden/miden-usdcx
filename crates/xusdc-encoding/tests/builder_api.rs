@@ -1,9 +1,10 @@
-//! R-MINT-16 `XReserveStablecoinBuilder` API suite (Wave-1 S1 recomposition): the production
+//! `XReserveStablecoinBuilder` API suite: the production
 //! builder must compose an ATTESTATION-gated PUBLIC faucet and reject the packaging mistakes that
 //! would weaken the mint/burn posture — a non-`Public` account type, an active mint policy that is
-//! not the attestation policy (INV-MINT-SECURITY restated: every supply increase passes
+//! not the attestation policy (the sole-supply-surface invariant restated: every supply increase
+//! passes
 //! `xreserve::mint_policy::check_policy`), an active burn policy that is not the stock
-//! `MinBurnAmount`, a sub-floor `min_burn_size`, and a missing build-seeded domain config (DEC-4).
+//! `MinBurnAmount`, a sub-floor `min_burn_size`, and a missing build-seeded domain config.
 //! The build-validation tests assert the exact rejection variants (pure builder logic); the
 //! composed-set tests pin the posture the builder ships (active-policy slot, component seam,
 //! domain-config seeding).
@@ -32,7 +33,7 @@ use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
 // value slots so it assembles, exactly as the composition harness does).
 const DUMMY_DOMAIN: u32 = 7;
 
-// R2-F2: the identifier value slot is the DEC-4 account-id fixpoint — it ships EMPTY at
+// The identifier value slot is the account-id fixpoint — it ships EMPTY at
 // composition and the builder REJECTS a non-empty seed (the faucet-bound `identifier_init` note
 // is its only writer). The fixtures below therefore declare an empty identifier; the
 // `build_rejects_nonempty_identifier_seed` test drives a non-empty one via
@@ -80,7 +81,7 @@ fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
                 StorageSlot::with_value(name, Word::from([DUMMY_DOMAIN, 0, 0, 0]))
             }
             l if l == IDENTIFIER_CONFIG_SLOT_LABEL => {
-                // R2-F2: the identifier fixpoint ships EMPTY (the builder requires it).
+                // The identifier fixpoint ships EMPTY (the builder requires it).
                 StorageSlot::with_value(name, Word::empty())
             }
             _ => StorageSlot::with_value(name, Word::from([0u32, 0, 0, 0])),
@@ -96,7 +97,7 @@ fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
 }
 
 /// The full 7-slot `xreserve` component but with the identifier value slot seeded to `identifier`
-/// (the fixture for the R2-F2 non-empty-identifier rejection test — every other slot matches the
+/// (the fixture for the non-empty-identifier rejection test — every other slot matches the
 /// default fixture, so the ONLY difference exercised is the identifier value).
 fn xreserve_component_with_identifier(identifier: Word) -> Result<AccountComponent> {
     let library = assemble_xreserve_lib()?;
@@ -143,7 +144,7 @@ fn production_faucet(
 
 /// The standard production builder over `(faucet, component)`: the seeded principal ids
 /// (owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3), BLK_MANAGER = id(4)) plus the REQUIRED
-/// build-seeded domain config (DEC-4) — every construction in this suite goes through here unless
+/// build-seeded domain config — every construction in this suite goes through here unless
 /// the test's very point is omitting the domain config.
 fn production_builder(
     faucet: FungibleFaucet,
@@ -160,8 +161,10 @@ fn production_builder(
     .with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN, test_xreserve_contract())
 }
 
-/// Resolves a library-path procedure root across the composed component set (the
-/// `wave1_recomposition.rs` resolve-helper pattern).
+/// Looks up a procedure's root by its library path across every component in the composed set.
+///
+/// The set is a flat list of components and a given procedure lives in exactly one of them, so the
+/// first hit is the answer; `None` means no component exposes that path at all.
 fn resolve_proc_root(components: &[AccountComponent], path: &str) -> Option<Word> {
     components
         .iter()
@@ -181,11 +184,15 @@ fn find_value_slot(components: &[AccountComponent], name: &StorageSlotName) -> O
 // BUILD + POSTURE — the production attestation-gated faucet
 // ================================================================================================
 
-/// The production `build_components` composes an attestation-gated PUBLIC faucet without error (the
-/// build-validation half), and the composed set's ACTIVE mint-policy slot holds the attestation
-/// policy root resolved from the installed `xreserve` component — the builder-API half of the
-/// restated INV-MINT-SECURITY (the E2E halves live in `wave1_recomposition.rs` /
-/// `mint_policy_e2e.rs`).
+/// The production composition builds, and the account it produces is gated on the attestation
+/// policy.
+///
+/// Two things are asserted. The build succeeds and yields a public faucet, and the active
+/// mint-policy storage slot holds the root of the attestation policy actually installed in the
+/// composed component — not merely some non-empty value. Together they are the build-time half of
+/// the claim that a mint can only happen against a valid Circle attestation; the runtime halves,
+/// where real notes are minted and rejected, live in the recomposition and mint-policy end-to-end
+/// suites.
 #[test]
 fn build_produces_attestation_gated_public_faucet() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
@@ -229,8 +236,8 @@ fn build_rejects_non_public_account_type() -> Result<()> {
 }
 
 /// An active mint policy that is not the attestation policy is rejected — packaging cannot silently
-/// swap out the attestation gate (INV-MINT-SECURITY restated: the attestation policy is the only
-/// mint policy production allows). GREEN.
+/// swap out the attestation gate (the sole-supply-surface invariant restated: the attestation
+/// policy is the only mint policy production allows). GREEN.
 #[test]
 fn build_rejects_missing_attestation_mint_policy() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(false)?;
@@ -250,7 +257,7 @@ fn build_rejects_missing_attestation_mint_policy() -> Result<()> {
 
 /// An active burn policy that is not the stock `MinBurnAmount` is rejected (the burn-slot twin of
 /// [`build_rejects_missing_attestation_mint_policy`]): packaging cannot drop the minimum-burn floor
-/// predicate (R-BURN-1/2 preserved through the stock policy since the Wave-1 S1 swap). The faucet is
+/// predicate (the zero-burn and minimum-burn rejects preserved through the stock policy). The faucet is
 /// otherwise valid (Public + attestation mint active + mutable max_supply) so the burn policy is the
 /// SOLE reason for rejection — removing the guard makes this build succeed (removal-based
 /// non-vacuity).
@@ -273,7 +280,7 @@ fn build_rejects_non_min_burn_amount_burn_policy() -> Result<()> {
     Ok(())
 }
 
-/// R2-F1 (the same-root zero-floor bypass): an explicit `with_active_burn_policy` override that
+/// The same-root zero-floor bypass: an explicit `with_active_burn_policy` override that
 /// carries the STOCK `MinBurnAmount` root — so it slips past the root check — but a ZERO-valued
 /// companion must be rejected with the EXACT `BurnPolicyFloorMismatch`. Without this guard the
 /// override installs its own zero-floor `MinBurnAmount` companion, and the stock predicate is
@@ -303,7 +310,7 @@ fn build_rejects_same_root_zero_seeded_min_burn_override() -> Result<()> {
     Ok(())
 }
 
-/// R2-F1 (positive control): a same-root override whose companion floor MATCHES the validated
+/// Positive control: a same-root override whose companion floor MATCHES the validated
 /// `min_burn_size` is accepted, and the shipped faucet's floor slot is exactly that value — the
 /// override cannot lower the floor, only restate it.
 #[test]
@@ -329,9 +336,9 @@ fn build_accepts_matching_min_burn_override() -> Result<()> {
     Ok(())
 }
 
-/// R2-F2 (the identifier fixpoint): a build whose supplied `xreserve` component declares a
+/// The identifier fixpoint: a build whose supplied `xreserve` component declares a
 /// NON-EMPTY identifier value slot must be rejected with the EXACT `IdentifierNotEmpty`. The
-/// identifier is the DEC-4 account-id fixpoint (the account id derives from the initial storage
+/// identifier is the account-id fixpoint (the account id derives from the initial storage
 /// commitment), so it can never be build-seeded — a non-empty identifier would ship an
 /// already-initialized, potentially misbound faucet and make `identifier_init` trap as a reinit.
 #[test]
@@ -368,13 +375,13 @@ fn build_rejects_immutable_max_supply() -> Result<()> {
     Ok(())
 }
 
-// PRODUCTION minBurnSize SEEDING (the stock MinBurnAmount floor slot since Wave-1 S1)
+// PRODUCTION minBurnSize SEEDING (the stock MinBurnAmount floor slot)
 // ================================================================================================
 
 /// Production `build_components` SEEDS the STOCK `MinBurnAmount` floor slot
 /// (`MinBurnAmount::slot_name()` = `[min_burn_size, 0, 0, 0]`, carried by the policy companion
 /// component the manager emits) so the stock burn policy's floor read resolves on a real production
-/// faucet — the builder owns a `min_burn_size` default/override, and the reworked
+/// faucet — the builder owns a `min_burn_size` default/override, and the
 /// `set_min_burn_size` admin note mutates the SAME slot at runtime. The expected value uses the
 /// canonical full-u64 `AssetAmount -> Felt`, so an `as u32` truncation in the seed would fail this
 /// test (see the MIN_BURN choice below).
@@ -418,8 +425,8 @@ fn production_seeds_min_burn_size() -> Result<()> {
 
 /// A `min_burn_size` below the floor (= 1) is rejected with the EXACT `MinBurnSizeBelowFloor(0)`:
 /// the stock `MinBurnAmount` asserts only `min <= amount` (its stock setter even accepts 0), so a
-/// zero seed would silently drop the R-BURN-1 zero-burn invariant — the builder half of the
-/// zero-floor guard (the runtime half is the reworked `set_min_burn_size` note's assert). The faucet
+/// zero seed would silently drop the zero-burn invariant — the builder half of the
+/// zero-floor guard (the runtime half is the `set_min_burn_size` note's assert). The faucet
 /// is otherwise valid, so the sub-floor seed is the SOLE reason for rejection.
 #[test]
 fn build_rejects_zero_min_burn_size() -> Result<()> {
@@ -458,12 +465,12 @@ fn build_rejects_min_burn_size_exceeding_max() -> Result<()> {
     Ok(())
 }
 
-// DEC-4 DOMAIN-CONFIG SEEDING — required input + build-time slot writes
+// DOMAIN-CONFIG SEEDING — required input + build-time slot writes
 // ================================================================================================
 
-/// Omitting `with_domain_config` is rejected with the EXACT `MissingDomainConfig`: DEC-4 moved the
-/// three non-identifier domain-config fields to build time, so a build without them would ship a
-/// faucet whose D5a domain compare reads an empty slot. The builder is otherwise fully valid, so the
+/// Omitting `with_domain_config` is rejected with the EXACT `MissingDomainConfig`: the
+/// three non-identifier domain-config fields are build-seeded, so a build without them would ship a
+/// faucet whose deposit-intent domain compare would read an empty slot. The builder is otherwise fully valid, so the
 /// missing domain config is the SOLE reason for rejection.
 #[test]
 fn build_rejects_missing_domain_config() -> Result<()> {
@@ -485,7 +492,7 @@ fn build_rejects_missing_domain_config() -> Result<()> {
     Ok(())
 }
 
-/// The build SEEDS the three DEC-4 domain-config fields into the declared xreserve slots —
+/// The build SEEDS the three build-time domain-config fields into the declared xreserve slots —
 /// `[domain, 0, 0, 0]`, `[source_domain, 0, 0, 0]`, and the packed `xreserve_contract` hi/lo words
 /// (hi = packed felts 0..4 / wire bytes 0..16, lo = felts 4..8) — while the `identifier` slot stays
 /// EMPTY through the build (the account-id fixpoint: the builder never seeds it, and the
@@ -534,10 +541,10 @@ fn build_seeds_the_domain_config_slots() -> Result<()> {
     Ok(())
 }
 
-// PAUSE COMPOSITION (IMPL-DEV-1) — Domain-Pauser-ONLY pause surface
+// PAUSE COMPOSITION — Domain-Pauser-ONLY pause surface
 // ================================================================================================
 
-/// Domain-Pauser-only pause (IMPL-DEV-1; Circle requires that only the Domain Pauser role may
+/// Domain-Pauser-only pause (Circle requires that only the Domain Pauser role may
 /// pause): the production composition exposes NO stock `PausableManager` procedure — neither the
 /// `pause` nor the `unpause` root appears in any composed component, so the ONLY pause surface is the
 /// DOM_PAUSER-gated `xreserve::pause_admin::{pause,unpause}`. The structural twin of the executing
@@ -570,8 +577,7 @@ fn builder_installs_no_stock_pause_manager() -> Result<()> {
 /// The `is_paused` slot SURVIVES the Domain-Pauser-only pause model: the production composition
 /// carries the value slot `miden::standards::access::pausable::is_paused`, installed at v0.16 by
 /// the base `Pausable` component the builder adds (`Pausable::unpaused()`) — NOT by
-/// `FungibleFaucet` (protocol #2944 moved the slot OUT of the faucet; the v15 provenance this doc
-/// used to cite is superseded — MIGRATION-V16-ALPHA2.md S1) and NOT by the deliberately-absent
+/// `FungibleFaucet` (v0.16 moved the slot OUT of the faucet) and NOT by the deliberately-absent
 /// `PausableManager`, which installs zero storage. Without this slot the mint/burn
 /// `assert_not_paused` halt-gates break, reopening the pause halt-gap (Circle requires a paused
 /// faucet halt mint and burn) — and at v0.16 that failure is SILENT rather than loud: #3047 made
@@ -675,7 +681,7 @@ fn build_rejects_missing_xreserve_slot(#[case] omitted: usize) -> Result<()> {
 }
 
 /// Token-config exactness: a faucet whose `decimals != 6` is rejected with the EXACT
-/// `WrongDecimals(d)` — Circle mandates six decimal places and the D5b reducer scales to 6dp, so
+/// `WrongDecimals(d)` — Circle mandates six decimal places and the amount reducer scales to 6dp, so
 /// a mismatched faucet silently mis-scales every minted amount. The faucet is otherwise valid
 /// (Public + deny active + mutable max_supply + full slot set), so the decimals are the SOLE reason
 /// for rejection.
@@ -715,7 +721,7 @@ fn build_rejects_wrong_token_symbol() -> Result<()> {
     Ok(())
 }
 
-// S18 — THE POLICY-COMPANION SEAM (MIGRATION-V16-ALPHA2.md S18; Wave-1 S1 rework)
+// THE POLICY-COMPANION SEAM
 // ================================================================================================
 // At v0.16 the policy descriptors CARRY their companion components, and the manager's iterator
 // emits the companions per DISTINCT policy root after the manager component itself. With the
@@ -778,7 +784,7 @@ fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> 
     );
 
     // the pinned install ORDER of the identifiable middle run: xreserve at index 2, then the
-    // MinBurnAmount + BasicBlocklist companions, then the manager (Wave-1 S1 component order).
+    // MinBurnAmount + BasicBlocklist companions, then the manager (the pinned component order).
     assert!(
         components[2].component_code().as_package() == xreserve_code.as_package(),
         "component 2 must be the xreserve component"
@@ -814,8 +820,8 @@ fn seam_rejects_a_smuggled_foreign_policy_companion() -> Result<()> {
         .context("the attestation-policy root resolves from the installed component")?;
 
     // A stock component the production composition never installs through a POLICY — the smuggled
-    // payload. The override's ROOT is still the attestation policy, so the INV-MINT-SECURITY check
-    // passes and the seam is the only thing standing between this component and the account.
+    // payload. The override's ROOT is still the attestation policy, so the attestation-policy root
+    // check passes and the seam is the only thing standing between this component and the account.
     let foreign: AccountComponent = PausableManager.into();
     let smuggling_policy = MintPolicy::custom(
         AccountProcedureRoot::from_raw(attestation_root),

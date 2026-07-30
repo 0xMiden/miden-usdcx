@@ -1,4 +1,4 @@
-# xreserve_set_max_supply_note — the shipped, root-pinned set_max_supply admin note script (F5).
+# xreserve_set_max_supply_note — the shipped, root-pinned set_max_supply admin note script.
 #
 # The production admin surface for the STOCK `set_max_supply` under the network account: a fixed-root
 # note whose parameter is CREATOR-COMMITTED in note storage (never NOTE_ARGS). It stages the note
@@ -40,6 +40,9 @@ const ERR_XRESERVE_SET_MAX_SUPPLY_NOTE_STORAGE = "set_max_supply note storage it
 #! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
 #!
+#! Where:
+#! - ARGS is executor-controlled and dropped unread.
+#!
 #! Note storage is assumed to be as follows:
 #! - new_max_supply is the new maximum supply as an AssetAmount felt (item 0).
 #!
@@ -62,13 +65,11 @@ pub proc main
 
     push.PARAM_PTR mem_load
     # => [new_max_supply, pad(16)]
-    # (the call consumes the top 16: [new_max_supply, pad(15)])
 
+    # => [new_max_supply, pad(15)]
     call.fungible::set_max_supply
     # => [pad(17)]
 
-    # rebalance to the dyncall depth-16-on-return rule: the param push above displaced 1 pad zero
-    # into the overflow table (the callee's window is balanced), so drop 1 to end at depth 16.
     drop
     # => [pad(16)]
 end

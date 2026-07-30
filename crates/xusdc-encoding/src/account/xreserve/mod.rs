@@ -1,4 +1,4 @@
-//! `xreserve` faucet account composition (CMP-A15) — the [`XReserveStablecoinBuilder`].
+//! `xreserve` faucet account composition — the [`XReserveStablecoinBuilder`].
 
 pub mod builder;
 

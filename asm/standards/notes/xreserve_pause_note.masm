@@ -1,4 +1,4 @@
-# xreserve_pause_note — the shipped, root-pinned pause admin note script (F5).
+# xreserve_pause_note — the shipped, root-pinned pause admin note script.
 #
 # The production admin surface for `pause` under the network account: a fixed-root, PARAM-LESS note
 # whose sole job is to cross into the faucet account context and `call` the DOM_PAUSER-gated
@@ -21,6 +21,9 @@ use xreserve::pause_admin
 #!
 #! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
+#!
+#! Where:
+#! - ARGS is executor-controlled and dropped unread.
 #!
 #! Panics if:
 #! - the note sender does not hold the DOM_PAUSER role (pause_admin::pause's role gate).

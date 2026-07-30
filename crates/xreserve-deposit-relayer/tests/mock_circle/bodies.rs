@@ -2,10 +2,10 @@
 //!
 //! Every body here is built to the exact OpenAPI shape — in particular the by-`depositMessageHash`
 //! endpoint's **wrapper** (`{"attestation": {...}}`, live OpenAPI YAML L391–398) versus the
-//! `?txHash=` and `/v1/remote-domains/{d}/attestations` **list** shapes (`{"attestations": [...]}`),
-//! and camelCase wire keys (`messageHash`, `remoteDomain`, `pageSize`, `pageAfter`, …). A divergent
-//! fixture is a defect: it would let a wrong decoder pass, which is the one thing a contract test
-//! exists to prevent.
+//! `?txHash=` and `/v1/remote-domains/{d}/attestations` **list** shapes (`{"attestations":
+//! [...]}`), and camelCase wire keys (`messageHash`, `remoteDomain`, `pageSize`, `pageAfter`, …). A
+//! divergent fixture is a defect: it would let a wrong decoder pass, which is the one thing a
+//! contract test exists to prevent.
 
 #![allow(dead_code)] // a shared fixture module: each test target uses the subset it needs.
 
@@ -13,12 +13,12 @@ use serde_json::{json, Value};
 
 use crate::fixtures::AttestationVector;
 
-/// The Miden remote domain used by the fixtures. **Placeholder — `Q-DOM-1` is OPEN (`REQUIRES
-/// CIRCLE CONFIRMATION`)**: Circle has not assigned Miden a domain id. A fixture value, never a
-/// settled decision.
+/// The Miden remote domain used by the fixtures. **Placeholder — the Miden domain id is OPEN
+/// (`REQUIRES CIRCLE CONFIRMATION`)**: Circle has not assigned Miden a domain id. A fixture value,
+/// never a settled decision.
 pub const FIXTURE_MIDEN_DOMAIN: u32 = 10001;
 
-/// The xUSDC remote-token identifier used by the fixtures. **Placeholder — `DEV-10` is OPEN
+/// The xUSDC remote-token identifier used by the fixtures. **Placeholder — the identifier is OPEN
 /// (`REQUIRES CIRCLE CONFIRMATION`)**: the AccountId↔bytes32 encoding is not settled.
 pub const FIXTURE_XUSDC_IDENTIFIER: &str =
     "0x00000000000000000000000000000000000000000000000000000000c0ffee01";
@@ -98,8 +98,8 @@ pub fn batch_href(
 
 /// [`info_body`], advertising an arbitrary remote domain + xUSDC identifier — so a test can point
 /// discovery at the domain/token a fixture DepositIntent actually carries. Both values are
-/// placeholders (`Q-DOM-1` / `DEV-10` are OPEN — `REQUIRES CIRCLE CONFIRMATION`); parameterizing
-/// them is what keeps a fixture from reading as a settled assignment.
+/// placeholders (the domain id and the identifier are OPEN — `REQUIRES CIRCLE CONFIRMATION`);
+/// parameterizing them is what keeps a fixture from reading as a settled assignment.
 pub fn info_body_for(remote_domain: u32, xusdc_identifier_hex: &str) -> Value {
     let mut body = info_body();
     body["remoteDomains"][0]["domain"] = json!(remote_domain);

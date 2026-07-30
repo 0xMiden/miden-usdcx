@@ -1,13 +1,13 @@
-//! Shared fixtures for the `T-LA-11` burn-evidence suites: the unit adapter standing in for the three
+//! Shared fixtures for the burn-evidence suites: the unit adapter standing in for the three
 //! Miden reads, and the records each case is built from.
 //!
 //! It is a UNIT adapter, not a mock of Miden. It hands back exactly the records a case is about, so
-//! the assertions land on the assembler's REASONING over those records rather than on a re-implemented
-//! node. The real reads are W10, parked on a `miden-client` with no v0.16 release — which is also why
-//! this file exists at all rather than a local-node harness.
+//! the assertions land on the assembler's REASONING over those records rather than on a
+//! re-implemented node. The real reads are parked on a `miden-client` with no v0.16 release — which
+//! is also why this file exists at all rather than a local-node harness.
 //!
-//! Split out under G3 (the ~700-line Rust ceiling `crate_posture.rs` sweeps), the same way
-//! `submit_support` carries the `POST /v1/withdraw` suites.
+//! Split out to stay within the ~700-line Rust file ceiling that `crate_posture.rs` sweeps for, the
+//! same way `submit_support` carries the `POST /v1/withdraw` suites.
 
 #![allow(dead_code)] // a shared fixture module: each test target uses the subset it needs.
 
@@ -35,15 +35,15 @@ use withdrawal_listener_attester::types::EvidencePackage;
 pub const FAUCET_ID_HEX: &str = "0xbb405fd9fe431bd1135a292de098cb";
 
 /// The LNV4 run's holder account — the keyed `BasicWallet` that actually burned
-/// (`VALIDATION-RECORD-LNV4.md:21`). It is the negative control for the faucet filter, and it is the
-/// realistic one: the burner is the account most likely to appear alongside the faucet in a
+/// (`VALIDATION-RECORD-LNV4.md:21`). It is the negative control for the faucet filter, and it is
+/// the realistic one: the burner is the account most likely to appear alongside the faucet in a
 /// transaction stream, so "not the faucet" is tested against the id that genuinely is not.
 pub const OTHER_ACCOUNT_ID_HEX: &str = "0x0a8770f581c324b114fb42884cddc9";
 
 /// The block the burn note is created in, and the block it is consumed in. They differ by one
-/// because a burn note cannot be created and consumed in the same block and still be observable
-/// (`INV-TWO-BLOCK-BURN`) — so a fixture that used one block for both would be testing a state the
-/// chain does not produce.
+/// because a burn note cannot be created and consumed in the same block and still be observable (a
+/// burn note is created in block N and consumed in block ≥ N+1) — so a fixture that used one block
+/// for both would be testing a state the chain does not produce.
 pub const CREATE_BLOCK: u32 = 42;
 pub const CONSUME_BLOCK: u32 = 43;
 
@@ -57,8 +57,8 @@ pub fn other_account_id() -> AccountId {
 
 /// A distinct `Word` per `n` — the opaque 32-byte identifiers this file needs, and nothing more.
 /// `Felt::new` is fallible at the v16 base (values ≥ p are rejected), so it is unwrapped explicitly
-/// rather than through a `From` that would silently reduce (`felt-construction`); every `n` here is a
-/// small literal well inside the field.
+/// rather than through a `From` that would silently reduce (`felt-construction`); every `n` here is
+/// a small literal well inside the field.
 pub fn word(n: u64) -> Word {
     let felt = |v: u64| Felt::new(v).expect("test value is in the field");
     Word::from([felt(0), felt(0), felt(0), felt(n)])
@@ -76,7 +76,7 @@ pub fn burn_tx_id() -> TransactionId {
     TransactionId::from_raw(word(0xB0_11))
 }
 
-/// A note inclusion proof for `block` — the CRYPTOGRAPHIC creation evidence (`GetNotesById`, R-2).
+/// A note inclusion proof for `block` — the CRYPTOGRAPHIC creation evidence (`GetNotesById`).
 /// The path is empty because nothing here verifies the Merkle path itself; what is under test is
 /// whether the assembler reads the block number OUT OF THIS PROOF rather than believing a
 /// node-reported field.
@@ -113,9 +113,10 @@ pub fn consuming_tx() -> TransactionRecord {
 }
 
 /// The `SyncTransactions` record for the tx that CREATED the burn note. It names the note — in
-/// `output_note_proofs`, which proves the note was minted BY it, and proves nothing whatsoever about
-/// the note being consumed (R-9/R-10). It is in the faucet's transaction stream exactly like the
-/// consuming one, which is what makes confusing the two a live risk rather than a theoretical one.
+/// `output_note_proofs`, which proves the note was minted BY it, and proves nothing whatsoever
+/// about the note being consumed. It is in the faucet's transaction stream exactly like
+/// the consuming one, which is what makes confusing the two a live risk rather than a theoretical
+/// one.
 pub fn creating_tx() -> TransactionRecord {
     TransactionRecord {
         transaction_id: TransactionId::from_raw(word(0xC0_FF_EE)),
@@ -136,7 +137,7 @@ pub fn observed_spend() -> NullifierRecord {
 
 /// A scripted stand-in for the three Miden reads. It is a UNIT adapter, not a mock of Miden: it
 /// hands back exactly the records a case is about, so the assertions are about the assembler's
-/// reasoning over those records. The real reads are W10.
+/// reasoning over those records. The real reads are parked for the node-backed slice.
 pub struct UnitPort {
     pub note: Result<NoteRecord, EvidenceReadError>,
     pub txs: Result<Vec<TransactionRecord>, EvidenceReadError>,

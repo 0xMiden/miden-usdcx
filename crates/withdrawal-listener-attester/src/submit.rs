@@ -1,9 +1,9 @@
 //! **The `POST /v1/withdraw` submission path** — the `409` conflict-recovery, the bounded
-//! retry/backoff under the documented rate ceilings, and the per-burn idempotency claim that gates all
-//! of it (§10.10; `T-LA-13`).
+//! retry/backoff under the documented rate ceilings, and the per-burn idempotency claim that gates
+//! all of it.
 //!
-//! This is the money path. Everything here follows from one sentence in §10.10, quoted in full because
-//! every clause of it is load-bearing:
+//! This is the money path. Everything here follows from one sentence in Circle's documentation,
+//! quoted in full because every clause of it is load-bearing:
 //!
 //! > a `POST /v1/withdraw` 409 ("burnTxId already tied to an active withdrawal") is a **duplicate
 //! > conflict requiring recovery/reconciliation, NOT success**, and never a blind re-send. If
@@ -23,41 +23,45 @@
 //! exactly one line, under a `201`. "A 409 reported as success" is therefore not a bug this code
 //! avoids; it is a value this code cannot produce.
 //!
-//! The same is true of the re-send. There is exactly one `POST /v1/withdraw` call site in this module
-//! (`attempt_withdraw`), it runs inside one backoff loop, and that loop retries only what
-//! [`is_retryable`](crate::circle::retry::is_retryable) approves — which a `409` never reaches, because
-//! a `409` is not an error here at all: it is an `Attempt::Conflict`, returned `Ok`, ending the loop.
+//! The same is true of the re-send. There is exactly one `POST /v1/withdraw` call site in this
+//! module (`attempt_withdraw`), it runs inside one backoff loop, and that loop retries only what
+//! [`is_retryable`](crate::circle::retry::is_retryable) approves — which a `409` never reaches,
+//! because a `409` is not an error here at all: it is an `Attempt::Conflict`, returned `Ok`, ending
+//! the loop.
 //!
 //! # Fail-closed, everywhere, on purpose
 //!
 //! Circle's `409` is the ONLY other guard against a double withdrawal, and there is no on-chain
 //! backstop behind it (contrast the deposit relayer, whose `usedNonces` assert makes a double mint
-//! impossible whatever the off-chain code does). So every ambiguous answer — an exhausted `5xx` budget,
-//! a `201` body that will not decode, a conflict that names no withdrawal, a status that echoes another
-//! burn — lands in [`SubmissionStatus::ReconciliationRequired`]: the burn is BLOCKED and an operator is
-//! told, rather than retried into a possible second release. Only a genuinely terminal `finalized`
-//! (§10.10) settles a burn as done; `failed`, `expired` and every pending status do not.
+//! impossible whatever the off-chain code does). So every ambiguous answer — an exhausted `5xx`
+//! budget, a `201` body that will not decode, a conflict that names no withdrawal, a status that
+//! echoes another burn — lands in [`SubmissionStatus::ReconciliationRequired`]: the burn is BLOCKED
+//! and an operator is told, rather than retried into a possible second release. Only a genuinely
+//! terminal `finalized` settles a burn as done; `failed`, `expired` and every pending status do
+//! not.
 //!
 //! # This is the ONLY entry point, because the alternative was a bypass
 //!
-//! [`submit_withdraw`] takes the [`SubmitLedger`] as an argument and claims every burn BEFORE it builds
-//! a request, so "submit without an idempotency claim" is not something a caller can express by
-//! forgetting to.
+//! [`submit_withdraw`] takes the [`SubmitLedger`] as an argument and claims every burn BEFORE it
+//! builds a request, so "submit without an idempotency claim" is not something a caller can express
+//! by forgetting to.
 //!
-//! `withdrawal_api` used to expose a raw `withdraw` driver beside it — one POST, `201`-or-`Err`, no
-//! ledger — for the endpoint's shape to be tested against. That was a hole, not a convenience:
-//! `WithdrawRequest` is `Clone` and `authorize_submission` is public, so a caller could mint two
-//! authorizations for ONE burn and submit it twice, entirely around the ledger. Calling this function
-//! "the production entry point" in prose did not close it. Deleting the driver did — and the `CMP-D6`
-//! wire contract it used to prove (the `batches[]` wrapper, the `201` array, the cardinality rule) is
-//! now asserted through this path, which builds and decodes through the same code.
+//! `withdrawal_api` deliberately exposes no raw `withdraw` driver beside it — one POST,
+//! `201`-or-`Err`, no ledger — not even for the endpoint's shape to be tested against. Such a
+//! driver would be a hole, not a convenience: `WithdrawRequest` is `Clone` and
+//! `authorize_submission` is public, so a caller could mint two authorizations for ONE burn and
+//! submit it twice, entirely around the ledger. Calling this function "the production entry point"
+//! in prose would not close that; the driver's absence does — and the withdraw wire contract (the
+//! `batches[]` wrapper, the `201` array, the cardinality rule) is asserted through this path, which
+//! builds and decodes through the same code.
 //!
 //! # Still OPEN, and left that way
 //!
-//! `DEV-7` — whether a Miden transaction id is an acceptable `burnTxId` is Circle's to confirm. This
-//! module keys the ledger, the echo check, and the conflict binding on whatever `burnTxId` the batch
-//! carries, and asserts nothing about that question. `Q-API-AUTH` is likewise untouched: the retry loop
-//! re-sends whatever header the client's posture injects, and invents none.
+//! Whether a Miden transaction id is an acceptable `burnTxId` is Circle's to confirm. This module
+//! keys the ledger, the echo check, and the conflict binding on whatever `burnTxId` the batch
+//! carries, and asserts nothing about that question. the credential question is likewise untouched:
+//! the retry
+//! loop re-sends whatever header the client's posture injects, and invents none.
 
 use crate::circle::client::CircleClient;
 use crate::circle::retry::with_backoff;
@@ -77,40 +81,42 @@ use core::fmt;
 
 /// What a `POST /v1/withdraw` submission ACTUALLY resulted in.
 ///
-/// The type is closed, and its shape is the §10.10 contract: **there is no path from a `409` to
-/// [`Self::Submitted`]**, because [`Self::Submitted`] is constructed under a `201` and nowhere else.
+/// The type is closed, and its shape is Circle's documented contract: **there is no path from a
+/// `409` to [`Self::Submitted`]**, because [`Self::Submitted`] is constructed under a `201` and
+/// nowhere else.
 ///
-/// It is deliberately NOT `#[non_exhaustive]`. A caller must be forced to confront every outcome: the
-/// three that are *not* a completed withdrawal are exactly the ones a catch-all arm would quietly
-/// swallow, and swallowing them is how a duplicate becomes a second release.
+/// It is deliberately NOT `#[non_exhaustive]`. A caller must be forced to confront every outcome:
+/// the three that are *not* a completed withdrawal are exactly the ones a catch-all arm would
+/// quietly swallow, and swallowing them is how a duplicate becomes a second release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmitOutcome {
     /// Circle answered **`201`**: the withdrawal(s) were created, one status per submitted batch.
     ///
     /// This is "Circle accepted the submission", NOT "the funds are out": the statuses inside are
-    /// typically `created`, and only a later `finalized` is terminal success (§10.10).
+    /// typically `created`, and only a later `finalized` is terminal success.
     Submitted(WithdrawSubmissionResponse),
 
     /// A **`409`** that named a `conflict.withdrawalId`, RECOVERED by polling
     /// `GET /v1/withdrawal/{withdrawalId}` — the real state, read rather than assumed.
     ///
     /// `status` is reported HONESTLY and is not filtered: `finalized` is the one terminal success;
-    /// `failed`/`expired`/pending are NOT. This variant means "we found out what actually happened",
-    /// never "it worked".
+    /// `failed`/`expired`/pending are NOT. This variant means "we found out what actually
+    /// happened", never "it worked".
     ConflictRecovered {
         withdrawal_id: Uuid,
         status: WithdrawalStatus,
     },
 
-    /// A **`409`** carrying only `conflict.burnTxId`: there is no withdrawal id to recover through, so
-    /// resubmission STOPS and an operator must reconcile the burn (§10.10). Not a failure of this
-    /// service — an answer it is not allowed to resolve on its own.
+    /// A **`409`** carrying only `conflict.burnTxId`: there is no withdrawal id to recover through,
+    /// so resubmission STOPS and an operator must reconcile the burn. Not a failure of this service
+    /// — an answer it is not allowed to resolve on its own.
     ReconciliationRequired { burn_tx_id: String },
 
-    /// The `burnTxId` Circle echoed is NOT one this request submitted — in a `409` conflict body, or in
-    /// a status recovered through one. §10.10: "a 409 body that does not echo the original `burnTxId` →
-    /// treat as a defect, not a success". The idempotency key must match; if it does not, this
-    /// conflict is about some other burn, and nothing about it may be believed of ours.
+    /// The `burnTxId` Circle echoed is NOT one this request submitted — in a `409` conflict body,
+    /// or in a status recovered through one. Circle documents: "a 409 body that does not echo the
+    /// original `burnTxId` → treat as a defect, not a success". The idempotency key must match; if
+    /// it does not, this conflict is about some other burn, and nothing about it may be believed of
+    /// ours.
     ConflictEchoMismatch {
         /// The `burnTxId`s this request actually carried.
         submitted: Vec<String>,
@@ -118,8 +124,9 @@ pub enum SubmitOutcome {
         echoed: String,
     },
 
-    /// The ledger already accounts for this burn: it was claimed, submitted, settled or flagged by an
-    /// earlier pass (or another process). **ZERO calls were made** — this is decided before the wire.
+    /// The ledger already accounts for this burn: it was claimed, submitted, settled or flagged by
+    /// an earlier pass (or another process). **ZERO calls were made** — this is decided before the
+    /// wire.
     AlreadySubmitted {
         burn_tx_id: String,
         status: SubmissionStatus,
@@ -127,10 +134,11 @@ pub enum SubmitOutcome {
 }
 
 impl SubmitOutcome {
-    /// The `201` submission response, and `None` for every other outcome — including every `409` one.
+    /// The `201` submission response, and `None` for every other outcome — including every `409`
+    /// one.
     ///
-    /// The accessor exists so a caller can ask "did this submission actually go out?" without matching,
-    /// and get an answer that cannot be `Some` for a conflict.
+    /// The accessor exists so a caller can ask "did this submission actually go out?" without
+    /// matching, and get an answer that cannot be `Some` for a conflict.
     pub fn submitted(&self) -> Option<&WithdrawSubmissionResponse> {
         match self {
             Self::Submitted(response) => Some(response),
@@ -147,17 +155,17 @@ impl SubmitOutcome {
 #[non_exhaustive]
 pub enum SubmitError {
     /// Circle's answer, surfaced with its exact [`ListenerError`] — an exhausted `5xx` budget, a
-    /// deterministic `400`, an undocumented status, an unreadable body. Never softened into an outcome:
-    /// none of these is a withdrawal.
+    /// deterministic `400`, an undocumented status, an unreadable body. Never softened into an
+    /// outcome: none of these is a withdrawal.
     Circle(ListenerError),
 
-    /// The ledger refused. The submission did NOT go out — a listener that cannot record a claim must
-    /// not make one.
+    /// The ledger refused. The submission did NOT go out — a listener that cannot record a claim
+    /// must not make one.
     Ledger(LedgerError),
 
-    /// ONE request carried the same `burnTxId` in two batches. It would ask Circle to release the same
-    /// burn twice inside a single call, and the request's own second batch would be what triggers the
-    /// `409`. Refused before the wire.
+    /// ONE request carried the same `burnTxId` in two batches. It would ask Circle to release the
+    /// same burn twice inside a single call, and the request's own second batch would be what
+    /// triggers the `409`. Refused before the wire.
     DuplicateBurnInRequest { burn_tx_id: String },
 }
 
@@ -196,30 +204,30 @@ impl From<LedgerError> for SubmitError {
 ///
 /// 1. **Refuse an intra-request duplicate** — the same burn twice in one body. Zero calls.
 /// 2. **CLAIM every burn in the request, atomically and all-or-nothing**
-///    ([`SubmitLedger::claim_burns`]). The claim is the decision: on
-///    [`ClaimOutcome::AlreadySeen`] this returns [`SubmitOutcome::AlreadySubmitted`] having made ZERO
-///    calls, so a re-discovered burn, a retry driver, or a restarted process cannot produce a second
-///    submission.
+///    (`SubmitLedger::claim_burns`). The claim is the decision: on [`ClaimOutcome::AlreadySeen`]
+///    this returns [`SubmitOutcome::AlreadySubmitted`] having made ZERO calls, so a re-discovered
+///    burn, a retry driver, or a restarted process cannot produce a second submission.
 /// 3. **POST once, under the retry policy and the rate ceilings.** A `5xx` is retried within the
-///    bound — it is the one failure §10.10 documents as transient, and Circle ANSWERED, so it did not
-///    act. A `400` is not retried, a status-less transport failure is not retried (no answer is no
-///    evidence: the withdrawal may be releasing with only the response lost), and a `409` is not an
-///    error at all but a conflict to RECOVER.
+///    bound — it is the one failure Circle documents as transient, and Circle ANSWERED, so it did
+///    not act. A `400` is not retried, a status-less transport failure is not retried (no answer is
+///    no evidence: the withdrawal may be releasing with only the response lost), and a `409` is not
+///    an error at all but a conflict to RECOVER.
 /// 4. **Record the answer durably**, and fail closed on every ambiguity — attaching Circle's
 ///    `withdrawalId` only to the burn Circle actually bound it to.
 ///
 /// The `authorized` token is CONSUMED, so one pre-submit fund-safety authorization
-/// ([`authorize_submission`](crate::withdrawal_api::authorize_submission)) is spent on one submission.
-/// Together with the claim, both gates a withdrawal must clear — "every signer is a registered
-/// attester" and "this burn has never been submitted" — are structural, not conventional.
+/// ([`authorize_submission`](crate::withdrawal_api::authorize_submission)) is spent on one
+/// submission. Together with the claim, both gates a withdrawal must clear — "every signer is a
+/// registered attester" and "this burn has never been submitted" — are structural, not
+/// conventional.
 ///
 /// # Errors
 /// * [`SubmitError::DuplicateBurnInRequest`] — step 1.
-/// * [`SubmitError::Ledger`] — the claim or a record failed; nothing was submitted, or the answer could
-///   not be written down (which an operator must see).
+/// * [`SubmitError::Ledger`] — the claim or a record failed; nothing was submitted, or the answer
+///   could not be written down (which an operator must see).
 /// * [`SubmitError::Circle`] — the exact Circle failure, surfaced. The burn is left recorded:
-///   [`SubmissionStatus::Failed`] (re-claimable) ONLY for a deterministic `400`, where Circle created
-///   nothing; [`SubmissionStatus::ReconciliationRequired`] for every ambiguous failure.
+///   [`SubmissionStatus::Failed`] (re-claimable) ONLY for a deterministic `400`, where Circle
+///   created nothing; [`SubmissionStatus::ReconciliationRequired`] for every ambiguous failure.
 pub async fn submit_withdraw(
     circle: &CircleClient,
     ledger: &SubmitLedger,
@@ -270,18 +278,20 @@ pub async fn submit_withdraw(
     }
 }
 
-/// What ONE `POST /v1/withdraw` attempt produced. A `409` is an ATTEMPT OUTCOME, not an error —
-/// which is exactly what keeps it out of [`is_retryable`](crate::circle::retry::is_retryable)'s reach
-/// and therefore out of the retry loop.
+/// What ONE `POST /v1/withdraw` attempt produced. A `409` is an ATTEMPT OUTCOME, not an error which
+/// is exactly what keeps it out of [`is_retryable`](crate::circle::retry::is_retryable)'s reach and
+/// therefore out of the retry loop.
 enum Attempt {
     Created(WithdrawSubmissionResponse),
     Conflict(WithdrawConflict),
 }
 
-/// One attempt: build the real request, execute it, apply the §10.8 status policy, decode.
+/// One attempt: build the real request, execute it, apply Circle's documented status policy,
+/// decode.
 ///
-/// Everything that is a property of the PEER's answer rather than of the moment — a malformed body, a
-/// cardinality mismatch, a `400`, an undocumented status — is an `Err` the retry loop will not retry.
+/// Everything that is a property of the PEER's answer rather than of the moment — a malformed body,
+/// a cardinality mismatch, a `400`, an undocumented status — is an `Err` the retry loop will not
+/// retry.
 async fn attempt_withdraw(
     circle: &CircleClient,
     request: &WithdrawRequest,
@@ -306,12 +316,13 @@ async fn attempt_withdraw(
 
 /// A `201`: bind each returned status to the burn it claims, then record.
 ///
-/// The binding is by `burnTxId`, not by array position. §10.8 says one element per submitted batch, and
-/// the cardinality is already enforced — but "the same COUNT" is not "the same burns", and pairing by
-/// index would attribute a withdrawal id to the wrong burn if the order ever differed. Since an
-/// intra-request duplicate is refused above, each burn matches at most one status, so the pairing is
-/// unambiguous. (Binding the submitted BATCH to `assemble_quorum`'s shape check, and the batch↔burn
-/// cardinality question underneath it, is W9's — this is the `burnTxId` half of it.)
+/// The binding is by `burnTxId`, not by array position. Circle documents one element per submitted
+/// batch, and the cardinality is already enforced — but "the same COUNT" is not "the same burns",
+/// and pairing by index would attribute a withdrawal id to the wrong burn if the order ever
+/// differed. Since an intra-request duplicate is refused above, each burn matches at most one
+/// status, so the pairing is unambiguous. (Binding the submitted BATCH to `assemble_quorum`'s shape
+/// check, and the batch↔burn cardinality question underneath it, belongs to the orchestration —
+/// this is the `burnTxId` half of it.)
 fn settle_created(
     ledger: &SubmitLedger,
     keys: &[BurnKey],
@@ -354,7 +365,7 @@ fn settle_created(
     Ok(SubmitOutcome::Submitted(statuses))
 }
 
-/// A `409` — §10.10, clause by clause.
+/// A `409` — Circle's documented conflict response, clause by clause.
 ///
 /// # A conflict names ONE burn, and may settle only that burn
 ///
@@ -362,13 +373,13 @@ fn settle_created(
 /// evidence about exactly one of the submitted burns, and the others are simply not spoken about:
 /// Circle refused the whole POST, and nothing here says what became of them.
 ///
-/// This function therefore resolves the conflict to a specific INDEX, applies the recovered outcome to
-/// that burn alone, and fails every other burn in the request closed. Applying the named burn's
+/// This function therefore resolves the conflict to a specific INDEX, applies the recovered outcome
+/// to that burn alone, and fails every other burn in the request closed. Applying the named burn's
 /// `finalized` to its neighbours would write a durable claim that Circle released them — with no
-/// evidence for them whatsoever — which both blocks them permanently and makes the per-burn record a
-/// lie. (The neighbours are blocked rather than freed because "Circle almost certainly did not create
-/// them" is not "Circle demonstrably did not create them". That costs liveness — an operator must
-/// clear them — and it is the trade this whole module makes.)
+/// evidence for them whatsoever — which both blocks them permanently and makes the per-burn record
+/// a lie. (The neighbours are blocked rather than freed because "Circle almost certainly did not
+/// create them" is not "Circle demonstrably did not create them". That costs liveness — an operator
+/// must clear them — and it is the trade this whole module makes.)
 async fn recover_conflict(
     circle: &CircleClient,
     ledger: &SubmitLedger,
@@ -432,8 +443,8 @@ async fn recover_conflict(
         });
     }
 
-    // "never report withdrawal success from a 409 alone" — and only `finalized` is terminal success
-    // (§10.10). `failed`, `expired` and every pending status leave the burn for an operator.
+    // "never report withdrawal success from a 409 alone" — and only `finalized` is terminal
+    // success. `failed`, `expired` and every pending status leave the burn for an operator.
     //
     // Applied to `keys[at]` ONLY: it is the single burn this evidence is about.
     if status.status() == WithdrawalStatusKind::Finalized {
@@ -453,8 +464,8 @@ async fn recover_conflict(
 
 /// Record a failed attempt, fail-closed.
 ///
-/// The ONE case that is re-claimable is a deterministic `400`: Circle rejected the request, so nothing
-/// was created and nothing can be double-released — the spec's "abort/fix-request" (§10.10). Every
+/// The ONE case that is re-claimable is a deterministic `400`: Circle rejected the request, so
+/// nothing was created and nothing can be double-released — the spec's "abort/fix-request". Every
 /// other failure (an exhausted `5xx` budget, a status-less transport failure, a `201` we could not
 /// read, an undocumented status) may have left a withdrawal in flight, so the burn is BLOCKED.
 fn settle_failure(
@@ -473,8 +484,8 @@ fn settle_failure(
 
 /// Block every burn, claiming NOTHING about any of them.
 ///
-/// The counterpart of [`block_binding_id_to`], and the default: a burn gets a `withdrawalId` only where
-/// Circle actually named one FOR IT.
+/// The counterpart of [`block_binding_id_to`], and the default: a burn gets a `withdrawalId` only
+/// where Circle actually named one FOR IT.
 fn mark_all_reconciliation(ledger: &SubmitLedger, keys: &[BurnKey]) -> Result<(), SubmitError> {
     for key in keys {
         ledger.record_reconciliation_required(key, None)?;
@@ -482,19 +493,19 @@ fn mark_all_reconciliation(ledger: &SubmitLedger, keys: &[BurnKey]) -> Result<()
     Ok(())
 }
 
-/// Block every burn, attaching `withdrawal_id` to `keys[at]` — the ONE burn the conflict named — and to
-/// no other.
+/// Block every burn, attaching `withdrawal_id` to `keys[at]` — the ONE burn the conflict named —
+/// and to no other.
 ///
 /// # Why the index is not a detail
 ///
 /// [`SubmissionRecord::withdrawal_id`](crate::idempotency::SubmissionRecord::withdrawal_id) is the
-/// handle an OPERATOR polls: it answers "this burn is blocked — what happened to it?". Copying burn A's
-/// id into burn B's record is therefore not untidiness, it is **durable false evidence**: whoever
-/// reconciles B would poll A's withdrawal, read A's outcome, and attribute it to B — a conclusion
-/// Circle never supported and this service manufactured.
+/// handle an OPERATOR polls: it answers "this burn is blocked — what happened to it?". Copying burn
+/// A's id into burn B's record is therefore not untidiness, it is **durable false evidence**:
+/// whoever reconciles B would poll A's withdrawal, read A's outcome, and attribute it to B — a
+/// conclusion Circle never supported and this service manufactured.
 ///
-/// A `409` binds one `withdrawalId` to one `burnTxId`. Blocking the neighbours is right (their state is
-/// unknown); telling a story about them is not. So they are blocked with `None`.
+/// A `409` binds one `withdrawalId` to one `burnTxId`. Blocking the neighbours is right (their
+/// state is unknown); telling a story about them is not. So they are blocked with `None`.
 fn block_binding_id_to(
     ledger: &SubmitLedger,
     keys: &[BurnKey],
@@ -517,14 +528,14 @@ fn block_others(ledger: &SubmitLedger, keys: &[BurnKey], at: usize) -> Result<()
 
 /// WHICH of the `burnTxId`s this request carried `echoed` names, if any.
 ///
-/// The index — not a yes/no — is what lets a conflict or a status bind to ONE burn, so evidence about
-/// burn A can never settle burn B. Since an intra-request duplicate is refused before anything is
-/// submitted, at most one burn can match, and the first is the only one.
+/// The index — not a yes/no — is what lets a conflict or a status bind to ONE burn, so evidence
+/// about burn A can never settle burn B. Since an intra-request duplicate is refused before
+/// anything is submitted, at most one burn can match, and the first is the only one.
 ///
 /// The comparison ignores ASCII case because hex is case-insensitive as an IDENTIFIER: `0xAB…` and
 /// `0xab…` name the same Miden transaction, and calling that a defect would push a perfectly
-/// recoverable conflict into reconciliation. Anything beyond case is a different value and is treated
-/// as one — which fails toward a blocked burn, never toward a second release.
+/// recoverable conflict into reconciliation. Anything beyond case is a different value and is
+/// treated as one — which fails toward a blocked burn, never toward a second release.
 fn position_of(burns: &[String], echoed: &str) -> Option<usize> {
     burns
         .iter()

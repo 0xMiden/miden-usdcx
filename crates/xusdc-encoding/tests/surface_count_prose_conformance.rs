@@ -1,4 +1,4 @@
-//! ANTI-DRIFT GUARD (round-6 finding #2): the audit-facing COUNT PROSE in the callable-surface
+//! ANTI-DRIFT GUARD: the audit-facing COUNT PROSE in the callable-surface
 //! conformance modules must match the EXECUTABLE surface, not a superseded value. These are
 //! security-reasoning tests; stale "17 / 62 / 12" prose next to a `[&str; 64]` constant makes a
 //! failure message lie about what the account actually exposes.
@@ -91,12 +91,10 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
         );
     }
 
-    // The SUPERSEDED count-phrases must be gone from EACH source (a stale token is a lie about the
-    // real surface). Each is a value the surface DID carry earlier: the pre-F4 era (17 xreserve
-    // roots, 62-root account surface, 12-note allowlist, 10 admin notes, 45 stock rows), the
-    // pre-Wave-1-S1 era (19 xreserve roots, 46 stock rows, 65-root account surface), and the
-    // pre-V16-NOW era (64-root account surface, 49 stock rows — before the ratified temporary
-    // growth).
+    // The SUPERSEDED count-phrases must be gone from EACH source (a stale token is a lie about
+    // the real surface). Each is a count the surface DID carry under an earlier composition
+    // (fewer xreserve roots, a different stock-row total, a smaller note allowlist), so any of
+    // them reappearing in prose means the text no longer describes the executable account.
     let superseded = [
         "64-root",
         "49 stock",

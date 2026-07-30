@@ -3,8 +3,9 @@
 //! [`ReqwestTransport`].
 //!
 //! These live in their OWN test file (not inside `transport.rs`), so the response-limit tests are a
-//! tests-only artifact and can be run RED against the unmodified transport before the implementation
-//! exists — the security fix is proven test-first, not bundled into the code under test.
+//! tests-only artifact and can be run RED against the unmodified transport before the
+//! implementation exists — the security fix is proven test-first, not bundled into the code under
+//! test.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -147,7 +148,7 @@ fn a_custom_ceiling_is_propagated_to_the_default_production_transport() {
     // `with_max_response_bytes` stops rebuilding the default transport (e.g. the `if
     // self.transport_is_default {` guard is mutated to `if false {`), the installed transport stays at
     // the DEFAULT ceiling and these assertions fail. This is the non-tautological oracle for the
-    // round-3 security fix.
+    // bounded-response security property.
     let default_client = CircleClient::new("https://circle.mock", AuthPosture::None).unwrap();
     assert_eq!(
         default_client.transport_max_response_bytes(),

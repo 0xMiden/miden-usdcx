@@ -1,8 +1,7 @@
-//! AccountId ↔ bytes32 family, frozen signatures per the shared-encoding spec
-//! (INV-ACCOUNTID-ENCODING; Rust-primary — no MASM leg in this slice). The bytes32 packaging
-//! is the R-B / Agglayer-mirroring layout (DEV-10 draft, human-selected 2026-06-15 — supersedes
-//! the prior left-aligned 15-byte/trailing-zero draft). Still `REQUIRES CIRCLE CONFIRMATION`
-//! (DEV-10) and `REQUIRES IMPLEMENTATION VALIDATION` — the layout stays an OPEN proposal to
+//! AccountId ↔ bytes32 family, frozen signatures per the shared-encoding spec (Rust-primary —
+//! there is no MASM leg). The bytes32 packaging is the right-aligned layout that mirrors the
+//! protocol's Agglayer embedded-account-id form. Still `REQUIRES CIRCLE CONFIRMATION`
+//! and `REQUIRES IMPLEMENTATION VALIDATION` — the layout stays an OPEN proposal to
 //! Circle, no approval.
 
 use miden_protocol::account::AccountId;
@@ -15,7 +14,7 @@ use super::error::EncodingError;
 /// NOT part of the bytes32 wire form.
 pub const ADDRESS_TYPE_ACCOUNT_ID: u8 = 232;
 
-/// Lossless AccountId → bytes32 packaging — R-B / Agglayer-mirroring (DEV-10 draft):
+/// Lossless AccountId → bytes32 packaging — right-aligned:
 /// `bytes[0..16] = 0x00` (leading zero pad), `bytes[16..24] = prefix` as u64 big-endian,
 /// `bytes[24..32] = suffix` as canonical u64 big-endian. Mirrors the protocol Agglayer
 /// `EthEmbeddedAccountId` form `0x00000000 || prefix(8) || suffix(8)`
@@ -28,7 +27,7 @@ pub fn account_id_to_bytes32(id: AccountId) -> [u8; 32] {
     out
 }
 
-/// Inverse (R-B): rejects a non-zero byte in the leading 16-byte pad region
+/// Inverse: rejects a non-zero byte in the leading 16-byte pad region
 /// (`AccountIdOutOfRange`); rejects a prefix/suffix that do not form a canonical
 /// AccountId — out-of-field felts or a failed `try_from_elements` (`NonCanonicalAccountId`).
 /// Round-trip lossless for valid ids.
@@ -120,11 +119,11 @@ mod tests {
         }
     }
 
-    /// INV-ACCOUNTID-ENCODING reject boundary, per pad byte: a `0x01` at EVERY index of the
+    /// Reject boundary of the fail-closed decode, per pad byte: a `0x01` at EVERY index of the
     /// leading 16-byte zero pad (not just byte 0, the canonical vector's shape) rejects with the
     /// EXACT `AccountIdOutOfRange`. Byte 15 is the boundary byte of the `b[..16]` sweep — a
-    /// weakened `b[..15]` pad check (an audit mutant) decodes a `b[15] != 0` wire form into a
-    /// lossy, non-round-tripping AccountId; the `b15` case kills that mutant.
+    /// weakened `b[..15]` pad check would decode a `b[15] != 0` wire form into a
+    /// lossy, non-round-tripping AccountId; the `b15` case catches that weakening.
     #[rstest]
     #[case::b0(0)]
     #[case::b1(1)]
@@ -161,7 +160,7 @@ mod tests {
 
     /// TV-AID-3 (constants/API shape): the address type discriminant is 232 and the API
     /// has no >32-byte / keccak fallback branch (input type is `[u8; 32]` by signature).
-    /// Layout labels: still `REQUIRES CIRCLE CONFIRMATION` (DEV-10) with no evidence of Circle
+    /// Layout labels: still `REQUIRES CIRCLE CONFIRMATION` with no evidence of Circle
     /// approval, and `REQUIRES IMPLEMENTATION VALIDATION`.
     #[test]
     fn tv_aid_3_address_type_and_no_fallback() {
@@ -174,10 +173,9 @@ mod tests {
         let _shape_check: fn(&[u8; 32]) -> Result<AccountId, EncodingError> = bytes32_to_account_id;
     }
 
-    /// IMPL-DEV-12 rider: the `AccountIdOutOfRange` Display message must describe the SHIPPED R-B
-    /// layout — the account id region is the 16 bytes `bytes[16..32]` (prefix u64 BE + suffix u64
-    /// BE) behind a 16-byte zero pad — not the superseded left-aligned draft's "15-byte region"
-    /// (see the message in `error.rs`).
+    /// The `AccountIdOutOfRange` Display message must describe the SHIPPED layout — the
+    /// account id region is the 16 bytes `bytes[16..32]` (prefix u64 BE + suffix u64
+    /// BE) behind a 16-byte zero pad (see the message in `error.rs`).
     #[test]
     fn account_id_out_of_range_message_names_16_byte_region() {
         assert_eq!(

@@ -1,18 +1,19 @@
 //! Absent ≠ present-and-null, and required means required.
 //!
-//! Two holes the round-2 types still had, both of them the same species of leniency — serde being
-//! helpful where the schema is not:
+//! Two holes of the same species of leniency — serde being helpful where the schema is not — that
+//! these types must not carry:
 //!
-//! * **`token` carried `#[serde(default)]`.** The OpenAPI marks it **required**. A body that simply
-//!   omitted it therefore had `"USDC"` *manufactured* for it. Today that guesses right (the enum has
-//!   one member); the day Circle adds a second, it guesses silently and wrongly, on the field that
-//!   says which asset is being released.
+//! * **`token` must not carry `#[serde(default)]`.** The OpenAPI marks it **required**. A body that
+//!   simply omitted it would have `"USDC"` *manufactured* for it. Today that would guess right (the
+//!   enum has one member); the day Circle adds a second, it guesses silently and wrongly, on the
+//!   field that says which asset is being released.
 //!
-//! * **`Option<T>` accepted an explicit `null`.** In the OpenAPI these properties are *optional*
-//!   (may be absent) but **not nullable** (may not be present-and-null) — the two are different
-//!   states, and serde's `Option<T>` collapses them. `{"salt": null}` was decoding as "no salt", so a
-//!   caller who set salt to null believing it meaningful got a Circle-generated random salt instead,
-//!   with no error anywhere. The wire types now refuse the null and accept only the omission.
+//! * **`Option<T>` must not accept an explicit `null`.** In the OpenAPI these properties are
+//!   *optional* (may be absent) but **not nullable** (may not be present-and-null) — the two are
+//!   different states, and serde's `Option<T>` collapses them. `{"salt": null}` decoding as "no
+//!   salt" would hand a caller who set salt to null believing it meaningful a Circle-generated
+//!   random salt instead, with no error anywhere. The wire types refuse the null and accept only
+//!   the omission.
 //!
 //! The asymmetry is worth stating plainly: **omitting** an optional field is legal and means "not
 //! set"; **sending null** for it is not a thing the schema describes, so it is refused rather than
@@ -233,7 +234,8 @@ fn an_explicit_null_inside_forwarding_options_is_refused_too(#[case] field: &str
 #[case::transaction_hash("transactionHash")]
 #[case::failure_reason("failureReason")]
 fn an_explicit_null_conditional_response_field_is_refused(#[case] field: &str) {
-    // §10.11: a malformed Circle response is REJECTED, not acted on. A `null` where a conditional
+    // Circle's documentation: a malformed Circle response is REJECTED, not acted on. A `null` where
+    // a conditional
     // field belongs is malformed — the schema says "absent, or a value of this type", never "null".
     //
     // The base fixture is a fully valid status, so the null is the sole defect: were this field to

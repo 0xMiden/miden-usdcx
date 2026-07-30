@@ -1,17 +1,17 @@
-//! **The atomic conditional re-stamp** (`touch_failed_timestamp`) — round-4 finding 2.
+//! **The atomic conditional re-stamp** (`touch_failed_timestamp`).
 //!
-//! Round 3 rotated the retry queue by calling `record_failure` unconditionally on a re-fetch failure,
-//! and discarded its `Result`. But `retryable()` is a NON-owning read that two drivers may observe, and
-//! the status machine permits `Pending → Failed` and `Submitted → Failed`. So if driver A re-fetch-
-//! failed a row that driver B had meanwhile CLAIMED (`Pending`) or SUBMITTED (`Submitted`), A's
-//! `record_failure` would clobber B's live state back to `Failed` — B could then not record its
-//! submission, and the durable log would re-advertise the nonce as retryable. And the discarded
-//! `Result` meant a failed re-stamp defeated fairness silently.
+//! Rotating the retry queue with an unconditional `record_failure` on a re-fetch failure — its
+//! `Result` discarded — would go wrong twice. `retryable()` is a NON-owning read that two drivers
+//! may observe, and the status machine permits `Pending → Failed` and `Submitted → Failed`. So if
+//! driver A re-fetch- failed a row that driver B had meanwhile CLAIMED (`Pending`) or SUBMITTED
+//! (`Submitted`), A's `record_failure` would clobber B's live state back to `Failed` — B could then
+//! not record its submission, and the durable log would re-advertise the nonce as retryable. And
+//! the discarded `Result` would let a failed re-stamp defeat fairness silently.
 //!
-//! `touch_failed_timestamp` fixes both: in ONE transaction it re-stamps the timestamp ONLY while the
-//! row is still `Failed`, leaves any other state untouched, and returns a `Result` the caller must
-//! handle. These tests drive it with a second, independent handle on the same file — the real race —
-//! and prove a store read failure propagates rather than being swallowed.
+//! `touch_failed_timestamp` avoids both: in ONE transaction it re-stamps the timestamp ONLY while
+//! the row is still `Failed`, leaves any other state untouched, and returns a `Result` the caller
+//! must handle. These tests drive it with a second, independent handle on the same file — the real
+//! race — and prove a store read failure propagates rather than being swallowed.
 
 mod idempotency_fixtures;
 
@@ -96,13 +96,14 @@ fn touching_an_unknown_nonce_reports_false() {
 // THE RACE — a second handle's live claim is not clobbered
 // ================================================================================================
 
-/// **Two handles on one file.** Handle B wins the retry claim on a `Failed` row (`Failed → Pending`);
-/// handle A — which read the same stale work list — then re-fetch-fails and touches the row. The touch
-/// must NOT clobber B's `Pending` claim back to `Failed`; B remains free to record its submission.
+/// **Two handles on one file.** Handle B wins the retry claim on a `Failed` row (`Failed →
+/// Pending`); handle A — which read the same stale work list — then re-fetch-fails and touches the
+/// row. The touch must NOT clobber B's `Pending` claim back to `Failed`; B remains free to record
+/// its submission.
 ///
-/// With the round-3 unconditional `record_failure`, A would drag the row to `Failed`, B's
-/// `record_submission` would then be an illegal `Failed → Submitted`, and the mint would be lost while
-/// the log re-advertised the nonce as retryable.
+/// With an unconditional `record_failure`, A would drag the row to `Failed`, B's
+/// `record_submission` would then be an illegal `Failed → Submitted`, and the mint would be lost
+/// while the log re-advertised the nonce as retryable.
 #[test]
 fn touch_does_not_overwrite_a_second_handles_live_claim() {
     let clock = ManualClock::at(1_000);
@@ -188,9 +189,9 @@ fn touch_does_not_overwrite_a_second_handles_submitted_row() {
 // PROPAGATION — a store read failure is not swallowed
 // ================================================================================================
 
-/// A touch whose read hits a CORRUPT row PROPAGATES the error rather than swallowing it (round 3
-/// discarded the `Result`). An unreadable row is corruption, and defaulting it to "not failed" — or to
-/// "re-stamp anyway" — would either strand or double-drive the deposit.
+/// A touch whose read hits a CORRUPT row PROPAGATES the error rather than swallowing it (a
+/// discarded `Result` would hide it). An unreadable row is corruption, and defaulting it to "not
+/// failed" — or to "re-stamp anyway" — would either strand or double-drive the deposit.
 #[test]
 fn touch_propagates_a_corrupt_row_error() {
     let clock = ManualClock::at(1_000);

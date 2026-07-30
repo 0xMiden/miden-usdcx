@@ -67,8 +67,8 @@ fn a_non_hex_transaction_id_is_refused_with_its_cause_preserved() {
     );
 }
 
-/// An odd number of hex characters is not a byte string at all — it is refused as malformed hex, not
-/// silently padded to a length that would then pass the 32-byte check.
+/// An odd number of hex characters is not a byte string at all — it is refused as malformed hex,
+/// not silently padded to a length that would then pass the 32-byte check.
 #[test]
 fn an_odd_length_transaction_id_is_refused_as_malformed_hex() {
     let odd = format!("0x{}", "a".repeat(63));

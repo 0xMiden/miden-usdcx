@@ -15,21 +15,22 @@
 //! (one shape silently decodes to nothing useful), which is why the by-hash decoder rejects a bare
 //! top-level object rather than accepting both shapes "to be safe".
 //!
-//! **Decoded ≠ trusted.** A [`AttestationObject`] is only what Circle *said*. [`ValidatedAttestation`]
-//! is the type that has passed §8.1 checks 2–3 — schema decode, `messageHash == keccak256(payload)`
-//! (RAW keccak; DC-2, INV-DEPOSIT-ATTESTATION-RAW-KECCAK), and the 65-byte `r‖s‖v` shape — and it is
-//! the only attestation type the rest of the relayer accepts. The type system therefore carries the
-//! validation order (§8.1): you cannot get bytes to build a note from without having gone through
-//! the binding check. What it does NOT carry is any grant of authority — the ECDSA verify and the
-//! attester-allowlist check are on-chain at D5d (§1.2). Validated means "worth spending a Miden
-//! transaction on", never "authorized to mint".
+//! **Decoded ≠ trusted.** A [`AttestationObject`] is only what Circle *said*.
+//! [`ValidatedAttestation`] is the type that has passed the schema-decode and digest-binding checks
+//! — schema decode, `messageHash == keccak256(payload)` (RAW keccak, not EIP-712), and the 65-byte
+//! `r‖s‖v` shape — and it is the only attestation type the rest of the relayer accepts. The type
+//! system therefore carries the validation order: you cannot get bytes to build a note from without
+//! having gone through the binding check. What it does NOT carry is any grant of authority — the
+//! ECDSA verify and the attester-allowlist check are on-chain in the faucet's attestation check.
+//! Validated means "worth spending a Miden transaction on", never "authorized to mint".
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::RelayerError;
 use crate::validate::envelope::{validate_attestation_envelope, verify_message_hash_bytes};
 
-/// `remoteDomain` has `minimum: 1` on the `?txHash=` response elements (`CIRCLE-API-SURFACE.md:51`).
+/// `remoteDomain` has `minimum: 1` on the `?txHash=` response elements
+/// (`CIRCLE-API-SURFACE.md:51`).
 const REMOTE_DOMAIN_MIN: u32 = 1;
 
 // RESPONSE SHAPES
@@ -41,11 +42,11 @@ const REMOTE_DOMAIN_MIN: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttestationObject {
-    /// `0x`-hex — the encoded DepositIntent (DC-1).
+    /// `0x`-hex — the encoded DepositIntent (the fixed 240-byte big-endian header plus `hookData`).
     payload: String,
-    /// `0x`-hex, 32 bytes — `keccak256(payload)` (DC-2).
+    /// `0x`-hex, 32 bytes — `keccak256(payload)` (raw keccak, not EIP-712).
     message_hash: String,
-    /// `0x`-hex, 65 bytes — the secp256k1 `r‖s‖v` attestation (DC-2).
+    /// `0x`-hex, 65 bytes — the raw secp256k1 `r‖s‖v` attestation signature.
     attestation: String,
 }
 
@@ -115,13 +116,14 @@ impl AttestationListResponse {
 // VALIDATED FORMS (what the rest of the relayer consumes)
 // ================================================================================================
 
-/// An attestation that has passed §8.1 checks 2–3: it decoded, its `messageHash` IS
-/// `keccak256(payload)` (raw keccak, over the full payload), and its attestation is exactly 65
-/// bytes.
+/// An attestation that has passed the schema-decode and digest-binding checks: it decoded, its
+/// `messageHash` IS `keccak256(payload)` (raw keccak, over the full payload), and its attestation
+/// is exactly 65 bytes.
 ///
 /// It carries the decoded bytes — the payload, the verified digest, the `r‖s‖v` — so no consumer
 /// re-decodes hex or re-derives the digest (one binding computation, one source of truth), and it
-/// keeps the originating wire [`AttestationObject`] so a log line can quote exactly what Circle sent.
+/// keeps the originating wire [`AttestationObject`] so a log line can quote exactly what Circle
+/// sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedAttestation {
     object: AttestationObject,
@@ -151,7 +153,7 @@ impl ValidatedAttestation {
         })
     }
 
-    /// The decoded DepositIntent payload — the exact bytes the on-chain D5a parse will see.
+    /// The decoded DepositIntent payload — the exact bytes the on-chain parse will see.
     pub fn payload(&self) -> &[u8] {
         &self.payload
     }
@@ -161,7 +163,8 @@ impl ValidatedAttestation {
         self.message_hash
     }
 
-    /// The 65-byte `r‖s‖v` attestation (shape-checked only — the ECDSA verify is on-chain, D5d).
+    /// The 65-byte `r‖s‖v` attestation. Only its shape is checked here; whether it actually
+    /// verifies is decided on-chain, by the faucet's attestation check.
     pub fn attestation(&self) -> [u8; 65] {
         self.attestation
     }
@@ -204,15 +207,17 @@ impl ValidatedAttestationByTxHash {
     }
 
     /// The source-chain-reported remote domain (≥ 1). NOT authoritative for the mint: the
-    /// authoritative `remoteDomain == self.domain` compare is on-chain at D5a, and the expected
-    /// Miden value is Q-DOM-1 (REQUIRES CIRCLE CONFIRMATION).
+    /// authoritative `remoteDomain == self.domain` compare is on-chain in the faucet's
+    /// deposit-intent parse, and which remote-domain id Circle assigns Miden is still OPEN
+    /// (REQUIRES CIRCLE CONFIRMATION).
     pub fn remote_domain(&self) -> u32 {
         self.remote_domain
     }
 }
 
-/// One page of the batch (`CMP-D4`) poll: its validated attestations. The cursors live in
-/// [`PageCursors`](super::pagination::PageCursors), parsed from the `Link` header, because that is where Circle puts them.
+/// One page of the batch poll: its validated attestations. The cursors live in
+/// [`PageCursors`](super::pagination::PageCursors), parsed from the `Link` header, because that is
+/// where Circle puts them.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AttestationPage {
     attestations: Vec<ValidatedAttestation>,
@@ -232,15 +237,16 @@ impl AttestationPage {
     }
 }
 
-// GET /v1/info (CMP-D1)
+// GET /v1/info
 // ================================================================================================
 
 /// `GET /v1/info` — the discovery response (`CIRCLE-API-SURFACE.md:30`).
 ///
 /// The relayer reads Miden's domain config and the xUSDC identifier from it. Both values are
-/// Circle-owned and OPEN — Q-DOM-1 (the Miden domain id) and DEV-10 (the AccountId↔bytes32
-/// encoding of the token identifier) — so the relayer DISCOVERS them here rather than assuming them,
-/// and the authoritative compare happens on-chain at D5a regardless.
+/// Circle-owned and OPEN — the Miden domain id is unassigned, and the AccountId↔bytes32 encoding of
+/// the token identifier is unconfirmed — so the relayer DISCOVERS them here rather than assuming
+/// them, and the authoritative compare happens on-chain in the faucet's deposit-intent parse
+/// regardless.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InfoResponse {
@@ -296,7 +302,7 @@ impl SourceDomain {
     }
 }
 
-/// A remote (mint-side) domain — Miden, once Circle assigns it one (Q-DOM-1, OPEN).
+/// A remote (mint-side) domain — Miden, once Circle assigns it one (still OPEN).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteDomain {
@@ -324,8 +330,8 @@ impl RemoteDomain {
     }
 
     /// The identifier Circle advertises for `remote_token` on this domain — the xUSDC id the mint's
-    /// `remoteToken` field must carry. Its encoding is DEV-10 (REQUIRES CIRCLE CONFIRMATION), so it
-    /// is carried as the opaque string Circle sends and compared, never re-derived.
+    /// `remoteToken` field must carry. Its encoding is still OPEN (REQUIRES CIRCLE CONFIRMATION),
+    /// so it is carried as the opaque string Circle sends and compared, never re-derived.
     pub fn token_identifier(&self, remote_token: &str) -> Option<&str> {
         self.tokens
             .iter()

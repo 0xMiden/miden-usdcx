@@ -1,5 +1,6 @@
-//! Exponential backoff under the rate ceilings, and the §8.4 obligations that ride on it: nothing
-//! fetched is ever silently dropped, and an operator hears about what matters — no more.
+//! Exponential backoff under the rate ceilings, and the no-silent-drops obligations that ride on
+//! it: nothing fetched is ever silently dropped, and an operator hears about what matters — no
+//! more.
 
 use std::future::Future;
 use std::time::Duration;
@@ -12,9 +13,9 @@ use crate::observability::{EventSink, RelayerEvent};
 /// Caps the exponential backoff shift, so a large `max_attempts` cannot overflow the delay.
 const MAX_BACKOFF_SHIFT: u32 = 20;
 
-/// The exponential-backoff policy: `max_attempts` attempts, waiting `base_delay_ms · 2^(n-1)` before
-/// attempt n+1, alerting once `alert_after_attempts` consecutive attempts have failed with a failure
-/// that warrants an alert (5xx / transport / deadline — a 404 does not; see
+/// The exponential-backoff policy: `max_attempts` attempts, waiting `base_delay_ms · 2^(n-1)`
+/// before attempt n+1, alerting once `alert_after_attempts` consecutive attempts have failed with a
+/// failure that warrants an alert (5xx / transport / deadline — a 404 does not; see
 /// `RelayerError::alerts_while_retrying`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetryPolicy {
@@ -82,9 +83,9 @@ impl RetryPolicy {
 /// reports carry.
 ///
 /// (The spec sketches `with_backoff(governor, max_attempts, op)`. Bundling the parameters is a
-/// deliberate deviation, reported per §14: the governor cannot rate-limit without knowing the HOST,
-/// and §8.4's "never silently drop / alert after a threshold" obligations cannot be met without a
-/// sink and an endpoint label. The retry SEMANTICS are unchanged.)
+/// deliberate deviation, reported as a deliberate deviation: the governor cannot rate-limit without
+/// knowing the HOST, and the never-silently-drop and alert-after-a-threshold obligations cannot be
+/// met without a sink and an endpoint label. The retry SEMANTICS are unchanged.)
 pub struct RetryContext<'a> {
     governor: &'a RateGovernor,
     host: &'a str,
@@ -112,13 +113,13 @@ impl<'a> RetryContext<'a> {
 }
 
 /// Runs `op` under the rate ceilings, retrying TRANSIENT failures with exponential backoff and
-/// surfacing everything (§8.4).
+/// surfacing everything.
 ///
 /// * A rate-limit permit is taken before EVERY attempt, retries included.
-/// * A permanent failure (400, a redirect, a decode error, a broken binding, an oversized body, a bad
-///   parameter) returns immediately — `Rejected` + `Alert`, no retry. Retrying it would re-issue an
-///   identical request that must fail identically, spending the rate budget the transient failures
-///   need.
+/// * A permanent failure (400, a redirect, a decode error, a broken binding, an oversized body, a
+///   bad parameter) returns immediately — `Rejected` + `Alert`, no retry. Retrying it would
+///   re-issue an identical request that must fail identically, spending the rate budget the
+///   transient failures need.
 /// * A transient failure (404, 429, 5xx, a transport error, a deadline) is logged `Pending` — so it
 ///   is never silently dropped — and retried; it alerts once `alert_after_attempts` consecutive
 ///   attempts have failed AND the failure is one that warrants an alert (a 404 does not: a

@@ -9,7 +9,7 @@
 //! derivation code, not routine logic. Regeneration is an explicit, reviewed act:
 //! `cargo run --bin gen_vectors`.
 //!
-//! DC-1 byte offsets used below: magic@0, version@4, amount@8, remoteDomain@40,
+//! Wire-format byte offsets used below: magic@0, version@4, amount@8, remoteDomain@40,
 //! remoteToken@44, remoteRecipient@76, localToken@108, localDepositor@140, maxFee@172,
 //! nonce@204, hookDataLen@236, hookData@240; header = 240 bytes = 60 u32-LE felts.
 
@@ -256,7 +256,8 @@ fn di_reject(
 // Independent generation (anti-circularity): the secp256k1 keypair + signature come from the
 // INDEPENDENT `k256` crate, the keccak digest from `sha3` — never a miden signer. The commitment
 // oracle is miden-crypto `PublicKey::to_commitment` (the canonical attester-allowlist keying
-// primitive D5d looks up), deserialized from the exact 33 compressed wire bytes. This binary
+// primitive the faucet's attestation verify looks up), deserialized from the exact 33 compressed
+// wire bytes. This binary
 // never calls the crate mirror (`pubkey_commitment`/`*_felts`) — derivation independence.
 
 /// Deterministic independent secp256k1 keypair (k256 + seeded StdRng).
@@ -283,7 +284,7 @@ fn att_keccak256(msg: &[u8]) -> [u8; 32] {
 /// 65-byte `r || s || v` signature of `digest` under `sk`, generated entirely by `k256`
 /// (`sign_prehash_recoverable`) — mirrors miden-crypto 0.25.1 `Signature` serialization
 /// (r‖s‖v, v = recovery id). RAW secp256k1 over the keccak digest: NO EIP-712 domain, no
-/// struct (INV-DEPOSIT-ATTESTATION-RAW-KECCAK); v is carried, unused on-chain.
+/// struct; v is carried, unused on-chain.
 fn att_sign65(sk: &SigningKey, digest: &[u8; 32]) -> [u8; 65] {
     let (sig, recid): (K256Signature, RecoveryId) = sk
         .sign_prehash_recoverable(digest)
@@ -296,8 +297,8 @@ fn att_sign65(sk: &SigningKey, digest: &[u8; 32]) -> [u8; 65] {
 
 /// The canonical commitment oracle: deserialize the exact 33 compressed wire bytes into the
 /// miden-crypto `PublicKey` and take `to_commitment()` = Poseidon2 over the 16 affine-coordinate
-/// pubkey felts (miden-crypto 0.28 `ecdsa_k256_keccak`, vm#3342 — the v16 supersession of the
-/// 9-felt compressed preimage).
+/// pubkey felts (miden-crypto 0.28
+/// `ecdsa_k256_keccak`).
 /// This is exactly what off-chain `set_attester` keys the `xReserveAttesters` allowlist by.
 fn att_commitment(pk33: &[u8; 33]) -> Word {
     PublicKey::read_from_bytes(pk33)
@@ -479,7 +480,8 @@ fn main() {
     let ids: Vec<miden_protocol::account::AccountId> = (1u8..=3)
         .map(|seed| AccountIdBuilder::new().build_with_seed([seed; 32]))
         .collect();
-    // R-B / Agglayer-mirroring packaging (DEV-10 draft, human-selected 2026-06-15):
+    // The right-aligned (Agglayer-mirroring) AccountId packaging — a human-selected draft that
+    // stays OPEN, pending Circle confirmation:
     // bytes[0..16]=0, bytes[16..24]=prefix u64 BE, bytes[24..32]=suffix u64 BE. Derived
     // inline from the protocol AccountId accessors (derivation independence — this binary
     // never calls the crate mirror's account_id_to_bytes32).
@@ -660,7 +662,7 @@ fn main() {
             &["TV-DI-7"],
             &spec.encode(),
             "HookDataTooLarge",
-            None, // Rust-only: the 1024-felt bound lives in the Rust packer (04:344)
+            None, // Rust-only: the 1024-felt bound lives in the Rust packer
             "DEV-6 (REQUIRES CIRCLE CONFIRMATION)",
             "hookDataLen = 3860 => 60 + 965 = 1025 felts > 1024 NoteStorage bound",
         ));
@@ -682,7 +684,7 @@ fn main() {
 
     // ---- att family (attestation surface) ----------------------------------------
     // Each vector: an independent k256 keypair; the digest is keccak256 of a FULL DepositIntent
-    // payload (raw keccak, NOT EIP-712, no struct — INV-DEPOSIT-ATTESTATION-RAW-KECCAK); the
+    // payload (raw keccak, NOT EIP-712, no struct); the
     // 65-byte r||s||v signature over that digest; and the canonical commitment from miden-crypto
     // `PublicKey::to_commitment`. The nonce is varied per seed so digests/sigs/pubkeys all differ.
     let mut att: Vec<Value> = Vec::new();
@@ -716,7 +718,7 @@ fn main() {
         }));
     }
 
-    // ---- bn family (DC-7 burn-note items) --------------------------------------
+    // ---- bn family (burn-note items) -------------------------------------------
     // items = amount(1) + destDomain(1) + destRecipient(8 u32-LE) + salt(8 u32-LE)
     // = 18 felts. Derived independently of the crate's encode: amount/destDomain are the canonical
     // felt of the integer; the two bytes32 fields use the same `packed` primitive as the b32 family.

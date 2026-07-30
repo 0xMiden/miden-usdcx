@@ -1,15 +1,15 @@
 //! The transport seam the Circle drivers will be built on.
 //!
-//! This slice makes **no Circle call**. What it fixes is the shape of the boundary: [`HttpTransport`]
-//! is the injectable seam, and it exists because the *interesting* behavior — the URL and query the
-//! listener builds, the auth header it injects, the status policy, the backoff, the decoders — lives
-//! on both sides of the socket, and only the socket itself needs a network.
+//! This slice makes **no Circle call**. What it fixes is the shape of the boundary:
+//! [`HttpTransport`] is the injectable seam, and it exists because the *interesting* behavior — the
+//! URL and query the listener builds, the auth header it injects, the status policy, the backoff,
+//! the decoders — lives on both sides of the socket, and only the socket itself needs a network.
 //!
-//! That matters concretely here. The audit/CI sandbox denies `bind(127.0.0.1:0)` outright (EPERM), so
-//! a loopback-server mock cannot be part of a gate that has to be green in every environment. With
-//! the seam, the withdrawal drivers (W6) can be exercised end to end against a schema-exact mock
-//! Circle server routed by `axum` and driven IN PROCESS through `tower`'s `ServiceExt::oneshot` — the
-//! pattern the deposit relayer already proved — while still building a real `reqwest::Request`.
+//! That matters concretely here. The audit/CI sandbox denies `bind(127.0.0.1:0)` outright (EPERM),
+//! so a loopback-server mock cannot be part of a gate that has to be green in every environment.
+//! With the seam, the withdrawal drivers can be exercised end to end against a schema-exact mock
+//! Circle server routed by `axum` and driven IN PROCESS through `tower`'s `ServiceExt::oneshot` —
+//! the pattern the deposit relayer already proved — while still building a real `reqwest::Request`.
 //!
 //! The seam is defined now, with the crate scaffold, so the drivers are written against it from the
 //! first line rather than being retrofitted onto a client that had already grown a hard-wired
@@ -42,9 +42,9 @@ impl RawResponse {
         }
     }
 
-    /// The HTTP status — the contract the error fixtures are keyed on (400 / 409 / 500 / 404). It is
-    /// deliberately NOT interpreted here: a 409 in particular is a duplicate *conflict* requiring
-    /// recovery, never a success (§10.10), and that judgement belongs to the status policy.
+    /// The HTTP status — the contract the error fixtures are keyed on (400 / 409 / 500 / 404). It
+    /// is deliberately NOT interpreted here: a 409 in particular is a duplicate *conflict*
+    /// requiring recovery, never a success, and that judgement belongs to the status policy.
     pub fn status(&self) -> u16 {
         self.status
     }
@@ -63,13 +63,13 @@ impl RawResponse {
 }
 
 /// What executes a built request. The production implementation (reqwest over the network) and the
-/// in-process mock Circle server both land with the driver slice (W6); this is the trait they will
+/// in-process mock Circle server both land with the driver slice; this is the trait they will
 /// both satisfy.
 ///
 /// An error returned here is a request that produced NO HTTP status — a connection failure, a
-/// timeout, a body that could not be read — and must be [`ListenerError::Transport`], which the retry
-/// policy treats as transient. An oversized body is [`ListenerError::ResponseTooLarge`], which it
-/// does not.
+/// timeout, a body that could not be read — and must be [`ListenerError::Transport`], which the
+/// retry policy treats as transient. An oversized body is [`ListenerError::ResponseTooLarge`],
+/// which it does not.
 pub trait HttpTransport: fmt::Debug + Send + Sync {
     fn execute<'a>(
         &'a self,
@@ -83,21 +83,22 @@ pub trait HttpTransport: fmt::Debug + Send + Sync {
     fn as_any(&self) -> &dyn core::any::Any;
 }
 
-/// The production transport: `reqwest` over the network. The ONLY place this crate touches a socket —
-/// and this slice never does, because every gate runs against the in-process mock. It exists so
+/// The production transport: `reqwest` over the network. The ONLY place this crate touches a socket
+/// — and this slice never does, because every gate runs against the in-process mock. It exists so
 /// [`CircleClient`](crate::circle::client::CircleClient) has a real default; the contract tests
 /// install the mock in its place.
 ///
 /// It **follows no redirect** (`redirect::Policy::none()`) and backstops that with an explicit
 /// final-URL check: following a 3xx would re-issue the request — carrying the credential — at an
-/// origin the peer chose, and since `Q-API-AUTH` is OPEN the credential may ride under any header
+/// origin the peer chose, and since Circle documents no auth scheme the credential may ride under
+/// any header
 /// name, which reqwest's cross-origin strip list would not cover. Circle's documented API redirects
 /// nowhere, so a 3xx is simply refused.
 #[derive(Debug, Clone)]
 pub struct ReqwestTransport {
     http: reqwest::Client,
-    /// The response-size ceiling this transport enforces WHILE READING — before an oversized external
-    /// body can be buffered whole.
+    /// The response-size ceiling this transport enforces WHILE READING — before an oversized
+    /// external body can be buffered whole.
     max_response_bytes: usize,
 }
 
@@ -156,9 +157,10 @@ impl HttpTransport for ReqwestTransport {
     }
 }
 
-/// Enforces the response-size ceiling — before the read (on the advertised length) and during it (per
-/// chunk). Both halves matter: the `Content-Length` check refuses an oversized body without allocating
-/// for it, and the per-chunk check catches the body that lied about its length or never declared one.
+/// Enforces the response-size ceiling — before the read (on the advertised length) and during it
+/// (per chunk). Both halves matter: the `Content-Length` check refuses an oversized body without
+/// allocating for it, and the per-chunk check catches the body that lied about its length or never
+/// declared one.
 #[derive(Debug, Clone, Copy)]
 pub struct BodyLimit {
     max: usize,
@@ -202,8 +204,9 @@ impl BodyLimit {
     }
 }
 
-/// A body arriving in pieces — the shape both a `reqwest::Response` and a test's scripted body take.
-/// The seam is what makes the streaming ceiling TESTABLE without a socket (the sandbox denies `bind`).
+/// A body arriving in pieces — the shape both a `reqwest::Response` and a test's scripted body
+/// take. The seam is what makes the streaming ceiling TESTABLE without a socket (the sandbox denies
+/// `bind`).
 pub trait ChunkSource: Send {
     /// What `Content-Length` claims, if anything. Possibly a lie; possibly absent.
     fn advertised_len(&self) -> Option<u64>;
@@ -215,13 +218,13 @@ pub trait ChunkSource: Send {
 }
 
 /// Collects a body under the size ceiling — **stopping the read** the moment it is crossed, so the
-/// buffer never grows past the ceiling: the accounting happens BEFORE the chunk is appended, and the
-/// chunk that crosses the line is dropped, not kept.
+/// buffer never grows past the ceiling: the accounting happens BEFORE the chunk is appended, and
+/// the chunk that crosses the line is dropped, not kept.
 ///
 /// # Errors
 /// * [`ListenerError::ResponseTooLarge`] — the body exceeds `max_bytes`. The rest is never read.
-/// * [`ListenerError::Transport`] — the body could not be read to its end (a truncated body is never
-///   returned as a success — half a JSON document decodes into nonsense).
+/// * [`ListenerError::Transport`] — the body could not be read to its end (a truncated body is
+///   never returned as a success — half a JSON document decodes into nonsense).
 pub async fn collect_bounded(
     source: &mut dyn ChunkSource,
     max_bytes: usize,
@@ -239,8 +242,8 @@ pub async fn collect_bounded(
     Ok(body)
 }
 
-/// The adapter from `reqwest::Response` to [`ChunkSource`]. Plumbing only — every decision about what
-/// to accept lives in [`collect_bounded`].
+/// The adapter from `reqwest::Response` to [`ChunkSource`]. Plumbing only — every decision about
+/// what to accept lives in [`collect_bounded`].
 struct ReqwestChunks {
     response: reqwest::Response,
 }

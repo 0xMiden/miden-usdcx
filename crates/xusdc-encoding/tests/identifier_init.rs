@@ -1,21 +1,30 @@
-//! `identifier_init` suite — the minimized, owner-gated, init-once identifier seeding
-//! (R-ADMIN-4 under DEC-4). REPLACES the deleted `domain_config.rs` (the four-field
-//! `domain_init` suite): since the Wave-1 S1 recomposition the identifier is the ONE
-//! domain-config field written post-build (it is a provable fixpoint of the account id), while
-//! `domain` / `source_domain` / `xreserve_contract` are BUILD-SEEDED by
-//! `XReserveStablecoinBuilder::with_domain_config` — so the former scalar/limb u32 guards, the
-//! 4-field write integrity, and the consumption-seam legs are gone with the surface they tested.
+//! Seeding the faucet's identifier: an owner-only write that can happen exactly once.
 //!
-//! What SURVIVES (this file): the owner-SPECIFIC auth gate (a DOM role holder and a stranger
-//! both trap the EXACT ERR_SENDER_NOT_OWNER), the identifier-sentinel init-once (a re-init traps
-//! the EXACT ERR_XRESERVE_IDENTIFIER_REINIT and changes nothing), the empty-identifier guard
-//! (ERR_XRESERVE_IDENTIFIER_EMPTY — an EMPTY identifier could never arm the sentinel), the
-//! round-3 OWN-ID BINDING (the proc derives `bytes32_to_key(account_id_to_bytes32(get_id()))`
-//! ON-CHAIN and traps the EXACT ERR_XRESERVE_IDENTIFIER_MISMATCH on any foreign value — a
-//! front-run init can no longer seed a foreign identity), the not-pause-gated asymmetry
-//! (deploy-time config is orthogonal to the operational pause), and the untouched-build-seed
-//! read-backs (the init writes ONLY the identifier slot; the production build-seed itself is
-//! pinned pre-init).
+//! Of the faucet's five domain-config words, four — the domain, the source domain, and the two
+//! halves of the xReserve contract address — are seeded by the builder when the account is
+//! composed. Only the identifier is written after deployment, because it must be derived from the
+//! account's own id, which is not known until the account exists. `init_identifier` is the sole
+//! writer of that slot.
+//!
+//! Everything about the procedure is defensive, because the identifier is what the mint path
+//! compares every incoming deposit's `remoteToken` against. A wrong identifier would either brick
+//! minting or, worse, accept deposits meant for a different faucet.
+//!
+//! - It is gated on the OWNER specifically — a role holder is refused just like a stranger.
+//! - It refuses the empty Word. An empty identifier would leave the slot indistinguishable from
+//!   uninitialized, so the init-once check could never fire and the deposit compare would be
+//!   against nothing.
+//! - It is init-once. Once the slot is non-empty, a second write traps and changes nothing, so an
+//!   identifier cannot be re-pointed after deposits have started flowing.
+//! - It binds to the faucet's OWN id: the procedure recomputes the expected key on-chain from
+//!   `get_id()` and rejects any other value. This is what makes the init safe to leave open on a
+//!   fresh account — even if someone else's transaction lands first, they can only write the
+//!   identifier the faucet was always going to have.
+//! - It is deliberately NOT pause-gated: deployment-time configuration is orthogonal to the
+//!   operational halt.
+//!
+//! Each write test also reads back the four build-seeded words to prove the init touched only the
+//! identifier slot.
 
 mod support;
 
@@ -46,9 +55,12 @@ fn stranger() -> AccountId {
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
-/// The faucet's OWN-id fixpoint key — since the round-3 on-chain binding the ONLY value
-/// `init_identifier` accepts (the proc derives `bytes32_to_key(account_id_to_bytes32(get_id()))`
-/// itself and asserts the note-committed word equals it before writing).
+/// The identifier key derived from the faucet's own account id — the only value `init_identifier`
+/// will accept.
+///
+/// The procedure recomputes this on-chain from `get_id()` and requires the value committed in the
+/// note to match before it writes anything, so this is computed here the same way rather than
+/// pinned as a literal.
 fn own_identifier(gm: &GuardedMint) -> Word {
     XReserveIdentifierInitNote::identifier_for(gm.harness.account_id)
 }
@@ -59,10 +71,11 @@ fn foreign_identifier() -> Word {
     Word::from([11u32, 12, 13, 14])
 }
 
-/// The exact pre-init domain-config state the production fixture ships with (DEC-4): the three
-/// build-seeded fields (`with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN,
-/// test_xreserve_contract())` — xrc as the packed 8x u32-LE hi/lo halves) plus the EMPTY
-/// identifier the init note is the sole writer of.
+/// The domain-config state a freshly built faucet has before any init runs: the three fields the
+/// builder seeds (domain, source domain, and the xReserve contract address packed into two words of
+/// u32 limbs) plus an empty identifier slot.
+///
+/// Tests compare against this to prove a rejected init wrote nothing at all.
 fn pre_init_config() -> [Word; 5] {
     let xrc = bytes32_to_packed_felts(&test_xreserve_contract());
     [
@@ -87,16 +100,16 @@ const NOOP_DRIVER_SRC: &str = "#! No-op driver placeholder (never invoked by thi
                                \x20\x20\x20\x20push.0 drop\n\
                                end\n";
 
-/// The PRODUCTION-composed faucet (attestation mint policy active; Ownable2Step owner = id(1);
-/// DOM roles seeded) with the domain config BUILD-SEEDED and the identifier slot EMPTY — so
-/// `identifier_init` is the sole writer and the init-once sentinel reads EMPTY pre-init.
+/// A production-composed faucet in exactly the state a real deployment is in before its first
+/// init: the attestation mint policy active, ownership and roles seeded, the domain config
+/// build-seeded, and the identifier slot still empty.
 fn uninit_identifier_faucet() -> Result<GuardedMint> {
     setup_guarded_mint_account(
         GuardSelection::ProductionAttestation,
         MAX_SUPPLY,
         0,
         Word::from([TEST_DOMAIN, 0, 0, 0]),
-        Word::empty(), // the identifier ships EMPTY (note-seeded, DEC-4)
+        Word::empty(), // the identifier ships empty — the init note is its only writer
         None,
         None,
         NOOP_DRIVER_SRC,
@@ -114,7 +127,7 @@ fn note_rng(seed: u64) -> RandomCoin {
     ]))
 }
 
-// R2-F3 — the production factory BINDS the identifier to the target faucet (the own-id fixpoint)
+// THE FACTORY BINDS THE IDENTIFIER TO ITS TARGET FAUCET — the note can only carry that faucet's own key
 // ================================================================================================
 
 /// The production `XReserveIdentifierInitNote::create` DERIVES the seeded identifier from the
@@ -182,7 +195,7 @@ fn probe_identifier_init_exports() -> Result<()> {
     Ok(())
 }
 
-// THE PRODUCTION BUILD-SEED — the pre-init state itself (DEC-4's build-time half)
+// THE BUILD SEED ITSELF — the four config words the builder writes, pinned before any init runs
 // ================================================================================================
 
 /// BEFORE any init, the five config words read back as the production build-seed: domain
@@ -232,14 +245,16 @@ async fn identifier_init_owner_writes_the_own_id_key() -> Result<()> {
     Ok(())
 }
 
-// OWN-ID BINDING (round-3 hardening) — a foreign identifier value is rejected AT INIT
+// OWN-ID BINDING — the procedure will only write the identifier derived from its own account id
 // ================================================================================================
 
-/// An owner-sent init whose note-committed identifier is NOT the faucet's own-id key traps the
-/// EXACT ERR_XRESERVE_IDENTIFIER_MISMATCH and writes nothing: `init_identifier` derives
-/// `bytes32_to_key(account_id_to_bytes32(get_id()))` ON-CHAIN and enforces the committed value
-/// equals it, so a front-run init on a fresh keyless faucet cannot seed a foreign identity
-/// (the deploy-time griefing vector the round-3 audit named).
+/// An init carrying any identifier other than the faucet's own traps and writes nothing.
+///
+/// Even sent by the owner, a foreign value is refused: the procedure derives the expected key
+/// on-chain from its own account id and requires the note's committed word to equal it. That
+/// closes the deploy-time griefing window — a freshly deployed faucet's init is open to whoever
+/// gets there first, but the only thing anyone can write is the identifier the faucet was always
+/// going to have, so a front-run cannot bind it to a foreign identity.
 #[tokio::test]
 async fn identifier_init_foreign_identifier_rejects() -> Result<()> {
     let gm = uninit_identifier_faucet()?;
@@ -265,7 +280,7 @@ async fn identifier_init_foreign_identifier_rejects() -> Result<()> {
     Ok(())
 }
 
-// INIT-ONCE (R-ADMIN-4) — a second write traps the EXACT ERR_XRESERVE_IDENTIFIER_REINIT
+// INIT-ONCE — once the identifier is set, a second write traps and changes nothing
 // ================================================================================================
 
 /// First `identifier_init` succeeds; a SECOND — even from the owner, with a different value —
@@ -313,10 +328,12 @@ async fn identifier_init_reinit_traps_and_leaves_config_unchanged() -> Result<()
 // EMPTY-IDENTIFIER GUARD — an EMPTY input could never arm the sentinel, so it traps
 // ================================================================================================
 
-/// `identifier_init` with `identifier = EMPTY_WORD` traps the EXACT
-/// ERR_XRESERVE_IDENTIFIER_EMPTY and writes NOTHING: an EMPTY identifier would leave the
-/// init-once sentinel unarmed (silently re-initializable, R-ADMIN-4 broken) AND D5a would
-/// compare every intent's identifier against EMPTY.
+/// Initializing with the empty Word traps and writes nothing.
+///
+/// The empty Word is what an uninitialized slot already reads as, so writing it would leave the
+/// slot re-initializable forever — the init-once check has no other way to tell "set" from "not
+/// set". It would also leave every incoming deposit's `remoteToken` being compared against
+/// nothing. Rejecting it outright removes both problems.
 #[tokio::test]
 async fn identifier_init_empty_identifier_traps() -> Result<()> {
     let gm = uninit_identifier_faucet()?;

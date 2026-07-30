@@ -1,27 +1,28 @@
-//! **The documented Circle rate ceilings — 5 QPS/IP, 35 QPS global** (§10.12,
+//! **The documented Circle rate ceilings — 5 QPS/IP, 35 QPS global** (Circle documents:
 //! `CIRCLE-API-SURFACE.md:18`, tagged "at NDA writing").
 //!
-//! These were part of the retry suite while the only governed thing was a retry. They are not a retry
-//! concern: the ceilings are Circle's limit on **every request this process makes**, and the withdrawal
-//! flow makes three kinds — the `prepare` POST, the `withdraw` POST (and its retries), and the
-//! `GET /v1/withdrawal/{id}` polls that a `409` recovery runs. So they live here, over the whole flow.
+//! These were part of the retry suite while the only governed thing was a retry. They are not a
+//! retry concern: the ceilings are Circle's limit on **every request this process makes**, and the
+//! withdrawal flow makes three kinds — the `prepare` POST, the `withdraw` POST (and its retries),
+//! and the `GET /v1/withdrawal/{id}` polls that a `409` recovery runs. So they live here, over the
+//! whole flow.
 //!
 //! # Coverage is the property, and a stopwatch cannot see it
 //!
-//! It is tempting to test a ceiling only by timing: make N requests, assert it took a window to roll.
-//! That test passes for a governor that never saw half the requests — because an UNGOVERNED request
-//! costs no time, and the ones that are governed still roll the window on schedule. The hole is
-//! invisible exactly where it matters.
+//! It is tempting to test a ceiling only by timing: make N requests, assert it took a window to
+//! roll. That test passes for a governor that never saw half the requests — because an UNGOVERNED
+//! request costs no time, and the ones that are governed still roll the window on schedule. The
+//! hole is invisible exactly where it matters.
 //!
-//! So the oracle here is [`RateGovernor::granted`]: the count of permits actually taken. "Every request
-//! took a permit" is then a deterministic equality, not an inference from a duration — and it catches
-//! both an ungoverned request (too few) and a double-counted one (too many, which silently halves the
-//! real ceiling). The timing assertions stay as the complementary half: they prove a granted permit
-//! actually *waits*.
+//! So the oracle here is [`RateGovernor::granted`]: the count of permits actually taken. "Every
+//! request took a permit" is then a deterministic equality, not an inference from a duration — and
+//! it catches both an ungoverned request (too few) and a double-counted one (too many, which
+//! silently halves the real ceiling). The timing assertions stay as the complementary half: they
+//! prove a granted permit actually *waits*.
 //!
-//! A recovery poll loop is the case that motivates all this. A `409` can fan out into many `GET`s per
-//! conflict, and concurrent conflicts start independent loops — the single easiest way for this service
-//! to exceed the ceilings and get the partner's IP throttled by Circle.
+//! A recovery poll loop is the case that motivates all this. A `409` can fan out into many `GET`s
+//! per conflict, and concurrent conflicts start independent loops — the single easiest way for this
+//! service to exceed the ceilings and get the partner's IP throttled by Circle.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -126,10 +127,10 @@ fn a_zero_ceiling_is_clamped_so_a_window_can_never_fail_to_open() {
 
 /// **A `409` recovery's polls take permits.**
 ///
-/// This is the case a POST-only governor misses entirely. One conflict fans out into a `GET` per poll,
-/// and concurrent conflicts run independent loops — so recovery is the easiest way for this service to
-/// blow through 5 QPS/IP and get throttled, precisely while it is trying to work out whether real money
-/// has already moved.
+/// This is the case a POST-only governor misses entirely. One conflict fans out into a `GET` per
+/// poll, and concurrent conflicts run independent loops — so recovery is the easiest way for this
+/// service to blow through 5 QPS/IP and get throttled, precisely while it is trying to work out
+/// whether real money has already moved.
 #[tokio::test]
 async fn a_409_recovery_poll_takes_a_rate_permit_for_every_get() {
     let governor = Arc::new(RateGovernor::new(10_000, 10_000)); // non-binding: COUNT, don't time
@@ -165,8 +166,8 @@ async fn a_409_recovery_poll_takes_a_rate_permit_for_every_get() {
     );
 }
 
-/// The same property under a BINDING ceiling: the polls must actually wait their turn, not merely be
-/// counted.
+/// The same property under a BINDING ceiling: the polls must actually wait their turn, not merely
+/// be counted.
 #[tokio::test]
 async fn a_409_recovery_poll_waits_for_the_ceiling() {
     let governor = Arc::new(RateGovernor::new(2, 35));
@@ -258,8 +259,8 @@ async fn every_request_the_withdrawal_flow_makes_takes_exactly_one_permit() {
 /// **Exactly one permit per attempt — not two.**
 ///
 /// Double-acquiring is the mirror-image bug of missing the governor, and it is quieter: the service
-/// still "respects" the ceiling, it just silently runs at half the documented rate forever. It becomes
-/// possible the moment the permit lives at more than one layer, so it is pinned here.
+/// still "respects" the ceiling, it just silently runs at half the documented rate forever. It
+/// becomes possible the moment the permit lives at more than one layer, so it is pinned here.
 #[tokio::test]
 async fn a_retried_attempt_takes_exactly_one_permit_per_attempt() {
     let governor = Arc::new(RateGovernor::new(10_000, 10_000));
@@ -277,8 +278,8 @@ async fn a_retried_attempt_takes_exactly_one_permit_per_attempt() {
     );
 }
 
-/// The retry path takes a permit for EVERY attempt, retries included: a retry storm that ignored the
-/// ceiling is the fastest way to get the partner's IP throttled.
+/// The retry path takes a permit for EVERY attempt, retries included: a retry storm that ignored
+/// the ceiling is the fastest way to get the partner's IP throttled.
 #[tokio::test]
 async fn the_submit_retries_take_a_rate_permit_for_every_attempt() {
     let governor = Arc::new(RateGovernor::new(2, 35));
@@ -299,8 +300,8 @@ async fn the_submit_retries_take_a_rate_permit_for_every_attempt() {
     );
 }
 
-/// One governor shared by two clients is what makes the GLOBAL ceiling global. A per-client governor
-/// would silently multiply the 35 QPS budget by the number of clients in the process.
+/// One governor shared by two clients is what makes the GLOBAL ceiling global. A per-client
+/// governor would silently multiply the 35 QPS budget by the number of clients in the process.
 #[tokio::test]
 async fn clients_sharing_a_governor_share_one_budget() {
     let governor = Arc::new(RateGovernor::new(10_000, 10_000));

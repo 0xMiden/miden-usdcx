@@ -1,28 +1,29 @@
-//! `tests/fixtures/mod.rs` — the **partner-held attestation test vector** (DC-2,
-//! INV-DEPOSIT-ATTESTATION-RAW-KECCAK). The single, deterministic source of attestation test data
+//! `tests/fixtures/mod.rs` — the **partner-held attestation test vector** (the raw-keccak
+//! attestation-envelope contract). The single, deterministic source of attestation test data
 //! for the relayer's slices: the envelope suite here, and the mint-note-builder / idempotency /
 //! local-node slices that follow (they reuse [`PartnerAttester`] and [`AttestationVector`] rather
 //! than minting a second, divergent key).
 //!
 //! **What it is.** A deterministic secp256k1 keypair (seeded `StdRng`, so it is byte-identical on
-//! every machine and every run) that SIGNS `keccak256(DepositIntent payload)` and yields the 65-byte
-//! `r‖s‖v` attestation, the 33-byte compressed pubkey, and the Poseidon2 pubkey commitment — the
-//! key the on-chain `xReserveAttesters` allowlist is keyed by (DC-3), which the later local-node
+//! every machine and every run) that SIGNS `keccak256(DepositIntent payload)` and yields the
+//! 65-byte `r‖s‖v` attestation, the 33-byte compressed pubkey, and the Poseidon2 pubkey commitment
+//! — the key the on-chain `xReserveAttesters` allowlist is keyed by, which the later local-node
 //! rows seed via `set_attester`.
 //!
 //! **What it is NOT.** Not a Miden fake and not a mock: the signature is a real secp256k1 signature
 //! over a real keccak digest of a real canonical DepositIntent payload, produced by `k256`/`sha3`
-//! exactly as unit-04's own D5d in-test vectors and the `gen_vectors` `att_*` helpers produce
-//! theirs (same `sign_prehash_recoverable` → `r‖s‖v`, `v` = recovery id, carried and unused
-//! on-chain). It stands in only for CIRCLE — the party that holds the real attester key.
+//! exactly as the shared encoding crate's own in-test attestation vectors and the `gen_vectors`
+//! `att_*` helpers produce theirs (same `sign_prehash_recoverable` → `r‖s‖v`, `v` = recovery id,
+//! carried and unused on-chain). It stands in only for CIRCLE — the party that holds the real
+//! attester key.
 //!
-//! **Ownership.** The Poseidon2 commitment is NOT re-derived here: it is [`pubkey_commitment`],
-//! unit-04's owned allowlist-keying primitive (single-owner rule), the same procedure the faucet's
-//! D5d verify recomputes on-chain. Likewise the payload is the canonical DC-1 vector from the ONE
-//! golden artifact, never a hand-rolled byte blob.
+//! **Ownership.** The Poseidon2 commitment is NOT re-derived here: it is [`pubkey_commitment`], the
+//! shared encoding crate's owned allowlist-keying primitive (single-owner rule), the same procedure
+//! the faucet's on-chain attestation check recomputes on-chain. Likewise the payload is the
+//! canonical DepositIntent vector from the ONE golden artifact, never a hand-rolled byte blob.
 //!
 //! **Signing only.** `k256` appears in this crate's dev-dependencies to SIGN. The relayer never
-//! verifies an ECDSA signature off-chain — that is on-chain and faucet-owned (R-MINT-13/14).
+//! verifies an ECDSA signature off-chain — that is on-chain and faucet-owned.
 
 #![allow(dead_code)] // a shared fixture: each integration test uses the subset it needs.
 
@@ -49,14 +50,14 @@ pub const FOREIGN_KEY_SEED: u64 = 0x464f_5245_4947_4e00; // "FOREIGN\0"
 /// The partner key's 33-byte compressed SEC1 pubkey, PINNED. This is a determinism pin, not a
 /// correctness oracle: it fails the moment the seed, the curve, or the key-derivation path changes,
 /// so every later slice (and the local-node allowlist it seeds) is guaranteed the same attester.
-/// Correctness of the commitment derived from it is anchored by unit-04's `pubkey_commitment`
-/// (pinned == miden-crypto `PublicKey::to_commitment` by TV-ATT-2).
+/// Correctness of the commitment derived from it is anchored by the shared encoding crate's
+/// `pubkey_commitment` (pinned == miden-crypto `PublicKey::to_commitment` by TV-ATT-2).
 pub const PARTNER_PUBKEY_HEX: &str =
     "03a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3f";
 
-/// The canonical DC-1 payload the standard [`test_vector`] is built over: the golden artifact's
-/// `di-pos-hookdata` vector (a full 240-byte header + hookData). Taken from the ONE artifact that
-/// drives unit-04's MASM and Rust tests — never a hand-rolled blob.
+/// The canonical DepositIntent payload the standard [`test_vector`] is built over: the golden
+/// artifact's `di-pos-hookdata` vector (a full 240-byte header + hookData). Taken from the ONE
+/// artifact that drives the shared encoding crate's MASM and Rust tests — never a hand-rolled blob.
 pub const TEST_VECTOR_PAYLOAD_ID: &str = "di-pos-hookdata";
 
 /// [`test_vector`]'s `messageHash` — `keccak256` of the canonical payload, PINNED.
@@ -73,12 +74,12 @@ pub const TEST_VECTOR_ATTESTATION_HEX: &str = concat!(
     "00",                                                               // v (recovery id)
 );
 
-/// The canonical DC-1 payload with EMPTY hookData — the second shape (240 bytes exactly), for
-/// slices that need a boundary-length payload.
+/// The canonical DepositIntent payload with EMPTY hookData — the second shape (240 bytes exactly),
+/// for slices that need a boundary-length payload.
 pub const TEST_VECTOR_PAYLOAD_ID_EMPTY_HOOKDATA: &str = "di-pos-empty-hookdata";
 
 /// keccak256 (original Keccak, NOT NIST SHA3-256) — the digest family the attestation is taken
-/// over (INV-DEPOSIT-ATTESTATION-RAW-KECCAK). Mirrors unit-04's `att_keccak256`.
+/// over. Mirrors the shared encoding crate's `att_keccak256`.
 pub fn keccak256(msg: &[u8]) -> [u8; 32] {
     let mut h = Keccak256::new();
     h.update(msg);
@@ -125,7 +126,8 @@ impl Default for PartnerAttester {
 }
 
 impl PartnerAttester {
-    /// The deterministic partner key (seeded `StdRng`, mirroring unit-04's `att_keypair`).
+    /// The deterministic partner key (seeded `StdRng`, mirroring the shared encoding crate's
+    /// `att_keypair`).
     pub fn new() -> Self {
         Self::with_seed(PARTNER_KEY_SEED)
     }
@@ -140,7 +142,7 @@ impl PartnerAttester {
     }
 
     /// The 33-byte compressed SEC1 public key — the wire form the allowlist commitment is derived
-    /// from (decompressed to 16 affine felts before hashing since v16, vm#3342), and the form
+    /// from (decompressed to 16 affine felts before hashing), and the form
     /// `set_attester` is called with.
     pub fn pubkey(&self) -> [u8; 33] {
         self.signing_key
@@ -151,12 +153,13 @@ impl PartnerAttester {
             .expect("compressed secp256k1 pubkey is 33 bytes")
     }
 
-    /// The attester-allowlist key (DC-3, v16 supersession): `Poseidon2(affine pubkey felts)` →
+    /// The attester-allowlist key: `Poseidon2(affine pubkey felts)` →
     /// one `Word` (the compressed wire key is decompressed inside the owned primitive).
     ///
-    /// Delegated to unit-04's [`pubkey_commitment`] — the SINGLE owner of this keying primitive and
-    /// the exact procedure the faucet's D5d verify recomputes on-chain. This fixture never
-    /// re-implements it, so the local-node allowlist it seeds cannot drift from the on-chain lookup.
+    /// Delegated to the shared encoding crate's [`pubkey_commitment`] — the SINGLE owner of this
+    /// keying primitive and the exact procedure the faucet's on-chain attestation check recomputes
+    /// on-chain. This fixture never re-implements it, so the local-node allowlist it seeds cannot
+    /// drift from the on-chain lookup.
     pub fn commitment(&self) -> Word {
         pubkey_commitment(&self.pubkey()).expect("the deterministic partner key is a valid point")
     }
@@ -164,9 +167,9 @@ impl PartnerAttester {
     /// Signs `keccak256(payload)` — RAW secp256k1 over the raw keccak digest of the FULL payload.
     ///
     /// No EIP-712 `\x19\x01` domain separator, no typed-data struct hash, no personal-sign prefix,
-    /// no Poseidon2 (INV-DEPOSIT-ATTESTATION-RAW-KECCAK). The 65 bytes are `r‖s‖v` with `v` = the
-    /// recovery id (carried on the wire, unused on-chain) — byte-for-byte the layout unit-04's
-    /// `att_sign65` and miden-crypto's `Signature` serialization use.
+    /// no Poseidon2. The 65 bytes are `r‖s‖v` with `v` = the recovery id (carried on the wire,
+    /// unused on-chain) — byte-for-byte the layout the shared encoding crate's `att_sign65` and
+    /// miden-crypto's `Signature` serialization use.
     pub fn attest(&self, payload: &[u8]) -> AttestationVector {
         let message_hash = keccak256(payload);
         let (sig, recid): (K256Signature, RecoveryId) = self
@@ -254,12 +257,14 @@ pub fn test_vector() -> AttestationVector {
 // FIXTURE, not to gate a mint: that the 65 bytes the partner key produces actually cover the RAW
 // KECCAK digest they claim to. Without it, a fixture could report the right `message_hash` while
 // having signed something else, and the "partner vector signs raw keccak" invariant would be
-// unfalsifiable. Production code must never do this (the chain verifies at D5d — R-MINT-13/14).
+// unfalsifiable. Production code must never do this (the chain verifies in the faucet's attestation
+// check).
 
 /// Verifies a 65-byte `r‖s‖v` attestation over `digest` under the 33-byte compressed `pubkey`
-/// (`verify_prehash` — the digest is signed as-is, exactly as the on-chain `verify_prehash` at D5d
-/// consumes the keccak precompile's output). Returns `false` on any malformed input rather than
-/// panicking, so a negative test cannot pass merely because the oracle blew up.
+/// (`verify_prehash` — the digest is signed as-is, exactly as the on-chain `verify_prehash` in the
+/// faucet's attestation check consumes the keccak precompile's output). Returns `false` on any
+/// malformed input rather than panicking, so a negative test cannot pass merely because the oracle
+/// blew up.
 pub fn verify_attestation(pubkey: &[u8; 33], digest: &[u8; 32], attestation: &[u8; 65]) -> bool {
     let Ok(verifying_key) = VerifyingKey::from_sec1_bytes(pubkey) else {
         return false;
@@ -283,15 +288,14 @@ pub fn recover_pubkey(digest: &[u8; 32], attestation: &[u8; 65]) -> Option<[u8; 
 
 // NEGATIVE COMPARATORS — the three WRONG digests, each computed over the SAME payload
 // ================================================================================================
-// INV-DEPOSIT-ATTESTATION-RAW-KECCAK is a claim about WHICH digest binds the envelope, so the
+// The raw-keccak binding is a claim about WHICH digest binds the envelope, so the
 // invariant is only actually tested by digests that are plausible-but-wrong: each of these is what
 // `messageHash` WOULD have been had Circle used the Ethereum convention (EIP-712 / personal-sign)
 // or the Miden-native hash family (Poseidon2) instead of raw keccak. A binding check that accepted
 // any of them would be silently verifying a DIFFERENT message than the one it mints.
 
-/// The EIP-712 typed-data digest over the same payload:
-/// `keccak256(0x19 ‖ 0x01 ‖ domainSeparator ‖ hashStruct)` — the convention the invariant
-/// explicitly forbids ("NOT EIP-712").
+/// The EIP-712 typed-data digest over the same payload: `keccak256(0x19 ‖ 0x01 ‖ domainSeparator ‖
+/// hashStruct)` — the convention the invariant explicitly forbids ("NOT EIP-712").
 pub fn eip712_digest(payload: &[u8]) -> [u8; 32] {
     // domainSeparator = keccak256(abi.encode(DOMAIN_TYPEHASH, name, version, chainId, verifyingContract))
     let domain_typehash = keccak256(
@@ -333,8 +337,9 @@ pub fn personal_sign_digest(payload: &[u8]) -> [u8; 32] {
 /// The Miden-native Poseidon2 `Word` over the same payload, serialized to 32 bytes — the
 /// wrong-hash-FAMILY comparator (Poseidon2 is what Miden hashes with everywhere else in this
 /// system: the nonce key, the attester commitment; the attestation digest is the one place it is
-/// keccak). The payload is packed into felts by unit-04's owned DC-1 packer, then hashed with the
-/// protocol `Hasher` (Poseidon2) — the same primitive `pubkey_commitment` uses.
+/// keccak). The payload is packed into felts by the shared encoding crate's owned DepositIntent
+/// packer, then hashed with the protocol `Hasher` (Poseidon2) — the same primitive
+/// `pubkey_commitment` uses.
 pub fn poseidon2_word_digest(payload: &[u8]) -> [u8; 32] {
     let felts = deposit_intent_to_packed_felts(payload)
         .expect("the comparator is built over a canonical DC-1 payload");

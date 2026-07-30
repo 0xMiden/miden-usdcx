@@ -1,10 +1,32 @@
-//! Faucet mint-precondition shell suite: every behavior test drives
-//! the faucet-owned `xreserve::deposit_intent_parser::assert_deposit_intent` shell
-//! through MockChain `execute().await` via a CALL-entered driver component (account
-//! context — the kernel authenticates `active_account::get_item` as account-origin).
-//! Canonical shared-encoding vectors are loaded by reference; the R-MINT-1..5 rows assert
-//! the ratified seam mapping (`ERR_DI_*` through the shell call path); R-MINT-6/7 assert
-//! the two NEW faucet-owned errors against mismatched config slots.
+//! Faucet mint-precondition suite: every behavior test executes the faucet-owned
+//! `xreserve::deposit_intent_parser::assert_deposit_intent` on a MockChain, entered by `call`
+//! from a small driver component. The `call` matters: `assert_deposit_intent` reads the
+//! faucet's own domain/identifier configuration with `active_account::get_item`, which the
+//! kernel only honors when the caller runs in account context.
+//!
+//! The DepositIntent payloads come from the canonical golden-vector artifact shared with the
+//! Rust codec, so an accept here and an accept in the Rust parser are driven by the same bytes.
+//!
+//! The reject rows split into two groups by who owns the check. Five of them — bad magic, bad
+//! version, and a zero `amount` / `localToken` / `localDepositor` — are enforced by the shared
+//! encoding parser and surface as its `ERR_DI_*` errors travelling back out through the call.
+//! The other two are the faucet's own compares against its configured slots: the intent's
+//! `remoteDomain` must equal the configured domain, and its `remoteToken`, hashed to a storage
+//! key, must equal the configured identifier.
+//!
+//! The file is organized by the stages the mint pipeline runs in, and the section headers and
+//! test names use the short stage labels the faucet's own comments use. The sequence, defined
+//! here so nothing outside this file has to be consulted:
+//!
+//! - `d5a` — parse the DepositIntent and assert its fields against the faucet configuration
+//!   (the first two sections below).
+//! - `d5b` — reduce `amount` / `maxFee` / `feeAmount` from uint256 to asset amounts and assert
+//!   the relations between them.
+//! - `d5c` — assert the intent's nonce has not been spent (read-only; the marker write is a
+//!   later stage).
+//! - `d5d` — verify the depositor's ECDSA attestation against the attester allowlist.
+//! - `d5e` — the state-changing tail (mint, write the nonce marker); driven end to end in
+//!   `mint_policy_e2e.rs`, not here.
 
 mod support;
 
@@ -28,10 +50,15 @@ fn di(id: &str) -> &'static DiVector {
         .unwrap_or_else(|| panic!("canonical artifact is missing di vector {id}"))
 }
 
-/// Derives the TEST-ONLY config words from an accept vector: domain word
-/// `[remote_domain, 0, 0, 0]` and the identifier slot value = the canonical key-Word
-/// of the vector's remoteToken bytes, computed via the encoding crate's Rust routine
-/// `bytes32_to_storage_map_key` (NS-1 name; by reference).
+/// Builds the two faucet configuration words a vector should be accepted against.
+///
+/// The domain slot holds the remote domain id in its first element and zeros elsewhere; the
+/// identifier slot holds the storage-map key the faucet compares `remoteToken` to, derived from
+/// the vector's own remoteToken bytes with the Rust side of the shared codec
+/// (`bytes32_to_storage_map_key`) so the expected value is never hand-written here.
+///
+/// Set `flip_identifier_byte` to corrupt the first remoteToken byte before hashing: the result
+/// is a well-formed but wrong identifier key, which is what the wrong-identifier reject needs.
 fn config_for(vector_id: &str, domain: u32, flip_identifier_byte: bool) -> (Word, Word) {
     let f = di(vector_id)
         .fields
@@ -80,13 +107,14 @@ async fn happy_path_mint_preconditions(#[case] vector_id: &str) -> Result<()> {
     Ok(())
 }
 
-// R-MINT REJECTS (parametrized; every case pins the EXACT expected error)
+// DEPOSIT-INTENT REJECTS (parametrized; every case pins the EXACT expected error)
 // ================================================================================================
-// Rows 1-5: the ratified seam mapping — canonical reject vectors trap inside the
-// shared-encoding parser, propagated through the shell call path (matching config so the
-// parser trap is the only candidate). Rows 6-7: NEW faucet-owned compares against
-// deliberately mismatched config over an accept vector (6 mismatches the domain with a
-// MATCHING identifier; 7 mismatches only the identifier — isolating each assert).
+// The first five rows feed a reject vector against MATCHING configuration, so the shared
+// encoding parser's own trap is the only thing that can fire and the case proves which
+// `ERR_DI_*` reaches the caller. The last two rows do the opposite: they feed an ACCEPT vector
+// against deliberately wrong configuration, so the only remaining candidate is the faucet's own
+// compare. They are kept apart on purpose — the wrong-domain row keeps the identifier matching
+// and the wrong-identifier row keeps the domain matching, so neither assert can mask the other.
 
 #[rstest]
 #[case::r_mint_1_bad_magic("di-rej-bad-magic", TEST_DOMAIN, false, "ERR_DI_BAD_MAGIC")]
@@ -136,11 +164,19 @@ async fn r_mint_rejects(
     Ok(())
 }
 
-// PROBES (harness mechanics, not shell behavior)
+// PROBES — harness mechanics, not faucet behavior
 // ================================================================================================
+// These tests do not exercise the mint preconditions at all. They pin the assumptions the
+// behavior tests are built on: that the library exports each proc under the fully-qualified path
+// the drivers call it by, and that named storage slots read back what they were seeded with.
+// Keeping them separate means an assembler or naming regression fails as itself rather than
+// masquerading as a mint-policy reject.
 
-/// P1: the assembled library exports the canonical NESTED shell path (mirrors the encoding
-/// crate's `probe_p1_exports`; exports render absolute at 0.23.3).
+/// The assembled library exports `assert_deposit_intent` under its fully-qualified path.
+///
+/// The drivers in this file invoke it by that exact path, and so does the faucet component, so a
+/// module move or rename would silently break both. Comparing against the assembler's own export
+/// list is what catches it.
 #[test]
 fn probe_shell_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
@@ -158,10 +194,13 @@ fn probe_shell_exports() -> Result<()> {
     Ok(())
 }
 
-/// P2: a probe component reads BOTH named value slots via `word(\"label\")[0..2]` +
-/// `active_account::get_item` from a CALL-entered proc and pins the fixture words —
-/// proving the `StorageSlotName` ↔ `word("…")` binding and the call-context read pipeline on
-/// the pinned 0.23.3 stack, independent of the shell implementation.
+/// Pins the plumbing the other tests depend on: that a named storage slot really resolves to the
+/// word it was seeded with.
+///
+/// A minimal probe component reads both named value slots by name and compares them against the
+/// fixture words. It deliberately does not touch the deposit-intent code, so if the slot naming
+/// or the call-context read path ever breaks on a toolchain bump, this fails on its own instead
+/// of showing up as a confusing wrong-domain or wrong-identifier reject elsewhere in the file.
 #[tokio::test]
 async fn probe_slot_binding() -> Result<()> {
     let domain = Word::from([7u32, 0, 0, 0]);
@@ -174,16 +213,21 @@ async fn probe_slot_binding() -> Result<()> {
     Ok(())
 }
 
-// D5B AMOUNT/FEE PRECONDITIONS
+// D5B — AMOUNT / MAXFEE / FEEAMOUNT PRECONDITIONS
 // ================================================================================================
-// Drives the NEW faucet-owned `xreserve::deposit_intent_parser::assert_mint_amounts` shell
-// through MockChain `execute().await`. `amount`/`maxFee` are spliced into a base accept
-// preimage from the canonical `amt-*` vectors (by reference); `feeAmount` is staged
-// on the advice stack (the operator must supply it explicitly — a missing feeAmount errors).
+// Executes the faucet-owned `xreserve::deposit_intent_parser::assert_mint_amounts` on a
+// MockChain. Each case splices a chosen `amount` and `maxFee` into an otherwise-valid
+// DepositIntent preimage, taking the uint256 limb patterns from the shared `amt-*` golden
+// vectors so the reduction behavior under test is the same one the Rust reducer is pinned to.
+// `feeAmount` does not travel in the intent: the caller stages it on the advice stack, and the
+// proc requires it to actually be there — omitting it is an error, not a silent zero.
 
-/// The D5b scale exponent, passed as a proc parameter (NOT a faucet constant): it matches
-/// the scale-6 `amt-*` vectors and keeps DEV-5 / Q-CRY-6 (scale factor) cleanly OPEN — the
-/// production value is set where the faucet reads its config, not here.
+/// Decimal exponent the amount reducer divides by, handed to the proc as a parameter rather
+/// than read from a faucet constant.
+///
+/// Six matches the scale the `amt-*` vectors were generated at. Passing it in keeps this suite
+/// from asserting anything about the production scale factor, which Circle has not yet fixed —
+/// the shipped value lives with the faucet's configuration, deliberately not here.
 const D5B_SCALE_EXP: u32 = 6;
 
 /// Looks up a canonical amount vector by id (by-reference loading).
@@ -213,7 +257,7 @@ fn d5b_harness(amount_limbs: [u32; 8], maxfee_limbs: [u32; 8]) -> Result<ShellHa
 #[rstest]
 // feeAmount == 0 (MVP default) accepted; amount (amt-ge-gt.a) > maxFee (amt-ge-gt.b)
 #[case::fee_zero(amt("amt-ge-gt").le_limbs(), amt("amt-ge-gt").b_le_limbs(), fee_advice_felts([0u32; 8]))]
-// boundary amount == maxFee accepted (R-MINT-10 is `<`, not `<=`)
+// boundary: amount exactly equal to maxFee is accepted — the reject fires below maxFee, not at it
 #[case::amount_eq_maxfee(amt("amt-ge-eq").le_limbs(), amt("amt-ge-eq").b_le_limbs(), fee_advice_felts([0u32; 8]))]
 // value at AssetAmount::MAX accepted at the cap; amount (cap) >= maxFee (amt-pos-1)
 #[case::cap_value(amt("amt-cap-accept").le_limbs(), amt("amt-pos-1").le_limbs(), fee_advice_felts([0u32; 8]))]
@@ -240,27 +284,28 @@ async fn d5b_happy_amount_fee(
     Ok(())
 }
 
-// REJECTS — plain `assert` traps (R-MINT-9 ERR_X_TOO_LARGE; R-MINT-10/11 faucet errors)
+// REJECTS — every case pins the EXACT error symbol, never a bare `is_err()`
 // ------------------------------------------------------------------------------------------------
-// Each case pins the EXACT expected error (no `is_err()`); the family is parametrized
-// (parametrize-related-tests). ERR_X_TOO_LARGE propagates from the shared-encoding reducer's
-// `assert.err=` (a FailedAssertion), so the plain `assert_transaction_executor_error!`
-// (MasmError) form applies — same as `masm_dual.rs` reject vectors.
+// Two distinct failure kinds are covered here. A value too large to reduce traps inside the
+// shared encoding reducer with `ERR_X_TOO_LARGE`; a value that reduces fine but breaks a
+// relation the faucet requires traps with one of the faucet's own `ERR_XRESERVE_*` symbols.
+// Both arrive as MASM assertion failures, so one `assert_transaction_executor_error!` shape
+// covers the family and the cases stay parametrized rather than copy-pasted.
 
 #[rstest]
-// R-MINT-9: high-4 limbs nonzero on the AMOUNT reduction
+// too large to reduce: the AMOUNT's top four u32 limbs are nonzero, i.e. it exceeds 2^128
 #[case::r_mint_9_amount_overflow(amt("amt-rej-limb-overflow").le_limbs(), amt("amt-pos-1").le_limbs(), fee_advice_felts([0u32; 8]), "ERR_X_TOO_LARGE")]
-// R-MINT-9: high-4 limbs nonzero on the MAXFEE reduction (amount reduces OK first)
+// same overflow on MAXFEE — ordered so the amount reduces cleanly first and the trap is maxFee's
 #[case::r_mint_9_maxfee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-rej-limb-overflow").le_limbs(), fee_advice_felts([0u32; 8]), "ERR_X_TOO_LARGE")]
-// R-MINT-9: high-4 limbs nonzero on the FEEAMOUNT (advice) reduction
+// same overflow on the advice-supplied FEEAMOUNT — the third reduction is guarded too
 #[case::r_mint_9_fee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-pos-1").le_limbs(), fee_advice_felts(amt("amt-rej-limb-overflow").le_limbs()), "ERR_X_TOO_LARGE")]
-// R-MINT-10: reduced amount (amt-ge-lt.a) < maxFee (amt-ge-lt.b)
+// relation broken: the reduced amount is strictly below maxFee, so the mint could not cover its fee
 #[case::r_mint_10_amount_below_fee(amt("amt-ge-lt").le_limbs(), amt("amt-ge-lt").b_le_limbs(), fee_advice_felts([0u32; 8]), "ERR_XRESERVE_AMOUNT_BELOW_FEE")]
-// F2: amount >= maxFee passes, then reduced feeAmount (amt-ge-lt.b) is NONZERO (and > maxFee) ->
-// ERR_XRESERVE_FEE_NONZERO. The old R-MINT-11 over-max reject is subsumed by the feeAmount==0 gate.
+// amount >= maxFee passes, then a NONZERO feeAmount is rejected: the faucet pays no relayer fee,
+// so any nonzero fee is refused regardless of how it compares to maxFee
 #[case::r_mint_11_fee_over_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-lt").le_limbs(), fee_advice_felts(amt("amt-ge-lt").b_le_limbs()), "ERR_XRESERVE_FEE_NONZERO")]
-// F2: a nonzero feeAmount == maxFee (amt-ge-eq)
-// is no longer accepted — the old R-MINT-11 accept boundary is now a reject -> ERR_XRESERVE_FEE_NONZERO.
+// the same refusal at the tightest point: a feeAmount that exactly equals maxFee is still nonzero,
+// so it is still rejected — the gate is "zero", not "within maxFee"
 #[case::fee_eq_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-eq").le_limbs(), fee_advice_felts(amt("amt-ge-eq").le_limbs()), "ERR_XRESERVE_FEE_NONZERO")]
 #[tokio::test]
 async fn d5b_amount_fee_rejects(
@@ -318,8 +363,8 @@ async fn d5b_fee_advice_malformed_limb() -> Result<()> {
 // PROBE (export check for the new proc)
 // ------------------------------------------------------------------------------------------------
 
-/// The assembled library exports the canonical NESTED D5b proc path (mirrors
-/// `probe_shell_exports`; exports render absolute at 0.23.3).
+/// The assembled library exports `assert_mint_amounts` under its fully-qualified path — the same
+/// rename guard as `probe_shell_exports`, for the amount/fee stage.
 #[test]
 fn probe_mint_amounts_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
@@ -337,22 +382,25 @@ fn probe_mint_amounts_exports() -> Result<()> {
     Ok(())
 }
 
-// D5C NONCE REPLAY GUARD
+// D5C — NONCE REPLAY GUARD
 // ================================================================================================
-// Drives the NEW faucet-owned `xreserve::deposit_intent_parser::assert_nonce_unused` shell
-// through MockChain `execute().await`. The guard derives `key = bytes32_to_key(nonce felt[51..58])`
-// (consumed BY REFERENCE), reads `usedNonces[key]` via the canary-proven
-// `active_account::get_map_item`, and asserts `== EMPTY_WORD` else traps R-MINT-12. D5c is
-// assert-zero ONLY — the nonce SET is deferred to D5e.
+// Executes the faucet-owned `xreserve::deposit_intent_parser::assert_nonce_unused` on a
+// MockChain. The guard hashes the intent's 32-byte nonce (felts 51..58 of the parsed preimage)
+// into a storage-map key with the shared `bytes32_to_key`, reads `usedNonces[key]` from account
+// storage, and requires it to still be the empty Word; anything else means this deposit has
+// already been minted and it traps. The guard only READS — writing the spent marker belongs to
+// the mint tail, so the tests here also assert that no storage was written.
 
-/// Any non-empty marker Word for seeding `usedNonces` (distinct from `EMPTY_WORD`). The real
-/// D5e marker value is out of scope for D5c (assert-zero only); the guard only distinguishes
-/// empty vs non-empty.
+/// A stand-in "this nonce is spent" marker used to seed `usedNonces`. Any non-empty Word does:
+/// the guard's whole test is empty vs non-empty, and the value the mint tail actually writes is
+/// not what this section exercises.
 const NONCE_MARKER: [u32; 4] = [1, 0, 0, 0];
 
-/// Derives the canonical `usedNonces` map key for a vector's nonce via the encoding crate's Rust
-/// routine (`bytes32_to_storage_map_key`, by reference) — guaranteed to match the MASM
-/// `bytes32_to_key(nonce felt[51..58])` by TV-DUAL-1.
+/// Computes the `usedNonces` map key a vector's nonce should land on.
+///
+/// It runs the Rust half of the shared bytes32→Word codec, so the expected key is derived the
+/// same way the MASM guard derives it rather than being pinned by hand; the cross-language
+/// parity test in `masm_dual.rs` is what guarantees the two halves agree.
 fn nonce_key(vector_id: &str) -> Word {
     let f = di(vector_id)
         .fields
@@ -389,7 +437,7 @@ async fn d5c_happy_nonce_unused(#[case] vector_id: &str) -> Result<()> {
     Ok(())
 }
 
-// REPLAY REJECT (R-MINT-12) — a seeded (used) nonce traps with the EXACT error
+// REPLAY REJECT — a nonce already recorded as spent traps with the exact replay error
 // ------------------------------------------------------------------------------------------------
 
 #[rstest]
@@ -400,8 +448,8 @@ async fn d5c_replay_rejects(#[case] vector_id: &str) -> Result<()> {
     let v = di(vector_id);
     let (domain, identifier) = config_for(vector_id, TEST_DOMAIN, false);
     let driver_src = nonce_driver_src(&v.preimage_values());
-    // seed usedNonces[key(nonce)] = marker so the guard's REAL get_map_item read returns
-    // non-empty and the assert-zero traps R-MINT-12
+    // mark this vector's nonce as already spent, so the guard's map read returns a non-empty
+    // Word and the "must still be empty" assert fires — this is the same-deposit-twice case
     let seed = (nonce_key(vector_id), Word::from(NONCE_MARKER));
     let h = setup_shell_account_with_nonce_seed(
         domain,
@@ -467,8 +515,8 @@ async fn d5c_unrelated_seeded_nonce_passes() -> Result<()> {
 // PROBE (export check for the new proc)
 // ------------------------------------------------------------------------------------------------
 
-/// The assembled library exports the canonical NESTED D5c proc path (mirrors
-/// `probe_shell_exports`/`probe_mint_amounts_exports`; exports render absolute at 0.23.3).
+/// The assembled library exports `assert_nonce_unused` under its fully-qualified path — the same
+/// rename guard as the other export probes, for the replay stage.
 #[test]
 fn probe_nonce_unused_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
@@ -486,32 +534,44 @@ fn probe_nonce_unused_exports() -> Result<()> {
     Ok(())
 }
 
-// D5D ATTESTATION VERIFY
+// D5D — ATTESTATION VERIFY
 // ================================================================================================
-// Drives the NEW faucet-owned `xreserve::attestation_verify::verify_attestation` shell through
-// MockChain execute().await: keccak the DepositIntent payload (hash_bytes), gate the candidate
-// pubkey against xReserveAttesters (get_map_item over Poseidon2(pubkey) -> R-MINT-13), and
-// ECDSA-verify the signature (verify_prehash -> R-MINT-14). The candidate pubkey is read ONCE into
-// one local region that feeds BOTH the commitment lookup and verify_prehash (the seam).
+// Executes the faucet-owned `xreserve::attestation_verify::verify_attestation` on a MockChain.
+// The proc does three things in order: keccak256 the DepositIntent payload, check that the
+// candidate public key is an enabled attester (its Poseidon2 commitment must have a non-empty
+// entry in the `xReserveAttesters` map), and ECDSA-verify the supplied signature against that
+// digest and key. Only a deposit Circle actually signed can pass.
 //
-// Attester keypairs/signatures are generated IN-TEST (k256 + sha3 + miden-crypto), zero touch to
-// the canonical artifact; key A (seed 1) and key B (seed 2) sign the SAME payload, so the seam
-// test can pair an allowlisted commitment with a foreign valid signature.
+// The security property these cases exist for: the pubkey is read from the advice stack ONCE,
+// into one local memory region, and that same region feeds both the allowlist lookup and the
+// signature check. If the two steps could read different keys, an attacker could present an
+// allowlisted attester's key for the lookup and their own signature for the verification.
 //
-// Each behavior case EXECUTES the real gate (hash_bytes + pubkey_commitment + get_map_item +
-// verify_prehash) under MockChain and pins the exact outcome: the happy path reaches the
-// supply-write boundary (no storage write); the rejects trap the EXACT R-MINT-13 / R-MINT-14
-// errors; the missing-advice case fails closed (AdviceError). The export probe pins the canonical path.
+// Keypairs and signatures are generated inside the test (k256 + sha3 + miden-crypto) rather than
+// baked into the shared vector artifact, because the tests need two attesters signing the SAME
+// payload: key A and key B, with distinct commitments, so a signature by one can be offered
+// under the identity of the other.
+//
+// Every case runs the real proc — real keccak, real Poseidon2 commitment, real map read, real
+// `verify_prehash` — and pins the exact outcome: an accepted attestation stops at the
+// supply-write boundary having written nothing; a rejected one traps with the specific error for
+// the check that failed; and an attestation with nothing staged on the advice stack fails closed
+// rather than proceeding with garbage.
 
-/// The canonical payload the D5d cases keccak + sign over: the 240-byte (60-felt, no-hookData)
-/// accept DepositIntent, consumed BY REFERENCE.
+/// The DepositIntent whose bytes the attestation cases hash and sign: the 240-byte accept vector
+/// with no hookData, so the payload is exactly the fixed header.
 const ATTESTATION_VECTOR: &str = "di-pos-empty-hookdata";
 
-/// Any non-empty enabled-marker Word for the allowlist value (absent/EMPTY_WORD = not allowlisted).
+/// The value stored under an attester's commitment to mark it enabled. Any non-empty Word does —
+/// the allowlist check is presence, and an absent key reads back as the empty Word.
 const ATTESTER_MARKER: [u32; 4] = [1, 0, 0, 0];
 
-/// (preimage felts, payload bytes, len_bytes) for the attestation payload — the bytes the attester
-/// signs MUST equal the bytes the on-chain keccak hashes (the staged felts reconstruct them u32-LE).
+/// Returns the attestation payload three ways: as the felts staged into the driver, as the raw
+/// bytes the attester signs, and as its byte length.
+///
+/// The bytes and the felts must describe the same payload — the felts are the u32-little-endian
+/// packing of those bytes — because the signature is made over the bytes while the on-chain
+/// keccak runs over what the felts reconstruct. If they diverged, every case would fail closed.
 fn attestation_payload() -> (Vec<Felt>, Vec<u8>, u64) {
     let v = di(ATTESTATION_VECTOR);
     let bytes = v.bytes();
@@ -519,8 +579,9 @@ fn attestation_payload() -> (Vec<Felt>, Vec<u8>, u64) {
     (v.preimage_values(), bytes, len_bytes)
 }
 
-/// The seam pair: key A (allowlisted in the happy/forged cases) and key B (the foreign key), both
-/// signing keccak256(the SAME payload). Distinct commitments.
+/// Generates the two attesters the reject cases need: key A, which the tests allowlist, and key
+/// B, the foreign key. Both sign keccak256 of the same payload, and the assertion pins that their
+/// commitments differ — otherwise "allowlist A, present B" would not actually be a mismatch.
 fn seam_keys(payload: &[u8]) -> (AttesterVector, AttesterVector) {
     let a = gen_attester(1, payload);
     let b = gen_attester(2, payload);
@@ -531,8 +592,9 @@ fn seam_keys(payload: &[u8]) -> (AttesterVector, AttesterVector) {
     (a, b)
 }
 
-/// Advice stack pairing one attester's pubkey with another's signature (the seam attack input):
-/// `[pubkey(16), sig(17)]`.
+/// Stages an advice stack that pairs one attester's public key with a different attester's
+/// signature — the mix-and-match input an attacker would try. Layout is the proc's expected
+/// `[pubkey (16 felts), signature (17 felts)]`.
 fn paired_advice(pubkey_of: &AttesterVector, sig_of: &AttesterVector) -> Vec<Felt> {
     pubkey_of
         .pubkey_felts
@@ -542,7 +604,7 @@ fn paired_advice(pubkey_of: &AttesterVector, sig_of: &AttesterVector) -> Vec<Fel
         .collect()
 }
 
-// HAPPY PATH FIRST (G4)
+// HAPPY PATH FIRST — an allowlisted attester with its own valid signature
 // ------------------------------------------------------------------------------------------------
 
 #[tokio::test]
@@ -575,8 +637,11 @@ async fn d5d_happy_attestation() -> Result<()> {
 // REJECTS — each pins the EXACT expected error (no is_err())
 // ------------------------------------------------------------------------------------------------
 
-/// Forged-sig (R-MINT-14): an allowlisted pubkey A with a WELL-FORMED tampered signature
-/// (B's valid-for-B signature, not a malformed-bytes abort) -> verify_prehash returns 0.
+/// A signature that does not belong to the presented key is rejected.
+///
+/// The advice stack carries allowlisted key A together with B's signature. B's signature is
+/// perfectly well-formed — this is a genuine ECDSA verification failure, not a decode abort on
+/// junk bytes — so the case proves the signature check itself, not input validation.
 #[tokio::test]
 async fn d5d_forged_sig_rejects() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
@@ -592,8 +657,11 @@ async fn d5d_forged_sig_rejects() -> Result<()> {
     Ok(())
 }
 
-/// Non-allowlisted (R-MINT-13): pubkey B with B's valid signature, but only A is allowlisted
-/// -> xReserveAttesters[Poseidon2(B)] is EMPTY_WORD.
+/// A key the faucet does not know is rejected even with a perfectly valid signature.
+///
+/// Key B signs the payload correctly, but only A's commitment was seeded into the allowlist, so
+/// the map lookup on B's commitment reads back the empty Word and the proc traps before it ever
+/// gets to the signature. A valid signature by a stranger is not an attestation.
 #[tokio::test]
 async fn d5d_non_allowlisted_rejects() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
@@ -615,10 +683,13 @@ async fn d5d_non_allowlisted_rejects() -> Result<()> {
 // THE SEAM (the catastrophic case) — BOTH attacker arrangements must reject
 // ------------------------------------------------------------------------------------------------
 
-/// An allowlisted commitment must NOT be pairable with a foreign valid signature. Drives BOTH
-/// arrangements through real execution: (1) A's pubkey (allowlisted) + B's signature -> R-MINT-14;
-/// (2) B's pubkey + B's signature, B not allowlisted -> R-MINT-13. The single pubkey local region
-/// makes it impossible to check one pubkey against the allowlist and verify against another.
+/// Neither way of splitting "who is allowlisted" from "who signed" gets through.
+///
+/// An attacker holding a valid signature by an unknown key B has two moves, and this test runs
+/// both for real: the allowlisted key A presented with B's signature (the allowlist check passes,
+/// the ECDSA verify then fails) and B's own key presented with it (the ECDSA verify would pass,
+/// but the allowlist check comes first and refuses). There is no third arrangement, because the
+/// proc reads the candidate key exactly once and both checks consume that one copy.
 #[tokio::test]
 async fn d5d_seam_both_arrangements_reject() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
@@ -626,12 +697,12 @@ async fn d5d_seam_both_arrangements_reject() -> Result<()> {
     let driver_src = attestation_driver_src(&preimage, len_bytes);
     let allowlist_a = Some((a.commitment, Word::from(ATTESTER_MARKER)));
 
-    // arrangement 1: allowlisted pubkey A + B's (foreign, valid-for-B) signature -> R-MINT-14
+    // arrangement 1: allowlisted key A carries the allowlist check, B's signature fails the verify
     let h1 = setup_attestation_account(allowlist_a, &driver_src, SHELL_DRIVER_PATH)?;
     let r1 = run_call_driver_with_advice(&h1, "drive", Some(paired_advice(&a, &b))).await;
     assert_transaction_executor_error!(r1, shell_error_by_name("ERR_XRESERVE_SIG_INVALID"));
 
-    // arrangement 2: B's pubkey + B's valid signature, but B is NOT allowlisted -> R-MINT-13
+    // arrangement 2: B's key and B's own valid signature, but B was never allowlisted
     let h2 = setup_attestation_account(allowlist_a, &driver_src, SHELL_DRIVER_PATH)?;
     let r2 = run_call_driver_with_advice(&h2, "drive", Some(b.advice())).await;
     assert_transaction_executor_error!(r2, shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"));
@@ -641,8 +712,11 @@ async fn d5d_seam_both_arrangements_reject() -> Result<()> {
 // ADVICE-PROVIDER HYGIENE — missing advice must fail closed
 // ------------------------------------------------------------------------------------------------
 
-/// Missing pubkey/signature advice must ERROR (never default): the materialization `adv_push*`
-/// traps with `AdviceError::StackReadFailed` ("advice stack read failed").
+/// With no key or signature staged, the proc errors instead of proceeding.
+///
+/// Advice-stack data is caller-supplied and unauthenticated, so the failure mode matters: an
+/// empty stack must abort the transaction, never silently materialize zeros that could be
+/// treated as a key. The read itself traps with `AdviceError::StackReadFailed`.
 #[tokio::test]
 async fn d5d_missing_advice_traps() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
@@ -665,8 +739,8 @@ async fn d5d_missing_advice_traps() -> Result<()> {
 // PROBE (export check for the new proc)
 // ------------------------------------------------------------------------------------------------
 
-/// The assembled library exports the canonical NESTED D5d proc path (mirrors the other export
-/// probes; exports render absolute at 0.23.3).
+/// The assembled library exports `verify_attestation` under its fully-qualified path — the same
+/// rename guard as the other export probes, for the attestation stage.
 #[test]
 fn probe_attestation_verify_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;

@@ -1,4 +1,4 @@
-//! F4-reversal transfer-blocklist admin note factories: `block_account`, `unblock_account`.
+//! Transfer-blocklist admin note factories: `block_account`, `unblock_account`.
 
 use std::sync::LazyLock;
 
@@ -10,7 +10,7 @@ use miden_protocol::Word;
 
 use super::{build_admin_note, compile_admin_note_script};
 
-// BLOCK_ACCOUNT (allowlist row 13 — F4-reversal transfer blocklist)
+// BLOCK_ACCOUNT (allowlist row 13 — transfer blocklist)
 // ================================================================================================
 
 const BLOCK_ACCOUNT_NOTE_SCRIPT_SRC: &str =
@@ -27,7 +27,7 @@ static BLOCK_ACCOUNT_NOTE_SCRIPT: LazyLock<NoteScript> =
 pub const XRESERVE_BLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX: &str =
     "0xd92cf7cc23c84d29ebe9486d55845ede7fb2126e135a0d2ef87f5bfc090aefb2";
 
-/// The BLK_MANAGER-gated `block_account` admin note (F4-reversal). Storage layout:
+/// The BLK_MANAGER-gated `block_account` admin note. Storage layout:
 /// `[account_suffix, account_prefix]` — the account to block. Consumed against the faucet network
 /// account; `blocklist_admin::block_account` gates on the (kernel-forced) note sender holding the
 /// `BLK_MANAGER` role.
@@ -56,7 +56,7 @@ impl XReserveBlockAccountNote {
 
     /// Builds a `block_account` admin note: `sender` is the admin party (the BLK_MANAGER holder, for
     /// success), `faucet_id` the target faucet (PUBLIC), `account` the account to block. The params
-    /// live in note storage; the executor-controlled `NOTE_ARGS` are ignored by the script.
+    /// live in note storage; `NOTE_ARGS` are ignored by the script.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -68,7 +68,7 @@ impl XReserveBlockAccountNote {
     }
 }
 
-// UNBLOCK_ACCOUNT (allowlist row 14 — F4-reversal transfer blocklist)
+// UNBLOCK_ACCOUNT (allowlist row 14 — transfer blocklist)
 // ================================================================================================
 
 const UNBLOCK_ACCOUNT_NOTE_SCRIPT_SRC: &str =
@@ -85,7 +85,7 @@ static UNBLOCK_ACCOUNT_NOTE_SCRIPT: LazyLock<NoteScript> =
 pub const XRESERVE_UNBLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX: &str =
     "0xeed9a3d1ef3589a8039dcd3174e410e8ca1a0c0f977d4ecc412e226ba2a343d2";
 
-/// The BLK_MANAGER-gated `unblock_account` admin note (F4-reversal). Storage layout:
+/// The BLK_MANAGER-gated `unblock_account` admin note. Storage layout:
 /// `[account_suffix, account_prefix]` — the account to unblock. Consumed against the faucet network
 /// account; `blocklist_admin::unblock_account` gates on the (kernel-forced) note sender holding the
 /// `BLK_MANAGER` role.
@@ -114,7 +114,7 @@ impl XReserveUnblockAccountNote {
 
     /// Builds an `unblock_account` admin note: `sender` is the admin party (the BLK_MANAGER holder, for
     /// success), `faucet_id` the target faucet (PUBLIC), `account` the account to unblock. The params
-    /// live in note storage; the executor-controlled `NOTE_ARGS` are ignored by the script.
+    /// live in note storage; `NOTE_ARGS` are ignored by the script.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,

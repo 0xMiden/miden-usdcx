@@ -1,23 +1,25 @@
-//! **`T-RLY-19`** (`domain_token_mismatch_fast_fail`) · GATING (liveness; values RCC) — the two
-//! sub-cases of §8.1 check 5, plus the config gate that decides whether the check runs at all.
+//! `domain_token_mismatch_fast_fail` · GATING (liveness; values RCC) — the two
+//! sub-cases of the optional domain/token fast-fail, plus the config gate that decides whether the
+//! check runs at all.
 //!
 //! # This is a LIVENESS optimization, not a safety gate
 //!
 //! `remoteDomain == the configured Miden domain` and `remoteToken == the configured xUSDC
-//! identifier` are compared ON-CHAIN at D5a, and only the chain's verdict is authoritative. The
-//! check here saves a block by refusing an attestation the faucet would refuse anyway. Deleting it
-//! would cost throughput; it could not cost safety.
+//! identifier` are compared ON-CHAIN in the faucet's deposit-intent parse, and only the chain's
+//! verdict is authoritative. The check here saves a block by refusing an attestation the faucet
+//! would refuse anyway. Deleting it would cost throughput; it could not cost safety.
 //!
 //! # Both expected values are Circle-owned and OPEN
 //!
-//! * `Q-DOM-1` — Circle has assigned Miden no remote-domain id. `REQUIRES CIRCLE CONFIRMATION`.
-//! * `DEV-10` — the xUSDC AccountId↔bytes32 identifier and its encoding are unsettled. `REQUIRES
+//! * The remote-domain id — Circle has assigned Miden none. `REQUIRES CIRCLE CONFIRMATION`.
+//! * The xUSDC AccountId↔bytes32 identifier and its encoding are unsettled. `REQUIRES
 //!   CIRCLE CONFIRMATION` · `NO EVIDENCE OF CIRCLE APPROVAL`.
 //!
 //! So every value here is a package-default PLACEHOLDER: these tests gate the DEFAULT this package
-//! takes and the MECHANISM that consumes it, never Circle acceptance of either value. The live-Circle
-//! leg stays `REQUIRES CIRCLE CONFIRMATION`, and that is also why the check ships OFF by default — a
-//! fast-fail whose expected value is a placeholder would reject every honest deposit.
+//! takes and the MECHANISM that consumes it, never Circle acceptance of either value. The
+//! live-Circle leg stays `REQUIRES CIRCLE CONFIRMATION`, and that is also why the check ships OFF
+//! by default — a fast-fail whose expected value is a placeholder would reject every honest
+//! deposit.
 
 mod cycle_support;
 mod fixtures;
@@ -54,8 +56,8 @@ async fn the_matching_domain_and_token_pass() {
 }
 
 /// **`reject_remoteDomain_mismatch`** — a `messageHash`-matching, structurally valid DepositIntent
-/// whose `remoteDomain` is not the configured Miden domain. Live value gated by `Q-DOM-1`,
-/// `REQUIRES CIRCLE CONFIRMATION`.
+/// whose `remoteDomain` is not the configured Miden domain. The live value is still Circle's to
+/// assign — `REQUIRES CIRCLE CONFIRMATION`.
 #[tokio::test]
 async fn reject_remote_domain_mismatch() {
     let intent = canonical_intent();
@@ -77,8 +79,9 @@ async fn reject_remote_domain_mismatch() {
     );
 }
 
-/// **`reject_remoteToken_mismatch`** — `remoteToken` is not the configured xUSDC identifier. Live
-/// value gated by `DEV-10`, `REQUIRES CIRCLE CONFIRMATION` · `NO EVIDENCE OF CIRCLE APPROVAL`.
+/// **`reject_remoteToken_mismatch`** — `remoteToken` is not the configured xUSDC identifier. The
+/// live value is still unsettled — `REQUIRES CIRCLE CONFIRMATION` · `NO EVIDENCE OF CIRCLE
+/// APPROVAL`.
 #[tokio::test]
 async fn reject_remote_token_mismatch() {
     let intent = canonical_intent();
@@ -128,7 +131,8 @@ async fn a_configured_domain_circle_does_not_advertise_is_refused() {
     let intent = canonical_intent();
     let config = config_matching(&intent, true);
     // discovery advertises CYCLE_DOMAIN; the config's expected domain is the intent's, and the
-    // canonical vector does not carry CYCLE_DOMAIN (the fixture domain is a `Q-DOM-1` placeholder).
+    // canonical vector does not carry CYCLE_DOMAIN (the fixture domain is a placeholder — the real
+    // id awaits Circle).
     assert_ne!(intent.remote_domain(), CYCLE_DOMAIN);
     let info = fetched_info(info_body()).await;
 
@@ -200,7 +204,7 @@ async fn with_the_fast_fail_on_info_is_fetched_once_per_cycle() {
     );
 }
 
-/// **The cycle-level T-RLY-19**: with the fast-fail ON and a mismatching configured domain, the
+/// **The cycle-level**: with the fast-fail ON and a mismatching configured domain, the
 /// attestation is refused PRE-SUBMISSION — the submit port is never reached — and it is reported
 /// with its reason rather than dropped.
 #[tokio::test]
@@ -288,7 +292,8 @@ async fn a_broken_info_fetch_fails_the_cycle_rather_than_disabling_the_check() {
 // ================================================================================================
 
 /// The canonical `di-pos-hookdata` DepositIntent, decoded through the relayer's own validator — so
-/// the expected `remoteDomain`/`remoteToken` are read from the golden artifact, never restated here.
+/// the expected `remoteDomain`/`remoteToken` are read from the golden artifact, never restated
+/// here.
 fn canonical_intent() -> DepositIntent {
     xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(&canonical_payload(
         TEST_VECTOR_PAYLOAD_ID,
@@ -296,9 +301,9 @@ fn canonical_intent() -> DepositIntent {
     .expect("the canonical vector is a valid DepositIntent")
 }
 
-/// A config whose RCC-valued expectations MATCH `intent` — the placeholders `Q-DOM-1` and `DEV-10`
-/// will one day carry, set here to what the golden vector actually holds so the mechanism can be
-/// exercised without pretending either decision is settled.
+/// A config whose Circle-owned expectations MATCH `intent` — the values the still-OPEN domain and
+/// identifier placeholders will one day carry, set here to what the golden vector actually holds so
+/// the mechanism can be exercised without pretending either decision is settled.
 fn config_matching(intent: &DepositIntent, fast_fail: bool) -> RelayerConfig {
     serde_json::from_value(serde_json::json!({
         "circle_base_url": MOCK_BASE_URL,
@@ -328,8 +333,8 @@ fn with_xusdc_identifier(config: RelayerConfig, identifier: [u8; 32]) -> Relayer
 }
 
 /// The `/v1/info` body that ADVERTISES `intent`'s own domain and token identifier — i.e. a Circle
-/// whose discovery agrees with the deposit. Both values stay placeholders (`Q-DOM-1` / `DEV-10` are
-/// OPEN).
+/// whose discovery agrees with the deposit. Both values stay placeholders (the domain id and the
+/// identifier are still OPEN).
 fn advertised_info_body(intent: &DepositIntent) -> serde_json::Value {
     mock_circle::info_body_for(
         intent.remote_domain(),

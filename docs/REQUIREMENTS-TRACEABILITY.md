@@ -1,0 +1,173 @@
+# Requirements traceability index
+
+This index maps every short requirement / invariant / decision id that agents and reviewers
+navigate by to the code that implements it and the test that verifies it. **Inline code comments
+deliberately carry plain-English prose, not these ids** — the ids live here (and are defined in
+`docs/spec/GLOSSARY.md`); a tripwire test
+(`crates/xusdc-encoding/tests/comment_hygiene_tripwire.rs`) keeps them out of comments.
+Rows name procedures/functions and test names, never line numbers, so they survive refactoring.
+
+## Circle requirements — `CIR-*`
+
+| Id | Meaning | Implementing proc/function (file) | Verifying test |
+|---|---|---|---|
+| CIR-ADMIN-3 | Role rotation: the Domain Manager rotates the Domain Pauser with the owner as backstop, via `grant_role`/`revoke_role` over a build-seeded, frozen delegation graph | `seeded_dom_roles_rbac` (`crates/xusdc-encoding/src/account/xreserve/builder/rbac_seed.rs`); also the grant/revoke note scripts (`asm/standards/notes/`) | `dom_manager_rotates_pauser_revoke_then_grant` (`tests/role_admin.rs`) and 8 others |
+| CIR-ADMIN-4 | Pausing halts both deposits (mint) and withdrawals (burn-consume) | `pause` / `unpause` (`asm/standards/xreserve/pause_admin.masm`); the `is_paused` slot is composed by `XReserveStablecoinBuilder::build_components` (`crates/xusdc-encoding/src/account/xreserve/builder/mod.rs`) | `dom_pauser_pause_halts_mint` + `dom_pauser_pause_halts_burn` (`tests/pause_admin.rs`) and 4 others |
+| CIR-FEE-3 | xUSDC uses 6 decimals; the amount reducer scales to 6 dp | decimals guard in `XReserveStablecoinBuilder::build_components` (`builder/mod.rs`); `uint256_to_asset_amount` (`crates/xusdc-encoding/src/xreserve/encoding/amount.rs`) | `build_rejects_wrong_decimals` (`tests/builder_api.rs`); `tv_amt_1_in_bound_scale6` (`amount.rs`) |
+| CIR-API-4 | Circle API rate ceilings: 5 QPS per IP, 35 QPS global | `RateGovernor::new` (`crates/xreserve-deposit-relayer/src/circle/rate.rs`); wired by `CircleClient::from_config` (`src/circle/mod.rs`) | `client_from_config_wires_the_documented_rate_ceilings_and_no_auth` (`tests/circle_transport_contract.rs`) and the rate-governor suite |
+| CIR-MINT-PRE-2 | DepositIntent `magic` must match (the bad-magic reject; R-MINT-1) | `parse_deposit_intent` (`asm/standards/xreserve/encoding/mod.masm`), `ERR_DI_BAD_MAGIC`; Rust `parse_deposit_intent_header` (`deposit_intent.rs`) | `tv_dual_3_parse_deposit_intent` (`tests/masm_dual.rs`, vector `di-rej-bad-magic`) |
+| CIR-MINT-PRE-3 | DepositIntent `version` must match (R-MINT-2) | `parse_deposit_intent` (`encoding/mod.masm`), `ERR_DI_BAD_VERSION`; Rust `parse_deposit_intent_header` | `tv_dual_3_parse_deposit_intent` (vector `di-rej-bad-version`) |
+| CIR-MINT-PRE-4 | `amount` must be non-zero (R-MINT-3; the same zero-field assert covers `localToken`/`localDepositor`) | `parse_deposit_intent` (`encoding/mod.masm`), `ERR_DI_ZERO_FIELD` | `tv_dual_3_parse_deposit_intent` (vector `di-rej-zero-amount`) |
+| CIR-MINT-PRE-8 | Reduced `amount >= maxFee` (R-MINT-10) | `assert_mint_amounts` (`asm/standards/xreserve/deposit_intent_parser.masm`); Rust `reduced_ge` (`amount.rs`) | `mint_rejects_an_amount_below_max_fee` (`tests/mint_policy_e2e.rs`); `tv_amt_5_reduced_ge` |
+| CIR-MINT-PRE-11 | Total length relation `len == 240 + hookDataLen` (R-MINT-8) | `parse_deposit_intent` (`encoding/mod.masm`), `ERR_DI_LENGTH` | `tv_dual_3_parse_deposit_intent` (vectors `di-rej-length-mismatch` / `di-rej-truncated`) |
+
+## Invariants — `INV-*`
+
+| Id | Meaning | Implementing proc/function (file) | Verifying test |
+|---|---|---|---|
+| INV-MINT-SECURITY | The attestation mint policy is the faucet's only supply-increasing gate | `check_policy` (`asm/standards/xreserve/mint_policy.masm`); active-policy validation in `XReserveStablecoinBuilder::build_components` (`builder/mod.rs`) | `active_mint_policy_is_the_attestation_policy` + `mint_deny_guard_is_fully_dissolved` (`tests/wave1_recomposition.rs`) and 4 others |
+| INV-DEPOSIT-ATTESTATION-RAW-KECCAK | Raw secp256k1 ECDSA over `keccak256(full payload)`, 65-byte `r‖s‖v`, `v` unused — not EIP-712 | `verify_attestation` (`asm/standards/xreserve/attestation_verify.masm`); relayer `validate_attestation_envelope` (`crates/xreserve-deposit-relayer/src/validate/envelope.rs`) | `t_rly_20_reject_non_raw_keccak_digest` (`tests/envelope_validate.rs`) and 9 others |
+| INV-CIRCLE-CANONICAL-WITHDRAWAL | Circle's returned burn spec must match the burn note field-by-field before anything is signed; mismatch = do-not-sign abort | `validate_returned` / `sign_validated` (`crates/withdrawal-listener-attester/src/validate.rs`) | `validate_returned_rejects_amount_mismatch` (`tests/validate.rs`), `a_b5_spec_mismatch_produces_no_signature_and_no_withdraw` (`tests/listener_orchestration.rs`) and 12 others |
+| INV-PUBLIC-BURN-OBSERVABILITY | The burn note is Public with its payload in `NoteStorage.items` and a fixed 32-bit tag | `XReserveBurnNote::create` (`crates/xusdc-encoding/src/note/xreserve_burn.rs`); listener `validate_discovery` (`src/validate.rs`) | `burn_note_is_public_with_fixed_tag` (`tests/xreserve_burn.rs`) and 4 others |
+| INV-OFFCHAIN-BURN-SIGNING | Burn signing is off-chain: ECDSA over Circle's `messageHashToSign`, opaque-and-sign, with a 2-signature quorum | `sign` / `assemble_quorum` (`crates/withdrawal-listener-attester/src/attester.rs`) | `sign_signs_the_digest_opaquely_recoverable_to_the_signer` (`tests/offchain_signing.rs`) and 12 others |
+| INV-REMOTEDEPOSITOR-VS-SOURCEDEPOSITOR | `remoteDepositor` = the burn note's sender (as bytes32); `sourceDepositor` is Circle's to fill and is never sent | `build_prepare_request` (`crates/withdrawal-listener-attester/src/withdrawal_api.rs`); `PrepareBurnIntentInput` (`src/circle/schema/intents.rs`) has no sourceDepositor field | `serialized_request_has_no_source_depositor_key` + `remote_depositor_is_dc6_of_sender` (`tests/build_prepare_request.rs`) and others |
+| INV-BURN-EVIDENCE-TRUST | Retrievable ≠ proved: the consumption claim is node-trusted and labeled per element; ambiguity fails closed | `assemble_evidence` / `full_block_upgrade` (`crates/withdrawal-listener-attester/src/evidence.rs`) | `the_burn_happened_claim_is_node_trusted_however_strong_the_creation_proof_is` (`tests/evidence_trust_labeling.rs`) and ~20 others |
+| INV-TWO-BLOCK-BURN | A burn note is created in block N and consumed in block ≥ N+1; a same-block create+consume is erased | `assemble_evidence` (`src/evidence.rs`) refuses a spend at/before the creation block | `a_spend_at_or_before_the_creation_block_is_refused` (`tests/evidence_trust_labeling.rs`); `production_burn_note_same_block_consume_is_erased` (`tests/xreserve_burn.rs`) |
+| INV-DEPOSITINTENT-PARSE | Fixed-offset 240-byte header = 60 u32-LE-packed felts plus hookData; all field asserts; read-only input | `parse_deposit_intent` (`encoding/mod.masm`); Rust `parse_deposit_intent_header` (`deposit_intent.rs`); relayer `decode_and_validate_deposit_intent` (`src/validate/deposit_intent.rs`) | `tv_dual_3_parse_deposit_intent` (`tests/masm_dual.rs`) and the relayer `deposit_intent_validate.rs` suite |
+| INV-BURN-SENDER-PRIVACY-LEAK | The burner's id is exposed in `metadata.sender` by protocol; read it exactly as the depositor, never defaulted | `read_sender` (`crates/withdrawal-listener-attester/src/note_decode.rs`) | `t_la_04_sender_is_read_from_metadata` (`tests/note_decode.rs`) and 3 others |
+| INV-UINT256-TO-ASSETAMOUNT | uint256 reduction: assert high half zero, floor-divide by 10^scale, cap at `AssetAmount::MAX`; trap, never saturate | `uint256_to_asset_amount` (`encoding/mod.masm` + Rust `amount.rs`) | `tv_dual_2_uint256_reducer` (`tests/masm_dual.rs`) and the `tv_amt_1..7` unit tests |
+| INV-NOTE-MODEL-CURRENT | The u32-LE preimage (60 header felts plus packed hookData) must fit the 1024-felt `NoteStorage` bound | relayer `decode_and_validate_deposit_intent` (`src/validate/deposit_intent.rs`, `PreimageTooLarge`); `deposit_intent_to_packed_felts` (`deposit_intent.rs`) | `t_rly_11_oversized_preimage_rejected` (`tests/deposit_intent_validate.rs`) and the exact-1024 accept twin |
+| INV-BYTES32-HASH-TO-WORD | bytes32 → Word via Poseidon2 `hash_elements` over the 8 u32-LE limbs (the fallible native conversion is not used on this path) | `bytes32_to_key` (`encoding/mod.masm`); Rust `bytes32_to_storage_map_key` (`bytes32.rs`) | `tv_dual_1_bytes32_to_key` (`tests/masm_dual.rs`) and the TV-B32 unit tests |
+| INV-ACCOUNTID-ENCODING | AccountId ↔ bytes32 is lossless with a fail-closed decode; any non-zero pad byte rejects | `account_id_to_bytes32` / `bytes32_to_account_id` (`crates/xusdc-encoding/src/xreserve/encoding/account_id.rs`) | `tv_aid_1_roundtrip_lossless` (`account_id.rs`) and 4 others |
+
+## Decisions and deviations — `DEV-*` / `IMPL-DEV-*` / `DEC-*`
+
+`DEV-*` are Circle-owned items that remain OPEN — the code implements a provisional,
+documented position and nothing here marks them resolved.
+
+| Id | Meaning | Implementing proc/function (file) | Verifying test |
+|---|---|---|---|
+| DEV-1 | OPEN: verify deposit attestations against a supplied pubkey + Poseidon2-commitment allowlist instead of EVM `ecrecover` | `verify_attestation` (`asm/standards/xreserve/attestation_verify.masm`) | `mint_rejects_a_non_allowlisted_attester` (`tests/mint_policy_e2e.rs`) and 6 others |
+| DEV-5 | OPEN: cap `amount` at `AssetAmount::MAX` at 6-dp scale (provisional scale-0 identity); exact cap/scale/dust tolerance await Circle | `uint256_to_asset_amount` (`encoding/mod.masm` + Rust `amount.rs`); `DEPOSIT_SCALE_EXP` (`mint_policy.masm`) | `tv_dual_2_uint256_reducer` (`tests/masm_dual.rs`) and 8 others incl. the `mint_scale_conformance.rs` identity suite |
+| DEV-6 | OPEN: bound `hookData` length — default cap is the 1024-felt `NoteStorage` limit | `deposit_intent_to_packed_felts` (`deposit_intent.rs`); MASM length relation in `parse_deposit_intent` | `tv_di_7_sixty_felts_and_1024_bound` (`deposit_intent.rs`) |
+| DEV-7 | OPEN: the burn-evidence package proving a completed burn to Circle (burnTxId + note id + nullifier + block num + trust labels) | `assemble_evidence` (`crates/withdrawal-listener-attester/src/evidence.rs`) | `the_package_carries_the_documented_per_element_proof_strengths` (`tests/evidence_trust_labeling.rs`) and 15 others |
+| DEV-8 | OPEN: permissionless relay + single custom mint path; the MVP rejects any nonzero `feeAmount` (relayer-fee split awaits Circle) | the fee gate in `assert_mint_amounts` (`deposit_intent_parser.masm`) | `stock_mint_note_rejects_a_nonzero_fee` (`tests/wave1_recomposition_e2e.rs`) and 3 others |
+| DEV-9 | OPEN: key `usedNonces` by a Poseidon2 hash-to-Word of the nonce; the used marker stays a plain flag | `assert_nonce_unused` (`deposit_intent_parser.masm`); marker SET in `check_policy` (`mint_policy.masm`) | `d5c_replay_rejects` (`tests/masm_mint_shell.rs`) and 3 others |
+| DEV-10 | OPEN: AccountId-as-bytes32 via the right-aligned layout (16 zero bytes ‖ prefix u64 BE ‖ suffix u64 BE), lossless, no keccak fallback | `account_id_to_bytes32` / `bytes32_to_account_id` (`account_id.rs`) | `tv_aid_1_roundtrip_lossless` and 4 others |
+| IMPL-DEV-1 | The sole pause surface is the custom DOM_PAUSER path; the stock owner-gated pause manager is not installed | pause-provenance seam in `XReserveStablecoinBuilder::build_components` (`builder/mod.rs`); procs in `pause_admin.masm` | `builder_installs_no_stock_pause_manager` (`tests/builder_api.rs`) and 2 others |
+| IMPL-DEV-6 | Attestation uses Poseidon2 pubkey commitment + keccak256 precompile + `verify_prehash`; the signature `v` byte is unused | `verify_attestation` (`attestation_verify.masm`); `pubkey_commitment` (`encoding/mod.masm`) | `tv_dual_5_pubkey_commitment` (`tests/masm_dual.rs`) and 5 others |
+| IMPL-DEV-12 | The AccountId-out-of-range error message describes the shipped 16-byte-padded right-aligned bytes32 layout | `Display` for `EncodingError::AccountIdOutOfRange` (`crates/xusdc-encoding/src/xreserve/encoding/error.rs`) | `account_id_out_of_range_message_names_16_byte_region` (`account_id.rs`) |
+| IMPL-DEV-24 | The runtime `set_role_admin` note is removed from the note allowlist; the role-delegation graph is build-seeded and frozen (stock proc present-but-unreachable) | `XReserveStablecoinBuilder::allowed_note_scripts` (`builder/mod.rs`); seed in `seeded_dom_roles_rbac` (`builder/rbac_seed.rs`) | `set_role_admin_former_note_root_is_not_admissible_via_either_allowlist` (`tests/account_surface_unreachable.rs`) and 4 others |
+| DEC-2 | Keep-zero fee decision: the `feeAmount == 0` gate is the shipped MVP fee behavior (no relayer-credit leg) | `assert_mint_amounts` (`deposit_intent_parser.masm`) | `stock_mint_note_rejects_a_nonzero_fee` (`tests/wave1_recomposition_e2e.rs`) |
+| DEC-4 | Runtime init minimized to identifier-only (`identifier_init`); the other three domain-config fields are build-seeded with no runtime writer | `init_identifier` (`identifier_init.masm`); seeding via `XReserveStablecoinBuilder::with_domain_config` (`builder/mod.rs`) | `identifier_init_reinit_traps_and_leaves_config_unchanged` (`tests/identifier_init.rs`) and 10 others |
+
+## Reject conditions — `R-MINT-*` / `R-BURN-*` / `R-ADMIN-*`
+
+| Id | Condition | ERR symbol | Implementing proc/function (file) | Verifying test |
+|---|---|---|---|---|
+| R-MINT-1 | DepositIntent `magic` matches the expected constant | `ERR_DI_BAD_MAGIC` | `parse_deposit_intent` (`asm/standards/xreserve/encoding/mod.masm`) | `r_mint_rejects::case::r_mint_1_bad_magic` (`tests/masm_mint_shell.rs`) and 1 other |
+| R-MINT-2 | DepositIntent `version` equals the supported version (1) | `ERR_DI_BAD_VERSION` | `parse_deposit_intent` (`encoding/mod.masm`) | `r_mint_rejects::case::r_mint_2_bad_version` and 1 other |
+| R-MINT-3 | `amount` is non-zero | `ERR_DI_ZERO_FIELD` | `parse_deposit_intent` (`encoding/mod.masm`) | `r_mint_rejects::case::r_mint_3_zero_amount` and 1 other |
+| R-MINT-4 | `localToken` is non-zero | `ERR_DI_ZERO_FIELD` | `parse_deposit_intent` (`encoding/mod.masm`) | `r_mint_rejects::case::r_mint_4_zero_local_token` and 1 other |
+| R-MINT-5 | `localDepositor` is non-zero | `ERR_DI_ZERO_FIELD` | `parse_deposit_intent` (`encoding/mod.masm`) | `r_mint_rejects::case::r_mint_5_zero_local_depositor` and 1 other |
+| R-MINT-6 | `remoteDomain` equals the faucet's configured domain | `ERR_XRESERVE_WRONG_DOMAIN` | `assert_deposit_intent` (`deposit_intent_parser.masm`) | `r_mint_rejects::case::r_mint_6_wrong_domain` and `mint_rejects_a_wrong_domain` (`tests/mint_policy_e2e.rs`) |
+| R-MINT-7 | `remoteToken`, hashed to a key, equals the configured identifier key | `ERR_XRESERVE_WRONG_IDENTIFIER` | `assert_deposit_intent` (`deposit_intent_parser.masm`) | `r_mint_rejects::case::r_mint_7_wrong_identifier` and `mint_rejects_a_wrong_identifier` |
+| R-MINT-8 | Total preimage length equals `240 + hookDataLen` | `ERR_DI_LENGTH` | `parse_deposit_intent` (`encoding/mod.masm`) | `tv_dual_3_parse_deposit_intent` (`tests/masm_dual.rs`, length/truncation vectors) and the Rust vector tests |
+| R-MINT-9 | Reduced `amount`/`maxFee`/`feeAmount` fit ≤ 2^128 (high four limbs zero) | `ERR_X_TOO_LARGE` | `uint256_to_asset_amount` (`encoding/mod.masm`), consumed via `assert_mint_amounts` → `reduce_uint256_field` | `d5b_amount_fee_rejects::case::r_mint_9_amount_overflow` (+ maxfee/fee twins) and `tv_dual_2_uint256_reducer` |
+| R-MINT-10 | Reduced `amount >= maxFee` | `ERR_XRESERVE_AMOUNT_BELOW_FEE` | `assert_mint_amounts` (`deposit_intent_parser.masm`) | `d5b_amount_fee_rejects::case::r_mint_10_amount_below_fee` and 2 others |
+| R-MINT-11 | Reduced `feeAmount <= maxFee` — subsumed by the MVP `feeAmount == 0` gate | `ERR_XRESERVE_FEE_NONZERO` | `assert_mint_amounts` (`deposit_intent_parser.masm`) | `d5b_amount_fee_rejects::case::r_mint_11_fee_over_maxfee` and `stock_mint_note_rejects_a_nonzero_fee` |
+| R-MINT-12 | The DepositIntent `nonce` has not been used before (replay guard) | `ERR_XRESERVE_NONCE_REPLAY` | `assert_nonce_unused` (`deposit_intent_parser.masm`) | `d5c_replay_rejects` (`tests/masm_mint_shell.rs`) and 2 others |
+| R-MINT-13 | The attester's pubkey commitment is enabled in the `xReserveAttesters` allowlist | `ERR_XRESERVE_BAD_PK_COMMITMENT` | `verify_attestation` (`attestation_verify.masm`) | `d5d_non_allowlisted_rejects` and 3 others |
+| R-MINT-14 | The ECDSA signature verifies over `keccak256(payload)` for that pubkey | `ERR_XRESERVE_SIG_INVALID` | `verify_attestation` (`attestation_verify.masm`) | `d5d_forged_sig_rejects` and 2 others |
+| R-MINT-15 | `token_supply + amount <= max_supply` and `max_supply <= AssetAmount::MAX` (supply cap) | stock `ERR_FUNGIBLE_ASSET_DISTRIBUTE_AMOUNT_EXCEEDS_MAX_SUPPLY` | stock `distribute` (upstream `fungible.masm`), composed by `XReserveStablecoinBuilder::build_components` (`builder/mod.rs`) | `mint_rejects_an_over_cap_amount` (`tests/mint_policy_e2e.rs`) and 2 others |
+| R-MINT-16 | The stock `mint_and_send` cannot raise supply ungated — every mint passes the attestation mint policy | `XReserveStablecoinBuilderError::MissingAttestationMintPolicy` (build-time); runtime = `check_policy`'s pipeline errors | `XReserveStablecoinBuilder::build_components` (`builder/mod.rs`); `check_policy` (`mint_policy.masm`) | `build_rejects_missing_attestation_mint_policy` (`tests/builder_api.rs`) and 3 others |
+| R-BURN-1 | Burn `amount > 0` (zero burns rejected via the ≥ 1 floor invariant) | stock `ERR_BURN_AMOUNT_BELOW_MIN_BURN_AMOUNT`; floor guards `MinBurnSizeBelowFloor` (builder) and `ERR_XRESERVE_MIN_BURN_BELOW_FLOOR` (note) | stock `check_policy` (upstream `min_burn_amount.masm`); floor kept ≥ 1 by `build_components` + `xreserve_set_min_burn_size_note.masm` | `burn_zero_amount_rejects` (`tests/burn_policy.rs`) and 3 others |
+| R-BURN-2 | Burn `amount >= minBurnSize` | stock `ERR_BURN_AMOUNT_BELOW_MIN_BURN_AMOUNT` | stock `check_policy` (upstream), installed as the active burn policy by the builder | `burn_below_min_rejects` (`tests/burn_policy.rs`) and 3 others |
+| R-BURN-3 | A paused faucet halts the burn (stock wrapper gate before the policy) | stock `ERR_PAUSABLE_IS_PAUSED` | stock `execute_burn_policy` (upstream); pause flag driven by `pause`/`unpause` (`pause_admin.masm`) | `burn_paused_rejects` (`tests/burn_policy.rs`) and 3 others |
+| R-BURN-4 | A same-block create+consume erases the burn note; the design requires a two-block burn | structural — no ERR symbol | stock note-inclusion semantics; evidenced at `XReserveBurnNote::create` (`note/xreserve_burn.rs`) | `production_burn_note_same_block_consume_is_erased` (`tests/xreserve_burn.rs`) and 1 other |
+| R-BURN-5 | A burn note cannot exceed the holder's balance (checked at note creation) | structural — no ERR symbol | stock kernel vault check; wiring at `XReserveBurnNote::create` (`note/xreserve_burn.rs`) | `burn_note_insufficient_balance_rejects_create` (`tests/xreserve_burn.rs`) and 1 other |
+| R-BURN-6 | The `XReserveBurnNote` is always Public | structural — the constructor hardcodes Public | `XReserveBurnNote::create` (`note/xreserve_burn.rs`) | `burn_note_is_never_private` (`tests/xreserve_burn.rs`) and 1 other |
+| R-ADMIN-1 | `set_attester` is owner-gated | stock `ERR_SENDER_NOT_OWNER` | `set_attester` (`attester_admin.masm`) | `set_attester_admin_note_owner_writes_and_nonowner_traps` (`tests/f5_admin_notes.rs`) and 2 others |
+| R-ADMIN-2 | `set_min_burn_size` is owner-gated | stock `ERR_SENDER_NOT_OWNER` | stock `set_min_burn_amount` (upstream), targeted by `xreserve_set_min_burn_size_note.masm` | `set_min_burn_plain_non_owner_rejects` (`tests/set_min_burn.rs`) and 3 others |
+| R-ADMIN-3 | `pause`/`unpause` require the DOM_PAUSER role | stock `ERR_SENDER_LACKS_ROLE` | `pause` / `unpause` (`pause_admin.masm`) | `non_dom_pauser_pause_rejects` (`tests/pause_admin.rs`) and 3 others |
+| R-ADMIN-4 | Domain config is init-once: identifier-only runtime init, a second write traps, other fields build-seeded | `ERR_XRESERVE_IDENTIFIER_REINIT` (+ `ERR_XRESERVE_IDENTIFIER_EMPTY` / `ERR_XRESERVE_IDENTIFIER_MISMATCH` hardening) | `init_identifier` (`identifier_init.masm`) | `identifier_init_reinit_traps_and_leaves_config_unchanged` (`tests/identifier_init.rs`) and 2 others |
+
+## Codec decisions — `DC-*`
+
+| Id | Meaning | Implementing proc/function (file) | Verifying test |
+|---|---|---|---|
+| DC-1 | DepositIntent wire format: fixed 240-byte big-endian header + variable `hookData`; on-chain form is 60 u32-LE-packed felts | Rust `parse_deposit_intent_header` / `deposit_intent_to_packed_felts` (`deposit_intent.rs`); MASM `layout.masm` constants consumed by `parse_deposit_intent` (`encoding/mod.masm`) | `masm_rust_constant_parity` (`tests/constant_parity.rs`) and 6 others |
+| DC-2 | `depositAttestation` = the raw 65-byte `r‖s‖v` secp256k1 signature over `keccak256(payload)`, not EIP-712 | Rust `signature_felts` / `keccak_digest_felts` (`attestation.rs`) | `tv_att_3_raw_keccak_not_eip712` (`attestation.rs`) and 1 other |
+| DC-3 | Attester commitment = Poseidon2 over the 16 affine-pubkey felts → one Word; the wire form stays the 33-byte compressed SEC1 key, decompressed before hashing | Rust `pubkey_commitment` / `affine_pubkey_felts` (`attestation.rs`); MASM `pubkey_commitment` (`encoding/mod.masm`) | `tv_dual_5_pubkey_commitment` (`tests/masm_dual.rs`) and 2 others |
+| DC-5 | uint256 → AssetAmount: byte-swap, assert high 4 limbs zero, floor-divide by 10^scale, reject above `AssetAmount::MAX` | Rust + MASM `uint256_to_asset_amount` (`amount.rs` / `encoding/mod.masm`) | `tv_dual_2_uint256_reducer` and 5 others |
+| DC-6 | AccountId ↔ bytes32 packaging via the right-aligned layout; Rust-primary, no MASM counterpart | `account_id_to_bytes32` / `bytes32_to_account_id` (`account_id.rs`) | `tv_aid_1_roundtrip_lossless` and 6 others |
+| DC-7 | `XReserveBurnNote` payload codec `(amount, destDomain, destRecipient, salt)` in `NoteStorage.items`; Rust only | `encode_burn_note_items` / `decode_burn_note_items` (`burn_note.rs`) | `tv_bn_1_round_trip` (`burn_note.rs`) and 4 others |
+| DC-8 | Burn-evidence package assembly (burnTxId + note_id + nullifier + block_num + proof-strength labels); listener-owned | `assemble_evidence` (`crates/withdrawal-listener-attester/src/evidence.rs`) | `the_package_carries_the_four_elements_it_read` (`tests/evidence_trust_labeling.rs`) and 22 others |
+| DC-9 | Circle prepare-withdrawal REQUEST schema + field-mapping builder | `PrepareWithdrawalRequest` (`src/circle/schema/prepare.rs`); `build_prepare_request` (`src/withdrawal_api.rs`) | `happy_path_maps_every_field` (`tests/build_prepare_request.rs`) and 12 others |
+| DC-10 | Circle prepare-withdrawal RESPONSE schema (incl. `messageHashToSign`) | `PrepareWithdrawalResponse` + `PreparedBatch`/`BurnIntent`/`TransferSpec` (`src/circle/schema/intents.rs`) | `prepare_withdrawal_200_round_trips_through_the_batches_wrapper` (`tests/wire_roundtrip.rs`) and others |
+| DC-11 | Burn-signature quorum contract: sign the opaque `messageHashToSign` raw, exactly 2 verifying signatures, strictly ascending signer order | `sign` / `assemble_quorum` (`src/attester.rs`) | `assembles_exactly_two_ascending_verifying_signatures` (`tests/quorum_assembly.rs`) and 24+ others |
+
+## Golden dual-implementation vectors — `TV-DUAL-*`
+
+| Id | Meaning | Implementing proc/function (file) | Verifying test |
+|---|---|---|---|
+| TV-DUAL-1 | Rust and MASM produce the identical bytes32 key Word on every vector | `bytes32_to_storage_map_key` (`bytes32.rs`); `bytes32_to_key` (`encoding/mod.masm`) | `tv_dual_1_bytes32_to_key` (`tests/masm_dual.rs`) |
+| TV-DUAL-2 | Rust and MASM produce the identical reduced amount / trap on every reducer vector | `uint256_to_asset_amount` (both sides) | `tv_dual_2_uint256_reducer` |
+| TV-DUAL-3 | Rust and MASM agree on DepositIntent accept/reject and the 60-felt preimage | `deposit_intent_to_packed_felts` / `parse_deposit_intent_header` (Rust); `parse_deposit_intent` (MASM) | `tv_dual_3_parse_deposit_intent` |
+| TV-DUAL-4 | Burn-note items emit-vs-encode parity within Rust (no MASM burn-item codec exists) | `encode_burn_note_items` (`burn_note.rs`) vs the emitted note | `burn_note_emitted_items_match_codec_vectors` (`tests/xreserve_burn.rs`) |
+| TV-DUAL-5 | Rust and MASM produce the identical attestation felts and `pubkey_commitment` Word | `pubkey_commitment` (both sides) | `tv_dual_5_pubkey_commitment` |
+
+## Component labels, stages, naming, and open questions (residual group)
+
+| Id | Meaning | Implementing proc/function (file) | Verifying test |
+|---|---|---|---|
+| D5a | Mint stage: structural parse + domain/identifier compares | `assert_deposit_intent` (`deposit_intent_parser.masm`) | `r_mint_rejects` (parameterized, `tests/masm_mint_shell.rs`) and 3 others |
+| D5b | Mint stage: amount/maxFee/feeAmount reduction + bounds (incl. the fee-zero gate) | `assert_mint_amounts` (`deposit_intent_parser.masm`) | `d5b_amount_fee_rejects` and 4 others |
+| D5c | Mint stage: nonce replay guard, assert-zero only | `assert_nonce_unused` (`deposit_intent_parser.masm`) | `d5c_replay_rejects` and 3 others |
+| D5d | Mint stage: attestation verify (keccak, allowlist gate, ECDSA) | `verify_attestation` (`attestation_verify.masm`) | `d5d_happy_attestation` and 4 others |
+| D5e | Mint stage: atomic write effects — the `check_policy` accept path (nonce SET + assert-match) gating the stock `mint_and_send` | `check_policy` (`mint_policy.masm`) | `stock_mint_note_mints_the_attested_amount` (`tests/wave1_recomposition_e2e.rs`) and 3 others |
+| NS-1 | Frozen naming: the canonical bytes32→Word MASM proc is `xreserve::encoding::bytes32_to_key`; the Rust routine keeps `bytes32_to_storage_map_key` | both procs as named | `tv_dual_1_bytes32_to_key` |
+| NS-2 | Frozen ownership: the shared DepositIntent parser is encoding-owned; the faucet parser adds only mint-specific asserts by reference | `parse_deposit_intent` (`encoding/mod.masm`), consumed by `assert_deposit_intent` | `tv_dual_3_parse_deposit_intent` |
+| Q-DOM-1 | OPEN: which remote-domain id Circle assigns Miden — every domain value is a placeholder | `ListenerConfig::miden_domain` (`src/config.rs`) and the relayer counterpart | `rejects_when_remote_domain_below_minimum` (`tests/build_prepare_request.rs`) and 2 others |
+| Q-DOM-2 | OPEN: the forwarding scope — no forwarding invented (`useCircleForwarding=false`, options omitted) | `build_prepare_request` (`src/withdrawal_api.rs`) | `happy_path_maps_every_field` |
+| Q-DOM-3 | OPEN: `sourceDepositor` is Circle-assigned server-side; the partner never populates it | `PrepareWithdrawalRequest` (`src/circle/schema/prepare.rs`) | `serialized_request_has_no_source_depositor_key` and 1 other |
+| Q-CRY-2 | OPEN: `messageHashToSign` is treated as an opaque digest and signed as-is | `sign` (`src/attester.rs`); flow gate `sign_validated` (`src/validate.rs`) | `sign_signs_the_digest_opaquely_recoverable_to_the_signer` and 12 others |
+| Q-CRY-3 | OPEN: whether Circle registers the AccountId-in-bytes32 packaging for `remoteRecipient` | `account_id_to_bytes32` (`account_id.rs`) | `tv_aid_1_roundtrip_lossless` and 3 others |
+| Q-CRY-4 | OPEN: whether the AccountId encoding also applies to `remoteToken`/the identifier — provisional: identifier = the faucet's own id as bytes32 | `compute_own_identifier_key` (`identifier_init.masm`); Rust `identifier_for` (`note/xreserve_admin/config.rs`) | `identifier_init_owner_writes_the_own_id_key` (`tests/identifier_init.rs`) and 2 others |
+| Q-CRY-5 | OPEN: nonce keyed by Poseidon2 commitment; the used marker stays a plain non-empty flag | `assert_nonce_unused` (`deposit_intent_parser.masm`); `NONCE_USED_MARKER` (`mint_policy.masm`) | `d5c_replay_rejects` and 3 others |
+| Q-CRY-6 | OPEN: the exact amount cap/scale — provisional `AssetAmount::MAX` cap at 6-dp denomination | `uint256_to_asset_amount` (`encoding/mod.masm`) | `mint_rejects_an_over_cap_amount` and 2 others |
+| CMP-A6 | `XReserveDomainConfig` — the domain-config fields (three build-seeded, identifier note-initialized) | `XReserveStablecoinBuilder::with_domain_config` (`builder/mod.rs`) | `build_seeds_the_domain_config_slots` (`tests/builder_api.rs`) and 1 other |
+| CMP-A10 | The burn security policy on every `receive_and_burn` — the stock `MinBurnAmount::check_policy` with the ≥1 floor | stock `MinBurnAmount`, wired by `build_components` (`builder/mod.rs`) | `burn_below_min_rejects` (`tests/burn_policy.rs`) and 6 others |
+| CMP-A15 | `XReserveStablecoinBuilder` — composes the faucet account and rejects invalid wiring at build time | `XReserveStablecoinBuilder::build_components` (`builder/mod.rs`) | `build_produces_attestation_gated_public_faucet` (`tests/builder_api.rs`) and the `build_rejects_*` family |
+| CMP-B1 | The mint-note transport — the stock `MintNote` carrying the xUSDC attachments | `XUsdcMintNote::create` (`note/xreserve_mint.rs`) | `stock_mint_note_mints_the_attested_amount` and 3 others |
+| CMP-B2 | `XReserveBurnNote` construction — the public withdrawal-evidence note | `XReserveBurnNote::create` (`note/xreserve_burn.rs`) | `burn_note_emitted_items_match_codec_vectors` and 6 others |
+| CMP-B3 | Burn-note consumption via the stock `receive_and_burn` | `XReserveBurnNote::script` → stock `receive_and_burn` (`note/xreserve_burn.rs`) | `burn_note_consumed_by_faucet_decrements` and 2 others |
+| CMP-C1 | The off-chain deposit-attestation relayer service (poll → validate → build → submit → record) | `run_relayer_cycle` (`crates/xreserve-deposit-relayer/src/cycle/mod.rs`) | `one_cycle_fetches_validates_builds_submits_records_and_advances` (`tests/cycle_pipeline.rs`) and 11 others |
+| CMP-C2 | The off-chain burn listener — discovers burn notes, validates, drives the withdrawal flow | `run_once` (`crates/withdrawal-listener-attester/src/listener/mod.rs`) | `happy_path_b3_to_b10_submits_exactly_one_withdrawal_with_two_signatures` (`tests/listener_orchestration.rs`) and 15 others |
+| CMP-C3 | The off-chain burn attester — assembles the exactly-threshold verified signature quorum | `assemble_quorum` (`src/attester.rs`) | `assembles_exactly_two_ascending_verifying_signatures` and 9 others |
+| CMP-D1 | Circle `GET /v1/info` discovery driver | `fetch_info` (`src/circle/info.rs`) | `with_the_fast_fail_on_info_is_fetched_once_per_cycle` (`tests/cycle_fast_fail.rs`) and 2 others |
+| CMP-D3 | Circle attestation fetch by message hash / tx hash (retry re-fetch path) | `fetch_attestation_by_message_hash` / `fetch_attestations_by_tx_hash` (`src/circle/attestation_fetch.rs`) | `a_transient_failure_is_retried_across_cycles_not_stranded_behind_the_cursor` (`tests/cycle_recovery.rs`) and 3 others |
+| CMP-D4 | Circle remote-domain attestation batch poll with cursor pagination | `poll_remote_domain_attestations` (`src/circle/attestation_fetch.rs`) | `the_next_cycle_polls_from_the_persisted_cursor` (`tests/cycle_pipeline.rs`) and 1 other |
+| CMP-D5 | Circle prepare-withdrawal request builder + read-only driver | `prepare` / `build_prepare_request` (`src/withdrawal_api.rs`) | `prepare_posts_the_batches_wrapper_and_decodes_the_response` (`tests/submit_withdraw.rs`) and 3 others |
+| CMP-D6 | Circle withdraw submission — wrapper, pre-submit fund-safety gate, production submit path | `submit_withdraw` (`src/submit.rs`); `build_withdraw_request` + `authorize_submission` (`src/withdrawal_api.rs`) | `withdraw_submits_the_wrapper_and_decodes_the_201_array` (`tests/submit_withdraw.rs`) and 9 others |
+| CMP-D7 | Circle withdrawal status poll across the full status enum | `poll_status` / `poll_status_once` (`src/withdrawal_api.rs`) | `every_status_enum_value_round_trips_through_a_single_poll` (`tests/status_poll.rs`) and 13 others |
+| CMP-F2 | The owner-gated `set_min_burn_size` setter (note-driven, floor-guarded, calls the stock setter) | `main` (`asm/standards/notes/xreserve_set_min_burn_size_note.masm`) | `set_min_burn_owner_succeeds` (`tests/set_min_burn.rs`) and 7 others |
+| CMP-F3 | The custom DOM_PAUSER-gated pause/unpause | `pause` / `unpause` (`pause_admin.masm`) | `dom_pauser_pause_halts_mint` (`tests/pause_admin.rs`) and 10 others |
+| CMP-F5 | Role management: grant/revoke rotation plus the build-seeded, frozen `DOM_PAUSER.admin_role = DOM_MANAGER` delegation | `seeded_dom_roles_rbac` (`builder/rbac_seed.rs`) | `shipped_delegation_reads_back` (`tests/role_admin.rs`) and 6 others |
+| R2-F4 | Process label: the governance scan asserting no source line marks the Circle-owned amount-cap decision resolved | the guard itself (`tests/module_split_doc_hygiene.rs`) | `dev5_stays_open_in_the_wave1_sources` |
+
+## Residue — banned tokens deliberately left in exempt surfaces
+
+These surfaces are byte-frozen or parked, so their internal tokens are NOT cleaned by the
+comment-humanization pass and are excluded from the tripwire scan. Counts are matching lines at
+the branch point; each surface belongs to a later authorized pass.
+
+| Surface | Token lines | Disposition |
+|---|---|---|
+| `crates/xusdc-encoding/tests/constant_parity.rs` | 30 | frozen conformance tripwire — future comment-only micro-slice |
+| `crates/xusdc-encoding/tests/account_callable_surface.rs` | 16 | frozen conformance tripwire — future comment-only micro-slice |
+| `crates/xusdc-encoding/tests/basic_asset_tripwire.rs` | 2 | frozen conformance tripwire — future comment-only micro-slice |
+| `crates/xusdc-encoding/src/vectors.rs` | 3 | golden-vector loader, frozen with its data |
+| `crates/xusdc-encoding/tests/vectors/*.json` | 106 | golden-vector data (ids are data, not comments) |
+| `crates/xusdc-validation/**` | 149 lines / 40 files | parked crate (out of `workspace.members`, pledged byte-intact) — the un-park slice owns its cleanup |
+| `crates/xusdc-encoding/tests/fixtures/pinned-standards/PROVENANCE.md` | 1 | byte-pinned upstream fixture provenance record |

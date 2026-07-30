@@ -1,22 +1,23 @@
-//! `T-LA-13` — the **`409` conflict-recovery** contract on `POST /v1/withdraw` (§10.10).
+//! The **`409` conflict-recovery** contract on `POST /v1/withdraw`.
 //!
 //! A duplicate `burnTxId` must NEVER be reported as a success, and must NEVER be blindly re-sent —
 //! either mistake releases native USDC twice.
 //!
 //! # Non-vacuity: the mock's CALL LOG is the oracle
 //!
-//! An outcome assertion alone proves nothing about what went on the wire — a driver that re-POSTed and
-//! then returned a tidy outcome would pass it. So every case asserts on the call log: the exact number
-//! of `POST /v1/withdraw` attempts, and the exact number (and path) of `GET /v1/withdrawal/{id}`
-//! recoveries. The mock's reply queue REPEATS its last element forever, so a blind re-send genuinely
-//! could happen and genuinely would be counted.
+//! An outcome assertion alone proves nothing about what went on the wire — a driver that re-POSTed
+//! and then returned a tidy outcome would pass it. So every case asserts on the call log: the exact
+//! number of `POST /v1/withdraw` attempts, and the exact number (and path) of `GET
+//! /v1/withdrawal/{id}` recoveries. The mock's reply queue REPEATS its last element forever, so a
+//! blind re-send genuinely could happen and genuinely would be counted.
 //!
 //! # The binding is per-burn, and that is what the multi-burn cases are for
 //!
-//! A `POST /v1/withdraw` carries 1-5 batches; a `409` names ONE `burnTxId`. So "which burn does this
-//! conflict bind to?" is a real question the moment a request carries more than one — and answering it
-//! "any of them" would let a conflict about burn A settle burn B with no Circle evidence for B at all.
-//! Every recovery case below is therefore run multi-burn as well as single-burn.
+//! A `POST /v1/withdraw` carries 1-5 batches; a `409` names ONE `burnTxId`. So "which burn does
+//! this conflict bind to?" is a real question the moment a request carries more than one — and
+//! answering it "any of them" would let a conflict about burn A settle burn B with no Circle
+//! evidence for B at all. Every recovery case below is therefore run multi-burn as well as
+//! single-burn.
 
 use assert_matches::assert_matches;
 use rstest::rstest;
@@ -34,7 +35,7 @@ use submit_support::mock_circle::{Endpoint, MockCircle, Reply, Script};
 use submit_support::*;
 
 // ================================================================================================
-// THE 409 CONTRACT — never success, never a blind re-send (§10.10)
+// THE 409 CONTRACT — never success, never a blind re-send
 // ================================================================================================
 
 /// The recovery path: a 409 carrying `conflict.withdrawalId` is resolved by POLLING
@@ -106,8 +107,8 @@ async fn a_409_never_yields_the_submitted_success_variant(#[case] body: Value) {
     );
 }
 
-/// Only `conflict.burnTxId` → stop resubmission and mark reconciliation required. No poll (there is no
-/// id to poll), no second POST.
+/// Only `conflict.burnTxId` → stop resubmission and mark reconciliation required. No poll (there is
+/// no id to poll), no second POST.
 #[tokio::test]
 async fn a_409_with_only_a_burn_tx_id_stops_and_marks_reconciliation_required() {
     let mock = MockCircle::start(
@@ -139,8 +140,8 @@ async fn a_409_with_only_a_burn_tx_id_stops_and_marks_reconciliation_required() 
     );
 }
 
-/// A 409 body echoing a DIFFERENT `burnTxId` is a DEFECT — the idempotency key must match. It is not a
-/// recovery (no poll), not a success, and it does not resubmit.
+/// A 409 body echoing a DIFFERENT `burnTxId` is a DEFECT — the idempotency key must match. It is
+/// not a recovery (no poll), not a success, and it does not resubmit.
 #[tokio::test]
 async fn a_409_echoing_a_different_burn_tx_id_is_a_defect_not_a_recovery() {
     let mock = MockCircle::start(
@@ -262,8 +263,8 @@ async fn a_recovered_status_for_another_burn_tx_id_is_a_defect() {
     );
 }
 
-/// A 409 body that does not decode (no `burnTxId` to echo-check against) is an EXACT `Err` — nothing
-/// is acted on, nothing is re-sent, and the burn is left blocked.
+/// A 409 body that does not decode (no `burnTxId` to echo-check against) is an EXACT `Err` —
+/// nothing is acted on, nothing is re-sent, and the burn is left blocked.
 #[rstest]
 #[case::no_burn_tx_id(json!({ "withdrawalId": CONFLICT_WITHDRAWAL_ID }))]
 #[case::burn_tx_id_not_hex(json!({ "burnTxId": "not-hex-at-all" }))]
@@ -298,9 +299,9 @@ async fn a_409_with_an_undecodable_body_is_an_exact_err_and_never_resubmits(#[ca
     );
 }
 
-/// A poll that cannot answer (the conflict's id 404s) leaves the burn BLOCKED and surfaces the error.
-/// "We asked what happened and did not find out" is the definition of ambiguous — and must never
-/// become a re-send.
+/// A poll that cannot answer (the conflict's id 404s) leaves the burn BLOCKED and surfaces the
+/// error. "We asked what happened and did not find out" is the definition of ambiguous — and must
+/// never become a re-send.
 #[tokio::test]
 async fn a_recovery_poll_that_fails_leaves_the_burn_blocked_and_surfaces() {
     let mock = MockCircle::start(
@@ -335,9 +336,9 @@ async fn a_recovery_poll_that_fails_leaves_the_burn_blocked_and_surfaces() {
 
 /// **A recovered conflict for burn A must never finalize burn B.**
 ///
-/// The 409 names A and A alone. Recording B as `Finalized` off the back of it would be a durable claim
-/// that Circle released B — with NO Circle evidence for B whatsoever — permanently blocking B behind a
-/// dishonest record. B's real state is unknown, so B fails closed instead.
+/// The 409 names A and A alone. Recording B as `Finalized` off the back of it would be a durable
+/// claim that Circle released B — with NO Circle evidence for B whatsoever — permanently blocking B
+/// behind a dishonest record. B's real state is unknown, so B fails closed instead.
 #[tokio::test]
 async fn a_409_naming_one_burn_never_finalizes_the_other_burns() {
     let mock = MockCircle::start(

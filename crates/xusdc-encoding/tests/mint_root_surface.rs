@@ -1,15 +1,14 @@
-//! XRESERVE COMPONENT CALLABLE-ROOT PIN (F1 lineage, recut by the Wave-1 S1 recomposition). The
+//! XRESERVE COMPONENT CALLABLE-ROOT PIN. The
 //! core invariant — mintable ONLY with a valid Circle Deposit Attestation — is carried by the
-//! composition since the recomposition: the ONLY supply-raising account procedure is the STOCK
+//! composition: the ONLY supply-raising account procedure is the STOCK
 //! `fungible_faucet::mint_and_send`, and every invocation passes the ACTIVE attestation mint
-//! policy (`xreserve::mint_policy::check_policy`) — the posture proven end-to-end in
-//! `wave1_recomposition.rs` / `mint_policy_e2e.rs`. The bespoke mint transport the original F1
-//! demotion policed (`xreserve_mint::mint`, its `apply_mint_effects` write stage, the
-//! `receive_and_mint` note-entry shim) is DELETED, so the former executing exploit legs (an
-//! external `call` of the demoted `apply_mint_effects` root; the effects-public re-assembly)
-//! dissolved with their subject — there is no bespoke effects surface left to demote.
+//! policy (`xreserve::mint_policy::check_policy`) — the posture proven end-to-end by the
+//! recomposition and mint-policy suites. There is NO bespoke mint transport
+//! (no `xreserve_mint::mint`, no `apply_mint_effects` write stage, no
+//! `receive_and_mint` note-entry shim), so no bespoke effects surface exists that could serve
+//! as a second supply door.
 //!
-//! What stays is the component-level tripwire: the xreserve library's callable-root set is FROZEN
+//! The component-level tripwire: the xreserve library's callable-root set is FROZEN
 //! at the 15 sanctioned roots below, enumerated at BOTH layers — the manifest's exported paths and
 //! the `@account_procedure`-filtered account interface — so any new export (a potential new
 //! supply door) fails loudly.
@@ -20,17 +19,17 @@ use anyhow::Result;
 use miden_protocol::Word;
 use support::*;
 
-/// The frozen sanctioned callable-root set of the shipped `xreserve` library after the Wave-1 S1
-/// recomposition: the shared-encoding + parser + attestation procs, the admin wrappers
-/// (`attester_admin::set_attester`, `pause_admin::{pause,unpause}`, and the two F4-reversal
+/// The frozen sanctioned callable-root set of the shipped `xreserve`
+/// library: the shared-encoding + parser + attestation procs, the admin wrappers
+/// (`attester_admin::set_attester`, `pause_admin::{pause,unpause}`, and the two
 /// `blocklist_admin::{block_account,unblock_account}` BLK_MANAGER-gated wrappers), the attestation
 /// mint policy `mint_policy::check_policy` (the ACTIVE mint policy — a pure gate, no supply
-/// arithmetic of its own), and the minimized DEC-4 `identifier_init::init_identifier`
-/// (owner-gated, init-once) = 15. The custom transport/burn/config roots of the pre-slice set
-/// (`xreserve_mint::mint`, `xreserve_mint_note_entry::receive_and_mint`,
+/// arithmetic of its own), and the identifier-only `identifier_init::init_identifier`
+/// (owner-gated, init-once) = 15. There is deliberately NO custom transport/burn/config root
+/// (no `xreserve_mint::mint`, `xreserve_mint_note_entry::receive_and_mint`,
 /// `mint_deny_guard::check_policy`, `burn_policy::check_policy`,
-/// `min_burn_admin::set_min_burn_size`, `domain_config::domain_init`) are DELETED with their
-/// modules. NO xreserve root raises supply — the sole supply-raising procedure is the stock
+/// `min_burn_admin::set_min_burn_size`, or `domain_config::domain_init` — those modules do not
+/// ship). NO xreserve root raises supply — the sole supply-raising procedure is the stock
 /// `mint_and_send`, gated by the attestation policy. Any drift (a new export, i.e. a potential
 /// new supply door) trips `production_xreserve_callable_root_set_is_frozen`.
 /// Paths render absolute (leading `::`) at assembler 0.23.3.
@@ -95,7 +94,7 @@ fn production_xreserve_callable_root_set_is_frozen() -> Result<()> {
          potential new supply door)"
     );
 
-    // Frozen tripwire, INTERFACE layer (v16 — MIGRATION-V16-ALPHA2.md S19): at alpha.2 the
+    // Frozen tripwire, INTERFACE layer: since protocol v0.16 (alpha.2) the
     // account interface is FILTERED by `@account_procedure` (`AccountComponentCode::exports`),
     // while the raw package-manifest `exports()` above still lists every `pub proc` regardless of the
     // attribute — so a missing annotation would leave the path-level compare green while the

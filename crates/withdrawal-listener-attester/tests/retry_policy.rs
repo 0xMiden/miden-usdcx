@@ -1,18 +1,19 @@
-//! `T-LA-13` (3/4) — the **retry/backoff policy** and the refusal
-//! to act on a malformed response (§10.10, §10.11). The documented rate ceilings the submit path runs
-//! under are `rate_ceilings.rs` — they govern the WHOLE flow, not just retries, so they are not a
-//! retry concern.
+//! The **retry/backoff policy** and the refusal to act on a malformed response, both as Circle
+//! documents them. The documented rate ceilings the submit path runs under live in
+//! `rate_ceilings.rs` — they govern the WHOLE flow, not just retries, so they are not a retry
+//! concern.
 //!
 //! # The one rule this file exists to pin
 //!
-//! `POST /v1/withdraw` is **not idempotent**. Retrying it is re-asking Circle to release funds, so the
-//! only failure that may be retried is one where Circle DEMONSTRABLY did not act — §10.10 names exactly
-//! one: "5xx → bounded retry with backoff". Everything else is surfaced.
+//! `POST /v1/withdraw` is **not idempotent**. Retrying it is re-asking Circle to release funds, so
+//! the only failure that may be retried is one where Circle DEMONSTRABLY did not act — Circle's
+//! documentation names exactly one: "5xx → bounded retry with backoff". Everything else is
+//! surfaced.
 //!
 //! A **status-less transport failure is the sharp case**, and it goes the other way from what
 //! intuition suggests: a timeout or a connection reset can happen *after* Circle accepted the
-//! withdrawal and before the answer got back, so re-POSTing it is precisely the blind resubmission the
-//! money-path rule forbids. "No answer" is ambiguity, and ambiguity fails closed.
+//! withdrawal and before the answer got back, so re-POSTing it is precisely the blind resubmission
+//! the money-path rule forbids. "No answer" is ambiguity, and ambiguity fails closed.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -111,9 +112,9 @@ async fn a_5xx_that_recovers_within_the_budget_succeeds() {
 /// **A status-less transport failure is NOT retried.**
 ///
 /// This is the money-path rule in its sharpest form. A timeout or connection reset carries no
-/// information about whether Circle acted: the withdrawal may already be created and releasing, with
-/// only the response lost. Re-POSTing on "no answer" is a blind resubmission — so the attempt is made
-/// EXACTLY ONCE, the ambiguity is surfaced, and the burn is left blocked for an operator.
+/// information about whether Circle acted: the withdrawal may already be created and releasing,
+/// with only the response lost. Re-POSTing on "no answer" is a blind resubmission — so the attempt
+/// is made EXACTLY ONCE, the ambiguity is surfaced, and the burn is left blocked for an operator.
 ///
 /// The counting transport is the oracle: it fails the way a dead network does (no status, ever) and
 /// records how many times the driver asked.
@@ -176,9 +177,9 @@ async fn a_deterministic_400_is_not_retried() {
     );
 }
 
-/// A 400 means Circle REJECTED the request — nothing was created. That burn is therefore re-claimable
-/// once the request is fixed (the spec's "abort/fix-request"), and a later, corrected submission does
-/// go out.
+/// A 400 means Circle REJECTED the request — nothing was created. That burn is therefore
+/// re-claimable once the request is fixed (the spec's "abort/fix-request"), and a later, corrected
+/// submission does go out.
 #[tokio::test]
 async fn a_400_leaves_the_burn_re_claimable_for_a_fixed_request() {
     let mock = MockCircle::start(Script::new().withdraw(vec![
@@ -221,9 +222,10 @@ async fn a_409_is_never_retried() {
 
 /// The retry classification, stated directly.
 ///
-/// Two entries are load-bearing and both say `false`: a **`409`** (retrying a duplicate conflict is the
-/// double-withdrawal footgun) and a **`Transport`** failure (no status = no evidence Circle did not
-/// act). §10.10 names 5xx and 5xx alone as the retryable case; everything else fails closed.
+/// Two entries are load-bearing and both say `false`: a **`409`** (retrying a duplicate conflict is
+/// the double-withdrawal footgun) and a **`Transport`** failure (no status = no evidence Circle did
+/// not act). Circle's documentation names 5xx and 5xx alone as the retryable case; everything else
+/// fails closed.
 #[rstest]
 #[case::http_500(ListenerError::Http { status: 500 }, true)]
 #[case::http_502(ListenerError::Http { status: 502 }, true)]
@@ -304,11 +306,11 @@ async fn the_backoff_delay_is_actually_waited_between_attempts() {
 }
 
 // ================================================================================================
-// MALFORMED RESPONSES (§10.11 — reject, never coerce)
+// MALFORMED RESPONSES (Circle's documentation — reject, never coerce)
 // ================================================================================================
 
-/// A `201` body that does not decode is an EXACT `Err`; nothing is acted on (no poll), and the burn is
-/// left blocked — Circle created SOMETHING we cannot read, which is the definition of ambiguous.
+/// A `201` body that does not decode is an EXACT `Err`; nothing is acted on (no poll), and the burn
+/// is left blocked — Circle created SOMETHING we cannot read, which is the definition of ambiguous.
 #[tokio::test]
 async fn a_201_body_that_does_not_decode_is_rejected_and_nothing_is_acted_on() {
     let mock = MockCircle::start(
@@ -341,9 +343,10 @@ async fn a_201_body_that_does_not_decode_is_rejected_and_nothing_is_acted_on() {
     );
 }
 
-/// A `201` is bound to the burn it answers, not merely counted. A status object echoing a `burnTxId`
-/// this request never submitted is a DEFECT — recording it as this burn's submission would tie our burn
-/// to a stranger's withdrawal id, and every later poll would then read the wrong withdrawal.
+/// A `201` is bound to the burn it answers, not merely counted. A status object echoing a
+/// `burnTxId` this request never submitted is a DEFECT — recording it as this burn's submission
+/// would tie our burn to a stranger's withdrawal id, and every later poll would then read the wrong
+/// withdrawal.
 #[tokio::test]
 async fn a_201_echoing_a_burn_that_was_not_submitted_is_a_defect() {
     let mock = MockCircle::start(
@@ -371,8 +374,8 @@ async fn a_201_echoing_a_burn_that_was_not_submitted_is_a_defect() {
     );
 }
 
-/// An UNDOCUMENTED status is an exact `Err`, surfaced — never guessed at, and (no `Retry-After`/`429`
-/// being documented) never given invented handling.
+/// An UNDOCUMENTED status is an exact `Err`, surfaced — never guessed at, and (no
+/// `Retry-After`/`429` being documented) never given invented handling.
 #[tokio::test]
 async fn an_undocumented_status_is_an_exact_err_surfaced_without_retry() {
     let mock = MockCircle::start(Script::new().withdraw(vec![Reply::Status(429)]));

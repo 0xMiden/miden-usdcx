@@ -1,22 +1,24 @@
-//! Deterministic WITHDRAWAL-LOCAL attester vectors for `T-LA-08` (signing) and `T-LA-09` (quorum).
+//! Deterministic WITHDRAWAL-LOCAL attester vectors for signing and
+//! quorum.
 //!
-//! **What it is.** Deterministic secp256k1 keypairs (seeded `StdRng`, byte-identical on every machine
-//! and run) that sign Circle's **opaque** `messageHashToSign`, plus the test-only oracles that prove
-//! a produced signature actually covers the digest it claims (`verify` / `recover`).
+//! **What it is.** Deterministic secp256k1 keypairs (seeded `StdRng`, byte-identical on every
+//! machine and run) that sign Circle's **opaque** `messageHashToSign`, plus the test-only oracles
+//! that prove a produced signature actually covers the digest it claims (`verify` / `recover`).
 //!
-//! **Distinct from the relayer's fixture on purpose.** The deposit relayer's `PartnerAttester` signs
-//! `keccak256(DepositIntent payload)` — a digest it re-derives locally. This withdrawal fixture signs
-//! [`MESSAGE_HASH_TO_SIGN`], a fixed 32-byte value standing in for the digest Circle RETURNS, hashed
-//! from nothing here (`INV-OFFCHAIN-BURN-SIGNING`, `Q-CRY-2` OPEN — opaque-and-sign). Seeds are
-//! withdrawal-local, so a vector here can never be confused with a relayer mint vector.
+//! **Distinct from the relayer's fixture on purpose.** The deposit relayer's `PartnerAttester`
+//! signs `keccak256(DepositIntent payload)` — a digest it re-derives locally. This withdrawal
+//! fixture signs [`MESSAGE_HASH_TO_SIGN`], a fixed 32-byte value standing in for the digest Circle
+//! RETURNS, hashed from nothing here (signing is off-chain and opaque-and-sign; the digest's
+//! derivation stays OPEN with Circle). Seeds are withdrawal-local, so a vector here can never be
+//! confused with a relayer mint vector.
 //!
 //! **No real key material.** Every key is seed-derived and test-only. The production attester keys
-//! (KMS/HSM, ≥2, rotation) are human/ops-owned (W11); nothing here is, or stands in for, a real
+//! (KMS/HSM, ≥2, rotation) are human/ops-owned; nothing here is, or stands in for, a real
 //! Circle-registered key.
 //!
-//! **`address()` derives the Ethereum-style signer address** (`keccak256(uncompressed pubkey)[12..]`)
-//! only to feed the quorum's ascending-address ordering — the value Circle recovers via
-//! `ECDSA.recover` (`CIRCLE-DATA-SCHEMAS.md:46`,`:193`). It lives in this dev fixture, not the
+//! **`address()` derives the Ethereum-style signer address** (`keccak256(uncompressed
+//! pubkey)[12..]`) only to feed the quorum's ascending-address ordering — the value Circle recovers
+//! via `ECDSA.recover` (`CIRCLE-DATA-SCHEMAS.md:46`,`:193`). It lives in this dev fixture, not the
 //! library: `attester::sign` links no keccak (it signs Circle's digest opaquely).
 
 #![allow(dead_code)] // shared across two test targets; each uses a subset.
@@ -31,16 +33,17 @@ use sha3::{Digest, Keccak256};
 
 use withdrawal_listener_attester::attester::{sign, Address, Signature65, EVM_V_OFFSET};
 
-/// The opaque `messageHashToSign` the withdrawal path signs — a FIXED 32-byte digest standing in for
-/// what Circle returns from `POST /v1/prepare-withdrawal`. It is deliberately NOT `keccak256(payload)`
-/// or any locally re-derived hash: the burn path treats Circle's digest as opaque (`Q-CRY-2`).
+/// The opaque `messageHashToSign` the withdrawal path signs — a FIXED 32-byte digest standing in
+/// for what Circle returns from `POST /v1/prepare-withdrawal`. It is deliberately NOT
+/// `keccak256(payload)` or any locally re-derived hash: the burn path treats Circle's digest as
+/// opaque.
 pub const MESSAGE_HASH_TO_SIGN: [u8; 32] = [
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
     0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
 ];
 
-/// A DIFFERENT opaque digest — the wrong-hash comparator (`T-LA-08` negative): a signature over
-/// [`MESSAGE_HASH_TO_SIGN`] must NOT verify against this one.
+/// A DIFFERENT opaque digest — the wrong-hash comparator: a signature over [`MESSAGE_HASH_TO_SIGN`]
+/// must NOT verify against this one.
 pub const OTHER_MESSAGE_HASH: [u8; 32] = [
     0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf,
     0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
@@ -83,9 +86,10 @@ impl TestAttester {
             .expect("compressed secp256k1 pubkey is 33 bytes")
     }
 
-    /// The 20-byte Ethereum-style signer address: `keccak256(uncompressed pubkey X‖Y)[12..]`. This is
-    /// the value Circle recovers via `ECDSA.recover` and orders the quorum by, and it is byte-identical
-    /// to what `attester::recover_address` recovers from this attester's signatures (same derivation).
+    /// The 20-byte Ethereum-style signer address: `keccak256(uncompressed pubkey X‖Y)[12..]`. This
+    /// is the value Circle recovers via `ECDSA.recover` and orders the quorum by, and it is
+    /// byte-identical to what `attester::recover_address` recovers from this attester's signatures
+    /// (same derivation).
     pub fn address(&self) -> Address {
         let point = self.secret.public_key().to_encoded_point(false);
         let uncompressed = point.as_bytes(); // 0x04 ‖ X(32) ‖ Y(32)
@@ -107,8 +111,8 @@ impl TestAttester {
     }
 }
 
-/// The three canonical withdrawal attesters, in seed order (NOT address order — the quorum tests sort
-/// them explicitly).
+/// The three canonical withdrawal attesters, in seed order (NOT address order — the quorum tests
+/// sort them explicitly).
 pub fn attesters() -> Vec<TestAttester> {
     ATTESTER_SEEDS
         .iter()
@@ -125,8 +129,8 @@ pub fn keccak256(msg: &[u8]) -> [u8; 32] {
 
 /// TEST-ONLY signature oracle: does the 65-byte `r‖s‖v` verify over `digest` under the 33-byte
 /// compressed `pubkey`? `verify_prehash` — the digest is verified AS-IS, exactly the opaque digest
-/// `sign` consumed. Returns `false` on any malformed input (never panics), so a negative test cannot
-/// pass merely because the oracle blew up.
+/// `sign` consumed. Returns `false` on any malformed input (never panics), so a negative test
+/// cannot pass merely because the oracle blew up.
 pub fn verify(pubkey: &[u8; 33], digest: &[u8; 32], sig: &Signature65) -> bool {
     let Ok(verifying_key) = VerifyingKey::from_sec1_bytes(pubkey) else {
         return false;
@@ -138,10 +142,10 @@ pub fn verify(pubkey: &[u8; 33], digest: &[u8; 32], sig: &Signature65) -> bool {
 }
 
 /// Recovers the 33-byte compressed pubkey from `digest` + the 65-byte `r‖s‖v`, reading the **EVM**
-/// `v` (`27`/`28`) back to a k256 recovery id (`v - 27`). `Some` only if the signature really is over
-/// `digest` — pinning the signer, the digest, AND that `v` is the true EVM recovery byte (so it
-/// proves `sign` signed the digest OPAQUELY and emitted the Ethereum-shaped `v`). A `v` outside the
-/// EVM range yields `None`, so a regression to raw `0`/`1` is caught.
+/// `v` (`27`/`28`) back to a k256 recovery id (`v - 27`). `Some` only if the signature really is
+/// over `digest` — pinning the signer, the digest, AND that `v` is the true EVM recovery byte (so
+/// it proves `sign` signed the digest OPAQUELY and emitted the Ethereum-shaped `v`). A `v` outside
+/// the EVM range yields `None`, so a regression to raw `0`/`1` is caught.
 pub fn recover(digest: &[u8; 32], sig: &Signature65) -> Option<[u8; 33]> {
     let signature = K256Signature::from_slice(&sig.as_bytes()[..64]).ok()?;
     let recovery_id = RecoveryId::from_byte(sig.v().checked_sub(EVM_V_OFFSET)?)?;
@@ -150,14 +154,15 @@ pub fn recover(digest: &[u8; 32], sig: &Signature65) -> Option<[u8; 33]> {
 }
 
 /// Crafts a 65-byte signature carrying a **non-EVM `v`** (`29` for `recid_byte = 2`, `30` for `3` —
-/// the x-reduced recovery ids) that a RANGE-UNCHECKED recovery WOULD accept, paired with the address
-/// k256 recovers for it under that x-reduced id.
+/// the x-reduced recovery ids) that a RANGE-UNCHECKED recovery WOULD accept, paired with the
+/// address k256 recovers for it under that x-reduced id.
 ///
-/// This is the discriminating vector for the v=29/30 fix: it uses a small `r` (so `r + n < p` and the
-/// x-reduced point exists), then reads back the address the buggy `v - 27 → RecoveryId::from_byte`
-/// path would have blessed. A CORRECT `recover_address` rejects it purely on the `v` range — never
-/// reaching recovery — so the pair is refused; a range-unchecked one recovers this very address and
-/// accepts it. Panics if no small `r` yields a recoverable x-reduced point (it does, quickly).
+/// This is the discriminating vector for the v=29/30 fix: it uses a small `r` (so `r + n < p` and
+/// the x-reduced point exists), then reads back the address the buggy `v - 27 →
+/// RecoveryId::from_byte` path would have blessed. A CORRECT `recover_address` rejects it purely on
+/// the `v` range — never reaching recovery — so the pair is refused; a range-unchecked one recovers
+/// this very address and accepts it. Panics if no small `r` yields a recoverable x-reduced point
+/// (it does, quickly).
 pub fn x_reduced_pair(digest: &[u8; 32], recid_byte: u8) -> (Address, Signature65) {
     assert!(recid_byte == 2 || recid_byte == 3, "x-reduced ids are 2/3");
     let recovery_id = RecoveryId::from_byte(recid_byte).expect("2/3 is a valid recovery id");

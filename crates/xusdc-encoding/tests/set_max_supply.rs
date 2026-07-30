@@ -5,8 +5,9 @@
 //! config change: the account installs `Authority::OwnerControlled` (was `RbacControlled{ATTEST_ADMIN}`),
 //! so `authority::assert_authorized` now resolves to the Ownable2Step owner. This file covers the owner
 //! gate, write integrity, the below-supply guard, the pause gate, and the immutable control. The
-//! cap-enforcement seam (that `set_max_supply` actually changes what R-MINT-15 enforces) lives in
-//! `xreserve_mint.rs`, alongside the shared mint-composition fixtures it reuses.
+//! cap-enforcement seam — that changing the maximum actually changes which mints are refused for
+//! exceeding it — lives in `xreserve_mint.rs`, alongside the shared mint-composition fixtures it
+//! reuses.
 //!
 //! The net-new surface is the build-time mutability flag. The gate fixtures are built MUTABLE
 //! (`is_max_supply_mutable = true`), so each gate test exercises its intended gate: the owner's

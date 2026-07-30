@@ -1,15 +1,25 @@
-//! MASM execution harness: the TV-DUAL-1..3 cross-language conformance tests plus the
-//! harness probes/meta-tests. Protocol-derived mechanics:
-//! `TransactionKernel::assembler().with_warnings_as_errors(true)` +
-//! `assemble_library_from_dir` (miden-standards/build.rs), dynamic library
-//! linking into tx scripts (code_builder/mod.rs; test_array.rs), MockChain
-//! account + `build_tx_context(...).tx_script(...).execute()` (test_account.rs),
-//! exact-error assertion via `assert_transaction_executor_error!`
-//! (miden-testing/src/utils.rs).
+//! Cross-language conformance: the MASM codecs must agree with their Rust twins on every
+//! canonical vector.
 //!
-//! Every conformance assertion here is on the RESULT OF `execute().await` — there is no
-//! assemble-only assertion path, and the Rust mirror is never consulted: expected values
-//! come from the canonical artifact, actual values from the VM.
+//! Four routines are shared between the on-chain faucet and the off-chain services, and each is
+//! written twice — once in MASM, once in Rust. If the two ever disagree, the off-chain side
+//! signs or relays something the chain will reject, or worse, accepts something the chain would
+//! have rejected. The tests here run each MASM routine over the same golden vectors the Rust
+//! unit tests use and require identical results, accept and reject alike: the bytes32 → storage
+//! key hash, the uint256 → asset amount reduction, the DepositIntent parser, and the attester
+//! pubkey commitment.
+//!
+//! How the assertions are made matters as much as what they assert. Every conformance claim is
+//! made on the result of actually EXECUTING the MASM in a transaction — never on assembly
+//! succeeding — and the expected values are read from the canonical vector artifact rather than
+//! recomputed by calling the Rust routine. Comparing the Rust implementation against itself
+//! would pass no matter how far the MASM had drifted.
+//!
+//! The harness itself is assembled the way the protocol assembles its own standard libraries
+//! (warnings as errors, a library built from the source directory, linked dynamically into a
+//! transaction script) so the code under test is exercised through the real pipeline. A handful
+//! of probe tests at the end pin those harness mechanics, so that a toolchain change breaks them
+//! rather than silently changing what the conformance tests mean.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -126,7 +136,7 @@ fn stage_preimage(src: &mut String, felts: &[Felt]) {
     }
 }
 
-// TV-DUAL-1 — bytes32_to_key (every b32 vector, executed)
+// PARITY 1 — bytes32 → storage-map key: every b32 vector, executed on the VM
 // ================================================================================================
 
 #[tokio::test]
@@ -160,7 +170,7 @@ end
     Ok(())
 }
 
-// TV-DUAL-2 — uint256_to_asset_amount (every reducer vector: accepts, rejects, guard)
+// PARITY 2 — uint256 → asset amount: every reducer vector, accepts and rejects alike
 // ================================================================================================
 
 #[tokio::test]
@@ -244,16 +254,20 @@ end
     Ok(())
 }
 
-// TV-DUAL-3 — parse_deposit_intent (every di vector; the parser stack-output contract +
-// layout memory assertions via the `layout` constants)
+// PARITY 3 — DepositIntent parsing: every intent vector, its stack outputs, and the memory
+// layout every field is expected to sit at
 // ================================================================================================
 
-/// Builds the shared `parse_deposit_intent` driver prefix: the layout-const imports,
-/// preimage staging, and the `exec` call — leaving the parser's stack outputs
-/// `[remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len]` on the stack. Shared by
-/// the canonical TV-DUAL-3 path and the Circle differential so both stage + exec via ONE
-/// code path. (Constants are imported individually — `push.` takes only unqualified
-/// constant identifiers, the protocol's single-const import style.)
+/// Emits the common prologue for a `parse_deposit_intent` driver: import the layout offset
+/// constants, stage the intent preimage into memory, and call the parser, leaving its outputs
+/// `[remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len]` on the stack.
+///
+/// The two suites that parse intents — the vector-driven conformance run and the differential
+/// against Circle's own encoder — share this one prologue, so neither can accidentally test a
+/// different staging path than the other.
+///
+/// The layout constants are imported one by one because `push.` only accepts an unqualified
+/// constant identifier, which is also how the protocol's own MASM imports constants.
 fn build_parser_driver_prefix(preimage: &[Felt], len_felts: u64) -> String {
     let mut src = String::from("use xreserve::encoding\n");
     // v0.25 braced item-import form (bare `use module::CONST` no longer resolves constants).
@@ -273,7 +287,8 @@ fn build_parser_driver_prefix(preimage: &[Felt], len_felts: u64) -> String {
     src
 }
 
-/// Maps a DC-1 field name to its `layout::*` felt-offset constant.
+/// Maps a DepositIntent field name to the `layout::*` constant holding its felt offset in the
+/// parsed preimage.
 fn layout_const_for(field: &str) -> &'static str {
     match field {
         "magic" => "MAGIC_FELT_OFF",
@@ -292,12 +307,19 @@ fn layout_const_for(field: &str) -> &'static str {
     }
 }
 
-/// Builds + runs an accept-path driver: stages the preimage, execs the parser, asserts the
-/// parser's stack outputs, then asserts every DC-1 field reads back at its `layout::*` offset
-/// post-exec (⇒ staged memory unmutated). `packed` is `(field name, expected packed felts at
-/// that field's offset)`. Single-felt loads throughout: the DC-1 felt offsets are not
-/// word-aligned and word memory ops trap on unaligned addresses (processor
-/// `UnalignedWordAccess`). Shared by TV-DUAL-3 accepts and the Circle differential.
+/// Runs one accepted DepositIntent end to end and checks both halves of the parser's contract.
+///
+/// First the values it hands back on the stack, then — for each field named in `packed` — that
+/// reading the parsed region at that field's declared offset still returns the expected felts.
+/// The second half is what proves the parser left the caller's staged intent unmodified: it
+/// reports fields by offset into memory the caller supplied, so a parser that overwrote its input
+/// would still return plausible stack values while corrupting everything downstream.
+///
+/// Reads are single-felt rather than word-sized on purpose: field offsets are not word-aligned,
+/// and a word-sized memory op on an unaligned address traps in the processor.
+///
+/// Both the vector-driven run and the differential against Circle's encoder use this, so an
+/// accept means the same thing in both.
 async fn run_accept_driver(
     h: &Harness,
     label: &str,
@@ -310,7 +332,7 @@ async fn run_accept_driver(
     packed: &[(&str, Vec<Felt>)],
 ) {
     let mut src = build_parser_driver_prefix(preimage, len_felts);
-    // parser stack outputs: [remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0, hook_data_len].
+    // parser stack outputs: [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len].
     writeln!(
         src,
         "    push.{remote_domain} assert_eq.err=\"{label}: remote_domain\""
@@ -411,17 +433,22 @@ async fn tv_dual_3_parse_deposit_intent() -> Result<()> {
     Ok(())
 }
 
-// TV-DUAL-5 — pubkey_commitment (every att vector, executed): the MASM commitment Word
-// equals BOTH the canonical artifact's `expected_commitment` (miden-crypto
-// `PublicKey::to_commitment`) AND — asserted alongside — the Rust mirror `pubkey_commitment`.
-// Anti-drift across MASM ↔ Rust ↔ miden-crypto.
+// PARITY 4 — attester pubkey commitment: the Word the allowlist is keyed by
+// ================================================================================================
+// Each attestation vector is run through the MASM commitment routine and the result is checked
+// against two independent references at once: the value pinned in the canonical artifact (which
+// miden-crypto's own `PublicKey::to_commitment` produced) and the Rust mirror used off-chain.
+// All three must agree, because the faucet decides whether an attester is allowlisted by looking
+// up exactly this Word — if the off-chain side computed a different commitment for the same key,
+// a legitimate attester would be seeded under a key the chain never looks at.
 // ================================================================================================
 
 #[tokio::test]
 async fn tv_dual_5_pubkey_commitment() -> Result<()> {
     let h = setup()?;
     for vec in &load().families.att {
-        let limbs = vec.packed_felts_values(); // 16 affine felts f0..f15 (to_elements order, vm#3342)
+        // the public key as 16 field elements, in the affine-coordinate order miden-crypto emits
+        let limbs = vec.packed_felts_values();
         let (pkw0, pkw1, pkw2, pkw3) = (
             word_of(&limbs[0..4]),
             word_of(&limbs[4..8]),
@@ -551,21 +578,27 @@ fn probe_p4_packing_util() {
     assert_eq!(felts.len(), 1);
 }
 
-// TV-CIRCLE-DIFF — Circle-encoder-produced DepositIntent bytes through our parser
+// DIFFERENTIAL — bytes produced by Circle's own encoder, parsed by ours
 // ================================================================================================
-// Differential ("spec → Circle") test. The fixture
-// `tests/vectors/circle-depositintent-groundtruth.json` was LOCALLY GENERATED/RECONSTRUCTED from
-// Circle source (evm-xreserve-contracts @ a571cbe12fa7cede3dfd48bc4fedb74739c04377) by an
-// agent-authored Foundry extraction script (reproduced under `tests/vectors/circle-extraction/`)
-// that invokes Circle's OWN `DepositIntentLib.encodeDepositIntent` (abi.encodePacked) over
-// hardcoded field values. It is NOT copied from Circle's repo; Circle's tracked tree at that
-// commit ships no golden-hex blob and no extraction script. EXPECTED field values here are
-// fixture/raw-byte-derived and source-verified against Circle's DC-1 layout (DepositIntent.sol
-// offsets) — this test does NOT run Circle's decoder. INPUTS are the Circle-encoder-produced
-// bytes; only the u32-LE staging packing and our parser are "ours". Validates the
-// shared-encoding PARSER ENVELOPE (offsets, sizes, endianness, magic/version, length rule). It does NOT exercise the
-// faucet R-MINT-7 identifier compare against a real Miden identifier — Circle treats remoteToken /
-// remoteRecipient as opaque bytes32, so DEV-10 / Q-CRY-3/4 stay OPEN and out of scope here.
+// Everything else in this file compares our MASM against our Rust over vectors we generated. That
+// cannot catch a shared misreading of Circle's wire format: if both halves place a field at the
+// wrong offset, both agree and both are wrong. This test closes that gap by parsing bytes that
+// Circle's encoder produced.
+//
+// Provenance of the fixture, stated precisely because it bounds what the test proves. It was
+// generated locally from Circle's contract source (evm-xreserve-contracts @ a571cbe12fa7cede)
+// by a Foundry script — kept alongside it under `tests/vectors/circle-extraction/` — that calls
+// Circle's own `DepositIntentLib.encodeDepositIntent` over fixed field values. It is not a blob
+// copied from Circle: their tracked tree at that commit ships neither golden hex nor an
+// extraction script. So the INPUT bytes are genuinely Circle's encoding; the expected field
+// values are derived from those raw bytes and checked against the field offsets declared in
+// Circle's `DepositIntent.sol`. Circle's decoder is never run here.
+//
+// What this establishes is that the shared parser's envelope — field offsets, field sizes,
+// endianness, the magic and version constants, and the total-length rule — matches Circle's
+// encoder. What it deliberately does not touch is the faucet's identifier compare: Circle treats
+// remoteToken and remoteRecipient as opaque bytes32 and has not fixed how a Miden account id is
+// carried in them, so there is no ground truth to test that against yet.
 
 const CIRCLE_FIXTURE: &str = include_str!("vectors/circle-depositintent-groundtruth.json");
 
@@ -639,12 +672,11 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
         let raw = circle_hexdec(&v.bytes_hex);
         let f = &v.fields;
 
-        // (1) INDEPENDENT cross-check — our DC-1 offset model vs the fixture's stated field
-        // values (themselves source-verified against Circle's layout by the extraction
-        // script's offset self-asserts). Raw bytes sliced at the DC-1 offsets (big-endian)
-        // must equal the fixture's stated fields. Catches any offset / size / endianness
-        // error in our spec model, using only the fixture bytes + its stated fields (no
-        // parser involved).
+        // (1) Check our understanding of the layout without involving the parser at all: slice
+        // the raw bytes at the offsets and widths we believe Circle uses, read them big-endian,
+        // and require them to equal the field values the fixture states (which the extraction
+        // script asserted against Circle's own offset constants). If our offset model is wrong,
+        // this fails here, before any of our code has had a chance to be consistently wrong.
         assert_eq!(raw.len() as u64, v.length, "{}: declared length", v.id);
         assert_eq!(
             raw.len() as u64,
@@ -715,10 +747,10 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
         };
         assert_eq!(hd, f.hook_data, "{}: hookData @240", v.id);
 
-        // (2) MASM parser run — the Circle-encoder-produced bytes → u32-LE staging → our
-        // parser. The expected parser outputs are derived from the RAW bytes (big-endian), NOT
-        // by mirroring the parser's own LE-pack-then-byte-swap path, so a parser endianness or
-        // offset bug surfaces as a mismatch rather than a silent pass.
+        // (2) Now run the real parser over those same bytes, staged the way the chain stages
+        // them. The expected outputs are computed from the raw big-endian bytes directly, not by
+        // replaying the parser's own pack-then-swap steps — reusing its logic to predict its
+        // result would turn an endianness or offset bug into a silent pass.
         let preimage = pack(&raw);
         let len_felts = preimage.len() as u64;
         let remote_domain = u32::from_be_bytes(raw[40..44].try_into().unwrap()) as u64;
@@ -726,9 +758,10 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
         let rt = pack(&raw[44..76]);
         assert_eq!(rt.len(), 8, "{}: remoteToken packs to 8 limbs", v.id);
         let (rt0, rt1) = (word_of(&rt[0..4]), word_of(&rt[4..8]));
-        // Every DC-1 field's packed felts at its offset. All offsets/sizes are 4-byte
-        // aligned (only trailing hookData is variable), so per-field packing equals the
-        // matching slice of the whole-preimage packing.
+        // The expected felts for every field, at that field's offset. Each field's offset and
+        // width is a multiple of four bytes (only the trailing hookData varies in length), so
+        // packing a field on its own gives the same felts as the corresponding slice of the
+        // whole packed preimage — which is what lets the fields be checked independently.
         let spans: [(&str, usize, usize); 12] = [
             ("magic", 0, 4),
             ("version", 4, 4),

@@ -1,8 +1,9 @@
-//! **`T-RLY-09` — the dedup: a replayed attestation produces no second mint** (INV-MINT-SECURITY,
-//! liveness side), across a re-poll and across a restart. Split out of `cycle_pipeline.rs` to keep
-//! each suite under the G3 file ceiling; the two share the `cycle_support` harness. The authoritative
-//! duplicate defence is the on-chain `usedNonces` assert-then-set (D5c); this is the liveness backstop
-//! in front of it. Real everywhere except the Miden submit PORT (NON-GATING; §11).
+//! **The dedup: a replayed attestation produces no second mint** — the liveness side of the
+//! no-double-mint guarantee, across a re-poll and across a restart. Split out of
+//! `cycle_pipeline.rs` to keep each suite within its file-size ceiling; the two share the
+//! `cycle_support` harness. The authoritative duplicate defence is the on-chain `usedNonces`
+//! assert-then-set (the on-chain replay guard); this is the liveness backstop in front of it. Real
+//! everywhere except the Miden submit PORT (NON-GATING; the mock boundary).
 
 mod cycle_support;
 mod fixtures;
@@ -26,14 +27,14 @@ use mock_circle::{
 
 // ================================================================================================
 
-/// **T-RLY-09** · GATING (orchestration) · INV-MINT-SECURITY (liveness side).
+/// this suite · GATING (orchestration) · the no-double-mint guarantee, liveness side.
 ///
 /// The SAME attestation is served twice — the shape a re-poll of an overlapping window, a restarted
 /// relayer, or a Circle page boundary actually produces. It is minted ONCE.
 ///
 /// The oracle is the PORT's call count, not the report: "no second mint" means the submit leg was
-/// never reached a second time, and a test that only read the disposition could not tell a note that
-/// was never built from one that was built and submitted twice.
+/// never reached a second time, and a test that only read the disposition could not tell a note
+/// that was never built from one that was built and submitted twice.
 #[tokio::test]
 async fn duplicate_attestation_no_double_submit() {
     let vector = test_vector();
@@ -138,7 +139,7 @@ async fn the_dedup_survives_a_restart() {
     );
 }
 
-// THE FAILURE CATALOG (§8.4), WIRED THROUGH THE CYCLE
+// THE FAILURE CATALOG, WIRED THROUGH THE CYCLE
 
 // HELPERS
 // ================================================================================================

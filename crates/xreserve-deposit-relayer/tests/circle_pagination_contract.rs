@@ -1,14 +1,14 @@
-//! `tests/circle_pagination_contract.rs` — the batch poll and discovery: `T-RLY-03` (the full
-//! documented `BatchQuery` surface, the `Link`-header cursors, the forward scan and its termination,
-//! and the malformed pagination metadata that must NOT be mistaken for a final page) and `T-RLY-04`
-//! (`GET /v1/info`, the public no-`domain`-param shape).
+//! The batch poll and discovery legs. The poll covers the full documented `BatchQuery` surface,
+//! the `Link`-header cursors, the forward scan and its termination, and the malformed pagination
+//! metadata that must NOT be mistaken for a final page; discovery covers `GET /v1/info`, the
+//! public no-`domain`-param shape.
 //!
-//! No live Circle leg (§11): every Circle endpoint is `REQUIRES CIRCLE CONFIRMATION` and is
-//! exercised against the in-process schema-exact mock ([`mock_circle`]) — the relayer builds a real
-//! `reqwest::Request` and the mock's axum router answers it, binding no socket. The attestation wire
-//! data is the partner test vector from [`fixtures`] — a real secp256k1 signature over the real
-//! raw-keccak digest of a canonical DC-1 DepositIntent payload — so the keccak binding these tests
-//! assert is a genuine binding, not a self-consistent invention.
+//! No live Circle leg (the mock boundary): every Circle endpoint is `REQUIRES CIRCLE CONFIRMATION`
+//! and is exercised against the in-process schema-exact mock ([`mock_circle`]) — the relayer builds
+//! a real `reqwest::Request` and the mock's axum router answers it, binding no socket. The
+//! attestation wire data is the partner test vector from [`fixtures`] — a real secp256k1 signature
+//! over the real raw-keccak digest of a canonical DepositIntent payload — so the keccak binding
+//! these tests assert is a genuine binding, not a self-consistent invention.
 
 mod fixtures;
 mod mock_circle;
@@ -28,7 +28,7 @@ use xreserve_deposit_relayer::circle::{
 };
 use xreserve_deposit_relayer::error::RelayerError;
 
-// T-RLY-03 — batch poll: full BatchQuery surface + Link-header cursors
+// batch poll: full BatchQuery surface + Link-header cursors
 // ================================================================================================
 
 /// The `BatchQuery` type models ALL FIVE documented params, and every one of them reaches the wire
@@ -37,8 +37,8 @@ use xreserve_deposit_relayer::error::RelayerError;
 /// **The two cursors are covered in SEPARATE requests, because Circle forbids sending them
 /// together** ("`pageAfter`: do not use with `pageBefore`", and vice versa — the list-attestations
 /// endpoint reference). A single request carrying both would be an invalid request that a real
-/// endpoint may answer with 400, so a fixture asserting it would enshrine a request the relayer must
-/// never make. Full surface, two legal requests: `pageSize + pageAfter + from + to`, then
+/// endpoint may answer with 400, so a fixture asserting it would enshrine a request the relayer
+/// must never make. Full surface, two legal requests: `pageSize + pageAfter + from + to`, then
 /// `pageSize + pageBefore + from + to`.
 #[tokio::test]
 async fn t_rly_03_batch_poll_puts_the_full_documented_query_surface_on_the_wire() {
@@ -295,8 +295,9 @@ async fn t_rly_03_a_page_without_a_link_header_terminates_the_scan() {
     assert_eq!(cursors.next_cursor(), None);
 }
 
-/// An element of a batch page whose envelope does not bind its payload is rejected — the batch path
-/// runs the SAME §8.1 checks as the by-hash path (a bad element cannot slip through the list shape).
+/// An element of a batch page whose envelope does not bind its payload is rejected — the batch
+/// path runs the SAME binding checks as the by-hash path, so a bad element cannot slip through by
+/// arriving inside a list.
 #[tokio::test]
 async fn t_rly_03_a_batch_page_element_with_a_broken_binding_is_rejected() {
     let vector = test_vector();
@@ -337,7 +338,7 @@ fn t_rly_03_batch_query_enforces_the_documented_page_size_bounds(
     }
 }
 
-// T-RLY-04 — GET /v1/info (the public no-`domain`-param shape)
+// GET /v1/info (the public no-`domain`-param shape)
 // ================================================================================================
 
 #[tokio::test]
@@ -348,7 +349,7 @@ async fn t_rly_04_info_is_fetched_with_no_domain_param_and_both_domain_lists_dec
     let info = fetch_info(&client).await.expect("/v1/info decodes");
 
     // (2) the DEFAULT request shape carries NO `domain` query param — the public/OpenAPI form. The
-    //     NDA's `/v1/info?domain={domain}` is a recorded CONFLICT (Q-INFO-PARAM, REQUIRES CIRCLE
+    // NDA's `/v1/info?domain={domain}` is a recorded CONFLICT (REQUIRES CIRCLE
     //     CONFIRMATION), not the implemented default.
     let requests = mock.requests_to(Endpoint::Info);
     assert_eq!(requests.len(), 1);
@@ -401,14 +402,15 @@ async fn t_rly_04_info_retries_a_500_then_succeeds() {
     assert_eq!(mock.requests_to(Endpoint::Info).len(), 2);
 }
 
-// T-RLY-03 (cont.) — MALFORMED pagination metadata is never mistaken for the end of the scan
+// (cont.) — MALFORMED pagination metadata is never mistaken for the end
+// of the scan
 // ================================================================================================
 //
 // The scan terminates on `next == None`. That makes "no next link" a LOAD-BEARING signal, and it is
 // exactly why a `Link` header the relayer cannot parse must not be silently discarded: discarding it
 // produces the same `next == None` as a legitimate final page, so a corrupted (or truncated, or
 // hostile) header would quietly stop the relayer mid-stream. Deposits already attested would simply
-// never be minted, and nothing would be logged — the silent drop §8.4 forbids.
+// never be minted, and nothing would be logged — the silent drop the no-silent-drops rule forbids.
 //
 // So: an ABSENT Link header is terminal (the documented final page). A PRESENT one must parse, must
 // carry at least one relation the relayer understands, and — if it advertises `next` — must carry a
@@ -434,8 +436,8 @@ async fn t_rly_03_a_garbage_link_header_is_rejected_not_read_as_end_of_scan() {
     assert_eq!(sink.alerts().len(), 1, "an operator must hear about it");
 }
 
-/// A `next` link with no cursor in it. It advertises that more pages exist, and gives the relayer no
-/// way to reach them: treating that as the end of the scan would strand every later page.
+/// A `next` link with no cursor in it. It advertises that more pages exist, and gives the relayer
+/// no way to reach them: treating that as the end of the scan would strand every later page.
 #[tokio::test]
 async fn t_rly_03_a_next_link_without_a_cursor_is_rejected() {
     let vector = test_vector();
@@ -522,8 +524,8 @@ async fn t_rly_03_a_non_utf8_link_header_is_rejected() {
 }
 
 /// The counterweight: a page with NO `Link` header at all IS the documented final page, and must
-/// still terminate the scan cleanly. (Without this, "reject malformed metadata" could be satisfied by
-/// rejecting everything — including the normal end of a scan.)
+/// still terminate the scan cleanly. (Without this, "reject malformed metadata" could be satisfied
+/// by rejecting everything — including the normal end of a scan.)
 #[tokio::test]
 async fn t_rly_03_an_absent_link_header_remains_the_terminal_case() {
     let vector = test_vector();

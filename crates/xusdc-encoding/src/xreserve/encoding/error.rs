@@ -1,7 +1,15 @@
-//! Frozen `EncodingError` surface (per the shared-encoding spec) plus the MASM error-constant
-//! mirror (a human decision: string `MasmError` constants per the v0.15 protocol pattern; the
-//! frozen `u32` code type is not realizable against v0.15). Deferred-family variants (burn-note
-//! / Circle JSON / binary) are part of the one frozen enum and stay unconstructed in this slice.
+//! The error type every encoding routine returns, and its MASM counterparts.
+//!
+//! One enum covers the whole encoding surface so a caller handles failures from the amount reducer,
+//! the intent parser, and the codecs uniformly. Some variants exist for paths this crate does not
+//! yet construct — the burn-note and Circle wire families — and are kept here rather than added
+//! later, so the enum's shape does not change under consumers as those paths land.
+//!
+//! Alongside the enum are the MASM error constants the faucet raises. They are strings rather than
+//! numeric codes, matching how the protocol's own MASM declares errors; the assertion messages here
+//! and the ones in the `.masm` files are the same text, and the parity test is what keeps them
+//! that way. That matters for diagnosis: a transaction that trapped on-chain reports the same
+//! wording an off-chain rejection would.
 
 use core::fmt;
 
@@ -12,8 +20,8 @@ use super::deposit_intent::DepositIntentField;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EncodingError {
     LimbOutOfField,
-    /// A u32-LE-packed felt limb exceeds `u32::MAX` (DC-7 `packed_felts_to_bytes32` guard,
-    /// distinct from `LimbOutOfField`'s 8-byte/felt `>= p` Word-packing check).
+    /// A u32-LE-packed felt limb exceeds `u32::MAX` (the `packed_felts_to_bytes32` guard on the
+    /// burn-note item decode, distinct from `LimbOutOfField`'s 8-byte/felt `>= p` Word-packing check).
     LimbNotU32,
     AmountTooLarge,
     AmountOverCap,
@@ -30,8 +38,8 @@ pub enum EncodingError {
     NonCanonicalAccountId,
     BurnItemsMalformed,
     /// The 33-byte compressed SEC1 attester pubkey does not decode to a secp256k1 curve point
-    /// (the DC-2 SEC1→affine decompression the v16 affine commitment format requires —
-    /// MIGRATION-V16-ALPHA2.md S16; such a key could never verify on-chain either).
+    /// (the SEC1→affine decompression the on-chain affine commitment format requires;
+    /// such a key could never verify on-chain either).
     InvalidPubkey,
     JsonSchema(String),
     BinaryMagic,
@@ -55,9 +63,9 @@ impl fmt::Display for EncodingError {
             Self::LengthMismatch => write!(f, "deposit intent length relation violated"),
             Self::HookDataTooLarge => write!(f, "hook data exceeds the note storage felt bound"),
             Self::AccountIdOutOfRange => {
-                // R-B / Agglayer-mirroring layout (IMPL-DEV-12 fix): the account id region is the
+                // The right-aligned (Agglayer-mirroring) layout: the account id region is the
                 // 16 bytes `bytes[16..32]` (prefix u64 BE + suffix u64 BE) behind a 16-byte zero
-                // pad — not the superseded left-aligned draft's 15-byte region.
+                // pad — the message names the 16-byte region of the shipped layout.
                 write!(f, "bytes set outside the 16-byte account id region")
             }
             Self::NonCanonicalAccountId => {
@@ -80,7 +88,7 @@ impl core::error::Error for EncodingError {}
 // ================================================================================================
 // Names per the frozen spec's intent list plus two additions (`ERR_AMOUNT_OVER_CAP`,
 // `ERR_SCALE_EXP_TOO_LARGE`, each 1:1 with a frozen enum variant). The MASM side must declare
-// identical strings; `tests/constant_parity.rs` enforces it.
+// byte-identical strings, and a parity test fails if one of them drifts.
 
 /// Single source for every MASM error name/message pair: the named constants, the
 /// name→constant lookup (MASM execution tests), and the name→message table (the

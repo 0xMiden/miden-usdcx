@@ -1,9 +1,9 @@
 //! The two liveness paths: freeing a claim a crash stranded, and finding the mints that still owe a
 //! retry.
 //!
-//! Both exist because of the same asymmetry. The on-chain `usedNonces` assert makes a duplicate mint
-//! *impossible*, so a redundant attempt costs a wasted transaction — while a mint this store forgets
-//! to retry is a deposit that never arrives. Every trade here is made in that direction.
+//! Both exist because of the same asymmetry. The on-chain `usedNonces` assert makes a duplicate
+//! mint *impossible*, so a redundant attempt costs a wasted transaction — while a mint this store
+//! forgets to retry is a deposit that never arrives. Every trade here is made in that direction.
 
 use super::{
     record::{IdempotencyRecord, SubmissionStatus},
@@ -23,10 +23,10 @@ impl IdempotencyStore {
     /// burns a transaction on the on-chain nonce assert and the record settles at
     /// [`SubmissionStatus::AlreadyMinted`]. That is the trade the whole module is built on.
     ///
-    /// It touches nothing else — not a young `Pending` (its submit may be in flight this second), and
-    /// not a `Submitted` (its transaction may still land; whether to abandon it is the submit leg's
-    /// decision, made against the chain, not this store's against a clock). Re-running it is a no-op:
-    /// a record it already freed is `Failed`, not `Pending`.
+    /// It touches nothing else — not a young `Pending` (its submit may be in flight this second),
+    /// and not a `Submitted` (its transaction may still land; whether to abandon it is the submit
+    /// leg's decision, made against the chain, not this store's against a clock). Re-running it is
+    /// a no-op: a record it already freed is `Failed`, not `Pending`.
     ///
     /// # Errors
     /// [`RelayerError::CorruptStoreRecord`], [`RelayerError::IdempotencyStore`].
@@ -78,14 +78,15 @@ impl IdempotencyStore {
     /// The retry driver's work list: the `Failed` records, oldest first, at most `limit` of them.
     ///
     /// It exists because the cursor only moves FORWARD. A mint whose attempt failed sits on a page
-    /// the poll has already passed, so no re-poll will ever re-observe its attestation — without this
-    /// list, a failed deposit would be stranded exactly as surely as a forgotten `Pending`. Each
-    /// record carries the `attestation_message_hash` its attestation can be re-fetched by (Circle's
-    /// by-`depositMessageHash` endpoint), which is what the retry needs to rebuild the mint.
+    /// the poll has already passed, so no re-poll will ever re-observe its attestation — without
+    /// this list, a failed deposit would be stranded exactly as surely as a forgotten `Pending`.
+    /// Each record carries the `attestation_message_hash` its attestation can be re-fetched by
+    /// (Circle's by-`depositMessageHash` endpoint), which is what the retry needs to rebuild the
+    /// mint.
     ///
-    /// This is a READ, and the caller does NOT act on it directly: it re-acquires each nonce through
-    /// [`IdempotencyStore::claim_nonce`], which is the atomic step. Two retry drivers may therefore
-    /// read the same work list, and still exactly one of them will mint each nonce.
+    /// This is a READ, and the caller does NOT act on it directly: it re-acquires each nonce
+    /// through [`IdempotencyStore::claim_nonce`], which is the atomic step. Two retry drivers may
+    /// therefore read the same work list, and still exactly one of them will mint each nonce.
     ///
     /// # Errors
     /// [`RelayerError::CorruptStoreRecord`], [`RelayerError::IdempotencyStore`].

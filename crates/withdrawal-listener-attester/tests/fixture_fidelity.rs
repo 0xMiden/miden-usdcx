@@ -1,14 +1,16 @@
-//! §11.2 — the fixtures are frozen against the **OpenAPI**, not against this crate's structs.
+//! Fidelity of the fixtures at the mock boundary: they are frozen against the **OpenAPI**, not
+//! against this crate's structs.
 //!
 //! Every check below re-derives a constraint straight from the schema tables in
 //! `CIRCLE-API-SURFACE.md` / `CIRCLE-DATA-SCHEMAS.md` — the field's regex, its enum, its
-//! cardinality, its required-ness — and applies it to the fixture's RAW JSON. Nothing here touches a
-//! wire type, deliberately: if these assertions ran through `PrepareWithdrawalResponse` they would
-//! only ever prove the fixtures agree with the structs, which is exactly the circularity that lets a
-//! fixture get "fixed" to make a wrong struct pass.
+//! cardinality, its required-ness — and applies it to the fixture's RAW JSON. Nothing here touches
+//! a wire type, deliberately: if these assertions ran through `PrepareWithdrawalResponse` they
+//! would only ever prove the fixtures agree with the structs, which is exactly the circularity that
+//! lets a fixture get "fixed" to make a wrong struct pass.
 //!
-//! This service releases real USDC. A fixture that drifts from the schema is a defect that would ship
-//! a request Circle rejects — or, far worse, one it accepts and settles differently than intended.
+//! This service releases real USDC. A fixture that drifts from the schema is a defect that would
+//! ship a request Circle rejects — or, far worse, one it accepts and settles differently than
+//! intended.
 
 use serde_json::Value;
 
@@ -86,7 +88,7 @@ fn check_transfer_spec(spec: &Value, whose: &str) {
     assert!(is_hex32(str_at(spec, "salt")), "{whose}.salt");
 
     // hookData is a STRUCTURED OBJECT in the JSON API — not the hex bytes string the binary
-    // WithdrawHookData is (CIRCLE-DATA-SCHEMAS.md §3.4: "DO NOT CONFLATE")
+    // WithdrawHookData is (CIRCLE-DATA-SCHEMAS.md Circle's documentation: "DO NOT CONFLATE")
     let hook = &spec["hookData"];
     assert!(hook.is_object(), "{whose}.hookData must be an object");
     assert!(
@@ -393,8 +395,8 @@ fn the_undocumented_error_bodies_stay_content_free() {
         );
     }
 
-    // the 409 is the one exception, and it carries ONLY Circle's own field names — the two recovery
-    // hints COMPONENT-SPEC §10.10 reads
+    // the 409 is the one exception, and it carries ONLY Circle's own field names — the two
+    // recovery hints Circle's own documentation describes
     let conflict = fixture_json("withdraw_409");
     let keys: Vec<&String> = conflict.as_object().unwrap().keys().collect();
     assert_eq!(

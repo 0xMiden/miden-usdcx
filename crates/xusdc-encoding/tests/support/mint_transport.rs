@@ -1,14 +1,15 @@
-//! Shared PRODUCTION mint-transport harness (Wave-1 S1): builds REAL stock `MintNote`s
-//! (DepositIntent scheme-4 + attestation scheme-5 + `NetworkAccountTarget` scheme-2 attachments)
-//! against the production-composed faucet fixture and drives their consumption end to end.
+//! Shared harness for driving real mints against a production faucet.
 //!
-//! Factored out of the recomposition e2e suites (G3 split + G4 shared fixtures): the tamper
-//! engine ([`tampered_mint_note`] with [`AttachmentPlan`]/[`StoragePlan`]), the honest baseline
-//! ([`honest_note`]), the production bring-up drivers, and the fail-closure assertions live ONCE
-//! here; the split suites (`mint_policy_e2e.rs`, `mint_policy_binding_e2e.rs`,
-//! `wave1_recomposition_e2e.rs`) consume them by reference. The underlying account fixture is
-//! `super::setup_production_faucet` (the faucet carries EXACTLY the production
-//! `XReserveStablecoinBuilder::build_components` output under the stock network-account auth).
+//! It builds genuine standard mint notes — carrying the deposit intent, the attestation, and the
+//! routing target as their three attachments — and runs them to completion against an account
+//! composed by the production builder under the standard network-account auth. Nothing is
+//! substituted, so a test's accept or reject is the account's real behavior.
+//!
+//! Everything the mint suites share lives here exactly once: the honest baseline note
+//! ([`honest_note`]), the tampering engine ([`tampered_mint_note`], with [`AttachmentPlan`] and
+//! [`StoragePlan`] describing what to corrupt), the bring-up drivers that seed a faucet to the
+//! point where it can mint, and the fail-closure assertions. Keeping one tamper engine matters:
+//! the suites must differ in what they tamper with, not in how a tampered note is built.
 
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
@@ -43,14 +44,14 @@ pub const MAX_FEE_RAW: u64 = 1;
 // `support::REMOTE_RECIPIENT_BYTE_OFF` (the single test-side source, `REMOTE_RECIPIENT_FELT_OFF
 // * 4`); a duplicate would make the two glob imports ambiguous.
 
-/// First byte of the u32 `remoteDomain` field (felt 10 x 4 bytes; DC-1).
+/// First byte of the u32 `remoteDomain` field (felt 10 x 4 bytes of the fixed header).
 pub const REMOTE_DOMAIN_BYTE_OFF: usize = 10 * 4;
-/// First byte of the 32-byte `remoteToken` field (felt 11 x 4 bytes; DC-1).
+/// First byte of the 32-byte `remoteToken` field (felt 11 x 4 bytes of the fixed header).
 pub const REMOTE_TOKEN_BYTE_OFF: usize = 11 * 4;
-/// First byte of the 32-byte `nonce` field (felt 51 x 4 bytes; DC-1).
+/// First byte of the 32-byte `nonce` field (felt 51 x 4 bytes of the fixed header).
 pub const NONCE_BYTE_OFF: usize = 51 * 4;
 
-/// The ratified attachment schemes (rider A8) — test-side literals, parity-pinned in
+/// The ratified attachment schemes — test-side literals, parity-pinned in
 /// `constant_parity.rs` against both the Rust factory and the MASM policy.
 pub const INTENT_SCHEME: u16 = 4;
 pub const ATTESTATION_SCHEME: u16 = 5;
@@ -65,7 +66,8 @@ pub fn dom_pauser() -> AccountId {
     test_account_id(2)
 }
 
-/// Resolves a canonical DepositIntent vector by id (consumed BY REFERENCE from the one artifact).
+/// Looks up a DepositIntent vector by id in the canonical artifact — the same file the Rust codec
+/// tests read, so both sides exercise identical bytes.
 pub fn di(id: &str) -> &'static DiVector {
     load()
         .families
@@ -77,8 +79,8 @@ pub fn di(id: &str) -> &'static DiVector {
 
 /// The canonical accept payload with the wire amount / maxFee spliced in, `remoteRecipient`
 /// replaced by the real recipient wallet, `remoteToken` bound to the faucet's own-id identifier
-/// fixpoint (what D5a compares against), and one nonce byte perturbed per variant so each mint
-/// consumes a fresh D5c nonce.
+/// fixpoint (what the identifier compare checks against), and one nonce byte perturbed per variant
+/// so each mint consumes a nonce the replay guard has not seen.
 pub fn payload_for(
     recipient: AccountId,
     faucet_id: AccountId,
@@ -120,7 +122,7 @@ pub fn marker() -> Word {
 }
 
 /// The exact STOCK `mint_and_send` cap-discipline error (`fungible.masm` distribute) — the
-/// R-MINT-15 semantics, stock-owned since the recomposition.
+/// supply-cap reject, stock-owned.
 pub fn err_stock_over_cap() -> MasmError {
     MasmError::from_static_str(
         "token_supply plus the amount passed to distribute would exceed the maximum supply",
@@ -299,7 +301,8 @@ pub fn honest_note(pf: &ProductionFaucet, payload: &[u8], rng_seed: u64) -> Resu
 // FIXTURE + DRIVERS
 // ================================================================================================
 
-/// The production faucet brought up for minting: identifier seeded (the DEC-4 minimized init),
+/// The production faucet brought up for minting: identifier seeded (the minimized
+/// identifier-only init),
 /// attester 1 allowlisted. `extra_notes` seeds additional admin notes (e.g. the pause note).
 pub fn fixture_with(
     max_supply: u64,

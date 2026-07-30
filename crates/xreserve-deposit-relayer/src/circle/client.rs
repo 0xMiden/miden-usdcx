@@ -1,6 +1,6 @@
 //! `CircleClient` — the Circle-facing HTTP transport and the policies that govern every request:
-//! the rate ceilings ([`RateGovernor`]), the exponential backoff ([`with_backoff`]), the HTTP-status
-//! policy ([`classify_status`]), the request deadline and the response-size ceiling
+//! the rate ceilings ([`RateGovernor`]), the exponential backoff ([`with_backoff`]), the
+//! HTTP-status policy ([`classify_status`]), the request deadline and the response-size ceiling
 //! ([`TransportLimits`]), and the auth-header injection point ([`AuthPosture`]).
 //!
 //! Two rules about the credential are enforced HERE, at construction, because by the time a request
@@ -12,8 +12,8 @@
 //!    after the key has already been sent. A plaintext base URL with NO credential is fine: the
 //!    documented API declares no auth at all, and the relayer does not invent a TLS requirement it
 //!    does not have; it protects the key it was given.
-//! 2. **No redirect is ever followed** (see the crate-private `build_http_client`), so there is no code path on which
-//!    the key is re-sent to an origin the peer chose.
+//! 2. **No redirect is ever followed** (see the crate-private `build_http_client`), so there is no
+//!    code path on which the key is re-sent to an origin the peer chose.
 
 use std::fmt;
 use std::sync::Arc;
@@ -224,8 +224,8 @@ impl CircleClient {
     }
 
     /// Records a PERMANENT rejection (a decode failure, a broken binding, malformed pagination
-    /// metadata, a malformed request parameter) and hands the error back unchanged: it is logged with
-    /// its reason and alerted, and never silently dropped (§8.4). The status-code rejections are
+    /// metadata, a malformed request parameter) and hands the error back unchanged: it is logged
+    /// with its reason and alerted, and never silently dropped. The status-code rejections are
     /// recorded by [`with_backoff`], which is where a status is decided.
     pub(crate) fn reject(&self, endpoint: &str, error: RelayerError) -> RelayerError {
         self.sink.emit(RelayerEvent::Rejected {
@@ -239,9 +239,9 @@ impl CircleClient {
         error
     }
 
-    /// GETs `path` under the full policy stack: rate ceilings, request deadline, exponential backoff,
-    /// HTTP-status policy, response-size ceiling. Returns the 2xx body (and its `Link` header); every
-    /// non-2xx becomes a [`RelayerError::Http`], retried or rejected per its class.
+    /// GETs `path` under the full policy stack: rate ceilings, request deadline, exponential
+    /// backoff, HTTP-status policy, response-size ceiling. Returns the 2xx body (and its `Link`
+    /// header); every non-2xx becomes a [`RelayerError::Http`], retried or rejected per its class.
     pub(crate) async fn get(
         &self,
         endpoint: &str,

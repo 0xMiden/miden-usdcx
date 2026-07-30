@@ -1,14 +1,15 @@
-//! **Schema v1 → v2 migration** (round-3 finding 3).
+//! **Schema v1 → v2 migration.**
 //!
-//! Round 2 added the terminal `rejected` status token and bumped `STORE_SCHEMA_VERSION` 1 → 2, then
-//! accepted only version 0 (fresh) or exactly 2 — with no migration. An operator upgrading a durable
-//! relayer would find their existing v1 nonce log and cursor REFUSED at open, and deleting the file
-//! to recover would discard exactly the replay-prevention state the component exists to preserve.
+//! Schema v2 added the terminal `rejected` status token and bumped `STORE_SCHEMA_VERSION` 1 → 2. A
+//! store that accepted only version 0 (fresh) or exactly 2 — with no migration — would leave an
+//! operator upgrading a durable relayer with their existing v1 nonce log and cursor REFUSED at
+//! open, and deleting the file to recover would discard exactly the replay-prevention state the
+//! component exists to preserve.
 //!
-//! The table layout did not change and every v1 status token is a subset of v2's, so the migration is
-//! a version re-stamp that preserves the data. These tests prove a populated v1 store opens, keeps its
-//! nonce records and its cursor, and ends stamped v2 — while an unknown FUTURE version is still
-//! refused.
+//! The table layout did not change and every v1 status token is a subset of v2's, so the migration
+//! is a version re-stamp that preserves the data. These tests prove a populated v1 store opens,
+//! keeps its nonce records and its cursor, and ends stamped v2 — while an unknown FUTURE version is
+//! still refused.
 
 mod idempotency_fixtures;
 
@@ -22,11 +23,11 @@ use xreserve_deposit_relayer::{
     idempotency::{Clock, IdempotencyStore, SubmissionStatus, STORE_SCHEMA_VERSION},
 };
 
-/// The schema version a base (pre-round-2) build stamped.
+/// The schema version a v1-era build stamped.
 const V1: u32 = 1;
 
-/// Re-stamps `path`'s `user_version` to `version`, leaving the byte-identical table layout untouched —
-/// so the file is indistinguishable from one a build of that version actually wrote.
+/// Re-stamps `path`'s `user_version` to `version`, leaving the byte-identical table layout
+/// untouched — so the file is indistinguishable from one a build of that version actually wrote.
 fn stamp_version(path: &std::path::Path, version: u32) {
     let raw = rusqlite::Connection::open(path).expect("raw open");
     raw.pragma_update(None, "user_version", version)
@@ -40,9 +41,9 @@ fn user_version(path: &std::path::Path) -> u32 {
         .expect("read version")
 }
 
-/// A populated v1 store opens, MIGRATES to the current version, and preserves both its nonce records
-/// and its domain cursor. This is the upgrade path an operator takes; failing it would strand a
-/// running relayer or force it to discard its replay-prevention state.
+/// A populated v1 store opens, MIGRATES to the current version, and preserves both its nonce
+/// records and its domain cursor. This is the upgrade path an operator takes; failing it would
+/// strand a running relayer or force it to discard its replay-prevention state.
 #[test]
 fn a_populated_v1_store_migrates_and_preserves_its_records_and_cursor() {
     let clock = ManualClock::at(1_000);
@@ -88,9 +89,9 @@ fn a_populated_v1_store_migrates_and_preserves_its_records_and_cursor() {
     );
 }
 
-/// The migration is idempotent: a store migrated to the current version reopens cleanly a second time
-/// (it is now v2, so it is the plain reopen path). A migration that re-ran or re-refused would be a
-/// startup deadlock.
+/// The migration is idempotent: a store migrated to the current version reopens cleanly a second
+/// time (it is now v2, so it is the plain reopen path). A migration that re-ran or re-refused would
+/// be a startup deadlock.
 #[test]
 fn a_migrated_store_reopens_without_re_migrating() {
     let clock = ManualClock::at(1_000);
@@ -119,8 +120,8 @@ fn a_migrated_store_reopens_without_re_migrating() {
     assert_eq!(user_version(&path), STORE_SCHEMA_VERSION);
 }
 
-/// A version NEWER than this build knows is still REFUSED — migration is for the known past, never a
-/// blind acceptance of an unknown layout the current code might misread.
+/// A version NEWER than this build knows is still REFUSED — migration is for the known past, never
+/// a blind acceptance of an unknown layout the current code might misread.
 #[test]
 fn a_future_schema_version_is_still_refused() {
     let clock = ManualClock::at(1_000);

@@ -32,9 +32,11 @@ const MAX_SUPPLY: u64 = 1_000_000;
 const TOKEN_SUPPLY: u64 = 100_000;
 const SEED_MIN: u64 = 1_000;
 
-/// A burn-policy production faucet (Ownable2Step owner = id(1)) — carries the owner-gated
-/// `set_min_burn_size` note path (since Wave-1 S1 it drives the STOCK `set_min_burn_amount`)
-/// used as the authority probe.
+/// A production faucet whose owner is account 1.
+///
+/// These tests need some owner-gated operation to probe authority with, and the minimum-burn
+/// setter is the convenient one — the note path it drives calls the standard
+/// `set_min_burn_amount`. Nothing here is about burning; the setter is purely the probe.
 fn faucet_harness() -> Result<BurnPolicyHarness> {
     setup_burn_policy_account(
         BurnGuardSelection::OracleBurnReal,
@@ -50,8 +52,9 @@ fn faucet(h: &BurnPolicyHarness) -> Result<Account> {
     Ok(h.chain.committed_account(h.faucet_id)?.clone())
 }
 
-/// The STOCK `MinBurnAmount` floor-slot word for a floor `v` (`[v,0,0,0]` — the slot
-/// `support::read_min_burn_size` reads since the Wave-1 S1 swap).
+/// The storage word a floor of `v` is stored as: the value in the first element, zeros elsewhere.
+/// This is the shape the standard minimum-burn policy keeps its floor in, and what
+/// `support::read_min_burn_size` reads back.
 fn min_word(v: u64) -> Word {
     Word::from([Felt::from(v as u32), Felt::ZERO, Felt::ZERO, Felt::ZERO])
 }

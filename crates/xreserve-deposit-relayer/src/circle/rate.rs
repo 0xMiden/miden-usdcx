@@ -1,8 +1,9 @@
-//! The rate governor — 5 QPS/IP, 35 QPS global (CIR-API-4).
+//! The rate governor — Circle's documented rate ceilings: 5 QPS per IP, 35 QPS global.
 //!
 //! A permit is taken before EVERY attempt, retries included: a retry storm that ignored the ceiling
-//! would be the fastest way to get the partner's IP throttled by Circle, which is exactly what a 429
-//! means. Sharing one governor (`Arc`) across clients makes the global ceiling genuinely global.
+//! would be the fastest way to get the partner's IP throttled by Circle, which is exactly what a
+//! 429 means. Sharing one governor (`Arc`) across clients makes the global ceiling genuinely
+//! global.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -40,7 +41,7 @@ struct GovernorState {
 }
 
 impl RateGovernor {
-    /// The documented ceilings are `RateGovernor::new(5, 35)` (CIR-API-4).
+    /// A governor for the documented ceilings is `RateGovernor::new(5, 35)`.
     ///
     /// # Errors
     /// [`RelayerError::BadRateLimit`] — a 0-QPS ceiling. Its window never opens, so an acquisition
@@ -82,13 +83,13 @@ impl RateGovernor {
     /// The returned instant is the governor's OWN clock sample — the one it put in its windows and
     /// enforces the ceiling against. It is returned rather than kept private so that a caller (or a
     /// test) can reason about the ceiling on the same samples the governor used: a second
-    /// `Instant::now()` taken after this returns is a *different* sample, and near a window boundary
-    /// the two disagree — the governor can legitimately expire its own earlier stamp while an
-    /// observer's later stamp still counts, "showing" 6 acquisitions in a window that only ever
+    /// `Instant::now()` taken after this returns is a *different* sample, and near a window
+    /// boundary the two disagree — the governor can legitimately expire its own earlier stamp while
+    /// an observer's later stamp still counts, "showing" 6 acquisitions in a window that only ever
     /// admitted 5.
     ///
-    /// The re-check after each sleep is what makes this safe under concurrency: a task that wakes to
-    /// find another task took the slot it was waiting for simply waits again, so the invariant
+    /// The re-check after each sleep is what makes this safe under concurrency: a task that wakes
+    /// to find another task took the slot it was waiting for simply waits again, so the invariant
     /// ("never more than N inside any 1s window") holds no matter how many callers race.
     pub async fn acquire(&self, host: &str) -> Instant {
         loop {

@@ -1,37 +1,37 @@
 //! `listener` — the **B3→B10 orchestration**: the one place the units this crate ships are composed
 //! into the flow that releases a user's money.
 //!
-//! It re-implements none of them. B3 is [`validate::validate_discovery`], B4 is
-//! [`withdrawal_api::build_prepare_request`], B5 is [`withdrawal_api::prepare`] +
-//! [`validate::validate_returned`], B6 is the [`QuorumSigner`] port over
-//! [`validate::sign_validated`] + [`attester::assemble_quorum`], B7 is
-//! [`evidence::assemble_evidence`] + [`withdrawal_api::build_withdraw_batch`] +
-//! [`withdrawal_api::authorize_submission`] + [`submit::submit_withdraw`], and B10 is
-//! [`withdrawal_api::poll_status`]. What this module owns is the ORDER, and the order is the
+//! It re-implements none of them. B3 is [`validate::validate_discovery`](crate::validate::validate_discovery), B4 is
+//! [`withdrawal_api::build_prepare_request`](crate::withdrawal_api::build_prepare_request), B5 is [`withdrawal_api::prepare`](crate::withdrawal_api::prepare) +
+//! [`validate::validate_returned`](crate::validate::validate_returned), B6 is the [`QuorumSigner`] port over
+//! [`validate::sign_validated`](crate::validate::sign_validated) + [`attester::assemble_quorum`](crate::attester::assemble_quorum), B7 is
+//! [`evidence::assemble_evidence`](crate::evidence::assemble_evidence) + [`withdrawal_api::build_withdraw_batch`](crate::withdrawal_api::build_withdraw_batch) +
+//! [`withdrawal_api::authorize_submission`](crate::withdrawal_api::authorize_submission) + [`submit::submit_withdraw`](crate::submit::submit_withdraw), and B10 is
+//! [`withdrawal_api::poll_status`](crate::withdrawal_api::poll_status). What this module owns is the ORDER, and the order is the
 //! product.
 //!
-//! # `INV-CIRCLE-CANONICAL-WITHDRAWAL` — B5 gates B6, and it is a type, not a line number
+//! # B5 gates B6, and it is a type, not a line number
 //!
 //! [`run_once`] reads top to bottom as validate → sign → authorize → submit, but reading is not
-//! evidence. What makes the order hold is that each stage's output is the next stage's only possible
-//! input:
+//! evidence. What makes the order hold is that each stage's output is the next stage's only
+//! possible input:
 //!
-//! * [`validate_returned`](crate::validate::validate_returned) mints a
-//!   [`ValidatedWithdrawal`](crate::validate::ValidatedWithdrawal), and [`QuorumSigner`] — the
-//!   orchestration's only signing entry — takes one. A mismatching Circle response produces no token,
-//!   so on the mismatch branch the signer is not merely un-called: it is **uncallable**, and there is
-//!   no second constructor to reach for.
-//! * [`assemble_quorum`](crate::attester::assemble_quorum) mints a
+//! * [`validate_returned`] mints a
+//!   [`ValidatedWithdrawal`], and [`QuorumSigner`] — the
+//!   orchestration's only signing entry — takes one. A mismatching Circle response produces no
+//!   token, so on the mismatch branch the signer is not merely un-called: it is **uncallable**, and
+//!   there is no second constructor to reach for.
+//! * [`assemble_quorum`] mints a
 //!   [`QuorumBundle`](crate::attester::QuorumBundle), and
-//!   [`build_withdraw_batch`](crate::withdrawal_api::build_withdraw_batch) takes one. A
+//!   [`build_withdraw_batch`] takes one. A
 //!   below-threshold, over-threshold, descending or duplicate-signer set produces no bundle, so it
 //!   cannot become a batch, so it cannot reach `POST /v1/withdraw`.
-//! * [`authorize_submission`](crate::withdrawal_api::authorize_submission) mints an
+//! * [`authorize_submission`] mints an
 //!   [`AuthorizedWithdrawal`](crate::withdrawal_api::AuthorizedWithdrawal), and
-//!   [`submit_withdraw`](crate::submit::submit_withdraw) consumes one by value. An unregistered
+//!   [`submit_withdraw`] consumes one by value. An unregistered
 //!   signer, or no configured allowlist at all, produces no authorization — zero `/v1/withdraw`
 //!   calls.
-//! * [`submit_withdraw`](crate::submit::submit_withdraw) claims the burn durably before it builds a
+//! * [`submit_withdraw`] claims the burn durably before it builds a
 //!   request, so a re-discovered burn makes zero calls rather than a second release.
 //!
 //! Each `?` below is therefore fail-closed for THAT burn and for that burn only: a stage that did
@@ -40,36 +40,37 @@
 //! # One burn ↔ one payload ↔ one batch
 //!
 //! `POST /v1/withdraw` carries 1–5 batches, and this orchestration submits exactly one, for exactly
-//! one burn. That is not a simplification — it is the cardinality rule
-//! ([`ONE_BATCH_PER_BURN`]) that keeps the flow's evidence attributable. Fan-in (two burns behind one
-//! batch) would sign one canonical intent and claim two burns against it; fan-out (one burn across
-//! two batches) would hand Circle the same `burnTxId` twice inside one body, and its own second batch
-//! would be what triggers the `409`. Circle answering the prepare with anything but one batch is
-//! refused BEFORE the signer ([`RunError::BatchCardinality`]), because a signature over the extra
-//! batch's digest is exactly the artifact that must not exist.
+//! one burn. That is not a simplification — it is the cardinality rule ([`ONE_BATCH_PER_BURN`])
+//! that keeps the flow's evidence attributable. Fan-in (two burns behind one batch) would sign one
+//! canonical intent and claim two burns against it; fan-out (one burn across two batches) would
+//! hand Circle the same `burnTxId` twice inside one body, and its own second batch would be what
+//! triggers the `409`. Circle answering the prepare with anything but one batch is refused BEFORE
+//! the signer ([`RunError::BatchCardinality`]), because a signature over the extra batch's digest
+//! is exactly the artifact that must not exist.
 //!
 //! # What is a SEAM here, and is deliberately left one
 //!
 //! The Miden reads are not in this crate. `miden-client` has no v0.16 release, so B3's exact-tag
 //! `SyncNotes` scan / `GetNotesById` retrieval and the [`BurnEvidenceReads`] evidence reads are
-//! **W10, PARKED**. This module takes them as PORTS — a [`DiscoveredNote`] handed in, and a
-//! `&dyn BurnEvidenceReads` on the context — and nothing here fakes, stubs-as-real, or simulates a
-//! node. The suite that drives this module runs against the in-process Circle mock and unit read
-//! adapters, and is **NON-GATING** accordingly; the GATING real-node leg is W10's.
+//! **PARKED** for the node-backed slice. This module takes them as PORTS — a [`DiscoveredNote`]
+//! handed in, and a `&dyn BurnEvidenceReads` on the context — and nothing here fakes,
+//! stubs-as-real, or simulates a node. The suite that drives this module runs against the
+//! in-process Circle mock and unit read adapters, and is **NON-GATING** accordingly; the GATING
+//! real-node leg is the node-backed slice's.
 //!
 //! # Circle-owned questions this module touches — all still OPEN
 //!
-//! `DEV-5` (the `value` scale / fee semantics — carried unscaled through
-//! [`build_prepare_request`](crate::withdrawal_api::build_prepare_request), never guessed here) and
-//! `DEV-7` (whether a Miden tx id is an acceptable `burnTxId` — this module keys the batch, the
-//! ledger and the echo checks on whatever `DC-8` assembled, and asserts nothing about Circle's
+//! The `value` scale / fee semantics (carried unscaled through
+//! [`build_prepare_request`], never guessed here) and
+//! whether a Miden tx id is an acceptable `burnTxId` (this module keys the batch, the ledger and
+//! the echo checks on whatever the evidence assembler resolved, and asserts nothing about Circle's
 //! answer). Both block the LIVE leg. Neither blocks this code, and neither is resolved by it.
 //!
 //! # No secret ever reaches an event
 //!
-//! [`ListenerEvent`] carries a B-step, an outcome slug, the note id and — once `DC-8` has resolved
-//! one — the `burnTxId`. It has nowhere to put a key or a credential, which is the point: the
-//! attester keys live behind the [`QuorumSigner`] port and the API token lives behind
+//! [`ListenerEvent`] carries a B-step, an outcome slug, the note id and — once B7's evidence has
+//! resolved one — the `burnTxId`. It has nowhere to put a key or a credential, which is the point:
+//! the attester keys live behind the [`QuorumSigner`] port and the API token lives behind
 //! [`SecretString`](crate::config::SecretString), and neither is a field of anything this module
 //! emits.
 
@@ -96,47 +97,49 @@ use crate::withdrawal_api::{
     poll_status, prepare,
 };
 
-/// One burn produces one `PrepareBurnIntentInput`, so Circle must return exactly one prepared batch,
-/// and exactly one `WithdrawBatch` is submitted for it (§9 B4/B7).
+/// One burn produces one `PrepareBurnIntentInput`, so Circle must return exactly one prepared
+/// batch, and exactly one `WithdrawBatch` is submitted for it (one prepared batch, one submitted
+/// batch).
 ///
 /// Named rather than written as a bare `1` in three places: it is the cardinality rule the flow's
 /// evidence attribution rests on, not an incidental length check (`masm-named-literals`).
 pub const ONE_BATCH_PER_BURN: usize = 1;
 
-/// …and that one batch carries exactly one burn intent (§9 B4/B7).
+/// …and that one batch carries exactly one burn intent (one prepared batch, one submitted batch).
 ///
 /// **This is the half of the cardinality rule the batch count cannot see, and it is the dangerous
 /// half.** `WithdrawBatch.burnIntents` is `1..=10` on the wire — Circle's schema calls it "either a
-/// single burn intent or a burn intent set" — so one batch can carry a SET. Nothing upstream refuses
-/// one: B5's field-by-field compare clears every intent that matches the burn payload, and repeats of
-/// the burn's own intent all match it. The batch's `messageHashToSign` then covers the whole set, so a
-/// single attester signature authorizes every member; the quorum is a well-formed exactly-2; every
-/// signer is a registered attester; and `batches.len()` is still 1.
+/// single burn intent or a burn intent set" — so one batch can carry a SET. Nothing upstream
+/// refuses one: B5's field-by-field compare clears every intent that matches the burn payload, and
+/// repeats of the burn's own intent all match it. The batch's `messageHashToSign` then covers the
+/// whole set, so a single attester signature authorizes every member; the quorum is a well-formed
+/// exactly-2; every signer is a registered attester; and `batches.len` is still 1.
 ///
-/// The result would be one discovered burn funding N releases — a fan-in `DC-8` cannot even describe,
-/// since its evidence resolves ONE `burnTxId` from ONE note. So the rule is one burn ↔ one payload ↔
-/// one batch ↔ one intent, and this constant is the fourth term.
+/// The result would be one discovered burn funding N releases — a fan-in the burn evidence cannot
+/// even describe, since it resolves ONE `burnTxId` from ONE note. So the rule is one burn ↔ one
+/// payload ↔ one batch ↔ one intent, and this constant is the fourth term.
 pub const ONE_INTENT_PER_BURN: usize = 1;
 
-/// The index of the only batch there is, and of the only intent inside it. Both are `0`, and both are
-/// named, because a bare `[0]` on this path reads as "the first of several" — which is precisely the
-/// reading the two rules above exist to forbid.
+/// The index of the only batch there is, and of the only intent inside it. Both are `0`, and both
+/// are named, because a bare `[0]` on this path reads as "the first of several" — which is
+/// precisely the reading the two rules above exist to forbid.
 const ONLY_BATCH: usize = 0;
 const ONLY_INTENT: usize = 0;
 
-// THE PORTS — what W10 fills in, and what a test drives
+// THE PORTS — what the node-backed slice fills in, and what a test drives
 // ================================================================================================
 
 /// A burn note as B3's discovery leg reports it: the note's id, and the raw
 /// [`DiscoveryRecord`] the retrieval returned.
 ///
 /// Both halves are needed and neither substitutes for the other. The record is what B3 VALIDATES
-/// (the exact-32-bit tag, the `details = Some(..)` observability, the payload, the sender); the note
-/// id is what `DC-8`'s evidence is resolved FROM — and it must be the id of the very note the record
-/// describes, which is why they travel as one value rather than as two arguments.
+/// (the exact-32-bit tag, the `details = Some(..)` observability, the payload, the sender); the
+/// note id is what the burn evidence is resolved FROM — and it must be the id of the very note the
+/// record describes, which is why they travel as one value rather than as two arguments.
 ///
 /// The feed behind it — the exact-tag `SyncNotes` scan and `GetNotesById` — needs `miden-client`,
-/// which has no v0.16 release, so it is **W10, PARKED**. This type is the seam it lands on.
+/// which has no v0.16 release, so it is **PARKED** for the node-backed slice. This type is the seam
+/// it lands on.
 #[derive(Debug, Clone)]
 pub struct DiscoveredNote {
     note_id: NoteId,
@@ -149,7 +152,8 @@ impl DiscoveredNote {
         Self { note_id, record }
     }
 
-    /// The note's id — `DC-8`'s only entry key (anti-`ASG-4`: there is no by-`burnTxId` lookup).
+    /// The note's id — the evidence assembler's only entry key (never a transaction id: there is no
+    /// by-`burnTxId` lookup).
     pub fn note_id(&self) -> NoteId {
         self.note_id
     }
@@ -166,18 +170,19 @@ impl DiscoveredNote {
 ///
 /// # The input type is the invariant
 ///
-/// The port takes a `&ValidatedWithdrawal` and nothing else, so there is no implementation of it —
+/// The port takes a `&ValidatedWithdrawal` and nothing else, so there is no implementation of it
 /// production, test, or future — that can be invoked before B5 has passed: the argument does not
-/// exist until [`validate_returned`](crate::validate::validate_returned) returns `Ok`. That is what
+/// exist until [`validate_returned`] returns `Ok`. That is what
 /// makes "the signer was not reached on the mismatch path" a property of the types rather than a
 /// property of this file's control flow, and it is why the port exists at all rather than the
-/// orchestration calling [`sign_validated`](crate::validate::sign_validated) inline: an interface a
+/// orchestration calling [`sign_validated`] inline: an interface a
 /// test can COUNT is what turns "no signature was produced" from an outcome assertion into an
 /// observation.
 ///
-/// Returning the claimed ADDRESS alongside each signature is deliberate. `assemble_quorum` proves the
-/// claim by recovering the signer from the signature; a port that returned bare signatures would have
-/// left this module to recover them and then check them against themselves, which proves nothing.
+/// Returning the claimed ADDRESS alongside each signature is deliberate. `assemble_quorum` proves
+/// the claim by recovering the signer from the signature; a port that returned bare signatures
+/// would have left this module to recover them and then check them against themselves, which proves
+/// nothing.
 pub trait QuorumSigner {
     /// One `Vec<(Address, Signature65)>` per validated batch, in batch order.
     ///
@@ -191,20 +196,21 @@ pub trait QuorumSigner {
 }
 
 /// The production [`QuorumSigner`]: the configured attester keys, each signing every cleared digest
-/// through [`sign_validated`](crate::validate::sign_validated).
+/// through [`sign_validated`].
 ///
 /// It reaches the raw [`sign`](crate::attester::sign) primitive nowhere — `sign_validated` is the
 /// withdrawal flow's signing entry, and this is the withdrawal flow. The claimed address per
 /// signature is derived from the KEY ([`address_of`]) rather than recovered from the signature just
-/// produced, so `assemble_quorum`'s recovery check compares two independently-derived answers instead
-/// of an answer with itself.
+/// produced, so `assemble_quorum`'s recovery check compares two independently-derived answers
+/// instead of an answer with itself.
 ///
 /// Signatures are emitted in ascending signer-address order, because that is the order Circle's
-/// source-chain verifier requires — `assemble_quorum` still checks it, and still refuses a duplicate
-/// signer (two handles for one key) rather than de-duplicating it into a below-threshold bundle.
+/// source-chain verifier requires — `assemble_quorum` still checks it, and still refuses a
+/// duplicate signer (two handles for one key) rather than de-duplicating it into a below-threshold
+/// bundle.
 ///
 /// This holds real [`SecretKey`]s and is therefore the LOCAL/dev shape. Production custody is
-/// KMS/HSM-backed and is `P4-OPS`'s (W11): the config carries key HANDLES, never key material, and an
+/// KMS/HSM-backed and is `P4-OPS`'s: the config carries key HANDLES, never key material, and an
 /// HSM-backed signer is another implementation of this same port.
 pub struct LocalKeyQuorumSigner {
     keys: Vec<SecretKey>,
@@ -212,8 +218,8 @@ pub struct LocalKeyQuorumSigner {
 
 impl LocalKeyQuorumSigner {
     /// A signer over `keys`. The COUNT is not checked here: "exactly the threshold, no duplicate
-    /// signer" is [`assemble_quorum`]'s answer to give, and giving it twice — in two places that can
-    /// drift — is how one of them ends up the lenient one.
+    /// signer" is [`assemble_quorum`]'s answer to give, and giving it twice — in two places that
+    /// can drift — is how one of them ends up the lenient one.
     pub fn new(keys: Vec<SecretKey>) -> Self {
         Self { keys }
     }
@@ -249,15 +255,16 @@ impl QuorumSigner for LocalKeyQuorumSigner {
 
 /// One structured event, emitted as the orchestration passes each B-step.
 ///
-/// Its fields are the whole vocabulary: which step, what happened, which note, and — once `DC-8` has
-/// resolved one — which burn. There is deliberately no free-form payload and no `Debug` of a config
-/// or a key: a field that could carry an attester key or the API credential is a field that
-/// eventually does, and this service's logs are the one place a credential leaks without anything
-/// failing.
+/// Its fields are the whole vocabulary: which step, what happened, which note, and — once B7's
+/// evidence has resolved one — which burn. There is deliberately no free-form payload and no
+/// `Debug` of a config or a key: a field that could carry an attester key or the API credential is
+/// a field that eventually does, and this service's logs are the one place a credential leaks
+/// without anything failing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ListenerEvent {
-    /// The `§9` step, as the spec names it: `"B3"`, `"B4"`, `"B5"`, `"B6"`, `"B7"`, `"B10"`.
+    /// The step this event belongs to, using the step names defined at the crate root: `"B3"`,
+    /// `"B4"`, `"B5"`, `"B6"`, `"B7"`, `"B10"`.
     pub step: &'static str,
 
     /// What happened, as a short stable slug (`"validated"`, `"signed"`, `"submitted"`,
@@ -267,8 +274,9 @@ pub struct ListenerEvent {
     /// The burn note this event is about.
     pub note_id: String,
 
-    /// The `DC-8` `burnTxId`, once B7's evidence has resolved one. `None` before that — the flow does
-    /// not have one to report, and reporting a placeholder would be worse than reporting nothing.
+    /// The evidence package's `burnTxId`, once B7 has resolved one. `None` before that — the flow
+    /// does not have one to report, and reporting a placeholder would be worse than reporting
+    /// nothing.
     pub burn_tx_id: Option<String>,
 }
 
@@ -291,8 +299,8 @@ impl ListenerEvent {
 /// Where [`ListenerEvent`]s go — the operator's log, a metrics sink, or nowhere ([`NoopEvents`]).
 ///
 /// A port rather than a logging dependency: this crate names no log framework (`P4-OPS` owns that
-/// choice, W11), and a test that has to prove no secret is emitted needs to hold the events, not
-/// scrape a global logger.
+/// choice, a later slice), and a test that has to prove no secret is emitted needs to hold the
+/// events, not scrape a global logger.
 pub trait ListenerEvents {
     /// Record `event`. Implementations must not fail the flow: observability is not the withdrawal.
     fn emit(&self, event: &ListenerEvent);
@@ -310,11 +318,11 @@ impl ListenerEvents for NoopEvents {
 // ================================================================================================
 
 /// Everything one [`run_once`] needs: the static config, the Circle client, the durable idempotency
-/// ledger, the B6 signer, the `DC-8` read port, and the event sink.
+/// ledger, the B6 signer, the burn-evidence read port, and the event sink.
 ///
 /// Borrowed rather than owned, and assembled by the caller, so the two seams that are PARKED (the
-/// evidence reads, W10) and human-owned (key custody, W11) are supplied from outside rather than
-/// constructed here.
+/// evidence reads, parked) and human-owned (key custody, a later slice) are supplied from outside
+/// rather than constructed here.
 pub struct RunContext<'a> {
     config: &'a ListenerConfig,
     circle: &'a CircleClient,
@@ -325,9 +333,9 @@ pub struct RunContext<'a> {
 }
 
 impl<'a> RunContext<'a> {
-    /// Assembles the context. Every part is required — there is no default Circle client, no default
-    /// ledger, and above all no default signer or allowlist: a listener missing one of these must not
-    /// start, rather than start and fail closed on every burn.
+    /// Assembles the context. Every part is required — there is no default Circle client, no
+    /// default ledger, and above all no default signer or allowlist: a listener missing one of
+    /// these must not start, rather than start and fail closed on every burn.
     pub fn new(
         config: &'a ListenerConfig,
         circle: &'a CircleClient,
@@ -359,8 +367,8 @@ impl<'a> RunContext<'a> {
 /// Closed, and not `#[non_exhaustive]`, for [`SubmitOutcome`]'s reason: three of the four are NOT a
 /// completed withdrawal, and they are exactly the ones a catch-all arm would swallow. Nothing here
 /// means "the funds are out" except a [`Self::Withdrawn`] whose status is
-/// [`WithdrawalStatusKind::Finalized`] — and the status is carried honestly rather than filtered, so
-/// a caller reads it instead of inferring it.
+/// [`WithdrawalStatusKind::Finalized`] — and the status is carried honestly rather than filtered,
+/// so a caller reads it instead of inferring it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// B7 answered `201` and B10 polled the withdrawal to a stop. `status` is what Circle actually
@@ -372,8 +380,8 @@ pub enum Outcome {
         status: WithdrawalStatus,
     },
 
-    /// B7 answered `409` naming a withdrawal, and it was RECOVERED by polling it — never re-sent
-    /// (§10.10). This is "we found out what actually happened", not "it worked".
+    /// B7 answered `409` naming a withdrawal, and it was RECOVERED by polling it — never re-sent.
+    /// This is "we found out what actually happened", not "it worked".
     ConflictRecovered {
         burn_tx_id: String,
         withdrawal_id: String,
@@ -395,16 +403,17 @@ pub enum Outcome {
     },
 }
 
-/// Why a burn was left for an operator. W7's vocabulary, deliberately reused rather than paralleled.
+/// Why a burn was left for an operator. the idempotency store's vocabulary, deliberately reused
+/// rather than paralleled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ReconciliationReason {
     /// A `409` carrying only `conflict.burnTxId`: there is no withdrawal id to recover through, so
-    /// resubmission stops (§10.10).
+    /// resubmission stops.
     ConflictNamedNoWithdrawal,
 
     /// Circle echoed a `burnTxId` that is not the one submitted — in a `409` body, or in a status
-    /// recovered through one. §10.10: a defect, not a success.
+    /// recovered through one. Circle documents: a defect, not a success.
     EchoMismatch { echoed: String },
 }
 
@@ -415,27 +424,27 @@ pub enum ReconciliationReason {
 ///
 /// The stages, and what each one is gated on:
 ///
-/// 1. **B3** — [`validate_discovery`](crate::validate::validate_discovery): exact-32-bit tag,
-///    `details = Some(..)`, the `DC-7` payload through unit-04's codec, `metadata.sender`. Circle is
-///    not touched until this passes.
-/// 2. **B4** — [`build_prepare_request`](crate::withdrawal_api::build_prepare_request) from the ONE
-///    [`DiscoveredBurn`](crate::validate::DiscoveredBurn) B3 minted, so the payload and the depositor
-///    cannot come from different notes.
-/// 3. **B5** — [`prepare`](crate::withdrawal_api::prepare), then
-///    [`validate_returned`](crate::validate::validate_returned). **This is the gate.** A mismatch
+/// 1. **B3** — [`validate_discovery`]: exact-32-bit tag,
+///    `details = Some(..)`, the burn payload through the shared encoding crate's codec,
+///    `metadata.sender`. Circle is not touched until this passes.
+/// 2. **B4** — [`build_prepare_request`] from the ONE
+///    [`DiscoveredBurn`](crate::validate::DiscoveredBurn) B3 minted, so the payload and the
+///    depositor cannot come from different notes.
+/// 3. **B5** — [`prepare`], then
+///    [`validate_returned`]. **This is the gate.** A mismatch
 ///    returns [`RunError::Validation`] and the run ends here: no token, therefore no signature,
 ///    therefore no submission.
-/// 4. **cardinality** — exactly [`ONE_BATCH_PER_BURN`] validated batch, checked BEFORE the signer, so
-///    a fan-out response never produces a signature over a batch this burn did not ask for.
+/// 4. **cardinality** — exactly [`ONE_BATCH_PER_BURN`] validated batch, checked BEFORE the signer,
+///    so a fan-out response never produces a signature over a batch this burn did not ask for.
 /// 5. **B6** — [`QuorumSigner::sign_batches`] (takes the B5 token), then
-///    [`assemble_quorum`](crate::attester::assemble_quorum): exactly-2, each verifying to its claimed
-///    signer, strictly ascending, no duplicate.
-/// 6. **B7** — [`assemble_evidence`](crate::evidence::assemble_evidence) (`DC-8`, fail-closed),
-///    [`build_withdraw_batch`](crate::withdrawal_api::build_withdraw_batch) (takes the quorum
-///    bundle), [`authorize_submission`](crate::withdrawal_api::authorize_submission) (every signer a
-///    registered attester), then [`submit_withdraw`](crate::submit::submit_withdraw) (claims the burn
-///    durably first; a `409` is RECOVERED, never re-sent).
-/// 7. **B10** — [`poll_status`](crate::withdrawal_api::poll_status) to a stop, bound to the burn.
+///    [`assemble_quorum`]: exactly-2, each verifying to its
+///    claimed signer, strictly ascending, no duplicate.
+/// 6. **B7** — [`assemble_evidence`] (fail-closed),
+///    [`build_withdraw_batch`] (takes the quorum
+///    bundle), [`authorize_submission`] (every signer
+///    a registered attester), then [`submit_withdraw`] (claims the
+///    burn durably first; a `409` is RECOVERED, never re-sent).
+/// 7. **B10** — [`poll_status`] to a stop, bound to the burn.
 ///
 /// B8/B9 are Circle-side (evidence resolution and the source-chain release); they are not partner
 /// steps and there is nothing here for them to do.
@@ -463,7 +472,7 @@ pub async fn run_once(
     // ---- B5 — ask Circle, then VALIDATE. This is the gate. -------------------------------------
     let response = prepare(ctx.circle, &request).await?;
     let validated = validate_returned(&response, burn.payload(), ctx.config).inspect_err(|_| {
-        // The DO-NOT-SIGN abort (§10.4). No ValidatedWithdrawal exists past this point on this
+        // The DO-NOT-SIGN abort. No ValidatedWithdrawal exists past this point on this
         // branch, so the signer below is not reachable — this event RECORDS the refusal, it does not
         // cause it.
         ctx.emit(ListenerEvent::new("B5", "do-not-sign-abort", note_id));
@@ -487,8 +496,8 @@ pub async fn run_once(
     // ALREADY cleared every member of it: each repeat of the burn's own intent matches the burn's own
     // payload, so the field-by-field compare passes on all of them. The batch's single
     // `messageHashToSign` then covers the whole set, so one attester signature authorizes every
-    // member — one burn funding N releases, which `DC-8` cannot even describe (its evidence resolves
-    // ONE burnTxId from ONE note).
+    // member — one burn funding N releases, which the burn evidence cannot even describe (it
+    // resolves ONE burnTxId from ONE note).
     //
     // Refused HERE, before the signer, because the artifact that must not exist is the signature over
     // a set this burn never asked Circle to prepare.
@@ -527,8 +536,8 @@ pub async fn run_once(
     ctx.emit(ListenerEvent::new("B6", "signed", note_id));
 
     // ---- B7 — evidence, batch, authorization, submission. --------------------------------------
-    // `DC-8` is assembled HERE, at submit, because `burnTxId` is a required `POST /v1/withdraw` body
-    // field (§9 B7) — the batch cannot be built without it. It is fail-closed: incomplete, ambiguous
+    // The evidence is assembled HERE, at submit, because `burnTxId` is a required `POST /v1/withdraw` body
+    // field (the documented evidence field) — the batch cannot be built without it. It is fail-closed: incomplete, ambiguous
     // or self-contradicting reads yield no package and no submission.
     let evidence = assemble_evidence(ctx.evidence, note_id, ctx.config.faucet_id())?;
     let burn_tx_id = evidence.burn_tx_id().to_string();
@@ -560,8 +569,9 @@ pub async fn run_once(
 /// Turn what `POST /v1/withdraw` answered into the run's outcome — polling to a stop on a `201`
 /// (B10), and reporting every other answer as the thing it is.
 ///
-/// The `409` arms do NOT poll again: [`submit_withdraw`](crate::submit::submit_withdraw) has already
-/// recovered (or refused to), and re-asking would neither add evidence nor be allowed to re-send.
+/// The `409` arms do NOT poll again: [`submit_withdraw`](crate::submit::submit_withdraw) has
+/// already recovered (or refused to), and re-asking would neither add evidence nor be allowed to
+/// re-send.
 async fn settle(
     ctx: &RunContext<'_>,
     note_id: NoteId,
@@ -581,7 +591,7 @@ async fn settle(
             let status = poll_status(ctx.circle, &withdrawal_id).await?;
 
             // The poll is already bound to the withdrawal id it asked about; this binds it to the
-            // BURN. A status that names another burn is a defect (§10.10), and reading it as this
+            // BURN. A status that names another burn is a defect, and reading it as this
             // burn's outcome is how one burn's `finalized` settles another burn's release.
             if !status.burn_tx_id().eq_ignore_ascii_case(burn_tx_id) {
                 ctx.emit(ListenerEvent::new("B10", "echo-mismatch", note_id).with_burn(burn_tx_id));
@@ -593,7 +603,7 @@ async fn settle(
                 });
             }
 
-            // Only a terminal `finalized` settles a burn as done (§10.10). `failed`, `expired` and
+            // Only a terminal `finalized` settles a burn as done. `failed`, `expired` and
             // every pending status leave the ledger's claim exactly where `submit_withdraw` put it:
             // submitted, and not settled.
             if status.status() == WithdrawalStatusKind::Finalized {

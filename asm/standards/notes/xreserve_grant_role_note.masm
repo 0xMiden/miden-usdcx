@@ -1,4 +1,4 @@
-# xreserve_grant_role_note — the shipped, root-pinned grant_role admin note script (F5).
+# xreserve_grant_role_note — the shipped, root-pinned grant_role admin note script.
 #
 # The production admin surface for the STOCK `grant_role` under the network account: a fixed-root note
 # whose parameters are CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the network executor
@@ -19,7 +19,7 @@ use miden::standards::access::rbac
 # =================================================================================================
 
 # Absolute memory address where the creator-committed params are staged (word-aligned; the mint-note
-# INTENT_PTR convention, shared with the set_attester reference note).
+# INTENT_PTR convention the admin notes share).
 const PARAM_PTR = 1024
 
 # The exact note-storage item count for this admin op:
@@ -35,19 +35,22 @@ const ERR_XRESERVE_GRANT_ROLE_NOTE_STORAGE = "grant_role note storage item count
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Consumes the `grant_role` admin note and drives the role-admin-gated role grant (v0.16 #3215:
-#! the gate is the granted role's EFFECTIVE admin — its delegated admin, else the built-in ADMIN
-#! role; the v15 owner leg is gone — MIGRATION-V16-ALPHA2.md S2/S21).
+#! Consumes the `grant_role` admin note and drives the role-admin-gated role grant (the gate
+#! is the granted role's EFFECTIVE admin — its delegated admin, else the built-in ADMIN role).
 #!
 #! Stages the creator-committed params (`[role_symbol, account_suffix, account_prefix]`) into memory
 #! at PARAM_PTR, marshals them onto the stack as `[role_symbol, account_suffix, account_prefix,
-#! pad(13)]`, and `call`s the stock `rbac::grant_role`. The note ARGS are unused (executor-controlled).
+#! pad(13)]`, and `call`s the stock `rbac::grant_role`. The note ARGS are unused
+#! (executor-controlled).
 #!
 #! Requires that the account exposes:
 #! - miden::standards::access::rbac::grant_role procedure.
 #!
 #! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
+#!
+#! Where:
+#! - ARGS is executor-controlled and dropped unread.
 #!
 #! Note storage is assumed to be as follows:
 #! - role_symbol is the RoleSymbol felt of the role to grant (item 0).
@@ -81,13 +84,11 @@ pub proc main
 
     push.PARAM_PTR mem_load
     # => [role_symbol, account_suffix, account_prefix, pad(16)]
-    # (the call consumes the top 16: [role_symbol, account_suffix, account_prefix, pad(13)])
 
+    # => [role_symbol, account_suffix, account_prefix, pad(13)]
     call.rbac::grant_role
     # => [pad(19)]
 
-    # rebalance to the dyncall depth-16-on-return rule: the 3 param pushes above displaced 3 pad
-    # zeros into the overflow table (the callee's window is balanced), so drop 3 to end at depth 16.
     drop drop drop
     # => [pad(16)]
 end

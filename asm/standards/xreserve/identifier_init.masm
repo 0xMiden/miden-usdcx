@@ -1,26 +1,26 @@
 # xreserve::identifier_init
 #
-# The owner-gated, init-once IDENTIFIER seeding (R-ADMIN-4, minimized per DEC-4): a one-time write
+# The owner-gated, init-once IDENTIFIER seeding: a one-time write
 # of the ONE domain-config field that provably cannot be build-seeded — the faucet identifier. The
 # account id derives from the initial storage commitment (account_id/v1: the id is a hash over
-# seed + code commitment + storage commitment), and the identifier is (pending Q-CRY-4) the
-# faucet's OWN id as bytes32 — a fixpoint, so the slot must start EMPTY and be seeded after the
+# seed + code commitment + storage commitment), and the identifier is the faucet's OWN id as
+# bytes32 — a fixpoint, so the slot must start EMPTY and be seeded after the
 # id exists. The other three domain-config fields (`domain`, `source_domain`,
 # `xreserve_contract`) are BUILD-SEEDED by the Rust account builder and have no runtime writer.
 #
-# The identifier slot is the one the mint path's D5a compare
+# The identifier slot is the one the mint path's deposit-intent compare
 # (deposit_intent_parser::assert_deposit_intent) reads to reject mis-addressed deposits; it stores
-# the Poseidon2 bytes32->key WORD (consumer-forced — D5a's `assert_eqw` compares the hashed
+# the Poseidon2 bytes32->key WORD (consumer-forced — the compare is `assert_eqw` over the hashed
 # form). A second write traps ERR_XRESERVE_IDENTIFIER_REINIT. Owner-gated (Ownable2Step); no
 # pause gate (deploy-time config is orthogonal to the operational pause). The slot const is
-# IMPORTED from deposit_intent_parser (the single source of truth with D5a).
+# IMPORTED from deposit_intent_parser (the single source of truth with the mint-path compare).
 #
-# Round-3 hardening: the proc derives the faucet's OWN identifier key ON-CHAIN —
-# `bytes32_to_key(account_id_to_bytes32(native_account::get_id))`, the DEC-4 own-id fixpoint —
-# and requires the note-committed IDENTIFIER to EQUAL it, so a front-run init on a fresh keyless
-# faucet cannot seed a foreign identity (the deploy-time griefing vector). This ENFORCES the
-# provisional DEV-10/Q-CRY-4 position (identifier = the faucet's own id as bytes32) that the
-# off-chain flows already assume; both stay Circle-OPEN.
+# Front-run hardening: the proc derives the faucet's OWN identifier key ON-CHAIN —
+# `bytes32_to_key(account_id_to_bytes32(native_account::get_id))`, the own-id fixpoint — and
+# requires the note-committed IDENTIFIER to EQUAL it, so a front-run init on a fresh keyless faucet
+# cannot seed a foreign identity (the deploy-time griefing vector). This ENFORCES the provisional
+# identifier-is-own-id position that the off-chain flows already assume; whether the
+# account-id-as-bytes32 packaging applies to the identifier stays OPEN, pending Circle confirmation.
 
 use miden::protocol::active_account
 use miden::protocol::native_account
@@ -31,16 +31,16 @@ use {IDENTIFIER_CONFIG_SLOT} from xreserve::deposit_intent_parser
 # ERRORS
 # =================================================================================================
 
-# R-ADMIN-4: the identifier is init-once; a second write traps. The init-once sentinel is the
+# The identifier is init-once; a second write traps. The init-once sentinel is the
 # identifier slot itself — a Poseidon2 bytes32->key hash, non-empty by construction once set.
 const ERR_XRESERVE_IDENTIFIER_REINIT = "identifier has already been initialized"
 
-# R-ADMIN-4 hardening: an EMPTY input identifier would never arm the init-once sentinel (the
-# "immutable" identifier would stay silently re-initializable) and D5a would compare every
-# intent's identifier against EMPTY. Trap rather than deploy that state.
+# Hardening: an EMPTY input identifier would never arm the init-once sentinel (the
+# "immutable" identifier would stay silently re-initializable) and the mint path would compare
+# every intent's identifier against EMPTY. Trap rather than deploy that state.
 const ERR_XRESERVE_IDENTIFIER_EMPTY = "identifier must be non-empty"
 
-# Round-3 own-id binding: the note-committed identifier must EQUAL the on-chain-derived
+# Own-id binding: the note-committed identifier must EQUAL the on-chain-derived
 # `bytes32_to_key(account_id_to_bytes32(get_id()))` — a divergent value is a mis-addressed or
 # front-run init note and must never seed the identity slot.
 const ERR_XRESERVE_IDENTIFIER_MISMATCH = "identifier does not match the faucet's own account id key"
@@ -49,41 +49,41 @@ const ERR_XRESERVE_IDENTIFIER_MISMATCH = "identifier does not match the faucet's
 # =================================================================================================
 
 #! Writes the faucet identifier config slot, owner-gated, init-once, and BOUND to the faucet's
-#! own account id: the ONE domain-config field the account-id fixpoint forces past build time
-#! (DEC-4). Gated on the Ownable2Step owner — NOT an operational role — because the identifier
-#! is deploy-time identity. Init-once (R-ADMIN-4): a second call finds the slot non-empty and
-#! traps; a trapped tx commits nothing. The written value is NOT trusted verbatim (round-3
-#! hardening): the proc derives `bytes32_to_key(account_id_to_bytes32(get_id()))` on-chain and
+#! own account id: the ONE domain-config field the account-id fixpoint forces past build time.
+#! Gated on the Ownable2Step owner — NOT an operational role — because the identifier
+#! is deploy-time identity. Init-once: a second call finds the slot non-empty and
+#! traps; a trapped tx commits nothing. The written value is NOT trusted verbatim: the proc
+#! derives `bytes32_to_key(account_id_to_bytes32(get_id()))` on-chain and
 #! requires the note-committed IDENTIFIER to equal it — the slot can only ever hold the faucet's
-#! own-id fixpoint key, the exact Word D5a compares deposit intents against.
+#! own-id fixpoint key, the exact Word the mint path compares deposit intents against.
 #!
 #! Inputs:  [IDENTIFIER, pad(12)]
 #! Outputs: [pad(16)]
 #!
 #! Where:
-#! - IDENTIFIER is the faucet identifier as the canonical bytes32->key Word; must equal the
-#!   on-chain-derived own-id key (asserted, then stored; D5a asserts word equality against it).
+#! - IDENTIFIER is the faucet identifier as the canonical bytes32->key Word; it must equal the
+#!   on-chain-derived own-id key, and is stored verbatim once asserted.
 #!
 #! Panics if:
 #! - the note sender is not the Ownable2Step owner (ownable2step::assert_sender_is_owner,
 #!   ERR_SENDER_NOT_OWNER).
 #! - the identifier was already initialized — the slot is non-empty
-#!   (ERR_XRESERVE_IDENTIFIER_REINIT, R-ADMIN-4).
+#!   (ERR_XRESERVE_IDENTIFIER_REINIT).
 #! - the input IDENTIFIER is the empty word — it could never arm the init-once sentinel
 #!   (ERR_XRESERVE_IDENTIFIER_EMPTY).
 #! - the input IDENTIFIER is not the faucet's own-id key
-#!   (ERR_XRESERVE_IDENTIFIER_MISMATCH, the round-3 anti-front-run binding).
+#!   (ERR_XRESERVE_IDENTIFIER_MISMATCH, the anti-front-run binding).
 #!
 #! Invocation: call
 @account_procedure
 pub proc init_identifier
-    # => [IDENTIFIER, pad(12)]
-
-    # gate: owner-only. Identifier binding is deploy-time identity, off the operational roles.
+    # gate: owner-only. Identifier binding is
+    # deploy-time identity, off the operational
+    # roles.
     exec.ownable2step::assert_sender_is_owner
     # => [IDENTIFIER, pad(12)]
 
-    # init-once (R-ADMIN-4): the identifier slot must be EMPTY. assert_eqw against EMPTY_WORD
+    # init-once: the identifier slot must be EMPTY. assert_eqw against EMPTY_WORD
     # passes only when uninitialized; a second write finds the stored hash word and traps.
     push.IDENTIFIER_CONFIG_SLOT[0..2] exec.active_account::get_item
     # => [STORED_IDENTIFIER, IDENTIFIER, pad(12)]
@@ -91,9 +91,9 @@ pub proc init_identifier
     padw assert_eqw.err=ERR_XRESERVE_IDENTIFIER_REINIT
     # => [IDENTIFIER, pad(12)]
 
-    # hardening (R-ADMIN-4): the input IDENTIFIER must be non-empty — an EMPTY identifier would
-    # never arm the sentinel above. Non-destructive compare: eqw pushes the flag WITHOUT
-    # consuming the words, so IDENTIFIER reaches its verbatim write (and D5a's read) untouched.
+    # hardening: the input IDENTIFIER must be non-empty — an EMPTY identifier would never arm
+    # the sentinel above. the compare is non-destructive: eqw pushes the flag WITHOUT consuming
+    # the words, so the identifier reaches its verbatim write untouched.
     padw
     # => [EMPTY, IDENTIFIER, pad(12)]
 
@@ -106,7 +106,7 @@ pub proc init_identifier
     dropw
     # => [IDENTIFIER, pad(12)]
 
-    # own-id binding (round-3 hardening): derive the faucet's OWN identifier key on-chain and
+    # own-id binding: derive the faucet's OWN identifier key on-chain and
     # require the note-committed word to EQUAL it — a front-run init cannot seed a foreign
     # identity. Compare over a copy (dupw.1) so the verified IDENTIFIER reaches its write intact.
     exec.compute_own_identifier_key
@@ -118,7 +118,7 @@ pub proc init_identifier
     assert_eqw.err=ERR_XRESERVE_IDENTIFIER_MISMATCH
     # => [IDENTIFIER, pad(12)]
 
-    # identifier_config := IDENTIFIER (the own-id-verified Word D5a's assert_eqw reads).
+    # identifier_config := IDENTIFIER (the own-id-verified Word the mint-path compare reads).
     push.IDENTIFIER_CONFIG_SLOT[0..2] exec.native_account::set_item dropw
     # => [pad(12)]
 end
@@ -126,12 +126,12 @@ end
 # HELPER PROCEDURES
 # =================================================================================================
 
-#! Derives the faucet's OWN identifier storage key on-chain: the Poseidon2 bytes32->key hash of
-#! the account-id-in-bytes32 packaging (the R-B layout — 16 zero pad bytes, then the id prefix as
-#! a u64 big-endian, then the id suffix as a u64 big-endian) of `native_account::get_id` — the
-#! DEC-4 own-id fixpoint, byte-identical to the Rust
-#! `XReserveIdentifierInitNote::identifier_for(faucet_id)` derivation (proven by the production
-#! create-to-consume execution tests).
+#! Derives the faucet's OWN identifier storage key on-chain: the Poseidon2
+#! bytes32->key hash of the account-id-in-bytes32 packaging (the right-aligned
+#! layout — 16 zero pad bytes, then the id prefix as a u64 big-endian, then
+#! the id suffix as a u64 big-endian) of `native_account::get_id` — the own-id
+#! fixpoint, byte-identical to the Rust `identifier_for(faucet_id)`
+#! derivation.
 #!
 #! Each id felt splits into its big-endian u32 halves (`u32split`), and each half byte-swaps into
 #! the u32-LE-packed limb form `bytes32_to_key` consumes (limbs 4..8 = the id bytes 16..32; limbs
@@ -166,11 +166,11 @@ proc compute_own_identifier_key
     # => [limb5, prefix_hi, limb6, limb7]
 
     swap exec.swap_u32_bytes
-    # => [B1] = [limb4, limb5, limb6, limb7]
+    # => [B_UPPER] = [limb4, limb5, limb6, limb7]
 
-    # push the 16-byte zero pad as B0 (limbs 0..4); bytes32_to_key consumes [B1, B0]
+    # push the 16-byte zero pad as B_LOWER (limbs 0..4); bytes32_to_key consumes [B_UPPER, B_LOWER]
     padw swapw
-    # => [B1, B0]
+    # => [B_UPPER, B_LOWER]
 
     exec.encoding::bytes32_to_key
     # => [KEY]
@@ -178,7 +178,7 @@ end
 
 #! Reverses the byte order of a u32 (little-endian <-> big-endian). A generic u32 primitive (not
 #! encoding-library domain logic); reimplemented locally because the encoding library's
-#! `swap_u32_bytes` is a private `proc` (not exported) — the same recorded deviation as
+#! `swap_u32_bytes` is a private `proc` (not exported) — the same local-copy approach as
 #! `mint_policy.masm`. The caller feeds `u32split` halves, which are valid u32s by construction.
 #!
 #! Inputs:  [value]

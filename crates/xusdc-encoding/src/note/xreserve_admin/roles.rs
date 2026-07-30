@@ -24,9 +24,9 @@ static GRANT_ROLE_NOTE_SCRIPT: LazyLock<NoteScript> =
 pub const XRESERVE_GRANT_ROLE_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x39e47eb27d42b5eb91ff800800bf43b64f0c6ee761ddb02ed197112809513d8e";
 
-/// The role-admin-gated stock `grant_role` admin note (F5; v0.16 #3215 — the sender must hold the
+/// The role-admin-gated stock `grant_role` admin note (the sender must hold the
 /// granted role's EFFECTIVE admin: its delegated admin, else the built-in `ADMIN` role, which the
-/// builder seeds on the owner. MIGRATION-V16-ALPHA2.md S2/S21). Storage layout:
+/// builder seeds on the owner). Storage layout:
 /// `[role_symbol, account_suffix, account_prefix]`.
 pub struct XReserveGrantRoleNote;
 
@@ -50,7 +50,7 @@ impl XReserveGrantRoleNote {
     }
 
     /// Builds a `grant_role` admin note: `sender` is the admin party (a holder of the granted role's
-    /// effective admin role — v0.16 #3215; for
+    /// effective admin role, for
     /// success), `faucet_id` the target faucet (PUBLIC), `role_symbol` the RBAC role element, `member`
     /// the account to grant it to. The params live in note storage; NOTE_ARGS are ignored.
     pub fn create<R: FeltRng>(
@@ -79,9 +79,9 @@ static REVOKE_ROLE_NOTE_SCRIPT: LazyLock<NoteScript> =
 pub const XRESERVE_REVOKE_ROLE_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x109245c8d4f8c2873ff3c244fecf6db931e00d1ee0c7d61863107f4b78a4d9ba";
 
-/// The role-admin-gated stock `revoke_role` admin note (F5; v0.16 #3215 — the sender must hold the
+/// The role-admin-gated stock `revoke_role` admin note (the sender must hold the
 /// revoked role's EFFECTIVE admin: its delegated admin, else the built-in `ADMIN` role, which the
-/// builder seeds on the owner. MIGRATION-V16-ALPHA2.md S2/S21). Storage layout:
+/// builder seeds on the owner). Storage layout:
 /// `[role_symbol, account_suffix, account_prefix]`.
 pub struct XReserveRevokeRoleNote;
 
@@ -105,7 +105,7 @@ impl XReserveRevokeRoleNote {
     }
 
     /// Builds a `revoke_role` admin note: `sender` is the admin party (a holder of the revoked role's
-    /// effective admin role — v0.16 #3215; for
+    /// effective admin role, for
     /// success), `faucet_id` the target faucet (PUBLIC), `role_symbol` the RBAC role element, `member`
     /// the account to revoke it from. The params live in note storage; NOTE_ARGS are ignored.
     pub fn create<R: FeltRng>(

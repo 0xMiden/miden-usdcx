@@ -5,9 +5,9 @@ edition = "2021"
 publish = false
 description = "Phase-4 P4-WITHDRAWAL (CMP-C2/C3): off-chain burn-listener / attester — this slice ships the crate scaffold, the Circle withdrawal wire types, the schema-frozen mock fixtures, and the auth posture"
 
-# The burn-note payload layout (DC-7) and the AccountId↔bytes32 codec (DC-6) are OWNED by unit-04
+# The burn-note payload layout and the AccountId↔bytes32 codec are OWNED by the shared encoding crate
 # (`xusdc-encoding`, `xreserve::encoding`) and consumed here BY REFERENCE (single-owner rule). In
-# particular `types::BurnPayload` IS unit-04's `XReserveBurnItems` — an alias, not a second copy —
+# particular `types::BurnPayload` IS the shared encoding crate's `XReserveBurnItems` — an alias, not a second copy —
 # so the two cannot drift. This crate re-derives no offset and re-implements no codec.
 #
 # This service RELEASES REAL USDC: it observes a Miden burn, has it signed, and hands Circle the
@@ -19,13 +19,13 @@ description = "Phase-4 P4-WITHDRAWAL (CMP-C2/C3): off-chain burn-listener / atte
 xusdc-encoding = { path = "../xusdc-encoding" }
 # Shared versions live in the root [workspace.dependencies]; crate-specific feature sets are added on
 # top (workspace-shared-dependencies).
-#   serde/serde_json — the Circle wire codecs (§10.3) and the operator's config file.
+#   serde/serde_json — the Circle wire codecs  and the operator's config file.
 #   tokio            — the service runtime the async Circle transport seam runs on.
 #   reqwest          — the Circle HTTP transport type the `HttpTransport` seam is defined over. This
-#                      slice builds NO driver and makes NO call (that is W6); it fixes the seam the
+#                      slice builds NO driver and makes NO call (that arrives with the Circle drivers); it fixes the seam the
 #                      drivers plug into, mirroring the relayer's.
 #   hex              — renders the burn-evidence 32-byte fields (note id, nullifier) into the 0x-hex
-#                      the Circle wire carries (DC-8).
+#                      the Circle wire carries in the burn-evidence package.
 #   bon              — `PrepareBurnIntentInput` has eleven fields, five of them optional, and a
 #                      positional constructor for it would be a line of eleven arguments where
 #                      swapping `remoteDepositor` and `finalDestinationRecipient` still compiles.
@@ -40,10 +40,10 @@ bon = { workspace = true }
 # k256 is a LIBRARY dependency here, and the difference from the relayer is deliberate. The relayer
 # keeps k256 DEV-only because it never verifies a signature off-chain — the attestation is verified
 # ON-CHAIN by the faucet. This service is the mirror image: the burn attester's off-chain secp256k1
-# ECDSA signature over Circle's `messageHashToSign` IS the product (INV-OFFCHAIN-BURN-SIGNING, DC-11;
-# Circle's own verification is on the source chain), so the signing core is library code. Its call
-# site arrives with the signing slice (T-LA-08); the POSTURE is fixed now — and guarded by
-# tests/crate_posture.rs — so that slice cannot quietly ship it as a dev dependency.
+# ECDSA signature over Circle's `messageHashToSign` IS the product (burn signing happens off-chain
+# over Circle's opaque digest; Circle's own verification is on the source chain), so the signing core
+# is library code. The posture is declared and guarded here, so the signing call site cannot
+# arrive with k256 quietly demoted to a dev dependency.
 k256 = { workspace = true }
 # sha3 (keccak256) is a LIBRARY dependency for the ONE fund-safety step that needs it: recovering the
 # 20-byte Ethereum signer address from a burn signature (`keccak256(uncompressed pubkey)[12..]`) so
@@ -63,7 +63,7 @@ sha3 = { workspace = true }
 # overlap) — and SQLite's `BEGIN IMMEDIATE` + a PRIMARY KEY on the burn give exactly that, where a
 # JSON file's read-modify-write cannot. Where the relayer's store is a LIVENESS backstop (the faucet's
 # `usedNonces` assert is the real safety), this ledger has no on-chain backstop behind it: Circle's
-# `409` is the only other guard, and the whole point of W7 is that a `409` must never be answered by
+# `409` is the only other guard, and the whole point of the idempotency ledger is that a `409` must never be answered by
 # re-sending. The claim IS the safety property here.
 #
 # `bundled` compiles SQLite from the amalgamation inside `libsqlite3-sys`: this box has
@@ -73,7 +73,7 @@ rusqlite = { workspace = true }
 # `AccountId` (the faucet id in config, and the `metadata.sender → remoteDepositor` encoding's input)
 # and `AssetAmount` (the burn payload's amount) are NAMED in this crate's public API, at the same
 # frozen protocol-monorepo git rev the rest of the workspace resolves the protocol family at
-# (MIGRATION-V16-NEXT.md).
+# (the workspace-wide protocol pin).
 #
 # `miden-client` is deliberately ABSENT: no client release exists for the protocol-`next` graph, so
 # every real Miden read (the SyncNotes tag scan, GetNotesById retrieval, the evidence reads) is
@@ -89,13 +89,13 @@ assert_matches = { workspace = true }
 # recovers it (`keccak256(uncompressed pubkey)[12..]`), so a fixture address and a recovered address
 # are the same 20 bytes. `sha3` is a normal (library) dependency now — see [dependencies] — and is
 # available to the tests through it.
-# Declared now, consumed from W6 (the Circle drivers). The relayer proved the pattern this crate's
+# Declared now, consumed by the Circle drivers. The relayer proved the pattern this crate's
 # `HttpTransport` seam is shaped for: a schema-exact mock Circle server routed by axum and driven IN
 # PROCESS through tower's `ServiceExt::oneshot`, installed as the client's transport. It binds NO
 # socket, because the audit/CI sandbox denies `bind(127.0.0.1:0)` (EPERM) — a loopback-server mock
 # could not run in a gate that has to be green in every environment. `rand` seeds the deterministic
-# attester keypairs the signing slice (T-LA-08) signs its vectors with. None of the three has a call
-# site in THIS slice, which builds no driver and makes no call; they are pinned here so W6 inherits
+# attester keypairs the signing slice  signs its vectors with. None of the three has a call
+# site in THIS slice, which builds no driver and makes no call; they are pinned here so the driver slice inherits
 # the settled stack rather than re-litigating it (and wiremock/httpmock/mockito are absent from the
 # pinned offline cache besides — declaring one would break the offline gate outright).
 axum = { workspace = true }

@@ -1,18 +1,18 @@
 //! `tests/circle_transport_contract.rs` — the transport and the policies that bound it: the RATE
-//! governor (5 QPS/IP, 35 QPS global — CIR-API-4), the exponential backoff, the request DEADLINE,
-//! the response-SIZE ceiling, and the config wiring that supplies all three.
+//! governor (Circle's documented 5 QPS/IP, 35 QPS global), the exponential backoff, the request
+//! DEADLINE, the response-SIZE ceiling, and the config wiring that supplies all three.
 //!
 //! The deadline and the size ceiling are availability properties: without them a single peer that
 //! accepts a request and never answers — or answers with an endless body — stalls or exhausts the
 //! relayer, and no alert is ever raised, because from the relayer's point of view nothing has gone
 //! wrong yet.
 //!
-//! No live Circle leg (§11): every Circle endpoint is `REQUIRES CIRCLE CONFIRMATION` and is
-//! exercised against the in-process schema-exact mock ([`mock_circle`]) — the relayer builds a real
-//! `reqwest::Request` and the mock's axum router answers it, binding no socket. The attestation wire
-//! data is the partner test vector from [`fixtures`] — a real secp256k1 signature over the real
-//! raw-keccak digest of a canonical DC-1 DepositIntent payload — so the keccak binding these tests
-//! assert is a genuine binding, not a self-consistent invention.
+//! No live Circle leg (the mock boundary): every Circle endpoint is `REQUIRES CIRCLE CONFIRMATION`
+//! and is exercised against the in-process schema-exact mock ([`mock_circle`]) — the relayer builds
+//! a real `reqwest::Request` and the mock's axum router answers it, binding no socket. The
+//! attestation wire data is the partner test vector from [`fixtures`] — a real secp256k1 signature
+//! over the real raw-keccak digest of a canonical DepositIntent payload — so the keccak binding
+//! these tests assert is a genuine binding, not a self-consistent invention.
 
 mod fixtures;
 mod mock_circle;
@@ -39,7 +39,7 @@ use xreserve_deposit_relayer::config::RelayerConfig;
 use xreserve_deposit_relayer::error::RelayerError;
 use xreserve_deposit_relayer::observability::{EventSink, NoopSink, RelayerEvent};
 
-// RATE GOVERNOR — 5 QPS/IP, 35 QPS global (CIR-API-4), and the backoff that runs under it
+// RATE GOVERNOR — Circle's documented 5 QPS/IP, 35 QPS global, and the backoff that runs under it
 // ================================================================================================
 
 /// The per-IP ceiling is a real ceiling: with 5 QPS/IP, no 1-second window may ever contain more
@@ -66,7 +66,8 @@ async fn rate_governor_enforces_the_5_qps_per_ip_ceiling() {
     );
 }
 
-/// The global ceiling binds across DIFFERENT hosts (it is a per-process budget, not a per-host one).
+/// The global ceiling binds across DIFFERENT hosts (it is a per-process budget, not a per-host
+/// one).
 #[tokio::test]
 async fn rate_governor_enforces_the_35_qps_global_ceiling_across_hosts() {
     // per-IP set high so ONLY the global ceiling can bind
@@ -121,9 +122,9 @@ fn rate_governor_rejects_a_zero_ceiling(#[case] per_ip: u32, #[case] global: u32
 }
 
 /// Asserts the sliding-window invariant directly, on the instants the GOVERNOR recorded: for every
-/// acquisition, at most `limit` acquisitions fall inside the 1-second window that starts at it. This
-/// is an exact oracle — the governor admits a stamp only when fewer than `limit` of its own stamps
-/// lie within the preceding second — so it is deterministic, not a timing race.
+/// acquisition, at most `limit` acquisitions fall inside the 1-second window that starts at it.
+/// This is an exact oracle — the governor admits a stamp only when fewer than `limit` of its own
+/// stamps lie within the preceding second — so it is deterministic, not a timing race.
 fn assert_max_in_any_window(stamps: &[Instant], limit: usize) {
     for (i, start) in stamps.iter().enumerate() {
         let window = Duration::from_millis(1000);
@@ -284,9 +285,10 @@ async fn a_transport_failure_is_retried_and_surfaces_as_transport() {
     );
 }
 
-/// The PRODUCTION transport — the one that actually speaks HTTP — maps a request that never produced
-/// a status onto `RelayerError::Transport`, preserving the originating `reqwest::Error` as its
-/// source. This is the seam the in-process mock deliberately does not cover, so it is pinned here.
+/// The PRODUCTION transport — the one that actually speaks HTTP — maps a request that never
+/// produced a status onto `RelayerError::Transport`, preserving the originating `reqwest::Error` as
+/// its source. This is the seam the in-process mock deliberately does not cover, so it is pinned
+/// here.
 ///
 /// It dials `127.0.0.1:1` (privileged, nothing listens) with a short timeout: whether the sandbox
 /// refuses the connection, denies it, or blackholes it, the request cannot produce an HTTP status —
@@ -335,8 +337,8 @@ async fn the_default_event_sink_is_the_noop_sink() {
 
 /// The slowloris shape: the peer accepts the request and simply never responds. Without a deadline
 /// the relayer awaits it forever — `max_attempts` is never reached, the attestation is never
-/// submitted, and NO alert is ever raised, because from the relayer's point of view nothing has gone
-/// wrong yet. One unresponsive peer would take the service down silently.
+/// submitted, and NO alert is ever raised, because from the relayer's point of view nothing has
+/// gone wrong yet. One unresponsive peer would take the service down silently.
 ///
 /// With a deadline the hung attempt becomes an ordinary transient failure: bounded, logged
 /// `Pending`, retried, and finally surfaced with an alert.

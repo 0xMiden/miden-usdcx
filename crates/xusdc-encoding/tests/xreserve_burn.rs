@@ -1,17 +1,23 @@
-//! `XReserveBurnNote` suite (component CMP-B2, payload codec DC-7): the Circle-facing public
-//! burn-event note.
+//! `XReserveBurnNote` suite: the public note a holder emits to withdraw, and the evidence Circle
+//! reads to release the corresponding native USDC on the source chain.
 //!
-//! A FRESH note (the `P2idNote` idiom) that REUSES the stock
-//! burn consume script (`receive_and_burn` → CMP-A10), mandates `NoteType::Public`, bears the fixed
-//! xUSDC burn tag, and writes the DC-7 `(amount, destDomain, destRecipient, salt)` payload into
-//! `NoteStorage.items` via the shared encoding codec (consumed by reference).
+//! The note is built fresh per burn, following the same shape as the standard pay-to-id note, but
+//! it is consumed by the faucet's stock `receive_and_burn` script rather than by a wallet. It is
+//! always `NoteType::Public`, always carries the fixed xUSDC burn tag, and writes its
+//! `(amount, destDomain, destRecipient, salt)` withdrawal payload into `NoteStorage.items` using
+//! the shared encoding codec, so on-chain bytes and off-chain decode never drift.
 //!
-//! The load-bearing proof is OBSERVABILITY NON-VACUITY: `note_type` AND the exact `tag`
-//! are asserted DIRECTLY against an independent constant, never inferred from the payload — a wrong
-//! tag or a `Private` note must fail a named test. The create→consume seam proves the real note is
-//! consumable by the faucet (running CMP-A10) and decrements `token_supply` by exactly the amount.
-//! `burn_note_emitted_items_match_codec_vectors` is vector-driven EMITTED-note parity (TV-DUAL-4):
-//! the items as they land on-chain equal both the codec encode AND the golden vector felts.
+//! Public and tagged is the whole point: the off-chain listener finds these notes by tag, and
+//! Circle's withdrawal only happens because the burn is externally observable. So the tests assert
+//! the note type and the exact tag value DIRECTLY against an independent constant rather than
+//! inferring either from the payload — a note that turned Private, or drifted to another tag,
+//! must fail a test named for that fact, not pass quietly.
+//!
+//! Two further seams are covered. Emitting the note and consuming it through the faucet must
+//! actually reduce `token_supply` by exactly the burned amount — a burn that does not shrink
+//! supply would break the 1:1 backing. And the items as they land on-chain must equal both what
+//! the Rust codec encodes and what the golden vectors pin, so the listener decoding a real note
+//! sees the same fields the producer intended.
 
 mod support;
 
@@ -34,7 +40,8 @@ use xusdc_encoding::xreserve::encoding::{
 // HARNESS
 // ================================================================================================
 
-/// A deterministic standalone note rng (only the serial number depends on it; never the schema/tag).
+/// A fixed-seed rng for standalone note construction, so runs are reproducible. It feeds only the
+/// note's serial number — the payload layout and the tag are constants and never depend on it.
 fn note_rng(seed: u64) -> RandomCoin {
     RandomCoin::new(Word::from([
         Felt::from(seed as u32),
@@ -44,7 +51,9 @@ fn note_rng(seed: u64) -> RandomCoin {
     ]))
 }
 
-/// A sample DC-7 payload with an arbitrary (round-trippable) destination + salt.
+/// A representative withdrawal payload: the given amount plus an arbitrary destination domain,
+/// destination recipient, and salt. The non-amount fields are only there to be carried and read
+/// back unchanged, so their values are arbitrary as long as they round-trip.
 fn sample_items(amount: u64) -> XReserveBurnItems {
     XReserveBurnItems {
         amount: AssetAmount::new(amount).expect("amount within AssetAmount bounds"),
@@ -54,9 +63,13 @@ fn sample_items(amount: u64) -> XReserveBurnItems {
     }
 }
 
-/// Emits a real `XReserveBurnNote` carrying `items` through a minimal MockChain (basic faucet + a
-/// user seeded at `AssetAmount::MAX` so every accept-vector amount moves) and returns the EMITTED
-/// output note's `NoteStorage.items` — the on-chain truth the TV-DUAL-4 parity test asserts.
+/// Emits a real `XReserveBurnNote` on a MockChain and returns the `NoteStorage.items` of the note
+/// as it actually landed on-chain.
+///
+/// The chain is deliberately minimal: a basic faucet and one user holding the maximum asset
+/// amount, so any amount a vector asks for can actually be moved. What comes back is the on-chain
+/// truth the parity test compares the codec's output against — not a re-encode of the same Rust
+/// call, which would prove nothing.
 async fn emitted_items_for(items: &XReserveBurnItems) -> anyhow::Result<Vec<Felt>> {
     let cap = u64::from(AssetAmount::MAX);
     let mut builder = MockChain::builder();
@@ -69,8 +82,8 @@ async fn emitted_items_for(items: &XReserveBurnItems) -> anyhow::Result<Vec<Felt
         Some(cap),
     )?;
     let seed_asset = FungibleAsset::new(faucet.id(), cap)?;
-    // The user EMITS the burn note, so it carries the emit helper (v0.16 #3204: note creation runs
-    // in account context — MIGRATION-V16-ALPHA2.md S22).
+    // The user account emits the note itself, so it needs the emit helper installed: note creation
+    // runs in account context, not in the transaction script.
     let user = add_emitting_wallet(&mut builder, Auth::IncrNonce, [seed_asset.into()])?;
 
     let note = XReserveBurnNote::create(user.id(), faucet.id(), items.clone(), builder.rng_mut())?;
@@ -117,7 +130,7 @@ fn burn_note_is_public_with_fixed_tag() {
     );
 }
 
-// 2 — DC-7 PAYLOAD SCHEMA: items in NoteStorage (NOT metadata); assets + sender
+// 2 — PAYLOAD SCHEMA: the withdrawal fields live in NoteStorage, not in metadata
 // ================================================================================================
 
 #[test]
@@ -128,7 +141,8 @@ fn burn_note_payload_schema() {
     let note = XReserveBurnNote::create(sender, faucet, items.clone(), &mut note_rng(2))
         .expect("constructing the burn note");
 
-    // Payload lives in NoteStorage.items, in the exact DC-7 order/width (decode round-trips).
+    // The payload sits in NoteStorage.items in the codec's field order and widths, so decoding it
+    // returns exactly what was encoded.
     let storage_items = note.recipient().storage().items();
     assert_eq!(storage_items.len(), 18, "DC-7 is exactly 18 felts");
     let decoded = decode_burn_note_items(storage_items).expect("decoding DC-7 items");
@@ -150,7 +164,9 @@ fn burn_note_payload_schema() {
         "NoteAssets amount == items.amount"
     );
 
-    // metadata exposes ONLY the depositor as sender (destination fields are in NoteStorage; anti-ASG-13).
+    // Note metadata exposes only the burner as sender. The destination domain and recipient stay
+    // in NoteStorage, so they are read from the payload the listener decodes rather than inferred
+    // from a metadata field that means something else.
     assert_eq!(
         note.metadata().sender(),
         sender,
@@ -158,7 +174,7 @@ fn burn_note_payload_schema() {
     );
 }
 
-// 3 — R-BURN-6 PRODUCING SIDE: the constructor always yields Public (no note_type parameter)
+// 3 — PRODUCING SIDE: the constructor can only make Public notes (it takes no note-type argument)
 // ================================================================================================
 
 #[test]
@@ -185,7 +201,7 @@ fn burn_note_is_never_private() {
     }
 }
 
-// 4 — TV-DUAL-4 (vector-driven EMITTED-note parity): emitted items == codec encode == golden felts
+// 4 — PARITY: the items on the emitted note equal the codec's encoding and the golden vectors
 // ================================================================================================
 
 #[tokio::test]
@@ -217,7 +233,7 @@ async fn burn_note_emitted_items_match_codec_vectors() -> anyhow::Result<()> {
     Ok(())
 }
 
-// 5 — CREATE→CONSUME SEAM: faucet consumes the real note (CMP-A10) → token_supply -= amount
+// 5 — CREATE-THEN-CONSUME SEAM: the faucet consumes a real note and its supply falls by the amount
 // ================================================================================================
 
 #[tokio::test]
@@ -250,7 +266,9 @@ async fn burn_note_consumed_by_faucet_decrements() -> anyhow::Result<()> {
         AssetAmount::new(TOKEN_SUPPLY)?
     );
 
-    // Emit at block N, faucet consumes at N+1 (runs receive_and_burn → execute_burn_policy → CMP-A10).
+    // The note is emitted in one block and consumed in the next — a burn note consumed in its own
+    // block is erased instead (covered at the end of this file). Consuming runs the stock
+    // `receive_and_burn`, which applies the faucet's minimum-burn policy before destroying the asset.
     let tx1 = run_burn_consume(&mut chain, &note, &h.asset, h.faucet_id, h.user_id)
         .await
         .expect("faucet consumes the XReserveBurnNote via receive_and_burn → CMP-A10");
@@ -265,7 +283,7 @@ async fn burn_note_consumed_by_faucet_decrements() -> anyhow::Result<()> {
     Ok(())
 }
 
-// 6 — R-BURN-5: insufficient holder balance fails the create-tx (the asset can't move into NoteAssets)
+// 6 — a holder cannot burn more than they hold: the asset never moves into the note
 // ================================================================================================
 
 #[tokio::test]
@@ -303,15 +321,16 @@ async fn burn_note_insufficient_balance_rejects_create() -> anyhow::Result<()> {
     Ok(())
 }
 
-// 7 — R-BURN-5 `==balance` ACCEPT boundary: the recipient burns 100% of holdings
+// 7 — the accept side of that boundary: burning exactly the full balance is allowed
 // ================================================================================================
 
-/// The `== balance` ACCEPT side of R-BURN-5, pinned EXPLICITLY: the holder burns their ENTIRE
-/// holding — the emit succeeds, the holder's vault is EMPTY afterwards, and `token_supply`
-/// decrements by exactly the full amount. Honest framing: the seam test above already burns == the
-/// seeded balance de facto (the harness seeds the user with exactly `burn_amount`), but nothing
-/// ASSERTED the boundary — this pin adds the vault-empty and exact-decrement assertions so a
-/// fixture-constant drift cannot silently unpin the accept boundary.
+/// Burning an amount equal to the holder's entire balance succeeds.
+///
+/// This is the accepting edge of the insufficient-balance check above: at exactly the balance the
+/// emit must go through, the holder's vault must end up empty, and `token_supply` must fall by the
+/// full amount. The seam test further up happens to burn the whole seeded balance too, but it
+/// never asserts that fact, so a change to its fixture constants would quietly stop covering this
+/// edge. Asserting the empty vault and the exact decrement here keeps the boundary pinned.
 #[tokio::test]
 async fn recipient_burns_full_balance() -> anyhow::Result<()> {
     const MAX_SUPPLY: u64 = 1_000_000;
@@ -352,15 +371,19 @@ async fn recipient_burns_full_balance() -> anyhow::Result<()> {
     Ok(())
 }
 
-// 8 — same-block erasure with the PRODUCTION note (the canary erasure mechanism)
+// 8 — a burn note created and consumed inside one block is erased
 // ================================================================================================
 
-/// R-BURN-4 with the PRODUCTION `XReserveBurnNote` on the PRODUCTION burn-policy
-/// composition (the burn canary proved this mechanism with the STOCK `BurnNote` on a canary
-/// fixture): the user emits the note and the faucet consumes it UNAUTHENTICATED in the SAME block
-/// — the note is erased (absent from the block's output notes, not retrievable, not committed, no
-/// nullifier), yet tx1's account delta COMMITS, so `token_supply` still drops by the burned
-/// amount. Pins the exact semantics the canary observed, now on the production note + policy.
+/// A same-block create-and-consume destroys the evidence, which is why a burn takes two blocks.
+///
+/// The user emits the note and the faucet consumes it unauthenticated in the SAME block. The
+/// protocol then erases the note: it is absent from the block's output notes, not retrievable, not
+/// committed, and produces no nullifier. The burn itself still happens — the emitting
+/// transaction's account delta commits and `token_supply` drops by the burned amount — so the
+/// tokens are gone with nothing on-chain for the off-chain listener to find or for Circle to be
+/// shown. That asymmetry is the reason the withdrawal flow requires the consume to land in a later
+/// block than the creation, and this test pins the erasure semantics on the real note and the real
+/// burn policy rather than on a stand-in.
 #[tokio::test]
 async fn production_burn_note_same_block_consume_is_erased() -> anyhow::Result<()> {
     const MAX_SUPPLY: u64 = 1_000_000;
@@ -387,7 +410,7 @@ async fn production_burn_note_same_block_consume_is_erased() -> anyhow::Result<(
     let tx0 = chain
         .build_transaction(h.user_id)
         .tx_script(tx_script)
-        // F5: the routing-target attachment content (keyed by commitment) for `add_attachment`.
+        // the routing-target attachment's content, keyed by its commitment for `add_attachment`.
         .extend_advice_inputs(attachment_advice(&note))
         .expected_output_note(RawOutputNote::Full(note.clone()))
         .build()?

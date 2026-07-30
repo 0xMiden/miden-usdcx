@@ -1,12 +1,12 @@
 # xreserve::attester_admin
 #
-# The owner-gated deposit-attester allowlist setter (set_attester): the `set_attester` setter writes
-# the xReserveAttesters allowlist — the on-chain write completing the D5d read seam
-# (attestation_verify.masm, R-MINT-13). Reuses the stock access primitives BY REFERENCE:
+# The owner-gated deposit-attester allowlist setter (set_attester): writes the
+# xReserveAttesters allowlist — the write side of the allowlist that attestation_verify.masm
+# reads at mint time. Reuses the standard access primitives:
 # authority::assert_authorized (the account-wide Authority::OwnerControlled gate ->
 # ownable2step::assert_sender_is_owner on the note sender) + native_account::set_map_item (the write).
-# No custom owner/RBAC logic. The setter is intentionally NOT pause-gated (matching Circle's onlyOwner
-# model, F6).
+# No custom owner/RBAC logic. The setter is intentionally NOT pause-gated (matching Circle's
+# onlyOwner model).
 
 use miden::protocol::native_account
 use miden::standards::access::authority
@@ -14,14 +14,14 @@ use miden::standards::access::authority
 # CONSTANTS
 # =================================================================================================
 
-# The xReserveAttesters allowlist StorageMap slot — byte-identical to attestation_verify.masm:26 (the
-# D5d read path keys the SAME slot). The slot id both modules derive from this one name string is the
-# single source of truth; the Rust XRESERVE_ATTESTERS_SLOT_LABEL binds the identical string.
+# The xReserveAttesters allowlist StorageMap slot — byte-identical to the slot const in
+# attestation_verify.masm (the mint-time read path keys the SAME slot). The name string is the single
+# source of truth for the slot id; the Rust XRESERVE_ATTESTERS_SLOT_LABEL binds the identical string.
 pub const XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xreserve_attesters")
 
-# The non-empty enabled marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1 (== the
-# fixture MARKER; the D5d read path asserts only that the stored value is non-empty). enabled = 0
-# writes EMPTY_WORD, which the read path treats as "not allowlisted".
+# The non-empty enabled marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1
+# (the read path asserts only that the stored value is non-empty). enabled = 0 writes
+# EMPTY_WORD, which the read path treats as "not allowlisted".
 const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
 
 # PUBLIC INTERFACE
@@ -47,15 +47,15 @@ const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
 @locals(4)
 @account_procedure
 pub proc set_attester
-    # => [PK_COMMITMENT, enabled, pad(11)]
-
-    # gate: the Ownable2Step owner (sender-based) ONLY — intentionally NOT pause-gated (Circle's
-    # onlyOwner model, F6), so the owner may disable a compromised attester while the faucet is paused.
-    # reads account storage and is operand-stack-neutral.
+    # gate: the Ownable2Step owner (sender-based) ONLY —
+    # intentionally NOT pause-gated (Circle's onlyOwner model), so
+    # the owner may disable a compromised attester while the faucet
+    # is paused. reads account storage and is
+    # operand-stack-neutral.
     exec.authority::assert_authorized
     # => [PK_COMMITMENT, enabled, pad(11)]
 
-    # stash the caller-supplied commitment (the map key) into loc[0..4], trusted verbatim. The
+    # store the caller-supplied commitment (the map key) into loc[0..4], trusted verbatim. The
     # `_le` store leaves the word on the stack, so drop the copy.
     loc_storew_le.0 dropw
     # => [enabled, pad(11)]

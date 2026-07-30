@@ -1,6 +1,10 @@
-//! F4-REVERSAL transfer-blocklist — the DELEGATION CONTRACT (role gate), MockChain (see
-//! `DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md`). The §1.5 blocklist SEMANTICS matrix lives in the
-//! sibling `transfer_blocklist_semantics.rs` (split for the G3 file-size ceiling).
+//! Transfer blocklist — who is allowed to block, run against a MockChain.
+//!
+//! This file covers the delegation contract only: the authorization around the block and unblock
+//! admin notes. What being blocked actually does to transfers, burns, and consumption is the
+//! sibling `transfer_blocklist_semantics.rs`; the two are split only to keep each file within its
+//! size ceiling. The decision record behind the feature is the transfer-blocklist decision
+//! document under `docs/`.
 //!
 //! The two new admin notes `block_account` / `unblock_account` are gated on the dedicated
 //! `BLK_MANAGER` role held by an EXTERNAL entity, NOT the owner. A block/unblock from the BLK_MANAGER
@@ -92,9 +96,10 @@ fn unblocked_word() -> Word {
 // PART A — the delegation contract (role gate on block_account / unblock_account)
 // ================================================================================================
 
-/// A compilable stand-in for the DELETED custom mint driver (the Wave-1 S1 recomposition removed
-/// `xreserve::xreserve_mint`, so the former generated driver no longer assembles): these tests
-/// never invoke the driver proc — the guarded fixture only needs a driver component that compiles.
+/// A do-nothing component that satisfies the shared fixture's requirement for a driver.
+///
+/// These tests reach the account through admin notes and never invoke it, so it only has to
+/// compile.
 fn placeholder_driver_src() -> String {
     "#! Test driver stand-in: never invoked by this suite (the custom mint entry was deleted by\n\
      #! the Wave-1 S1 recomposition); the guarded fixture only requires a compilable component.\n\

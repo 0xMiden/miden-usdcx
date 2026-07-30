@@ -1,4 +1,4 @@
-# xreserve_accept_ownership_note — the shipped, root-pinned accept_ownership admin note (F5).
+# xreserve_accept_ownership_note — the shipped, root-pinned accept_ownership admin note.
 #
 # The production admin surface for the STOCK `accept_ownership` under the network account: a fixed-root,
 # PARAM-LESS note whose sole job is to cross into the faucet account context and `call` the
@@ -24,6 +24,9 @@ use miden::standards::access::ownable2step
 #!
 #! Inputs:  [ARGS, pad(12)]
 #! Outputs: [pad(16)]
+#!
+#! Where:
+#! - ARGS is executor-controlled and dropped unread.
 #!
 #! Panics if:
 #! - the note sender is not the nominated owner (accept_ownership's pending-owner gate), or no

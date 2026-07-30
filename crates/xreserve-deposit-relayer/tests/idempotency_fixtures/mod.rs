@@ -52,12 +52,12 @@ impl Clock for ManualClock {
     }
 }
 
-/// The one distinguishable DepositIntent nonce (DC-1 field 9) a test keys on.
+/// The one distinguishable DepositIntent nonce (header field 9) a test keys on.
 pub fn nonce(tag: u8) -> [u8; 32] {
     [tag; 32]
 }
 
-/// The attestation envelope's `messageHash` (`keccak256(payload)`, DC-2) bound to that nonce.
+/// The attestation envelope's `messageHash` (`keccak256(payload)`, raw keccak) bound to that nonce.
 pub fn message_hash(tag: u8) -> [u8; 32] {
     [tag.wrapping_add(0x80); 32]
 }

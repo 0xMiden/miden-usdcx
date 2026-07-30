@@ -1,18 +1,24 @@
-//! S12 (RATIFIED 2026-07-20) — the faucet's production auth component allowlists EXACTLY the one
-//! canonical `ExpirationTransactionScript` in its tx-script allowlist, and NOTHING else.
+//! The transaction-script allowlist: exactly one script may run against the faucet.
 //!
-//! This is the dedicated RED-then-GREEN proof for the S12 change: it exercises the SOURCE of the
-//! change — `XReserveStablecoinBuilder::auth_component()` — directly (component storage), an angle
-//! distinct from the finalized-account view in `f5_network_account_auth.rs`, plus the on-chain
-//! enforcement (execute-level admit/reject). It fails RED against the pre-S12 EMPTY tx-script
-//! allowlist and passes GREEN once `auth_component()` allowlists the single expiration root.
+//! A network account's transaction-script allowlist decides which scripts a transaction may carry.
+//! Left empty it admits none, and left open it would admit any script an attacker cared to write —
+//! against an account whose own procedures move supply. The faucet allowlists precisely one entry,
+//! the canonical expiration script, which is what a relayer needs to set a transaction's expiry and
+//! nothing more.
 //!
-//! Invariant (three checks):
-//! - the auth component's tx-script allowlist slot carries EXACTLY `{ script_root() }` (the "only"
-//!   property — extra or missing = RED);
-//! - the note-script allowlist slot is UNCHANGED by S12 — 14 non-empty roots (S12 must not touch it);
-//! - on-chain enforcement: the canonical expiration script is ADMITTED and executes, while an
-//!   arbitrary (nop) tx-script is REJECTED with `ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED`.
+//! This file checks that from the SOURCE side — the builder's auth component, read as component
+//! storage — which is a different vantage point from `f5_network_account_auth.rs`, where the same
+//! property is read off a finalized account. Both matter: the builder is where the value is decided,
+//! the account is where it is enforced.
+//!
+//! Three things are asserted:
+//!
+//! - the tx-script allowlist holds exactly the one expiration root — an extra entry is as much a
+//!   failure as a missing one;
+//! - the note-script allowlist still holds all fourteen of its roots, so adding the tx-script
+//!   allowlist did not disturb the note one (they share a component);
+//! - and enforcement actually happens on-chain: the expiration script is admitted and executes,
+//!   while an arbitrary no-op script is refused with the allowlist's own error.
 
 mod support;
 
@@ -55,7 +61,7 @@ fn allowlisted_keys(component: &AccountComponent, slot: &StorageSlotName) -> BTr
 
 /// DIRECT test of the changed function: `auth_component()`'s tx-script allowlist slot must carry
 /// EXACTLY the one canonical `ExpirationTransactionScript::script_root()` — nothing more, nothing
-/// less. RED before S12 (the slot is empty), GREEN after.
+/// less.
 #[test]
 fn auth_component_tx_script_allowlist_is_exactly_the_expiration_root() -> Result<()> {
     let component: AccountComponent = XReserveStablecoinBuilder::auth_component()
@@ -76,8 +82,12 @@ fn auth_component_tx_script_allowlist_is_exactly_the_expiration_root() -> Result
     Ok(())
 }
 
-/// S12 must NOT touch the note-script allowlist: the note slot still carries the frozen 14 roots
-/// (12 owner/role/pause + the 2 F4-reversal transfer-blocklist notes).
+/// Adding the transaction-script allowlist must not disturb the note-script allowlist.
+///
+/// The two allowlists live in the same auth component, so a change to one is a plausible way to
+/// corrupt the other. This re-reads the note slot and requires all fourteen roots to still be
+/// there: the twelve owner-, role- and pause-gated admin notes plus the two transfer-blocklist
+/// notes.
 #[test]
 fn auth_component_note_script_allowlist_is_untouched_by_s12() -> Result<()> {
     let component: AccountComponent = XReserveStablecoinBuilder::auth_component()
@@ -93,13 +103,14 @@ fn auth_component_note_script_allowlist_is_untouched_by_s12() -> Result<()> {
         "S12 must leave the note-script allowlist at EXACTLY the frozen 14 roots; found {}",
         note_keys.len(),
     );
-    // The exact-14-root set (source + on-chain) is pinned by f5; here we only prove S12 did not
+    // The exact fourteen-root set is pinned, source and on-chain, in `f5_network_account_auth.rs`;
+    // here we only prove that adding the tx-script allowlist did not
     // add/remove a note root while flipping the tx-script allowlist.
     Ok(())
 }
 
 /// On-chain enforcement: the canonical expiration script is ADMITTED (clears the allowlist gate and
-/// executes) while an arbitrary nop tx-script is REJECTED. RED before S12 (both rejected).
+/// executes) while an arbitrary no-op tx-script is REJECTED.
 #[tokio::test]
 async fn expiration_is_admitted_and_every_other_tx_script_is_rejected() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
@@ -122,7 +133,7 @@ async fn expiration_is_admitted_and_every_other_tx_script_is_rejected() -> Resul
     // POSITIVE — the canonical expiration script IS allowlisted, so it CLEARS the allowlist gate.
     // An expiration-only tx changes no account state and consumes no notes, so the kernel then
     // rejects it with the empty-tx epilogue assertion — which is DOWNSTREAM of, and orthogonal to,
-    // the S12 tx-script allowlist gate. The precise S12 invariant is that the expiration script is
+    // the tx-script allowlist gate. The precise invariant is that the expiration script is
     // NOT rejected by the tx-script allowlist; a mutation dropping the expiration root flips this
     // back to `ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED` (the RED state), which this catches.
     let expiration = ExpirationTransactionScript::new(NonZeroU16::new(64).expect("64 is non-zero"));

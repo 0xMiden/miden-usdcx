@@ -1,6 +1,8 @@
-//! The error type returned while composing the xUSDC faucet account
-//! (`XReserveStablecoinBuilderError`), moved verbatim from the builder module
-//! to satisfy the file-size gate.
+//! The error type the faucet-account builder returns
+//! ([`XReserveStablecoinBuilderError`]).
+//!
+//! It lives beside the builder rather than inside it purely to keep that module within its size
+//! ceiling; the variants describe wiring the builder refuses to compose.
 
 use core::fmt;
 
@@ -16,8 +18,8 @@ pub enum XReserveStablecoinBuilderError {
     /// at build time so packaging cannot produce an unobservable faucet.
     NonPublicAccountType(AccountType),
     /// The active mint policy does not resolve to the attestation mint policy — packaging cannot
-    /// bypass the attestation gate (INV-MINT-SECURITY, restated: every supply increase passes the
-    /// attestation policy).
+    /// bypass the attestation gate (the core mint-security invariant: every supply increase passes
+    /// the attestation policy).
     MissingAttestationMintPolicy,
     /// The supplied faucet was not built with a mutable `max_supply`, so the stock `set_max_supply`
     /// admin function would be permanently dead on the deployed faucet (every call traps the runtime
@@ -28,22 +30,22 @@ pub enum XReserveStablecoinBuilderError {
     /// (assembly/path drift). Carries the expected path for diagnosis.
     AttestationPolicyProcNotFound,
     /// The active burn policy does not resolve to the stock
-    /// [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) — packaging cannot
+    /// `MinBurnAmount` — packaging cannot
     /// ship a faucet whose burns bypass the floor predicate (the burn-side twin of
     /// [`Self::MissingAttestationMintPolicy`]).
     MissingMinBurnAmountPolicy,
-    /// The requested `min_burn_size` is below [`MIN_BURN_SIZE_FLOOR`](super::MIN_BURN_SIZE_FLOOR)
+    /// The requested `min_burn_size` is below [`MIN_BURN_SIZE_FLOOR`]
     /// (= 1). The stock `MinBurnAmount` policy asserts only `min <= amount` and its stock setter
-    /// accepts `0`, so a sub-floor seed would silently drop the R-BURN-1 zero-burn invariant;
+    /// accepts `0`, so a sub-floor seed would silently allow zero-amount burns;
     /// rejected at build time (the runtime twin is the `set_min_burn_size` note's floor assert).
     /// Carries the offending value.
     MinBurnSizeBelowFloor(u64),
     /// The requested `min_burn_size` exceeds [`AssetAmount::MAX`](miden_protocol::asset::AssetAmount::MAX)
-    /// (`2^63 - 2^31`), so it is not a valid burn amount / field element and cannot be seeded into
+    /// (`2^63 - 2^31`), so it is not a valid burn amount and cannot be seeded into
     /// the stock `MinBurnAmount` floor slot. Carries the offending value.
     MinBurnSizeExceedsMax(u64),
     /// An explicit
-    /// [`with_active_burn_policy`](super::XReserveStablecoinBuilder::with_active_burn_policy)
+    /// `with_active_burn_policy`
     /// override carries the stock `MinBurnAmount` root but a companion floor that disagrees with
     /// the builder-validated `min_burn_size`. Rejected so a same-root override cannot smuggle a
     /// sub-floor (e.g. zero) floor slot past the `min_burn_size` validation — the stock predicate
@@ -51,8 +53,8 @@ pub enum XReserveStablecoinBuilderError {
     /// is the override's companion floor; `expected` the validated `min_burn_size`.
     BurnPolicyFloorMismatch { requested: u64, expected: u64 },
     /// The supplied `xreserve` component declares a NON-EMPTY identifier value slot. The identifier
-    /// is the DEC-4 account-id fixpoint (the account id derives from the initial storage
-    /// commitment; the identifier is, provisionally pending Q-CRY-4, the faucet's own id as
+    /// is the account-id fixpoint (the account id derives from the initial storage
+    /// commitment; the identifier is, provisionally pending Circle confirmation, the faucet's own id as
     /// bytes32), so it can NEVER be build-seeded — a non-empty declared identifier would ship an
     /// already-initialized, potentially misbound faucet and make the init-once `identifier_init`
     /// note trap as a reinitialization. The identifier slot must ship EMPTY; the faucet-bound
@@ -61,8 +63,8 @@ pub enum XReserveStablecoinBuilderError {
     /// The three build-seeded domain-config fields (`domain`, `source_domain`,
     /// `xreserve_contract`) were not supplied — see
     /// [`XReserveStablecoinBuilder::with_domain_config`](super::XReserveStablecoinBuilder::with_domain_config).
-    /// DEC-4 moved these to build time (only the identifier fixpoint stays a runtime init), so a
-    /// build without them would ship a faucet whose D5a domain compare reads an empty slot.
+    /// These fields are build-seeded (only the identifier fixpoint stays a runtime init), so a
+    /// build without them would ship a faucet whose domain compare reads an empty slot.
     MissingDomainConfig,
     /// The supplied `xreserve` component does not declare a required storage slot (the
     /// validate-what-you-ship check, [`REQUIRED_XRESERVE_SLOT_LABELS`](super::REQUIRED_XRESERVE_SLOT_LABELS):
@@ -71,38 +73,37 @@ pub enum XReserveStablecoinBuilderError {
     MissingXReserveSlot(&'static str),
     /// The supplied faucet's `decimals` is not the spec-mandated [`USDCX_DECIMALS`](super::USDCX_DECIMALS)
     /// (= 6;
-    /// `token_config` decimals = 6, a Circle requirement of six decimal places — the D5b reducer
+    /// `token_config` decimals = 6, a Circle requirement of six decimal places — the amount reducer
     /// scales to 6dp, so a mismatched faucet silently mis-scales every amount). Carries the
     /// offending value.
     WrongDecimals(u8),
     /// The supplied faucet's `TokenSymbol` is not the shipped [`USDCX_TOKEN_SYMBOL`](super::USDCX_TOKEN_SYMBOL)
     /// guard
-    /// constant. The token's identity is USDCx (human decision 2026-07-06, distinct from the
-    /// superseded "xUSDC"); the pinned `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs`),
+    /// constant. The token's identity is USDCx (distinct from the
+    /// "xUSDC" working label); the pinned `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs`),
     /// so the on-chain symbol is the VM-forced uppercase `USDCX`; this guard pins the shipped
     /// constant so the deployed symbol is load-bearing and a drift fails the build.
     WrongTokenSymbol,
     /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with a privileged
-    /// identity — the owner, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The F4-reversal
-    /// requires the transfer-blocklist administrator be an EXTERNAL entity with NO other faucet-admin
+    /// identity — the owner, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The blocklist
+    /// decision requires the transfer-blocklist administrator be an EXTERNAL entity with NO other faucet-admin
     /// capability (two-way capability isolation): a caller who set the owner as `BLK_MANAGER` would
     /// give the owner/ADMIN a direct block/unblock path, and a caller who set a DOM_PAUSER/DOM_MANAGER
     /// holder as `BLK_MANAGER` would fuse those roles. Rejected at build time so packaging cannot ship
     /// a faucet whose blocklist admin is not capability-isolated. `collides_with` names the offending
     /// role (`"owner"` / `"DOM_PAUSER"` / `"DOM_MANAGER"`).
     BlocklistManagerNotIsolated { collides_with: &'static str },
-    /// The mint-policy descriptor rejected its construction (v16 `MintPolicy::custom` validates
+    /// The mint-policy descriptor rejected its construction (`MintPolicy::custom` validates
     /// the root against the supplied companion components).
     MintPolicy(MintPolicyError),
     /// The burn-policy descriptor rejected its construction — the burn-slot twin of
     /// [`Self::MintPolicy`].
     BurnPolicy(BurnPolicyError),
-    /// The policy manager's companion components did not have the pinned shape at the
-    /// composition seam (the manager component first, then EXACTLY one xreserve-component copy —
-    /// the custom attestation mint policy — plus EXACTLY one stock `MinBurnAmount` companion (the
-    /// burn floor) and EXACTLY one `BasicBlocklist` companion (the transfer-blocklist policy
-    /// shared by the send and receive kinds — F4-reversal); MIGRATION-V16-ALPHA2.md S18, Wave-1 S1
-    /// rework). Never dropped silently. `found` is the FULL companion remainder the manager
+    /// The policy manager's companion components did not have the pinned shape at the composition
+    /// seam: the manager component first, then EXACTLY one xreserve-component copy (the custom
+    /// attestation mint policy), EXACTLY one stock `MinBurnAmount` companion (the burn floor), and
+    /// EXACTLY one `BasicBlocklist` companion (the transfer-blocklist policy shared by the send and
+    /// receive kinds). Never dropped silently. `found` is the FULL companion remainder the manager
     /// emitted; the `*_recognized` counters say how many of those were the already-installed
     /// xreserve component, the `MinBurnAmount` companion, and the `BasicBlocklist` companion
     /// respectively, so a smuggled foreign companion shows up as

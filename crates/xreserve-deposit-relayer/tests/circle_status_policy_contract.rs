@@ -1,14 +1,14 @@
-//! `tests/circle_status_policy_contract.rs` — the HTTP-status policy (§8.1 check 1, §8.4):
-//! `T-RLY-07` (404 → retry with backoff, logged `Pending`, never dropped), `T-RLY-17` (400 → reject,
-//! NO retry, alert, and no error body ever parsed), `T-RLY-18` (500 → retry, alert after the
-//! threshold; plus 429), the classification table itself, and redirects — which are NOT followed.
+//! `tests/circle_status_policy_contract.rs` — the HTTP-status policy (the HTTP-status check, the
+//! documented policy): 404 → retry with backoff, logged `Pending`, never dropped (400 → reject, NO
+//! retry, alert, and no error body ever parsed) (500 → retry, alert after the threshold; plus 429),
+//! the classification table itself, and redirects — which are NOT followed.
 //!
-//! No live Circle leg (§11): every Circle endpoint is `REQUIRES CIRCLE CONFIRMATION` and is
-//! exercised against the in-process schema-exact mock ([`mock_circle`]) — the relayer builds a real
-//! `reqwest::Request` and the mock's axum router answers it, binding no socket. The attestation wire
-//! data is the partner test vector from [`fixtures`] — a real secp256k1 signature over the real
-//! raw-keccak digest of a canonical DC-1 DepositIntent payload — so the keccak binding these tests
-//! assert is a genuine binding, not a self-consistent invention.
+//! No live Circle leg (the mock boundary): every Circle endpoint is `REQUIRES CIRCLE CONFIRMATION`
+//! and is exercised against the in-process schema-exact mock ([`mock_circle`]) — the relayer builds
+//! a real `reqwest::Request` and the mock's axum router answers it, binding no socket. The
+//! attestation wire data is the partner test vector from [`fixtures`] — a real secp256k1 signature
+//! over the real raw-keccak digest of a canonical DepositIntent payload — so the keccak binding
+//! these tests assert is a genuine binding, not a self-consistent invention.
 
 mod fixtures;
 mod mock_circle;
@@ -31,7 +31,7 @@ use xreserve_deposit_relayer::circle::{
 use xreserve_deposit_relayer::error::RelayerError;
 use xreserve_deposit_relayer::observability::RelayerEvent;
 
-// T-RLY-07 — HTTP 404: retry with backoff, log Pending, never drop
+// HTTP 404: retry with backoff, log Pending, never drop
 // ================================================================================================
 
 #[tokio::test]
@@ -69,7 +69,7 @@ async fn t_rly_07_404_retries_with_exponential_backoff_then_succeeds() {
     );
 
     // (3) the attestation was never dropped: each 404 attempt is logged Pending, with no alert
-    // (§8.4: 404 alerts only once the attempts are exhausted).
+    // (Circle documents 404 alerts only once the attempts are exhausted).
     assert_eq!(sink.pending().len(), 2, "each 404 is logged Pending");
     assert!(
         sink.alerts().is_empty(),
@@ -111,7 +111,7 @@ async fn t_rly_07_404_that_never_resolves_exhausts_attempts_and_is_surfaced() {
     );
 }
 
-// T-RLY-17 — HTTP 400: reject, NO retry, alert
+// HTTP 400: reject, NO retry, alert
 // ================================================================================================
 
 #[tokio::test]
@@ -174,7 +174,8 @@ async fn t_rly_17_400_is_not_retried_on_the_batch_endpoint_either() {
     assert_eq!(sink.alerts().len(), 1);
 }
 
-// T-RLY-18 — HTTP 500: retry with backoff, alert after a threshold. Plus 429 (throttle).
+// HTTP 500: retry with backoff, alert after a threshold. Plus 429
+// (throttle).
 // ================================================================================================
 
 #[tokio::test]
@@ -272,7 +273,8 @@ async fn t_rly_18_429_backs_off_and_retries() {
     assert_eq!(sink.pending().len(), 1);
 }
 
-/// The HTTP-status policy, stated once and asserted directly (the table §8.1 check 1 / §8.4).
+/// The HTTP-status policy, stated once and asserted directly (the table the HTTP-status check / the
+/// documented policy).
 #[rstest]
 #[case::ok(200, StatusClass::Success)]
 #[case::created(201, StatusClass::Success)]
@@ -305,7 +307,7 @@ fn status_policy_classifies_every_documented_code(#[case] status: u16, #[case] c
 // client re-issues the request at the `Location` the peer chose, and unless the HTTP stack strips the
 // auth header, the key goes with it. reqwest strips only a fixed set of standard names
 // (`Authorization`, `Cookie`, `Proxy-Authorization`, `WWW-Authenticate`) on a cross-origin redirect —
-// and `Q-API-AUTH` is OPEN, so the relayer's credential header may be called anything at all
+// and With no documented auth scheme, the relayer's credential header may be called anything at all
 // (`X-Circle-Api-Key`, …), which that list does not cover.
 //
 // So the relayer does not follow redirects AT ALL. The production transport is built with

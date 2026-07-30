@@ -1,11 +1,11 @@
-//! `T-LA-07`, part 1 — the **B3→B10 happy path**, the **DO-NOT-SIGN abort**, and the
-//! **batch↔burn cardinality**, driven end to end against the schema-exact Circle mock and the unit
-//! evidence adapter. **NON-GATING** (the real-node leg is W10; see `listener_support/mod.rs`).
+//! The **happy path**, the **DO-NOT-SIGN abort**, and the **batch↔burn cardinality**, driven end
+//! to end against the schema-exact Circle mock and the unit evidence adapter. **NON-GATING** (the
+//! real-node leg is parked; see `listener_support/mod.rs`).
 //!
-//! Its siblings: `listener_quorum_and_conflict.rs` (the quorum shape, the allowlist gate, B3's
-//! refusals, the `409` contract, idempotency, `DC-8` fail-closed, observability) and
-//! `listener_structural_absence.rs` (what the orchestration must not be able to do). Split under G3's
-//! ~700-line Rust ceiling, over one `listener_support` fixture module.
+//! Its siblings: `listener_quorum_and_conflict.rs` (the quorum shape, the allowlist gate, the
+//! discovery gate's refusals, the `409` contract, idempotency, fail-closed evidence, observability)
+//! and `listener_structural_absence.rs` (what the orchestration must not be able to do). Split to
+//! stay within the ~700-line Rust ceiling, over one `listener_support` fixture module.
 //!
 //! # What is actually being proven here, and why the oracle is not the return value
 //!
@@ -15,15 +15,15 @@
 //!
 //! * **the mock's CALL LOG** — how many `POST /v1/prepare-withdrawal`, `POST /v1/withdraw` and
 //!   `GET /v1/withdrawal/{id}` requests were actually built and sent;
-//! * **a COUNTING signer** — how many times the orchestration reached B6.
+//! * **a COUNTING signer** — how many times the orchestration reached the signing step.
 //!
 //! `signer.calls() == 0` on every do-not-sign path, and `withdraw_posts == 0` on every
 //! stage-refusal, are the whole point of the file.
 //!
 //! # The invariants this half maps to
 //!
-//! * `INV-CIRCLE-CANONICAL-WITHDRAWAL` (§10.4, B5 gates B6) — the mismatch family.
-//! * The batch↔burn cardinality (§9 B4/B7: one burn, one payload, one batch) — the cardinality family.
+//! * Circle's returned spec must match the burn note before signing — the mismatch family.
+//! * The batch↔burn cardinality (one prepared batch, one submitted batch: one burn, one payload, one batch) — the cardinality family.
 use assert_matches::assert_matches;
 use rstest::rstest;
 use serde_json::{json, Value};
@@ -44,12 +44,12 @@ use listener_support::mock_circle::{Reply, Script};
 use listener_support::*;
 
 // ================================================================================================
-// HAPPY PATH — B3→B10
+// HAPPY PATH — discovery through to the status poll
 // ================================================================================================
 
-/// The whole flow, once: a public, correctly-tagged burn note is discovered, Circle prepares intents
-/// that match it, two registered attesters sign, the evidence assembles, ONE withdrawal is submitted,
-/// and B10 polls it to `finalized`.
+/// The whole flow, once: a public, correctly-tagged burn note is discovered, Circle prepares
+/// intents that match it, two registered attesters sign, the evidence assembles, ONE withdrawal is
+/// submitted, and the status poll takes it to `finalized`.
 ///
 /// The counted oracle is the point: **exactly one** `POST /v1/withdraw`, carrying **exactly one**
 /// batch with **exactly two** signatures.
@@ -99,9 +99,9 @@ async fn happy_path_b3_to_b10_submits_exactly_one_withdrawal_with_two_signatures
 }
 
 /// The signatures that reach the wire ARE `assemble_quorum`'s shape: exactly the threshold, each
-/// recovering to a REGISTERED attester over B5's digest, strictly ascending by signer address, no
-/// duplicate. This is the off-chain mirror of Circle's source-chain verifier, asserted on the bytes
-/// the driver actually sent rather than on the value the assembler returned.
+/// recovering to a REGISTERED attester over the validated digest, strictly ascending by signer
+/// address, no duplicate. This is the off-chain mirror of Circle's source-chain verifier, asserted
+/// on the bytes the driver actually sent rather than on the value the assembler returned.
 #[tokio::test]
 async fn the_submitted_signatures_carry_the_on_chain_quorum_shape() {
     let mock = mock(happy_script());
@@ -142,9 +142,9 @@ async fn the_submitted_signatures_carry_the_on_chain_quorum_shape() {
     }
 }
 
-/// The `burnTxId` on the wire is the one `DC-8` assembled — not a value the orchestration invented,
-/// and not the note id. If the evidence port resolves a different burn transaction, the wire follows
-/// it.
+/// The `burnTxId` on the wire is the one the evidence assembler resolved — not a value the
+/// orchestration invented, and not the note id. If the evidence port resolves a different burn
+/// transaction, the wire follows it.
 #[tokio::test]
 async fn the_wire_burn_tx_id_is_the_assembled_evidence_burn_tx_id() {
     let mock = mock(happy_script());
@@ -177,8 +177,8 @@ async fn the_wire_burn_tx_id_is_the_assembled_evidence_burn_tx_id() {
     );
 }
 
-/// A `finalized` B10 poll settles the burn in the durable ledger — so the next pass sees a settled
-/// burn rather than re-deriving one.
+/// A `finalized` status poll settles the burn in the durable ledger — so the next pass sees a
+/// settled burn rather than re-deriving one.
 #[tokio::test]
 async fn a_finalized_poll_settles_the_burn_in_the_ledger() {
     let mock = mock(happy_script());
@@ -202,7 +202,7 @@ async fn a_finalized_poll_settles_the_burn_in_the_ledger() {
 }
 
 /// A non-terminal poll answer does NOT settle the burn. Only Circle's `finalized` is terminal
-/// success (§10.10) — reporting `expired` or `failed` as done would mark a burn released that was
+/// success — reporting `expired` or `failed` as done would mark a burn released that was
 /// not.
 #[rstest]
 #[case::expired("expired")]
@@ -254,22 +254,24 @@ async fn a_non_finalized_poll_answer_never_settles_the_burn(#[case] status: &str
 }
 
 // ================================================================================================
-// THE DO-NOT-SIGN ABORT — B5 gates B6 (INV-CIRCLE-CANONICAL-WITHDRAWAL)
+// THE DO-NOT-SIGN ABORT — validation gates signing
 // ================================================================================================
 
 /// **The mandatory negative.** Circle returns a spec that does not match the burn payload → the run
 /// aborts with the exact `ValidationMismatch`, **the signer is invoked zero times**, and **no
 /// `POST /v1/withdraw` is issued**.
 ///
-/// Each mismatch class is its own case (§10.4 lists them separately), and the missing/empty digest is
-/// here too: a non-signable hash must be refused BEFORE signing, not handed to the signer.
-/// Each case pins its EXACT `ValidationMismatch` (G4). A wildcard would pass for a run that refused
-/// the amount mismatch because it thought the RECIPIENT was wrong — i.e. for a build in which the
-/// amount comparison had silently stopped working, which is the one this table exists to catch.
+/// Each mismatch class is its own case (Circle's documentation lists them separately), and the
+/// missing/empty digest is here too: a non-signable hash must be refused BEFORE signing, not handed
+/// to the signer. Each case pins its EXACT `ValidationMismatch`. A wildcard would pass for a run
+/// that refused the amount mismatch because it thought the RECIPIENT was wrong — i.e. for a build
+/// in which the amount comparison had silently stopped working, which is the one this table exists
+/// to catch.
 ///
 /// The expected error is derived from the same `payload()` the request was built from rather than
 /// written out as a literal: a literal would be a second source of truth for the fixture, and the
-/// natural response to a fixture edit would be to "correct" the literal until the test passed again.
+/// natural response to a fixture edit would be to "correct" the literal until the test passed
+/// again.
 #[rstest]
 #[case::amount("value", json!("999"))]
 #[case::destination_domain("destinationDomain", json!(WRONG_DOMAIN))]
@@ -313,8 +315,8 @@ async fn a_b5_spec_mismatch_produces_no_signature_and_no_withdraw(
     assert_eq!(withdraw_posts(&mock), 0, "and nothing was submitted");
 }
 
-/// The digest itself: present-but-empty, and present-but-not-32-bytes. Both are refused at B5 with
-/// their exact variants, and neither reaches the signer.
+/// The digest itself: present-but-empty, and present-but-not-32-bytes. Both are refused by the gate
+/// with their exact variants, and neither reaches the signer.
 #[rstest]
 #[case::empty("", ValidationMismatch::MissingMessageHash { batch: 0 })]
 #[case::short("0xdeadbeef", ValidationMismatch::MalformedMessageHash { batch: 0, len: 4 })]
@@ -409,7 +411,7 @@ async fn a_two_batch_prepare_response_is_refused_before_the_signer() {
 }
 
 /// An EMPTY prepare response — no batch at all. There is no spec to compare and no digest to bind,
-/// so B5 refuses rather than minting a signing token vacuously.
+/// so the gate refuses rather than minting a signing token vacuously.
 #[tokio::test]
 async fn an_empty_prepare_response_is_refused_before_the_signer() {
     let mock = mock(happy_script().prepare(vec![Reply::json(200, prepare_200_with_batches(0))]));
@@ -423,20 +425,20 @@ async fn an_empty_prepare_response_is_refused_before_the_signer() {
     assert_eq!(withdraw_posts(&mock), 0);
 }
 
-/// **Fan-in — the one the batch count cannot see.** Circle answers a one-burn prepare with ONE batch
-/// carrying the matching burn intent `n` times.
+/// **Fan-in — the one the batch count cannot see.** Circle answers a one-burn prepare with ONE
+/// batch carrying the matching burn intent `n` times.
 ///
-/// Every check upstream of this passes, and that is exactly why it needs its own gate. Each repeated
-/// intent matches the burn payload, so B5's field-by-field compare clears every one of them; the
-/// batch's `messageHashToSign` covers the whole intent SET, so a single attester signature authorizes
-/// all `n`; the quorum is a perfectly well-formed exactly-2; every signer is a registered attester;
-/// and `batches.len()` is still 1, so a gate that counts BATCHES sees nothing wrong at all. The
-/// result would be one discovered burn funding `n` releases — the fan-in `DC-8`'s single `burnTxId`
-/// cannot even describe.
+/// Every check upstream of this passes, and that is exactly why it needs its own gate. Each
+/// repeated intent matches the burn payload, so the field-by-field compare clears every one of
+/// them; the batch's `messageHashToSign` covers the whole intent SET, so a single attester
+/// signature authorizes all `n`; the quorum is a perfectly well-formed exactly-2; every signer is a
+/// registered attester; and `batches.len()` is still 1, so a gate that counts BATCHES sees nothing
+/// wrong at all. The result would be one discovered burn funding `n` releases — the fan-in the
+/// evidence package's single `burnTxId` cannot even describe.
 ///
-/// So the cardinality rule is one burn ↔ one payload ↔ one batch ↔ **one intent**, and it is enforced
-/// before the signer: a signature over a set this burn never asked for is the artifact that must not
-/// exist.
+/// So the cardinality rule is one burn ↔ one payload ↔ one batch ↔ **one intent**, and it is
+/// enforced before the signer: a signature over a set this burn never asked for is the artifact
+/// that must not exist.
 #[rstest]
 #[case::two_intents(2)]
 #[case::three_intents(3)]
@@ -460,8 +462,8 @@ async fn a_batch_carrying_the_burn_intent_more_than_once_is_refused_before_the_s
     assert_eq!(withdraw_posts(&mock), 0);
 }
 
-/// The other direction of the same rule: a batch with NO burn intent. Its digest would be bound to no
-/// amount, no domain and no recipient — a signature over nothing at all.
+/// The other direction of the same rule: a batch with NO burn intent. Its digest would be bound to
+/// no amount, no domain and no recipient — a signature over nothing at all.
 #[tokio::test]
 async fn a_batch_carrying_no_burn_intent_is_refused_before_the_signer() {
     let mock = mock(happy_script().prepare(vec![Reply::json(200, prepare_200_with_intents(0))]));
@@ -478,8 +480,8 @@ async fn a_batch_carrying_no_burn_intent_is_refused_before_the_signer() {
 }
 
 /// The wire half of the same rule, on the happy path: the submitted batch carries **exactly one**
-/// burn intent. Without this, the refusals above could all pass while the honest path still shipped a
-/// set — the count on the wire is what Circle actually acts on.
+/// burn intent. Without this, the refusals above could all pass while the honest path still shipped
+/// a set — the count on the wire is what Circle actually acts on.
 #[tokio::test]
 async fn the_submitted_batch_carries_exactly_one_burn_intent() {
     let mock = mock(happy_script());

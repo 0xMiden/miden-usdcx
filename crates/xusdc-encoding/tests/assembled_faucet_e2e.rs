@@ -1,23 +1,30 @@
 //! FULL FAUCET ASSEMBLY E2E: the single-instance, sequential, full-lifecycle dress rehearsal for
-//! local-node validation, on the RECOMPOSED (Wave-1 S1) faucet. ONE faucet composed by the
-//! PRODUCTION `XReserveStablecoinBuilder` — domain / source_domain / xreserve_contract
-//! BUILD-SEEDED (DEC-4), identifier EMPTY, attester allowlist EMPTY, the stock `MinBurnAmount`
-//! floor at the builder default — is driven through the whole lifecycle IN ORDER on ONE evolving
-//! MockChain: build-seeded config read-backs → identifier init (the minimized DEC-4 init note) →
-//! re-init trap → admin bring-up (attester / max_supply / min_burn + the min-burn zero-floor
-//! guard, each with its non-owner reject) → a REAL attested mint through the STOCK `MintNote`
-//! transport (the `XUsdcMintNote` factory: scheme-4 intent + scheme-5 attestation + scheme-2
-//! routing) → nonce replay trap → the tx-script `mint_and_send` leg (the F1 restatement: the
-//! stock path IS the attestation-gated path, so a policy-less tx-script mint traps in the
-//! kernel) → the holder wallet consumes the minted P2ID note (custody-traced funds) → a
-//! below-min burn reject (the stock `MinBurnAmount` policy) → a real burn (two-block consume,
-//! DC-7 schema asserted) → DOM_PAUSER pause halts BOTH mint and burn (and the owner has NO pause
-//! path) → unpause resumes BOTH (the SAME halted mint note lands) → CMP-F5 rotation (DOM_MANAGER
-//! grant → new pauser pauses; revoke → rejected). Every tx is COMMITTED
-//! (`add_pending_executed_transaction` + `prove_next_block`) so all stages run on one chain — no
-//! stitched fixtures. Every reject pins its EXACT error (S6's kernel host-event is the one
-//! documented exception); every state change is read back; the final ledger asserts the exact
-//! whole-arc supply equation.
+//! local-node validation, on the production faucet composition.
+//!
+//! ONE faucet composed by the PRODUCTION `XReserveStablecoinBuilder` — domain / source_domain /
+//! xreserve_contract BUILD-SEEDED, identifier EMPTY, attester allowlist EMPTY, the stock
+//! `MinBurnAmount` floor at the builder default — is driven through the whole lifecycle IN ORDER
+//! on ONE evolving MockChain. The stages, in the order the S-labels below number them:
+//!
+//! - S0 the build-seeded config read-backs;
+//! - S1 identifier init (the minimized identifier-only init note), then S2 the re-init trap;
+//! - S3 admin bring-up: attester, max_supply, min_burn, and the min-burn zero-floor guard, each
+//!   with its non-owner reject;
+//! - S4-S6 a REAL attested mint through the STOCK `MintNote` transport (the `XUsdcMintNote`
+//!   factory: scheme-4 intent + scheme-5 attestation + scheme-2 routing), then the nonce replay
+//!   trap, then the tx-script `mint_and_send` leg — the stock path IS the attestation-gated path,
+//!   so a policy-less tx-script mint traps in the kernel;
+//! - S7-S9 the holder wallet consumes the minted P2ID note (custody-traced funds), a below-min
+//!   burn rejects on the stock `MinBurnAmount` policy, and a real burn goes through (two-block
+//!   consume, burn-item schema asserted);
+//! - S10-S11 DOM_PAUSER pause halts BOTH mint and burn (and the owner has NO pause path);
+//!   unpause resumes BOTH, and the SAME halted mint note lands;
+//! - S12 role rotation: DOM_MANAGER grant → the new pauser pauses; revoke → rejected;
+//! - S13 the final ledger: the exact whole-arc supply equation and the config read-backs.
+//!
+//! Every tx is COMMITTED (`add_pending_executed_transaction` + `prove_next_block`) so all stages
+//! run on one chain — no stitched fixtures. Every reject pins its EXACT error (S6's kernel
+//! host-event is the one documented exception), and every state change is read back.
 //!
 //! MECHANICS: the admin notes are deterministic and pre-seeded ON-CHAIN at build
 //! (`setup_production_faucet` seeded_notes), so every admin step consumes its note BY ID as an
@@ -76,21 +83,23 @@ fn stranger() -> AccountId {
     test_account_id(99)
 }
 
-// FIXTURE VALUES (all Circle-owned values are test parameters — Q-DOM-1 / DEV-10 / DEV-1 OPEN;
+// FIXTURE VALUES (all Circle-owned values are test parameters — the domain id, the identifier
+// encoding, and the attester scheme stay OPEN with Circle;
 // the build-seeded TEST_DOMAIN / TEST_SOURCE_DOMAIN / test_xreserve_contract() come from support)
 // ================================================================================================
 
 const BASE_VECTOR: &str = "di-pos-empty-hookdata";
 
-/// The attested wire amount of BOTH lifecycle mints. Under the ratified DEV-5 identity scale
-/// (`DEPOSIT_SCALE_EXP = 0`, `y = x`) the minted amount IS the wire amount, so the former
-/// RAW(100_000_000)/REDUCED(100) pair collapses to this one value — chosen to keep the old
+/// The attested wire amount of BOTH lifecycle mints. Under the provisional identity scale
+/// (`DEPOSIT_SCALE_EXP = 0`, `y = x` — the cap/scale decision stays OPEN, pending Circle) the
+/// minted amount IS the wire amount — one value chosen to keep the
 /// whole-arc "170" ledger story: 2 * 100 - 20 - 10 = 170.
 const MINT_AMOUNT: u64 = 100;
 /// The distinct-recipient test's second attested amount (distinct from `MINT_AMOUNT` so each
 /// wallet's final balance identifies WHICH mint it received).
 const SECOND_MINT_AMOUNT: u64 = 250;
-/// maxFee 1 (amount >= maxFee holds for every attested amount here); feeAmount stays 0 (DEV-8 MVP).
+/// maxFee 1 (amount >= maxFee holds for every attested amount here); feeAmount stays 0 (the MVP
+/// rejects any nonzero fee).
 const MAX_FEE_RAW: u64 = 1;
 
 const MAX_SUPPLY: u64 = 1_000_000;
@@ -100,11 +109,11 @@ const BURN_LOW: u64 = 5; // < MIN_BURN -> the stock MinBurnAmount reject
 const BURN_OK: u64 = 20;
 const BURN_PAUSED: u64 = 10; // the paused-era emit traps (S10b); burned for real after unpause (S11b)
 
-/// First byte of the 32-byte `remoteRecipient` field (felt 19 x 4 bytes; DC-1).
+/// First byte of the 32-byte `remoteRecipient` field (felt 19 x 4 bytes of the fixed header).
 const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
-/// First byte of the 32-byte `remoteToken` field (felt 11 x 4 bytes; DC-1).
+/// First byte of the 32-byte `remoteToken` field (felt 11 x 4 bytes of the fixed header).
 const REMOTE_TOKEN_BYTE_OFF: usize = 11 * 4;
-/// First byte of the 32-byte `nonce` field (felt 51 x 4 bytes; DC-1).
+/// First byte of the 32-byte `nonce` field (felt 51 x 4 bytes of the fixed header).
 const NONCE_BYTE_OFF: usize = 51 * 4;
 
 fn di(id: &str) -> &'static DiVector {
@@ -119,8 +128,9 @@ fn di(id: &str) -> &'static DiVector {
 /// The canonical accept payload with amount/maxFee spliced, `remoteRecipient` REPLACED by the REAL
 /// target wallet's right-aligned bytes32 (so the emitted P2ID note targets an account that exists
 /// on this chain and can consume it), `remoteToken` REPLACED by `account_id_to_bytes32(faucet_id)`
-/// (the own-id fixpoint the seeded identifier_init writes, so D5a's identifier compare passes), and
-/// one nonce byte XOR-perturbed per `nonce_variant` so each mint consumes a fresh D5c nonce.
+/// (the own-id fixpoint the seeded identifier_init writes, so the identifier compare passes), and
+/// one nonce byte XOR-perturbed per `nonce_variant` so each mint consumes a nonce the replay guard
+/// has not seen.
 fn payload_for(
     recipient: AccountId,
     amount: u64,
@@ -228,7 +238,7 @@ async fn consume_committed_note(
 /// Consumes a COMMITTED P2ID note carrying POLICED xUSDC with a NON-faucet `account` as the consumer.
 /// The receive callback (`on_before_asset_added_to_account`) fires with the consumer as the native
 /// account, so the kernel dyncalls the issuing faucet to run `basic_blocklist::check_policy` — the
-/// faucet MUST be attached as a foreign account (F4-reversal client-side coupling). This is what a
+/// faucet MUST be attached as a foreign account (the policed-asset client-side coupling). This is what a
 /// real wallet consuming policed xUSDC has to do; the coupling is pinned executable by
 /// `transfer_blocklist_e2e::send_without_faucet_foreign_account_fails`.
 async fn consume_committed_note_with_faucet_foreign(
@@ -299,11 +309,8 @@ fn marker() -> Word {
 #[tokio::test]
 async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // ── S0 — ASSEMBLY: the production builder composes the faucet; domain / source_domain /
-    // xreserve_contract BUILD-SEEDED (DEC-4), identifier + attester allowlist EMPTY. All admin
-    // notes are DETERMINISTIC and pre-seeded ON-CHAIN at build (indices below), so every admin
-    // step consumes its note BY ID as an authenticated input — block-provable, which the
-    // commit-each-step design requires (an unauthenticated note cannot be committed: "no inclusion
-    // proof"). Reject-path notes simply stay unconsumed after their tx traps. `route` is the
+    // xreserve_contract BUILD-SEEDED, identifier + attester allowlist EMPTY. The admin notes are
+    // seeded here in the order the indices below list, per the header's mechanics. `route` is the
     // routing-only faucet target the factories stamp into tags/attachments; consume-by-id never
     // reads it, so the pre-build dummy id is sound.
     let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
@@ -399,8 +406,8 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let pauser_sym = RoleSymbol::new(DOM_PAUSER_ROLE).expect("valid role symbol");
     let manager_sym = RoleSymbol::new(DOM_MANAGER_ROLE).expect("valid role symbol");
 
-    // S0 read-backs: the BUILD-SEEDED domain config (DEC-4), identifier EMPTY, supply 0, the
-    // CMP-F5 delegation, the stock MinBurnAmount builder-default floor.
+    // S0 read-backs: the BUILD-SEEDED domain config, identifier EMPTY, supply 0, the
+    // seeded role delegation, the stock MinBurnAmount builder-default floor.
     let faucet0 = committed(&pf.mock_chain, faucet_id)?;
     let words0 = read_domain_config_words(&faucet0)?;
     let xrc_felts = bytes32_to_packed_felts(&test_xreserve_contract());
@@ -489,7 +496,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S1a: the rejected init left every config word unchanged (identifier still empty)"
     );
 
-    // ── S1b — INIT: the owner seeds the ONE note-initialized config field (DEC-4: the identifier
+    // ── S1b — INIT: the owner seeds the ONE note-initialized config field (the identifier
     // is the account-id fixpoint, so ONLY it gets an init note); it reads back verbatim and the
     // four BUILD-SEEDED words are untouched.
     let init_tx = consume_committed_note(&pf.mock_chain, &faucet0, note_id(1))
@@ -507,7 +514,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S1b: the four build-seeded config words are UNCHANGED by identifier_init"
     );
 
-    // ── S2 — RE-INIT: a second owner init traps the EXACT R-ADMIN-4 error; every field unchanged.
+    // ── S2 — RE-INIT: a second owner init traps the EXACT init-once error; every field unchanged.
     let faucet = committed(&pf.mock_chain, faucet_id)?;
     let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(2)).await;
     assert_transaction_executor_error!(
@@ -558,7 +565,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S3b: token_config[max_supply] read-back"
     );
 
-    // ── S3c — ADMIN: owner sets the min-burn floor (the reworked note targets the STOCK
+    // ── S3c — ADMIN: owner sets the min-burn floor (the note targets the STOCK
     // `set_min_burn_amount`); a stranger's attempt is rejected; the note-side ZERO-FLOOR guard
     // rejects new_min = 0 with its exact error (the stock setter itself would accept 0).
     let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(7)).await;
@@ -654,7 +661,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     );
 
     // ── S5 — REPLAY: a SECOND mint note over the SAME payload (same nonce, fresh serial) traps
-    // the EXACT R-MINT-12 error; supply unchanged.
+    // the EXACT nonce-replay error; supply unchanged.
     let replay_note = production_mint_note(producer_id, faucet_id, &payload1, 62)?;
     emit_note_with_attachments(&mut pf.mock_chain, producer_id, &replay_note).await?;
     let faucet = committed(&pf.mock_chain, faucet_id)?;
@@ -667,7 +674,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S5 after replay reject",
     )?;
 
-    // ── S6 — NO POLICY-LESS MINT (the F1 restatement): a tx-script `mint_and_send` (no active
+    // ── S6 — NO POLICY-LESS MINT: a tx-script `mint_and_send` (no active
     // note, no attachments) CANNOT mint — the attestation policy's transport reads trap in the
     // kernel (there is no active note to read). The former deny-guard posture is preserved
     // STRUCTURALLY: every supply increase must ride the attested note transport. The failure is a
@@ -767,7 +774,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S8 after below-min reject",
     )?;
 
-    // ── S9 — BURN: a real burn of the minted funds; DC-7 schema asserted; two-block consume;
+    // ── S9 — BURN: a real burn of the minted funds; burn-item schema asserted; two-block consume;
     // supply -= amount exactly (whole-arc conservation).
     let items = XReserveBurnItems {
         amount: AssetAmount::new(BURN_OK)?,
@@ -837,7 +844,8 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S10: is_paused publicly readable == paused"
     );
     // S10a: a fresh attested mint halts at the policy dispatcher's stock pause gate (the producer
-    // EMIT itself still passes — the mint note is asset-less, so no transfer callback fires);
+    // EMIT itself still passes — no asset is attached to the mint note, the amount being in its
+    // storage, so no transfer callback fires);
     // fail-closed: the fresh nonce stays unburned, so the SAME note can land after unpause.
     let note_m2 = production_mint_note(producer_id, faucet_id, &payload2, 63)?;
     emit_note_with_attachments(&mut pf.mock_chain, producer_id, &note_m2).await?;
@@ -853,12 +861,11 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         Word::from([0u32, 0, 0, 0]),
         "S10a: the paused mint burned no nonce (fail-closed)"
     );
-    // S10b (F4-reversal pause semantics): with an active transfer policy, PAUSE halts ALL transfers.
-    // The holder's emit of a burn note fires the SEND callback, whose wrapper runs
-    // `pausable::assert_not_paused` BEFORE the blocklist check, so the emit itself now TRAPS while
-    // paused — the halt moved from the faucet consume to the holder-side send (a chain-wide freeze on
-    // xUSDC movement). This is the deliberate reversal semantic; see
-    // DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md.
+    // S10b (pause semantics on the policed asset): with an active transfer policy, PAUSE halts ALL
+    // transfers. The holder's emit of a burn note fires the SEND callback, whose wrapper runs
+    // `pausable::assert_not_paused` BEFORE the blocklist check, so the emit itself TRAPS while
+    // paused — the halt lands at the holder-side send, not only the faucet consume (a chain-wide
+    // freeze on xUSDC movement). This is the deliberate, ratified semantic.
     let paused_asset = FungibleAsset::new(faucet_id, BURN_PAUSED)?;
     let paused_items = XReserveBurnItems {
         amount: AssetAmount::new(BURN_PAUSED)?,
@@ -916,7 +923,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S11a after the second mint",
     )?;
     // S11b: with the faucet unpaused, a burn now EMITS and CONSUMES again — the burn path resumed.
-    // (Under the F4-reversal pause semantics the S10b pause-era emit trapped at emit, so no note was
+    // (Under the policed pause semantics the S10b pause-era emit trapped at emit, so no note was
     // created then; this fresh burn proves the whole holder→note→faucet path is live again.)
     let resumed_items = XReserveBurnItems {
         amount: AssetAmount::new(BURN_PAUSED)?,
@@ -948,7 +955,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S11b after the resumed burn",
     )?;
 
-    // ── S12 — ROTATION (CMP-F5): DOM_MANAGER grants a new pauser -> the new member can pause
+    // ── S12 — ROTATION: DOM_MANAGER grants a new pauser -> the new member can pause
     // (capability-proven against a REAL attested mint); revoke -> they cannot.
     let faucet = committed(&pf.mock_chain, faucet_id)?;
     let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(14))

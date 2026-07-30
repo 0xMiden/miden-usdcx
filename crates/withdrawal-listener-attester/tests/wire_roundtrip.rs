@@ -1,15 +1,15 @@
-//! Serde round-trip of every fixture against the §10.3 wire shapes — and the divergent shapes that
-//! MUST fail.
+//! Serde round-trip of every fixture against Circle's documented wire shapes — and the divergent
+//! shapes that MUST fail.
 //!
 //! The round-trip is `fixture JSON → typed struct → JSON`, compared as `serde_json::Value`. That
 //! comparison is what makes the test non-vacuous in both directions at once: a **missing** field in
 //! the struct drops a key on the way back out, and an **invented** field adds one. Either way the
-//! re-serialized value stops equalling the fixture, and the test fails. A `from_str::<T>(…).is_ok()`
-//! check would have caught neither.
+//! re-serialized value stops equalling the fixture, and the test fails. A
+//! `from_str::<T>(…).is_ok()` check would have caught neither.
 //!
 //! Every rejection pins the exact serde error — `Category::Data` (a shape/type violation, not a
-//! syntax error) plus the field serde names in its message. `is_err()` alone would pass on a typo in
-//! the fixture path.
+//! syntax error) plus the field serde names in its message. `is_err()` alone would pass on a typo
+//! in the fixture path.
 //!
 //! The forbidden implementations this file forecloses (each has a named test):
 //!
@@ -17,7 +17,7 @@
 //!   request/response or the withdraw request;
 //! * the **withdraw response modelled as an object** — it is an ARRAY, one status per submitted batch;
 //! * a **`sourceDepositor` field on `PrepareBurnIntentInput`** — Circle fills that server-side; the
-//!   partner never sends it (`INV-REMOTEDEPOSITOR-VS-SOURCEDEPOSITOR`).
+//!   partner never sends it.
 
 use assert_matches::assert_matches;
 use serde_json::{json, Value};
@@ -33,8 +33,8 @@ mod support;
 
 use support::{fixture_json, fixture_text, walk_keys};
 
-/// `fixture → T → JSON` must reproduce the fixture EXACTLY. Returns the decoded value so a caller can
-/// go on to assert on its contents.
+/// `fixture → T → JSON` must reproduce the fixture EXACTLY. Returns the decoded value so a caller
+/// can go on to assert on its contents.
 fn round_trip<T>(stem: &str) -> T
 where
     T: serde::de::DeserializeOwned + serde::Serialize,
@@ -135,8 +135,8 @@ fn withdraw_failed_status_round_trips_with_its_failure_reason_and_no_transaction
 
 #[test]
 fn a_validation_mismatch_is_a_well_formed_200_that_only_semantics_can_catch() {
-    // The point of this fixture: it is SCHEMA-VALID. It decodes cleanly, which is exactly why the B5
-    // field-by-field compare against the burn-note payload (T-LA-06, a later slice) must exist — serde
+    // The point of this fixture: it is SCHEMA-VALID. It decodes cleanly, which is exactly why the
+    // field-by-field compare against the burn-note payload must exist — serde
     // cannot see that the value/domain/recipient are the wrong ones.
     let response: PrepareWithdrawalResponse = round_trip("prepare_withdrawal_validation_mismatch");
 
@@ -281,7 +281,7 @@ fn an_error_body_never_decodes_as_the_endpoints_success_shape() {
 
 #[test]
 fn the_409_conflict_body_carries_the_two_recovery_hints_as_raw_json() {
-    // §10.10: a 409 is a duplicate CONFLICT requiring recovery, never a success. The body is read as
+    // Circle's documentation: a 409 is a duplicate CONFLICT requiring recovery, never a success. The body is read as
     // raw JSON deliberately — declaring a typed Circle error struct would be declaring a schema
     // Circle has not published.
     let conflict = fixture_json("withdraw_409");
@@ -383,9 +383,9 @@ fn sample_burn_intent_input() -> PrepareBurnIntentInput {
 
 #[test]
 fn the_prepare_request_serializes_with_no_source_depositor_key_at_any_depth() {
-    // FORBIDDEN IMPL: a `sourceDepositor` on PrepareBurnIntentInput. Circle assigns it server-side
-    // (Q-DOM-3); the partner sends `remoteDepositor` and NEVER `sourceDepositor`
-    // (INV-REMOTEDEPOSITOR-VS-SOURCEDEPOSITOR). Swapping the two would hand Circle the wrong debtor.
+    // FORBIDDEN IMPL: a `sourceDepositor` on PrepareBurnIntentInput. Circle assigns it server-side;
+    // the partner sends `remoteDepositor` and NEVER `sourceDepositor`.
+    // Swapping the two would hand Circle the wrong debtor.
     let request = PrepareWithdrawalRequest::new(vec![sample_burn_intent_input()]);
     let json = serde_json::to_value(&request).unwrap();
 

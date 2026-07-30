@@ -1,75 +1,149 @@
-# Minimal CI for 0xMiden/miden-usdcx.
+# CI for 0xMiden/miden-usdcx — derived from 0xMiden/protocol's CI, adapted for a
+# downstream *consumer* repo.
 #
-# Scope (per PhilippGackstatter): "a very minimal CI that at least runs tests
-# (we can skip formatting and other nice-to-haves)." This runs ONLY the test
-# suite -- no rustfmt, no clippy, no coverage, no build matrix.
+# WHAT THIS IS. PhilippGackstatter suggested "copy the CI checks from protocol,
+# that might be the most bang for buck." Protocol's CI is 10 workflow files / ~20
+# jobs built to gate the protocol *monorepo* (VM, compiler, no_std/wasm libs,
+# generated files, crates.io release, docs site). usdcx is a downstream consumer:
+# three std crates that git-pin the protocol family and assemble HAND-WRITTEN MASM
+# in-process at test time. So this keeps protocol's STANDARD Rust checks
+# (test + clippy + fmt) and drops every
+# monorepo/compiler/release-specific job. Each choice is commented with its
+# protocol origin (workflow file:job) and the usdcx amendment.
 #
-# What it builds: `cargo test --workspace` compiles and runs the tests for the
-# workspace members. On `implementation` that is three crates:
-# crates/xusdc-encoding (THE gate -- assembles + executes the hand-written MASM)
-# plus the two off-chain service crates (xreserve-deposit-relayer,
-# withdrawal-listener-attester). `--workspace` deliberately does NOT touch:
-#   * crates/xusdc-validation -- listed under [workspace].exclude on
-#     `implementation` (it needs a miden-client release that has no build against
-#     the git-pinned `next` protocol graph), so `--workspace` skips it. If a
-#     later branch un-parks it back into [workspace].members, `--workspace`
-#     simply picks it up -- no edit here needed.
-#   * canary/* -- each is its own isolated workspace (empty `[workspace]` table)
-#     with path-deps to a local ../protocol-pin-v0.15.3 clone that does not exist
-#     on a CI runner, so they are never part of this workspace's build.
+# ADOPTED  from protocol:  test (test.yml:test), clippy (lint.yml:clippy),
+#                          rustfmt (lint.yml:rustfmt)
+# DROPPED  from protocol (do not apply to a consumer repo — see the report):
+#   test.yml:doc-tests .......... redundant: `cargo test --workspace` already runs doctests
+#   lint.yml:clippy-no-std ...... usdcx has no no_std/wasm32 target (on-chain code is MASM, not Rust->wasm)
+#   lint.yml:generated-files .... usdcx has NO build.rs / codegen — nothing to regenerate
+#   lint.yml:workspace-inheritance / cargo-shear / typos / toml / hooks-test .. protocol-governance tooling; optional, need config usdcx lacks
+#   lint.yml:cargo-deny ......... valuable but needs a deny.toml that allows the 0xMiden git source (see report); opt-in, not wired here
+#   build.yml:no-std / check-features / build-benches .. no wasm target, no feature matrix, no benches in usdcx
+#   build-docs.yml .............. usdcx docs/ is plain markdown, not an npm/docusaurus site
+#   changelog.yml ............... CHANGELOG-enforcement is governance overhead for a solo private repo
+#   workspace-dry-run / workspace-publish / trigger-deploy-docs .. usdcx is git-pinned + private, never published to crates.io
+#   zizmor.yml .................. its LESSONS are applied below (SHA-pinned actions, minimal permissions,
+#                                persist-credentials:false) rather than run as a job
 #
-# No `cargo miden` / no MASM compiler toolchain is needed: the on-chain code is
-# hand-written MASM under asm/**, pulled in with include_str! and assembled +
-# executed by the protocol library's assembler inside the test process. There is
-# no build.rs and no wasm32 target anywhere in the test path.
-#
-# Network IS required at build time: the protocol crates are git-pinned to
-# 0xMiden/protocol @ 4971ec4b3 (next / 0.16.0-beta.1), so the first build fetches
-# that git rev plus the crates.io dependency closure. GitHub-hosted runners have
-# network, so this resolves fine. `--locked` uses the committed Cargo.lock so the
-# graph is exactly what contributors build.
+# usdcx AMENDMENTS vs protocol's assumptions:
+#   * No `make`: protocol wraps every check in a Makefile target; usdcx has no
+#     Makefile, so the cargo commands are inlined here.
+#   * No `cargo miden` / no MASM compiler: protocol HAS the compiler; usdcx's MASM
+#     under asm/** is include_str!'d and assembled by the protocol library's
+#     assembler INSIDE the test process. There is no build step to add — the MASM
+#     is exercised by the `test` job. (MASM source-convention conformance is the
+#     Rust test crates/xusdc-encoding/tests/masm_structure.rs, which `cargo test
+#     --workspace` runs; no separate MASM-lint job exists in protocol either.)
+#   * Git-pinned deps: the protocol family is git-pinned (rev 4971ec4, 0.16.0-beta.1),
+#     NOT crates.io. Builds need network (runners have it) + `--locked` against the
+#     committed Cargo.lock. Do NOT add `--offline`.
+#   * `--workspace` is exactly right and SAFE: `[workspace].members` is the three
+#     std crates; `crates/xusdc-validation` is `[workspace].exclude`d and `canary/*`
+#     are separate isolated workspaces (path-dep to a local protocol-pin-v0.15.3
+#     absent on runners). `--workspace` never reaches either, so nothing force-builds
+#     the parked/canary code. Do NOT cd into canary or build xusdc-validation.
+#   * Toolchain: protocol pins rust-toolchain.toml = 1.96.1 and runs rustfmt on
+#     NIGHTLY (`cargo +nightly fmt`). usdcx has NO rust-toolchain.toml (all crates
+#     edition 2021) and its documented gate (README/AGENTS) uses STABLE
+#     `cargo fmt --all -- --check`, so this uses stable throughout — no nightly.
+#     (If usdcx ever adds a rustfmt.toml with unstable options, the fmt job must
+#     move to nightly.)
+#   * `--all-features` dropped from clippy/doc: protocol uses it, but usdcx's
+#     xusdc-encoding has a `vectors` feature that pulls an extra crypto/generator
+#     path the normal gate doesn't need; the documented gate omits --all-features.
+#   * Runner: ubuntu-latest (ships gcc, which the relayer's rusqlite `bundled`
+#     feature needs). Protocol's heavy jobs use paid warp 8x runners — usdcx uses
+#     the standard hosted runner.
+#   * Composite actions: protocol's ./.github/actions/cleanup-runner and
+#     workspace-release are monorepo-local and do not exist here — dropped.
 
 name: CI
 
 on:
-  # Long-lived branches on push; every PR. Scoping push (rather than a bare
-  # `push:`) avoids a duplicate run when a branch that already has an open PR is
-  # pushed. Widen this list if you want push runs on more branches.
+  # usdcx long-lived branches: main + implementation (protocol uses main + next).
+  # Scoped push avoids a duplicate run when a branch that already has an open PR is
+  # pushed. No merge_group: usdcx does not use a GitHub merge queue.
   push:
     branches: [main, implementation]
   pull_request:
 
-# Cancel an in-progress run when a newer commit lands on the same ref.
+# Cancel an in-progress run when a newer commit lands on the same ref
+# (protocol does the same in every workflow's `concurrency` block).
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# zizmor lesson (protocol zizmor.yml): grant the least privilege. Read-only is all
+# any job here needs.
+permissions:
+  contents: read
+
 jobs:
+  # ADOPT — protocol test.yml:test. THE gate. Protocol runs it via nextest with
+  # `make test-release` (features concurrent,testing,std). usdcx's documented gate
+  # (README.md:88 / AGENTS.md:72) is plain `cargo test --workspace --locked
+  # --release`, which:
+  #   - builds the 3 members + assembles & EXECUTES every asm/**.masm on the Miden VM
+  #     (release is materially faster for VM execution than debug),
+  #   - runs the masm_structure.rs conformance test and the doctests,
+  #   - fails on a stale Cargo.lock (--locked) instead of silently updating it.
   test:
-    # ubuntu-latest ships a C toolchain (gcc), which the relayer's
-    # rusqlite `bundled` feature needs to compile SQLite from source.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # gcc present for rusqlite `bundled`
     steps:
-      - uses: actions/checkout@v4
-
-      # Stable Rust. The repo pins no rust-toolchain.toml (all crates are
-      # edition 2021), so tracking `stable` matches what contributors build with.
-      # No extra components/targets are required -- rustfmt/clippy are out of
-      # scope and the tests run on the host target.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false # zizmor lesson (protocol pins this everywhere)
+      # No rust-toolchain.toml in usdcx -> track stable, matching contributors.
       - uses: dtolnay/rust-toolchain@stable
-
-      # Cache the cargo registry, the git-pinned protocol checkout, and target/.
-      # This is build-time infra, not a "check": building the protocol family
-      # from a git rev (+ miden-testing + the crypto stack) is heavy on a cold
-      # runner, so this turns reruns from ~10 min into ~2 min. Safe to delete if
-      # you want the workflow reduced to the bare minimum.
-      - uses: Swatinem/rust-cache@v2
-
-      # THE gate. `--workspace` builds the members described in the header
-      # (validation + canary/* are excluded automatically). `--release` mirrors
-      # the repo's documented gate (README.md / AGENTS.md): these tests EXECUTE
-      # MASM on the Miden VM, which is far faster in release than in an
-      # unoptimized debug build. `--locked` fails if Cargo.lock is stale instead
-      # of silently updating it.
+      # First build compiles the whole git-pinned protocol family (+ crypto/SQLite):
+      # heavy cold, ~2 min warm. save-if limits cache writes to the long-lived
+      # branches so PR runs don't thrash the 10GB cache (protocol's pattern).
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/implementation' }}
       - name: Run tests
         run: cargo test --workspace --locked --release
+
+  # ADOPT — protocol lint.yml:clippy. Protocol runs
+  # `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+  # usdcx amendment: keep --workspace --all-targets (lints tests too) + --locked
+  # (matches README.md:91), DROP --all-features (the `vectors` feature pulls an
+  # extra generator/crypto path the gate doesn't need). clippy.toml is respected
+  # automatically (its thresholds keep the frozen test builders lint-clean).
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/implementation' }}
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  # ADOPT (adapted to stable) — protocol lint.yml:rustfmt. Protocol formats on
+  # NIGHTLY. usdcx has no rustfmt.toml and its documented gate is stable
+  # `cargo fmt --all -- --check` (README.md:90), so this stays on stable. Trivial
+  # job: no dependency build, so no cache needed.
+  #
+  # NOTE (tension to resolve with PhilippG): his earlier "very minimal CI ... we
+  # can skip formatting" argues for dropping this job; "copy protocol's checks" +
+  # usdcx's own README already listing `cargo fmt --check` as the gate argue for
+  # keeping it. Kept here because it makes CI enforce the gate the repo docs
+  # already claim. Delete this job for the bare-minimum variant.
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Rustfmt
+        run: cargo fmt --all --check

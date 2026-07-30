@@ -86,7 +86,6 @@ pub proc main
     push.PARAM_PTR mem_load
     # => [PK_COMMITMENT, enabled, pad(16)]
 
-    # => [PK_COMMITMENT, enabled, pad(11)]
     call.attester_admin::set_attester
     # => [pad(21)]
 

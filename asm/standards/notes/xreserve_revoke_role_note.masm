@@ -73,7 +73,6 @@ pub proc main
     push.PARAM_PTR mem_load
     # => [role_symbol, account_suffix, account_prefix, pad(16)]
 
-    # => [role_symbol, account_suffix, account_prefix, pad(13)]
     call.rbac::revoke_role
     # => [pad(19)]
 

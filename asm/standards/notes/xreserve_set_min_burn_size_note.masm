@@ -109,7 +109,6 @@ pub proc main
     dup lte.FUNGIBLE_ASSET_MAX_AMOUNT assert.err=ERR_XRESERVE_MIN_BURN_ABOVE_MAX
     # => [new_min, pad(16)]
 
-    # => [new_min, pad(15)]
     call.min_burn_amount::set_min_burn_amount
     # => [pad(17)]
 

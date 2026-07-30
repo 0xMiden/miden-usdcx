@@ -37,7 +37,7 @@ pub struct XReserveBurnItems {
 }
 
 /// Encodes `(amount, destDomain, destRecipient, salt)` into the `NoteStorage.items` felt
-/// layout. Infallible: `AssetAmount::MAX = 2^63 − 2^31 < p`, `destDomain` is a
+/// layout. Infallible: `AssetAmount::MAX = 2^63 − 2^31`, `destDomain` is a
 /// `u32`, and both bytes32 fields pack via the existing `bytes32` codec.
 pub fn encode_burn_note_items(items: &XReserveBurnItems) -> Vec<Felt> {
     let mut out = Vec::with_capacity(BURN_NOTE_ITEMS_FELTS);

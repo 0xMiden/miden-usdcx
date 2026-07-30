@@ -41,7 +41,7 @@ pub enum XReserveStablecoinBuilderError {
     /// Carries the offending value.
     MinBurnSizeBelowFloor(u64),
     /// The requested `min_burn_size` exceeds [`AssetAmount::MAX`](miden_protocol::asset::AssetAmount::MAX)
-    /// (`2^63 - 2^31`), so it is not a valid burn amount / field element and cannot be seeded into
+    /// (`2^63 - 2^31`), so it is not a valid burn amount and cannot be seeded into
     /// the stock `MinBurnAmount` floor slot. Carries the offending value.
     MinBurnSizeExceedsMax(u64),
     /// An explicit

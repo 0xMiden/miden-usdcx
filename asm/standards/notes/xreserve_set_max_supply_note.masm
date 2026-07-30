@@ -41,8 +41,7 @@ const ERR_XRESERVE_SET_MAX_SUPPLY_NOTE_STORAGE = "set_max_supply note storage it
 #! Outputs: [pad(16)]
 #!
 #! Where:
-#! - ARGS is the executor-controlled note-argument word, which this script drops unread.
-#! - pad(16) is the 16-element call-boundary pad the note script hands the account procedure.
+#! - ARGS is executor-controlled and dropped unread.
 #!
 #! Note storage is assumed to be as follows:
 #! - new_max_supply is the new maximum supply as an AssetAmount felt (item 0).
@@ -67,7 +66,7 @@ pub proc main
     push.PARAM_PTR mem_load
     # => [new_max_supply, pad(16)]
 
-    # (the call consumes the top 16: [new_max_supply, pad(15)])
+    # => [new_max_supply, pad(15)]
     call.fungible::set_max_supply
     # => [pad(17)]
 

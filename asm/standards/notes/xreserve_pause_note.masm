@@ -23,8 +23,7 @@ use xreserve::pause_admin
 #! Outputs: [pad(16)]
 #!
 #! Where:
-#! - ARGS is the executor-controlled note-argument word, which this script drops unread.
-#! - pad(16) is the 16-element call-boundary pad the note script hands the account procedure.
+#! - ARGS is executor-controlled and dropped unread.
 #!
 #! Panics if:
 #! - the note sender does not hold the DOM_PAUSER role (pause_admin::pause's role gate).

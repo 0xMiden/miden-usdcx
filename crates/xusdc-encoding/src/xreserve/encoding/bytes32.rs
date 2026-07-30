@@ -31,7 +31,7 @@ pub fn bytes32_to_storage_map_key(b: &[u8; 32]) -> StorageMapKey {
     StorageMapKey::new(Hasher::hash_elements(&felts))
 }
 
-/// The 8x u32-LE packing primitive (infallible, each u32 < 2^32 < p).
+/// The 8x u32-LE packing primitive (infallible).
 pub fn bytes32_to_packed_felts(b: &[u8; 32]) -> [Felt; 8] {
     bytes_to_packed_u32_elements(b)
         .try_into()

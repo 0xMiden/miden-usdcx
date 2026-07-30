@@ -33,10 +33,6 @@ const DOM_PAUSER_ROLE = 728098706988649
 #! Inputs:  [pad(16)]
 #! Outputs: [pad(16)]
 #!
-#! Where:
-#! - pad(16) is the 16-element call-boundary pad this procedure is invoked with and returns
-#!   unchanged; it carries no operands, because the operation takes none.
-#!
 #! Panics if:
 #! - the note sender does not hold DOM_PAUSER (rbac::assert_sender_has_role, ERR_SENDER_LACKS_ROLE).
 #!
@@ -59,10 +55,6 @@ end
 #!
 #! Inputs:  [pad(16)]
 #! Outputs: [pad(16)]
-#!
-#! Where:
-#! - pad(16) is the 16-element call-boundary pad this procedure is invoked with and returns
-#!   unchanged; it carries no operands, because the operation takes none.
 #!
 #! Panics if:
 #! - the note sender does not hold DOM_PAUSER (rbac::assert_sender_has_role, ERR_SENDER_LACKS_ROLE).

@@ -52,7 +52,7 @@ const XUSDC_MINT_ATTESTATION_NUM_WORDS = 11
 # below which no field offset can be trusted.
 const DEPOSIT_INTENT_HEADER_WORDS = 15
 
-# The number of felts in a Word — for the indexed attachment-commitment address math
+# For the indexed attachment-commitment address math
 # (`commitment_ptr = commitments_base + attachment_idx * WORD_NUM_ELEMENTS`), mirroring the
 # pinned `note::write_indexed_attachment_to_memory`.
 const WORD_NUM_ELEMENTS = 4
@@ -593,7 +593,7 @@ end
 #! Loads the 8 u32-LE-packed limbs of a 32-byte field at `base` into the [W_UPPER, W_LOWER] word
 #! orientation the encoding reducers consume. Replicates the (private) deposit_intent_parser staging
 #! (reduce_uint256_field / assert_nonce_unused nonce load): single-felt loads because the header
-#! felt offsets are not word-aligned (word loads would trap); the reduction / key-hash itself is the
+#! felt offsets are not word-aligned; the reduction / key-hash itself is the
 #! encoding library's `pub proc`, consumed by reference at the call site.
 #!
 #! Inputs:  [base]

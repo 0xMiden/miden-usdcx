@@ -271,7 +271,7 @@ end
 #! Reduces the uint256 field at `base` (8 u32-LE packed felts) to an AssetAmount via the
 #! encoding library's reducer.
 #!
-#! Single-felt loads: the header felt offsets are not word-aligned, so word loads would trap.
+#! Single-felt loads: the header felt offsets are not word-aligned.
 #! The word orientation matches the shared parser's remoteToken load: U_LOWER = the field's
 #! positionally lower four packed limbs (wire bytes 0..16), U_UPPER = the positionally upper
 #! four (wire bytes 16..32), each element-0 on top — exactly the `[U_UPPER, U_LOWER,

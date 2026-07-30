@@ -293,7 +293,7 @@ pub proc parse_deposit_intent
     # => [hook_data_len, intent_ptr]
 
     # outputs: load the caller-compare fields from the staged preimage (single-felt loads
-    # — the header felt offsets are not word-aligned, so word loads would trap); the packed
+    # — the header felt offsets are not word-aligned); the packed
     # remoteToken words are pushed in the same element order the callers compare against
     swap
     # => [intent_ptr, hook_data_len]

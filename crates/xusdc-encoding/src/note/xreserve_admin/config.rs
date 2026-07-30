@@ -60,7 +60,7 @@ impl XReserveSetAttesterNote {
     /// Builds a `set_attester` admin note: `sender` is the admin party (the owner, for success),
     /// `faucet_id` the target faucet (PUBLIC), `commitment` the attester pubkey commitment (the
     /// xReserveAttesters map key), `enabled` = 1 (allowlist) or 0 (remove). The params live in note
-    /// storage; the executor-controlled `NOTE_ARGS` are ignored by the script.
+    /// storage; `NOTE_ARGS` are ignored by the script.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -146,7 +146,7 @@ impl XReserveIdentifierInitNote {
     /// already expects exactly this key). This is a PROVISIONAL position (the
     /// AccountId↔bytes32 codec and the identifier==own-id equivalence stay OPEN with Circle); it is
     /// changeable if Circle assigns a different identifier. The derived key lives in note storage;
-    /// the executor-controlled `NOTE_ARGS` are ignored by the script.
+    /// `NOTE_ARGS` are ignored by the script.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -213,7 +213,7 @@ impl XReserveSetMinBurnSizeNote {
 
     /// Builds a `set_min_burn_size` admin note: `sender` is the admin party (the owner, for success),
     /// `faucet_id` the target faucet (PUBLIC), `new_min` the new minimum burn size. The param lives in
-    /// note storage; the executor-controlled `NOTE_ARGS` are ignored by the script.
+    /// note storage; `NOTE_ARGS` are ignored by the script.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,

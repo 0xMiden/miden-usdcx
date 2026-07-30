@@ -12,7 +12,7 @@
 //!
 //! - The digest and the signature are packed into u32-little-endian field elements with the same
 //!   primitive miden-crypto uses for byte streams, four bytes per element. These conversions cannot
-//!   fail: every element is a `u32`, which is always below the field modulus, and the lengths come
+//!   fail: every element is a `u32`, and the lengths come
 //!   from fixed-size arrays rather than from input.
 //! - The public key is different, and its packing IS fallible. Circle hands over the 33-byte
 //!   compressed SEC1 form, while the chain works with the point's affine coordinates as sixteen

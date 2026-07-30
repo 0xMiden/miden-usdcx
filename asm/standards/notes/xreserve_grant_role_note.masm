@@ -50,8 +50,7 @@ const ERR_XRESERVE_GRANT_ROLE_NOTE_STORAGE = "grant_role note storage item count
 #! Outputs: [pad(16)]
 #!
 #! Where:
-#! - ARGS is the executor-controlled note-argument word, which this script drops unread.
-#! - pad(16) is the 16-element call-boundary pad the note script hands the account procedure.
+#! - ARGS is executor-controlled and dropped unread.
 #!
 #! Note storage is assumed to be as follows:
 #! - role_symbol is the RoleSymbol felt of the role to grant (item 0).
@@ -86,7 +85,7 @@ pub proc main
     push.PARAM_PTR mem_load
     # => [role_symbol, account_suffix, account_prefix, pad(16)]
 
-    # (the call consumes the top 16: [role_symbol, account_suffix, account_prefix, pad(13)])
+    # => [role_symbol, account_suffix, account_prefix, pad(13)]
     call.rbac::grant_role
     # => [pad(19)]
 

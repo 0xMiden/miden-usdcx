@@ -56,7 +56,7 @@ impl XReserveBlockAccountNote {
 
     /// Builds a `block_account` admin note: `sender` is the admin party (the BLK_MANAGER holder, for
     /// success), `faucet_id` the target faucet (PUBLIC), `account` the account to block. The params
-    /// live in note storage; the executor-controlled `NOTE_ARGS` are ignored by the script.
+    /// live in note storage; `NOTE_ARGS` are ignored by the script.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -114,7 +114,7 @@ impl XReserveUnblockAccountNote {
 
     /// Builds an `unblock_account` admin note: `sender` is the admin party (the BLK_MANAGER holder, for
     /// success), `faucet_id` the target faucet (PUBLIC), `account` the account to unblock. The params
-    /// live in note storage; the executor-controlled `NOTE_ARGS` are ignored by the script.
+    /// live in note storage; `NOTE_ARGS` are ignored by the script.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,

@@ -26,8 +26,7 @@ use miden::standards::access::ownable2step
 #! Outputs: [pad(16)]
 #!
 #! Where:
-#! - ARGS is the executor-controlled note-argument word, which this script drops unread.
-#! - pad(16) is the 16-element call-boundary pad the note script hands the account procedure.
+#! - ARGS is executor-controlled and dropped unread.
 #!
 #! Panics if:
 #! - the note sender is not the nominated owner (accept_ownership's pending-owner gate), or no

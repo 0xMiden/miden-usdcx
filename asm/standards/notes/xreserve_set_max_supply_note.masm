@@ -66,7 +66,6 @@ pub proc main
     push.PARAM_PTR mem_load
     # => [new_max_supply, pad(16)]
 
-    # => [new_max_supply, pad(15)]
     call.fungible::set_max_supply
     # => [pad(17)]
 

@@ -76,7 +76,6 @@ pub proc main
     push.PARAM_PTR mem_load
     # => [account_id_suffix, account_id_prefix, pad(16)]
 
-    # => [account_id_suffix, account_id_prefix, pad(14)]
     call.blocklist_admin::block_account
     # => [pad(18)]
 

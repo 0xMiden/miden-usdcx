@@ -87,7 +87,6 @@ pub proc main
     padw mem_loadw_le.PARAM_PTR
     # => [IDENTIFIER, pad(16)]
 
-    # => [IDENTIFIER, pad(12)]
     call.identifier_init::init_identifier
     # => [pad(20)]
 

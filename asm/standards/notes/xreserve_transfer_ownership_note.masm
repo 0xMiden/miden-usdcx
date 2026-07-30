@@ -68,7 +68,6 @@ pub proc main
     push.PARAM_PTR mem_load
     # => [new_owner_suffix, new_owner_prefix, pad(16)]
 
-    # => [new_owner_suffix, new_owner_prefix, pad(14)]
     call.ownable2step::transfer_ownership
     # => [pad(18)]
 

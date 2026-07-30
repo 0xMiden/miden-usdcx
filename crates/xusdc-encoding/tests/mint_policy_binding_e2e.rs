@@ -172,8 +172,8 @@ async fn mint_rejects_a_malformed_attested_recipient() -> Result<()> {
 
 /// The NONCANONICAL reject family, parametrized into one case table: an attested
 /// `remoteRecipient` whose prefix or suffix u64 region (bytes 16..24 / 24..32 of the bytes32)
-/// holds `u64::MAX` — a value `>= p` that would REDUCE mod the field — rejects in the policy's
-/// no-reduction `build_felt` round-trip (`ERR_XRESERVE_RECIPIENT_NONCANONICAL`, mirroring Rust
+/// holds `u64::MAX` — a value `>= p` that would REDUCE mod the field — rejects in the standards
+/// `eth::build_felt` no-reduction round-trip (the standards `ERR_MERGE_OVERFLOW`, mirroring Rust
 /// `Felt::try_from`; one case per `build_felt` call site). The storage recipe stays honest — the
 /// PAYLOAD limb is what is bad, so the trap is attributable to the extraction guard alone.
 #[rstest]
@@ -208,7 +208,7 @@ async fn mint_rejects_a_noncanonical_recipient(
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_XRESERVE_RECIPIENT_NONCANONICAL"),
+        shell_error_by_name("ERR_MERGE_OVERFLOW"),
     )
     .await
 }

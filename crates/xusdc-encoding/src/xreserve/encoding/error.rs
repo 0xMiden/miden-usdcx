@@ -86,9 +86,9 @@ impl core::error::Error for EncodingError {}
 
 // MASM ERROR CONSTANTS
 // ================================================================================================
-// Names per the frozen spec's intent list plus two additions (`ERR_AMOUNT_OVER_CAP`,
-// `ERR_SCALE_EXP_TOO_LARGE`, each 1:1 with a frozen enum variant). The MASM side must declare
-// byte-identical strings, and a parity test fails if one of them drifts.
+// Names per the frozen spec's intent list plus one addition (`ERR_AMOUNT_OVER_CAP`, 1:1 with a
+// frozen enum variant). The MASM side must declare byte-identical strings, and a parity test
+// fails if one of them drifts.
 
 /// Single source for every MASM error name/message pair: the named constants, the
 /// name→constant lookup (MASM execution tests), and the name→message table (the
@@ -99,18 +99,17 @@ macro_rules! masm_errors {
 
         /// Name → constant lookup used by the MASM execution tests (vectors carry the
         /// constant NAME; the value lives here exactly once).
-        pub static ERR_TABLE: [(&str, &MasmError); 8] = [ $( (stringify!($name), &$name) ),+ ];
+        pub static ERR_TABLE: [(&str, &MasmError); 7] = [ $( (stringify!($name), &$name) ),+ ];
 
         /// Name → message table consumed by the constant-parity test (the MASM side
         /// must declare identical strings).
-        pub static ERR_MESSAGES: [(&str, &str); 8] = [ $( (stringify!($name), $msg) ),+ ];
+        pub static ERR_MESSAGES: [(&str, &str); 7] = [ $( (stringify!($name), $msg) ),+ ];
     };
 }
 
 masm_errors! {
     ERR_X_TOO_LARGE => "larger than 2**128",
     ERR_AMOUNT_OVER_CAP => "post-scale quotient exceeds the asset amount maximum",
-    ERR_SCALE_EXP_TOO_LARGE => "scale exponent exceeds 18",
     ERR_FELT_OUT_OF_FIELD => "supplied limb is not a valid u32",
     ERR_DI_BAD_MAGIC => "deposit intent magic mismatch",
     ERR_DI_BAD_VERSION => "deposit intent version mismatch",
@@ -118,7 +117,40 @@ masm_errors! {
     ERR_DI_LENGTH => "deposit intent length relation violated",
 }
 
-/// Looks up a MASM error constant by its `ERR_*` name (vector `masm_err` field).
+/// Errors raised inside procedures the MASM links from the protocol's `miden-standards`
+/// library (`miden::standards::utils` / `assets::asset_amount` / `interop::eth`) rather than
+/// declaring locally. The strings are the standards library's own — they are pinned
+/// FUNCTIONALLY by the execution tests that trap on them, not by the local declaration parity
+/// sweep (which covers only constants declared in this repo's MASM sources).
+pub static STANDARDS_ERR_TABLE: [(&str, MasmError); 3] = [
+    // the standards pow10 scale bound (both its u32 guard and its <= 18 bound)
+    (
+        "ERR_SCALE_AMOUNT_EXCEEDED_LIMIT",
+        MasmError::from_static_str("maximum scaling factor is 18"),
+    ),
+    // the standards merge_u32_limbs lossless round-trip check (build_felt's no-reduction proof)
+    (
+        "ERR_MERGE_OVERFLOW",
+        MasmError::from_static_str("merged u32 limbs do not fit in a field element"),
+    ),
+    // the standards eth::build_felt u32 limb guard
+    (
+        "ERR_NOT_U32",
+        MasmError::from_static_str("address limb is not u32"),
+    ),
+];
+
+/// Looks up a MASM error constant by its `ERR_*` name (vector `masm_err` field), covering
+/// both the locally-declared constants and the linked standards-library ones.
 pub fn masm_error_by_name(name: &str) -> Option<&'static MasmError> {
-    ERR_TABLE.iter().find(|(n, _)| *n == name).map(|(_, e)| *e)
+    ERR_TABLE
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, e)| *e)
+        .or_else(|| {
+            STANDARDS_ERR_TABLE
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, e)| e)
+        })
 }

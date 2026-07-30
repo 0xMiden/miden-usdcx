@@ -125,7 +125,7 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 26] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -161,24 +161,16 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 26] = [
         "ERR_XRESERVE_FEE_NONZERO",
         MasmError::from_static_str("mint fee amount must be zero"),
     ),
-    // recipient AccountId helper (extract_recipient_account_id, mint_policy.masm). These
-    // are the LOCAL layout / field-range errors; the suffix-shape and unknown-version rejects
+    // recipient AccountId helper (extract_recipient_account_id, mint_policy.masm). This is the
+    // LOCAL layout error (the pad check); the limb and canonical-range rejects surface the
+    // STANDARDS `eth::build_felt` constants (`ERR_NOT_U32` / `ERR_MERGE_OVERFLOW`, resolved via
+    // the `masm_error_by_name` fallback), and the suffix-shape and unknown-version rejects
     // surface the PROTOCOL `account_id::validate` `ERR_ACCOUNT_ID_*` constants directly. Pinned
     // here so the behavior tests can name their EXACT expected error, byte-identical to the MASM
     // consts.
     (
         "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",
         MasmError::from_static_str("deposit intent remote recipient address pad is not zero"),
-    ),
-    (
-        "ERR_XRESERVE_RECIPIENT_BAD_LIMB",
-        MasmError::from_static_str("deposit intent remote recipient limb is not a valid u32"),
-    ),
-    (
-        "ERR_XRESERVE_RECIPIENT_NONCANONICAL",
-        MasmError::from_static_str(
-            "deposit intent remote recipient value does not fit in the field",
-        ),
     ),
     // The attestation mint policy (mint_policy.masm) — the TRANSPORT-shape guards on the
     // stock MintNote's attachments: the scheme-4 intent + scheme-5 attestation + scheme-2 routing

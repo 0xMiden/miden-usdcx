@@ -107,7 +107,7 @@ static IDENTIFIER_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// `bytes32_to_key(account_id_to_bytes32(get_id()))` on-chain and rejects a mismatched committed
 /// identifier.
 pub const XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xaf63dbcec4e79c6dd1d731f7f6b245401d733b0e14e58f885b53321f416c348b";
+    "0xdb53cbb2b077f1812ab9f8784483a7756efb01e1f8f048df5eb0c02504e04710";
 
 /// The owner-gated, init-once `identifier_init` admin note (the minimized
 /// identifier-only init: the identifier is the ONE domain-config

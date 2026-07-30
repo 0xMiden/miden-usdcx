@@ -29,6 +29,7 @@
 #   effects.
 
 use miden::protocol::active_account
+use miden::standards::utils
 use miden::core::math::u64
 use xreserve::encoding
 use {AMOUNT_FELT_OFF, MAX_FEE_FELT_OFF, NONCE_FELT_OFF} from xreserve::encoding::layout
@@ -230,23 +231,10 @@ pub proc assert_nonce_unused
     push.NONCE_FELT_OFF add
     # => [nonce_base]
 
-    # load B_LOWER: the nonce's first four packed limbs (wire bytes 0..16), element-0 on top —
-    # the [B_UPPER, B_LOWER] orientation bytes32_to_key consumes (the same staging as the
-    # parser's remoteToken load)
-    dup add.3 mem_load
-    dup.1 add.2 mem_load
-    dup.2 add.1 mem_load
-    dup.3 mem_load
-    # => [B_LOWER, nonce_base]
-
-    # load B_UPPER: the next four packed limbs (wire bytes 16..32)
-    dup.4 add.7 mem_load
-    dup.5 add.6 mem_load
-    dup.6 add.5 mem_load
-    dup.7 add.4 mem_load
-    # => [B_UPPER, B_LOWER, nonce_base]
-
-    movup.8 drop
+    # load the nonce's eight packed limbs (single-felt loads — the header felt offsets are not
+    # word-aligned); the standards loader returns the low-address word on top, so a swapw
+    # yields the [B_UPPER, B_LOWER] orientation bytes32_to_key consumes
+    exec.utils::mem_load_double_word_unaligned swapw
     # => [B_UPPER, B_LOWER]
 
     # call the encoding library's bytes32_to_key; the hash is never re-implemented here
@@ -271,8 +259,9 @@ end
 #! Reduces the uint256 field at `base` (8 u32-LE packed felts) to an AssetAmount via the
 #! encoding library's reducer.
 #!
-#! Single-felt loads: the header felt offsets are not word-aligned.
-#! The word orientation matches the shared parser's remoteToken load: U_LOWER = the field's
+#! The standards loader stages the field with single-felt loads (the header felt offsets are
+#! not word-aligned) and returns the low-address word on top; the swapw yields the reducer's
+#! word orientation, matching the shared parser's remoteToken load: U_LOWER = the field's
 #! positionally lower four packed limbs (wire bytes 0..16), U_UPPER = the positionally upper
 #! four (wire bytes 16..32), each element-0 on top — exactly the `[U_UPPER, U_LOWER,
 #! scale_exp]` shape the reducer consumes.
@@ -290,21 +279,7 @@ end
 #!
 #! Invocation: exec
 proc reduce_uint256_field
-    # load U_LOWER: the field's first four packed limbs at base+0..base+3 (element-0 on top)
-    dup add.3 mem_load
-    dup.1 add.2 mem_load
-    dup.2 add.1 mem_load
-    dup.3 mem_load
-    # => [U_LOWER, base, scale_exp]
-
-    # load U_UPPER: the next four packed limbs at base+4..base+7
-    dup.4 add.7 mem_load
-    dup.5 add.6 mem_load
-    dup.6 add.5 mem_load
-    dup.7 add.4 mem_load
-    # => [U_UPPER, U_LOWER, base, scale_exp]
-
-    movup.8 drop
+    exec.utils::mem_load_double_word_unaligned swapw
     # => [U_UPPER, U_LOWER, scale_exp]
 
     exec.encoding::uint256_to_asset_amount

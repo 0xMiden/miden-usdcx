@@ -1,0 +1,75 @@
+# Minimal CI for 0xMiden/miden-usdcx.
+#
+# Scope (per PhilippGackstatter): "a very minimal CI that at least runs tests
+# (we can skip formatting and other nice-to-haves)." This runs ONLY the test
+# suite -- no rustfmt, no clippy, no coverage, no build matrix.
+#
+# What it builds: `cargo test --workspace` compiles and runs the tests for the
+# workspace members. On `implementation` that is three crates:
+# crates/xusdc-encoding (THE gate -- assembles + executes the hand-written MASM)
+# plus the two off-chain service crates (xreserve-deposit-relayer,
+# withdrawal-listener-attester). `--workspace` deliberately does NOT touch:
+#   * crates/xusdc-validation -- listed under [workspace].exclude on
+#     `implementation` (it needs a miden-client release that has no build against
+#     the git-pinned `next` protocol graph), so `--workspace` skips it. If a
+#     later branch un-parks it back into [workspace].members, `--workspace`
+#     simply picks it up -- no edit here needed.
+#   * canary/* -- each is its own isolated workspace (empty `[workspace]` table)
+#     with path-deps to a local ../protocol-pin-v0.15.3 clone that does not exist
+#     on a CI runner, so they are never part of this workspace's build.
+#
+# No `cargo miden` / no MASM compiler toolchain is needed: the on-chain code is
+# hand-written MASM under asm/**, pulled in with include_str! and assembled +
+# executed by the protocol library's assembler inside the test process. There is
+# no build.rs and no wasm32 target anywhere in the test path.
+#
+# Network IS required at build time: the protocol crates are git-pinned to
+# 0xMiden/protocol @ 4971ec4b3 (next / 0.16.0-beta.1), so the first build fetches
+# that git rev plus the crates.io dependency closure. GitHub-hosted runners have
+# network, so this resolves fine. `--locked` uses the committed Cargo.lock so the
+# graph is exactly what contributors build.
+
+name: CI
+
+on:
+  # Long-lived branches on push; every PR. Scoping push (rather than a bare
+  # `push:`) avoids a duplicate run when a branch that already has an open PR is
+  # pushed. Widen this list if you want push runs on more branches.
+  push:
+    branches: [main, implementation]
+  pull_request:
+
+# Cancel an in-progress run when a newer commit lands on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # ubuntu-latest ships a C toolchain (gcc), which the relayer's
+    # rusqlite `bundled` feature needs to compile SQLite from source.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Stable Rust. The repo pins no rust-toolchain.toml (all crates are
+      # edition 2021), so tracking `stable` matches what contributors build with.
+      # No extra components/targets are required -- rustfmt/clippy are out of
+      # scope and the tests run on the host target.
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Cache the cargo registry, the git-pinned protocol checkout, and target/.
+      # This is build-time infra, not a "check": building the protocol family
+      # from a git rev (+ miden-testing + the crypto stack) is heavy on a cold
+      # runner, so this turns reruns from ~10 min into ~2 min. Safe to delete if
+      # you want the workflow reduced to the bare minimum.
+      - uses: Swatinem/rust-cache@v2
+
+      # THE gate. `--workspace` builds the members described in the header
+      # (validation + canary/* are excluded automatically). `--release` mirrors
+      # the repo's documented gate (README.md / AGENTS.md): these tests EXECUTE
+      # MASM on the Miden VM, which is far faster in release than in an
+      # unoptimized debug build. `--locked` fails if Cargo.lock is stale instead
+      # of silently updating it.
+      - name: Run tests
+        run: cargo test --workspace --locked --release

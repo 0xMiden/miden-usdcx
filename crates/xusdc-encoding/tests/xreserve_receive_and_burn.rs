@@ -271,7 +271,7 @@ fn pinned_standards_fixture_unchanged() {
 }
 
 const CARGO_TOML: &str = include_str!("../Cargo.toml");
-const PINNED_STANDARDS_REV: &str = "dbe4e38797207ce09fee1668ea204aafec275f63";
+const PINNED_STANDARDS_REV: &str = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c";
 
 /// Ties the vendored fixture copies to the dependency they were taken from.
 ///

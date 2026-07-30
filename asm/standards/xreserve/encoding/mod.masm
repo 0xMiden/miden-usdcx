@@ -203,8 +203,7 @@ pub proc uint256_to_asset_amount
     assert.err=ERR_AMOUNT_OVER_CAP
     # => [q0, q1]
 
-    # compose the AssetAmount felt (y <= 2^63 - 2^31 < p after the cap check; the merge's
-    # own lossless round-trip check cannot fire after that bound)
+    # compose the AssetAmount felt (y <= 2^63 - 2^31 < p after the cap check)
     exec.utils::merge_u32_limbs
     # => [y]
 end
@@ -297,9 +296,6 @@ pub proc parse_deposit_intent
     dup push.REMOTE_TOKEN_FELT_OFF add
     # => [rt_base, intent_ptr, hook_data_len]
 
-    # the standards loader pushes each word highest-index felt first, so the words read
-    # element-0-on-top — the same orientation the staged words and the callers' compare words
-    # use; the swapw puts the positionally upper word on top
     exec.utils::mem_load_double_word_unaligned swapw
     # => [REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_ptr, hook_data_len]
 

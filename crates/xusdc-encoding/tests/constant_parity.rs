@@ -9,7 +9,7 @@
 //! or a documented exemption, so a new MASM-only constant fails this suite; the faucet shell
 //! modules are included by reference (the encoding crate's `lib.rs` embeds only its own
 //! sources). The generic scale/limb primitives (pow10, the u32 limb merge) are consumed from
-//! the linked miden-standards library, so their bounds no longer appear as local constants. Wave-1 S1 re-materialization: the deleted custom-transport modules
+//! the linked miden-standards library and declare no local constants here. Wave-1 S1 re-materialization: the deleted custom-transport modules
 //! (`xreserve_mint` / `xreserve_mint_note_entry` / `mint_deny_guard` / `burn_policy` /
 //! `min_burn_admin` / `domain_config`) left the sweep; the attestation mint policy
 //! (`mint_policy.masm`) and the minimized `identifier_init.masm` joined it, with the
@@ -298,8 +298,7 @@ fn masm_rust_constant_parity() {
         "NoteStorage felt bound is frozen at 1024"
     );
 
-    // extra row: the affine-pubkey felt count (the scale bound and the u32 limb base moved
-    // into the linked standards pow10 / merge_u32_limbs and are no longer local constants)
+    // extra row: the affine-pubkey felt count
     let (enc_nums, _, _) = parse_masm_consts(ENCODING_MOD_MASM);
     assert_eq!(
         num(&enc_nums, "PUBKEY_FELTS", "encoding/mod.masm"),

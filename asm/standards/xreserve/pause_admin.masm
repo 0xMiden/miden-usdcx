@@ -16,7 +16,7 @@ use miden::standards::access::pausable
 
 # The DOM_PAUSER RoleSymbol encoded as a Felt (RoleSymbol::as_element, base-27 over A-Z/_).
 # HARD-CODED here rather than caller-supplied, so no role a caller merely holds can be substituted
-# for DOM_PAUSER. The Rust side declares the same value; a drift silently breaks the role gate.
+# for DOM_PAUSER.
 const DOM_PAUSER_ROLE = 728098706988649
 
 # PUBLIC INTERFACE

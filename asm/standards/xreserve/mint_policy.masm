@@ -32,8 +32,7 @@ use {
 # =================================================================================================
 
 # The mint-note DepositIntent attachment scheme (>= 4 — clear of the reserved "none"
-# value 1 and the standard values 2 `NetworkAccountTarget` / 3 `Pswap`). The Rust constructor
-# declares the same value.
+# value 1 and the standard values 2 `NetworkAccountTarget` / 3 `Pswap`).
 const XUSDC_MINT_INTENT_ATTACHMENT_SCHEME = 4
 
 # The mint-note attestation attachment scheme (see the intent scheme above).

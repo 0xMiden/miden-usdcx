@@ -83,7 +83,6 @@ impl core::error::Error for EncodingError {}
 
 // MASM ERROR CONSTANTS
 // ================================================================================================
-// The MASM side must declare byte-identical strings for each of these.
 
 /// Single source for every MASM error name/message pair: the named constants, the
 /// name→constant lookup, and the name→message table are all generated from one list.

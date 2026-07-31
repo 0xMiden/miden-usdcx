@@ -16,7 +16,7 @@ use miden::standards::access::authority
 
 # The xReserveAttesters allowlist StorageMap slot — byte-identical to the slot const in
 # attestation_verify.masm, since the mint-time read path keys the SAME slot. The name string is the
-# single source of truth for the slot id; the Rust side binds the identical string.
+# single source of truth for the slot id.
 pub const XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xreserve_attesters")
 
 # The non-empty enabled marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1

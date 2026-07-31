@@ -35,7 +35,6 @@ use super::error::EncodingError;
 
 /// Number of u32 field elements an affine secp256k1 public key packs to
 /// (`qx_le_u32[8] || qy_le_u32[8]`) — the element count the commitment hashes.
-/// The MASM side declares a `PUBKEY_FELTS` constant with the same value.
 pub const PUBKEY_FELTS: usize = 16;
 
 /// Packs a 32-byte keccak digest into 8 u32-LE field elements (4 bytes/felt).

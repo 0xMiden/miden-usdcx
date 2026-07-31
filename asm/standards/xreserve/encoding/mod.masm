@@ -37,9 +37,9 @@ const ERR_DI_LENGTH = "deposit intent length relation violated"
 #! Hashes an external bytes32 into its canonical storage-map key Word.
 #!
 #! Computes the Poseidon2 hash over the 8 u32-LE-packed limbs of the bytes32. The output is the
-#! raw storage-map key — the Word the kernel's storage map is keyed by — matching the Rust
-#! mirror `bytes32_to_storage_map_key`. Hashing rather than reinterpreting is what makes this
-#! total: an external bytes32 whose limbs exceed the field modulus still has a key.
+#! raw storage-map key — the Word the kernel's storage map is keyed by. Hashing rather than
+#! reinterpreting is what makes this total: an external bytes32 whose limbs exceed the field
+#! modulus still has a key.
 #!
 #! Inputs:  [B_UPPER, B_LOWER]
 #! Outputs: [KEY]

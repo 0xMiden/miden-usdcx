@@ -37,8 +37,7 @@ use {AMOUNT_FELT_OFF, MAX_FEE_FELT_OFF, NONCE_FELT_OFF} from xreserve::encoding:
 # CONSTANTS
 # =================================================================================================
 
-# Slots — ids derive from the namespaced label strings below. The Rust account builder binds
-# the identical label strings, so both sides derive the same slot ids.
+# Slots — ids derive from the namespaced label strings below.
 pub const DOMAIN_CONFIG_SLOT = word("xusdc::xreserve::domain_config::domain")
 pub const IDENTIFIER_CONFIG_SLOT = word("xusdc::xreserve::domain_config::identifier")
 

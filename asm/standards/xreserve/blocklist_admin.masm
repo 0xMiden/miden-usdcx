@@ -18,7 +18,7 @@ use miden::standards::faucets::policies::transfer::blocklist
 
 # The BLK_MANAGER RoleSymbol encoded as a Felt (RoleSymbol::as_element, base-27 over A-Z/_).
 # HARD-CODED here rather than caller-supplied, so no role a caller merely holds can be substituted
-# for BLK_MANAGER. The Rust side declares the same value; a drift silently breaks the role gate.
+# for BLK_MANAGER.
 const BLK_MANAGER_ROLE = 7907587873290749
 
 # ERRORS

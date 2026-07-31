@@ -44,25 +44,21 @@ use crate::xreserve::encoding::{
 
 /// The mint-note DepositIntent attachment scheme (u16, project-chosen: >= 4, clear of
 /// the reserved "none" value 1 and the standard values 2 `NetworkAccountTarget` / 3 `Pswap`).
-/// Declared identically in `mint_policy.masm`; the policy's `find_attachment` fail-closes on a
-/// mismatch. Not a Circle-owned value.
+/// The policy's `find_attachment` fail-closes on a mismatch. Not a Circle-owned value.
 pub const XUSDC_MINT_INTENT_ATTACHMENT_SCHEME: u16 = 4;
 
 /// The mint-note attestation attachment scheme (see the intent scheme above).
-/// Declared identically in `mint_policy.masm`.
 pub const XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME: u16 = 5;
 
 /// The attestation attachment word count: `[feeAmount(8), pubkey(16), signature(17), pad(3)]`
-/// = 44 felts (the pubkey is the 16-felt affine
-/// form). Declared identically in `mint_policy.masm`.
+/// = 44 felts (the pubkey is the 16-felt affine form).
 pub const XUSDC_MINT_ATTESTATION_NUM_WORDS: usize = 11;
 
 /// The uint256 -> AssetAmount decimal scale the faucet applies. The cap / scale / dust decision
 /// stays OPEN, pending Circle confirmation; the faucet ships the PROVISIONAL scale-0 position
 /// because Circle's on-wire deposit `amount` is 6-decimal smallest units and xUSDC is 6-decimal, so
-/// the reduction is the identity. Declared identically in `mint_policy.masm` as
-/// `DEPOSIT_SCALE_EXP`; this factory reduces the attested amount with the SAME scale so the storage
-/// it builds passes the policy's ASSERT-MATCH amount compare.
+/// the reduction is the identity. This factory reduces the attested amount with the SAME scale the
+/// faucet applies, so the storage it builds passes the policy's ASSERT-MATCH amount compare.
 pub const XUSDC_DEPOSIT_SCALE_EXP: u32 = 0;
 
 /// The Circle deposit attestation crossing the note boundary: the raw 65-byte

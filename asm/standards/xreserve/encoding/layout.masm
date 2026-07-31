@@ -6,7 +6,7 @@
 # the faucet consumes these constants for its mint-side assertions.
 #
 # The wire format is a fixed 240-byte big-endian header (60 u32-LE-packed felts) followed by
-# variable-length hookData. Every offset below has a Rust counterpart holding the same value.
+# variable-length hookData.
 
 # CONSTANTS — DepositIntent felt offsets (byte offset / 4)
 # =================================================================================================

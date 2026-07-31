@@ -38,7 +38,7 @@ use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::*;
 use xusdc_encoding::vectors::{load, parse_hex32, AmtVector, DiVector};
-use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
+use xusdc_encoding::xreserve::encoding::{bytes32_to_storage_map_key, uint256_to_asset_amount};
 
 /// Looks up a canonical DepositIntent vector by id (by-reference loading).
 fn di(id: &str) -> &'static DiVector {
@@ -218,9 +218,9 @@ async fn probe_slot_binding() -> Result<()> {
 // Executes the faucet-owned `xreserve::deposit_intent_parser::assert_mint_amounts` on a
 // MockChain. Each case splices a chosen `amount` and `maxFee` into an otherwise-valid
 // DepositIntent preimage, taking the uint256 limb patterns from the shared `amt-*` golden
-// vectors so the reduction behavior under test is the same one the Rust reducer is pinned to.
-// `feeAmount` does not travel in the intent: the caller stages it on the advice stack, and the
-// proc requires it to actually be there — omitting it is an error, not a silent zero.
+// vectors so the conversion behavior under test is the same one the Rust mirror is pinned to;
+// the driver passes the mirror-computed amount witness. `feeAmount` does not travel in the
+// intent: the caller stages its limbs in memory and passes the pointer.
 
 /// Decimal exponent the amount reducer divides by, handed to the proc as a parameter rather
 /// than read from a faucet constant.
@@ -243,6 +243,10 @@ fn amt(id: &str) -> &'static AmtVector {
 /// Builds a D5b harness over a base accept preimage with `amount`/`maxFee` spliced from the
 /// given limbs. The shell does not read config slots, but the component still binds them;
 /// the matching `di-pos-empty-hookdata` config is reused for tidiness.
+///
+/// The driver's amount witness is the Rust mirror's quotient (the value the mint-note factory
+/// would carry); an unreducible amount pushes a zero witness — the verifier traps on the x
+/// bound before consuming y.
 fn d5b_harness(
     amount_limbs: [u32; 8],
     maxfee_limbs: [u32; 8],
@@ -251,7 +255,10 @@ fn d5b_harness(
     let base = di("di-pos-empty-hookdata").preimage_values();
     let preimage = splice_amounts(&base, amount_limbs, maxfee_limbs);
     let (domain, identifier) = config_for("di-pos-empty-hookdata", TEST_DOMAIN, false);
-    let driver_src = mint_amounts_driver_src(&preimage, fee_amount, D5B_SCALE_EXP);
+    let amount_y = uint256_to_asset_amount(amount_limbs, D5B_SCALE_EXP)
+        .map(u64::from)
+        .unwrap_or(0);
+    let driver_src = mint_amounts_driver_src(&preimage, fee_amount, D5B_SCALE_EXP, amount_y);
     setup_shell_account(domain, identifier, &driver_src, SHELL_DRIVER_PATH)
 }
 
@@ -290,15 +297,16 @@ async fn d5b_happy_amount_fee(
 
 // REJECTS — every case pins the EXACT error symbol, never a bare `is_err()`
 // ------------------------------------------------------------------------------------------------
-// Two distinct failure kinds are covered here. A value too large to reduce traps inside the
-// shared encoding reducer with `ERR_X_TOO_LARGE`; a value that reduces fine but breaks a
-// relation the faucet requires traps with one of the faucet's own `ERR_XRESERVE_*` symbols.
-// Both arrive as MASM assertion failures, so one `assert_transaction_executor_error!` shape
-// covers the family and the cases stay parametrized rather than copy-pasted.
+// Two distinct failure kinds are covered here. A value too large to convert traps its staging
+// guard (the amount inside the standards verifier, maxFee/fee in the parser's own staging); a
+// value that converts fine but breaks a relation the faucet requires traps with one of the
+// faucet's own `ERR_XRESERVE_*` symbols. Both arrive as MASM assertion failures, so one
+// `assert_transaction_executor_error!` shape covers the family.
 
 #[rstest]
-// too large to reduce: the AMOUNT's top four u32 limbs are nonzero, i.e. it exceeds 2^128
-#[case::r_mint_9_amount_overflow(amt("amt-rej-limb-overflow").le_limbs(), amt("amt-pos-1").le_limbs(), fee_amount_felts([0u32; 8]), "ERR_X_TOO_LARGE")]
+// too large: the AMOUNT exceeds 2^128; the amount goes through the standards verifier, so
+// the trap is its own x bound (distinct from the shell's maxFee/fee ERR_X_TOO_LARGE below)
+#[case::r_mint_9_amount_overflow(amt("amt-rej-limb-overflow").le_limbs(), amt("amt-pos-1").le_limbs(), fee_amount_felts([0u32; 8]), "STD_ERR_X_TOO_LARGE")]
 // same overflow on MAXFEE — ordered so the amount reduces cleanly first and the trap is maxFee's
 #[case::r_mint_9_maxfee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-rej-limb-overflow").le_limbs(), fee_amount_felts([0u32; 8]), "ERR_X_TOO_LARGE")]
 // same overflow on the separately staged FEEAMOUNT — the third reduction is guarded too

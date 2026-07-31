@@ -86,9 +86,10 @@ impl core::error::Error for EncodingError {}
 
 // MASM ERROR CONSTANTS
 // ================================================================================================
-// Names per the frozen spec's intent list plus one addition (`ERR_AMOUNT_OVER_CAP`, 1:1 with a
-// frozen enum variant). The MASM side must declare byte-identical strings, and a parity test
-// fails if one of them drifts.
+// Names per the frozen spec's intent list, restricted to what `encoding/mod.masm` declares
+// locally (the amount-conversion rejects are the linked standards verifier's own — see
+// `STANDARDS_ERR_TABLE` below). The MASM side must declare byte-identical strings, and a
+// parity test fails if one of them drifts.
 
 /// Single source for every MASM error name/message pair: the named constants, the
 /// name→constant lookup (MASM execution tests), and the name→message table (the
@@ -99,17 +100,15 @@ macro_rules! masm_errors {
 
         /// Name → constant lookup used by the MASM execution tests (vectors carry the
         /// constant NAME; the value lives here exactly once).
-        pub static ERR_TABLE: [(&str, &MasmError); 7] = [ $( (stringify!($name), &$name) ),+ ];
+        pub static ERR_TABLE: [(&str, &MasmError); 5] = [ $( (stringify!($name), &$name) ),+ ];
 
         /// Name → message table consumed by the constant-parity test (the MASM side
         /// must declare identical strings).
-        pub static ERR_MESSAGES: [(&str, &str); 7] = [ $( (stringify!($name), $msg) ),+ ];
+        pub static ERR_MESSAGES: [(&str, &str); 5] = [ $( (stringify!($name), $msg) ),+ ];
     };
 }
 
 masm_errors! {
-    ERR_X_TOO_LARGE => "larger than 2**128",
-    ERR_AMOUNT_OVER_CAP => "post-scale quotient exceeds the asset amount maximum",
     ERR_FELT_OUT_OF_FIELD => "supplied limb is not a valid u32",
     ERR_DI_BAD_MAGIC => "deposit intent magic mismatch",
     ERR_DI_BAD_VERSION => "deposit intent version mismatch",
@@ -117,12 +116,10 @@ masm_errors! {
     ERR_DI_LENGTH => "deposit intent length relation violated",
 }
 
-/// Errors raised inside procedures the MASM links from the protocol's `miden-standards`
-/// library (`miden::standards::utils` / `assets::asset_amount` / `interop::eth`) rather than
-/// declaring locally. The strings are the standards library's own — they are pinned
-/// FUNCTIONALLY by the execution tests that trap on them, not by the local declaration parity
-/// sweep (which covers only constants declared in this repo's MASM sources).
-pub static STANDARDS_ERR_TABLE: [(&str, MasmError); 3] = [
+/// Errors raised inside the linked `miden-standards` procedures. The strings are the
+/// standards library's own, pinned functionally by the execution tests that trap on them
+/// (the declaration parity sweep covers only constants declared in this repo's MASM).
+pub static STANDARDS_ERR_TABLE: [(&str, MasmError); 7] = [
     // the standards pow10 scale bound (both its u32 guard and its <= 18 bound)
     (
         "ERR_SCALE_AMOUNT_EXCEEDED_LIMIT",
@@ -137,6 +134,29 @@ pub static STANDARDS_ERR_TABLE: [(&str, MasmError); 3] = [
     (
         "ERR_NOT_U32",
         MasmError::from_static_str("address limb is not u32"),
+    ),
+    // the conversion verifier's x < 2^128 bound; STD-prefixed because the shell declares its
+    // own ERR_X_TOO_LARGE for the maxFee/fee staging
+    (
+        "STD_ERR_X_TOO_LARGE",
+        MasmError::from_static_str(
+            "the u256 value is larger than 2**128 and cannot be verifiably scaled to u64",
+        ),
+    ),
+    // the conversion verifier's witness bound: y within the fungible asset maximum
+    (
+        "ERR_Y_TOO_LARGE",
+        MasmError::from_static_str("y exceeds max fungible token amount"),
+    ),
+    // the conversion verifier's no-underflow subtract (an over-claimed witness)
+    (
+        "ERR_UNDERFLOW",
+        MasmError::from_static_str("x < y*10^s (underflow detected)"),
+    ),
+    // the conversion verifier's remainder bound (an under-claimed witness)
+    (
+        "ERR_REMAINDER_TOO_LARGE",
+        MasmError::from_static_str("remainder z must be < 10^s"),
     ),
 ];
 

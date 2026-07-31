@@ -29,8 +29,11 @@
 #   effects.
 
 use miden::protocol::active_account
+use miden::standards::assets::asset_amount
 use miden::standards::utils
+use miden::core::math::u128
 use miden::core::math::u64
+use miden::core::word
 use xreserve::encoding
 use {AMOUNT_FELT_OFF, MAX_FEE_FELT_OFF, NONCE_FELT_OFF} from xreserve::encoding::layout
 
@@ -52,10 +55,12 @@ pub const USED_NONCES_SLOT = word("xusdc::xreserve::nonce_registry::used_nonces"
 const ERR_XRESERVE_WRONG_DOMAIN = "deposit intent remote domain does not match the faucet domain"
 const ERR_XRESERVE_WRONG_IDENTIFIER = "deposit intent remote token does not match the faucet identifier"
 
-# Amount/fee errors. The too-large reject (ERR_X_TOO_LARGE) is CONSUMED from the encoding
-# library's reducer, never redefined here. The fee gate requires feeAmount == 0 — the MVP has
-# no relayer-fee leg — which subsumes the feeAmount <= maxFee compare (see
-# assert_mint_amounts for the gate and its upgrade path).
+# Amount/fee errors. The maxFee/fee staging declares its own too-large and limb guards (the
+# same strings the encoding library uses); the amount field goes through the witness verifier.
+# The fee gate requires feeAmount == 0 — the MVP has no relayer-fee leg — which subsumes the
+# feeAmount <= maxFee compare.
+const ERR_X_TOO_LARGE = "larger than 2**128"
+const ERR_FELT_OUT_OF_FIELD = "supplied limb is not a valid u32"
 const ERR_XRESERVE_AMOUNT_BELOW_FEE = "deposit intent amount is below the max fee"
 const ERR_XRESERVE_FEE_NONZERO = "mint fee amount must be zero"
 
@@ -121,80 +126,104 @@ end
 #! Asserts the faucet-owned amount and fee mint preconditions over a staged preimage.
 #!
 #! `amount` (felt[2..9]) and `maxFee` (felt[43..50]) come from the staged preimage; `feeAmount`
-#! does not travel in the intent at all and lives wherever the caller staged it. All three go
-#! through the encoding library's `uint256_to_asset_amount`.
+#! does not travel in the intent at all and lives wherever the caller staged it. The amount
+#! goes through the encoding library's witness verifier against the `amount_y` claim; the
+#! maxFee and feeAmount bounds are proven division-free by algebraic equivalence, so no
+#! quotient is ever computed on-chain.
 #!
-#! Inputs:  [intent_ptr, fee_amount_ptr, scale_exp]
+#! Inputs:  [intent_ptr, fee_amount_ptr, scale_exp, amount_y]
 #! Outputs: []
 #!
 #! Where:
 #! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
 #! - fee_amount_ptr is the memory address of the operator feeAmount's first packed limb (8 u32-LE
 #!   limbs).
-#! - scale_exp is the decimal scale exponent forwarded to the reducer (the cap/scale choice
+#! - scale_exp is the decimal scale exponent forwarded to the verifier (the cap/scale choice
 #!   is OPEN, pending Circle confirmation).
+#! - amount_y is the claimed reduced amount witness (in the mint pipeline, the note-supplied
+#!   asset value), proven equal to floor(amount / 10^scale_exp) and within the fungible
+#!   maximum by the verifier.
 #!
 #! Panics if:
-#! - the reducer rejects amount, maxFee, or feeAmount (ERR_X_TOO_LARGE / ERR_AMOUNT_OVER_CAP).
-#! - a feeAmount limb is not a valid u32 (ERR_FELT_OUT_OF_FIELD).
+#! - the witness verifier rejects the amount claim (the standards too-large / over-maximum /
+#!   underflow / remainder constraints).
+#! - a maxFee or feeAmount limb is not a valid u32 (ERR_FELT_OUT_OF_FIELD), or a maxFee or
+#!   feeAmount high half is nonzero (ERR_X_TOO_LARGE).
 #! - reduced amount < maxFee (ERR_XRESERVE_AMOUNT_BELOW_FEE).
 #! - reduced feeAmount != 0 (ERR_XRESERVE_FEE_NONZERO).
 #!
 #! Invocation: exec
 @account_procedure
 pub proc assert_mint_amounts
-    # reduce amount (felt[2..9]); keep [intent_ptr, fee_amount_ptr, scale_exp] live below for reuse
+    # verify the amount claim (felt[2..9]) against the witness; keep the inputs live below
     dup.2 dup.1 push.AMOUNT_FELT_OFF add
-    # => [amount_base, scale_exp, intent_ptr, fee_amount_ptr, scale_exp]
+    # => [amount_base, scale_exp, intent_ptr, fee_amount_ptr, scale_exp, amount_y]
 
-    exec.reduce_uint256_field
-    # => [amount_y, intent_ptr, fee_amount_ptr, scale_exp]
+    exec.utils::mem_load_double_word_unaligned swapw
+    # => [U_UPPER, U_LOWER, scale_exp, intent_ptr, fee_amount_ptr, scale_exp, amount_y]
 
-    # reduce maxFee (felt[43..50])
-    dup.3 dup.2 push.MAX_FEE_FELT_OFF add
-    # => [maxfee_base, scale_exp, amount_y, intent_ptr, fee_amount_ptr, scale_exp]
+    dup.12 movdn.9
+    # => [U_UPPER, U_LOWER, scale_exp, amount_y, intent_ptr, fee_amount_ptr, scale_exp, amount_y]
 
-    exec.reduce_uint256_field
-    # => [maxfee_y, amount_y, intent_ptr, fee_amount_ptr, scale_exp]
+    exec.encoding::verify_uint256_to_asset_amount
+    # => [intent_ptr, fee_amount_ptr, scale_exp, amount_y]
 
-    # intent_ptr has served every field it owns
-    movup.2 drop
-    # => [maxfee_y, amount_y, fee_amount_ptr, scale_exp]
+    # amount >= maxFee over the maxFee field (felt[43..50]), division-free:
+    # floor(m/10^s) <= A  <=>  m < B = (A+1)*10^s (the verify above bounds amount_y, so the
+    # +1 cannot wrap)
+    push.MAX_FEE_FELT_OFF add
+    # => [maxfee_base, fee_amount_ptr, scale_exp, amount_y]
 
-    # assert reduced amount >= maxFee over copies; both reduced values are < 2^63 (felts are
-    # unordered) -> u64 limb compare. the surviving maxfee_y copy below is dropped after the
-    # fee gate.
-    dup movup.2 swap
-    # => [maxfee_y, amount_y, maxfee_y, fee_amount_ptr, scale_exp]
+    exec.utils::mem_load_double_word_unaligned swapw
+    # => [M_UPPER, M_LOWER, fee_amount_ptr, scale_exp, amount_y]
 
-    u32split
-    # => [maxfee_lo, maxfee_hi, amount_y, maxfee_y, fee_amount_ptr, scale_exp]
+    exec.to_u128_limbs
+    # => [m0, m1, m2, m3, fee_amount_ptr, scale_exp, amount_y]
 
-    movup.2 u32split
-    # => [amount_lo, amount_hi, maxfee_lo, maxfee_hi, maxfee_y, fee_amount_ptr, scale_exp]
+    movup.6 add.1
+    # => [amount_y+1, m0, m1, m2, m3, fee_amount_ptr, scale_exp]
 
-    # compute amount >= maxfee
-    exec.u64::lte
-    # => [is_amount_ge_maxfee, maxfee_y, fee_amount_ptr, scale_exp]
+    dup.6 swap
+    # => [amount_y+1, scale_exp, m0, m1, m2, m3, fee_amount_ptr, scale_exp]
+
+    exec.asset_amount::scale_asset_amount_to_u256
+    # => [B_LO, B_HI, m0, m1, m2, m3, fee_amount_ptr, scale_exp]
+
+    # the u256 high word is provably zero (B < 2^123)
+    swapw dropw
+    # => [B_LO, m0, m1, m2, m3, fee_amount_ptr, scale_exp]
+
+    # u128::lt over [b, a] (b on top) returns a < b; here b = B, a = maxFee
+    exec.u128::lt
+    # => [is_maxfee_lt_bound, fee_amount_ptr, scale_exp]
 
     assert.err=ERR_XRESERVE_AMOUNT_BELOW_FEE
-    # => [maxfee_y, fee_amount_ptr, scale_exp]
+    # => [fee_amount_ptr, scale_exp]
 
-    # reduce feeAmount through the same staged-field helper the two intent fields used
-    movup.2 movup.2
-    # => [fee_amount_ptr, scale_exp, maxfee_y]
+    # fail-loud fee gate, division-free: floor(f/10^s) == 0  <=>  f < 10^s. only a zero fee is
+    # allowed — the relayer fee split stays open, pending Circle confirmation.
+    exec.utils::mem_load_double_word_unaligned swapw
+    # => [F_UPPER, F_LOWER, scale_exp]
 
-    exec.reduce_uint256_field
-    # => [feeamount_y, maxfee_y]
+    exec.to_u128_limbs
+    # => [f0, f1, f2, f3, scale_exp]
 
-    # fail-loud fee gate: the operator feeAmount must be zero. the only allowed fee is zero, which
-    # is always <= maxFee, so no feeAmount-vs-maxFee compare is reachable, and the mint pipeline
-    # credits the recipient the whole amount with no relayer-fee leg. the relayer fee split stays
-    # open, pending Circle confirmation.
-    assertz.err=ERR_XRESERVE_FEE_NONZERO
-    # => [maxfee_y]
+    # f3 or f2 nonzero means f >= 2^64 > 10^18 >= 10^s, i.e. a nonzero reduced fee
+    movup.3 assertz.err=ERR_XRESERVE_FEE_NONZERO
+    movup.2 assertz.err=ERR_XRESERVE_FEE_NONZERO
+    # => [f0, f1, scale_exp]
 
-    drop
+    movup.2 exec.asset_amount::pow10
+    # => [p, f0, f1]
+
+    u32split
+    # => [p_lo, p_hi, f0, f1]
+
+    # u64::lt over [b, a] (b on top) returns a < b; here b = 10^s, a = the fee low half
+    exec.u64::lt
+    # => [is_fee_lt_pow10]
+
+    assert.err=ERR_XRESERVE_FEE_NONZERO
     # => []
 end
 
@@ -244,25 +273,43 @@ end
 # HELPER PROCEDURES
 # =================================================================================================
 
-#! Reduces the uint256 field at `base` (8 u32-LE packed felts) to an AssetAmount via the
-#! encoding library's reducer.
+#! Normalizes a staged uint256 to its numerically-low half as u128 little-endian u32 limbs.
 #!
-#! Inputs:  [base, scale_exp]
-#! Outputs: [y]
+#! Guards every limb as a u32, asserts the numerically high half (U_LOWER, wire bytes 0..16)
+#! is zero, then byte-swaps and reverses the low half into little-endian u128 limb order.
+#! Works with any trailing elements beneath the two words.
+#!
+#! Inputs:  [U_UPPER, U_LOWER]
+#! Outputs: [x0, x1, x2, x3]
 #!
 #! Where:
-#! - base is the memory address of the field's first packed felt.
-#! - scale_exp is the decimal scale exponent.
-#! - y is the reduced AssetAmount felt.
+#! - U_UPPER / U_LOWER are the field's positionally upper / lower four u32-LE-packed limbs
+#!   (wire bytes 16..32 / 0..16), each element-0 on top.
+#! - x0..x3 are the value's u32 limbs in little-endian order (x = x3*2^96 + x2*2^64 +
+#!   x1*2^32 + x0).
 #!
 #! Panics if:
-#! - the reducer rejects the value (ERR_X_TOO_LARGE / ERR_AMOUNT_OVER_CAP / ERR_FELT_OUT_OF_FIELD).
+#! - a limb is not a valid u32 (ERR_FELT_OUT_OF_FIELD).
+#! - any limb of the numerically high half is nonzero (ERR_X_TOO_LARGE).
 #!
 #! Invocation: exec
-proc reduce_uint256_field
-    exec.utils::mem_load_double_word_unaligned swapw
-    # => [U_UPPER, U_LOWER, scale_exp]
+proc to_u128_limbs
+    # guard every externally-supplied limb before any u32 op
+    u32assertw.err=ERR_FELT_OUT_OF_FIELD
+    swapw
+    u32assertw.err=ERR_FELT_OUT_OF_FIELD
+    # => [U_LOWER, U_UPPER]
 
-    exec.encoding::uint256_to_asset_amount
-    # => [y]
+    exec.word::eqz
+    assert.err=ERR_X_TOO_LARGE
+    # => [U_UPPER]
+
+    # byte-swap the numerically-low-half limbs to numeric order
+    repeat.4
+        exec.utils::swap_u32_bytes movdn.3
+    end
+    # => [n4, n5, n6, n7]
+
+    exec.word::reverse
+    # => [x0, x1, x2, x3]
 end

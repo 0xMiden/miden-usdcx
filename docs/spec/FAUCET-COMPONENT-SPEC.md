@@ -177,8 +177,9 @@ faucet's own key and rejects a mismatched committed value).
 ## 7. What is consumed from the encoding library
 
 The faucet does not re-implement encoding. It consumes `xreserve::encoding::*` by reference:
-`bytes32_to_key` (nonce/identifier keying), `uint256_to_asset_amount` (amount reduction),
-`parse_deposit_intent` (structural parse), `pubkey_commitment` (attester keying). See the
+`bytes32_to_key` (nonce/identifier keying), `verify_uint256_to_asset_amount` (the amount
+witness verify), `parse_deposit_intent` (structural parse), `pubkey_commitment` (attester
+keying). See the
 encoding spec at `docs/spec/ENCODING-COMPONENT-SPEC.md` and the data contracts `DC-1..DC-7` in the
 glossary.
 

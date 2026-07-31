@@ -174,7 +174,9 @@ end
     Ok(())
 }
 
-// PARITY 2 — uint256 → asset amount: every reducer vector, accepts and rejects alike
+// PARITY 2 — uint256 → asset amount: every conversion vector, accepts and rejects alike. The
+// Rust leg divides; the MASM leg proves that quotient as a witness, pinning both to the same
+// floor semantics.
 // ================================================================================================
 
 #[tokio::test]
@@ -185,25 +187,28 @@ async fn tv_dual_2_uint256_reducer() -> Result<()> {
             "accept" => {
                 let limbs: Vec<Felt> = vec.le_limbs().iter().map(|l| Felt::from(*l)).collect();
                 let (u0, u1) = (word_of(&limbs[0..4]), word_of(&limbs[4..8]));
+                // the Rust-computed quotient is the witness; passing (no trap) is the
+                // acceptance criterion
                 let y: u64 = vec.expected_y.as_deref().unwrap().parse().unwrap();
                 let src = format!(
                     r#"use xreserve::encoding
 
 @transaction_script
 pub proc main
+    push.{y}
     push.{scale}
     push.{u0}
     push.{u1}
-    exec.encoding::uint256_to_asset_amount
-    push.{y}
-    assert_eq.err="vector {id}: amount mismatch"
+    exec.encoding::verify_uint256_to_asset_amount
 end
 "#,
                     scale = vec.scale_exp,
-                    id = vec.id,
                 );
                 run_driver(&h, &src).await.unwrap_or_else(|e| {
-                    panic!("vector {}: MASM reducer must accept and match: {e}", vec.id)
+                    panic!(
+                        "vector {}: MASM verifier must accept the Rust-computed witness: {e}",
+                        vec.id
+                    )
                 });
             }
             "reject" | "guard" => {
@@ -217,16 +222,23 @@ end
                     (None, None) => panic!("vector {}: no reducer input", vec.id),
                 };
                 let (u0, u1) = (word_of(&limbs[0..4]), word_of(&limbs[4..8]));
+                // rows whose trap fires before (or independent of) the witness carry no
+                // witness_y and push zero
+                let y: u64 = vec
+                    .witness_y
+                    .as_deref()
+                    .map(|w| w.parse().unwrap())
+                    .unwrap_or(0);
                 let src = format!(
                     r#"use xreserve::encoding
 
 @transaction_script
 pub proc main
+    push.{y}
     push.{scale}
     push.{u0}
     push.{u1}
-    exec.encoding::uint256_to_asset_amount
-    drop
+    exec.encoding::verify_uint256_to_asset_amount
 end
 "#,
                     scale = vec.scale_exp,
@@ -548,7 +560,7 @@ fn probe_p1_exports() -> Result<()> {
     // exports render as ABSOLUTE paths (leading `::`) at this assembler version
     for canonical in [
         "::xreserve::encoding::bytes32_to_key",
-        "::xreserve::encoding::uint256_to_asset_amount",
+        "::xreserve::encoding::verify_uint256_to_asset_amount",
         "::xreserve::encoding::parse_deposit_intent",
     ] {
         assert!(

@@ -6,8 +6,8 @@
 use miden::protocol::active_account
 use miden::core::crypto::hashes::keccak256
 use miden::core::crypto::dsa::ecdsa_k256_keccak
+use miden::core::crypto::hashes::poseidon2
 use miden::core::word
-use xreserve::encoding
 
 # CONSTANTS
 # =================================================================================================
@@ -17,6 +17,15 @@ use xreserve::encoding
 # allowlisted). The set_attester admin setter co-owns this SAME slot. The map slot itself is
 # declared by the Rust account builder; this const is the MASM-side slot id.
 pub const XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xreserve_attesters")
+
+# `verify_attestation` locals: the keccak digest is the only value that needs a memory home — the
+# precompile wrappers take their other operands as pointers and leave the stack below their inputs
+# intact, so the caller's pubkey and signature pointers simply ride on the operand stack.
+const DIGEST_LO_LOC = 0
+const DIGEST_HI_LOC = 4
+
+# The number of elements in a packed secp256k1 pubkey.
+const PUBKEY_FELTS = 16
 
 # ERRORS
 # =================================================================================================
@@ -34,99 +43,90 @@ const ERR_XRESERVE_SIG_INVALID = "deposit attestation signature verification fai
 #! against the xReserveAttesters allowlist, and ECDSA-verify the signature over the keccak
 #! digest.
 #!
-#! The candidate pubkey is materialized ONCE into the word-aligned pubkey local region; that same
-#! region feeds BOTH the allowlist commitment (pubkey_commitment) and the signature check
-#! (verify_prehash pk_ptr), so an allowlisted commitment cannot be paired with a foreign
-#! signature.
+#! The caller owns the pubkey and signature bytes and passes pointers to them; this procedure
+#! reads nothing from the advice provider, so whatever memory the caller hash-verified is exactly
+#! what gets checked here. The SAME pubkey pointer feeds both the allowlist commitment
+#! (pubkey_commitment) and the signature check (verify_prehash), so an allowlisted commitment
+#! cannot be paired with a foreign signature.
 #!
-#! Locals (@locals(44), word-aligned sub-regions): loc[0..16] candidate pubkey (16 affine
-#! felts), loc[16..24] keccak digest (8 felts), loc[24..41] signature (17 felts).
-#!
-#! Inputs:
-#!   Operand stack: [intent_ptr, len_bytes]
-#!   Advice stack: [PK[16], SIG[17]]
+#! Inputs:  [intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 #! Outputs: []
 #!
 #! Where:
 #! - intent_ptr is the memory address of the u32-LE-packed DepositIntent payload preimage.
-#! - len_bytes is the payload length in bytes (keccak's hashed extent; equals the bytes the
+#! - intent_num_bytes is the payload length in bytes (keccak's hashed extent; equals the bytes the
 #!   attester signed).
-#! - PK[16] is the candidate attester pubkey as 16 u32-LE-packed affine-coordinate felts, read
-#!   from the advice stack.
-#! - SIG[17] is the attestation signature as 17 felts, read from the advice stack after PK.
+#! - pubkey_ptr is the word-aligned memory address of the candidate attester pubkey, 16
+#!   u32-LE-packed affine-coordinate felts.
+#! - signature_ptr is the word-aligned memory address of the 17-felt attestation signature.
 #!
 #! Panics if:
-#! - the pubkey or signature advice is missing or short (fail-closed materialization).
 #! - the candidate pubkey's commitment is not allowlisted (ERR_XRESERVE_BAD_PK_COMMITMENT).
 #! - the signature does not verify over the payload digest (ERR_XRESERVE_SIG_INVALID).
 #!
+#! Locals:
+#! - 0..8: DIGEST
+#!
 #! Invocation: exec
-@locals(44)
+@locals(8)
 @account_procedure
 pub proc verify_attestation
     # keccak the full payload -> 8-limb digest, stored to the digest local region. hash_bytes
-    # consumes [intent_ptr, len_bytes] and leaves the digest above a restored depth-16 floor.
+    # consumes [intent_ptr, intent_num_bytes] and leaves everything below it untouched, so the two
+    # pointers survive the precompile call on the operand stack.
     exec.keccak256::hash_bytes
-    # => [DIGEST_U32[8], pad(16)]
+    # => [DIGEST_U32[8], pubkey_ptr, signature_ptr]
 
-    loc_storew_le.16 dropw
-    loc_storew_le.20 dropw
-    # => [pad(16)]
+    loc_storew_le.DIGEST_LO_LOC dropw
+    loc_storew_le.DIGEST_HI_LOC dropw
+    # => [pubkey_ptr, signature_ptr]
 
-    # materialize the candidate pubkey (16 affine felts) then the signature (17 felts) from
-    # the advice stack into word-aligned locals. ONE pubkey read into loc[0..16] -- the same
-    # region both checks below consume. Missing or short advice traps in adv_push*,
-    # fail-closed (never defaults). Advice seed order [PK, SIG].
-    adv_pushw loc_storew_le.0 dropw
-    adv_pushw loc_storew_le.4 dropw
-    adv_pushw loc_storew_le.8 dropw
-    adv_pushw loc_storew_le.12 dropw
-    # => [pad(16)]
-
-    adv_pushw loc_storew_le.24 dropw
-    adv_pushw loc_storew_le.28 dropw
-    adv_pushw loc_storew_le.32 dropw
-    adv_pushw loc_storew_le.36 dropw
-    adv_push loc_store.40
-    # => [pad(16)]
-
-    # allowlist gate: load the pubkey from loc[0..16] (the shared pubkey region) and consume
-    # the encoding-library pubkey_commitment to get COMM, then read xReserveAttesters[COMM].
-    padw loc_loadw_le.12
-    padw loc_loadw_le.8
-    padw loc_loadw_le.4
-    padw loc_loadw_le.0
-    # => [PK_W0, PK_W1, PK_W2, PK_W3, pad(16)]
-
-    exec.encoding::pubkey_commitment
-    # => [COMM, pad(16)]
+    # allowlist gate: commit to the caller's pubkey, then read
+    # xReserveAttesters[PUBKEY_COMMITMENT].
+    dup exec.pubkey_commitment
+    # => [PUBKEY_COMMITMENT, pubkey_ptr, signature_ptr]
 
     push.XRESERVE_ATTESTERS_SLOT[0..2]
-    # => [slot_id_suffix, slot_id_prefix, COMM, pad(16)]
+    # => [slot_id_suffix, slot_id_prefix, PUBKEY_COMMITMENT, pubkey_ptr, signature_ptr]
 
     exec.active_account::get_map_item
-    # => [VALUE, pad(16)]
-
-    swapw dropw
-    # => [VALUE, pad(12)]
+    # => [VALUE, pubkey_ptr, signature_ptr]
 
     # the stored value must be a non-empty enabled marker -- an absent / EMPTY_WORD value
     # means the candidate pubkey's commitment is not allowlisted.
     exec.word::eqz
-    # => [is_empty, pad(12)]
+    # => [is_empty, pubkey_ptr, signature_ptr]
 
     assertz.err=ERR_XRESERVE_BAD_PK_COMMITMENT
-    # => [pad(16)]
+    # => [pubkey_ptr, signature_ptr]
 
-    # the ECDSA verify: verify_prehash over the SAME pubkey region (loc[0..16]), the
-    # digest (loc[16..24]), and the signature (loc[24..41]).
-    locaddr.24 locaddr.16 locaddr.0
-    # => [pk_ptr, digest_ptr, sig_ptr, pad(16)]
+    # the ECDSA verify: verify_prehash over the SAME pubkey the allowlist gate just cleared, the
+    # digest, and the caller's signature.
+    locaddr.DIGEST_LO_LOC swap
+    # => [pubkey_ptr, digest_ptr, signature_ptr]
 
     exec.ecdsa_k256_keccak::verify_prehash
-    # => [result, pad(16)]
+    # => [result]
 
     # the signature must verify over the payload digest for the candidate pubkey.
     assert.err=ERR_XRESERVE_SIG_INVALID
-    # => [pad(16)]
+    # => []
+end
+
+#! Computes the commitment of the provided public key.
+#!
+#! Computes the poseidon2 hash over the 16 u32-LE-packed affine-coordinate limbs, which is the
+#! attester-allowlist map key.
+#!
+#! Inputs:  [pubkey_ptr]
+#! Outputs: [PUBKEY_COMMITMENT]
+#!
+#! Where:
+#! - pubkey_ptr is the word-aligned memory address of the 16 packed pubkey felts.
+#! - PUBKEY_COMMITMENT is the Poseidon2 commitment Word.
+#!
+#! Invocation: exec
+pub proc pubkey_commitment
+    push.PUBKEY_FELTS swap exec.poseidon2::hash_elements
+    # => [PUBKEY_COMMITMENT]
 end

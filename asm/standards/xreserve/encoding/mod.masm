@@ -20,16 +20,6 @@ use {
 
 pub mod layout
 
-# CONSTANTS
-# =================================================================================================
-
-# the affine secp256k1 pubkey coordinates (qx_le_u32[8] || qy_le_u32[8]) pack to 16 u32-LE
-# felts; this is the element count poseidon2::hash_elements absorbs for the attester commitment
-# (the same count the precompile verify wrapper stages, kept in cross-language parity with the
-# Rust PUBKEY_FELTS by constant_parity.rs). The Circle-facing wire form stays the 33-byte
-# compressed SEC1 key — the Rust codec owns the SEC1 -> affine decompression.
-const PUBKEY_FELTS = 16
-
 # ERRORS
 # =================================================================================================
 
@@ -70,52 +60,8 @@ pub proc bytes32_to_key
     swapw
     # => [B_LOWER, B_UPPER]
 
-    hmerge
+    exec.poseidon2::merge
     # => [KEY]
-end
-
-#! Computes the attester-allowlist commitment key over an affine secp256k1 public key.
-#!
-#! Poseidon2 over the 16 u32-LE-packed affine-coordinate limbs (`qx_le_u32[8] || qy_le_u32[8]`),
-#! identical to miden-crypto `PublicKey::to_commitment` and the precompile `verify` wrapper's
-#! pubkey commitment — the value the faucet's attestation verify recomputes and looks up in the
-#! `xReserveAttesters` allowlist. The Circle-facing wire form stays the 33-byte compressed SEC1
-#! key; the Rust codec decompresses it to the affine form before staging.
-#!
-#! Inputs:  [PK_W0, PK_W1, PK_W2, PK_W3]
-#! Outputs: [COMM]
-#!
-#! Where:
-#! - PK_W0 is the word holding pubkey felts 0..4 (qx bytes 0..16).
-#! - PK_W1 is the word holding pubkey felts 4..8 (qx bytes 16..32).
-#! - PK_W2 is the word holding pubkey felts 8..12 (qy bytes 0..16).
-#! - PK_W3 is the word holding pubkey felts 12..16 (qy bytes 16..32).
-#! - COMM is the Poseidon2 commitment Word.
-#!
-#! Invocation: exec
-@locals(16)
-@account_procedure
-pub proc pubkey_commitment
-    # stage the 16 pubkey felts into word-aligned locals so poseidon2::hash_elements can absorb
-    # them, mirroring the pubkey staging in the core library's ECDSA verify wrapper
-    # (`ecdsa_k256_keccak.masm`). loc_storew_le places the top word's first felt at the lowest
-    # address, so loc[0..16] = the 16 to_elements felts (f0..f15).
-    loc_storew_le.0 dropw
-    # => [PK_W1, PK_W2, PK_W3]
-
-    loc_storew_le.4 dropw
-    # => [PK_W2, PK_W3]
-
-    loc_storew_le.8 dropw
-    # => [PK_W3]
-
-    loc_storew_le.12 dropw
-    # => []
-
-    # the output COMM = Poseidon2(loc[0..16]); the sponge sets capacity[0] = 16 % 8 = 0 (domain
-    # tag), identical to miden-crypto PublicKey::to_commitment and the precompile's commitment.
-    push.PUBKEY_FELTS locaddr.0 exec.poseidon2::hash_elements
-    # => [COMM]
 end
 
 #! Reduces an externally-supplied uint256 amount to an AssetAmount felt.

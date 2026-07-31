@@ -126,7 +126,7 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
 // ================================================================================================
 
 /// The fully-qualified path of the stock RBAC `set_role_admin` account procedure (a member of the
-/// frozen 75-root surface — the proc STAYS; only its runtime note was removed).
+/// frozen 74-root surface — the proc STAYS; only its runtime note was removed).
 const RBAC_SET_ROLE_ADMIN_PROC_PATH: &str =
     "::miden::standards::components::access::rbac::set_role_admin";
 
@@ -405,7 +405,7 @@ fn ratified_growth_row_roots() -> Result<Vec<(&'static str, Word)>> {
 }
 
 /// PRESENT: each of the 11 ratified growth rows IS a callable root of the composed account — the
-/// fact the ratification covers, stated explicitly rather than left implicit in the 75-root count.
+/// fact the ratification covers, stated explicitly rather than left implicit in the 74-root count.
 /// If any row disappears, the temporary-growth ratification must be re-visited (the revert slice
 /// expects to remove exactly these).
 #[test]

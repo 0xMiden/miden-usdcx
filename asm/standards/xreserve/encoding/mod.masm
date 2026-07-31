@@ -5,6 +5,8 @@
 # `layout` submodule.
 
 use {FUNGIBLE_ASSET_MAX_AMOUNT} from miden::protocol::asset
+use miden::standards::assets::asset_amount
+use miden::standards::utils
 use miden::core::crypto::hashes::poseidon2
 use miden::core::math::u128
 use miden::core::math::u64
@@ -18,28 +20,11 @@ use {
 
 pub mod layout
 
-# CONSTANTS
-# =================================================================================================
-
-# scale_exp = EVM decimals − Miden decimals, bounded to 0..=18 (10^18 < 2^60)
-const SCALE_EXP_MAX = 18
-
-# the u32 limb base used to compose the output felt from two u32 quotient limbs
-const POW2_32 = 4294967296
-
-# the affine secp256k1 pubkey coordinates (qx_le_u32[8] || qy_le_u32[8]) pack to 16 u32-LE
-# felts; this is the element count poseidon2::hash_elements absorbs for the attester commitment
-# (the same count the precompile verify wrapper stages, kept in cross-language parity with the
-# Rust PUBKEY_FELTS by constant_parity.rs). The Circle-facing wire form stays the 33-byte
-# compressed SEC1 key — the Rust codec owns the SEC1 -> affine decompression.
-const PUBKEY_FELTS = 16
-
 # ERRORS
 # =================================================================================================
 
 const ERR_X_TOO_LARGE = "larger than 2**128"
 const ERR_AMOUNT_OVER_CAP = "post-scale quotient exceeds the asset amount maximum"
-const ERR_SCALE_EXP_TOO_LARGE = "scale exponent exceeds 18"
 const ERR_FELT_OUT_OF_FIELD = "supplied limb is not a valid u32"
 const ERR_DI_BAD_MAGIC = "deposit intent magic mismatch"
 const ERR_DI_BAD_VERSION = "deposit intent version mismatch"
@@ -75,52 +60,8 @@ pub proc bytes32_to_key
     swapw
     # => [B_LOWER, B_UPPER]
 
-    hmerge
+    exec.poseidon2::merge
     # => [KEY]
-end
-
-#! Computes the attester-allowlist commitment key over an affine secp256k1 public key.
-#!
-#! Poseidon2 over the 16 u32-LE-packed affine-coordinate limbs (`qx_le_u32[8] || qy_le_u32[8]`),
-#! identical to miden-crypto `PublicKey::to_commitment` and the precompile `verify` wrapper's
-#! pubkey commitment — the value the faucet's attestation verify recomputes and looks up in the
-#! `xReserveAttesters` allowlist. The Circle-facing wire form stays the 33-byte compressed SEC1
-#! key; the Rust codec decompresses it to the affine form before staging.
-#!
-#! Inputs:  [PK_W0, PK_W1, PK_W2, PK_W3]
-#! Outputs: [COMM]
-#!
-#! Where:
-#! - PK_W0 is the word holding pubkey felts 0..4 (qx bytes 0..16).
-#! - PK_W1 is the word holding pubkey felts 4..8 (qx bytes 16..32).
-#! - PK_W2 is the word holding pubkey felts 8..12 (qy bytes 0..16).
-#! - PK_W3 is the word holding pubkey felts 12..16 (qy bytes 16..32).
-#! - COMM is the Poseidon2 commitment Word.
-#!
-#! Invocation: exec
-@locals(16)
-@account_procedure
-pub proc pubkey_commitment
-    # stage the 16 pubkey felts into word-aligned locals so poseidon2::hash_elements can absorb
-    # them, mirroring the pubkey staging in the core library's ECDSA verify wrapper
-    # (`ecdsa_k256_keccak.masm`). loc_storew_le places the top word's first felt at the lowest
-    # address, so loc[0..16] = the 16 to_elements felts (f0..f15).
-    loc_storew_le.0 dropw
-    # => [PK_W1, PK_W2, PK_W3]
-
-    loc_storew_le.4 dropw
-    # => [PK_W2, PK_W3]
-
-    loc_storew_le.8 dropw
-    # => [PK_W3]
-
-    loc_storew_le.12 dropw
-    # => []
-
-    # the output COMM = Poseidon2(loc[0..16]); the sponge sets capacity[0] = 16 % 8 = 0 (domain
-    # tag), identical to miden-crypto PublicKey::to_commitment and the precompile's commitment.
-    push.PUBKEY_FELTS locaddr.0 exec.poseidon2::hash_elements
-    # => [COMM]
 end
 
 #! Reduces an externally-supplied uint256 amount to an AssetAmount felt.
@@ -165,7 +106,7 @@ pub proc uint256_to_asset_amount
     # byte-swap the numerically-low-half limbs to numeric order (limb 4 holds wire
     # bytes 16..20 — the most significant of that half)
     repeat.4
-        exec.swap_u32_bytes movdn.3
+        exec.utils::swap_u32_bytes movdn.3
     end
     # => [n4, n5, n6, n7, scale_exp]
 
@@ -174,7 +115,7 @@ pub proc uint256_to_asset_amount
     # => [x0, x1, x2, x3, scale_exp]
 
     # divisor: d = 10^scale_exp as u128 limbs [d0, d1, 0, 0]
-    movup.4 exec.pow10
+    movup.4 exec.asset_amount::pow10
     # => [d, x0, x1, x2, x3]
 
     u32split
@@ -209,7 +150,7 @@ pub proc uint256_to_asset_amount
     # => [q0, q1]
 
     # compose the AssetAmount felt (y <= 2^63 - 2^31 < p after the cap check)
-    swap mul.POW2_32 add
+    exec.utils::merge_u32_limbs
     # => [y]
 end
 
@@ -276,7 +217,7 @@ pub proc parse_deposit_intent
     # hookDataLen (semantic u32): byte-swap the packed felt at offset 59
     dup push.HOOK_DATA_LEN_FELT_OFF add mem_load
     u32assert.err=ERR_FELT_OUT_OF_FIELD
-    exec.swap_u32_bytes
+    exec.utils::swap_u32_bytes
     # => [hook_data_len, intent_ptr, len_felts]
 
     # length relation: len_felts == 60 + ceil(hookDataLen / 4)
@@ -301,23 +242,7 @@ pub proc parse_deposit_intent
     dup push.REMOTE_TOKEN_FELT_OFF add
     # => [rt_base, intent_ptr, hook_data_len]
 
-    # each word is pushed highest-index felt first, so the word reads element-0-on-top —
-    # the same orientation the staged words and the callers' compare words use
-    dup add.3 mem_load
-    # => [f14, rt_base, intent_ptr, hook_data_len]
-
-    dup.1 add.2 mem_load
-    dup.2 add.1 mem_load
-    dup.3 mem_load
-    # => [REMOTE_TOKEN_LOWER, rt_base, intent_ptr, hook_data_len]
-
-    dup.4 add.7 mem_load
-    dup.5 add.6 mem_load
-    dup.6 add.5 mem_load
-    dup.7 add.4 mem_load
-    # => [REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, rt_base, intent_ptr, hook_data_len]
-
-    movup.8 drop
+    exec.utils::mem_load_double_word_unaligned swapw
     # => [REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_ptr, hook_data_len]
 
     movup.8
@@ -326,7 +251,7 @@ pub proc parse_deposit_intent
     # remote_domain (semantic u32): byte-swap the packed felt at offset 10
     push.REMOTE_DOMAIN_FELT_OFF add mem_load
     u32assert.err=ERR_FELT_OUT_OF_FIELD
-    exec.swap_u32_bytes
+    exec.utils::swap_u32_bytes
     # => [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len]
 end
 
@@ -364,88 +289,4 @@ proc field8_is_nonzero
 
     drop
     # => [acc]
-end
-
-#! Swaps the byte order of a u32 limb (LE <-> BE numeric order).
-#!
-#! Keeps a local copy of the protocol's agglayer byte-swap helper, because the agglayer
-#! library is not linked by the standards code builder. The value must already be a valid
-#! u32 (callers guard with u32assertw).
-#!
-#! Inputs:  [value]
-#! Outputs: [swapped]
-#!
-#! Where:
-#! - value is a u32 limb.
-#! - swapped is the same limb with its four bytes reversed.
-#!
-#! Invocation: exec
-proc swap_u32_bytes
-    # part0 = (value & 0xFF) << 24
-    dup u32and.0xFF u32shl.24
-    # => [part0, value]
-
-    # part1 = ((value >> 8) & 0xFF) << 16
-    dup.1 u32shr.8 u32and.0xFF u32shl.16 u32or
-    # => [part01, value]
-
-    # part2 = ((value >> 16) & 0xFF) << 8
-    dup.1 u32shr.16 u32and.0xFF u32shl.8 u32or
-    # => [part012, value]
-
-    # part3 = (value >> 24)
-    dup.1 u32shr.24 u32or
-    # => [swapped, value]
-
-    swap drop
-    # => [swapped]
-end
-
-#! Computes 10^scale_exp as a felt (10^18 < 2^60 fits comfortably).
-#!
-#! Keeps a local copy of the protocol's agglayer power-of-ten helper, because the agglayer
-#! library is not linked by the standards code builder.
-#!
-#! Inputs:  [scale_exp]
-#! Outputs: [result]
-#!
-#! Where:
-#! - scale_exp is the decimal scale exponent (a u32, at most 18).
-#! - result is 10^scale_exp as a felt.
-#!
-#! Panics if:
-#! - scale_exp is not a valid u32.
-#! - scale_exp exceeds 18.
-#!
-#! Invocation: exec
-proc pow10
-    u32assert.err=ERR_FELT_OUT_OF_FIELD
-    # => [scale_exp]
-
-    dup u32lte.SCALE_EXP_MAX
-    assert.err=ERR_SCALE_EXP_TOO_LARGE
-    # => [scale_exp]
-
-    push.1 swap
-    # => [scale_exp, result]
-
-    dup neq.0
-    # => [is_not_zero, scale_exp, result]
-
-    while.true
-        # => [scale_exp, result]
-
-        swap mul.10 swap
-        # => [scale_exp, result*10]
-
-        sub.1
-        # => [scale_exp-1, result*10]
-
-        dup neq.0
-        # => [is_not_zero, scale_exp-1, result*10]
-    end
-    # => [0, result]
-
-    drop
-    # => [result]
 end

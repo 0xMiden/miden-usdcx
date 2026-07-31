@@ -417,7 +417,7 @@ fn main() {
             u256_be_from_u128(1_000_000),
             20,
             "ScaleExpTooLarge",
-            "ERR_SCALE_EXP_TOO_LARGE",
+            "ERR_SCALE_AMOUNT_EXCEEDED_LIMIT",
             "(scale 0..=18)",
             "scale_exp = 20 exceeds the 0..=18 bound / overflows 10^scale in u64",
         ),

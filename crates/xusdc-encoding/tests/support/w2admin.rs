@@ -47,8 +47,10 @@ use super::{add_faucet_account, setup_production_faucet, test_account_id, Produc
 pub const RATIFIED_ALLOWLIST_ROOTS: usize = 12;
 
 /// The callable procedure count: four custom procedures out, four standard manager procedures in,
-/// two-step ownership retained. Human-ratified.
-pub const RATIFIED_CALLABLE_PROCEDURES: usize = 75;
+/// two-step ownership retained (count-neutral). The mint-path `encoding::pubkey_commitment`
+/// de-export (it became an exec-only export of `attestation_verify`, no longer a callable account
+/// root) then drops the total by one to 74. Human-ratified.
+pub const RATIFIED_CALLABLE_PROCEDURES: usize = 74;
 
 /// The `DOM_PAUSER` role symbol felt the retired `pause_admin.masm` hard-coded. The role identity
 /// had to survive the move from a MASM literal into the procedure-role map, so it is pinned here as

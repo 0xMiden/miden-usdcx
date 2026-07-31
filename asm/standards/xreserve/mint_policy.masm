@@ -15,7 +15,9 @@ use miden::protocol::native_account
 use miden::protocol::note
 use {NOTE_TYPE_PUBLIC} from miden::protocol::note
 use {NETWORK_ACCOUNT_TARGET_ATTACHMENT_SCHEME} from miden::standards::attachments::network_account_target
+use miden::standards::interop::eth
 use miden::standards::note_tag
+use miden::standards::utils
 use miden::core::sys
 use xreserve::attestation_verify
 use xreserve::deposit_intent_parser
@@ -28,12 +30,6 @@ use {
 
 # CONSTANTS
 # =================================================================================================
-
-# Absolute account-call-frame address where the DepositIntent preimage is staged (word-aligned;
-# the admin note scripts stage their params at the same address by convention). The policy runs
-# inside `mint_and_send`'s account frame, whose only other memory use is FMP-based locals, so
-# the low absolute region is free.
-const INTENT_PTR = 1024
 
 # The mint-note DepositIntent attachment scheme (>= 4 — clear of the reserved "none"
 # value 1 and the standard values 2 `NetworkAccountTarget` / 3 `Pswap`). The Rust constructor
@@ -52,18 +48,13 @@ const XUSDC_MINT_ATTESTATION_NUM_WORDS = 11
 # below which no field offset can be trusted.
 const DEPOSIT_INTENT_HEADER_WORDS = 15
 
-# For the indexed attachment-commitment address math
-# (`commitment_ptr = commitments_base + attachment_idx * WORD_NUM_ELEMENTS`), mirroring the
-# pinned `note::write_indexed_attachment_to_memory`.
-const WORD_NUM_ELEMENTS = 4
-
 # The uint256->AssetAmount decimal scale (`y = floor(x / 10^scale_exp)`), FAUCET-side by design: a
 # note-carried scale would let the producer diverge the minted amount from the attested amount. The
 # amount cap / scale / dust tolerance are OPEN, pending Circle confirmation; the faucet ships the
 # PROVISIONAL scale-0 position because Circle's on-wire deposit `amount` is denominated in 6-decimal
 # smallest units and xUSDC is likewise 6-decimal, so the two denominations coincide and no rescale
 # applies — scale 0, `y = floor(x / 10^0) = x`, an identity with no floored dust. (`0` is inside the
-# reducer's `[0, SCALE_EXP_MAX=18]` bound.) Changing this constant is how the faucet would be
+# reducer's `[0, 18]` scale bound.) Changing this constant is how the faucet would be
 # repointed at a wire denomination whose asset is scaled differently.
 const DEPOSIT_SCALE_EXP = 0
 
@@ -79,6 +70,40 @@ const NONCE_USED_MARKER = [1, 0, 0, 0]
 # const (not parity-parsed, mirroring NONCE_USED_MARKER); functionally pinned by the composition
 # happy tests (the emitted recipient note's script root == P2idNote::script_root()).
 const P2ID_SCRIPT_ROOT = [7131697192369665042, 13614976149584716721, 15020972229364874097, 1084006998777425639]
+
+# `check_policy` locals: the parked note-supplied interface, the verify scratch, and the staged
+# DepositIntent preimage. Every sub-region that a word instruction touches is word-aligned; the
+# gaps between them are the alignment padding.
+const ASSET_VALUE_LOC = 0
+const RECIPIENT_LOC = 4
+const TAG_LOC = 8
+const NOTE_TYPE_LOC = 9
+const ATTACHMENT_COMMITMENTS_LOC = 12
+
+# The hash-verified attestation content and its three sub-regions, in attachment order.
+const ATTESTATION_LOC = 28
+const ATTESTATION_FEE_AMOUNT_LOC = ATTESTATION_LOC
+const ATTESTATION_PUBKEY_LOC = ATTESTATION_LOC + 8
+const ATTESTATION_SIGNATURE_LOC = ATTESTATION_LOC + 24
+
+const NONCE_KEY_LOC = 72
+
+# The P2ID note-storage region, in the [target_id_suffix, target_id_prefix] order p2id.masm reads.
+const P2ID_TARGET_ID_SUFFIX_LOC = 76
+const P2ID_TARGET_ID_PREFIX_LOC = 77
+
+const HOOK_DATA_LEN_LOC = 80
+const LEN_FELTS_LOC = 81
+const ATTESTED_AMOUNT_LOC = 82
+
+# The staged DepositIntent preimage, plus the fields `check_policy` itself reads out of it (the
+# parser reads the remaining fields off the base pointer). The region is sized to the protocol's
+# per-attachment ceiling, so every intent that can reach the policy fits.
+const INTENT_LOC = 84
+const INTENT_AMOUNT_LOC = INTENT_LOC + AMOUNT_FELT_OFF
+const INTENT_REMOTE_RECIPIENT_LOC = INTENT_LOC + REMOTE_RECIPIENT_FELT_OFF
+const INTENT_NONCE_LOC = INTENT_LOC + NONCE_FELT_OFF
+const INTENT_HOOK_DATA_LEN_LOC = INTENT_LOC + HOOK_DATA_LEN_FELT_OFF
 
 # ERRORS
 # =================================================================================================
@@ -127,13 +152,13 @@ const ERR_XRESERVE_MINT_TAG_MISMATCH = "mint note tag does not match the atteste
 # The ASSERT-MATCH binding: the attested output note is always public.
 const ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC = "mint note output note type must be public"
 
-# Recipient AccountId extraction (extract_recipient_account_id): the field-range checks of the right-aligned
-# AccountId-in-bytes32 layout (the packaging is OPEN, pending Circle confirmation); the suffix-shape and
-# unknown-version rejects surface the protocol account_id::validate ERR_ACCOUNT_ID_* constants directly.
+# Recipient AccountId extraction (extract_recipient_account_id): the pad check of the right-aligned
+# AccountId-in-bytes32 layout (the packaging is OPEN, pending Circle confirmation); the limb and
+# canonical-range rejects surface the standards eth::build_felt error constants, and the
+# suffix-shape and zero-version rejects surface the protocol account_id::validate_structure
+# ERR_ACCOUNT_ID_* constants directly.
 # Parity-pinned against support::SHELL_ERR_TABLE + SHELL_ERRORS_DECLARED (constant_parity.rs).
 const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient address pad is not zero"
-const ERR_XRESERVE_RECIPIENT_BAD_LIMB = "deposit intent remote recipient limb is not a valid u32"
-const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient value does not fit in the field"
 
 # PUBLIC INTERFACE
 # =================================================================================================
@@ -148,18 +173,6 @@ const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient val
 #! then requires every value the note supplies to EQUAL the value derived from the attestation:
 #! the policy never overrides a note, it only refuses one that disagrees. On accept it marks the
 #! nonce used — its only state write — and returns its inputs unchanged.
-#!
-#! Locals (@locals(84), word-aligned sub-regions):
-#! - loc[0..4] the parked note ASSET_VALUE, loc[4..8] the parked note RECIPIENT, loc[8] the parked
-#!   tag, loc[9] the parked note_type.
-#! - loc[12..28] the attachment commitments list (at most 4 words; the attestation's commitment is
-#!   selected by its found index, the word at 12 + attachment_idx * WORD_NUM_ELEMENTS).
-#! - loc[28..72] the hash-verified attestation content ([feeAmount(8), pubkey(16), signature(17),
-#!   pad(3)]).
-#! - loc[72..76] the nonce KEY: the usedNonces storage-map key, which is the attested output-note
-#!   serial.
-#! - loc[76..80] the P2ID note-storage region ([target_id_suffix, target_id_prefix]).
-#! - loc[80] hook_data_len, loc[81] len_felts, loc[82] the reduced attested amount.
 #!
 #! Inputs:  [ASSET_VALUE, tag, note_type, RECIPIENT]
 #! Outputs: [ASSET_VALUE, tag, note_type, RECIPIENT]
@@ -184,24 +197,38 @@ const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient val
 #! - any consumed verify stage rejects (structural/domain/identifier, amount/fee with
 #!   feeAmount != 0, nonce replay, attester allowlist/signature).
 #! - the recipient extraction rejects the attested remoteRecipient (pad/limb/canonicity or
-#!   account_id::validate).
+#!   account_id::validate_structure).
 #! - a note-supplied value diverges from its attested derivation (the ASSERT-MATCH errors).
 #!
+#! Locals:
+#! - 0..4: ASSET_VALUE
+#! - 4..8: RECIPIENT
+#! - 8: note tag
+#! - 9: note_type
+#! - 12..28: attachment commitments list (4 words)
+#! - 28..72: attestation content
+#!     - 28..36: feeAmount(8)
+#!     - 36..52: pubkey(16)
+#!     - 52..72: signature(17) + pad(3)
+#! - 72..76: nonce KEY (usedNonces storage-map key == the attested output-note serial)
+#! - 76..80: P2ID note-storage region [target_id_suffix, target_id_prefix]
+#! - 80: hook_data_len
+#! - 81: len_felts
+#! - 82: reduced attested amount
+#! - 84..1108: the hash-verified DepositIntent preimage (MAX_ATTACHMENT_WORDS * 4 felts)
+#!
 #! Invocation: dynexec
-@locals(84)
+@locals(1108)
 @account_procedure
 pub proc check_policy
-    # park the policy interface: every note-supplied
-    # value is compared against its attested
-    # derivation below, then restored verbatim for the
-    # return
-    loc_storew_le.0 dropw
+    # cache the parameters for returning
+    loc_storew_le.ASSET_VALUE_LOC dropw
     # => [tag, note_type, RECIPIENT]
 
-    loc_store.8 loc_store.9
+    loc_store.TAG_LOC loc_store.NOTE_TYPE_LOC
     # => [RECIPIENT]
 
-    loc_storew_le.4 dropw
+    loc_storew_le.RECIPIENT_LOC dropw
     # => []
 
     # ---- TRANSPORT: locate the three attachments; keep the found indices for the binding reads ----
@@ -227,15 +254,18 @@ pub proc check_policy
 
     # exactly three attachments total; with all three schemes found this is one of each (a
     # doubled scheme fails another scheme's find), so no per-scheme count is needed
-    locaddr.12 exec.active_note::write_attachment_commitments_to_memory
+    locaddr.ATTACHMENT_COMMITMENTS_LOC exec.active_note::write_attachment_commitments_to_memory
     # => [num_attachments, attestation_idx, intent_idx]
 
     eq.3 assert.err=ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT
     # => [attestation_idx, intent_idx]
 
-    # ---- the intent attachment: hash-verify into the account frame, bind the committed length ----
+    # ---- the intent attachment: hash-verify into the policy's own locals, bind the committed length ----
 
-    swap push.INTENT_PTR exec.active_note::write_attachment_to_memory
+    # the intent region holds MAX_ATTACHMENT_WORDS words, the ceiling the kernel enforces when a
+    # note is created, so it fits every intent that can reach here. a preimage claiming more words
+    # than that fails the commitment check inside write_attachment_to_memory and aborts the tx.
+    swap locaddr.INTENT_LOC exec.active_note::write_attachment_to_memory
     # => [num_words, attestation_idx]
 
     # transport-shape floor: at least the 60-felt header (content is the parser's job)
@@ -243,13 +273,13 @@ pub proc check_policy
     u32gte.DEPOSIT_INTENT_HEADER_WORDS assert.err=ERR_XRESERVE_MINT_NOTE_INTENT_TOO_SHORT
     # => [num_words, attestation_idx]
 
-    # derive the exact felt length from the embedded hookDataLen (offset 59, u32-LE packed;
-    # hash-committed content, so u32-guard before the byte-swap)
-    push.INTENT_PTR add.HOOK_DATA_LEN_FELT_OFF mem_load
+    # derive the exact felt length from the embedded hookDataLen (u32-LE packed; hash-committed
+    # content, so u32-guard before the byte-swap)
+    locaddr.INTENT_HOOK_DATA_LEN_LOC mem_load
     # => [hook_len_packed, num_words, attestation_idx]
 
     u32assert.err=ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB
-    exec.swap_u32_bytes
+    exec.utils::swap_u32_bytes
     # => [hook_data_len, num_words, attestation_idx]
 
     # len_felts = 60 + ceil(hook_data_len / 4), the parser's own length relation
@@ -262,11 +292,11 @@ pub proc check_policy
     push.DEPOSIT_INTENT_HEADER_FELTS add
     # => [len_felts, hook_data_len, num_words, attestation_idx]
 
-    loc_store.81 drop
+    loc_store.LEN_FELTS_LOC drop
     # => [num_words, attestation_idx]
 
     # bind the hash-committed word count to the embedded claim: num_words == ceil(len_felts / 4)
-    loc_load.81 dup u32mod.4 neq.0
+    loc_load.LEN_FELTS_LOC dup u32mod.4 neq.0
     # => [has_rem, len_felts, num_words, attestation_idx]
 
     dup.1 u32div.4 add
@@ -280,61 +310,47 @@ pub proc check_policy
 
     # ---- the attestation attachment: hash-verify by its index + 11-word check ----
 
-    dup locaddr.28 exec.active_note::write_attachment_to_memory
-    # => [num_words, attestation_idx]
+    # every stage below reads the fee, the pubkey and the signature out of THIS region. nothing is
+    # re-read from the advice provider, so what the note committed to is exactly what gets verified.
+    locaddr.ATTESTATION_LOC exec.active_note::write_attachment_to_memory
+    # => [num_words]
 
     eq.XUSDC_MINT_ATTESTATION_NUM_WORDS assert.err=ERR_XRESERVE_MINT_NOTE_ATTESTATION_NUM_WORDS
-    # => [attestation_idx]
-
-    # ---- surface the attestation map entry to the advice stack (element-0-first pop order):
-    #      load its commitment BY INDEX (commitments_base 12 + attestation_idx * WORD_NUM_ELEMENTS),
-    #      the pinned note::write_indexed_attachment_to_memory address math ----
-
-    mul.WORD_NUM_ELEMENTS locaddr.12 add
-    # => [commitment_ptr]
-
-    padw movup.4 mem_loadw_le
-    # => [ATTESTATION_COMMITMENT]
-
-    adv.push_mapval
-    # => [ATTESTATION_COMMITMENT]
-    # advice stack => [feeAmount(8), pubkey(16), signature(17), pad(3)]
-
-    dropw
     # => []
 
     # ---- VERIFY (verify once); any trap aborts the whole tx -> no writes ----
 
     # deposit-intent preconditions: structural parse + domain/identifier compares; the returned
     # hook_data_len (the same embedded field the derivation above read) feeds the keccak extent
-    loc_load.81 push.INTENT_PTR
+    loc_load.LEN_FELTS_LOC locaddr.INTENT_LOC
     # => [intent_ptr, len_felts]
 
     exec.deposit_intent_parser::assert_deposit_intent
-    loc_store.80
+    loc_store.HOOK_DATA_LEN_LOC
     # => []
 
-    # amount/maxFee/feeAmount reduction + bounds (feeAmount comes from the re-surfaced advice;
-    # the MVP requires feeAmount == 0)
-    push.DEPOSIT_SCALE_EXP push.INTENT_PTR
-    # => [intent_ptr, scale_exp]
+    # amount/maxFee/feeAmount reduction + bounds (the MVP requires feeAmount == 0)
+    push.DEPOSIT_SCALE_EXP locaddr.ATTESTATION_FEE_AMOUNT_LOC locaddr.INTENT_LOC
+    # => [intent_ptr, fee_amount_ptr, scale_exp]
 
     exec.deposit_intent_parser::assert_mint_amounts
     # => []
 
     # nonce replay guard (assert-zero only; the SET is the accept-path write
     # below)
-    push.INTENT_PTR
+    locaddr.INTENT_LOC
     exec.deposit_intent_parser::assert_nonce_unused
     # => []
 
-    # attestation verify: keccak the 240 + hook_data_len payload, allowlist gate + ECDSA
-    # verify (pubkey + signature from the re-surfaced advice)
-    loc_load.80 push.DEPOSIT_INTENT_HEADER_FELTS mul.4 add
-    # => [len_bytes]
+    # attestation verify: keccak the 240 + hook_data_len payload, allowlist gate + ECDSA verify
+    locaddr.ATTESTATION_SIGNATURE_LOC locaddr.ATTESTATION_PUBKEY_LOC
+    # => [pubkey_ptr, signature_ptr]
 
-    push.INTENT_PTR
-    # => [intent_ptr, len_bytes]
+    loc_load.HOOK_DATA_LEN_LOC push.DEPOSIT_INTENT_HEADER_FELTS mul.4 add
+    # => [intent_num_bytes, pubkey_ptr, signature_ptr]
+
+    locaddr.INTENT_LOC
+    # => [intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 
     exec.attestation_verify::verify_attestation
     # => []
@@ -342,30 +358,29 @@ pub proc check_policy
     # ---- ASSERT-MATCH: derive the attested values and compare the parked note-supplied ones ----
 
     # the KEY = bytes32_to_key(nonce) — the usedNonces key AND the attested output-note serial
-    push.INTENT_PTR add.NONCE_FELT_OFF
-    exec.load_field_words
+    locaddr.INTENT_NONCE_LOC
+    exec.utils::mem_load_double_word_unaligned swapw
     exec.encoding::bytes32_to_key
-    loc_storew_le.72 dropw
+    loc_storew_le.NONCE_KEY_LOC dropw
     # => []
 
-    # the attested recipient AccountId from remoteRecipient (loc 76 = suffix, loc 77 = prefix —
-    # the P2ID note-storage order)
-    push.INTENT_PTR
+    # the attested recipient AccountId from remoteRecipient
+    locaddr.INTENT_REMOTE_RECIPIENT_LOC
     exec.extract_recipient_account_id
     # => [recipient_id_suffix, recipient_id_prefix]
 
-    loc_store.76 loc_store.77
+    loc_store.P2ID_TARGET_ID_SUFFIX_LOC loc_store.P2ID_TARGET_ID_PREFIX_LOC
     # => []
 
     # the attested amount = reduce(amount field, scale 0)
-    push.DEPOSIT_SCALE_EXP push.INTENT_PTR add.AMOUNT_FELT_OFF
+    push.DEPOSIT_SCALE_EXP locaddr.INTENT_AMOUNT_LOC
     # => [amount_base, scale_exp]
 
-    exec.load_field_words
+    exec.utils::mem_load_double_word_unaligned swapw
     # => [U_UPPER, U_LOWER, scale_exp]
 
     exec.encoding::uint256_to_asset_amount
-    loc_store.82
+    loc_store.ATTESTED_AMOUNT_LOC
     # => []
 
     # the RECIPIENT binding: the expected recipe = hash(hash(hash(KEY, EMPTY), P2ID_ROOT), storage)
@@ -374,26 +389,26 @@ pub proc check_policy
     push.P2ID_SCRIPT_ROOT
     # => [P2ID_SCRIPT_ROOT]
 
-    padw loc_loadw_le.72
+    padw loc_loadw_le.NONCE_KEY_LOC
     # => [KEY, P2ID_SCRIPT_ROOT]
 
-    push.P2ID_NUM_STORAGE_ITEMS locaddr.76
+    push.P2ID_NUM_STORAGE_ITEMS locaddr.P2ID_TARGET_ID_SUFFIX_LOC
     # => [storage_ptr, num_storage_items, KEY, P2ID_SCRIPT_ROOT]
 
     exec.note::compute_and_store_recipient
     # => [EXPECTED_RECIPIENT]
 
-    padw loc_loadw_le.4
+    padw loc_loadw_le.RECIPIENT_LOC
     # => [NOTE_RECIPIENT, EXPECTED_RECIPIENT]
 
     assert_eqw.err=ERR_XRESERVE_MINT_RECIPIENT_MISMATCH
     # => []
 
     # the ASSET_VALUE binding: element 0 equals the attested amount, elements 1..3 are zero
-    padw loc_loadw_le.0
+    padw loc_loadw_le.ASSET_VALUE_LOC
     # => [NOTE_ASSET_VALUE]
 
-    loc_load.82 assert_eq.err=ERR_XRESERVE_MINT_AMOUNT_MISMATCH
+    loc_load.ATTESTED_AMOUNT_LOC assert_eq.err=ERR_XRESERVE_MINT_AMOUNT_MISMATCH
     # => [value_1, value_2, value_3]
 
     assertz.err=ERR_XRESERVE_MINT_AMOUNT_MISMATCH
@@ -402,15 +417,15 @@ pub proc check_policy
     # => []
 
     # tag binding: the attested recipient's account target (the standards tag helper)
-    loc_load.77
+    loc_load.P2ID_TARGET_ID_PREFIX_LOC
     exec.note_tag::create_account_target
     # => [expected_tag]
 
-    loc_load.8 assert_eq.err=ERR_XRESERVE_MINT_TAG_MISMATCH
+    loc_load.TAG_LOC assert_eq.err=ERR_XRESERVE_MINT_TAG_MISMATCH
     # => []
 
     # note_type binding: the attested output note is always public
-    loc_load.9 eq.NOTE_TYPE_PUBLIC assert.err=ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC
+    loc_load.NOTE_TYPE_LOC eq.NOTE_TYPE_PUBLIC assert.err=ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC
     # => []
 
     # ---- ACCEPT: mark the nonce used (the policy's ONLY state write) ----
@@ -418,7 +433,7 @@ pub proc check_policy
     push.NONCE_USED_MARKER
     # => [MARKER]
 
-    padw loc_loadw_le.72
+    padw loc_loadw_le.NONCE_KEY_LOC
     # => [KEY, MARKER]
 
     push.USED_NONCES_SLOT[0..2]
@@ -429,22 +444,21 @@ pub proc check_policy
 
     # ---- return the (asserted-matching) policy interface unchanged ----
 
-    padw loc_loadw_le.4
+    padw loc_loadw_le.RECIPIENT_LOC
     # => [RECIPIENT]
 
-    loc_load.9 loc_load.8
+    loc_load.NOTE_TYPE_LOC loc_load.TAG_LOC
     # => [tag, note_type, RECIPIENT]
 
-    padw loc_loadw_le.0
+    padw loc_loadw_le.ASSET_VALUE_LOC
     # => [ASSET_VALUE, tag, note_type, RECIPIENT]
 
-    # depth discipline: the verify pipeline's deep scratch phases bottom out at the operand
-    # stack's 16-element floor (pulling disposable zeros; the keccak stage truncates to the floor
-    # outright), so the restored interface would ride ABOVE a full floor of junk instead of the
-    # dispatcher's original padding. Truncate to exactly 16 — the top 10 interface elements plus
-    # 6 pad — so the policy returns at the SAME depth it was dispatched at (the region below the
-    # interface is the caller's disposable call-window padding; `mint_and_send` keeps its live
-    # state in locals).
+    # depth discipline: the verify pipeline's deep scratch phases pull disposable zeros from below
+    # the operand stack's 16-element floor, so the restored interface would ride ABOVE a full floor
+    # of junk instead of the dispatcher's original padding. Truncate to exactly 16 — the top 10
+    # interface elements plus 6 pad — so the policy returns at the SAME depth it was dispatched at
+    # (the region below the interface is the caller's disposable call-window padding;
+    # `mint_and_send` keeps its live state in locals).
     exec.sys::truncate_stack
     # => [ASSET_VALUE, tag, note_type, RECIPIENT]
 end
@@ -452,172 +466,62 @@ end
 # HELPER PROCEDURES
 # =================================================================================================
 
-#! Extracts and canonically validates the P2ID recipient's Miden AccountId felts from the staged
-#! DepositIntent's `remoteRecipient` bytes32 (the right-aligned AccountId-in-bytes32 layout),
-#! feeding the ASSERT-MATCH recipe derivation.
+#! Extracts and validates the P2ID recipient's account ID felts from the deposit intent's
+#! `remoteRecipient`.
 #!
-#! Reads the eight u32-LE-packed `remoteRecipient` limbs at `intent_ptr + REMOTE_RECIPIENT_FELT_OFF`,
-#! asserts the 16-byte leading pad is zero, rebuilds the big-endian `prefix`/`suffix` u64s — each
-#! through a no-reduction `build_felt` (byte-swap the two limbs, compose `hi*2^32 + lo`, then prove
-#! via a `u32split` round-trip that the value did NOT reduce mod the field, mirroring Rust
-#! `Felt::try_from`) — then delegates canonical AccountId validation to
-#! `miden::protocol::account_id::validate` (suffix low byte == 0, suffix MSB == 0, version == 1).
+#! Reads the eight u32-LE-packed `remoteRecipient` limbs, asserts the 16-byte leading pad is zero,
+#! and rebuilds the account ID prefix and suffix through the standards no-reduction
+#! `eth::build_felt`.
 #!
-#! Inputs:  [intent_ptr]
+#! Inputs:  [remote_recipient_ptr]
 #! Outputs: [recipient_id_suffix, recipient_id_prefix]
 #!
 #! Where:
-#! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
+#! - remote_recipient_ptr is the memory address of the remoteRecipient field's first packed limb.
 #! - recipient_id_{suffix,prefix} are the two validated Miden AccountId felts, in the stack order
 #!   the P2ID storage region consumes ([suffix, prefix]; Rust `account_id_to_felts` is
 #!   [prefix, suffix]).
 #!
 #! Panics if:
 #! - the remoteRecipient 16-byte leading pad is non-zero (ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE).
-#! - a staged remoteRecipient limb is not a valid u32 (ERR_XRESERVE_RECIPIENT_BAD_LIMB).
-#! - a rebuilt prefix/suffix u64 reduced mod the field (ERR_XRESERVE_RECIPIENT_NONCANONICAL).
-#! - account_id::validate rejects the felts (its ERR_ACCOUNT_ID_* suffix/version constants).
+#! - a staged remoteRecipient limb is not a valid u32 (the standards eth::build_felt u32 guard).
+#! - a rebuilt prefix/suffix u64 reduced mod the field (the standards merge overflow guard).
+#! - account_id::validate_structure rejects the felts (its ERR_ACCOUNT_ID_* constants).
 #!
 #! Invocation: exec
 proc extract_recipient_account_id
-    push.REMOTE_RECIPIENT_FELT_OFF add
-    # => [base]
-
-    # ---- leading pad: the 16-byte pad (limbs base+0..3) of the AccountId-in-bytes32 layout must be exactly zero ----
+    # ---- leading pad: the 16-byte pad (limbs ptr+0..3) of the AccountId-in-bytes32 layout must be exactly zero ----
     dup mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
     dup add.1 mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
     dup add.2 mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
     dup add.3 mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
-    # => [base]
+    # => [remote_recipient_ptr]
 
-    # ---- prefix = build_felt(lo = limb base+5, hi = limb base+4)  (bytes[16..24], big-endian) ----
+    # ---- prefix = build_felt(lo = limb ptr+5, hi = limb ptr+4)  (bytes[16..24], big-endian) ----
     dup add.4 mem_load
-    # => [prefix_hi, base]
+    # => [prefix_hi, remote_recipient_ptr]
 
     dup.1 add.5 mem_load
-    # => [prefix_lo, prefix_hi, base]
+    # => [prefix_lo, prefix_hi, remote_recipient_ptr]
 
-    exec.build_felt
-    # => [prefix, base]
+    exec.eth::build_felt
+    # => [prefix, remote_recipient_ptr]
 
-    # ---- suffix = build_felt(lo = limb base+7, hi = limb base+6)  (bytes[24..32], big-endian) ----
+    # ---- suffix = build_felt(lo = limb ptr+7, hi = limb ptr+6)  (bytes[24..32], big-endian) ----
     dup.1 add.6 mem_load
-    # => [suffix_hi, prefix, base]
+    # => [suffix_hi, prefix, remote_recipient_ptr]
 
     movup.2 add.7 mem_load
     # => [suffix_lo, suffix_hi, prefix]
 
-    exec.build_felt
+    exec.eth::build_felt
     # => [suffix, prefix]
 
-    # ---- canonical AccountId validation (suffix low byte == 0, suffix MSB == 0, version == 1) ----
-    # delegate to the protocol's own account-id validator over a copy of the felts;
-    # the originals are the returned [suffix, prefix] the recipe derivation consumes
+    # ---- structural AccountId validation ----
     dup.1 dup.1
     # => [suffix, prefix, suffix, prefix]
 
-    exec.account_id::validate
+    # we don't need to assert the ID version, so structural validation is sufficient
+    exec.account_id::validate_structure
     # => [suffix, prefix]
-end
-
-#! Builds a Miden field element from the two u32-LE-packed limbs of a big-endian u64, PROVING the
-#! value did not reduce mod the field (the canonical-range check mirroring Rust `Felt::try_from`;
-#! adapted from the agglayer library's `build_felt` with a local byte-swap so the faucet
-#! library depends on no private export of the encoding library).
-#!
-#! Inputs:  [lo, hi]
-#! Outputs: [felt]
-#!
-#! Where:
-#! - lo, hi are the low / high u32-LE-packed limbs of a big-endian u64 (4 wire bytes each).
-#! - felt is the reconstructed field element (hi_be * 2^32 + lo_be).
-#!
-#! Panics if:
-#! - a limb is not a valid u32 (ERR_XRESERVE_RECIPIENT_BAD_LIMB).
-#! - the composed u64 reduced mod the field, i.e. it is >= the field modulus
-#!   (ERR_XRESERVE_RECIPIENT_NONCANONICAL).
-#!
-#! Invocation: exec
-proc build_felt
-    u32assert2.err=ERR_XRESERVE_RECIPIENT_BAD_LIMB
-    # => [lo, hi]
-
-    exec.swap_u32_bytes swap exec.swap_u32_bytes swap
-    # => [lo_be, hi_be]
-
-    dup.1 dup.1
-    # => [lo_be, hi_be, lo_be, hi_be]
-
-    swap mul.0x0100000000 add
-    # => [felt, lo_be, hi_be]
-
-    dup u32split
-    # => [felt_lo, felt_hi, felt, lo_be, hi_be]
-
-    movup.3 assert_eq.err=ERR_XRESERVE_RECIPIENT_NONCANONICAL
-    # => [felt_hi, felt, hi_be]
-
-    movup.2 assert_eq.err=ERR_XRESERVE_RECIPIENT_NONCANONICAL
-    # => [felt]
-end
-
-#! Reverses the byte order of a u32 (little-endian <-> big-endian). A generic u32 primitive (not
-#! encoding-library domain logic); reimplemented locally because the encoding library's
-#! `swap_u32_bytes` is a private `proc` (not exported). The caller asserts u32-ness before
-#! invoking (`build_felt`'s `u32assert2`; the hookDataLen derivation's `u32assert`).
-#!
-#! Inputs:  [value]
-#! Outputs: [swapped]
-#!
-#! Where:
-#! - value is a u32; swapped is value with its four bytes reversed.
-#!
-#! Invocation: exec
-proc swap_u32_bytes
-    dup u32and.0xff u32shl.24
-    # => [part0, value]
-
-    dup.1 u32shr.8 u32and.0xff u32shl.16 u32or
-    # => [part01, value]
-
-    dup.1 u32shr.16 u32and.0xff u32shl.8 u32or
-    # => [part012, value]
-
-    dup.1 u32shr.24 u32or
-    # => [swapped, value]
-
-    swap drop
-    # => [swapped]
-end
-
-#! Loads the 8 u32-LE-packed limbs of a 32-byte field at `base` into the [W_UPPER, W_LOWER] word
-#! orientation the encoding reducers consume. Replicates the (private) deposit_intent_parser staging
-#! (reduce_uint256_field / assert_nonce_unused nonce load): single-felt loads because the header
-#! felt offsets are not word-aligned; the reduction / key-hash itself is the
-#! encoding library's `pub proc`, consumed by reference at the call site.
-#!
-#! Inputs:  [base]
-#! Outputs: [W_UPPER, W_LOWER]
-#!
-#! Where:
-#! - base is the memory address of the field's first packed limb.
-#! - W_LOWER is the field's positionally lower four packed limbs (wire bytes 0..16), W_UPPER
-#!   is the positionally upper four (wire bytes 16..32), each element-0 on top.
-#!
-#! Invocation: exec
-proc load_field_words
-    dup add.3 mem_load
-    dup.1 add.2 mem_load
-    dup.2 add.1 mem_load
-    dup.3 mem_load
-    # => [W_LOWER, base]
-
-    dup.4 add.7 mem_load
-    dup.5 add.6 mem_load
-    dup.6 add.5 mem_load
-    dup.7 add.4 mem_load
-    # => [W_UPPER, W_LOWER, base]
-
-    movup.8 drop
-    # => [W_UPPER, W_LOWER]
 end

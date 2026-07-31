@@ -176,10 +176,10 @@ fn the_role_action_note_stays_out_of_the_allowlist() {
     );
 }
 
-/// The callable surface is the ratified seventy-five procedures, and the swap is visible in it: the
+/// The callable surface is the ratified seventy-four procedures, and the swap is visible in it: the
 /// four standard manager procedures are present.
 #[tokio::test]
-async fn the_callable_surface_is_the_ratified_seventy_five_procedures() -> Result<()> {
+async fn the_callable_surface_is_the_ratified_seventy_four_procedures() -> Result<()> {
     let pf = admin_faucet(|_| Vec::new())?;
     let account = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
     let roots = callable_roots(&account);

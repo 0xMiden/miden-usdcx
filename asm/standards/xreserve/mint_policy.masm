@@ -275,15 +275,12 @@ pub proc check_policy
 
     # derive the exact felt length from the embedded hookDataLen (u32-LE packed; hash-committed
     # content, so u32-guard before the byte-swap)
-    locaddr.INTENT_HOOK_DATA_LEN_LOC mem_load
-    # => [hook_len_packed, num_words, attestation_idx]
-
-    u32assert.err=ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB
+    locaddr.INTENT_HOOK_DATA_LEN_LOC mem_load u32assert.err=ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB
     exec.utils::swap_u32_bytes
     # => [hook_data_len_bytes, num_words, attestation_idx]
 
-    # the felt length the byte length implies, through the library's own length relation
-    exec.encoding::deposit_intent_len_felts loc_store.LEN_FELTS_LOC
+    # len_felts = the 60-felt header plus the packed hookData felts, the parser's own relation
+    exec.encoding::num_bytes_to_num_felts push.DEPOSIT_INTENT_HEADER_FELTS add loc_store.LEN_FELTS_LOC
     # => [num_words, attestation_idx]
 
     # bind the hash-committed word count to the embedded claim: num_words == ceil(len_felts / 4)
@@ -312,8 +309,7 @@ pub proc check_policy
     # ---- VERIFY (verify once); any trap aborts the whole tx -> no writes ----
 
     # deposit-intent preconditions: structural parse + domain/identifier compares; the returned
-    # hook_data_len_bytes (the same embedded field the derivation above read) feeds the keccak
-    # extent
+    # byte length (the same embedded field the derivation above read) feeds the keccak extent
     loc_load.LEN_FELTS_LOC locaddr.INTENT_LOC
     # => [intent_ptr, len_felts]
 
@@ -334,8 +330,7 @@ pub proc check_policy
     exec.deposit_intent_parser::assert_nonce_unused
     # => []
 
-    # attestation verify: keccak the 240 + hook_data_len_bytes payload, allowlist gate + ECDSA
-    # verify
+    # attestation verify: keccak the 240 + hookData bytes, allowlist gate + ECDSA verify
     locaddr.ATTESTATION_SIGNATURE_LOC locaddr.ATTESTATION_PUBKEY_LOC
     # => [pubkey_ptr, signature_ptr]
 

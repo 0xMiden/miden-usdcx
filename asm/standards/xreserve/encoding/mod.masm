@@ -172,8 +172,7 @@ end
 #!   packed limbs (intent bytes 60..76).
 #! - REMOTE_TOKEN_LOWER is the word holding the remoteToken field's positionally lower four
 #!   packed limbs (intent bytes 44..60).
-#! - hook_data_len_bytes is the semantic hookDataLen value — the trailing hookData's length in
-#!   bytes — as a u32 felt.
+#! - hook_data_len_bytes is the semantic hookDataLen value in bytes, as a u32 felt.
 #!
 #! Panics if:
 #! - the packed magic does not match the DepositIntent magic.
@@ -216,13 +215,12 @@ pub proc parse_deposit_intent
     # => [intent_ptr, len_felts]
 
     # hookDataLen (semantic u32, a byte count): byte-swap the packed felt at offset 59
-    dup push.HOOK_DATA_LEN_FELT_OFF add mem_load
-    u32assert.err=ERR_FELT_OUT_OF_FIELD
+    dup push.HOOK_DATA_LEN_FELT_OFF add mem_load u32assert.err=ERR_FELT_OUT_OF_FIELD
     exec.utils::swap_u32_bytes
     # => [hook_data_len_bytes, intent_ptr, len_felts]
 
-    # length relation: the staged felt length must be the one the embedded byte length implies
-    dup exec.deposit_intent_len_felts
+    # length relation: the 60-felt header plus the packed hookData felts
+    dup exec.num_bytes_to_num_felts push.DEPOSIT_INTENT_HEADER_FELTS add
     # => [expected_len_felts, hook_data_len_bytes, intent_ptr, len_felts]
 
     movup.3 assert_eq.err=ERR_DI_LENGTH
@@ -250,35 +248,14 @@ pub proc parse_deposit_intent
     # => [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
 end
 
-#! Computes the packed felt length of a DepositIntent preimage from its hookData byte length.
+#! Returns the number of felts holding num_bytes wire bytes, packed four bytes to a felt.
 #!
-#! The preimage is the fixed-size header followed by the trailing hookData packed four bytes to a
-#! felt, so the length is the header felt count plus the hookData byte count rounded up to a whole
-#! felt. Both the library parser and the faucet's mint policy derive the staged length this way.
-#!
-#! Inputs:  [hook_data_len_bytes]
-#! Outputs: [len_felts]
-#!
-#! Where:
-#! - hook_data_len_bytes is the semantic hookDataLen value — the trailing hookData's length in
-#!   bytes — as a u32 felt.
-#! - len_felts is the length of the whole packed preimage in felts.
-#!
-#! Panics if:
-#! - hook_data_len_bytes is not a valid u32 (callers guard the packed limb before the byte swap
-#!   that produces it).
+#! Inputs:  [num_bytes]
+#! Outputs: [num_felts]
 #!
 #! Invocation: exec
-pub proc deposit_intent_len_felts
-    # ceil(hook_data_len_bytes / 4): the floor quotient plus one felt for a partial tail
-    dup u32mod.4 neq.0
-    # => [has_partial_felt, hook_data_len_bytes]
-
-    swap u32div.4 add
-    # => [hook_data_felts]
-
-    push.DEPOSIT_INTENT_HEADER_FELTS add
-    # => [len_felts]
+pub proc num_bytes_to_num_felts
+    u32divmod.4 neq.0 add
 end
 
 # HELPER PROCEDURES

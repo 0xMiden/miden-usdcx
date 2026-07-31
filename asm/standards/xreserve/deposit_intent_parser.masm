@@ -80,8 +80,7 @@ const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
 #! Where:
 #! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
 #! - len_felts is the staged preimage length in felts.
-#! - hook_data_len_bytes is the semantic hookDataLen value — the trailing hookData's length in
-#!   bytes — as a u32 felt.
+#! - hook_data_len_bytes is the semantic hookDataLen value in bytes, as a u32 felt.
 #!
 #! Panics if:
 #! - parse_deposit_intent fails to verify.

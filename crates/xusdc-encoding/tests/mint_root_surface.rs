@@ -57,7 +57,7 @@ const FROZEN_CALLABLE_ROOTS: [&str; 14] = [
 /// that can be `call`ed on the deployed faucet.
 const FROZEN_EXEC_ONLY_EXPORTS: [&str; 2] = [
     "::xreserve::attestation_verify::pubkey_commitment",
-    "::xreserve::encoding::deposit_intent_len_felts",
+    "::xreserve::encoding::num_bytes_to_num_felts",
 ];
 
 /// The attestation mint policy's library path — the anchor by which the xreserve component is

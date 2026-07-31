@@ -1,12 +1,12 @@
-# xreserve_block_account_note — the shipped, root-pinned block_account admin note script.
+# xreserve_block_account_note — the root-pinned block_account admin note script.
 #
-# The production admin surface for `block_account` under the network account: a fixed-root note whose
-# parameter (the account id to block) is CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the
-# network executor controls). It stages the note storage into memory, marshals the account id onto the
-# stack in the proc's Inputs order, and `call`s the BLK_MANAGER-gated `blocklist_admin::block_account`
+# The admin surface for `block_account` under the network account: a fixed-root note whose parameter
+# (the account id to block) is CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the network
+# executor controls). It stages the note storage into memory, marshals the account id onto the stack
+# in the proc's Inputs order, and `call`s the BLK_MANAGER-gated `blocklist_admin::block_account`
 # (the sender gate lives in the proc; the note sender is kernel-forced, so a non-BLK_MANAGER creator
 # traps there). A scheme-2 NetworkAccountTarget routing attachment addresses the note at the faucet
-# (routing-only, added by the Rust factory).
+# (routing-only).
 #
 # Note storage layout (2 felts): [account_id_suffix, account_id_prefix] — the account to block.
 
@@ -68,8 +68,8 @@ pub proc main
     # => [pad(16)]
 
     # marshal deepest-first so account_id_suffix (item 0) lands on top, matching the proc's Inputs
-    # order [account_id_suffix, account_id_prefix, pad(14)]. Felt-by-felt mem_load (the deposit-intent
-    # parser convention) avoids any word-load element-order ambiguity.
+    # order [account_id_suffix, account_id_prefix, pad(14)]. felt-by-felt mem_load avoids any
+    # word-load element-order ambiguity.
     push.PARAM_PTR add.1 mem_load
     # => [account_id_prefix, pad(16)]
 

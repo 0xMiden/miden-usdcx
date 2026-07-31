@@ -1,14 +1,13 @@
-# xreserve_grant_role_note — the shipped, root-pinned grant_role admin note script.
+# xreserve_grant_role_note — the root-pinned grant_role admin note script.
 #
-# The production admin surface for the STOCK `grant_role` under the network account: a fixed-root note
-# whose parameters are CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the network executor
+# The admin surface for the STOCK `grant_role` under the network account: a fixed-root note whose
+# parameters are CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the network executor
 # controls). It stages the note storage into memory, marshals the creator's params onto the stack in
 # the proc's Inputs order, and `call`s the role-admin-gated stock
 # `miden::standards::access::rbac::grant_role` (the sender gate lives in the proc; the note sender is
-# kernel-forced, so an unauthorized creator traps there). The `call` resolves to the
-# SAME proc root the faucet exposes via the RBAC component re-exports
-# (`account_components/access/rbac.masm`). A scheme-2 NetworkAccountTarget routing attachment addresses
-# the note at the faucet (routing-only, added by the Rust factory).
+# kernel-forced, so an unauthorized creator traps there). The `call` resolves to the SAME proc root
+# the faucet exposes via the RBAC component re-exports. A scheme-2 NetworkAccountTarget routing
+# attachment addresses the note at the faucet (routing-only).
 #
 # Note storage layout (3 felts): [role_symbol, account_suffix, account_prefix].
 

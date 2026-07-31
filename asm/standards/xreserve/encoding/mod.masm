@@ -38,8 +38,8 @@ const ERR_DI_LENGTH = "deposit intent length relation violated"
 #!
 #! Computes the Poseidon2 hash over the 8 u32-LE-packed limbs of the bytes32. The output is the
 #! raw storage-map key — the Word the kernel's storage map is keyed by — matching the Rust
-#! mirror `bytes32_to_storage_map_key`. Hash-to-Word is deliberate: the fallible native bytes32
-#! lossless conversion is never used on this path.
+#! mirror `bytes32_to_storage_map_key`. Hashing rather than reinterpreting is what makes this
+#! total: an external bytes32 whose limbs exceed the field modulus still has a key.
 #!
 #! Inputs:  [B_UPPER, B_LOWER]
 #! Outputs: [KEY]
@@ -54,9 +54,8 @@ const ERR_DI_LENGTH = "deposit intent length relation violated"
 #! Invocation: exec
 @account_procedure
 pub proc bytes32_to_key
-    # the hash absorbs B_LOWER (wire bytes 0..16) as the first rate word, so
-    # the output is Poseidon2(B_LOWER || B_UPPER), matching the Rust mirror's
-    # hash over the 8 packed limbs
+    # the hash absorbs B_LOWER (wire bytes 0..16) as the first rate word, so the
+    # output is Poseidon2(B_LOWER || B_UPPER) over the 8 packed limbs
     swapw
     # => [B_LOWER, B_UPPER]
 
@@ -91,7 +90,7 @@ end
 #! Invocation: exec
 @account_procedure
 pub proc uint256_to_asset_amount
-    # guard every externally-supplied limb before any u32 op (u32-assert-before-u32-ops)
+    # guard every externally-supplied limb before any u32 op
     u32assertw.err=ERR_FELT_OUT_OF_FIELD
     swapw
     u32assertw.err=ERR_FELT_OUT_OF_FIELD
@@ -190,7 +189,7 @@ pub proc parse_deposit_intent
     # => [intent_ptr, len_felts]
 
     # truncation guard: the full 60-felt header must be staged before any field offset can
-    # be trusted; both length violations share the frozen ERR_DI_LENGTH constant
+    # be trusted; both length violations share the ERR_DI_LENGTH constant
     dup.1 u32gte.DEPOSIT_INTENT_HEADER_FELTS
     assert.err=ERR_DI_LENGTH
     # => [intent_ptr, len_felts]

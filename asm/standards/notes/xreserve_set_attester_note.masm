@@ -1,12 +1,11 @@
-# xreserve_set_attester_note — the shipped, root-pinned set_attester admin note script.
+# xreserve_set_attester_note — the root-pinned set_attester admin note script.
 #
-# The production admin surface for `set_attester` under the network account: a fixed-root note whose
-# parameters are CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the network executor
-# controls). It stages the note storage into memory, marshals the creator's params onto the stack in
-# the proc's Inputs order, and `call`s the OWNER-gated `attester_admin::set_attester` (the sender gate
-# lives in the proc; the note sender is kernel-forced, so a non-owner creator traps there). A scheme-2
-# NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only, added by the
-# Rust factory).
+# The admin surface for `set_attester` under the network account: a fixed-root note whose parameters
+# are CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the network executor controls). It
+# stages the note storage into memory, marshals the creator's params onto the stack in the proc's
+# Inputs order, and `call`s the OWNER-gated `attester_admin::set_attester` (the sender gate lives in
+# the proc; the note sender is kernel-forced, so a non-owner creator traps there). A scheme-2
+# NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only).
 #
 # Note storage layout (5 felts): [pk_commitment(4), enabled]. `enabled` is 1 (allowlist) or 0 (remove).
 
@@ -69,8 +68,8 @@ pub proc main
     # => [pad(16)]
 
     # marshal params deepest-first so pk_commitment element 0 lands on top, matching the
-    # proc's Inputs order [PK_COMMITMENT, enabled, pad(11)]. Felt-by-felt mem_load (the
-    # deposit-intent parser convention) avoids any word-load element-order ambiguity.
+    # proc's Inputs order [PK_COMMITMENT, enabled, pad(11)]. felt-by-felt mem_load avoids any
+    # word-load element-order ambiguity.
     push.PARAM_PTR add.4 mem_load
     # => [enabled, pad(16)]
 

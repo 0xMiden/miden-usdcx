@@ -5,9 +5,8 @@
 # library tree: the faucet component modules, the shared-encoding library (`encoding`,
 # with its `layout` constants submodule declared in `encoding/mod.masm`), the attestation
 # mint policy (the ACTIVE mint policy the stock `mint_and_send` dispatches), and the
-# minimized identifier-init surface. It carries no procedures of its own — the callable
-# surface lives in the submodules and is frozen by the root-surface tripwire
-# (mint_root_surface.rs).
+# identifier-init surface. It carries no procedures of its own — the callable surface lives in
+# the submodules.
 
 pub mod attestation_verify
 pub mod attester_admin

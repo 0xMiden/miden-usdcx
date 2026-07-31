@@ -3,11 +3,10 @@
 # The DOM_PAUSER-gated custom pause/unpause: under Circle's Domain-Pauser-only model
 # this is the ONLY pause surface on the faucet. The stock PausableManager gates pause on
 # the account-wide Authority (= owner), which both fails Circle's distinct-pauser-role
-# model AND gives the owner a direct pause path — so it is NOT installed; these procs
-# compose rbac::assert_sender_has_role(DOM_PAUSER) with the UNAUTHENTICATED
-# pausable::pause/unpause primitives ("compose with access control in a wrapper"). The
-# is_paused slot is installed by the base Pausable component, so these write a real
-# slot.
+# model and gives the owner a direct pause path, so these procs compose
+# rbac::assert_sender_has_role(DOM_PAUSER) with the UNAUTHENTICATED pausable::pause/unpause
+# primitives instead. The is_paused slot is installed by the base Pausable component, so
+# these write a real slot.
 
 use miden::standards::access::rbac
 use miden::standards::access::pausable
@@ -15,10 +14,9 @@ use miden::standards::access::pausable
 # CONSTANTS
 # =================================================================================================
 
-# The DOM_PAUSER RoleSymbol encoded as a Felt (RoleSymbol::as_element, base-27 over A-Z/_). HARD-CODED
-# here (never caller-supplied) so no role a caller merely holds can be substituted for DOM_PAUSER.
-# Parity-asserted against the Rust RoleSymbol::new(DOM_PAUSER_ROLE).as_element() in constant_parity.rs
-# (cross-language constant parity); a drift silently breaks the role gate. DOM_PAUSER is seeded role id 2.
+# The DOM_PAUSER RoleSymbol encoded as a Felt (RoleSymbol::as_element, base-27 over A-Z/_).
+# HARD-CODED here rather than caller-supplied, so no role a caller merely holds can be substituted
+# for DOM_PAUSER. The Rust side declares the same value; a drift silently breaks the role gate.
 const DOM_PAUSER_ROLE = 728098706988649
 
 # PUBLIC INTERFACE
@@ -51,7 +49,7 @@ end
 
 #! Unpauses the faucet: the same DOM_PAUSER role gate, then clears the is_paused flag via the
 #! unauthenticated pausable primitive. The Circle multi-party co-approval for unpause is an
-#! operational procedure, NOT an on-chain check — deliberately not enforced here.
+#! operational procedure, not an on-chain check.
 #!
 #! Inputs:  [pad(16)]
 #! Outputs: [pad(16)]

@@ -4,9 +4,9 @@
 # xReserveAttesters allowlist — the write side of the allowlist that attestation_verify.masm
 # reads at mint time. Reuses the standard access primitives:
 # authority::assert_authorized (the account-wide Authority::OwnerControlled gate ->
-# ownable2step::assert_sender_is_owner on the note sender) + native_account::set_map_item (the write).
-# No custom owner/RBAC logic. The setter is intentionally NOT pause-gated (matching Circle's
-# onlyOwner model).
+# ownable2step::assert_sender_is_owner on the note sender) + native_account::set_map_item (the
+# write). The setter is NOT pause-gated, matching Circle's onlyOwner model, so the owner can
+# disable a compromised attester while the faucet is paused.
 
 use miden::protocol::native_account
 use miden::standards::access::authority
@@ -15,8 +15,8 @@ use miden::standards::access::authority
 # =================================================================================================
 
 # The xReserveAttesters allowlist StorageMap slot — byte-identical to the slot const in
-# attestation_verify.masm (the mint-time read path keys the SAME slot). The name string is the single
-# source of truth for the slot id; the Rust XRESERVE_ATTESTERS_SLOT_LABEL binds the identical string.
+# attestation_verify.masm, since the mint-time read path keys the SAME slot. The name string is the
+# single source of truth for the slot id; the Rust side binds the identical string.
 pub const XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xreserve_attesters")
 
 # The non-empty enabled marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1
@@ -47,10 +47,7 @@ const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
 @locals(4)
 @account_procedure
 pub proc set_attester
-    # gate: the Ownable2Step owner (sender-based) ONLY —
-    # intentionally NOT pause-gated (Circle's onlyOwner model), so
-    # the owner may disable a compromised attester while the faucet
-    # is paused. reads account storage and is
+    # gate on the Ownable2Step owner (sender-based) only. reads account storage and is
     # operand-stack-neutral.
     exec.authority::assert_authorized
     # => [PK_COMMITMENT, enabled, pad(11)]
@@ -61,7 +58,7 @@ pub proc set_attester
     # => [enabled, pad(11)]
 
     # the written VALUE = enabled ? ATTESTER_ENABLED_MARKER : EMPTY_WORD. `if.true` requires
-    # `enabled` to be boolean, so a non-bool can never write a non-canonical marker.
+    # `enabled` to be boolean.
     if.true
         push.ATTESTER_ENABLED_MARKER
     else

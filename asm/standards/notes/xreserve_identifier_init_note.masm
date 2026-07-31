@@ -1,20 +1,19 @@
-# xreserve_identifier_init_note — the shipped, root-pinned identifier_init admin note script.
+# xreserve_identifier_init_note — the root-pinned identifier_init admin note script.
 #
-# The production admin surface for the minimized `init_identifier` under the network account
-# (the identifier is the ONE domain-config field the account-id fixpoint forces past build
-# time; `domain`/`source_domain`/`xreserve_contract` are build-seeded and have no runtime
-# writer). A fixed-root note whose parameter is CREATOR-COMMITTED in note storage (never
-# NOTE_ARGS, which the network executor controls). It stages the note storage into memory,
-# marshals the creator's identifier Word onto the stack in the proc's Inputs order, and `call`s
-# the OWNER-gated + init-once `identifier_init::init_identifier` (the sender gate lives in the
-# proc; the note sender is kernel-forced, so a non-owner creator traps there). A scheme-2
-# NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only, added
-# by the Rust factory).
+# The admin surface for `init_identifier` under the network account. The identifier is the ONE
+# domain-config field the account-id fixpoint forces past build time;
+# `domain`/`source_domain`/`xreserve_contract` are build-seeded and have no runtime writer. A
+# fixed-root note whose parameter is CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the
+# network executor controls). It stages the note storage into memory, marshals the creator's
+# identifier Word onto the stack in the proc's Inputs order, and `call`s the OWNER-gated + init-once
+# `identifier_init::init_identifier` (the sender gate lives in the proc; the note sender is
+# kernel-forced, so a non-owner creator traps there). A scheme-2 NetworkAccountTarget routing
+# attachment addresses the note at the faucet (routing-only).
 #
-# Note storage layout (4 felts): [IDENTIFIER] — the pre-hashed bytes32_to_key Word (the mint
-# path's identifier compare reads the stored form). The proc additionally
-# derives `bytes32_to_key(account_id_to_bytes32(get_id()))` ON-CHAIN and rejects a committed
-# identifier that does not equal it, so this note can only ever seed its target's own identity.
+# Note storage layout (4 felts): [IDENTIFIER] — the pre-hashed bytes32_to_key Word, the form the
+# mint path's identifier compare reads. The proc additionally derives
+# `bytes32_to_key(account_id_to_bytes32(get_id()))` ON-CHAIN and rejects a committed identifier
+# that does not equal it, so this note can only ever seed its target's own identity.
 
 use miden::protocol::active_note
 use xreserve::identifier_init

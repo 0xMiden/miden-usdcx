@@ -1,12 +1,11 @@
-# xreserve_transfer_ownership_note — the shipped, root-pinned transfer_ownership admin note.
+# xreserve_transfer_ownership_note — the root-pinned transfer_ownership admin note.
 #
-# The production admin surface for the STOCK `transfer_ownership` under the network account: a
-# fixed-root note whose parameters are CREATOR-COMMITTED in note storage (never NOTE_ARGS). It stages
-# the note storage into memory, marshals the creator's params onto the stack in the proc's Inputs
-# order, and `call`s the current-OWNER-gated stock
-# `miden::standards::access::ownable2step::transfer_ownership` (the note sender is kernel-forced, so a
-# non-owner creator traps there). This is step 1 of the 2-step transfer: it sets the pending
-# (nominated) owner; the current owner is UNCHANGED until the nominee accepts. The
+# The admin surface for the STOCK `transfer_ownership` under the network account: a fixed-root note
+# whose parameters are CREATOR-COMMITTED in note storage (never NOTE_ARGS). It stages the note storage
+# into memory, marshals the creator's params onto the stack in the proc's Inputs order, and `call`s the
+# current-OWNER-gated stock `miden::standards::access::ownable2step::transfer_ownership` (the note
+# sender is kernel-forced, so a non-owner creator traps there). This is step 1 of the 2-step transfer:
+# it sets the pending (nominated) owner; the current owner is UNCHANGED until the nominee accepts. The
 # `call` resolves to the SAME proc root the faucet exposes via the Ownable2Step component re-exports.
 # A scheme-2 NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only).
 #

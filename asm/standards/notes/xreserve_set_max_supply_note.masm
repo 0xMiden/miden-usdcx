@@ -1,13 +1,13 @@
-# xreserve_set_max_supply_note — the shipped, root-pinned set_max_supply admin note script.
+# xreserve_set_max_supply_note — the root-pinned set_max_supply admin note script.
 #
-# The production admin surface for the STOCK `set_max_supply` under the network account: a fixed-root
-# note whose parameter is CREATOR-COMMITTED in note storage (never NOTE_ARGS). It stages the note
-# storage into memory, marshals the creator's param onto the stack in the proc's Inputs order, and
-# `call`s the owner-gated (via the account Authority) stock
+# The admin surface for the STOCK `set_max_supply` under the network account: a fixed-root note whose
+# parameter is CREATOR-COMMITTED in note storage (never NOTE_ARGS). It stages the note storage into
+# memory, marshals the creator's param onto the stack in the proc's Inputs order, and `call`s the
+# owner-gated (via the account Authority) stock
 # `miden::standards::faucets::fungible::set_max_supply` (the gate lives in the proc; the note sender is
-# kernel-forced, so a non-owner creator traps there). The `call` resolves to the SAME
-# proc root the faucet exposes via the FungibleFaucet component re-exports. A scheme-2
-# NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only).
+# kernel-forced, so a non-owner creator traps there). The `call` resolves to the SAME proc root the
+# faucet exposes via the FungibleFaucet component re-exports. A scheme-2 NetworkAccountTarget routing
+# attachment addresses the note at the faucet (routing-only).
 #
 # Note storage layout (1 felt): [new_max_supply].
 

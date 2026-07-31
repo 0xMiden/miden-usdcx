@@ -1,13 +1,13 @@
-# xreserve_accept_ownership_note — the shipped, root-pinned accept_ownership admin note.
+# xreserve_accept_ownership_note — the root-pinned accept_ownership admin note.
 #
-# The production admin surface for the STOCK `accept_ownership` under the network account: a fixed-root,
+# The admin surface for the STOCK `accept_ownership` under the network account: a fixed-root,
 # PARAM-LESS note whose sole job is to cross into the faucet account context and `call` the
 # NOMINATED-owner-gated stock `miden::standards::access::ownable2step::accept_ownership` (step 2 of the
 # 2-step transfer). The gate reads the note sender (kernel-forced): only the pending/nominated owner
 # succeeds — the current owner and any third party trap. The executor-controlled NOTE_ARGS are dropped
-# and never read. The `call` resolves to the SAME proc root the faucet exposes via the
-# Ownable2Step component re-exports. A scheme-2 NetworkAccountTarget routing attachment addresses the
-# note at the faucet (routing-only, added by the Rust factory).
+# unread. The `call` resolves to the SAME proc root the faucet exposes via the Ownable2Step component
+# re-exports. A scheme-2 NetworkAccountTarget routing attachment addresses the note at the faucet
+# (routing-only).
 
 use miden::standards::access::ownable2step
 

@@ -18,9 +18,8 @@
 # Front-run hardening: the proc derives the faucet's OWN identifier key ON-CHAIN —
 # `bytes32_to_key(account_id_to_bytes32(native_account::get_id))`, the own-id fixpoint — and
 # requires the note-committed IDENTIFIER to EQUAL it, so a front-run init on a fresh keyless faucet
-# cannot seed a foreign identity (the deploy-time griefing vector). This ENFORCES the provisional
-# identifier-is-own-id position that the off-chain flows already assume; whether the
-# account-id-as-bytes32 packaging applies to the identifier stays OPEN, pending Circle confirmation.
+# cannot seed a foreign identity. Whether the account-id-as-bytes32 packaging applies to the
+# identifier at all stays OPEN, pending Circle confirmation.
 
 use miden::protocol::active_account
 use miden::protocol::native_account
@@ -78,9 +77,8 @@ const ERR_XRESERVE_IDENTIFIER_MISMATCH = "identifier does not match the faucet's
 #! Invocation: call
 @account_procedure
 pub proc init_identifier
-    # gate: owner-only. Identifier binding is
-    # deploy-time identity, off the operational
-    # roles.
+    # gate: owner-only, identifier binding being deploy-time identity rather than an operational
+    # role.
     exec.ownable2step::assert_sender_is_owner
     # => [IDENTIFIER, pad(12)]
 
@@ -130,9 +128,7 @@ end
 #! Derives the faucet's OWN identifier storage key on-chain: the Poseidon2
 #! bytes32->key hash of the account-id-in-bytes32 packaging (the right-aligned
 #! layout — 16 zero pad bytes, then the id prefix as a u64 big-endian, then
-#! the id suffix as a u64 big-endian) of `native_account::get_id` — the own-id
-#! fixpoint, byte-identical to the Rust `identifier_for(faucet_id)`
-#! derivation.
+#! the id suffix as a u64 big-endian) of `native_account::get_id`.
 #!
 #! Each id felt splits into its big-endian u32 halves (`u32split`), and each half byte-swaps into
 #! the u32-LE-packed limb form `bytes32_to_key` consumes (limbs 4..8 = the id bytes 16..32; limbs

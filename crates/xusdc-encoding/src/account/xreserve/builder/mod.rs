@@ -5,22 +5,25 @@
 //! the policy dispatch), so every supply increase passes the attestation gate — the
 //! faucet's core mint-security invariant.
 //!
-//! Scope (cumulative): it composes the `FungibleFaucet`, the assembled `xreserve` library
-//! component (carrying the attestation mint policy, the minimized `identifier_init`, the
-//! `set_attester` admin proc, the DOM_PAUSER custom `pause`/`unpause`, and the BLK_MANAGER
-//! `blocklist_admin`), a `TokenPolicyManager` whose ACTIVE mint policy is the attestation
-//! policy and whose ACTIVE burn policy is the STOCK [`MinBurnAmount`] (floor-seeded `>= 1`,
-//! so zero-amount burns stay rejected by construction), and the **owner-gating admin
-//! foundation** (`Ownable2Step` with a seeded `RoleBasedAccessControl` under
-//! `Authority::OwnerControlled`). The RBAC is SEEDED with the two Circle Domain role members
-//! (`DOM_PAUSER` / `DOM_MANAGER`), with `DOM_PAUSER` administration DELEGATED to `DOM_MANAGER`,
-//! plus the stock `ADMIN` role seeded on the OWNER's account, and the external
-//! `BLK_MANAGER` transfer-blocklist administrator. NOTE the ratified role-graph freeze:
-//! the runtime `set_role_admin` NOTE is deliberately absent from the
-//! note-script allowlist, so the delegation graph deploys FROZEN at this build seed. Pause is
-//! Domain-Pauser-ONLY: the stock `PausableManager` is NOT installed —
-//! the only pause surface is the DOM_PAUSER-gated `xreserve::pause_admin` procs; the
-//! `is_paused` slot the halt-gates read is installed by the base `Pausable` component.
+//! It composes four things:
+//!
+//! * the stock `FungibleFaucet`;
+//! * the assembled `xreserve` library component, carrying the attestation mint policy, the
+//!   `identifier_init` proc, the `set_attester` admin proc, the DOM_PAUSER custom `pause`/`unpause`,
+//!   and the BLK_MANAGER `blocklist_admin`;
+//! * a `TokenPolicyManager` whose ACTIVE mint policy is the attestation policy and whose ACTIVE burn
+//!   policy is the STOCK [`MinBurnAmount`], floor-seeded `>= 1` so zero-amount burns stay rejected
+//!   by construction;
+//! * the owner-gating admin foundation: `Ownable2Step` with a seeded `RoleBasedAccessControl` under
+//!   `Authority::OwnerControlled`.
+//!
+//! The RBAC seed holds the two Circle Domain role members (`DOM_PAUSER` / `DOM_MANAGER`) with
+//! `DOM_PAUSER` administration DELEGATED to `DOM_MANAGER`, the stock `ADMIN` role on the OWNER's
+//! account, and the external `BLK_MANAGER` transfer-blocklist administrator. The runtime
+//! `set_role_admin` note is absent from the note-script allowlist, so the delegation graph deploys
+//! FROZEN at this build seed. Pause is Domain-Pauser-ONLY: the only pause surface is the
+//! DOM_PAUSER-gated `xreserve::pause_admin` procs, and the `is_paused` slot the halt-gates read
+//! comes from the base `Pausable` component.
 //!
 //! Domain config is BUILD-SEEDED except the identifier: `domain`, `source_domain`, and
 //! `xreserve_contract` are required builder inputs written into the declared slots at
@@ -318,23 +321,27 @@ impl XReserveStablecoinBuilder {
     /// tripwire asserts the built account's allowlist equals it exactly. The scheme-2
     /// `NetworkAccountTarget` bind on the notes is routing-only, not a consume gate.
     ///
-    /// COMPLETE — the frozen 14-root set: rows 1-2 (the supply-side STOCK `MintNote` + STOCK
-    /// `BurnNote`), row 3 (`set_attester`, the reference op), rows 4-12 (the remaining
-    /// owner/role/pause admin note scripts, with row 12 the minimized identifier-only
-    /// `identifier_init` note), and rows 13-14 (the transfer-blocklist admin notes `block_account` /
-    /// `unblock_account`, BLK_MANAGER-gated). The set is IMMUTABLE IN EFFECT post-deploy: the
-    /// stock component does export allowlist mutators at this protocol version, but they are
-    /// present-but-UNREACHABLE — no allowlisted note references them and the tx-script allowlist
-    /// admits only the expiration bounder, which is a temporary and ratified state. The config
-    /// note that could drive those mutators is deliberately NOT allowlisted.
-    /// Two capabilities are deliberately OMITTED
-    /// (both human-ratified, grounded in Circle's xReserve EVM admin model): `renounce_role`
-    /// (Circle has no role self-renounce) and the
-    /// runtime `set_role_admin` note (the delegation graph is BUILD-SEEDED by
-    /// `seeded_dom_roles_rbac` and deploys frozen; rotation is `grant_role`/`revoke_role`, with
-    /// the owner as the rotation backstop — see `DECISION-SETROLEADMIN-NOTE-REMOVAL.md`). The stock
-    /// `rbac::set_role_admin` account procedure stays composed but is present-but-UNREACHABLE.
-    /// The materialized 14 pinned roots require explicit HUMAN ratification before deploy.
+    /// The frozen set holds fourteen roots:
+    ///
+    /// * rows 1-2 — the supply-side STOCK `MintNote` and STOCK `BurnNote`.
+    /// * row 3 — `set_attester`.
+    /// * rows 4-12 — the remaining owner/role/pause admin note scripts, row 12 being
+    ///   `identifier_init`.
+    /// * rows 13-14 — the BLK_MANAGER-gated `block_account` / `unblock_account`.
+    ///
+    /// The set is IMMUTABLE IN EFFECT post-deploy: the stock component does export allowlist mutators
+    /// at this protocol version, but they are unreachable — no allowlisted note references them, and
+    /// the tx-script allowlist admits only the expiration bounder.
+    ///
+    /// Two capabilities are omitted, both grounded in Circle's xReserve EVM admin model:
+    ///
+    /// * `renounce_role` — Circle has no role self-renounce.
+    /// * the runtime `set_role_admin` note — the delegation graph is BUILD-SEEDED by
+    ///   `seeded_dom_roles_rbac` and deploys frozen; rotation is `grant_role`/`revoke_role`, with the
+    ///   owner as the backstop. The stock `rbac::set_role_admin` account procedure stays composed but
+    ///   is unreachable.
+    ///
+    /// The materialized roots require explicit HUMAN ratification before deploy.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
         // The "row N" labels below are the notes' STABLE allowlist identities (1-14, shared with
         // `note::xreserve_admin` and the tests), NOT positions in this initializer: the entries

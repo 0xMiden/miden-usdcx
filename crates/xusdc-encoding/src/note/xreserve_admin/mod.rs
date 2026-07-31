@@ -1,20 +1,31 @@
 //! Faucet-owned ADMIN note factories: the root-pinned, storage-param admin notes the faucet
 //! network account consumes to drive its owner/role-gated admin procs.
 //!
-//! Each admin note (a) carries its parameters CREATOR-COMMITTED in `NoteStorage.items`; (b) uses a
-//! FIXED, root-pinned note script (independent of the param values, so it can be allowlisted); and
-//! (c) carries a scheme-2
-//! `NetworkAccountTarget` routing bind to the faucet (routing-only). The note script marshals the
-//! params onto the stack and `call`s the unchanged sender-gated admin proc — the note sender is
-//! kernel-forced, so the proc's owner/role gate is sound under permissionless network execution.
+//! Each admin note:
 //!
-//! The notes are `set_attester`, `set_min_burn_size` (targeting the STOCK `set_min_burn_amount`
-//! with a note-side zero-floor guard), `set_max_supply`, `pause`, `unpause`, `grant_role`,
-//! `revoke_role`, `transfer_ownership`, `accept_ownership`, `identifier_init` (the
-//! identifier-only init; the other domain-config fields are build-seeded), and the
-//! BLK_MANAGER-gated `block_account` / `unblock_account`. There is deliberately no
-//! `set_role_admin` note: the role-admin delegation graph is build-seeded and deploys frozen — see
-//! the SET_ROLE_ADMIN section below.
+//! * carries its parameters CREATOR-COMMITTED in `NoteStorage.items`;
+//! * uses a FIXED, root-pinned note script, independent of the param values, so it can be
+//!   allowlisted;
+//! * carries a scheme-2 `NetworkAccountTarget` routing bind to the faucet (routing-only).
+//!
+//! The note script marshals the params onto the stack and `call`s the unchanged sender-gated admin
+//! proc — the note sender is kernel-forced, so the proc's owner/role gate is sound under
+//! permissionless network execution.
+//!
+//! The notes are:
+//!
+//! * `set_attester`
+//! * `set_min_burn_size` — targets the STOCK `set_min_burn_amount`, with a note-side zero-floor
+//!   guard
+//! * `set_max_supply`
+//! * `pause` / `unpause`
+//! * `grant_role` / `revoke_role`
+//! * `transfer_ownership` / `accept_ownership`
+//! * `identifier_init` — the identifier-only init; the other domain-config fields are build-seeded
+//! * `block_account` / `unblock_account` — BLK_MANAGER-gated
+//!
+//! There is deliberately no `set_role_admin` note: the role-admin delegation graph is build-seeded
+//! and deploys frozen — see the SET_ROLE_ADMIN section below.
 
 use std::sync::Arc;
 

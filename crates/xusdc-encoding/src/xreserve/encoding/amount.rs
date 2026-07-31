@@ -22,8 +22,9 @@ use miden_protocol::asset::AssetAmount;
 
 use super::error::EncodingError;
 
-/// The scale exponent bound (scale_exp = EVM decimals − Miden decimals, 0..=18; mirrored in
-/// MASM as `SCALE_EXP_MAX` — `pub` so the constant-parity suite pins the cross-language pair).
+/// The scale exponent bound (scale_exp = EVM decimals − Miden decimals, 0..=18). The MASM
+/// side enforces the same bound inside the linked standards `pow10` ("maximum scaling factor
+/// is 18"), pinned functionally by the scale-overflow vector rather than a constant-parity row.
 pub const MAX_SCALE_EXP: u32 = 18;
 
 /// The single reduction core shared by all three public routines (≤ 1 implementation of

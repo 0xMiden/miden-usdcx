@@ -25,6 +25,7 @@
 use miden::protocol::active_account
 use miden::protocol::native_account
 use miden::standards::access::ownable2step
+use miden::standards::utils
 use xreserve::encoding
 use {IDENTIFIER_CONFIG_SLOT} from xreserve::deposit_intent_parser
 
@@ -152,20 +153,20 @@ proc compute_own_identifier_key
     u32split
     # => [suffix_lo, suffix_hi, id_prefix]
 
-    exec.swap_u32_bytes
+    exec.utils::swap_u32_bytes
     # => [limb7, suffix_hi, id_prefix]
 
-    swap exec.swap_u32_bytes
+    swap exec.utils::swap_u32_bytes
     # => [limb6, limb7, id_prefix]
 
     # prefix -> limbs 4/5 (bytes 16..24)
     movup.2 u32split
     # => [prefix_lo, prefix_hi, limb6, limb7]
 
-    exec.swap_u32_bytes
+    exec.utils::swap_u32_bytes
     # => [limb5, prefix_hi, limb6, limb7]
 
-    swap exec.swap_u32_bytes
+    swap exec.utils::swap_u32_bytes
     # => [B_UPPER] = [limb4, limb5, limb6, limb7]
 
     # push the 16-byte zero pad as B_LOWER (limbs 0..4); bytes32_to_key consumes [B_UPPER, B_LOWER]
@@ -174,33 +175,4 @@ proc compute_own_identifier_key
 
     exec.encoding::bytes32_to_key
     # => [KEY]
-end
-
-#! Reverses the byte order of a u32 (little-endian <-> big-endian). A generic u32 primitive (not
-#! encoding-library domain logic); reimplemented locally because the encoding library's
-#! `swap_u32_bytes` is a private `proc` (not exported) — the same local-copy approach as
-#! `mint_policy.masm`. The caller feeds `u32split` halves, which are valid u32s by construction.
-#!
-#! Inputs:  [value]
-#! Outputs: [swapped]
-#!
-#! Where:
-#! - value is a u32; swapped is value with its four bytes reversed.
-#!
-#! Invocation: exec
-proc swap_u32_bytes
-    dup u32and.0xff u32shl.24
-    # => [part0, value]
-
-    dup.1 u32shr.8 u32and.0xff u32shl.16 u32or
-    # => [part01, value]
-
-    dup.1 u32shr.16 u32and.0xff u32shl.8 u32or
-    # => [part012, value]
-
-    dup.1 u32shr.24 u32or
-    # => [swapped, value]
-
-    swap drop
-    # => [swapped]
 end

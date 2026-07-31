@@ -19,7 +19,7 @@
 
 use anyhow::{Context, Result};
 use xusdc_validation::assertions_de::{
-    assert_all, assert_d, assert_e, ERR_XRESERVE_BAD_PK_COMMITMENT, ERR_XRESERVE_FEE_NONZERO,
+    assert_all, assert_d, assert_e, ERR_XRESERVE_DISALLOWED_PUB_KEY, ERR_XRESERVE_FEE_NONZERO,
     ERR_XRESERVE_NONCE_REPLAY, ERR_XRESERVE_SIG_INVALID,
 };
 use xusdc_validation::observations_de::{
@@ -128,7 +128,7 @@ fn green_e() -> Vec<MintNegative> {
         ),
         neg(
             "non-allowlisted-attester",
-            ERR_XRESERVE_BAD_PK_COMMITMENT,
+            ERR_XRESERVE_DISALLOWED_PUB_KEY,
             rej("... deposit attester pubkey commitment is not allowlisted ..."),
             false,
         ),
@@ -382,7 +382,7 @@ fn e_requires_the_bad_attester_negative() {
         .collect();
     let e = assert_e(&ev).expect_err("E must require the non-allowlisted-attester negative");
     assert!(
-        format!("{e:#}").contains(ERR_XRESERVE_BAD_PK_COMMITMENT)
+        format!("{e:#}").contains(ERR_XRESERVE_DISALLOWED_PUB_KEY)
             || format!("{e:#}").contains("allowlist"),
         "got: {e:#}"
     );

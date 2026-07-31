@@ -14,15 +14,17 @@ use miden::standards::access::authority
 # CONSTANTS
 # =================================================================================================
 
-# The xReserveAttesters allowlist StorageMap slot — byte-identical to the slot const in
-# attestation_verify.masm (the mint-time read path keys the SAME slot). The name string is the single
-# source of truth for the slot id; the Rust XRESERVE_ATTESTERS_SLOT_LABEL binds the identical string.
+# The xReserveAttesters allowlist StorageMap slot — the single MASM-side declaration; the mint-time
+# read path in attestation_verify.masm imports it. The name string is the single source of truth for
+# the slot id; the Rust XRESERVE_ATTESTERS_SLOT_LABEL binds the identical string.
 pub const XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xreserve_attesters")
 
-# The non-empty enabled marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1
-# (the read path asserts only that the stored value is non-empty). enabled = 0 writes
-# EMPTY_WORD, which the read path treats as "not allowlisted".
+# The marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1 — the mint-time read
+# path admits an attester only on an exact match against it.
 pub const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
+
+# The marker written when enabled = 0. Equal to EMPTY_WORD, so a disabled row is indistinguishable
+# from an absent one on the read path.
 const ATTESTER_DISABLED_MARKER = [0, 0, 0, 0]
 
 # PUBLIC INTERFACE
@@ -42,10 +44,9 @@ const ATTESTER_DISABLED_MARKER = [0, 0, 0, 0]
 #! Panics if:
 #! - the note sender is not the registered owner (authority::assert_authorized ->
 #!   ownable2step::assert_sender_is_owner, ERR_SENDER_NOT_OWNER).
-#! - `enabled` is not a boolean (the `if.true` binary constraint).
+#! - `enabled` is not a boolean (the `cdropw` binary constraint).
 #!
 #! Invocation: call
-@locals(4)
 @account_procedure
 pub proc set_attester
     # gate: the Ownable2Step owner (sender-based) ONLY — intentionally NOT pause-gated (Circle's
@@ -56,8 +57,7 @@ pub proc set_attester
     push.ATTESTER_DISABLED_MARKER push.ATTESTER_ENABLED_MARKER movup.12
     # => [enabled, ENABLED_MARKER, DISABLED_MARKER, PK_COMMITMENT, pad(11)]
 
-    # If enabled ENABLED_MARKER remains.
-    # If !enabled DISABLED_MARKER remains.
+    # enabled = 1 keeps ENABLED_MARKER, enabled = 0 keeps DISABLED_MARKER.
     cdropw
     # => [MARKER, PK_COMMITMENT, pad(11)]
 

@@ -87,8 +87,8 @@ pub proc verify_attestation
     exec.active_account::get_map_item
     # => [MARKER, pubkey_ptr, signature_ptr]
 
-    # the stored value must be a non-empty enabled marker -- an absent / EMPTY_WORD value
-    # means the candidate pubkey's commitment is not allowlisted.
+    # the stored value must be exactly the enabled marker -- a disabled row and an absent row both
+    # read as EMPTY_WORD, meaning the candidate pubkey's commitment is not allowlisted.
     push.ATTESTER_ENABLED_MARKER exec.word::eq
     # => [is_allowed, pubkey_ptr, signature_ptr]
 

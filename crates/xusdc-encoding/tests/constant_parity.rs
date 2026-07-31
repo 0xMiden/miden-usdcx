@@ -73,7 +73,7 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     // D5c R-MINT-12
     "ERR_XRESERVE_NONCE_REPLAY",
     // D5d R-MINT-13 / R-MINT-14 (attestation_verify.masm)
-    "ERR_XRESERVE_BAD_PK_COMMITMENT",
+    "ERR_XRESERVE_DISALLOWED_PUB_KEY",
     "ERR_XRESERVE_SIG_INVALID",
     // F2 fee guard (deposit_intent_parser.masm; DEC-2 keep-zero)
     "ERR_XRESERVE_FEE_NONZERO",
@@ -113,16 +113,15 @@ const EXPECTED_SHELL_WORD_CONSTS: &[(&str, &str)] = &[
     ("USED_NONCES_SLOT", support::USED_NONCES_SLOT_LABEL),
 ];
 
-/// Expected `word("…")` slot-name constant of the D5d attestation-verify shell module.
-const EXPECTED_ATTESTATION_WORD_CONSTS: &[(&str, &str)] = &[(
-    "XRESERVE_ATTESTERS_SLOT",
-    support::XRESERVE_ATTESTERS_SLOT_LABEL,
-)];
+/// Expected `word("…")` slot-name constants of the D5d attestation-verify shell module: NONE. It
+/// imports `XRESERVE_ATTESTERS_SLOT` (and the enabled marker) from the setter module rather than
+/// redeclaring them, so the two sides cannot drift by construction.
+const EXPECTED_ATTESTATION_WORD_CONSTS: &[(&str, &str)] = &[];
 
-/// Expected `word("…")` slot-name constant of the set_attester admin module. Its
-/// `XRESERVE_ATTESTERS_SLOT` MUST be byte-identical to attestation_verify's (the setter writes the
-/// SAME slot the D5d read path keys); the shared label is the single Rust source. (The
-/// `ATTESTER_ENABLED_MARKER` Word array literal is not parity-parsed, like `NONCE_USED_MARKER`.)
+/// Expected `word("…")` slot-name constant of the set_attester admin module — the single MASM-side
+/// declaration of the slot the D5d read path also keys; the shared label is the single Rust source.
+/// (The `ATTESTER_ENABLED_MARKER` / `ATTESTER_DISABLED_MARKER` Word array literals are not
+/// parity-parsed, like `NONCE_USED_MARKER`.)
 const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] = &[(
     "XRESERVE_ATTESTERS_SLOT",
     support::XRESERVE_ATTESTERS_SLOT_LABEL,

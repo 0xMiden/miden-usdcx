@@ -29,7 +29,7 @@ static SET_ATTESTER_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// proc it calls trips the parity assertion (`script_root() == pinned_script_root()`) and forces a
 /// conscious re-pin.
 pub const XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x442a0c19b0bbce60630f7c52758b296a4ba74e6b7b02b6603f94481c161bc962";
+    "0x2763aaac15ebd657c7d0e5f952aacb953faedd224b4e465871bac4baa67df42f";
 
 /// The owner-gated `set_attester` admin note. Storage layout: `[pk_commitment(4), enabled]`.
 /// Consumed against the faucet network account; `attester_admin::set_attester` gates on the (kernel-

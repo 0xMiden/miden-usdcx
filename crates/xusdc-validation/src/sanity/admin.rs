@@ -137,7 +137,7 @@ async fn admin_checks(
     recipient_id: AccountId,
 ) -> Result<()> {
     use crate::assertions_cf::{ERR_NOT_OWNER, ERR_PAUSED, ERR_SUPPLY_CAP};
-    use crate::assertions_de::ERR_XRESERVE_BAD_PK_COMMITMENT;
+    use crate::assertions_de::ERR_XRESERVE_DISALLOWED_PUB_KEY;
     use crate::assertions_gj::ERR_BURN_BELOW_MIN;
 
     let owner_id = actors.owner.id();
@@ -255,7 +255,7 @@ async fn admin_checks(
         "admin",
         "a mint by the rotated-out (disabled) attester is REJECTED",
         &v,
-        ERR_XRESERVE_BAD_PK_COMMITMENT,
+        ERR_XRESERVE_DISALLOWED_PUB_KEY,
     );
     set_attester_enabled(
         d,

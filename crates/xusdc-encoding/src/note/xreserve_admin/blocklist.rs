@@ -10,7 +10,7 @@ use miden_protocol::Word;
 
 use super::{build_admin_note, compile_admin_note_script};
 
-// BLOCK_ACCOUNT (allowlist row 13 — transfer blocklist)
+// BLOCK_ACCOUNT (transfer blocklist)
 // ================================================================================================
 
 const BLOCK_ACCOUNT_NOTE_SCRIPT_SRC: &str =
@@ -19,11 +19,10 @@ const BLOCK_ACCOUNT_NOTE_SCRIPT_SRC: &str =
 static BLOCK_ACCOUNT_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(BLOCK_ACCOUNT_NOTE_SCRIPT_SRC));
 
-/// The PINNED block_account admin note-script root (`masm-rust-constant-parity`): the MAST root of
-/// the compiled `xreserve_block_account_note.masm` with the xreserve library linked. It binds
-/// transitively to `blocklist_admin::block_account`'s digest, so ANY edit of the note script or the
-/// proc it calls trips the parity assertion (`script_root() == pinned_script_root()`) and forces a
-/// conscious re-pin.
+/// The PINNED block_account admin note-script root: the MAST root of the compiled
+/// `xreserve_block_account_note.masm` with the xreserve library linked. It binds transitively to
+/// `blocklist_admin::block_account`'s digest, so any edit of the note script or of the proc it calls
+/// changes this root.
 pub const XRESERVE_BLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX: &str =
     "0xd92cf7cc23c84d29ebe9486d55845ede7fb2126e135a0d2ef87f5bfc090aefb2";
 
@@ -40,13 +39,13 @@ impl XReserveBlockAccountNote {
         BLOCK_ACCOUNT_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 13). Must equal the pinned
-    /// [`XRESERVE_BLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX`] (parity-tested).
+    /// The note-script root, which must equal
+    /// [`XRESERVE_BLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX`].
     pub fn script_root() -> NoteScriptRoot {
         BLOCK_ACCOUNT_NOTE_SCRIPT.root()
     }
 
-    /// The PINNED note-script root ([`XRESERVE_BLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX`]).
+    /// [`XRESERVE_BLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
     pub fn pinned_script_root() -> NoteScriptRoot {
         NoteScriptRoot::from_raw(
             Word::parse(XRESERVE_BLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX)
@@ -68,7 +67,7 @@ impl XReserveBlockAccountNote {
     }
 }
 
-// UNBLOCK_ACCOUNT (allowlist row 14 — transfer blocklist)
+// UNBLOCK_ACCOUNT (transfer blocklist)
 // ================================================================================================
 
 const UNBLOCK_ACCOUNT_NOTE_SCRIPT_SRC: &str =
@@ -77,11 +76,10 @@ const UNBLOCK_ACCOUNT_NOTE_SCRIPT_SRC: &str =
 static UNBLOCK_ACCOUNT_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(UNBLOCK_ACCOUNT_NOTE_SCRIPT_SRC));
 
-/// The PINNED unblock_account admin note-script root (`masm-rust-constant-parity`): the MAST root of
-/// the compiled `xreserve_unblock_account_note.masm` with the xreserve library linked. It binds
-/// transitively to `blocklist_admin::unblock_account`'s digest, so ANY edit of the note script or the
-/// proc it calls trips the parity assertion (`script_root() == pinned_script_root()`) and forces a
-/// conscious re-pin.
+/// The PINNED unblock_account admin note-script root: the MAST root of the compiled
+/// `xreserve_unblock_account_note.masm` with the xreserve library linked. It binds transitively to
+/// `blocklist_admin::unblock_account`'s digest, so any edit of the note script or of the proc it
+/// calls changes this root.
 pub const XRESERVE_UNBLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX: &str =
     "0xeed9a3d1ef3589a8039dcd3174e410e8ca1a0c0f977d4ecc412e226ba2a343d2";
 
@@ -98,13 +96,13 @@ impl XReserveUnblockAccountNote {
         UNBLOCK_ACCOUNT_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 14). Must equal the pinned
-    /// [`XRESERVE_UNBLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX`] (parity-tested).
+    /// The note-script root, which must equal
+    /// [`XRESERVE_UNBLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX`].
     pub fn script_root() -> NoteScriptRoot {
         UNBLOCK_ACCOUNT_NOTE_SCRIPT.root()
     }
 
-    /// The PINNED note-script root ([`XRESERVE_UNBLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX`]).
+    /// [`XRESERVE_UNBLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
     pub fn pinned_script_root() -> NoteScriptRoot {
         NoteScriptRoot::from_raw(
             Word::parse(XRESERVE_UNBLOCK_ACCOUNT_NOTE_SCRIPT_ROOT_HEX)

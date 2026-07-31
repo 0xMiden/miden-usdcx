@@ -3,12 +3,8 @@
 //!
 //! This codec is Rust-only and has no MASM counterpart, because nothing on-chain ever reads the
 //! payload: the faucet burns the asset, and the destination fields exist for the off-chain
-//! withdrawal attester to act on. So there are exactly two participants — the burn note encodes,
-//! the attester decodes — and the encoding has to be exactly reversible between them.
-//!
-//! Whether the bytes that land on-chain match what this encodes is verified where the note is
-//! emitted, against a real note on a MockChain, since that is the only place the two can be
-//! compared.
+//! withdrawal attester to act on. The burn note encodes and the attester decodes, so the encoding
+//! has to be exactly reversible between them.
 //!
 //! The `destRecipient` and `salt` fields are packed and unpacked with the shared bytes32 codec in
 //! both directions rather than being repacked here, so there is one definition of how 32 bytes
@@ -25,9 +21,9 @@ use super::error::EncodingError;
 /// (≤ 1024, the note-storage bound).
 pub const BURN_NOTE_ITEMS_FELTS: usize = 18;
 
-/// The burn-note public payload `(amount, destDomain, destRecipient, salt)` (frozen
-/// signature). Destination fields live in `NoteStorage.items`, never note metadata
-/// (`metadata.sender` carries the burner and nothing else).
+/// The burn-note public payload `(amount, destDomain, destRecipient, salt)`. Destination fields
+/// live in `NoteStorage.items`, never note metadata (`metadata.sender` carries the burner and
+/// nothing else).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XReserveBurnItems {
     pub amount: AssetAmount,
@@ -110,7 +106,7 @@ mod tests {
             assert_eq!(
                 encoded,
                 vec.items_values(),
-                "{}: encode matches §7 golden layout",
+                "{}: encode matches the golden layout",
                 vec.id
             );
             assert_eq!(

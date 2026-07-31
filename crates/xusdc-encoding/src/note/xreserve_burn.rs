@@ -5,17 +5,15 @@
 //! reads its `NoteStorage.items` payload `(amount, destDomain, destRecipient, salt)` to release
 //! USDC on the source chain.
 //!
-//! It is built as a standalone note factory, following the same pattern as the standard
-//! pay-to-id note, rather than by extending the standard `BurnNote` — that type is sealed and
-//! hardcodes an empty payload and an account-target tag, neither of which works here. What it does
-//! reuse is the standard burn consume script, so consuming one of these notes runs
-//! `faucet::receive_and_burn` and the faucet's active burn policy exactly as any other burn would.
-//! The note is forced public, carries the fixed xUSDC burn tag, and writes its payload through the
-//! shared codec so the listener decodes precisely what was encoded.
+//! It is built as a standalone note factory rather than by extending the standard `BurnNote`, which
+//! is sealed and hardcodes an empty payload and an account-target tag. What it does reuse is the
+//! standard burn consume script, so consuming one of these notes runs `faucet::receive_and_burn`
+//! and the faucet's active burn policy exactly as any other burn would. The note is forced public,
+//! carries the fixed xUSDC burn tag, and writes its payload through the shared codec so the listener
+//! decodes precisely what was encoded.
 //!
-//! Nothing on-chain reads that payload: there is no burn-items parser in MASM and no custom consume
-//! script. The destination fields exist purely so the burn is legible off-chain, which is what makes
-//! the note evidence rather than just an accounting entry.
+//! Nothing on-chain reads that payload. The destination fields exist purely so the burn is legible
+//! off-chain, which is what makes the note evidence rather than just an accounting entry.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::FungibleAsset;
@@ -69,27 +67,25 @@ impl XReserveBurnNote {
     ) -> Result<Note, NoteError> {
         let serial_num = rng.draw_word();
 
-        // The payload is written into NoteStorage.items by the shared codec — the same routine the
-        // off-chain attester decodes with, so encode and decode cannot drift apart.
+        // the shared codec is the same routine the off-chain attester decodes with, so encode and
+        // decode cannot drift apart
         let storage = NoteStorage::new(encode_burn_note_items(&items))?;
-        // Reuse the STOCK burn consume script (→ faucet::receive_and_burn → the active burn policy).
         let recipient = NoteRecipient::new(serial_num, BurnNote::script(), storage);
 
-        // Public mandate (the burn note is always Public — no note_type parameter) + the fixed xUSDC burn tag;
-        // The sender is the burning holder. The withdrawal destination stays in NoteStorage, so
-        // the listener reads it from the payload rather than inferring it from a metadata field.
+        // the burn note is always Public — there is no note_type parameter. The withdrawal
+        // destination stays in NoteStorage, so the listener reads it from the payload rather than
+        // inferring it from a metadata field.
         let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
             .with_tag(NoteTag::new(FIXED_XUSDC_BURN_TAG));
 
-        // NoteAssets = the burned xUSDC asset; amount single-sourced from items.amount so the
-        // recorded amount and the burned asset can never diverge.
+        // the amount is single-sourced from items.amount so the recorded amount and the burned asset
+        // can never diverge
         let asset = FungibleAsset::new(faucet_id, u64::from(items.amount))
             .map_err(|err| NoteError::other_with_source("invalid burned xUSDC asset", err))?;
         let vault = NoteAssets::new(vec![asset.into()])?;
 
-        // The scheme-2 NetworkAccountTarget routing attachment addresses the note at the faucet
-        // network account (routing only — the stock consume script ignores attachments; the burn is
-        // still gated by receive_and_burn and the burn policy). Requires a PUBLIC faucet id.
+        // routing only: the stock consume script ignores attachments, and the burn stays gated by
+        // receive_and_burn and the burn policy. Requires a PUBLIC faucet id.
         let target =
             NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always).map_err(|err| {
                 NoteError::other_with_source("faucet id is not a public network account", err)

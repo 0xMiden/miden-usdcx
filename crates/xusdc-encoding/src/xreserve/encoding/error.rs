@@ -1,15 +1,12 @@
 //! The error type every encoding routine returns, and its MASM counterparts.
 //!
 //! One enum covers the whole encoding surface so a caller handles failures from the amount reducer,
-//! the intent parser, and the codecs uniformly. Some variants exist for paths this crate does not
-//! yet construct — the burn-note and Circle wire families — and are kept here rather than added
-//! later, so the enum's shape does not change under consumers as those paths land.
+//! the intent parser, and the codecs uniformly.
 //!
 //! Alongside the enum are the MASM error constants the faucet raises. They are strings rather than
-//! numeric codes, matching how the protocol's own MASM declares errors; the assertion messages here
-//! and the ones in the `.masm` files are the same text, and the parity test is what keeps them
-//! that way. That matters for diagnosis: a transaction that trapped on-chain reports the same
-//! wording an off-chain rejection would.
+//! numeric codes, matching how the protocol's own MASM declares errors, and the assertion messages
+//! here are the same text as the ones in the `.masm` files. That matters for diagnosis: a
+//! transaction that trapped on-chain reports the same wording an off-chain rejection would.
 
 use core::fmt;
 
@@ -86,23 +83,18 @@ impl core::error::Error for EncodingError {}
 
 // MASM ERROR CONSTANTS
 // ================================================================================================
-// Names per the frozen spec's intent list plus one addition (`ERR_AMOUNT_OVER_CAP`, 1:1 with a
-// frozen enum variant). The MASM side must declare byte-identical strings, and a parity test
-// fails if one of them drifts.
+// The MASM side must declare byte-identical strings for each of these.
 
 /// Single source for every MASM error name/message pair: the named constants, the
-/// name→constant lookup (MASM execution tests), and the name→message table (the
-/// constant-parity test) are all generated from one list.
+/// name→constant lookup, and the name→message table are all generated from one list.
 macro_rules! masm_errors {
     ($( $name:ident => $msg:literal ),+ $(,)?) => {
         $( pub const $name: MasmError = MasmError::from_static_str($msg); )+
 
-        /// Name → constant lookup used by the MASM execution tests (vectors carry the
-        /// constant NAME; the value lives here exactly once).
+        /// Name → constant lookup, for callers that hold only the `ERR_*` name.
         pub static ERR_TABLE: [(&str, &MasmError); 7] = [ $( (stringify!($name), &$name) ),+ ];
 
-        /// Name → message table consumed by the constant-parity test (the MASM side
-        /// must declare identical strings).
+        /// Name → message table, for comparing against the strings the MASM declares.
         pub static ERR_MESSAGES: [(&str, &str); 7] = [ $( (stringify!($name), $msg) ),+ ];
     };
 }
@@ -119,9 +111,7 @@ masm_errors! {
 
 /// Errors raised inside procedures the MASM links from the protocol's `miden-standards`
 /// library (`miden::standards::utils` / `assets::asset_amount` / `interop::eth`) rather than
-/// declaring locally. The strings are the standards library's own — they are pinned
-/// FUNCTIONALLY by the execution tests that trap on them, not by the local declaration parity
-/// sweep (which covers only constants declared in this repo's MASM sources).
+/// declaring locally. The strings are the standards library's own, not this repo's.
 pub static STANDARDS_ERR_TABLE: [(&str, MasmError); 3] = [
     // the standards pow10 scale bound (both its u32 guard and its <= 18 bound)
     (

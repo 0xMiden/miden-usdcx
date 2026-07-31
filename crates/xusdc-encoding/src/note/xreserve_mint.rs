@@ -44,26 +44,25 @@ use crate::xreserve::encoding::{
 
 /// The mint-note DepositIntent attachment scheme (u16, project-chosen: >= 4, clear of
 /// the reserved "none" value 1 and the standard values 2 `NetworkAccountTarget` / 3 `Pswap`).
-/// Declared identically in `mint_policy.masm` (`masm-rust-constant-parity` via
-/// `constant_parity.rs`); the policy's `find_attachment` fail-closes on a mismatch. Not a
-/// Circle-owned value.
+/// Declared identically in `mint_policy.masm`; the policy's `find_attachment` fail-closes on a
+/// mismatch. Not a Circle-owned value.
 pub const XUSDC_MINT_INTENT_ATTACHMENT_SCHEME: u16 = 4;
 
 /// The mint-note attestation attachment scheme (see the intent scheme above).
-/// Declared identically in `mint_policy.masm` (parity-pinned).
+/// Declared identically in `mint_policy.masm`.
 pub const XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME: u16 = 5;
 
 /// The attestation attachment word count: `[feeAmount(8), pubkey(16), signature(17), pad(3)]`
 /// = 44 felts (the pubkey is the 16-felt affine
-/// form). Declared identically in `mint_policy.masm` (parity-pinned).
+/// form). Declared identically in `mint_policy.masm`.
 pub const XUSDC_MINT_ATTESTATION_NUM_WORDS: usize = 11;
 
 /// The uint256 -> AssetAmount decimal scale the faucet applies. The cap / scale / dust decision
-/// stays OPEN, pending Circle confirmation; the faucet ships the PROVISIONAL scale-0 position because Circle's on-wire
-/// deposit `amount` is 6-decimal smallest units and xUSDC is 6-decimal, so the reduction is the
-/// identity. Declared identically in `mint_policy.masm` (`DEPOSIT_SCALE_EXP`, parity-pinned); this
-/// factory reduces the attested amount with the SAME scale so the storage it builds passes the
-/// policy's ASSERT-MATCH amount compare.
+/// stays OPEN, pending Circle confirmation; the faucet ships the PROVISIONAL scale-0 position
+/// because Circle's on-wire deposit `amount` is 6-decimal smallest units and xUSDC is 6-decimal, so
+/// the reduction is the identity. Declared identically in `mint_policy.masm` as
+/// `DEPOSIT_SCALE_EXP`; this factory reduces the attested amount with the SAME scale so the storage
+/// it builds passes the policy's ASSERT-MATCH amount compare.
 pub const XUSDC_DEPOSIT_SCALE_EXP: u32 = 0;
 
 /// The Circle deposit attestation crossing the note boundary: the raw 65-byte
@@ -94,9 +93,8 @@ impl MintAttestation {
 }
 
 /// The production mint-note factory: builds the STOCK [`MintNote`] carrying the xUSDC
-/// attested transport. A standalone unit-struct factory like its siblings; the note script is the
-/// STOCK standards MINT script (no custom root to pin — [`Self::script_root`] delegates to
-/// [`MintNote::script_root`], which is what the note-script allowlist row 1 holds).
+/// attested transport. The note script is the STOCK standards MINT script, so there is no custom
+/// root to pin and [`Self::script_root`] delegates to [`MintNote::script_root`].
 pub struct XUsdcMintNote;
 
 impl XUsdcMintNote {
@@ -105,7 +103,7 @@ impl XUsdcMintNote {
         MintNote::script()
     }
 
-    /// The STOCK MINT note script root (the allowlist row-1 identity).
+    /// The STOCK MINT note script root.
     pub fn script_root() -> NoteScriptRoot {
         MintNote::script_root()
     }
@@ -129,7 +127,10 @@ impl XUsdcMintNote {
         rng: &mut R,
     ) -> Result<Note, NoteError> {
         let header = parse_deposit_intent_header(deposit_intent).map_err(|source| {
-            NoteError::other_with_source("deposit intent payload rejected by the 04 codec", source)
+            NoteError::other_with_source(
+                "deposit intent payload rejected by the shared codec",
+                source,
+            )
         })?;
         // the attested output-note ingredients: recipient account, reduced amount, nonce-key
         // serial — the SAME derivations the on-chain policy re-computes and assert-matches.
@@ -143,7 +144,7 @@ impl XUsdcMintNote {
             uint256_to_asset_amount(uint256_le_limbs(&header.amount), XUSDC_DEPOSIT_SCALE_EXP)
                 .map_err(|source| {
                     NoteError::other_with_source(
-                        "deposit intent amount rejected by the 04 reducer",
+                        "deposit intent amount rejected by the amount reducer",
                         source,
                     )
                 })?;
@@ -175,7 +176,10 @@ impl XUsdcMintNote {
     /// this attachment's committed word count.
     fn intent_attachment(deposit_intent: &[u8]) -> Result<NoteAttachment, NoteError> {
         let mut felts = deposit_intent_to_packed_felts(deposit_intent).map_err(|source| {
-            NoteError::other_with_source("deposit intent payload rejected by the 04 codec", source)
+            NoteError::other_with_source(
+                "deposit intent payload rejected by the shared codec",
+                source,
+            )
         })?;
         while !felts.len().is_multiple_of(4) {
             felts.push(Felt::from(0u32));
@@ -194,16 +198,14 @@ impl XUsdcMintNote {
     /// `[feeAmount(8 zero limbs), pubkey(16 affine felts), signature(17), pad(3)]` as 11 words.
     /// The layout is a contract: the policy hash-verifies these words into one memory region and
     /// hands the amount and attestation-verify stages pointers at these three offsets, so a
-    /// reordering here would silently repoint them. The
-    /// feeAmount limbs are MVP-zero (hardcoded: the MVP has no relayer-fee split, so a non-zero
-    /// fee would only ever trap the fee-must-be-zero guard on-chain). The 33-byte compressed wire
-    /// pubkey is decompressed to its affine
-    /// coordinates here (an off-curve key rejects — it could never verify on-chain).
+    /// reordering here would silently repoint them. The feeAmount limbs are hardcoded to zero,
+    /// there being no relayer-fee split yet. The 33-byte compressed wire pubkey is decompressed to
+    /// its affine coordinates here, so an off-curve key rejects rather than reaching the chain.
     fn attestation_attachment(attestation: &MintAttestation) -> Result<NoteAttachment, NoteError> {
         let mut felts: Vec<Felt> = Vec::with_capacity(44);
         felts.extend([Felt::from(0u32); 8]);
         felts.extend(affine_pubkey_felts(attestation.pubkey()).map_err(|source| {
-            NoteError::other_with_source("attestation pubkey rejected by the 04 codec", source)
+            NoteError::other_with_source("attestation pubkey rejected by the shared codec", source)
         })?);
         felts.extend(signature_felts(attestation.signature()));
         felts.extend([Felt::from(0u32); 3]);

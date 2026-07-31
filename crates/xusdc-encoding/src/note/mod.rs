@@ -6,7 +6,7 @@
 //!
 //! Both are producers only — nothing here consumes a note. Payloads are written with the shared
 //! codecs in `crate::xreserve::encoding` rather than packed inline, so the bytes a note carries are
-//! defined in exactly one place and the on-chain and off-chain readers agree with the producer.
+//! defined in exactly one place.
 
 pub mod xreserve_admin;
 pub mod xreserve_burn;

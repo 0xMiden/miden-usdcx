@@ -10,7 +10,7 @@ use miden_protocol::Word;
 
 use super::{build_admin_note, compile_admin_note_script};
 
-// TRANSFER_OWNERSHIP (allowlist row 10)
+// TRANSFER_OWNERSHIP
 // ================================================================================================
 
 const TRANSFER_OWNERSHIP_NOTE_SCRIPT_SRC: &str =
@@ -19,8 +19,8 @@ const TRANSFER_OWNERSHIP_NOTE_SCRIPT_SRC: &str =
 static TRANSFER_OWNERSHIP_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(TRANSFER_OWNERSHIP_NOTE_SCRIPT_SRC));
 
-/// The PINNED transfer_ownership admin note-script root (`masm-rust-constant-parity`): binds
-/// transitively to the stock `ownable2step::transfer_ownership`'s digest.
+/// The PINNED transfer_ownership admin note-script root: binds transitively to the stock
+/// `ownable2step::transfer_ownership`'s digest.
 pub const XRESERVE_TRANSFER_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x5bd39b30a487d6a385acd220c43a82980e63cfe37ba4d86efd58ffbd7a6c7c0a";
 
@@ -34,12 +34,12 @@ impl XReserveTransferOwnershipNote {
         TRANSFER_OWNERSHIP_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 10). Must equal the pinned constant (parity-tested).
+    /// The note-script root, which must equal the pinned constant.
     pub fn script_root() -> NoteScriptRoot {
         TRANSFER_OWNERSHIP_NOTE_SCRIPT.root()
     }
 
-    /// The PINNED note-script root ([`XRESERVE_TRANSFER_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX`]).
+    /// [`XRESERVE_TRANSFER_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
     pub fn pinned_script_root() -> NoteScriptRoot {
         NoteScriptRoot::from_raw(
             Word::parse(XRESERVE_TRANSFER_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX)
@@ -61,7 +61,7 @@ impl XReserveTransferOwnershipNote {
     }
 }
 
-// ACCEPT_OWNERSHIP (allowlist row 11)
+// ACCEPT_OWNERSHIP
 // ================================================================================================
 
 const ACCEPT_OWNERSHIP_NOTE_SCRIPT_SRC: &str =
@@ -88,12 +88,12 @@ impl XReserveAcceptOwnershipNote {
         ACCEPT_OWNERSHIP_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 11). Must equal the pinned constant (parity-tested).
+    /// The note-script root, which must equal the pinned constant.
     pub fn script_root() -> NoteScriptRoot {
         ACCEPT_OWNERSHIP_NOTE_SCRIPT.root()
     }
 
-    /// The PINNED note-script root ([`XRESERVE_ACCEPT_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX`]).
+    /// [`XRESERVE_ACCEPT_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
     pub fn pinned_script_root() -> NoteScriptRoot {
         NoteScriptRoot::from_raw(
             Word::parse(XRESERVE_ACCEPT_OWNERSHIP_NOTE_SCRIPT_ROOT_HEX)

@@ -162,7 +162,7 @@ end
 #! domain and identifier equality compares are NOT performed here.
 #!
 #! Inputs:  [intent_ptr, len_felts]
-#! Outputs: [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len]
+#! Outputs: [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
 #!
 #! Where:
 #! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
@@ -172,7 +172,7 @@ end
 #!   packed limbs (intent bytes 60..76).
 #! - REMOTE_TOKEN_LOWER is the word holding the remoteToken field's positionally lower four
 #!   packed limbs (intent bytes 44..60).
-#! - hook_data_len is the semantic hookDataLen value as a u32 felt.
+#! - hook_data_len_bytes is the semantic hookDataLen value in bytes, as a u32 felt.
 #!
 #! Panics if:
 #! - the packed magic does not match the DepositIntent magic.
@@ -214,45 +214,48 @@ pub proc parse_deposit_intent
     assert.err=ERR_DI_ZERO_FIELD
     # => [intent_ptr, len_felts]
 
-    # hookDataLen (semantic u32): byte-swap the packed felt at offset 59
-    dup push.HOOK_DATA_LEN_FELT_OFF add mem_load
-    u32assert.err=ERR_FELT_OUT_OF_FIELD
+    # hookDataLen (semantic u32, a byte count): byte-swap the packed felt at offset 59
+    dup push.HOOK_DATA_LEN_FELT_OFF add mem_load u32assert.err=ERR_FELT_OUT_OF_FIELD
     exec.utils::swap_u32_bytes
-    # => [hook_data_len, intent_ptr, len_felts]
+    # => [hook_data_len_bytes, intent_ptr, len_felts]
 
-    # length relation: len_felts == 60 + ceil(hookDataLen / 4)
-    dup u32mod.4 neq.0
-    # => [has_rem, hook_data_len, intent_ptr, len_felts]
-
-    dup.1 u32div.4 add
-    # => [ceil_hook_felts, hook_data_len, intent_ptr, len_felts]
-
-    push.DEPOSIT_INTENT_HEADER_FELTS add
-    # => [expected_len, hook_data_len, intent_ptr, len_felts]
+    # length relation: the 60-felt header plus the packed hookData felts
+    dup exec.num_bytes_to_num_felts push.DEPOSIT_INTENT_HEADER_FELTS add
+    # => [expected_len_felts, hook_data_len_bytes, intent_ptr, len_felts]
 
     movup.3 assert_eq.err=ERR_DI_LENGTH
-    # => [hook_data_len, intent_ptr]
+    # => [hook_data_len_bytes, intent_ptr]
 
     # outputs: load the caller-compare fields from the staged preimage (single-felt loads
     # — the header felt offsets are not word-aligned); the packed
     # remoteToken words are pushed in the same element order the callers compare against
     swap
-    # => [intent_ptr, hook_data_len]
+    # => [intent_ptr, hook_data_len_bytes]
 
     dup push.REMOTE_TOKEN_FELT_OFF add
-    # => [rt_base, intent_ptr, hook_data_len]
+    # => [rt_base, intent_ptr, hook_data_len_bytes]
 
     exec.utils::mem_load_double_word_unaligned swapw
-    # => [REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_ptr, hook_data_len]
+    # => [REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_ptr, hook_data_len_bytes]
 
     movup.8
-    # => [intent_ptr, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len]
+    # => [intent_ptr, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
 
     # remote_domain (semantic u32): byte-swap the packed felt at offset 10
     push.REMOTE_DOMAIN_FELT_OFF add mem_load
     u32assert.err=ERR_FELT_OUT_OF_FIELD
     exec.utils::swap_u32_bytes
-    # => [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len]
+    # => [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
+end
+
+#! Returns the number of felts holding num_bytes wire bytes, packed four bytes to a felt.
+#!
+#! Inputs:  [num_bytes]
+#! Outputs: [num_felts]
+#!
+#! Invocation: exec
+pub proc num_bytes_to_num_felts
+    u32divmod.4 neq.0 add
 end
 
 # HELPER PROCEDURES

@@ -286,17 +286,19 @@ pub proc check_policy
     dup u32mod.4 neq.0
     # => [has_rem, hook_data_len, num_words, attestation_idx]
 
-    dup.1 u32div.4 add
-    # => [ceil_hook_felts, hook_data_len, num_words, attestation_idx]
+    swap u32div.4 add
+    # => [ceil_hook_felts, num_words, attestation_idx]
 
     push.DEPOSIT_INTENT_HEADER_FELTS add
-    # => [len_felts, hook_data_len, num_words, attestation_idx]
+    # => [len_felts, num_words, attestation_idx]
 
-    loc_store.LEN_FELTS_LOC drop
-    # => [num_words, attestation_idx]
+    # the parser call below reads the length back out of the local; the word-count bind right here
+    # keeps the stack copy
+    dup loc_store.LEN_FELTS_LOC
+    # => [len_felts, num_words, attestation_idx]
 
     # bind the hash-committed word count to the embedded claim: num_words == ceil(len_felts / 4)
-    loc_load.LEN_FELTS_LOC dup u32mod.4 neq.0
+    dup u32mod.4 neq.0
     # => [has_rem, len_felts, num_words, attestation_idx]
 
     dup.1 u32div.4 add

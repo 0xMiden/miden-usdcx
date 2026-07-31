@@ -6,10 +6,10 @@
 //!
 //! Bidirectional hardening: parity is BIDIRECTIONAL — every constant parsed from the MASM
 //! sources (numeric, string, and `word("…")` slot-name) must be covered by a parity row
-//! or a documented exemption, so a new MASM-only constant fails this suite; the
-//! `SCALE_EXP_MAX`/`MAX_SCALE_EXP` pair and `POW2_32` carry explicit rows; the faucet shell
+//! or a documented exemption, so a new MASM-only constant fails this suite; the faucet shell
 //! modules are included by reference (the encoding crate's `lib.rs` embeds only its own
-//! sources). Wave-1 S1 re-materialization: the deleted custom-transport modules
+//! sources). The generic scale/limb primitives (pow10, the u32 limb merge) are consumed from
+//! the linked miden-standards library and declare no local constants here. Wave-1 S1 re-materialization: the deleted custom-transport modules
 //! (`xreserve_mint` / `xreserve_mint_note_entry` / `mint_deny_guard` / `burn_policy` /
 //! `min_burn_admin` / `domain_config`) left the sweep; the attestation mint policy
 //! (`mint_policy.masm`) and the minimized `identifier_init.masm` joined it, with the
@@ -32,7 +32,7 @@ use xusdc_encoding::note::xreserve_mint::{
 use xusdc_encoding::xreserve::encoding::{
     deposit_intent_field_offset, DepositIntentField, DEPOSIT_INTENT_HEADER_FELTS,
     DEPOSIT_INTENT_HEADER_LEN, DEPOSIT_INTENT_MAGIC, DEPOSIT_INTENT_VERSION, ERR_MESSAGES,
-    MAX_SCALE_EXP, PUBKEY_FELTS,
+    PUBKEY_FELTS,
 };
 use xusdc_encoding::{ENCODING_MOD_MASM, LAYOUT_MASM};
 
@@ -77,10 +77,10 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_SIG_INVALID",
     // F2 fee guard (deposit_intent_parser.masm; DEC-2 keep-zero)
     "ERR_XRESERVE_FEE_NONZERO",
-    // the attested-recipient AccountId extraction (mint_policy.masm)
+    // the attested-recipient AccountId extraction (mint_policy.masm); the limb and
+    // canonical-range rejects surface the linked standards eth::build_felt constants and are
+    // not declared locally
     "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",
-    "ERR_XRESERVE_RECIPIENT_BAD_LIMB",
-    "ERR_XRESERVE_RECIPIENT_NONCANONICAL",
     // Wave-1 S1 transport-shape guards on the stock MintNote's attachments (mint_policy.masm)
     "ERR_XRESERVE_MINT_NOTE_INTENT_MISSING",
     "ERR_XRESERVE_MINT_NOTE_ATTESTATION_MISSING",
@@ -201,7 +201,10 @@ const LAYOUT_COVERED_NUMS: &[&str] = &[
     "DEPOSIT_INTENT_HEADER_FELTS",
     "MAX_NOTE_STORAGE_FELTS",
 ];
-const ENCODING_COVERED_NUMS: &[&str] = &["SCALE_EXP_MAX", "POW2_32"];
+// encoding/mod.masm no longer declares numeric constants: the scale/limb primitives (pow10,
+// the u32 limb merge) and PUBKEY_FELTS moved to the linked miden-standards library
+// (#48) and to attestation_verify.masm (#47) respectively.
+const ENCODING_COVERED_NUMS: &[&str] = &[];
 const SHELL_COVERED_NUMS: &[&str] = &[];
 
 /// Parses `const NAME = <value>` / `pub const NAME = <value>` lines from a MASM source.
@@ -317,20 +320,9 @@ fn masm_rust_constant_parity() {
         "NoteStorage felt bound is frozen at 1024"
     );
 
-    // extra rows: the reducer's bound and limb base (names differ across languages for
-    // the scale bound by frozen decision — MASM SCALE_EXP_MAX, Rust MAX_SCALE_EXP)
-    let (enc_nums, _, _) = parse_masm_consts(ENCODING_MOD_MASM);
+    // extra row: the affine-pubkey felt count (PUBKEY_FELTS moved to attestation_verify.masm in
+    // #47; the encoding scale/limb consts moved to the linked miden-standards library in #48)
     let (att_nums, _, _) = parse_masm_consts(ATTESTATION_VERIFY_MASM);
-    assert_eq!(
-        num(&enc_nums, "SCALE_EXP_MAX", "encoding/mod.masm"),
-        MAX_SCALE_EXP as u64,
-        "scale-exponent bound parity (MASM SCALE_EXP_MAX vs Rust MAX_SCALE_EXP)"
-    );
-    assert_eq!(
-        num(&enc_nums, "POW2_32", "encoding/mod.masm"),
-        1u64 << 32,
-        "u32 limb base must be 2^32"
-    );
     assert_eq!(
         num(&att_nums, "PUBKEY_FELTS", "attestation_verify.masm"),
         PUBKEY_FELTS as u64,

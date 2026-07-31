@@ -238,7 +238,7 @@
           0,
           1078071040
         ],
-        "masm_err": "ERR_SCALE_EXP_TOO_LARGE",
+        "masm_err": "ERR_SCALE_AMOUNT_EXCEEDED_LIMIT",
         "scale_exp": 20,
         "tv": [
           "TV-AMT-7",

@@ -22,7 +22,8 @@ pub const XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xrese
 # The non-empty enabled marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1
 # (the read path asserts only that the stored value is non-empty). enabled = 0 writes
 # EMPTY_WORD, which the read path treats as "not allowlisted".
-const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
+pub const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
+const ATTESTER_DISABLED_MARKER = [0, 0, 0, 0]
 
 # PUBLIC INTERFACE
 # =================================================================================================
@@ -47,35 +48,26 @@ const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
 @locals(4)
 @account_procedure
 pub proc set_attester
-    # gate: the Ownable2Step owner (sender-based) ONLY —
-    # intentionally NOT pause-gated (Circle's onlyOwner model), so
-    # the owner may disable a compromised attester while the faucet
-    # is paused. reads account storage and is
-    # operand-stack-neutral.
+    # gate: the Ownable2Step owner (sender-based) ONLY — intentionally NOT pause-gated (Circle's
+    # onlyOwner model), so the owner may disable a compromised attester while the faucet is paused
     exec.authority::assert_authorized
     # => [PK_COMMITMENT, enabled, pad(11)]
 
-    # store the caller-supplied commitment (the map key) into loc[0..4], trusted verbatim. The
-    # `_le` store leaves the word on the stack, so drop the copy.
-    loc_storew_le.0 dropw
-    # => [enabled, pad(11)]
+    push.ATTESTER_DISABLED_MARKER push.ATTESTER_ENABLED_MARKER movup.12
+    # => [enabled, ENABLED_MARKER, DISABLED_MARKER, PK_COMMITMENT, pad(11)]
 
-    # the written VALUE = enabled ? ATTESTER_ENABLED_MARKER : EMPTY_WORD. `if.true` requires
-    # `enabled` to be boolean, so a non-bool can never write a non-canonical marker.
-    if.true
-        push.ATTESTER_ENABLED_MARKER
-    else
-        padw
-    end
-    # => [VALUE, pad(11)]
+    # If enabled ENABLED_MARKER remains.
+    # If !enabled DISABLED_MARKER remains.
+    cdropw
+    # => [MARKER, PK_COMMITMENT, pad(11)]
 
-    # xReserveAttesters[PK_COMMITMENT] := VALUE.
-    padw loc_loadw_le.0
-    # => [PK_COMMITMENT, VALUE, pad(11)]
+    swapw
+    # => [PK_COMMITMENT, MARKER, pad(11)]
 
     push.XRESERVE_ATTESTERS_SLOT[0..2]
-    # => [slot_id_suffix, slot_id_prefix, PK_COMMITMENT, VALUE, pad(11)]
+    # => [slot_id_suffix, slot_id_prefix, PK_COMMITMENT, MARKER, pad(11)]
 
+    # xReserveAttesters[PK_COMMITMENT] = MARKER.
     exec.native_account::set_map_item dropw
     # => [pad(16)]
 end

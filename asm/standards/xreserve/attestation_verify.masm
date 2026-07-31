@@ -8,15 +8,10 @@ use miden::core::crypto::hashes::keccak256
 use miden::core::crypto::dsa::ecdsa_k256_keccak
 use miden::core::crypto::hashes::poseidon2
 use miden::core::word
+use {XRESERVE_ATTESTERS_SLOT, ATTESTER_ENABLED_MARKER} from xreserve::attester_admin
 
 # CONSTANTS
 # =================================================================================================
-
-# Attester allowlist: the xReserveAttesters StorageMap slot, keyed by
-# Poseidon2(16 affine pubkey felts) -> enabled-marker Word (absent / EMPTY_WORD = not
-# allowlisted). The set_attester admin setter co-owns this SAME slot. The map slot itself is
-# declared by the Rust account builder; this const is the MASM-side slot id.
-pub const XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xreserve_attesters")
 
 # `verify_attestation` locals: the keccak digest is the only value that needs a memory home — the
 # precompile wrappers take their other operands as pointers and leave the stack below their inputs
@@ -31,7 +26,7 @@ const PUBKEY_FELTS = 16
 # =================================================================================================
 
 # The candidate pubkey's Poseidon2 commitment is not enabled in xReserveAttesters.
-const ERR_XRESERVE_BAD_PK_COMMITMENT = "deposit attester pubkey commitment is not allowlisted"
+const ERR_XRESERVE_DISALLOWED_PUB_KEY = "deposit attester pubkey commitment is not allowlisted"
 
 # The ECDSA signature does not verify over keccak256(payload) for the candidate pubkey.
 const ERR_XRESERVE_SIG_INVALID = "deposit attestation signature verification failed"
@@ -61,7 +56,7 @@ const ERR_XRESERVE_SIG_INVALID = "deposit attestation signature verification fai
 #! - signature_ptr is the word-aligned memory address of the 17-felt attestation signature.
 #!
 #! Panics if:
-#! - the candidate pubkey's commitment is not allowlisted (ERR_XRESERVE_BAD_PK_COMMITMENT).
+#! - the candidate pubkey's commitment is not allowlisted (ERR_XRESERVE_DISALLOWED_PUB_KEY).
 #! - the signature does not verify over the payload digest (ERR_XRESERVE_SIG_INVALID).
 #!
 #! Locals:
@@ -90,14 +85,14 @@ pub proc verify_attestation
     # => [slot_id_suffix, slot_id_prefix, PUBKEY_COMMITMENT, pubkey_ptr, signature_ptr]
 
     exec.active_account::get_map_item
-    # => [VALUE, pubkey_ptr, signature_ptr]
+    # => [MARKER, pubkey_ptr, signature_ptr]
 
     # the stored value must be a non-empty enabled marker -- an absent / EMPTY_WORD value
     # means the candidate pubkey's commitment is not allowlisted.
-    exec.word::eqz
-    # => [is_empty, pubkey_ptr, signature_ptr]
+    push.ATTESTER_ENABLED_MARKER exec.word::eq
+    # => [is_allowed, pubkey_ptr, signature_ptr]
 
-    assertz.err=ERR_XRESERVE_BAD_PK_COMMITMENT
+    assert.err=ERR_XRESERVE_DISALLOWED_PUB_KEY
     # => [pubkey_ptr, signature_ptr]
 
     # the ECDSA verify: verify_prehash over the SAME pubkey the allowlist gate just cleared, the

@@ -33,7 +33,7 @@ use miden_testing::assert_transaction_executor_error;
 use support::mint_transport::*;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveBlocklistConfigNote, XReserveBlocklistNoteError, XReserveSetMinBurnSizeNote,
+    block_note, XReserveBlocklistNoteError, XReserveSetMinBurnSizeNote,
 };
 
 // The maximum representable fungible-asset amount = 2^63 - 2^31 (miden::protocol::asset
@@ -95,9 +95,8 @@ fn min_word(v: u64) -> Word {
 #[test]
 fn a_block_note_targeting_the_faucet_itself_cannot_be_built() {
     let faucet_id = test_faucet_id(1);
-    let err =
-        XReserveBlocklistConfigNote::block(blk_manager(), faucet_id, faucet_id, &mut note_rng(710))
-            .expect_err("the factory must refuse a self-targeting block note");
+    let err = block_note(blk_manager(), faucet_id, faucet_id, &mut note_rng(710))
+        .expect_err("the factory must refuse a self-targeting block note");
     assert!(
         matches!(err, XReserveBlocklistNoteError::SelfBlockRejected { .. }),
         "the refusal must be the specific self-block rejection, not some other note error: {err:?}"

@@ -19,9 +19,7 @@ use miden_protocol::Word;
 use miden_standards::note::BlocklistConfig;
 use support::w2admin::*;
 use support::*;
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveBlocklistConfigNote, XReserveBlocklistNoteError,
-};
+use xusdc_encoding::note::xreserve_admin::{block_note, unblock_note, XReserveBlocklistNoteError};
 
 // THE FACTORY REFUSAL — off-chain belt-and-braces, not an authorization boundary
 // ================================================================================================
@@ -32,13 +30,8 @@ use xusdc_encoding::note::xreserve_admin::{
 #[test]
 fn the_note_factory_refuses_to_build_a_self_block_note() -> Result<()> {
     let faucet_id = test_faucet_id(7);
-    let err = XReserveBlocklistConfigNote::block(
-        blocklist_holder(),
-        faucet_id,
-        faucet_id,
-        &mut note_rng(18),
-    )
-    .expect_err("the factory must refuse to build a self-block note");
+    let err = block_note(blocklist_holder(), faucet_id, faucet_id, &mut note_rng(18))
+        .expect_err("the factory must refuse to build a self-block note");
 
     assert!(
         matches!(err, XReserveBlocklistNoteError::SelfBlockRejected { .. }),
@@ -52,13 +45,8 @@ fn the_note_factory_refuses_to_build_a_self_block_note() -> Result<()> {
 #[test]
 fn the_note_factory_allows_unblocking_the_faucet() -> Result<()> {
     let faucet_id = test_faucet_id(7);
-    XReserveBlocklistConfigNote::unblock(
-        blocklist_holder(),
-        faucet_id,
-        faucet_id,
-        &mut note_rng(19),
-    )
-    .context("unblocking the faucet must remain constructible — it is the recovery path")?;
+    unblock_note(blocklist_holder(), faucet_id, faucet_id, &mut note_rng(19))
+        .context("unblocking the faucet must remain constructible — it is the recovery path")?;
     Ok(())
 }
 
@@ -105,8 +93,7 @@ async fn a_self_block_is_recoverable_through_the_unblock_note() -> Result<()> {
                 21,
             )
             .expect("self-block note"),
-            XReserveBlocklistConfigNote::unblock(blocklist_holder(), id, id, &mut note_rng(22))
-                .expect("self-unblock note"),
+            unblock_note(blocklist_holder(), id, id, &mut note_rng(22)).expect("self-unblock note"),
         ]
     })?;
     let (block, unblock) = (pf.seeded_notes[0].clone(), pf.seeded_notes[1].clone());

@@ -59,7 +59,7 @@ impl XReserveSetAttesterNote {
     /// Builds a `set_attester` admin note: `sender` is the admin party (the owner, for success),
     /// `faucet_id` the target faucet (PUBLIC), `commitment` the attester pubkey commitment (the
     /// xReserveAttesters map key), `enabled` = 1 (allowlist) or 0 (remove). The params live in note
-    /// storage; `NOTE_ARGS` are ignored by the script.
+    /// storage.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -141,8 +141,7 @@ impl XReserveIdentifierInitNote {
     /// key of the faucet's own account id as bytes32 — so the init is BOUND to its target and
     /// cannot seed a token that belongs to another identity. This is a PROVISIONAL position — the
     /// AccountId↔bytes32 codec and the identifier==own-id equivalence stay OPEN with Circle — and is
-    /// changeable if Circle assigns a different identifier. The derived key lives in note storage;
-    /// `NOTE_ARGS` are ignored by the script.
+    /// changeable if Circle assigns a different identifier. The derived key lives in note storage.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -207,7 +206,7 @@ impl XReserveSetMinBurnSizeNote {
 
     /// Builds a `set_min_burn_size` admin note: `sender` is the admin party (the owner, for success),
     /// `faucet_id` the target faucet (PUBLIC), `new_min` the new minimum burn size. The param lives in
-    /// note storage; `NOTE_ARGS` are ignored by the script.
+    /// note storage.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -259,7 +258,7 @@ impl XReserveSetMaxSupplyNote {
 
     /// Builds a `set_max_supply` admin note: `sender` is the admin party (the owner, for success),
     /// `faucet_id` the target faucet (PUBLIC), `new_max_supply` the new cap. The param lives in note
-    /// storage; NOTE_ARGS are ignored.
+    /// storage.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -308,7 +307,7 @@ impl XReservePauseNote {
     }
 
     /// Builds a `pause` admin note (param-less): `sender` is the DOM_PAUSER holder (for success),
-    /// `faucet_id` the target faucet (PUBLIC). Carries no storage payload; the note ARGS are ignored.
+    /// `faucet_id` the target faucet (PUBLIC). Carries no storage payload.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -354,7 +353,7 @@ impl XReserveUnpauseNote {
     }
 
     /// Builds an `unpause` admin note (param-less): `sender` is the DOM_PAUSER holder (for success),
-    /// `faucet_id` the target faucet (PUBLIC). Carries no storage payload; the note ARGS are ignored.
+    /// `faucet_id` the target faucet (PUBLIC). Carries no storage payload.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,

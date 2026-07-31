@@ -3,9 +3,9 @@
 # The admin surface for `init_identifier` under the network account. The identifier is the ONE
 # domain-config field the account-id fixpoint forces past build time;
 # `domain`/`source_domain`/`xreserve_contract` are build-seeded and have no runtime writer. A
-# fixed-root note whose parameter is CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the
-# network executor controls). It stages the note storage into memory, marshals the creator's
-# identifier Word onto the stack in the proc's Inputs order, and `call`s the OWNER-gated + init-once
+# fixed-root note whose parameter is CREATOR-COMMITTED in note storage. It stages the note storage
+# into memory, marshals the creator's identifier Word onto the stack in the proc's Inputs order, and
+# `call`s the OWNER-gated + init-once
 # `identifier_init::init_identifier` (the sender gate lives in the proc; the note sender is
 # kernel-forced, so a non-owner creator traps there). A scheme-2 NetworkAccountTarget routing
 # attachment addresses the note at the faucet (routing-only).
@@ -41,8 +41,7 @@ const ERR_XRESERVE_IDENTIFIER_INIT_NOTE_STORAGE = "identifier_init note storage 
 #! write.
 #!
 #! Stages the creator-committed param (`[IDENTIFIER]`) into memory at PARAM_PTR, marshals it onto
-#! the stack as `[IDENTIFIER, pad(12)]`, and `call`s `identifier_init::init_identifier`. The note
-#! ARGS are unused (executor-controlled).
+#! the stack as `[IDENTIFIER, pad(12)]`, and `call`s `identifier_init::init_identifier`.
 #!
 #! Requires that the account exposes:
 #! - xreserve::identifier_init::init_identifier procedure.
@@ -51,7 +50,7 @@ const ERR_XRESERVE_IDENTIFIER_INIT_NOTE_STORAGE = "identifier_init note storage 
 #! Outputs: [pad(16)]
 #!
 #! Where:
-#! - ARGS is executor-controlled and dropped unread.
+#! - ARGS is unused.
 #!
 #! Note storage is assumed to be as follows:
 #! - IDENTIFIER is the pre-hashed bytes32_to_key Word, stored verbatim (4 felts, items 0..4).
@@ -70,7 +69,7 @@ pub proc main
     dropw
     # => [pad(16)]
 
-    # stage the creator-committed param into memory; the executor-controlled note ARGS are ignored.
+    # stage the creator-committed param into memory.
     push.PARAM_PTR exec.active_note::get_storage
     # => [num_items, pad(16)]
 

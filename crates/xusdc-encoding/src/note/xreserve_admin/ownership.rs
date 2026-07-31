@@ -49,7 +49,7 @@ impl XReserveTransferOwnershipNote {
 
     /// Builds a `transfer_ownership` admin note: `sender` is the current owner (for success),
     /// `faucet_id` the target faucet (PUBLIC), `new_owner` the nominated owner. The params live in
-    /// note storage; NOTE_ARGS are ignored.
+    /// note storage.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -102,8 +102,7 @@ impl XReserveAcceptOwnershipNote {
     }
 
     /// Builds an `accept_ownership` admin note (param-less): `sender` is the nominated (pending) owner
-    /// (for success), `faucet_id` the target faucet (PUBLIC). Carries no storage payload; NOTE_ARGS
-    /// are ignored.
+    /// (for success), `faucet_id` the target faucet (PUBLIC). Carries no storage payload.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,

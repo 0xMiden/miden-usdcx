@@ -3,8 +3,8 @@
 # The admin surface for `pause` under the network account: a fixed-root, PARAM-LESS note whose sole
 # job is to cross into the faucet account context and `call` the DOM_PAUSER-gated
 # `pause_admin::pause`. The sender gate lives in the proc (the note sender is kernel-forced, so a
-# non-DOM_PAUSER creator traps there). The executor-controlled NOTE_ARGS are dropped unread. A
-# scheme-2 NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only).
+# non-DOM_PAUSER creator traps there). A scheme-2 NetworkAccountTarget routing attachment addresses
+# the note at the faucet (routing-only).
 
 use xreserve::pause_admin
 
@@ -13,7 +13,7 @@ use xreserve::pause_admin
 
 #! Consumes the `pause` admin note and drives the DOM_PAUSER-gated emergency halt.
 #!
-#! Drops the executor-controlled note ARGS (the op is param-less) and `call`s `pause_admin::pause`.
+#! Drops the note ARGS (the op is param-less) and `call`s `pause_admin::pause`.
 #!
 #! Requires that the account exposes:
 #! - xreserve::pause_admin::pause procedure.
@@ -22,7 +22,7 @@ use xreserve::pause_admin
 #! Outputs: [pad(16)]
 #!
 #! Where:
-#! - ARGS is executor-controlled and dropped unread.
+#! - ARGS is unused.
 #!
 #! Panics if:
 #! - the note sender does not hold the DOM_PAUSER role (pause_admin::pause's role gate).

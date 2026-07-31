@@ -1,9 +1,9 @@
 //! Faucet-owned ADMIN note factories: the root-pinned, storage-param admin notes the faucet
 //! network account consumes to drive its owner/role-gated admin procs.
 //!
-//! Each admin note (a) carries its parameters CREATOR-COMMITTED in `NoteStorage.items` (never
-//! `NOTE_ARGS`, which the network executor controls); (b) uses a FIXED, root-pinned note script
-//! (independent of the param values, so it can be allowlisted); and (c) carries a scheme-2
+//! Each admin note (a) carries its parameters CREATOR-COMMITTED in `NoteStorage.items`; (b) uses a
+//! FIXED, root-pinned note script (independent of the param values, so it can be allowlisted); and
+//! (c) carries a scheme-2
 //! `NetworkAccountTarget` routing bind to the faucet (routing-only). The note script marshals the
 //! params onto the stack and `call`s the unchanged sender-gated admin proc — the note sender is
 //! kernel-forced, so the proc's owner/role gate is sound under permissionless network execution.

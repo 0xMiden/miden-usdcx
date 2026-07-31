@@ -52,7 +52,7 @@ impl XReserveGrantRoleNote {
     /// Builds a `grant_role` admin note: `sender` is the admin party (a holder of the granted role's
     /// effective admin role, for
     /// success), `faucet_id` the target faucet (PUBLIC), `role_symbol` the RBAC role element, `member`
-    /// the account to grant it to. The params live in note storage; NOTE_ARGS are ignored.
+    /// the account to grant it to. The params live in note storage.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -107,7 +107,7 @@ impl XReserveRevokeRoleNote {
     /// Builds a `revoke_role` admin note: `sender` is the admin party (a holder of the revoked role's
     /// effective admin role, for
     /// success), `faucet_id` the target faucet (PUBLIC), `role_symbol` the RBAC role element, `member`
-    /// the account to revoke it from. The params live in note storage; NOTE_ARGS are ignored.
+    /// the account to revoke it from. The params live in note storage.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,

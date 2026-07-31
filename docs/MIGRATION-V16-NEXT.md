@@ -424,6 +424,13 @@ exists to adapt), which the full behavioral suite proves.
   primitive remains `miden-agglayer`'s `asset_conversion.masm`
   (`verify_u256_to_native_amount_conversion`, a verify-the-witness design) — byte-identical to
   alpha.4, in a crate the standards CodeBuilder does not link. Report-only; never a bump rider.
+  [SUPERSEDED post-#44: the pin bump to `4971ec4b` picked up protocol #3423, which promoted the
+  agglayer helpers into `miden-standards` (`miden::standards::utils`,
+  `miden::standards::assets::asset_amount` — including `verify_u256_to_asset_amount_conversion`,
+  the verify-the-witness conversion — and `miden::standards::interop::eth`), all linked by the
+  standards CodeBuilder. UNBLOCKED: the faucet MASM now imports the generic helpers
+  (byte-swap, limb merge, unaligned double-word load, pow10, build_felt) from the standards
+  library instead of keeping local copies.]
 - **FF-3 — V16-FINAL: deferred by definition.** This migration is #1 of 2. Parked/temporary
   state tied to FF-3 as the revert/re-enable vehicle: the validation crate + LNV harness
   (`PARKED-V16-NEXT.md`), the A1 growth + A2 provisional fee (FF-5, §9), and the crates.io

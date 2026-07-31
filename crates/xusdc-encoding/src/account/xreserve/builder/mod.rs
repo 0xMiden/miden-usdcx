@@ -3,25 +3,27 @@
 //! `FungibleFaucet::mint_and_send` gated by the custom **attestation mint policy**
 //! (`xreserve::mint_policy::check_policy` — the ENTIRE attestation pipeline lives in
 //! the policy dispatch), so every supply increase passes the attestation gate — the
-//! faucet's core mint-security invariant. There is NO separate mint-deny guard: the stock
-//! path IS the gated path, so nothing needs trapping.
+//! faucet's core mint-security invariant.
 //!
-//! Scope (cumulative): it composes the `FungibleFaucet`, the assembled `xreserve` library
-//! component (carrying the attestation mint policy, the minimized `identifier_init`, the
-//! `set_attester` admin proc, the DOM_PAUSER custom `pause`/`unpause`, and the BLK_MANAGER
-//! `blocklist_admin`), a `TokenPolicyManager` whose ACTIVE mint policy is the attestation
-//! policy and whose ACTIVE burn policy is the STOCK [`MinBurnAmount`] (floor-seeded `>= 1`,
-//! so zero-amount burns stay rejected by construction), and the **owner-gating admin
-//! foundation** (`Ownable2Step` with a seeded `RoleBasedAccessControl` under
-//! `Authority::OwnerControlled`). The RBAC is SEEDED with the two Circle Domain role members
-//! (`DOM_PAUSER` / `DOM_MANAGER`), with `DOM_PAUSER` administration DELEGATED to `DOM_MANAGER`,
-//! plus the stock `ADMIN` role seeded on the OWNER's account, and the external
-//! `BLK_MANAGER` transfer-blocklist administrator. NOTE the ratified role-graph freeze:
-//! the runtime `set_role_admin` NOTE is deliberately absent from the
-//! note-script allowlist, so the delegation graph deploys FROZEN at this build seed. Pause is
-//! Domain-Pauser-ONLY: the stock `PausableManager` is NOT installed —
-//! the only pause surface is the DOM_PAUSER-gated `xreserve::pause_admin` procs; the
-//! `is_paused` slot the halt-gates read is installed by the base `Pausable` component.
+//! It composes four things:
+//!
+//! * the stock `FungibleFaucet`;
+//! * the assembled `xreserve` library component, carrying the attestation mint policy, the
+//!   `identifier_init` proc, the `set_attester` admin proc, the DOM_PAUSER custom `pause`/`unpause`,
+//!   and the BLK_MANAGER `blocklist_admin`;
+//! * a `TokenPolicyManager` whose ACTIVE mint policy is the attestation policy and whose ACTIVE burn
+//!   policy is the STOCK [`MinBurnAmount`], floor-seeded `>= 1` so zero-amount burns stay rejected
+//!   by construction;
+//! * the owner-gating admin foundation: `Ownable2Step` with a seeded `RoleBasedAccessControl` under
+//!   `Authority::OwnerControlled`.
+//!
+//! The RBAC seed holds the two Circle Domain role members (`DOM_PAUSER` / `DOM_MANAGER`) with
+//! `DOM_PAUSER` administration DELEGATED to `DOM_MANAGER`, the stock `ADMIN` role on the OWNER's
+//! account, and the external `BLK_MANAGER` transfer-blocklist administrator. The runtime
+//! `set_role_admin` note is absent from the note-script allowlist, so the delegation graph deploys
+//! FROZEN at this build seed. Pause is Domain-Pauser-ONLY: the only pause surface is the
+//! DOM_PAUSER-gated `xreserve::pause_admin` procs, and the `is_paused` slot the halt-gates read
+//! comes from the base `Pausable` component.
 //!
 //! Domain config is BUILD-SEEDED except the identifier: `domain`, `source_domain`, and
 //! `xreserve_contract` are required builder inputs written into the declared slots at
@@ -31,7 +33,7 @@
 //!
 //! Packaging: the attestation policy is **runtime-assembled** MASM (no `.masl` asset /
 //! `account_component_code!` here — that is a miden-standards-internal pipeline). The caller
-//! assembles the `xreserve` library (namespace `xreserve`) into an `AccountComponent` and passes
+//! assembles the `xreserve` library into an `AccountComponent` and passes
 //! it in; the policy procedure root is resolved from that same installed code via
 //! [`AccountComponent::get_procedure_root_by_path`], so the `dynexec` root the policy manager
 //! stores always equals the installed proc's MAST root.
@@ -64,8 +66,7 @@ use rbac_seed::seeded_dom_roles_rbac;
 
 /// The two Circle Domain RoleSymbols this faucet seeds under the ratified Circle-faithful admin
 /// model: `DOM_PAUSER` (custom pause/unpause) and `DOM_MANAGER` (rotation / role
-/// management — the delegated admin of `DOM_PAUSER`). Both are valid `RoleSymbol`s
-/// (≤12 chars, `A`–`Z`/`_`; `DOMAIN_PAUSER`(13)/`DOMAIN_MANAGER`(14) would be rejected). The pause
+/// management — the delegated admin of `DOM_PAUSER`). The pause
 /// gate hard-codes the `DOM_PAUSER` symbol in `pause_admin.masm` (parity-asserted); role
 /// management consumes the STOCK rbac procs, so no MASM references `DOM_MANAGER`. The setters are
 /// owner-gated (`Authority::OwnerControlled`), not role-gated.
@@ -78,16 +79,14 @@ pub const DOM_MANAGER_ROLE: &str = "DOM_MANAGER";
 /// is two-way — the holder can ONLY block/unblock, and the owner, lacking the role, cannot). The
 /// stock `BlocklistOwnerControlled` is owner-gated (the wrong identity) and is deliberately NOT
 /// installed; instead `xreserve::blocklist_admin::{block_account,unblock_account}` hard-code this
-/// symbol (parity-asserted). `BLK_MANAGER` is a valid `RoleSymbol` (≤12 chars, `A`–`Z`/`_`). Its
+/// symbol (parity-asserted). Its
 /// admin is left unset → resolves to the built-in `ADMIN` (the owner-held account), so Miden rotates
 /// or revokes the external entity through the EXISTING allowlisted `grant_role`/`revoke_role` notes —
 /// no new rotation machinery. `BLK_MANAGER` is seeded role id 4.
 pub const BLK_MANAGER_ROLE: &str = "BLK_MANAGER";
 
 /// Flat library path of the attestation mint policy's `check_policy` procedure within the
-/// assembled `xreserve` library (namespace `xreserve`, module `mint_policy`). This is the
-/// no-leading-`::` form [`AccountComponent::get_procedure_root_by_path`] expects (matching the
-/// `procedure_root!` macro and the protocol callback wiring).
+/// assembled `xreserve` library (namespace `xreserve`, module `mint_policy`).
 pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str = "xreserve::mint_policy::check_policy";
 
 /// The smallest admissible `min_burn_size` (the zero floor). The stock [`MinBurnAmount`] policy
@@ -100,11 +99,7 @@ pub const MIN_BURN_SIZE_FLOOR: u64 = 1;
 
 /// The shipped on-chain `TokenSymbol` guard constant (token config). The token's identity is
 /// **USDCx** — a DISTINCT identity from the "xUSDC" working label;
-/// the two must not be confused. The pinned `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs`
-/// `ShortCapitalString`), so the on-chain symbol is `USDCX`, the VM-forced uppercase form of
-/// "USDCx"; the display `TokenName` keeps the mixed-case "USDCx".
-/// [`XReserveStablecoinBuilder::build_components`] rejects any other symbol so the deployed symbol
-/// is load-bearing.
+/// the two must not be confused.
 pub const USDCX_TOKEN_SYMBOL: &str = "USDCX";
 
 /// The spec-mandated token decimals (`token_config` decimals = 6; a Circle requirement of six
@@ -112,9 +107,7 @@ pub const USDCX_TOKEN_SYMBOL: &str = "USDCX";
 /// mis-scale every minted amount).
 pub const USDCX_DECIMALS: u8 = 6;
 
-/// Canonical Rust labels of the seven caller-declared `xreserve` storage slots (the single Rust
-/// source: the tests re-export these and the constant-parity suite pins them against the MASM
-/// `word("…")` consts where a MASM reader exists). The five domain-config slots + the two
+/// Canonical Rust labels of the seven caller-declared `xreserve` storage slots. The five domain-config slots + the two
 /// registry maps. `domain` / `source_domain` / `xreserve_contract_{hi,lo}` are BUILD-SEEDED by
 /// this builder (no runtime writer); `identifier` ships EMPTY (the `identifier_init` note is its
 /// only writer).
@@ -145,15 +138,12 @@ pub const REQUIRED_XRESERVE_SLOT_LABELS: [&str; 7] = [
     XRESERVE_ATTESTERS_SLOT_LABEL,
 ];
 
-/// The storage slot the stock `FungibleFaucet` writes its mutability flags into (miden-standards
-/// `token_metadata.rs` at the pinned `=0.16.0-alpha.2`; unlike `is_paused`, this slot lives on
-/// the faucet itself). `build_components` reads it to reject an immutable-`max_supply`
+/// The storage slot the stock `FungibleFaucet` writes its mutability flags into. `build_components` reads it to reject an immutable-`max_supply`
 /// faucet — `FungibleFaucet` exposes no public accessor for the flag (it lives in private `metadata`).
 const FAUCET_MUTABILITY_CONFIG_SLOT: &str = "miden::standards::faucets::mutability_config";
 
 /// Index of `is_max_supply_mutable` within the faucet `mutability_config` word, whose layout is
-/// `[is_desc_mutable, is_logo_mutable, is_extlink_mutable, is_max_supply_mutable]` (miden-standards
-/// `token_metadata.rs` at the pinned `=0.16.0-alpha.2`).
+/// `[is_desc_mutable, is_logo_mutable, is_extlink_mutable, is_max_supply_mutable]`
 const MAX_SUPPLY_MUTABLE_WORD_INDEX: usize = 3;
 
 /// The three build-seeded domain-config fields (`domain`, `source_domain`, `xreserve_contract`)
@@ -327,27 +317,31 @@ impl XReserveStablecoinBuilder {
 
     /// The note-script allowlist for the production faucet's `AuthNetworkAccount` auth
     /// component. It is the SINGLE SOURCE OF TRUTH — the production auth component (`Self::auth_component`)
-    /// consumes it (and the test fixtures compose through that same component), and the allowlist
+    /// consumes it, and the allowlist
     /// tripwire asserts the built account's allowlist equals it exactly. The scheme-2
     /// `NetworkAccountTarget` bind on the notes is routing-only, not a consume gate.
     ///
-    /// COMPLETE — the frozen 14-root set: rows 1-2 (the supply-side STOCK `MintNote` + STOCK
-    /// `BurnNote`), row 3 (`set_attester`, the reference op), rows 4-12 (the remaining
-    /// owner/role/pause admin note scripts, with row 12 the minimized identifier-only
-    /// `identifier_init` note), and rows 13-14 (the transfer-blocklist admin notes `block_account` /
-    /// `unblock_account`, BLK_MANAGER-gated). The set is IMMUTABLE IN EFFECT post-deploy: the
-    /// stock component does export allowlist mutators at this protocol version, but they are
-    /// present-but-UNREACHABLE — no allowlisted note references them and the tx-script allowlist
-    /// admits only the expiration bounder, which is a temporary and ratified state. The config
-    /// note that could drive those mutators is deliberately NOT allowlisted.
-    /// Two capabilities are deliberately OMITTED
-    /// (both human-ratified, grounded in Circle's xReserve EVM admin model): `renounce_role`
-    /// (Circle has no role self-renounce) and the
-    /// runtime `set_role_admin` note (the delegation graph is BUILD-SEEDED by
-    /// `seeded_dom_roles_rbac` and deploys frozen; rotation is `grant_role`/`revoke_role`, with
-    /// the owner as the rotation backstop — see `DECISION-SETROLEADMIN-NOTE-REMOVAL.md`). The stock
-    /// `rbac::set_role_admin` account procedure stays composed but is present-but-UNREACHABLE.
-    /// The materialized 14 pinned roots require explicit HUMAN ratification before deploy.
+    /// The frozen set holds fourteen roots:
+    ///
+    /// * rows 1-2 — the supply-side STOCK `MintNote` and STOCK `BurnNote`.
+    /// * row 3 — `set_attester`.
+    /// * rows 4-12 — the remaining owner/role/pause admin note scripts, row 12 being
+    ///   `identifier_init`.
+    /// * rows 13-14 — the BLK_MANAGER-gated `block_account` / `unblock_account`.
+    ///
+    /// The set is IMMUTABLE IN EFFECT post-deploy: the stock component does export allowlist mutators
+    /// at this protocol version, but they are unreachable — no allowlisted note references them, and
+    /// the tx-script allowlist admits only the expiration bounder.
+    ///
+    /// Two capabilities are omitted, both grounded in Circle's xReserve EVM admin model:
+    ///
+    /// * `renounce_role` — Circle has no role self-renounce.
+    /// * the runtime `set_role_admin` note — the delegation graph is BUILD-SEEDED by
+    ///   `seeded_dom_roles_rbac` and deploys frozen; rotation is `grant_role`/`revoke_role`, with the
+    ///   owner as the backstop. The stock `rbac::set_role_admin` account procedure stays composed but
+    ///   is unreachable.
+    ///
+    /// The materialized roots require explicit HUMAN ratification before deploy.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
         // The "row N" labels below are the notes' STABLE allowlist identities (1-14, shared with
         // `note::xreserve_admin` and the tests), NOT positions in this initializer: the entries
@@ -433,22 +427,7 @@ impl XReserveStablecoinBuilder {
     /// note-script allowlist (`Self::allowed_note_scripts`), a tx-script allowlist containing
     /// EXACTLY the one canonical `ExpirationTransactionScript::script_root()` (a ratified
     /// decision), and the provisional zero-fee configuration
-    /// ([`Self::provisional_fee_policy_manager`]). That single tx-script root is the
-    /// protocol-standard expiration bounder a network account allowlists so the ntx-builder can
-    /// bound how long a submitted tx stays valid; it is safe on an open network account because
-    /// the submitter-controlled delta only bounds the inclusion window of the submitter's own
-    /// transaction (kernel-capped at `0xFFFF` blocks) and can touch neither the account's nonce,
-    /// state, nor assets. Every OTHER tx-script is still rejected (the sole-mint-surface
-    /// posture, expressed as a one-root allowlist).
-    ///
-    /// Constructed via `AuthNetworkAccount::custom`, NEVER `new`: the default constructor
-    /// force-inserts the config-note and fee-sponsorship script roots into the note allowlist,
-    /// which would grow the frozen 14-root set and hand the (present-but-unreachable) allowlist
-    /// mutators a runtime entry vector; `custom` inserts nothing, so the preserved allowlist
-    /// stays exact, and a tripwire test fails if a config note ever appears in it. Composed at
-    /// finalization; the value expands into the auth component plus its registered fee-policy
-    /// components (`IntoIterator`), so callers install everything with one `with_components` /
-    /// `extend`.
+    /// ([`Self::provisional_fee_policy_manager`]).
     pub fn auth_component() -> Result<AuthNetworkAccount, NetworkAccountNoteAllowlistError> {
         Ok(AuthNetworkAccount::custom(
             Self::allowed_note_scripts(),
@@ -460,9 +439,7 @@ impl XReserveStablecoinBuilder {
     /// Reads the supplied faucet's `is_max_supply_mutable` flag from its assembled storage. The stock
     /// `FungibleFaucet` exposes no accessor for it (the flag lives in its private `metadata`), so the
     /// guard reads the `mutability_config` slot the faucet writes. Fail-closed: returns `true` ONLY
-    /// when the slot is present and the flag felt is exactly `1`; a missing slot or any non-`1` felt
-    /// yields `false`, so [`Self::build_components`] rejects the build rather than letting an immutable
-    /// (or malformed) faucet pass silently.
+    /// when the slot is present and the flag felt is exactly `1`.
     fn faucet_max_supply_is_mutable(&self) -> bool {
         let slot_name = StorageSlotName::new(FAUCET_MUTABILITY_CONFIG_SLOT)
             .expect("the faucet mutability_config slot name is a valid constant");
@@ -477,9 +454,7 @@ impl XReserveStablecoinBuilder {
 
     /// Production composition: validates `AccountType::Public`, that the active mint policy is the
     /// attestation policy and the active burn policy the stock [`MinBurnAmount`], seeds the three
-    /// build-time domain-config fields, then composes the account components. No reserved
-    /// alternate policies are registered — production carries no runtime path to a weaker mint or
-    /// burn gate.
+    /// build-time domain-config fields, then composes the account components.
     pub fn build_components(
         &self,
     ) -> Result<Vec<AccountComponent>, XReserveStablecoinBuilderError> {
@@ -715,14 +690,10 @@ impl XReserveStablecoinBuilder {
     /// Assembles the final component list from the manager and the domain-seeded `xreserve`
     /// component.
     ///
-    /// PAUSE PROVENANCE (Domain-Pauser-only): the stock `PausableManager`
-    /// (owner-gated callable `pause`/`unpause`) is deliberately NOT installed; the only pause
-    /// surface is the DOM_PAUSER-gated `xreserve::pause_admin` procs carried by the `xreserve`
-    /// component. The `is_paused` slot every `assert_not_paused` halt-gate reads
-    /// (`execute_mint_policy`/`execute_burn_policy`, the setters) is installed by the base
-    /// `Pausable` component, not by the faucet. `PausableManager`
-    /// still installs ZERO storage. The `production_components_carry_is_paused_slot` tripwire
-    /// pins the slot.
+    /// PAUSE PROVENANCE (Domain-Pauser-only): the only pause surface is the DOM_PAUSER-gated
+    /// `xreserve::pause_admin` procs carried by the `xreserve` component. The `is_paused` slot every
+    /// `assert_not_paused` halt-gate reads (`execute_mint_policy`/`execute_burn_policy`, the
+    /// setters) comes from the base `Pausable` component.
     ///
     /// POLICY-COMPANION SEAM: the
     /// policy descriptors carry their companion components, and the manager's iterator emits one

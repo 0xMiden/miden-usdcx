@@ -10,7 +10,7 @@ use miden_protocol::{Felt, Word};
 
 use super::{build_admin_note, compile_admin_note_script};
 
-// GRANT_ROLE (allowlist row 8)
+// GRANT_ROLE
 // ================================================================================================
 
 const GRANT_ROLE_NOTE_SCRIPT_SRC: &str =
@@ -19,8 +19,8 @@ const GRANT_ROLE_NOTE_SCRIPT_SRC: &str =
 static GRANT_ROLE_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(GRANT_ROLE_NOTE_SCRIPT_SRC));
 
-/// The PINNED grant_role admin note-script root (`masm-rust-constant-parity`): binds transitively to
-/// the stock `rbac::grant_role`'s digest.
+/// The PINNED grant_role admin note-script root: binds transitively to the stock
+/// `rbac::grant_role`'s digest.
 pub const XRESERVE_GRANT_ROLE_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x39e47eb27d42b5eb91ff800800bf43b64f0c6ee761ddb02ed197112809513d8e";
 
@@ -36,12 +36,12 @@ impl XReserveGrantRoleNote {
         GRANT_ROLE_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 8). Must equal the pinned constant (parity-tested).
+    /// The note-script root, which must equal the pinned constant.
     pub fn script_root() -> NoteScriptRoot {
         GRANT_ROLE_NOTE_SCRIPT.root()
     }
 
-    /// The PINNED note-script root ([`XRESERVE_GRANT_ROLE_NOTE_SCRIPT_ROOT_HEX`]).
+    /// [`XRESERVE_GRANT_ROLE_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
     pub fn pinned_script_root() -> NoteScriptRoot {
         NoteScriptRoot::from_raw(
             Word::parse(XRESERVE_GRANT_ROLE_NOTE_SCRIPT_ROOT_HEX)
@@ -52,7 +52,7 @@ impl XReserveGrantRoleNote {
     /// Builds a `grant_role` admin note: `sender` is the admin party (a holder of the granted role's
     /// effective admin role, for
     /// success), `faucet_id` the target faucet (PUBLIC), `role_symbol` the RBAC role element, `member`
-    /// the account to grant it to. The params live in note storage; NOTE_ARGS are ignored.
+    /// the account to grant it to. The params live in note storage.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -65,7 +65,7 @@ impl XReserveGrantRoleNote {
     }
 }
 
-// REVOKE_ROLE (allowlist row 9)
+// REVOKE_ROLE
 // ================================================================================================
 
 const REVOKE_ROLE_NOTE_SCRIPT_SRC: &str =
@@ -74,8 +74,8 @@ const REVOKE_ROLE_NOTE_SCRIPT_SRC: &str =
 static REVOKE_ROLE_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(REVOKE_ROLE_NOTE_SCRIPT_SRC));
 
-/// The PINNED revoke_role admin note-script root (`masm-rust-constant-parity`): binds transitively to
-/// the stock `rbac::revoke_role`'s digest.
+/// The PINNED revoke_role admin note-script root: binds transitively to the stock
+/// `rbac::revoke_role`'s digest.
 pub const XRESERVE_REVOKE_ROLE_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x109245c8d4f8c2873ff3c244fecf6db931e00d1ee0c7d61863107f4b78a4d9ba";
 
@@ -91,12 +91,12 @@ impl XReserveRevokeRoleNote {
         REVOKE_ROLE_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 9). Must equal the pinned constant (parity-tested).
+    /// The note-script root, which must equal the pinned constant.
     pub fn script_root() -> NoteScriptRoot {
         REVOKE_ROLE_NOTE_SCRIPT.root()
     }
 
-    /// The PINNED note-script root ([`XRESERVE_REVOKE_ROLE_NOTE_SCRIPT_ROOT_HEX`]).
+    /// [`XRESERVE_REVOKE_ROLE_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
     pub fn pinned_script_root() -> NoteScriptRoot {
         NoteScriptRoot::from_raw(
             Word::parse(XRESERVE_REVOKE_ROLE_NOTE_SCRIPT_ROOT_HEX)
@@ -107,7 +107,7 @@ impl XReserveRevokeRoleNote {
     /// Builds a `revoke_role` admin note: `sender` is the admin party (a holder of the revoked role's
     /// effective admin role, for
     /// success), `faucet_id` the target faucet (PUBLIC), `role_symbol` the RBAC role element, `member`
-    /// the account to revoke it from. The params live in note storage; NOTE_ARGS are ignored.
+    /// the account to revoke it from. The params live in note storage.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,

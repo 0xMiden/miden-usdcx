@@ -40,7 +40,7 @@ pub enum DepositIntentField {
     HookData,
 }
 
-/// Wire-format constants (the 240-byte header packs to 60 u32-LE felts, 4 bytes per felt — NOT 240/8).
+/// Wire-format constants (the 240-byte header packs to 60 u32-LE felts, 4 bytes per felt).
 pub const DEPOSIT_INTENT_HEADER_LEN: usize = 240;
 pub const DEPOSIT_INTENT_MAGIC: u32 = 0x5a2e_0acd;
 pub const DEPOSIT_INTENT_VERSION: u32 = 1;
@@ -49,7 +49,7 @@ pub const DEPOSIT_INTENT_HEADER_FELTS: usize = 60;
 /// The NoteStorage felt bound (the default hookData cap; the exact cap stays OPEN with Circle).
 const MAX_NOTE_STORAGE_FELTS: usize = 1024;
 
-/// Fixed-offset accessor (offsets per the frozen wire-format table, byte positions on the wire).
+/// Fixed-offset accessor; the offsets are byte positions on the wire.
 pub fn deposit_intent_field_offset(field: DepositIntentField) -> usize {
     match field {
         DepositIntentField::Magic => 0,
@@ -317,9 +317,9 @@ mod tests {
         }
     }
 
-    /// TV-DI-7 (boundary): the packed header is exactly 60 felts (NOT 30),
-    /// equals the committed preimage, stays within the 1024-felt bound, and the overflow
-    /// vector rejects with `HookDataTooLarge` (the hookData cap stays OPEN with Circle).
+    /// TV-DI-7 (boundary): the packed header is exactly 60 felts, equals the committed preimage,
+    /// stays within the 1024-felt bound, and the overflow vector rejects with `HookDataTooLarge`
+    /// (the hookData cap stays OPEN with Circle).
     #[test]
     fn tv_di_7_sixty_felts_and_1024_bound() {
         let v = load();
@@ -351,7 +351,7 @@ mod tests {
         assert_matches!(
             deposit_intent_to_packed_felts(&overflow.bytes()),
             Err(EncodingError::HookDataTooLarge),
-            "hookData past the 1024-felt bound must reject (DEV-6 label preserved)"
+            "hookData past the 1024-felt bound must reject"
         );
     }
 
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(bytes, before, "input must be unchanged by parsing");
     }
 
-    /// TV-DI-9 (layout table): every field offset equals the frozen wire-format byte offset.
+    /// TV-DI-9 (layout table): every field offset equals the wire-format byte offset.
     #[test]
     fn tv_di_9_offsets_table() {
         let expected: [(DepositIntentField, usize); 12] = [
@@ -393,7 +393,7 @@ mod tests {
             assert_eq!(
                 deposit_intent_field_offset(field),
                 off,
-                "DC-1 offset of {field:?}"
+                "wire offset of {field:?}"
             );
         }
     }

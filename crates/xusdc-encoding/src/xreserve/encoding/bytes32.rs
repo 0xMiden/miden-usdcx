@@ -9,8 +9,7 @@
 //! The canonical answer is to HASH instead of reinterpret: pack the bytes into eight
 //! u32-little-endian field elements and take their Poseidon2 hash. That is total — every possible
 //! bytes32 has a key — and collision-resistant, so distinct nonces stay distinct. The faucet's MASM
-//! computes the identical key on-chain, and the cross-language vectors are what keep the two
-//! implementations from drifting.
+//! computes the identical key on-chain.
 //!
 //! The fallible direct conversion also lives here, for the paths that genuinely need the original
 //! bytes back rather than a one-way key.
@@ -39,12 +38,10 @@ pub fn bytes32_to_packed_felts(b: &[u8; 32]) -> [Felt; 8] {
         .expect("32 bytes always pack to exactly 8 u32 felts")
 }
 
-/// Option A (lossless, FALLIBLE — NOT used for external map keys): native `TryFrom`.
-/// Returns `Err(LimbOutOfField)` if any 8-byte LE limb >= p. Round-trip tests only.
+/// The lossless direct conversion. Not usable for external map keys: it returns
+/// `Err(LimbOutOfField)` if any 8-byte LE limb is at or above the field modulus.
 pub fn bytes32_to_word_lossless(b: &[u8; 32]) -> Result<Word, EncodingError> {
-    // the frozen `EncodingError::LimbOutOfField` is a unit variant, so the inner
-    // `WordError` source cannot be carried (the frozen signature takes precedence over the
-    // preserve-error-source convention)
+    // `LimbOutOfField` is a unit variant, so the inner `WordError` source cannot be carried
     Word::try_from(*b).map_err(|_| EncodingError::LimbOutOfField)
 }
 
@@ -52,11 +49,9 @@ pub fn bytes32_to_word_lossless(b: &[u8; 32]) -> Result<Word, EncodingError> {
 /// Fail-closed — any felt
 /// `> u32::MAX` is not a valid packed limb and returns [`EncodingError::LimbNotU32`] rather
 /// than truncating. Round-trip: `packed_felts_to_bytes32(bytes32_to_packed_felts(b)) == b`.
-/// Both the burn-note item decode and the off-chain withdrawal attester unpack through this, so
-/// there is one definition of the inverse.
 pub fn packed_felts_to_bytes32(felts: &[Felt; 8]) -> Result<[u8; 32], EncodingError> {
-    // Fail-closed: the upstream unpacker truncates a felt >= 2^32 to its low 32 bits, so the
-    // valid-u32 guard must run first (never silently narrow a malformed limb).
+    // the upstream unpacker truncates a felt >= 2^32 to its low 32 bits, so the valid-u32 guard
+    // must run first
     for f in felts {
         if f.as_canonical_u64() > u32::MAX as u64 {
             return Err(EncodingError::LimbNotU32);
@@ -93,8 +88,8 @@ mod tests {
         }
     }
 
-    /// TV-B32-2 (negative + bypass-positive): native lossless path rejects a limb >= p,
-    /// while Option B succeeds on the same input.
+    /// TV-B32-2 (negative + bypass-positive): the lossless path rejects a limb >= p, while
+    /// `bytes32_to_storage_map_key` succeeds on the same input.
     #[test]
     fn tv_b32_2_lossless_rejects_option_b_succeeds() {
         let v = load();

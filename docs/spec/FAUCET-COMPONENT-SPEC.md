@@ -40,10 +40,8 @@ min-burn floor, a missing domain-config seed, or a non-Public faucet) at build t
 | `mint_policy` | The **attestation mint policy** (`check_policy`, the ACTIVE mint policy the stock `mint_and_send` dispatches): reads the mint note's DepositIntent + attestation attachments (hash-verified), runs `D5a`–`D5d` by reference, enforces the assert-match binding (note-claimed recipient/amount/tag/type must equal their attested derivations), and marks the nonce used — its only state write. |
 | `deposit_intent_parser` | The faucet-side mint preconditions (`D5a`/`D5b`/`D5c`): domain/identifier compares, amount/fee bounds, nonce replay guard. Delegates the structural DepositIntent parse to the encoding library. |
 | `attestation_verify` | The attestation check (`D5d`): keccak the payload, gate the attester pubkey against the allowlist, ECDSA-verify the signature. |
-| `identifier_init` | The owner-gated, init-once **identifier** seeding (the DEC-4 minimized init: the identifier is a provable fixpoint of the account id, so it alone gets a runtime init; the other three domain-config fields are build-seeded). |
-| `attester_admin` | The owner-gated `set_attester` allowlist setter. |
-| `pause_admin` | The `DOM_PAUSER`-gated custom pause / unpause. |
-| `blocklist_admin` | The `BLK_MANAGER`-gated transfer-blocklist block / unblock. |
+| `identifier_init` | The owner-slot-gated, init-once **identifier** seeding (one of the few procedures the owner slot still gates directly; the setters resolve to the `ADMIN` role) (the DEC-4 minimized init: the identifier is a provable fixpoint of the account id, so it alone gets a runtime init; the other three domain-config fields are build-seeded). |
+| `attester_admin` | The authority-gated `set_attester` allowlist setter. |
 | `encoding/` | The shared encoding library (`xreserve::encoding::*`): bytes32→key hashing, uint256→amount reduction, DepositIntent parse, pubkey commitment. Owned by the encoding crate; the faucet consumes it by reference. |
 
 The burn floor and its setter are **stock**: the `MinBurnAmount` policy component carries the
@@ -53,10 +51,13 @@ floor slot, its `check_policy` is the active burn policy, and the admin note cal
 ### `notes/` — the note scripts
 
 Public note scripts that drive account procedures when consumed. The mint note is the **stock
-miden-standards `MintNote`** (no custom mint script exists); the admin notes are custom, thin,
+miden-standards `MintNote`** (no custom mint script exists); the faucet-owned admin notes are thin,
 root-pinned scripts (`identifier_init`, `set_attester`, `set_min_burn_size` — which asserts the
-floor then calls the stock `set_min_burn_amount` —, `pause`/`unpause`, role management,
-ownership transfer, block/unblock) that cross into the account and call the matching setter.
+floor then calls the stock `set_min_burn_amount` —, `set_max_supply`, role management, ownership
+transfer) that cross into the account and call the matching setter. Pause and blocklist
+administration ship **no faucet-owned script**: they use the stock `PauseActionNote` and
+`BlocklistConfigNote`, each of which covers both of its actions behind one script root and calls the
+stock manager the account installs.
 
 ## 3. Mint
 
@@ -135,12 +136,24 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
 ## 5. Admin
 
 - **Ownership**: `Ownable2Step` (two-step owner transfer).
-- **Owner-gated setters**: `set_attester` (allowlist), the stock `set_min_burn_amount` (behind
-  the note-side floor guard), and `identifier_init` are gated on the account owner. They are
-  intentionally **not** pause-gated (finding `F6`), so the owner can, e.g., disable a
+- **Administrator-gated setters**: `set_attester` (allowlist), the stock `set_min_burn_amount`
+  (behind the note-side floor guard) and `set_max_supply` resolve to the `ADMIN` role;
+  `identifier_init` gates on the owner slot directly. They are
+  intentionally **not** pause-gated (finding `F6`), so the administrator can, e.g., disable a
   compromised attester while the faucet is paused.
-- **Pause**: `pause`/`unpause` are gated on the `DOM_PAUSER` role (not the owner) — Circle's
-  distinct-pauser-role model. A pause halts both mint and burn-consume.
+- **Pause**: the stock `PausableManager`'s `pause`/`unpause`, gated on the `DOM_PAUSER` role (not
+  the owner) — Circle's distinct-pauser-role model, expressed through the account's per-procedure
+  role map rather than a hand-written wrapper. A pause halts both mint and burn-consume.
+- **Transfer blocklist**: the stock `BlocklistManager`'s `block_account`/`unblock_account`, gated on
+  the `BLK_MANAGER` role held by an external administrator with no other capability. The stock
+  procedure does not validate its target, so blocking the faucet against itself is reachable on
+  chain; the faucet's note factory refuses to build such a note, and the state is recoverable with
+  an unblock note (which carries no assets, so no transfer policy runs).
+- **Authority**: `Authority::RbacControlled`. The four manager procedures above carry their roles in
+  the account's procedure-role map; every other authority-gated procedure carries none and so
+  resolves to the built-in `ADMIN` role, whose sole seeded member is the owner's account. That keeps
+  the administrator-gated setters with their current holder while keeping pausing and blocklisting away from
+  it. `ADMIN` membership is account-bound and does not follow an ownership transfer.
 - **Roles**: role-based access control with a `DOM_MANAGER` role that administers `DOM_PAUSER`.
   Since v16 (protocol #3215) the stock RBAC gates `grant_role`/`revoke_role`/`set_role_admin` on
   the managed role's *effective admin* — its delegated admin role, else the built-in `ADMIN`,

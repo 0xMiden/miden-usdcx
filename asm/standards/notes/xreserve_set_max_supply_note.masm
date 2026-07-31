@@ -3,9 +3,9 @@
 # The production admin surface for the STOCK `set_max_supply` under the network account: a fixed-root
 # note whose parameter is CREATOR-COMMITTED in note storage (never NOTE_ARGS). It stages the note
 # storage into memory, marshals the creator's param onto the stack in the proc's Inputs order, and
-# `call`s the owner-gated (via the account Authority) stock
+# `call`s the `ADMIN`-role-gated (via the account Authority) stock
 # `miden::standards::faucets::fungible::set_max_supply` (the gate lives in the proc; the note sender is
-# kernel-forced, so a non-owner creator traps there). The `call` resolves to the SAME
+# kernel-forced, so a creator without the `ADMIN` role traps there). The `call` resolves to the SAME
 # proc root the faucet exposes via the FungibleFaucet component re-exports. A scheme-2
 # NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only).
 #
@@ -28,7 +28,7 @@ const ERR_XRESERVE_SET_MAX_SUPPLY_NOTE_STORAGE = "set_max_supply note storage it
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Consumes the `set_max_supply` admin note and drives the owner-gated max-supply write.
+#! Consumes the `set_max_supply` admin note and drives the `ADMIN`-role-gated max-supply write.
 #!
 #! Stages the creator-committed param (`[new_max_supply]`) into memory at PARAM_PTR, marshals it onto
 #! the stack as `[new_max_supply, pad(15)]`, and `call`s the stock `fungible::set_max_supply`. The
@@ -48,7 +48,7 @@ const ERR_XRESERVE_SET_MAX_SUPPLY_NOTE_STORAGE = "set_max_supply note storage it
 #!
 #! Panics if:
 #! - the note storage does not carry exactly 1 item.
-#! - the max supply is not mutable, the note sender is not the owner, or the faucet is paused, or
+#! - the max supply is not mutable, the note sender does not hold the `ADMIN` role, or the faucet is paused, or
 #!   new_max_supply < token_supply (the stock set_max_supply gate chain).
 #!
 #! Invocation: dyncall

@@ -51,7 +51,7 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveGrantRoleNote, XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote,
+    XReserveGrantRoleNote, XReserveIdentifierInitNote, XReserveRevokeRoleNote,
     XReserveSetAttesterNote,
 };
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
@@ -326,7 +326,7 @@ async fn dom_manager_grants_pauser_then_new_pauser_halts_mint() -> Result<()> {
                 &mut note_rng(31),
             )
             .expect("building the DOM_MANAGER grant_role note"),
-            XReservePauseNote::create(new_pauser(), test_faucet_id(1), &mut note_rng(32))
+            stock_pause_note(new_pauser(), test_faucet_id(1), 32)
                 .expect("building the candidate's pause note"),
         ]
     })?;
@@ -444,9 +444,9 @@ async fn dom_manager_rotates_pauser_revoke_then_grant() -> Result<()> {
                 &mut note_rng(37),
             )
             .expect("building the DOM_MANAGER grant_role note"),
-            XReservePauseNote::create(dom_pauser(), route, &mut note_rng(38))
+            stock_pause_note(dom_pauser(), route, 38)
                 .expect("building the OLD pauser's pause note"),
-            XReservePauseNote::create(new_pauser(), route, &mut note_rng(39))
+            stock_pause_note(new_pauser(), route, 39)
                 .expect("building the NEW pauser's pause note"),
         ]
     })?;

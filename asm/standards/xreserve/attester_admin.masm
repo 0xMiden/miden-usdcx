@@ -1,11 +1,13 @@
 # xreserve::attester_admin
 #
-# The owner-gated deposit-attester allowlist setter (set_attester): writes the
+# The authority-gated deposit-attester allowlist setter (set_attester): writes the
 # xReserveAttesters allowlist — the write side of the allowlist that attestation_verify.masm
 # reads at mint time. Reuses the standard access primitives:
-# authority::assert_authorized (the account-wide Authority::OwnerControlled gate ->
-# ownable2step::assert_sender_is_owner on the note sender) + native_account::set_map_item (the write).
-# No custom owner/RBAC logic. The setter is intentionally NOT pause-gated (matching Circle's
+# authority::assert_authorized (the account-wide Authority gate) + native_account::set_map_item
+# (the write). No custom owner/RBAC logic. Under the account's role-based authority this procedure
+# carries no role assignment of its own, so the gate resolves to the built-in ADMIN role, whose sole
+# member is the owner's account — the same identity that held the capability under the earlier
+# owner-based authority. The setter is intentionally NOT pause-gated (matching Circle's
 # onlyOwner model).
 
 use miden::protocol::native_account
@@ -28,7 +30,7 @@ const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
 # =================================================================================================
 
 #! Enables (enabled = 1) or disables (enabled = 0) a deposit attester keyed by its pubkey
-#! commitment — the OWNER-gated setter for the xReserveAttesters allowlist. It trusts the caller's
+#! commitment — the `ADMIN`-gated setter for the xReserveAttesters allowlist. It trusts the caller's
 #! commitment Word verbatim and does NOT recompute it from a raw pubkey.
 #!
 #! Inputs:  [PK_COMMITMENT, enabled, pad(11)]
@@ -39,18 +41,18 @@ const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
 #! - enabled is 1 (allowlist: write the enabled marker) or 0 (remove: write EMPTY_WORD).
 #!
 #! Panics if:
-#! - the note sender is not the registered owner (authority::assert_authorized ->
-#!   ownable2step::assert_sender_is_owner, ERR_SENDER_NOT_OWNER).
+#! - the note sender does not hold the role the account's authority requires for this procedure
+#!   (authority::assert_authorized -> rbac::assert_sender_is_admin, ERR_SENDER_LACKS_ROLE).
 #! - `enabled` is not a boolean (the `if.true` binary constraint).
 #!
 #! Invocation: call
 @locals(4)
 @account_procedure
 pub proc set_attester
-    # gate: the Ownable2Step owner (sender-based) ONLY —
+    # gate: the account-wide authority (sender-based) ONLY —
     # intentionally NOT pause-gated (Circle's onlyOwner model), so
-    # the owner may disable a compromised attester while the faucet
-    # is paused. reads account storage and is
+    # the administrator may disable a compromised attester while the
+    # faucet is paused. reads account storage and is
     # operand-stack-neutral.
     exec.authority::assert_authorized
     # => [PK_COMMITMENT, enabled, pad(11)]

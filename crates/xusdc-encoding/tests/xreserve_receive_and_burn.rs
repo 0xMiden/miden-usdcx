@@ -55,7 +55,7 @@ const VALID_BURN: u64 = 5_000;
 const BELOW_MIN: u64 = 500;
 
 /// The Ownable2Step OWNER the burn oracle installs (id(1)). Under the reconciled Circle-faithful admin
-/// model the setters gate on the owner (`Authority::OwnerControlled`).
+/// model the setters resolve to the built-in `ADMIN` role under the account's role-based authority.
 fn owner() -> AccountId {
     test_account_id(1)
 }

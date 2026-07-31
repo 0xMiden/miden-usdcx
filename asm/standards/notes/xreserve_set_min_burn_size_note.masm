@@ -4,8 +4,8 @@
 # note whose parameter is CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the network
 # executor controls). The note targets the STOCK
 # `min_burn_amount::set_min_burn_amount` account procedure (authority-gated: under
-# `Authority::OwnerControlled` the sender gate resolves to the Ownable2Step owner, and it lives
-# in the proc — a non-owner creator traps there). The stock setter itself accepts `new_min = 0`,
+# `Authority::RbacControlled` the sender gate resolves to the `ADMIN` role, and it lives
+# in the proc — a creator without the `ADMIN` role traps there). The stock setter itself accepts `new_min = 0`,
 # so THIS SCRIPT carries the zero-floor guard, preserving the zero-burns-are-rejected
 # invariant at the only runtime write path: `new_min >= 1` is asserted BEFORE the call. A scheme-2
 # NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only, added
@@ -51,7 +51,7 @@ const ERR_XRESERVE_MIN_BURN_ABOVE_MAX = "min burn size exceeds the maximum asset
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Consumes the `set_min_burn_size` admin note and drives the owner-gated minimum-burn write
+#! Consumes the `set_min_burn_size` admin note and drives the `ADMIN`-role-gated minimum-burn write
 #! through the STOCK `set_min_burn_amount`, enforcing both range bounds first.
 #!
 #! Both bounds are this note's own: the stock setter accepts 0,
@@ -78,7 +78,7 @@ const ERR_XRESERVE_MIN_BURN_ABOVE_MAX = "min burn size exceeds the maximum asset
 #! - new_min exceeds FUNGIBLE_ASSET_MAX_AMOUNT (ERR_XRESERVE_MIN_BURN_ABOVE_MAX, the
 #!   upper-range guard — an out-of-range floor would halt all redemptions).
 #! - the note sender is not authorized per the installed Authority (the stock setter's
-#!   authority::assert_authorized -> the Ownable2Step owner).
+#!   authority::assert_authorized -> the `ADMIN` role).
 #!
 #! Invocation: dyncall
 @note_script

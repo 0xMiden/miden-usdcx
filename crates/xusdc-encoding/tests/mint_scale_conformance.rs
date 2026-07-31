@@ -36,9 +36,7 @@ use miden_standards::account::faucets::FungibleFaucet;
 use miden_testing::MockChain;
 use miden_tx::TransactionExecutorError;
 use support::*;
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveBlockAccountNote, XReserveIdentifierInitNote, XReserveSetAttesterNote,
-};
+use xusdc_encoding::note::xreserve_admin::{XReserveIdentifierInitNote, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, DiVector};
 use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, bytes32_to_storage_map_key};
@@ -516,13 +514,8 @@ async fn mint_to_a_blocked_recipient_succeeds_then_strands() -> anyhow::Result<(
                 .expect("building the owner identifier_init note"),
             XReserveSetAttesterNote::create(owner(), faucet_id, commitment, 1, &mut note_rng(962))
                 .expect("building the owner set_attester note"),
-            XReserveBlockAccountNote::create(
-                blk_manager(),
-                faucet_id,
-                recipient,
-                &mut note_rng(963),
-            )
-            .expect("building the BLK_MANAGER block note targeting the recipient"),
+            stock_block_note(blk_manager(), faucet_id, recipient, 963)
+                .expect("building the BLK_MANAGER block note targeting the recipient"),
         ]
     })?;
     bring_up(&mut pf).await?;

@@ -18,6 +18,17 @@
 #![allow(dead_code)]
 
 pub mod mint_transport;
+pub mod w2admin;
+
+// The standard pause / blocklist admin-note factories live with the rest of the standard-admin
+// fixtures; re-exported here so every suite reaches them through `support::*` as before.
+// Each test binary compiles this module separately and pulls in only the helpers it uses, so the
+// re-export is legitimately unused in most of them.
+#[allow(unused_imports)]
+pub use w2admin::{
+    raw_stock_block_note, stock_block_note, stock_pause_action_note, stock_pause_note,
+    stock_unblock_note, stock_unpause_note,
+};
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -37,7 +48,9 @@ use miden_protocol::note::{Note, NoteType};
 use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote, TransactionKernel};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
-use miden_standards::account::access::{Authority, Ownable2Step, Pausable, RoleBasedAccessControl};
+use miden_standards::account::access::{
+    Ownable2Step, Pausable, PausableManager, RoleBasedAccessControl,
+};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
 use miden_standards::account::wallets::BasicWallet;
@@ -48,8 +61,8 @@ use miden_standards::StandardsLib;
 use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
-    XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE,
-    DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveAdminAuthority, XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH,
+    BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::xreserve::encoding::masm_error_by_name;
 
@@ -125,7 +138,7 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 26] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 25] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -262,13 +275,6 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 26] = [
         "ERR_XRESERVE_IDENTIFIER_MISMATCH",
         MasmError::from_static_str("identifier does not match the faucet's own account id key"),
     ),
-    // Self-block guard (blocklist_admin.masm): block_account rejects the faucet's OWN account id
-    // as its target, since blocking the faucet would freeze it as a transfer party (mint-and-send and
-    // burn/redeem both trap). Only block_account is guarded — unblocking the faucet is harmless.
-    (
-        "ERR_XRESERVE_CANNOT_BLOCK_SELF",
-        MasmError::from_static_str("cannot block the faucet's own account"),
-    ),
 ];
 
 /// The min-burn admin note's zero-floor guard
@@ -404,7 +410,7 @@ pub fn add_faucet_account(
 /// its fee-policy companions — instead of the `miden-testing` `Auth::NetworkAccount` fixture. The
 /// fixture routes through `AuthNetworkAccount::new()`, which force-inserts the config-note and
 /// fee-sponsorship script roots into the note allowlist; the preserved posture is the EXACT
-/// 14-root allowlist, so the composition must go through `custom()` (which inserts nothing) —
+/// 12-root allowlist, so the composition must go through `custom()` (which inserts nothing) —
 /// `config_note_absence.rs` is the tripwire. Registering the account without an authenticator
 /// matches the fixture's behavior for the keyless network account (its authenticator is `None`
 /// either way). The callback flag is derived exactly as in [`add_faucet_account`].
@@ -1213,12 +1219,12 @@ pub fn faucet_account(h: &CompositionHarness) -> Account {
         .clone()
 }
 
-/// Builds a note SENT BY `sender` whose script calls the stock `PausableManager::pause`. Under
-/// the Domain-Pauser-only model the composition does NOT install `PausableManager`, so this note is
-/// the NEGATIVE PROBE for `owner_has_no_pause_path`: it assembles (StandardsLib is pre-linked) but
-/// executing it traps `UnknownAccountProcedure` (the root is not in the account code). No xreserve
-/// link is needed.
-pub fn pause_note(sender: AccountId, seed: u64) -> Result<Note> {
+/// Builds a note SENT BY `sender` whose script calls the stock `PausableManager::pause`. The
+/// procedure IS installed, so this note is the probe for WHO may use it: sent by the Domain pauser
+/// it pauses the faucet, and sent by anyone else — including the owner — it traps the role error,
+/// which is what `owner_has_no_pause_path` pins. It assembles without an xreserve link, since
+/// StandardsLib is pre-linked.
+pub fn manager_pause_call_note(sender: AccountId, seed: u64) -> Result<Note> {
     let src = "use miden::standards::access::pausable::manager\n\
                @note_script\n\
                pub proc main\n\
@@ -1242,15 +1248,16 @@ pub fn pause_note(sender: AccountId, seed: u64) -> Result<Note> {
 }
 
 /// Executes a stock `PausableManager::pause` note (sent by `sender`) against the faucet `account` —
-/// the CompositionHarness-shaped twin of [`run_pause_against`]. Under the Domain-Pauser-only model
-/// this is a negative probe: the stock proc is not installed, so execution traps `UnknownAccountProcedure`.
+/// the CompositionHarness-shaped twin of [`run_pause_against`]. The procedure IS installed, so the
+/// verdict is the role gate's: the Domain pauser succeeds and anyone else traps the role error.
 pub async fn run_pause_tx(
     h: &CompositionHarness,
     account: &Account,
     sender: AccountId,
     seed: u64,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note = pause_note(sender, seed).expect("building the pause note (test-setup invariant)");
+    let note = manager_pause_call_note(sender, seed)
+        .expect("building the manager pause-call note (test-setup invariant)");
     h.mock_chain
         .build_transaction(account.clone())
         .unauthenticated_input_note(note.clone())
@@ -1269,7 +1276,7 @@ pub const RAW_BLOCKLIST_PATH: &str = "xusdc::test_fixtures::raw_blocklist";
 /// A TEST-ONLY account component exposing an UNGUARDED raw self-block proc (`block_self_unchecked`):
 /// it `exec`s the low-level `blocklist::block_account` primitive on the NATIVE id directly,
 /// bypassing both the BLK_MANAGER role gate and the self-block guard in
-/// `xreserve::blocklist_admin::block_account`. Its sole use is arming the faucet-blocked sentinel in
+/// the stock `BlocklistManager::block_account`. Its sole use is arming the faucet-blocked sentinel in
 /// `transfer_blocklist_semantics::faucet_side_burn_consume_is_callback_unaffected`: with the
 /// self-block guard in place the
 /// production admin surface cannot block the faucet, so the sentinel writes
@@ -1340,11 +1347,22 @@ pub fn raw_self_block_note(sender: AccountId, seed: u64) -> Result<Note> {
 // identifier_init — owner-gated init-once identifier seeding note
 // ================================================================================================
 
+/// The exact stock error the RBAC role assertion traps (`rbac.masm` ERR_SENDER_LACKS_ROLE). Under
+/// the account's role-based authority this is what an unauthorized sender gets from every
+/// authority-gated procedure: the ones with a role assigned (the pause and blocklist managers) and
+/// the ones without, which fall back to the administrator role (`set_attester`, the supply cap, the
+/// burn floor, the policy setters). The procedures that gate on the owner slot DIRECTLY —
+/// `identifier_init`, `transfer_ownership`, `accept_ownership` — still trap
+/// [`err_sender_not_owner`].
+pub fn err_sender_lacks_role() -> MasmError {
+    MasmError::from_static_str("note sender does not hold the required role")
+}
+
 /// The exact stock error `ownable2step::assert_sender_is_owner` traps (ownable2step.masm:38
 /// ERR_SENDER_NOT_OWNER). Constructed inline (a stock protocol error, not an xusdc shell error, so it
-/// is not in `SHELL_ERR_TABLE`). Under the reconciled owner-gated model
-/// this is the SHARED trap for a non-owner sender across every setter (`set_attester` /
-/// `set_min_burn_size` / `set_max_supply` / `identifier_init`).
+/// is not in `SHELL_ERR_TABLE`). It is the trap for the procedures reading the owner slot DIRECTLY
+/// — `identifier_init`, `transfer_ownership`, `accept_ownership`. The setters (`set_attester` /
+/// `set_min_burn_size` / `set_max_supply`) resolve to the `ADMIN` role and raise the role error.
 pub fn err_sender_not_owner() -> MasmError {
     MasmError::from_static_str("note sender is not the owner")
 }
@@ -1435,12 +1453,12 @@ pub fn read_domain_config_words(account: &Account) -> Result<[Word; 5]> {
     ])
 }
 
-// set_min_burn_size — owner-gated minBurnSize setter note + slot read-back
+// set_min_burn_size — ADMIN-gated minBurnSize setter note + slot read-back
 // ================================================================================================
 
 /// Builds an unauthenticated note SENT BY `sender` whose script `call`s the STOCK
 /// `min_burn_amount::set_min_burn_amount(new_min)`. Like `set_attester`,
-/// the authority gate reads the note sender, so the sender is what the owner check tests.
+/// the authority gate reads the note sender, so the sender is what the `ADMIN` role check tests.
 /// `new_min` is the single felt written as element 0 of the stock floor slot. NOTE: this is the
 /// RAW driver — it deliberately BYPASSES the production note script's zero-floor guard so tests
 /// can probe the stock proc directly; the floor-guard behavior itself is tested through the
@@ -1606,10 +1624,10 @@ pub enum GuardSelection {
 /// A guarded mint harness: the composition account WITH the `TokenPolicyManager` (the attestation
 /// policy or allow-all per the [`GuardSelection`]), plus the resolved ACTIVE mint-policy proc
 /// root. The production path is composed by `XReserveStablecoinBuilder::build_components`; the
-/// allow-all oracle by the test-only [`oracle_components`] helper. No stock `PausableManager`
-/// anywhere (the Domain-Pauser-only model): the `is_paused` slot is installed by the base
-/// `Pausable` component (v0.16 #2944 moved it out of `FungibleFaucet`) and pause is exclusively
-/// `xreserve::pause_admin`.
+/// allow-all oracle by the test-only [`oracle_components`] helper. Pause is the stock
+/// `PausableManager` gated on the Domain pauser role by the account's procedure-role map; the
+/// `is_paused` slot it writes is installed by the base `Pausable` component (v0.16 #2944 moved it
+/// out of `FungibleFaucet`).
 pub struct GuardedMint {
     pub harness: CompositionHarness,
     pub policy_root: Word,
@@ -1857,7 +1875,7 @@ pub struct BurnPolicyHarness {
 /// direct-seeded with the two Circle Domain role members `DOM_PAUSER`→`pauser_holder` and
 /// `DOM_MANAGER`→`manager_holder`; `DOM_PAUSER` administration delegated to `DOM_MANAGER` — the
 /// seed `role_config[DOM_PAUSER] = [1, DOM_MANAGER, 0, 0]`). The burn oracle needs the RBAC foundation
-/// so the DOM_PAUSER-sent custom `xreserve::pause_admin::pause` clears its role gate (the pause gate
+/// so the DOM_PAUSER-sent stock `PausableManager::pause` clears its role gate (the pause gate
 /// `burn_paused_rejects` exercises). Reuses the stock RBAC code + slot names + metadata verbatim.
 /// Replica fidelity to the production seed is pinned by
 /// `set_min_burn.rs::support_replica_carries_delegation_seed` (the production twin is
@@ -2036,9 +2054,8 @@ fn oracle_burn_components(
     // carries the xreserve component (dropped: it is installed once below) and the two stock burn
     // policies carry the MinBurnAmount (with the floor slot) + BurnAllowAll companions (BOTH
     // kept: the code-identical pair needs them in both variants). The base Pausable component
-    // installs the is_paused slot (v16 — #2944 moved it out of FungibleFaucet); no
-    // PausableManager (the Domain-Pauser-only model) — pause is exclusively the DOM_PAUSER
-    // custom xreserve::pause_admin procs.
+    // installs the is_paused slot (v16 — #2944 moved it out of FungibleFaucet) and the stock
+    // PausableManager writes it, gated on the Domain pauser role by the procedure-role map.
     let xreserve_code = xreserve_component.component_code().clone();
     let mut parts = manager.into_iter();
     let manager_component = parts.next().expect("manager component first");
@@ -2060,6 +2077,7 @@ fn oracle_burn_components(
     ];
     components.push(manager_component);
     components.extend(keep); // [MinBurnAmount (floor slot), BurnAllowAll]
+    components.push(PausableManager.into());
     components.push(Ownable2Step::new(owner).into());
     components.push(seeded_dom_roles_rbac_component(
         owner,
@@ -2067,7 +2085,7 @@ fn oracle_burn_components(
         manager_holder,
         blocklist_manager_holder,
     ));
-    components.push(Authority::OwnerControlled.into());
+    components.push(XReserveAdminAuthority::new().into());
     Ok(components)
 }
 
@@ -2461,7 +2479,8 @@ pub async fn run_pause_against(
     sender: AccountId,
     seed: u64,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note = pause_note(sender, seed).expect("building the pause note (test-setup invariant)");
+    let note = manager_pause_call_note(sender, seed)
+        .expect("building the manager pause-call note (test-setup invariant)");
     chain
         .build_transaction(account.clone())
         .unauthenticated_input_note(note.clone())
@@ -2472,9 +2491,9 @@ pub async fn run_pause_against(
 }
 
 /// Builds a note SENT BY `sender` whose script calls the stock `PausableManager::unpause` — the
-/// unpause twin of [`pause_note`]. Serial tail [25, 26] keeps note serials disjoint from the other
-/// admin-note families.
-pub fn stock_unpause_note(sender: AccountId, seed: u64) -> Result<Note> {
+/// unpause twin of [`manager_pause_call_note`]. Serial tail [25, 26] keeps note serials disjoint
+/// from the other admin-note families.
+pub fn manager_unpause_call_note(sender: AccountId, seed: u64) -> Result<Note> {
     let src = "use miden::standards::access::pausable::manager\n\
                @note_script\n\
                pub proc main\n\
@@ -2505,8 +2524,8 @@ pub async fn run_stock_unpause_against(
     sender: AccountId,
     seed: u64,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note = stock_unpause_note(sender, seed)
-        .expect("building the stock unpause note (test-setup invariant)");
+    let note = manager_unpause_call_note(sender, seed)
+        .expect("building the manager unpause-call note (test-setup invariant)");
     chain
         .build_transaction(account.clone())
         .unauthenticated_input_note(note.clone())
@@ -2540,35 +2559,33 @@ pub fn assert_unknown_account_procedure(err: &TransactionExecutorError) {
     );
 }
 
-// DOM_PAUSER CUSTOM PAUSE — notes + runners for the xreserve::pause_admin procs
+// DOM_PAUSER PAUSE — notes + runners for the stock PausableManager procs
 // ================================================================================================
 
-/// Builds a note SENT BY `sender` whose script `call`s the CUSTOM `xreserve::pause_admin::{proc}`
-/// (DOM_PAUSER-gated) — under the Domain-Pauser-only model the ONLY installed pause surface. Unlike
-/// [`pause_note`] (the stock negative probe, a pre-linked StandardsLib proc), this links the
-/// `xreserve` library so the `xreserve::pause_admin::*` path resolves. `pause`/`unpause` take
-/// `[pad(16)]` and return `[pad(16)]`, so the note pushes 16 pad felts, `call`s, and clears the
-/// returned frame — the [`pause_note`] shape.
-fn dom_pauser_pause_admin_note(
+/// Builds a note SENT BY `sender` whose script `call`s the stock `PausableManager::{proc}`, which
+/// the account's procedure-role map gates on the Domain pauser role.
+///
+/// This is the same underlying procedure [`manager_pause_call_note`] targets — the pause surface is
+/// the stock manager for every caller now, and who may use it is decided by the role map, not by
+/// which procedure the note calls. The two helpers differ only in their serial tails, which keeps
+/// note ids from colliding across the admin-note families.
+fn dom_pauser_manager_note(
     sender: AccountId,
     seed: u64,
     proc: &str,
     tail0: u32,
     tail1: u32,
 ) -> Result<Note> {
-    let lib = assemble_xreserve_lib()?;
     let src = format!(
-        "use xreserve::pause_admin\n\
+        "use miden::standards::access::pausable::manager\n\
          @note_script\n\
          pub proc main\n\
          \x20\x20\x20\x20repeat.16 push.0 end\n\
-         \x20\x20\x20\x20call.pause_admin::{proc}\n\
+         \x20\x20\x20\x20call.manager::{proc}\n\
          \x20\x20\x20\x20dropw dropw dropw dropw\n\
          end\n",
     );
     let script = CodeBuilder::new()
-        .with_dynamically_linked_package(&lib)
-        .context("linking xreserve into the dom_pauser pause_admin note script")?
         .compile_note_script(src.clone())
         .map_err(|e| {
             anyhow::anyhow!("dom_pauser {proc} note script failed to compile: {e}\n{src}")
@@ -2588,19 +2605,18 @@ fn dom_pauser_pause_admin_note(
         .build()?)
 }
 
-/// A DOM_PAUSER `pause_admin::pause` note sent by `sender`.
+/// A `PausableManager::pause` note sent by `sender` (the Domain pauser, for success).
 pub fn dom_pauser_pause_note(sender: AccountId, seed: u64) -> Result<Note> {
-    dom_pauser_pause_admin_note(sender, seed, "pause", 21, 22)
+    dom_pauser_manager_note(sender, seed, "pause", 21, 22)
 }
 
-/// A DOM_PAUSER `pause_admin::unpause` note sent by `sender`.
+/// A `PausableManager::unpause` note sent by `sender` (the Domain pauser, for success).
 pub fn dom_pauser_unpause_note(sender: AccountId, seed: u64) -> Result<Note> {
-    dom_pauser_pause_admin_note(sender, seed, "unpause", 23, 24)
+    dom_pauser_manager_note(sender, seed, "unpause", 23, 24)
 }
 
-/// Executes a DOM_PAUSER `pause_admin::pause` note (sent by `sender`) against the faucet `account` on a
-/// bare `&MockChain`. Mirrors [`run_pause_against`] (stock owner pause) but drives the CUSTOM
-/// pause_admin proc; the caller applies the returned delta (the unauthenticated note is not
+/// Executes a `PausableManager::pause` note (sent by `sender`) against the faucet `account` on a
+/// bare `&MockChain`; the caller applies the returned delta (the unauthenticated note is not
 /// block-proven).
 pub async fn run_dom_pauser_pause(
     chain: &MockChain,
@@ -3194,7 +3210,7 @@ pub fn setup_production_faucet(
     // and the provisional zero-fee configuration — installed via the deploy path's OWN
     // `XReserveStablecoinBuilder::auth_component()` (the `custom()`-based composition; the
     // `Auth::NetworkAccount` fixture is deliberately bypassed because it routes through the
-    // force-inserting `new()` constructor and would grow the 14-root allowlist).
+    // force-inserting `new()` constructor and would grow the 12-root allowlist).
     let account = add_network_faucet_account(&mut mc, components)
         .context("adding the production faucet account")?;
     // The faucet id is now known, so the seed-notes closure binds its notes (the

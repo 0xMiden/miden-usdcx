@@ -33,9 +33,7 @@ use miden_testing::assert_transaction_executor_error;
 use miden_tx::TransactionExecutorError;
 use rstest::rstest;
 use support::*;
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveIdentifierInitNote, XReservePauseNote, XReserveSetAttesterNote, XReserveUnpauseNote,
-};
+use xusdc_encoding::note::xreserve_admin::{XReserveIdentifierInitNote, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, DiVector};
 use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
@@ -74,10 +72,6 @@ const VALID_BURN: u64 = 5_000;
 fn err_paused() -> MasmError {
     MasmError::from_static_str("the contract is paused")
 }
-fn err_sender_lacks_role() -> MasmError {
-    MasmError::from_static_str("note sender does not hold the required role")
-}
-
 // MINT-SEAM FIXTURES (the recomposed REAL stock-MintNote transport — mirrors mint_policy_e2e.rs)
 // ================================================================================================
 
@@ -246,7 +240,7 @@ fn token_supply_of(account: &Account) -> Result<Felt> {
 // ================================================================================================
 
 #[test]
-fn probe_pause_admin_exports() -> Result<()> {
+fn the_xreserve_library_exports_no_pause_procedure() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     let exports: Vec<String> = lib
         .manifest
@@ -254,52 +248,46 @@ fn probe_pause_admin_exports() -> Result<()> {
         .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
-    for canonical in [
-        "::xreserve::pause_admin::pause",
-        "::xreserve::pause_admin::unpause",
-    ] {
-        assert!(
-            exports.iter().any(|e| e == canonical),
-            "canonical pause proc path {canonical} missing; exports: {exports:?}"
-        );
-    }
+    assert!(
+        !exports.iter().any(|e| e.contains("pause")),
+        "pausing is the stock manager's job now; the faucet library must export no pause \
+         procedure of its own, or two pause surfaces would exist. exports: {exports:?}"
+    );
     Ok(())
 }
 
 // PAUSE-HALT SEAM — the non-vacuity must-have: a pause HALTS the real mint AND the real burn
 // ================================================================================================
 
-/// The owner has no standard pause path: the procedure is not in the account at all.
+/// The owner has no pause path.
 ///
-/// A note calling the standard `PausableManager::pause` still ASSEMBLES, because the standards
-/// library is linked in regardless — so the interesting failure is at execution. The production
-/// account does not expose that procedure's root, and the host rejects the call with
-/// `UnknownAccountProcedure` ("… is not in the account procedure index map"). That is a structural
-/// absence, not an authorization check: no MASM assert runs, and `is_paused` is left untouched.
+/// The standard pause manager IS installed now, so the rejection is an authorization check rather
+/// than a missing procedure: the account's procedure-role map gates `pause` on the Domain pauser
+/// role, the owner does not hold it, and the role assertion traps. What matters is that the outcome
+/// is unchanged — the owner cannot pause, and `is_paused` is left untouched.
 ///
-/// Distinguishing the two failure kinds is the point. A rejected-by-assert result would mean the
-/// manager is installed and merely refusing this caller, which is a weaker property than the
-/// manager not being there.
+/// The exact error is the point. A missing-procedure failure would now mean the manager was dropped
+/// from the composition; anything other than the role error would mean the map is not gating this
+/// procedure at all, and the capability had quietly fallen back to the administrator role — which
+/// the owner does hold.
 #[tokio::test]
 async fn owner_has_no_pause_path() -> Result<()> {
     let gm = production_pause_fixture()?;
     let account = faucet_account(&gm.harness);
 
     let result = run_pause_against(&gm.harness.mock_chain, &account, owner(), 5).await;
-    let err = result.expect_err("the stock owner pause path must be gone (Option 1)");
-    assert_unknown_account_procedure(&err);
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     assert_eq!(
         read_is_paused(&account)?,
         Word::from([0u32, 0, 0, 0]),
-        "a failed stock pause leaves is_paused unpaused"
+        "a rejected pause leaves is_paused unpaused"
     );
     Ok(())
 }
 
-/// The unpause twin: DOM_PAUSER pauses first (the flag REALLY flips), then an owner-sent stock
-/// `PausableManager::unpause` note fails with the EXACT `UnknownAccountProcedure` and the faucet
-/// STAYS paused — a surviving stock unpause would visibly clear the flag. RED at the prior
-/// baseline: the owner stock unpause SUCCEEDS (gated only on the owner Authority).
+/// The unpause twin: the Domain pauser pauses first (the flag REALLY flips), then an owner-sent
+/// unpause note fails with the EXACT role error and the faucet STAYS paused — an owner who could
+/// unpause would visibly clear the flag.
 #[tokio::test]
 async fn owner_has_no_unpause_path() -> Result<()> {
     let gm = production_pause_fixture()?;
@@ -317,17 +305,16 @@ async fn owner_has_no_unpause_path() -> Result<()> {
     );
 
     let result = run_stock_unpause_against(&gm.harness.mock_chain, &evolved, owner(), 6).await;
-    let err = result.expect_err("the stock owner unpause path must be gone (Option 1)");
-    assert_unknown_account_procedure(&err);
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     assert_eq!(
         read_is_paused(&evolved)?,
         Word::from([1u32, 0, 0, 0]),
-        "a failed stock unpause leaves the faucet paused"
+        "a rejected unpause leaves the faucet paused"
     );
     Ok(())
 }
 
-/// A DOM_PAUSER-triggered pause HALTS the real mint: the seeded production `XReservePauseNote`
+/// A DOM_PAUSER-triggered pause HALTS the real mint: the seeded standard pause-action note
 /// (DOM_PAUSER-sent, consumed by id under the network auth) pauses the faucet, then a REAL attested
 /// stock mint note (the recomposed transport, emitted and consumed by id) traps the EXACT
 /// `ERR_PAUSABLE_IS_PAUSED` at the policy dispatcher's stock pause gate — fail-closed (no supply
@@ -335,10 +322,8 @@ async fn owner_has_no_unpause_path() -> Result<()> {
 #[tokio::test]
 async fn dom_pauser_pause_halts_mint() -> Result<()> {
     let mut pf = mint_fixture(|_| {
-        vec![
-            XReservePauseNote::create(dom_pauser(), test_faucet_id(1), &mut prod_note_rng(7))
-                .expect("building the DOM_PAUSER pause note"),
-        ]
+        vec![stock_pause_note(dom_pauser(), test_faucet_id(1), 7)
+            .expect("building the DOM_PAUSER pause note")]
     })?;
     bring_up(&mut pf, 3).await?; // identifier_init + set_attester + pause
     assert_eq!(
@@ -358,7 +343,7 @@ async fn dom_pauser_pause_halts_mint() -> Result<()> {
     Ok(())
 }
 
-/// The shipped, allowlisted `XReservePauseNote`, sent by the Domain Pauser, HALTS the real attested
+/// The shipped, allowlisted standard pause-action note, sent by the Domain Pauser, HALTS the real attested
 /// mint through the UNAUTHENTICATED-note transport: the pause note executes as an unauthenticated
 /// input (never block-committed first — routing target a placeholder PUBLIC id, routing-only), its
 /// `is_paused=1` delta is applied to the evolved faucet, and the REAL stock mint note consumed
@@ -370,7 +355,7 @@ async fn dom_pauser_production_pause_note_halts_mint() -> Result<()> {
     bring_up(&mut pf, 2).await?; // identifier_init + set_attester
 
     let account = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
-    let note = XReservePauseNote::create(dom_pauser(), test_faucet_id(1), &mut prod_note_rng(8))?;
+    let note = stock_pause_note(dom_pauser(), test_faucet_id(1), 8)?;
     let paused = pf
         .mock_chain
         .build_transaction(account.clone())
@@ -402,7 +387,7 @@ async fn dom_pauser_production_pause_note_halts_mint() -> Result<()> {
     Ok(())
 }
 
-/// The shipped, allowlisted `XReservePauseNote` HALTS the real burn — the note-driven twin of
+/// The shipped, allowlisted standard pause-action note HALTS the real burn — the note-driven twin of
 /// `dom_pauser_pause_halts_burn`, which pauses through the procedure directly.
 #[tokio::test]
 async fn dom_pauser_production_pause_note_halts_burn() -> Result<()> {
@@ -431,7 +416,7 @@ async fn dom_pauser_production_pause_note_halts_burn() -> Result<()> {
 
     // The DOM_PAUSER production pause note pauses the faucet; apply its delta to the evolved account.
     let account = chain.committed_account(faucet_id)?.clone();
-    let note = XReservePauseNote::create(dom_pauser(), test_faucet_id(1), &mut prod_note_rng(8))?;
+    let note = stock_pause_note(dom_pauser(), test_faucet_id(1), 8)?;
     let paused = chain
         .build_transaction(account.clone())
         .unauthenticated_input_note(note.clone())
@@ -510,9 +495,9 @@ async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
     // --- mint side ---
     let mut pf = mint_fixture(|_| {
         vec![
-            XReservePauseNote::create(dom_pauser(), test_faucet_id(1), &mut prod_note_rng(9))
+            stock_pause_note(dom_pauser(), test_faucet_id(1), 9)
                 .expect("building the DOM_PAUSER pause note"),
-            XReserveUnpauseNote::create(dom_pauser(), test_faucet_id(1), &mut prod_note_rng(10))
+            stock_unpause_note(dom_pauser(), test_faucet_id(1), 10)
                 .expect("building the DOM_PAUSER unpause note"),
         ]
     })?;
@@ -704,7 +689,7 @@ async fn dom_pauser_cannot_call_owner_setters() -> Result<()> {
     let account = bh.chain.committed_account(bh.faucet_id)?.clone();
 
     let result = run_set_min_burn_size_against(&bh.chain, &account, dom_pauser(), 5_000, 7).await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     Ok(())
 }
 

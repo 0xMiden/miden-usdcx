@@ -8,15 +8,19 @@
 //! params onto the stack and `call`s the unchanged sender-gated admin proc — the note sender is
 //! kernel-forced, so the proc's owner/role gate is sound under permissionless network execution.
 //!
-//! This module ships allowlist rows 3-14: the `set_attester` reference op, the ratified owner/role/
-//! pause admin note scripts (`set_min_burn_size` — targeting the STOCK `set_min_burn_amount`
-//! with a note-side zero-floor guard —, `set_max_supply`,
-//! `pause`, `unpause`, `grant_role`, `revoke_role`, `transfer_ownership`, `accept_ownership`,
-//! `identifier_init` — the minimized identifier-only init; the other domain-config fields are
-//! build-seeded), and the transfer-blocklist admin notes (`block_account`, `unblock_account`,
-//! BLK_MANAGER-gated). There is deliberately NO `set_role_admin`
-//! note: the role-admin delegation graph is build-seeded and deploys frozen
-//! — see the SET_ROLE_ADMIN section below.
+//! This module ships the faucet-owned rows of the note-script allowlist: the `set_attester`
+//! reference op, `set_min_burn_size` (targeting the STOCK `set_min_burn_amount` with a note-side
+//! zero-floor guard), `set_max_supply`, `grant_role`, `revoke_role`, `transfer_ownership`,
+//! `accept_ownership`, and `identifier_init` (the minimized identifier-only init; the other
+//! domain-config fields are build-seeded). There is deliberately NO `set_role_admin` note: the
+//! role-admin delegation graph is build-seeded and deploys frozen — see the SET_ROLE_ADMIN section
+//! below.
+//!
+//! Pausing and the transfer blocklist do NOT ship a faucet-owned note script. They run through the
+//! STANDARD pause-action and blocklist-config notes, each of which covers both of its actions
+//! behind one script root and calls the standard manager the faucet installs. Pausing uses the
+//! standard note directly with no faucet wrapper at all; the blocklist gets [`blocklist`]'s thin
+//! factory, which exists solely to refuse building a note that would block the faucet itself.
 
 use std::sync::Arc;
 

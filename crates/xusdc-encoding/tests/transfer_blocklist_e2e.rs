@@ -16,9 +16,7 @@
 mod support;
 
 use anyhow::{Context, Result};
-use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey, StorageSlotName};
-use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_testing::{assert_transaction_executor_error, MockChain};
@@ -26,7 +24,6 @@ use miden_tx::TransactionExecutorError;
 use rstest::rstest;
 use support::*;
 use xusdc_encoding::account::xreserve::BLK_MANAGER_ROLE;
-use xusdc_encoding::note::xreserve_admin::{XReserveBlockAccountNote, XReserveUnblockAccountNote};
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -48,20 +45,6 @@ fn stranger() -> AccountId {
 /// immaterial there — only the SENDER's role is under test).
 fn target() -> AccountId {
     test_account_id(50)
-}
-
-/// The exact stock role error these tests pin (assert-specific-error-in-tests).
-fn err_sender_lacks_role() -> MasmError {
-    MasmError::from_static_str("note sender does not hold the required role")
-}
-
-fn note_rng(seed: u64) -> RandomCoin {
-    RandomCoin::new(Word::from([
-        Felt::from(seed as u32),
-        Felt::from((seed >> 32) as u32),
-        Felt::from(5u32),
-        Felt::from(9u32),
-    ]))
 }
 
 /// The stock `blocked_accounts` map slot (installed by the `BasicBlocklist` companion), the primitive's
@@ -143,9 +126,8 @@ async fn run_block(
     target: AccountId,
     seed: u64,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note =
-        XReserveBlockAccountNote::create(sender, test_faucet_id(1), target, &mut note_rng(seed))
-            .expect("building the block_account note (test-setup invariant)");
+    let note = stock_block_note(sender, test_faucet_id(1), target, seed)
+        .expect("building the block_account note (test-setup invariant)");
     chain
         .build_transaction(account.clone())
         .unauthenticated_input_note(note.clone())
@@ -163,9 +145,8 @@ async fn run_unblock(
     target: AccountId,
     seed: u64,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note =
-        XReserveUnblockAccountNote::create(sender, test_faucet_id(1), target, &mut note_rng(seed))
-            .expect("building the unblock_account note (test-setup invariant)");
+    let note = stock_unblock_note(sender, test_faucet_id(1), target, seed)
+        .expect("building the unblock_account note (test-setup invariant)");
     chain
         .build_transaction(account.clone())
         .unauthenticated_input_note(note.clone())

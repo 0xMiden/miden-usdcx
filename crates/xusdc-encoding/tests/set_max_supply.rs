@@ -1,18 +1,21 @@
-//! `set_max_supply` admin surface, reconciled to the Circle-faithful OWNER-gated model.
+//! `set_max_supply` admin surface, reconciled to the Circle-faithful administrator-gated model.
 //! This is STOCK reuse — the standard `FungibleFaucet` already exposes
 //! `set_max_supply`, gated (in this order) mutability -> `authority::assert_authorized` ->
 //! `assert_not_paused` -> below-current-supply. No new MASM. The reconciliation is a pure Authority
-//! config change: the account installs `Authority::OwnerControlled` (was `RbacControlled{ATTEST_ADMIN}`),
-//! so `authority::assert_authorized` now resolves to the Ownable2Step owner. This file covers the owner
+//! config change: the account installs the role-based authority and assigns this procedure no role,
+//! so `authority::assert_authorized` resolves it to the built-in `ADMIN` role — seeded on the
+//! owner's account, but account-bound and NOT following an ownership transfer. This file covers the
+//! administrator
 //! gate, write integrity, the below-supply guard, the pause gate, and the immutable control. The
 //! cap-enforcement seam — that changing the maximum actually changes which mints are refused for
 //! exceeding it — lives in `xreserve_mint.rs`, alongside the shared mint-composition fixtures it
 //! reuses.
 //!
 //! The net-new surface is the build-time mutability flag. The gate fixtures are built MUTABLE
-//! (`is_max_supply_mutable = true`), so each gate test exercises its intended gate: the owner's
-//! `set_max_supply` succeeds (write integrity), a non-owner (incl. a seeded DOM role-holder) traps
-//! ERR_SENDER_NOT_OWNER with no state change, a paused faucet traps ERR_PAUSABLE_IS_PAUSED, and a
+//! (`is_max_supply_mutable = true`), so each gate test exercises its intended gate: the
+//! administrator's `set_max_supply` succeeds (write integrity), a sender without `ADMIN` (incl. a
+//! seeded DOM role-holder) traps
+//! ERR_SENDER_LACKS_ROLE with no state change, a paused faucet traps ERR_PAUSABLE_IS_PAUSED, and a
 //! below-current-supply value traps ERR_NEW_MAX_SUPPLY_BELOW_TOKEN_SUPPLY. `set_max_supply_immutable_traps`
 //! keeps an IMMUTABLE faucet as the control, pinning that the mutability gate fires FIRST (the EXACT
 //! ERR_MAX_SUPPLY_NOT_MUTABLE, even for the owner). Stock `set_max_supply` is reused verbatim — no new MASM.
@@ -97,7 +100,7 @@ async fn set_max_supply_immutable_traps() -> Result<()> {
     Ok(())
 }
 
-// OWNER GATE + WRITE INTEGRITY — RED until the Authority is flipped to OwnerControlled (green)
+// ADMINISTRATOR GATE + WRITE INTEGRITY — the unmapped setter resolves to the ADMIN role
 // ================================================================================================
 
 /// An OWNER-sent `set_max_supply(X)` succeeds and writes ONLY word[1] (max_supply), preserving
@@ -136,8 +139,8 @@ async fn set_max_supply_owner_succeeds() -> Result<()> {
     Ok(())
 }
 
-/// Shared owner-ONLY assertion for `set_max_supply`: a NON-owner `sender` (a seeded DOM role-holder)
-/// traps the EXACT ERR_SENDER_NOT_OWNER and leaves `token_config` byte-identical (the auth gate fires
+/// Shared administrator-ONLY assertion for `set_max_supply`: a `sender` without `ADMIN` (a seeded
+/// DOM role-holder) traps the EXACT ERR_SENDER_LACKS_ROLE and leaves `token_config` byte-identical (the auth gate fires
 /// after mutability passes; the trap commits nothing).
 async fn assert_set_max_supply_non_owner_rejected(sender: AccountId) -> Result<()> {
     let gm = guarded_faucet(0, true)?;
@@ -145,7 +148,7 @@ async fn assert_set_max_supply_non_owner_rejected(sender: AccountId) -> Result<(
     let before = read_token_config(&account)?;
 
     let result = run_set_max_supply_tx(&gm.harness, &account, sender, 500_000, 7).await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
 
     // no state change: token_config (esp. word[1] max_supply) is byte-identical to before the reject.
     assert_eq!(
@@ -162,8 +165,8 @@ async fn set_max_supply_dom_pauser_non_owner_rejects() -> Result<()> {
     assert_set_max_supply_non_owner_rejected(dom_pauser()).await
 }
 
-/// Owner-ONLY: the seeded DOM_MANAGER holder id(3) is rejected from `set_max_supply` (completing the
-/// owner-ONLY cross-product for this setter).
+/// ADMIN-only: the seeded DOM_MANAGER holder id(3) is rejected from `set_max_supply` (completing
+/// the administrator-only cross-product for this setter).
 #[tokio::test]
 async fn set_max_supply_dom_manager_non_owner_rejects() -> Result<()> {
     assert_set_max_supply_non_owner_rejected(dom_manager()).await

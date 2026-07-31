@@ -1,5 +1,14 @@
 # LNV-2 VALIDATION RECORD — admin suite (rows C) + auth boundary (row F)
 
+> **Superseded admin model (2026-07-30).** This record was produced against the composition in
+> which the admin setters resolved to the `Ownable2Step` owner and rejected with
+> `ERR_SENDER_NOT_OWNER`. The faucet has since moved to a role-based authority: the setters
+> carry no role and resolve to the built-in `ADMIN` role, raising `ERR_SENDER_LACKS_ROLE`,
+> and pause/blocklist run through the standard managers. The observations below are
+> unchanged evidence of what that earlier run saw; re-running these rows is part of the
+> un-park steps in `PARKED-V16-NEXT.md`.
+
+
 **Slice:** LNV-2 (Phase-4 §11.2 local-node validation track, second slice — extends the LNV-1
 harness). **Scope:** rows **C** + **F** of the A–L local-node validation matrix (see
 `crates/xusdc-validation/README.md`).

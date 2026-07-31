@@ -3,8 +3,8 @@
 # The production admin surface for `set_attester` under the network account: a fixed-root note whose
 # parameters are CREATOR-COMMITTED in note storage (never NOTE_ARGS, which the network executor
 # controls). It stages the note storage into memory, marshals the creator's params onto the stack in
-# the proc's Inputs order, and `call`s the OWNER-gated `attester_admin::set_attester` (the sender gate
-# lives in the proc; the note sender is kernel-forced, so a non-owner creator traps there). A scheme-2
+# the proc's Inputs order, and `call`s the `ADMIN`-role-gated `attester_admin::set_attester` (the sender gate
+# lives in the proc; the note sender is kernel-forced, so a creator without the `ADMIN` role traps there). A scheme-2
 # NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only, added by the
 # Rust factory).
 #
@@ -32,7 +32,7 @@ const ERR_XRESERVE_SET_ATTESTER_NOTE_STORAGE = "set_attester note storage item c
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Consumes the `set_attester` admin note and drives the owner-gated attester-allowlist write.
+#! Consumes the `set_attester` admin note and drives the `ADMIN`-role-gated attester-allowlist write.
 #!
 #! Stages the creator-committed params (`[pk_commitment(4), enabled]`) into memory at PARAM_PTR,
 #! marshals them onto the stack as `[PK_COMMITMENT, enabled, pad(11)]`, and `call`s
@@ -53,7 +53,7 @@ const ERR_XRESERVE_SET_ATTESTER_NOTE_STORAGE = "set_attester note storage item c
 #!
 #! Panics if:
 #! - the note storage does not carry exactly 5 items.
-#! - the note sender is not the registered owner (attester_admin::set_attester's owner gate).
+#! - the note sender does not hold the `ADMIN` role (attester_admin::set_attester's authority gate).
 #!
 #! Invocation: dyncall
 @note_script

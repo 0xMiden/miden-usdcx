@@ -21,10 +21,8 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use miden_protocol::account::RoleSymbol;
 use miden_protocol::note::NoteAttachmentScheme;
 use miden_standards::note::NetworkAccountTarget;
-use xusdc_encoding::account::xreserve::{BLK_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_mint::{
     XUSDC_DEPOSIT_SCALE_EXP, XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME,
     XUSDC_MINT_ATTESTATION_NUM_WORDS, XUSDC_MINT_INTENT_ATTACHMENT_SCHEME,
@@ -54,13 +52,6 @@ const IDENTIFIER_INIT_MASM: &str =
 /// The faucet set_attester admin module source, read test-side by reference.
 const ATTESTER_ADMIN_MASM: &str =
     include_str!("../../../asm/standards/xreserve/attester_admin.masm");
-
-/// The faucet CMP-F3 DOM_PAUSER custom pause/unpause module source, read test-side by reference.
-const PAUSE_ADMIN_MASM: &str = include_str!("../../../asm/standards/xreserve/pause_admin.masm");
-
-/// The faucet F4-reversal BLK_MANAGER custom block/unblock module source, read test-side by reference.
-const BLOCKLIST_ADMIN_MASM: &str =
-    include_str!("../../../asm/standards/xreserve/blocklist_admin.masm");
 
 /// Faucet-owned shell error constants declared in MASM, pinned against the test-side
 /// `support::SHELL_ERR_TABLE` (the single Rust source).
@@ -151,15 +142,6 @@ const MINT_POLICY_COVERED_NUMS: &[&str] = &[
     "DEPOSIT_SCALE_EXP",
     "P2ID_NUM_STORAGE_ITEMS",
 ];
-
-/// CMP-F3 pause-admin numeric const: DOM_PAUSER_ROLE (the encoded RoleSymbol felt), parity-asserted
-/// against `RoleSymbol::new(DOM_PAUSER_ROLE).as_element()` in `masm_rust_constant_parity` below.
-const PAUSE_ADMIN_COVERED_NUMS: &[&str] = &["DOM_PAUSER_ROLE"];
-
-/// F4-reversal blocklist-admin numeric const: BLK_MANAGER_ROLE (the encoded RoleSymbol felt),
-/// parity-asserted against `RoleSymbol::new(BLK_MANAGER_ROLE).as_element()` in
-/// `masm_rust_constant_parity` below.
-const BLOCKLIST_ADMIN_COVERED_NUMS: &[&str] = &["BLK_MANAGER_ROLE"];
 
 /// Numeric-constant coverage sets (bidirectional sweep): every numeric const parsed
 /// from a MASM source must appear in its file's set — extending a MASM file with a new
@@ -317,32 +299,14 @@ fn masm_rust_constant_parity() {
         "affine-pubkey felt count parity (qx||qy -> 16 u32-LE felts; ATT commitment input)"
     );
 
-    // CMP-F3: the DOM_PAUSER role-symbol MASM const must equal the Rust encoding
-    // RoleSymbol::new(DOM_PAUSER_ROLE).as_element() (base-27 over A-Z/_). A one-sided edit fails here.
-    // Felt::as_int() does NOT exist at the pin; as_canonical_u64 is the inherent u64 accessor at
-    // miden-field 0.25.1 (the repo migrated as_int()->as_canonical_u64; used in account_id.rs).
-    let (pause_nums, _, _) = parse_masm_consts(PAUSE_ADMIN_MASM);
-    assert_eq!(
-        num(&pause_nums, "DOM_PAUSER_ROLE", "pause_admin.masm"),
-        RoleSymbol::new(DOM_PAUSER_ROLE)
-            .expect("DOM_PAUSER is a valid RoleSymbol")
-            .as_element()
-            .as_canonical_u64(),
-        "DOM_PAUSER role-symbol felt parity (MASM const == RoleSymbol::new(DOM_PAUSER_ROLE).as_element())"
-    );
-
-    // F4-reversal: the BLK_MANAGER role-symbol MASM const must equal the Rust encoding
-    // RoleSymbol::new(BLK_MANAGER_ROLE).as_element() (base-27 over A-Z/_). A one-sided edit — the
-    // exact mutation check (d) — fails here, so the transfer-blocklist role gate cannot silently drift.
-    let (blocklist_nums, _, _) = parse_masm_consts(BLOCKLIST_ADMIN_MASM);
-    assert_eq!(
-        num(&blocklist_nums, "BLK_MANAGER_ROLE", "blocklist_admin.masm"),
-        RoleSymbol::new(BLK_MANAGER_ROLE)
-            .expect("BLK_MANAGER is a valid RoleSymbol")
-            .as_element()
-            .as_canonical_u64(),
-        "BLK_MANAGER role-symbol felt parity (MASM const == RoleSymbol::new(BLK_MANAGER_ROLE).as_element())"
-    );
+    // The DOM_PAUSER / BLK_MANAGER role symbols no longer appear in any MASM constant. They used
+    // to be hard-coded felts in the custom pause and blocklist wrappers, which is what this suite
+    // pinned; the wrappers are gone and the symbols now live in the account's procedure-role map,
+    // written from the SAME Rust constants by `XReserveAdminAuthority`. There is nothing left to
+    // keep in step across languages, so the parity rows are gone with the wrappers. The role
+    // identity is pinned instead where it is now expressed: the felt encodings in
+    // `builder_api.rs` (`RoleSymbol::new(DOM_PAUSER_ROLE)` / `RoleSymbol::new(BLK_MANAGER_ROLE)`)
+    // and the materialized map in `w2admin_production_admin_effects.rs`.
 
     // Wave-1 S1: the mint-note attachment schemes + attestation word count + DC-5 scale must
     // match across languages — the XUsdcMintNote factory builds exactly what the attestation
@@ -467,7 +431,7 @@ fn masm_constants_bidirectional() {
         ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
     };
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 9] = [
+    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 7] = [
         ("layout.masm", LAYOUT_MASM, LAYOUT_COVERED_NUMS, &[]),
         (
             "encoding/mod.masm",
@@ -505,31 +469,12 @@ fn masm_constants_bidirectional() {
         // only (the builder seeds them), so no slot-label parity rows exist for them.
         ("identifier_init.masm", IDENTIFIER_INIT_MASM, &[], &[]),
         // set_attester: pins XRESERVE_ATTESTERS_SLOT to the shared label (no numeric consts;
-        // the owner-gate traps reuse the stock ERR_SENDER_NOT_OWNER / ERR_PAUSABLE_IS_PAUSED, not declared here).
+        // the authority-gate traps reuse the stock ADMIN-role and pause errors, not declared here).
         (
             "attester_admin.masm",
             ATTESTER_ADMIN_MASM,
             &[],
             EXPECTED_ATTESTER_ADMIN_WORD_CONSTS,
-        ),
-        // CMP-F3 pause_admin: declares the numeric DOM_PAUSER_ROLE role-symbol const (parity-asserted in
-        // masm_rust_constant_parity); no word("…") consts, and no new string errors (the role gate reuses
-        // the stock ERR_SENDER_LACKS_ROLE, the primitive reuses ERR_PAUSABLE_IS_PAUSED).
-        (
-            "pause_admin.masm",
-            PAUSE_ADMIN_MASM,
-            PAUSE_ADMIN_COVERED_NUMS,
-            &[],
-        ),
-        // F4-reversal blocklist_admin: declares the numeric BLK_MANAGER_ROLE role-symbol const
-        // (parity-asserted in masm_rust_constant_parity); no word("…") consts. The role gate reuses
-        // the stock ERR_SENDER_LACKS_ROLE and the primitive reuses the stock ERR_ACCOUNT_IS_BLOCKED;
-        // the PA2 self-block guard adds ERR_XRESERVE_CANNOT_BLOCK_SELF (a SHELL_ERR_TABLE row).
-        (
-            "blocklist_admin.masm",
-            BLOCKLIST_ADMIN_MASM,
-            BLOCKLIST_ADMIN_COVERED_NUMS,
-            &[],
         ),
     ];
     for (file, src, covered_nums, expected_words) in sources {
@@ -564,13 +509,15 @@ fn masm_constants_bidirectional() {
     }
 }
 
-/// Parity for the installed authority mode: under the reconciled Circle-faithful owner-gated
-/// model the production builder's `Authority` slot must carry exactly
-/// `OwnerControlled` = `[OWNER_CONTROLLED, 0, 0, 0]`, so the account-wide gate resolves the setters
-/// (`set_attester` / the stock `set_min_burn_amount` / stock `set_max_supply`) to the Ownable2Step
-/// owner. Drifting the installed mode fails here.
+/// Parity for the installed authority mode: the production builder's `Authority` slot must carry
+/// exactly `RbacControlled` = `[RBAC_CONTROLLED, 0, 0, 0]`, which is what makes the per-procedure
+/// role map load-bearing — the pause and blocklist managers resolve to their assigned roles, and
+/// every other gated procedure (`set_attester`, the stock `set_min_burn_amount` / `set_max_supply`,
+/// the policy setters) falls back to the administrator role. Drifting the installed mode fails
+/// here: under the owner-controlled mode the role map would be ignored and pausing would land back
+/// on the owner, the one identity Circle's model keeps it away from.
 #[test]
-fn owner_controlled_authority_parity() -> anyhow::Result<()> {
+fn rbac_controlled_authority_parity() -> anyhow::Result<()> {
     use miden_standards::account::access::Authority;
 
     let components = support::production_component_set(1_000_000, 0)?;
@@ -581,12 +528,13 @@ fn owner_controlled_authority_parity() -> anyhow::Result<()> {
         .find(|s| s.name() == authority_slot)
         .map(|s| s.value())
         .ok_or_else(|| anyhow::anyhow!("the composed set must carry the Authority slot"))?;
-    // the authority_config word is [mode, 0, 0, 0] with OwnerControlled = 1 (authority.rs:63);
-    // compare the full word so a smuggled tail felt cannot hide.
+    // the authority_config word is [mode, is_frozen, 0, 0] with RbacControlled = 2 (authority.rs);
+    // compare the full word so a smuggled tail felt — or a frozen flag — cannot hide.
     assert_eq!(
         word,
-        miden_protocol::Word::from([1u32, 0, 0, 0]),
-        "the installed Authority must be OwnerControlled (owner-gated setters)"
+        miden_protocol::Word::from([2u32, 0, 0, 0]),
+        "the installed Authority must be RbacControlled: the manager procedures carry roles and \
+         every other gated procedure falls back to the administrator role"
     );
     Ok(())
 }

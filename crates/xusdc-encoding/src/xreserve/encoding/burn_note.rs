@@ -7,8 +7,7 @@
 //! has to be exactly reversible between them.
 //!
 //! The `destRecipient` and `salt` fields are packed and unpacked with the shared bytes32 codec in
-//! both directions rather than being repacked here, so there is one definition of how 32 bytes
-//! become field elements.
+//! both directions, so there is one definition of how 32 bytes become field elements.
 
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::Felt;

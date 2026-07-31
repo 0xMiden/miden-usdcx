@@ -21,7 +21,7 @@ use super::{BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 /// Seeding `ADMIN` with the owner is what grants the owner role administration: the Ownable2Step
 /// owner carries no implicit super-admin standing over the role graph. `ADMIN` is the built-in
 /// default admin role that any role with no delegated admin resolves to, so the owner-held account
-/// administers `DOM_MANAGER` through its `ADMIN` membership rather than through owner status.
+/// administers `DOM_MANAGER` through its `ADMIN` membership.
 ///
 /// This seed is the ENTIRE role-admin graph the faucet will ever have: the runtime
 /// `set_role_admin` note is not allowlisted, so `role_config[*].admin_role` is immutable

@@ -52,8 +52,8 @@ const ERR_XRESERVE_WRONG_DOMAIN = "deposit intent remote domain does not match t
 const ERR_XRESERVE_WRONG_IDENTIFIER = "deposit intent remote token does not match the faucet identifier"
 
 # Amount/fee errors. The too-large reject (ERR_X_TOO_LARGE) is CONSUMED from the encoding library's
-# reducer rather than redefined here. The fee gate requires feeAmount == 0, since there is no
-# relayer-fee leg yet, which subsumes the feeAmount <= maxFee compare.
+# reducer. The fee gate requires feeAmount == 0, since there is no relayer-fee leg yet, which
+# subsumes the feeAmount <= maxFee compare.
 const ERR_XRESERVE_AMOUNT_BELOW_FEE = "deposit intent amount is below the max fee"
 const ERR_XRESERVE_FEE_NONZERO = "mint fee amount must be zero"
 

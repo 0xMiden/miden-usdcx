@@ -683,14 +683,10 @@ impl XReserveStablecoinBuilder {
     /// Assembles the final component list from the manager and the domain-seeded `xreserve`
     /// component.
     ///
-    /// PAUSE PROVENANCE (Domain-Pauser-only): the stock `PausableManager`
-    /// (owner-gated callable `pause`/`unpause`) is deliberately NOT installed; the only pause
-    /// surface is the DOM_PAUSER-gated `xreserve::pause_admin` procs carried by the `xreserve`
-    /// component. The `is_paused` slot every `assert_not_paused` halt-gate reads
-    /// (`execute_mint_policy`/`execute_burn_policy`, the setters) is installed by the base
-    /// `Pausable` component, not by the faucet. `PausableManager`
-    /// still installs ZERO storage. The `production_components_carry_is_paused_slot` tripwire
-    /// pins the slot.
+    /// PAUSE PROVENANCE (Domain-Pauser-only): the only pause surface is the DOM_PAUSER-gated
+    /// `xreserve::pause_admin` procs carried by the `xreserve` component. The `is_paused` slot every
+    /// `assert_not_paused` halt-gate reads (`execute_mint_policy`/`execute_burn_policy`, the
+    /// setters) comes from the base `Pausable` component.
     ///
     /// POLICY-COMPANION SEAM: the
     /// policy descriptors carry their companion components, and the manager's iterator emits one

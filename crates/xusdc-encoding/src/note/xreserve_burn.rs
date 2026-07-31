@@ -5,12 +5,11 @@
 //! reads its `NoteStorage.items` payload `(amount, destDomain, destRecipient, salt)` to release
 //! USDC on the source chain.
 //!
-//! It is built as a standalone note factory rather than by extending the standard `BurnNote`, which
-//! is sealed and hardcodes an empty payload and an account-target tag. What it does reuse is the
-//! standard burn consume script, so consuming one of these notes runs `faucet::receive_and_burn`
-//! and the faucet's active burn policy exactly as any other burn would. The note is forced public,
-//! carries the fixed xUSDC burn tag, and writes its payload through the shared codec so the listener
-//! decodes precisely what was encoded.
+//! It is built as a standalone note factory. What it does reuse is the standard burn consume
+//! script, so consuming one of these notes runs `faucet::receive_and_burn` and the faucet's active
+//! burn policy exactly as any other burn would. The note is forced public, carries the fixed xUSDC
+//! burn tag, and writes its payload through the shared codec so the listener decodes precisely what
+//! was encoded.
 //!
 //! Nothing on-chain reads that payload. The destination fields exist purely so the burn is legible
 //! off-chain, which is what makes the note evidence rather than just an accounting entry.

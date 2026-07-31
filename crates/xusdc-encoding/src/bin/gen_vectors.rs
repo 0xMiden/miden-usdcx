@@ -4,9 +4,8 @@
 //! Arithmetic and layout expectations are derived here with exact integer math (the formula is
 //! recorded per entry); hash- and protocol-derived expectations (Poseidon2 Words, AccountIds) come
 //! from the protocol crates via `Hasher::hash_elements`, `bytes_to_packed_u32_elements`, and
-//! `AccountIdBuilder::build_with_seed`. This binary never calls the crate's own mirror routines, so
-//! the vectors are derived independently of the code they check. Regeneration is an explicit,
-//! reviewed act: `cargo run --bin gen_vectors`.
+//! `AccountIdBuilder::build_with_seed`. The vectors are derived independently of the code they
+//! check. Regeneration is an explicit, reviewed act: `cargo run --bin gen_vectors`.
 //!
 //! Wire-format byte offsets used below: magic@0, version@4, amount@8, remoteDomain@40,
 //! remoteToken@44, remoteRecipient@76, localToken@108, localDepositor@140, maxFee@172,
@@ -253,7 +252,7 @@ fn di_reject(
 // Attestation (ATT) entries — Rust + MASM dual surface
 // ================================================================================================
 // the secp256k1 keypair and signature come from the INDEPENDENT `k256` crate and the keccak digest
-// from `sha3`, never from a miden signer. The commitment oracle is miden-crypto
+// from `sha3`. The commitment oracle is miden-crypto
 // `PublicKey::to_commitment` — the attester-allowlist keying primitive the faucet's attestation
 // verify looks up — deserialized from the exact 33 compressed wire bytes.
 
@@ -478,8 +477,7 @@ fn main() {
         .collect();
     // the right-aligned (Agglayer-mirroring) AccountId packaging — a draft that stays OPEN, pending
     // Circle confirmation: bytes[0..16]=0, bytes[16..24]=prefix u64 BE, bytes[24..32]=suffix u64 BE.
-    // Derived inline from the protocol AccountId accessors rather than through the crate's own
-    // account_id_to_bytes32.
+    // Derived inline from the protocol AccountId accessors.
     let r_b_bytes32 = |id: &miden_protocol::account::AccountId| -> [u8; 32] {
         let mut b = [0u8; 32];
         b[16..24].copy_from_slice(&id.prefix().as_u64().to_be_bytes());
@@ -715,8 +713,8 @@ fn main() {
 
     // ---- bn family (burn-note items) -------------------------------------------
     // items = amount(1) + destDomain(1) + destRecipient(8 u32-LE) + salt(8 u32-LE) = 18 felts.
-    // Derived without the crate's encode: amount and destDomain are the canonical felt of the
-    // integer, and the two bytes32 fields use the same `packed` primitive as the b32 family.
+    // amount and destDomain are the canonical felt of the integer, and the two bytes32 fields use
+    // the same `packed` primitive as the b32 family.
     let bn_items =
         |amount: u64, domain: u32, recipient: &[u8; 32], salt: &[u8; 32]| -> Vec<String> {
             let mut out = Vec::with_capacity(18);

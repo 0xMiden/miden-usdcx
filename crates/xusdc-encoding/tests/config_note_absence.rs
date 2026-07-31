@@ -5,7 +5,7 @@
 //! Why this file exists: at protocol-`next`, `AuthNetworkAccount::new()` force-inserts BOTH roots
 //! into whatever allowlist it is given (the config note so a deployed account's allowlists can be
 //! reconfigured post-deploy; the sponsorship note so prepaid fees can be collected). The xReserve
-//! faucet's entire authorization model is the FROZEN 12-root note allowlist — admitting the
+//! faucet's entire authorization model is the FROZEN 9-root note allowlist — admitting the
 //! config note would hand the (present-but-unreachable) allowlist mutators a runtime entry
 //! vector, and the faucet collects no sponsored fees. The production composition therefore goes
 //! through `AuthNetworkAccount::custom()`, which inserts NOTHING: the absence asserted here is
@@ -17,7 +17,7 @@
 //! The allowlist-mutator PROCEDURES the same upstream change added to the account's callable
 //! surface are a separate, ratified matter: they are present-but-unreachable rows, pinned in
 //! `account_callable_surface.rs` / `account_surface_unreachable.rs`. This file guards the entry
-//! vector those rows would need: the note-script allowlist stays the exact 12 ratified roots.
+//! vector those rows would need: the note-script allowlist stays the exact 9 ratified roots.
 
 mod support;
 
@@ -67,7 +67,7 @@ fn allowlisted_keys(component: &AccountComponent, slot: &StorageSlotName) -> BTr
         .collect()
 }
 
-/// Source layer: the builder's single-source 12-root set does not name either forbidden root
+/// Source layer: the builder's single-source 9-root set does not name either forbidden root
 /// (the set is a literal, so this is the source-drift tripwire).
 #[test]
 fn config_note_root_is_not_in_the_builder_allowlist() {
@@ -75,14 +75,14 @@ fn config_note_root_is_not_in_the_builder_allowlist() {
     for (name, root) in forbidden_roots() {
         assert!(
             !allowlist.iter().any(|r| r.as_word() == root),
-            "the {name} script root must NOT be a member of the builder's 12-root note-script \
+            "the {name} script root must NOT be a member of the builder's 9-root note-script \
              allowlist"
         );
     }
 }
 
 /// Component layer: the auth component `auth_component()` composes carries neither forbidden root
-/// in its allowlist slot, and the slot holds EXACTLY 12 keys — the composition went through
+/// in its allowlist slot, and the slot holds EXACTLY 9 keys — the composition went through
 /// `custom()`, which inserts nothing. RED whenever the composition routes through `new()` (which
 /// force-inserts both roots).
 #[test]
@@ -96,8 +96,8 @@ fn config_note_root_is_not_in_the_auth_components_allowlist() -> Result<()> {
     let note_keys = allowlisted_keys(&component, AuthNetworkAccount::allowed_note_scripts_slot());
     assert_eq!(
         note_keys.len(),
-        12,
-        "the auth component's note-script allowlist must hold EXACTLY the 12 ratified roots; \
+        9,
+        "the auth component's note-script allowlist must hold EXACTLY the 9 ratified roots; \
          found {} (a 15th/16th key means a force-inserting constructor was used)",
         note_keys.len(),
     );
@@ -112,7 +112,7 @@ fn config_note_root_is_not_in_the_auth_components_allowlist() -> Result<()> {
     Ok(())
 }
 
-/// On-chain layer: the BUILT production faucet's materialized allowlist storage holds exactly 12
+/// On-chain layer: the BUILT production faucet's materialized allowlist storage holds exactly 9
 /// roots and neither forbidden root. This is the layer the kernel enforces at runtime, and the
 /// layer the test-support composition must preserve (composing through the `miden-testing`
 /// `Auth::NetworkAccount` fixture would violate it — the fixture routes through `new()`).
@@ -136,8 +136,8 @@ fn config_note_root_is_absent_from_the_built_accounts_allowlist() -> Result<()> 
 
     assert_eq!(
         roots.len(),
-        12,
-        "the built faucet's on-chain note-script allowlist must hold EXACTLY the 12 ratified \
+        9,
+        "the built faucet's on-chain note-script allowlist must hold EXACTLY the 9 ratified \
          roots; found {}",
         roots.len(),
     );

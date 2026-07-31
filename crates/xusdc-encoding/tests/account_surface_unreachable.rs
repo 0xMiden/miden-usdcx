@@ -3,14 +3,11 @@
 //! ceiling. `account_callable_surface.rs` holds the frozen-surface equality pin + the
 //! freeze/unfreeze disposition + the asset-callback (transfer-blocklist-live) proof; THIS file
 //! holds:
-//!   * `rbac::set_role_admin` is a callable root but OPERATIONALLY UNREACHABLE (its runtime
-//!     note was removed from the allowlist; the role-admin graph is
-//!     build-seeded and frozen — rotation is grant_role/revoke_role only);
 //!   * `authority::get_authority` is READ-ONLY in execution (executed bounding, not
 //!     documentation);
 //!   * temporary v0.16 growth — the 11 mutator/fee procedures the protocol-`next` stock
 //!     components add, in TWO ratified reachability tiers: Tier A (the 4 allowlist mutators)
-//!     truly unreachable, the same disposition as freeze/unfreeze and set_role_admin; Tier B
+//!     truly unreachable, the same disposition as freeze/unfreeze; Tier B
 //!     (the 6 fee procedures + the
 //!     `compute_note_fee` callback) direct-entry-unreachable — no external entry point — while
 //!     the fee-estimation path runs INTERNALLY on every input note, computing the scheduled
@@ -34,14 +31,15 @@ use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::{BlocklistConfigNote, BurnNote, MintNote, PauseActionNote};
+use miden_standards::note::{
+    BlocklistConfigNote, BurnNote, MintNote, PauseActionNote, RbacActionNote,
+};
 use miden_standards::testing::note::NoteBuilder;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveAcceptOwnershipNote, XReserveGrantRoleNote, XReserveIdentifierInitNote,
-    XReserveRevokeRoleNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
-    XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
+    XReserveIdentifierInitNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
+    XReserveSetMinBurnSizeNote,
 };
 
 const MAX_SUPPLY: u64 = 1_000_000;
@@ -90,15 +88,12 @@ fn production_account() -> Result<Account> {
     Ok(account)
 }
 
-/// The 14 allowlisted note SCRIPTS (not just their roots): the two STOCK supply notes (the stock
-/// `MintNote` transport + the `BurnNote`) + the 12 admin notes (10 owner/role/pause — with the
-/// identifier-only `identifier_init` — + the 2
-/// transfer-blocklist notes). Single-sourced from the
+/// The 9 allowlisted note SCRIPTS (not just their roots): the two STOCK supply notes (the stock
+/// `MintNote` transport + the `BurnNote`) + the seven admin notes — the four administrator-gated
+/// setters, with the identifier-only `identifier_init` among them, plus the three stock config
+/// notes for pausing, the transfer blocklist and role management. Single-sourced from the
 /// same factories the allowlist itself is built from, so a note that enters the allowlist necessarily
-/// enters this sweep too. There is deliberately NO `set_role_admin` entry: the runtime
-/// `set_role_admin` note was REMOVED from the
-/// allowlist — the role-admin graph is BUILD-SEEDED and frozen; rotation is
-/// `grant_role`/`revoke_role` (the Domain Manager rotates the Pauser, the owner is the backstop).
+/// enters this sweep too.
 fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
     vec![
         ("stock_mint_note", MintNote::script()),
@@ -107,123 +102,10 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
         ("identifier_init", XReserveIdentifierInitNote::script()),
         ("set_min_burn_size", XReserveSetMinBurnSizeNote::script()),
         ("stock_pause_action_note", PauseActionNote::script()),
-        ("grant_role", XReserveGrantRoleNote::script()),
-        ("revoke_role", XReserveRevokeRoleNote::script()),
         ("set_max_supply", XReserveSetMaxSupplyNote::script()),
-        (
-            "transfer_ownership",
-            XReserveTransferOwnershipNote::script(),
-        ),
-        ("accept_ownership", XReserveAcceptOwnershipNote::script()),
         ("stock_blocklist_config_note", BlocklistConfigNote::script()),
+        ("stock_rbac_action_note", RbacActionNote::script()),
     ]
-}
-
-// SET_ROLE_ADMIN: PRESENT, AND PROVABLY UNREACHABLE (the frozen role-admin graph)
-// ================================================================================================
-
-/// The fully-qualified path of the stock RBAC `set_role_admin` account procedure (a member of the
-/// frozen 74-root surface — the proc STAYS; only its runtime note was removed).
-const RBAC_SET_ROLE_ADMIN_PROC_PATH: &str =
-    "::miden::standards::components::access::rbac::set_role_admin";
-
-/// The pinned root of the REMOVED runtime `set_role_admin` note script.
-/// Preserved so its non-membership stays machine-checked: re-adding the note to the allowlist
-/// turns `set_role_admin_former_note_root_is_not_admissible_via_either_allowlist` RED.
-const FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x0c69fe1a19ee27196780be8d7815920e6a5da49e05ee10b9a615c4ee7a778648";
-
-/// Resolves the `rbac::set_role_admin` account-procedure root from the shipped composition (by
-/// path, so a stock re-key cannot silently blunt the MAST sweep below).
-fn rbac_set_role_admin_proc_root() -> Result<Word> {
-    let components = production_components()?;
-    component_surface(&components)
-        .into_iter()
-        .find(|(path, _)| path == RBAC_SET_ROLE_ADMIN_PROC_PATH)
-        .map(|(_, root)| root)
-        .context(
-            "the composed account must expose rbac::set_role_admin (present-but-unreachable, S21)",
-        )
-}
-
-/// PRESENT: the stock RBAC `set_role_admin` procedure IS a callable root of the composed account —
-/// the ratified disposition keeps the stock component intact (the frozen surface membership is
-/// otherwise unchanged); ONLY
-/// the runtime note that could reach it was removed.
-#[test]
-fn rbac_set_role_admin_is_present_on_the_account() -> Result<()> {
-    let root = rbac_set_role_admin_proc_root()?;
-    let account = production_account()?;
-    let roots: BTreeSet<Word> = account
-        .code()
-        .procedures()
-        .iter()
-        .map(|r| Word::from(*r))
-        .collect();
-    assert!(
-        roots.contains(&root),
-        "the stock RBAC component contributes `set_role_admin` to the account's callable surface \
-         (S21: present-but-unreachable) — if this ever stops being true, the S21 disposition must \
-         be re-ratified"
-    );
-    Ok(())
-}
-
-/// UNREACHABLE, leg 1 (static, exhaustive over the allowlist): NOT ONE of the 14 allowlisted note
-/// scripts references the `rbac::set_role_admin` root ANYWHERE in its MAST — so no admissible note
-/// can re-point (or clear) any role's admin delegation. The swept set is asserted equal to the
-/// allowlist first, so a re-added note cannot dodge the sweep: the set-equality itself goes
-/// RED (this is the machine-enforced check that the note's removal holds).
-#[test]
-fn set_role_admin_is_unreachable_from_every_allowlisted_note() -> Result<()> {
-    let allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
-    let scripts = allowlisted_note_scripts();
-    let swept: BTreeSet<_> = scripts.iter().map(|(_, s)| s.root()).collect();
-    assert_eq!(
-        swept, allowlist,
-        "the swept note scripts must be EXACTLY the 12-root note-script allowlist — an extra root \
-         (e.g. a re-added set_role_admin note) breaks the ratified S21 removal \
-         (DECISION-SETROLEADMIN-NOTE-REMOVAL: the role-admin graph is build-frozen)"
-    );
-
-    let forbidden = rbac_set_role_admin_proc_root()?;
-    for (label, script) in &scripts {
-        let forest = script.mast();
-        for node in forest.nodes() {
-            assert_ne!(
-                node.digest(),
-                forbidden,
-                "allowlisted note script `{label}` references the rbac::set_role_admin root — the \
-                 S21 unreachability guarantee is BROKEN (the role-admin graph would be \
-                 runtime-mutable again: owner self-lockout and Manager re-delegation become \
-                 reachable)"
-            );
-        }
-    }
-    Ok(())
-}
-
-/// UNREACHABLE, cross-reference (set_role_admin-specific): neither entry vector admits the removed
-/// capability. The FORMER pinned `set_role_admin` note root is NOT a member of the 12-root
-/// note-script allowlist (re-adding it turns this test RED), and the tx-script allowlist admits ONLY
-/// the canonical expiration bounder — never `set_role_admin` (pinned + executed by
-/// `the_auth_component_rejects_non_expiration_tx_scripts_and_admits_expiration`).
-/// The executing leg — the preserved former note is consumed and REJECTED by the auth component —
-/// lives in `f5_admin_notes.rs::set_role_admin_note_is_rejected_as_non_allowlisted`.
-#[test]
-fn set_role_admin_former_note_root_is_not_admissible_via_either_allowlist() -> Result<()> {
-    let former = NoteScriptRoot::from_raw(
-        Word::parse(FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX)
-            .expect("the former set_role_admin note-script root hex is a valid word"),
-    );
-    assert!(
-        !XReserveStablecoinBuilder::allowed_note_scripts().contains(&former),
-        "the former set_role_admin note root must NOT be a member of the 12-root note-script \
-         allowlist — the runtime set_role_admin note was REMOVED (S21 flip, human-ratified \
-         2026-07-14; rotation is grant_role/revoke_role, the delegation graph is build-seeded); \
-         re-adding it violates the ratified DECISION-SETROLEADMIN-NOTE-REMOVAL disposition"
-    );
-    Ok(())
 }
 
 // GET_AUTHORITY IS READ-ONLY (executed bounding, not documentation)
@@ -337,7 +219,7 @@ async fn get_authority_is_read_only_on_the_account() -> Result<()> {
 // against the protocol source at the pin):
 //
 // Tier A — truly unreachable: the 4 stock admin allowlist mutators. No note or tx can reach them
-// under the frozen 12-root note-script allowlist + 1-root tx-script allowlist (the same
+// under the frozen 9-root note-script allowlist + 1-root tx-script allowlist (the same
 // disposition as the freeze/unfreeze + set_role_admin precedents).
 //
 // Tier B — internally-active-but-inert, direct-entry-unreachable: the 6 stock fee procedures +
@@ -347,7 +229,7 @@ async fn get_authority_is_read_only_on_the_account() -> Result<()> {
 // `auth_network_transaction` (`collect_sponsored_fees` -> `estimate_note_fee_internal` -> dyncall
 // to `compute_note_fee`). With `BasicConstantFeePolicy` scheduling an explicit ZERO fee for all
 // 14 allowlisted roots, that execution computes a zero fee and is functionally inert (doubly so
-// on the zero-base-fee MockChain). The 12-root schedule is required precisely because this path
+// on the zero-base-fee MockChain). The 9-root schedule is required precisely because this path
 // runs on every note.
 //
 // Both tiers are TEMPORARY: a later slice reverts the growth together with the provisional fee
@@ -402,7 +284,7 @@ fn ratified_growth_row_roots() -> Result<Vec<(&'static str, Word)>> {
 }
 
 /// PRESENT: each of the 11 ratified growth rows IS a callable root of the composed account — the
-/// fact the ratification covers, stated explicitly rather than left implicit in the 74-root count.
+/// fact the ratification covers, stated explicitly rather than left implicit in the 69-root count.
 /// If any row disappears, the temporary-growth ratification must be re-visited (the revert slice
 /// expects to remove exactly these).
 #[test]
@@ -435,7 +317,7 @@ fn tier_a_mutators_are_unreachable_from_every_allowlisted_note() -> Result<()> {
     let swept: BTreeSet<_> = scripts.iter().map(|(_, s)| s.root()).collect();
     assert_eq!(
         swept, allowlist,
-        "the swept note scripts must be EXACTLY the 12-root note-script allowlist"
+        "the swept note scripts must be EXACTLY the 9-root note-script allowlist"
     );
 
     let rows = growth_row_roots(&TIER_A_MUTATOR_ROWS)?;
@@ -470,7 +352,7 @@ fn tier_b_fee_rows_are_not_referenced_by_any_allowlisted_note() -> Result<()> {
     let swept: BTreeSet<_> = scripts.iter().map(|(_, s)| s.root()).collect();
     assert_eq!(
         swept, allowlist,
-        "the swept note scripts must be EXACTLY the 12-root note-script allowlist"
+        "the swept note scripts must be EXACTLY the 9-root note-script allowlist"
     );
 
     let rows = growth_row_roots(&TIER_B_FEE_ROWS)?;
@@ -492,7 +374,7 @@ fn tier_b_fee_rows_are_not_referenced_by_any_allowlisted_note() -> Result<()> {
 }
 
 /// NO EXTERNAL ENTRY POINT (both tiers): no growth root is a member of EITHER allowlist — the
-/// 12-root note-script allowlist or the tx-script allowlist (read directly from the production
+/// 9-root note-script allowlist or the tx-script allowlist (read directly from the production
 /// auth component's slot; it holds EXACTLY the one canonical expiration root, as the
 /// expiration-allowlist tests pin).
 /// For Tier A this closes both entry vectors outright (with the MAST sweep above: truly
@@ -528,7 +410,7 @@ fn ratified_growth_rows_are_not_admissible_via_either_allowlist() -> Result<()> 
         let as_note_root = NoteScriptRoot::from_raw(root);
         assert!(
             !note_allowlist.contains(&as_note_root),
-            "the `{path}` root must NOT be a member of the 12-root note-script allowlist"
+            "the `{path}` root must NOT be a member of the 9-root note-script allowlist"
         );
         assert!(
             !tx_allowlist.contains(&root),

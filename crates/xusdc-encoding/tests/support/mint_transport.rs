@@ -58,7 +58,7 @@ pub const INTENT_SCHEME: u16 = 4;
 pub const ATTESTATION_SCHEME: u16 = 5;
 
 /// The production builder's Ownable2Step owner (`test_account_id(1)` across every fixture).
-pub fn owner() -> AccountId {
+pub fn administrator() -> AccountId {
     test_account_id(1)
 }
 
@@ -313,10 +313,16 @@ pub fn fixture_with(
         let commitment =
             gen_attester(1, &payload_for(recipient, faucet_id, MINT_AMOUNT, 0)).commitment;
         let mut notes = vec![
-            XReserveIdentifierInitNote::create(owner(), faucet_id, &mut note_rng(951))
-                .expect("building the owner identifier_init note"),
-            XReserveSetAttesterNote::create(owner(), faucet_id, commitment, 1, &mut note_rng(952))
-                .expect("building the owner set_attester note"),
+            XReserveIdentifierInitNote::create(administrator(), faucet_id, &mut note_rng(951))
+                .expect("building the administrator identifier_init note"),
+            XReserveSetAttesterNote::create(
+                administrator(),
+                faucet_id,
+                commitment,
+                1,
+                &mut note_rng(952),
+            )
+            .expect("building the administrator set_attester note"),
         ];
         notes.extend(extra_notes(recipient, faucet_id));
         notes

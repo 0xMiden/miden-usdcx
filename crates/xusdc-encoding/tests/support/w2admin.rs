@@ -33,7 +33,7 @@ use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
-    XReserveAdminAuthority, BLK_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveAdminAuthority, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::note::xreserve_admin::{block_note, unblock_note};
 
@@ -42,15 +42,17 @@ use super::{add_faucet_account, setup_production_faucet, test_account_id, Produc
 // THE RATIFIED NUMBERS
 // ================================================================================================
 
-/// The note-script allowlist after the standard config notes replaced the four faucet-owned pause
-/// and blocklist notes: each standard note covers both of its actions. Human-ratified.
-pub const RATIFIED_ALLOWLIST_ROOTS: usize = 12;
+/// The note-script allowlist once every admin capability rides a standard note that covers all of
+/// its actions behind one script root — pause and unpause, block and unblock, and grant, revoke,
+/// set-role-admin and renounce — and the two ownership notes are gone with the administratorship component.
+/// Human-ratified.
+pub const RATIFIED_ALLOWLIST_ROOTS: usize = 9;
 
 /// The callable procedure count: four custom procedures out, four standard manager procedures in,
-/// two-step ownership retained (count-neutral). The mint-path `encoding::pubkey_commitment`
-/// de-export (it became an exec-only export of `attestation_verify`, no longer a callable account
-/// root) then drops the total by one to 74. Human-ratified.
-pub const RATIFIED_CALLABLE_PROCEDURES: usize = 74;
+/// the two-step ownership component's five rows removed, and the mint-path
+/// `encoding::pubkey_commitment` de-export (it became an exec-only export of `attestation_verify`,
+/// no longer a callable account root) drops the total by one more to 69. Human-ratified.
+pub const RATIFIED_CALLABLE_PROCEDURES: usize = 69;
 
 /// The `DOM_PAUSER` role symbol felt the retired `pause_admin.masm` hard-coded. The role identity
 /// had to survive the move from a MASM literal into the procedure-role map, so it is pinned here as
@@ -65,7 +67,8 @@ pub const BLK_MANAGER_ROLE_FELT: u64 = 7_907_587_873_290_749;
 // The production builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3),
 // BLK_MANAGER = id(4). The grounding account seeds the same identities so both suites read alike.
 
-/// The bootstrap administrator — also the production faucet's `Ownable2Step` owner.
+/// The bootstrap administrator — the sole member of the built-in `ADMIN` role, which is the
+/// faucet's only authority handle.
 pub fn admin_holder() -> AccountId {
     test_account_id(1)
 }
@@ -94,9 +97,22 @@ pub fn blocklist_symbol() -> RoleSymbol {
     RoleSymbol::new(BLK_MANAGER_ROLE).expect("the blocklist administrator role symbol is valid")
 }
 
+/// The Domain manager role symbol — the seeded administrator of the Domain pauser role, and so the
+/// identity the standard role note's grant, revoke and re-point actions answer to for that role.
+pub fn role_manager_symbol() -> RoleSymbol {
+    RoleSymbol::new(DOM_MANAGER_ROLE).expect("the Domain manager role symbol is valid")
+}
+
 /// The trap the standard pause gate raises when a paused faucet is asked to mint or burn.
 pub fn err_paused() -> MasmError {
     MasmError::from_static_str("the contract is paused")
+}
+
+/// The trap the standard role component raises when the sender does not hold the target role's
+/// effective administrator role. It is what refuses a grant, a revoke or a re-point sent by the
+/// wrong party — including the administrator role itself, for a role that was delegated away.
+pub fn err_sender_not_role_admin() -> MasmError {
+    MasmError::from_static_str("note sender does not hold the role's admin role")
 }
 
 /// The word a set pause flag or a blocked account reads back as.

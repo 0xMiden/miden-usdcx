@@ -24,7 +24,7 @@ use support::*;
 /// (`attester_admin::set_attester`, which resolves to the `ADMIN` role), the attestation
 /// mint policy `mint_policy::check_policy` (the ACTIVE mint policy — a pure gate, no supply
 /// arithmetic of its own), and the identifier-only `identifier_init::init_identifier`
-/// (owner-gated, init-once) = 10. Pause and blocklist administration are no longer here: the
+/// (administrator-gated, init-once) = 10. Pause and blocklist administration are no longer here: the
 /// custom role-gated wrappers gave way to the stock `PausableManager` / `BlocklistManager`
 /// components, whose roots live on those components and are gated by the account's
 /// procedure-role map. `encoding::pubkey_commitment` is no longer a callable root either — it is a

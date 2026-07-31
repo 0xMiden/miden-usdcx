@@ -143,10 +143,13 @@ async fn set_min_burn_above_the_asset_max_is_rejected() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let above_max = FUNGIBLE_ASSET_MAX_AMOUNT + 1;
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
-        vec![
-            XReserveSetMinBurnSizeNote::create(owner(), faucet_id, above_max, &mut note_rng(720))
-                .expect("building the above-max min-burn note"),
-        ]
+        vec![XReserveSetMinBurnSizeNote::create(
+            administrator(),
+            faucet_id,
+            above_max,
+            &mut note_rng(720),
+        )
+        .expect("building the above-max min-burn note")]
     })?;
     let above_max_note = pf.seeded_notes[0].clone();
 
@@ -175,7 +178,7 @@ async fn set_min_burn_at_exactly_the_asset_max_is_accepted() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
         vec![XReserveSetMinBurnSizeNote::create(
-            owner(),
+            administrator(),
             faucet_id,
             FUNGIBLE_ASSET_MAX_AMOUNT,
             &mut note_rng(721),
@@ -212,7 +215,7 @@ async fn set_min_burn_at_the_floor_still_succeeds() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
         vec![
-            XReserveSetMinBurnSizeNote::create(owner(), faucet_id, 1, &mut note_rng(722))
+            XReserveSetMinBurnSizeNote::create(administrator(), faucet_id, 1, &mut note_rng(722))
                 .expect("building the floor min-burn note"),
         ]
     })?;
@@ -243,7 +246,7 @@ async fn set_min_burn_zero_still_rejected_by_the_floor() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
         vec![
-            XReserveSetMinBurnSizeNote::create(owner(), faucet_id, 0, &mut note_rng(723))
+            XReserveSetMinBurnSizeNote::create(administrator(), faucet_id, 0, &mut note_rng(723))
                 .expect("building the zero min-burn note"),
         ]
     })?;

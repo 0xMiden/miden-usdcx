@@ -202,7 +202,7 @@ fn the_attester_setter_is_not_mapped_to_a_dedicated_role() -> Result<()> {
 }
 
 /// The emergency switch also stays unmapped, so it resolves to the administrator role — matching
-/// today's behaviour, where it is gated on the owner.
+/// today's behaviour, where it is gated on the administrator.
 #[test]
 fn the_emergency_switch_is_not_mapped_to_a_dedicated_role() {
     let roles = XReserveAdminAuthority::new().procedure_roles().clone();

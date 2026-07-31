@@ -6,9 +6,9 @@
 # authority::assert_authorized (the account-wide Authority gate) + native_account::set_map_item
 # (the write). No custom owner/RBAC logic. Under the account's role-based authority this procedure
 # carries no role assignment of its own, so the gate resolves to the built-in ADMIN role, whose sole
-# member is the owner's account — the same identity that held the capability under the earlier
-# owner-based authority. The setter is intentionally NOT pause-gated (matching Circle's
-# onlyOwner model).
+# seeded member is the bootstrap administrator's account — the same identity that held the
+# capability under the earlier owner-based authority. The setter is intentionally NOT pause-gated
+# (matching Circle's onlyOwner model).
 
 use miden::protocol::native_account
 use miden::standards::access::authority

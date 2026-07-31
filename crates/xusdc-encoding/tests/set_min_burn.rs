@@ -7,9 +7,9 @@
 //!
 //! Authority follows Circle's admin model: this setter carries no role of its own, so the
 //! account-wide role-based authority resolves it to the built-in `ADMIN` role, seeded on the
-//! owner's account. The account also seeds two Domain roles — Pauser and Manager — but neither may
+//! administrator's account. The account also seeds two Domain roles — Pauser and Manager — but neither may
 //! set the floor, and their own powers are tested in the pause and role suites. `ADMIN` membership
-//! is account-bound: it does not follow an ownership transfer.
+//! is account-bound: it is the faucet's only authority handle.
 //!
 //! The gate tests here call the standard setter directly through a bare test-local note, on
 //! purpose: the production note script also enforces its own "never below one" floor guard, and
@@ -18,7 +18,7 @@
 //!
 //! So this file covers the administrator gate, that a successful write lands the right value in the right
 //! slot, that the setter is deliberately NOT blocked while the faucet is paused, that a seeded
-//! role-holder who is not the owner is still rejected, and that the role seeding it relies on is
+//! role-holder who is not the administrator is still rejected, and that the role seeding it relies on is
 //! itself correct. The end-to-end consequence — set the floor, then watch a below-floor burn trap —
 //! lives with the burn-note machinery in `xreserve_receive_and_burn.rs`.
 
@@ -27,14 +27,14 @@ mod support;
 use anyhow::Result;
 use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey};
 use miden_protocol::{Felt, Word};
-use miden_standards::account::access::RoleBasedAccessControl;
+use miden_standards::account::access::{Ownable2Step, RoleBasedAccessControl};
 use miden_standards::account::policies::MinBurnAmount;
 use miden_testing::assert_transaction_executor_error;
 use support::*;
 
 // The seeded principals the reconciled production builder installs: owner = id(1) (Ownable2Step), and
-// the two DOM role members DOM_PAUSER = id(2), DOM_MANAGER = id(3). A plain non-owner is any other id.
-fn owner() -> AccountId {
+// the two DOM role members DOM_PAUSER = id(2), DOM_MANAGER = id(3). A plain non-administrator is any other id.
+fn administrator() -> AccountId {
     test_account_id(1)
 }
 fn dom_pauser() -> AccountId {
@@ -43,7 +43,7 @@ fn dom_pauser() -> AccountId {
 fn dom_manager() -> AccountId {
     test_account_id(3)
 }
-fn plain_non_owner() -> AccountId {
+fn plain_non_administrator() -> AccountId {
     test_account_id(99)
 }
 
@@ -117,20 +117,20 @@ fn probe_stock_min_burn_setter_installed() -> Result<()> {
     Ok(())
 }
 
-// OWNER GATE + WRITE INTEGRITY (the security core) — against the STOCK setter
+// ADMINISTRATOR GATE + WRITE INTEGRITY (the security core) — against the STOCK setter
 // ================================================================================================
 
 /// An OWNER-sent `set_min_burn_size(M)` succeeds and writes the FULL word `[M,0,0,0]` to the STOCK
 /// `MinBurnAmount` floor slot (write integrity).
 #[tokio::test]
-async fn set_min_burn_owner_succeeds() -> Result<()> {
+async fn set_min_burn_administrator_succeeds() -> Result<()> {
     let h = faucet_harness()?;
     let account = faucet(&h)?;
     const NEW_MIN: u64 = 5_000;
 
-    let executed = run_set_min_burn_size_against(&h.chain, &account, owner(), NEW_MIN, 7)
+    let executed = run_set_min_burn_size_against(&h.chain, &account, administrator(), NEW_MIN, 7)
         .await
-        .expect("the owner's set_min_burn_size(M) must succeed");
+        .expect("the administrator's set_min_burn_size(M) must succeed");
     let mut evolved = account.clone();
     evolved.apply_patch(executed.account_patch())?;
 
@@ -146,29 +146,29 @@ async fn set_min_burn_owner_succeeds() -> Result<()> {
 /// A PLAIN non-administrator-sent `set_min_burn_size` traps the EXACT `ERR_SENDER_LACKS_ROLE` and leaves the
 /// slot unchanged (no partial write before the trap).
 #[tokio::test]
-async fn set_min_burn_plain_non_owner_rejects() -> Result<()> {
-    assert_non_owner_rejected(plain_non_owner()).await
+async fn set_min_burn_plain_non_administrator_rejects() -> Result<()> {
+    assert_non_administrator_rejected(plain_non_administrator()).await
 }
 
-/// OWNER-ONLY (the seeded `DOM_PAUSER` member, who is NOT the owner, is rejected). Proves the gate is the
+/// ADMINISTRATOR-ONLY (the seeded `DOM_PAUSER` member, who is NOT the administrator, is rejected). Proves the gate is the
 /// Ownable2Step owner specifically — a privileged role-holder gains no setter access. Doubles as the
 /// `former ATTEST_ADMIN` removal proof: id(2) held ATTEST_ADMIN pre-reconciliation and is rejected now.
 #[tokio::test]
-async fn set_min_burn_dom_pauser_non_owner_rejects() -> Result<()> {
-    assert_non_owner_rejected(dom_pauser()).await
+async fn set_min_burn_dom_pauser_non_administrator_rejects() -> Result<()> {
+    assert_non_administrator_rejected(dom_pauser()).await
 }
 
-/// OWNER-ONLY (the seeded `DOM_MANAGER` member, who is NOT the owner, is rejected). The second DOM role,
+/// ADMINISTRATOR-ONLY (the seeded `DOM_MANAGER` member, who is NOT the administrator, is rejected). The second DOM role,
 /// so both seeded role-holders are proven non-authorizing for the setter.
 #[tokio::test]
 async fn set_min_burn_dom_manager_non_owner_rejects() -> Result<()> {
-    assert_non_owner_rejected(dom_manager()).await
+    assert_non_administrator_rejected(dom_manager()).await
 }
 
 /// Shared non-administrator assertion: `sender` (no `ADMIN` role) traps the EXACT `ERR_SENDER_LACKS_ROLE`, AND
 /// the STOCK `MinBurnAmount` floor slot reads back the seeded `[SEED_MIN,0,0,0]` (byte-identical)
 /// — no partial write.
-async fn assert_non_owner_rejected(sender: AccountId) -> Result<()> {
+async fn assert_non_administrator_rejected(sender: AccountId) -> Result<()> {
     let h = faucet_harness()?;
     let account = faucet(&h)?;
 
@@ -179,7 +179,7 @@ async fn assert_non_owner_rejected(sender: AccountId) -> Result<()> {
     assert_eq!(
         read_min_burn_size(&account)?,
         min_word(SEED_MIN),
-        "a rejected non-owner set_min_burn_size leaves the stock MinBurnAmount floor slot unchanged"
+        "a rejected non-administrator set_min_burn_size leaves the stock MinBurnAmount floor slot unchanged"
     );
     Ok(())
 }
@@ -206,9 +206,9 @@ async fn set_min_burn_owner_succeeds_while_paused() -> Result<()> {
     evolved.apply_patch(paused.account_patch())?;
 
     // tx2: the OWNER's set_min_burn_size(M) SUCCEEDS while paused — setters are not pause-gated.
-    let executed = run_set_min_burn_size_against(&h.chain, &evolved, owner(), NEW_MIN, 7)
+    let executed = run_set_min_burn_size_against(&h.chain, &evolved, administrator(), NEW_MIN, 7)
         .await
-        .expect("the owner's set_min_burn_size(M) must succeed while the faucet is paused");
+        .expect("the administrator's set_min_burn_size(M) must succeed while the faucet is paused");
     evolved.apply_patch(executed.account_patch())?;
 
     assert_eq!(
@@ -220,18 +220,19 @@ async fn set_min_burn_owner_succeeds_while_paused() -> Result<()> {
     Ok(())
 }
 
-// DOM ROLE SEEDING (owner-ONLY foundation) — the DOM_PAUSER/DOM_MANAGER members are seeded + valid
+// DOM ROLE SEEDING (administrator-ONLY foundation) — the DOM_PAUSER/DOM_MANAGER members are seeded + valid
 // ================================================================================================
 
 /// The test-side role seeding matches the shape the production builder seeds.
 ///
-/// Several suites — the pause rejects, the non-owner setter reject below — run against a support
+/// Several suites — the pause rejects, the non-administrator setter reject below — run against a support
 /// harness that installs its own role-seeding component rather than the production builder. Those
 /// tests are only meaningful while the replica seeds the same thing production does, and nothing
 /// else checks that. So this reads the replica's storage directly and pins all three facts: the
 /// Domain Pauser role is administered by the Domain Manager (one member, admin role = Domain
 /// Manager), the Domain Manager is administered by the built-in admin role (one member, admin role
-/// 0), and both memberships are present. The equivalent assertions against a production-built
+/// 0), and both memberships are present — and that the replica installs no ownership component,
+/// because the shipped account does not either. The equivalent assertions against a production-built
 /// account live in `role_admin.rs::shipped_delegation_reads_back`.
 #[tokio::test]
 async fn support_replica_carries_delegation_seed() -> Result<()> {
@@ -246,9 +247,9 @@ async fn support_replica_carries_delegation_seed() -> Result<()> {
     // The Domain Pauser's config records one member and names the Domain Manager as its admin
     // role — that delegation is what lets the Manager rotate the Pauser without owner involvement.
     // The Domain Manager itself records admin role 0, the built-in admin role, whose membership the
-    // builder seeds on the owner's account. Note that this admin membership is bound to that
+    // builder seeds on the administrator's account. Note that this admin membership is bound to that
     // ACCOUNT, not to whoever currently holds ownership: transferring ownership does not move it,
-    // so an ownership handover has to re-seat the role explicitly.
+    // so an administratorship handover has to re-seat the role explicitly.
     let pauser_config = account.storage().get_map_item(
         RoleBasedAccessControl::role_config_slot(),
         StorageMapKey::new(role_config_key(&pauser)),
@@ -299,6 +300,15 @@ async fn support_replica_carries_delegation_seed() -> Result<()> {
         Felt::from(1u32),
         "DOM_MANAGER holder id(3) is a seeded member"
     );
+
+    // And the replica must not carry an authority handle the shipped account has retired: the
+    // ownership component is gone from production, so a replica that still installs it would give
+    // the suites running against it an administrator slot and five callable procedures the real faucet does
+    // not have — the divergence that makes a replica stop being evidence.
+    assert!(
+        Ownable2Step::try_from_storage(account.storage()).is_err(),
+        "the replica must carry no owner-config slot — the shipped composition installs no          ownership component, and the built-in ADMIN role is its only authority handle"
+    );
     Ok(())
 }
 
@@ -312,7 +322,7 @@ async fn dom_non_member_reads_empty() -> Result<()> {
 
     let non = account.storage().get_map_item(
         RoleBasedAccessControl::role_membership_slot(),
-        StorageMapKey::new(role_membership_key(&pauser, plain_non_owner())),
+        StorageMapKey::new(role_membership_key(&pauser, plain_non_administrator())),
     )?;
     assert_eq!(
         non[0],

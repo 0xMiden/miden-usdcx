@@ -2,12 +2,12 @@
 //! The allowlist setter's MASM is UNCHANGED — it calls the account-wide
 //! `authority::assert_authorized`, which under the account's role-based authority resolves this
 //! procedure to the built-in `ADMIN` role, since it carries no role of its own. `ADMIN` is seeded on
-//! the owner's account, so the identity is today's; it is account-bound and does not follow an
-//! ownership transfer. This file covers the administrator
+//! the administrator's account, so the identity is today's; it is account-bound and does not follow an
+//! administrator handover. This file covers the administrator
 //! gate (the security core), the production attestation-gate posture pin, and the pause gate. The
 //! non-vacuity seam — that enabling, removing, and rotating an attester actually changes which
 //! attestations a real mint accepts — lives in the mint end-to-end suites, alongside the
-//! production-faucet fixtures they own. The role seeding this file's non-owner rejects rely on is
+//! production-faucet fixtures they own. The role seeding this file's non-administrator rejects rely on is
 //! proven in `role_admin.rs::shipped_delegation_reads_back` against a production-built account and
 //! in `set_min_burn.rs::support_replica_carries_delegation_seed` against the test replica.
 
@@ -21,10 +21,10 @@ use miden_testing::assert_transaction_executor_error;
 use support::*;
 use xusdc_encoding::account::xreserve::ATTESTATION_MINT_POLICY_PROC_PATH;
 
-// The seeded principals the reconciled builder installs: owner = id(1) (Ownable2Step); the two seeded
+// The seeded principals the reconciled builder installs: the administrator = id(1) (the sole ADMIN member); the two seeded
 // DOM role-holders DOM_PAUSER = id(2) (also the FORMER ATTEST_ADMIN holder) and DOM_MANAGER = id(3) —
-// privileged non-owners the owner-ONLY proof rejects.
-fn owner() -> AccountId {
+// privileged non-administrators the administrator-ONLY proof rejects.
+fn administrator() -> AccountId {
     test_account_id(1)
 }
 fn dom_pauser() -> AccountId {
@@ -59,8 +59,8 @@ fn placeholder_driver_src() -> String {
         .to_string()
 }
 
-/// A guarded production faucet (owner-gated, attestation-policy active) with a trivial driver/probe
-/// — the base for the owner-gate tests. `attesters_seed = None` (empty allowlist).
+/// A guarded production faucet (administrator-gated, attestation-policy active) with a trivial driver/probe
+/// — the base for the administrator-gate tests. `attesters_seed = None` (empty allowlist).
 fn guarded_faucet() -> Result<GuardedMint> {
     let driver = placeholder_driver_src();
     let probe = composition_supply_probe_src(0);
@@ -80,7 +80,7 @@ fn guarded_faucet() -> Result<GuardedMint> {
 }
 
 /// Reads the `xReserveAttesters` allowlist entry for `commitment` from a committed account (EMPTY_WORD
-/// when unset) — the no-state-change read-back the non-owner reject uses.
+/// when unset) — the no-state-change read-back the non-administrator reject uses.
 fn read_attester(account: &miden_protocol::account::Account, commitment: Word) -> Result<Word> {
     let slot = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)?;
     Ok(account
@@ -108,10 +108,10 @@ fn probe_attester_admin_exports() -> Result<()> {
     Ok(())
 }
 
-// PRODUCTION REGRESSION GATE — the owner-gated build must not perturb the mint-gate posture
+// PRODUCTION REGRESSION GATE — the administrator-gated build must not perturb the mint-gate posture
 // ================================================================================================
 
-/// Making the attester setter owner-gated did not disturb what actually guards minting.
+/// Making the attester setter administrator-gated did not disturb what actually guards minting.
 ///
 /// The composed account's active mint-policy slot must still hold exactly the root of the
 /// attestation policy resolved from the installed component. That is the structural form of the
@@ -134,7 +134,7 @@ fn production_build_gates_mint_on_the_attestation_policy() -> Result<()> {
         .value();
     assert_eq!(
         active, attestation_root,
-        "the ACTIVE mint policy slot must hold the attestation policy root (the owner-gated build \
+        "the ACTIVE mint policy slot must hold the attestation policy root (the administrator-gated build \
          leaves the mint gate on the attestation policy)"
     );
     Ok(())
@@ -150,9 +150,9 @@ async fn set_attester_owner_succeeds() -> Result<()> {
     let account = faucet_account(&gm.harness);
     let commitment = Word::from([10u32, 11, 12, 13]);
 
-    let executed = run_set_attester_tx(&gm.harness, &account, owner(), commitment, 1, 7)
+    let executed = run_set_attester_tx(&gm.harness, &account, administrator(), commitment, 1, 7)
         .await
-        .expect("the owner's set_attester(K, true) must succeed");
+        .expect("the administrator's set_attester(K, true) must succeed");
 
     // the allowlist entry landed: xReserveAttesters[K] == [1,0,0,0].
     let attesters = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)?;
@@ -193,7 +193,7 @@ async fn assert_set_attester_non_owner_rejected(sender: AccountId, key_seed: u32
     assert_eq!(
         read_attester(&account, commitment)?,
         Word::from([0u32, 0, 0, 0]),
-        "a rejected non-owner set_attester leaves xReserveAttesters[K] empty"
+        "a rejected non-administrator set_attester leaves xReserveAttesters[K] empty"
     );
     Ok(())
 }
@@ -235,9 +235,11 @@ async fn set_attester_owner_succeeds_while_paused() -> Result<()> {
     evolved.apply_patch(paused.account_patch())?;
 
     // tx2: the OWNER's set_attester(K, true) SUCCEEDS while paused — setters are not pause-gated.
-    let executed = run_set_attester_tx(&gm.harness, &evolved, owner(), commitment, 1, 7)
+    let executed = run_set_attester_tx(&gm.harness, &evolved, administrator(), commitment, 1, 7)
         .await
-        .expect("the owner's set_attester(K, true) must succeed while the faucet is paused");
+        .expect(
+            "the administrator's set_attester(K, true) must succeed while the faucet is paused",
+        );
 
     // the allowlist entry landed despite the pause: xReserveAttesters[K] == [1,0,0,0].
     let attesters = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)?;

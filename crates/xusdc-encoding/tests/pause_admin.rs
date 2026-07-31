@@ -1,12 +1,12 @@
 //! The emergency halt: who can pause the faucet, and what pausing actually stops.
 //!
-//! Circle's model gives pausing to a dedicated Domain Pauser, and gives the owner no direct pause
+//! Circle's model gives pausing to a dedicated Domain Pauser, and gives the administrator no direct pause
 //! path at all. The standard `PausableManager` cannot express that — it gates pausing on the
-//! account-wide authority, which is the owner — so the faucet ships its own `pause` and `unpause`
+//! account-wide authority, which is the administrator — so the faucet ships its own `pause` and `unpause`
 //! procs, each of which asserts the sender holds the Domain Pauser role and then calls the
 //! unauthenticated standard pause primitive. The standard manager is left out of the composition
 //! entirely, which is what makes the custom procs the account's ONLY pause surface. Two tests here
-//! pin that absence directly: an owner-sent standard pause note fails with "unknown account
+//! pin that absence directly: an administrator-sent standard pause note fails with "unknown account
 //! procedure", because those procedure roots are genuinely not in the account's code.
 //!
 //! The load-bearing proof is not that pausing flips a flag — it is that pausing HALTS the faucet.
@@ -49,7 +49,7 @@ fn prod_note_rng(seed: u64) -> RandomCoin {
 }
 
 // The production builder seeds owner = id(1) (Ownable2Step), DOM_PAUSER = id(2), DOM_MANAGER = id(3).
-fn owner() -> AccountId {
+fn administrator() -> AccountId {
     test_account_id(1)
 }
 fn dom_pauser() -> AccountId {
@@ -58,7 +58,7 @@ fn dom_pauser() -> AccountId {
 fn dom_manager() -> AccountId {
     test_account_id(3)
 }
-fn plain_non_owner() -> AccountId {
+fn plain_non_administrator() -> AccountId {
     test_account_id(99)
 }
 
@@ -170,10 +170,16 @@ fn mint_fixture(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<Producti
             gen_attester(1, &payload_for(recipient, MINT_AMOUNT, 0, faucet_id)).commitment;
         let route = faucet_id;
         let mut notes = vec![
-            XReserveIdentifierInitNote::create(owner(), route, &mut prod_note_rng(951))
-                .expect("building the owner identifier_init note"),
-            XReserveSetAttesterNote::create(owner(), route, commitment, 1, &mut prod_note_rng(952))
-                .expect("building the owner set_attester note"),
+            XReserveIdentifierInitNote::create(administrator(), route, &mut prod_note_rng(951))
+                .expect("building the administrator identifier_init note"),
+            XReserveSetAttesterNote::create(
+                administrator(),
+                route,
+                commitment,
+                1,
+                &mut prod_note_rng(952),
+            )
+            .expect("building the administrator set_attester note"),
         ];
         notes.extend(extra_notes(recipient));
         notes
@@ -259,23 +265,23 @@ fn the_xreserve_library_exports_no_pause_procedure() -> Result<()> {
 // PAUSE-HALT SEAM — the non-vacuity must-have: a pause HALTS the real mint AND the real burn
 // ================================================================================================
 
-/// The owner has no pause path.
+/// The administrator has no pause path.
 ///
 /// The standard pause manager IS installed now, so the rejection is an authorization check rather
 /// than a missing procedure: the account's procedure-role map gates `pause` on the Domain pauser
-/// role, the owner does not hold it, and the role assertion traps. What matters is that the outcome
-/// is unchanged — the owner cannot pause, and `is_paused` is left untouched.
+/// role, the administrator does not hold it, and the role assertion traps. What matters is that the outcome
+/// is unchanged — the administrator cannot pause, and `is_paused` is left untouched.
 ///
 /// The exact error is the point. A missing-procedure failure would now mean the manager was dropped
 /// from the composition; anything other than the role error would mean the map is not gating this
 /// procedure at all, and the capability had quietly fallen back to the administrator role — which
-/// the owner does hold.
+/// the administrator does hold.
 #[tokio::test]
 async fn owner_has_no_pause_path() -> Result<()> {
     let gm = production_pause_fixture()?;
     let account = faucet_account(&gm.harness);
 
-    let result = run_pause_against(&gm.harness.mock_chain, &account, owner(), 5).await;
+    let result = run_pause_against(&gm.harness.mock_chain, &account, administrator(), 5).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
     assert_eq!(
         read_is_paused(&account)?,
@@ -285,8 +291,8 @@ async fn owner_has_no_pause_path() -> Result<()> {
     Ok(())
 }
 
-/// The unpause twin: the Domain pauser pauses first (the flag REALLY flips), then an owner-sent
-/// unpause note fails with the EXACT role error and the faucet STAYS paused — an owner who could
+/// The unpause twin: the Domain pauser pauses first (the flag REALLY flips), then an administrator-sent
+/// unpause note fails with the EXACT role error and the faucet STAYS paused — an administrator who could
 /// unpause would visibly clear the flag.
 #[tokio::test]
 async fn owner_has_no_unpause_path() -> Result<()> {
@@ -304,7 +310,8 @@ async fn owner_has_no_unpause_path() -> Result<()> {
         "precondition: the DOM_PAUSER pause really flipped is_paused"
     );
 
-    let result = run_stock_unpause_against(&gm.harness.mock_chain, &evolved, owner(), 6).await;
+    let result =
+        run_stock_unpause_against(&gm.harness.mock_chain, &evolved, administrator(), 6).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
     assert_eq!(
         read_is_paused(&evolved)?,
@@ -576,7 +583,7 @@ async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
     Ok(())
 }
 
-// ROLE GATE + SEPARATION — the custom pause is DOM_PAUSER-specific, and a pauser is not the owner
+// ROLE GATE + SEPARATION — the custom pause is DOM_PAUSER-specific, and a pauser is not the administrator
 // ================================================================================================
 
 /// Shared: a non-DOM_PAUSER `sender` is rejected from the CUSTOM pause with the EXACT
@@ -604,20 +611,20 @@ async fn assert_custom_pause_rejects(sender: AccountId) -> Result<()> {
 /// A plain non-holder (id 99) cannot pause via the custom proc.
 #[tokio::test]
 async fn non_dom_pauser_pause_rejects() -> Result<()> {
-    assert_custom_pause_rejects(plain_non_owner()).await
+    assert_custom_pause_rejects(plain_non_administrator()).await
 }
 
-/// The owner cannot pause either — the custom proc is role-gated, not owner-gated.
+/// The administrator cannot pause either — the proc is gated on the pause role, which it does not hold.
 ///
 /// Together with the test that the standard pause procedures are absent from the account, this
-/// completes the claim that the owner has no direct pause path at all: neither surface accepts
-/// them. What the owner keeps is administration of the roles, reaching the Domain Pauser's
+/// completes the claim that the administrator has no direct pause path at all: neither surface accepts
+/// them. What the administrator keeps is administration of the roles, reaching the Domain Pauser's
 /// membership indirectly by administering the Domain Manager that administers it. That is a
 /// rotation power, exercised in `role_admin.rs`, and it is deliberately not a pause power: the
 /// owner can appoint a pauser, but cannot pause.
 #[tokio::test]
 async fn owner_is_not_dom_pauser_on_custom_pause() -> Result<()> {
-    assert_custom_pause_rejects(owner()).await
+    assert_custom_pause_rejects(administrator()).await
 }
 
 /// Holding a different role is not enough: the Domain Manager cannot pause.
@@ -636,8 +643,8 @@ async fn other_role_holder_cannot_pause() -> Result<()> {
 /// is the security-critical direction (Circle designates unpause a joint-approval action): an ungated
 /// unpause would let anyone re-enable a paused — possibly compromised — bridge.
 #[rstest]
-#[case::stranger(plain_non_owner())]
-#[case::owner(owner())]
+#[case::stranger(plain_non_administrator())]
+#[case::owner(administrator())]
 #[case::dom_manager(dom_manager())]
 #[tokio::test]
 async fn non_dom_pauser_unpause_rejects(#[case] sender: AccountId) -> Result<()> {
@@ -672,9 +679,9 @@ async fn non_dom_pauser_unpause_rejects(#[case] sender: AccountId) -> Result<()>
     Ok(())
 }
 
-/// The separation holds in the other direction too: the pauser is not an owner.
+/// The separation holds in the other direction too: the pauser is not an administrator.
 ///
-/// The Domain Pauser can halt the faucet, but sending an owner-gated setter — here the minimum-burn
+/// The Domain Pauser can halt the faucet, but sending an administrator-gated setter — here the minimum-burn
 /// setter — is rejected with the standard not-owner error. Without this, a compromised pauser key
 /// would be a compromised admin key.
 #[tokio::test]

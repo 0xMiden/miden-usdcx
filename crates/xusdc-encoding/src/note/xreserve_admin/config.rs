@@ -35,9 +35,8 @@ pub const XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX: &str =
 /// `[pk_commitment(4), enabled]`. Consumed against the faucet network account;
 /// `attester_admin::set_attester` gates on the (kernel-forced) note sender through the account-wide
 /// authority, which — the procedure carrying no role of its own — resolves it to the built-in
-/// `ADMIN` role. `ADMIN` membership is account-bound and does NOT follow an ownership transfer, so
-/// the sender that succeeds is the `ADMIN` holder, which is only the owner until the two are
-/// deliberately re-seated.
+/// `ADMIN` role. `ADMIN` membership is account-bound, and it is the faucet's only authority handle:
+/// the sender that succeeds is whichever account currently holds the role.
 pub struct XReserveSetAttesterNote;
 
 impl XReserveSetAttesterNote {
@@ -111,15 +110,19 @@ static IDENTIFIER_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// forces a conscious re-pin. The pinned root covers the own-id binding: the proc derives
 /// `bytes32_to_key(account_id_to_bytes32(get_id()))` on-chain and rejects a mismatched committed
 /// identifier.
+///
+/// RE-MATERIALIZED when the initializer's sender gate moved off the owner slot and onto the
+/// account-wide authority: the procedure's own root moved, and this root binds to it.
 pub const XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xac81d9ab1fd5f66252ac77a668342b0656f6f3b102a0efbc219e42b05f82b89e";
+    "0x440573e0c726f4bdade6df0de040bcbdaa08912c87e6df2da846bf050c8bd7f2";
 
-/// The owner-gated, init-once `identifier_init` admin note (the minimized
+/// The administrator-gated, init-once `identifier_init` admin note (the minimized
 /// identifier-only init: the identifier is the ONE domain-config
 /// field the account-id fixpoint forces past build time, the other three are build-seeded by the
 /// `XReserveStablecoinBuilder`). Storage layout: `[IDENTIFIER(4)]`. Consumed against the faucet
 /// network account; `identifier_init::init_identifier` gates on the (kernel-forced) note sender
-/// being the owner AND rejects a second initialization.
+/// through the account-wide authority, which resolves it to the built-in `ADMIN` role, AND
+/// rejects a second initialization.
 pub struct XReserveIdentifierInitNote;
 
 impl XReserveIdentifierInitNote {
@@ -143,7 +146,7 @@ impl XReserveIdentifierInitNote {
         )
     }
 
-    /// Builds an `identifier_init` admin note: `sender` is the admin party (the owner, for
+    /// Builds an `identifier_init` admin note: `sender` is the admin party (an `ADMIN` holder, for
     /// success) and `faucet_id` the target faucet (PUBLIC). The seeded identifier is DERIVED from
     /// `faucet_id` — `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))`, the canonical
     /// key of the faucet's own account id as bytes32 — so the init is BOUND to its target and
@@ -196,7 +199,7 @@ pub const XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX: &str =
 /// The administrator-gated `set_min_burn_size` admin note. Storage layout: `[new_min]` with
 /// `new_min >= 1` (the note script's zero-floor guard — the stock setter itself accepts 0). The
 /// stock setter it targets resolves through the account-wide authority to the built-in `ADMIN` role,
-/// which is account-bound and does not follow an ownership transfer.
+/// which is account-bound and is the faucet's only authority handle.
 pub struct XReserveSetMinBurnSizeNote;
 
 impl XReserveSetMinBurnSizeNote {
@@ -251,7 +254,7 @@ pub const XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX: &str =
 
 /// The administrator-gated stock `set_max_supply` admin note. Storage layout:
 /// `[new_max_supply]`. The stock setter resolves through the account-wide authority to the built-in
-/// `ADMIN` role, which is account-bound and does not follow an ownership transfer.
+/// `ADMIN` role, which is account-bound and is the faucet's only authority handle.
 pub struct XReserveSetMaxSupplyNote;
 
 impl XReserveSetMaxSupplyNote {

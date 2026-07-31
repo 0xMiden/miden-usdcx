@@ -15,7 +15,9 @@ use miden::protocol::native_account
 use miden::protocol::note
 use {NOTE_TYPE_PUBLIC} from miden::protocol::note
 use {NETWORK_ACCOUNT_TARGET_ATTACHMENT_SCHEME} from miden::standards::attachments::network_account_target
+use miden::standards::interop::eth
 use miden::standards::note_tag
+use miden::standards::utils
 use miden::core::sys
 use xreserve::attestation_verify
 use xreserve::deposit_intent_parser
@@ -52,7 +54,7 @@ const DEPOSIT_INTENT_HEADER_WORDS = 15
 # PROVISIONAL scale-0 position because Circle's on-wire deposit `amount` is denominated in 6-decimal
 # smallest units and xUSDC is likewise 6-decimal, so the two denominations coincide and no rescale
 # applies — scale 0, `y = floor(x / 10^0) = x`, an identity with no floored dust. (`0` is inside the
-# reducer's `[0, SCALE_EXP_MAX=18]` bound.) Changing this constant is how the faucet would be
+# reducer's `[0, 18]` scale bound.) Changing this constant is how the faucet would be
 # repointed at a wire denomination whose asset is scaled differently.
 const DEPOSIT_SCALE_EXP = 0
 
@@ -150,13 +152,13 @@ const ERR_XRESERVE_MINT_TAG_MISMATCH = "mint note tag does not match the atteste
 # The ASSERT-MATCH binding: the attested output note is always public.
 const ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC = "mint note output note type must be public"
 
-# Recipient AccountId extraction (extract_recipient_account_id): the field-range checks of the right-aligned
-# AccountId-in-bytes32 layout (the packaging is OPEN, pending Circle confirmation); the suffix-shape and
-# zero-version rejects surface the protocol account_id::validate_structure ERR_ACCOUNT_ID_* constants directly.
+# Recipient AccountId extraction (extract_recipient_account_id): the pad check of the right-aligned
+# AccountId-in-bytes32 layout (the packaging is OPEN, pending Circle confirmation); the limb and
+# canonical-range rejects surface the standards eth::build_felt error constants, and the
+# suffix-shape and zero-version rejects surface the protocol account_id::validate_structure
+# ERR_ACCOUNT_ID_* constants directly.
 # Parity-pinned against support::SHELL_ERR_TABLE + SHELL_ERRORS_DECLARED (constant_parity.rs).
 const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient address pad is not zero"
-const ERR_XRESERVE_RECIPIENT_BAD_LIMB = "deposit intent remote recipient limb is not a valid u32"
-const ERR_XRESERVE_RECIPIENT_NONCANONICAL = "deposit intent remote recipient value does not fit in the field"
 
 # PUBLIC INTERFACE
 # =================================================================================================
@@ -277,7 +279,7 @@ pub proc check_policy
     # => [hook_len_packed, num_words, attestation_idx]
 
     u32assert.err=ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB
-    exec.swap_u32_bytes
+    exec.utils::swap_u32_bytes
     # => [hook_data_len, num_words, attestation_idx]
 
     # len_felts = 60 + ceil(hook_data_len / 4), the parser's own length relation
@@ -357,7 +359,7 @@ pub proc check_policy
 
     # the KEY = bytes32_to_key(nonce) — the usedNonces key AND the attested output-note serial
     locaddr.INTENT_NONCE_LOC
-    exec.load_field_words
+    exec.utils::mem_load_double_word_unaligned swapw
     exec.encoding::bytes32_to_key
     loc_storew_le.NONCE_KEY_LOC dropw
     # => []
@@ -374,7 +376,7 @@ pub proc check_policy
     push.DEPOSIT_SCALE_EXP locaddr.INTENT_AMOUNT_LOC
     # => [amount_base, scale_exp]
 
-    exec.load_field_words
+    exec.utils::mem_load_double_word_unaligned swapw
     # => [U_UPPER, U_LOWER, scale_exp]
 
     exec.encoding::uint256_to_asset_amount
@@ -468,7 +470,8 @@ end
 #! `remoteRecipient`.
 #!
 #! Reads the eight u32-LE-packed `remoteRecipient` limbs, asserts the 16-byte leading pad is zero,
-#! and rebuilds the account ID prefix and suffix through a no-reduction `build_felt`.
+#! and rebuilds the account ID prefix and suffix through the standards no-reduction
+#! `eth::build_felt`.
 #!
 #! Inputs:  [remote_recipient_ptr]
 #! Outputs: [recipient_id_suffix, recipient_id_prefix]
@@ -481,8 +484,8 @@ end
 #!
 #! Panics if:
 #! - the remoteRecipient 16-byte leading pad is non-zero (ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE).
-#! - a staged remoteRecipient limb is not a valid u32 (ERR_XRESERVE_RECIPIENT_BAD_LIMB).
-#! - a rebuilt prefix/suffix u64 reduced mod the field (ERR_XRESERVE_RECIPIENT_NONCANONICAL).
+#! - a staged remoteRecipient limb is not a valid u32 (the standards eth::build_felt u32 guard).
+#! - a rebuilt prefix/suffix u64 reduced mod the field (the standards merge overflow guard).
 #! - account_id::validate_structure rejects the felts (its ERR_ACCOUNT_ID_* constants).
 #!
 #! Invocation: exec
@@ -501,7 +504,7 @@ proc extract_recipient_account_id
     dup.1 add.5 mem_load
     # => [prefix_lo, prefix_hi, remote_recipient_ptr]
 
-    exec.build_felt
+    exec.eth::build_felt
     # => [prefix, remote_recipient_ptr]
 
     # ---- suffix = build_felt(lo = limb ptr+7, hi = limb ptr+6)  (bytes[24..32], big-endian) ----
@@ -511,7 +514,7 @@ proc extract_recipient_account_id
     movup.2 add.7 mem_load
     # => [suffix_lo, suffix_hi, prefix]
 
-    exec.build_felt
+    exec.eth::build_felt
     # => [suffix, prefix]
 
     # ---- structural AccountId validation ----
@@ -521,106 +524,4 @@ proc extract_recipient_account_id
     # we don't need to assert the ID version, so structural validation is sufficient
     exec.account_id::validate_structure
     # => [suffix, prefix]
-end
-
-#! Builds a Miden field element from the two u32-LE-packed limbs of a big-endian u64, PROVING the
-#! value did not reduce mod the field (the canonical-range check mirroring Rust `Felt::try_from`;
-#! adapted from the agglayer library's `build_felt` with a local byte-swap so the faucet
-#! library depends on no private export of the encoding library).
-#!
-#! Inputs:  [lo, hi]
-#! Outputs: [felt]
-#!
-#! Where:
-#! - lo, hi are the low / high u32-LE-packed limbs of a big-endian u64 (4 wire bytes each).
-#! - felt is the reconstructed field element (hi_be * 2^32 + lo_be).
-#!
-#! Panics if:
-#! - a limb is not a valid u32 (ERR_XRESERVE_RECIPIENT_BAD_LIMB).
-#! - the composed u64 reduced mod the field, i.e. it is >= the field modulus
-#!   (ERR_XRESERVE_RECIPIENT_NONCANONICAL).
-#!
-#! Invocation: exec
-proc build_felt
-    u32assert2.err=ERR_XRESERVE_RECIPIENT_BAD_LIMB
-    # => [lo, hi]
-
-    exec.swap_u32_bytes swap exec.swap_u32_bytes swap
-    # => [lo_be, hi_be]
-
-    dup.1 dup.1
-    # => [lo_be, hi_be, lo_be, hi_be]
-
-    swap mul.0x0100000000 add
-    # => [felt, lo_be, hi_be]
-
-    dup u32split
-    # => [felt_lo, felt_hi, felt, lo_be, hi_be]
-
-    movup.3 assert_eq.err=ERR_XRESERVE_RECIPIENT_NONCANONICAL
-    # => [felt_hi, felt, hi_be]
-
-    movup.2 assert_eq.err=ERR_XRESERVE_RECIPIENT_NONCANONICAL
-    # => [felt]
-end
-
-#! Reverses the byte order of a u32 (little-endian <-> big-endian). A generic u32 primitive (not
-#! encoding-library domain logic); reimplemented locally because the encoding library's
-#! `swap_u32_bytes` is a private `proc` (not exported). The caller asserts u32-ness before
-#! invoking (`build_felt`'s `u32assert2`; the hookDataLen derivation's `u32assert`).
-#!
-#! Inputs:  [value]
-#! Outputs: [swapped]
-#!
-#! Where:
-#! - value is a u32; swapped is value with its four bytes reversed.
-#!
-#! Invocation: exec
-proc swap_u32_bytes
-    dup u32and.0xff u32shl.24
-    # => [part0, value]
-
-    dup.1 u32shr.8 u32and.0xff u32shl.16 u32or
-    # => [part01, value]
-
-    dup.1 u32shr.16 u32and.0xff u32shl.8 u32or
-    # => [part012, value]
-
-    dup.1 u32shr.24 u32or
-    # => [swapped, value]
-
-    swap drop
-    # => [swapped]
-end
-
-#! Loads the 8 u32-LE-packed limbs of a 32-byte field at `base` into the [W_UPPER, W_LOWER] word
-#! orientation the encoding reducers consume. Replicates the (private) deposit_intent_parser staging
-#! (reduce_uint256_field / assert_nonce_unused nonce load): single-felt loads because the header
-#! felt offsets are not word-aligned; the reduction / key-hash itself is the
-#! encoding library's `pub proc`, consumed by reference at the call site.
-#!
-#! Inputs:  [base]
-#! Outputs: [W_UPPER, W_LOWER]
-#!
-#! Where:
-#! - base is the memory address of the field's first packed limb.
-#! - W_LOWER is the field's positionally lower four packed limbs (wire bytes 0..16), W_UPPER
-#!   is the positionally upper four (wire bytes 16..32), each element-0 on top.
-#!
-#! Invocation: exec
-proc load_field_words
-    dup add.3 mem_load
-    dup.1 add.2 mem_load
-    dup.2 add.1 mem_load
-    dup.3 mem_load
-    # => [W_LOWER, base]
-
-    dup.4 add.7 mem_load
-    dup.5 add.6 mem_load
-    dup.6 add.5 mem_load
-    dup.7 add.4 mem_load
-    # => [W_UPPER, W_LOWER, base]
-
-    movup.8 drop
-    # => [W_UPPER, W_LOWER]
 end

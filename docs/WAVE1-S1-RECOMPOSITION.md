@@ -159,7 +159,8 @@ per the round-3 build log).
 - **Attested-recipient extraction** (`mint_recipient_account_id.rs`) → pad guard:
   `mint_rejects_a_malformed_attested_recipient`; the >= modulus canonicality rejects — **restored
   round 3**: `mint_rejects_a_noncanonical_recipient_prefix` / `_suffix`
-  (`ERR_XRESERVE_RECIPIENT_NONCANONICAL` at both `build_felt` call sites). NOT re-driven e2e: the
+  (the linked `eth::build_felt`'s merge-overflow reject, at both call sites). NOT re-driven
+  e2e: the
   bad-limb (> u32) leg and the protocol suffix-shape/version rejects — those trap inside the
   pinned `u32assert2` / `account_id::validate` primitives (consumed by reference); the deleted
   suite drove them through the now-deleted shell driver, and no composed-transport equivalent

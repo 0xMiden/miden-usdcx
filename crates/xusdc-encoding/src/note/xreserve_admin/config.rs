@@ -1,5 +1,5 @@
 //! Config / setter admin note factories: `set_attester`, `identifier_init`,
-//! `set_min_burn_size`, `set_max_supply`, `pause`, `unpause`.
+//! `set_min_burn_size`, `set_max_supply`.
 
 use std::sync::LazyLock;
 

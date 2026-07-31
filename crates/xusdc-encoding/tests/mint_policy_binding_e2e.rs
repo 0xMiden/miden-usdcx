@@ -171,8 +171,8 @@ async fn mint_rejects_a_malformed_attested_recipient() -> Result<()> {
 
 /// The NONCANONICAL reject family, parametrized into one case table: an attested
 /// `remoteRecipient` whose prefix or suffix u64 region (bytes 16..24 / 24..32 of the bytes32)
-/// holds `u64::MAX` — a value `>= p` that would REDUCE mod the field — rejects in the policy's
-/// no-reduction `build_felt` round-trip (`ERR_XRESERVE_RECIPIENT_NONCANONICAL`, mirroring Rust
+/// holds `u64::MAX` — a value `>= p` that would REDUCE mod the field — rejects in the standards
+/// `eth::build_felt` no-reduction round-trip (the standards `ERR_MERGE_OVERFLOW`, mirroring Rust
 /// `Felt::try_from`; one case per `build_felt` call site). The storage recipe stays honest — the
 /// PAYLOAD limb is what is bad, so the trap is attributable to the extraction guard alone.
 #[rstest]
@@ -207,7 +207,7 @@ async fn mint_rejects_a_noncanonical_recipient(
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_XRESERVE_RECIPIENT_NONCANONICAL"),
+        shell_error_by_name("ERR_MERGE_OVERFLOW"),
     )
     .await
 }
@@ -597,6 +597,69 @@ async fn mint_note_routes_to_the_faucet_network_account() -> Result<()> {
         )?,
         marker(),
         "the consumed nonce is marked"
+    );
+    Ok(())
+}
+
+// ADVICE INDEPENDENCE — the host cannot influence a mint
+// ================================================================================================
+
+/// A mint runs identically whether or not the prover seeds an advice stack.
+///
+/// Every operand the policy verifies — the deposit intent, the operator fee, the attester pubkey,
+/// the signature — is read out of memory the policy hash-verified against the note's own
+/// attachment commitments. The advice provider is host-controlled, so if any stage still popped
+/// from it, a prover could hand the verify a different payload than the one the note committed to.
+///
+/// The behavioral half of that guarantee is what this test covers: a hostile stack changes
+/// nothing. It cannot cover the whole of it, because the divergence a real attacker exploits is a
+/// prover serving different bytes on a second read of the same advice-map key, and MockChain's
+/// advice provider is a static map that cannot model it. What closes the gap is a source fact
+/// rather than a behavior: no `.masm` under `asm/` contains an advice-read instruction at all.
+#[tokio::test]
+async fn mint_ignores_a_hostile_advice_stack() -> Result<()> {
+    let mut pf = fixture()?;
+    bring_up(&mut pf, 2).await?;
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 23);
+    let note = honest_note(&pf, &payload, 83)?;
+    emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
+
+    // enough junk to satisfy every read the pre-hardening pipeline made (8 fee limbs + 16 pubkey
+    // felts + 17 signature felts), so a surviving advice read would consume it and diverge rather
+    // than trap on an empty stack
+    let hostile: Vec<Felt> = (1u32..=41).map(Felt::from).collect();
+    let tx = consume_note_with_advice(&pf.mock_chain, pf.faucet_id, note.id(), Some(hostile))
+        .await
+        .map_err(|e| anyhow::anyhow!("a hostile advice stack must not affect the mint: {e}"))?;
+
+    assert_eq!(
+        tx.output_notes().num_notes(),
+        1,
+        "the mint still emits exactly one recipient note"
+    );
+    let out = tx.output_notes().get_note(0);
+    let asset = out
+        .assets()
+        .iter_fungible()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("the recipient note carries a fungible asset"))?;
+    assert_eq!(
+        u64::from(asset.amount()),
+        MINT_AMOUNT,
+        "the minted amount is the attested one, not anything the advice stack suggested"
+    );
+
+    let mut chain = pf.mock_chain;
+    commit(&mut chain, &tx)?;
+    let faucet = committed(&chain, pf.faucet_id)?;
+    assert_eq!(
+        read_map_word(
+            &faucet,
+            USED_NONCES_SLOT_LABEL,
+            nonce_key_of_payload(&payload)
+        )?,
+        marker(),
+        "the attested nonce is marked used"
     );
     Ok(())
 }

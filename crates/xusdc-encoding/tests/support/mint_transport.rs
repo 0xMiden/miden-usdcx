@@ -12,6 +12,7 @@
 //! the suites must differ in what they tamper with, not in how a tampered note is built.
 
 use anyhow::{Context, Result};
+use miden_processor::advice::AdviceInputs;
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::{Account, AccountId, StorageMapKey, StorageSlotName};
 use miden_protocol::asset::FungibleAsset;
@@ -364,10 +365,26 @@ pub async fn consume_note(
     faucet_id: AccountId,
     note_id: NoteId,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    chain
+    consume_note_with_advice(chain, faucet_id, note_id, None).await
+}
+
+/// Like `consume_note`, but seeds an advice stack the consuming transaction did not ask for.
+///
+/// The advice provider is host-controlled, so this is what a malicious prover gets to choose. A
+/// mint that behaves identically with and without it is a mint that reads none of it.
+pub async fn consume_note_with_advice(
+    chain: &MockChain,
+    faucet_id: AccountId,
+    note_id: NoteId,
+    advice_stack: Option<Vec<Felt>>,
+) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
+    let mut ctx = chain
         .build_transaction(faucet_id)
-        .authenticated_input_note(note_id)
-        .build()
+        .authenticated_input_note(note_id);
+    if let Some(stack) = advice_stack {
+        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack));
+    }
+    ctx.build()
         .expect("building the consume tx")
         .execute()
         .await

@@ -191,9 +191,10 @@ impl XUsdcMintNote {
     }
 
     /// Builds the scheme-5 attestation attachment: 44 felts
-    /// `[feeAmount(8 zero limbs), pubkey(16 affine felts), signature(17), pad(3)]` as 11 words —
-    /// the exact order the policy's advice re-surfacing hands to the amount and attestation-verify
-    /// stages (element-0-first `adv.push_mapval` pop order). The
+    /// `[feeAmount(8 zero limbs), pubkey(16 affine felts), signature(17), pad(3)]` as 11 words.
+    /// The layout is a contract: the policy hash-verifies these words into one memory region and
+    /// hands the amount and attestation-verify stages pointers at these three offsets, so a
+    /// reordering here would silently repoint them. The
     /// feeAmount limbs are MVP-zero (hardcoded: the MVP has no relayer-fee split, so a non-zero
     /// fee would only ever trap the fee-must-be-zero guard on-chain). The 33-byte compressed wire
     /// pubkey is decompressed to its affine

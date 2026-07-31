@@ -29,6 +29,7 @@
 #   effects.
 
 use miden::protocol::active_account
+use miden::standards::utils
 use miden::core::math::u64
 use xreserve::encoding
 use {AMOUNT_FELT_OFF, MAX_FEE_FELT_OFF, NONCE_FELT_OFF} from xreserve::encoding::layout
@@ -120,80 +121,70 @@ end
 #! Asserts the faucet-owned amount and fee mint preconditions over a staged preimage.
 #!
 #! `amount` (felt[2..9]) and `maxFee` (felt[43..50]) come from the staged preimage; `feeAmount`
-#! does not travel in the intent at all and is read from the advice stack as 8 u32-LE limbs.
-#! All three go through the encoding library's `uint256_to_asset_amount`.
+#! does not travel in the intent at all and lives wherever the caller staged it. All three go
+#! through the encoding library's `uint256_to_asset_amount`.
 #!
-#! The advice read is the part worth care: `feeAmount` is caller-supplied with no commitment
-#! backing it, so its only bound is the zero gate below. An absent advice value traps rather than
-#! defaulting to zero, which is what keeps "supplied no fee" and "claimed a zero fee" distinct.
-#!
-#! Inputs:  [intent_ptr, scale_exp]
+#! Inputs:  [intent_ptr, fee_amount_ptr, scale_exp]
 #! Outputs: []
 #!
 #! Where:
 #! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
+#! - fee_amount_ptr is the memory address of the operator feeAmount's first packed limb (8 u32-LE
+#!   limbs).
 #! - scale_exp is the decimal scale exponent forwarded to the reducer (the cap/scale choice
 #!   is OPEN, pending Circle confirmation).
 #!
 #! Panics if:
 #! - the reducer rejects amount, maxFee, or feeAmount (ERR_X_TOO_LARGE / ERR_AMOUNT_OVER_CAP).
-#! - a feeAmount advice limb is not a valid u32 (ERR_FELT_OUT_OF_FIELD), or feeAmount advice is absent.
+#! - a feeAmount limb is not a valid u32 (ERR_FELT_OUT_OF_FIELD).
 #! - reduced amount < maxFee (ERR_XRESERVE_AMOUNT_BELOW_FEE).
 #! - reduced feeAmount != 0 (ERR_XRESERVE_FEE_NONZERO).
 #!
 #! Invocation: exec
 @account_procedure
 pub proc assert_mint_amounts
-    # reduce amount (felt[2..9]); keep [intent_ptr, scale_exp] live below for reuse
-    dup.1 dup.1 push.AMOUNT_FELT_OFF add
-    # => [amount_base, scale_exp, intent_ptr, scale_exp]
+    # reduce amount (felt[2..9]); keep [intent_ptr, fee_amount_ptr, scale_exp] live below for reuse
+    dup.2 dup.1 push.AMOUNT_FELT_OFF add
+    # => [amount_base, scale_exp, intent_ptr, fee_amount_ptr, scale_exp]
 
     exec.reduce_uint256_field
-    # => [amount_y, intent_ptr, scale_exp]
+    # => [amount_y, intent_ptr, fee_amount_ptr, scale_exp]
 
     # reduce maxFee (felt[43..50])
-    dup.2 dup.2 push.MAX_FEE_FELT_OFF add
-    # => [maxfee_base, scale_exp, amount_y, intent_ptr, scale_exp]
+    dup.3 dup.2 push.MAX_FEE_FELT_OFF add
+    # => [maxfee_base, scale_exp, amount_y, intent_ptr, fee_amount_ptr, scale_exp]
 
     exec.reduce_uint256_field
-    # => [maxfee_y, amount_y, intent_ptr, scale_exp]
+    # => [maxfee_y, amount_y, intent_ptr, fee_amount_ptr, scale_exp]
 
-    # intent_ptr is no longer needed (feeAmount comes from advice)
+    # intent_ptr has served every field it owns
     movup.2 drop
-    # => [maxfee_y, amount_y, scale_exp]
+    # => [maxfee_y, amount_y, fee_amount_ptr, scale_exp]
 
     # assert reduced amount >= maxFee over copies; both reduced values are < 2^63 (felts are
     # unordered) -> u64 limb compare. the surviving maxfee_y copy below is dropped after the
     # fee gate.
     dup movup.2 swap
-    # => [maxfee_y, amount_y, maxfee_y, scale_exp]
+    # => [maxfee_y, amount_y, maxfee_y, fee_amount_ptr, scale_exp]
 
     u32split
-    # => [maxfee_lo, maxfee_hi, amount_y, maxfee_y, scale_exp]
+    # => [maxfee_lo, maxfee_hi, amount_y, maxfee_y, fee_amount_ptr, scale_exp]
 
     movup.2 u32split
-    # => [amount_lo, amount_hi, maxfee_lo, maxfee_hi, maxfee_y, scale_exp]
+    # => [amount_lo, amount_hi, maxfee_lo, maxfee_hi, maxfee_y, fee_amount_ptr, scale_exp]
 
-    # u64::lte over [b, a] (b on top) returns a <= b; here b = amount, a = maxFee
+    # compute amount >= maxfee
     exec.u64::lte
-    # => [is_amount_ge_maxfee, maxfee_y, scale_exp]
+    # => [is_amount_ge_maxfee, maxfee_y, fee_amount_ptr, scale_exp]
 
     assert.err=ERR_XRESERVE_AMOUNT_BELOW_FEE
-    # => [maxfee_y, scale_exp]
+    # => [maxfee_y, fee_amount_ptr, scale_exp]
 
-    # reduce feeAmount from the advice stack: the first adv_pushw pops limbs 0..3
-    # (-> U_LOWER), the next pops limbs 4..7 (-> U_UPPER), matching the reducer's
-    # [U_UPPER, U_LOWER] shape. A missing word traps (advice stack read), never defaults.
-    adv_pushw
-    # => [U_LOWER, maxfee_y, scale_exp]
+    # reduce feeAmount through the same staged-field helper the two intent fields used
+    movup.2 movup.2
+    # => [fee_amount_ptr, scale_exp, maxfee_y]
 
-    adv_pushw
-    # => [U_UPPER, U_LOWER, maxfee_y, scale_exp]
-
-    movup.9 movdn.8
-    # => [U_UPPER, U_LOWER, scale_exp, maxfee_y]
-
-    exec.encoding::uint256_to_asset_amount
+    exec.reduce_uint256_field
     # => [feeamount_y, maxfee_y]
 
     # fail-loud fee gate: the operator feeAmount must be zero. the only allowed fee is zero, which
@@ -230,23 +221,8 @@ pub proc assert_nonce_unused
     push.NONCE_FELT_OFF add
     # => [nonce_base]
 
-    # load B_LOWER: the nonce's first four packed limbs (wire bytes 0..16), element-0 on top —
-    # the [B_UPPER, B_LOWER] orientation bytes32_to_key consumes (the same staging as the
-    # parser's remoteToken load)
-    dup add.3 mem_load
-    dup.1 add.2 mem_load
-    dup.2 add.1 mem_load
-    dup.3 mem_load
-    # => [B_LOWER, nonce_base]
-
-    # load B_UPPER: the next four packed limbs (wire bytes 16..32)
-    dup.4 add.7 mem_load
-    dup.5 add.6 mem_load
-    dup.6 add.5 mem_load
-    dup.7 add.4 mem_load
-    # => [B_UPPER, B_LOWER, nonce_base]
-
-    movup.8 drop
+    # load the nonce's eight packed limbs
+    exec.utils::mem_load_double_word_unaligned swapw
     # => [B_UPPER, B_LOWER]
 
     # call the encoding library's bytes32_to_key; the hash is never re-implemented here
@@ -271,12 +247,6 @@ end
 #! Reduces the uint256 field at `base` (8 u32-LE packed felts) to an AssetAmount via the
 #! encoding library's reducer.
 #!
-#! Single-felt loads: the header felt offsets are not word-aligned.
-#! The word orientation matches the shared parser's remoteToken load: U_LOWER = the field's
-#! positionally lower four packed limbs (wire bytes 0..16), U_UPPER = the positionally upper
-#! four (wire bytes 16..32), each element-0 on top — exactly the `[U_UPPER, U_LOWER,
-#! scale_exp]` shape the reducer consumes.
-#!
 #! Inputs:  [base, scale_exp]
 #! Outputs: [y]
 #!
@@ -290,21 +260,7 @@ end
 #!
 #! Invocation: exec
 proc reduce_uint256_field
-    # load U_LOWER: the field's first four packed limbs at base+0..base+3 (element-0 on top)
-    dup add.3 mem_load
-    dup.1 add.2 mem_load
-    dup.2 add.1 mem_load
-    dup.3 mem_load
-    # => [U_LOWER, base, scale_exp]
-
-    # load U_UPPER: the next four packed limbs at base+4..base+7
-    dup.4 add.7 mem_load
-    dup.5 add.6 mem_load
-    dup.6 add.5 mem_load
-    dup.7 add.4 mem_load
-    # => [U_UPPER, U_LOWER, base, scale_exp]
-
-    movup.8 drop
+    exec.utils::mem_load_double_word_unaligned swapw
     # => [U_UPPER, U_LOWER, scale_exp]
 
     exec.encoding::uint256_to_asset_amount

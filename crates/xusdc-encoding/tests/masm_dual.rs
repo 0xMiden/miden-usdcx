@@ -45,6 +45,10 @@ use xusdc_encoding::xreserve::encoding::masm_error_by_name;
 /// inside global program memory, clear of anything the kernel stages).
 const INTENT_PTR: u64 = 1024;
 
+/// Memory base for the staged pubkey felts `pubkey_commitment` hashes in place (word-aligned,
+/// clear of `INTENT_PTR`).
+const PUBKEY_PTR: u64 = 8;
+
 // HARNESS (assemble → bind → MockChain account)
 // ================================================================================================
 
@@ -467,18 +471,20 @@ async fn tv_dual_5_pubkey_commitment() -> Result<()> {
             vec.id
         );
 
-        // MASM proc executed under MockChain: push [PK_W0, PK_W1, PK_W2, PK_W3] (PK_W0 on top,
-        // consumed first by loc_storew_le.0), exec, assert the returned Word equals the oracle.
+        // MASM proc executed under MockChain: stage the 16 felts (f0 at the lowest address),
+        // push the pointer, exec, assert the returned Word equals the oracle.
+        let (pk_ptr1, pk_ptr2, pk_ptr3) = (PUBKEY_PTR + 4, PUBKEY_PTR + 8, PUBKEY_PTR + 12);
         let src = format!(
-            r#"use xreserve::encoding
+            r#"use xreserve::attestation_verify
 
 @transaction_script
 pub proc main
-    push.{pkw3}
-    push.{pkw2}
-    push.{pkw1}
-    push.{pkw0}
-    exec.encoding::pubkey_commitment
+    push.{pkw0} mem_storew_le.{PUBKEY_PTR} dropw
+    push.{pkw1} mem_storew_le.{pk_ptr1} dropw
+    push.{pkw2} mem_storew_le.{pk_ptr2} dropw
+    push.{pkw3} mem_storew_le.{pk_ptr3} dropw
+    push.{PUBKEY_PTR}
+    exec.attestation_verify::pubkey_commitment
     push.{expected}
     assert_eqw.err="vector {id}: pubkey_commitment mismatch"
 end
@@ -544,7 +550,6 @@ fn probe_p1_exports() -> Result<()> {
         "::xreserve::encoding::bytes32_to_key",
         "::xreserve::encoding::uint256_to_asset_amount",
         "::xreserve::encoding::parse_deposit_intent",
-        "::xreserve::encoding::pubkey_commitment",
     ] {
         assert!(
             exports.iter().any(|e| e == canonical),

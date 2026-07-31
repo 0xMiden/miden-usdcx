@@ -73,9 +73,10 @@ transaction with no writes, so a failed mint never consumes the nonce.
 1. **Pause gate** — the stock policy dispatcher runs `assert_not_paused` before the policy, so a
    paused faucet never even dispatches the attestation gate.
 2. **Transport shape** — the policy locates the three attachments (exactly three, one per
-   scheme), hash-verifies the intent into the account frame binding its committed word count to
-   the intent's own embedded `hookDataLen`, hash-verifies the 11-word attestation, and
-   re-surfaces it for the verify stages.
+   scheme), hash-verifies the intent into its own local memory binding its committed word count to
+   the intent's own embedded `hookDataLen`, and hash-verifies the 11-word attestation into a second
+   local region. Every verify stage below then reads those two regions by pointer. Nothing is read
+   back from the advice provider, so what the note committed to is exactly what gets verified.
 3. **`D5a` — structural + addressing** (`R-MINT-1..8`): parse the fixed-offset DepositIntent
    header; check magic, version, non-zero `amount`/`localToken`/`localDepositor`, the length
    relation, and that the intent's `remoteDomain`/`remoteToken` match the faucet's configured

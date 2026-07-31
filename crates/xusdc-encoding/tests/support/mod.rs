@@ -31,6 +31,7 @@ pub use w2admin::{
 };
 
 use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -138,7 +139,7 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 25] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 23] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -174,24 +175,16 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 25] = [
         "ERR_XRESERVE_FEE_NONZERO",
         MasmError::from_static_str("mint fee amount must be zero"),
     ),
-    // recipient AccountId helper (extract_recipient_account_id, mint_policy.masm). These
-    // are the LOCAL layout / field-range errors; the suffix-shape and unknown-version rejects
+    // recipient AccountId helper (extract_recipient_account_id, mint_policy.masm). This is the
+    // LOCAL layout error (the pad check); the limb and canonical-range rejects surface the
+    // STANDARDS `eth::build_felt` constants (`ERR_NOT_U32` / `ERR_MERGE_OVERFLOW`, resolved via
+    // the `masm_error_by_name` fallback), and the suffix-shape and unknown-version rejects
     // surface the PROTOCOL `account_id::validate` `ERR_ACCOUNT_ID_*` constants directly. Pinned
     // here so the behavior tests can name their EXACT expected error, byte-identical to the MASM
     // consts.
     (
         "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",
         MasmError::from_static_str("deposit intent remote recipient address pad is not zero"),
-    ),
-    (
-        "ERR_XRESERVE_RECIPIENT_BAD_LIMB",
-        MasmError::from_static_str("deposit intent remote recipient limb is not a valid u32"),
-    ),
-    (
-        "ERR_XRESERVE_RECIPIENT_NONCANONICAL",
-        MasmError::from_static_str(
-            "deposit intent remote recipient value does not fit in the field",
-        ),
     ),
     // The attestation mint policy (mint_policy.masm) — the TRANSPORT-shape guards on the
     // stock MintNote's attachments: the scheme-4 intent + scheme-5 attestation + scheme-2 routing
@@ -336,6 +329,24 @@ pub fn tripwire_serial_guard_blocking() -> tokio::sync::MutexGuard<'static, ()> 
 /// `masm-locals-over-globals` scratch rule is deliberately not applied here (recorded
 /// deviation; the shell itself uses no memory at all).
 pub const INTENT_PTR: u64 = 1024;
+
+fn collect_masm_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("asm directory must be readable") {
+        let path = entry.expect("directory entry must be readable").path();
+        if path.is_dir() {
+            collect_masm_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "masm") {
+            out.push(path);
+        }
+    }
+}
+
+/// Memory bases for the attestation operands the drivers stage alongside the preimage, mirroring
+/// how the production policy hands `assert_mint_amounts` and `verify_attestation` pointers into
+/// the hash-verified attestation attachment. All word-aligned and clear of `INTENT_PTR`.
+pub const FEE_AMOUNT_PTR: u64 = 0;
+pub const PUBKEY_PTR: u64 = 8;
+pub const SIGNATURE_PTR: u64 = 24;
 
 /// Module path of the generated per-case shell driver component.
 pub const SHELL_DRIVER_PATH: &str = "xusdc::test_fixtures::shell_driver";
@@ -704,15 +715,20 @@ fn word_of(felts: &[Felt]) -> Word {
 }
 
 /// Emits the `push.[..] mem_storew_le.{addr} dropw` staging sequence for a felt slice
-/// (zero-padding the trailing word), starting at `INTENT_PTR` — the `masm_dual.rs`
-/// staging convention inside the driver proc's own call context.
-fn stage_preimage(src: &mut String, felts: &[Felt]) {
+/// (zero-padding the trailing word) at `base_ptr`, inside the driver proc's own call context.
+/// `base_ptr` must be word-aligned.
+fn stage_felts(src: &mut String, felts: &[Felt], base_ptr: u64) {
     for (i, chunk) in felts.chunks(4).enumerate() {
         let mut w = [miden_protocol::ZERO; 4];
         w[..chunk.len()].copy_from_slice(chunk);
-        let addr = INTENT_PTR + 4 * i as u64;
+        let addr = base_ptr + 4 * i as u64;
         writeln!(src, "    push.{} mem_storew_le.{addr} dropw", word_of(&w)).unwrap();
     }
+}
+
+/// Stages the DepositIntent preimage at `INTENT_PTR` — the `masm_dual.rs` staging convention.
+fn stage_preimage(src: &mut String, felts: &[Felt]) {
+    stage_felts(src, felts, INTENT_PTR);
 }
 
 /// Generates the per-case shell-driver component source: a CALL-entered account proc
@@ -817,22 +833,21 @@ pub fn splice_amounts(base: &[Felt], amount_limbs: [u32; 8], maxfee_limbs: [u32;
     preimage
 }
 
-/// The 8 u32-LE `feeAmount` limbs as advice-stack felts (`Felt::from(u32)`, infallible —
-/// `felt-construction`). `feeAmount == 0` is the operator EXPLICITLY supplying eight zero
-/// limbs — distinct from missing advice (which errors).
-pub fn fee_advice_felts(limbs: [u32; 8]) -> Vec<Felt> {
+/// The 8 u32-LE `feeAmount` limbs as felts (`Felt::from(u32)`, infallible —
+/// `felt-construction`), in the order the reducer reads them out of memory.
+pub fn fee_amount_felts(limbs: [u32; 8]) -> Vec<Felt> {
     limbs.iter().map(|l| Felt::from(*l)).collect()
 }
 
-/// Generates the per-case amount/fee driver: stages the (spliced) preimage in the account
-/// context, pushes `[intent_ptr, scale_exp]`, and `exec`s the faucet `assert_mint_amounts`
-/// shell (which reads `feeAmount` from the advice stack). The proc returns `[]`, so the
+/// Generates the per-case amount/fee driver: stages the (spliced) preimage and the operator
+/// `feeAmount` limbs in the account context, pushes `[intent_ptr, fee_amount_ptr, scale_exp]`, and
+/// `exec`s the faucet `assert_mint_amounts` shell. The proc returns `[]`, so the
 /// staged-then-consumed stack restores the 16-depth `call` boundary.
-pub fn mint_amounts_driver_src(preimage: &[Felt], scale_exp: u32) -> String {
+pub fn mint_amounts_driver_src(preimage: &[Felt], fee_amount: &[Felt], scale_exp: u32) -> String {
     let mut src = String::from(
         "use xreserve::deposit_intent_parser\n\n\
-         #! Test driver: stages a DepositIntent preimage in the account context and execs\n\
-         #! the D5b amount/fee precondition shell (feeAmount from the advice stack).\n\
+         #! Test driver: stages a DepositIntent preimage and a feeAmount in the account context\n\
+         #! and execs the amount/fee precondition shell.\n\
          #!\n\
          #! Inputs:  [pad(16)]\n\
          #! Outputs: [pad(16)]\n\
@@ -842,7 +857,9 @@ pub fn mint_amounts_driver_src(preimage: &[Felt], scale_exp: u32) -> String {
          pub proc drive\n",
     );
     stage_preimage(&mut src, preimage);
+    stage_felts(&mut src, fee_amount, FEE_AMOUNT_PTR);
     writeln!(src, "    push.{scale_exp}").unwrap();
+    writeln!(src, "    push.{FEE_AMOUNT_PTR}").unwrap();
     writeln!(src, "    push.{INTENT_PTR}").unwrap();
     src.push_str("    exec.deposit_intent_parser::assert_mint_amounts\n");
     src.push_str("end\n");
@@ -917,10 +934,10 @@ pub fn nonce_driver_src(preimage: &[Felt]) -> String {
 /// allowlist commitment (the miden-crypto `PublicKey::to_commitment` oracle == the on-chain MASM
 /// `pubkey_commitment`).
 pub struct AttesterVector {
-    /// 16-felt affine pubkey coordinates `qx_le_u32[8] || qy_le_u32[8]` (the candidate-pubkey
-    /// advice felts; the Circle wire form stays the 33-byte compressed key below).
+    /// 16-felt affine pubkey coordinates `qx_le_u32[8] || qy_le_u32[8]` (the candidate pubkey the
+    /// driver stages in memory; the Circle wire form stays the 33-byte compressed key below).
     pub pubkey_felts: Vec<Felt>,
-    /// 17-felt u32-LE-packed r||s||v signature over keccak256(payload) (the signature advice felts).
+    /// 17-felt u32-LE-packed r||s||v signature over keccak256(payload).
     pub sig_felts: Vec<Felt>,
     /// Poseidon2 commitment Word = the `xReserveAttesters` allowlist key for this pubkey.
     pub commitment: Word,
@@ -928,18 +945,6 @@ pub struct AttesterVector {
     pub pubkey_bytes: [u8; 33],
     /// Raw 65-byte `r||s||v` signature (what the relayer hands `XUsdcMintNote::create`).
     pub sig_bytes: [u8; 65],
-}
-
-impl AttesterVector {
-    /// The advice stack `verify_attestation` reads: pubkey (16 affine felts) then signature
-    /// (17), in seed order.
-    pub fn advice(&self) -> Vec<Felt> {
-        self.pubkey_felts
-            .iter()
-            .chain(self.sig_felts.iter())
-            .copied()
-            .collect()
-    }
 }
 
 /// Deterministically generates an attester keypair (k256 + seeded StdRng) and signs
@@ -1038,15 +1043,24 @@ pub fn setup_attestation_account(
     })
 }
 
-/// Generates the per-case attestation driver: stages the DepositIntent payload preimage in the account
-/// context, pushes `[intent_ptr, len_bytes]`, and `exec`s the faucet `verify_attestation` shell
-/// (which reads the candidate pubkey + signature from the advice stack). The shell returns `[]`
-/// (assert-only gate), so the staged-then-consumed stack restores the 16-depth `call` boundary.
-pub fn attestation_driver_src(preimage: &[Felt], len_bytes: u64) -> String {
+/// Generates the per-case attestation driver: stages the DepositIntent payload preimage, the
+/// candidate pubkey and the signature in the account context, pushes
+/// `[intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]`, and `exec`s the faucet
+/// `verify_attestation` shell. The shell returns `[]` (assert-only gate), so the
+/// staged-then-consumed stack restores the 16-depth `call` boundary.
+///
+/// Taking the pubkey and signature separately is what lets the seam cases pair one attester's
+/// pubkey with another's signature.
+pub fn attestation_driver_src(
+    preimage: &[Felt],
+    len_bytes: u64,
+    pubkey_felts: &[Felt],
+    sig_felts: &[Felt],
+) -> String {
     let mut src = String::from(
         "use xreserve::attestation_verify\n\n\
-         #! Test driver: stages a DepositIntent payload in the account context and execs the D5d\n\
-         #! attestation verify shell (pubkey + signature from the advice stack).\n\
+         #! Test driver: stages a DepositIntent payload, a candidate pubkey and a signature in\n\
+         #! the account context and execs the attestation verify shell.\n\
          #!\n\
          #! Inputs:  [pad(16)]\n\
          #! Outputs: [pad(16)]\n\
@@ -1056,6 +1070,10 @@ pub fn attestation_driver_src(preimage: &[Felt], len_bytes: u64) -> String {
          pub proc drive\n",
     );
     stage_preimage(&mut src, preimage);
+    stage_felts(&mut src, pubkey_felts, PUBKEY_PTR);
+    stage_felts(&mut src, sig_felts, SIGNATURE_PTR);
+    writeln!(src, "    push.{SIGNATURE_PTR}").unwrap();
+    writeln!(src, "    push.{PUBKEY_PTR}").unwrap();
     writeln!(src, "    push.{len_bytes}").unwrap();
     writeln!(src, "    push.{INTENT_PTR}").unwrap();
     src.push_str("    exec.attestation_verify::verify_attestation\n");

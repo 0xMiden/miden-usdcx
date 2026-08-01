@@ -4,10 +4,9 @@
 #
 # Circle's model puts the transfer blocklist under an EXTERNAL entity holding only that role — not
 # the owner, who also controls set_attester, the supply cap and ownership itself. The stock
-# BlocklistOwnerControlled gates on the owner, which is the wrong identity, so it is not
-# installed: these procs wrap the unauthenticated blocklist primitives in a role check instead.
-# The blocked_accounts slot they write belongs to the BasicBlocklist companion, wired as the
-# active send and receive policy.
+# BlocklistOwnerControlled gates on the owner instead, so these procs wrap the unauthenticated
+# blocklist primitives in a role check. The blocked_accounts slot they write belongs to the
+# BasicBlocklist companion, wired as the active send and receive policy.
 
 use miden::protocol::native_account
 use miden::protocol::account_id
@@ -17,20 +16,19 @@ use miden::standards::faucets::policies::transfer::blocklist
 # CONSTANTS
 # =================================================================================================
 
-# The BLK_MANAGER RoleSymbol encoded as a Felt (RoleSymbol::as_element, base-27 over A-Z/_). HARD-CODED
-# here (never caller-supplied) so no role a caller merely holds can be substituted for BLK_MANAGER.
-# Parity-asserted against the Rust RoleSymbol::new(BLK_MANAGER_ROLE).as_element() in constant_parity.rs
-# (cross-language constant parity); a drift silently breaks the role gate. BLK_MANAGER is seeded role id 4.
+# The BLK_MANAGER RoleSymbol encoded as a Felt (RoleSymbol::as_element, base-27 over A-Z/_).
+# HARD-CODED here rather than caller-supplied, so no role a caller merely holds can be substituted
+# for BLK_MANAGER.
 const BLK_MANAGER_ROLE = 7907587873290749
 
 # ERRORS
 # =================================================================================================
 
-# The self-block guard: BasicBlocklist is the ACTIVE send AND receive transfer policy, so a
-# blocked account can neither send, receive, nor burn/redeem. Blocking the faucet's OWN id would
-# therefore freeze the faucet as a transfer party (mint-and-send and burn/redeem both trap) and halt
-# the core faucet function, so `block_account` rejects the native faucet id as its target. Only
-# `block_account` carries the guard — unblocking the faucet is harmless.
+# The self-block guard. BasicBlocklist is the ACTIVE send AND receive transfer policy, so a blocked
+# account can neither send, receive, nor burn/redeem. Blocking the faucet's OWN id would therefore
+# freeze it as a transfer party, halting both mint-and-send and burn/redeem, so `block_account`
+# rejects the native faucet id as its target. Only `block_account` carries the guard, unblocking the
+# faucet being harmless.
 const ERR_XRESERVE_CANNOT_BLOCK_SELF = "cannot block the faucet's own account"
 
 # PUBLIC INTERFACE
@@ -58,10 +56,9 @@ pub proc block_account
     exec.rbac::assert_sender_has_role
     # => [account_id_suffix, account_id_prefix, pad(14)]
 
-    # self-block guard: blocking the faucet itself would freeze every redemption, so a target
-    # equal to the transaction's own account id is rejected before the add is delegated. the
-    # compare runs on copies, leaving the original target on the stack for the add below.
-    # `native_account::get_id` is the account the admin note is being consumed against.
+    # self-block guard: a target equal to the transaction's own account id is rejected before the
+    # add is delegated. the compare runs on copies, leaving the original target on the stack for the
+    # add below. `native_account::get_id` is the account the admin note is being consumed against.
     exec.native_account::get_id
     # => [own_id_suffix, own_id_prefix, account_id_suffix, account_id_prefix, pad(14)]
 

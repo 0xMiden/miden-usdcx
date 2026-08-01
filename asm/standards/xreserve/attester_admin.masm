@@ -4,9 +4,9 @@
 # xReserveAttesters allowlist — the write side of the allowlist that attestation_verify.masm
 # reads at mint time. Reuses the standard access primitives:
 # authority::assert_authorized (the account-wide Authority::OwnerControlled gate ->
-# ownable2step::assert_sender_is_owner on the note sender) + native_account::set_map_item (the write).
-# No custom owner/RBAC logic. The setter is intentionally NOT pause-gated (matching Circle's
-# onlyOwner model).
+# ownable2step::assert_sender_is_owner on the note sender) + native_account::set_map_item (the
+# write). The setter is NOT pause-gated, matching Circle's onlyOwner model, so the owner can
+# disable a compromised attester while the faucet is paused.
 
 use miden::protocol::native_account
 use miden::standards::access::authority
@@ -14,9 +14,7 @@ use miden::standards::access::authority
 # CONSTANTS
 # =================================================================================================
 
-# The xReserveAttesters allowlist StorageMap slot — the single MASM-side declaration; the mint-time
-# read path in attestation_verify.masm imports it. The name string is the single source of truth for
-# the slot id; the Rust XRESERVE_ATTESTERS_SLOT_LABEL binds the identical string.
+# The xReserveAttesters allowlist StorageMap slot.
 pub const XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xreserve_attesters")
 
 # The marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1 — the mint-time read
@@ -49,8 +47,8 @@ const ATTESTER_DISABLED_MARKER = [0, 0, 0, 0]
 #! Invocation: call
 @account_procedure
 pub proc set_attester
-    # gate: the Ownable2Step owner (sender-based) ONLY — intentionally NOT pause-gated (Circle's
-    # onlyOwner model), so the owner may disable a compromised attester while the faucet is paused
+    # gate on the Ownable2Step owner (sender-based) only. reads account storage and is
+    # operand-stack-neutral.
     exec.authority::assert_authorized
     # => [PK_COMMITMENT, enabled, pad(11)]
 

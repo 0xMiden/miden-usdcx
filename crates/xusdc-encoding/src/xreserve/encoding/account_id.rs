@@ -1,24 +1,21 @@
-//! AccountId ↔ bytes32 family, frozen signatures per the shared-encoding spec (Rust-primary —
-//! there is no MASM leg). The bytes32 packaging is the right-aligned layout that mirrors the
-//! protocol's Agglayer embedded-account-id form. Still `REQUIRES CIRCLE CONFIRMATION`
-//! and `REQUIRES IMPLEMENTATION VALIDATION` — the layout stays an OPEN proposal to
-//! Circle, no approval.
+//! AccountId ↔ bytes32 family (Rust-primary — there is no MASM leg). The bytes32 packaging is the
+//! right-aligned layout that mirrors the protocol's Agglayer embedded-account-id form. It
+//! `REQUIRES CIRCLE CONFIRMATION` and `REQUIRES IMPLEMENTATION VALIDATION` — the layout stays an
+//! OPEN proposal to Circle.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::Felt;
 
 use super::error::EncodingError;
 
-/// `AddressType::AccountId` discriminant (pinned source:
-/// `miden-protocol/src/address/type.rs` — 232 = 0b1110_1000). A bech32 discriminant,
+/// `AddressType::AccountId` discriminant (232 = 0b1110_1000). A bech32 discriminant,
 /// NOT part of the bytes32 wire form.
 pub const ADDRESS_TYPE_ACCOUNT_ID: u8 = 232;
 
 /// Lossless AccountId → bytes32 packaging — right-aligned:
 /// `bytes[0..16] = 0x00` (leading zero pad), `bytes[16..24] = prefix` as u64 big-endian,
 /// `bytes[24..32] = suffix` as canonical u64 big-endian. Mirrors the protocol Agglayer
-/// `EthEmbeddedAccountId` form `0x00000000 || prefix(8) || suffix(8)`
-/// (`miden-agglayer/src/eth_types/eth_embedded_account_id.rs`) widened to a
+/// `EthEmbeddedAccountId` form `0x00000000 || prefix(8) || suffix(8)` widened to a
 /// 32-byte slot; uses the FULL 8-byte suffix, not `to_bytes()`'s 7-byte form.
 pub fn account_id_to_bytes32(id: AccountId) -> [u8; 32] {
     let mut out = [0u8; 32];
@@ -38,9 +35,8 @@ pub fn bytes32_to_account_id(b: &[u8; 32]) -> Result<AccountId, EncodingError> {
     let prefix = u64::from_be_bytes(b[16..24].try_into().expect("8-byte slice"));
     let suffix = u64::from_be_bytes(b[24..32].try_into().expect("8-byte slice"));
     // packing into the field must not reduce mod p, then the felts must form a canonical
-    // AccountId (`try_from_elements(suffix, prefix)`, mirroring the Agglayer precedent
-    // `eth_embedded_account_id.rs`); the frozen unit variant cannot carry the inner
-    // `AccountIdError` source (the frozen signature wins over preserve-error-source)
+    // AccountId; `NonCanonicalAccountId` is a unit variant, so the inner `AccountIdError` source
+    // cannot be carried
     let prefix_felt = Felt::try_from(prefix).map_err(|_| EncodingError::NonCanonicalAccountId)?;
     let suffix_felt = Felt::try_from(suffix).map_err(|_| EncodingError::NonCanonicalAccountId)?;
     AccountId::try_from_elements(suffix_felt, prefix_felt)
@@ -160,16 +156,14 @@ mod tests {
 
     /// TV-AID-3 (constants/API shape): the address type discriminant is 232 and the API
     /// has no >32-byte / keccak fallback branch (input type is `[u8; 32]` by signature).
-    /// Layout labels: still `REQUIRES CIRCLE CONFIRMATION` with no evidence of Circle
-    /// approval, and `REQUIRES IMPLEMENTATION VALIDATION`.
+    /// The layout itself `REQUIRES CIRCLE CONFIRMATION`.
     #[test]
     fn tv_aid_3_address_type_and_no_fallback() {
         assert_eq!(
             ADDRESS_TYPE_ACCOUNT_ID, 232,
             "AddressType::AccountId discriminant"
         );
-        // API-shape check: the converter accepts exactly 32 bytes (compile-time shape);
-        // the absence of any keccak dependency in this crate is swept by the final gate.
+        // API-shape check: the converter accepts exactly 32 bytes
         let _shape_check: fn(&[u8; 32]) -> Result<AccountId, EncodingError> = bytes32_to_account_id;
     }
 
@@ -181,8 +175,7 @@ mod tests {
         assert_eq!(
             EncodingError::AccountIdOutOfRange.to_string(),
             "bytes set outside the 16-byte account id region",
-            "the AccountIdOutOfRange message must match the shipped R-B 16-byte-pad layout \
-             (IMPL-DEV-12)"
+            "the AccountIdOutOfRange message must match the shipped 16-byte-pad layout"
         );
     }
 

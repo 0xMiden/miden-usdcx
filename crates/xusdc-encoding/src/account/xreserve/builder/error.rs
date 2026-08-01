@@ -1,8 +1,7 @@
 //! The error type the faucet-account builder returns
 //! ([`XReserveStablecoinBuilderError`]).
 //!
-//! It lives beside the builder rather than inside it purely to keep that module within its size
-//! ceiling; the variants describe wiring the builder refuses to compose.
+//! The variants describe wiring the builder refuses to compose.
 
 use core::fmt;
 
@@ -17,9 +16,8 @@ pub enum XReserveStablecoinBuilderError {
     /// The xUSDC faucet must be public (network-observable). A non-`Public` account type is rejected
     /// at build time so packaging cannot produce an unobservable faucet.
     NonPublicAccountType(AccountType),
-    /// The active mint policy does not resolve to the attestation mint policy — packaging cannot
-    /// bypass the attestation gate (the core mint-security invariant: every supply increase passes
-    /// the attestation policy).
+    /// The active mint policy does not resolve to the attestation mint policy, so packaging cannot
+    /// bypass the attestation gate every supply increase has to pass.
     MissingAttestationMintPolicy,
     /// The supplied faucet was not built with a mutable `max_supply`, so the stock `set_max_supply`
     /// admin function would be permanently dead on the deployed faucet (every call traps the runtime
@@ -44,20 +42,15 @@ pub enum XReserveStablecoinBuilderError {
     /// (`2^63 - 2^31`), so it is not a valid burn amount and cannot be seeded into
     /// the stock `MinBurnAmount` floor slot. Carries the offending value.
     MinBurnSizeExceedsMax(u64),
-    /// An explicit
-    /// `with_active_burn_policy`
-    /// override carries the stock `MinBurnAmount` root but a companion floor that disagrees with
-    /// the builder-validated `min_burn_size`. Rejected so a same-root override cannot smuggle a
-    /// sub-floor (e.g. zero) floor slot past the `min_burn_size` validation — the stock predicate
-    /// is `min <= amount`, so a zero-seeded companion would restore zero-amount burns. `requested`
-    /// is the override's companion floor; `expected` the validated `min_burn_size`.
+    /// An explicit `with_active_burn_policy` override carries the stock `MinBurnAmount` root but a
+    /// companion floor that disagrees with the builder-validated `min_burn_size`, which would let a
+    /// same-root override smuggle a sub-floor value past that validation. `requested` is the
+    /// override's companion floor; `expected` the validated `min_burn_size`.
     BurnPolicyFloorMismatch { requested: u64, expected: u64 },
     /// The supplied `xreserve` component declares a NON-EMPTY identifier value slot. The identifier
-    /// is the account-id fixpoint (the account id derives from the initial storage
-    /// commitment; the identifier is, provisionally pending Circle confirmation, the faucet's own id as
-    /// bytes32), so it can NEVER be build-seeded — a non-empty declared identifier would ship an
-    /// already-initialized, potentially misbound faucet and make the init-once `identifier_init`
-    /// note trap as a reinitialization. The identifier slot must ship EMPTY; the faucet-bound
+    /// is the account-id fixpoint — the account id derives from the initial storage commitment, and
+    /// the identifier is, provisionally pending Circle confirmation, the faucet's own id as bytes32
+    /// — so it can never be build-seeded. The slot must ship EMPTY; the faucet-bound
     /// `identifier_init` note is its only writer.
     IdentifierNotEmpty,
     /// The three build-seeded domain-config fields (`domain`, `source_domain`,
@@ -66,32 +59,25 @@ pub enum XReserveStablecoinBuilderError {
     /// These fields are build-seeded (only the identifier fixpoint stays a runtime init), so a
     /// build without them would ship a faucet whose domain compare reads an empty slot.
     MissingDomainConfig,
-    /// The supplied `xreserve` component does not declare a required storage slot (the
-    /// validate-what-you-ship check, [`REQUIRED_XRESERVE_SLOT_LABELS`](super::REQUIRED_XRESERVE_SLOT_LABELS):
-    /// a missing slot would ship a
-    /// faucet whose reads/writes of that slot trap at runtime). Carries the missing slot's label.
+    /// The supplied `xreserve` component does not declare a required storage slot
+    /// ([`REQUIRED_XRESERVE_SLOT_LABELS`](super::REQUIRED_XRESERVE_SLOT_LABELS)); reads and writes
+    /// of a missing slot trap at runtime. Carries the missing slot's label.
     MissingXReserveSlot(&'static str),
-    /// The supplied faucet's `decimals` is not the spec-mandated [`USDCX_DECIMALS`](super::USDCX_DECIMALS)
-    /// (= 6;
-    /// `token_config` decimals = 6, a Circle requirement of six decimal places — the amount reducer
-    /// scales to 6dp, so a mismatched faucet silently mis-scales every amount). Carries the
-    /// offending value.
+    /// The supplied faucet's `decimals` is not [`USDCX_DECIMALS`](super::USDCX_DECIMALS) (= 6, a
+    /// Circle requirement). The amount reducer scales to 6dp, so a mismatched faucet silently
+    /// mis-scales every amount. Carries the offending value.
     WrongDecimals(u8),
-    /// The supplied faucet's `TokenSymbol` is not the shipped [`USDCX_TOKEN_SYMBOL`](super::USDCX_TOKEN_SYMBOL)
-    /// guard
-    /// constant. The token's identity is USDCx (distinct from the
-    /// "xUSDC" working label); the pinned `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs`),
-    /// so the on-chain symbol is the VM-forced uppercase `USDCX`; this guard pins the shipped
-    /// constant so the deployed symbol is load-bearing and a drift fails the build.
+    /// The supplied faucet's `TokenSymbol` is not the shipped
+    /// [`USDCX_TOKEN_SYMBOL`](super::USDCX_TOKEN_SYMBOL) guard constant. The token's identity is
+    /// USDCx, distinct from the "xUSDC" working label; the on-chain symbol is its uppercase form
+    /// `USDCX`.
     WrongTokenSymbol,
     /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with a privileged
-    /// identity — the owner, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The blocklist
-    /// decision requires the transfer-blocklist administrator be an EXTERNAL entity with NO other faucet-admin
-    /// capability (two-way capability isolation): a caller who set the owner as `BLK_MANAGER` would
-    /// give the owner/ADMIN a direct block/unblock path, and a caller who set a DOM_PAUSER/DOM_MANAGER
-    /// holder as `BLK_MANAGER` would fuse those roles. Rejected at build time so packaging cannot ship
-    /// a faucet whose blocklist admin is not capability-isolated. `collides_with` names the offending
-    /// role (`"owner"` / `"DOM_PAUSER"` / `"DOM_MANAGER"`).
+    /// identity — the owner, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The
+    /// transfer-blocklist administrator must be an external entity with no other faucet-admin
+    /// capability, so that neither the owner gains a block/unblock path nor the pause and blocklist
+    /// roles fuse. `collides_with` names the offending role (`"owner"` / `"DOM_PAUSER"` /
+    /// `"DOM_MANAGER"`).
     BlocklistManagerNotIsolated { collides_with: &'static str },
     /// The mint-policy descriptor rejected its construction (`MintPolicy::custom` validates
     /// the root against the supplied companion components).
@@ -103,13 +89,10 @@ pub enum XReserveStablecoinBuilderError {
     /// seam: the manager component first, then EXACTLY one xreserve-component copy (the custom
     /// attestation mint policy), EXACTLY one stock `MinBurnAmount` companion (the burn floor), and
     /// EXACTLY one `BasicBlocklist` companion (the transfer-blocklist policy shared by the send and
-    /// receive kinds). Never dropped silently. `found` is the FULL companion remainder the manager
-    /// emitted; the `*_recognized` counters say how many of those were the already-installed
-    /// xreserve component, the `MinBurnAmount` companion, and the `BasicBlocklist` companion
-    /// respectively, so a smuggled foreign companion shows up as
-    /// `found > xreserve_recognized + min_burn_recognized + blocklist_recognized` instead of
-    /// hiding behind a matching count, and a missing stock companion (which would ship a faucet
-    /// whose floor/`blocked_accounts` accesses trap) shows up in its own counter.
+    /// receive kinds). `found` is the FULL companion remainder the manager emitted; the
+    /// `*_recognized` counters say how many of those were each expected component, so a smuggled
+    /// foreign companion shows up as `found` exceeding their sum rather than hiding behind a
+    /// matching total, and a missing stock companion shows up in its own counter.
     PolicyCompanionMismatch {
         expected_xreserve: usize,
         expected_min_burn: usize,

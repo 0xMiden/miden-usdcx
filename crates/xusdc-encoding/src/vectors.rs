@@ -1,7 +1,6 @@
 //! Loader for the ONE canonical golden-vector artifact
 //! (`tests/vectors/xreserve-encoding-vectors.json`). Both the Rust unit tests and the
-//! MASM execution tests load the same file by reference through this module — no second
-//! vector table exists anywhere in the repo.
+//! MASM execution tests load the same file by reference through this module.
 
 use std::sync::OnceLock;
 
@@ -115,7 +114,7 @@ pub struct DiVector {
 }
 
 /// Per-field expectations for accept vectors: semantic values plus each field's packed
-/// felts at its DC-1 felt offset (drives the TV-DUAL-3 layout memory assertions).
+/// felts at its felt offset in the packed layout.
 #[derive(Debug, Deserialize)]
 pub struct DiFields {
     pub magic: u32,
@@ -166,7 +165,7 @@ pub struct AttVector {
     pub derivation: String,
 }
 
-/// Burn-note item (BN) vectors (DC-7). `kind`: accept | reject. Accept entries carry
+/// Burn-note item (BN) vectors. `kind`: accept | reject. Accept entries carry
 /// the four semantic inputs plus the 18-felt golden `items` layout; reject entries carry the
 /// malformed `items` felts plus `expected_variant` (`BurnItemsMalformed`).
 #[derive(Debug, Deserialize)]
@@ -396,20 +395,20 @@ impl BnVector {
     }
 }
 
-// ARTIFACT GUARD (scaffold / meta test)
+// ARTIFACT GUARD
 // ================================================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Scaffold/meta test: the artifact parses, every family is non-empty, every entry
-    /// carries provenance (`cite` + `derivation`), and every entry carries non-empty
-    /// `tv` tags unless it is on the explicit guard-vector allowlist.
+    /// The artifact parses, every family is non-empty, every entry carries provenance
+    /// (`cite` + `derivation`), and every entry carries non-empty `tv` tags unless it is on the
+    /// explicit guard-vector allowlist.
     #[test]
     fn artifact_guard() {
-        // guard-vector allowlist: guard-only vectors that intentionally trace to no frozen TV
-        // row (they pin harness/trap mechanics, not a spec row).
+        // guard-only vectors that intentionally trace to no spec row; they pin harness and trap
+        // mechanics instead.
         const TV_TAG_ALLOWLIST: [&str; 1] = ["amt-guard-limb-not-u32"];
 
         let v = load();

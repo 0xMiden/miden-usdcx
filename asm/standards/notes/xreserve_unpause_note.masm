@@ -1,11 +1,10 @@
-# xreserve_unpause_note — the shipped, root-pinned unpause admin note script.
+# xreserve_unpause_note — the root-pinned unpause admin note script.
 #
-# The production admin surface for `unpause` under the network account: a fixed-root, PARAM-LESS note
-# whose sole job is to cross into the faucet account context and `call` the DOM_PAUSER-gated
+# The admin surface for `unpause` under the network account: a fixed-root, PARAM-LESS note whose sole
+# job is to cross into the faucet account context and `call` the DOM_PAUSER-gated
 # `pause_admin::unpause`. The sender gate lives in the proc (the note sender is kernel-forced, so a
-# non-DOM_PAUSER creator traps there). The executor-controlled NOTE_ARGS are dropped and never read.
-# A scheme-2 NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only,
-# added by the Rust factory).
+# non-DOM_PAUSER creator traps there). A scheme-2 NetworkAccountTarget routing attachment addresses
+# the note at the faucet (routing-only).
 
 use xreserve::pause_admin
 
@@ -14,7 +13,7 @@ use xreserve::pause_admin
 
 #! Consumes the `unpause` admin note and drives the DOM_PAUSER-gated resume.
 #!
-#! Drops the executor-controlled note ARGS (the op is param-less) and `call`s `pause_admin::unpause`.
+#! Drops the note ARGS (the op is param-less) and `call`s `pause_admin::unpause`.
 #!
 #! Requires that the account exposes:
 #! - xreserve::pause_admin::unpause procedure.
@@ -23,7 +22,7 @@ use xreserve::pause_admin
 #! Outputs: [pad(16)]
 #!
 #! Where:
-#! - ARGS is executor-controlled and dropped unread.
+#! - ARGS is unused.
 #!
 #! Panics if:
 #! - the note sender does not hold the DOM_PAUSER role (pause_admin::unpause's role gate).

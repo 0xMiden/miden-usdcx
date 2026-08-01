@@ -59,10 +59,7 @@ pub proc set_attester
     cdropw
     # => [MARKER, PK_COMMITMENT, pad(11)]
 
-    swapw
-    # => [PK_COMMITMENT, MARKER, pad(11)]
-
-    push.XRESERVE_ATTESTERS_SLOT[0..2]
+    swapw push.XRESERVE_ATTESTERS_SLOT[0..2]
     # => [slot_id_suffix, slot_id_prefix, PK_COMMITMENT, MARKER, pad(11)]
 
     # xReserveAttesters[PK_COMMITMENT] = MARKER.

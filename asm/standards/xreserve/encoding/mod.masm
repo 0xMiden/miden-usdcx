@@ -5,25 +5,13 @@
 # `layout` submodule.
 
 use miden::standards::assets::asset_amount
-use miden::standards::utils
 use miden::core::crypto::hashes::poseidon2
-use {
-    AMOUNT_FELT_OFF, DEPOSIT_INTENT_HEADER_FELTS, DEPOSIT_INTENT_MAGIC_PACKED,
-    DEPOSIT_INTENT_VERSION_PACKED, HOOK_DATA_LEN_FELT_OFF, LOCAL_DEPOSITOR_FELT_OFF,
-    LOCAL_TOKEN_FELT_OFF, MAGIC_FELT_OFF, REMOTE_DOMAIN_FELT_OFF, REMOTE_TOKEN_FELT_OFF,
-    VERSION_FELT_OFF
-} from xreserve::encoding::layout
-
 pub mod layout
 
 # ERRORS
 # =================================================================================================
 
 const ERR_FELT_OUT_OF_FIELD = "supplied limb is not a valid u32"
-const ERR_DI_BAD_MAGIC = "deposit intent magic mismatch"
-const ERR_DI_BAD_VERSION = "deposit intent version mismatch"
-const ERR_DI_ZERO_FIELD = "deposit intent amount, local token, or local depositor is zero"
-const ERR_DI_LENGTH = "deposit intent length relation violated"
 
 # PUBLIC INTERFACE
 # =================================================================================================
@@ -98,144 +86,4 @@ pub proc verify_uint256_to_asset_amount
     # top-first this is the verifier's most-significant-first limb order
     exec.asset_amount::verify_u256_to_asset_amount_conversion
     # => []
-end
-
-#! Validates a staged DepositIntent preimage structurally and returns the caller-compare fields.
-#!
-#! Asserts the library-owned structural checks over the u32-LE-packed preimage staged in
-#! memory: packed magic, packed version, amount nonzero, localToken nonzero, localDepositor
-#! nonzero, and the felt-length relation against the embedded hookDataLen. The faucet-owned
-#! domain and identifier equality compares are NOT performed here.
-#!
-#! Inputs:  [intent_ptr, len_felts]
-#! Outputs: [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
-#!
-#! Where:
-#! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
-#! - len_felts is the staged preimage length in felts.
-#! - remote_domain is the semantic remoteDomain value as a u32 felt.
-#! - REMOTE_TOKEN_UPPER is the word holding the remoteToken field's positionally upper four
-#!   packed limbs (intent bytes 60..76).
-#! - REMOTE_TOKEN_LOWER is the word holding the remoteToken field's positionally lower four
-#!   packed limbs (intent bytes 44..60).
-#! - hook_data_len_bytes is the semantic hookDataLen value in bytes, as a u32 felt.
-#!
-#! Panics if:
-#! - the packed magic does not match the DepositIntent magic.
-#! - the packed version does not match the supported version.
-#! - the amount field is zero.
-#! - the localToken field is zero.
-#! - the localDepositor field is zero.
-#! - len_felts does not equal the header felt count plus the packed hookData felt count.
-#!
-#! Invocation: exec
-@account_procedure
-pub proc parse_deposit_intent
-    # guard the externally-supplied pointer and length before any u32 op
-    u32assert2.err=ERR_FELT_OUT_OF_FIELD
-    # => [intent_ptr, len_felts]
-
-    # truncation guard: the full 60-felt header must be staged before any field offset can
-    # be trusted; both length violations share the ERR_DI_LENGTH constant
-    dup.1 u32gte.DEPOSIT_INTENT_HEADER_FELTS
-    assert.err=ERR_DI_LENGTH
-    # => [intent_ptr, len_felts]
-
-    # packed magic must match
-    dup push.MAGIC_FELT_OFF add mem_load
-    push.DEPOSIT_INTENT_MAGIC_PACKED assert_eq.err=ERR_DI_BAD_MAGIC
-    # => [intent_ptr, len_felts]
-
-    # packed version must match
-    dup push.VERSION_FELT_OFF add mem_load
-    push.DEPOSIT_INTENT_VERSION_PACKED assert_eq.err=ERR_DI_BAD_VERSION
-    # => [intent_ptr, len_felts]
-
-    # amount, localToken, localDepositor must be nonzero
-    dup push.AMOUNT_FELT_OFF add exec.field8_is_nonzero
-    assert.err=ERR_DI_ZERO_FIELD
-    dup push.LOCAL_TOKEN_FELT_OFF add exec.field8_is_nonzero
-    assert.err=ERR_DI_ZERO_FIELD
-    dup push.LOCAL_DEPOSITOR_FELT_OFF add exec.field8_is_nonzero
-    assert.err=ERR_DI_ZERO_FIELD
-    # => [intent_ptr, len_felts]
-
-    # hookDataLen (semantic u32, a byte count): byte-swap the packed felt at offset 59
-    dup push.HOOK_DATA_LEN_FELT_OFF add mem_load u32assert.err=ERR_FELT_OUT_OF_FIELD
-    exec.utils::swap_u32_bytes
-    # => [hook_data_len_bytes, intent_ptr, len_felts]
-
-    # length relation: the 60-felt header plus the packed hookData felts
-    dup exec.num_bytes_to_num_felts push.DEPOSIT_INTENT_HEADER_FELTS add
-    # => [expected_len_felts, hook_data_len_bytes, intent_ptr, len_felts]
-
-    movup.3 assert_eq.err=ERR_DI_LENGTH
-    # => [hook_data_len_bytes, intent_ptr]
-
-    # outputs: load the caller-compare fields from the staged preimage (single-felt loads
-    # — the header felt offsets are not word-aligned); the packed
-    # remoteToken words are pushed in the same element order the callers compare against
-    swap
-    # => [intent_ptr, hook_data_len_bytes]
-
-    dup push.REMOTE_TOKEN_FELT_OFF add
-    # => [rt_base, intent_ptr, hook_data_len_bytes]
-
-    exec.utils::mem_load_double_word_unaligned swapw
-    # => [REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_ptr, hook_data_len_bytes]
-
-    movup.8
-    # => [intent_ptr, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
-
-    # remote_domain (semantic u32): byte-swap the packed felt at offset 10
-    push.REMOTE_DOMAIN_FELT_OFF add mem_load
-    u32assert.err=ERR_FELT_OUT_OF_FIELD
-    exec.utils::swap_u32_bytes
-    # => [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
-end
-
-#! Returns the number of felts holding num_bytes wire bytes, packed four bytes to a felt.
-#!
-#! Inputs:  [num_bytes]
-#! Outputs: [num_felts]
-#!
-#! Invocation: exec
-pub proc num_bytes_to_num_felts
-    u32divmod.4 neq.0 add
-end
-
-# HELPER PROCEDURES
-# =================================================================================================
-
-#! Returns whether any of the eight consecutive felts at the given address is nonzero.
-#!
-#! Used for the DepositIntent 32-byte-field zero checks (a field is zero iff all eight of
-#! its u32-LE-packed limbs are zero).
-#!
-#! Inputs:  [addr]
-#! Outputs: [is_nonzero]
-#!
-#! Where:
-#! - addr is the memory address of the field's first packed felt.
-#! - is_nonzero is 1 when any of the eight felts is nonzero, 0 otherwise.
-#!
-#! Invocation: exec
-proc field8_is_nonzero
-    push.0 swap
-    # => [addr, acc]
-
-    repeat.8
-        dup mem_load neq.0
-        # => [is_nz, addr, acc]
-
-        movup.2 or
-        # => [acc', addr]
-
-        swap add.1
-        # => [addr+1, acc']
-    end
-    # => [addr+8, acc]
-
-    drop
-    # => [acc]
 end

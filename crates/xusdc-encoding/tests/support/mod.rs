@@ -137,7 +137,7 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 23] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -210,12 +210,6 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
     (
         "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT",
         MasmError::from_static_str("mint note must carry exactly three attachments"),
-    ),
-    (
-        "ERR_XRESERVE_MINT_NOTE_INTENT_TOO_SHORT",
-        MasmError::from_static_str(
-            "mint note deposit intent attachment is shorter than the deposit intent header",
-        ),
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB",
@@ -346,7 +340,7 @@ fn collect_masm_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Memory bases for the attestation operands the drivers stage alongside the preimage, mirroring
-/// how the production policy hands `assert_mint_amounts` and `verify_attestation` pointers into
+/// how the production policy hands `validate` and `verify_attestation` pointers into
 /// the hash-verified attestation attachment. All word-aligned and clear of `INTENT_PTR`.
 pub const FEE_AMOUNT_PTR: u64 = 0;
 pub const PUBKEY_PTR: u64 = 8;
@@ -735,18 +729,24 @@ fn stage_preimage(src: &mut String, felts: &[Felt]) {
     stage_felts(src, felts, INTENT_PTR);
 }
 
-/// Generates the per-case shell-driver component source: a CALL-entered account proc
-/// that stages the case's preimage, pushes `[intent_ptr, len_felts]`, `exec`s the
-/// shell, and (happy path) asserts the returned `hook_data_len`.
-pub fn shell_driver_src(
+/// Generates the per-case shell-driver component source: a CALL-entered account proc that stages
+/// the case's preimage and `feeAmount`, pushes the `validate` inputs `[intent_ptr,
+/// intent_num_words, fee_amount_ptr, scale_exp, amount_y]`, `exec`s the shell, and (happy path)
+/// asserts the returned `intent_num_bytes`.
+///
+/// `validate` is the parser's single entry, so one driver serves every mint-precondition stage: a
+/// case reaches the stage it targets by being valid for the stages that run before it.
+pub fn validate_driver_src(
     preimage: &[Felt],
-    len_felts: u64,
-    expected_hook_data_len: Option<u32>,
+    intent_num_words: u64,
+    fee_amount: &[Felt],
+    amount_y: u64,
+    expected_intent_num_bytes: Option<u32>,
 ) -> String {
     let mut src = String::from(
         "use xreserve::deposit_intent_parser\n\n\
-         #! Test driver: stages a DepositIntent preimage in the account context and\n\
-         #! execs the faucet assertion shell.\n\
+         #! Test driver: stages a DepositIntent preimage and a feeAmount in the account context\n\
+         #! and execs the faucet mint-precondition shell.\n\
          #!\n\
          #! Inputs:  [pad(16)]\n\
          #! Outputs: [pad(16)]\n\
@@ -756,15 +756,18 @@ pub fn shell_driver_src(
          pub proc drive\n",
     );
     stage_preimage(&mut src, preimage);
-    writeln!(src, "    push.{len_felts}").unwrap();
+    stage_felts(&mut src, fee_amount, FEE_AMOUNT_PTR);
+    writeln!(src, "    push.{amount_y}").unwrap();
+    writeln!(src, "    push.{FEE_AMOUNT_PTR}").unwrap();
+    writeln!(src, "    push.{intent_num_words}").unwrap();
     writeln!(src, "    push.{INTENT_PTR}").unwrap();
-    src.push_str("    exec.deposit_intent_parser::assert_deposit_intent\n");
-    match expected_hook_data_len {
+    src.push_str("    exec.deposit_intent_parser::validate\n");
+    match expected_intent_num_bytes {
         // happy path: pin the shell's output, restoring the 16-depth call boundary
         Some(expected) => {
             writeln!(
                 src,
-                "    push.{expected} assert_eq.err=\"driver: hook_data_len mismatch\""
+                "    push.{expected} assert_eq.err=\"driver: intent_num_bytes mismatch\""
             )
             .unwrap();
         }
@@ -812,14 +815,15 @@ pub fn slot_probe_src(domain: Word, identifier: Word) -> String {
 // AMOUNT / FEE HELPERS
 // ================================================================================================
 
-/// Felt offsets of the two uint256 money fields in a staged DepositIntent preimage: `amount` at
-/// felts 2..9 and `maxFee` at felts 43..50.
+/// Felt offsets in a staged DepositIntent preimage: the two uint256 money fields (`amount` at
+/// felts 2..9, `maxFee` at felts 43..50) and the `hookDataLen` limb at felt 59.
 ///
 /// Each is the field's byte offset in the wire format divided by four, since one felt packs four
 /// bytes. They mirror the MASM layout constants of the same names, and the two definitions are
 /// held together by `constant_parity.rs`.
 pub const AMOUNT_FELT_OFF: usize = 2;
 pub const MAX_FEE_FELT_OFF: usize = 43;
+pub const HOOK_DATA_LEN_FELT_OFF: usize = 59;
 
 /// Clones a base accept preimage and overwrites the `amount` and `maxFee` fields with the
 /// 8 u32-LE limbs of the chosen canonical `amt-*` vectors (read from the shared artifact — no
@@ -841,34 +845,6 @@ pub fn splice_amounts(base: &[Felt], amount_limbs: [u32; 8], maxfee_limbs: [u32;
 /// `felt-construction`), in the order the reducer reads them out of memory.
 pub fn fee_amount_felts(limbs: [u32; 8]) -> Vec<Felt> {
     limbs.iter().map(|l| Felt::from(*l)).collect()
-}
-
-/// Generates the per-case amount/fee driver: stages the (spliced) preimage and the operator
-/// `feeAmount` limbs in the account context, pushes `[intent_ptr, fee_amount_ptr, amount_y]`
-/// (the amount witness the standards conversion verifier proves at the parser's own scale),
-/// and `exec`s the faucet `assert_mint_amounts` shell. The proc returns `[]`, so the
-/// staged-then-consumed stack restores the 16-depth `call` boundary.
-pub fn mint_amounts_driver_src(preimage: &[Felt], fee_amount: &[Felt], amount_y: u64) -> String {
-    let mut src = String::from(
-        "use xreserve::deposit_intent_parser\n\n\
-         #! Test driver: stages a DepositIntent preimage and a feeAmount in the account context\n\
-         #! and execs the amount/fee precondition shell.\n\
-         #!\n\
-         #! Inputs:  [pad(16)]\n\
-         #! Outputs: [pad(16)]\n\
-         #!\n\
-         #! Invocation: call\n\
-         @account_procedure\n\
-         pub proc drive\n",
-    );
-    stage_preimage(&mut src, preimage);
-    stage_felts(&mut src, fee_amount, FEE_AMOUNT_PTR);
-    writeln!(src, "    push.{amount_y}").unwrap();
-    writeln!(src, "    push.{FEE_AMOUNT_PTR}").unwrap();
-    writeln!(src, "    push.{INTENT_PTR}").unwrap();
-    src.push_str("    exec.deposit_intent_parser::assert_mint_amounts\n");
-    src.push_str("end\n");
-    src
 }
 
 /// Like `run_call_driver`, but stages an optional `feeAmount` advice stack into the tx
@@ -902,33 +878,6 @@ pub async fn run_call_driver_with_advice(
         .expect("building the transaction")
         .execute()
         .await
-}
-
-// D5C NONCE REPLAY HELPERS
-// ================================================================================================
-
-/// Generates the per-case replay-guard driver: stages the preimage in the account context, pushes
-/// `[intent_ptr]`, and `exec`s the faucet `assert_nonce_unused` shell. The shell returns `[]`
-/// (the guard is read-only — it asserts the entry is empty and writes nothing), so the staged-then-consumed stack restores
-/// the 16-depth `call` boundary.
-pub fn nonce_driver_src(preimage: &[Felt]) -> String {
-    let mut src = String::from(
-        "use xreserve::deposit_intent_parser\n\n\
-         #! Test driver: stages a DepositIntent preimage in the account context and execs the\n\
-         #! D5c nonce replay-guard shell.\n\
-         #!\n\
-         #! Inputs:  [pad(16)]\n\
-         #! Outputs: [pad(16)]\n\
-         #!\n\
-         #! Invocation: call\n\
-         @account_procedure\n\
-         pub proc drive\n",
-    );
-    stage_preimage(&mut src, preimage);
-    writeln!(src, "    push.{INTENT_PTR}").unwrap();
-    src.push_str("    exec.deposit_intent_parser::assert_nonce_unused\n");
-    src.push_str("end\n");
-    src
 }
 
 // D5D ATTESTATION VERIFY HELPERS

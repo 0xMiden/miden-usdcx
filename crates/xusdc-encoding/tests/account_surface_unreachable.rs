@@ -284,7 +284,7 @@ fn ratified_growth_row_roots() -> Result<Vec<(&'static str, Word)>> {
 }
 
 /// PRESENT: each of the 11 ratified growth rows IS a callable root of the composed account — the
-/// fact the ratification covers, stated explicitly rather than left implicit in the 69-root count.
+/// fact the ratification covers, stated explicitly rather than left implicit in the 65-root count.
 /// If any row disappears, the temporary-growth ratification must be re-visited (the revert slice
 /// expects to remove exactly these).
 #[test]

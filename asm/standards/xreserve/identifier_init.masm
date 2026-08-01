@@ -8,12 +8,12 @@
 # id exists. The other three domain-config fields (`domain`, `source_domain`,
 # `xreserve_contract`) are BUILD-SEEDED by the Rust account builder and have no runtime writer.
 #
-# The identifier slot is the one the mint path's deposit-intent compare
-# (deposit_intent_parser::assert_deposit_intent) reads to reject mis-addressed deposits; it stores
-# the Poseidon2 bytes32->key WORD (consumer-forced — the compare is `assert_eqw` over the hashed
-# form). A second write traps ERR_XRESERVE_IDENTIFIER_REINIT. Gated by the account-wide authority,
-# which resolves this procedure — it carries no role assignment of its own — to the built-in ADMIN
-# role; no pause gate (deploy-time config is orthogonal to the operational pause). The slot const is
+# The identifier slot is read during deposit intent validation to reject mis-addressed deposits; it
+# stores the Poseidon2 bytes32->key WORD (consumer-forced — the compare is `assert_eqw` over the
+# hashed form). A second write traps ERR_XRESERVE_IDENTIFIER_REINIT. Gated by the account-wide
+# authority, which resolves this procedure — it carries no role assignment of its own — to the
+# built-in ADMIN role; no pause gate (deploy-time config is orthogonal to the operational pause).
+# The slot const is
 # IMPORTED from deposit_intent_parser (the single source of truth with the mint-path compare).
 #
 # Front-run hardening: the proc derives the faucet's OWN identifier key ON-CHAIN —

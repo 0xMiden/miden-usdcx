@@ -91,10 +91,10 @@ macro_rules! masm_errors {
         $( pub const $name: MasmError = MasmError::from_static_str($msg); )+
 
         /// Name → constant lookup, for callers that hold only the `ERR_*` name.
-        pub static ERR_TABLE: [(&str, &MasmError); 5] = [ $( (stringify!($name), &$name) ),+ ];
+        pub static ERR_TABLE: [(&str, &MasmError); 4] = [ $( (stringify!($name), &$name) ),+ ];
 
         /// Name → message table, for comparing against the strings the MASM declares.
-        pub static ERR_MESSAGES: [(&str, &str); 5] = [ $( (stringify!($name), $msg) ),+ ];
+        pub static ERR_MESSAGES: [(&str, &str); 4] = [ $( (stringify!($name), $msg) ),+ ];
     };
 }
 
@@ -103,7 +103,6 @@ masm_errors! {
     ERR_DI_BAD_MAGIC => "deposit intent magic mismatch",
     ERR_DI_BAD_VERSION => "deposit intent version mismatch",
     ERR_DI_ZERO_FIELD => "deposit intent amount, local token, or local depositor is zero",
-    ERR_DI_LENGTH => "deposit intent length relation violated",
 }
 
 /// Errors raised inside procedures the MASM links from the protocol's `miden-standards`

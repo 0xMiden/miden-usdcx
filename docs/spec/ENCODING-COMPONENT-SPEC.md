@@ -12,7 +12,7 @@ message, the burn-note payload) and Miden's on-chain types (felts, Words, `Asset
 
 Most codecs are implemented on **both** sides: `bytes32_to_key`, the amount conversion (Rust
 `uint256_to_asset_amount` computing the quotient, MASM `verify_uint256_to_asset_amount` proving
-it as a witness through the linked standards conversion verifier), `parse_deposit_intent`, and
+it as a witness through the linked standards conversion verifier), and
 the attestation staging each have a Rust and a MASM leg, and a
 cross-implementation suite (`TV-DUAL-1`, `-2`, `-3`, `-5`) proves the two agree on every golden
 vector. The **burn-note payload codec (`DC-7`) is Rust-only** — there is no MASM burn-item codec — so

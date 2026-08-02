@@ -54,7 +54,7 @@ const VALID_BURN: u64 = 5_000;
 /// A below-minimum burn: `0 < BELOW_MIN < MIN_BURN_SIZE`.
 const BELOW_MIN: u64 = 500;
 
-/// The Ownable2Step OWNER the burn oracle installs (id(1)). Under the reconciled Circle-faithful admin
+/// The administrator the burn oracle installs (id(1)). Under the reconciled Circle-faithful admin
 /// model the setters resolve to the built-in `ADMIN` role under the account's role-based authority.
 fn administrator() -> AccountId {
     test_account_id(1)

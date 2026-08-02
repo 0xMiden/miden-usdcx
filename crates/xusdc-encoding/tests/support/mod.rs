@@ -419,7 +419,7 @@ pub fn add_faucet_account(
 /// its fee-policy companions — instead of the `miden-testing` `Auth::NetworkAccount` fixture. The
 /// fixture routes through `AuthNetworkAccount::new()`, which force-inserts the config-note and
 /// fee-sponsorship script roots into the note allowlist; the preserved posture is the EXACT
-/// 12-root allowlist, so the composition must go through `custom()` (which inserts nothing) —
+/// 9-root allowlist, so the composition must go through `custom()` (which inserts nothing) —
 /// `config_note_absence.rs` is the tripwire. Registering the account without an authenticator
 /// matches the fixture's behavior for the keyless network account (its authenticator is `None`
 /// either way). The callback flag is derived exactly as in [`add_faucet_account`].
@@ -1238,7 +1238,7 @@ pub fn faucet_account(h: &CompositionHarness) -> Account {
 /// Builds a note SENT BY `sender` whose script calls the stock `PausableManager::pause`. The
 /// procedure IS installed, so this note is the probe for WHO may use it: sent by the Domain pauser
 /// it pauses the faucet, and sent by anyone else — including the administrator — it traps the role error,
-/// which is what `owner_has_no_pause_path` pins. It assembles without an xreserve link, since
+/// which is what `administrator_has_no_pause_path` pins. It assembles without an xreserve link, since
 /// StandardsLib is pre-linked.
 pub fn manager_pause_call_note(sender: AccountId, seed: u64) -> Result<Note> {
     let src = "use miden::standards::access::pausable::manager\n\
@@ -2020,7 +2020,7 @@ fn oracle_burn_components(
     xreserve_component: AccountComponent,
     min_burn_size: u64,
     burn_real_active: bool,
-    owner: AccountId,
+    administrator: AccountId,
     pauser_holder: AccountId,
     manager_holder: AccountId,
     blocklist_manager_holder: AccountId,
@@ -2085,7 +2085,7 @@ fn oracle_burn_components(
     components.extend(keep); // [MinBurnAmount (floor slot), BurnAllowAll]
     components.push(PausableManager.into());
     components.push(seeded_dom_roles_rbac_component(
-        owner,
+        administrator,
         pauser_holder,
         manager_holder,
         blocklist_manager_holder,
@@ -2097,7 +2097,7 @@ fn oracle_burn_components(
 /// Builds the burn-policy harness: assembles the `xreserve` component with the full production slot set
 /// (domain/identifier value slots, usedNonces/xReserveAttesters map slots, AND the NET-NEW minBurnSize
 /// value slot seeded `[min_burn_size, 0, 0, 0]`), composes the faucet via [`oracle_burn_components`]
-/// (`owner` = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3)), adds a user wallet seeded with the single burn asset, and
+/// (`administrator` = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3)), adds a user wallet seeded with the single burn asset, and
 /// creates the canonical [`BurnNote`]. The faucet is built with `is_max_supply_mutable(true)` + decimals
 /// 6, mirroring the mint composition fixtures.
 pub fn setup_burn_policy_account(
@@ -2475,7 +2475,7 @@ pub async fn run_burn_consume(
 
 /// Executes a stock `PausableManager::pause` note SENT BY `sender` against the faucet `account` on a
 /// bare `&MockChain` (the note is provided unauthenticated). Under the Domain-Pauser-only model the
-/// stock proc is NOT installed — this is the NEGATIVE PROBE `owner_has_no_pause_path` drives: the tx
+/// stock proc is NOT installed — this is the NEGATIVE PROBE `administrator_has_no_pause_path` drives: the tx
 /// must trap `UnknownAccountProcedure` and never flip `is_paused`. To actually pause, use
 /// [`run_dom_pauser_pause`] (the DOM_PAUSER custom proc — the only pause surface).
 pub async fn run_pause_against(
@@ -3109,7 +3109,7 @@ pub fn setup_production_faucet(
     // and the provisional zero-fee configuration — installed via the deploy path's OWN
     // `XReserveStablecoinBuilder::auth_component()` (the `custom()`-based composition; the
     // `Auth::NetworkAccount` fixture is deliberately bypassed because it routes through the
-    // force-inserting `new()` constructor and would grow the 12-root allowlist).
+    // force-inserting `new()` constructor and would grow the 9-root allowlist).
     let account = add_network_faucet_account(&mut mc, components)
         .context("adding the production faucet account")?;
     // The faucet id is now known, so the seed-notes closure binds its notes (the

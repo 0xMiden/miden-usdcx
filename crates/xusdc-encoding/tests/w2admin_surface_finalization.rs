@@ -147,10 +147,10 @@ fn the_ownership_component_is_absent_from_the_composition() -> Result<()> {
     Ok(())
 }
 
-/// The callable surface is the ratified 70 roots, and not one of them is an administratorship procedure.
+/// The callable surface is the ratified 69 roots, and not one of them is an administratorship procedure.
 /// The count is asserted against the real composition, so a stale removal shows up here.
 #[test]
-fn the_callable_surface_is_seventy_roots_and_carries_no_ownership_row() -> Result<()> {
+fn the_callable_surface_is_sixty_nine_roots_and_carries_no_ownership_row() -> Result<()> {
     let mut components = production_component_set(MAX_SUPPLY, 0)?;
     components.extend(
         XReserveStablecoinBuilder::auth_component()

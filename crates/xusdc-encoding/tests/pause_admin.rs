@@ -48,7 +48,8 @@ fn prod_note_rng(seed: u64) -> RandomCoin {
     ]))
 }
 
-// The production builder seeds owner = id(1) (Ownable2Step), DOM_PAUSER = id(2), DOM_MANAGER = id(3).
+// The production builder seeds the administrator = id(1) (the sole seeded `ADMIN` member),
+// DOM_PAUSER = id(2), DOM_MANAGER = id(3).
 fn administrator() -> AccountId {
     test_account_id(1)
 }
@@ -277,7 +278,7 @@ fn the_xreserve_library_exports_no_pause_procedure() -> Result<()> {
 /// procedure at all, and the capability had quietly fallen back to the administrator role — which
 /// the administrator does hold.
 #[tokio::test]
-async fn owner_has_no_pause_path() -> Result<()> {
+async fn administrator_has_no_pause_path() -> Result<()> {
     let gm = production_pause_fixture()?;
     let account = faucet_account(&gm.harness);
 
@@ -295,7 +296,7 @@ async fn owner_has_no_pause_path() -> Result<()> {
 /// unpause note fails with the EXACT role error and the faucet STAYS paused — an administrator who could
 /// unpause would visibly clear the flag.
 #[tokio::test]
-async fn owner_has_no_unpause_path() -> Result<()> {
+async fn administrator_has_no_unpause_path() -> Result<()> {
     let gm = production_pause_fixture()?;
     let account = faucet_account(&gm.harness);
 

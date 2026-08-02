@@ -152,8 +152,8 @@ per the round-3 build log).
   marked, one public P2ID note); fee != 0: `stock_mint_note_rejects_a_nonzero_fee`; over-cap:
   `mint_policy_e2e.rs::mint_rejects_an_over_cap_amount`; cap-boundary ACCEPT — **restored round
   3**: `mint_accepts_at_the_exact_raised_cap_boundary`; plus the round-3 `set_max_supply` x mint
-  admin interplay: `mint_rejects_after_the_owner_lowers_max_supply_below_the_amount` and
-  `mint_accepts_after_the_owner_raises_max_supply`. NOT re-driven e2e: the deleted suite's
+  admin interplay: `mint_rejects_after_the_administrator_lowers_max_supply_below_the_amount` and
+  `mint_accepts_after_the_administrator_raises_max_supply`. NOT re-driven e2e: the deleted suite's
   near-`AssetAmount` ceiling case — the reducer's own cap boundary stays covered at the codec
   layer (`mint_scale_conformance.rs` + the `uint256_to_asset_amount` vectors).
 - **Attested-recipient extraction** (`mint_recipient_account_id.rs`) → pad guard:

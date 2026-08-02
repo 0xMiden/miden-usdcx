@@ -113,8 +113,11 @@ static IDENTIFIER_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
 ///
 /// RE-MATERIALIZED when the initializer's sender gate moved off the owner slot and onto the
 /// account-wide authority: the procedure's own root moved, and this root binds to it.
+/// RE-MATERIALIZED again when the proc's own-id derivation switched from a local byte-swap helper
+/// to the shared `miden::standards::utils::swap_u32_bytes` (behavior-identical; the callee digest
+/// moved, and this root binds transitively to it).
 pub const XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x440573e0c726f4bdade6df0de040bcbdaa08912c87e6df2da846bf050c8bd7f2";
+    "0x99b4ba0f78f1420b4bcea7c27dd6aa839b7efdfd292814ce8619a22eabc68c2e";
 
 /// The administrator-gated, init-once `identifier_init` admin note (the minimized
 /// identifier-only init: the identifier is the ONE domain-config

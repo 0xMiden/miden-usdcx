@@ -32,7 +32,8 @@ use miden_standards::account::policies::MinBurnAmount;
 use miden_testing::assert_transaction_executor_error;
 use support::*;
 
-// The seeded principals the reconciled production builder installs: owner = id(1) (Ownable2Step), and
+// The seeded principals the reconciled production builder installs: the administrator = id(1) (the
+// sole seeded `ADMIN` member), and
 // the two DOM role members DOM_PAUSER = id(2), DOM_MANAGER = id(3). A plain non-administrator is any other id.
 fn administrator() -> AccountId {
     test_account_id(1)
@@ -151,7 +152,7 @@ async fn set_min_burn_plain_non_administrator_rejects() -> Result<()> {
 }
 
 /// ADMINISTRATOR-ONLY (the seeded `DOM_PAUSER` member, who is NOT the administrator, is rejected). Proves the gate is the
-/// Ownable2Step owner specifically — a privileged role-holder gains no setter access. Doubles as the
+/// built-in `ADMIN` role specifically — a privileged role-holder gains no setter access. Doubles as the
 /// `former ATTEST_ADMIN` removal proof: id(2) held ATTEST_ADMIN pre-reconciliation and is rejected now.
 #[tokio::test]
 async fn set_min_burn_dom_pauser_non_administrator_rejects() -> Result<()> {
@@ -161,7 +162,7 @@ async fn set_min_burn_dom_pauser_non_administrator_rejects() -> Result<()> {
 /// ADMINISTRATOR-ONLY (the seeded `DOM_MANAGER` member, who is NOT the administrator, is rejected). The second DOM role,
 /// so both seeded role-holders are proven non-authorizing for the setter.
 #[tokio::test]
-async fn set_min_burn_dom_manager_non_owner_rejects() -> Result<()> {
+async fn set_min_burn_dom_manager_non_administrator_rejects() -> Result<()> {
     assert_non_administrator_rejected(dom_manager()).await
 }
 
@@ -184,7 +185,7 @@ async fn assert_non_administrator_rejected(sender: AccountId) -> Result<()> {
     Ok(())
 }
 
-// THE SETTER IS NOT PAUSE-GATED — the OWNER may set_min_burn_size while the faucet is paused
+// THE SETTER IS NOT PAUSE-GATED — the ADMINISTRATOR may set_min_burn_size while the faucet is paused
 // ================================================================================================
 
 /// After the Domain Pauser pauses the faucet (the stock `PausableManager`, role-gated), an
@@ -193,7 +194,7 @@ async fn assert_non_administrator_rejected(sender: AccountId) -> Result<()> {
 /// lands despite is_paused == true; the administrator gate still governs it (the rejection tests
 /// above prove that half).
 #[tokio::test]
-async fn set_min_burn_owner_succeeds_while_paused() -> Result<()> {
+async fn set_min_burn_administrator_succeeds_while_paused() -> Result<()> {
     let h = faucet_harness()?;
     let account = faucet(&h)?;
     const NEW_MIN: u64 = 5_000;
@@ -245,11 +246,11 @@ async fn support_replica_carries_delegation_seed() -> Result<()> {
     let account = faucet(&h)?;
 
     // The Domain Pauser's config records one member and names the Domain Manager as its admin
-    // role — that delegation is what lets the Manager rotate the Pauser without owner involvement.
-    // The Domain Manager itself records admin role 0, the built-in admin role, whose membership the
-    // builder seeds on the administrator's account. Note that this admin membership is bound to that
-    // ACCOUNT, not to whoever currently holds ownership: transferring ownership does not move it,
-    // so an administratorship handover has to re-seat the role explicitly.
+    // role — that delegation is what lets the Manager rotate the Pauser without administrator
+    // involvement. The Domain Manager itself records admin role 0, the built-in admin role, whose
+    // membership the builder seeds on the administrator's account. Note that this admin membership
+    // is bound to that ACCOUNT, so an administratorship handover has to re-seat the role explicitly
+    // (grant-new / revoke-old).
     let pauser_config = account.storage().get_map_item(
         RoleBasedAccessControl::role_config_slot(),
         StorageMapKey::new(role_config_key(&pauser)),
@@ -277,7 +278,7 @@ async fn support_replica_carries_delegation_seed() -> Result<()> {
     assert_eq!(
         manager_config[1],
         Felt::ZERO,
-        "DOM_MANAGER admin_role == 0 (resolves to ADMIN = the seeded owner account)"
+        "DOM_MANAGER admin_role == 0 (resolves to ADMIN = the seeded administrator account)"
     );
 
     // role_membership[{0,<role>,holder.suffix,holder.prefix}] = [1,0,0,0] for each DOM holder.

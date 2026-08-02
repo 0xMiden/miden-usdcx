@@ -57,7 +57,8 @@ pub const NONCE_BYTE_OFF: usize = 51 * 4;
 pub const INTENT_SCHEME: u16 = 4;
 pub const ATTESTATION_SCHEME: u16 = 5;
 
-/// The production builder's Ownable2Step owner (`test_account_id(1)` across every fixture).
+/// The production builder's administrator (`test_account_id(1)` across every fixture): the sole
+/// seeded `ADMIN` member.
 pub fn administrator() -> AccountId {
     test_account_id(1)
 }

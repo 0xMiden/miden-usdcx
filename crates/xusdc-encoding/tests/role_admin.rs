@@ -769,10 +769,10 @@ async fn administrator_can_still_grant_pauser() -> Result<()> {
 /// member) grants itself DOM_MANAGER — DOM_PAUSER's effective admin — then, so
 /// empowered, REVOKES DOM_PAUSER from the seeded pauser id(2); that pauser's pause is then
 /// REJECTED with the exact role error and `is_paused` never flips. The (seeded-ADMIN-member)
-/// owner therefore retains Circle's backstop ability to strip a live pauser, one hop longer than
+/// administrator therefore retains Circle's backstop ability to strip a live pauser, one hop longer than
 /// (the membership is bound to the account, so an administratorship handover has to re-seat it).
 #[tokio::test]
-async fn owner_can_still_revoke_pauser() -> Result<()> {
+async fn administrator_can_still_revoke_pauser() -> Result<()> {
     let gm = production_faucet()?;
     let account = faucet_account(&gm.harness);
 
@@ -800,7 +800,7 @@ async fn owner_can_still_revoke_pauser() -> Result<()> {
         43,
     )
     .await
-    .expect("the DOM_MANAGER-holding owner revokes the seeded pauser's DOM_PAUSER");
+    .expect("the DOM_MANAGER-holding administrator revokes the seeded pauser's DOM_PAUSER");
     evolved.apply_patch(revoked.account_patch())?;
 
     // The REAL loss of authority: the revoked pauser's pause is rejected and is_paused stays 0.
@@ -817,9 +817,9 @@ async fn owner_can_still_revoke_pauser() -> Result<()> {
 /// The backstop's OTHER lever (v16, additive): the administrator (ADMIN member) can CUT the delegation
 /// chain outright — revoking DOM_MANAGER from the seeded manager id(3) leaves that holder unable
 /// to administer DOM_PAUSER at all (the exact role-admin error). Complements
-/// [`owner_can_still_revoke_pauser`], which strips an existing pauser directly.
+/// [`administrator_can_still_revoke_pauser`], which strips an existing pauser directly.
 #[tokio::test]
-async fn owner_can_revoke_dom_manager_cutting_the_delegation_chain() -> Result<()> {
+async fn administrator_can_revoke_dom_manager_cutting_the_delegation_chain() -> Result<()> {
     let gm = production_faucet()?;
     let account = faucet_account(&gm.harness);
 

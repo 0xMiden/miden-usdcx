@@ -295,7 +295,7 @@ async fn mint_rejects_an_over_cap_amount() -> Result<()> {
 /// amount BEFORE the mint; the attested mint then rejects in the stock cap discipline,
 /// fail-closed (no nonce burned, no supply raised).
 #[tokio::test]
-async fn mint_rejects_after_the_owner_lowers_max_supply_below_the_amount() -> Result<()> {
+async fn mint_rejects_after_the_administrator_lowers_max_supply_below_the_amount() -> Result<()> {
     let mut pf = fixture_with(MAX_SUPPLY, |_, faucet_id| {
         vec![XReserveSetMaxSupplyNote::create(
             administrator(),
@@ -345,7 +345,7 @@ async fn mint_accepts_at_the_exact_raised_cap_boundary() -> Result<()> {
 /// cap binds); after the administrator's raise note lands, a fresh-nonce mint of the SAME amount
 /// succeeds — the runtime raise is what unlocks the mint.
 #[tokio::test]
-async fn mint_accepts_after_the_owner_raises_max_supply() -> Result<()> {
+async fn mint_accepts_after_the_administrator_raises_max_supply() -> Result<()> {
     let mut pf = fixture_with(MINT_AMOUNT - 1, |_, faucet_id| {
         vec![XReserveSetMaxSupplyNote::create(
             administrator(),

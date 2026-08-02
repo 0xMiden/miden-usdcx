@@ -145,7 +145,7 @@ fn production_build_gates_mint_on_the_attestation_policy() -> Result<()> {
 
 /// An OWNER-sent `set_attester(K, true)` note succeeds and the allowlist entry lands.
 #[tokio::test]
-async fn set_attester_owner_succeeds() -> Result<()> {
+async fn set_attester_administrator_succeeds() -> Result<()> {
     let gm = guarded_faucet()?;
     let account = faucet_account(&gm.harness);
     let commitment = Word::from([10u32, 11, 12, 13]);
@@ -181,7 +181,7 @@ async fn set_attester_owner_succeeds() -> Result<()> {
 
 /// Shared ADMIN-only assertion for `set_attester`: a `sender` without the administrator role traps the EXACT
 /// ERR_SENDER_LACKS_ROLE AND leaves the allowlist entry for the attempted key EMPTY (no partial write).
-async fn assert_set_attester_non_owner_rejected(sender: AccountId, key_seed: u32) -> Result<()> {
+async fn assert_set_attester_non_administrator_rejected(sender: AccountId, key_seed: u32) -> Result<()> {
     let gm = guarded_faucet()?;
     let account = faucet_account(&gm.harness);
     let commitment = Word::from([key_seed, key_seed + 1, key_seed + 2, key_seed + 3]);
@@ -202,15 +202,15 @@ async fn assert_set_attester_non_owner_rejected(sender: AccountId, key_seed: u32
 /// (proving the removed role grants no access) AND privileged without being an administrator — is
 /// rejected from `set_attester`.
 #[tokio::test]
-async fn set_attester_former_admin_dom_pauser_non_owner_rejects() -> Result<()> {
-    assert_set_attester_non_owner_rejected(dom_pauser(), 20).await
+async fn set_attester_former_admin_dom_pauser_non_administrator_rejects() -> Result<()> {
+    assert_set_attester_non_administrator_rejected(dom_pauser(), 20).await
 }
 
 /// ADMIN-only: the seeded DOM_MANAGER holder id(3) — privileged, but not an administrator — is
 /// rejected from `set_attester` (completing the administrator-only cross-product for this setter).
 #[tokio::test]
-async fn set_attester_dom_manager_non_owner_rejects() -> Result<()> {
-    assert_set_attester_non_owner_rejected(dom_manager(), 30).await
+async fn set_attester_dom_manager_non_administrator_rejects() -> Result<()> {
+    assert_set_attester_non_administrator_rejected(dom_manager(), 30).await
 }
 
 // THE SETTER IS NOT PAUSE-GATED — the OWNER may set_attester while the faucet is paused
@@ -222,7 +222,7 @@ async fn set_attester_dom_manager_non_owner_rejects() -> Result<()> {
 /// is needed. The enabled marker lands despite is_paused == true. The administrator gate still
 /// governs it — the rejection tests above prove that half.
 #[tokio::test]
-async fn set_attester_owner_succeeds_while_paused() -> Result<()> {
+async fn set_attester_administrator_succeeds_while_paused() -> Result<()> {
     let gm = guarded_faucet()?;
     let account = faucet_account(&gm.harness);
     let commitment = Word::from([1u32, 2, 3, 4]);

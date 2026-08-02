@@ -181,7 +181,10 @@ async fn set_attester_administrator_succeeds() -> Result<()> {
 
 /// Shared ADMIN-only assertion for `set_attester`: a `sender` without the administrator role traps the EXACT
 /// ERR_SENDER_LACKS_ROLE AND leaves the allowlist entry for the attempted key EMPTY (no partial write).
-async fn assert_set_attester_non_administrator_rejected(sender: AccountId, key_seed: u32) -> Result<()> {
+async fn assert_set_attester_non_administrator_rejected(
+    sender: AccountId,
+    key_seed: u32,
+) -> Result<()> {
     let gm = guarded_faucet()?;
     let account = faucet_account(&gm.harness);
     let commitment = Word::from([key_seed, key_seed + 1, key_seed + 2, key_seed + 3]);

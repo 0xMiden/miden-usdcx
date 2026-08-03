@@ -29,7 +29,6 @@
 #   effects.
 
 use miden::protocol::active_account
-use miden::standards::assets::asset_amount
 use miden::standards::utils
 use miden::core::math::u128
 use miden::core::word
@@ -50,7 +49,8 @@ pub const USED_NONCES_SLOT = word("xusdc::xreserve::nonce_registry::used_nonces"
 # The uint256->AssetAmount decimal scale.
 # Circle's on-wire deposit `amount` is denominated in 6-decimal units, just like Miden,
 # so the two denominations coincide and no rescale applies. The cap/scale/dust decision
-# stays OPEN, pending Circle confirmation.
+# stays OPEN, pending Circle confirmation. The maxFee and fee gates in assert_mint_amounts
+# assume the scale-0 identity outright — revisit both if this constant ever changes.
 const DEPOSIT_SCALE_EXP = 0
 
 # ERRORS
@@ -132,8 +132,8 @@ end
 #! `amount` (felt[2..9]) and `maxFee` (felt[43..50]) come from the staged preimage; `feeAmount`
 #! does not travel in the intent at all and lives wherever the caller staged it. The amount
 #! goes through the encoding library's witness verifier against the `amount_y` claim at the
-#! faucet's own `DEPOSIT_SCALE_EXP`; the maxFee bound is proven division-free by algebraic
-#! equivalence; the feeAmount must be zero verbatim on the wire.
+#! faucet's own `DEPOSIT_SCALE_EXP`; the maxFee bound is a plain u128 compare at the scale-0
+#! identity; the feeAmount must be zero verbatim on the wire.
 #!
 #! Inputs:  [intent_ptr, fee_amount_ptr, amount_y]
 #! Outputs: []
@@ -172,12 +172,8 @@ pub proc assert_mint_amounts
     exec.encoding::verify_uint256_to_asset_amount
     # => [intent_ptr, fee_amount_ptr, amount_y]
 
-    # step 2: assert the amount covers the depositor's fee ceiling — floor(maxfee/10^s) must
-    # not exceed amount_y. rather than reducing maxfee (a division), the same inequality is
-    # checked multiplied out: it holds exactly when maxfee < (amount_y+1)*10^s, since any
-    # maxfee at least that large would reduce above amount_y. the verify above bounds
-    # amount_y, so the +1 cannot wrap; at the shipped scale-0 identity the bound is simply
-    # maxfee < amount_y+1, i.e. maxfee <= amount_y as a u128
+    # step 2: assert the amount covers the depositor's fee ceiling. at the scale-0 identity
+    # maxfee reduces to itself, so the check is a plain maxfee <= amount_y in u128 limb space
     push.MAX_FEE_FELT_OFF add
     # => [intent_maxfee_ptr, fee_amount_ptr, amount_y]
 
@@ -187,21 +183,14 @@ pub proc assert_mint_amounts
     exec.to_u128_limbs
     # => [MAXFEE_U128, fee_amount_ptr, amount_y]
 
-    movup.5 add.1
-    # => [amount_y+1, MAXFEE_U128, fee_amount_ptr]
+    movup.5 u32split
+    # => [amount_lo, amount_hi, MAXFEE_U128, fee_amount_ptr]
 
-    push.DEPOSIT_SCALE_EXP swap
-    # => [amount_y+1, scale_exp, MAXFEE_U128, fee_amount_ptr]
+    push.0.0 movup.3 movup.3
+    # => [AMOUNT_U128, MAXFEE_U128, fee_amount_ptr]
 
-    exec.asset_amount::scale_asset_amount_to_u256
-    # => [BOUND_LO, BOUND_HI, MAXFEE_U128, fee_amount_ptr]
-
-    # the u256 high word is provably zero (the bound is below 2^123)
-    swapw dropw
-    # => [BOUND_LO, MAXFEE_U128, fee_amount_ptr]
-
-    exec.u128::lt
-    # => [is_maxfee_lt_bound, fee_amount_ptr]
+    exec.u128::lte
+    # => [is_maxfee_lte_amount, fee_amount_ptr]
 
     assert.err=ERR_XRESERVE_AMOUNT_BELOW_FEE
     # => [fee_amount_ptr]

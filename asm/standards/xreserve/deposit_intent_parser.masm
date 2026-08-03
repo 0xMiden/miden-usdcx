@@ -323,7 +323,7 @@ proc validate_mint_amounts
     # => [intent_amount_ptr, scale_exp, amount_y, intent_ptr, fee_amount_ptr, amount_y]
 
     exec.utils::mem_load_double_word_unaligned swapw
-    # => [U_UPPER, U_LOWER, scale_exp, amount_y, intent_ptr, fee_amount_ptr, amount_y]
+    # => [U_LO128, U_HI128, scale_exp, amount_y, intent_ptr, fee_amount_ptr, amount_y]
 
     exec.encoding::verify_uint256_to_asset_amount
     # => [intent_ptr, fee_amount_ptr, amount_y]
@@ -333,7 +333,7 @@ proc validate_mint_amounts
     # => [intent_maxfee_ptr, fee_amount_ptr, amount_y]
 
     exec.utils::mem_load_double_word_unaligned swapw
-    # => [MAXFEE_UPPER, MAXFEE_LOWER, fee_amount_ptr, amount_y]
+    # => [MAXFEE_LO128, MAXFEE_HI128, fee_amount_ptr, amount_y]
 
     exec.to_u128_limbs
     # => [MAXFEE_U128, fee_amount_ptr, amount_y]
@@ -457,22 +457,22 @@ end
 
 #! Normalizes a staged uint256 to its numerically-low half as u128 little-endian u32 limbs.
 #!
-#! Guards every limb as a u32, asserts the numerically high half (U_LOWER, wire bytes 0..16)
+#! Guards every limb as a u32, asserts the high half (U_HI128, wire bytes 0..16)
 #! is zero, then byte-swaps and reverses the low half into little-endian u128 limb order.
 #! Works with any trailing elements beneath the two words.
 #!
-#! Inputs:  [U_UPPER, U_LOWER]
+#! Inputs:  [U_LO128, U_HI128]
 #! Outputs: [x0, x1, x2, x3]
 #!
 #! Where:
-#! - U_UPPER / U_LOWER are the field's positionally upper / lower four u32-LE-packed limbs
-#!   (wire bytes 16..32 / 0..16), each element-0 on top.
+#! - U_LO128 / U_HI128 are the field's numerically low / high 128-bit halves, held as four
+#!   u32-LE-packed limbs each (wire bytes 16..32 / 0..16), each element-0 on top.
 #! - x0..x3 are the value's u32 limbs in little-endian order (x = x3*2^96 + x2*2^64 +
 #!   x1*2^32 + x0).
 #!
 #! Panics if:
 #! - a limb is not a valid u32 (ERR_FELT_OUT_OF_FIELD).
-#! - any limb of the numerically high half is nonzero (ERR_X_TOO_LARGE).
+#! - any limb of the high half is nonzero (ERR_X_TOO_LARGE).
 #!
 #! Invocation: exec
 proc to_u128_limbs
@@ -480,13 +480,13 @@ proc to_u128_limbs
     u32assertw.err=ERR_FELT_OUT_OF_FIELD
     swapw
     u32assertw.err=ERR_FELT_OUT_OF_FIELD
-    # => [U_LOWER, U_UPPER]
+    # => [U_HI128, U_LO128]
 
     exec.word::eqz
     assert.err=ERR_X_TOO_LARGE
-    # => [U_UPPER]
+    # => [U_LO128]
 
-    # byte-swap the numerically-low-half limbs to numeric order
+    # byte-swap the low-half limbs to numeric order
     repeat.4
         exec.utils::swap_u32_bytes movdn.3
     end

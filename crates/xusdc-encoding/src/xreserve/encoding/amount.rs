@@ -3,8 +3,8 @@
 //! Circle states deposit amounts as 256-bit values in the source token's smallest units; a Miden
 //! fungible asset amount is a `u64` bounded by `AssetAmount::MAX`. Every mint therefore has to
 //! cross that gap, and this is the only place it happens. The MASM faucet performs the identical
-//! reduction on-chain, so the two implementations are held together by cross-language vectors —
-//! a disagreement here would mean the relayer and the faucet mint different numbers.
+//! reduction on-chain; a disagreement between the two would mean the relayer and the faucet mint
+//! different numbers.
 //!
 //! The reduction is deliberately conservative at each step. The value arrives as eight
 //! little-endian-packed 32-bit limbs of a big-endian wire field, so the first thing checked is
@@ -24,12 +24,12 @@ use super::error::EncodingError;
 
 /// The scale exponent bound (scale_exp = EVM decimals − Miden decimals, 0..=18). The MASM
 /// side enforces the same bound inside the linked standards `pow10` ("maximum scaling factor
-/// is 18"), pinned functionally by the scale-overflow vector rather than a constant-parity row.
+/// is 18").
 pub const MAX_SCALE_EXP: u32 = 18;
 
-/// The single reduction core shared by all three public routines (≤ 1 implementation of
-/// the owned mechanic): byte-swap → high-4-zero → low-4 u128 → floor-divide by 10^scale_exp →
-/// (y, z). The AssetAmount cap is applied by the callers via [`AssetAmount::new`].
+/// The single reduction core shared by all three public routines: byte-swap → high-4-zero →
+/// low-4 u128 → floor-divide by 10^scale_exp → (y, z). The AssetAmount cap is applied by the
+/// callers via [`AssetAmount::new`].
 fn reduce(le_limbs: [u32; 8], scale_exp: u32) -> Result<(u64, u128), EncodingError> {
     // the numerically high half — the positionally LOWER four limbs, wire bytes 0..16 of the
     // big-endian value — must be zero; a limb byte-swaps to zero iff it is zero, so the raw
@@ -46,7 +46,7 @@ fn reduce(le_limbs: [u32; 8], scale_exp: u32) -> Result<(u64, u128), EncodingErr
         x = (x << 32) | u128::from(limb.swap_bytes());
     }
 
-    // y = floor(x / 10^scale_exp); the divisor is bounded first (TV-AMT-7)
+    // y = floor(x / 10^scale_exp); the divisor is bounded first
     if scale_exp > MAX_SCALE_EXP {
         return Err(EncodingError::ScaleExpTooLarge);
     }
@@ -83,7 +83,7 @@ pub fn reduced_ge(a: [u32; 8], b: [u32; 8], scale_exp: u32) -> Result<bool, Enco
 }
 
 /// The non-zero division remainder (dust), surfaced so the caller can apply the
-/// dust policy (`REQUIRES CIRCLE CONFIRMATION` — not resolved here).
+/// dust policy, which `REQUIRES CIRCLE CONFIRMATION`.
 pub fn uint256_to_asset_amount_with_dust(
     le_limbs: [u32; 8],
     scale_exp: u32,

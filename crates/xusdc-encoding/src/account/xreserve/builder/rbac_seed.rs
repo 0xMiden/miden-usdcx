@@ -1,6 +1,5 @@
 //! `seeded_dom_roles_rbac` — hand-builds the seeded `RoleBasedAccessControl`
-//! component for the xUSDC faucet, moved verbatim from the builder module
-//! to satisfy the file-size gate.
+//! component for the xUSDC faucet.
 
 use miden_protocol::account::{
     AccountComponent, AccountId, RoleSymbol, StorageMap, StorageMapKey, StorageSlot,
@@ -34,19 +33,17 @@ use super::{BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 /// a grant of `ADMIN` to the incoming account and a revoke from the outgoing one, through that same
 /// note.
 ///
-/// Both stock RBAC maps are direct-seeded at build, consistent with the stock procs' post-state
-/// for a single first grant per role — `role_membership[{0, <role>, holder.suffix,
-/// holder.prefix}] = [1,0,0,0]` AND `role_config[{0,0,0,DOM_PAUSER}] = [member_count=1,
-/// admin_role=DOM_MANAGER, 0, 0]` (the seeded delegation: the Domain Manager rotates the Pauser)
-/// while `role_config[{0,0,0,DOM_MANAGER}] = [1, 0, 0, 0]` and `role_config[{0,0,0,ADMIN}] =
-/// [1, 0, 0, 0]` (admin_role = 0 → resolves to the built-in `ADMIN`; `ADMIN` is thereby
-/// self-administered). It reuses the stock RBAC code + slot names + component metadata verbatim
-/// (NO custom RBAC logic); only the maps are non-empty (the stock `From<RoleBasedAccessControl>`
-/// seeds them empty). The key encodings mirror the stock readers. `grant_role` is NOT used (it
-/// would add a tx). Seed correctness is locked by the `shipped_delegation_reads_back` +
-/// rotation-seam + ADMIN-gating tests, not by construction (`AccountComponent::new` does not
-/// validate slots against the metadata schema). Construction failures are invariants, so this
-/// mirrors the stock `.expect()` pattern.
+/// Both stock RBAC maps are direct-seeded at build, matching the stock procs' post-state for a
+/// single first grant per role — `role_membership[{0, <role>, holder.suffix, holder.prefix}] =
+/// [1,0,0,0]` and `role_config[{0,0,0,DOM_PAUSER}] = [member_count=1, admin_role=DOM_MANAGER, 0, 0]`
+/// (the seeded delegation: the Domain Manager rotates the Pauser), while
+/// `role_config[{0,0,0,DOM_MANAGER}]` and `role_config[{0,0,0,ADMIN}]` are `[1, 0, 0, 0]`
+/// (admin_role = 0 → resolves to the built-in `ADMIN`, so `ADMIN` is self-administered). It reuses
+/// the stock RBAC code, slot names, and component metadata verbatim, and only the maps differ from
+/// the stock `From<RoleBasedAccessControl>` impl, which seeds them empty. Note that
+/// `AccountComponent::new` does not validate slots against the metadata schema, so a malformed seed
+/// would not be caught here. Construction failures are invariants, so this mirrors the stock
+/// `.expect()` pattern.
 pub(super) fn seeded_dom_roles_rbac(
     owner: AccountId,
     pauser_holder: AccountId,

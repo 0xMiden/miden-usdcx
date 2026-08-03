@@ -4,11 +4,11 @@
 # xReserveAttesters allowlist — the write side of the allowlist that attestation_verify.masm
 # reads at mint time. Reuses the standard access primitives:
 # authority::assert_authorized (the account-wide Authority gate) + native_account::set_map_item
-# (the write). No custom owner/RBAC logic. Under the account's role-based authority this procedure
-# carries no role assignment of its own, so the gate resolves to the built-in ADMIN role, whose sole
-# seeded member is the bootstrap administrator's account — the same identity that held the
-# capability under the earlier owner-based authority. The setter is intentionally NOT pause-gated
-# (matching Circle's onlyOwner model).
+# (the write). Under the account's role-based authority this procedure carries no role assignment
+# of its own, so the gate resolves to the built-in ADMIN role, whose sole seeded member is the
+# bootstrap administrator's account — the same identity that held the capability under the
+# earlier owner-based authority. The setter is NOT pause-gated, matching Circle's onlyOwner model,
+# so the administrator can disable a compromised attester while the faucet is paused.
 
 use miden::protocol::native_account
 use miden::standards::access::authority
@@ -16,15 +16,16 @@ use miden::standards::access::authority
 # CONSTANTS
 # =================================================================================================
 
-# The xReserveAttesters allowlist StorageMap slot — byte-identical to the slot const in
-# attestation_verify.masm (the mint-time read path keys the SAME slot). The name string is the single
-# source of truth for the slot id; the Rust XRESERVE_ATTESTERS_SLOT_LABEL binds the identical string.
+# The xReserveAttesters allowlist StorageMap slot.
 pub const XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xreserve_attesters")
 
-# The non-empty enabled marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1
-# (the read path asserts only that the stored value is non-empty). enabled = 0 writes
-# EMPTY_WORD, which the read path treats as "not allowlisted".
-const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
+# The marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1 — the mint-time read
+# path admits an attester only on an exact match against it.
+pub const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
+
+# The marker written when enabled = 0. Equal to EMPTY_WORD, so a disabled row is indistinguishable
+# from an absent one on the read path.
+const ATTESTER_DISABLED_MARKER = [0, 0, 0, 0]
 
 # PUBLIC INTERFACE
 # =================================================================================================
@@ -43,41 +44,27 @@ const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
 #! Panics if:
 #! - the note sender does not hold the role the account's authority requires for this procedure
 #!   (authority::assert_authorized -> rbac::assert_sender_is_admin, ERR_SENDER_LACKS_ROLE).
-#! - `enabled` is not a boolean (the `if.true` binary constraint).
+#! - `enabled` is not a boolean (the `cdropw` binary constraint).
 #!
 #! Invocation: call
-@locals(4)
 @account_procedure
 pub proc set_attester
-    # gate: the account-wide authority (sender-based) ONLY —
-    # intentionally NOT pause-gated (Circle's onlyOwner model), so
-    # the administrator may disable a compromised attester while the
-    # faucet is paused. reads account storage and is
+    # gate on the account-wide authority (sender-based) only. reads account storage and is
     # operand-stack-neutral.
     exec.authority::assert_authorized
     # => [PK_COMMITMENT, enabled, pad(11)]
 
-    # store the caller-supplied commitment (the map key) into loc[0..4], trusted verbatim. The
-    # `_le` store leaves the word on the stack, so drop the copy.
-    loc_storew_le.0 dropw
-    # => [enabled, pad(11)]
+    push.ATTESTER_DISABLED_MARKER push.ATTESTER_ENABLED_MARKER movup.12
+    # => [enabled, ENABLED_MARKER, DISABLED_MARKER, PK_COMMITMENT, pad(11)]
 
-    # the written VALUE = enabled ? ATTESTER_ENABLED_MARKER : EMPTY_WORD. `if.true` requires
-    # `enabled` to be boolean, so a non-bool can never write a non-canonical marker.
-    if.true
-        push.ATTESTER_ENABLED_MARKER
-    else
-        padw
-    end
-    # => [VALUE, pad(11)]
+    # enabled = 1 keeps ENABLED_MARKER, enabled = 0 keeps DISABLED_MARKER.
+    cdropw
+    # => [MARKER, PK_COMMITMENT, pad(11)]
 
-    # xReserveAttesters[PK_COMMITMENT] := VALUE.
-    padw loc_loadw_le.0
-    # => [PK_COMMITMENT, VALUE, pad(11)]
+    swapw push.XRESERVE_ATTESTERS_SLOT[0..2]
+    # => [slot_id_suffix, slot_id_prefix, PK_COMMITMENT, MARKER, pad(11)]
 
-    push.XRESERVE_ATTESTERS_SLOT[0..2]
-    # => [slot_id_suffix, slot_id_prefix, PK_COMMITMENT, VALUE, pad(11)]
-
+    # xReserveAttesters[PK_COMMITMENT] = MARKER.
     exec.native_account::set_map_item dropw
     # => [pad(16)]
 end

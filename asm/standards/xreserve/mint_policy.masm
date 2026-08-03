@@ -32,16 +32,14 @@ use {
 # =================================================================================================
 
 # The mint-note DepositIntent attachment scheme (>= 4 — clear of the reserved "none"
-# value 1 and the standard values 2 `NetworkAccountTarget` / 3 `Pswap`). The Rust constructor
-# declares the same value (cross-language constant parity via constant_parity.rs).
+# value 1 and the standard values 2 `NetworkAccountTarget` / 3 `Pswap`).
 const XUSDC_MINT_INTENT_ATTACHMENT_SCHEME = 4
 
 # The mint-note attestation attachment scheme (see the intent scheme above).
 const XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME = 5
 
 # The attestation attachment word count: [feeAmount(8), pubkey(16), signature(17), pad(3)]
-# = 44 felts = 11 words, matching the frozen advice contract order (the pubkey is the
-# 16-felt affine form).
+# = 44 felts = 11 words (the pubkey is the 16-felt affine form).
 const XUSDC_MINT_ATTESTATION_NUM_WORDS = 11
 
 # The 60-felt DepositIntent header packed into words (60 / 4): the attachment word-count floor
@@ -65,10 +63,8 @@ const P2ID_NUM_STORAGE_ITEMS = 2
 # flips it). Whether the marker should carry more than a plain flag is OPEN, pending Circle confirmation.
 const NONCE_USED_MARKER = [1, 0, 0, 0]
 
-# The canonical P2ID note script root (miden_standards::note::P2idNote::script_root), consumed by
-# the expected-RECIPIENT recipe so the attested output note is identifiable as P2ID. Array-literal
-# const (not parity-parsed, mirroring NONCE_USED_MARKER); functionally pinned by the composition
-# happy tests (the emitted recipient note's script root == P2idNote::script_root()).
+# The canonical P2ID note script root, consumed by the expected-RECIPIENT recipe so the attested
+# output note is identifiable as P2ID.
 const P2ID_SCRIPT_ROOT = [7131697192369665042, 13614976149584716721, 15020972229364874097, 1084006998777425639]
 
 # `check_policy` locals: the parked note-supplied interface, the verify scratch, and the staged
@@ -92,7 +88,7 @@ const NONCE_KEY_LOC = 72
 const P2ID_TARGET_ID_SUFFIX_LOC = 76
 const P2ID_TARGET_ID_PREFIX_LOC = 77
 
-const HOOK_DATA_LEN_LOC = 80
+const HOOK_DATA_LEN_BYTES_LOC = 80
 const LEN_FELTS_LOC = 81
 const ATTESTED_AMOUNT_LOC = 82
 
@@ -153,11 +149,10 @@ const ERR_XRESERVE_MINT_TAG_MISMATCH = "mint note tag does not match the atteste
 const ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC = "mint note output note type must be public"
 
 # Recipient AccountId extraction (extract_recipient_account_id): the pad check of the right-aligned
-# AccountId-in-bytes32 layout (the packaging is OPEN, pending Circle confirmation); the limb and
+# AccountId-in-bytes32 layout (the packaging is OPEN, pending Circle confirmation). The limb and
 # canonical-range rejects surface the standards eth::build_felt error constants, and the
 # suffix-shape and zero-version rejects surface the protocol account_id::validate_structure
 # ERR_ACCOUNT_ID_* constants directly.
-# Parity-pinned against support::SHELL_ERR_TABLE + SHELL_ERRORS_DECLARED (constant_parity.rs).
 const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient address pad is not zero"
 
 # PUBLIC INTERFACE
@@ -212,7 +207,7 @@ const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient add
 #!     - 52..72: signature(17) + pad(3)
 #! - 72..76: nonce KEY (usedNonces storage-map key == the attested output-note serial)
 #! - 76..80: P2ID note-storage region [target_id_suffix, target_id_prefix]
-#! - 80: hook_data_len
+#! - 80: hook_data_len_bytes
 #! - 81: len_felts
 #! - 82: reduced attested amount
 #! - 84..1108: the hash-verified DepositIntent preimage (MAX_ATTACHMENT_WORDS * 4 felts)
@@ -275,24 +270,12 @@ pub proc check_policy
 
     # derive the exact felt length from the embedded hookDataLen (u32-LE packed; hash-committed
     # content, so u32-guard before the byte-swap)
-    locaddr.INTENT_HOOK_DATA_LEN_LOC mem_load
-    # => [hook_len_packed, num_words, attestation_idx]
-
-    u32assert.err=ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB
+    locaddr.INTENT_HOOK_DATA_LEN_LOC mem_load u32assert.err=ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB
     exec.utils::swap_u32_bytes
-    # => [hook_data_len, num_words, attestation_idx]
+    # => [hook_data_len_bytes, num_words, attestation_idx]
 
-    # len_felts = 60 + ceil(hook_data_len / 4), the parser's own length relation
-    dup u32mod.4 neq.0
-    # => [has_rem, hook_data_len, num_words, attestation_idx]
-
-    dup.1 u32div.4 add
-    # => [ceil_hook_felts, hook_data_len, num_words, attestation_idx]
-
-    push.DEPOSIT_INTENT_HEADER_FELTS add
-    # => [len_felts, hook_data_len, num_words, attestation_idx]
-
-    loc_store.LEN_FELTS_LOC drop
+    # len_felts = the 60-felt header plus the packed hookData felts, the parser's own relation
+    exec.encoding::num_bytes_to_num_felts push.DEPOSIT_INTENT_HEADER_FELTS add loc_store.LEN_FELTS_LOC
     # => [num_words, attestation_idx]
 
     # bind the hash-committed word count to the embedded claim: num_words == ceil(len_felts / 4)
@@ -321,32 +304,31 @@ pub proc check_policy
     # ---- VERIFY (verify once); any trap aborts the whole tx -> no writes ----
 
     # deposit-intent preconditions: structural parse + domain/identifier compares; the returned
-    # hook_data_len (the same embedded field the derivation above read) feeds the keccak extent
+    # byte length (the same embedded field the derivation above read) feeds the keccak extent
     loc_load.LEN_FELTS_LOC locaddr.INTENT_LOC
     # => [intent_ptr, len_felts]
 
     exec.deposit_intent_parser::assert_deposit_intent
-    loc_store.HOOK_DATA_LEN_LOC
+    loc_store.HOOK_DATA_LEN_BYTES_LOC
     # => []
 
-    # amount/maxFee/feeAmount reduction + bounds (the MVP requires feeAmount == 0)
+    # amount/maxFee/feeAmount reduction + bounds (feeAmount must be zero)
     push.DEPOSIT_SCALE_EXP locaddr.ATTESTATION_FEE_AMOUNT_LOC locaddr.INTENT_LOC
     # => [intent_ptr, fee_amount_ptr, scale_exp]
 
     exec.deposit_intent_parser::assert_mint_amounts
     # => []
 
-    # nonce replay guard (assert-zero only; the SET is the accept-path write
-    # below)
+    # nonce replay guard (assert-zero only; the SET is the accept-path write below)
     locaddr.INTENT_LOC
     exec.deposit_intent_parser::assert_nonce_unused
     # => []
 
-    # attestation verify: keccak the 240 + hook_data_len payload, allowlist gate + ECDSA verify
+    # attestation verify: keccak the 240 + hookData bytes, allowlist gate + ECDSA verify
     locaddr.ATTESTATION_SIGNATURE_LOC locaddr.ATTESTATION_PUBKEY_LOC
     # => [pubkey_ptr, signature_ptr]
 
-    loc_load.HOOK_DATA_LEN_LOC push.DEPOSIT_INTENT_HEADER_FELTS mul.4 add
+    loc_load.HOOK_DATA_LEN_BYTES_LOC push.DEPOSIT_INTENT_HEADER_FELTS mul.4 add
     # => [intent_num_bytes, pubkey_ptr, signature_ptr]
 
     locaddr.INTENT_LOC
@@ -453,12 +435,10 @@ pub proc check_policy
     padw loc_loadw_le.ASSET_VALUE_LOC
     # => [ASSET_VALUE, tag, note_type, RECIPIENT]
 
-    # depth discipline: the verify pipeline's deep scratch phases pull disposable zeros from below
-    # the operand stack's 16-element floor, so the restored interface would ride ABOVE a full floor
-    # of junk instead of the dispatcher's original padding. Truncate to exactly 16 — the top 10
-    # interface elements plus 6 pad — so the policy returns at the SAME depth it was dispatched at
-    # (the region below the interface is the caller's disposable call-window padding;
-    # `mint_and_send` keeps its live state in locals).
+    # the verify pipeline's deep scratch phases pull disposable zeros from below the operand stack's
+    # 16-element floor, so the restored interface would otherwise ride above a full floor of junk
+    # instead of the dispatcher's original padding. Truncate to exactly 16 — the top 10 interface
+    # elements plus 6 pad — so the policy returns at the SAME depth it was dispatched at.
     exec.sys::truncate_stack
     # => [ASSET_VALUE, tag, note_type, RECIPIENT]
 end
@@ -521,7 +501,7 @@ proc extract_recipient_account_id
     dup.1 dup.1
     # => [suffix, prefix, suffix, prefix]
 
-    # we don't need to assert the ID version, so structural validation is sufficient
+    # the ID version does not need asserting, so structural validation is sufficient
     exec.account_id::validate_structure
     # => [suffix, prefix]
 end

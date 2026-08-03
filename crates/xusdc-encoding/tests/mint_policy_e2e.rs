@@ -58,7 +58,7 @@ async fn mint_rejects_a_non_allowlisted_attester() -> Result<()> {
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"),
+        shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY"),
     )
     .await
 }
@@ -123,7 +123,7 @@ async fn mint_rejects_a_removed_attester() -> Result<()> {
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"),
+        shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY"),
     )
     .await
 }
@@ -177,7 +177,7 @@ async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<
         &mut pf,
         note_old,
         &payload_old,
-        shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"),
+        shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY"),
     )
     .await?;
 

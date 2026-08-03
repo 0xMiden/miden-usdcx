@@ -23,7 +23,7 @@ use super::XReserveStablecoinBuilder;
 impl XReserveStablecoinBuilder {
     /// The note-script allowlist for the production faucet's `AuthNetworkAccount` auth
     /// component. It is the SINGLE SOURCE OF TRUTH — the production auth component (`Self::auth_component`)
-    /// consumes it (and the test fixtures compose through that same component), and the allowlist
+    /// consumes it, and the allowlist
     /// tripwire asserts the built account's allowlist equals it exactly. The scheme-2
     /// `NetworkAccountTarget` bind on the notes is routing-only, not a consume gate.
     ///
@@ -126,22 +126,7 @@ impl XReserveStablecoinBuilder {
     /// note-script allowlist (`Self::allowed_note_scripts`), a tx-script allowlist containing
     /// EXACTLY the one canonical `ExpirationTransactionScript::script_root()` (a ratified
     /// decision), and the provisional zero-fee configuration
-    /// ([`Self::provisional_fee_policy_manager`]). That single tx-script root is the
-    /// protocol-standard expiration bounder a network account allowlists so the ntx-builder can
-    /// bound how long a submitted tx stays valid; it is safe on an open network account because
-    /// the submitter-controlled delta only bounds the inclusion window of the submitter's own
-    /// transaction (kernel-capped at `0xFFFF` blocks) and can touch neither the account's nonce,
-    /// state, nor assets. Every OTHER tx-script is still rejected (the sole-mint-surface
-    /// posture, expressed as a one-root allowlist).
-    ///
-    /// Constructed via `AuthNetworkAccount::custom`, NEVER `new`: the default constructor
-    /// force-inserts the config-note and fee-sponsorship script roots into the note allowlist,
-    /// which would grow the 9-root set and hand the (present-but-unreachable) allowlist
-    /// mutators a runtime entry vector; `custom` inserts nothing, so the preserved allowlist
-    /// stays exact, and a tripwire test fails if a config note ever appears in it. Composed at
-    /// finalization; the value expands into the auth component plus its registered fee-policy
-    /// components (`IntoIterator`), so callers install everything with one `with_components` /
-    /// `extend`.
+    /// ([`Self::provisional_fee_policy_manager`]).
     pub fn auth_component() -> Result<AuthNetworkAccount, NetworkAccountNoteAllowlistError> {
         Ok(AuthNetworkAccount::custom(
             Self::allowed_note_scripts(),

@@ -35,22 +35,17 @@ use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::errors::standards::ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED;
-use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
+use miden_standards::note::{
+    BlocklistConfigNote, NetworkAccountTarget, NoteExecutionHint, PauseActionNote,
+};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveAcceptOwnershipNote, XReserveBlockAccountNote, XReserveGrantRoleNote,
-    XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote, XReserveSetAttesterNote,
-    XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
-    XReserveUnblockAccountNote, XReserveUnpauseNote,
+    XReserveAcceptOwnershipNote, XReserveGrantRoleNote, XReserveIdentifierInitNote,
+    XReserveRevokeRoleNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
+    XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
 };
-
-/// The exact stock role error the DOM_PAUSER gate traps (rbac.masm:50 ERR_SENDER_LACKS_ROLE).
-/// Defined per-file (as in pause_admin.rs / role_admin.rs); not exported from the shared harness.
-fn err_sender_lacks_role() -> MasmError {
-    MasmError::from_static_str("note sender does not hold the required role")
-}
 
 /// The exact stock RBAC delegation error (v0.16: rbac.masm:66 ERR_SENDER_NOT_ROLE_ADMIN — #3215
 /// re-keyed the v15 ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN and dropped its owner leg).
@@ -88,10 +83,10 @@ fn note_rng(seed: u64) -> RandomCoin {
     ]))
 }
 
-/// The shipped `set_attester` admin note, consumed against the production network-auth faucet:
-/// owner-sent SUCCEEDS and writes the attester marker at the creator-committed commitment key (the
-/// storage-param marshaling is correct); a non-owner sender PASSES network auth (the script is
-/// allowlisted) but TRAPS at the proc's owner gate — the layered-auth proof.
+/// The shipped `set_attester` admin note, consumed against the production network-auth faucet: an
+/// `ADMIN` holder SUCCEEDS and writes the attester marker at the creator-committed commitment key
+/// (the storage-param marshaling is correct); anyone else PASSES network auth (the script is
+/// allowlisted) but TRAPS at the proc's authority gate — the layered-auth proof.
 #[tokio::test]
 async fn set_attester_admin_note_owner_writes_and_nonowner_traps() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
@@ -158,7 +153,7 @@ async fn set_attester_admin_note_owner_writes_and_nonowner_traps() -> Result<()>
         .context("non-owner set_attester tx build")?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     Ok(())
 }
 
@@ -391,7 +386,7 @@ fn identifier_init_note_script_root_is_pinned() {
     );
 }
 
-// SET_MIN_BURN_SIZE (allowlist row 4) — owner-gated floor setter. The note first asserts the new
+// SET_MIN_BURN_SIZE (allowlist row 4) — ADMIN-gated floor setter. The note first asserts the new
 // floor is at least 1 (which is what makes a zero-amount burn impossible) and then calls the
 // standard `min_burn_amount::set_min_burn_amount`, which writes the standard policy's own slot
 // ================================================================================================
@@ -402,7 +397,7 @@ fn expected_min_burn() -> Word {
     scalar_word(Felt::try_from(NEW_MIN_BURN).expect("min burn within the field"))
 }
 
-/// Owner-sent set_min_burn_size PASSES auth (allowlisted) + the proc owner gate and writes
+/// An ADMIN-sent set_min_burn_size PASSES auth (allowlisted) + the proc's authority gate and writes
 /// `[new_min,0,0,0]` into the STOCK `MinBurnAmount` slot.
 #[tokio::test]
 async fn set_min_burn_size_owner_writes_slot() -> Result<()> {
@@ -438,7 +433,7 @@ async fn set_min_burn_size_owner_writes_slot() -> Result<()> {
     Ok(())
 }
 
-/// A non-owner set_min_burn_size note PASSES auth but TRAPS at the proc's owner gate.
+/// A set_min_burn_size note from a sender without ADMIN PASSES auth but TRAPS at the authority gate.
 async fn assert_set_min_burn_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
@@ -454,7 +449,7 @@ async fn assert_set_min_burn_nonowner_traps(sender: AccountId, seed: u64) -> Res
         .context("non-owner set_min_burn_size tx build")?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     Ok(())
 }
 
@@ -510,8 +505,8 @@ async fn set_min_burn_size_note_args_are_inert() -> Result<()> {
     Ok(())
 }
 
-/// The production note script's zero-floor guard: an OWNER-sent note carrying `new_min = 0` PASSES
-/// network auth (allowlisted) AND the owner gate would admit the sender, but the note-side
+/// The production note script's zero-floor guard: an ADMIN-sent note carrying `new_min = 0` PASSES
+/// network auth (allowlisted) AND the authority gate would admit the sender, but the note-side
 /// `new_min >= 1` assert fires BEFORE the stock `set_min_burn_amount` call (the stock setter
 /// itself accepts 0) — the EXACT floor error, and the STOCK slot stays at the build seed.
 #[tokio::test]
@@ -568,7 +563,7 @@ async fn pause_dom_pauser_sets_is_paused() -> Result<()> {
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
 
-    let note = XReservePauseNote::create(test_account_id(2), faucet_id, &mut note_rng(50))
+    let note = stock_pause_note(test_account_id(2), faucet_id, 50)
         .context("building the DOM_PAUSER pause note")?;
     let tx = chain
         .build_transaction(faucet_id)
@@ -593,8 +588,8 @@ async fn assert_pause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<()
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReservePauseNote::create(sender, faucet_id, &mut note_rng(seed))
-        .context("building the non-pauser pause note")?;
+    let note =
+        stock_pause_note(sender, faucet_id, seed).context("building the non-pauser pause note")?;
     let result = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
@@ -624,7 +619,7 @@ async fn pause_note_args_are_inert() -> Result<()> {
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
 
-    let note = XReservePauseNote::create(test_account_id(2), faucet_id, &mut note_rng(53))
+    let note = stock_pause_note(test_account_id(2), faucet_id, 53)
         .context("building the DOM_PAUSER pause note")?;
     let bogus_args = Word::from([5u32, 5, 5, 5]);
     let tx = chain
@@ -644,43 +639,37 @@ async fn pause_note_args_are_inert() -> Result<()> {
     Ok(())
 }
 
-/// masm-rust-constant-parity for the pause note (the failure prints the actual hex).
-#[test]
-fn pause_note_script_root_is_pinned() {
-    let root = XReservePauseNote::script_root();
-    assert_eq!(
-        root,
-        XReservePauseNote::pinned_script_root(),
-        "masm-rust-constant-parity: pause note-script root == the pinned constant (actual = {})",
-        root.to_hex(),
-    );
-}
-
-/// The compiled block-account note script matches its pinned root constant.
+/// The standard pause-action note's script root, pinned.
 ///
-/// The pin binds transitively to the digest of `blocklist_admin::block_account`, which the note
-/// calls, so editing either the note or the procedure changes the root and fails here — forcing the
-/// re-pin to be a deliberate act rather than a silent drift between the Rust constant and the MASM.
+/// Pause administration no longer ships a faucet-owned note script, so there is no MASM digest to
+/// bind to — but the root is still a load-bearing allowlist entry, and a protocol bump that changed
+/// the standard script would silently swap what the faucet admits. Pinning the root makes that a
+/// deliberate re-pin instead of a quiet drift.
+const PAUSE_ACTION_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0xe2e4588e0d7a76ad53817669c10b7e7d149d501f5bb6148687f587f59c06b35f";
+
+/// The standard blocklist-config note's script root, pinned for the same reason.
+const BLOCKLIST_CONFIG_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0x886d61a0c638ad270aa602b0d2d03b6a5d5f51772b6408cf102c032452304471";
+
 #[test]
-fn block_account_note_script_root_is_pinned() {
-    let root = XReserveBlockAccountNote::script_root();
+fn stock_pause_action_note_script_root_is_pinned() {
+    let root = PauseActionNote::script_root();
     assert_eq!(
-        root,
-        XReserveBlockAccountNote::pinned_script_root(),
-        "masm-rust-constant-parity: block_account note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
+        PAUSE_ACTION_NOTE_SCRIPT_ROOT_HEX,
+        "the standard pause-action note script root moved; the allowlist admits this exact root, so          a protocol bump that changes it must be re-pinned deliberately (actual = {})",
         root.to_hex(),
     );
 }
 
-/// The compiled unblock-account note script matches its pinned root constant, binding transitively
-/// to the digest of `blocklist_admin::unblock_account` as above.
 #[test]
-fn unblock_account_note_script_root_is_pinned() {
-    let root = XReserveUnblockAccountNote::script_root();
+fn stock_blocklist_config_note_script_root_is_pinned() {
+    let root = BlocklistConfigNote::script_root();
     assert_eq!(
-        root,
-        XReserveUnblockAccountNote::pinned_script_root(),
-        "masm-rust-constant-parity: unblock_account note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
+        BLOCKLIST_CONFIG_NOTE_SCRIPT_ROOT_HEX,
+        "the standard blocklist-config note script root moved; the allowlist admits this exact          root, so a protocol bump that changes it must be re-pinned deliberately (actual = {})",
         root.to_hex(),
     );
 }
@@ -693,10 +682,8 @@ fn unblock_account_note_script_root_is_pinned() {
 async fn paused_faucet() -> Result<(MockChain, AccountId)> {
     let route = test_faucet_id(1);
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| {
-        vec![
-            XReservePauseNote::create(test_account_id(2), route, &mut note_rng(60))
-                .expect("building the seeded pause note"),
-        ]
+        vec![stock_pause_note(test_account_id(2), route, 60)
+            .expect("building the seeded pause note")]
     })
     .context("building the production faucet with a seeded pause")?;
     let mut chain = pf.mock_chain;
@@ -720,7 +707,7 @@ async fn paused_faucet() -> Result<(MockChain, AccountId)> {
 #[tokio::test]
 async fn unpause_dom_pauser_clears_is_paused() -> Result<()> {
     let (chain, faucet_id) = paused_faucet().await?;
-    let note = XReserveUnpauseNote::create(test_account_id(2), faucet_id, &mut note_rng(61))
+    let note = stock_unpause_note(test_account_id(2), faucet_id, 61)
         .context("building the DOM_PAUSER unpause note")?;
     let tx = chain
         .build_transaction(faucet_id)
@@ -744,7 +731,7 @@ async fn assert_unpause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReserveUnpauseNote::create(sender, faucet_id, &mut note_rng(seed))
+    let note = stock_unpause_note(sender, faucet_id, seed)
         .context("building the non-pauser unpause note")?;
     let result = chain
         .build_transaction(faucet_id)
@@ -771,7 +758,7 @@ async fn unpause_third_party_traps() -> Result<()> {
 #[tokio::test]
 async fn unpause_note_args_are_inert() -> Result<()> {
     let (chain, faucet_id) = paused_faucet().await?;
-    let note = XReserveUnpauseNote::create(test_account_id(2), faucet_id, &mut note_rng(64))
+    let note = stock_unpause_note(test_account_id(2), faucet_id, 64)
         .context("building the DOM_PAUSER unpause note")?;
     let bogus_args = Word::from([8u32, 8, 8, 8]);
     let tx = chain
@@ -789,18 +776,6 @@ async fn unpause_note_args_are_inert() -> Result<()> {
         "unpause must clear is_paused=0 regardless of executor NOTE_ARGS",
     );
     Ok(())
-}
-
-/// masm-rust-constant-parity for the unpause note (the failure prints the actual hex).
-#[test]
-fn unpause_note_script_root_is_pinned() {
-    let root = XReserveUnpauseNote::script_root();
-    assert_eq!(
-        root,
-        XReserveUnpauseNote::pinned_script_root(),
-        "masm-rust-constant-parity: unpause note-script root == the pinned constant (actual = {})",
-        root.to_hex(),
-    );
 }
 
 // GRANT_ROLE (allowlist row 8) — STOCK RBAC grant (CANARY: a note calling a stock component proc)
@@ -1006,7 +981,7 @@ async fn set_max_supply_owner_writes_cap() -> Result<()> {
     Ok(())
 }
 
-/// A non-owner set_max_supply note PASSES auth but TRAPS at the owner Authority gate.
+/// A set_max_supply note from a sender without ADMIN PASSES auth but TRAPS at the Authority gate.
 async fn assert_set_max_supply_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
@@ -1022,7 +997,7 @@ async fn assert_set_max_supply_nonowner_traps(sender: AccountId, seed: u64) -> R
         .context("non-owner set_max_supply tx build")?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     Ok(())
 }
 

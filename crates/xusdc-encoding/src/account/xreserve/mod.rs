@@ -1,7 +1,9 @@
 //! `xreserve` faucet account composition — the [`XReserveStablecoinBuilder`].
 
+pub mod admin_authority;
 pub mod builder;
 
+pub use admin_authority::XReserveAdminAuthority;
 pub use builder::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH,
     BLK_MANAGER_ROLE, DOMAIN_CONFIG_SLOT_LABEL, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,

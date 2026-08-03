@@ -9,7 +9,7 @@
 //! as a second supply door.
 //!
 //! The component-level tripwire: the xreserve library's callable-root set is FROZEN
-//! at the 14 sanctioned roots below, enumerated at BOTH layers — the manifest's exported paths and
+//! at the 10 sanctioned roots below, enumerated at BOTH layers — the manifest's exported paths and
 //! the `@account_procedure`-filtered account interface — so any new export (a potential new
 //! supply door) fails loudly.
 
@@ -20,12 +20,16 @@ use miden_protocol::Word;
 use support::*;
 
 /// The frozen sanctioned callable-root set of the shipped `xreserve`
-/// library: the shared-encoding + parser + attestation procs, the admin wrappers
-/// (`attester_admin::set_attester`, `pause_admin::{pause,unpause}`, and the two
-/// `blocklist_admin::{block_account,unblock_account}` BLK_MANAGER-gated wrappers), the attestation
+/// library: the shared-encoding + parser + attestation procs, the one admin wrapper
+/// (`attester_admin::set_attester`, which resolves to the `ADMIN` role), the attestation
 /// mint policy `mint_policy::check_policy` (the ACTIVE mint policy — a pure gate, no supply
 /// arithmetic of its own), and the identifier-only `identifier_init::init_identifier`
-/// (owner-gated, init-once) = 14. There is deliberately NO custom transport/burn/config root
+/// (owner-gated, init-once) = 10. Pause and blocklist administration are no longer here: the
+/// custom role-gated wrappers gave way to the stock `PausableManager` / `BlocklistManager`
+/// components, whose roots live on those components and are gated by the account's
+/// procedure-role map. `encoding::pubkey_commitment` is no longer a callable root either — it is a
+/// pure `exec`-only helper now (`FROZEN_EXEC_ONLY_EXPORTS`). There is deliberately NO custom
+/// transport/burn/config root
 /// (no `xreserve_mint::mint`, `xreserve_mint_note_entry::receive_and_mint`,
 /// `mint_deny_guard::check_policy`, `burn_policy::check_policy`,
 /// `min_burn_admin::set_min_burn_size`, or `domain_config::domain_init` — those modules do not
@@ -33,11 +37,9 @@ use support::*;
 /// `mint_and_send`, gated by the attestation policy. Any drift (a new export, i.e. a potential
 /// new supply door) trips `production_xreserve_callable_root_set_is_frozen`.
 /// Paths render absolute (leading `::`) at assembler 0.23.3.
-const FROZEN_CALLABLE_ROOTS: [&str; 14] = [
+const FROZEN_CALLABLE_ROOTS: [&str; 10] = [
     "::xreserve::attestation_verify::verify_attestation",
     "::xreserve::attester_admin::set_attester",
-    "::xreserve::blocklist_admin::block_account",
-    "::xreserve::blocklist_admin::unblock_account",
     "::xreserve::deposit_intent_parser::assert_deposit_intent",
     "::xreserve::deposit_intent_parser::assert_mint_amounts",
     "::xreserve::deposit_intent_parser::assert_nonce_unused",
@@ -46,8 +48,6 @@ const FROZEN_CALLABLE_ROOTS: [&str; 14] = [
     "::xreserve::encoding::uint256_to_asset_amount",
     "::xreserve::identifier_init::init_identifier",
     "::xreserve::mint_policy::check_policy",
-    "::xreserve::pause_admin::pause",
-    "::xreserve::pause_admin::unpause",
 ];
 
 /// Exported `pub proc`s that are deliberately NOT `@account_procedure`: pure `exec`-invoked
@@ -83,7 +83,7 @@ fn production_xreserve_callable_root_set_is_frozen() -> Result<()> {
         .map(|(root, _is_auth)| Word::from(root))
         .collect();
 
-    // Frozen tripwire, source layer: the exported-proc set is EXACTLY the 14 sanctioned roots plus
+    // Frozen tripwire, source layer: the exported-proc set is EXACTLY the 10 sanctioned roots plus
     // the exec-only exports.
     let lib: &miden_protocol::assembly::Package = xreserve.component_code().as_package();
     let mut paths: Vec<String> = lib
@@ -126,7 +126,7 @@ fn production_xreserve_callable_root_set_is_frozen() -> Result<()> {
         .collect();
     assert_eq!(
         callable, frozen_roots,
-        "the FILTERED account-interface root set (@account_procedure) must equal the 14 frozen \
+        "the FILTERED account-interface root set (@account_procedure) must equal the 10 frozen \
          roots exactly — a missing annotation drops a sanctioned proc from the account, an extra \
          one opens an unsanctioned callable root"
     );

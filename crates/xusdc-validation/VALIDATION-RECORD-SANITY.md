@@ -1,5 +1,14 @@
 # xUSDC Faucet — v16 E2E Sanity Validation Record
 
+> **Superseded admin model (2026-07-30).** This record was produced against the composition in
+> which the admin setters resolved to the `Ownable2Step` owner and rejected with
+> `ERR_SENDER_NOT_OWNER`. The faucet has since moved to a role-based authority: the setters
+> carry no role and resolve to the built-in `ADMIN` role, raising `ERR_SENDER_LACKS_ROLE`,
+> and pause/blocklist run through the standard managers. The observations below are
+> unchanged evidence of what that earlier run saw; re-running these rows is part of the
+> un-park steps in `PARKED-V16-NEXT.md`.
+
+
 The pre-deploy confidence gate: a cohesive run driving the xUSDC faucet's core on-chain functionality against a real Miden node, with fund-correctness (the P0 scale-0 identity, mint/burn amounts + destinations, replay, supply-cap, attestation gates) proven end-to-end, plus DC-8 burn-evidence readiness and a clean-node-log gate. The DESTRUCTIVE admin surface runs ONLY on a fresh LOCAL faucet we own — NEVER against a deployed faucet. **Validator-not-fixer:** a failing check is a SURFACED finding that BLOCKS the deploy, never a faucet hot-fix.
 
 - Node: **miden-node 0.16.0-alpha.2 (v16 start-test-node.sh cached binaries)** — RPC `http://127.0.0.1:57291`.

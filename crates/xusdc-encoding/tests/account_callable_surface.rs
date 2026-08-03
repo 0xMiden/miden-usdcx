@@ -1,13 +1,13 @@
 //! FULL-ACCOUNT CALLABLE-SURFACE PIN (S12, human-ratified 2026-07-13).
 //!
-//! `mint_root_surface.rs` freezes the 14 callable roots of the **xreserve** component. This file
-//! freezes the **whole composed account** — the xreserve 14 PLUS every callable procedure the STOCK
+//! `mint_root_surface.rs` freezes the 10 callable roots of the **xreserve** component. This file
+//! freezes the **whole composed account** — the xreserve 10 PLUS every callable procedure the STOCK
 //! components contribute (`Authority` incl. the v0.16 `freeze`/`unfreeze`, `RoleBasedAccessControl`,
 //! `Ownable2Step`, `FungibleFaucet` incl. the v0.16 `has_procedure` re-export, `TokenPolicyManager`,
 //! `MinBurnAmount` (the Wave-1 S1 stock burn policy), `Pausable`, and the `AuthNetworkAccount`
 //! auth procedure). It exists because a stock dependency
 //! bump can hand this faucet a NEW callable capability silently: at the v0.16 migration
-//! `Authority::OwnerControlled` began bundling owner-gated `freeze`/`unfreeze` procedures
+//! the stock `Authority` component began bundling authority-gated `freeze`/`unfreeze` procedures
 //! (upstream #3102/#3209) that no v0.15 composition had. That must never be inherited quietly again
 //! — so the composed account's callable set is pinned to a FROZEN literal list here, and any stock
 //! bump that adds (or drops) a callable procedure fails LOUDLY in
@@ -22,12 +22,12 @@
 //!
 //! S12 DISPOSITION — `freeze`/`unfreeze` are PRESENT but OPERATIONALLY UNREACHABLE, and this file
 //! proves it rather than asserting it: the faucet is a keyless network account whose
-//! `AuthNetworkAccount` admits ONLY the immutable 14-root note-script allowlist and a tx-script
+//! `AuthNetworkAccount` admits ONLY the immutable 12-root note-script allowlist and a tx-script
 //! allowlist of EXACTLY the one canonical `ExpirationTransactionScript` (S12, RATIFIED 2026-07-20 —
 //! F5). `freeze_and_unfreeze_are_unreachable_from_every_allowlisted_note`
-//! scans the MAST of all 14 allowlisted note scripts and shows not one of them references the
+//! scans the MAST of all 12 allowlisted note scripts and shows not one of them references the
 //! freeze/unfreeze roots; `freeze_and_unfreeze_are_not_admissible_via_either_allowlist` shows the
-//! roots are not among the 14 note-script roots; and `the_auth_component_rejects_a_non_allowlisted_note`
+//! roots are not among the 12 note-script roots; and `the_auth_component_rejects_a_non_allowlisted_note`
 //! / `the_auth_component_rejects_non_expiration_tx_scripts_and_admits_expiration` EXECUTE the two
 //! (and only two) entry vectors and watch the auth component reject every non-admitted script (the
 //! sole admitted tx-script — the expiration bounder — cannot reach freeze). (The allowlist is an epilogue
@@ -75,7 +75,7 @@ use miden_standards::code_builder::CodeBuilder;
 use miden_standards::errors::standards::{
     ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED, ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED,
 };
-use miden_standards::note::{BurnNote, MintNote};
+use miden_standards::note::{BlocklistConfigNote, BurnNote, MintNote, PauseActionNote};
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_testing::assert_transaction_executor_error;
@@ -83,10 +83,9 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveAcceptOwnershipNote, XReserveBlockAccountNote, XReserveGrantRoleNote,
-    XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote, XReserveSetAttesterNote,
-    XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
-    XReserveUnblockAccountNote, XReserveUnpauseNote,
+    XReserveAcceptOwnershipNote, XReserveGrantRoleNote, XReserveIdentifierInitNote,
+    XReserveRevokeRoleNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
+    XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
 };
 
 const MAX_SUPPLY: u64 = 1_000_000;
@@ -97,12 +96,13 @@ const MAX_SUPPLY: u64 = 1_000_000;
 /// account's real surface without growing this list, and the set-equality below goes RED.
 ///
 /// Membership is ratified, not incidental (paths are the component-wrapper form the exports carry):
-/// - the 14 `::xreserve::…` roots are the Wave-1 S1 recomposed set (`mint_root_surface.rs` pins
-///   them separately), including the two F4-reversal
-///   `blocklist_admin::{block_account,unblock_account}` wrappers, the attestation
-///   `mint_policy::check_policy` (the ACTIVE mint policy), and the minimized
-///   `identifier_init::init_identifier` (DEC-4);
-/// - the 60 stock rows are what the composition's components export at the frozen
+/// - the 10 `::xreserve::…` roots are the Wave-1 S1 recomposed set (`mint_root_surface.rs` pins
+///   them separately) — the shared-encoding/parser/attestation procs, the one `set_attester` admin
+///   wrapper, the attestation `mint_policy::check_policy` (the ACTIVE mint policy), and the
+///   minimized `identifier_init::init_identifier` (DEC-4); pause and blocklist administration are
+///   STOCK now (the manager rows below), and `encoding::pubkey_commitment` is `exec`-only (dropped
+///   from the callable surface by the mint-path de-export), not an account root;
+/// - the 64 stock rows are what the composition's components export at the frozen
 ///   protocol-`next` rev, including
 ///   the F4-reversal `basic_blocklist::check_policy` transfer-policy predicate (S24-policed) and
 ///   the three Wave-1 S1 `burn::min_burn_amount` rows (`check_policy` / `set_min_burn_amount` /
@@ -122,12 +122,10 @@ const MAX_SUPPLY: u64 = 1_000_000;
 /// - `fungible_faucet::has_procedure` is the v0.16 `FungibleFaucet` re-export (#3222) the stock BURN
 ///   note's faucet-kind reflection requires.
 const FROZEN_ACCOUNT_SURFACE: [&str; 74] = [
-    // --- the 14 xreserve component roots (their IDENTITIES are also pinned in
+    // --- the 10 xreserve component roots (their IDENTITIES are also pinned in
     //     mint_root_surface.rs::FROZEN_CALLABLE_ROOTS; here they complete the whole account) ---
     "::xreserve::attestation_verify::verify_attestation",
     "::xreserve::attester_admin::set_attester",
-    "::xreserve::blocklist_admin::block_account",
-    "::xreserve::blocklist_admin::unblock_account",
     "::xreserve::deposit_intent_parser::assert_deposit_intent",
     "::xreserve::deposit_intent_parser::assert_mint_amounts",
     "::xreserve::deposit_intent_parser::assert_nonce_unused",
@@ -136,9 +134,18 @@ const FROZEN_ACCOUNT_SURFACE: [&str; 74] = [
     "::xreserve::encoding::uint256_to_asset_amount",
     "::xreserve::identifier_init::init_identifier",
     "::xreserve::mint_policy::check_policy",
-    "::xreserve::pause_admin::pause",
-    "::xreserve::pause_admin::unpause",
-    // --- the 60 stock-component roots ---
+    // --- the 64 stock-component roots ---
+    // The pause and blocklist admin procedures are STOCK now: the four custom xreserve wrappers
+    // above gave way to the stock managers, each of whose procedures the account's procedure-role
+    // map gates on the same role the wrapper hard-coded (pause / unpause on the Domain pauser,
+    // block / unblock on the external blocklist administrator). Four custom xreserve wrappers out,
+    // four stock manager procs in; separately, the mint-path de-export drops
+    // `encoding::pubkey_commitment` from the callable surface (it is `exec`-only now), so the whole
+    // account surface is 74 (10 xreserve + 64 stock).
+    "::miden::standards::components::access::pausable::manager::pause",
+    "::miden::standards::components::access::pausable::manager::unpause",
+    "::miden::standards::components::faucets::policies::transfer::blocklist::manager::block_account",
+    "::miden::standards::components::faucets::policies::transfer::blocklist::manager::unblock_account",
     "::miden::standards::components::access::authority::freeze",
     "::miden::standards::components::access::authority::get_authority",
     "::miden::standards::components::access::authority::unfreeze",
@@ -194,7 +201,7 @@ const FROZEN_ACCOUNT_SURFACE: [&str; 74] = [
     "::miden::standards::components::faucets::fungible_faucet::set_max_supply",
     // Wave-1 S1: the stock MinBurnAmount burn-policy component (the ACTIVE burn policy since the
     // recomposition — its check_policy is dispatched by the policy manager on every burn, its
-    // set_min_burn_amount is the owner-gated floor setter the reworked admin note calls).
+    // set_min_burn_amount is the ADMIN-role-gated floor setter the reworked admin note calls).
     "::miden::standards::components::faucets::policies::burn::min_burn_amount::check_policy",
     "::miden::standards::components::faucets::policies::burn::min_burn_amount::get_min_burn_amount",
     "::miden::standards::components::faucets::policies::burn::min_burn_amount::set_min_burn_amount",
@@ -262,10 +269,12 @@ fn production_account() -> Result<Account> {
     Ok(account)
 }
 
-/// The 14 allowlisted note SCRIPTS (not just their roots): the two STOCK supply notes (the Wave-1
-/// S1 `MintNote` transport + the `BurnNote`) + the 12 admin notes (10 owner/role/pause — with the
-/// minimized `identifier_init` in the former `domain_init` row (DEC-4) — + the 2 F4-reversal
-/// transfer-blocklist notes). Single-sourced from the
+/// The 12 allowlisted note SCRIPTS (not just their roots): the two STOCK supply notes (the Wave-1
+/// S1 `MintNote` transport + the `BurnNote`) and ten admin/config notes — the `ADMIN`-role-gated
+/// setters (`set_attester`, `set_min_burn_size`, `set_max_supply`, and the minimized
+/// `identifier_init` in the former `domain_init` row (DEC-4)), the RBAC `grant_role`/`revoke_role`
+/// pair, the two ownership notes, and the stock `PauseActionNote` (pause+unpause) + stock
+/// `BlocklistConfigNote` (block+unblock). Single-sourced from the
 /// same factories the allowlist itself is built from, so a note that enters the allowlist necessarily
 /// enters this sweep too. There is deliberately NO `set_role_admin` entry: the runtime
 /// `set_role_admin` note was REMOVED from the allowlist (S21 disposition flip, human-ratified
@@ -278,8 +287,7 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
         ("set_attester", XReserveSetAttesterNote::script()),
         ("identifier_init", XReserveIdentifierInitNote::script()),
         ("set_min_burn_size", XReserveSetMinBurnSizeNote::script()),
-        ("pause", XReservePauseNote::script()),
-        ("unpause", XReserveUnpauseNote::script()),
+        ("stock_pause_action_note", PauseActionNote::script()),
         ("grant_role", XReserveGrantRoleNote::script()),
         ("revoke_role", XReserveRevokeRoleNote::script()),
         ("set_max_supply", XReserveSetMaxSupplyNote::script()),
@@ -288,8 +296,7 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
             XReserveTransferOwnershipNote::script(),
         ),
         ("accept_ownership", XReserveAcceptOwnershipNote::script()),
-        ("block_account", XReserveBlockAccountNote::script()),
-        ("unblock_account", XReserveUnblockAccountNote::script()),
+        ("stock_blocklist_config_note", BlocklistConfigNote::script()),
     ]
 }
 
@@ -305,8 +312,8 @@ fn production_account_callable_surface_is_frozen() -> Result<()> {
     let components = production_components()?;
     let surface = component_surface(&components);
 
-    // Layer 1 (source): the component-exported paths equal the frozen 74-root list EXACTLY (14
-    // xreserve + 60 stock, in one literal set — a stock bump that adds or removes any callable
+    // Layer 1 (source): the component-exported paths equal the frozen 74-root list EXACTLY (10
+    // xreserve + 64 stock, in one literal set — a stock bump that adds or removes any callable
     // procedure fails HERE).
     let mut paths: Vec<String> = surface.iter().map(|(path, _)| path.clone()).collect();
     paths.sort();
@@ -373,7 +380,7 @@ fn authority_freeze_and_unfreeze_are_present_on_the_account() -> Result<()> {
     Ok(())
 }
 
-/// UNREACHABLE, leg 1 (static, exhaustive over the allowlist): NOT ONE of the 14 allowlisted note
+/// UNREACHABLE, leg 1 (static, exhaustive over the allowlist): NOT ONE of the 12 allowlisted note
 /// scripts references the freeze or unfreeze root ANYWHERE in its MAST — so no admissible note can
 /// invoke them. Scanning every MAST node digest (not just the entrypoint) catches a call by root, a
 /// call by path, and any nested/external reference alike.
@@ -383,14 +390,14 @@ fn freeze_and_unfreeze_are_unreachable_from_every_allowlisted_note() -> Result<(
     let scripts = allowlisted_note_scripts();
     assert_eq!(
         scripts.len(),
-        14,
-        "the unreachability sweep must cover all 14 allowlisted note scripts"
+        12,
+        "the unreachability sweep must cover all 12 allowlisted note scripts"
     );
     // The scripts swept ARE the allowlist (no script can dodge the sweep by not being listed here).
     let swept: BTreeSet<_> = scripts.iter().map(|(_, s)| s.root()).collect();
     assert_eq!(
         swept, allowlist,
-        "the swept note scripts must be EXACTLY the 14-root note-script allowlist"
+        "the swept note scripts must be EXACTLY the 12-root note-script allowlist"
     );
 
     let forbidden = [
@@ -432,7 +439,7 @@ fn freeze_and_unfreeze_are_not_admissible_via_either_allowlist() -> Result<()> {
         let as_note_root = NoteScriptRoot::from_raw(Word::from(root));
         assert!(
             !note_allowlist.contains(&as_note_root),
-            "the `{name}` root must NOT be a member of the 14-root note-script allowlist \
+            "the `{name}` root must NOT be a member of the 12-root note-script allowlist \
              (there is no freeze note factory; a freeze-bearing note is inadmissible)"
         );
     }

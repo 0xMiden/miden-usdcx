@@ -1,10 +1,14 @@
-//! The Ownable2Step OWNER-TRANSFER seam. The ENTIRE admin surface
-//! (setters, role administration) hangs off the Ownable2Step owner, but no test exercised
-//! `transfer_ownership` / `accept_ownership` on the production composition. This smoke test drives
-//! the full two-step lifecycle on a production burn-policy faucet and pins the authority handover
-//! with an owner-gated setter (`set_min_burn_size`) at every step:
-//! nominate → old owner still authoritative → pending nominee rejected → accept → authority
-//! rotated (new owner accepted, old owner rejected with the EXACT `ERR_SENDER_NOT_OWNER`).
+//! The Ownable2Step OWNER-TRANSFER seam, and the place where ownership and administration part
+//! company.
+//!
+//! The owner slot still gates what it always gated: `identifier_init` and the transfer handshake
+//! itself. It no longer gates the setters. Those carry no role of their own, so the account's
+//! role-based authority resolves them to the built-in `ADMIN` role — seeded on the owner's account
+//! at build, but account-bound thereafter. This suite drives the full two-step lifecycle on a
+//! production burn-policy faucet using the minimum-burn setter as the authority probe, and the last
+//! step is the one that matters: after acceptance the owner slot has moved and `ADMIN` has NOT, so
+//! the new owner is rejected and the former owner still succeeds until the role is re-seated
+//! through the grant and revoke notes.
 //!
 //! Stock semantics pinned (v0.15.3 `standards/access/ownable2step.masm`): `transfer_ownership` is
 //! owner-gated and only NOMINATES (`owner_config = [owner, nominated]`); the current owner remains
@@ -34,9 +38,9 @@ const SEED_MIN: u64 = 1_000;
 
 /// A production faucet whose owner is account 1.
 ///
-/// These tests need some owner-gated operation to probe authority with, and the minimum-burn
-/// setter is the convenient one — the note path it drives calls the standard
-/// `set_min_burn_amount`. Nothing here is about burning; the setter is purely the probe.
+/// These tests need some authority-gated operation to probe with, and the minimum-burn setter is
+/// the convenient one — the note path it drives calls the standard `set_min_burn_amount`, which
+/// resolves to the `ADMIN` role. Nothing here is about burning; the setter is purely the probe.
 fn faucet_harness() -> Result<BurnPolicyHarness> {
     setup_burn_policy_account(
         BurnGuardSelection::OracleBurnReal,
@@ -73,11 +77,16 @@ fn owner_config_word(owner: AccountId, nominated: Option<AccountId>) -> Word {
     ])
 }
 
-/// The full two-step owner-transfer lifecycle on the production composition, with the owner-gated
-/// setter as the authority probe at every step. Every reject pins the EXACT stock
-/// `ERR_SENDER_NOT_OWNER`; every accept pins an exact-value read-back.
+/// The full two-step owner-transfer lifecycle on the production composition, with the burn-floor
+/// setter as the authority probe at every step.
+///
+/// The probe is an authority-gated setter with no role of its own, so it resolves to the
+/// administrator role rather than to the owner slot. That makes it a probe of administrator
+/// membership, not of ownership — and the last step is where the two come apart: rotating the owner
+/// slot does not move administrator membership with it. Every reject pins the exact role error;
+/// every accept pins an exact-value read-back.
 #[tokio::test]
-async fn owner_two_step_transfer_rotates_authority() -> Result<()> {
+async fn owner_two_step_transfer_rotates_the_owner_slot_but_not_the_administrator() -> Result<()> {
     let h = faucet_harness()?;
     let account = faucet(&h)?;
 
@@ -106,7 +115,7 @@ async fn owner_two_step_transfer_rotates_authority() -> Result<()> {
 
     // 3. The PENDING nominee has no authority yet.
     let pending = run_set_min_burn_size_against(&h.chain, &evolved, new_owner(), 3_000, 43).await;
-    assert_transaction_executor_error!(pending, err_sender_not_owner());
+    assert_transaction_executor_error!(pending, err_sender_lacks_role());
     assert_eq!(
         read_min_burn_size(&evolved)?,
         min_word(2_000),
@@ -124,23 +133,31 @@ async fn owner_two_step_transfer_rotates_authority() -> Result<()> {
         "accept_ownership rotates the owner to id(4) and clears the nomination"
     );
 
-    // 5. Authority rotated: the NEW owner's setter succeeds; the OLD owner's rejects exactly.
-    let new_set = run_set_min_burn_size_against(&h.chain, &evolved, new_owner(), 3_000, 45)
-        .await
-        .expect("the new owner's setter must succeed after accept");
-    evolved.apply_patch(new_set.account_patch())?;
+    // 5. The owner slot rotated, but authority over the authority-gated setters did NOT follow it.
+    //
+    // Those setters carry no role of their own, so they resolve to the administrator role — and
+    // administrator membership is account-based, seeded on the original owner's account. Rotating
+    // the owner slot moves what the owner slot gates (`identifier_init` and the ownership handshake
+    // itself); it does not move administrator membership. So after accept the NEW owner cannot set
+    // the burn floor and the OLD owner still can, until the administrator role is granted to the
+    // new owner and revoked from the old one — which is what the rotation runbook does, through the
+    // grant and revoke role notes.
+    let new_set = run_set_min_burn_size_against(&h.chain, &evolved, new_owner(), 3_000, 45).await;
+    assert_transaction_executor_error!(new_set, err_sender_lacks_role());
     assert_eq!(
         read_min_burn_size(&evolved)?,
-        min_word(3_000),
-        "new-owner write landed"
+        min_word(2_000),
+        "the new owner's setter is rejected until it holds the administrator role, so nothing wrote"
     );
 
-    let old = run_set_min_burn_size_against(&h.chain, &evolved, owner(), 4_000, 46).await;
-    assert_transaction_executor_error!(old, err_sender_not_owner());
+    let old_set = run_set_min_burn_size_against(&h.chain, &evolved, owner(), 4_000, 46)
+        .await
+        .expect("the ex-owner still holds the administrator role, so its setter still succeeds");
+    evolved.apply_patch(old_set.account_patch())?;
     assert_eq!(
         read_min_burn_size(&evolved)?,
-        min_word(3_000),
-        "the ex-owner's rejected setter must not write"
+        min_word(4_000),
+        "the administrator's write landed even though it no longer holds the owner slot"
     );
     Ok(())
 }

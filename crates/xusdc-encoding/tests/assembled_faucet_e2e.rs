@@ -51,9 +51,8 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveGrantRoleNote, XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote,
+    XReserveGrantRoleNote, XReserveIdentifierInitNote, XReserveRevokeRoleNote,
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-    XReserveUnpauseNote,
 };
 use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
@@ -159,10 +158,6 @@ fn nonce_key_of_payload(payload: &[u8]) -> Word {
 fn err_paused() -> MasmError {
     MasmError::from_static_str("the contract is paused")
 }
-fn err_sender_lacks_role() -> MasmError {
-    MasmError::from_static_str("note sender does not hold the required role")
-}
-
 fn note_rng(seed: u64) -> RandomCoin {
     RandomCoin::new(Word::from([
         Felt::from(seed as u32),
@@ -350,15 +345,15 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
             XReserveSetMinBurnSizeNote::create(owner(), route, 0, &mut note_rng(919))
                 .expect("building the seeded min-zero note"),
             // 10: S10 DOM_PAUSER pause
-            XReservePauseNote::create(pauser(), route, &mut note_rng(920))
-                .expect("building the seeded pause-pauser note"),
+            stock_pause_note(pauser(), route, 920).expect("building the seeded pause-pauser note"),
             // 11: S10c owner STOCK pause probe (traps UnknownAccountProcedure)
-            pause_note(owner(), 921).expect("building the seeded pause-stock-owner note"),
+            manager_pause_call_note(owner(), 921)
+                .expect("building the seeded manager pause-call note sent by the owner"),
             // 12: S10d stranger custom pause (reject)
-            XReservePauseNote::create(stranger(), route, &mut note_rng(922))
+            stock_pause_note(stranger(), route, 922)
                 .expect("building the seeded pause-stranger note"),
             // 13: S11 DOM_PAUSER unpause
-            XReserveUnpauseNote::create(pauser(), route, &mut note_rng(923))
+            stock_unpause_note(pauser(), route, 923)
                 .expect("building the seeded unpause-pauser note"),
             // 14: S12 DOM_MANAGER grant_role(DOM_PAUSER, new_pauser)
             XReserveGrantRoleNote::create(
@@ -370,10 +365,9 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
             )
             .expect("building the seeded grant note"),
             // 15: S12 new pauser pause
-            XReservePauseNote::create(new_pauser(), route, &mut note_rng(925))
-                .expect("building the seeded pause-new note"),
+            stock_pause_note(new_pauser(), route, 925).expect("building the seeded pause-new note"),
             // 16: S12 new pauser unpause
-            XReserveUnpauseNote::create(new_pauser(), route, &mut note_rng(926))
+            stock_unpause_note(new_pauser(), route, 926)
                 .expect("building the seeded unpause-new note"),
             // 17: S12 DOM_MANAGER revoke_role(DOM_PAUSER, new_pauser)
             XReserveRevokeRoleNote::create(
@@ -385,7 +379,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
             )
             .expect("building the seeded revoke note"),
             // 18: S12 revoked pauser pause attempt (reject)
-            XReservePauseNote::create(new_pauser(), route, &mut note_rng(928))
+            stock_pause_note(new_pauser(), route, 928)
                 .expect("building the seeded pause-revoked note"),
         ]
     })?;
@@ -530,7 +524,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // ── S3a — ADMIN: owner allowlists the attester; a stranger's attempt is rejected and leaves
     // the map unchanged.
     let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(3)).await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     assert_eq!(
         read_map_word(&faucet, XRESERVE_ATTESTERS_SLOT_LABEL, attester1.commitment)?,
         Word::from([0u32, 0, 0, 0]),
@@ -553,7 +547,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // ── S3b — ADMIN: owner sets max_supply; a stranger's attempt is rejected.
     let faucet = committed(&pf.mock_chain, faucet_id)?;
     let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(5)).await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(6))
         .await
         .expect("S3b: the owner's set_max_supply must succeed");
@@ -569,7 +563,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // `set_min_burn_amount`); a stranger's attempt is rejected; the note-side ZERO-FLOOR guard
     // rejects new_min = 0 with its exact error (the stock setter itself would accept 0).
     let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(7)).await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(8))
         .await
         .expect("S3c: the owner's set_min_burn_size must succeed");
@@ -884,13 +878,12 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     )
     .await;
     assert_transaction_executor_error!(result, err_paused());
-    // S10c: the owner has NO direct pause path (Domain-Pauser-only model — the stock
-    // PausableManager is absent, so the stock pause note traps a kernel host-event, not a MASM
-    // assert: the called proc root is not in the account code).
+    // S10c: the owner has NO direct pause path. The stock manager IS installed, so the rejection is
+    // the role assertion rather than a missing procedure: the procedure-role map gates pause on the
+    // Domain pauser, which the owner does not hold.
     let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(11)).await;
-    let err = result.expect_err("S10c: the stock owner pause path must not exist");
-    assert_unknown_account_procedure(&err);
-    // S10d: a non-DOM_PAUSER custom pause attempt is rejected with the EXACT role error.
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
+    // S10d: a second non-DOM_PAUSER pause attempt is rejected with the same exact role error.
     let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(12)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
 

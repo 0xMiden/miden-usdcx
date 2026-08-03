@@ -1,7 +1,9 @@
-//! `set_attester` suite, reconciled to the Circle-faithful OWNER-gated model.
+//! `set_attester` suite, reconciled to the Circle-faithful administrator-gated model.
 //! The allowlist setter's MASM is UNCHANGED — it calls the account-wide
-//! `authority::assert_authorized`, which after the reconciliation (`Authority::OwnerControlled`, the
-//! built `ATTEST_ADMIN` role removed) resolves to the Ownable2Step owner. This file covers the owner
+//! `authority::assert_authorized`, which under the account's role-based authority resolves this
+//! procedure to the built-in `ADMIN` role, since it carries no role of its own. `ADMIN` is seeded on
+//! the owner's account, so the identity is today's; it is account-bound and does not follow an
+//! ownership transfer. This file covers the administrator
 //! gate (the security core), the production attestation-gate posture pin, and the pause gate. The
 //! non-vacuity seam — that enabling, removing, and rotating an attester actually changes which
 //! attestations a real mint accepts — lives in the mint end-to-end suites, alongside the
@@ -138,7 +140,7 @@ fn production_build_gates_mint_on_the_attestation_policy() -> Result<()> {
     Ok(())
 }
 
-// OWNER GATE (the security core) — RED until the Authority is flipped to OwnerControlled (green)
+// ADMINISTRATOR GATE (the security core) — the unmapped setter resolves to the ADMIN role
 // ================================================================================================
 
 /// An OWNER-sent `set_attester(K, true)` note succeeds and the allowlist entry lands.
@@ -177,15 +179,15 @@ async fn set_attester_owner_succeeds() -> Result<()> {
     Ok(())
 }
 
-/// Shared owner-ONLY assertion for `set_attester`: a NON-owner `sender` traps the EXACT
-/// ERR_SENDER_NOT_OWNER AND leaves the allowlist entry for the attempted key EMPTY (no partial write).
+/// Shared ADMIN-only assertion for `set_attester`: a `sender` without the administrator role traps the EXACT
+/// ERR_SENDER_LACKS_ROLE AND leaves the allowlist entry for the attempted key EMPTY (no partial write).
 async fn assert_set_attester_non_owner_rejected(sender: AccountId, key_seed: u32) -> Result<()> {
     let gm = guarded_faucet()?;
     let account = faucet_account(&gm.harness);
     let commitment = Word::from([key_seed, key_seed + 1, key_seed + 2, key_seed + 3]);
 
     let result = run_set_attester_tx(&gm.harness, &account, sender, commitment, 1, 7).await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
 
     // no state change: the allowlist entry for the attempted key never landed (reads EMPTY_WORD).
     assert_eq!(
@@ -196,15 +198,16 @@ async fn assert_set_attester_non_owner_rejected(sender: AccountId, key_seed: u32
     Ok(())
 }
 
-/// Owner-ONLY: the seeded DOM_PAUSER holder id(2) — who is BOTH the former `ATTEST_ADMIN` holder
-/// (proving the removed role grants no access) AND a privileged non-owner — is rejected from `set_attester`.
+/// ADMIN-only: the seeded DOM_PAUSER holder id(2) — who is BOTH the former `ATTEST_ADMIN` holder
+/// (proving the removed role grants no access) AND privileged without being an administrator — is
+/// rejected from `set_attester`.
 #[tokio::test]
 async fn set_attester_former_admin_dom_pauser_non_owner_rejects() -> Result<()> {
     assert_set_attester_non_owner_rejected(dom_pauser(), 20).await
 }
 
-/// Owner-ONLY: the seeded DOM_MANAGER holder id(3) — a privileged non-owner — is rejected from
-/// `set_attester` (completing the owner-ONLY cross-product for this setter).
+/// ADMIN-only: the seeded DOM_MANAGER holder id(3) — privileged, but not an administrator — is
+/// rejected from `set_attester` (completing the administrator-only cross-product for this setter).
 #[tokio::test]
 async fn set_attester_dom_manager_non_owner_rejects() -> Result<()> {
     assert_set_attester_non_owner_rejected(dom_manager(), 30).await
@@ -213,11 +216,11 @@ async fn set_attester_dom_manager_non_owner_rejects() -> Result<()> {
 // THE SETTER IS NOT PAUSE-GATED — the OWNER may set_attester while the faucet is paused
 // ================================================================================================
 
-/// After the DOM_PAUSER pauses the faucet (custom `xreserve::pause_admin::pause` — the ONLY pause
-/// surface in the Domain-Pauser-only model), an OWNER-sent `set_attester` note SUCCEEDS while paused:
-/// the admin setters follow Circle's owner-only model and are deliberately NOT pause-gated, so a
-/// compromised attester can be disabled during a pause — which is exactly when it is needed. The enabled marker lands despite is_paused == true. The owner gate still
-/// governs it — the `*_non_owner_rejects` tests above prove that half.
+/// After the Domain Pauser pauses the faucet (the stock `PausableManager`, role-gated), an
+/// `ADMIN`-sent `set_attester` note SUCCEEDS while paused: the admin setters are deliberately NOT
+/// pause-gated, so a compromised attester can be disabled during a pause — which is exactly when it
+/// is needed. The enabled marker lands despite is_paused == true. The administrator gate still
+/// governs it — the rejection tests above prove that half.
 #[tokio::test]
 async fn set_attester_owner_succeeds_while_paused() -> Result<()> {
     let gm = guarded_faucet()?;

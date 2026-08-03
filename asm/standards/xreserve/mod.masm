@@ -10,9 +10,7 @@
 
 pub mod attestation_verify
 pub mod attester_admin
-pub mod blocklist_admin
 pub mod deposit_intent_parser
 pub mod encoding
 pub mod identifier_init
 pub mod mint_policy
-pub mod pause_admin

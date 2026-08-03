@@ -46,7 +46,10 @@ use miden_standards::code_builder::CodeBuilder;
 use miden_standards::errors::standards::{
     ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED, ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED,
 };
-use miden_standards::note::{BurnNote, MintNote, NetworkAccountTarget, NoteExecutionHint};
+use miden_standards::note::{
+    BlocklistConfigNote, BurnNote, MintNote, NetworkAccountTarget, NoteExecutionHint,
+    PauseActionNote,
+};
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_testing::{assert_transaction_executor_error, MockChain};
@@ -54,10 +57,9 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveAcceptOwnershipNote, XReserveBlockAccountNote, XReserveGrantRoleNote,
-    XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote, XReserveSetAttesterNote,
-    XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
-    XReserveUnblockAccountNote, XReserveUnpauseNote,
+    XReserveAcceptOwnershipNote, XReserveGrantRoleNote, XReserveIdentifierInitNote,
+    XReserveRevokeRoleNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
+    XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
 };
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
@@ -203,47 +205,46 @@ fn production_faucet_auth_component_is_stock_network_account() -> Result<()> {
 /// role-delegation graph is seeded at build time and frozen, and rotation goes through grant and
 /// revoke.
 #[test]
-fn production_faucet_note_allowlist_is_exactly_the_14_ratified_roots() -> Result<()> {
+fn production_faucet_note_allowlist_is_exactly_the_12_ratified_roots() -> Result<()> {
     let (_chain, account) = production_faucet()?;
     let expected: BTreeSet<_> = BTreeSet::from([
         // the two supply-side notes: minting uses the standard mint note
         MintNote::script_root(),
         BurnNote::script_root(),
-        // the ten configuration and role admin notes (no set_role_admin — see the doc comment)
+        // the configuration and role admin notes (no set_role_admin — see the doc comment)
         XReserveSetAttesterNote::script_root(),
         XReserveSetMinBurnSizeNote::script_root(),
         XReserveSetMaxSupplyNote::script_root(),
-        XReservePauseNote::script_root(),
-        XReserveUnpauseNote::script_root(),
+        // one standard note covers pausing AND unpausing
+        PauseActionNote::script_root(),
         XReserveGrantRoleNote::script_root(),
         XReserveRevokeRoleNote::script_root(),
         XReserveTransferOwnershipNote::script_root(),
         XReserveAcceptOwnershipNote::script_root(),
         XReserveIdentifierInitNote::script_root(),
-        // the two transfer-blocklist notes, gated on the blocklist manager role
-        XReserveBlockAccountNote::script_root(),
-        XReserveUnblockAccountNote::script_root(),
+        // one standard note covers blocking AND unblocking, gated on the blocklist manager role
+        BlocklistConfigNote::script_root(),
     ]);
     assert_eq!(
         expected.len(),
-        14,
-        "the ratified allowlist is exactly 14 distinct roots"
+        12,
+        "the ratified allowlist is exactly 12 distinct roots"
     );
 
-    // Source layer: the builder's single-source allowlist == the 14 ratified roots.
+    // Source layer: the builder's single-source allowlist == the 12 ratified roots.
     assert_eq!(
         XReserveStablecoinBuilder::allowed_note_scripts(),
         expected,
-        "allowed_note_scripts() must equal EXACTLY the 14 ratified roots (extra/missing = RED)",
+        "allowed_note_scripts() must equal EXACTLY the 12 ratified roots (extra/missing = RED)",
     );
 
-    // On-chain layer: the built faucet's allowlist storage map == the 14 ratified roots.
+    // On-chain layer: the built faucet's allowlist storage map == the 12 ratified roots.
     let allowlist = NetworkAccountNoteAllowlist::try_from(account.storage())
         .map_err(|e| anyhow::anyhow!("the faucet must carry a note-script allowlist slot: {e}"))?;
     assert_eq!(
         allowlist.allowed_script_roots(),
         &expected,
-        "the built faucet's on-chain allowlist map must equal EXACTLY the 14 ratified roots",
+        "the built faucet's on-chain allowlist map must equal EXACTLY the 12 ratified roots",
     );
     Ok(())
 }

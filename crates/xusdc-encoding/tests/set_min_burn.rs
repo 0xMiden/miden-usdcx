@@ -5,17 +5,18 @@
 //! decides whether a burn is large enough. The setter is the standard
 //! `min_burn_amount::set_min_burn_amount`; the faucet contributes no setter of its own.
 //!
-//! Authority follows Circle's admin model: this setter is gated on the account OWNER, through the
-//! account-wide owner-controlled authority, rather than on a role. The account does seed two roles
-//! — Domain Pauser and Domain Manager — but neither may set the floor, and their own powers are
-//! tested in the pause and role suites.
+//! Authority follows Circle's admin model: this setter carries no role of its own, so the
+//! account-wide role-based authority resolves it to the built-in `ADMIN` role, seeded on the
+//! owner's account. The account also seeds two Domain roles — Pauser and Manager — but neither may
+//! set the floor, and their own powers are tested in the pause and role suites. `ADMIN` membership
+//! is account-bound: it does not follow an ownership transfer.
 //!
 //! The gate tests here call the standard setter directly through a bare test-local note, on
 //! purpose: the production note script also enforces its own "never below one" floor guard, and
 //! going through it would mean testing that guard instead of the setter's authorization. The floor
 //! guard itself is covered where the production note factory is exercised.
 //!
-//! So this file covers the owner gate, that a successful write lands the right value in the right
+//! So this file covers the administrator gate, that a successful write lands the right value in the right
 //! slot, that the setter is deliberately NOT blocked while the faucet is paused, that a seeded
 //! role-holder who is not the owner is still rejected, and that the role seeding it relies on is
 //! itself correct. The end-to-end consequence — set the floor, then watch a below-floor burn trap —
@@ -142,7 +143,7 @@ async fn set_min_burn_owner_succeeds() -> Result<()> {
     Ok(())
 }
 
-/// A PLAIN non-owner-sent `set_min_burn_size` traps the EXACT `ERR_SENDER_NOT_OWNER` and leaves the
+/// A PLAIN non-administrator-sent `set_min_burn_size` traps the EXACT `ERR_SENDER_LACKS_ROLE` and leaves the
 /// slot unchanged (no partial write before the trap).
 #[tokio::test]
 async fn set_min_burn_plain_non_owner_rejects() -> Result<()> {
@@ -164,7 +165,7 @@ async fn set_min_burn_dom_manager_non_owner_rejects() -> Result<()> {
     assert_non_owner_rejected(dom_manager()).await
 }
 
-/// Shared non-owner assertion: `sender` (a non-owner) traps the EXACT `ERR_SENDER_NOT_OWNER`, AND
+/// Shared non-administrator assertion: `sender` (no `ADMIN` role) traps the EXACT `ERR_SENDER_LACKS_ROLE`, AND
 /// the STOCK `MinBurnAmount` floor slot reads back the seeded `[SEED_MIN,0,0,0]` (byte-identical)
 /// — no partial write.
 async fn assert_non_owner_rejected(sender: AccountId) -> Result<()> {
@@ -172,7 +173,7 @@ async fn assert_non_owner_rejected(sender: AccountId) -> Result<()> {
     let account = faucet(&h)?;
 
     let result = run_set_min_burn_size_against(&h.chain, &account, sender, 5_000, 7).await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
 
     // no state change: the slot is byte-identical to the seed (the trap precedes any write).
     assert_eq!(
@@ -186,11 +187,11 @@ async fn assert_non_owner_rejected(sender: AccountId) -> Result<()> {
 // THE SETTER IS NOT PAUSE-GATED — the OWNER may set_min_burn_size while the faucet is paused
 // ================================================================================================
 
-/// After the DOM_PAUSER pauses the faucet (custom `xreserve::pause_admin::pause` — the ONLY pause
-/// surface in the Domain-Pauser-only model), an OWNER-sent `set_min_burn_size` SUCCEEDS while paused:
-/// the admin setters follow Circle's owner-only model and are deliberately NOT pause-gated, so the
-/// burn floor can be adjusted during a pause. The full word `[new_min,0,0,0]` lands despite is_paused == true; the owner gate still
-/// governs it (the `*_non_owner_rejects` tests above prove that half).
+/// After the Domain Pauser pauses the faucet (the stock `PausableManager`, role-gated), an
+/// `ADMIN`-sent `set_min_burn_size` SUCCEEDS while paused: the admin setters are deliberately NOT
+/// pause-gated, so the burn floor can be adjusted during a pause. The full word `[new_min,0,0,0]`
+/// lands despite is_paused == true; the administrator gate still governs it (the rejection tests
+/// above prove that half).
 #[tokio::test]
 async fn set_min_burn_owner_succeeds_while_paused() -> Result<()> {
     let h = faucet_harness()?;

@@ -25,9 +25,6 @@ use miden_standards::note::P2idNote;
 use miden_testing::{assert_transaction_executor_error, Auth, MockChain};
 use miden_tx::{TransactionExecutorError, TransactionKernelError};
 use support::*;
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveBlockAccountNote, XReservePauseNote, XReserveUnblockAccountNote,
-};
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
 
@@ -135,18 +132,12 @@ fn semantics_fixture() -> Result<SemanticsFixture> {
     let holder_id = holder.id();
 
     // Seed the BLK_MANAGER block/unblock admin notes (targeting the holder) as COMMITTED genesis notes.
-    let block_note =
-        XReserveBlockAccountNote::create(blk_manager(), faucet_id, holder_id, &mut note_rng(100))?;
-    let unblock_note = XReserveUnblockAccountNote::create(
-        blk_manager(),
-        faucet_id,
-        holder_id,
-        &mut note_rng(101),
-    )?;
+    let block_note = stock_block_note(blk_manager(), faucet_id, holder_id, 100)?;
+    let unblock_note = stock_unblock_note(blk_manager(), faucet_id, holder_id, 101)?;
     // A DOM_PAUSER pause admin note (DOM_PAUSER = id(2), seeded by the production builder).
-    let pause_note = XReservePauseNote::create(dom_pauser(), faucet_id, &mut note_rng(102))?;
+    let pause_note = stock_pause_note(dom_pauser(), faucet_id, 102)?;
     // Arms the sentinel that shows the burn path is unaffected by the blocklist callback, by
-    // blocking the faucet itself. The production admin note refuses a faucet-self target — blocking
+    // blocking the faucet itself. The faucet's note factory refuses a faucet-self target — blocking
     // the faucet would freeze redemption for everyone — so this reaches the same underlying
     // `blocklist::block_account` primitive through a test-only proc without that guard. The guard
     // itself is exercised in the security-hardening suite.

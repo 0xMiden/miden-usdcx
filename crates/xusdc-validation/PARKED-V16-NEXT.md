@@ -53,5 +53,32 @@ onto the released `v0.16.0` crates.io family **and** a matching `miden-client`/n
 3. Adapt to the API deltas recorded in `docs/MIGRATION-V16-NEXT.md` — this crate consumes the same
    renamed surfaces (`AccountBuilder::with_auth_component` removal, the `Library`→`Package` rename
    wave, the `AuthNetworkAccount` constructor rework with its mandatory fee-policy configuration).
-4. Re-run the LNV row gates (`cargo run -p xusdc-validation --bin …` per this crate's README)
+4. Adapt the admin rows to the standard admin components AND to the re-gated setters.
+
+   **Expected-gate constants (behavioural, not cosmetic).** The admin setters — `set_attester`,
+   `set_min_burn_size`/`set_min_burn_amount`, `set_max_supply` — no longer resolve to the
+   `Ownable2Step` owner. They carry no role of their own, so the account's role-based authority
+   resolves them to the built-in `ADMIN` role and an unauthorized sender is rejected with
+   `ERR_SENDER_LACKS_ROLE`, not `ERR_SENDER_NOT_OWNER`. These rows still expect the owner error and
+   will fail against a current faucet:
+   - `src/assertions_cf.rs:53` — `ERR_NOT_OWNER` is defined and used as a setter's expected gate.
+   - `src/assertions_cf.rs` C6 assertion — requires at least one negative expecting `ERR_NOT_OWNER`.
+   - `src/rows_cf.rs` C6 negatives — two rows carry `expected_gate: ERR_NOT_OWNER`.
+   - `src/sanity/admin.rs` — the `set_attester` rejection asserts `ERR_NOT_OWNER`.
+
+   These were left as-is rather than changed blind: the crate is excluded from the workspace and
+   cannot be compiled or executed against the current pins, so an untested edit to an assertion
+   would be a guess. `ERR_LACKS_ROLE` already exists in `assertions_cf.rs` and is what they should
+   use. Ownership-slot procedures — `identifier_init`, `transfer_ownership`, `accept_ownership` —
+   keep `ERR_NOT_OWNER` and must NOT be changed.
+
+   **The standard admin components.** While this crate was parked, the faucet
+   replaced its two hand-written role-gated admin wrappers with the stock `PausableManager` and
+   `BlocklistManager`, driven by the stock `PauseActionNote` and `BlocklistConfigNote`. The
+   references this crate still carries to `xreserve::pause_admin::{pause,unpause}` and
+   `xreserve::blocklist_admin::{block_account,unblock_account}` (`src/rows_cf.rs`, `src/rows_gj.rs`,
+   `src/assertions_cf.rs`, `src/sanity/admin.rs`, `src/sanity/admin_restore.rs`) name procedures
+   that no longer exist; point them at the stock manager roots and build the notes through
+   `PauseActionNote` / `XReserveBlocklistConfigNote`. The note-script allowlist is 12 roots, not 14.
+5. Re-run the LNV row gates (`cargo run -p xusdc-validation --bin …` per this crate's README)
    against the matching node stack and extend `VALIDATION-RECORD.md` with the run.

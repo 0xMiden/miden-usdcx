@@ -390,7 +390,11 @@ fn masm_rust_constant_parity() {
     );
     let (shell_nums, _, _) = parse_masm_consts(SHELL_MASM);
     assert_eq!(
-        num(&shell_nums, "DEPOSIT_SCALE_EXP", "deposit_intent_parser.masm"),
+        num(
+            &shell_nums,
+            "DEPOSIT_SCALE_EXP",
+            "deposit_intent_parser.masm"
+        ),
         num(&policy_nums, "DEPOSIT_SCALE_EXP", "mint_policy.masm"),
         "deposit scale must match between parser shell and mint policy"
     );

@@ -29,6 +29,7 @@
 #   effects.
 
 use miden::protocol::active_account
+use miden::protocol::native_account
 use miden::standards::assets::asset_amount
 use miden::standards::utils
 use miden::core::math::u128
@@ -262,6 +263,73 @@ pub proc assert_nonce_unused
     # does not write the registry -- consuming the nonce is the mint policy's accept-path write.
     padw assert_eqw.err=ERR_XRESERVE_NONCE_REPLAY
     # => []
+end
+
+#! Packs the faucet's OWN account id into the frozen bytes32 form, on chain.
+#!
+#! The packing is right-aligned: sixteen zero bytes, then the id prefix as a u64 big-endian, then
+#! the id suffix as a u64 big-endian. Each id felt splits into its big-endian u32 halves
+#! (`u32split`), and each half byte-swaps into the u32-LE-packed limb form the key hash consumes.
+#! The two words are left in the orientation `bytes32_to_key` reads them in.
+#!
+#! Inputs:  []
+#! Outputs: [B_UPPER, B_LOWER]
+#!
+#! Where:
+#! - B_UPPER is limbs 4..8 — wire bytes 16..32, the account id itself.
+#! - B_LOWER is limbs 0..4 — wire bytes 0..16, the zero pad.
+#!
+#! Invocation: exec
+pub proc compute_own_id_bytes32
+    exec.native_account::get_id
+    # => [id_suffix, id_prefix]
+
+    # suffix -> limbs 6/7 (bytes 24..32): split into BE u32 halves, byte-swap each to LE-packed
+    u32split
+    # => [suffix_lo, suffix_hi, id_prefix]
+
+    exec.utils::swap_u32_bytes
+    # => [limb7, suffix_hi, id_prefix]
+
+    swap exec.utils::swap_u32_bytes
+    # => [limb6, limb7, id_prefix]
+
+    # prefix -> limbs 4/5 (bytes 16..24)
+    movup.2 u32split
+    # => [prefix_lo, prefix_hi, limb6, limb7]
+
+    exec.utils::swap_u32_bytes
+    # => [limb5, prefix_hi, limb6, limb7]
+
+    swap exec.utils::swap_u32_bytes
+    # => [B_UPPER] = [limb4, limb5, limb6, limb7]
+
+    # push the 16-byte zero pad as B_LOWER (limbs 0..4)
+    padw swapw
+    # => [B_UPPER, B_LOWER]
+end
+
+#! Derives the faucet's OWN identifier key on chain: the canonical bytes32->key hash of its account
+#! id in the frozen bytes32 packaging.
+#!
+#! This is the comparand the mint path checks a deposit intent's `remoteToken` against. Deriving it
+#! rather than reading a slot is what lets the faucet mint from the moment it exists: the account id
+#! is a hash over the account's own initial storage, so the identifier could never have been seeded
+#! into that storage, and the alternative was a post-deploy write with a window in front of it.
+#!
+#! Inputs:  []
+#! Outputs: [KEY]
+#!
+#! Where:
+#! - KEY is the canonical bytes32->key Word of the native account id's bytes32 packaging.
+#!
+#! Invocation: exec
+pub proc compute_own_identifier_key
+    exec.compute_own_id_bytes32
+    # => [B_UPPER, B_LOWER]
+
+    exec.encoding::bytes32_to_key
+    # => [KEY]
 end
 
 # HELPER PROCEDURES

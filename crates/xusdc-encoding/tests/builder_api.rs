@@ -14,18 +14,20 @@ mod support;
 use anyhow::{Context, Result};
 use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
-    AccountComponent, AccountProcedureRoot, AccountType, StorageMap, StorageSlot, StorageSlotName,
+    AccountComponent, AccountProcedureRoot, AccountType, RoleSymbol, StorageMap, StorageSlot,
+    StorageSlotName,
 };
 use miden_protocol::asset::{AssetAmount, TokenSymbol};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{PausableManager, PausableStorage};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::policies::{
-    BasicBlocklist, BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager,
+    BasicBlocklist, BlocklistManager, BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager,
 };
 use support::*;
 use xusdc_encoding::account::xreserve::{
-    XReserveStablecoinBuilder, XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH,
+    XReserveAdminAuthority, XReserveStablecoinBuilder, XReserveStablecoinBuilderError,
+    ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
 
@@ -544,41 +546,64 @@ fn build_seeds_the_domain_config_slots() -> Result<()> {
 // PAUSE COMPOSITION — Domain-Pauser-ONLY pause surface
 // ================================================================================================
 
-/// Domain-Pauser-only pause (Circle requires that only the Domain Pauser role may
-/// pause): the production composition exposes NO stock `PausableManager` procedure — neither the
-/// `pause` nor the `unpause` root appears in any composed component, so the ONLY pause surface is the
-/// DOM_PAUSER-gated `xreserve::pause_admin::{pause,unpause}`. The structural twin of the executing
-/// `owner_has_no_pause_path` / `owner_has_no_unpause_path` (pause_admin.rs).
+/// Domain-Pauser-only pause (Circle requires that only the Domain Pauser role may pause), now
+/// expressed in the stock components: the production composition installs the stock
+/// `PausableManager` and `BlocklistManager`, and the authority's role map is what keeps each of
+/// their procedures with its own role rather than with the administrator.
+///
+/// The structural half is here — every one of the four manager roots is really installed, and each
+/// really carries the role the faucet intends. The executing half is
+/// `administrator_has_no_pause_path` / `administrator_has_no_unpause_path` (pause_admin.rs) and the effects suite.
 #[test]
-fn builder_installs_no_stock_pause_manager() -> Result<()> {
+fn builder_installs_the_stock_managers_with_their_roles_assigned() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
     let components = production_builder(faucet, xreserve_component)
         .build_components()
         .context("production build_components must compose")?;
 
-    let banned = [
-        PausableManager::pause_root(),
-        PausableManager::unpause_root(),
-    ];
-    for component in &components {
-        for (root, _is_auth) in component.procedures() {
-            assert!(
-                !banned.contains(&root),
-                "the production composition must not expose the stock PausableManager \
-                 pause/unpause (Option 1, Domain-Pauser-only); found a banned root in component \
-                 '{}'",
-                component.metadata().name(),
-            );
-        }
+    let installed: std::collections::BTreeSet<_> = components
+        .iter()
+        .flat_map(|component| component.procedures().map(|(root, _is_auth)| root))
+        .collect();
+    let roles = XReserveAdminAuthority::new().procedure_roles().clone();
+    let pauser = RoleSymbol::new(DOM_PAUSER_ROLE).expect("the Domain pauser role symbol is valid");
+    let blocklist_manager = RoleSymbol::new(BLK_MANAGER_ROLE)
+        .expect("the blocklist administrator role symbol is valid");
+
+    for (what, root, role) in [
+        ("pause", PausableManager::pause_root(), &pauser),
+        ("unpause", PausableManager::unpause_root(), &pauser),
+        (
+            "block_account",
+            BlocklistManager::block_account_root(),
+            &blocklist_manager,
+        ),
+        (
+            "unblock_account",
+            BlocklistManager::unblock_account_root(),
+            &blocklist_manager,
+        ),
+    ] {
+        assert!(
+            installed.contains(&root),
+            "the production composition must install the stock manager procedure {what} — the \
+             standard config note calls that exact root"
+        );
+        assert_eq!(
+            roles.get(&root),
+            Some(role),
+            "the stock manager procedure {what} must be gated on its intended role, or the \
+             capability lands on the administrator instead"
+        );
     }
     Ok(())
 }
 
-/// The `is_paused` slot SURVIVES the Domain-Pauser-only pause model: the production composition
-/// carries the value slot `miden::standards::access::pausable::is_paused`, installed at v0.16 by
-/// the base `Pausable` component the builder adds (`Pausable::unpaused()`) — NOT by
-/// `FungibleFaucet` (v0.16 moved the slot OUT of the faucet) and NOT by the deliberately-absent
-/// `PausableManager`, which installs zero storage. Without this slot the mint/burn
+/// The `is_paused` slot's provenance: the production composition carries the value slot
+/// `miden::standards::access::pausable::is_paused`, installed at v0.16 by the base `Pausable`
+/// component the builder adds (`Pausable::unpaused()`) — NOT by `FungibleFaucet` (v0.16 moved the
+/// slot OUT of the faucet) and NOT by the stock `PausableManager`, which writes the slot but
+/// installs zero storage of its own. Without this slot the mint/burn
 /// `assert_not_paused` halt-gates break, reopening the pause halt-gap (Circle requires a paused
 /// faucet halt mint and burn) — and at v0.16 that failure is SILENT rather than loud: #3047 made
 /// `pausable::assert_not_paused` a no-op on accounts lacking the slot instead of trapping. This
@@ -735,9 +760,10 @@ fn build_rejects_wrong_token_symbol() -> Result<()> {
 /// POSITIVE shape: the production composition carries EXACTLY ONE component whose code is the
 /// installed xreserve library, EXACTLY ONE policy-manager component, and EXACTLY ONE each of the
 /// stock `MinBurnAmount` + `BasicBlocklist` companions — in the pinned install order
-/// [faucet, Pausable, xreserve, MinBurnAmount, BasicBlocklist, manager, Ownable2Step, RBAC,
-/// Authority]. A duplicate xreserve copy would hard-reject the account build with
-/// `DuplicateStorageSlotName`, so this is the build-time tripwire for that failure.
+/// [faucet, Pausable, xreserve, MinBurnAmount, BasicBlocklist, policy manager, PausableManager,
+/// BlocklistManager, RBAC, Authority]. A duplicate xreserve copy would hard-reject
+/// the account build with `DuplicateStorageSlotName`, so this is the build-time tripwire for that
+/// failure.
 #[test]
 fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
@@ -748,8 +774,8 @@ fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> 
 
     assert_eq!(
         components.len(),
-        9,
-        "the recomposed production set is exactly the nine pinned components"
+        10,
+        "the recomposed production set is exactly the ten pinned components"
     );
     let count_by_code = |code: &AccountComponentCode| {
         components

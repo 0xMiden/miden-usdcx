@@ -7,18 +7,16 @@
 //! document under `docs/`.
 //!
 //! The two new admin notes `block_account` / `unblock_account` are gated on the dedicated
-//! `BLK_MANAGER` role held by an EXTERNAL entity, NOT the owner. A block/unblock from the BLK_MANAGER
+//! `BLK_MANAGER` role held by an EXTERNAL entity, NOT the administrator. A block/unblock from the BLK_MANAGER
 //! holder SUCCEEDS and mutates the `blocked_accounts` map; from a stranger, the OWNER (two-way
-//! capability isolation — the owner has NO block power), or a DIFFERENT role holder (spoof-proof) it is
-//! REJECTED with the EXACT stock rbac role error; after the owner (as `ADMIN`) revokes `BLK_MANAGER`
+//! capability isolation — the administrator has NO block power), or a DIFFERENT role holder (spoof-proof) it is
+//! REJECTED with the EXACT stock rbac role error; after the administrator (as `ADMIN`) revokes `BLK_MANAGER`
 //! via the EXISTING `revoke_role` note, the former holder is REJECTED — rotation with ZERO new machinery.
 
 mod support;
 
 use anyhow::{Context, Result};
-use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey, StorageSlotName};
-use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_testing::{assert_transaction_executor_error, MockChain};
@@ -26,13 +24,12 @@ use miden_tx::TransactionExecutorError;
 use rstest::rstest;
 use support::*;
 use xusdc_encoding::account::xreserve::BLK_MANAGER_ROLE;
-use xusdc_encoding::note::xreserve_admin::{XReserveBlockAccountNote, XReserveUnblockAccountNote};
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
 // The production builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3),
 // BLK_MANAGER = id(4).
-fn owner() -> AccountId {
+fn administrator() -> AccountId {
     test_account_id(1)
 }
 fn dom_manager() -> AccountId {
@@ -48,20 +45,6 @@ fn stranger() -> AccountId {
 /// immaterial there — only the SENDER's role is under test).
 fn target() -> AccountId {
     test_account_id(50)
-}
-
-/// The exact stock role error these tests pin (assert-specific-error-in-tests).
-fn err_sender_lacks_role() -> MasmError {
-    MasmError::from_static_str("note sender does not hold the required role")
-}
-
-fn note_rng(seed: u64) -> RandomCoin {
-    RandomCoin::new(Word::from([
-        Felt::from(seed as u32),
-        Felt::from((seed >> 32) as u32),
-        Felt::from(5u32),
-        Felt::from(9u32),
-    ]))
 }
 
 /// The stock `blocked_accounts` map slot (installed by the `BasicBlocklist` companion), the primitive's
@@ -143,9 +126,8 @@ async fn run_block(
     target: AccountId,
     seed: u64,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note =
-        XReserveBlockAccountNote::create(sender, test_faucet_id(1), target, &mut note_rng(seed))
-            .expect("building the block_account note (test-setup invariant)");
+    let note = stock_block_note(sender, test_faucet_id(1), target, seed)
+        .expect("building the block_account note (test-setup invariant)");
     chain
         .build_transaction(account.clone())
         .unauthenticated_input_note(note.clone())
@@ -163,9 +145,8 @@ async fn run_unblock(
     target: AccountId,
     seed: u64,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note =
-        XReserveUnblockAccountNote::create(sender, test_faucet_id(1), target, &mut note_rng(seed))
-            .expect("building the unblock_account note (test-setup invariant)");
+    let note = stock_unblock_note(sender, test_faucet_id(1), target, seed)
+        .expect("building the unblock_account note (test-setup invariant)");
     chain
         .build_transaction(account.clone())
         .unauthenticated_input_note(note.clone())
@@ -232,7 +213,7 @@ async fn unblock_by_blk_manager_holder_succeeds_and_clears_the_map() -> Result<(
 /// map is unchanged.
 #[rstest]
 #[case::stranger(stranger())]
-#[case::owner(owner())]
+#[case::owner(administrator())]
 #[case::dom_manager(dom_manager())]
 #[tokio::test]
 async fn block_by_non_blk_manager_is_rejected(#[case] sender: AccountId) -> Result<()> {
@@ -254,7 +235,7 @@ async fn block_by_non_blk_manager_is_rejected(#[case] sender: AccountId) -> Resu
 /// rejected with the EXACT role error while the account STAYS blocked.
 #[rstest]
 #[case::stranger(stranger())]
-#[case::owner(owner())]
+#[case::owner(administrator())]
 #[case::dom_manager(dom_manager())]
 #[tokio::test]
 async fn unblock_by_non_blk_manager_is_rejected(#[case] sender: AccountId) -> Result<()> {
@@ -278,7 +259,7 @@ async fn unblock_by_non_blk_manager_is_rejected(#[case] sender: AccountId) -> Re
     Ok(())
 }
 
-/// ROTATION with ZERO new machinery: the owner (as the built-in `ADMIN`, `BLK_MANAGER`'s effective
+/// ROTATION with ZERO new machinery: the administrator (as the built-in `ADMIN`, `BLK_MANAGER`'s effective
 /// admin) revokes `BLK_MANAGER` from its holder via the EXISTING `revoke_role` note; the former
 /// holder can then no longer block — the block is rejected with the EXACT role error.
 #[tokio::test]
@@ -292,17 +273,17 @@ async fn former_blk_manager_holder_rejected_after_revoke() -> Result<()> {
         .await
         .expect("precondition: the BLK_MANAGER holder can block before revoke");
 
-    // The owner (ADMIN) revokes BLK_MANAGER from its holder via the existing revoke_role note.
+    // The administrator (ADMIN) revokes BLK_MANAGER from its holder via the existing revoke_role note.
     let revoked = run_revoke_role_against(
         &gm.harness.mock_chain,
         &faucet,
-        owner(),
+        administrator(),
         &blk_role,
         blk_manager(),
         7,
     )
     .await
-    .expect("the owner (ADMIN) revokes BLK_MANAGER via the existing revoke_role note");
+    .expect("the administrator (ADMIN) revokes BLK_MANAGER via the standard role-action note");
     let mut evolved = faucet.clone();
     evolved.apply_patch(revoked.account_patch())?;
 

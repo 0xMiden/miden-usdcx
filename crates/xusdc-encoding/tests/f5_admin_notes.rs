@@ -2,23 +2,24 @@
 //!
 //! Every admin operation reaches the faucet as a note, and two independent things must hold for it
 //! to take effect. The note's script must be allowlisted, or network auth refuses it before any of
-//! its code runs; and the admin procedure it calls must accept the sender, which is the owner or a
-//! specific role depending on the operation. Each test here drives a real shipped note and pins
-//! both layers, so neither can start carrying the other.
+//! its code runs; and the admin procedure it calls must accept the sender, which is the built-in
+//! administrator role or a specific role depending on the operation. Each test here drives a real
+//! shipped note and pins both layers, so neither can start carrying the other.
 //!
 //! Parameters travel in note STORAGE, committed by whoever created the note — never in note
 //! arguments, which the network executor controls and could therefore rewrite. The `set_attester`
 //! note is the worked example the others follow.
 //!
-//! One operation is covered by its absence. There is no admissible note for `set_role_admin`: the
-//! role-delegation graph is seeded when the account is built and frozen there, and rotation happens
-//! through grant and revoke. Its section below builds that exact note anyway and shows auth
-//! rejecting it — negative coverage of a capability the faucet deliberately does not have.
+//! Role management is the standard role-action note, and its ONE script root carries four actions:
+//! grant, revoke, set-role-admin and renounce. Allowlisting is per root, so admitting it admits all
+//! four, and the sections below drive each of them against the production account — including the
+//! two the faucet gained with the note: re-pointing a role's administrator (gated on that role's own
+//! effective admin, so the built-in administrator is refused for a role delegated away) and a holder
+//! renouncing its own membership.
 
 mod support;
 
 use std::collections::BTreeMap;
-use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
@@ -27,35 +28,22 @@ use miden_protocol::account::{
 };
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::MasmError;
-use miden_protocol::note::{
-    Note, NoteAssets, NoteAttachment, NoteAttachments, NoteRecipient, NoteScript, NoteScriptRoot,
-    NoteStorage, NoteTag, NoteType, PartialNoteMetadata,
-};
+use miden_protocol::note::Note;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
-use miden_standards::code_builder::CodeBuilder;
-use miden_standards::errors::standards::ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED;
-use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
+use miden_standards::note::{BlocklistConfigNote, PauseActionNote, RbacAction, RbacActionNote};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
-use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
+use xusdc_encoding::account::xreserve::{BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveAcceptOwnershipNote, XReserveBlockAccountNote, XReserveGrantRoleNote,
-    XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote, XReserveSetAttesterNote,
-    XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
-    XReserveUnblockAccountNote, XReserveUnpauseNote,
+    XReserveIdentifierInitNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
+    XReserveSetMinBurnSizeNote,
 };
-
-/// The exact stock role error the DOM_PAUSER gate traps (rbac.masm:50 ERR_SENDER_LACKS_ROLE).
-/// Defined per-file (as in pause_admin.rs / role_admin.rs); not exported from the shared harness.
-fn err_sender_lacks_role() -> MasmError {
-    MasmError::from_static_str("note sender does not hold the required role")
-}
 
 /// The exact stock RBAC delegation error (v0.16: rbac.masm:66 ERR_SENDER_NOT_ROLE_ADMIN — #3215
 /// re-keyed the v15 ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN and dropped its owner leg).
 fn err_not_role_admin() -> MasmError {
-    // v16 #3215: the owner path is gone — the stock error re-keyed from
+    // v16 #3215: the administrator path is gone — the stock error re-keyed from
     // ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN to ERR_SENDER_NOT_ROLE_ADMIN (rbac.masm:66).
     MasmError::from_static_str("note sender does not hold the role's admin role")
 }
@@ -66,6 +54,17 @@ fn pauser_sym() -> RoleSymbol {
 
 fn manager_sym() -> RoleSymbol {
     RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol")
+}
+
+fn blk_manager_sym() -> RoleSymbol {
+    RoleSymbol::new(BLK_MANAGER_ROLE).expect("BLK_MANAGER is a fixed valid role symbol")
+}
+
+/// The exact stock error the membership assertion raises when a role is cleared for an account
+/// that does not hold it (`rbac.masm` ERR_ACCOUNT_NOT_IN_ROLE) — the trap a renounce by a
+/// non-holder hits.
+fn err_account_not_in_role() -> MasmError {
+    MasmError::from_static_str("account does not hold the role")
 }
 
 /// The `[is_member,0,0,0]` / marker word.
@@ -88,23 +87,79 @@ fn note_rng(seed: u64) -> RandomCoin {
     ]))
 }
 
-/// The shipped `set_attester` admin note, consumed against the production network-auth faucet:
-/// owner-sent SUCCEEDS and writes the attester marker at the creator-committed commitment key (the
-/// storage-param marshaling is correct); a non-owner sender PASSES network auth (the script is
-/// allowlisted) but TRAPS at the proc's owner gate — the layered-auth proof.
+/// A standard role-action note carrying `action`, sent by `sender` and tagged for `faucet_id`. The
+/// serial is drawn from `rng` so note ids stay deterministic; every gate reads the sender.
+fn stock_role_note<R: FeltRng>(
+    sender: AccountId,
+    faucet_id: AccountId,
+    action: RbacAction,
+    rng: &mut R,
+) -> Result<Note> {
+    let note = RbacActionNote::builder()
+        .sender(sender)
+        .account(faucet_id)
+        .action(action)
+        .serial_number(rng.draw_word())
+        .build()
+        .map_err(|e| anyhow::anyhow!("building the standard role-action note: {e}"))?;
+    Ok(Note::from(note))
+}
+
+/// A standard role-action note granting `role` to `member`.
+fn stock_grant_role_note<R: FeltRng>(
+    sender: AccountId,
+    faucet_id: AccountId,
+    role: RoleSymbol,
+    member: AccountId,
+    rng: &mut R,
+) -> Result<Note> {
+    stock_role_note(
+        sender,
+        faucet_id,
+        RbacAction::GrantRole {
+            role,
+            account: member,
+        },
+        rng,
+    )
+}
+
+/// A standard role-action note revoking `role` from `member`.
+fn stock_revoke_role_note<R: FeltRng>(
+    sender: AccountId,
+    faucet_id: AccountId,
+    role: RoleSymbol,
+    member: AccountId,
+    rng: &mut R,
+) -> Result<Note> {
+    stock_role_note(
+        sender,
+        faucet_id,
+        RbacAction::RevokeRole {
+            role,
+            account: member,
+        },
+        rng,
+    )
+}
+
+/// The shipped `set_attester` admin note, consumed against the production network-auth faucet: an
+/// `ADMIN` holder SUCCEEDS and writes the attester marker at the creator-committed commitment key
+/// (the storage-param marshaling is correct); anyone else PASSES network auth (the script is
+/// allowlisted) but TRAPS at the proc's authority gate — the layered-auth proof.
 #[tokio::test]
-async fn set_attester_admin_note_owner_writes_and_nonowner_traps() -> Result<()> {
+async fn set_attester_admin_note_admin_writes_and_nonadmin_traps() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    // setup_production_faucet seeds the owner as test_account_id(1).
+    // setup_production_faucet seeds the administrator as test_account_id(1).
     let owner = test_account_id(1);
     let commitment = gen_attester(1, b"attester").commitment;
 
     // Owner-sent: PASSES network auth (allowlisted) AND the proc owner gate — writes state.
     let note = XReserveSetAttesterNote::create(owner, faucet_id, commitment, 1, &mut note_rng(1))
-        .context("building the owner set_attester note")?;
+        .context("building the administrator set_attester note")?;
     let tx = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
@@ -142,7 +197,7 @@ async fn set_attester_admin_note_owner_writes_and_nonowner_traps() -> Result<()>
          (storage-param marshaling correct)",
     );
 
-    // Non-owner-sent: PASSES network auth (allowlisted script) but TRAPS at the proc owner gate.
+    // Non-administrator-sent: PASSES network auth (allowlisted script) but TRAPS at the proc owner gate.
     let bad = XReserveSetAttesterNote::create(
         test_account_id(9),
         faucet_id,
@@ -150,15 +205,15 @@ async fn set_attester_admin_note_owner_writes_and_nonowner_traps() -> Result<()>
         0,
         &mut note_rng(2),
     )
-    .context("building the non-owner set_attester note")?;
+    .context("building the non-administrator set_attester note")?;
     let result = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(bad.clone())
         .build()
-        .context("non-owner set_attester tx build")?
+        .context("non-administrator set_attester tx build")?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     Ok(())
 }
 
@@ -173,13 +228,13 @@ fn set_attester_note_script_root_is_pinned() {
     );
 }
 
-// IDENTIFIER_INIT (allowlist row 12) — owner-gated, init-once seeding of the one domain-config
+// IDENTIFIER_INIT — administrator-gated, init-once seeding of the one domain-config
 // field that cannot be known at build time. The domain, source domain, and xReserve contract
 // address are all seeded by the builder; only the identifier, which derives from the account's own
 // id, is written after deployment
 // ================================================================================================
 
-/// The five config words as `read_domain_config_words` returns them after the owner's init:
+/// The five config words as `read_domain_config_words` returns them after the administrator's init:
 /// indexes 0-3 are the PRODUCTION BUILD-SEED (`with_domain_config(TEST_DOMAIN,
 /// TEST_SOURCE_DOMAIN, test_xreserve_contract())` — never touched by the init note), index 4 the
 /// note-committed identifier.
@@ -225,7 +280,7 @@ fn scalar_word(f: Felt) -> Word {
 /// reads back the production build-seed + the committed identifier (the storage-param marshaling
 /// is correct).
 #[tokio::test]
-async fn identifier_init_owner_writes_only_the_identifier_slot() -> Result<()> {
+async fn identifier_init_admin_writes_only_the_identifier_slot() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
@@ -233,7 +288,7 @@ async fn identifier_init_owner_writes_only_the_identifier_slot() -> Result<()> {
     let owner = test_account_id(1);
 
     let note = XReserveIdentifierInitNote::create(owner, faucet_id, &mut note_rng(13))
-        .context("building the owner identifier_init note")?;
+        .context("building the administrator identifier_init note")?;
     let tx = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
@@ -270,43 +325,43 @@ async fn identifier_init_owner_writes_only_the_identifier_slot() -> Result<()> {
     Ok(())
 }
 
-/// A non-owner identifier_init note PASSES network auth (allowlisted) but TRAPS at the proc's
-/// owner gate.
-async fn assert_identifier_init_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
+/// A non-administrator identifier_init note PASSES network auth (allowlisted) but TRAPS at the
+/// proc's authority gate, which resolves to the built-in `ADMIN` role.
+async fn assert_identifier_init_nonadmin_traps(sender: AccountId, seed: u64) -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let note = XReserveIdentifierInitNote::create(sender, faucet_id, &mut note_rng(seed))
-        .context("building the non-owner identifier_init note")?;
+        .context("building the non-administrator identifier_init note")?;
     let result = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
         .build()
-        .context("non-owner identifier_init tx build")?
+        .context("non-administrator identifier_init tx build")?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     Ok(())
 }
 
 #[tokio::test]
 async fn identifier_init_dom_pauser_traps() -> Result<()> {
-    assert_identifier_init_nonowner_traps(test_account_id(2), 14).await
+    assert_identifier_init_nonadmin_traps(test_account_id(2), 14).await
 }
 
 #[tokio::test]
 async fn identifier_init_third_party_traps() -> Result<()> {
-    assert_identifier_init_nonowner_traps(test_account_id(99), 15).await
+    assert_identifier_init_nonadmin_traps(test_account_id(99), 15).await
 }
 
-/// init-once: a SECOND identifier_init — even from the owner — traps
+/// init-once: a SECOND identifier_init — even from the administrator — traps
 /// `ERR_XRESERVE_IDENTIFIER_REINIT` (the identifier slot IS the init-once sentinel). The first
 /// init is SEEDED on-chain (block-provable) so the second sees initialized state. Both notes are
 /// built against the REAL faucet id (the seed closure receives it), so both derive the SAME own-id
 /// identifier key — the second write hits the armed sentinel regardless of the value.
 #[tokio::test]
-async fn identifier_init_reinit_traps_even_from_owner() -> Result<()> {
+async fn identifier_init_reinit_traps_even_from_the_administrator() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, faucet_id| {
         vec![
             XReserveIdentifierInitNote::create(test_account_id(1), faucet_id, &mut note_rng(16))
@@ -358,7 +413,7 @@ async fn identifier_init_note_args_are_inert() -> Result<()> {
     let owner = test_account_id(1);
 
     let note = XReserveIdentifierInitNote::create(owner, faucet_id, &mut note_rng(18))
-        .context("building the owner identifier_init note")?;
+        .context("building the administrator identifier_init note")?;
     let bogus_args = Word::from([424_242u32, 7, 7, 7]);
     let tx = chain
         .build_transaction(faucet_id)
@@ -391,7 +446,7 @@ fn identifier_init_note_script_root_is_pinned() {
     );
 }
 
-// SET_MIN_BURN_SIZE (allowlist row 4) — owner-gated floor setter. The note first asserts the new
+// SET_MIN_BURN_SIZE (allowlist row 4) — ADMIN-gated floor setter. The note first asserts the new
 // floor is at least 1 (which is what makes a zero-amount burn impossible) and then calls the
 // standard `min_burn_amount::set_min_burn_amount`, which writes the standard policy's own slot
 // ================================================================================================
@@ -402,10 +457,10 @@ fn expected_min_burn() -> Word {
     scalar_word(Felt::try_from(NEW_MIN_BURN).expect("min burn within the field"))
 }
 
-/// Owner-sent set_min_burn_size PASSES auth (allowlisted) + the proc owner gate and writes
+/// An ADMIN-sent set_min_burn_size PASSES auth (allowlisted) + the proc's authority gate and writes
 /// `[new_min,0,0,0]` into the STOCK `MinBurnAmount` slot.
 #[tokio::test]
-async fn set_min_burn_size_owner_writes_slot() -> Result<()> {
+async fn set_min_burn_size_administrator_writes_slot() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
@@ -414,7 +469,7 @@ async fn set_min_burn_size_owner_writes_slot() -> Result<()> {
 
     let note =
         XReserveSetMinBurnSizeNote::create(owner, faucet_id, NEW_MIN_BURN, &mut note_rng(40))
-            .context("building the owner set_min_burn_size note")?;
+            .context("building the administrator set_min_burn_size note")?;
     let tx = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
@@ -438,39 +493,39 @@ async fn set_min_burn_size_owner_writes_slot() -> Result<()> {
     Ok(())
 }
 
-/// A non-owner set_min_burn_size note PASSES auth but TRAPS at the proc's owner gate.
-async fn assert_set_min_burn_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
+/// A set_min_burn_size note from a sender without ADMIN PASSES auth but TRAPS at the authority gate.
+async fn assert_set_min_burn_nonadmin_traps(sender: AccountId, seed: u64) -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let note =
         XReserveSetMinBurnSizeNote::create(sender, faucet_id, NEW_MIN_BURN, &mut note_rng(seed))
-            .context("building the non-owner set_min_burn_size note")?;
+            .context("building the non-administrator set_min_burn_size note")?;
     let result = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
         .build()
-        .context("non-owner set_min_burn_size tx build")?
+        .context("non-administrator set_min_burn_size tx build")?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     Ok(())
 }
 
 #[tokio::test]
 async fn set_min_burn_size_dom_pauser_traps() -> Result<()> {
-    assert_set_min_burn_nonowner_traps(test_account_id(2), 41).await
+    assert_set_min_burn_nonadmin_traps(test_account_id(2), 41).await
 }
 
 #[tokio::test]
 async fn set_min_burn_size_dom_manager_traps() -> Result<()> {
-    assert_set_min_burn_nonowner_traps(test_account_id(3), 42).await
+    assert_set_min_burn_nonadmin_traps(test_account_id(3), 42).await
 }
 
 #[tokio::test]
 async fn set_min_burn_size_third_party_traps() -> Result<()> {
-    assert_set_min_burn_nonowner_traps(test_account_id(99), 43).await
+    assert_set_min_burn_nonadmin_traps(test_account_id(99), 43).await
 }
 
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the written min burn size.
@@ -484,7 +539,7 @@ async fn set_min_burn_size_note_args_are_inert() -> Result<()> {
 
     let note =
         XReserveSetMinBurnSizeNote::create(owner, faucet_id, NEW_MIN_BURN, &mut note_rng(44))
-            .context("building the owner set_min_burn_size note")?;
+            .context("building the administrator set_min_burn_size note")?;
     let bogus_args = Word::from([999u32, 1, 2, 3]);
     let tx = chain
         .build_transaction(faucet_id)
@@ -510,12 +565,12 @@ async fn set_min_burn_size_note_args_are_inert() -> Result<()> {
     Ok(())
 }
 
-/// The production note script's zero-floor guard: an OWNER-sent note carrying `new_min = 0` PASSES
-/// network auth (allowlisted) AND the owner gate would admit the sender, but the note-side
+/// The production note script's zero-floor guard: an ADMIN-sent note carrying `new_min = 0` PASSES
+/// network auth (allowlisted) AND the authority gate would admit the sender, but the note-side
 /// `new_min >= 1` assert fires BEFORE the stock `set_min_burn_amount` call (the stock setter
 /// itself accepts 0) — the EXACT floor error, and the STOCK slot stays at the build seed.
 #[tokio::test]
-async fn set_min_burn_size_zero_floor_from_owner_traps() -> Result<()> {
+async fn set_min_burn_size_zero_floor_from_the_administrator_traps() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
@@ -523,7 +578,7 @@ async fn set_min_burn_size_zero_floor_from_owner_traps() -> Result<()> {
     let owner = test_account_id(1);
 
     let note = XReserveSetMinBurnSizeNote::create(owner, faucet_id, 0, &mut note_rng(45))
-        .context("building the owner zero-floor set_min_burn_size note")?;
+        .context("building the administrator zero-floor set_min_burn_size note")?;
     let result = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
@@ -568,7 +623,7 @@ async fn pause_dom_pauser_sets_is_paused() -> Result<()> {
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
 
-    let note = XReservePauseNote::create(test_account_id(2), faucet_id, &mut note_rng(50))
+    let note = stock_pause_note(test_account_id(2), faucet_id, 50)
         .context("building the DOM_PAUSER pause note")?;
     let tx = chain
         .build_transaction(faucet_id)
@@ -587,14 +642,14 @@ async fn pause_dom_pauser_sets_is_paused() -> Result<()> {
 }
 
 /// A non-DOM_PAUSER pause note PASSES auth but TRAPS at the proc's role gate — including the OWNER
-/// (Circle model: the owner has NO pause path).
+/// (Circle model: the administrator has NO pause path).
 async fn assert_pause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReservePauseNote::create(sender, faucet_id, &mut note_rng(seed))
-        .context("building the non-pauser pause note")?;
+    let note =
+        stock_pause_note(sender, faucet_id, seed).context("building the non-pauser pause note")?;
     let result = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
@@ -607,7 +662,7 @@ async fn assert_pause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<()
 }
 
 #[tokio::test]
-async fn pause_owner_traps() -> Result<()> {
+async fn pause_administrator_traps() -> Result<()> {
     assert_pause_nonpauser_traps(test_account_id(1), 51).await
 }
 
@@ -624,7 +679,7 @@ async fn pause_note_args_are_inert() -> Result<()> {
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
 
-    let note = XReservePauseNote::create(test_account_id(2), faucet_id, &mut note_rng(53))
+    let note = stock_pause_note(test_account_id(2), faucet_id, 53)
         .context("building the DOM_PAUSER pause note")?;
     let bogus_args = Word::from([5u32, 5, 5, 5]);
     let tx = chain
@@ -644,43 +699,37 @@ async fn pause_note_args_are_inert() -> Result<()> {
     Ok(())
 }
 
-/// masm-rust-constant-parity for the pause note (the failure prints the actual hex).
-#[test]
-fn pause_note_script_root_is_pinned() {
-    let root = XReservePauseNote::script_root();
-    assert_eq!(
-        root,
-        XReservePauseNote::pinned_script_root(),
-        "masm-rust-constant-parity: pause note-script root == the pinned constant (actual = {})",
-        root.to_hex(),
-    );
-}
-
-/// The compiled block-account note script matches its pinned root constant.
+/// The standard pause-action note's script root, pinned.
 ///
-/// The pin binds transitively to the digest of `blocklist_admin::block_account`, which the note
-/// calls, so editing either the note or the procedure changes the root and fails here — forcing the
-/// re-pin to be a deliberate act rather than a silent drift between the Rust constant and the MASM.
+/// Pause administration no longer ships a faucet-owned note script, so there is no MASM digest to
+/// bind to — but the root is still a load-bearing allowlist entry, and a protocol bump that changed
+/// the standard script would silently swap what the faucet admits. Pinning the root makes that a
+/// deliberate re-pin instead of a quiet drift.
+const PAUSE_ACTION_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0xe2e4588e0d7a76ad53817669c10b7e7d149d501f5bb6148687f587f59c06b35f";
+
+/// The standard blocklist-config note's script root, pinned for the same reason.
+const BLOCKLIST_CONFIG_NOTE_SCRIPT_ROOT_HEX: &str =
+    "0x886d61a0c638ad270aa602b0d2d03b6a5d5f51772b6408cf102c032452304471";
+
 #[test]
-fn block_account_note_script_root_is_pinned() {
-    let root = XReserveBlockAccountNote::script_root();
+fn stock_pause_action_note_script_root_is_pinned() {
+    let root = PauseActionNote::script_root();
     assert_eq!(
-        root,
-        XReserveBlockAccountNote::pinned_script_root(),
-        "masm-rust-constant-parity: block_account note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
+        PAUSE_ACTION_NOTE_SCRIPT_ROOT_HEX,
+        "the standard pause-action note script root moved; the allowlist admits this exact root, so          a protocol bump that changes it must be re-pinned deliberately (actual = {})",
         root.to_hex(),
     );
 }
 
-/// The compiled unblock-account note script matches its pinned root constant, binding transitively
-/// to the digest of `blocklist_admin::unblock_account` as above.
 #[test]
-fn unblock_account_note_script_root_is_pinned() {
-    let root = XReserveUnblockAccountNote::script_root();
+fn stock_blocklist_config_note_script_root_is_pinned() {
+    let root = BlocklistConfigNote::script_root();
     assert_eq!(
-        root,
-        XReserveUnblockAccountNote::pinned_script_root(),
-        "masm-rust-constant-parity: unblock_account note-script root == the pinned constant (actual = {})",
+        root.to_hex(),
+        BLOCKLIST_CONFIG_NOTE_SCRIPT_ROOT_HEX,
+        "the standard blocklist-config note script root moved; the allowlist admits this exact          root, so a protocol bump that changes it must be re-pinned deliberately (actual = {})",
         root.to_hex(),
     );
 }
@@ -693,10 +742,8 @@ fn unblock_account_note_script_root_is_pinned() {
 async fn paused_faucet() -> Result<(MockChain, AccountId)> {
     let route = test_faucet_id(1);
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| {
-        vec![
-            XReservePauseNote::create(test_account_id(2), route, &mut note_rng(60))
-                .expect("building the seeded pause note"),
-        ]
+        vec![stock_pause_note(test_account_id(2), route, 60)
+            .expect("building the seeded pause note")]
     })
     .context("building the production faucet with a seeded pause")?;
     let mut chain = pf.mock_chain;
@@ -720,7 +767,7 @@ async fn paused_faucet() -> Result<(MockChain, AccountId)> {
 #[tokio::test]
 async fn unpause_dom_pauser_clears_is_paused() -> Result<()> {
     let (chain, faucet_id) = paused_faucet().await?;
-    let note = XReserveUnpauseNote::create(test_account_id(2), faucet_id, &mut note_rng(61))
+    let note = stock_unpause_note(test_account_id(2), faucet_id, 61)
         .context("building the DOM_PAUSER unpause note")?;
     let tx = chain
         .build_transaction(faucet_id)
@@ -744,7 +791,7 @@ async fn assert_unpause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReserveUnpauseNote::create(sender, faucet_id, &mut note_rng(seed))
+    let note = stock_unpause_note(sender, faucet_id, seed)
         .context("building the non-pauser unpause note")?;
     let result = chain
         .build_transaction(faucet_id)
@@ -758,7 +805,7 @@ async fn assert_unpause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<
 }
 
 #[tokio::test]
-async fn unpause_owner_traps() -> Result<()> {
+async fn unpause_administrator_traps() -> Result<()> {
     assert_unpause_nonpauser_traps(test_account_id(1), 62).await
 }
 
@@ -771,7 +818,7 @@ async fn unpause_third_party_traps() -> Result<()> {
 #[tokio::test]
 async fn unpause_note_args_are_inert() -> Result<()> {
     let (chain, faucet_id) = paused_faucet().await?;
-    let note = XReserveUnpauseNote::create(test_account_id(2), faucet_id, &mut note_rng(64))
+    let note = stock_unpause_note(test_account_id(2), faucet_id, 64)
         .context("building the DOM_PAUSER unpause note")?;
     let bogus_args = Word::from([8u32, 8, 8, 8]);
     let tx = chain
@@ -791,18 +838,6 @@ async fn unpause_note_args_are_inert() -> Result<()> {
     Ok(())
 }
 
-/// masm-rust-constant-parity for the unpause note (the failure prints the actual hex).
-#[test]
-fn unpause_note_script_root_is_pinned() {
-    let root = XReserveUnpauseNote::script_root();
-    assert_eq!(
-        root,
-        XReserveUnpauseNote::pinned_script_root(),
-        "masm-rust-constant-parity: unpause note-script root == the pinned constant (actual = {})",
-        root.to_hex(),
-    );
-}
-
 // GRANT_ROLE (allowlist row 8) — STOCK RBAC grant (CANARY: a note calling a stock component proc)
 // ================================================================================================
 
@@ -818,10 +853,10 @@ async fn assert_grant_role_authorized(
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let grantee = test_account_id(4);
-    let note = XReserveGrantRoleNote::create(
+    let note = stock_grant_role_note(
         sender,
         faucet_id,
-        Felt::from(&role),
+        role.clone(),
         grantee,
         &mut note_rng(seed),
     )
@@ -849,11 +884,11 @@ async fn assert_grant_role_authorized(
     Ok(())
 }
 
-/// The owner's role administration flows through its ADMIN
+/// The administrator's role administration flows through its ADMIN
 /// membership — it administers DOM_MANAGER (whose effective admin defaults to ADMIN), no longer
 /// the delegated DOM_PAUSER.
 #[tokio::test]
-async fn grant_role_owner_authorized() -> Result<()> {
+async fn grant_role_administrator_authorized() -> Result<()> {
     assert_grant_role_authorized(test_account_id(1), manager_sym(), 70).await
 }
 
@@ -862,23 +897,23 @@ async fn grant_role_dom_manager_authorized() -> Result<()> {
     assert_grant_role_authorized(test_account_id(3), pauser_sym(), 71).await
 }
 
-/// Delegation is EXCLUSIVE — the owner (an ADMIN member, not a DOM_MANAGER
+/// Delegation is EXCLUSIVE — the administrator (an ADMIN member, not a DOM_MANAGER
 /// holder) can no longer grant the DOM_MANAGER-administered DOM_PAUSER; the delegation gate
 /// traps it like any non-admin sender.
 #[tokio::test]
-async fn grant_role_owner_on_delegated_role_traps() -> Result<()> {
+async fn grant_role_administrator_on_delegated_role_traps() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReserveGrantRoleNote::create(
+    let note = stock_grant_role_note(
         test_account_id(1),
         faucet_id,
-        Felt::from(&pauser_sym()),
+        pauser_sym(),
         test_account_id(4),
         &mut note_rng(73),
     )
-    .context("building the owner grant-on-delegated-role note")?;
+    .context("building the administrator grant-on-delegated-role note")?;
     let result = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
@@ -897,10 +932,10 @@ async fn grant_role_third_party_traps() -> Result<()> {
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReserveGrantRoleNote::create(
+    let note = stock_grant_role_note(
         test_account_id(99),
         faucet_id,
-        Felt::from(&pauser_sym()),
+        pauser_sym(),
         test_account_id(4),
         &mut note_rng(72),
     )
@@ -925,14 +960,14 @@ async fn grant_role_note_args_are_inert() -> Result<()> {
     let faucet_id = pf.faucet_id;
     let grantee = test_account_id(5);
     // DOM_PAUSER's effective admin is DOM_MANAGER, so the grant must be manager-sent.
-    let note = XReserveGrantRoleNote::create(
+    let note = stock_grant_role_note(
         test_account_id(3),
         faucet_id,
-        Felt::from(&pauser_sym()),
+        pauser_sym(),
         grantee,
         &mut note_rng(73),
     )
-    .context("building the owner grant_role note")?;
+    .context("building the administrator grant_role note")?;
     let bogus_args = Word::from([7u32, 7, 7, 7]);
     let tx = chain
         .build_transaction(faucet_id)
@@ -956,27 +991,15 @@ async fn grant_role_note_args_are_inert() -> Result<()> {
     Ok(())
 }
 
-/// masm-rust-constant-parity for the grant_role note (the failure prints the actual hex).
-#[test]
-fn grant_role_note_script_root_is_pinned() {
-    let root = XReserveGrantRoleNote::script_root();
-    assert_eq!(
-        root,
-        XReserveGrantRoleNote::pinned_script_root(),
-        "masm-rust-constant-parity: grant_role note-script root == the pinned constant (actual = {})",
-        root.to_hex(),
-    );
-}
-
-// SET_MAX_SUPPLY (allowlist row 5) — owner-gated stock max-supply setter
+// SET_MAX_SUPPLY — administrator-gated stock max-supply setter
 // ================================================================================================
 
 const NEW_MAX_SUPPLY: u64 = 2_000_000;
 
-/// Owner-sent set_max_supply PASSES auth + the owner Authority gate (the production faucet is
+/// Owner-sent set_max_supply PASSES auth + the administrator Authority gate (the production faucet is
 /// max-supply-mutable + unpaused) and writes word[1] (max_supply) of the token_config slot.
 #[tokio::test]
-async fn set_max_supply_owner_writes_cap() -> Result<()> {
+async fn set_max_supply_administrator_writes_cap() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
@@ -987,7 +1010,7 @@ async fn set_max_supply_owner_writes_cap() -> Result<()> {
         NEW_MAX_SUPPLY,
         &mut note_rng(90),
     )
-    .context("building the owner set_max_supply note")?;
+    .context("building the administrator set_max_supply note")?;
     let tx = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
@@ -1006,39 +1029,39 @@ async fn set_max_supply_owner_writes_cap() -> Result<()> {
     Ok(())
 }
 
-/// A non-owner set_max_supply note PASSES auth but TRAPS at the owner Authority gate.
-async fn assert_set_max_supply_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
+/// A set_max_supply note from a sender without ADMIN PASSES auth but TRAPS at the Authority gate.
+async fn assert_set_max_supply_nonadmin_traps(sender: AccountId, seed: u64) -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let note =
         XReserveSetMaxSupplyNote::create(sender, faucet_id, NEW_MAX_SUPPLY, &mut note_rng(seed))
-            .context("building the non-owner set_max_supply note")?;
+            .context("building the non-administrator set_max_supply note")?;
     let result = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
         .build()
-        .context("non-owner set_max_supply tx build")?
+        .context("non-administrator set_max_supply tx build")?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     Ok(())
 }
 
 #[tokio::test]
 async fn set_max_supply_dom_pauser_traps() -> Result<()> {
-    assert_set_max_supply_nonowner_traps(test_account_id(2), 91).await
+    assert_set_max_supply_nonadmin_traps(test_account_id(2), 91).await
 }
 
 #[tokio::test]
 async fn set_max_supply_dom_manager_traps() -> Result<()> {
-    assert_set_max_supply_nonowner_traps(test_account_id(3), 92).await
+    assert_set_max_supply_nonadmin_traps(test_account_id(3), 92).await
 }
 
 #[tokio::test]
 async fn set_max_supply_third_party_traps() -> Result<()> {
-    assert_set_max_supply_nonowner_traps(test_account_id(99), 93).await
+    assert_set_max_supply_nonadmin_traps(test_account_id(99), 93).await
 }
 
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the written cap.
@@ -1054,7 +1077,7 @@ async fn set_max_supply_note_args_are_inert() -> Result<()> {
         NEW_MAX_SUPPLY,
         &mut note_rng(94),
     )
-    .context("building the owner set_max_supply note")?;
+    .context("building the administrator set_max_supply note")?;
     let bogus_args = Word::from([3u32, 3, 3, 3]);
     let tx = chain
         .build_transaction(faucet_id)
@@ -1090,7 +1113,7 @@ fn set_max_supply_note_script_root_is_pinned() {
 // REVOKE_ROLE (allowlist row 9) — STOCK RBAC revoke (needs a prior grant)
 // ================================================================================================
 
-/// A production faucet where id(4) has been granted DOM_PAUSER by the owner, applied as a delta to an
+/// A production faucet where id(4) has been granted DOM_PAUSER by the administrator, applied as a delta to an
 /// evolved (not-committed) account. Returns (chain, faucet_id, evolved account, grantee).
 async fn faucet_with_granted_role(
     role: RoleSymbol,
@@ -1103,11 +1126,11 @@ async fn faucet_with_granted_role(
     let faucet_id = pf.faucet_id;
     let grantee = test_account_id(4);
     // each role is seeded by its effective admin — DOM_PAUSER by the
-    // DOM_MANAGER holder (delegated admin), DOM_MANAGER by the owner (ADMIN member).
-    let grant = XReserveGrantRoleNote::create(
+    // DOM_MANAGER holder (delegated admin), DOM_MANAGER by the administrator (ADMIN member).
+    let grant = stock_grant_role_note(
         grantor,
         faucet_id,
-        Felt::from(&role),
+        role.clone(),
         grantee,
         &mut note_rng(grant_seed),
     )
@@ -1130,7 +1153,7 @@ async fn faucet_with_granted_role(
 
 /// Authorized revoke: `sender` (the role's v16 effective admin) revokes id(4)'s `role`
 /// membership; membership cleared. DOM_PAUSER revocation is DOM_MANAGER's
-/// (delegated admin); DOM_MANAGER revocation is the owner's (ADMIN member).
+/// (delegated admin); DOM_MANAGER revocation is the administrator's (ADMIN member).
 async fn assert_revoke_authorized(
     sender: AccountId,
     role: RoleSymbol,
@@ -1140,10 +1163,10 @@ async fn assert_revoke_authorized(
 ) -> Result<()> {
     let (chain, faucet_id, evolved, grantee) =
         faucet_with_granted_role(role.clone(), grantor, grant_seed).await?;
-    let note = XReserveRevokeRoleNote::create(
+    let note = stock_revoke_role_note(
         sender,
         faucet_id,
-        Felt::from(&role),
+        role.clone(),
         grantee,
         &mut note_rng(revoke_seed),
     )
@@ -1166,10 +1189,10 @@ async fn assert_revoke_authorized(
     Ok(())
 }
 
-/// The owner (ADMIN member) administers DOM_MANAGER — grant seeded by the owner,
-/// revoked by the owner.
+/// The administrator (ADMIN member) administers DOM_MANAGER — grant seeded by the administrator,
+/// revoked by the administrator.
 #[tokio::test]
-async fn revoke_role_owner_authorized() -> Result<()> {
+async fn revoke_role_administrator_authorized() -> Result<()> {
     assert_revoke_authorized(
         test_account_id(1),
         manager_sym(),
@@ -1197,10 +1220,10 @@ async fn revoke_role_dom_manager_authorized() -> Result<()> {
 async fn revoke_role_third_party_traps() -> Result<()> {
     let (chain, faucet_id, evolved, grantee) =
         faucet_with_granted_role(pauser_sym(), test_account_id(3), 112).await?;
-    let note = XReserveRevokeRoleNote::create(
+    let note = stock_revoke_role_note(
         test_account_id(99),
         faucet_id,
-        Felt::from(&pauser_sym()),
+        pauser_sym(),
         grantee,
         &mut note_rng(102),
     )
@@ -1222,10 +1245,10 @@ async fn revoke_role_note_args_are_inert() -> Result<()> {
     let (chain, faucet_id, evolved, grantee) =
         faucet_with_granted_role(pauser_sym(), test_account_id(3), 113).await?;
     // DOM_PAUSER's effective admin is DOM_MANAGER, so the revoke must be manager-sent.
-    let note = XReserveRevokeRoleNote::create(
+    let note = stock_revoke_role_note(
         test_account_id(3),
         faucet_id,
-        Felt::from(&pauser_sym()),
+        pauser_sym(),
         grantee,
         &mut note_rng(103),
     )
@@ -1250,579 +1273,192 @@ async fn revoke_role_note_args_are_inert() -> Result<()> {
     Ok(())
 }
 
-/// masm-rust-constant-parity for the revoke_role note (the failure prints the actual hex).
-#[test]
-fn revoke_role_note_script_root_is_pinned() {
-    let root = XReserveRevokeRoleNote::script_root();
-    assert_eq!(
-        root,
-        XReserveRevokeRoleNote::pinned_script_root(),
-        "masm-rust-constant-parity: revoke_role note-script root == the pinned constant (actual = {})",
-        root.to_hex(),
-    );
-}
-
-// SET_ROLE_ADMIN — deliberately NOT in the allowlist, and proven unreachable
-// ================================================================================================
-// The faucet ships no way to re-point a role's administrator at runtime. The delegation graph is
-// seeded when the account is built and frozen there; rotating who holds a role is done with
-// grant_role and revoke_role, which is the operation Circle's model actually calls for.
-//
-// Proving a capability is absent needs the capability's exact artifact, so the note script that
-// would have exercised it is kept verbatim below as a fixture. The tests build that exact note and
-// send it to a production network-auth faucet, which rejects it at the allowlist check before any
-// of its code runs. Keeping the real script — rather than an approximation — is what makes the
-// rejection meaningful: it is the genuine root that would have worked had it been allowlisted.
-//
-// The complementary evidence, that the underlying procedure is also unreachable through the
-// account's callable surface, lives in `account_callable_surface.rs`.
+// SET_ROLE_ADMIN — reachable through the standard role note, gated on the target role's own admin
 // ================================================================================================
 
-/// The set-role-admin note script, preserved verbatim so the rejection tests below drive the exact
-/// root such a note would have.
-///
-/// It is not shipped in `asm/standards/notes/` — it lives here precisely because it is not part of
-/// the account's surface.
-/// It stages the creator-committed `[role_symbol, admin_role_symbol]` note storage and `call`s the
-/// stock `rbac::set_role_admin` — which the account still exposes (present-but-unreachable).
-const FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT_SRC: &str = r#"# xreserve_set_role_admin_note — the shipped, root-pinned set_role_admin admin note script (F5).
-#
-# The production admin surface for the STOCK `set_role_admin` under the network account: a fixed-root
-# note whose parameters are CREATOR-COMMITTED in note storage (never NOTE_ARGS). It stages the note
-# storage into memory, marshals the creator's params onto the stack in the proc's Inputs order, and
-# `call`s the stock `miden::standards::access::rbac::set_role_admin`. The `call` resolves to the SAME
-# proc root the faucet exposes via the RBAC component re-exports. A scheme-2 NetworkAccountTarget
-# routing attachment addresses the note at the faucet (routing-only).
-#
-# AUTHORIZATION (v0.16 — protocol #3215; MIGRATION-V16-ALPHA2.md S2/S21, the owner-only gate is
-# GONE): the stock proc gates on the MANAGED ROLE's EFFECTIVE ADMIN — the role's configured
-# delegated admin, else the built-in `ADMIN` role. On this faucet that means: re-delegating
-# DOM_PAUSER (whose admin is DOM_MANAGER, the CMP-F5 seed) requires a DOM_MANAGER holder, while
-# re-delegating DOM_MANAGER (admin unset -> ADMIN) requires an ADMIN member — the OWNER's account,
-# which the builder seeds into ADMIN. The owner reaches DOM_PAUSER's delegation by first taking
-# DOM_MANAGER (which it may, as the ADMIN member). The note sender is kernel-forced.
-#
-# Note storage layout (2 felts): [role_symbol, admin_role_symbol]. `admin_role_symbol = 0` clears the
-# delegation (the managed role falls back to ADMIN-administered) — the stock sentinel.
-
-use miden::protocol::active_note
-use miden::standards::access::rbac
-use miden::core::sys
-
-# CONSTANTS
-# =================================================================================================
-
-const PARAM_PTR = 1024
-const SET_ROLE_ADMIN_NOTE_NUM_ITEMS = 2
-
-# ERRORS
-# =================================================================================================
-
-const ERR_XRESERVE_SET_ROLE_ADMIN_NOTE_STORAGE = "set_role_admin note storage item count is invalid"
-
-# PUBLIC INTERFACE
-# =================================================================================================
-
-#! Consumes the `set_role_admin` admin note and drives the role-admin write (gated on the managed
-#! role's effective admin — v0.16 #3215, see the module header).
-#!
-#! Stages the creator-committed params (`[role_symbol, admin_role_symbol]`) into memory at PARAM_PTR,
-#! marshals them onto the stack as `[role_symbol, admin_role_symbol, pad(14)]`, and `call`s the stock
-#! `rbac::set_role_admin`. The note ARGS are unused.
-#!
-#! Requires that the account exposes:
-#! - miden::standards::access::rbac::set_role_admin procedure.
-#!
-#! Inputs:  [ARGS, pad(12)]
-#! Outputs: [pad(16)]
-#!
-#! Note storage is assumed to be as follows:
-#! - role_symbol is the RoleSymbol felt of the managed role (item 0).
-#! - admin_role_symbol is the admin RoleSymbol felt (item 1); 0 clears the delegation (the stock
-#!   sentinel).
-#!
-#! Panics if:
-#! - the note storage does not carry exactly 2 items.
-#! - the note sender does not hold the managed role's effective admin role
-#!   (rbac::set_role_admin, ERR_SENDER_NOT_ROLE_ADMIN).
-#!
-#! Invocation: dyncall
-@note_script
-pub proc main
-    dropw
-    # => [pad(16)]
-
-    push.PARAM_PTR exec.active_note::get_storage
-    # => [num_items, pad(16)]
-
-    eq.SET_ROLE_ADMIN_NOTE_NUM_ITEMS assert.err=ERR_XRESERVE_SET_ROLE_ADMIN_NOTE_STORAGE
-    # => [pad(16)]
-
-    push.PARAM_PTR add.1 mem_load
-    push.PARAM_PTR mem_load
-    # => [role_symbol, admin_role_symbol, pad(16)]
-    # (the call consumes the top 16: [role_symbol, admin_role_symbol, pad(14)])
-
-    call.rbac::set_role_admin
-    # => [pad(16)]
-
-    exec.sys::truncate_stack
-end
-"#;
-
-/// The FORMER pinned `set_role_admin` note-script root (was
-/// `XRESERVE_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX`). The fixture-integrity test below asserts the
-/// preserved source still compiles to exactly this root, so the rejection tests provably drive the
-/// removed production root — not a lookalike.
-const FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x0c69fe1a19ee27196780be8d7815920e6a5da49e05ee10b9a615c4ee7a778648";
-
-static FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT: LazyLock<NoteScript> = LazyLock::new(|| {
-    CodeBuilder::new()
-        .compile_note_script(FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT_SRC)
-        .expect("the preserved former set_role_admin note script compiles")
-});
-
-/// Builds the FORMER `set_role_admin` admin note exactly as the removed
-/// `XReserveSetRoleAdminNote::create` factory did: creator-committed
-/// `[role_symbol, admin_role_symbol]` note storage, PUBLIC, faucet-tagged, empty assets, and the
-/// scheme-2 `NetworkAccountTarget` routing attachment.
-fn former_set_role_admin_note(
-    sender: AccountId,
-    faucet_id: AccountId,
-    role_symbol: Felt,
-    admin_role_symbol: Felt,
-    rng: &mut RandomCoin,
-) -> Result<Note> {
-    let storage = NoteStorage::new(vec![role_symbol, admin_role_symbol])
-        .context("the former set_role_admin note storage")?;
-    let recipient = NoteRecipient::new(
-        rng.draw_word(),
-        FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT.clone(),
-        storage,
-    );
-    let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
-        .with_tag(NoteTag::with_account_target(faucet_id));
-    let target = NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always)
-        .context("the faucet id is a public network account")?;
-    let attachments = NoteAttachments::new(vec![NoteAttachment::from(target)])
-        .context("the former set_role_admin note attachments")?;
-    Ok(Note::with_attachments(
-        NoteAssets::new(vec![]).context("empty note assets")?,
-        metadata,
-        recipient,
-        attachments,
-    ))
-}
-
-/// FIXTURE INTEGRITY (masm-rust-constant-parity, inverted): the PRESERVED former source still
-/// compiles to the FORMER pinned root — so the rejection tests below demonstrably consume the
-/// exact note the allowlist used to admit (a drifting fixture would silently weaken them to a
-/// generic non-allowlisted probe).
-#[test]
-fn former_set_role_admin_note_script_still_compiles_to_the_former_root() {
-    let root = FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT.root();
-    assert_eq!(
-        root,
-        NoteScriptRoot::from_raw(
-            Word::parse(FORMER_SET_ROLE_ADMIN_NOTE_SCRIPT_ROOT_HEX)
-                .expect("the former set_role_admin note-script root hex is a valid word"),
-        ),
-        "the preserved former set_role_admin note script must still compile to the former pinned \
-         root (actual = {})",
-        root.to_hex(),
-    );
-}
-
-/// REJECTED — the executing proof that the capability is gone: the exact
-/// set_role_admin note — owner-sent, well-formed, previously allowlist row 10 — now FAILS network
-/// auth with the allowlist error. The note script itself EXECUTES (the allowlist is an epilogue
-/// `@auth_script`) and the owner passes the ADMIN-role proc gate, so the rejection is attributable
-/// ONLY to the removed allowlist membership; the committed delegation graph stays the build seed.
+/// The delegated administrator re-points the role it administers, on the production network
+/// account: the note clears both layers — network auth admits the standard role root, and the
+/// standard procedure accepts the Domain Manager as the Domain Pauser's effective admin — and the
+/// config word's admin field moves.
 #[tokio::test]
-async fn set_role_admin_note_is_rejected_as_non_allowlisted() -> Result<()> {
+async fn set_role_admin_dom_manager_authorized() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = former_set_role_admin_note(
-        test_account_id(1),
-        faucet_id,
-        Felt::from(&manager_sym()),
-        Felt::from(&pauser_sym()),
-        &mut note_rng(120),
-    )
-    .context("building the former owner set_role_admin note")?;
-    let result = chain
-        .build_transaction(faucet_id)
-        .unauthenticated_input_note(note.clone())
-        .build()
-        .context("owner set_role_admin tx build")?
-        .execute()
-        .await;
-    assert_transaction_executor_error!(result, ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED);
 
-    // The committed role-admin graph is untouched: DOM_MANAGER stays ADMIN-administered (the
-    // build seed), so the runtime graph is provably frozen.
-    let committed = chain
+    let before = read_role_config(
+        &chain
+            .committed_account(faucet_id)
+            .context("reading the committed faucet")?
+            .clone(),
+        &pauser_sym(),
+    )?;
+    assert_eq!(
+        before[1],
+        Felt::from(&manager_sym()),
+        "the build seed must delegate DOM_PAUSER's administration to DOM_MANAGER"
+    );
+
+    let note = stock_role_note(
+        test_account_id(3),
+        faucet_id,
+        RbacAction::SetRoleAdmin {
+            role: pauser_sym(),
+            admin_role: Some(blk_manager_sym()),
+        },
+        &mut note_rng(150),
+    )
+    .context("building the DOM_MANAGER set_role_admin note")?;
+    let account = chain
         .committed_account(faucet_id)
-        .context("committed faucet")?;
+        .context("reading the committed faucet")?
+        .clone();
+    let tx = chain
+        .build_transaction(faucet_id)
+        .unauthenticated_input_note(note.clone())
+        .build()
+        .context("set_role_admin tx build")?
+        .execute()
+        .await
+        .map_err(|e| anyhow::anyhow!("the delegated admin's set_role_admin must succeed: {e}"))?;
+
+    let mut evolved = account;
+    evolved.apply_patch(tx.account_patch())?;
+    let after = read_role_config(&evolved, &pauser_sym())?;
     assert_eq!(
-        read_role_config(committed, &manager_sym())?[1],
-        Felt::ZERO,
-        "a rejected set_role_admin note must leave DOM_MANAGER's admin_role at the build seed \
-         (ADMIN-administered)",
+        after[1],
+        Felt::from(&blk_manager_sym()),
+        "the delegated admin must be able to re-point the role it administers",
+    );
+    assert_eq!(
+        after[0], before[0],
+        "re-pointing must preserve the role's member count",
     );
     Ok(())
 }
 
-/// REJECTED regardless of executor NOTE_ARGS (formerly the NOTE_ARGS-inert SUCCESS test): a bogus
-/// NOTE_ARGS word changes nothing — the former note still fails the allowlist check.
-#[tokio::test]
-async fn set_role_admin_note_is_rejected_regardless_of_note_args() -> Result<()> {
+/// A sender that is not the target role's effective admin is refused — including the `ADMIN`
+/// holder, because delegation is exclusive: `DOM_PAUSER` was delegated to `DOM_MANAGER`, so the
+/// administrator has no authority over it at all.
+async fn assert_set_role_admin_rejected(sender: AccountId, seed: u64) -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = former_set_role_admin_note(
-        test_account_id(1),
-        faucet_id,
-        Felt::from(&manager_sym()),
-        Felt::from(&pauser_sym()),
-        &mut note_rng(123),
-    )
-    .context("building the former owner set_role_admin note")?;
-    let bogus_args = Word::from([4u32, 4, 4, 4]);
-    let result = chain
-        .build_transaction(faucet_id)
-        .unauthenticated_input_note(note.clone())
-        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
-        .build()
-        .context("set_role_admin note-args tx build")?
-        .execute()
-        .await;
-    assert_transaction_executor_error!(result, ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED);
-    Ok(())
-}
+    let account = chain
+        .committed_account(faucet_id)
+        .context("reading the committed faucet")?
+        .clone();
+    let before = read_role_config(&account, &pauser_sym())?;
 
-/// LAYER-ORDER pin (preserved negative coverage): a NON-admin-sent former set_role_admin note
-/// still traps at the stock role-admin PROC gate — the note body executes BEFORE the epilogue
-/// allowlist check, so the proc's own gate fires first (`ERR_SENDER_NOT_ROLE_ADMIN`). Identical
-/// behavior whether or not the note is admissible: the inner authorization layer never weakened.
-async fn assert_set_role_admin_nonadmin_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
-        .context("building the production network-auth faucet")?;
-    let chain = pf.mock_chain;
-    let faucet_id = pf.faucet_id;
-    let note = former_set_role_admin_note(
+    let note = stock_role_note(
         sender,
         faucet_id,
-        Felt::from(&manager_sym()),
-        Felt::from(&pauser_sym()),
+        RbacAction::SetRoleAdmin {
+            role: pauser_sym(),
+            admin_role: None,
+        },
         &mut note_rng(seed),
     )
-    .context("building the former non-admin set_role_admin note")?;
+    .context("building the unauthorized set_role_admin note")?;
     let result = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
         .build()
-        .context("non-admin set_role_admin tx build")?
+        .context("unauthorized set_role_admin tx build")?
         .execute()
         .await;
     assert_transaction_executor_error!(result, err_not_role_admin());
+    assert_eq!(
+        read_role_config(&account, &pauser_sym())?,
+        before,
+        "a rejected set_role_admin leaves the role config untouched",
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn set_role_admin_dom_manager_traps() -> Result<()> {
-    assert_set_role_admin_nonadmin_traps(test_account_id(3), 121).await
+async fn set_role_admin_administrator_rejects_on_a_delegated_role() -> Result<()> {
+    assert_set_role_admin_rejected(test_account_id(1), 151).await
 }
 
 #[tokio::test]
-async fn set_role_admin_third_party_traps() -> Result<()> {
-    assert_set_role_admin_nonadmin_traps(test_account_id(99), 122).await
+async fn set_role_admin_third_party_rejects() -> Result<()> {
+    assert_set_role_admin_rejected(test_account_id(99), 152).await
 }
 
-// TRANSFER_OWNERSHIP (allowlist row 10) — current-owner-gated, step 1 of the 2-step transfer
+// RENOUNCE_ROLE — reachable through the standard role note, self-only and ungated
 // ================================================================================================
 
-const OWNER_CONFIG_LABEL: &str = "miden::standards::access::ownable2step::owner_config";
-
-/// The Ownable2Step `owner_config` word `[owner_suffix, owner_prefix, nominee_suffix, nominee_prefix]`.
-fn owner_config_word(owner: AccountId, nominee: AccountId) -> Word {
-    Word::from([
-        owner.suffix(),
-        owner.prefix().as_felt(),
-        nominee.suffix(),
-        nominee.prefix().as_felt(),
-    ])
-}
-
-/// Owner-sent transfer_ownership PASSES auth + the owner gate and nominates id(5); the CURRENT owner
-/// half is UNCHANGED (the 2-step invariant).
+/// A role holder drops its own membership on the production network account. No administrator is
+/// involved: the standard procedure clears the membership of the note SENDER, and there is no
+/// target argument it could be pointed at anyone else.
 #[tokio::test]
-async fn transfer_ownership_owner_nominates() -> Result<()> {
+async fn renounce_role_holder_clears_own_membership() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let new_owner = test_account_id(5);
-    let note = XReserveTransferOwnershipNote::create(
-        test_account_id(1),
-        faucet_id,
-        new_owner,
-        &mut note_rng(130),
-    )
-    .context("building the owner transfer_ownership note")?;
-    let tx = chain
-        .build_transaction(faucet_id)
-        .unauthenticated_input_note(note.clone())
-        .build()
-        .context("owner transfer_ownership tx build")?
-        .execute()
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!("owner-sent transfer_ownership must succeed under network auth: {e}")
-        })?;
-    assert_eq!(
-        value_delta(&tx, OWNER_CONFIG_LABEL),
-        owner_config_word(test_account_id(1), new_owner),
-        "transfer_ownership must nominate id(5) with the owner half UNCHANGED (2-step)",
-    );
-    Ok(())
-}
-
-/// A non-owner transfer_ownership note PASSES auth but TRAPS at the owner gate.
-async fn assert_transfer_ownership_nonowner_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
-        .context("building the production network-auth faucet")?;
-    let chain = pf.mock_chain;
-    let faucet_id = pf.faucet_id;
-    let note = XReserveTransferOwnershipNote::create(
-        sender,
-        faucet_id,
-        test_account_id(5),
-        &mut note_rng(seed),
-    )
-    .context("building the non-owner transfer_ownership note")?;
-    let result = chain
-        .build_transaction(faucet_id)
-        .unauthenticated_input_note(note.clone())
-        .build()
-        .context("non-owner transfer_ownership tx build")?
-        .execute()
-        .await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
-    Ok(())
-}
-
-#[tokio::test]
-async fn transfer_ownership_dom_pauser_traps() -> Result<()> {
-    assert_transfer_ownership_nonowner_traps(test_account_id(2), 131).await
-}
-
-#[tokio::test]
-async fn transfer_ownership_dom_manager_traps() -> Result<()> {
-    assert_transfer_ownership_nonowner_traps(test_account_id(3), 132).await
-}
-
-#[tokio::test]
-async fn transfer_ownership_third_party_traps() -> Result<()> {
-    assert_transfer_ownership_nonowner_traps(test_account_id(99), 133).await
-}
-
-/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the nomination.
-#[tokio::test]
-async fn transfer_ownership_note_args_are_inert() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
-        .context("building the production network-auth faucet")?;
-    let chain = pf.mock_chain;
-    let faucet_id = pf.faucet_id;
-    let new_owner = test_account_id(5);
-    let note = XReserveTransferOwnershipNote::create(
-        test_account_id(1),
-        faucet_id,
-        new_owner,
-        &mut note_rng(134),
-    )
-    .context("building the owner transfer_ownership note")?;
-    let bogus_args = Word::from([2u32, 2, 2, 2]);
-    let tx = chain
-        .build_transaction(faucet_id)
-        .unauthenticated_input_note(note.clone())
-        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
-        .build()
-        .context("transfer_ownership note-args tx build")?
-        .execute()
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!("transfer_ownership with bogus NOTE_ARGS must still succeed: {e}")
-        })?;
-    assert_eq!(
-        value_delta(&tx, OWNER_CONFIG_LABEL),
-        owner_config_word(test_account_id(1), new_owner),
-        "transfer_ownership must nominate the storage-committed owner regardless of executor NOTE_ARGS",
-    );
-    Ok(())
-}
-
-/// masm-rust-constant-parity for the transfer_ownership note (the failure prints the actual hex).
-#[test]
-fn transfer_ownership_note_script_root_is_pinned() {
-    let root = XReserveTransferOwnershipNote::script_root();
-    assert_eq!(
-        root,
-        XReserveTransferOwnershipNote::pinned_script_root(),
-        "masm-rust-constant-parity: transfer_ownership note-script root == the pinned constant (actual = {})",
-        root.to_hex(),
-    );
-}
-
-// ACCEPT_OWNERSHIP (allowlist row 11) — nominated-owner-gated, step 2 of the 2-step transfer
-// ================================================================================================
-
-/// The exact stock error accept_ownership traps for a non-nominated sender
-/// (ownable2step.masm:39 ERR_SENDER_NOT_NOMINATED_OWNER). Defined locally (a stock error not in
-/// SHELL_ERR_TABLE); no existing harness helper covers it.
-fn err_sender_not_nominated_owner() -> MasmError {
-    MasmError::from_static_str("note sender is not the nominated owner")
-}
-
-/// A production faucet with `nominee` set as the pending owner (an owner transfer_ownership applied as
-/// a delta to an evolved, not-committed account). Returns (chain, faucet_id, evolved account).
-async fn faucet_with_pending_owner(
-    nominee: AccountId,
-    transfer_seed: u64,
-) -> Result<(MockChain, AccountId, Account)> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
-        .context("building the production network-auth faucet")?;
-    let chain = pf.mock_chain;
-    let faucet_id = pf.faucet_id;
-    let transfer = XReserveTransferOwnershipNote::create(
-        test_account_id(1),
-        faucet_id,
-        nominee,
-        &mut note_rng(transfer_seed),
-    )
-    .context("building the owner transfer note")?;
-    let tx = chain
-        .build_transaction(faucet_id)
-        .unauthenticated_input_note(transfer.clone())
-        .build()
-        .context("transfer seed tx build")?
-        .execute()
-        .await
-        .map_err(|e| anyhow::anyhow!("seeding the owner transfer must succeed: {e}"))?;
-    let mut evolved = chain
+    let account = chain
         .committed_account(faucet_id)
-        .context("committed faucet")?
+        .context("reading the committed faucet")?
         .clone();
-    evolved.apply_patch(tx.account_patch())?;
-    Ok((chain, faucet_id, evolved))
-}
 
-/// The post-accept owner_config: the nominee is promoted to owner, the nomination cleared to (0,0).
-fn accepted_owner_config(nominee: AccountId) -> Word {
-    Word::from([
-        nominee.suffix(),
-        nominee.prefix().as_felt(),
-        Felt::from(0u32),
-        Felt::from(0u32),
-    ])
-}
-
-/// The nominated (pending) owner accepts: it PASSES auth + the pending-owner gate and becomes owner.
-#[tokio::test]
-async fn accept_ownership_pending_owner_becomes_owner() -> Result<()> {
-    let nominee = test_account_id(5);
-    let (chain, faucet_id, evolved) = faucet_with_pending_owner(nominee, 140).await?;
-    let note = XReserveAcceptOwnershipNote::create(nominee, faucet_id, &mut note_rng(141))
-        .context("building the pending-owner accept note")?;
+    let note = stock_role_note(
+        test_account_id(2),
+        faucet_id,
+        RbacAction::RenounceRole { role: pauser_sym() },
+        &mut note_rng(153),
+    )
+    .context("building the DOM_PAUSER renounce note")?;
     let tx = chain
-        .build_transaction(evolved.clone())
+        .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
         .build()
-        .context("accept_ownership tx build")?
+        .context("renounce tx build")?
         .execute()
         .await
-        .map_err(|e| {
-            anyhow::anyhow!("pending-owner accept_ownership must succeed under network auth: {e}")
-        })?;
-    let mut evolved2 = evolved.clone();
-    evolved2.apply_patch(tx.account_patch())?;
+        .map_err(|e| anyhow::anyhow!("a holder's renounce of its own role must succeed: {e}"))?;
+
+    let mut evolved = account;
+    evolved.apply_patch(tx.account_patch())?;
     assert_eq!(
-        read_owner_config(&evolved2)?,
-        accepted_owner_config(nominee),
-        "accept_ownership must promote the nominee to owner and clear the nomination",
+        read_role_membership(&evolved, &pauser_sym(), test_account_id(2))?,
+        Word::from([0u32, 0, 0, 0]),
+        "the holder must have dropped its own DOM_PAUSER membership",
+    );
+    assert_eq!(
+        read_role_config(&evolved, &pauser_sym())?[0],
+        Felt::ZERO,
+        "the role must be left with no members",
     );
     Ok(())
 }
 
-/// A non-nominated sender (the current owner or a third party) PASSES auth but TRAPS at the
-/// pending-owner gate.
-async fn assert_accept_wrong_sender_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let nominee = test_account_id(5);
-    let (chain, faucet_id, evolved) = faucet_with_pending_owner(nominee, 150 + seed).await?;
-    let note = XReserveAcceptOwnershipNote::create(sender, faucet_id, &mut note_rng(seed))
-        .context("building the wrong-sender accept note")?;
+/// An account that does not hold the role cannot renounce it — the standard procedure requires a
+/// membership to clear, so the refusal is the membership assertion, not an admin gate.
+#[tokio::test]
+async fn renounce_role_non_holder_rejects() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+        .context("building the production network-auth faucet")?;
+    let chain = pf.mock_chain;
+    let faucet_id = pf.faucet_id;
+
+    let note = stock_role_note(
+        test_account_id(99),
+        faucet_id,
+        RbacAction::RenounceRole { role: pauser_sym() },
+        &mut note_rng(154),
+    )
+    .context("building the non-holder renounce note")?;
     let result = chain
-        .build_transaction(evolved)
+        .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
         .build()
-        .context("wrong-sender accept tx build")?
+        .context("non-holder renounce tx build")?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, err_sender_not_nominated_owner());
+    assert_transaction_executor_error!(result, err_account_not_in_role());
     Ok(())
-}
-
-#[tokio::test]
-async fn accept_ownership_current_owner_traps() -> Result<()> {
-    assert_accept_wrong_sender_traps(test_account_id(1), 142).await
-}
-
-#[tokio::test]
-async fn accept_ownership_third_party_traps() -> Result<()> {
-    assert_accept_wrong_sender_traps(test_account_id(99), 143).await
-}
-
-/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the ownership promotion.
-#[tokio::test]
-async fn accept_ownership_note_args_are_inert() -> Result<()> {
-    let nominee = test_account_id(5);
-    let (chain, faucet_id, evolved) = faucet_with_pending_owner(nominee, 144).await?;
-    let note = XReserveAcceptOwnershipNote::create(nominee, faucet_id, &mut note_rng(145))
-        .context("building the pending-owner accept note")?;
-    let bogus_args = Word::from([9u32, 9, 9, 9]);
-    let tx = chain
-        .build_transaction(evolved.clone())
-        .unauthenticated_input_note(note.clone())
-        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
-        .build()
-        .context("accept note-args tx build")?
-        .execute()
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!("accept_ownership with bogus NOTE_ARGS must still succeed: {e}")
-        })?;
-    let mut evolved2 = evolved.clone();
-    evolved2.apply_patch(tx.account_patch())?;
-    assert_eq!(
-        read_owner_config(&evolved2)?,
-        accepted_owner_config(nominee),
-        "accept_ownership must promote the nominee regardless of executor NOTE_ARGS",
-    );
-    Ok(())
-}
-
-/// masm-rust-constant-parity for the accept_ownership note (the failure prints the actual hex).
-#[test]
-fn accept_ownership_note_script_root_is_pinned() {
-    let root = XReserveAcceptOwnershipNote::script_root();
-    assert_eq!(
-        root,
-        XReserveAcceptOwnershipNote::pinned_script_root(),
-        "masm-rust-constant-parity: accept_ownership note-script root == the pinned constant (actual = {})",
-        root.to_hex(),
-    );
 }

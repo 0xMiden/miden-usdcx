@@ -1,5 +1,14 @@
 # LNV-4 Validation Record — matrix rows G (burn two-block) + H (F7 same-block RIV) + I (burn negatives) + J (conservation)
 
+> **Superseded admin model (2026-07-30).** This record was produced against the composition in
+> which the admin setters resolved to the `Ownable2Step` owner and rejected with
+> `ERR_SENDER_NOT_OWNER`. The faucet has since moved to a role-based authority: the setters
+> carry no role and resolve to the built-in `ADMIN` role, raising `ERR_SENDER_LACKS_ROLE`,
+> and pause/blocklist run through the standard managers. The observations below are
+> unchanged evidence of what that earlier run saw; re-running these rows is part of the
+> un-park steps in `PARKED-V16-NEXT.md`.
+
+
 Real-node validation of the PRODUCTION `XReserveBurnNote` lifecycle against a fresh local
 `miden-node v0.15.1` stack. Extends the LNV-1 harness (`crates/xusdc-validation`); reuses the
 LNV-1/2/3 toolchain, node topology, and path-N execution model (see `VALIDATION-RECORD.md`,

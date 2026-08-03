@@ -6,9 +6,14 @@
 //! still succeeds), and the floor boundary is re-proven so FIX 2 cannot silently weaken the
 //! pre-existing lower guard.
 //!
-//! FIX 1 — `xreserve::blocklist_admin::block_account` must reject blocking the faucet's OWN
-//! account id (blocking the faucet freezes it as a transfer party: mint-and-send and burn/redeem
-//! both trap). FIX 2 — the runtime `set_min_burn_size` note must reject
+//! FIX 1 — blocking the faucet's OWN account id must be refused (blocking the faucet freezes it as
+//! a transfer party: mint-and-send and burn/redeem both trap). The guard used to live on-chain, in
+//! the faucet's own `block_account` wrapper; adopting the standard blocklist manager retired that
+//! wrapper, and the standard procedure validates nothing about its target, so the refusal now lives
+//! in the note factory instead. That is a construction-time guard against operator error, not an
+//! authorization boundary — what the chain does when someone hand-rolls the standard note past it,
+//! and why that state is recoverable, is covered in `w2admin_production_admin_effects.rs`.
+//! FIX 2 — the runtime `set_min_burn_size` note must reject
 //! `new_min > FUNGIBLE_ASSET_MAX_AMOUNT` (an out-of-range floor makes the stock
 //! `check_policy` (`min_burn_amount <= amount`) unsatisfiable for every real burn, halting all
 //! redemptions).
@@ -27,7 +32,9 @@ use miden_standards::account::policies::MinBurnAmount;
 use miden_testing::assert_transaction_executor_error;
 use support::mint_transport::*;
 use support::*;
-use xusdc_encoding::note::xreserve_admin::{XReserveBlockAccountNote, XReserveSetMinBurnSizeNote};
+use xusdc_encoding::note::xreserve_admin::{
+    block_note, XReserveBlocklistNoteError, XReserveSetMinBurnSizeNote,
+};
 
 // The maximum representable fungible-asset amount = 2^63 - 2^31 (miden::protocol::asset
 // FUNGIBLE_ASSET_MAX_AMOUNT = 0x7fffffff80000000). Inlined here (not the MASM const) so the
@@ -46,9 +53,6 @@ fn other_account() -> AccountId {
 
 // EXACT expected guard errors (assert-specific-error-in-tests). Inlined as the literal strings the
 // MASM `ERR_*` constants carry — never `is_err()`.
-fn err_cannot_block_self() -> MasmError {
-    MasmError::from_static_str("cannot block the faucet's own account")
-}
 fn err_min_burn_above_max() -> MasmError {
     MasmError::from_static_str("min burn size exceeds the maximum asset amount")
 }
@@ -85,50 +89,31 @@ fn min_word(v: u64) -> Word {
 // FIX 1 — the blocklist self-block guard
 // ================================================================================================
 
-/// A `BLK_MANAGER`-sent `block_account` targeting the faucet's OWN account id is REJECTED with the
-/// EXACT `ERR_XRESERVE_CANNOT_BLOCK_SELF`. Without the guard this SUCCEEDS (freezing the faucet as a
-/// transfer party) — the proof this tests something real.
-#[tokio::test]
-async fn block_account_targeting_the_faucet_itself_is_rejected() -> Result<()> {
-    let _serial = tripwire_serial_guard().await;
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
-        vec![XReserveBlockAccountNote::create(
-            blk_manager(),
-            faucet_id,
-            faucet_id,
-            &mut note_rng(710),
-        )
-        .expect("building the self-targeting block_account note")]
-    })?;
-    let self_block_note = pf.seeded_notes[0].clone();
-
-    let result = consume_note(&pf.mock_chain, pf.faucet_id, self_block_note.id()).await;
-    assert_transaction_executor_error!(result, err_cannot_block_self());
-
-    // no state change: the faucet was never added to its own blocklist (the trap precedes the write).
-    let faucet = committed(&pf.mock_chain, pf.faucet_id)?;
-    assert_eq!(
-        read_blocked(&faucet, pf.faucet_id)?,
-        Word::from([Felt::ZERO; 4]),
-        "a rejected self-block leaves blocked_accounts[faucet] empty (no partial write)"
+/// A block note targeting the faucet's OWN account id cannot be built: the factory refuses it, so
+/// the note never reaches a chain. Without the refusal the note builds and the block lands, freezing
+/// the faucet as a transfer party — which is what makes this test non-vacuous.
+#[test]
+fn a_block_note_targeting_the_faucet_itself_cannot_be_built() {
+    let faucet_id = test_faucet_id(1);
+    let err = block_note(blk_manager(), faucet_id, faucet_id, &mut note_rng(710))
+        .expect_err("the factory must refuse a self-targeting block note");
+    assert!(
+        matches!(err, XReserveBlocklistNoteError::SelfBlockRejected { .. }),
+        "the refusal must be the specific self-block rejection, not some other note error: {err:?}"
     );
-    Ok(())
 }
 
-/// The guard is NOT over-broad: a `BLK_MANAGER`-sent `block_account` targeting a DIFFERENT account
-/// still SUCCEEDS and writes the blocked marker (a non-vacuous success — the map write really
-/// happened). Proves FIX 1 rejects ONLY the faucet's own id.
+/// The refusal is NOT over-broad: a `BLK_MANAGER`-sent block targeting a DIFFERENT account still
+/// builds, SUCCEEDS on chain, and writes the blocked marker (a non-vacuous success — the map write
+/// really happened). Proves FIX 1 refuses ONLY the faucet's own id.
 #[tokio::test]
 async fn block_account_targeting_a_different_account_still_succeeds() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
-        vec![XReserveBlockAccountNote::create(
-            blk_manager(),
-            faucet_id,
-            other_account(),
-            &mut note_rng(711),
-        )
-        .expect("building the other-account block_account note")]
+        vec![
+            stock_block_note(blk_manager(), faucet_id, other_account(), 711)
+                .expect("building the other-account block note"),
+        ]
     })?;
     let block_note = pf.seeded_notes[0].clone();
 
@@ -158,10 +143,13 @@ async fn set_min_burn_above_the_asset_max_is_rejected() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let above_max = FUNGIBLE_ASSET_MAX_AMOUNT + 1;
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
-        vec![
-            XReserveSetMinBurnSizeNote::create(owner(), faucet_id, above_max, &mut note_rng(720))
-                .expect("building the above-max min-burn note"),
-        ]
+        vec![XReserveSetMinBurnSizeNote::create(
+            administrator(),
+            faucet_id,
+            above_max,
+            &mut note_rng(720),
+        )
+        .expect("building the above-max min-burn note")]
     })?;
     let above_max_note = pf.seeded_notes[0].clone();
 
@@ -190,7 +178,7 @@ async fn set_min_burn_at_exactly_the_asset_max_is_accepted() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
         vec![XReserveSetMinBurnSizeNote::create(
-            owner(),
+            administrator(),
             faucet_id,
             FUNGIBLE_ASSET_MAX_AMOUNT,
             &mut note_rng(721),
@@ -227,7 +215,7 @@ async fn set_min_burn_at_the_floor_still_succeeds() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
         vec![
-            XReserveSetMinBurnSizeNote::create(owner(), faucet_id, 1, &mut note_rng(722))
+            XReserveSetMinBurnSizeNote::create(administrator(), faucet_id, 1, &mut note_rng(722))
                 .expect("building the floor min-burn note"),
         ]
     })?;
@@ -258,7 +246,7 @@ async fn set_min_burn_zero_still_rejected_by_the_floor() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
         vec![
-            XReserveSetMinBurnSizeNote::create(owner(), faucet_id, 0, &mut note_rng(723))
+            XReserveSetMinBurnSizeNote::create(administrator(), faucet_id, 0, &mut note_rng(723))
                 .expect("building the zero min-burn note"),
         ]
     })?;

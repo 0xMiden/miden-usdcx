@@ -206,10 +206,10 @@ async fn min_burn_note_rejects_a_zero_floor_at_runtime() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
         vec![
-            XReserveSetMinBurnSizeNote::create(owner(), faucet_id, 0, &mut note_rng(961))
+            XReserveSetMinBurnSizeNote::create(administrator(), faucet_id, 0, &mut note_rng(961))
                 .expect("building the zero-floor min-burn note"),
             XReserveSetMinBurnSizeNote::create(
-                owner(),
+                administrator(),
                 faucet_id,
                 MIN_BURN_VALID,
                 &mut note_rng(962),

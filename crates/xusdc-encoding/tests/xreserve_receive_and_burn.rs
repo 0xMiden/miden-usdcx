@@ -54,9 +54,9 @@ const VALID_BURN: u64 = 5_000;
 /// A below-minimum burn: `0 < BELOW_MIN < MIN_BURN_SIZE`.
 const BELOW_MIN: u64 = 500;
 
-/// The Ownable2Step OWNER the burn oracle installs (id(1)). Under the reconciled Circle-faithful admin
-/// model the setters gate on the owner (`Authority::OwnerControlled`).
-fn owner() -> AccountId {
+/// The administrator the burn oracle installs (id(1)). Under the reconciled Circle-faithful admin
+/// model the setters resolve to the built-in `ADMIN` role under the account's role-based authority.
+fn administrator() -> AccountId {
     test_account_id(1)
 }
 
@@ -515,9 +515,9 @@ async fn run_set_min_burn_then_consume(
 
     // The OWNER moves the floor to `new_min`; evolve the committed faucet with the setter delta.
     let account = chain.committed_account(faucet_id)?.clone();
-    let set = run_set_min_burn_size_against(&chain, &account, owner(), new_min, 31)
+    let set = run_set_min_burn_size_against(&chain, &account, administrator(), new_min, 31)
         .await
-        .expect("the owner's set_min_burn_size must succeed");
+        .expect("the administrator's set_min_burn_size must succeed");
     let mut evolved = account.clone();
     evolved.apply_patch(set.account_patch())?;
 
@@ -536,7 +536,7 @@ async fn run_set_min_burn_then_consume(
 ///
 /// The amount used (5,000) passes at the seeded floor of 1,000 and fails at the new floor of
 /// 10,000, so the only thing that changed between accept and reject is the setter's write. This is
-/// the direction that matters for safety: the owner can tighten the limit and it binds at once.
+/// the direction that matters for safety: the administrator can tighten the limit and it binds at once.
 #[tokio::test]
 async fn set_min_burn_raise_then_below_new_min_rejects() -> Result<()> {
     let result = run_set_min_burn_then_consume(MIN_BURN_SIZE, 10_000, VALID_BURN).await?;

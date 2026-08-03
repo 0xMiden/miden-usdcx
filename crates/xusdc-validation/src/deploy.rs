@@ -14,7 +14,7 @@
 //!   stock mint path, the stock `MinBurnAmount` burn policy, Ownable2Step owner, seeded DOM roles,
 //!   OwnerControlled authority);
 //! - finalized for deploy with `AccountBuilder::with_auth_component(auth_component())` — the
-//!   stock `AuthNetworkAccount` under the frozen 14-root note allowlist + the single-root tx-script
+//!   stock `AuthNetworkAccount` under the frozen 12-root note allowlist + the single-root tx-script
 //!   allowlist (the S12 `ExpirationTransactionScript` root; v16 no longer ships an EMPTY tx-script
 //!   allowlist — MIGRATION-V16-ALPHA2.md. The runtime `set_role_admin` note was removed — S21
 //!   flip, 2026-07-14).

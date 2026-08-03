@@ -8,7 +8,7 @@
 //! admins must not gain blocking power.
 //!
 //! Rather than trusting deployment to get this right, `build_components` refuses to compose an
-//! account at all when the blocklist manager collides with the owner, the Domain Pauser, or the
+//! account at all when the blocklist manager collides with the administrator, the Domain Pauser, or the
 //! Domain Manager. These tests pin each refusal and the specific error naming the collided role.
 //! (They live apart from `builder_api.rs` only to keep that file within its size ceiling.)
 
@@ -97,7 +97,7 @@ fn faucet_and_component(is_max_supply_mutable: bool) -> Result<(FungibleFaucet, 
 }
 
 // The production builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3), BLK_MANAGER =
-// id(4). A BLK_MANAGER holder equal to id(1)/(2)/(3) collides with the owner/DOM_PAUSER/DOM_MANAGER.
+// id(4). A BLK_MANAGER holder equal to id(1)/(2)/(3) collides with the administrator/DOM_PAUSER/DOM_MANAGER.
 
 /// A blocklist manager that collides with any privileged identity is rejected at build time, with
 /// an error naming which one it collided with.
@@ -106,7 +106,7 @@ fn faucet_and_component(is_max_supply_mutable: bool) -> Result<(FungibleFaucet, 
 /// guessing which of the three accounts they reused. The three collisions are parametrized rather
 /// than copy-pasted.
 #[rstest]
-#[case::owner(test_account_id(1), "owner")]
+#[case::administrator(test_account_id(1), "ADMIN")]
 #[case::dom_pauser(test_account_id(2), "DOM_PAUSER")]
 #[case::dom_manager(test_account_id(3), "DOM_MANAGER")]
 fn build_rejects_blk_manager_colliding_with_a_privileged_role(

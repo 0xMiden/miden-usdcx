@@ -36,9 +36,7 @@ use miden_standards::account::faucets::FungibleFaucet;
 use miden_testing::MockChain;
 use miden_tx::TransactionExecutorError;
 use support::*;
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveBlockAccountNote, XReserveIdentifierInitNote, XReserveSetAttesterNote,
-};
+use xusdc_encoding::note::xreserve_admin::{XReserveIdentifierInitNote, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, DiVector};
 use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, bytes32_to_storage_map_key};
@@ -87,7 +85,7 @@ const REMOTE_TOKEN_BYTE_OFF: usize = 11 * 4;
 /// First byte of the 32-byte `nonce` field (felt 51 x 4 bytes of the fixed header).
 const NONCE_BYTE_OFF: usize = 51 * 4;
 
-fn owner() -> AccountId {
+fn administrator() -> AccountId {
     test_account_id(1)
 }
 
@@ -160,10 +158,16 @@ fn fixture() -> Result<ProductionFaucet> {
         )
         .commitment;
         vec![
-            XReserveIdentifierInitNote::create(owner(), faucet_id, &mut note_rng(951))
-                .expect("building the owner identifier_init note"),
-            XReserveSetAttesterNote::create(owner(), faucet_id, commitment, 1, &mut note_rng(952))
-                .expect("building the owner set_attester note"),
+            XReserveIdentifierInitNote::create(administrator(), faucet_id, &mut note_rng(951))
+                .expect("building the administrator identifier_init note"),
+            XReserveSetAttesterNote::create(
+                administrator(),
+                faucet_id,
+                commitment,
+                1,
+                &mut note_rng(952),
+            )
+            .expect("building the administrator set_attester note"),
         ]
     })
 }
@@ -512,17 +516,18 @@ async fn mint_to_a_blocked_recipient_succeeds_then_strands() -> anyhow::Result<(
         )
         .commitment;
         vec![
-            XReserveIdentifierInitNote::create(owner(), faucet_id, &mut note_rng(961))
-                .expect("building the owner identifier_init note"),
-            XReserveSetAttesterNote::create(owner(), faucet_id, commitment, 1, &mut note_rng(962))
-                .expect("building the owner set_attester note"),
-            XReserveBlockAccountNote::create(
-                blk_manager(),
+            XReserveIdentifierInitNote::create(administrator(), faucet_id, &mut note_rng(961))
+                .expect("building the administrator identifier_init note"),
+            XReserveSetAttesterNote::create(
+                administrator(),
                 faucet_id,
-                recipient,
-                &mut note_rng(963),
+                commitment,
+                1,
+                &mut note_rng(962),
             )
-            .expect("building the BLK_MANAGER block note targeting the recipient"),
+            .expect("building the administrator set_attester note"),
+            stock_block_note(blk_manager(), faucet_id, recipient, 963)
+                .expect("building the BLK_MANAGER block note targeting the recipient"),
         ]
     })?;
     bring_up(&mut pf).await?;

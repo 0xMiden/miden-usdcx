@@ -1670,13 +1670,13 @@ fn run_check(check: fn(&str, &str, &mut Violations), rel: &str, src: &str) -> Vi
     out
 }
 
-const SYNTH_NOTE_REL: &str = "asm/standards/notes/xreserve_pause_note.masm";
+const SYNTH_NOTE_REL: &str = "asm/standards/notes/xreserve_set_attester_note.masm";
 
 /// A minimal conformant admin-note source (calls through an import, full-path Requires bullet).
 fn synth_note(requires_bullet: &str, call_line: &str) -> String {
     format!(
-        "# xreserve_pause_note — synthetic fixture.\n\n\
-         use xreserve::pause_admin\n\n\
+        "# xreserve_set_attester_note — synthetic fixture.\n\n\
+         use xreserve::attester_admin\n\n\
          #! Consumes the synthetic admin note.\n\
          #!\n\
          #! Requires that the account exposes:\n\
@@ -1699,7 +1699,10 @@ fn synth_note(requires_bullet: &str, call_line: &str) -> String {
 
 #[test]
 fn checker_accepts_full_path_requires_bullet() {
-    let src = synth_note("xreserve::pause_admin::pause", "call.pause_admin::pause");
+    let src = synth_note(
+        "xreserve::attester_admin::set_attester",
+        "call.attester_admin::set_attester",
+    );
     assert_eq!(
         run_check(check_note_requires, SYNTH_NOTE_REL, &src),
         Vec::<String>::new(),
@@ -1710,7 +1713,10 @@ fn checker_accepts_full_path_requires_bullet() {
 #[test]
 fn checker_flags_wrong_module_in_requires_bullet() {
     // same terminal procedure name, wrong module — the exact-path requirement must fail this.
-    let src = synth_note("xreserve::wrong_module::pause", "call.pause_admin::pause");
+    let src = synth_note(
+        "xreserve::wrong_module::set_attester",
+        "call.attester_admin::set_attester",
+    );
     assert!(
         !run_check(check_note_requires, SYNTH_NOTE_REL, &src).is_empty(),
         "a Requires bullet naming the wrong module must be flagged"
@@ -1720,7 +1726,10 @@ fn checker_flags_wrong_module_in_requires_bullet() {
 #[test]
 fn checker_flags_unresolvable_call_target_in_note() {
     // `call` through an alias the note never imports — the requirement cannot be verified.
-    let src = synth_note("xreserve::pause_admin::pause", "call.mystery::pause");
+    let src = synth_note(
+        "xreserve::attester_admin::set_attester",
+        "call.mystery::set_attester",
+    );
     assert!(
         !run_check(check_note_requires, SYNTH_NOTE_REL, &src).is_empty(),
         "a call target that does not resolve through the note's imports must be flagged"
@@ -1736,7 +1745,7 @@ fn checker_flags_missing_storage_section_on_transport_note() {
         "call.note_entry::receive_and_mint",
     )
     .replace(
-        "use xreserve::pause_admin",
+        "use xreserve::attester_admin",
         "use xreserve::xreserve_mint_note_entry as note_entry",
     )
     .replace("# xreserve_pause_note", "# xreserve_mint_note");
@@ -1749,7 +1758,7 @@ fn checker_flags_missing_storage_section_on_transport_note() {
 
 #[test]
 fn checker_flags_storage_section_on_storage_less_note() {
-    let src = synth_note("xreserve::pause_admin::pause", "call.pause_admin::pause").replace(
+    let src = synth_note("xreserve::attester_admin::set_attester", "call.attester_admin::set_attester").replace(
         "#! Panics if:",
         "#! Note storage is assumed to be as follows:\n#! - phantom is not real (item 0).\n#!\n#! Panics if:",
     );
@@ -1761,7 +1770,10 @@ fn checker_flags_storage_section_on_storage_less_note() {
 
 #[test]
 fn checker_flags_unregistered_note_storage_posture() {
-    let src = synth_note("xreserve::pause_admin::pause", "call.pause_admin::pause");
+    let src = synth_note(
+        "xreserve::attester_admin::set_attester",
+        "call.attester_admin::set_attester",
+    );
     assert!(
         !run_check(
             check_note_storage,

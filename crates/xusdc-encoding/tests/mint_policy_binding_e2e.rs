@@ -32,7 +32,6 @@ use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::mint_transport::*;
 use support::*;
-use xusdc_encoding::note::xreserve_admin::XReservePauseNote;
 
 use miden_protocol::{Felt, Word};
 
@@ -460,10 +459,8 @@ async fn mint_rejects_a_truncated_intent() -> Result<()> {
 #[tokio::test]
 async fn mint_halts_while_paused() -> Result<()> {
     let mut pf = fixture_with(MAX_SUPPLY, |_, faucet_id| {
-        vec![
-            XReservePauseNote::create(dom_pauser(), faucet_id, &mut note_rng(953))
-                .expect("building the DOM_PAUSER pause note"),
-        ]
+        vec![stock_pause_note(dom_pauser(), faucet_id, 953)
+            .expect("building the DOM_PAUSER pause note")]
     })?;
     bring_up(&mut pf, 3).await?; // identifier_init + set_attester + pause
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 28);

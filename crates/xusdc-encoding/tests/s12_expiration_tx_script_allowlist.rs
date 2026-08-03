@@ -99,8 +99,8 @@ fn auth_component_note_script_allowlist_is_untouched_by_s12() -> Result<()> {
     let note_keys = allowlisted_keys(&component, AuthNetworkAccount::allowed_note_scripts_slot());
     assert_eq!(
         note_keys.len(),
-        14,
-        "S12 must leave the note-script allowlist at EXACTLY the frozen 14 roots; found {}",
+        9,
+        "S12 must leave the note-script allowlist at EXACTLY the 9 roots; found {}",
         note_keys.len(),
     );
     // The exact fourteen-root set is pinned, source and on-chain, in `f5_network_account_auth.rs`;

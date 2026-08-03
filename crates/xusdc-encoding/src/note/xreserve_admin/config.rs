@@ -1,5 +1,5 @@
 //! Config / setter admin note factories: `set_attester`, `identifier_init`,
-//! `set_min_burn_size`, `set_max_supply`, `pause`, `unpause`.
+//! `set_min_burn_size`, `set_max_supply`.
 
 use std::sync::LazyLock;
 
@@ -28,11 +28,14 @@ static SET_ATTESTER_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// `attester_admin::set_attester`'s digest, so any edit of the note script or of the proc it calls
 /// changes this root.
 pub const XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x442a0c19b0bbce60630f7c52758b296a4ba74e6b7b02b6603f94481c161bc962";
+    "0x2763aaac15ebd657c7d0e5f952aacb953faedd224b4e465871bac4baa67df42f";
 
-/// The owner-gated `set_attester` admin note. Storage layout: `[pk_commitment(4), enabled]`.
-/// Consumed against the faucet network account; `attester_admin::set_attester` gates on the (kernel-
-/// forced) note sender being the owner.
+/// The administrator-gated `set_attester` admin note. Storage layout:
+/// `[pk_commitment(4), enabled]`. Consumed against the faucet network account;
+/// `attester_admin::set_attester` gates on the (kernel-forced) note sender through the account-wide
+/// authority, which — the procedure carrying no role of its own — resolves it to the built-in
+/// `ADMIN` role. `ADMIN` membership is account-bound, and it is the faucet's only authority handle:
+/// the sender that succeeds is whichever account currently holds the role.
 pub struct XReserveSetAttesterNote;
 
 impl XReserveSetAttesterNote {
@@ -56,7 +59,8 @@ impl XReserveSetAttesterNote {
         )
     }
 
-    /// Builds a `set_attester` admin note: `sender` is the admin party (the owner, for success),
+    /// Builds a `set_attester` admin note: `sender` is the admin party (an `ADMIN` role holder, for
+    /// success),
     /// `faucet_id` the target faucet (PUBLIC), `commitment` the attester pubkey commitment (the
     /// xReserveAttesters map key), `enabled` = 1 (allowlist) or 0 (remove). The params live in note
     /// storage.
@@ -104,14 +108,22 @@ static IDENTIFIER_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// calls changes this root. The root therefore covers the own-id binding: the proc derives
 /// `bytes32_to_key(account_id_to_bytes32(get_id()))` on-chain and rejects a mismatched committed
 /// identifier.
+///
+/// RE-MATERIALIZED when the initializer's sender gate moved off the owner slot and onto the
+/// account-wide authority: the procedure's own root moved, and this root binds to it.
+/// RE-MATERIALIZED again when the proc's own-id derivation switched from a local byte-swap helper
+/// to the shared `miden::standards::utils::swap_u32_bytes` (behavior-identical; the callee digest
+/// moved, and this root binds transitively to it).
 pub const XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xac81d9ab1fd5f66252ac77a668342b0656f6f3b102a0efbc219e42b05f82b89e";
+    "0x99b4ba0f78f1420b4bcea7c27dd6aa839b7efdfd292814ce8619a22eabc68c2e";
 
-/// The owner-gated, init-once `identifier_init` admin note. The identifier is the ONE domain-config
-/// field the account-id fixpoint forces past build time; the other three are build-seeded by the
-/// `XReserveStablecoinBuilder`. Storage layout: `[IDENTIFIER(4)]`. Consumed against the faucet
-/// network account; `identifier_init::init_identifier` gates on the (kernel-forced) note sender
-/// being the owner AND rejects a second initialization.
+/// The administrator-gated, init-once `identifier_init` admin note. The identifier is the ONE
+/// domain-config field the account-id fixpoint forces past build time; the other three are
+/// build-seeded by the `XReserveStablecoinBuilder`. Storage layout: `[IDENTIFIER(4)]`. Consumed
+/// against the faucet network account; `identifier_init::init_identifier` gates on the
+/// (kernel-forced) note sender
+/// through the account-wide authority, which resolves it to the built-in `ADMIN` role, AND
+/// rejects a second initialization.
 pub struct XReserveIdentifierInitNote;
 
 impl XReserveIdentifierInitNote {
@@ -135,7 +147,7 @@ impl XReserveIdentifierInitNote {
         )
     }
 
-    /// Builds an `identifier_init` admin note: `sender` is the admin party (the owner, for
+    /// Builds an `identifier_init` admin note: `sender` is the admin party (an `ADMIN` holder, for
     /// success) and `faucet_id` the target faucet (PUBLIC). The seeded identifier is DERIVED from
     /// `faucet_id` — `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))`, the canonical
     /// key of the faucet's own account id as bytes32 — so the init is BOUND to its target and
@@ -181,8 +193,10 @@ static SET_MIN_BURN_SIZE_NOTE_SCRIPT: LazyLock<NoteScript> =
 pub const XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x7ae46ecf82c7968a867c88d982659ba55989c49238c5e1ba6fa1a8c6a1008566";
 
-/// The owner-gated `set_min_burn_size` admin note. Storage layout: `[new_min]` with
-/// `new_min >= 1` (the note script's zero-floor guard — the stock setter itself accepts 0).
+/// The administrator-gated `set_min_burn_size` admin note. Storage layout: `[new_min]` with
+/// `new_min >= 1` (the note script's zero-floor guard — the stock setter itself accepts 0). The
+/// stock setter it targets resolves through the account-wide authority to the built-in `ADMIN` role,
+/// which is account-bound and is the faucet's only authority handle.
 pub struct XReserveSetMinBurnSizeNote;
 
 impl XReserveSetMinBurnSizeNote {
@@ -204,7 +218,8 @@ impl XReserveSetMinBurnSizeNote {
         )
     }
 
-    /// Builds a `set_min_burn_size` admin note: `sender` is the admin party (the owner, for success),
+    /// Builds a `set_min_burn_size` admin note: `sender` is the admin party (an `ADMIN` role
+    /// holder, for success),
     /// `faucet_id` the target faucet (PUBLIC), `new_min` the new minimum burn size. The param lives in
     /// note storage.
     pub fn create<R: FeltRng>(
@@ -234,7 +249,9 @@ static SET_MAX_SUPPLY_NOTE_SCRIPT: LazyLock<NoteScript> =
 pub const XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x70b18f7063f760b727dd194df5699fd5aa3453ed53ffb317b91711d4c597e018";
 
-/// The owner-gated stock `set_max_supply` admin note. Storage layout: `[new_max_supply]`.
+/// The administrator-gated stock `set_max_supply` admin note. Storage layout:
+/// `[new_max_supply]`. The stock setter resolves through the account-wide authority to the built-in
+/// `ADMIN` role, which is account-bound and is the faucet's only authority handle.
 pub struct XReserveSetMaxSupplyNote;
 
 impl XReserveSetMaxSupplyNote {
@@ -256,7 +273,8 @@ impl XReserveSetMaxSupplyNote {
         )
     }
 
-    /// Builds a `set_max_supply` admin note: `sender` is the admin party (the owner, for success),
+    /// Builds a `set_max_supply` admin note: `sender` is the admin party (an `ADMIN` role holder,
+    /// for success),
     /// `faucet_id` the target faucet (PUBLIC), `new_max_supply` the new cap. The param lives in note
     /// storage.
     pub fn create<R: FeltRng>(
@@ -268,97 +286,5 @@ impl XReserveSetMaxSupplyNote {
         let cap_felt = Felt::try_from(new_max_supply)
             .map_err(|e| NoteError::other_with_source("max supply exceeds the field modulus", e))?;
         build_admin_note(sender, faucet_id, Self::script(), vec![cap_felt], rng)
-    }
-}
-
-// PAUSE
-// ================================================================================================
-
-const PAUSE_NOTE_SCRIPT_SRC: &str =
-    include_str!("../../../../../asm/standards/notes/xreserve_pause_note.masm");
-
-static PAUSE_NOTE_SCRIPT: LazyLock<NoteScript> =
-    LazyLock::new(|| compile_admin_note_script(PAUSE_NOTE_SCRIPT_SRC));
-
-/// The PINNED pause admin note-script root: binds transitively to `pause_admin::pause`'s digest.
-pub const XRESERVE_PAUSE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xf505ce1232e61d9829825ee65a7db8d0cd5de182a7f16593aa212d5cf0d198a8";
-
-/// The DOM_PAUSER-gated, PARAM-LESS `pause` admin note.
-pub struct XReservePauseNote;
-
-impl XReservePauseNote {
-    /// The compiled, fixed-root note script.
-    pub fn script() -> NoteScript {
-        PAUSE_NOTE_SCRIPT.clone()
-    }
-
-    /// The note-script root, which must equal the pinned constant.
-    pub fn script_root() -> NoteScriptRoot {
-        PAUSE_NOTE_SCRIPT.root()
-    }
-
-    /// [`XRESERVE_PAUSE_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
-    pub fn pinned_script_root() -> NoteScriptRoot {
-        NoteScriptRoot::from_raw(
-            Word::parse(XRESERVE_PAUSE_NOTE_SCRIPT_ROOT_HEX)
-                .expect("the pinned pause note-script root hex is a valid word"),
-        )
-    }
-
-    /// Builds a `pause` admin note (param-less): `sender` is the DOM_PAUSER holder (for success),
-    /// `faucet_id` the target faucet (PUBLIC). Carries no storage payload.
-    pub fn create<R: FeltRng>(
-        sender: AccountId,
-        faucet_id: AccountId,
-        rng: &mut R,
-    ) -> Result<Note, NoteError> {
-        build_admin_note(sender, faucet_id, Self::script(), vec![], rng)
-    }
-}
-
-// UNPAUSE
-// ================================================================================================
-
-const UNPAUSE_NOTE_SCRIPT_SRC: &str =
-    include_str!("../../../../../asm/standards/notes/xreserve_unpause_note.masm");
-
-static UNPAUSE_NOTE_SCRIPT: LazyLock<NoteScript> =
-    LazyLock::new(|| compile_admin_note_script(UNPAUSE_NOTE_SCRIPT_SRC));
-
-/// The PINNED unpause admin note-script root: binds transitively to `pause_admin::unpause`'s digest.
-pub const XRESERVE_UNPAUSE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x8df1f866ebc97f423119ab04400e2c09a8680aac3bbb03f91a4fe271dfa9578c";
-
-/// The DOM_PAUSER-gated, PARAM-LESS `unpause` admin note.
-pub struct XReserveUnpauseNote;
-
-impl XReserveUnpauseNote {
-    /// The compiled, fixed-root note script.
-    pub fn script() -> NoteScript {
-        UNPAUSE_NOTE_SCRIPT.clone()
-    }
-
-    /// The note-script root, which must equal the pinned constant.
-    pub fn script_root() -> NoteScriptRoot {
-        UNPAUSE_NOTE_SCRIPT.root()
-    }
-
-    /// [`XRESERVE_UNPAUSE_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
-    pub fn pinned_script_root() -> NoteScriptRoot {
-        NoteScriptRoot::from_raw(
-            Word::parse(XRESERVE_UNPAUSE_NOTE_SCRIPT_ROOT_HEX)
-                .expect("the pinned unpause note-script root hex is a valid word"),
-        )
-    }
-
-    /// Builds an `unpause` admin note (param-less): `sender` is the DOM_PAUSER holder (for success),
-    /// `faucet_id` the target faucet (PUBLIC). Carries no storage payload.
-    pub fn create<R: FeltRng>(
-        sender: AccountId,
-        faucet_id: AccountId,
-        rng: &mut R,
-    ) -> Result<Note, NoteError> {
-        build_admin_note(sender, faucet_id, Self::script(), vec![], rng)
     }
 }

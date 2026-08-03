@@ -679,7 +679,7 @@ async fn d5d_non_allowlisted_rejects() -> Result<()> {
     let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(
         result,
-        shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT")
+        shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY")
     );
     Ok(())
 }
@@ -710,7 +710,7 @@ async fn d5d_seam_both_arrangements_reject() -> Result<()> {
     let b_only_src = paired_driver_src(&preimage, len_bytes, &b, &b);
     let h2 = setup_attestation_account(allowlist_a, &b_only_src, SHELL_DRIVER_PATH)?;
     let r2 = run_call_driver(&h2, "drive").await;
-    assert_transaction_executor_error!(r2, shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT"));
+    assert_transaction_executor_error!(r2, shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY"));
     Ok(())
 }
 
@@ -736,7 +736,7 @@ async fn d5d_unstaged_pubkey_rejects() -> Result<()> {
     let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(
         result,
-        shell_error_by_name("ERR_XRESERVE_BAD_PK_COMMITMENT")
+        shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY")
     );
     Ok(())
 }

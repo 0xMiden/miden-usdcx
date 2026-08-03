@@ -40,10 +40,8 @@ min-burn floor, a missing domain-config seed, or a non-Public faucet) at build t
 | `mint_policy` | The **attestation mint policy** (`check_policy`, the ACTIVE mint policy the stock `mint_and_send` dispatches): reads the mint note's DepositIntent + attestation attachments (hash-verified), runs `D5a`–`D5d` by reference, enforces the assert-match binding (note-claimed recipient/amount/tag/type must equal their attested derivations), and marks the nonce used — its only state write. |
 | `deposit_intent_parser` | The faucet-side mint preconditions (`D5a`/`D5b`/`D5c`): domain/identifier compares, amount/fee bounds, nonce replay guard. Delegates the structural DepositIntent parse to the encoding library. |
 | `attestation_verify` | The attestation check (`D5d`): keccak the payload, gate the attester pubkey against the allowlist, ECDSA-verify the signature. |
-| `identifier_init` | The owner-gated, init-once **identifier** seeding (the DEC-4 minimized init: the identifier is a provable fixpoint of the account id, so it alone gets a runtime init; the other three domain-config fields are build-seeded). |
-| `attester_admin` | The owner-gated `set_attester` allowlist setter. |
-| `pause_admin` | The `DOM_PAUSER`-gated custom pause / unpause. |
-| `blocklist_admin` | The `BLK_MANAGER`-gated transfer-blocklist block / unblock. |
+| `identifier_init` | The administrator-gated, init-once **identifier** seeding — it resolves through the account-wide authority to the `ADMIN` role, exactly like the setters (the DEC-4 minimized init: the identifier is a provable fixpoint of the account id, so it alone gets a runtime init; the other three domain-config fields are build-seeded). |
+| `attester_admin` | The authority-gated `set_attester` allowlist setter. |
 | `encoding/` | The shared encoding library (`xreserve::encoding::*`): bytes32→key hashing, uint256→amount reduction, DepositIntent parse, pubkey commitment. Owned by the encoding crate; the faucet consumes it by reference. |
 
 The burn floor and its setter are **stock**: the `MinBurnAmount` policy component carries the
@@ -53,10 +51,14 @@ floor slot, its `check_policy` is the active burn policy, and the admin note cal
 ### `notes/` — the note scripts
 
 Public note scripts that drive account procedures when consumed. The mint note is the **stock
-miden-standards `MintNote`** (no custom mint script exists); the admin notes are custom, thin,
+miden-standards `MintNote`** (no custom mint script exists); the faucet-owned admin notes are thin,
 root-pinned scripts (`identifier_init`, `set_attester`, `set_min_burn_size` — which asserts the
-floor then calls the stock `set_min_burn_amount` —, `pause`/`unpause`, role management,
-ownership transfer, block/unblock) that cross into the account and call the matching setter.
+floor then calls the stock `set_min_burn_amount` —, and `set_max_supply`) that cross into the
+account and call the matching setter. Pausing, the transfer blocklist and role management ship
+**no faucet-owned script**: they use the stock `PauseActionNote`, `BlocklistConfigNote` and
+`RbacActionNote`, each of which covers every one of its actions behind one script root and calls the
+stock component the account installs. There is no ownership note — the faucet installs no ownership
+component.
 
 ## 3. Mint
 
@@ -135,25 +137,44 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
 
 ## 5. Admin
 
-- **Ownership**: `Ownable2Step` (two-step owner transfer).
-- **Owner-gated setters**: `set_attester` (allowlist), the stock `set_min_burn_amount` (behind
-  the note-side floor guard), and `identifier_init` are gated on the account owner. They are
-  intentionally **not** pause-gated (finding `F6`), so the owner can, e.g., disable a
+- **Ownership**: none. There is no `Ownable2Step` component and no owner slot; the built-in `ADMIN`
+  role is the account's single authority handle, and rotating it is a grant and a revoke of that
+  role through the standard role-action note. The handover is single-step — there is no
+  nominate-then-accept confirmation.
+- **Administrator-gated setters**: `set_attester` (allowlist), `identifier_init`, the stock
+  `set_min_burn_amount` (behind the note-side floor guard) and `set_max_supply` all resolve through
+  the account-wide authority to the `ADMIN` role. They are
+  intentionally **not** pause-gated (finding `F6`), so the administrator can, e.g., disable a
   compromised attester while the faucet is paused.
-- **Pause**: `pause`/`unpause` are gated on the `DOM_PAUSER` role (not the owner) — Circle's
-  distinct-pauser-role model. A pause halts both mint and burn-consume.
+- **Pause**: the stock `PausableManager`'s `pause`/`unpause`, gated on the `DOM_PAUSER` role (not
+  the administrator) — Circle's distinct-pauser-role model, expressed through the account's per-procedure
+  role map rather than a hand-written wrapper. A pause halts both mint and burn-consume.
+- **Transfer blocklist**: the stock `BlocklistManager`'s `block_account`/`unblock_account`, gated on
+  the `BLK_MANAGER` role held by an external administrator with no other capability. The stock
+  procedure does not validate its target, so blocking the faucet against itself is reachable on
+  chain; the faucet's note factory refuses to build such a note, and the state is recoverable with
+  an unblock note (which carries no assets, so no transfer policy runs).
+- **Authority**: `Authority::RbacControlled`. The four manager procedures above carry their roles in
+  the account's procedure-role map; every other authority-gated procedure carries none and so
+  resolves to the built-in `ADMIN` role, whose sole seeded member is the bootstrap administrator's
+  account. That keeps the administrator-gated setters with one holder while keeping pausing and
+  blocklisting away from it. `ADMIN` membership is account-bound: it is the whole of the faucet's
+  administrative authority, with no second handle behind it.
 - **Roles**: role-based access control with a `DOM_MANAGER` role that administers `DOM_PAUSER`.
   Since v16 (protocol #3215) the stock RBAC gates `grant_role`/`revoke_role`/`set_role_admin` on
   the managed role's *effective admin* — its delegated admin role, else the built-in `ADMIN`,
-  which the builder seeds to the owner's account — so membership rotation runs owner (`ADMIN`) →
-  `DOM_MANAGER` → `DOM_PAUSER`. (`ADMIN` membership is account-bound: it does not auto-follow an
-  ownership transfer — the ratified rotation runbook re-seats it via grant/revoke; see
-  `IMPL-DEV-23`.) The delegation graph itself is **build-seeded and frozen**: the
-  runtime `set_role_admin` note was removed from the note-script allowlist (S21 disposition flip,
-  human-ratified 2026-07-14), so no on-chain sender can re-point or clear any role's admin. The
-  stock `rbac::set_role_admin` procedure remains composed but is present-but-unreachable
-  (`tests/account_callable_surface.rs`), and role rotation is `grant_role`/`revoke_role` only —
-  matching Circle's fixed `DomainManageable.sol` admin graph (see `IMPL-DEV-24` in the glossary).
+  which the builder seeds to the bootstrap administrator's account — so membership rotation runs
+  `ADMIN` → `DOM_MANAGER` → `DOM_PAUSER`. Role management is the **standard role-action note**,
+  whose single script root carries `grant_role`, `revoke_role`, `set_role_admin` and
+  `renounce_role` alike; allowlisting is per root, so admitting it admits all four. Two
+  consequences are accepted and pinned by test. The delegation graph is **runtime-mutable**: a
+  role's effective admin may re-point the role it administers, and because delegation is exclusive,
+  `ADMIN` has no authority at all over a role that was delegated away (`DOM_MANAGER`, not `ADMIN`,
+  governs `DOM_PAUSER`). And any holder may **renounce** its own membership, ungated — including
+  the sole `ADMIN`, which empties the role permanently, since the role administers itself and
+  nobody would be left to grant it back. Recovery from that state is a redeploy. See
+  `IMPL-DEV-24` in the glossary; the seam is driven end to end in
+  `tests/w2admin_surface_finalization.rs`.
 - **Domain config** (DEC-4, `R-ADMIN-4`): `domain`, `source_domain`, and `xreserve_contract`
   are **build-seeded** by the account builder (no runtime writer exists). Only the `identifier`
   — a provable fixpoint of the account id (the id derives from the initial storage commitment,

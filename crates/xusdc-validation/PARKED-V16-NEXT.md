@@ -53,5 +53,41 @@ onto the released `v0.16.0` crates.io family **and** a matching `miden-client`/n
 3. Adapt to the API deltas recorded in `docs/MIGRATION-V16-NEXT.md` — this crate consumes the same
    renamed surfaces (`AccountBuilder::with_auth_component` removal, the `Library`→`Package` rename
    wave, the `AuthNetworkAccount` constructor rework with its mandatory fee-policy configuration).
-4. Re-run the LNV row gates (`cargo run -p xusdc-validation --bin …` per this crate's README)
+4. Adapt the admin rows to the standard admin components AND to the re-gated setters.
+
+   **Expected-gate constants (behavioural, not cosmetic).** The admin setters — `set_attester`,
+   `set_min_burn_size`/`set_min_burn_amount`, `set_max_supply` — and, since the 2026-07-31
+   admin-surface finalization, `identifier_init` too, no longer resolve to an owner. There is no
+   `Ownable2Step` component and no owner slot at all. They carry no role of their own, so the
+   account's role-based authority resolves them to the built-in `ADMIN` role and an unauthorized
+   sender is rejected with `ERR_SENDER_LACKS_ROLE`, not `ERR_SENDER_NOT_OWNER`. These rows still
+   expect the owner error and will fail against a current faucet:
+   - `src/assertions_cf.rs:53` — `ERR_NOT_OWNER` is defined and used as a setter's expected gate.
+   - `src/assertions_cf.rs` C6 assertion — requires at least one negative expecting `ERR_NOT_OWNER`.
+   - `src/rows_cf.rs` C6 negatives — two rows carry `expected_gate: ERR_NOT_OWNER`.
+   - `src/sanity/admin.rs` — the `set_attester` rejection asserts `ERR_NOT_OWNER`.
+
+   These were left as-is rather than changed blind: the crate is excluded from the workspace and
+   cannot be compiled or executed against the current pins, so an untested edit to an assertion
+   would be a guess. `ERR_LACKS_ROLE` already exists in `assertions_cf.rs` and is what they should
+   use — and it is now what EVERY admin row should expect. There are no ownership-slot procedures
+   left: `identifier_init` moved onto the account-wide authority, and `transfer_ownership` /
+   `accept_ownership` were deleted with the component. Every reference this crate carries to them
+   (`src/sanity/admin.rs`, `src/sanity/admin_restore.rs`, `src/deploy.rs`, `src/sanity/driver.rs`,
+   `src/sanity/record.rs`) names a procedure or note factory that no longer exists; the ownership
+   rows must be dropped, and administrator rotation re-expressed as a grant and a revoke of the
+   `ADMIN` role through the stock `RbacActionNote`.
+
+   **The standard admin components.** While this crate was parked, the faucet
+   replaced its two hand-written role-gated admin wrappers with the stock `PausableManager` and
+   `BlocklistManager`, driven by the stock `PauseActionNote` and `BlocklistConfigNote`. The
+   references this crate still carries to `xreserve::pause_admin::{pause,unpause}` and
+   `xreserve::blocklist_admin::{block_account,unblock_account}` (`src/rows_cf.rs`, `src/rows_gj.rs`,
+   `src/assertions_cf.rs`, `src/sanity/admin.rs`, `src/sanity/admin_restore.rs`) name procedures
+   that no longer exist; point them at the stock manager roots and build the notes through
+   `PauseActionNote` / `XReserveBlocklistConfigNote`. Role management likewise moved to the stock
+   `RbacActionNote` (one script root carrying grant, revoke, set-role-admin and renounce), so the
+   references to the deleted bespoke `grant_role` / `revoke_role` note factories must be re-pointed
+   at it. The note-script allowlist is 9 roots, not 14, and the callable surface is 70, not 75.
+5. Re-run the LNV row gates (`cargo run -p xusdc-validation --bin …` per this crate's README)
    against the matching node stack and extend `VALIDATION-RECORD.md` with the run.

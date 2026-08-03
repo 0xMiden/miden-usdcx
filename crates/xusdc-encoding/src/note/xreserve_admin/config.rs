@@ -14,7 +14,7 @@ use miden_protocol::{Felt, Word};
 
 use super::{build_admin_note, compile_admin_note_script, routing_attachments};
 
-// SET_ATTESTER (allowlist row 3)
+// SET_ATTESTER
 // ================================================================================================
 
 const SET_ATTESTER_NOTE_SCRIPT_SRC: &str =
@@ -23,11 +23,10 @@ const SET_ATTESTER_NOTE_SCRIPT_SRC: &str =
 static SET_ATTESTER_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(SET_ATTESTER_NOTE_SCRIPT_SRC));
 
-/// The PINNED set_attester admin note-script root (`masm-rust-constant-parity`): the MAST root of
-/// the compiled `xreserve_set_attester_note.masm` with the xreserve library linked. It binds
-/// transitively to `attester_admin::set_attester`'s digest, so ANY edit of the note script or the
-/// proc it calls trips the parity assertion (`script_root() == pinned_script_root()`) and forces a
-/// conscious re-pin.
+/// The PINNED set_attester admin note-script root: the MAST root of the compiled
+/// `xreserve_set_attester_note.masm` with the xreserve library linked. It binds transitively to
+/// `attester_admin::set_attester`'s digest, so any edit of the note script or of the proc it calls
+/// changes this root.
 pub const XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x442a0c19b0bbce60630f7c52758b296a4ba74e6b7b02b6603f94481c161bc962";
 
@@ -43,13 +42,13 @@ impl XReserveSetAttesterNote {
         SET_ATTESTER_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 3). Must equal the pinned
-    /// [`XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX`] (parity-tested).
+    /// The note-script root, which must equal
+    /// [`XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX`].
     pub fn script_root() -> NoteScriptRoot {
         SET_ATTESTER_NOTE_SCRIPT.root()
     }
 
-    /// The PINNED note-script root ([`XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX`]).
+    /// [`XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
     pub fn pinned_script_root() -> NoteScriptRoot {
         NoteScriptRoot::from_raw(
             Word::parse(XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX)
@@ -60,7 +59,7 @@ impl XReserveSetAttesterNote {
     /// Builds a `set_attester` admin note: `sender` is the admin party (the owner, for success),
     /// `faucet_id` the target faucet (PUBLIC), `commitment` the attester pubkey commitment (the
     /// xReserveAttesters map key), `enabled` = 1 (allowlist) or 0 (remove). The params live in note
-    /// storage; `NOTE_ARGS` are ignored by the script.
+    /// storage.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -90,7 +89,7 @@ impl XReserveSetAttesterNote {
     }
 }
 
-// IDENTIFIER_INIT (allowlist row 12)
+// IDENTIFIER_INIT
 // ================================================================================================
 
 const IDENTIFIER_INIT_NOTE_SCRIPT_SRC: &str =
@@ -99,20 +98,18 @@ const IDENTIFIER_INIT_NOTE_SCRIPT_SRC: &str =
 static IDENTIFIER_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(IDENTIFIER_INIT_NOTE_SCRIPT_SRC));
 
-/// The PINNED identifier_init admin note-script root (`masm-rust-constant-parity`): the MAST root
-/// of the compiled `xreserve_identifier_init_note.masm` with the xreserve library linked. It binds
-/// transitively to `identifier_init::init_identifier`'s digest, so ANY edit of the note script or
-/// the proc it calls trips the parity assertion (`script_root() == pinned_script_root()`) and
-/// forces a conscious re-pin. The pinned root covers the own-id binding: the proc derives
+/// The PINNED identifier_init admin note-script root: the MAST root of the compiled
+/// `xreserve_identifier_init_note.masm` with the xreserve library linked. It binds transitively to
+/// `identifier_init::init_identifier`'s digest, so any edit of the note script or of the proc it
+/// calls changes this root. The root therefore covers the own-id binding: the proc derives
 /// `bytes32_to_key(account_id_to_bytes32(get_id()))` on-chain and rejects a mismatched committed
 /// identifier.
 pub const XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX: &str =
     "0xac81d9ab1fd5f66252ac77a668342b0656f6f3b102a0efbc219e42b05f82b89e";
 
-/// The owner-gated, init-once `identifier_init` admin note (the minimized
-/// identifier-only init: the identifier is the ONE domain-config
-/// field the account-id fixpoint forces past build time, the other three are build-seeded by the
-/// `XReserveStablecoinBuilder`). Storage layout: `[IDENTIFIER(4)]`. Consumed against the faucet
+/// The owner-gated, init-once `identifier_init` admin note. The identifier is the ONE domain-config
+/// field the account-id fixpoint forces past build time; the other three are build-seeded by the
+/// `XReserveStablecoinBuilder`. Storage layout: `[IDENTIFIER(4)]`. Consumed against the faucet
 /// network account; `identifier_init::init_identifier` gates on the (kernel-forced) note sender
 /// being the owner AND rejects a second initialization.
 pub struct XReserveIdentifierInitNote;
@@ -124,13 +121,13 @@ impl XReserveIdentifierInitNote {
         IDENTIFIER_INIT_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 12). Must equal the pinned
-    /// [`XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX`] (parity-tested).
+    /// The note-script root, which must equal
+    /// [`XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX`].
     pub fn script_root() -> NoteScriptRoot {
         IDENTIFIER_INIT_NOTE_SCRIPT.root()
     }
 
-    /// The PINNED note-script root ([`XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX`]).
+    /// [`XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
     pub fn pinned_script_root() -> NoteScriptRoot {
         NoteScriptRoot::from_raw(
             Word::parse(XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX)
@@ -142,11 +139,9 @@ impl XReserveIdentifierInitNote {
     /// success) and `faucet_id` the target faucet (PUBLIC). The seeded identifier is DERIVED from
     /// `faucet_id` — `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))`, the canonical
     /// key of the faucet's own account id as bytes32 — so the init is BOUND to its target and
-    /// cannot seed a token that belongs to another identity (the deployed-faucet re-check path
-    /// already expects exactly this key). This is a PROVISIONAL position (the
-    /// AccountId↔bytes32 codec and the identifier==own-id equivalence stay OPEN with Circle); it is
-    /// changeable if Circle assigns a different identifier. The derived key lives in note storage;
-    /// `NOTE_ARGS` are ignored by the script.
+    /// cannot seed a token that belongs to another identity. This is a PROVISIONAL position — the
+    /// AccountId↔bytes32 codec and the identifier==own-id equivalence stay OPEN with Circle — and is
+    /// changeable if Circle assigns a different identifier. The derived key lives in note storage.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -162,8 +157,8 @@ impl XReserveIdentifierInitNote {
 
     /// The provisional identifier this factory seeds for `faucet_id`: the canonical
     /// `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))` key (the own-id fixpoint,
-    /// pending Circle confirmation). Exposed so tests and validation flows can assert the seeded identity and
-    /// splice a matching `remoteToken` into the mint payload the faucet's identifier compare reads.
+    /// pending Circle confirmation). Exposed so callers can assert the seeded identity and splice a
+    /// matching `remoteToken` into the mint payload the faucet's identifier compare reads.
     pub fn identifier_for(faucet_id: AccountId) -> Word {
         crate::xreserve::encoding::bytes32_to_storage_map_key(
             &crate::xreserve::encoding::account_id_to_bytes32(faucet_id),
@@ -172,7 +167,7 @@ impl XReserveIdentifierInitNote {
     }
 }
 
-// SET_MIN_BURN_SIZE (allowlist row 4)
+// SET_MIN_BURN_SIZE
 // ================================================================================================
 
 const SET_MIN_BURN_SIZE_NOTE_SCRIPT_SRC: &str =
@@ -181,10 +176,8 @@ const SET_MIN_BURN_SIZE_NOTE_SCRIPT_SRC: &str =
 static SET_MIN_BURN_SIZE_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(SET_MIN_BURN_SIZE_NOTE_SCRIPT_SRC));
 
-/// The PINNED set_min_burn_size admin note-script root (`masm-rust-constant-parity`): binds
-/// transitively to the STOCK `min_burn_amount::set_min_burn_amount`'s
-/// digest plus the note-side zero-floor guard, so any edit of the note or the stock proc it
-/// calls trips parity and forces a conscious re-pin.
+/// The PINNED set_min_burn_size admin note-script root: binds transitively to the STOCK
+/// `min_burn_amount::set_min_burn_amount`'s digest plus the note-side zero-floor guard.
 pub const XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x7ae46ecf82c7968a867c88d982659ba55989c49238c5e1ba6fa1a8c6a1008566";
 
@@ -198,12 +191,12 @@ impl XReserveSetMinBurnSizeNote {
         SET_MIN_BURN_SIZE_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 4). Must equal the pinned constant (parity-tested).
+    /// The note-script root, which must equal the pinned constant.
     pub fn script_root() -> NoteScriptRoot {
         SET_MIN_BURN_SIZE_NOTE_SCRIPT.root()
     }
 
-    /// The PINNED note-script root ([`XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX`]).
+    /// [`XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
     pub fn pinned_script_root() -> NoteScriptRoot {
         NoteScriptRoot::from_raw(
             Word::parse(XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX)
@@ -213,7 +206,7 @@ impl XReserveSetMinBurnSizeNote {
 
     /// Builds a `set_min_burn_size` admin note: `sender` is the admin party (the owner, for success),
     /// `faucet_id` the target faucet (PUBLIC), `new_min` the new minimum burn size. The param lives in
-    /// note storage; `NOTE_ARGS` are ignored by the script.
+    /// note storage.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -227,7 +220,7 @@ impl XReserveSetMinBurnSizeNote {
     }
 }
 
-// SET_MAX_SUPPLY (allowlist row 5)
+// SET_MAX_SUPPLY
 // ================================================================================================
 
 const SET_MAX_SUPPLY_NOTE_SCRIPT_SRC: &str =
@@ -236,8 +229,8 @@ const SET_MAX_SUPPLY_NOTE_SCRIPT_SRC: &str =
 static SET_MAX_SUPPLY_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(SET_MAX_SUPPLY_NOTE_SCRIPT_SRC));
 
-/// The PINNED set_max_supply admin note-script root (`masm-rust-constant-parity`): binds transitively
-/// to the stock `fungible::set_max_supply`'s digest.
+/// The PINNED set_max_supply admin note-script root: binds transitively to the stock
+/// `fungible::set_max_supply`'s digest.
 pub const XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x70b18f7063f760b727dd194df5699fd5aa3453ed53ffb317b91711d4c597e018";
 
@@ -250,12 +243,12 @@ impl XReserveSetMaxSupplyNote {
         SET_MAX_SUPPLY_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 5). Must equal the pinned constant (parity-tested).
+    /// The note-script root, which must equal the pinned constant.
     pub fn script_root() -> NoteScriptRoot {
         SET_MAX_SUPPLY_NOTE_SCRIPT.root()
     }
 
-    /// The PINNED note-script root ([`XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX`]).
+    /// [`XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
     pub fn pinned_script_root() -> NoteScriptRoot {
         NoteScriptRoot::from_raw(
             Word::parse(XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX)
@@ -265,7 +258,7 @@ impl XReserveSetMaxSupplyNote {
 
     /// Builds a `set_max_supply` admin note: `sender` is the admin party (the owner, for success),
     /// `faucet_id` the target faucet (PUBLIC), `new_max_supply` the new cap. The param lives in note
-    /// storage; NOTE_ARGS are ignored.
+    /// storage.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -278,7 +271,7 @@ impl XReserveSetMaxSupplyNote {
     }
 }
 
-// PAUSE (allowlist row 6)
+// PAUSE
 // ================================================================================================
 
 const PAUSE_NOTE_SCRIPT_SRC: &str =
@@ -287,8 +280,7 @@ const PAUSE_NOTE_SCRIPT_SRC: &str =
 static PAUSE_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(PAUSE_NOTE_SCRIPT_SRC));
 
-/// The PINNED pause admin note-script root (`masm-rust-constant-parity`): binds transitively to
-/// `pause_admin::pause`'s digest.
+/// The PINNED pause admin note-script root: binds transitively to `pause_admin::pause`'s digest.
 pub const XRESERVE_PAUSE_NOTE_SCRIPT_ROOT_HEX: &str =
     "0xf505ce1232e61d9829825ee65a7db8d0cd5de182a7f16593aa212d5cf0d198a8";
 
@@ -301,12 +293,12 @@ impl XReservePauseNote {
         PAUSE_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 6). Must equal the pinned constant (parity-tested).
+    /// The note-script root, which must equal the pinned constant.
     pub fn script_root() -> NoteScriptRoot {
         PAUSE_NOTE_SCRIPT.root()
     }
 
-    /// The PINNED note-script root ([`XRESERVE_PAUSE_NOTE_SCRIPT_ROOT_HEX`]).
+    /// [`XRESERVE_PAUSE_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
     pub fn pinned_script_root() -> NoteScriptRoot {
         NoteScriptRoot::from_raw(
             Word::parse(XRESERVE_PAUSE_NOTE_SCRIPT_ROOT_HEX)
@@ -315,7 +307,7 @@ impl XReservePauseNote {
     }
 
     /// Builds a `pause` admin note (param-less): `sender` is the DOM_PAUSER holder (for success),
-    /// `faucet_id` the target faucet (PUBLIC). Carries no storage payload; the note ARGS are ignored.
+    /// `faucet_id` the target faucet (PUBLIC). Carries no storage payload.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -325,7 +317,7 @@ impl XReservePauseNote {
     }
 }
 
-// UNPAUSE (allowlist row 7)
+// UNPAUSE
 // ================================================================================================
 
 const UNPAUSE_NOTE_SCRIPT_SRC: &str =
@@ -334,8 +326,7 @@ const UNPAUSE_NOTE_SCRIPT_SRC: &str =
 static UNPAUSE_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(UNPAUSE_NOTE_SCRIPT_SRC));
 
-/// The PINNED unpause admin note-script root (`masm-rust-constant-parity`): binds transitively to
-/// `pause_admin::unpause`'s digest.
+/// The PINNED unpause admin note-script root: binds transitively to `pause_admin::unpause`'s digest.
 pub const XRESERVE_UNPAUSE_NOTE_SCRIPT_ROOT_HEX: &str =
     "0x8df1f866ebc97f423119ab04400e2c09a8680aac3bbb03f91a4fe271dfa9578c";
 
@@ -348,12 +339,12 @@ impl XReserveUnpauseNote {
         UNPAUSE_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root (allowlist row 7). Must equal the pinned constant (parity-tested).
+    /// The note-script root, which must equal the pinned constant.
     pub fn script_root() -> NoteScriptRoot {
         UNPAUSE_NOTE_SCRIPT.root()
     }
 
-    /// The PINNED note-script root ([`XRESERVE_UNPAUSE_NOTE_SCRIPT_ROOT_HEX`]).
+    /// [`XRESERVE_UNPAUSE_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
     pub fn pinned_script_root() -> NoteScriptRoot {
         NoteScriptRoot::from_raw(
             Word::parse(XRESERVE_UNPAUSE_NOTE_SCRIPT_ROOT_HEX)
@@ -362,7 +353,7 @@ impl XReserveUnpauseNote {
     }
 
     /// Builds an `unpause` admin note (param-less): `sender` is the DOM_PAUSER holder (for success),
-    /// `faucet_id` the target faucet (PUBLIC). Carries no storage payload; the note ARGS are ignored.
+    /// `faucet_id` the target faucet (PUBLIC). Carries no storage payload.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,

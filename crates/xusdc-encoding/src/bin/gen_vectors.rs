@@ -1,13 +1,11 @@
 //! Committed generator of the ONE canonical golden-vector artifact
 //! (`tests/vectors/xreserve-encoding-vectors.json`).
 //!
-//! Provenance engine: arithmetic/layout expectations are derived here with exact integer math
-//! (formulas recorded per entry); hash/protocol-derived expectations (Poseidon2 Words,
-//! AccountIds) are computed ONCE against the pinned `protocol v0.15.3` crates
-//! (`Hasher::hash_elements`, `bytes_to_packed_u32_elements`, `AccountIdBuilder::build_with_seed`).
-//! This binary never calls the crate's mirror routines (derivation independence); it is
-//! derivation code, not routine logic. Regeneration is an explicit, reviewed act:
-//! `cargo run --bin gen_vectors`.
+//! Arithmetic and layout expectations are derived here with exact integer math (the formula is
+//! recorded per entry); hash- and protocol-derived expectations (Poseidon2 Words, AccountIds) come
+//! from the protocol crates via `Hasher::hash_elements`, `bytes_to_packed_u32_elements`, and
+//! `AccountIdBuilder::build_with_seed`. The vectors are derived independently of the code they
+//! check. Regeneration is an explicit, reviewed act: `cargo run --bin gen_vectors`.
 //!
 //! Wire-format byte offsets used below: magic@0, version@4, amount@8, remoteDomain@40,
 //! remoteToken@44, remoteRecipient@76, localToken@108, localDepositor@140, maxFee@172,
@@ -147,8 +145,8 @@ struct IntentSpec {
     max_fee: [u8; 32],
     nonce: [u8; 32],
     hook_data: Vec<u8>,
-    /// When set, the encoded hookDataLen field diverges from `hook_data.len()`
-    /// (the TV-DI-6 length-mismatch construction).
+    /// When set, the encoded hookDataLen field diverges from `hook_data.len()`, which is how the
+    /// length-mismatch vectors are constructed.
     hook_data_len_override: Option<u32>,
 }
 
@@ -276,12 +274,10 @@ fn di_reject(
 
 // Attestation (ATT) entries — Rust + MASM dual surface
 // ================================================================================================
-// Independent generation (anti-circularity): the secp256k1 keypair + signature come from the
-// INDEPENDENT `k256` crate, the keccak digest from `sha3` — never a miden signer. The commitment
-// oracle is miden-crypto `PublicKey::to_commitment` (the canonical attester-allowlist keying
-// primitive the faucet's attestation verify looks up), deserialized from the exact 33 compressed
-// wire bytes. This binary
-// never calls the crate mirror (`pubkey_commitment`/`*_felts`) — derivation independence.
+// the secp256k1 keypair and signature come from the INDEPENDENT `k256` crate and the keccak digest
+// from `sha3`. The commitment oracle is miden-crypto
+// `PublicKey::to_commitment` — the attester-allowlist keying primitive the faucet's attestation
+// verify looks up — deserialized from the exact 33 compressed wire bytes.
 
 /// Deterministic independent secp256k1 keypair (k256 + seeded StdRng).
 fn att_keypair(seed: u64) -> SigningKey {
@@ -305,7 +301,7 @@ fn att_keccak256(msg: &[u8]) -> [u8; 32] {
 }
 
 /// 65-byte `r || s || v` signature of `digest` under `sk`, generated entirely by `k256`
-/// (`sign_prehash_recoverable`) — mirrors miden-crypto 0.25.1 `Signature` serialization
+/// (`sign_prehash_recoverable`) and laid out as miden-crypto's `Signature` serialization does
 /// (r‖s‖v, v = recovery id). RAW secp256k1 over the keccak digest: NO EIP-712 domain, no
 /// struct; v is carried, unused on-chain.
 fn att_sign65(sk: &SigningKey, digest: &[u8; 32]) -> [u8; 65] {
@@ -320,9 +316,8 @@ fn att_sign65(sk: &SigningKey, digest: &[u8; 32]) -> [u8; 65] {
 
 /// The canonical commitment oracle: deserialize the exact 33 compressed wire bytes into the
 /// miden-crypto `PublicKey` and take `to_commitment()` = Poseidon2 over the 16 affine-coordinate
-/// pubkey felts (miden-crypto 0.28
-/// `ecdsa_k256_keccak`).
-/// This is exactly what off-chain `set_attester` keys the `xReserveAttesters` allowlist by.
+/// pubkey felts. This is exactly what off-chain `set_attester` keys the `xReserveAttesters`
+/// allowlist by.
 fn att_commitment(pk33: &[u8; 33]) -> Word {
     PublicKey::read_from_bytes(pk33)
         .expect("valid compressed secp256k1 pubkey")
@@ -508,7 +503,7 @@ fn main() {
         "cite": "DEV-5",
         "derivation": "x = 1500123, y = floor(x/10^6) = 1, z = 500123; dust POLICY is REQUIRES CIRCLE CONFIRMATION (DEV-5)",
     }));
-    // masm-only u32 guard staging (additive harness case, not a frozen TV coverage claim).
+    // masm-only u32 guard staging (an additive harness case, not a spec row).
     amt.push(json!({
         "id": "amt-guard-limb-not-u32", "tv": [], "kind": "guard", "mode": "masm-only",
         "scale_exp": 6,
@@ -522,11 +517,9 @@ fn main() {
     let ids: Vec<miden_protocol::account::AccountId> = (1u8..=3)
         .map(|seed| AccountIdBuilder::new().build_with_seed([seed; 32]))
         .collect();
-    // The right-aligned (Agglayer-mirroring) AccountId packaging — a human-selected draft that
-    // stays OPEN, pending Circle confirmation:
-    // bytes[0..16]=0, bytes[16..24]=prefix u64 BE, bytes[24..32]=suffix u64 BE. Derived
-    // inline from the protocol AccountId accessors (derivation independence — this binary
-    // never calls the crate mirror's account_id_to_bytes32).
+    // the right-aligned (Agglayer-mirroring) AccountId packaging — a draft that stays OPEN, pending
+    // Circle confirmation: bytes[0..16]=0, bytes[16..24]=prefix u64 BE, bytes[24..32]=suffix u64 BE.
+    // Derived inline from the protocol AccountId accessors.
     let r_b_bytes32 = |id: &miden_protocol::account::AccountId| -> [u8; 32] {
         let mut b = [0u8; 32];
         b[16..24].copy_from_slice(&id.prefix().as_u64().to_be_bytes());
@@ -550,7 +543,7 @@ fn main() {
             ),
         }));
     }
-    // out-of-range: a valid R-B encoding with a non-zero byte in the leading 16-byte pad.
+    // out-of-range: an otherwise valid encoding with a non-zero byte in the leading 16-byte pad.
     {
         let mut bad = r_b_bytes32(&ids[0]);
         bad[0] = 0x01;
@@ -725,10 +718,10 @@ fn main() {
     }
 
     // ---- att family (attestation surface) ----------------------------------------
-    // Each vector: an independent k256 keypair; the digest is keccak256 of a FULL DepositIntent
-    // payload (raw keccak, NOT EIP-712, no struct); the
-    // 65-byte r||s||v signature over that digest; and the canonical commitment from miden-crypto
-    // `PublicKey::to_commitment`. The nonce is varied per seed so digests/sigs/pubkeys all differ.
+    // each vector carries an independent k256 keypair; the digest is keccak256 of a FULL
+    // DepositIntent payload (raw keccak, NOT EIP-712, no struct); the 65-byte r||s||v signature over
+    // that digest; and the canonical commitment from miden-crypto `PublicKey::to_commitment`. The
+    // nonce is varied per seed so digests, sigs, and pubkeys all differ.
     let mut att: Vec<Value> = Vec::new();
     for seed in 1u64..=3 {
         let mut spec = IntentSpec::base(recipient_b32);
@@ -761,9 +754,9 @@ fn main() {
     }
 
     // ---- bn family (burn-note items) -------------------------------------------
-    // items = amount(1) + destDomain(1) + destRecipient(8 u32-LE) + salt(8 u32-LE)
-    // = 18 felts. Derived independently of the crate's encode: amount/destDomain are the canonical
-    // felt of the integer; the two bytes32 fields use the same `packed` primitive as the b32 family.
+    // items = amount(1) + destDomain(1) + destRecipient(8 u32-LE) + salt(8 u32-LE) = 18 felts.
+    // amount and destDomain are the canonical felt of the integer, and the two bytes32 fields use
+    // the same `packed` primitive as the b32 family.
     let bn_items =
         |amount: u64, domain: u32, recipient: &[u8; 32], salt: &[u8; 32]| -> Vec<String> {
             let mut out = Vec::with_capacity(18);

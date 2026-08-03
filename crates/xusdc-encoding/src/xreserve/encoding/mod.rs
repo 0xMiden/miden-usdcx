@@ -1,5 +1,5 @@
-//! Rust mirror of the shared-encoding surface — module homes and signatures exactly
-//! per the shared-encoding spec (mirrored read-only in `docs/spec/`).
+//! Rust mirror of the shared-encoding surface: the codecs the faucet's MASM also implements, plus
+//! the ones that exist only off-chain.
 
 mod account_id;
 mod amount;

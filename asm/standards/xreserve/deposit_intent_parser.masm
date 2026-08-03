@@ -40,8 +40,7 @@ use {AMOUNT_FELT_OFF, MAX_FEE_FELT_OFF, NONCE_FELT_OFF} from xreserve::encoding:
 # CONSTANTS
 # =================================================================================================
 
-# Slots — ids derive from the namespaced label strings below. The Rust account builder binds
-# the identical label strings, so both sides derive the same slot ids.
+# Slots — ids derive from the namespaced label strings below.
 pub const DOMAIN_CONFIG_SLOT = word("xusdc::xreserve::domain_config::domain")
 pub const IDENTIFIER_CONFIG_SLOT = word("xusdc::xreserve::domain_config::identifier")
 
@@ -57,8 +56,8 @@ const ERR_XRESERVE_WRONG_IDENTIFIER = "deposit intent remote token does not matc
 
 # Amount/fee errors. The maxFee/fee staging declares its own too-large and limb guards (the
 # same strings the encoding library uses); the amount field goes through the witness verifier.
-# The fee gate requires feeAmount == 0 — the MVP has no relayer-fee leg — which subsumes the
-# feeAmount <= maxFee compare.
+# The fee gate requires feeAmount == 0, since there is no relayer-fee leg yet, which subsumes
+# the feeAmount <= maxFee compare.
 const ERR_X_TOO_LARGE = "larger than 2**128"
 const ERR_FELT_OUT_OF_FIELD = "supplied limb is not a valid u32"
 const ERR_XRESERVE_AMOUNT_BELOW_FEE = "deposit intent amount is below the max fee"
@@ -80,12 +79,12 @@ const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
 #! the configured identifier key.
 #!
 #! Inputs:  [intent_ptr, len_felts]
-#! Outputs: [hook_data_len]
+#! Outputs: [hook_data_len_bytes]
 #!
 #! Where:
 #! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
 #! - len_felts is the staged preimage length in felts.
-#! - hook_data_len is the semantic hookDataLen value as a u32 felt.
+#! - hook_data_len_bytes is the semantic hookDataLen value in bytes, as a u32 felt.
 #!
 #! Panics if:
 #! - parse_deposit_intent fails to verify.
@@ -97,30 +96,30 @@ const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
 @account_procedure
 pub proc assert_deposit_intent
     exec.encoding::parse_deposit_intent
-    # => [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len]
+    # => [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
 
     # domain compare: the configured domain lives in element 0 of the domain config slot word
     push.DOMAIN_CONFIG_SLOT[0..2]
     exec.active_account::get_item
-    # => [domain, d1, d2, d3, remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len]
+    # => [domain, d1, d2, d3, remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
 
     movdn.3 drop drop drop
-    # => [domain, remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len]
+    # => [domain, remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
 
     assert_eq.err=ERR_XRESERVE_WRONG_DOMAIN
-    # => [REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len]
+    # => [REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
 
     # identifier compare: the parser's packed remoteToken words are already in the
     # [B_UPPER, B_LOWER] orientation bytes32_to_key consumes
     exec.encoding::bytes32_to_key
-    # => [KEY, hook_data_len]
+    # => [KEY, hook_data_len_bytes]
 
     push.IDENTIFIER_CONFIG_SLOT[0..2]
     exec.active_account::get_item
-    # => [STORED_KEY, KEY, hook_data_len]
+    # => [STORED_KEY, KEY, hook_data_len_bytes]
 
     assert_eqw.err=ERR_XRESERVE_WRONG_IDENTIFIER
-    # => [hook_data_len]
+    # => [hook_data_len_bytes]
 end
 
 #! Asserts the faucet-owned amount and fee mint preconditions over a staged preimage.
@@ -229,11 +228,10 @@ end
 
 #! Asserts the deposit intent's nonce has not been used (the mint replay guard).
 #!
-#! Derives the nonce key by CONSUMING the encoding library's `xreserve::encoding::bytes32_to_key` (no
-#! re-implemented hash) over the parsed nonce (felt[51..58]), reads `usedNonces[key]` via
-#! `active_account::get_map_item`, and asserts it is `EMPTY_WORD`. Marking the nonce as
-#! consumed is the mint policy's accept-path write — this guard is assert-zero ONLY, so a
-#! failed mint never consumes a nonce.
+#! Derives the nonce key with the encoding library's `xreserve::encoding::bytes32_to_key` over the
+#! parsed nonce (felt[51..58]), reads `usedNonces[key]` via `active_account::get_map_item`, and
+#! asserts it is `EMPTY_WORD`. Marking the nonce as consumed is the mint policy's accept-path
+#! write — this guard is assert-zero ONLY, so a failed mint never consumes a nonce.
 #!
 #! Inputs:  [intent_ptr]
 #! Outputs: []
@@ -254,7 +252,6 @@ pub proc assert_nonce_unused
     exec.utils::mem_load_double_word_unaligned swapw
     # => [B_UPPER, B_LOWER]
 
-    # call the encoding library's bytes32_to_key; the hash is never re-implemented here
     exec.encoding::bytes32_to_key
     # => [KEY]
 

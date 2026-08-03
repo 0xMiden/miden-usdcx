@@ -55,7 +55,10 @@ const FROZEN_CALLABLE_ROOTS: [&str; 14] = [
 /// does not, so they are exported for reuse and by tests but are not doors on the account. Keeping
 /// them in their own list is the point — the frozen-root set above stays exactly the set of things
 /// that can be `call`ed on the deployed faucet.
-const FROZEN_EXEC_ONLY_EXPORTS: [&str; 1] = ["::xreserve::attestation_verify::pubkey_commitment"];
+const FROZEN_EXEC_ONLY_EXPORTS: [&str; 2] = [
+    "::xreserve::attestation_verify::pubkey_commitment",
+    "::xreserve::encoding::num_bytes_to_num_felts",
+];
 
 /// The attestation mint policy's library path — the anchor by which the xreserve component is
 /// located in the production component set.

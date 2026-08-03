@@ -40,7 +40,7 @@ Accounts are composed from **components** — reusable Rust modules annotated wi
 ### Notes
 Notes are **UTXO-like messages** for asynchronous inter-account communication. A note contains:
 - **Script** — Logic that executes when the note is consumed
-- **Inputs** — Data passed to the script (Vec<Felt>)
+- **Storage** — Data accessible to the script during execution (`NoteStorage`, backed by `Vec<Felt>`)
 - **Assets** — Fungible/non-fungible tokens attached to the note
 - **Metadata** — Sender, tag, note type (public/private)
 
@@ -67,10 +67,11 @@ A transaction is a **single-account state transition** with 4 phases:
 ### Felt and Word
 - **Felt**: Field element in the Goldilocks prime field (p = 2^64 - 2^32 + 1). The fundamental data unit.
 - **Word**: Array of 4 Felts (32 bytes). Used for cryptographic hashes, storage keys, account IDs.
-- **Current constructors**: `Felt::new`, `Felt::from_u8` / `from_u16` / `from_u32`, `Felt::from_canonical_checked`, `Word::new`, `Word::from([u32; 4])`, `Word::from([Felt; 4])`, `Word::try_from([u64; 4])`
+- **Felt constructors** (Rust `miden_field::Felt` — the same type used host-side in clients/tests *and* guest-side inside `#[component]`/`#[note]` contract code, which re-exports it): `Felt::new(u64)` is **fallible** in v0.15 — it returns `Result<Felt, FeltFromIntError>` and rejects out-of-range values (delegates to `from_canonical_checked`), so callers must `?`/match it (guest code typically `Felt::new(0).unwrap()`). `Felt::new_unchecked(u64)` is the raw, non-reducing constructor (any `u64`, no validation). Always-succeed constructors (return a bare `Felt`): `Felt::from_u8` / `from_u16` / `from_u32`. Non-panicking but fallible: `Felt::from_canonical_checked(u64) -> Option<Felt>` (returns `None` when out of range). Note the JS/React SDK's `Felt` is a *different* type whose `Felt.new(u64)` is infallible and whose accessor is `.asInt()`.
+- **Word constructors**: `Word::new`, `Word::from([u32; 4])`, `Word::from([Felt; 4])`, `Word::try_from([u64; 4])`
 - **Current accessors**: `felt.as_canonical_u64()`, `word.as_elements()`, `word.into_elements()`, `word.as_bytes()`, `word.to_hex()`
 
-**WARNING**: Felt arithmetic is **modular**. Subtraction wraps around the prime. Always validate with `.as_canonical_u64()` before subtracting. See the rust-sdk-pitfalls skill for details.
+**WARNING**: Felt arithmetic is **modular**. Subtraction wraps around the prime. Always validate with `.as_canonical_u64()` before subtracting (`.asInt()` in the JS/React SDK). See the rust-sdk-pitfalls skill (or frontend-pitfalls for the JS side) for details.
 
 ## Standard Note Patterns
 
@@ -79,6 +80,19 @@ A transaction is a **single-account state transition** with 4 phases:
 | **P2ID** | Send assets to a specific account | Note script checks consumer's ID matches target |
 | **P2IDE** | P2ID with expiration | Adds block-height timelock; sender can reclaim after expiry |
 | **SWAP** | Atomic asset exchange | Note offers asset A, requests asset B; consumer provides B |
+
+## Standard Components (miden-standards)
+
+| Component | Purpose |
+|-----------|---------|
+| `BasicWallet` | Standard wallet: `receive_asset()`, `move_asset_to_note()` |
+| `FungibleFaucet` | Mint/burn fungible tokens; built via `FungibleFaucet::builder()` |
+| `NoAuth` | No authentication (for testing) |
+| `AuthSingleSig` | Production signature authentication — unified auth component covering both Falcon-512 and ECDSA-K256 key types |
+
+**Auth**: `AuthSingleSig` is a single auth component that dispatches on the key type, so one component handles both Falcon-512 and ECDSA-K256 keys. The Falcon-512 scheme uses Poseidon2 as its hash function and is named `Falcon512Poseidon2`.
+
+**Fungible faucet**: `FungibleFaucet` is the fungible-faucet component, constructed with the `bon`-generated `FungibleFaucet::builder()` (required setters `.name(TokenName::new(..)?)`, `.symbol(TokenSymbol::new(..)?)`, `.decimals(n)`, `.max_supply(AssetAmount)`, then `.build()?`).
 
 ## Development Model
 
@@ -91,7 +105,7 @@ Three contract types:
 - `#[note]` — Note script (executes when consumed)
 - `#[tx_script]` — One-off transaction logic
 
-Contracts are tested locally with **MockChain** (no network needed) and deployed via **miden-client**.
+Contracts are tested locally with **MockChain** (no network needed) and deployed via the Miden Rust client (**`0xMiden/rust-sdk`**, formerly `miden-client`; the browser client split into `0xMiden/web-sdk`).
 
 ## Key Design Decisions for App Architects
 

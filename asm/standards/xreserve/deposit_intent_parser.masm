@@ -133,7 +133,7 @@ pub proc validate
     # => [intent_ptr, intent_expected_num_words, intent_ptr, fee_amount_ptr, amount_y, intent_ptr]
 
     exec.parse
-    # => [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_num_bytes, intent_ptr, fee_amount_ptr, amount_y, intent_ptr]
+    # => [remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER, intent_num_bytes, intent_ptr, fee_amount_ptr, amount_y, intent_ptr]
 
     exec.validate_domain_and_identifier
     # => [intent_num_bytes, intent_ptr, fee_amount_ptr, amount_y, intent_ptr]
@@ -158,17 +158,17 @@ end
 #! count, so that compare also proves the whole header was written into the staged region.
 #!
 #! Inputs:  [intent_ptr, intent_expected_num_words]
-#! Outputs: [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_num_bytes]
+#! Outputs: [remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER, intent_num_bytes]
 #!
 #! Where:
 #! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
 #! - intent_expected_num_words is the word count the caller requires the staged preimage to have
 #!   (in the mint pipeline, the attachment's hash-committed word count).
 #! - remote_domain is the semantic remoteDomain value as a u32 felt.
-#! - REMOTE_TOKEN_UPPER is the word holding the remoteToken field's positionally upper four
-#!   packed limbs (intent bytes 60..76).
 #! - REMOTE_TOKEN_LOWER is the word holding the remoteToken field's positionally lower four
 #!   packed limbs (intent bytes 44..60).
+#! - REMOTE_TOKEN_UPPER is the word holding the remoteToken field's positionally upper four
+#!   packed limbs (intent bytes 60..76).
 #! - intent_num_bytes is the wire length: the header bytes plus hookData, which is the extent
 #!   the attestation signature covers.
 #!
@@ -233,17 +233,17 @@ pub proc parse
     swap dup add.REMOTE_TOKEN_FELT_OFF
     # => [rt_base, intent_ptr, intent_num_bytes]
 
-    exec.utils::mem_load_double_word_unaligned swapw
-    # => [REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_ptr, intent_num_bytes]
+    exec.utils::mem_load_double_word_unaligned
+    # => [REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER, intent_ptr, intent_num_bytes]
 
     movup.8
-    # => [intent_ptr, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_num_bytes]
+    # => [intent_ptr, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER, intent_num_bytes]
 
     # remote_domain (semantic u32): byte-swap the packed felt at offset 10
     add.REMOTE_DOMAIN_FELT_OFF mem_load
     u32assert.err=ERR_FELT_OUT_OF_FIELD
     exec.utils::swap_u32_bytes
-    # => [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_num_bytes]
+    # => [remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER, intent_num_bytes]
 end
 
 # HELPER PROCEDURES
@@ -253,12 +253,12 @@ end
 #! remote domain must equal the configured domain, and the canonical key-Word of the parsed remote
 #! token must equal the configured identifier key.
 #!
-#! Inputs:  [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER]
+#! Inputs:  [remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER]
 #! Outputs: []
 #!
 #! Where:
 #! - remote_domain is the semantic remoteDomain value as a u32 felt.
-#! - REMOTE_TOKEN_{UPPER,LOWER} are the remoteToken field's positionally upper / lower four
+#! - REMOTE_TOKEN_{LOWER,UPPER} are the remoteToken field's positionally lower / upper four
 #!   packed limbs.
 #!
 #! Panics if:
@@ -271,16 +271,16 @@ proc validate_domain_and_identifier
     # domain compare: the configured domain lives in element 0 of the domain config slot word
     push.DOMAIN_CONFIG_SLOT[0..2]
     exec.active_account::get_item
-    # => [domain, d1, d2, d3, remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER]
+    # => [domain, d1, d2, d3, remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER]
 
     movdn.3 drop drop drop
-    # => [domain, remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER]
+    # => [domain, remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER]
 
     assert_eq.err=ERR_XRESERVE_WRONG_DOMAIN
-    # => [REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER]
+    # => [REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER]
 
     # identifier compare: the parsed packed remoteToken words are already in the
-    # [B_UPPER, B_LOWER] orientation bytes32_to_key consumes
+    # [B_LOWER, B_UPPER] orientation bytes32_to_key consumes
     exec.encoding::bytes32_to_key
     # => [KEY]
 
@@ -406,8 +406,8 @@ proc validate_nonce_unused
     # => [nonce_base]
 
     # load the nonce's eight packed limbs
-    exec.utils::mem_load_double_word_unaligned swapw
-    # => [B_UPPER, B_LOWER]
+    exec.utils::mem_load_double_word_unaligned
+    # => [B_LOWER, B_UPPER]
 
     exec.encoding::bytes32_to_key
     # => [KEY]

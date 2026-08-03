@@ -155,8 +155,8 @@ async fn tv_dual_1_bytes32_to_key() -> Result<()> {
 
 @transaction_script
 pub proc main
-    push.{b0}
     push.{b1}
+    push.{b0}
     exec.encoding::bytes32_to_key
     push.{expected}
     assert_eqw.err="vector {id}: key mismatch"
@@ -276,7 +276,7 @@ end
 
 /// Emits the common prologue for a `parse` driver: import the layout offset constants, stage the
 /// intent preimage into memory, and call the parser, leaving its outputs
-/// `[remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_num_bytes]` on the stack.
+/// `[remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER, intent_num_bytes]` on the stack.
 ///
 /// The word count the parser is asked to agree with is derived from the same staged preimage the
 /// driver writes, so an accept run proves the derivation, not the caller's arithmetic.
@@ -351,7 +351,7 @@ async fn run_accept_driver(
     packed: &[(&str, Vec<Felt>)],
 ) {
     let mut src = build_parser_driver_prefix(preimage, len_felts.div_ceil(4));
-    // parser stack outputs: [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER,
+    // parser stack outputs: [remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER,
     // intent_num_bytes].
     writeln!(
         src,
@@ -360,12 +360,12 @@ async fn run_accept_driver(
     .unwrap();
     writeln!(
         src,
-        "    push.{rt1} assert_eqw.err=\"{label}: remote_token_1\""
+        "    push.{rt0} assert_eqw.err=\"{label}: remote_token_0\""
     )
     .unwrap();
     writeln!(
         src,
-        "    push.{rt0} assert_eqw.err=\"{label}: remote_token_0\""
+        "    push.{rt1} assert_eqw.err=\"{label}: remote_token_1\""
     )
     .unwrap();
     // the wire length the parser DERIVES, which is the extent the attestation signature covers

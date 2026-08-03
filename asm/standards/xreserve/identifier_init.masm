@@ -171,9 +171,9 @@ proc compute_own_identifier_key
     swap exec.utils::swap_u32_bytes
     # => [B_UPPER] = [limb4, limb5, limb6, limb7]
 
-    # push the 16-byte zero pad as B_LOWER (limbs 0..4); bytes32_to_key consumes [B_UPPER, B_LOWER]
-    padw swapw
-    # => [B_UPPER, B_LOWER]
+    # push the 16-byte zero pad as B_LOWER (limbs 0..4); bytes32_to_key now consumes [B_LOWER, B_UPPER]
+    padw
+    # => [B_LOWER, B_UPPER]
 
     exec.encoding::bytes32_to_key
     # => [KEY]

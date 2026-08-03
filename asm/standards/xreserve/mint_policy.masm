@@ -251,7 +251,7 @@ pub proc check_policy
 
     # the NONCE_KEY = bytes32_to_key(nonce) — the usedNonces key AND the attested output-note serial
     locaddr.INTENT_NONCE_LOC
-    exec.utils::mem_load_double_word_unaligned swapw
+    exec.utils::mem_load_double_word_unaligned
     exec.encoding::bytes32_to_key
     loc_storew_le.NONCE_KEY_LOC
     # => [SERIAL_NUM]

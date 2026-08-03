@@ -23,24 +23,22 @@ const ERR_FELT_OUT_OF_FIELD = "supplied limb is not a valid u32"
 #! reinterpreting is what makes this total: an external bytes32 whose limbs exceed the field
 #! modulus still has a key.
 #!
-#! Inputs:  [B_UPPER, B_LOWER]
+#! Inputs:  [B_LOWER, B_UPPER]
 #! Outputs: [KEY]
 #!
 #! Where:
-#! - B_UPPER is the word holding the bytes32's positionally upper four u32-LE-packed limbs
-#!   (wire bytes 16..32).
 #! - B_LOWER is the word holding the bytes32's positionally lower four u32-LE-packed limbs
 #!   (wire bytes 0..16).
+#! - B_UPPER is the word holding the bytes32's positionally upper four u32-LE-packed limbs
+#!   (wire bytes 16..32).
 #! - KEY is the Poseidon2 hash-to-Word storage-map key.
 #!
 #! Invocation: exec
 @account_procedure
 pub proc bytes32_to_key
-    # the hash absorbs B_LOWER (wire bytes 0..16) as the first rate word, so the
-    # output is Poseidon2(B_LOWER || B_UPPER) over the 8 packed limbs
-    swapw
-    # => [B_LOWER, B_UPPER]
-
+    # poseidon2::merge absorbs the top word first, so B_LOWER (wire bytes 0..16) becomes the
+    # first rate word: KEY = Poseidon2(B_LOWER || B_UPPER), matching the Rust mirror's
+    # hash_elements order over the 8 packed limbs
     exec.poseidon2::merge
     # => [KEY]
 end

@@ -37,12 +37,13 @@ mint/burn — the transfer-policy wrapper runs the pause check before dispatchin
 pause intent (its EVM pause halts transfers too); we call it out because it is broader than the pre-v2
 pause, which halted only mint/burn.
 
-## Administration — a dedicated external role, not the owner
+## Administration — a dedicated external role, not the administrator
 
 Block/unblock is gated on a dedicated **`BLK_MANAGER`** role held by an **external entity** with **no
-other admin capability** (it cannot set the attester, change max supply, pause, or transfer ownership).
-Miden (as the owner/`ADMIN`) can rotate or revoke that entity through the existing role-grant/revoke
-mechanism. The owner itself has **no** direct block/unblock power (two-way capability isolation).
+other admin capability** (it cannot set the attester, change max supply, pause, or administer any
+other role). Miden (as the `ADMIN` holder) can rotate or revoke that entity through the standard
+role-grant/revoke mechanism. `ADMIN` itself has **no** direct block/unblock power (two-way capability
+isolation).
 
 ## Client-side consequence (for wallets / tooling holding xUSDC)
 

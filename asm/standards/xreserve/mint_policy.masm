@@ -302,7 +302,7 @@ pub proc check_policy
 
     # amount witness verify + maxFee/feeAmount bounds (feeAmount must be zero). the witness
     # is the parked note ASSET_VALUE's element 0, so the verify doubles as the amount half
-    # of the ASSERT-MATCH binding; the scale is the parser's own faucet-side constant
+    # of the ASSERT-MATCH binding
     loc_load.ASSET_VALUE_LOC locaddr.ATTESTATION_FEE_AMOUNT_LOC locaddr.INTENT_LOC
     # => [intent_ptr, fee_amount_ptr, amount_y]
 

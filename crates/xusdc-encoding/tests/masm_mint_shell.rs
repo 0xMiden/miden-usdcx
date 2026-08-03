@@ -220,9 +220,7 @@ async fn probe_slot_binding() -> Result<()> {
 // reduced value); the driver passes the mirror-computed amount witness. `feeAmount` does not
 // travel in the intent: the caller stages its limbs in memory and passes the pointer.
 
-/// The scale the witness is computed at, mirroring the parser's own `DEPOSIT_SCALE_EXP` (the
-/// proc no longer takes a scale parameter; the shipped constant is the scale-0 identity, and
-/// `shipped_faucet_declares_identity_deposit_scale` in `mint_scale_conformance.rs` pins it).
+/// The scale the witness is computed at.
 const D5B_SCALE_EXP: u32 = 0;
 
 /// Looks up a canonical amount vector by id (by-reference loading).

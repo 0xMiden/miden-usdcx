@@ -845,7 +845,6 @@ pub fn fee_amount_felts(limbs: [u32; 8]) -> Vec<Felt> {
 
 /// Generates the per-case amount/fee driver: stages the (spliced) preimage and the operator
 /// `feeAmount` limbs in the account context, pushes `[intent_ptr, fee_amount_ptr, amount_y]`
-/// (the amount witness the standards conversion verifier proves at the parser's own scale),
 /// and `exec`s the faucet `assert_mint_amounts` shell. The proc returns `[]`, so the
 /// staged-then-consumed stack restores the 16-depth `call` boundary.
 pub fn mint_amounts_driver_src(preimage: &[Felt], fee_amount: &[Felt], amount_y: u64) -> String {

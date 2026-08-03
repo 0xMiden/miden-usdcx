@@ -181,8 +181,6 @@ const LAYOUT_COVERED_NUMS: &[&str] = &[
     "MAX_NOTE_STORAGE_FELTS",
 ];
 const ENCODING_COVERED_NUMS: &[&str] = &[];
-// the faucet-side deposit scale lives with the parser's amount/fee stage (DEV-5 OPEN,
-// provisional scale-0), parity-asserted against the Rust factory constant below.
 const SHELL_COVERED_NUMS: &[&str] = &["DEPOSIT_SCALE_EXP"];
 
 /// Parses `const NAME = <value>` / `pub const NAME = <value>` lines from a MASM source.

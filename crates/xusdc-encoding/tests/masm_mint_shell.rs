@@ -59,16 +59,12 @@ fn di(id: &str) -> &'static DiVector {
 
 /// A placeholder identifier for the shell fixture's config slot.
 ///
-/// There is no real identifier configuration any more. The faucet derives the identifier it
-/// compares `remoteToken` against from its own account id, so the only way to make a vector intent
-/// pass the compare is to bind its `remoteToken` to the executing account — which is what
-/// `validate_driver_src_own_token` does. The compare no longer reads this slot — the slot itself is
-/// removed later in this slice — so any well-formed word will do.
-fn dummy_identifier() -> Word {
-    Word::from([11u32, 12, 13, 14])
-}
-
 /// The faucet's domain configuration word: the remote domain id in element 0, zeros elsewhere.
+///
+/// There is no identifier counterpart any more. The faucet derives the identifier it compares
+/// `remoteToken` against from its own account id, so the only way to make a vector intent pass the
+/// compare is to bind its `remoteToken` to the executing account — which is what
+/// `validate_driver_src_own_token` does.
 fn domain_word(domain: u32) -> Word {
     Word::new([
         Felt::from(domain),
@@ -118,12 +114,7 @@ async fn happy_path_mint_preconditions(#[case] vector_id: &str) -> Result<()> {
         amount_y,
         Some(expected_num_bytes),
     );
-    let h = setup_shell_account(
-        domain_word(TEST_DOMAIN),
-        dummy_identifier(),
-        &driver_src,
-        SHELL_DRIVER_PATH,
-    )?;
+    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
     // the account exists now, so the Rust encoder can produce the bound remoteToken for ITS id
     let advice = own_token_advice(h.account_id);
     let executed = run_call_driver_with_advice(&h, "drive", Some(advice))
@@ -187,12 +178,7 @@ async fn r_mint_rejects(
         0,
         None,
     );
-    let h = setup_shell_account(
-        domain_word(domain),
-        dummy_identifier(),
-        &driver_src,
-        SHELL_DRIVER_PATH,
-    )?;
+    let h = setup_shell_account(domain_word(domain), &driver_src, SHELL_DRIVER_PATH)?;
     let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
     Ok(())
@@ -228,12 +214,7 @@ async fn transport_shape_rejects(
         amount_y,
         None,
     );
-    let h = setup_shell_account(
-        domain_word(TEST_DOMAIN),
-        dummy_identifier(),
-        &driver_src,
-        SHELL_DRIVER_PATH,
-    )?;
+    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
     let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
     Ok(())
@@ -257,12 +238,7 @@ async fn transport_malformed_hook_data_len_limb() -> Result<()> {
         amount_y,
         None,
     );
-    let h = setup_shell_account(
-        domain_word(TEST_DOMAIN),
-        dummy_identifier(),
-        &driver_src,
-        SHELL_DRIVER_PATH,
-    )?;
+    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
     let result = run_call_driver(&h, "drive").await;
     let expected = shell_error_by_name("ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB");
     assert_transaction_executor_error!(
@@ -315,9 +291,8 @@ fn probe_shell_exports() -> Result<()> {
 #[tokio::test]
 async fn probe_slot_binding() -> Result<()> {
     let domain = Word::from([7u32, 0, 0, 0]);
-    let identifier = dummy_identifier();
-    let probe_src = slot_probe_src(domain, identifier);
-    let h = setup_shell_account(domain, identifier, &probe_src, SLOT_PROBE_PATH)?;
+    let probe_src = slot_probe_src(domain);
+    let h = setup_shell_account(domain, &probe_src, SLOT_PROBE_PATH)?;
     run_call_driver(&h, "read_slots")
         .await
         .unwrap_or_else(|e| panic!("slot-binding probe must execute green: {e}"));
@@ -372,12 +347,7 @@ fn d5b_harness(
         amount_y,
         None,
     );
-    setup_shell_account(
-        domain_word(TEST_DOMAIN),
-        dummy_identifier(),
-        &driver_src,
-        SHELL_DRIVER_PATH,
-    )
+    setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)
 }
 
 // HAPPY PATH FIRST
@@ -521,12 +491,7 @@ async fn d5c_happy_nonce_unused(#[case] vector_id: &str) -> Result<()> {
         None,
     );
     // empty usedNonces map -> usedNonces[key] reads EMPTY_WORD (unused) -> passes
-    let h = setup_shell_account(
-        domain_word(TEST_DOMAIN),
-        dummy_identifier(),
-        &driver_src,
-        SHELL_DRIVER_PATH,
-    )?;
+    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
     let advice = own_token_advice(h.account_id);
     let executed = run_call_driver_with_advice(&h, "drive", Some(advice))
         .await
@@ -569,7 +534,6 @@ async fn d5c_replay_rejects(#[case] vector_id: &str) -> Result<()> {
     let seed = (nonce_key(vector_id), Word::from(NONCE_MARKER));
     let h = setup_shell_account_with_nonce_seed(
         domain_word(TEST_DOMAIN),
-        dummy_identifier(),
         Some(seed),
         &driver_src,
         SHELL_DRIVER_PATH,
@@ -618,7 +582,6 @@ async fn d5c_unrelated_seeded_nonce_passes() -> Result<()> {
     let seed = (other_key, Word::from(NONCE_MARKER));
     let h = setup_shell_account_with_nonce_seed(
         domain_word(TEST_DOMAIN),
-        dummy_identifier(),
         Some(seed),
         &driver_src,
         SHELL_DRIVER_PATH,

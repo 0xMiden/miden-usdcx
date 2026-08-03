@@ -34,10 +34,10 @@ fn dom_manager() -> AccountId {
     test_account_id(3)
 }
 
-/// Config words the builder does not read (these tests invoke `set_attester` via a note, never the
-/// mint driver).
-fn dummy_config() -> (Word, Word) {
-    (Word::from([7u32, 0, 0, 0]), Word::from([11u32, 12, 13, 14]))
+/// The config word the builder does not read (these tests invoke `set_attester` via a note, never
+/// the mint driver).
+fn dummy_config() -> Word {
+    Word::from([7u32, 0, 0, 0])
 }
 
 /// A do-nothing component that satisfies the shared fixture's requirement for a driver.
@@ -64,13 +64,12 @@ fn placeholder_driver_src() -> String {
 fn guarded_faucet() -> Result<GuardedMint> {
     let driver = placeholder_driver_src();
     let probe = composition_supply_probe_src(0);
-    let (domain, identifier) = dummy_config();
+    let domain = dummy_config();
     setup_guarded_mint_account(
         GuardSelection::ProductionAttestation,
         1_000_000,
         0,
         domain,
-        identifier,
         None,
         None,
         &driver,

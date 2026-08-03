@@ -36,7 +36,7 @@ const MIN_BURN_VALID: u64 = 5;
 async fn stock_mint_note_mints_the_attested_amount() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 1);
     let note = honest_note(&pf, &payload, 71)?;
     emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
@@ -109,7 +109,7 @@ async fn stock_mint_note_mints_the_attested_amount() -> Result<()> {
 async fn stock_mint_note_rejects_a_recipient_mismatch() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 2);
     // the recipe targets the PRODUCER; the attested intent targets the recipient wallet. The
     // output tag stays on the ATTESTED recipient so the trap isolates the RECIPIENT binding.
@@ -143,7 +143,7 @@ async fn stock_mint_note_rejects_a_recipient_mismatch() -> Result<()> {
 async fn stock_mint_note_rejects_a_nonzero_fee() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 3);
     let note = tampered_mint_note(
         &pf,
@@ -175,7 +175,7 @@ async fn stock_mint_note_rejects_a_nonzero_fee() -> Result<()> {
 async fn stock_mint_note_rejects_a_replay() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 4);
 
     let first = honest_note(&pf, &payload, 74)?;

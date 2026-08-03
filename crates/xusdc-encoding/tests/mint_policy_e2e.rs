@@ -37,7 +37,7 @@ use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetM
 #[tokio::test]
 async fn mint_rejects_a_non_allowlisted_attester() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 11);
     let note = tampered_mint_note(
         &pf,
@@ -68,7 +68,7 @@ async fn mint_rejects_a_non_allowlisted_attester() -> Result<()> {
 #[tokio::test]
 async fn mint_rejects_a_forged_signature() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 12);
     let other = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 13);
     let note = tampered_mint_note(
@@ -116,7 +116,7 @@ async fn mint_rejects_a_removed_attester() -> Result<()> {
         )
         .expect("building the administrator remove-attester note")]
     })?;
-    bring_up(&mut pf, 3).await?; // identifier_init + set_attester(enable) + set_attester(REMOVE)
+    bring_up(&mut pf, 2).await?; // set_attester(enable) + set_attester(REMOVE)
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 30);
     let note = honest_note(&pf, &payload, 99)?; // attested by the (now removed) attester 1
     expect_reject(
@@ -154,7 +154,7 @@ async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<
             .expect("building the rotate-in note"),
         ]
     })?;
-    bring_up(&mut pf, 4).await?; // init + enable(1) + remove(1) + enable(2)
+    bring_up(&mut pf, 3).await?; // enable(1) + remove(1) + enable(2)
 
     // the ROTATED-OUT key rejects (exact error + no nonce burned + no supply raised)
     let payload_old = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 31);
@@ -219,7 +219,7 @@ async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<
 #[tokio::test]
 async fn mint_rejects_a_wrong_domain() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 14);
     payload[REMOTE_DOMAIN_BYTE_OFF..REMOTE_DOMAIN_BYTE_OFF + 4]
         .copy_from_slice(&TEST_WRONG_DOMAIN.to_be_bytes());
@@ -238,7 +238,7 @@ async fn mint_rejects_a_wrong_domain() -> Result<()> {
 #[tokio::test]
 async fn mint_rejects_a_wrong_identifier() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 15);
     payload[REMOTE_TOKEN_BYTE_OFF] ^= 0xff;
     let note = honest_note(&pf, &payload, 84)?;
@@ -259,7 +259,7 @@ async fn mint_rejects_a_wrong_identifier() -> Result<()> {
 #[tokio::test]
 async fn mint_rejects_an_amount_below_max_fee() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 33);
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MINT_AMOUNT + 1)); // maxFee = amount + 1 -> amount < maxFee
     let note = honest_note(&pf, &payload, 102)?;
@@ -281,7 +281,7 @@ async fn mint_rejects_an_amount_below_max_fee() -> Result<()> {
 #[tokio::test]
 async fn mint_rejects_an_over_cap_amount() -> Result<()> {
     let mut pf = fixture_with(MINT_AMOUNT - 1, |_, _| vec![])?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 16);
     let note = honest_note(&pf, &payload, 85)?;
     expect_reject(&mut pf, note, &payload, &err_stock_over_cap()).await
@@ -305,7 +305,7 @@ async fn mint_rejects_after_the_administrator_lowers_max_supply_below_the_amount
         )
         .expect("building the administrator lower-cap note")]
     })?;
-    bring_up(&mut pf, 3).await?; // identifier_init + set_attester + set_max_supply(lower)
+    bring_up(&mut pf, 2).await?; // set_attester + set_max_supply(lower)
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 34);
     let note = honest_note(&pf, &payload, 103)?;
     expect_reject(&mut pf, note, &payload, &err_stock_over_cap()).await
@@ -325,7 +325,7 @@ async fn mint_accepts_at_the_exact_raised_cap_boundary() -> Result<()> {
         )
         .expect("building the administrator raise-to-boundary note")]
     })?;
-    bring_up(&mut pf, 3).await?; // identifier_init + set_attester + set_max_supply(= amount)
+    bring_up(&mut pf, 2).await?; // set_attester + set_max_supply(= amount)
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 35);
     let note = honest_note(&pf, &payload, 104)?;
     emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
@@ -355,7 +355,7 @@ async fn mint_accepts_after_the_administrator_raises_max_supply() -> Result<()> 
         )
         .expect("building the administrator raise-cap note")]
     })?;
-    bring_up(&mut pf, 2).await?; // identifier_init + set_attester — the raise stays unconsumed
+    bring_up(&mut pf, 1).await?; // set_attester — the raise stays unconsumed
 
     // under the low build cap the attested amount rejects (the cap binds pre-raise)
     let payload_low = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 36);
@@ -363,7 +363,7 @@ async fn mint_accepts_after_the_administrator_raises_max_supply() -> Result<()> 
     expect_reject(&mut pf, note_low, &payload_low, &err_stock_over_cap()).await?;
 
     // the administrator's raise lands, then a fresh-nonce mint of the same amount succeeds
-    consume_seeded_admin_note(&mut pf, 2).await?;
+    consume_seeded_admin_note(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 37);
     let note = honest_note(&pf, &payload, 106)?;
     emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;

@@ -52,7 +52,7 @@ use miden_testing::assert_transaction_executor_error;
 use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
-use xusdc_encoding::note::xreserve_admin::{XReserveIdentifierInitNote, XReserveSetAttesterNote};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, DiVector};
 use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
@@ -113,8 +113,8 @@ fn err_account_not_in_role() -> MasmError {
 /// Placeholder domain configuration. These tests reach the account through role-administration
 /// notes and never run a mint, so nothing ever reads these words — they exist because the fixture
 /// requires a value.
-fn dummy_config() -> (Word, Word) {
-    (Word::from([7u32, 0, 0, 0]), Word::from([11u32, 12, 13, 14]))
+fn dummy_config() -> Word {
+    Word::from([7u32, 0, 0, 0])
 }
 
 /// A do-nothing component that satisfies the shared fixture's requirement for a driver.
@@ -140,13 +140,12 @@ fn placeholder_driver_src() -> String {
 fn production_faucet() -> Result<GuardedMint> {
     let driver = placeholder_driver_src();
     let probe = composition_supply_probe_src(0);
-    let (domain, identifier) = dummy_config();
+    let domain = dummy_config();
     setup_guarded_mint_account(
         GuardSelection::ProductionAttestation,
         1_000_000,
         0,
         domain,
-        identifier,
         None,
         None,
         &driver,
@@ -182,8 +181,8 @@ fn di(id: &str) -> &'static DiVector {
 
 /// The canonical accept payload with the wire amount / maxFee spliced in, `remoteRecipient`
 /// replaced by the real recipient wallet, `remoteToken` replaced by
-/// `account_id_to_bytes32(faucet_id)` (the own-id fixpoint the seeded identifier_init writes, so
-/// the identifier compare passes), and one nonce byte perturbed per variant so each mint consumes
+/// `account_id_to_bytes32(faucet_id)` (the own-id key the mint path derives, so the identifier
+/// compare passes), and one nonce byte perturbed per variant so each mint consumes
 /// a nonce the replay guard has not seen.
 fn payload_for(
     recipient: AccountId,
@@ -270,27 +269,22 @@ fn revoke_role_note(
 /// Brings up a production faucet ready to run a real mint, for the tests that check what a
 /// rotated role can and cannot do.
 ///
-/// It uses the real note transport and the account's own network authentication, seeds the domain
-/// identifier through the runtime init note, allowlists one attester, and adds whatever extra admin
-/// notes the caller needs. Everything is seeded at genesis so each admin transaction can be proved
+/// It uses the real note transport and the account's own network authentication, allowlists one
+/// attester, and adds whatever extra admin notes the caller needs. Everything is seeded at genesis so each admin transaction can be proved
 /// into its own block. The same shape is used by `mint_policy_e2e.rs`.
 fn mint_fixture(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<ProductionFaucet> {
     setup_production_faucet(MINT_MAX_SUPPLY, 0, |recipient, faucet_id| {
         let commitment =
             gen_attester(1, &payload_for(recipient, MINT_AMOUNT, 0, faucet_id)).commitment;
         let route = faucet_id;
-        let mut notes = vec![
-            XReserveIdentifierInitNote::create(administrator(), route, &mut note_rng(951))
-                .expect("building the administrator identifier_init note"),
-            XReserveSetAttesterNote::create(
-                administrator(),
-                route,
-                commitment,
-                1,
-                &mut note_rng(952),
-            )
-            .expect("building the administrator set_attester note"),
-        ];
+        let mut notes = vec![XReserveSetAttesterNote::create(
+            administrator(),
+            route,
+            commitment,
+            1,
+            &mut note_rng(952),
+        )
+        .expect("building the administrator set_attester note")];
         notes.extend(extra_notes(recipient));
         notes
     })
@@ -385,9 +379,9 @@ async fn dom_manager_grants_pauser_then_new_pauser_halts_mint() -> Result<()> {
                 .expect("building the candidate's pause note"),
         ]
     })?;
-    bring_up(&mut pf, 2).await?; // identifier_init + set_attester
-    let grant_note = pf.seeded_notes[2].clone();
-    let pause_note = pf.seeded_notes[3].clone();
+    bring_up(&mut pf, 1).await?; // set_attester
+    let grant_note = pf.seeded_notes[1].clone();
+    let pause_note = pf.seeded_notes[2].clone();
 
     // Pre-grant: the candidate's pause REJECTS — the capability is genuinely absent before the grant.
     let pre = consume_note(&pf, &pause_note).await;
@@ -493,11 +487,11 @@ async fn dom_manager_rotates_pauser_revoke_then_grant() -> Result<()> {
                 .expect("building the NEW pauser's pause note"),
         ]
     })?;
-    bring_up(&mut pf, 2).await?; // identifier_init + set_attester
-    let revoke_note = pf.seeded_notes[2].clone();
-    let grant_note = pf.seeded_notes[3].clone();
-    let old_pause_note = pf.seeded_notes[4].clone();
-    let new_pause_note = pf.seeded_notes[5].clone();
+    bring_up(&mut pf, 1).await?; // set_attester
+    let revoke_note = pf.seeded_notes[1].clone();
+    let grant_note = pf.seeded_notes[2].clone();
+    let old_pause_note = pf.seeded_notes[3].clone();
+    let new_pause_note = pf.seeded_notes[4].clone();
 
     consume_and_commit(
         &mut pf,

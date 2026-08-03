@@ -2,12 +2,11 @@
 //! local-node validation, on the production faucet composition.
 //!
 //! ONE faucet composed by the PRODUCTION `XReserveStablecoinBuilder` — domain / source_domain /
-//! xreserve_contract BUILD-SEEDED, identifier EMPTY, attester allowlist EMPTY, the stock
+//! xreserve_contract BUILD-SEEDED, attester allowlist EMPTY, the stock
 //! `MinBurnAmount` floor at the builder default — is driven through the whole lifecycle IN ORDER
 //! on ONE evolving MockChain. The stages, in the order the S-labels below number them:
 //!
 //! - S0 the build-seeded config read-backs;
-//! - S1 identifier init (the minimized identifier-only init note), then S2 the re-init trap;
 //! - S3 admin bring-up: attester, max_supply, min_burn, and the min-burn zero-floor guard, each
 //!   with its non-administrator reject;
 //! - S4-S6 a REAL attested mint through the STOCK `MintNote` transport (the `XUsdcMintNote`
@@ -51,8 +50,7 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveIdentifierInitNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
-    XReserveSetMinBurnSizeNote,
+    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
 use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
@@ -127,7 +125,7 @@ fn di(id: &str) -> &'static DiVector {
 /// The canonical accept payload with amount/maxFee spliced, `remoteRecipient` REPLACED by the REAL
 /// target wallet's right-aligned bytes32 (so the emitted P2ID note targets an account that exists
 /// on this chain and can consume it), `remoteToken` REPLACED by `account_id_to_bytes32(faucet_id)`
-/// (the own-id fixpoint the seeded identifier_init writes, so the identifier compare passes), and
+/// (the own-id key the mint path derives, so the identifier compare passes), and
 /// one nonce byte XOR-perturbed per `nonce_variant` so each mint consumes a nonce the replay guard
 /// has not seen.
 fn payload_for(
@@ -322,7 +320,7 @@ fn marker() -> Word {
 #[tokio::test]
 async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // ── S0 — ASSEMBLY: the production builder composes the faucet; domain / source_domain /
-    // xreserve_contract BUILD-SEEDED, identifier + attester allowlist EMPTY. The admin notes are
+    // xreserve_contract BUILD-SEEDED, attester allowlist EMPTY. The admin notes are
     // seeded here in the order the indices below list, per the header's mechanics. `route` is the
     // routing-only faucet target the factories stamp into tags/attachments; consume-by-id never
     // reads it, so the pre-build dummy id is sound.
@@ -332,19 +330,10 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         let route = faucet_id;
         let psym = RoleSymbol::new(DOM_PAUSER_ROLE).expect("valid role symbol");
         vec![
-            // 0: S1a stranger identifier_init (reject)
-            XReserveIdentifierInitNote::create(stranger(), route, &mut note_rng(910))
-                .expect("building the seeded init-stranger note"),
-            // 1: S1b owner identifier_init
-            XReserveIdentifierInitNote::create(administrator(), route, &mut note_rng(911))
-                .expect("building the seeded init-owner note"),
-            // 2: S2 owner re-init (reject: init-once, regardless of value)
-            XReserveIdentifierInitNote::create(administrator(), route, &mut note_rng(912))
-                .expect("building the seeded re-init note"),
-            // 3: S3a stranger set_attester (reject)
+            // 0: S3a stranger set_attester (reject)
             XReserveSetAttesterNote::create(stranger(), route, commitment, 1, &mut note_rng(913))
                 .expect("building the seeded attester-stranger note"),
-            // 4: S3a owner set_attester
+            // 1: S3a owner set_attester
             XReserveSetAttesterNote::create(
                 administrator(),
                 route,
@@ -353,10 +342,10 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
                 &mut note_rng(914),
             )
             .expect("building the seeded attester-owner note"),
-            // 5: S3b stranger set_max_supply (reject)
+            // 2: S3b stranger set_max_supply (reject)
             XReserveSetMaxSupplyNote::create(stranger(), route, NEW_MAX_SUPPLY, &mut note_rng(915))
                 .expect("building the seeded max-stranger note"),
-            // 6: S3b owner set_max_supply
+            // 3: S3b owner set_max_supply
             XReserveSetMaxSupplyNote::create(
                 administrator(),
                 route,
@@ -364,10 +353,10 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
                 &mut note_rng(916),
             )
             .expect("building the seeded max-owner note"),
-            // 7: S3c stranger set_min_burn_size (reject)
+            // 4: S3c stranger set_min_burn_size (reject)
             XReserveSetMinBurnSizeNote::create(stranger(), route, MIN_BURN, &mut note_rng(917))
                 .expect("building the seeded min-stranger note"),
-            // 8: S3c owner set_min_burn_size
+            // 5: S3c owner set_min_burn_size
             XReserveSetMinBurnSizeNote::create(
                 administrator(),
                 route,
@@ -375,21 +364,21 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
                 &mut note_rng(918),
             )
             .expect("building the seeded min-owner note"),
-            // 9: S3c owner set_min_burn_size(0) — the note-side zero-floor guard (reject)
+            // 6: S3c owner set_min_burn_size(0) — the note-side zero-floor guard (reject)
             XReserveSetMinBurnSizeNote::create(administrator(), route, 0, &mut note_rng(919))
                 .expect("building the seeded min-zero note"),
-            // 10: S10 DOM_PAUSER pause
+            // 7: S10 DOM_PAUSER pause
             stock_pause_note(pauser(), route, 920).expect("building the seeded pause-pauser note"),
-            // 11: S10c owner STOCK pause probe (traps UnknownAccountProcedure)
+            // 8: S10c owner STOCK pause probe (traps UnknownAccountProcedure)
             manager_pause_call_note(administrator(), 921)
                 .expect("building the seeded manager pause-call note sent by the administrator"),
-            // 12: S10d stranger custom pause (reject)
+            // 9: S10d stranger custom pause (reject)
             stock_pause_note(stranger(), route, 922)
                 .expect("building the seeded pause-stranger note"),
-            // 13: S11 DOM_PAUSER unpause
+            // 10: S11 DOM_PAUSER unpause
             stock_unpause_note(pauser(), route, 923)
                 .expect("building the seeded unpause-pauser note"),
-            // 14: S12 DOM_MANAGER grant_role(DOM_PAUSER, new_pauser)
+            // 11: S12 DOM_MANAGER grant_role(DOM_PAUSER, new_pauser)
             stock_role_action_note(
                 manager(),
                 route,
@@ -400,12 +389,12 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
                 &mut note_rng(924),
             )
             .expect("building the seeded grant note"),
-            // 15: S12 new pauser pause
+            // 12: S12 new pauser pause
             stock_pause_note(new_pauser(), route, 925).expect("building the seeded pause-new note"),
-            // 16: S12 new pauser unpause
+            // 13: S12 new pauser unpause
             stock_unpause_note(new_pauser(), route, 926)
                 .expect("building the seeded unpause-new note"),
-            // 17: S12 DOM_MANAGER revoke_role(DOM_PAUSER, new_pauser)
+            // 14: S12 DOM_MANAGER revoke_role(DOM_PAUSER, new_pauser)
             stock_role_action_note(
                 manager(),
                 route,
@@ -416,7 +405,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
                 &mut note_rng(927),
             )
             .expect("building the seeded revoke note"),
-            // 18: S12 revoked pauser pause attempt (reject)
+            // 15: S12 revoked pauser pause attempt (reject)
             stock_pause_note(new_pauser(), route, 928)
                 .expect("building the seeded pause-revoked note"),
         ]
@@ -434,11 +423,10 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let payload2 = payload_for(holder_id, MINT_AMOUNT, 0x5A, faucet_id);
     let payload3 = payload_for(holder_id, MINT_AMOUNT, 0xA5, faucet_id);
     let attester1 = gen_attester(1, &payload1);
-    let identifier = XReserveIdentifierInitNote::identifier_for(faucet_id);
     let pauser_sym = RoleSymbol::new(DOM_PAUSER_ROLE).expect("valid role symbol");
     let manager_sym = RoleSymbol::new(DOM_MANAGER_ROLE).expect("valid role symbol");
 
-    // S0 read-backs: the BUILD-SEEDED domain config, identifier EMPTY, supply 0, the
+    // S0 read-backs: the BUILD-SEEDED domain config, supply 0, the
     // seeded role delegation, the stock MinBurnAmount builder-default floor.
     let faucet0 = committed(&pf.mock_chain, faucet_id)?;
     let words0 = read_domain_config_words(&faucet0)?;
@@ -462,11 +450,6 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         words0[3],
         Word::new([xrc_felts[4], xrc_felts[5], xrc_felts[6], xrc_felts[7]]),
         "S0: xreserve_contract_lo ships BUILD-SEEDED (DEC-4)"
-    );
-    assert_eq!(
-        words0[4],
-        Word::from([0u32, 0, 0, 0]),
-        "S0: the identifier ships EMPTY (identifier_init is the production writer)"
     );
     // lossless round-trip: the build-seeded bytes32 round-trips through the FAIL-CLOSED inverse
     // back to the input — the GetAccount-readable public identity.
@@ -518,57 +501,17 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S0: the attester allowlist ships EMPTY (set_attester is the bring-up writer)"
     );
 
-    // ── S1a — INIT REJECT: a stranger's identifier_init traps the EXACT administrator-role error
-    // (the initializer resolves through the account-wide authority); nothing written.
-    let result = consume_committed_note(&pf.mock_chain, &faucet0, note_id(0)).await;
-    assert_transaction_executor_error!(result, err_sender_lacks_role());
-    assert_eq!(
-        read_domain_config_words(&committed(&pf.mock_chain, faucet_id)?)?,
-        words0,
-        "S1a: the rejected init left every config word unchanged (identifier still empty)"
-    );
-
-    // ── S1b — INIT: the administrator seeds the ONE note-initialized config field (the identifier
-    // is the account-id fixpoint, so ONLY it gets an init note); it reads back verbatim and the
-    // four BUILD-SEEDED words are untouched.
-    let init_tx = consume_committed_note(&pf.mock_chain, &faucet0, note_id(1))
-        .await
-        .expect("S1b: the administrator's identifier_init must succeed");
-    commit(&mut pf.mock_chain, &init_tx)?;
-    let words = read_domain_config_words(&committed(&pf.mock_chain, faucet_id)?)?;
-    assert_eq!(
-        words[4], identifier,
-        "S1b: identifier read-back (own-id fixpoint key)"
-    );
-    assert_eq!(
-        [words[0], words[1], words[2], words[3]],
-        [words0[0], words0[1], words0[2], words0[3]],
-        "S1b: the four build-seeded config words are UNCHANGED by identifier_init"
-    );
-
-    // ── S2 — RE-INIT: a second owner init traps the EXACT init-once error; every field unchanged.
-    let faucet = committed(&pf.mock_chain, faucet_id)?;
-    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(2)).await;
-    assert_transaction_executor_error!(
-        result,
-        shell_error_by_name("ERR_XRESERVE_IDENTIFIER_REINIT")
-    );
-    assert_eq!(
-        read_domain_config_words(&faucet)?,
-        words,
-        "S2: the trapped re-init left all five config words unchanged (init-once)"
-    );
-
     // ── S3a — ADMIN: owner allowlists the attester; a stranger's attempt is rejected and leaves
     // the map unchanged.
-    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(3)).await;
+    let faucet = committed(&pf.mock_chain, faucet_id)?;
+    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(0)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
     assert_eq!(
         read_map_word(&faucet, XRESERVE_ATTESTERS_SLOT_LABEL, attester1.commitment)?,
         Word::from([0u32, 0, 0, 0]),
         "S3a: the rejected set_attester left the allowlist unchanged"
     );
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(4))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(1))
         .await
         .expect("S3a: the administrator's set_attester must succeed");
     commit(&mut pf.mock_chain, &tx)?;
@@ -584,9 +527,9 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
 
     // ── S3b — ADMIN: owner sets max_supply; a stranger's attempt is rejected.
     let faucet = committed(&pf.mock_chain, faucet_id)?;
-    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(5)).await;
+    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(2)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(6))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(3))
         .await
         .expect("S3b: the administrator's set_max_supply must succeed");
     commit(&mut pf.mock_chain, &tx)?;
@@ -600,9 +543,9 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // ── S3c — ADMIN: owner sets the min-burn floor (the note targets the STOCK
     // `set_min_burn_amount`); a stranger's attempt is rejected; the note-side ZERO-FLOOR guard
     // rejects new_min = 0 with its exact error (the stock setter itself would accept 0).
-    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(7)).await;
+    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(4)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(8))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(5))
         .await
         .expect("S3c: the administrator's set_min_burn_size must succeed");
     commit(&mut pf.mock_chain, &tx)?;
@@ -617,7 +560,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         ]),
         "S3c: the stock MinBurnAmount floor slot reads [10,0,0,0]"
     );
-    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(9)).await;
+    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(6)).await;
     assert_transaction_executor_error!(result, err_min_burn_below_floor());
     assert_eq!(
         read_min_burn_size(&committed(&pf.mock_chain, faucet_id)?)?[0],
@@ -865,7 +808,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
 
     // ── S10 — PAUSE: DOM_PAUSER pauses; the halt is real on BOTH paths; the administrator has NO path.
     let faucet = committed(&pf.mock_chain, faucet_id)?;
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(10))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(7))
         .await
         .expect("S10: the DOM_PAUSER pause must succeed");
     commit(&mut pf.mock_chain, &tx)?;
@@ -919,14 +862,14 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // S10c: the administrator has NO direct pause path. The stock manager IS installed, so the rejection is
     // the role assertion rather than a missing procedure: the procedure-role map gates pause on the
     // Domain pauser, which the administrator does not hold.
-    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(11)).await;
+    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(8)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
     // S10d: a second non-DOM_PAUSER pause attempt is rejected with the same exact role error.
-    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(12)).await;
+    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(9)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
 
     // ── S11 — UNPAUSE: DOM_PAUSER unpauses; BOTH paths resume.
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(13))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(10))
         .await
         .expect("S11: the DOM_PAUSER unpause must succeed");
     commit(&mut pf.mock_chain, &tx)?;
@@ -989,7 +932,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // ── S12 — ROTATION: DOM_MANAGER grants a new pauser -> the new member can pause
     // (capability-proven against a REAL attested mint); revoke -> they cannot.
     let faucet = committed(&pf.mock_chain, faucet_id)?;
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(14))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(11))
         .await
         .expect("S12: the DOM_MANAGER grant must succeed (delegated admin)");
     commit(&mut pf.mock_chain, &tx)?;
@@ -999,7 +942,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         Word::from([1u32, 0, 0, 0]),
         "S12: the new pauser's membership reads back"
     );
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(15))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(12))
         .await
         .expect("S12: the NEW pauser can pause");
     commit(&mut pf.mock_chain, &tx)?;
@@ -1010,12 +953,12 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     emit_note_with_attachments(&mut pf.mock_chain, producer_id, &note_m3).await?;
     let result = consume_committed_note(&pf.mock_chain, &faucet, note_m3.id()).await;
     assert_transaction_executor_error!(result, err_paused());
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(16))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(13))
         .await
         .expect("S12: the new pauser unpauses");
     commit(&mut pf.mock_chain, &tx)?;
     let faucet = committed(&pf.mock_chain, faucet_id)?;
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(17))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(14))
         .await
         .expect("S12: the DOM_MANAGER revoke must succeed");
     commit(&mut pf.mock_chain, &tx)?;
@@ -1025,7 +968,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         Word::from([0u32, 0, 0, 0]),
         "S12: the revoked member's membership is cleared"
     );
-    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(18)).await;
+    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(15)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
     assert_eq!(
         read_is_paused(&faucet)?,
@@ -1043,8 +986,8 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     )?;
     assert_eq!(
         read_domain_config_words(&faucet)?,
-        words,
-        "S13: the config words are byte-identical to their build-seed + S1b init"
+        words0,
+        "S13: the config words are byte-identical to their build-seed"
     );
     assert_eq!(
         read_token_config(&faucet)?[1],
@@ -1120,10 +1063,7 @@ async fn second_mint_to_distinct_recipient() -> Result<()> {
             gen_attester(1, &payload_for(recipient, MINT_AMOUNT, 0, faucet_id)).commitment;
         let route = faucet_id;
         vec![
-            // 0: owner identifier_init (bring-up)
-            XReserveIdentifierInitNote::create(administrator(), route, &mut note_rng(930))
-                .expect("building the seeded init-owner note"),
-            // 1: owner set_attester (bring-up)
+            // 0: owner set_attester (bring-up)
             XReserveSetAttesterNote::create(
                 administrator(),
                 route,
@@ -1140,7 +1080,7 @@ async fn second_mint_to_distinct_recipient() -> Result<()> {
     let payload1 = payload_for(recipient1_id, MINT_AMOUNT, 0, faucet_id);
     let payload2 = payload_for(recipient2_id, SECOND_MINT_AMOUNT, 0x5A, faucet_id);
 
-    // Bring-up: identifier_init + set_attester (the production path), committed a block each.
+    // Bring-up: set_attester (the production path), committed a block each.
     for (i, note) in pf.seeded_notes.clone().iter().enumerate() {
         let faucet = committed(&pf.mock_chain, faucet_id)?;
         let tx = consume_committed_note(&pf.mock_chain, &faucet, note.id())

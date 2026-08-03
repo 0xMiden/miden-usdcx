@@ -30,9 +30,7 @@ use miden_tx::TransactionExecutorError;
 use support::w2admin::*;
 use support::*;
 use xusdc_encoding::account::xreserve::{XReserveAdminAuthority, XReserveStablecoinBuilder};
-use xusdc_encoding::note::xreserve_admin::{
-    block_note, unblock_note, XReserveIdentifierInitNote, XReserveSetAttesterNote,
-};
+use xusdc_encoding::note::xreserve_admin::{block_note, unblock_note, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, DiVector};
 use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
@@ -70,23 +68,19 @@ fn payload_for(recipient: AccountId, faucet_id: AccountId, nonce_variant: u8) ->
     payload
 }
 
-/// A production faucet brought up for a real mint: the identifier is seeded and one attester is
-/// allowlisted, both through their own admin notes, plus whatever the caller wants seeded.
+/// A production faucet brought up for a real mint: one attester allowlisted through its own admin
+/// note, plus whatever the caller wants seeded.
 fn mint_faucet(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<ProductionFaucet> {
     setup_production_faucet(MINT_MAX_SUPPLY, 0, |recipient, faucet_id| {
         let commitment = gen_attester(1, &payload_for(recipient, faucet_id, 0)).commitment;
-        let mut notes = vec![
-            XReserveIdentifierInitNote::create(admin_holder(), faucet_id, &mut note_rng(951))
-                .expect("building the identifier_init note"),
-            XReserveSetAttesterNote::create(
-                admin_holder(),
-                faucet_id,
-                commitment,
-                1,
-                &mut note_rng(952),
-            )
-            .expect("building the set_attester note"),
-        ];
+        let mut notes = vec![XReserveSetAttesterNote::create(
+            admin_holder(),
+            faucet_id,
+            commitment,
+            1,
+            &mut note_rng(952),
+        )
+        .expect("building the set_attester note")];
         notes.extend(extra_notes(faucet_id));
         notes
     })
@@ -137,9 +131,9 @@ async fn emit_and_consume_mint(
         .await)
 }
 
-/// The allowlist is the ratified nine roots, and the three standard config notes are among them.
+/// The allowlist is the ratified eight roots, and the three standard config notes are among them.
 #[test]
-fn the_allowlist_is_the_ratified_nine_roots() {
+fn the_allowlist_is_the_ratified_eight_roots() {
     let allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
 
     assert_eq!(
@@ -176,10 +170,10 @@ fn the_role_action_note_is_allowlisted_and_the_transfer_allowlist_note_is_not() 
     );
 }
 
-/// The callable surface is the ratified sixty-two procedures, and the swap is visible in it: the
+/// The callable surface is the ratified sixty-one procedures, and the swap is visible in it: the
 /// four standard manager procedures are present.
 #[tokio::test]
-async fn the_callable_surface_is_the_ratified_sixty_two_procedures() -> Result<()> {
+async fn the_callable_surface_is_the_ratified_sixty_one_procedures() -> Result<()> {
     let pf = admin_faucet(|_| Vec::new())?;
     let account = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
     let roots = callable_roots(&account);
@@ -251,7 +245,7 @@ async fn two_step_ownership_is_no_longer_installed() -> Result<()> {
 }
 
 /// The administrator role resolves to the bootstrap administrator's account, which is what keeps
-/// every unmapped procedure — the attester setter, the identifier initializer, the supply cap, the
+/// every unmapped procedure — the attester setter, the supply cap, the
 /// burn floor, the policy setters — on one identity.
 #[tokio::test]
 async fn the_administrator_role_is_the_bootstrap_administrator_account() -> Result<()> {
@@ -341,8 +335,8 @@ async fn a_standard_note_pause_halts_a_real_mint_and_the_unpause_resumes_it() ->
     })?;
     let recipient = pf.recipient_id;
     let faucet_id = pf.faucet_id;
-    let (pause, unpause) = (pf.seeded_notes[2].clone(), pf.seeded_notes[3].clone());
-    bring_up(&mut pf, 2).await?;
+    let (pause, unpause) = (pf.seeded_notes[1].clone(), pf.seeded_notes[2].clone());
+    bring_up(&mut pf, 1).await?;
 
     let paused = consume_and_commit(&mut pf, &pause, "a pause").await?;
     assert_eq!(read_paused(&paused)?, set_word(), "the pause must land");

@@ -44,9 +44,10 @@ use super::{add_faucet_account, setup_production_faucet, test_account_id, Produc
 
 /// The note-script allowlist once every admin capability rides a standard note that covers all of
 /// its actions behind one script root — pause and unpause, block and unblock, and grant, revoke,
-/// set-role-admin and renounce — and the two ownership notes are gone with the administratorship component.
+/// set-role-admin and renounce — the two ownership notes are gone with the administratorship
+/// component, and the identifier-init note is gone with the stored identifier it used to seed.
 /// Human-ratified.
-pub const RATIFIED_ALLOWLIST_ROOTS: usize = 9;
+pub const RATIFIED_ALLOWLIST_ROOTS: usize = 8;
 
 /// The callable procedure count: four custom procedures out, four standard manager procedures in,
 /// the two-step ownership component's five rows removed, and the mint-path
@@ -57,9 +58,11 @@ pub const RATIFIED_ALLOWLIST_ROOTS: usize = 9;
 /// `deposit_intent_parser::{parse,validate}` pair now — leaving 65. The MASM-hygiene pass then
 /// dropped `@account_procedure` from the three remaining `exec`-only xreserve helpers
 /// (`encoding::bytes32_to_key`, `encoding::verify_uint256_to_asset_amount` and
-/// `attestation_verify::verify_attestation`), leaving the three genuine entry points
-/// (`set_attester`, `init_identifier`, `check_policy`) plus the stock rows = 62. Human-ratified.
-pub const RATIFIED_CALLABLE_PROCEDURES: usize = 62;
+/// `attestation_verify::verify_attestation`), leaving 62. The identifier-derivation change then
+/// took `init_identifier` with the stored identifier the mint path no longer reads, leaving the two
+/// genuine entry points (`set_attester`, `check_policy`) plus the stock rows = 61.
+/// Human-ratified.
+pub const RATIFIED_CALLABLE_PROCEDURES: usize = 61;
 
 /// The `DOM_PAUSER` role symbol felt the retired `pause_admin.masm` hard-coded. The role identity
 /// had to survive the move from a MASM literal into the procedure-role map, so it is pinned here as

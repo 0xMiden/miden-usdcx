@@ -34,7 +34,6 @@ const ERR_FELT_OUT_OF_FIELD = "supplied limb is not a valid u32"
 #! - KEY is the Poseidon2 hash-to-Word storage-map key.
 #!
 #! Invocation: exec
-@account_procedure
 pub proc bytes32_to_key
     # poseidon2::merge absorbs the top word first, so B_LOWER (wire bytes 0..16) becomes the
     # first rate word: KEY = Poseidon2(B_LOWER || B_UPPER), matching the Rust mirror's
@@ -72,7 +71,6 @@ end
 #! - a supplied limb is not a valid u32.
 #!
 #! Invocation: exec
-@account_procedure
 pub proc verify_uint256_to_asset_amount
     # guard every externally-supplied limb before any u32 op (the standards verifier would
     # trap a non-u32 limb anonymously)

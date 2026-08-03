@@ -776,6 +776,66 @@ pub fn shell_driver_src(
     src
 }
 
+/// The first felt of the DepositIntent `remoteToken` field in a staged preimage (wire bytes
+/// 44..76, four wire bytes per felt).
+const REMOTE_TOKEN_FELT_OFF: u64 = 11;
+
+/// The eight advice felts [`shell_driver_src_own_token`] splices into a staged intent: the packed
+/// limbs of `account_id_to_bytes32(faucet_id)`, produced by the RUST encoder.
+pub fn own_token_advice(faucet_id: AccountId) -> Vec<Felt> {
+    xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts(
+        &xusdc_encoding::xreserve::encoding::account_id_to_bytes32(faucet_id),
+    )
+    .to_vec()
+}
+
+/// Like [`shell_driver_src`], but overwrites the staged intent's `remoteToken` with eight felts
+/// taken from the advice stack before running the assertion.
+///
+/// The faucet compares `remoteToken` against its OWN account id, and an account id is a hash over
+/// the account's code — which includes this very driver. A driver that baked the bound token into
+/// its source would therefore change the id it is trying to match. Taking the eight limbs as
+/// transaction inputs breaks that circularity: the account is built first, and the Rust encoder
+/// then produces the bytes for the id it actually got ([`own_token_advice`]).
+pub fn shell_driver_src_own_token(
+    preimage: &[Felt],
+    len_felts: u64,
+    expected_hook_data_len: Option<u32>,
+) -> String {
+    let mut src = String::from(
+        "use xreserve::deposit_intent_parser\n\n\
+         #! Test driver: stages a DepositIntent preimage in the account context, splices the\n\
+         #! caller-supplied remoteToken limbs into it, and execs the faucet assertion shell.\n\
+         #!\n\
+         #! Inputs:  [pad(16)]\n\
+         #! Outputs: [pad(16)]\n\
+         #!\n\
+         #! Invocation: call\n\
+         @account_procedure\n\
+         pub proc drive\n",
+    );
+    stage_preimage(&mut src, preimage);
+    for i in 0..8 {
+        let addr = INTENT_PTR + REMOTE_TOKEN_FELT_OFF + i;
+        writeln!(src, "    adv_push mem_store.{addr}").unwrap();
+    }
+    writeln!(src, "    push.{len_felts}").unwrap();
+    writeln!(src, "    push.{INTENT_PTR}").unwrap();
+    src.push_str("    exec.deposit_intent_parser::assert_deposit_intent\n");
+    match expected_hook_data_len {
+        Some(expected) => {
+            writeln!(
+                src,
+                "    push.{expected} assert_eq.err=\"driver: hook_data_len mismatch\""
+            )
+            .unwrap();
+        }
+        None => src.push_str("    drop\n"),
+    }
+    src.push_str("end\n");
+    src
+}
+
 /// Generates the P2 slot-binding probe component: reads BOTH config slots via
 /// `word("label")[0..2]` + `active_account::get_item` and pins the fixture words —
 /// proving the `StorageSlotName` ↔ `word("…")` linkage and the call-context `get_item`

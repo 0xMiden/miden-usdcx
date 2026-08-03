@@ -37,7 +37,7 @@ use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::*;
-use xusdc_encoding::vectors::{load, parse_hex32, AmtVector, DiVector};
+use xusdc_encoding::vectors::{load, AmtVector, DiVector};
 use xusdc_encoding::xreserve::encoding::{bytes32_to_storage_map_key, uint256_to_asset_amount};
 
 /// Looks up a canonical DepositIntent vector by id (by-reference loading).
@@ -50,32 +50,25 @@ fn di(id: &str) -> &'static DiVector {
         .unwrap_or_else(|| panic!("canonical artifact is missing di vector {id}"))
 }
 
-/// Builds the two faucet configuration words a vector should be accepted against.
+/// The faucet's domain configuration word: the remote domain id in element 0, zeros elsewhere.
 ///
-/// The domain slot holds the remote domain id in its first element and zeros elsewhere; the
-/// identifier slot holds the storage-map key the faucet compares `remoteToken` to, derived from
-/// the vector's own remoteToken bytes with the Rust side of the shared codec
-/// (`bytes32_to_storage_map_key`) so the expected value is never hand-written here.
-///
-/// Set `flip_identifier_byte` to corrupt the first remoteToken byte before hashing: the result
-/// is a well-formed but wrong identifier key, which is what the wrong-identifier reject needs.
-fn config_for(vector_id: &str, domain: u32, flip_identifier_byte: bool) -> (Word, Word) {
-    let f = di(vector_id)
-        .fields
-        .as_ref()
-        .expect("config vector carries fields");
-    let domain_word = Word::new([
+/// There is no identifier counterpart any more. The faucet derives the identifier it compares
+/// `remoteToken` against from its own account id, so the only way to make a vector intent pass the
+/// compare is to bind its `remoteToken` to the executing account — which is what
+/// [`shell_driver_src_own_token`] does.
+/// A placeholder identifier for the shell fixture's config slot. The compare no longer reads it —
+/// the slot itself is removed later in this slice — so any well-formed word will do.
+fn dummy_identifier() -> Word {
+    Word::from([11u32, 12, 13, 14])
+}
+
+fn domain_word(domain: u32) -> Word {
+    Word::new([
         Felt::from(domain),
         miden_protocol::ZERO,
         miden_protocol::ZERO,
         miden_protocol::ZERO,
-    ]);
-    let mut identifier_bytes = parse_hex32(&f.remote_token_hex);
-    if flip_identifier_byte {
-        identifier_bytes[0] ^= 0xff;
-    }
-    let identifier_word = Word::from(bytes32_to_storage_map_key(&identifier_bytes));
-    (domain_word, identifier_word)
+    ])
 }
 
 // HAPPY PATH FIRST — matching config x both canonical accept vectors
@@ -88,12 +81,21 @@ fn config_for(vector_id: &str, domain: u32, flip_identifier_byte: bool) -> (Word
 async fn happy_path_mint_preconditions(#[case] vector_id: &str) -> Result<()> {
     let v = di(vector_id);
     let f = v.fields.as_ref().expect("accept vector carries fields");
-    let (domain, identifier) = config_for(vector_id, TEST_DOMAIN, false);
-    let driver_src = shell_driver_src(&v.preimage_values(), v.len_felts, Some(f.hook_data_len));
-    let h = setup_shell_account(domain, identifier, &driver_src, SHELL_DRIVER_PATH)?;
-    let executed = run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
-        panic!("vector {vector_id}: the shell must accept a matching DepositIntent: {e}")
-    });
+    let driver_src =
+        shell_driver_src_own_token(&v.preimage_values(), v.len_felts, Some(f.hook_data_len));
+    let h = setup_shell_account(
+        domain_word(TEST_DOMAIN),
+        dummy_identifier(),
+        &driver_src,
+        SHELL_DRIVER_PATH,
+    )?;
+    // the account exists now, so the Rust encoder can produce the bound remoteToken for ITS id
+    let advice = own_token_advice(h.account_id);
+    let executed = run_call_driver_with_advice(&h, "drive", Some(advice))
+        .await
+        .unwrap_or_else(|e| {
+            panic!("vector {vector_id}: the shell must accept a matching DepositIntent: {e}")
+        });
     // the shell is read-only: the only account mutation is the auth nonce increment
     assert_eq!(
         (executed.final_account().nonce() - executed.initial_account().nonce()),
@@ -117,48 +119,34 @@ async fn happy_path_mint_preconditions(#[case] vector_id: &str) -> Result<()> {
 // and the wrong-identifier row keeps the domain matching, so neither assert can mask the other.
 
 #[rstest]
-#[case::r_mint_1_bad_magic("di-rej-bad-magic", TEST_DOMAIN, false, "ERR_DI_BAD_MAGIC")]
-#[case::r_mint_2_bad_version("di-rej-bad-version", TEST_DOMAIN, false, "ERR_DI_BAD_VERSION")]
-#[case::r_mint_3_zero_amount("di-rej-zero-amount", TEST_DOMAIN, false, "ERR_DI_ZERO_FIELD")]
-#[case::r_mint_4_zero_local_token(
-    "di-rej-zero-local-token",
-    TEST_DOMAIN,
-    false,
-    "ERR_DI_ZERO_FIELD"
-)]
+#[case::r_mint_1_bad_magic("di-rej-bad-magic", TEST_DOMAIN, "ERR_DI_BAD_MAGIC")]
+#[case::r_mint_2_bad_version("di-rej-bad-version", TEST_DOMAIN, "ERR_DI_BAD_VERSION")]
+#[case::r_mint_3_zero_amount("di-rej-zero-amount", TEST_DOMAIN, "ERR_DI_ZERO_FIELD")]
+#[case::r_mint_4_zero_local_token("di-rej-zero-local-token", TEST_DOMAIN, "ERR_DI_ZERO_FIELD")]
 #[case::r_mint_5_zero_local_depositor(
     "di-rej-zero-local-depositor",
     TEST_DOMAIN,
-    false,
     "ERR_DI_ZERO_FIELD"
 )]
-#[case::r_mint_6_wrong_domain(
-    "di-pos-hookdata",
-    TEST_WRONG_DOMAIN,
-    false,
-    "ERR_XRESERVE_WRONG_DOMAIN"
-)]
-#[case::r_mint_7_wrong_identifier(
-    "di-pos-hookdata",
-    TEST_DOMAIN,
-    true,
-    "ERR_XRESERVE_WRONG_IDENTIFIER"
-)]
+#[case::r_mint_6_wrong_domain("di-pos-hookdata", TEST_WRONG_DOMAIN, "ERR_XRESERVE_WRONG_DOMAIN")]
+// the vector's own remoteToken belongs to no account at all, so an intent carrying it is
+// mis-addressed for EVERY faucet — the reject needs no configuration lever any more
+#[case::r_mint_7_wrong_identifier("di-pos-hookdata", TEST_DOMAIN, "ERR_XRESERVE_WRONG_IDENTIFIER")]
 #[tokio::test]
 async fn r_mint_rejects(
     #[case] vector_id: &str,
     #[case] domain: u32,
-    #[case] flip_identifier_byte: bool,
     #[case] expected_err: &str,
 ) -> Result<()> {
-    // config always derives from the accept vector (reject vectors carry no fields
-    // block; for rows 1-5 the config is irrelevant — the parser traps first)
-    let (domain_word, identifier_word) =
-        config_for("di-pos-hookdata", domain, flip_identifier_byte);
     let v = di(vector_id);
     let len_felts = v.staging_len_felts.unwrap_or(v.len_felts);
     let driver_src = shell_driver_src(&v.preimage_values(), len_felts, None);
-    let h = setup_shell_account(domain_word, identifier_word, &driver_src, SHELL_DRIVER_PATH)?;
+    let h = setup_shell_account(
+        domain_word(domain),
+        dummy_identifier(),
+        &driver_src,
+        SHELL_DRIVER_PATH,
+    )?;
     let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
     Ok(())
@@ -197,14 +185,14 @@ fn probe_shell_exports() -> Result<()> {
 /// Pins the plumbing the other tests depend on: that a named storage slot really resolves to the
 /// word it was seeded with.
 ///
-/// A minimal probe component reads both named value slots by name and compares them against the
-/// fixture words. It deliberately does not touch the deposit-intent code, so if the slot naming
+/// A minimal probe component reads the named value slot by name and compares it against the
+/// fixture word. It deliberately does not touch the deposit-intent code, so if the slot naming
 /// or the call-context read path ever breaks on a toolchain bump, this fails on its own instead
-/// of showing up as a confusing wrong-domain or wrong-identifier reject elsewhere in the file.
+/// of showing up as a confusing wrong-domain reject elsewhere in the file.
 #[tokio::test]
 async fn probe_slot_binding() -> Result<()> {
     let domain = Word::from([7u32, 0, 0, 0]);
-    let identifier = Word::from([11u32, 12, 13, 14]);
+    let identifier = dummy_identifier();
     let probe_src = slot_probe_src(domain, identifier);
     let h = setup_shell_account(domain, identifier, &probe_src, SLOT_PROBE_PATH)?;
     run_call_driver(&h, "read_slots")
@@ -241,8 +229,8 @@ fn amt(id: &str) -> &'static AmtVector {
 }
 
 /// Builds a D5b harness over a base accept preimage with `amount`/`maxFee` spliced from the
-/// given limbs. The shell does not read config slots, but the component still binds them;
-/// the matching `di-pos-empty-hookdata` config is reused for tidiness.
+/// given limbs. The shell does not read config slots, but the component still binds the domain
+/// slot.
 ///
 /// The driver's amount witness is the Rust mirror's quotient (the value the mint-note factory
 /// would carry); an unreducible amount pushes a zero witness — the verifier traps on the x
@@ -254,12 +242,16 @@ fn d5b_harness(
 ) -> Result<ShellHarness> {
     let base = di("di-pos-empty-hookdata").preimage_values();
     let preimage = splice_amounts(&base, amount_limbs, maxfee_limbs);
-    let (domain, identifier) = config_for("di-pos-empty-hookdata", TEST_DOMAIN, false);
     let amount_y = uint256_to_asset_amount(amount_limbs, D5B_SCALE_EXP)
         .map(u64::from)
         .unwrap_or(0);
     let driver_src = mint_amounts_driver_src(&preimage, fee_amount, D5B_SCALE_EXP, amount_y);
-    setup_shell_account(domain, identifier, &driver_src, SHELL_DRIVER_PATH)
+    setup_shell_account(
+        domain_word(TEST_DOMAIN),
+        dummy_identifier(),
+        &driver_src,
+        SHELL_DRIVER_PATH,
+    )
 }
 
 // HAPPY PATH FIRST
@@ -418,10 +410,14 @@ fn nonce_key(vector_id: &str) -> Word {
 #[tokio::test]
 async fn d5c_happy_nonce_unused(#[case] vector_id: &str) -> Result<()> {
     let v = di(vector_id);
-    let (domain, identifier) = config_for(vector_id, TEST_DOMAIN, false);
     let driver_src = nonce_driver_src(&v.preimage_values());
     // empty usedNonces map -> usedNonces[key] reads EMPTY_WORD (unused) -> passes
-    let h = setup_shell_account(domain, identifier, &driver_src, SHELL_DRIVER_PATH)?;
+    let h = setup_shell_account(
+        domain_word(TEST_DOMAIN),
+        dummy_identifier(),
+        &driver_src,
+        SHELL_DRIVER_PATH,
+    )?;
     let executed = run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
         panic!("vector {vector_id}: an unused nonce must pass the D5c guard: {e}")
     });
@@ -446,14 +442,13 @@ async fn d5c_happy_nonce_unused(#[case] vector_id: &str) -> Result<()> {
 #[tokio::test]
 async fn d5c_replay_rejects(#[case] vector_id: &str) -> Result<()> {
     let v = di(vector_id);
-    let (domain, identifier) = config_for(vector_id, TEST_DOMAIN, false);
     let driver_src = nonce_driver_src(&v.preimage_values());
     // mark this vector's nonce as already spent, so the guard's map read returns a non-empty
     // Word and the "must still be empty" assert fires — this is the same-deposit-twice case
     let seed = (nonce_key(vector_id), Word::from(NONCE_MARKER));
     let h = setup_shell_account_with_nonce_seed(
-        domain,
-        identifier,
+        domain_word(TEST_DOMAIN),
+        dummy_identifier(),
         Some(seed),
         &driver_src,
         SHELL_DRIVER_PATH,
@@ -488,12 +483,11 @@ async fn d5c_unrelated_seeded_nonce_passes() -> Result<()> {
     );
 
     let v = di(run_id);
-    let (domain, identifier) = config_for(run_id, TEST_DOMAIN, false);
     let driver_src = nonce_driver_src(&v.preimage_values());
     let seed = (other_key, Word::from(NONCE_MARKER));
     let h = setup_shell_account_with_nonce_seed(
-        domain,
-        identifier,
+        domain_word(TEST_DOMAIN),
+        dummy_identifier(),
         Some(seed),
         &driver_src,
         SHELL_DRIVER_PATH,

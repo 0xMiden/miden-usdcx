@@ -142,5 +142,32 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
             );
         }
     }
+
+    // The CANONICAL RECORD must carry the current surface too: the deviation register's live
+    // claim and the docs inventory's latest-state delta are what a security reviewer reads
+    // first, so a code-side re-materialization that leaves them behind splits the authority.
+    // These docs deliberately PRESERVE superseded counts as struck-through provenance, so the
+    // check here is presence of the current claim, not absence of history.
+    let canonical: [(&str, &str, String); 2] = [
+        (
+            "docs/spec/GLOSSARY.md",
+            include_str!("../../../docs/spec/GLOSSARY.md"),
+            format!("the callable surface is **{total}** ({xreserve} xreserve + {stock} stock)"),
+        ),
+        (
+            "docs/DOCS-INVENTORY.md",
+            include_str!("../../../docs/DOCS-INVENTORY.md"),
+            format!("re-materialized to **{total}**"),
+        ),
+    ];
+    for (name, src, needle) in &canonical {
+        assert!(
+            src.contains(needle.as_str()),
+            "the canonical record {name} does not carry the current surface claim `{needle}` — \
+             the executable surface is {xreserve} xreserve + {stock} stock = {total} roots; the \
+             register and the inventory must state the live count (with the superseded one \
+             preserved as provenance)"
+        );
+    }
     Ok(())
 }

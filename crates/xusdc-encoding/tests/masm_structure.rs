@@ -921,19 +921,11 @@ fn note_docs_declare_required_account_procedures() {
 /// storage-less. The storage-documentation rule keys off this registration, so removing a
 /// storage-carrying note's section fails even when the note never reads storage itself; a new
 /// note fails until it gets a row (the registration pattern).
-const NOTE_STORAGE_TABLE: [(&str, &str); 12] = [
-    ("xreserve_accept_ownership_note.masm", "none"),
-    ("xreserve_block_account_note.masm", "read"),
-    ("xreserve_grant_role_note.masm", "read"),
+const NOTE_STORAGE_TABLE: [(&str, &str); 4] = [
     ("xreserve_identifier_init_note.masm", "read"),
-    ("xreserve_pause_note.masm", "none"),
-    ("xreserve_revoke_role_note.masm", "read"),
     ("xreserve_set_attester_note.masm", "read"),
     ("xreserve_set_max_supply_note.masm", "read"),
     ("xreserve_set_min_burn_size_note.masm", "read"),
-    ("xreserve_transfer_ownership_note.masm", "read"),
-    ("xreserve_unblock_account_note.masm", "read"),
-    ("xreserve_unpause_note.masm", "none"),
 ];
 
 /// A note script's storage posture matches its registration: storage-carrying notes (`read` or
@@ -989,6 +981,25 @@ fn check_note_storage(rel: &str, src: &str, out: &mut Violations) {
 #[test]
 fn note_docs_describe_carried_storage() {
     assert_rule("note storage-section", check_note_storage);
+}
+
+/// The registration pattern's reverse direction: every registered row must correspond to a note
+/// script that actually ships, so a deleted note takes its row with it and the table never
+/// carries a phantom layout.
+#[test]
+fn note_storage_table_registers_only_shipped_notes() {
+    let shipped: Vec<String> = masm_sources()
+        .into_iter()
+        .filter(|(rel, _)| is_note_script(rel))
+        .map(|(rel, _)| rel.rsplit('/').next().unwrap_or(&rel).to_string())
+        .collect();
+    for (name, _) in NOTE_STORAGE_TABLE {
+        assert!(
+            shipped.iter().any(|n| n == name),
+            "NOTE_STORAGE_TABLE registers `{name}` but no such note script ships under \
+             asm/standards/notes/ — remove the stale row"
+        );
+    }
 }
 
 /// Doc-block sections appear at most once each and in the protocol order — description prose

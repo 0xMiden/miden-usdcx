@@ -162,7 +162,7 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 23] = [
     ),
     // The two attestation rejects (attestation_verify.masm). Parity-pinned against the MASM consts.
     (
-        "ERR_XRESERVE_BAD_PK_COMMITMENT",
+        "ERR_XRESERVE_DISALLOWED_PUB_KEY",
         MasmError::from_static_str("deposit attester pubkey commitment is not allowlisted"),
     ),
     (

@@ -338,7 +338,7 @@ pub(crate) async fn negatives_suite(
 ) -> Result<()> {
     use crate::assertions_cf::ERR_SUPPLY_CAP;
     use crate::assertions_de::{
-        ERR_XRESERVE_BAD_PK_COMMITMENT, ERR_XRESERVE_NONCE_REPLAY, ERR_XRESERVE_SIG_INVALID,
+        ERR_XRESERVE_DISALLOWED_PUB_KEY, ERR_XRESERVE_NONCE_REPLAY, ERR_XRESERVE_SIG_INVALID,
     };
 
     let supply_before = token_supply(&d.fetch_faucet().await?)?;
@@ -360,7 +360,7 @@ pub(crate) async fn negatives_suite(
         "attestation",
         "a mint by a non-allowlisted attester is REJECTED",
         &v,
-        ERR_XRESERVE_BAD_PK_COMMITMENT,
+        ERR_XRESERVE_DISALLOWED_PUB_KEY,
     );
 
     let forged = mint_note_forged_sig(

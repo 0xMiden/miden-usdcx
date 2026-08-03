@@ -33,7 +33,7 @@ use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
 use xusdc_validation::assertions::ERR_IDENTIFIER_REINIT_TEXT;
 use xusdc_validation::assertions_cf::{ERR_LACKS_ROLE, ERR_NOT_OWNER};
 use xusdc_validation::assertions_de::{
-    ERR_XRESERVE_BAD_PK_COMMITMENT, ERR_XRESERVE_FEE_NONZERO, ERR_XRESERVE_NONCE_REPLAY,
+    ERR_XRESERVE_DISALLOWED_PUB_KEY, ERR_XRESERVE_FEE_NONZERO, ERR_XRESERVE_NONCE_REPLAY,
     ERR_XRESERVE_SIG_INVALID,
 };
 use xusdc_validation::assertions_gj::{
@@ -866,7 +866,7 @@ fn green_de() -> RowsDeObservations {
             ),
             neg(
                 "non-allowlisted-attester",
-                ERR_XRESERVE_BAD_PK_COMMITMENT,
+                ERR_XRESERVE_DISALLOWED_PUB_KEY,
                 "... deposit attester pubkey commitment is not allowlisted ...",
                 false,
             ),

@@ -18,9 +18,10 @@
 //!
 //! Installed by [`XReserveStablecoinBuilder::build_components`][crate::account::xreserve::XReserveStablecoinBuilder::build_components]
 //! as the account's only authority component. One consequence is worth stating where a reader will
-//! look for it: administrator membership is account-bound and does not follow the owner slot, so a
-//! completed ownership transfer does NOT move authority over the unmapped setters — the rotation
-//! runbook re-seats `ADMIN` through the grant and revoke role notes.
+//! look for it: administrator membership is account-bound, and it is the account's ONLY authority
+//! handle — the faucet installs no ownership component, so nothing else can move authority over the
+//! unmapped setters. Rotating it is a grant to the incoming account then a revoke from the
+//! outgoing one, both through the standard role-action note.
 
 use std::collections::BTreeMap;
 
@@ -42,7 +43,7 @@ const ROLE_GATED_PROCEDURE_COUNT: usize = 4;
 /// blocklist administrator role. Nothing else is assigned, so the remaining authority-gated
 /// procedures — the attester setter, the supply cap and burn-floor setters, the policy setters and
 /// the emergency switch — resolve to the built-in administrator role, keeping them with the
-/// account that holds them under the current owner-gated composition.
+/// account that holds the administrator role.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XReserveAdminAuthority {
     procedure_roles: BTreeMap<AccountProcedureRoot, RoleSymbol>,

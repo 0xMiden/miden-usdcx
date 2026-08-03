@@ -137,9 +137,9 @@ async fn emit_and_consume_mint(
         .await)
 }
 
-/// The allowlist is the ratified twelve roots, and the two standard config notes are among them.
+/// The allowlist is the ratified nine roots, and the three standard config notes are among them.
 #[test]
-fn the_allowlist_is_the_ratified_twelve_roots() {
+fn the_allowlist_is_the_ratified_nine_roots() {
     let allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
 
     assert_eq!(
@@ -159,16 +159,16 @@ fn the_allowlist_is_the_ratified_twelve_roots() {
     );
 }
 
-/// The role graph stays frozen: the standard role-action note bundles a selector that would make
-/// the role-admin delegation runtime-mutable and another that would allow self-renounce, so its
-/// single root stays out of the allowlist. Adopting it was explicitly deferred.
+/// Role management is the standard role-action note, and the transfer-allowlist note is still not
+/// composed. The role note's single root carries re-pointing a role's administrator and
+/// self-renouncing alongside grant and revoke — an accepted exposure, driven action by action in
+/// `w2admin_surface_finalization.rs`.
 #[test]
-fn the_role_action_note_stays_out_of_the_allowlist() {
+fn the_role_action_note_is_allowlisted_and_the_transfer_allowlist_note_is_not() {
     let allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
     assert!(
-        !allowlist.contains(&RbacActionNote::script_root()),
-        "the standard role-action note must not be allowlisted: its single root also exposes \
-         re-pointing a role's admin and self-renouncing a role, neither of which this faucet grants"
+        allowlist.contains(&RbacActionNote::script_root()),
+        "the standard role-action note must be allowlisted — it is the only role-management surface"
     );
     assert!(
         !allowlist.contains(&AllowlistConfigNote::script_root()),
@@ -176,10 +176,10 @@ fn the_role_action_note_stays_out_of_the_allowlist() {
     );
 }
 
-/// The callable surface is the ratified seventy-four procedures, and the swap is visible in it: the
+/// The callable surface is the ratified sixty-nine procedures, and the swap is visible in it: the
 /// four standard manager procedures are present.
 #[tokio::test]
-async fn the_callable_surface_is_the_ratified_seventy_four_procedures() -> Result<()> {
+async fn the_callable_surface_is_the_ratified_sixty_nine_procedures() -> Result<()> {
     let pf = admin_faucet(|_| Vec::new())?;
     let account = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
     let roots = callable_roots(&account);
@@ -219,7 +219,7 @@ async fn the_shipped_authority_carries_the_ratified_role_map() -> Result<()> {
     let Authority::RbacControlled { procedure_roles } = authority else {
         panic!(
             "the faucet's authority must be role-based; owner-controlled would gate the manager \
-             procedures on the owner, which is the identity Circle's model keeps them away from"
+             procedures on the administrator, which is the identity Circle's model keeps them away from"
         );
     };
 
@@ -236,28 +236,25 @@ async fn the_shipped_authority_carries_the_ratified_role_map() -> Result<()> {
     Ok(())
 }
 
-/// Two-step ownership is still installed: removing it was deferred to Circle's answer on
-/// single-step rotation, so the owner slot and its handshake stay.
+/// Two-step ownership is gone: the account carries no owner slot at all, so the administrator role
+/// is its single authority handle and there is no second handle that could drift from it.
 #[tokio::test]
-async fn two_step_ownership_is_still_installed() -> Result<()> {
+async fn two_step_ownership_is_no_longer_installed() -> Result<()> {
     let pf = admin_faucet(|_| Vec::new())?;
     let account = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
 
-    let ownable = Ownable2Step::try_from_storage(account.storage())
-        .map_err(|e| anyhow::anyhow!("the faucet must still carry the ownership slot: {e}"))?;
-    assert_eq!(
-        ownable.owner(),
-        Some(admin_holder()),
-        "the seeded owner must still be the registered owner"
+    assert!(
+        Ownable2Step::try_from_storage(account.storage()).is_err(),
+        "the faucet must carry no ownership slot — the component was removed"
     );
     Ok(())
 }
 
-/// The administrator role still resolves to the owner's account, which is what keeps every
-/// unmapped setter — the attester setter, the supply cap, the burn floor, the policy setters — on
-/// the identity that holds it today.
+/// The administrator role resolves to the bootstrap administrator's account, which is what keeps
+/// every unmapped procedure — the attester setter, the identifier initializer, the supply cap, the
+/// burn floor, the policy setters — on one identity.
 #[tokio::test]
-async fn the_administrator_role_is_still_the_owner_account() -> Result<()> {
+async fn the_administrator_role_is_the_bootstrap_administrator_account() -> Result<()> {
     let pf = admin_faucet(|_| Vec::new())?;
     let account = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
     let admin = RoleBasedAccessControl::admin_role();
@@ -279,7 +276,7 @@ async fn the_administrator_role_is_still_the_owner_account() -> Result<()> {
     assert_eq!(
         membership[0],
         Felt::from(1u32),
-        "the owner's account must hold the administrator role, or every unmapped setter would move \
+        "the administrator's account must hold the administrator role, or every unmapped setter would move \
          off its current holder"
     );
     Ok(())
@@ -411,9 +408,9 @@ async fn the_blocklist_manager_unblocks_a_target_through_the_standard_note() -> 
     Ok(())
 }
 
-/// The owner has no pause path. That was true before the swap because the standard manager was not
+/// The administrator has no pause path. That was true before the swap because the standard manager was not
 /// installed at all; it is true after the swap because the manager is installed and the role map
-/// gates it on the pause role, which the owner does not hold. Same outcome, different reason — and
+/// gates it on the pause role, which the administrator does not hold. Same outcome, different reason — and
 /// the reason is exactly what the role map is for.
 #[tokio::test]
 async fn the_owner_still_has_no_pause_path() -> Result<()> {
@@ -434,7 +431,7 @@ async fn the_owner_still_has_no_pause_path() -> Result<()> {
     Ok(())
 }
 
-/// The owner has no unpause path either.
+/// The administrator has no unpause path either.
 #[tokio::test]
 async fn the_owner_still_has_no_unpause_path() -> Result<()> {
     let pf = admin_faucet(|id| {
@@ -445,8 +442,8 @@ async fn the_owner_still_has_no_unpause_path() -> Result<()> {
     Ok(())
 }
 
-/// The owner has no blocklist path. The blocklist belongs to an external administrator holding
-/// nothing else, and the owner — who administers everything else — is kept out of it.
+/// The administrator has no blocklist path. The blocklist belongs to an external administrator holding
+/// nothing else, and the administrator — who holds everything else — is kept out of it.
 #[tokio::test]
 async fn the_owner_still_has_no_blocklist_path() -> Result<()> {
     let pf = admin_faucet(|id| {

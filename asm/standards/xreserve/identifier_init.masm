@@ -1,6 +1,6 @@
 # xreserve::identifier_init
 #
-# The owner-gated, init-once IDENTIFIER seeding: a one-time write
+# The administrator-gated, init-once IDENTIFIER seeding: a one-time write
 # of the ONE domain-config field that provably cannot be build-seeded — the faucet identifier. The
 # account id derives from the initial storage commitment (account_id/v1: the id is a hash over
 # seed + code commitment + storage commitment), and the identifier is the faucet's OWN id as
@@ -11,8 +11,9 @@
 # The identifier slot is the one the mint path's deposit-intent compare
 # (deposit_intent_parser::assert_deposit_intent) reads to reject mis-addressed deposits; it stores
 # the Poseidon2 bytes32->key WORD (consumer-forced — the compare is `assert_eqw` over the hashed
-# form). A second write traps ERR_XRESERVE_IDENTIFIER_REINIT. Owner-gated (Ownable2Step); no
-# pause gate (deploy-time config is orthogonal to the operational pause). The slot const is
+# form). A second write traps ERR_XRESERVE_IDENTIFIER_REINIT. Gated by the account-wide authority,
+# which resolves this procedure — it carries no role assignment of its own — to the built-in ADMIN
+# role; no pause gate (deploy-time config is orthogonal to the operational pause). The slot const is
 # IMPORTED from deposit_intent_parser (the single source of truth with the mint-path compare).
 #
 # Front-run hardening: the proc derives the faucet's OWN identifier key ON-CHAIN —
@@ -23,7 +24,7 @@
 
 use miden::protocol::active_account
 use miden::protocol::native_account
-use miden::standards::access::ownable2step
+use miden::standards::access::authority
 use miden::standards::utils
 use xreserve::encoding
 use {IDENTIFIER_CONFIG_SLOT} from xreserve::deposit_intent_parser
@@ -48,9 +49,10 @@ const ERR_XRESERVE_IDENTIFIER_MISMATCH = "identifier does not match the faucet's
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Writes the faucet identifier config slot, owner-gated, init-once, and BOUND to the faucet's
-#! own account id: the ONE domain-config field the account-id fixpoint forces past build time.
-#! Gated on the Ownable2Step owner — NOT an operational role — because the identifier
+#! Writes the faucet identifier config slot, administrator-gated, init-once, and BOUND to the
+#! faucet's own account id: the ONE domain-config field the account-id fixpoint forces past build
+#! time. Gated through the account-wide authority, which resolves it to the built-in ADMIN role —
+#! NOT an operational role — because the identifier
 #! is deploy-time identity. Init-once: a second call finds the slot non-empty and
 #! traps; a trapped tx commits nothing. The written value is NOT trusted verbatim: the proc
 #! derives `bytes32_to_key(account_id_to_bytes32(get_id()))` on-chain and
@@ -65,8 +67,8 @@ const ERR_XRESERVE_IDENTIFIER_MISMATCH = "identifier does not match the faucet's
 #!   on-chain-derived own-id key, and is stored verbatim once asserted.
 #!
 #! Panics if:
-#! - the note sender is not the Ownable2Step owner (ownable2step::assert_sender_is_owner,
-#!   ERR_SENDER_NOT_OWNER).
+#! - the note sender does not hold the role the account's authority requires for this procedure
+#!   (authority::assert_authorized -> rbac::assert_sender_is_admin, ERR_SENDER_LACKS_ROLE).
 #! - the identifier was already initialized — the slot is non-empty
 #!   (ERR_XRESERVE_IDENTIFIER_REINIT).
 #! - the input IDENTIFIER is the empty word — it could never arm the init-once sentinel
@@ -77,8 +79,13 @@ const ERR_XRESERVE_IDENTIFIER_MISMATCH = "identifier does not match the faucet's
 #! Invocation: call
 @account_procedure
 pub proc init_identifier
-    # gate: owner-only; the identifier is deploy-time identity.
-    exec.ownable2step::assert_sender_is_owner
+    # gate: the account-wide authority (sender-based)
+    # only. identifier binding is deploy-time identity,
+    # off the operational roles, so this procedure
+    # carries no role of its own and resolves to the
+    # built-in ADMIN role. reads account storage and is
+    # operand-stack-neutral.
+    exec.authority::assert_authorized
     # => [IDENTIFIER, pad(12)]
 
     # init-once: the identifier slot must be EMPTY. assert_eqw against EMPTY_WORD

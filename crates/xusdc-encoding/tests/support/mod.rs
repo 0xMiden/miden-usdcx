@@ -49,9 +49,7 @@ use miden_protocol::note::{Note, NoteType};
 use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote, TransactionKernel};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
-use miden_standards::account::access::{
-    Ownable2Step, Pausable, PausableManager, RoleBasedAccessControl,
-};
+use miden_standards::account::access::{Pausable, PausableManager, RoleBasedAccessControl};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
 use miden_standards::account::wallets::BasicWallet;
@@ -421,7 +419,7 @@ pub fn add_faucet_account(
 /// its fee-policy companions — instead of the `miden-testing` `Auth::NetworkAccount` fixture. The
 /// fixture routes through `AuthNetworkAccount::new()`, which force-inserts the config-note and
 /// fee-sponsorship script roots into the note allowlist; the preserved posture is the EXACT
-/// 12-root allowlist, so the composition must go through `custom()` (which inserts nothing) —
+/// 9-root allowlist, so the composition must go through `custom()` (which inserts nothing) —
 /// `config_note_absence.rs` is the tripwire. Registering the account without an authenticator
 /// matches the fixture's behavior for the keyless network account (its authenticator is `None`
 /// either way). The callback flag is derived exactly as in [`add_faucet_account`].
@@ -1239,8 +1237,8 @@ pub fn faucet_account(h: &CompositionHarness) -> Account {
 
 /// Builds a note SENT BY `sender` whose script calls the stock `PausableManager::pause`. The
 /// procedure IS installed, so this note is the probe for WHO may use it: sent by the Domain pauser
-/// it pauses the faucet, and sent by anyone else — including the owner — it traps the role error,
-/// which is what `owner_has_no_pause_path` pins. It assembles without an xreserve link, since
+/// it pauses the faucet, and sent by anyone else — including the administrator — it traps the role error,
+/// which is what `administrator_has_no_pause_path` pins. It assembles without an xreserve link, since
 /// StandardsLib is pre-linked.
 pub fn manager_pause_call_note(sender: AccountId, seed: u64) -> Result<Note> {
     let src = "use miden::standards::access::pausable::manager\n\
@@ -1362,34 +1360,24 @@ pub fn raw_self_block_note(sender: AccountId, seed: u64) -> Result<Note> {
         .build()?)
 }
 
-// identifier_init — owner-gated init-once identifier seeding note
+// identifier_init — administrator-gated init-once identifier seeding note
 // ================================================================================================
 
 /// The exact stock error the RBAC role assertion traps (`rbac.masm` ERR_SENDER_LACKS_ROLE). Under
-/// the account's role-based authority this is what an unauthorized sender gets from every
+/// the account's role-based authority this is what an unauthorized sender gets from EVERY
 /// authority-gated procedure: the ones with a role assigned (the pause and blocklist managers) and
-/// the ones without, which fall back to the administrator role (`set_attester`, the supply cap, the
-/// burn floor, the policy setters). The procedures that gate on the owner slot DIRECTLY —
-/// `identifier_init`, `transfer_ownership`, `accept_ownership` — still trap
-/// [`err_sender_not_owner`].
+/// the ones without, which fall back to the administrator role (`set_attester`, `identifier_init`,
+/// the supply cap, the burn floor, the policy setters). No procedure gates on an administrator slot any
+/// more — the faucet installs no ownership component, so there is no owner error to raise.
 pub fn err_sender_lacks_role() -> MasmError {
     MasmError::from_static_str("note sender does not hold the required role")
-}
-
-/// The exact stock error `ownable2step::assert_sender_is_owner` traps (ownable2step.masm:38
-/// ERR_SENDER_NOT_OWNER). Constructed inline (a stock protocol error, not an xusdc shell error, so it
-/// is not in `SHELL_ERR_TABLE`). It is the trap for the procedures reading the owner slot DIRECTLY
-/// — `identifier_init`, `transfer_ownership`, `accept_ownership`. The setters (`set_attester` /
-/// `set_min_burn_size` / `set_max_supply`) resolve to the `ADMIN` role and raise the role error.
-pub fn err_sender_not_owner() -> MasmError {
-    MasmError::from_static_str("note sender is not the owner")
 }
 
 /// Builds an unauthenticated note SENT BY `sender` whose script `call`s the MINIMIZED
 /// `xreserve::identifier_init::init_identifier(IDENTIFIER)` (the identifier is the one
 /// domain-config field the account-id fixpoint forces past build time; the other three fields are
-/// build-seeded). The Ownable2Step gate reads the note sender (`active_note::get_sender`), so the
-/// sender is what the owner check tests. `identifier` is the pre-hashed `bytes32_to_key` Word
+/// build-seeded). The authority gate reads the note sender (`active_note::get_sender`), so the
+/// sender is what the administrator-role check tests. `identifier` is the pre-hashed `bytes32_to_key` Word
 /// stored verbatim. The note script links the `xreserve` library so the `call` resolves to the
 /// same proc installed on the faucet account.
 pub fn identifier_init_note(sender: AccountId, identifier: Word, seed: u64) -> Result<Note> {
@@ -1909,8 +1897,8 @@ fn seeded_dom_roles_rbac_component(
         RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol");
     let blk_manager =
         RoleSymbol::new(BLK_MANAGER_ROLE).expect("BLK_MANAGER is a fixed valid role symbol");
-    // v16 (#3215): the owner has no implicit super-admin standing — the stock ADMIN role is
-    // seeded on the owner's account, mirroring the production seed.
+    // v16 (#3215): the administrator has no implicit super-admin standing — the stock ADMIN role is
+    // seeded on the administrator's account, mirroring the production seed.
     let admin = RoleBasedAccessControl::admin_role();
     let member_word = Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
     // [1, DOM_MANAGER, 0, 0]: member_count = 1 with administration delegated to DOM_MANAGER.
@@ -2032,7 +2020,7 @@ fn oracle_burn_components(
     xreserve_component: AccountComponent,
     min_burn_size: u64,
     burn_real_active: bool,
-    owner: AccountId,
+    administrator: AccountId,
     pauser_holder: AccountId,
     manager_holder: AccountId,
     blocklist_manager_holder: AccountId,
@@ -2096,9 +2084,8 @@ fn oracle_burn_components(
     components.push(manager_component);
     components.extend(keep); // [MinBurnAmount (floor slot), BurnAllowAll]
     components.push(PausableManager.into());
-    components.push(Ownable2Step::new(owner).into());
     components.push(seeded_dom_roles_rbac_component(
-        owner,
+        administrator,
         pauser_holder,
         manager_holder,
         blocklist_manager_holder,
@@ -2110,7 +2097,7 @@ fn oracle_burn_components(
 /// Builds the burn-policy harness: assembles the `xreserve` component with the full production slot set
 /// (domain/identifier value slots, usedNonces/xReserveAttesters map slots, AND the NET-NEW minBurnSize
 /// value slot seeded `[min_burn_size, 0, 0, 0]`), composes the faucet via [`oracle_burn_components`]
-/// (`owner` = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3)), adds a user wallet seeded with the single burn asset, and
+/// (`administrator` = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3)), adds a user wallet seeded with the single burn asset, and
 /// creates the canonical [`BurnNote`]. The faucet is built with `is_max_supply_mutable(true)` + decimals
 /// 6, mirroring the mint composition fixtures.
 pub fn setup_burn_policy_account(
@@ -2488,7 +2475,7 @@ pub async fn run_burn_consume(
 
 /// Executes a stock `PausableManager::pause` note SENT BY `sender` against the faucet `account` on a
 /// bare `&MockChain` (the note is provided unauthenticated). Under the Domain-Pauser-only model the
-/// stock proc is NOT installed — this is the NEGATIVE PROBE `owner_has_no_pause_path` drives: the tx
+/// stock proc is NOT installed — this is the NEGATIVE PROBE `administrator_has_no_pause_path` drives: the tx
 /// must trap `UnknownAccountProcedure` and never flip `is_paused`. To actually pause, use
 /// [`run_dom_pauser_pause`] (the DOM_PAUSER custom proc — the only pause surface).
 pub async fn run_pause_against(
@@ -2913,112 +2900,6 @@ pub async fn run_renounce_role_against(
     run_rbac_note_against(chain, account, note, "renounce_role").await
 }
 
-// OWNABLE2STEP TWO-STEP OWNER TRANSFER — notes + runners + owner-config read-back
-// ================================================================================================
-
-/// A `transfer_ownership(new_owner)` note sent by `sender` (stock gate: OWNER-only,
-/// `standards/access/ownable2step.masm:248`; the pending nominee has no authority until accept).
-/// Stack contract: `[new_owner_suffix, new_owner_prefix, pad(14)]` (suffix on top). Like the rbac
-/// notes, the stock proc is a pure standards proc, so the absolute-path `call` resolves to the
-/// SAME proc root the production account exposes via the Ownable2Step component re-exports
-/// (`account_components/access/ownable2step.masm`).
-pub fn transfer_ownership_note(sender: AccountId, new_owner: AccountId, seed: u64) -> Result<Note> {
-    let new_suffix = new_owner.suffix().as_canonical_u64();
-    let new_prefix = new_owner.prefix().as_felt().as_canonical_u64();
-    let src = format!(
-        "@note_script\n\
-         pub proc main\n\
-         \x20\x20\x20\x20repeat.14 push.0 end\n\
-         \x20\x20\x20\x20push.{new_prefix}\n\
-         \x20\x20\x20\x20push.{new_suffix}\n\
-         \x20\x20\x20\x20call.::miden::standards::access::ownable2step::transfer_ownership\n\
-         \x20\x20\x20\x20dropw dropw dropw dropw\n\
-         end\n",
-    );
-    let script = CodeBuilder::new()
-        .compile_note_script(src.clone())
-        .map_err(|e| {
-            anyhow::anyhow!("transfer_ownership note script failed to compile: {e}\n{src}")
-        })?;
-    // Fresh serial tail [27,28] — disjoint from every other admin-note family.
-    let mut rng = RandomCoin::new(Word::from([
-        Felt::from(seed as u32),
-        Felt::from((seed >> 32) as u32),
-        Felt::from(27u32),
-        Felt::from(28u32),
-    ]));
-    Ok(NoteBuilder::new(sender, &mut rng)
-        .note_type(NoteType::Private)
-        .script(script)
-        .build()?)
-}
-
-/// An `accept_ownership` note sent by `sender` (stock gate: NOMINATED-owner-only,
-/// `standards/access/ownable2step.masm:292-324`). Stack contract: `[pad(16)]`.
-pub fn accept_ownership_note(sender: AccountId, seed: u64) -> Result<Note> {
-    let src = "@note_script\n\
-         pub proc main\n\
-         \x20\x20\x20\x20repeat.16 push.0 end\n\
-         \x20\x20\x20\x20call.::miden::standards::access::ownable2step::accept_ownership\n\
-         \x20\x20\x20\x20dropw dropw dropw dropw\n\
-         end\n"
-        .to_string();
-    let script = CodeBuilder::new()
-        .compile_note_script(src.clone())
-        .map_err(|e| {
-            anyhow::anyhow!("accept_ownership note script failed to compile: {e}\n{src}")
-        })?;
-    // Fresh serial tail [29,30] — disjoint from every other admin-note family.
-    let mut rng = RandomCoin::new(Word::from([
-        Felt::from(seed as u32),
-        Felt::from((seed >> 32) as u32),
-        Felt::from(29u32),
-        Felt::from(30u32),
-    ]));
-    Ok(NoteBuilder::new(sender, &mut rng)
-        .note_type(NoteType::Private)
-        .script(script)
-        .build()?)
-}
-
-/// Executes a `transfer_ownership` note (sent by `sender`) against the faucet `account`.
-pub async fn run_transfer_ownership_against(
-    chain: &MockChain,
-    account: &Account,
-    sender: AccountId,
-    new_owner: AccountId,
-    seed: u64,
-) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note = transfer_ownership_note(sender, new_owner, seed)
-        .expect("building the transfer_ownership note (test-setup invariant)");
-    run_rbac_note_against(chain, account, note, "transfer_ownership").await
-}
-
-/// Executes an `accept_ownership` note (sent by `sender`) against the faucet `account`.
-pub async fn run_accept_ownership_against(
-    chain: &MockChain,
-    account: &Account,
-    sender: AccountId,
-    seed: u64,
-) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note = accept_ownership_note(sender, seed)
-        .expect("building the accept_ownership note (test-setup invariant)");
-    run_rbac_note_against(chain, account, note, "accept_ownership").await
-}
-
-/// Reads the Ownable2Step `owner_config` value slot:
-/// `[owner_suffix, owner_prefix, nominated_owner_suffix, nominated_owner_prefix]`
-/// (pinned `ownable2step.rs:25,40-42`); the nominated pair is `(0, 0)` when no transfer pends.
-pub fn read_owner_config(account: &Account) -> Result<Word> {
-    account
-        .storage()
-        .get_item(
-            &StorageSlotName::new("miden::standards::access::ownable2step::owner_config")
-                .context("owner_config slot label")?,
-        )
-        .map_err(|e| anyhow::anyhow!("reading the owner_config value slot: {e}"))
-}
-
 /// Reads a role's `role_config` word `[member_count, admin_role_symbol, 0, 0]` from a
 /// committed/evolved account (stock key encoding `[0,0,0,role_symbol]`, rbac.masm:12).
 pub fn read_role_config(account: &Account, role: &RoleSymbol) -> Result<Word> {
@@ -3228,7 +3109,7 @@ pub fn setup_production_faucet(
     // and the provisional zero-fee configuration — installed via the deploy path's OWN
     // `XReserveStablecoinBuilder::auth_component()` (the `custom()`-based composition; the
     // `Auth::NetworkAccount` fixture is deliberately bypassed because it routes through the
-    // force-inserting `new()` constructor and would grow the 12-root allowlist).
+    // force-inserting `new()` constructor and would grow the 9-root allowlist).
     let account = add_network_faucet_account(&mut mc, components)
         .context("adding the production faucet account")?;
     // The faucet id is now known, so the seed-notes closure binds its notes (the

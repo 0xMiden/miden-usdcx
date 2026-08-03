@@ -198,7 +198,7 @@ fn built_account_fee_storage_matches_the_provisional_config() -> Result<()> {
     );
 
     // No runtime path to different fee economics: the on-chain allowed-policy map holds EXACTLY
-    // the active BasicConstantFeePolicy root — with no second allowed policy, the owner-gated
+    // the active BasicConstantFeePolicy root — with no second allowed policy, the administrator-gated
     // `set_fee_policy` (direct-entry-unreachable: in neither allowlist) would have nothing to
     // switch to even if it were ever driven.
     let allowed_slot = storage

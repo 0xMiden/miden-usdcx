@@ -42,7 +42,7 @@ const VALID_BURN: u64 = 5_000;
 const BELOW_MIN: u64 = 500;
 
 /// The seeded DOM_PAUSER holder (id(2)) — the ONLY pause authority in the Domain-Pauser-only model
-/// (the custom `xreserve::pause_admin` procs). The Ownable2Step owner (id(1))
+/// (the custom `xreserve::pause_admin` procs). The administrator (id(1), the sole ADMIN member)
 /// has no direct pause path and no other role in this suite.
 fn dom_pauser() -> AccountId {
     test_account_id(2)

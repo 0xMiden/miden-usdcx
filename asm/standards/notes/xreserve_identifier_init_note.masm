@@ -1,14 +1,16 @@
 # xreserve_identifier_init_note — the root-pinned identifier_init admin note script.
 #
-# The admin surface for `init_identifier` under the network account. The identifier is the ONE
-# domain-config field the account-id fixpoint forces past build time;
-# `domain`/`source_domain`/`xreserve_contract` are build-seeded and have no runtime writer. A
-# fixed-root note whose parameter is CREATOR-COMMITTED in note storage. It stages the note storage
-# into memory, marshals the creator's identifier Word onto the stack in the proc's Inputs order, and
-# `call`s the OWNER-gated + init-once
-# `identifier_init::init_identifier` (the sender gate lives in the proc; the note sender is
-# kernel-forced, so a non-owner creator traps there). A scheme-2 NetworkAccountTarget routing
-# attachment addresses the note at the faucet (routing-only).
+# The production admin surface for the minimized `init_identifier` under the network account
+# (the identifier is the ONE domain-config field the account-id fixpoint forces past build
+# time; `domain`/`source_domain`/`xreserve_contract` are build-seeded and have no runtime
+# writer). A fixed-root note whose parameter is CREATOR-COMMITTED in note storage (never
+# NOTE_ARGS, which the network executor controls). It stages the note storage into memory,
+# marshals the creator's identifier Word onto the stack in the proc's Inputs order, and `call`s
+# the ADMIN-gated + init-once `identifier_init::init_identifier` (the sender gate lives in the
+# proc, which resolves it through the account-wide authority; the note sender is kernel-forced, so
+# a creator outside the ADMIN role traps there). A scheme-2
+# NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only, added
+# by the Rust factory).
 #
 # Note storage layout (4 felts): [IDENTIFIER] — the pre-hashed bytes32_to_key Word, the form the
 # mint path's identifier compare reads. The proc additionally derives
@@ -37,8 +39,8 @@ const ERR_XRESERVE_IDENTIFIER_INIT_NOTE_STORAGE = "identifier_init note storage 
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Consumes the `identifier_init` admin note and drives the owner-gated, init-once identifier
-#! write.
+#! Consumes the `identifier_init` admin note and drives the administrator-gated, init-once
+#! identifier write.
 #!
 #! Stages the creator-committed param (`[IDENTIFIER]`) into memory at PARAM_PTR, marshals it onto
 #! the stack as `[IDENTIFIER, pad(12)]`, and `call`s `identifier_init::init_identifier`.
@@ -57,7 +59,7 @@ const ERR_XRESERVE_IDENTIFIER_INIT_NOTE_STORAGE = "identifier_init note storage 
 #!
 #! Panics if:
 #! - the note storage does not carry exactly 4 items.
-#! - the note sender is not the registered owner (init_identifier's owner gate).
+#! - the note sender does not hold the ADMIN role (init_identifier's authority gate).
 #! - the identifier was already initialized (init_identifier's init-once gate).
 #! - the committed identifier is the empty word (init_identifier's non-empty guard).
 #! - the committed identifier is not the faucet's own-id key (init_identifier's

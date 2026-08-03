@@ -11,16 +11,18 @@
 //! policy and whose ACTIVE burn policy is the STOCK [`MinBurnAmount`] (floor-seeded `>= 1`,
 //! so zero-amount burns stay rejected by construction), the STOCK [`PausableManager`] and
 //! [`BlocklistManager`] admin components, and the **role-gating admin foundation**
-//! (`Ownable2Step` with a seeded `RoleBasedAccessControl` under the
-//! [`XReserveAdminAuthority`]'s `Authority::RbacControlled`). The RBAC seed holds the two Circle
-//! Domain role members (`DOM_PAUSER` / `DOM_MANAGER`) with `DOM_PAUSER` administration DELEGATED
-//! to `DOM_MANAGER`, the stock `ADMIN` role on the OWNER's account, and the external `BLK_MANAGER`
-//! transfer-blocklist administrator. The runtime `set_role_admin` note is absent from the
-//! note-script allowlist, so the delegation graph deploys FROZEN at this build seed.
+//! (a seeded `RoleBasedAccessControl` under the
+//! [`XReserveAdminAuthority`]'s `Authority::RbacControlled`). The RBAC is SEEDED with the two
+//! Circle Domain role members (`DOM_PAUSER` / `DOM_MANAGER`), with `DOM_PAUSER` administration
+//! DELEGATED to `DOM_MANAGER`, plus the stock `ADMIN` role seeded on the administrator's account,
+//! and the external `BLK_MANAGER` transfer-blocklist administrator. There is NO two-step ownership
+//! component: the built-in `ADMIN` role is the account's only authority handle, and the standard
+//! role-action note is what rotates it. That note also makes the delegation graph seeded here
+//! RUNTIME-MUTABLE — see the allowlist doc in `network_auth`.
 //!
 //! Pause and blocklist administration are the STOCK managers gated per procedure: the authority's
 //! role map assigns `pause`/`unpause` to `DOM_PAUSER` and `block_account`/`unblock_account` to
-//! `BLK_MANAGER`, so neither capability reaches the owner — Circle's distinct-role model, expressed
+//! `BLK_MANAGER`, so neither capability reaches the administrator — Circle's distinct-role model, expressed
 //! in the standard components rather than in hand-rolled wrappers. The managers install no storage
 //! of their own: `is_paused` comes from the base `Pausable` component and `blocked_accounts` from
 //! the `BasicBlocklist` companion, both of which were already installed.
@@ -29,7 +31,7 @@
 //! `xreserve_contract` are required builder inputs written into the declared slots at
 //! composition time; the `identifier` slot is a provable FIXPOINT of the account id (the id
 //! derives from the initial storage commitment), so it ships EMPTY and is seeded post-deploy by
-//! the ONE minimized `identifier_init` admin note (owner-gated, init-once).
+//! the ONE minimized `identifier_init` admin note (administrator-gated, init-once).
 //!
 //! Packaging: the attestation policy is **runtime-assembled** MASM (no `.masl` asset /
 //! `account_component_code!` here — that is a miden-standards-internal pipeline). The caller
@@ -43,7 +45,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::asset::{AssetAmount, TokenSymbol};
 use miden_protocol::{Felt, Word};
-use miden_standards::account::access::{Ownable2Step, Pausable, PausableManager};
+use miden_standards::account::access::{Pausable, PausableManager};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::{
     BasicBlocklist, BlocklistManager, BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager,
@@ -62,23 +64,26 @@ use rbac_seed::seeded_dom_roles_rbac;
 
 /// The two Circle Domain RoleSymbols this faucet seeds under the ratified Circle-faithful admin
 /// model: `DOM_PAUSER` (pause/unpause) and `DOM_MANAGER` (rotation / role
-/// management — the delegated admin of `DOM_PAUSER`). [`XReserveAdminAuthority`] is the single
-/// place `DOM_PAUSER` gates a procedure — it assigns the symbol to the stock `PausableManager`'s
-/// two roots, so no MASM mentions either symbol; role management consumes the STOCK rbac procs,
-/// so no MASM references `DOM_MANAGER` either. The remaining setters are unassigned and so
-/// resolve to `ADMIN`, whose sole member is the owner.
+/// management — the delegated admin of `DOM_PAUSER`). Both are valid `RoleSymbol`s
+/// (≤12 chars, `A`–`Z`/`_`; `DOMAIN_PAUSER`(13)/`DOMAIN_MANAGER`(14) would be rejected).
+/// [`XReserveAdminAuthority`] is the single place `DOM_PAUSER` gates a procedure — it assigns the
+/// symbol to the stock `PausableManager`'s two roots, so no MASM mentions either symbol; role
+/// management consumes the STOCK rbac procs, so no MASM references `DOM_MANAGER` either. The
+/// remaining setters are unassigned and so resolve to `ADMIN`, whose sole seeded member is the
+/// bootstrap administrator.
 pub const DOM_PAUSER_ROLE: &str = "DOM_PAUSER";
 pub const DOM_MANAGER_ROLE: &str = "DOM_MANAGER";
 
 /// The dedicated blocklist-administration RoleSymbol this faucet seeds under the ratified
 /// transfer-blocklist decision: `BLK_MANAGER` is held by an EXTERNAL entity that
 /// manages the transfer blocklist for Miden and has NO other admin capability (capability isolation
-/// is two-way — the holder can ONLY block/unblock, and the owner, lacking the role, cannot). The
+/// is two-way — the holder can ONLY block/unblock, and the administrator, lacking the role, cannot). The
 /// stock `BlocklistManager`'s `block_account` / `unblock_account` roots are assigned this symbol by
-/// [`XReserveAdminAuthority`], which is what keeps the capability off the owner — the owner-gated
-/// `BlocklistOwnerControlled` variant is the wrong identity and is not installed. Its
-/// admin is left unset → resolves to the built-in `ADMIN` (the owner-held account), so Miden rotates
-/// or revokes the external entity through the EXISTING allowlisted `grant_role`/`revoke_role` notes —
+/// [`XReserveAdminAuthority`], which is what keeps the capability off the administrator — the
+/// owner-gated `BlocklistOwnerControlled` variant is the wrong identity and is not installed.
+/// `BLK_MANAGER` is a valid `RoleSymbol` (≤12 chars, `A`–`Z`/`_`). Its
+/// admin is left unset → resolves to the built-in `ADMIN`, so Miden rotates
+/// or revokes the external entity through the allowlisted standard role-action note —
 /// no new rotation machinery. `BLK_MANAGER` is seeded role id 4.
 pub const BLK_MANAGER_ROLE: &str = "BLK_MANAGER";
 
@@ -174,7 +179,7 @@ fn min_burn_amount_floor_of(policy: &BurnPolicy) -> Option<u64> {
 /// component (attestation mint policy, identifier init, admin procs) + a `TokenPolicyManager`
 /// with the attestation policy active on the mint side and the stock [`MinBurnAmount`] active on
 /// the burn side + the STOCK [`PausableManager`] / [`BlocklistManager`] admin components + the
-/// **role-gating admin foundation** (`Ownable2Step` + a seeded `RoleBasedAccessControl` +
+/// **role-gating admin foundation** (a seeded `RoleBasedAccessControl` +
 /// [`XReserveAdminAuthority`]'s `Authority::RbacControlled`).
 ///
 /// Construct with [`XReserveStablecoinBuilder::new`] (the `owner` and the role holders are
@@ -185,10 +190,11 @@ fn min_burn_amount_floor_of(policy: &BurnPolicy) -> Option<u64> {
 pub struct XReserveStablecoinBuilder {
     faucet: FungibleFaucet,
     xreserve_component: AccountComponent,
-    /// The `Ownable2Step` owner, ALSO seeded as the sole member of the built-in `ADMIN` role — which
-    /// is what gates the unmapped setters (`set_attester` / the stock `set_min_burn_amount` /
-    /// stock `set_max_supply`) under `Authority::RbacControlled`. The two are one account at build
-    /// time but are NOT the same handle: rotating the owner slot does not move `ADMIN` membership.
+    /// The administrator: seeded as the sole member of the built-in `ADMIN` role, which is what
+    /// gates every unmapped authority-gated procedure (`set_attester` / `init_identifier` / the
+    /// stock `set_min_burn_amount` / stock `set_max_supply` / the policy setters) under
+    /// `Authority::RbacControlled`. It is the account's ONLY authority handle; rotating it is a
+    /// grant and a revoke of `ADMIN` through the standard role-action note.
     owner: AccountId,
     /// The seeded `DOM_PAUSER` role member — the holder the role map assigns the stock
     /// `PausableManager`'s pause and unpause procedures to.
@@ -197,8 +203,8 @@ pub struct XReserveStablecoinBuilder {
     manager_holder: AccountId,
     /// The seeded `BLK_MANAGER` role member — the EXTERNAL entity that administers the transfer
     /// blocklist (block/unblock) and holds NO other admin capability. Its concrete
-    /// account id is supplied at deploy time; the built-in `ADMIN` (the owner) rotates/revokes it via
-    /// the existing `grant_role`/`revoke_role` notes.
+    /// account id is supplied at deploy time; the built-in `ADMIN` rotates/revokes it via
+    /// the standard role-action note.
     blocklist_manager_holder: AccountId,
     account_type: AccountType,
     requested_active_mint_policy: Option<MintPolicy>,
@@ -219,7 +225,7 @@ pub struct XReserveStablecoinBuilder {
 impl XReserveStablecoinBuilder {
     /// Creates a builder from a built `FungibleFaucet` and the assembled `xreserve` library
     /// component (which must carry the attestation mint policy `check_policy`), the `owner`
-    /// (the owner slot, and the seeded `ADMIN` member that gates the unmapped setters), the
+    /// (the seeded `ADMIN` member that gates every unmapped authority-gated procedure), the
     /// `pauser_holder` / `manager_holder`
     /// seeded as the sole members of `DOM_PAUSER` / `DOM_MANAGER`, and the
     /// `blocklist_manager_holder` seeded as the sole member of `BLK_MANAGER` (the external
@@ -345,12 +351,12 @@ impl XReserveStablecoinBuilder {
         }
         // Blocklist capability isolation: the BLK_MANAGER holder (transfer-blocklist administrator)
         // MUST be an external entity with no other faucet-admin capability. Reject at build time if it
-        // collides with the owner (also ADMIN — would gain a direct block/unblock path), the DOM_PAUSER
+        // collides with the administrator (ADMIN — would gain a direct block/unblock path), the DOM_PAUSER
         // holder, or the DOM_MANAGER holder — the two-way isolation the blocklist decision requires.
         if self.blocklist_manager_holder == self.owner {
             return Err(
                 XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
-                    collides_with: "owner",
+                    collides_with: "ADMIN",
                 },
             );
         }
@@ -503,18 +509,17 @@ impl XReserveStablecoinBuilder {
         // here. `XReserveAdminAuthority` installs `Authority::RbacControlled` with a role assigned
         // to each of the four stock manager procedures; every other authority-gated procedure
         // (`set_attester`, the stock supply-cap / burn-floor / policy setters, the emergency
-        // switch) is unassigned and so resolves to the `ADMIN` role, whose sole member is the owner
-        // account — the same identity that gated them under the earlier owner-controlled mode. Mint
+        // switch) is unassigned and so resolves to the `ADMIN` role, whose sole seeded member is the
+        // bootstrap administrator — the same identity that gated them under the earlier owner-controlled mode. Mint
         // execution is `assert_authorized`-free (policy_manager.masm), so this leaves the
-        // attestation-gate behavior unchanged. `Ownable2Step` stays installed: dropping it is
-        // deferred, and its owner slot is still what `transfer_ownership` / `accept_ownership`
-        // rotate. This mirrors `AccessControl::Rbac` (access/mod.rs) with the RBAC SEEDED with the
-        // DOM role members + the external BLK_MANAGER, since the stock constructor cannot express
-        // the `DOM_PAUSER → DOM_MANAGER` administration delegation the seed carries.
+        // attestation-gate behavior unchanged. There is NO two-step ownership component, so the
+        // built-in ADMIN role is the account's only authority handle and no owner slot exists to
+        // drift from it. This mirrors `AccessControl::Rbac` (access/mod.rs) with the RBAC SEEDED
+        // with the DOM role members + the external BLK_MANAGER, since the stock constructor cannot
+        // express the `DOM_PAUSER → DOM_MANAGER` administration delegation the seed carries.
         let mut components = self.assemble_components(manager, xreserve_component)?;
         components.push(PausableManager.into());
         components.push(BlocklistManager.into());
-        components.push(Ownable2Step::new(self.owner).into());
         components.push(seeded_dom_roles_rbac(
             self.owner,
             self.pauser_holder,

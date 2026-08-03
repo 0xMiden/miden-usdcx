@@ -73,11 +73,13 @@ pub enum XReserveStablecoinBuilderError {
     /// `USDCX`.
     WrongTokenSymbol,
     /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with a privileged
-    /// identity — the owner, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The
-    /// transfer-blocklist administrator must be an external entity with no other faucet-admin
-    /// capability, so that neither the owner gains a block/unblock path nor the pause and blocklist
-    /// roles fuse. `collides_with` names the offending role (`"owner"` / `"DOM_PAUSER"` /
-    /// `"DOM_MANAGER"`).
+    /// identity — the administrator, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The blocklist
+    /// decision requires the transfer-blocklist administrator be an EXTERNAL entity with NO other faucet-admin
+    /// capability (two-way capability isolation): a caller who set the administrator as `BLK_MANAGER`
+    /// would give `ADMIN` a direct block/unblock path, and a caller who set a DOM_PAUSER/DOM_MANAGER
+    /// holder as `BLK_MANAGER` would fuse those roles. Rejected at build time so packaging cannot ship
+    /// a faucet whose blocklist admin is not capability-isolated. `collides_with` names the offending
+    /// role (`"ADMIN"` / `"DOM_PAUSER"` / `"DOM_MANAGER"`).
     BlocklistManagerNotIsolated { collides_with: &'static str },
     /// The mint-policy descriptor rejected its construction (`MintPolicy::custom` validates
     /// the root against the supplied companion components).

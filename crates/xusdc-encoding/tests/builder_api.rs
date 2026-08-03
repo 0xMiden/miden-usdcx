@@ -549,11 +549,11 @@ fn build_seeds_the_domain_config_slots() -> Result<()> {
 /// Domain-Pauser-only pause (Circle requires that only the Domain Pauser role may pause), now
 /// expressed in the stock components: the production composition installs the stock
 /// `PausableManager` and `BlocklistManager`, and the authority's role map is what keeps each of
-/// their procedures with its own role rather than with the owner.
+/// their procedures with its own role rather than with the administrator.
 ///
 /// The structural half is here — every one of the four manager roots is really installed, and each
 /// really carries the role the faucet intends. The executing half is
-/// `owner_has_no_pause_path` / `owner_has_no_unpause_path` (pause_admin.rs) and the effects suite.
+/// `administrator_has_no_pause_path` / `administrator_has_no_unpause_path` (pause_admin.rs) and the effects suite.
 #[test]
 fn builder_installs_the_stock_managers_with_their_roles_assigned() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
@@ -761,7 +761,7 @@ fn build_rejects_wrong_token_symbol() -> Result<()> {
 /// installed xreserve library, EXACTLY ONE policy-manager component, and EXACTLY ONE each of the
 /// stock `MinBurnAmount` + `BasicBlocklist` companions — in the pinned install order
 /// [faucet, Pausable, xreserve, MinBurnAmount, BasicBlocklist, policy manager, PausableManager,
-/// BlocklistManager, Ownable2Step, RBAC, Authority]. A duplicate xreserve copy would hard-reject
+/// BlocklistManager, RBAC, Authority]. A duplicate xreserve copy would hard-reject
 /// the account build with `DuplicateStorageSlotName`, so this is the build-time tripwire for that
 /// failure.
 #[test]
@@ -774,8 +774,8 @@ fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> 
 
     assert_eq!(
         components.len(),
-        11,
-        "the recomposed production set is exactly the eleven pinned components"
+        10,
+        "the recomposed production set is exactly the ten pinned components"
     );
     let count_by_code = |code: &AccountComponentCode| {
         components

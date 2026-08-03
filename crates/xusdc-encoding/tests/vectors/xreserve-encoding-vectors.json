@@ -175,6 +175,29 @@
         "uint256_be": "0x00000000000000000000000000000000000000000007a11ffff85ee000000000"
       },
       {
+        "cite": "CIR-FEE-3",
+        "derivation": "cap boundary at the shipped scale-0 identity: x = 2^63 - 2^31, y = x = AssetAmount::MAX exactly",
+        "expected_y": "9223372034707292160",
+        "id": "amt-cap-accept-scale0",
+        "kind": "accept",
+        "le_limbs": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4294967167,
+          128
+        ],
+        "scale_exp": 0,
+        "tv": [
+          "TV-AMT-2",
+          "TV-DUAL-2"
+        ],
+        "uint256_be": "0x0000000000000000000000000000000000000000000000007fffffff80000000"
+      },
+      {
         "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
         "derivation": "x = (2^63 - 2^31 + 1) * 10^6, post-scale y = MAX + 1 must reject (no saturation); the MASM witness carries the true over-maximum quotient",
         "expected_variant": "AmountOverCap",

@@ -138,7 +138,6 @@ const MINT_POLICY_COVERED_NUMS: &[&str] = &[
     "XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME",
     "XUSDC_MINT_ATTESTATION_NUM_WORDS",
     "DEPOSIT_INTENT_HEADER_WORDS",
-    "DEPOSIT_SCALE_EXP",
     "P2ID_NUM_STORAGE_ITEMS",
     "ASSET_VALUE_LOC",
     "RECIPIENT_LOC",
@@ -182,7 +181,9 @@ const LAYOUT_COVERED_NUMS: &[&str] = &[
     "MAX_NOTE_STORAGE_FELTS",
 ];
 const ENCODING_COVERED_NUMS: &[&str] = &[];
-const SHELL_COVERED_NUMS: &[&str] = &[];
+// the faucet-side deposit scale lives with the parser's amount/fee stage (DEV-5 OPEN,
+// provisional scale-0), parity-asserted against the Rust factory constant below.
+const SHELL_COVERED_NUMS: &[&str] = &["DEPOSIT_SCALE_EXP"];
 
 /// Parses `const NAME = <value>` / `pub const NAME = <value>` lines from a MASM source.
 /// Returns (numeric constants, string constants, word("…") slot-name constants).
@@ -346,10 +347,11 @@ fn masm_rust_constant_parity() {
         XUSDC_MINT_ATTESTATION_NUM_WORDS as u64,
         "attestation attachment word-count parity (MASM policy == Rust factory)"
     );
+    let (shell_nums, _, _) = parse_masm_consts(SHELL_MASM);
     assert_eq!(
-        num(&policy_nums, "DEPOSIT_SCALE_EXP", "mint_policy.masm"),
+        num(&shell_nums, "DEPOSIT_SCALE_EXP", "deposit_intent_parser.masm"),
         XUSDC_DEPOSIT_SCALE_EXP as u64,
-        "DC-5 deposit-scale parity (MASM policy == Rust factory; DEV-5 OPEN, provisional scale-0 identity)"
+        "DC-5 deposit-scale parity (MASM parser == Rust factory; DEV-5 OPEN, provisional scale-0 identity)"
     );
     // derived relation: the header word floor x 4 == the header felt count (60 / 4 = 15).
     assert_eq!(

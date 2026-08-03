@@ -31,8 +31,6 @@
 mod support;
 
 use anyhow::Result;
-use miden_processor::operation::OperationError;
-use miden_processor::ExecutionError;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
@@ -218,17 +216,14 @@ async fn probe_slot_binding() -> Result<()> {
 // Executes the faucet-owned `xreserve::deposit_intent_parser::assert_mint_amounts` on a
 // MockChain. Each case splices a chosen `amount` and `maxFee` into an otherwise-valid
 // DepositIntent preimage, taking the uint256 limb patterns from the shared `amt-*` golden
-// vectors so the conversion behavior under test is the same one the Rust mirror is pinned to;
-// the driver passes the mirror-computed amount witness. `feeAmount` does not travel in the
-// intent: the caller stages its limbs in memory and passes the pointer.
+// vectors (read at the proc's own scale-0 identity, so a vector's raw wire value IS its
+// reduced value); the driver passes the mirror-computed amount witness. `feeAmount` does not
+// travel in the intent: the caller stages its limbs in memory and passes the pointer.
 
-/// Decimal exponent the amount reducer divides by, handed to the proc as a parameter rather
-/// than read from a faucet constant.
-///
-/// Six matches the scale the `amt-*` vectors were generated at. Passing it in keeps this suite
-/// from asserting anything about the production scale factor, which Circle has not yet fixed —
-/// the shipped value lives with the faucet's configuration, deliberately not here.
-const D5B_SCALE_EXP: u32 = 6;
+/// The scale the witness is computed at, mirroring the parser's own `DEPOSIT_SCALE_EXP` (the
+/// proc no longer takes a scale parameter; the shipped constant is the scale-0 identity, and
+/// `shipped_faucet_declares_identity_deposit_scale` in `mint_scale_conformance.rs` pins it).
+const D5B_SCALE_EXP: u32 = 0;
 
 /// Looks up a canonical amount vector by id (by-reference loading).
 fn amt(id: &str) -> &'static AmtVector {
@@ -258,7 +253,7 @@ fn d5b_harness(
     let amount_y = uint256_to_asset_amount(amount_limbs, D5B_SCALE_EXP)
         .map(u64::from)
         .unwrap_or(0);
-    let driver_src = mint_amounts_driver_src(&preimage, fee_amount, D5B_SCALE_EXP, amount_y);
+    let driver_src = mint_amounts_driver_src(&preimage, fee_amount, amount_y);
     setup_shell_account(domain, identifier, &driver_src, SHELL_DRIVER_PATH)
 }
 
@@ -271,7 +266,7 @@ fn d5b_harness(
 // boundary: amount exactly equal to maxFee is accepted — the reject fires below maxFee, not at it
 #[case::amount_eq_maxfee(amt("amt-ge-eq").le_limbs(), amt("amt-ge-eq").b_le_limbs(), fee_amount_felts([0u32; 8]))]
 // value at AssetAmount::MAX accepted at the cap; amount (cap) >= maxFee (amt-pos-1)
-#[case::cap_value(amt("amt-cap-accept").le_limbs(), amt("amt-pos-1").le_limbs(), fee_amount_felts([0u32; 8]))]
+#[case::cap_value(amt("amt-cap-accept-scale0").le_limbs(), amt("amt-pos-1").le_limbs(), fee_amount_felts([0u32; 8]))]
 #[tokio::test]
 async fn d5b_happy_amount_fee(
     #[case] amount_limbs: [u32; 8],
@@ -309,8 +304,9 @@ async fn d5b_happy_amount_fee(
 #[case::r_mint_9_amount_overflow(amt("amt-rej-limb-overflow").le_limbs(), amt("amt-pos-1").le_limbs(), fee_amount_felts([0u32; 8]), "STD_ERR_X_TOO_LARGE")]
 // same overflow on MAXFEE — ordered so the amount reduces cleanly first and the trap is maxFee's
 #[case::r_mint_9_maxfee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-rej-limb-overflow").le_limbs(), fee_amount_felts([0u32; 8]), "ERR_X_TOO_LARGE")]
-// same overflow on the separately staged FEEAMOUNT — the third reduction is guarded too
-#[case::r_mint_9_fee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-pos-1").le_limbs(), fee_amount_felts(amt("amt-rej-limb-overflow").le_limbs()), "ERR_X_TOO_LARGE")]
+// an oversized FEEAMOUNT needs no staging guard: it is nonzero, and the verbatim-zero fee
+// gate refuses every nonzero wire fee alike
+#[case::r_mint_9_fee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-pos-1").le_limbs(), fee_amount_felts(amt("amt-rej-limb-overflow").le_limbs()), "ERR_XRESERVE_FEE_NONZERO")]
 // relation broken: the reduced amount is strictly below maxFee, so the mint could not cover its fee
 #[case::r_mint_10_amount_below_fee(amt("amt-ge-lt").le_limbs(), amt("amt-ge-lt").b_le_limbs(), fee_amount_felts([0u32; 8]), "ERR_XRESERVE_AMOUNT_BELOW_FEE")]
 // amount >= maxFee passes, then a NONZERO feeAmount is rejected: the faucet pays no relayer fee,
@@ -335,10 +331,9 @@ async fn d5b_amount_fee_rejects(
 // REJECTS — a malformed staged feeAmount limb
 // ------------------------------------------------------------------------------------------------
 
-/// A malformed (non-u32) `feeAmount` limb must ERROR: the reducer's `u32assertw` guard
-/// traps `ERR_FELT_OUT_OF_FIELD`. `u32assert*` surfaces as `OperationError::U32AssertionFailed`
-/// (not `FailedAssertion`), so the named error is pinned on that variant's code AND message
-/// — same strength as `masm_dual.rs`'s `amt-guard-limb-not-u32` row.
+/// A malformed (non-u32) `feeAmount` limb must ERROR: the verbatim-zero fee gate needs no u32
+/// guard — a malformed limb is nonzero, so it rejects with the same
+/// `ERR_XRESERVE_FEE_NONZERO` as any other nonzero fee claim.
 #[tokio::test]
 async fn d5b_fee_amount_malformed_limb() -> Result<()> {
     // a felt at 2^32 is a valid field element but NOT a valid u32 limb
@@ -349,14 +344,7 @@ async fn d5b_fee_amount_malformed_limb() -> Result<()> {
         &malformed,
     )?;
     let result = run_call_driver(&h, "drive").await;
-    let expected = shell_error_by_name("ERR_FELT_OUT_OF_FIELD");
-    assert_transaction_executor_error!(
-        result,
-        matches ExecutionError::OperationError {
-            err: OperationError::U32AssertionFailed { ref err_code, ref err_msg, .. },
-            ..
-        } if *err_code == expected.code() && err_msg.as_deref() == Some(expected.message())
-    );
+    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_FEE_NONZERO"));
     Ok(())
 }
 

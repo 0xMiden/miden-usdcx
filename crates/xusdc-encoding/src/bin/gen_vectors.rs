@@ -404,6 +404,13 @@ fn main() {
             6,
             "cap boundary: x = (2^63 - 2^31) * 10^6, y = AssetAmount::MAX exactly",
         ),
+        amt_accept(
+            "amt-cap-accept-scale0",
+            &["TV-AMT-2", "TV-DUAL-2"],
+            max,
+            0,
+            "cap boundary at the shipped scale-0 identity: x = 2^63 - 2^31, y = x = AssetAmount::MAX exactly",
+        ),
         amt_reject(
             "amt-rej-cap",
             &["TV-AMT-3", "TV-DUAL-2"],

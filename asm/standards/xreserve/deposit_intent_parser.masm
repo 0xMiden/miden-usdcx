@@ -32,7 +32,6 @@ use miden::protocol::active_account
 use miden::standards::assets::asset_amount
 use miden::standards::utils
 use miden::core::math::u128
-use miden::core::math::u64
 use miden::core::word
 use xreserve::encoding
 use {AMOUNT_FELT_OFF, MAX_FEE_FELT_OFF, NONCE_FELT_OFF} from xreserve::encoding::layout
@@ -48,16 +47,26 @@ pub const IDENTIFIER_CONFIG_SLOT = word("xusdc::xreserve::domain_config::identif
 # by the Rust account builder; this const is the MASM-side slot id.
 pub const USED_NONCES_SLOT = word("xusdc::xreserve::nonce_registry::used_nonces")
 
+# The uint256->AssetAmount decimal scale (`y = floor(x / 10^scale_exp)`), FAUCET-side by design: a
+# note-carried scale would let the producer diverge the minted amount from the attested amount. The
+# amount cap / scale / dust tolerance are OPEN, pending Circle confirmation; the faucet ships the
+# PROVISIONAL scale-0 position because Circle's on-wire deposit `amount` is denominated in 6-decimal
+# smallest units and xUSDC is likewise 6-decimal, so the two denominations coincide and no rescale
+# applies — scale 0, `y = floor(x / 10^0) = x`, an identity with no floored dust. (`0` is inside the
+# reducer's `[0, 18]` scale bound.) Changing this constant is how the faucet would be
+# repointed at a wire denomination whose asset is scaled differently.
+const DEPOSIT_SCALE_EXP = 0
+
 # ERRORS
 # =================================================================================================
 
 const ERR_XRESERVE_WRONG_DOMAIN = "deposit intent remote domain does not match the faucet domain"
 const ERR_XRESERVE_WRONG_IDENTIFIER = "deposit intent remote token does not match the faucet identifier"
 
-# Amount/fee errors. The maxFee/fee staging declares its own too-large and limb guards (the
+# Amount/fee errors. The maxFee staging declares its own too-large and limb guards (the
 # same strings the encoding library uses); the amount field goes through the witness verifier.
-# The fee gate requires feeAmount == 0, since there is no relayer-fee leg yet, which subsumes
-# the feeAmount <= maxFee compare.
+# The fee gate requires the wire feeAmount to be zero verbatim, since there is no relayer-fee
+# leg yet, which subsumes the feeAmount <= maxFee compare.
 const ERR_X_TOO_LARGE = "larger than 2**128"
 const ERR_FELT_OUT_OF_FIELD = "supplied limb is not a valid u32"
 const ERR_XRESERVE_AMOUNT_BELOW_FEE = "deposit intent amount is below the max fee"
@@ -126,102 +135,91 @@ end
 #!
 #! `amount` (felt[2..9]) and `maxFee` (felt[43..50]) come from the staged preimage; `feeAmount`
 #! does not travel in the intent at all and lives wherever the caller staged it. The amount
-#! goes through the encoding library's witness verifier against the `amount_y` claim; the
-#! maxFee and feeAmount bounds are proven division-free by algebraic equivalence, so no
-#! quotient is ever computed on-chain.
+#! goes through the encoding library's witness verifier against the `amount_y` claim at the
+#! faucet's own `DEPOSIT_SCALE_EXP`; the maxFee bound is proven division-free by algebraic
+#! equivalence; the feeAmount must be zero verbatim on the wire.
 #!
-#! Inputs:  [intent_ptr, fee_amount_ptr, scale_exp, amount_y]
+#! Inputs:  [intent_ptr, fee_amount_ptr, amount_y]
 #! Outputs: []
 #!
 #! Where:
 #! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
 #! - fee_amount_ptr is the memory address of the operator feeAmount's first packed limb (8 u32-LE
 #!   limbs).
-#! - scale_exp is the decimal scale exponent forwarded to the verifier (the cap/scale choice
-#!   is OPEN, pending Circle confirmation).
 #! - amount_y is the claimed reduced amount witness (in the mint pipeline, the note-supplied
-#!   asset value), proven equal to floor(amount / 10^scale_exp) and within the fungible
+#!   asset value), proven equal to floor(amount / 10^DEPOSIT_SCALE_EXP) and within the fungible
 #!   maximum by the verifier.
 #!
 #! Panics if:
 #! - the witness verifier rejects the amount claim (the standards too-large / over-maximum /
 #!   underflow / remainder constraints).
-#! - a maxFee or feeAmount limb is not a valid u32 (ERR_FELT_OUT_OF_FIELD), or a maxFee or
-#!   feeAmount high half is nonzero (ERR_X_TOO_LARGE).
+#! - a maxFee limb is not a valid u32 (ERR_FELT_OUT_OF_FIELD), or the maxFee high half is
+#!   nonzero (ERR_X_TOO_LARGE).
 #! - reduced amount < maxFee (ERR_XRESERVE_AMOUNT_BELOW_FEE).
-#! - reduced feeAmount != 0 (ERR_XRESERVE_FEE_NONZERO).
+#! - any wire feeAmount limb is nonzero (ERR_XRESERVE_FEE_NONZERO).
 #!
 #! Invocation: exec
 @account_procedure
 pub proc assert_mint_amounts
-    # verify the amount claim (felt[2..9]) against the witness; keep the inputs live below
-    dup.2 dup.1 push.AMOUNT_FELT_OFF add
-    # => [amount_base, scale_exp, intent_ptr, fee_amount_ptr, scale_exp, amount_y]
+    # step 1: verify the witness supplied amount_y against the intent's amount field
+    dup push.AMOUNT_FELT_OFF add
+    # => [intent_amount_ptr, intent_ptr, fee_amount_ptr, amount_y]
 
     exec.utils::mem_load_double_word_unaligned swapw
-    # => [U_UPPER, U_LOWER, scale_exp, intent_ptr, fee_amount_ptr, scale_exp, amount_y]
+    # => [U_UPPER, U_LOWER, intent_ptr, fee_amount_ptr, amount_y]
 
-    dup.12 movdn.9
-    # => [U_UPPER, U_LOWER, scale_exp, amount_y, intent_ptr, fee_amount_ptr, scale_exp, amount_y]
+    push.DEPOSIT_SCALE_EXP movdn.8
+    # => [U_UPPER, U_LOWER, scale_exp, intent_ptr, fee_amount_ptr, amount_y]
+
+    dup.11 movdn.9
+    # => [U_UPPER, U_LOWER, scale_exp, amount_y, intent_ptr, fee_amount_ptr, amount_y]
 
     exec.encoding::verify_uint256_to_asset_amount
-    # => [intent_ptr, fee_amount_ptr, scale_exp, amount_y]
+    # => [intent_ptr, fee_amount_ptr, amount_y]
 
-    # amount >= maxFee over the maxFee field (felt[43..50]), division-free:
+    # step 2: assert the amount >= maxFee
     # floor(m/10^s) <= A  <=>  m < B = (A+1)*10^s (the verify above bounds amount_y, so the
     # +1 cannot wrap)
     push.MAX_FEE_FELT_OFF add
-    # => [maxfee_base, fee_amount_ptr, scale_exp, amount_y]
+    # => [intent_maxfee_ptr, fee_amount_ptr, amount_y]
 
     exec.utils::mem_load_double_word_unaligned swapw
-    # => [M_UPPER, M_LOWER, fee_amount_ptr, scale_exp, amount_y]
+    # => [M_UPPER, M_LOWER, fee_amount_ptr, amount_y]
 
     exec.to_u128_limbs
-    # => [m0, m1, m2, m3, fee_amount_ptr, scale_exp, amount_y]
+    # => [m0, m1, m2, m3, fee_amount_ptr, amount_y]
 
-    movup.6 add.1
-    # => [amount_y+1, m0, m1, m2, m3, fee_amount_ptr, scale_exp]
+    movup.5 add.1
+    # => [amount_y+1, m0, m1, m2, m3, fee_amount_ptr]
 
-    dup.6 swap
-    # => [amount_y+1, scale_exp, m0, m1, m2, m3, fee_amount_ptr, scale_exp]
+    push.DEPOSIT_SCALE_EXP swap
+    # => [amount_y+1, scale_exp, m0, m1, m2, m3, fee_amount_ptr]
 
     exec.asset_amount::scale_asset_amount_to_u256
-    # => [B_LO, B_HI, m0, m1, m2, m3, fee_amount_ptr, scale_exp]
+    # => [B_LO, B_HI, m0, m1, m2, m3, fee_amount_ptr]
 
     # the u256 high word is provably zero (B < 2^123)
     swapw dropw
-    # => [B_LO, m0, m1, m2, m3, fee_amount_ptr, scale_exp]
+    # => [B_LO, m0, m1, m2, m3, fee_amount_ptr]
 
-    # u128::lt over [b, a] (b on top) returns a < b; here b = B, a = maxFee
     exec.u128::lt
-    # => [is_maxfee_lt_bound, fee_amount_ptr, scale_exp]
+    # => [is_maxfee_lt_bound, fee_amount_ptr]
 
     assert.err=ERR_XRESERVE_AMOUNT_BELOW_FEE
-    # => [fee_amount_ptr, scale_exp]
+    # => [fee_amount_ptr]
 
-    # fail-loud fee gate, division-free: floor(f/10^s) == 0  <=>  f < 10^s. only a zero fee is
-    # allowed — the relayer fee split stays open, pending Circle confirmation.
-    exec.utils::mem_load_double_word_unaligned swapw
-    # => [F_UPPER, F_LOWER, scale_exp]
+    # step 3: assert the staged wire feeAmount is zero verbatim — with no relayer-fee leg any
+    # nonzero claim is refused outright. a packed limb is zero iff its wire bytes are zero, so
+    # the raw limbs are checked directly; word order and limb well-formedness are irrelevant
+    # (a malformed limb is nonzero and rejects)
+    exec.utils::mem_load_double_word_unaligned
+    # => [F_1, F_2]
 
-    exec.to_u128_limbs
-    # => [f0, f1, f2, f3, scale_exp]
+    exec.word::eqz
+    assert.err=ERR_XRESERVE_FEE_NONZERO
+    # => [F_2]
 
-    # f3 or f2 nonzero means f >= 2^64 > 10^18 >= 10^s, i.e. a nonzero reduced fee
-    movup.3 assertz.err=ERR_XRESERVE_FEE_NONZERO
-    movup.2 assertz.err=ERR_XRESERVE_FEE_NONZERO
-    # => [f0, f1, scale_exp]
-
-    movup.2 exec.asset_amount::pow10
-    # => [p, f0, f1]
-
-    u32split
-    # => [p_lo, p_hi, f0, f1]
-
-    # u64::lt over [b, a] (b on top) returns a < b; here b = 10^s, a = the fee low half
-    exec.u64::lt
-    # => [is_fee_lt_pow10]
-
+    exec.word::eqz
     assert.err=ERR_XRESERVE_FEE_NONZERO
     # => []
 end

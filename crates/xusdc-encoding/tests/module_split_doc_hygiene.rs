@@ -24,6 +24,10 @@ const DEV5_SCANNED_SOURCES: &[(&str, &str)] = &[
         include_str!("../../../asm/standards/xreserve/mint_policy.masm"),
     ),
     (
+        "asm/standards/xreserve/deposit_intent_parser.masm",
+        include_str!("../../../asm/standards/xreserve/deposit_intent_parser.masm"),
+    ),
+    (
         "src/note/xreserve_mint.rs",
         include_str!("../src/note/xreserve_mint.rs"),
     ),

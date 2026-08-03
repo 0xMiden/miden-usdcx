@@ -40,7 +40,7 @@ use miden_testing::{
 use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, bytes32_to_packed_felts, bytes32_to_storage_map_key,
+    account_id_to_bytes32, account_id_to_felts, bytes32_to_packed_felts, bytes32_to_storage_map_key,
 };
 
 /// How many generated account ids the parity spread covers, over and above the production faucet.
@@ -67,6 +67,37 @@ const MAX_SUPPLY: u64 = 1_000_000;
 /// could only make an assertion FAIL, never pass a wrong derivation. Each procedure is stack-neutral
 /// across its `call` window, the shape the production note scripts use.
 const DERIVE_DRIVER_SRC: &str = r#"use xreserve::deposit_intent_parser
+use miden::protocol::native_account
+
+#! Asserts the native account id's two felts equal the pair the caller staged in advice.
+#!
+#! Inputs:  [pad(16)]
+#! Outputs: [pad(16)]
+#!
+#! Advice stack: [expected_suffix, expected_prefix].
+#!
+#! Panics if:
+#! - either felt differs from what the kernel reports for the native account.
+#!
+#! Invocation: call
+@account_procedure
+pub proc assert_native_id
+    exec.native_account::get_id
+    # => [suffix, prefix, pad(16)]
+
+    adv_push
+    # => [expected_suffix, suffix, prefix, pad(16)]
+
+    assert_eq.err="canary: native account id suffix mismatch"
+    # => [prefix, pad(16)]
+
+    adv_push
+    # => [expected_prefix, prefix, pad(16)]
+
+    assert_eq.err="canary: native account id prefix mismatch"
+    # => [pad(16)]
+end
+
 #! Asserts the on-chain bytes32 packaging of the native account id equals the caller's limbs.
 #!
 #! Inputs:  [pad(16)]
@@ -266,6 +297,32 @@ fn spread() -> Result<Vec<DeriveHarness>> {
             })
         })
         .collect()
+}
+
+// THE CANARY — the kernel really hands the faucet its own id in account context
+// ================================================================================================
+
+/// `native_account::get_id`, read from inside a `call`-invoked account procedure, reports exactly
+/// the felts Rust reads off the same `AccountId`.
+///
+/// Everything downstream is arithmetic on those two felts, so this pins the single value the whole
+/// derivation is a function of, independently of the packaging that consumes it.
+#[tokio::test]
+async fn native_account_id_matches_the_rust_felts_in_account_context() -> Result<()> {
+    let mut harnesses = spread()?;
+    harnesses.push(setup_production_derive_faucet()?);
+    for h in &harnesses {
+        let [prefix, suffix] = account_id_to_felts(h.account_id);
+        call_driver(h, "assert_native_id", vec![suffix, prefix])
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "account {}: get_id must report the Rust felts: {e}",
+                    h.account_id
+                )
+            });
+    }
+    Ok(())
 }
 
 // PARITY — the packaging and the key, over the whole spread

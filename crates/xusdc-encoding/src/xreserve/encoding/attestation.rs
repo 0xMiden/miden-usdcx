@@ -23,8 +23,7 @@
 //! - `pubkey_commitment` hashes those sixteen elements into the single Word that keys the attester
 //!   allowlist. It is the one routine here with an on-chain twin: the faucet's verify recomputes the
 //!   same commitment from the key presented to it and looks up that Word, so a mismatch between the
-//!   two implementations would silently un-allowlist every attester. The cross-language conformance
-//!   test is what holds them together.
+//!   two implementations would silently un-allowlist every attester.
 //!
 //! Producing the digest and running the signature check are the faucet's job, not this module's.
 
@@ -36,8 +35,6 @@ use super::error::EncodingError;
 
 /// Number of u32 field elements an affine secp256k1 public key packs to
 /// (`qx_le_u32[8] || qy_le_u32[8]`) — the element count the commitment hashes.
-/// The MASM side declares a `PUBKEY_FELTS` constant with the same value, and a parity test fails
-/// if the two ever diverge.
 pub const PUBKEY_FELTS: usize = 16;
 
 /// Packs a 32-byte keccak digest into 8 u32-LE field elements (4 bytes/felt).
@@ -50,7 +47,7 @@ pub fn keccak_digest_felts(digest: &[u8; 32]) -> [Felt; 8] {
 /// Decompresses a 33-byte compressed SEC1 secp256k1 public key (the Circle-facing wire form)
 /// and packs its affine coordinates into the 16 u32 field elements the on-chain
 /// attestation surface consumes (`qx_le_u32[8] || qy_le_u32[8]`; byte-order
-/// identical to miden-crypto 0.28 `affine_point_to_elements`: each 32-byte big-endian
+/// identical to miden-crypto's `affine_point_to_elements`: each 32-byte big-endian
 /// coordinate is read as eight big-endian u32 limbs emitted least-significant-limb first).
 ///
 /// # Errors
@@ -90,13 +87,11 @@ pub fn signature_felts(sig: &[u8; 65]) -> [Felt; 17] {
 }
 
 /// The attester-allowlist commitment key: Poseidon2 over the 16 affine pubkey felts,
-/// identical to miden-crypto 0.28 `PublicKey::to_commitment`
+/// identical to miden-crypto's `PublicKey::to_commitment`
 /// (`Poseidon2::hash_elements(affine_point_to_elements())`) and to the MASM
-/// `xreserve::attestation_verify::pubkey_commitment` the faucet recomputes. `Hasher` is the
-/// protocol's Poseidon2 (same primitive as `bytes32_to_storage_map_key`); the 16-felt input
-/// sets the sponge capacity domain tag to `16 % 8 = 0` — verified == `to_commitment` by
-/// TV-ATT-2 and the cross-implementation vector check. Takes the 33-byte compressed wire form
-/// and decompresses internally (single-owner rule: this encoding crate owns the SEC1→affine seam).
+/// `xreserve::attestation_verify::pubkey_commitment` the faucet recomputes. The 16-felt input
+/// sets the sponge capacity domain tag to `16 % 8 = 0`. Takes the 33-byte compressed wire form
+/// and decompresses internally, so this crate owns the SEC1-to-affine seam.
 ///
 /// # Errors
 ///
@@ -150,8 +145,8 @@ mod tests {
     }
 
     /// TV-ATT-2 (commitment): `pubkey_commitment(pk)` equals miden-crypto
-    /// `PublicKey::to_commitment` (the value the generator baked into each vector — the
-    /// attester-allowlist keying primitive the faucet's attestation verify looks up).
+    /// `PublicKey::to_commitment`, the attester-allowlist keying primitive the faucet's
+    /// attestation verify looks up.
     #[test]
     fn tv_att_2_commitment() {
         for v in &load().families.att {

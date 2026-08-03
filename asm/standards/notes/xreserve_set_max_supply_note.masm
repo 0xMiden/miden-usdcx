@@ -1,9 +1,9 @@
-# xreserve_set_max_supply_note — the shipped, root-pinned set_max_supply admin note script.
+# xreserve_set_max_supply_note — the root-pinned set_max_supply admin note script.
 #
-# The production admin surface for the STOCK `set_max_supply` under the network account: a fixed-root
-# note whose parameter is CREATOR-COMMITTED in note storage (never NOTE_ARGS). It stages the note
-# storage into memory, marshals the creator's param onto the stack in the proc's Inputs order, and
-# `call`s the `ADMIN`-role-gated (via the account Authority) stock
+# The admin surface for the STOCK `set_max_supply` under the network account: a fixed-root note whose
+# parameter is CREATOR-COMMITTED in note storage. It stages the note storage into memory, marshals the
+# creator's param onto the stack in the proc's Inputs order, and `call`s the
+# `ADMIN`-role-gated (via the account Authority) stock
 # `miden::standards::faucets::fungible::set_max_supply` (the gate lives in the proc; the note sender is
 # kernel-forced, so a creator without the `ADMIN` role traps there). The `call` resolves to the SAME
 # proc root the faucet exposes via the FungibleFaucet component re-exports. A scheme-2
@@ -31,8 +31,7 @@ const ERR_XRESERVE_SET_MAX_SUPPLY_NOTE_STORAGE = "set_max_supply note storage it
 #! Consumes the `set_max_supply` admin note and drives the `ADMIN`-role-gated max-supply write.
 #!
 #! Stages the creator-committed param (`[new_max_supply]`) into memory at PARAM_PTR, marshals it onto
-#! the stack as `[new_max_supply, pad(15)]`, and `call`s the stock `fungible::set_max_supply`. The
-#! note ARGS are unused (executor-controlled).
+#! the stack as `[new_max_supply, pad(15)]`, and `call`s the stock `fungible::set_max_supply`.
 #!
 #! Requires that the account exposes:
 #! - miden::standards::faucets::fungible::set_max_supply procedure.
@@ -41,7 +40,7 @@ const ERR_XRESERVE_SET_MAX_SUPPLY_NOTE_STORAGE = "set_max_supply note storage it
 #! Outputs: [pad(16)]
 #!
 #! Where:
-#! - ARGS is executor-controlled and dropped unread.
+#! - ARGS is unused.
 #!
 #! Note storage is assumed to be as follows:
 #! - new_max_supply is the new maximum supply as an AssetAmount felt (item 0).

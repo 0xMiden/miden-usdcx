@@ -3,8 +3,7 @@
 //! `FungibleFaucet::mint_and_send` gated by the custom **attestation mint policy**
 //! (`xreserve::mint_policy::check_policy` — the ENTIRE attestation pipeline lives in
 //! the policy dispatch), so every supply increase passes the attestation gate — the
-//! faucet's core mint-security invariant. There is NO separate mint-deny guard: the stock
-//! path IS the gated path, so nothing needs trapping.
+//! faucet's core mint-security invariant.
 //!
 //! Scope (cumulative): it composes the `FungibleFaucet`, the assembled `xreserve` library
 //! component (carrying the attestation mint policy, the minimized `identifier_init` and the
@@ -13,11 +12,10 @@
 //! so zero-amount burns stay rejected by construction), the STOCK [`PausableManager`] and
 //! [`BlocklistManager`] admin components, and the **role-gating admin foundation**
 //! (`Ownable2Step` with a seeded `RoleBasedAccessControl` under the
-//! [`XReserveAdminAuthority`]'s `Authority::RbacControlled`). The RBAC is SEEDED with the two
-//! Circle Domain role members (`DOM_PAUSER` / `DOM_MANAGER`), with `DOM_PAUSER` administration
-//! DELEGATED to `DOM_MANAGER`, plus the stock `ADMIN` role seeded on the OWNER's account, and the
-//! external `BLK_MANAGER` transfer-blocklist administrator. NOTE the ratified role-graph freeze:
-//! the runtime `set_role_admin` NOTE is deliberately absent from the
+//! [`XReserveAdminAuthority`]'s `Authority::RbacControlled`). The RBAC seed holds the two Circle
+//! Domain role members (`DOM_PAUSER` / `DOM_MANAGER`) with `DOM_PAUSER` administration DELEGATED
+//! to `DOM_MANAGER`, the stock `ADMIN` role on the OWNER's account, and the external `BLK_MANAGER`
+//! transfer-blocklist administrator. The runtime `set_role_admin` note is absent from the
 //! note-script allowlist, so the delegation graph deploys FROZEN at this build seed.
 //!
 //! Pause and blocklist administration are the STOCK managers gated per procedure: the authority's
@@ -35,7 +33,7 @@
 //!
 //! Packaging: the attestation policy is **runtime-assembled** MASM (no `.masl` asset /
 //! `account_component_code!` here — that is a miden-standards-internal pipeline). The caller
-//! assembles the `xreserve` library (namespace `xreserve`) into an `AccountComponent` and passes
+//! assembles the `xreserve` library into an `AccountComponent` and passes
 //! it in; the policy procedure root is resolved from that same installed code via
 //! [`AccountComponent::get_procedure_root_by_path`], so the `dynexec` root the policy manager
 //! stores always equals the installed proc's MAST root.
@@ -64,12 +62,11 @@ use rbac_seed::seeded_dom_roles_rbac;
 
 /// The two Circle Domain RoleSymbols this faucet seeds under the ratified Circle-faithful admin
 /// model: `DOM_PAUSER` (pause/unpause) and `DOM_MANAGER` (rotation / role
-/// management — the delegated admin of `DOM_PAUSER`). Both are valid `RoleSymbol`s
-/// (≤12 chars, `A`–`Z`/`_`; `DOMAIN_PAUSER`(13)/`DOMAIN_MANAGER`(14) would be rejected).
-/// [`XReserveAdminAuthority`] is the single place `DOM_PAUSER` gates a procedure — it assigns the
-/// symbol to the stock `PausableManager`'s two roots, so no MASM mentions either symbol; role
-/// management consumes the STOCK rbac procs, so no MASM references `DOM_MANAGER` either. The
-/// remaining setters are unassigned and so resolve to `ADMIN`, whose sole member is the owner.
+/// management — the delegated admin of `DOM_PAUSER`). [`XReserveAdminAuthority`] is the single
+/// place `DOM_PAUSER` gates a procedure — it assigns the symbol to the stock `PausableManager`'s
+/// two roots, so no MASM mentions either symbol; role management consumes the STOCK rbac procs,
+/// so no MASM references `DOM_MANAGER` either. The remaining setters are unassigned and so
+/// resolve to `ADMIN`, whose sole member is the owner.
 pub const DOM_PAUSER_ROLE: &str = "DOM_PAUSER";
 pub const DOM_MANAGER_ROLE: &str = "DOM_MANAGER";
 
@@ -79,17 +76,14 @@ pub const DOM_MANAGER_ROLE: &str = "DOM_MANAGER";
 /// is two-way — the holder can ONLY block/unblock, and the owner, lacking the role, cannot). The
 /// stock `BlocklistManager`'s `block_account` / `unblock_account` roots are assigned this symbol by
 /// [`XReserveAdminAuthority`], which is what keeps the capability off the owner — the owner-gated
-/// `BlocklistOwnerControlled` variant is the wrong identity and is not installed.
-/// `BLK_MANAGER` is a valid `RoleSymbol` (≤12 chars, `A`–`Z`/`_`). Its
+/// `BlocklistOwnerControlled` variant is the wrong identity and is not installed. Its
 /// admin is left unset → resolves to the built-in `ADMIN` (the owner-held account), so Miden rotates
 /// or revokes the external entity through the EXISTING allowlisted `grant_role`/`revoke_role` notes —
 /// no new rotation machinery. `BLK_MANAGER` is seeded role id 4.
 pub const BLK_MANAGER_ROLE: &str = "BLK_MANAGER";
 
 /// Flat library path of the attestation mint policy's `check_policy` procedure within the
-/// assembled `xreserve` library (namespace `xreserve`, module `mint_policy`). This is the
-/// no-leading-`::` form [`AccountComponent::get_procedure_root_by_path`] expects (matching the
-/// `procedure_root!` macro and the protocol callback wiring).
+/// assembled `xreserve` library (namespace `xreserve`, module `mint_policy`).
 pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str = "xreserve::mint_policy::check_policy";
 
 /// The smallest admissible `min_burn_size` (the zero floor). The stock [`MinBurnAmount`] policy
@@ -102,11 +96,7 @@ pub const MIN_BURN_SIZE_FLOOR: u64 = 1;
 
 /// The shipped on-chain `TokenSymbol` guard constant (token config). The token's identity is
 /// **USDCx** — a DISTINCT identity from the "xUSDC" working label;
-/// the two must not be confused. The pinned `TokenSymbol` is uppercase-A–Z only (`token_symbol.rs`
-/// `ShortCapitalString`), so the on-chain symbol is `USDCX`, the VM-forced uppercase form of
-/// "USDCx"; the display `TokenName` keeps the mixed-case "USDCx".
-/// [`XReserveStablecoinBuilder::build_components`] rejects any other symbol so the deployed symbol
-/// is load-bearing.
+/// the two must not be confused.
 pub const USDCX_TOKEN_SYMBOL: &str = "USDCX";
 
 /// The spec-mandated token decimals (`token_config` decimals = 6; a Circle requirement of six
@@ -114,9 +104,7 @@ pub const USDCX_TOKEN_SYMBOL: &str = "USDCX";
 /// mis-scale every minted amount).
 pub const USDCX_DECIMALS: u8 = 6;
 
-/// Canonical Rust labels of the seven caller-declared `xreserve` storage slots (the single Rust
-/// source: the tests re-export these and the constant-parity suite pins them against the MASM
-/// `word("…")` consts where a MASM reader exists). The five domain-config slots + the two
+/// Canonical Rust labels of the seven caller-declared `xreserve` storage slots. The five domain-config slots + the two
 /// registry maps. `domain` / `source_domain` / `xreserve_contract_{hi,lo}` are BUILD-SEEDED by
 /// this builder (no runtime writer); `identifier` ships EMPTY (the `identifier_init` note is its
 /// only writer).
@@ -147,15 +135,12 @@ pub const REQUIRED_XRESERVE_SLOT_LABELS: [&str; 7] = [
     XRESERVE_ATTESTERS_SLOT_LABEL,
 ];
 
-/// The storage slot the stock `FungibleFaucet` writes its mutability flags into (miden-standards
-/// `token_metadata.rs` at the pinned `=0.16.0-alpha.2`; unlike `is_paused`, this slot lives on
-/// the faucet itself). `build_components` reads it to reject an immutable-`max_supply`
+/// The storage slot the stock `FungibleFaucet` writes its mutability flags into. `build_components` reads it to reject an immutable-`max_supply`
 /// faucet — `FungibleFaucet` exposes no public accessor for the flag (it lives in private `metadata`).
 const FAUCET_MUTABILITY_CONFIG_SLOT: &str = "miden::standards::faucets::mutability_config";
 
 /// Index of `is_max_supply_mutable` within the faucet `mutability_config` word, whose layout is
-/// `[is_desc_mutable, is_logo_mutable, is_extlink_mutable, is_max_supply_mutable]` (miden-standards
-/// `token_metadata.rs` at the pinned `=0.16.0-alpha.2`).
+/// `[is_desc_mutable, is_logo_mutable, is_extlink_mutable, is_max_supply_mutable]`
 const MAX_SUPPLY_MUTABLE_WORD_INDEX: usize = 3;
 
 /// The three build-seeded domain-config fields (`domain`, `source_domain`, `xreserve_contract`)
@@ -334,9 +319,7 @@ impl XReserveStablecoinBuilder {
     /// Reads the supplied faucet's `is_max_supply_mutable` flag from its assembled storage. The stock
     /// `FungibleFaucet` exposes no accessor for it (the flag lives in its private `metadata`), so the
     /// guard reads the `mutability_config` slot the faucet writes. Fail-closed: returns `true` ONLY
-    /// when the slot is present and the flag felt is exactly `1`; a missing slot or any non-`1` felt
-    /// yields `false`, so [`Self::build_components`] rejects the build rather than letting an immutable
-    /// (or malformed) faucet pass silently.
+    /// when the slot is present and the flag felt is exactly `1`.
     fn faucet_max_supply_is_mutable(&self) -> bool {
         let slot_name = StorageSlotName::new(FAUCET_MUTABILITY_CONFIG_SLOT)
             .expect("the faucet mutability_config slot name is a valid constant");
@@ -351,9 +334,7 @@ impl XReserveStablecoinBuilder {
 
     /// Production composition: validates `AccountType::Public`, that the active mint policy is the
     /// attestation policy and the active burn policy the stock [`MinBurnAmount`], seeds the three
-    /// build-time domain-config fields, then composes the account components. No reserved
-    /// alternate policies are registered — production carries no runtime path to a weaker mint or
-    /// burn gate.
+    /// build-time domain-config fields, then composes the account components.
     pub fn build_components(
         &self,
     ) -> Result<Vec<AccountComponent>, XReserveStablecoinBuilderError> {
@@ -600,7 +581,7 @@ impl XReserveStablecoinBuilder {
     /// owner has no pause path — the capability is the Domain Pauser's alone. The `is_paused` slot
     /// every `assert_not_paused` halt-gate reads (`execute_mint_policy`/`execute_burn_policy`, the
     /// setters) is installed by the base `Pausable` component, not by the manager, which installs
-    /// ZERO storage. The `production_components_carry_is_paused_slot` tripwire pins the slot.
+    /// ZERO storage.
     ///
     /// POLICY-COMPANION SEAM: the
     /// policy descriptors carry their companion components, and the manager's iterator emits one

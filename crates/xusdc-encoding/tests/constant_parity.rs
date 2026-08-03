@@ -105,16 +105,11 @@ const EXPECTED_SHELL_WORD_CONSTS: &[(&str, &str)] = &[
     ("USED_NONCES_SLOT", support::USED_NONCES_SLOT_LABEL),
 ];
 
-/// Expected `word("…")` slot-name constant of the D5d attestation-verify shell module.
-const EXPECTED_ATTESTATION_WORD_CONSTS: &[(&str, &str)] = &[(
-    "XRESERVE_ATTESTERS_SLOT",
-    support::XRESERVE_ATTESTERS_SLOT_LABEL,
-)];
-
-/// Expected `word("…")` slot-name constant of the set_attester admin module. Its
-/// `XRESERVE_ATTESTERS_SLOT` MUST be byte-identical to attestation_verify's (the setter writes the
-/// SAME slot the D5d read path keys); the shared label is the single Rust source. (The
-/// `ATTESTER_ENABLED_MARKER` Word array literal is not parity-parsed, like `NONCE_USED_MARKER`.)
+/// Expected `word("…")` slot-name constant of the set_attester admin module — the SINGLE MASM
+/// declaration of `XRESERVE_ATTESTERS_SLOT` (the attestation-verify read path imports it instead
+/// of re-declaring, so the write and read sides cannot drift), pinned against the shared Rust
+/// label. (The `ATTESTER_ENABLED_MARKER` Word array literal is not parity-parsed, like
+/// `NONCE_USED_MARKER`.)
 const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] = &[(
     "XRESERVE_ATTESTERS_SLOT",
     support::XRESERVE_ATTESTERS_SLOT_LABEL,
@@ -124,6 +119,11 @@ const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] = &[(
 /// digest's two words — procedure-local addresses with no Rust counterpart) and `PUBKEY_FELTS`,
 /// which IS parity-asserted against the Rust codec in `masm_rust_constant_parity` below.
 const ATTESTATION_COVERED_NUMS: &[&str] = &["DIGEST_LO_LOC", "DIGEST_HI_LOC", "PUBKEY_FELTS"];
+
+/// The set_attester admin module's numeric constant: its one `@locals` offset (the staged
+/// commitment word — a procedure-local address with no Rust counterpart). Bare descriptive
+/// form: the file defines locals in a single procedure, so no procedure prefix is needed.
+const ATTESTER_ADMIN_COVERED_NUMS: &[&str] = &["PK_COMMITMENT_LOC"];
 
 /// Wave-1 S1 attestation mint-policy numeric consts: the two attachment schemes + the
 /// attestation word count + the DC-5 scale are parity-asserted against the `XUsdcMintNote`
@@ -452,11 +452,13 @@ fn masm_constants_bidirectional() {
             SHELL_COVERED_NUMS,
             EXPECTED_SHELL_WORD_CONSTS,
         ),
+        // attestation_verify: its XRESERVE_ATTESTERS_SLOT is IMPORTED from attester_admin (the
+        // single declaring module) — no word("…") consts of its own.
         (
             "attestation_verify.masm",
             ATTESTATION_VERIFY_MASM,
             ATTESTATION_COVERED_NUMS,
-            EXPECTED_ATTESTATION_WORD_CONSTS,
+            &[],
         ),
         // Wave-1 S1 attestation mint policy: declares the transport + binding errors (known
         // shell errors via SHELL_ERR_TABLE) and the covered/parity-asserted numeric consts; its
@@ -475,12 +477,13 @@ fn masm_constants_bidirectional() {
         // domain-config fields have NO MASM reader/writer anymore — their labels live Rust-side
         // only (the builder seeds them), so no slot-label parity rows exist for them.
         ("identifier_init.masm", IDENTIFIER_INIT_MASM, &[], &[]),
-        // set_attester: pins XRESERVE_ATTESTERS_SLOT to the shared label (no numeric consts;
-        // the authority-gate traps reuse the stock ADMIN-role and pause errors, not declared here).
+        // set_attester: pins XRESERVE_ATTESTERS_SLOT to the shared label; its one numeric const
+        // is the covered procedure-local offset (the authority-gate traps reuse the stock
+        // ADMIN-role and pause errors, not declared here).
         (
             "attester_admin.masm",
             ATTESTER_ADMIN_MASM,
-            &[],
+            ATTESTER_ADMIN_COVERED_NUMS,
             EXPECTED_ATTESTER_ADMIN_WORD_CONSTS,
         ),
     ];

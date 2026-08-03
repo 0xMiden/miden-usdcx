@@ -8,15 +8,10 @@ use miden::core::crypto::hashes::keccak256
 use miden::core::crypto::dsa::ecdsa_k256_keccak
 use miden::core::crypto::hashes::poseidon2
 use miden::core::word
+use {XRESERVE_ATTESTERS_SLOT} from xreserve::attester_admin
 
 # CONSTANTS
 # =================================================================================================
-
-# Attester allowlist: the xReserveAttesters StorageMap slot, keyed by
-# Poseidon2(16 affine pubkey felts) -> enabled-marker Word (absent / EMPTY_WORD = not
-# allowlisted). The set_attester admin setter co-owns this SAME slot. The map slot itself is
-# declared by the Rust account builder; this const is the MASM-side slot id.
-pub const XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xreserve_attesters")
 
 # `verify_attestation` locals: the keccak digest is the only value that needs a memory home — the
 # precompile wrappers take their other operands as pointers and leave the stack below their inputs
@@ -69,7 +64,6 @@ const ERR_XRESERVE_SIG_INVALID = "deposit attestation signature verification fai
 #!
 #! Invocation: exec
 @locals(8)
-@account_procedure
 pub proc verify_attestation
     # keccak the full payload -> 8-limb digest, stored to the digest local region. hash_bytes
     # consumes [intent_ptr, intent_num_bytes] and leaves everything below it untouched, so the two

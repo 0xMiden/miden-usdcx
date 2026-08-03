@@ -16,15 +16,18 @@ use miden::standards::access::authority
 # CONSTANTS
 # =================================================================================================
 
-# The xReserveAttesters allowlist StorageMap slot — byte-identical to the slot const in
-# attestation_verify.masm, since the mint-time read path keys the SAME slot. The name string is the
-# single source of truth for the slot id.
+# The xReserveAttesters allowlist StorageMap slot, keyed by Poseidon2(16 affine pubkey felts)
+# -> enabled-marker Word. The mint-time read path (attestation_verify) imports this const, so
+# both sides key the SAME slot; the name string is the single source of truth for the slot id.
 pub const XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xreserve_attesters")
 
 # The non-empty enabled marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1
 # (the read path asserts only that the stored value is non-empty). enabled = 0 writes
 # EMPTY_WORD, which the read path treats as "not allowlisted".
 const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
+
+# set_attester locals: the caller-supplied commitment Word (the map key), staged verbatim.
+const PK_COMMITMENT_LOC = 0
 
 # PUBLIC INTERFACE
 # =================================================================================================
@@ -54,9 +57,9 @@ pub proc set_attester
     exec.authority::assert_authorized
     # => [PK_COMMITMENT, enabled, pad(11)]
 
-    # store the caller-supplied commitment (the map key) into loc[0..4], trusted verbatim. The
+    # store the caller-supplied commitment (the map key) into the locals, trusted verbatim. The
     # `_le` store leaves the word on the stack, so drop the copy.
-    loc_storew_le.0 dropw
+    loc_storew_le.PK_COMMITMENT_LOC dropw
     # => [enabled, pad(11)]
 
     # the written VALUE = enabled ? ATTESTER_ENABLED_MARKER : EMPTY_WORD. `if.true` requires
@@ -69,7 +72,7 @@ pub proc set_attester
     # => [VALUE, pad(11)]
 
     # xReserveAttesters[PK_COMMITMENT] := VALUE.
-    padw loc_loadw_le.0
+    padw loc_loadw_le.PK_COMMITMENT_LOC
     # => [PK_COMMITMENT, VALUE, pad(11)]
 
     push.XRESERVE_ATTESTERS_SLOT[0..2]

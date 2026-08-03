@@ -44,9 +44,8 @@ use {AMOUNT_FELT_OFF, MAX_FEE_FELT_OFF, NONCE_FELT_OFF} from xreserve::encoding:
 # CONSTANTS
 # =================================================================================================
 
-# Slots — ids derive from the namespaced label strings below.
+# Slot — the id derives from the namespaced label string below.
 pub const DOMAIN_CONFIG_SLOT = word("xusdc::xreserve::domain_config::domain")
-pub const IDENTIFIER_CONFIG_SLOT = word("xusdc::xreserve::domain_config::identifier")
 
 # The usedNonces StorageMap slot (the nonce replay registry). The map slot itself is declared
 # by the Rust account builder; this const is the MASM-side slot id.

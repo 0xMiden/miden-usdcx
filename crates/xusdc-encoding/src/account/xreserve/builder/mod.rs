@@ -6,8 +6,8 @@
 //! faucet's core mint-security invariant.
 //!
 //! Scope (cumulative): it composes the `FungibleFaucet`, the assembled `xreserve` library
-//! component (carrying the attestation mint policy, the minimized `identifier_init` and the
-//! `set_attester` admin proc), a `TokenPolicyManager` whose ACTIVE mint policy is the attestation
+//! component (carrying the attestation mint policy and the `set_attester` admin proc), a
+//! `TokenPolicyManager` whose ACTIVE mint policy is the attestation
 //! policy and whose ACTIVE burn policy is the STOCK [`MinBurnAmount`] (floor-seeded `>= 1`,
 //! so zero-amount burns stay rejected by construction), the STOCK [`PausableManager`] and
 //! [`BlocklistManager`] admin components, and the **role-gating admin foundation**
@@ -27,11 +27,10 @@
 //! of their own: `is_paused` comes from the base `Pausable` component and `blocked_accounts` from
 //! the `BasicBlocklist` companion, both of which were already installed.
 //!
-//! Domain config is BUILD-SEEDED except the identifier: `domain`, `source_domain`, and
-//! `xreserve_contract` are required builder inputs written into the declared slots at
-//! composition time; the `identifier` slot is a provable FIXPOINT of the account id (the id
-//! derives from the initial storage commitment), so it ships EMPTY and is seeded post-deploy by
-//! the ONE minimized `identifier_init` admin note (administrator-gated, init-once).
+//! Domain config is entirely BUILD-SEEDED: `domain`, `source_domain`, and `xreserve_contract` are
+//! required builder inputs written into the declared slots at composition time. The faucet
+//! identifier is not among them and has no slot at all — it is the account's own id, which the
+//! mint path derives on chain, so the composed faucet is mint-ready the moment it exists.
 //!
 //! Packaging: the attestation policy is **runtime-assembled** MASM (no `.masl` asset /
 //! `account_component_code!` here — that is a miden-standards-internal pipeline). The caller
@@ -109,12 +108,10 @@ pub const USDCX_TOKEN_SYMBOL: &str = "USDCX";
 /// mis-scale every minted amount).
 pub const USDCX_DECIMALS: u8 = 6;
 
-/// Canonical Rust labels of the seven caller-declared `xreserve` storage slots. The five domain-config slots + the two
-/// registry maps. `domain` / `source_domain` / `xreserve_contract_{hi,lo}` are BUILD-SEEDED by
-/// this builder (no runtime writer); `identifier` ships EMPTY (the `identifier_init` note is its
-/// only writer).
+/// Canonical Rust labels of the six caller-declared `xreserve` storage slots: the four
+/// domain-config slots + the two registry maps. All four config fields are BUILD-SEEDED by this
+/// builder and have no runtime writer.
 pub const DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::domain";
-pub const IDENTIFIER_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::identifier";
 pub const SOURCE_DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::source_domain";
 pub const XRESERVE_CONTRACT_HI_SLOT_LABEL: &str =
     "xusdc::xreserve::domain_config::xreserve_contract_hi";
@@ -124,15 +121,14 @@ pub const USED_NONCES_SLOT_LABEL: &str = "xusdc::xreserve::nonce_registry::used_
 pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str =
     "xusdc::xreserve::attester_admin::xreserve_attesters";
 
-/// The SEVEN storage slots the supplied `xreserve` component must declare (the
+/// The SIX storage slots the supplied `xreserve` component must declare (the
 /// validate-what-you-ship check): a missing slot would ship a faucet whose reads/writes of it trap
 /// `ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME` at runtime;
 /// [`XReserveStablecoinBuilder::build_components`] rejects at build time instead. The stock
 /// [`MinBurnAmount`] floor slot is NOT in this set — it rides the policy companion component the
 /// manager emits, not the `xreserve` component.
-pub const REQUIRED_XRESERVE_SLOT_LABELS: [&str; 7] = [
+pub const REQUIRED_XRESERVE_SLOT_LABELS: [&str; 6] = [
     DOMAIN_CONFIG_SLOT_LABEL,
-    IDENTIFIER_CONFIG_SLOT_LABEL,
     SOURCE_DOMAIN_CONFIG_SLOT_LABEL,
     XRESERVE_CONTRACT_HI_SLOT_LABEL,
     XRESERVE_CONTRACT_LO_SLOT_LABEL,
@@ -148,8 +144,7 @@ const FAUCET_MUTABILITY_CONFIG_SLOT: &str = "miden::standards::faucets::mutabili
 /// `[is_desc_mutable, is_logo_mutable, is_extlink_mutable, is_max_supply_mutable]`
 const MAX_SUPPLY_MUTABLE_WORD_INDEX: usize = 3;
 
-/// The three build-seeded domain-config fields (`domain`, `source_domain`, `xreserve_contract`)
-/// — every domain-config field EXCEPT the identifier fixpoint.
+/// The three build-seeded domain-config fields (`domain`, `source_domain`, `xreserve_contract`).
 #[derive(Debug, Clone, Copy)]
 struct DomainConfigSeed {
     domain: u32,
@@ -176,7 +171,7 @@ fn min_burn_amount_floor_of(policy: &BurnPolicy) -> Option<u64> {
 }
 
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library
-/// component (attestation mint policy, identifier init, admin procs) + a `TokenPolicyManager`
+/// component (attestation mint policy, admin procs) + a `TokenPolicyManager`
 /// with the attestation policy active on the mint side and the stock [`MinBurnAmount`] active on
 /// the burn side + the STOCK [`PausableManager`] / [`BlocklistManager`] admin components + the
 /// **role-gating admin foundation** (a seeded `RoleBasedAccessControl` +
@@ -191,7 +186,7 @@ pub struct XReserveStablecoinBuilder {
     faucet: FungibleFaucet,
     xreserve_component: AccountComponent,
     /// The administrator: seeded as the sole member of the built-in `ADMIN` role, which is what
-    /// gates every unmapped authority-gated procedure (`set_attester` / `init_identifier` / the
+    /// gates every unmapped authority-gated procedure (`set_attester` / the
     /// stock `set_min_burn_amount` / stock `set_max_supply` / the policy setters) under
     /// `Authority::RbacControlled`. It is the account's ONLY authority handle; rotating it is a
     /// grant and a revoke of `ADMIN` through the standard role-action note.
@@ -296,8 +291,7 @@ impl XReserveStablecoinBuilder {
     /// is rejected with [`XReserveStablecoinBuilderError::MissingDomainConfig`]. The values are
     /// written into the declared `domain` / `source_domain` / `xreserve_contract_{hi,lo}` slots
     /// at composition time (`[domain, 0, 0, 0]` / `[source_domain, 0, 0, 0]` / the raw 8x
-    /// u32-LE packed felts, hi = wire bytes 0..16, lo = bytes 16..32); the `identifier` slot is
-    /// NOT seeded (the account-id fixpoint — the `identifier_init` note is its only writer).
+    /// u32-LE packed felts, hi = wire bytes 0..16, lo = bytes 16..32).
     pub fn with_domain_config(
         mut self,
         domain: u32,
@@ -403,7 +397,7 @@ impl XReserveStablecoinBuilder {
         // component — a missing slot would ship a faucet whose reads / writes of it trap
         // ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME at runtime. Presence-only for the two maps (the
         // per-slice fixtures legitimately pre-seed values); the three build-seeded fields are
-        // overwritten below and the identifier is checked EMPTY just after.
+        // overwritten below.
         for label in REQUIRED_XRESERVE_SLOT_LABELS {
             let name = StorageSlotName::new(label)
                 .expect("the required xreserve slot labels are valid constants");
@@ -415,23 +409,6 @@ impl XReserveStablecoinBuilder {
             {
                 return Err(XReserveStablecoinBuilderError::MissingXReserveSlot(label));
             }
-        }
-        // The identifier fixpoint (it can NEVER be build-seeded): the account id derives from the
-        // initial storage commitment, and the identifier is (provisionally, pending Circle) the
-        // faucet's own id as bytes32 — a fixpoint. A non-empty declared identifier would ship an
-        // already-initialized, potentially misbound faucet AND make the init-once `identifier_init`
-        // note trap as a reinitialization. Require the declared identifier value slot EMPTY at
-        // composition; the `identifier_init` note (bound to the faucet id) is its only writer.
-        let identifier_name = StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
-            .expect("the identifier slot label is a valid constant");
-        let identifier_value = self
-            .xreserve_component
-            .storage_slots()
-            .iter()
-            .find(|slot| slot.name() == &identifier_name)
-            .map(|slot| slot.value());
-        if identifier_value != Some(Word::empty()) {
-            return Err(XReserveStablecoinBuilderError::IdentifierNotEmpty);
         }
         // token-config exactness: decimals MUST be 6 (a Circle requirement; the amount reducer scales
         // to 6dp) and the symbol MUST be the shipped USDCX guard constant (the USDCx identity's
@@ -480,9 +457,8 @@ impl XReserveStablecoinBuilder {
             }
         }
         let active_burn = BurnPolicy::min_burn_amount(min_burn);
-        // Domain-config build seeding: the three non-identifier domain-config fields are REQUIRED
-        // builder inputs written into the declared slots; the identifier slot stays as declared
-        // (EMPTY in production — the identifier_init note is its only writer).
+        // Domain-config build seeding: the three domain-config fields are REQUIRED builder inputs
+        // written into the declared slots.
         let domain_config = self
             .domain_config
             .ok_or(XReserveStablecoinBuilderError::MissingDomainConfig)?;
@@ -533,9 +509,7 @@ impl XReserveStablecoinBuilder {
     /// Reconstructs the supplied `xreserve` component with the three BUILD-SEEDED domain-config
     /// values written into their declared slots (`[domain, 0, 0, 0]`, `[source_domain, 0, 0, 0]`,
     /// and the packed `xreserve_contract` hi/lo
-    /// words). Every other slot — the identifier (the account-id fixpoint, seeded
-    /// post-deploy by `identifier_init`) and the two registry maps — is carried through as
-    /// declared.
+    /// words). The two registry maps are carried through as declared.
     fn xreserve_component_with_domain_seed(&self, seed: DomainConfigSeed) -> AccountComponent {
         let domain_name = StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL)
             .expect("the domain slot label is a valid constant");

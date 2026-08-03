@@ -18,7 +18,7 @@ const MAX_SUPPLY: u64 = 1_000_000;
 
 /// The conformance sources whose count-prose this guard keeps in sync with the executable surface.
 /// (`include_str!` resolves relative to THIS file — i.e. the `tests/` dir.)
-const SOURCES: [(&str, &str); 3] = [
+const SOURCES: [(&str, &str); 5] = [
     (
         "account_callable_surface.rs",
         include_str!("account_callable_surface.rs"),
@@ -28,6 +28,17 @@ const SOURCES: [(&str, &str); 3] = [
         include_str!("account_surface_unreachable.rs"),
     ),
     ("mint_root_surface.rs", include_str!("mint_root_surface.rs")),
+    // the w2admin suites assert the same two counts and narrate them in prose and in TEST NAMES,
+    // which is where the last round of drift hid: a name like `..._sixty_two_procedures` keeps
+    // claiming a superseded count long after the constant it asserts against moved.
+    (
+        "w2admin_production_admin_effects.rs",
+        include_str!("w2admin_production_admin_effects.rs"),
+    ),
+    (
+        "w2admin_surface_finalization.rs",
+        include_str!("w2admin_surface_finalization.rs"),
+    ),
 ];
 
 /// Derive `(xreserve_roots, stock_roots, total_roots, note_allowlist)` from the SAME composition the
@@ -65,7 +76,7 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
     // surface ever changes, this fails loudly (and the whole point below — the prose — must follow).
     assert_eq!(
         (xreserve, stock, total, notes),
-        (3, 59, 62, 9),
+        (2, 59, 61, 8),
         "the executable callable surface changed ({xreserve} xreserve + {stock} stock = {total} \
          roots, {notes}-note allowlist) — update the ratified constants AND every count-phrase in \
          the conformance prose together (MIGRATION-V16-ALPHA2.md stock-surface discipline)"
@@ -96,6 +107,22 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
     // (fewer xreserve roots, a different stock-row total, a smaller note allowlist), so any of
     // them reappearing in prose means the text no longer describes the executable account.
     let superseded = [
+        // — superseded when the identifier-init note and procedure were removed —
+        "62-root",
+        "sixty-two",
+        "sixty_two",
+        "ratified 62 roots",
+        "seven admin/config notes",
+        "the seven admin notes",
+        "the seven admin",
+        "one of the 9",
+        "among the 9",
+        "the 9 are the two supply notes",
+        "the four administrator-gated",
+        "the 3 callable roots",
+        "the 3 sanctioned roots",
+        "the 3 frozen",
+        "9-root note-script allowlist",
         "75-root",
         "64 stock",
         "12-root",

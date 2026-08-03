@@ -9,7 +9,7 @@
 //! as a second supply door.
 //!
 //! The component-level tripwire: the xreserve library's callable-root set is FROZEN
-//! at the 3 sanctioned roots below, enumerated at BOTH layers — the manifest's exported paths and
+//! at the 2 sanctioned roots below, enumerated at BOTH layers — the manifest's exported paths and
 //! the `@account_procedure`-filtered account interface — so any new export (a potential new
 //! supply door) fails loudly.
 
@@ -24,8 +24,7 @@ use support::*;
 /// (`attester_admin::set_attester`, `call`ed by its admin note and resolving to the `ADMIN`
 /// role), the attestation mint policy `mint_policy::check_policy` (the ACTIVE mint policy — a
 /// pure gate, no supply arithmetic of its own, reached only by `dynexec` from the stock policy
-/// manager), and the identifier-only `identifier_init::init_identifier` (administrator-gated,
-/// init-once, `call`ed by its admin note) = 3. The shared-encoding + parser + attestation procs
+/// manager) = 2. The shared-encoding + parser + attestation procs
 /// are `exec`-only helpers inlined into their callers and live in `FROZEN_EXEC_ONLY_EXPORTS`,
 /// off the account interface. Pause and blocklist administration are no longer here either: the
 /// custom role-gated wrappers gave way to the stock `PausableManager` / `BlocklistManager`
@@ -39,9 +38,8 @@ use support::*;
 /// `mint_and_send`, gated by the attestation policy. Any drift (a new export, i.e. a potential
 /// new supply door) trips `production_xreserve_callable_root_set_is_frozen`.
 /// Paths render absolute (leading `::`) at assembler 0.23.3.
-const FROZEN_CALLABLE_ROOTS: [&str; 3] = [
+const FROZEN_CALLABLE_ROOTS: [&str; 2] = [
     "::xreserve::attester_admin::set_attester",
-    "::xreserve::identifier_init::init_identifier",
     "::xreserve::mint_policy::check_policy",
 ];
 
@@ -90,7 +88,7 @@ fn production_xreserve_callable_root_set_is_frozen() -> Result<()> {
         .map(|(root, _is_auth)| Word::from(root))
         .collect();
 
-    // Frozen tripwire, source layer: the exported-proc set is EXACTLY the 3 sanctioned roots plus
+    // Frozen tripwire, source layer: the exported-proc set is EXACTLY the 2 sanctioned roots plus
     // the exec-only exports.
     let lib: &miden_protocol::assembly::Package = xreserve.component_code().as_package();
     let mut paths: Vec<String> = lib
@@ -133,7 +131,7 @@ fn production_xreserve_callable_root_set_is_frozen() -> Result<()> {
         .collect();
     assert_eq!(
         callable, frozen_roots,
-        "the FILTERED account-interface root set (@account_procedure) must equal the 3 frozen \
+        "the FILTERED account-interface root set (@account_procedure) must equal the 2 frozen \
          roots exactly — a missing annotation drops a sanctioned proc from the account, an extra \
          one opens an unsanctioned callable root"
     );

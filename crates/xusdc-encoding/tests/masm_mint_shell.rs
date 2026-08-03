@@ -56,12 +56,6 @@ fn di(id: &str) -> &'static DiVector {
 /// `remoteToken` against from its own account id, so the only way to make a vector intent pass the
 /// compare is to bind its `remoteToken` to the executing account — which is what
 /// [`shell_driver_src_own_token`] does.
-/// A placeholder identifier for the shell fixture's config slot. The compare no longer reads it —
-/// the slot itself is removed later in this slice — so any well-formed word will do.
-fn dummy_identifier() -> Word {
-    Word::from([11u32, 12, 13, 14])
-}
-
 fn domain_word(domain: u32) -> Word {
     Word::new([
         Felt::from(domain),
@@ -83,12 +77,7 @@ async fn happy_path_mint_preconditions(#[case] vector_id: &str) -> Result<()> {
     let f = v.fields.as_ref().expect("accept vector carries fields");
     let driver_src =
         shell_driver_src_own_token(&v.preimage_values(), v.len_felts, Some(f.hook_data_len));
-    let h = setup_shell_account(
-        domain_word(TEST_DOMAIN),
-        dummy_identifier(),
-        &driver_src,
-        SHELL_DRIVER_PATH,
-    )?;
+    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
     // the account exists now, so the Rust encoder can produce the bound remoteToken for ITS id
     let advice = own_token_advice(h.account_id);
     let executed = run_call_driver_with_advice(&h, "drive", Some(advice))
@@ -141,12 +130,7 @@ async fn r_mint_rejects(
     let v = di(vector_id);
     let len_felts = v.staging_len_felts.unwrap_or(v.len_felts);
     let driver_src = shell_driver_src(&v.preimage_values(), len_felts, None);
-    let h = setup_shell_account(
-        domain_word(domain),
-        dummy_identifier(),
-        &driver_src,
-        SHELL_DRIVER_PATH,
-    )?;
+    let h = setup_shell_account(domain_word(domain), &driver_src, SHELL_DRIVER_PATH)?;
     let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
     Ok(())
@@ -192,9 +176,8 @@ fn probe_shell_exports() -> Result<()> {
 #[tokio::test]
 async fn probe_slot_binding() -> Result<()> {
     let domain = Word::from([7u32, 0, 0, 0]);
-    let identifier = dummy_identifier();
-    let probe_src = slot_probe_src(domain, identifier);
-    let h = setup_shell_account(domain, identifier, &probe_src, SLOT_PROBE_PATH)?;
+    let probe_src = slot_probe_src(domain);
+    let h = setup_shell_account(domain, &probe_src, SLOT_PROBE_PATH)?;
     run_call_driver(&h, "read_slots")
         .await
         .unwrap_or_else(|e| panic!("slot-binding probe must execute green: {e}"));
@@ -246,12 +229,7 @@ fn d5b_harness(
         .map(u64::from)
         .unwrap_or(0);
     let driver_src = mint_amounts_driver_src(&preimage, fee_amount, D5B_SCALE_EXP, amount_y);
-    setup_shell_account(
-        domain_word(TEST_DOMAIN),
-        dummy_identifier(),
-        &driver_src,
-        SHELL_DRIVER_PATH,
-    )
+    setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)
 }
 
 // HAPPY PATH FIRST
@@ -412,12 +390,7 @@ async fn d5c_happy_nonce_unused(#[case] vector_id: &str) -> Result<()> {
     let v = di(vector_id);
     let driver_src = nonce_driver_src(&v.preimage_values());
     // empty usedNonces map -> usedNonces[key] reads EMPTY_WORD (unused) -> passes
-    let h = setup_shell_account(
-        domain_word(TEST_DOMAIN),
-        dummy_identifier(),
-        &driver_src,
-        SHELL_DRIVER_PATH,
-    )?;
+    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
     let executed = run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
         panic!("vector {vector_id}: an unused nonce must pass the D5c guard: {e}")
     });
@@ -448,7 +421,6 @@ async fn d5c_replay_rejects(#[case] vector_id: &str) -> Result<()> {
     let seed = (nonce_key(vector_id), Word::from(NONCE_MARKER));
     let h = setup_shell_account_with_nonce_seed(
         domain_word(TEST_DOMAIN),
-        dummy_identifier(),
         Some(seed),
         &driver_src,
         SHELL_DRIVER_PATH,
@@ -487,7 +459,6 @@ async fn d5c_unrelated_seeded_nonce_passes() -> Result<()> {
     let seed = (other_key, Word::from(NONCE_MARKER));
     let h = setup_shell_account_with_nonce_seed(
         domain_word(TEST_DOMAIN),
-        dummy_identifier(),
         Some(seed),
         &driver_src,
         SHELL_DRIVER_PATH,

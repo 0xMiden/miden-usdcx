@@ -38,8 +38,7 @@ use miden_standards::testing::note::NoteBuilder;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveIdentifierInitNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
-    XReserveSetMinBurnSizeNote,
+    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
 
 const MAX_SUPPLY: u64 = 1_000_000;
@@ -88,9 +87,9 @@ fn production_account() -> Result<Account> {
     Ok(account)
 }
 
-/// The 9 allowlisted note SCRIPTS (not just their roots): the two STOCK supply notes (the stock
-/// `MintNote` transport + the `BurnNote`) + the seven admin notes — the four administrator-gated
-/// setters, with the identifier-only `identifier_init` among them, plus the three stock config
+/// The 8 allowlisted note SCRIPTS (not just their roots): the two STOCK supply notes (the stock
+/// `MintNote` transport + the `BurnNote`) + the six admin notes — the three administrator-gated
+/// setters, plus the three stock config
 /// notes for pausing, the transfer blocklist and role management. Single-sourced from the
 /// same factories the allowlist itself is built from, so a note that enters the allowlist necessarily
 /// enters this sweep too.
@@ -99,7 +98,6 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
         ("stock_mint_note", MintNote::script()),
         ("stock_burn_note", BurnNote::script()),
         ("set_attester", XReserveSetAttesterNote::script()),
-        ("identifier_init", XReserveIdentifierInitNote::script()),
         ("set_min_burn_size", XReserveSetMinBurnSizeNote::script()),
         ("stock_pause_action_note", PauseActionNote::script()),
         ("set_max_supply", XReserveSetMaxSupplyNote::script()),
@@ -149,7 +147,6 @@ async fn get_authority_is_read_only_on_the_account() -> Result<()> {
         MAX_SUPPLY,
         0,
         Word::from([7u32, 0, 0, 0]),
-        Word::from([11u32, 12, 13, 14]),
         None,
         None,
         &driver,
@@ -219,7 +216,7 @@ async fn get_authority_is_read_only_on_the_account() -> Result<()> {
 // against the protocol source at the pin):
 //
 // Tier A — truly unreachable: the 4 stock admin allowlist mutators. No note or tx can reach them
-// under the frozen 9-root note-script allowlist + 1-root tx-script allowlist (the same
+// under the frozen 8-root note-script allowlist + 1-root tx-script allowlist (the same
 // disposition as the freeze/unfreeze + set_role_admin precedents).
 //
 // Tier B — internally-active-but-inert, direct-entry-unreachable: the 6 stock fee procedures +
@@ -229,7 +226,7 @@ async fn get_authority_is_read_only_on_the_account() -> Result<()> {
 // `auth_network_transaction` (`collect_sponsored_fees` -> `estimate_note_fee_internal` -> dyncall
 // to `compute_note_fee`). With `BasicConstantFeePolicy` scheduling an explicit ZERO fee for all
 // 14 allowlisted roots, that execution computes a zero fee and is functionally inert (doubly so
-// on the zero-base-fee MockChain). The 9-root schedule is required precisely because this path
+// on the zero-base-fee MockChain). The 8-root schedule is required precisely because this path
 // runs on every note.
 //
 // Both tiers are TEMPORARY: a later slice reverts the growth together with the provisional fee
@@ -284,7 +281,7 @@ fn ratified_growth_row_roots() -> Result<Vec<(&'static str, Word)>> {
 }
 
 /// PRESENT: each of the 11 ratified growth rows IS a callable root of the composed account — the
-/// fact the ratification covers, stated explicitly rather than left implicit in the 62-root count.
+/// fact the ratification covers, stated explicitly rather than left implicit in the 61-root count.
 /// If any row disappears, the temporary-growth ratification must be re-visited (the revert slice
 /// expects to remove exactly these).
 #[test]
@@ -317,7 +314,7 @@ fn tier_a_mutators_are_unreachable_from_every_allowlisted_note() -> Result<()> {
     let swept: BTreeSet<_> = scripts.iter().map(|(_, s)| s.root()).collect();
     assert_eq!(
         swept, allowlist,
-        "the swept note scripts must be EXACTLY the 9-root note-script allowlist"
+        "the swept note scripts must be EXACTLY the 8-root note-script allowlist"
     );
 
     let rows = growth_row_roots(&TIER_A_MUTATOR_ROWS)?;
@@ -352,7 +349,7 @@ fn tier_b_fee_rows_are_not_referenced_by_any_allowlisted_note() -> Result<()> {
     let swept: BTreeSet<_> = scripts.iter().map(|(_, s)| s.root()).collect();
     assert_eq!(
         swept, allowlist,
-        "the swept note scripts must be EXACTLY the 9-root note-script allowlist"
+        "the swept note scripts must be EXACTLY the 8-root note-script allowlist"
     );
 
     let rows = growth_row_roots(&TIER_B_FEE_ROWS)?;
@@ -374,7 +371,7 @@ fn tier_b_fee_rows_are_not_referenced_by_any_allowlisted_note() -> Result<()> {
 }
 
 /// NO EXTERNAL ENTRY POINT (both tiers): no growth root is a member of EITHER allowlist — the
-/// 9-root note-script allowlist or the tx-script allowlist (read directly from the production
+/// 8-root note-script allowlist or the tx-script allowlist (read directly from the production
 /// auth component's slot; it holds EXACTLY the one canonical expiration root, as the
 /// expiration-allowlist tests pin).
 /// For Tier A this closes both entry vectors outright (with the MAST sweep above: truly
@@ -410,7 +407,7 @@ fn ratified_growth_rows_are_not_admissible_via_either_allowlist() -> Result<()> 
         let as_note_root = NoteScriptRoot::from_raw(root);
         assert!(
             !note_allowlist.contains(&as_note_root),
-            "the `{path}` root must NOT be a member of the 9-root note-script allowlist"
+            "the `{path}` root must NOT be a member of the 8-root note-script allowlist"
         );
         assert!(
             !tx_allowlist.contains(&root),

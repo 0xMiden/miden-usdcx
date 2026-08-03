@@ -217,7 +217,6 @@ fn setup_production_derive_faucet() -> Result<DeriveHarness> {
         MAX_SUPPLY,
         0,
         Word::from([TEST_DOMAIN, 0, 0, 0]),
-        Word::empty(),
         None,
         None,
         DERIVE_DRIVER_SRC,

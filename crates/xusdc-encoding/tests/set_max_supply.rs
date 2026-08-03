@@ -44,8 +44,8 @@ fn dom_manager() -> AccountId {
 
 /// Config words the builder does not read (these tests invoke `set_max_supply` via a note, never the
 /// mint driver).
-fn dummy_config() -> (Word, Word) {
-    (Word::from([7u32, 0, 0, 0]), Word::from([11u32, 12, 13, 14]))
+fn dummy_config() -> Word {
+    Word::from([7u32, 0, 0, 0])
 }
 
 /// An administrator-gated production faucet (attestation policy active) with cap 1_000_000 and a trivial
@@ -65,13 +65,12 @@ fn guarded_faucet(token_supply: u64, is_max_supply_mutable: bool) -> Result<Guar
                   \x20\x20\x20\x20push.0 drop\n\
                   end\n";
     let probe = composition_supply_probe_src(0);
-    let (domain, identifier) = dummy_config();
+    let domain = dummy_config();
     setup_guarded_mint_account(
         GuardSelection::ProductionAttestation,
         1_000_000,
         token_supply,
         domain,
-        identifier,
         None,
         None,
         driver,

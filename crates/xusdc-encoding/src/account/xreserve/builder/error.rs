@@ -47,17 +47,10 @@ pub enum XReserveStablecoinBuilderError {
     /// same-root override smuggle a sub-floor value past that validation. `requested` is the
     /// override's companion floor; `expected` the validated `min_burn_size`.
     BurnPolicyFloorMismatch { requested: u64, expected: u64 },
-    /// The supplied `xreserve` component declares a NON-EMPTY identifier value slot. The identifier
-    /// is the account-id fixpoint — the account id derives from the initial storage commitment, and
-    /// the identifier is, provisionally pending Circle confirmation, the faucet's own id as bytes32
-    /// — so it can never be build-seeded. The slot must ship EMPTY; the faucet-bound
-    /// `identifier_init` note is its only writer.
-    IdentifierNotEmpty,
     /// The three build-seeded domain-config fields (`domain`, `source_domain`,
     /// `xreserve_contract`) were not supplied — see
     /// [`XReserveStablecoinBuilder::with_domain_config`](super::XReserveStablecoinBuilder::with_domain_config).
-    /// These fields are build-seeded (only the identifier fixpoint stays a runtime init), so a
-    /// build without them would ship a faucet whose domain compare reads an empty slot.
+    /// A build without them would ship a faucet whose domain compare reads an empty slot.
     MissingDomainConfig,
     /// The supplied `xreserve` component does not declare a required storage slot
     /// ([`REQUIRED_XRESERVE_SLOT_LABELS`](super::REQUIRED_XRESERVE_SLOT_LABELS)); reads and writes
@@ -151,11 +144,6 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 "the active burn policy override carries a MinBurnAmount floor of {requested}, but \
                  the validated min_burn_size is {expected}; an override may not diverge (nor lower) \
                  the shipped burn floor"
-            ),
-            Self::IdentifierNotEmpty => write!(
-                f,
-                "the identifier config slot must be EMPTY at composition (the DEC-4 account-id \
-                 fixpoint can never be build-seeded; the identifier_init note is its only writer)"
             ),
             Self::MissingDomainConfig => write!(
                 f,

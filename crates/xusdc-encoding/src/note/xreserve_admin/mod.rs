@@ -10,9 +10,8 @@
 //!
 //! This module ships the faucet-owned rows of the note-script allowlist: the `set_attester`
 //! reference op, `set_min_burn_size` (targeting the STOCK `set_min_burn_amount` with a note-side
-//! zero-floor guard), `set_max_supply`, and `identifier_init` (the minimized identifier-only init;
-//! the other domain-config fields are build-seeded). All four resolve, through the account-wide
-//! authority, to the built-in `ADMIN` role.
+//! zero-floor guard), and `set_max_supply`. All three resolve, through the account-wide authority,
+//! to the built-in `ADMIN` role.
 //!
 //! Three admin surfaces do NOT ship a faucet-owned note script, because a standard note already
 //! covers each of them and calls the standard component the faucet installs. Pausing uses the

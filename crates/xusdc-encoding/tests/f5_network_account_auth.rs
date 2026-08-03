@@ -57,8 +57,7 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveIdentifierInitNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
-    XReserveSetMinBurnSizeNote,
+    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
@@ -191,7 +190,7 @@ fn production_faucet_auth_component_is_stock_network_account() -> Result<()> {
 // PROOF #5 — the frozen note-script allowlist + a tx-script allowlist of EXACTLY the expiration root
 // ================================================================================================
 
-/// The note-script allowlist is exactly the nine intended roots — two supply notes and seven
+/// The note-script allowlist is exactly the eight intended roots — two supply notes and six
 /// admin notes — with nothing extra and nothing missing.
 ///
 /// The allowlist cannot be changed after deployment, so its contents at build time are its contents
@@ -200,22 +199,22 @@ fn production_faucet_auth_component_is_stock_network_account() -> Result<()> {
 /// the account that auth actually consults. The expected roots are taken from the shipped note
 /// factories rather than written out as literals.
 ///
-/// Three of the seven admin roots are standard notes that each cover a whole capability behind one
+/// Three of the six admin roots are standard notes that each cover a whole capability behind one
 /// script root: pause and unpause; block and unblock; and grant, revoke, set-role-admin and
 /// renounce. There are no ownership notes — the faucet installs no ownership component, so rotating
-/// the administrator is a grant and a revoke of the `ADMIN` role.
+/// the administrator is a grant and a revoke of the `ADMIN` role. There is no identifier-init note
+/// either: the mint path derives the identifier from the account's own id, so nothing seeds it.
 #[test]
-fn production_faucet_note_allowlist_is_exactly_the_9_ratified_roots() -> Result<()> {
+fn production_faucet_note_allowlist_is_exactly_the_8_ratified_roots() -> Result<()> {
     let (_chain, account) = production_faucet()?;
     let expected: BTreeSet<_> = BTreeSet::from([
         // the two supply-side notes: minting uses the standard mint note
         MintNote::script_root(),
         BurnNote::script_root(),
-        // the four administrator-gated configuration notes
+        // the three administrator-gated configuration notes
         XReserveSetAttesterNote::script_root(),
         XReserveSetMinBurnSizeNote::script_root(),
         XReserveSetMaxSupplyNote::script_root(),
-        XReserveIdentifierInitNote::script_root(),
         // one standard note covers pausing AND unpausing
         PauseActionNote::script_root(),
         // one standard note covers blocking AND unblocking, gated on the blocklist manager role
@@ -225,24 +224,24 @@ fn production_faucet_note_allowlist_is_exactly_the_9_ratified_roots() -> Result<
     ]);
     assert_eq!(
         expected.len(),
-        9,
-        "the ratified allowlist is exactly 9 distinct roots"
+        8,
+        "the ratified allowlist is exactly 8 distinct roots"
     );
 
-    // Source layer: the builder's single-source allowlist == the 9 ratified roots.
+    // Source layer: the builder's single-source allowlist == the 8 ratified roots.
     assert_eq!(
         XReserveStablecoinBuilder::allowed_note_scripts(),
         expected,
-        "allowed_note_scripts() must equal EXACTLY the 9 ratified roots (extra/missing = RED)",
+        "allowed_note_scripts() must equal EXACTLY the 8 ratified roots (extra/missing = RED)",
     );
 
-    // On-chain layer: the built faucet's allowlist storage map == the 9 ratified roots.
+    // On-chain layer: the built faucet's allowlist storage map == the 8 ratified roots.
     let allowlist = NetworkAccountNoteAllowlist::try_from(account.storage())
         .map_err(|e| anyhow::anyhow!("the faucet must carry a note-script allowlist slot: {e}"))?;
     assert_eq!(
         allowlist.allowed_script_roots(),
         &expected,
-        "the built faucet's on-chain allowlist map must equal EXACTLY the 9 ratified roots",
+        "the built faucet's on-chain allowlist map must equal EXACTLY the 8 ratified roots",
     );
     Ok(())
 }

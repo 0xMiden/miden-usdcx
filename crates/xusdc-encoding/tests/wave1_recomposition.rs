@@ -228,9 +228,9 @@ fn custom_mint_transport_masm_is_deleted() -> Result<()> {
 }
 
 /// TRIPWIRE: the legacy config/burn admin MASM is replaced — `domain_config`/`min_burn_admin`/
-/// `burn_policy` delete; the minimized `identifier_init` module + note land (the
-/// identifier is a provable fixpoint of the account id, so ONLY it gets an init note; the other
-/// three domain-config fields are build-seeded).
+/// `burn_policy` delete; the identifier-init module + note are gone too (the identifier is a
+/// provable fixpoint of the account id, which is why the mint path derives it instead of reading a
+/// seeded slot; the other three domain-config fields are build-seeded).
 #[test]
 fn legacy_config_and_burn_masm_are_replaced() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();
@@ -245,16 +245,17 @@ fn legacy_config_and_burn_masm_are_replaced() -> Result<()> {
         );
     }
     assert!(
-        shipped_masm_path("identifier_init.masm").exists(),
-        "asm/standards/xreserve/identifier_init.masm (the minimized init surface) must exist"
+        !shipped_masm_path("identifier_init.masm").exists(),
+        "asm/standards/xreserve/identifier_init.masm must be deleted — the mint path derives the \
+         identifier from the account's own id, so there is nothing left to initialize"
     );
     assert!(
         !shipped_note_masm_path("xreserve_domain_init_note.masm").exists(),
         "the four-field domain_init note script must be deleted"
     );
     assert!(
-        shipped_note_masm_path("xreserve_identifier_init_note.masm").exists(),
-        "the identifier-only init note script must exist"
+        !shipped_note_masm_path("xreserve_identifier_init_note.masm").exists(),
+        "the identifier-init note script must be deleted along with the procedure it drove"
     );
     Ok(())
 }
@@ -346,14 +347,14 @@ fn min_burn_note_targets_the_stock_setter_with_a_floor_guard() -> Result<()> {
 // 4 — POSTURE: the note-script allowlist pins the stock MintNote
 // ================================================================================================
 
-/// TRIPWIRE: the 9-root allowlist's mint row is the STOCK `MintNote::script_root()`; the
+/// TRIPWIRE: the 8-root allowlist's mint row is the STOCK `MintNote::script_root()`; the
 /// former custom mint-note root is gone.
 #[test]
 fn note_allowlist_pins_the_stock_mint_note() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();
     let allowlist =
         xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::allowed_note_scripts();
-    assert_eq!(allowlist.len(), 9, "the ratified allowlist is 9 rows");
+    assert_eq!(allowlist.len(), 8, "the ratified allowlist is 8 rows");
     assert!(
         allowlist.contains(&MintNote::script_root()),
         "row 1 must be the STOCK miden-standards MintNote script root"

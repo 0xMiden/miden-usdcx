@@ -32,10 +32,9 @@ use xusdc_encoding::account::xreserve::{
 // value slots so it assembles). Mirrors `builder_api.rs`.
 const DUMMY_DOMAIN: u32 = 7;
 
-/// The SEVEN required xreserve slot labels (the builder's slot-presence guard).
-const ALL_XRESERVE_SLOT_LABELS: [&str; 7] = [
+/// The SIX required xreserve slot labels (the builder's slot-presence guard).
+const ALL_XRESERVE_SLOT_LABELS: [&str; 6] = [
     DOMAIN_CONFIG_SLOT_LABEL,
-    IDENTIFIER_CONFIG_SLOT_LABEL,
     SOURCE_DOMAIN_CONFIG_SLOT_LABEL,
     XRESERVE_CONTRACT_HI_SLOT_LABEL,
     XRESERVE_CONTRACT_LO_SLOT_LABEL,
@@ -44,8 +43,7 @@ const ALL_XRESERVE_SLOT_LABELS: [&str; 7] = [
 ];
 
 /// Assembles the xreserve component carrying exactly `labels` (the composition fixture; the two
-/// well-known map labels get empty maps, the domain a dummy word, and the identifier fixpoint the
-/// EMPTY word the builder requires, because the identifier is written by its init note, not seeded).
+/// well-known map labels get empty maps and the domain a dummy word).
 fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
     let library = assemble_xreserve_lib()?;
     let mut slots = Vec::new();
@@ -57,11 +55,6 @@ fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
             }
             l if l == DOMAIN_CONFIG_SLOT_LABEL => {
                 StorageSlot::with_value(name, Word::from([DUMMY_DOMAIN, 0, 0, 0]))
-            }
-            l if l == IDENTIFIER_CONFIG_SLOT_LABEL => {
-                // the identifier slot ships EMPTY — the builder rejects a pre-seeded value, because
-                // only the on-chain init may derive it from the account's own id.
-                StorageSlot::with_value(name, Word::empty())
             }
             _ => StorageSlot::with_value(name, Word::from([0u32, 0, 0, 0])),
         };

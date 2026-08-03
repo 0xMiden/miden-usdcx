@@ -130,7 +130,7 @@ end
 #!
 #! `amount` (felt[2..9]) and `maxFee` (felt[43..50]) come from the staged preimage; `feeAmount`
 #! does not travel in the intent at all and lives wherever the caller staged it. The amount
-#! goes through the encoding library's witness verifier against the `amount_y` untrusted 
+#! goes through the encoding library's witness verifier against the `amount_y` untrusted
 #! input from the note ("advice").
 #!
 #! Inputs:  [intent_ptr, fee_amount_ptr, amount_y]

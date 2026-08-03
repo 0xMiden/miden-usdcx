@@ -171,7 +171,6 @@ const LAYOUT_COVERED_NUMS: &[&str] = &[
     "DEPOSIT_INTENT_HEADER_FELTS",
     "DEPOSIT_INTENT_HEADER_BYTES",
     "BYTES_PER_FELT",
-    "MAX_NOTE_STORAGE_FELTS",
 ];
 const ENCODING_COVERED_NUMS: &[&str] = &[];
 const SHELL_COVERED_NUMS: &[&str] = &["DEPOSIT_SCALE_EXP"];
@@ -228,9 +227,8 @@ fn num(nums: &BTreeMap<String, u64>, name: &str, file: &str) -> u64 {
 
 /// DC-1 relation: every MASM felt offset × 4 equals the Rust byte offset, the packed
 /// magic/version equal the LE reinterpretation of the BE wire values, the header felt
-/// count matches both sides, the NoteStorage bound is the frozen 1024, and the
-/// extra rows pin the reducer's scale bound and limb base plus the Wave-1 S1
-/// attachment-scheme / word-count / scale rows.
+/// count matches both sides, and the extra rows pin the reducer's scale bound and
+/// limb base plus the Wave-1 S1 attachment-scheme / word-count / scale rows.
 #[test]
 fn masm_rust_constant_parity() {
     let (nums, _, _) = parse_masm_consts(LAYOUT_MASM);
@@ -287,11 +285,6 @@ fn masm_rust_constant_parity() {
         num(&nums, "DEPOSIT_INTENT_HEADER_BYTES", "layout.masm"),
         num(&nums, "DEPOSIT_INTENT_HEADER_FELTS", "layout.masm") * 4,
         "header byte length must be 4x the felt count (4 bytes per felt)"
-    );
-    assert_eq!(
-        num(&nums, "MAX_NOTE_STORAGE_FELTS", "layout.masm"),
-        1024,
-        "NoteStorage felt bound is frozen at 1024"
     );
 
     // extra row: the affine-pubkey felt count

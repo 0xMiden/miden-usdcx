@@ -87,7 +87,6 @@ const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
 #! - a config slot with the expected id does not exist in account storage.
 #!
 #! Invocation: exec
-@account_procedure
 pub proc assert_deposit_intent
     exec.encoding::parse_deposit_intent
     # => [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
@@ -139,7 +138,6 @@ end
 #! - reduced feeAmount != 0 (ERR_XRESERVE_FEE_NONZERO).
 #!
 #! Invocation: exec
-@account_procedure
 pub proc assert_mint_amounts
     # reduce amount (felt[2..9]); keep [intent_ptr, fee_amount_ptr, scale_exp] live below for reuse
     dup.2 dup.1 push.AMOUNT_FELT_OFF add
@@ -212,7 +210,6 @@ end
 #! - usedNonces[key] is non-empty (the nonce was already used) -> ERR_XRESERVE_NONCE_REPLAY.
 #!
 #! Invocation: exec
-@account_procedure
 pub proc assert_nonce_unused
     push.NONCE_FELT_OFF add
     # => [nonce_base]

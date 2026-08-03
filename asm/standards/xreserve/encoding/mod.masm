@@ -52,7 +52,6 @@ const ERR_DI_LENGTH = "deposit intent length relation violated"
 #! - KEY is the Poseidon2 hash-to-Word storage-map key.
 #!
 #! Invocation: exec
-@account_procedure
 pub proc bytes32_to_key
     # the hash absorbs B_LOWER (wire bytes 0..16) as the first rate word, so the
     # output is Poseidon2(B_LOWER || B_UPPER) over the 8 packed limbs
@@ -88,7 +87,6 @@ end
 #! - a supplied limb is not a valid u32.
 #!
 #! Invocation: exec
-@account_procedure
 pub proc uint256_to_asset_amount
     # guard every externally-supplied limb before any u32 op
     u32assertw.err=ERR_FELT_OUT_OF_FIELD
@@ -182,7 +180,6 @@ end
 #! - len_felts does not equal the header felt count plus the packed hookData felt count.
 #!
 #! Invocation: exec
-@account_procedure
 pub proc parse_deposit_intent
     # guard the externally-supplied pointer and length before any u32 op
     u32assert2.err=ERR_FELT_OUT_OF_FIELD

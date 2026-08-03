@@ -743,6 +743,49 @@ pub fn validate_driver_src(
     amount_y: u64,
     expected_intent_num_bytes: Option<u32>,
 ) -> String {
+    validate_driver_src_inner(
+        preimage,
+        intent_num_words,
+        fee_amount,
+        amount_y,
+        expected_intent_num_bytes,
+        false,
+    )
+}
+
+/// Like [`validate_driver_src`], but overwrites the staged intent's `remoteToken` with eight felts
+/// taken from the advice stack before entering `validate`.
+///
+/// The faucet compares `remoteToken` against its OWN account id, and an account id is a hash over
+/// the account's code — which includes this very driver. A driver that baked the bound token into
+/// its source would therefore change the id it is trying to match. Taking the eight limbs as
+/// transaction inputs breaks that circularity: the account is built first, and the Rust encoder
+/// then produces the bytes for the id it actually got ([`own_token_advice`]).
+pub fn validate_driver_src_own_token(
+    preimage: &[Felt],
+    intent_num_words: u64,
+    fee_amount: &[Felt],
+    amount_y: u64,
+    expected_intent_num_bytes: Option<u32>,
+) -> String {
+    validate_driver_src_inner(
+        preimage,
+        intent_num_words,
+        fee_amount,
+        amount_y,
+        expected_intent_num_bytes,
+        true,
+    )
+}
+
+fn validate_driver_src_inner(
+    preimage: &[Felt],
+    intent_num_words: u64,
+    fee_amount: &[Felt],
+    amount_y: u64,
+    expected_intent_num_bytes: Option<u32>,
+    splice_own_token: bool,
+) -> String {
     let mut src = String::from(
         "use xreserve::deposit_intent_parser\n\n\
          #! Test driver: stages a DepositIntent preimage and a feeAmount in the account context\n\
@@ -756,6 +799,12 @@ pub fn validate_driver_src(
          pub proc drive\n",
     );
     stage_preimage(&mut src, preimage);
+    if splice_own_token {
+        for i in 0..8 {
+            let addr = INTENT_PTR + REMOTE_TOKEN_FELT_OFF + i;
+            writeln!(src, "    adv_push mem_store.{addr}").unwrap();
+        }
+    }
     stage_felts(&mut src, fee_amount, FEE_AMOUNT_PTR);
     writeln!(src, "    push.{amount_y}").unwrap();
     writeln!(src, "    push.{FEE_AMOUNT_PTR}").unwrap();
@@ -777,6 +826,19 @@ pub fn validate_driver_src(
     }
     src.push_str("end\n");
     src
+}
+
+/// The first felt of the DepositIntent `remoteToken` field in a staged preimage (wire bytes
+/// 44..76, four wire bytes per felt).
+const REMOTE_TOKEN_FELT_OFF: u64 = 11;
+
+/// The eight advice felts [`validate_driver_src_own_token`] splices into a staged intent: the packed
+/// limbs of `account_id_to_bytes32(faucet_id)`, produced by the RUST encoder.
+pub fn own_token_advice(faucet_id: AccountId) -> Vec<Felt> {
+    xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts(
+        &xusdc_encoding::xreserve::encoding::account_id_to_bytes32(faucet_id),
+    )
+    .to_vec()
 }
 
 /// Generates the P2 slot-binding probe component: reads BOTH config slots via

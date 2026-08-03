@@ -2,9 +2,11 @@
 #
 # The DepositIntent parser and the faucet-side mint preconditions it feeds, behind the single
 # `validate` entry: the structural parse and length derivation, the domain and identifier
-# equality compares, the amount/fee bounds, and the nonce replay guard. The identifier slot
-# stores the canonical `bytes32_to_key` key-Word, so the identifier equality is realized as key
-# equality.
+# equality compares, the amount/fee bounds, and the nonce replay guard. The identifier the intent
+# is checked against is the faucet's OWN account id in the frozen bytes32 packaging, derived on
+# chain here rather than stored: the account id is a hash over the account's initial storage, so
+# the identifier could never have been seeded into that storage in the first place. The compare is
+# over the canonical `bytes32_to_key` key-Word, so identifier equality is realized as key equality.
 #
 # A DepositIntent is the Circle-signed message that authorizes one mint. Its wire form is a
 # fixed 240-byte big-endian header followed by variable-length hookData; on-chain it is staged
@@ -16,7 +18,7 @@
 # - remoteDomain (bytes 40..44): the destination-domain id Circle assigns this chain; the
 #   faucet accepts only its configured domain.
 # - remoteToken (bytes 44..76): the destination token identifier as bytes32; the faucet
-#   accepts only its configured identifier.
+#   accepts only its own account id in that packaging.
 # - remoteRecipient (bytes 76..108): the destination account to mint to, as bytes32 (the
 #   right-aligned account-id packaging); chosen by the depositor.
 # - localToken (bytes 108..140): the source-chain token contract as bytes32; set by Circle.
@@ -312,9 +314,9 @@ end
 # HELPER PROCEDURES
 # =================================================================================================
 
-#! Asserts the two faucet-owned addressing compares against the faucet config slots: the parsed
-#! remote domain must equal the configured domain, and the canonical key-Word of the parsed remote
-#! token must equal the configured identifier key.
+#! Asserts the two faucet-owned addressing compares: the parsed remote domain must equal the
+#! configured domain, and the canonical key-Word of the parsed remote token must equal the faucet's
+#! own identifier key — derived here from the native account id, not read from storage.
 #!
 #! Inputs:  [remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER]
 #! Outputs: []
@@ -326,8 +328,8 @@ end
 #!
 #! Panics if:
 #! - the parsed remote domain does not equal the faucet's configured domain.
-#! - the parsed remote token's key does not equal the faucet's configured identifier key.
-#! - a config slot with the expected id does not exist in account storage.
+#! - the parsed remote token's key does not equal the faucet's own identifier key.
+#! - the domain config slot with the expected id does not exist in account storage.
 #!
 #! Invocation: exec
 proc validate_domain_and_identifier
@@ -347,9 +349,10 @@ proc validate_domain_and_identifier
     exec.encoding::bytes32_to_key
     # => [KEY]
 
-    push.IDENTIFIER_CONFIG_SLOT[0..2]
-    exec.active_account::get_item
-    # => [STORED_KEY, KEY]
+    # the comparand is DERIVED from the faucet's own account id, so it exists from the moment the
+    # account does and no deploy-time write can get it wrong
+    exec.compute_own_identifier_key
+    # => [OWN_KEY, KEY]
 
     assert_eqw.err=ERR_XRESERVE_WRONG_IDENTIFIER
     # => []

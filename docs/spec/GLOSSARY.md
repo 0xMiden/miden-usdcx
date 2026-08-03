@@ -37,7 +37,7 @@ supply-cap check of `D5e`; `R-MINT-16` the deny of the stock mint path.
 | R-MINT-4 | `localToken` field is non-zero. |
 | R-MINT-5 | `localDepositor` field is non-zero. |
 | R-MINT-6 | DepositIntent `remoteDomain` equals the faucet's configured domain. |
-| R-MINT-7 | DepositIntent `remoteToken` (hashed to a key) equals the faucet's configured identifier key. |
+| R-MINT-7 | DepositIntent `remoteToken` (hashed to a key) equals the faucet's own identifier key — DERIVED on chain from the native account id, not read from a slot. [DEC-4 REVERSED 2026-08-03; see `DECISION-DEC4-REVERSAL-IDENTIFIER-DERIVE.md`.] |
 | R-MINT-8 | Total preimage length equals `240 + hookDataLen` (header + hookData). |
 | R-MINT-9 | Reduced `amount`/`maxFee`/`feeAmount` fit ≤ 2^128 (high four limbs zero) — else "too large". |
 | R-MINT-10 | Reduced `amount ≥ maxFee`. |
@@ -66,7 +66,7 @@ supply-cap check of `D5e`; `R-MINT-16` the deny of the stock mint path.
 | R-ADMIN-1 | `set_attester` is administrator-gated: it carries no role of its own, so the account's role-based authority resolves it to the built-in `ADMIN` role — whose sole seeded member is the bootstrap administrator's account — and a sender without that role is rejected. |
 | R-ADMIN-2 | `set_min_burn_size` is administrator-gated (unmapped, so it resolves to the built-in `ADMIN` role). |
 | R-ADMIN-3 | `pause` / `unpause` require the `DOM_PAUSER` role. |
-| R-ADMIN-4 | Domain config is init-once. [Wave-1 S1 → DEC-4: the runtime init is the minimized `identifier_init` (identifier-only; a second init traps); the other three fields are build-seeded with no runtime writer.] |
+| R-ADMIN-4 | Domain config is init-once. [Wave-1 S1 → DEC-4: the runtime init was the minimized `identifier_init` (identifier-only; a second init trapped); the other three fields are build-seeded with no runtime writer.] [SUPERSEDED 2026-08-03 → DEC-4 REVERSED: there is NO runtime init at all. The identifier has no slot — the mint path derives it from the account's own id — so all remaining domain-config fields are build-seeded and immutable by construction.] |
 
 ## Mint pipeline stages — `D5a`–`D5e`
 
@@ -416,7 +416,7 @@ sections:
 | §5.2 | The sole-supply-surface property (`INV-MINT-SECURITY`). |
 | §5.5 | `XReserveAttesterAdmin` — home of the `xReserveAttesters` allowlist and `minBurnSize` slots. |
 | §5.6 | The `usedNonces` nonce registry. |
-| §5.9 | The domain config. [Wave-1 S1 → three fields build-seeded; the identifier via the minimized `identifier_init` note (DEC-4).] |
+| §5.9 | The domain config. [Wave-1 S1 → three fields build-seeded; the identifier via the minimized `identifier_init` note (DEC-4).] [SUPERSEDED 2026-08-03 → DEC-4 REVERSED: the identifier slot is deleted; the mint path derives the identifier from the native account id.] |
 | §5.12 | The admin setters and pause. |
 | §5.13 | The builder's slot-presence guard. |
 | §6.6 | (shared-encoding spec) the `burn_note` item codec (`DC-7`). |

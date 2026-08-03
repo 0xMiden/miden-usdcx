@@ -109,8 +109,9 @@ pub const USDCX_TOKEN_SYMBOL: &str = "USDCX";
 pub const USDCX_DECIMALS: u8 = 6;
 
 /// Canonical Rust labels of the six caller-declared `xreserve` storage slots: the four
-/// domain-config slots + the two registry maps. All four config fields are BUILD-SEEDED by this
-/// builder and have no runtime writer.
+/// domain-config slots + the two registry maps. The four slots hold THREE build-seeded fields —
+/// `xreserve_contract` is one bytes32 spread across its `hi`/`lo` pair — and none of the three
+/// has a runtime writer.
 pub const DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::domain";
 pub const SOURCE_DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::source_domain";
 pub const XRESERVE_CONTRACT_HI_SLOT_LABEL: &str =

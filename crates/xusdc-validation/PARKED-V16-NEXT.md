@@ -91,3 +91,22 @@ onto the released `v0.16.0` crates.io family **and** a matching `miden-client`/n
    at it. The note-script allowlist is 9 roots, not 14, and the callable surface is 70, not 75.
 5. Re-run the LNV row gates (`cargo run -p xusdc-validation --bin …` per this crate's README)
    against the matching node stack and extend `VALIDATION-RECORD.md` with the run.
+
+## Un-park obligation added 2026-08-03 — the identifier init is gone
+
+The DEC-4 reversal (`docs/DECISION-DEC4-REVERSAL-IDENTIFIER-DERIVE.md`) deleted the whole
+identifier-init mechanism from the shipped faucet: the mint path now DERIVES the faucet identifier
+from the native account id, so there is no `identifier_init` procedure, no note script, no
+`XReserveIdentifierInitNote` factory, and no `xusdc::xreserve::domain_config::identifier` slot.
+
+This crate is deliberately left byte-intact at its v16-alpha state, so its deploy flow and LNV rows
+still reference all of the above. Un-parking must therefore ALSO:
+
+- drop the identifier slot from the deployed `xreserve` component (the builder's required-slot set
+  is six labels now, not seven);
+- delete the identifier-init step from the deploy flow and every row that asserts init behavior
+  (row A/B's init-once leg in particular);
+- keep every mint payload's `remoteToken` bound to `account_id_to_bytes32(faucet_id)` — that binding
+  is what the derived comparand checks against, and it is unchanged.
+
+Nothing here is verifiable until the crate compiles again, which is why it was not edited blind.

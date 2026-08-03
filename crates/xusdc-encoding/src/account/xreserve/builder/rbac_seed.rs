@@ -15,19 +15,23 @@ use super::{BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 ///   Domain roles.
 /// * `BLK_MANAGER` (→ `blocklist_manager_holder`), the transfer-blocklist administrator. It is
 ///   capability-isolated — the holder can ONLY block and unblock — and its admin resolves to the
-///   built-in `ADMIN`, so the owner rotates or revokes it with the existing grant/revoke notes.
-/// * the stock `ADMIN` role, whose single member is the OWNER's account.
+///   built-in `ADMIN`, so the administrator rotates or revokes it through the standard role-action
+///   note.
+/// * the stock `ADMIN` role, whose single member is the bootstrap administrator's account.
 ///
-/// Seeding `ADMIN` with the owner is what grants the owner role administration: the Ownable2Step
-/// owner carries no implicit super-admin standing over the role graph. `ADMIN` is the built-in
-/// default admin role that any role with no delegated admin resolves to, so the owner-held account
-/// administers `DOM_MANAGER` through its `ADMIN` membership.
+/// Seeding `ADMIN` with the administrator's account is what grants it role administration. `ADMIN`
+/// is the built-in default admin role (`rbac.masm`) that any role with no delegated admin resolves
+/// to, so this seed gives that one account authority over `DOM_MANAGER` and `BLK_MANAGER` — and,
+/// since the faucet installs no ownership component, `ADMIN` membership is the account's ONLY
+/// authority handle.
 ///
-/// This seed is the ENTIRE role-admin graph the faucet will ever have: the runtime
-/// `set_role_admin` note is not allowlisted, so `role_config[*].admin_role` is immutable
-/// post-deploy. One consequence to note: after `transfer_ownership`/`accept_ownership`, `ADMIN`
-/// membership does not auto-follow, so the rotation runbook grants `ADMIN` to the new owner and
-/// revokes the old one via the existing grant/revoke admin notes.
+/// This seed is the STARTING role-admin graph, not a permanent one. The standard role-action note
+/// is allowlisted, and its single script root carries `set_role_admin` alongside grant and revoke,
+/// so `role_config[*].admin_role` is runtime-mutable: each role's effective admin may re-point the
+/// role it administers, and because delegation is exclusive, `ADMIN` cannot re-point, grant or
+/// revoke `DOM_PAUSER` — `DOM_MANAGER` governs it exclusively. Rotating the administrator itself is
+/// a grant of `ADMIN` to the incoming account and a revoke from the outgoing one, through that same
+/// note.
 ///
 /// Both stock RBAC maps are direct-seeded at build, matching the stock procs' post-state for a
 /// single first grant per role — `role_membership[{0, <role>, holder.suffix, holder.prefix}] =

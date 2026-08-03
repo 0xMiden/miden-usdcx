@@ -145,7 +145,7 @@ async fn the_blocklist_role_holder_unblocks_through_the_stock_note() -> Result<(
     Ok(())
 }
 
-/// The bootstrap administrator cannot pause. Today the owner has no pause path at all, and a map
+/// The bootstrap administrator cannot pause. Today the administrator has no pause path at all, and a map
 /// entry has to take precedence over the administrator fallback for that to stay true.
 #[tokio::test]
 async fn the_administrator_cannot_pause() -> Result<()> {
@@ -238,7 +238,7 @@ async fn an_account_holding_no_role_can_neither_pause_nor_block() -> Result<()> 
 }
 
 /// A procedure with no map entry resolves to the administrator role: the administrator can freeze,
-/// and a role holder — who is not an administrator — cannot. Every one of today's owner-gated
+/// and a role holder — who is not an administrator — cannot. Every one of the administrator-gated
 /// setters relies on exactly this, since none of them is mapped and all of them must stay with the
 /// account that holds them now.
 #[tokio::test]

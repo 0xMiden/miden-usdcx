@@ -65,7 +65,7 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
     // surface ever changes, this fails loudly (and the whole point below — the prose — must follow).
     assert_eq!(
         (xreserve, stock, total, notes),
-        (10, 64, 74, 12),
+        (10, 59, 69, 9),
         "the executable callable surface changed ({xreserve} xreserve + {stock} stock = {total} \
          roots, {notes}-note allowlist) — update the ratified constants AND every count-phrase in \
          the conformance prose together (MIGRATION-V16-ALPHA2.md stock-surface discipline)"
@@ -96,6 +96,9 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
     // (fewer xreserve roots, a different stock-row total, a smaller note allowlist), so any of
     // them reappearing in prose means the text no longer describes the executable account.
     let superseded = [
+        "75-root",
+        "64 stock",
+        "12-root",
         "64-root",
         "49 stock",
         "62-root",

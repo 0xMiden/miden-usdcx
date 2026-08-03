@@ -1,4 +1,4 @@
-//! Seeding the faucet's identifier: an owner-only write that can happen exactly once.
+//! Seeding the faucet's identifier: an administrator-only write that can happen exactly once.
 //!
 //! Of the faucet's five domain-config words, four — the domain, the source domain, and the two
 //! halves of the xReserve contract address — are seeded by the builder when the account is
@@ -39,11 +39,12 @@ use xusdc_encoding::xreserve::encoding::{
     account_id_to_bytes32, bytes32_to_packed_felts, bytes32_to_storage_map_key,
 };
 
-// The production builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3)
+// The production builder seeds the administrator = id(1) (the sole ADMIN member), DOM_PAUSER =
+// id(2), DOM_MANAGER = id(3)
 // (support::setup_guarded_mint_account -> XReserveStablecoinBuilder::new(.., id(1), id(2), ..)).
-// The owner-SPECIFIC auth proof needs distinct senders: the owner, a role holder (NOT owner),
-// and a stranger (neither).
-fn owner() -> AccountId {
+// The auth proof needs distinct senders: the administrator, a role holder that is not one, and a
+// stranger holding nothing.
+fn administrator() -> AccountId {
     test_account_id(1)
 }
 fn dom_pauser() -> AccountId {
@@ -101,7 +102,7 @@ const NOOP_DRIVER_SRC: &str = "#! No-op driver placeholder (never invoked by thi
                                end\n";
 
 /// A production-composed faucet in exactly the state a real deployment is in before its first
-/// init: the attestation mint policy active, ownership and roles seeded, the domain config
+/// init: the attestation mint policy active, the roles seeded, the domain config
 /// build-seeded, and the identifier slot still empty.
 fn uninit_identifier_faucet() -> Result<GuardedMint> {
     setup_guarded_mint_account(
@@ -156,7 +157,7 @@ fn identifier_init_note_binds_the_identifier_to_the_faucet() -> Result<()> {
     );
 
     // the built note for faucet A carries key_a verbatim in its storage — not a vector token.
-    let note = XReserveIdentifierInitNote::create(owner(), fa, &mut note_rng(1))?;
+    let note = XReserveIdentifierInitNote::create(administrator(), fa, &mut note_rng(1))?;
     let items = note.recipient().storage().items();
     assert_eq!(
         &items[0..4],
@@ -213,21 +214,27 @@ fn production_build_seeds_the_domain_config() -> Result<()> {
     Ok(())
 }
 
-// WRITE INTEGRITY — the owner's init writes the identifier verbatim and NOTHING else
+// WRITE INTEGRITY — the administrator's init writes the identifier verbatim and NOTHING else
 // ================================================================================================
 
-/// The owner's `identifier_init` with the faucet's OWN-id key succeeds, stores that Word, and
+/// The administrator's `identifier_init` with the faucet's OWN-id key succeeds, stores that Word, and
 /// leaves the four build-seeded config words byte-identical (before == after) — the minimized
 /// init touches ONLY the identifier slot, and the stored value IS the on-chain-derived fixpoint.
 #[tokio::test]
-async fn identifier_init_owner_writes_the_own_id_key() -> Result<()> {
+async fn identifier_init_administrator_writes_the_own_id_key() -> Result<()> {
     let gm = uninit_identifier_faucet()?;
     let account = faucet_account(&gm.harness);
     let before = read_domain_config_words(&account)?;
 
-    let executed = run_identifier_init_tx(&gm.harness, &account, owner(), own_identifier(&gm), 1)
-        .await
-        .expect("the owner's identifier_init must succeed");
+    let executed = run_identifier_init_tx(
+        &gm.harness,
+        &account,
+        administrator(),
+        own_identifier(&gm),
+        1,
+    )
+    .await
+    .expect("the administrator's identifier_init must succeed");
     let mut evolved = account.clone();
     evolved.apply_patch(executed.account_patch())?;
 
@@ -250,7 +257,7 @@ async fn identifier_init_owner_writes_the_own_id_key() -> Result<()> {
 
 /// An init carrying any identifier other than the faucet's own traps and writes nothing.
 ///
-/// Even sent by the owner, a foreign value is refused: the procedure derives the expected key
+/// Even sent by the administrator, a foreign value is refused: the procedure derives the expected key
 /// on-chain from its own account id and requires the note's committed word to equal it. That
 /// closes the deploy-time griefing window — a freshly deployed faucet's init is open to whoever
 /// gets there first, but the only thing anyone can write is the identifier the faucet was always
@@ -260,30 +267,42 @@ async fn identifier_init_foreign_identifier_rejects() -> Result<()> {
     let gm = uninit_identifier_faucet()?;
     let account = faucet_account(&gm.harness);
 
-    let result =
-        run_identifier_init_tx(&gm.harness, &account, owner(), foreign_identifier(), 8).await;
+    let result = run_identifier_init_tx(
+        &gm.harness,
+        &account,
+        administrator(),
+        foreign_identifier(),
+        8,
+    )
+    .await;
     assert_transaction_executor_error!(
         result,
         shell_error_by_name("ERR_XRESERVE_IDENTIFIER_MISMATCH")
     );
 
     // no-write proof: a trapped tx commits nothing; the config stays the exact build-seed, so
-    // the owner's own-id init on the same account still succeeds (the sentinel stayed unarmed).
+    // the administrator's own-id init on the same account still succeeds (the sentinel stayed unarmed).
     assert_eq!(
         read_domain_config_words(&account)?,
         pre_init_config(),
         "a rejected foreign-identifier init must write nothing"
     );
-    run_identifier_init_tx(&gm.harness, &account, owner(), own_identifier(&gm), 9)
-        .await
-        .expect("the own-id init proves the rejected foreign init left the sentinel unarmed");
+    run_identifier_init_tx(
+        &gm.harness,
+        &account,
+        administrator(),
+        own_identifier(&gm),
+        9,
+    )
+    .await
+    .expect("the own-id init proves the rejected foreign init left the sentinel unarmed");
     Ok(())
 }
 
 // INIT-ONCE — once the identifier is set, a second write traps and changes nothing
 // ================================================================================================
 
-/// First `identifier_init` succeeds; a SECOND — even from the owner, with a different value —
+/// First `identifier_init` succeeds; a SECOND — even from the administrator, with a different value —
 /// traps the EXACT ERR_XRESERVE_IDENTIFIER_REINIT (the identifier slot IS the init-once
 /// sentinel) and leaves all five config words unchanged.
 #[tokio::test]
@@ -291,9 +310,15 @@ async fn identifier_init_reinit_traps_and_leaves_config_unchanged() -> Result<()
     let gm = uninit_identifier_faucet()?;
     let account = faucet_account(&gm.harness);
 
-    let first = run_identifier_init_tx(&gm.harness, &account, owner(), own_identifier(&gm), 1)
-        .await
-        .expect("first identifier_init must succeed");
+    let first = run_identifier_init_tx(
+        &gm.harness,
+        &account,
+        administrator(),
+        own_identifier(&gm),
+        1,
+    )
+    .await
+    .expect("first identifier_init must succeed");
     let mut evolved = account.clone();
     evolved.apply_patch(first.account_patch())?;
     let before = read_domain_config_words(&evolved)?;
@@ -308,7 +333,7 @@ async fn identifier_init_reinit_traps_and_leaves_config_unchanged() -> Result<()
     let result = run_identifier_init_tx(
         &gm.harness,
         &evolved,
-        owner(),
+        administrator(),
         Word::from([91u32, 92, 93, 94]),
         2,
     )
@@ -339,7 +364,8 @@ async fn identifier_init_empty_identifier_traps() -> Result<()> {
     let gm = uninit_identifier_faucet()?;
     let account = faucet_account(&gm.harness);
 
-    let result = run_identifier_init_tx(&gm.harness, &account, owner(), Word::empty(), 1).await;
+    let result =
+        run_identifier_init_tx(&gm.harness, &account, administrator(), Word::empty(), 1).await;
     assert_transaction_executor_error!(
         result,
         shell_error_by_name("ERR_XRESERVE_IDENTIFIER_EMPTY")
@@ -354,50 +380,57 @@ async fn identifier_init_empty_identifier_traps() -> Result<()> {
     Ok(())
 }
 
-// OWNER-SPECIFIC AUTH — a role holder who is NOT the owner and a stranger both reject
+// ADMINISTRATOR-SPECIFIC AUTH — a role holder who is not the administrator and a stranger both reject
 // ================================================================================================
 
-/// Shared body of the non-owner reject family: the sender traps the EXACT ERR_SENDER_NOT_OWNER
-/// and writes nothing (the config stays the pre-init build-seed).
-async fn assert_identifier_init_nonowner_rejects(sender: AccountId, seed: u64) -> Result<()> {
+/// Shared body of the non-administrator reject family: the sender traps the EXACT role error the
+/// account-wide authority raises, and writes nothing (the config stays the pre-init build-seed).
+async fn assert_identifier_init_nonadmin_rejects(sender: AccountId, seed: u64) -> Result<()> {
     let gm = uninit_identifier_faucet()?;
     let account = faucet_account(&gm.harness);
 
     let result =
         run_identifier_init_tx(&gm.harness, &account, sender, foreign_identifier(), seed).await;
-    assert_transaction_executor_error!(result, err_sender_not_owner());
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
     assert_eq!(
         read_domain_config_words(&account)?,
         pre_init_config(),
-        "a rejected non-owner init must write nothing"
+        "a rejected non-administrator init must write nothing"
     );
     Ok(())
 }
 
-/// A seeded DOM role holder (id(2), DOM_PAUSER) who is NOT the owner rejects —
-/// `identifier_init` is OWNER-gated, not role-gated. The owner's follow-up init on the SAME
-/// account still succeeds, proving the rejected tx left the sentinel unarmed (had it written,
-/// this would trap ERR_XRESERVE_IDENTIFIER_REINIT).
+/// A seeded DOM role holder (id(2), DOM_PAUSER) rejects — `identifier_init` resolves through the
+/// account-wide authority to the built-in administrator role, which the Domain pauser does not
+/// hold. The administrator's follow-up init on the SAME account still succeeds, proving the
+/// rejected tx left the sentinel unarmed (had it written, this would trap
+/// ERR_XRESERVE_IDENTIFIER_REINIT).
 #[tokio::test]
 async fn identifier_init_dom_pauser_rejects() -> Result<()> {
-    assert_identifier_init_nonowner_rejects(dom_pauser(), 3).await?;
+    assert_identifier_init_nonadmin_rejects(dom_pauser(), 3).await?;
 
     let gm = uninit_identifier_faucet()?;
     let account = faucet_account(&gm.harness);
     let rejected =
         run_identifier_init_tx(&gm.harness, &account, dom_pauser(), foreign_identifier(), 3).await;
-    assert_transaction_executor_error!(rejected, err_sender_not_owner());
-    run_identifier_init_tx(&gm.harness, &account, owner(), own_identifier(&gm), 4)
-        .await
-        .expect("the owner write proves the rejected tx left the sentinel unarmed");
+    assert_transaction_executor_error!(rejected, err_sender_lacks_role());
+    run_identifier_init_tx(
+        &gm.harness,
+        &account,
+        administrator(),
+        own_identifier(&gm),
+        4,
+    )
+    .await
+    .expect("the administrator write proves the rejected tx left the sentinel unarmed");
     Ok(())
 }
 
-/// A stranger (id(9), neither owner nor role holder) rejects with the EXACT
-/// ERR_SENDER_NOT_OWNER and writes nothing.
+/// A stranger (id(9), holding no role at all) rejects with the EXACT role error and writes
+/// nothing.
 #[tokio::test]
 async fn identifier_init_stranger_rejects() -> Result<()> {
-    assert_identifier_init_nonowner_rejects(stranger(), 5).await
+    assert_identifier_init_nonadmin_rejects(stranger(), 5).await
 }
 
 // PAUSE ASYMMETRY — deploy-time config is NOT pause-gated
@@ -424,11 +457,15 @@ async fn identifier_init_succeeds_while_paused() -> Result<()> {
     );
 
     // identifier_init on the PAUSED faucet succeeds and writes the identifier.
-    let executed = run_identifier_init_tx(&gm.harness, &evolved, owner(), own_identifier(&gm), 7)
-        .await
-        .expect(
-            "identifier_init must succeed while paused (deploy-time config is not pause-gated)",
-        );
+    let executed = run_identifier_init_tx(
+        &gm.harness,
+        &evolved,
+        administrator(),
+        own_identifier(&gm),
+        7,
+    )
+    .await
+    .expect("identifier_init must succeed while paused (deploy-time config is not pause-gated)");
     evolved.apply_patch(executed.account_patch())?;
     assert_eq!(
         read_domain_config_words(&evolved)?[4],

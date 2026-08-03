@@ -1,5 +1,5 @@
 //! Faucet-owned ADMIN note factories: the root-pinned, storage-param admin notes the faucet
-//! network account consumes to drive its owner/role-gated admin procs.
+//! network account consumes to drive its role-gated admin procs.
 //!
 //! Each admin note:
 //!
@@ -9,22 +9,24 @@
 //! * carries a scheme-2 `NetworkAccountTarget` routing bind to the faucet (routing-only).
 //!
 //! The note script marshals the params onto the stack and `call`s the unchanged sender-gated admin
-//! proc — the note sender is kernel-forced, so the proc's owner/role gate is sound under
-//! permissionless network execution.
+//! proc — the note sender is kernel-forced, so the proc's role gate is sound under permissionless
+//! network execution.
 //!
 //! This module ships the faucet-owned rows of the note-script allowlist: the `set_attester`
 //! reference op, `set_min_burn_size` (targeting the STOCK `set_min_burn_amount` with a note-side
-//! zero-floor guard), `set_max_supply`, `grant_role`, `revoke_role`, `transfer_ownership`,
-//! `accept_ownership`, and `identifier_init` (the minimized identifier-only init; the other
-//! domain-config fields are build-seeded). There is deliberately NO `set_role_admin` note: the
-//! role-admin delegation graph is build-seeded and deploys frozen — see the SET_ROLE_ADMIN section
-//! below.
+//! zero-floor guard), `set_max_supply`, and `identifier_init` (the minimized identifier-only init;
+//! the other domain-config fields are build-seeded). All four resolve, through the account-wide
+//! authority, to the built-in `ADMIN` role.
 //!
-//! Pausing and the transfer blocklist do NOT ship a faucet-owned note script. They run through the
-//! STANDARD pause-action and blocklist-config notes, each of which covers both of its actions
-//! behind one script root and calls the standard manager the faucet installs. Pausing uses the
-//! standard note directly with no faucet wrapper at all; the blocklist gets [`blocklist`]'s thin
-//! factory, which exists solely to refuse building a note that would block the faucet itself.
+//! Three admin surfaces do NOT ship a faucet-owned note script, because a standard note already
+//! covers each of them and calls the standard component the faucet installs. Pausing uses the
+//! standard pause-action note directly, with no faucet wrapper at all. Role management uses the
+//! standard role-action note, whose single script root carries grant, revoke, set-role-admin and
+//! renounce alike. The blocklist uses the standard blocklist-config note through [`blocklist`]'s
+//! thin factory, which exists solely to refuse building a note that would block the faucet itself.
+//!
+//! There is no ownership note either: the faucet installs no two-step ownership component, so
+//! rotation is a grant and a revoke of the `ADMIN` role through the standard role-action note.
 
 use std::sync::Arc;
 
@@ -44,13 +46,9 @@ use miden_standards::StandardsLib;
 
 mod blocklist;
 mod config;
-mod ownership;
-mod roles;
 
 pub use blocklist::*;
 pub use config::*;
-pub use ownership::*;
-pub use roles::*;
 
 /// Compiles an admin note-script source with the shipped `xreserve` component library linked so its
 /// `call.<module>::<proc>` resolves to the SAME proc installed on the faucet account.
@@ -108,10 +106,15 @@ pub(super) fn build_admin_note<R: FeltRng>(
     ))
 }
 
-// SET_ROLE_ADMIN — NO FACTORY
+// ROLE MANAGEMENT — NO FACTORY (the standard role-action note covers it)
 // ================================================================================================
-// There is deliberately no `XReserveSetRoleAdminNote`, matching `renounce_role`, which also has no
-// factory and is never allowlisted. The role-admin graph is build-seeded by `seeded_dom_roles_rbac`
-// and deploys frozen; rotation goes through `grant_role`/`revoke_role`, with the owner as the
-// backstop. The stock `rbac::set_role_admin` account procedure remains composed but is unreachable,
-// since no allowlisted note reaches it.
+// There is no faucet-owned role note. The standard role-action note is allowlisted instead, and its
+// single script root carries all four of the standard role component's management actions: grant,
+// revoke, set-role-admin and renounce. Admitting the root admits all four, so the role-admin graph
+// the build seeds is runtime-mutable rather than frozen, and a role holder can drop its own
+// membership. That exposure is deliberate and human-ratified; the allowlist doc in
+// `account::xreserve::builder` states what it means for the account.
+//
+// Authorization is unchanged by the move: every action is gated by the standard role component
+// against the note sender — grant, revoke and set-role-admin on the target role's effective admin
+// role, renounce on the sender's own membership.

@@ -107,10 +107,14 @@ async fn mint_rejects_a_removed_attester() -> Result<()> {
     let mut pf = fixture_with(MAX_SUPPLY, |recipient, faucet_id| {
         let commitment =
             gen_attester(1, &payload_for(recipient, faucet_id, MINT_AMOUNT, 0)).commitment;
-        vec![
-            XReserveSetAttesterNote::create(owner(), faucet_id, commitment, 0, &mut note_rng(954))
-                .expect("building the owner remove-attester note"),
-        ]
+        vec![XReserveSetAttesterNote::create(
+            administrator(),
+            faucet_id,
+            commitment,
+            0,
+            &mut note_rng(954),
+        )
+        .expect("building the administrator remove-attester note")]
     })?;
     bring_up(&mut pf, 3).await?; // identifier_init + set_attester(enable) + set_attester(REMOVE)
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 30);
@@ -133,7 +137,7 @@ async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<
         let base = payload_for(recipient, faucet_id, MINT_AMOUNT, 0);
         vec![
             XReserveSetAttesterNote::create(
-                owner(),
+                administrator(),
                 faucet_id,
                 gen_attester(1, &base).commitment,
                 0,
@@ -141,7 +145,7 @@ async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<
             )
             .expect("building the rotate-out note"),
             XReserveSetAttesterNote::create(
-                owner(),
+                administrator(),
                 faucet_id,
                 gen_attester(2, &base).commitment,
                 1,
@@ -287,19 +291,19 @@ async fn mint_rejects_an_over_cap_amount() -> Result<()> {
 // the attested mint interact exactly as the stock discipline dictates)
 // ================================================================================================
 
-/// LOWER-then-over-cap: the owner's `set_max_supply` note LOWERS the cap below the attested
+/// LOWER-then-over-cap: the administrator's `set_max_supply` note LOWERS the cap below the attested
 /// amount BEFORE the mint; the attested mint then rejects in the stock cap discipline,
 /// fail-closed (no nonce burned, no supply raised).
 #[tokio::test]
-async fn mint_rejects_after_the_owner_lowers_max_supply_below_the_amount() -> Result<()> {
+async fn mint_rejects_after_the_administrator_lowers_max_supply_below_the_amount() -> Result<()> {
     let mut pf = fixture_with(MAX_SUPPLY, |_, faucet_id| {
         vec![XReserveSetMaxSupplyNote::create(
-            owner(),
+            administrator(),
             faucet_id,
             MINT_AMOUNT - 1,
             &mut note_rng(957),
         )
-        .expect("building the owner lower-cap note")]
+        .expect("building the administrator lower-cap note")]
     })?;
     bring_up(&mut pf, 3).await?; // identifier_init + set_attester + set_max_supply(lower)
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 34);
@@ -307,16 +311,19 @@ async fn mint_rejects_after_the_owner_lowers_max_supply_below_the_amount() -> Re
     expect_reject(&mut pf, note, &payload, &err_stock_over_cap()).await
 }
 
-/// AT-CAP boundary: from a build cap BELOW the attested amount, the owner's note RAISES the cap
+/// AT-CAP boundary: from a build cap BELOW the attested amount, the administrator's note RAISES the cap
 /// to EXACTLY that amount; the mint then lands with `token_supply == max_supply` — the boundary
 /// ACCEPTS (the cap is `<=`, not `<`), and the acceptance is attributable to the admin note.
 #[tokio::test]
 async fn mint_accepts_at_the_exact_raised_cap_boundary() -> Result<()> {
     let mut pf = fixture_with(MINT_AMOUNT - 1, |_, faucet_id| {
-        vec![
-            XReserveSetMaxSupplyNote::create(owner(), faucet_id, MINT_AMOUNT, &mut note_rng(958))
-                .expect("building the owner raise-to-boundary note"),
-        ]
+        vec![XReserveSetMaxSupplyNote::create(
+            administrator(),
+            faucet_id,
+            MINT_AMOUNT,
+            &mut note_rng(958),
+        )
+        .expect("building the administrator raise-to-boundary note")]
     })?;
     bring_up(&mut pf, 3).await?; // identifier_init + set_attester + set_max_supply(= amount)
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 35);
@@ -335,15 +342,18 @@ async fn mint_accepts_at_the_exact_raised_cap_boundary() -> Result<()> {
 }
 
 /// RAISE-then-accepts: under the too-low build cap the attested mint REJECTS over-cap (the low
-/// cap binds); after the owner's raise note lands, a fresh-nonce mint of the SAME amount
+/// cap binds); after the administrator's raise note lands, a fresh-nonce mint of the SAME amount
 /// succeeds — the runtime raise is what unlocks the mint.
 #[tokio::test]
-async fn mint_accepts_after_the_owner_raises_max_supply() -> Result<()> {
+async fn mint_accepts_after_the_administrator_raises_max_supply() -> Result<()> {
     let mut pf = fixture_with(MINT_AMOUNT - 1, |_, faucet_id| {
-        vec![
-            XReserveSetMaxSupplyNote::create(owner(), faucet_id, MAX_SUPPLY, &mut note_rng(959))
-                .expect("building the owner raise-cap note"),
-        ]
+        vec![XReserveSetMaxSupplyNote::create(
+            administrator(),
+            faucet_id,
+            MAX_SUPPLY,
+            &mut note_rng(959),
+        )
+        .expect("building the administrator raise-cap note")]
     })?;
     bring_up(&mut pf, 2).await?; // identifier_init + set_attester — the raise stays unconsumed
 
@@ -352,7 +362,7 @@ async fn mint_accepts_after_the_owner_raises_max_supply() -> Result<()> {
     let note_low = honest_note(&pf, &payload_low, 105)?;
     expect_reject(&mut pf, note_low, &payload_low, &err_stock_over_cap()).await?;
 
-    // the owner's raise lands, then a fresh-nonce mint of the same amount succeeds
+    // the administrator's raise lands, then a fresh-nonce mint of the same amount succeeds
     consume_seeded_admin_note(&mut pf, 2).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 37);
     let note = honest_note(&pf, &payload, 106)?;

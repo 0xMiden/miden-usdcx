@@ -60,10 +60,14 @@ deposit and burns it on withdrawal.
   the Rust leg packs the raw key itself — so the byte→felt packing runs only in Rust, with no MASM
   counterpart to diff against. The keccak digest and the ECDSA signature check themselves are not
   encoding codecs — they run on-chain in the faucet's attestation verifier.
-- **Admin.** `Ownable2Step` ownership, `ADMIN`-role-gated setters (`set_attester`, the floor-guarded
-  `set_min_burn_size` targeting the stock `set_min_burn_amount`, and the minimized init-once
-  `identifier_init` — the other domain-config fields are build-seeded), and a separate
-  `DOM_PAUSER`-gated pause/unpause that halts both mint and burn-consume.
+- **Admin.** Pure role-based: there is no ownership component and no owner slot, so the built-in
+  `ADMIN` role is the account's only authority handle, and rotating it is a grant then a revoke of
+  that role. `ADMIN` gates the setters (`set_attester`, the floor-guarded `set_min_burn_size`
+  targeting the stock `set_min_burn_amount`, `set_max_supply`, and the minimized init-once
+  `identifier_init` — the other domain-config fields are build-seeded); a separate `DOM_PAUSER`
+  gates pause/unpause, which halts both mint and burn-consume. Role management runs on the stock
+  `RbacActionNote`, whose one script root also exposes re-pointing a role's administrator and
+  self-renounce — both accepted, both pinned by test.
 
 See [`docs/spec/FAUCET-COMPONENT-SPEC.md`](docs/spec/FAUCET-COMPONENT-SPEC.md) for the full pipeline.
 

@@ -521,8 +521,8 @@ fn masm_constants_bidirectional() {
 /// role map load-bearing — the pause and blocklist managers resolve to their assigned roles, and
 /// every other gated procedure (`set_attester`, the stock `set_min_burn_amount` / `set_max_supply`,
 /// the policy setters) falls back to the administrator role. Drifting the installed mode fails
-/// here: under the owner-controlled mode the role map would be ignored and pausing would land back
-/// on the owner, the one identity Circle's model keeps it away from.
+/// here: under the administrator-controlled mode the role map would be ignored and pausing would land back
+/// on the administrator, the one identity Circle's model keeps it away from.
 #[test]
 fn rbac_controlled_authority_parity() -> anyhow::Result<()> {
     use miden_standards::account::access::Authority;

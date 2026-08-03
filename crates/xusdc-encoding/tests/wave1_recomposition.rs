@@ -346,14 +346,14 @@ fn min_burn_note_targets_the_stock_setter_with_a_floor_guard() -> Result<()> {
 // 4 — POSTURE: the note-script allowlist pins the stock MintNote
 // ================================================================================================
 
-/// TRIPWIRE: the frozen 12-root allowlist's mint row is the STOCK `MintNote::script_root()`; the
+/// TRIPWIRE: the 9-root allowlist's mint row is the STOCK `MintNote::script_root()`; the
 /// former custom mint-note root is gone.
 #[test]
 fn note_allowlist_pins_the_stock_mint_note() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();
     let allowlist =
         xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::allowed_note_scripts();
-    assert_eq!(allowlist.len(), 12, "the ratified allowlist stays 12 rows");
+    assert_eq!(allowlist.len(), 9, "the ratified allowlist is 9 rows");
     assert!(
         allowlist.contains(&MintNote::script_root()),
         "row 1 must be the STOCK miden-standards MintNote script root"

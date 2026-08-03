@@ -34,7 +34,7 @@ pub const ERR_XRESERVE_NONCE_REPLAY: &str = "deposit intent nonce has already be
 /// pubkey (a forged signature or a payload tampered after signing).
 pub const ERR_XRESERVE_SIG_INVALID: &str = "deposit attestation signature verification failed";
 /// R-MINT-13 (D5d): the candidate attester pubkey's commitment is not in the on-chain allowlist.
-pub const ERR_XRESERVE_BAD_PK_COMMITMENT: &str =
+pub const ERR_XRESERVE_DISALLOWED_PUB_KEY: &str =
     "deposit attester pubkey commitment is not allowlisted";
 /// F2 (D5b): the operator `feeAmount` must be zero (fail-loud MVP).
 pub const ERR_XRESERVE_FEE_NONZERO: &str = "mint fee amount must be zero";

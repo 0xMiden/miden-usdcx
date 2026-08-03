@@ -7,9 +7,9 @@
 //! `DEPOSIT_SCALE_EXP`, which is how an incorrect scale stayed deploy-reachable.
 //!
 //! Everything here instead rides the REAL stock `MintNote` (built by the `XUsdcMintNote`
-//! factory) consumed by the production faucet, so the only scale in play is the one the shipped
-//! `mint_policy.masm` pushes (`push.DEPOSIT_SCALE_EXP`) into its amount reductions. NOTHING in
-//! this file injects,
+//! factory) consumed by the production faucet, so the only scale in play is the
+//! `DEPOSIT_SCALE_EXP` the shipped `deposit_intent_parser.masm` amount/fee stage applies.
+//! NOTHING in this file injects,
 //! derives, or even names a test-side scale — grep-provable, and deliberately so: the assertions
 //! below are only meaningful because they depend on the production constant.
 //!
@@ -310,7 +310,7 @@ fn minted_amount(tx: &ExecutedTransaction, faucet_id: AccountId) -> u64 {
 /// in the recipient's wallet as EXACTLY 100_000_000 xUSDC smallest units.
 ///
 /// This assertion is load-bearing precisely because nothing here supplies a scale: the value used
-/// is whatever the attestation policy pushes from `DEPOSIT_SCALE_EXP`. At `= 0` (correct) the mint is
+/// is whatever the amount/fee stage applies from `DEPOSIT_SCALE_EXP`. At `= 0` (correct) the mint is
 /// an identity and this passes; at the former placeholder `= 6` the faucet mints
 /// `100_000_000 / 10^6 = 100` and this fails on the amount assertion — a 100-USDC deposit
 /// delivered as 0.000100 xUSDC.
@@ -475,14 +475,14 @@ async fn production_mint_leaves_no_fractional_remainder() -> Result<()> {
 fn shipped_faucet_declares_identity_deposit_scale() -> Result<()> {
     let src = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../asm/standards/xreserve/mint_policy.masm"),
+            .join("../../asm/standards/xreserve/deposit_intent_parser.masm"),
     )
-    .context("reading the shipped mint-note entry source")?;
+    .context("reading the shipped amount/fee stage source")?;
     let decl = src
         .lines()
         .map(str::trim)
         .find(|line| line.starts_with("const DEPOSIT_SCALE_EXP"))
-        .context("the mint-note entry declares DEPOSIT_SCALE_EXP")?;
+        .context("the amount/fee stage declares DEPOSIT_SCALE_EXP")?;
     assert_eq!(
         decl, "const DEPOSIT_SCALE_EXP = 0",
         "the faucet must apply NO rescale: Circle's on-wire amount is 6-decimal and xUSDC is \

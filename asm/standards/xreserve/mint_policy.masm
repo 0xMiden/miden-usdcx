@@ -47,16 +47,6 @@ const XUSDC_MINT_ATTESTATION_NUM_WORDS = 11
 # below which no field offset can be trusted.
 const DEPOSIT_INTENT_HEADER_WORDS = 15
 
-# The uint256->AssetAmount decimal scale (`y = floor(x / 10^scale_exp)`), FAUCET-side by design: a
-# note-carried scale would let the producer diverge the minted amount from the attested amount. The
-# amount cap / scale / dust tolerance are OPEN, pending Circle confirmation; the faucet ships the
-# PROVISIONAL scale-0 position because Circle's on-wire deposit `amount` is denominated in 6-decimal
-# smallest units and xUSDC is likewise 6-decimal, so the two denominations coincide and no rescale
-# applies — scale 0, `y = floor(x / 10^0) = x`, an identity with no floored dust. (`0` is inside the
-# reducer's `[0, 18]` scale bound.) Changing this constant is how the faucet would be
-# repointed at a wire denomination whose asset is scaled differently.
-const DEPOSIT_SCALE_EXP = 0
-
 # Number of P2ID note-storage items ([target_id_suffix, target_id_prefix]; p2id.masm storage fmt).
 const P2ID_NUM_STORAGE_ITEMS = 2
 
@@ -312,9 +302,9 @@ pub proc check_policy
 
     # amount witness verify + maxFee/feeAmount bounds (feeAmount must be zero). the witness
     # is the parked note ASSET_VALUE's element 0, so the verify doubles as the amount half
-    # of the ASSERT-MATCH binding
-    loc_load.ASSET_VALUE_LOC push.DEPOSIT_SCALE_EXP locaddr.ATTESTATION_FEE_AMOUNT_LOC locaddr.INTENT_LOC
-    # => [intent_ptr, fee_amount_ptr, scale_exp, amount_y]
+    # of the ASSERT-MATCH binding; the scale is the parser's own faucet-side constant
+    loc_load.ASSET_VALUE_LOC locaddr.ATTESTATION_FEE_AMOUNT_LOC locaddr.INTENT_LOC
+    # => [intent_ptr, fee_amount_ptr, amount_y]
 
     exec.deposit_intent_parser::assert_mint_amounts
     # => []

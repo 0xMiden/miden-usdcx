@@ -249,6 +249,10 @@ end
 #! Inputs:  [num_bytes]
 #! Outputs: [num_felts]
 #!
+#! Where:
+#! - num_bytes is the wire byte count as a u32 felt.
+#! - num_felts is ceil(num_bytes / 4) — one felt per four packed wire bytes.
+#!
 #! Invocation: exec
 pub proc num_bytes_to_num_felts
     u32divmod.4 neq.0 add

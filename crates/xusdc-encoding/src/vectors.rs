@@ -130,8 +130,8 @@ pub struct DiFields {
     pub nonce_hex: String,
     /// field name → (felt offset within the preimage, packed felts at that offset).
     pub packed: Vec<PackedField>,
-    /// The stack-output expectation: [remote_domain, REMOTE_TOKEN_1, REMOTE_TOKEN_0,
-    /// hook_data_len] — the words as felt-hex.
+    /// The stack-output expectation: [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER,
+    /// hook_data_len_bytes] — the words as felt-hex.
     pub remote_token_felts: Vec<String>,
 }
 

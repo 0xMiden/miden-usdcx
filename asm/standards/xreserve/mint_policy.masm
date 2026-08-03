@@ -18,6 +18,7 @@ use {NETWORK_ACCOUNT_TARGET_ATTACHMENT_SCHEME} from miden::standards::attachment
 use miden::standards::interop::eth
 use miden::standards::note_tag
 use miden::standards::utils
+use {ONE_WORD} from miden::standards::utils
 use miden::core::sys
 use xreserve::attestation_verify
 use xreserve::deposit_intent_parser
@@ -61,7 +62,7 @@ const P2ID_NUM_STORAGE_ITEMS = 2
 
 # The non-empty Word written into usedNonces[KEY] (the replay guard asserts EMPTY_WORD, so any non-empty marker
 # flips it). Whether the marker should carry more than a plain flag is OPEN, pending Circle confirmation.
-const NONCE_USED_MARKER = [1, 0, 0, 0]
+const NONCE_USED_MARKER = ONE_WORD
 
 # The canonical P2ID note script root, consumed by the expected-RECIPIENT recipe so the attested
 # output note is identifiable as P2ID.

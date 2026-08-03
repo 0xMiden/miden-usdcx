@@ -12,6 +12,7 @@
 
 use miden::protocol::native_account
 use miden::standards::access::authority
+use {ONE_WORD, ZERO_WORD} from miden::standards::utils
 
 # CONSTANTS
 # =================================================================================================
@@ -21,11 +22,11 @@ pub const XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xrese
 
 # The marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1 — the mint-time read
 # path admits an attester only on an exact match against it.
-pub const ATTESTER_ENABLED_MARKER = [1, 0, 0, 0]
+pub const ATTESTER_ENABLED_MARKER = ONE_WORD
 
 # The marker written when enabled = 0. Equal to EMPTY_WORD, so a disabled row is indistinguishable
 # from an absent one on the read path.
-const ATTESTER_DISABLED_MARKER = [0, 0, 0, 0]
+const ATTESTER_DISABLED_MARKER = ZERO_WORD
 
 # PUBLIC INTERFACE
 # =================================================================================================

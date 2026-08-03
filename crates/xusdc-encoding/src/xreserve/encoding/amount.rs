@@ -8,7 +8,7 @@
 //!
 //! The reduction is deliberately conservative at each step. The value arrives as eight
 //! little-endian-packed 32-bit limbs of a big-endian wire field, so the first thing checked is
-//! that the top half is entirely zero: anything above 2^128 is refused outright rather than
+//! that the upper half is entirely zero: anything above 2^128 is refused outright rather than
 //! wrapped. The remaining half is composed into a `u128`, floor-divided by ten to the scale
 //! exponent to convert decimal places, and the quotient is then handed to `AssetAmount::new`,
 //! which rejects anything past the asset-amount ceiling. Nothing saturates and nothing truncates
@@ -27,20 +27,20 @@ use super::error::EncodingError;
 /// is 18").
 pub const MAX_SCALE_EXP: u32 = 18;
 
-/// The single reduction core shared by all three public routines: byte-swap → high-4-zero →
-/// low-4 u128 → floor-divide by 10^scale_exp → (y, z). The AssetAmount cap is applied by the
-/// callers via [`AssetAmount::new`].
+/// The single reduction core shared by all three public routines: byte-swap → upper-half-zero →
+/// lower-half u128 → floor-divide by 10^scale_exp → (y, z). Halves are the value's numerically
+/// low and high 128 bits (the MASM reducer's U_LOWER/U_UPPER), independent of byte order on the
+/// wire. The AssetAmount cap is applied by the callers via [`AssetAmount::new`].
 fn reduce(le_limbs: [u32; 8], scale_exp: u32) -> Result<(u64, u128), EncodingError> {
-    // the numerically high half — the positionally LOWER four limbs, wire bytes 0..16 of the
-    // big-endian value — must be zero; a limb byte-swaps to zero iff it is zero, so the raw
+    // the upper half — wire bytes 0..16 of the big-endian value, arriving as the first four
+    // LE-packed limbs — must be zero; a limb byte-swaps to zero iff it is zero, so the raw
     // LE-packed limbs are checked directly
     if le_limbs[..4].iter().any(|&limb| limb != 0) {
         return Err(EncodingError::AmountTooLarge);
     }
 
-    // byte-swap the numerically-low-half limbs (the positionally UPPER four, wire
-    // bytes 16..32) to numeric order and compose x (limb 4 holds wire bytes 16..20 — the
-    // most significant of that half)
+    // byte-swap the lower-half limbs (wire bytes 16..32, the last four) to numeric order
+    // and compose x (limb 4 holds wire bytes 16..20 — the most significant of that half)
     let mut x: u128 = 0;
     for &limb in &le_limbs[4..8] {
         x = (x << 32) | u128::from(limb.swap_bytes());
@@ -62,9 +62,9 @@ fn reduce(le_limbs: [u32; 8], scale_exp: u32) -> Result<(u64, u128), EncodingErr
     Ok((y, z))
 }
 
-/// uint256 (8 LE u32 limbs) → AssetAmount: byte-swap → assert the numerically high half
-/// (the positionally lower four limbs) zero (else `AmountTooLarge`) → the numerically low
-/// half as u128 x → y = floor(x / 10^scale_exp) → reject if y
+/// uint256 (8 LE u32 limbs) → AssetAmount: byte-swap → assert the upper half (wire
+/// bytes 0..16) zero (else `AmountTooLarge`) → the lower half as u128 x →
+/// y = floor(x / 10^scale_exp) → reject if y
 /// exceeds `AssetAmount::MAX` (`AmountOverCap`). No saturation or clamping.
 pub fn uint256_to_asset_amount(
     le_limbs: [u32; 8],

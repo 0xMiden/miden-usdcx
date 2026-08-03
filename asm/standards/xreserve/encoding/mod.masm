@@ -64,24 +64,23 @@ end
 
 #! Reduces an externally-supplied uint256 amount to an AssetAmount felt.
 #!
-#! Byte-swaps the limbs to numeric order, asserts the numerically high half (U_LOWER, wire
-#! bytes 0..16) is zero, takes the numerically low half (U_UPPER) as a u128, floor-divides by
-#! 10^scale_exp, and asserts the quotient does not exceed the AssetAmount maximum.
-#! Rejects by trapping; never saturates or clamps.
+#! Byte-swaps the limbs to numeric order, asserts the upper half (U_UPPER) is zero, takes the
+#! lower half (U_LOWER) as a u128, floor-divides by 10^scale_exp, and asserts the quotient
+#! does not exceed the AssetAmount maximum. Rejects by trapping; never saturates or clamps.
 #!
-#! Inputs:  [U_UPPER, U_LOWER, scale_exp]
+#! Inputs:  [U_LOWER, U_UPPER, scale_exp]
 #! Outputs: [y]
 #!
 #! Where:
-#! - U_UPPER is the word holding the uint256's positionally upper four u32-LE-packed limbs
-#!   (wire bytes 16..32) — for the big-endian wire value, the numerically LOW half.
-#! - U_LOWER is the word holding the uint256's positionally lower four u32-LE-packed limbs
-#!   (wire bytes 0..16) — for the big-endian wire value, the numerically HIGH half.
+#! - U_LOWER and U_UPPER are the uint256's numerically low and high 128-bit halves,
+#!   independent of byte order on the wire.
+#! - U_LOWER is the word holding wire bytes 16..32 of the big-endian value as four
+#!   u32-LE-packed limbs; U_UPPER is the word holding wire bytes 0..16 the same way.
 #! - scale_exp is the decimal scale exponent (EVM decimals minus Miden decimals, 0..=18).
 #! - y is the reduced amount as a single AssetAmount felt.
 #!
 #! Panics if:
-#! - any limb of the numerically high half (U_LOWER) is nonzero (the value exceeds 2^128).
+#! - any limb of the upper half (U_UPPER) is nonzero (the value exceeds 2^128).
 #! - the post-scale quotient exceeds the AssetAmount maximum.
 #! - scale_exp exceeds 18.
 #! - a supplied limb is not a valid u32.
@@ -92,15 +91,15 @@ pub proc uint256_to_asset_amount
     u32assertw.err=ERR_FELT_OUT_OF_FIELD
     swapw
     u32assertw.err=ERR_FELT_OUT_OF_FIELD
-    # => [U_LOWER, U_UPPER, scale_exp]
+    # => [U_UPPER, U_LOWER, scale_exp]
 
-    # the numerically high half (U_LOWER, wire bytes 0..16) must be zero — a limb
-    # byte-swaps to zero iff it is zero, so the raw LE-packed limbs are checked directly
+    # the upper half (U_UPPER, wire bytes 0..16) must be zero — a limb byte-swaps to zero
+    # iff it is zero, so the raw LE-packed limbs are checked directly
     exec.word::eqz
     assert.err=ERR_X_TOO_LARGE
-    # => [U_UPPER, scale_exp]
+    # => [U_LOWER, scale_exp]
 
-    # byte-swap the numerically-low-half limbs to numeric order (limb 4 holds wire
+    # byte-swap the lower-half limbs to numeric order (limb 4 holds wire
     # bytes 16..20 — the most significant of that half)
     repeat.4
         exec.utils::swap_u32_bytes movdn.3

@@ -253,7 +253,7 @@ end
 #! Invocation: exec
 proc reduce_uint256_field
     exec.utils::mem_load_double_word_unaligned swapw
-    # => [U_UPPER, U_LOWER, scale_exp]
+    # => [U_LOWER, U_UPPER, scale_exp]
 
     exec.encoding::uint256_to_asset_amount
     # => [y]

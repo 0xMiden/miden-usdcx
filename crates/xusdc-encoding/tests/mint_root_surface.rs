@@ -45,7 +45,7 @@ const FROZEN_CALLABLE_ROOTS: [&str; 10] = [
     "::xreserve::deposit_intent_parser::assert_nonce_unused",
     "::xreserve::encoding::bytes32_to_key",
     "::xreserve::encoding::parse_deposit_intent",
-    "::xreserve::encoding::uint256_to_asset_amount",
+    "::xreserve::encoding::verify_uint256_to_asset_amount",
     "::xreserve::identifier_init::init_identifier",
     "::xreserve::mint_policy::check_policy",
 ];

@@ -38,18 +38,29 @@ use miden_protocol::{Felt, Word};
 // ASSERT-MATCH — the note-supplied values must EQUAL their attested derivations
 // ================================================================================================
 
-/// A note claiming MORE than the attested amount rejects with the amount-mismatch binding error.
+/// A note amount diverging from the attested one rejects inside the amounts stage: the note
+/// amount is the witness, so an over-claim trips the verifier's no-underflow subtract and an
+/// under-claim its remainder bound. (`ERR_XRESERVE_MINT_AMOUNT_MISMATCH` guards the asset
+/// word's upper elements, which no note-shaped transport can set nonzero.)
+#[rstest]
+#[case::over_claim(1i64, 17, 86, "ERR_UNDERFLOW")]
+#[case::under_claim(-1i64, 40, 109, "ERR_REMAINDER_TOO_LARGE")]
 #[tokio::test]
-async fn mint_rejects_an_amount_mismatch() -> Result<()> {
+async fn mint_rejects_an_amount_mismatch(
+    #[case] delta: i64,
+    #[case] nonce_variant: u8,
+    #[case] rng_seed: u64,
+    #[case] expected_err: &str,
+) -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 2).await?;
-    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 17);
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, nonce_variant);
     let note = tampered_mint_note(
         &pf,
         &payload,
         &StoragePlan {
             recipient: pf.recipient_id,
-            amount: MINT_AMOUNT + 1, // claims one unit more than attested
+            amount: MINT_AMOUNT.checked_add_signed(delta).expect("in range"),
             tag: None,
             public: true,
         },
@@ -57,15 +68,9 @@ async fn mint_rejects_an_amount_mismatch() -> Result<()> {
         1,
         None,
         &AttachmentPlan::default(),
-        86,
+        rng_seed,
     )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_MINT_AMOUNT_MISMATCH"),
-    )
-    .await
+    expect_reject(&mut pf, note, &payload, shell_error_by_name(expected_err)).await
 }
 
 /// A note whose output tag does not target the attested recipient rejects with the tag binding

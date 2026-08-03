@@ -24,7 +24,7 @@ use xreserve::deposit_intent_parser
 use {USED_NONCES_SLOT} from xreserve::deposit_intent_parser
 use xreserve::encoding
 use {
-    AMOUNT_FELT_OFF, DEPOSIT_INTENT_HEADER_FELTS, HOOK_DATA_LEN_FELT_OFF, NONCE_FELT_OFF,
+    DEPOSIT_INTENT_HEADER_FELTS, HOOK_DATA_LEN_FELT_OFF, NONCE_FELT_OFF,
     REMOTE_RECIPIENT_FELT_OFF
 } from xreserve::encoding::layout
 
@@ -90,13 +90,11 @@ const P2ID_TARGET_ID_PREFIX_LOC = 77
 
 const HOOK_DATA_LEN_BYTES_LOC = 80
 const LEN_FELTS_LOC = 81
-const ATTESTED_AMOUNT_LOC = 82
 
 # The staged DepositIntent preimage, plus the fields `check_policy` itself reads out of it (the
 # parser reads the remaining fields off the base pointer). The region is sized to the protocol's
 # per-attachment ceiling, so every intent that can reach the policy fits.
 const INTENT_LOC = 84
-const INTENT_AMOUNT_LOC = INTENT_LOC + AMOUNT_FELT_OFF
 const INTENT_REMOTE_RECIPIENT_LOC = INTENT_LOC + REMOTE_RECIPIENT_FELT_OFF
 const INTENT_NONCE_LOC = INTENT_LOC + NONCE_FELT_OFF
 const INTENT_HOOK_DATA_LEN_LOC = INTENT_LOC + HOOK_DATA_LEN_FELT_OFF
@@ -209,7 +207,6 @@ const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient add
 #! - 76..80: P2ID note-storage region [target_id_suffix, target_id_prefix]
 #! - 80: hook_data_len_bytes
 #! - 81: len_felts
-#! - 82: reduced attested amount
 #! - 84..1108: the hash-verified DepositIntent preimage (MAX_ATTACHMENT_WORDS * 4 felts)
 #!
 #! Invocation: dynexec
@@ -312,9 +309,11 @@ pub proc check_policy
     loc_store.HOOK_DATA_LEN_BYTES_LOC
     # => []
 
-    # amount/maxFee/feeAmount reduction + bounds (feeAmount must be zero)
-    push.DEPOSIT_SCALE_EXP locaddr.ATTESTATION_FEE_AMOUNT_LOC locaddr.INTENT_LOC
-    # => [intent_ptr, fee_amount_ptr, scale_exp]
+    # amount witness verify + maxFee/feeAmount bounds (feeAmount must be zero). the witness
+    # is the parked note ASSET_VALUE's element 0, so the verify doubles as the amount half
+    # of the ASSERT-MATCH binding
+    loc_load.ASSET_VALUE_LOC push.DEPOSIT_SCALE_EXP locaddr.ATTESTATION_FEE_AMOUNT_LOC locaddr.INTENT_LOC
+    # => [intent_ptr, fee_amount_ptr, scale_exp, amount_y]
 
     exec.deposit_intent_parser::assert_mint_amounts
     # => []
@@ -354,17 +353,6 @@ pub proc check_policy
     loc_store.P2ID_TARGET_ID_SUFFIX_LOC loc_store.P2ID_TARGET_ID_PREFIX_LOC
     # => []
 
-    # the attested amount = reduce(amount field, scale 0)
-    push.DEPOSIT_SCALE_EXP locaddr.INTENT_AMOUNT_LOC
-    # => [amount_base, scale_exp]
-
-    exec.utils::mem_load_double_word_unaligned swapw
-    # => [U_UPPER, U_LOWER, scale_exp]
-
-    exec.encoding::uint256_to_asset_amount
-    loc_store.ATTESTED_AMOUNT_LOC
-    # => []
-
     # the RECIPIENT binding: the expected recipe = hash(hash(hash(KEY, EMPTY), P2ID_ROOT), storage)
     # over the attested target — the full recipe compare covers script root + storage target +
     # serial policy at once
@@ -386,11 +374,12 @@ pub proc check_policy
     assert_eqw.err=ERR_XRESERVE_MINT_RECIPIENT_MISMATCH
     # => []
 
-    # the ASSET_VALUE binding: element 0 equals the attested amount, elements 1..3 are zero
+    # the ASSET_VALUE binding: element 0 is proven by the amounts-stage witness verify;
+    # only elements 1..3 remain to be pinned zero
     padw loc_loadw_le.ASSET_VALUE_LOC
     # => [NOTE_ASSET_VALUE]
 
-    loc_load.ATTESTED_AMOUNT_LOC assert_eq.err=ERR_XRESERVE_MINT_AMOUNT_MISMATCH
+    drop
     # => [value_1, value_2, value_3]
 
     assertz.err=ERR_XRESERVE_MINT_AMOUNT_MISMATCH

@@ -62,6 +62,10 @@ pub struct AmtVector {
     pub expected_variant: Option<String>,
     #[serde(default)]
     pub masm_err: Option<String>,
+    /// The MASM witness `y` for reject rows (accept rows use `expected_y`; rows without
+    /// either push zero).
+    #[serde(default)]
+    pub witness_y: Option<String>,
     /// masm-only guard staging: raw felt values pushed as "limbs" (one >= 2^32).
     #[serde(default)]
     pub staging_felts: Option<Vec<String>>,
@@ -409,7 +413,11 @@ mod tests {
     fn artifact_guard() {
         // guard-only vectors that intentionally trace to no spec row; they pin harness and trap
         // mechanics instead.
-        const TV_TAG_ALLOWLIST: [&str; 1] = ["amt-guard-limb-not-u32"];
+        const TV_TAG_ALLOWLIST: [&str; 3] = [
+            "amt-guard-limb-not-u32",
+            "amt-rej-witness-over",
+            "amt-rej-witness-under",
+        ];
 
         let v = load();
         assert_eq!(v.version, 1);

@@ -96,6 +96,7 @@ fn amt_reject(
     scale_exp: u32,
     variant: &str,
     masm_err: &str,
+    witness_y: u64,
     cite: &str,
     derivation: &str,
 ) -> Value {
@@ -103,7 +104,29 @@ fn amt_reject(
         "id": id, "tv": tv, "kind": "reject",
         "uint256_be": hex_bytes(&b), "le_limbs": le_limbs(&b), "scale_exp": scale_exp,
         "expected_variant": variant, "masm_err": masm_err,
+        "witness_y": witness_y.to_string(),
         "cite": cite, "derivation": derivation,
+    })
+}
+
+/// A MASM-only witness-tamper row: a well-formed uint256/scale whose pushed witness `y`
+/// diverges from the true floor quotient, so the verifier must trap (the Rust mirror has no
+/// witness leg).
+fn amt_witness_reject(
+    id: &str,
+    x: u128,
+    scale_exp: u32,
+    witness_y: u64,
+    masm_err: &str,
+    derivation: &str,
+) -> Value {
+    let b = u256_be_from_u128(x);
+    json!({
+        "id": id, "tv": [], "kind": "reject", "mode": "masm-only",
+        "uint256_be": hex_bytes(&b), "le_limbs": le_limbs(&b), "scale_exp": scale_exp,
+        "masm_err": masm_err, "witness_y": witness_y.to_string(),
+        "cite": "DEV-5",
+        "derivation": derivation,
     })
 }
 
@@ -387,9 +410,10 @@ fn main() {
             u256_be_from_u128((max + 1) * 1_000_000),
             6,
             "AmountOverCap",
-            "ERR_AMOUNT_OVER_CAP",
+            "ERR_Y_TOO_LARGE",
+            (max + 1) as u64,
             "generated deterministically by gen_vectors @ protocol v0.15.3",
-            "x = (2^63 - 2^31 + 1) * 10^6, post-scale y = MAX + 1 must reject (no saturation)",
+            "x = (2^63 - 2^31 + 1) * 10^6, post-scale y = MAX + 1 must reject (no saturation); the MASM witness carries the true over-maximum quotient",
         ),
         {
             // bit 130 set => high four limbs nonzero (> 2^128). BE byte 15, bit 2.
@@ -401,7 +425,8 @@ fn main() {
                 b,
                 6,
                 "AmountTooLarge",
-                "ERR_X_TOO_LARGE",
+                "STD_ERR_X_TOO_LARGE",
+                0,
                 "generated deterministically by gen_vectors @ protocol v0.15.3",
                 "x = 2^130: high-4 limbs nonzero must reject (limb-overflow edge)",
             )
@@ -413,8 +438,25 @@ fn main() {
             20,
             "ScaleExpTooLarge",
             "ERR_SCALE_AMOUNT_EXCEEDED_LIMIT",
+            0,
             "(scale 0..=18)",
             "scale_exp = 20 exceeds the 0..=18 bound / overflows 10^scale in u64",
+        ),
+        amt_witness_reject(
+            "amt-rej-witness-over",
+            5_000_000,
+            6,
+            6,
+            "ERR_UNDERFLOW",
+            "x = 5*10^6 at scale 6 (true y = 5); an over-claimed witness y = 6 must trap the verifier's no-underflow subtract",
+        ),
+        amt_witness_reject(
+            "amt-rej-witness-under",
+            5_000_000,
+            6,
+            4,
+            "ERR_REMAINDER_TOO_LARGE",
+            "x = 5*10^6 at scale 6 (true y = 5); an under-claimed witness y = 4 leaves remainder 10^6 >= 10^s and must trap the verifier's remainder bound",
         ),
     ];
     // reduced-ge pairs (TV-AMT-5).

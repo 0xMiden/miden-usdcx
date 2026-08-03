@@ -384,7 +384,7 @@ in `tests/masm_dual.rs`); `-4` is Rust-only because `DC-7` has no MASM side.
 | Id | Checks |
 |---|---|
 | TV-DUAL-1 | `bytes32_to_key`: Rust and MASM produce the identical key Word on every vector. |
-| TV-DUAL-2 | `uint256_to_asset_amount`: Rust and MASM produce the identical amount / trap. |
+| TV-DUAL-2 | The amount conversion: the Rust-computed quotient passes the MASM witness verifier / both sides trap alike. |
 | TV-DUAL-3 | DepositIntent parse: Rust and MASM agree on accept/reject and the 60-felt preimage. |
 | TV-DUAL-4 | Burn-note items: the Rust-emitted burn note's `NoteStorage.items` match the Rust codec and the golden felts (an emit-vs-codec check within Rust — `DC-7` is Rust-only, there is no MASM burn-item codec). |
 | TV-DUAL-5 | Attestation packing/commitment: Rust and MASM produce the identical felts / commitment. |

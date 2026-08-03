@@ -4,13 +4,9 @@
 # so the `xreserve::encoding::<name>` paths resolve exactly. Wire-layout constants live in the
 # `layout` submodule.
 
-use {FUNGIBLE_ASSET_MAX_AMOUNT} from miden::protocol::asset
 use miden::standards::assets::asset_amount
 use miden::standards::utils
 use miden::core::crypto::hashes::poseidon2
-use miden::core::math::u128
-use miden::core::math::u64
-use miden::core::word
 use {
     AMOUNT_FELT_OFF, DEPOSIT_INTENT_HEADER_FELTS, DEPOSIT_INTENT_MAGIC_PACKED,
     DEPOSIT_INTENT_VERSION_PACKED, HOOK_DATA_LEN_FELT_OFF, LOCAL_DEPOSITOR_FELT_OFF,
@@ -23,8 +19,6 @@ pub mod layout
 # ERRORS
 # =================================================================================================
 
-const ERR_X_TOO_LARGE = "larger than 2**128"
-const ERR_AMOUNT_OVER_CAP = "post-scale quotient exceeds the asset amount maximum"
 const ERR_FELT_OUT_OF_FIELD = "supplied limb is not a valid u32"
 const ERR_DI_BAD_MAGIC = "deposit intent magic mismatch"
 const ERR_DI_BAD_VERSION = "deposit intent version mismatch"
@@ -63,15 +57,17 @@ pub proc bytes32_to_key
     # => [KEY]
 end
 
-#! Reduces an externally-supplied uint256 amount to an AssetAmount felt.
+#! Verifies a claimed AssetAmount felt against an externally-supplied uint256 amount.
 #!
-#! Byte-swaps the limbs to numeric order, asserts the numerically high half (U_LOWER, wire
-#! bytes 0..16) is zero, takes the numerically low half (U_UPPER) as a u128, floor-divides by
-#! 10^scale_exp, and asserts the quotient does not exceed the AssetAmount maximum.
-#! Rejects by trapping; never saturates or clamps.
+#! The caller supplies the claimed reduced amount `y` (in practice the mint note's own asset
+#! value), and the standards verifier proves `y == floor(x / 10^scale_exp)` with one widening
+#! multiply, a 128-bit no-underflow subtract, and a remainder bound — no division on-chain.
+#! The identity `x = y*10^scale_exp + z` with `0 <= z < 10^scale_exp` pins y uniquely: floor
+#! semantics, dust dropped (the dust policy is OPEN, pending Circle confirmation). Rejects by
+#! trapping; never saturates or clamps.
 #!
-#! Inputs:  [U_UPPER, U_LOWER, scale_exp]
-#! Outputs: [y]
+#! Inputs:  [U_UPPER, U_LOWER, scale_exp, y]
+#! Outputs: []
 #!
 #! Where:
 #! - U_UPPER is the word holding the uint256's positionally upper four u32-LE-packed limbs
@@ -79,78 +75,29 @@ end
 #! - U_LOWER is the word holding the uint256's positionally lower four u32-LE-packed limbs
 #!   (wire bytes 0..16) — for the big-endian wire value, the numerically HIGH half.
 #! - scale_exp is the decimal scale exponent (EVM decimals minus Miden decimals, 0..=18).
-#! - y is the reduced amount as a single AssetAmount felt.
+#! - y is the claimed reduced amount as a single AssetAmount felt (the untrusted witness).
 #!
 #! Panics if:
 #! - any limb of the numerically high half (U_LOWER) is nonzero (the value exceeds 2^128).
-#! - the post-scale quotient exceeds the AssetAmount maximum.
+#! - y exceeds the fungible asset amount maximum.
+#! - y*10^scale_exp exceeds x, or the remainder x - y*10^scale_exp reaches 10^scale_exp
+#!   (either way y is not the floor quotient).
 #! - scale_exp exceeds 18.
 #! - a supplied limb is not a valid u32.
 #!
 #! Invocation: exec
 @account_procedure
-pub proc uint256_to_asset_amount
-    # guard every externally-supplied limb before any u32 op
+pub proc verify_uint256_to_asset_amount
+    # guard every externally-supplied limb before any u32 op (the standards verifier would
+    # trap a non-u32 limb anonymously)
     u32assertw.err=ERR_FELT_OUT_OF_FIELD
     swapw
     u32assertw.err=ERR_FELT_OUT_OF_FIELD
-    # => [U_LOWER, U_UPPER, scale_exp]
+    # => [U_LOWER, U_UPPER, scale_exp, y]
 
-    # the numerically high half (U_LOWER, wire bytes 0..16) must be zero — a limb
-    # byte-swaps to zero iff it is zero, so the raw LE-packed limbs are checked directly
-    exec.word::eqz
-    assert.err=ERR_X_TOO_LARGE
-    # => [U_UPPER, scale_exp]
-
-    # byte-swap the numerically-low-half limbs to numeric order (limb 4 holds wire
-    # bytes 16..20 — the most significant of that half)
-    repeat.4
-        exec.utils::swap_u32_bytes movdn.3
-    end
-    # => [n4, n5, n6, n7, scale_exp]
-
-    # x as u128 little-endian u32 limbs: x = n4*2^96 + n5*2^64 + n6*2^32 + n7
-    exec.word::reverse
-    # => [x0, x1, x2, x3, scale_exp]
-
-    # divisor: d = 10^scale_exp as u128 limbs [d0, d1, 0, 0]
-    movup.4 exec.asset_amount::pow10
-    # => [d, x0, x1, x2, x3]
-
-    u32split
-    # => [d0, d1, x0, x1, x2, x3]
-
-    push.0.0 movup.3 movup.3
-    # => [d0, d1, 0, 0, x0, x1, x2, x3]
-
-    exec.u128::divmod
-    # => [r0, r1, r2, r3, q0, q1, q2, q3]
-
-    # the on-chain output is the floor quotient; the dust remainder is surfaced by the
-    # off-chain mirror only (the dust policy is OPEN, pending Circle confirmation)
-    dropw
-    # => [q0, q1, q2, q3]
-
-    # cap: the quotient must fit a u64 ...
-    movup.3 assertz.err=ERR_AMOUNT_OVER_CAP
-    movup.2 assertz.err=ERR_AMOUNT_OVER_CAP
-    # => [q0, q1]
-
-    # ... and must not exceed the asset amount maximum (compared in u64 limb space —
-    # composing first could wrap the felt for quotients in [p, 2^64))
-    dup.1 dup.1
-    # => [q0, q1, q0, q1]
-
-    push.FUNGIBLE_ASSET_MAX_AMOUNT u32split
-    # => [max_lo, max_hi, q0, q1, q0, q1]
-
-    exec.u64::lte
-    assert.err=ERR_AMOUNT_OVER_CAP
-    # => [q0, q1]
-
-    # compose the AssetAmount felt (y <= 2^63 - 2^31 < p after the cap check)
-    exec.utils::merge_u32_limbs
-    # => [y]
+    # top-first this is the verifier's most-significant-first limb order
+    exec.asset_amount::verify_u256_to_asset_amount_conversion
+    # => []
 end
 
 #! Validates a staged DepositIntent preimage structurally and returns the caller-compare fields.

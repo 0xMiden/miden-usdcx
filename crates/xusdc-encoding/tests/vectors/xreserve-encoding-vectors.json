@@ -176,7 +176,7 @@
       },
       {
         "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
-        "derivation": "x = (2^63 - 2^31 + 1) * 10^6, post-scale y = MAX + 1 must reject (no saturation)",
+        "derivation": "x = (2^63 - 2^31 + 1) * 10^6, post-scale y = MAX + 1 must reject (no saturation); the MASM witness carries the true over-maximum quotient",
         "expected_variant": "AmountOverCap",
         "id": "amt-rej-cap",
         "kind": "reject",
@@ -190,13 +190,14 @@
           3764320511,
           1078071040
         ],
-        "masm_err": "ERR_AMOUNT_OVER_CAP",
+        "masm_err": "ERR_Y_TOO_LARGE",
         "scale_exp": 6,
         "tv": [
           "TV-AMT-3",
           "TV-DUAL-2"
         ],
-        "uint256_be": "0x00000000000000000000000000000000000000000007a11ffff85ee0000f4240"
+        "uint256_be": "0x00000000000000000000000000000000000000000007a11ffff85ee0000f4240",
+        "witness_y": "9223372034707292161"
       },
       {
         "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
@@ -214,13 +215,14 @@
           0,
           0
         ],
-        "masm_err": "ERR_X_TOO_LARGE",
+        "masm_err": "STD_ERR_X_TOO_LARGE",
         "scale_exp": 6,
         "tv": [
           "TV-AMT-4",
           "TV-DUAL-2"
         ],
-        "uint256_be": "0x0000000000000000000000000000000400000000000000000000000000000000"
+        "uint256_be": "0x0000000000000000000000000000000400000000000000000000000000000000",
+        "witness_y": "0"
       },
       {
         "cite": "(scale 0..=18)",
@@ -244,7 +246,52 @@
           "TV-AMT-7",
           "TV-DUAL-2"
         ],
-        "uint256_be": "0x00000000000000000000000000000000000000000000000000000000000f4240"
+        "uint256_be": "0x00000000000000000000000000000000000000000000000000000000000f4240",
+        "witness_y": "0"
+      },
+      {
+        "cite": "DEV-5",
+        "derivation": "x = 5*10^6 at scale 6 (true y = 5); an over-claimed witness y = 6 must trap the verifier's no-underflow subtract",
+        "id": "amt-rej-witness-over",
+        "kind": "reject",
+        "le_limbs": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1078676480
+        ],
+        "masm_err": "ERR_UNDERFLOW",
+        "mode": "masm-only",
+        "scale_exp": 6,
+        "tv": [],
+        "uint256_be": "0x00000000000000000000000000000000000000000000000000000000004c4b40",
+        "witness_y": "6"
+      },
+      {
+        "cite": "DEV-5",
+        "derivation": "x = 5*10^6 at scale 6 (true y = 5); an under-claimed witness y = 4 leaves remainder 10^6 >= 10^s and must trap the verifier's remainder bound",
+        "id": "amt-rej-witness-under",
+        "kind": "reject",
+        "le_limbs": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1078676480
+        ],
+        "masm_err": "ERR_REMAINDER_TOO_LARGE",
+        "mode": "masm-only",
+        "scale_exp": 6,
+        "tv": [],
+        "uint256_be": "0x00000000000000000000000000000000000000000000000000000000004c4b40",
+        "witness_y": "4"
       },
       {
         "b_le_limbs": [

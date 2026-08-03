@@ -176,7 +176,7 @@ impl OwnershipOps for DriverOwnershipOps<'_> {
 /// supplied faucet is NEVER left paused, attester-disabled, policy-mutated, or owned/nominated by the
 /// ephemeral wallet — and it runs EVEN WHEN an admin check errored mid-suite. Ownership is driven by
 /// the ON-CHAIN owner (ground truth, not a client-side flag), then restored FIRST because the policy
-/// setters are owner-gated. Every step acts only when a restore is actually needed (idempotent);
+/// setters are administrator-gated. Every step acts only when a restore is actually needed (idempotent);
 /// failures are RECORDED as surfaced findings, never propagated (`admin_suite` returns the ORIGINAL
 /// error, if any).
 pub(super) async fn restore_faucet(
@@ -191,7 +191,7 @@ pub(super) async fn restore_faucet(
     let pauser_id = actors.pauser.id();
     let ephemeral_id = actors.new_pauser.id();
 
-    // 1. OWNERSHIP — from ON-CHAIN ground truth, FIRST (policy setters are owner-gated). A BOUNDED
+    // 1. OWNERSHIP — from ON-CHAIN ground truth, FIRST (policy setters are ADMIN-gated). A BOUNDED
     //    refetch→plan→act→verify loop reconciles against fresh truth each cycle, so an accept that
     //    committed but the client never observed (Err ≠ not-consumed), a dangling step-1 nomination, OR
     //    an accept that RACES an in-flight cancel is detected and undone — none of which a client-side
@@ -229,7 +229,7 @@ pub(super) async fn restore_faucet(
         }
     }
 
-    // RE-ALLOWLIST the mint attester if it was left disabled (owner-gated).
+    // RE-ALLOWLIST the mint attester if it was left disabled (ADMIN-gated).
     let commitment = mint_attester.commitment_word();
     let attester_disabled = attester_marker(&acct, commitment)
         .map(is_zero_word)
@@ -252,7 +252,7 @@ pub(super) async fn restore_faucet(
         }
     }
 
-    // RESTORE min_burn_size (owner-gated).
+    // RESTORE min_burn_size (ADMIN-gated).
     if min_burn(&acct).map(|m| m != orig_min_burn).unwrap_or(true) {
         match restore_min_burn(d, owner_id, orig_min_burn).await {
             Ok(()) => actions.push(format!("min_burn_size ← {orig_min_burn}")),
@@ -263,7 +263,7 @@ pub(super) async fn restore_faucet(
         }
     }
 
-    // RESTORE max_supply (owner-gated). The run mints test tokens, so if that pushed token_supply
+    // RESTORE max_supply (ADMIN-gated). The run mints test tokens, so if that pushed token_supply
     // above the original cap, restore to that supply (the minimum valid cap) — supply is not fully
     // reversible; report the adjustment.
     let supply_now = token_supply(&acct).unwrap_or(0);
@@ -414,7 +414,7 @@ async fn restore_unpause(d: &mut SanityDriver, pauser_id: AccountId) -> Result<(
     Ok(())
 }
 
-/// Sets `min_burn_size` back to `target` (owner-gated), waiting for the read-back.
+/// Sets `min_burn_size` back to `target` (ADMIN-gated), waiting for the read-back.
 async fn restore_min_burn(d: &mut SanityDriver, owner_id: AccountId, target: u64) -> Result<()> {
     let note = XReserveSetMinBurnSizeNote::create(owner_id, d.faucet_id, target, d.hc.client.rng())
         .context("set_min_burn_size(restore) note")?;
@@ -425,7 +425,7 @@ async fn restore_min_burn(d: &mut SanityDriver, owner_id: AccountId, target: u64
     Ok(())
 }
 
-/// Sets `max_supply` back to `target` (owner-gated), waiting for the read-back.
+/// Sets `max_supply` back to `target` (ADMIN-gated), waiting for the read-back.
 async fn restore_max_supply(d: &mut SanityDriver, owner_id: AccountId, target: u64) -> Result<()> {
     let note = XReserveSetMaxSupplyNote::create(owner_id, d.faucet_id, target, d.hc.client.rng())
         .context("set_max_supply(restore) note")?;

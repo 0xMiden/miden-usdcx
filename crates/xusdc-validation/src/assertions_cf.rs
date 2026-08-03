@@ -49,7 +49,7 @@ pub const ERR_SUPPLY_CAP: &str =
     "token_supply plus the amount passed to distribute would exceed the maximum supply";
 /// R-BURN-3 / the mint pause gate: the contract is paused.
 pub const ERR_PAUSED: &str = "the contract is paused";
-/// The owner gate on the owner-controlled admin setters.
+/// The administrator gate on the ADMIN-role-gated admin setters.
 pub const ERR_NOT_OWNER: &str = "note sender is not the owner";
 /// The DOM_PAUSER role gate on the custom pause/unpause procs.
 pub const ERR_LACKS_ROLE: &str = "note sender does not hold the required role";
@@ -282,7 +282,7 @@ pub fn assert_c5(o: &C5RoleRotation) -> Result<()> {
 /// Every admin note from a NON-authorized sender must be REJECTED at the proc gate with ITS exact
 /// gate error, AND the (allowlisted, routed) note must stay UNCONSUMED after the watch window (the
 /// ntx-builder attempted it and failed the same gate — nothing committed). The set must be
-/// non-empty and MUST cover both gate kinds (an owner-gated op from a non-owner AND a pause from a
+/// non-empty and MUST cover both gate kinds (an authority-gated op from an unauthorized sender AND a pause from a
 /// non-DOM_PAUSER) so the row proves both gates, not just one.
 pub fn assert_c6(rejects: &[AdminGateReject]) -> Result<()> {
     ensure!(
@@ -308,7 +308,7 @@ pub fn assert_c6(rejects: &[AdminGateReject]) -> Result<()> {
     }
     ensure!(
         saw_owner_gate,
-        "C6: the negative set must include at least one owner-gated op rejected from a non-owner \
+        "C6: the negative set must include at least one authority-gated op rejected from an unauthorized owner \
          ('{ERR_NOT_OWNER}')",
     );
     ensure!(

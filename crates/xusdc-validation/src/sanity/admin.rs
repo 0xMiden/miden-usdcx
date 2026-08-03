@@ -40,7 +40,7 @@ const ERR_MAX_SUPPLY_BELOW_SUPPLY: &str = "new max supply is less than current t
 // ATTESTER ALLOWLIST HELPERS
 // ================================================================================================
 
-/// Emits a `set_attester(commitment, enabled)` note (owner-gated) via path N and waits for the
+/// Emits a `set_attester(commitment, enabled)` note (ADMIN-role-gated) via path N and waits for the
 /// allowlist marker to reach the expected set/clear state.
 pub(crate) async fn set_attester_enabled(
     d: &mut SanityDriver,
@@ -137,7 +137,7 @@ async fn admin_checks(
     recipient_id: AccountId,
 ) -> Result<()> {
     use crate::assertions_cf::{ERR_NOT_OWNER, ERR_PAUSED, ERR_SUPPLY_CAP};
-    use crate::assertions_de::ERR_XRESERVE_BAD_PK_COMMITMENT;
+    use crate::assertions_de::ERR_XRESERVE_DISALLOWED_PUB_KEY;
     use crate::assertions_gj::ERR_BURN_BELOW_MIN;
 
     let owner_id = actors.owner.id();
@@ -255,7 +255,7 @@ async fn admin_checks(
         "admin",
         "a mint by the rotated-out (disabled) attester is REJECTED",
         &v,
-        ERR_XRESERVE_BAD_PK_COMMITMENT,
+        ERR_XRESERVE_DISALLOWED_PUB_KEY,
     );
     set_attester_enabled(
         d,
@@ -424,17 +424,22 @@ async fn admin_checks(
     // the pre-run snapshot. No positive mint runs after the tighten above, so the tightened cap does
     // not block the remaining (client-side reject) checks.
 
-    // ── OWNER-GATING: a non-owner set_attester note is REJECTED (ERR_NOT_OWNER) ──
+    // ── AUTHORITY GATING: a set_attester note from a sender without the ADMIN role is REJECTED.
+    //    NOTE (parked-crate debt): the expected error below is still ERR_NOT_OWNER. Since the
+    //    W2-ADMIN slice the setters resolve to the ADMIN role and raise ERR_SENDER_LACKS_ROLE
+    //    instead. This crate is parked out of the workspace and cannot be compiled or run against
+    //    the current pins, so the constant is left as-is rather than changed blind; the un-park
+    //    steps in PARKED-V16-NEXT.md name it.
     let commitment = actors.attester_b.commitment_word();
     let rogue =
         XReserveSetAttesterNote::create(holder_id, d.faucet_id, commitment, 1, d.hc.client.rng())
-            .context("non-owner set_attester note")?;
+            .context("unauthorized set_attester note")?;
     let v = d.probe_consume(rogue).await?;
     record_rejection(
         led,
         "ADMIN-OWNER-GATE",
         "admin",
-        "a non-owner admin note is REJECTED",
+        "an unauthorized admin note is REJECTED",
         &v,
         ERR_NOT_OWNER,
     );

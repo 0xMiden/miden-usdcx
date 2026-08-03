@@ -537,7 +537,7 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
             negative(
                 d,
                 "non-allowlisted-attester",
-                crate::assertions_de::ERR_XRESERVE_BAD_PK_COMMITMENT,
+                crate::assertions_de::ERR_XRESERVE_DISALLOWED_PUB_KEY,
                 note,
                 key,
                 false,

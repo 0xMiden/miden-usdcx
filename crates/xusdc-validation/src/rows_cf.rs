@@ -796,7 +796,7 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
     })
 }
 
-/// The C6 negatives: an owner-gated op from a non-owner, a second owner-gated op from a non-owner,
+/// The C6 negatives: an authority-gated op from an unauthorized sender, a second such op from an unauthorized sendr,
 /// and a pause from a non-DOM_PAUSER. Each: client-side execute traps at the proc gate, AND the
 /// emitted (allowlisted, routed) note stays UNCONSUMED after a bounded watch (the ntx-builder
 /// attempted and failed the same gate).

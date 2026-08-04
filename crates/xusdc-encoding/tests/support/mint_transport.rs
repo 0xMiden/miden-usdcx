@@ -1,7 +1,8 @@
 //! Shared harness for driving real mints against a production faucet.
 //!
-//! It builds genuine standard mint notes — carrying the deposit intent, the attestation, and the
-//! routing target as their three attachments — and runs them to completion against an account
+//! It builds genuine standard mint notes — carrying the merged transport attachment (the
+//! attestation followed by the deposit intent) and the routing target as their two attachments —
+//! and runs them to completion against an account
 //! composed by the production builder under the standard network-account auth. Nothing is
 //! substituted, so a test's accept or reject is the account's real behavior.
 //!
@@ -52,10 +53,36 @@ pub const REMOTE_TOKEN_BYTE_OFF: usize = 11 * 4;
 /// First byte of the 32-byte `nonce` field (felt 51 x 4 bytes of the fixed header).
 pub const NONCE_BYTE_OFF: usize = 51 * 4;
 
-/// The ratified attachment schemes — test-side literals, parity-pinned in
+/// The ratified merged transport attachment scheme — a test-side literal, parity-pinned in
 /// `constant_parity.rs` against both the Rust factory and the MASM policy.
-pub const INTENT_SCHEME: u16 = 4;
-pub const ATTESTATION_SCHEME: u16 = 5;
+pub const TRANSPORT_SCHEME: u16 = 4;
+
+/// The merged transport layout, test-side: the fixed-width attestation section, then the deposit
+/// intent. Every offset below is parity-pinned in `constant_parity.rs` against both the Rust
+/// factory and the MASM policy, so the harness cannot drift from the wire.
+pub const ATTESTATION_WORDS: usize = 11;
+pub const TRANSPORT_INTENT_WORD_OFF: usize = ATTESTATION_WORDS;
+pub const ATTESTATION_FELTS: usize = ATTESTATION_WORDS * 4;
+
+/// Felt offsets INSIDE the attestation section, in the order the policy hands them out.
+pub const ATTESTATION_FEE_FELT_OFF: usize = 0;
+pub const ATTESTATION_PUBKEY_FELT_OFF: usize = 8;
+pub const ATTESTATION_SIGNATURE_FELT_OFF: usize = 24;
+
+/// Felt offset of the packed `hookDataLen` limb inside the deposit-intent sub-region (mirrors the
+/// shared layout's `HOOK_DATA_LEN_FELT_OFF`).
+pub const INTENT_HOOK_DATA_LEN_FELT_OFF: usize = 59;
+
+/// The word floor the policy enforces on the merged attachment: the attestation + the 15-word
+/// deposit-intent header.
+pub const TRANSPORT_FLOOR_WORDS: usize = TRANSPORT_INTENT_WORD_OFF + 15;
+
+/// The packed form of a `hookDataLen` the policy will decode as `bytes`: the wire field is a
+/// big-endian u32 and the transport packs four wire bytes per felt little-endian, so the staged
+/// limb is the LE reinterpretation of the BE value (the policy's `swap_u32_bytes` undoes it).
+pub fn packed_hook_data_len(bytes: u32) -> Felt {
+    Felt::from(u32::from_le_bytes(bytes.to_be_bytes()))
+}
 
 /// The production builder's administrator (`test_account_id(1)` across every fixture): the sole
 /// seeded `ADMIN` member.
@@ -141,31 +168,46 @@ pub fn fee_limbs_of(fee: u64) -> [Felt; 8] {
 // THE TAMPER ENGINE — a parameterized stock-MintNote builder over an attested payload
 // ================================================================================================
 
-/// The attachment plan: which of the three attachments ride the note (the shape negatives drop /
-/// duplicate entries; `extra_scheme` appends a foreign-scheme attachment for the count negative).
+/// The attachment plan: which of the two attachments ride the note, and how the merged transport
+/// attachment is corrupted. Each sub-region of the merged attachment — the attestation section and
+/// the deposit intent — is independently tamperable, which is what lets the negatives prove that
+/// corrupting one cannot be mistaken for corrupting another.
 pub struct AttachmentPlan {
-    pub intent: bool,
-    pub attestation: bool,
+    /// The merged scheme-4 transport attachment rides the note.
+    pub transport: bool,
+    /// The scheme-2 routing target rides the note.
     pub target: bool,
+    /// Appends a foreign-scheme attachment (the count negative).
     pub extra_scheme: Option<u16>,
-    /// Overrides the attestation attachment's word count (padding words appended / truncated).
-    pub attestation_words_override: Option<usize>,
-    /// Appends N EXTRA zero words to the intent attachment (the length-binding negative).
-    pub intent_extra_words: usize,
-    /// Truncates the intent attachment to N words (the header-floor negative).
-    pub intent_truncate_words: Option<usize>,
+    /// Attaches the merged transport TWICE (the doubled-scheme negative).
+    pub duplicate_transport: bool,
+    /// Appends a SECOND attestation section AFTER the intent — a smuggled extra section that
+    /// leaves every constant sub-offset (and so every verify stage) reading the right bytes, so
+    /// the word-count binding is the only thing standing between it and an accept.
+    pub trailing_attestation_section: bool,
+    /// Appends N EXTRA zero words to the merged attachment (the length-binding negative).
+    pub transport_extra_words: usize,
+    /// Truncates the merged attachment to N words (the floor negative).
+    pub transport_truncate_words: Option<usize>,
+    /// Overwrites one felt of the attestation section, by its offset within that section.
+    pub attestation_felt_tamper: Option<(usize, Felt)>,
+    /// Overwrites the packed `hookDataLen` limb of the intent sub-region — a length claim that
+    /// disagrees with the committed word count, or an outright non-u32 limb.
+    pub intent_hook_data_len_felt: Option<Felt>,
 }
 
 impl Default for AttachmentPlan {
     fn default() -> Self {
         Self {
-            intent: true,
-            attestation: true,
+            transport: true,
             target: true,
             extra_scheme: None,
-            attestation_words_override: None,
-            intent_extra_words: 0,
-            intent_truncate_words: None,
+            duplicate_transport: false,
+            trailing_attestation_section: false,
+            transport_extra_words: 0,
+            transport_truncate_words: None,
+            attestation_felt_tamper: None,
+            intent_hook_data_len_felt: None,
         }
     }
 }
@@ -179,16 +221,53 @@ pub struct StoragePlan {
     pub public: bool,
 }
 
-fn intent_words(payload: &[u8]) -> Vec<Word> {
+/// The packed deposit-intent felts, zero-padded to the word boundary — the intent sub-region of
+/// the merged transport attachment.
+fn intent_felts(payload: &[u8]) -> Vec<Felt> {
     let mut felts = xusdc_encoding::xreserve::encoding::deposit_intent_to_packed_felts(payload)
         .expect("the tamper payload packs");
     while !felts.len().is_multiple_of(4) {
         felts.push(Felt::from(0u32));
     }
     felts
-        .chunks_exact(4)
-        .map(|c| Word::from([c[0], c[1], c[2], c[3]]))
-        .collect()
+}
+
+/// The 44-felt attestation section: `[feeAmount(8), pubkey(16), signature(17), pad(3)]`.
+fn attestation_felts(fee_limbs: [Felt; 8], key_source: &AttesterVector) -> Vec<Felt> {
+    let mut felts: Vec<Felt> = fee_limbs.to_vec();
+    felts.extend(key_source.pubkey_felts.iter().copied());
+    felts.extend(key_source.sig_felts.iter().copied());
+    felts.extend([Felt::from(0u32); 3]);
+    debug_assert_eq!(felts.len(), ATTESTATION_FELTS);
+    felts
+}
+
+/// Assembles the merged transport attachment's felts under `plan`: the attestation section
+/// (optionally duplicated / tampered), then the packed intent.
+fn transport_felts(
+    payload: &[u8],
+    fee_limbs: [Felt; 8],
+    key_source: &AttesterVector,
+    plan: &AttachmentPlan,
+) -> Vec<Felt> {
+    let mut felts: Vec<Felt> = Vec::new();
+
+    let mut attestation = attestation_felts(fee_limbs, key_source);
+    if let Some((off, value)) = plan.attestation_felt_tamper {
+        attestation[off] = value;
+    }
+    felts.extend(attestation.iter().copied());
+
+    let mut intent = intent_felts(payload);
+    if let Some(limb) = plan.intent_hook_data_len_felt {
+        intent[INTENT_HOOK_DATA_LEN_FELT_OFF] = limb;
+    }
+    felts.extend(intent);
+
+    if plan.trailing_attestation_section {
+        felts.extend(attestation.iter().copied());
+    }
+    felts
 }
 
 fn words_of(felts: &[Felt]) -> Vec<Word> {
@@ -196,6 +275,28 @@ fn words_of(felts: &[Felt]) -> Vec<Word> {
         .chunks_exact(4)
         .map(|c| Word::from([c[0], c[1], c[2], c[3]]))
         .collect()
+}
+
+/// The merged transport attachment under `plan` (word truncation / padding applied last, so the
+/// committed word count is exactly what the negatives intend).
+fn transport_attachment(
+    payload: &[u8],
+    fee_limbs: [Felt; 8],
+    key_source: &AttesterVector,
+    plan: &AttachmentPlan,
+) -> Result<NoteAttachment> {
+    let mut words = words_of(&transport_felts(payload, fee_limbs, key_source, plan));
+    if let Some(truncate) = plan.transport_truncate_words {
+        words.truncate(truncate);
+    }
+    for _ in 0..plan.transport_extra_words {
+        words.push(Word::empty());
+    }
+    NoteAttachment::with_words(
+        NoteAttachmentScheme::new(TRANSPORT_SCHEME).expect("scheme 4 is valid"),
+        words,
+    )
+    .map_err(|e| anyhow::anyhow!("transport attachment: {e}"))
 }
 
 /// Builds the (possibly tampered) stock mint note. `sig_over` lets the forged-signature case sign
@@ -230,38 +331,12 @@ pub fn tampered_mint_note(
         .sender(pf.producer_id)
         .mint_storage(mint_storage)
         .serial_number(note_rng(rng_seed).draw_word());
-    if plan.intent {
-        let mut words = intent_words(payload);
-        if let Some(truncate) = plan.intent_truncate_words {
-            words.truncate(truncate);
+    if plan.transport {
+        builder = builder.attachment(transport_attachment(payload, fee_limbs, &key_source, plan)?);
+        if plan.duplicate_transport {
+            builder =
+                builder.attachment(transport_attachment(payload, fee_limbs, &key_source, plan)?);
         }
-        for _ in 0..plan.intent_extra_words {
-            words.push(Word::empty());
-        }
-        builder = builder.attachment(
-            NoteAttachment::with_words(
-                NoteAttachmentScheme::new(INTENT_SCHEME).expect("scheme 4 is valid"),
-                words,
-            )
-            .map_err(|e| anyhow::anyhow!("intent attachment: {e}"))?,
-        );
-    }
-    if plan.attestation {
-        let mut felts: Vec<Felt> = fee_limbs.to_vec();
-        felts.extend(key_source.pubkey_felts.iter().copied());
-        felts.extend(key_source.sig_felts.iter().copied());
-        felts.extend([Felt::from(0u32); 3]);
-        let mut words = words_of(&felts);
-        if let Some(override_words) = plan.attestation_words_override {
-            words.resize(override_words, Word::empty());
-        }
-        builder = builder.attachment(
-            NoteAttachment::with_words(
-                NoteAttachmentScheme::new(ATTESTATION_SCHEME).expect("scheme 5 is valid"),
-                words,
-            )
-            .map_err(|e| anyhow::anyhow!("attestation attachment: {e}"))?,
-        );
     }
     if plan.target {
         builder = builder.attachment(NoteAttachment::from(
@@ -281,17 +356,23 @@ pub fn tampered_mint_note(
     Ok(Note::from(mint_note))
 }
 
+/// The honest storage plan: the attested recipient, the attested amount, the derived tag, public.
+/// The attachment negatives all pair with it, so an unexpected trap cannot be a storage divergence.
+pub fn honest_storage(pf: &ProductionFaucet) -> StoragePlan {
+    StoragePlan {
+        recipient: pf.recipient_id,
+        amount: MINT_AMOUNT,
+        tag: None,
+        public: true,
+    }
+}
+
 /// The honest note over an attested payload (the baseline the tamper cases diverge from).
 pub fn honest_note(pf: &ProductionFaucet, payload: &[u8], rng_seed: u64) -> Result<Note> {
     tampered_mint_note(
         pf,
         payload,
-        &StoragePlan {
-            recipient: pf.recipient_id,
-            amount: MINT_AMOUNT,
-            tag: None,
-            public: true,
-        },
+        &honest_storage(pf),
         [Felt::from(0u32); 8],
         1,
         None,
@@ -435,6 +516,36 @@ pub fn assert_no_effects(pf: &ProductionFaucet, payload: &[u8]) -> Result<()> {
         "a rejected mint must not raise supply"
     );
     Ok(())
+}
+
+/// Emits the note and consumes it, expecting a trap that carries EXACTLY `expected`'s message,
+/// then proves fail-closure.
+///
+/// [`expect_reject`] cannot serve for a `u32assert.err=` guard: `assert_transaction_executor_error!`
+/// matches only the VM's plain `FailedAssertion`, while a failed `u32assert` is a different
+/// operation error that carries the declared message inside its own rendering. The assertion is
+/// still exact — it names the `ERR_*` string byte for byte — it is only located differently.
+pub async fn expect_reject_u32_assert(
+    pf: &mut ProductionFaucet,
+    note: Note,
+    payload: &[u8],
+    expected: &MasmError,
+) -> Result<()> {
+    emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
+    let result = consume_note(&pf.mock_chain, pf.faucet_id, note.id()).await;
+    let TransactionExecutorError::TransactionProgramExecutionFailed(execution_error) = result
+        .err()
+        .context("the u32 guard must trap the consuming transaction")?
+    else {
+        anyhow::bail!("the trap must be a transaction program execution failure");
+    };
+    let rendered = execution_error.to_string();
+    anyhow::ensure!(
+        rendered.contains(expected.message()),
+        "expected a u32-assertion trap carrying {:?}, got: {rendered}",
+        expected.message()
+    );
+    assert_no_effects(pf, payload)
 }
 
 /// Emits the note and consumes it, expecting the exact `expected` trap, then (payload-based

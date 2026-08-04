@@ -10,8 +10,7 @@ description = "Phase-4 §11.2 local-node validation harness (LNV): real-node lif
 # the rest of the workspace carry — and `miden-client` / `miden-client-sqlite-store` from crates.io
 # at `=0.16.0-alpha.1`, the first v16-alpha client release, which itself pins protocol
 # `=0.16.0-alpha.4`. Because the client and the workspace agree on the protocol family, NO
-# `[patch.crates-io]` unification block is needed (the v15 git-pin block left with the v16
-# migration, MIGRATION-V16-ALPHA2.md R2) — one copy of each protocol crate resolves from crates.io.
+# No `[patch.crates-io]` unification block is needed; one copy of each protocol crate resolves.
 # k256/rand/miden-crypto mirror the versions `xusdc-encoding` uses for its attestation vectors
 # (miden-crypto moved to the family's 0.28); promoting k256/rand/miden-crypto to
 # [workspace.dependencies] is a deliberate later cleanup, not this un-park slice.

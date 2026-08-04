@@ -1,6 +1,6 @@
-//! P5-01 D5e mint-effects grounding canary — MockChain gate.
+//! P5-01 mint effects mint-effects grounding canary — MockChain gate.
 //!
-//! Proves, with RUNNING code (not assembly), the faucet write-side kernel primitives that D5e's
+//! Proves, with RUNNING code (not assembly), the faucet write-side kernel primitives that mint effects's
 //! `apply_mint_effects` will consume, on a `FungibleFaucet` account that ALSO carries a custom
 //! component:
 //!   - the `token_config` value-slot read/modify/write (`active_account::get_item` +

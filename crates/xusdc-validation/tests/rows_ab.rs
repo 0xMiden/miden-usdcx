@@ -39,8 +39,7 @@ const MAX_SUPPLY: u64 = 1_000_000_000_000;
 // ── synthetic-fixture helpers ────────────────────────────────────────────────────────────────
 
 fn wallet_id(seed: u8) -> AccountId {
-    // v16: `AccountId::dummy` gained an `AssetCallbackFlag` param (#3167 / MIGRATION-V16-ALPHA2.md
-    // S6). These synthetic wallets register no transfer policy, so the flag is `Disabled`.
+    // These synthetic wallets register no transfer policy, so the flag is `Disabled`.
     AccountId::dummy(
         [seed; 15],
         AccountIdVersion::Version1,

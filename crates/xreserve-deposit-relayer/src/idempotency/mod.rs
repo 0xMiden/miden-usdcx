@@ -67,8 +67,7 @@
 //! The spec leaves the technology `RIV`. It is **SQLite** (via `rusqlite`; one file, WAL +
 //! `synchronous = FULL`), because the atomic claim above is a property a JSON/bincode file's
 //! read-modify-write cannot provide, and because the cursor must survive `kill -9` and not merely a
-//! clean shutdown. The full rationale, and the alternatives weighed against it, are in the crate's
-//! `PERSISTENCE-CHOICE.md`.
+//! clean shutdown.
 //!
 //! There is deliberately no in-memory mode — and that is ENFORCED, not merely declared. SQLite's
 //! ephemeral databases (`:memory:`, an empty filename, a `file:…?mode=memory` URI) are spelled as

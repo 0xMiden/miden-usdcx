@@ -461,9 +461,9 @@ fn log_check(led: &mut Ledger, log_dir: &Path) {
 /// Resolves the DEPLOYED faucet's mint domain config for the `--faucet-id` re-check (the thin
 /// slot-read adapter; the node-free logic lives in [`mintburn::MintDomainConfig`]). Reads the on-chain
 /// `domain` and pairs it with `remote_token = account_id_to_bytes32(faucet_id)` — the two fields the
-/// D5a mint gate compares. Then VERIFIES the faucet's stored identifier key equals
+/// structural validation mint gate compares. Then VERIFIES the faucet's stored identifier key equals
 /// `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))`: if it does not, the deployed
-/// identifier is NOT `account_id_to_bytes32(faucet_id)` and every mint would be rejected at D5a, so we
+/// identifier is NOT `account_id_to_bytes32(faucet_id)` and every mint would be rejected at structural validation, so we
 /// bail HERE with an explicit message instead of letting the operator hit the 300s path-N timeout (the
 /// A6 failure mode). The `domain` compare cannot be pre-verified the same way (the mint payload IS what
 /// establishes the domain), so a wrong stored domain is caught by the resolved config making the mint
@@ -481,7 +481,7 @@ async fn resolve_deployed_mint_config(
         bail!(
             "the deployed faucet {faucet_id}'s stored identifier key {stored_identifier:?} does not \
              match bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id)) {expected_identifier:?}: \
-             the mint gate (D5a) would reject every mint with WRONG_IDENTIFIER. The --faucet-id \
+             the mint gate (structural validation) would reject every mint with WRONG_IDENTIFIER. The --faucet-id \
              re-check requires the identifier A5's identifier_init set from account_id_to_bytes32(faucet.id())."
         );
     }

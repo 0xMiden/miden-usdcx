@@ -3,7 +3,7 @@ name = "xusdc-canary-mint-effects"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Mint-effects grounding canary (P5-01 D5e): proves the faucet write-side kernel primitives (create_fungible_asset + faucet::mint + output_note::* + token_supply read/modify/write + set_map_item) EXECUTE AND COMMIT under MockChain on a FungibleFaucet account carrying a custom component, on the pinned Miden v0.15.3 / assembler 0.23.3 stack. Scratch — isolated from the xusdc-miden faucet build."
+description = "Mint-effects grounding canary (P5-01 mint effects): proves the faucet write-side kernel primitives (create_fungible_asset + faucet::mint + output_note::* + token_supply read/modify/write + set_map_item) EXECUTE AND COMMIT under MockChain on a FungibleFaucet account carrying a custom component, on the pinned Miden v0.15.3 / assembler 0.23.3 stack. Scratch — isolated from the xusdc-miden faucet build."
 
 # Isolated workspace. This empty [workspace] table makes the crate its own workspace root, so it
 # is fully decoupled from the parent xusdc-miden workspace (members = ["crates/xusdc-encoding"]).

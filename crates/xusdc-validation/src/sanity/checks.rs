@@ -46,7 +46,7 @@ const BURN_DEST_DOMAIN: u32 = 3;
 /// A production mint note for `amount_units` (raw==minted under scale-0) to `recipient`, signed by
 /// `attester`. Returns `(note, payload)` so the caller can derive the nonce key. `config` is the
 /// deployed faucet's domain config on the `--faucet-id` path (its `remoteDomain`/`remoteToken` are
-/// spliced so the D5a gate accepts the mint) and `None` on the fresh-LOCAL gate (the BASE_VECTOR
+/// spliced so the structural validation gate accepts the mint) and `None` on the fresh-LOCAL gate (the BASE_VECTOR
 /// header is used unchanged).
 pub(crate) fn mint_note_for(
     sender: AccountId,
@@ -78,8 +78,8 @@ fn mint_note_forged_sig(
     config: Option<MintDomainConfig>,
     rng: &mut impl miden_protocol::crypto::rand::FeltRng,
 ) -> Result<Note> {
-    // Carry the deployed faucet's domain/identifier too, so the mint reaches the D5d signature gate
-    // (a wrong domain would reject earlier at D5a, hiding the signature negative under WRONG_DOMAIN).
+    // Carry the deployed faucet's domain/identifier too, so the mint reaches the attestation verification signature gate
+    // (a wrong domain would reject earlier at structural validation, hiding the signature negative under WRONG_DOMAIN).
     let payload = mint_payload_opt(config.as_ref(), recipient, amount_units, 0, nonce_salt);
     let forged: MintAttestation = attester.attestation_over_digest([0xEE; 32]);
     XUsdcMintNote::create(sender, faucet_id, &payload, &forged, rng)

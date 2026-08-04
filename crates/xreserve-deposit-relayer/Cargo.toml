@@ -16,7 +16,6 @@ description = "Phase-4 P4-RELAYER (CMP-C1): off-chain deposit-attestation relaye
 # repository's gate runs `--locked --offline` against a pinned cargo cache, and Cargo resolves a
 # declared registry package even when it is optional, so a dependency the cache does not carry
 # fails EVERY offline command. The cache carries reqwest 0.13.4 and its hyper/rustls/h2 closure.
-# DEFERRED-DEPENDENCIES.md is the record of that rule and how a dependency it blocks is provisioned.
 #
 # No Circle endpoint, credential, or Miden domain is committed — the auth scheme and which
 # remote-domain id Circle assigns Miden stay OPEN (REQUIRES CIRCLE CONFIRMATION): the auth header
@@ -47,8 +46,7 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 sha3 = { workspace = true }
 # The idempotency seam's persistence (`idempotency`): a single-file SQLite database holding the
-# submitted-nonce log and the per-remote-domain `Link` cursor. PERSISTENCE-CHOICE.md records the
-# choice with the alternatives weighed against it. In one line: the dedup this seam exists for is a
+# submitted-nonce log and the per-remote-domain `Link` cursor. The dedup this seam exists for is a
 # CLAIM — check-then-insert must be one atomic step even with two observers running — and SQLite's
 # `BEGIN IMMEDIATE` plus a PRIMARY KEY on the nonce give exactly that, where a JSON or bincode
 # file's read-modify-write cannot. Version and features come from the root

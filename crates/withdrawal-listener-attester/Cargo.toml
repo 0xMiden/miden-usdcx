@@ -53,8 +53,7 @@ k256 = { workspace = true }
 # `messageHashToSign` opaquely (no hashing on the input path).
 sha3 = { workspace = true }
 # The per-burn idempotency ledger's persistence (`idempotency::SubmitLedger`): a single-file SQLite
-# database holding the submitted-burn log. This MIRRORS the relayer's `idempotency` seam and its
-# recorded persistence choice (`crates/xreserve-deposit-relayer/PERSISTENCE-CHOICE.md`) — the two must
+# database holding the submitted-burn log. This mirrors the relayer's `idempotency` seam; the two must
 # not drift onto different engines, which is why the version/features come from the root
 # [workspace.dependencies] rather than being re-pinned here.
 #

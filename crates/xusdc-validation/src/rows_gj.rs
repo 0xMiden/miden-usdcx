@@ -380,8 +380,7 @@ impl Driver {
         {
             Ok(result) => {
                 // v16: `account_delta()`→`account_patch()`; `StorageSlotDelta::Value(word)`→
-                // `StorageSlotPatch::Value(StorageValuePatch)` read via `.value() -> Option<Word>`
-                // (MIGRATION-V16-ALPHA2.md M1/M2).
+                // `StorageSlotPatch::Value(StorageValuePatch)` read via `.value() -> Option<Word>`.
                 let new_supply = match result.account_patch().storage().get(&token_config_slot()) {
                     Some(StorageSlotPatch::Value(vp)) => {
                         vp.value().map(|w| w[0].as_canonical_u64())
@@ -735,7 +734,7 @@ async fn mint_to_holder(d: &mut Driver, units: u64, salt: u8) -> Result<u64> {
     let supply_before = token_supply(&d.fetch_faucet().await?)?;
 
     // Produce the attestation under an immutable borrow that ends before the rng borrow. Fresh
-    // faucet: splice the OWN-ID remoteToken so D5a's identifier compare passes against the
+    // faucet: splice the OWN-ID remoteToken so structural validation's identifier compare passes against the
     // note-derived own-id identifier (R2 identifier-binding fix).
     let payload = mintburn::mint_payload_own_id(
         faucet_id,

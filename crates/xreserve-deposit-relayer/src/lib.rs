@@ -25,8 +25,8 @@
 //!   endpoint is contacted live (every live Circle leg is `REQUIRES CIRCLE CONFIRMATION`).
 //! * The **idempotency seam** ([`idempotency`]) — the one-directional joint between that Circle
 //!   half and the Miden half: a durable submitted-nonce log, the per-remote-domain `Link` cursor a
-//!   restart resumes from, and the `SubmissionStatus` machine that joins them (SQLite; the choice
-//!   is recorded in `PERSISTENCE-CHOICE.md`). It dedups so that an attestation observed twice is
+//!   restart resumes from, and the `SubmissionStatus` machine that joins them (SQLite). It dedups
+//!   so that an attestation observed twice is
 //!   minted at most once — a LIVENESS backstop, never a safety one: the authoritative duplicate
 //!   defence stays the on-chain `usedNonces` assert-then-set.
 //! * The **Miden-facing half** ([`miden`]): [`miden::build_mint_note`] turns a validated

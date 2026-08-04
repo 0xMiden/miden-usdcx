@@ -29,13 +29,10 @@ use withdrawal_listener_attester::types::EvidencePackage;
 
 // ================================================================================================
 
-/// This repo's own LNV4 local-node-validated xUSDC faucet
-/// (`crates/xusdc-validation/VALIDATION-RECORD-LNV4.md`) — a real, parseable id, not a fabricated
-/// one.
+/// A real, parseable xUSDC faucet id, not a fabricated one.
 pub const FAUCET_ID_HEX: &str = "0xbb405fd9fe431bd1135a292de098cb";
 
-/// The LNV4 run's holder account — the keyed `BasicWallet` that actually burned
-/// (`VALIDATION-RECORD-LNV4.md:21`). It is the negative control for the faucet filter, and it is
+/// The keyed `BasicWallet` holder account is the negative control for the faucet filter, and it is
 /// the realistic one: the burner is the account most likely to appear alongside the faucet in a
 /// transaction stream, so "not the faucet" is tested against the id that genuinely is not.
 pub const OTHER_ACCOUNT_ID_HEX: &str = "0x0a8770f581c324b114fb42884cddc9";

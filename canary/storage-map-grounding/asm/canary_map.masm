@@ -4,7 +4,7 @@
 # StorageSlot::Map read / write / empty-key primitive end to end under MockChain on the pinned
 # Miden v0.15.3 / assembler 0.23.3 stack. It is NOT the real nonce registry or attester
 # allowlist: it writes a fixed marker at a fixed key, reads it back, and reads an unset key —
-# exactly the shape D5c's replay check (usedNonces[KEY] == EMPTY_WORD) and D5d's allowlist build
+# exactly the shape replay protection's replay check (usedNonces[KEY] == EMPTY_WORD) and attestation verification's allowlist build
 # on. Proc bodies mirror the live protocol precedent in
 # protocol-pin-v0.15.3/crates/miden-standards/asm/standards/access/rbac.masm (a storage Map used
 # as an access-control registry): read via active_account::get_map_item, write via

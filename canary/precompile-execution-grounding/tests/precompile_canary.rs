@@ -7,7 +7,7 @@
 //!   Q2/Q3 ecdsa `verify_prehash` returns 1 for a valid triple and 0 for a structurally-valid-but-
 //!         invalid one (wrong key / wrong digest) — the load-bearing accept/reject semantics,
 //!   Q3 the `verify` wrapper TRAPS ("ECDSA signature verification failed") on a forged-but-well-formed
-//!      triple — D5d's fail-closed reject (R-MINT-14),
+//!      triple — attestation verification's fail-closed reject (R-MINT-14),
 //!   Q4 every test runs through `MockChain::build_tx_context(...).execute()` with no custom host,
 //!   Q5 the pubkey/digest/signature arrive via the advice provider (`extend_advice_inputs`).
 //!

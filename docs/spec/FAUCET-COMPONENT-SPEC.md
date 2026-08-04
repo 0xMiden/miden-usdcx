@@ -5,7 +5,7 @@ hand-written-MASM faucet account and its note scripts. It is written to match th
 code** in `asm/standards/`; where the code takes a provisional position on an item Circle has
 not yet confirmed, that is called out as OPEN (see `docs/spec/GLOSSARY.md`, `DEV-*`/`Q-*`).
 
-Short identifiers used below (`R-MINT-15`, `D5c`, `INV-MINT-SECURITY`, …) are defined once in
+Short identifiers used below (`R-MINT-15`, `INV-MINT-SECURITY`, …) are defined once in
 `docs/spec/GLOSSARY.md`.
 
 ## 1. What this component is
@@ -15,8 +15,8 @@ contract on the source chain; this faucet mints xUSDC on Miden against a Circle-
 **DepositIntent**, and burns xUSDC when a holder withdraws. It is built the way the canonical stock
 bridge faucet is built: **stock transport and effects, custom policies as the gates**.
 
-- Mints ride the **stock `MintNote` + stock `mint_and_send`**; the ENTIRE attestation gate
-  (`D5a`–`D5d` plus the ratified assert-match binding) is the faucet's active **attestation mint
+- Mints ride the **stock `MintNote` + stock `mint_and_send`**; structural, amount, replay, and
+  attestation checks plus the assert-match binding form the faucet's active **attestation mint
   policy** (`mint_policy::check_policy`), dispatched fail-closed by the stock policy manager on
   every mint. Every supply increase passes the attestation policy (`INV-MINT-SECURITY`) because
   the stock path is now the gated path.
@@ -35,9 +35,9 @@ min-burn floor, a missing domain-config seed, or a non-Public faucet) at build t
 
 | Module | Role |
 |---|---|
-| `mint_policy` | The **attestation mint policy** (`check_policy`, the ACTIVE mint policy the stock `mint_and_send` dispatches): reads the mint note's DepositIntent + attestation attachments (hash-verified), runs `D5a`–`D5d` by reference, enforces the assert-match binding (note-claimed recipient/amount/tag/type must equal their attested derivations), and marks the nonce used — its only state write. |
-| `deposit_intent_parser` | The faucet-side mint preconditions behind the single `validate` entry (`D5a`/`D5b`/`D5c`): the staged length derivation and its word-count binding, domain/identifier compares, amount/fee bounds, nonce replay guard. Delegates the structural DepositIntent parse to the encoding library. |
-| `attestation_verify` | The attestation check (`D5d`): keccak the payload, gate the attester pubkey against the allowlist, ECDSA-verify the signature. |
+| `mint_policy` | The **attestation mint policy** (`check_policy`, the ACTIVE mint policy the stock `mint_and_send` dispatches): reads and hash-verifies the mint note's DepositIntent and attestation attachments, runs all validation stages, enforces that the note recipient, amount, tag, and type match their attested derivations, and marks the nonce used — its only state write. |
+| `deposit_intent_parser` | The faucet-side mint preconditions behind the single `validate` entry: length and word-count binding, domain/identifier comparisons, amount/fee bounds, and nonce replay protection. Delegates the structural DepositIntent parse to the encoding library. |
+| `attestation_verify` | Keccaks the payload, checks the attester pubkey against the allowlist, and verifies the ECDSA signature. |
 | `identifier_init` | The administrator-gated, init-once **identifier** seeding — it resolves through the account-wide authority to the `ADMIN` role, exactly like the setters (the DEC-4 minimized init: the identifier is a provable fixpoint of the account id, so it alone gets a runtime init; the other three domain-config fields are build-seeded). |
 | `attester_admin` | The authority-gated `set_attester` allowlist setter. |
 | `encoding/` | The shared encoding library (`xreserve::encoding::*`): bytes32→key hashing, uint256→amount reduction, DepositIntent parse, pubkey commitment. Owned by the encoding crate; the faucet consumes it by reference. |
@@ -73,20 +73,20 @@ transaction with no writes, so a failed mint never consumes the nonce.
    paused faucet never even dispatches the attestation gate.
 2. **Transport shape** — the policy locates the three attachments (exactly three, one per
    scheme) and hash-verifies the intent and the 11-word attestation into two of its own local
-   regions. It hands the intent's committed word count to `D5a`, which binds it to the intent's
+   regions. It hands the intent's committed word count to structural validation, which binds it to the intent's
    own embedded `hookDataLen`. Every verify stage below then reads those two regions by pointer.
    Nothing is read back from the advice provider, so what the note committed to is exactly what
    gets verified.
-3. **`D5a` — structural + addressing** (`R-MINT-1..8`): derive the preimage length from the
+3. **Structural and addressing validation** (`R-MINT-1..8`): derive the preimage length from the
    embedded `hookDataLen` and bind it to the committed word count; parse the fixed-offset
    DepositIntent header; check magic, version, non-zero `amount`/`localToken`/`localDepositor`,
    the length relation, and that the intent's `remoteDomain`/`remoteToken` match the faucet's
    configured domain/identifier.
-4. **`D5b` — amount/fee** (`R-MINT-9..11`): reduce `amount`, `maxFee`, and the operator
+4. **Amount and fee validation** (`R-MINT-9..11`): reduce `amount`, `maxFee`, and the operator
    `feeAmount` from uint256 to an `AssetAmount`; require `amount ≥ maxFee`. In the MVP the
    operator `feeAmount` must be zero (see fee handling below).
-5. **`D5c` — replay** (`R-MINT-12`): derive the nonce key and assert `usedNonces[key]` is empty.
-6. **`D5d` — attestation** (`R-MINT-13..14`): keccak the full payload, require the attester's
+5. **Replay protection** (`R-MINT-12`): derive the nonce key and assert `usedNonces[key]` is empty.
+6. **Attestation verification** (`R-MINT-13..14`): keccak the full payload, require the attester's
    pubkey commitment to be enabled in the `xReserveAttesters` allowlist, and ECDSA-verify the
    signature over the digest. The same pubkey region feeds both the allowlist lookup and the
    signature check, so an allowlisted pubkey cannot be paired with a foreign signature.

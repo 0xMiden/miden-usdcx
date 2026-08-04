@@ -2,8 +2,8 @@
 
 This file defines every short identifier that appears in this repository's code comments,
 documentation, and test names. The identifiers are stable anchors: a numbered
-requirement (`R-MINT-15`), a named invariant (`INV-MINT-SECURITY`), a mint pipeline stage
-(`D5c`), or an open question that is still owned by Circle (`DEV-10`). Comments keep them
+requirement (`R-MINT-15`), a named invariant (`INV-MINT-SECURITY`), or an open question that is
+still owned by Circle (`DEV-10`). Comments keep them
 only where the anchor is genuinely useful — for example, a reject condition that a test
 asserts on by name. **The prose around an anchor always stands on its own; the anchor is a
 label, not a pointer you must follow to understand the code.** This file is the single place
@@ -24,10 +24,10 @@ A **DepositIntent** is the Circle-attested message authorizing a mint; an
 ## Mint reject conditions — `R-MINT-<n>`
 
 Numbered conditions the mint path enforces; a violation traps the transaction with no state
-change. Several are asserted on by name in the tests. `R-MINT-1..8` are the structural /
-addressing checks of stage `D5a`; `R-MINT-9..11` the amount/fee checks of `D5b`; `R-MINT-12`
-the replay check of `D5c`; `R-MINT-13..14` the attestation checks of `D5d`; `R-MINT-15` the
-supply-cap check of `D5e`; `R-MINT-16` the deny of the stock mint path.
+change. Several are asserted on by name in the tests. `R-MINT-1..8` cover structural and
+addressing checks; `R-MINT-9..11` amount and fee checks; `R-MINT-12` replay protection;
+`R-MINT-13..14` attestation checks; `R-MINT-15` the supply-cap check; and `R-MINT-16` the
+stock-mint-path denial.
 
 | Id | Condition enforced |
 |---|---|
@@ -67,20 +67,6 @@ supply-cap check of `D5e`; `R-MINT-16` the deny of the stock mint path.
 | R-ADMIN-2 | `set_min_burn_size` is administrator-gated (unmapped, so it resolves to the built-in `ADMIN` role). |
 | R-ADMIN-3 | `pause` / `unpause` require the `DOM_PAUSER` role. |
 | R-ADMIN-4 | Domain config is init-once: `identifier_init` can run once, while the other domain-config fields are build-seeded with no runtime writer. |
-
-## Mint pipeline stages — `D5a`–`D5e`
-
-The `xreserve_mint::mint` procedure runs a verify-once-then-write-once pipeline. `D5a`–`D5d`
-verify; `D5e` writes. Any verify/extraction trap aborts the whole transaction, so a failed
-mint performs no writes (in particular it never consumes the nonce).
-
-| Stage | What it does |
-|---|---|
-| D5a | Structural parse + domain/identifier compares (`validate_deposit_intent`). |
-| D5b | `amount` / `maxFee` / `feeAmount` reduction and bounds (`validate_mint_amounts`). |
-| D5c | Nonce replay guard, assert-zero only (`validate_nonce_unused`). |
-| D5d | Attestation verify: keccak the payload, allowlist gate, ECDSA verify (`verify_attestation`). |
-| D5e | Atomic mint effects: supply-cap guard, nonce SET, P2ID recipient note, `token_supply += amount` (`apply_mint_effects`). |
 
 ## Component slices — `CMP-<x>`
 
@@ -208,7 +194,7 @@ questions (e.g. `Q-CRY-*` cryptography, `Q-BUR-*` burn, `Q-DOM-*` domain, `Q-MIN
 
 Beyond these, `Q-<...>` labels in comments/fixtures mark a value or choice as awaiting Circle:
 - `Q-DOM-1` — which remote-domain id does Circle assign Miden? (so any test `domain` value is a placeholder, never the real value).
-- `Q-BLK-1` (**OPEN** — Circle-owned) — confirm the transfer-blocklist semantics: blocked means full freeze including redemption; mint or transfer to a blocked recipient strands at consume; pause halts all transfers. See `docs/DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md` / `docs/CIRCLE-SEMANTICS-TRANSFER-BLOCKLIST.md`.
+- `Q-BLK-1` (**OPEN** — Circle-owned) — confirm the transfer-blocklist semantics: blocked means full freeze including redemption; mint or transfer to a blocked recipient strands at consume; pause halts all transfers. See `docs/CIRCLE-SEMANTICS-TRANSFER-BLOCKLIST.md`.
 - `Q-ADMIN-1` — is the canonical `xReserveAttesters` key type `address` or `bytes32`?
 - `Q-CRY-4` — does the AccountId↔bytes32 encoding (`DEV-10`) apply to `remoteToken` / the faucet's bytes32 identifier as well as to `remoteRecipient`?
 - `Q-DA-QUORUM` — is deposit attestation single-signer or a quorum (how many signatures must verify)?
@@ -298,7 +284,7 @@ The `xusdc-validation` crate runs a real-local-node acceptance matrix. Each row 
 | K | Network-transaction-builder liveness: does the node auto-execute routed+allowlisted consumptions (observed: yes). |
 | L | Clean logs: no unexplained ERROR/panic lines across the service logs. |
 
-The matrix was built in slices `LNV-1`–`LNV-5` (each recorded in a `VALIDATION-RECORD*.md`):
+The matrix is built in slices `LNV-1`–`LNV-5`:
 
 | Slice | Rows covered |
 |---|---|
@@ -425,7 +411,3 @@ sections:
 | §8.1 | (shared-encoding spec) DepositIntent validation order. |
 | §8.2 | (shared-encoding spec) uint256 → AssetAmount reduction order. |
 | §11.2 | The full-matrix real-node acceptance gate (the LNV matrix above). |
-
-`§<n>.<n>` references written as "§N of the record" / "`VALIDATION-RECORD.md` §N" point to a
-section of the named in-repo document (e.g. `§2.4`, `§3` of a validation record) and resolve
-within this repository.

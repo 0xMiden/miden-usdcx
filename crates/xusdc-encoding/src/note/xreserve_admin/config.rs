@@ -114,8 +114,10 @@ static IDENTIFIER_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// RE-MATERIALIZED again when the proc's own-id derivation switched from a local byte-swap helper
 /// to the shared `miden::standards::utils::swap_u32_bytes` (behavior-identical; the callee digest
 /// moved, and this root binds transitively to it).
+/// RE-MATERIALIZED again when `bytes32_to_key`'s own `swapw` was removed (behavior-identical; the
+/// callee digest moved, and this root binds transitively to it).
 pub const XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x99b4ba0f78f1420b4bcea7c27dd6aa839b7efdfd292814ce8619a22eabc68c2e";
+    "0xe51f11e61d731efe73dbc4312fb4113041fda1249130da257594830f44d2f651";
 
 /// The administrator-gated, init-once `identifier_init` admin note. The identifier is the ONE
 /// domain-config field the account-id fixpoint forces past build time; the other three are

@@ -12,19 +12,17 @@ Short identifiers used below (`R-MINT-15`, `D5c`, `INV-MINT-SECURITY`, …) are 
 
 xUSDC is a Miden **fungible faucet** account. Native USDC stays locked 1:1 in Circle's xReserve
 contract on the source chain; this faucet mints xUSDC on Miden against a Circle-attested
-**DepositIntent**, and burns xUSDC when a holder withdraws. Since the Wave-1 S1 recomposition it
-is built the way the canonical stock bridge faucet is built — **stock transport and effects,
-custom policies as the gates**:
+**DepositIntent**, and burns xUSDC when a holder withdraws. It is built the way the canonical stock
+bridge faucet is built: **stock transport and effects, custom policies as the gates**.
 
 - Mints ride the **stock `MintNote` + stock `mint_and_send`**; the ENTIRE attestation gate
   (`D5a`–`D5d` plus the ratified assert-match binding) is the faucet's active **attestation mint
   policy** (`mint_policy::check_policy`), dispatched fail-closed by the stock policy manager on
-  every mint. Every supply increase passes the attestation policy (`INV-MINT-SECURITY`,
-  restated); the former mint-deny guard dissolved — its job (trapping the stock path) dissolved
-  because the stock path IS now the gated path.
+  every mint. Every supply increase passes the attestation policy (`INV-MINT-SECURITY`) because
+  the stock path is now the gated path.
 - Burns run through the standard `receive_and_burn` path gated by the **stock `MinBurnAmount`
   policy** with the floor seeded `≥ 1` (builder-rejected below 1; the admin note asserts the
-  same floor), which preserves the former `amount > 0` zero-burn invariant by construction.
+  same floor), which preserves the `amount > 0` zero-burn invariant by construction.
 
 The account is `AccountType::Public`, 6-decimal, symbol "xUSDC". The Rust
 `XReserveStablecoinBuilder` (in `crates/xusdc-encoding`) composes the account and rejects an
@@ -104,10 +102,10 @@ transaction with no writes, so a failed mint never consumes the nonce.
    cap discipline, binds the note's asset to this faucet, creates the recipient note, mints, and
    raises `token_supply` — the same audited implementation every stock faucet runs.
 
-The former deny guard is gone by construction: with the attestation policy as the ACTIVE mint
-policy and the allowed-mint set exactly `{that root}`, every supply increase passes the
-attestation policy (`INV-MINT-SECURITY`, restated), and an execution without the attested note
-transport (e.g. a bare tx-script `mint_and_send`) fail-closes in the policy's kernel reads.
+With the attestation policy as the active mint policy and the allowed-mint set exactly `{that root}`,
+every supply increase passes the attestation policy (`INV-MINT-SECURITY`), and an execution without
+the attested note transport (e.g. a bare tx-script `mint_and_send`) fail-closes in the policy's
+kernel reads.
 
 **Fee handling.** The MVP mints a single recipient note and raises supply by the full amount, so
 a non-zero fee would over-count supply against the minted assets. Both the parser and the

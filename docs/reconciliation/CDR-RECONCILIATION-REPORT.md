@@ -256,8 +256,8 @@ cargo doc --no-deps --workspace --locked                 → exit 0   0 warnings
   (V16-DOC-DELTA §2a gate-hygiene table) — the gate was NOT clean at this re-run's baseline
   and is not explained away.
 - Diff surface: docs/spec/{GLOSSARY, FAUCET-, ENCODING-COMPONENT-SPEC}.md, README.md,
-  docs/DOCS-INVENTORY.md, docs/MIGRATION-V16-ALPHA2.md (4 bracketed renumber annotations
-  only), docs/reconciliation/* (this packet), comment/message-only edits in
+  docs/MIGRATION-V16-ALPHA2.md (4 bracketed renumber annotations only),
+  docs/reconciliation/* (this packet), comment/message-only edits in
   `crates/xusdc-encoding` (src + tests) and `crates/xreserve-deposit-relayer` (src doc-comment
   sites incl. `miden/mint_note.rs`, `error.rs`, the idempotency doc-links; 4 test comment
   sites), and the planning-tree register + decision-doc annotation. Zero

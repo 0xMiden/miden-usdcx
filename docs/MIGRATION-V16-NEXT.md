@@ -625,8 +625,7 @@ same classification:
 Outside the tripwire fence (not tripwire files; listed for completeness): the 4 manifests + lock
 (the pin flip + park), `src/account/xreserve/builder/mod.rs` (the A2/A3 production composition —
 the ratified dispositions themselves), `src/note/xreserve_admin/ownership.rs` (class 1: the one
-moved root), `src/note/xreserve_admin/mod.rs` (class 5: one rename), the docs
-(`MIGRATION-V16-NEXT.md`, `PARKED-V16-NEXT.md`, `DOCS-INVENTORY.md` rows).
+moved root), `src/note/xreserve_admin/mod.rs` (class 5: one rename), and the migration docs.
 
 ### 11.3 The class-6 hunks — per-hunk no-drop / no-reorder proof
 

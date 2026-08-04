@@ -154,7 +154,7 @@ documented position and nothing here marks them resolved.
 | CMP-F2 | The administrator-gated `set_min_burn_size` setter (note-driven, floor-guarded, calls the stock setter) | `main` (`asm/standards/notes/xreserve_set_min_burn_size_note.masm`) | `set_min_burn_administrator_succeeds` (`tests/set_min_burn.rs`) and 7 others |
 | CMP-F3 | The DOM_PAUSER-gated pause/unpause | the stock `PausableManager::{pause,unpause}` role-mapped by `XReserveAdminAuthority` (`admin_authority.rs`) | `dom_pauser_pause_halts_mint` (`tests/pause_admin.rs`) and 10 others |
 | CMP-F5 | Role management: grant/revoke rotation plus the build-seeded `DOM_PAUSER.admin_role = DOM_MANAGER` delegation, all driven by the stock `RbacActionNote` (which also exposes set-role-admin and renounce) | `seeded_dom_roles_rbac` (`builder/rbac_seed.rs`) | `shipped_delegation_reads_back` (`tests/role_admin.rs`) and 6 others |
-| R2-F4 | Process label: the governance scan asserting no source line marks the Circle-owned amount-cap decision resolved | the guard itself (`tests/module_split_doc_hygiene.rs`) | `dev5_stays_open_in_the_wave1_sources` |
+| R2-F4 | Governance scan asserting no source line marks the Circle-owned amount-cap decision resolved | the guard itself (`tests/module_split_doc_hygiene.rs`) | `dev5_stays_open_in_live_sources` |
 
 ## Residue — banned tokens deliberately left in exempt surfaces
 

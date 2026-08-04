@@ -32,10 +32,6 @@ const DEV5_SCANNED_SOURCES: &[(&str, &str)] = &[
         include_str!("../src/note/xreserve_mint.rs"),
     ),
     (
-        "docs/WAVE1-S1-RECOMPOSITION.md",
-        include_str!("../../../docs/WAVE1-S1-RECOMPOSITION.md"),
-    ),
-    (
         "tests/mint_scale_conformance.rs",
         include_str!("mint_scale_conformance.rs"),
     ),
@@ -50,7 +46,7 @@ const DEV5_SCANNED_SOURCES: &[(&str, &str)] = &[
 /// anchor line. The provisional wording cannot silently drift into an implied Circle
 /// approval, and the scan cannot silently go vacuous by the anchors disappearing.
 #[test]
-fn dev5_stays_open_in_the_wave1_sources() {
+fn dev5_stays_open_in_live_sources() {
     // resolution words (lower-cased match) that must never sit on an anchor line.
     const FORBIDDEN: [&str; 5] = ["answered", "resolved", "approved", "accepted", "closed"];
     // the open-status anchors: the humanized marker phrases plus the historical id, which

@@ -562,7 +562,12 @@ async fn mint_rejects_a_non_u32_hook_data_len_limb() -> Result<()> {
 /// bytes. Each case's error identity is exactly the one it had when these were separate
 /// attachments.
 #[rstest]
-#[case::pubkey(ATTESTATION_PUBKEY_FELT_OFF, "ERR_XRESERVE_BAD_PK_COMMITMENT", 34, 101)]
+#[case::pubkey(
+    ATTESTATION_PUBKEY_FELT_OFF,
+    "ERR_XRESERVE_DISALLOWED_PUB_KEY",
+    34,
+    101
+)]
 #[case::signature(ATTESTATION_SIGNATURE_FELT_OFF, "ERR_XRESERVE_SIG_INVALID", 35, 102)]
 #[tokio::test]
 async fn mint_rejects_a_tampered_attestation_sub_region(

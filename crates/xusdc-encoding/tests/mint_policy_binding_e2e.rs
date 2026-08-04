@@ -14,8 +14,10 @@
 //!   account id in its low bytes, so the leading pad must be zero and each id half must be below
 //!   the field modulus. Both guards get their own reject cases — a non-canonical value must fail,
 //!   never be silently reduced into a different, valid account id.
-//! - Transport shape: attachments missing, attachments duplicated, wrong word counts, a length
-//!   that disagrees with the payload, a truncated payload.
+//! - Transport shape: the merged scheme-4 attachment's layout (count prefix, attestation section,
+//!   deposit intent) and every way it can be wrong — an attachment missing, doubled or extra, an
+//!   attestation count other than one, a truncated attachment, a length that disagrees with the
+//!   payload, and each sub-region tampered with independently.
 //! - The pause halt, the routing proof on a MockChain, and the restatement that a mint path with
 //!   no policy installed cannot mint at all.
 //!
@@ -26,12 +28,13 @@ mod support;
 
 use anyhow::{Context, Result};
 use miden_protocol::errors::MasmError;
-use miden_protocol::note::{NoteTag, NoteType};
+use miden_protocol::note::{NoteAttachmentScheme, NoteTag, NoteType};
 use miden_standards::note::{NetworkAccountTarget, P2idNote, P2idNoteStorage};
 use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::mint_transport::*;
 use support::*;
+use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 
 use miden_protocol::{Felt, Word};
 
@@ -217,62 +220,156 @@ async fn mint_rejects_a_noncanonical_recipient(
     .await
 }
 
-// TRANSPORT SHAPE — what happens when the note's three attachments are wrong
+// TRANSPORT SHAPE — what happens when the note's two attachments are wrong
 // ================================================================================================
+//
+// The mint note carries ONE merged transport attachment (scheme 4: a one-felt attestation-count
+// prefix padded to a word, then the 11-word attestation section, then the packed deposit intent)
+// plus the scheme-2 routing target. Every case below corrupts exactly one thing and names the
+// EXACT error it must produce — which is also how the merged offsets get proven: a sub-region read
+// at the wrong offset would surface a different error, or none.
 
-/// Dropping the scheme-4 intent attachment rejects.
+/// The honest note's attachment SHAPE: exactly two, one scheme-4 merged transport and one
+/// scheme-2 routing target, and the transport's felts are the documented
+/// `[count, 0, 0, 0] ‖ attestation(44) ‖ intent(word-padded)` concatenation.
 #[tokio::test]
-async fn mint_rejects_a_missing_intent_attachment() -> Result<()> {
-    let mut pf = fixture()?;
-    bring_up(&mut pf, 1).await?;
+async fn the_honest_note_carries_the_merged_transport_and_the_routing_target() -> Result<()> {
+    let pf = fixture()?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 21);
-    let note = tampered_mint_note(
-        &pf,
+    let note = honest_note(&pf, &payload, 90)?;
+
+    let transport_scheme =
+        NoteAttachmentScheme::new(TRANSPORT_SCHEME).expect("scheme 4 is a valid attachment scheme");
+    let schemes: Vec<NoteAttachmentScheme> = note
+        .attachments()
+        .iter()
+        .map(|a| a.attachment_scheme())
+        .collect();
+    assert_eq!(
+        schemes.len(),
+        2,
+        "the mint note carries exactly two attachments: the merged transport + the routing target"
+    );
+    assert!(
+        schemes.contains(&transport_scheme),
+        "one of them is the scheme-{TRANSPORT_SCHEME} merged transport (schemes = {schemes:?})"
+    );
+    assert!(
+        schemes.contains(&NetworkAccountTarget::ATTACHMENT_SCHEME),
+        "the other is the stock scheme-2 routing target (schemes = {schemes:?})"
+    );
+
+    let transport = note
+        .attachments()
+        .iter()
+        .find(|a| a.attachment_scheme() == transport_scheme)
+        .context("the merged transport attachment is present")?
+        .content()
+        .to_elements();
+
+    // the count prefix occupies a full word, so the intent sub-region stays word-aligned
+    assert_eq!(
+        transport[0],
+        Felt::from(ATTESTATION_COUNT),
+        "felt 0 is the attestation count"
+    );
+    assert_eq!(
+        &transport[1..TRANSPORT_PREFIX_WORDS * 4],
+        &[Felt::from(0u32); 3],
+        "the rest of the prefix word is zero padding"
+    );
+
+    // the attestation section sits FIRST (fixed width), which is what makes every offset below a
+    // constant rather than a function of hookDataLen
+    let attester = gen_attester(1, &payload);
+    let attestation = &transport[TRANSPORT_PREFIX_WORDS * 4..TRANSPORT_INTENT_WORD_OFF * 4];
+    assert_eq!(
+        attestation.len(),
+        ATTESTATION_FELTS,
+        "the attestation section is {ATTESTATION_WORDS} words"
+    );
+    assert_eq!(
+        &attestation[ATTESTATION_FEE_FELT_OFF..ATTESTATION_FEE_FELT_OFF + 8],
+        &[Felt::from(0u32); 8],
+        "the feeAmount limbs are zero while relayer fees stay open"
+    );
+    assert_eq!(
+        &attestation[ATTESTATION_PUBKEY_FELT_OFF..ATTESTATION_PUBKEY_FELT_OFF + 16],
+        attester.pubkey_felts.as_slice(),
+        "the 16 affine pubkey felts sit at the documented offset"
+    );
+    assert_eq!(
+        &attestation[ATTESTATION_SIGNATURE_FELT_OFF..ATTESTATION_SIGNATURE_FELT_OFF + 17],
+        attester.sig_felts.as_slice(),
+        "the 17 signature felts sit at the documented offset"
+    );
+
+    // the Circle-signed byte extent stays 1:1 identifiable: the intent starts at a FIXED felt
+    // offset and is the packed payload verbatim, zero-padded to the word boundary
+    let mut expected_intent =
+        xusdc_encoding::xreserve::encoding::deposit_intent_to_packed_felts(&payload)
+            .map_err(|e| anyhow::anyhow!("the payload packs: {e}"))?;
+    let signed_felts = expected_intent.len();
+    while !expected_intent.len().is_multiple_of(4) {
+        expected_intent.push(Felt::from(0u32));
+    }
+    assert_eq!(
+        &transport[TRANSPORT_INTENT_WORD_OFF * 4..],
+        expected_intent.as_slice(),
+        "the intent sub-region is the packed Circle-signed payload, verbatim"
+    );
+    assert_eq!(
+        transport.len(),
+        TRANSPORT_INTENT_WORD_OFF * 4 + expected_intent.len(),
+        "the merged attachment is exactly prefix + attestation + padded intent"
+    );
+    assert_eq!(
+        signed_felts,
+        payload.len().div_ceil(4),
+        "the Circle-signed byte extent is exactly the unpadded intent felts, starting at the fixed \
+         intent offset — the trailing word padding carries none of it"
+    );
+
+    // and the harness builds the PRODUCTION wire, not a look-alike: the same transport the
+    // `XUsdcMintNote` factory emits for the same payload and attestation. Without this, every
+    // tamper case below would only be proving things about the harness.
+    let factory_note = XUsdcMintNote::create(
+        pf.producer_id,
+        pf.faucet_id,
         &payload,
-        &StoragePlan {
-            recipient: pf.recipient_id,
-            amount: MINT_AMOUNT,
-            tag: None,
-            public: true,
-        },
-        [Felt::from(0u32); 8],
-        1,
-        None,
-        &AttachmentPlan {
-            intent: false,
-            ..AttachmentPlan::default()
-        },
-        90,
-    )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_INTENT_MISSING"),
+        &MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes),
+        &mut note_rng(90),
     )
-    .await
+    .map_err(|e| anyhow::anyhow!("the production factory must build the note: {e}"))?;
+    let factory_transport = factory_note
+        .attachments()
+        .iter()
+        .find(|a| a.attachment_scheme() == transport_scheme)
+        .context("the factory note carries the merged transport attachment")?
+        .content()
+        .to_elements();
+    assert_eq!(
+        transport, factory_transport,
+        "the harness's transport attachment is byte-for-byte the production factory's"
+    );
+    Ok(())
 }
 
-/// Dropping the scheme-5 attestation attachment rejects.
+/// Dropping the scheme-4 merged transport attachment rejects.
 #[tokio::test]
-async fn mint_rejects_a_missing_attestation_attachment() -> Result<()> {
+async fn mint_rejects_a_missing_transport_attachment() -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 22);
     let note = tampered_mint_note(
         &pf,
         &payload,
-        &StoragePlan {
-            recipient: pf.recipient_id,
-            amount: MINT_AMOUNT,
-            tag: None,
-            public: true,
-        },
+        &honest_storage(&pf),
         [Felt::from(0u32); 8],
         1,
         None,
         &AttachmentPlan {
-            attestation: false,
+            transport: false,
             ..AttachmentPlan::default()
         },
         91,
@@ -281,12 +378,13 @@ async fn mint_rejects_a_missing_attestation_attachment() -> Result<()> {
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_ATTESTATION_MISSING"),
+        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_TRANSPORT_MISSING"),
     )
     .await
 }
 
-/// Dropping the scheme-2 routing target rejects (the routing bind stays part of the shape).
+/// Dropping the scheme-2 routing target rejects (the routing bind stays part of the shape, and its
+/// reject identity is unchanged by the merge).
 #[tokio::test]
 async fn mint_rejects_a_missing_routing_target() -> Result<()> {
     let mut pf = fixture()?;
@@ -295,12 +393,7 @@ async fn mint_rejects_a_missing_routing_target() -> Result<()> {
     let note = tampered_mint_note(
         &pf,
         &payload,
-        &StoragePlan {
-            recipient: pf.recipient_id,
-            amount: MINT_AMOUNT,
-            tag: None,
-            public: true,
-        },
+        &honest_storage(&pf),
         [Felt::from(0u32); 8],
         1,
         None,
@@ -319,29 +412,29 @@ async fn mint_rejects_a_missing_routing_target() -> Result<()> {
     .await
 }
 
-/// A FOURTH attachment rejects (exactly three).
+/// A THIRD attachment rejects — either a foreign scheme riding along, or the merged transport
+/// attached twice (which `find_attachment` would happily resolve to the first copy).
+#[rstest]
+#[case::foreign_scheme(AttachmentPlan { extra_scheme: Some(6), ..AttachmentPlan::default() }, 24, 93)]
+#[case::doubled_transport(AttachmentPlan { duplicate_transport: true, ..AttachmentPlan::default() }, 25, 94)]
 #[tokio::test]
-async fn mint_rejects_a_fourth_attachment() -> Result<()> {
+async fn mint_rejects_a_third_attachment(
+    #[case] plan: AttachmentPlan,
+    #[case] nonce_variant: u8,
+    #[case] rng_seed: u64,
+) -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 1).await?;
-    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 24);
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, nonce_variant);
     let note = tampered_mint_note(
         &pf,
         &payload,
-        &StoragePlan {
-            recipient: pf.recipient_id,
-            amount: MINT_AMOUNT,
-            tag: None,
-            public: true,
-        },
+        &honest_storage(&pf),
         [Felt::from(0u32); 8],
         1,
         None,
-        &AttachmentPlan {
-            extra_scheme: Some(6),
-            ..AttachmentPlan::default()
-        },
-        93,
+        &plan,
+        rng_seed,
     )?;
     expect_reject(
         &mut pf,
@@ -352,102 +445,219 @@ async fn mint_rejects_a_fourth_attachment() -> Result<()> {
     .await
 }
 
-/// A wrong-sized attestation attachment (10 words instead of 11) rejects.
+/// An attestation count other than one rejects with its DEDICATED error — the documented
+/// single-signature restriction. The prefix is extensibility for a future quorum outcome, not
+/// multi-signature support: `count = 0` and a shape-plausible `count = 2` (the attestation section
+/// genuinely repeated, so the note looks like a two-signer attestation) both fail closed.
+#[rstest]
+#[case::zero(AttachmentPlan { attestation_count_override: Some(0), ..AttachmentPlan::default() }, 26, 95)]
+#[case::two_with_a_second_section(
+    AttachmentPlan {
+        attestation_count_override: Some(2),
+        duplicate_attestation_section: true,
+        ..AttachmentPlan::default()
+    },
+    27,
+    96
+)]
 #[tokio::test]
-async fn mint_rejects_a_wrong_attestation_word_count() -> Result<()> {
+async fn mint_rejects_an_attestation_count_other_than_one(
+    #[case] plan: AttachmentPlan,
+    #[case] nonce_variant: u8,
+    #[case] rng_seed: u64,
+) -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 1).await?;
-    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 25);
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, nonce_variant);
     let note = tampered_mint_note(
         &pf,
         &payload,
-        &StoragePlan {
-            recipient: pf.recipient_id,
-            amount: MINT_AMOUNT,
-            tag: None,
-            public: true,
-        },
+        &honest_storage(&pf),
         [Felt::from(0u32); 8],
         1,
         None,
-        &AttachmentPlan {
-            attestation_words_override: Some(10),
-            ..AttachmentPlan::default()
-        },
-        94,
+        &plan,
+        rng_seed,
     )?;
     expect_reject(
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_ATTESTATION_NUM_WORDS"),
+        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_ATTESTATION_COUNT"),
     )
     .await
 }
 
-/// An intent attachment with a TRAILING EXTRA word (word count above the embedded length claim)
-/// rejects — the hash-committed transport length is bound to the intent's own hookDataLen.
+/// A merged attachment shorter than prefix + attestation + the 15-word intent header rejects at
+/// the transport floor — below it, no sub-region offset can be trusted.
 #[tokio::test]
-async fn mint_rejects_an_intent_length_mismatch() -> Result<()> {
+async fn mint_rejects_a_truncated_transport() -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 1).await?;
-    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 26);
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 30);
     let note = tampered_mint_note(
         &pf,
         &payload,
-        &StoragePlan {
-            recipient: pf.recipient_id,
-            amount: MINT_AMOUNT,
-            tag: None,
-            public: true,
-        },
+        &honest_storage(&pf),
         [Felt::from(0u32); 8],
         1,
         None,
         &AttachmentPlan {
-            intent_extra_words: 1,
+            transport_truncate_words: Some(TRANSPORT_FLOOR_WORDS - 1),
             ..AttachmentPlan::default()
         },
-        95,
+        97,
     )?;
     expect_reject(
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_INTENT_WORDS"),
+        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_TRANSPORT_TOO_SHORT"),
     )
     .await
 }
 
-/// An intent attachment SHORTER than the 60-felt header rejects at the transport floor.
+/// The committed word count must equal prefix + attestation + ⌈len_felts/4⌉, from BOTH directions:
+/// a trailing padding word makes the attachment longer than the embedded `hookDataLen` claims, and
+/// a `hookDataLen` claiming extra hookData makes the claim longer than the attachment. Neither is
+/// admissible — the padding must not be able to hide data, and the length claim must not be able
+/// to reach past the committed bytes.
+#[rstest]
+#[case::an_extra_padding_word(
+    AttachmentPlan { transport_extra_words: 1, ..AttachmentPlan::default() },
+    31,
+    98
+)]
+#[case::a_hook_data_len_lie(
+    AttachmentPlan {
+        intent_hook_data_len_felt: Some(packed_hook_data_len(4)),
+        ..AttachmentPlan::default()
+    },
+    32,
+    99
+)]
 #[tokio::test]
-async fn mint_rejects_a_truncated_intent() -> Result<()> {
+async fn mint_rejects_a_transport_length_mismatch(
+    #[case] plan: AttachmentPlan,
+    #[case] nonce_variant: u8,
+    #[case] rng_seed: u64,
+) -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 1).await?;
-    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 27);
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, nonce_variant);
     let note = tampered_mint_note(
         &pf,
         &payload,
-        &StoragePlan {
-            recipient: pf.recipient_id,
-            amount: MINT_AMOUNT,
-            tag: None,
-            public: true,
-        },
+        &honest_storage(&pf),
         [Felt::from(0u32); 8],
         1,
         None,
-        &AttachmentPlan {
-            intent_truncate_words: Some(14), // below the 15-word header floor
-            ..AttachmentPlan::default()
-        },
-        96,
+        &plan,
+        rng_seed,
     )?;
     expect_reject(
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_INTENT_TOO_SHORT"),
+        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_TRANSPORT_WORDS"),
+    )
+    .await
+}
+
+/// A `hookDataLen` limb above the u32 range rejects BEFORE the byte-swap that derives the length —
+/// the guard that keeps a hash-committed but out-of-range limb out of the length arithmetic.
+#[tokio::test]
+async fn mint_rejects_a_non_u32_hook_data_len_limb() -> Result<()> {
+    let mut pf = fixture()?;
+    bring_up(&mut pf, 1).await?;
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 33);
+    let note = tampered_mint_note(
+        &pf,
+        &payload,
+        &honest_storage(&pf),
+        [Felt::from(0u32); 8],
+        1,
+        None,
+        &AttachmentPlan {
+            intent_hook_data_len_felt: Some(
+                Felt::new(1u64 << 32).expect("2^32 is inside the field"),
+            ),
+            ..AttachmentPlan::default()
+        },
+        100,
+    )?;
+    expect_reject_u32_assert(
+        &mut pf,
+        note,
+        &payload,
+        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB"),
+    )
+    .await
+}
+
+/// SUB-REGION ISOLATION: corrupting one region of the merged attachment surfaces THAT region's
+/// reject, never another's. The pubkey sub-region is read by the allowlist gate, the signature
+/// sub-region by the ECDSA verify, and the intent sub-region by the keccak — so a merge that
+/// mis-derived any offset would either mis-attribute the failure or, worse, verify the wrong
+/// bytes. Each case's error identity is exactly the one it had when these were separate
+/// attachments.
+#[rstest]
+#[case::pubkey(ATTESTATION_PUBKEY_FELT_OFF, "ERR_XRESERVE_BAD_PK_COMMITMENT", 34, 101)]
+#[case::signature(ATTESTATION_SIGNATURE_FELT_OFF, "ERR_XRESERVE_SIG_INVALID", 35, 102)]
+#[tokio::test]
+async fn mint_rejects_a_tampered_attestation_sub_region(
+    #[case] felt_off: usize,
+    #[case] expected_err: &str,
+    #[case] nonce_variant: u8,
+    #[case] rng_seed: u64,
+) -> Result<()> {
+    let mut pf = fixture()?;
+    bring_up(&mut pf, 1).await?;
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, nonce_variant);
+    let note = tampered_mint_note(
+        &pf,
+        &payload,
+        &honest_storage(&pf),
+        [Felt::from(0u32); 8],
+        1,
+        None,
+        &AttachmentPlan {
+            attestation_felt_tamper: Some((felt_off, Felt::from(0xdead_beefu32))),
+            ..AttachmentPlan::default()
+        },
+        rng_seed,
+    )?;
+    expect_reject(&mut pf, note, &payload, shell_error_by_name(expected_err)).await
+}
+
+/// The other half of the isolation proof: a tampered INTENT byte — the attestation section left
+/// untouched and the signature still over the original payload — rejects at the signature check,
+/// because the keccak'd extent is the intent sub-region and nothing else. A merge that hashed the
+/// prefix or the attestation along with the intent would not reproduce this identity.
+#[tokio::test]
+async fn mint_rejects_a_tampered_intent_byte() -> Result<()> {
+    let mut pf = fixture()?;
+    bring_up(&mut pf, 1).await?;
+    let signed = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 36);
+    // the last maxFee byte: 1 -> 2, which every structural and amount check still admits (the
+    // attested amount stays far above the fee), so the ONLY thing that changes is the digest.
+    let mut carried = signed.clone();
+    carried[MAX_FEE_BYTE_OFF + 31] = 2;
+    let note = tampered_mint_note(
+        &pf,
+        &carried,
+        &honest_storage(&pf),
+        [Felt::from(0u32); 8],
+        1,
+        Some(&signed),
+        &AttachmentPlan::default(),
+        103,
+    )?;
+    expect_reject(
+        &mut pf,
+        note,
+        &carried,
+        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
     )
     .await
 }

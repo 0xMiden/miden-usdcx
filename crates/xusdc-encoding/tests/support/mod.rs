@@ -136,7 +136,7 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 21] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 20] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -190,17 +190,14 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 21] = [
         MasmError::from_static_str("deposit intent remote recipient address pad is not zero"),
     ),
     // The attestation mint policy (mint_policy.masm) — the TRANSPORT-shape guards on the
-    // stock MintNote's attachments: the scheme-4 intent + scheme-5 attestation + scheme-2 routing
-    // target must all be present, exactly three in total; the hash-committed intent word count
-    // must cover the header and match the embedded hookDataLen claim; the attestation is exactly
-    // 11 words ([feeAmount(8), pubkey(16), signature(17), pad(3)]).
+    // stock MintNote's attachments: the scheme-4 merged transport (attestation count prefix +
+    // attestation + deposit intent) and the scheme-2 routing target must both be present, exactly
+    // two in total; the leading attestation count must be one; the hash-committed transport word
+    // count must cover the prefix, the attestation and the intent header, and must match the
+    // embedded hookDataLen claim.
     (
-        "ERR_XRESERVE_MINT_NOTE_INTENT_MISSING",
-        MasmError::from_static_str("mint note deposit intent attachment is missing"),
-    ),
-    (
-        "ERR_XRESERVE_MINT_NOTE_ATTESTATION_MISSING",
-        MasmError::from_static_str("mint note attestation attachment is missing"),
+        "ERR_XRESERVE_MINT_NOTE_TRANSPORT_MISSING",
+        MasmError::from_static_str("mint note transport attachment is missing"),
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_TARGET_MISSING",
@@ -208,13 +205,17 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 21] = [
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT",
-        MasmError::from_static_str("mint note must carry exactly three attachments"),
+        MasmError::from_static_str("mint note must carry exactly two attachments"),
     ),
     (
-        "ERR_XRESERVE_MINT_NOTE_INTENT_TOO_SHORT",
+        "ERR_XRESERVE_MINT_NOTE_TRANSPORT_TOO_SHORT",
         MasmError::from_static_str(
-            "mint note deposit intent attachment is shorter than the deposit intent header",
+            "mint note transport attachment is shorter than the attestation and the deposit intent header",
         ),
+    ),
+    (
+        "ERR_XRESERVE_MINT_NOTE_ATTESTATION_COUNT",
+        MasmError::from_static_str("mint note transport attestation count must be one"),
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB",
@@ -223,14 +224,10 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 21] = [
         ),
     ),
     (
-        "ERR_XRESERVE_MINT_NOTE_INTENT_WORDS",
+        "ERR_XRESERVE_MINT_NOTE_TRANSPORT_WORDS",
         MasmError::from_static_str(
-            "mint note deposit intent attachment word count does not match the intent length",
+            "mint note transport attachment word count does not match the intent length",
         ),
-    ),
-    (
-        "ERR_XRESERVE_MINT_NOTE_ATTESTATION_NUM_WORDS",
-        MasmError::from_static_str("mint note attestation attachment word count is invalid"),
     ),
     // The ASSERT-MATCH binding (mint_policy.masm): the note-supplied output-note
     // RECIPIENT / ASSET_VALUE / tag / note_type must EQUAL their attested derivations.
@@ -3086,32 +3083,12 @@ pub fn setup_production_faucet(
 /// directly — the same pattern as the stock `note_creator::create_note`).
 pub const EMIT_HELPER_PATH: &str = "xusdc::test_fixtures::emit_helper";
 
-/// The FIXED emit-helper component source: create-plus-two-attachments (the mint note's exact
-/// shape — 16 call-window felts, zero padding) and create-plus-one-attachment returning the
-/// note index (the burn note's shape; the index feeds the subsequent `move_asset_to_note`).
+/// The FIXED emit-helper component source: create-plus-one-attachment returning the note index
+/// (the burn note's shape, where the index feeds the subsequent `move_asset_to_note`, and the
+/// first leg of every multi-attachment emit) plus the appender that adds each further attachment
+/// to the note the first leg created.
 fn emit_helper_src() -> String {
     "use miden::protocol::output_note\n\
-     \n\
-     #! Creates an output note and adds its two attachments in account context.\n\
-     #!\n\
-     #! Inputs:  [tag, note_type, RECIPIENT, scheme_a, COMM_A, scheme_b, COMM_B]\n\
-     #! Outputs: [pad(16)]\n\
-     #!\n\
-     #! Invocation: call\n\
-     @account_procedure\n\
-     pub proc emit_note_with_two_attachments\n\
-     \x20\x20\x20\x20exec.output_note::create\n\
-     \x20\x20\x20\x20# => [note_idx, scheme_a, COMM_A, scheme_b, COMM_B]\n\
-     \x20\x20\x20\x20dup movdn.6\n\
-     \x20\x20\x20\x20# => [note_idx, scheme_a, COMM_A, note_idx, scheme_b, COMM_B]\n\
-     \x20\x20\x20\x20movdn.5\n\
-     \x20\x20\x20\x20# => [scheme_a, COMM_A, note_idx, note_idx, scheme_b, COMM_B]\n\
-     \x20\x20\x20\x20exec.output_note::add_attachment\n\
-     \x20\x20\x20\x20# => [note_idx, scheme_b, COMM_B]\n\
-     \x20\x20\x20\x20movdn.5\n\
-     \x20\x20\x20\x20# => [scheme_b, COMM_B, note_idx]\n\
-     \x20\x20\x20\x20exec.output_note::add_attachment\n\
-     end\n\
      \n\
      #! Creates an output note, adds its single attachment, and returns the note index.\n\
      #!\n\
@@ -3131,8 +3108,8 @@ fn emit_helper_src() -> String {
      \x20\x20\x20\x20# => [note_idx, pad(5)]\n\
      end\n\
      \n\
-     #! Adds one attachment to an already-created output note (the third-attachment leg of the\n\
-     #! stock-MintNote emit: create-plus-two leaves the note index on the caller stack, this\n\
+     #! Adds one attachment to an already-created output note (the extra-attachment leg of a\n\
+     #! multi-attachment emit: create-plus-one leaves the note index on the caller stack, this\n\
      #! appends one more attachment to that note).\n\
      #!\n\
      #! Inputs:  [scheme, COMM, note_idx, pad(10)]\n\
@@ -3187,23 +3164,19 @@ pub async fn emit_note_with_attachments(
     let tag = Felt::from(note.metadata().tag());
 
     // v0.16 #3204: output_note::create/add_attachment execute only from account procedures —
-    // the script calls the producer-installed emit helper. Two attachments (the legacy
-    // mint-note shape) ride one create-plus-two call (16 call-window felts, zero padding); the
-    // three-attachment stock-MintNote shape appends the third via a second `add_note_attachment`
-    // call consuming the note index the first call leaves on the caller stack.
+    // the script calls the producer-installed emit helper. The FIRST attachment rides the
+    // create-plus-one call (16 call-window felts with five pads); every further attachment gets
+    // its own `add_note_attachment` leg. The shape negatives emit one-attachment notes and the
+    // production shape two, so the leg count is driven by the note, never assumed.
     let attachments: Vec<_> = note.attachments().iter().collect();
     anyhow::ensure!(
-        (2..=4).contains(&attachments.len()),
-        "emit_note_with_attachments emits the two- to four-attachment mint-note shapes, got {}",
+        (1..=4).contains(&attachments.len()),
+        "emit_note_with_attachments emits the one- to four-attachment mint-note shapes, got {}",
         attachments.len()
     );
     let (scheme_a, comm_a) = (
         attachments[0].attachment_scheme().as_u16(),
         attachments[0].content().to_commitment(),
-    );
-    let (scheme_b, comm_b) = (
-        attachments[1].attachment_scheme().as_u16(),
-        attachments[1].content().to_commitment(),
     );
     let mut advice = AdviceInputs::default();
     for attachment in &attachments {
@@ -3212,15 +3185,14 @@ pub async fn emit_note_with_attachments(
             attachment.content().to_elements(),
         )]);
     }
-    // the create-plus-two call consumes the note index (its window returns as pad(16)); each
-    // optional extra-attachment leg re-supplies it explicitly — the producer tx creates exactly
-    // ONE output note, so its index is deterministically 0 — and calls the appender (insertion
-    // order preserved).
-    let mut third_leg = String::new();
-    for attachment in attachments.iter().skip(2) {
+    // each extra-attachment leg re-supplies the note index explicitly — the producer tx creates
+    // exactly ONE output note, so its index is deterministically 0 — and calls the appender
+    // (insertion order preserved).
+    let mut extra_legs = String::new();
+    for attachment in attachments.iter().skip(1) {
         let scheme_n = attachment.attachment_scheme().as_u16();
         let comm_n = attachment.content().to_commitment();
-        third_leg.push_str(&format!(
+        extra_legs.push_str(&format!(
             "\x20\x20\x20\x20push.0\n\
              \x20\x20\x20\x20push.{comm_n}\n\
              \x20\x20\x20\x20push.{scheme_n}\n\
@@ -3232,15 +3204,14 @@ pub async fn emit_note_with_attachments(
          \n\
          @transaction_script\n\
          pub proc main\n\
-         \x20\x20\x20\x20push.{comm_b}\n\
-         \x20\x20\x20\x20push.{scheme_b}\n\
+         \x20\x20\x20\x20repeat.5 push.0 end\n\
          \x20\x20\x20\x20push.{comm_a}\n\
          \x20\x20\x20\x20push.{scheme_a}\n\
          \x20\x20\x20\x20push.{recipient}\n\
          \x20\x20\x20\x20push.{note_type}\n\
          \x20\x20\x20\x20push.{tag}\n\
-         \x20\x20\x20\x20call.emit_helper::emit_note_with_two_attachments\n\
-         {third_leg}\
+         \x20\x20\x20\x20call.emit_helper::emit_note_with_attachment\n\
+         {extra_legs}\
          \x20\x20\x20\x20exec.::miden::core::sys::truncate_stack\n\
          end\n"
     );

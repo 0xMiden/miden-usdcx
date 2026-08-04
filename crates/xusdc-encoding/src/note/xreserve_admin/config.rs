@@ -23,16 +23,6 @@ const SET_ATTESTER_NOTE_SCRIPT_SRC: &str =
 static SET_ATTESTER_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(SET_ATTESTER_NOTE_SCRIPT_SRC));
 
-/// The PINNED set_attester admin note-script root: the MAST root of the compiled
-/// `xreserve_set_attester_note.masm` with the xreserve library linked. It binds transitively to
-/// `attester_admin::set_attester`'s digest, so any edit of the note script or of the proc it calls
-/// changes this root.
-///
-/// RE-MATERIALIZED when the param staging moved to memory address zero (the PARAM_PTR constant
-/// collapsed to literal addresses; behavior-identical).
-pub const XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x9aa376ffec65130e82d52a01cc8c26bac6bdd2faccdc8a2ecb75081bc785f15c";
-
 /// The administrator-gated `set_attester` admin note. Storage layout:
 /// `[pk_commitment(4), enabled]`. Consumed against the faucet network account;
 /// `attester_admin::set_attester` gates on the (kernel-forced) note sender through the account-wide
@@ -48,18 +38,10 @@ impl XReserveSetAttesterNote {
         SET_ATTESTER_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root, which must equal
-    /// [`XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX`].
+    /// The compiled note-script root. It binds transitively to `attester_admin::set_attester`'s
+    /// digest; the allowlist row for this note derives from the same compiled script.
     pub fn script_root() -> NoteScriptRoot {
         SET_ATTESTER_NOTE_SCRIPT.root()
-    }
-
-    /// [`XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
-    pub fn pinned_script_root() -> NoteScriptRoot {
-        NoteScriptRoot::from_raw(
-            Word::parse(XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX)
-                .expect("the pinned set_attester note-script root hex is a valid word"),
-        )
     }
 
     /// Builds a `set_attester` admin note: `sender` is the admin party (an `ADMIN` role holder, for
@@ -105,23 +87,6 @@ const IDENTIFIER_INIT_NOTE_SCRIPT_SRC: &str =
 static IDENTIFIER_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(IDENTIFIER_INIT_NOTE_SCRIPT_SRC));
 
-/// The PINNED identifier_init admin note-script root: the MAST root of the compiled
-/// `xreserve_identifier_init_note.masm` with the xreserve library linked. It binds transitively to
-/// `identifier_init::init_identifier`'s digest, so any edit of the note script or of the proc it
-/// calls changes this root. The root therefore covers the own-id binding: the proc derives
-/// `bytes32_to_key(account_id_to_bytes32(get_id()))` on-chain and rejects a mismatched committed
-/// identifier.
-///
-/// RE-MATERIALIZED when the initializer's sender gate moved off the owner slot and onto the
-/// account-wide authority: the procedure's own root moved, and this root binds to it.
-/// RE-MATERIALIZED again when the proc's own-id derivation switched from a local byte-swap helper
-/// to the shared `miden::standards::utils::swap_u32_bytes` (behavior-identical; the callee digest
-/// moved, and this root binds transitively to it).
-/// RE-MATERIALIZED again when `bytes32_to_key`'s own `swapw` was removed (behavior-identical; the
-/// callee digest moved, and this root binds transitively to it).
-pub const XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xe51f11e61d731efe73dbc4312fb4113041fda1249130da257594830f44d2f651";
-
 /// The administrator-gated, init-once `identifier_init` admin note. The identifier is the ONE
 /// domain-config field the account-id fixpoint forces past build time; the other three are
 /// build-seeded by the `XReserveStablecoinBuilder`. Storage layout: `[IDENTIFIER(4)]`. Consumed
@@ -138,18 +103,12 @@ impl XReserveIdentifierInitNote {
         IDENTIFIER_INIT_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root, which must equal
-    /// [`XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX`].
+    /// The compiled note-script root. It binds transitively to
+    /// `identifier_init::init_identifier`'s digest — including the proc's own-id derivation,
+    /// `bytes32_to_key(account_id_to_bytes32(get_id()))` — and the allowlist row for this note
+    /// derives from the same compiled script.
     pub fn script_root() -> NoteScriptRoot {
         IDENTIFIER_INIT_NOTE_SCRIPT.root()
-    }
-
-    /// [`XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
-    pub fn pinned_script_root() -> NoteScriptRoot {
-        NoteScriptRoot::from_raw(
-            Word::parse(XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX)
-                .expect("the pinned identifier_init note-script root hex is a valid word"),
-        )
     }
 
     /// Builds an `identifier_init` admin note: `sender` is the admin party (an `ADMIN` holder, for
@@ -193,14 +152,6 @@ const SET_MIN_BURN_SIZE_NOTE_SCRIPT_SRC: &str =
 static SET_MIN_BURN_SIZE_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(SET_MIN_BURN_SIZE_NOTE_SCRIPT_SRC));
 
-/// The PINNED set_min_burn_size admin note-script root: binds transitively to the STOCK
-/// `min_burn_amount::set_min_burn_amount`'s digest plus the note-side zero-floor guard.
-///
-/// RE-MATERIALIZED when the param staging moved to memory address zero (the PARAM_PTR constant
-/// collapsed to literal addresses; behavior-identical).
-pub const XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x142cfb7440610bb23c7d54d5bc83f0eaa69d12bb098aaeb4f36cdc0d56e41d35";
-
 /// The administrator-gated `set_min_burn_size` admin note. Storage layout: `[new_min]` with
 /// `new_min >= 1` (the note script's zero-floor guard — the stock setter itself accepts 0). The
 /// stock setter it targets resolves through the account-wide authority to the built-in `ADMIN` role,
@@ -213,17 +164,11 @@ impl XReserveSetMinBurnSizeNote {
         SET_MIN_BURN_SIZE_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root, which must equal the pinned constant.
+    /// The compiled note-script root. It binds transitively to the stock
+    /// `min_burn_amount::set_min_burn_amount`'s digest plus the note-side zero-floor guard; the
+    /// allowlist row for this note derives from the same compiled script.
     pub fn script_root() -> NoteScriptRoot {
         SET_MIN_BURN_SIZE_NOTE_SCRIPT.root()
-    }
-
-    /// [`XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
-    pub fn pinned_script_root() -> NoteScriptRoot {
-        NoteScriptRoot::from_raw(
-            Word::parse(XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX)
-                .expect("the pinned set_min_burn_size note-script root hex is a valid word"),
-        )
     }
 
     /// Builds a `set_min_burn_size` admin note: `sender` is the admin party (an `ADMIN` role
@@ -252,14 +197,6 @@ const SET_MAX_SUPPLY_NOTE_SCRIPT_SRC: &str =
 static SET_MAX_SUPPLY_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(SET_MAX_SUPPLY_NOTE_SCRIPT_SRC));
 
-/// The PINNED set_max_supply admin note-script root: binds transitively to the stock
-/// `fungible::set_max_supply`'s digest.
-///
-/// RE-MATERIALIZED when the param staging moved to memory address zero (the PARAM_PTR constant
-/// collapsed to literal addresses; behavior-identical).
-pub const XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x63289a6146599e94c0686008e3f1e674ae6a128fc9f9546cf9a521cde721908f";
-
 /// The administrator-gated stock `set_max_supply` admin note. Storage layout:
 /// `[new_max_supply]`. The stock setter resolves through the account-wide authority to the built-in
 /// `ADMIN` role, which is account-bound and is the faucet's only authority handle.
@@ -271,17 +208,11 @@ impl XReserveSetMaxSupplyNote {
         SET_MAX_SUPPLY_NOTE_SCRIPT.clone()
     }
 
-    /// The note-script root, which must equal the pinned constant.
+    /// The compiled note-script root. It binds transitively to the stock
+    /// `fungible::set_max_supply`'s digest; the allowlist row for this note derives from the same
+    /// compiled script.
     pub fn script_root() -> NoteScriptRoot {
         SET_MAX_SUPPLY_NOTE_SCRIPT.root()
-    }
-
-    /// [`XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX`] as a [`NoteScriptRoot`].
-    pub fn pinned_script_root() -> NoteScriptRoot {
-        NoteScriptRoot::from_raw(
-            Word::parse(XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX)
-                .expect("the pinned set_max_supply note-script root hex is a valid word"),
-        )
     }
 
     /// Builds a `set_max_supply` admin note: `sender` is the admin party (an `ADMIN` role holder,

@@ -16,8 +16,8 @@
 //! version, and a zero `amount` / `localToken` / `localDepositor` — are enforced by the shared
 //! encoding parser and surface as its `ERR_DI_*` errors travelling back out through the call.
 //! The other two are the faucet's own compares: the intent's `remoteDomain` must equal the
-//! configured domain, and its `remoteToken` must equal, limb for limb, the faucet's own account id
-//! in the frozen bytes32 packaging — derived from its account id, not read from a slot.
+//! configured domain, and its `remoteToken` must decode — out of the frozen bytes32 packaging, pad
+//! and all — to the faucet's own account id, read from the kernel rather than from a slot.
 //!
 //! The file is organized by the stages the mint pipeline runs in, and the section headers and
 //! test names use the short stage labels the faucet's own comments use. The sequence, defined
@@ -142,9 +142,15 @@ async fn happy_path_mint_preconditions(#[case] vector_id: &str) -> Result<()> {
 // `ERR_DI_*` reaches the caller. The last two rows do the opposite: they feed an ACCEPT vector
 // into a faucet it is mis-addressed for, so the only remaining candidate is the faucet's own
 // compare. They are kept apart on purpose — the wrong-domain row is the only one whose domain is
-// wrong, and the wrong-identifier row keeps the domain matching, so neither assert can mask the
-// other. Note the identifier leg needs no configuration lever any more: NO account is addressed by
-// the vector's own remoteToken, so simply not splicing the executing account's id is enough.
+// wrong, and the identifier row keeps the domain matching, so neither assert can mask the other.
+// Note the identifier leg needs no configuration lever any more: NO account is addressed by the
+// vector's own remoteToken, so simply not splicing the executing account's id is enough.
+//
+// The identifier row here covers the SHAPE reject only. `remoteToken` is read through the bytes32
+// account-id decode, and the vector's token is opaque bytes with a non-zero leading pad, so it is
+// refused as un-decodable before any identity compare runs. The identity reject — a well-formed
+// packaging carrying somebody else's account id — is its own test below, because it is the only
+// one that can reach `ERR_XRESERVE_WRONG_IDENTIFIER`.
 
 #[rstest]
 #[case::r_mint_1_bad_magic("di-rej-bad-magic", TEST_DOMAIN, "ERR_DI_BAD_MAGIC")]
@@ -157,9 +163,11 @@ async fn happy_path_mint_preconditions(#[case] vector_id: &str) -> Result<()> {
     "ERR_DI_ZERO_FIELD"
 )]
 #[case::r_mint_6_wrong_domain("di-pos-hookdata", TEST_WRONG_DOMAIN, "ERR_XRESERVE_WRONG_DOMAIN")]
-// the vector's own remoteToken belongs to no account at all, so an intent carrying it is
-// mis-addressed for EVERY faucet — the reject needs no configuration lever any more
-#[case::r_mint_7_wrong_identifier("di-pos-hookdata", TEST_DOMAIN, "ERR_XRESERVE_WRONG_IDENTIFIER")]
+#[case::r_mint_7_unpackaged_identifier(
+    "di-pos-hookdata",
+    TEST_DOMAIN,
+    "ERR_BYTES32_PADDING_NONZERO"
+)]
 #[tokio::test]
 async fn r_mint_rejects(
     #[case] vector_id: &str,
@@ -170,7 +178,7 @@ async fn r_mint_rejects(
     let num_felts = v.staging_len_felts.unwrap_or(v.len_felts);
     // the money fields are irrelevant here: every row traps in the stage before the amount one.
     // no own-token splice either — the vector's own remoteToken belongs to no account, which is
-    // exactly what the wrong-identifier row needs and what the earlier rows trap before reaching
+    // exactly what the identifier row needs and what the earlier rows trap before reaching
     let driver_src = validate_driver_src(
         &v.preimage_values(),
         intent_num_words(num_felts),
@@ -184,15 +192,58 @@ async fn r_mint_rejects(
     Ok(())
 }
 
+/// An intent whose `remoteToken` is a perfectly well-formed packaged account id — just somebody
+/// else's — is rejected with `ERR_XRESERVE_WRONG_IDENTIFIER`.
+///
+/// This is the reject the faucet identifier exists for, and the only input that can reach that
+/// error: everything malformed is refused earlier, by the decode. The foreign id is the canonical
+/// vector's own `remoteRecipient`, which is a real account-id packaging (zero pad, structurally
+/// valid halves) and belongs to no faucet in this test.
+#[tokio::test]
+async fn a_foreign_faucet_identifier_rejects() -> Result<()> {
+    let v = di("di-pos-hookdata");
+    let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
+    let driver_src = validate_driver_src_own_token(
+        &preimage,
+        intent_num_words(v.len_felts),
+        &fee_amount_felts([0u32; 8]),
+        amount_y,
+        None,
+    );
+    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
+    let foreign = v
+        .fields
+        .as_ref()
+        .expect("the accept vector carries fields")
+        .bytes32("remote_recipient");
+    assert_ne!(
+        foreign,
+        xusdc_encoding::xreserve::encoding::account_id_to_bytes32(h.account_id),
+        "the foreign identifier must genuinely differ from the shell account's own encoding"
+    );
+    let advice = xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts(&foreign).to_vec();
+    let result = run_call_driver_with_advice(&h, "drive", Some(advice)).await;
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_WRONG_IDENTIFIER")
+    );
+    Ok(())
+}
+
 /// An intent whose `remoteToken` carries the faucet's OWN account id but a non-zero sixteen-byte
 /// pad is still rejected.
 ///
-/// The identity compare is over the packed bytes32 rather than a hash of it, so the pad is covered
-/// by being compared, not by an extra guard. This row is what proves that: it is the one input a
-/// compare over the account-id felts alone would wave through, and it must fail with the same
-/// `ERR_XRESERVE_WRONG_IDENTIFIER` any other mis-addressed intent fails with.
+/// This is the one input a compare over the account-id felts alone would wave through. The pad is
+/// covered because the decode asserts it, in two halves — limb 0 (wire bytes 0..4) and limb 3
+/// (wire bytes 12..16) are checked by different standards procedures — so both get a case here.
+#[rstest]
+#[case::leading_twelve(0, "ERR_BYTES32_PADDING_NONZERO")]
+#[case::bytes_twelve_to_sixteen(3, "ERR_MSB_NONZERO")]
 #[tokio::test]
-async fn a_dirty_remote_token_pad_rejects() -> Result<()> {
+async fn a_dirty_remote_token_pad_rejects(
+    #[case] dirty_limb: usize,
+    #[case] expected_err: &str,
+) -> Result<()> {
     let v = di("di-pos-hookdata");
     let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
     let driver_src = validate_driver_src_own_token(
@@ -210,12 +261,9 @@ async fn a_dirty_remote_token_pad_rejects() -> Result<()> {
         &[miden_protocol::ZERO; 4],
         "the frozen packaging pads wire bytes 0..16 with zeros"
     );
-    advice[0] = miden_protocol::ONE;
+    advice[dirty_limb] = miden_protocol::ONE;
     let result = run_call_driver_with_advice(&h, "drive", Some(advice)).await;
-    assert_transaction_executor_error!(
-        result,
-        shell_error_by_name("ERR_XRESERVE_WRONG_IDENTIFIER")
-    );
+    assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
     Ok(())
 }
 

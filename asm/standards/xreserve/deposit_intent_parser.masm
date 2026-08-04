@@ -3,12 +3,11 @@
 # The DepositIntent parser and the faucet-side mint preconditions it feeds, behind the single
 # `validate` entry: the structural parse and length derivation, the domain and identifier
 # equality compares, the amount/fee bounds, and the nonce replay guard. The identifier the intent
-# is checked against is the faucet's OWN account id in the frozen bytes32 packaging, derived on
-# chain here rather than stored: the account id is a hash over the account's initial storage, so
-# the identifier could never have been seeded into that storage in the first place. The compare is
-# over the packed bytes32 limbs themselves — all thirty-two bytes, pad included — so identifier
-# equality is plain Word equality. Hashing both sides first would cost two Poseidon2 permutations
-# and decide nothing a direct compare does not.
+# is checked against is the faucet's OWN account id, read from the kernel rather than stored: the
+# account id is a hash over the account's initial storage, so the identifier could never have been
+# seeded into that storage in the first place. The compare runs in account-id space — the intent's
+# `remoteToken` is decoded out of its bytes32 packaging by the standards decoder, which asserts the
+# sixteen-byte pad on the way, and the decoded id is compared against `native_account::get_id`.
 #
 # A DepositIntent is the Circle-signed message that authorizes one mint. Its wire form is a
 # fixed 240-byte big-endian header followed by variable-length hookData; on-chain it is staged
@@ -32,8 +31,10 @@
 # - hookData (bytes 240..): an optional opaque payload; parsed only for length, never for
 #   effects.
 
+use miden::protocol::account_id
 use miden::protocol::active_account
 use miden::protocol::native_account
+use miden::standards::interop::eth
 use miden::standards::utils
 use miden::core::math::u128
 use miden::core::word
@@ -99,8 +100,9 @@ const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
 #! Validates a staged DepositIntent preimage against every faucet-owned mint precondition.
 #!
 #! Derives the preimage length from the embedded hookDataLen and binds it to the attachment's
-#! hash-committed word count, then runs the three validation stages in order:
-#! - the structural parse with the domain and identifier compares
+#! hash-committed word count, then runs the four validation stages in order:
+#! - the structural parse
+#! - the domain and identifier compares
 #! - the amount and fee bounds
 #! - and the nonce replay guard
 #!
@@ -129,15 +131,19 @@ const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
 pub proc validate
     dup movdn.2
     dup movdn.5
-    # => [intent_ptr, intent_expected_num_words, intent_ptr, fee_amount_ptr, amount_y, intent_ptr]
+    dup movdn.6
+    # => [intent_ptr, intent_expected_num_words, intent_ptr, fee_amount_ptr, amount_y, intent_ptr, intent_ptr]
 
     exec.parse
-    # => [remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER, intent_num_bytes, intent_ptr, fee_amount_ptr, amount_y, intent_ptr]
+    # => [intent_num_bytes, intent_ptr, fee_amount_ptr, amount_y, intent_ptr, intent_ptr]
+
+    movdn.5
+    # => [intent_ptr, fee_amount_ptr, amount_y, intent_ptr, intent_ptr, intent_num_bytes]
 
     exec.validate_domain_and_identifier
-    # => [intent_num_bytes, intent_ptr, fee_amount_ptr, amount_y, intent_ptr]
+    # => [fee_amount_ptr, amount_y, intent_ptr, intent_ptr, intent_num_bytes]
 
-    movdn.4
+    movup.2
     # => [intent_ptr, fee_amount_ptr, amount_y, intent_ptr, intent_num_bytes]
 
     exec.validate_mint_amounts
@@ -147,8 +153,7 @@ pub proc validate
     # => [intent_num_bytes]
 end
 
-#! Parses a staged DepositIntent preimage: asserts its structure and returns its length with the
-#! fields the faucet compares against its configuration.
+#! Parses a staged DepositIntent preimage: asserts its structure and returns its wire length.
 #!
 #! The preimage length is DERIVED from the embedded hookDataLen rather than taken from the caller.
 #! The caller passes the word count it requires the staged preimage to have, and this procedure
@@ -156,18 +161,16 @@ end
 #! derived length is the header plus the packed hookData felts, it is never below the header
 #! count, so that compare also proves the whole header was written into the staged region.
 #!
+#! No header field is handed back: every consumer reads the field it needs off the intent pointer
+#! it already holds, at the layout offset that field is declared at.
+#!
 #! Inputs:  [intent_ptr, intent_expected_num_words]
-#! Outputs: [remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER, intent_num_bytes]
+#! Outputs: [intent_num_bytes]
 #!
 #! Where:
 #! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
 #! - intent_expected_num_words is the word count the caller requires the staged preimage to have
 #!   (in the mint pipeline, the attachment's hash-committed word count).
-#! - remote_domain is the semantic remoteDomain value as a u32 felt.
-#! - REMOTE_TOKEN_LOWER is the word holding the remoteToken field's positionally lower four
-#!   packed limbs (intent bytes 44..60).
-#! - REMOTE_TOKEN_UPPER is the word holding the remoteToken field's positionally upper four
-#!   packed limbs (intent bytes 60..76).
 #! - intent_num_bytes is the wire length: the header bytes plus hookData, which is the extent
 #!   the attestation signature covers.
 #!
@@ -177,7 +180,7 @@ end
 #! - the amount field is zero.
 #! - the localToken field is zero.
 #! - the localDepositor field is zero.
-#! - the staged hookDataLen or remoteDomain limb is not a valid u32.
+#! - the staged hookDataLen limb is not a valid u32.
 #! - intent_expected_num_words does not equal the word count the derived length implies.
 #!
 #! Invocation: exec
@@ -226,125 +229,98 @@ pub proc parse
     assert_eq.err=ERR_XRESERVE_MINT_NOTE_INTENT_WORDS
     # => [intent_num_bytes, intent_ptr]
 
-    # outputs: load the compare fields from the staged preimage (single-felt loads — the header
-    # felt offsets are not word-aligned); the packed remoteToken words are pushed in the same
-    # element order the caller compares against
-    swap dup add.REMOTE_TOKEN_FELT_OFF
-    # => [rt_base, intent_ptr, intent_num_bytes]
-
-    exec.utils::mem_load_double_word_unaligned
-    # => [REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER, intent_ptr, intent_num_bytes]
-
-    movup.8
-    # => [intent_ptr, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER, intent_num_bytes]
-
-    # remote_domain (semantic u32): byte-swap the packed felt at offset 10
-    add.REMOTE_DOMAIN_FELT_OFF mem_load
-    u32assert.err=ERR_FELT_OUT_OF_FIELD
-    exec.utils::swap_u32_bytes
-    # => [remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER, intent_num_bytes]
+    swap drop
+    # => [intent_num_bytes]
 end
 
-#! Packs the faucet's OWN account id into the frozen bytes32 form, on chain.
+#! Reads a staged bytes32 field and decodes the Miden account id it carries.
 #!
-#! This is the comparand the mint path checks a deposit intent's `remoteToken` against. Deriving it
-#! rather than reading a slot is what lets the faucet mint from the moment it exists: the account id
-#! is a hash over the account's own initial storage, so the identifier could never have been seeded
-#! into that storage, and the alternative was a post-deploy write with a window in front of it.
+#! Two DepositIntent fields carry an account id in the frozen right-aligned bytes32 packaging —
+#! `remoteToken` (the faucet's own id) and `remoteRecipient` (who the mint pays) — and both are
+#! read through here. The decode itself is the standards
+#! `miden::standards::interop::eth::bytes32_to_account_id`, so the packaging is validated by the
+#! same code every other Miden-on-EVM addressing path uses: it asserts wire bytes 0..16 are zero,
+#! rebuilds the prefix and suffix from the big-endian u64 halves with no reduction mod the field,
+#! and structurally validates the result.
 #!
-#! The packing is right-aligned: sixteen zero bytes, then the id prefix as a u64 big-endian, then
-#! the id suffix as a u64 big-endian. Each id felt splits into its big-endian u32 halves
-#! (`u32split`), and each half byte-swaps into the u32-LE-packed limb form the wire uses. The two
-#! words are left in the same orientation the parser returns a staged bytes32 field in, lower word
-#! on top, so the mint compare is a word-for-word equality.
-#!
-#! Inputs:  []
-#! Outputs: [B_LOWER, B_UPPER]
+#! Inputs:  [bytes32_ptr]
+#! Outputs: [account_id_suffix, account_id_prefix]
 #!
 #! Where:
-#! - B_LOWER is limbs 0..4 — wire bytes 0..16, the zero pad.
-#! - B_UPPER is limbs 4..8 — wire bytes 16..32, the account id itself.
+#! - bytes32_ptr is the memory address of the field's first u32-LE-packed limb.
+#! - account_id_{suffix,prefix} are the two decoded Miden AccountId felts, in the stack order the
+#!   protocol's account-id procedures consume ([suffix, prefix]; Rust `account_id_to_felts` is
+#!   [prefix, suffix]).
+#!
+#! Panics if:
+#! - the sixteen-byte leading pad is non-zero (the standards ERR_BYTES32_PADDING_NONZERO for
+#!   bytes 0..12, ERR_MSB_NONZERO for bytes 12..16).
+#! - a staged limb is not a valid u32 (the standards eth::build_felt u32 guard).
+#! - a rebuilt prefix/suffix u64 reduced mod the field (the standards merge overflow guard).
+#! - account_id::validate_structure rejects the felts (its ERR_ACCOUNT_ID_* constants).
 #!
 #! Invocation: exec
-pub proc compute_own_id_bytes32
-    exec.native_account::get_id
-    # => [id_suffix, id_prefix]
-
-    # suffix -> limbs 6/7 (bytes 24..32): split into BE u32 halves, byte-swap each to LE-packed
-    u32split
-    # => [suffix_lo, suffix_hi, id_prefix]
-
-    exec.utils::swap_u32_bytes
-    # => [limb7, suffix_hi, id_prefix]
-
-    swap exec.utils::swap_u32_bytes
-    # => [limb6, limb7, id_prefix]
-
-    # prefix -> limbs 4/5 (bytes 16..24)
-    movup.2 u32split
-    # => [prefix_lo, prefix_hi, limb6, limb7]
-
-    exec.utils::swap_u32_bytes
-    # => [limb5, prefix_hi, limb6, limb7]
-
-    swap exec.utils::swap_u32_bytes
-    # => [B_UPPER] = [limb4, limb5, limb6, limb7]
-
-    # push the 16-byte zero pad on top as B_LOWER (limbs 0..4)
-    padw
+pub proc load_bytes32_account_id
+    exec.utils::mem_load_double_word_unaligned
     # => [B_LOWER, B_UPPER]
+
+    exec.eth::bytes32_to_account_id
+    # => [account_id_suffix, account_id_prefix]
 end
 
 # HELPER PROCEDURES
 # =================================================================================================
 
-#! Asserts the two faucet-owned addressing compares: the parsed remote domain must equal the
-#! configured domain, and the parsed remote token must equal, limb for limb, the faucet's own
-#! account id in the same bytes32 packaging — derived here from the native account id, not read
-#! from storage.
+#! Asserts the two faucet-owned addressing compares: the staged remote domain must equal the
+#! configured domain, and the staged remote token must decode to the faucet's own account id —
+#! read from the kernel, not from storage.
 #!
-#! Inputs:  [remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER]
+#! Inputs:  [intent_ptr]
 #! Outputs: []
 #!
 #! Where:
-#! - remote_domain is the semantic remoteDomain value as a u32 felt.
-#! - REMOTE_TOKEN_{LOWER,UPPER} are the remoteToken field's positionally lower / upper four
-#!   packed limbs.
+#! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
 #!
 #! Panics if:
-#! - the parsed remote domain does not equal the faucet's configured domain.
-#! - the parsed remote token does not equal the faucet's own bytes32 identifier, in either half.
+#! - the staged remoteDomain limb is not a valid u32.
+#! - the staged remote domain does not equal the faucet's configured domain.
+#! - the staged remote token does not carry a well-formed bytes32-packaged account id (see
+#!   load_bytes32_account_id).
+#! - the account id it carries is not the faucet's own.
 #! - the domain config slot with the expected id does not exist in account storage.
 #!
 #! Invocation: exec
 proc validate_domain_and_identifier
+    # remote_domain (semantic u32): byte-swap the packed felt at offset 10
+    dup add.REMOTE_DOMAIN_FELT_OFF mem_load
+    u32assert.err=ERR_FELT_OUT_OF_FIELD
+    exec.utils::swap_u32_bytes
+    # => [remote_domain, intent_ptr]
+
     # domain compare: the configured domain lives in element 0 of the domain config slot word
     push.DOMAIN_CONFIG_SLOT[0..2]
     exec.active_account::get_item
-    # => [domain, d1, d2, d3, remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER]
+    # => [domain, d1, d2, d3, remote_domain, intent_ptr]
 
     movdn.3 drop drop drop
-    # => [domain, remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER]
+    # => [domain, remote_domain, intent_ptr]
 
     assert_eq.err=ERR_XRESERVE_WRONG_DOMAIN
-    # => [REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER]
+    # => [intent_ptr]
 
-    # identifier compare: the comparand is DERIVED from the faucet's own account id, so it exists
-    # from the moment the account does and no deploy-time write can get it wrong. it comes back in
-    # the same packed-limb form the parser hands the remoteToken over in, so the two are compared
-    # word for word
-    exec.compute_own_id_bytes32
-    # => [OWN_LOWER, OWN_UPPER, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER]
+    # identifier compare: the remoteToken is decoded out of its bytes32 packaging and checked
+    # against the faucet's own id, which exists from the moment the account does — no deploy-time
+    # write can get it wrong, and nothing has to be seeded for the faucet to start minting
+    add.REMOTE_TOKEN_FELT_OFF exec.load_bytes32_account_id
+    # => [remote_token_id_suffix, remote_token_id_prefix]
 
-    movupw.2
-    # => [REMOTE_TOKEN_LOWER, OWN_LOWER, OWN_UPPER, REMOTE_TOKEN_UPPER]
+    exec.native_account::get_id
+    # => [own_id_suffix, own_id_prefix, remote_token_id_suffix, remote_token_id_prefix]
 
-    # wire bytes 0..16: the sixteen-byte zero pad, compared rather than assumed
-    assert_eqw.err=ERR_XRESERVE_WRONG_IDENTIFIER
-    # => [OWN_UPPER, REMOTE_TOKEN_UPPER]
+    exec.account_id::eq
+    # => [is_own_id]
 
-    # wire bytes 16..32: the account id itself
-    assert_eqw.err=ERR_XRESERVE_WRONG_IDENTIFIER
+    assert.err=ERR_XRESERVE_WRONG_IDENTIFIER
     # => []
 end
 

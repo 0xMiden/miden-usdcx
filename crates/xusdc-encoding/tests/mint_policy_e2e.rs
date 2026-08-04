@@ -234,13 +234,19 @@ async fn mint_rejects_a_wrong_domain() -> Result<()> {
 }
 
 /// A deposit intent whose `remoteToken` is not this faucet's identifier is refused, compared
-/// against the identifier the init note seeded.
+/// against the faucet's own account id.
+///
+/// The substituted token is another live account's id in the SAME frozen packaging, so it decodes
+/// cleanly and the IDENTITY compare is what refuses it. Corrupting the packaging instead would trap
+/// earlier, inside the decode, and prove nothing about the identity check.
 #[tokio::test]
 async fn mint_rejects_a_wrong_identifier() -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 1).await?;
     let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 15);
-    payload[REMOTE_TOKEN_BYTE_OFF] ^= 0xff;
+    payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32].copy_from_slice(
+        &xusdc_encoding::xreserve::encoding::account_id_to_bytes32(pf.recipient_id),
+    );
     let note = honest_note(&pf, &payload, 84)?;
     expect_reject(
         &mut pf,

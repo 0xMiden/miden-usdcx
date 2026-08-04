@@ -126,8 +126,12 @@ async fn a_never_initialized_faucet_mints() -> Result<()> {
 /// the same faucet, in the same test, then mints an own-id-bound intent: the compare discriminates
 /// rather than refuses.
 ///
-/// The rejected token bytes are the canonical vector's — a value with no relation to any account
-/// id, the shape a mis-addressed deposit actually has.
+/// The rejected token is another live account's id in the SAME frozen packaging. That is what makes
+/// the row an identity test rather than a shape test: `remoteToken` is read through the bytes32
+/// account-id decode, so opaque bytes are refused for being un-decodable long before any identity
+/// compare runs, and only a well-formed foreign packaging can reach
+/// `ERR_XRESERVE_WRONG_IDENTIFIER`. (The un-decodable shape has its own row in
+/// `masm_mint_shell.rs`.)
 #[tokio::test]
 async fn a_foreign_remote_token_rejects_while_the_own_id_intent_mints() -> Result<()> {
     let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
@@ -144,16 +148,13 @@ async fn a_foreign_remote_token_rejects_while_the_own_id_intent_mints() -> Resul
     })?;
     bring_up(&mut pf, 1).await?;
 
-    // the base vector's own remoteToken: unbound to any faucet, and NOT an account-id encoding
-    let vector_token: [u8; 32] = di(BASE_VECTOR)
-        .fields
-        .as_ref()
-        .expect("the accept vector carries fields")
-        .bytes32("remote_token");
+    // another live account's id, in the same frozen packaging: decodable, valid, and not ours
+    let foreign_token: [u8; 32] =
+        xusdc_encoding::xreserve::encoding::account_id_to_bytes32(pf.recipient_id);
     let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 32);
-    payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32].copy_from_slice(&vector_token);
+    payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32].copy_from_slice(&foreign_token);
     assert_ne!(
-        vector_token,
+        foreign_token,
         xusdc_encoding::xreserve::encoding::account_id_to_bytes32(pf.faucet_id),
         "the foreign token must genuinely differ from the faucet's own id encoding"
     );

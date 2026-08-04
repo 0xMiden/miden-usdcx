@@ -1,30 +1,34 @@
-//! The faucet derives its own identifier instead of reading a stored one — proven byte for byte
-//! against the Rust encoding.
+//! The faucet checks a deposit intent against its own account id instead of a stored identifier —
+//! proven against the Rust encoding, over a spread of ids.
 //!
 //! The mint path compares every deposit intent's `remoteToken` against the faucet's identifier.
-//! That identifier is the faucet's own account id in the frozen bytes32 packaging, and the faucet
-//! now computes it on chain from `native_account::get_id` rather than reading a slot somebody had
-//! to seed. The compare is over the packed bytes32 limbs directly — no hash on either side — so
-//! this packaging IS the comparand, not an input to one. The whole design rests on one claim: the
-//! MASM packaging is the same packaging `account_id_to_bytes32` produces, for every account id, not
+//! That identifier is the faucet's own account id, which the faucet reads on chain from
+//! `native_account::get_id` rather than from a slot somebody had to seed. The compare runs in
+//! account-id space: the staged `remoteToken` is DECODED out of the frozen bytes32 packaging by
+//! `deposit_intent_parser::load_bytes32_account_id` (a thin wrapper over the standards
+//! `eth::bytes32_to_account_id`) and the decoded id is compared against the native one.
+//!
+//! The whole design rests on one claim: the bytes `account_id_to_bytes32` produces off chain
+//! decode, on chain, back to exactly the account they were produced for — for every account id, not
 //! just the one a fixture happened to pick. If the two ever disagreed, the faucet would reject
 //! deposits Circle addressed to it, or — worse — accept deposits addressed elsewhere.
 //!
-//! So every assertion here is made on the result of EXECUTING the MASM inside a transaction, with
-//! the expected value computed on the Rust side and pushed across the `call` boundary. The
-//! comparison itself happens in MASM (`assert_eqw`), so a disagreement traps and the test fails
+//! So every assertion here is made on the result of EXECUTING the MASM inside a transaction, over
+//! bytes the RUST encoder produced and the caller pushes across the `call` boundary. The comparison
+//! itself happens in MASM (`account_id::eq` + `assert`), so a disagreement traps and the test fails
 //! with the driver's own error message; nothing is ever compared against itself.
 //!
 //! The spread is deliberate. One account id proves little about the byte swapping: an id whose
 //! limbs happened to be palindromic, or whose prefix and suffix happened to coincide, would pass a
-//! broken implementation. The suite therefore runs the derivation over a dozen freshly generated
-//! ids spanning both account types, and then over the account id of a faucet composed by the
-//! production builder — the id that actually ships.
+//! broken implementation. The suite therefore runs the decode over a dozen freshly generated ids
+//! spanning both account types, and then over the account id of a faucet composed by the production
+//! builder — the id that actually ships.
 //!
 //! Three controls keep the assertions honest: the same driver run against a DIFFERENT account's
-//! expected limbs must trap (so the driver really compares), a corrupted zero pad must trap (so
-//! BOTH halves of the packaging are asserted, not just the half that carries the id), and two
-//! accounts must derive different packagings (so the derivation really reads the id).
+//! encoding must trap (so the compare really discriminates), a corrupted zero pad must trap (so the
+//! pad is asserted rather than ignored, which is what stops a `remoteToken` carrying the right id
+//! inside the wrong packaging), and two accounts must encode differently (so the encoding really
+//! reads the id).
 
 mod support;
 
@@ -40,6 +44,7 @@ use miden_testing::{
     assert_transaction_executor_error, AccountState, Auth, MockChain, MockTransactionInput,
 };
 use miden_tx::TransactionExecutorError;
+use rstest::rstest;
 use support::*;
 use xusdc_encoding::xreserve::encoding::{
     account_id_to_bytes32, account_id_to_felts, bytes32_to_packed_felts,
@@ -56,20 +61,24 @@ const DERIVE_DRIVER_PATH: &str = "xusdc::test_fixtures::own_id_derive_driver";
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
-/// The driver component: two `call`-invoked procedures that run the faucet's own-id derivation
-/// and compare it against values the caller pushes across the `call` boundary.
+/// The driver component: two `call`-invoked procedures that read the faucet's own id and run the
+/// production bytes32 account-id decode over bytes the caller pushes across the `call` boundary.
 ///
-/// The expected values arrive through the advice provider rather than being compiled into the
-/// source, and that is not a style choice. An account id is a hash over the account's own code and
-/// storage commitments, so a driver that embedded the expected id would change the very id it is
-/// trying to predict. Taking them as transaction inputs keeps the component's code — and therefore
-/// every account id derived from it — independent of what is being asserted.
+/// The staged bytes arrive through the advice provider rather than being compiled into the source,
+/// and that is not a style choice. An account id is a hash over the account's own code and storage
+/// commitments, so a driver that embedded the expected id would change the very id it is trying to
+/// predict. Taking them as transaction inputs keeps the component's code — and therefore every
+/// account id derived from it — independent of what is being asserted.
 ///
 /// Reading them from advice does not weaken anything: advice is host-controlled, so a hostile host
-/// could only make an assertion FAIL, never pass a wrong derivation. Each procedure is stack-neutral
+/// could only make an assertion FAIL, never pass a wrong decode. Each procedure is stack-neutral
 /// across its `call` window, the shape the production note scripts use.
 const DERIVE_DRIVER_SRC: &str = r#"use xreserve::deposit_intent_parser
+use miden::protocol::account_id
 use miden::protocol::native_account
+
+# The scratch address the staged bytes32 is written to before the decode reads it.
+const STAGED_BYTES32_PTR = 1024
 
 #! Asserts the native account id's two felts equal the pair the caller staged in advice.
 #!
@@ -100,33 +109,45 @@ pub proc assert_native_id
     # => [pad(16)]
 end
 
-#! Asserts the on-chain bytes32 packaging of the native account id equals the caller's limbs.
+#! Asserts the caller's staged bytes32 decodes to the native account's own id.
+#!
+#! This is the production identifier compare with the intent stripped away: the same
+#! `load_bytes32_account_id` decode the mint path runs over `remoteToken`, and the same
+#! `account_id::eq` against `native_account::get_id`.
 #!
 #! Inputs:  [pad(16)]
 #! Outputs: [pad(16)]
 #!
-#! Advice stack: [B_LOWER_EXPECTED, B_UPPER_EXPECTED] — the packed-felt limbs of the Rust
-#! `account_id_to_bytes32` form, lower word first, in the orientation the mint compare consumes.
+#! Advice stack: the eight u32-LE-packed limbs of the Rust `account_id_to_bytes32` form, limb 0
+#! first — the orientation the mint path stages a `remoteToken` in.
 #!
 #! Panics if:
-#! - either limb word differs from the one the derivation produces.
+#! - the staged bytes32 is not a well-formed packaged account id (the standards decode's guards).
+#! - the account id it carries is not the native account's.
 #!
 #! Invocation: call
 @account_procedure
-pub proc assert_own_id_bytes32
-    exec.deposit_intent_parser::compute_own_id_bytes32
-    # => [B_LOWER, B_UPPER, pad(16)]
+pub proc assert_bytes32_decodes_to_own_id
+    adv_push mem_store.1024
+    adv_push mem_store.1025
+    adv_push mem_store.1026
+    adv_push mem_store.1027
+    adv_push mem_store.1028
+    adv_push mem_store.1029
+    adv_push mem_store.1030
+    adv_push mem_store.1031
+    # => [pad(16)]
 
-    padw adv_loadw
-    # => [B_LOWER_EXPECTED, B_LOWER, B_UPPER, pad(16)]
+    push.STAGED_BYTES32_PTR exec.deposit_intent_parser::load_bytes32_account_id
+    # => [staged_suffix, staged_prefix, pad(16)]
 
-    assert_eqw.err="parity: own-id bytes32 lower limbs mismatch"
-    # => [B_UPPER, pad(16)]
+    exec.native_account::get_id
+    # => [own_suffix, own_prefix, staged_suffix, staged_prefix, pad(16)]
 
-    padw adv_loadw
-    # => [B_UPPER_EXPECTED, B_UPPER, pad(16)]
+    exec.account_id::eq
+    # => [is_own_id, pad(16)]
 
-    assert_eqw.err="parity: own-id bytes32 upper limbs mismatch"
+    assert.err="parity: the staged bytes32 does not decode to the account's own id"
     # => [pad(16)]
 end
 "#;
@@ -242,19 +263,10 @@ async fn call_driver(
         .await
 }
 
-/// The advice stack carrying one Word: `adv_loadw` reads a word in canonical order, so the felts go
-/// in as they are.
-fn advice_word(w: Word) -> Vec<Felt> {
-    w.as_elements().to_vec()
-}
-
-/// The Rust side of the packaging: the bytes32 form of `id`, split into the two limb words in the
-/// orientation the MASM leaves them on the stack (lower first).
-fn expected_bytes32_words(id: AccountId) -> (Word, Word) {
-    let limbs = bytes32_to_packed_felts(&account_id_to_bytes32(id));
-    let lower = Word::new([limbs[0], limbs[1], limbs[2], limbs[3]]);
-    let upper = Word::new([limbs[4], limbs[5], limbs[6], limbs[7]]);
-    (lower, upper)
+/// The Rust side of the packaging: the eight u32-LE-packed limbs of `account_id_to_bytes32(id)`,
+/// limb 0 first — the order `adv_push` pops them off the advice stack and the driver stages them in.
+fn encoded_bytes32_limbs(id: AccountId) -> Vec<Felt> {
+    bytes32_to_packed_felts(&account_id_to_bytes32(id)).to_vec()
 }
 
 /// The account ids the parity spread covers: `SPREAD_SIZE` freshly generated accounts, alternating
@@ -297,31 +309,33 @@ async fn native_account_id_matches_the_rust_felts_in_account_context() -> Result
     Ok(())
 }
 
-// PARITY — the packaging, over the whole spread
+// PARITY — the decode, over the whole spread
 // ================================================================================================
 
-/// The on-chain bytes32 packaging of the account's own id equals `account_id_to_bytes32`, limb for
-/// limb, for every id in the spread and for the production faucet.
+/// The bytes `account_id_to_bytes32` produces for an account decode, on chain, back to that exact
+/// account — for every id in the spread and for the production faucet.
 ///
 /// This is the layer Circle's wire format actually fixes: sixteen zero bytes, then the prefix as a
-/// u64 big endian, then the suffix as a u64 big endian. It is also the exact Word pair the mint
-/// path's two `assert_eqw`s compare a deposit intent's `remoteToken` against, so a disagreement
-/// here is a disagreement about which deposits the faucet accepts.
+/// u64 big endian, then the suffix as a u64 big endian. It is also exactly what the mint path does
+/// with a deposit intent's `remoteToken`, so a disagreement here is a disagreement about which
+/// deposits the faucet accepts.
 #[tokio::test]
 async fn own_id_bytes32_packaging_matches_the_rust_encoding() -> Result<()> {
     let mut harnesses = spread()?;
     harnesses.push(setup_production_derive_faucet()?);
     for h in &harnesses {
-        let (lower, upper) = expected_bytes32_words(h.account_id);
-        let advice = [advice_word(lower), advice_word(upper)].concat();
-        call_driver(h, "assert_own_id_bytes32", advice)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "account {}: the on-chain packaging must match account_id_to_bytes32: {e}",
-                    h.account_id
-                )
-            });
+        call_driver(
+            h,
+            "assert_bytes32_decodes_to_own_id",
+            encoded_bytes32_limbs(h.account_id),
+        )
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "account {}: account_id_to_bytes32 must decode back to the account on chain: {e}",
+                h.account_id
+            )
+        });
     }
     Ok(())
 }
@@ -329,10 +343,10 @@ async fn own_id_bytes32_packaging_matches_the_rust_encoding() -> Result<()> {
 // CONTROLS — the assertions above cannot pass vacuously
 // ================================================================================================
 
-/// Feeding one account the OTHER account's expected bytes32 limbs traps.
+/// Feeding one account the OTHER account's bytes32 encoding traps.
 ///
-/// Without this, an `assert_eqw` that had been dropped — or a derivation that simply returned the
-/// caller's own input — would sail through the parity test above.
+/// Without this, an identity compare that had been dropped — or one that compared the decode
+/// against itself — would sail through the parity test above.
 #[tokio::test]
 async fn foreign_expected_bytes32_limbs_trap() -> Result<()> {
     let a = setup_derive_account(AccountType::Public)?;
@@ -341,45 +355,53 @@ async fn foreign_expected_bytes32_limbs_trap() -> Result<()> {
         a.account_id, b.account_id,
         "the two harness accounts must have different ids"
     );
-    let (lower, upper) = expected_bytes32_words(b.account_id);
-    let advice = [advice_word(lower), advice_word(upper)].concat();
-    let result = call_driver(&a, "assert_own_id_bytes32", advice).await;
-    // the lower word is the sixteen-byte zero pad, identical for any two accounts, so the leg that
-    // can tell the two ids apart — and therefore the leg that traps — is the upper one.
+    let result = call_driver(
+        &a,
+        "assert_bytes32_decodes_to_own_id",
+        encoded_bytes32_limbs(b.account_id),
+    )
+    .await;
+    // b's encoding is perfectly well formed — its pad is zero and its id is structurally valid — so
+    // the decode succeeds and the IDENTITY compare is what has to fire.
     assert_transaction_executor_error!(
         result,
-        &MasmError::from_static_str("parity: own-id bytes32 upper limbs mismatch")
+        &MasmError::from_static_str(
+            "parity: the staged bytes32 does not decode to the account's own id"
+        )
     );
     Ok(())
 }
 
-/// Feeding a NON-ZERO expected pad traps — the LOWER half of the packaging is asserted too.
+/// A NON-ZERO pad traps — the sixteen pad bytes are asserted, not ignored.
 ///
-/// The foreign-account control above can never reach it: the pad is sixteen zero bytes for every
-/// account, so no other id can make the lower words differ. Corrupting the expectation is the only
-/// way to prove that half is compared rather than assumed — and it is the half the mint path leans
-/// on to reject a `remoteToken` that carries the right account id inside the wrong packaging, which
-/// is precisely what a compare over only the id felts would let through.
+/// The foreign-account control above can never reach this: the pad is sixteen zero bytes for every
+/// account, so no other id can make it differ. Dirtying it is the only way to prove it is checked —
+/// and it is what stops a `remoteToken` that carries the right account id inside the wrong
+/// packaging, which is precisely what a compare over the id felts alone would let through. Both
+/// halves of the standards pad check get a case: limb 0 (wire bytes 0..4) and limb 3 (wire bytes
+/// 12..16) are asserted by different procedures and surface different errors.
+#[rstest]
+#[case::leading_twelve(0, "leading 12 bytes must be zero for a bytes32-embedded address")]
+#[case::bytes_twelve_to_sixteen(3, "most-significant 4 bytes must be zero for AccountId")]
 #[tokio::test]
-async fn a_nonzero_expected_pad_traps() -> Result<()> {
+async fn a_nonzero_expected_pad_traps(
+    #[case] dirty_limb: usize,
+    #[case] expected_err: &'static str,
+) -> Result<()> {
     let a = setup_derive_account(AccountType::Public)?;
-    let (lower, upper) = expected_bytes32_words(a.account_id);
+    let mut limbs = encoded_bytes32_limbs(a.account_id);
     assert_eq!(
-        lower,
-        Word::from([0u32, 0, 0, 0]),
+        &limbs[0..4],
+        &[miden_protocol::ZERO; 4],
         "the frozen packaging pads wire bytes 0..16 with zeros"
     );
-    let dirty_pad = Word::from([1u32, 0, 0, 0]);
-    let advice = [advice_word(dirty_pad), advice_word(upper)].concat();
-    let result = call_driver(&a, "assert_own_id_bytes32", advice).await;
-    assert_transaction_executor_error!(
-        result,
-        &MasmError::from_static_str("parity: own-id bytes32 lower limbs mismatch")
-    );
+    limbs[dirty_limb] = miden_protocol::ONE;
+    let result = call_driver(&a, "assert_bytes32_decodes_to_own_id", limbs).await;
+    assert_transaction_executor_error!(result, &MasmError::from_static_str(expected_err));
     Ok(())
 }
 
-/// Two accounts derive DIFFERENT bytes32 packagings — the derivation reads the id rather than
+/// Two accounts encode to DIFFERENT bytes32 forms — the encoding reads the id rather than
 /// returning a constant, which is what makes the mint compare an identity check at all.
 #[test]
 fn distinct_accounts_derive_distinct_bytes32() -> Result<()> {
@@ -387,9 +409,9 @@ fn distinct_accounts_derive_distinct_bytes32() -> Result<()> {
     let b = setup_derive_account(AccountType::Private)?;
     assert_ne!(a.account_id, b.account_id, "distinct harness accounts");
     assert_ne!(
-        expected_bytes32_words(a.account_id),
-        expected_bytes32_words(b.account_id),
-        "distinct accounts must derive distinct bytes32 packagings"
+        encoded_bytes32_limbs(a.account_id),
+        encoded_bytes32_limbs(b.account_id),
+        "distinct accounts must encode to distinct bytes32 packagings"
     );
     Ok(())
 }

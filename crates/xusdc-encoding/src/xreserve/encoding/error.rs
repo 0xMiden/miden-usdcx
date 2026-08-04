@@ -108,7 +108,7 @@ masm_errors! {
 /// Errors raised inside procedures the MASM links from the protocol's `miden-standards`
 /// library (`miden::standards::utils` / `assets::asset_amount` / `interop::eth`) rather than
 /// declaring locally. The strings are the standards library's own, not this repo's.
-pub static STANDARDS_ERR_TABLE: [(&str, MasmError); 7] = [
+pub static STANDARDS_ERR_TABLE: [(&str, MasmError); 9] = [
     // the standards pow10 scale bound (both its u32 guard and its <= 18 bound)
     (
         "ERR_SCALE_AMOUNT_EXCEEDED_LIMIT",
@@ -118,6 +118,19 @@ pub static STANDARDS_ERR_TABLE: [(&str, MasmError); 7] = [
     (
         "ERR_MERGE_OVERFLOW",
         MasmError::from_static_str("merged u32 limbs do not fit in a field element"),
+    ),
+    // the two halves of the standards `eth::bytes32_to_account_id` pad check, which is what the
+    // faucet's bytes32 account-id decode (`deposit_intent_parser::load_bytes32_account_id`) leans
+    // on: wire bytes 0..12 are asserted in `bytes32_to_account_id` itself, bytes 12..16 in the
+    // `to_account_id` it delegates to. Between them they cover the whole sixteen-byte pad of the
+    // right-aligned AccountId-in-bytes32 packaging.
+    (
+        "ERR_BYTES32_PADDING_NONZERO",
+        MasmError::from_static_str("leading 12 bytes must be zero for a bytes32-embedded address"),
+    ),
+    (
+        "ERR_MSB_NONZERO",
+        MasmError::from_static_str("most-significant 4 bytes must be zero for AccountId"),
     ),
     // the standards eth::build_felt u32 limb guard
     (

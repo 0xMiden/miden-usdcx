@@ -144,12 +144,25 @@ async fn mint_rejects_a_private_output_note() -> Result<()> {
 /// bytes must be zero. If the policy ignored them instead of asserting, two different attested
 /// payloads would extract to the same account, and the attestation would no longer pin who gets
 /// paid.
+///
+/// The decode delegates to the standards `eth::bytes32_to_account_id`, which splits the pad check
+/// in two — bytes 0..12 in the bytes32 entry point, bytes 12..16 in the `to_account_id` it calls.
+/// Both halves get a case, so neither can go unasserted: a pass that only covered bytes 0..12
+/// would still let a recipient with four dirty bytes at offset 12 through.
+#[rstest]
+#[case::leading_twelve(REMOTE_RECIPIENT_BYTE_OFF, 20, 89, "ERR_BYTES32_PADDING_NONZERO")]
+#[case::bytes_twelve_to_sixteen(REMOTE_RECIPIENT_BYTE_OFF + 12, 40, 109, "ERR_MSB_NONZERO")]
 #[tokio::test]
-async fn mint_rejects_a_malformed_attested_recipient() -> Result<()> {
+async fn mint_rejects_a_malformed_attested_recipient(
+    #[case] dirty_byte_off: usize,
+    #[case] nonce_variant: u8,
+    #[case] rng_seed: u64,
+    #[case] expected_err: &str,
+) -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 1).await?;
-    let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 20);
-    payload[REMOTE_RECIPIENT_BYTE_OFF] = 0xaa; // the 16-byte pad must be zero
+    let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, nonce_variant);
+    payload[dirty_byte_off] = 0xaa; // the 16-byte pad must be zero
     let note = tampered_mint_note(
         &pf,
         &payload,
@@ -163,15 +176,9 @@ async fn mint_rejects_a_malformed_attested_recipient() -> Result<()> {
         1,
         None,
         &AttachmentPlan::default(),
-        89,
+        rng_seed,
     )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE"),
-    )
-    .await
+    expect_reject(&mut pf, note, &payload, shell_error_by_name(expected_err)).await
 }
 
 /// The NONCANONICAL reject family, parametrized into one case table: an attested

@@ -66,9 +66,6 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_SIG_INVALID",
     // F2 fee guard (deposit_intent_parser.masm; DEC-2 keep-zero)
     "ERR_XRESERVE_FEE_NONZERO",
-    // the attested-recipient extraction's pad check (mint_policy.masm; the limb and
-    // canonical-range rejects are the standards eth::build_felt's)
-    "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",
     // Wave-1 S1 transport-shape guards on the stock MintNote's attachments: the attachment set
     // (mint_policy.masm) and the staged intent's shape and length (deposit_intent_parser.masm)
     "ERR_XRESERVE_MINT_NOTE_INTENT_MISSING",

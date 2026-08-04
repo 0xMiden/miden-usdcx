@@ -34,7 +34,6 @@ const ERR_FELT_OUT_OF_FIELD = "supplied limb is not a valid u32"
 #! - KEY is the Poseidon2 hash-to-Word storage-map key.
 #!
 #! Invocation: exec
-@account_procedure
 pub proc bytes32_to_key
     # poseidon2::merge absorbs the top word first, so B_LOWER (wire bytes 0..16) becomes the
     # first rate word: KEY = Poseidon2(B_LOWER || B_UPPER), matching the Rust mirror's
@@ -52,19 +51,19 @@ end
 #! semantics, dust dropped (the dust policy is OPEN, TODO confirm with Circle). Rejects by
 #! trapping; never saturates or clamps.
 #!
-#! Inputs:  [U_UPPER, U_LOWER, scale_exp, y]
+#! Inputs:  [U_LO128, U_HI128, scale_exp, y]
 #! Outputs: []
 #!
 #! Where:
-#! - U_UPPER is the word holding the uint256's positionally upper four u32-LE-packed limbs
-#!   (wire bytes 16..32) — for the big-endian wire value, the numerically LOW half.
-#! - U_LOWER is the word holding the uint256's positionally lower four u32-LE-packed limbs
-#!   (wire bytes 0..16) — for the big-endian wire value, the numerically HIGH half.
+#! - U_LO128 and U_HI128 are the uint256's numerically low and high 128-bit halves,
+#!   independent of byte order on the wire.
+#! - U_LO128 is the word holding wire bytes 16..32 of the big-endian value as four
+#!   u32-LE-packed limbs; U_HI128 is the word holding wire bytes 0..16 the same way.
 #! - scale_exp is the decimal scale exponent (EVM decimals minus Miden decimals, 0..=18).
 #! - y is the claimed reduced amount as a single AssetAmount felt (the untrusted witness).
 #!
 #! Panics if:
-#! - any limb of the numerically high half (U_LOWER) is nonzero (the value exceeds 2^128).
+#! - any limb of the high half (U_HI128) is nonzero (the value exceeds 2^128).
 #! - y exceeds the fungible asset amount maximum.
 #! - y*10^scale_exp exceeds x, or the remainder x - y*10^scale_exp reaches 10^scale_exp
 #!   (either way y is not the floor quotient).
@@ -72,14 +71,13 @@ end
 #! - a supplied limb is not a valid u32.
 #!
 #! Invocation: exec
-@account_procedure
 pub proc verify_uint256_to_asset_amount
     # guard every externally-supplied limb before any u32 op (the standards verifier would
     # trap a non-u32 limb anonymously)
     u32assertw.err=ERR_FELT_OUT_OF_FIELD
     swapw
     u32assertw.err=ERR_FELT_OUT_OF_FIELD
-    # => [U_LOWER, U_UPPER, scale_exp, y]
+    # => [U_HI128, U_LO128, scale_exp, y]
 
     # top-first this is the verifier's most-significant-first limb order
     exec.asset_amount::verify_u256_to_asset_amount_conversion

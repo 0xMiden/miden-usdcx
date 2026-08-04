@@ -12,10 +12,10 @@
 //! the linked miden-standards library and declare no local constants here. Wave-1 S1 re-materialization: the deleted custom-transport modules
 //! (`xreserve_mint` / `xreserve_mint_note_entry` / `mint_deny_guard` / `burn_policy` /
 //! `min_burn_admin` / `domain_config`) left the sweep; the attestation mint policy
-//! (`mint_policy.masm`) joined it, with the
-//! attachment-scheme rows (rider A8: schemes >= 4, clear of the reserved value 1 and the
-//! standard values 2/3) and the DC-5 scale row pinned against the `XUsdcMintNote` factory
-//! constants.
+//! (`mint_policy.masm`) joined it, with the merged transport rows — the attachment scheme
+//! (rider A8: >= 4, clear of the reserved value 1 and the standard values 2/3), the attestation
+//! count, and the prefix/attestation widths that place the intent sub-region — and the DC-5 scale
+//! row pinned against the `XUsdcMintNote` factory constants.
 
 mod support;
 
@@ -24,8 +24,9 @@ use std::collections::BTreeMap;
 use miden_protocol::note::NoteAttachmentScheme;
 use miden_standards::note::NetworkAccountTarget;
 use xusdc_encoding::note::xreserve_mint::{
-    XUSDC_DEPOSIT_SCALE_EXP, XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME,
-    XUSDC_MINT_ATTESTATION_NUM_WORDS, XUSDC_MINT_INTENT_ATTACHMENT_SCHEME,
+    XUSDC_DEPOSIT_SCALE_EXP, XUSDC_MINT_ATTESTATION_COUNT, XUSDC_MINT_ATTESTATION_NUM_WORDS,
+    XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF,
+    XUSDC_MINT_TRANSPORT_PREFIX_WORDS,
 };
 use xusdc_encoding::xreserve::encoding::{
     deposit_intent_field_offset, DepositIntentField, DEPOSIT_INTENT_HEADER_FELTS,
@@ -41,8 +42,8 @@ const SHELL_MASM: &str = include_str!("../../../asm/standards/xreserve/deposit_i
 const ATTESTATION_VERIFY_MASM: &str =
     include_str!("../../../asm/standards/xreserve/attestation_verify.masm");
 
-/// The Wave-1 S1 attestation mint policy module source (the ACTIVE mint policy; owns the
-/// attachment transport + ASSERT-MATCH binding constants), read test-side by reference.
+/// The attestation mint policy module source (the ACTIVE mint policy; owns the merged attachment
+/// transport + ASSERT-MATCH binding constants), read test-side by reference.
 const MINT_POLICY_MASM: &str = include_str!("../../../asm/standards/xreserve/mint_policy.masm");
 
 /// The faucet set_attester admin module source, read test-side by reference.
@@ -69,16 +70,15 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     // the attested-recipient extraction's pad check (mint_policy.masm; the limb and
     // canonical-range rejects are the standards eth::build_felt's)
     "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",
-    // Wave-1 S1 transport-shape guards on the stock MintNote's attachments (mint_policy.masm)
-    "ERR_XRESERVE_MINT_NOTE_INTENT_MISSING",
-    "ERR_XRESERVE_MINT_NOTE_ATTESTATION_MISSING",
+    // Transport-shape guards on the stock MintNote's attachments (mint_policy.masm)
+    "ERR_XRESERVE_MINT_NOTE_TRANSPORT_MISSING",
     "ERR_XRESERVE_MINT_NOTE_TARGET_MISSING",
     "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT",
-    "ERR_XRESERVE_MINT_NOTE_INTENT_TOO_SHORT",
+    "ERR_XRESERVE_MINT_NOTE_TRANSPORT_TOO_SHORT",
+    "ERR_XRESERVE_MINT_NOTE_ATTESTATION_COUNT",
     "ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB",
-    "ERR_XRESERVE_MINT_NOTE_INTENT_WORDS",
-    "ERR_XRESERVE_MINT_NOTE_ATTESTATION_NUM_WORDS",
-    // Wave-1 S1 ASSERT-MATCH binding (mint_policy.masm)
+    "ERR_XRESERVE_MINT_NOTE_TRANSPORT_WORDS",
+    // the ASSERT-MATCH binding (mint_policy.masm)
     "ERR_XRESERVE_MINT_RECIPIENT_MISMATCH",
     "ERR_XRESERVE_MINT_AMOUNT_MISMATCH",
     "ERR_XRESERVE_MINT_TAG_MISMATCH",
@@ -112,19 +112,23 @@ const ATTESTATION_COVERED_NUMS: &[&str] = &["DIGEST_LO_LOC", "DIGEST_HI_LOC", "P
 /// form: the file defines locals in a single procedure, so no procedure prefix is needed.
 const ATTESTER_ADMIN_COVERED_NUMS: &[&str] = &["PK_COMMITMENT_LOC"];
 
-/// Wave-1 S1 attestation mint-policy numeric consts: the two attachment schemes + the
-/// attestation word count + the DC-5 scale are parity-asserted against the `XUsdcMintNote`
-/// factory constants in `masm_rust_constant_parity` below (the constructor builds what the
-/// policy verifies); `DEPOSIT_INTENT_HEADER_WORDS` carries a derived relation row (x 4 == the
-/// header felt count). The `P2ID_NUM_STORAGE_ITEMS` note-storage count (2, matching
-/// notes/p2id.masm), the `*_LOC` procedure-local offsets of `check_policy` (including the four
-/// derived from the shared layout's field offsets), and the
+/// Attestation mint-policy numeric consts: the merged transport's scheme + attestation count +
+/// prefix width + attestation word count, and the DC-5 scale, are parity-asserted against the
+/// `XUsdcMintNote` factory constants in `masm_rust_constant_parity` below (the constructor builds
+/// what the policy verifies); `DEPOSIT_INTENT_HEADER_WORDS` carries a derived relation row (x 4 ==
+/// the header felt count), and the intent sub-region's word offset carries a derived relation row
+/// of its own (prefix + attestation on both sides). The `P2ID_NUM_STORAGE_ITEMS` note-storage
+/// count (2, matching notes/p2id.masm), the `*_LOC` procedure-local offsets of `check_policy`
+/// (including the derived transport sub-region and shared-layout field offsets), and the
 /// `NONCE_USED_MARKER`/`P2ID_SCRIPT_ROOT` Word array literals (not parity-parsed) are
 /// policy-owned with no Rust counterpart, covered here.
 const MINT_POLICY_COVERED_NUMS: &[&str] = &[
-    "XUSDC_MINT_INTENT_ATTACHMENT_SCHEME",
-    "XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME",
+    "XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME",
+    "XUSDC_MINT_ATTESTATION_COUNT",
+    "XUSDC_MINT_TRANSPORT_PREFIX_WORDS",
     "XUSDC_MINT_ATTESTATION_NUM_WORDS",
+    "XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF",
+    "XUSDC_MINT_TRANSPORT_FLOOR_WORDS",
     "DEPOSIT_INTENT_HEADER_WORDS",
     "DEPOSIT_SCALE_EXP",
     "P2ID_NUM_STORAGE_ITEMS",
@@ -133,6 +137,7 @@ const MINT_POLICY_COVERED_NUMS: &[&str] = &[
     "TAG_LOC",
     "NOTE_TYPE_LOC",
     "ATTACHMENT_COMMITMENTS_LOC",
+    "TRANSPORT_LOC",
     "ATTESTATION_LOC",
     "ATTESTATION_FEE_AMOUNT_LOC",
     "ATTESTATION_PUBKEY_LOC",
@@ -225,8 +230,8 @@ fn num(nums: &BTreeMap<String, u64>, name: &str, file: &str) -> u64 {
 /// DC-1 relation: every MASM felt offset × 4 equals the Rust byte offset, the packed
 /// magic/version equal the LE reinterpretation of the BE wire values, the header felt
 /// count matches both sides, the NoteStorage bound is the frozen 1024, and the
-/// extra rows pin the reducer's scale bound and limb base plus the Wave-1 S1
-/// attachment-scheme / word-count / scale rows.
+/// extra rows pin the reducer's scale bound and limb base plus the merged transport's
+/// scheme / count / section-width / scale rows.
 #[test]
 fn masm_rust_constant_parity() {
     let (nums, _, _) = parse_masm_consts(LAYOUT_MASM);
@@ -302,28 +307,38 @@ fn masm_rust_constant_parity() {
     // `builder_api.rs` (`RoleSymbol::new(DOM_PAUSER_ROLE)` / `RoleSymbol::new(BLK_MANAGER_ROLE)`)
     // and the materialized map in `w2admin_production_admin_effects.rs`.
 
-    // Wave-1 S1: the mint-note attachment schemes + attestation word count + DC-5 scale must
-    // match across languages — the XUsdcMintNote factory builds exactly what the attestation
-    // policy locates (find_attachment by scheme), size-asserts (num_words == 11), and reduces at
+    // The merged mint-note transport must match across languages — the XUsdcMintNote factory
+    // builds exactly what the attestation policy locates (find_attachment by scheme), reads the
+    // attestation count of, sub-divides at the prefix/attestation offsets, and reduces at
     // (scale 0). A one-sided edit — the exact mutation check (e) — fails here.
     let (policy_nums, _, _) = parse_masm_consts(MINT_POLICY_MASM);
     assert_eq!(
         num(
             &policy_nums,
-            "XUSDC_MINT_INTENT_ATTACHMENT_SCHEME",
+            "XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME",
             "mint_policy.masm"
         ),
-        XUSDC_MINT_INTENT_ATTACHMENT_SCHEME as u64,
-        "intent attachment scheme parity (MASM policy == Rust factory)"
+        XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME as u64,
+        "transport attachment scheme parity (MASM policy == Rust factory)"
     );
     assert_eq!(
         num(
             &policy_nums,
-            "XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME",
+            "XUSDC_MINT_ATTESTATION_COUNT",
             "mint_policy.masm"
         ),
-        XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME as u64,
-        "attestation attachment scheme parity (MASM policy == Rust factory)"
+        u64::from(XUSDC_MINT_ATTESTATION_COUNT),
+        "transport attestation-count parity (MASM policy == Rust factory; the single-signature \
+         restriction is asserted on-chain against the value the factory emits)"
+    );
+    assert_eq!(
+        num(
+            &policy_nums,
+            "XUSDC_MINT_TRANSPORT_PREFIX_WORDS",
+            "mint_policy.masm"
+        ),
+        XUSDC_MINT_TRANSPORT_PREFIX_WORDS as u64,
+        "transport count-prefix width parity (MASM policy == Rust factory)"
     );
     assert_eq!(
         num(
@@ -332,7 +347,23 @@ fn masm_rust_constant_parity() {
             "mint_policy.masm"
         ),
         XUSDC_MINT_ATTESTATION_NUM_WORDS as u64,
-        "attestation attachment word-count parity (MASM policy == Rust factory)"
+        "attestation section word-count parity (MASM policy == Rust factory)"
+    );
+    // derived relation, both sides: the intent sub-region starts past the count prefix and the
+    // attestation. The MASM constant is an expression over the same two constants, so pinning the
+    // Rust derivation against the MASM operands is what keeps the two layouts one layout.
+    assert_eq!(
+        XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF as u64,
+        num(
+            &policy_nums,
+            "XUSDC_MINT_TRANSPORT_PREFIX_WORDS",
+            "mint_policy.masm"
+        ) + num(
+            &policy_nums,
+            "XUSDC_MINT_ATTESTATION_NUM_WORDS",
+            "mint_policy.masm"
+        ),
+        "the intent sub-region's word offset must be prefix + attestation on BOTH sides"
     );
     assert_eq!(
         num(&policy_nums, "DEPOSIT_SCALE_EXP", "mint_policy.masm"),
@@ -347,28 +378,24 @@ fn masm_rust_constant_parity() {
             "mint_policy.masm"
         ) * 4,
         DEPOSIT_INTENT_HEADER_FELTS as u64,
-        "the intent attachment's header word floor must be the packed header felt count / 4"
+        "the intent sub-region's header word floor must be the packed header felt count / 4"
     );
-    // rider A8 (ratified): the xUSDC schemes sit at >= 4 — clear of the protocol-reserved
+    // rider A8 (ratified): the xUSDC scheme sits at >= 4 — clear of the protocol-reserved
     // "none" value 1 and the standard values 2 (NetworkAccountTarget, carried on this very
     // note) and 3 (Pswap). Executable so a scheme regression cannot slip in one-sided.
-    for (name, scheme) in [
-        ("intent", XUSDC_MINT_INTENT_ATTACHMENT_SCHEME),
-        ("attestation", XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME),
-    ] {
-        assert!(
-            scheme >= 4,
-            "the {name} scheme must be >= 4 (rider A8: off the reserved/standard values)"
-        );
-        assert_ne!(
-            NoteAttachmentScheme::new(scheme).expect("xusdc schemes are valid"),
-            NetworkAccountTarget::ATTACHMENT_SCHEME,
-            "the {name} scheme must not collide with the standard NetworkAccountTarget scheme"
-        );
-    }
+    assert!(
+        num(
+            &policy_nums,
+            "XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME",
+            "mint_policy.masm"
+        ) >= 4,
+        "the transport scheme must be >= 4 (rider A8: off the reserved/standard values)"
+    );
     assert_ne!(
-        XUSDC_MINT_INTENT_ATTACHMENT_SCHEME, XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME,
-        "the two xUSDC schemes must be distinct (find_attachment dispatches on them)"
+        NoteAttachmentScheme::new(XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME)
+            .expect("the xusdc scheme is valid"),
+        NetworkAccountTarget::ATTACHMENT_SCHEME,
+        "the transport scheme must not collide with the standard NetworkAccountTarget scheme"
     );
 }
 
@@ -444,7 +471,7 @@ fn masm_constants_bidirectional() {
             ATTESTATION_COVERED_NUMS,
             &[],
         ),
-        // Wave-1 S1 attestation mint policy: declares the transport + binding errors (known
+        // the attestation mint policy: declares the transport + binding errors (known
         // shell errors via SHELL_ERR_TABLE) and the covered/parity-asserted numeric consts; its
         // slot consts stay IMPORTED (USED_NONCES from deposit_intent_parser) — no word("…")
         // consts of its own (the NONCE_USED_MARKER / P2ID_SCRIPT_ROOT Word array literals are

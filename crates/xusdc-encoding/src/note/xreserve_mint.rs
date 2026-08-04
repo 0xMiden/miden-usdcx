@@ -11,18 +11,27 @@
 //! - The mint-note storage holds the output note's pay-to-id recipe: target = the intent's
 //!   `remoteRecipient`, serial = the key derived from the deposit nonce, asset = the reduced
 //!   attested amount, tag = the attested recipient.
-//! - Three attachments travel with it, and none of them is note storage. Scheme 4 is the raw
-//!   deposit-intent payload, u32-little-endian packed and zero-padded to a word boundary — the
+//! - Two attachments travel with it, and neither is note storage. Scheme 4 is the whole
+//!   Circle-signed transport in one attachment: an attestation count (one felt, padded to a full
+//!   word so everything behind it stays word-aligned), then the attestation as eleven words — fee
+//!   amount (8 felts), attester public key (16), signature (17), 3 padding felts, in the order the
+//!   policy reads them; the fee is zero while relayer fees remain open with Circle — and then the
+//!   raw deposit-intent payload, u32-little-endian packed and zero-padded to a word boundary. The
 //!   policy re-derives the true felt length from the payload's own `hookDataLen`, so the padding
-//!   cannot hide extra data. Scheme 5 is the attestation as eleven words: fee amount (8 felts),
-//!   attester public key (16), signature (17), 3 padding felts, in the order the policy reads
-//!   them; the fee is zero while relayer fees remain open with Circle. Scheme 2 routes the note to
-//!   the faucet's network account.
+//!   cannot hide extra data. Scheme 2 routes the note to the faucet's network account.
+//!
+//!   The attestation comes FIRST because it is fixed-width: that keeps the deposit intent's
+//!   starting offset a constant instead of a function of `hookDataLen`, which is what lets the
+//!   policy read every sub-region at a constant offset — and what keeps the Circle-signed byte
+//!   extent 1:1 identifiable inside the merged attachment.
 //! - Converting to a `MintNote` forces the note public and tags it at the faucet, which is what
 //!   makes it routable and observable.
 //!
 //! Nothing is staged on the advice provider: attachment contents are public note data the executor
-//! supplies, and the policy hash-verifies each against the commitment the note carries.
+//! supplies, and the policy hash-verifies the transport against the commitment the note carries
+//! before reading a single byte of it. The scheme-2 routing attachment is NOT hash-verified by the
+//! policy and never feeds a mint effect — the policy only requires it to be present, and the
+//! network transaction infrastructure is what reads it, to route the note.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::FungibleAsset;
@@ -42,17 +51,32 @@ use crate::xreserve::encoding::{
     uint256_to_asset_amount,
 };
 
-/// The mint-note DepositIntent attachment scheme (u16, project-chosen: >= 4, clear of
+/// The mint-note transport attachment scheme (u16, project-chosen: >= 4, clear of
 /// the reserved "none" value 1 and the standard values 2 `NetworkAccountTarget` / 3 `Pswap`).
+/// One attachment carries the attestation count, the attestation and the DepositIntent preimage.
 /// The policy's `find_attachment` fail-closes on a mismatch. Not a Circle-owned value.
-pub const XUSDC_MINT_INTENT_ATTACHMENT_SCHEME: u16 = 4;
+pub const XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME: u16 = 4;
 
-/// The mint-note attestation attachment scheme (see the intent scheme above).
-pub const XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME: u16 = 5;
+/// The attestation count the transport declares. Single-signature is the ONLY implemented and
+/// verified path — the policy asserts this exact value. The count exists so that a future
+/// multiple-attester outcome re-parameterizes the layout instead of re-opening it; it is
+/// extensibility, not multi-signature support.
+pub const XUSDC_MINT_ATTESTATION_COUNT: u32 = 1;
 
-/// The attestation attachment word count: `[feeAmount(8), pubkey(16), signature(17), pad(3)]`
+/// Words the attestation count occupies at the head of the transport. The count is a single felt;
+/// padding it to a full word is what keeps every sub-region behind it word-aligned (the VM traps
+/// on unaligned word accesses).
+pub const XUSDC_MINT_TRANSPORT_PREFIX_WORDS: usize = 1;
+
+/// The attestation section word count: `[feeAmount(8), pubkey(16), signature(17), pad(3)]`
 /// = 44 felts (the pubkey is the 16-felt affine form).
 pub const XUSDC_MINT_ATTESTATION_NUM_WORDS: usize = 11;
+
+/// Word offset of the DepositIntent sub-region inside the transport attachment: past the count
+/// prefix and the fixed-width attestation. Constant by construction — see the module docs on why
+/// the attestation goes first.
+pub const XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF: usize =
+    XUSDC_MINT_TRANSPORT_PREFIX_WORDS + XUSDC_MINT_ATTESTATION_NUM_WORDS;
 
 /// The uint256 -> AssetAmount decimal scale the faucet applies. The cap / scale / dust decision
 /// stays OPEN, pending Circle confirmation; the faucet ships the PROVISIONAL scale-0 position
@@ -158,60 +182,66 @@ impl XUsdcMintNote {
             .sender(sender)
             .mint_storage(storage)
             .serial_number(rng.draw_word())
-            .attachment(Self::intent_attachment(deposit_intent)?)
-            .attachment(Self::attestation_attachment(attestation)?)
+            .attachment(Self::transport_attachment(deposit_intent, attestation)?)
             .attachment(NoteAttachment::from(target))
             .build()?;
         Ok(Note::from(mint_note))
     }
 
-    /// Builds the scheme-4 DepositIntent attachment: the u32-LE-packed payload felts (60 header
-    /// felts plus ⌈hookDataLen/4⌉ hookData felts, packed by the shared codec),
-    /// zero-padded to the word boundary — attachment content is word-granular, and the on-chain
-    /// policy re-derives the exact felt length from the embedded hookDataLen and binds it to
-    /// this attachment's committed word count.
-    fn intent_attachment(deposit_intent: &[u8]) -> Result<NoteAttachment, NoteError> {
-        let mut felts = deposit_intent_to_packed_felts(deposit_intent).map_err(|source| {
-            NoteError::other_with_source(
-                "deposit intent payload rejected by the shared codec",
-                source,
-            )
-        })?;
-        while !felts.len().is_multiple_of(4) {
-            felts.push(Felt::from(0u32));
-        }
-        let words: Vec<Word> = felts
-            .chunks_exact(4)
-            .map(|chunk| Word::new([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect();
-        NoteAttachment::with_words(
-            NoteAttachmentScheme::new(XUSDC_MINT_INTENT_ATTACHMENT_SCHEME)?,
-            words,
-        )
-    }
-
-    /// Builds the scheme-5 attestation attachment: 44 felts
-    /// `[feeAmount(8 zero limbs), pubkey(16 affine felts), signature(17), pad(3)]` as 11 words.
+    /// Builds the scheme-4 transport attachment — the whole Circle-signed payload in one
+    /// attachment, in three sections:
+    ///
+    /// 1. `[count, 0, 0, 0]`: the attestation count, padded to a full word.
+    /// 2. 44 felts `[feeAmount(8 zero limbs), pubkey(16 affine felts), signature(17), pad(3)]`.
+    /// 3. the u32-LE-packed DepositIntent payload (60 header felts plus ⌈hookDataLen/4⌉ hookData
+    ///    felts, packed by the shared codec), zero-padded to the word boundary.
+    ///
     /// The layout is a contract: the policy hash-verifies these words into one memory region and
-    /// hands the amount and attestation-verify stages pointers at these three offsets, so a
-    /// reordering here would silently repoint them. The feeAmount limbs are hardcoded to zero,
-    /// there being no relayer-fee split yet. The 33-byte compressed wire pubkey is decompressed to
-    /// its affine coordinates here, so an off-curve key rejects rather than reaching the chain.
-    fn attestation_attachment(attestation: &MintAttestation) -> Result<NoteAttachment, NoteError> {
-        let mut felts: Vec<Felt> = Vec::with_capacity(44);
+    /// hands each verify stage a pointer at a constant offset into it, so a reordering here would
+    /// silently repoint them. In particular section 3's offset is what identifies the
+    /// Circle-signed byte extent — the attester signed exactly the `240 + hookDataLen` bytes that
+    /// pack into it, and the policy keccaks exactly those. Attachment content is word-granular,
+    /// and the policy re-derives the exact felt length from the embedded hookDataLen and binds it
+    /// to this attachment's committed word count, so the trailing padding cannot hide data.
+    ///
+    /// The feeAmount limbs are hardcoded to zero, there being no relayer-fee split yet. The
+    /// 33-byte compressed wire pubkey is decompressed to its affine coordinates here, so an
+    /// off-curve key rejects rather than reaching the chain.
+    fn transport_attachment(
+        deposit_intent: &[u8],
+        attestation: &MintAttestation,
+    ) -> Result<NoteAttachment, NoteError> {
+        let mut felts: Vec<Felt> = Vec::new();
+
+        felts.push(Felt::from(XUSDC_MINT_ATTESTATION_COUNT));
+        felts.resize(XUSDC_MINT_TRANSPORT_PREFIX_WORDS * 4, Felt::from(0u32));
+
         felts.extend([Felt::from(0u32); 8]);
         felts.extend(affine_pubkey_felts(attestation.pubkey()).map_err(|source| {
             NoteError::other_with_source("attestation pubkey rejected by the shared codec", source)
         })?);
         felts.extend(signature_felts(attestation.signature()));
         felts.extend([Felt::from(0u32); 3]);
+        debug_assert_eq!(felts.len(), XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF * 4);
+
+        felts.extend(
+            deposit_intent_to_packed_felts(deposit_intent).map_err(|source| {
+                NoteError::other_with_source(
+                    "deposit intent payload rejected by the shared codec",
+                    source,
+                )
+            })?,
+        );
+        while !felts.len().is_multiple_of(4) {
+            felts.push(Felt::from(0u32));
+        }
+
         let words: Vec<Word> = felts
             .chunks_exact(4)
             .map(|chunk| Word::new([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect();
-        debug_assert_eq!(words.len(), XUSDC_MINT_ATTESTATION_NUM_WORDS);
         NoteAttachment::with_words(
-            NoteAttachmentScheme::new(XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME)?,
+            NoteAttachmentScheme::new(XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME)?,
             words,
         )
     }

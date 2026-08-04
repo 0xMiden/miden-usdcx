@@ -6,8 +6,9 @@
 //! `MintNoteStorage::FungiblePublic` embedding the ATTESTED output (the P2ID recipe to the intent's
 //! `remoteRecipient` under the canonical nonce-key serial, the scale-0-reduced amount as a
 //! `FungibleAsset` of the faucet, the recipient's account-target tag), and the Circle-signed
-//! transport rides as THREE attachments — the scheme-4 DepositIntent preimage, the scheme-5
-//! attestation, and the scheme-2 `NetworkAccountTarget` routing bind. Every byte of that wire form
+//! transport rides as TWO attachments — the merged scheme-4 transport (the attestation count
+//! prefix, the attestation, and the DepositIntent preimage) and the scheme-2
+//! `NetworkAccountTarget` routing bind. Every byte of that wire form
 //! belongs to the shared encoding crate (single-owner rule); the note script is the STOCK standards
 //! MINT script, and the faucet's attestation mint policy — not a custom note script — is what
 //! verifies the attachments and assert-matches the storage. The relayer restates NONE of it, and
@@ -52,8 +53,7 @@ use miden_standards::note::{MintNote, NetworkAccountTarget, NoteExecutionHint, P
 use xreserve_deposit_relayer::miden::build_mint_note;
 use xusdc_encoding::note::xreserve_mint::{
     MintAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
-    XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME, XUSDC_MINT_ATTESTATION_NUM_WORDS,
-    XUSDC_MINT_INTENT_ATTACHMENT_SCHEME,
+    XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
     affine_pubkey_felts, bytes32_to_account_id, bytes32_to_packed_felts,
@@ -125,57 +125,42 @@ fn t_script_root_is_the_stock_mint_root() {
     );
 }
 
-// THE THREE ATTACHMENTS
+// THE TWO ATTACHMENTS
 // ================================================================================================
 
-/// Exactly THREE attachments — the scheme-4 DepositIntent preimage, the scheme-5 attestation and
-/// the scheme-2 routing target — asserted through the note's own attachment API
-/// (`num_attachments` / `find`), never by indexing a layout this crate re-derived. The faucet's
-/// attestation mint policy asserts exactly these three, so the count is load-bearing: a fourth
-/// attachment, or a missing one, fails the mint on-chain.
+/// Exactly TWO attachments — the merged scheme-4 transport and the scheme-2 routing target —
+/// asserted through the note's own attachment API (`num_attachments` / `find`), never by indexing
+/// a layout this crate re-derived. The faucet's attestation mint policy asserts exactly these two,
+/// so the count is load-bearing: a third attachment, or a missing one, fails the mint on-chain.
 #[test]
-fn t_note_carries_exactly_the_three_attachments() {
+fn t_note_carries_exactly_the_two_attachments() {
     let attestation = validated_test_vector();
     let note = build_note();
     let attachments = note.attachments();
 
     assert_eq!(
         attachments.num_attachments(),
-        3,
-        "the mint note carries exactly the scheme-4 intent + the scheme-5 attestation + the \
-         scheme-2 routing target"
+        2,
+        "the mint note carries exactly the merged scheme-4 transport + the scheme-2 routing target"
     );
 
-    let intent_attachment = attachments
+    let transport = attachments
         .find(
-            NoteAttachmentScheme::new(XUSDC_MINT_INTENT_ATTACHMENT_SCHEME)
-                .expect("unit-04's intent scheme id is a valid scheme"),
+            NoteAttachmentScheme::new(XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME)
+                .expect("unit-04's transport scheme id is a valid scheme"),
         )
-        .expect("the scheme-4 DepositIntent attachment is present");
+        .expect("the scheme-4 merged transport attachment is present");
 
-    // the intent attachment is word-granular: ⌈packed payload felts / 4⌉ words, the packed length
-    // computed by the shared encoding crate's OWNED codec — not a number restated here
+    // the transport is word-granular: the count prefix, the attestation, and ⌈packed payload
+    // felts / 4⌉ words of intent — every width computed by the shared encoding crate's OWNED
+    // codec and constants, not a number restated here
     let packed_felts =
         deposit_intent_to_packed_felts(attestation.payload()).expect("the canonical payload packs");
     assert_eq!(
-        usize::from(intent_attachment.content().num_words()),
-        packed_felts.len().div_ceil(4),
-        "the intent attachment is the packed payload, zero-padded to the word boundary"
-    );
-
-    let attestation_attachment = attachments
-        .find(
-            NoteAttachmentScheme::new(XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME)
-                .expect("unit-04's attestation scheme id is a valid scheme"),
-        )
-        .expect("the scheme-5 attestation attachment is present");
-
-    // the WIDTH is the shared encoding crate's constant, consumed by reference — not a number
-    // restated here
-    assert_eq!(
-        usize::from(attestation_attachment.content().num_words()),
-        XUSDC_MINT_ATTESTATION_NUM_WORDS,
-        "the attestation attachment is unit-04's width"
+        usize::from(transport.content().num_words()),
+        XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF + packed_felts.len().div_ceil(4),
+        "the transport is the count prefix + the attestation + the packed payload, zero-padded to \
+         the word boundary"
     );
 
     assert!(
@@ -335,17 +320,19 @@ fn t_storage_embeds_the_attested_output() {
     );
 }
 
-/// The validated DepositIntent payload travels VERBATIM in the scheme-4 attachment: its elements
-/// are the shared encoding crate's OWNED packing (`deposit_intent_to_packed_felts`, consumed here
-/// BY REFERENCE — the test does not restate the 60-felt header / ⌈hookDataLen/4⌉ packing, it calls
-/// the owner), zero-padded to the word boundary. And the attachment really tracks the VALIDATED
-/// payload that was handed in: attestations over two DIFFERENT canonical payloads produce different
-/// attachments.
+/// The validated DepositIntent payload travels VERBATIM in the transport's intent sub-region — at
+/// the FIXED word offset that makes the Circle-signed byte extent 1:1 identifiable inside the
+/// merged attachment. Its elements are the shared encoding crate's OWNED packing
+/// (`deposit_intent_to_packed_felts`, consumed here BY REFERENCE — the test does not restate the
+/// 60-felt header / ⌈hookDataLen/4⌉ packing, it calls the owner), zero-padded to the word boundary.
+/// And the sub-region really tracks the VALIDATED payload that was handed in: attestations over
+/// two DIFFERENT canonical payloads produce different transports.
 #[test]
-fn t_the_intent_attachment_is_the_validated_payload() {
+fn t_the_transport_intent_sub_region_is_the_validated_payload() {
     let attester = attester_pubkey();
-    let scheme = NoteAttachmentScheme::new(XUSDC_MINT_INTENT_ATTACHMENT_SCHEME)
-        .expect("unit-04's intent scheme id is a valid scheme");
+    let scheme = NoteAttachmentScheme::new(XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME)
+        .expect("unit-04's transport scheme id is a valid scheme");
+    let intent_felt_off = XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF * 4;
 
     let intent_elements = |vector_id: &str, seed: u64| {
         let note = build_mint_note(
@@ -358,9 +345,10 @@ fn t_the_intent_attachment_is_the_validated_payload() {
         .expect("the canonical vector builds");
         note.attachments()
             .find(scheme)
-            .expect("the scheme-4 intent attachment is present")
+            .expect("the scheme-4 merged transport attachment is present")
             .content()
-            .to_elements()
+            .to_elements()[intent_felt_off..]
+            .to_vec()
     };
 
     for vector_id in ["di-pos-hookdata", "di-pos-empty-hookdata"] {
@@ -373,29 +361,29 @@ fn t_the_intent_attachment_is_the_validated_payload() {
         assert_eq!(
             intent_elements(vector_id, 1),
             expected,
-            "vector {vector_id}: the attachment is the packed preimage of the payload the relayer \
-             validated, zero-padded to the word boundary"
+            "vector {vector_id}: the intent sub-region is the packed preimage of the payload the \
+             relayer validated, zero-padded to the word boundary"
         );
     }
 
     assert_ne!(
         intent_elements("di-pos-hookdata", 1),
         intent_elements("di-pos-empty-hookdata", 1),
-        "the attachment tracks the validated payload, not a fixed blob"
+        "the sub-region tracks the validated payload, not a fixed blob"
     );
 }
 
 // THE ATTESTATION ATTACHMENT — THE VALIDATED SIGNATURE + THE CONFIGURED PUBKEY
 // ================================================================================================
 
-/// The scheme-5 attachment carries the 65-byte signature the relayer VALIDATED (from
+/// The transport's attestation section carries the 65-byte signature the relayer VALIDATED (from
 /// `ValidatedAttestation`, never from a raw-bytes side door) and the 33-byte attester pubkey the
 /// OPERATOR configured — both in the shared encoding crate's felt encoding, checked by looking for
 /// the owner's own packing (`signature_felts` / `affine_pubkey_felts`) inside the attachment's
 /// elements. The test asserts PRESENCE of the owner-packed runs, not their offsets: the offsets are
 /// the shared encoding crate's to choose, and restating them here would fork the layout.
 #[test]
-fn t_attestation_attachment_carries_the_validated_signature_and_configured_pubkey() {
+fn t_transport_carries_the_validated_signature_and_configured_pubkey() {
     let attestation = validated_test_vector();
     let attester = attester_pubkey();
     let note = build_note();
@@ -403,10 +391,10 @@ fn t_attestation_attachment_carries_the_validated_signature_and_configured_pubke
     let elements = note
         .attachments()
         .find(
-            NoteAttachmentScheme::new(XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME)
+            NoteAttachmentScheme::new(XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME)
                 .expect("valid scheme"),
         )
-        .expect("the attestation attachment is present")
+        .expect("the merged transport attachment is present")
         .content()
         .to_elements();
 

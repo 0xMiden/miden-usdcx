@@ -211,7 +211,7 @@ Beyond these, `Q-<...>` labels in comments/fixtures mark a value or choice as aw
 - `Q-PRV-5` (**OPEN** — Circle-owned) — ~~confirm xUSDC ships as a basic, transfer-free asset with no on-token control~~. **[REFRAMED 2026-07-23 → F4 REVERSAL]** the basic-asset premise was reversed (see `F4`); the live Circle-owned confirmation is now **Q-BLK-1** — confirm the transfer-blocklist semantics (blocked = full freeze incl. redemption; mint/transfer to a blocked recipient strands at consume; pause halts all transfers). Stays **OPEN** — do not mark resolved. See `docs/DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md` / `docs/CIRCLE-SEMANTICS-TRANSFER-BLOCKLIST.md`.
 - `Q-ADMIN-1` — is the canonical `xReserveAttesters` key type `address` or `bytes32`?
 - `Q-CRY-4` — does the AccountId↔bytes32 encoding (`DEV-10`) apply to `remoteToken` / the faucet's bytes32 identifier as well as to `remoteRecipient`?
-- `Q-DA-QUORUM` — is deposit attestation single-signer or a quorum (how many signatures must verify)?
+- `Q-DA-QUORUM` (**RESOLVED** — Circle-owned) — ~~is deposit attestation single-signer or a quorum (how many signatures must verify)?~~ Circle confirmed **single-signature**: exactly one attestation verifies, so the merged mint transport carries one attestation section and no count field.
 - `Q-FEE-MVP` — confirm the MVP's fail-loud `feeAmount==0` reject (the CIR-FEE-2 relayer-credit split is deferred to mainnet/production-final; see `F2`). Distinct from the narrower `Q-MIN-2`, which covers only the zero-fee note structure. Question to Circle pending (orchestrator-owned).
 
 ## Circle requirement ids — `CIR-<AREA>-<n>`

@@ -1,8 +1,8 @@
 > **Reference document** — adapted from the internal xUSDC spec program; the shipped code and tests in this repo are the source of truth.
 
-# CANONICAL-OWNERSHIP-MAP (FINALIZED — GOVERNING, 2026-06-11 — MASM-first)
+# CANONICAL-OWNERSHIP-MAP (GOVERNING — MASM-first)
 
-> **Baseline: Miden v0.15 + devnet (2026-06-10).** Source citations to `miden-standards` / `protocol` resolve at the released tag **`protocol v0.15.3`** (`681fc9058`). The spike pin `0b662adfb` (`git describe` = `v0.15.0-21`) is a **v0.15-LINE commit** — NOT an ancestor of the v0.15 patch tags (it diverged toward `next` after `v0.15.0`); the cited `miden-standards` source (`fungible.masm`, `build.rs`) was verified **byte-identical** between `0b662adfb` and the historical `v0.15.1`, and and the gate-B re-audit (2026-06-10) **independently re-verified byte-identity through `v0.15.3`** for the load-bearing files (`fungible.masm`, `miden-standards/build.rs`, `code_builder/mod.rs`, the shim, `notes/{burn,mint}.masm`, `kernel/mod.rs`, `note/script.rs`), so every citation holds under the v0.15 baseline. `0.23.3`/`0.25.1` crate versions are the **v0.15 stack's dependencies** (v0.15.3-locked; the historical v0.15.1 locked 0.23.1), not a top-level target (and the VM/assembler line is a **separate `0.23.x` cadence**, NOT a "miden-vm v0.15" tag). See `V15-DEVNET-BASELINE.md`. This is an ownership/layout map; the retarget does not change owners — only the baseline framing of the cited source.
+> **Baseline: Miden v0.15 + devnet.** Source citations resolve at `protocol v0.15.3` (`681fc9058`) and its pinned dependency set. See `V15-DEVNET-BASELINE.md`.
 
 **Purpose.** One — and only one — owner per shared concept, wire-format, and routine, so builders **conform to the owner instead of re-deriving it**. Re-deriving an owned thing is the defect generalized from an earlier reconciliation: the relayer keeps an off-chain DepositIntent layout that is byte-identical to the canonical 04 owner but not pinned to it, leaving a drift seam.
 
@@ -33,7 +33,7 @@ asm/standards/
     xreserve_set_max_supply_note.masm
     xreserve_set_min_burn_size_note.masm
 ```
-Owner→path rule: directory path = MASM module path (report §1.1) and the Rust component `NAME` must equal it. **Logical owner ≠ physical parent:** 04 owns `xreserve::encoding::*` even though it sits under the `xreserve` product root; the faucet(01) owns the parser/attestation *assertion* logic but consumes 04's `encoding/layout.masm` constants.
+Owner→path rule: directory path = MASM module path and the Rust component `NAME` must equal it. **Logical owner ≠ physical parent:** 04 owns `xreserve::encoding::*` even though it sits under the `xreserve` product root; the faucet(01) owns the parser/attestation *assertion* logic but consumes 04's `encoding/layout.masm` constants.
 
 **Layout decision:** assemble a single **self-contained** component `.masm`; builders implement the self-contained layout.
 
@@ -60,7 +60,7 @@ Owner→path rule: directory path = MASM module path (report §1.1) and the Rust
 - Each owned routine: **≤ 1 MASM implementation** and **≤ 1 Rust implementation**, both conforming to the column-5 source of truth. A second within-language copy fails the duplication scan even if byte-identical.
 - **Shared test vectors have ONE canonical home (owner = shared-encoding 04).** The golden vectors (input → expected bytes/felts, incl. cap-boundary/limb-overflow edges) live in a single artifact under 04; BOTH the MASM-side test and the Rust-side test load them **by reference**, not as hand-copied tables. A duplicate vector table outside that home fails the G1 duplication scan, same as a duplicate routine. The dual-implementation harness already pins this (the `TV-DUAL-*` cross-implementation vectors).
 - **The off-chain Rust mirror must pin to the 04 owner, not re-derive it.** Per an earlier reconciliation's remediation, the relayer's DepositIntent decoder **re-exports the 04 serde / `parse_deposit_intent_header` model** OR carries an explicit lockstep-pin reference to 04 (owner `04:341-345,:388`) — a byte-identical independent copy fails G1 even if it passes its own local vectors.
-- **Cross-language CONSTANTS follow `masm-rust-constant-parity` (#2927) — single source of truth.** The DC-1 layout offsets, the packed magic `0x5a2e0acd`, and the DC-5 cap `2^63−2^31` / 6-dp scale are numeric constants duplicated MASM↔Rust. **PREFER defining them in MASM and generating the Rust counterpart via `build.rs` codegen** (the protocol already does this for `ERR_*`/event consts — `MASM-STRUCTURE-RESEARCH-REPORT.md §3.7`); where still hand-duplicated, both sides MUST change in the SAME unit AND be cross-checked by the canonical golden vectors. A one-sided constant edit is the invisible-until-it-bites drift `masm-rust-constant-parity` warns against (the same cross-language drift-seam failure class).
+- **Cross-language constants follow `masm-rust-constant-parity` — single source of truth.** Prefer defining DC-1 layout offsets, packed magic `0x5a2e0acd`, and DC-5 cap/scale in MASM and generating Rust counterparts through `build.rs`; where hand-duplicated, both sides must change together and pass canonical vectors.
 - A new shared concept/boundary must be **added to this map first** (human re-approves) — no silent new shared shapes.
 
 ## Naming decisions

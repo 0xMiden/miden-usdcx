@@ -10,8 +10,10 @@ message, the burn-note payload) and Miden's on-chain types (felts, Words, `Asset
 - **MASM:** `asm/standards/xreserve/encoding/` (`mod.masm` procedure bodies + `layout.masm`
   constants).
 
-Most codecs are implemented on **both** sides: `bytes32_to_key`, `uint256_to_asset_amount`,
-`parse_deposit_intent`, and the attestation staging each have a Rust and a MASM implementation, and a
+Most codecs are implemented on **both** sides: `bytes32_to_key`, the amount conversion (Rust
+`uint256_to_asset_amount` computing the quotient, MASM `verify_uint256_to_asset_amount` proving
+it as a witness through the linked standards conversion verifier), and
+the attestation staging each have a Rust and a MASM leg, and a
 cross-implementation suite (`TV-DUAL-1`, `-2`, `-3`, `-5`) proves the two agree on every golden
 vector. The **burn-note payload codec (`DC-7`) is Rust-only** — there is no MASM burn-item codec — so
 its vector (`TV-DUAL-4`) is an emit-vs-codec check within Rust (the Rust-created burn note vs the Rust
@@ -41,7 +43,7 @@ definitions). In summary:
 |---|---|
 | `bytes32_to_key` (MASM) / `bytes32_to_storage_map_key` (Rust) | Poseidon2 `hash_elements` over the 8 u32-LE limbs of a bytes32 → one canonical Word. The raw fallible `TryFrom<[u8;32]>` is **not** used on this path (`NS-1`, `DC-4`, `INV-BYTES32-HASH-TO-WORD`). |
 | `pubkey_commitment` | Poseidon2 over the 16 u32-LE affine-coordinate limbs of the pubkey → the allowlist commitment Word (`DC-3`; sponge capacity domain tag `16 % 8 = 0`), identical to miden-crypto 0.28 `PublicKey::to_commitment`. The Rust side takes the 33-byte compressed wire key and decompresses to affine internally; the MASM side hashes the 16 already-staged felts. |
-| `uint256_to_asset_amount` | The `DC-5` reduction (`INV-UINT256-TO-ASSETAMOUNT`). `scale_exp` is bounded to `0..=18`. |
+| `uint256_to_asset_amount` (Rust) / `verify_uint256_to_asset_amount` (MASM) | The `DC-5` reduction (`INV-UINT256-TO-ASSETAMOUNT`). `scale_exp` is bounded to `0..=18`. Rust computes `y = floor(x / 10^scale_exp)`; the MASM side takes that `y` as an explicit witness and proves the same floor identity via the standards `verify_u256_to_asset_amount_conversion` (multiply-and-verify, no on-chain division). |
 | `parse_deposit_intent` | Structural DepositIntent validation (magic, version, non-zero `amount`/`localToken`/`localDepositor`, the length relation) and the returned compare fields. The faucet adds the domain/identifier compares (`NS-2`, `INV-DEPOSITINTENT-PARSE`). |
 | AccountId ↔ bytes32 (`account_id.rs`) | The `DC-6` lossless encode/decode with a fail-closed inverse. |
 | Burn-note items (`burn_note.rs`) | The `DC-7` deterministic encode/decode. |

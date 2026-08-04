@@ -1,5 +1,5 @@
 //! A6 offline tests — the `--faucet-id` (existing-faucet) mint must carry the DEPLOYED faucet's domain
-//! config, not the fixed BASE_VECTOR's. The mint gate (D5a `deposit_intent_parser::assert_deposit_intent`)
+//! config, not the fixed BASE_VECTOR's. The mint gate (D5a `deposit_intent_parser::validate`)
 //! compares a mint's `remoteDomain` against the faucet's stored `domain`, and `bytes32_to_key(remoteToken)`
 //! against the stored identifier key. A production faucet was deployed with domain 10007 and an
 //! identifier = account_id_to_bytes32(faucet.id()); the fixed BASE_VECTOR carries domain 7, so D5a
@@ -7,7 +7,7 @@
 //! config (a domain D != 7 and a faucet id F) and prove the produced payload carries D + the F-derived
 //! identifier. sourceDomain is NOT asserted on the payload: it is NOT a DepositIntent field and the
 //! mint proc never reads one — the mint gate compares ONLY remoteDomain + remoteToken (verified against
-//! `asm/standards/xreserve/deposit_intent_parser.masm::assert_deposit_intent`).
+//! `asm/standards/xreserve/deposit_intent_parser.masm::validate`).
 //!
 //! Split out of `sanity/tests.rs` (BUILDER-GATES G3 file-size ceiling) into this `tests::a6` submodule;
 //! the shared offline fixtures (`dummy_id`, `faucet_id`, `rng`) are reused from the parent `tests`

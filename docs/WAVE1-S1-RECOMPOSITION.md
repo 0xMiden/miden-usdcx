@@ -155,7 +155,7 @@ per the round-3 build log).
   admin interplay: `mint_rejects_after_the_administrator_lowers_max_supply_below_the_amount` and
   `mint_accepts_after_the_administrator_raises_max_supply`. NOT re-driven e2e: the deleted suite's
   near-`AssetAmount` ceiling case — the reducer's own cap boundary stays covered at the codec
-  layer (`mint_scale_conformance.rs` + the `uint256_to_asset_amount` vectors).
+  layer (`mint_scale_conformance.rs` + the amount-conversion `amt-*` vectors).
 - **Attested-recipient extraction** (`mint_recipient_account_id.rs`) → pad guard:
   `mint_rejects_a_malformed_attested_recipient`; the >= modulus canonicality rejects — **restored
   round 3**: `mint_rejects_a_noncanonical_recipient_prefix` / `_suffix`

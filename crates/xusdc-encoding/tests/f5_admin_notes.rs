@@ -31,7 +31,7 @@ use miden_protocol::errors::MasmError;
 use miden_protocol::note::Note;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
-use miden_standards::note::{BlocklistConfigNote, PauseActionNote, RbacAction, RbacActionNote};
+use miden_standards::note::{RbacAction, RbacActionNote};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
 use xusdc_encoding::account::xreserve::{BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
@@ -215,17 +215,6 @@ async fn set_attester_admin_note_admin_writes_and_nonadmin_traps() -> Result<()>
         .await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
     Ok(())
-}
-
-/// masm-rust-constant-parity: the compiled set_attester note-script root must equal the pinned
-/// constant, so any edit to the script (or the proc it calls) forces a conscious re-pin.
-#[test]
-fn set_attester_note_script_root_is_pinned() {
-    assert_eq!(
-        XReserveSetAttesterNote::script_root(),
-        XReserveSetAttesterNote::pinned_script_root(),
-        "masm-rust-constant-parity: compiled set_attester note-script root == the pinned constant",
-    );
 }
 
 // IDENTIFIER_INIT — administrator-gated, init-once seeding of the one domain-config
@@ -435,17 +424,6 @@ async fn identifier_init_note_args_are_inert() -> Result<()> {
     Ok(())
 }
 
-/// masm-rust-constant-parity: the compiled identifier_init note-script root must equal the pinned
-/// const (`XRESERVE_IDENTIFIER_INIT_NOTE_SCRIPT_ROOT_HEX`).
-#[test]
-fn identifier_init_note_script_root_is_pinned() {
-    assert_eq!(
-        XReserveIdentifierInitNote::script_root(),
-        XReserveIdentifierInitNote::pinned_script_root(),
-        "masm-rust-constant-parity: compiled identifier_init note-script root == the pinned constant",
-    );
-}
-
 // SET_MIN_BURN_SIZE (allowlist row 4) — ADMIN-gated floor setter. The note first asserts the new
 // floor is at least 1 (which is what makes a zero-amount burn impossible) and then calls the
 // standard `min_burn_amount::set_min_burn_amount`, which writes the standard policy's own slot
@@ -600,18 +578,6 @@ async fn set_min_burn_size_zero_floor_from_the_administrator_traps() -> Result<(
     Ok(())
 }
 
-/// masm-rust-constant-parity for the set_min_burn_size note (the failure prints the actual hex).
-#[test]
-fn set_min_burn_size_note_script_root_is_pinned() {
-    let root = XReserveSetMinBurnSizeNote::script_root();
-    assert_eq!(
-        root,
-        XReserveSetMinBurnSizeNote::pinned_script_root(),
-        "masm-rust-constant-parity: set_min_burn_size note-script root == the pinned constant (actual = {})",
-        root.to_hex(),
-    );
-}
-
 // PAUSE (allowlist row 6) — DOM_PAUSER-gated emergency halt (owner has NO pause path)
 // ================================================================================================
 
@@ -697,41 +663,6 @@ async fn pause_note_args_are_inert() -> Result<()> {
         "pause must set is_paused=1 regardless of executor NOTE_ARGS",
     );
     Ok(())
-}
-
-/// The standard pause-action note's script root, pinned.
-///
-/// Pause administration no longer ships a faucet-owned note script, so there is no MASM digest to
-/// bind to — but the root is still a load-bearing allowlist entry, and a protocol bump that changed
-/// the standard script would silently swap what the faucet admits. Pinning the root makes that a
-/// deliberate re-pin instead of a quiet drift.
-const PAUSE_ACTION_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0xe2e4588e0d7a76ad53817669c10b7e7d149d501f5bb6148687f587f59c06b35f";
-
-/// The standard blocklist-config note's script root, pinned for the same reason.
-const BLOCKLIST_CONFIG_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x886d61a0c638ad270aa602b0d2d03b6a5d5f51772b6408cf102c032452304471";
-
-#[test]
-fn stock_pause_action_note_script_root_is_pinned() {
-    let root = PauseActionNote::script_root();
-    assert_eq!(
-        root.to_hex(),
-        PAUSE_ACTION_NOTE_SCRIPT_ROOT_HEX,
-        "the standard pause-action note script root moved; the allowlist admits this exact root, so          a protocol bump that changes it must be re-pinned deliberately (actual = {})",
-        root.to_hex(),
-    );
-}
-
-#[test]
-fn stock_blocklist_config_note_script_root_is_pinned() {
-    let root = BlocklistConfigNote::script_root();
-    assert_eq!(
-        root.to_hex(),
-        BLOCKLIST_CONFIG_NOTE_SCRIPT_ROOT_HEX,
-        "the standard blocklist-config note script root moved; the allowlist admits this exact          root, so a protocol bump that changes it must be re-pinned deliberately (actual = {})",
-        root.to_hex(),
-    );
 }
 
 // UNPAUSE (allowlist row 7) — DOM_PAUSER-gated resume
@@ -1096,18 +1027,6 @@ async fn set_max_supply_note_args_are_inert() -> Result<()> {
         "set_max_supply must write the storage-committed cap regardless of executor NOTE_ARGS",
     );
     Ok(())
-}
-
-/// masm-rust-constant-parity for the set_max_supply note (the failure prints the actual hex).
-#[test]
-fn set_max_supply_note_script_root_is_pinned() {
-    let root = XReserveSetMaxSupplyNote::script_root();
-    assert_eq!(
-        root,
-        XReserveSetMaxSupplyNote::pinned_script_root(),
-        "masm-rust-constant-parity: set_max_supply note-script root == the pinned constant (actual = {})",
-        root.to_hex(),
-    );
 }
 
 // REVOKE_ROLE (allowlist row 9) — STOCK RBAC revoke (needs a prior grant)

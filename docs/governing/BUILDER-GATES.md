@@ -4,8 +4,6 @@
 
 Enforceable gates for every implementation unit. Phrased to be **mechanically checkable**, not matters of taste — agent self-assessment of "is this clean / did I review enough" is not gaugeable. Subjective calls (right abstraction? architecture buckling?) are **reserved for the human**.
 
-**Baseline: Miden v0.15 + devnet.** Protocol pins to released tag **v0.15.3**, with the **miden-assembly/core/core-lib/processor 0.23.3** and **miden-crypto/miden-field 0.25.1** dependencies recorded in `V15-DEVNET-BASELINE.md`. Testnet v0.14 is not the validation network.
-
 **MASM-first premise.** The custom contracts are **hand-written MASM**. Assemble through `miden-standards`' `CodeBuilder` / `TransactionKernel::assembler()` path, create components with `AccountComponent::new`, load note scripts through `NoteScript::from_library_reference`, and execute behavior through MockChain plus the local-node gates. Do not use `cargo miden build` or a hand-built raw `Assembler` for the faucet.
 
 **Protocol AI/MASM guidance.** Builder and critic agents must use the protocol-local skills pinned in `.claude/skills/` as mandatory checklist material. These skills are hygiene/review guidance, not runtime API evidence; if a skill conflicts with pinned repository evidence, stop and report the conflict.
@@ -26,7 +24,6 @@ A unit is not eligible for human review until all of these are green (a green bu
 - Apply the PR #2927 MASM skills as additional mandatory checklists for each MASM unit: `cheap-masm-equivalents`, `checked-arithmetic`, `felt-construction`, `u32-assert-before-u32-ops`, `masm-error-constants`, `masm-explicit-stack-inputs`, `masm-locals-over-globals`, `masm-named-literals`, `masm-rust-constant-parity`, and **`advice-provider-hygiene`**. The builder's completion note must list which of these were checked and any resulting changes or conflicts.
 - **`advice-provider-hygiene` is MANDATORY and security-critical for the `attestation_verify` proc and the `feeAmount` advice path** (consortium H1). Every advice/`NoteAttachment`-sourced value — the 17-felt ECDSA signature, the 9-felt candidate pubkey, and the operator `feeAmount` — MUST be validated against a kernel-trusted commitment (the pubkey-commitment `assert_eqw` + the keccak-bound signature, frozen faucet spec), use content-addressed advice-map keys, and **ERROR (not default) on missing advice**. A missed advice-commitment / missing-advice check on this path is an unlimited-mint authorization bypass — the worst failure mode in the faucet.
 - **Pinned MASM facts:** core-lib imports use `miden::core::`; `@note_script` and `@locals(N)` are lowercase line-above attributes; `pub proc` exports a component procedure; `word("ns::label")` plus `[0..2]` yields the slot id; the runtime compile path uses `CodeBuilder` with no build dependency; and the pinned core library carries the Keccak/ECDSA precompiles.
-- **Pending for later units:** precompile execution with registered host handlers, kernel procedure stack contracts, and local-node validation against the v0.15 devnet node. Seed `Cargo.lock` to the v0.15.3 dependency set.
 - **`uint256→AssetAmount` reducer (DC-5, external Circle amount) — pinned obligations (consortium N11):** the Rust mirror MUST use **checked/overflowing arithmetic that surfaces overflow** on the scale / floor-div / cap path (no bare `*`/`-`/`+` on external values — `checked-arithmetic`); the MASM impl MUST `u32assert`/`u32assert2` the externally-supplied uint256 limbs **before** any `u32*` op (`u32-assert-before-u32-ops`); the golden vectors MUST include a cap-boundary case AND a limb-overflow case.
 
 ## G1 — Single ownership / no duplication (per language + cross-language conformance)
@@ -40,9 +37,8 @@ A unit is not eligible for human review until all of these are green (a green bu
 
 ## G3 — Module/file size + structure
 - Default file ceiling **~500–700 lines** for Rust. Split `.masm` logically by routine family rather than by a guessed line count.
-- **D-1A module-realization rule:** under miden-assembly 0.23.3, procs whose canonical path is flat `xreserve::encoding::<name>` must live in `encoding/mod.masm`; per-file `.masm` files create nested module paths and wrapper aliases are banned.
+- **D-1A module-realization rule:** procs whose canonical path is flat `xreserve::encoding::<name>` must live in `encoding/mod.masm`; per-file `.masm` files create nested module paths and wrapper aliases are banned.
 - Tests live in their **own module/file**, not inline with implementation.
-- Final layout target: **MASM monorepo, one folder per component** — shape **resolved** (two-root `asm/standards` + `asm/account_components` tree; see `CANONICAL-OWNERSHIP-MAP` §Resolved layout). Permanent on-disk home = human decision.
 
 ## G4 — Test discipline (happy path first)
 - The **happy-path test is written first**, before any negative/edge/malformed case, and before the unit is considered done.

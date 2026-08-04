@@ -159,7 +159,7 @@ Codec decisions owned by the `xusdc-encoding` crate (`xreserve::encoding`).
 | Id | Decision |
 |---|---|
 | NS-1 | The canonical bytes32→key MASM procedure is `xreserve::encoding::bytes32_to_key`; the Rust routine is `bytes32_to_storage_map_key`. |
-| NS-2 | The canonical DepositIntent parser is `xreserve::deposit_intent_parser::parse`, in the same module as the mint preconditions it feeds (superseded 2026-08-01: it was `xreserve::encoding::parse_deposit_intent`). The encoding module keeps the multi-consumer primitives. |
+| NS-2 | The canonical DepositIntent parser is `xreserve::deposit_intent_parser::parse`, in the same module as the mint preconditions it feeds. The encoding module keeps the multi-consumer primitives. |
 
 ## Module-layout & implementation decisions
 

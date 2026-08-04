@@ -2,8 +2,6 @@
 
 # CANONICAL-OWNERSHIP-MAP (GOVERNING — MASM-first)
 
-> **Baseline: Miden v0.15 + devnet.** Source citations resolve at `protocol v0.15.3` (`681fc9058`) and its pinned dependency set. See `V15-DEVNET-BASELINE.md`.
-
 **Purpose.** One — and only one — owner per shared concept, wire-format, and routine, so builders **conform to the owner instead of re-deriving it**. Re-deriving an owned thing is the defect generalized from an earlier reconciliation: the relayer keeps an off-chain DepositIntent layout that is byte-identical to the canonical 04 owner but not pinned to it, leaving a drift seam.
 
 **MASM-first scope note (read before using this map).** Ownership here is at the **concept/component level**, not the file level. The custom contracts (faucet first) are **hand-written MASM**, so the *encoding contract* (byte offsets, felt packing, cap/scale, hash-to-Word rule) is realized in **two implementations that must agree**:
@@ -74,7 +72,7 @@ The decisions below are binding:
 
 ## MASM Module Realization
 
-**Source-proven constraint:** `miden-assembly-syntax-0.23.3` treats `mod.masm` as the directory-module ROOT (`src/ast/module.rs:162` `ROOT_FILENAME = "mod.masm"`; the directory walker maps any other file `<name>.masm` to its own submodule `…::<name>`). Therefore a per-file home like `encoding/bytes32.masm` can only export `xreserve::encoding::bytes32::bytes32_to_key` — NOT the frozen flat path — and a re-export wrapper is banned (NS-1; G1 "wrappers that merely re-expose an owned routine also fail"). The per-file sketch this map previously drew was unsatisfiable as drawn.
+**Source-proven constraint:** the pinned Miden assembler treats `mod.masm` as the directory-module root; any other file `<name>.masm` is its own submodule. Therefore a per-file home like `encoding/bytes32.masm` can only export `xreserve::encoding::bytes32::bytes32_to_key` — NOT the frozen flat path — and a re-export wrapper is banned (NS-1; G1 "wrappers that merely re-expose an owned routine also fail").
 
 **Binding realization rules (empirically validated by `probe_p1_exports`, 37/37 green):**
 1. Any public proc whose CANONICAL path is flat `xreserve::encoding::<proc>` has its body in **`asm/standards/xreserve/encoding/mod.masm`**.

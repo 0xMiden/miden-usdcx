@@ -17,9 +17,7 @@ hence this vendored fixture + checksum + Cargo-pin anchor.
     git = "https://github.com/0xMiden/protocol"
     rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c"
 
-(one frozen rev of the `next` branch — the interim beta.1 bump of the V16-NOW migration,
-`docs/MIGRATION-V16-NEXT.md`; all four protocol-repo crates carry the identical rev, so the
-standards source is unambiguous.)
+(all four protocol-repo crates carry the identical rev, so the standards source is unambiguous.)
 
 `tests/xreserve_receive_and_burn.rs::pinned_standards_rev_matches_cargo` asserts that pin still
 holds; if the dependency pin is bumped, that test fails — **re-vendor and re-checksum** before

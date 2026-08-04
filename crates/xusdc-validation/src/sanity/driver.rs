@@ -90,7 +90,7 @@ pub(crate) fn min_burn(account: &Account) -> Result<u64> {
         .context("reading the stock MinBurnAmount floor slot")
 }
 
-/// The faucet's configured `domain` (element 0 of the domain-config slot) — the value the D5a mint
+/// The faucet's configured `domain` (element 0 of the domain-config slot) — the value the structural validation mint
 /// gate compares a mint's `remoteDomain` against. Read from the DEPLOYED faucet so the `--faucet-id`
 /// mint carries the RIGHT domain (a domain id is a u32, so an out-of-u32 slot value is an error).
 pub(crate) fn domain_config(account: &Account) -> Result<u32> {
@@ -100,7 +100,7 @@ pub(crate) fn domain_config(account: &Account) -> Result<u32> {
     })
 }
 
-/// The faucet's configured identifier key (the D5a `remoteToken` compare target): the stored
+/// The faucet's configured identifier key (the structural validation `remoteToken` compare target): the stored
 /// `bytes32_to_key(identifier_bytes)` Word. Used to VERIFY a resolved mint config's `remote_token`
 /// hashes to what the deployed faucet actually stored, before any mint is emitted.
 pub(crate) fn identifier_config(account: &Account) -> Result<Word> {
@@ -188,7 +188,7 @@ fn policed_faucet_foreign(note: &Note, faucet_id: AccountId) -> Result<Vec<Forei
 pub(crate) struct SanityDriver {
     pub(crate) hc: HarnessClient,
     pub(crate) faucet_id: AccountId,
-    /// The domain config every mint payload must carry so the D5a gate accepts it. `None` on the
+    /// The domain config every mint payload must carry so the structural validation gate accepts it. `None` on the
     /// fresh-LOCAL full gate (mints use the [`crate::mintburn::BASE_VECTOR`] header unchanged);
     /// `Some` on the existing-faucet (`--faucet-id`) re-check — resolved once from the DEPLOYED
     /// faucet's on-chain `domain` + `account_id_to_bytes32(faucet_id)`, then applied to EVERY mint

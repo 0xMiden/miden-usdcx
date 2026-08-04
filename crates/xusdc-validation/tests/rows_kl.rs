@@ -1065,8 +1065,7 @@ fn pathn_commits_feed_a_passing_row_k() {
 const MAX_SUPPLY: u64 = 1_000_000_000_000;
 
 fn wallet_id(seed: u8) -> AccountId {
-    // v16: `AccountId::dummy` gained an `AssetCallbackFlag` param (#3167 / MIGRATION-V16-ALPHA2.md
-    // S6). These synthetic wallets register no transfer policy, so the flag is `Disabled`.
+    // These synthetic wallets register no transfer policy, so the flag is `Disabled`.
     AccountId::dummy(
         [seed; 15],
         AccountIdVersion::Version1,
@@ -1486,7 +1485,7 @@ fn fresh_under_roots_the_run_under_the_named_track() {
 // ════════════════════════════════════════════════════════════════════════════════════════════
 // Stack service invocations (round-2 row-L disposition: the sequencer's gRPC connection-age
 // override). The LNV-5 round-1 run surfaced sequencer panics at exactly the node's 30-minute
-// DEFAULT_MAX_CONNECTION_AGE (tonic-0.14.6 resumed-after-completion, LNV5-ROW-L-FINDING.md);
+// DEFAULT_MAX_CONNECTION_AGE (tonic-0.14.6 resumed-after-completion);
 // the HUMAN disposition is to extend that age at the STACK-BOOT CONFIG level (the v0.15.1
 // sequencer CLI exposes `--rpc.grpc.max-connection-age <DURATION>`) so no connection can reach
 // it within a gate run — while the row-L panic detector stays byte-for-byte as strict.

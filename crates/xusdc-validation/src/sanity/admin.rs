@@ -428,8 +428,7 @@ async fn admin_checks(
     //    NOTE (parked-crate debt): the expected error below is still ERR_NOT_OWNER. Since the
     //    W2-ADMIN slice the setters resolve to the ADMIN role and raise ERR_SENDER_LACKS_ROLE
     //    instead. This crate is parked out of the workspace and cannot be compiled or run against
-    //    the current pins, so the constant is left as-is rather than changed blind; the un-park
-    //    steps in PARKED-V16-NEXT.md name it.
+    //    the current pins, so the constant is left as-is rather than changed blind.
     let commitment = actors.attester_b.commitment_word();
     let rogue =
         XReserveSetAttesterNote::create(holder_id, d.faucet_id, commitment, 1, d.hc.client.rng())

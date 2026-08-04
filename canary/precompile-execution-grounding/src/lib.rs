@@ -10,7 +10,7 @@
 pub const CANARY_PATH: &str = "xusdc::canary::precompile_execution";
 
 /// The hand-written, house-style component MASM source. Three `pub proc` drivers `exec` the core-lib
-/// precompiles over `@locals` scratch; their inputs arrive via the advice provider (modelling D5d's
+/// precompiles over `@locals` scratch; their inputs arrive via the advice provider (modelling attestation verification's
 /// advice-delivered attester pubkey/signature), so the harness seeds advice and the host handlers
 /// supply the precompile outputs.
 pub const CANARY_MASM: &str = include_str!("../asm/canary_precompile.masm");

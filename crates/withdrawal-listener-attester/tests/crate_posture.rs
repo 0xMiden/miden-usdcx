@@ -26,9 +26,7 @@ mod evidence_support;
 
 use evidence_support::{burn_note_id, burn_nullifier, faucet_id, UnitPort, CREATE_BLOCK};
 
-/// This repo's own LNV4 local-node-validated xUSDC faucet
-/// (`crates/xusdc-validation/VALIDATION-RECORD-LNV4.md`) — a real, parseable id, not a fabricated
-/// one.
+/// A real, parseable xUSDC faucet id, not a fabricated one.
 const FAUCET_ID_HEX: &str = "0xbb405fd9fe431bd1135a292de098cb";
 
 fn manifest() -> String {

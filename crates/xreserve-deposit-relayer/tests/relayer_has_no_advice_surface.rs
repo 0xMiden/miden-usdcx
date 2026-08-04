@@ -18,8 +18,7 @@
 //!
 //! The needles are assembled from FRAGMENTS at runtime, on purpose: spelled out literally they
 //! would be hits on this very file, and the gate has to be able to scan the whole crate — its own
-//! test sources included — without exempting anything. (`RIV-ADVICE-KEY.md`, the carried finding
-//! about which key the faucet's shim looks the attestation up under, is markdown and out of the
+//! test sources included — without exempting anything. The faucet's advice-key implementation is out of the
 //! `*.rs` scan by construction: the finding is preserved, the code surface is not.)
 
 use std::path::{Path, PathBuf};

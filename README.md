@@ -74,11 +74,8 @@ See [`docs/spec/FAUCET-COMPONENT-SPEC.md`](docs/spec/FAUCET-COMPONENT-SPEC.md) f
 ## Start here
 
 - **What the faucet does and how it's built:** [`docs/spec/FAUCET-COMPONENT-SPEC.md`](docs/spec/FAUCET-COMPONENT-SPEC.md).
-- **What every short identifier means** (`R-MINT-15`, `D5c`, `DEV-10`, …):
+- **What every short identifier means** (`R-MINT-15`, `DEV-10`, …):
   [`docs/spec/GLOSSARY.md`](docs/spec/GLOSSARY.md).
-- **Where each id is implemented and verified:** [`docs/REQUIREMENTS-TRACEABILITY.md`](docs/REQUIREMENTS-TRACEABILITY.md)
-  maps every requirement/invariant/decision id to its procedure/function and test (inline code
-  comments deliberately carry prose, not ids).
 - **The encoding contracts** (`DC-1`..`DC-7`): [`docs/spec/ENCODING-COMPONENT-SPEC.md`](docs/spec/ENCODING-COMPONENT-SPEC.md).
 
 ## Build and test
@@ -110,11 +107,7 @@ non-ignored (sandbox-safe, no-node) tests.
 
 The **live-node** rows — the real four-service-stack deploy/drive that needs the node binaries on
 `PATH` and loopback ports `57291–57294` free — stay `#[ignore]`d in the default suite and are
-**operator-run** (P1b-b); their execution against a real **v16** node (and the node harness's
-v16-CLI correctness) is a separate step. Until P1b-b regenerates the v16 record, the completed
-**v15 run record stands as the inherited real-node evidence** — see
-[`crates/xusdc-validation/VALIDATION-RECORD-LNV5.md`](crates/xusdc-validation/VALIDATION-RECORD-LNV5.md)
-(the consolidated rows `A`–`L` gate run, 12/12) and the per-slice `VALIDATION-RECORD*.md` files.
+operator-run.
 
 Each gate binary bootstraps genesis, starts the four-service node stack (validator, ntx-builder,
 sequencer, tx prover), runs its rows, and tears the stack down:

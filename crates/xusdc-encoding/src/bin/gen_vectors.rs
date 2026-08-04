@@ -497,7 +497,7 @@ fn main() {
             "uint256_be": hex_bytes(&ab), "le_limbs": le_limbs(&ab),
             "b_uint256_be": hex_bytes(&bb), "b_le_limbs": le_limbs(&bb),
             "scale_exp": 6, "ge_result": result,
-            "cite": "CIR-MINT-PRE-8/9 ; D5b",
+            "cite": "CIR-MINT-PRE-8/9 ; amount validation",
             "derivation": note,
         }));
     }

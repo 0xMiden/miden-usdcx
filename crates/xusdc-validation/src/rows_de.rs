@@ -65,7 +65,7 @@ const MAX_FEE_UNITS: u64 = 1;
 const FEE_UNITS: u64 = 5;
 
 /// Nonce salts (distinct ⇒ distinct nonces). The empty-hookData Row-D salt is reused by the replay
-/// negative (same nonce ⇒ D5c replay), so it is fixed here.
+/// negative (same nonce ⇒ replay protection replay), so it is fixed here.
 const SALT_D_EMPTY: u8 = 0x01;
 const SALT_D_HOOK: u8 = 0x02;
 const SALT_E_FORGED: u8 = 0x11;
@@ -377,7 +377,7 @@ impl Driver {
         let f = self.faucet_id;
         let sender = self.owner();
         let recipient = self.recipient();
-        // Fresh faucet: splice the OWN-ID remoteToken so D5a's identifier compare passes against the
+        // Fresh faucet: splice the OWN-ID remoteToken so structural validation's identifier compare passes against the
         // note-derived own-id identifier (R2 identifier-binding fix).
         let payload = mint_payload_own_id(
             f,

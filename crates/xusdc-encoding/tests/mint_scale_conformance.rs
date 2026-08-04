@@ -346,7 +346,7 @@ async fn production_mint_delivers_the_circle_amount_unrescaled() -> Result<()> {
             nonce_key_of_payload(&payload)
         )?,
         marker(),
-        "usedNonces[key] marker set (the mint really executed the D5e write path)"
+        "usedNonces[key] marker set (the mint really executed the mint effects write path)"
     );
 
     let p2id_id = minted.output_notes().get_note(0).id();

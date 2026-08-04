@@ -68,7 +68,7 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
         (6, 59, 65, 9),
         "the executable callable surface changed ({xreserve} xreserve + {stock} stock = {total} \
          roots, {notes}-note allowlist) — update the ratified constants AND every count-phrase in \
-         the conformance prose together (MIGRATION-V16-ALPHA2.md stock-surface discipline)"
+         the conformance prose together"
     );
 
     // The CURRENT authoritative count-phrases must appear in the prose (derived, not hard-coded).

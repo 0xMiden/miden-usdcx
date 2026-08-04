@@ -95,7 +95,7 @@ fn intent_num_words(num_felts: u64) -> u64 {
 ///
 /// The canonical vectors carry a `maxFee` above their `amount`, so a case that must run past the
 /// amount stage takes its money fields from the shared `amt-*` vectors instead — the same splice
-/// the D5b cases use. The witness is the Rust mirror's quotient, so the on-chain verifier proves
+/// the amount validation cases use. The witness is the Rust mirror's quotient, so the on-chain verifier proves
 /// the value the mint-note factory would carry.
 fn with_acceptable_money_fields(base: &[Felt]) -> (Vec<Felt>, u64) {
     let amount_limbs = amt("amt-ge-gt").le_limbs();
@@ -346,14 +346,14 @@ fn amt(id: &str) -> &'static AmtVector {
         .unwrap_or_else(|| panic!("canonical artifact is missing amt vector {id}"))
 }
 
-/// Builds a D5b harness over a base accept preimage with `amount`/`maxFee` spliced from the
+/// Builds a amount validation harness over a base accept preimage with `amount`/`maxFee` spliced from the
 /// given limbs. The shell does not read config slots, but the component still binds them;
 /// the matching `di-pos-empty-hookdata` config is reused for tidiness.
 ///
 /// The driver's amount witness is the Rust mirror's quotient (the value the mint-note factory
 /// would carry); an unreducible amount pushes a zero witness — the verifier traps on the x
 /// bound before consuming y.
-fn d5b_harness(
+fn amount_validation_harness(
     amount_limbs: [u32; 8],
     maxfee_limbs: [u32; 8],
     fee_amount: &[Felt],
@@ -385,15 +385,15 @@ fn d5b_harness(
 // value at AssetAmount::MAX accepted at the cap; amount (cap) >= maxFee (amt-pos-1)
 #[case::cap_value(amt("amt-cap-accept-scale0").le_limbs(), amt("amt-pos-1").le_limbs(), fee_amount_felts([0u32; 8]))]
 #[tokio::test]
-async fn d5b_happy_amount_fee(
+async fn amount_and_fee_validation_accepts(
     #[case] amount_limbs: [u32; 8],
     #[case] maxfee_limbs: [u32; 8],
     #[case] fee_amount: Vec<Felt>,
 ) -> Result<()> {
-    let h = d5b_harness(amount_limbs, maxfee_limbs, &fee_amount)?;
-    let executed = run_call_driver(&h, "drive")
-        .await
-        .unwrap_or_else(|e| panic!("D5b must accept these reduced amount/fee values: {e}"));
+    let h = amount_validation_harness(amount_limbs, maxfee_limbs, &fee_amount)?;
+    let executed = run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
+        panic!("amount validation must accept these reduced amount/fee values: {e}")
+    });
     // the shell is read-only: the only account mutation is the auth nonce increment
     assert_eq!(
         (executed.final_account().nonce() - executed.initial_account().nonce()),
@@ -402,7 +402,7 @@ async fn d5b_happy_amount_fee(
     );
     assert!(
         executed.account_patch().storage().is_empty(),
-        "the D5b shell must not write account storage"
+        "the amount validation shell must not write account storage"
     );
     Ok(())
 }
@@ -433,13 +433,13 @@ async fn d5b_happy_amount_fee(
 // so it is still rejected — the gate is "zero", not "within maxFee"
 #[case::fee_eq_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-eq").le_limbs(), fee_amount_felts(amt("amt-ge-eq").le_limbs()), "ERR_XRESERVE_FEE_NONZERO")]
 #[tokio::test]
-async fn d5b_amount_fee_rejects(
+async fn amount_and_fee_validation_rejects(
     #[case] amount_limbs: [u32; 8],
     #[case] maxfee_limbs: [u32; 8],
     #[case] fee_amount: Vec<Felt>,
     #[case] expected_err: &str,
 ) -> Result<()> {
-    let h = d5b_harness(amount_limbs, maxfee_limbs, &fee_amount)?;
+    let h = amount_validation_harness(amount_limbs, maxfee_limbs, &fee_amount)?;
     let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
     Ok(())
@@ -452,10 +452,10 @@ async fn d5b_amount_fee_rejects(
 /// guard — a malformed limb is nonzero, so it rejects with the same
 /// `ERR_XRESERVE_FEE_NONZERO` as any other nonzero fee claim.
 #[tokio::test]
-async fn d5b_fee_amount_malformed_limb() -> Result<()> {
+async fn malformed_fee_limb_rejects() -> Result<()> {
     // a felt at 2^32 is a valid field element but NOT a valid u32 limb
     let malformed = vec![Felt::try_from(1u64 << 32).expect("2^32 is within the field"); 8];
-    let h = d5b_harness(
+    let h = amount_validation_harness(
         amt("amt-ge-gt").le_limbs(),
         amt("amt-ge-gt").b_le_limbs(),
         &malformed,
@@ -499,7 +499,7 @@ fn nonce_key(vector_id: &str) -> Word {
 #[case::hookdata("di-pos-hookdata")]
 #[case::empty_hookdata("di-pos-empty-hookdata")]
 #[tokio::test]
-async fn d5c_happy_nonce_unused(#[case] vector_id: &str) -> Result<()> {
+async fn unused_nonce_passes_replay_protection(#[case] vector_id: &str) -> Result<()> {
     let v = di(vector_id);
     let (domain, identifier) = config_for(vector_id, TEST_DOMAIN, false);
     let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
@@ -513,7 +513,7 @@ async fn d5c_happy_nonce_unused(#[case] vector_id: &str) -> Result<()> {
     // empty usedNonces map -> usedNonces[key] reads EMPTY_WORD (unused) -> passes
     let h = setup_shell_account(domain, identifier, &driver_src, SHELL_DRIVER_PATH)?;
     let executed = run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
-        panic!("vector {vector_id}: an unused nonce must pass the D5c guard: {e}")
+        panic!("vector {vector_id}: an unused nonce must pass the replay protection guard: {e}")
     });
     assert_eq!(
         (executed.final_account().nonce() - executed.initial_account().nonce()),
@@ -522,7 +522,7 @@ async fn d5c_happy_nonce_unused(#[case] vector_id: &str) -> Result<()> {
     );
     assert!(
         executed.account_patch().storage().is_empty(),
-        "D5c is assert-zero only: it must not write account storage (no nonce SET)"
+        "replay protection is assert-zero only: it must not write account storage (no nonce SET)"
     );
     Ok(())
 }
@@ -534,7 +534,7 @@ async fn d5c_happy_nonce_unused(#[case] vector_id: &str) -> Result<()> {
 #[case::hookdata("di-pos-hookdata")]
 #[case::empty_hookdata("di-pos-empty-hookdata")]
 #[tokio::test]
-async fn d5c_replay_rejects(#[case] vector_id: &str) -> Result<()> {
+async fn used_nonce_fails_replay_protection(#[case] vector_id: &str) -> Result<()> {
     let v = di(vector_id);
     let (domain, identifier) = config_for(vector_id, TEST_DOMAIN, false);
     let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
@@ -564,7 +564,7 @@ async fn d5c_replay_rejects(#[case] vector_id: &str) -> Result<()> {
 // ------------------------------------------------------------------------------------------------
 
 #[tokio::test]
-async fn d5c_unrelated_seeded_nonce_passes() -> Result<()> {
+async fn unrelated_nonce_passes_replay_protection() -> Result<()> {
     // seeding a DIFFERENT nonce's key must NOT reject this nonce — the read is key-scoped
     // (re-proven at the faucet level). The "other" key is THIS nonce with one
     // byte flipped (the `config_for` identifier-flip idiom), so it is guaranteed distinct
@@ -611,7 +611,7 @@ async fn d5c_unrelated_seeded_nonce_passes() -> Result<()> {
     );
     assert!(
         executed.account_patch().storage().is_empty(),
-        "D5c is assert-zero only: it must not write account storage (no nonce SET)"
+        "replay protection is assert-zero only: it must not write account storage (no nonce SET)"
     );
     Ok(())
 }
@@ -694,7 +694,7 @@ fn paired_driver_src(
 // ------------------------------------------------------------------------------------------------
 
 #[tokio::test]
-async fn d5d_happy_attestation() -> Result<()> {
+async fn valid_attestation_passes() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, _b) = seam_keys(&bytes);
     let driver_src = paired_driver_src(&preimage, len_bytes, &a, &a);
@@ -704,9 +704,9 @@ async fn d5d_happy_attestation() -> Result<()> {
         &driver_src,
         SHELL_DRIVER_PATH,
     )?;
-    let executed = run_call_driver(&h, "drive")
-        .await
-        .unwrap_or_else(|e| panic!("an allowlisted attester + valid signature must pass D5d: {e}"));
+    let executed = run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
+        panic!("an allowlisted attester + valid signature must pass attestation verification: {e}")
+    });
     // the verify shell is read-only: the only account mutation is the auth nonce increment
     assert_eq!(
         (executed.final_account().nonce() - executed.initial_account().nonce()),
@@ -715,7 +715,7 @@ async fn d5d_happy_attestation() -> Result<()> {
     );
     assert!(
         executed.account_patch().storage().is_empty(),
-        "the D5d verify shell must not write account storage"
+        "the attestation verification verify shell must not write account storage"
     );
     Ok(())
 }
@@ -729,7 +729,7 @@ async fn d5d_happy_attestation() -> Result<()> {
 /// perfectly well-formed — this is a genuine ECDSA verification failure, not a decode abort on
 /// junk bytes — so the case proves the signature check itself, not input validation.
 #[tokio::test]
-async fn d5d_forged_sig_rejects() -> Result<()> {
+async fn forged_signature_rejects() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, b) = seam_keys(&bytes);
     let driver_src = paired_driver_src(&preimage, len_bytes, &a, &b);
@@ -749,7 +749,7 @@ async fn d5d_forged_sig_rejects() -> Result<()> {
 /// the map lookup on B's commitment reads back the empty Word and the proc traps before it ever
 /// gets to the signature. A valid signature by a stranger is not an attestation.
 #[tokio::test]
-async fn d5d_non_allowlisted_rejects() -> Result<()> {
+async fn non_allowlisted_attester_rejects() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, b) = seam_keys(&bytes);
     let driver_src = paired_driver_src(&preimage, len_bytes, &b, &b);
@@ -777,7 +777,7 @@ async fn d5d_non_allowlisted_rejects() -> Result<()> {
 /// but the allowlist check comes first and refuses). There is no third arrangement, because the
 /// proc reads the candidate key exactly once and both checks consume that one copy.
 #[tokio::test]
-async fn d5d_seam_both_arrangements_reject() -> Result<()> {
+async fn mismatched_attestation_arrangements_reject() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, b) = seam_keys(&bytes);
     let allowlist_a = Some((a.commitment, Word::from(ATTESTER_MARKER)));
@@ -806,7 +806,7 @@ async fn d5d_seam_both_arrangements_reject() -> Result<()> {
 /// pubkey's commitment was never enabled, so the lookup reads the empty Word and the proc traps
 /// before the signature check.
 #[tokio::test]
-async fn d5d_unstaged_pubkey_rejects() -> Result<()> {
+async fn unstaged_pubkey_rejects() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, _b) = seam_keys(&bytes);
     let driver_src = attestation_driver_src(&preimage, len_bytes, &[], &[]);
@@ -840,7 +840,7 @@ fn probe_attestation_verify_exports() -> Result<()> {
     let canonical = "::xreserve::attestation_verify::verify_attestation";
     assert!(
         exports.iter().any(|e| e == canonical),
-        "canonical D5d proc path {canonical} missing; exports: {exports:?}"
+        "canonical attestation verification proc path {canonical} missing; exports: {exports:?}"
     );
     Ok(())
 }

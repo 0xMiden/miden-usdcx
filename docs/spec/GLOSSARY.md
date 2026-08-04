@@ -208,7 +208,7 @@ questions (e.g. `Q-CRY-*` cryptography, `Q-BUR-*` burn, `Q-DOM-*` domain, `Q-MIN
 
 Beyond these, `Q-<...>` labels in comments/fixtures mark a value or choice as awaiting Circle:
 - `Q-DOM-1` — which remote-domain id does Circle assign Miden? (so any test `domain` value is a placeholder, never the real value).
-- `Q-PRV-5` (**OPEN** — Circle-owned) — ~~confirm xUSDC ships as a basic, transfer-free asset with no on-token control~~. **[REFRAMED 2026-07-23 → F4 REVERSAL]** the basic-asset premise was reversed (see `F4`); the live Circle-owned confirmation is now **Q-BLK-1** — confirm the transfer-blocklist semantics (blocked = full freeze incl. redemption; mint/transfer to a blocked recipient strands at consume; pause halts all transfers). Stays **OPEN** — do not mark resolved. See `docs/DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md` / `docs/CIRCLE-SEMANTICS-TRANSFER-BLOCKLIST.md`.
+- `Q-BLK-1` (**OPEN** — Circle-owned) — confirm the transfer-blocklist semantics: blocked means full freeze including redemption; mint or transfer to a blocked recipient strands at consume; pause halts all transfers. See `docs/DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md` / `docs/CIRCLE-SEMANTICS-TRANSFER-BLOCKLIST.md`.
 - `Q-ADMIN-1` — is the canonical `xReserveAttesters` key type `address` or `bytes32`?
 - `Q-CRY-4` — does the AccountId↔bytes32 encoding (`DEV-10`) apply to `remoteToken` / the faucet's bytes32 identifier as well as to `remoteRecipient`?
 - `Q-DA-QUORUM` — is deposit attestation single-signer or a quorum (how many signatures must verify)?
@@ -272,7 +272,7 @@ name because the code or validation records anchor on them:
 | Id | Meaning |
 |---|---|
 | F1 | The mint-effects helpers (`apply_mint_effects`, `extract_recipient_account_id`) must stay **private** so they cannot become a second, ungated supply surface; only `xreserve_mint::mint` (and its note entry) is a callable mint-family root. |
-| F2 | Defensive fee guard: `apply_mint_effects` asserts `feeAmount == 0` (the MVP has no relayer-fee leg). RATIFIED DEFERRAL (2026-07-14): the fail-loud `feeAmount==0` reject IS the MVP contract; the relayer-credit fee split (CIR-FEE-2 / CIR-MINT-STATE-3 — recipient `amount−feeAmount`, relayer `+feeAmount`) is a documented, Circle-gated deferral, priority P2, gated on **mainnet/production-final** (NOT on the testnet MVP go-live). The "reject nonzero fee in MVP" decision needs its OWN explicit Circle confirmation — tracked as the pending **Q-FEE-MVP** (canonical Q-MIN-2 is narrower: it covers only the zero-fee note *structure*, and must not be cited as approving the reject). |
+| F2 | `apply_mint_effects` rejects nonzero `feeAmount`; the relayer-credit split remains deferred behind the OPEN `Q-FEE-MVP` Circle confirmation. |
 | F4 | xUSDC ships as a policed asset: the stock `BasicBlocklist` is the active send + receive transfer policy and the account id has `AssetCallbackFlag::Enabled`. |
 | F5 | The transaction-level auth boundary for the permissionless-mint model (a non-allowlisted note and tx-script must both be rejected). |
 | F6 | The administrator-gated setters are intentionally **not** pause-gated (matching Circle's `onlyOwner`). |

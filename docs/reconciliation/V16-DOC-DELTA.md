@@ -3,7 +3,7 @@
 **Role.** The CDR-2 deliverable of the post-migration Conformance & Documentation
 Reconciliation (CDR) gate: for every SEMANTIC row of `docs/MIGRATION-V16-ALPHA2.md` (the
 "S-ids"), the greps below were mechanically derived from the OLD internal each row replaced,
-run over `asm/`, `crates/`, `docs/spec/`, `README.md`, and `docs/DOCS-INVENTORY.md`, and every
+run over `asm/`, `crates/`, `docs/spec/`, and `README.md`, and every
 hit adjudicated: **stale → corrected** (§2), **still-true → verified-current** (§3, recorded so
 the adjudication is auditable, with the v16 code line that proves it). Line numbers are as of
 this branch (`cdr/v16-verify`, working tree).
@@ -111,13 +111,8 @@ from the merged relayer idempotency module):
 | `crates/xreserve-deposit-relayer/src/idempotency/mod.rs:84-87` | `` [`clock`]/[`record`]/[`store`]/[`cursor`]/[`recovery`]/[`rows`] `` (public module doc linking six private submodules) | plain-code references | doc gate (new this base) |
 | `crates/xreserve-deposit-relayer/src/idempotency/store.rs:71,:82` | `` [`BUSY_TIMEOUT`] `` / `` [`durable_path`] `` (private items) | plain-code references ("the crate-private …") | doc gate (new this base) |
 
-Inventory-completeness edits (`docs/DOCS-INVENTORY.md` claims to list EVERY repo Markdown doc —
-the migration-era docs were missing; re-applied and then extended in the round-4/round-5 audit
-repairs): added a "Migration & reconciliation (`docs/`)" section (`MIGRATION-V16-ALPHA2.md` +
-the three `docs/reconciliation/` CDR outputs), the `crates/xusdc-validation/PARKED-V15.md`
-row, a `crates/xreserve-deposit-relayer/` section with ALL THREE relayer records
-(`DEFERRED-DEPENDENCIES.md`; round 4 added `PERSISTENCE-CHOICE.md` and `RIV-ADVICE-KEY.md` —
-the latter cross-referencing its §3 v16-disclaimer adjudication), and the Root-table
+Documentation-index repairs from this pass covered the migration-era docs, the validation parking
+records, the relayer records, and the root documentation table.
 `AGENTS.md` row (round 5 — the tracked, byte-identical canonical copy of `CLAUDE.md` was
 missing from the "every Markdown document" claim).
 

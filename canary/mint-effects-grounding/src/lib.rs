@@ -4,7 +4,7 @@
 //! decides nothing about the faucet's real mint proc. It proves the write-side kernel primitives
 //! (`create_fungible_asset` + `faucet::mint` + `output_note::*` + the `token_config` value-slot
 //! read/modify/write + `set_map_item`) EXECUTE AND COMMIT on a faucet account carrying a custom
-//! component. See `MINT-EFFECTS-GROUNDING-REPORT.md` (written in Phase 3).
+//! component.
 
 /// Fully-qualified component module path. Passed to `CodeBuilder::compile_component_code` and
 /// imported by the tx script via `use xusdc::canary::mint_effects->canary`. Must match the

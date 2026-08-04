@@ -15,7 +15,7 @@
 //!   - `NoteType::Public` discoverability.
 //!
 //! It uses STOCK components only (no hand-authored faucet/policy MASM); the sole hand-written MASM
-//! is two inline tx-/note-script strings. See `BURN-MECHANICS-GROUNDING-REPORT.md`.
+//! is two inline tx-/note-script strings.
 
 /// The `token_config` value slot installed by the standard `FungibleFaucet` component — index 0 of
 /// the word holds `token_supply`. The burn path decrements it (`fungible.masm:444`); the canary

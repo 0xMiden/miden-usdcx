@@ -26,7 +26,7 @@ Phase 4 **pins** Miden baselines (see `V15-DEVNET-BASELINE.md`). The original re
 | Role | Repo | Commit | Version | Used for |
 |---|---|---|---|---|
 | **v0.15 BUILDER TARGET (released tag)** | `protocol` (= renamed `miden-base`) | **`v0.15.3` (`681fc9058`)** — supersedes the spike pin `0b662adfb` (= `git describe` `v0.15.0-21`, on the v0.15 line); the historical `v0.15.1` (`625b66dc4`) is the spike-verification pin | **Miden v0.15.3**, locks deps `miden-assembly`/`miden-core-lib` **0.23.3** + `miden-crypto` **0.25.1** (the v0.15 stack's deps; v0.15.1 historically locked 0.23.1) | Authoritative for component/note/build.rs/CodeBuilder/MockChain conventions. Conventions cited at `0b662adfb` carry to the v0.15.3-locked 0.23.3 stack (spike Q1–Q4 verified identical on 0.23.1 and 0.23.3). See `V15-DEVNET-BASELINE.md`. |
-| ~~ARCHIVE-PINNED (builder target)~~ **SUPERSEDED reference (not the v0.15 target)** | `miden-vm` | `328071990` | "v0.24" (`miden-core-lib` 0.24) — a separate VM-track pin, **NOT the v0.15 target** | Read-only retarget reference only. Under v0.15 there is no 0.24 retarget: v0.15 resolves the 0.23.x family (0.23.3 at v0.15.3; 0.23.1 historically at v0.15.1). Rows citing it below are provenance, not a builder target. |
+| reference only (not the v0.15 target) | `miden-vm` | `328071990` | "v0.24" (`miden-core-lib` 0.24) — a separate VM-track pin, **NOT the v0.15 target** | Read-only retarget reference only. Under v0.15 there is no 0.24 retarget: v0.15 resolves the 0.23.x family (0.23.3 at v0.15.3; 0.23.1 historically at v0.15.1). Rows citing it below are provenance, not a builder target. |
 | originally-inspected | `protocol` | `2ef8056323` | v0.16.0, deps 0.23 | rev-0 research head. **Same v0.16.0 / assembly-0.23 family as the pinned `0b662adfb`** — its miden-standards conventions match the pin (re-verified below). |
 | originally-inspected | `miden-vm` | `f84b0fff83` (branch `next`) | ~v0.22.x | rev-0 research head. **Older (2026-04-24) than the pinned VM (2026-06-03)**; some raw-assembler APIs differ from the pin (see §3.1). |
 | skills (style only) | `agent-tools` | `e082708` | — | The 6 MASM skill files; one MISMATCH quarantined (the core-library README index mismatch). |
@@ -80,7 +80,7 @@ xusdc-masm/
         domain_config.masm
         deposit_intent_parser.masm     # RESOLVED (ownership): faucet(01)-owned at xreserve/, consumes 04's encoding/layout.masm consts — see §1.3 note
         attestation_verify.masm        # RESOLVED (ownership): faucet(01)-owned at xreserve/, over 04's encoding/attestation.masm staging — see §1.3 note
-      encoding/                        # SHARED-ENCODING(04)-owned — single owner. ⚠️ SIBLING placement SUPERSEDED: the governing CANONICAL-OWNERSHIP-MAP nests encoding/ under xreserve/ (frozen `xreserve::encoding::*` product root) and adds attestation.masm + burn_items.masm — follow the map, not this sketch
+      encoding/                        # SHARED-ENCODING(04)-owned — single owner. Follow CANONICAL-OWNERSHIP-MAP.md for the current product-root layout.
         layout.masm
         uint256.masm                   # uint256 → AssetAmount reducer
         bytes32.masm                   # bytes32 → Word
@@ -448,8 +448,8 @@ Do NOT resolve these by guessing into conventions.
 
 | Repo | Role | Commit | Version | Local-clone check |
 |---|---|---|---|---|
-| `protocol` (= `miden-base`) | ~~ARCHIVE-PINNED (builder target)~~ **SUPERSEDED — v0.15-line dev commit (rev-3: builder target = released `v0.15.3`)** | `0b662adfb` (retrieval ref `2c423249d`; `git describe` = `v0.15.0-21`) | recorded "v0.16.0" pre-tag; deps `miden-assembly`/`miden-core-lib` 0.23 | `cat-file -t` → `commit` (present) |
-| `miden-vm` | ~~ARCHIVE-PINNED (builder target)~~ **SUPERSEDED — separate VM-track reference, never the v0.15 target (rev-3)** | `328071990` | 0.24 (VM track) | `cat-file -t` → `commit` (present) |
+| `protocol` (= `miden-base`) | v0.15-line dev commit; current builder target is released `v0.15.3` | `0b662adfb` (retrieval ref `2c423249d`; `git describe` = `v0.15.0-21`) | recorded "v0.16.0" pre-tag; deps `miden-assembly`/`miden-core-lib` 0.23 | `cat-file -t` → `commit` (present) |
+| `miden-vm` | separate VM-track reference, never the v0.15 target | `328071990` | 0.24 (VM track) | `cat-file -t` → `commit` (present) |
 | `protocol` | originally-inspected (rev-0) | `2ef8056323` | v0.16.0, deps 0.23 | local HEAD; same v0.16.0/0.23 family as the pin |
 | `miden-vm` | originally-inspected (rev-0) | `f84b0fff83` (branch `next`) | ~v0.22.x | local HEAD; **older (2026-04-24)** than the pinned VM (2026-06-03) |
 | `agent-tools` | skills (style only) | `e082708` | — | local HEAD |

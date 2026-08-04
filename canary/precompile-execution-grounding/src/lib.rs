@@ -3,7 +3,6 @@
 //! Scratch: this crate is an isolated workspace, depends only on the pinned `protocol-pin-v0.15.3`,
 //! and decides nothing about the faucet's real attestation/allowlist logic. It grounds a primitive —
 //! that the precompiles run (not merely assemble/link) under the stock `miden-testing` MockChain host.
-//! See `PRECOMPILE-EXECUTION-GROUNDING-REPORT.md` (written in Phase 3).
 
 /// Fully-qualified component module path. Passed to `CodeBuilder::compile_component_code` and
 /// imported by the tx script via `use xusdc::canary::precompile_execution->canary`. Must match the

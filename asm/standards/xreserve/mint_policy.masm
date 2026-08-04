@@ -226,8 +226,7 @@ pub proc check_policy
 
     # every deposit-intent precondition, from the transport length binding to the nonce replay
     # guard. the amount witness is the note-supplied ASSET_VALUE's element 0, so the verify doubles
-    # as the amount half of the ASSERT-MATCH binding; the scale is the parser's own faucet-side
-    # constant
+    # as the amount half of the ASSERT-MATCH binding
     loc_load.ASSET_VALUE_LOC locaddr.ATTESTATION_FEE_AMOUNT_LOC
     movup.2 locaddr.INTENT_LOC
     # => [intent_ptr, intent_expected_num_words, fee_amount_ptr, amount_y]

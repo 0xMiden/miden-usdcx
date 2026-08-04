@@ -51,7 +51,7 @@ end
 #! value), and the standards verifier proves `y == floor(x / 10^scale_exp)` with one widening
 #! multiply, a 128-bit no-underflow subtract, and a remainder bound — no division on-chain.
 #! The identity `x = y*10^scale_exp + z` with `0 <= z < 10^scale_exp` pins y uniquely: floor
-#! semantics, dust dropped (the dust policy is OPEN, pending Circle confirmation). Rejects by
+#! semantics, dust dropped (the dust policy is OPEN, TODO confirm with Circle). Rejects by
 #! trapping; never saturates or clamps.
 #!
 #! Inputs:  [U_UPPER, U_LOWER, scale_exp, y]

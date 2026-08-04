@@ -37,7 +37,7 @@ min-burn floor, a missing domain-config seed, or a non-Public faucet) at build t
 
 | Module | Role |
 |---|---|
-| `mint_policy` | The **attestation mint policy** (`check_policy`, the ACTIVE mint policy the stock `mint_and_send` dispatches): reads the mint note's DepositIntent + attestation attachments (hash-verified), runs `D5a`–`D5d` by reference, enforces the assert-match binding (note-claimed recipient/amount/tag/type must equal their attested derivations), and marks the nonce used — its only state write. |
+| `mint_policy` | The **attestation mint policy** (`check_policy`, the ACTIVE mint policy the stock `mint_and_send` dispatches): reads the mint note's merged transport attachment (hash-verified once, carrying the attestation and the DepositIntent), runs `D5a`–`D5d` by reference, enforces the assert-match binding (note-claimed recipient/amount/tag/type must equal their attested derivations), and marks the nonce used — its only state write. |
 | `deposit_intent_parser` | The faucet-side mint preconditions (`D5a`/`D5b`/`D5c`): domain/identifier compares, amount/fee bounds, nonce replay guard. The identifier comparand is DERIVED here from the native account id (`compute_own_identifier_key`), not read from storage. Delegates the structural DepositIntent parse to the encoding library. |
 | `attestation_verify` | The attestation check (`D5d`): keccak the payload, gate the attester pubkey against the allowlist, ECDSA-verify the signature. |
 | `attester_admin` | The authority-gated `set_attester` allowlist setter. |
@@ -64,19 +64,47 @@ component.
 A relayer submits a **stock `MintNote`** whose storage embeds the attested output (the P2ID
 recipe to the intent's recipient with the nonce-key serial, the reduced amount as this faucet's
 asset, the recipient's account-target tag) and whose attachments carry the Circle-signed
-transport: the DepositIntent preimage (scheme 4), the attestation `[feeAmount, pubkey,
-signature]` (scheme 5), and the network routing target (scheme 2). The stock MINT script calls
+transport: ONE merged transport attachment (scheme 4) plus the network routing target (scheme 2).
+The stock MINT script calls
 the stock `mint_and_send`, which dispatches the **attestation mint policy** first; the policy
 runs a strict **verify-once-then-write-once** pipeline, and any failure aborts the whole
 transaction with no writes, so a failed mint never consumes the nonce.
 
 1. **Pause gate** — the stock policy dispatcher runs `assert_not_paused` before the policy, so a
    paused faucet never even dispatches the attestation gate.
-2. **Transport shape** — the policy locates the three attachments (exactly three, one per
-   scheme), hash-verifies the intent into its own local memory binding its committed word count to
-   the intent's own embedded `hookDataLen`, and hash-verifies the 11-word attestation into a second
-   local region. Every verify stage below then reads those two regions by pointer. Nothing is read
-   back from the advice provider, so what the note committed to is exactly what gets verified.
+2. **Transport shape** — the policy locates the two attachments (exactly two, one per scheme) and
+   hash-verifies the merged transport into ONE local region, binding its committed word count to
+   the count prefix, the attestation width, and the intent's own embedded `hookDataLen`. Every
+   verify stage below then reads that one region by pointer, at constant sub-offsets. Nothing is
+   read back from the advice provider, so what the note committed to is exactly what gets verified.
+
+   The merged attachment's layout is fixed and constant-derived:
+
+   | Felts | Words | Section |
+   |---|---|---|
+   | `0` | `0` | the attestation count — asserted `== 1` |
+   | `1..4` | `0` | zero padding, so everything behind the count stays word-aligned |
+   | `4..48` | `1..12` | the attestation: `[feeAmount(8), pubkey(16), signature(17), pad(3)]` |
+   | `48..` | `12..` | the u32-LE-packed DepositIntent preimage, zero-padded to a word boundary |
+
+   Three properties follow, and they are the reason for this order:
+
+   - **The attestation is fixed-width and therefore goes first.** The intent is not (it carries
+     `hookData`), so an intent-first layout would make the attestation's offset a function of
+     `hookDataLen`. As built, every sub-offset is a constant.
+   - **The Circle-signed byte extent stays 1:1 auditable.** The attester signed exactly the
+     `240 + hookDataLen` payload bytes that pack into the intent sub-region, starting at its
+     constant offset — and that is precisely the extent `D5d` keccaks. Nothing before felt 48 is
+     hashed; the trailing word padding is not hashed either, because the extent is a byte count
+     derived from the embedded `hookDataLen`, not the attachment's word count.
+   - **The count prefix is extensibility, not a feature.** `Q-DA-QUORUM` (single-signer vs quorum
+     deposit attestation) stays OPEN with Circle. Single-signature is the only implemented and
+     tested path — the policy asserts `count == 1` and rejects anything else with a dedicated
+     error — but a future quorum outcome re-parameterizes this layout instead of re-opening it.
+
+   One documented consequence, accepted rather than worked around: the intent may occupy only the
+   protocol's per-attachment word ceiling minus the 12 words ahead of it, so the largest carryable
+   `hookData` shrinks by 192 bytes. `hookData` is unused in v1, so this is theoretical headroom.
 3. **`D5a` — structural + addressing** (`R-MINT-1..8`): parse the fixed-offset DepositIntent
    header; check magic, version, non-zero `amount`/`localToken`/`localDepositor`, the length
    relation, and that the intent's `remoteDomain`/`remoteToken` match the faucet's configured

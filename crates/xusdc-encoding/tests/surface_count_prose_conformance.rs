@@ -65,7 +65,7 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
     // surface ever changes, this fails loudly (and the whole point below — the prose — must follow).
     assert_eq!(
         (xreserve, stock, total, notes),
-        (6, 59, 65, 9),
+        (3, 59, 62, 9),
         "the executable callable surface changed ({xreserve} xreserve + {stock} stock = {total} \
          roots, {notes}-note allowlist) — update the ratified constants AND every count-phrase in \
          the conformance prose together (MIGRATION-V16-ALPHA2.md stock-surface discipline)"
@@ -101,7 +101,6 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
         "12-root",
         "64-root",
         "49 stock",
-        "62-root",
         "14-root",
         "60 stock",
         "the 15 callable roots",
@@ -124,6 +123,14 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
         "the 14 callable roots",
         "the 14 sanctioned roots",
         "the 14 frozen",
+        "69-root",
+        "the 10 callable roots",
+        "the 10 sanctioned roots",
+        "the 10 frozen",
+        "65-root",
+        "the 6 callable roots",
+        "the 6 sanctioned roots",
+        "the 6 frozen",
     ];
     for (name, src) in SOURCES {
         for bad in superseded {
@@ -134,6 +141,33 @@ fn conformance_prose_counts_match_the_executable_surface() -> Result<()> {
                  {notes}; audit-facing prose must not claim a superseded count (round-6 finding #2)"
             );
         }
+    }
+
+    // The CANONICAL RECORD must carry the current surface too: the deviation register's live
+    // claim and the docs inventory's latest-state delta are what a security reviewer reads
+    // first, so a code-side re-materialization that leaves them behind splits the authority.
+    // These docs deliberately PRESERVE superseded counts as struck-through provenance, so the
+    // check here is presence of the current claim, not absence of history.
+    let canonical: [(&str, &str, String); 2] = [
+        (
+            "docs/spec/GLOSSARY.md",
+            include_str!("../../../docs/spec/GLOSSARY.md"),
+            format!("the callable surface is **{total}** ({xreserve} xreserve + {stock} stock)"),
+        ),
+        (
+            "docs/DOCS-INVENTORY.md",
+            include_str!("../../../docs/DOCS-INVENTORY.md"),
+            format!("re-materialized to **{total}**"),
+        ),
+    ];
+    for (name, src, needle) in &canonical {
+        assert!(
+            src.contains(needle.as_str()),
+            "the canonical record {name} does not carry the current surface claim `{needle}` — \
+             the executable surface is {xreserve} xreserve + {stock} stock = {total} roots; the \
+             register and the inventory must state the live count (with the superseded one \
+             preserved as provenance)"
+        );
     }
     Ok(())
 }

@@ -130,6 +130,9 @@ struct ProcDoc {
     proc_line: usize,
     name: String,
     is_note_entry: bool,
+    /// Whether the declaration carries `@account_procedure` — the attribute that publishes the
+    /// procedure on the composed account's callable interface.
+    is_account_procedure: bool,
     /// Doc lines in source order, each `(1-indexed line, full text)`.
     doc: Vec<(usize, String)>,
     /// Body lines (after the declaration, up to the column-0 `end`).
@@ -169,9 +172,13 @@ fn proc_docs(src: &str) -> Vec<ProcDoc> {
         };
         let mut j = i;
         let mut is_note_entry = false;
+        let mut is_account_procedure = false;
         while j > 0 && lines[j - 1].starts_with('@') {
             if lines[j - 1].starts_with("@note_script") {
                 is_note_entry = true;
+            }
+            if lines[j - 1].trim() == "@account_procedure" {
+                is_account_procedure = true;
             }
             j -= 1;
         }
@@ -190,6 +197,7 @@ fn proc_docs(src: &str) -> Vec<ProcDoc> {
             proc_line: i + 1,
             name,
             is_note_entry,
+            is_account_procedure,
             doc,
             body,
         });
@@ -913,19 +921,11 @@ fn note_docs_declare_required_account_procedures() {
 /// storage-less. The storage-documentation rule keys off this registration, so removing a
 /// storage-carrying note's section fails even when the note never reads storage itself; a new
 /// note fails until it gets a row (the registration pattern).
-const NOTE_STORAGE_TABLE: [(&str, &str); 12] = [
-    ("xreserve_accept_ownership_note.masm", "none"),
-    ("xreserve_block_account_note.masm", "read"),
-    ("xreserve_grant_role_note.masm", "read"),
+const NOTE_STORAGE_TABLE: [(&str, &str); 4] = [
     ("xreserve_identifier_init_note.masm", "read"),
-    ("xreserve_pause_note.masm", "none"),
-    ("xreserve_revoke_role_note.masm", "read"),
     ("xreserve_set_attester_note.masm", "read"),
     ("xreserve_set_max_supply_note.masm", "read"),
     ("xreserve_set_min_burn_size_note.masm", "read"),
-    ("xreserve_transfer_ownership_note.masm", "read"),
-    ("xreserve_unblock_account_note.masm", "read"),
-    ("xreserve_unpause_note.masm", "none"),
 ];
 
 /// A note script's storage posture matches its registration: storage-carrying notes (`read` or
@@ -981,6 +981,25 @@ fn check_note_storage(rel: &str, src: &str, out: &mut Violations) {
 #[test]
 fn note_docs_describe_carried_storage() {
     assert_rule("note storage-section", check_note_storage);
+}
+
+/// The registration pattern's reverse direction: every registered row must correspond to a note
+/// script that actually ships, so a deleted note takes its row with it and the table never
+/// carries a phantom layout.
+#[test]
+fn note_storage_table_registers_only_shipped_notes() {
+    let shipped: Vec<String> = masm_sources()
+        .into_iter()
+        .filter(|(rel, _)| is_note_script(rel))
+        .map(|(rel, _)| rel.rsplit('/').next().unwrap_or(&rel).to_string())
+        .collect();
+    for (name, _) in NOTE_STORAGE_TABLE {
+        assert!(
+            shipped.iter().any(|n| n == name),
+            "NOTE_STORAGE_TABLE registers `{name}` but no such note script ships under \
+             asm/standards/notes/ — remove the stale row"
+        );
+    }
 }
 
 /// Doc-block sections appear at most once each and in the protocol order — description prose
@@ -1232,6 +1251,50 @@ fn invocation_docs_match_invocation_sites() {
             }
         }
     });
+}
+
+/// `@account_procedure` and `#! Invocation: exec` are mutually exclusive. The attribute publishes
+/// a procedure on the composed account's callable interface, and an interface procedure is always
+/// entered across the account boundary — by `call`, or by the stock policy manager's `dynexec`
+/// dispatch on a pinned root. A helper documented `Invocation: exec` is inlined into its caller's
+/// context instead, so carrying the attribute only widens the callable surface without adding any
+/// reachable entry point.
+///
+/// The second half of the check keeps the first half honest: the attribute is read off the
+/// declaration's contiguous attribute run, so an `@account_procedure` line that never reaches a
+/// declaration would make the pairing check silently vacuous on it.
+fn check_exec_helpers_are_off_the_account_interface(rel: &str, src: &str, out: &mut Violations) {
+    let procs = proc_docs(src);
+    for proc in &procs {
+        if proc.is_account_procedure && proc.invocation() == Some("exec") {
+            out.push(format!(
+                "{rel}:{}: `{}` carries `@account_procedure` and documents `Invocation: exec` — \
+                 an account-interface procedure is entered by `call` or by `dynexec` dispatch, so \
+                 an exec-only helper must not be published on the interface",
+                proc.proc_line, proc.name
+            ));
+        }
+    }
+    let declared = src
+        .lines()
+        .filter(|l| l.trim() == "@account_procedure")
+        .count();
+    let attached = procs.iter().filter(|p| p.is_account_procedure).count();
+    if declared != attached {
+        out.push(format!(
+            "{rel}: the file carries {declared} `@account_procedure` line(s) but only {attached} \
+             attach to a procedure declaration — a detached attribute is invisible to the \
+             interface check"
+        ));
+    }
+}
+
+#[test]
+fn account_interface_procedures_are_never_exec_only() {
+    assert_rule(
+        "no @account_procedure on an exec-only procedure",
+        check_exec_helpers_are_off_the_account_interface,
+    );
 }
 
 /// A procedure whose body asserts directly must document its `Panics if:` conditions
@@ -2201,5 +2264,89 @@ fn checker_accepts_brace_shorthand_where_definitions() {
         run_check(check_where_definitions, rel, src),
         Vec::<String>::new(),
         "brace-shorthand Where definitions must cover their expanded items"
+    );
+}
+
+/// A minimal implementation-module procedure carrying `attrs` (each line already newline
+/// terminated, or empty for none) and the given documented invocation kind.
+fn synth_proc(attrs: &str, invocation: &str) -> String {
+    format!(
+        "# xreserve::synthetic\n\n\
+         #! Does the synthetic move.\n\
+         #!\n\
+         #! Inputs:  [VALUE]\n\
+         #! Outputs: []\n\
+         #!\n\
+         #! Where:\n\
+         #! - VALUE is the synthetic word.\n\
+         #!\n\
+         #! Invocation: {invocation}\n\
+         {attrs}pub proc synthetic_helper\n\
+         \x20\x20\x20\x20dropw\nend\n"
+    )
+}
+
+const SYNTH_PROC_REL: &str = "asm/standards/xreserve/synthetic.masm";
+
+#[test]
+fn checker_accepts_an_exec_helper_that_is_off_the_interface() {
+    let src = synth_proc("", "exec");
+    assert_eq!(
+        run_check(
+            check_exec_helpers_are_off_the_account_interface,
+            SYNTH_PROC_REL,
+            &src
+        ),
+        Vec::<String>::new(),
+        "an exec helper without the attribute is the conformant shape"
+    );
+}
+
+#[test]
+fn checker_flags_an_exec_procedure_published_on_the_interface() {
+    // the exact mutation the audit planted on `verify_attestation`: the attribute comes back on
+    // a procedure whose own doc says it is entered by `exec`.
+    let src = synth_proc("@account_procedure\n", "exec");
+    assert!(
+        !run_check(
+            check_exec_helpers_are_off_the_account_interface,
+            SYNTH_PROC_REL,
+            &src
+        )
+        .is_empty(),
+        "an exec-only procedure carrying `@account_procedure` must be flagged"
+    );
+}
+
+#[test]
+fn checker_accepts_a_dynexec_procedure_on_the_interface() {
+    // the mint policy's `check_policy` shape: the stock policy manager dispatches it by root, so
+    // it must stay on the account interface. Only the `exec` pairing is forbidden, and the
+    // attribute run may carry `@locals` alongside.
+    let src = synth_proc("@locals(4)\n@account_procedure\n", "dynexec");
+    assert_eq!(
+        run_check(
+            check_exec_helpers_are_off_the_account_interface,
+            SYNTH_PROC_REL,
+            &src
+        ),
+        Vec::<String>::new(),
+        "a dynexec-dispatched account procedure must keep its attribute"
+    );
+}
+
+#[test]
+fn checker_flags_a_detached_account_procedure_attribute() {
+    // a blank line between the attribute and the declaration detaches it from the attribute run;
+    // the parity half of the rule refuses to go vacuous on it.
+    let src = synth_proc("@account_procedure\n\n", "exec");
+    assert!(
+        !run_check(
+            check_exec_helpers_are_off_the_account_interface,
+            SYNTH_PROC_REL,
+            &src
+        )
+        .is_empty(),
+        "an `@account_procedure` line that reaches no declaration must be flagged"
     );
 }

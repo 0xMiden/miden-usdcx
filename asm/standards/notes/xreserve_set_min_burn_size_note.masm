@@ -18,10 +18,6 @@ use miden::standards::faucets::policies::burn::min_burn_amount
 # CONSTANTS
 # =================================================================================================
 
-# Absolute memory address where the creator-committed param is staged (word-aligned; the
-# admin-note convention the other admin notes share).
-const PARAM_PTR = 1024
-
 # The exact note-storage item count for this admin op: [new_min] = 1 felt.
 const SET_MIN_BURN_SIZE_NOTE_NUM_ITEMS = 1
 
@@ -81,14 +77,14 @@ pub proc main
     dropw
     # => [pad(16)]
 
-    # stage the creator-committed param into memory.
-    push.PARAM_PTR exec.active_note::get_storage
+    # stage the creator-committed param into memory at address zero.
+    push.0 exec.active_note::get_storage
     # => [num_items, pad(16)]
 
     eq.SET_MIN_BURN_SIZE_NOTE_NUM_ITEMS assert.err=ERR_XRESERVE_SET_MIN_BURN_SIZE_NOTE_STORAGE
     # => [pad(16)]
 
-    push.PARAM_PTR mem_load
+    push.0 mem_load
     # => [new_min, pad(16)]
 
     # the zero-floor guard: new_min >= 1, asserted BEFORE the stock call.

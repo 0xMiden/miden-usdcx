@@ -15,10 +15,6 @@ use xreserve::attester_admin
 # CONSTANTS
 # =================================================================================================
 
-# Absolute memory address where the creator-committed params are staged (word-aligned; the
-# staging convention the admin notes share).
-const PARAM_PTR = 1024
-
 # The exact note-storage item count for this admin op: [pk_commitment(4), enabled] = 5 felts.
 const SET_ATTESTER_NOTE_NUM_ITEMS = 5
 
@@ -33,7 +29,7 @@ const ERR_XRESERVE_SET_ATTESTER_NOTE_STORAGE = "set_attester note storage item c
 
 #! Consumes the `set_attester` admin note and drives the `ADMIN`-role-gated attester-allowlist write.
 #!
-#! Stages the creator-committed params (`[pk_commitment(4), enabled]`) into memory at PARAM_PTR,
+#! Stages the creator-committed params (`[pk_commitment(4), enabled]`) into memory at address zero,
 #! marshals them onto the stack as `[PK_COMMITMENT, enabled, pad(11)]`, and `call`s
 #! `attester_admin::set_attester`.
 #!
@@ -60,8 +56,8 @@ pub proc main
     dropw
     # => [pad(16)]
 
-    # stage the creator-committed params into memory.
-    push.PARAM_PTR exec.active_note::get_storage
+    # stage the creator-committed params into memory at address zero.
+    push.0 exec.active_note::get_storage
     # => [num_items, pad(16)]
 
     eq.SET_ATTESTER_NOTE_NUM_ITEMS assert.err=ERR_XRESERVE_SET_ATTESTER_NOTE_STORAGE
@@ -70,19 +66,19 @@ pub proc main
     # marshal params deepest-first so pk_commitment element 0 lands on top, matching the
     # proc's Inputs order [PK_COMMITMENT, enabled, pad(11)]. felt-by-felt mem_load avoids any
     # word-load element-order ambiguity.
-    push.PARAM_PTR add.4 mem_load
+    push.4 mem_load
     # => [enabled, pad(16)]
 
-    push.PARAM_PTR add.3 mem_load
+    push.3 mem_load
     # => [pk_commitment_3, enabled, pad(16)]
 
-    push.PARAM_PTR add.2 mem_load
+    push.2 mem_load
     # => [pk_commitment_2, pk_commitment_3, enabled, pad(16)]
 
-    push.PARAM_PTR add.1 mem_load
+    push.1 mem_load
     # => [pk_commitment_1, pk_commitment_2, pk_commitment_3, enabled, pad(16)]
 
-    push.PARAM_PTR mem_load
+    push.0 mem_load
     # => [PK_COMMITMENT, enabled, pad(16)]
 
     call.attester_admin::set_attester

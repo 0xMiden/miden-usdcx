@@ -9,7 +9,7 @@
 //! as a second supply door.
 //!
 //! The component-level tripwire: the xreserve library's callable-root set is FROZEN
-//! at the 6 sanctioned roots below, enumerated at BOTH layers — the manifest's exported paths and
+//! at the 3 sanctioned roots below, enumerated at BOTH layers — the manifest's exported paths and
 //! the `@account_procedure`-filtered account interface — so any new export (a potential new
 //! supply door) fails loudly.
 
@@ -20,15 +20,18 @@ use miden_protocol::Word;
 use support::*;
 
 /// The frozen sanctioned callable-root set of the shipped `xreserve`
-/// library: the two shared-encoding primitives + the attestation verify, the one admin wrapper
-/// (`attester_admin::set_attester`, which resolves to the `ADMIN` role), the attestation
-/// mint policy `mint_policy::check_policy` (the ACTIVE mint policy — a pure gate, no supply
-/// arithmetic of its own), and the identifier-only `identifier_init::init_identifier`
-/// (administrator-gated, init-once) = 6. Pause and blocklist administration are no longer here: the
-/// custom role-gated wrappers gave way to the stock `PausableManager` / `BlocklistManager`
-/// components, whose roots live on those components and are gated by the account's
-/// procedure-role map. The deposit-intent parser is not here either: `parse` and `validate` are
-/// `exec`-only, like `encoding::pubkey_commitment` (`FROZEN_EXEC_ONLY_EXPORTS`). There is
+/// library — the procedures the account is genuinely entered through: the one admin wrapper
+/// (`attester_admin::set_attester`, `call`ed by its admin note and resolving to the `ADMIN`
+/// role), the attestation mint policy `mint_policy::check_policy` (the ACTIVE mint policy — a
+/// pure gate, no supply arithmetic of its own, reached from the stock policy manager), and the
+/// identifier-only `identifier_init::init_identifier` (administrator-gated, init-once, `call`ed
+/// by its admin note) = 3. The shared-encoding primitives and the attestation verify are NOT
+/// here: they are `exec`-only helpers inlined into their callers and live in
+/// `FROZEN_EXEC_ONLY_EXPORTS`, alongside the deposit-intent parser's `parse` / `validate` pair
+/// and `encoding::pubkey_commitment`. Pause and blocklist administration are no longer here
+/// either: the custom role-gated wrappers gave way to the stock `PausableManager` /
+/// `BlocklistManager` components, whose roots live on those components and are gated by the
+/// account's procedure-role map. There is
 /// deliberately NO custom transport/burn/config root
 /// (no `xreserve_mint::mint`, `xreserve_mint_note_entry::receive_and_mint`,
 /// `mint_deny_guard::check_policy`, `burn_policy::check_policy`,
@@ -37,24 +40,26 @@ use support::*;
 /// `mint_and_send`, gated by the attestation policy. Any drift (a new export, i.e. a potential
 /// new supply door) trips `production_xreserve_callable_root_set_is_frozen`.
 /// Paths render absolute (leading `::`) at assembler 0.23.3.
-const FROZEN_CALLABLE_ROOTS: [&str; 6] = [
-    "::xreserve::attestation_verify::verify_attestation",
+const FROZEN_CALLABLE_ROOTS: [&str; 3] = [
     "::xreserve::attester_admin::set_attester",
-    "::xreserve::encoding::bytes32_to_key",
-    "::xreserve::encoding::verify_uint256_to_asset_amount",
     "::xreserve::identifier_init::init_identifier",
     "::xreserve::mint_policy::check_policy",
 ];
 
 /// Exported `pub proc`s that are deliberately NOT `@account_procedure`: pure `exec`-invoked
-/// helpers, inlined into their callers. The package manifest lists them, the account interface
-/// does not, so they are exported for reuse and by tests but are not doors on the account. Keeping
+/// helpers, inlined into their callers — the shared-encoding codecs, the deposit-intent parser's
+/// `parse` / `validate` pair, and the attestation verifier with its pubkey commitment. The
+/// package manifest lists them, the account interface does not, so they are exported for reuse
+/// and by tests but are not doors on the account. Keeping
 /// them in their own list is the point — the frozen-root set above stays exactly the set of things
 /// that can be `call`ed on the deployed faucet.
-const FROZEN_EXEC_ONLY_EXPORTS: [&str; 3] = [
+const FROZEN_EXEC_ONLY_EXPORTS: [&str; 6] = [
     "::xreserve::attestation_verify::pubkey_commitment",
+    "::xreserve::attestation_verify::verify_attestation",
     "::xreserve::deposit_intent_parser::parse",
     "::xreserve::deposit_intent_parser::validate",
+    "::xreserve::encoding::bytes32_to_key",
+    "::xreserve::encoding::verify_uint256_to_asset_amount",
 ];
 
 /// The attestation mint policy's library path — the anchor by which the xreserve component is
@@ -80,7 +85,7 @@ fn production_xreserve_callable_root_set_is_frozen() -> Result<()> {
         .map(|(root, _is_auth)| Word::from(root))
         .collect();
 
-    // Frozen tripwire, source layer: the exported-proc set is EXACTLY the 6 sanctioned roots plus
+    // Frozen tripwire, source layer: the exported-proc set is EXACTLY the 3 sanctioned roots plus
     // the exec-only exports.
     let lib: &miden_protocol::assembly::Package = xreserve.component_code().as_package();
     let mut paths: Vec<String> = lib
@@ -123,7 +128,7 @@ fn production_xreserve_callable_root_set_is_frozen() -> Result<()> {
         .collect();
     assert_eq!(
         callable, frozen_roots,
-        "the FILTERED account-interface root set (@account_procedure) must equal the 6 frozen \
+        "the FILTERED account-interface root set (@account_procedure) must equal the 3 frozen \
          roots exactly — a missing annotation drops a sanctioned proc from the account, an extra \
          one opens an unsanctioned callable root"
     );

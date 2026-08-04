@@ -22,8 +22,11 @@ use xreserve::identifier_init
 # CONSTANTS
 # =================================================================================================
 
-# Absolute memory address where the creator-committed param is staged (word-aligned; the
-# admin-note convention the other admin notes share).
+# Absolute memory address where the creator-committed param is staged (word-aligned). The other
+# admin notes stage at address zero; this one deliberately keeps 1024. The staging address is
+# free — a note script runs in its own memory context — but changing it changes this script's
+# instructions and therefore its MAST root, and the identifier-derivation work removes this
+# script outright, so the re-pin would buy nothing.
 const PARAM_PTR = 1024
 
 # The exact note-storage item count for this admin op: [IDENTIFIER] = 4 felts.

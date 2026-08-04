@@ -54,8 +54,12 @@ pub const RATIFIED_ALLOWLIST_ROOTS: usize = 9;
 /// no longer a callable account root) drops the total by one more to 69. The deposit-intent
 /// consolidation then took the parser's three assertion procedures and the shared
 /// `encoding::parse_deposit_intent` off the surface too — they are the exec-only
-/// `deposit_intent_parser::{parse,validate}` pair now — leaving 65. Human-ratified.
-pub const RATIFIED_CALLABLE_PROCEDURES: usize = 65;
+/// `deposit_intent_parser::{parse,validate}` pair now — leaving 65. The MASM-hygiene pass then
+/// dropped `@account_procedure` from the three remaining `exec`-only xreserve helpers
+/// (`encoding::bytes32_to_key`, `encoding::verify_uint256_to_asset_amount` and
+/// `attestation_verify::verify_attestation`), leaving the three genuine entry points
+/// (`set_attester`, `init_identifier`, `check_policy`) plus the stock rows = 62. Human-ratified.
+pub const RATIFIED_CALLABLE_PROCEDURES: usize = 62;
 
 /// The `DOM_PAUSER` role symbol felt the retired `pause_admin.masm` hard-coded. The role identity
 /// had to survive the move from a MASM literal into the procedure-role map, so it is pinned here as

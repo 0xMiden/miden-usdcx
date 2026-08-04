@@ -16,11 +16,12 @@
 //! same order and the two must reject identically — a payload that fails here must fail on-chain
 //! with the same error, or off-chain pre-validation would pass work to the chain that then fails.
 //!
-//! How large hookData may be is still Circle's to decide. The bound applied here is the 1024-field-
-//! element note-storage limit, which is the documented default rather than an answer.
+//! How large hookData may be is still Circle's to decide. The bound applied here is the protocol's
+//! own note-storage limit (`MAX_NOTE_STORAGE_ITEMS`, 1024 field elements — each storage "item" is
+//! a single field element), which is the documented default rather than an answer.
 
 use miden_protocol::utils::bytes_to_packed_u32_elements;
-use miden_protocol::Felt;
+use miden_protocol::{Felt, MAX_NOTE_STORAGE_ITEMS};
 
 use super::error::EncodingError;
 
@@ -45,9 +46,6 @@ pub const DEPOSIT_INTENT_HEADER_LEN: usize = 240;
 pub const DEPOSIT_INTENT_MAGIC: u32 = 0x5a2e_0acd;
 pub const DEPOSIT_INTENT_VERSION: u32 = 1;
 pub const DEPOSIT_INTENT_HEADER_FELTS: usize = 60;
-
-/// The NoteStorage felt bound (the default hookData cap; the exact cap stays OPEN with Circle).
-const MAX_NOTE_STORAGE_FELTS: usize = 1024;
 
 /// Fixed-offset accessor; the offsets are byte positions on the wire.
 pub fn deposit_intent_field_offset(field: DepositIntentField) -> usize {
@@ -191,12 +189,13 @@ pub fn parse_deposit_intent_header(bytes: &[u8]) -> Result<DepositIntentHeader, 
 
 /// The u32-LE-packed on-chain preimage: 60 felts for the header plus ceil(hookDataLen/4)
 /// felts of hookData (the same `bytes_to_packed_u32_elements` primitive). Validates the
-/// structure first, then errors `HookDataTooLarge` past the 1024-felt NoteStorage bound
-/// (the default cap; the exact hookData cap stays OPEN with Circle).
+/// structure first, then errors `HookDataTooLarge` past the protocol's
+/// `MAX_NOTE_STORAGE_ITEMS` bound (1024 felts; the default cap — the exact hookData cap
+/// stays OPEN with Circle).
 pub fn deposit_intent_to_packed_felts(bytes: &[u8]) -> Result<Vec<Felt>, EncodingError> {
     parse_deposit_intent_header(bytes)?;
     let felts = bytes_to_packed_u32_elements(bytes);
-    if felts.len() > MAX_NOTE_STORAGE_FELTS {
+    if felts.len() > MAX_NOTE_STORAGE_ITEMS {
         return Err(EncodingError::HookDataTooLarge);
     }
     Ok(felts)

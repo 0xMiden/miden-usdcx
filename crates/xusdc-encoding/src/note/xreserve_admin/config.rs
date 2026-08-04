@@ -27,8 +27,11 @@ static SET_ATTESTER_NOTE_SCRIPT: LazyLock<NoteScript> =
 /// `xreserve_set_attester_note.masm` with the xreserve library linked. It binds transitively to
 /// `attester_admin::set_attester`'s digest, so any edit of the note script or of the proc it calls
 /// changes this root.
+///
+/// RE-MATERIALIZED when the param staging moved to memory address zero (the PARAM_PTR constant
+/// collapsed to literal addresses; behavior-identical).
 pub const XRESERVE_SET_ATTESTER_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x2763aaac15ebd657c7d0e5f952aacb953faedd224b4e465871bac4baa67df42f";
+    "0x9aa376ffec65130e82d52a01cc8c26bac6bdd2faccdc8a2ecb75081bc785f15c";
 
 /// The administrator-gated `set_attester` admin note. Storage layout:
 /// `[pk_commitment(4), enabled]`. Consumed against the faucet network account;
@@ -192,8 +195,11 @@ static SET_MIN_BURN_SIZE_NOTE_SCRIPT: LazyLock<NoteScript> =
 
 /// The PINNED set_min_burn_size admin note-script root: binds transitively to the STOCK
 /// `min_burn_amount::set_min_burn_amount`'s digest plus the note-side zero-floor guard.
+///
+/// RE-MATERIALIZED when the param staging moved to memory address zero (the PARAM_PTR constant
+/// collapsed to literal addresses; behavior-identical).
 pub const XRESERVE_SET_MIN_BURN_SIZE_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x7ae46ecf82c7968a867c88d982659ba55989c49238c5e1ba6fa1a8c6a1008566";
+    "0x142cfb7440610bb23c7d54d5bc83f0eaa69d12bb098aaeb4f36cdc0d56e41d35";
 
 /// The administrator-gated `set_min_burn_size` admin note. Storage layout: `[new_min]` with
 /// `new_min >= 1` (the note script's zero-floor guard — the stock setter itself accepts 0). The
@@ -248,8 +254,11 @@ static SET_MAX_SUPPLY_NOTE_SCRIPT: LazyLock<NoteScript> =
 
 /// The PINNED set_max_supply admin note-script root: binds transitively to the stock
 /// `fungible::set_max_supply`'s digest.
+///
+/// RE-MATERIALIZED when the param staging moved to memory address zero (the PARAM_PTR constant
+/// collapsed to literal addresses; behavior-identical).
 pub const XRESERVE_SET_MAX_SUPPLY_NOTE_SCRIPT_ROOT_HEX: &str =
-    "0x70b18f7063f760b727dd194df5699fd5aa3453ed53ffb317b91711d4c597e018";
+    "0x63289a6146599e94c0686008e3f1e674ae6a128fc9f9546cf9a521cde721908f";
 
 /// The administrator-gated stock `set_max_supply` admin note. Storage layout:
 /// `[new_max_supply]`. The stock setter resolves through the account-wide authority to the built-in

@@ -45,20 +45,19 @@ const FROZEN_CALLABLE_ROOTS: [&str; 2] = [
 
 /// Exported `pub proc`s that are deliberately NOT `@account_procedure`: pure `exec`-invoked
 /// helpers, inlined into their callers — the shared-encoding codecs and parser, the faucet-side
-/// mint preconditions, the faucet's own-id identifier derivation (exported so the cross-language
+/// mint preconditions, the faucet's own-id bytes32 packaging (exported so the cross-language
 /// parity suite can EXECUTE it against the Rust encoder, never callable on the account), and the
 /// attestation verifier. The package manifest lists them, the account
 /// interface does not, so they are exported for reuse and by tests but are not doors on the
 /// account. Keeping them in their own list is the point — the frozen-root set above stays exactly
 /// the set of things that can be `call`ed (or `dynexec`ed) on the deployed faucet.
-const FROZEN_EXEC_ONLY_EXPORTS: [&str; 11] = [
+const FROZEN_EXEC_ONLY_EXPORTS: [&str; 10] = [
     "::xreserve::attestation_verify::pubkey_commitment",
     "::xreserve::attestation_verify::verify_attestation",
     "::xreserve::deposit_intent_parser::assert_deposit_intent",
     "::xreserve::deposit_intent_parser::assert_mint_amounts",
     "::xreserve::deposit_intent_parser::assert_nonce_unused",
     "::xreserve::deposit_intent_parser::compute_own_id_bytes32",
-    "::xreserve::deposit_intent_parser::compute_own_identifier_key",
     "::xreserve::encoding::bytes32_to_key",
     "::xreserve::encoding::num_bytes_to_num_felts",
     "::xreserve::encoding::parse_deposit_intent",

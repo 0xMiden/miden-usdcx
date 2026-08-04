@@ -38,7 +38,7 @@ min-burn floor, a missing domain-config seed, or a non-Public faucet) at build t
 | Module | Role |
 |---|---|
 | `mint_policy` | The **attestation mint policy** (`check_policy`, the ACTIVE mint policy the stock `mint_and_send` dispatches): reads the mint note's DepositIntent + attestation attachments (hash-verified), runs `D5a`–`D5d` by reference, enforces the assert-match binding (note-claimed recipient/amount/tag/type must equal their attested derivations), and marks the nonce used — its only state write. |
-| `deposit_intent_parser` | The faucet-side mint preconditions (`D5a`/`D5b`/`D5c`): domain/identifier compares, amount/fee bounds, nonce replay guard. The identifier comparand is DERIVED here from the native account id (`compute_own_identifier_key`), not read from storage. Delegates the structural DepositIntent parse to the encoding library. |
+| `deposit_intent_parser` | The faucet-side mint preconditions (`D5a`/`D5b`/`D5c`): domain/identifier compares, amount/fee bounds, nonce replay guard. The identifier comparand is DERIVED here from the native account id (`compute_own_id_bytes32`) and compared against `remoteToken` limb for limb, not read from storage and not hashed. Delegates the structural DepositIntent parse to the encoding library. |
 | `attestation_verify` | The attestation check (`D5d`): keccak the payload, gate the attester pubkey against the allowlist, ECDSA-verify the signature. |
 | `attester_admin` | The authority-gated `set_attester` allowlist setter. |
 | `encoding/` | The shared encoding library (`xreserve::encoding::*`): bytes32→key hashing, uint256→amount reduction, DepositIntent parse, pubkey commitment. Owned by the encoding crate; the faucet consumes it by reference. |
@@ -179,15 +179,15 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
   for any of them. The `identifier` has no slot at all. The account id derives from the initial
   storage commitment, so the faucet's own id could never be seeded into that storage — rather than
   writing it after deployment, the mint path DERIVES it at check time from
-  `native_account::get_id` (`bytes32_to_key(account_id_to_bytes32(get_id()))`, the provisional
-  `Q-CRY-4` own-id position, enforced but still Circle-OPEN). Nothing has to be initialized, so a
+  `native_account::get_id` (`account_id_to_bytes32(get_id())`, the provisional `Q-CRY-4` own-id
+  position, enforced but still Circle-OPEN) and compares the packed bytes32 directly. Nothing has to be initialized, so a
   freshly deployed faucet mints immediately and there is no pre-init window to front-run. See
   `DECISION-DEC4-REVERSAL-IDENTIFIER-DERIVE.md`.
 
 ## 6. Domain-config field representation
 
-`identifier` is not stored at all — the mint path derives it, in the Poseidon2 bytes32→key form the
-compare uses. `xreserve_contract` is stored losslessly as its raw 8×u32-LE packed limbs across two value
+`identifier` is not stored at all — the mint path derives it, in the packed bytes32 limb form the
+compare uses (no hash on either side). `xreserve_contract` is stored losslessly as its raw 8×u32-LE packed limbs across two value
 slots, because it has no on-chain compare and must be readable from storage by off-chain
 services. `domain` and `source_domain` are u32 scalars in element 0 of their slot words. The
 three build-seeded fields are typed u32/bytes32 at the builder boundary (Rust-validated); the
@@ -198,7 +198,7 @@ encoder (`tests/own_id_identifier_derive.rs`).
 ## 7. What is consumed from the encoding library
 
 The faucet does not re-implement encoding. It consumes `xreserve::encoding::*` by reference:
-`bytes32_to_key` (nonce/identifier keying), `verify_uint256_to_asset_amount` (the amount
+`bytes32_to_key` (nonce keying), `verify_uint256_to_asset_amount` (the amount
 witness verify), `parse_deposit_intent` (structural parse), `pubkey_commitment` (attester
 keying). See the
 encoding spec at `docs/spec/ENCODING-COMPONENT-SPEC.md` and the data contracts `DC-1..DC-7` in the

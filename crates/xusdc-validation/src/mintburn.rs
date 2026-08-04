@@ -57,8 +57,7 @@ pub const MINT_DOMAIN: u32 = 7;
 
 /// The scale exponent the D5b reducer applies — pinned BY REFERENCE to the factory-side
 /// [`XUSDC_DEPOSIT_SCALE_EXP`], which is itself parity-pinned against the shipped
-/// `mint_policy.masm`'s `DEPOSIT_SCALE_EXP` (the Wave-1 S1 home of the former
-/// `xreserve_mint_note_entry.masm` constant). Set to **0** by the P0 fix (commit 75ece89): Circle
+/// `deposit_intent_parser.masm`'s `DEPOSIT_SCALE_EXP`. Set to **0** by the P0 fix (commit 75ece89): Circle
 /// sends a 6-decimal deposit amount and Miden xUSDC is ALSO 6 decimals, so the EVM-minus-Miden
 /// decimal delta is 0. The reducer therefore computes `floor(x / 10^0) = x`: the on-chain minted
 /// asset amount EQUALS the raw uint256 deposit amount (scale-0 identity, NO 10^6 division).
@@ -340,9 +339,9 @@ pub fn mint_note<R: FeltRng>(
 }
 
 /// The 8 u32-LE `feeAmount` attachment limbs encoding a raw uint256 `fee_raw` — extracted from the
-/// `amount` field position of a freshly-packed DepositIntent, so the on-chain `uint256_to_asset_amount`
-/// reducer (shared by the `amount` field and the advice `feeAmount`) reduces them to EXACTLY
-/// `fee_raw / 10^SCALE_EXP`. Deriving the limbs from the trusted amount-field packing avoids
+/// `amount` field position of a freshly-packed DepositIntent, so the on-chain amount/fee staging
+/// (the same uint256 limb layout for the `amount` field and the advice `feeAmount`) evaluates them
+/// as EXACTLY `fee_raw / 10^SCALE_EXP`. Deriving the limbs from the trusted amount-field packing avoids
 /// re-deriving the wire-byte→limb layout by hand — the F2 negative needs a reduced fee ≥ 1, i.e.
 /// `fee_raw ≥ SCALE`. The production attestation attachment hardcodes these eight limbs to zero
 /// (DEV-8 MVP); only a harness-crafted note can carry a non-zero fee.

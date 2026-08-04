@@ -137,7 +137,7 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 23] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 24] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -151,6 +151,12 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 23] = [
     (
         "ERR_XRESERVE_AMOUNT_BELOW_FEE",
         MasmError::from_static_str("deposit intent amount is below the max fee"),
+    ),
+    // The maxFee/fee staging's too-large guard (deposit_intent_parser.masm); the amount
+    // field's distinct standards string lives in STANDARDS_ERR_TABLE.
+    (
+        "ERR_X_TOO_LARGE",
+        MasmError::from_static_str("larger than 2**128"),
     ),
     // The nonce replay guard's error, pinned here so the replay test can name its EXACT
     // expected error, byte-identical to the MASM const.
@@ -838,10 +844,10 @@ pub fn fee_amount_felts(limbs: [u32; 8]) -> Vec<Felt> {
 }
 
 /// Generates the per-case amount/fee driver: stages the (spliced) preimage and the operator
-/// `feeAmount` limbs in the account context, pushes `[intent_ptr, fee_amount_ptr, scale_exp]`, and
-/// `exec`s the faucet `assert_mint_amounts` shell. The proc returns `[]`, so the
+/// `feeAmount` limbs in the account context, pushes `[intent_ptr, fee_amount_ptr, amount_y]`
+/// and `exec`s the faucet `assert_mint_amounts` shell. The proc returns `[]`, so the
 /// staged-then-consumed stack restores the 16-depth `call` boundary.
-pub fn mint_amounts_driver_src(preimage: &[Felt], fee_amount: &[Felt], scale_exp: u32) -> String {
+pub fn mint_amounts_driver_src(preimage: &[Felt], fee_amount: &[Felt], amount_y: u64) -> String {
     let mut src = String::from(
         "use xreserve::deposit_intent_parser\n\n\
          #! Test driver: stages a DepositIntent preimage and a feeAmount in the account context\n\
@@ -856,7 +862,7 @@ pub fn mint_amounts_driver_src(preimage: &[Felt], fee_amount: &[Felt], scale_exp
     );
     stage_preimage(&mut src, preimage);
     stage_felts(&mut src, fee_amount, FEE_AMOUNT_PTR);
-    writeln!(src, "    push.{scale_exp}").unwrap();
+    writeln!(src, "    push.{amount_y}").unwrap();
     writeln!(src, "    push.{FEE_AMOUNT_PTR}").unwrap();
     writeln!(src, "    push.{INTENT_PTR}").unwrap();
     src.push_str("    exec.deposit_intent_parser::assert_mint_amounts\n");

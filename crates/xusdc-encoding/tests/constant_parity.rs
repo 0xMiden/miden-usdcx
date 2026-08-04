@@ -61,6 +61,8 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     // D5b R-MINT-10 (F2's feeAmount==0 reuses ERR_XRESERVE_FEE_NONZERO, declared below; the old
     // R-MINT-11 <= maxFee compare + ERR_XRESERVE_FEE_OVER_MAX are subsumed and removed)
     "ERR_XRESERVE_AMOUNT_BELOW_FEE",
+    // the maxFee/fee staging's too-large guard (deposit_intent_parser.masm)
+    "ERR_X_TOO_LARGE",
     // D5c R-MINT-12
     "ERR_XRESERVE_NONCE_REPLAY",
     // D5d R-MINT-13 / R-MINT-14 (attestation_verify.masm)
@@ -68,9 +70,8 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_SIG_INVALID",
     // F2 fee guard (deposit_intent_parser.masm; DEC-2 keep-zero)
     "ERR_XRESERVE_FEE_NONZERO",
-    // the attested-recipient AccountId extraction (mint_policy.masm); the limb and
-    // canonical-range rejects surface the linked standards eth::build_felt constants and are
-    // not declared locally
+    // the attested-recipient extraction's pad check (mint_policy.masm; the limb and
+    // canonical-range rejects are the standards eth::build_felt's)
     "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",
     // Wave-1 S1 transport-shape guards on the stock MintNote's attachments (mint_policy.masm)
     "ERR_XRESERVE_MINT_NOTE_INTENT_MISSING",
@@ -137,7 +138,6 @@ const MINT_POLICY_COVERED_NUMS: &[&str] = &[
     "XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME",
     "XUSDC_MINT_ATTESTATION_NUM_WORDS",
     "DEPOSIT_INTENT_HEADER_WORDS",
-    "DEPOSIT_SCALE_EXP",
     "P2ID_NUM_STORAGE_ITEMS",
     "ASSET_VALUE_LOC",
     "RECIPIENT_LOC",
@@ -153,9 +153,7 @@ const MINT_POLICY_COVERED_NUMS: &[&str] = &[
     "P2ID_TARGET_ID_PREFIX_LOC",
     "HOOK_DATA_LEN_BYTES_LOC",
     "LEN_FELTS_LOC",
-    "ATTESTED_AMOUNT_LOC",
     "INTENT_LOC",
-    "INTENT_AMOUNT_LOC",
     "INTENT_REMOTE_RECIPIENT_LOC",
     "INTENT_NONCE_LOC",
     "INTENT_HOOK_DATA_LEN_LOC",
@@ -183,7 +181,7 @@ const LAYOUT_COVERED_NUMS: &[&str] = &[
     "MAX_NOTE_STORAGE_FELTS",
 ];
 const ENCODING_COVERED_NUMS: &[&str] = &[];
-const SHELL_COVERED_NUMS: &[&str] = &[];
+const SHELL_COVERED_NUMS: &[&str] = &["DEPOSIT_SCALE_EXP"];
 
 /// Parses `const NAME = <value>` / `pub const NAME = <value>` lines from a MASM source.
 /// Returns (numeric constants, string constants, word("…") slot-name constants).
@@ -347,10 +345,11 @@ fn masm_rust_constant_parity() {
         XUSDC_MINT_ATTESTATION_NUM_WORDS as u64,
         "attestation attachment word-count parity (MASM policy == Rust factory)"
     );
+    let (shell_nums, _, _) = parse_masm_consts(SHELL_MASM);
     assert_eq!(
-        num(&policy_nums, "DEPOSIT_SCALE_EXP", "mint_policy.masm"),
+        num(&shell_nums, "DEPOSIT_SCALE_EXP", "deposit_intent_parser.masm"),
         XUSDC_DEPOSIT_SCALE_EXP as u64,
-        "DC-5 deposit-scale parity (MASM policy == Rust factory; DEV-5 OPEN, provisional scale-0 identity)"
+        "DC-5 deposit-scale parity (MASM parser == Rust factory; DEV-5 OPEN, provisional scale-0 identity)"
     );
     // derived relation: the header word floor x 4 == the header felt count (60 / 4 = 15).
     assert_eq!(

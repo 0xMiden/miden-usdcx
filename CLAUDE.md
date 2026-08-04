@@ -12,7 +12,7 @@ Circle **xReserve / xUSDC** (NOT standard USDC, NOT CCTP) on Miden: native USDC 
    - NS-2: the DepositIntent parser is 01-owned at `xreserve::deposit_intent_parser::parse`; `xreserve::encoding` owns the shared layout and multi-consumer primitives.
    - DC-7: the burn-item codec is 04-owned and ships in Rust at `crates/xusdc-encoding/src/xreserve/encoding/burn_note.rs`; there is no `burn_items.masm`.
    - Layout: **SELF-CONTAINED** components; the faucet component ships under `asm/standards/xreserve/` and its note scripts under `asm/standards/notes/`.
-5. **Version pins (ledger: `docs/governing/V15-DEVNET-BASELINE.md`):** Miden **v0.15 + devnet**. `protocol v0.15.3` (`681fc9058`) → assembler crates **0.23.3** (seed `Cargo.lock`); `miden-node v0.15.0` (`29a876c3`, the TAG is the pin); devnet RPC `https://rpc.devnet.miden.io`. Miden testnet (v0.14) is NOT the validation network. `miden-vm`/`miden-assembly` follow their own `0.23.x` cadence — never pin a "miden-vm v0.15" tag.
+5. **Version pins:** Workspace manifests and `Cargo.lock` are authoritative. Protocol-family crates pin `0xMiden/protocol@4971ec4b38fb1f54e8f73969e6da81ee0cbf850c` (`v0.16.0-beta.1`).
 6. **Circle-owned open decisions stay OPEN** (`DEV-*`/`Q-*`, e.g. DEV-5 cap/scale, DEV-7 burn evidence, DEV-10 AccountId encoding): implement per the frozen spec, keep the OPEN labels, never mark them approved/resolved.
 7. **Single-owner rule:** every shared format/routine has exactly one owner (the map); consumers pin by reference. One canonical golden-vector artifact drives both MASM and Rust tests; MASM tests must EXECUTE, not just assemble.
 8. Git: conventional commits, signed; **never push, publish, or open PRs without explicit human approval.**

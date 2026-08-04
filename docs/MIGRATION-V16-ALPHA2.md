@@ -33,12 +33,9 @@ from source. This map sits at its HARD GATE: the audit reviews it BEFORE any cod
 (Phases 2-5) runs, and the map is reconciled against the shipped diff again at the end
 (Phase 5). Three decisions are requested at this gate — §10 items 1-3.**
 
-This map is the migration's pin ledger and change contract. For the duration of the migration it
-supersedes the `CLAUDE.md`/`AGENTS.md` ground-rule-5 pin (protocol v0.15.3 `681fc9058` →
-assembler 0.23.3) and the `docs/governing/V15-DEVNET-BASELINE.md` framing (human decision,
-2026-07-13); those files themselves stay UNEDITED. Every hunk of the migration diff must trace to
-a row here (mechanical, semantic, re-pin, restructure, or comment-fix). An unmapped hunk is a
-defect — regardless of test results.
+This map is the migration's pin ledger and change contract. Every hunk of the migration diff must
+trace to a row here (mechanical, semantic, re-pin, restructure, or comment-fix). An unmapped hunk
+is a defect — regardless of test results.
 
 Authority for "what changed upstream": the published crates at `=0.16.0-alpha.2` (present in the
 local pinned cargo cache under `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/`) and the
@@ -138,8 +135,7 @@ workspace member references `miden-client`.
 Out of scope, untouched: `canary/` (five standalone non-member grounding crates with `path` deps
 onto a `../../../protocol-pin-v0.15.3/` sibling checkout; no gate builds them; they cannot
 migrate without a v16 sibling checkout), the v15 LNV records/evidence, `main`,
-`.claude/skills/`, `docs/governing/` (including `V15-DEVNET-BASELINE.md` and
-`CANONICAL-OWNERSHIP-MAP.md` — the S16 DC-2/DC-3 supersession is recorded in THIS map, never as
+`.claude/skills/`, `docs/governing/` (including `CANONICAL-OWNERSHIP-MAP.md` — the S16 DC-2/DC-3 supersession is recorded in THIS map, never as
 a governing-doc edit), and the golden vectors (`crates/xusdc-encoding/tests/vectors/*.json` —
 Circle-frozen wire formats, byte-identical across the migration) with EXACTLY ONE carve-out:
 the `att`-family fields named in §10 decision item 1(b), which change ONLY under that approved
@@ -1217,5 +1213,4 @@ deny-guard `{mint}`-only surface intact — the operator's three S18 conditions)
 document — a later alpha.3/final bump re-runs a lighter pass of this task (pin ledger refresh,
 re-pin re-derivation, delta review), reconciling against this map rather than restarting
 discovery. The `DEV-*`/`Q-*` Circle-owned items remain OPEN throughout (nothing in this migration
-resolves or approves any of them); `docs/governing/V15-DEVNET-BASELINE.md` remains the v15
-ledger of record and is superseded FOR THIS BRANCH by §1 only.
+resolves or approves any of them).

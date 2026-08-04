@@ -40,30 +40,40 @@ Circle-owned. This decision changes only where the comparand comes from, never w
 
 ## What the mint path does now
 
-`deposit_intent_parser::assert_deposit_intent` hashes the parsed `remoteToken` to its canonical key
-(unchanged) and compares it against `compute_own_identifier_key` instead of against a slot read:
+`deposit_intent_parser::assert_deposit_intent` compares the parsed `remoteToken` against
+`compute_own_id_bytes32` instead of against a slot read, word for word:
 
 ```
-exec.encoding::bytes32_to_key          # the intent's remoteToken, hashed
-exec.compute_own_identifier_key        # the faucet's own id, packed and hashed
-assert_eqw.err=ERR_XRESERVE_WRONG_IDENTIFIER
+exec.compute_own_id_bytes32            # the faucet's own id, in the frozen bytes32 packaging
+movupw.2
+assert_eqw.err=ERR_XRESERVE_WRONG_IDENTIFIER   # wire bytes 16..32 — the account id
+assert_eqw.err=ERR_XRESERVE_WRONG_IDENTIFIER   # wire bytes 0..16  — the zero pad
 ```
+
+**Neither side is hashed.** The compare used to run over the canonical `bytes32_to_key` Word of each
+side, and that was a leftover of the design being replaced: the identifier was a storage-map key, so
+key equality was the only equality available. Once the comparand is derived, both sides are the same
+eight packed limbs and a hash decides nothing a direct compare does not — it only costs two
+Poseidon2 permutations on every mint. Direct equality is also strictly the tighter check: hash
+equality admits (infeasible) collisions, word equality admits nothing but the value. All thirty-two
+wire bytes are still compared, pad included, so a `remoteToken` carrying the right account id in the
+wrong packaging is refused exactly as before. This is the second half of the review comment that
+prompted the reversal (`https://github.com/0xMiden/miden-usdcx/pull/37#discussion_r3675202936`).
 
 The reject identity is **byte-unchanged** — same error name, same message
-(`"deposit intent remote token does not match the faucet identifier"`), so `R-MINT-7` reads the same
-to a relayer and to a reviewer. Only the comparand's source moved.
+(`"deposit intent remote token does not match the faucet identifier"`), on both halves, so
+`R-MINT-7` reads the same to a relayer and to a reviewer. Only the comparand's source moved.
 
 The derivation is the one that already shipped inside `identifier_init`'s anti-front-run binding,
-relocated verbatim and split at its natural seam so both halves can be proven independently:
+relocated verbatim:
 
 | Procedure | Form | Invocation |
 |---|---|---|
-| `deposit_intent_parser::compute_own_id_bytes32` | `[] → [B_UPPER, B_LOWER]` — the account id right-aligned into bytes32 (16 zero bytes, prefix u64 BE, suffix u64 BE), as the u32-LE-packed limbs `bytes32_to_key` consumes | `exec` (exported, NOT `@account_procedure`) |
-| `deposit_intent_parser::compute_own_identifier_key` | `[] → [KEY]` — the above, hashed | `exec` (exported, NOT `@account_procedure`) |
+| `deposit_intent_parser::compute_own_id_bytes32` | `[] → [B_UPPER, B_LOWER]` — the account id right-aligned into bytes32 (16 zero bytes, prefix u64 BE, suffix u64 BE), as the u32-LE-packed limbs the parser returns a staged bytes32 field in | `exec` (exported, NOT `@account_procedure`) |
 
-Both are exported so the cross-language parity suite can EXECUTE them directly against the Rust
-encoder; neither carries `@account_procedure`, so neither is callable on the deployed account. They
-join the `FROZEN_EXEC_ONLY_EXPORTS` list (9 → 11) rather than the callable-root set.
+It is exported so the cross-language parity suite can EXECUTE it directly against the Rust encoder;
+it does not carry `@account_procedure`, so it is not callable on the deployed account. It joins the
+`FROZEN_EXEC_ONLY_EXPORTS` list (9 → 10) rather than the callable-root set.
 
 **Execution context.** The comparand is read with `native_account::get_id`, where the old one used
 `active_account::get_item`. Those agree only in the faucet's own account context — which is where
@@ -78,11 +88,11 @@ EXECUTING the MASM in transactions and comparing against Rust-computed values:
 
 | Test | What it proves |
 |---|---|
-| `own_id_bytes32_packaging_matches_the_rust_encoding` | the on-chain packaging equals `account_id_to_bytes32(id)`, limb for limb, for 12 generated ids spanning both account types **plus** the production-composed faucet |
-| `own_id_identifier_key_matches_the_rust_key` | the derived key equals `bytes32_to_storage_map_key(account_id_to_bytes32(id))` over the same spread |
+| `own_id_bytes32_packaging_matches_the_rust_encoding` | the on-chain packaging equals `account_id_to_bytes32(id)`, limb for limb, for 12 generated ids spanning both account types **plus** the production-composed faucet — and since the compare is over that packaging, this is parity on the comparand itself |
 | `native_account_id_matches_the_rust_felts_in_account_context` | the canary: `get_id` inside a `call`-invoked account procedure reports exactly `account_id_to_felts(id)` |
-| `a_foreign_expected_key_traps` / `foreign_expected_bytes32_limbs_trap` | the parity assertions are not vacuous — feeding one account another's expected value traps with the driver's exact error |
-| `distinct_accounts_derive_distinct_keys` | the derivation reads the id rather than returning a constant |
+| `foreign_expected_bytes32_limbs_trap` | the parity assertion is not vacuous — feeding one account another's expected limbs traps with the driver's exact error |
+| `a_nonzero_expected_pad_traps` | the LOWER half is asserted too: no foreign id can move the pad, so only a corrupted expectation can prove that leg fires |
+| `distinct_accounts_derive_distinct_bytes32` | the derivation reads the id rather than returning a constant |
 
 (all in `crates/xusdc-encoding/tests/own_id_identifier_derive.rs`)
 
@@ -92,6 +102,7 @@ And the behavioral consequences, through the real note transport on a production
 |---|---|
 | `a_never_initialized_faucet_mints` | a faucet whose only bring-up note is the attester allowlist entry mints an own-id-bound intent — no identifier init exists anywhere in the flow |
 | `a_foreign_remote_token_rejects_while_the_own_id_intent_mints` | a foreign `remoteToken` rejects with EXACTLY `ERR_XRESERVE_WRONG_IDENTIFIER` **while the same faucet accepts the own-id-bound intent** — the compare discriminates rather than refusing everything (which is what an uninitialized faucet used to do) |
+| `a_dirty_remote_token_pad_rejects` (`tests/masm_mint_shell.rs`) | at the real compare site: the faucet's OWN account id with a non-zero pad still rejects with `ERR_XRESERVE_WRONG_IDENTIFIER` — the pad is covered by being compared, which is the one input an id-felts-only compare would admit |
 | `the_wrong_identifier_error_text_is_unchanged` | the reject message is byte-identical to the pre-change one |
 | `the_allowlist_drops_the_identifier_init_root_and_nothing_else` | the allowlist is exactly the eight surviving roots |
 | `the_component_exports_no_identifier_initializer` | no `identifier_init` module survives on the assembled component |
@@ -134,7 +145,7 @@ manifest-export and `@account_procedure`-filtered interface tiers.
 | xreserve callable roots | 3 (`set_attester`, `init_identifier`, `check_policy`) | **2** (`set_attester`, `check_policy`) |
 | stock callable roots | 59 | 59 (unchanged) |
 | total | 62 | **61** |
-| xreserve exec-only exports | 9 | **11** (+ `compute_own_id_bytes32`, `compute_own_identifier_key`) |
+| xreserve exec-only exports | 9 | **10** (+ `compute_own_id_bytes32`) |
 
 ### 3. Declared `xreserve` storage slots — shrink 7 → **6**
 

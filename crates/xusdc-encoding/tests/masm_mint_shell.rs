@@ -16,8 +16,8 @@
 //! version, and a zero `amount` / `localToken` / `localDepositor` — are enforced by the shared
 //! encoding parser and surface as its `ERR_DI_*` errors travelling back out through the call.
 //! The other two are the faucet's own compares: the intent's `remoteDomain` must equal the
-//! configured domain, and its `remoteToken`, hashed to a storage key, must equal the faucet's own
-//! identifier key — derived from its account id, not read from a slot.
+//! configured domain, and its `remoteToken` must equal, limb for limb, the faucet's own account id
+//! in the frozen bytes32 packaging — derived from its account id, not read from a slot.
 //!
 //! The file is organized by the stages the mint pipeline runs in, and the section headers and
 //! test names use the short stage labels the faucet's own comments use. The sequence, defined
@@ -181,6 +181,41 @@ async fn r_mint_rejects(
     let h = setup_shell_account(domain_word(domain), &driver_src, SHELL_DRIVER_PATH)?;
     let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
+    Ok(())
+}
+
+/// An intent whose `remoteToken` carries the faucet's OWN account id but a non-zero sixteen-byte
+/// pad is still rejected.
+///
+/// The identity compare is over the packed bytes32 rather than a hash of it, so the pad is covered
+/// by being compared, not by an extra guard. This row is what proves that: it is the one input a
+/// compare over the account-id felts alone would wave through, and it must fail with the same
+/// `ERR_XRESERVE_WRONG_IDENTIFIER` any other mis-addressed intent fails with.
+#[tokio::test]
+async fn a_dirty_remote_token_pad_rejects() -> Result<()> {
+    let v = di("di-pos-hookdata");
+    let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
+    let driver_src = validate_driver_src_own_token(
+        &preimage,
+        intent_num_words(v.len_felts),
+        &fee_amount_felts([0u32; 8]),
+        amount_y,
+        None,
+    );
+    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
+    let mut advice = own_token_advice(h.account_id);
+    // limbs 0..4 are wire bytes 0..16 — the pad the frozen packaging fixes at zero
+    assert_eq!(
+        &advice[0..4],
+        &[miden_protocol::ZERO; 4],
+        "the frozen packaging pads wire bytes 0..16 with zeros"
+    );
+    advice[0] = miden_protocol::ONE;
+    let result = run_call_driver_with_advice(&h, "drive", Some(advice)).await;
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_WRONG_IDENTIFIER")
+    );
     Ok(())
 }
 

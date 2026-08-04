@@ -6,7 +6,9 @@
 # is checked against is the faucet's OWN account id in the frozen bytes32 packaging, derived on
 # chain here rather than stored: the account id is a hash over the account's initial storage, so
 # the identifier could never have been seeded into that storage in the first place. The compare is
-# over the canonical `bytes32_to_key` key-Word, so identifier equality is realized as key equality.
+# over the packed bytes32 limbs themselves — all thirty-two bytes, pad included — so identifier
+# equality is plain Word equality. Hashing both sides first would cost two Poseidon2 permutations
+# and decide nothing a direct compare does not.
 #
 # A DepositIntent is the Circle-signed message that authorizes one mint. Its wire form is a
 # fixed 240-byte big-endian header followed by variable-length hookData; on-chain it is staged
@@ -245,10 +247,16 @@ end
 
 #! Packs the faucet's OWN account id into the frozen bytes32 form, on chain.
 #!
+#! This is the comparand the mint path checks a deposit intent's `remoteToken` against. Deriving it
+#! rather than reading a slot is what lets the faucet mint from the moment it exists: the account id
+#! is a hash over the account's own initial storage, so the identifier could never have been seeded
+#! into that storage, and the alternative was a post-deploy write with a window in front of it.
+#!
 #! The packing is right-aligned: sixteen zero bytes, then the id prefix as a u64 big-endian, then
 #! the id suffix as a u64 big-endian. Each id felt splits into its big-endian u32 halves
-#! (`u32split`), and each half byte-swaps into the u32-LE-packed limb form the key hash consumes.
-#! The two words are left in the orientation `bytes32_to_key` reads them in.
+#! (`u32split`), and each half byte-swaps into the u32-LE-packed limb form the wire uses. The two
+#! words are left in the same orientation the parser returns a staged bytes32 field in, lower word
+#! on top, so the mint compare is a word-for-word equality.
 #!
 #! Inputs:  []
 #! Outputs: [B_LOWER, B_UPPER]
@@ -287,35 +295,13 @@ pub proc compute_own_id_bytes32
     # => [B_LOWER, B_UPPER]
 end
 
-#! Derives the faucet's OWN identifier key on chain: the canonical bytes32->key hash of its account
-#! id in the frozen bytes32 packaging.
-#!
-#! This is the comparand the mint path checks a deposit intent's `remoteToken` against. Deriving it
-#! rather than reading a slot is what lets the faucet mint from the moment it exists: the account id
-#! is a hash over the account's own initial storage, so the identifier could never have been seeded
-#! into that storage, and the alternative was a post-deploy write with a window in front of it.
-#!
-#! Inputs:  []
-#! Outputs: [KEY]
-#!
-#! Where:
-#! - KEY is the canonical bytes32->key Word of the native account id's bytes32 packaging.
-#!
-#! Invocation: exec
-pub proc compute_own_identifier_key
-    exec.compute_own_id_bytes32
-    # => [B_LOWER, B_UPPER]
-
-    exec.encoding::bytes32_to_key
-    # => [KEY]
-end
-
 # HELPER PROCEDURES
 # =================================================================================================
 
 #! Asserts the two faucet-owned addressing compares: the parsed remote domain must equal the
-#! configured domain, and the canonical key-Word of the parsed remote token must equal the faucet's
-#! own identifier key — derived here from the native account id, not read from storage.
+#! configured domain, and the parsed remote token must equal, limb for limb, the faucet's own
+#! account id in the same bytes32 packaging — derived here from the native account id, not read
+#! from storage.
 #!
 #! Inputs:  [remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER]
 #! Outputs: []
@@ -327,7 +313,7 @@ end
 #!
 #! Panics if:
 #! - the parsed remote domain does not equal the faucet's configured domain.
-#! - the parsed remote token's key does not equal the faucet's own identifier key.
+#! - the parsed remote token does not equal the faucet's own bytes32 identifier, in either half.
 #! - the domain config slot with the expected id does not exist in account storage.
 #!
 #! Invocation: exec
@@ -343,16 +329,21 @@ proc validate_domain_and_identifier
     assert_eq.err=ERR_XRESERVE_WRONG_DOMAIN
     # => [REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER]
 
-    # identifier compare: the parsed packed remoteToken words are already in the
-    # [B_LOWER, B_UPPER] orientation bytes32_to_key consumes
-    exec.encoding::bytes32_to_key
-    # => [KEY]
+    # identifier compare: the comparand is DERIVED from the faucet's own account id, so it exists
+    # from the moment the account does and no deploy-time write can get it wrong. it comes back in
+    # the same packed-limb form the parser hands the remoteToken over in, so the two are compared
+    # word for word
+    exec.compute_own_id_bytes32
+    # => [OWN_LOWER, OWN_UPPER, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER]
 
-    # the comparand is DERIVED from the faucet's own account id, so it exists from the moment the
-    # account does and no deploy-time write can get it wrong
-    exec.compute_own_identifier_key
-    # => [OWN_KEY, KEY]
+    movupw.2
+    # => [REMOTE_TOKEN_LOWER, OWN_LOWER, OWN_UPPER, REMOTE_TOKEN_UPPER]
 
+    # wire bytes 0..16: the sixteen-byte zero pad, compared rather than assumed
+    assert_eqw.err=ERR_XRESERVE_WRONG_IDENTIFIER
+    # => [OWN_UPPER, REMOTE_TOKEN_UPPER]
+
+    # wire bytes 16..32: the account id itself
     assert_eqw.err=ERR_XRESERVE_WRONG_IDENTIFIER
     # => []
 end

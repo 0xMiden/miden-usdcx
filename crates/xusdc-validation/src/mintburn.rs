@@ -71,7 +71,7 @@ const AMOUNT_BYTE_OFF: usize = 2 * 4;
 const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
 const MAX_FEE_BYTE_OFF: usize = 43 * 4;
 const NONCE_BYTE_OFF: usize = 51 * 4;
-// The two fields the mint gate (D5a `deposit_intent_parser::assert_deposit_intent`) compares against
+// The two fields the mint gate (D5a `deposit_intent_parser::validate`) compares against
 // the faucet's stored domain config are `remoteDomain` (felt 10, a big-endian u32) and `remoteToken`
 // (felt 11..18, a bytes32). Their wire offsets are NOT restated here: the DepositIntent layout owner
 // is `xusdc-encoding`, so `mint_payload_for` reads them from `deposit_intent_field_offset(...)` (the
@@ -192,7 +192,7 @@ pub fn mint_payload_own_id(
     payload
 }
 
-/// The two DepositIntent fields the mint gate (D5a `deposit_intent_parser::assert_deposit_intent`)
+/// The two DepositIntent fields the mint gate (D5a `deposit_intent_parser::validate`)
 /// compares against the faucet's stored domain config: `remoteDomain` and `remoteToken`. This is the
 /// config a mint payload must carry so D5a's compares pass.
 ///

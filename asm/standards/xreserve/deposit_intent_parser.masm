@@ -1,10 +1,10 @@
 # xreserve::deposit_intent_parser
 #
-# The faucet-side DepositIntent mint preconditions. It consumes the shared parser
-# (`xreserve::encoding::parse_deposit_intent`) and adds only the faucet-owned
-# checks: the domain and identifier equality compares, the amount/fee bounds, and the nonce
-# replay guard. The identifier slot stores the canonical `bytes32_to_key` key-Word, so the
-# identifier equality is realized as key equality.
+# The DepositIntent parser and the faucet-side mint preconditions it feeds, behind the single
+# `validate` entry: the structural parse and length derivation, the domain and identifier
+# equality compares, the amount/fee bounds, and the nonce replay guard. The identifier slot
+# stores the canonical `bytes32_to_key` key-Word, so the identifier equality is realized as key
+# equality.
 #
 # A DepositIntent is the Circle-signed message that authorizes one mint. Its wire form is a
 # fixed 240-byte big-endian header followed by variable-length hookData; on-chain it is staged
@@ -23,8 +23,8 @@
 # - localDepositor (bytes 140..172): the source-chain depositor as bytes32; set by Circle.
 # - maxFee (bytes 172..204): the depositor-authorized fee ceiling as a uint256.
 # - nonce (bytes 204..236): Circle's unique deposit nonce as bytes32; drives the replay guard.
-# - hookDataLen (bytes 236..240): the byte length of the trailing hookData; the staged length
-#   must satisfy len == 240 + hookDataLen.
+# - hookDataLen (bytes 236..240): the byte length of the trailing hookData; it is what the
+#   staged length is derived from.
 # - hookData (bytes 240..): an optional opaque payload; parsed only for length, never for
 #   effects.
 
@@ -33,7 +33,13 @@ use miden::standards::utils
 use miden::core::math::u128
 use miden::core::word
 use xreserve::encoding
-use {AMOUNT_FELT_OFF, MAX_FEE_FELT_OFF, NONCE_FELT_OFF} from xreserve::encoding::layout
+use {
+    AMOUNT_FELT_OFF, DEPOSIT_INTENT_HEADER_BYTES, DEPOSIT_INTENT_HEADER_FELTS,
+    DEPOSIT_INTENT_MAGIC_PACKED, DEPOSIT_INTENT_VERSION_PACKED,
+    HOOK_DATA_LEN_FELT_OFF, LOCAL_DEPOSITOR_FELT_OFF,
+    LOCAL_TOKEN_FELT_OFF, MAGIC_FELT_OFF, MAX_FEE_FELT_OFF, NONCE_FELT_OFF,
+    REMOTE_DOMAIN_FELT_OFF, REMOTE_TOKEN_FELT_OFF, VERSION_FELT_OFF
+} from xreserve::encoding::layout
 
 # CONSTANTS
 # =================================================================================================
@@ -55,6 +61,18 @@ const DEPOSIT_SCALE_EXP = 0
 # ERRORS
 # =================================================================================================
 
+# Structural rejects over the staged preimage.
+const ERR_DI_BAD_MAGIC = "deposit intent magic mismatch"
+const ERR_DI_BAD_VERSION = "deposit intent version mismatch"
+const ERR_DI_ZERO_FIELD = "deposit intent amount, local token, or local depositor is zero"
+
+# The staged hookDataLen limb must be a valid u32 before the length derivation byte-swaps it.
+const ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB = "mint note deposit intent hook data length limb is not a valid u32"
+
+# The attachment's hash-committed word count must equal the word count that the embedded
+# hookDataLen implies.
+const ERR_XRESERVE_MINT_NOTE_INTENT_WORDS = "mint note deposit intent attachment word count does not match the intent length"
+
 const ERR_XRESERVE_WRONG_DOMAIN = "deposit intent remote domain does not match the faucet domain"
 const ERR_XRESERVE_WRONG_IDENTIFIER = "deposit intent remote token does not match the faucet identifier"
 
@@ -74,56 +92,199 @@ const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Asserts the faucet-owned DepositIntent mint preconditions over a staged preimage.
+#! Validates a staged DepositIntent preimage against every faucet-owned mint precondition.
 #!
-#! Delegates the structural validation to the encoding library's
-#! `xreserve::encoding::parse_deposit_intent`, then asserts the two faucet-owned
-#! compares against the faucet config slots: the parsed remote domain must equal the
-#! configured domain, and the canonical key-Word of the parsed remote token must equal
-#! the configured identifier key.
+#! Derives the preimage length from the embedded hookDataLen and binds it to the attachment's
+#! hash-committed word count, then runs the three validation stages in order:
+#! - the structural parse with the domain and identifier compares
+#! - the amount and fee bounds
+#! - and the nonce replay guard
 #!
-#! Inputs:  [intent_ptr, len_felts]
-#! Outputs: [hook_data_len_bytes]
+#! Callers stage the preimage and supply the committed word count.
+#!
+#! Inputs:  [intent_ptr, intent_expected_num_words, fee_amount_ptr, amount_y]
+#! Outputs: [intent_num_bytes]
 #!
 #! Where:
 #! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
-#! - len_felts is the staged preimage length in felts.
-#! - hook_data_len_bytes is the semantic hookDataLen value in bytes, as a u32 felt.
+#! - intent_expected_num_words is the word count the caller requires the staged preimage to have
+#!   (in the mint pipeline, the attachment's hash-committed word count).
+#! - fee_amount_ptr is the memory address of the operator feeAmount's first packed limb (8 u32-LE
+#!   limbs).
+#! - amount_y is the claimed reduced amount witness (in the mint pipeline, the note-supplied
+#!   asset value).
+#! - intent_num_bytes is the wire length of the preimage in bytes (the header plus hookData),
+#!   which is the extent the attestation signature covers.
 #!
 #! Panics if:
-#! - parse_deposit_intent fails to verify.
+#! - the parse rejects (magic, version, a zero field, a malformed hookDataLen limb, or a word
+#!   count that disagrees with the parsed length).
+#! - a mint stage rejects (see the stage procedures below).
+#!
+#! Invocation: exec
+pub proc validate
+    dup movdn.2
+    dup movdn.5
+    # => [intent_ptr, intent_expected_num_words, intent_ptr, fee_amount_ptr, amount_y, intent_ptr]
+
+    exec.parse
+    # => [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_num_bytes, intent_ptr, fee_amount_ptr, amount_y, intent_ptr]
+
+    exec.validate_domain_and_identifier
+    # => [intent_num_bytes, intent_ptr, fee_amount_ptr, amount_y, intent_ptr]
+
+    movdn.4
+    # => [intent_ptr, fee_amount_ptr, amount_y, intent_ptr, intent_num_bytes]
+
+    exec.validate_mint_amounts
+    # => [intent_ptr, intent_num_bytes]
+
+    exec.validate_nonce_unused
+    # => [intent_num_bytes]
+end
+
+#! Parses a staged DepositIntent preimage: asserts its structure and returns its length with the
+#! fields the faucet compares against its configuration.
+#!
+#! The preimage length is DERIVED from the embedded hookDataLen rather than taken from the caller.
+#! The caller passes the word count it requires the staged preimage to have, and this procedure
+#! asserts the derived length agrees with it — the only length assert in the pipeline. Because the
+#! derived length is the header plus the packed hookData felts, it is never below the header
+#! count, so that compare also proves the whole header was written into the staged region.
+#!
+#! Inputs:  [intent_ptr, intent_expected_num_words]
+#! Outputs: [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_num_bytes]
+#!
+#! Where:
+#! - intent_ptr is the memory address of the u32-LE-packed DepositIntent preimage.
+#! - intent_expected_num_words is the word count the caller requires the staged preimage to have
+#!   (in the mint pipeline, the attachment's hash-committed word count).
+#! - remote_domain is the semantic remoteDomain value as a u32 felt.
+#! - REMOTE_TOKEN_UPPER is the word holding the remoteToken field's positionally upper four
+#!   packed limbs (intent bytes 60..76).
+#! - REMOTE_TOKEN_LOWER is the word holding the remoteToken field's positionally lower four
+#!   packed limbs (intent bytes 44..60).
+#! - intent_num_bytes is the wire length: the header bytes plus hookData, which is the extent
+#!   the attestation signature covers.
+#!
+#! Panics if:
+#! - the packed magic does not match the DepositIntent magic.
+#! - the packed version does not match the supported version.
+#! - the amount field is zero.
+#! - the localToken field is zero.
+#! - the localDepositor field is zero.
+#! - the staged hookDataLen or remoteDomain limb is not a valid u32.
+#! - intent_expected_num_words does not equal the word count the derived length implies.
+#!
+#! Invocation: exec
+pub proc parse
+    # packed magic must match
+    dup add.MAGIC_FELT_OFF mem_load
+    push.DEPOSIT_INTENT_MAGIC_PACKED assert_eq.err=ERR_DI_BAD_MAGIC
+    # => [intent_ptr, intent_expected_num_words]
+
+    # packed version must match
+    dup add.VERSION_FELT_OFF mem_load
+    push.DEPOSIT_INTENT_VERSION_PACKED assert_eq.err=ERR_DI_BAD_VERSION
+    # => [intent_ptr, intent_expected_num_words]
+
+    # amount, localToken, localDepositor must be nonzero
+    dup add.AMOUNT_FELT_OFF exec.field8_is_nonzero
+    assert.err=ERR_DI_ZERO_FIELD
+    dup add.LOCAL_TOKEN_FELT_OFF exec.field8_is_nonzero
+    assert.err=ERR_DI_ZERO_FIELD
+    dup add.LOCAL_DEPOSITOR_FELT_OFF exec.field8_is_nonzero
+    assert.err=ERR_DI_ZERO_FIELD
+    # => [intent_ptr, intent_expected_num_words]
+
+    # hookDataLen (semantic u32): byte-swap the packed felt at offset 59. it is hash-committed
+    # content, so guard the limb before the byte-swap
+    dup add.HOOK_DATA_LEN_FELT_OFF mem_load
+    u32assert.err=ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB
+    exec.utils::swap_u32_bytes
+    # => [hook_data_len, intent_ptr, intent_expected_num_words]
+
+    # the wire length is the header bytes plus hookData
+    dup add.DEPOSIT_INTENT_HEADER_BYTES
+    # => [intent_num_bytes, hook_data_len, intent_ptr, intent_expected_num_words]
+
+    # the staged length is the header felts plus the packed hookData felts
+    swap exec.div_ceil_four
+    # => [hook_data_num_felts, intent_num_bytes, intent_ptr, intent_expected_num_words]
+
+    add.DEPOSIT_INTENT_HEADER_FELTS
+    # => [intent_num_felts, intent_num_bytes, intent_ptr, intent_expected_num_words]
+
+    # the caller holds a word count, so compare in words
+    exec.div_ceil_four movup.3
+    # => [intent_expected_num_words, intent_num_words, intent_num_bytes, intent_ptr]
+
+    assert_eq.err=ERR_XRESERVE_MINT_NOTE_INTENT_WORDS
+    # => [intent_num_bytes, intent_ptr]
+
+    # outputs: load the compare fields from the staged preimage (single-felt loads — the header
+    # felt offsets are not word-aligned); the packed remoteToken words are pushed in the same
+    # element order the caller compares against
+    swap dup add.REMOTE_TOKEN_FELT_OFF
+    # => [rt_base, intent_ptr, intent_num_bytes]
+
+    exec.utils::mem_load_double_word_unaligned swapw
+    # => [REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_ptr, intent_num_bytes]
+
+    movup.8
+    # => [intent_ptr, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_num_bytes]
+
+    # remote_domain (semantic u32): byte-swap the packed felt at offset 10
+    add.REMOTE_DOMAIN_FELT_OFF mem_load
+    u32assert.err=ERR_FELT_OUT_OF_FIELD
+    exec.utils::swap_u32_bytes
+    # => [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_num_bytes]
+end
+
+# HELPER PROCEDURES
+# =================================================================================================
+
+#! Asserts the two faucet-owned addressing compares against the faucet config slots: the parsed
+#! remote domain must equal the configured domain, and the canonical key-Word of the parsed remote
+#! token must equal the configured identifier key.
+#!
+#! Inputs:  [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER]
+#! Outputs: []
+#!
+#! Where:
+#! - remote_domain is the semantic remoteDomain value as a u32 felt.
+#! - REMOTE_TOKEN_{UPPER,LOWER} are the remoteToken field's positionally upper / lower four
+#!   packed limbs.
+#!
+#! Panics if:
 #! - the parsed remote domain does not equal the faucet's configured domain.
 #! - the parsed remote token's key does not equal the faucet's configured identifier key.
 #! - a config slot with the expected id does not exist in account storage.
 #!
 #! Invocation: exec
-@account_procedure
-pub proc assert_deposit_intent
-    exec.encoding::parse_deposit_intent
-    # => [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
-
+proc validate_domain_and_identifier
     # domain compare: the configured domain lives in element 0 of the domain config slot word
     push.DOMAIN_CONFIG_SLOT[0..2]
     exec.active_account::get_item
-    # => [domain, d1, d2, d3, remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
+    # => [domain, d1, d2, d3, remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER]
 
     movdn.3 drop drop drop
-    # => [domain, remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
+    # => [domain, remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER]
 
     assert_eq.err=ERR_XRESERVE_WRONG_DOMAIN
-    # => [REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len_bytes]
+    # => [REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER]
 
-    # identifier compare: the parser's packed remoteToken words are already in the
+    # identifier compare: the parsed packed remoteToken words are already in the
     # [B_UPPER, B_LOWER] orientation bytes32_to_key consumes
     exec.encoding::bytes32_to_key
-    # => [KEY, hook_data_len_bytes]
+    # => [KEY]
 
     push.IDENTIFIER_CONFIG_SLOT[0..2]
     exec.active_account::get_item
-    # => [STORED_KEY, KEY, hook_data_len_bytes]
+    # => [STORED_KEY, KEY]
 
     assert_eqw.err=ERR_XRESERVE_WRONG_IDENTIFIER
-    # => [hook_data_len_bytes]
+    # => []
 end
 
 #! Asserts the faucet-owned amount and fee mint preconditions over a staged preimage.
@@ -153,8 +314,7 @@ end
 #! - any wire feeAmount limb is nonzero (ERR_XRESERVE_FEE_NONZERO).
 #!
 #! Invocation: exec
-@account_procedure
-pub proc assert_mint_amounts
+proc validate_mint_amounts
     # step 1: verify the witness supplied amount_y against the intent's amount field
     dup.2 push.DEPOSIT_SCALE_EXP
     # => [scale_exp, amount_y, intent_ptr, fee_amount_ptr, amount_y]
@@ -221,8 +381,7 @@ end
 #! - usedNonces[key] is non-empty (the nonce was already used) -> ERR_XRESERVE_NONCE_REPLAY.
 #!
 #! Invocation: exec
-@account_procedure
-pub proc assert_nonce_unused
+proc validate_nonce_unused
     push.NONCE_FELT_OFF add
     # => [nonce_base]
 
@@ -245,8 +404,56 @@ pub proc assert_nonce_unused
     # => []
 end
 
-# HELPER PROCEDURES
-# =================================================================================================
+#! Returns whether any of the eight consecutive felts at the given address is nonzero.
+#!
+#! Used for the DepositIntent 32-byte-field zero checks (a field is zero iff all eight of
+#! its u32-LE-packed limbs are zero).
+#!
+#! Inputs:  [addr]
+#! Outputs: [is_nonzero]
+#!
+#! Where:
+#! - addr is the memory address of the field's first packed felt.
+#! - is_nonzero is 1 when any of the eight felts is nonzero, 0 otherwise.
+#!
+#! Invocation: exec
+proc field8_is_nonzero
+    push.0 swap
+    # => [addr, acc]
+
+    repeat.8
+        dup mem_load neq.0
+        # => [is_non_zero, addr, acc]
+
+        movup.2 or
+        # => [acc', addr]
+
+        swap add.1
+        # => [addr+1, acc']
+    end
+    # => [addr+8, acc]
+
+    drop
+    # => [acc]
+end
+
+#! Returns num_items divided by four, rounded up.
+#!
+#! Inputs:  [num_items]
+#! Outputs: [num_groups]
+#!
+#! Where:
+#! - num_items is a u32 count of items packed four to a group (wire bytes in a felt, or felts in
+#!   a word).
+#! - num_groups is the number of groups that hold them.
+#!
+#! Panics if:
+#! - num_items is not a valid u32.
+#!
+#! Invocation: exec
+proc div_ceil_four
+    u32divmod.4 neq.0 add
+end
 
 #! Normalizes a staged uint256 to its numerically-low half as u128 little-endian u32 limbs.
 #!

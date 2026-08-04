@@ -681,7 +681,10 @@ fn main() {
             &["TV-DI-6", "TV-DUAL-3"],
             &spec.encode(),
             "LengthMismatch",
-            Some("ERR_DI_LENGTH"),
+            // Rust-only: MASM derives the preimage length from hookDataLen instead of taking a
+            // caller claim, so there is no on-chain length relation left to violate. The staged
+            // word count carries that check now (see the mint policy's transport binding).
+            None,
             "CIR-MINT-PRE-11",
             "hookDataLen field = 10 but only 4 hookData bytes appended (total 244 != 250)",
         ));
@@ -691,8 +694,10 @@ fn main() {
         &["TV-DI-6", "TV-DUAL-3"],
         &base_bytes[..100],
         "TruncatedHeader",
-        Some("ERR_DI_LENGTH"),
-        "(MASM folds both length violations into ERR_DI_LENGTH)",
+        // MASM reads the unstaged tail of the header as zeros, so the zero-field guard is what
+        // refuses a truncated preimage.
+        Some("ERR_DI_ZERO_FIELD"),
+        "(the MASM reject is the zero-field guard over the unstaged tail)",
         "first 100 bytes only (< 240-byte header; 25 staged felts < 60)",
     ));
     {
@@ -709,21 +714,6 @@ fn main() {
             "hookDataLen = 3860 => 60 + 965 = 1025 felts > 1024 NoteStorage bound",
         ));
     }
-    {
-        // masm-only: wrong len_felts parameter (unrepresentable in the Rust byte API).
-        let preimage = packed(&base_bytes);
-        di.push(json!({
-            "id": "di-rej-felt-len", "tv": ["TV-DUAL-3"], "kind": "reject",
-            "mode": "masm-only",
-            "preimage_felts": felts_hex(&preimage),
-            "len_felts": preimage.len(),
-            "staging_len_felts": 59,
-            "expected_variant": "LengthMismatch", "masm_err": "ERR_DI_LENGTH",
-            "cite": "(parser input contract)",
-            "derivation": "valid 60-felt preimage staged with len_felts = 59; the felt-length relation must trap",
-        }));
-    }
-
     // ---- att family (attestation surface) ----------------------------------------
     // each vector carries an independent k256 keypair; the digest is keccak256 of a FULL
     // DepositIntent payload (raw keccak, NOT EIP-712, no struct); the 65-byte r||s||v signature over

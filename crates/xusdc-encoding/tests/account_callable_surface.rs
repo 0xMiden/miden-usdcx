@@ -1,6 +1,6 @@
 //! FULL-ACCOUNT CALLABLE-SURFACE PIN (S12, human-ratified 2026-07-13).
 //!
-//! `mint_root_surface.rs` freezes the 10 callable roots of the **xreserve** component. This file
+//! `mint_root_surface.rs` freezes the 6 callable roots of the **xreserve** component. This file
 //! freezes the **whole composed account** — the xreserve 10 PLUS every callable procedure the STOCK
 //! components contribute (`Authority` incl. the v0.16 `freeze`/`unfreeze`, `RoleBasedAccessControl`,
 //! `FungibleFaucet` incl. the v0.16 `has_procedure` re-export, `TokenPolicyManager`,
@@ -112,16 +112,12 @@ const MAX_SUPPLY: u64 = 1_000_000;
 ///   human-ratified);
 /// - `fungible_faucet::has_procedure` is the v0.16 `FungibleFaucet` re-export (#3222) the stock BURN
 ///   note's faucet-kind reflection requires.
-const FROZEN_ACCOUNT_SURFACE: [&str; 69] = [
-    // --- the 10 xreserve component roots (their IDENTITIES are also pinned in
+const FROZEN_ACCOUNT_SURFACE: [&str; 65] = [
+    // --- the 6 xreserve component roots (their IDENTITIES are also pinned in
     //     mint_root_surface.rs::FROZEN_CALLABLE_ROOTS; here they complete the whole account) ---
     "::xreserve::attestation_verify::verify_attestation",
     "::xreserve::attester_admin::set_attester",
-    "::xreserve::deposit_intent_parser::assert_deposit_intent",
-    "::xreserve::deposit_intent_parser::assert_mint_amounts",
-    "::xreserve::deposit_intent_parser::assert_nonce_unused",
     "::xreserve::encoding::bytes32_to_key",
-    "::xreserve::encoding::parse_deposit_intent",
     "::xreserve::encoding::verify_uint256_to_asset_amount",
     "::xreserve::identifier_init::init_identifier",
     "::xreserve::mint_policy::check_policy",
@@ -131,9 +127,11 @@ const FROZEN_ACCOUNT_SURFACE: [&str; 69] = [
     // map gates on the same role the wrapper hard-coded (pause / unpause on the Domain pauser,
     // block / unblock on the external blocklist administrator). Four custom xreserve wrappers out,
     // four stock manager procs in; separately, the mint-path de-export drops
-    // `encoding::pubkey_commitment` from the callable surface (it is `exec`-only now), and the
+    // `encoding::pubkey_commitment` from the callable surface (it is `exec`-only now), the
+    // deposit-intent parser's three assertion procs and the shared `encoding::parse_deposit_intent`
+    // collapsed into the `exec`-only `deposit_intent_parser::{parse,validate}` pair, and the
     // two-step ownership component is gone, which is where the five missing access rows went — so
-    // the whole account surface is 69 (10 xreserve + 59 stock).
+    // the whole account surface is 65 (6 xreserve + 59 stock).
     "::miden::standards::components::access::pausable::manager::pause",
     "::miden::standards::components::access::pausable::manager::unpause",
     "::miden::standards::components::faucets::policies::transfer::blocklist::manager::block_account",
@@ -291,7 +289,7 @@ fn production_account_callable_surface_is_frozen() -> Result<()> {
     let components = production_components()?;
     let surface = component_surface(&components);
 
-    // Layer 1 (source): the component-exported paths equal the frozen 69-root list EXACTLY (10
+    // Layer 1 (source): the component-exported paths equal the frozen 65-root list EXACTLY (6
     // xreserve + 59 stock, in one literal set — a stock bump that adds or removes any callable
     // procedure fails HERE).
     let mut paths: Vec<String> = surface.iter().map(|(path, _)| path.clone()).collect();
@@ -303,7 +301,7 @@ fn production_account_callable_surface_is_frozen() -> Result<()> {
     expected.sort();
     assert_eq!(
         paths, expected,
-        "the composed account's callable surface drifted from the frozen 69-root set — a stock \
+        "the composed account's callable surface drifted from the frozen 65-root set — a stock \
          bump added or removed a callable procedure (or the xreserve surface changed). This is NOT \
          a mechanical conformance change: every such delta must be SURFACED for ratification \
          (MIGRATION-V16-ALPHA2.md §4a stock-surface discipline + STOP condition 5), exactly as the \
@@ -327,7 +325,7 @@ fn production_account_callable_surface_is_frozen() -> Result<()> {
     assert_eq!(
         account_roots.len(),
         FROZEN_ACCOUNT_SURFACE.len(),
-        "the account's callable procedure COUNT must equal the frozen 69-root surface"
+        "the account's callable procedure COUNT must equal the frozen 65-root surface"
     );
     Ok(())
 }

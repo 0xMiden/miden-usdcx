@@ -73,12 +73,12 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     // the attested-recipient extraction's pad check (mint_policy.masm; the limb and
     // canonical-range rejects are the standards eth::build_felt's)
     "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",
-    // Wave-1 S1 transport-shape guards on the stock MintNote's attachments (mint_policy.masm)
+    // Wave-1 S1 transport-shape guards on the stock MintNote's attachments: the attachment set
+    // (mint_policy.masm) and the staged intent's shape and length (deposit_intent_parser.masm)
     "ERR_XRESERVE_MINT_NOTE_INTENT_MISSING",
     "ERR_XRESERVE_MINT_NOTE_ATTESTATION_MISSING",
     "ERR_XRESERVE_MINT_NOTE_TARGET_MISSING",
     "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT",
-    "ERR_XRESERVE_MINT_NOTE_INTENT_TOO_SHORT",
     "ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB",
     "ERR_XRESERVE_MINT_NOTE_INTENT_WORDS",
     "ERR_XRESERVE_MINT_NOTE_ATTESTATION_NUM_WORDS",
@@ -125,20 +125,16 @@ const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] = &[(
 const ATTESTATION_COVERED_NUMS: &[&str] = &["DIGEST_LO_LOC", "DIGEST_HI_LOC", "PUBKEY_FELTS"];
 
 /// Wave-1 S1 attestation mint-policy numeric consts: the two attachment schemes + the
-/// attestation word count + the DC-5 scale are parity-asserted against the `XUsdcMintNote`
-/// factory constants in `masm_rust_constant_parity` below (the constructor builds what the
-/// policy verifies); `DEPOSIT_INTENT_HEADER_WORDS` carries a derived relation row (x 4 == the
-/// header felt count). The `P2ID_NUM_STORAGE_ITEMS` note-storage count (2, matching
-/// notes/p2id.masm), the `*_LOC` procedure-local offsets of `check_policy` (including the four
-/// derived from the shared layout's field offsets), and the
-/// `NONCE_USED_MARKER`/`P2ID_SCRIPT_ROOT` Word array literals (not parity-parsed) are
+/// attestation word count are parity-asserted against the `XUsdcMintNote` factory constants in
+/// `masm_rust_constant_parity` below (the constructor builds what the policy verifies; the DC-5
+/// scale is asserted the same way but is parser-owned, see `SHELL_COVERED_NUMS`). The `*_LOC`
+/// procedure-local offsets of `check_policy` (including the two derived from the shared layout's
+/// field offsets) and the `NONCE_USED_MARKER` Word array literal (not parity-parsed) are
 /// policy-owned with no Rust counterpart, covered here.
 const MINT_POLICY_COVERED_NUMS: &[&str] = &[
     "XUSDC_MINT_INTENT_ATTACHMENT_SCHEME",
     "XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME",
     "XUSDC_MINT_ATTESTATION_NUM_WORDS",
-    "DEPOSIT_INTENT_HEADER_WORDS",
-    "P2ID_NUM_STORAGE_ITEMS",
     "ASSET_VALUE_LOC",
     "RECIPIENT_LOC",
     "TAG_LOC",
@@ -149,14 +145,9 @@ const MINT_POLICY_COVERED_NUMS: &[&str] = &[
     "ATTESTATION_PUBKEY_LOC",
     "ATTESTATION_SIGNATURE_LOC",
     "NONCE_KEY_LOC",
-    "P2ID_TARGET_ID_SUFFIX_LOC",
-    "P2ID_TARGET_ID_PREFIX_LOC",
-    "HOOK_DATA_LEN_BYTES_LOC",
-    "LEN_FELTS_LOC",
     "INTENT_LOC",
     "INTENT_REMOTE_RECIPIENT_LOC",
     "INTENT_NONCE_LOC",
-    "INTENT_HOOK_DATA_LEN_LOC",
 ];
 
 /// Numeric-constant coverage sets (bidirectional sweep): every numeric const parsed
@@ -178,6 +169,8 @@ const LAYOUT_COVERED_NUMS: &[&str] = &[
     "DEPOSIT_INTENT_MAGIC_PACKED",
     "DEPOSIT_INTENT_VERSION_PACKED",
     "DEPOSIT_INTENT_HEADER_FELTS",
+    "DEPOSIT_INTENT_HEADER_BYTES",
+    "BYTES_PER_FELT",
     "MAX_NOTE_STORAGE_FELTS",
 ];
 const ENCODING_COVERED_NUMS: &[&str] = &[];
@@ -286,7 +279,12 @@ fn masm_rust_constant_parity() {
         "header felt count must match across languages"
     );
     assert_eq!(
+        num(&nums, "DEPOSIT_INTENT_HEADER_BYTES", "layout.masm"),
         DEPOSIT_INTENT_HEADER_LEN as u64,
+        "header byte length must match across languages"
+    );
+    assert_eq!(
+        num(&nums, "DEPOSIT_INTENT_HEADER_BYTES", "layout.masm"),
         num(&nums, "DEPOSIT_INTENT_HEADER_FELTS", "layout.masm") * 4,
         "header byte length must be 4x the felt count (4 bytes per felt)"
     );
@@ -351,16 +349,6 @@ fn masm_rust_constant_parity() {
         XUSDC_DEPOSIT_SCALE_EXP as u64,
         "DC-5 deposit-scale parity (MASM parser == Rust factory; DEV-5 OPEN, provisional scale-0 identity)"
     );
-    // derived relation: the header word floor x 4 == the header felt count (60 / 4 = 15).
-    assert_eq!(
-        num(
-            &policy_nums,
-            "DEPOSIT_INTENT_HEADER_WORDS",
-            "mint_policy.masm"
-        ) * 4,
-        DEPOSIT_INTENT_HEADER_FELTS as u64,
-        "the intent attachment's header word floor must be the packed header felt count / 4"
-    );
     // rider A8 (ratified): the xUSDC schemes sit at >= 4 — clear of the protocol-reserved
     // "none" value 1 and the standard values 2 (NetworkAccountTarget, carried on this very
     // note) and 3 (Pswap). Executable so a scheme regression cannot slip in one-sided.
@@ -384,16 +372,19 @@ fn masm_rust_constant_parity() {
     );
 }
 
-/// Error-string parity, Rust → MASM: every Rust `ERR_*` MasmError has an
-/// identically-named MASM constant with a byte-identical message string in
-/// `encoding/mod.masm`.
+/// Error-string parity, Rust → MASM: every Rust `ERR_*` MasmError has an identically-named MASM
+/// constant with a byte-identical message string. The shared limb guard is the encoding module's;
+/// the DepositIntent structural rejects belong to the parser module, so both sources are merged
+/// before the lookup (the names are unique, and the limb guard's string is identical in both).
 #[test]
 fn masm_rust_error_string_parity() {
-    let (_, strs, _) = parse_masm_consts(ENCODING_MOD_MASM);
+    let (_, mut strs, _) = parse_masm_consts(ENCODING_MOD_MASM);
+    let (_, parser_strs, _) = parse_masm_consts(SHELL_MASM);
+    strs.extend(parser_strs);
     for (name, message) in ERR_MESSAGES {
-        let masm = strs
-            .get(name)
-            .unwrap_or_else(|| panic!("encoding/mod.masm must define const {name} = \"...\""));
+        let masm = strs.get(name).unwrap_or_else(|| {
+            panic!("the encoding or parser module must define const {name} = \"...\"")
+        });
         assert_eq!(masm, message, "error message parity for {name}");
     }
 }
@@ -460,8 +451,7 @@ fn masm_constants_bidirectional() {
         // Wave-1 S1 attestation mint policy: declares the transport + binding errors (known
         // shell errors via SHELL_ERR_TABLE) and the covered/parity-asserted numeric consts; its
         // slot consts stay IMPORTED (USED_NONCES from deposit_intent_parser) — no word("…")
-        // consts of its own (the NONCE_USED_MARKER / P2ID_SCRIPT_ROOT Word array literals are
-        // not parity-parsed).
+        // consts of its own (the NONCE_USED_MARKER Word array literal is not parity-parsed).
         (
             "mint_policy.masm",
             MINT_POLICY_MASM,

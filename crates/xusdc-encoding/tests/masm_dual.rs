@@ -39,7 +39,7 @@ use miden_testing::{assert_transaction_executor_error, Auth, MockChain};
 use miden_tx::TransactionExecutorError;
 use serde::Deserialize;
 use xusdc_encoding::vectors::{felt_from_hex, load, word_from_hex};
-use xusdc_encoding::xreserve::encoding::masm_error_by_name;
+use xusdc_encoding::xreserve::encoding::{masm_error_by_name, DEPOSIT_INTENT_HEADER_LEN};
 
 /// Memory base for staged DepositIntent preimages in driver scripts (word-aligned,
 /// inside global program memory, clear of anything the kernel stages).
@@ -274,9 +274,12 @@ end
 // layout every field is expected to sit at
 // ================================================================================================
 
-/// Emits the common prologue for a `parse_deposit_intent` driver: import the layout offset
-/// constants, stage the intent preimage into memory, and call the parser, leaving its outputs
-/// `[remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len]` on the stack.
+/// Emits the common prologue for a `parse` driver: import the layout offset constants, stage the
+/// intent preimage into memory, and call the parser, leaving its outputs
+/// `[remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, intent_num_bytes]` on the stack.
+///
+/// The word count the parser is asked to agree with is derived from the same staged preimage the
+/// driver writes, so an accept run proves the derivation, not the caller's arithmetic.
 ///
 /// The two suites that parse intents — the vector-driven conformance run and the differential
 /// against Circle's own encoder — share this one prologue, so neither can accidentally test a
@@ -284,8 +287,8 @@ end
 ///
 /// The layout constants are imported one by one because `push.` only accepts an unqualified
 /// constant identifier, which is also how the protocol's own MASM imports constants.
-fn build_parser_driver_prefix(preimage: &[Felt], len_felts: u64) -> String {
-    let mut src = String::from("use xreserve::encoding\n");
+fn build_parser_driver_prefix(preimage: &[Felt], expected_num_words: u64) -> String {
+    let mut src = String::from("use xreserve::deposit_intent_parser\n");
     // v0.25 braced item-import form (bare `use module::CONST` no longer resolves constants).
     writeln!(
         src,
@@ -297,9 +300,9 @@ fn build_parser_driver_prefix(preimage: &[Felt], len_felts: u64) -> String {
     .unwrap();
     src.push_str("\n@transaction_script\npub proc main\n");
     stage_preimage(&mut src, preimage);
-    writeln!(src, "    push.{len_felts}").unwrap();
+    writeln!(src, "    push.{expected_num_words}").unwrap();
     writeln!(src, "    push.{INTENT_PTR}").unwrap();
-    writeln!(src, "    exec.encoding::parse_deposit_intent").unwrap();
+    writeln!(src, "    exec.deposit_intent_parser::parse").unwrap();
     src
 }
 
@@ -347,8 +350,9 @@ async fn run_accept_driver(
     hook_data_len: u64,
     packed: &[(&str, Vec<Felt>)],
 ) {
-    let mut src = build_parser_driver_prefix(preimage, len_felts);
-    // parser stack outputs: [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER, hook_data_len].
+    let mut src = build_parser_driver_prefix(preimage, len_felts.div_ceil(4));
+    // parser stack outputs: [remote_domain, REMOTE_TOKEN_UPPER, REMOTE_TOKEN_LOWER,
+    // intent_num_bytes].
     writeln!(
         src,
         "    push.{remote_domain} assert_eq.err=\"{label}: remote_domain\""
@@ -364,9 +368,11 @@ async fn run_accept_driver(
         "    push.{rt0} assert_eqw.err=\"{label}: remote_token_0\""
     )
     .unwrap();
+    // the wire length the parser DERIVES, which is the extent the attestation signature covers
     writeln!(
         src,
-        "    push.{hook_data_len} assert_eq.err=\"{label}: hook_data_len\""
+        "    push.{} assert_eq.err=\"{label}: intent_num_bytes\"",
+        DEPOSIT_INTENT_HEADER_LEN as u64 + hook_data_len
     )
     .unwrap();
     for (name, felts) in packed {
@@ -435,7 +441,7 @@ async fn tv_dual_3_parse_deposit_intent() -> Result<()> {
                 .await;
             }
             "reject" => {
-                let mut src = build_parser_driver_prefix(&preimage, len_felts);
+                let mut src = build_parser_driver_prefix(&preimage, len_felts.div_ceil(4));
                 // Clean up the would-be outputs so a non-trapping run completes cleanly
                 // and the error assertion below reports "unexpectedly successful".
                 src.push_str("    drop dropw dropw drop\nend\n");
@@ -561,7 +567,7 @@ fn probe_p1_exports() -> Result<()> {
     for canonical in [
         "::xreserve::encoding::bytes32_to_key",
         "::xreserve::encoding::verify_uint256_to_asset_amount",
-        "::xreserve::encoding::parse_deposit_intent",
+        "::xreserve::deposit_intent_parser::parse",
     ] {
         assert!(
             exports.iter().any(|e| e == canonical),
@@ -818,7 +824,7 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
     let base = circle_hexdec(&file.vectors[0].bytes_hex);
     let reject_src = |raw: &[u8]| {
         let preimage = pack(raw);
-        let mut src = build_parser_driver_prefix(&preimage, preimage.len() as u64);
+        let mut src = build_parser_driver_prefix(&preimage, (preimage.len() as u64).div_ceil(4));
         src.push_str("    drop dropw dropw drop\nend\n");
         src
     };

@@ -438,7 +438,7 @@ async fn mint_rejects_a_truncated_intent() -> Result<()> {
         1,
         None,
         &AttachmentPlan {
-            intent_truncate_words: Some(14), // below the 15-word header floor
+            intent_truncate_words: Some(14), // one word short of the parsed length
             ..AttachmentPlan::default()
         },
         96,
@@ -447,7 +447,7 @@ async fn mint_rejects_a_truncated_intent() -> Result<()> {
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_INTENT_TOO_SHORT"),
+        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_INTENT_WORDS"),
     )
     .await
 }

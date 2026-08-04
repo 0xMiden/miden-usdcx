@@ -51,8 +51,11 @@ pub const RATIFIED_ALLOWLIST_ROOTS: usize = 9;
 /// The callable procedure count: four custom procedures out, four standard manager procedures in,
 /// the two-step ownership component's five rows removed, and the mint-path
 /// `encoding::pubkey_commitment` de-export (it became an exec-only export of `attestation_verify`,
-/// no longer a callable account root) drops the total by one more to 69. Human-ratified.
-pub const RATIFIED_CALLABLE_PROCEDURES: usize = 69;
+/// no longer a callable account root) drops the total by one more to 69. The deposit-intent
+/// consolidation then took the parser's three assertion procedures and the shared
+/// `encoding::parse_deposit_intent` off the surface too — they are the exec-only
+/// `deposit_intent_parser::{parse,validate}` pair now — leaving 65. Human-ratified.
+pub const RATIFIED_CALLABLE_PROCEDURES: usize = 65;
 
 /// The `DOM_PAUSER` role symbol felt the retired `pause_admin.masm` hard-coded. The role identity
 /// had to survive the move from a MASM literal into the procedure-role map, so it is pinned here as

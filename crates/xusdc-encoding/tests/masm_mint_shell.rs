@@ -1,8 +1,13 @@
 //! Faucet mint-precondition suite: every behavior test executes the faucet-owned
-//! `xreserve::deposit_intent_parser::assert_deposit_intent` on a MockChain, entered by `call`
-//! from a small driver component. The `call` matters: `assert_deposit_intent` reads the
-//! faucet's own domain/identifier configuration with `active_account::get_item`, which the
-//! kernel only honors when the caller runs in account context.
+//! `xreserve::deposit_intent_parser::validate` on a MockChain, entered by `call` from a small
+//! driver component. The `call` matters: `validate` reads the faucet's own domain/identifier
+//! configuration with `active_account::get_item`, which the kernel only honors when the caller
+//! runs in account context.
+//!
+//! `validate` is the parser's single entry and runs every stage in order, so a case reaches the
+//! stage it targets by being valid for the stages before it. That is why cases aimed past the
+//! amount stage splice a coherent `amount`/`maxFee` pair into their preimage: the canonical
+//! vectors carry a `maxFee` above their `amount`, which that stage refuses.
 //!
 //! The DepositIntent payloads come from the canonical golden-vector artifact shared with the
 //! Rust codec, so an accept here and an accept in the Rust parser are driven by the same bytes.
@@ -31,12 +36,16 @@
 mod support;
 
 use anyhow::Result;
+use miden_processor::operation::OperationError;
+use miden_processor::ExecutionError;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::*;
 use xusdc_encoding::vectors::{load, parse_hex32, AmtVector, DiVector};
-use xusdc_encoding::xreserve::encoding::{bytes32_to_storage_map_key, uint256_to_asset_amount};
+use xusdc_encoding::xreserve::encoding::{
+    bytes32_to_storage_map_key, uint256_to_asset_amount, DEPOSIT_INTENT_HEADER_FELTS,
+};
 
 /// Looks up a canonical DepositIntent vector by id (by-reference loading).
 fn di(id: &str) -> &'static DiVector {
@@ -76,6 +85,27 @@ fn config_for(vector_id: &str, domain: u32, flip_identifier_byte: bool) -> (Word
     (domain_word, identifier_word)
 }
 
+/// The hash-committed word count a staged preimage of `num_felts` felts carries.
+fn intent_num_words(num_felts: u64) -> u64 {
+    num_felts.div_ceil(4)
+}
+
+/// Splices a coherent `amount`/`maxFee` pair into a vector preimage and returns it with the
+/// matching amount witness.
+///
+/// The canonical vectors carry a `maxFee` above their `amount`, so a case that must run past the
+/// amount stage takes its money fields from the shared `amt-*` vectors instead — the same splice
+/// the D5b cases use. The witness is the Rust mirror's quotient, so the on-chain verifier proves
+/// the value the mint-note factory would carry.
+fn with_acceptable_money_fields(base: &[Felt]) -> (Vec<Felt>, u64) {
+    let amount_limbs = amt("amt-ge-gt").le_limbs();
+    let preimage = splice_amounts(base, amount_limbs, amt("amt-ge-gt").b_le_limbs());
+    let amount_y = uint256_to_asset_amount(amount_limbs, D5B_SCALE_EXP)
+        .map(u64::from)
+        .expect("the accept amount vector must reduce");
+    (preimage, amount_y)
+}
+
 // HAPPY PATH FIRST — matching config x both canonical accept vectors
 // ================================================================================================
 
@@ -87,7 +117,15 @@ async fn happy_path_mint_preconditions(#[case] vector_id: &str) -> Result<()> {
     let v = di(vector_id);
     let f = v.fields.as_ref().expect("accept vector carries fields");
     let (domain, identifier) = config_for(vector_id, TEST_DOMAIN, false);
-    let driver_src = shell_driver_src(&v.preimage_values(), v.len_felts, Some(f.hook_data_len));
+    let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
+    let expected_num_bytes = (DEPOSIT_INTENT_HEADER_FELTS as u32) * 4 + f.hook_data_len;
+    let driver_src = validate_driver_src(
+        &preimage,
+        intent_num_words(v.len_felts),
+        &fee_amount_felts([0u32; 8]),
+        amount_y,
+        Some(expected_num_bytes),
+    );
     let h = setup_shell_account(domain, identifier, &driver_src, SHELL_DRIVER_PATH)?;
     let executed = run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
         panic!("vector {vector_id}: the shell must accept a matching DepositIntent: {e}")
@@ -154,11 +192,86 @@ async fn r_mint_rejects(
     let (domain_word, identifier_word) =
         config_for("di-pos-hookdata", domain, flip_identifier_byte);
     let v = di(vector_id);
-    let len_felts = v.staging_len_felts.unwrap_or(v.len_felts);
-    let driver_src = shell_driver_src(&v.preimage_values(), len_felts, None);
+    let num_felts = v.staging_len_felts.unwrap_or(v.len_felts);
+    // the money fields are irrelevant here: every row traps in the stage before the amount one
+    let driver_src = validate_driver_src(
+        &v.preimage_values(),
+        intent_num_words(num_felts),
+        &fee_amount_felts([0u32; 8]),
+        0,
+        None,
+    );
     let h = setup_shell_account(domain_word, identifier_word, &driver_src, SHELL_DRIVER_PATH)?;
     let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
+    Ok(())
+}
+
+// TRANSPORT-SHAPE REJECTS — the staged attachment's shape and its embedded length claim
+// ================================================================================================
+// These run before any field is parsed, because every field offset is only meaningful once the
+// staged region is known to cover the header and to be exactly as long as it claims. The caller
+// supplies the hash-committed word count; the preimage carries its own `hookDataLen`, and the two
+// must agree.
+
+#[rstest]
+// the committed word count is one word short of the parsed length, so part of the header was
+// never staged
+#[case::too_short("di-pos-empty-hookdata", 14, "ERR_XRESERVE_MINT_NOTE_INTENT_WORDS")]
+// the committed word count disagrees with the length the embedded hookDataLen implies (the
+// hookdata vector is 63 felts = 16 words, claimed here as 15)
+#[case::word_count_mismatch("di-pos-hookdata", 15, "ERR_XRESERVE_MINT_NOTE_INTENT_WORDS")]
+#[tokio::test]
+async fn transport_shape_rejects(
+    #[case] vector_id: &str,
+    #[case] claimed_num_words: u64,
+    #[case] expected_err: &str,
+) -> Result<()> {
+    let v = di(vector_id);
+    let (domain, identifier) = config_for(vector_id, TEST_DOMAIN, false);
+    let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
+    let driver_src = validate_driver_src(
+        &preimage,
+        claimed_num_words,
+        &fee_amount_felts([0u32; 8]),
+        amount_y,
+        None,
+    );
+    let h = setup_shell_account(domain, identifier, &driver_src, SHELL_DRIVER_PATH)?;
+    let result = run_call_driver(&h, "drive").await;
+    assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
+    Ok(())
+}
+
+/// A staged `hookDataLen` limb that is not a valid u32 must ERROR before the byte-swap reads it.
+///
+/// `u32assert` surfaces as `OperationError::U32AssertionFailed` (not `FailedAssertion`), so the
+/// named error is pinned on that variant's code AND message.
+#[tokio::test]
+async fn transport_malformed_hook_data_len_limb() -> Result<()> {
+    let v = di("di-pos-empty-hookdata");
+    let (domain, identifier) = config_for("di-pos-empty-hookdata", TEST_DOMAIN, false);
+    let (mut preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
+    // a felt at 2^32 is a valid field element but NOT a valid u32 limb
+    preimage[HOOK_DATA_LEN_FELT_OFF] =
+        Felt::try_from(1u64 << 32).expect("2^32 is within the field");
+    let driver_src = validate_driver_src(
+        &preimage,
+        intent_num_words(v.len_felts),
+        &fee_amount_felts([0u32; 8]),
+        amount_y,
+        None,
+    );
+    let h = setup_shell_account(domain, identifier, &driver_src, SHELL_DRIVER_PATH)?;
+    let result = run_call_driver(&h, "drive").await;
+    let expected = shell_error_by_name("ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB");
+    assert_transaction_executor_error!(
+        result,
+        matches ExecutionError::OperationError {
+            err: OperationError::U32AssertionFailed { ref err_code, ref err_msg, .. },
+            ..
+        } if *err_code == expected.code() && err_msg.as_deref() == Some(expected.message())
+    );
     Ok(())
 }
 
@@ -170,7 +283,7 @@ async fn r_mint_rejects(
 // Keeping them separate means an assembler or naming regression fails as itself rather than
 // masquerading as a mint-policy reject.
 
-/// The assembled library exports `assert_deposit_intent` under its fully-qualified path.
+/// The assembled library exports `validate` under its fully-qualified path.
 ///
 /// The drivers in this file invoke it by that exact path, and so does the faucet component, so a
 /// module move or rename would silently break both. Comparing against the assembler's own export
@@ -184,7 +297,7 @@ fn probe_shell_exports() -> Result<()> {
         .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
-    let canonical = "::xreserve::deposit_intent_parser::assert_deposit_intent";
+    let canonical = "::xreserve::deposit_intent_parser::validate";
     assert!(
         exports.iter().any(|e| e == canonical),
         "canonical shell proc path {canonical} missing; exports: {exports:?}"
@@ -213,8 +326,8 @@ async fn probe_slot_binding() -> Result<()> {
 
 // D5B — AMOUNT / MAXFEE / FEEAMOUNT PRECONDITIONS
 // ================================================================================================
-// Executes the faucet-owned `xreserve::deposit_intent_parser::assert_mint_amounts` on a
-// MockChain. Each case splices a chosen `amount` and `maxFee` into an otherwise-valid
+// Executes the faucet-owned amount and fee stage of `xreserve::deposit_intent_parser::validate`
+// on a MockChain. Each case splices a chosen `amount` and `maxFee` into an otherwise-valid
 // DepositIntent preimage, taking the uint256 limb patterns from the shared `amt-*` golden
 // vectors (read at the proc's own scale-0 identity, so a vector's raw wire value IS its
 // reduced value); the driver passes the mirror-computed amount witness. `feeAmount` does not
@@ -245,13 +358,19 @@ fn d5b_harness(
     maxfee_limbs: [u32; 8],
     fee_amount: &[Felt],
 ) -> Result<ShellHarness> {
-    let base = di("di-pos-empty-hookdata").preimage_values();
-    let preimage = splice_amounts(&base, amount_limbs, maxfee_limbs);
+    let v = di("di-pos-empty-hookdata");
+    let preimage = splice_amounts(&v.preimage_values(), amount_limbs, maxfee_limbs);
     let (domain, identifier) = config_for("di-pos-empty-hookdata", TEST_DOMAIN, false);
     let amount_y = uint256_to_asset_amount(amount_limbs, D5B_SCALE_EXP)
         .map(u64::from)
         .unwrap_or(0);
-    let driver_src = mint_amounts_driver_src(&preimage, fee_amount, amount_y);
+    let driver_src = validate_driver_src(
+        &preimage,
+        intent_num_words(v.len_felts),
+        fee_amount,
+        amount_y,
+        None,
+    );
     setup_shell_account(domain, identifier, &driver_src, SHELL_DRIVER_PATH)
 }
 
@@ -346,31 +465,9 @@ async fn d5b_fee_amount_malformed_limb() -> Result<()> {
     Ok(())
 }
 
-// PROBE (export check for the new proc)
-// ------------------------------------------------------------------------------------------------
-
-/// The assembled library exports `assert_mint_amounts` under its fully-qualified path — the same
-/// rename guard as `probe_shell_exports`, for the amount/fee stage.
-#[test]
-fn probe_mint_amounts_exports() -> Result<()> {
-    let lib = assemble_xreserve_lib()?;
-    let exports: Vec<String> = lib
-        .manifest
-        .exports()
-        .filter(|e| e.is_procedure())
-        .map(|e| e.path().to_string())
-        .collect();
-    let canonical = "::xreserve::deposit_intent_parser::assert_mint_amounts";
-    assert!(
-        exports.iter().any(|e| e == canonical),
-        "canonical D5b proc path {canonical} missing; exports: {exports:?}"
-    );
-    Ok(())
-}
-
 // D5C — NONCE REPLAY GUARD
 // ================================================================================================
-// Executes the faucet-owned `xreserve::deposit_intent_parser::assert_nonce_unused` on a
+// Executes the faucet-owned nonce stage of `xreserve::deposit_intent_parser::validate` on a
 // MockChain. The guard hashes the intent's 32-byte nonce (felts 51..58 of the parsed preimage)
 // into a storage-map key with the shared `bytes32_to_key`, reads `usedNonces[key]` from account
 // storage, and requires it to still be the empty Word; anything else means this deposit has
@@ -405,7 +502,14 @@ fn nonce_key(vector_id: &str) -> Word {
 async fn d5c_happy_nonce_unused(#[case] vector_id: &str) -> Result<()> {
     let v = di(vector_id);
     let (domain, identifier) = config_for(vector_id, TEST_DOMAIN, false);
-    let driver_src = nonce_driver_src(&v.preimage_values());
+    let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
+    let driver_src = validate_driver_src(
+        &preimage,
+        intent_num_words(v.len_felts),
+        &fee_amount_felts([0u32; 8]),
+        amount_y,
+        None,
+    );
     // empty usedNonces map -> usedNonces[key] reads EMPTY_WORD (unused) -> passes
     let h = setup_shell_account(domain, identifier, &driver_src, SHELL_DRIVER_PATH)?;
     let executed = run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
@@ -433,7 +537,14 @@ async fn d5c_happy_nonce_unused(#[case] vector_id: &str) -> Result<()> {
 async fn d5c_replay_rejects(#[case] vector_id: &str) -> Result<()> {
     let v = di(vector_id);
     let (domain, identifier) = config_for(vector_id, TEST_DOMAIN, false);
-    let driver_src = nonce_driver_src(&v.preimage_values());
+    let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
+    let driver_src = validate_driver_src(
+        &preimage,
+        intent_num_words(v.len_felts),
+        &fee_amount_felts([0u32; 8]),
+        amount_y,
+        None,
+    );
     // mark this vector's nonce as already spent, so the guard's map read returns a non-empty
     // Word and the "must still be empty" assert fires — this is the same-deposit-twice case
     let seed = (nonce_key(vector_id), Word::from(NONCE_MARKER));
@@ -475,7 +586,14 @@ async fn d5c_unrelated_seeded_nonce_passes() -> Result<()> {
 
     let v = di(run_id);
     let (domain, identifier) = config_for(run_id, TEST_DOMAIN, false);
-    let driver_src = nonce_driver_src(&v.preimage_values());
+    let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
+    let driver_src = validate_driver_src(
+        &preimage,
+        intent_num_words(v.len_felts),
+        &fee_amount_felts([0u32; 8]),
+        amount_y,
+        None,
+    );
     let seed = (other_key, Word::from(NONCE_MARKER));
     let h = setup_shell_account_with_nonce_seed(
         domain,
@@ -494,28 +612,6 @@ async fn d5c_unrelated_seeded_nonce_passes() -> Result<()> {
     assert!(
         executed.account_patch().storage().is_empty(),
         "D5c is assert-zero only: it must not write account storage (no nonce SET)"
-    );
-    Ok(())
-}
-
-// PROBE (export check for the new proc)
-// ------------------------------------------------------------------------------------------------
-
-/// The assembled library exports `assert_nonce_unused` under its fully-qualified path — the same
-/// rename guard as the other export probes, for the replay stage.
-#[test]
-fn probe_nonce_unused_exports() -> Result<()> {
-    let lib = assemble_xreserve_lib()?;
-    let exports: Vec<String> = lib
-        .manifest
-        .exports()
-        .filter(|e| e.is_procedure())
-        .map(|e| e.path().to_string())
-        .collect();
-    let canonical = "::xreserve::deposit_intent_parser::assert_nonce_unused";
-    assert!(
-        exports.iter().any(|e| e == canonical),
-        "canonical D5c proc path {canonical} missing; exports: {exports:?}"
     );
     Ok(())
 }

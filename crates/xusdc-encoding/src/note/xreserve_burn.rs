@@ -19,10 +19,10 @@ use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{
-    Note, NoteAssets, NoteAttachment, NoteAttachments, NoteRecipient, NoteScript, NoteScriptRoot,
-    NoteStorage, NoteTag, NoteType, PartialNoteMetadata,
+    Note, NoteAssets, NoteAttachments, NoteRecipient, NoteScript, NoteScriptRoot, NoteStorage,
+    NoteTag, NoteType, PartialNoteMetadata,
 };
-use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint};
+use miden_standards::note::BurnNote;
 
 use crate::xreserve::encoding::{encode_burn_note_items, XReserveBurnItems, BURN_NOTE_ITEMS_FELTS};
 
@@ -84,12 +84,9 @@ impl XReserveBurnNote {
         let vault = NoteAssets::new(vec![asset.into()])?;
 
         // routing only: the stock consume script ignores attachments, and the burn stays gated by
-        // receive_and_burn and the burn policy. Requires a PUBLIC faucet id.
-        let target =
-            NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always).map_err(|err| {
-                NoteError::other_with_source("faucet id is not a public network account", err)
-            })?;
-        let attachments = NoteAttachments::new(vec![NoteAttachment::from(target)])?;
+        // receive_and_burn and the burn policy.
+        let attachments =
+            NoteAttachments::new(vec![super::network_routing_attachment(faucet_id)?])?;
 
         Ok(Note::with_attachments(
             vault,

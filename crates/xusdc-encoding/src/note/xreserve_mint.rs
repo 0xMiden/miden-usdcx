@@ -40,9 +40,7 @@ use miden_protocol::note::{
     Note, NoteAttachment, NoteAttachmentScheme, NoteScript, NoteScriptRoot, NoteTag,
 };
 use miden_protocol::{Felt, Word};
-use miden_standards::note::{
-    MintNote, MintNoteStorage, NetworkAccountTarget, NoteExecutionHint, P2idNoteStorage,
-};
+use miden_standards::note::{MintNote, MintNoteStorage, P2idNoteStorage};
 
 use crate::xreserve::encoding::{
     affine_pubkey_felts, bytes32_to_account_id, bytes32_to_storage_map_key,
@@ -161,16 +159,12 @@ impl XUsdcMintNote {
         let recipient = P2idNoteStorage::new(recipient_id).into_recipient(serial);
         let tag = NoteTag::with_account_target(recipient_id);
         let storage = MintNoteStorage::new_fungible_public(recipient, asset, tag)?;
-        let target =
-            NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always).map_err(|err| {
-                NoteError::other_with_source("faucet id is not a public network account", err)
-            })?;
         let mint_note = MintNote::builder()
             .sender(sender)
             .mint_storage(storage)
             .serial_number(rng.draw_word())
             .attachment(Self::transport_attachment(deposit_intent, attestation)?)
-            .attachment(NoteAttachment::from(target))
+            .attachment(super::network_routing_attachment(faucet_id)?)
             .build()?;
         Ok(Note::from(mint_note))
     }

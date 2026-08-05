@@ -9,8 +9,7 @@ members = [
 # the protocol family from the protocol monorepo's `next` branch at a frozen git rev, but the
 # validation crate needs `miden-client`/`miden-client-sqlite-store`, whose newest releases
 # (`=0.16.0-alpha.1`) pin protocol `=0.16.0-alpha.4` — no client exists for the `next` graph,
-# so the crate cannot build alongside the rest. The crate directory is byte-intact; the parking
-# record (why, re-enable trigger, un-park steps) is `crates/xusdc-validation/PARKED-V16-NEXT.md`.
+# so the crate cannot build alongside the rest.
 # It un-parks at the migration onto the released `v0.16.0` crates with a client/node pair.
 exclude = [
   "crates/xusdc-validation",
@@ -56,14 +55,12 @@ rand = "0.8"
 # `RequestBuilder::query` — how every Circle query param (`txHash`, `pageSize`, `pageAfter`, …) is
 # built and percent-encoded — sits behind its own `query` feature. `default-features = false`
 # keeps the graph off system OpenSSL and off the default TLS backend; `json` pulls the serde_json
-# body codec. The reqwest deferral recorded in
-# crates/xreserve-deposit-relayer/DEFERRED-DEPENDENCIES.md is discharged by this pin (the pinned
+# body codec. The pinned
 # cargo cache carries reqwest + its hyper/rustls/h2 closure, so the offline `--locked` gate
 # resolves).
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
 # The relayer's idempotency seam (`idempotency::IdempotencyStore`) — the submitted-nonce log + the
-# per-remote-domain `Link` cursor that must survive a restart. SQLite is the persistence choice
-# (rationale + the alternatives weighed: crates/xreserve-deposit-relayer/PERSISTENCE-CHOICE.md); it
+# per-remote-domain `Link` cursor that must survive a restart. SQLite is the persistence choice; it
 # is pinned here, not in the crate, because the withdrawal listener needs the same durable-cursor
 # store and the two must not drift onto different engines.
 #

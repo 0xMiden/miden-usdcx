@@ -30,8 +30,7 @@ use crate::error::{Cause, ListenerError};
 pub const CIRCLE_TESTNET_BASE_URL: &str = "https://xreserve-api-testnet.circle.com";
 pub const CIRCLE_MAINNET_BASE_URL: &str = "https://xreserve-api.circle.com";
 
-/// The package-default faucet id: the xUSDC faucet this repo's own LNV4 local-node validation run
-/// deployed (`crates/xusdc-validation/VALIDATION-RECORD-LNV4.md`). It is a **placeholder** — a real
+/// The package-default faucet id is a **placeholder** — a real
 /// deployment overrides it from the operator's config file, and the default exists so a test or a
 /// dev run has a parseable, genuinely-valid id rather than a fabricated one.
 const PLACEHOLDER_FAUCET_ID: &str = "0xbb405fd9fe431bd1135a292de098cb";

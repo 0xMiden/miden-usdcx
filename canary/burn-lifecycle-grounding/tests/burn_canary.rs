@@ -293,8 +293,7 @@ async fn c1_next_block_user_create_retrieve_consume() -> anyhow::Result<()> {
     // Public note still discoverable AFTER consumption — assert the FULL details still match.
     // NOTE: this holds because MockChain marks the nullifier spent but does not yet prune
     // committed_notes (chain.rs:920-928 TODO) — a harness behavior, not a protocol guarantee. The
-    // durable burn-event observability is a local-node / withdrawal-attester concern (see
-    // BURN-MECHANICS-GROUNDING-REPORT.md).
+    // durable burn-event observability is a local-node / withdrawal-attester concern.
     let retrieved_after = chain
         .get_public_note(&burn_note.id())
         .expect("public note retained post-consume (MockChain TODO)");

@@ -1,7 +1,7 @@
 //! Storage-map grounding canary (P5-01) — exposes the component MASM and its module path so the
 //! MockChain test can assemble, bind, and exercise it. Scratch: this crate is an isolated
 //! workspace, depends only on the pinned `protocol-pin-v0.15.3`, and decides nothing about the
-//! faucet's real storage layout. See `STORAGE-MAP-GROUNDING-REPORT.md` (written in Phase 3).
+//! faucet's real storage layout.
 
 /// Fully-qualified component module path. Passed to `CodeBuilder::compile_component_code` and
 /// imported by the tx script via `use xusdc::canary::storage_map->canary`. Must match the

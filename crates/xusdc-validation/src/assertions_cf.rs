@@ -36,7 +36,7 @@ use crate::observations_cf::{
 // assertion rejects it.
 // ================================================================================================
 
-/// D5d: the attester pubkey commitment is not in the on-chain `xReserveAttesters` allowlist.
+/// attestation verification: the attester pubkey commitment is not in the on-chain `xReserveAttesters` allowlist.
 pub const ERR_ATTESTER_NOT_ALLOWLISTED: &str =
     "deposit attester pubkey commitment is not allowlisted";
 /// R-BURN-2 — the STOCK `MinBurnAmount::check_policy` floor gate (Wave-1 S1: the custom

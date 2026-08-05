@@ -175,7 +175,7 @@ fn t_rly_13_amount_and_maxfee_carried_raw(#[case] id: &str) {
     assert_eq!(
         di.amount(),
         &f.bytes32("amount"),
-        "amount carried raw (reduction is on-chain at D5b)"
+        "amount carried raw (reduction is on-chain at amount validation)"
     );
     assert_eq!(di.max_fee(), &f.bytes32("max_fee"), "maxFee carried raw");
 }

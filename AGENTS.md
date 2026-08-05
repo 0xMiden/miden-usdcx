@@ -9,10 +9,10 @@ Circle **xReserve / xUSDC** (NOT standard USDC, NOT CCTP) on Miden: native USDC 
 3. **The governing docs bind every builder:** `docs/governing/CANONICAL-OWNERSHIP-MAP.md` (owners, layout, names) and `docs/governing/BUILDER-GATES.md` (G0–G8, G-MASM, G-RUST). Read both before any work. The specs and governing docs under `docs/` are the source of truth for this repository.
 4. **Frozen decisions (do not revisit, do not alias):**
    - NS-1: bytes32→Word MASM proc = `xreserve::encoding::bytes32_to_key` (the Rust routine keeps `bytes32_to_storage_map_key`).
-   - NS-2: the shared DepositIntent parser = 04-owned `xreserve::encoding::parse_deposit_intent`; faucet owns only mint-specific assertions. [SUPERSEDED 2026-08-01 → the parser is 01-owned `xreserve::deposit_intent_parser::parse`, called by `validate` in the same module: it had exactly one MASM consumer, and deriving the preimage length inside it removed a second derivation site. `xreserve::encoding` keeps the multi-consumer primitives (`bytes32_to_key`, `verify_uint256_to_asset_amount`, `layout`). The Rust mirror keeps `parse_deposit_intent_header`.]
-   - DC-7: `encoding/burn_items.masm` = 04-owned burn-item codec home (deferred past the first slice). [SUPERSEDED 2026-06-30 → P5-04 codec: DC-7 shipped as RUST (`crates/xusdc-encoding/src/xreserve/encoding/burn_note.rs`), NOT a .masm file — there is no burn_items.masm]
-   - Layout: **SELF-CONTAINED** components; two-root tree `asm/standards/xreserve/…` + `asm/account_components/faucets/…`. [SUPERSEDED → as built, the `asm/account_components/` root was not materialized: the faucet component ships under `asm/standards/xreserve/` and its note scripts under `asm/standards/notes/`. See the Layout section below for the tree as built.]
-5. **Version pins (ledger: `docs/governing/V15-DEVNET-BASELINE.md`):** Miden **v0.15 + devnet**. `protocol v0.15.3` (`681fc9058`) → assembler crates **0.23.3** (seed `Cargo.lock`); `miden-node v0.15.0` (`29a876c3`, the TAG is the pin); devnet RPC `https://rpc.devnet.miden.io`. Miden testnet (v0.14) is NOT the validation network. `miden-vm`/`miden-assembly` follow their own `0.23.x` cadence — never pin a "miden-vm v0.15" tag.
+   - NS-2: the DepositIntent parser is 01-owned at `xreserve::deposit_intent_parser::parse`; `xreserve::encoding` owns the shared layout and multi-consumer primitives.
+   - DC-7: the burn-item codec is 04-owned and ships in Rust at `crates/xusdc-encoding/src/xreserve/encoding/burn_note.rs`; there is no `burn_items.masm`.
+   - Layout: **SELF-CONTAINED** components; the faucet component ships under `asm/standards/xreserve/` and its note scripts under `asm/standards/notes/`.
+5. **Version pins:** Workspace manifests and `Cargo.lock` are authoritative. Protocol-family crates pin `0xMiden/protocol@4971ec4b38fb1f54e8f73969e6da81ee0cbf850c` (`v0.16.0-beta.1`).
 6. **Circle-owned open decisions stay OPEN** (`DEV-*`/`Q-*`, e.g. DEV-5 cap/scale, DEV-7 burn evidence, DEV-10 AccountId encoding): implement per the frozen spec, keep the OPEN labels, never mark them approved/resolved.
 7. **Single-owner rule:** every shared format/routine has exactly one owner (the map); consumers pin by reference. One canonical golden-vector artifact drives both MASM and Rust tests; MASM tests must EXECUTE, not just assemble.
 8. Git: conventional commits, signed; **never push, publish, or open PRs without explicit human approval.**
@@ -30,37 +30,25 @@ asm/standards/notes/         # public note scripts — the mint note and the adm
 crates/xusdc-encoding/       # Rust: the encoding mirror, the faucet-account builder, golden vectors, assemble-and-execute tests
 crates/xusdc-validation/     # Rust: the real-local-node validation harness (LNV rows A–L)
 docs/governing/  docs/spec/  # governing conventions + pins; the spec, glossary, and encoding spec
-canary/                      # grounding reports: each Miden primitive the faucet relies on, proven to execute
+canary/                      # executable grounding test crates for specific Miden primitives
 ```
 
 (This is the tree as built. The off-chain partner services — relayer, listener, monitoring — are
 later units of the wider program and are not in this repository.)
 
-Build order: **04 shared encoding → 01 faucet → 02 relayer → 03 listener → local-node/devnet validation → 05 monitoring** (frontend deferred). Each unit: plan → audit → build → consortium → Codex audit → human approval.
-
-> [SUPERSEDED → faucet §11: the **faucet's own local-node validation is part of unit 01** (its own gate, BEFORE the off-chain relayer/listener) — do NOT defer the faucet's node-validation to the end. The trailing "local-node/devnet validation" step above is the **system E2E** (whole-flow), not the faucet's unit gate.]
+Build order: **04 shared encoding → 01 faucet (including its local-node validation) → 02 relayer → 03 listener → system E2E validation → 05 monitoring** (frontend deferred). Each unit: plan → audit → build → consortium → Codex audit → human approval.
 
 ## Working in this repo (onboarding — for a human or a local coding agent)
 
 New here? Read the specs before the code. `README.md` is the top-level orientation;
-`docs/spec/FAUCET-COMPONENT-SPEC.md` is what the faucet does, `docs/spec/ENCODING-COMPONENT-SPEC.md`
-is the shared codecs, and `docs/DOCS-INVENTORY.md` maps every doc in the repo.
-
-**Looking for where a requirement, invariant, or decision id is implemented and verified?
-`docs/REQUIREMENTS-TRACEABILITY.md` is the index** — it maps every id (`CIR-*`, `INV-*`, `DEV-*`,
-`R-MINT-*`, `DC-*`, …) to the procedure or function that implements it and the test that verifies
-it. Inline comments deliberately carry prose, not ids, so this index is the only place the two are
-tied together.
+`docs/spec/FAUCET-COMPONENT-SPEC.md` is what the faucet does, and
+`docs/spec/ENCODING-COMPONENT-SPEC.md` is the shared codecs.
 
 ### Code comments ↔ docs
 
 Inline code comments carry plain-English prose only — each comment stands on its own with no
-external lookups. The short stable IDs — a requirement (`R-MINT-15`), an invariant
-(`INV-MINT-SECURITY`), a mint pipeline stage (`D5c`), a data contract (`DC-1`), or a
-still-Circle-owned open question (`DEV-10`) — are defined in `docs/spec/GLOSSARY.md` and mapped
-to their implementing procedure/function and verifying test in
-`docs/REQUIREMENTS-TRACEABILITY.md`. A tripwire test
-(`crates/xusdc-encoding/tests/comment_hygiene_tripwire.rs`) keeps the ids out of comments.
+external lookups. Stable requirement, invariant, data-contract, and open-question IDs are defined
+in `docs/spec/GLOSSARY.md`.
 
 ### Build / test / validate
 

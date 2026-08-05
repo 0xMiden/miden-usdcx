@@ -17,8 +17,8 @@ plus the Rust encoding library and validation harness that support it.
 | `crates/xusdc-encoding/` | Rust crate: the encoding library (the Rust mirror of the MASM codecs — bytes32 hashing, uint256→amount reduction, DepositIntent parse), the `XReserveStablecoinBuilder` that composes the faucet account, golden test vectors, and the assemble-and-**execute** test suite. |
 | `crates/xusdc-validation/` | Rust crate: the local-node validation harness that deploys the production faucet to a real Miden node and drives the mint/burn/admin acceptance matrix (rows `A`–`L`). |
 | `docs/spec/` | The specification: the faucet component spec, the shared-encoding spec, and the **identifier glossary**. |
-| `docs/governing/` | The pins, module-ownership map, MASM structure conventions, and toolchain-grounding reports the code is built against. |
-| `canary/` | Grounding reports proving each Miden primitive the faucet relies on actually executes on the pinned toolchain. |
+| `docs/governing/` | The pins, module-ownership map, MASM structure conventions, and toolchain grounding the code is built against. |
+| `canary/` | Executable grounding test crates for specific Miden primitives the faucet relies on. |
 
 ## How it works
 
@@ -76,13 +76,9 @@ See [`docs/spec/FAUCET-COMPONENT-SPEC.md`](docs/spec/FAUCET-COMPONENT-SPEC.md) f
 ## Start here
 
 - **What the faucet does and how it's built:** [`docs/spec/FAUCET-COMPONENT-SPEC.md`](docs/spec/FAUCET-COMPONENT-SPEC.md).
-- **What every short identifier means** (`R-MINT-15`, `D5c`, `DEV-10`, …):
+- **What every short identifier means** (`R-MINT-15`, `DEV-10`, …):
   [`docs/spec/GLOSSARY.md`](docs/spec/GLOSSARY.md).
-- **Where each id is implemented and verified:** [`docs/REQUIREMENTS-TRACEABILITY.md`](docs/REQUIREMENTS-TRACEABILITY.md)
-  maps every requirement/invariant/decision id to its procedure/function and test (inline code
-  comments deliberately carry prose, not ids).
 - **The encoding contracts** (`DC-1`..`DC-7`): [`docs/spec/ENCODING-COMPONENT-SPEC.md`](docs/spec/ENCODING-COMPONENT-SPEC.md).
-- **What each doc in the repo is for:** [`docs/DOCS-INVENTORY.md`](docs/DOCS-INVENTORY.md).
 
 ## Build and test
 
@@ -106,19 +102,14 @@ cross-implementation vectors — against a mock chain.
 `crates/xusdc-validation` deploys the production faucet to a **real Miden node** and drives the
 mint/burn/admin acceptance matrix (rows `A`–`L`). Since the v16-alpha `miden-client`
 (`=0.16.0-alpha.1`, which itself pins protocol `=0.16.0-alpha.4`) shipped, the crate is a
-**workspace member again** and builds against this tree (P1b-a; the former
-[`PARKED-V15.md`](crates/xusdc-validation/PARKED-V15.md) is superseded). The **offline** half runs
+**workspace member again** and builds against this tree. The **offline** half runs
 in the normal workspace gate — `cargo build --workspace --locked` compiles the lib, the `lnv*`
 binaries, and the row test files, and `cargo test --workspace --locked` runs the crate's
 non-ignored (sandbox-safe, no-node) tests.
 
 The **live-node** rows — the real four-service-stack deploy/drive that needs the node binaries on
 `PATH` and loopback ports `57291–57294` free — stay `#[ignore]`d in the default suite and are
-**operator-run** (P1b-b); their execution against a real **v16** node (and the node harness's
-v16-CLI correctness) is a separate step. Until P1b-b regenerates the v16 record, the completed
-**v15 run record stands as the inherited real-node evidence** — see
-[`crates/xusdc-validation/VALIDATION-RECORD-LNV5.md`](crates/xusdc-validation/VALIDATION-RECORD-LNV5.md)
-(the consolidated rows `A`–`L` gate run, 12/12) and the per-slice `VALIDATION-RECORD*.md` files.
+operator-run.
 
 Each gate binary bootstraps genesis, starts the four-service node stack (validator, ntx-builder,
 sequencer, tx prover), runs its rows, and tears the stack down:

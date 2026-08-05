@@ -1,8 +1,6 @@
 # Circle-facing semantics note — xUSDC transfer blocklist (faucet v2)
 
 **Audience:** Circle · **Status:** for confirmation (Q-BLK-1, OPEN) · **Date:** 2026-07-23
-**Companion:** `DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md`
-
 This note states, in plain terms, what the on-chain transfer blocklist DOES on the Miden xUSDC faucet, so
 Circle can confirm the behavior matches its compliance intent. The mechanics are kernel-verified (see the
 flow matrix, §1.5 of the research report) and proven executable in `tests/transfer_blocklist_e2e.rs`.

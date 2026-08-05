@@ -1,10 +1,10 @@
-//! Mint-effects grounding canary (P5-01 D5e) — exposes the component MASM and its module path so
+//! Mint-effects grounding canary (P5-01 mint effects) — exposes the component MASM and its module path so
 //! the MockChain test can assemble, bind, and exercise it on a `FungibleFaucet` account. Scratch:
 //! this crate is an isolated workspace, depends only on the pinned `protocol-pin-v0.15.3`, and
 //! decides nothing about the faucet's real mint proc. It proves the write-side kernel primitives
 //! (`create_fungible_asset` + `faucet::mint` + `output_note::*` + the `token_config` value-slot
 //! read/modify/write + `set_map_item`) EXECUTE AND COMMIT on a faucet account carrying a custom
-//! component. See `MINT-EFFECTS-GROUNDING-REPORT.md` (written in Phase 3).
+//! component.
 
 /// Fully-qualified component module path. Passed to `CodeBuilder::compile_component_code` and
 /// imported by the tx script via `use xusdc::canary::mint_effects->canary`. Must match the
@@ -13,7 +13,7 @@ pub const CANARY_PATH: &str = "xusdc::canary::mint_effects";
 
 /// The map storage-slot label the MASM `word("...")` const hashes into the slot id. The harness
 /// binds the same string via `StorageSlotName::new(USED_SLOT_LABEL)` (cross-language linkage).
-/// Stands in for D5e's `usedNonces` registry — the canary just proves the SET commits.
+/// Stands in for mint effects's `usedNonces` registry — the canary just proves the SET commits.
 pub const USED_SLOT_LABEL: &str = "xusdc::canary::mint_effects::used";
 
 /// The faucet token-config value slot installed by the standard `FungibleFaucet` component, read

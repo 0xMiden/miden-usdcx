@@ -345,7 +345,7 @@ pub proc check_policy
     padw loc_loadw_le.ASSET_VALUE_LOC
     # => [ASSET_VALUE, tag, note_type, RECIPIENT, pad(16)]
 
-    # we should not drop the stack elements trailing directly behind `RECIPIENT`, because these 
+    # we should not drop the stack elements trailing directly behind `RECIPIENT`, because these
     # might have come from the invoking procedure.
     # instead, truncate_stack removes the final ten stack elements.
     exec.sys::truncate_stack

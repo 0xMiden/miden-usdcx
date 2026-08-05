@@ -45,9 +45,8 @@ use miden_standards::note::{
 };
 
 use crate::xreserve::encoding::{
-    affine_pubkey_felts, bytes32_to_account_id, bytes32_to_storage_map_key,
-    deposit_intent_to_packed_felts, parse_deposit_intent_header, signature_felts,
-    uint256_to_asset_amount,
+    bytes32_to_account_id, bytes32_to_storage_map_key, deposit_intent_to_packed_felts,
+    parse_deposit_intent_header, uint256_to_asset_amount, PublicKey, Signature,
 };
 
 /// The mint-note transport attachment scheme (u16, project-chosen: >= 4, clear of
@@ -200,10 +199,17 @@ impl XUsdcMintNote {
         let mut felts: Vec<Felt> = Vec::new();
 
         felts.extend([Felt::from(0u32); 8]);
-        felts.extend(affine_pubkey_felts(attestation.pubkey()).map_err(|source| {
-            NoteError::other_with_source("attestation pubkey rejected by the shared codec", source)
-        })?);
-        felts.extend(signature_felts(attestation.signature()));
+        felts.extend(
+            PublicKey::new(*attestation.pubkey())
+                .to_affine_felts()
+                .map_err(|source| {
+                    NoteError::other_with_source(
+                        "attestation pubkey rejected by the shared codec",
+                        source,
+                    )
+                })?,
+        );
+        felts.extend(Signature::new(*attestation.signature()).to_felts());
         felts.extend([Felt::from(0u32); 3]);
         debug_assert_eq!(felts.len(), XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF * 4);
 

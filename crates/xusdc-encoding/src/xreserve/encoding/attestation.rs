@@ -33,6 +33,12 @@ use miden_protocol::{Felt, Hasher, Word};
 
 use super::error::EncodingError;
 
+/// Re-export of the stock commitment type: the attester-allowlist commitment path produces a raw
+/// commitment `Word`, and the protocol already owns a newtype over exactly that `Word`, so a typed
+/// caller names the commitment as this stock type rather than re-deriving one. A caller that needs
+/// the raw `Word` back converts with `Word::from(commitment)`.
+pub use miden_protocol::account::auth::PublicKeyCommitment;
+
 /// Number of u32 field elements an affine secp256k1 public key packs to
 /// (`qx_le_u32[8] || qy_le_u32[8]`) — the element count the commitment hashes.
 pub const PUBKEY_FELTS: usize = 16;
@@ -98,6 +104,76 @@ pub fn signature_felts(sig: &[u8; 65]) -> [Felt; 17] {
 /// Returns [`EncodingError::InvalidPubkey`] if the bytes do not decode to a curve point.
 pub fn pubkey_commitment(pk: &[u8; 33]) -> Result<Word, EncodingError> {
     Ok(Hasher::hash_elements(&affine_pubkey_felts(pk)?))
+}
+
+/// A Circle deposit attestation's raw 65-byte `r‖s‖v` ECDSA signature.
+///
+/// Wrapping the fixed-width byte array turns the packing into a method — `Signature::new(bytes)
+/// .to_felts()` — so a caller states what the bytes ARE at the call site instead of passing a bare
+/// `[u8; 65]` into a free function. The felt sequence is produced by [`signature_felts`], so it is
+/// identical to the free function's (golden-vector-locked) output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Signature([u8; 65]);
+
+impl Signature {
+    /// Wraps a raw 65-byte `r‖s‖v` signature (`v` carried in the last byte, unused on-chain).
+    pub const fn new(bytes: [u8; 65]) -> Self {
+        Self(bytes)
+    }
+
+    /// The raw 65 signature bytes.
+    pub const fn as_bytes(&self) -> &[u8; 65] {
+        &self.0
+    }
+
+    /// Packs the signature into the 17 u32-LE field elements the on-chain attestation surface reads
+    /// (`v` in felt 16, upper three bytes zero-filled). Byte-for-byte identical to
+    /// [`signature_felts`].
+    pub fn to_felts(&self) -> [Felt; 17] {
+        signature_felts(&self.0)
+    }
+}
+
+/// A Circle attester's public key in Circle's 33-byte compressed SEC1 wire form.
+///
+/// The newtype gives the two fallible conversions a home as methods — the affine-coordinate packing
+/// ([`PublicKey::to_affine_felts`]) and the allowlist commitment ([`PublicKey::to_commitment`]) —
+/// each delegating to the free function that owns the SEC1→affine decompression seam, so the felts
+/// and the commitment `Word` are identical to [`affine_pubkey_felts`] / [`pubkey_commitment`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublicKey([u8; 33]);
+
+impl PublicKey {
+    /// Wraps a 33-byte compressed SEC1 candidate public key.
+    pub const fn new(bytes: [u8; 33]) -> Self {
+        Self(bytes)
+    }
+
+    /// The raw 33 compressed-SEC1 bytes.
+    pub const fn as_bytes(&self) -> &[u8; 33] {
+        &self.0
+    }
+
+    /// Decompresses and packs the affine coordinates into the 16 u32-LE field elements the on-chain
+    /// attestation surface consumes. Identical to [`affine_pubkey_felts`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EncodingError::InvalidPubkey`] if the bytes do not decode to a curve point.
+    pub fn to_affine_felts(&self) -> Result<[Felt; 16], EncodingError> {
+        affine_pubkey_felts(&self.0)
+    }
+
+    /// The attester-allowlist commitment, handed out as the stock [`PublicKeyCommitment`] rather
+    /// than a raw `Word` — the commitment value is [`pubkey_commitment`]'s `Word`, wrapped in the
+    /// protocol's own newtype (`Word::from(commitment)` recovers it).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EncodingError::InvalidPubkey`] if the bytes do not decode to a curve point.
+    pub fn to_commitment(&self) -> Result<PublicKeyCommitment, EncodingError> {
+        Ok(PublicKeyCommitment::from(pubkey_commitment(&self.0)?))
+    }
 }
 
 // TESTS — TV-ATT-1..3

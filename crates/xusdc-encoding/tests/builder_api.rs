@@ -14,22 +14,21 @@ mod support;
 use anyhow::{Context, Result};
 use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
-    AccountComponent, AccountProcedureRoot, AccountType, RoleSymbol, StorageMap, StorageSlot,
-    StorageSlotName,
+    AccountComponent, RoleSymbol, StorageMap, StorageSlot, StorageSlotName,
 };
 use miden_protocol::asset::{AssetAmount, TokenSymbol};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{PausableManager, PausableStorage};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::policies::{
-    BasicBlocklist, BlocklistManager, BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager,
+    BasicBlocklist, BlocklistManager, BurnPolicy, MinBurnAmount, TokenPolicyManager,
 };
 use support::*;
 use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, XReserveStablecoinBuilder, XReserveStablecoinBuilderError,
     ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
+use xusdc_encoding::xreserve::encoding::{bytes32_to_packed_felts, EthBytes32};
 
 // Dummy faucet config words (the builder does not read them; they only bind the xreserve component's
 // value slots so it assembles, exactly as the composition harness does).
@@ -105,23 +104,31 @@ fn production_faucet(
         .context("failed to build FungibleFaucet")
 }
 
-/// The standard production builder over `(faucet, component)`: the seeded principal ids
-/// (owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3), BLK_MANAGER = id(4)) plus the REQUIRED
-/// build-seeded domain config — every construction in this suite goes through here unless
-/// the test's very point is omitting the domain config.
+/// The standard production builder: the seeded principal ids (owner = id(1), DOM_PAUSER = id(2),
+/// DOM_MANAGER = id(3), BLK_MANAGER = id(4)) plus the REQUIRED build-seeded domain config — every
+/// construction in this suite goes through here unless the test's very point is omitting the domain
+/// config. Neither the faucet nor the `xreserve` component is a builder input any more — `new` builds
+/// the fixed-identity USDCx faucet (mutable max supply) and assembles the one valid component itself
+/// — so this fixture supplies only the fixed supply parameters. The `_faucet` / `_xreserve_component`
+/// arguments are retained (ignored) so the many call sites keep their shape.
 fn production_builder(
-    faucet: FungibleFaucet,
-    xreserve_component: AccountComponent,
+    _faucet: FungibleFaucet,
+    _xreserve_component: AccountComponent,
 ) -> XReserveStablecoinBuilder {
     XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
+        AssetAmount::new(1_000_000).expect("the fixed test max supply is valid"),
+        AssetAmount::new(0).expect("a zero token supply is valid"),
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
     )
-    .with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN, test_xreserve_contract())
+    .expect("the fixed-identity USDCx faucet builds")
+    .with_domain_config(
+        TEST_DOMAIN,
+        TEST_SOURCE_DOMAIN,
+        EthBytes32::new(test_xreserve_contract()),
+    )
 }
 
 /// Looks up a procedure's root by its library path across every component in the composed set.
@@ -179,47 +186,16 @@ fn build_produces_attestation_gated_public_faucet() -> Result<()> {
 // BUILD VALIDATION REJECTS (GREEN)
 // ================================================================================================
 
-/// A non-`Public` account type is rejected at build time (packaging cannot produce an unobservable
-/// faucet). The non-public check runs before the policy resolution, so this fails fast. GREEN.
-#[test]
-fn build_rejects_non_public_account_type() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(false)?;
-    let err = production_builder(faucet, xreserve_component)
-        .account_type(AccountType::Private)
-        .build_components()
-        .expect_err("a non-Public account type must be rejected");
-    assert!(
-        matches!(
-            err,
-            XReserveStablecoinBuilderError::NonPublicAccountType(AccountType::Private)
-        ),
-        "expected NonPublicAccountType(Private), got {err:?}"
-    );
-    Ok(())
-}
+// The account type and the active mint policy are no longer builder inputs: the account is composed
+// against the supplied (Public) faucet, and the mint policy is hard-wired to the attestation policy
+// (there is exactly one mint policy). Neither a non-`Public` account type nor a non-attestation mint
+// policy can be expressed through the public builder, so the former `build_rejects_non_public_account_type`
+// and `build_rejects_missing_attestation_mint_policy` tripwires have no input to reject. The
+// posture is enforced by construction and asserted positively by
+// `production_composition_installs_one_xreserve_and_one_manager` and the frozen callable-surface pins.
 
-/// An active mint policy that is not the attestation policy is rejected — packaging cannot silently
-/// swap out the attestation gate (the sole-supply-surface invariant restated: the attestation
-/// policy is the only mint policy production allows). GREEN.
-#[test]
-fn build_rejects_missing_attestation_mint_policy() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(false)?;
-    let err = production_builder(faucet, xreserve_component)
-        .with_active_mint_policy(MintPolicy::allow_all())
-        .build_components()
-        .expect_err("a non-attestation active mint policy must be rejected");
-    assert!(
-        matches!(
-            err,
-            XReserveStablecoinBuilderError::MissingAttestationMintPolicy
-        ),
-        "expected MissingAttestationMintPolicy, got {err:?}"
-    );
-    Ok(())
-}
-
-/// An active burn policy that is not the stock `MinBurnAmount` is rejected (the burn-slot twin of
-/// [`build_rejects_missing_attestation_mint_policy`]): packaging cannot drop the minimum-burn floor
+/// An active burn policy that is not the stock `MinBurnAmount` is rejected (the burn-slot twin of the
+/// hard-wired attestation mint gate): packaging cannot drop the minimum-burn floor
 /// predicate (the zero-burn and minimum-burn rejects preserved through the stock policy). The faucet is
 /// otherwise valid (Public + attestation mint active + mutable max_supply) so the burn policy is the
 /// SOLE reason for rejection — removing the guard makes this build succeed (removal-based
@@ -299,24 +275,12 @@ fn build_accepts_matching_min_burn_override() -> Result<()> {
     Ok(())
 }
 
-/// An immutable-`max_supply` faucet is rejected at build time: the stock `set_max_supply` admin
-/// function would otherwise ship permanently dead (every call traps the runtime mutability gate). The
-/// faucet here is otherwise valid (Public + attestation active) and differs ONLY in mutability, so the
-/// guard is the sole reason for rejection — and deleting the guard makes this build succeed
-/// (removal-based non-vacuity). `faucet_and_component(false)` builds an IMMUTABLE faucet, exactly the
-/// misconfiguration the guard exists to reject.
-#[test]
-fn build_rejects_immutable_max_supply() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(false)?;
-    let err = production_builder(faucet, xreserve_component)
-        .build_components()
-        .expect_err("an immutable-max-supply faucet must be rejected at build time");
-    assert!(
-        matches!(err, XReserveStablecoinBuilderError::ImmutableMaxSupply),
-        "expected ImmutableMaxSupply, got {err:?}"
-    );
-    Ok(())
-}
+// The max-supply mutability invariant is now enforced BY CONSTRUCTION: the crate-root
+// `build_faucet_account` builds the faucet `is_max_supply_mutable(true)`, so there is no
+// runtime `ImmutableMaxSupply` reject to exercise, and the former `build_rejects_immutable_max_supply`
+// tripwire has no immutable faucet to inject through the public constructor. The invariant is
+// asserted positively by the crate-root byte-identity suite, which builds through
+// `build_faucet_account` and composes a valid faucet whose `set_max_supply` stays operable.
 
 // PRODUCTION minBurnSize SEEDING (the stock MinBurnAmount floor slot)
 // ================================================================================================
@@ -417,15 +381,15 @@ fn build_rejects_min_burn_size_exceeding_max() -> Result<()> {
 /// missing domain config is the SOLE reason for rejection.
 #[test]
 fn build_rejects_missing_domain_config() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
     let err = XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
+        AssetAmount::new(1_000_000).expect("valid max supply"),
+        AssetAmount::new(0).expect("valid token supply"),
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
     )
+    .expect("the fixed-identity USDCx faucet builds")
     .build_components()
     .expect_err("a build without with_domain_config must be rejected (DEC-4)");
     assert!(
@@ -605,78 +569,19 @@ fn production_components_carry_mutability_config_slot() -> Result<()> {
 // COMPLETENESS GUARDS — the builder rejects an incompletely- or wrongly-composed faucet at build time.
 // ================================================================================================
 
-/// Validate-what-you-ship slot presence: a component missing ANY of the seven required xreserve
-/// slots is rejected with the EXACT `MissingXReserveSlot(label)` naming the absent slot — a missing
-/// slot would ship a faucet whose reads/writes of it trap `ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME`
-/// at runtime (LOUD, but deploy-time rejection is the "invalid composition → build error" bar). One
-/// case per omitted slot.
-#[rstest::rstest]
-#[case::domain(0)]
-#[case::source_domain(1)]
-#[case::xreserve_contract_hi(2)]
-#[case::xreserve_contract_lo(3)]
-#[case::used_nonces(4)]
-#[case::xreserve_attesters(5)]
-fn build_rejects_missing_xreserve_slot(#[case] omitted: usize) -> Result<()> {
-    let labels: Vec<&str> = ALL_XRESERVE_SLOT_LABELS
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != omitted)
-        .map(|(_, l)| *l)
-        .collect();
-    let component = xreserve_component_with_slots(&labels)?;
-    let faucet = production_faucet(true, 6, "USDCX")?;
-    let err = production_builder(faucet, component)
-        .build_components()
-        .expect_err("a component missing a required xreserve slot must be rejected at build time");
-    let missing = ALL_XRESERVE_SLOT_LABELS[omitted];
-    assert!(
-        matches!(err, XReserveStablecoinBuilderError::MissingXReserveSlot(l) if l == missing),
-        "expected MissingXReserveSlot({missing}), got {err:?}"
-    );
-    Ok(())
-}
+// The `xreserve` component is now assembled by the builder itself (16d), always carrying its six
+// declared slots, so a component "missing a required slot" cannot be injected through the public API.
+// The `MissingXReserveSlot` guard remains in `build_components` as defence against a future assembly
+// regression, but the former `build_rejects_missing_xreserve_slot` tripwire has no malformed
+// component to feed it. The six slots are still pinned by the Phase-0 baseline
+// (`REQUIRED_XRESERVE_SLOT_LABELS`) and asserted present by the composed-account surface tests.
 
-/// Token-config exactness: a faucet whose `decimals != 6` is rejected with the EXACT
-/// `WrongDecimals(d)` — Circle mandates six decimal places and the amount reducer scales to 6dp, so
-/// a mismatched faucet silently mis-scales every minted amount. The faucet is otherwise valid
-/// (Public + deny active + mutable max_supply + full slot set), so the decimals are the SOLE reason
-/// for rejection.
-#[test]
-fn build_rejects_wrong_decimals() -> Result<()> {
-    let component = xreserve_component_with_slots(&ALL_XRESERVE_SLOT_LABELS)?;
-    let faucet = production_faucet(true, 7, "USDCX")?;
-    let err = production_builder(faucet, component)
-        .build_components()
-        .expect_err("a faucet with decimals != 6 must be rejected at build time");
-    assert!(
-        matches!(err, XReserveStablecoinBuilderError::WrongDecimals(7)),
-        "expected WrongDecimals(7), got {err:?}"
-    );
-    Ok(())
-}
-
-/// Token-config exactness: a faucet whose `TokenSymbol` is not the shipped `USDCX` guard
-/// constant is rejected with the EXACT `WrongTokenSymbol`. The token's identity is USDCx (DISTINCT
-/// from the superseded "xUSDC"); the pinned `TokenSymbol` is
-/// uppercase A–Z only (`token_symbol.rs:17`), so `USDCX` is the VM-forced uppercase on-chain form.
-/// The WRONG fixture is deliberately the superseded `"XUSDC"` — this test now also guards against
-/// regressing to the old symbol.
-#[test]
-fn build_rejects_wrong_token_symbol() -> Result<()> {
-    let component = xreserve_component_with_slots(&ALL_XRESERVE_SLOT_LABELS)?;
-    let faucet = production_faucet(true, 6, "XUSDC")?;
-    let err = production_builder(faucet, component)
-        .build_components()
-        .expect_err(
-            "a faucet whose symbol is not the shipped USDCX must be rejected at build time",
-        );
-    assert!(
-        matches!(err, XReserveStablecoinBuilderError::WrongTokenSymbol),
-        "expected WrongTokenSymbol, got {err:?}"
-    );
-    Ok(())
-}
+// Token-config exactness (decimals == 6, symbol == USDCX) is now guaranteed BY CONSTRUCTION: the
+// builder builds the fixed-identity USDCx faucet itself via `build_usdcx_faucet`, so a
+// wrong-decimals or wrong-symbol faucet cannot be handed in through the public API and the former
+// `build_rejects_wrong_decimals` / `build_rejects_wrong_token_symbol` tripwires have no
+// mis-configured faucet to reject. The identity is asserted positively by the byte-identity suite,
+// which builds the account through `build_faucet_account` and matches the frozen composition.
 
 // THE POLICY-COMPANION SEAM
 // ================================================================================================
@@ -763,56 +668,10 @@ fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> 
     Ok(())
 }
 
-/// NEGATIVE (the anti-smuggling proof): a policy override whose root IS the attestation policy — so
-/// it passes the `MissingAttestationMintPolicy` root check — but whose companion vector smuggles a
-/// FOREIGN component is rejected at the seam with the exact `PolicyCompanionMismatch`, and the
-/// diagnostic exposes the extra: the remainder holds 4 companions of which only 3 are recognized
-/// (1 xreserve + 1 MinBurnAmount + 1 BasicBlocklist). Without this seam the foreign component would
-/// ride into the account silently.
-#[test]
-fn seam_rejects_a_smuggled_foreign_policy_companion() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let builder = production_builder(faucet, xreserve_component.clone());
-    let attestation_root = builder
-        .attestation_mint_policy_root()
-        .context("the attestation-policy root resolves from the installed component")?;
-
-    // A stock component the production composition never installs through a POLICY — the smuggled
-    // payload. The override's ROOT is still the attestation policy, so the attestation-policy root
-    // check passes and the seam is the only thing standing between this component and the account.
-    let foreign: AccountComponent = PausableManager.into();
-    let smuggling_policy = MintPolicy::custom(
-        AccountProcedureRoot::from_raw(attestation_root),
-        [xreserve_component, foreign],
-    )
-    .context("the smuggling policy still resolves to the attestation-policy root")?;
-
-    let err = builder
-        .with_active_mint_policy(smuggling_policy)
-        .build_components()
-        .expect_err("a policy companion that is not a recognized companion must reject");
-    // The manager's companion remainder for the smuggled build: the mint policy emits its TWO
-    // companions (the xreserve copy + the foreign PausableManager), the stock burn policy its ONE
-    // MinBurnAmount companion, and the transfer policies their ONE shared BasicBlocklist — so
-    // `found` is 4 with only 3 recognized: the foreign is visible as
-    // `found > xreserve_recognized + min_burn_recognized + blocklist_recognized`.
-    assert!(
-        matches!(
-            err,
-            XReserveStablecoinBuilderError::PolicyCompanionMismatch {
-                expected_xreserve: 1,
-                expected_min_burn: 1,
-                expected_blocklist: 1,
-                found: 4,
-                xreserve_recognized: 1,
-                min_burn_recognized: 1,
-                blocklist_recognized: 1,
-            }
-        ),
-        "expected PolicyCompanionMismatch{{expected_xreserve:1, expected_min_burn:1, \
-         expected_blocklist:1, found:4, xreserve_recognized:1, min_burn_recognized:1, \
-         blocklist_recognized:1}} (the foreign companion must be visible as found > the recognized \
-         sum), got {err:?}"
-    );
-    Ok(())
-}
+// The former `seam_rejects_a_smuggled_foreign_policy_companion` tripwire injected a FOREIGN policy
+// companion through `with_active_mint_policy`, the mint-policy override this slice removed (the
+// faucet ships exactly one mint policy, hard-wired to the attestation policy). With no injectable
+// mint policy there is no way to smuggle a foreign companion through the public API, so the seam has
+// no adversarial input to reject. The defensive `PolicyCompanionMismatch` check remains in
+// `build_components`, and the composition's companion shape is asserted positively by
+// `production_composition_installs_one_xreserve_and_one_manager` above.

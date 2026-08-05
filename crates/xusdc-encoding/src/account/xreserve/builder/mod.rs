@@ -33,16 +33,16 @@
 //! mint path derives on chain, so the composed faucet is mint-ready the moment it exists.
 //!
 //! Packaging: the attestation policy is **runtime-assembled** MASM (no `.masl` asset /
-//! `account_component_code!` here — that is a miden-standards-internal pipeline). The caller
-//! assembles the `xreserve` library into an `AccountComponent` and passes
-//! it in; the policy procedure root is resolved from that same installed code via
-//! [`AccountComponent::get_procedure_root_by_path`], so the `dynexec` root the policy manager
-//! stores always equals the installed proc's MAST root.
+//! `account_component_code!` here — that is a miden-standards-internal pipeline). The builder
+//! assembles the shipped `xreserve` library into an `AccountComponent` itself (there is exactly one
+//! valid component, so it is not a builder input); the policy procedure root is resolved from that
+//! same installed code via [`AccountComponent::get_procedure_root_by_path`], so the `dynexec` root
+//! the policy manager stores always equals the installed proc's MAST root.
 
 use miden_protocol::account::{
-    AccountComponent, AccountId, AccountProcedureRoot, AccountType, StorageSlot, StorageSlotName,
+    AccountComponent, AccountId, AccountProcedureRoot, StorageSlot, StorageSlotName,
 };
-use miden_protocol::asset::{AssetAmount, TokenSymbol};
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Pausable, PausableManager};
 use miden_standards::account::faucets::FungibleFaucet;
@@ -52,12 +52,15 @@ use miden_standards::account::policies::{
 };
 
 use crate::account::xreserve::XReserveAdminAuthority;
-use crate::xreserve::encoding::bytes32_to_packed_felts;
+use crate::xreserve::encoding::EthBytes32;
 
+mod construction;
 mod error;
 mod network_auth;
 mod rbac_seed;
 
+use construction::build_usdcx_faucet;
+pub use construction::XReserveComponent;
 pub use error::XReserveStablecoinBuilderError;
 use rbac_seed::seeded_dom_roles_rbac;
 
@@ -134,20 +137,12 @@ pub const REQUIRED_XRESERVE_SLOT_LABELS: [&str; 6] = [
     XRESERVE_ATTESTERS_SLOT_LABEL,
 ];
 
-/// The storage slot the stock `FungibleFaucet` writes its mutability flags into. `build_components` reads it to reject an immutable-`max_supply`
-/// faucet — `FungibleFaucet` exposes no public accessor for the flag (it lives in private `metadata`).
-const FAUCET_MUTABILITY_CONFIG_SLOT: &str = "miden::standards::faucets::mutability_config";
-
-/// Index of `is_max_supply_mutable` within the faucet `mutability_config` word, whose layout is
-/// `[is_desc_mutable, is_logo_mutable, is_extlink_mutable, is_max_supply_mutable]`
-const MAX_SUPPLY_MUTABLE_WORD_INDEX: usize = 3;
-
 /// The three build-seeded domain-config fields (`domain`, `source_domain`, `xreserve_contract`).
 #[derive(Debug, Clone, Copy)]
 struct DomainConfigSeed {
     domain: u32,
     source_domain: u32,
-    xreserve_contract: [u8; 32],
+    xreserve_contract: EthBytes32,
 }
 
 /// Reads the burn floor (element 0 of the value word) from a `BurnPolicy`'s stock [`MinBurnAmount`]
@@ -175,11 +170,12 @@ fn min_burn_amount_floor_of(policy: &BurnPolicy) -> Option<u64> {
 /// **role-gating admin foundation** (a seeded `RoleBasedAccessControl` +
 /// [`XReserveAdminAuthority`]'s `Authority::RbacControlled`).
 ///
-/// Construct with [`XReserveStablecoinBuilder::new`] (the `owner` and the role holders are
-/// required), supply the three build-seeded domain-config fields via
-/// [`XReserveStablecoinBuilder::with_domain_config`] (required — a build without them is
-/// rejected), optionally override the account type / policies (for the rejection tests) or the
-/// min-burn floor, then call [`XReserveStablecoinBuilder::build_components`].
+/// Construct with [`XReserveStablecoinBuilder::new`] (the faucet supply parameters plus the `owner`
+/// and role holders — the faucet and the `xreserve` component are built internally, not passed in),
+/// supply the three build-seeded domain-config fields via
+/// [`XReserveStablecoinBuilder::with_domain_config`] (required — a build without them is rejected),
+/// optionally override the active burn policy or the min-burn floor, then call
+/// [`XReserveStablecoinBuilder::build_components`].
 pub struct XReserveStablecoinBuilder {
     faucet: FungibleFaucet,
     xreserve_component: AccountComponent,
@@ -199,8 +195,6 @@ pub struct XReserveStablecoinBuilder {
     /// account id is supplied at deploy time; the built-in `ADMIN` rotates/revokes it via
     /// the standard role-action note.
     blocklist_manager_holder: AccountId,
-    account_type: AccountType,
-    requested_active_mint_policy: Option<MintPolicy>,
     /// Overridden active burn policy (default: the stock [`MinBurnAmount`] descriptor). A
     /// non-MinBurnAmount choice exercises the missing-burn-policy rejection.
     requested_active_burn_policy: Option<BurnPolicy>,
@@ -216,52 +210,53 @@ pub struct XReserveStablecoinBuilder {
 }
 
 impl XReserveStablecoinBuilder {
-    /// Creates a builder from a built `FungibleFaucet` and the assembled `xreserve` library
-    /// component (which must carry the attestation mint policy `check_policy`), the `owner`
-    /// (the seeded `ADMIN` member that gates every unmapped authority-gated procedure), the
+    // CONSTRUCTORS
+    // --------------------------------------------------------------------------------------------
+
+    /// Creates a builder from the faucet supply parameters (`max_supply` / `token_supply`), the
+    /// `owner` (the seeded `ADMIN` member that gates every unmapped authority-gated procedure), the
     /// `pauser_holder` / `manager_holder`
     /// seeded as the sole members of `DOM_PAUSER` / `DOM_MANAGER`, and the
     /// `blocklist_manager_holder` seeded as the sole member of `BLK_MANAGER` (the external
-    /// transfer-blocklist administrator). Defaults to `AccountType::Public`, the
-    /// attestation policy as the active mint policy, the stock [`MinBurnAmount`] as the active
-    /// burn policy, and a min-burn floor of [`MIN_BURN_SIZE_FLOOR`].
+    /// transfer-blocklist administrator).
+    ///
+    /// The faucet is NOT a parameter: it has a fixed identity — name `USDCx`, symbol
+    /// [`USDCX_TOKEN_SYMBOL`], [`USDCX_DECIMALS`] decimals, and `is_max_supply_mutable(true)` — so the
+    /// builder BUILDS it here from `max_supply` / `token_supply`, and the mutability invariant, the
+    /// decimals and the symbol are guaranteed BY CONSTRUCTION. There is no way to hand the
+    /// builder an immutable or mis-configured faucet. The `xreserve` component is likewise not a
+    /// parameter — there is exactly one valid value (the shipped MASM), so the builder assembles it
+    /// via [`XReserveComponent`]. The active mint policy is always the attestation policy, hard-wired
+    /// at composition. Defaults to the stock [`MinBurnAmount`] as the active burn policy and a
+    /// min-burn floor of [`MIN_BURN_SIZE_FLOOR`].
+    ///
+    /// # Errors
+    ///
+    /// [`XReserveStablecoinBuilderError::FaucetComposition`] if the supply parameters do not form a
+    /// valid `FungibleFaucet`.
     pub fn new(
-        faucet: FungibleFaucet,
-        xreserve_component: AccountComponent,
+        max_supply: AssetAmount,
+        token_supply: AssetAmount,
         owner: AccountId,
         pauser_holder: AccountId,
         manager_holder: AccountId,
         blocklist_manager_holder: AccountId,
-    ) -> Self {
-        Self {
-            faucet,
-            xreserve_component,
+    ) -> Result<Self, XReserveStablecoinBuilderError> {
+        Ok(Self {
+            faucet: build_usdcx_faucet(max_supply, token_supply)?,
+            xreserve_component: XReserveComponent::assemble().into(),
             owner,
             pauser_holder,
             manager_holder,
             blocklist_manager_holder,
-            account_type: AccountType::Public,
-            requested_active_mint_policy: None,
             requested_active_burn_policy: None,
             min_burn_size: MIN_BURN_SIZE_FLOOR,
             domain_config: None,
-        }
+        })
     }
 
-    /// Overrides the account type (default `Public`). Used to exercise the non-`Public` rejection.
-    pub fn account_type(mut self, account_type: AccountType) -> Self {
-        self.account_type = account_type;
-        self
-    }
-
-    /// Overrides the requested active mint policy (default: the attestation policy). A
-    /// non-attestation choice is rejected by [`Self::build_components`] with
-    /// [`XReserveStablecoinBuilderError::MissingAttestationMintPolicy`] — packaging cannot
-    /// silently drop the attestation gate.
-    pub fn with_active_mint_policy(mut self, policy: MintPolicy) -> Self {
-        self.requested_active_mint_policy = Some(policy);
-        self
-    }
+    // MODIFIERS
+    // --------------------------------------------------------------------------------------------
 
     /// Overrides the requested active burn policy (default: the stock [`MinBurnAmount`]).
     /// A non-MinBurnAmount choice (e.g. [`BurnPolicy::allow_all`]) is rejected by
@@ -285,8 +280,9 @@ impl XReserveStablecoinBuilder {
     }
 
     /// Supplies the three BUILD-SEEDED domain-config fields: the u32 `domain` and
-    /// `source_domain` ids and the `xreserve_contract` bytes32. REQUIRED — a build without them
-    /// is rejected with [`XReserveStablecoinBuilderError::MissingDomainConfig`]. The values are
+    /// `source_domain` ids and the `xreserve_contract` remote address, typed as [`EthBytes32`] (the
+    /// 32-byte source-chain address newtype) rather than a raw `[u8; 32]`. REQUIRED — a build without
+    /// them is rejected with [`XReserveStablecoinBuilderError::MissingDomainConfig`]. The values are
     /// written into the declared `domain` / `source_domain` / `xreserve_contract_{hi,lo}` slots
     /// at composition time (`[domain, 0, 0, 0]` / `[source_domain, 0, 0, 0]` / the raw 8x
     /// u32-LE packed felts, hi = wire bytes 0..16, lo = bytes 16..32).
@@ -294,7 +290,7 @@ impl XReserveStablecoinBuilder {
         mut self,
         domain: u32,
         source_domain: u32,
-        xreserve_contract: [u8; 32],
+        xreserve_contract: EthBytes32,
     ) -> Self {
         self.domain_config = Some(DomainConfigSeed {
             domain,
@@ -303,6 +299,9 @@ impl XReserveStablecoinBuilder {
         });
         self
     }
+
+    // GETTERS
+    // --------------------------------------------------------------------------------------------
 
     /// Resolves the attestation mint policy's procedure root from the installed `xreserve`
     /// component. The same root is registered as the active mint policy, so the policy manager's
@@ -314,33 +313,16 @@ impl XReserveStablecoinBuilder {
             .ok_or(XReserveStablecoinBuilderError::AttestationPolicyProcNotFound)
     }
 
-    /// Reads the supplied faucet's `is_max_supply_mutable` flag from its assembled storage. The stock
-    /// `FungibleFaucet` exposes no accessor for it (the flag lives in its private `metadata`), so the
-    /// guard reads the `mutability_config` slot the faucet writes. Fail-closed: returns `true` ONLY
-    /// when the slot is present and the flag felt is exactly `1`.
-    fn faucet_max_supply_is_mutable(&self) -> bool {
-        let slot_name = StorageSlotName::new(FAUCET_MUTABILITY_CONFIG_SLOT)
-            .expect("the faucet mutability_config slot name is a valid constant");
-        self.faucet
-            .clone()
-            .into_storage_slots()
-            .into_iter()
-            .find(|slot| slot.name() == &slot_name)
-            .map(|slot| slot.value()[MAX_SUPPLY_MUTABLE_WORD_INDEX] == Felt::from(1u32))
-            .unwrap_or(false)
-    }
+    // BUILD / COMPOSE
+    // --------------------------------------------------------------------------------------------
 
-    /// Production composition: validates `AccountType::Public`, that the active mint policy is the
-    /// attestation policy and the active burn policy the stock [`MinBurnAmount`], seeds the three
-    /// build-time domain-config fields, then composes the account components.
+    /// Production composition: validates that the active burn policy is the stock [`MinBurnAmount`],
+    /// seeds the three build-time domain-config fields, then composes the account components. The
+    /// faucet's `max_supply` mutability is guaranteed by construction (the builder builds the faucet
+    /// `is_max_supply_mutable(true)` itself), so there is no runtime mutability reject.
     pub fn build_components(
         &self,
     ) -> Result<Vec<AccountComponent>, XReserveStablecoinBuilderError> {
-        if self.account_type != AccountType::Public {
-            return Err(XReserveStablecoinBuilderError::NonPublicAccountType(
-                self.account_type,
-            ));
-        }
         // Blocklist capability isolation: the BLK_MANAGER holder (transfer-blocklist administrator)
         // MUST be an external entity with no other faucet-admin capability. Reject at build time if it
         // collides with the administrator (ADMIN — would gain a direct block/unblock path), the DOM_PAUSER
@@ -367,30 +349,16 @@ impl XReserveStablecoinBuilder {
             );
         }
         let attestation_root = self.attestation_mint_policy_root()?;
-        // The policy descriptors are non-Copy and own their companion components —
-        // clone the override, or construct the default custom descriptor from the installed
-        // xreserve component (whose `has_procedure` check cannot fail here: `attestation_root`
-        // was just resolved FROM that component).
-        let active = match &self.requested_active_mint_policy {
-            Some(policy) => policy.clone(),
-            None => MintPolicy::custom(
-                AccountProcedureRoot::from_raw(attestation_root),
-                [self.xreserve_component.clone()],
-            )
-            .map_err(XReserveStablecoinBuilderError::MintPolicy)?,
-        };
-        // The core mint-security invariant: the active mint policy MUST resolve to the attestation
-        // policy — every supply increase passes the attestation gate.
-        if Word::from(active.root()) != attestation_root {
-            return Err(XReserveStablecoinBuilderError::MissingAttestationMintPolicy);
-        }
-        // Validate-what-you-ship: the supplied faucet's max_supply must be mutable, else the stock
-        // `set_max_supply` admin function ships permanently dead (it traps the runtime mutability gate
-        // on every call). Placed AFTER the account-type / policy rejections so those keep their
-        // precedence. Reject — never mutate the supplied faucet.
-        if !self.faucet_max_supply_is_mutable() {
-            return Err(XReserveStablecoinBuilderError::ImmutableMaxSupply);
-        }
+        // The faucet ships exactly ONE mint policy: the attestation policy, hard-wired here from the
+        // installed xreserve component (whose `has_procedure` check cannot fail — `attestation_root`
+        // was just resolved FROM that component). There is no injectable override, so the active
+        // mint policy resolves to the attestation root by construction and every supply increase
+        // passes the attestation gate — a parameter with exactly one valid value is not a parameter.
+        let active = MintPolicy::custom(
+            AccountProcedureRoot::from_raw(attestation_root),
+            [self.xreserve_component.clone()],
+        )
+        .map_err(XReserveStablecoinBuilderError::MintPolicy)?;
         // validate-what-you-ship: every required xreserve slot must be declared on the supplied
         // component — a missing slot would ship a faucet whose reads / writes of it trap
         // ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME at runtime. Presence-only for the two maps (the
@@ -408,19 +376,9 @@ impl XReserveStablecoinBuilder {
                 return Err(XReserveStablecoinBuilderError::MissingXReserveSlot(label));
             }
         }
-        // token-config exactness: decimals MUST be 6 (a Circle requirement; the amount reducer scales
-        // to 6dp) and the symbol MUST be the shipped USDCX guard constant (the USDCx identity's
-        // VM-forced uppercase on-chain form — see USDCX_TOKEN_SYMBOL).
-        if self.faucet.decimals() != USDCX_DECIMALS {
-            return Err(XReserveStablecoinBuilderError::WrongDecimals(
-                self.faucet.decimals(),
-            ));
-        }
-        let expected_symbol = TokenSymbol::new(USDCX_TOKEN_SYMBOL)
-            .expect("the shipped USDCX symbol guard constant is a valid TokenSymbol");
-        if self.faucet.symbol() != &expected_symbol {
-            return Err(XReserveStablecoinBuilderError::WrongTokenSymbol);
-        }
+        // token-config exactness (decimals == 6, the amount reducer's scale; symbol == USDCX) is now
+        // guaranteed BY CONSTRUCTION: the faucet is built by `build_usdcx_faucet`, which hard-wires
+        // both, so there is nothing to validate here — the faucet cannot be handed in mis-configured.
         // The zero floor (zero-amount burns stay rejected): the seeded min-burn floor must be at least
         // MIN_BURN_SIZE_FLOOR (= 1) and a representable AssetAmount. The runtime twin is the
         // reworked set_min_burn_size note's `new_min >= 1` assert.
@@ -504,6 +462,9 @@ impl XReserveStablecoinBuilder {
         Ok(components)
     }
 
+    // The fixed-identity faucet and the `xreserve` component assembly ([`XReserveComponent`]) live
+    // in the sibling `construction` module; this file composes the component SET.
+
     /// Reconstructs the supplied `xreserve` component with the three BUILD-SEEDED domain-config
     /// values written into their declared slots (`[domain, 0, 0, 0]`, `[source_domain, 0, 0, 0]`,
     /// and the packed `xreserve_contract` hi/lo
@@ -519,7 +480,7 @@ impl XReserveStablecoinBuilder {
             .expect("the xreserve_contract_lo slot label is a valid constant");
         let scalar_word =
             |value: u32| Word::from([Felt::from(value), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-        let xrc = bytes32_to_packed_felts(&seed.xreserve_contract);
+        let xrc = seed.xreserve_contract.to_packed_felts();
         let hi_word = Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]);
         let lo_word = Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]);
         let slots = self

@@ -51,7 +51,9 @@ use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Pausable, PausableManager, RoleBasedAccessControl};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
-use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
+use miden_standards::account::policies::{
+    BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager,
+};
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::BurnNote;
@@ -1428,7 +1430,7 @@ pub async fn run_set_min_burn_size_against(
 pub fn read_min_burn_size(account: &Account) -> Result<Word> {
     account
         .storage()
-        .get_item(miden_standards::account::policies::MinBurnAmount::slot_name())
+        .get_item(MinBurnAmount::slot_name())
         .map_err(|e| anyhow::anyhow!("reading the stock MinBurnAmount floor slot: {e}"))
 }
 
@@ -2034,7 +2036,7 @@ pub fn setup_burn_policy_account(
     )
     .context("binding the xreserve library + all composition slots as a component")?;
 
-    let burn_root = Word::from(miden_standards::account::policies::MinBurnAmount::root());
+    let burn_root = Word::from(MinBurnAmount::root());
 
     let faucet = FungibleFaucet::builder()
         .name(TokenName::new("USDCx")?)
@@ -2205,76 +2207,6 @@ pub fn read_active_burn_policy_root(account: &Account) -> Result<Word> {
         .storage()
         .get_item(TokenPolicyManager::active_burn_policy_slot())
         .map_err(|e| anyhow::anyhow!("reading the active burn policy root slot: {e}"))
-}
-
-/// Returns the names of the procedures in a vendored pinned-standards MASM source that
-/// call `exec.faucet::burn` (the inherited supply-decrement primitive). A call's enclosing proc is the
-/// most recent `(pub )?proc <name>` declaration above it (MASM procs are top-level; inner block `end`s
-/// are irrelevant to which proc a line belongs to). Used to prove the sole inherited decrement surface
-/// is `receive_and_burn`.
-pub fn faucet_burn_caller_procs(src: &str) -> Vec<String> {
-    let mut current: Option<String> = None;
-    let mut callers = Vec::new();
-    for line in src.lines() {
-        let trimmed = line.trim();
-        // A call's enclosing proc is the most recent `(pub )?proc <name>` above it; MASM procs are
-        // top-level, so inner block `end`s never change which proc a line belongs to.
-        if let Some(rest) = trimmed
-            .strip_prefix("pub proc ")
-            .or_else(|| trimmed.strip_prefix("proc "))
-        {
-            current = Some(rest.split_whitespace().next().unwrap_or(rest).to_string());
-        } else if trimmed.contains("exec.faucet::burn") {
-            callers.push(current.clone().unwrap_or_else(|| "<top-level>".to_string()));
-        }
-    }
-    callers
-}
-
-/// Returns the names of the procedures in a vendored pinned-standards MASM source that
-/// perform a supply-DECREMENT write to `TOKEN_CONFIG_SLOT` (a `set_item` write whose written value is
-/// produced by a `sub`). For each `TOKEN_CONFIG_SLOT` `set_item` write it finds the nearest preceding
-/// arithmetic op (`add`/`sub`) within the enclosing proc and classifies the write `sub` => decrement,
-/// `add` => raise. The standards' `mint_and_send` write is `add`-fed (raise) and `set_max_supply`
-/// preserves supply, so the only decrement write is `receive_and_burn`'s. Used to prove the sole
-/// inherited supply-LOWERING surface is `receive_and_burn` (the burn-write twin of `faucet_burn_caller_procs`).
-pub fn faucet_supply_decrement_write_procs(src: &str) -> Vec<String> {
-    let lines: Vec<&str> = src.lines().collect();
-    let mut current: Option<String> = None;
-    let mut proc_start = 0usize;
-    let mut procs = Vec::new();
-    for (idx, raw) in lines.iter().enumerate() {
-        let trimmed = raw.trim();
-        if let Some(rest) = trimmed
-            .strip_prefix("pub proc ")
-            .or_else(|| trimmed.strip_prefix("proc "))
-        {
-            current = Some(rest.split_whitespace().next().unwrap_or(rest).to_string());
-            proc_start = idx;
-        } else if trimmed.contains("set_item") && trimmed.contains("TOKEN_CONFIG_SLOT") {
-            // Nearest preceding arithmetic op within the enclosing proc decides the write's DIRECTION
-            // (robust to stack ops/comments between the arithmetic and the write-back).
-            let arith = lines[proc_start..idx]
-                .iter()
-                .rev()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .find_map(|l| {
-                    let toks: Vec<&str> = l.split_whitespace().collect();
-                    if toks.contains(&"sub") {
-                        Some("sub")
-                    } else if toks.contains(&"add") {
-                        Some("add")
-                    } else {
-                        None
-                    }
-                });
-            if arith == Some("sub") {
-                procs.push(current.clone().unwrap_or_else(|| "<top-level>".to_string()));
-            }
-        }
-    }
-    procs
 }
 
 /// tx0 ONLY (non-panicking): the user emits `burn_note` in-block (a send tx-script that draws the asset
@@ -2854,9 +2786,8 @@ pub fn setup_burn_policy_direct_account(
     min_burn_size: u64,
     driver_src: &str,
 ) -> Result<ShellHarness> {
-    let min_burn = miden_standards::account::policies::MinBurnAmount::new(
-        AssetAmount::new(min_burn_size).context("invalid min_burn_size")?,
-    );
+    let min_burn =
+        MinBurnAmount::new(AssetAmount::new(min_burn_size).context("invalid min_burn_size")?);
 
     let driver_code = CodeBuilder::new()
         .compile_component_code(BURN_POLICY_DRIVER_PATH, driver_src)

@@ -30,7 +30,6 @@ asm/standards/notes/         # public note scripts — the mint note and the adm
 crates/xusdc-encoding/       # Rust: the encoding mirror, the faucet-account builder, golden vectors, assemble-and-execute tests
 crates/xusdc-validation/     # Rust: the real-local-node validation harness (LNV rows A–L)
 docs/governing/  docs/spec/  # governing conventions + pins; the spec, glossary, and encoding spec
-canary/                      # executable grounding test crates for specific Miden primitives
 ```
 
 (This is the tree as built. The off-chain partner services — relayer, listener, monitoring — are

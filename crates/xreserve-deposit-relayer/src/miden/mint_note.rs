@@ -5,7 +5,7 @@
 //! `ValidatedAttestation` has passed the raw-keccak digest binding and the 65-byte shape check)
 //! with the attester pubkey the OPERATOR configured, and hands both — plus the payload — to the
 //! shared encoding crate's [`XUsdcMintNote::create`], which decides every byte of the note's
-//! form: the storage, the three attachments, the note type, and the script.
+//! form: the storage, the two attachments, the note type, and the script.
 //!
 //! **Why the pubkey is a parameter and the signature is not.** Circle's attestation object carries
 //! `payload`, `messageHash`, and `attestation` (the 65-byte `r‖s‖v`) — but NOT the attester's
@@ -115,8 +115,8 @@ impl AttesterPubkey {
 /// * `sender` — the relayer's own account.
 /// * `faucet_id` — the xUSDC faucet the note is routed at. It must be a PUBLIC network account:
 ///   the routing attachment can bind nothing else.
-/// * `attestation` — the validated envelope. Its DepositIntent payload travels in the scheme-4
-///   attachment, its 65-byte `r‖s‖v` in the scheme-5 one.
+/// * `attestation` — the validated envelope. Its DepositIntent payload and its 65-byte `r‖s‖v`
+///   travel together in the merged scheme-4 transport attachment.
 /// * `attester` — the operator-configured candidate pubkey, travelling beside the signature.
 /// * `rng` — the caller's randomness. The serial number is drawn from it, which is what makes a
 ///   re-mint of the same DepositIntent a distinct note rather than a collision.

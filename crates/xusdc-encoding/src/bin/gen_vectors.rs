@@ -17,11 +17,11 @@ use miden_crypto::utils::Deserializable;
 use miden_protocol::testing::account_id::AccountIdBuilder;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Hasher, Word};
-use xusdc_encoding::xreserve::encoding::bytes32_to_packed_u32_limbs;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
+use xusdc_encoding::xreserve::encoding::bytes32_to_packed_u32_limbs;
 
 const ASSET_AMOUNT_MAX: u128 = (1u128 << 63) - (1u128 << 31); // 2^63 - 2^31
 

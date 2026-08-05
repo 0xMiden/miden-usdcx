@@ -137,12 +137,12 @@ impl XUsdcMintNote {
             bytes32_to_packed_u32_limbs(&header.amount),
             XUSDC_DEPOSIT_SCALE_EXP,
         )
-                .map_err(|source| {
-                    NoteError::other_with_source(
-                        "deposit intent amount rejected by the amount reducer",
-                        source,
-                    )
-                })?;
+        .map_err(|source| {
+            NoteError::other_with_source(
+                "deposit intent amount rejected by the amount reducer",
+                source,
+            )
+        })?;
         let asset = FungibleAsset::new(faucet_id, u64::from(amount))
             .map_err(|source| NoteError::other_with_source("attested amount", source))?;
         let serial = Word::from(bytes32_to_storage_map_key(&header.nonce));

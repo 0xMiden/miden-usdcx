@@ -252,7 +252,7 @@ fn t_storage_embeds_the_attested_output() {
         bytes32_to_packed_u32_limbs(&header.amount),
         XUSDC_DEPOSIT_SCALE_EXP,
     )
-        .expect("the attested amount reduces at unit-04's scale");
+    .expect("the attested amount reduces at unit-04's scale");
     let asset = FungibleAsset::new(faucet_id(), u64::from(amount))
         .expect("the reduced amount is a fungible asset of the faucet");
 

@@ -19,14 +19,12 @@ asm/standards/
     attestation_verify.masm       # FAUCET(01): on-chain attestation verify
     attester_admin.masm           # FAUCET(01): attester allowlist administration
     deposit_intent_parser.masm    # FAUCET(01): DepositIntent parser and mint validation
-    identifier_init.masm          # FAUCET(01): init-once identifier fixpoint
     mint_policy.masm              # FAUCET(01): active attestation mint policy
     mod.masm                      # FAUCET(01): self-contained component root
     encoding/                     # SHARED-ENCODING(04)-OWNED sub-module → xreserve::encoding::*
       mod.masm                    #   04: flat public procs live here
       layout.masm                 #   04: DepositIntent felt offsets + packed magic constant (DC-1) — constants submodule (path xreserve::encoding::layout::* intentional for constants)
   notes/
-    xreserve_identifier_init_note.masm
     xreserve_set_attester_note.masm
     xreserve_set_max_supply_note.masm
     xreserve_set_min_burn_size_note.masm
@@ -45,13 +43,13 @@ Owner→path rule: directory path = MASM module path and the Rust component `NAM
 | `uint256 → AssetAmount` conversion (Rust floor-divides; MASM verifies the supplied witness) (DC-5) | **shared-encoding (04)** | `asm/standards/xreserve/encoding/mod.masm` → `xreserve::encoding::verify_uint256_to_asset_amount` | Rust `uint256_to_asset_amount` witness generator | `DC-5`; `INV-UINT256-TO-ASSETAMOUNT` |
 | `AccountId ↔ bytes32` (protocol form 15-byte/two-felt; right-aligned bytes32 packaging; lossless, no keccak fallback) (DC-6) | **shared-encoding (04)** | Rust-primary: no MASM proc in the 04 slice | `crates/xusdc-encoding/src/xreserve/encoding/account_id.rs` | `DC-6`; `INV-ACCOUNTID-ENCODING` |
 | `DepositIntent` 240-byte header = 60 u32-LE felts + hookData (DC-1) | **shared-encoding (04)** owns the layout constants; **faucet (01)** owns the on-chain parser and mint assertions | layout: `asm/standards/xreserve/encoding/layout.masm`; parser: `xreserve::deposit_intent_parser::parse` | Rust mirror keeps `parse_deposit_intent_header` | `DC-1`; `INV-DEPOSITINTENT-PARSE`; `TV-DUAL-3` |
-| `depositAttestation` wire (raw secp256k1 over `keccak256(payload)`; NOT EIP-712) (DC-2) | **shared-encoding (04)** owns the staging/felt-packing; **faucet (01)** owns the on-chain verify | verify: `asm/standards/xreserve/attestation_verify.masm` | relayer transport + Rust packing helpers | `DC-2`; `INV-DEPOSIT-ATTESTATION-RAW-KECCAK`; `TV-DUAL-5` |
+| `depositAttestation` wire (raw secp256k1 over `keccak256(payload)`; NOT EIP-712) (DC-2) | **shared-encoding (04)** owns the merged-transport staging/felt-packing; **faucet (01)** owns the on-chain verify | verify: `asm/standards/xreserve/attestation_verify.masm` | relayer transport + Rust packing helpers | `DC-2`; `INV-DEPOSIT-ATTESTATION-RAW-KECCAK`; `TV-DUAL-5` |
 | pubkey commitment + allowlist key (`Poseidon2` over staged pubkey felts → `Word`) (DC-3) | **shared-encoding (04)** (commitment hash) + **faucet (01)** (the on-chain `StorageMap` store) | commitment via `xreserve::encoding::bytes32_to_key` in `encoding/mod.masm`; store `asm/standards/xreserve/attester_admin.masm` | Rust packing and commitment helpers | `DC-3`; `TV-DUAL-5` |
 | `XReserveBurnNote` item codec `(amount,destDomain,destRecipient,salt)` (DC-7) | **shared-encoding (04)** owns the codec; **faucet (01)** owns note production/consumption policy | no MASM codec; the faucet uses the stock burn consume script | `crates/xusdc-encoding/src/xreserve/encoding/burn_note.rs`; listener decode | `DC-7`; `INV-PUBLIC-BURN-OBSERVABILITY` |
 | Circle JSON schema types (DC-9/10/11/12) | **shared-encoding (04)** (type defs) | n/a (off-chain only) | relayer, listener, monitor | `DC-9..DC-12` |
 | optional Circle binary decode (DC-13) | **shared-encoding (04)** (optional, NON-GATING) | n/a | listener (optional) | `DC-13` |
 | burn-evidence package assembly (`burnTxId`+`note_id`+`nullifier`+`block_num`; proof-strength labels) (DC-8) | **listener (03)** | n/a | listener | `DC-8`; `INV-BURN-EVIDENCE-TRUST` |
-| attestation mint policy, mint assertions, attester admin, identifier init, note factories, faucet account composition | **faucet (01)** — hand-written MASM plus Rust builder/harness code | `asm/standards/xreserve/*.masm` + notes `asm/standards/notes/xreserve_*_note.masm` | `crates/xusdc-encoding` account/note builder APIs | the faucet spec; `INV-MINT-*`/`INV-*BURN*` |
+| attestation mint policy, mint assertions, attester admin, note factories, faucet account composition | **faucet (01)** — hand-written MASM plus Rust builder/harness code | `asm/standards/xreserve/*.masm` + notes `asm/standards/notes/xreserve_*_note.masm` | `crates/xusdc-encoding` account/note builder APIs | the faucet spec; `INV-MINT-*`/`INV-*BURN*` |
 | supply/monitoring, admin SOPs, upgrade-governance | **monitoring (05)** | n/a (off-chain/ops) | monitor | off-chain/ops component (not in this repo) |
 
 ## Anti-duplication rule (preserved, MASM-aware — mechanical, not prose)

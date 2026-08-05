@@ -1,13 +1,15 @@
 //! The emergency halt: who can pause the faucet, and what pausing actually stops.
 //!
-//! Circle's model gives pausing to a dedicated Domain Pauser, and gives the administrator no direct pause
-//! path at all. The standard `PausableManager` cannot express that — it gates pausing on the
-//! account-wide authority, which is the administrator — so the faucet ships its own `pause` and `unpause`
-//! procs, each of which asserts the sender holds the Domain Pauser role and then calls the
-//! unauthenticated standard pause primitive. The standard manager is left out of the composition
-//! entirely, which is what makes the custom procs the account's ONLY pause surface. Two tests here
-//! pin that absence directly: an administrator-sent standard pause note fails with "unknown account
-//! procedure", because those procedure roots are genuinely not in the account's code.
+//! Circle's model gives pausing to a dedicated Domain Pauser and gives the administrator no direct
+//! pause path at all. That is expressed entirely through composition: the faucet installs the
+//! standard `PausableManager` and maps its two procedures to the Domain Pauser role in the
+//! account's procedure-role map, so it ships no pause MASM of its own — an absence one test here
+//! pins directly against the assembled library. The administrator's two rejections are therefore
+//! role-assertion failures, and their exact error is what proves the map is really doing the
+//! gating rather than the capability having fallen back to the administrator.
+//!
+//! Everything else about the standard manager — its authorization matrix, and the fact that its
+//! writes are unconditional — belongs to `miden-standards` and is tested there.
 //!
 //! The load-bearing proof is not that pausing flips a flag — it is that pausing HALTS the faucet.
 //! A real attested mint and a real burn are both driven against a paused faucet and both trap with
@@ -15,10 +17,9 @@
 //! before they run their policies. Both resume after unpause. That covers Circle's requirement
 //! that a pause stops deposits and withdrawals alike.
 //!
-//! Those two halt tests double as guards on the `is_paused` slot's provenance: the slot is
-//! installed by the base pausable component the builder adds, never by the deliberately absent
-//! manager (which installs no storage at all). If the slot ever went missing, the halt would
-//! silently stop happening.
+//! Those halt tests double as guards on the `is_paused` slot's provenance: the slot is installed
+//! by the base pausable component the builder adds, never by the manager (which installs no
+//! storage at all). If the slot ever went missing, the halt would silently stop happening.
 
 mod support;
 
@@ -31,7 +32,6 @@ use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use miden_tx::TransactionExecutorError;
-use rstest::rstest;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
@@ -48,22 +48,16 @@ fn prod_note_rng(seed: u64) -> RandomCoin {
     ]))
 }
 
-// The production builder seeds the administrator = id(1) (the sole seeded `ADMIN` member),
-// DOM_PAUSER = id(2), DOM_MANAGER = id(3).
+// The production builder seeds the administrator = id(1) (the sole seeded `ADMIN` member) and
+// DOM_PAUSER = id(2).
 fn administrator() -> AccountId {
     test_account_id(1)
 }
 fn dom_pauser() -> AccountId {
     test_account_id(2)
 }
-fn dom_manager() -> AccountId {
-    test_account_id(3)
-}
-fn plain_non_administrator() -> AccountId {
-    test_account_id(99)
-}
 
-// Burn-faucet parameters (mirrors burn_policy.rs / set_min_burn.rs).
+// Burn-faucet parameters (mirrors set_min_burn.rs).
 const MAX_SUPPLY: u64 = 1_000_000;
 const TOKEN_SUPPLY: u64 = 100_000;
 const MIN_BURN_SIZE: u64 = 1_000;
@@ -238,7 +232,7 @@ fn token_supply_of(account: &Account) -> Result<Felt> {
     Ok(read_token_config(account)?[0])
 }
 
-// EXPORT PROBE (declared green scaffold — flat-path check for the new pause procs)
+// EXPORT PROBE — the faucet library ships no pause procedure of its own
 // ================================================================================================
 
 #[test]
@@ -575,232 +569,6 @@ async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
         token_supply_of(&bfinal)?,
         Felt::from((TOKEN_SUPPLY - VALID_BURN) as u32),
         "unpause resumes burning (token_supply decremented by the burn amount)"
-    );
-    Ok(())
-}
-
-// ROLE GATE + SEPARATION — the custom pause is DOM_PAUSER-specific, and a pauser is not the administrator
-// ================================================================================================
-
-/// Shared: a non-DOM_PAUSER `sender` is rejected from the CUSTOM pause with the EXACT
-/// `ERR_SENDER_LACKS_ROLE`, and `is_paused` is unchanged (the gate traps before the pausable write).
-async fn assert_custom_pause_rejects(sender: AccountId) -> Result<()> {
-    let bh = setup_burn_policy_account(
-        BurnGuardSelection::OracleBurnReal,
-        MAX_SUPPLY,
-        TOKEN_SUPPLY,
-        MIN_BURN_SIZE,
-        VALID_BURN,
-    )?;
-    let account = bh.chain.committed_account(bh.faucet_id)?.clone();
-
-    let result = run_dom_pauser_pause(&bh.chain, &account, sender, 5).await;
-    assert_transaction_executor_error!(result, err_sender_lacks_role());
-    assert_eq!(
-        read_is_paused(&account)?,
-        Word::from([0u32, 0, 0, 0]),
-        "a rejected custom pause leaves is_paused unchanged (unpaused)"
-    );
-    Ok(())
-}
-
-/// A plain non-holder (id 99) cannot pause via the custom proc.
-#[tokio::test]
-async fn non_dom_pauser_pause_rejects() -> Result<()> {
-    assert_custom_pause_rejects(plain_non_administrator()).await
-}
-
-/// The administrator cannot pause either — the proc is gated on the pause role, which it does not hold.
-///
-/// Together with the test that the standard pause procedures are absent from the account, this
-/// completes the claim that the administrator has no direct pause path at all: neither surface accepts
-/// them. What the administrator keeps is administration of the roles, reaching the Domain Pauser's
-/// membership indirectly by administering the Domain Manager that administers it. That is a
-/// rotation power, exercised in `role_admin.rs`, and it is deliberately not a pause power: the
-/// owner can appoint a pauser, but cannot pause.
-#[tokio::test]
-async fn owner_is_not_dom_pauser_on_custom_pause() -> Result<()> {
-    assert_custom_pause_rejects(administrator()).await
-}
-
-/// Holding a different role is not enough: the Domain Manager cannot pause.
-///
-/// This forecloses the gate ever being satisfied by "the sender holds some role". The role symbol
-/// the proc checks is hard-coded in the MASM, not taken from the caller, so only an actual Domain
-/// Pauser passes.
-#[tokio::test]
-async fn other_role_holder_cannot_pause() -> Result<()> {
-    assert_custom_pause_rejects(dom_manager()).await
-}
-
-/// The custom `unpause` role gate, proven NEGATIVELY (audit HIGH finding): a non-DOM_PAUSER sender
-/// — stranger, owner, or a DIFFERENT role holder (DOM_MANAGER) — is rejected from `unpause` with
-/// the EXACT stock `ERR_SENDER_LACKS_ROLE`, and the faucet STAYS paused (no state change). Unpause
-/// is the security-critical direction (Circle designates unpause a joint-approval action): an ungated
-/// unpause would let anyone re-enable a paused — possibly compromised — bridge.
-#[rstest]
-#[case::stranger(plain_non_administrator())]
-#[case::owner(administrator())]
-#[case::dom_manager(dom_manager())]
-#[tokio::test]
-async fn non_dom_pauser_unpause_rejects(#[case] sender: AccountId) -> Result<()> {
-    let bh = setup_burn_policy_account(
-        BurnGuardSelection::OracleBurnReal,
-        MAX_SUPPLY,
-        TOKEN_SUPPLY,
-        MIN_BURN_SIZE,
-        VALID_BURN,
-    )?;
-    let account = bh.chain.committed_account(bh.faucet_id)?.clone();
-
-    // Arm the negative on a genuinely paused faucet: a real DOM_PAUSER pause first.
-    let paused = run_dom_pauser_pause(&bh.chain, &account, dom_pauser(), 11)
-        .await
-        .expect("DOM_PAUSER pauses the faucet");
-    let mut evolved = account.clone();
-    evolved.apply_patch(paused.account_patch())?;
-    assert_eq!(
-        read_is_paused(&evolved)?,
-        Word::from([1u32, 0, 0, 0]),
-        "paused before the unpause probe"
-    );
-
-    let result = run_dom_pauser_unpause(&bh.chain, &evolved, sender, 12).await;
-    assert_transaction_executor_error!(result, err_sender_lacks_role());
-    assert_eq!(
-        read_is_paused(&evolved)?,
-        Word::from([1u32, 0, 0, 0]),
-        "a rejected custom unpause leaves the faucet paused (no state change)"
-    );
-    Ok(())
-}
-
-/// The separation holds in the other direction too: the pauser is not an administrator.
-///
-/// The Domain Pauser can halt the faucet, but sending an administrator-gated setter — here the minimum-burn
-/// setter — is rejected with the standard not-owner error. Without this, a compromised pauser key
-/// would be a compromised admin key.
-#[tokio::test]
-async fn dom_pauser_cannot_call_owner_setters() -> Result<()> {
-    let bh = setup_burn_policy_account(
-        BurnGuardSelection::OracleBurnReal,
-        MAX_SUPPLY,
-        TOKEN_SUPPLY,
-        MIN_BURN_SIZE,
-        VALID_BURN,
-    )?;
-    let account = bh.chain.committed_account(bh.faucet_id)?.clone();
-
-    let result = run_set_min_burn_size_against(&bh.chain, &account, dom_pauser(), 5_000, 7).await;
-    assert_transaction_executor_error!(result, err_sender_lacks_role());
-    Ok(())
-}
-
-// IDEMPOTENCY PINS — the stock pausable primitives are UNCONDITIONAL writes
-// ================================================================================================
-
-/// `pause` when ALREADY paused is idempotent SUCCESS: the stock `pausable::pause` is an
-/// unconditional `set_item` write with no already-paused guard (pinned `=0.16.0-alpha.2`
-/// `pausable/mod.masm`), so a redundant DOM_PAUSER pause succeeds and `is_paused` stays
-/// `[1,0,0,0]`. Pin-bump drift tripwire: a future stock version that traps on a redundant pause
-/// would silently change ops semantics — it fails HERE instead.
-#[tokio::test]
-async fn pause_when_already_paused_is_idempotent() -> Result<()> {
-    let bh = setup_burn_policy_account(
-        BurnGuardSelection::OracleBurnReal,
-        MAX_SUPPLY,
-        TOKEN_SUPPLY,
-        MIN_BURN_SIZE,
-        VALID_BURN,
-    )?;
-    let account = bh.chain.committed_account(bh.faucet_id)?.clone();
-
-    let paused = run_dom_pauser_pause(&bh.chain, &account, dom_pauser(), 13)
-        .await
-        .expect("the first DOM_PAUSER pause succeeds");
-    let mut evolved = account.clone();
-    evolved.apply_patch(paused.account_patch())?;
-    assert_eq!(
-        read_is_paused(&evolved)?,
-        Word::from([1u32, 0, 0, 0]),
-        "paused after pause #1"
-    );
-
-    let again = run_dom_pauser_pause(&bh.chain, &evolved, dom_pauser(), 14)
-        .await
-        .expect("a redundant pause is idempotent success (stock pause is an unconditional write)");
-    evolved.apply_patch(again.account_patch())?;
-    assert_eq!(
-        read_is_paused(&evolved)?,
-        Word::from([1u32, 0, 0, 0]),
-        "is_paused stays exactly [1,0,0,0] after the redundant pause"
-    );
-    Ok(())
-}
-
-/// `unpause` when NOT paused is idempotent SUCCESS: the stock `pausable::unpause` is an
-/// unconditional `set_item` write with no not-paused guard (pinned `=0.16.0-alpha.2`
-/// `pausable/mod.masm`) — the same pin-bump drift tripwire, in the unpause direction.
-#[tokio::test]
-async fn unpause_when_not_paused_is_idempotent() -> Result<()> {
-    let bh = setup_burn_policy_account(
-        BurnGuardSelection::OracleBurnReal,
-        MAX_SUPPLY,
-        TOKEN_SUPPLY,
-        MIN_BURN_SIZE,
-        VALID_BURN,
-    )?;
-    let account = bh.chain.committed_account(bh.faucet_id)?.clone();
-    assert_eq!(
-        read_is_paused(&account)?,
-        Word::from([0u32, 0, 0, 0]),
-        "fresh faucet is unpaused"
-    );
-
-    let unpaused = run_dom_pauser_unpause(&bh.chain, &account, dom_pauser(), 15)
-        .await
-        .expect("unpausing an unpaused faucet is idempotent success (unconditional write)");
-    let mut evolved = account.clone();
-    evolved.apply_patch(unpaused.account_patch())?;
-    assert_eq!(
-        read_is_paused(&evolved)?,
-        Word::from([0u32, 0, 0, 0]),
-        "is_paused stays exactly [0,0,0,0] after the redundant unpause"
-    );
-    Ok(())
-}
-
-// OBSERVABILITY — is_paused reads back via GetAccount
-// ================================================================================================
-
-/// `is_paused` is a network-observable value slot: it reads back unpaused pre-pause and paused after a
-/// DOM_PAUSER pause. RED: the pause placeholder traps, so the flag never flips.
-#[tokio::test]
-async fn is_paused_publicly_readable() -> Result<()> {
-    let bh = setup_burn_policy_account(
-        BurnGuardSelection::OracleBurnReal,
-        MAX_SUPPLY,
-        TOKEN_SUPPLY,
-        MIN_BURN_SIZE,
-        VALID_BURN,
-    )?;
-    let account = bh.chain.committed_account(bh.faucet_id)?.clone();
-
-    assert_eq!(
-        read_is_paused(&account)?,
-        Word::from([0u32, 0, 0, 0]),
-        "is_paused reads back unpaused pre-pause (GetAccount observability)"
-    );
-
-    let paused = run_dom_pauser_pause(&bh.chain, &account, dom_pauser(), 9)
-        .await
-        .expect("DOM_PAUSER pauses the faucet");
-    let mut evolved = account.clone();
-    evolved.apply_patch(paused.account_patch())?;
-    assert_eq!(
-        read_is_paused(&evolved)?,
-        Word::from([1u32, 0, 0, 0]),
-        "after a DOM_PAUSER pause, is_paused reads back paused"
     );
     Ok(())
 }

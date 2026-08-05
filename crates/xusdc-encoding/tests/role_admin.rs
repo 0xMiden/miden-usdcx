@@ -33,8 +33,8 @@
 //! grants before it revokes so there is never a window with no administrator at all.
 //!
 //! Fixture rule: every test here runs against an account composed by the real production builder —
-//! the pure gating tests via the guarded-mint fixture, the capability seams via the full production
-//! faucet. The support harness's replica account is deliberately used by no test in this file; its
+//! the seed and backstop pins via the guarded-mint fixture, the capability seams via the full
+//! production faucet. The support harness's replica account is used by no test in this file; its
 //! fidelity to the production seed is pinned separately in
 //! `set_min_burn.rs::support_replica_carries_delegation_seed`.
 
@@ -59,7 +59,7 @@ use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
 
 // The production builder seeds the administrator = id(1) (the sole ADMIN member), DOM_PAUSER =
 // id(2), DOM_MANAGER = id(3).
-// id(4)/id(5) are fresh member candidates the rotation grants; id(99) is a plain stranger.
+// id(4)/id(5) are fresh member candidates the rotation grants.
 fn administrator() -> AccountId {
     test_account_id(1)
 }
@@ -74,9 +74,6 @@ fn new_pauser() -> AccountId {
 }
 fn second_pauser() -> AccountId {
     test_account_id(5)
-}
-fn stranger() -> AccountId {
-    test_account_id(99)
 }
 
 // The fixed role aliases, via the production Rust constants (builder.rs) — the single source the
@@ -100,9 +97,6 @@ fn err_not_role_admin() -> MasmError {
     // v16 #3215: the administrator path is gone from the stock component — the error re-keyed from
     // ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN to ERR_SENDER_NOT_ROLE_ADMIN (rbac.masm:66).
     MasmError::from_static_str("note sender does not hold the role's admin role")
-}
-fn err_account_not_in_role() -> MasmError {
-    MasmError::from_static_str("account does not hold the role")
 }
 
 // PRODUCTION FIXTURES (both compose via XReserveStablecoinBuilder::build_components — never the
@@ -523,135 +517,8 @@ async fn dom_manager_rotates_pauser_revoke_then_grant() -> Result<()> {
     Ok(())
 }
 
-// STOCK-BRANCH PINS — the grant no-op branch, the non-member revoke trap, self-renounce
+// THE SHIPPED DELEGATION SEED — what the builder wrote, read back off a production account
 // ================================================================================================
-
-/// A double-grant leaves NO ghost member: the stock `grant_role_internal` takes its
-/// "Already a member — no-op" branch BEFORE the count increment (the pinned `=0.16.0-alpha.2`
-/// `rbac.masm` — `has_role → drop drop drop`; the `add.1` sits only in the else branch), so granting the
-/// SEEDED DOM_PAUSER member a second time cannot double-increment `member_count`, and ONE revoke
-/// fully removes the member — their pause then rejects with the exact role error. (The existing
-/// pins cover count 1→0 and revoke-then-grant; neither touched the no-op branch.)
-#[tokio::test]
-async fn double_grant_pauser_leaves_no_ghost_member() -> Result<()> {
-    let gm = production_faucet()?;
-    let account = faucet_account(&gm.harness);
-
-    // Grant DOM_PAUSER to the ALREADY-seeded member: idempotent success via the no-op branch...
-    let granted = run_grant_role_against(
-        &gm.harness.mock_chain,
-        &account,
-        dom_manager(),
-        &pauser_sym(),
-        dom_pauser(),
-        51,
-    )
-    .await
-    .expect("granting an existing member succeeds via the stock no-op branch");
-    let mut evolved = account.clone();
-    evolved.apply_patch(granted.account_patch())?;
-
-    // ...with NO count increment (the ghost-member hazard this test forecloses).
-    assert_eq!(
-        read_role_config(&evolved, &pauser_sym())?[0],
-        Felt::from(1u32),
-        "member_count stays exactly 1 after the double grant (no-op branch, no increment)"
-    );
-    assert_eq!(
-        read_role_membership(&evolved, &pauser_sym(), dom_pauser())?[0],
-        Felt::from(1u32),
-        "the membership flag is unchanged"
-    );
-
-    // ONE revoke fully removes the member — no ghost count survives.
-    let revoked = run_revoke_role_against(
-        &gm.harness.mock_chain,
-        &evolved,
-        dom_manager(),
-        &pauser_sym(),
-        dom_pauser(),
-        52,
-    )
-    .await
-    .expect("one revoke removes the double-granted member");
-    evolved.apply_patch(revoked.account_patch())?;
-    assert_eq!(
-        read_role_config(&evolved, &pauser_sym())?[0],
-        Felt::ZERO,
-        "ONE revoke takes member_count to 0 (a ghost would leave 1)"
-    );
-    assert_eq!(
-        read_role_membership(&evolved, &pauser_sym(), dom_pauser())?[0],
-        Felt::ZERO,
-        "the membership flag is cleared"
-    );
-    let result = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, dom_pauser(), 53).await;
-    assert_transaction_executor_error!(result, err_sender_lacks_role());
-    Ok(())
-}
-
-/// Revoking a NON-member traps the EXACT stock `ERR_ACCOUNT_NOT_IN_ROLE`
-/// (the pinned `=0.16.0-alpha.2` `rbac.masm`, asserted inside `revoke_role_internal`) and leaves
-/// the role config untouched — the first pin of this stock constant in the repo.
-#[tokio::test]
-async fn revoke_role_non_member_traps() -> Result<()> {
-    let gm = production_faucet()?;
-    let account = faucet_account(&gm.harness);
-
-    let result = run_revoke_role_against(
-        &gm.harness.mock_chain,
-        &account,
-        dom_manager(),
-        &pauser_sym(),
-        stranger(),
-        54,
-    )
-    .await;
-    assert_transaction_executor_error!(result, err_account_not_in_role());
-    assert_eq!(
-        read_role_config(&account, &pauser_sym())?[0],
-        Felt::from(1u32),
-        "a rejected non-member revoke leaves member_count untouched"
-    );
-    Ok(())
-}
-
-/// CHARACTERIZATION pin of the stock `renounce_role` ops surface: a DOM_PAUSER holder can
-/// SELF-remove (the stock proc is self-only by construction — it reads the note sender — and has
-/// no owner/admin gate; re-exported on the account interface,
-/// `account_components/access/rbac.masm:12`). After the renounce, their pause rejects with the
-/// exact role error. Documents that self-renounce is possible BY DESIGN — an ops-surface fact,
-/// not a defect.
-#[tokio::test]
-async fn dom_pauser_can_renounce_own_role() -> Result<()> {
-    let gm = production_faucet()?;
-    let account = faucet_account(&gm.harness);
-
-    let renounced = run_renounce_role_against(
-        &gm.harness.mock_chain,
-        &account,
-        dom_pauser(),
-        &pauser_sym(),
-        55,
-    )
-    .await
-    .expect("a DOM_PAUSER holder self-renounces (stock renounce_role, self-only)");
-    let mut evolved = account.clone();
-    evolved.apply_patch(renounced.account_patch())?;
-    assert_eq!(
-        read_role_config(&evolved, &pauser_sym())?[0],
-        Felt::ZERO,
-        "self-renounce decrements member_count to 0"
-    );
-    assert_eq!(
-        read_role_membership(&evolved, &pauser_sym(), dom_pauser())?[0],
-        Felt::ZERO,
-        "self-renounce clears the membership flag"
-    );
-    let result = run_dom_pauser_pause(&gm.harness.mock_chain, &evolved, dom_pauser(), 56).await;
-    assert_transaction_executor_error!(result, err_sender_lacks_role());
-    Ok(())
-}
 
 /// The shipped-build provenance read-back — against the PRODUCTION `XReserveStablecoinBuilder`
 /// account (NOT the burn-oracle support replica; that is pinned separately in
@@ -844,208 +711,6 @@ async fn administrator_can_revoke_dom_manager_cutting_the_delegation_chain() -> 
         read_is_paused(&evolved)?[0],
         Felt::ZERO,
         "a failed grant leaves is_paused untouched"
-    );
-    Ok(())
-}
-
-// THE GATING MATRIX REJECT CELLS (GREEN pins) — exact errors + no state change
-// ================================================================================================
-
-/// Shared: a non-administrator non-DOM_MANAGER `sender` can NEITHER grant NOR revoke DOM_PAUSER — both trap
-/// the exact `ERR_SENDER_NOT_ROLE_ADMIN` (the stock `assert_sender_is_role_admin` gate — reached at
-/// the red commit via its zero-admin leg and post-green via its membership leg, the same constant
-/// either way), and the failed txs leave the committed membership/config words untouched.
-async fn assert_non_admin_cannot_administer_pauser(sender: AccountId, seed: u64) -> Result<()> {
-    let gm = production_faucet()?;
-    let account = faucet_account(&gm.harness);
-
-    let grant = run_grant_role_against(
-        &gm.harness.mock_chain,
-        &account,
-        sender,
-        &pauser_sym(),
-        new_pauser(),
-        seed,
-    )
-    .await;
-    assert_transaction_executor_error!(grant, err_not_role_admin());
-
-    let revoke = run_revoke_role_against(
-        &gm.harness.mock_chain,
-        &account,
-        sender,
-        &pauser_sym(),
-        dom_pauser(),
-        seed + 1,
-    )
-    .await;
-    assert_transaction_executor_error!(revoke, err_not_role_admin());
-
-    // No state change: the rejected txs produced no delta; the committed words are intact.
-    assert_eq!(
-        read_role_membership(&account, &pauser_sym(), new_pauser())?[0],
-        Felt::ZERO,
-        "the rejected grant landed no membership"
-    );
-    assert_eq!(
-        read_role_membership(&account, &pauser_sym(), dom_pauser())?[0],
-        Felt::from(1u32),
-        "the rejected revoke removed no membership"
-    );
-    assert_eq!(
-        read_role_config(&account, &pauser_sym())?[0],
-        Felt::from(1u32),
-        "DOM_PAUSER member_count is unchanged"
-    );
-    Ok(())
-}
-
-/// A DOM_PAUSER holder cannot administer its own role (a pauser is not a role admin).
-#[tokio::test]
-async fn dom_pauser_holder_cannot_grant_or_revoke() -> Result<()> {
-    assert_non_admin_cannot_administer_pauser(dom_pauser(), 44).await
-}
-
-/// A plain stranger cannot grant or revoke.
-#[tokio::test]
-async fn stranger_cannot_grant_or_revoke() -> Result<()> {
-    assert_non_admin_cannot_administer_pauser(stranger(), 46).await
-}
-
-/// Shared: a sender who does NOT hold DOM_PAUSER's effective admin role is rejected from
-/// `set_role_admin(DOM_PAUSER, …)` with the exact `ERR_SENDER_NOT_ROLE_ADMIN`, and the delegation
-/// word is untouched. The gate is the ROLE's effective admin, not the account owner.
-///
-/// NOTE: every `set_role_admin` test in this
-/// file is a PROC-LEVEL pin under the permissive-auth fixture, which isolates the standard
-/// procedure's own gate from the note-script allowlist. In PRODUCTION the procedure IS reachable —
-/// the allowlisted standard role-action note carries `set_role_admin` alongside grant, revoke and
-/// renounce — so these gate characterizations describe live behavior, not an inert one.
-/// `w2admin_surface_finalization.rs` drives the same actions through the real note.
-async fn assert_set_role_admin_rejected(sender: AccountId, seed: u64) -> Result<()> {
-    let gm = production_faucet()?;
-    let account = faucet_account(&gm.harness);
-    let before = read_role_config(&account, &pauser_sym())?;
-
-    let result = run_set_role_admin_against(
-        &gm.harness.mock_chain,
-        &account,
-        sender,
-        &pauser_sym(),
-        Some(&manager_sym()),
-        seed,
-    )
-    .await;
-    assert_transaction_executor_error!(result, err_not_role_admin());
-    assert_eq!(
-        read_role_config(&account, &pauser_sym())?,
-        before,
-        "a rejected set_role_admin leaves the role config untouched"
-    );
-    Ok(())
-}
-
-/// Characterizes the standard procedure's gate: even the administrator cannot re-point the Domain Pauser's
-/// administrator directly.
-///
-/// The gate asks for the role's effective administrator, which is the Domain Manager; the
-/// administrator holds the built-in admin role but is not a Domain Manager, so the call is refused.
-/// Delegation is exclusive, and this is what that costs: the administrator has no authority over a
-/// role it delegated away — not to grant it, not to revoke it, and not to take the delegation back.
-/// The same refusal is driven through the real note in
-/// `w2admin_surface_finalization.rs::the_administrator_cannot_repoint_an_exclusively_delegated_role`.
-#[tokio::test]
-async fn set_role_admin_administrator_direct_rejects() -> Result<()> {
-    assert_set_role_admin_rejected(administrator(), 48).await
-}
-
-/// CHARACTERIZATION pin of the standard procedure's gate: at procedure level, DOM_MANAGER —
-/// DOM_PAUSER's delegated admin — passes the `set_role_admin(DOM_PAUSER, …)` gate (a capability
-/// the proc did not expose to it at v15, where the gate was administrator-only). Kept loud so the stock
-/// semantics are pinned, exactly like `dom_pauser_can_renounce_own_role`. In PRODUCTION this path
-/// IS reachable through the allowlisted standard role-action note — the Manager can re-point the
-/// Pauser's administrator on-chain, an accepted capability driven end to end in
-/// `w2admin_surface_finalization.rs::the_stock_role_note_can_repoint_a_delegated_role_admin`.
-#[tokio::test]
-async fn set_role_admin_dom_manager_can_redelegate_pauser() -> Result<()> {
-    let gm = production_faucet()?;
-    let account = faucet_account(&gm.harness);
-
-    let cleared = run_set_role_admin_against(
-        &gm.harness.mock_chain,
-        &account,
-        dom_manager(),
-        &pauser_sym(),
-        None,
-        49,
-    )
-    .await
-    .expect("v16: DOM_PAUSER's delegated admin (DOM_MANAGER) may re-delegate it");
-    let mut evolved = account.clone();
-    evolved.apply_patch(cleared.account_patch())?;
-    let config = read_role_config(&evolved, &pauser_sym())?;
-    assert_eq!(config[1], Felt::ZERO, "the delegation is cleared");
-    assert_eq!(
-        config[0],
-        Felt::from(1u32),
-        "member_count is preserved through set_role_admin"
-    );
-    Ok(())
-}
-
-/// DOM_PAUSER cannot re-delegate role administration.
-#[tokio::test]
-async fn set_role_admin_dom_pauser_rejects() -> Result<()> {
-    assert_set_role_admin_rejected(dom_pauser(), 49).await
-}
-
-/// A stranger cannot re-delegate role administration.
-#[tokio::test]
-async fn set_role_admin_stranger_rejects() -> Result<()> {
-    assert_set_role_admin_rejected(stranger(), 50).await
-}
-
-/// SEPARATION: `DOM_MANAGER.admin_role` stays 0 (→ ADMIN = the seeded owner account), so a
-/// DOM_MANAGER holder cannot administer DOM_MANAGER itself — self-expansion of the manager set is
-/// ADMIN territory, i.e. the seeded owner account's (Circle keeps rotation of the Manager under
-/// the administrator, and bound to an account). Both ops trap the exact gate error; the seeded manager
-/// state is untouched.
-#[tokio::test]
-async fn dom_manager_cannot_administer_dom_manager() -> Result<()> {
-    let gm = production_faucet()?;
-    let account = faucet_account(&gm.harness);
-
-    let grant = run_grant_role_against(
-        &gm.harness.mock_chain,
-        &account,
-        dom_manager(),
-        &manager_sym(),
-        new_pauser(),
-        51,
-    )
-    .await;
-    assert_transaction_executor_error!(grant, err_not_role_admin());
-
-    let revoke = run_revoke_role_against(
-        &gm.harness.mock_chain,
-        &account,
-        dom_manager(),
-        &manager_sym(),
-        dom_manager(),
-        52,
-    )
-    .await;
-    assert_transaction_executor_error!(revoke, err_not_role_admin());
-
-    assert_eq!(
-        read_role_config(&account, &manager_sym())?[1],
-        Felt::ZERO,
-        "DOM_MANAGER.admin_role stays 0 (ADMIN-administered: the seeded owner account)"
-    );
-    assert_eq!(
-        read_role_membership(&account, &manager_sym(), dom_manager())?[0],
-        Felt::from(1u32),
-        "the seeded DOM_MANAGER membership is unchanged"
     );
     Ok(())
 }

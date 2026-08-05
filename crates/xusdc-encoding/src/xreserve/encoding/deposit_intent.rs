@@ -200,6 +200,58 @@ pub fn deposit_intent_to_packed_felts(bytes: &[u8]) -> Result<Vec<Felt>, Encodin
     }
     Ok(felts)
 }
+
+/// A borrowed DepositIntent payload — the raw Circle-signed wire bytes (`240`-byte header plus
+/// variable hookData).
+///
+/// This gives the two codecs a typed home: `DepositIntent::new(bytes).parse_header()` and
+/// `.to_packed_felts()` read as operations on a DepositIntent rather than free functions over an
+/// anonymous `&[u8]`. Both delegate to the functions that own the layout, so the parsed fields and
+/// the packed preimage are identical to [`parse_deposit_intent_header`] /
+/// [`deposit_intent_to_packed_felts`]; the 240-byte layout is frozen and nothing here moves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DepositIntent<'a>(&'a [u8]);
+
+impl<'a> DepositIntent<'a> {
+    /// Wraps a raw DepositIntent payload without copying it.
+    pub const fn new(bytes: &'a [u8]) -> Self {
+        Self(bytes)
+    }
+
+    /// The raw payload bytes.
+    pub const fn as_bytes(&self) -> &'a [u8] {
+        self.0
+    }
+
+    /// Structural parse + the library-owned checks. Identical to [`parse_deposit_intent_header`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates every [`EncodingError`] [`parse_deposit_intent_header`] raises.
+    pub fn parse_header(&self) -> Result<DepositIntentHeader, EncodingError> {
+        parse_deposit_intent_header(self.0)
+    }
+
+    /// The u32-LE-packed on-chain preimage. Identical to [`deposit_intent_to_packed_felts`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates every [`EncodingError`] [`deposit_intent_to_packed_felts`] raises.
+    pub fn to_packed_felts(&self) -> Result<Vec<Felt>, EncodingError> {
+        deposit_intent_to_packed_felts(self.0)
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for DepositIntentHeader {
+    type Error = EncodingError;
+
+    /// Decodes a header straight from the wire bytes — the `TryFrom` spelling of
+    /// [`parse_deposit_intent_header`].
+    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
+        parse_deposit_intent_header(bytes)
+    }
+}
+
 // TESTS — TV-DI-1..9
 // ================================================================================================
 

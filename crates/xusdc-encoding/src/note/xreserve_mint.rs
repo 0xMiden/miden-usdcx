@@ -45,8 +45,8 @@ use miden_standards::note::{
 };
 
 use crate::xreserve::encoding::{
-    bytes32_to_account_id, bytes32_to_storage_map_key, deposit_intent_to_packed_felts,
-    parse_deposit_intent_header, uint256_to_asset_amount, PublicKey, Signature,
+    bytes32_to_account_id, bytes32_to_storage_map_key, uint256_to_asset_amount, DepositIntent,
+    PublicKey, Signature,
 };
 
 /// The mint-note transport attachment scheme (u16, project-chosen: >= 4, clear of
@@ -116,7 +116,8 @@ impl XUsdcMintNote {
 
     /// Creates the production mint note: `sender` is the producer/relayer account, `faucet_id`
     /// the consuming faucet, `deposit_intent` the RAW Circle-signed DepositIntent payload bytes
-    /// (parsed and packed by the shared codec, so a structurally invalid payload is rejected here
+    /// (wrapped as the typed [`DepositIntent`], which owns the parse and the packing, so a
+    /// structurally invalid payload is rejected here
     /// rather than on-chain — it surfaces as a [`NoteError`] carrying the codec's error as its
     /// source), `attestation` the raw signature and
     /// candidate pubkey. The storage embeds the ATTESTED values (P2ID recipe to the intent's
@@ -132,7 +133,8 @@ impl XUsdcMintNote {
         attestation: &MintAttestation,
         rng: &mut R,
     ) -> Result<Note, NoteError> {
-        let header = parse_deposit_intent_header(deposit_intent).map_err(|source| {
+        let deposit_intent = DepositIntent::new(deposit_intent);
+        let header = deposit_intent.parse_header().map_err(|source| {
             NoteError::other_with_source(
                 "deposit intent payload rejected by the shared codec",
                 source,
@@ -193,7 +195,7 @@ impl XUsdcMintNote {
     /// 33-byte compressed wire pubkey is decompressed to its affine coordinates here, so an
     /// off-curve key rejects rather than reaching the chain.
     fn transport_attachment(
-        deposit_intent: &[u8],
+        deposit_intent: DepositIntent<'_>,
         attestation: &MintAttestation,
     ) -> Result<NoteAttachment, NoteError> {
         let mut felts: Vec<Felt> = Vec::new();
@@ -213,14 +215,12 @@ impl XUsdcMintNote {
         felts.extend([Felt::from(0u32); 3]);
         debug_assert_eq!(felts.len(), XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF * 4);
 
-        felts.extend(
-            deposit_intent_to_packed_felts(deposit_intent).map_err(|source| {
-                NoteError::other_with_source(
-                    "deposit intent payload rejected by the shared codec",
-                    source,
-                )
-            })?,
-        );
+        felts.extend(deposit_intent.to_packed_felts().map_err(|source| {
+            NoteError::other_with_source(
+                "deposit intent payload rejected by the shared codec",
+                source,
+            )
+        })?);
         while !felts.len().is_multiple_of(4) {
             felts.push(Felt::from(0u32));
         }

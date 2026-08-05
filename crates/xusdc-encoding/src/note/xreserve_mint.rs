@@ -48,7 +48,7 @@ use crate::xreserve::encoding::{
 pub const XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME: u16 = 4;
 
 /// The attestation section word count: `[feeAmount(8), pubkey(16), signature(17), pad(3)]`
-/// = 44 felts,
+/// = 44 felts.
 pub const XUSDC_MINT_ATTESTATION_NUM_WORDS: usize = 11;
 
 /// Word offset of the DepositIntent sub-region inside the transport attachment: past the

@@ -56,7 +56,7 @@ use xusdc_encoding::note::xreserve_mint::{
     XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
-    affine_pubkey_felts, bytes32_to_account_id, bytes32_to_packed_felts,
+    affine_pubkey_felts, bytes32_to_account_id, bytes32_to_packed_u32_limbs,
     bytes32_to_storage_map_key, deposit_intent_to_packed_felts, parse_deposit_intent_header,
     signature_felts, uint256_to_asset_amount,
 };
@@ -248,9 +248,10 @@ fn t_storage_embeds_the_attested_output() {
         parse_deposit_intent_header(attestation.payload()).expect("the canonical payload parses");
     let recipient_id = bytes32_to_account_id(&header.remote_recipient)
         .expect("the canonical payload's remoteRecipient is a valid account id");
-    let limbs: [u32; 8] = bytes32_to_packed_felts(&header.amount)
-        .map(|limb| u32::try_from(limb.as_canonical_u64()).expect("a packed u32 limb"));
-    let amount = uint256_to_asset_amount(limbs, XUSDC_DEPOSIT_SCALE_EXP)
+    let amount = uint256_to_asset_amount(
+        bytes32_to_packed_u32_limbs(&header.amount),
+        XUSDC_DEPOSIT_SCALE_EXP,
+    )
         .expect("the attested amount reduces at unit-04's scale");
     let asset = FungibleAsset::new(faucet_id(), u64::from(amount))
         .expect("the reduced amount is a fungible asset of the faucet");

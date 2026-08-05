@@ -1,26 +1,31 @@
-//! Faucet-account CONSTRUCTION: the assembled `xreserve` component type and the fixed-identity
-//! USDCx faucet.
+//! Faucet-account CONSTRUCTION: the assembled `xreserve` component type, the fixed-identity USDCx
+//! faucet, the crate-root `Account` constructor, and [`XReserveStablecoinBuilder::build_account`].
 //!
 //! Split out of `builder/mod.rs` (which composes the component SET) so the two separable concerns —
-//! composing the components vs. building the pieces they are composed from — live apart and each
-//! file stays within the Rust file-size ceiling.
+//! composing the components vs. turning them into the deployable `Account` — live apart and each file
+//! stays within the Rust file-size ceiling.
 
 use std::sync::Arc;
 
 use miden_protocol::account::component::AccountComponentMetadata;
-use miden_protocol::account::{AccountComponent, StorageMap, StorageSlot, StorageSlotName};
+use miden_protocol::account::{
+    Account, AccountComponent, AccountId, AccountType, AssetCallbackFlag, StorageMap, StorageSlot,
+    StorageSlotName,
+};
 use miden_protocol::assembly::{Linkage, Path as MasmPath};
-use miden_protocol::asset::{AssetAmount, TokenSymbol};
+use miden_protocol::asset::{AssetAmount, AssetCallbacks, TokenSymbol};
 use miden_protocol::transaction::TransactionKernel;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::StandardsLib;
 
 use super::{
-    XReserveStablecoinBuilderError, DOMAIN_CONFIG_SLOT_LABEL, SOURCE_DOMAIN_CONFIG_SLOT_LABEL,
-    USDCX_DECIMALS, USDCX_TOKEN_SYMBOL, USED_NONCES_SLOT_LABEL, XRESERVE_ATTESTERS_SLOT_LABEL,
-    XRESERVE_CONTRACT_HI_SLOT_LABEL, XRESERVE_CONTRACT_LO_SLOT_LABEL,
+    XReserveStablecoinBuilder, XReserveStablecoinBuilderError, DOMAIN_CONFIG_SLOT_LABEL,
+    SOURCE_DOMAIN_CONFIG_SLOT_LABEL, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL, USED_NONCES_SLOT_LABEL,
+    XRESERVE_ATTESTERS_SLOT_LABEL, XRESERVE_CONTRACT_HI_SLOT_LABEL,
+    XRESERVE_CONTRACT_LO_SLOT_LABEL,
 };
+use crate::xreserve::encoding::EthBytes32;
 
 /// The metadata label the assembled `xreserve` component carries. It is a build-time label only —
 /// the account's code commitment is over the procedure roots and its storage over the slot values,
@@ -88,6 +93,84 @@ impl From<XReserveComponent> for AccountComponent {
     fn from(component: XReserveComponent) -> Self {
         component.0
     }
+}
+
+impl XReserveStablecoinBuilder {
+    /// Builds the final composed faucet [`Account`] from `init_seed`: [`Self::build_components`] plus
+    /// the production keyless-network `AuthNetworkAccount` auth component ([`Self::auth_component`]),
+    /// assembled exactly as the network-deploy path does — `AccountType::Public`, and the asset
+    /// callbacks enabled iff the composition installs the transfer-policy callback slots (it does:
+    /// xUSDC is a policed asset).
+    ///
+    /// This is the crate-root faucet-account constructor: nothing outside the test harness previously
+    /// turned the components into an `Account`, so account construction is now traceable from the
+    /// library root. Composing the account through this entry is byte-identical to composing the
+    /// components and the auth component by hand with the same seed (the byte-identity suite proves
+    /// it against the pre-change composition).
+    pub fn build_account(
+        &self,
+        init_seed: [u8; 32],
+    ) -> Result<Account, XReserveStablecoinBuilderError> {
+        let components = self.build_components()?;
+        // xUSDC is a policed asset: the transfer blocklist is the active send + receive policy, so
+        // the composition installs the two asset-callback slots and the account id must carry the
+        // Enabled flag for the kernel to dispatch the callbacks. Derived from the composition rather
+        // than hard-coded, so a composition that dropped the policy would flip the flag in lockstep.
+        let has_callbacks = components.iter().any(|component| {
+            component.storage_slots().iter().any(|slot| {
+                slot.name() == AssetCallbacks::on_before_asset_added_to_note_slot()
+                    || slot.name() == AssetCallbacks::on_before_asset_added_to_account_slot()
+            })
+        });
+        let flag = if has_callbacks {
+            AssetCallbackFlag::Enabled
+        } else {
+            AssetCallbackFlag::Disabled
+        };
+        let mut builder = Account::builder(init_seed)
+            .account_type(AccountType::Public)
+            .with_asset_callbacks(flag);
+        for component in components {
+            builder = builder.with_component(component);
+        }
+        builder = builder.with_components(
+            Self::auth_component().map_err(XReserveStablecoinBuilderError::NetworkAuth)?,
+        );
+        builder
+            .build_existing()
+            .map_err(XReserveStablecoinBuilderError::AccountComposition)
+    }
+}
+
+/// Crate-root constructor for the final xUSDC faucet [`Account`]: builds the fixed-identity USDCx
+/// faucet (`is_max_supply_mutable(true)` — the mutability invariant enforced BY CONSTRUCTION rather
+/// than a runtime reject), then composes it into the attestation-gated keyless network account via
+/// [`XReserveStablecoinBuilder`]. It is the single entry point that turns deploy parameters into the
+/// deployable account, so account construction is traceable from the library root (the agglayer
+/// `create_bridge_account` pattern). `init_seed` seeds the account id.
+#[allow(clippy::too_many_arguments)]
+pub fn build_faucet_account(
+    init_seed: [u8; 32],
+    max_supply: AssetAmount,
+    token_supply: AssetAmount,
+    owner: AccountId,
+    pauser_holder: AccountId,
+    manager_holder: AccountId,
+    blocklist_manager_holder: AccountId,
+    domain: u32,
+    source_domain: u32,
+    xreserve_contract: EthBytes32,
+) -> Result<Account, XReserveStablecoinBuilderError> {
+    XReserveStablecoinBuilder::new(
+        max_supply,
+        token_supply,
+        owner,
+        pauser_holder,
+        manager_holder,
+        blocklist_manager_holder,
+    )?
+    .with_domain_config(domain, source_domain, xreserve_contract)
+    .build_account(init_seed)
 }
 
 /// Builds the fixed-identity USDCx [`FungibleFaucet`]: name `USDCx`, symbol [`USDCX_TOKEN_SYMBOL`],

@@ -37,7 +37,9 @@
 //! assembles the shipped `xreserve` library into an `AccountComponent` itself (there is exactly one
 //! valid component, so it is not a builder input); the policy procedure root is resolved from that
 //! same installed code via [`AccountComponent::get_procedure_root_by_path`], so the `dynexec` root
-//! the policy manager stores always equals the installed proc's MAST root.
+//! the policy manager stores always equals the installed proc's MAST root. The final composed
+//! [`Account`] is produced by [`XReserveStablecoinBuilder::build_account`] / the crate-root
+//! [`build_faucet_account`], so account construction is traceable from the library root.
 
 use miden_protocol::account::{
     AccountComponent, AccountId, AccountProcedureRoot, StorageSlot, StorageSlotName,
@@ -60,7 +62,7 @@ mod network_auth;
 mod rbac_seed;
 
 use construction::build_usdcx_faucet;
-pub use construction::XReserveComponent;
+pub use construction::{build_faucet_account, XReserveComponent};
 pub use error::XReserveStablecoinBuilderError;
 use rbac_seed::seeded_dom_roles_rbac;
 
@@ -175,7 +177,8 @@ fn min_burn_amount_floor_of(policy: &BurnPolicy) -> Option<u64> {
 /// supply the three build-seeded domain-config fields via
 /// [`XReserveStablecoinBuilder::with_domain_config`] (required — a build without them is rejected),
 /// optionally override the active burn policy or the min-burn floor, then call
-/// [`XReserveStablecoinBuilder::build_components`].
+/// [`XReserveStablecoinBuilder::build_components`] (or the crate-root `build_faucet_account` /
+/// [`Self::build_account`] for the finished `Account`).
 pub struct XReserveStablecoinBuilder {
     faucet: FungibleFaucet,
     xreserve_component: AccountComponent,
@@ -318,8 +321,9 @@ impl XReserveStablecoinBuilder {
 
     /// Production composition: validates that the active burn policy is the stock [`MinBurnAmount`],
     /// seeds the three build-time domain-config fields, then composes the account components. The
-    /// faucet's `max_supply` mutability is guaranteed by construction (the builder builds the faucet
-    /// `is_max_supply_mutable(true)` itself), so there is no runtime mutability reject.
+    /// faucet's `max_supply` mutability is guaranteed by construction (the crate-root
+    /// [`Self::build_account`] path builds the faucet `is_max_supply_mutable(true)`), so there is no
+    /// runtime mutability reject.
     pub fn build_components(
         &self,
     ) -> Result<Vec<AccountComponent>, XReserveStablecoinBuilderError> {
@@ -462,8 +466,10 @@ impl XReserveStablecoinBuilder {
         Ok(components)
     }
 
-    // The fixed-identity faucet and the `xreserve` component assembly ([`XReserveComponent`]) live
-    // in the sibling `construction` module; this file composes the component SET.
+    // The final-`Account` constructor ([`Self::build_account`]) and the crate-root
+    // [`build_faucet_account`] / component assembly ([`XReserveComponent`]) live in the sibling
+    // `construction` module (this file composes the component SET; that one turns it into an
+    // `Account`).
 
     /// Reconstructs the supplied `xreserve` component with the three BUILD-SEEDED domain-config
     /// values written into their declared slots (`[domain, 0, 0, 0]`, `[source_domain, 0, 0, 0]`,

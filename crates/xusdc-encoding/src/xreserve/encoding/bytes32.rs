@@ -17,7 +17,10 @@
 
 use miden_protocol::account::StorageMapKey;
 use miden_protocol::utils::{bytes_to_packed_u32_elements, packed_u32_elements_to_bytes};
-use miden_protocol::{Felt, Hasher, Word};
+use miden_protocol::{Felt, Hasher};
+// `Word` is only named by the test-only lossless conversion and the unit tests.
+#[cfg(test)]
+use miden_protocol::Word;
 
 use super::error::EncodingError;
 
@@ -42,6 +45,11 @@ pub fn bytes32_to_packed_felts(b: &[u8; 32]) -> [Felt; 8] {
 
 /// The lossless direct conversion. Not usable for external map keys: it returns
 /// `Err(LimbOutOfField)` if any 8-byte LE limb is at or above the field modulus.
+///
+/// Test-only: it backs the TV-B32-2 bypass-positive golden-vector row (the lossless path rejecting
+/// a limb `>= p` while the hashing path succeeds); no production path performs the lossless direct
+/// conversion.
+#[cfg(test)]
 pub fn bytes32_to_word_lossless(b: &[u8; 32]) -> Result<Word, EncodingError> {
     // `LimbOutOfField` is a unit variant, so the inner `WordError` source cannot be carried
     Word::try_from(*b).map_err(|_| EncodingError::LimbOutOfField)

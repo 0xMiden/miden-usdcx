@@ -2,9 +2,12 @@
 //!
 //! Circle states deposit amounts as 256-bit values in the source token's smallest units; a Miden
 //! fungible asset amount is a `u64` bounded by `AssetAmount::MAX`. Every mint therefore has to
-//! cross that gap, and this is the only place it happens. The MASM faucet performs the identical
-//! reduction on-chain; a disagreement between the two would mean the relayer and the faucet mint
-//! different numbers.
+//! cross that gap, and this is the only place it happens off-chain. On-chain the faucet does NOT
+//! re-run this division: it VERIFIES a witness instead — the caller supplies the reduced quotient
+//! and remainder, and the MASM checks `x == y*10^s + z` with `z < 10^s`. So the production routine
+//! here, [`uint256_to_asset_amount`], is the witness GENERATOR the relayer delegates to, and its
+//! result is what the faucet's verifier is handed; a disagreement would make the faucet reject the
+//! relayer's own mint.
 //!
 //! The reduction is deliberately conservative at each step. The value arrives as eight
 //! little-endian-packed 32-bit limbs of a big-endian wire field, so the first thing checked is
@@ -76,6 +79,10 @@ pub fn uint256_to_asset_amount(
 
 /// The reduced-compare: reduce both operands, then compare as u64 (the mint's
 /// `amount >= maxFee` check).
+///
+/// Test-only: it exercises the `reduce` core over the TV-AMT-5 golden-vector rows, which are
+/// Rust-fn-only by design; no production path calls it (the on-chain compare is the MASM's).
+#[cfg(test)]
 pub fn reduced_ge(a: [u32; 8], b: [u32; 8], scale_exp: u32) -> Result<bool, EncodingError> {
     let (ya, _) = reduce(a, scale_exp)?;
     let (yb, _) = reduce(b, scale_exp)?;
@@ -84,6 +91,10 @@ pub fn reduced_ge(a: [u32; 8], b: [u32; 8], scale_exp: u32) -> Result<bool, Enco
 
 /// The non-zero division remainder (dust), surfaced so the caller can apply the
 /// dust policy, which `REQUIRES CIRCLE CONFIRMATION`.
+///
+/// Test-only: it drives the TV-AMT-6 dust golden-vector row (Rust-fn-only by design); the dust
+/// policy is unsettled, so no production path consumes the remainder yet.
+#[cfg(test)]
 pub fn uint256_to_asset_amount_with_dust(
     le_limbs: [u32; 8],
     scale_exp: u32,

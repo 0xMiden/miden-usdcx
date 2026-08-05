@@ -1,5 +1,3 @@
-//! The `set_attester` admin note factory.
-
 use std::sync::LazyLock;
 
 use miden_protocol::account::AccountId;
@@ -16,12 +14,10 @@ const SET_ATTESTER_NOTE_SCRIPT_SRC: &str =
 static SET_ATTESTER_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(SET_ATTESTER_NOTE_SCRIPT_SRC));
 
-/// The administrator-gated `set_attester` admin note. Storage layout:
-/// `[pk_commitment(4), enabled]`. Consumed against the faucet network account;
-/// `attester_admin::set_attester` gates on the (kernel-forced) note sender through the account-wide
-/// authority, which — the procedure carrying no role of its own — resolves it to the built-in
-/// `ADMIN` role. `ADMIN` membership is account-bound, and it is the faucet's only authority handle:
-/// the sender that succeeds is whichever account currently holds the role.
+/// The administrator-gated `set_attester` admin note. Storage layout: `[pk_commitment(4),
+/// enabled]`. Consumed against the faucet network account; `attester_admin::set_attester` gates on
+/// the (kernel-forced) note sender through the account-wide authority, resolving to the built-in
+/// `ADMIN` role.
 pub struct XReserveSetAttesterNote;
 
 impl XReserveSetAttesterNote {
@@ -37,11 +33,8 @@ impl XReserveSetAttesterNote {
         SET_ATTESTER_NOTE_SCRIPT.root()
     }
 
-    /// Builds a `set_attester` admin note: `sender` is the admin party (an `ADMIN` role holder, for
-    /// success),
-    /// `faucet_id` the target faucet (PUBLIC), `commitment` the attester pubkey commitment (the
-    /// xReserveAttesters map key), `enabled` = 1 (allowlist) or 0 (remove). The params live in note
-    /// storage.
+    /// Builds a `set_attester` admin note: `commitment` is the attester pubkey commitment (the
+    /// xReserveAttesters map key), `enabled` = 1 (allowlist) or 0 (remove).
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,

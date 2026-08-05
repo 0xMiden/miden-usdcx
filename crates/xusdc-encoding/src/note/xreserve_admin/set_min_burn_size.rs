@@ -1,5 +1,3 @@
-//! The `set_min_burn_size` admin note factory.
-
 use std::sync::LazyLock;
 
 use miden_protocol::account::AccountId;
@@ -18,8 +16,8 @@ static SET_MIN_BURN_SIZE_NOTE_SCRIPT: LazyLock<NoteScript> =
 
 /// The administrator-gated `set_min_burn_size` admin note. Storage layout: `[new_min]` with
 /// `new_min >= 1` (the note script's zero-floor guard — the stock setter itself accepts 0). The
-/// stock setter it targets resolves through the account-wide authority to the built-in `ADMIN` role,
-/// which is account-bound and is the faucet's only authority handle.
+/// stock setter it targets resolves through the account-wide authority to the built-in `ADMIN`
+/// role.
 pub struct XReserveSetMinBurnSizeNote;
 
 impl XReserveSetMinBurnSizeNote {
@@ -35,10 +33,7 @@ impl XReserveSetMinBurnSizeNote {
         SET_MIN_BURN_SIZE_NOTE_SCRIPT.root()
     }
 
-    /// Builds a `set_min_burn_size` admin note: `sender` is the admin party (an `ADMIN` role
-    /// holder, for success),
-    /// `faucet_id` the target faucet (PUBLIC), `new_min` the new minimum burn size. The param lives in
-    /// note storage.
+    /// Builds a `set_min_burn_size` admin note carrying `new_min`, the new minimum burn size.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,

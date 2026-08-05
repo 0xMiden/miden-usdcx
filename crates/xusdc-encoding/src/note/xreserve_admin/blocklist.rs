@@ -69,9 +69,7 @@ impl From<NoteError> for XReserveBlocklistNoteError {
 }
 
 /// The transfer-blocklist admin note factory: the standard [`BlocklistConfigNote`] constrained by
-/// the self-block refusal. There is no faucet-owned script behind this type — [`Self::script`] and
-/// [`Self::script_root`] are the STOCK blocklist-config script and root, exposed here so the
-/// faucet's admin-note surface reads from one module.
+/// the self-block refusal. There is no faucet-owned script behind this type.
 pub struct XReserveBlocklistNote;
 
 impl XReserveBlocklistNote {
@@ -87,11 +85,6 @@ impl XReserveBlocklistNote {
 
     /// Builds a note that adds `account` to `faucet_id`'s transfer blocklist over the standard
     /// [`BlocklistConfigNote`].
-    ///
-    /// Both actions ride one script root, so the note-script allowlist carries a single entry for
-    /// blocking and unblocking alike. The blocklist administrator role gates them: the note sender
-    /// is kernel-forced, and the standard manager resolves that sender against the role the
-    /// faucet's procedure-role map assigns to each procedure.
     ///
     /// # Errors
     ///

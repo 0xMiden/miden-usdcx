@@ -1,5 +1,3 @@
-//! The `set_max_supply` admin note factory.
-
 use std::sync::LazyLock;
 
 use miden_protocol::account::AccountId;
@@ -16,9 +14,8 @@ const SET_MAX_SUPPLY_NOTE_SCRIPT_SRC: &str =
 static SET_MAX_SUPPLY_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(SET_MAX_SUPPLY_NOTE_SCRIPT_SRC));
 
-/// The administrator-gated stock `set_max_supply` admin note. Storage layout:
-/// `[new_max_supply]`. The stock setter resolves through the account-wide authority to the built-in
-/// `ADMIN` role, which is account-bound and is the faucet's only authority handle.
+/// The administrator-gated stock `set_max_supply` admin note. Storage layout: `[new_max_supply]`.
+/// The stock setter resolves through the account-wide authority to the built-in `ADMIN` role.
 pub struct XReserveSetMaxSupplyNote;
 
 impl XReserveSetMaxSupplyNote {
@@ -34,10 +31,7 @@ impl XReserveSetMaxSupplyNote {
         SET_MAX_SUPPLY_NOTE_SCRIPT.root()
     }
 
-    /// Builds a `set_max_supply` admin note: `sender` is the admin party (an `ADMIN` role holder,
-    /// for success),
-    /// `faucet_id` the target faucet (PUBLIC), `new_max_supply` the new cap. The param lives in note
-    /// storage.
+    /// Builds a `set_max_supply` admin note carrying `new_max_supply`, the new cap.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,

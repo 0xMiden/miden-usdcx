@@ -75,8 +75,7 @@ impl XReserveStablecoinBuilder {
             // PausableManager, gated on DOM_PAUSER by the procedure-role map.
             PauseActionNote::script_root(),
             // the STOCK blocklist-config note — block AND unblock behind one root, calling
-            // BlocklistManager, gated on BLK_MANAGER by the procedure-role map. The factory type
-            // delegates to the stock note; the root IS the stock root.
+            // BlocklistManager, gated on BLK_MANAGER by the procedure-role map.
             crate::note::xreserve_admin::XReserveBlocklistNote::script_root(),
             // the STOCK role-action note — grant, revoke, set-role-admin AND renounce behind one
             // root, calling the stock role component, which gates every action on the note sender.

@@ -10,7 +10,7 @@
 //! - S3 admin bring-up: attester, max_supply, min_burn, and the min-burn zero-floor guard, each
 //!   with its non-administrator reject;
 //! - S4-S6 a REAL attested mint through the STOCK `MintNote` transport (the `XUsdcMintNote`
-//!   factory: scheme-4 intent + scheme-5 attestation + scheme-2 routing), then the nonce replay
+//!   factory: the merged scheme-4 transport + scheme-2 routing), then the nonce replay
 //!   trap, then the tx-script `mint_and_send` leg — the stock path IS the attestation-gated path,
 //!   so a policy-less tx-script mint traps in the kernel;
 //! - S7-S9 the holder wallet consumes the minted P2ID note (custody-traced funds), a below-min
@@ -184,14 +184,14 @@ fn stock_role_action_note<R: miden_protocol::crypto::rand::FeltRng>(
 }
 
 /// The allowlisted (seed 1) attester's `MintAttestation` over `payload` — the wire-form signature
-/// + pubkey the `XUsdcMintNote` factory embeds in the scheme-5 attachment.
+/// + pubkey the `XUsdcMintNote` factory embeds in the merged transport's attestation section.
 fn attestation_for(seed: u64, payload: &[u8]) -> MintAttestation {
     let attester = gen_attester(seed, payload);
     MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes)
 }
 
-/// The REAL stock mint note for `payload`: the production `XUsdcMintNote` factory (DepositIntent
-/// scheme-4 + attestation scheme-5 + `NetworkAccountTarget` scheme-2 attachments over a stock
+/// The REAL stock mint note for `payload`: the production `XUsdcMintNote` factory (the merged
+/// scheme-4 transport + `NetworkAccountTarget` scheme-2 attachments over a stock
 /// `MintNote`), signed by the allowlisted attester. Built per step — never genesis-seeded — because
 /// the embedded output asset carries the REAL faucet id.
 fn production_mint_note(

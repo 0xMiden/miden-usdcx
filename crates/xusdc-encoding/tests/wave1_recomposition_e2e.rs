@@ -3,9 +3,10 @@
 //! production-transport harness in `support::mint_transport`, so neither carries its own copy of
 //! the note-building engine.
 //!
-//! The production transport driven END TO END: a REAL stock `MintNote` carrying the
-//! DepositIntent (scheme 4) + attestation (scheme 5) + `NetworkAccountTarget` (scheme 2)
-//! attachments mints EXACTLY the attested amount, and the ratified ASSERT-MATCH binding
+//! The production transport driven END TO END: a REAL stock `MintNote` carrying the merged
+//! transport (scheme 4: the attestation followed by the DepositIntent) +
+//! `NetworkAccountTarget` (scheme 2) attachments mints EXACTLY the attested amount, and the
+//! ratified ASSERT-MATCH binding
 //! (the policy asserts the note-supplied RECIPIENT equals the attested derivation, never
 //! overrides) rejects a tampered recipient with its EXACT error; fee != 0 (the keep-zero fee
 //! gate) and nonce replay keep their frozen errors through the transport; and the
@@ -137,8 +138,9 @@ async fn stock_mint_note_rejects_a_recipient_mismatch() -> Result<()> {
     .await
 }
 
-/// E2E NEGATIVE (the keep-zero fee gate): a nonzero feeAmount in the attestation attachment trips the
-/// frozen `ERR_XRESERVE_FEE_NONZERO` through the new transport.
+/// E2E NEGATIVE (the keep-zero fee gate): a nonzero feeAmount in the transport's attestation
+/// section trips the frozen `ERR_XRESERVE_FEE_NONZERO` through the merged transport — which also
+/// pins the feeAmount sub-region's offset inside the merged attachment.
 #[tokio::test]
 async fn stock_mint_note_rejects_a_nonzero_fee() -> Result<()> {
     let _serial = tripwire_serial_guard().await;

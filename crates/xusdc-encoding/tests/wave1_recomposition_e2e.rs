@@ -3,9 +3,10 @@
 //! production-transport harness in `support::mint_transport`, so neither carries its own copy of
 //! the note-building engine.
 //!
-//! The production transport driven END TO END: a REAL stock `MintNote` carrying the
-//! DepositIntent (scheme 4) + attestation (scheme 5) + `NetworkAccountTarget` (scheme 2)
-//! attachments mints EXACTLY the attested amount, and the ratified ASSERT-MATCH binding
+//! The production transport driven END TO END: a REAL stock `MintNote` carrying the merged
+//! transport (scheme 4: the attestation followed by the DepositIntent) +
+//! `NetworkAccountTarget` (scheme 2) attachments mints EXACTLY the attested amount, and the
+//! ratified ASSERT-MATCH binding
 //! (the policy asserts the note-supplied RECIPIENT equals the attested derivation, never
 //! overrides) rejects a tampered recipient with its EXACT error; fee != 0 (the keep-zero fee
 //! gate) and nonce replay keep their frozen errors through the transport; and the
@@ -36,7 +37,7 @@ const MIN_BURN_VALID: u64 = 5;
 async fn stock_mint_note_mints_the_attested_amount() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 1);
     let note = honest_note(&pf, &payload, 71)?;
     emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
@@ -109,7 +110,7 @@ async fn stock_mint_note_mints_the_attested_amount() -> Result<()> {
 async fn stock_mint_note_rejects_a_recipient_mismatch() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 2);
     // the recipe targets the PRODUCER; the attested intent targets the recipient wallet. The
     // output tag stays on the ATTESTED recipient so the trap isolates the RECIPIENT binding.
@@ -137,13 +138,14 @@ async fn stock_mint_note_rejects_a_recipient_mismatch() -> Result<()> {
     .await
 }
 
-/// E2E NEGATIVE (the keep-zero fee gate): a nonzero feeAmount in the attestation attachment trips the
-/// frozen `ERR_XRESERVE_FEE_NONZERO` through the new transport.
+/// E2E NEGATIVE (the keep-zero fee gate): a nonzero feeAmount in the transport's attestation
+/// section trips the frozen `ERR_XRESERVE_FEE_NONZERO` through the merged transport — which also
+/// pins the feeAmount sub-region's offset inside the merged attachment.
 #[tokio::test]
 async fn stock_mint_note_rejects_a_nonzero_fee() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 3);
     let note = tampered_mint_note(
         &pf,
@@ -175,7 +177,7 @@ async fn stock_mint_note_rejects_a_nonzero_fee() -> Result<()> {
 async fn stock_mint_note_rejects_a_replay() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 4);
 
     let first = honest_note(&pf, &payload, 74)?;

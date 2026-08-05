@@ -36,7 +36,7 @@ use miden_standards::account::faucets::FungibleFaucet;
 use miden_testing::MockChain;
 use miden_tx::TransactionExecutorError;
 use support::*;
-use xusdc_encoding::note::xreserve_admin::{XReserveIdentifierInitNote, XReserveSetAttesterNote};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, DiVector};
 use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, bytes32_to_storage_map_key};
@@ -148,7 +148,7 @@ fn marker() -> Word {
 // HARNESS (the production component set + the production bring-up notes; no drivers, no probes)
 // ================================================================================================
 
-/// The production-faucet fixture with owner `domain_init` + owner `set_attester` seeded on-chain.
+/// The production-faucet fixture with the administrator's `set_attester` seeded on-chain.
 /// The allowlisted attester is `gen_attester(1, ..)`, whose commitment is payload-independent.
 fn fixture() -> Result<ProductionFaucet> {
     setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
@@ -157,18 +157,14 @@ fn fixture() -> Result<ProductionFaucet> {
             &payload_for(recipient, faucet_id, CIRCLE_DEPOSIT_100_USDC, 0),
         )
         .commitment;
-        vec![
-            XReserveIdentifierInitNote::create(administrator(), faucet_id, &mut note_rng(951))
-                .expect("building the administrator identifier_init note"),
-            XReserveSetAttesterNote::create(
-                administrator(),
-                faucet_id,
-                commitment,
-                1,
-                &mut note_rng(952),
-            )
-            .expect("building the administrator set_attester note"),
-        ]
+        vec![XReserveSetAttesterNote::create(
+            administrator(),
+            faucet_id,
+            commitment,
+            1,
+            &mut note_rng(952),
+        )
+        .expect("building the administrator set_attester note")]
     })
 }
 
@@ -507,8 +503,7 @@ async fn mint_to_a_blocked_recipient_succeeds_then_strands() -> anyhow::Result<(
     use miden_testing::assert_transaction_executor_error;
 
     // A fixture that additionally seeds a BLK_MANAGER block note targeting the recipient; bring_up
-    // consumes identifier_init, set_attester, AND the block note (so the recipient is blocked
-    // pre-mint).
+    // consumes set_attester AND the block note (so the recipient is blocked pre-mint).
     let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
         let commitment = gen_attester(
             1,
@@ -516,8 +511,6 @@ async fn mint_to_a_blocked_recipient_succeeds_then_strands() -> anyhow::Result<(
         )
         .commitment;
         vec![
-            XReserveIdentifierInitNote::create(administrator(), faucet_id, &mut note_rng(961))
-                .expect("building the administrator identifier_init note"),
             XReserveSetAttesterNote::create(
                 administrator(),
                 faucet_id,

@@ -1,5 +1,5 @@
 //! The component-level tripwire: the xreserve library's callable-root set is FROZEN
-//! at the 3 sanctioned roots below, enumerated at the `@account_procedure`-filtered account
+//! at the 2 sanctioned roots below, enumerated at the `@account_procedure`-filtered account
 //! interface — so any new export (a potential new supply door) fails loudly.
 
 mod support;
@@ -11,9 +11,8 @@ use miden_protocol::account::AccountProcedureRoot;
 use support::*;
 
 /// The frozen sanctioned callable-root set of the shipped `xreserve` library.
-const FROZEN_CALLABLE_ROOTS: [&str; 3] = [
+const FROZEN_CALLABLE_ROOTS: [&str; 2] = [
     "::xreserve::attester_admin::set_attester",
-    "::xreserve::identifier_init::init_identifier",
     "::xreserve::mint_policy::check_policy",
 ];
 

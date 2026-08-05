@@ -20,9 +20,10 @@
 //! against the faucet's own procedures.
 //!
 //! The remaining tests cover the routing attachments that make a network account reachable: a mint
-//! note carries three attachments — the deposit intent, the attestation, and the target routing the
-//! note to the faucet with an always-execute hint — and a burn note carries the routing attachment.
-//! Both the wire form and the semantics are checked.
+//! note carries two attachments — the merged transport (the attestation followed by the deposit
+//! intent) and the target routing the note to the faucet with an
+//! always-execute hint — and a burn note carries the routing attachment. Both the wire form and
+//! the semantics are checked.
 //!
 //! Sibling suites cover the rest: per-operation admin authorization in `f5_admin_notes.rs`, and the
 //! mint transport negatives — missing or miscounted attachments, tampered attestations — in
@@ -57,15 +58,17 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveIdentifierInitNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
-    XReserveSetMinBurnSizeNote,
+    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
-    MintAttestation, XUsdcMintNote, XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME,
-    XUSDC_MINT_ATTESTATION_NUM_WORDS, XUSDC_MINT_INTENT_ATTACHMENT_SCHEME,
+    MintAttestation, XUsdcMintNote, XUSDC_MINT_ATTESTATION_NUM_WORDS,
+    XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF,
 };
-use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, XReserveBurnItems};
+use xusdc_encoding::xreserve::encoding::{
+    account_id_to_bytes32, affine_pubkey_felts, deposit_intent_to_packed_felts, signature_felts,
+    XReserveBurnItems,
+};
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -191,7 +194,7 @@ fn production_faucet_auth_component_is_stock_network_account() -> Result<()> {
 // PROOF #5 — the frozen note-script allowlist + a tx-script allowlist of EXACTLY the expiration root
 // ================================================================================================
 
-/// The note-script allowlist is exactly the nine intended roots — two supply notes and seven
+/// The note-script allowlist is exactly the eight intended roots — two supply notes and six
 /// admin notes — with nothing extra and nothing missing.
 ///
 /// The allowlist cannot be changed after deployment, so its contents at build time are its contents
@@ -200,22 +203,22 @@ fn production_faucet_auth_component_is_stock_network_account() -> Result<()> {
 /// the account that auth actually consults. The expected roots are taken from the shipped note
 /// factories rather than written out as literals.
 ///
-/// Three of the seven admin roots are standard notes that each cover a whole capability behind one
+/// Three of the six admin roots are standard notes that each cover a whole capability behind one
 /// script root: pause and unpause; block and unblock; and grant, revoke, set-role-admin and
 /// renounce. There are no ownership notes — the faucet installs no ownership component, so rotating
-/// the administrator is a grant and a revoke of the `ADMIN` role.
+/// the administrator is a grant and a revoke of the `ADMIN` role. There is no identifier-init note
+/// either: the mint path derives the identifier from the account's own id, so nothing seeds it.
 #[test]
-fn production_faucet_note_allowlist_is_exactly_the_9_ratified_roots() -> Result<()> {
+fn production_faucet_note_allowlist_is_exactly_the_8_ratified_roots() -> Result<()> {
     let (_chain, account) = production_faucet()?;
     let expected: BTreeSet<_> = BTreeSet::from([
         // the two supply-side notes: minting uses the standard mint note
         MintNote::script_root(),
         BurnNote::script_root(),
-        // the four administrator-gated configuration notes
+        // the three administrator-gated configuration notes
         XReserveSetAttesterNote::script_root(),
         XReserveSetMinBurnSizeNote::script_root(),
         XReserveSetMaxSupplyNote::script_root(),
-        XReserveIdentifierInitNote::script_root(),
         // one standard note covers pausing AND unpausing
         PauseActionNote::script_root(),
         // one standard note covers blocking AND unblocking, gated on the blocklist manager role
@@ -225,24 +228,24 @@ fn production_faucet_note_allowlist_is_exactly_the_9_ratified_roots() -> Result<
     ]);
     assert_eq!(
         expected.len(),
-        9,
-        "the ratified allowlist is exactly 9 distinct roots"
+        8,
+        "the ratified allowlist is exactly 8 distinct roots"
     );
 
-    // Source layer: the builder's single-source allowlist == the 9 ratified roots.
+    // Source layer: the builder's single-source allowlist == the 8 ratified roots.
     assert_eq!(
         XReserveStablecoinBuilder::allowed_note_scripts(),
         expected,
-        "allowed_note_scripts() must equal EXACTLY the 9 ratified roots (extra/missing = RED)",
+        "allowed_note_scripts() must equal EXACTLY the 8 ratified roots (extra/missing = RED)",
     );
 
-    // On-chain layer: the built faucet's allowlist storage map == the 9 ratified roots.
+    // On-chain layer: the built faucet's allowlist storage map == the 8 ratified roots.
     let allowlist = NetworkAccountNoteAllowlist::try_from(account.storage())
         .map_err(|e| anyhow::anyhow!("the faucet must carry a note-script allowlist slot: {e}"))?;
     assert_eq!(
         allowlist.allowed_script_roots(),
         &expected,
-        "the built faucet's on-chain allowlist map must equal EXACTLY the 9 ratified roots",
+        "the built faucet's on-chain allowlist map must equal EXACTLY the 8 ratified roots",
     );
     Ok(())
 }
@@ -348,13 +351,16 @@ async fn non_expiration_tx_script_is_rejected_and_expiration_is_admitted() -> Re
 // PROOF #2 / #3 — exact routing-attachment wire form + NetworkAccountTarget semantics
 // ================================================================================================
 
-/// The mint note (the STOCK `MintNote` built by `XUsdcMintNote::create`) must carry EXACTLY the
-/// three xUSDC attachments — the scheme-4 DepositIntent preimage, the scheme-5 attestation
-/// (11 words: `[feeAmount(8), pubkey(16), signature(17), pad(3)]`), and the scheme-2
-/// `NetworkAccountTarget` routing attachment addressed to the faucet with
-/// `NoteExecutionHint::Always`.
+/// The mint note (the STOCK `MintNote` built by `XUsdcMintNote::create`) must carry EXACTLY TWO
+/// attachments — the merged scheme-4 transport (the 11-word attestation
+/// `[feeAmount(8), pubkey(16), signature(17), pad(3)]`, then the packed DepositIntent preimage)
+/// and the scheme-2 `NetworkAccountTarget` routing attachment
+/// addressed to the faucet with `NoteExecutionHint::Always`.
+///
+/// The attestation section comes FIRST because it is fixed-width: that is what keeps the intent's
+/// starting offset a constant instead of a function of `hookDataLen`.
 #[test]
-fn mint_note_carries_the_three_xusdc_attachments() -> Result<()> {
+fn mint_note_carries_the_merged_transport_and_the_routing_target() -> Result<()> {
     let (_chain, faucet) = production_faucet()?;
     let faucet_id = faucet.id();
     let payload = attested_deposit_intent_payload(test_account_id(3));
@@ -370,14 +376,12 @@ fn mint_note_carries_the_three_xusdc_attachments() -> Result<()> {
 
     assert_eq!(
         note.attachments().num_attachments(),
-        3,
-        "the mint note must carry exactly three attachments: the intent + the attestation + the \
-         routing target",
+        2,
+        "the mint note must carry exactly two attachments: the merged transport + the routing \
+         target",
     );
-    let scheme_four = NoteAttachmentScheme::new(XUSDC_MINT_INTENT_ATTACHMENT_SCHEME)
+    let transport_scheme = NoteAttachmentScheme::new(XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME)
         .expect("scheme 4 is a valid attachment scheme");
-    let scheme_five = NoteAttachmentScheme::new(XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME)
-        .expect("scheme 5 is a valid attachment scheme");
     let count_of = |scheme: NoteAttachmentScheme| {
         note.attachments()
             .iter()
@@ -385,14 +389,9 @@ fn mint_note_carries_the_three_xusdc_attachments() -> Result<()> {
             .count()
     };
     assert_eq!(
-        count_of(scheme_four),
+        count_of(transport_scheme),
         1,
-        "exactly one scheme-4 DepositIntent attachment"
-    );
-    assert_eq!(
-        count_of(scheme_five),
-        1,
-        "exactly one scheme-5 attestation attachment"
+        "exactly one scheme-4 merged transport attachment"
     );
     assert_eq!(
         count_of(NetworkAccountTarget::ATTACHMENT_SCHEME),
@@ -400,15 +399,47 @@ fn mint_note_carries_the_three_xusdc_attachments() -> Result<()> {
         "exactly one scheme-2 routing attachment"
     );
 
-    let attestation = note
+    // the merged content, at the documented offsets: attestation, intent
+    let transport = note
         .attachments()
         .iter()
-        .find(|a| a.attachment_scheme() == scheme_five)
-        .context("the scheme-5 attestation attachment is present")?;
+        .find(|a| a.attachment_scheme() == transport_scheme)
+        .context("the scheme-4 merged transport attachment is present")?
+        .content()
+        .to_elements();
+    let mut intent = deposit_intent_to_packed_felts(&payload)
+        .map_err(|e| anyhow::anyhow!("the attested payload packs: {e}"))?;
+    while !intent.len().is_multiple_of(4) {
+        intent.push(Felt::from(0u32));
+    }
+    let mut expected: Vec<Felt> = Vec::new();
+    expected.extend([Felt::from(0u32); 8]);
+    expected.extend(
+        affine_pubkey_felts(&att.pubkey_bytes)
+            .map_err(|e| anyhow::anyhow!("the attester key is on the curve: {e}"))?,
+    );
+    expected.extend(signature_felts(&att.sig_bytes));
+    expected.extend([Felt::from(0u32); 3]);
     assert_eq!(
-        usize::from(attestation.num_words()),
-        XUSDC_MINT_ATTESTATION_NUM_WORDS,
-        "the attestation attachment is [feeAmount(8), pubkey(16), signature(17), pad(3)] = 11 words",
+        expected.len(),
+        XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF * 4,
+        "the attestation section ({XUSDC_MINT_ATTESTATION_NUM_WORDS} words) precedes the intent"
+    );
+    expected.extend(intent);
+    assert_eq!(
+        transport, expected,
+        "the merged transport attachment is attestation(44) || padded intent",
+    );
+    assert_eq!(
+        usize::from(
+            note.attachments()
+                .iter()
+                .find(|a| a.attachment_scheme() == transport_scheme)
+                .expect("present")
+                .num_words()
+        ),
+        expected.len() / 4,
+        "the committed word count is exactly attestation + padded intent",
     );
 
     let target = NetworkAccountTarget::try_from(note.attachments())

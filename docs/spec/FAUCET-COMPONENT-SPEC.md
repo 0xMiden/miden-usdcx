@@ -35,10 +35,9 @@ min-burn floor, a missing domain-config seed, or a non-Public faucet) at build t
 
 | Module | Role |
 |---|---|
-| `mint_policy` | The **attestation mint policy** (`check_policy`, the ACTIVE mint policy the stock `mint_and_send` dispatches): reads and hash-verifies the mint note's DepositIntent and attestation attachments, runs all validation stages, enforces that the note recipient, amount, tag, and type match their attested derivations, and marks the nonce used — its only state write. |
-| `deposit_intent_parser` | The faucet-side mint preconditions behind the single `validate` entry: length and word-count binding, domain/identifier comparisons, amount/fee bounds, and nonce replay protection. Delegates the structural DepositIntent parse to the encoding library. |
+| `mint_policy` | The **attestation mint policy** (`check_policy`, the ACTIVE mint policy the stock `mint_and_send` dispatches): reads and hash-verifies the mint note's merged transport attachment, runs all validation stages, enforces that the note recipient, amount, tag, and type match their attested derivations, and marks the nonce used — its only state write. |
+| `deposit_intent_parser` | The faucet-side mint preconditions behind the single `validate` entry: length and word-count binding, domain/identifier comparisons, amount/fee bounds, and nonce replay protection. It decodes the staged `remoteToken` and compares it directly with the faucet's native account id. |
 | `attestation_verify` | Keccaks the payload, checks the attester pubkey against the allowlist, and verifies the ECDSA signature. |
-| `identifier_init` | The administrator-gated, init-once **identifier** seeding — it resolves through the account-wide authority to the `ADMIN` role, exactly like the setters (the DEC-4 minimized init: the identifier is a provable fixpoint of the account id, so it alone gets a runtime init; the other three domain-config fields are build-seeded). |
 | `attester_admin` | The authority-gated `set_attester` allowlist setter. |
 | `encoding/` | The shared encoding library (`xreserve::encoding::*`): bytes32→key hashing, uint256→amount reduction, DepositIntent parse, pubkey commitment. Owned by the encoding crate; the faucet consumes it by reference. |
 
@@ -50,9 +49,9 @@ floor slot, its `check_policy` is the active burn policy, and the admin note cal
 
 Public note scripts that drive account procedures when consumed. The mint note is the **stock
 miden-standards `MintNote`** (no custom mint script exists); the faucet-owned admin notes are thin,
-root-pinned scripts (`identifier_init`, `set_attester`, `set_min_burn_size` — which asserts the
-floor then calls the stock `set_min_burn_amount` —, and `set_max_supply`) that cross into the
-account and call the matching setter. Pausing, the transfer blocklist and role management ship
+root-pinned scripts (`set_attester`, `set_min_burn_size` — which asserts the floor then calls the
+stock `set_min_burn_amount` —, and `set_max_supply`) that cross into the account and call the
+matching setter. Pausing, the transfer blocklist and role management ship
 **no faucet-owned script**: they use the stock `PauseActionNote`, `BlocklistConfigNote` and
 `RbacActionNote`, each of which covers every one of its actions behind one script root and calls the
 stock component the account installs. There is no ownership note — the faucet installs no ownership
@@ -63,25 +62,25 @@ component.
 A relayer submits a **stock `MintNote`** whose storage embeds the attested output (the P2ID
 recipe to the intent's recipient with the nonce-key serial, the reduced amount as this faucet's
 asset, the recipient's account-target tag) and whose attachments carry the Circle-signed
-transport: the DepositIntent preimage (scheme 4), the attestation `[feeAmount, pubkey,
-signature]` (scheme 5), and the network routing target (scheme 2). The stock MINT script calls
+transport: one merged attachment (scheme 4) containing `[feeAmount, pubkey, signature]` followed
+by the DepositIntent preimage, plus the network routing target (scheme 2). The stock MINT script calls
 the stock `mint_and_send`, which dispatches the **attestation mint policy** first; the policy
 runs a strict **verify-once-then-write-once** pipeline, and any failure aborts the whole
 transaction with no writes, so a failed mint never consumes the nonce.
 
 1. **Pause gate** — the stock policy dispatcher runs `assert_not_paused` before the policy, so a
    paused faucet never even dispatches the attestation gate.
-2. **Transport shape** — the policy locates the three attachments (exactly three, one per
-   scheme) and hash-verifies the intent and the 11-word attestation into two of its own local
-   regions. It hands the intent's committed word count to structural validation, which binds it to the intent's
-   own embedded `hookDataLen`. Every verify stage below then reads those two regions by pointer.
-   Nothing is read back from the advice provider, so what the note committed to is exactly what
-   gets verified.
+2. **Transport shape** — the policy locates exactly two attachments and hash-verifies the merged
+   transport into one local region. Its first 11 words carry the fixed-width attestation and the
+   remaining words carry the DepositIntent preimage. The policy derives the intent word count by
+   subtracting that fixed prefix and binds it to the embedded `hookDataLen`. Nothing is read back
+   from the advice provider, so what the note committed to is exactly what gets verified.
 3. **Structural and addressing validation** (`R-MINT-1..8`): derive the preimage length from the
    embedded `hookDataLen` and bind it to the committed word count; parse the fixed-offset
    DepositIntent header; check magic, version, non-zero `amount`/`localToken`/`localDepositor`,
-   the length relation, and that the intent's `remoteDomain`/`remoteToken` match the faucet's
-   configured domain/identifier.
+   the length relation, and that the intent's `remoteDomain` matches the configured domain. The
+   staged `remoteToken` is decoded from its bytes32 AccountId packaging and compared directly with
+   `native_account::get_id`; the identifier is derived, not stored or hashed.
 4. **Amount and fee validation** (`R-MINT-9..11`): reduce `amount`, `maxFee`, and the operator
    `feeAmount` from uint256 to an `AssetAmount`; require `amount ≥ maxFee`. In the MVP the
    operator `feeAmount` must be zero (see fee handling below).
@@ -108,8 +107,8 @@ the attested note transport (e.g. a bare tx-script `mint_and_send`) fail-closes 
 kernel reads.
 
 **Fee handling.** The MVP mints a single recipient note and raises supply by the full amount, so
-a non-zero fee would over-count supply against the minted assets. Both the parser and the
-effects assert `feeAmount == 0`. When Circle confirms the relayer-fee design (DEV-8), the
+a non-zero fee would over-count supply against the minted assets. The parser asserts
+`feeAmount == 0`. When Circle confirms the relayer-fee design (DEV-8), the
 `feeAmount ≤ maxFee` compare and a relayer-credit note leg are restored.
 
 **Attestation model** (DEV-1, `INV-NO-ECRECOVER`): Miden has no `ecrecover`, so the signer is
@@ -142,8 +141,8 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
   role is the account's single authority handle, and rotating it is a grant and a revoke of that
   role through the standard role-action note. The handover is single-step — there is no
   nominate-then-accept confirmation.
-- **Administrator-gated setters**: `set_attester` (allowlist), `identifier_init`, the stock
-  `set_min_burn_amount` (behind the note-side floor guard) and `set_max_supply` all resolve through
+- **Administrator-gated setters**: `set_attester` (allowlist), the stock `set_min_burn_amount`
+  (behind the note-side floor guard) and `set_max_supply` all resolve through
   the account-wide authority to the `ADMIN` role. They are
   intentionally **not** pause-gated (finding `F6`), so the administrator can, e.g., disable a
   compromised attester while the faucet is paused.
@@ -176,30 +175,25 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
   nobody would be left to grant it back. Recovery from that state is a redeploy. See
   `IMPL-DEV-24` in the glossary; the seam is driven end to end in
   `tests/w2admin_surface_finalization.rs`.
-- **Domain config** (DEC-4, `R-ADMIN-4`): `domain`, `source_domain`, and `xreserve_contract`
-  are **build-seeded** by the account builder (no runtime writer exists). Only the `identifier`
-  — a provable fixpoint of the account id (the id derives from the initial storage commitment,
-  and the identifier is, pending `Q-CRY-4`, the faucet's own id as bytes32) — is seeded
-  post-deploy by the minimized init-once `identifier_init` note. The `identifier` slot doubles
-  as the init-once sentinel, so a second init traps. `init_identifier` derives the own-id key
-  ON-CHAIN (`bytes32_to_key(account_id_to_bytes32(get_id()))`) and rejects any other committed
-  value, so an init note cannot seed a foreign identity (the provisional `Q-CRY-4` own-id
-  position, enforced but still Circle-OPEN).
+- **Domain config** (`R-ADMIN-4`): `domain`, `source_domain`, and `xreserve_contract` are
+  **build-seeded** by the account builder and have no runtime writer. There is no identifier slot
+  or init procedure: the mint path compares the decoded `remoteToken` directly with the faucet's
+  native account id. The bytes32 packaging remains the provisional, Circle-OPEN `Q-CRY-4`
+  position.
 
 ## 6. Domain-config field representation
 
-`identifier` is stored as the Poseidon2 bytes32→key Word, because the mint compares the hashed
-form. `xreserve_contract` is stored losslessly as its raw 8×u32-LE packed limbs across two value
-slots, because it has no on-chain compare and must be readable from storage by off-chain
-services. `domain` and `source_domain` are u32 scalars in element 0 of their slot words. The
-three build-seeded fields are typed u32/bytes32 at the builder boundary (Rust-validated); the
-runtime-seeded identifier is guarded non-empty AND own-id-bound on-chain (the proc derives the
-faucet's own key and rejects a mismatched committed value).
+The identifier is not stored: the mint path decodes `remoteToken` to an `AccountId` and compares it
+with the native faucet account id. `xreserve_contract` is stored losslessly as its raw 8×u32-LE
+packed limbs across two value slots, because it has no on-chain compare and must be readable from
+storage by off-chain services. `domain` and `source_domain` are u32 scalars in element 0 of their
+slot words. The three build-seeded fields are typed u32/bytes32 at the builder boundary
+(Rust-validated).
 
 ## 7. What is consumed from the encoding library
 
 The faucet does not re-implement encoding. It consumes `xreserve::encoding::*` by reference:
-`bytes32_to_key` (nonce/identifier keying), `verify_uint256_to_asset_amount` (the amount
+`bytes32_to_key` (nonce keying), `verify_uint256_to_asset_amount` (the amount
 witness verify), `pubkey_commitment` (attester
 keying). See the
 encoding spec at `docs/spec/ENCODING-COMPONENT-SPEC.md` and the data contracts `DC-1..DC-7` in the

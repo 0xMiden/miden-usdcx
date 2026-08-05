@@ -270,13 +270,21 @@ end
     Ok(())
 }
 
-// PARITY 3 — DepositIntent parsing: every intent vector, its stack outputs, and the memory
+// PARITY 3 — DepositIntent parsing: every intent vector, its derived length, and the memory
 // layout every field is expected to sit at
 // ================================================================================================
+//
+// `parse` hands back the derived wire length and nothing else: the faucet reads each header field
+// off the intent pointer it already holds, at that field's declared layout offset. So the fields
+// are checked where they live — the per-field memory reads below cover every one of them,
+// including `remoteDomain` and `remoteToken`, at the offsets this file's layout constants declare.
+// What no longer has a home here is the SEMANTIC decode of `remoteDomain` (the byte swap out of
+// the packed limb), which now happens inside the account-context compare; it is covered by the
+// domain rows of `masm_mint_shell.rs`, where a mis-swapped domain fails the happy path.
 
 /// Emits the common prologue for a `parse` driver: import the layout offset constants, stage the
-/// intent preimage into memory, and call the parser, leaving its outputs
-/// `[remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER, intent_num_bytes]` on the stack.
+/// intent preimage into memory, and call the parser, leaving its single output
+/// `[intent_num_bytes]` on the stack.
 ///
 /// The word count the parser is asked to agree with is derived from the same staged preimage the
 /// driver writes, so an accept run proves the derivation, not the caller's arithmetic.
@@ -344,31 +352,12 @@ async fn run_accept_driver(
     label: &str,
     preimage: &[Felt],
     len_felts: u64,
-    remote_domain: u64,
-    rt0: Word,
-    rt1: Word,
     hook_data_len: u64,
     packed: &[(&str, Vec<Felt>)],
 ) {
     let mut src = build_parser_driver_prefix(preimage, len_felts.div_ceil(4));
-    // parser stack outputs: [remote_domain, REMOTE_TOKEN_LOWER, REMOTE_TOKEN_UPPER,
-    // intent_num_bytes].
-    writeln!(
-        src,
-        "    push.{remote_domain} assert_eq.err=\"{label}: remote_domain\""
-    )
-    .unwrap();
-    writeln!(
-        src,
-        "    push.{rt0} assert_eqw.err=\"{label}: remote_token_0\""
-    )
-    .unwrap();
-    writeln!(
-        src,
-        "    push.{rt1} assert_eqw.err=\"{label}: remote_token_1\""
-    )
-    .unwrap();
-    // the wire length the parser DERIVES, which is the extent the attestation signature covers
+    // the parser's single stack output: the wire length it DERIVES, which is the extent the
+    // attestation signature covers
     writeln!(
         src,
         "    push.{} assert_eq.err=\"{label}: intent_num_bytes\"",
@@ -390,7 +379,7 @@ async fn run_accept_driver(
     src.push_str("end\n");
     run_driver(h, &src).await.unwrap_or_else(|e| {
         panic!(
-            "{label}: MASM parser must accept, return the compare fields, and satisfy the \
+            "{label}: MASM parser must accept, return the derived length, and satisfy the \
              layout assertions: {e}"
         )
     });
@@ -411,12 +400,6 @@ async fn tv_dual_3_parse_deposit_intent() -> Result<()> {
         match vec.kind.as_str() {
             "accept" => {
                 let f = vec.fields.as_ref().expect("accept vector carries fields");
-                let rt: Vec<Felt> = f
-                    .remote_token_felts
-                    .iter()
-                    .map(|s| felt_from_hex(s))
-                    .collect();
-                let (rt0, rt1) = (word_of(&rt[0..4]), word_of(&rt[4..8]));
                 let packed: Vec<(&str, Vec<Felt>)> = f
                     .packed
                     .iter()
@@ -432,9 +415,6 @@ async fn tv_dual_3_parse_deposit_intent() -> Result<()> {
                     &vec.id,
                     &preimage,
                     len_felts,
-                    f.remote_domain as u64,
-                    rt0,
-                    rt1,
                     f.hook_data_len as u64,
                     &packed,
                 )
@@ -442,9 +422,9 @@ async fn tv_dual_3_parse_deposit_intent() -> Result<()> {
             }
             "reject" => {
                 let mut src = build_parser_driver_prefix(&preimage, len_felts.div_ceil(4));
-                // Clean up the would-be outputs so a non-trapping run completes cleanly
+                // Clean up the would-be output so a non-trapping run completes cleanly
                 // and the error assertion below reports "unexpectedly successful".
-                src.push_str("    drop dropw dropw drop\nend\n");
+                src.push_str("    drop\nend\n");
                 let masm_err = vec.masm_err.as_deref().unwrap();
                 let result = run_driver(&h, &src).await;
                 assert_transaction_executor_error!(result, expected_err(masm_err));
@@ -776,11 +756,7 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
         // result would turn an endianness or offset bug into a silent pass.
         let preimage = pack(&raw);
         let len_felts = preimage.len() as u64;
-        let remote_domain = u32::from_be_bytes(raw[40..44].try_into().unwrap()) as u64;
         let hook_data_len = u32::from_be_bytes(raw[236..240].try_into().unwrap()) as u64;
-        let rt = pack(&raw[44..76]);
-        assert_eq!(rt.len(), 8, "{}: remoteToken packs to 8 limbs", v.id);
-        let (rt0, rt1) = (word_of(&rt[0..4]), word_of(&rt[4..8]));
         // The expected felts for every field, at that field's offset. Each field's offset and
         // width is a multiple of four bytes (only the trailing hookData varies in length), so
         // packing a field on its own gives the same felts as the corresponding slice of the
@@ -804,18 +780,7 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
             .map(|(name, off, size)| (*name, pack(&raw[*off..*off + *size])))
             .collect();
 
-        run_accept_driver(
-            &h,
-            &v.id,
-            &preimage,
-            len_felts,
-            remote_domain,
-            rt0,
-            rt1,
-            hook_data_len,
-            &packed,
-        )
-        .await;
+        run_accept_driver(&h, &v.id, &preimage, len_felts, hook_data_len, &packed).await;
     }
 
     // (3) NEGATIVE CONTROLS — prove the differential actually rejects corrupted input,
@@ -825,7 +790,7 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
     let reject_src = |raw: &[u8]| {
         let preimage = pack(raw);
         let mut src = build_parser_driver_prefix(&preimage, (preimage.len() as u64).div_ceil(4));
-        src.push_str("    drop dropw dropw drop\nend\n");
+        src.push_str("    drop\nend\n");
         src
     };
 

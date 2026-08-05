@@ -108,7 +108,6 @@ fn policed_faucet() -> Result<GuardedMint> {
         MAX_SUPPLY,
         0,
         Word::from([7u32, 0, 0, 0]),
-        Word::from([11u32, 12, 13, 14]),
         None,
         None,
         &driver,

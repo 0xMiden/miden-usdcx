@@ -9,12 +9,10 @@
 # reaching this policy outside note processing — a tx-script `mint_and_send`, say — traps in the
 # kernel's active-note accessors, so there is no mint path that skips the attested transport.
 
-use miden::protocol::account_id
 use miden::protocol::active_note
 use miden::protocol::native_account
 use {NOTE_TYPE_PUBLIC} from miden::protocol::note
 use {NETWORK_ACCOUNT_TARGET_ATTACHMENT_SCHEME} from miden::standards::attachments::network_account_target
-use miden::standards::interop::eth
 use miden::standards::note_tag
 use miden::standards::notes::p2id
 use miden::standards::utils
@@ -29,16 +27,29 @@ use {NONCE_FELT_OFF, REMOTE_RECIPIENT_FELT_OFF} from xreserve::encoding::layout
 # CONSTANTS
 # =================================================================================================
 
-# The mint-note DepositIntent attachment scheme (>= 4 — clear of the reserved "none"
-# value 1 and the standard values 2 `NetworkAccountTarget` / 3 `Pswap`).
-const XUSDC_MINT_INTENT_ATTACHMENT_SCHEME = 4
+# The mint-note transport attachment scheme (>= 4 — clear of the reserved "none"
+# value 1 and the standard values 2 `NetworkAccountTarget` / 3 `Pswap`). ONE attachment carries
+# the whole Circle-signed transport: the attestation followed by the DepositIntent preimage. They
+# always travelled together, so merging them saves a find and a hash-verify and leaves a note
+# attachment slot free.
+const XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME = 4
 
-# The mint-note attestation attachment scheme (see the intent scheme above).
-const XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME = 5
-
-# The attestation attachment word count: [feeAmount(8), pubkey(16), signature(17), pad(3)]
+# The attestation section word count: [feeAmount(8), pubkey(16), signature(17), pad(3)]
 # = 44 felts = 11 words (the pubkey is the 16-felt affine form).
 const XUSDC_MINT_ATTESTATION_NUM_WORDS = 11
+
+# Word offset of the DepositIntent sub-region inside the transport: past the attestation section.
+# The attestation comes FIRST precisely so this offset is a constant — the attestation is
+# fixed-width while the intent is not, so an intent-first layout would make the attestation's
+# offset depend on hookDataLen.
+const XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF = XUSDC_MINT_ATTESTATION_NUM_WORDS
+
+# The 60-felt DepositIntent header packed into words (60 / 4).
+const DEPOSIT_INTENT_HEADER_WORDS = 15
+
+# The transport word-count floor: the attestation and the DepositIntent header. Below it no
+# sub-region offset can be trusted.
+const XUSDC_MINT_TRANSPORT_FLOOR_WORDS = XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF + DEPOSIT_INTENT_HEADER_WORDS
 
 # The non-empty Word written into usedNonces[KEY] (the replay guard asserts EMPTY_WORD, so any non-empty marker
 # flips it). Whether the marker should carry more than a plain flag is OPEN, pending Circle confirmation.
@@ -51,43 +62,52 @@ const ASSET_VALUE_LOC = 0
 const RECIPIENT_LOC = 4
 const TAG_LOC = 8
 const NOTE_TYPE_LOC = 9
+
+# The attachment commitments list. Sized to the protocol's FOUR-attachment ceiling rather than the
+# two this policy admits: the kernel writes one commitment per attachment the note actually
+# carries, and it does so BEFORE the count assert below can reject an over-long note.
 const ATTACHMENT_COMMITMENTS_LOC = 12
 
-# The hash-verified attestation content and its three sub-regions, in attachment order.
-const ATTESTATION_LOC = 28
+const NONCE_KEY_LOC = 28
+
+# The hash-verified transport attachment and the sub-regions the verify stages read out of it. The
+# region is sized to the protocol's per-attachment word ceiling, so every transport that can reach
+# the policy fits. The offsets below are FELT offsets into it: the attestation is eleven words
+# (44 felts), so the DepositIntent preimage begins 44 felts in. Both sections are a whole number
+# of words, so every sub-region a word instruction touches stays word-aligned.
+const TRANSPORT_LOC = 32
+const ATTESTATION_LOC = TRANSPORT_LOC
 const ATTESTATION_FEE_AMOUNT_LOC = ATTESTATION_LOC
 const ATTESTATION_PUBKEY_LOC = ATTESTATION_LOC + 8
 const ATTESTATION_SIGNATURE_LOC = ATTESTATION_LOC + 24
 
-const NONCE_KEY_LOC = 72
-
-# The staged DepositIntent preimage, plus the two fields `check_policy` itself reads out of it (the
-# parser reads the remaining fields off the base pointer). The region is sized to the protocol's
-# per-attachment ceiling, so every intent that can reach the policy fits.
-const INTENT_LOC = 76
+# The DepositIntent preimage inside the transport, plus the two fields `check_policy` itself reads
+# out of it (the parser reads the remaining fields off the base pointer). This address is also the
+# Circle-signed extent's start: the attester signed exactly the bytes packed from here onwards.
+const INTENT_LOC = ATTESTATION_LOC + 44
 const INTENT_REMOTE_RECIPIENT_LOC = INTENT_LOC + REMOTE_RECIPIENT_FELT_OFF
 const INTENT_NONCE_LOC = INTENT_LOC + NONCE_FELT_OFF
 
 # ERRORS
 # =================================================================================================
 
-# The scheme-4 DepositIntent attachment must be present on the mint note.
-const ERR_XRESERVE_MINT_NOTE_INTENT_MISSING = "mint note deposit intent attachment is missing"
-
-# The scheme-5 attestation attachment (fee + candidate pubkey + signature) must be present.
-const ERR_XRESERVE_MINT_NOTE_ATTESTATION_MISSING = "mint note attestation attachment is missing"
+# The scheme-4 transport attachment (attestation + DepositIntent) must be present on the mint
+# note.
+const ERR_XRESERVE_MINT_NOTE_TRANSPORT_MISSING = "mint note transport attachment is missing"
 
 # The scheme-2 NetworkAccountTarget routing attachment (routing-only — never read for effects)
-# must be present alongside the intent and the attestation.
+# must be present alongside the transport.
 const ERR_XRESERVE_MINT_NOTE_TARGET_MISSING = "mint note routing target attachment is missing"
 
-# Exactly THREE attachments: the scheme-4 intent + the scheme-5 attestation + the scheme-2
-# routing target (with all three schemes found, count three means one of each).
-const ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT = "mint note must carry exactly three attachments"
+# Exactly TWO attachments: the scheme-4 transport + the scheme-2 routing target (with both schemes
+# found, count two means one of each).
+const ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT = "mint note must carry exactly two attachments"
 
-# The verified attestation attachment must be exactly 11 words
-# ([feeAmount(8), pubkey(16), signature(17), pad(3)]).
-const ERR_XRESERVE_MINT_NOTE_ATTESTATION_NUM_WORDS = "mint note attestation attachment word count is invalid"
+# The transport attachment must cover at least the attestation and the 60-felt DepositIntent
+# header (content is the parser's job; this is the transport-shape floor on the hash-committed
+# word count). The exact length binding is the parser's: it derives the intent's length from the
+# embedded hookDataLen and asserts the committed word count this policy hands it agrees.
+const ERR_XRESERVE_MINT_NOTE_TRANSPORT_TOO_SHORT = "mint note transport attachment is shorter than the attestation and the deposit intent header"
 
 # The ASSERT-MATCH binding: the note-supplied output-note RECIPIENT must equal the P2ID recipe
 # derived from the attested intent (target = remoteRecipient, serial = the nonce key).
@@ -103,13 +123,6 @@ const ERR_XRESERVE_MINT_TAG_MISMATCH = "mint note tag does not match the atteste
 # The ASSERT-MATCH binding: the attested output note is always public.
 const ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC = "mint note output note type must be public"
 
-# Recipient AccountId extraction (extract_recipient_account_id): the pad check of the right-aligned
-# AccountId-in-bytes32 layout (the packaging is OPEN, pending Circle confirmation). The limb and
-# canonical-range rejects surface the standards eth::build_felt error constants, and the
-# suffix-shape and zero-version rejects surface the protocol account_id::validate_structure
-# ERR_ACCOUNT_ID_* constants directly.
-const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient address pad is not zero"
-
 # PUBLIC INTERFACE
 # =================================================================================================
 
@@ -119,10 +132,18 @@ const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient add
 #! on every MINT-note consumption (the dispatcher's pause gate runs BEFORE this policy, so a
 #! paused faucet never dispatches it).
 #!
-#! It hash-verifies the note's three attachments, runs the verify stages over the attested intent,
-#! then requires every value the note supplies to EQUAL the value derived from the attestation:
-#! the policy never overrides a note, it only refuses one that disagrees. On accept it marks the
-#! nonce used — its only state write — and returns its inputs unchanged.
+#! It hash-verifies the note's transport attachment into ONE region, runs the verify stages over
+#! the attested intent, then requires every value the note supplies to EQUAL the value derived
+#! from the attestation: the policy never overrides a note, it only refuses one that disagrees. On
+#! accept it marks the nonce used — its only state write — and returns its inputs unchanged.
+#!
+#! The transport is one attachment carrying two things in a fixed order: the fixed-width
+#! attestation, then the DepositIntent preimage. The Circle-signed byte extent stays exactly
+#! identifiable inside it — the attester signed the `240 + hookDataLen` bytes packed from the
+#! intent sub-region's constant offset, and that is precisely the extent handed to the attestation
+#! verify. One consequence to accept rather than work around: the intent may now occupy only the
+#! protocol's per-attachment word ceiling MINUS the attestation (11 words), so the largest
+#! carryable hookData shrinks by 176 bytes. hookData is unused in v1, so this costs nothing today.
 #!
 #! Inputs:  [ASSET_VALUE, tag, note_type, RECIPIENT]
 #! Outputs: [ASSET_VALUE, tag, note_type, RECIPIENT]
@@ -138,15 +159,16 @@ const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient add
 #!
 #! Panics if:
 #! - the procedure is not dispatched during note processing (active_note::* will fail).
-#! - an attachment is missing, doubled, or extra (the three finds + the count-three assert).
-#! - the attestation attachment is not exactly 11 words.
+#! - an attachment is missing, doubled, or extra (the two finds + the count-two assert).
+#! - the transport is shorter than the attestation plus the intent header, or the intent word
+#!   count it implies does not match the embedded length claim (the parser's own assert).
 #! - an attachment's advice-map content does not hash to its note-committed commitment (the
 #!   pipe_preimage_to_memory assert inside write_attachment_to_memory).
 #! - the deposit intent validation rejects (transport shape and length, structural, domain and
 #!   identifier, amount and fee with feeAmount != 0, nonce replay).
 #! - the attestation verify rejects (attester allowlist, signature).
-#! - the recipient extraction rejects the attested remoteRecipient (pad/limb/canonicity or
-#!   account_id::validate_structure).
+#! - the bytes32 account-id decode rejects the attested remoteRecipient (pad, limb, canonicity or
+#!   structure).
 #! - a note-supplied value diverges from its attested derivation (the ASSERT-MATCH errors).
 #!
 #! Locals:
@@ -155,15 +177,16 @@ const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient add
 #! - 8: note tag
 #! - 9: note_type
 #! - 12..28: attachment commitments list (4 words)
-#! - 28..72: attestation content
-#!     - 28..36: feeAmount(8)
-#!     - 36..52: pubkey(16)
-#!     - 52..72: signature(17) + pad(3)
-#! - 72..76: nonce KEY (usedNonces storage-map key == the attested output-note serial)
-#! - 76..1100: the hash-verified DepositIntent preimage (MAX_ATTACHMENT_WORDS * 4 felts)
+#! - 28..32: nonce KEY (usedNonces storage-map key == the attested output-note serial)
+#! - 32..1056: the hash-verified transport attachment (MAX_ATTACHMENT_WORDS * 4 felts)
+#!     - 32..76: attestation content
+#!         - 32..40: feeAmount(8)
+#!         - 40..56: pubkey(16)
+#!         - 56..76: signature(17) + pad(3)
+#!     - 76..1056: the DepositIntent preimage
 #!
 #! Invocation: dynexec
-@locals(1100)
+@locals(1056)
 @account_procedure
 pub proc check_policy
     # store the note-supplied values: the ASSERT-MATCH compares read them back, and so does the
@@ -177,49 +200,53 @@ pub proc check_policy
     loc_storew_le.RECIPIENT_LOC dropw
     # => []
 
-    # ---- TRANSPORT: locate the three attachments; keep the found indices for the binding reads ----
+    # ---- TRANSPORT: locate the two attachments; keep the transport index for the verify read ----
 
-    push.XUSDC_MINT_INTENT_ATTACHMENT_SCHEME exec.active_note::find_attachment
-    # => [is_found, intent_idx]
+    push.XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME exec.active_note::find_attachment
+    # => [is_found, transport_idx]
 
-    assert.err=ERR_XRESERVE_MINT_NOTE_INTENT_MISSING
-    # => [intent_idx]
-
-    push.XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME exec.active_note::find_attachment
-    # => [is_found, attestation_idx, intent_idx]
-
-    assert.err=ERR_XRESERVE_MINT_NOTE_ATTESTATION_MISSING
-    # => [attestation_idx, intent_idx]
+    assert.err=ERR_XRESERVE_MINT_NOTE_TRANSPORT_MISSING
+    # => [transport_idx]
 
     push.NETWORK_ACCOUNT_TARGET_ATTACHMENT_SCHEME exec.active_note::find_attachment
-    # => [is_found, target_idx, attestation_idx, intent_idx]
+    # => [is_found, target_idx, transport_idx]
 
     assert.err=ERR_XRESERVE_MINT_NOTE_TARGET_MISSING
     drop
-    # => [attestation_idx, intent_idx]
+    # => [transport_idx]
 
-    # exactly three attachments total; with all three schemes found this is one of each (a
-    # doubled scheme fails another scheme's find), so no per-scheme count is needed
+    # exactly two attachments total; with both schemes found this is one of each (a doubled scheme
+    # pushes the count to three), so no per-scheme count is needed
     locaddr.ATTACHMENT_COMMITMENTS_LOC exec.active_note::write_attachment_commitments_to_memory
-    # => [num_attachments, attestation_idx, intent_idx]
+    # => [num_attachments, transport_idx]
 
-    eq.3 assert.err=ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT
-    # => [attestation_idx, intent_idx]
+    eq.2 assert.err=ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT
+    # => [transport_idx]
 
-    # ---- the two content attachments: hash-verify into the policy's own locals ----
+    # ---- the transport attachment: ONE hash-verify into the policy's own locals ----
 
-    # every stage below reads the fee, the pubkey and the signature out of THIS region. nothing is
-    # re-read from the advice provider, so what the note committed to is exactly what gets verified.
-    locaddr.ATTESTATION_LOC exec.active_note::write_attachment_to_memory
-    # => [attestation_num_words, intent_idx]
+    # the transport region holds MAX_ATTACHMENT_WORDS words, the ceiling the kernel enforces when
+    # a note is created, so it fits every transport that can reach here. a preimage claiming more
+    # words than that fails the commitment check inside write_attachment_to_memory and aborts the
+    # tx. every stage below reads the fee, the pubkey, the signature and the intent out of THIS
+    # region at constant offsets; nothing is re-read from the advice provider, so what the note
+    # committed to is exactly what gets verified.
+    locaddr.TRANSPORT_LOC exec.active_note::write_attachment_to_memory
+    # => [transport_num_words]
 
-    eq.XUSDC_MINT_ATTESTATION_NUM_WORDS assert.err=ERR_XRESERVE_MINT_NOTE_ATTESTATION_NUM_WORDS
-    # => [intent_idx]
+    # transport-shape floor: the attestation and at least the 60-felt intent header (content is
+    # the parser's job). checked FIRST, because every read below is at a constant offset that only
+    # a transport of at least this size actually contains.
+    dup u32assert.err=ERR_XRESERVE_MINT_NOTE_TRANSPORT_TOO_SHORT
+    u32gte.XUSDC_MINT_TRANSPORT_FLOOR_WORDS assert.err=ERR_XRESERVE_MINT_NOTE_TRANSPORT_TOO_SHORT
+    # => [transport_num_words]
 
-    # the intent region holds MAX_ATTACHMENT_WORDS words, the ceiling the kernel enforces when a
-    # note is created, so it fits every intent that can reach here. a preimage claiming more words
-    # than that fails the commitment check inside write_attachment_to_memory and aborts the tx.
-    locaddr.INTENT_LOC exec.active_note::write_attachment_to_memory
+    # the intent's own hash-committed word count is the transport minus the fixed attestation
+    # section (the floor above proves the subtraction stays non-negative). `validate` binds it to
+    # the word count the embedded hookDataLen implies, an EXACT equality — so the trailing word
+    # padding cannot hide data, a smuggled extra section cannot ride along, and a length claim
+    # cannot reach past the committed bytes.
+    sub.XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF
     # => [intent_expected_num_words]
 
     # ---- VERIFY (verify once); any trap aborts the whole tx -> no writes ----
@@ -258,7 +285,7 @@ pub proc check_policy
     push.NOTE_TYPE_PUBLIC
     # => [note_type, SERIAL_NUM]
 
-    locaddr.INTENT_REMOTE_RECIPIENT_LOC exec.extract_recipient_account_id
+    locaddr.INTENT_REMOTE_RECIPIENT_LOC exec.deposit_intent_parser::load_bytes32_account_id
     # => [target_id_suffix, target_id_prefix, note_type, SERIAL_NUM]
 
     dup.1 exec.note_tag::create_account_target movdn.2
@@ -324,67 +351,4 @@ pub proc check_policy
     # elements plus 6 pad — so the policy returns at the SAME depth it was dispatched at.
     exec.sys::truncate_stack
     # => [ASSET_VALUE, tag, note_type, RECIPIENT]
-end
-
-# HELPER PROCEDURES
-# =================================================================================================
-
-#! Extracts and validates the P2ID recipient's account ID felts from the deposit intent's
-#! `remoteRecipient`.
-#!
-#! Reads the eight u32-LE-packed `remoteRecipient` limbs, asserts the 16-byte leading pad is zero,
-#! and rebuilds the account ID prefix and suffix through the standards no-reduction
-#! `eth::build_felt`.
-#!
-#! Inputs:  [remote_recipient_ptr]
-#! Outputs: [recipient_id_suffix, recipient_id_prefix]
-#!
-#! Where:
-#! - remote_recipient_ptr is the memory address of the remoteRecipient field's first packed limb.
-#! - recipient_id_{suffix,prefix} are the two validated Miden AccountId felts, in the stack order
-#!   `p2id::prepare_note` consumes ([suffix, prefix]; Rust `account_id_to_felts` is
-#!   [prefix, suffix]).
-#!
-#! Panics if:
-#! - the remoteRecipient 16-byte leading pad is non-zero (ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE).
-#! - a staged remoteRecipient limb is not a valid u32 (the standards eth::build_felt u32 guard).
-#! - a rebuilt prefix/suffix u64 reduced mod the field (the standards merge overflow guard).
-#! - account_id::validate_structure rejects the felts (its ERR_ACCOUNT_ID_* constants).
-#!
-#! Invocation: exec
-proc extract_recipient_account_id
-    # ---- leading pad: the 16-byte pad (limbs ptr+0..3) of the AccountId-in-bytes32 layout must be exactly zero ----
-    dup mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
-    dup add.1 mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
-    dup add.2 mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
-    dup add.3 mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
-    # => [remote_recipient_ptr]
-
-    # ---- prefix = build_felt(lo = limb ptr+5, hi = limb ptr+4)  (bytes[16..24], big-endian) ----
-    dup add.4 mem_load
-    # => [prefix_hi, remote_recipient_ptr]
-
-    dup.1 add.5 mem_load
-    # => [prefix_lo, prefix_hi, remote_recipient_ptr]
-
-    exec.eth::build_felt
-    # => [prefix, remote_recipient_ptr]
-
-    # ---- suffix = build_felt(lo = limb ptr+7, hi = limb ptr+6)  (bytes[24..32], big-endian) ----
-    dup.1 add.6 mem_load
-    # => [suffix_hi, prefix, remote_recipient_ptr]
-
-    movup.2 add.7 mem_load
-    # => [suffix_lo, suffix_hi, prefix]
-
-    exec.eth::build_felt
-    # => [suffix, prefix]
-
-    # ---- structural AccountId validation ----
-    dup.1 dup.1
-    # => [suffix, prefix, suffix, prefix]
-
-    # the ID version does not need asserting, so structural validation is sufficient
-    exec.account_id::validate_structure
-    # => [suffix, prefix]
 end

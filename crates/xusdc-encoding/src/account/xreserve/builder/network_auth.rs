@@ -27,9 +27,9 @@ impl XReserveStablecoinBuilder {
     /// tripwire asserts the built account's allowlist equals it exactly. The scheme-2
     /// `NetworkAccountTarget` bind on the notes is routing-only, not a consume gate.
     ///
-    /// COMPLETE — the 9-root set: the two supply-side STOCK notes (`MintNote` + `BurnNote`), the
-    /// four faucet-owned `ADMIN`-gated setters (`set_attester`, `set_min_burn_size`,
-    /// `set_max_supply`, and the minimized identifier-only `identifier_init`), and the three STOCK
+    /// COMPLETE — the 8-root set: the two supply-side STOCK notes (`MintNote` + `BurnNote`), the
+    /// three faucet-owned `ADMIN`-gated setters (`set_attester`, `set_min_burn_size` and
+    /// `set_max_supply`), and the three STOCK
     /// admin notes (`PauseActionNote`, `BlocklistConfigNote` and `RbacActionNote`), each covering
     /// EVERY one of its actions behind one script root. The set is IMMUTABLE IN EFFECT post-deploy:
     /// the stock component does export allowlist mutators at this protocol version, but they are
@@ -38,6 +38,10 @@ impl XReserveStablecoinBuilder {
     /// note that could drive those mutators is deliberately NOT allowlisted.
     ///
     /// Two capability decisions are recorded in this set, both human-ratified.
+    ///
+    /// There is no IDENTIFIER-INIT note, because there is no identifier to seed: the mint path
+    /// derives the faucet's identifier from its own account id, so the faucet is mint-ready from
+    /// deploy and no post-deploy write — nor the window in front of it — exists to allowlist.
     ///
     /// There is no OWNERSHIP note, because the faucet installs no two-step ownership component: the
     /// account has a single authority handle, the built-in `ADMIN` role, and rotating it is a grant
@@ -54,7 +58,7 @@ impl XReserveStablecoinBuilder {
     /// role empty until its admin grants it again. Both are accepted; the alternative was keeping
     /// two bespoke note scripts to withhold them.
     ///
-    /// The materialized 9 pinned roots require explicit HUMAN ratification before deploy.
+    /// The materialized 8 pinned roots require explicit HUMAN ratification before deploy.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
         BTreeSet::from([
             // the supply-side notes — BOTH the STOCK standards scripts. The mint row is the
@@ -64,9 +68,6 @@ impl XReserveStablecoinBuilder {
             BurnNote::script_root(),
             // set_attester admin note (reference op).
             crate::note::xreserve_admin::XReserveSetAttesterNote::script_root(),
-            // identifier_init admin note (ADMIN-gated through the account-wide authority,
-            // init-once — identifier-only; the other domain-config fields are build-seeded).
-            crate::note::xreserve_admin::XReserveIdentifierInitNote::script_root(),
             // set_min_burn_size admin note (ADMIN-gated; targets the STOCK set_min_burn_amount
             // with the note-side zero-floor guard).
             crate::note::xreserve_admin::XReserveSetMinBurnSizeNote::script_root(),

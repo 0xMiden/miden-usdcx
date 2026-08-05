@@ -35,15 +35,9 @@ use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
 // value slots so it assembles, exactly as the composition harness does).
 const DUMMY_DOMAIN: u32 = 7;
 
-// The identifier value slot is the account-id fixpoint — it ships EMPTY at
-// composition and the builder REJECTS a non-empty seed (the faucet-bound `identifier_init` note
-// is its only writer). The fixtures below therefore declare an empty identifier; the
-// `build_rejects_nonempty_identifier_seed` test drives a non-empty one via
-// `xreserve_component_with_identifier`.
-
 /// Builds a fresh `(FungibleFaucet, AccountComponent)` pair from the assembled `xreserve` library —
 /// the two inputs `XReserveStablecoinBuilder::new` consumes. The component carries the standard
-/// 7-slot composition layout (so it binds) AND exports the attestation mint policy `check_policy`
+/// 6-slot composition layout (so it binds) AND exports the attestation mint policy `check_policy`
 /// (so `attestation_mint_policy_root` resolves). A fresh pair per call because `new` takes them by
 /// value. `is_max_supply_mutable` selects the faucet's stock mutability flag: production builds pass
 /// `true` (the builder rejects immutable `max_supply`); the rejection tests whose own check fires
@@ -55,11 +49,10 @@ fn faucet_and_component(is_max_supply_mutable: bool) -> Result<(FungibleFaucet, 
     ))
 }
 
-/// The SEVEN required xreserve slot labels (the builder's slot-presence guard; the 4-field domain
-/// config set + the two maps; `min_burn_size` is builder-seeded, not caller-declared).
-const ALL_XRESERVE_SLOT_LABELS: [&str; 7] = [
+/// The SIX required xreserve slot labels (the builder's slot-presence guard; the domain-config set
+/// + the two maps; `min_burn_size` is builder-seeded, not caller-declared).
+const ALL_XRESERVE_SLOT_LABELS: [&str; 6] = [
     DOMAIN_CONFIG_SLOT_LABEL,
-    IDENTIFIER_CONFIG_SLOT_LABEL,
     SOURCE_DOMAIN_CONFIG_SLOT_LABEL,
     XRESERVE_CONTRACT_HI_SLOT_LABEL,
     XRESERVE_CONTRACT_LO_SLOT_LABEL,
@@ -67,9 +60,9 @@ const ALL_XRESERVE_SLOT_LABELS: [&str; 7] = [
     XRESERVE_ATTESTERS_SLOT_LABEL,
 ];
 
-/// Assembles the xreserve component carrying exactly `labels` (value slots get a dummy word for
-/// the domain/identifier pair and empty words for the new domain-config slots; the two well-known map labels
-/// get empty maps) — the omission fixture for the slot-presence guard tests.
+/// Assembles the xreserve component carrying exactly `labels` (value slots get a dummy word for the
+/// domain and empty words for the other domain-config slots; the two well-known map labels get
+/// empty maps) — the omission fixture for the slot-presence guard tests.
 fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
     let library = assemble_xreserve_lib()?;
     let mut slots = Vec::new();
@@ -82,10 +75,6 @@ fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
             l if l == DOMAIN_CONFIG_SLOT_LABEL => {
                 StorageSlot::with_value(name, Word::from([DUMMY_DOMAIN, 0, 0, 0]))
             }
-            l if l == IDENTIFIER_CONFIG_SLOT_LABEL => {
-                // The identifier fixpoint ships EMPTY (the builder requires it).
-                StorageSlot::with_value(name, Word::empty())
-            }
             _ => StorageSlot::with_value(name, Word::from([0u32, 0, 0, 0])),
         };
         slots.push(slot);
@@ -96,34 +85,6 @@ fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
         AccountComponentMetadata::new("xusdc-builder-api-xreserve"),
     )
     .context("binding the xreserve library + composition slots as a component")
-}
-
-/// The full 7-slot `xreserve` component but with the identifier value slot seeded to `identifier`
-/// (the fixture for the non-empty-identifier rejection test — every other slot matches the
-/// default fixture, so the ONLY difference exercised is the identifier value).
-fn xreserve_component_with_identifier(identifier: Word) -> Result<AccountComponent> {
-    let library = assemble_xreserve_lib()?;
-    let mut slots = Vec::new();
-    for label in ALL_XRESERVE_SLOT_LABELS {
-        let name = StorageSlotName::new(label).with_context(|| format!("slot label {label}"))?;
-        let slot = match label {
-            USED_NONCES_SLOT_LABEL | XRESERVE_ATTESTERS_SLOT_LABEL => {
-                StorageSlot::with_map(name, StorageMap::new())
-            }
-            l if l == DOMAIN_CONFIG_SLOT_LABEL => {
-                StorageSlot::with_value(name, Word::from([DUMMY_DOMAIN, 0, 0, 0]))
-            }
-            l if l == IDENTIFIER_CONFIG_SLOT_LABEL => StorageSlot::with_value(name, identifier),
-            _ => StorageSlot::with_value(name, Word::from([0u32, 0, 0, 0])),
-        };
-        slots.push(slot);
-    }
-    AccountComponent::new(
-        library,
-        slots,
-        AccountComponentMetadata::new("xusdc-builder-api-xreserve-identifier"),
-    )
-    .context("binding the xreserve library + composition slots (seeded identifier) as a component")
 }
 
 /// Builds a `FungibleFaucet` with configurable decimals/symbol — the fixture for the builder's
@@ -338,26 +299,6 @@ fn build_accepts_matching_min_burn_override() -> Result<()> {
     Ok(())
 }
 
-/// The identifier fixpoint: a build whose supplied `xreserve` component declares a
-/// NON-EMPTY identifier value slot must be rejected with the EXACT `IdentifierNotEmpty`. The
-/// identifier is the account-id fixpoint (the account id derives from the initial storage
-/// commitment), so it can never be build-seeded — a non-empty identifier would ship an
-/// already-initialized, potentially misbound faucet and make `identifier_init` trap as a reinit.
-#[test]
-fn build_rejects_nonempty_identifier_seed() -> Result<()> {
-    let faucet = production_faucet(true, 6, "USDCX")?;
-    // the component ships a NON-EMPTY identifier — exactly what the fixpoint forbids.
-    let xreserve_component = xreserve_component_with_identifier(Word::from([11u32, 12, 13, 14]))?;
-    let err = production_builder(faucet, xreserve_component)
-        .build_components()
-        .expect_err("a non-empty declared identifier must be rejected (DEC-4 fixpoint)");
-    assert!(
-        matches!(err, XReserveStablecoinBuilderError::IdentifierNotEmpty),
-        "expected IdentifierNotEmpty, got {err:?}"
-    );
-    Ok(())
-}
-
 /// An immutable-`max_supply` faucet is rejected at build time: the stock `set_max_supply` admin
 /// function would otherwise ship permanently dead (every call traps the runtime mutability gate). The
 /// faucet here is otherwise valid (Public + attestation active) and differs ONLY in mutability, so the
@@ -471,7 +412,7 @@ fn build_rejects_min_burn_size_exceeding_max() -> Result<()> {
 // ================================================================================================
 
 /// Omitting `with_domain_config` is rejected with the EXACT `MissingDomainConfig`: the
-/// three non-identifier domain-config fields are build-seeded, so a build without them would ship a
+/// three domain-config fields are build-seeded, so a build without them would ship a
 /// faucet whose deposit-intent domain compare would read an empty slot. The builder is otherwise fully valid, so the
 /// missing domain config is the SOLE reason for rejection.
 #[test]
@@ -496,9 +437,7 @@ fn build_rejects_missing_domain_config() -> Result<()> {
 
 /// The build SEEDS the three build-time domain-config fields into the declared xreserve slots —
 /// `[domain, 0, 0, 0]`, `[source_domain, 0, 0, 0]`, and the packed `xreserve_contract` hi/lo words
-/// (hi = packed felts 0..4 / wire bytes 0..16, lo = felts 4..8) — while the `identifier` slot stays
-/// EMPTY through the build (the account-id fixpoint: the builder never seeds it, and the
-/// faucet-bound `identifier_init` note is its only writer).
+/// (hi = packed felts 0..4 / wire bytes 0..16, lo = felts 4..8).
 #[test]
 fn build_seeds_the_domain_config_slots() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
@@ -533,12 +472,6 @@ fn build_seeds_the_domain_config_slots() -> Result<()> {
         slot(XRESERVE_CONTRACT_LO_SLOT_LABEL)?,
         Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]),
         "the xreserve_contract_lo slot must hold the packed wire bytes 16..32"
-    );
-    assert_eq!(
-        slot(IDENTIFIER_CONFIG_SLOT_LABEL)?,
-        Word::empty(),
-        "the identifier slot must stay EMPTY through the build (DEC-4 fixpoint: the builder never \
-         seeds it — the faucet-bound identifier_init note is its only writer)"
     );
     Ok(())
 }
@@ -679,12 +612,11 @@ fn production_components_carry_mutability_config_slot() -> Result<()> {
 /// case per omitted slot.
 #[rstest::rstest]
 #[case::domain(0)]
-#[case::identifier(1)]
-#[case::source_domain(2)]
-#[case::xreserve_contract_hi(3)]
-#[case::xreserve_contract_lo(4)]
-#[case::used_nonces(5)]
-#[case::xreserve_attesters(6)]
+#[case::source_domain(1)]
+#[case::xreserve_contract_hi(2)]
+#[case::xreserve_contract_lo(3)]
+#[case::used_nonces(4)]
+#[case::xreserve_attesters(5)]
 fn build_rejects_missing_xreserve_slot(#[case] omitted: usize) -> Result<()> {
     let labels: Vec<&str> = ALL_XRESERVE_SLOT_LABELS
         .iter()

@@ -80,9 +80,8 @@ use sha3::{Digest, Keccak256};
 // ================================================================================================
 // The real Miden domain id is Circle-assigned and OPEN — `TEST_DOMAIN` exists
 // solely to match the canonical accept vectors' `remote_domain` (= 7) and must never
-// be presented as the real value. The AccountId↔bytes32 identifier encoding is likewise
-// Circle-OPEN; the test identifier is the accept vector's remoteToken bytes, nothing
-// more.
+// be presented as the real value. The AccountId↔bytes32 encoding the faucet derives its
+// identifier with is likewise Circle-OPEN.
 
 /// Matches `di-pos-hookdata` / `di-pos-empty-hookdata` `fields.remote_domain`.
 pub const TEST_DOMAIN: u32 = 7;
@@ -103,12 +102,11 @@ pub fn test_xreserve_contract() -> [u8; 32] {
 // RE-EXPORTED from the production crate (the MIN_BURN_SIZE_SLOT_LABEL precedent, single Rust
 // source: the builder's slot-presence guard and these test bindings can never drift). The two
 // `xreserve_contract` slots carry the raw 8×u32-LE realization (hi = packed felts[0..4]
-// / wire bytes 0..16, lo = felts[4..8]); `identifier` stays the structural validation-consumer-forced hash-Word;
-// `source_domain`/`xreserve_contract` are written ONLY by `domain_init` (off-chain identity,
-// `GetAccount`-readable).
+// / wire bytes 0..16, lo = felts[4..8]). `source_domain` and `xreserve_contract` are build-seeded
+// by the production builder and have no runtime writer.
 pub use xusdc_encoding::account::xreserve::{
-    DOMAIN_CONFIG_SLOT_LABEL, IDENTIFIER_CONFIG_SLOT_LABEL, SOURCE_DOMAIN_CONFIG_SLOT_LABEL,
-    XRESERVE_CONTRACT_HI_SLOT_LABEL, XRESERVE_CONTRACT_LO_SLOT_LABEL,
+    DOMAIN_CONFIG_SLOT_LABEL, SOURCE_DOMAIN_CONFIG_SLOT_LABEL, XRESERVE_CONTRACT_HI_SLOT_LABEL,
+    XRESERVE_CONTRACT_LO_SLOT_LABEL,
 };
 
 /// Label of the `usedNonces` map slot — the registry the replay guard reads. The MASM declares a
@@ -137,7 +135,7 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 23] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -179,29 +177,14 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 23] = [
         "ERR_XRESERVE_FEE_NONZERO",
         MasmError::from_static_str("mint fee amount must be zero"),
     ),
-    // recipient AccountId helper (extract_recipient_account_id, mint_policy.masm). This is the
-    // LOCAL layout error (the pad check); the limb and canonical-range rejects surface the
-    // STANDARDS `eth::build_felt` constants (`ERR_NOT_U32` / `ERR_MERGE_OVERFLOW`, resolved via
-    // the `masm_error_by_name` fallback), and the suffix-shape and unknown-version rejects
-    // surface the PROTOCOL `account_id::validate` `ERR_ACCOUNT_ID_*` constants directly. Pinned
-    // here so the behavior tests can name their EXACT expected error, byte-identical to the MASM
-    // consts.
-    (
-        "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",
-        MasmError::from_static_str("deposit intent remote recipient address pad is not zero"),
-    ),
     // The attestation mint policy (mint_policy.masm) — the TRANSPORT-shape guards on the
-    // stock MintNote's attachments: the scheme-4 intent + scheme-5 attestation + scheme-2 routing
-    // target must all be present, exactly three in total; the hash-committed intent word count
-    // must cover the header and match the embedded hookDataLen claim; the attestation is exactly
-    // 11 words ([feeAmount(8), pubkey(16), signature(17), pad(3)]).
+    // stock MintNote's attachments: the scheme-4 merged transport (attestation + deposit intent)
+    // and the scheme-2 routing target must both be present, exactly two in total; the
+    // hash-committed transport word count must cover the attestation and the intent header, and
+    // must match the embedded hookDataLen claim.
     (
-        "ERR_XRESERVE_MINT_NOTE_INTENT_MISSING",
-        MasmError::from_static_str("mint note deposit intent attachment is missing"),
-    ),
-    (
-        "ERR_XRESERVE_MINT_NOTE_ATTESTATION_MISSING",
-        MasmError::from_static_str("mint note attestation attachment is missing"),
+        "ERR_XRESERVE_MINT_NOTE_TRANSPORT_MISSING",
+        MasmError::from_static_str("mint note transport attachment is missing"),
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_TARGET_MISSING",
@@ -209,7 +192,13 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 23] = [
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT",
-        MasmError::from_static_str("mint note must carry exactly three attachments"),
+        MasmError::from_static_str("mint note must carry exactly two attachments"),
+    ),
+    (
+        "ERR_XRESERVE_MINT_NOTE_TRANSPORT_TOO_SHORT",
+        MasmError::from_static_str(
+            "mint note transport attachment is shorter than the attestation and the deposit intent header",
+        ),
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB",
@@ -222,10 +211,6 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 23] = [
         MasmError::from_static_str(
             "mint note deposit intent attachment word count does not match the intent length",
         ),
-    ),
-    (
-        "ERR_XRESERVE_MINT_NOTE_ATTESTATION_NUM_WORDS",
-        MasmError::from_static_str("mint note attestation attachment word count is invalid"),
     ),
     // The ASSERT-MATCH binding (mint_policy.masm): the note-supplied output-note
     // RECIPIENT / ASSET_VALUE / tag / note_type must EQUAL their attested derivations.
@@ -248,23 +233,6 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 23] = [
     (
         "ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC",
         MasmError::from_static_str("mint note output note type must be public"),
-    ),
-    // Identifier init-once (identifier_init.masm; the identifier-only runtime init — the other
-    // domain-config fields are build-seeded). The second write traps REINIT; an EMPTY input
-    // identifier (which could never arm the sentinel) traps EMPTY; a note-committed identifier
-    // that is not the faucet's OWN on-chain-derived id key traps MISMATCH (the anti-
-    // front-run binding: `bytes32_to_key(account_id_to_bytes32(get_id()))` derived in-proc).
-    (
-        "ERR_XRESERVE_IDENTIFIER_REINIT",
-        MasmError::from_static_str("identifier has already been initialized"),
-    ),
-    (
-        "ERR_XRESERVE_IDENTIFIER_EMPTY",
-        MasmError::from_static_str("identifier must be non-empty"),
-    ),
-    (
-        "ERR_XRESERVE_IDENTIFIER_MISMATCH",
-        MasmError::from_static_str("identifier does not match the faucet's own account id key"),
     ),
 ];
 
@@ -419,7 +387,7 @@ pub fn add_faucet_account(
 /// its fee-policy companions — instead of the `miden-testing` `Auth::NetworkAccount` fixture. The
 /// fixture routes through `AuthNetworkAccount::new()`, which force-inserts the config-note and
 /// fee-sponsorship script roots into the note allowlist; the preserved posture is the EXACT
-/// 9-root allowlist, so the composition must go through `custom()` (which inserts nothing) —
+/// 8-root allowlist, so the composition must go through `custom()` (which inserts nothing) —
 /// `config_note_absence.rs` is the tripwire. Registering the account without an authenticator
 /// matches the fixture's behavior for the keyless network account (its authenticator is `None`
 /// either way). The callback flag is derived exactly as in [`add_faucet_account`].
@@ -509,11 +477,6 @@ pub fn production_builder_outcome(
                 empty(),
             ),
             StorageSlot::with_value(
-                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
-                    .context("identifier slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_value(
                 StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
                     .context("source_domain slot label")?,
                 empty(),
@@ -577,19 +540,18 @@ pub struct ShellHarness {
     pub driver_path: &'static str,
 }
 
-/// Builds the MockChain account carrying [the xreserve component WITH the two named value
-/// config slots + the `usedNonces` map slot] + [the generated driver component], per the
+/// Builds the MockChain account carrying [the xreserve component WITH the named domain value
+/// slot + the `usedNonces` map slot] + [the generated driver component], per the
 /// proven binding (`StorageSlotName::new(label)` ↔ MASM `word("label")`) and the
 /// proven `StorageSlot::with_map` map-slot path. The `usedNonces` map starts EMPTY
 /// (unused nonces read `EMPTY_WORD`); use `setup_shell_account_with_nonce_seed` to
 /// pre-populate it so the replay guard sees a spent nonce.
 pub fn setup_shell_account(
     domain: Word,
-    identifier: Word,
     driver_src: &str,
     driver_path: &'static str,
 ) -> Result<ShellHarness> {
-    setup_shell_account_with_nonce_seed(domain, identifier, None, driver_src, driver_path)
+    setup_shell_account_with_nonce_seed(domain, None, driver_src, driver_path)
 }
 
 /// Like `setup_shell_account`, but optionally seeds the `usedNonces` map with a single
@@ -599,7 +561,6 @@ pub fn setup_shell_account(
 /// the marker the mint tail would have written.
 pub fn setup_shell_account_with_nonce_seed(
     domain: Word,
-    identifier: Word,
     nonce_seed: Option<(Word, Word)>,
     driver_src: &str,
     driver_path: &'static str,
@@ -607,7 +568,6 @@ pub fn setup_shell_account_with_nonce_seed(
     setup_shell_account_with_lib(
         assemble_xreserve_lib()?,
         domain,
-        identifier,
         nonce_seed,
         driver_src,
         driver_path,
@@ -617,7 +577,6 @@ pub fn setup_shell_account_with_nonce_seed(
 fn setup_shell_account_with_lib(
     library: Package,
     domain: Word,
-    identifier: Word,
     nonce_seed: Option<(Word, Word)>,
     driver_src: &str,
     driver_path: &'static str,
@@ -634,11 +593,6 @@ fn setup_shell_account_with_lib(
             StorageSlot::with_value(
                 StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
                 domain,
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
-                    .context("identifier slot label")?,
-                identifier,
             ),
             StorageSlot::with_map(
                 StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
@@ -743,6 +697,49 @@ pub fn validate_driver_src(
     amount_y: u64,
     expected_intent_num_bytes: Option<u32>,
 ) -> String {
+    validate_driver_src_inner(
+        preimage,
+        intent_num_words,
+        fee_amount,
+        amount_y,
+        expected_intent_num_bytes,
+        false,
+    )
+}
+
+/// Like [`validate_driver_src`], but overwrites the staged intent's `remoteToken` with eight felts
+/// taken from the advice stack before entering `validate`.
+///
+/// The faucet compares `remoteToken` against its OWN account id, and an account id is a hash over
+/// the account's code — which includes this very driver. A driver that baked the bound token into
+/// its source would therefore change the id it is trying to match. Taking the eight limbs as
+/// transaction inputs breaks that circularity: the account is built first, and the Rust encoder
+/// then produces the bytes for the id it actually got ([`own_token_advice`]).
+pub fn validate_driver_src_own_token(
+    preimage: &[Felt],
+    intent_num_words: u64,
+    fee_amount: &[Felt],
+    amount_y: u64,
+    expected_intent_num_bytes: Option<u32>,
+) -> String {
+    validate_driver_src_inner(
+        preimage,
+        intent_num_words,
+        fee_amount,
+        amount_y,
+        expected_intent_num_bytes,
+        true,
+    )
+}
+
+fn validate_driver_src_inner(
+    preimage: &[Felt],
+    intent_num_words: u64,
+    fee_amount: &[Felt],
+    amount_y: u64,
+    expected_intent_num_bytes: Option<u32>,
+    splice_own_token: bool,
+) -> String {
     let mut src = String::from(
         "use xreserve::deposit_intent_parser\n\n\
          #! Test driver: stages a DepositIntent preimage and a feeAmount in the account context\n\
@@ -756,6 +753,12 @@ pub fn validate_driver_src(
          pub proc drive\n",
     );
     stage_preimage(&mut src, preimage);
+    if splice_own_token {
+        for i in 0..8 {
+            let addr = INTENT_PTR + REMOTE_TOKEN_FELT_OFF + i;
+            writeln!(src, "    adv_push mem_store.{addr}").unwrap();
+        }
+    }
     stage_felts(&mut src, fee_amount, FEE_AMOUNT_PTR);
     writeln!(src, "    push.{amount_y}").unwrap();
     writeln!(src, "    push.{FEE_AMOUNT_PTR}").unwrap();
@@ -779,18 +782,30 @@ pub fn validate_driver_src(
     src
 }
 
-/// Generates the P2 slot-binding probe component: reads BOTH config slots via
-/// `word("label")[0..2]` + `active_account::get_item` and pins the fixture words —
+/// The first felt of the DepositIntent `remoteToken` field in a staged preimage (wire bytes
+/// 44..76, four wire bytes per felt).
+const REMOTE_TOKEN_FELT_OFF: u64 = 11;
+
+/// The eight advice felts [`validate_driver_src_own_token`] splices into a staged intent: the packed
+/// limbs of `account_id_to_bytes32(faucet_id)`, produced by the RUST encoder.
+pub fn own_token_advice(faucet_id: AccountId) -> Vec<Felt> {
+    xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts(
+        &xusdc_encoding::xreserve::encoding::account_id_to_bytes32(faucet_id),
+    )
+    .to_vec()
+}
+
+/// Generates the P2 slot-binding probe component: reads the domain config slot via
+/// `word("label")[0..2]` + `active_account::get_item` and pins the fixture word —
 /// proving the `StorageSlotName` ↔ `word("…")` linkage and the call-context `get_item`
 /// pipeline on the pinned 0.23.3 stack, independent of the shell implementation.
-pub fn slot_probe_src(domain: Word, identifier: Word) -> String {
+pub fn slot_probe_src(domain: Word) -> String {
     format!(
         "use miden::protocol::active_account\n\n\
-         # slot ids derive from the SAME labels the Rust fixture binds (single source:\n\
+         # the slot id derives from the SAME label the Rust fixture binds (single source:\n\
          # the tests/support label consts)\n\
-         const PROBE_DOMAIN_SLOT = word(\"{domain_label}\")\n\
-         const PROBE_IDENTIFIER_SLOT = word(\"{identifier_label}\")\n\n\
-         #! Probe: asserts both config slots hold the fixture words.\n\
+         const PROBE_DOMAIN_SLOT = word(\"{domain_label}\")\n\n\
+         #! Probe: asserts the domain config slot holds the fixture word.\n\
          #!\n\
          #! Inputs:  [pad(16)]\n\
          #! Outputs: [pad(16)]\n\
@@ -802,13 +817,8 @@ pub fn slot_probe_src(domain: Word, identifier: Word) -> String {
              exec.active_account::get_item\n\
              push.{domain}\n\
              assert_eqw.err=\"probe: domain slot mismatch\"\n\
-             push.PROBE_IDENTIFIER_SLOT[0..2]\n\
-             exec.active_account::get_item\n\
-             push.{identifier}\n\
-             assert_eqw.err=\"probe: identifier slot mismatch\"\n\
          end\n",
         domain_label = DOMAIN_CONFIG_SLOT_LABEL,
-        identifier_label = IDENTIFIER_CONFIG_SLOT_LABEL,
     )
 }
 
@@ -1316,90 +1326,23 @@ pub fn raw_self_block_note(sender: AccountId, seed: u64) -> Result<Note> {
         .build()?)
 }
 
-// identifier_init — administrator-gated init-once identifier seeding note
+// AUTHORITY-GATE ERROR MIRROR
 // ================================================================================================
 
 /// The exact stock error the RBAC role assertion traps (`rbac.masm` ERR_SENDER_LACKS_ROLE). Under
 /// the account's role-based authority this is what an unauthorized sender gets from EVERY
 /// authority-gated procedure: the ones with a role assigned (the pause and blocklist managers) and
-/// the ones without, which fall back to the administrator role (`set_attester`, `identifier_init`,
+/// the ones without, which fall back to the administrator role (`set_attester`,
 /// the supply cap, the burn floor, the policy setters). No procedure gates on an administrator slot any
 /// more — the faucet installs no ownership component, so there is no owner error to raise.
 pub fn err_sender_lacks_role() -> MasmError {
     MasmError::from_static_str("note sender does not hold the required role")
 }
 
-/// Builds an unauthenticated note SENT BY `sender` whose script `call`s the MINIMIZED
-/// `xreserve::identifier_init::init_identifier(IDENTIFIER)` (the identifier is the one
-/// domain-config field the account-id fixpoint forces past build time; the other three fields are
-/// build-seeded). The authority gate reads the note sender (`active_note::get_sender`), so the
-/// sender is what the administrator-role check tests. `identifier` is the pre-hashed `bytes32_to_key` Word
-/// stored verbatim. The note script links the `xreserve` library so the `call` resolves to the
-/// same proc installed on the faucet account.
-pub fn identifier_init_note(sender: AccountId, identifier: Word, seed: u64) -> Result<Note> {
-    let lib = assemble_xreserve_lib()?;
-    // Stack contract: [IDENTIFIER, pad(12)] (IDENTIFIER element-0 on top). Push 12 pads (deepest)
-    // then the IDENTIFIER word (pushed e3..e0 so element 0 ends on top): 12 + 4 = 16.
-    let src = format!(
-        "use xreserve::identifier_init\n\
-         @note_script\n\
-         pub proc main\n\
-         \x20\x20\x20\x20repeat.12 push.0 end\n\
-         \x20\x20\x20\x20push.{i3}.{i2}.{i1}.{i0}\n\
-         \x20\x20\x20\x20call.identifier_init::init_identifier\n\
-         \x20\x20\x20\x20dropw dropw dropw dropw\n\
-         end\n",
-        i0 = identifier[0],
-        i1 = identifier[1],
-        i2 = identifier[2],
-        i3 = identifier[3],
-    );
-    let script = CodeBuilder::new()
-        .with_dynamically_linked_package(&lib)
-        .context("linking xreserve into the identifier_init note script")?
-        .compile_note_script(src.clone())
-        .map_err(|e| {
-            anyhow::anyhow!("identifier_init note script failed to compile: {e}\n{src}")
-        })?;
-    // Deterministic note rng (serial only; never affects the gate). Distinct tail [9,10] keeps serials
-    // disjoint from set_attester [1,2] / pause [3,4] / set_max_supply [5,6].
-    let mut rng = RandomCoin::new(Word::from([
-        Felt::from(seed as u32),
-        Felt::from((seed >> 32) as u32),
-        Felt::from(9u32),
-        Felt::from(10u32),
-    ]));
-    Ok(NoteBuilder::new(sender, &mut rng)
-        .note_type(NoteType::Private)
-        .script(script)
-        .build()?)
-}
-
-/// Executes an `identifier_init` note (sent by `sender`) against the faucet `account`, returning
-/// the raw execution result so callers can assert success or the exact trap. Mirrors
-/// `run_set_attester_tx`.
-pub async fn run_identifier_init_tx(
-    h: &CompositionHarness,
-    account: &Account,
-    sender: AccountId,
-    identifier: Word,
-    seed: u64,
-) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note = identifier_init_note(sender, identifier, seed)
-        .expect("building the identifier_init note (test-setup invariant)");
-    h.mock_chain
-        .build_transaction(account.clone())
-        .unauthenticated_input_note(note.clone())
-        .build()
-        .expect("building the identifier_init transaction")
-        .execute()
-        .await
-}
-
-/// Reads the FIVE domain-config words `[domain, source_domain, xrc_hi, xrc_lo, identifier]` from a
-/// committed/evolved account — the 4-field read-back (+ the no-write assert of the guard
+/// Reads the FOUR domain-config words `[domain, source_domain, xrc_hi, xrc_lo]` from a
+/// committed/evolved account — the build-seeded read-back (+ the no-write assert of the guard
 /// tests). Missing-slot reads propagate as errors (the slots are always declared on the fixtures).
-pub fn read_domain_config_words(account: &Account) -> Result<[Word; 5]> {
+pub fn read_domain_config_words(account: &Account) -> Result<[Word; 4]> {
     let read = |label: &str| -> Result<Word> {
         account
             .storage()
@@ -1411,7 +1354,6 @@ pub fn read_domain_config_words(account: &Account) -> Result<[Word; 5]> {
         read(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)?,
         read(XRESERVE_CONTRACT_HI_SLOT_LABEL)?,
         read(XRESERVE_CONTRACT_LO_SLOT_LABEL)?,
-        read(IDENTIFIER_CONFIG_SLOT_LABEL)?,
     ])
 }
 
@@ -1600,7 +1542,7 @@ pub struct GuardedMint {
 /// attestation policy rides the same `xreserve` library component (its
 /// `mint_policy::check_policy` proc). The production arm build-seeds the caller's `domain` word
 /// (element 0) plus the canonical test `source_domain`/`xreserve_contract` through
-/// `with_domain_config`; the `identifier` slot carries the caller's pre-seed verbatim.
+/// `with_domain_config`.
 ///
 /// `is_max_supply_mutable` configures the built faucet's stock max-supply mutability flag (threaded
 /// into the `FungibleFaucet::builder()` chain). The production builder REJECTS an immutable
@@ -1613,7 +1555,6 @@ pub fn setup_guarded_mint_account(
     max_supply: u64,
     token_supply: u64,
     domain: Word,
-    identifier: Word,
     nonce_seed: Option<(Word, Word)>,
     attesters_seed: Option<(Word, Word)>,
     driver_src: &str,
@@ -1630,23 +1571,12 @@ pub fn setup_guarded_mint_account(
         }
     };
 
-    // The identifier slot ships EMPTY (the ProductionAttestation builder REJECTS a
-    // non-empty fixpoint seed; the allow-all bypass arm's mint skips the intent asserts, so it
-    // never reads the identifier). The caller's `identifier` param is retained only as the value
-    // an OracleAllowAll isolated test may want to observe; it is NOT build-seeded into the
-    // fixpoint slot.
-    let _ = identifier;
     let xreserve_component = AccountComponent::new(
         library.clone(),
         vec![
             StorageSlot::with_value(
                 StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
                 domain,
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
-                    .context("identifier slot label")?,
-                Word::empty(),
             ),
             // 4-field domain-config closure: the two new scalar/bytes32 config slots, EMPTY at assembly
             // (domain_init is the sole writer; the fixtures never read them).
@@ -1724,8 +1654,7 @@ pub fn setup_guarded_mint_account(
         })?;
     let (mut components, policy_root) = match selection {
         // PRODUCTION path: the real builder — attestation policy ONLY (no reserved alternates).
-        // The caller's `domain` word (element 0) is build-seeded; the identifier slot
-        // carries the caller's pre-seed verbatim (the builder never writes it).
+        // The caller's `domain` word (element 0) is build-seeded.
         GuardSelection::ProductionAttestation => {
             let domain_u32 = u32::try_from(domain[0].as_canonical_u64())
                 .context("the fixture domain word element 0 must be a u32")?;
@@ -2051,7 +1980,7 @@ fn oracle_burn_components(
 }
 
 /// Builds the burn-policy harness: assembles the `xreserve` component with the full production slot set
-/// (domain/identifier value slots, usedNonces/xReserveAttesters map slots, AND the NET-NEW minBurnSize
+/// (the domain-config value slots, usedNonces/xReserveAttesters map slots, AND the NET-NEW minBurnSize
 /// value slot seeded `[min_burn_size, 0, 0, 0]`), composes the faucet via [`oracle_burn_components`]
 /// (`administrator` = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3)), adds a user wallet seeded with the single burn asset, and
 /// creates the canonical [`BurnNote`]. The faucet is built with `is_max_supply_mutable(true)` + decimals
@@ -2071,11 +2000,6 @@ pub fn setup_burn_policy_account(
             StorageSlot::with_value(
                 StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
                 Word::from([TEST_DOMAIN, 0, 0, 0]),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
-                    .context("identifier slot label")?,
-                Word::from([11u32, 12, 13, 14]),
             ),
             // 4-field domain-config closure: the two new scalar/bytes32 config slots, EMPTY at assembly
             // (domain_init is the sole writer; the burn fixtures never read them).
@@ -2995,17 +2919,11 @@ pub fn setup_production_faucet(
     let xreserve_component = AccountComponent::new(
         library,
         vec![
-            // the five domain-config slots are DECLARED here; the builder BUILD-SEEDS domain /
-            // source_domain / xreserve_contract, the identifier stays EMPTY until the
-            // seeded identifier_init owner note writes it; the attester allowlist ships EMPTY
+            // the four domain-config slots are DECLARED here; the builder BUILD-SEEDS domain /
+            // source_domain / xreserve_contract; the attester allowlist ships EMPTY
             // (set_attester writes it).
             StorageSlot::with_value(
                 StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
-                    .context("identifier slot label")?,
                 empty(),
             ),
             StorageSlot::with_value(
@@ -3065,13 +2983,11 @@ pub fn setup_production_faucet(
     // and the provisional zero-fee configuration — installed via the deploy path's OWN
     // `XReserveStablecoinBuilder::auth_component()` (the `custom()`-based composition; the
     // `Auth::NetworkAccount` fixture is deliberately bypassed because it routes through the
-    // force-inserting `new()` constructor and would grow the 9-root allowlist).
+    // force-inserting `new()` constructor and would grow the 8-root allowlist).
     let account = add_network_faucet_account(&mut mc, components)
         .context("adding the production faucet account")?;
-    // The faucet id is now known, so the seed-notes closure binds its notes (the
-    // identifier_init note derives the identifier from THIS faucet id — the own-id fixpoint) and
-    // its mint payloads (`remoteToken = account_id_to_bytes32(faucet_id)`) to the REAL faucet
-    // identity. Seeded AFTER the account is built; order relative to `mc.build()` is all that
+    // The faucet id is now known, so the seed-notes closure binds its notes and its mint payloads
+    // (`remoteToken = account_id_to_bytes32(faucet_id)`) to the REAL faucet identity. Seeded AFTER the account is built; order relative to `mc.build()` is all that
     // matters for genesis notes.
     let seeded_notes = seed_notes_for(recipient.id(), account.id());
     for note in &seeded_notes {
@@ -3101,32 +3017,12 @@ pub fn setup_production_faucet(
 /// directly — the same pattern as the stock `note_creator::create_note`).
 pub const EMIT_HELPER_PATH: &str = "xusdc::test_fixtures::emit_helper";
 
-/// The FIXED emit-helper component source: create-plus-two-attachments (the mint note's exact
-/// shape — 16 call-window felts, zero padding) and create-plus-one-attachment returning the
-/// note index (the burn note's shape; the index feeds the subsequent `move_asset_to_note`).
+/// The FIXED emit-helper component source: create-plus-one-attachment returning the note index
+/// (the burn note's shape, where the index feeds the subsequent `move_asset_to_note`, and the
+/// first leg of every multi-attachment emit) plus the appender that adds each further attachment
+/// to the note the first leg created.
 fn emit_helper_src() -> String {
     "use miden::protocol::output_note\n\
-     \n\
-     #! Creates an output note and adds its two attachments in account context.\n\
-     #!\n\
-     #! Inputs:  [tag, note_type, RECIPIENT, scheme_a, COMM_A, scheme_b, COMM_B]\n\
-     #! Outputs: [pad(16)]\n\
-     #!\n\
-     #! Invocation: call\n\
-     @account_procedure\n\
-     pub proc emit_note_with_two_attachments\n\
-     \x20\x20\x20\x20exec.output_note::create\n\
-     \x20\x20\x20\x20# => [note_idx, scheme_a, COMM_A, scheme_b, COMM_B]\n\
-     \x20\x20\x20\x20dup movdn.6\n\
-     \x20\x20\x20\x20# => [note_idx, scheme_a, COMM_A, note_idx, scheme_b, COMM_B]\n\
-     \x20\x20\x20\x20movdn.5\n\
-     \x20\x20\x20\x20# => [scheme_a, COMM_A, note_idx, note_idx, scheme_b, COMM_B]\n\
-     \x20\x20\x20\x20exec.output_note::add_attachment\n\
-     \x20\x20\x20\x20# => [note_idx, scheme_b, COMM_B]\n\
-     \x20\x20\x20\x20movdn.5\n\
-     \x20\x20\x20\x20# => [scheme_b, COMM_B, note_idx]\n\
-     \x20\x20\x20\x20exec.output_note::add_attachment\n\
-     end\n\
      \n\
      #! Creates an output note, adds its single attachment, and returns the note index.\n\
      #!\n\
@@ -3146,8 +3042,8 @@ fn emit_helper_src() -> String {
      \x20\x20\x20\x20# => [note_idx, pad(5)]\n\
      end\n\
      \n\
-     #! Adds one attachment to an already-created output note (the third-attachment leg of the\n\
-     #! stock-MintNote emit: create-plus-two leaves the note index on the caller stack, this\n\
+     #! Adds one attachment to an already-created output note (the extra-attachment leg of a\n\
+     #! multi-attachment emit: create-plus-one leaves the note index on the caller stack, this\n\
      #! appends one more attachment to that note).\n\
      #!\n\
      #! Inputs:  [scheme, COMM, note_idx, pad(10)]\n\
@@ -3202,23 +3098,19 @@ pub async fn emit_note_with_attachments(
     let tag = Felt::from(note.metadata().tag());
 
     // v0.16 #3204: output_note::create/add_attachment execute only from account procedures —
-    // the script calls the producer-installed emit helper. Two attachments (the legacy
-    // mint-note shape) ride one create-plus-two call (16 call-window felts, zero padding); the
-    // three-attachment stock-MintNote shape appends the third via a second `add_note_attachment`
-    // call consuming the note index the first call leaves on the caller stack.
+    // the script calls the producer-installed emit helper. The FIRST attachment rides the
+    // create-plus-one call (16 call-window felts with five pads); every further attachment gets
+    // its own `add_note_attachment` leg. The shape negatives emit one-attachment notes and the
+    // production shape two, so the leg count is driven by the note, never assumed.
     let attachments: Vec<_> = note.attachments().iter().collect();
     anyhow::ensure!(
-        (2..=4).contains(&attachments.len()),
-        "emit_note_with_attachments emits the two- to four-attachment mint-note shapes, got {}",
+        (1..=4).contains(&attachments.len()),
+        "emit_note_with_attachments emits the one- to four-attachment mint-note shapes, got {}",
         attachments.len()
     );
     let (scheme_a, comm_a) = (
         attachments[0].attachment_scheme().as_u16(),
         attachments[0].content().to_commitment(),
-    );
-    let (scheme_b, comm_b) = (
-        attachments[1].attachment_scheme().as_u16(),
-        attachments[1].content().to_commitment(),
     );
     let mut advice = AdviceInputs::default();
     for attachment in &attachments {
@@ -3227,15 +3119,14 @@ pub async fn emit_note_with_attachments(
             attachment.content().to_elements(),
         )]);
     }
-    // the create-plus-two call consumes the note index (its window returns as pad(16)); each
-    // optional extra-attachment leg re-supplies it explicitly — the producer tx creates exactly
-    // ONE output note, so its index is deterministically 0 — and calls the appender (insertion
-    // order preserved).
-    let mut third_leg = String::new();
-    for attachment in attachments.iter().skip(2) {
+    // each extra-attachment leg re-supplies the note index explicitly — the producer tx creates
+    // exactly ONE output note, so its index is deterministically 0 — and calls the appender
+    // (insertion order preserved).
+    let mut extra_legs = String::new();
+    for attachment in attachments.iter().skip(1) {
         let scheme_n = attachment.attachment_scheme().as_u16();
         let comm_n = attachment.content().to_commitment();
-        third_leg.push_str(&format!(
+        extra_legs.push_str(&format!(
             "\x20\x20\x20\x20push.0\n\
              \x20\x20\x20\x20push.{comm_n}\n\
              \x20\x20\x20\x20push.{scheme_n}\n\
@@ -3247,15 +3138,14 @@ pub async fn emit_note_with_attachments(
          \n\
          @transaction_script\n\
          pub proc main\n\
-         \x20\x20\x20\x20push.{comm_b}\n\
-         \x20\x20\x20\x20push.{scheme_b}\n\
+         \x20\x20\x20\x20repeat.5 push.0 end\n\
          \x20\x20\x20\x20push.{comm_a}\n\
          \x20\x20\x20\x20push.{scheme_a}\n\
          \x20\x20\x20\x20push.{recipient}\n\
          \x20\x20\x20\x20push.{note_type}\n\
          \x20\x20\x20\x20push.{tag}\n\
-         \x20\x20\x20\x20call.emit_helper::emit_note_with_two_attachments\n\
-         {third_leg}\
+         \x20\x20\x20\x20call.emit_helper::emit_note_with_attachment\n\
+         {extra_legs}\
          \x20\x20\x20\x20exec.::miden::core::sys::truncate_stack\n\
          end\n"
     );

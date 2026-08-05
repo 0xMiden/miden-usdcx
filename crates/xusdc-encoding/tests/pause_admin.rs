@@ -33,7 +33,7 @@ use miden_testing::assert_transaction_executor_error;
 use miden_tx::TransactionExecutorError;
 use rstest::rstest;
 use support::*;
-use xusdc_encoding::note::xreserve_admin::{XReserveIdentifierInitNote, XReserveSetAttesterNote};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, DiVector};
 use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
@@ -99,8 +99,8 @@ fn di(id: &str) -> &'static DiVector {
 
 /// The canonical accept payload with the wire amount / maxFee spliced in, `remoteRecipient`
 /// replaced by the real recipient wallet, `remoteToken` replaced by
-/// `account_id_to_bytes32(faucet_id)` (the own-id fixpoint the seeded identifier_init writes, so
-/// the identifier compare passes), and one nonce byte perturbed per variant so each mint consumes
+/// `account_id_to_bytes32(faucet_id)` (the own-id key the mint path derives, so the identifier
+/// compare passes), and one nonce byte perturbed per variant so each mint consumes
 /// a nonce the replay guard has not seen.
 fn payload_for(
     recipient: AccountId,
@@ -149,7 +149,6 @@ fn production_pause_fixture() -> Result<GuardedMint> {
         MAX_SUPPLY,
         0,
         Word::from([Felt::from(TEST_DOMAIN), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
-        Word::from([11u32, 12, 13, 14]),
         None,
         None,
         &driver,
@@ -162,7 +161,7 @@ fn production_pause_fixture() -> Result<GuardedMint> {
 /// actually halts one.
 ///
 /// It uses the real note transport and the account's own network authentication, seeds the domain
-/// identifier through the runtime init note, allowlists one attester, and adds whatever extra admin
+/// allowlists one attester, and adds whatever extra admin
 /// notes the caller needs. Everything is seeded at genesis so each admin transaction can be proved
 /// into its own block. The same shape is used by `mint_policy_e2e.rs`.
 fn mint_fixture(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<ProductionFaucet> {
@@ -170,18 +169,14 @@ fn mint_fixture(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<Producti
         let commitment =
             gen_attester(1, &payload_for(recipient, MINT_AMOUNT, 0, faucet_id)).commitment;
         let route = faucet_id;
-        let mut notes = vec![
-            XReserveIdentifierInitNote::create(administrator(), route, &mut prod_note_rng(951))
-                .expect("building the administrator identifier_init note"),
-            XReserveSetAttesterNote::create(
-                administrator(),
-                route,
-                commitment,
-                1,
-                &mut prod_note_rng(952),
-            )
-            .expect("building the administrator set_attester note"),
-        ];
+        let mut notes = vec![XReserveSetAttesterNote::create(
+            administrator(),
+            route,
+            commitment,
+            1,
+            &mut prod_note_rng(952),
+        )
+        .expect("building the administrator set_attester note")];
         notes.extend(extra_notes(recipient));
         notes
     })
@@ -333,7 +328,7 @@ async fn dom_pauser_pause_halts_mint() -> Result<()> {
         vec![stock_pause_note(dom_pauser(), test_faucet_id(1), 7)
             .expect("building the DOM_PAUSER pause note")]
     })?;
-    bring_up(&mut pf, 3).await?; // identifier_init + set_attester + pause
+    bring_up(&mut pf, 2).await?; // set_attester + pause
     assert_eq!(
         read_is_paused(&pf.mock_chain.committed_account(pf.faucet_id)?.clone())?,
         Word::from([1u32, 0, 0, 0]),
@@ -360,7 +355,7 @@ async fn dom_pauser_pause_halts_mint() -> Result<()> {
 #[tokio::test]
 async fn dom_pauser_production_pause_note_halts_mint() -> Result<()> {
     let mut pf = mint_fixture(|_| vec![])?;
-    bring_up(&mut pf, 2).await?; // identifier_init + set_attester
+    bring_up(&mut pf, 1).await?; // set_attester
 
     let account = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
     let note = stock_pause_note(dom_pauser(), test_faucet_id(1), 8)?;
@@ -509,7 +504,7 @@ async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
                 .expect("building the DOM_PAUSER unpause note"),
         ]
     })?;
-    bring_up(&mut pf, 4).await?; // identifier_init + set_attester + pause + unpause
+    bring_up(&mut pf, 3).await?; // set_attester + pause + unpause
     assert_eq!(
         read_is_paused(&pf.mock_chain.committed_account(pf.faucet_id)?.clone())?,
         Word::from([0u32, 0, 0, 0]),

@@ -66,7 +66,7 @@ stock-mint-path denial.
 | R-ADMIN-1 | `set_attester` is administrator-gated: it carries no role of its own, so the account's role-based authority resolves it to the built-in `ADMIN` role — whose sole seeded member is the bootstrap administrator's account — and a sender without that role is rejected. |
 | R-ADMIN-2 | `set_min_burn_size` is administrator-gated (unmapped, so it resolves to the built-in `ADMIN` role). |
 | R-ADMIN-3 | `pause` / `unpause` require the `DOM_PAUSER` role. |
-| R-ADMIN-4 | Domain config is init-once: `identifier_init` can run once, while the other domain-config fields are build-seeded with no runtime writer. |
+| R-ADMIN-4 | Domain config is build-seeded with no runtime writer; the mint path derives the faucet identifier from its native account id. |
 
 ## Component slices — `CMP-<x>`
 
@@ -76,11 +76,11 @@ Labels for the faucet's functional pieces (originally built as incremental slice
 | Id | Component |
 |---|---|
 | CMP-A5 | On-token transfer policy: the stock `BasicBlocklist` is the active send + receive policy, administered by `BLK_MANAGER`. |
-| CMP-A6 | `XReserveDomainConfig` — the faucet's domain-config fields (`domain`, `source_domain`, `xreserve_contract`, `identifier`). |
-| CMP-A9 | The mint supply-increasing surface (`apply_mint_effects`) — the only place `token_supply` rises. |
+| CMP-A6 | `XReserveDomainConfig` — the faucet's build-seeded domain-config fields (`domain`, `source_domain`, `xreserve_contract`); the identifier is derived, not stored. |
+| CMP-A9 | The stock `mint_and_send` supply-increasing surface, gated by `mint_policy::check_policy`. |
 | CMP-A10 | The burn security policy, run on every `receive_and_burn`: stock `MinBurnAmount::check_policy` with the ≥1 floor invariant enforced by the builder and admin note. |
 | CMP-A15 | `XReserveStablecoinBuilder` — the Rust builder that composes the full faucet account and rejects an invalid wiring (e.g. no deny guard, non-Public faucet) at build time. |
-| CMP-B1 | The `XReserveMintNote` script + account-side transport shim (`receive_and_mint`). |
+| CMP-B1 | The stock `MintNote` transport plus the account's attestation mint policy. |
 | CMP-B2 | `XReserveBurnNote` construction (the public withdrawal note). |
 | CMP-B3 | `receive_and_burn` consumption of the burn note. |
 | CMP-F2 | The administrator-gated `set_min_burn_size` setter (unmapped, so the account's role-based authority resolves it to the built-in `ADMIN` role). |
@@ -197,7 +197,7 @@ Beyond these, `Q-<...>` labels in comments/fixtures mark a value or choice as aw
 - `Q-BLK-1` (**OPEN** — Circle-owned) — confirm the transfer-blocklist semantics: blocked means full freeze including redemption; mint or transfer to a blocked recipient strands at consume; pause halts all transfers. See `docs/CIRCLE-SEMANTICS-TRANSFER-BLOCKLIST.md`.
 - `Q-ADMIN-1` — is the canonical `xReserveAttesters` key type `address` or `bytes32`?
 - `Q-CRY-4` — does the AccountId↔bytes32 encoding (`DEV-10`) apply to `remoteToken` / the faucet's bytes32 identifier as well as to `remoteRecipient`?
-- `Q-DA-QUORUM` — is deposit attestation single-signer or a quorum (how many signatures must verify)?
+- `Q-DA-QUORUM` (**OPEN** — Circle-owned) — the current transport carries one attestation; confirm whether the production design remains single-signer or requires a quorum.
 - `Q-FEE-MVP` — confirm the MVP's fail-loud `feeAmount==0` reject (the CIR-FEE-2 relayer-credit split is deferred to mainnet/production-final; see `F2`). Distinct from the narrower `Q-MIN-2`, which covers only the zero-fee note structure. Question to Circle pending (orchestrator-owned).
 
 ## Circle requirement ids — `CIR-<AREA>-<n>`
@@ -241,12 +241,12 @@ are open items with Circle). The ones referenced in this repo:
 | IMPL-DEV-7 | The burn note uses a fixed placeholder tag until Circle assigns one. |
 | IMPL-DEV-8 | The burn payload carries `{amount, dest_domain, dest_recipient, salt}` with the depositor in `metadata.sender`. |
 | IMPL-DEV-12 | Cosmetic fix: an `AccountId`-out-of-range error message once said "15-byte region" while the shipped layout is 16-byte-padded; the message now describes the shipped right-aligned bytes32 layout. |
-| IMPL-DEV-16 | `identifier_init` uses `authority::assert_authorized`, matching the administrator-gated setters; it resolves to the built-in `ADMIN` role and traps `ERR_SENDER_LACKS_ROLE` when unauthorized. |
+| IMPL-DEV-16 | The identifier-init procedure and note are removed. The mint path decodes `remoteToken` and compares it directly with the faucet's native account id, so there is no identifier slot or initialization window. |
 | IMPL-DEV-20 | xUSDC ships as a policed fungible asset carrying the stock `BasicBlocklist` as the active send + receive policy, administered by `BLK_MANAGER`. |
 | IMPL-DEV-21 | Mint rejects any nonzero `feeAmount` with `ERR_XRESERVE_FEE_NONZERO`. The relayer-credit fee split is deferred behind the OPEN `Q-FEE-MVP` Circle confirmation. |
 | IMPL-DEV-22 | Self-renounce is reachable through the stock `RbacActionNote`. A sole `ADMIN` can renounce and leave administrator-gated procedures unrecoverable except by redeploy; `Q-ADMIN-RENOUNCE` stays OPEN. |
 | IMPL-DEV-23 | Admin roles use Miden RBAC (`grant_role`/`revoke_role`) rather than Circle's single address slots. There is no ownership component; seeded `ADMIN` membership is the faucet's administrative authority, and rotation is grant-successor before revoke-predecessor. `Q-ADMIN-RBAC-EQUIV` stays OPEN. |
-| IMPL-DEV-24 | The stock `RbacActionNote` is allowlisted as one script root carrying `GRANT_ROLE`/`REVOKE_ROLE`/`SET_ROLE_ADMIN`/`RENOUNCE_ROLE`; all four selectors are reachable. The allowlist is 9 roots and the composed account's callable surface is 62. |
+| IMPL-DEV-24 | The stock `RbacActionNote` is allowlisted as one script root carrying `GRANT_ROLE`/`REVOKE_ROLE`/`SET_ROLE_ADMIN`/`RENOUNCE_ROLE`; all four selectors are reachable. The allowlist is 8 roots and the composed account's callable surface is 61. |
 | IMPL-DEV-25 | The stock `Authority` component exposes account `freeze`/`unfreeze` roots, but the keyless allowlist faucet has no note-script or tx-script path that reaches them. |
 | IMPL-DEV-26 | The stock `authority::get_authority` accessor is read-only, and the transfer-policy dispatch wrappers are live because the account wires `BasicBlocklist` as its transfer policy. |
 
@@ -257,13 +257,13 @@ name because the code or validation records anchor on them:
 
 | Id | Meaning |
 |---|---|
-| F1 | The mint-effects helpers (`apply_mint_effects`, `extract_recipient_account_id`) must stay **private** so they cannot become a second, ungated supply surface; only `xreserve_mint::mint` (and its note entry) is a callable mint-family root. |
-| F2 | `apply_mint_effects` rejects nonzero `feeAmount`; the relayer-credit split remains deferred behind the OPEN `Q-FEE-MVP` Circle confirmation. |
+| F1 | The stock `mint_and_send` path dispatching `mint_policy::check_policy` is the sole supply surface. The exported `deposit_intent_parser::load_bytes32_account_id` parity helper is not an account procedure. |
+| F2 | Deposit-intent validation rejects nonzero `feeAmount`; the relayer-credit split remains deferred behind the OPEN `Q-FEE-MVP` Circle confirmation. |
 | F4 | xUSDC ships as a policed asset: the stock `BasicBlocklist` is the active send + receive transfer policy and the account id has `AssetCallbackFlag::Enabled`. |
 | F5 | The transaction-level auth boundary for the permissionless-mint model (a non-allowlisted note and tx-script must both be rejected). |
 | F6 | The administrator-gated setters are intentionally **not** pause-gated (matching Circle's `onlyOwner`). |
 | F7 | The production burn note is same-block-erasable, which could starve Circle's burn discovery — kept OPEN as a Circle/DEV-7 decision, evidenced by a real-node run. |
-| L1 | `extract_recipient_account_id` must stay a private helper — it must **not** be a callable account root (a read-only sibling of `F1`, asserted by the root-surface tripwire test). |
+| L1 | `deposit_intent_parser::load_bytes32_account_id` is exported for parity execution but must not carry `@account_procedure` or become a callable account root. |
 
 ## Local-node validation rows — `LNV` rows `A`–`L`
 
@@ -288,7 +288,7 @@ The matrix is built in slices `LNV-1`–`LNV-5`:
 
 | Slice | Rows covered |
 |---|---|
-| LNV-1 | The harness foundation + rows `A`/`B` (deploy the faucet; identifier init-once). |
+| LNV-1 | The harness foundation + rows `A`/`B` (deploy the mint-ready faucet and inspect its seeded configuration). |
 | LNV-2 | The admin suite (row `C`) + the auth boundary (row `F`). |
 | LNV-3 | The mint lifecycle (rows `D`/`E`). |
 | LNV-4 | The burn lifecycle (rows `G`/`H`/`I`/`J`). |
@@ -398,11 +398,11 @@ sections:
 |---|---|
 | §2 | (faucet spec) file/folder layout; (shared-encoding spec) the non-negotiable invariants. |
 | §3 | (faucet spec) the invariants (`INV-*` list); (shared-encoding spec) the data contracts. |
-| §5.1 | The mint write phase / `apply_mint_effects` effects. |
+| §5.1 | The stock `mint_and_send` effects behind the attestation policy. |
 | §5.2 | The sole-supply-surface property (`INV-MINT-SECURITY`). |
 | §5.5 | `XReserveAttesterAdmin` — home of the `xReserveAttesters` allowlist and `minBurnSize` slots. |
 | §5.6 | The `usedNonces` nonce registry. |
-| §5.9 | The domain config: three fields are build-seeded; `identifier` is set by the minimized `identifier_init` note. |
+| §5.9 | The three stored domain-config fields are build-seeded; the identifier is derived from the native account id. |
 | §5.12 | The admin setters and pause. |
 | §5.13 | The builder's slot-presence guard. |
 | §6.6 | (shared-encoding spec) the `burn_note` item codec (`DC-7`). |

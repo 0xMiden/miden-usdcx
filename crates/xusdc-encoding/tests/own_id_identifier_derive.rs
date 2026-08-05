@@ -46,9 +46,7 @@ use miden_testing::{
 use miden_tx::TransactionExecutorError;
 use rstest::rstest;
 use support::*;
-use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, account_id_to_felts, bytes32_to_packed_felts,
-};
+use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, bytes32_to_packed_felts};
 
 /// How many generated account ids the parity spread covers, over and above the production faucet.
 /// The floor this suite has to clear is eight; twelve costs little and spans both account types
@@ -296,7 +294,7 @@ async fn native_account_id_matches_the_rust_felts_in_account_context() -> Result
     let mut harnesses = spread()?;
     harnesses.push(setup_production_derive_faucet()?);
     for h in &harnesses {
-        let [prefix, suffix] = account_id_to_felts(h.account_id);
+        let (prefix, suffix) = (h.account_id.prefix().as_felt(), h.account_id.suffix());
         call_driver(h, "assert_native_id", vec![suffix, prefix])
             .await
             .unwrap_or_else(|e| {

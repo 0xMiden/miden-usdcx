@@ -36,7 +36,7 @@
 use miden_protocol::account::AccountId;
 use miden_protocol::note::NoteMetadata;
 use miden_protocol::Felt;
-use xusdc_encoding::xreserve::encoding::{account_id_to_felts, decode_burn_note_items};
+use xusdc_encoding::xreserve::encoding::decode_burn_note_items;
 
 use crate::error::{Cause, DecodeError};
 use crate::types::BurnPayload;
@@ -67,7 +67,10 @@ impl BurnNoteMetadata {
     /// The metadata of a note that came back with its details — the public burn note the happy path
     /// discovers.
     pub fn from_metadata(meta: &NoteMetadata) -> Self {
-        let [prefix, suffix] = account_id_to_felts(meta.sender());
+        // the two id components read straight off the id, ordered to match this struct's
+        // `(prefix, suffix)` field pair.
+        let sender = meta.sender();
+        let (prefix, suffix) = (sender.prefix().as_felt(), sender.suffix());
         Self {
             sender: Some((prefix, suffix)),
         }

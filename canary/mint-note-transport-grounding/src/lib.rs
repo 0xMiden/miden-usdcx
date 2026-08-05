@@ -6,7 +6,6 @@
 //! `find_attachment`, the hash-verified `write_attachment_to_memory` read, the post-verification
 //! `adv.push_mapval` advice-stack surfacing + element-0-first pop order, the tampered-advice trap,
 //! and the create-side `output_note::create` + `add_attachment` emit) EXECUTES AND COMMITS.
-//! See `MINT-NOTE-TRANSPORT-GROUNDING-REPORT.md` (written in Phase 3).
 
 use miden_protocol::{Felt, Word};
 

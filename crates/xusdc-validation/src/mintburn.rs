@@ -52,10 +52,10 @@ pub const BASE_VECTOR: &str = "di-pos-empty-hookdata";
 pub const HOOKDATA_VECTOR: &str = "di-pos-hookdata";
 
 /// The vector's `remoteDomain` (Q-DOM-1 OPEN; `TEST_DOMAIN` in the MockChain suite). The build
-/// seed must carry this so the D5a domain compare passes.
+/// seed must carry this so the structural validation domain compare passes.
 pub const MINT_DOMAIN: u32 = 7;
 
-/// The scale exponent the D5b reducer applies — pinned BY REFERENCE to the factory-side
+/// The scale exponent the amount validation reducer applies — pinned BY REFERENCE to the factory-side
 /// [`XUSDC_DEPOSIT_SCALE_EXP`], which is itself parity-pinned against the shipped
 /// `deposit_intent_parser.masm`'s `DEPOSIT_SCALE_EXP`. Set to **0** by the P0 fix (commit 75ece89): Circle
 /// sends a 6-decimal deposit amount and Miden xUSDC is ALSO 6 decimals, so the EVM-minus-Miden
@@ -71,7 +71,7 @@ const AMOUNT_BYTE_OFF: usize = 2 * 4;
 const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
 const MAX_FEE_BYTE_OFF: usize = 43 * 4;
 const NONCE_BYTE_OFF: usize = 51 * 4;
-// The two fields the mint gate (D5a `deposit_intent_parser::validate`) compares against
+// The two fields the mint gate (structural validation `deposit_intent_parser::validate`) compares against
 // the faucet's stored domain config are `remoteDomain` (felt 10, a big-endian u32) and `remoteToken`
 // (felt 11..18, a bytes32). Their wire offsets are NOT restated here: the DepositIntent layout owner
 // is `xusdc-encoding`, so `mint_payload_for` reads them from `deposit_intent_field_offset(...)` (the
@@ -108,7 +108,7 @@ pub fn hook_data_len(vector_id: &str) -> u32 {
 }
 
 /// The BUILD-SEEDED domain-config parameters LNV-2 deploys with: `domain` MATCHES the mint vector's
-/// `remoteDomain` (so the D5a domain compare passes), `source_domain`/`xreserve_contract` are
+/// `remoteDomain` (so the structural validation domain compare passes), `source_domain`/`xreserve_contract` are
 /// arbitrary distinct local test values (the mint path does not read them — they are off-chain
 /// withdrawal identity). The `identifier` is NO LONGER build-seeded from these params: the fresh
 /// faucet's identifier is derived at init from its OWN id
@@ -174,7 +174,7 @@ pub fn mint_payload_from(
 /// OWN-ID `remoteToken` (`account_id_to_bytes32(faucet_id)`). The fresh faucet's identifier is the
 /// note-derived own-id fixpoint (`XReserveIdentifierInitNote::identifier_for(faucet_id)` =
 /// `bytes32_to_key(account_id_to_bytes32(faucet_id))`), so a mint's `remoteToken` MUST be
-/// `account_id_to_bytes32(faucet_id)` for D5a's identifier compare to pass — NOT the static
+/// `account_id_to_bytes32(faucet_id)` for structural validation's identifier compare to pass — NOT the static
 /// golden-vector `remoteToken` the vectors carry (the R2 identifier-binding fix). `remoteDomain`
 /// already equals the build-seed [`MINT_DOMAIN`] on the fresh vectors, so only the token is spliced.
 pub fn mint_payload_own_id(
@@ -192,9 +192,9 @@ pub fn mint_payload_own_id(
     payload
 }
 
-/// The two DepositIntent fields the mint gate (D5a `deposit_intent_parser::validate`)
+/// The two DepositIntent fields the mint gate (structural validation `deposit_intent_parser::validate`)
 /// compares against the faucet's stored domain config: `remoteDomain` and `remoteToken`. This is the
-/// config a mint payload must carry so D5a's compares pass.
+/// config a mint payload must carry so structural validation's compares pass.
 ///
 /// - Fresh-LOCAL full gate: the config is [`MintDomainConfig::for_deployed_faucet`]`(MINT_DOMAIN,
 ///   fresh_faucet_id)` — the build-seed `remoteDomain` ([`MINT_DOMAIN`]) paired with the OWN-ID
@@ -206,7 +206,7 @@ pub fn mint_payload_own_id(
 ///   `domain` read from its on-chain domain-config slot, `remote_token` recomputed as
 ///   `account_id_to_bytes32(faucet_id)` (the identifier A5's `identifier_init` set from
 ///   `account_id_to_bytes32(faucet.id())`). This is the A6 fix: the fixed vector's `remoteDomain` (7)
-///   did not match a production faucet's stored `domain` (e.g. 10007), so D5a rejected every mint.
+///   did not match a production faucet's stored `domain` (e.g. 10007), so structural validation rejected every mint.
 ///
 /// There is deliberately NO `source_domain` field: the DepositIntent has no `sourceDomain` field and
 /// the mint proc never reads one (the faucet's `source_domain` config slot is off-chain withdrawal
@@ -251,10 +251,10 @@ impl MintDomainConfig {
     }
 }
 
-/// Builds a mint DepositIntent that carries `config`'s `remoteDomain` + `remoteToken` (the two D5a
+/// Builds a mint DepositIntent that carries `config`'s `remoteDomain` + `remoteToken` (the two structural validation
 /// gated fields) in addition to the amount/maxFee/recipient/nonce splice of [`mint_payload_from`].
 /// The existing-faucet (`--faucet-id`) mint builder: the payload must match the DEPLOYED faucet's
-/// stored domain config, or D5a rejects it (`WRONG_DOMAIN` / `WRONG_IDENTIFIER`) before any later
+/// stored domain config, or structural validation rejects it (`WRONG_DOMAIN` / `WRONG_IDENTIFIER`) before any later
 /// gate — the root cause of the A6 300s path-N timeout. The attestation is re-signed over this
 /// modified payload by the caller's `attestation_for` (keccak covers the whole preimage).
 pub(crate) fn mint_payload_for(
@@ -294,7 +294,7 @@ pub(crate) fn mint_payload_opt(
 }
 
 /// The `usedNonces[nonce]` storage-map key for a payload's nonce field (`bytes32_to_key(nonce)`) —
-/// the SAME key the mint's D5c/D5e derive and set, so the driver can read the marker back after a
+/// the SAME key the mint's replay protection/mint effects derive and set, so the driver can read the marker back after a
 /// committed mint or prove a rejected negative left it empty.
 pub fn nonce_key(payload: &[u8]) -> Word {
     let nonce: [u8; 32] = payload[NONCE_BYTE_OFF..NONCE_BYTE_OFF + 32]
@@ -411,9 +411,9 @@ pub fn mint_note_with_fee<R: FeltRng>(
     .context("building the scheme-4 DepositIntent attachment")?;
 
     // The scheme-5 attestation content: [feeAmount(8), pubkey(16 affine), signature(17), pad(3)] =
-    // 44 felts = 11 words — the exact advice order the policy's D5b/D5d stages consume. Identical
+    // 44 felts = 11 words — the exact advice order the policy's amount validation/attestation verification stages consume. Identical
     // to the production `attestation_attachment` (v16: the 33-byte compressed wire pubkey is
-    // decompressed to its 16 affine-coordinate felts, vm#3342 / MIGRATION-V16-ALPHA2.md S16), save
+    // decompressed to its 16 affine-coordinate felts), save
     // the caller-chosen fee limbs (production hardcodes eight zeros — DEV-8).
     let mut felts: Vec<Felt> = Vec::with_capacity(44);
     felts.extend(fee_limbs);

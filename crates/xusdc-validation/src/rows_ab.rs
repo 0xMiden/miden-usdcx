@@ -1,8 +1,7 @@
 //! The LNV-1 row-A/B driver: one deterministic flow against a fresh local node, producing the
 //! [`RowsAbObservations`] the assertion suite judges.
 //!
-//! Flow (path C — client-side build+prove+submit; discovered mechanics recorded in
-//! `VALIDATION-RECORD.md` §3):
+//! Flow (path C — client-side build+prove+submit):
 //!
 //! 1. Bootstrap + start the fresh four-process stack ([`crate::stack`]).
 //! 2. Assemble the client ([`crate::client`]) and the actors ([`crate::actors`]).

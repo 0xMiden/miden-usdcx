@@ -106,8 +106,7 @@ pub fn assert_row_a(obs: &RowsAbObservations) -> Result<()> {
     );
 
     // The tx-script allowlist must exist and equal EXACTLY the frozen v16 production set — the one
-    // canonical ExpirationTransactionScript root (S12, RATIFIED; the v15 EMPTY tx-script allowlist
-    // gained the expiration root at v16 — MIGRATION-V16-ALPHA2.md). Extra or missing roots are a
+    // canonical ExpirationTransactionScript root. Extra or missing roots are a
     // composition defect.
     let tx_allowlist =
         NetworkAccountTxScriptAllowlist::try_from(account.storage()).map_err(|e| {

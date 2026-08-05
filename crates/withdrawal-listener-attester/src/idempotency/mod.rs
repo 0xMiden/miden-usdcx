@@ -59,7 +59,7 @@
 //!
 //! # Persistence: SQLite
 //!
-//! Mirrors the relayer's recorded choice (`crates/xreserve-deposit-relayer/PERSISTENCE-CHOICE.md`):
+//! Mirrors the relayer's SQLite choice:
 //! the atomic claim above is a property a JSON file's read-modify-write cannot provide, and the log
 //! must survive `kill -9`, not merely a clean shutdown. There is deliberately no in-memory mode,
 //! and that is ENFORCED rather than declared — see [`SubmitLedger::open`].

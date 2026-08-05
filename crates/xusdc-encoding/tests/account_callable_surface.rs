@@ -301,7 +301,7 @@ fn production_account_callable_surface_is_frozen() -> Result<()> {
         "the composed account's callable surface drifted from the frozen 61-root set — a stock \
          bump added or removed a callable procedure (or the xreserve surface changed). This is NOT \
          a mechanical conformance change: every such delta must be SURFACED for ratification \
-         (MIGRATION-V16-ALPHA2.md §4a stock-surface discipline + STOP condition 5), exactly as the \
+         exactly as the \
          v0.16 freeze/unfreeze (S12) and get_authority/invoke_* (S24) additions were."
     );
 

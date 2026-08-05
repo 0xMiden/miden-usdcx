@@ -1,9 +1,9 @@
 # xusdc::canary::mint_effects
 #
-# Mint-effects grounding canary (P5-01 D5e). TRIVIAL scratch component that proves the faucet
+# Mint-effects grounding canary (P5-01 mint effects). TRIVIAL scratch component that proves the faucet
 # write-side kernel primitives EXECUTE AND COMMIT end to end under MockChain on the pinned Miden
 # v0.15.3 / assembler 0.23.3 stack, when installed on a FungibleFaucet account alongside the
-# standard faucet component. It is NOT the real xreserve_mint proc: it decomposes the D5e write
+# standard faucet component. It is NOT the real xreserve_mint proc: it decomposes the mint effects write
 # phase into independent single-purpose procs (so each primitive's stack contract is provable in
 # isolation) and hard-codes amounts/keys. Proc bodies mirror the live protocol precedent
 # mint_and_send in protocol-pin-v0.15.3/.../faucets/fungible.masm:264-364 (token_config read via
@@ -26,7 +26,7 @@ use miden::standards::notes::p2id
 # CANONICAL-OWNERSHIP-MAP.md:41. The Rust harness reads the same label.
 pub const TOKEN_CONFIG_SLOT = word("miden::standards::faucets::fungible::token_config")
 
-# Map slot standing in for D5e's usedNonces registry; the Rust harness binds the same label.
+# Map slot standing in for mint effects's usedNonces registry; the Rust harness binds the same label.
 pub const USED_SLOT = word("xusdc::canary::mint_effects::used")
 
 # Hard-coded canary values (declared identically in the Rust harness — the passing test IS the
@@ -74,7 +74,7 @@ pub proc bump_token_supply
 end
 
 #! Writes the fixed MARKER word at the fixed TEST_KEY in the USED map slot, mirroring the
-#! storage-map canary / D5e's nonce SET. Proves native_account::set_map_item commits.
+#! storage-map canary / mint effects's nonce SET. Proves native_account::set_map_item commits.
 #!
 #! Inputs:  [pad(16)]
 #! Outputs: [pad(16)]

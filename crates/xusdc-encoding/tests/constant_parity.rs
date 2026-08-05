@@ -37,7 +37,7 @@ use xusdc_encoding::{ENCODING_MOD_MASM, LAYOUT_MASM};
 /// The faucet shell module source, read test-side by reference.
 const SHELL_MASM: &str = include_str!("../../../asm/standards/xreserve/deposit_intent_parser.masm");
 
-/// The faucet D5d attestation-verify shell module source, read test-side by reference.
+/// The faucet attestation verification attestation-verify shell module source, read test-side by reference.
 const ATTESTATION_VERIFY_MASM: &str =
     include_str!("../../../asm/standards/xreserve/attestation_verify.masm");
 
@@ -54,14 +54,14 @@ const ATTESTER_ADMIN_MASM: &str =
 const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_WRONG_DOMAIN",
     "ERR_XRESERVE_WRONG_IDENTIFIER",
-    // D5b R-MINT-10 (F2's feeAmount==0 reuses ERR_XRESERVE_FEE_NONZERO, declared below; the old
+    // amount validation R-MINT-10 (F2's feeAmount==0 reuses ERR_XRESERVE_FEE_NONZERO, declared below; the old
     // R-MINT-11 <= maxFee compare + ERR_XRESERVE_FEE_OVER_MAX are subsumed and removed)
     "ERR_XRESERVE_AMOUNT_BELOW_FEE",
     // the maxFee/fee staging's too-large guard (deposit_intent_parser.masm)
     "ERR_X_TOO_LARGE",
-    // D5c R-MINT-12
+    // replay protection R-MINT-12
     "ERR_XRESERVE_NONCE_REPLAY",
-    // D5d R-MINT-13 / R-MINT-14 (attestation_verify.masm)
+    // attestation verification R-MINT-13 / R-MINT-14 (attestation_verify.masm)
     "ERR_XRESERVE_DISALLOWED_PUB_KEY",
     "ERR_XRESERVE_SIG_INVALID",
     // F2 fee guard (deposit_intent_parser.masm; DEC-2 keep-zero)
@@ -89,13 +89,13 @@ const EXPECTED_SHELL_WORD_CONSTS: &[(&str, &str)] = &[
     ("USED_NONCES_SLOT", support::USED_NONCES_SLOT_LABEL),
 ];
 
-/// Expected `word("…")` slot-name constants of the D5d attestation-verify shell module: NONE. It
+/// Expected `word("…")` slot-name constants of the attestation verification attestation-verify shell module: NONE. It
 /// imports `XRESERVE_ATTESTERS_SLOT` (and the enabled marker) from the setter module rather than
 /// redeclaring them, so the two sides cannot drift by construction.
 const EXPECTED_ATTESTATION_WORD_CONSTS: &[(&str, &str)] = &[];
 
 /// Expected `word("…")` slot-name constant of the set_attester admin module — the single MASM-side
-/// declaration of the slot the D5d read path also keys; the shared label is the single Rust source.
+/// declaration of the slot the attestation verification read path also keys; the shared label is the single Rust source.
 /// (The `ATTESTER_ENABLED_MARKER` / `ATTESTER_DISABLED_MARKER` Word array literals are not
 /// parity-parsed, like `NONCE_USED_MARKER`.)
 const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] = &[(
@@ -103,7 +103,7 @@ const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] = &[(
     support::XRESERVE_ATTESTERS_SLOT_LABEL,
 )];
 
-/// The D5d attestation-verify shell's numeric constants: its `@locals` offsets (the keccak
+/// The attestation verification attestation-verify shell's numeric constants: its `@locals` offsets (the keccak
 /// digest's two words — procedure-local addresses with no Rust counterpart) and `PUBKEY_FELTS`,
 /// which IS parity-asserted against the Rust codec in `masm_rust_constant_parity` below.
 const ATTESTATION_COVERED_NUMS: &[&str] = &["DIGEST_LO_LOC", "DIGEST_HI_LOC", "PUBKEY_FELTS"];

@@ -102,9 +102,8 @@ pub fn test_xreserve_contract() -> [u8; 32] {
 // RE-EXPORTED from the production crate (the MIN_BURN_SIZE_SLOT_LABEL precedent, single Rust
 // source: the builder's slot-presence guard and these test bindings can never drift). The two
 // `xreserve_contract` slots carry the raw 8×u32-LE realization (hi = packed felts[0..4]
-// / wire bytes 0..16, lo = felts[4..8]);
-// `source_domain`/`xreserve_contract` are written ONLY by `domain_init` (off-chain identity,
-// `GetAccount`-readable).
+// / wire bytes 0..16, lo = felts[4..8]). `source_domain` and `xreserve_contract` are build-seeded
+// by the production builder and have no runtime writer.
 pub use xusdc_encoding::account::xreserve::{
     DOMAIN_CONFIG_SLOT_LABEL, SOURCE_DOMAIN_CONFIG_SLOT_LABEL, XRESERVE_CONTRACT_HI_SLOT_LABEL,
     XRESERVE_CONTRACT_LO_SLOT_LABEL,

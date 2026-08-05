@@ -20,7 +20,7 @@
 //!     the real red-suite tamper test depends on.
 //!
 //! What this canary does NOT prove (the real-slice boundary): the real DepositIntent schema, the
-//! D5a-D5e gate chain, the real wrapper's `exec.xreserve_mint::mint` hand-off, fee/pubkey/sig
+//! full validation pipeline gate chain, the real wrapper's `exec.xreserve_mint::mint` hand-off, fee/pubkey/sig
 //! semantics, or any Circle value. Sentinels only.
 
 use miden_protocol::account::component::AccountComponentMetadata;

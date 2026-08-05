@@ -420,7 +420,7 @@ impl Driver {
     ) -> Result<Note> {
         let f = self.faucet_id;
         let sender = self.owner();
-        // Fresh faucet: the mint must carry the OWN-ID remoteToken so D5a's identifier compare passes
+        // Fresh faucet: the mint must carry the OWN-ID remoteToken so structural validation's identifier compare passes
         // against the note-derived own-id identifier (the R2 identifier-binding fix).
         let payload = mintburn::mint_payload_own_id(
             f,
@@ -576,7 +576,7 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
     .context("committing the supply-establishing mint via path N")?;
 
     // ── C3 — set_max_supply(CAP); a within-cap mint ACCEPTS, an over-cap mint REJECTS. ──
-    // max_supply is stored (and the D5e cap-check `token_supply + amount <= max_supply` compares) in
+    // max_supply is stored (and the mint effects cap-check `token_supply + amount <= max_supply` compares) in
     // ON-CHAIN reduced units — the SAME units as token_supply and the mint's reduced amount — NOT the
     // raw uint256. So the cap is committed in reduced units (CAP_UNITS), not `raw_for_units(...)`.
     let note = d.set_max_supply_note(owner_id, CAP_UNITS)?;
@@ -859,7 +859,7 @@ async fn run_row_f(d: &mut Driver, sender: AccountId) -> Result<RowF> {
     let faucet_id = d.faucet_id;
     // A stock P2ID note targeting the faucet — its script root is NOT in the note allowlist. v16:
     // `P2idNote::create(...)` → the bon `P2idNote::builder()`, and a P2ID must now carry ≥1 asset
-    // (MIGRATION-V16-ALPHA2.md M3/S7), so it carries a nominal 1 unit of the faucet's own token; the
+    // so it carries a nominal 1 unit of the faucet's own token; the
     // rejection under test is the script-root allowlist gate, upstream of any asset handling.
     let serial = d.rng().draw_word();
     let p2id: Note = P2idNote::builder()

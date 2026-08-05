@@ -15,9 +15,8 @@
 //!   OwnerControlled authority);
 //! - finalized for deploy with `AccountBuilder::with_auth_component(auth_component())` — the
 //!   stock `AuthNetworkAccount` under the frozen 12-root note allowlist + the single-root tx-script
-//!   allowlist (the S12 `ExpirationTransactionScript` root; v16 no longer ships an EMPTY tx-script
-//!   allowlist — MIGRATION-V16-ALPHA2.md. The runtime `set_role_admin` note was removed — S21
-//!   flip, 2026-07-14).
+//!   allowlist (the `ExpirationTransactionScript` root; v16 no longer ships an empty tx-script
+//!   allowlist).
 //!
 //! MockChain finalizes the same composition via `Auth::NetworkAccount` in the repo's F5 suite;
 //! this is the REAL-deploy twin of that fixture. The `_seeded` variant exists for SYNTHETIC
@@ -60,8 +59,7 @@ use crate::config::DomainParams;
 pub fn build_xreserve_component_seeded(domain: Option<&DomainParams>) -> Result<AccountComponent> {
     // The same assembler shape as the repo's F5 fixtures: kernel assembler + StandardsLib (the
     // admin procs call stock authority/pausable/ownable2step procs living there).
-    // v16 assembler API (MIGRATION-V16-ALPHA2.md; worked reference:
-    // crates/xusdc-encoding/src/note/xreserve_mint.rs): `with_dynamic_library(lib)` →
+    // v16 assembler API: `with_dynamic_library(lib)` →
     // `with_package(Arc<Package>, Linkage::Dynamic)`, and `assemble_library_from_dir(dir, name)` →
     // `assemble_library_from_root(dir/mod.masm, Some(MasmPath))` (returns a `Box<Library>`).
     let assembler = TransactionKernel::assembler()

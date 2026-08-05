@@ -1,8 +1,8 @@
 //! Policed-asset tripwire (F4 REVERSAL, human-ratified 2026-07-23) — locks in the decision that
 //! xUSDC ships as a POLICED fungible asset carrying the stock `BasicBlocklist` as the ACTIVE send AND
 //! receive transfer policy (one root, both kinds, empty initial blocklist). This SUPERSEDES the former
-//! basic-asset tripwire (which asserted the OPPOSITE: no transfer policy, `AssetCallbackFlag::Disabled`
-//! — the 2026-07-08 decision reversed here; see `DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md`).
+//! basic-asset tripwire (which asserted the opposite: no transfer policy and
+//! `AssetCallbackFlag::Disabled`).
 //!
 //! This test is GREEN on the shipped (policed) build and flips RED the moment anyone un-wires the
 //! transfer blocklist (drops `active_send_policy`/`active_receive_policy` from `build_components`).
@@ -93,7 +93,7 @@ fn production_build_wires_the_transfer_blocklist() -> Result<()> {
             map.num_entries(),
             1,
             "the {kind} allowed-policy map must carry EXACTLY the one BasicBlocklist root — the \
-             transfer blocklist must be wired (F4-reversal). See DECISION-F4-REVERSAL-TRANSFER-BLOCKLIST.md."
+             transfer blocklist must be wired."
         );
     }
 

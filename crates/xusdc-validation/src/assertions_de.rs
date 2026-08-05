@@ -28,15 +28,15 @@ use crate::observations_de::{
 // `err_code` for robustness against a future protocol string/pin drift.
 // ================================================================================================
 
-/// R-MINT-12 (D5c): the deposit intent's nonce is already in `usedNonces` (replay).
+/// R-MINT-12 (replay protection): the deposit intent's nonce is already in `usedNonces` (replay).
 pub const ERR_XRESERVE_NONCE_REPLAY: &str = "deposit intent nonce has already been used";
-/// R-MINT-14 (D5d): the ECDSA signature does not verify over `keccak256(payload)` for the candidate
+/// R-MINT-14 (attestation verification): the ECDSA signature does not verify over `keccak256(payload)` for the candidate
 /// pubkey (a forged signature or a payload tampered after signing).
 pub const ERR_XRESERVE_SIG_INVALID: &str = "deposit attestation signature verification failed";
-/// R-MINT-13 (D5d): the candidate attester pubkey's commitment is not in the on-chain allowlist.
+/// R-MINT-13 (attestation verification): the candidate attester pubkey's commitment is not in the on-chain allowlist.
 pub const ERR_XRESERVE_DISALLOWED_PUB_KEY: &str =
     "deposit attester pubkey commitment is not allowlisted";
-/// F2 (D5b): the operator `feeAmount` must be zero (fail-loud MVP).
+/// F2 (amount validation): the operator `feeAmount` must be zero (fail-loud MVP).
 pub const ERR_XRESERVE_FEE_NONZERO: &str = "mint fee amount must be zero";
 
 // SHARED CHECK HELPERS

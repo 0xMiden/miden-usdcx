@@ -569,7 +569,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     );
 
     // ── S4 — ATTESTED MINT: a REAL stock MintNote (the XUsdcMintNote factory) emitted by the
-    // producer and consumed by the faucet drives the FULL attestation policy chain (D5a-e).
+    // producer and consumed by the faucet drives the FULL attestation policy chain (full validation pipeline).
     let note_m1 = production_mint_note(producer_id, faucet_id, &payload1, 61)?;
     emit_note_with_attachments(&mut pf.mock_chain, producer_id, &note_m1).await?;
     let faucet = committed(&pf.mock_chain, faucet_id)?;

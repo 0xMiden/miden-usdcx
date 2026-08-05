@@ -3,9 +3,7 @@
 //! Two changes land together here. The two-step ownership component is gone, so there is no owner
 //! slot and no ownership handshake: every administrator-gated procedure resolves through the
 //! account-wide authority to the administrator role, whose member is the account that used to hold
-//! the administrator slot. The identifier initializer moved onto that same gate — it was the one faucet-owned
-//! procedure still reading the administrator slot directly, and with the component dropped it would have
-//! read a slot the account no longer declares.
+//! the administrator slot.
 //!
 //! Role management moved to the standard role-action note. It carries four actions behind one
 //! script root — grant, revoke, re-point a role's administrator, and renounce — and admitting the
@@ -31,12 +29,9 @@ use miden_standards::note::{
 use miden_testing::assert_transaction_executor_error;
 use support::w2admin::*;
 use support::*;
-use xusdc_encoding::account::xreserve::{
-    XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL, XRESERVE_ATTESTERS_SLOT_LABEL,
-};
+use xusdc_encoding::account::xreserve::{XReserveStablecoinBuilder, XRESERVE_ATTESTERS_SLOT_LABEL};
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveIdentifierInitNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
-    XReserveSetMinBurnSizeNote,
+    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
 
 const MAX_SUPPLY: u64 = 1_000_000;
@@ -93,16 +88,6 @@ fn read_attester(account: &Account, commitment: Word) -> Result<Word> {
         .map_err(|e| anyhow::anyhow!("reading xReserveAttesters[{commitment}]: {e}"))
 }
 
-/// The identifier config slot word.
-fn read_identifier(account: &Account) -> Result<Word> {
-    let slot = StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
-        .context("the identifier slot label is a valid constant")?;
-    account
-        .storage()
-        .get_item(&slot)
-        .map_err(|e| anyhow::anyhow!("reading the identifier slot: {e}"))
-}
-
 /// A standard role-action note carrying `action`, sent by `sender` and tagged for `faucet_id`. The
 /// serial is derived from `seed` so note ids stay stable; authorization rides on the sender.
 fn role_note(
@@ -147,10 +132,10 @@ fn the_ownership_component_is_absent_from_the_composition() -> Result<()> {
     Ok(())
 }
 
-/// The callable surface is the ratified 62 roots, and not one of them is an administratorship procedure.
+/// The callable surface is the ratified 61 roots, and not one of them is an administratorship procedure.
 /// The count is asserted against the real composition, so a stale removal shows up here.
 #[test]
-fn the_callable_surface_is_sixty_two_roots_and_carries_no_ownership_row() -> Result<()> {
+fn the_callable_surface_is_sixty_one_roots_and_carries_no_ownership_row() -> Result<()> {
     let mut components = production_component_set(MAX_SUPPLY, 0)?;
     components.extend(
         XReserveStablecoinBuilder::auth_component()
@@ -183,18 +168,17 @@ fn the_callable_surface_is_sixty_two_roots_and_carries_no_ownership_row() -> Res
     Ok(())
 }
 
-/// The note-script allowlist is exactly the ratified nine roots: the two supply notes, the four
+/// The note-script allowlist is exactly the ratified eight roots: the two supply notes, the three
 /// administrator-gated setters, the two standard config notes, and the ONE standard role-action
 /// note that replaced the two bespoke role notes. Set equality, so a leftover root fails as loudly
 /// as a missing one.
 #[test]
-fn the_note_allowlist_is_exactly_the_nine_ratified_roots() -> Result<()> {
+fn the_note_allowlist_is_exactly_the_eight_ratified_roots() -> Result<()> {
     let allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
     let expected: BTreeSet<NoteScriptRoot> = BTreeSet::from([
         MintNote::script_root(),
         BurnNote::script_root(),
         XReserveSetAttesterNote::script_root(),
-        XReserveIdentifierInitNote::script_root(),
         XReserveSetMinBurnSizeNote::script_root(),
         XReserveSetMaxSupplyNote::script_root(),
         PauseActionNote::script_root(),
@@ -209,55 +193,9 @@ fn the_note_allowlist_is_exactly_the_nine_ratified_roots() -> Result<()> {
     );
     assert_eq!(
         allowlist, expected,
-        "the allowlist must be exactly the nine ratified roots — the standard role-action note is \
-         in, and both ownership notes and both bespoke role notes are out"
+        "the allowlist must be exactly the eight ratified roots — the standard role-action note is \
+         in, and both ownership notes, both bespoke role notes and the identifier-init note are out"
     );
-    Ok(())
-}
-
-// THE IDENTIFIER INITIALIZER, NOW GATED BY THE ACCOUNT-WIDE AUTHORITY
-// ================================================================================================
-
-/// The initializer still works, and still seeds the faucet's own-id key. It reaches the same
-/// authorized account it always did — the administrator role's sole member is the account that held
-/// the administrator slot — so the only thing that moved is which gate it asks.
-#[tokio::test]
-async fn the_identifier_initializer_lands_for_the_administrator() -> Result<()> {
-    let mut pf = admin_faucet(|faucet_id| {
-        vec![
-            XReserveIdentifierInitNote::create(admin_holder(), faucet_id, &mut note_rng(301))
-                .expect("the identifier_init note builds"),
-        ]
-    })?;
-
-    let note = pf.seeded_notes[0].clone();
-    let faucet_id = pf.faucet_id;
-    let account = consume_and_commit(&mut pf, &note, "identifier_init").await?;
-
-    assert_eq!(
-        read_identifier(&account)?,
-        XReserveIdentifierInitNote::identifier_for(faucet_id),
-        "the initializer must seed the faucet's own-id key through the authority gate"
-    );
-    Ok(())
-}
-
-/// The gate still gates, and now speaks the role error. An account outside the administrator role
-/// is refused — the authorized identity is unchanged, only the mechanism and therefore the trap
-/// message moved, exactly as it did for every other setter when the authority flipped.
-#[tokio::test]
-async fn the_identifier_initializer_rejects_a_non_administrator_with_the_role_error() -> Result<()>
-{
-    let pf = admin_faucet(|faucet_id| {
-        vec![
-            XReserveIdentifierInitNote::create(stranger(), faucet_id, &mut note_rng(302))
-                .expect("the identifier_init note builds"),
-        ]
-    })?;
-
-    let note = pf.seeded_notes[0].clone();
-    let result = consume(&pf, &note).await;
-    assert_transaction_executor_error!(result, err_sender_lacks_role());
     Ok(())
 }
 

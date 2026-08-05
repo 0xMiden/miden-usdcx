@@ -921,8 +921,7 @@ fn note_docs_declare_required_account_procedures() {
 /// storage-less. The storage-documentation rule keys off this registration, so removing a
 /// storage-carrying note's section fails even when the note never reads storage itself; a new
 /// note fails until it gets a row (the registration pattern).
-const NOTE_STORAGE_TABLE: [(&str, &str); 4] = [
-    ("xreserve_identifier_init_note.masm", "read"),
+const NOTE_STORAGE_TABLE: [(&str, &str); 3] = [
     ("xreserve_set_attester_note.masm", "read"),
     ("xreserve_set_max_supply_note.masm", "read"),
     ("xreserve_set_min_burn_size_note.masm", "read"),

@@ -12,7 +12,7 @@
 //! the linked miden-standards library and declare no local constants here. Wave-1 S1 re-materialization: the deleted custom-transport modules
 //! (`xreserve_mint` / `xreserve_mint_note_entry` / `mint_deny_guard` / `burn_policy` /
 //! `min_burn_admin` / `domain_config`) left the sweep; the attestation mint policy
-//! (`mint_policy.masm`) and the minimized `identifier_init.masm` joined it, with the
+//! (`mint_policy.masm`) joined it, with the
 //! attachment-scheme rows (rider A8: schemes >= 4, clear of the reserved value 1 and the
 //! standard values 2/3) and the DC-5 scale row pinned against the `XUsdcMintNote` factory
 //! constants.
@@ -45,10 +45,6 @@ const ATTESTATION_VERIFY_MASM: &str =
 /// attachment transport + ASSERT-MATCH binding constants), read test-side by reference.
 const MINT_POLICY_MASM: &str = include_str!("../../../asm/standards/xreserve/mint_policy.masm");
 
-/// The minimized identifier-init module source (DEC-4), read test-side by reference.
-const IDENTIFIER_INIT_MASM: &str =
-    include_str!("../../../asm/standards/xreserve/identifier_init.masm");
-
 /// The faucet set_attester admin module source, read test-side by reference.
 const ATTESTER_ADMIN_MASM: &str =
     include_str!("../../../asm/standards/xreserve/attester_admin.masm");
@@ -70,9 +66,6 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_SIG_INVALID",
     // F2 fee guard (deposit_intent_parser.masm; DEC-2 keep-zero)
     "ERR_XRESERVE_FEE_NONZERO",
-    // the attested-recipient extraction's pad check (mint_policy.masm; the limb and
-    // canonical-range rejects are the standards eth::build_felt's)
-    "ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE",
     // Wave-1 S1 transport-shape guards on the stock MintNote's attachments: the attachment set
     // (mint_policy.masm) and the staged intent's shape and length (deposit_intent_parser.masm)
     "ERR_XRESERVE_MINT_NOTE_INTENT_MISSING",
@@ -87,21 +80,12 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_MINT_AMOUNT_MISMATCH",
     "ERR_XRESERVE_MINT_TAG_MISMATCH",
     "ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC",
-    // R-ADMIN-4 identifier init-once + non-empty + own-id binding guards (identifier_init.masm;
-    // DEC-4 + the round-3 on-chain derivation)
-    "ERR_XRESERVE_IDENTIFIER_REINIT",
-    "ERR_XRESERVE_IDENTIFIER_EMPTY",
-    "ERR_XRESERVE_IDENTIFIER_MISMATCH",
 ];
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned
 /// against the test-side label consts.
 const EXPECTED_SHELL_WORD_CONSTS: &[(&str, &str)] = &[
     ("DOMAIN_CONFIG_SLOT", support::DOMAIN_CONFIG_SLOT_LABEL),
-    (
-        "IDENTIFIER_CONFIG_SLOT",
-        support::IDENTIFIER_CONFIG_SLOT_LABEL,
-    ),
     ("USED_NONCES_SLOT", support::USED_NONCES_SLOT_LABEL),
 ];
 
@@ -387,16 +371,13 @@ fn masm_rust_error_string_parity() {
 /// `support::SHELL_ERR_TABLE` message.
 #[test]
 fn masm_shell_error_string_parity() {
-    // the faucet shell errors live across the four shell modules (deposit_intent_parser +
-    // attestation_verify + mint_policy + identifier_init); merge their string consts before
-    // the lookup.
+    // the faucet shell errors live across the three shell modules (deposit_intent_parser +
+    // attestation_verify + mint_policy); merge their string consts before the lookup.
     let (_, mut strs, _) = parse_masm_consts(SHELL_MASM);
     let (_, att_strs, _) = parse_masm_consts(ATTESTATION_VERIFY_MASM);
     let (_, policy_strs, _) = parse_masm_consts(MINT_POLICY_MASM);
-    let (_, init_strs, _) = parse_masm_consts(IDENTIFIER_INIT_MASM);
     strs.extend(att_strs);
     strs.extend(policy_strs);
-    strs.extend(init_strs);
     for name in SHELL_ERRORS_DECLARED {
         let expected = support::SHELL_ERR_TABLE
             .iter()
@@ -421,7 +402,7 @@ fn masm_constants_bidirectional() {
         ERR_MESSAGES.iter().any(|(n, _)| *n == name)
             || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
     };
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 7] = [
+    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 6] = [
         ("layout.masm", LAYOUT_MASM, LAYOUT_COVERED_NUMS, &[]),
         (
             "encoding/mod.masm",
@@ -451,12 +432,6 @@ fn masm_constants_bidirectional() {
             MINT_POLICY_COVERED_NUMS,
             &[],
         ),
-        // DEC-4 identifier_init: declares the REINIT + EMPTY guards (known shell errors via
-        // SHELL_ERR_TABLE); the identifier slot const stays IMPORTED from deposit_intent_parser
-        // (not redeclared -> no duplicate parity row); no numeric consts. The three build-seeded
-        // domain-config fields have NO MASM reader/writer anymore — their labels live Rust-side
-        // only (the builder seeds them), so no slot-label parity rows exist for them.
-        ("identifier_init.masm", IDENTIFIER_INIT_MASM, &[], &[]),
         // set_attester: pins XRESERVE_ATTESTERS_SLOT to the shared label (no numeric consts;
         // the authority-gate traps reuse the stock ADMIN-role and pause errors, not declared here).
         (

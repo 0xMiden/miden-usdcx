@@ -53,7 +53,7 @@ async fn mint_rejects_an_amount_mismatch(
     #[case] expected_err: &str,
 ) -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, nonce_variant);
     let note = tampered_mint_note(
         &pf,
@@ -78,7 +78,7 @@ async fn mint_rejects_an_amount_mismatch(
 #[tokio::test]
 async fn mint_rejects_a_tag_mismatch() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 18);
     let note = tampered_mint_note(
         &pf,
@@ -109,7 +109,7 @@ async fn mint_rejects_a_tag_mismatch() -> Result<()> {
 #[tokio::test]
 async fn mint_rejects_a_private_output_note() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 19);
     let note = tampered_mint_note(
         &pf,
@@ -144,12 +144,25 @@ async fn mint_rejects_a_private_output_note() -> Result<()> {
 /// bytes must be zero. If the policy ignored them instead of asserting, two different attested
 /// payloads would extract to the same account, and the attestation would no longer pin who gets
 /// paid.
+///
+/// The decode delegates to the standards `eth::bytes32_to_account_id`, which splits the pad check
+/// in two — bytes 0..12 in the bytes32 entry point, bytes 12..16 in the `to_account_id` it calls.
+/// Both halves get a case, so neither can go unasserted: a pass that only covered bytes 0..12
+/// would still let a recipient with four dirty bytes at offset 12 through.
+#[rstest]
+#[case::leading_twelve(REMOTE_RECIPIENT_BYTE_OFF, 20, 89, "ERR_BYTES32_PADDING_NONZERO")]
+#[case::bytes_twelve_to_sixteen(REMOTE_RECIPIENT_BYTE_OFF + 12, 40, 109, "ERR_MSB_NONZERO")]
 #[tokio::test]
-async fn mint_rejects_a_malformed_attested_recipient() -> Result<()> {
+async fn mint_rejects_a_malformed_attested_recipient(
+    #[case] dirty_byte_off: usize,
+    #[case] nonce_variant: u8,
+    #[case] rng_seed: u64,
+    #[case] expected_err: &str,
+) -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
-    let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 20);
-    payload[REMOTE_RECIPIENT_BYTE_OFF] = 0xaa; // the 16-byte pad must be zero
+    bring_up(&mut pf, 1).await?;
+    let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, nonce_variant);
+    payload[dirty_byte_off] = 0xaa; // the 16-byte pad must be zero
     let note = tampered_mint_note(
         &pf,
         &payload,
@@ -163,15 +176,9 @@ async fn mint_rejects_a_malformed_attested_recipient() -> Result<()> {
         1,
         None,
         &AttachmentPlan::default(),
-        89,
+        rng_seed,
     )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE"),
-    )
-    .await
+    expect_reject(&mut pf, note, &payload, shell_error_by_name(expected_err)).await
 }
 
 /// The NONCANONICAL reject family, parametrized into one case table: an attested
@@ -190,7 +197,7 @@ async fn mint_rejects_a_noncanonical_recipient(
     #[case] rng_seed: u64,
 ) -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, nonce_variant);
     payload[limb_byte_off..limb_byte_off + 8].copy_from_slice(&u64::MAX.to_be_bytes());
     let note = tampered_mint_note(
@@ -224,7 +231,7 @@ async fn mint_rejects_a_noncanonical_recipient(
 #[tokio::test]
 async fn mint_rejects_a_missing_intent_attachment() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 21);
     let note = tampered_mint_note(
         &pf,
@@ -257,7 +264,7 @@ async fn mint_rejects_a_missing_intent_attachment() -> Result<()> {
 #[tokio::test]
 async fn mint_rejects_a_missing_attestation_attachment() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 22);
     let note = tampered_mint_note(
         &pf,
@@ -290,7 +297,7 @@ async fn mint_rejects_a_missing_attestation_attachment() -> Result<()> {
 #[tokio::test]
 async fn mint_rejects_a_missing_routing_target() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 23);
     let note = tampered_mint_note(
         &pf,
@@ -323,7 +330,7 @@ async fn mint_rejects_a_missing_routing_target() -> Result<()> {
 #[tokio::test]
 async fn mint_rejects_a_fourth_attachment() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 24);
     let note = tampered_mint_note(
         &pf,
@@ -356,7 +363,7 @@ async fn mint_rejects_a_fourth_attachment() -> Result<()> {
 #[tokio::test]
 async fn mint_rejects_a_wrong_attestation_word_count() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 25);
     let note = tampered_mint_note(
         &pf,
@@ -390,7 +397,7 @@ async fn mint_rejects_a_wrong_attestation_word_count() -> Result<()> {
 #[tokio::test]
 async fn mint_rejects_an_intent_length_mismatch() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 26);
     let note = tampered_mint_note(
         &pf,
@@ -423,7 +430,7 @@ async fn mint_rejects_an_intent_length_mismatch() -> Result<()> {
 #[tokio::test]
 async fn mint_rejects_a_truncated_intent() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 27);
     let note = tampered_mint_note(
         &pf,
@@ -462,7 +469,7 @@ async fn mint_halts_while_paused() -> Result<()> {
         vec![stock_pause_note(dom_pauser(), faucet_id, 953)
             .expect("building the DOM_PAUSER pause note")]
     })?;
-    bring_up(&mut pf, 3).await?; // identifier_init + set_attester + pause
+    bring_up(&mut pf, 2).await?; // set_attester + pause
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 28);
     let note = honest_note(&pf, &payload, 97)?;
     expect_reject(
@@ -485,7 +492,7 @@ async fn mint_halts_while_paused() -> Result<()> {
 #[tokio::test]
 async fn tx_script_mint_and_send_cannot_mint() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let recipient_recipe =
         P2idNoteStorage::new(pf.recipient_id).into_recipient(Word::from([9u32, 9, 9, 9]));
     let src = format!(
@@ -550,7 +557,7 @@ async fn tx_script_mint_and_send_cannot_mint() -> Result<()> {
 #[tokio::test]
 async fn mint_note_routes_to_the_faucet_network_account() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 29);
     let note = honest_note(&pf, &payload, 98)?;
 
@@ -624,7 +631,7 @@ async fn mint_note_routes_to_the_faucet_network_account() -> Result<()> {
 #[tokio::test]
 async fn mint_ignores_a_hostile_advice_stack() -> Result<()> {
     let mut pf = fixture()?;
-    bring_up(&mut pf, 2).await?;
+    bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 23);
     let note = honest_note(&pf, &payload, 83)?;
     emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;

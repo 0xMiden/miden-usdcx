@@ -9,12 +9,10 @@
 # reaching this policy outside note processing — a tx-script `mint_and_send`, say — traps in the
 # kernel's active-note accessors, so there is no mint path that skips the attested transport.
 
-use miden::protocol::account_id
 use miden::protocol::active_note
 use miden::protocol::native_account
 use {NOTE_TYPE_PUBLIC} from miden::protocol::note
 use {NETWORK_ACCOUNT_TARGET_ATTACHMENT_SCHEME} from miden::standards::attachments::network_account_target
-use miden::standards::interop::eth
 use miden::standards::note_tag
 use miden::standards::notes::p2id
 use miden::standards::utils
@@ -103,13 +101,6 @@ const ERR_XRESERVE_MINT_TAG_MISMATCH = "mint note tag does not match the atteste
 # The ASSERT-MATCH binding: the attested output note is always public.
 const ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC = "mint note output note type must be public"
 
-# Recipient AccountId extraction (extract_recipient_account_id): the pad check of the right-aligned
-# AccountId-in-bytes32 layout (the packaging is OPEN, pending Circle confirmation). The limb and
-# canonical-range rejects surface the standards eth::build_felt error constants, and the
-# suffix-shape and zero-version rejects surface the protocol account_id::validate_structure
-# ERR_ACCOUNT_ID_* constants directly.
-const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient address pad is not zero"
-
 # PUBLIC INTERFACE
 # =================================================================================================
 
@@ -145,8 +136,8 @@ const ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE = "deposit intent remote recipient add
 #! - the deposit intent validation rejects (transport shape and length, structural, domain and
 #!   identifier, amount and fee with feeAmount != 0, nonce replay).
 #! - the attestation verify rejects (attester allowlist, signature).
-#! - the recipient extraction rejects the attested remoteRecipient (pad/limb/canonicity or
-#!   account_id::validate_structure).
+#! - the bytes32 account-id decode rejects the attested remoteRecipient (pad, limb, canonicity or
+#!   structure).
 #! - a note-supplied value diverges from its attested derivation (the ASSERT-MATCH errors).
 #!
 #! Locals:
@@ -258,7 +249,7 @@ pub proc check_policy
     push.NOTE_TYPE_PUBLIC
     # => [note_type, SERIAL_NUM]
 
-    locaddr.INTENT_REMOTE_RECIPIENT_LOC exec.extract_recipient_account_id
+    locaddr.INTENT_REMOTE_RECIPIENT_LOC exec.deposit_intent_parser::load_bytes32_account_id
     # => [target_id_suffix, target_id_prefix, note_type, SERIAL_NUM]
 
     dup.1 exec.note_tag::create_account_target movdn.2
@@ -324,67 +315,4 @@ pub proc check_policy
     # elements plus 6 pad — so the policy returns at the SAME depth it was dispatched at.
     exec.sys::truncate_stack
     # => [ASSET_VALUE, tag, note_type, RECIPIENT]
-end
-
-# HELPER PROCEDURES
-# =================================================================================================
-
-#! Extracts and validates the P2ID recipient's account ID felts from the deposit intent's
-#! `remoteRecipient`.
-#!
-#! Reads the eight u32-LE-packed `remoteRecipient` limbs, asserts the 16-byte leading pad is zero,
-#! and rebuilds the account ID prefix and suffix through the standards no-reduction
-#! `eth::build_felt`.
-#!
-#! Inputs:  [remote_recipient_ptr]
-#! Outputs: [recipient_id_suffix, recipient_id_prefix]
-#!
-#! Where:
-#! - remote_recipient_ptr is the memory address of the remoteRecipient field's first packed limb.
-#! - recipient_id_{suffix,prefix} are the two validated Miden AccountId felts, in the stack order
-#!   `p2id::prepare_note` consumes ([suffix, prefix]; Rust `account_id_to_felts` is
-#!   [prefix, suffix]).
-#!
-#! Panics if:
-#! - the remoteRecipient 16-byte leading pad is non-zero (ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE).
-#! - a staged remoteRecipient limb is not a valid u32 (the standards eth::build_felt u32 guard).
-#! - a rebuilt prefix/suffix u64 reduced mod the field (the standards merge overflow guard).
-#! - account_id::validate_structure rejects the felts (its ERR_ACCOUNT_ID_* constants).
-#!
-#! Invocation: exec
-proc extract_recipient_account_id
-    # ---- leading pad: the 16-byte pad (limbs ptr+0..3) of the AccountId-in-bytes32 layout must be exactly zero ----
-    dup mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
-    dup add.1 mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
-    dup add.2 mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
-    dup add.3 mem_load assertz.err=ERR_XRESERVE_RECIPIENT_OUT_OF_RANGE
-    # => [remote_recipient_ptr]
-
-    # ---- prefix = build_felt(lo = limb ptr+5, hi = limb ptr+4)  (bytes[16..24], big-endian) ----
-    dup add.4 mem_load
-    # => [prefix_hi, remote_recipient_ptr]
-
-    dup.1 add.5 mem_load
-    # => [prefix_lo, prefix_hi, remote_recipient_ptr]
-
-    exec.eth::build_felt
-    # => [prefix, remote_recipient_ptr]
-
-    # ---- suffix = build_felt(lo = limb ptr+7, hi = limb ptr+6)  (bytes[24..32], big-endian) ----
-    dup.1 add.6 mem_load
-    # => [suffix_hi, prefix, remote_recipient_ptr]
-
-    movup.2 add.7 mem_load
-    # => [suffix_lo, suffix_hi, prefix]
-
-    exec.eth::build_felt
-    # => [suffix, prefix]
-
-    # ---- structural AccountId validation ----
-    dup.1 dup.1
-    # => [suffix, prefix, suffix, prefix]
-
-    # the ID version does not need asserting, so structural validation is sufficient
-    exec.account_id::validate_structure
-    # => [suffix, prefix]
 end

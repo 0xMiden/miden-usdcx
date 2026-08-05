@@ -27,7 +27,7 @@ use miden_standards::note::{
 };
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
-use xusdc_encoding::note::xreserve_admin::{XReserveIdentifierInitNote, XReserveSetAttesterNote};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::vectors::{load, DiVector};
 use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, bytes32_to_storage_map_key};
 
@@ -303,9 +303,9 @@ pub fn honest_note(pf: &ProductionFaucet, payload: &[u8], rng_seed: u64) -> Resu
 // FIXTURE + DRIVERS
 // ================================================================================================
 
-/// The production faucet brought up for minting: identifier seeded (the minimized
-/// identifier-only init),
-/// attester 1 allowlisted. `extra_notes` seeds additional admin notes (e.g. the pause note).
+/// The production faucet brought up for minting: attester 1 allowlisted, and nothing else — the
+/// identifier needs no seeding, because the mint path derives it from the faucet's own account id.
+/// `extra_notes` seeds additional admin notes (e.g. the pause note).
 pub fn fixture_with(
     max_supply: u64,
     extra_notes: impl Fn(AccountId, AccountId) -> Vec<Note>,
@@ -313,18 +313,14 @@ pub fn fixture_with(
     setup_production_faucet(max_supply, 0, |recipient, faucet_id| {
         let commitment =
             gen_attester(1, &payload_for(recipient, faucet_id, MINT_AMOUNT, 0)).commitment;
-        let mut notes = vec![
-            XReserveIdentifierInitNote::create(administrator(), faucet_id, &mut note_rng(951))
-                .expect("building the administrator identifier_init note"),
-            XReserveSetAttesterNote::create(
-                administrator(),
-                faucet_id,
-                commitment,
-                1,
-                &mut note_rng(952),
-            )
-            .expect("building the administrator set_attester note"),
-        ];
+        let mut notes = vec![XReserveSetAttesterNote::create(
+            administrator(),
+            faucet_id,
+            commitment,
+            1,
+            &mut note_rng(952),
+        )
+        .expect("building the administrator set_attester note")];
         notes.extend(extra_notes(recipient, faucet_id));
         notes
     })

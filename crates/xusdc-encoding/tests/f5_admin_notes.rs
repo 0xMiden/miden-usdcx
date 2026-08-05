@@ -36,8 +36,7 @@ use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
 use xusdc_encoding::account::xreserve::{BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveIdentifierInitNote, XReserveSetAttesterNote, XReserveSetMaxSupplyNote,
-    XReserveSetMinBurnSizeNote,
+    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
 
 /// The exact stock RBAC delegation error (v0.16: rbac.masm:66 ERR_SENDER_NOT_ROLE_ADMIN — #3215
@@ -217,27 +216,8 @@ async fn set_attester_admin_note_admin_writes_and_nonadmin_traps() -> Result<()>
     Ok(())
 }
 
-// IDENTIFIER_INIT — administrator-gated, init-once seeding of the one domain-config
-// field that cannot be known at build time. The domain, source domain, and xReserve contract
-// address are all seeded by the builder; only the identifier, which derives from the account's own
-// id, is written after deployment
+// SHARED READ-BACK HELPERS
 // ================================================================================================
-
-/// The five config words as `read_domain_config_words` returns them after the administrator's init:
-/// indexes 0-3 are the PRODUCTION BUILD-SEED (`with_domain_config(TEST_DOMAIN,
-/// TEST_SOURCE_DOMAIN, test_xreserve_contract())` — never touched by the init note), index 4 the
-/// note-committed identifier.
-fn expected_domain_config(faucet_id: AccountId) -> [Word; 5] {
-    let xrc =
-        xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts(&test_xreserve_contract());
-    [
-        scalar_word(Felt::from(TEST_DOMAIN)),
-        scalar_word(Felt::from(TEST_SOURCE_DOMAIN)),
-        Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]),
-        Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]),
-        XReserveIdentifierInitNote::identifier_for(faucet_id),
-    ]
-}
 
 /// Reads a single value-slot's post-tx word from the account delta (the slot's new value).
 fn value_delta(tx: &ExecutedTransaction, label: &str) -> Word {
@@ -248,180 +228,9 @@ fn value_delta(tx: &ExecutedTransaction, label: &str) -> Word {
     }
 }
 
-/// Asserts the tx's storage patch does NOT touch the value slot `label` (the minimized init
-/// writes ONLY the identifier slot; the four build-seeded config slots stay delta-free).
-fn assert_no_value_delta(tx: &ExecutedTransaction, label: &str) {
-    let slot = StorageSlotName::new(label).expect("valid slot label");
-    assert!(
-        tx.account_patch().storage().get(&slot).is_none(),
-        "the identifier_init tx must not touch the build-seeded {label} slot",
-    );
-}
-
 /// A single felt as its value-slot word `[f, 0, 0, 0]`.
 fn scalar_word(f: Felt) -> Word {
     Word::from([f, Felt::from(0u32), Felt::from(0u32), Felt::from(0u32)])
-}
-
-/// Consumes `owner`'s identifier_init note against a fresh production faucet, PASSING network auth
-/// (allowlisted) AND the proc's owner gate: it writes ONLY the identifier slot at the creator-
-/// committed param (the four build-seeded config slots stay delta-free), and the evolved account
-/// reads back the production build-seed + the committed identifier (the storage-param marshaling
-/// is correct).
-#[tokio::test]
-async fn identifier_init_admin_writes_only_the_identifier_slot() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
-        .context("building the production network-auth faucet")?;
-    let chain = pf.mock_chain;
-    let faucet_id = pf.faucet_id;
-    let owner = test_account_id(1);
-
-    let note = XReserveIdentifierInitNote::create(owner, faucet_id, &mut note_rng(13))
-        .context("building the administrator identifier_init note")?;
-    let tx = chain
-        .build_transaction(faucet_id)
-        .unauthenticated_input_note(note.clone())
-        .build()
-        .context("owner identifier_init tx build")?
-        .execute()
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!("owner-sent identifier_init must succeed under network auth: {e}")
-        })?;
-    assert_eq!(
-        value_delta(&tx, IDENTIFIER_CONFIG_SLOT_LABEL),
-        XReserveIdentifierInitNote::identifier_for(faucet_id),
-        "owner identifier_init must write the creator-committed identifier verbatim",
-    );
-    for label in [
-        DOMAIN_CONFIG_SLOT_LABEL,
-        SOURCE_DOMAIN_CONFIG_SLOT_LABEL,
-        XRESERVE_CONTRACT_HI_SLOT_LABEL,
-        XRESERVE_CONTRACT_LO_SLOT_LABEL,
-    ] {
-        assert_no_value_delta(&tx, label);
-    }
-    let mut evolved = chain
-        .committed_account(faucet_id)
-        .context("committed faucet")?
-        .clone();
-    evolved.apply_patch(tx.account_patch())?;
-    assert_eq!(
-        read_domain_config_words(&evolved)?,
-        expected_domain_config(faucet_id),
-        "the five config words = the four production build-seeded words + the committed identifier",
-    );
-    Ok(())
-}
-
-/// A non-administrator identifier_init note PASSES network auth (allowlisted) but TRAPS at the
-/// proc's authority gate, which resolves to the built-in `ADMIN` role.
-async fn assert_identifier_init_nonadmin_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
-        .context("building the production network-auth faucet")?;
-    let chain = pf.mock_chain;
-    let faucet_id = pf.faucet_id;
-    let note = XReserveIdentifierInitNote::create(sender, faucet_id, &mut note_rng(seed))
-        .context("building the non-administrator identifier_init note")?;
-    let result = chain
-        .build_transaction(faucet_id)
-        .unauthenticated_input_note(note.clone())
-        .build()
-        .context("non-administrator identifier_init tx build")?
-        .execute()
-        .await;
-    assert_transaction_executor_error!(result, err_sender_lacks_role());
-    Ok(())
-}
-
-#[tokio::test]
-async fn identifier_init_dom_pauser_traps() -> Result<()> {
-    assert_identifier_init_nonadmin_traps(test_account_id(2), 14).await
-}
-
-#[tokio::test]
-async fn identifier_init_third_party_traps() -> Result<()> {
-    assert_identifier_init_nonadmin_traps(test_account_id(99), 15).await
-}
-
-/// init-once: a SECOND identifier_init — even from the administrator — traps
-/// `ERR_XRESERVE_IDENTIFIER_REINIT` (the identifier slot IS the init-once sentinel). The first
-/// init is SEEDED on-chain (block-provable) so the second sees initialized state. Both notes are
-/// built against the REAL faucet id (the seed closure receives it), so both derive the SAME own-id
-/// identifier key — the second write hits the armed sentinel regardless of the value.
-#[tokio::test]
-async fn identifier_init_reinit_traps_even_from_the_administrator() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, faucet_id| {
-        vec![
-            XReserveIdentifierInitNote::create(test_account_id(1), faucet_id, &mut note_rng(16))
-                .expect("building the seeded first identifier_init note"),
-        ]
-    })
-    .context("building the production faucet with a seeded first identifier_init")?;
-    let mut chain = pf.mock_chain;
-    let faucet_id = pf.faucet_id;
-
-    for note in pf.seeded_notes.clone() {
-        let tx = chain
-            .build_transaction(faucet_id)
-            .authenticated_input_note(note.id())
-            .build()
-            .context("first identifier_init bring-up tx build")?
-            .execute()
-            .await
-            .map_err(|e| anyhow::anyhow!("first identifier_init bring-up must succeed: {e}"))?;
-        chain.add_pending_executed_transaction(&tx)?;
-        chain.prove_next_block()?;
-    }
-
-    let note2 =
-        XReserveIdentifierInitNote::create(test_account_id(1), faucet_id, &mut note_rng(17))
-            .context("building the second identifier_init note")?;
-    let result = chain
-        .build_transaction(faucet_id)
-        .unauthenticated_input_note(note2.clone())
-        .build()
-        .context("second identifier_init tx build")?
-        .execute()
-        .await;
-    assert_transaction_executor_error!(
-        result,
-        shell_error_by_name("ERR_XRESERVE_IDENTIFIER_REINIT")
-    );
-    Ok(())
-}
-
-/// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the written identifier
-/// (the param comes from note storage, never NOTE_ARGS).
-#[tokio::test]
-async fn identifier_init_note_args_are_inert() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
-        .context("building the production network-auth faucet")?;
-    let chain = pf.mock_chain;
-    let faucet_id = pf.faucet_id;
-    let owner = test_account_id(1);
-
-    let note = XReserveIdentifierInitNote::create(owner, faucet_id, &mut note_rng(18))
-        .context("building the administrator identifier_init note")?;
-    let bogus_args = Word::from([424_242u32, 7, 7, 7]);
-    let tx = chain
-        .build_transaction(faucet_id)
-        .unauthenticated_input_note(note.clone())
-        .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
-        .build()
-        .context("identifier_init note-args tx build")?
-        .execute()
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!("owner identifier_init with bogus NOTE_ARGS must still succeed: {e}")
-        })?;
-    assert_eq!(
-        value_delta(&tx, IDENTIFIER_CONFIG_SLOT_LABEL),
-        XReserveIdentifierInitNote::identifier_for(faucet_id),
-        "identifier_init must write the storage-committed identifier regardless of executor \
-         NOTE_ARGS",
-    );
-    Ok(())
 }
 
 // SET_MIN_BURN_SIZE (allowlist row 4) — ADMIN-gated floor setter. The note first asserts the new

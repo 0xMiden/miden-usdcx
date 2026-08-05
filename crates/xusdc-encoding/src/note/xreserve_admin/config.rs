@@ -1,4 +1,4 @@
-//! Config / setter admin note factories: `set_attester`, `identifier_init`,
+//! Config / setter admin note factories: `set_attester`,
 //! `set_min_burn_size`, `set_max_supply`.
 
 use std::sync::LazyLock;
@@ -75,71 +75,6 @@ impl XReserveSetAttesterNote {
             recipient,
             attachments,
         ))
-    }
-}
-
-// IDENTIFIER_INIT
-// ================================================================================================
-
-const IDENTIFIER_INIT_NOTE_SCRIPT_SRC: &str =
-    include_str!("../../../../../asm/standards/notes/xreserve_identifier_init_note.masm");
-
-static IDENTIFIER_INIT_NOTE_SCRIPT: LazyLock<NoteScript> =
-    LazyLock::new(|| compile_admin_note_script(IDENTIFIER_INIT_NOTE_SCRIPT_SRC));
-
-/// The administrator-gated, init-once `identifier_init` admin note. The identifier is the ONE
-/// domain-config field the account-id fixpoint forces past build time; the other three are
-/// build-seeded by the `XReserveStablecoinBuilder`. Storage layout: `[IDENTIFIER(4)]`. Consumed
-/// against the faucet network account; `identifier_init::init_identifier` gates on the
-/// (kernel-forced) note sender
-/// through the account-wide authority, which resolves it to the built-in `ADMIN` role, AND
-/// rejects a second initialization.
-pub struct XReserveIdentifierInitNote;
-
-impl XReserveIdentifierInitNote {
-    /// The compiled, fixed-root note script (the shipped `xreserve_identifier_init_note.masm`
-    /// with the xreserve library linked).
-    pub fn script() -> NoteScript {
-        IDENTIFIER_INIT_NOTE_SCRIPT.clone()
-    }
-
-    /// The compiled note-script root. It binds transitively to
-    /// `identifier_init::init_identifier`'s digest — including the proc's own-id derivation,
-    /// `bytes32_to_key(account_id_to_bytes32(get_id()))` — and the allowlist row for this note
-    /// derives from the same compiled script.
-    pub fn script_root() -> NoteScriptRoot {
-        IDENTIFIER_INIT_NOTE_SCRIPT.root()
-    }
-
-    /// Builds an `identifier_init` admin note: `sender` is the admin party (an `ADMIN` holder, for
-    /// success) and `faucet_id` the target faucet (PUBLIC). The seeded identifier is DERIVED from
-    /// `faucet_id` — `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))`, the canonical
-    /// key of the faucet's own account id as bytes32 — so the init is BOUND to its target and
-    /// cannot seed a token that belongs to another identity. This is a PROVISIONAL position — the
-    /// AccountId↔bytes32 codec and the identifier==own-id equivalence stay OPEN with Circle — and is
-    /// changeable if Circle assigns a different identifier. The derived key lives in note storage.
-    pub fn create<R: FeltRng>(
-        sender: AccountId,
-        faucet_id: AccountId,
-        rng: &mut R,
-    ) -> Result<Note, NoteError> {
-        let identifier: Word = crate::xreserve::encoding::bytes32_to_storage_map_key(
-            &crate::xreserve::encoding::account_id_to_bytes32(faucet_id),
-        )
-        .into();
-        let items = vec![identifier[0], identifier[1], identifier[2], identifier[3]];
-        build_admin_note(sender, faucet_id, Self::script(), items, rng)
-    }
-
-    /// The provisional identifier this factory seeds for `faucet_id`: the canonical
-    /// `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))` key (the own-id fixpoint,
-    /// pending Circle confirmation). Exposed so callers can assert the seeded identity and splice a
-    /// matching `remoteToken` into the mint payload the faucet's identifier compare reads.
-    pub fn identifier_for(faucet_id: AccountId) -> Word {
-        crate::xreserve::encoding::bytes32_to_storage_map_key(
-            &crate::xreserve::encoding::account_id_to_bytes32(faucet_id),
-        )
-        .into()
     }
 }
 

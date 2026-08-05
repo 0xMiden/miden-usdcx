@@ -148,11 +148,6 @@ const ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC = "mint note output note type must 
 #! Inputs:  [ASSET_VALUE, tag, note_type, RECIPIENT, pad(6)]
 #! Outputs: [ASSET_VALUE, tag, note_type, RECIPIENT, pad(6)]
 #!
-#! `dynexec` runs in the dispatcher's own context (no fresh frame), so the 16-element floor it
-#! arrives with is the ONLY guarantee this procedure gets about ambient depth — every inline `# =>`
-#! comment below tracks the full 16 (or more), not just the named values, so the stack is fully
-#! accounted for start to end; see the note by `truncate_stack` for how it ends above 16.
-#!
 #! Where:
 #! - ASSET_VALUE is the note-supplied fungible asset value word [amount, 0, 0, 0]; asserted equal
 #!   to the attested reduced amount and returned unchanged.
@@ -341,13 +336,6 @@ pub proc check_policy
 
     # ---- return the (asserted-matching) policy interface unchanged ----
 
-    # every TRANSPORT/VERIFY/ASSERT-MATCH/ACCEPT stage above nets to zero against its own entry
-    # depth, so the pad(16) established by the cache-store at the top has sat untouched, floor-deep,
-    # the WHOLE time — nothing after the cache-store ever consumed it (a call/dynexec return can only
-    # ever grow depth 16 or hold it there; it can't shrink past the floor to reclaim that pad for
-    # reuse). Reconstructing the 10-element interface from locals is therefore a pure ADD on top of
-    # that untouched pad(16), not a replacement of it: 3 word-level pushes/loads that never drop
-    # anything, so depth only ever climbs.
     padw loc_loadw_le.RECIPIENT_LOC
     # => [RECIPIENT, pad(16)]
 
@@ -357,11 +345,9 @@ pub proc check_policy
     padw loc_loadw_le.ASSET_VALUE_LOC
     # => [ASSET_VALUE, tag, note_type, RECIPIENT, pad(16)]
 
-    # depth is now 26 (10 interface elements + the original pad(16), never the dispatcher's pad(6)),
-    # so truncate_stack removes exactly the 10-element gap between the two — not a symptom of any
-    # called procedure's stack count being off (every stage above nets to zero, verified line by
-    # line), but the direct, unavoidable cost of rebuilding the return interface from locals against
-    # a floor that can't be pre-shrunk to make room for it.
+    # we should not drop the stack elements trailing directly behind `RECIPIENT`, because these 
+    # might have come from the invoking procedure.
+    # instead, truncate_stack removes the final ten stack elements.
     exec.sys::truncate_stack
     # => [ASSET_VALUE, tag, note_type, RECIPIENT, pad(6)]
 end

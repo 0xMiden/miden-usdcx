@@ -33,9 +33,7 @@ use miden_tx::LocalTransactionProver;
 use support::*;
 use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
 use xusdc_encoding::vectors::load;
-use xusdc_encoding::xreserve::encoding::{
-    decode_burn_note_items, encode_burn_note_items, XReserveBurnItems,
-};
+use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
 
 // HARNESS
 // ================================================================================================
@@ -145,7 +143,7 @@ fn burn_note_payload_schema() {
     // returns exactly what was encoded.
     let storage_items = note.recipient().storage().items();
     assert_eq!(storage_items.len(), 18, "DC-7 is exactly 18 felts");
-    let decoded = decode_burn_note_items(storage_items).expect("decoding DC-7 items");
+    let decoded = XReserveBurnItems::decode(storage_items).expect("decoding DC-7 items");
     assert_eq!(
         decoded, items,
         "NoteStorage.items decode == input items (DC-7 order)"
@@ -215,7 +213,7 @@ async fn burn_note_emitted_items_match_codec_vectors() -> anyhow::Result<()> {
     assert!(!accept.is_empty(), "BN accept vectors present");
     for vec in accept {
         let items = vec.expected_struct();
-        let expected = encode_burn_note_items(&items);
+        let expected = items.encode();
         let got = emitted_items_for(&items).await?;
         assert_eq!(
             got.as_slice(),

@@ -15,10 +15,9 @@ use assert_matches::assert_matches;
 use miden_protocol::Word;
 use xusdc_encoding::vectors::{load, parse_hex32};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, affine_pubkey_felts, bytes32_to_account_id, bytes32_to_packed_felts,
-    deposit_intent_to_packed_felts, encode_burn_note_items, parse_deposit_intent_header,
-    pubkey_commitment, signature_felts, DepositIntent, DepositIntentHeader, EncodingError,
-    EthBytes32, PublicKey, PublicKeyCommitment, Signature, XReserveBurnItems,
+    account_id_to_bytes32, bytes32_to_account_id, bytes32_to_packed_felts, DepositIntent,
+    DepositIntentHeader, EncodingError, EthBytes32, PublicKey, PublicKeyCommitment, Signature,
+    XReserveBurnItems,
 };
 
 // Signature
@@ -40,7 +39,7 @@ fn signature_type_matches_golden_and_free_fn() {
         );
         assert_eq!(
             typed.to_felts(),
-            signature_felts(&sig),
+            Signature::new(sig).to_felts(),
             "{}: Signature::to_felts == free fn",
             v.id
         );
@@ -76,7 +75,7 @@ fn public_key_affine_and_commitment_match_golden() {
         );
         assert_eq!(
             affine,
-            affine_pubkey_felts(&pk).expect("valid point"),
+            PublicKey::new(pk).to_affine_felts().expect("valid point"),
             "{}: PublicKey::to_affine_felts == free fn",
             v.id
         );
@@ -90,7 +89,7 @@ fn public_key_affine_and_commitment_match_golden() {
         );
         assert_eq!(
             Word::from(commitment),
-            pubkey_commitment(&pk).expect("valid point"),
+            Word::from(PublicKey::new(pk).to_commitment().expect("valid point")),
             "{}: PublicKey::to_commitment word == free fn",
             v.id
         );
@@ -132,7 +131,9 @@ fn deposit_intent_type_matches_free_fns_and_golden() {
         let intent = DepositIntent::new(&bytes);
 
         let typed_header = intent.parse_header().expect("accept vector parses");
-        let free_header = parse_deposit_intent_header(&bytes).expect("accept vector parses");
+        let free_header = DepositIntent::new(&bytes)
+            .parse_header()
+            .expect("accept vector parses");
         assert_eq!(typed_header.magic, free_header.magic, "{}: magic", vec.id);
         assert_eq!(typed_header.nonce, free_header.nonce, "{}: nonce", vec.id);
         assert_eq!(
@@ -158,7 +159,7 @@ fn deposit_intent_type_matches_free_fns_and_golden() {
         let typed_felts = intent.to_packed_felts().expect("accept vector packs");
         assert_eq!(
             typed_felts,
-            deposit_intent_to_packed_felts(&bytes).expect("packs"),
+            DepositIntent::new(&bytes).to_packed_felts().expect("packs"),
             "{}: DepositIntent::to_packed_felts == free fn",
             vec.id
         );
@@ -203,7 +204,7 @@ fn burn_items_methods_match_free_fns_and_golden() {
         let encoded = items.encode();
         assert_eq!(
             encoded,
-            encode_burn_note_items(&items),
+            items.encode(),
             "{}: XReserveBurnItems::encode == free fn",
             vec.id
         );

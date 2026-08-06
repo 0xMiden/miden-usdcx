@@ -24,7 +24,7 @@ use miden_protocol::note::{
 };
 use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint};
 
-use crate::xreserve::encoding::{encode_burn_note_items, XReserveBurnItems, BURN_NOTE_ITEMS_FELTS};
+use crate::xreserve::encoding::{XReserveBurnItems, BURN_NOTE_ITEMS_FELTS};
 
 /// The fixed tag every xUSDC burn note carries — ASCII `"BURN"`.
 ///
@@ -54,11 +54,33 @@ impl XReserveBurnNote {
         BurnNote::script_root()
     }
 
-    /// Builds an `XReserveBurnNote`: `NoteType::Public`, the fixed xUSDC burn tag,
-    /// `metadata.sender = sender` (the depositor), `NoteAssets` = the burned xUSDC
-    /// `FungibleAsset` (`amount` issued by `faucet_id`), and `NoteStorage.items` = the shared-codec
-    /// encoding of `items`. The note's amount is single-sourced from `items.amount`.
+    /// Convenience constructor over the [`XReserveBurnItems`] payload (a thin delegator to the
+    /// [`builder`](Self::builder)); retained because the frozen conformance suites pin this signature.
     pub fn create<R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        items: XReserveBurnItems,
+        rng: &mut R,
+    ) -> Result<Note, NoteError> {
+        Self::builder()
+            .sender(sender)
+            .faucet_id(faucet_id)
+            .items(items)
+            .rng(rng)
+            .build()
+    }
+}
+
+#[bon::bon]
+impl XReserveBurnNote {
+    /// Builds an `XReserveBurnNote` via a `bon` builder
+    /// (`XReserveBurnNote::builder().sender(..).faucet_id(..).items(..).rng(..).build()`):
+    /// `NoteType::Public`, the fixed xUSDC burn tag, `metadata.sender = sender` (the depositor),
+    /// `NoteAssets` = the burned xUSDC `FungibleAsset` (`amount` issued by `faucet_id`), and
+    /// `NoteStorage.items` = the shared-codec encoding of `items` (the burn note's dedicated
+    /// [`XReserveBurnItems`] storage type). The note's amount is single-sourced from `items.amount`.
+    #[builder]
+    pub fn new<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
         items: XReserveBurnItems,
@@ -68,7 +90,7 @@ impl XReserveBurnNote {
 
         // the shared codec is the same routine the off-chain attester decodes with, so encode and
         // decode cannot drift apart
-        let storage = NoteStorage::new(encode_burn_note_items(&items))?;
+        let storage = NoteStorage::new(items.encode())?;
         let recipient = NoteRecipient::new(serial_num, BurnNote::script(), storage);
 
         // the burn note is always Public — there is no note_type parameter. The withdrawal

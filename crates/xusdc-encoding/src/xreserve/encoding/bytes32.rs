@@ -1,26 +1,31 @@
-//! Turning an arbitrary 32-byte value into the Word that keys a storage map.
+//! Turning an arbitrary 32-byte value into the Word the faucet derives from it.
 //!
-//! Several faucet lookups are keyed by values that originate outside Miden — the deposit nonce
-//! that guards against replay, the token identifier the faucet compares deposits against. Those
-//! are opaque bytes32 values with no guarantee that they fit a field element, so they cannot be
-//! reinterpreted as a Word directly; a value whose limbs exceed the field modulus would have to be
-//! rejected or reduced, and reducing would let two distinct nonces collide onto one key.
+//! The value this hashes is the deposit nonce — a bytes32 that originates outside Miden. The faucet
+//! derives exactly two Words from it, and both go through this one hashing routine (`bytes32_to_key`
+//! on the MASM side): the key of the `usedNonces` replay-guard storage map, and the serial number of
+//! the attested output note the mint sends. A nonce carries no guarantee that it fits a field
+//! element, so it cannot be reinterpreted as a Word directly; a value whose limbs exceed the field
+//! modulus would have to be rejected or reduced, and reducing would let two distinct nonces collide.
 //!
 //! The canonical answer is to HASH instead of reinterpret: pack the bytes into eight
 //! u32-little-endian field elements and take their Poseidon2 hash. That is total — every possible
 //! bytes32 has a key — and collision-resistant, so distinct nonces stay distinct. The faucet's MASM
-//! computes the identical key on-chain.
+//! computes the identical Word on-chain.
 //!
 //! The fallible direct conversion also lives here, for the paths that genuinely need the original
 //! bytes back rather than a one-way key.
 
 use miden_protocol::account::StorageMapKey;
 use miden_protocol::utils::{bytes_to_packed_u32_elements, packed_u32_elements_to_bytes};
-use miden_protocol::{Felt, Hasher, Word};
+use miden_protocol::{Felt, Hasher};
+// `Word` is only named by the test-only lossless conversion and the unit tests.
+#[cfg(test)]
+use miden_protocol::Word;
 
 use super::error::EncodingError;
 
-/// Derives the canonical storage-map key for an arbitrary 32-byte value.
+/// Derives the canonical Word for an arbitrary 32-byte value (the deposit nonce): the `usedNonces`
+/// replay-guard map key and the attested output note's serial are both this Word.
 ///
 /// The bytes are packed into eight u32 field elements and hashed with Poseidon2. It cannot fail:
 /// any 32 bytes pack to valid u32s, so every input has a key — which is what makes it safe for
@@ -40,6 +45,11 @@ pub fn bytes32_to_packed_felts(b: &[u8; 32]) -> [Felt; 8] {
 
 /// The lossless direct conversion. Not usable for external map keys: it returns
 /// `Err(LimbOutOfField)` if any 8-byte LE limb is at or above the field modulus.
+///
+/// Test-only: it backs the TV-B32-2 bypass-positive golden-vector row (the lossless path rejecting
+/// a limb `>= p` while the hashing path succeeds); no production path performs the lossless direct
+/// conversion.
+#[cfg(test)]
 pub fn bytes32_to_word_lossless(b: &[u8; 32]) -> Result<Word, EncodingError> {
     // `LimbOutOfField` is a unit variant, so the inner `WordError` source cannot be carried
     Word::try_from(*b).map_err(|_| EncodingError::LimbOutOfField)

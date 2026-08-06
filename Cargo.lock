@@ -4867,6 +4867,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "assert_matches",
+ "bon",
  "k256 0.13.4",
  "miden-crypto",
  "miden-processor",

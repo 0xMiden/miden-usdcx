@@ -16,6 +16,9 @@ miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b
 miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# bon powers the note-factory builders and the dedicated note-storage types (the standards
+# PswapNote / PswapNoteStorage pattern the note factories adopt).
+bon = { workspace = true }
 # k256 is a REGULAR dependency (not vectors-gated): the attester commitment is computed over
 # the affine pubkey form, which makes this crate the owner of the SEC1→affine decompression
 # (the Circle ingress stays the 33-byte compressed pubkey; the on-chain staging is the 16

@@ -5,7 +5,9 @@
 
 use core::fmt;
 
-use miden_protocol::account::AccountType;
+use miden_protocol::errors::AccountError;
+use miden_standards::account::auth::NetworkAccountNoteAllowlistError;
+use miden_standards::account::faucets::FungibleFaucetError;
 use miden_standards::account::policies::{BurnPolicyError, MintPolicyError};
 
 use super::{ATTESTATION_MINT_POLICY_PROC_PATH, MIN_BURN_SIZE_FLOOR};
@@ -13,24 +15,23 @@ use super::{ATTESTATION_MINT_POLICY_PROC_PATH, MIN_BURN_SIZE_FLOOR};
 /// Errors returned while composing the xUSDC faucet account.
 #[derive(Debug)]
 pub enum XReserveStablecoinBuilderError {
-    /// The xUSDC faucet must be public (network-observable). A non-`Public` account type is rejected
-    /// at build time so packaging cannot produce an unobservable faucet.
-    NonPublicAccountType(AccountType),
-    /// The active mint policy does not resolve to the attestation mint policy, so packaging cannot
-    /// bypass the attestation gate every supply increase has to pass.
-    MissingAttestationMintPolicy,
-    /// The supplied faucet was not built with a mutable `max_supply`, so the stock `set_max_supply`
-    /// admin function would be permanently dead on the deployed faucet (every call traps the runtime
-    /// mutability gate). Rejected at build time so packaging cannot silently ship a faucet whose
-    /// `set_max_supply` is inoperable — build the faucet with `.is_max_supply_mutable(true)`.
-    ImmutableMaxSupply,
+    /// The fixed-identity USDCx [`FungibleFaucet`](miden_standards::account::faucets::FungibleFaucet)
+    /// could not be constructed from the supplied supply parameters (the crate-root
+    /// `build_faucet_account` path). Carries the stock faucet error.
+    FaucetComposition(FungibleFaucetError),
+    /// The production `AuthNetworkAccount` auth component could not be assembled from the note-script
+    /// allowlist (the crate-root `build_account` path). Carries the stock allowlist error.
+    NetworkAuth(NetworkAccountNoteAllowlistError),
+    /// The composed faucet [`Account`](miden_protocol::account::Account) could not be built from the
+    /// component set (the crate-root `build_account` path). Carries the stock account error.
+    AccountComposition(AccountError),
     /// The supplied `xreserve` component does not export the attestation mint policy procedure
     /// (assembly/path drift). Carries the expected path for diagnosis.
     AttestationPolicyProcNotFound,
     /// The active burn policy does not resolve to the stock
     /// `MinBurnAmount` — packaging cannot
-    /// ship a faucet whose burns bypass the floor predicate (the burn-side twin of
-    /// [`Self::MissingAttestationMintPolicy`]).
+    /// ship a faucet whose burns bypass the floor predicate (the burn-side twin of the hard-wired
+    /// attestation mint gate).
     MissingMinBurnAmountPolicy,
     /// The requested `min_burn_size` is below [`MIN_BURN_SIZE_FLOOR`]
     /// (= 1). The stock `MinBurnAmount` policy asserts only `min <= amount` and its stock setter
@@ -56,15 +57,6 @@ pub enum XReserveStablecoinBuilderError {
     /// ([`REQUIRED_XRESERVE_SLOT_LABELS`](super::REQUIRED_XRESERVE_SLOT_LABELS)); reads and writes
     /// of a missing slot trap at runtime. Carries the missing slot's label.
     MissingXReserveSlot(&'static str),
-    /// The supplied faucet's `decimals` is not [`USDCX_DECIMALS`](super::USDCX_DECIMALS) (= 6, a
-    /// Circle requirement). The amount reducer scales to 6dp, so a mismatched faucet silently
-    /// mis-scales every amount. Carries the offending value.
-    WrongDecimals(u8),
-    /// The supplied faucet's `TokenSymbol` is not the shipped
-    /// [`USDCX_TOKEN_SYMBOL`](super::USDCX_TOKEN_SYMBOL) guard constant. The token's identity is
-    /// USDCx, distinct from the "xUSDC" working label; the on-chain symbol is its uppercase form
-    /// `USDCX`.
-    WrongTokenSymbol,
     /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with a privileged
     /// identity — the administrator, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The
     /// transfer-blocklist administrator must be an external entity with no other faucet-admin
@@ -100,22 +92,16 @@ pub enum XReserveStablecoinBuilderError {
 impl fmt::Display for XReserveStablecoinBuilderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NonPublicAccountType(account_type) => {
-                write!(
-                    f,
-                    "xusdc faucet must be AccountType::Public, got {account_type:?}"
-                )
+            Self::FaucetComposition(_) => {
+                write!(f, "the fixed-identity USDCx faucet could not be constructed")
             }
-            Self::MissingAttestationMintPolicy => write!(
+            Self::NetworkAuth(_) => write!(
                 f,
-                "active mint policy is not the attestation mint policy; packaging cannot bypass \
-                 the attestation gate (INV-MINT-SECURITY)"
+                "the production network-account auth component could not be assembled"
             ),
-            Self::ImmutableMaxSupply => write!(
-                f,
-                "xusdc faucet must be built with a mutable max supply \
-                 (is_max_supply_mutable=true) so the deployed faucet's set_max_supply stays operable"
-            ),
+            Self::AccountComposition(_) => {
+                write!(f, "the composed faucet account could not be built")
+            }
             Self::AttestationPolicyProcNotFound => write!(
                 f,
                 "the xreserve component does not export the attestation mint policy procedure \
@@ -151,15 +137,6 @@ impl fmt::Display for XReserveStablecoinBuilderError {
             Self::MissingXReserveSlot(label) => write!(
                 f,
                 "the xreserve component does not declare the required storage slot '{label}'"
-            ),
-            Self::WrongDecimals(decimals) => write!(
-                f,
-                "xusdc faucet decimals must be 6 (CIR-FEE-3; the reducer scales to 6dp), got \
-                 {decimals}"
-            ),
-            Self::WrongTokenSymbol => write!(
-                f,
-                "xusdc faucet token symbol must be the shipped USDCX guard constant"
             ),
             Self::BlocklistManagerNotIsolated { collides_with } => write!(
                 f,
@@ -198,6 +175,9 @@ impl core::error::Error for XReserveStablecoinBuilderError {
         match self {
             Self::MintPolicy(source) => Some(source),
             Self::BurnPolicy(source) => Some(source),
+            Self::FaucetComposition(source) => Some(source),
+            Self::NetworkAuth(source) => Some(source),
+            Self::AccountComposition(source) => Some(source),
             _ => None,
         }
     }

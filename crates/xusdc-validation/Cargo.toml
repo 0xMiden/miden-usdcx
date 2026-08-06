@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 description = "Phase-4 §11.2 local-node validation harness (LNV): real-node lifecycle, drivers, and assertions for the xUSDC faucet"
 
-# LNV-1 dep ledger (VALIDATION-RECORD.md §2), UN-PARKED to the v16 family (P1b-a, 2026-07-21).
+# Protocol and client dependencies are pinned below.
 # The protocol trio comes from crates.io at `=0.16.0-alpha.4` — the SAME pin `xusdc-encoding` and
 # the rest of the workspace carry — and `miden-client` / `miden-client-sqlite-store` from crates.io
 # at `=0.16.0-alpha.1`, the first v16-alpha client release, which itself pins protocol

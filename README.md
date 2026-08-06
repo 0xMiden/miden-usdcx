@@ -18,7 +18,6 @@ plus the Rust encoding library and validation harness that support it.
 | `crates/xusdc-validation/` | Rust crate: the local-node validation harness that deploys the production faucet to a real Miden node and drives the mint/burn/admin acceptance matrix (rows `A`–`L`). |
 | `docs/spec/` | The specification: the faucet component spec, the shared-encoding spec, and the **identifier glossary**. |
 | `docs/governing/` | The pins, module-ownership map, MASM structure conventions, and toolchain grounding the code is built against. |
-| `canary/` | Executable grounding test crates for specific Miden primitives the faucet relies on. |
 
 ## How it works
 
@@ -88,7 +87,6 @@ suite. Everything below runs offline — the toolchain is pinned in `Cargo.lock`
 ```sh
 cargo build  --locked -p xusdc-encoding                       # compile the encoding crate (Rust; MASM is assembled by the test gate, not here)
 cargo test   --locked -p xusdc-encoding --release             # THE gate: assemble + EXECUTE the MASM, full suite
-cargo test   --locked -p xusdc-encoding --test masm_structure # MASM source-convention conformance
 cargo fmt    --all -- --check                                 # formatting
 cargo clippy --workspace --locked -- -D warnings              # lints
 ```

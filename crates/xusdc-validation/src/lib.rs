@@ -7,7 +7,7 @@
 //! assertion here is a surfaced production finding, not something to patch around.
 //!
 //! This slice (LNV-1) owns the harness foundation plus matrix rows A (deploy + recognize) and
-//! B (`identifier_init` init-once). Evidence + pins: `VALIDATION-RECORD.md` next to this crate.
+//! B (`identifier_init` init-once).
 //!
 //! ## Architecture
 //! - [`stack`] — lifecycle of the three-service local node stack at `miden-node v0.15.1`

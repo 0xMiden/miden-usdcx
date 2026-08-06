@@ -32,7 +32,7 @@ use withdrawal_listener_attester::types::BurnPayload;
 use withdrawal_listener_attester::validate::{
     sign_validated, validate_discovery, validate_returned, DiscoveredDetails, DiscoveryRecord,
 };
-use xusdc_encoding::xreserve::encoding::{account_id_to_felts, encode_burn_note_items};
+use xusdc_encoding::xreserve::encoding::encode_burn_note_items;
 
 #[path = "support/mod.rs"]
 mod support;
@@ -455,7 +455,8 @@ fn abort_is_idempotent_on_retry() {
 /// account id (the config's faucet id, reused as a valid, canonical id).
 fn public_record(tag: u32, payload: &BurnPayload) -> DiscoveryRecord {
     let items: Vec<Felt> = encode_burn_note_items(payload);
-    let [prefix, suffix] = account_id_to_felts(ListenerConfig::default().faucet_id());
+    let faucet_id = ListenerConfig::default().faucet_id();
+    let (prefix, suffix) = (faucet_id.prefix().as_felt(), faucet_id.suffix());
     DiscoveryRecord::new(
         tag,
         Some(DiscoveredDetails::from_raw_sender(items, prefix, suffix)),
@@ -519,7 +520,8 @@ fn discovery_rejects_a_prefix_only_tag_match() {
 /// codec's verdict, carried through unflattened.
 #[test]
 fn discovery_rejects_malformed_items() {
-    let [prefix, suffix] = account_id_to_felts(ListenerConfig::default().faucet_id());
+    let faucet_id = ListenerConfig::default().faucet_id();
+    let (prefix, suffix) = (faucet_id.prefix().as_felt(), faucet_id.suffix());
     // 17 felts, not the required 18.
     let items = vec![Felt::from(0u32); 17];
     let record = DiscoveryRecord::new(

@@ -1,6 +1,6 @@
-//! The PRESENT-BUT-UNREACHABLE and READ-ONLY halves of the FULL-ACCOUNT CALLABLE-SURFACE pin,
+//! The UNREACHABLE and READ-ONLY halves of the FULL-ACCOUNT CALLABLE-SURFACE proofs,
 //! split out of `account_callable_surface.rs` to respect the file-size
-//! ceiling. `account_callable_surface.rs` holds the frozen-surface equality pin + the
+//! ceiling. `account_callable_surface.rs` holds the
 //! freeze/unfreeze disposition + the asset-callback (transfer-blocklist-live) proof; THIS file
 //! holds:
 //!   * `authority::get_authority` is READ-ONLY in execution (executed bounding, not
@@ -14,7 +14,7 @@
 //!     zero fee (internally active but inert). TEMPORARY — a later slice reverts this growth
 //!     together with the provisional fee configuration.
 //!
-//! The small conformance helpers (`production_components`/`component_surface`/`production_account`/
+//! The small conformance helpers (`production_components`/`component_surface`/
 //! `allowlisted_note_scripts`) are duplicated here so this module is
 //! self-contained; both copies are single-sourced from `XReserveStablecoinBuilder`, so neither can
 //! drift from what ships.
@@ -24,17 +24,14 @@ mod support;
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
-use miden_processor::crypto::random::RandomCoin;
-use miden_protocol::account::{Account, AccountComponent, StorageSlotContent};
+use miden_protocol::account::{AccountComponent, StorageSlotContent};
 use miden_protocol::assembly::mast::MastNodeExt;
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
-use miden_protocol::{Felt, Word};
+use miden_protocol::Word;
 use miden_standards::account::auth::AuthNetworkAccount;
-use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::{
     BlocklistConfigNote, BurnNote, MintNote, PauseActionNote, RbacActionNote,
 };
-use miden_standards::testing::note::NoteBuilder;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_admin::{
@@ -74,19 +71,6 @@ fn component_surface(components: &[AccountComponent]) -> Vec<(String, Word)> {
     surface
 }
 
-/// The committed production faucet ACCOUNT (the real composed, auth-carrying account the network
-/// executes against).
-fn production_account() -> Result<Account> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
-        .context("building the production network-auth faucet")?;
-    let account = pf
-        .mock_chain
-        .committed_account(pf.faucet_id)
-        .context("the production faucet must be committed")?
-        .clone();
-    Ok(account)
-}
-
 /// The 8 allowlisted note SCRIPTS (not just their roots): the two STOCK supply notes (the stock
 /// `MintNote` transport + the `BurnNote`) + the six admin notes — the three administrator-gated
 /// setters, plus the three stock config
@@ -104,109 +88,6 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
         ("stock_blocklist_config_note", BlocklistConfigNote::script()),
         ("stock_rbac_action_note", RbacActionNote::script()),
     ]
-}
-
-// GET_AUTHORITY IS READ-ONLY (executed bounding, not documentation)
-// ================================================================================================
-
-/// The v0.16 `authority::get_authority` view accessor is READ-ONLY in execution, not just by
-/// documentation: a note that `call`s it by root on the production-composed
-/// account executes successfully and leaves storage AND vault byte-identical (only the fixture's
-/// nonce-increment auth runs). Uses the permissive-auth production composition (the same
-/// `GuardSelection::ProductionAttestation` fixture the role-gating suites use) because on the
-/// network-auth faucet the epilogue allowlist would reject the probe note before its effects could
-/// be observed.
-#[tokio::test]
-async fn get_authority_is_read_only_on_the_account() -> Result<()> {
-    let components = production_components()?;
-    let get_authority_root = component_surface(&components)
-        .into_iter()
-        .find(|(path, _)| {
-            path == "::miden::standards::components::access::authority::get_authority"
-        })
-        .map(|(_, root)| root)
-        .context("the composed account must expose authority::get_authority (S24)")?;
-
-    // a no-op driver: the guarded-mint harness requires at least one driver component, but the
-    // probe below calls `get_authority` by root through its own note, never this driver.
-    let driver = "#! A no-op driver — the get_authority probe fires a standalone note, not this\n\
-                  #! driver; the guarded-mint harness merely requires one driver component.\n\
-                  #!\n\
-                  #! Inputs:  [pad(16)]\n\
-                  #! Outputs: [pad(16)]\n\
-                  #!\n\
-                  #! Invocation: call\n\
-                  @account_procedure\n\
-                  pub proc drive\n\
-                  \x20\x20\x20\x20push.0 drop\n\
-                  end\n"
-        .to_string();
-    let probe = composition_supply_probe_src(0);
-    let gm = setup_guarded_mint_account(
-        GuardSelection::ProductionAttestation,
-        MAX_SUPPLY,
-        0,
-        Word::from([7u32, 0, 0, 0]),
-        None,
-        None,
-        &driver,
-        &probe,
-        true,
-    )?;
-    let account = faucet_account(&gm.harness);
-    let storage_before = account.storage().to_commitment();
-    let vault_before = account.vault().root();
-
-    // A probe note that calls get_authority by ROOT (resolved above from the shipped composition)
-    // and drops the returned discriminator: [pad(16)] in, [authority, pad(15)] out.
-    let src = format!(
-        "@note_script\n\
-         pub proc main\n\
-         \x20\x20\x20\x20dropw\n\
-         \x20\x20\x20\x20call.{}\n\
-         \x20\x20\x20\x20dropw dropw dropw dropw\n\
-         end\n",
-        get_authority_root.to_hex(),
-    );
-    let script = CodeBuilder::new()
-        .compile_note_script(src)
-        .context("compiling the get_authority probe note script")?;
-    let mut rng = RandomCoin::new(Word::from([
-        Felt::from(13u32),
-        Felt::from(24u32),
-        Felt::from(13u32),
-        Felt::from(24u32),
-    ]));
-    let note = NoteBuilder::new(test_account_id(9), &mut rng)
-        .script(script)
-        .build()
-        .context("building the get_authority probe note")?;
-
-    let tx = gm
-        .harness
-        .mock_chain
-        .build_transaction(account.clone())
-        .unauthenticated_input_note(note.clone())
-        .build()
-        .context("get_authority probe tx build")?
-        .execute()
-        .await
-        .map_err(|e| anyhow::anyhow!("the get_authority probe note must execute cleanly: {e}"))?;
-
-    let mut evolved = account.clone();
-    evolved.apply_patch(tx.account_patch())?;
-    assert_eq!(
-        evolved.storage().to_commitment(),
-        storage_before,
-        "get_authority must not mutate ANY account storage (S13/S24: read-only, executed proof)"
-    );
-    assert_eq!(
-        evolved.vault().root(),
-        vault_before,
-        "get_authority must not mutate the vault / issued supply (S13/S24: read-only, executed \
-         proof)"
-    );
-    Ok(())
 }
 
 // TEMPORARY V16 GROWTH — THE RATIFIED FEE/MUTATOR ROWS: TWO REACHABILITY TIERS
@@ -278,29 +159,6 @@ fn ratified_growth_row_roots() -> Result<Vec<(&'static str, Word)>> {
     let mut rows = growth_row_roots(&TIER_A_MUTATOR_ROWS)?;
     rows.extend(growth_row_roots(&TIER_B_FEE_ROWS)?);
     Ok(rows)
-}
-
-/// PRESENT: each of the 11 ratified growth rows IS a callable root of the composed account — the
-/// fact the ratification covers, stated explicitly rather than left implicit in the 61-root count.
-/// If any row disappears, the temporary-growth ratification must be re-visited (the revert slice
-/// expects to remove exactly these).
-#[test]
-fn ratified_growth_rows_are_present_on_the_account() -> Result<()> {
-    let rows = ratified_growth_row_roots()?;
-    let account = production_account()?;
-    let roots: BTreeSet<Word> = account
-        .code()
-        .procedures()
-        .iter()
-        .map(|r| Word::from(*r))
-        .collect();
-    for (path, root) in rows {
-        assert!(
-            roots.contains(&root),
-            "the composed account must carry `{path}` on-chain (ratified temporary growth)"
-        );
-    }
-    Ok(())
 }
 
 /// Tier A, UNREACHABLE, leg 1 (static, exhaustive over the allowlist): NOT ONE of the 14

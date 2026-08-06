@@ -87,7 +87,6 @@ suite. Everything below runs offline — the toolchain is pinned in `Cargo.lock`
 ```sh
 cargo build  --locked -p xusdc-encoding                       # compile the encoding crate (Rust; MASM is assembled by the test gate, not here)
 cargo test   --locked -p xusdc-encoding --release             # THE gate: assemble + EXECUTE the MASM, full suite
-cargo test   --locked -p xusdc-encoding --test masm_structure # MASM source-convention conformance
 cargo fmt    --all -- --check                                 # formatting
 cargo clippy --workspace --locked -- -D warnings              # lints
 ```

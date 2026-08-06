@@ -31,9 +31,7 @@
 //! **There is no advice map in any of this.** The attestation travels INSIDE the note, as a note
 //! attachment; the consuming transaction (the network's ntx-builder — the faucet is a keyless
 //! network account) rebuilds the advice map from those attachments. The relayer cannot reach that
-//! transaction's advice provider at all, so it does not try (see
-//! `relayer_has_no_advice_surface.rs` for the executable
-//! gate).
+//! transaction's advice provider at all, so it does not try.
 //!
 //! **What this suite does NOT prove:** that the faucet ACCEPTS the note. Only a real-node mint does
 //! (`REQUIRES IMPLEMENTATION VALIDATION`; the submit leg is parked until a v0.16 `miden-client`

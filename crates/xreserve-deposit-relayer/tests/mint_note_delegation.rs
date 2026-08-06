@@ -54,9 +54,8 @@ use xusdc_encoding::note::xreserve_mint::{
     XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
-    affine_pubkey_felts, bytes32_to_account_id, bytes32_to_packed_u32_limbs,
-    bytes32_to_storage_map_key, parse_deposit_intent_header, signature_felts,
-    uint256_to_asset_amount, DepositIntent, MintIntent,
+    bytes32_to_account_id, bytes32_to_packed_u32_limbs, bytes32_to_storage_map_key,
+    uint256_to_asset_amount, DepositIntent, MintIntent, PublicKey, Signature,
 };
 
 use mint_support::*;
@@ -90,7 +89,7 @@ fn t_delegation_is_byte_for_byte_unit04_create() {
     let unit04 = XUsdcMintNote::create(
         relayer_sender_id(),
         faucet_id(),
-        attestation.payload(),
+        attestation.deposit_intent().as_bytes(),
         &MintAttestation::new(attestation.attestation(), *attester.as_bytes()),
         &mut note_rng(0xC1_2C_1E),
     )
@@ -152,7 +151,7 @@ fn t_note_carries_exactly_the_two_attachments() {
     // the transport is word-granular: the attestation, and ⌈carried felts / 4⌉ words of mint
     // payload — every width computed by the shared encoding crate's OWNED codec and constants, not
     // a number restated here
-    let carried = carried_payload(attestation.payload());
+    let carried = carried_payload(attestation.deposit_intent().as_bytes());
     assert_eq!(
         usize::from(transport.content().num_words()),
         XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF + carried.to_felts().len().div_ceil(4),
@@ -248,8 +247,10 @@ fn t_storage_embeds_the_attested_output() {
 
     // the attested ingredients, re-derived through the shared encoding crate's OWNED codecs (by
     // reference)
-    let header =
-        parse_deposit_intent_header(attestation.payload()).expect("the canonical payload parses");
+    let header = attestation
+        .deposit_intent()
+        .parse_header()
+        .expect("the canonical payload parses");
     let recipient_id = bytes32_to_account_id(&header.remote_recipient)
         .expect("the canonical payload's remoteRecipient is a valid account id");
     let amount = uint256_to_asset_amount(
@@ -402,8 +403,10 @@ fn t_transport_carries_the_validated_signature_and_configured_pubkey() {
         .content()
         .to_elements();
 
-    let signature = signature_felts(&attestation.attestation());
-    let pubkey = affine_pubkey_felts(attester.as_bytes()).expect("the partner key is on the curve");
+    let signature = Signature::new(attestation.attestation()).to_felts();
+    let pubkey = PublicKey::new(*attester.as_bytes())
+        .to_affine_felts()
+        .expect("the partner key is on the curve");
 
     assert!(
         elements.windows(signature.len()).any(|w| w == signature),

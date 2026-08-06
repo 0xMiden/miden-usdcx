@@ -106,8 +106,8 @@ pub fn verify_message_hash_bytes(
 ///
 /// Returns the raw 65 bytes verbatim (`r` = `[..32]`, `s` = `[32..64]`, `v` = `[64]`), ready for
 /// the mint-note builder to hand to the faucet, which packs them into 17 u32-LE felts (the shared
-/// encoding crate's [`signature_felts`](xusdc_encoding::xreserve::encoding::signature_felts)) and
-/// verifies them on-chain.
+/// encoding crate's [`Signature::to_felts`](xusdc_encoding::xreserve::encoding::Signature::to_felts))
+/// and verifies them on-chain.
 ///
 /// SHAPE ONLY — this never verifies the signature, and never inspects `r`/`s`/`v` for
 /// well-formedness beyond the length (see the module docs: the relayer must not be able to withhold

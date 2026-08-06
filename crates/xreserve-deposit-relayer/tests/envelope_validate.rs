@@ -47,7 +47,7 @@ use xreserve_deposit_relayer::validate::envelope::{
     validate_attestation_envelope, verify_message_hash,
 };
 use xusdc_encoding::vectors::{load, AttVector};
-use xusdc_encoding::xreserve::encoding::pubkey_commitment;
+use xusdc_encoding::xreserve::encoding::PublicKey;
 
 /// The canonical attestation vectors — the independent oracle (see the module docs).
 fn att_vectors() -> &'static [AttVector] {
@@ -223,7 +223,11 @@ fn t_rly_20_partner_attester_identity_is_deterministic_and_canonically_keyed() {
     assert_eq!(pk[0] & 0xfe, 0x02, "compressed SEC1 prefix is 0x02 or 0x03");
     assert_eq!(
         attester.commitment(),
-        pubkey_commitment(&pk).expect("the deterministic partner key is a valid point"),
+        miden_protocol::Word::from(
+            PublicKey::new(pk)
+                .to_commitment()
+                .expect("the deterministic partner key is a valid point"),
+        ),
         "the allowlist key must be unit-04's owned Poseidon2 commitment (DC-3), never re-derived"
     );
     // a second construction yields the identical key (no hidden RNG state / time dependence)

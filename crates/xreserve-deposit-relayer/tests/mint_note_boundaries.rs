@@ -153,7 +153,7 @@ fn t_the_reject_payloads_pass_the_envelope_boundary(#[case] vector_id: &str) {
     let attestation = validated_over(&payload);
 
     assert_eq!(
-        attestation.payload(),
+        attestation.deposit_intent().as_bytes(),
         payload.as_slice(),
         "the validated boundary carries the payload verbatim — the builder's input really is this"
     );

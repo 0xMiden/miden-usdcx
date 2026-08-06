@@ -6,7 +6,7 @@
 //! The `(amount, destDomain, destRecipient, salt)` felt layout — `amount` at `[0]`, `destDomain` at
 //! `[1]`, `destRecipient` at `[2..10]`, `salt` at `[10..18]`, `BURN_NOTE_ITEMS_FELTS = 18` — is
 //! the burn-note payload codec, and that codec is OWNED by `xusdc-encoding`
-//! ([`decode_burn_note_items`]). This module calls it; it re-derives no offset,
+//! ([`XReserveBurnItems::decode`]). This module calls it; it re-derives no offset,
 //! packs no felt, and reads no byte. The layout appears nowhere below, deliberately: the burn note
 //! is written on-chain against that codec and read here, and a second implementation of it — even a
 //! correct one — is a place where the two can drift, and the units it would drift in are dollars.
@@ -36,7 +36,7 @@
 use miden_protocol::account::AccountId;
 use miden_protocol::note::NoteMetadata;
 use miden_protocol::Felt;
-use xusdc_encoding::xreserve::encoding::decode_burn_note_items;
+use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
 
 use crate::error::{Cause, DecodeError};
 use crate::types::BurnPayload;
@@ -93,7 +93,7 @@ impl BurnNoteMetadata {
 /// Decodes a burn note's `NoteStorage.items` into Circle's documented [`BurnPayload`]
 /// `(amount, dest_domain, dest_recipient, salt)`.
 ///
-/// The decode IS the shared encoding crate's [`decode_burn_note_items`] (single-owner);
+/// The decode IS the shared encoding crate's [`XReserveBurnItems::decode`] (single-owner);
 /// [`BurnPayload`] is that codec's `XReserveBurnItems`, so the mapping is the identity and there is
 /// no field to get wrong here. The only thing this wrapper adds is the crate-level refusal, and it
 /// adds it without losing anything: the codec's own
@@ -106,7 +106,7 @@ impl BurnNoteMetadata {
 /// count other than 18, an out-of-range `amount` or `destDomain`, or a non-`u32` bytes32 limb. No
 /// partial payload is ever surfaced.
 pub fn decode_burn_payload(items: &[Felt]) -> Result<BurnPayload, DecodeError> {
-    decode_burn_note_items(items).map_err(|source| DecodeError::BurnItemsMalformed { source })
+    XReserveBurnItems::decode(items).map_err(|source| DecodeError::BurnItemsMalformed { source })
 }
 
 /// Reads `metadata.sender` — the account that created the burn note, i.e. the Miden burner.

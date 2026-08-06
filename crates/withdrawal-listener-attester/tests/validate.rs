@@ -32,7 +32,6 @@ use withdrawal_listener_attester::types::BurnPayload;
 use withdrawal_listener_attester::validate::{
     sign_validated, validate_discovery, validate_returned, DiscoveredDetails, DiscoveryRecord,
 };
-use xusdc_encoding::xreserve::encoding::encode_burn_note_items;
 
 #[path = "support/mod.rs"]
 mod support;
@@ -454,7 +453,7 @@ fn abort_is_idempotent_on_retry() {
 /// Builds a public discovery record whose items decode to `payload` and whose sender is a genuine
 /// account id (the config's faucet id, reused as a valid, canonical id).
 fn public_record(tag: u32, payload: &BurnPayload) -> DiscoveryRecord {
-    let items: Vec<Felt> = encode_burn_note_items(payload);
+    let items: Vec<Felt> = payload.encode();
     let faucet_id = ListenerConfig::default().faucet_id();
     let (prefix, suffix) = (faucet_id.prefix().as_felt(), faucet_id.suffix());
     DiscoveryRecord::new(
@@ -540,7 +539,7 @@ fn discovery_rejects_malformed_items() {
 /// (the sender is the exposed depositor; a zero there would attribute the burn to nobody).
 #[test]
 fn discovery_rejects_a_zero_sender() {
-    let items = encode_burn_note_items(&matching_payload());
+    let items = matching_payload().encode();
     let record = DiscoveryRecord::new(
         cfg().burn_tag(),
         Some(DiscoveredDetails::from_raw_sender(

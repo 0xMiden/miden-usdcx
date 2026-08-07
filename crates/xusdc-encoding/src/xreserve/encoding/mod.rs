@@ -8,6 +8,7 @@ mod burn_note;
 mod bytes32;
 mod deposit_intent;
 mod error;
+mod mint_intent;
 
 pub use account_id::*;
 pub use amount::*;
@@ -16,3 +17,4 @@ pub use burn_note::*;
 pub use bytes32::*;
 pub use deposit_intent::*;
 pub use error::*;
+pub use mint_intent::*;

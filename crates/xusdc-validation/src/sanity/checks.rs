@@ -19,7 +19,7 @@ use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
 
 use crate::actors::AttesterKey;
-use crate::mintburn::{mint_payload_opt, nonce_key, MintDomainConfig};
+use crate::mintburn::{mint_payload_opt, nonce_key, MintDomainConfig, MINT_DOMAIN};
 use crate::observations_cf::Verdict;
 
 use super::driver::{
@@ -61,7 +61,7 @@ pub(crate) fn mint_note_for(
     // maxFee = 0 (R-MINT-10: maxFee ≤ amount trivially holds); scale-0 ⇒ raw amount == minted units.
     let payload = mint_payload_opt(config.as_ref(), recipient, amount_units, 0, nonce_salt);
     let attestation = attester.attestation_for(&payload);
-    let note = XUsdcMintNote::create(sender, faucet_id, &payload, &attestation, rng)
+    let note = XUsdcMintNote::create(sender, faucet_id, MINT_DOMAIN, &payload, &attestation, rng)
         .context("building a production mint note")?;
     Ok((note, payload))
 }
@@ -82,7 +82,7 @@ fn mint_note_forged_sig(
     // (a wrong domain would reject earlier at structural validation, hiding the signature negative under WRONG_DOMAIN).
     let payload = mint_payload_opt(config.as_ref(), recipient, amount_units, 0, nonce_salt);
     let forged: MintAttestation = attester.attestation_over_digest([0xEE; 32]);
-    XUsdcMintNote::create(sender, faucet_id, &payload, &forged, rng)
+    XUsdcMintNote::create(sender, faucet_id, MINT_DOMAIN, &payload, &forged, rng)
         .context("building a forged-signature mint note")
 }
 

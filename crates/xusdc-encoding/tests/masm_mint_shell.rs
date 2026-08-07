@@ -42,29 +42,18 @@ use miden_protocol::{Felt, Word};
 use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::*;
-use xusdc_encoding::vectors::{load, AmtVector, DiVector};
+use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
-    bytes32_to_storage_map_key, uint256_to_asset_amount, DEPOSIT_INTENT_HEADER_FELTS,
+    deposit_intent_to_packed_felts, MintIntent, DEPOSIT_INTENT_HEADER_FELTS,
+    MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF, MINT_INTENT_LOCAL_TOKEN_FELT_OFF,
+    MINT_INTENT_NONCE_FELT_OFF,
 };
 
-/// Looks up a canonical DepositIntent vector by id (by-reference loading).
-fn di(id: &str) -> &'static DiVector {
-    load()
-        .families
-        .di
-        .iter()
-        .find(|v| v.id == id)
-        .unwrap_or_else(|| panic!("canonical artifact is missing di vector {id}"))
-}
-
-/// A placeholder identifier for the shell fixture's config slot.
-///
 /// The faucet's domain configuration word: the remote domain id in element 0, zeros elsewhere.
 ///
-/// There is no identifier counterpart any more. The faucet derives the identifier it compares
-/// `remoteToken` against from its own account id, so the only way to make a vector intent pass the
-/// compare is to bind its `remoteToken` to the executing account — which is what
-/// `validate_driver_src_own_token` does.
+/// There is no identifier counterpart, and under DC-14 there is no domain compare either — the
+/// faucet WRITES both into the preimage it rebuilds. The slot still has to hold the right value,
+/// because that is what the writer stamps.
 fn domain_word(domain: u32) -> Word {
     Word::new([
         Felt::from(domain),
@@ -72,266 +61,6 @@ fn domain_word(domain: u32) -> Word {
         miden_protocol::ZERO,
         miden_protocol::ZERO,
     ])
-}
-
-/// The hash-committed word count a staged preimage of `num_felts` felts carries.
-fn intent_num_words(num_felts: u64) -> u64 {
-    num_felts.div_ceil(4)
-}
-
-/// Splices a coherent `amount`/`maxFee` pair into a vector preimage and returns it with the
-/// matching amount witness.
-///
-/// The canonical vectors carry a `maxFee` above their `amount`, so a case that must run past the
-/// amount stage takes its money fields from the shared `amt-*` vectors instead — the same splice
-/// the amount validation cases use. The witness is the Rust mirror's quotient, so the on-chain verifier proves
-/// the value the mint-note factory would carry.
-fn with_acceptable_money_fields(base: &[Felt]) -> (Vec<Felt>, u64) {
-    let amount_limbs = amt("amt-ge-gt").le_limbs();
-    let preimage = splice_amounts(base, amount_limbs, amt("amt-ge-gt").b_le_limbs());
-    let amount_y = uint256_to_asset_amount(amount_limbs, D5B_SCALE_EXP)
-        .map(u64::from)
-        .expect("the accept amount vector must reduce");
-    (preimage, amount_y)
-}
-
-// HAPPY PATH FIRST — matching config x both canonical accept vectors
-// ================================================================================================
-
-#[rstest]
-#[case::hookdata("di-pos-hookdata")]
-#[case::empty_hookdata("di-pos-empty-hookdata")]
-#[tokio::test]
-async fn happy_path_mint_preconditions(#[case] vector_id: &str) -> Result<()> {
-    let v = di(vector_id);
-    let f = v.fields.as_ref().expect("accept vector carries fields");
-    let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
-    let expected_num_bytes = (DEPOSIT_INTENT_HEADER_FELTS as u32) * 4 + f.hook_data_len;
-    let driver_src = validate_driver_src_own_token(
-        &preimage,
-        intent_num_words(v.len_felts),
-        &fee_amount_felts([0u32; 8]),
-        amount_y,
-        Some(expected_num_bytes),
-    );
-    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
-    // the account exists now, so the Rust encoder can produce the bound remoteToken for ITS id
-    let advice = own_token_advice(h.account_id);
-    let executed = run_call_driver_with_advice(&h, "drive", Some(advice))
-        .await
-        .unwrap_or_else(|e| {
-            panic!("vector {vector_id}: the shell must accept a matching DepositIntent: {e}")
-        });
-    // the shell is read-only: the only account mutation is the auth nonce increment
-    assert_eq!(
-        (executed.final_account().nonce() - executed.initial_account().nonce()),
-        miden_protocol::ONE,
-        "auth must increment the nonce exactly once"
-    );
-    assert!(
-        executed.account_patch().storage().is_empty(),
-        "the shell must not write account storage"
-    );
-    Ok(())
-}
-
-// DEPOSIT-INTENT REJECTS (parametrized; every case pins the EXACT expected error)
-// ================================================================================================
-// The first five rows feed a reject vector against MATCHING configuration, so the shared
-// encoding parser's own trap is the only thing that can fire and the case proves which
-// `ERR_DI_*` reaches the caller. The last two rows do the opposite: they feed an ACCEPT vector
-// into a faucet it is mis-addressed for, so the only remaining candidate is the faucet's own
-// compare. They are kept apart on purpose — the wrong-domain row is the only one whose domain is
-// wrong, and the identifier row keeps the domain matching, so neither assert can mask the other.
-// Note the identifier leg needs no configuration lever any more: NO account is addressed by the
-// vector's own remoteToken, so simply not splicing the executing account's id is enough.
-//
-// The identifier row here covers the SHAPE reject only. `remoteToken` is read through the bytes32
-// account-id decode, and the vector's token is opaque bytes with a non-zero leading pad, so it is
-// refused as un-decodable before any identity compare runs. The identity reject — a well-formed
-// packaging carrying somebody else's account id — is its own test below, because it is the only
-// one that can reach `ERR_XRESERVE_WRONG_IDENTIFIER`.
-
-#[rstest]
-#[case::r_mint_1_bad_magic("di-rej-bad-magic", TEST_DOMAIN, "ERR_DI_BAD_MAGIC")]
-#[case::r_mint_2_bad_version("di-rej-bad-version", TEST_DOMAIN, "ERR_DI_BAD_VERSION")]
-#[case::r_mint_3_zero_amount("di-rej-zero-amount", TEST_DOMAIN, "ERR_DI_ZERO_FIELD")]
-#[case::r_mint_4_zero_local_token("di-rej-zero-local-token", TEST_DOMAIN, "ERR_DI_ZERO_FIELD")]
-#[case::r_mint_5_zero_local_depositor(
-    "di-rej-zero-local-depositor",
-    TEST_DOMAIN,
-    "ERR_DI_ZERO_FIELD"
-)]
-#[case::r_mint_6_wrong_domain("di-pos-hookdata", TEST_WRONG_DOMAIN, "ERR_XRESERVE_WRONG_DOMAIN")]
-#[case::r_mint_7_unpackaged_identifier(
-    "di-pos-hookdata",
-    TEST_DOMAIN,
-    "ERR_BYTES32_PADDING_NONZERO"
-)]
-#[tokio::test]
-async fn r_mint_rejects(
-    #[case] vector_id: &str,
-    #[case] domain: u32,
-    #[case] expected_err: &str,
-) -> Result<()> {
-    let v = di(vector_id);
-    let num_felts = v.staging_len_felts.unwrap_or(v.len_felts);
-    // the money fields are irrelevant here: every row traps in the stage before the amount one.
-    // no own-token splice either — the vector's own remoteToken belongs to no account, which is
-    // exactly what the identifier row needs and what the earlier rows trap before reaching
-    let driver_src = validate_driver_src(
-        &v.preimage_values(),
-        intent_num_words(num_felts),
-        &fee_amount_felts([0u32; 8]),
-        0,
-        None,
-    );
-    let h = setup_shell_account(domain_word(domain), &driver_src, SHELL_DRIVER_PATH)?;
-    let result = run_call_driver(&h, "drive").await;
-    assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
-    Ok(())
-}
-
-/// An intent whose `remoteToken` is a perfectly well-formed packaged account id — just somebody
-/// else's — is rejected with `ERR_XRESERVE_WRONG_IDENTIFIER`.
-///
-/// This is the reject the faucet identifier exists for, and the only input that can reach that
-/// error: everything malformed is refused earlier, by the decode. The foreign id is the canonical
-/// vector's own `remoteRecipient`, which is a real account-id packaging (zero pad, structurally
-/// valid halves) and belongs to no faucet in this test.
-#[tokio::test]
-async fn a_foreign_faucet_identifier_rejects() -> Result<()> {
-    let v = di("di-pos-hookdata");
-    let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
-    let driver_src = validate_driver_src_own_token(
-        &preimage,
-        intent_num_words(v.len_felts),
-        &fee_amount_felts([0u32; 8]),
-        amount_y,
-        None,
-    );
-    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
-    let foreign = v
-        .fields
-        .as_ref()
-        .expect("the accept vector carries fields")
-        .bytes32("remote_recipient");
-    assert_ne!(
-        foreign,
-        xusdc_encoding::xreserve::encoding::account_id_to_bytes32(h.account_id),
-        "the foreign identifier must genuinely differ from the shell account's own encoding"
-    );
-    let advice = xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts(&foreign).to_vec();
-    let result = run_call_driver_with_advice(&h, "drive", Some(advice)).await;
-    assert_transaction_executor_error!(
-        result,
-        shell_error_by_name("ERR_XRESERVE_WRONG_IDENTIFIER")
-    );
-    Ok(())
-}
-
-/// An intent whose `remoteToken` carries the faucet's OWN account id but a non-zero sixteen-byte
-/// pad is still rejected.
-///
-/// This is the one input a compare over the account-id felts alone would wave through. The pad is
-/// covered because the decode asserts it, in two halves — limb 0 (wire bytes 0..4) and limb 3
-/// (wire bytes 12..16) are checked by different standards procedures — so both get a case here.
-#[rstest]
-#[case::leading_twelve(0, "ERR_BYTES32_PADDING_NONZERO")]
-#[case::bytes_twelve_to_sixteen(3, "ERR_MSB_NONZERO")]
-#[tokio::test]
-async fn a_dirty_remote_token_pad_rejects(
-    #[case] dirty_limb: usize,
-    #[case] expected_err: &str,
-) -> Result<()> {
-    let v = di("di-pos-hookdata");
-    let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
-    let driver_src = validate_driver_src_own_token(
-        &preimage,
-        intent_num_words(v.len_felts),
-        &fee_amount_felts([0u32; 8]),
-        amount_y,
-        None,
-    );
-    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
-    let mut advice = own_token_advice(h.account_id);
-    // limbs 0..4 are wire bytes 0..16 — the pad the frozen packaging fixes at zero
-    assert_eq!(
-        &advice[0..4],
-        &[miden_protocol::ZERO; 4],
-        "the frozen packaging pads wire bytes 0..16 with zeros"
-    );
-    advice[dirty_limb] = miden_protocol::ONE;
-    let result = run_call_driver_with_advice(&h, "drive", Some(advice)).await;
-    assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
-    Ok(())
-}
-
-// TRANSPORT-SHAPE REJECTS — the staged attachment's shape and its embedded length claim
-// ================================================================================================
-// These run before any field is parsed, because every field offset is only meaningful once the
-// staged region is known to cover the header and to be exactly as long as it claims. The caller
-// supplies the hash-committed word count; the preimage carries its own `hookDataLen`, and the two
-// must agree.
-
-#[rstest]
-// the committed word count is one word short of the parsed length, so part of the header was
-// never staged
-#[case::too_short("di-pos-empty-hookdata", 14, "ERR_XRESERVE_MINT_NOTE_INTENT_WORDS")]
-// the committed word count disagrees with the length the embedded hookDataLen implies (the
-// hookdata vector is 63 felts = 16 words, claimed here as 15)
-#[case::word_count_mismatch("di-pos-hookdata", 15, "ERR_XRESERVE_MINT_NOTE_INTENT_WORDS")]
-#[tokio::test]
-async fn transport_shape_rejects(
-    #[case] vector_id: &str,
-    #[case] claimed_num_words: u64,
-    #[case] expected_err: &str,
-) -> Result<()> {
-    let v = di(vector_id);
-    let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
-    // no own-token splice: these rows trap in `parse`, before the identifier compare runs
-    let driver_src = validate_driver_src(
-        &preimage,
-        claimed_num_words,
-        &fee_amount_felts([0u32; 8]),
-        amount_y,
-        None,
-    );
-    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
-    let result = run_call_driver(&h, "drive").await;
-    assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
-    Ok(())
-}
-
-/// A staged `hookDataLen` limb that is not a valid u32 must ERROR before the byte-swap reads it.
-///
-/// `u32assert` surfaces as `OperationError::U32AssertionFailed` (not `FailedAssertion`), so the
-/// named error is pinned on that variant's code AND message.
-#[tokio::test]
-async fn transport_malformed_hook_data_len_limb() -> Result<()> {
-    let v = di("di-pos-empty-hookdata");
-    let (mut preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
-    // a felt at 2^32 is a valid field element but NOT a valid u32 limb
-    preimage[HOOK_DATA_LEN_FELT_OFF] =
-        Felt::try_from(1u64 << 32).expect("2^32 is within the field");
-    let driver_src = validate_driver_src(
-        &preimage,
-        intent_num_words(v.len_felts),
-        &fee_amount_felts([0u32; 8]),
-        amount_y,
-        None,
-    );
-    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
-    let result = run_call_driver(&h, "drive").await;
-    let expected = shell_error_by_name("ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB");
-    assert_transaction_executor_error!(
-        result,
-        matches ExecutionError::OperationError {
-            err: OperationError::U32AssertionFailed { ref err_code, ref err_msg, .. },
-            ..
-        } if *err_code == expected.code() && err_msg.as_deref() == Some(expected.message())
-    );
-    Ok(())
 }
 
 // PROBES — harness mechanics, not faucet behavior
@@ -342,7 +71,7 @@ async fn transport_malformed_hook_data_len_limb() -> Result<()> {
 // Keeping them separate means an assembler or naming regression fails as itself rather than
 // masquerading as a mint-policy reject.
 
-/// The assembled library exports `validate` under its fully-qualified path.
+/// The assembled library exports the nonce guard under its fully-qualified path.
 ///
 /// The drivers in this file invoke it by that exact path, and so does the faucet component, so a
 /// module move or rename would silently break both. Comparing against the assembler's own export
@@ -356,7 +85,7 @@ fn probe_shell_exports() -> Result<()> {
         .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
-    let canonical = "::xreserve::deposit_intent_parser::validate";
+    let canonical = "::xreserve::mint_intent::hashed_nonce";
     assert!(
         exports.iter().any(|e| e == canonical),
         "canonical shell proc path {canonical} missing; exports: {exports:?}"
@@ -382,212 +111,46 @@ async fn probe_slot_binding() -> Result<()> {
     Ok(())
 }
 
-// D5B — AMOUNT / MAXFEE / FEEAMOUNT PRECONDITIONS
-// ================================================================================================
-// Executes the faucet-owned amount and fee stage of `xreserve::deposit_intent_parser::validate`
-// on a MockChain. Each case splices a chosen `amount` and `maxFee` into an otherwise-valid
-// DepositIntent preimage, taking the uint256 limb patterns from the shared `amt-*` golden
-// vectors (read at the proc's own scale-0 identity, so a vector's raw wire value IS its
-// reduced value); the driver passes the mirror-computed amount witness. `feeAmount` does not
-// travel in the intent: the caller stages its limbs in memory and passes the pointer.
-
-/// The scale the witness is computed at.
-const D5B_SCALE_EXP: u32 = 0;
-
-/// Looks up a canonical amount vector by id (by-reference loading).
-fn amt(id: &str) -> &'static AmtVector {
-    load()
-        .families
-        .amt
-        .iter()
-        .find(|v| v.id == id)
-        .unwrap_or_else(|| panic!("canonical artifact is missing amt vector {id}"))
-}
-
-/// Builds an amount-validation harness over a base accept preimage with `amount`/`maxFee` spliced
-/// from the given limbs. The shell does not read config slots, but the component still binds the
-/// domain slot.
-///
-/// The driver's amount witness is the Rust mirror's quotient (the value the mint-note factory
-/// would carry); an unreducible amount pushes a zero witness — the verifier traps on the x
-/// bound before consuming y.
-fn amount_validation_harness(
-    amount_limbs: [u32; 8],
-    maxfee_limbs: [u32; 8],
-    fee_amount: &[Felt],
-) -> Result<ShellHarness> {
-    let v = di("di-pos-empty-hookdata");
-    let preimage = splice_amounts(&v.preimage_values(), amount_limbs, maxfee_limbs);
-    let amount_y = uint256_to_asset_amount(amount_limbs, D5B_SCALE_EXP)
-        .map(u64::from)
-        .unwrap_or(0);
-    // `validate` is one entry, so a D5b case only reaches the amount stage if the identifier
-    // compare passes first — hence the own-token splice
-    let driver_src = validate_driver_src_own_token(
-        &preimage,
-        intent_num_words(v.len_felts),
-        fee_amount,
-        amount_y,
-        None,
-    );
-    setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)
-}
-
-// HAPPY PATH FIRST
-// ------------------------------------------------------------------------------------------------
-
-#[rstest]
-// feeAmount == 0 (MVP default) accepted; amount (amt-ge-gt.a) > maxFee (amt-ge-gt.b)
-#[case::fee_zero(amt("amt-ge-gt").le_limbs(), amt("amt-ge-gt").b_le_limbs(), fee_amount_felts([0u32; 8]))]
-// boundary: amount exactly equal to maxFee is accepted — the reject fires below maxFee, not at it
-#[case::amount_eq_maxfee(amt("amt-ge-eq").le_limbs(), amt("amt-ge-eq").b_le_limbs(), fee_amount_felts([0u32; 8]))]
-// value at AssetAmount::MAX accepted at the cap; amount (cap) >= maxFee (amt-pos-1)
-#[case::cap_value(amt("amt-cap-accept-scale0").le_limbs(), amt("amt-pos-1").le_limbs(), fee_amount_felts([0u32; 8]))]
-#[tokio::test]
-async fn amount_and_fee_validation_accepts(
-    #[case] amount_limbs: [u32; 8],
-    #[case] maxfee_limbs: [u32; 8],
-    #[case] fee_amount: Vec<Felt>,
-) -> Result<()> {
-    let h = amount_validation_harness(amount_limbs, maxfee_limbs, &fee_amount)?;
-    let advice = own_token_advice(h.account_id);
-    let executed = run_call_driver_with_advice(&h, "drive", Some(advice))
-        .await
-        .unwrap_or_else(|e| {
-            panic!("amount validation must accept these reduced amount/fee values: {e}")
-        });
-    // the shell is read-only: the only account mutation is the auth nonce increment
-    assert_eq!(
-        (executed.final_account().nonce() - executed.initial_account().nonce()),
-        miden_protocol::ONE,
-        "auth must increment the nonce exactly once"
-    );
-    assert!(
-        executed.account_patch().storage().is_empty(),
-        "the amount validation shell must not write account storage"
-    );
-    Ok(())
-}
-
-// REJECTS — every case pins the EXACT error symbol, never a bare `is_err()`
-// ------------------------------------------------------------------------------------------------
-// Two distinct failure kinds are covered here. A value too large to convert traps its staging
-// guard (the amount inside the standards verifier, maxFee/fee in the parser's own staging); a
-// value that converts fine but breaks a relation the faucet requires traps with one of the
-// faucet's own `ERR_XRESERVE_*` symbols. Both arrive as MASM assertion failures, so one
-// `assert_transaction_executor_error!` shape covers the family.
-
-#[rstest]
-// too large: the AMOUNT exceeds 2^128; the amount goes through the standards verifier, so
-// the trap is its own x bound (distinct from the shell's maxFee/fee ERR_X_TOO_LARGE below)
-#[case::r_mint_9_amount_overflow(amt("amt-rej-limb-overflow").le_limbs(), amt("amt-pos-1").le_limbs(), fee_amount_felts([0u32; 8]), "STD_ERR_X_TOO_LARGE")]
-// same overflow on MAXFEE — ordered so the amount reduces cleanly first and the trap is maxFee's
-#[case::r_mint_9_maxfee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-rej-limb-overflow").le_limbs(), fee_amount_felts([0u32; 8]), "ERR_X_TOO_LARGE")]
-// an oversized FEEAMOUNT needs no staging guard: it is nonzero, and the verbatim-zero fee
-// gate refuses every nonzero wire fee alike
-#[case::r_mint_9_fee_overflow(amt("amt-pos-2").le_limbs(), amt("amt-pos-1").le_limbs(), fee_amount_felts(amt("amt-rej-limb-overflow").le_limbs()), "ERR_XRESERVE_FEE_NONZERO")]
-// relation broken: the reduced amount is strictly below maxFee, so the mint could not cover its fee
-#[case::r_mint_10_amount_below_fee(amt("amt-ge-lt").le_limbs(), amt("amt-ge-lt").b_le_limbs(), fee_amount_felts([0u32; 8]), "ERR_XRESERVE_AMOUNT_BELOW_FEE")]
-// amount >= maxFee passes, then a NONZERO feeAmount is rejected: the faucet pays no relayer fee,
-// so any nonzero fee is refused regardless of how it compares to maxFee
-#[case::r_mint_11_fee_over_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-lt").le_limbs(), fee_amount_felts(amt("amt-ge-lt").b_le_limbs()), "ERR_XRESERVE_FEE_NONZERO")]
-// the same refusal at the tightest point: a feeAmount that exactly equals maxFee is still nonzero,
-// so it is still rejected — the gate is "zero", not "within maxFee"
-#[case::fee_eq_maxfee(amt("amt-pos-2").le_limbs(), amt("amt-ge-eq").le_limbs(), fee_amount_felts(amt("amt-ge-eq").le_limbs()), "ERR_XRESERVE_FEE_NONZERO")]
-#[tokio::test]
-async fn amount_and_fee_validation_rejects(
-    #[case] amount_limbs: [u32; 8],
-    #[case] maxfee_limbs: [u32; 8],
-    #[case] fee_amount: Vec<Felt>,
-    #[case] expected_err: &str,
-) -> Result<()> {
-    let h = amount_validation_harness(amount_limbs, maxfee_limbs, &fee_amount)?;
-    let advice = own_token_advice(h.account_id);
-    let result = run_call_driver_with_advice(&h, "drive", Some(advice)).await;
-    assert_transaction_executor_error!(result, shell_error_by_name(expected_err));
-    Ok(())
-}
-
-// REJECTS — a malformed staged feeAmount limb
-// ------------------------------------------------------------------------------------------------
-
-/// A malformed (non-u32) `feeAmount` limb must ERROR: the verbatim-zero fee gate needs no u32
-/// guard — a malformed limb is nonzero, so it rejects with the same
-/// `ERR_XRESERVE_FEE_NONZERO` as any other nonzero fee claim.
-#[tokio::test]
-async fn malformed_fee_limb_rejects() -> Result<()> {
-    // a felt at 2^32 is a valid field element but NOT a valid u32 limb
-    let malformed = vec![Felt::try_from(1u64 << 32).expect("2^32 is within the field"); 8];
-    let h = amount_validation_harness(
-        amt("amt-ge-gt").le_limbs(),
-        amt("amt-ge-gt").b_le_limbs(),
-        &malformed,
-    )?;
-    let advice = own_token_advice(h.account_id);
-    let result = run_call_driver_with_advice(&h, "drive", Some(advice)).await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_FEE_NONZERO"));
-    Ok(())
-}
-
 // D5C — NONCE REPLAY GUARD
 // ================================================================================================
-// Executes the faucet-owned nonce stage of `xreserve::deposit_intent_parser::validate` on a
-// MockChain. The guard hashes the intent's 32-byte nonce (felts 51..58 of the parsed preimage)
-// into a storage-map key with the shared `bytes32_to_key`, reads `usedNonces[key]` from account
-// storage, and requires it to still be the empty Word; anything else means this deposit has
-// already been minted and it traps. The guard only READS — writing the spent marker belongs to
-// the mint tail, so the tests here also assert that no storage was written.
+// Executes `xreserve::mint_intent::assert_nonce_unused` on a MockChain. The guard reads
+// `usedNonces[key]` from account storage and requires it to still be the empty Word; anything else
+// means this deposit has already been minted and it traps. It only READS — writing the spent
+// marker belongs to the mint tail, so the tests here also assert that no storage was written.
+//
+// The key arrives already derived, because the policy needs the same Word twice: once to key the
+// registry and once as the attested output note's serial. Deriving it there rather than here is
+// what lets this guard be three instructions.
 
 /// A stand-in "this nonce is spent" marker used to seed `usedNonces`. Any non-empty Word does:
 /// the guard's whole test is empty vs non-empty, and the value the mint tail actually writes is
 /// not what this section exercises.
 const NONCE_MARKER: [u32; 4] = [1, 0, 0, 0];
 
-/// Computes the `usedNonces` map key a vector's nonce should land on.
-///
-/// It runs the Rust half of the shared bytes32→Word codec, so the expected key is derived the
-/// same way the MASM guard derives it rather than being pinned by hand; the cross-language
-/// parity test in `masm_dual.rs` is what guarantees the two halves agree.
-fn nonce_key(vector_id: &str) -> Word {
-    let f = di(vector_id)
-        .fields
-        .as_ref()
-        .expect("accept vector carries fields");
-    Word::from(bytes32_to_storage_map_key(&f.bytes32("nonce")))
+/// The `usedNonces` key a carried payload's nonce lands on, through the Rust half of the shared
+/// bytes32→Word codec — the same derivation the policy performs, rather than a hand-pinned Word.
+fn nonce_key(vector_id: &str) -> Result<Word> {
+    let carried = MintIntent::from_felts(&mi(vector_id).carried_values())?;
+    Ok(Word::from(carried.nonce().to_storage_map_key()))
 }
 
 // HAPPY PATH FIRST — an unused nonce (empty map) passes the guard
 // ------------------------------------------------------------------------------------------------
 
 #[rstest]
-#[case::hookdata("di-pos-hookdata")]
-#[case::empty_hookdata("di-pos-empty-hookdata")]
+#[case::empty_hookdata("mi-pos-empty-hookdata")]
+#[case::hookdata("mi-pos-hookdata")]
 #[tokio::test]
 async fn unused_nonce_passes_replay_protection(#[case] vector_id: &str) -> Result<()> {
-    let v = di(vector_id);
-    let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
-    // `validate` is one entry, so the nonce stage is only reached once the identifier compare
-    // passes — hence the own-token splice
-    let driver_src = validate_driver_src_own_token(
-        &preimage,
-        intent_num_words(v.len_felts),
-        &fee_amount_felts([0u32; 8]),
-        amount_y,
-        None,
-    );
-    // empty usedNonces map -> usedNonces[key] reads EMPTY_WORD (unused) -> passes
-    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
-    let advice = own_token_advice(h.account_id);
-    let executed = run_call_driver_with_advice(&h, "drive", Some(advice))
-        .await
-        .unwrap_or_else(|e| {
-            panic!("vector {vector_id}: an unused nonce must pass the replay protection guard: {e}")
-        });
-    assert_eq!(
-        (executed.final_account().nonce() - executed.initial_account().nonce()),
-        miden_protocol::ONE,
-        "auth must increment the nonce exactly once"
-    );
+    let key = nonce_key(vector_id)?;
+    let h = setup_shell_account(
+        domain_word(TEST_DOMAIN),
+        &nonce_guard_driver_src(key),
+        SHELL_DRIVER_PATH,
+    )?;
+    let executed = run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
+        panic!("vector {vector_id}: an unused nonce must pass the replay guard: {e}")
+    });
     assert!(
         executed.account_patch().storage().is_empty(),
         "replay protection is assert-zero only: it must not write account storage (no nonce SET)"
@@ -599,32 +162,18 @@ async fn unused_nonce_passes_replay_protection(#[case] vector_id: &str) -> Resul
 // ------------------------------------------------------------------------------------------------
 
 #[rstest]
-#[case::hookdata("di-pos-hookdata")]
-#[case::empty_hookdata("di-pos-empty-hookdata")]
+#[case::empty_hookdata("mi-pos-empty-hookdata")]
+#[case::hookdata("mi-pos-hookdata")]
 #[tokio::test]
 async fn used_nonce_fails_replay_protection(#[case] vector_id: &str) -> Result<()> {
-    let v = di(vector_id);
-    let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
-    // `validate` is one entry, so the nonce stage is only reached once the identifier compare
-    // passes — hence the own-token splice
-    let driver_src = validate_driver_src_own_token(
-        &preimage,
-        intent_num_words(v.len_felts),
-        &fee_amount_felts([0u32; 8]),
-        amount_y,
-        None,
-    );
-    // mark this vector's nonce as already spent, so the guard's map read returns a non-empty
-    // Word and the "must still be empty" assert fires — this is the same-deposit-twice case
-    let seed = (nonce_key(vector_id), Word::from(NONCE_MARKER));
+    let key = nonce_key(vector_id)?;
     let h = setup_shell_account_with_nonce_seed(
         domain_word(TEST_DOMAIN),
-        Some(seed),
-        &driver_src,
+        Some((key, Word::from(NONCE_MARKER))),
+        &nonce_guard_driver_src(key),
         SHELL_DRIVER_PATH,
     )?;
-    let advice = own_token_advice(h.account_id);
-    let result = run_call_driver_with_advice(&h, "drive", Some(advice)).await;
+    let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_NONCE_REPLAY"));
     Ok(())
 }
@@ -632,57 +181,23 @@ async fn used_nonce_fails_replay_protection(#[case] vector_id: &str) -> Result<(
 // KEY-SCOPING (strengthening) — a non-empty map must not reject an UNRELATED nonce
 // ------------------------------------------------------------------------------------------------
 
+/// A spent entry for one nonce must not shadow another. Without this, a guard that keyed on
+/// something coarser than the nonce — or that tested "the map is non-empty" — would still pass
+/// both cases above.
 #[tokio::test]
 async fn unrelated_nonce_passes_replay_protection() -> Result<()> {
-    // seeding a DIFFERENT nonce's key must NOT reject this nonce — the read is key-scoped
-    // (re-proven at the faucet level). The "other" key is THIS nonce with one
-    // byte flipped, so it is guaranteed distinct
-    // (the two canonical accept vectors happen to share a nonce, so cross-vector keys would
-    // collide).
-    let run_id = "di-pos-hookdata";
-    let f = di(run_id)
-        .fields
-        .as_ref()
-        .expect("accept vector carries fields");
-    let mut other_nonce = f.bytes32("nonce");
-    other_nonce[0] ^= 0xff;
-    let other_key = Word::from(bytes32_to_storage_map_key(&other_nonce));
-    assert_ne!(
-        other_key,
-        nonce_key(run_id),
-        "the flipped-byte nonce key must differ"
-    );
-
-    let v = di(run_id);
-    let (preimage, amount_y) = with_acceptable_money_fields(&v.preimage_values());
-    // `validate` is one entry, so the nonce stage is only reached once the identifier compare
-    // passes — hence the own-token splice
-    let driver_src = validate_driver_src_own_token(
-        &preimage,
-        intent_num_words(v.len_felts),
-        &fee_amount_felts([0u32; 8]),
-        amount_y,
-        None,
-    );
-    let seed = (other_key, Word::from(NONCE_MARKER));
+    let spent = nonce_key("mi-pos-hookdata")?;
+    let fresh = nonce_key("mi-pos-empty-hookdata")?;
+    assert_ne!(spent, fresh, "the two vectors must key on distinct nonces");
     let h = setup_shell_account_with_nonce_seed(
         domain_word(TEST_DOMAIN),
-        Some(seed),
-        &driver_src,
+        Some((spent, Word::from(NONCE_MARKER))),
+        &nonce_guard_driver_src(fresh),
         SHELL_DRIVER_PATH,
     )?;
-    let advice = own_token_advice(h.account_id);
-    let executed = run_call_driver_with_advice(&h, "drive", Some(advice))
+    run_call_driver(&h, "drive")
         .await
-        .unwrap_or_else(|e| panic!("a seeded-but-unrelated nonce must not reject {run_id}: {e}"));
-    assert_eq!(
-        (executed.final_account().nonce() - executed.initial_account().nonce()),
-        miden_protocol::ONE
-    );
-    assert!(
-        executed.account_patch().storage().is_empty(),
-        "replay protection is assert-zero only: it must not write account storage (no nonce SET)"
-    );
+        .map_err(|e| anyhow::anyhow!("an unrelated spent nonce must not reject this one: {e}"))?;
     Ok(())
 }
 
@@ -712,7 +227,7 @@ async fn unrelated_nonce_passes_replay_protection() -> Result<()> {
 
 /// The DepositIntent whose bytes the attestation cases hash and sign: the 240-byte accept vector
 /// with no hookData, so the payload is exactly the fixed header.
-const ATTESTATION_VECTOR: &str = "di-pos-empty-hookdata";
+const ATTESTATION_VECTOR: &str = "mi-pos-empty-hookdata";
 
 /// The value stored under an attester's commitment to mark it enabled. Any non-empty Word does —
 /// the allowlist check is presence, and an absent key reads back as the empty Word.
@@ -725,10 +240,10 @@ const ATTESTER_MARKER: [u32; 4] = [1, 0, 0, 0];
 /// packing of those bytes — because the signature is made over the bytes while the on-chain
 /// keccak runs over what the felts reconstruct. If they diverged, every case would fail closed.
 fn attestation_payload() -> (Vec<Felt>, Vec<u8>, u64) {
-    let v = di(ATTESTATION_VECTOR);
-    let bytes = v.bytes();
+    let bytes = mi(ATTESTATION_VECTOR).payload();
     let len_bytes = bytes.len() as u64;
-    (v.preimage_values(), bytes, len_bytes)
+    let felts = deposit_intent_to_packed_felts(&bytes).expect("the vector payload packs");
+    (felts, bytes, len_bytes)
 }
 
 /// Generates the two attesters the reject cases need: key A, which the tests allowlist, and key
@@ -911,6 +426,178 @@ fn probe_attestation_verify_exports() -> Result<()> {
     assert!(
         exports.iter().any(|e| e == canonical),
         "canonical attestation verification proc path {canonical} missing; exports: {exports:?}"
+    );
+    Ok(())
+}
+
+// D5F — DC-14 PREIMAGE RECONSTRUCTION (TV-DUAL-6, the MASM half)
+// ================================================================================================
+
+/// Looks up a canonical mint-payload vector by id (by-reference loading).
+fn mi(id: &str) -> &'static MiVector {
+    load()
+        .families
+        .mi
+        .iter()
+        .find(|v| v.id == id)
+        .unwrap_or_else(|| panic!("canonical artifact is missing mp vector {id}"))
+}
+
+/// Runs `rebuild` for one vector against a fresh shell account.
+///
+/// The vector's own faucet id is synthetic, so it is NOT reused here: the mint intent is
+/// faucet-independent by construction, and the reconstruction is checked against the id the shell
+/// account actually got. That is precisely the field the faucet supplies rather than reads.
+async fn run_rebuild(vector_id: &str, poison: bool) -> Result<()> {
+    let v = mi(vector_id);
+    let carried = MintIntent::from_felts(&v.carried_values())?;
+    let felts = carried.to_felts();
+    let num_expected_felts =
+        DEPOSIT_INTENT_HEADER_FELTS + carried.hook_data().as_bytes().len().div_ceil(4);
+
+    let driver_src = rebuild_driver_src(
+        &felts,
+        felts.len().div_ceil(4) as u64,
+        u64::from(v.amount()),
+        num_expected_felts,
+        poison,
+    );
+    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
+
+    // the account exists now, so the Rust mirror can rebuild the message for ITS id
+    let expected = deposit_intent_to_packed_felts(&carried.to_deposit_intent_bytes(
+        v.amount(),
+        TEST_DOMAIN,
+        h.account_id,
+    ))?;
+    assert_eq!(
+        expected.len(),
+        num_expected_felts,
+        "vector {vector_id}: the mirror and the driver must agree on the felt count"
+    );
+
+    run_call_driver_with_advice(&h, "drive", Some(expected))
+        .await
+        .map_err(|e| anyhow::anyhow!("vector {vector_id}: MASM must match the Rust mirror: {e}"))?;
+    Ok(())
+}
+
+/// TV-DUAL-6 (happy path, written first): the MASM writer produces exactly the message the Rust
+/// mirror does, felt for felt.
+///
+/// This is the highest-value assertion in the mint suite. Everything the policy no longer compares,
+/// it enforces by rebuilding these felts and letting the attestation verify over them — so a writer
+/// that is off by one field, one limb, or one offset makes every mint fail, and nothing else in the
+/// suite would say why.
+#[rstest]
+#[case::empty_hookdata("mi-pos-empty-hookdata")]
+#[case::hookdata("mi-pos-hookdata")]
+#[tokio::test]
+async fn rebuild_matches_the_canonical_deposit_intent(#[case] vector_id: &str) -> Result<()> {
+    run_rebuild(vector_id, false).await
+}
+
+/// `rebuild` owns every felt of the header, including the structural pads.
+///
+/// The region is global memory, which reads as zero from MASM — but that is not enough on its own:
+/// keccak's host-side byte reader fetches raw cells and fails on one that was never written, so
+/// the pads have to be materialized rather than assumed. Pre-filling with a recognizable pattern
+/// proves the writer covers all of them, and keeps the `dynexec`-context caveat recorded on
+/// `DEPOSIT_INTENT_PTR` from ever mattering.
+#[rstest]
+#[case::empty_hookdata("mi-pos-empty-hookdata")]
+#[case::hookdata("mi-pos-hookdata")]
+#[tokio::test]
+async fn rebuild_overwrites_a_poisoned_region(#[case] vector_id: &str) -> Result<()> {
+    run_rebuild(vector_id, true).await
+}
+
+/// Perturbing one carried field moves exactly that field's felts and nothing else.
+///
+/// This is what replaces the per-field rejects the compare-based pipeline used to have. On-chain
+/// every one of those now fails identically as an invalid signature, so the attributability has to
+/// live here: the placement of each field is pinned individually, against the same mirror the
+/// happy path uses.
+#[rstest]
+#[case::nonce(MINT_INTENT_NONCE_FELT_OFF)]
+#[case::local_token(MINT_INTENT_LOCAL_TOKEN_FELT_OFF)]
+#[case::local_depositor(MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF)]
+#[tokio::test]
+async fn rebuild_places_each_carried_field(#[case] carried_felt_off: usize) -> Result<()> {
+    let v = mi("mi-pos-empty-hookdata");
+    let mut felts = v.carried_values();
+    felts[carried_felt_off] = Felt::from(0x1234_5678u32);
+    let carried = MintIntent::from_felts(&felts)?;
+
+    let driver_src = rebuild_driver_src(
+        &felts,
+        felts.len().div_ceil(4) as u64,
+        u64::from(v.amount()),
+        DEPOSIT_INTENT_HEADER_FELTS,
+        false,
+    );
+    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
+    let expected = deposit_intent_to_packed_felts(&carried.to_deposit_intent_bytes(
+        v.amount(),
+        TEST_DOMAIN,
+        h.account_id,
+    ))?;
+
+    run_call_driver_with_advice(&h, "drive", Some(expected))
+        .await
+        .unwrap_or_else(|e| {
+            panic!("perturbing carried felt {carried_felt_off} must move only that field: {e}")
+        });
+    Ok(())
+}
+
+/// A carried limb above u32 is refused by name.
+///
+/// keccak's byte reader would refuse it too, but as an anonymous host failure. The guard exists so
+/// the fault is attributable, which matters most on the one path where every other failure looks
+/// like a bad signature.
+#[tokio::test]
+async fn rebuild_rejects_a_non_u32_carried_limb() -> Result<()> {
+    let v = mi("mi-pos-empty-hookdata");
+    let mut felts = v.carried_values();
+    // a felt at 2^32 is a valid field element but NOT a valid u32 limb
+    felts[MINT_INTENT_NONCE_FELT_OFF] =
+        Felt::try_from(1u64 << 32).expect("2^32 is within the field");
+
+    let driver_src = rebuild_driver_src(
+        &felts,
+        felts.len().div_ceil(4) as u64,
+        u64::from(v.amount()),
+        DEPOSIT_INTENT_HEADER_FELTS,
+        false,
+    );
+    let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
+    let result = run_call_driver_with_advice(&h, "drive", Some(vec![])).await;
+    let expected = shell_error_by_name("ERR_XRESERVE_MINT_INTENT_LIMB");
+    assert_transaction_executor_error!(
+        result,
+        matches ExecutionError::OperationError {
+            err: OperationError::U32AssertionFailed { ref err_code, ref err_msg, .. },
+            ..
+        } if *err_code == expected.code() && err_msg.as_deref() == Some(expected.message())
+    );
+    Ok(())
+}
+
+/// The assembled library exports the writer under its canonical path (`NS-3`).
+#[test]
+fn probe_deposit_intent_builder_exports() -> Result<()> {
+    let lib = assemble_xreserve_lib()?;
+    let exports: Vec<String> = lib
+        .manifest
+        .exports()
+        .filter(|e| e.is_procedure())
+        .map(|e| e.path().to_string())
+        .collect();
+    let canonical = "::xreserve::deposit_intent::rebuild";
+    assert!(
+        exports.iter().any(|e| e == canonical),
+        "canonical preimage-writer path {canonical} missing; exports: {exports:?}"
     );
     Ok(())
 }

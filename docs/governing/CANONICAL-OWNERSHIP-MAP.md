@@ -11,25 +11,23 @@
 The duplication rule is therefore **per language, plus cross-language conformance**: at most one MASM implementation and at most one Rust implementation of each owned routine, and both must pass the **same shared deterministic test vectors** (single canonical vector home — see Anti-duplication). A second copy *within* a language is a defect; an undocumented divergence *across* languages is the cross-language drift seam.
 
 ## Resolved MASM layout
-The current faucet account is self-contained under the `xreserve` product-root namespace. The shared-encoding library declares the canonical `xreserve::encoding::<name>` procedures, and the faucet consumes them by that path.
+The current faucet account is self-contained under the `xreserve` product-root namespace. It is organized by WIRE FORM rather than by owner: one module per format, each holding that format's constants and the procedures that realize it.
 
 ```
 asm/standards/
   xreserve/                       # xUSDC product-root namespace
     attestation_verify.masm       # FAUCET(01): on-chain attestation verify
     attester_admin.masm           # FAUCET(01): attester allowlist administration
-    deposit_intent_parser.masm    # FAUCET(01): DepositIntent parser and mint validation
+    deposit_intent.masm           # Circle's DepositIntent wire form (DC-1, 04-owned layout) + `rebuild`, the faucet's on-chain realization of it (DC-14, 01-owned), plus the shared primitives that only it and its callers need (the DC-5 reducer, div_ceil_four)
+    mint_intent.masm              # What the mint note carries (DC-14): the carried felt offsets, the value widths, and the admissibility checks that hold over the carried fields alone (`validate`, `hashed_nonce`, the replay guard + its registry slot)
     mint_policy.masm              # FAUCET(01): active attestation mint policy
     mod.masm                      # FAUCET(01): self-contained component root
-    encoding/                     # SHARED-ENCODING(04)-OWNED sub-module → xreserve::encoding::*
-      mod.masm                    #   04: flat public procs live here
-      layout.masm                 #   04: DepositIntent felt offsets + packed magic constant (DC-1) — constants submodule (path xreserve::encoding::layout::* intentional for constants)
   notes/
     xreserve_set_attester_note.masm
     xreserve_set_max_supply_note.masm
     xreserve_set_min_burn_size_note.masm
 ```
-Owner→path rule: directory path = MASM module path and the Rust component `NAME` must equal it. **Logical owner ≠ physical parent:** 04 owns `xreserve::encoding::*` even though it sits under the `xreserve` product root; the faucet(01) owns the parser/attestation *assertion* logic but consumes 04's `encoding/layout.masm` constants.
+Owner→path rule: directory path = MASM module path and the Rust component `NAME` must equal it. **Logical owner ≠ physical parent, and it is no longer a directory boundary either:** the `encoding/` submodule is gone. 04 still owns the wire *layouts* — the DC-1 offsets and the DC-14 carried shape — and the shared codecs; 01 owns the procedures that realize them. They now share two files, one per wire form, because a constant and the single procedure that writes at it are read together and drifted apart when they were not.
 
 **Layout decision:** assemble a single **self-contained** component `.masm`; builders implement the self-contained layout.
 
@@ -39,12 +37,14 @@ Owner→path rule: directory path = MASM module path and the Rust component `NAM
 
 | Owned thing (DC-id) | Canonical owner (concept) | On-chain MASM home (per §Resolved layout) | Off-chain Rust home | Conformance source of truth |
 |---|---|---|---|---|
-| `bytes32 → Word` hash-to-Word, Poseidon2 over 8×u32-LE (DC-3 commitment / DC-4 nonce key) | **shared-encoding (04)** (hash) + **faucet (01)** (nonce-registry & allowlist stores) | `asm/standards/xreserve/encoding/mod.masm` → **`xreserve::encoding::bytes32_to_key`** | harness encode helper | `INV-BYTES32-HASH-TO-WORD`; DC-4; DC-3 |
-| `uint256 → AssetAmount` conversion (Rust floor-divides; MASM verifies the supplied witness) (DC-5) | **shared-encoding (04)** | `asm/standards/xreserve/encoding/mod.masm` → `xreserve::encoding::verify_uint256_to_asset_amount` | Rust `uint256_to_asset_amount` witness generator | `DC-5`; `INV-UINT256-TO-ASSETAMOUNT` |
+| `bytes32 → Word` hash-to-Word, Poseidon2 over 8×u32-LE (DC-3 commitment / DC-4 nonce key) | **shared-encoding (04)** (hash) + **faucet (01)** (nonce-registry & allowlist stores) | `asm/standards/xreserve/mint_intent.masm` → **`xreserve::mint_intent::hashed_nonce`** | harness encode helper | `INV-BYTES32-HASH-TO-WORD`; DC-4; DC-3 |
+| `uint256 → AssetAmount` conversion (DC-5) | **shared-encoding (04)** | **Rust-only.** The MASM witness verifier is removed — see the rider below | `crates/xusdc-encoding/src/xreserve/encoding/amount.rs` → `uint256_to_asset_amount` | `DC-5`; `INV-UINT256-TO-ASSETAMOUNT` |
+| ↳ **MASM side removed (human-directed).** Under DC-14 the faucet writes the amount into the preimage from the note's own asset value, so no untrusted witness reaches the chain and nothing called `verify_uint256_to_asset_amount`. It was previously retained against a non-zero `DEPOSIT_SCALE_EXP` (DEV-5, OPEN); it is now deleted, along with `TV-DUAL-2` and the local `ERR_FELT_OUT_OF_FIELD`. **Reopening DEV-5 means restoring it from history**, together with a transport that carries the uint256 again — the reduction is not expressible on-chain without both. The Rust generator is untouched and keeps all its callers. | — | — | — | `DC-5`; `DEV-5` |
 | `AccountId ↔ bytes32` (protocol form 15-byte/two-felt; right-aligned bytes32 packaging; lossless, no keccak fallback) (DC-6) | **shared-encoding (04)** | Rust-primary: no MASM proc in the 04 slice | `crates/xusdc-encoding/src/xreserve/encoding/account_id.rs` | `DC-6`; `INV-ACCOUNTID-ENCODING` |
-| `DepositIntent` 240-byte header = 60 u32-LE felts + hookData (DC-1) | **shared-encoding (04)** owns the layout constants; **faucet (01)** owns the on-chain parser and mint assertions | layout: `asm/standards/xreserve/encoding/layout.masm`; parser: `xreserve::deposit_intent_parser::parse` | Rust mirror keeps `parse_deposit_intent_header` | `DC-1`; `INV-DEPOSITINTENT-PARSE`; `TV-DUAL-3` |
+| `DepositIntent` 240-byte header = 60 u32-LE felts + hookData (DC-1) | **shared-encoding (04)** owns the layout constants; **faucet (01)** owns the on-chain realization | layout and realization both in `asm/standards/xreserve/deposit_intent.masm`: `xreserve::deposit_intent::rebuild` (write side, DC-14) — the read-side parser is retired, see NS-2/NS-3 | Rust mirror keeps `parse_deposit_intent_header` (still the compress-side entry and the relayer's pre-validate) | `DC-1`; `INV-DEPOSITINTENT-PARSE`; `TV-DUAL-3` |
+| **DepositIntent reconstruction from the carried mint intent; the mint-intent wire shape (DC-14)** | **faucet (01)** owns the writer and the carried shape (both are mint-transport concerns and the writer reads faucet state); **shared-encoding (04)** owns the felt offsets it writes at | `asm/standards/xreserve/deposit_intent.masm` → `xreserve::deposit_intent::rebuild`; the carried offsets in `mint_intent.masm` | `crates/xusdc-encoding/src/xreserve/encoding/mint_intent.rs` → `MintIntent::{from_deposit_intent, to_deposit_intent_bytes, to_felts, from_felts}` | `DC-14`; `TV-DUAL-6` (the round-trip and MASM/Rust preimage-parity rows) |
 | `depositAttestation` wire (raw secp256k1 over `keccak256(payload)`; NOT EIP-712) (DC-2) | **shared-encoding (04)** owns the merged-transport staging/felt-packing; **faucet (01)** owns the on-chain verify | verify: `asm/standards/xreserve/attestation_verify.masm` | relayer transport + Rust packing helpers | `DC-2`; `INV-DEPOSIT-ATTESTATION-RAW-KECCAK`; `TV-DUAL-5` |
-| pubkey commitment + allowlist key (`Poseidon2` over staged pubkey felts → `Word`) (DC-3) | **shared-encoding (04)** (commitment hash) + **faucet (01)** (the on-chain `StorageMap` store) | commitment via `xreserve::encoding::bytes32_to_key` in `encoding/mod.masm`; store `asm/standards/xreserve/attester_admin.masm` | Rust packing and commitment helpers | `DC-3`; `TV-DUAL-5` |
+| pubkey commitment + allowlist key (`Poseidon2` over staged pubkey felts → `Word`) (DC-3) | **shared-encoding (04)** (commitment hash) + **faucet (01)** (the on-chain `StorageMap` store) | commitment `xreserve::attestation_verify::pubkey_commitment`; store `asm/standards/xreserve/attester_admin.masm` | Rust packing and commitment helpers | `DC-3`; `TV-DUAL-5` |
 | `XReserveBurnNote` item codec `(amount,destDomain,destRecipient,salt)` (DC-7) | **shared-encoding (04)** owns the codec; **faucet (01)** owns note production/consumption policy | no MASM codec; the faucet uses the stock burn consume script | `crates/xusdc-encoding/src/xreserve/encoding/burn_note.rs`; listener decode | `DC-7`; `INV-PUBLIC-BURN-OBSERVABILITY` |
 | Circle JSON schema types (DC-9/10/11/12) | **shared-encoding (04)** (type defs) | n/a (off-chain only) | relayer, listener, monitor | `DC-9..DC-12` |
 | optional Circle binary decode (DC-13) | **shared-encoding (04)** (optional, NON-GATING) | n/a | listener (optional) | `DC-13` |
@@ -58,6 +58,7 @@ Owner→path rule: directory path = MASM module path and the Rust component `NAM
 - **The off-chain Rust mirror must pin to the 04 owner, not re-derive it.** Per an earlier reconciliation's remediation, the relayer's DepositIntent decoder **re-exports the 04 serde / `parse_deposit_intent_header` model** OR carries an explicit lockstep-pin reference to 04 (owner `04:341-345,:388`) — a byte-identical independent copy fails G1 even if it passes its own local vectors.
 - **Cross-language constants follow `masm-rust-constant-parity` — single source of truth.** Prefer defining DC-1 layout offsets, packed magic `0x5a2e0acd`, and DC-5 cap/scale in MASM and generating Rust counterparts through `build.rs`; where hand-duplicated, both sides must change together and pass canonical vectors.
 - A new shared concept/boundary must be **added to this map first** (human re-approves) — no silent new shared shapes.
+- **DC-14 vector exception, recorded here so it is not read as a G1/G4 violation.** The reconstructed preimage embeds the faucet's own account id, and an account id is a hash over the account's code — which, in a shell test, includes the test driver. The expected felts are therefore not knowable when the artifact is generated. The canonical artifact carries the DC-14 rows (`carried_felts`, `rebuilt_preimage_felts`) for **one fixed synthetic faucet id and domain**, and both sides load and execute those by reference as usual. The live-account tests, which cannot use them, check the MASM writer against the **Rust mirror as an oracle** instead. That is a deliberate mixed posture for exactly one owned thing, not a second vector home.
 
 ## Naming decisions
 
@@ -65,17 +66,33 @@ The decisions below are binding:
 
 | # | Owner-04 side (normative per `04:210` "MASM procedure names follow `xreserve::encoding::<name>`") | Consumer/faucet-01 side | Bound test rows |
 |---|---|---|---|
-| NS-1 (bytes32, DC-3/DC-4) | `xreserve::encoding::bytes32_to_key` | Rust keeps `bytes32_to_storage_map_key`; do not add a MASM alias. | TV-DUAL-1 |
-| NS-2 (DepositIntent parse, DC-1) | `xreserve::deposit_intent_parser::parse` | 01 owns the only MASM parser; 04 owns the layout and shared primitives. | TV-DUAL-3 |
+| NS-1 (bytes32, DC-3/DC-4) — **amended twice** | `xreserve::mint_intent::hashed_nonce` | The path moved with the `encoding` module and again with the nonce it hashes; the routine, its body and its owner did not. Rust keeps `bytes32_to_storage_map_key`; do not add a MASM alias. | TV-DUAL-1 |
+| NS-2 (DepositIntent parse, DC-1) | ~~`xreserve::deposit_intent_parser::parse`~~ — **retired, superseded by NS-3** | 01 owns the only MASM realization; 04 owns the layout and shared primitives. The Rust `parse_deposit_intent_header` is **unaffected** and keeps its name. | TV-DUAL-3 |
+| NS-3 (DepositIntent write, DC-1/DC-14) | `xreserve::deposit_intent::rebuild` | 01 owns the only MASM realization of the DepositIntent wire form; 04 owns the felt offsets it writes at. Rust: `MintIntent::to_deposit_intent_bytes`. Do not add a MASM alias, and do not reintroduce a second parser. | TV-DUAL-6 |
+
+**NS-2 retirement — the adjudication.** NS-2 froze the *name* of the on-chain DepositIntent parser
+on the premise that the faucet reads the wire form. Under DC-14 the faucet **writes** it instead, so
+there is no parser left to name: every field `parse` compared is now either written by the faucet or
+proven by the signature over what the faucet wrote. Retiring NS-2 is therefore not a naming split
+between two live implementations — the condition G5 makes a STOP — but the removal of one side of
+the contract. NS-3 replaces it with the same single-owner discipline on the write side. What NS-2
+actually protected, *one MASM realization of the DepositIntent wire form owned by 01*, is preserved
+verbatim.
+
+The parser file is gone with the parser. Its two surviving preconditions — the fee ceiling and the
+replay guard — are statements about the CARRIED fields rather than the message, so they live in
+`mint_intent.masm` as the single `validate` entry the mint policy runs before `rebuild`. The policy
+therefore admits an intent and then rebuilds a message from it, rather than running a pile of stages
+in the right order.
 
 ## MASM Module Realization
 
-**Source-proven constraint:** the pinned Miden assembler treats `mod.masm` as the directory-module root; any other file `<name>.masm` is its own submodule. Therefore a per-file home like `encoding/bytes32.masm` can only export `xreserve::encoding::bytes32::bytes32_to_key` — NOT the frozen flat path — and a re-export wrapper is banned (NS-1; G1 "wrappers that merely re-expose an owned routine also fail").
+**Source-proven constraint:** the pinned Miden assembler treats `mod.masm` as the directory-module root; any other file `<name>.masm` is its own submodule, and its exported paths carry that segment. That is what the flat `xreserve::encoding::<proc>` naming used to fight; the tree is now one module per wire form directly under `xreserve/`, so every exported path already reads the way it is named and no re-export wrapper is needed (they remain banned — G1, "wrappers that merely re-expose an owned routine also fail").
 
 **Binding realization rules (empirically validated by `probe_p1_exports`, 37/37 green):**
-1. Any public proc whose CANONICAL path is flat `xreserve::encoding::<proc>` has its body in **`asm/standards/xreserve/encoding/mod.masm`**.
-2. Support submodules (e.g. `layout.masm`) are allowed when their exported path INTENTIONALLY includes the submodule segment (constants/helpers consumed from the root).
-3. Do NOT create per-proc `bytes32.masm` / `uint256.masm` / `account_id.masm` / `burn_items.masm` for flat public proc paths unless the human explicitly changes the canonical name to a nested one.
+1. One module per WIRE FORM, directly under `asm/standards/xreserve/`. A procedure lives with the format it reads or writes, and so do that format's constants.
+2. Do NOT reintroduce a nesting directory to group by owner. Ownership is a column in the table above, not a path segment; the previous `encoding/` split put a constant and its single writer in different files and they drifted.
+3. Do NOT create per-proc modules (`bytes32.masm`, `uint256.masm`, …) unless the human explicitly changes the canonical name to a nested one.
 4. Conceptual/routine ownership in the table above is unchanged — this section governs only physical module realization.
 
 ## Non-negotiables

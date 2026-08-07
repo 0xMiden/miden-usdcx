@@ -95,38 +95,14 @@ fn amt_reject(
     b: [u8; 32],
     scale_exp: u32,
     variant: &str,
-    masm_err: &str,
-    witness_y: u64,
     cite: &str,
     derivation: &str,
 ) -> Value {
     json!({
         "id": id, "tv": tv, "kind": "reject",
         "uint256_be": hex_bytes(&b), "le_limbs": le_limbs(&b), "scale_exp": scale_exp,
-        "expected_variant": variant, "masm_err": masm_err,
-        "witness_y": witness_y.to_string(),
+        "expected_variant": variant,
         "cite": cite, "derivation": derivation,
-    })
-}
-
-/// A MASM-only witness-tamper row: a well-formed uint256/scale whose pushed witness `y`
-/// diverges from the true floor quotient, so the verifier must trap (the Rust mirror has no
-/// witness leg).
-fn amt_witness_reject(
-    id: &str,
-    x: u128,
-    scale_exp: u32,
-    witness_y: u64,
-    masm_err: &str,
-    derivation: &str,
-) -> Value {
-    let b = u256_be_from_u128(x);
-    json!({
-        "id": id, "tv": [], "kind": "reject", "mode": "masm-only",
-        "uint256_be": hex_bytes(&b), "le_limbs": le_limbs(&b), "scale_exp": scale_exp,
-        "masm_err": masm_err, "witness_y": witness_y.to_string(),
-        "cite": "DEV-5",
-        "derivation": derivation,
     })
 }
 
@@ -371,56 +347,54 @@ fn main() {
     let mut amt = vec![
         amt_accept(
             "amt-pos-1",
-            &["TV-AMT-1", "TV-DUAL-2"],
+            &["TV-AMT-1"],
             1_000_000,
             6,
             "x = 10^6, y = 1",
         ),
         amt_accept(
             "amt-pos-2",
-            &["TV-AMT-1", "TV-DUAL-2"],
+            &["TV-AMT-1"],
             123_456_789_012 * 1_000_000,
             6,
             "x = 123456789012 * 10^6, y = 123456789012",
         ),
         amt_accept(
             "amt-pos-3",
-            &["TV-AMT-1", "TV-DUAL-2"],
+            &["TV-AMT-1"],
             42,
             0,
             "scale 0: y = x = 42",
         ),
         amt_accept(
             "amt-pos-4",
-            &["TV-AMT-1", "TV-DUAL-2"],
+            &["TV-AMT-1"],
             5 * 10u128.pow(18),
             18,
             "scale 18: x = 5 * 10^18, y = 5",
         ),
         amt_accept(
             "amt-cap-accept",
-            &["TV-AMT-2", "TV-DUAL-2"],
+            &["TV-AMT-2"],
             max * 1_000_000,
             6,
             "cap boundary: x = (2^63 - 2^31) * 10^6, y = AssetAmount::MAX exactly",
         ),
         amt_accept(
             "amt-cap-accept-scale0",
-            &["TV-AMT-2", "TV-DUAL-2"],
+            &["TV-AMT-2"],
             max,
             0,
             "cap boundary at the shipped scale-0 identity: x = 2^63 - 2^31, y = x = AssetAmount::MAX exactly",
         ),
         amt_reject(
             "amt-rej-cap",
-            &["TV-AMT-3", "TV-DUAL-2"],
+            &["TV-AMT-3"],
             u256_be_from_u128((max + 1) * 1_000_000),
             6,
             "AmountOverCap",
-            "ERR_Y_TOO_LARGE",
-            (max + 1) as u64,
             "generated deterministically by gen_vectors @ protocol v0.15.3",
-            "x = (2^63 - 2^31 + 1) * 10^6, post-scale y = MAX + 1 must reject (no saturation); the MASM witness carries the true over-maximum quotient",
+            "x = (2^63 - 2^31 + 1) * 10^6, post-scale y = MAX + 1 must reject (no saturation)",
         ),
         {
             // bit 130 set => high four limbs nonzero (> 2^128). BE byte 15, bit 2.
@@ -428,42 +402,22 @@ fn main() {
             b[15] = 0x04;
             amt_reject(
                 "amt-rej-limb-overflow",
-                &["TV-AMT-4", "TV-DUAL-2"],
+                &["TV-AMT-4"],
                 b,
                 6,
                 "AmountTooLarge",
-                "STD_ERR_X_TOO_LARGE",
-                0,
                 "generated deterministically by gen_vectors @ protocol v0.15.3",
                 "x = 2^130: high-4 limbs nonzero must reject (limb-overflow edge)",
             )
         },
         amt_reject(
             "amt-rej-scale-overflow",
-            &["TV-AMT-7", "TV-DUAL-2"],
+            &["TV-AMT-7"],
             u256_be_from_u128(1_000_000),
             20,
             "ScaleExpTooLarge",
-            "ERR_SCALE_AMOUNT_EXCEEDED_LIMIT",
-            0,
             "(scale 0..=18)",
             "scale_exp = 20 exceeds the 0..=18 bound / overflows 10^scale in u64",
-        ),
-        amt_witness_reject(
-            "amt-rej-witness-over",
-            5_000_000,
-            6,
-            6,
-            "ERR_UNDERFLOW",
-            "x = 5*10^6 at scale 6 (true y = 5); an over-claimed witness y = 6 must trap the verifier's no-underflow subtract",
-        ),
-        amt_witness_reject(
-            "amt-rej-witness-under",
-            5_000_000,
-            6,
-            4,
-            "ERR_REMAINDER_TOO_LARGE",
-            "x = 5*10^6 at scale 6 (true y = 5); an under-claimed witness y = 4 leaves remainder 10^6 >= 10^s and must trap the verifier's remainder bound",
         ),
     ];
     // reduced-ge pairs (TV-AMT-5).
@@ -510,16 +464,6 @@ fn main() {
         "cite": "DEV-5",
         "derivation": "x = 1500123, y = floor(x/10^6) = 1, z = 500123; dust POLICY is REQUIRES CIRCLE CONFIRMATION (DEV-5)",
     }));
-    // masm-only u32 guard staging (an additive harness case, not a spec row).
-    amt.push(json!({
-        "id": "amt-guard-limb-not-u32", "tv": [], "kind": "guard", "mode": "masm-only",
-        "scale_exp": 6,
-        "staging_felts": ["0x1", "0x0", "0x0", "0x0", "0x0", "0x100000000", "0x0", "0x0"],
-        "masm_err": "ERR_FELT_OUT_OF_FIELD",
-        "cite": "BUILDER-GATES G-MASM",
-        "derivation": "staged 'limb' felt = 2^32 is not a valid u32; the reducer's input guard must trap (unrepresentable in the Rust [u32;8] API)",
-    }));
-
     // ---- aid family -------------------------------------------------------------------
     let ids: Vec<miden_protocol::account::AccountId> = (1u8..=3)
         .map(|seed| AccountIdBuilder::new().build_with_seed([seed; 32]))
@@ -714,6 +658,202 @@ fn main() {
             "hookDataLen = 3860 => 60 + 965 = 1025 felts > 1024 NoteStorage bound",
         ));
     }
+    // ---- mp family (DC-14 carried payload + preimage reconstruction) -------------------
+    // The faucet id is SYNTHETIC and fixed: a real one hashes over the account's own code, so the
+    // rebuilt preimage's identity fields could not be baked here at all. It is a different id from
+    // the recipient's, so a row that confused the two would not pass.
+    //
+    // These intents are DC-14-shaped, which the older `di` rows are not: `remoteToken` carries the
+    // faucet's account id in its bytes32 packaging, and `localToken` / `localDepositor` carry
+    // right-aligned 20-byte EVM addresses. That narrowing is the point of the reject rows below.
+    let faucet_id = &ids[1];
+    let faucet_b32 = r_b_bytes32(faucet_id);
+    let mi_domain = 7u32;
+    // a 20-byte EVM address right-aligned in a bytes32 (the leading 12 bytes are the zero pad)
+    let evm_bytes32 = |base: u8| -> [u8; 32] {
+        let mut b = [0u8; 32];
+        for (i, slot) in b[12..].iter_mut().enumerate() {
+            *slot = base.wrapping_add(i as u8);
+        }
+        b
+    };
+    // each row gets its own nonce: two deposits never share one, and the replay-guard tests need
+    // a pair that keys distinctly
+    let mi_spec = |hook_data: Vec<u8>, nonce_seed: u8| -> IntentSpec {
+        let mut spec = IntentSpec::base(recipient_b32);
+        spec.nonce = pattern32(nonce_seed);
+        spec.remote_domain = mi_domain;
+        spec.remote_token = faucet_b32;
+        spec.local_token = evm_bytes32(0xb0);
+        spec.local_depositor = evm_bytes32(0xc0);
+        // the fee ceiling has to sit under the amount for the intent to be mintable at all
+        spec.max_fee = u256_be_from_u128(1);
+        spec.hook_data = hook_data;
+        spec
+    };
+    let mut mi: Vec<Value> = Vec::new();
+    let mi_accept = |mi: &mut Vec<Value>, id: &str, spec: &IntentSpec, derivation: &str| {
+        let payload = spec.encode();
+        let intent = xusdc_encoding::xreserve::encoding::DepositIntent::new(&payload);
+        let carried = xusdc_encoding::xreserve::encoding::MintIntent::from_deposit_intent(
+            &intent, *faucet_id, mi_domain,
+        )
+        .expect("generator invariant: the mp accept specs are DC-14 shaped");
+        let amount = intent
+            .parse_header()
+            .expect("generator invariant: the spec encodes a valid header")
+            .reduced_amount(xusdc_encoding::xreserve::encoding::MINT_INTENT_SCALE_EXP)
+            .expect("generator invariant: the spec amount is an AssetAmount");
+        let rebuilt = carried.to_deposit_intent_bytes(amount, mi_domain, *faucet_id);
+        // the law the whole design rests on: what the faucet rebuilds is byte-for-byte what
+        // Circle signed. If this ever fails, no note built from this payload could ever mint.
+        assert_eq!(
+            rebuilt, payload,
+            "generator invariant: the DC-14 round trip must be exact for {id}"
+        );
+        mi.push(json!({
+            "id": id,
+            "tv": ["TV-DUAL-6"],
+            "kind": "accept",
+            "payload_hex": hex_bytes(&payload),
+            "faucet_prefix_felt": felt_hex(faucet_id.prefix().as_felt()),
+            "faucet_suffix_felt": felt_hex(faucet_id.suffix()),
+            "remote_domain": mi_domain,
+            "amount_felt": felt_hex(Felt::from(amount)),
+            "carried_felts": felts_hex(&carried.to_felts()),
+            "rebuilt_preimage_felts": felts_hex(
+                &xusdc_encoding::xreserve::encoding::deposit_intent_to_packed_felts(&rebuilt)
+                    .expect("generator invariant: the rebuilt preimage packs"),
+            ),
+            "cite": "DC-14 + DEV-10 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
+            "derivation": derivation,
+        }));
+    };
+    mi_accept(
+        &mut mi,
+        "mi-pos-empty-hookdata",
+        &mi_spec(Vec::new(), 0xd0),
+        "DC-14 shaped intent, no hookData: 24 carried felts, 60 rebuilt felts",
+    );
+    mi_accept(
+        &mut mi,
+        "mi-pos-hookdata",
+        &mi_spec((0..10u8).map(|i| 0xe0 + i).collect(), 0xd8),
+        "DC-14 shaped intent, hookDataLen = 10: 24 + 3 carried felts, 63 rebuilt felts",
+    );
+
+    let mi_reject = |mi: &mut Vec<Value>,
+                     id: &str,
+                     spec: &IntentSpec,
+                     domain: u32,
+                     expected_variant: &str,
+                     derivation: &str| {
+        let payload = spec.encode();
+        let intent = xusdc_encoding::xreserve::encoding::DepositIntent::new(&payload);
+        assert!(
+            xusdc_encoding::xreserve::encoding::MintIntent::from_deposit_intent(
+                &intent, *faucet_id, domain,
+            )
+            .is_err(),
+            "generator invariant: {id} must not compress"
+        );
+        mi.push(json!({
+            "id": id,
+            "tv": ["TV-DUAL-6"],
+            "kind": "reject",
+            "payload_hex": hex_bytes(&payload),
+            "faucet_prefix_felt": felt_hex(faucet_id.prefix().as_felt()),
+            "faucet_suffix_felt": felt_hex(faucet_id.suffix()),
+            "remote_domain": domain,
+            "expected_variant": expected_variant,
+            "cite": "DC-14 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
+            "derivation": derivation,
+        }));
+    };
+    {
+        let mut spec = mi_spec(Vec::new(), 0xd0);
+        spec.local_token = pattern32(0xb0);
+        mi_reject(
+            &mut mi,
+            "mi-rej-local-token-not-address",
+            &spec,
+            mi_domain,
+            "FieldNotEvmAddress",
+            "localToken has non-zero bytes in the leading 12-byte pad, so it is not a 20-byte EVM address",
+        );
+    }
+    {
+        let mut spec = mi_spec(Vec::new(), 0xd0);
+        spec.local_depositor = pattern32(0xc0);
+        mi_reject(
+            &mut mi,
+            "mi-rej-local-depositor-not-address",
+            &spec,
+            mi_domain,
+            "FieldNotEvmAddress",
+            "localDepositor has non-zero bytes in the leading 12-byte pad",
+        );
+    }
+    mi_reject(
+        &mut mi,
+        "mi-rej-domain-mismatch",
+        &mi_spec(Vec::new(), 0xd0),
+        mi_domain + 1,
+        "RemoteDomainMismatch",
+        "the intent's remoteDomain is 7 but the faucet is configured for 8",
+    );
+    {
+        let mut spec = mi_spec(Vec::new(), 0xd0);
+        spec.remote_token = r_b_bytes32(&ids[2]);
+        mi_reject(
+            &mut mi,
+            "mi-rej-remote-token-mismatch",
+            &spec,
+            mi_domain,
+            "RemoteTokenMismatch",
+            "remoteToken is a well-formed account id, but a different faucet's",
+        );
+    }
+    {
+        let mut spec = mi_spec(Vec::new(), 0xd0);
+        spec.remote_token = pattern32(0xa0);
+        mi_reject(
+            &mut mi,
+            "mi-rej-remote-token-malformed",
+            &spec,
+            mi_domain,
+            "AccountIdOutOfRange",
+            "remoteToken has non-zero bytes in the leading 16-byte account-id pad",
+        );
+    }
+    {
+        let mut spec = mi_spec(Vec::new(), 0xd0);
+        spec.max_fee = u256_be_from_u128(ASSET_AMOUNT_MAX + 1);
+        mi_reject(
+            &mut mi,
+            "mi-rej-max-fee-over-cap",
+            &spec,
+            mi_domain,
+            "FieldNotAssetAmount",
+            "maxFee exceeds AssetAmount::MAX, so it cannot be carried as one felt",
+        );
+    }
+    {
+        let mut spec = mi_spec(Vec::new(), 0xd0);
+        let mut bad = [0u8; 32];
+        bad[16..24].copy_from_slice(&7u64.to_be_bytes());
+        bad[24..32].copy_from_slice(&7u64.to_be_bytes());
+        spec.remote_recipient = bad;
+        mi_reject(
+            &mut mi,
+            "mi-rej-recipient-non-canonical",
+            &spec,
+            mi_domain,
+            "NonCanonicalAccountId",
+            "remoteRecipient prefix=suffix=7 is in-field but not a canonical account id",
+        );
+    }
+
     // ---- att family (attestation surface) ----------------------------------------
     // each vector carries an independent k256 keypair; the digest is keccak256 of a FULL
     // DepositIntent payload (raw keccak, NOT EIP-712, no struct); the 65-byte r||s||v signature over
@@ -863,7 +1003,7 @@ fn main() {
         "items[12] = 2^32 → salt limb not a u32",
     ));
 
-    let file = json!({ "version": 1, "families": { "b32": b32, "amt": amt, "aid": aid, "di": di, "att": att, "bn": bn } });
+    let file = json!({ "version": 1, "families": { "b32": b32, "amt": amt, "aid": aid, "di": di, "att": att, "bn": bn, "mi": mi } });
     let path = xusdc_encoding::vectors_path();
     std::fs::create_dir_all(path.parent().unwrap()).expect("create vectors dir");
     std::fs::write(

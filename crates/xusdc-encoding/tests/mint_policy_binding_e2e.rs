@@ -27,6 +27,7 @@
 mod support;
 
 use anyhow::{Context, Result};
+use miden_protocol::errors::tx_kernel::ERR_ACCOUNT_ID_SUFFIX_LEAST_SIGNIFICANT_BYTE_MUST_BE_ZERO;
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{NoteAttachmentScheme, NoteTag, NoteType};
 use miden_standards::note::{NetworkAccountTarget, P2idNote, P2idNoteStorage};
@@ -35,25 +36,30 @@ use rstest::rstest;
 use support::mint_transport::*;
 use support::*;
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
+use xusdc_encoding::xreserve::encoding::{
+    DepositIntent, MintIntent, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
+};
 
 use miden_protocol::{Felt, Word};
 
 // ASSERT-MATCH — the note-supplied values must EQUAL their attested derivations
 // ================================================================================================
 
-/// A note amount diverging from the attested one rejects inside the amounts stage: the note
-/// amount is the witness, so an over-claim trips the verifier's no-underflow subtract and an
-/// under-claim its remainder bound. (`ERR_XRESERVE_MINT_AMOUNT_MISMATCH` guards the asset
-/// word's upper elements, which no note-shaped transport can set nonzero.)
+/// A note amount diverging from the attested one rejects at the SIGNATURE.
+///
+/// The amount is no longer compared against anything: the faucet writes the note's own asset
+/// amount into the preimage it rebuilds, so a divergent note simply reconstructs a different
+/// message and Circle's signature stops verifying. The binding is structural rather than checked,
+/// which is why both directions land on the same error — `build_preimage_places_each_carried_field`
+/// is what keeps the placement itself honest.
 #[rstest]
-#[case::over_claim(1i64, 17, 86, "ERR_UNDERFLOW")]
-#[case::under_claim(-1i64, 40, 109, "ERR_REMAINDER_TOO_LARGE")]
+#[case::over_claim(1i64, 17, 86)]
+#[case::under_claim(-1i64, 40, 109)]
 #[tokio::test]
 async fn mint_rejects_an_amount_mismatch(
     #[case] delta: i64,
     #[case] nonce_variant: u8,
     #[case] rng_seed: u64,
-    #[case] expected_err: &str,
 ) -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 1).await?;
@@ -67,13 +73,18 @@ async fn mint_rejects_an_amount_mismatch(
             tag: None,
             public: true,
         },
-        [Felt::from(0u32); 8],
         1,
         None,
         &AttachmentPlan::default(),
         rng_seed,
     )?;
-    expect_reject(&mut pf, note, &payload, shell_error_by_name(expected_err)).await
+    expect_reject(
+        &mut pf,
+        note,
+        &payload,
+        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
+    )
+    .await
 }
 
 /// A note whose output tag does not target the attested recipient rejects with the tag binding
@@ -92,7 +103,6 @@ async fn mint_rejects_a_tag_mismatch() -> Result<()> {
             tag: Some(NoteTag::with_account_target(pf.producer_id)), // mis-targeted
             public: true,
         },
-        [Felt::from(0u32); 8],
         1,
         None,
         &AttachmentPlan::default(),
@@ -123,7 +133,6 @@ async fn mint_rejects_a_private_output_note() -> Result<()> {
             tag: None,
             public: false, // the 13-item private layout — note_type PRIVATE
         },
-        [Felt::from(0u32); 8],
         1,
         None,
         &AttachmentPlan::default(),
@@ -141,88 +150,52 @@ async fn mint_rejects_a_private_output_note() -> Result<()> {
 // EXTRACTING THE RECIPIENT FROM THE ATTESTED PAYLOAD — the layout guards, run through the policy
 // ================================================================================================
 
-/// A recipient field with a non-zero leading pad is rejected rather than truncated.
-///
-/// A Miden account id occupies only the low 16 bytes of the 32-byte `remoteRecipient`; the high
-/// bytes must be zero. If the policy ignored them instead of asserting, two different attested
-/// payloads would extract to the same account, and the attestation would no longer pin who gets
-/// paid.
-///
-/// The decode delegates to the standards `eth::bytes32_to_account_id`, which splits the pad check
-/// in two — bytes 0..12 in the bytes32 entry point, bytes 12..16 in the `to_account_id` it calls.
-/// Both halves get a case, so neither can go unasserted: a pass that only covered bytes 0..12
-/// would still let a recipient with four dirty bytes at offset 12 through.
-#[rstest]
-#[case::leading_twelve(REMOTE_RECIPIENT_BYTE_OFF, 20, 89, "ERR_BYTES32_PADDING_NONZERO")]
-#[case::bytes_twelve_to_sixteen(REMOTE_RECIPIENT_BYTE_OFF + 12, 40, 109, "ERR_MSB_NONZERO")]
-#[tokio::test]
-async fn mint_rejects_a_malformed_attested_recipient(
-    #[case] dirty_byte_off: usize,
-    #[case] nonce_variant: u8,
-    #[case] rng_seed: u64,
-    #[case] expected_err: &str,
-) -> Result<()> {
-    let mut pf = fixture()?;
-    bring_up(&mut pf, 1).await?;
-    let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, nonce_variant);
-    payload[dirty_byte_off] = 0xaa; // the 16-byte pad must be zero
-    let note = tampered_mint_note(
-        &pf,
-        &payload,
-        &StoragePlan {
-            recipient: pf.recipient_id, // the STORAGE recipe stays honest — the PAYLOAD is bad
-            amount: MINT_AMOUNT,
-            tag: None,
-            public: true,
-        },
-        [Felt::from(0u32); 8],
-        1,
-        None,
-        &AttachmentPlan::default(),
-        rng_seed,
-    )?;
-    expect_reject(&mut pf, note, &payload, shell_error_by_name(expected_err)).await
-}
+// The bytes32 pad and non-canonical-limb families are no longer on-chain rejects, and cannot be.
+// The recipient does not travel as a bytes32 any more — it travels as the two account-id felts the
+// protocol's own procedures consume — so a dirty 16-byte pad and an out-of-field u64 limb are both
+// unrepresentable on the wire. Their rejects moved to compress time, where
+// `MintIntent::from_deposit_intent` refuses them with `AccountIdOutOfRange` and
+// `NonCanonicalAccountId`; the `mp-rej-remote-token-malformed` and `mp-rej-recipient-non-canonical`
+// vectors drive them in `mint_intent.rs`.
+//
+// What DOES remain on-chain is the structural validation of the two carried felts, because those
+// are attacker-supplied and the policy uses them to address the output note.
 
-/// The NONCANONICAL reject family, parametrized into one case table: an attested
-/// `remoteRecipient` whose prefix or suffix u64 region (bytes 16..24 / 24..32 of the bytes32)
-/// holds `u64::MAX` — a value `>= p` that would REDUCE mod the field — rejects in the standards
-/// `eth::build_felt` no-reduction round-trip (the standards `ERR_MERGE_OVERFLOW`, mirroring Rust
-/// `Felt::try_from`; one case per `build_felt` call site). The storage recipe stays honest — the
-/// PAYLOAD limb is what is bad, so the trap is attributable to the extraction guard alone.
-#[rstest]
-#[case::prefix(REMOTE_RECIPIENT_BYTE_OFF + 16, 38, 107)]
-#[case::suffix(REMOTE_RECIPIENT_BYTE_OFF + 24, 39, 108)]
+/// A carried recipient that is not a structurally valid account id is refused before the faucet
+/// writes it into the preimage.
+///
+/// This one cannot be left to the signature. A structurally invalid id would rebuild a perfectly
+/// consistent message — Circle could have signed exactly that recipient — and the mint would then
+/// create a P2ID note nobody can consume. Funds destroyed rather than a transaction rejected, so
+/// the guard has to run here.
 #[tokio::test]
-async fn mint_rejects_a_noncanonical_recipient(
-    #[case] limb_byte_off: usize,
-    #[case] nonce_variant: u8,
-    #[case] rng_seed: u64,
-) -> Result<()> {
+async fn mint_rejects_a_structurally_invalid_carried_recipient() -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 1).await?;
-    let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, nonce_variant);
-    payload[limb_byte_off..limb_byte_off + 8].copy_from_slice(&u64::MAX.to_be_bytes());
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 38);
+    let carried =
+        MintIntent::from_deposit_intent(&DepositIntent::new(&payload), pf.faucet_id, TEST_DOMAIN)
+            .map_err(|e| anyhow::anyhow!("the base payload compresses: {e}"))?;
+    // the low byte of an account id's suffix is reserved and must be zero
+    let dirty_suffix = Felt::new(carried.remote_recipient().suffix().as_canonical_u64() | 1)
+        .expect("setting the reserved low bit stays inside the field");
     let note = tampered_mint_note(
         &pf,
         &payload,
-        &StoragePlan {
-            recipient: pf.recipient_id,
-            amount: MINT_AMOUNT,
-            tag: None,
-            public: true,
-        },
-        [Felt::from(0u32); 8],
+        &honest_storage(&pf),
         1,
         None,
-        &AttachmentPlan::default(),
-        rng_seed,
+        &AttachmentPlan {
+            payload_felt_tamper: Some((MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF, dirty_suffix)),
+            ..AttachmentPlan::default()
+        },
+        107,
     )?;
     expect_reject(
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_MERGE_OVERFLOW"),
+        &ERR_ACCOUNT_ID_SUFFIX_LEAST_SIGNIFICANT_BYTE_MUST_BE_ZERO,
     )
     .await
 }
@@ -277,16 +250,11 @@ async fn the_honest_note_carries_the_merged_transport_and_the_routing_target() -
     // the attestation section sits FIRST (fixed width), which is what makes every offset below a
     // constant rather than a function of hookDataLen
     let attester = gen_attester(1, &payload);
-    let attestation = &transport[..TRANSPORT_INTENT_WORD_OFF * 4];
+    let attestation = &transport[..TRANSPORT_PAYLOAD_WORD_OFF * 4];
     assert_eq!(
         attestation.len(),
         ATTESTATION_FELTS,
         "the attestation section is {ATTESTATION_WORDS} words"
-    );
-    assert_eq!(
-        &attestation[ATTESTATION_FEE_FELT_OFF..ATTESTATION_FEE_FELT_OFF + 8],
-        &[Felt::from(0u32); 8],
-        "the feeAmount limbs are zero while relayer fees stay open"
     );
     assert_eq!(
         &attestation[ATTESTATION_PUBKEY_FELT_OFF..ATTESTATION_PUBKEY_FELT_OFF + 16],
@@ -299,30 +267,21 @@ async fn the_honest_note_carries_the_merged_transport_and_the_routing_target() -
         "the 17 signature felts sit at the documented offset"
     );
 
-    // the Circle-signed byte extent stays 1:1 identifiable: the intent starts at a FIXED felt
-    // offset and is the packed payload verbatim, zero-padded to the word boundary
-    let mut expected_intent =
-        xusdc_encoding::xreserve::encoding::deposit_intent_to_packed_felts(&payload)
-            .map_err(|e| anyhow::anyhow!("the payload packs: {e}"))?;
-    let signed_felts = expected_intent.len();
-    while !expected_intent.len().is_multiple_of(4) {
-        expected_intent.push(Felt::from(0u32));
-    }
+    // the intent itself does NOT travel. What follows the attestation is the carried payload —
+    // only the fields the faucet cannot derive — and the faucet rebuilds the signed message from
+    // it. That the two agree is TV-DUAL-6's job; here we only pin that the note carries exactly
+    // what the codec says it should.
+    let carried =
+        MintIntent::from_deposit_intent(&DepositIntent::new(&payload), pf.faucet_id, TEST_DOMAIN)
+            .map_err(|e| anyhow::anyhow!("the payload compresses: {e}"))?;
     assert_eq!(
-        &transport[TRANSPORT_INTENT_WORD_OFF * 4..],
-        expected_intent.as_slice(),
-        "the intent sub-region is the packed Circle-signed payload, verbatim"
+        &transport[TRANSPORT_PAYLOAD_WORD_OFF * 4..],
+        carried.to_felts().as_slice(),
+        "the payload sub-region is exactly the carried mint payload"
     );
-    assert_eq!(
-        transport.len(),
-        TRANSPORT_INTENT_WORD_OFF * 4 + expected_intent.len(),
-        "the merged attachment is exactly attestation + padded intent"
-    );
-    assert_eq!(
-        signed_felts,
-        payload.len().div_ceil(4),
-        "the Circle-signed byte extent is exactly the unpadded intent felts, starting at the fixed \
-         intent offset — the trailing word padding carries none of it"
+    assert!(
+        transport.len() < ATTESTATION_FELTS + payload.len().div_ceil(4),
+        "the transport is smaller than carrying the intent verbatim would have been"
     );
 
     // and the harness builds the PRODUCTION wire, not a look-alike: the same transport the
@@ -331,6 +290,7 @@ async fn the_honest_note_carries_the_merged_transport_and_the_routing_target() -
     let factory_note = XUsdcMintNote::create(
         pf.producer_id,
         pf.faucet_id,
+        TEST_DOMAIN,
         &payload,
         &MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes),
         &mut note_rng(90),
@@ -360,7 +320,6 @@ async fn mint_rejects_a_missing_transport_attachment() -> Result<()> {
         &pf,
         &payload,
         &honest_storage(&pf),
-        [Felt::from(0u32); 8],
         1,
         None,
         &AttachmentPlan {
@@ -389,7 +348,6 @@ async fn mint_rejects_a_missing_routing_target() -> Result<()> {
         &pf,
         &payload,
         &honest_storage(&pf),
-        [Felt::from(0u32); 8],
         1,
         None,
         &AttachmentPlan {
@@ -425,7 +383,6 @@ async fn mint_rejects_a_third_attachment(
         &pf,
         &payload,
         &honest_storage(&pf),
-        [Felt::from(0u32); 8],
         1,
         None,
         &plan,
@@ -451,7 +408,6 @@ async fn mint_rejects_a_truncated_transport() -> Result<()> {
         &pf,
         &payload,
         &honest_storage(&pf),
-        [Felt::from(0u32); 8],
         1,
         None,
         &AttachmentPlan {
@@ -490,7 +446,7 @@ async fn mint_rejects_a_truncated_transport() -> Result<()> {
 )]
 #[case::a_hook_data_len_lie(
     AttachmentPlan {
-        intent_hook_data_len_felt: Some(packed_hook_data_len(4)),
+        payload_hook_data_len_felt: Some(Felt::from(4u32)),
         ..AttachmentPlan::default()
     },
     32,
@@ -509,7 +465,6 @@ async fn mint_rejects_a_transport_length_mismatch(
         &pf,
         &payload,
         &honest_storage(&pf),
-        [Felt::from(0u32); 8],
         1,
         None,
         &plan,
@@ -535,11 +490,10 @@ async fn mint_rejects_a_non_u32_hook_data_len_limb() -> Result<()> {
         &pf,
         &payload,
         &honest_storage(&pf),
-        [Felt::from(0u32); 8],
         1,
         None,
         &AttachmentPlan {
-            intent_hook_data_len_felt: Some(
+            payload_hook_data_len_felt: Some(
                 Felt::new(1u64 << 32).expect("2^32 is inside the field"),
             ),
             ..AttachmentPlan::default()
@@ -583,7 +537,6 @@ async fn mint_rejects_a_tampered_attestation_sub_region(
         &pf,
         &payload,
         &honest_storage(&pf),
-        [Felt::from(0u32); 8],
         1,
         None,
         &AttachmentPlan {
@@ -612,7 +565,6 @@ async fn mint_rejects_a_tampered_intent_byte() -> Result<()> {
         &pf,
         &carried,
         &honest_storage(&pf),
-        [Felt::from(0u32); 8],
         1,
         Some(&signed),
         &AttachmentPlan::default(),

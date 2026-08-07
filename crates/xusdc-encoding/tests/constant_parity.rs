@@ -25,17 +25,18 @@ use miden_protocol::note::NoteAttachmentScheme;
 use miden_standards::note::NetworkAccountTarget;
 use xusdc_encoding::note::xreserve_mint::{
     XUSDC_DEPOSIT_SCALE_EXP, XUSDC_MINT_ATTESTATION_NUM_WORDS,
-    XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF,
+    XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
-    deposit_intent_field_offset, DepositIntentField, DEPOSIT_INTENT_HEADER_FELTS,
-    DEPOSIT_INTENT_HEADER_LEN, DEPOSIT_INTENT_MAGIC, DEPOSIT_INTENT_VERSION, ERR_MESSAGES,
-    PUBKEY_FELTS,
+    deposit_intent_field_offset, DepositIntentField, ACCOUNT_ID_BYTES, ACCOUNT_ID_FELTS,
+    ASSET_AMOUNT_BYTES, BYTES32_LEN, DEPOSIT_INTENT_HEADER_FELTS, DEPOSIT_INTENT_HEADER_LEN,
+    DEPOSIT_INTENT_MAGIC, DEPOSIT_INTENT_VERSION, EVM_ADDRESS_BYTES, EVM_ADDRESS_PACKED_LIMBS,
+    MINT_INTENT_FELTS, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF, MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF,
+    MINT_INTENT_LOCAL_TOKEN_FELT_OFF, MINT_INTENT_MAX_FEE_FELT_OFF, MINT_INTENT_NONCE_FELT_OFF,
+    MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
+    MINT_INTENT_SCALE_EXP, PUBKEY_FELTS,
 };
-use xusdc_encoding::{ENCODING_MOD_MASM, LAYOUT_MASM};
-
-/// The faucet shell module source, read test-side by reference.
-const SHELL_MASM: &str = include_str!("../../../asm/standards/xreserve/deposit_intent_parser.masm");
+use xusdc_encoding::{DEPOSIT_INTENT_MASM, MINT_INTENT_MASM};
 
 /// The faucet attestation verification attestation-verify shell module source, read test-side by reference.
 const ATTESTATION_VERIFY_MASM: &str =
@@ -52,20 +53,21 @@ const ATTESTER_ADMIN_MASM: &str =
 /// Faucet-owned shell error constants declared in MASM, pinned against the test-side
 /// `support::SHELL_ERR_TABLE` (the single Rust source).
 const SHELL_ERRORS_DECLARED: &[&str] = &[
-    "ERR_XRESERVE_WRONG_DOMAIN",
-    "ERR_XRESERVE_WRONG_IDENTIFIER",
+    // the DC-14 preimage writer (deposit_intent_builder.masm)
+    "ERR_XRESERVE_MINT_INTENT_LIMB",
+    "ERR_XRESERVE_DOMAIN_NOT_U32",
     // amount validation R-MINT-10 (F2's feeAmount==0 reuses ERR_XRESERVE_FEE_NONZERO, declared below; the old
     // R-MINT-11 <= maxFee compare + ERR_XRESERVE_FEE_OVER_MAX are subsumed and removed)
+    "ERR_XRESERVE_MINT_ZERO_AMOUNT",
+    "ERR_XRESERVE_MINT_AMOUNT_OVER_MAX",
     "ERR_XRESERVE_AMOUNT_BELOW_FEE",
     // the maxFee/fee staging's too-large guard (deposit_intent_parser.masm)
-    "ERR_X_TOO_LARGE",
     // replay protection R-MINT-12
     "ERR_XRESERVE_NONCE_REPLAY",
     // attestation verification R-MINT-13 / R-MINT-14 (attestation_verify.masm)
     "ERR_XRESERVE_DISALLOWED_PUB_KEY",
     "ERR_XRESERVE_SIG_INVALID",
     // F2 fee guard (deposit_intent_parser.masm; DEC-2 keep-zero)
-    "ERR_XRESERVE_FEE_NONZERO",
     // Transport-shape guards on the stock MintNote's attachments: the attachment set and the
     // merged transport's floor (mint_policy.masm), then the staged intent's own shape and length
     // (deposit_intent_parser.masm)
@@ -84,10 +86,13 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
 
 /// Expected `word("…")` slot-name constants of the shell module (name → label), pinned
 /// against the test-side label consts.
-const EXPECTED_SHELL_WORD_CONSTS: &[(&str, &str)] = &[
-    ("DOMAIN_CONFIG_SLOT", support::DOMAIN_CONFIG_SLOT_LABEL),
-    ("USED_NONCES_SLOT", support::USED_NONCES_SLOT_LABEL),
-];
+const EXPECTED_DEPOSIT_INTENT_WORD_CONSTS: &[(&str, &str)] =
+    &[("DOMAIN_CONFIG_SLOT", support::DOMAIN_CONFIG_SLOT_LABEL)];
+
+/// Expected `word("…")` slot-name constant of the mint-intent module: the nonce registry the
+/// replay guard reads, declared beside the nonce it keys on.
+const EXPECTED_MINT_INTENT_WORD_CONSTS: &[(&str, &str)] =
+    &[("USED_NONCES_SLOT", support::USED_NONCES_SLOT_LABEL)];
 
 /// Expected `word("…")` slot-name constants of the attestation verification attestation-verify shell module: NONE. It
 /// imports `XRESERVE_ATTESTERS_SLOT` (and the enabled marker) from the setter module rather than
@@ -120,30 +125,59 @@ const ATTESTATION_COVERED_NUMS: &[&str] = &["DIGEST_LO_LOC", "DIGEST_HI_LOC", "P
 /// policy-owned with no Rust counterpart, covered here.
 const MINT_POLICY_COVERED_NUMS: &[&str] = &[
     "XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME",
+    "XUSDC_MINT_ATTESTATION_NUM_FELTS",
+    "DEPOSIT_INTENT_PTR",
     "XUSDC_MINT_ATTESTATION_NUM_WORDS",
-    "XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF",
-    "XUSDC_MINT_TRANSPORT_FLOOR_WORDS",
-    "DEPOSIT_INTENT_HEADER_WORDS",
+    "MINT_INTENT_NUM_WORDS",
+    "XUSDC_MINT_TRANSPORT_FIXED_WORDS",
     "ASSET_VALUE_LOC",
     "RECIPIENT_LOC",
     "TAG_LOC",
     "NOTE_TYPE_LOC",
+    "HOOK_DATA_LEN_LOC",
+    "AMOUNT_LOC",
     "ATTACHMENT_COMMITMENTS_LOC",
+    "HASHED_NONCE_LOC",
+    "PREIMAGE_LOC",
+    "PREIMAGE_MAX_FELTS",
     "TRANSPORT_LOC",
     "ATTESTATION_LOC",
-    "ATTESTATION_FEE_AMOUNT_LOC",
     "ATTESTATION_PUBKEY_LOC",
     "ATTESTATION_SIGNATURE_LOC",
-    "NONCE_KEY_LOC",
-    "INTENT_LOC",
-    "INTENT_REMOTE_RECIPIENT_LOC",
-    "INTENT_NONCE_LOC",
+    "MINT_INTENT_LOC",
+    "MINT_INTENT_NONCE_LOC",
+    "MINT_INTENT_RECIPIENT_PREFIX_LOC",
+    "MINT_INTENT_RECIPIENT_SUFFIX_LOC",
+    "MINT_INTENT_MAX_FEE_LOC",
+    "MINT_INTENT_HOOK_DATA_LEN_LOC",
 ];
 
 /// Numeric-constant coverage sets (bidirectional sweep): every numeric const parsed
 /// from a MASM source must appear in its file's set — extending a MASM file with a new
 /// numeric constant REQUIRES a parity row here.
-const LAYOUT_COVERED_NUMS: &[&str] = &[
+const MINT_INTENT_COVERED_NUMS: &[&str] = &[
+    // carried-value widths: each carries a derived relation row below
+    "BYTES32_PACKED_LIMBS",
+    "EVM_ADDRESS_PACKED_LIMBS",
+    "ASSET_AMOUNT_PACKED_LIMBS",
+    "ACCOUNT_ID_FELTS",
+    // DC-14 carried felt offsets, each pinned directly against its Rust twin
+    "MINT_INTENT_NONCE_FELT_OFF",
+    "MINT_INTENT_LOCAL_TOKEN_FELT_OFF",
+    "MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF",
+    "MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF",
+    "MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF",
+    "MINT_INTENT_MAX_FEE_FELT_OFF",
+    "MINT_INTENT_HOOK_DATA_LEN_FELT_OFF",
+    "MINT_INTENT_FELTS",
+    "MINT_INTENT_WORDS",
+];
+
+/// The DepositIntent module's constants: the DC-1 wire offsets and packed compares (each with a
+/// parity row below), the right-alignment pads, the destination offsets `rebuild` derives from
+/// them (their operands carry the rows, and the derivation is one MASM line against one Rust
+/// line), and its `@locals` frame offsets, which have no Rust counterpart.
+const DEPOSIT_INTENT_COVERED_NUMS: &[&str] = &[
     "MAGIC_FELT_OFF",
     "VERSION_FELT_OFF",
     "AMOUNT_FELT_OFF",
@@ -156,14 +190,49 @@ const LAYOUT_COVERED_NUMS: &[&str] = &[
     "NONCE_FELT_OFF",
     "HOOK_DATA_LEN_FELT_OFF",
     "HOOK_DATA_FELT_OFF",
+    "BYTES32_ACCOUNT_ID_LIMB_OFF",
+    "BYTES32_EVM_ADDRESS_LIMB_OFF",
+    "UINT256_ASSET_AMOUNT_LIMB_OFF",
     "DEPOSIT_INTENT_MAGIC_PACKED",
     "DEPOSIT_INTENT_VERSION_PACKED",
-    "DEPOSIT_INTENT_HEADER_FELTS",
     "DEPOSIT_INTENT_HEADER_BYTES",
-    "BYTES_PER_FELT",
+    "DEPOSIT_INTENT_HEADER_WORDS",
+    "WRITE_AMOUNT_FELT_OFF",
+    "WRITE_REMOTE_TOKEN_FELT_OFF",
+    "WRITE_REMOTE_RECIPIENT_FELT_OFF",
+    "WRITE_LOCAL_TOKEN_FELT_OFF",
+    "WRITE_LOCAL_DEPOSITOR_FELT_OFF",
+    "WRITE_MAX_FEE_FELT_OFF",
+    "DEPOSIT_INTENT_PTR_LOC",
+    "MINT_INTENT_PTR_LOC",
+    "AMOUNT_LOC",
+    "HOOK_DATA_LEN_LOC",
 ];
-const ENCODING_COVERED_NUMS: &[&str] = &[];
-const SHELL_COVERED_NUMS: &[&str] = &["DEPOSIT_SCALE_EXP"];
+
+/// Evaluates a MASM numeric constant expression: a decimal or hex literal, a reference to a
+/// constant the same file already declared, or a `+`-chain of those. Returns `None` for anything
+/// else — a `word("…")` literal, a Word imported from another module, or a cross-file reference
+/// whose operand this file never declares — which leaves that constant out of the sweep exactly
+/// as it was before expressions were understood at all.
+///
+/// Resolving expressions is what lets a DERIVED constant carry a parity row. Without it a layout
+/// written as `A + B` would silently drop out of the bidirectional check, so keeping MASM readable
+/// would cost coverage.
+fn eval_masm_num(value: &str, known: &BTreeMap<String, u64>) -> Option<u64> {
+    value
+        .split('+')
+        .map(|term| {
+            let term = term.trim();
+            match term.strip_prefix("0x") {
+                Some(hex) => u64::from_str_radix(hex, 16).ok(),
+                None => term
+                    .parse::<u64>()
+                    .ok()
+                    .or_else(|| known.get(term).copied()),
+            }
+        })
+        .try_fold(0u64, |acc, term| acc.checked_add(term?))
+}
 
 /// Parses `const NAME = <value>` / `pub const NAME = <value>` lines from a MASM source.
 /// Returns (numeric constants, string constants, word("…") slot-name constants).
@@ -198,11 +267,7 @@ fn parse_masm_consts(
             if let Some(l) = label.strip_suffix("\")") {
                 words.insert(name, l.to_string());
             }
-        } else if let Some(hex) = value.strip_prefix("0x") {
-            if let Ok(v) = u64::from_str_radix(hex, 16) {
-                nums.insert(name, v);
-            }
-        } else if let Ok(v) = value.parse::<u64>() {
+        } else if let Some(v) = eval_masm_num(value, &nums) {
             nums.insert(name, v);
         }
     }
@@ -221,7 +286,8 @@ fn num(nums: &BTreeMap<String, u64>, name: &str, file: &str) -> u64 {
 /// limb base plus the merged transport's scheme / section-width / scale rows.
 #[test]
 fn masm_rust_constant_parity() {
-    let (nums, _, _) = parse_masm_consts(LAYOUT_MASM);
+    let (nums, _, _) = parse_masm_consts(DEPOSIT_INTENT_MASM);
+    let (mi_nums, _, _) = parse_masm_consts(MINT_INTENT_MASM);
 
     let offsets: [(&str, DepositIntentField); 12] = [
         ("MAGIC_FELT_OFF", DepositIntentField::Magic),
@@ -245,36 +311,131 @@ fn masm_rust_constant_parity() {
     ];
     for (masm_name, field) in offsets {
         assert_eq!(
-            num(&nums, masm_name, "layout.masm") * 4,
+            num(&nums, masm_name, "deposit_intent.masm") * 4,
             deposit_intent_field_offset(field) as u64,
             "DC-1 offset relation for {masm_name} (MASM felt offset x 4 == Rust byte offset)"
         );
     }
 
     assert_eq!(
-        num(&nums, "DEPOSIT_INTENT_MAGIC_PACKED", "layout.masm"),
+        num(&nums, "DEPOSIT_INTENT_MAGIC_PACKED", "deposit_intent.masm"),
         u32::from_le_bytes(DEPOSIT_INTENT_MAGIC.to_be_bytes()) as u64,
         "packed magic must be the u32-LE reinterpretation of the BE wire magic"
     );
     assert_eq!(
-        num(&nums, "DEPOSIT_INTENT_VERSION_PACKED", "layout.masm"),
+        num(
+            &nums,
+            "DEPOSIT_INTENT_VERSION_PACKED",
+            "deposit_intent.masm"
+        ),
         u32::from_le_bytes(DEPOSIT_INTENT_VERSION.to_be_bytes()) as u64,
         "packed version must be the u32-LE reinterpretation of the BE wire version"
     );
     assert_eq!(
-        num(&nums, "DEPOSIT_INTENT_HEADER_FELTS", "layout.masm"),
-        DEPOSIT_INTENT_HEADER_FELTS as u64,
-        "header felt count must match across languages"
-    );
-    assert_eq!(
-        num(&nums, "DEPOSIT_INTENT_HEADER_BYTES", "layout.masm"),
+        num(&nums, "DEPOSIT_INTENT_HEADER_BYTES", "deposit_intent.masm"),
         DEPOSIT_INTENT_HEADER_LEN as u64,
         "header byte length must match across languages"
     );
     assert_eq!(
-        num(&nums, "DEPOSIT_INTENT_HEADER_BYTES", "layout.masm"),
-        num(&nums, "DEPOSIT_INTENT_HEADER_FELTS", "layout.masm") * 4,
+        num(&nums, "DEPOSIT_INTENT_HEADER_BYTES", "deposit_intent.masm"),
+        DEPOSIT_INTENT_HEADER_FELTS as u64 * 4,
         "header byte length must be 4x the felt count (4 bytes per felt)"
+    );
+    // the header is a whole number of words, which is what lets the hookData tail start
+    // word-aligned and lets the writer zero the header word by word
+    assert_eq!(
+        num(&nums, "DEPOSIT_INTENT_HEADER_WORDS", "deposit_intent.masm") * 4,
+        DEPOSIT_INTENT_HEADER_FELTS as u64,
+        "header word count must be the felt count / 4"
+    );
+
+    // DC-14 sub-field widths. The MASM side counts packed limbs because it writes felts; the Rust
+    // side counts bytes because it writes bytes. Pinning the DERIVED relation — a value sits at
+    // the end of its 32-byte field, so its pad is the field minus its own width — is what keeps
+    // the two writers producing the same preimage.
+    let limb_relations: [(&str, usize); 4] = [
+        ("BYTES32_ACCOUNT_ID_LIMB_OFF", ACCOUNT_ID_BYTES),
+        ("BYTES32_EVM_ADDRESS_LIMB_OFF", EVM_ADDRESS_BYTES),
+        ("UINT256_ASSET_AMOUNT_LIMB_OFF", ASSET_AMOUNT_BYTES),
+        // a full-width bytes32 has no pad, which is the degenerate case of the same relation
+        ("MAGIC_FELT_OFF", BYTES32_LEN),
+    ];
+    for (masm_name, value_bytes) in limb_relations {
+        assert_eq!(
+            num(&nums, masm_name, "deposit_intent.masm") * 4,
+            (BYTES32_LEN - value_bytes) as u64,
+            "DC-14 right-alignment relation for {masm_name} (pad == 32 bytes - the value's width)"
+        );
+    }
+    let width_relations: [(&str, usize); 2] = [
+        ("BYTES32_PACKED_LIMBS", BYTES32_LEN),
+        ("ASSET_AMOUNT_PACKED_LIMBS", ASSET_AMOUNT_BYTES),
+    ];
+    for (masm_name, value_bytes) in width_relations {
+        assert_eq!(
+            num(&mi_nums, masm_name, "mint_intent.masm") * 4,
+            value_bytes as u64,
+            "DC-14 packed-limb width for {masm_name} (limbs x 4 == the value's byte width)"
+        );
+    }
+    assert_eq!(
+        num(&mi_nums, "EVM_ADDRESS_PACKED_LIMBS", "mint_intent.masm"),
+        EVM_ADDRESS_PACKED_LIMBS as u64,
+        "DC-14 evm-address limb count parity"
+    );
+    assert_eq!(
+        num(&mi_nums, "ACCOUNT_ID_FELTS", "mint_intent.masm"),
+        ACCOUNT_ID_FELTS as u64,
+        "DC-14 account-id felt-pair width parity"
+    );
+
+    // DC-14 carried-payload offsets. Both sides derive these from the widths above, so a width
+    // edit that lands on only one side moves the offsets apart and fails here.
+    let payload_offsets: [(&str, usize); 8] = [
+        ("MINT_INTENT_NONCE_FELT_OFF", MINT_INTENT_NONCE_FELT_OFF),
+        (
+            "MINT_INTENT_LOCAL_TOKEN_FELT_OFF",
+            MINT_INTENT_LOCAL_TOKEN_FELT_OFF,
+        ),
+        (
+            "MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF",
+            MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF,
+        ),
+        (
+            "MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF",
+            MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF,
+        ),
+        (
+            "MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF",
+            MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
+        ),
+        ("MINT_INTENT_MAX_FEE_FELT_OFF", MINT_INTENT_MAX_FEE_FELT_OFF),
+        (
+            "MINT_INTENT_HOOK_DATA_LEN_FELT_OFF",
+            MINT_INTENT_HOOK_DATA_LEN_FELT_OFF,
+        ),
+        ("MINT_INTENT_FELTS", MINT_INTENT_FELTS),
+    ];
+    for (masm_name, rust_value) in payload_offsets {
+        assert_eq!(
+            num(&mi_nums, masm_name, "mint_intent.masm"),
+            rust_value as u64,
+            "DC-14 carried-payload offset parity for {masm_name}"
+        );
+    }
+    // the payload block is a whole number of words, so the hookData tail that follows it starts
+    // word-aligned and the attestation section's width alone fixes where the payload begins
+    assert_eq!(
+        num(&mi_nums, "MINT_INTENT_FELTS", "mint_intent.masm") % 4,
+        0,
+        "the carried payload must be a whole number of words"
+    );
+    // DEV-5 pin: DC-14 zero-extends the carried AssetAmount back into its uint256 field, which is
+    // lossless ONLY at scale zero. A non-zero scale needs a new transport, not a new constant, so
+    // it has to fail here rather than ship a preimage that can never verify.
+    assert_eq!(
+        MINT_INTENT_SCALE_EXP, 0,
+        "DC-14 reconstruction is only invertible at scale zero (DEV-5 OPEN)"
     );
 
     // extra row: the affine-pubkey felt count
@@ -321,29 +482,21 @@ fn masm_rust_constant_parity() {
     // constant is an expression over that same constant, so pinning the Rust derivation against
     // the MASM operand is what keeps the two layouts one layout.
     assert_eq!(
-        XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF as u64,
+        XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF as u64,
         num(
             &policy_nums,
             "XUSDC_MINT_ATTESTATION_NUM_WORDS",
             "mint_policy.masm"
         ),
-        "the intent sub-region's word offset must be the attestation width on BOTH sides"
+        "the carried payload's word offset must be the attestation width on BOTH sides"
     );
-    let (shell_nums, _, _) = parse_masm_consts(SHELL_MASM);
+    // DC-5 scale parity is Rust-only now: the MASM side no longer HAS a scale, because the writer
+    // zero-extends the note's AssetAmount instead of verifying a witness against a staged uint256.
+    // The pin that matters is that both Rust constants agree on zero, which MINT_INTENT_SCALE_EXP
+    // asserts above.
     assert_eq!(
-        num(&shell_nums, "DEPOSIT_SCALE_EXP", "deposit_intent_parser.masm"),
-        XUSDC_DEPOSIT_SCALE_EXP as u64,
-        "DC-5 deposit-scale parity (MASM parser == Rust factory; DEV-5 OPEN, provisional scale-0 identity)"
-    );
-    // derived relation: the header word floor x 4 == the header felt count (60 / 4 = 15).
-    assert_eq!(
-        num(
-            &policy_nums,
-            "DEPOSIT_INTENT_HEADER_WORDS",
-            "mint_policy.masm"
-        ) * 4,
-        DEPOSIT_INTENT_HEADER_FELTS as u64,
-        "the intent sub-region's header word floor must be the packed header felt count / 4"
+        XUSDC_DEPOSIT_SCALE_EXP, MINT_INTENT_SCALE_EXP,
+        "the note factory and the DC-14 mirror must reduce at the same scale"
     );
     // rider A8 (ratified): the xUSDC scheme sits at >= 4 — clear of the protocol-reserved
     // "none" value 1 and the standard values 2 (NetworkAccountTarget, carried on this very
@@ -364,33 +517,23 @@ fn masm_rust_constant_parity() {
     );
 }
 
-/// Error-string parity, Rust → MASM: every Rust `ERR_*` MasmError has an identically-named MASM
-/// constant with a byte-identical message string. The shared limb guard is the encoding module's;
-/// the DepositIntent structural rejects belong to the parser module, so both sources are merged
-/// before the lookup (the names are unique, and the limb guard's string is identical in both).
-#[test]
-fn masm_rust_error_string_parity() {
-    let (_, mut strs, _) = parse_masm_consts(ENCODING_MOD_MASM);
-    let (_, parser_strs, _) = parse_masm_consts(SHELL_MASM);
-    strs.extend(parser_strs);
-    for (name, message) in ERR_MESSAGES {
-        let masm = strs.get(name).unwrap_or_else(|| {
-            panic!("the encoding or parser module must define const {name} = \"...\"")
-        });
-        assert_eq!(masm, message, "error message parity for {name}");
-    }
-}
+// Rust → MASM error-string parity has no rows left to check: the encoding crate declares no MASM
+// error constants of its own any more (see `error.rs`). Every MASM error the faucet raises is
+// faucet-owned and pinned by `masm_shell_error_string_parity` below, against the test-side
+// `support::SHELL_ERR_TABLE`.
 
 /// Shell error-string parity, test-side Rust → MASM: every DECLARED faucet shell error
 /// has an identically-named shell-module constant with the byte-identical
 /// `support::SHELL_ERR_TABLE` message.
 #[test]
 fn masm_shell_error_string_parity() {
-    // the faucet shell errors live across the three shell modules (deposit_intent_parser +
+    // the faucet shell errors live across four modules (mint_intent + deposit_intent +
     // attestation_verify + mint_policy); merge their string consts before the lookup.
-    let (_, mut strs, _) = parse_masm_consts(SHELL_MASM);
+    let (_, mut strs, _) = parse_masm_consts(DEPOSIT_INTENT_MASM);
+    let (_, mi_strs, _) = parse_masm_consts(MINT_INTENT_MASM);
     let (_, att_strs, _) = parse_masm_consts(ATTESTATION_VERIFY_MASM);
     let (_, policy_strs, _) = parse_masm_consts(MINT_POLICY_MASM);
+    strs.extend(mi_strs);
     strs.extend(att_strs);
     strs.extend(policy_strs);
     for name in SHELL_ERRORS_DECLARED {
@@ -413,23 +556,19 @@ fn masm_shell_error_string_parity() {
 fn masm_constants_bidirectional() {
     // every MASM-only string constant must be a known error (the encoding table or the faucet
     // shell table); a new one fails here until it gets a row
-    let known_err = |name: &str| {
-        ERR_MESSAGES.iter().any(|(n, _)| *n == name)
-            || support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name)
-    };
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 6] = [
-        ("layout.masm", LAYOUT_MASM, LAYOUT_COVERED_NUMS, &[]),
+    let known_err = |name: &str| support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name);
+    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 5] = [
         (
-            "encoding/mod.masm",
-            ENCODING_MOD_MASM,
-            ENCODING_COVERED_NUMS,
-            &[],
+            "mint_intent.masm",
+            MINT_INTENT_MASM,
+            MINT_INTENT_COVERED_NUMS,
+            EXPECTED_MINT_INTENT_WORD_CONSTS,
         ),
         (
-            "deposit_intent_parser.masm",
-            SHELL_MASM,
-            SHELL_COVERED_NUMS,
-            EXPECTED_SHELL_WORD_CONSTS,
+            "deposit_intent.masm",
+            DEPOSIT_INTENT_MASM,
+            DEPOSIT_INTENT_COVERED_NUMS,
+            EXPECTED_DEPOSIT_INTENT_WORD_CONSTS,
         ),
         (
             "attestation_verify.masm",
@@ -439,7 +578,7 @@ fn masm_constants_bidirectional() {
         ),
         // the attestation mint policy: declares the transport + binding errors (known
         // shell errors via SHELL_ERR_TABLE) and the covered/parity-asserted numeric consts; its
-        // slot consts stay IMPORTED (USED_NONCES from deposit_intent_parser) — no word("…")
+        // slot consts stay IMPORTED (USED_NONCES from mint_intent) — no word("…")
         // consts of its own (the NONCE_USED_MARKER Word array literal is not parity-parsed).
         (
             "mint_policy.masm",

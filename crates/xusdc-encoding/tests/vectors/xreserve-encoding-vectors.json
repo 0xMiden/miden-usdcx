@@ -77,8 +77,7 @@
         ],
         "scale_exp": 6,
         "tv": [
-          "TV-AMT-1",
-          "TV-DUAL-2"
+          "TV-AMT-1"
         ],
         "uint256_be": "0x00000000000000000000000000000000000000000000000000000000000f4240"
       },
@@ -100,8 +99,7 @@
         ],
         "scale_exp": 6,
         "tv": [
-          "TV-AMT-1",
-          "TV-DUAL-2"
+          "TV-AMT-1"
         ],
         "uint256_be": "0x00000000000000000000000000000000000000000000000001b69b4ba62bad00"
       },
@@ -123,8 +121,7 @@
         ],
         "scale_exp": 0,
         "tv": [
-          "TV-AMT-1",
-          "TV-DUAL-2"
+          "TV-AMT-1"
         ],
         "uint256_be": "0x000000000000000000000000000000000000000000000000000000000000002a"
       },
@@ -146,8 +143,7 @@
         ],
         "scale_exp": 18,
         "tv": [
-          "TV-AMT-1",
-          "TV-DUAL-2"
+          "TV-AMT-1"
         ],
         "uint256_be": "0x0000000000000000000000000000000000000000000000004563918244f40000"
       },
@@ -169,8 +165,7 @@
         ],
         "scale_exp": 6,
         "tv": [
-          "TV-AMT-2",
-          "TV-DUAL-2"
+          "TV-AMT-2"
         ],
         "uint256_be": "0x00000000000000000000000000000000000000000007a11ffff85ee000000000"
       },
@@ -192,14 +187,13 @@
         ],
         "scale_exp": 0,
         "tv": [
-          "TV-AMT-2",
-          "TV-DUAL-2"
+          "TV-AMT-2"
         ],
         "uint256_be": "0x0000000000000000000000000000000000000000000000007fffffff80000000"
       },
       {
         "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
-        "derivation": "x = (2^63 - 2^31 + 1) * 10^6, post-scale y = MAX + 1 must reject (no saturation); the MASM witness carries the true over-maximum quotient",
+        "derivation": "x = (2^63 - 2^31 + 1) * 10^6, post-scale y = MAX + 1 must reject (no saturation)",
         "expected_variant": "AmountOverCap",
         "id": "amt-rej-cap",
         "kind": "reject",
@@ -213,14 +207,11 @@
           3764320511,
           1078071040
         ],
-        "masm_err": "ERR_Y_TOO_LARGE",
         "scale_exp": 6,
         "tv": [
-          "TV-AMT-3",
-          "TV-DUAL-2"
+          "TV-AMT-3"
         ],
-        "uint256_be": "0x00000000000000000000000000000000000000000007a11ffff85ee0000f4240",
-        "witness_y": "9223372034707292161"
+        "uint256_be": "0x00000000000000000000000000000000000000000007a11ffff85ee0000f4240"
       },
       {
         "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
@@ -238,14 +229,11 @@
           0,
           0
         ],
-        "masm_err": "STD_ERR_X_TOO_LARGE",
         "scale_exp": 6,
         "tv": [
-          "TV-AMT-4",
-          "TV-DUAL-2"
+          "TV-AMT-4"
         ],
-        "uint256_be": "0x0000000000000000000000000000000400000000000000000000000000000000",
-        "witness_y": "0"
+        "uint256_be": "0x0000000000000000000000000000000400000000000000000000000000000000"
       },
       {
         "cite": "(scale 0..=18)",
@@ -263,58 +251,11 @@
           0,
           1078071040
         ],
-        "masm_err": "ERR_SCALE_AMOUNT_EXCEEDED_LIMIT",
         "scale_exp": 20,
         "tv": [
-          "TV-AMT-7",
-          "TV-DUAL-2"
+          "TV-AMT-7"
         ],
-        "uint256_be": "0x00000000000000000000000000000000000000000000000000000000000f4240",
-        "witness_y": "0"
-      },
-      {
-        "cite": "DEV-5",
-        "derivation": "x = 5*10^6 at scale 6 (true y = 5); an over-claimed witness y = 6 must trap the verifier's no-underflow subtract",
-        "id": "amt-rej-witness-over",
-        "kind": "reject",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          1078676480
-        ],
-        "masm_err": "ERR_UNDERFLOW",
-        "mode": "masm-only",
-        "scale_exp": 6,
-        "tv": [],
-        "uint256_be": "0x00000000000000000000000000000000000000000000000000000000004c4b40",
-        "witness_y": "6"
-      },
-      {
-        "cite": "DEV-5",
-        "derivation": "x = 5*10^6 at scale 6 (true y = 5); an under-claimed witness y = 4 leaves remainder 10^6 >= 10^s and must trap the verifier's remainder bound",
-        "id": "amt-rej-witness-under",
-        "kind": "reject",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          1078676480
-        ],
-        "masm_err": "ERR_REMAINDER_TOO_LARGE",
-        "mode": "masm-only",
-        "scale_exp": 6,
-        "tv": [],
-        "uint256_be": "0x00000000000000000000000000000000000000000000000000000000004c4b40",
-        "witness_y": "4"
+        "uint256_be": "0x00000000000000000000000000000000000000000000000000000000000f4240"
       },
       {
         "b_le_limbs": [
@@ -328,7 +269,7 @@
           2156142080
         ],
         "b_uint256_be": "0x00000000000000000000000000000000000000000000000000000000001e8480",
-        "cite": "CIR-MINT-PRE-8/9 ; D5b",
+        "cite": "CIR-MINT-PRE-8/9 ; amount validation",
         "derivation": "1 < 2 after reduction",
         "ge_result": false,
         "id": "amt-ge-lt",
@@ -361,7 +302,7 @@
           3234213120
         ],
         "b_uint256_be": "0x00000000000000000000000000000000000000000000000000000000002dc6c0",
-        "cite": "CIR-MINT-PRE-8/9 ; D5b",
+        "cite": "CIR-MINT-PRE-8/9 ; amount validation",
         "derivation": "3 == 3 after reduction",
         "ge_result": true,
         "id": "amt-ge-eq",
@@ -394,7 +335,7 @@
           2156142080
         ],
         "b_uint256_be": "0x00000000000000000000000000000000000000000000000000000000001e8480",
-        "cite": "CIR-MINT-PRE-8/9 ; D5b",
+        "cite": "CIR-MINT-PRE-8/9 ; amount validation",
         "derivation": "5 > 2 after reduction",
         "ge_result": true,
         "id": "amt-ge-gt",
@@ -437,26 +378,6 @@
           "TV-AMT-6"
         ],
         "uint256_be": "0x000000000000000000000000000000000000000000000000000000000016e3db"
-      },
-      {
-        "cite": "BUILDER-GATES G-MASM",
-        "derivation": "staged 'limb' felt = 2^32 is not a valid u32; the reducer's input guard must trap (unrepresentable in the Rust [u32;8] API)",
-        "id": "amt-guard-limb-not-u32",
-        "kind": "guard",
-        "masm_err": "ERR_FELT_OUT_OF_FIELD",
-        "mode": "masm-only",
-        "scale_exp": 6,
-        "staging_felts": [
-          "0x1",
-          "0x0",
-          "0x0",
-          "0x0",
-          "0x0",
-          "0x100000000",
-          "0x0",
-          "0x0"
-        ],
-        "tv": []
       }
     ],
     "att": [
@@ -3075,6 +2996,316 @@
         ],
         "tv": [
           "TV-DI-7"
+        ]
+      }
+    ],
+    "mi": [
+      {
+        "amount_felt": "0xf4240",
+        "carried_felts": [
+          "0xd3d2d1d0",
+          "0xd7d6d5d4",
+          "0xdbdad9d8",
+          "0xdfdedddc",
+          "0xe3e2e1e0",
+          "0xe7e6e5e4",
+          "0xebeae9e8",
+          "0xefeeedec",
+          "0xb3b2b1b0",
+          "0xb7b6b5b4",
+          "0xbbbab9b8",
+          "0xbfbebdbc",
+          "0xc3c2c1c0",
+          "0xc3c2c1c0",
+          "0xc7c6c5c4",
+          "0xcbcac9c8",
+          "0xcfcecdcc",
+          "0xd3d2d1d0",
+          "0x8110548cc4185201",
+          "0x140bd1325ff0800",
+          "0x1",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "cite": "DC-14 + DEV-10 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
+        "derivation": "DC-14 shaped intent, no hookData: 24 carried felts, 60 rebuilt felts",
+        "faucet_prefix_felt": "0x320a8188931a401",
+        "faucet_suffix_felt": "0x38036a64a672c00",
+        "id": "mi-pos-empty-hookdata",
+        "kind": "accept",
+        "payload_hex": "0x5a2e0acd0000000100000000000000000000000000000000000000000000000000000000000f424000000007000000000000000000000000000000000320a8188931a401038036a64a672c00000000000000000000000000000000008110548cc41852010140bd1325ff0800000000000000000000000000b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3000000000000000000000000c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d30000000000000000000000000000000000000000000000000000000000000001d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef00000000",
+        "rebuilt_preimage_felts": [
+          "0xcd0a2e5a",
+          "0x1000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x40420f00",
+          "0x7000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x18a82003",
+          "0x1a43189",
+          "0xa6368003",
+          "0x2c674a",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x8c541081",
+          "0x15218c4",
+          "0x13bd4001",
+          "0x8ff25",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0xb3b2b1b0",
+          "0xb7b6b5b4",
+          "0xbbbab9b8",
+          "0xbfbebdbc",
+          "0xc3c2c1c0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0xc3c2c1c0",
+          "0xc7c6c5c4",
+          "0xcbcac9c8",
+          "0xcfcecdcc",
+          "0xd3d2d1d0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x1000000",
+          "0xd3d2d1d0",
+          "0xd7d6d5d4",
+          "0xdbdad9d8",
+          "0xdfdedddc",
+          "0xe3e2e1e0",
+          "0xe7e6e5e4",
+          "0xebeae9e8",
+          "0xefeeedec",
+          "0x0"
+        ],
+        "remote_domain": 7,
+        "tv": [
+          "TV-DUAL-6"
+        ]
+      },
+      {
+        "amount_felt": "0xf4240",
+        "carried_felts": [
+          "0xdbdad9d8",
+          "0xdfdedddc",
+          "0xe3e2e1e0",
+          "0xe7e6e5e4",
+          "0xebeae9e8",
+          "0xefeeedec",
+          "0xf3f2f1f0",
+          "0xf7f6f5f4",
+          "0xb3b2b1b0",
+          "0xb7b6b5b4",
+          "0xbbbab9b8",
+          "0xbfbebdbc",
+          "0xc3c2c1c0",
+          "0xc3c2c1c0",
+          "0xc7c6c5c4",
+          "0xcbcac9c8",
+          "0xcfcecdcc",
+          "0xd3d2d1d0",
+          "0x8110548cc4185201",
+          "0x140bd1325ff0800",
+          "0x1",
+          "0xa",
+          "0x0",
+          "0x0",
+          "0xe3e2e1e0",
+          "0xe7e6e5e4",
+          "0xe9e8"
+        ],
+        "cite": "DC-14 + DEV-10 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
+        "derivation": "DC-14 shaped intent, hookDataLen = 10: 24 + 3 carried felts, 63 rebuilt felts",
+        "faucet_prefix_felt": "0x320a8188931a401",
+        "faucet_suffix_felt": "0x38036a64a672c00",
+        "id": "mi-pos-hookdata",
+        "kind": "accept",
+        "payload_hex": "0x5a2e0acd0000000100000000000000000000000000000000000000000000000000000000000f424000000007000000000000000000000000000000000320a8188931a401038036a64a672c00000000000000000000000000000000008110548cc41852010140bd1325ff0800000000000000000000000000b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3000000000000000000000000c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d30000000000000000000000000000000000000000000000000000000000000001d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f70000000ae0e1e2e3e4e5e6e7e8e9",
+        "rebuilt_preimage_felts": [
+          "0xcd0a2e5a",
+          "0x1000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x40420f00",
+          "0x7000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x18a82003",
+          "0x1a43189",
+          "0xa6368003",
+          "0x2c674a",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x8c541081",
+          "0x15218c4",
+          "0x13bd4001",
+          "0x8ff25",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0xb3b2b1b0",
+          "0xb7b6b5b4",
+          "0xbbbab9b8",
+          "0xbfbebdbc",
+          "0xc3c2c1c0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0xc3c2c1c0",
+          "0xc7c6c5c4",
+          "0xcbcac9c8",
+          "0xcfcecdcc",
+          "0xd3d2d1d0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x1000000",
+          "0xdbdad9d8",
+          "0xdfdedddc",
+          "0xe3e2e1e0",
+          "0xe7e6e5e4",
+          "0xebeae9e8",
+          "0xefeeedec",
+          "0xf3f2f1f0",
+          "0xf7f6f5f4",
+          "0xa000000",
+          "0xe3e2e1e0",
+          "0xe7e6e5e4",
+          "0xe9e8"
+        ],
+        "remote_domain": 7,
+        "tv": [
+          "TV-DUAL-6"
+        ]
+      },
+      {
+        "cite": "DC-14 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
+        "derivation": "localToken has non-zero bytes in the leading 12-byte pad, so it is not a 20-byte EVM address",
+        "expected_variant": "FieldNotEvmAddress",
+        "faucet_prefix_felt": "0x320a8188931a401",
+        "faucet_suffix_felt": "0x38036a64a672c00",
+        "id": "mi-rej-local-token-not-address",
+        "kind": "reject",
+        "payload_hex": "0x5a2e0acd0000000100000000000000000000000000000000000000000000000000000000000f424000000007000000000000000000000000000000000320a8188931a401038036a64a672c00000000000000000000000000000000008110548cc41852010140bd1325ff0800b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecf000000000000000000000000c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d30000000000000000000000000000000000000000000000000000000000000001d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef00000000",
+        "remote_domain": 7,
+        "tv": [
+          "TV-DUAL-6"
+        ]
+      },
+      {
+        "cite": "DC-14 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
+        "derivation": "localDepositor has non-zero bytes in the leading 12-byte pad",
+        "expected_variant": "FieldNotEvmAddress",
+        "faucet_prefix_felt": "0x320a8188931a401",
+        "faucet_suffix_felt": "0x38036a64a672c00",
+        "id": "mi-rej-local-depositor-not-address",
+        "kind": "reject",
+        "payload_hex": "0x5a2e0acd0000000100000000000000000000000000000000000000000000000000000000000f424000000007000000000000000000000000000000000320a8188931a401038036a64a672c00000000000000000000000000000000008110548cc41852010140bd1325ff0800000000000000000000000000b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf0000000000000000000000000000000000000000000000000000000000000001d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef00000000",
+        "remote_domain": 7,
+        "tv": [
+          "TV-DUAL-6"
+        ]
+      },
+      {
+        "cite": "DC-14 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
+        "derivation": "the intent's remoteDomain is 7 but the faucet is configured for 8",
+        "expected_variant": "RemoteDomainMismatch",
+        "faucet_prefix_felt": "0x320a8188931a401",
+        "faucet_suffix_felt": "0x38036a64a672c00",
+        "id": "mi-rej-domain-mismatch",
+        "kind": "reject",
+        "payload_hex": "0x5a2e0acd0000000100000000000000000000000000000000000000000000000000000000000f424000000007000000000000000000000000000000000320a8188931a401038036a64a672c00000000000000000000000000000000008110548cc41852010140bd1325ff0800000000000000000000000000b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3000000000000000000000000c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d30000000000000000000000000000000000000000000000000000000000000001d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef00000000",
+        "remote_domain": 8,
+        "tv": [
+          "TV-DUAL-6"
+        ]
+      },
+      {
+        "cite": "DC-14 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
+        "derivation": "remoteToken is a well-formed account id, but a different faucet's",
+        "expected_variant": "RemoteTokenMismatch",
+        "faucet_prefix_felt": "0x320a8188931a401",
+        "faucet_suffix_felt": "0x38036a64a672c00",
+        "id": "mi-rej-remote-token-mismatch",
+        "kind": "reject",
+        "payload_hex": "0x5a2e0acd0000000100000000000000000000000000000000000000000000000000000000000f424000000007000000000000000000000000000000008430fc24320cdd01726fbe7dcfa27200000000000000000000000000000000008110548cc41852010140bd1325ff0800000000000000000000000000b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3000000000000000000000000c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d30000000000000000000000000000000000000000000000000000000000000001d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef00000000",
+        "remote_domain": 7,
+        "tv": [
+          "TV-DUAL-6"
+        ]
+      },
+      {
+        "cite": "DC-14 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
+        "derivation": "remoteToken has non-zero bytes in the leading 16-byte account-id pad",
+        "expected_variant": "AccountIdOutOfRange",
+        "faucet_prefix_felt": "0x320a8188931a401",
+        "faucet_suffix_felt": "0x38036a64a672c00",
+        "id": "mi-rej-remote-token-malformed",
+        "kind": "reject",
+        "payload_hex": "0x5a2e0acd0000000100000000000000000000000000000000000000000000000000000000000f424000000007a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf000000000000000000000000000000008110548cc41852010140bd1325ff0800000000000000000000000000b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3000000000000000000000000c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d30000000000000000000000000000000000000000000000000000000000000001d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef00000000",
+        "remote_domain": 7,
+        "tv": [
+          "TV-DUAL-6"
+        ]
+      },
+      {
+        "cite": "DC-14 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
+        "derivation": "maxFee exceeds AssetAmount::MAX, so it cannot be carried as one felt",
+        "expected_variant": "FieldNotAssetAmount",
+        "faucet_prefix_felt": "0x320a8188931a401",
+        "faucet_suffix_felt": "0x38036a64a672c00",
+        "id": "mi-rej-max-fee-over-cap",
+        "kind": "reject",
+        "payload_hex": "0x5a2e0acd0000000100000000000000000000000000000000000000000000000000000000000f424000000007000000000000000000000000000000000320a8188931a401038036a64a672c00000000000000000000000000000000008110548cc41852010140bd1325ff0800000000000000000000000000b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3000000000000000000000000c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d30000000000000000000000000000000000000000000000007fffffff80000001d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef00000000",
+        "remote_domain": 7,
+        "tv": [
+          "TV-DUAL-6"
+        ]
+      },
+      {
+        "cite": "DC-14 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
+        "derivation": "remoteRecipient prefix=suffix=7 is in-field but not a canonical account id",
+        "expected_variant": "NonCanonicalAccountId",
+        "faucet_prefix_felt": "0x320a8188931a401",
+        "faucet_suffix_felt": "0x38036a64a672c00",
+        "id": "mi-rej-recipient-non-canonical",
+        "kind": "reject",
+        "payload_hex": "0x5a2e0acd0000000100000000000000000000000000000000000000000000000000000000000f424000000007000000000000000000000000000000000320a8188931a401038036a64a672c000000000000000000000000000000000000000000000000070000000000000007000000000000000000000000b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3000000000000000000000000c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d30000000000000000000000000000000000000000000000000000000000000001d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef00000000",
+        "remote_domain": 7,
+        "tv": [
+          "TV-DUAL-6"
         ]
       }
     ]

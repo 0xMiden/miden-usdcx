@@ -53,7 +53,7 @@ use crate::assertions_cf::{ERR_LACKS_ROLE, ERR_NOT_OWNER};
 use crate::client::{build_client, os_seed, HarnessClient};
 use crate::config::RunConfig;
 use crate::deploy::build_faucet_account;
-use crate::mintburn::{self, lnv2_domain_params, raw_for_units};
+use crate::mintburn::{self, lnv2_domain_params, raw_for_units, MINT_DOMAIN};
 use crate::observations_cf::{
     AdminGateReject, C1SetAttester, C2MinBurn, C3MaxSupply, C4Pause, C5RoleRotation, RowF,
     RowsCfObservations, Verdict, Word4,
@@ -440,7 +440,7 @@ impl Driver {
             };
             attester.attestation_for(&payload)
         };
-        XUsdcMintNote::create(sender, f, &payload, &attestation, self.hc.client.rng())
+        XUsdcMintNote::create(sender, f, MINT_DOMAIN, &payload, &attestation, self.hc.client.rng())
             .context("building the XUsdcMintNote probe")
     }
     fn burn_note(&mut self, units: u64, salt: u8) -> Result<Note> {

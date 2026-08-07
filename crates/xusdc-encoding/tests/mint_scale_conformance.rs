@@ -37,14 +37,18 @@ use miden_testing::MockChain;
 use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
-use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
-use xusdc_encoding::vectors::{load, DiVector};
+use xusdc_encoding::note::xreserve_mint::{
+    MintAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
+};
+use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, bytes32_to_storage_map_key};
 
 // CIRCLE-FORMAT FIXTURE VALUES
 // ================================================================================================
 
-const BASE_VECTOR: &str = "di-pos-empty-hookdata";
+// the DC-14 rows are the ones whose localToken / localDepositor are address-shaped,
+// which the mint transport requires
+const BASE_VECTOR: &str = "mi-pos-empty-hookdata";
 
 /// The headline Circle deposit: 100.000000 USDC expressed in 6-decimal smallest units. Written as
 /// a literal on purpose — it is a WIRE value, not something derived from any local scale constant.
@@ -94,13 +98,13 @@ fn blk_manager() -> AccountId {
     test_account_id(4)
 }
 
-fn di(id: &str) -> &'static DiVector {
+fn mi(id: &str) -> &'static MiVector {
     load()
         .families
-        .di
+        .mi
         .iter()
         .find(|v| v.id == id)
-        .unwrap_or_else(|| panic!("canonical artifact is missing di vector {id}"))
+        .unwrap_or_else(|| panic!("canonical artifact is missing mp vector {id}"))
 }
 
 /// The canonical accept payload with the Circle `amount` / `maxFee` spliced in, `remoteRecipient`
@@ -113,7 +117,7 @@ fn payload_for(
     amount: u64,
     nonce_variant: u8,
 ) -> Vec<u8> {
-    let mut payload = di(BASE_VECTOR).bytes();
+    let mut payload = mi(BASE_VECTOR).payload();
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
@@ -262,6 +266,7 @@ async fn mint_via_production_note(
     let note = XUsdcMintNote::create(
         pf.producer_id,
         pf.faucet_id,
+        TEST_DOMAIN,
         payload,
         &attestation_for(1, payload),
         &mut note_rng(rng_seed),
@@ -461,28 +466,46 @@ async fn production_mint_leaves_no_fractional_remainder() -> Result<()> {
     Ok(())
 }
 
-// 4 — THE SOURCE PIN: the shipped faucet declares the identity scale
+// 4 — THE SOURCE PIN: the shipped faucet writes the amount at the identity scale
 // ================================================================================================
 
 /// The behavioural tests above are the real gate; this reads the shipped MASM so a regression that
-/// re-introduces a placeholder scale names itself in the failure output instead of surfacing only
-/// as an arithmetic mismatch three tests up.
+/// re-introduces a rescale names itself in the failure output instead of surfacing only as an
+/// arithmetic mismatch three tests up.
+///
+/// Under `DC-14` the scale is no longer a constant the faucet applies — it is structural. The
+/// writer stores the note's `AssetAmount` as two byte-swapped limbs at its uint256 field's low
+/// eight bytes, which IS `y = x` zero-extended. Anything other than the identity would have to
+/// reconstruct the dropped remainder, which the note does not carry, so a rescale cannot be
+/// introduced here without changing the transport (`DEV-5` stays OPEN).
 #[test]
-fn shipped_faucet_declares_identity_deposit_scale() -> Result<()> {
+fn shipped_faucet_writes_the_amount_at_the_identity_scale() -> Result<()> {
     let src = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../asm/standards/xreserve/deposit_intent_parser.masm"),
+            .join("../../asm/standards/xreserve/deposit_intent.masm"),
     )
-    .context("reading the shipped amount/fee stage source")?;
-    let decl = src
-        .lines()
-        .map(str::trim)
-        .find(|line| line.starts_with("const DEPOSIT_SCALE_EXP"))
-        .context("the amount/fee stage declares DEPOSIT_SCALE_EXP")?;
+    .context("reading the shipped deposit-intent module source")?;
+    assert!(
+        src.contains(
+            "const WRITE_AMOUNT_FELT_OFF = AMOUNT_FELT_OFF + UINT256_ASSET_AMOUNT_LIMB_OFF"
+        ),
+        "the writer must place the amount at the uint256's low eight bytes — the zero-extension \
+         that makes the identity scale structural"
+    );
+    // scoped to `rebuild`'s own body: the module still HOSTS the DC-5 reducer for DEV-5's sake,
+    // and its signature names a scale exponent. What must stay scale-free is the write path.
+    let body = src
+        .split_once("pub proc rebuild")
+        .and_then(|(_, rest)| rest.split_once("\nend\n"))
+        .map(|(body, _)| body)
+        .context("the module declares pub proc rebuild")?;
+    assert!(
+        !body.to_ascii_lowercase().contains("scale"),
+        "the writer applies no scale at all; a scale here would mean a rescale crept back"
+    );
     assert_eq!(
-        decl, "const DEPOSIT_SCALE_EXP = 0",
-        "the faucet must apply NO rescale: Circle's on-wire amount is 6-decimal and xUSDC is \
-         6-decimal, so y = floor(x / 10^0) = x (the provisional scale-0 position; DEV-5 OPEN)"
+        XUSDC_DEPOSIT_SCALE_EXP, 0,
+        "the note factory must reduce at the same identity scale the writer expands at"
     );
     Ok(())
 }

@@ -34,12 +34,20 @@ const TOKEN_SUPPLY: u64 = 0;
 
 // The baseline composition anchors, as their stable `Debug`/`Display` renderings (captured from the
 // pre-change composition at SEED). Comparing the rendered strings sidesteps any felt-repr ambiguity.
+//
+// Re-captured when the mint intent took ownership of its own admissibility checks (`validate`,
+// `hashed_nonce` and the replay guard moved out of the deposit-intent module, and `rebuild` lost
+// them), the unused `verify_uint256_to_asset_amount` was removed, and the nonce copy became two
+// word moves instead of eight element moves. Three of the four anchors moved with that — the code commitment directly, the storage
+// digest because the active mint policy is stored as `check_policy`'s MAST root, and the initial
+// commitment because it covers both. The account id did NOT move, which is what says the seed
+// derivation and the slot LAYOUT are untouched: only procedure code and the root it is named by.
 const GOLDEN_INITIAL_COMMITMENT: &str =
-    "Word([3520431078798775920, 10430867718293530017, 14630533360089816843, 1581504771049878528])";
+    "Word([1052646678099504404, 463462926362689613, 17653851081971408789, 2407414798603717391])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([4795957935671222943, 8323907530742077123, 15290569741410167257, 12045743130653956173])";
+    "Word([16976291790698015816, 5888415912956684650, 4290450764110773212, 7150546299912713910])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([17347449617239272321, 10069560592056632855, 1440135642858094890, 476100099933957087])";
+    "Word([2490542360978853948, 16780434252263796967, 2203274247233403944, 6602689817247658489])";
 const GOLDEN_ACCOUNT_ID: &str = "0x070707060707073107070707070707";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a

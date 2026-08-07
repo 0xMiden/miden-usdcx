@@ -44,7 +44,7 @@ use crate::config::RunConfig;
 use crate::deploy::build_faucet_account;
 use crate::mintburn::{
     self, fee_limbs_for, hook_data_len, mint_note_with_fee, mint_payload_own_id, nonce_key,
-    raw_for_units, BASE_VECTOR, HOOKDATA_VECTOR,
+    raw_for_units, BASE_VECTOR, HOOKDATA_VECTOR, MINT_DOMAIN,
 };
 use crate::observations_cf::{Verdict, Word4};
 use crate::observations_de::{MintHappy, MintNegative, RowsDeObservations};
@@ -388,7 +388,7 @@ impl Driver {
             salt,
         );
         let attestation = self.actors.attester.attestation_for(&payload);
-        let note = XUsdcMintNote::create(sender, f, &payload, &attestation, self.hc.client.rng())
+        let note = XUsdcMintNote::create(sender, f, MINT_DOMAIN, &payload, &attestation, self.hc.client.rng())
             .context("building a valid XUsdcMintNote")?;
         Ok((note, payload))
     }
@@ -410,7 +410,7 @@ async fn run_mint_happy(
     let recipient_balance_before = d.balance_of(recipient).await?;
 
     let (note, payload) = d.valid_mint(vector_id, units, salt)?;
-    let key = nonce_key(&payload); // the mint sets SERIAL_NUM = bytes32_to_key(nonce)
+    let key = nonce_key(&payload); // the mint sets SERIAL_NUM = bytes32_to_storage_map_key(nonce)
 
     // Commit the mint via path N (the ntx-builder consumes the routed allowlisted note).
     let committed = d
@@ -469,7 +469,7 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
         let sender = d.owner();
         let attestation = d.actors.attester.attestation_for(replay_payload);
         let note =
-            XUsdcMintNote::create(sender, f, replay_payload, &attestation, d.hc.client.rng())
+            XUsdcMintNote::create(sender, f, MINT_DOMAIN, replay_payload, &attestation, d.hc.client.rng())
                 .context("building the replay mint note")?;
         let key = nonce_key(replay_payload);
         out.push(
@@ -500,7 +500,7 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
         );
         // A well-formed ECDSA signature over a digest that is NOT keccak256(payload).
         let attestation = d.actors.attester.attestation_over_digest([0xAB; 32]);
-        let note = XUsdcMintNote::create(sender, f, &payload, &attestation, d.hc.client.rng())
+        let note = XUsdcMintNote::create(sender, f, MINT_DOMAIN, &payload, &attestation, d.hc.client.rng())
             .context("building the forged-signature mint note")?;
         let key = nonce_key(&payload);
         out.push(
@@ -530,7 +530,7 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
             SALT_E_BAD_ATTESTER,
         );
         let attestation = d.actors.attester_b.attestation_for(&payload);
-        let note = XUsdcMintNote::create(sender, f, &payload, &attestation, d.hc.client.rng())
+        let note = XUsdcMintNote::create(sender, f, MINT_DOMAIN, &payload, &attestation, d.hc.client.rng())
             .context("building the non-allowlisted-attester mint note")?;
         let key = nonce_key(&payload);
         out.push(
@@ -607,7 +607,7 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
             raw_for_units(MAX_FEE_UNITS),
             SALT_E_TAMPERED,
         );
-        let note = XUsdcMintNote::create(sender, f, &note_payload, &attestation, d.hc.client.rng())
+        let note = XUsdcMintNote::create(sender, f, MINT_DOMAIN, &note_payload, &attestation, d.hc.client.rng())
             .context("building the tampered-payload mint note")?;
         let key = nonce_key(&note_payload);
         out.push(

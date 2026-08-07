@@ -173,7 +173,7 @@ pub fn mint_payload_from(
 /// A mint payload for a FRESH-deployed faucet: [`mint_payload_from`] spliced with the faucet's
 /// OWN-ID `remoteToken` (`account_id_to_bytes32(faucet_id)`). The fresh faucet's identifier is the
 /// note-derived own-id fixpoint (`XReserveIdentifierInitNote::identifier_for(faucet_id)` =
-/// `bytes32_to_key(account_id_to_bytes32(faucet_id))`), so a mint's `remoteToken` MUST be
+/// `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))`), so a mint's `remoteToken` MUST be
 /// `account_id_to_bytes32(faucet_id)` for structural validation's identifier compare to pass — NOT the static
 /// golden-vector `remoteToken` the vectors carry (the R2 identifier-binding fix). `remoteDomain`
 /// already equals the build-seed [`MINT_DOMAIN`] on the fresh vectors, so only the token is spliced.
@@ -221,7 +221,7 @@ pub(crate) struct MintDomainConfig {
     /// The faucet's configured `domain` — spliced into `remoteDomain` (felt 10, big-endian u32).
     pub(crate) domain: u32,
     /// The faucet's identifier bytes32 — spliced into `remoteToken` (felt 11..18); the mint gate
-    /// compares `bytes32_to_key(remoteToken)` against the stored identifier key.
+    /// compares `bytes32_to_storage_map_key(remoteToken)` against the stored identifier key.
     pub(crate) remote_token: [u8; 32],
 }
 
@@ -293,7 +293,7 @@ pub(crate) fn mint_payload_opt(
     }
 }
 
-/// The `usedNonces[nonce]` storage-map key for a payload's nonce field (`bytes32_to_key(nonce)`) —
+/// The `usedNonces[nonce]` storage-map key for a payload's nonce field (`bytes32_to_storage_map_key(nonce)`) —
 /// the SAME key the mint's replay protection/mint effects derive and set, so the driver can read the marker back after a
 /// committed mint or prove a rejected negative left it empty.
 pub fn nonce_key(payload: &[u8]) -> Word {
@@ -334,7 +334,7 @@ pub fn mint_note<R: FeltRng>(
 ) -> Result<Note> {
     let payload = mint_payload(recipient, amount_raw, max_fee_raw, nonce_salt);
     let attestation = attester.attestation_for(&payload);
-    XUsdcMintNote::create(sender, faucet, &payload, &attestation, rng)
+    XUsdcMintNote::create(sender, faucet, MINT_DOMAIN, &payload, &attestation, rng)
         .context("building the XUsdcMintNote probe")
 }
 

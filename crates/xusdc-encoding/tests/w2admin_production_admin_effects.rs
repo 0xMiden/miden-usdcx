@@ -32,7 +32,7 @@ use support::*;
 use xusdc_encoding::account::xreserve::{XReserveAdminAuthority, XReserveStablecoinBuilder};
 use xusdc_encoding::note::xreserve_admin::{block_note, unblock_note, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
-use xusdc_encoding::vectors::{load, DiVector};
+use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
 
 // THE MINT FIXTURE — only the pause-halt proof needs a faucet that can actually mint
@@ -41,14 +41,16 @@ use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
 const MINT_MAX_SUPPLY: u64 = 1_000_000_000_000;
 const MINT_AMOUNT: u64 = 250_000_000;
 const MAX_FEE_RAW: u64 = 1;
-const BASE_VECTOR: &str = "di-pos-empty-hookdata";
+// the DC-14 rows are the ones whose localToken / localDepositor are address-shaped,
+// which the mint transport requires
+const BASE_VECTOR: &str = "mi-pos-empty-hookdata";
 const REMOTE_TOKEN_BYTE_OFF: usize = 11 * 4;
 const NONCE_BYTE_OFF: usize = 51 * 4;
 
-fn di(id: &str) -> &'static DiVector {
+fn mi(id: &str) -> &'static MiVector {
     load()
         .families
-        .di
+        .mi
         .iter()
         .find(|v| v.id == id)
         .unwrap_or_else(|| panic!("the canonical artifact is missing di vector {id}"))
@@ -57,7 +59,7 @@ fn di(id: &str) -> &'static DiVector {
 /// The canonical accept payload rebound to this faucet and recipient, with one nonce byte perturbed
 /// so each mint consumes a nonce the replay guard has not seen.
 fn payload_for(recipient: AccountId, faucet_id: AccountId, nonce_variant: u8) -> Vec<u8> {
-    let mut payload = di(BASE_VECTOR).bytes();
+    let mut payload = mi(BASE_VECTOR).payload();
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(MINT_AMOUNT));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
@@ -115,6 +117,7 @@ async fn emit_and_consume_mint(
     let note = XUsdcMintNote::create(
         pf.producer_id,
         pf.faucet_id,
+        TEST_DOMAIN,
         payload,
         &MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes),
         &mut note_rng(seed),

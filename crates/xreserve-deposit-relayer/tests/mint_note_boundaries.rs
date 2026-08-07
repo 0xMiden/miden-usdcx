@@ -9,9 +9,10 @@
 //! surface them as a typed, NON-retryable error — never as a panic, never as a malformed note, and
 //! never as an infinite retry loop that wedges the relayer on one bad attestation.
 //!
-//! The reject payloads are the canonical golden-artifact vectors (`di-rej-*`), consumed BY
-//! REFERENCE from the ONE artifact that drives the shared encoding crate's own MASM and Rust suites
-//! — never a blob hand-rolled here (which would be a second, drifting definition of the
+//! The reject payloads are the canonical golden-artifact vectors — the `di-rej-*` rows for the
+//! structural parse and the `mi-rej-*` rows for the `DC-14` addressing and carriability checks —
+//! consumed BY REFERENCE from the ONE artifact that drives the shared encoding crate's own MASM and
+//! Rust suites, never a blob hand-rolled here (which would be a second, drifting definition of the
 //! DepositIntent layout).
 //!
 //! Errors are asserted by EXACT variant AND by their preserved source chain: an operator must be
@@ -29,7 +30,7 @@ use xreserve_deposit_relayer::miden::{build_mint_note, AttesterPubkey};
 use xreserve_deposit_relayer::RelayerError;
 use xusdc_encoding::xreserve::encoding::{DepositIntentField, EncodingError};
 
-use fixtures::{PartnerAttester, PARTNER_PUBKEY_HEX};
+use fixtures::{PartnerAttester, PARTNER_PUBKEY_HEX, TEST_REMOTE_DOMAIN};
 use mint_support::*;
 
 // STRUCTURALLY-INVALID DEPOSITINTENTS (they pass the envelope; the shared encoding crate's codec
@@ -44,17 +45,84 @@ use mint_support::*;
 #[case::zero_local_depositor("di-rej-zero-local-depositor", EncodingError::ZeroField { field: DepositIntentField::LocalDepositor })]
 #[case::length_mismatch("di-rej-length-mismatch", EncodingError::LengthMismatch)]
 #[case::truncated_header("di-rej-truncated", EncodingError::TruncatedHeader)]
-#[case::hookdata_overflow("di-rej-hookdata-overflow", EncodingError::HookDataTooLarge)]
 fn t_a_payload_unit04_refuses_is_a_typed_build_error(
     #[case] vector_id: &str,
     #[case] expected: EncodingError,
 ) {
-    let attestation = validated_over_vector_id(vector_id);
+    assert_build_error(&validated_over_vector_id(vector_id), expected);
+}
+
+/// The hookData bound is the one structural reject that survives the PARSE: a payload can be a
+/// well-formed, correctly-addressed DepositIntent and still carry more hookData than a
+/// `NoteStorage` can hold. It therefore needs a `DC-14`-shaped payload — one that reaches the
+/// bound instead of tripping an addressing check first.
+#[test]
+fn t_an_oversized_hookdata_is_a_typed_build_error() {
+    let attestation = validated_over(&fixtures::oversized_hook_data_payload());
+
+    assert_build_error(&attestation, EncodingError::HookDataTooLarge);
+}
+
+/// The addressing rejects `DC-14` added: an intent for another domain, another faucet, or carrying
+/// a field the mint transport cannot express is refused HERE, with a name — never submitted to
+/// surface on-chain as an unexplained bad signature.
+#[rstest]
+#[case::domain_mismatch("mi-rej-domain-mismatch")]
+#[case::remote_token_mismatch("mi-rej-remote-token-mismatch")]
+#[case::remote_token_malformed("mi-rej-remote-token-malformed")]
+#[case::local_token_not_address("mi-rej-local-token-not-address")]
+#[case::local_depositor_not_address("mi-rej-local-depositor-not-address")]
+#[case::max_fee_over_cap("mi-rej-max-fee-over-cap")]
+#[case::recipient_non_canonical("mi-rej-recipient-non-canonical")]
+fn t_an_uncarryable_intent_is_a_typed_build_error(#[case] vector_id: &str) {
+    let vector = fixtures::mi_vector(vector_id).expect("the canonical MI reject vector");
+    let expected = vector
+        .expected_variant
+        .as_deref()
+        .expect("a reject vector names the variant it must produce");
+    let attestation = validated_over(&vector.payload());
 
     let error = build_mint_note(
         relayer_sender_id(),
-        faucet_id(),
+        // the reject vectors are addressed to the artifact's own synthetic faucet, and each is a
+        // reject for a reason OTHER than the faucet — so the build has to be told that faucet, or
+        // it would fail on the addressing rather than on the row's subject
+        vector.faucet_id(),
+        vector.remote_domain,
         &attestation,
+        &attester_pubkey(),
+        &mut note_rng(4),
+    )
+    .expect_err("an intent the mint transport cannot carry never becomes a note");
+
+    assert_matches!(error, RelayerError::MintNoteBuild(_));
+    // the artifact names the variant, not the field it carries, so the comparison is on the name
+    let verdict = format!(
+        "{:?}",
+        encoding_error_in_chain(&error).expect("a typed verdict")
+    );
+    assert_eq!(
+        verdict.split_whitespace().next(),
+        Some(expected),
+        "unit-04's exact verdict survives in the source chain"
+    );
+    assert!(
+        !error.is_retryable(),
+        "an uncarryable intent stays uncarryable"
+    );
+}
+
+/// The shared assertion of the two reject tables above: a typed, non-retryable build error whose
+/// source chain still carries the encoding crate's own verdict.
+fn assert_build_error(
+    attestation: &xreserve_deposit_relayer::circle::schema::ValidatedAttestation,
+    expected: EncodingError,
+) {
+    let error = build_mint_note(
+        relayer_sender_id(),
+        faucet_id(),
+        TEST_REMOTE_DOMAIN,
+        attestation,
         &attester_pubkey(),
         &mut note_rng(1),
     )
@@ -79,13 +147,17 @@ fn t_a_payload_unit04_refuses_is_a_typed_build_error(
 #[rstest]
 #[case("di-rej-bad-magic")]
 #[case("di-rej-truncated")]
-#[case("di-rej-hookdata-overflow")]
+#[case("mi-rej-domain-mismatch")]
+#[case("mi-rej-max-fee-over-cap")]
 fn t_the_reject_payloads_pass_the_envelope_boundary(#[case] vector_id: &str) {
-    let attestation = validated_over_vector_id(vector_id);
+    let payload = fixtures::mi_vector(vector_id)
+        .map(|vector| vector.payload())
+        .unwrap_or_else(|| fixtures::canonical_payload(vector_id));
+    let attestation = validated_over(&payload);
 
     assert_eq!(
         attestation.payload(),
-        fixtures::canonical_payload(vector_id).as_slice(),
+        payload.as_slice(),
         "the validated boundary carries the payload verbatim — the builder's input really is this"
     );
     assert_eq!(attestation.attestation().len(), 65);
@@ -100,10 +172,18 @@ fn t_the_reject_payloads_pass_the_envelope_boundary(#[case] vector_id: &str) {
 /// would ever pick up.
 #[test]
 fn t_a_private_faucet_id_is_refused() {
+    // addressed to the private faucet, so the build gets past `DC-14`'s remoteToken check and
+    // actually reaches the routing bind this test is about
+    let attestation = validated_over(&fixtures::canonical_payload_addressed_to(
+        fixtures::TEST_VECTOR_PAYLOAD_ID,
+        private_faucet_id(),
+    ));
+
     let error = build_mint_note(
         relayer_sender_id(),
         private_faucet_id(),
-        &validated_test_vector(),
+        TEST_REMOTE_DOMAIN,
+        &attestation,
         &attester_pubkey(),
         &mut note_rng(2),
     )

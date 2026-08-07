@@ -35,11 +35,11 @@ min-burn floor, a missing domain-config seed, or a non-Public faucet) at build t
 
 | Module | Role |
 |---|---|
-| `mint_policy` | The **attestation mint policy** (`check_policy`, the ACTIVE mint policy the stock `mint_and_send` dispatches): reads and hash-verifies the mint note's merged transport attachment, runs all validation stages, enforces that the note recipient, amount, tag, and type match their attested derivations, and marks the nonce used — its only state write. |
-| `deposit_intent_parser` | The faucet-side mint preconditions behind the single `validate` entry: length and word-count binding, domain/identifier comparisons, amount/fee bounds, and nonce replay protection. It decodes the staged `remoteToken` and compares it directly with the faucet's native account id. |
+| `mint_policy` | The **attestation mint policy** (`check_policy`, the ACTIVE mint policy the stock `mint_and_send` dispatches): reads and hash-verifies the mint note's transport attachment, binds its word count, rebuilds the signed DepositIntent preimage, runs the remaining validation stages, enforces that the note recipient, amount, tag, and type match their attested derivations, and marks the nonce used — its only state write. |
+| `deposit_intent` | Circle's wire form and the faucet's on-chain realization of it. `rebuild` (`DC-14`) writes the message the attestation signed, from the note's mint intent plus the fields only this account can supply — the configured domain and its own account id, both read here rather than passed in, so no caller-supplied value can reach them. It also holds the `DC-5` reducer and declares the domain-config slot id. |
+| `mint_intent` | What the mint note actually carries (`DC-14`): the carried felt offsets, the widths of the values they hold, and `validate` — the two preconditions the signature cannot express (the fee ceiling and the nonce replay guard), both statements about the carried fields alone. It hashes the carried nonce (`hashed_nonce`) and declares the used-nonces slot id. |
 | `attestation_verify` | Keccaks the payload, checks the attester pubkey against the allowlist, and verifies the ECDSA signature. |
 | `attester_admin` | The authority-gated `set_attester` allowlist setter. |
-| `encoding/` | The shared encoding library (`xreserve::encoding::*`): bytes32→key hashing, uint256→amount reduction, DepositIntent parse, pubkey commitment. Owned by the encoding crate; the faucet consumes it by reference. |
 
 The burn floor and its setter are **stock**: the `MinBurnAmount` policy component carries the
 floor slot, its `check_policy` is the active burn policy, and the admin note calls its stock
@@ -62,42 +62,63 @@ component.
 A relayer submits a **stock `MintNote`** whose storage embeds the attested output (the P2ID
 recipe to the intent's recipient with the nonce-key serial, the reduced amount as this faucet's
 asset, the recipient's account-target tag) and whose attachments carry the Circle-signed
-transport: one merged attachment (scheme 4) containing `[feeAmount, pubkey, signature]` followed
-by the DepositIntent preimage, plus the network routing target (scheme 2). The stock MINT script calls
-the stock `mint_and_send`, which dispatches the **attestation mint policy** first; the policy
-runs a strict **verify-once-then-write-once** pipeline, and any failure aborts the whole
-transaction with no writes, so a failed mint never consumes the nonce.
+transport: one merged attachment (scheme 4) containing `[pubkey, signature]` followed by the
+**carried mint payload** and its `hookData` tail, plus the network routing target (scheme 2). The
+stock MINT script calls the stock `mint_and_send`, which dispatches the **attestation mint policy**
+first; the policy runs a strict **verify-once-then-write-once** pipeline, and any failure aborts the
+whole transaction with no writes, so a failed mint never consumes the nonce.
+
+The note does **not** carry Circle's DepositIntent. It carries only the fields the faucet cannot
+derive, and the faucet rebuilds the signed preimage itself (`DC-14`). That is what makes most of the
+addressing and structural validation below unnecessary: a field the faucet writes cannot disagree
+with the attestation, because a divergent value produces a different digest. The trade — those
+rejects stop being separately diagnosable — is spelled out under `R-MINT-*` in the glossary.
 
 1. **Pause gate** — the stock policy dispatcher runs `assert_not_paused` before the policy, so a
    paused faucet never even dispatches the attestation gate.
-2. **Transport shape** — the policy locates exactly two attachments and hash-verifies the merged
-   transport into one local region. Its first 11 words carry the fixed-width attestation and the
-   remaining words carry the DepositIntent preimage. The policy derives the intent word count by
-   subtracting that fixed prefix and binds it to the embedded `hookDataLen`. Nothing is read back
-   from the advice provider, so what the note committed to is exactly what gets verified.
-3. **Structural and addressing validation** (`R-MINT-1..8`): derive the preimage length from the
-   embedded `hookDataLen` and bind it to the committed word count; parse the fixed-offset
-   DepositIntent header; check magic, version, non-zero `amount`/`localToken`/`localDepositor`,
-   the length relation, and that the intent's `remoteDomain` matches the configured domain. The
-   staged `remoteToken` is decoded from its bytes32 AccountId packaging and compared directly with
-   `native_account::get_id`; the identifier is derived, not stored or hashed.
-4. **Amount and fee validation** (`R-MINT-9..11`): reduce `amount`, `maxFee`, and the operator
-   `feeAmount` from uint256 to an `AssetAmount`; require `amount ≥ maxFee`. In the MVP the
-   operator `feeAmount` must be zero (see fee handling below).
-5. **Replay protection** (`R-MINT-12`): derive the nonce key and assert `usedNonces[key]` is empty.
-6. **Attestation verification** (`R-MINT-13..14`): keccak the full payload, require the attester's
+2. **Transport shape** (`R-MINT-8`) — the policy locates exactly two attachments and hash-verifies
+   the transport into one local region. Its first 9 words carry the fixed-width attestation, the
+   next 6 the carried payload, and the rest the packed `hookData`. A floor check makes the fixed
+   prefix readable, then the embedded `hookDataLen` is bound to the committed word count by an
+   **exact** equality — so trailing padding cannot hide data, a smuggled section cannot ride along,
+   and a length claim cannot reach past the committed bytes. This binding runs **before** anything
+   reads the payload, because the reconstruction copies `hookData` out of that region. Nothing is
+   read back from the advice provider, so what the note committed to is exactly what gets verified.
+3. **Admissibility** (`R-MINT-3`, `R-MINT-10`, `R-MINT-12`): the policy takes the amount from the
+   note's own asset value, pinning the asset word's upper elements zero, the amount non-zero and
+   within the protocol's `FUNGIBLE_ASSET_MAX_AMOUNT` — the standards constant, not a local copy.
+   (The stock `fungible_asset::value_into_amount` would have said all three in one call, but it is
+   private in the pinned library and its public sibling `to_amount` documents that it does not
+   validate.) `mint_intent::validate` then requires `amount ≥ maxFee`, a single felt compare — both
+   values are `AssetAmount`s by construction — and asserts `usedNonces[hashed_nonce]` is empty,
+   handing back the hashed nonce the binding and the nonce write both need. Neither check needs the
+   message, which is why both run before it exists: one relates the carried ceiling to the note's
+   own asset, the other the carried nonce to this faucet's history. The operator `feeAmount` no
+   longer travels on the wire, so a non-zero fee is inexpressible rather than rejected (see fee
+   handling below).
+4. **Preimage reconstruction** (`DC-14`, subsuming `R-MINT-1..2` and `R-MINT-6..7`):
+   `deposit_intent::rebuild` validates the carried recipient's account-id structure before writing
+   it — a structurally invalid id would rebuild a perfectly consistent message and then mint a note
+   nobody can consume, so that one cannot be left to the signature. The writer supplies `magic`,
+   `version`, the amount, the configured `remoteDomain`, its own id as `remoteToken`, and a zero
+   `feeAmount`; it copies the carried `localToken`, `localDepositor`, `remoteRecipient`, `maxFee`,
+   `hookDataLen` and `hookData` into their canonical offsets, and writes an explicit zero into every
+   other felt of the region. The identifier and the domain are read inside the writer, not passed to
+   it.
+5. **Attestation verification** (`R-MINT-13..14`): keccak the full **rebuilt** payload — the same
+   `240 + hookDataLen` bytes Circle signed — require the attester's
    pubkey commitment to be enabled in the `xReserveAttesters` allowlist, and ECDSA-verify the
    signature over the digest. The same pubkey region feeds both the allowlist lookup and the
    signature check, so an allowlisted pubkey cannot be paired with a foreign signature.
-7. **Assert-match binding** (ratified): the policy rebuilds the note-creation arguments with the
+6. **Assert-match binding** (ratified): the policy rebuilds the note-creation arguments with the
    standard `p2id::prepare_note` over the attested target and the nonce-key serial, and every
    value the note supplied must equal what that recipe returns — `RECIPIENT` (one word compare
    covering script root, storage target, and serial policy), the tag (the attested recipient's
    account target), and the note type (public). The asset value must be
    `[attested amount, 0, 0, 0]`. The policy never overrides — it keeps the note
    honest.
-8. **Nonce write** — the policy marks the nonce used (its ONLY state write), then returns.
-9. **Stock effects** (`R-MINT-15` semantics, stock-owned): `mint_and_send` enforces the supply
+7. **Nonce write** — the policy marks the nonce used (its ONLY state write), then returns.
+8. **Stock effects** (`R-MINT-15` semantics, stock-owned): `mint_and_send` enforces the supply
    cap discipline, binds the note's asset to this faucet, creates the recipient note, mints, and
    raises `token_supply` — the same audited implementation every stock faucet runs.
 
@@ -107,9 +128,11 @@ the attested note transport (e.g. a bare tx-script `mint_and_send`) fail-closes 
 kernel reads.
 
 **Fee handling.** The MVP mints a single recipient note and raises supply by the full amount, so
-a non-zero fee would over-count supply against the minted assets. The parser asserts
-`feeAmount == 0`. When Circle confirms the relayer-fee design (DEV-8), the
-`feeAmount ≤ maxFee` compare and a relayer-credit note leg are restored.
+a non-zero fee would over-count supply against the minted assets. The faucet **writes** a zero
+`feeAmount` into the preimage and the field does not travel on the wire at all, so a non-zero fee
+cannot be expressed — strictly stronger than the reject it replaces. When Circle confirms the
+relayer-fee design (DEV-8), restoring the `feeAmount ≤ maxFee` compare and a relayer-credit note leg
+is a **transport change**, not a policy change: the field has to be carried again first.
 
 **Attestation model** (DEV-1, `INV-NO-ECRECOVER`): Miden has no `ecrecover`, so the signer is
 not recovered on-chain. Instead the relayer supplies the candidate pubkey, the faucet checks a
@@ -183,8 +206,9 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
 
 ## 6. Domain-config field representation
 
-The identifier is not stored: the mint path decodes `remoteToken` to an `AccountId` and compares it
-with the native faucet account id. `xreserve_contract` is stored losslessly as its raw 8×u32-LE
+The identifier is not stored: the mint path **writes** the native faucet account id into the
+preimage as `remoteToken`, so there is nothing to compare and nothing that could have been seeded
+wrong. `xreserve_contract` is stored losslessly as its raw 8×u32-LE
 packed limbs across two value slots, because it has no on-chain compare and must be readable from
 storage by off-chain services. `domain` and `source_domain` are u32 scalars in element 0 of their
 slot words. The three build-seeded fields are typed u32/bytes32 at the builder boundary
@@ -193,11 +217,13 @@ slot words. The three build-seeded fields are typed u32/bytes32 at the builder b
 ## 7. What is consumed from the encoding library
 
 The faucet does not re-implement encoding. It consumes `xreserve::encoding::*` by reference:
-`bytes32_to_key` (nonce keying), `verify_uint256_to_asset_amount` (the amount
-witness verify), `pubkey_commitment` (attester
-keying). See the
-encoding spec at `docs/spec/ENCODING-COMPONENT-SPEC.md` and the data contracts `DC-1..DC-7` in the
-glossary.
+`hashed_nonce` (nonce keying), `pubkey_commitment` (attester keying), and the `layout` felt
+offsets (which the preimage writer stores at). The `DC-5` amount reduction is not among them: with
+`DEPOSIT_SCALE_EXP == 0` the faucet writes the amount from the note's own asset value rather than
+verifying a witness against a staged uint256, so the MASM verifier had no caller and is deleted
+(reopening `DEV-5` restores it from history — see the ownership map's `DC-5` rider). See the
+encoding spec at `docs/spec/ENCODING-COMPONENT-SPEC.md` and the data
+contracts `DC-1..DC-7` and `DC-14` in the glossary.
 
 ## 8. Invariants (see the glossary for the full list)
 
@@ -220,5 +246,15 @@ decision, never self-declared.
 Everything Circle still owns stays OPEN and is not marked approved: the AccountId↔bytes32
 encoding (DEV-10), the amount cap/scale (DEV-5), the `hookData` bound (DEV-6), the
 burn-evidence package (DEV-7), the relayer-fee design (DEV-8), the nonce keying
-(DEV-9), the assigned domain id (`Q-DOM-1`), and the attester quorum (`Q-DA-QUORUM`). See the
+(DEV-9), the assigned domain id (`Q-DOM-1`), the attester quorum (`Q-DA-QUORUM`), and the
+20-byte-EVM-address assumption the carried payload rests on (`Q-EVM-ADDR-1`). See the
 glossary and `docs/spec/ENCODING-COMPONENT-SPEC.md` for the encoding-side open decisions.
+
+Two of these now bind the **wire format** rather than just a validation rule, which changes what it
+costs to settle them. `DEV-5`: `DC-14` reconstructs the uint256 `amount` by zero-extending the
+note's `AssetAmount`, which is lossless only while `DEPOSIT_SCALE_EXP == 0` — a non-zero scale
+leaves the original value unrecoverable (the dropped dust is not carried), so it needs a new
+transport, not a constant change. A parity assertion pins the constant to zero so the change fails a
+test rather than shipping a broken digest. `DEV-10`: the faucet now **emits** the bytes32 AccountId
+packaging instead of only reading it, so a change in Circle's packaging is likewise a transport
+change.

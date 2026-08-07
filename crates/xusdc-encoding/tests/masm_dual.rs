@@ -1,13 +1,12 @@
 //! Cross-language conformance: the MASM codecs must agree with their Rust twins on every
 //! canonical vector.
 //!
-//! Four routines are shared between the on-chain faucet and the off-chain services, and each is
-//! written twice — once in MASM, once in Rust. If the two ever disagree, the off-chain side
-//! signs or relays something the chain will reject, or worse, accepts something the chain would
-//! have rejected. The tests here run each MASM routine over the same golden vectors the Rust
-//! unit tests use and require identical results, accept and reject alike: the bytes32 → storage
-//! key hash, the uint256 → asset amount reduction, the DepositIntent parser, and the attester
-//! pubkey commitment.
+//! Two routines are still shared between the on-chain faucet and the off-chain services and
+//! written twice — once in MASM, once in Rust: the bytes32 → storage key hash and the attester
+//! pubkey commitment. If the two ever disagree, the off-chain side signs or relays something the
+//! chain will reject, or worse, accepts something the chain would have rejected. The tests here
+//! run each MASM routine over the same golden vectors the Rust unit tests use and require
+//! identical results, accept and reject alike.
 //!
 //! How the assertions are made matters as much as what they assert. Every conformance claim is
 //! made on the result of actually EXECUTING the MASM in a transaction — never on assembly
@@ -25,25 +24,17 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use miden_processor::operation::OperationError;
-use miden_processor::ExecutionError;
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::account::{AccountComponent, AccountId};
 use miden_protocol::assembly::{Linkage, Package, Path as MasmPath};
-use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::{ExecutedTransaction, TransactionKernel};
 use miden_protocol::{Felt, Word};
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::StandardsLib;
-use miden_testing::{assert_transaction_executor_error, Auth, MockChain};
+use miden_testing::{Auth, MockChain};
 use miden_tx::TransactionExecutorError;
 use serde::Deserialize;
-use xusdc_encoding::vectors::{felt_from_hex, load, word_from_hex};
-use xusdc_encoding::xreserve::encoding::{masm_error_by_name, DEPOSIT_INTENT_HEADER_LEN};
-
-/// Memory base for staged DepositIntent preimages in driver scripts (word-aligned,
-/// inside global program memory, clear of anything the kernel stages).
-const INTENT_PTR: u64 = 1024;
+use xusdc_encoding::vectors::{load, word_from_hex};
 
 /// Memory base for the staged pubkey felts `pubkey_commitment` hashes in place (word-aligned,
 /// clear of `INTENT_PTR`).
@@ -124,40 +115,24 @@ fn word_of(felts: &[Felt]) -> Word {
     Word::new([felts[0], felts[1], felts[2], felts[3]])
 }
 
-fn expected_err(name: &str) -> &'static MasmError {
-    masm_error_by_name(name)
-        .unwrap_or_else(|| panic!("vector names unknown MASM error constant {name}"))
-}
-
-/// Emits the `push.[..] mem_storew.{addr} dropw` staging sequence for a felt slice
-/// (zero-padding the trailing word), starting at `INTENT_PTR`.
-fn stage_preimage(src: &mut String, felts: &[Felt]) {
-    for (i, chunk) in felts.chunks(4).enumerate() {
-        let mut w = [miden_protocol::ZERO; 4];
-        w[..chunk.len()].copy_from_slice(chunk);
-        let addr = INTENT_PTR + 4 * i as u64;
-        writeln!(src, "    push.{} mem_storew_le.{addr} dropw", word_of(&w)).unwrap();
-    }
-}
-
 // PARITY 1 — bytes32 → storage-map key: every b32 vector, executed on the VM
 // ================================================================================================
 
 #[tokio::test]
-async fn tv_dual_1_bytes32_to_key() -> Result<()> {
+async fn tv_dual_1_hashed_nonce() -> Result<()> {
     let h = setup()?;
     for vec in &load().families.b32 {
         let limbs = vec.packed_felts_values();
         let (b0, b1) = (word_of(&limbs[0..4]), word_of(&limbs[4..8]));
         let expected = word_from_hex(&vec.expected_key);
         let src = format!(
-            r#"use xreserve::encoding
+            r#"use xreserve::mint_intent
 
 @transaction_script
 pub proc main
     push.{b1}
     push.{b0}
-    exec.encoding::bytes32_to_key
+    exec.mint_intent::hashed_nonce
     push.{expected}
     assert_eqw.err="vector {id}: key mismatch"
 end
@@ -166,7 +141,7 @@ end
         );
         run_driver(&h, &src).await.unwrap_or_else(|e| {
             panic!(
-                "vector {}: MASM bytes32_to_key must produce the canonical key: {e}",
+                "vector {}: MASM hashed_nonce must produce the canonical key: {e}",
                 vec.id
             )
         });
@@ -174,266 +149,18 @@ end
     Ok(())
 }
 
-// PARITY 2 — uint256 → asset amount: every conversion vector, accepts and rejects alike. The
-// Rust leg divides; the MASM leg proves that quotient as a witness, pinning both to the same
-// floor semantics.
+// PARITY 3 — DepositIntent parsing: RUST-ONLY since DC-14
 // ================================================================================================
-
-#[tokio::test]
-async fn tv_dual_2_uint256_reducer() -> Result<()> {
-    let h = setup()?;
-    for vec in &load().families.amt {
-        match vec.kind.as_str() {
-            "accept" => {
-                let limbs: Vec<Felt> = vec.le_limbs().iter().map(|l| Felt::from(*l)).collect();
-                let (u0, u1) = (word_of(&limbs[0..4]), word_of(&limbs[4..8]));
-                // the Rust-computed quotient is the witness; passing (no trap) is the
-                // acceptance criterion
-                let y: u64 = vec.expected_y.as_deref().unwrap().parse().unwrap();
-                let src = format!(
-                    r#"use xreserve::encoding
-
-@transaction_script
-pub proc main
-    push.{y}
-    push.{scale}
-    push.{u0}
-    push.{u1}
-    exec.encoding::verify_uint256_to_asset_amount
-end
-"#,
-                    scale = vec.scale_exp,
-                );
-                run_driver(&h, &src).await.unwrap_or_else(|e| {
-                    panic!(
-                        "vector {}: MASM verifier must accept the Rust-computed witness: {e}",
-                        vec.id
-                    )
-                });
-            }
-            "reject" | "guard" => {
-                let masm_err = vec
-                    .masm_err
-                    .as_deref()
-                    .unwrap_or_else(|| panic!("vector {}: reject without masm_err", vec.id));
-                let limbs: Vec<Felt> = match (&vec.staging_felts, &vec.le_limbs) {
-                    (Some(staged), _) => staged.iter().map(|s| felt_from_hex(s)).collect(),
-                    (None, Some(le)) => le.iter().map(|l| Felt::from(*l)).collect(),
-                    (None, None) => panic!("vector {}: no reducer input", vec.id),
-                };
-                let (u0, u1) = (word_of(&limbs[0..4]), word_of(&limbs[4..8]));
-                // rows whose trap fires before (or independent of) the witness carry no
-                // witness_y and push zero
-                let y: u64 = vec
-                    .witness_y
-                    .as_deref()
-                    .map(|w| w.parse().unwrap())
-                    .unwrap_or(0);
-                let src = format!(
-                    r#"use xreserve::encoding
-
-@transaction_script
-pub proc main
-    push.{y}
-    push.{scale}
-    push.{u0}
-    push.{u1}
-    exec.encoding::verify_uint256_to_asset_amount
-end
-"#,
-                    scale = vec.scale_exp,
-                );
-                let result = run_driver(&h, &src).await;
-                if vec.kind == "guard" {
-                    // `u32assert*` traps surface as `OperationError::U32AssertionFailed`
-                    // (not `FailedAssertion`), so the named error is pinned on that
-                    // variant's code AND message — same strength, correct trap class
-                    let expected = expected_err(masm_err);
-                    assert_transaction_executor_error!(
-                        result,
-                        matches ExecutionError::OperationError {
-                            err: OperationError::U32AssertionFailed {
-                                ref err_code, ref err_msg, ..
-                            },
-                            ..
-                        } if *err_code == expected.code()
-                            && err_msg.as_deref() == Some(expected.message())
-                    );
-                } else {
-                    assert_transaction_executor_error!(result, expected_err(masm_err));
-                }
-            }
-            "ge" | "dust" => {} // Rust-fn-only rows (no MASM leg by design)
-            other => panic!("vector {}: unknown kind {other}", vec.id),
-        }
-    }
-    Ok(())
-}
-
-// PARITY 3 — DepositIntent parsing: every intent vector, its derived length, and the memory
-// layout every field is expected to sit at
-// ================================================================================================
+// There is no MASM parser to compare against any more. The faucet no longer reads Circle's
+// DepositIntent off the wire — it WRITES the signed message from the note's carried payload plus
+// its own state (`NS-3`), so `TV-DUAL-3`'s on-chain leg moved to `TV-DUAL-6` in
+// `masm_mint_shell.rs`, where the writer's felts are compared against the Rust mirror's.
 //
-// `parse` hands back the derived wire length and nothing else: the faucet reads each header field
-// off the intent pointer it already holds, at that field's declared layout offset. So the fields
-// are checked where they live — the per-field memory reads below cover every one of them,
-// including `remoteDomain` and `remoteToken`, at the offsets this file's layout constants declare.
-// What no longer has a home here is the SEMANTIC decode of `remoteDomain` (the byte swap out of
-// the packed limb), which now happens inside the account-context compare; it is covered by the
-// domain rows of `masm_mint_shell.rs`, where a mis-swapped domain fails the happy path.
-
-/// Emits the common prologue for a `parse` driver: import the layout offset constants, stage the
-/// intent preimage into memory, and call the parser, leaving its single output
-/// `[intent_num_bytes]` on the stack.
-///
-/// The word count the parser is asked to agree with is derived from the same staged preimage the
-/// driver writes, so an accept run proves the derivation, not the caller's arithmetic.
-///
-/// The two suites that parse intents — the vector-driven conformance run and the differential
-/// against Circle's own encoder — share this one prologue, so neither can accidentally test a
-/// different staging path than the other.
-///
-/// The layout constants are imported one by one because `push.` only accepts an unqualified
-/// constant identifier, which is also how the protocol's own MASM imports constants.
-fn build_parser_driver_prefix(preimage: &[Felt], expected_num_words: u64) -> String {
-    let mut src = String::from("use xreserve::deposit_intent_parser\n");
-    // v0.25 braced item-import form (bare `use module::CONST` no longer resolves constants).
-    writeln!(
-        src,
-        "use {{MAGIC_FELT_OFF, VERSION_FELT_OFF, AMOUNT_FELT_OFF, REMOTE_DOMAIN_FELT_OFF, \
-         REMOTE_TOKEN_FELT_OFF, REMOTE_RECIPIENT_FELT_OFF, LOCAL_TOKEN_FELT_OFF, \
-         LOCAL_DEPOSITOR_FELT_OFF, MAX_FEE_FELT_OFF, NONCE_FELT_OFF, HOOK_DATA_LEN_FELT_OFF, \
-         HOOK_DATA_FELT_OFF}} from xreserve::encoding::layout"
-    )
-    .unwrap();
-    src.push_str("\n@transaction_script\npub proc main\n");
-    stage_preimage(&mut src, preimage);
-    writeln!(src, "    push.{expected_num_words}").unwrap();
-    writeln!(src, "    push.{INTENT_PTR}").unwrap();
-    writeln!(src, "    exec.deposit_intent_parser::parse").unwrap();
-    src
-}
-
-/// Maps a DepositIntent field name to the `layout::*` constant holding its felt offset in the
-/// parsed preimage.
-fn layout_const_for(field: &str) -> &'static str {
-    match field {
-        "magic" => "MAGIC_FELT_OFF",
-        "version" => "VERSION_FELT_OFF",
-        "amount" => "AMOUNT_FELT_OFF",
-        "remote_domain" => "REMOTE_DOMAIN_FELT_OFF",
-        "remote_token" => "REMOTE_TOKEN_FELT_OFF",
-        "remote_recipient" => "REMOTE_RECIPIENT_FELT_OFF",
-        "local_token" => "LOCAL_TOKEN_FELT_OFF",
-        "local_depositor" => "LOCAL_DEPOSITOR_FELT_OFF",
-        "max_fee" => "MAX_FEE_FELT_OFF",
-        "nonce" => "NONCE_FELT_OFF",
-        "hook_data_len" => "HOOK_DATA_LEN_FELT_OFF",
-        "hook_data" => "HOOK_DATA_FELT_OFF",
-        other => panic!("unknown packed field {other}"),
-    }
-}
-
-/// Runs one accepted DepositIntent end to end and checks both halves of the parser's contract.
-///
-/// First the values it hands back on the stack, then — for each field named in `packed` — that
-/// reading the parsed region at that field's declared offset still returns the expected felts.
-/// The second half is what proves the parser left the caller's staged intent unmodified: it
-/// reports fields by offset into memory the caller supplied, so a parser that overwrote its input
-/// would still return plausible stack values while corrupting everything downstream.
-///
-/// Reads are single-felt rather than word-sized on purpose: field offsets are not word-aligned,
-/// and a word-sized memory op on an unaligned address traps in the processor.
-///
-/// Both the vector-driven run and the differential against Circle's encoder use this, so an
-/// accept means the same thing in both.
-async fn run_accept_driver(
-    h: &Harness,
-    label: &str,
-    preimage: &[Felt],
-    len_felts: u64,
-    hook_data_len: u64,
-    packed: &[(&str, Vec<Felt>)],
-) {
-    let mut src = build_parser_driver_prefix(preimage, len_felts.div_ceil(4));
-    // the parser's single stack output: the wire length it DERIVES, which is the extent the
-    // attestation signature covers
-    writeln!(
-        src,
-        "    push.{} assert_eq.err=\"{label}: intent_num_bytes\"",
-        DEPOSIT_INTENT_HEADER_LEN as u64 + hook_data_len
-    )
-    .unwrap();
-    for (name, felts) in packed {
-        let const_name = layout_const_for(name);
-        for (i, felt) in felts.iter().enumerate() {
-            writeln!(
-                src,
-                "    push.{const_name} push.{INTENT_PTR} add push.{i} add mem_load \
-                 push.{} assert_eq.err=\"{label}: layout {name} felt {i}\"",
-                felt.as_canonical_u64()
-            )
-            .unwrap();
-        }
-    }
-    src.push_str("end\n");
-    run_driver(h, &src).await.unwrap_or_else(|e| {
-        panic!(
-            "{label}: MASM parser must accept, return the derived length, and satisfy the \
-             layout assertions: {e}"
-        )
-    });
-}
-
-#[tokio::test]
-async fn tv_dual_3_parse_deposit_intent() -> Result<()> {
-    let h = setup()?;
-    for vec in &load().families.di {
-        // The hookData-overflow reject is Rust-only (the 1024-felt bound lives in the
-        // Rust packer) — no MASM leg by design.
-        if vec.kind == "reject" && vec.masm_err.is_none() {
-            continue;
-        }
-        let preimage = vec.preimage_values();
-        let len_felts = vec.staging_len_felts.unwrap_or(vec.len_felts);
-
-        match vec.kind.as_str() {
-            "accept" => {
-                let f = vec.fields.as_ref().expect("accept vector carries fields");
-                let packed: Vec<(&str, Vec<Felt>)> = f
-                    .packed
-                    .iter()
-                    .map(|pf| {
-                        (
-                            pf.name.as_str(),
-                            pf.felts.iter().map(|s| felt_from_hex(s)).collect(),
-                        )
-                    })
-                    .collect();
-                run_accept_driver(
-                    &h,
-                    &vec.id,
-                    &preimage,
-                    len_felts,
-                    f.hook_data_len as u64,
-                    &packed,
-                )
-                .await;
-            }
-            "reject" => {
-                let mut src = build_parser_driver_prefix(&preimage, len_felts.div_ceil(4));
-                // Clean up the would-be output so a non-trapping run completes cleanly
-                // and the error assertion below reports "unexpectedly successful".
-                src.push_str("    drop\nend\n");
-                let masm_err = vec.masm_err.as_deref().unwrap();
-                let result = run_driver(&h, &src).await;
-                assert_transaction_executor_error!(result, expected_err(masm_err));
-            }
-            other => panic!("vector {}: unknown kind {other}", vec.id),
-        }
-    }
-    Ok(())
-}
+// The Rust half of `TV-DUAL-3` is unaffected and still runs: `parse_deposit_intent_header` remains
+// the compress-side entry and the relayer's pre-validate, covered by the unit tests in
+// `deposit_intent.rs`. The Circle differential (`TV-CIRCLE-DIFF`) likewise keeps its byte-level
+// leg there — what it can no longer do is push those bytes through an on-chain parser, because
+// none exists.
 
 // PARITY 4 — attester pubkey commitment: the Word the allowlist is keyed by
 // ================================================================================================
@@ -513,13 +240,13 @@ async fn harness_detects_wrong_vector() -> Result<()> {
     let mut wrong = word_from_hex(&vec.expected_key);
     wrong[0] += miden_protocol::ONE;
     let src = format!(
-        r#"use xreserve::encoding
+        r#"use xreserve::mint_intent
 
 @transaction_script
 pub proc main
     push.{b0}
     push.{b1}
-    exec.encoding::bytes32_to_key
+    exec.mint_intent::hashed_nonce
     push.{wrong}
     assert_eqw.err="meta-test: deliberately wrong expected value"
 end
@@ -545,9 +272,9 @@ fn probe_p1_exports() -> Result<()> {
         .collect();
     // exports render as ABSOLUTE paths (leading `::`) at this assembler version
     for canonical in [
-        "::xreserve::encoding::bytes32_to_key",
-        "::xreserve::encoding::verify_uint256_to_asset_amount",
-        "::xreserve::deposit_intent_parser::parse",
+        "::xreserve::mint_intent::hashed_nonce",
+        "::xreserve::mint_intent::validate",
+        "::xreserve::deposit_intent::rebuild",
     ] {
         assert!(
             exports.iter().any(|e| e == canonical),
@@ -662,8 +389,6 @@ fn be32_of_u128(v: u128) -> [u8; 32] {
 
 #[tokio::test]
 async fn tv_circle_differential_real_bytes() -> Result<()> {
-    let h = setup()?;
-    let pack = miden_protocol::utils::bytes_to_packed_u32_elements;
     let file: CircleFile =
         serde_json::from_str(CIRCLE_FIXTURE).expect("circle ground-truth fixture parses");
     assert!(
@@ -750,65 +475,18 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
         };
         assert_eq!(hd, f.hook_data, "{}: hookData @240", v.id);
 
-        // (2) Now run the real parser over those same bytes, staged the way the chain stages
-        // them. The expected outputs are computed from the raw big-endian bytes directly, not by
-        // replaying the parser's own pack-then-swap steps — reusing its logic to predict its
-        // result would turn an endianness or offset bug into a silent pass.
-        let preimage = pack(&raw);
-        let len_felts = preimage.len() as u64;
-        let hook_data_len = u32::from_be_bytes(raw[236..240].try_into().unwrap()) as u64;
-        // The expected felts for every field, at that field's offset. Each field's offset and
-        // width is a multiple of four bytes (only the trailing hookData varies in length), so
-        // packing a field on its own gives the same felts as the corresponding slice of the
-        // whole packed preimage — which is what lets the fields be checked independently.
-        let spans: [(&str, usize, usize); 12] = [
-            ("magic", 0, 4),
-            ("version", 4, 4),
-            ("amount", 8, 32),
-            ("remote_domain", 40, 4),
-            ("remote_token", 44, 32),
-            ("remote_recipient", 76, 32),
-            ("local_token", 108, 32),
-            ("local_depositor", 140, 32),
-            ("max_fee", 172, 32),
-            ("nonce", 204, 32),
-            ("hook_data_len", 236, 4),
-            ("hook_data", 240, f.hook_data_length as usize),
-        ];
-        let packed: Vec<(&str, Vec<Felt>)> = spans
-            .iter()
-            .map(|(name, off, size)| (*name, pack(&raw[*off..*off + *size])))
-            .collect();
-
-        run_accept_driver(&h, &v.id, &preimage, len_felts, hook_data_len, &packed).await;
-    }
-
-    // (3) NEGATIVE CONTROLS — prove the differential actually rejects corrupted input,
-    // so a green positive run cannot be a false pass. Corrupt one Circle-encoder-produced
-    // blob and confirm our parser traps the EXACT structural error through the same call path.
-    let base = circle_hexdec(&file.vectors[0].bytes_hex);
-    let reject_src = |raw: &[u8]| {
-        let preimage = pack(raw);
-        let mut src = build_parser_driver_prefix(&preimage, (preimage.len() as u64).div_ceil(4));
-        src.push_str("    drop\nend\n");
-        src
-    };
-
-    // corrupted magic → ERR_DI_BAD_MAGIC
-    {
-        let mut bad = base.clone();
-        bad[0] ^= 0xff;
-        let result = run_driver(&h, &reject_src(&bad)).await;
-        assert_transaction_executor_error!(result, expected_err("ERR_DI_BAD_MAGIC"));
-    }
-    // zeroed amount → ERR_DI_ZERO_FIELD
-    {
-        let mut bad = base.clone();
-        for b in &mut bad[8..40] {
-            *b = 0;
-        }
-        let result = run_driver(&h, &reject_src(&bad)).await;
-        assert_transaction_executor_error!(result, expected_err("ERR_DI_ZERO_FIELD"));
+        // (2) The bytes are also what the Rust codec packs, which is the leg the relayer's
+        // pre-validate rides on. There is no on-chain parser to run them through any more — the
+        // faucet writes the message rather than reading it — so the differential stops here and
+        // the write side is covered by TV-DUAL-6.
+        let packed = xusdc_encoding::xreserve::encoding::deposit_intent_to_packed_felts(&raw)
+            .unwrap_or_else(|e| panic!("{}: Circle's own bytes must pack: {e}", v.id));
+        assert_eq!(
+            packed.len(),
+            raw.len().div_ceil(4),
+            "{}: the packed preimage is four wire bytes per felt",
+            v.id
+        );
     }
 
     Ok(())

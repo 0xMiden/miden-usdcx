@@ -20,9 +20,11 @@
 //! own note-storage limit (`MAX_NOTE_STORAGE_ITEMS`, 1024 field elements — each storage "item" is
 //! a single field element), which is the documented default rather than an answer.
 
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, MAX_NOTE_STORAGE_ITEMS};
 
+use super::amount::uint256_to_asset_amount;
 use super::error::EncodingError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +80,53 @@ pub struct DepositIntentHeader {
     pub max_fee: [u8; 32],
     pub nonce: [u8; 32],
     pub hook_data_len: u32,
+}
+
+impl DepositIntentHeader {
+    /// The `amount` field reduced to an `AssetAmount` — the value the mint note carries as its
+    /// asset and the faucet writes back into the preimage.
+    ///
+    /// # Errors
+    ///
+    /// [`EncodingError::FieldNotAssetAmount`] if the wire value does not reduce to a valid
+    /// `AssetAmount` at this scale.
+    pub fn reduced_amount(&self, scale_exp: u32) -> Result<AssetAmount, EncodingError> {
+        reduce_field(&self.amount, scale_exp, DepositIntentField::Amount)
+    }
+
+    /// The `maxFee` field reduced the same way — the depositor-authorized fee ceiling.
+    ///
+    /// # Errors
+    ///
+    /// [`EncodingError::FieldNotAssetAmount`] if the wire value does not reduce to a valid
+    /// `AssetAmount` at this scale.
+    pub fn reduced_max_fee(&self, scale_exp: u32) -> Result<AssetAmount, EncodingError> {
+        reduce_field(&self.max_fee, scale_exp, DepositIntentField::MaxFee)
+    }
+}
+
+/// Reduces one uint256 wire field, reporting which field failed rather than only why. The
+/// distinction matters off-chain: the relayer has to tell an unmintable `amount` from an
+/// unmintable `maxFee`.
+fn reduce_field(
+    value: &[u8; 32],
+    scale_exp: u32,
+    field: DepositIntentField,
+) -> Result<AssetAmount, EncodingError> {
+    uint256_to_asset_amount(uint256_le_limbs(value), scale_exp)
+        .map_err(|_| EncodingError::FieldNotAssetAmount { field })
+}
+
+/// The 8 u32-LE packed limbs of a big-endian uint256 wire field (limb i = LE-u32 of wire bytes
+/// `[4i, 4i+4)`) — the limb form the shared-encoding reducer consumes.
+pub(crate) fn uint256_le_limbs(bytes: &[u8; 32]) -> [u32; 8] {
+    core::array::from_fn(|i| {
+        u32::from_le_bytes(
+            bytes[4 * i..4 * i + 4]
+                .try_into()
+                .expect("4-byte window of a 32-byte field"),
+        )
+    })
 }
 
 /// Reads a big-endian u32 wire field (the caller has bounds-checked the slice).
@@ -239,6 +288,18 @@ impl<'a> DepositIntent<'a> {
     /// Propagates every [`EncodingError`] [`deposit_intent_to_packed_felts`] raises.
     pub fn to_packed_felts(&self) -> Result<Vec<Felt>, EncodingError> {
         deposit_intent_to_packed_felts(self.0)
+    }
+
+    /// The trailing hookData bytes — everything past the fixed header.
+    ///
+    /// # Errors
+    ///
+    /// Propagates every [`EncodingError`] [`Self::parse_header`] raises; in particular a payload
+    /// whose declared and actual lengths disagree has no well-defined hookData.
+    pub fn hook_data(&self) -> Result<&'a [u8], EncodingError> {
+        self.parse_header()?;
+        // the length relation the parse just checked makes this slice exact
+        Ok(&self.0[DEPOSIT_INTENT_HEADER_LEN..])
     }
 }
 

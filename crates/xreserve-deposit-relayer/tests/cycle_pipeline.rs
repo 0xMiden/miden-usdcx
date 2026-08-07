@@ -528,7 +528,7 @@ async fn the_cycle_duration_histogram_records_one_sample_per_cycle() {
 // HELPERS
 // ================================================================================================
 
-/// The standard vector: the partner key over the canonical `di-pos-hookdata` DepositIntent payload.
+/// The standard vector: the partner key over the canonical `mi-pos-hookdata` DepositIntent payload.
 fn test_vector() -> AttestationVector {
     fixtures::test_vector()
 }

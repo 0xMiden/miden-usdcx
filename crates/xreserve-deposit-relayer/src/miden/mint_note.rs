@@ -116,6 +116,11 @@ impl AttesterPubkey {
 /// * `sender` — the relayer's own account.
 /// * `faucet_id` — the xUSDC faucet the note is routed at. It must be a PUBLIC network account:
 ///   the routing attachment can bind nothing else.
+/// * `remote_domain` — the destination domain that faucet is configured for. The note does not
+///   carry the DepositIntent; the faucet rebuilds it from what the note DOES carry plus its own
+///   domain and id, so an intent addressed elsewhere reconstructs a different message and dies as
+///   an invalid signature. Passing the domain here is what turns that into a named error before
+///   the note is ever submitted.
 /// * `attestation` — the validated envelope. Its DepositIntent payload and its 65-byte `r‖s‖v`
 ///   travel together in the merged scheme-4 transport attachment.
 /// * `attester` — the operator-configured candidate pubkey, travelling beside the signature.
@@ -129,13 +134,16 @@ impl AttesterPubkey {
 ///
 /// # Errors
 /// [`RelayerError::MintNoteBuild`] — the shared encoding crate's factory refused the inputs: the
-/// payload is not a structurally valid DepositIntent, or it exceeds the 1024-felt `NoteStorage`
-/// bound, or `faucet_id` is not a public network account. That crate's `NoteError` (and the
+/// payload is not a structurally valid DepositIntent, or it is addressed to a different domain or
+/// faucet, or a field it must carry is unrepresentable (a `maxFee` beyond `AssetAmount::MAX`, a
+/// `localToken` / `localDepositor` that is not a 20-byte address), or `faucet_id` is not a public
+/// network account. That crate's `NoteError` (and the
 /// `EncodingError` beneath it) is preserved as the error's source. The variant is NOT retryable —
 /// none of those conditions clears on its own.
 pub fn build_mint_note<R: FeltRng>(
     sender: AccountId,
     faucet_id: AccountId,
+    remote_domain: u32,
     attestation: &ValidatedAttestation,
     attester: &AttesterPubkey,
     rng: &mut R,
@@ -147,6 +155,7 @@ pub fn build_mint_note<R: FeltRng>(
     XUsdcMintNote::builder()
         .sender(sender)
         .faucet_id(faucet_id)
+        .remote_domain(remote_domain)
         .deposit_intent(DepositIntent::new(attestation.payload()))
         .attestation(&mint_attestation)
         .rng(rng)

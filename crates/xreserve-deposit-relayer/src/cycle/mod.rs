@@ -426,6 +426,7 @@ async fn classify_one<R: FeltRng>(
     let note = match build_mint_note(
         ctx.identities.sender(),
         ctx.identities.faucet(),
+        ctx.config.remote_domain(),
         &attestation,
         ctx.identities.attester(),
         &mut *ctx.rng,

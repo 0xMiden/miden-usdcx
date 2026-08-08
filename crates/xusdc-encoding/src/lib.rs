@@ -12,6 +12,11 @@ pub mod note;
 pub mod vectors;
 pub mod xreserve;
 
+/// The crate-root faucet-account constructor: the single entry that turns deploy parameters into the
+/// deployable, attestation-gated xUSDC faucet [`account::xreserve::XReserveStablecoinBuilder`]-composed
+/// `Account`. Surfaced at the library root so account construction is traceable from the top.
+pub use account::xreserve::build_faucet_account;
+
 /// Embedded MASM sources. The on-disk files are the single source of truth; these copies exist so
 /// callers can read the MASM without a filesystem.
 pub const ENCODING_MOD_MASM: &str =

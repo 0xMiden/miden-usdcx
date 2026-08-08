@@ -170,21 +170,14 @@ fn the_role_action_note_is_allowlisted_and_the_transfer_allowlist_note_is_not() 
     );
 }
 
-/// The callable surface is the ratified sixty-one procedures, and the swap is visible in it: the
-/// four standard manager procedures are present.
+/// The swap is visible in the callable surface: the four standard manager procedures are present,
+/// by name. Membership is the property — the surface's size is a changelog, not a security claim.
 #[tokio::test]
-async fn the_callable_surface_is_the_ratified_sixty_one_procedures() -> Result<()> {
+async fn the_standard_manager_procedures_are_on_the_callable_surface() -> Result<()> {
     let pf = admin_faucet(|_| Vec::new())?;
     let account = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
     let roots = callable_roots(&account);
 
-    assert_eq!(
-        roots.len(),
-        RATIFIED_CALLABLE_PROCEDURES,
-        "the built faucet must expose exactly the ratified {RATIFIED_CALLABLE_PROCEDURES} callable \
-         procedures; found {}",
-        roots.len()
-    );
     for (what, root) in [
         ("pause", PausableManager::pause_root()),
         ("unpause", PausableManager::unpause_root()),

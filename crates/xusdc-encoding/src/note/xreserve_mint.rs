@@ -37,9 +37,8 @@ use miden_standards::note::{
 };
 
 use crate::xreserve::encoding::{
-    affine_pubkey_felts, bytes32_to_account_id, bytes32_to_packed_u32_limbs,
-    bytes32_to_storage_map_key, deposit_intent_to_packed_felts, parse_deposit_intent_header,
-    signature_felts, uint256_to_asset_amount,
+    bytes32_to_account_id, bytes32_to_packed_u32_limbs, bytes32_to_storage_map_key,
+    uint256_to_asset_amount, DepositIntent, DepositIntentHeader, PublicKey, Signature,
 };
 
 /// The mint-note transport attachment scheme (u16, project-chosen: >= 4, clear of
@@ -88,45 +87,30 @@ impl MintAttestation {
     }
 }
 
-/// The mint-note factory: builds the [`MintNote`] carrying the xUSDC
-/// attested transport.
-pub struct XUsdcMintNote;
+/// The mint note's dedicated note-storage type — the attested output-note recipe the faucet's
+/// attestation policy assert-matches. It is DERIVED from the typed inputs (the DepositIntent header
+/// together with the consuming faucet id), never caller-supplied, so the storage cannot diverge from
+/// the attested values. It wraps the stock [`MintNoteStorage`] (a private field with read-only
+/// accessors, per the standards `PswapNoteStorage` pattern) rather than exposing a second copy of the
+/// recipe.
+pub struct XUsdcMintNoteStorage {
+    storage: MintNoteStorage,
+}
 
-impl XUsdcMintNote {
-    /// The [`MintNote`] script the transport rides on.
-    pub fn script() -> NoteScript {
-        MintNote::script()
-    }
-
-    /// The [`MintNote`] script root.
-    pub fn script_root() -> NoteScriptRoot {
-        MintNote::script_root()
-    }
-
-    /// Creates the production mint note: `sender` is the producer/relayer account, `faucet_id`
-    /// the consuming faucet, `deposit_intent` the RAW Circle-signed DepositIntent payload bytes
-    /// (parsed and packed by the shared codec, so a structurally invalid payload is rejected here
-    /// rather than on-chain — it surfaces as a [`NoteError`] carrying the codec's error as its
-    /// source), `attestation` the raw signature and
-    /// candidate pubkey. The storage embeds the ATTESTED values (P2ID recipe to the intent's
-    /// `remoteRecipient` with the nonce-key serial; the scale-0-reduced amount as a
-    /// [`FungibleAsset`] of `faucet_id`; the recipient's account-target tag) so the faucet's
-    /// attestation policy accepts it under the ASSERT-MATCH binding.
-    pub fn create<R: FeltRng>(
-        sender: AccountId,
+impl XUsdcMintNoteStorage {
+    /// Derives the mint-note storage from the attested DepositIntent `header` and the consuming
+    /// `faucet_id`: the P2ID recipe to the intent's `remoteRecipient` (serial = the nonce-derived
+    /// key), the scale-reduced attested amount as a [`FungibleAsset`] of the faucet, and the
+    /// recipient's account-target tag.
+    ///
+    /// # Errors
+    ///
+    /// [`NoteError`] if `remoteRecipient` is not a valid account id, the amount is out of range, or
+    /// the mint storage cannot be assembled.
+    pub fn from_attested(
+        header: &DepositIntentHeader,
         faucet_id: AccountId,
-        deposit_intent: &[u8],
-        attestation: &MintAttestation,
-        rng: &mut R,
-    ) -> Result<Note, NoteError> {
-        let header = parse_deposit_intent_header(deposit_intent).map_err(|source| {
-            NoteError::other_with_source(
-                "deposit intent payload rejected by the shared codec",
-                source,
-            )
-        })?;
-        // the attested output-note ingredients: recipient account, reduced amount, nonce-key
-        // serial — the SAME derivations the on-chain policy re-computes and assert-matches.
+    ) -> Result<Self, NoteError> {
         let recipient_id = bytes32_to_account_id(&header.remote_recipient).map_err(|source| {
             NoteError::other_with_source(
                 "deposit intent remoteRecipient is not a valid account id",
@@ -149,13 +133,92 @@ impl XUsdcMintNote {
         let recipient = P2idNoteStorage::new(recipient_id).into_recipient(serial);
         let tag = NoteTag::with_account_target(recipient_id);
         let storage = MintNoteStorage::new_fungible_public(recipient, asset, tag)?;
+        Ok(Self { storage })
+    }
+
+    /// A read-only view of the derived stock mint storage.
+    pub fn as_mint_storage(&self) -> &MintNoteStorage {
+        &self.storage
+    }
+
+    /// Consumes into the stock [`MintNoteStorage`] the [`MintNote`] builder installs.
+    pub fn into_mint_storage(self) -> MintNoteStorage {
+        self.storage
+    }
+}
+
+/// The mint-note factory: builds the [`MintNote`] carrying the xUSDC
+/// attested transport.
+pub struct XUsdcMintNote;
+
+impl XUsdcMintNote {
+    /// The [`MintNote`] script the transport rides on.
+    pub fn script() -> NoteScript {
+        MintNote::script()
+    }
+
+    /// The [`MintNote`] script root.
+    pub fn script_root() -> NoteScriptRoot {
+        MintNote::script_root()
+    }
+
+    /// Convenience constructor over the RAW Circle-signed DepositIntent payload bytes (a thin
+    /// delegator to the [`builder`](Self::builder)); retained because the frozen conformance suites
+    /// pin this signature. New callers should prefer the typed builder, which takes a
+    /// [`DepositIntent`].
+    pub fn create<R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        deposit_intent: &[u8],
+        attestation: &MintAttestation,
+        rng: &mut R,
+    ) -> Result<Note, NoteError> {
+        Self::builder()
+            .sender(sender)
+            .faucet_id(faucet_id)
+            .deposit_intent(DepositIntent::new(deposit_intent))
+            .attestation(attestation)
+            .rng(rng)
+            .build()
+    }
+}
+
+#[bon::bon]
+impl XUsdcMintNote {
+    /// Builds the production mint note via a `bon` builder
+    /// (`XUsdcMintNote::builder().sender(..).faucet_id(..).deposit_intent(..).attestation(..).rng(..).build()`):
+    /// `sender` is the producer/relayer account, `faucet_id` the consuming faucet, `deposit_intent`
+    /// the typed [`DepositIntent`] payload (parsed and packed by the shared codec, so a structurally
+    /// invalid payload is rejected here rather than on-chain — it surfaces as a [`NoteError`] carrying
+    /// the codec's error as its source), `attestation` the raw signature and candidate pubkey. The
+    /// storage embeds the ATTESTED values (P2ID recipe to the intent's `remoteRecipient` with the
+    /// nonce-key serial; the scale-0-reduced amount as a [`FungibleAsset`] of `faucet_id`; the
+    /// recipient's account-target tag) so the faucet's attestation policy accepts it under the
+    /// ASSERT-MATCH binding.
+    #[builder]
+    pub fn new<'a, R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        deposit_intent: DepositIntent<'a>,
+        attestation: &MintAttestation,
+        rng: &mut R,
+    ) -> Result<Note, NoteError> {
+        let header = deposit_intent.parse_header().map_err(|source| {
+            NoteError::other_with_source(
+                "deposit intent payload rejected by the shared codec",
+                source,
+            )
+        })?;
+        // the attested output-note recipe, encapsulated in the mint note's dedicated storage type —
+        // the SAME derivations the on-chain policy re-computes and assert-matches.
+        let storage = XUsdcMintNoteStorage::from_attested(&header, faucet_id)?;
         let target =
             NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always).map_err(|err| {
                 NoteError::other_with_source("faucet id is not a public network account", err)
             })?;
         let mint_note = MintNote::builder()
             .sender(sender)
-            .mint_storage(storage)
+            .mint_storage(storage.into_mint_storage())
             .serial_number(rng.draw_word())
             .attachment(Self::transport_attachment(deposit_intent, attestation)?)
             .attachment(NoteAttachment::from(target))
@@ -182,27 +245,32 @@ impl XUsdcMintNote {
     /// 33-byte compressed wire pubkey is decompressed to its affine coordinates here, so an
     /// off-curve key rejects rather than reaching the chain.
     fn transport_attachment(
-        deposit_intent: &[u8],
+        deposit_intent: DepositIntent<'_>,
         attestation: &MintAttestation,
     ) -> Result<NoteAttachment, NoteError> {
         let mut felts: Vec<Felt> = Vec::new();
 
         felts.extend([Felt::from(0u32); 8]);
-        felts.extend(affine_pubkey_felts(attestation.pubkey()).map_err(|source| {
-            NoteError::other_with_source("attestation pubkey rejected by the shared codec", source)
-        })?);
-        felts.extend(signature_felts(attestation.signature()));
+        felts.extend(
+            PublicKey::new(*attestation.pubkey())
+                .to_affine_felts()
+                .map_err(|source| {
+                    NoteError::other_with_source(
+                        "attestation pubkey rejected by the shared codec",
+                        source,
+                    )
+                })?,
+        );
+        felts.extend(Signature::new(*attestation.signature()).to_felts());
         felts.extend([Felt::from(0u32); 3]);
         debug_assert_eq!(felts.len(), XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF * 4);
 
-        felts.extend(
-            deposit_intent_to_packed_felts(deposit_intent).map_err(|source| {
-                NoteError::other_with_source(
-                    "deposit intent payload rejected by the shared codec",
-                    source,
-                )
-            })?,
-        );
+        felts.extend(deposit_intent.to_packed_felts().map_err(|source| {
+            NoteError::other_with_source(
+                "deposit intent payload rejected by the shared codec",
+                source,
+            )
+        })?);
         while !felts.len().is_multiple_of(4) {
             felts.push(Felt::from(0u32));
         }

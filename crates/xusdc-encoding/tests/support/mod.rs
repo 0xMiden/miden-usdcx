@@ -51,7 +51,9 @@ use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Pausable, PausableManager, RoleBasedAccessControl};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
-use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
+use miden_standards::account::policies::{
+    BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager,
+};
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::BurnNote;
@@ -63,7 +65,7 @@ use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH,
     BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::xreserve::encoding::masm_error_by_name;
+use xusdc_encoding::xreserve::encoding::{masm_error_by_name, EthBytes32};
 
 // Attestation fixtures — deterministic secp256k1 keys and signatures generated IN-TEST (the
 // canonical vector artifact is untouched), mirroring the `gen_vectors` att_* helpers: k256 the
@@ -450,7 +452,7 @@ pub fn production_component_set(
     max_supply: u64,
     token_supply: u64,
 ) -> Result<Vec<AccountComponent>> {
-    production_builder_outcome(max_supply, token_supply, None, None)?
+    production_builder_outcome(max_supply, token_supply, None)?
         .map_err(|e| anyhow::anyhow!("composing the production faucet components: {e}"))
 }
 
@@ -459,76 +461,32 @@ pub fn production_component_set(
 /// binding, faucet construction), the inner `Result` is `build_components`' typed
 /// [`XReserveStablecoinBuilderError`] verdict — so the builder-reject tripwires can
 /// `assert_matches!` the CONCRETE variant (the specific error, never a stringified word
-/// search). `min_burn_size = None` keeps the builder default; `mint_policy_override = None`
-/// keeps the attestation policy (the production shape).
+/// search). `min_burn_size = None` keeps the builder default. The mint policy is not a builder
+/// input — it is hard-wired to the attestation policy, the production shape.
 pub fn production_builder_outcome(
     max_supply: u64,
     token_supply: u64,
     min_burn_size: Option<u64>,
-    mint_policy_override: Option<MintPolicy>,
 ) -> Result<std::result::Result<Vec<AccountComponent>, XReserveStablecoinBuilderError>> {
-    let library = assemble_xreserve_lib()?;
-    let empty = || Word::from([0u32, 0, 0, 0]);
-    let xreserve_component = AccountComponent::new(
-        library,
-        vec![
-            StorageSlot::with_value(
-                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
-                    .context("source_domain slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
-                    .context("xreserve_contract_hi slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
-                    .context("xreserve_contract_lo slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_map(
-                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
-                StorageMap::new(),
-            ),
-            StorageSlot::with_map(
-                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
-                    .context("xReserveAttesters slot label")?,
-                StorageMap::new(),
-            ),
-        ],
-        AccountComponentMetadata::new("xusdc-production-surface"),
-    )
-    .context("binding the xreserve library + all seven slots as a component")?;
-
-    let faucet = FungibleFaucet::builder()
-        .name(TokenName::new("USDCx")?)
-        .symbol(TokenSymbol::new("USDCX")?)
-        .decimals(6)
-        .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
-        .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
-        .is_max_supply_mutable(true)
-        .build()
-        .context("failed to build FungibleFaucet")?;
-
+    // Neither the faucet nor the xreserve component is a builder input any more — `new` builds the
+    // fixed-identity USDCx faucet (mutable max supply) and assembles the one valid component itself
+    // — so the fixture only supplies the supply parameters and role holders.
     let mut builder = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
+        AssetAmount::new(max_supply).context("invalid max_supply")?,
+        AssetAmount::new(token_supply).context("invalid token_supply")?,
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
     )
-    .with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN, test_xreserve_contract());
+    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
+    .with_domain_config(
+        TEST_DOMAIN,
+        TEST_SOURCE_DOMAIN,
+        EthBytes32::new(test_xreserve_contract()),
+    );
     if let Some(min_burn_size) = min_burn_size {
         builder = builder.min_burn_size(min_burn_size);
-    }
-    if let Some(policy) = mint_policy_override {
-        builder = builder.with_active_mint_policy(policy);
     }
     Ok(builder.build_components())
 }
@@ -1428,7 +1386,7 @@ pub async fn run_set_min_burn_size_against(
 pub fn read_min_burn_size(account: &Account) -> Result<Word> {
     account
         .storage()
-        .get_item(miden_standards::account::policies::MinBurnAmount::slot_name())
+        .get_item(MinBurnAmount::slot_name())
         .map_err(|e| anyhow::anyhow!("reading the stock MinBurnAmount floor slot: {e}"))
 }
 
@@ -1659,14 +1617,19 @@ pub fn setup_guarded_mint_account(
             let domain_u32 = u32::try_from(domain[0].as_canonical_u64())
                 .context("the fixture domain word element 0 must be a u32")?;
             let components = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
-                faucet,
-                xreserve_component,
+                AssetAmount::new(max_supply).context("invalid max_supply")?,
+                AssetAmount::new(token_supply).context("invalid token_supply")?,
                 test_account_id(1),
                 test_account_id(2),
                 test_account_id(3),
                 test_account_id(4),
             )
-            .with_domain_config(domain_u32, TEST_SOURCE_DOMAIN, test_xreserve_contract())
+            .map_err(|e| anyhow::anyhow!("building the production attestation faucet: {e}"))?
+            .with_domain_config(
+                domain_u32,
+                TEST_SOURCE_DOMAIN,
+                EthBytes32::new(test_xreserve_contract()),
+            )
             .build_components()
             .map_err(|e| anyhow::anyhow!("composing the production attestation faucet: {e}"))?;
             (components, attestation_root)
@@ -2034,7 +1997,7 @@ pub fn setup_burn_policy_account(
     )
     .context("binding the xreserve library + all composition slots as a component")?;
 
-    let burn_root = Word::from(miden_standards::account::policies::MinBurnAmount::root());
+    let burn_root = Word::from(MinBurnAmount::root());
 
     let faucet = FungibleFaucet::builder()
         .name(TokenName::new("USDCx")?)
@@ -2205,76 +2168,6 @@ pub fn read_active_burn_policy_root(account: &Account) -> Result<Word> {
         .storage()
         .get_item(TokenPolicyManager::active_burn_policy_slot())
         .map_err(|e| anyhow::anyhow!("reading the active burn policy root slot: {e}"))
-}
-
-/// Returns the names of the procedures in a vendored pinned-standards MASM source that
-/// call `exec.faucet::burn` (the inherited supply-decrement primitive). A call's enclosing proc is the
-/// most recent `(pub )?proc <name>` declaration above it (MASM procs are top-level; inner block `end`s
-/// are irrelevant to which proc a line belongs to). Used to prove the sole inherited decrement surface
-/// is `receive_and_burn`.
-pub fn faucet_burn_caller_procs(src: &str) -> Vec<String> {
-    let mut current: Option<String> = None;
-    let mut callers = Vec::new();
-    for line in src.lines() {
-        let trimmed = line.trim();
-        // A call's enclosing proc is the most recent `(pub )?proc <name>` above it; MASM procs are
-        // top-level, so inner block `end`s never change which proc a line belongs to.
-        if let Some(rest) = trimmed
-            .strip_prefix("pub proc ")
-            .or_else(|| trimmed.strip_prefix("proc "))
-        {
-            current = Some(rest.split_whitespace().next().unwrap_or(rest).to_string());
-        } else if trimmed.contains("exec.faucet::burn") {
-            callers.push(current.clone().unwrap_or_else(|| "<top-level>".to_string()));
-        }
-    }
-    callers
-}
-
-/// Returns the names of the procedures in a vendored pinned-standards MASM source that
-/// perform a supply-DECREMENT write to `TOKEN_CONFIG_SLOT` (a `set_item` write whose written value is
-/// produced by a `sub`). For each `TOKEN_CONFIG_SLOT` `set_item` write it finds the nearest preceding
-/// arithmetic op (`add`/`sub`) within the enclosing proc and classifies the write `sub` => decrement,
-/// `add` => raise. The standards' `mint_and_send` write is `add`-fed (raise) and `set_max_supply`
-/// preserves supply, so the only decrement write is `receive_and_burn`'s. Used to prove the sole
-/// inherited supply-LOWERING surface is `receive_and_burn` (the burn-write twin of `faucet_burn_caller_procs`).
-pub fn faucet_supply_decrement_write_procs(src: &str) -> Vec<String> {
-    let lines: Vec<&str> = src.lines().collect();
-    let mut current: Option<String> = None;
-    let mut proc_start = 0usize;
-    let mut procs = Vec::new();
-    for (idx, raw) in lines.iter().enumerate() {
-        let trimmed = raw.trim();
-        if let Some(rest) = trimmed
-            .strip_prefix("pub proc ")
-            .or_else(|| trimmed.strip_prefix("proc "))
-        {
-            current = Some(rest.split_whitespace().next().unwrap_or(rest).to_string());
-            proc_start = idx;
-        } else if trimmed.contains("set_item") && trimmed.contains("TOKEN_CONFIG_SLOT") {
-            // Nearest preceding arithmetic op within the enclosing proc decides the write's DIRECTION
-            // (robust to stack ops/comments between the arithmetic and the write-back).
-            let arith = lines[proc_start..idx]
-                .iter()
-                .rev()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .find_map(|l| {
-                    let toks: Vec<&str> = l.split_whitespace().collect();
-                    if toks.contains(&"sub") {
-                        Some("sub")
-                    } else if toks.contains(&"add") {
-                        Some("add")
-                    } else {
-                        None
-                    }
-                });
-            if arith == Some("sub") {
-                procs.push(current.clone().unwrap_or_else(|| "<top-level>".to_string()));
-            }
-        }
-    }
-    procs
 }
 
 /// tx0 ONLY (non-panicking): the user emits `burn_note` in-block (a send tx-script that draws the asset
@@ -2854,9 +2747,8 @@ pub fn setup_burn_policy_direct_account(
     min_burn_size: u64,
     driver_src: &str,
 ) -> Result<ShellHarness> {
-    let min_burn = miden_standards::account::policies::MinBurnAmount::new(
-        AssetAmount::new(min_burn_size).context("invalid min_burn_size")?,
-    );
+    let min_burn =
+        MinBurnAmount::new(AssetAmount::new(min_burn_size).context("invalid min_burn_size")?);
 
     let driver_code = CodeBuilder::new()
         .compile_component_code(BURN_POLICY_DRIVER_PATH, driver_src)
@@ -2914,66 +2806,22 @@ pub fn setup_production_faucet(
     let producer =
         add_emitting_wallet(&mut mc, Auth::IncrNonce, []).context("adding producer wallet")?;
 
-    let library = assemble_xreserve_lib()?;
-    let empty = || Word::from([0u32, 0, 0, 0]);
-    let xreserve_component = AccountComponent::new(
-        library,
-        vec![
-            // the four domain-config slots are DECLARED here; the builder BUILD-SEEDS domain /
-            // source_domain / xreserve_contract; the attester allowlist ships EMPTY
-            // (set_attester writes it).
-            StorageSlot::with_value(
-                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
-                    .context("source_domain slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
-                    .context("xreserve_contract_hi slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
-                    .context("xreserve_contract_lo slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_map(
-                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
-                StorageMap::new(),
-            ),
-            StorageSlot::with_map(
-                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
-                    .context("xReserveAttesters slot label")?,
-                StorageMap::new(),
-            ),
-        ],
-        AccountComponentMetadata::new("xusdc-production-faucet"),
-    )
-    .context("binding the xreserve library + all seven slots as a component")?;
-
-    let faucet = FungibleFaucet::builder()
-        .name(TokenName::new("USDCx")?)
-        .symbol(TokenSymbol::new("USDCX")?)
-        .decimals(6)
-        .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
-        .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
-        .is_max_supply_mutable(true)
-        .build()
-        .context("failed to build FungibleFaucet")?;
-
+    // The builder builds the fixed-identity USDCx faucet and assembles the one valid xreserve
+    // component internally, so the fixture only supplies the supply parameters.
     let components = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
+        AssetAmount::new(max_supply).context("invalid max_supply")?,
+        AssetAmount::new(token_supply).context("invalid token_supply")?,
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
     )
-    .with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN, test_xreserve_contract())
+    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
+    .with_domain_config(
+        TEST_DOMAIN,
+        TEST_SOURCE_DOMAIN,
+        EthBytes32::new(test_xreserve_contract()),
+    )
     .build_components()
     .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
 

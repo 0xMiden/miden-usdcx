@@ -20,15 +20,36 @@ use super::error::EncodingError;
 /// (≤ 1024, the note-storage bound).
 pub const BURN_NOTE_ITEMS_FELTS: usize = 18;
 
-/// The burn-note public payload `(amount, destDomain, destRecipient, salt)`. Destination fields
-/// live in `NoteStorage.items`, never note metadata (`metadata.sender` carries the burner and
-/// nothing else).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The burn-note public payload `(amount, destDomain, destRecipient, salt)` — the burn note's
+/// dedicated note-storage type. Destination fields live in `NoteStorage.items`, never note metadata
+/// (`metadata.sender` carries the burner and nothing else). Built either as a struct literal or with
+/// a `bon` builder (`XReserveBurnItems::builder().amount(..).dest_domain(..)…build()`), the standards
+/// note-storage-type pattern.
+#[derive(Debug, Clone, PartialEq, Eq, bon::Builder)]
 pub struct XReserveBurnItems {
     pub amount: AssetAmount,
     pub dest_domain: u32,
     pub dest_recipient: [u8; 32],
     pub salt: [u8; 32],
+}
+
+impl XReserveBurnItems {
+    /// Encodes the payload into its `NoteStorage.items` felt layout. The method spelling of
+    /// [`encode_burn_note_items`]; byte-for-byte identical output.
+    pub fn encode(&self) -> Vec<Felt> {
+        encode_burn_note_items(self)
+    }
+
+    /// Decodes a `NoteStorage.items` payload back into the typed struct — the method spelling of
+    /// [`decode_burn_note_items`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EncodingError::BurnItemsMalformed`] on any wrong length, out-of-range field, or
+    /// non-u32 limb (identical fail-closed behaviour to [`decode_burn_note_items`]).
+    pub fn decode(items: &[Felt]) -> Result<Self, EncodingError> {
+        decode_burn_note_items(items)
+    }
 }
 
 /// Encodes `(amount, destDomain, destRecipient, salt)` into the `NoteStorage.items` felt

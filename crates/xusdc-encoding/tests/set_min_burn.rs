@@ -11,16 +11,13 @@
 //! set the floor, and their own powers are tested in the pause and role suites. `ADMIN` membership
 //! is account-bound: it is the faucet's only authority handle.
 //!
-//! The gate tests here call the standard setter directly through a bare test-local note, on
-//! purpose: the production note script also enforces its own "never below one" floor guard, and
-//! going through it would mean testing that guard instead of the setter's authorization. The floor
-//! guard itself is covered where the production note factory is exercised.
-//!
-//! So this file covers the administrator gate, that a successful write lands the right value in the right
-//! slot, that the setter is deliberately NOT blocked while the faucet is paused, that a seeded
-//! role-holder who is not the administrator is still rejected, and that the role seeding it relies on is
-//! itself correct. The end-to-end consequence — set the floor, then watch a below-floor burn trap —
-//! lives with the burn-note machinery in `xreserve_receive_and_burn.rs`.
+//! The authorization gate itself is the standard setter's, and it is driven through the production
+//! note in `f5_admin_notes.rs`. What is left here is what belongs to this repository: that the
+//! composition installs the very setter root the production note targets, that the setter is
+//! deliberately NOT blocked while the faucet is paused, and that the role seeding the support
+//! replica hands to every suite running against it matches what the builder seeds. The end-to-end
+//! consequence — set the floor, then watch a below-floor burn trap — lives with the burn-note
+//! machinery in `xreserve_receive_and_burn.rs`.
 
 mod support;
 
@@ -29,7 +26,6 @@ use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Ownable2Step, RoleBasedAccessControl};
 use miden_standards::account::policies::MinBurnAmount;
-use miden_testing::assert_transaction_executor_error;
 use support::*;
 
 // The seeded principals the reconciled production builder installs: the administrator = id(1) (the
@@ -114,73 +110,6 @@ fn probe_stock_min_burn_setter_installed() -> Result<()> {
             .any(|c| c.has_procedure(MinBurnAmount::set_min_burn_amount_root())),
         "the production component set must expose the stock MinBurnAmount::set_min_burn_amount \
          root (the setter the production admin note targets)"
-    );
-    Ok(())
-}
-
-// ADMINISTRATOR GATE + WRITE INTEGRITY (the security core) — against the STOCK setter
-// ================================================================================================
-
-/// An OWNER-sent `set_min_burn_size(M)` succeeds and writes the FULL word `[M,0,0,0]` to the STOCK
-/// `MinBurnAmount` floor slot (write integrity).
-#[tokio::test]
-async fn set_min_burn_administrator_succeeds() -> Result<()> {
-    let h = faucet_harness()?;
-    let account = faucet(&h)?;
-    const NEW_MIN: u64 = 5_000;
-
-    let executed = run_set_min_burn_size_against(&h.chain, &account, administrator(), NEW_MIN, 7)
-        .await
-        .expect("the administrator's set_min_burn_size(M) must succeed");
-    let mut evolved = account.clone();
-    evolved.apply_patch(executed.account_patch())?;
-
-    assert_eq!(
-        read_min_burn_size(&evolved)?,
-        min_word(NEW_MIN),
-        "the stock set_min_burn_amount writes the full [new_min,0,0,0] word to the stock \
-         MinBurnAmount floor slot"
-    );
-    Ok(())
-}
-
-/// A PLAIN non-administrator-sent `set_min_burn_size` traps the EXACT `ERR_SENDER_LACKS_ROLE` and leaves the
-/// slot unchanged (no partial write before the trap).
-#[tokio::test]
-async fn set_min_burn_plain_non_administrator_rejects() -> Result<()> {
-    assert_non_administrator_rejected(plain_non_administrator()).await
-}
-
-/// ADMINISTRATOR-ONLY (the seeded `DOM_PAUSER` member, who is NOT the administrator, is rejected). Proves the gate is the
-/// built-in `ADMIN` role specifically — a privileged role-holder gains no setter access. Doubles as the
-/// `former ATTEST_ADMIN` removal proof: id(2) held ATTEST_ADMIN pre-reconciliation and is rejected now.
-#[tokio::test]
-async fn set_min_burn_dom_pauser_non_administrator_rejects() -> Result<()> {
-    assert_non_administrator_rejected(dom_pauser()).await
-}
-
-/// ADMINISTRATOR-ONLY (the seeded `DOM_MANAGER` member, who is NOT the administrator, is rejected). The second DOM role,
-/// so both seeded role-holders are proven non-authorizing for the setter.
-#[tokio::test]
-async fn set_min_burn_dom_manager_non_administrator_rejects() -> Result<()> {
-    assert_non_administrator_rejected(dom_manager()).await
-}
-
-/// Shared non-administrator assertion: `sender` (no `ADMIN` role) traps the EXACT `ERR_SENDER_LACKS_ROLE`, AND
-/// the STOCK `MinBurnAmount` floor slot reads back the seeded `[SEED_MIN,0,0,0]` (byte-identical)
-/// — no partial write.
-async fn assert_non_administrator_rejected(sender: AccountId) -> Result<()> {
-    let h = faucet_harness()?;
-    let account = faucet(&h)?;
-
-    let result = run_set_min_burn_size_against(&h.chain, &account, sender, 5_000, 7).await;
-    assert_transaction_executor_error!(result, err_sender_lacks_role());
-
-    // no state change: the slot is byte-identical to the seed (the trap precedes any write).
-    assert_eq!(
-        read_min_burn_size(&account)?,
-        min_word(SEED_MIN),
-        "a rejected non-administrator set_min_burn_size leaves the stock MinBurnAmount floor slot unchanged"
     );
     Ok(())
 }

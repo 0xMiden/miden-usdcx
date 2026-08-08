@@ -5,7 +5,9 @@
 
 use miden_protocol::account::AccountId;
 use miden_protocol::Felt;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 
+use super::bytes32::bytes32_to_packed_felts;
 use super::error::EncodingError;
 
 /// `AddressType::AccountId` discriminant (232 = 0b1110_1000). A bech32 discriminant,
@@ -14,14 +16,15 @@ pub const ADDRESS_TYPE_ACCOUNT_ID: u8 = 232;
 
 /// Lossless AccountId → bytes32 packaging — right-aligned:
 /// `bytes[0..16] = 0x00` (leading zero pad), `bytes[16..24] = prefix` as u64 big-endian,
-/// `bytes[24..32] = suffix` as canonical u64 big-endian. Mirrors the protocol Agglayer
-/// `EthEmbeddedAccountId` form `0x00000000 || prefix(8) || suffix(8)` widened to a
-/// 32-byte slot; uses the FULL 8-byte suffix, not `to_bytes()`'s 7-byte form.
+/// `bytes[24..32] = suffix` as canonical u64 big-endian.
+///
+/// This is the stock `EthEmbeddedAccountId::to_bytes32()` form: `EthEmbeddedAccountId` wraps an
+/// `AccountId` in the same right-aligned ETH-shaped container (16-byte zero pad, then prefix and
+/// suffix as big-endian u64s), so the two are byte-identical, and the on-chain side already reads
+/// the stock `eth::bytes32_to_account_id`. Delegating keeps both sides on one definition of the
+/// layout; the golden vectors lock the byte-for-byte equality.
 pub fn account_id_to_bytes32(id: AccountId) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    out[16..24].copy_from_slice(&id.prefix().as_u64().to_be_bytes());
-    out[24..32].copy_from_slice(&id.suffix().as_canonical_u64().to_be_bytes());
-    out
+    EthEmbeddedAccountId::from_account_id(id).to_bytes32()
 }
 
 /// Inverse: rejects a non-zero byte in the leading 16-byte pad region
@@ -43,12 +46,49 @@ pub fn bytes32_to_account_id(b: &[u8; 32]) -> Result<AccountId, EncodingError> {
         .map_err(|_| EncodingError::NonCanonicalAccountId)
 }
 
-/// The on-chain natural form: the two felts `[prefix, suffix]` directly (no repacking).
-pub fn account_id_to_felts(id: AccountId) -> [Felt; 2] {
-    [id.prefix().as_felt(), id.suffix()]
+/// A remote (source-chain) address carried as a 32-byte big-endian value — the shape Circle's
+/// `xreserve_contract` domain-config field uses.
+///
+/// This mirrors the stock `miden_standards::interop::eth::EthAddress` newtype pattern (a fixed-width
+/// byte array with construction, an accessor, and a field-element packing), but keeps a LOCAL type
+/// because the shapes differ: stock `EthAddress` is a 20-byte EVM address, while this value is a full
+/// 32-byte `bytes32`, so the stock type cannot hold it without narrowing (its `TryFrom<[u8; 32]>`
+/// rejects any value whose leading 12 bytes are non-zero). The packing goes through the shared
+/// [`bytes32_to_packed_felts`] codec, so a value packed here is identical to one packed anywhere else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EthBytes32([u8; 32]);
+
+impl EthBytes32 {
+    /// Wraps a raw 32-byte big-endian value.
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// The raw 32 bytes.
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Packs the value into its 8 u32-LE field elements (the shared [`bytes32_to_packed_felts`]
+    /// primitive).
+    pub fn to_packed_felts(&self) -> [Felt; 8] {
+        bytes32_to_packed_felts(&self.0)
+    }
 }
 
-// TESTS — TV-AID-1..4
+impl From<[u8; 32]> for EthBytes32 {
+    fn from(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<EthBytes32> for [u8; 32] {
+    fn from(value: EthBytes32) -> Self {
+        value.0
+    }
+}
+
+// TESTS — TV-AID-1..3
 // ================================================================================================
 
 #[cfg(test)]
@@ -177,30 +217,5 @@ mod tests {
             "bytes set outside the 16-byte account id region",
             "the AccountIdOutOfRange message must match the shipped 16-byte-pad layout"
         );
-    }
-
-    /// TV-AID-4 (on-chain shape): the two-felt form matches the vector's expected
-    /// `[prefix, suffix]` pair and the pair recovered from the bytes32 form.
-    #[test]
-    fn tv_aid_4_two_felt_form() {
-        let v = load();
-        for vec in v
-            .families
-            .aid
-            .iter()
-            .filter(|v| v.expected_variant.is_none())
-        {
-            let b = parse_hex32(&vec.bytes32);
-            let id = bytes32_to_account_id(&b)
-                .unwrap_or_else(|e| panic!("vector {}: must decode, got {e}", vec.id));
-            let felts = account_id_to_felts(id);
-            let expected = vec.expected_felts();
-            assert_eq!(
-                felts.as_slice(),
-                expected.as_slice(),
-                "vector {}: felts",
-                vec.id
-            );
-        }
     }
 }

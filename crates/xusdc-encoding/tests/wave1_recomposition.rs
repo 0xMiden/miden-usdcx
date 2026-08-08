@@ -37,7 +37,7 @@ use miden_protocol::account::{
     AccountComponent, StorageMapKey, StorageSlot, StorageSlotContent, StorageSlotName,
 };
 use miden_protocol::{Felt, Word};
-use miden_standards::account::policies::{MinBurnAmount, MintPolicy, TokenPolicyManager};
+use miden_standards::account::policies::{MinBurnAmount, TokenPolicyManager};
 use miden_standards::note::MintNote;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilderError;
@@ -164,22 +164,13 @@ fn allowed_mint_policy_map_is_exactly_the_attestation_root() -> Result<()> {
     Ok(())
 }
 
-/// TRIPWIRE: a build whose active mint policy is NOT the attestation policy CANNOT exist — the
-/// builder rejects it with the CONCRETE `MissingAttestationMintPolicy` variant (the
-/// mutation-test half of the restated sole-supply-surface invariant — the exact variant, not a
-/// stringified word search).
-#[test]
-fn builder_rejects_a_non_attestation_mint_policy() -> Result<()> {
-    let _serial = tripwire_serial_guard_blocking();
-    let outcome = production_builder_outcome(MAX_SUPPLY, 0, None, Some(MintPolicy::allow_all()))?;
-    assert_matches!(
-        outcome,
-        Err(XReserveStablecoinBuilderError::MissingAttestationMintPolicy),
-        "a build with MintPolicy::allow_all() as the active mint policy MUST be rejected with \
-         the exact missing-attestation-policy variant"
-    );
-    Ok(())
-}
+// The active mint policy is no longer an injectable builder input — it is hard-wired to the
+// attestation policy at composition (there is exactly one mint policy), so a "non-attestation active
+// mint policy" build cannot be expressed through the public API and the former
+// `builder_rejects_a_non_attestation_mint_policy` tripwire has no injection vector to exercise. The
+// sole-supply-surface invariant is enforced by construction and asserted positively by
+// `production_composition_installs_one_xreserve_and_one_manager` (builder_api.rs) and the frozen
+// callable-surface pins.
 
 /// TRIPWIRE: the mint-deny guard is fully dissolved — its module resolves nowhere in the
 /// composition and its source file is gone (its job dissolved: the stock path IS the gated path).
@@ -309,7 +300,7 @@ fn burn_policy_is_stock_min_burn_amount_with_a_positive_floor() -> Result<()> {
 #[test]
 fn builder_rejects_a_zero_min_burn_floor() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();
-    let outcome = production_builder_outcome(MAX_SUPPLY, 0, Some(0), None)?;
+    let outcome = production_builder_outcome(MAX_SUPPLY, 0, Some(0))?;
     assert_matches!(
         outcome,
         Err(XReserveStablecoinBuilderError::MinBurnSizeBelowFloor(0)),

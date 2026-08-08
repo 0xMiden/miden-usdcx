@@ -56,7 +56,7 @@ use withdrawal_listener_attester::types::BurnPayload;
 use withdrawal_listener_attester::validate::{
     DiscoveredDetails, DiscoveryRecord, ValidatedWithdrawal,
 };
-use xusdc_encoding::xreserve::encoding::{account_id_to_felts, encode_burn_note_items};
+use xusdc_encoding::xreserve::encoding::encode_burn_note_items;
 
 use evidence_support::UnitPort;
 use mock_circle::{Endpoint, MockCircle, Reply, Script};
@@ -129,7 +129,8 @@ pub fn discovered() -> DiscoveredNote {
 /// None`) — the two discovery rejects that must stop the flow before Circle is touched.
 pub fn discovered_with(tag: u32, payload: Option<BurnPayload>) -> DiscoveredNote {
     let details = payload.map(|p| {
-        let [prefix, suffix] = account_id_to_felts(evidence_support::other_account_id());
+        let id = evidence_support::other_account_id();
+        let (prefix, suffix) = (id.prefix().as_felt(), id.suffix());
         DiscoveredDetails::from_raw_sender(encode_burn_note_items(&p), prefix, suffix)
     });
     DiscoveredNote::new(note_id(), DiscoveryRecord::new(tag, details))

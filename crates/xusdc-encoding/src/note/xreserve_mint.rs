@@ -1,6 +1,6 @@
 //! `XUsdcMintNote`: builds the note that carries a Circle-attested deposit to the faucet.
 //!
-//! There is no custom mint note script. The note is a standard [`MintNote`] driving the standard
+//! The note is a standard [`MintNote`] driving the standard
 //! `mint_and_send`; everything specific to xUSDC rides along as attachments. The authorization
 //! decision lives entirely in the faucet's active mint policy, which re-derives the note's contents
 //! from the attested payload and refuses anything that does not match — so this factory's only job
@@ -11,7 +11,7 @@
 //! - The mint-note storage holds the output note's pay-to-id recipe: target = the intent's
 //!   `remoteRecipient`, serial = the key derived from the deposit nonce, asset = the reduced
 //!   attested amount, tag = the attested recipient.
-//! - Two attachments travel with it, and neither is note storage. Scheme 4 is the whole
+//! - Two attachments travel with it. Scheme 4 is the whole
 //!   Circle-signed transport in one attachment: the attestation as eleven words — fee amount
 //!   (8 felts), attester public key (16), signature (17), 3 padding felts, in the order the
 //!   policy reads them; the fee is zero while relayer fees remain open with Circle — and then the
@@ -23,14 +23,6 @@
 //!   starting offset a constant instead of a function of `hookDataLen`, which is what lets the
 //!   policy read every sub-region at a constant offset — and what keeps the Circle-signed byte
 //!   extent 1:1 identifiable inside the merged attachment.
-//! - Converting to a `MintNote` forces the note public and tags it at the faucet, which is what
-//!   makes it routable and observable.
-//!
-//! Nothing is staged on the advice provider: attachment contents are public note data the executor
-//! supplies, and the policy hash-verifies the transport against the commitment the note carries
-//! before reading a single byte of it. The scheme-2 routing attachment is NOT hash-verified by the
-//! policy and never feeds a mint effect — the policy only requires it to be present, and the
-//! network transaction infrastructure is what reads it, to route the note.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::FungibleAsset;
@@ -45,23 +37,21 @@ use miden_standards::note::{
 };
 
 use crate::xreserve::encoding::{
-    bytes32_to_account_id, bytes32_to_storage_map_key, uint256_to_asset_amount, DepositIntent,
-    DepositIntentHeader, PublicKey, Signature,
+    bytes32_to_account_id, bytes32_to_packed_u32_limbs, bytes32_to_storage_map_key,
+    uint256_to_asset_amount, DepositIntent, DepositIntentHeader, PublicKey, Signature,
 };
 
 /// The mint-note transport attachment scheme (u16, project-chosen: >= 4, clear of
 /// the reserved "none" value 1 and the standard values 2 `NetworkAccountTarget` / 3 `Pswap`).
-/// One attachment carries the attestation and the DepositIntent preimage.
-/// The policy's `find_attachment` fail-closes on a mismatch. Not a Circle-owned value.
+/// This attachment carries both the attestation and the DepositIntent preimage.
 pub const XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME: u16 = 4;
 
 /// The attestation section word count: `[feeAmount(8), pubkey(16), signature(17), pad(3)]`
-/// = 44 felts (the pubkey is the 16-felt affine form).
+/// = 44 felts.
 pub const XUSDC_MINT_ATTESTATION_NUM_WORDS: usize = 11;
 
 /// Word offset of the DepositIntent sub-region inside the transport attachment: past the
-/// fixed-width attestation. Constant by construction — see the module docs on why the attestation
-/// goes first.
+/// fixed-width attestation.
 pub const XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF: usize = XUSDC_MINT_ATTESTATION_NUM_WORDS;
 
 /// The uint256 -> AssetAmount decimal scale the faucet applies. The cap / scale / dust decision
@@ -73,8 +63,7 @@ pub const XUSDC_DEPOSIT_SCALE_EXP: u32 = 0;
 
 /// The Circle deposit attestation crossing the note boundary: the raw 65-byte
 /// `r‖s‖v` ECDSA signature over `keccak256(payload)` and the raw 33-byte compressed SEC1
-/// candidate pubkey. The lengths are enforced by the types themselves; converting these bytes to
-/// field elements happens in [`XUsdcMintNote`], through the shared codec.
+/// candidate pubkey.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MintAttestation {
     signature: [u8; 65],
@@ -128,14 +117,16 @@ impl XUsdcMintNoteStorage {
                 source,
             )
         })?;
-        let amount =
-            uint256_to_asset_amount(uint256_le_limbs(&header.amount), XUSDC_DEPOSIT_SCALE_EXP)
-                .map_err(|source| {
-                    NoteError::other_with_source(
-                        "deposit intent amount rejected by the amount reducer",
-                        source,
-                    )
-                })?;
+        let amount = uint256_to_asset_amount(
+            bytes32_to_packed_u32_limbs(&header.amount),
+            XUSDC_DEPOSIT_SCALE_EXP,
+        )
+        .map_err(|source| {
+            NoteError::other_with_source(
+                "deposit intent amount rejected by the amount reducer",
+                source,
+            )
+        })?;
         let asset = FungibleAsset::new(faucet_id, u64::from(amount))
             .map_err(|source| NoteError::other_with_source("attested amount", source))?;
         let serial = Word::from(bytes32_to_storage_map_key(&header.nonce));
@@ -156,18 +147,17 @@ impl XUsdcMintNoteStorage {
     }
 }
 
-/// The production mint-note factory: builds the STOCK [`MintNote`] carrying the xUSDC
-/// attested transport. The note script is the STOCK standards MINT script, so there is no custom
-/// root to pin and [`Self::script_root`] delegates to [`MintNote::script_root`].
+/// The mint-note factory: builds the [`MintNote`] carrying the xUSDC
+/// attested transport.
 pub struct XUsdcMintNote;
 
 impl XUsdcMintNote {
-    /// The STOCK standards MINT note script the transport rides on.
+    /// The [`MintNote`] script the transport rides on.
     pub fn script() -> NoteScript {
         MintNote::script()
     }
 
-    /// The STOCK MINT note script root.
+    /// The [`MintNote`] script root.
     pub fn script_root() -> NoteScriptRoot {
         MintNote::script_root()
     }
@@ -204,8 +194,7 @@ impl XUsdcMintNote {
     /// storage embeds the ATTESTED values (P2ID recipe to the intent's `remoteRecipient` with the
     /// nonce-key serial; the scale-0-reduced amount as a [`FungibleAsset`] of `faucet_id`; the
     /// recipient's account-target tag) so the faucet's attestation policy accepts it under the
-    /// ASSERT-MATCH binding. Nothing is attached to the note as an asset — the amount rides in that
-    /// storage — and the stock conversion forces `NoteType::Public`.
+    /// ASSERT-MATCH binding.
     #[builder]
     pub fn new<'a, R: FeltRng>(
         sender: AccountId,
@@ -295,16 +284,4 @@ impl XUsdcMintNote {
             words,
         )
     }
-}
-
-/// The 8 u32-LE packed limbs of a big-endian uint256 wire field (limb i = LE-u32 of wire bytes
-/// `[4i, 4i+4)`) — the limb form the shared-encoding reducer consumes.
-fn uint256_le_limbs(bytes: &[u8; 32]) -> [u32; 8] {
-    core::array::from_fn(|i| {
-        u32::from_le_bytes(
-            bytes[4 * i..4 * i + 4]
-                .try_into()
-                .expect("4-byte window of a 32-byte field"),
-        )
-    })
 }

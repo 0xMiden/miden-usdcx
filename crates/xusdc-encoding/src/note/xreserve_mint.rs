@@ -32,9 +32,7 @@ use miden_protocol::note::{
     Note, NoteAttachment, NoteAttachmentScheme, NoteScript, NoteScriptRoot, NoteTag,
 };
 use miden_protocol::{Felt, Word};
-use miden_standards::note::{
-    MintNote, MintNoteStorage, NetworkAccountTarget, NoteExecutionHint, P2idNoteStorage,
-};
+use miden_standards::note::{MintNote, MintNoteStorage, P2idNoteStorage};
 
 use crate::xreserve::encoding::{
     bytes32_to_account_id, bytes32_to_packed_u32_limbs, bytes32_to_storage_map_key,
@@ -212,16 +210,12 @@ impl XUsdcMintNote {
         // the attested output-note recipe, encapsulated in the mint note's dedicated storage type —
         // the SAME derivations the on-chain policy re-computes and assert-matches.
         let storage = XUsdcMintNoteStorage::from_attested(&header, faucet_id)?;
-        let target =
-            NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always).map_err(|err| {
-                NoteError::other_with_source("faucet id is not a public network account", err)
-            })?;
         let mint_note = MintNote::builder()
             .sender(sender)
             .mint_storage(storage.into_mint_storage())
             .serial_number(rng.draw_word())
             .attachment(Self::transport_attachment(deposit_intent, attestation)?)
-            .attachment(NoteAttachment::from(target))
+            .attachment(super::network_routing_attachment(faucet_id)?)
             .build()?;
         Ok(Note::from(mint_note))
     }

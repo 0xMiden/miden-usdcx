@@ -35,7 +35,7 @@ use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::note::xreserve_admin::{block_note, unblock_note};
+use xusdc_encoding::note::xreserve_admin::XReserveBlocklistNote;
 
 use super::{add_faucet_account, setup_production_faucet, test_account_id, ProductionFaucet};
 
@@ -431,7 +431,7 @@ pub fn stock_block_note(
     seed: u64,
 ) -> Result<Note> {
     let mut rng = RandomCoin::new(config_note_serial(seed));
-    block_note(sender, faucet_id, target, &mut rng)
+    XReserveBlocklistNote::block(sender, faucet_id, target, &mut rng)
         .map_err(|e| anyhow::anyhow!("building the block note: {e}"))
 }
 
@@ -443,7 +443,7 @@ pub fn stock_unblock_note(
     seed: u64,
 ) -> Result<Note> {
     let mut rng = RandomCoin::new(config_note_serial(seed));
-    unblock_note(sender, faucet_id, target, &mut rng)
+    XReserveBlocklistNote::unblock(sender, faucet_id, target, &mut rng)
         .map_err(|e| anyhow::anyhow!("building the unblock note: {e}"))
 }
 

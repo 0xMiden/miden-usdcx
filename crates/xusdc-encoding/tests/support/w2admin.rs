@@ -49,21 +49,6 @@ use super::{add_faucet_account, setup_production_faucet, test_account_id, Produc
 /// Human-ratified.
 pub const RATIFIED_ALLOWLIST_ROOTS: usize = 8;
 
-/// The callable procedure count: four custom procedures out, four standard manager procedures in,
-/// the two-step ownership component's five rows removed, and the mint-path
-/// `encoding::pubkey_commitment` de-export (it became an exec-only export of `attestation_verify`,
-/// no longer a callable account root) drops the total by one more to 69. The deposit-intent
-/// consolidation then took the parser's three assertion procedures and the shared
-/// `encoding::parse_deposit_intent` off the surface too — they are the exec-only
-/// `deposit_intent_parser::{parse,validate}` pair now — leaving 65. The MASM-hygiene pass then
-/// dropped `@account_procedure` from the three remaining `exec`-only xreserve helpers
-/// (`encoding::bytes32_to_key`, `encoding::verify_uint256_to_asset_amount` and
-/// `attestation_verify::verify_attestation`), leaving 62. The identifier-derivation change then
-/// took `init_identifier` with the stored identifier the mint path no longer reads, leaving the two
-/// genuine entry points (`set_attester`, `check_policy`) plus the stock rows = 61.
-/// Human-ratified.
-pub const RATIFIED_CALLABLE_PROCEDURES: usize = 61;
-
 /// The `DOM_PAUSER` role symbol felt the retired `pause_admin.masm` hard-coded. The role identity
 /// had to survive the move from a MASM literal into the procedure-role map, so it is pinned here as
 /// a literal rather than read from a file that no longer exists.

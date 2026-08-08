@@ -26,8 +26,8 @@ use withdrawal_listener_attester::note_decode::{
 };
 use xusdc_encoding::vectors::{load, parse_hex32, BnVector};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, account_id_to_felts, bytes32_to_account_id, decode_burn_note_items,
-    encode_burn_note_items, EncodingError, BURN_NOTE_ITEMS_FELTS,
+    account_id_to_bytes32, bytes32_to_account_id, decode_burn_note_items, encode_burn_note_items,
+    EncodingError, BURN_NOTE_ITEMS_FELTS,
 };
 
 // HELPERS
@@ -283,8 +283,8 @@ fn t_la_04_sender_is_read_from_metadata() {
         let read = read_sender(&meta).expect("a public note's sender reads back");
         assert_eq!(read, sender, "the sender read is the burning account id");
         assert_eq!(
-            account_id_to_felts(read),
-            account_id_to_felts(sender),
+            (read.prefix().as_felt(), read.suffix()),
+            (sender.prefix().as_felt(), sender.suffix()),
             "both id felts survive — a prefix/suffix swap is not a round trip"
         );
     }
@@ -358,7 +358,7 @@ fn t_la_04_non_canonical_sender_is_refused(#[case] prefix: u64, #[case] suffix: 
 #[test]
 fn t_la_04_sender_with_invalid_suffix_is_refused() {
     let (sender, _) = golden_senders()[0];
-    let [prefix, suffix] = account_id_to_felts(sender);
+    let (prefix, suffix) = (sender.prefix().as_felt(), sender.suffix());
     let perturbed = felt(suffix.as_canonical_u64() + 1);
     assert_ne!(perturbed, suffix);
 
@@ -374,7 +374,7 @@ fn t_la_04_sender_with_invalid_suffix_is_refused() {
 #[test]
 fn t_la_04_canonical_raw_sender_reads_back() {
     for (sender, _) in golden_senders() {
-        let [prefix, suffix] = account_id_to_felts(sender);
+        let (prefix, suffix) = (sender.prefix().as_felt(), sender.suffix());
         let via_raw = read_sender(&BurnNoteMetadata::from_raw_sender(prefix, suffix))
             .expect("a canonical raw sender reads back");
         let via_metadata =

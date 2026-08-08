@@ -3,9 +3,10 @@
 //!
 //! The builder is thin ON PURPOSE. It bundles the attestation the relayer VALIDATED (a
 //! `ValidatedAttestation` has passed the raw-keccak digest binding and the 65-byte shape check)
-//! with the attester pubkey the OPERATOR configured, and hands both — plus the payload — to the
-//! shared encoding crate's [`XUsdcMintNote::create`], which decides every byte of the note's
-//! form: the storage, the two attachments, the note type, and the script.
+//! with the attester pubkey the OPERATOR configured, and hands both — plus the DepositIntent payload
+//! (as the typed [`DepositIntent`]) — to the shared encoding crate's typed [`XUsdcMintNote`] builder,
+//! which decides every byte of the note's form: the storage, the two attachments, the note type, and
+//! the script.
 //!
 //! **Why the pubkey is a parameter and the signature is not.** Circle's attestation object carries
 //! `payload`, `messageHash`, and `attestation` (the 65-byte `r‖s‖v`) — but NOT the attester's
@@ -29,7 +30,7 @@ use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::Note;
 
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::affine_pubkey_felts;
+use xusdc_encoding::xreserve::encoding::{affine_pubkey_felts, DepositIntent};
 
 use crate::circle::schema::ValidatedAttestation;
 use crate::error::{Cause, HexField, RelayerError};
@@ -108,7 +109,7 @@ impl AttesterPubkey {
 }
 
 /// Builds the mint note for a validated Circle deposit attestation, by delegation to the shared
-/// encoding crate's [`XUsdcMintNote::create`].
+/// encoding crate's typed [`XUsdcMintNote`] builder (the DepositIntent crosses as [`DepositIntent`]).
 ///
 /// The parameters:
 ///
@@ -141,12 +142,14 @@ pub fn build_mint_note<R: FeltRng>(
 ) -> Result<Note, RelayerError> {
     let mint_attestation = MintAttestation::new(attestation.attestation(), *attester.as_bytes());
 
-    XUsdcMintNote::create(
-        sender,
-        faucet_id,
-        attestation.payload(),
-        &mint_attestation,
-        rng,
-    )
-    .map_err(|source| RelayerError::MintNoteBuild(Cause::new(source)))
+    // Adopt the typed builder at the production boundary: the DepositIntent payload crosses as the
+    // typed `DepositIntent`, not a raw `&[u8]`.
+    XUsdcMintNote::builder()
+        .sender(sender)
+        .faucet_id(faucet_id)
+        .deposit_intent(DepositIntent::new(attestation.payload()))
+        .attestation(&mint_attestation)
+        .rng(rng)
+        .build()
+        .map_err(|source| RelayerError::MintNoteBuild(Cause::new(source)))
 }

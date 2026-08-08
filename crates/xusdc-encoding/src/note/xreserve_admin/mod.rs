@@ -49,9 +49,9 @@ mod set_max_supply;
 mod set_min_burn_size;
 
 pub use blocklist::{XReserveBlocklistNote, XReserveBlocklistNoteError};
-pub use set_attester::XReserveSetAttesterNote;
-pub use set_max_supply::XReserveSetMaxSupplyNote;
-pub use set_min_burn_size::XReserveSetMinBurnSizeNote;
+pub use set_attester::{XReserveSetAttesterNote, XReserveSetAttesterNoteStorage};
+pub use set_max_supply::{XReserveSetMaxSupplyNote, XReserveSetMaxSupplyNoteStorage};
+pub use set_min_burn_size::{XReserveSetMinBurnSizeNote, XReserveSetMinBurnSizeNoteStorage};
 
 /// Compiles an admin note-script source with the shipped `xreserve` component library linked so its
 /// `call.<module>::<proc>` resolves to the SAME proc installed on the faucet account.

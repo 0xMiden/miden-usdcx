@@ -36,9 +36,7 @@ use withdrawal_listener_attester::validate::{
     validate_discovery, DiscoveredBurn, DiscoveredDetails, DiscoveryRecord,
 };
 use withdrawal_listener_attester::withdrawal_api::build_prepare_request;
-use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, account_id_to_felts, encode_burn_note_items,
-};
+use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, encode_burn_note_items};
 
 // ================================================================================================
 // FIXTURES
@@ -106,7 +104,7 @@ fn discovered_burn(
     sender: AccountId,
     cfg: &ListenerConfig,
 ) -> DiscoveredBurn {
-    let [prefix, suffix] = account_id_to_felts(sender);
+    let (prefix, suffix) = (sender.prefix().as_felt(), sender.suffix());
     let record = DiscoveryRecord::new(
         cfg.burn_tag(),
         Some(DiscoveredDetails::from_raw_sender(

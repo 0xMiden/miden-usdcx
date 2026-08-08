@@ -14,12 +14,49 @@ const SET_ATTESTER_NOTE_SCRIPT_SRC: &str =
 static SET_ATTESTER_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(SET_ATTESTER_NOTE_SCRIPT_SRC));
 
+/// The dedicated `set_attester` note-storage type: the `NoteStorage.items` payload
+/// `[pk_commitment(4), enabled]`. Built with a `bon` builder
+/// (`XReserveSetAttesterNoteStorage::builder().commitment(..).enabled(..).build()`), mirroring the
+/// standards `PswapNoteStorage` pattern, and converted to its felt items by [`Self::into_items`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bon::Builder)]
+pub struct XReserveSetAttesterNoteStorage {
+    commitment: Word,
+    enabled: u8,
+}
+
+impl XReserveSetAttesterNoteStorage {
+    /// The `NoteStorage.items` felt count: `[commitment(4), enabled]`.
+    pub const NUM_ITEMS: usize = 5;
+
+    /// The attester pubkey commitment (the xReserveAttesters map key).
+    pub fn commitment(&self) -> Word {
+        self.commitment
+    }
+
+    /// `1` = allowlist the attester, `0` = remove it.
+    pub fn enabled(&self) -> u8 {
+        self.enabled
+    }
+
+    /// The `NoteStorage.items` felt layout `[commitment(4), enabled]`.
+    pub fn into_items(self) -> Vec<Felt> {
+        vec![
+            self.commitment[0],
+            self.commitment[1],
+            self.commitment[2],
+            self.commitment[3],
+            Felt::from(u32::from(self.enabled)),
+        ]
+    }
+}
+
 /// The administrator-gated `set_attester` admin note. Storage layout: `[pk_commitment(4),
 /// enabled]`. Consumed against the faucet network account; `attester_admin::set_attester` gates on
 /// the (kernel-forced) note sender through the account-wide authority, resolving to the built-in
 /// `ADMIN` role.
 pub struct XReserveSetAttesterNote;
 
+#[bon::bon]
 impl XReserveSetAttesterNote {
     /// The compiled, fixed-root note script (the shipped `xreserve_set_attester_note.masm` with the
     /// xreserve library linked).
@@ -33,8 +70,23 @@ impl XReserveSetAttesterNote {
         SET_ATTESTER_NOTE_SCRIPT.root()
     }
 
-    /// Builds a `set_attester` admin note: `commitment` is the attester pubkey commitment (the
-    /// xReserveAttesters map key), `enabled` = 1 (allowlist) or 0 (remove).
+    /// Builds a `set_attester` admin note via a `bon` builder
+    /// (`XReserveSetAttesterNote::builder().sender(..).faucet_id(..).storage(..).rng(..).build()`):
+    /// `sender` is the admin party (an `ADMIN` role holder, for success), `faucet_id` the target
+    /// faucet (PUBLIC), `storage` the typed [`XReserveSetAttesterNoteStorage`] payload.
+    #[builder]
+    pub fn new<R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        storage: XReserveSetAttesterNoteStorage,
+        rng: &mut R,
+    ) -> Result<Note, NoteError> {
+        build_admin_note(sender, faucet_id, Self::script(), storage.into_items(), rng)
+    }
+
+    /// Convenience constructor over the raw `commitment` / `enabled` params. Retained (a thin
+    /// delegator to the [`builder`](Self::builder)) because the frozen conformance suites pin this
+    /// signature; new callers should prefer the typed builder.
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
@@ -42,13 +94,16 @@ impl XReserveSetAttesterNote {
         enabled: u8,
         rng: &mut R,
     ) -> Result<Note, NoteError> {
-        let items = vec![
-            commitment[0],
-            commitment[1],
-            commitment[2],
-            commitment[3],
-            Felt::from(u32::from(enabled)),
-        ];
-        build_admin_note(sender, faucet_id, Self::script(), items, rng)
+        Self::builder()
+            .sender(sender)
+            .faucet_id(faucet_id)
+            .storage(
+                XReserveSetAttesterNoteStorage::builder()
+                    .commitment(commitment)
+                    .enabled(enabled)
+                    .build(),
+            )
+            .rng(rng)
+            .build()
     }
 }

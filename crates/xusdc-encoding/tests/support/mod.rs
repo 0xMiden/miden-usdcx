@@ -65,7 +65,7 @@ use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH,
     BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::xreserve::encoding::masm_error_by_name;
+use xusdc_encoding::xreserve::encoding::{masm_error_by_name, EthBytes32};
 
 // Attestation fixtures — deterministic secp256k1 keys and signatures generated IN-TEST (the
 // canonical vector artifact is untouched), mirroring the `gen_vectors` att_* helpers: k256 the
@@ -452,7 +452,7 @@ pub fn production_component_set(
     max_supply: u64,
     token_supply: u64,
 ) -> Result<Vec<AccountComponent>> {
-    production_builder_outcome(max_supply, token_supply, None, None)?
+    production_builder_outcome(max_supply, token_supply, None)?
         .map_err(|e| anyhow::anyhow!("composing the production faucet components: {e}"))
 }
 
@@ -461,76 +461,32 @@ pub fn production_component_set(
 /// binding, faucet construction), the inner `Result` is `build_components`' typed
 /// [`XReserveStablecoinBuilderError`] verdict — so the builder-reject tripwires can
 /// `assert_matches!` the CONCRETE variant (the specific error, never a stringified word
-/// search). `min_burn_size = None` keeps the builder default; `mint_policy_override = None`
-/// keeps the attestation policy (the production shape).
+/// search). `min_burn_size = None` keeps the builder default. The mint policy is not a builder
+/// input — it is hard-wired to the attestation policy, the production shape.
 pub fn production_builder_outcome(
     max_supply: u64,
     token_supply: u64,
     min_burn_size: Option<u64>,
-    mint_policy_override: Option<MintPolicy>,
 ) -> Result<std::result::Result<Vec<AccountComponent>, XReserveStablecoinBuilderError>> {
-    let library = assemble_xreserve_lib()?;
-    let empty = || Word::from([0u32, 0, 0, 0]);
-    let xreserve_component = AccountComponent::new(
-        library,
-        vec![
-            StorageSlot::with_value(
-                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
-                    .context("source_domain slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
-                    .context("xreserve_contract_hi slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
-                    .context("xreserve_contract_lo slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_map(
-                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
-                StorageMap::new(),
-            ),
-            StorageSlot::with_map(
-                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
-                    .context("xReserveAttesters slot label")?,
-                StorageMap::new(),
-            ),
-        ],
-        AccountComponentMetadata::new("xusdc-production-surface"),
-    )
-    .context("binding the xreserve library + all seven slots as a component")?;
-
-    let faucet = FungibleFaucet::builder()
-        .name(TokenName::new("USDCx")?)
-        .symbol(TokenSymbol::new("USDCX")?)
-        .decimals(6)
-        .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
-        .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
-        .is_max_supply_mutable(true)
-        .build()
-        .context("failed to build FungibleFaucet")?;
-
+    // Neither the faucet nor the xreserve component is a builder input any more — `new` builds the
+    // fixed-identity USDCx faucet (mutable max supply) and assembles the one valid component itself
+    // — so the fixture only supplies the supply parameters and role holders.
     let mut builder = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
+        AssetAmount::new(max_supply).context("invalid max_supply")?,
+        AssetAmount::new(token_supply).context("invalid token_supply")?,
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
     )
-    .with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN, test_xreserve_contract());
+    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
+    .with_domain_config(
+        TEST_DOMAIN,
+        TEST_SOURCE_DOMAIN,
+        EthBytes32::new(test_xreserve_contract()),
+    );
     if let Some(min_burn_size) = min_burn_size {
         builder = builder.min_burn_size(min_burn_size);
-    }
-    if let Some(policy) = mint_policy_override {
-        builder = builder.with_active_mint_policy(policy);
     }
     Ok(builder.build_components())
 }
@@ -1661,14 +1617,19 @@ pub fn setup_guarded_mint_account(
             let domain_u32 = u32::try_from(domain[0].as_canonical_u64())
                 .context("the fixture domain word element 0 must be a u32")?;
             let components = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
-                faucet,
-                xreserve_component,
+                AssetAmount::new(max_supply).context("invalid max_supply")?,
+                AssetAmount::new(token_supply).context("invalid token_supply")?,
                 test_account_id(1),
                 test_account_id(2),
                 test_account_id(3),
                 test_account_id(4),
             )
-            .with_domain_config(domain_u32, TEST_SOURCE_DOMAIN, test_xreserve_contract())
+            .map_err(|e| anyhow::anyhow!("building the production attestation faucet: {e}"))?
+            .with_domain_config(
+                domain_u32,
+                TEST_SOURCE_DOMAIN,
+                EthBytes32::new(test_xreserve_contract()),
+            )
             .build_components()
             .map_err(|e| anyhow::anyhow!("composing the production attestation faucet: {e}"))?;
             (components, attestation_root)
@@ -2845,66 +2806,22 @@ pub fn setup_production_faucet(
     let producer =
         add_emitting_wallet(&mut mc, Auth::IncrNonce, []).context("adding producer wallet")?;
 
-    let library = assemble_xreserve_lib()?;
-    let empty = || Word::from([0u32, 0, 0, 0]);
-    let xreserve_component = AccountComponent::new(
-        library,
-        vec![
-            // the four domain-config slots are DECLARED here; the builder BUILD-SEEDS domain /
-            // source_domain / xreserve_contract; the attester allowlist ships EMPTY
-            // (set_attester writes it).
-            StorageSlot::with_value(
-                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
-                    .context("source_domain slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
-                    .context("xreserve_contract_hi slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
-                    .context("xreserve_contract_lo slot label")?,
-                empty(),
-            ),
-            StorageSlot::with_map(
-                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
-                StorageMap::new(),
-            ),
-            StorageSlot::with_map(
-                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
-                    .context("xReserveAttesters slot label")?,
-                StorageMap::new(),
-            ),
-        ],
-        AccountComponentMetadata::new("xusdc-production-faucet"),
-    )
-    .context("binding the xreserve library + all seven slots as a component")?;
-
-    let faucet = FungibleFaucet::builder()
-        .name(TokenName::new("USDCx")?)
-        .symbol(TokenSymbol::new("USDCX")?)
-        .decimals(6)
-        .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
-        .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
-        .is_max_supply_mutable(true)
-        .build()
-        .context("failed to build FungibleFaucet")?;
-
+    // The builder builds the fixed-identity USDCx faucet and assembles the one valid xreserve
+    // component internally, so the fixture only supplies the supply parameters.
     let components = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
+        AssetAmount::new(max_supply).context("invalid max_supply")?,
+        AssetAmount::new(token_supply).context("invalid token_supply")?,
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
     )
-    .with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN, test_xreserve_contract())
+    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
+    .with_domain_config(
+        TEST_DOMAIN,
+        TEST_SOURCE_DOMAIN,
+        EthBytes32::new(test_xreserve_contract()),
+    )
     .build_components()
     .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
 

@@ -18,7 +18,7 @@ use miden_protocol::account::{AccountComponent, StorageSlotName};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Authority, PausableManager};
 use miden_standards::account::policies::BlocklistManager;
-use miden_standards::note::{AllowlistConfigNote, BlocklistConfigNote, PauseActionNote};
+use miden_standards::note::{AllowlistConfigNote, BlocklistConfigNote, PauseConfigNote};
 use support::w2admin::*;
 use support::*;
 use xusdc_encoding::account::xreserve::{XReserveAdminAuthority, XReserveStablecoinBuilder};
@@ -30,7 +30,7 @@ use xusdc_encoding::account::xreserve::{XReserveAdminAuthority, XReserveStableco
 #[test]
 fn the_stock_config_notes_have_the_shapes_the_plan_assumes() {
     assert_eq!(
-        PauseActionNote::NUM_STORAGE_ITEMS,
+        PauseConfigNote::NUM_STORAGE_ITEMS,
         1,
         "a pause action note carries just its selector"
     );
@@ -40,12 +40,12 @@ fn the_stock_config_notes_have_the_shapes_the_plan_assumes() {
         "a blocklist config note carries a selector plus the account id it acts on"
     );
     assert_ne!(
-        PauseActionNote::script_root(),
+        PauseConfigNote::script_root(),
         BlocklistConfigNote::script_root(),
         "the pause and blocklist notes must be separate scripts, each allowlisted on its own"
     );
     assert_ne!(
-        PauseActionNote::script_root().as_word(),
+        PauseConfigNote::script_root().as_word(),
         Word::empty(),
         "the pause action note script root must be a real root"
     );

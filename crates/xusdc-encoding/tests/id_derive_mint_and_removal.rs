@@ -25,7 +25,7 @@ use anyhow::{Context, Result};
 use miden_protocol::account::StorageSlotName;
 use miden_protocol::note::NoteScriptRoot;
 use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, MintNote, PauseActionNote, RbacActionNote,
+    BlocklistConfigNote, BurnNote, MintNote, PauseConfigNote, RbacConfigNote,
 };
 use support::mint_transport::*;
 use support::*;
@@ -51,9 +51,9 @@ fn expected_allowlist() -> BTreeSet<NoteScriptRoot> {
         XReserveSetAttesterNote::script_root(),
         XReserveSetMinBurnSizeNote::script_root(),
         XReserveSetMaxSupplyNote::script_root(),
-        PauseActionNote::script_root(),
+        PauseConfigNote::script_root(),
         BlocklistConfigNote::script_root(),
-        RbacActionNote::script_root(),
+        RbacConfigNote::script_root(),
     ])
 }
 

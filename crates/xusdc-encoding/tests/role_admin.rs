@@ -47,7 +47,7 @@ use miden_protocol::errors::MasmError;
 use miden_protocol::note::Note;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
-use miden_standards::note::{RbacAction, RbacActionNote};
+use miden_standards::note::{RbacConfig, RbacConfigNote};
 use miden_testing::assert_transaction_executor_error;
 use miden_tx::TransactionExecutorError;
 use support::*;
@@ -211,13 +211,13 @@ fn note_rng(seed: u64) -> RandomCoin {
 fn role_action_note(
     sender: AccountId,
     faucet_id: AccountId,
-    action: RbacAction,
+    action: RbacConfig,
     seed: u32,
 ) -> Result<Note> {
-    let note = RbacActionNote::builder()
+    let note = RbacConfigNote::builder()
         .sender(sender)
-        .account(faucet_id)
-        .action(action)
+        .target(faucet_id)
+        .config(action)
         .serial_number(Word::from([seed, 3, 4, 5]))
         .build()
         .map_err(|e| anyhow::anyhow!("building the standard role-action note: {e}"))?;
@@ -234,7 +234,7 @@ fn grant_role_note(
     role_action_note(
         sender,
         faucet_id,
-        RbacAction::GrantRole {
+        RbacConfig::GrantRole {
             role: pauser_sym(),
             account: member,
         },
@@ -252,7 +252,7 @@ fn revoke_role_note(
     role_action_note(
         sender,
         faucet_id,
-        RbacAction::RevokeRole {
+        RbacConfig::RevokeRole {
             role: pauser_sym(),
             account: member,
         },

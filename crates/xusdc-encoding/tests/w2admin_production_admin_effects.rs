@@ -24,7 +24,7 @@ use miden_standards::account::access::{
 };
 use miden_standards::account::policies::BlocklistManager;
 use miden_standards::note::{
-    AllowlistConfigNote, BlocklistConfigNote, PauseAction, PauseActionNote, RbacActionNote,
+    AllowlistConfigNote, BlocklistConfigNote, PauseConfig, PauseConfigNote, RbacConfigNote,
 };
 use miden_tx::TransactionExecutorError;
 use support::w2admin::*;
@@ -144,7 +144,7 @@ fn the_allowlist_is_the_ratified_eight_roots() {
          its size is human-ratified and not something a build may change"
     );
     assert!(
-        allowlist.contains(&PauseActionNote::script_root()),
+        allowlist.contains(&PauseConfigNote::script_root()),
         "the standard pause action note must be allowlisted — it is the only pause surface"
     );
     assert!(
@@ -161,7 +161,7 @@ fn the_allowlist_is_the_ratified_eight_roots() {
 fn the_role_action_note_is_allowlisted_and_the_transfer_allowlist_note_is_not() {
     let allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
     assert!(
-        allowlist.contains(&RbacActionNote::script_root()),
+        allowlist.contains(&RbacConfigNote::script_root()),
         "the standard role-action note must be allowlisted — it is the only role-management surface"
     );
     assert!(
@@ -273,7 +273,7 @@ async fn the_administrator_role_is_the_bootstrap_administrator_account() -> Resu
 #[tokio::test]
 async fn the_pauser_pauses_the_faucet_through_the_standard_note() -> Result<()> {
     let mut pf = admin_faucet(|id| {
-        vec![pause_action_note(pauser_holder(), id, PauseAction::Pause, 1).expect("pause note")]
+        vec![pause_action_note(pauser_holder(), id, PauseConfig::Pause, 1).expect("pause note")]
     })?;
     let note = pf.seeded_notes[0].clone();
     let before = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
@@ -297,8 +297,8 @@ async fn the_pauser_pauses_the_faucet_through_the_standard_note() -> Result<()> 
 async fn the_pauser_unpauses_the_faucet_through_the_standard_note() -> Result<()> {
     let mut pf = admin_faucet(|id| {
         vec![
-            pause_action_note(pauser_holder(), id, PauseAction::Pause, 2).expect("pause note"),
-            pause_action_note(pauser_holder(), id, PauseAction::Unpause, 3).expect("unpause note"),
+            pause_action_note(pauser_holder(), id, PauseConfig::Pause, 2).expect("pause note"),
+            pause_action_note(pauser_holder(), id, PauseConfig::Unpause, 3).expect("unpause note"),
         ]
     })?;
     let (pause, unpause) = (pf.seeded_notes[0].clone(), pf.seeded_notes[1].clone());
@@ -322,8 +322,8 @@ async fn the_pauser_unpauses_the_faucet_through_the_standard_note() -> Result<()
 async fn a_standard_note_pause_halts_a_real_mint_and_the_unpause_resumes_it() -> Result<()> {
     let mut pf = mint_faucet(|id| {
         vec![
-            pause_action_note(pauser_holder(), id, PauseAction::Pause, 4).expect("pause note"),
-            pause_action_note(pauser_holder(), id, PauseAction::Unpause, 5).expect("unpause note"),
+            pause_action_note(pauser_holder(), id, PauseConfig::Pause, 4).expect("pause note"),
+            pause_action_note(pauser_holder(), id, PauseConfig::Unpause, 5).expect("unpause note"),
         ]
     })?;
     let recipient = pf.recipient_id;
@@ -407,7 +407,7 @@ async fn the_blocklist_manager_unblocks_a_target_through_the_standard_note() -> 
 #[tokio::test]
 async fn the_owner_still_has_no_pause_path() -> Result<()> {
     let pf = admin_faucet(|id| {
-        vec![pause_action_note(admin_holder(), id, PauseAction::Pause, 6).expect("pause note")]
+        vec![pause_action_note(admin_holder(), id, PauseConfig::Pause, 6).expect("pause note")]
     })?;
     let note = pf.seeded_notes[0].clone();
 
@@ -427,7 +427,7 @@ async fn the_owner_still_has_no_pause_path() -> Result<()> {
 #[tokio::test]
 async fn the_owner_still_has_no_unpause_path() -> Result<()> {
     let pf = admin_faucet(|id| {
-        vec![pause_action_note(admin_holder(), id, PauseAction::Unpause, 7).expect("unpause note")]
+        vec![pause_action_note(admin_holder(), id, PauseConfig::Unpause, 7).expect("unpause note")]
     })?;
     let result = consume(&pf, &pf.seeded_notes[0].clone()).await;
     miden_testing::assert_transaction_executor_error!(result, err_sender_lacks_role());
@@ -476,7 +476,7 @@ async fn the_pauser_cannot_block() -> Result<()> {
 #[tokio::test]
 async fn the_blocklist_manager_cannot_pause() -> Result<()> {
     let pf = admin_faucet(|id| {
-        vec![pause_action_note(blocklist_holder(), id, PauseAction::Pause, 8).expect("pause note")]
+        vec![pause_action_note(blocklist_holder(), id, PauseConfig::Pause, 8).expect("pause note")]
     })?;
     let result = consume(&pf, &pf.seeded_notes[0].clone()).await;
     miden_testing::assert_transaction_executor_error!(result, err_sender_lacks_role());
@@ -488,7 +488,7 @@ async fn the_blocklist_manager_cannot_pause() -> Result<()> {
 async fn the_role_manager_can_neither_pause_nor_block() -> Result<()> {
     let pf = admin_faucet(|id| {
         vec![
-            pause_action_note(role_manager_holder(), id, PauseAction::Pause, 9)
+            pause_action_note(role_manager_holder(), id, PauseConfig::Pause, 9)
                 .expect("pause note"),
             XReserveBlocklistNote::block(role_manager_holder(), id, stranger(), &mut note_rng(16))
                 .expect("block note"),
@@ -508,7 +508,7 @@ async fn the_role_manager_can_neither_pause_nor_block() -> Result<()> {
 async fn a_stranger_can_neither_pause_nor_block() -> Result<()> {
     let pf = admin_faucet(|id| {
         vec![
-            pause_action_note(stranger(), id, PauseAction::Pause, 10).expect("pause note"),
+            pause_action_note(stranger(), id, PauseConfig::Pause, 10).expect("pause note"),
             XReserveBlocklistNote::block(stranger(), id, admin_holder(), &mut note_rng(17))
                 .expect("block note"),
         ]

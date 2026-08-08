@@ -817,7 +817,7 @@ pub fn fee_amount_felts(limbs: [u32; 8]) -> Vec<Felt> {
 
 /// Like `run_call_driver`, but stages an optional `feeAmount` advice stack into the tx
 /// context (`extend_advice_inputs`). `None` ⇒ no advice staged (the missing-advice case,
-/// which must error). `AdviceInputs::with_stack` preserves order:
+/// which must error). `AdviceInputs::with_advice_stack` preserves order:
 /// the first felt is the first one `adv_push` returns.
 pub async fn run_call_driver_with_advice(
     h: &ShellHarness,
@@ -840,7 +840,7 @@ pub async fn run_call_driver_with_advice(
         .build_transaction(h.account_id)
         .tx_script(tx_script);
     if let Some(stack) = advice_stack {
-        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack));
+        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_advice_stack(stack.into()));
     }
     ctx.build()
         .expect("building the transaction")

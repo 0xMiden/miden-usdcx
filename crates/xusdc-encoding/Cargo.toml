@@ -8,12 +8,12 @@ description = "xUSDC-on-Miden 04 shared encoding: hand-written MASM + Rust mirro
 # The four protocol-monorepo crates come from git at ONE frozen rev of the `next`
 # branch — always the rev key, never a floating branch pin, which would make the build
 # non-reproducible. The frozen graph resolves the 0.25.8 assembler/VM family (0.25.0–0.25.7 are
-# yanked on crates.io) and miden-crypto 0.28. The `testing` feature on the main miden-protocol
+# yanked on crates.io) and miden-crypto 0.29. The `testing` feature on the main miden-protocol
 # dep is required by the committed vector generator (AccountIdBuilder).
 
 [dependencies]
-miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c", features = ["testing"] }
-miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c" }
+miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "75d05d962dc82a1d9fff077b043f5e1647d8061d", features = ["testing"] }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "75d05d962dc82a1d9fff077b043f5e1647d8061d" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # bon powers the note-factory builders and the dedicated note-storage types (the standards
@@ -36,7 +36,7 @@ k256 = { workspace = true }
 # module.
 sha3 = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
-miden-crypto = { version = "0.28", default-features = false, features = ["std"], optional = true }
+miden-crypto = { version = "0.29", default-features = false, features = ["std"], optional = true }
 
 [features]
 # Enables the canonical golden-vector generator binary. Its keccak/commitment crates live
@@ -52,14 +52,14 @@ name = "gen_vectors"
 required-features = ["vectors"]
 
 [dev-dependencies]
-miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c", features = ["testing"] }
-miden-testing   = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c" }
-miden-tx        = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c" }
-# exact-error matching for u32-assert traps (OperationError::U32AssertionFailed); 0.25.8 is the
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "75d05d962dc82a1d9fff077b043f5e1647d8061d", features = ["testing"] }
+miden-testing   = { git = "https://github.com/0xMiden/protocol", rev = "75d05d962dc82a1d9fff077b043f5e1647d8061d" }
+miden-tx        = { git = "https://github.com/0xMiden/protocol", rev = "75d05d962dc82a1d9fff077b043f5e1647d8061d" }
+# exact-error matching for u32-assert traps (OperationError::U32AssertionFailed); 0.29.0 is the
 # version the frozen protocol graph resolves AND the only live 0.25.x on crates.io (0.25.0–0.25.7
 # are yanked) — the pin moves in lockstep with the protocol family so exactly one processor copy
 # exists and the error downcasts unify
-miden-processor = "=0.25.8"
+miden-processor = "=0.29.0"
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 anyhow = { workspace = true }
 rstest = { workspace = true }
@@ -72,4 +72,4 @@ assert_matches = { workspace = true }
 # fixture); the versions live in [workspace.dependencies].
 sha3 = { workspace = true }
 rand = { workspace = true }
-miden-crypto = { version = "0.28", default-features = false, features = ["std"] }
+miden-crypto = { version = "0.29", default-features = false, features = ["std"] }

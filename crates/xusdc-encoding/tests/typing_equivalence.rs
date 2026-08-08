@@ -2,7 +2,7 @@
 //!
 //! Locks every new typed API this typing slice introduces to the FROZEN golden vectors: the typed
 //! path must produce byte-for-byte / felt-for-felt identical output to the values the encoding
-//! conformance suite already pins, and to the free functions the typed methods delegate to. A wire
+//! conformance suite already pins. A wire
 //! change — a reordered signature felt, a swapped account-id pair, a drifted commitment — makes these
 //! RED, which is what proves the typing refactor is wire-neutral.
 //!
@@ -38,12 +38,6 @@ fn signature_type_matches_golden_and_free_fn() {
             v.id
         );
         assert_eq!(
-            typed.to_felts(),
-            Signature::new(sig).to_felts(),
-            "{}: Signature::to_felts == free fn",
-            v.id
-        );
-        assert_eq!(
             typed.as_bytes(),
             &sig,
             "{}: Signature round-trips its bytes",
@@ -73,24 +67,12 @@ fn public_key_affine_and_commitment_match_golden() {
             "{}: PublicKey::to_affine_felts == golden pubkey felts",
             v.id
         );
-        assert_eq!(
-            affine,
-            PublicKey::new(pk).to_affine_felts().expect("valid point"),
-            "{}: PublicKey::to_affine_felts == free fn",
-            v.id
-        );
 
         let commitment: PublicKeyCommitment = typed.to_commitment().expect("valid point");
         assert_eq!(
             Word::from(commitment),
             v.expected_commitment_word(),
             "{}: PublicKey::to_commitment word == golden commitment",
-            v.id
-        );
-        assert_eq!(
-            Word::from(commitment),
-            Word::from(PublicKey::new(pk).to_commitment().expect("valid point")),
-            "{}: PublicKey::to_commitment word == free fn",
             v.id
         );
         // the stock newtype round-trips (From<Word>): the value we produced IS a PublicKeyCommitment.
@@ -109,7 +91,7 @@ fn public_key_affine_and_commitment_match_golden() {
     }
 }
 
-/// The typed pubkey conversions fail-close on an off-curve key, exactly like the free functions.
+/// The typed pubkey conversions fail-close on an off-curve key.
 #[test]
 fn public_key_fail_closes_on_off_curve() {
     let mut bogus = [0xFFu8; 33];
@@ -123,7 +105,7 @@ fn public_key_fail_closes_on_off_curve() {
 // ================================================================================================
 
 /// `DepositIntent::new(bytes).parse_header()` / `.to_packed_felts()` and the `TryFrom<&[u8]>` header
-/// decode are identical to the free functions and to the golden packed preimage.
+/// decode match the golden packed preimage.
 #[test]
 fn deposit_intent_type_matches_free_fns_and_golden() {
     for vec in load().families.di.iter().filter(|v| v.kind == "accept") {
@@ -159,12 +141,6 @@ fn deposit_intent_type_matches_free_fns_and_golden() {
         let typed_felts = intent.to_packed_felts().expect("accept vector packs");
         assert_eq!(
             typed_felts,
-            DepositIntent::new(&bytes).to_packed_felts().expect("packs"),
-            "{}: DepositIntent::to_packed_felts == free fn",
-            vec.id
-        );
-        assert_eq!(
-            typed_felts,
             vec.preimage_values(),
             "{}: DepositIntent::to_packed_felts == golden preimage",
             vec.id
@@ -178,7 +154,7 @@ fn deposit_intent_type_matches_free_fns_and_golden() {
     }
 }
 
-/// The typed path rejects a truncated payload identically to the free functions.
+/// The typed path rejects a truncated payload.
 #[test]
 fn deposit_intent_type_propagates_rejects() {
     let short = [0u8; 10];
@@ -195,19 +171,13 @@ fn deposit_intent_type_propagates_rejects() {
 // XReserveBurnItems methods
 // ================================================================================================
 
-/// `XReserveBurnItems::encode` / `decode` match the free functions and the golden `items` layout, and
+/// `XReserveBurnItems::encode` / `decode` match the golden `items` layout, and
 /// round-trip.
 #[test]
 fn burn_items_methods_match_free_fns_and_golden() {
     for vec in load().families.bn.iter().filter(|v| v.kind == "accept") {
         let items = vec.expected_struct();
         let encoded = items.encode();
-        assert_eq!(
-            encoded,
-            items.encode(),
-            "{}: XReserveBurnItems::encode == free fn",
-            vec.id
-        );
         assert_eq!(
             encoded,
             vec.items_values(),
@@ -223,7 +193,7 @@ fn burn_items_methods_match_free_fns_and_golden() {
     }
 }
 
-/// `XReserveBurnItems::decode` fail-closes on a malformed payload, like the free function.
+/// `XReserveBurnItems::decode` fail-closes on a malformed payload.
 #[test]
 fn burn_items_decode_fail_closes() {
     assert_matches!(

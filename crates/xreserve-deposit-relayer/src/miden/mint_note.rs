@@ -4,7 +4,7 @@
 //! The builder is thin ON PURPOSE. It bundles the attestation the relayer VALIDATED (a
 //! `ValidatedAttestation` has passed the raw-keccak digest binding and the 65-byte shape check)
 //! with the attester pubkey the OPERATOR configured, and hands both — plus the DepositIntent payload
-//! (as the typed [`DepositIntent`]) — to the shared encoding crate's typed [`XUsdcMintNote`] builder,
+//! (as the typed [`DepositIntent`](xusdc_encoding::xreserve::encoding::DepositIntent)) — to the shared encoding crate's typed [`XUsdcMintNote`] builder,
 //! which decides every byte of the note's form: the storage, the two attachments, the note type, and
 //! the script.
 //!

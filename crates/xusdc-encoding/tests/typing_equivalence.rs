@@ -27,7 +27,7 @@ use xusdc_encoding::xreserve::encoding::{
 /// free `signature_felts`. A reordered/perturbed packing in the method layer goes RED here (the free
 /// function's own tv_att suite would not catch a method-layer mutation).
 #[test]
-fn signature_type_matches_golden_and_free_fn() {
+fn signature_type_matches_golden() {
     for v in &load().families.att {
         let sig = v.sig();
         let typed = Signature::new(sig);
@@ -107,27 +107,12 @@ fn public_key_fail_closes_on_off_curve() {
 /// `DepositIntent::new(bytes).parse_header()` / `.to_packed_felts()` and the `TryFrom<&[u8]>` header
 /// decode match the golden packed preimage.
 #[test]
-fn deposit_intent_type_matches_free_fns_and_golden() {
+fn deposit_intent_type_matches_golden() {
     for vec in load().families.di.iter().filter(|v| v.kind == "accept") {
         let bytes = vec.bytes();
         let intent = DepositIntent::new(&bytes);
 
         let typed_header = intent.parse_header().expect("accept vector parses");
-        let free_header = DepositIntent::new(&bytes)
-            .parse_header()
-            .expect("accept vector parses");
-        assert_eq!(typed_header.magic, free_header.magic, "{}: magic", vec.id);
-        assert_eq!(typed_header.nonce, free_header.nonce, "{}: nonce", vec.id);
-        assert_eq!(
-            typed_header.amount, free_header.amount,
-            "{}: amount",
-            vec.id
-        );
-        assert_eq!(
-            typed_header.hook_data_len, free_header.hook_data_len,
-            "{}: hookDataLen",
-            vec.id
-        );
 
         // TryFrom<&[u8]> is the same decode as parse_header.
         let via_tryfrom =
@@ -174,7 +159,7 @@ fn deposit_intent_type_propagates_rejects() {
 /// `XReserveBurnItems::encode` / `decode` match the golden `items` layout, and
 /// round-trip.
 #[test]
-fn burn_items_methods_match_free_fns_and_golden() {
+fn burn_items_methods_match_golden() {
     for vec in load().families.bn.iter().filter(|v| v.kind == "accept") {
         let items = vec.expected_struct();
         let encoded = items.encode();

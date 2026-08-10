@@ -14,12 +14,10 @@ const SET_ATTESTER_NOTE_SCRIPT_SRC: &str =
 static SET_ATTESTER_NOTE_SCRIPT: LazyLock<NoteScript> =
     LazyLock::new(|| compile_admin_note_script(SET_ATTESTER_NOTE_SCRIPT_SRC));
 
-/// The dedicated `set_attester` note-storage type: the creator-committed param payload
+/// The dedicated `set_attester` note-storage type: the `NoteStorage.items` payload
 /// `[pk_commitment(4), enabled]`. Built with a `bon` builder
 /// (`XReserveSetAttesterNoteStorage::builder().commitment(..).enabled(..).build()`), mirroring the
 /// standards `PswapNoteStorage` pattern, and converted to its felt items by [`Self::into_items`].
-/// The note builder appends the target faucet id (`[suffix, prefix]`) after these params, so the
-/// consumed note carries 7 items in total and the note script can reject a foreign consumer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bon::Builder)]
 pub struct XReserveSetAttesterNoteStorage {
     commitment: Word,
@@ -83,13 +81,7 @@ impl XReserveSetAttesterNote {
         storage: XReserveSetAttesterNoteStorage,
         rng: &mut R,
     ) -> Result<Note, NoteError> {
-        // The note commits its target faucet id (`[suffix, prefix]`, matching
-        // `native_account::get_id`) so the note script can reject a foreign consumer — the scheme-2
-        // routing attachment is routing-only, not a consume gate.
-        let mut items = storage.into_items();
-        items.push(faucet_id.suffix());
-        items.push(faucet_id.prefix().as_felt());
-        build_admin_note(sender, faucet_id, Self::script(), items, rng)
+        build_admin_note(sender, faucet_id, Self::script(), storage.into_items(), rng)
     }
 
     /// Convenience constructor over the raw `commitment` / `enabled` params. Retained (a thin

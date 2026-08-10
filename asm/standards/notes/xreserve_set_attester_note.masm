@@ -1,36 +1,48 @@
 # xreserve_set_attester_note — the root-pinned set_attester admin note script.
 #
 # The admin surface for `set_attester` under the network account: a fixed-root note whose parameters
-# are CREATOR-COMMITTED in note storage. It stages the note storage into memory, marshals the
-# creator's params onto the stack in the proc's Inputs order, and `call`s the `ADMIN`-role-gated
-# `attester_admin::set_attester` (the sender gate lives in the proc; the note sender is
-# kernel-forced, so a creator without the `ADMIN` role traps there). A scheme-2
-# NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only).
+# are CREATOR-COMMITTED in note storage. It stages the note storage into memory, asserts the note is
+# bound to the consuming faucet, marshals the creator's params onto the stack in the proc's Inputs
+# order, and `call`s the `ADMIN`-role-gated `attester_admin::set_attester` (the sender gate lives in
+# the proc; the note sender is kernel-forced, so a creator without the `ADMIN` role traps there).
 #
-# Note storage layout (5 felts): [pk_commitment(4), enabled]. `enabled` is 1 (allowlist) or 0 (remove).
+# The note commits the target faucet id and the script requires the consuming account to be that
+# faucet: the scheme-2 NetworkAccountTarget attachment is routing-only, so without this check any
+# account exposing the same procedure could race-consume the note and nullify it, denying the faucet
+# its admin action.
+#
+# Note storage layout (7 felts): [pk_commitment(4), enabled, faucet_id_suffix, faucet_id_prefix].
+# `enabled` is 1 (allowlist) or 0 (remove).
 
 use miden::protocol::active_note
+use miden::protocol::native_account
+use miden::protocol::account_id
 use xreserve::attester_admin
 
 # CONSTANTS
 # =================================================================================================
 
-# The exact note-storage item count for this admin op: [pk_commitment(4), enabled] = 5 felts.
-const SET_ATTESTER_NOTE_NUM_ITEMS = 5
+# The exact note-storage item count for this admin op:
+# [pk_commitment(4), enabled, faucet_id_suffix, faucet_id_prefix] = 7 felts.
+const SET_ATTESTER_NOTE_NUM_ITEMS = 7
 
 # ERRORS
 # =================================================================================================
 
-# The note must carry exactly the 5 param felts; a wrong count is a malformed admin note.
+# The note must carry exactly the 7 param felts; a wrong count is a malformed admin note.
 const ERR_XRESERVE_SET_ATTESTER_NOTE_STORAGE = "set_attester note storage item count is invalid"
+
+# The consuming account must be the faucet the note committed as its target.
+const ERR_XRESERVE_SET_ATTESTER_NOTE_WRONG_FAUCET = "set_attester note is not bound to the consuming faucet"
 
 # PUBLIC INTERFACE
 # =================================================================================================
 
 #! Consumes the `set_attester` admin note and drives the `ADMIN`-role-gated attester-allowlist write.
 #!
-#! Stages the creator-committed params (`[pk_commitment(4), enabled]`) into memory at address zero,
-#! marshals them onto the stack as `[PK_COMMITMENT, enabled, pad(11)]`, and `call`s
+#! Stages the creator-committed params (`[pk_commitment(4), enabled, faucet_id_suffix,
+#! faucet_id_prefix]`) into memory at address zero, asserts the consuming account is the committed
+#! faucet, marshals the params onto the stack as `[PK_COMMITMENT, enabled, pad(11)]`, and `call`s
 #! `attester_admin::set_attester`.
 #!
 #! Requires that the account exposes:
@@ -45,9 +57,11 @@ const ERR_XRESERVE_SET_ATTESTER_NOTE_STORAGE = "set_attester note storage item c
 #! Note storage is assumed to be as follows:
 #! - PK_COMMITMENT is the Poseidon2 pubkey commitment to write (4 felts, items 0..4).
 #! - enabled is 1 (allowlist: write the enabled marker) or 0 (remove: write EMPTY_WORD) (item 4).
+#! - faucet_id_suffix, faucet_id_prefix are the target faucet's account id felts (items 5, 6).
 #!
 #! Panics if:
-#! - the note storage does not carry exactly 5 items.
+#! - the note storage does not carry exactly 7 items.
+#! - the consuming account is not the faucet the note committed (a foreign consumer).
 #! - the note sender does not hold the `ADMIN` role (attester_admin::set_attester's authority gate).
 #!
 #! Invocation: dyncall
@@ -61,6 +75,17 @@ pub proc main
     # => [num_items, pad(16)]
 
     eq.SET_ATTESTER_NOTE_NUM_ITEMS assert.err=ERR_XRESERVE_SET_ATTESTER_NOTE_STORAGE
+    # => [pad(16)]
+
+    # faucet binding: the committed [faucet_id_suffix, faucet_id_prefix] (items 5, 6) must equal the
+    # consuming account's id, so a foreign account cannot race-consume this routed note.
+    push.6 mem_load push.5 mem_load
+    # => [faucet_id_suffix, faucet_id_prefix, pad(16)]
+
+    exec.native_account::get_id
+    # => [own_id_suffix, own_id_prefix, faucet_id_suffix, faucet_id_prefix, pad(16)]
+
+    exec.account_id::eq assert.err=ERR_XRESERVE_SET_ATTESTER_NOTE_WRONG_FAUCET
     # => [pad(16)]
 
     # marshal params deepest-first so pk_commitment element 0 lands on top, matching the

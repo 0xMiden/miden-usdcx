@@ -1,0 +1,5 @@
+
+## miden::core::stark::verifier
+| Procedure | Description |
+| ----------- | ------------- |
+| verify | Verifies a STARK proof.<br /><br />Generic verifier used by relation-specific wrappers. It expects the following parameters on the<br />stack from the caller:<br /><br />1. `[D0, D1, D2, D3, D4]` which are the digests for dynamic execution of:<br />D0. `observe_aux_trace`<br />D1. `process_public_inputs`<br />D2. `process_row_ood_evaluations`<br />D3. `execute_constraint_evaluation_check`<br />D4. `compute_deep_composition_polynomial_queries`<br /><br />Precondition: security parameters, relation metadata, and relation-specific state must already<br />be stored in memory. The relation wrapper owns validation and setup of that state.<br /><br />Hardcoded protocol parameters:<br /><br />- Blowup factor: 8.<br />- Maximum remainder polynomial degree: 127.<br />- Constraint folding, OOD evaluations, and aux-trace values use the quadratic extension field.<br /><br />Inputs:  [D0, D1, D2, D3, D4]<br />Outputs: []<br /> |

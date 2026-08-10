@@ -21,6 +21,7 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
+use xusdc_encoding::xreserve::encoding::bytes32_to_packed_u32_limbs;
 
 const ASSET_AMOUNT_MAX: u128 = (1u128 << 63) - (1u128 << 31); // 2^63 - 2^31
 
@@ -52,11 +53,6 @@ fn u256_be_from_u128(x: u128) -> [u8; 32] {
     out
 }
 
-/// The wire's 8 u32-LE limbs of a 32-byte region (limb i = LE u32 of bytes 4i..4i+4).
-fn le_limbs(b: &[u8; 32]) -> [u32; 8] {
-    core::array::from_fn(|i| u32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap()))
-}
-
 fn packed(bytes: &[u8]) -> Vec<Felt> {
     bytes_to_packed_u32_elements(bytes)
 }
@@ -82,7 +78,7 @@ fn amt_accept(id: &str, tv: &[&str], x: u128, scale_exp: u32, derivation: &str) 
     );
     json!({
         "id": id, "tv": tv, "kind": "accept",
-        "uint256_be": hex_bytes(&b), "le_limbs": le_limbs(&b), "scale_exp": scale_exp,
+        "uint256_be": hex_bytes(&b), "le_limbs": bytes32_to_packed_u32_limbs(&b), "scale_exp": scale_exp,
         "expected_y": y.to_string(),
         "cite": "CIR-FEE-3",
         "derivation": derivation,
@@ -100,7 +96,7 @@ fn amt_reject(
 ) -> Value {
     json!({
         "id": id, "tv": tv, "kind": "reject",
-        "uint256_be": hex_bytes(&b), "le_limbs": le_limbs(&b), "scale_exp": scale_exp,
+        "uint256_be": hex_bytes(&b), "le_limbs": bytes32_to_packed_u32_limbs(&b), "scale_exp": scale_exp,
         "expected_variant": variant,
         "cite": cite, "derivation": derivation,
     })
@@ -448,8 +444,8 @@ fn main() {
         let bb = u256_be_from_u128(b);
         amt.push(json!({
             "id": id, "tv": ["TV-AMT-5"], "kind": "ge",
-            "uint256_be": hex_bytes(&ab), "le_limbs": le_limbs(&ab),
-            "b_uint256_be": hex_bytes(&bb), "b_le_limbs": le_limbs(&bb),
+            "uint256_be": hex_bytes(&ab), "le_limbs": bytes32_to_packed_u32_limbs(&ab),
+            "b_uint256_be": hex_bytes(&bb), "b_le_limbs": bytes32_to_packed_u32_limbs(&bb),
             "scale_exp": 6, "ge_result": result,
             "cite": "CIR-MINT-PRE-8/9 ; amount validation",
             "derivation": note,
@@ -459,7 +455,7 @@ fn main() {
     let dust_b = u256_be_from_u128(1_500_123);
     amt.push(json!({
         "id": "amt-dust", "tv": ["TV-AMT-6"], "kind": "dust",
-        "uint256_be": hex_bytes(&dust_b), "le_limbs": le_limbs(&dust_b), "scale_exp": 6,
+        "uint256_be": hex_bytes(&dust_b), "le_limbs": bytes32_to_packed_u32_limbs(&dust_b), "scale_exp": 6,
         "expected_y": "1", "expected_dust": "500123",
         "cite": "DEV-5",
         "derivation": "x = 1500123, y = floor(x/10^6) = 1, z = 500123; dust POLICY is REQUIRES CIRCLE CONFIRMATION (DEV-5)",

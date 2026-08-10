@@ -32,9 +32,10 @@ use xusdc_encoding::note::xreserve_mint::{
 };
 use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, affine_pubkey_felts, bytes32_to_account_id, bytes32_to_storage_map_key,
-    deposit_intent_field_offset, deposit_intent_to_packed_felts, parse_deposit_intent_header,
-    signature_felts, uint256_to_asset_amount, DepositIntentField, XReserveBurnItems,
+    account_id_to_bytes32, affine_pubkey_felts, bytes32_to_account_id, bytes32_to_packed_u32_limbs,
+    bytes32_to_storage_map_key, deposit_intent_field_offset, deposit_intent_to_packed_felts,
+    parse_deposit_intent_header, signature_felts, uint256_to_asset_amount, DepositIntentField,
+    XReserveBurnItems,
 };
 
 use crate::actors::AttesterKey;
@@ -382,7 +383,7 @@ pub fn mint_note_with_fee<R: FeltRng>(
         .map_err(|e| anyhow::anyhow!("deposit intent payload rejected by the 04 codec: {e}"))?;
     let recipient_id = bytes32_to_account_id(&header.remote_recipient)
         .map_err(|e| anyhow::anyhow!("remoteRecipient is not a valid account id: {e}"))?;
-    let amount = uint256_to_asset_amount(uint256_le_limbs(&header.amount), SCALE_EXP)
+    let amount = uint256_to_asset_amount(bytes32_to_packed_u32_limbs(&header.amount), SCALE_EXP)
         .map_err(|e| anyhow::anyhow!("amount rejected by the 04 reducer: {e}"))?;
     let asset = FungibleAsset::new(faucet, u64::from(amount))
         .map_err(|e| anyhow::anyhow!("attested amount: {e}"))?;
@@ -447,19 +448,6 @@ pub fn mint_note_with_fee<R: FeltRng>(
         .build()
         .context("building the adversarial stock MintNote")?;
     Ok(Note::from(mint_note))
-}
-
-/// The 8 u32-LE packed limbs of a big-endian uint256 wire field (limb i = LE-u32 of wire bytes
-/// `[4i, 4i+4)`) — the limb form the shared-encoding reducer consumes (the factory-side helper,
-/// restated for the adversarial builder).
-fn uint256_le_limbs(bytes: &[u8; 32]) -> [u32; 8] {
-    core::array::from_fn(|i| {
-        u32::from_le_bytes(
-            bytes[4 * i..4 * i + 4]
-                .try_into()
-                .expect("4-byte window of a 32-byte field"),
-        )
-    })
 }
 
 /// Builds a production `XReserveBurnNote` carrying `amount` units of the faucet's xUSDC (the note's

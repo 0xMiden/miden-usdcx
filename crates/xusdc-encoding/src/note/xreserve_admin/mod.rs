@@ -21,8 +21,9 @@
 //! covers each of them and calls the standard component the faucet installs. Pausing uses the
 //! standard pause-action note directly, with no faucet wrapper at all. Role management uses the
 //! standard role-action note, whose single script root carries grant, revoke, set-role-admin and
-//! renounce alike. The blocklist uses the standard blocklist-config note through [`blocklist`]'s
-//! thin factory, which exists solely to refuse building a note that would block the faucet itself.
+//! renounce alike. The blocklist uses the standard blocklist-config note through
+//! [`XReserveBlocklistNote`]'s thin factory, which exists solely to refuse building a note that
+//! would block the faucet itself.
 //!
 //! There is no ownership note either: the faucet installs no two-step ownership component, so
 //! rotation is a grant and a revoke of the `ADMIN` role through the standard role-action note.
@@ -34,20 +35,23 @@ use miden_protocol::assembly::{Linkage, Path as MasmPath};
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{
-    Note, NoteAssets, NoteAttachment, NoteAttachments, NoteRecipient, NoteScript, NoteStorage,
-    NoteTag, NoteType, PartialNoteMetadata,
+    Note, NoteAssets, NoteAttachments, NoteRecipient, NoteScript, NoteStorage, NoteTag, NoteType,
+    PartialNoteMetadata,
 };
 use miden_protocol::transaction::TransactionKernel;
 use miden_protocol::Felt;
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
 use miden_standards::StandardsLib;
 
 mod blocklist;
-mod config;
+mod set_attester;
+mod set_max_supply;
+mod set_min_burn_size;
 
-pub use blocklist::*;
-pub use config::*;
+pub use blocklist::{XReserveBlocklistNote, XReserveBlocklistNoteError};
+pub use set_attester::{XReserveSetAttesterNote, XReserveSetAttesterNoteStorage};
+pub use set_max_supply::{XReserveSetMaxSupplyNote, XReserveSetMaxSupplyNoteStorage};
+pub use set_min_burn_size::{XReserveSetMinBurnSizeNote, XReserveSetMinBurnSizeNoteStorage};
 
 /// Compiles an admin note-script source with the shipped `xreserve` component library linked so its
 /// `call.<module>::<proc>` resolves to the SAME proc installed on the faucet account.
@@ -69,16 +73,6 @@ pub(super) fn compile_admin_note_script(src: &str) -> NoteScript {
         .expect("the admin note script compiles")
 }
 
-/// Attaches the scheme-2 `NetworkAccountTarget` routing bind (routing-only) to a faucet-targeted
-/// admin note. Requires a PUBLIC faucet id.
-pub(super) fn routing_attachments(faucet_id: AccountId) -> Result<NoteAttachments, NoteError> {
-    let target =
-        NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always).map_err(|err| {
-            NoteError::other_with_source("faucet id is not a public network account", err)
-        })?;
-    NoteAttachments::new(vec![NoteAttachment::from(target)])
-}
-
 /// Assembles an admin note from its fixed-root `script` + the creator-committed storage `items`,
 /// carrying the scheme-2 `NetworkAccountTarget` routing bind to `faucet_id` (routing-only). Shared by
 /// every admin-note factory: the notes differ only in their script + the felt payload they commit;
@@ -96,7 +90,7 @@ pub(super) fn build_admin_note<R: FeltRng>(
     let recipient = NoteRecipient::new(serial_num, script, storage);
     let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
         .with_tag(NoteTag::with_account_target(faucet_id));
-    let attachments = routing_attachments(faucet_id)?;
+    let attachments = NoteAttachments::new(vec![super::network_routing_attachment(faucet_id)?])?;
     Ok(Note::with_attachments(
         NoteAssets::new(vec![])?,
         metadata,

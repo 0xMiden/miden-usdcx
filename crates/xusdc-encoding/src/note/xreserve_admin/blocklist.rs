@@ -11,8 +11,9 @@
 //! What is faucet-specific is which notes are worth creating. The blocklist is the faucet's active
 //! send and receive transfer policy, so blocking the faucet's own id would freeze it as a transfer
 //! party: minting-and-sending and receiving-and-burning would both trap, halting the core function.
-//! The standard block procedure validates nothing about its target, so [`block_note`] refuses to
-//! build such a note in the first place — the one guard the standard note cannot express.
+//! The standard block procedure validates nothing about its target, so
+//! [`XReserveBlocklistNote::block`] refuses to build such a note in the first place — the one guard
+//! the standard note cannot express.
 //!
 //! That refusal is a guard against operator error, not an authorization boundary. The blocklist
 //! administrator holds the role and can assemble the standard note directly, past this guard —
@@ -25,7 +26,7 @@ use core::fmt;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
-use miden_protocol::note::Note;
+use miden_protocol::note::{Note, NoteScript, NoteScriptRoot};
 use miden_standards::note::{BlocklistConfig, BlocklistConfigNote};
 
 /// Why a blocklist admin note could not be built.
@@ -67,73 +68,84 @@ impl From<NoteError> for XReserveBlocklistNoteError {
     }
 }
 
-/// Builds a note that adds `account` to `faucet_id`'s transfer blocklist over the standard
-/// [`BlocklistConfigNote`].
-///
-/// Both actions ride one script root, so the note-script allowlist carries a single entry for
-/// blocking and unblocking alike. The blocklist administrator role gates them: the note sender is
-/// kernel-forced, and the standard manager resolves that sender against the role the faucet's
-/// procedure-role map assigns to each procedure.
-///
-/// # Errors
-///
-/// Returns [`XReserveBlocklistNoteError::SelfBlockRejected`] if `account` is `faucet_id`:
-/// blocking the faucet freezes it as a transfer party. Returns
-/// [`XReserveBlocklistNoteError::Note`] if the standard note cannot be assembled.
-pub fn block_note<R: FeltRng>(
-    sender: AccountId,
-    faucet_id: AccountId,
-    account: AccountId,
-    rng: &mut R,
-) -> Result<Note, XReserveBlocklistNoteError> {
-    if account == faucet_id {
-        return Err(XReserveBlocklistNoteError::SelfBlockRejected { faucet_id });
+/// The transfer-blocklist admin note factory: the standard [`BlocklistConfigNote`] constrained by
+/// the self-block refusal. There is no faucet-owned script behind this type.
+pub struct XReserveBlocklistNote;
+
+impl XReserveBlocklistNote {
+    /// The STOCK standards blocklist-config note script — block and unblock behind one root.
+    pub fn script() -> NoteScript {
+        BlocklistConfigNote::script()
     }
-    build_blocklist_note(
-        sender,
-        faucet_id,
-        BlocklistConfig::BlockAccount { account },
-        rng,
-    )
-}
 
-/// Builds a note that removes `account` from `faucet_id`'s transfer blocklist over the standard
-/// [`BlocklistConfigNote`].
-///
-/// Unblocking the faucet itself is permitted — it is the recovery path from a self-block that was
-/// assembled past [`block_note`].
-///
-/// # Errors
-///
-/// Returns [`XReserveBlocklistNoteError::Note`] if the standard note cannot be assembled.
-pub fn unblock_note<R: FeltRng>(
-    sender: AccountId,
-    faucet_id: AccountId,
-    account: AccountId,
-    rng: &mut R,
-) -> Result<Note, XReserveBlocklistNoteError> {
-    build_blocklist_note(
-        sender,
-        faucet_id,
-        BlocklistConfig::UnblockAccount { account },
-        rng,
-    )
-}
+    /// The STOCK standards blocklist-config note script root.
+    pub fn script_root() -> NoteScriptRoot {
+        BlocklistConfigNote::script_root()
+    }
 
-/// Assembles the standard [`BlocklistConfigNote`] for `config`, tagged for the faucet and sent by
-/// `sender`.
-fn build_blocklist_note<R: FeltRng>(
-    sender: AccountId,
-    faucet_id: AccountId,
-    config: BlocklistConfig,
-    rng: &mut R,
-) -> Result<Note, XReserveBlocklistNoteError> {
-    let note = BlocklistConfigNote::builder()
-        .sender(sender)
-        .target(faucet_id)
-        .config(config)
-        .generate_serial_number(rng)
-        .build()
-        .map_err(XReserveBlocklistNoteError::Note)?;
-    Ok(Note::from(note))
+    /// Builds a note that adds `account` to `faucet_id`'s transfer blocklist over the standard
+    /// [`BlocklistConfigNote`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`XReserveBlocklistNoteError::SelfBlockRejected`] if `account` is `faucet_id`:
+    /// blocking the faucet freezes it as a transfer party. Returns
+    /// [`XReserveBlocklistNoteError::Note`] if the standard note cannot be assembled.
+    pub fn block<R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        account: AccountId,
+        rng: &mut R,
+    ) -> Result<Note, XReserveBlocklistNoteError> {
+        if account == faucet_id {
+            return Err(XReserveBlocklistNoteError::SelfBlockRejected { faucet_id });
+        }
+        Self::build(
+            sender,
+            faucet_id,
+            BlocklistConfig::BlockAccount { account },
+            rng,
+        )
+    }
+
+    /// Builds a note that removes `account` from `faucet_id`'s transfer blocklist over the standard
+    /// [`BlocklistConfigNote`].
+    ///
+    /// Unblocking the faucet itself is permitted — it is the recovery path from a self-block that
+    /// was assembled past [`Self::block`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`XReserveBlocklistNoteError::Note`] if the standard note cannot be assembled.
+    pub fn unblock<R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        account: AccountId,
+        rng: &mut R,
+    ) -> Result<Note, XReserveBlocklistNoteError> {
+        Self::build(
+            sender,
+            faucet_id,
+            BlocklistConfig::UnblockAccount { account },
+            rng,
+        )
+    }
+
+    /// Assembles the standard [`BlocklistConfigNote`] for `config`, tagged for the faucet and sent
+    /// by `sender`.
+    fn build<R: FeltRng>(
+        sender: AccountId,
+        faucet_id: AccountId,
+        config: BlocklistConfig,
+        rng: &mut R,
+    ) -> Result<Note, XReserveBlocklistNoteError> {
+        let note = BlocklistConfigNote::builder()
+            .sender(sender)
+            .target(faucet_id)
+            .config(config)
+            .generate_serial_number(rng)
+            .build()
+            .map_err(XReserveBlocklistNoteError::Note)?;
+        Ok(Note::from(note))
+    }
 }

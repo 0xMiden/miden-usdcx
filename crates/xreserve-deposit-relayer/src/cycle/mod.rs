@@ -387,7 +387,7 @@ async fn classify_one<R: FeltRng>(
     // ---- step 4 — the DepositIntent, through the shared encoding crate's codec ------------------------------------
     // The envelope layer validated the BINDING, never the structure — Circle can and does sign a
     // payload this codec refuses — so this is where a non-DepositIntent stops.
-    let intent = match decode_and_validate_deposit_intent(attestation.payload()) {
+    let intent = match decode_and_validate_deposit_intent(attestation.deposit_intent().as_bytes()) {
         Ok(intent) => intent,
         Err(error) => return entry(Disposition::Rejected(error)),
     };

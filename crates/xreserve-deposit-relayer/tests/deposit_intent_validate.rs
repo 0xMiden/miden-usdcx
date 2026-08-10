@@ -30,8 +30,7 @@ use xreserve_deposit_relayer::error::RelayerError;
 use xreserve_deposit_relayer::validate::deposit_intent::decode_and_validate_deposit_intent;
 use xusdc_encoding::vectors::{load, DiVector};
 use xusdc_encoding::xreserve::encoding::{
-    deposit_intent_field_offset, deposit_intent_to_packed_felts, DepositIntentField, EncodingError,
-    DEPOSIT_INTENT_HEADER_LEN,
+    deposit_intent_field_offset, DepositIntentField, EncodingError, DEPOSIT_INTENT_HEADER_LEN,
 };
 
 /// The fixed DepositIntent header length (bytes), taken from the shared encoding crate (the single
@@ -270,7 +269,9 @@ fn t_rly_11_preimage_felt_count(#[case] id: &str, #[case] expected_felts: usize)
     // the decoder's own count matches the canonical artifact...
     assert_eq!(di.preimage_felt_len(), expected_felts);
     //... and matches the shared encoding crate's authoritative packing of the same payload.
-    let packed = deposit_intent_to_packed_felts(&vector.bytes()).expect("packs");
+    let packed = xusdc_encoding::xreserve::encoding::DepositIntent::new(&vector.bytes())
+        .to_packed_felts()
+        .expect("packs");
     assert_eq!(di.preimage_felt_len(), packed.len());
 }
 
@@ -295,7 +296,8 @@ fn t_rly_11_preimage_exactly_1024_felts_accepted() {
         .expect("a preimage of exactly 1024 felts is accepted (inclusive bound)");
     assert_eq!(di.preimage_felt_len(), 1024);
     assert_eq!(
-        deposit_intent_to_packed_felts(&payload)
+        xusdc_encoding::xreserve::encoding::DepositIntent::new(&payload)
+            .to_packed_felts()
             .expect("packs")
             .len(),
         1024,

@@ -47,7 +47,7 @@ deposit and burns it on withdrawal.
   unacceptable on every path), and consuming the note decrements `token_supply`. The note is always
   public and two-block so Circle can observe the withdrawal.
 - **Encoding.** The codecs that translate Circle's wire formats to Miden types are **written once** in
-  `xreserve::encoding` (MASM) and mirrored in Rust — `bytes32` hashing, `uint256`→amount reduction,
+  MASM and mirrored in Rust — `bytes32` hashing, `uint256`→amount reduction,
   the `DepositIntent` parse, and the attester **pubkey commitment** (`DC-3`, a Poseidon2 hash over the
   already-packed pubkey felts) — with a cross-implementation test (`TV-DUAL-1`/`-2`/`-3`/`-5`) proving
   they agree on every golden vector. The remaining codecs are **Rust-only** (the relayer/harness side):
@@ -130,7 +130,7 @@ notes. **The gate PASS is a human decision — the binaries never declare it.**
 - **Every supply increase passes the attestation mint policy**, and it requires a valid attester
   signature; the stock `mint_and_send` path is deny-guarded.
 - **Burns are public, two-block notes** so Circle can observe them.
-- **The dual codecs are written once** in `xreserve::encoding` (MASM) and mirrored in Rust — bytes32
+- **The dual codecs are written once** in MASM and mirrored in Rust — bytes32
   hashing, amount reduction, the `DepositIntent` parse, and the attester pubkey commitment — each
   proven Rust==MASM on every golden vector; the rest (AccountId, burn payload, and the attestation
   digest/compressed-pubkey/signature packing) is Rust-only.

@@ -22,9 +22,10 @@
 //! * The remaining tests read the note back through the PROTOCOL's / the STANDARD's own accessors
 //!   (`note.attachments().find(scheme)`, `NetworkAccountTarget::try_from`,
 //!   `note.storage().items()`, `MintNote::script_root()`, `P2idNote::script_root()`) and through
-//!   the shared encoding crate's own codecs (`parse_deposit_intent_header`,
+//!   the shared encoding crate's own codecs (`DepositIntent::parse_header`,
 //!   `MintIntent::from_deposit_intent`, `bytes32_to_account_id`, `bytes32_to_storage_map_key`,
-//!   `uint256_to_asset_amount`, `signature_felts`, `affine_pubkey_felts`) — never against a layout
+//!   `uint256_to_asset_amount`, `Signature::to_felts`, `PublicKey::to_affine_felts`) — never
+//!   against a layout
 //!   re-derived here. An assertion that restated the layout would be a SECOND definition of an
 //!   owned format, i.e. exactly the drift seam the ownership map exists to close.
 //!
@@ -54,9 +55,8 @@ use xusdc_encoding::note::xreserve_mint::{
     XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
-    affine_pubkey_felts, bytes32_to_account_id, bytes32_to_packed_u32_limbs,
-    bytes32_to_storage_map_key, parse_deposit_intent_header, signature_felts,
-    uint256_to_asset_amount, DepositIntent, MintIntent,
+    bytes32_to_account_id, bytes32_to_packed_u32_limbs, bytes32_to_storage_map_key,
+    uint256_to_asset_amount, DepositIntent, MintIntent, PublicKey, Signature,
 };
 
 use mint_support::*;
@@ -90,7 +90,7 @@ fn t_delegation_is_byte_for_byte_unit04_create() {
     let unit04 = XUsdcMintNote::create(
         relayer_sender_id(),
         faucet_id(),
-        attestation.payload(),
+        attestation.deposit_intent().as_bytes(),
         &MintAttestation::new(attestation.attestation(), *attester.as_bytes()),
         &mut note_rng(0xC1_2C_1E),
     )
@@ -152,7 +152,7 @@ fn t_note_carries_exactly_the_two_attachments() {
     // the transport is word-granular: the attestation, and ⌈carried felts / 4⌉ words of mint
     // payload — every width computed by the shared encoding crate's OWNED codec and constants, not
     // a number restated here
-    let carried = carried_payload(attestation.payload());
+    let carried = carried_payload(attestation.deposit_intent().as_bytes());
     assert_eq!(
         usize::from(transport.content().num_words()),
         XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF + carried.to_felts().len().div_ceil(4),
@@ -248,8 +248,10 @@ fn t_storage_embeds_the_attested_output() {
 
     // the attested ingredients, re-derived through the shared encoding crate's OWNED codecs (by
     // reference)
-    let header =
-        parse_deposit_intent_header(attestation.payload()).expect("the canonical payload parses");
+    let header = attestation
+        .deposit_intent()
+        .parse_header()
+        .expect("the canonical payload parses");
     let recipient_id = bytes32_to_account_id(&header.remote_recipient)
         .expect("the canonical payload's remoteRecipient is a valid account id");
     let amount = uint256_to_asset_amount(
@@ -383,7 +385,7 @@ fn t_the_transport_payload_sub_region_is_the_compressed_intent() {
 /// The transport's attestation section carries the 65-byte signature the relayer VALIDATED (from
 /// `ValidatedAttestation`, never from a raw-bytes side door) and the 33-byte attester pubkey the
 /// OPERATOR configured — both in the shared encoding crate's felt encoding, checked by looking for
-/// the owner's own packing (`signature_felts` / `affine_pubkey_felts`) inside the attachment's
+/// the owner's own packing (`Signature::to_felts` / `PublicKey::to_affine_felts`) inside the attachment's
 /// elements. The test asserts PRESENCE of the owner-packed runs, not their offsets: the offsets are
 /// the shared encoding crate's to choose, and restating them here would fork the layout.
 #[test]
@@ -402,8 +404,10 @@ fn t_transport_carries_the_validated_signature_and_configured_pubkey() {
         .content()
         .to_elements();
 
-    let signature = signature_felts(&attestation.attestation());
-    let pubkey = affine_pubkey_felts(attester.as_bytes()).expect("the partner key is on the curve");
+    let signature = Signature::new(attestation.attestation()).to_felts();
+    let pubkey = PublicKey::new(*attester.as_bytes())
+        .to_affine_felts()
+        .expect("the partner key is on the curve");
 
     assert!(
         elements.windows(signature.len()).any(|w| w == signature),

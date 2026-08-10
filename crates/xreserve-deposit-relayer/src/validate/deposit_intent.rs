@@ -15,8 +15,7 @@
 //! 240-byte header packs to 60 field elements, not 30. Each element holds four bytes, not eight.
 
 use xusdc_encoding::xreserve::encoding::{
-    deposit_intent_to_packed_felts, parse_deposit_intent_header, DepositIntentHeader,
-    DEPOSIT_INTENT_HEADER_FELTS, DEPOSIT_INTENT_HEADER_LEN,
+    DepositIntentHeader, DEPOSIT_INTENT_HEADER_FELTS, DEPOSIT_INTENT_HEADER_LEN,
 };
 
 use crate::error::RelayerError;
@@ -130,15 +129,19 @@ pub fn decode_and_validate_deposit_intent(payload: &[u8]) -> Result<DepositInten
     // Structural parse + field checks — the shared encoding crate owns the offsets and the
     // structural
     // checks (magic/version/length/zero-field/truncation).
-    let header = parse_deposit_intent_header(payload).map_err(RelayerError::from_deposit_intent)?;
+    let header = xusdc_encoding::xreserve::encoding::DepositIntent::new(payload)
+        .parse_header()
+        .map_err(RelayerError::from_deposit_intent)?;
 
     // Felt-count / NoteStorage-bound guard (four bytes per felt, so 60 and never 30). Delegated to
     // the shared encoding crate's packer so the
     // 60-felt header count and the 1024-felt bound have exactly one owner; an oversized preimage
     // surfaces as `PreimageTooLarge`. (This re-runs the structural checks, which already passed.)
-    deposit_intent_to_packed_felts(payload).map_err(RelayerError::from_deposit_intent)?;
+    xusdc_encoding::xreserve::encoding::DepositIntent::new(payload)
+        .to_packed_felts()
+        .map_err(RelayerError::from_deposit_intent)?;
 
-    // `parse_deposit_intent_header` guarantees `payload.len() == 240 + hookDataLen >= 240`, so the
+    // the structural parse above guarantees `payload.len() == 240 + hookDataLen >= 240`, so the
     // hookData slice and the full-preimage copy below are in-bounds and mutually consistent.
     Ok(DepositIntent {
         header,

@@ -358,7 +358,7 @@ the OPEN `DEV-7` decision and makes no acceptability verdict of its own.
 | TV-AID-1 | Round-trip: `bytes32_to_account_id(account_id_to_bytes32(id)) == id`. |
 | TV-AID-2 | Reject a non-zero byte in the leading pad; reject a non-canonical prefix/suffix. |
 | TV-AID-3 | The address-type discriminant is fixed and there is no keccak-fallback branch. |
-| TV-AID-4 | The two-felt decomposition matches the bytes32 BYTE layout: `prefix` at bytes 16..24, `suffix` at bytes 24..32. That is the byte order only — on the operand stack the felt order is the reverse, `[account_id_suffix, account_id_prefix]` (suffix on top), the decided on-chain convention. The bytes32 `AccountId` encoding itself stays Circle-OPEN (`DEV-10` / `DC-6`). |
+| TV-AID-4 | The two-felt decomposition matches the bytes32 layout: `prefix` at bytes 16..24, `suffix` at bytes 24..32 (loaded on stack as `[suffix, prefix]`). |
 
 **DepositIntent parse (`TV-DI-*`)**
 

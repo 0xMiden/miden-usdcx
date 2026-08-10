@@ -279,7 +279,7 @@ fn mint_fixture(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<Producti
             &mut note_rng(952),
         )
         .expect("building the administrator set_attester note")];
-        notes.extend(extra_notes(recipient));
+        notes.extend(extra_notes(faucet_id));
         notes
     })
 }
@@ -365,12 +365,11 @@ async fn emit_and_consume_mint(
 /// recomposed stock-`MintNote` transport) at the exact `ERR_PAUSABLE_IS_PAUSED`.
 #[tokio::test]
 async fn dom_manager_grants_pauser_then_new_pauser_halts_mint() -> Result<()> {
-    let mut pf = mint_fixture(|_| {
+    let mut pf = mint_fixture(|id| {
         vec![
-            grant_role_note(dom_manager(), test_faucet_id(1), new_pauser(), 31)
+            grant_role_note(dom_manager(), id, new_pauser(), 31)
                 .expect("building the DOM_MANAGER grant_role note"),
-            stock_pause_note(new_pauser(), test_faucet_id(1), 32)
-                .expect("building the candidate's pause note"),
+            stock_pause_note(new_pauser(), id, 32).expect("building the candidate's pause note"),
         ]
     })?;
     bring_up(&mut pf, 1).await?; // set_attester
@@ -468,8 +467,8 @@ async fn dom_manager_revokes_pauser_then_pause_rejects() -> Result<()> {
 /// a real attested mint (the recomposed stock-`MintNote` transport).
 #[tokio::test]
 async fn dom_manager_rotates_pauser_revoke_then_grant() -> Result<()> {
-    let mut pf = mint_fixture(|_| {
-        let route = test_faucet_id(1);
+    let mut pf = mint_fixture(|id| {
+        let route = id;
         vec![
             revoke_role_note(dom_manager(), route, dom_pauser(), 36)
                 .expect("building the DOM_MANAGER revoke_role note"),

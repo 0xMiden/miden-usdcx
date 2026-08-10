@@ -564,15 +564,15 @@ async fn mint_rejects_a_non_u32_hook_data_len_limb() -> Result<()> {
 #[rstest]
 #[case::pubkey(
     ATTESTATION_PUBKEY_FELT_OFF,
-    "ERR_XRESERVE_DISALLOWED_PUB_KEY",
+    shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY"),
     34,
     101
 )]
-#[case::signature(ATTESTATION_SIGNATURE_FELT_OFF, "ERR_XRESERVE_SIG_INVALID", 35, 102)]
+#[case::signature(ATTESTATION_SIGNATURE_FELT_OFF, &STDLIB_ECDSA_SIG_INVALID, 35, 102)]
 #[tokio::test]
 async fn mint_rejects_a_tampered_attestation_sub_region(
     #[case] felt_off: usize,
-    #[case] expected_err: &str,
+    #[case] expected_err: &'static MasmError,
     #[case] nonce_variant: u8,
     #[case] rng_seed: u64,
 ) -> Result<()> {
@@ -592,7 +592,7 @@ async fn mint_rejects_a_tampered_attestation_sub_region(
         },
         rng_seed,
     )?;
-    expect_reject(&mut pf, note, &payload, shell_error_by_name(expected_err)).await
+    expect_reject(&mut pf, note, &payload, expected_err).await
 }
 
 /// The other half of the isolation proof: a tampered INTENT byte — the attestation section left
@@ -618,13 +618,7 @@ async fn mint_rejects_a_tampered_intent_byte() -> Result<()> {
         &AttachmentPlan::default(),
         103,
     )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &carried,
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
-    )
-    .await
+    expect_reject(&mut pf, note, &carried, &STDLIB_ECDSA_SIG_INVALID).await
 }
 
 // PAUSE HALT — the dispatcher gate (execute_mint_policy runs assert_not_paused FIRST)

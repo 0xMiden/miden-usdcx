@@ -473,8 +473,9 @@ fn burn_note_carries_scheme2_target_to_faucet() -> Result<()> {
 
     assert_eq!(
         note.attachments().num_attachments(),
-        1,
-        "the burn note must carry exactly one attachment: the scheme-2 routing target",
+        2,
+        "the burn note must carry exactly two attachments: the evidence payload and the scheme-2 \
+         routing target",
     );
     let target = NetworkAccountTarget::try_from(note.attachments())
         .map_err(|e| anyhow::anyhow!("the burn note must carry a scheme-2 routing target: {e}"))?;

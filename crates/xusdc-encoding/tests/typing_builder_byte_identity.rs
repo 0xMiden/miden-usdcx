@@ -34,12 +34,17 @@ const TOKEN_SUPPLY: u64 = 0;
 
 // The baseline composition anchors, as their stable `Debug`/`Display` renderings (captured from the
 // pre-change composition at SEED). Comparing the rendered strings sidesteps any felt-repr ambiguity.
+// RE-MATERIALIZED at the v0.16.0-rc.3 bump: the attestation verifier moved onto the standard
+// `ecdsa_k256_keccak::verify_bytes`, which moved the xreserve component's code commitment, and
+// with it the linked admin-note script roots the auth component's allowlist stores (the storage
+// digest). Both construction paths still agree with each other — the third test in this suite —
+// so the anchors moved together, not apart.
 const GOLDEN_INITIAL_COMMITMENT: &str =
-    "Word([3520431078798775920, 10430867718293530017, 14630533360089816843, 1581504771049878528])";
+    "Word([15659367660689059609, 18418661549420769897, 13810237756696815045, 17734049615975724556])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([4795957935671222943, 8323907530742077123, 15290569741410167257, 12045743130653956173])";
+    "Word([11589992720580416619, 15006159573889008290, 13011444741915521468, 13088590573027884474])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([17347449617239272321, 10069560592056632855, 1440135642858094890, 476100099933957087])";
+    "Word([5753177613286537079, 12039167758975438531, 13354235276758251937, 3096370706909904885])";
 const GOLDEN_ACCOUNT_ID: &str = "0x070707060707073107070707070707";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a

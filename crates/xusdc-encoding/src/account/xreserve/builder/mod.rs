@@ -38,7 +38,8 @@
 //! valid component, so it is not a builder input); the policy procedure root is resolved from that
 //! same installed code via [`AccountComponent::get_procedure_root_by_path`], so the `dynexec` root
 //! the policy manager stores always equals the installed proc's MAST root. The final composed
-//! [`Account`] is produced by [`XReserveStablecoinBuilder::build_account`] / the crate-root
+//! [`Account`](miden_protocol::account::Account) is produced by
+//! [`XReserveStablecoinBuilder::build_account`] / the crate-root
 //! [`build_faucet_account`], so account construction is traceable from the library root.
 
 use miden_protocol::account::{

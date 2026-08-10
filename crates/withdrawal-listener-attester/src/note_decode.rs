@@ -1,4 +1,4 @@
-//! `note_decode` (PURE) — what a discovered burn note SAYS: its `NoteStorage.items` payload decoded
+//! `note_decode` (PURE) — what a discovered burn note SAYS: its evidence-attachment payload decoded
 //! into Circle's documented [`BurnPayload`], and its `metadata.sender` read as the Miden burner.
 //!
 //! # The codec is the shared encoding crate's, consumed by reference
@@ -90,7 +90,7 @@ impl BurnNoteMetadata {
     }
 }
 
-/// Decodes a burn note's `NoteStorage.items` into Circle's documented [`BurnPayload`]
+/// Decodes a burn note's evidence-attachment payload into Circle's documented [`BurnPayload`]
 /// `(amount, dest_domain, dest_recipient, salt)`.
 ///
 /// The decode IS the shared encoding crate's [`decode_burn_note_items`] (single-owner);

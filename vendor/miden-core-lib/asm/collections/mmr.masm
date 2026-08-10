@@ -1,0 +1,282 @@
+use miden::core::mem
+use miden::core::crypto::hashes::poseidon2
+use miden::core::math::u64
+
+#! Loads the leaf at the absolute `pos` in the MMR.
+#!
+#! This MMR implementation supports only u32 positions.
+#!
+#! The position must refer to an existing leaf: `pos < num_leaves`, where `num_leaves` is stored
+#! at `mmr_ptr[0]`. The procedure fails instead of returning an empty or sentinel word when `pos`
+#! is outside the current MMR.
+#!
+#! Stack transition:
+#! Input: [pos, mmr_ptr, ...]
+#! Output: [N, ...] where `N` is the leaf and `R` is the MMR peak that owns the leaf.
+pub proc get
+  # load the num_leaves of the MMR (2 cycles)
+  dup.1 mem_load
+  # stack: [num_leaves, pos, mmr_ptr, ...]
+
+  # assert `pos < num_leaves`
+  dup.1 dup.1 u32assert2 u32lt assert.err="position is not an existing MMR leaf"
+  # stack: [num_leaves, pos, mmr_ptr, ...]
+
+  # compute `num_leaves & pos`, this contains all peaks before `pos` (and maybe some after the owning peak) (3 cycles)
+  dup.1 dup.1 u32and
+  # stack: [before_candidates, num_leaves, pos, mmr_ptr, ...]
+
+  # compute `num_leaves - before_candidates`, this removes every peak before the owner (result may include peaks after owner) (4 cycles)
+  dup.1 swap sub
+  # stack: [owner_candidates, num_leaves, pos, mmr_ptr, ...]
+
+  # compute `ilog2(owner_candidates)` and `2**depth`, it corresponds to the owner peak and its depth (83 cycles)
+  ilog2 dup.0 pow2
+  # stack: [owner_peak, depth, num_leaves, pos, mmr_ptr, ...]
+
+  # compute `owner_peak - 1`, this mask corresponds to every peak after the owner (3 cycles)
+  dup.0 sub.1
+  # stack: [after_mask, owner_peak, depth, num_leaves, pos, mmr_ptr, ...]
+
+  # compute `num_leaves & after_mask`, uses the mask to compute the actual after peaks (2 cycles)
+  dup.3 u32and
+  # stack: [after_peaks, owner_peak, depth, num_leaves, pos, mmr_ptr, ...]
+
+  # compute `num_leaves - (after_peaks + owner_peak)`, this computes the before peaks (5 cycles)
+  add movup.2 swap sub
+  # stack: [peaks_before, depth, pos, mmr_ptr, ...]
+
+  # compute `pos - peaks_before`, this computes the relative_pos of the leaf w.r.t. the owner peak. (4 cycles)
+  movup.2 dup.1 sub
+  # stack: [relative_pos, peaks_before, depth, mmr_ptr, ...]
+
+  # compute `popcount(peaks_before)`, the count peaks before the target to be skipped when loading from mem (36 cycles)
+  swap u32assert u32popcnt
+  # stack: [peak_count, relative_pos, depth, mmr_ptr, ...]
+
+  # compute `mmr_ptr + 4*peak_count + 4` the target tree index (6 cycles)
+  mul.4 movup.3 add add.4
+  # stack: [peak_ptr, relative_pos, depth, ...]
+
+  # load the target peak (6 cycles)
+  padw movup.4 mem_loadw_le
+  # stack: [P, relative_pos, depth, ...]
+
+  # find the tree depth (2 cycles)
+  movup.4 movup.5
+  # stack: [depth, relative_pos, P, ...]
+
+  # corner case, leaf values are not supported in the VM's Merkle store, so the
+  # `mtree_get` instruction will fail for the single leaf case of the MMR. (2 cycles)
+  dup.0 eq.0
+  if.true
+    drop drop # (2 cycles)
+    # stack: [leaf, ...]
+  else
+    # verify and get the leaf (10 cycles)
+    mtree_get
+    # stack: [leaf, root, ...]
+
+    # drop the root (5 cycles)
+    swapw dropw
+    # stack: [leaf, ...]
+  end
+end
+
+#! Given the num_leaves of a MMR returns the num_peaks.
+#!
+#! Implemented as counting the number of "1" bits in `num_leaves`.
+#!
+#! Input: [num_leaves, ...]
+#! Output: [num_peaks, ...]
+#! Cycles: 32
+pub proc num_leaves_to_num_peaks
+  # count number of peaks (32 cycles)
+  u32popcnt
+  # => [count, ...]
+end
+
+#! Given the num_peaks of a MMR, returns the hasher state size after accounting
+#! for the required padding.
+#!
+#! Input: [num_peaks, ...]
+#! Output: [len, ...]
+#! Cycles: 19
+pub proc num_peaks_to_message_size
+  # the peaks are padded to a minimum length of 16 (10 cycles)
+  push.16 u32max
+  # => [count_min, ...]
+
+  # when the number of peaks is greater than 16, then they are padded to an even number.
+  # we multiply by four because each peak is a word, and so is stored in 4 memory addresses.
+  # (9 cycles)
+  dup is_odd add mul.4
+  # => [even_count_min, ...]
+end
+
+#! Writes the MMR whose preimage hashes to `HASH` to the memory location pointed to by `mmr_ptr`.
+#!
+#! Input: [HASH, mmr_ptr, ...]
+#! Output: [...]
+#!
+#! Where:
+#!  - HASH: is the hash of `[num_leaves, 0, 0, 0] || padded_peaks`.
+#!  - The advice map must contain a key with HASH, and its value is
+#!    `[num_leaves, 0, 0 , 0] || padded_peaks`.
+#!  - mmr_ptr: the memory location where the MMR data will be written to,
+#!    starting with the MMR forest (its total leaves count) followed by its peaks.
+#!    The address is expected to be word-aligned.
+#!
+#! Cycles: 215 + 9 * extra_peak_pair cycles
+#!    where `extra_peak_pair` is the number of peak pairs in addition to the
+#!    first 16 peaks, i.e. `round_up((num_of_peaks - 16) / 2)`
+pub proc unpack
+  # load the preimage and its size to the advice_stack (0 cycles)
+  adv.push_mapvaln adv_push
+  # operand_stack => [preimage_size, HASH, mmr_ptr, ...]
+  # advice_stack => [NUM_LEAVES, peaks*, ...]
+
+  # make sure the preimage is word-aligned
+  dup u32mod.4 assertz.err="invalid MMR preimage: size must be word-aligned"
+
+  # compute the number of words in the preimage
+  div.4
+  # operand_stack => [num_words, HASH, mmr_ptr, ...]
+  # advice_stack => [NUM_LEAVES, peaks*, ...]
+
+  # copy the MMR preimage to memory and verify the leaf-count-bound commitment
+  dup.5 swap
+  # => [num_words, mmr_ptr, HASH, mmr_ptr, ...]
+
+  exec.mem::pipe_preimage_to_memory
+  # => [mmr_ptr_end, mmr_ptr, ...]
+
+  # verify that the preimage size matches the encoded MMR leaf count
+  dup.1 mem_load
+  # => [num_leaves, mmr_ptr_end, mmr_ptr, ...]
+
+  exec.num_leaves_to_num_peaks
+  exec.num_peaks_to_message_size
+  # => [peak_elements, mmr_ptr_end, mmr_ptr, ...]
+
+  add.4 dup.2 add
+  # => [expected_mmr_ptr_end, mmr_ptr_end, mmr_ptr, ...]
+
+  assert_eq drop
+end
+
+#! Computes the hash of the given MMR and copies it to the Advice Map using its hash as a key.
+#!
+#! Input: [mmr_ptr, ...]
+#! Output: [HASH, ...]
+#! Cycles: 198 + 6 * extra_peak_pair cycles
+#!    where `extra_peak_pair` is the number of peak pairs in addition to the
+#!    first 16 peaks, i.e. `round_up((num_of_peaks - 16) / 2)`
+pub proc pack
+  # load num_leaves (2 cycles)
+  dup mem_load
+  # => [num_leaves, mmr_ptr, ...]
+
+  # compute num_peaks (67 cycles)
+  exec.num_leaves_to_num_peaks
+  # => [num_peaks, mmr_ptr, ...]
+
+  # compute the message size (19 cycles)
+  exec.num_peaks_to_message_size
+  # => [message_size, mmr_ptr, ...]
+
+  # compute the full MMR preimage range
+  dup.1 add.4 add
+  # => [mmr_ptr_end, mmr_ptr, ...]
+
+  swap dup.1 dup.1
+  # => [mmr_ptr, mmr_ptr_end, mmr_ptr, mmr_ptr_end, ...]
+
+  exec.poseidon2::hash_words
+  # => [HASH, mmr_ptr, mmr_ptr_end, ...]
+
+  # copy the data to advice map
+  adv.insert_mem
+
+  # drop the extra addresses (4 cycles)
+  movup.4 drop movup.4 drop
+  # => [HASH, ...]
+end
+
+#! Adds a new element to the MMR.
+#!
+#! This will update the MMR peaks in the VM's memory and the advice provider
+#! with any merged nodes.
+#!
+#! Input: [EL, mmr_ptr, ...]
+#! Output: [...]
+#! Cycles: 145 + 39 * peak_merges
+pub proc add
+  # get num_leaves (2 cycles)
+  dup.4 mem_load
+  # => [num_leaves, EL, mmr_ptr]
+
+  # update the num_leaves (5 cycles)
+  dup add.1 dup.6 mem_store
+  # => [num_leaves, EL, mmr_ptr]
+
+  dup exec.num_leaves_to_num_peaks
+  # [num_peaks, num_leaves, EL, mmr_ptr] (68 cycles)
+
+  # compute peaks_end (6 cycles)
+  mul.4 movup.6 add add.4
+  # [mmr_end, num_leaves, EL]
+
+  # find how many MMR peaks will be merged (42 cycles)
+  swap u32split exec.u64::cto
+  # => [num_merges, mmr_end, EL]
+
+  # optimization: negate num_merges to use add.1 instead of sub.1 (1 cycles)
+  neg
+  # => [-num_merges, mmr_end, EL]
+
+  # move the control data after the working data (2 cycles)
+  movdn.5 movdn.5
+  # => [EL, -num_merges, mmr_end]
+
+  # add a word of padding to load the peak from memory (4 cycles)
+  padw
+  # => [PAD, EL, -num_merges, mmr_end]
+
+  # loop while there are merges left to be done (5 cycles)
+  dup.8 neq.0
+  # LOOP: [b, PAD, EL, -num_merges, mmr_end]
+
+  while.true # (39 cycles)
+    # load peak (4 cycles)
+    dup.9 sub.4 mem_loadw_le
+    # => [PEAK, EL, -num_merges, mmr_end]
+
+    # merge the nodes (17 cycles)
+    mtree_merge
+    # => [EL', -num_merges, mmr_end]
+
+    # erase existing peak (6 cycles)
+    padw dup.9 mem_storew_le
+    # => [PAD, EL', -num_merges, mmr_end]
+
+    # update control (7 cycles)
+    swapw.2 add.1 swap sub.4 swap swapw.2
+    # => [PAD, EL', -num_merges+1, mmr_end-4]
+
+    # check loop condition (5 cycles)
+    dup.8 neq.0
+    # LOOP: [b, PAD, EL', -num_merges+1, mmr_end-1]
+  end
+
+  # drop padding (4 cycles)
+  dropw
+  # =>: [EL, -num_merges+1, mmr_end-4]
+
+  # save the new peak (2 cycles)
+  movup.5 mem_storew_le
+  # =>: [EL, -num_merges+1]
+
+  # clean stack (5 cycles)
+  dropw drop
+end

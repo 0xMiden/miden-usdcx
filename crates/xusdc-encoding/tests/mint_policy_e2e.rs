@@ -86,13 +86,7 @@ async fn mint_rejects_a_forged_signature() -> Result<()> {
         &AttachmentPlan::default(),
         82,
     )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
-    )
-    .await
+    expect_reject(&mut pf, note, &payload, &STDLIB_ECDSA_SIG_INVALID).await
 }
 
 /// Removing an attester really revokes them, end to end.

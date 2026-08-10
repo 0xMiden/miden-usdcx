@@ -61,9 +61,11 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_X_TOO_LARGE",
     // replay protection R-MINT-12
     "ERR_XRESERVE_NONCE_REPLAY",
-    // attestation verification R-MINT-13 / R-MINT-14 (attestation_verify.masm)
+    // attestation verification R-MINT-13 / R-MINT-14 (attestation_verify.masm). The signature
+    // reject is no longer a faucet-owned constant: the verify_bytes migration delegates the
+    // whole signature check to the standard verifier, whose own assertion is the trap
+    // (`support::stdlib_ecdsa_sig_invalid_error`).
     "ERR_XRESERVE_DISALLOWED_PUB_KEY",
-    "ERR_XRESERVE_SIG_INVALID",
     // F2 fee guard (deposit_intent_parser.masm; DEC-2 keep-zero)
     "ERR_XRESERVE_FEE_NONZERO",
     // Transport-shape guards on the stock MintNote's attachments: the attachment set and the
@@ -103,10 +105,18 @@ const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] = &[(
     support::XRESERVE_ATTESTERS_SLOT_LABEL,
 )];
 
-/// The attestation verification attestation-verify shell's numeric constants: its `@locals` offsets (the keccak
-/// digest's two words — procedure-local addresses with no Rust counterpart) and `PUBKEY_FELTS`,
-/// which IS parity-asserted against the Rust codec in `masm_rust_constant_parity` below.
-const ATTESTATION_COVERED_NUMS: &[&str] = &["DIGEST_LO_LOC", "DIGEST_HI_LOC", "PUBKEY_FELTS"];
+/// The attestation verification attestation-verify shell's numeric constants: its `@locals`
+/// offsets and the witness-buffer felt count (procedure-local addresses and sizes with no Rust
+/// counterpart — the ECDSA witness the verify_bytes migration stages in locals) and
+/// `PUBKEY_FELTS`, which IS parity-asserted against the Rust codec in
+/// `masm_rust_constant_parity` below.
+const ATTESTATION_COVERED_NUMS: &[&str] = &[
+    "WITNESS_PUBKEY_LOC",
+    "WITNESS_SIG_R_LOC",
+    "WITNESS_SIG_S_LOC",
+    "WITNESS_FELTS",
+    "PUBKEY_FELTS",
+];
 
 /// Attestation mint-policy numeric consts: the merged transport's attachment scheme + the
 /// attestation section word count are parity-asserted against the `XUsdcMintNote` factory

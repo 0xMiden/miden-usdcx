@@ -1,0 +1,142 @@
+use miden::core::stark::constants
+
+#! Compute the LDE domain generator from the log2 of its size.
+#!
+#! Input: [log2(domain_size), ..]
+#! Output: [domain_gen, ..]
+#! Cycles: 63
+pub proc compute_lde_generator
+    push.32
+    swap
+    sub
+    pow2
+    exec.constants::get_root_unity
+    swap
+    exp.u32
+    # => [domain_gen, ..]
+end
+
+#! Validates the inputs to the recursive verifier.
+#!
+#! Checks security parameters from memory. Relation wrappers validate and store trace metadata
+#! before calling the generic verifier.
+#!
+#! Input: [...]
+#! Output: [...]
+pub proc validate_inputs
+    # Assert that the number of FRI queries is at most 150. This restriction is a soft one
+    #    and is due to the memory layout in the `constants.masm` files but can be updated
+    #    therein.
+    #    We also make sure that the number of FRI queries is at least 7.
+    exec.constants::get_number_queries
+    dup u32lt.151 assert.err="num_queries must be less than 151"
+    u32gt.6 assert.err="num_queries must be greater than 6"
+
+    # Assert that PoW bit counts are less than 32 (must fit in u32 bit masking).
+    exec.constants::get_query_pow_bits
+    u32lt.32 assert.err="query_pow_bits must be less than 32"
+
+    exec.constants::get_deep_pow_bits
+    u32lt.32 assert.err="deep_pow_bits must be less than 32"
+
+    exec.constants::get_folding_pow_bits
+    u32lt.32 assert.err="folding_pow_bits must be less than 32"
+end
+
+#! Reverse the lowest `bits` bits of `index` using parallel bit-swap.
+#! `pow2_shift` must equal 2^(32 - bits); the caller pre-computes it once.
+#!
+#! The algorithm has two parts:
+#!
+#! 1) Left-shift: multiply index by pow2_shift = 2^(32-bits) to place the `bits`
+#!    meaningful bits into the top of a 32-bit word. Since index < 2^bits, the
+#!    product is always < 2^32 so u32wrapping_mul is exact.
+#!
+#! 2) Full 32-bit reversal via 5 parallel swap steps. Each step k (for k=1,2,4,8,16)
+#!    swaps every adjacent group of k bits. A mask isolates the even-positioned
+#!    groups; the odd-positioned groups are the complement. Shifting each half by
+#!    k positions and combining swaps all groups simultaneously. After all 5 steps,
+#!    bit position i has moved to position 31-i, which (because of the initial
+#!    left-shift) is exactly position (bits-1-i) of the original -- i.e., the
+#!    reversed index. No final shift is needed.
+#!
+#! The two halves never overlap, so XOR = OR = ADD; we use XOR (1 cycle vs 3 for
+#! u32wrapping_add).
+#!
+#! Input: [index, pow2_shift, ...]
+#! Output: [rev_index, ...]
+#! Cycles: 78
+pub proc bit_reverse_len_parallel
+    u32wrapping_mul
+
+    # Step 1: swap adjacent bits
+    # x = ((x >> 1) & 0x55555555) ^ ((x & 0x55555555) << 1)
+    dup u32shr.1 push.0x55555555 u32and
+    swap push.0x55555555 u32and u32shl.1
+    u32xor
+    #=> [x1, ...]
+
+    # Step 2: swap bit pairs
+    # x = ((x >> 2) & 0x33333333) ^ ((x & 0x33333333) << 2)
+    dup u32shr.2 push.0x33333333 u32and
+    swap push.0x33333333 u32and u32shl.2
+    u32xor
+    #=> [x2, ...]
+
+    # Step 3: swap nibbles
+    # x = ((x >> 4) & 0x0F0F0F0F) ^ ((x & 0x0F0F0F0F) << 4)
+    dup u32shr.4 push.0x0F0F0F0F u32and
+    swap push.0x0F0F0F0F u32and u32shl.4
+    u32xor
+    #=> [x3, ...]
+
+    # Step 4: swap bytes
+    # x = ((x >> 8) & 0x00FF00FF) ^ ((x & 0x00FF00FF) << 8)
+    dup u32shr.8 push.0x00FF00FF u32and
+    swap push.0x00FF00FF u32and u32shl.8
+    u32xor
+    #=> [x4, ...]
+
+    # Step 5: swap halfwords
+    # x = (x >> 16) ^ (x << 16)  (no mask needed, both halves fit in 16 bits)
+    dup u32shr.16
+    swap u32shl.16
+    u32xor
+    #=> [rev_index, ...]
+end
+
+#! Executes the constraints evaluation check.
+#!
+#! Inputs:  [...]
+#! Outputs: [...]
+#!
+#! Invocation: exec
+pub proc execute_constraint_evaluation_check
+    exec.constants::get_procedure_digest_execute_constraint_evaluation_check_ptr dynexec
+end
+
+#! Observes the auxiliary trace: draws aux randomness, reseeds with the aux trace commitment,
+#! and absorbs aux trace boundary values into the transcript.
+#!
+#! For AIRs without an auxiliary trace, the implementation should be a no-op.
+#!
+#! Inputs:  [...]
+#! Outputs: [...]
+#!
+#! Invocation: exec
+pub proc observe_aux_trace
+    exec.constants::get_procedure_digest_observe_aux_trace_ptr dynexec
+end
+
+#! Stores digests of dynamically executed procedures.
+#!
+#! Input: [D0, D1, D2, D3, D4, ...]
+#! Output: [...]
+pub proc store_dynamically_executed_procedures
+    exec.constants::get_procedure_digest_observe_aux_trace_ptr mem_storew_le dropw
+    exec.constants::get_procedure_digest_process_public_inputs_ptr mem_storew_le dropw
+    exec.constants::get_procedure_digest_process_row_ood_evaluations_ptr mem_storew_le dropw
+    exec.constants::get_procedure_digest_execute_constraint_evaluation_check_ptr mem_storew_le dropw
+    exec.constants::get_procedure_digest_compute_deep_composition_polynomial_queries_ptr mem_storew_le dropw
+    # => [...]
+end

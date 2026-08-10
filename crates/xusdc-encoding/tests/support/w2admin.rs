@@ -11,7 +11,7 @@
 //! authority and role dispatch inside the called procedures, not the note-script allowlist. Mixing
 //! the two would make a rejection ambiguous.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;

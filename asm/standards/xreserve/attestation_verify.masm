@@ -4,7 +4,6 @@
 # itself; what this file is for is that a mint proceeds only for a deposit Circle actually signed.
 
 use miden::protocol::active_account
-use miden::core::crypto::hashes::keccak256
 use miden::core::crypto::dsa::ecdsa_k256_keccak
 use miden::core::crypto::hashes::poseidon2
 use miden::core::word
@@ -13,14 +12,17 @@ use {XRESERVE_ATTESTERS_SLOT, ATTESTER_ENABLED_MARKER} from xreserve::attester_a
 # CONSTANTS
 # =================================================================================================
 
-# `verify_attestation` locals: the keccak digest is the only value that needs a memory home — the
-# precompile wrappers take their other operands as pointers and leave the stack below their inputs
-# intact, so the caller's pubkey and signature pointers simply ride on the operand stack.
-const DIGEST_LO_LOC = 0
-const DIGEST_HI_LOC = 4
+# `verify_attestation` locals: the ECDSA witness buffer, in the exact advice-stack order the
+# verifier consumes — the 16 native pubkey limbs, then the two signature scalars as native limbs.
+const WITNESS_PUBKEY_LOC = 0
+const WITNESS_SIG_R_LOC = 16
+const WITNESS_SIG_S_LOC = 24
 
 # The number of elements in a packed secp256k1 pubkey.
 const PUBKEY_FELTS = 16
+
+# The number of felts in the ECDSA witness buffer: pubkey(16) + SIG_R(8) + SIG_S(8).
+const WITNESS_FELTS = 32
 
 # ERRORS
 # =================================================================================================
@@ -28,89 +30,143 @@ const PUBKEY_FELTS = 16
 # The candidate pubkey's Poseidon2 commitment is not enabled in xReserveAttesters.
 const ERR_XRESERVE_DISALLOWED_PUB_KEY = "deposit attester pubkey commitment is not allowlisted"
 
-# The ECDSA signature does not verify over keccak256(payload) for the candidate pubkey.
-const ERR_XRESERVE_SIG_INVALID = "deposit attestation signature verification failed"
-
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Verifies the mint-time deposit attestation: keccak the payload, gate the attester pubkey
-#! against the xReserveAttesters allowlist, and ECDSA-verify the signature over the keccak
-#! digest.
+#! Verifies the mint-time deposit attestation: gate the attester pubkey against the
+#! xReserveAttesters allowlist, then ECDSA-verify the signature over keccak256(payload) via the
+#! standard `ecdsa_k256_keccak::verify_bytes`, which keccaks the payload bytes itself.
 #!
-#! The caller owns the pubkey and signature bytes and passes pointers to them; this procedure
-#! reads nothing from the advice provider, so whatever memory the caller hash-verified is exactly
-#! what gets checked here. The SAME pubkey pointer feeds both the allowlist commitment
-#! (pubkey_commitment) and the signature check (verify_prehash), so an allowlisted commitment
-#! cannot be paired with a foreign signature.
+#! The caller owns the pubkey and signature bytes and passes pointers to them. The verifier takes
+#! its pubkey and signature witness from the advice stack, and this procedure stages that witness
+#! ITSELF, derived entirely from the caller's memory: the pubkey limbs are copied as-is and the
+#! signature scalars are byte-reversed into native limb order, the 32-felt buffer is round-tripped
+#! through the advice map under its own Poseidon2 hash (content-addressed, so concurrent
+#! attestations can never collide), and `verify_bytes` re-binds the advice-loaded pubkey to the
+#! SAME Poseidon2 commitment the allowlist gate just cleared. A substituted advice witness
+#! therefore either fails the commitment bind (foreign pubkey) or fails the curve equation
+#! (foreign signature); the signature scalars are a witness, not a committed encoding, so any
+#! equivalent witness — including the high-s mirror — verifies, exactly as the standard verifier
+#! accepts. Replay of the SAME attestation is bounded elsewhere, by the mint policy's used-nonce
+#! write.
 #!
 #! Inputs:  [intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 #! Outputs: []
 #!
 #! Where:
-#! - intent_ptr is the memory address of the u32-LE-packed DepositIntent payload preimage.
-#! - intent_num_bytes is the payload length in bytes (keccak's hashed extent; equals the bytes the
+#! - intent_ptr is the word-aligned memory address of the u32-LE-packed DepositIntent payload
+#!   preimage.
+#! - intent_num_bytes is the payload length in bytes (the keccaked extent; equals the bytes the
 #!   attester signed).
-#! - pubkey_ptr is the word-aligned memory address of the candidate attester pubkey, 16
-#!   u32-LE-packed affine-coordinate felts.
-#! - signature_ptr is the word-aligned memory address of the 17-felt attestation signature.
+#! - pubkey_ptr is the word-aligned memory address of the candidate attester pubkey, 16 native
+#!   little-endian u32 affine-coordinate limbs.
+#! - signature_ptr is the word-aligned memory address of the 17-felt attestation signature
+#!   (the 65-byte r‖s‖v wire encoding packed as u32-LE felts; v is unused on-chain).
 #!
 #! Panics if:
 #! - the candidate pubkey's commitment is not allowlisted (ERR_XRESERVE_DISALLOWED_PUB_KEY).
-#! - the signature does not verify over the payload digest (ERR_XRESERVE_SIG_INVALID).
+#! - the signature does not verify over the payload digest (the standard verifier's own traps,
+#!   e.g. "ECDSA verification failed: x(VERIFY_POINT) != SIG_R").
 #!
 #! Locals:
-#! - 0..8: DIGEST
+#! - 0..16: native pubkey limbs QX[8] || QY[8] (copied from pubkey_ptr)
+#! - 16..32: native signature scalar limbs SIG_R[8] || SIG_S[8] (byte-reversed from the wire felts)
 #!
 #! Invocation: exec
-@locals(8)
+@locals(32)
 pub proc verify_attestation
-    # keccak the full payload -> 8-limb digest, stored to the digest local region. hash_bytes
-    # consumes [intent_ptr, intent_num_bytes] and leaves everything below it untouched, so the two
-    # pointers survive the precompile call on the operand stack.
-    exec.keccak256::hash_bytes
-    # => [DIGEST_U32[8], pubkey_ptr, signature_ptr]
-
-    loc_storew_le.DIGEST_LO_LOC dropw
-    loc_storew_le.DIGEST_HI_LOC dropw
-    # => [pubkey_ptr, signature_ptr]
-
     # allowlist gate: commit to the caller's pubkey, then read
     # xReserveAttesters[PUBKEY_COMMITMENT].
-    dup exec.pubkey_commitment
-    # => [PUBKEY_COMMITMENT, pubkey_ptr, signature_ptr]
+    dup.2 exec.pubkey_commitment
+    # => [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 
     push.XRESERVE_ATTESTERS_SLOT[0..2]
-    # => [slot_id_suffix, slot_id_prefix, PUBKEY_COMMITMENT, pubkey_ptr, signature_ptr]
+    # => [slot_id_suffix, slot_id_prefix, PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes,
+    #     pubkey_ptr, signature_ptr]
 
     exec.active_account::get_map_item
-    # => [MARKER, pubkey_ptr, signature_ptr]
+    # => [MARKER, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 
     # the stored value must be exactly the enabled marker -- a disabled row and an absent row both
     # read as EMPTY_WORD, meaning the candidate pubkey's commitment is not allowlisted.
     push.ATTESTER_ENABLED_MARKER exec.word::eq
-    # => [is_allowed, pubkey_ptr, signature_ptr]
+    # => [is_allowed, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 
     assert.err=ERR_XRESERVE_DISALLOWED_PUB_KEY
+    # => [intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
+
+    # build the verifier's advice witness in locals[0..32): the pubkey limbs are already in the
+    # native order the curve precompile consumes, so they copy verbatim.
+    padw dup.6 mem_loadw_le loc_storew_le.0 dropw
+    padw dup.6 add.4 mem_loadw_le loc_storew_le.4 dropw
+    padw dup.6 add.8 mem_loadw_le loc_storew_le.8 dropw
+    padw dup.6 add.12 mem_loadw_le loc_storew_le.12 dropw
+    # => [intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
+    #    locals[0..16) = QX[8] || QY[8]
+
+    # the wire signature packs the big-endian r and s byte streams as u32-LE felts; the verifier
+    # consumes each scalar as native little-endian numeric limbs, so native limb j is the
+    # byte-reversed wire felt 7-j (r occupies wire felts 0..8, s occupies 8..16; felt 16 carries v,
+    # unused on-chain).
+    dup.3 add.7 mem_load exec.reverse_u32_bytes loc_store.16
+    dup.3 add.6 mem_load exec.reverse_u32_bytes loc_store.17
+    dup.3 add.5 mem_load exec.reverse_u32_bytes loc_store.18
+    dup.3 add.4 mem_load exec.reverse_u32_bytes loc_store.19
+    dup.3 add.3 mem_load exec.reverse_u32_bytes loc_store.20
+    dup.3 add.2 mem_load exec.reverse_u32_bytes loc_store.21
+    dup.3 add.1 mem_load exec.reverse_u32_bytes loc_store.22
+    dup.3 mem_load exec.reverse_u32_bytes loc_store.23
+    # => [intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
+    #    locals[16..24) = SIG_R native limbs
+
+    dup.3 add.15 mem_load exec.reverse_u32_bytes loc_store.24
+    dup.3 add.14 mem_load exec.reverse_u32_bytes loc_store.25
+    dup.3 add.13 mem_load exec.reverse_u32_bytes loc_store.26
+    dup.3 add.12 mem_load exec.reverse_u32_bytes loc_store.27
+    dup.3 add.11 mem_load exec.reverse_u32_bytes loc_store.28
+    dup.3 add.10 mem_load exec.reverse_u32_bytes loc_store.29
+    dup.3 add.9 mem_load exec.reverse_u32_bytes loc_store.30
+    dup.3 add.8 mem_load exec.reverse_u32_bytes loc_store.31
+    # => [intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
+    #    locals[24..32) = SIG_S native limbs
+
+    # round-trip the witness onto the advice stack: key the advice-map entry by the buffer's own
+    # Poseidon2 hash so the entry is content-addressed — identical witnesses share a key and value,
+    # distinct witnesses can never collide, so concurrent attestations in one transaction are safe.
+    locaddr.WITNESS_PUBKEY_LOC add.WITNESS_FELTS
+    locaddr.WITNESS_PUBKEY_LOC
+    # => [witness_start, witness_end, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
+
+    locaddr.WITNESS_PUBKEY_LOC push.WITNESS_FELTS swap exec.poseidon2::hash_elements
+    # => [WITNESS_KEY, witness_start, witness_end, intent_ptr, intent_num_bytes, pubkey_ptr,
+    #     signature_ptr]
+
+    adv.insert_mem
+    adv.push_mapval
+    # advice stack => [QX[8], QY[8], SIG_R[8], SIG_S[8]]
+
+    dropw drop drop
+    # => [intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
+
+    # the ECDSA verify: the standard verifier keccaks the payload bytes itself and binds the
+    # advice-loaded pubkey to the SAME commitment the allowlist gate cleared. Recomputing the
+    # commitment costs one short Poseidon2 hash and keeps the 16 copy ops above free of a word
+    # riding the stack.
+    dup.2 exec.pubkey_commitment
+    # => [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
+
+    exec.ecdsa_k256_keccak::verify_bytes
     # => [pubkey_ptr, signature_ptr]
 
-    # the ECDSA verify: verify_prehash over the SAME pubkey the allowlist gate just cleared, the
-    # digest, and the caller's signature.
-    locaddr.DIGEST_LO_LOC swap
-    # => [pubkey_ptr, digest_ptr, signature_ptr]
-
-    exec.ecdsa_k256_keccak::verify_prehash
-    # => [result]
-
-    # the signature must verify over the payload digest for the candidate pubkey.
-    assert.err=ERR_XRESERVE_SIG_INVALID
+    drop drop
     # => []
 end
 
 #! Computes the commitment of the provided public key.
 #!
-#! Computes the poseidon2 hash over the 16 u32-LE-packed affine-coordinate limbs, which is the
-#! attester-allowlist map key.
+#! Computes the poseidon2 hash over the 16 native-limb affine-coordinate felts, which is the
+#! attester-allowlist map key AND the `PK_COMM` the standard ECDSA verifier binds its
+#! advice-loaded pubkey against.
 #!
 #! Inputs:  [pubkey_ptr]
 #! Outputs: [PUBKEY_COMMITMENT]
@@ -123,4 +179,35 @@ end
 pub proc pubkey_commitment
     push.PUBKEY_FELTS swap exec.poseidon2::hash_elements
     # => [PUBKEY_COMMITMENT]
+end
+
+# INTERNAL PROCEDURES
+# =================================================================================================
+
+#! Reverses the byte order of a u32 value (the same limb transform the standard ECDSA module
+#! applies to Keccak digest limbs; its copy is private, so the three-step swap network is
+#! reproduced here).
+#!
+#! Inputs:  [x]
+#! Outputs: [byte_reverse(x)]
+#!
+#! Invocation: exec
+proc reverse_u32_bytes
+    dup u32shr.8 push.0x00FF00FF u32and
+    # => [(x >> 8) & 0x00ff00ff, x]
+
+    swap push.0x00FF00FF u32and mul.256
+    # => [(x & 0x00ff00ff) << 8, shifted]
+
+    u32xor
+    # => [x with adjacent bytes swapped]
+
+    dup u32shr.16
+    # => [swapped >> 16, swapped]
+
+    swap u32shl.16
+    # => [(swapped << 16) mod 2^32, swapped >> 16]
+
+    u32xor
+    # => [byte_reverse(x)]
 end

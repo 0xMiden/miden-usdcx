@@ -89,3 +89,10 @@ tower = { version = "0.5", features = ["util"] }
 # `crates/xusdc-validation` (`workspace.exclude`) — is outside the graph, so nothing pulls a
 # second protocol copy that a patch block would have to unify. Exactly one copy of each
 # protocol crate is in the graph.
+
+# TEMPORARY (remove when upstream ships verify_bytes in a released core-lib + protocol tag):
+# miden-core-lib 0.29.0 vendored verbatim from crates.io with exactly two files overlaid from
+# miden-vm PR #3563 (rev 374c6838c) — asm/crypto/dsa/ecdsa_k256_keccak.masm and src/dsa.rs —
+# restoring an ECDSA path for in-VM-hashed variable-length messages (upstream issue #3544).
+[patch.crates-io]
+miden-core-lib = { path = "vendor/miden-core-lib" }

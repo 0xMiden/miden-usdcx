@@ -4,7 +4,7 @@
 use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
 
 /// The burn note's public payload — `(amount, destDomain, destRecipient, salt)`, decoded from
-/// `NoteStorage.items`.
+/// the burn note's evidence attachment.
 ///
 /// This is an **alias**, not a second struct. Circle's documented `BurnPayload` is field-for-field
 /// the shared encoding crate's [`XReserveBurnItems`], which is the type that already owns the

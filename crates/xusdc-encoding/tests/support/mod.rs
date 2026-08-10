@@ -137,7 +137,7 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 17] = [
     (
         "ERR_XRESERVE_WRONG_DOMAIN",
         MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
@@ -168,10 +168,6 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
     (
         "ERR_XRESERVE_DISALLOWED_PUB_KEY",
         MasmError::from_static_str("deposit attester pubkey commitment is not allowlisted"),
-    ),
-    (
-        "ERR_XRESERVE_SIG_INVALID",
-        MasmError::from_static_str("deposit attestation signature verification failed"),
     ),
     // The fee gate (deposit_intent_parser.masm): the faucet pays no relayer fee, so the parser rejects
     // a non-zero advice feeAmount; parity-pinned against the MASM const.
@@ -250,8 +246,17 @@ pub fn err_min_burn_below_floor() -> MasmError {
 /// error (there are no custom burn errors: with the floor `>= 1`, a
 /// zero-amount burn rejects HERE).
 pub fn err_burn_below_min_burn_amount() -> MasmError {
-    MasmError::from_static_str("amount to be burned must exceed specified minimum burn amount")
+    MasmError::from_static_str(
+        "amount to be burned must meet or exceed specified minimum burn amount",
+    )
 }
+
+/// The standard ECDSA verifier's final trap for a signature that does not satisfy the curve
+/// equation. The faucet's own `ERR_XRESERVE_SIG_INVALID` disappeared with the `verify_bytes`
+/// migration: `attestation_verify.masm` now delegates the whole signature check to the standard
+/// `ecdsa_k256_keccak::verify_bytes`, whose own assertion is the trap a bad signature hits.
+pub static STDLIB_ECDSA_SIG_INVALID: MasmError =
+    MasmError::from_static_str("ECDSA verification failed: x(VERIFY_POINT) != SIG_R");
 
 /// Looks up an expected MASM error: faucet-owned shell errors first, then the encoding
 /// library's table (`ERR_DI_*` rows of the ratified seam mapping).
@@ -2081,8 +2086,9 @@ pub fn send_burn_note_script(
     // procedures, so note creation runs in ACCOUNT context — the STOCK wallet's `create_note`
     // (defined in `miden::standards::note::note_creator` and re-exported by the BasicWallet
     // component, so the account exposes its root) for the attachment-less stock BurnNote, and the
-    // user-installed emit helper for the single-attachment XReserveBurnNote (whose scheme-2 routing target must be reproduced so the
-    // emitted note's id == burn_note.id(); NoteId commits to attachments). The content is supplied
+    // user-installed emit helper for the XReserveBurnNote's evidence + scheme-2 routing
+    // attachments (both must be reproduced so the emitted note's id == burn_note.id(); NoteId
+    // commits to attachments). The content is supplied
     // via the advice map keyed by its commitment (`attachment_advice`, extended in
     // `try_emit_burn_note`). The returned note_idx feeds move_asset_to_note.
     let attachments: Vec<_> = burn_note.attachments().iter().collect();
@@ -2104,8 +2110,25 @@ pub fn send_burn_note_script(
             commitment = attachment.content().to_commitment(),
             scheme = attachment.attachment_scheme().as_u16(),
         ),
+        [first, second] => format!(
+            "    repeat.5 push.0 end\n\
+             \x20\x20\x20\x20push.{commitment_a}\n\
+             \x20\x20\x20\x20push.{scheme_a}\n\
+             \x20\x20\x20\x20push.{{recipient}}\n\
+             \x20\x20\x20\x20push.{{note_type}}\n\
+             \x20\x20\x20\x20push.{{tag}}\n\
+             \x20\x20\x20\x20call.emit_helper::emit_note_with_attachment\n\
+             \x20\x20\x20\x20dup\n\
+             \x20\x20\x20\x20push.{commitment_b}\n\
+             \x20\x20\x20\x20push.{scheme_b}\n\
+             \x20\x20\x20\x20call.emit_helper::add_note_attachment\n",
+            commitment_a = first.content().to_commitment(),
+            scheme_a = first.attachment_scheme().as_u16(),
+            commitment_b = second.content().to_commitment(),
+            scheme_b = second.attachment_scheme().as_u16(),
+        ),
         other => panic!(
-            "send_burn_note_script emits a 0- or 1-attachment burn note, got {}",
+            "send_burn_note_script emits a burn note with up to two attachments, got {}",
             other.len()
         ),
     };

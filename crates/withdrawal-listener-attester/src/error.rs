@@ -241,7 +241,7 @@ impl core::error::Error for ListenerError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DecodeError {
-    /// The `NoteStorage.items` felts are not a well-formed burn payload — a felt count other than
+    /// The evidence-attachment payload felts are not a well-formed burn payload — a felt count other than
     /// `BURN_NOTE_ITEMS_FELTS = 18`, an out-of-range `amount`/`destDomain`, or a non-`u32` bytes32
     /// limb.
     ///
@@ -475,7 +475,7 @@ pub enum DiscoveryReject {
     /// a note Circle cannot see is refused rather than attested to.
     PrivateNoteUnobservable,
 
-    /// The note came back public and tagged, but its `NoteStorage.items` payload or its
+    /// The note came back public and tagged, but its evidence-attachment payload or its
     /// `metadata.sender` did not decode — the shared encoding crate's codec's / sender read's
     /// verdict, carried through UNFLATTENED as the preserved [`DecodeError`]
     /// (`preserve-error-source`).

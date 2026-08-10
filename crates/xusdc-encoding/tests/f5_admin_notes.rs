@@ -478,11 +478,11 @@ async fn pause_note_args_are_inert() -> Result<()> {
 // ================================================================================================
 
 /// A production faucet paused by a SEEDED DOM_PAUSER pause note (brought up on-chain), so an unpause
-/// tx has a 1 -> 0 `is_paused` transition to observe. Placeholder PUBLIC routing target (routing-only).
+/// tx has a 1 -> 0 `is_paused` transition to observe. The routing target must be the faucet itself:
+/// the stock config-note script asserts the attachment target equals the consuming account.
 async fn paused_faucet() -> Result<(MockChain, AccountId)> {
-    let route = test_faucet_id(1);
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| {
-        vec![stock_pause_note(test_account_id(2), route, 60)
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, faucet_id| {
+        vec![stock_pause_note(test_account_id(2), faucet_id, 60)
             .expect("building the seeded pause note")]
     })
     .context("building the production faucet with a seeded pause")?;

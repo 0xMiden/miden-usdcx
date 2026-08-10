@@ -775,10 +775,13 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S9: metadata.sender == depositor"
     );
     assert_eq!(
-        decode_burn_note_items(burn_note.recipient().storage().items())
-            .expect("S9: DC-7 items decode"),
+        decode_burn_note_items(
+            &XReserveBurnNote::evidence_items(&burn_note)
+                .expect("S9: the burn note carries the evidence attachment"),
+        )
+        .expect("S9: DC-7 items decode"),
         items,
-        "S9: NoteStorage.items carries the exact DC-7 payload"
+        "S9: the evidence attachment carries the exact DC-7 payload"
     );
     let burn_asset = FungibleAsset::new(faucet_id, BURN_OK)?;
     let emit = try_emit_burn_note(

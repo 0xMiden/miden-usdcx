@@ -24,14 +24,16 @@ mod support;
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::auth::AuthScheme;
 use miden_protocol::asset::{AssetAmount, FungibleAsset};
-use miden_protocol::note::{NoteTag, NoteType};
+use miden_protocol::note::{NoteAttachmentScheme, NoteTag, NoteType};
 use miden_protocol::transaction::RawOutputNote;
 use miden_protocol::{Felt, Word};
 use miden_standards::code_builder::CodeBuilder;
 use miden_testing::{Auth, MockChain};
 use miden_tx::LocalTransactionProver;
 use support::*;
-use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
+use xusdc_encoding::note::xreserve_burn::{
+    XReserveBurnNote, FIXED_XUSDC_BURN_TAG, XUSDC_BURN_EVIDENCE_ATTACHMENT_SCHEME,
+};
 use xusdc_encoding::vectors::load;
 use xusdc_encoding::xreserve::encoding::{
     decode_burn_note_items, encode_burn_note_items, XReserveBurnItems,
@@ -63,8 +65,8 @@ fn sample_items(amount: u64) -> XReserveBurnItems {
     }
 }
 
-/// Emits a real `XReserveBurnNote` on a MockChain and returns the `NoteStorage.items` of the note
-/// as it actually landed on-chain.
+/// Emits a real `XReserveBurnNote` on a MockChain and returns the evidence-attachment payload of
+/// the note as it actually landed on-chain.
 ///
 /// The chain is deliberately minimal: a basic faucet and one user holding the maximum asset
 /// amount, so any amount a vector asks for can actually be moved. What comes back is the on-chain
@@ -95,10 +97,14 @@ async fn emitted_items_for(items: &XReserveBurnItems) -> anyhow::Result<Vec<Felt
         .await
         .map_err(|e| anyhow::anyhow!("emit tx0 failed: {e:?}"))?;
     let emitted = tx0.output_notes().get_note(0);
-    let recipient = emitted
-        .recipient()
-        .expect("public output note carries its full recipient");
-    Ok(recipient.storage().items().to_vec())
+    let scheme = NoteAttachmentScheme::new(XUSDC_BURN_EVIDENCE_ATTACHMENT_SCHEME)
+        .expect("the evidence attachment scheme is valid");
+    let attachment = emitted
+        .attachments()
+        .iter()
+        .find(|a| a.attachment_scheme() == scheme)
+        .expect("the emitted burn note carries the evidence attachment");
+    Ok(attachment.as_elements()[..XReserveBurnNote::EVIDENCE_PAYLOAD_FELTS].to_vec())
 }
 
 // 1 — OBSERVABILITY NON-VACUITY: Public + the exact fixed tag, asserted DIRECTLY
@@ -141,14 +147,15 @@ fn burn_note_payload_schema() {
     let note = XReserveBurnNote::create(sender, faucet, items.clone(), &mut note_rng(2))
         .expect("constructing the burn note");
 
-    // The payload sits in NoteStorage.items in the codec's field order and widths, so decoding it
-    // returns exactly what was encoded.
-    let storage_items = note.recipient().storage().items();
-    assert_eq!(storage_items.len(), 18, "DC-7 is exactly 18 felts");
-    let decoded = decode_burn_note_items(storage_items).expect("decoding DC-7 items");
+    // The payload sits in the evidence attachment in the codec's field order and widths, so
+    // decoding it returns exactly what was encoded.
+    let evidence = XReserveBurnNote::evidence_items(&note)
+        .expect("the burn note carries the evidence attachment");
+    assert_eq!(evidence.len(), 18, "DC-7 is exactly 18 felts");
+    let decoded = decode_burn_note_items(&evidence).expect("decoding DC-7 items");
     assert_eq!(
         decoded, items,
-        "NoteStorage.items decode == input items (DC-7 order)"
+        "the evidence-attachment decode == input items (DC-7 order)"
     );
 
     // NoteAssets carries the burned xUSDC FungibleAsset (amount single-sourced from items.amount).

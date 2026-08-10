@@ -17,9 +17,11 @@
 //! - The public key is different, and its packing IS fallible. Circle hands over the 33-byte
 //!   compressed SEC1 form, while the chain works with the point's affine coordinates as sixteen
 //!   field elements. Decompressing is where a malformed or off-curve key is caught — rejecting it
-//!   here is honest, since such a key could never verify on-chain either. The element order matches
-//!   miden-crypto's own affine-point conversion: the x coordinate's eight limbs followed by the y
-//!   coordinate's, each limb read big-endian, the limbs themselves in little-endian order.
+//!   here is honest, since such a key could never verify on-chain either. Both the affine packing
+//!   and the commitment below are the protocol's own `ecdsa_k256_keccak::PublicKey` conversions
+//!   rather than a local reimplementation of them, so the element order — the x coordinate's eight
+//!   limbs followed by the y coordinate's, each limb read big-endian, the limbs themselves in
+//!   little-endian order — cannot drift away from the order the chain expects.
 //! - The commitment (`PublicKey::to_commitment`) hashes those sixteen elements into the single Word
 //!   that keys the attester allowlist. It is the one routine here with an on-chain twin: the
 //!   faucet's verify recomputes the
@@ -28,9 +30,11 @@
 //!
 //! Producing the digest and running the signature check are the faucet's job, not this module's.
 
-use k256::elliptic_curve::sec1::ToEncodedPoint;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey as StockPublicKey;
+use miden_protocol::crypto::utils::Deserializable;
+use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
-use miden_protocol::{Felt, Hasher};
+use miden_protocol::Felt;
 
 use super::error::EncodingError;
 
@@ -83,10 +87,11 @@ impl Signature {
 
 /// A Circle attester's public key in Circle's 33-byte compressed SEC1 wire form.
 ///
-/// The newtype owns the two fallible conversions as methods — the affine-coordinate packing
-/// ([`PublicKey::to_affine_felts`]) and the allowlist commitment ([`PublicKey::to_commitment`]) —
-/// so this crate owns the SEC1→affine decompression seam and a caller states what the bytes ARE at
-/// the call site instead of passing a bare `[u8; 33]` around.
+/// The newtype names the Circle-facing wire form and carries the two fallible conversions as
+/// methods — the affine-coordinate packing ([`PublicKey::to_affine_felts`]) and the allowlist
+/// commitment ([`PublicKey::to_commitment`]) — so a caller states what the bytes ARE at the call
+/// site instead of passing a bare `[u8; 33]` around. Both conversions delegate to the protocol's
+/// own secp256k1 key type; this crate owns the seam, not the curve arithmetic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublicKey([u8; 33]);
 
@@ -102,53 +107,42 @@ impl PublicKey {
     }
 
     /// Decompresses the compressed SEC1 key and packs its affine coordinates into the 16 u32-LE
-    /// field elements the on-chain attestation surface consumes (`qx_le_u32[8] || qy_le_u32[8]`;
-    /// byte-order identical to miden-crypto's `affine_point_to_elements`: each 32-byte big-endian
-    /// coordinate is read as eight big-endian u32 limbs emitted least-significant-limb first).
-    /// Decompressing is where a malformed or off-curve key is caught.
+    /// field elements the on-chain attestation surface consumes (`qx_le_u32[8] || qy_le_u32[8]`:
+    /// each 32-byte big-endian coordinate read as eight big-endian u32 limbs emitted
+    /// least-significant-limb first).
     ///
     /// # Errors
     ///
     /// Returns [`EncodingError::InvalidPubkey`] if the bytes do not decode to a curve point.
     pub fn to_affine_felts(&self) -> Result<[Felt; 16], EncodingError> {
-        let point = k256::PublicKey::from_sec1_bytes(&self.0)
-            .map_err(|_| EncodingError::InvalidPubkey)?
-            .to_encoded_point(false);
-        let qx: &[u8] = point
-            .x()
-            .expect("an uncompressed point carries x")
-            .as_slice();
-        let qy: &[u8] = point
-            .y()
-            .expect("an uncompressed point carries y")
-            .as_slice();
-        let limb = |coord: &[u8], idx: usize| {
-            let start = 32 - 4 * (idx + 1);
-            u32::from_be_bytes(coord[start..start + 4].try_into().expect("4-byte chunk"))
-        };
-        Ok(core::array::from_fn(|idx| {
-            if idx < 8 {
-                Felt::from(limb(qx, idx))
-            } else {
-                Felt::from(limb(qy, idx - 8))
-            }
-        }))
+        Ok(self
+            .decompress()?
+            .to_elements()
+            .try_into()
+            .expect("an affine secp256k1 point packs to exactly 16 felts"))
     }
 
-    /// The attester-allowlist commitment key: Poseidon2 over the 16 affine pubkey felts, identical
-    /// to miden-crypto's `PublicKey::to_commitment`
-    /// (`Poseidon2::hash_elements(affine_point_to_elements())`) and to the MASM
-    /// `xreserve::attestation_verify::pubkey_commitment` the faucet recomputes; the 16-felt input
-    /// sets the sponge capacity domain tag to `16 % 8 = 0`. The commitment is the stock
-    /// [`PublicKeyCommitment`]; `Word::from(commitment)` recovers the raw `Word`.
+    /// The attester-allowlist commitment key: the stock key's own commitment, Poseidon2 over the
+    /// same 16 affine felts [`PublicKey::to_affine_felts`] returns, which is what the MASM
+    /// `xreserve::attestation_verify::pubkey_commitment` recomputes from the felts staged in the
+    /// mint note; the 16-felt input sets the sponge capacity domain tag to `16 % 8 = 0`. The
+    /// commitment is the stock [`PublicKeyCommitment`]; `Word::from(commitment)` recovers the raw
+    /// `Word`.
     ///
     /// # Errors
     ///
     /// Returns [`EncodingError::InvalidPubkey`] if the bytes do not decode to a curve point.
     pub fn to_commitment(&self) -> Result<PublicKeyCommitment, EncodingError> {
-        Ok(PublicKeyCommitment::from(Hasher::hash_elements(
-            &self.to_affine_felts()?,
-        )))
+        Ok(PublicKeyCommitment::from(
+            self.decompress()?.to_commitment(),
+        ))
+    }
+
+    /// The SEC1 decompression seam: the 33 compressed bytes read as the protocol's own secp256k1
+    /// key, which is where a malformed or off-curve key is caught — rejecting it here is honest,
+    /// since such a key could never verify on-chain either.
+    fn decompress(&self) -> Result<StockPublicKey, EncodingError> {
+        StockPublicKey::read_from_bytes(&self.0).map_err(|_| EncodingError::InvalidPubkey)
     }
 }
 

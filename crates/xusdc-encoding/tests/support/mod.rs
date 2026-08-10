@@ -961,7 +961,8 @@ pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
         .to_commitment();
 
     AttesterVector {
-        pubkey_felts: xusdc_encoding::xreserve::encoding::affine_pubkey_felts(&pk33)
+        pubkey_felts: xusdc_encoding::xreserve::encoding::PublicKey::new(pk33)
+            .to_affine_felts()
             .expect("the deterministic attester key is a valid curve point")
             .to_vec(),
         sig_felts: bytes_to_packed_u32_elements(&sig65),

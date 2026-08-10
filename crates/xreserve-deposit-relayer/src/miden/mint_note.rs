@@ -4,7 +4,7 @@
 //! The builder is thin ON PURPOSE. It bundles the attestation the relayer VALIDATED (a
 //! `ValidatedAttestation` has passed the raw-keccak digest binding and the 65-byte shape check)
 //! with the attester pubkey the OPERATOR configured, and hands both — plus the DepositIntent payload
-//! (as the typed [`DepositIntent`]) — to the shared encoding crate's typed [`XUsdcMintNote`] builder,
+//! (as the typed [`DepositIntent`](xusdc_encoding::xreserve::encoding::DepositIntent)) — to the shared encoding crate's typed [`XUsdcMintNote`] builder,
 //! which decides every byte of the note's form: the storage, the two attachments, the note type, and
 //! the script.
 //!
@@ -30,7 +30,7 @@ use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::Note;
 
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::{affine_pubkey_felts, DepositIntent};
+use xusdc_encoding::xreserve::encoding::PublicKey;
 
 use crate::circle::schema::ValidatedAttestation;
 use crate::error::{Cause, HexField, RelayerError};
@@ -48,7 +48,7 @@ const COMPRESSED_PUBKEY_LEN: usize = 33;
 /// travels inside every mint note, and the faucet checks it against `xReserveAttesters` on-chain. A
 /// typo caught at startup costs a restart; the same typo caught by the chain costs every mint until
 /// someone reads the logs. Point validity is judged by the shared encoding crate's own SEC1
-/// decompression ([`affine_pubkey_felts`], the same primitive that packs the affine felts the
+/// decompression ([`PublicKey::to_affine_felts`], the same primitive that packs the affine felts the
 /// faucet verifies) — this crate does not re-implement curve arithmetic.
 ///
 /// It is NOT an authority: an allowlisted key is one the FAUCET has in its allowlist, and only the
@@ -68,7 +68,8 @@ impl AttesterPubkey {
         // the felts are discarded: this call is here as the OWNER's validity judgement on the key,
         // not to encode anything (the encoding happens inside the shared encoding crate's note
         // factory).
-        affine_pubkey_felts(&bytes)
+        PublicKey::new(bytes)
+            .to_affine_felts()
             .map_err(|source| RelayerError::InvalidAttesterPubkey(Cause::new(source)))?;
 
         Ok(Self(bytes))
@@ -109,7 +110,9 @@ impl AttesterPubkey {
 }
 
 /// Builds the mint note for a validated Circle deposit attestation, by delegation to the shared
-/// encoding crate's typed [`XUsdcMintNote`] builder (the DepositIntent crosses as [`DepositIntent`]).
+/// encoding crate's typed [`XUsdcMintNote`] builder (the DepositIntent crosses as
+/// [`DepositIntent`](xusdc_encoding::xreserve::encoding::DepositIntent), handed over by
+/// [`ValidatedAttestation::deposit_intent`](crate::circle::schema::ValidatedAttestation::deposit_intent)).
 ///
 /// The parameters:
 ///
@@ -144,12 +147,12 @@ pub fn build_mint_note<R: FeltRng>(
 ) -> Result<Note, RelayerError> {
     let mint_attestation = MintAttestation::new(attestation.attestation(), *attester.as_bytes());
 
-    // Adopt the typed builder at the production boundary: the DepositIntent payload crosses as the
-    // typed `DepositIntent`, not a raw `&[u8]`.
+    // Adopt the typed builder at the production boundary: the Circle envelope hands over the typed
+    // `DepositIntent`, so no raw `&[u8]` crosses the ingestion boundary.
     XUsdcMintNote::builder()
         .sender(sender)
         .faucet_id(faucet_id)
-        .deposit_intent(DepositIntent::new(attestation.payload()))
+        .deposit_intent(attestation.deposit_intent())
         .attestation(&mint_attestation)
         .rng(rng)
         .build()

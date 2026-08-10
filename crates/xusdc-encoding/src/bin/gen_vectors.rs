@@ -718,7 +718,8 @@ fn main() {
             "amount_felt": felt_hex(Felt::from(amount)),
             "carried_felts": felts_hex(&carried.to_felts()),
             "rebuilt_preimage_felts": felts_hex(
-                &xusdc_encoding::xreserve::encoding::deposit_intent_to_packed_felts(&rebuilt)
+                &xusdc_encoding::xreserve::encoding::DepositIntent::new(&rebuilt)
+                    .to_packed_felts()
                     .expect("generator invariant: the rebuilt preimage packs"),
             ),
             "cite": "DC-14 + DEV-10 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
@@ -855,7 +856,7 @@ fn main() {
             "id": format!("att-{seed}"),
             "tv": ["TV-ATT-1", "TV-ATT-2", "TV-ATT-3", "TV-DUAL-5"],
             "pubkey_hex": hex_bytes(&pk),
-            "packed_felts": felts_hex(&xusdc_encoding::xreserve::encoding::affine_pubkey_felts(&pk).expect("generator keys are valid points")),
+            "packed_felts": felts_hex(&xusdc_encoding::xreserve::encoding::PublicKey::new(pk).to_affine_felts().expect("generator keys are valid points")),
             "expected_commitment": word_hex(commitment),
             "digest_hex": hex_bytes(&digest),
             "digest_felts": felts_hex(&packed(&digest)),

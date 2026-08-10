@@ -34,66 +34,56 @@ pub struct XReserveBurnItems {
 }
 
 impl XReserveBurnItems {
-    /// Encodes the payload into its `NoteStorage.items` felt layout. The method spelling of
-    /// [`encode_burn_note_items`]; byte-for-byte identical output.
+    /// Encodes `(amount, destDomain, destRecipient, salt)` into the `NoteStorage.items` felt layout
+    /// (`amount` at `[0]`, `destDomain` at `[1]`, `destRecipient` at `[2..10]`, `salt` at
+    /// `[10..18]`). Infallible: `AssetAmount::MAX = 2^63 − 2^31`, `destDomain` is a `u32`, and both
+    /// bytes32 fields pack via the shared `bytes32` codec.
     pub fn encode(&self) -> Vec<Felt> {
-        encode_burn_note_items(self)
+        let mut out = Vec::with_capacity(BURN_NOTE_ITEMS_FELTS);
+        out.push(Felt::from(self.amount)); // [0]
+        out.push(Felt::from(self.dest_domain)); // [1]
+        out.extend_from_slice(&bytes32_to_packed_felts(&self.dest_recipient)); // [2..10]
+        out.extend_from_slice(&bytes32_to_packed_felts(&self.salt)); // [10..18]
+        out
     }
 
-    /// Decodes a `NoteStorage.items` payload back into the typed struct — the method spelling of
-    /// [`decode_burn_note_items`].
+    /// Decodes a `NoteStorage.items` payload back into the typed struct — the inverse of
+    /// [`encode`](Self::encode). Fail-closed: a wrong length, an out-of-range `amount` or
+    /// `destDomain`, or a non-u32 bytes32 limb all return [`EncodingError::BurnItemsMalformed`]
+    /// (never a panic, never a generic error).
     ///
     /// # Errors
     ///
     /// Returns [`EncodingError::BurnItemsMalformed`] on any wrong length, out-of-range field, or
-    /// non-u32 limb (identical fail-closed behaviour to [`decode_burn_note_items`]).
+    /// non-u32 limb.
     pub fn decode(items: &[Felt]) -> Result<Self, EncodingError> {
-        decode_burn_note_items(items)
+        if items.len() != BURN_NOTE_ITEMS_FELTS {
+            return Err(EncodingError::BurnItemsMalformed);
+        }
+        let amount = AssetAmount::new(items[0].as_canonical_u64())
+            .map_err(|_| EncodingError::BurnItemsMalformed)?;
+        let dest_domain = u32::try_from(items[1].as_canonical_u64())
+            .map_err(|_| EncodingError::BurnItemsMalformed)?;
+        // The length was checked above, so each slice is exactly 8 felts. Unpacking goes through the
+        // shared bytes32 inverse; a limb that is not a valid u32 is reported as a malformed payload
+        // rather than being truncated into a plausible-looking address.
+        let recipient_felts: [Felt; 8] = items[2..10]
+            .try_into()
+            .expect("len == 18 ⇒ items[2..10] is exactly 8 felts");
+        let dest_recipient = packed_felts_to_bytes32(&recipient_felts)
+            .map_err(|_| EncodingError::BurnItemsMalformed)?;
+        let salt_felts: [Felt; 8] = items[10..18]
+            .try_into()
+            .expect("len == 18 ⇒ items[10..18] is exactly 8 felts");
+        let salt =
+            packed_felts_to_bytes32(&salt_felts).map_err(|_| EncodingError::BurnItemsMalformed)?;
+        Ok(Self {
+            amount,
+            dest_domain,
+            dest_recipient,
+            salt,
+        })
     }
-}
-
-/// Encodes `(amount, destDomain, destRecipient, salt)` into the `NoteStorage.items` felt
-/// layout. Infallible: `AssetAmount::MAX = 2^63 − 2^31`, `destDomain` is a
-/// `u32`, and both bytes32 fields pack via the existing `bytes32` codec.
-pub fn encode_burn_note_items(items: &XReserveBurnItems) -> Vec<Felt> {
-    let mut out = Vec::with_capacity(BURN_NOTE_ITEMS_FELTS);
-    out.push(Felt::from(items.amount)); // [0]
-    out.push(Felt::from(items.dest_domain)); // [1]
-    out.extend_from_slice(&bytes32_to_packed_felts(&items.dest_recipient)); // [2..10]
-    out.extend_from_slice(&bytes32_to_packed_felts(&items.salt)); // [10..18]
-    out
-}
-
-/// Inverse of [`encode_burn_note_items`]. Fail-closed: a wrong length, an out-of-range
-/// `amount` or `destDomain`, or a non-u32 bytes32 limb all return
-/// [`EncodingError::BurnItemsMalformed`] (never a panic, never a generic error).
-pub fn decode_burn_note_items(items: &[Felt]) -> Result<XReserveBurnItems, EncodingError> {
-    if items.len() != BURN_NOTE_ITEMS_FELTS {
-        return Err(EncodingError::BurnItemsMalformed);
-    }
-    let amount = AssetAmount::new(items[0].as_canonical_u64())
-        .map_err(|_| EncodingError::BurnItemsMalformed)?;
-    let dest_domain = u32::try_from(items[1].as_canonical_u64())
-        .map_err(|_| EncodingError::BurnItemsMalformed)?;
-    // The length was checked above, so each slice is exactly 8 felts. Unpacking goes through the
-    // shared bytes32 inverse; a limb that is not a valid u32 is reported as a malformed payload
-    // rather than being truncated into a plausible-looking address.
-    let recipient_felts: [Felt; 8] = items[2..10]
-        .try_into()
-        .expect("len == 18 ⇒ items[2..10] is exactly 8 felts");
-    let dest_recipient =
-        packed_felts_to_bytes32(&recipient_felts).map_err(|_| EncodingError::BurnItemsMalformed)?;
-    let salt_felts: [Felt; 8] = items[10..18]
-        .try_into()
-        .expect("len == 18 ⇒ items[10..18] is exactly 8 felts");
-    let salt =
-        packed_felts_to_bytes32(&salt_felts).map_err(|_| EncodingError::BurnItemsMalformed)?;
-    Ok(XReserveBurnItems {
-        amount,
-        dest_domain,
-        dest_recipient,
-        salt,
-    })
 }
 
 // TESTS — TV-BN-1..4
@@ -121,7 +111,7 @@ mod tests {
         assert!(!accept.is_empty(), "bn accept vectors present");
         for vec in accept {
             let x = vec.expected_struct();
-            let encoded = encode_burn_note_items(&x);
+            let encoded = x.encode();
             assert_eq!(encoded.len(), BURN_NOTE_ITEMS_FELTS, "{}: width", vec.id);
             assert_eq!(
                 encoded,
@@ -130,13 +120,13 @@ mod tests {
                 vec.id
             );
             assert_eq!(
-                decode_burn_note_items(&encoded).expect("round-trip decode"),
+                XReserveBurnItems::decode(&encoded).expect("round-trip decode"),
                 x,
                 "{}: decode∘encode",
                 vec.id
             );
             assert_eq!(
-                decode_burn_note_items(&vec.items_values()).expect("golden decode"),
+                XReserveBurnItems::decode(&vec.items_values()).expect("golden decode"),
                 x,
                 "{}: decode golden felts",
                 vec.id
@@ -152,7 +142,7 @@ mod tests {
     fn tv_bn_2_destination_in_items() {
         let v = load();
         for vec in v.families.bn.iter().filter(|x| x.kind == "accept") {
-            let items = encode_burn_note_items(&vec.expected_struct());
+            let items = vec.expected_struct().encode();
             let golden = vec.items_values();
             assert_eq!(items[1], golden[1], "{}: destDomain in items[1]", vec.id);
             assert_eq!(
@@ -176,7 +166,7 @@ mod tests {
     fn tv_bn_3_note_storage_placement() {
         let v = load();
         for vec in v.families.bn.iter().filter(|x| x.kind == "accept") {
-            let n = encode_burn_note_items(&vec.expected_struct()).len();
+            let n = vec.expected_struct().encode().len();
             assert_eq!(n, BURN_NOTE_ITEMS_FELTS, "{}: fixed width", vec.id);
             assert!(n <= 1024, "{}: within the NoteStorage.items bound", vec.id);
         }
@@ -199,7 +189,7 @@ mod tests {
             .find(|x| x.id == id)
             .unwrap_or_else(|| panic!("vector {id} present"));
         assert_matches!(
-            decode_burn_note_items(&vec.items_values()),
+            XReserveBurnItems::decode(&vec.items_values()),
             Err(EncodingError::BurnItemsMalformed),
             "{id}",
         );

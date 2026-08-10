@@ -26,8 +26,8 @@ use withdrawal_listener_attester::note_decode::{
 };
 use xusdc_encoding::vectors::{load, parse_hex32, BnVector};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, bytes32_to_account_id, decode_burn_note_items, encode_burn_note_items,
-    EncodingError, BURN_NOTE_ITEMS_FELTS,
+    account_id_to_bytes32, bytes32_to_account_id, EncodingError, XReserveBurnItems,
+    BURN_NOTE_ITEMS_FELTS,
 };
 
 // HELPERS
@@ -118,7 +118,7 @@ fn t_la_01_decode_is_the_unit_04_codec_by_reference() {
     for vector in accept_vectors() {
         let items = vector.items_values();
         let via_module = decode_burn_payload(&items).expect("module decode");
-        let via_codec = decode_burn_note_items(&items).expect("unit-04 decode");
+        let via_codec = XReserveBurnItems::decode(&items).expect("unit-04 decode");
         assert_eq!(
             via_module, via_codec,
             "{}: the module's payload IS the codec's",
@@ -135,7 +135,7 @@ fn t_la_01_decode_round_trips_to_the_golden_felts() {
         let golden = vector.items_values();
         let decoded = decode_burn_payload(&golden).expect("golden items decode");
         assert_eq!(
-            encode_burn_note_items(&decoded),
+            decoded.encode(),
             golden,
             "{}: re-encode reproduces the golden felts exactly",
             vector.id

@@ -91,7 +91,7 @@ pub const MINT_INTENT_HOOK_DATA_LEN_FELT_OFF: usize = MINT_INTENT_MAX_FEE_FELT_O
 pub const MINT_INTENT_FELTS: usize = 24;
 
 /// The hookData bound: the packed preimage must stay within the protocol's note-storage item
-/// limit, exactly as [`super::deposit_intent::deposit_intent_to_packed_felts`] requires. The
+/// limit, exactly as [`super::deposit_intent::DepositIntent::to_packed_felts`] requires. The
 /// faucet's staging region is sized to the same number, so a payload that passes here always fits
 /// on-chain. The exact cap Circle wants is still OPEN (`DEV-6`).
 pub const MAX_HOOK_DATA_LEN: usize =
@@ -507,7 +507,8 @@ mod tests {
             let rebuilt =
                 carried.to_deposit_intent_bytes(vec.amount(), vec.remote_domain, vec.faucet_id());
             assert_eq!(
-                super::super::deposit_intent::deposit_intent_to_packed_felts(&rebuilt)
+                DepositIntent::new(&rebuilt)
+                    .to_packed_felts()
                     .expect("the rebuilt preimage packs"),
                 vec.rebuilt_preimage_values(),
                 "vector {}: rebuilt preimage felts",

@@ -36,7 +36,7 @@ use withdrawal_listener_attester::validate::{
     validate_discovery, DiscoveredBurn, DiscoveredDetails, DiscoveryRecord,
 };
 use withdrawal_listener_attester::withdrawal_api::build_prepare_request;
-use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, encode_burn_note_items};
+use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
 
 // ================================================================================================
 // FIXTURES
@@ -108,7 +108,7 @@ fn discovered_burn(
     let record = DiscoveryRecord::new(
         cfg.burn_tag(),
         Some(DiscoveredDetails::from_raw_sender(
-            encode_burn_note_items(payload),
+            payload.encode(),
             prefix,
             suffix,
         )),

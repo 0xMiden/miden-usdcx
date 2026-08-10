@@ -1,16 +1,11 @@
 # xreserve_set_attester_note — the root-pinned set_attester admin note script.
 #
 # The admin surface for `set_attester` under the network account: a fixed-root note whose parameters
-# are CREATOR-COMMITTED in note storage. It binds the note to its target faucet, stages the note
-# storage into memory, marshals the creator's params onto the stack in the proc's Inputs order, and
-# `call`s the `ADMIN`-role-gated `attester_admin::set_attester` (the sender gate lives in the proc;
-# the note sender is kernel-forced, so a creator without the `ADMIN` role traps there).
-#
-# The scheme-2 NetworkAccountTarget attachment the note carries is enforced here as a CONSUME GATE,
-# not merely routing metadata: the standard
-# `network_account_target::active_account_matches_target_account` requires the consuming account to
-# be the attachment's target, so a foreign account exposing the same procedure cannot race-consume
-# the routed note and nullify it (the same binding the standard network-account config notes apply).
+# are CREATOR-COMMITTED in note storage. It stages the note storage into memory, marshals the
+# creator's params onto the stack in the proc's Inputs order, and `call`s the `ADMIN`-role-gated
+# `attester_admin::set_attester` (the sender gate lives in the proc; the note sender is
+# kernel-forced, so a creator without the `ADMIN` role traps there). The scheme-2
+# NetworkAccountTarget attachment binds the note to the faucet, enforced as a consume gate.
 #
 # Note storage layout (5 felts): [pk_commitment(4), enabled]. `enabled` is 1 (allowlist) or 0 (remove).
 
@@ -38,9 +33,8 @@ const ERR_XRESERVE_SET_ATTESTER_NOTE_WRONG_FAUCET = "set_attester note is not bo
 
 #! Consumes the `set_attester` admin note and drives the `ADMIN`-role-gated attester-allowlist write.
 #!
-#! Enforces that the consuming account is the note's NetworkAccountTarget, stages the
-#! creator-committed params (`[pk_commitment(4), enabled]`) into memory at address zero, marshals
-#! them onto the stack as `[PK_COMMITMENT, enabled, pad(11)]`, and `call`s
+#! Stages the creator-committed params (`[pk_commitment(4), enabled]`) into memory at address zero,
+#! marshals them onto the stack as `[PK_COMMITMENT, enabled, pad(11)]`, and `call`s
 #! `attester_admin::set_attester`.
 #!
 #! Requires that the account exposes:
@@ -57,8 +51,7 @@ const ERR_XRESERVE_SET_ATTESTER_NOTE_WRONG_FAUCET = "set_attester note is not bo
 #! - enabled is 1 (allowlist: write the enabled marker) or 0 (remove: write EMPTY_WORD) (item 4).
 #!
 #! Panics if:
-#! - the consuming account is not the note's NetworkAccountTarget (a foreign consumer), or the
-#!   target attachment is missing/malformed.
+#! - the consuming account is not the note's NetworkAccountTarget attachment target.
 #! - the note storage does not carry exactly 5 items.
 #! - the note sender does not hold the `ADMIN` role (attester_admin::set_attester's authority gate).
 #!
@@ -68,8 +61,7 @@ pub proc main
     dropw
     # => [pad(16)]
 
-    # faucet binding: enforce the note's scheme-2 NetworkAccountTarget attachment as a consume gate,
-    # so a foreign account cannot race-consume this routed note.
+    # faucet binding: only the attachment's target faucet may consume this note.
     exec.network_account_target::active_account_matches_target_account
     assert.err=ERR_XRESERVE_SET_ATTESTER_NOTE_WRONG_FAUCET
     # => [pad(16)]

@@ -69,7 +69,11 @@ impl XReserveAdminAuthority {
             ),
             (BlocklistManager::unblock_account_root(), blocklist_manager),
         ]);
-        debug_assert_eq!(
+        // A hard assert, not a debug_assert: a root collision would silently drop a role mapping
+        // from the map and mis-gate an admin procedure, so an unexpected collision must fail loud
+        // in release builds too. The roots are pinned stock-manager MAST roots, so this can only
+        // fire on a protocol-pin change that collapses two of them.
+        assert_eq!(
             procedure_roles.len(),
             ROLE_GATED_PROCEDURE_COUNT,
             "the four manager procedures must be four distinct roots",

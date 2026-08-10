@@ -29,7 +29,7 @@ A unit is not eligible for human review until all of these are green (a green bu
 ## G1 — Single ownership / no duplication (per language + cross-language conformance)
 - Each owned routine in `CANONICAL-OWNERSHIP-MAP.md`: **≤ 1 MASM implementation** and **≤ 1 Rust implementation**, both conforming to the canonical byte/felt contract, **cross-checked by ONE canonical golden-vector artifact owned by shared-encoding(04)** (loaded by reference on both sides — see the map's Anti-duplication rule; a duplicate vector table also fails this scan).
 - A second within-language definition of an owned thing — **even byte-identical** — fails (this is the cross-language drift seam: the relayer's off-chain mirror must conform to and be pinned to the 04 owner, not re-derived).
-- Mechanical check: no duplicate definition of an owned routine outside its single per-language home (e.g., a second MASM `deposit_intent_parser::parse` proc, or a second Rust DepositIntent decoder). Wrappers that merely re-expose an owned routine also fail.
+- Mechanical check: no duplicate definition of an owned routine outside its single per-language home (e.g., a second MASM DepositIntent writer, or a second Rust DepositIntent decoder). Wrappers that merely re-expose an owned routine also fail.
 - **Cross-language constant parity (`masm-rust-constant-parity`):** the DC-1 layout offsets, packed magic `0x5a2e0acd`, and DC-5 cap/scale are MASM↔Rust constant pairs. Prefer `build.rs` codegen or change both sides in one unit and cross-check through canonical vectors. A one-sided constant edit fails this gate.
 
 ## G2 — Ownership map is the source of truth for boundaries
@@ -37,7 +37,7 @@ A unit is not eligible for human review until all of these are green (a green bu
 
 ## G3 — Module/file size + structure
 - Default file ceiling **~500–700 lines** for Rust. Split `.masm` logically by routine family rather than by a guessed line count.
-- **D-1A module-realization rule:** procs whose canonical path is flat `xreserve::encoding::<name>` must live in `encoding/mod.masm`; per-file `.masm` files create nested module paths and wrapper aliases are banned.
+- **D-1A module-realization rule:** one module per WIRE FORM directly under `asm/standards/xreserve/`, holding that format's constants and the procedures that realize them; no owner-grouping directory, and wrapper aliases are banned.
 - Tests live in their **own module/file**, not inline with implementation.
 
 ## G4 — Test discipline (happy path first)
@@ -54,7 +54,7 @@ The off-chain harness/tooling crates (relayer, listener, monitor, MASM loaders, 
 - **`return-error-not-panic` + `preserve-error-source` + `lowercase-error-messages` — MANDATORY on any code reachable from Circle/RPC/note input** (the relayer DepositIntent pre-validate, the listener JSON / burn-evidence decode, `AccountId↔bytes32`): surface failures as a typed `Result` — **no `unwrap`/`expect`/`panic!`/`unwrap_or_default` on external-derived data**; a missing required input is an error (never default-fabricated); preserve the source chain (`#[source]`/`#[from]`, no `.to_string()` flattening); lowercase, un-punctuated messages. A relayer/listener that panics or default-fabricates on a malformed Circle payload is a DoS and can mask a divergence from the 04 owner.
 
 ## G5 — Reality grounds the spec
-- **Naming decisions are binding.** **NS-1** → canonical MASM proc `xreserve::encoding::bytes32_to_key` (do not add a MASM alias); **NS-2** → the DepositIntent parser is **01-owned `xreserve::deposit_intent_parser::parse`**, while 04 owns the layout and multi-consumer encoding primitives. **DC-7** ships as the Rust burn-note codec at `encoding/burn_note.rs`; there is no `burn_items.masm`. Any future unadjudicated split in the ownership map is a STOP condition: the builder must return to the human with no silent pick, dual name, or local alias.
+- **Naming decisions are binding.** **NS-1** (amended three times) → canonical MASM proc `xreserve::mint_intent::hash_nonce` (do not add a MASM alias); **NS-2** is retired and **NS-3** replaces it → the on-chain DepositIntent realization is **01-owned `xreserve::deposit_intent::rebuild`**, a writer rather than a parser, while 04 still owns the layouts and the shared codecs. **DC-7** ships as the Rust burn-note codec at `encoding/burn_note.rs`; there is no `burn_items.masm`. Any future unadjudicated split in the ownership map is a STOP condition: the builder must return to the human with no silent pick, dual name, or local alias.
 - **Code wins over spec.** If running MASM/Rust cannot match the spec (a felt count, a Word layout, an RPC semantic that real `protocol`/`miden-vm`/node contradicts), the builder **STOPS and reports the contradiction** — it does not force code to fit a wrong spec, and does not silently diverge. The human decides whether to correct the frozen archive.
 - **No hand-wavy Miden fake in a gating test.** A speed-only adapter fake is allowed only if labelled NON-GATING and paired with a real MockChain / local-node / source-backed check.
 - **No local-node skip** after MockChain passes (where the unit touches notes/RPC/lifecycle).

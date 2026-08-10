@@ -29,13 +29,17 @@
 
 use k256::ecdsa::signature::hazmat::PrehashVerifier;
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey, VerifyingKey};
+use miden_protocol::account::{AccountId, AccountIdVersion, AccountType, AssetCallbackFlag};
 use miden_protocol::{Hasher, Word};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use sha3::{Digest, Keccak256};
 
-use xusdc_encoding::vectors::load;
-use xusdc_encoding::xreserve::encoding::{deposit_intent_to_packed_felts, pubkey_commitment};
+use xusdc_encoding::vectors::{load, MiVector};
+use xusdc_encoding::xreserve::encoding::{
+    deposit_intent_to_packed_felts, pubkey_commitment, DepositIntent, MintIntent,
+    MINT_INTENT_SCALE_EXP,
+};
 
 /// Seed of the partner-held attester key. Deliberately distinct from the seeds the canonical
 /// `att-*` artifact vectors use, so this key is unmistakably the RELAYER-side test key and can
@@ -55,28 +59,51 @@ pub const FOREIGN_KEY_SEED: u64 = 0x464f_5245_4947_4e00; // "FOREIGN\0"
 pub const PARTNER_PUBKEY_HEX: &str =
     "03a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3f";
 
+/// The Miden destination domain this suite's payloads are addressed to, and the domain the mock
+/// Circle advertises. **Placeholder — the Miden domain id is OPEN (`REQUIRES CIRCLE
+/// CONFIRMATION`).** The mint-note factory needs it because the faucet stamps its own configured
+/// domain into the message it rebuilds, so a note built for the wrong one could only ever fail as a
+/// bad signature.
+pub const TEST_REMOTE_DOMAIN: u32 = 10001;
+
+/// The xUSDC faucet every relayer slice mints at — a PUBLIC (network) account, because the mint
+/// note's scheme-2 routing attachment can bind nothing else.
+///
+/// It lives here rather than beside the other test account ids because the fixture PAYLOADS are
+/// addressed to it: `DC-14` binds `remoteToken` to the faucet, so the id and the payload have to
+/// come from one place or the compress step refuses every vector.
+pub fn faucet_id() -> AccountId {
+    AccountId::dummy(
+        [0x22; 15],
+        AccountIdVersion::Version1,
+        AccountType::Public,
+        AssetCallbackFlag::Disabled,
+    )
+}
+
 /// The canonical DepositIntent payload the standard [`test_vector`] is built over: the golden
-/// artifact's `di-pos-hookdata` vector (a full 240-byte header + hookData). Taken from the ONE
-/// artifact that drives the shared encoding crate's MASM and Rust tests — never a hand-rolled blob.
-pub const TEST_VECTOR_PAYLOAD_ID: &str = "di-pos-hookdata";
+/// artifact's `mi-pos-hookdata` vector (a full 240-byte header + hookData), re-addressed to this
+/// suite's faucet and domain by [`canonical_payload`]. Taken from the ONE artifact that drives the
+/// shared encoding crate's MASM and Rust tests — never a hand-rolled blob.
+pub const TEST_VECTOR_PAYLOAD_ID: &str = "mi-pos-hookdata";
 
 /// [`test_vector`]'s `messageHash` — `keccak256` of the canonical payload, PINNED.
 pub const TEST_VECTOR_MESSAGE_HASH_HEX: &str =
-    "ba850d3332cd70d52106b9f2b50d93a3a43e0dc554a46ed96e44e25e7c428616";
+    "8e24efc812c0bb48f307270843c0f0f6b09b25d0328687c4ce4d2173b9a8a198";
 
 /// [`test_vector`]'s 65-byte `r‖s‖v`, PINNED. secp256k1 signing here is RFC 6979 DETERMINISTIC, so
 /// this is a fixed value — an independent golden pin on the whole chain (key → raw-keccak digest →
 /// signing convention). It moves only if one of those changes, which is exactly when every later
 /// slice reusing this vector needs to know.
 pub const TEST_VECTOR_ATTESTATION_HEX: &str = concat!(
-    "13315898a24ab93391c836414daa9b99c9c45bcb7047e45a79443cc0b811c566", // r
-    "40b5c31465e572c0e38ea56deafb60dbc1fb95709e190476d666d916ce403e6f", // s
+    "1f3dfce199935983b468a86f0282db1fc683d6ebd0d4a3ec3a5de0611ac7f026", // r
+    "23f373ffa40c3d03f9f74869169fda27cf0a3adaa099003065aa619ad53b67e3", // s
     "00",                                                               // v (recovery id)
 );
 
 /// The canonical DepositIntent payload with EMPTY hookData — the second shape (240 bytes exactly),
 /// for slices that need a boundary-length payload.
-pub const TEST_VECTOR_PAYLOAD_ID_EMPTY_HOOKDATA: &str = "di-pos-empty-hookdata";
+pub const TEST_VECTOR_PAYLOAD_ID_EMPTY_HOOKDATA: &str = "mi-pos-empty-hookdata";
 
 /// keccak256 (original Keccak, NOT NIST SHA3-256) — the digest family the attestation is taken
 /// over. Mirrors the shared encoding crate's `att_keccak256`.
@@ -87,7 +114,15 @@ pub fn keccak256(msg: &[u8]) -> [u8; 32] {
 }
 
 /// Fetches a canonical DepositIntent payload from the golden artifact by vector id.
+///
+/// A `mi-*` id is a `DC-14`-shaped payload and comes back re-addressed to [`faucet_id`] and
+/// [`TEST_REMOTE_DOMAIN`] (see [`mint_payload_for`]). A `di-*` id is the older, unshaped form and
+/// comes back verbatim — those vectors exist to exercise the structural parse, which runs before
+/// the compress step ever looks at the addressing.
 pub fn canonical_payload(id: &str) -> Vec<u8> {
+    if let Some(vector) = mi_vector(id) {
+        return mint_payload_for(vector, faucet_id(), TEST_REMOTE_DOMAIN);
+    }
     load()
         .families
         .di
@@ -95,6 +130,40 @@ pub fn canonical_payload(id: &str) -> Vec<u8> {
         .find(|v| v.id == id)
         .unwrap_or_else(|| panic!("canonical DI vector `{id}` present in the artifact"))
         .bytes()
+}
+
+/// The canonical `mi-*` accept vector by id, or `None` if the id names no such vector.
+pub fn mi_vector(id: &str) -> Option<&'static MiVector> {
+    load().families.mi.iter().find(|v| v.id == id)
+}
+
+/// A canonical `mi-*` accept payload re-addressed to `faucet` and `remote_domain`.
+///
+/// The artifact's synthetic faucet is a PRIVATE account and a network mint note can only be routed
+/// at a public one, so no relayer slice can use those vectors verbatim. Re-addressing runs through
+/// the owned codec in both directions — compress under the vector's own faucet and domain, expand
+/// under the ones asked for — so what comes back is still the encoding crate's bytes rather than a
+/// payload rewritten here.
+pub fn mint_payload_for(vector: &MiVector, faucet: AccountId, remote_domain: u32) -> Vec<u8> {
+    let payload = vector.payload();
+    let intent = DepositIntent::new(&payload);
+    let amount = intent
+        .parse_header()
+        .expect("the canonical mi vector is a structurally valid deposit intent")
+        .reduced_amount(MINT_INTENT_SCALE_EXP)
+        .expect("the canonical mi vector's amount is mintable");
+
+    MintIntent::from_deposit_intent(&intent, vector.faucet_id())
+        .expect("the canonical mi accept vector compresses under its own faucet")
+        .to_deposit_intent_bytes(amount, remote_domain, faucet)
+}
+
+/// [`canonical_payload`] for an `mi-*` id, addressed to a faucet other than [`faucet_id`] — for the
+/// slices that prove the faucet argument really drives the note.
+pub fn canonical_payload_addressed_to(id: &str, faucet: AccountId) -> Vec<u8> {
+    let vector =
+        mi_vector(id).unwrap_or_else(|| panic!("canonical MI vector `{id}` in the artifact"));
+    mint_payload_for(vector, faucet, TEST_REMOTE_DOMAIN)
 }
 
 /// Lower-case hex, no `0x` prefix (the bare form; the wire form is produced by [`with_0x`]).
@@ -245,9 +314,26 @@ impl AttestationVector {
 }
 
 /// THE test vector every later slice reuses: the partner key's attestation over the canonical
-/// `di-pos-hookdata` DepositIntent payload.
+/// `mi-pos-hookdata` DepositIntent payload, addressed to this suite's faucet.
 pub fn test_vector() -> AttestationVector {
     PartnerAttester::new().attest(&canonical_payload(TEST_VECTOR_PAYLOAD_ID))
+}
+
+/// The canonical payload with a hookData tail past the `NoteStorage` felt bound — `DC-14`-shaped
+/// and correctly addressed in every other respect, so a build over it reaches the hookData bound
+/// rather than tripping an addressing check first.
+///
+/// The tail is grown on the canonical payload rather than composed from scratch: `MintIntent`
+/// refuses to hold an over-long hookData at all, so the owned writer cannot produce this shape and
+/// only the declared length plus the appended bytes are touched here.
+pub fn oversized_hook_data_payload() -> Vec<u8> {
+    // 60 header felts + ⌈len/4⌉ hookData felts must exceed the 1024-felt NoteStorage bound
+    let hook_data_len = (1024 - 60) * 4 + 4;
+    let mut payload = canonical_payload(TEST_VECTOR_PAYLOAD_ID_EMPTY_HOOKDATA);
+    let hook_data_len_off = payload.len() - 4;
+    payload[hook_data_len_off..].copy_from_slice(&(hook_data_len as u32).to_be_bytes());
+    payload.extend(std::iter::repeat_n(0xab, hook_data_len));
+    payload
 }
 
 // THE SIGNATURE ORACLE — test-only ECDSA verification

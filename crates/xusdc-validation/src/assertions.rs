@@ -144,7 +144,7 @@ fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &st
     );
 
     // The identifier is BOUND to the faucet identity: the `identifier_init` note derives it from the
-    // faucet's OWN id (`identifier_for(faucet_id)` = `bytes32_to_key(account_id_to_bytes32(faucet_id))`,
+    // faucet's OWN id (`identifier_for(faucet_id)` = `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))`,
     // the own-id fixpoint), NOT from any caller-chosen `params` value (the R2 identifier-binding fix;
     // the deployed-faucet re-check in `sanity` enforces the SAME key). So the expected identifier is
     // derived from `account.id()`, not `params.identifier_word()`.

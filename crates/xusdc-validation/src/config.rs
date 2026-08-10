@@ -54,7 +54,7 @@ pub struct DomainParams {
 }
 
 impl DomainParams {
-    /// The LEGACY vector-token identifier as the canonical `bytes32_to_key` Word. NOT the faucet's
+    /// The LEGACY vector-token identifier as the canonical `bytes32_to_storage_map_key` Word. NOT the faucet's
     /// actual identifier (that is the own-id fixpoint `identifier_for(faucet_id)`, derived at init) —
     /// retained only for record/fixture completeness; the fresh-init assertions compute the own-id
     /// key from `account.id()` directly.

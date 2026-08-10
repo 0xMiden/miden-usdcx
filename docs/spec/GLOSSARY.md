@@ -27,26 +27,50 @@ Numbered conditions the mint path enforces; a violation traps the transaction wi
 change. Several are asserted on by name in the tests. `R-MINT-1..8` cover structural and
 addressing checks; `R-MINT-9..11` amount and fee checks; `R-MINT-12` replay protection;
 `R-MINT-13..14` attestation checks; `R-MINT-15` the supply-cap check; and `R-MINT-16` the
-stock-mint-path denial.
+stock-mint-path denial. The third column records *how* each condition is enforced after `DC-14`:
+several are no longer compares the faucet performs but states the faucet's own writing makes
+unreachable.
 
-| Id | Condition enforced |
-|---|---|
-| R-MINT-1 | DepositIntent `magic` matches the expected constant. |
-| R-MINT-2 | DepositIntent `version` matches the supported version (1). |
-| R-MINT-3 | `amount` field is non-zero. |
-| R-MINT-4 | `localToken` field is non-zero. |
-| R-MINT-5 | `localDepositor` field is non-zero. |
-| R-MINT-6 | DepositIntent `remoteDomain` equals the faucet's configured domain. |
-| R-MINT-7 | DepositIntent `remoteToken` (hashed to a key) equals the faucet's configured identifier key. |
-| R-MINT-8 | Total preimage length equals `240 + hookDataLen` (header + hookData). |
-| R-MINT-9 | Reduced `amount`/`maxFee`/`feeAmount` fit ≤ 2^128 (high four limbs zero) — else "too large". |
-| R-MINT-10 | Reduced `amount ≥ maxFee`. |
-| R-MINT-11 | Reduced `feeAmount ≤ maxFee` (in the MVP this is subsumed by the fee-must-be-zero gate). |
-| R-MINT-12 | The DepositIntent `nonce` has not been used before (replay guard). |
-| R-MINT-13 | The attester's pubkey commitment is enabled in the `xReserveAttesters` allowlist. |
-| R-MINT-14 | The ECDSA signature verifies over `keccak256(payload)` for that pubkey. |
-| R-MINT-15 | `token_supply + amount ≤ max_supply` and `max_supply ≤ AssetAmount::MAX` (supply cap). |
-| R-MINT-16 | The stock `mint_and_send` path is denied — only the custom `xreserve_mint` may raise supply. |
+| Id | Condition enforced | How it is enforced (see *Enforcement by construction* below) |
+|---|---|---|
+| R-MINT-1 | DepositIntent `magic` matches the expected constant. | by construction — the faucet writes it |
+| R-MINT-2 | DepositIntent `version` matches the supported version (1). | by construction — the faucet writes it |
+| R-MINT-3 | `amount` field is non-zero. | direct reject, `ERR_XRESERVE_MINT_ZERO_AMOUNT` |
+| R-MINT-4 | `localToken` field is non-zero. | subsumed by R-MINT-14 |
+| R-MINT-5 | `localDepositor` field is non-zero. | subsumed by R-MINT-14 |
+| R-MINT-6 | DepositIntent `remoteDomain` equals the faucet's configured domain. | by construction — written from the domain config slot |
+| R-MINT-7 | DepositIntent `remoteToken` equals the faucet's own account id. | by construction — written from `native_account::get_id` |
+| R-MINT-8 | Total preimage length equals `240 + hookDataLen` (header + hookData). | direct reject, unchanged (the exact transport word-count binding) |
+| R-MINT-9 | `amount` / `maxFee` are representable as an `AssetAmount`. | `maxFee`: off-chain typed reject at compress time, since it cannot be carried otherwise. `amount`: a direct on-chain reject against the protocol's `FUNGIBLE_ASSET_MAX_AMOUNT`, because it comes from the note rather than the payload |
+| R-MINT-10 | `amount ≥ maxFee`. | direct reject, unchanged (now a felt compare) |
+| R-MINT-11 | `feeAmount ≤ maxFee` (MVP: the fee must be zero). | inexpressible — `feeAmount` no longer travels on the wire at all |
+| R-MINT-12 | The DepositIntent `nonce` has not been used before (replay guard). | direct reject, unchanged |
+| R-MINT-13 | The attester's pubkey commitment is enabled in the `xReserveAttesters` allowlist. | direct reject, unchanged |
+| R-MINT-14 | The ECDSA signature verifies over `keccak256(payload)` for that pubkey. | direct reject, unchanged |
+| R-MINT-15 | `token_supply + amount ≤ max_supply` and `max_supply ≤ AssetAmount::MAX` (supply cap). | direct reject, unchanged (stock-owned) |
+| R-MINT-16 | The stock `mint_and_send` path is denied — only the custom `xreserve_mint` may raise supply. | superseded by the Wave-1 recomposition (the stock path IS the gated path) |
+
+### Enforcement by construction, and what it costs
+
+Under `DC-14` the faucet no longer reads Circle's DepositIntent off the wire — it **rebuilds** the
+signed message from the note's mint intent plus its own state. A field the faucet writes cannot be
+wrong: a divergent value produces a different keccak digest, so the attestation refuses it. Six
+conditions above therefore stop being compares.
+
+The cost is that they stop being *distinguishable*. A wrong domain, a wrong target faucet, a
+mismatched amount and a misplaced field in the writer now all surface as the same
+`ERR_XRESERVE_SIG_INVALID`. Every "by construction" and "subsumed" row above is consequently held
+by a **pair** of tests, and neither half alone discharges it:
+
+| Half | What it proves | Where |
+|---|---|---|
+| the e2e row | the mint fails closed — signature reject, nonce unburned, supply unraised | `mint_policy_e2e.rs`, `mint_policy_binding_e2e.rs` |
+| the placement row | the writer puts *that* field at *that* offset, so the reject is the intended one | the per-field case in `rebuild_places_each_carried_field`, `masm_mint_shell.rs` |
+
+Diagnosability regresses accordingly: during an incident the on-chain error no longer localizes the
+cause. The mitigation is off-chain — the relayer pre-validates with the Rust mirror
+(`MintIntent::from_deposit_intent`), which rejects each of these with its own typed error and
+should never submit such a note.
 
 ## Burn reject conditions — `R-BURN-<n>`
 
@@ -139,19 +163,21 @@ Codec decisions owned by the `xusdc-encoding` crate (`xreserve::encoding`).
 | DC-8 | Burn-evidence package assembly (`burnTxId` + `note_id` + `nullifier` + `block_num` + proof-strength labels). Owned by the off-chain **listener**, not this crate. |
 | DC-9 / DC-10 / DC-11 / DC-12 | Circle JSON request/response schema types (off-chain Rust type definitions). Not on-chain. |
 | DC-13 | Optional decoders for Circle-returned binary blobs (`TransferSpec`/`BurnIntent`/`WithdrawHookData`); off-chain validation only, non-gating. |
+| DC-14 | The mint-note carried payload and the on-chain reconstruction of the DepositIntent preimage. The note carries only what the faucet cannot derive — `nonce`, `localToken`, `localDepositor`, `remoteRecipient`, `maxFee`, `hookDataLen` and `hookData`; the faucet writes `magic`, `version`, `amount` (from the note's asset value), `remoteDomain` (from its config slot), `remoteToken` (from its own id) and a zero `feeAmount` into the canonical `240 + hookDataLen`-byte preimage before hashing. Owned by the faucet (01); the felt offsets are 04's (`mint_intent.masm`). Requires `DEPOSIT_SCALE_EXP == 0` and a 20-byte right-aligned EVM address in `localToken` / `localDepositor` — see `DEV-5` and `Q-EVM-ADDR-1`, both **OPEN**. |
 
 ## Naming decisions — `NS-<n>`
 
 | Id | Decision |
 |---|---|
-| NS-1 | The canonical bytes32→key MASM procedure is `xreserve::encoding::bytes32_to_key`; the Rust routine is `bytes32_to_storage_map_key`. |
-| NS-2 | The canonical DepositIntent parser is `xreserve::deposit_intent_parser::parse`, in the same module as the mint preconditions it feeds. The encoding module keeps the multi-consumer primitives. |
+| NS-1 | The canonical bytes32→key MASM procedure is `xreserve::mint_intent::hash_nonce`; the Rust routine is `bytes32_to_storage_map_key`. |
+| NS-2 | **Retired** (see the ownership map). The on-chain DepositIntent parser is gone: the faucet writes the message rather than reading it. |
+| NS-3 | The canonical on-chain DepositIntent realization is `xreserve::deposit_intent::rebuild`; the `DC-5` reducer moved to the same module when `xreserve::encoding` was dissolved. The nonce hash went to `xreserve::mint_intent` instead, with the admissibility checks that read it (NS-1, amended three times). |
 
 ## Module-layout & implementation decisions
 
 | Id | Decision |
 |---|---|
-| D-1A | The module-realization rule: the flat-named `xreserve::encoding::<name>` procedures live in the directory-module root `encoding/mod.masm` (a per-proc `.masm` file would force a nested module path). |
+| D-1A | The module-realization rule: one module per WIRE FORM directly under `asm/standards/xreserve/`, each holding that format's constants and the procedures that realize them. No owner-grouping directory — ownership is a column in the map, not a path segment. |
 | D-5 | The `AccountId ↔ bytes32` codec (`DC-6`) is Rust-primary — there is no MASM procedure for it in the encoding module (`account_id.rs`). |
 | IMPL-ACCOUNTID-LAYOUT | The shipped AccountId-in-bytes32 packaging (the right-aligned "R-B" layout: 16 zero bytes ‖ prefix u64 BE ‖ suffix u64 BE); see `DEV-10` / `DC-6`. Provisional, pending Circle confirmation. |
 
@@ -198,6 +224,7 @@ Beyond these, `Q-<...>` labels in comments/fixtures mark a value or choice as aw
 - `Q-ADMIN-1` — is the canonical `xReserveAttesters` key type `address` or `bytes32`?
 - `Q-CRY-4` — does the AccountId↔bytes32 encoding (`DEV-10`) apply to `remoteToken` / the faucet's bytes32 identifier as well as to `remoteRecipient`?
 - `Q-DA-QUORUM` (**OPEN** — Circle-owned) — the current transport carries one attestation; confirm whether the production design remains single-signer or requires a quorum.
+- `Q-EVM-ADDR-1` (**OPEN** — Circle-owned) — `DC-14` carries `localToken` and `localDepositor` as 20 bytes each, on the assumption that both bytes32 fields always hold a right-aligned EVM address. Confirm that holds for every source domain Circle will enable. A source chain with a wider address makes such a deposit unmintable under `DC-14` until a new transport ships; the relayer detects it at compress time and never submits the note, so it degrades to an off-chain error rather than a failed transaction.
 - `Q-FEE-MVP` — confirm the MVP's fail-loud `feeAmount==0` reject (the CIR-FEE-2 relayer-credit split is deferred to mainnet/production-final; see `F2`). Distinct from the narrower `Q-MIN-2`, which covers only the zero-fee note structure. Question to Circle pending (orchestrator-owned).
 
 ## Circle requirement ids — `CIR-<AREA>-<n>`
@@ -257,13 +284,13 @@ name because the code or validation records anchor on them:
 
 | Id | Meaning |
 |---|---|
-| F1 | The stock `mint_and_send` path dispatching `mint_policy::check_policy` is the sole supply surface. The exported `deposit_intent_parser::load_bytes32_account_id` parity helper is not an account procedure. |
+| F1 | The stock `mint_and_send` path dispatching `mint_policy::check_policy` is the sole supply surface. |
 | F2 | Deposit-intent validation rejects nonzero `feeAmount`; the relayer-credit split remains deferred behind the OPEN `Q-FEE-MVP` Circle confirmation. |
 | F4 | xUSDC ships as a policed asset: the stock `BasicBlocklist` is the active send + receive transfer policy and the account id has `AssetCallbackFlag::Enabled`. |
 | F5 | The transaction-level auth boundary for the permissionless-mint model (a non-allowlisted note and tx-script must both be rejected). |
 | F6 | The administrator-gated setters are intentionally **not** pause-gated (matching Circle's `onlyOwner`). |
 | F7 | The production burn note is same-block-erasable, which could starve Circle's burn discovery — kept OPEN as a Circle/DEV-7 decision, evidenced by a real-node run. |
-| L1 | `deposit_intent_parser::load_bytes32_account_id` is exported for parity execution but must not carry `@account_procedure` or become a callable account root. |
+| L1 | An exported parity helper must not carry `@account_procedure` or become a callable account root. |
 
 ## Local-node validation rows — `LNV` rows `A`–`L`
 
@@ -369,11 +396,12 @@ in `tests/masm_dual.rs`); `-4` is Rust-only because `DC-7` has no MASM side.
 
 | Id | Checks |
 |---|---|
-| TV-DUAL-1 | `bytes32_to_key`: Rust and MASM produce the identical key Word on every vector. |
-| TV-DUAL-2 | The amount conversion: the Rust-computed quotient passes the MASM witness verifier / both sides trap alike. |
-| TV-DUAL-3 | DepositIntent parse: Rust and MASM agree on accept/reject and the 60-felt preimage. |
+| TV-DUAL-1 | `hash_nonce`: Rust and MASM produce the identical key Word on every vector. |
+| TV-DUAL-2 | **Retired** with the MASM witness verifier (see the ownership map's `DC-5` rider). The amount conversion is Rust-only; its vectors still drive the Rust unit tests in `amount.rs`. |
+| TV-DUAL-3 | DepositIntent parse: Rust and MASM agree on accept/reject and the 60-felt preimage. Rust-only on the mint path after `DC-14` — the MASM parser is retired (`NS-2`), so the MASM leg is `TV-DUAL-6`. |
 | TV-DUAL-4 | Burn-note items: the Rust-emitted burn note's `NoteStorage.items` match the Rust codec and the golden felts (an emit-vs-codec check within Rust — `DC-7` is Rust-only, there is no MASM burn-item codec). |
 | TV-DUAL-5 | Attestation packing/commitment: Rust and MASM produce the identical felts / commitment. |
+| TV-DUAL-6 | `DC-14` preimage reconstruction, in three parts: the Rust round trip (`to_deposit_intent_bytes` after `from_deposit_intent` returns the original bytes); MASM/Rust parity (the felts `rebuild` writes equal the Rust reconstruction's); and per-field placement (mutating one carried field moves exactly that field's bytes). |
 
 `TV-CIRCLE-DIFF` = a differential check of the DepositIntent parse against a locally-reconstructed
 Circle ground-truth fixture. The faucet test harness also groups scenarios under module ids

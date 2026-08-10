@@ -1,6 +1,6 @@
 //! A6 offline tests — the `--faucet-id` (existing-faucet) mint must carry the DEPLOYED faucet's domain
 //! config, not the fixed BASE_VECTOR's. The mint gate (structural validation `deposit_intent_parser::validate`)
-//! compares a mint's `remoteDomain` against the faucet's stored `domain`, and `bytes32_to_key(remoteToken)`
+//! compares a mint's `remoteDomain` against the faucet's stored `domain`, and `bytes32_to_storage_map_key(remoteToken)`
 //! against the stored identifier key. A production faucet was deployed with domain 10007 and an
 //! identifier = account_id_to_bytes32(faucet.id()); the fixed BASE_VECTOR carries domain 7, so structural validation
 //! rejected every mint (the A6 300s path-N timeout). These node-free tests inject a synthetic deployed

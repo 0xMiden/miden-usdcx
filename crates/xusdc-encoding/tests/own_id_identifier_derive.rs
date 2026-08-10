@@ -1,12 +1,13 @@
 //! The faucet checks a deposit intent against its own account id instead of a stored identifier —
 //! proven against the Rust encoding, over a spread of ids.
 //!
-//! The mint path compares every deposit intent's `remoteToken` against the faucet's identifier.
-//! That identifier is the faucet's own account id, which the faucet reads on chain from
-//! `native_account::get_id` rather than from a slot somebody had to seed. The compare runs in
-//! account-id space: the staged `remoteToken` is DECODED out of the frozen bytes32 packaging by
-//! `deposit_intent_parser::load_bytes32_account_id` (a thin wrapper over the standards
-//! `eth::bytes32_to_account_id`) and the decoded id is compared against the native one.
+//! The mint path stamps its own account id into every deposit intent's `remoteToken`, read on
+//! chain from `native_account::get_id` rather than from a slot somebody had to seed (`DC-14`).
+//! There is no compare any more — a deposit addressed elsewhere rebuilds a different message and
+//! dies at the signature — but the PACKAGING is now something the faucet emits, so it has to be
+//! exactly the packaging Circle reads. This suite runs the standards decode
+//! (`eth::bytes32_to_account_id`) over the bytes the Rust encoder produces, in account context,
+//! and requires the result to be the emitting account.
 //!
 //! The whole design rests on one claim: the bytes `account_id_to_bytes32` produces off chain
 //! decode, on chain, back to exactly the account they were produced for — for every account id, not
@@ -71,9 +72,10 @@ const MAX_SUPPLY: u64 = 1_000_000;
 /// Reading them from advice does not weaken anything: advice is host-controlled, so a hostile host
 /// could only make an assertion FAIL, never pass a wrong decode. Each procedure is stack-neutral
 /// across its `call` window, the shape the production note scripts use.
-const DERIVE_DRIVER_SRC: &str = r#"use xreserve::deposit_intent_parser
-use miden::protocol::account_id
+const DERIVE_DRIVER_SRC: &str = r#"use miden::protocol::account_id
 use miden::protocol::native_account
+use miden::standards::interop::eth
+use miden::standards::utils
 
 # The scratch address the staged bytes32 is written to before the decode reads it.
 const STAGED_BYTES32_PTR = 1024
@@ -109,9 +111,11 @@ end
 
 #! Asserts the caller's staged bytes32 decodes to the native account's own id.
 #!
-#! This is the production identifier compare with the intent stripped away: the same
-#! `load_bytes32_account_id` decode the mint path runs over `remoteToken`, and the same
-#! `account_id::eq` against `native_account::get_id`.
+#! Under DC-14 the faucet WRITES `remoteToken` rather than decoding it, so this is no longer a
+#! compare the mint path performs — it is the inverse of the packaging the mint path now EMITS.
+#! The claim is unchanged and still load-bearing: the bytes the Rust encoder produces for an
+#! account id must decode back to that account, or a third party could not verify a mint note and
+#! the faucet's own emitted identifier would name someone else.
 #!
 #! Inputs:  [pad(16)]
 #! Outputs: [pad(16)]
@@ -136,7 +140,10 @@ pub proc assert_bytes32_decodes_to_own_id
     adv_push mem_store.1031
     # => [pad(16)]
 
-    push.STAGED_BYTES32_PTR exec.deposit_intent_parser::load_bytes32_account_id
+    push.STAGED_BYTES32_PTR exec.utils::mem_load_double_word_unaligned
+    # => [B_LOWER, B_UPPER, pad(16)]
+
+    exec.eth::bytes32_to_account_id
     # => [staged_suffix, staged_prefix, pad(16)]
 
     exec.native_account::get_id

@@ -61,7 +61,9 @@ use crate::assertions_gj::{ERR_BURN_BELOW_MIN, ERR_PAUSED, ERR_WRONG_ASSET_ORIGI
 use crate::client::{build_client, os_seed, HarnessClient};
 use crate::config::RunConfig;
 use crate::deploy::build_faucet_account;
-use crate::mintburn::{self, burn_note, burn_note_wrong_asset, raw_for_units, BASE_VECTOR};
+use crate::mintburn::{
+    self, burn_note, burn_note_wrong_asset, raw_for_units, BASE_VECTOR, MINT_DOMAIN,
+};
 use crate::observations_cf::{Verdict, Word4, MARKER_CLEAR, MARKER_SET};
 use crate::observations_gj::{
     BurnNegative, BurnSameBlock, BurnTwoBlock, ConservationLedger, RowsGjObservations, SupplyStep,

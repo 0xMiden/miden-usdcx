@@ -1,8 +1,9 @@
 //! Turning an arbitrary 32-byte value into the Word the faucet derives from it.
 //!
 //! The value this hashes is the deposit nonce — a bytes32 that originates outside Miden. The faucet
-//! derives exactly two Words from it, and both go through this one hashing routine (`bytes32_to_key`
-//! on the MASM side): the key of the `usedNonces` replay-guard storage map, and the serial number of
+//! derives exactly two Words from it, and both go through this one hashing routine
+//! (`mint_intent::hash_nonce` on the MASM side): the key of the `usedNonces` replay-guard storage
+//! map, and the serial number of
 //! the attested output note the mint sends. A nonce carries no guarantee that it fits a field
 //! element, so it cannot be reinterpreted as a Word directly; a value whose limbs exceed the field
 //! modulus would have to be rejected or reduced, and reducing would let two distinct nonces collide.
@@ -29,7 +30,7 @@ use super::error::EncodingError;
 ///
 /// The bytes are packed into eight u32 field elements and hashed with Poseidon2. It cannot fail:
 /// any 32 bytes pack to valid u32s, so every input has a key — which is what makes it safe for
-/// values that arrive from outside Miden. The faucet's `bytes32_to_key` computes the same Word.
+/// values that arrive from outside Miden. The faucet's `hash_nonce` computes the same Word.
 pub fn bytes32_to_storage_map_key(b: &[u8; 32]) -> StorageMapKey {
     let felts = bytes32_to_packed_felts(b);
     StorageMapKey::new(Hasher::hash_elements(&felts))

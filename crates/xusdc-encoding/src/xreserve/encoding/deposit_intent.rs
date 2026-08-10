@@ -9,8 +9,10 @@
 //! DepositIntent at all": the magic sentinel, the version, that the payload is not truncated, that
 //! the declared total length equals 240 plus the declared hookData length, and that the amount,
 //! `localToken`, and `localDepositor` fields are non-zero. What it deliberately does not check is
-//! whether the intent is addressed to a particular faucet; comparing the remote domain and token
-//! identifier against a faucet's configuration is the faucet's own decision and lives there.
+//! whether the intent is addressed to a particular faucet: the token identifier is compared
+//! against the consuming faucet by [`super::mint_intent::MintIntent::from_deposit_intent`], and
+//! the remote domain against the operator's configuration by whoever holds it — for the relayer,
+//! that is its own domain/token check against Circle's `/v1/info`.
 //!
 //! Validation order matters and is fixed, because the MASM parser performs the same checks in the
 //! same order and the two must reject identically — a payload that fails here must fail on-chain
@@ -20,9 +22,11 @@
 //! own note-storage limit (`MAX_NOTE_STORAGE_ITEMS`, 1024 field elements — each storage "item" is
 //! a single field element), which is the documented default rather than an answer.
 
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, MAX_NOTE_STORAGE_ITEMS};
 
+use super::amount::uint256_to_asset_amount;
 use super::error::EncodingError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +84,53 @@ pub struct DepositIntentHeader {
     pub hook_data_len: u32,
 }
 
+impl DepositIntentHeader {
+    /// The `amount` field reduced to an `AssetAmount` — the value the mint note carries as its
+    /// asset and the faucet writes back into the preimage.
+    ///
+    /// # Errors
+    ///
+    /// [`EncodingError::FieldNotAssetAmount`] if the wire value does not reduce to a valid
+    /// `AssetAmount` at this scale.
+    pub fn reduced_amount(&self, scale_exp: u32) -> Result<AssetAmount, EncodingError> {
+        reduce_to_asset_amount(&self.amount, scale_exp, DepositIntentField::Amount)
+    }
+
+    /// The `maxFee` field reduced the same way — the depositor-authorized fee ceiling.
+    ///
+    /// # Errors
+    ///
+    /// [`EncodingError::FieldNotAssetAmount`] if the wire value does not reduce to a valid
+    /// `AssetAmount` at this scale.
+    pub fn reduced_max_fee(&self, scale_exp: u32) -> Result<AssetAmount, EncodingError> {
+        reduce_to_asset_amount(&self.max_fee, scale_exp, DepositIntentField::MaxFee)
+    }
+}
+
+/// Reduces one uint256 wire field to the `AssetAmount` it must hold, naming which of the two
+/// amount-shaped fields failed rather than only why: the relayer has to tell an unmintable
+/// `amount` from an unmintable `maxFee`.
+fn reduce_to_asset_amount(
+    value: &[u8; 32],
+    scale_exp: u32,
+    field: DepositIntentField,
+) -> Result<AssetAmount, EncodingError> {
+    uint256_to_asset_amount(uint256_le_limbs(value), scale_exp)
+        .map_err(|_| EncodingError::FieldNotAssetAmount { field })
+}
+
+/// The 8 u32-LE packed limbs of a big-endian uint256 wire field (limb i = LE-u32 of wire bytes
+/// `[4i, 4i+4)`) — the limb form the shared-encoding reducer consumes.
+pub(crate) fn uint256_le_limbs(bytes: &[u8; 32]) -> [u32; 8] {
+    core::array::from_fn(|i| {
+        u32::from_le_bytes(
+            bytes[4 * i..4 * i + 4]
+                .try_into()
+                .expect("4-byte window of a 32-byte field"),
+        )
+    })
+}
+
 /// Reads a big-endian u32 wire field (the caller has bounds-checked the slice).
 fn be_u32(bytes: &[u8], offset: usize) -> u32 {
     u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("4-byte window"))
@@ -93,8 +144,7 @@ fn bytes32_at(bytes: &[u8], offset: usize) -> [u8; 32] {
 }
 
 /// Structural parse + the library-owned checks (truncation, magic, version, non-zero
-/// fields, total-length relation). Does NOT perform the faucet-owned domain/identifier
-/// equality compares.
+/// fields, total-length relation). Does NOT perform the addressing compares.
 pub fn parse_deposit_intent_header(bytes: &[u8]) -> Result<DepositIntentHeader, EncodingError> {
     // the bounds guard necessarily precedes any field read (the TruncatedHeader case)
     if bytes.len() < DEPOSIT_INTENT_HEADER_LEN {
@@ -239,6 +289,18 @@ impl<'a> DepositIntent<'a> {
     /// Propagates every [`EncodingError`] [`deposit_intent_to_packed_felts`] raises.
     pub fn to_packed_felts(&self) -> Result<Vec<Felt>, EncodingError> {
         deposit_intent_to_packed_felts(self.0)
+    }
+
+    /// The trailing hookData bytes — everything past the fixed header.
+    ///
+    /// # Errors
+    ///
+    /// Propagates every [`EncodingError`] [`Self::parse_header`] raises; in particular a payload
+    /// whose declared and actual lengths disagree has no well-defined hookData.
+    pub fn hook_data(&self) -> Result<&'a [u8], EncodingError> {
+        self.parse_header()?;
+        // the length relation the parse just checked makes this slice exact
+        Ok(&self.0[DEPOSIT_INTENT_HEADER_LEN..])
     }
 }
 

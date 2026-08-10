@@ -23,7 +23,7 @@
 //!   (`note.attachments().find(scheme)`, `NetworkAccountTarget::try_from`,
 //!   `note.storage().items()`, `MintNote::script_root()`, `P2idNote::script_root()`) and through
 //!   the shared encoding crate's own codecs (`parse_deposit_intent_header`,
-//!   `deposit_intent_to_packed_felts`, `bytes32_to_account_id`, `bytes32_to_storage_map_key`,
+//!   `MintIntent::from_deposit_intent`, `bytes32_to_account_id`, `bytes32_to_storage_map_key`,
 //!   `uint256_to_asset_amount`, `signature_felts`, `affine_pubkey_felts`) — never against a layout
 //!   re-derived here. An assertion that restated the layout would be a SECOND definition of an
 //!   owned format, i.e. exactly the drift seam the ownership map exists to close.
@@ -51,12 +51,12 @@ use miden_standards::note::{MintNote, NetworkAccountTarget, NoteExecutionHint, P
 use xreserve_deposit_relayer::miden::build_mint_note;
 use xusdc_encoding::note::xreserve_mint::{
     MintAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
-    XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF,
+    XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
     affine_pubkey_felts, bytes32_to_account_id, bytes32_to_packed_u32_limbs,
-    bytes32_to_storage_map_key, deposit_intent_to_packed_felts, parse_deposit_intent_header,
-    signature_felts, uint256_to_asset_amount,
+    bytes32_to_storage_map_key, parse_deposit_intent_header, signature_felts,
+    uint256_to_asset_amount, DepositIntent, MintIntent,
 };
 
 use mint_support::*;
@@ -149,15 +149,15 @@ fn t_note_carries_exactly_the_two_attachments() {
         )
         .expect("the scheme-4 merged transport attachment is present");
 
-    // the transport is word-granular: the attestation, and ⌈packed payload felts / 4⌉ words of
-    // intent — every width computed by the shared encoding crate's OWNED codec and constants, not
+    // the transport is word-granular: the attestation, and ⌈carried felts / 4⌉ words of mint
+    // payload — every width computed by the shared encoding crate's OWNED codec and constants, not
     // a number restated here
-    let packed_felts =
-        deposit_intent_to_packed_felts(attestation.payload()).expect("the canonical payload packs");
+    let carried = carried_payload(attestation.payload());
     assert_eq!(
         usize::from(transport.content().num_words()),
-        XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF + packed_felts.len().div_ceil(4),
-        "the transport is the attestation + the packed payload, zero-padded to the word boundary"
+        XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF + carried.to_felts().len().div_ceil(4),
+        "the transport is the attestation + the carried mint payload, zero-padded to the word \
+         boundary"
     );
 
     assert!(
@@ -194,7 +194,13 @@ fn t_routing_attachment_binds_the_faucet_network_account() {
 /// different routing bind and a different tag. (Guards against a builder that hardcoded either.)
 #[test]
 fn t_the_faucet_argument_drives_the_route_and_the_tag() {
-    let attestation = validated_test_vector();
+    // the intent has to be ADDRESSED to the second faucet: under `DC-14` a note whose payload names
+    // a different `remoteToken` is refused at build time, so this test cannot reuse the standard
+    // vector to prove what the faucet argument drives.
+    let attestation = validated_over(&fixtures::canonical_payload_addressed_to(
+        fixtures::TEST_VECTOR_PAYLOAD_ID,
+        other_faucet_id(),
+    ));
     let attester = attester_pubkey();
 
     let note = build_mint_note(
@@ -318,21 +324,22 @@ fn t_storage_embeds_the_attested_output() {
     );
 }
 
-/// The validated DepositIntent payload travels VERBATIM in the transport's intent sub-region — at
-/// the FIXED word offset that makes the Circle-signed byte extent 1:1 identifiable inside the
-/// merged attachment. Its elements are the shared encoding crate's OWNED packing
-/// (`deposit_intent_to_packed_felts`, consumed here BY REFERENCE — the test does not restate the
-/// 60-felt header / ⌈hookDataLen/4⌉ packing, it calls the owner), zero-padded to the word boundary.
-/// And the sub-region really tracks the VALIDATED payload that was handed in: attestations over
-/// two DIFFERENT canonical payloads produce different transports.
+/// The validated DepositIntent is COMPRESSED into the transport's payload sub-region — at the FIXED
+/// word offset the policy reads it from. Its elements are the shared encoding crate's OWNED carried
+/// form (`MintIntent::to_felts`, consumed here BY REFERENCE — the test does not restate the 24-felt
+/// shape or the ⌈hookDataLen/4⌉ tail, it calls the owner), zero-padded to the word boundary. And
+/// the sub-region really tracks the VALIDATED payload that was handed in: attestations over two
+/// DIFFERENT canonical payloads produce different transports.
+///
+/// The DepositIntent itself does NOT travel (`DC-14`); the faucet rebuilds it from these felts.
 #[test]
-fn t_the_transport_intent_sub_region_is_the_validated_payload() {
+fn t_the_transport_payload_sub_region_is_the_compressed_intent() {
     let attester = attester_pubkey();
     let scheme = NoteAttachmentScheme::new(XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME)
         .expect("unit-04's transport scheme id is a valid scheme");
-    let intent_felt_off = XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF * 4;
+    let payload_felt_off = XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF * 4;
 
-    let intent_elements = |vector_id: &str, seed: u64| {
+    let payload_elements = |vector_id: &str, seed: u64| {
         let note = build_mint_note(
             relayer_sender_id(),
             faucet_id(),
@@ -345,28 +352,27 @@ fn t_the_transport_intent_sub_region_is_the_validated_payload() {
             .find(scheme)
             .expect("the scheme-4 merged transport attachment is present")
             .content()
-            .to_elements()[intent_felt_off..]
+            .to_elements()[payload_felt_off..]
             .to_vec()
     };
 
-    for vector_id in ["di-pos-hookdata", "di-pos-empty-hookdata"] {
-        let mut expected = deposit_intent_to_packed_felts(&fixtures::canonical_payload(vector_id))
-            .expect("the canonical payload packs");
+    for vector_id in ["mi-pos-hookdata", "mi-pos-empty-hookdata"] {
+        let mut expected = carried_payload(&fixtures::canonical_payload(vector_id)).to_felts();
         while !expected.len().is_multiple_of(4) {
             expected.push(Felt::ZERO);
         }
 
         assert_eq!(
-            intent_elements(vector_id, 1),
+            payload_elements(vector_id, 1),
             expected,
-            "vector {vector_id}: the intent sub-region is the packed preimage of the payload the \
+            "vector {vector_id}: the payload sub-region is the compressed form of the intent the \
              relayer validated, zero-padded to the word boundary"
         );
     }
 
     assert_ne!(
-        intent_elements("di-pos-hookdata", 1),
-        intent_elements("di-pos-empty-hookdata", 1),
+        payload_elements("mi-pos-hookdata", 1),
+        payload_elements("mi-pos-empty-hookdata", 1),
         "the sub-region tracks the validated payload, not a fixed blob"
     );
 }
@@ -447,7 +453,7 @@ fn t_the_configured_pubkey_is_the_one_that_travels() {
 /// attachment too — the signature that travels is the one that was validated, not a stale one.
 #[test]
 fn t_the_validated_signature_is_the_one_that_travels() {
-    let payload = fixtures::canonical_payload("di-pos-hookdata");
+    let payload = fixtures::canonical_payload(fixtures::TEST_VECTOR_PAYLOAD_ID);
     let partner_signed = validated_over(&payload);
     let foreign_signed = validated(
         &fixtures::PartnerAttester::with_seed(fixtures::FOREIGN_KEY_SEED).attest(&payload),
@@ -588,6 +594,13 @@ fn t_the_callers_rng_is_the_one_that_is_drawn_from() {
 
 // helpers
 // ================================================================================================
+
+/// The carried form of a validated payload — the shared encoding crate's own compress step, called
+/// here so the expected transport content is the OWNER's, not a shape restated in this suite.
+fn carried_payload(payload: &[u8]) -> MintIntent {
+    MintIntent::from_deposit_intent(&DepositIntent::new(payload), faucet_id())
+        .expect("the canonical payload compresses for this faucet")
+}
 
 /// The standard note: the canonical vector, the partner attester key, the public faucet.
 fn build_note() -> miden_protocol::note::Note {

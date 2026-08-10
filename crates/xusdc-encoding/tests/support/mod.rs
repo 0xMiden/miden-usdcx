@@ -65,7 +65,7 @@ use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH,
     BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::xreserve::encoding::{masm_error_by_name, EthBytes32};
+use xusdc_encoding::xreserve::encoding::EthBytes32;
 
 // Attestation fixtures — deterministic secp256k1 keys and signatures generated IN-TEST (the
 // canonical vector artifact is untouched), mirroring the `gen_vectors` att_* helpers: k256 the
@@ -138,25 +138,26 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
 pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
+    // the packed-memory primitives the DC-14 preimage writer copies through (packed_mem.masm)
     (
-        "ERR_XRESERVE_WRONG_DOMAIN",
-        MasmError::from_static_str("deposit intent remote domain does not match the faucet domain"),
+        "ERR_XRESERVE_MINT_INTENT_LIMB",
+        MasmError::from_static_str("mint intent limb is not a valid u32"),
     ),
     (
-        "ERR_XRESERVE_WRONG_IDENTIFIER",
-        MasmError::from_static_str(
-            "deposit intent remote token does not match the faucet identifier",
-        ),
+        "ERR_XRESERVE_DOMAIN_NOT_U32",
+        MasmError::from_static_str("faucet domain config is not a valid u32"),
+    ),
+    (
+        "ERR_XRESERVE_MINT_ZERO_AMOUNT",
+        MasmError::from_static_str("mint note asset amount must be non-zero"),
+    ),
+    (
+        "ERR_XRESERVE_MINT_AMOUNT_OVER_MAX",
+        MasmError::from_static_str("mint note asset amount exceeds the fungible maximum"),
     ),
     (
         "ERR_XRESERVE_AMOUNT_BELOW_FEE",
         MasmError::from_static_str("deposit intent amount is below the max fee"),
-    ),
-    // The maxFee/fee staging's too-large guard (deposit_intent_parser.masm); the amount
-    // field's distinct standards string lives in STANDARDS_ERR_TABLE.
-    (
-        "ERR_X_TOO_LARGE",
-        MasmError::from_static_str("larger than 2**128"),
     ),
     // The nonce replay guard's error, pinned here so the replay test can name its EXACT
     // expected error, byte-identical to the MASM const.
@@ -175,10 +176,6 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
     ),
     // The fee gate (deposit_intent_parser.masm): the faucet pays no relayer fee, so the parser rejects
     // a non-zero advice feeAmount; parity-pinned against the MASM const.
-    (
-        "ERR_XRESERVE_FEE_NONZERO",
-        MasmError::from_static_str("mint fee amount must be zero"),
-    ),
     // The attestation mint policy (mint_policy.masm) — the TRANSPORT-shape guards on the
     // stock MintNote's attachments: the scheme-4 merged transport (attestation + deposit intent)
     // and the scheme-2 routing target must both be present, exactly two in total; the
@@ -253,14 +250,14 @@ pub fn err_burn_below_min_burn_amount() -> MasmError {
     MasmError::from_static_str("amount to be burned must exceed specified minimum burn amount")
 }
 
-/// Looks up an expected MASM error: faucet-owned shell errors first, then the encoding
-/// library's table (`ERR_DI_*` rows of the ratified seam mapping).
+/// Looks up an expected faucet-owned MASM error by name. Errors raised inside the LINKED protocol
+/// and standards libraries are not here — a test that expects one names that library's own
+/// constant, so there is no local copy to drift.
 pub fn shell_error_by_name(name: &str) -> &'static MasmError {
     SHELL_ERR_TABLE
         .iter()
         .find(|(n, _)| *n == name)
         .map(|(_, e)| e)
-        .or_else(|| masm_error_by_name(name))
         .unwrap_or_else(|| panic!("test names unknown MASM error constant {name}"))
 }
 
@@ -444,7 +441,9 @@ pub fn assemble_xreserve_lib() -> Result<Package> {
             xusdc_encoding::xreserve_asm_dir().join("mod.masm"),
             Some(MasmPath::new("xreserve")),
         )
-        .map_err(|e| anyhow::anyhow!("xreserve library failed to assemble: {e}"))?;
+        // the Display of an assembler report is just its kind ("syntax error"); the Debug form
+        // carries the source span and the label that say WHERE
+        .map_err(|e| anyhow::anyhow!("xreserve library failed to assemble: {e:?}"))?;
     Ok(*lib)
 }
 
@@ -699,7 +698,7 @@ fn validate_driver_src_inner(
     splice_own_token: bool,
 ) -> String {
     let mut src = String::from(
-        "use xreserve::deposit_intent_parser\n\n\
+        "use xreserve::deposit_intent\n\n\
          #! Test driver: stages a DepositIntent preimage and a feeAmount in the account context\n\
          #! and execs the faucet mint-precondition shell.\n\
          #!\n\
@@ -735,6 +734,71 @@ fn validate_driver_src_inner(
         // reject path: balance the would-be output so an unexpected non-trapping run
         // returns cleanly and the test's exact-error assertion reports the mismatch
         None => src.push_str("    drop\n"),
+    }
+    src.push_str("end\n");
+    src
+}
+
+/// Generates the nonce-guard driver: push a `usedNonces` key and run the replay guard.
+///
+/// Under DC-14 the guard takes the key the caller already derived — the policy needs the same Word
+/// for the output note's serial — so the driver no longer has to stage a whole intent to reach it.
+pub fn nonce_guard_driver_src(key: Word) -> String {
+    format!(
+        "use xreserve::mint_intent\n\n         #! Test driver: runs the faucet's nonce replay guard over a caller-derived key.\n         #!\n         #! Inputs:  [pad(16)]\n         #! Outputs: [pad(16)]\n         #!\n         #! Invocation: call\n         @account_procedure\n         pub proc drive\n         \x20   push.{key}\n         \x20   exec.mint_intent::assert_nonce_unused\n         end\n"
+    )
+}
+
+// DC-14 PREIMAGE-WRITER DRIVER
+// ================================================================================================
+
+/// Staging addresses for the `rebuild` driver. Both word-aligned and clear of the other drivers'
+/// regions. The deposit-intent region is GLOBAL memory, mirroring the policy: `rebuild` writes only
+/// the fields the message carries and relies on the rest reading zero.
+pub const MINT_INTENT_PTR: u64 = 2048;
+pub const DEPOSIT_INTENT_PTR: u64 = 3072;
+
+/// Generates the DC-14 writer driver: stage the mint intent, run `deposit_intent::rebuild`, then
+/// compare every felt of the message it built against the Rust mirror's.
+///
+/// The expected felts arrive on the ADVICE STACK rather than baked into this source, because the
+/// message embeds the account's own id and an account id is a hash over the account's code — which
+/// is this driver. Baking them would change the id they are trying to describe.
+///
+/// `poison` pre-fills the region with a recognizable pattern. `rebuild` does NOT zero it — that is
+/// the caller's contract — so poisoning is how the dependency is made visible rather than assumed.
+pub fn rebuild_driver_src(
+    mint_intent_felts: &[Felt],
+    mint_intent_num_words: u64,
+    amount: u64,
+    num_expected_felts: usize,
+    poison: bool,
+) -> String {
+    let mut src = String::from(
+        "use xreserve::deposit_intent\n\n         #! Test driver: stages the mint intent in the account context, rebuilds the DepositIntent\n         #! from it, and pins every felt against the Rust mirror.\n         #!\n         #! Inputs:  [pad(16)]\n         #! Outputs: [pad(16)]\n         #!\n         #! Invocation: call\n         @account_procedure\n         pub proc drive\n",
+    );
+    stage_felts(&mut src, mint_intent_felts, MINT_INTENT_PTR);
+    if poison {
+        let poison_word = Word::new([Felt::from(0xdead_beefu32); 4]);
+        for i in 0..num_expected_felts.div_ceil(4) {
+            let addr = DEPOSIT_INTENT_PTR + 4 * i as u64;
+            writeln!(src, "    push.{poison_word} mem_storew_le.{addr} dropw").unwrap();
+        }
+    }
+    writeln!(src, "    push.{amount}").unwrap();
+    writeln!(src, "    push.{mint_intent_num_words}").unwrap();
+    writeln!(src, "    push.{MINT_INTENT_PTR}").unwrap();
+    writeln!(src, "    push.{DEPOSIT_INTENT_PTR}").unwrap();
+    src.push_str("    exec.deposit_intent::rebuild\n");
+    // => [intent_num_bytes]; the message itself is what this driver checks
+    src.push_str("    drop\n");
+    for i in 0..num_expected_felts {
+        let addr = DEPOSIT_INTENT_PTR + i as u64;
+        writeln!(
+            src,
+            "    adv_push mem_load.{addr} assert_eq.err=\"driver: deposit intent felt {i} mismatch\""
+        )
+        .unwrap();
     }
     src.push_str("end\n");
     src

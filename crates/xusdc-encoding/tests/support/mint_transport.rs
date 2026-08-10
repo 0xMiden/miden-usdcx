@@ -21,7 +21,6 @@ use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{Note, NoteAttachment, NoteAttachmentScheme, NoteId, NoteTag};
 use miden_protocol::transaction::ExecutedTransaction;
-use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{
     MintNote, MintNoteStorage, NetworkAccountTarget, NoteExecutionHint, P2idNoteStorage,
@@ -29,15 +28,18 @@ use miden_standards::note::{
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
-use xusdc_encoding::vectors::{load, DiVector};
-use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, bytes32_to_storage_map_key};
+use xusdc_encoding::vectors::{load, MiVector};
+use xusdc_encoding::xreserve::encoding::{
+    account_id_to_bytes32, bytes32_to_account_id, bytes32_to_storage_map_key, DepositIntent,
+    MintIntent, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF,
+};
 
 use super::*;
 
 // FIXTURE VALUES (shared across the split e2e suites)
 // ================================================================================================
 
-pub const BASE_VECTOR: &str = "di-pos-empty-hookdata";
+pub const BASE_VECTOR: &str = "mi-pos-empty-hookdata";
 pub const MAX_SUPPLY: u64 = 1_000_000_000_000;
 pub const MINT_AMOUNT: u64 = 250_000_000;
 pub const MAX_FEE_RAW: u64 = 1;
@@ -57,32 +59,20 @@ pub const NONCE_BYTE_OFF: usize = 51 * 4;
 /// `constant_parity.rs` against both the Rust factory and the MASM policy.
 pub const TRANSPORT_SCHEME: u16 = 4;
 
-/// The merged transport layout, test-side: the fixed-width attestation section, then the deposit
-/// intent. Every offset below is parity-pinned in `constant_parity.rs` against both the Rust
-/// factory and the MASM policy, so the harness cannot drift from the wire.
-pub const ATTESTATION_WORDS: usize = 11;
-pub const TRANSPORT_INTENT_WORD_OFF: usize = ATTESTATION_WORDS;
+/// The transport layout, test-side: the fixed-width attestation section, then the carried mint
+/// payload, then the packed hookData. Every offset below is parity-pinned in `constant_parity.rs`
+/// against both the Rust factory and the MASM policy, so the harness cannot drift from the wire.
+pub const ATTESTATION_WORDS: usize = 9;
+pub const TRANSPORT_PAYLOAD_WORD_OFF: usize = ATTESTATION_WORDS;
 pub const ATTESTATION_FELTS: usize = ATTESTATION_WORDS * 4;
 
-/// Felt offsets INSIDE the attestation section, in the order the policy hands them out.
-pub const ATTESTATION_FEE_FELT_OFF: usize = 0;
-pub const ATTESTATION_PUBKEY_FELT_OFF: usize = 8;
-pub const ATTESTATION_SIGNATURE_FELT_OFF: usize = 24;
+/// Felt offsets INSIDE the attestation section. The operator `feeAmount` is gone with `DC-14` —
+/// the faucet writes a zero fee into the preimage, so there is no wire field to corrupt.
+pub const ATTESTATION_PUBKEY_FELT_OFF: usize = 0;
+pub const ATTESTATION_SIGNATURE_FELT_OFF: usize = 16;
 
-/// Felt offset of the packed `hookDataLen` limb inside the deposit-intent sub-region (mirrors the
-/// shared layout's `HOOK_DATA_LEN_FELT_OFF`).
-pub const INTENT_HOOK_DATA_LEN_FELT_OFF: usize = 59;
-
-/// The word floor the policy enforces on the merged attachment: the attestation + the 15-word
-/// deposit-intent header.
-pub const TRANSPORT_FLOOR_WORDS: usize = TRANSPORT_INTENT_WORD_OFF + 15;
-
-/// The packed form of a `hookDataLen` the policy will decode as `bytes`: the wire field is a
-/// big-endian u32 and the transport packs four wire bytes per felt little-endian, so the staged
-/// limb is the LE reinterpretation of the BE value (the policy's `swap_u32_bytes` undoes it).
-pub fn packed_hook_data_len(bytes: u32) -> Felt {
-    Felt::from(u32::from_le_bytes(bytes.to_be_bytes()))
-}
+/// The word floor the policy enforces: the attestation plus the six-word carried payload.
+pub const TRANSPORT_FLOOR_WORDS: usize = TRANSPORT_PAYLOAD_WORD_OFF + 6;
 
 /// The production builder's administrator (`test_account_id(1)` across every fixture): the sole
 /// seeded `ADMIN` member.
@@ -95,15 +85,16 @@ pub fn dom_pauser() -> AccountId {
     test_account_id(2)
 }
 
-/// Looks up a DepositIntent vector by id in the canonical artifact — the same file the Rust codec
-/// tests read, so both sides exercise identical bytes.
-pub fn di(id: &str) -> &'static DiVector {
+/// Looks up a mint-payload vector by id in the canonical artifact — the same file the Rust codec
+/// tests read, so both sides exercise identical bytes. The `DC-14` rows are the ones whose
+/// `localToken` / `localDepositor` are address-shaped, which the transport requires.
+pub fn mi(id: &str) -> &'static MiVector {
     load()
         .families
-        .di
+        .mi
         .iter()
         .find(|v| v.id == id)
-        .unwrap_or_else(|| panic!("canonical artifact is missing di vector {id}"))
+        .unwrap_or_else(|| panic!("canonical artifact is missing mp vector {id}"))
 }
 
 /// The canonical accept payload with the wire amount / maxFee spliced in, `remoteRecipient`
@@ -116,7 +107,7 @@ pub fn payload_for(
     amount: u64,
     nonce_variant: u8,
 ) -> Vec<u8> {
-    let mut payload = di(BASE_VECTOR).bytes();
+    let mut payload = mi(BASE_VECTOR).payload();
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
@@ -158,13 +149,6 @@ pub fn err_stock_over_cap() -> MasmError {
     )
 }
 
-/// The packed limbs of a NONZERO uint256 feeAmount (the fee != 0 negative).
-pub fn fee_limbs_of(fee: u64) -> [Felt; 8] {
-    bytes_to_packed_u32_elements(&uint256_be(fee))
-        .try_into()
-        .expect("a uint256 packs to exactly 8 limbs")
-}
-
 // THE TAMPER ENGINE — a parameterized stock-MintNote builder over an attested payload
 // ================================================================================================
 
@@ -191,9 +175,12 @@ pub struct AttachmentPlan {
     pub transport_truncate_words: Option<usize>,
     /// Overwrites one felt of the attestation section, by its offset within that section.
     pub attestation_felt_tamper: Option<(usize, Felt)>,
-    /// Overwrites the packed `hookDataLen` limb of the intent sub-region — a length claim that
-    /// disagrees with the committed word count, or an outright non-u32 limb.
-    pub intent_hook_data_len_felt: Option<Felt>,
+    /// Overwrites one felt of the carried payload, by its offset within that section. Every
+    /// carried field is reachable this way, which is what the per-field negatives use.
+    pub payload_felt_tamper: Option<(usize, Felt)>,
+    /// Overwrites the carried `hookDataLen` felt — a length claim that disagrees with the
+    /// committed word count, or an outright non-u32 limb.
+    pub payload_hook_data_len_felt: Option<Felt>,
 }
 
 impl Default for AttachmentPlan {
@@ -207,7 +194,8 @@ impl Default for AttachmentPlan {
             transport_extra_words: 0,
             transport_truncate_words: None,
             attestation_felt_tamper: None,
-            intent_hook_data_len_felt: None,
+            payload_felt_tamper: None,
+            payload_hook_data_len_felt: None,
         }
     }
 }
@@ -221,20 +209,28 @@ pub struct StoragePlan {
     pub public: bool,
 }
 
-/// The packed deposit-intent felts, zero-padded to the word boundary — the intent sub-region of
-/// the merged transport attachment.
-fn intent_felts(payload: &[u8]) -> Vec<Felt> {
-    let mut felts = xusdc_encoding::xreserve::encoding::deposit_intent_to_packed_felts(payload)
-        .expect("the tamper payload packs");
+/// The carried mint payload for a signed intent, zero-padded to the word boundary.
+///
+/// Compression is done against the payload's OWN claimed domain and token, not the executing
+/// faucet's, so a note addressed elsewhere still builds a well-formed transport — it has to, or
+/// the wrong-domain and wrong-faucet negatives could not reach the chain to fail there.
+fn carried_payload_felts(payload: &[u8]) -> Vec<Felt> {
+    let intent = DepositIntent::new(payload);
+    let header = intent.parse_header().expect("the tamper payload parses");
+    let claimed_faucet = bytes32_to_account_id(&header.remote_token)
+        .expect("the tamper payload names a well-formed faucet");
+    let carried = MintIntent::from_deposit_intent(&intent, claimed_faucet)
+        .expect("the tamper payload is DC-14 shaped");
+    let mut felts = carried.to_felts();
     while !felts.len().is_multiple_of(4) {
         felts.push(Felt::from(0u32));
     }
     felts
 }
 
-/// The 44-felt attestation section: `[feeAmount(8), pubkey(16), signature(17), pad(3)]`.
-fn attestation_felts(fee_limbs: [Felt; 8], key_source: &AttesterVector) -> Vec<Felt> {
-    let mut felts: Vec<Felt> = fee_limbs.to_vec();
+/// The 36-felt attestation section: `[pubkey(16), signature(17), pad(3)]`.
+fn attestation_felts(key_source: &AttesterVector) -> Vec<Felt> {
+    let mut felts: Vec<Felt> = Vec::new();
     felts.extend(key_source.pubkey_felts.iter().copied());
     felts.extend(key_source.sig_felts.iter().copied());
     felts.extend([Felt::from(0u32); 3]);
@@ -246,23 +242,25 @@ fn attestation_felts(fee_limbs: [Felt; 8], key_source: &AttesterVector) -> Vec<F
 /// (optionally duplicated / tampered), then the packed intent.
 fn transport_felts(
     payload: &[u8],
-    fee_limbs: [Felt; 8],
     key_source: &AttesterVector,
     plan: &AttachmentPlan,
 ) -> Vec<Felt> {
     let mut felts: Vec<Felt> = Vec::new();
 
-    let mut attestation = attestation_felts(fee_limbs, key_source);
+    let mut attestation = attestation_felts(key_source);
     if let Some((off, value)) = plan.attestation_felt_tamper {
         attestation[off] = value;
     }
     felts.extend(attestation.iter().copied());
 
-    let mut intent = intent_felts(payload);
-    if let Some(limb) = plan.intent_hook_data_len_felt {
-        intent[INTENT_HOOK_DATA_LEN_FELT_OFF] = limb;
+    let mut carried = carried_payload_felts(payload);
+    if let Some((off, value)) = plan.payload_felt_tamper {
+        carried[off] = value;
     }
-    felts.extend(intent);
+    if let Some(limb) = plan.payload_hook_data_len_felt {
+        carried[MINT_INTENT_HOOK_DATA_LEN_FELT_OFF] = limb;
+    }
+    felts.extend(carried);
 
     if plan.trailing_attestation_section {
         felts.extend(attestation.iter().copied());
@@ -281,11 +279,10 @@ fn words_of(felts: &[Felt]) -> Vec<Word> {
 /// committed word count is exactly what the negatives intend).
 fn transport_attachment(
     payload: &[u8],
-    fee_limbs: [Felt; 8],
     key_source: &AttesterVector,
     plan: &AttachmentPlan,
 ) -> Result<NoteAttachment> {
-    let mut words = words_of(&transport_felts(payload, fee_limbs, key_source, plan));
+    let mut words = words_of(&transport_felts(payload, key_source, plan));
     if let Some(truncate) = plan.transport_truncate_words {
         words.truncate(truncate);
     }
@@ -307,7 +304,6 @@ pub fn tampered_mint_note(
     pf: &ProductionFaucet,
     payload: &[u8],
     storage: &StoragePlan,
-    fee_limbs: [Felt; 8],
     attester_seed: u64,
     sig_over: Option<&[u8]>,
     plan: &AttachmentPlan,
@@ -332,10 +328,9 @@ pub fn tampered_mint_note(
         .mint_storage(mint_storage)
         .serial_number(note_rng(rng_seed).draw_word());
     if plan.transport {
-        builder = builder.attachment(transport_attachment(payload, fee_limbs, &key_source, plan)?);
+        builder = builder.attachment(transport_attachment(payload, &key_source, plan)?);
         if plan.duplicate_transport {
-            builder =
-                builder.attachment(transport_attachment(payload, fee_limbs, &key_source, plan)?);
+            builder = builder.attachment(transport_attachment(payload, &key_source, plan)?);
         }
     }
     if plan.target {
@@ -373,7 +368,6 @@ pub fn honest_note(pf: &ProductionFaucet, payload: &[u8], rng_seed: u64) -> Resu
         pf,
         payload,
         &honest_storage(pf),
-        [Felt::from(0u32); 8],
         1,
         None,
         &AttachmentPlan::default(),

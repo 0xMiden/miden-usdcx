@@ -63,10 +63,10 @@ use xusdc_encoding::note::xreserve_admin::{
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
     MintAttestation, XUsdcMintNote, XUSDC_MINT_ATTESTATION_NUM_WORDS,
-    XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF,
+    XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, affine_pubkey_felts, deposit_intent_to_packed_felts, signature_felts,
+    account_id_to_bytes32, affine_pubkey_felts, signature_felts, DepositIntent, MintIntent,
     XReserveBurnItems,
 };
 
@@ -98,6 +98,8 @@ fn sample_burn_items(amount: u64) -> XReserveBurnItems {
 
 /// Byte offset of the 32-byte `remoteRecipient` field in a DepositIntent (felt 19, 4 bytes/felt).
 const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
+/// First byte of the 32-byte `remoteToken` field (felt 11 x 4 bytes of the fixed header).
+const REMOTE_TOKEN_BYTE_OFF: usize = 11 * 4;
 
 /// The attested wire amount spliced into the payload (any in-range value; the factory re-derives
 /// the note storage from it).
@@ -109,19 +111,26 @@ const MINT_AMOUNT: u64 = 5_000;
 /// `remoteRecipient` holding the given account id in its bytes32 form. Those fields have to be
 /// genuinely valid, because the note factory decodes them to derive the mint note's storage — a
 /// payload that merely looks well-formed would fail at construction, not at the check under test.
-fn attested_deposit_intent_payload(recipient: miden_protocol::account::AccountId) -> Vec<u8> {
+fn attested_deposit_intent_payload(
+    recipient: miden_protocol::account::AccountId,
+    faucet_id: miden_protocol::account::AccountId,
+) -> Vec<u8> {
     let v = xusdc_encoding::vectors::load();
     let mut payload = v
         .families
-        .di
+        .mi
         .iter()
         .find(|d| d.kind == "accept")
-        .expect("at least one accepted deposit-intent vector")
-        .bytes();
+        .expect("at least one accepted mint-payload vector")
+        .payload();
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(MINT_AMOUNT));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(1));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
         .copy_from_slice(&account_id_to_bytes32(recipient));
+    // the transport can only be built for the faucet the intent names, so the vector's synthetic
+    // token has to become this faucet's id
+    payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32]
+        .copy_from_slice(&account_id_to_bytes32(faucet_id));
     payload
 }
 
@@ -363,7 +372,7 @@ async fn non_expiration_tx_script_is_rejected_and_expiration_is_admitted() -> Re
 fn mint_note_carries_the_merged_transport_and_the_routing_target() -> Result<()> {
     let (_chain, faucet) = production_faucet()?;
     let faucet_id = faucet.id();
-    let payload = attested_deposit_intent_payload(test_account_id(3));
+    let payload = attested_deposit_intent_payload(test_account_id(3), faucet_id);
     let att = gen_attester(1, &payload);
     let note = XUsdcMintNote::create(
         test_account_id(3),
@@ -399,7 +408,7 @@ fn mint_note_carries_the_merged_transport_and_the_routing_target() -> Result<()>
         "exactly one scheme-2 routing attachment"
     );
 
-    // the merged content, at the documented offsets: attestation, intent
+    // the merged content, at the documented offsets: attestation, carried payload
     let transport = note
         .attachments()
         .iter()
@@ -407,13 +416,9 @@ fn mint_note_carries_the_merged_transport_and_the_routing_target() -> Result<()>
         .context("the scheme-4 merged transport attachment is present")?
         .content()
         .to_elements();
-    let mut intent = deposit_intent_to_packed_felts(&payload)
-        .map_err(|e| anyhow::anyhow!("the attested payload packs: {e}"))?;
-    while !intent.len().is_multiple_of(4) {
-        intent.push(Felt::from(0u32));
-    }
+    let carried = MintIntent::from_deposit_intent(&DepositIntent::new(&payload), faucet_id)
+        .map_err(|e| anyhow::anyhow!("the attested payload compresses: {e}"))?;
     let mut expected: Vec<Felt> = Vec::new();
-    expected.extend([Felt::from(0u32); 8]);
     expected.extend(
         affine_pubkey_felts(&att.pubkey_bytes)
             .map_err(|e| anyhow::anyhow!("the attester key is on the curve: {e}"))?,
@@ -422,13 +427,13 @@ fn mint_note_carries_the_merged_transport_and_the_routing_target() -> Result<()>
     expected.extend([Felt::from(0u32); 3]);
     assert_eq!(
         expected.len(),
-        XUSDC_MINT_TRANSPORT_INTENT_WORD_OFF * 4,
-        "the attestation section ({XUSDC_MINT_ATTESTATION_NUM_WORDS} words) precedes the intent"
+        XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF * 4,
+        "the attestation section ({XUSDC_MINT_ATTESTATION_NUM_WORDS} words) precedes the payload"
     );
-    expected.extend(intent);
+    expected.extend(carried.to_felts());
     assert_eq!(
         transport, expected,
-        "the merged transport attachment is attestation(44) || padded intent",
+        "the transport attachment is attestation(36) || the carried mint payload",
     );
     assert_eq!(
         usize::from(

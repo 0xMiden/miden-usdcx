@@ -164,7 +164,7 @@ async fn a_foreign_remote_token_rejects_while_the_own_id_intent_mints() -> Resul
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_XRESERVE_WRONG_IDENTIFIER"),
+        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
     )
     .await?;
 
@@ -185,15 +185,18 @@ async fn a_foreign_remote_token_rejects_while_the_own_id_intent_mints() -> Resul
     Ok(())
 }
 
-/// The reject error text is the one pinned for the mint compare, character for character.
+/// The reject error text is the one pinned for the mint, character for character.
 ///
 /// The string is part of the faucet's MAST root and of what a relayer matches on, so a reworded
-/// message is a wire change dressed up as a comment fix.
+/// message is a wire change dressed up as a comment fix. Under `DC-14` a foreign identifier no
+/// longer has an error of its own — the faucet stamps its own id into the message, so the reject
+/// arrives as the signature failing over a preimage Circle never signed. That IS the frozen
+/// string now.
 #[test]
 fn the_wrong_identifier_error_text_is_unchanged() {
     assert_eq!(
-        shell_error_by_name("ERR_XRESERVE_WRONG_IDENTIFIER").message(),
-        "deposit intent remote token does not match the faucet identifier",
+        shell_error_by_name("ERR_XRESERVE_SIG_INVALID").message(),
+        "deposit attestation signature verification failed",
         "the wrong-identifier reject text is frozen"
     );
 }

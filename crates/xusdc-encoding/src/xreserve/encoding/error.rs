@@ -1,16 +1,9 @@
-//! The error type every encoding routine returns, and its MASM counterparts.
+//! The error type every encoding routine returns.
 //!
 //! One enum covers the whole encoding surface so a caller handles failures from the amount reducer,
 //! the intent parser, and the codecs uniformly.
-//!
-//! Alongside the enum are the MASM error constants the faucet raises. They are strings rather than
-//! numeric codes, matching how the protocol's own MASM declares errors, and the assertion messages
-//! here are the same text as the ones in the `.masm` files. That matters for diagnosis: a
-//! transaction that trapped on-chain reports the same wording an off-chain rejection would.
 
 use core::fmt;
-
-use miden_protocol::errors::MasmError;
 
 use super::deposit_intent::DepositIntentField;
 
@@ -31,6 +24,21 @@ pub enum EncodingError {
     TruncatedHeader,
     LengthMismatch,
     HookDataTooLarge,
+    /// A field the mint note must carry as a single `AssetAmount` felt holds a wire value outside
+    /// that range, so the note cannot express it. The faucet rebuilds the signed message from what
+    /// the note carries, so an unrepresentable field makes the deposit unmintable rather than
+    /// merely rejected on-chain.
+    FieldNotAssetAmount {
+        field: DepositIntentField,
+    },
+    /// A bytes32 field the mint note carries as a 20-byte address holds something wider. Whether
+    /// every source domain Circle enables keeps these fields address-shaped is still Circle's to
+    /// confirm.
+    FieldNotEvmAddress {
+        field: DepositIntentField,
+    },
+    /// The intent's `remoteToken` is not this faucet's account id.
+    RemoteTokenMismatch,
     AccountIdOutOfRange,
     NonCanonicalAccountId,
     BurnItemsMalformed,
@@ -59,6 +67,24 @@ impl fmt::Display for EncodingError {
             Self::TruncatedHeader => write!(f, "deposit intent header is shorter than 240 bytes"),
             Self::LengthMismatch => write!(f, "deposit intent length relation violated"),
             Self::HookDataTooLarge => write!(f, "hook data exceeds the note storage felt bound"),
+            Self::FieldNotAssetAmount { field } => {
+                write!(
+                    f,
+                    "deposit intent field {field:?} is not a valid asset amount"
+                )
+            }
+            Self::FieldNotEvmAddress { field } => {
+                write!(
+                    f,
+                    "deposit intent field {field:?} is not a right-aligned evm address"
+                )
+            }
+            Self::RemoteTokenMismatch => {
+                write!(
+                    f,
+                    "deposit intent remote token is not the faucet account id"
+                )
+            }
             Self::AccountIdOutOfRange => {
                 // The right-aligned (Agglayer-mirroring) layout: the account id region is the
                 // 16 bytes `bytes[16..32]` (prefix u64 BE + suffix u64 BE) behind a 16-byte zero
@@ -80,99 +106,3 @@ impl fmt::Display for EncodingError {
 }
 
 impl core::error::Error for EncodingError {}
-
-// MASM ERROR CONSTANTS
-// ================================================================================================
-
-/// Single source for every MASM error name/message pair: the named constants, the
-/// name→constant lookup, and the name→message table are all generated from one list.
-macro_rules! masm_errors {
-    ($( $name:ident => $msg:literal ),+ $(,)?) => {
-        $( pub const $name: MasmError = MasmError::from_static_str($msg); )+
-
-        /// Name → constant lookup, for callers that hold only the `ERR_*` name.
-        pub static ERR_TABLE: [(&str, &MasmError); 4] = [ $( (stringify!($name), &$name) ),+ ];
-
-        /// Name → message table, for comparing against the strings the MASM declares.
-        pub static ERR_MESSAGES: [(&str, &str); 4] = [ $( (stringify!($name), $msg) ),+ ];
-    };
-}
-
-masm_errors! {
-    ERR_FELT_OUT_OF_FIELD => "supplied limb is not a valid u32",
-    ERR_DI_BAD_MAGIC => "deposit intent magic mismatch",
-    ERR_DI_BAD_VERSION => "deposit intent version mismatch",
-    ERR_DI_ZERO_FIELD => "deposit intent amount, local token, or local depositor is zero",
-}
-
-/// Errors raised inside procedures the MASM links from the protocol's `miden-standards`
-/// library (`miden::standards::utils` / `assets::asset_amount` / `interop::eth`) rather than
-/// declaring locally. The strings are the standards library's own, not this repo's.
-pub static STANDARDS_ERR_TABLE: [(&str, MasmError); 9] = [
-    // the standards pow10 scale bound (both its u32 guard and its <= 18 bound)
-    (
-        "ERR_SCALE_AMOUNT_EXCEEDED_LIMIT",
-        MasmError::from_static_str("maximum scaling factor is 18"),
-    ),
-    // the standards merge_u32_limbs lossless round-trip check (build_felt's no-reduction proof)
-    (
-        "ERR_MERGE_OVERFLOW",
-        MasmError::from_static_str("merged u32 limbs do not fit in a field element"),
-    ),
-    // the two halves of the standards `eth::bytes32_to_account_id` pad check, which is what the
-    // faucet's bytes32 account-id decode (`deposit_intent_parser::load_bytes32_account_id`) leans
-    // on: wire bytes 0..12 are asserted in `bytes32_to_account_id` itself, bytes 12..16 in the
-    // `to_account_id` it delegates to. Between them they cover the whole sixteen-byte pad of the
-    // right-aligned AccountId-in-bytes32 packaging.
-    (
-        "ERR_BYTES32_PADDING_NONZERO",
-        MasmError::from_static_str("leading 12 bytes must be zero for a bytes32-embedded address"),
-    ),
-    (
-        "ERR_MSB_NONZERO",
-        MasmError::from_static_str("most-significant 4 bytes must be zero for AccountId"),
-    ),
-    // the standards eth::build_felt u32 limb guard
-    (
-        "ERR_NOT_U32",
-        MasmError::from_static_str("address limb is not u32"),
-    ),
-    // the conversion verifier's x < 2^128 bound; STD-prefixed because the shell declares its
-    // own ERR_X_TOO_LARGE for the maxFee/fee staging
-    (
-        "STD_ERR_X_TOO_LARGE",
-        MasmError::from_static_str(
-            "the u256 value is larger than 2**128 and cannot be verifiably scaled to u64",
-        ),
-    ),
-    // the conversion verifier's witness bound: y within the fungible asset maximum
-    (
-        "ERR_Y_TOO_LARGE",
-        MasmError::from_static_str("y exceeds max fungible token amount"),
-    ),
-    // the conversion verifier's no-underflow subtract (an over-claimed witness)
-    (
-        "ERR_UNDERFLOW",
-        MasmError::from_static_str("x < y*10^s (underflow detected)"),
-    ),
-    // the conversion verifier's remainder bound (an under-claimed witness)
-    (
-        "ERR_REMAINDER_TOO_LARGE",
-        MasmError::from_static_str("remainder z must be < 10^s"),
-    ),
-];
-
-/// Looks up a MASM error constant by its `ERR_*` name (vector `masm_err` field), covering
-/// both the locally-declared constants and the linked standards-library ones.
-pub fn masm_error_by_name(name: &str) -> Option<&'static MasmError> {
-    ERR_TABLE
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, e)| *e)
-        .or_else(|| {
-            STANDARDS_ERR_TABLE
-                .iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, e)| e)
-        })
-}

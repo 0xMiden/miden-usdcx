@@ -9,9 +9,11 @@ message, the burn-note payload) and Miden's on-chain types (felts, Words, `Asset
   `account_id.rs`, `attestation.rs`, `deposit_intent.rs`, `mint_intent.rs`, `burn_note.rs`,
   `error.rs`).
 - **MASM:** `asm/standards/xreserve/deposit_intent.masm` (the `DC-1` wire layout, the shared codecs,
-  and `rebuild` — the faucet-owned `DC-14` writer) and `asm/standards/xreserve/mint_intent.masm`
-  (the `DC-14` carried shape, plus the checks and the nonce hash that read it). There is no
-  `encoding/` submodule: a format's constants and the procedure that realizes them live together.
+  and `rebuild` — the faucet-owned `DC-14` writer), `asm/standards/xreserve/mint_intent.masm`
+  (the `DC-14` carried shape, plus the checks and the nonce hash that read it), and
+  `asm/standards/xreserve/packed_mem.masm` (the layout-agnostic primitives `rebuild` writes the
+  packed region with). There is no `encoding/` submodule: a format's constants and the procedure
+  that realizes them live together.
 
 Two codecs are implemented on **both** sides: the bytes32 hash-to-Word and the attestation
 staging each have a Rust and a MASM leg, and a
@@ -43,7 +45,7 @@ definitions). In summary:
 
 | Routine | Contract |
 |---|---|
-| `hashed_nonce` (MASM) / `bytes32_to_storage_map_key` (Rust) | Poseidon2 `hash_elements` over the 8 u32-LE limbs of a bytes32 → one canonical Word. The raw fallible `TryFrom<[u8;32]>` is **not** used on this path (`NS-1`, `DC-4`, `INV-BYTES32-HASH-TO-WORD`). |
+| `hash_nonce` (MASM) / `bytes32_to_storage_map_key` (Rust) | Poseidon2 `hash_elements` over the 8 u32-LE limbs of a bytes32 → one canonical Word. The raw fallible `TryFrom<[u8;32]>` is **not** used on this path (`NS-1`, `DC-4`, `INV-BYTES32-HASH-TO-WORD`). |
 | `pubkey_commitment` | Poseidon2 over the 16 u32-LE affine-coordinate limbs of the pubkey → the allowlist commitment Word (`DC-3`; sponge capacity domain tag `16 % 8 = 0`), identical to miden-crypto 0.28 `PublicKey::to_commitment`. The Rust side takes the 33-byte compressed wire key and decompresses to affine internally; the MASM side hashes the 16 already-staged felts. |
 | `uint256_to_asset_amount` (Rust) | The `DC-5` reduction (`INV-UINT256-TO-ASSETAMOUNT`), `y = floor(x / 10^scale_exp)` with `scale_exp` bounded to `0..=18`. **Rust-only:** the MASM witness verifier is removed, because under `DC-14` the uint256 never reaches the chain — see the ownership map's `DC-5` rider before reopening `DEV-5`. |
 | `parse_deposit_intent_header` (Rust) | Structural DepositIntent validation (magic, version, non-zero `amount`/`localToken`/`localDepositor`, the length relation). **Rust-only since `DC-14`** — the on-chain parser is retired (`NS-2`), because the faucet writes those fields instead of reading them. It remains the compress-side entry and the relayer's pre-validate (`INV-DEPOSITINTENT-PARSE`). |

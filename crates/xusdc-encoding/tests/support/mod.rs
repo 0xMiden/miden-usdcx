@@ -138,7 +138,7 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
 pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
-    // DC-14 preimage writer (deposit_intent_builder.masm)
+    // the packed-memory primitives the DC-14 preimage writer copies through (packed_mem.masm)
     (
         "ERR_XRESERVE_MINT_INTENT_LIMB",
         MasmError::from_static_str("mint intent limb is not a valid u32"),

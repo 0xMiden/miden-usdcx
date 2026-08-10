@@ -9,8 +9,10 @@
 //! DepositIntent at all": the magic sentinel, the version, that the payload is not truncated, that
 //! the declared total length equals 240 plus the declared hookData length, and that the amount,
 //! `localToken`, and `localDepositor` fields are non-zero. What it deliberately does not check is
-//! whether the intent is addressed to a particular faucet; comparing the remote domain and token
-//! identifier against a faucet's configuration is the faucet's own decision and lives there.
+//! whether the intent is addressed to a particular faucet: the token identifier is compared
+//! against the consuming faucet by [`super::mint_intent::MintIntent::from_deposit_intent`], and
+//! the remote domain against the operator's configuration by whoever holds it — for the relayer,
+//! that is its own domain/token check against Circle's `/v1/info`.
 //!
 //! Validation order matters and is fixed, because the MASM parser performs the same checks in the
 //! same order and the two must reject identically — a payload that fails here must fail on-chain
@@ -91,7 +93,7 @@ impl DepositIntentHeader {
     /// [`EncodingError::FieldNotAssetAmount`] if the wire value does not reduce to a valid
     /// `AssetAmount` at this scale.
     pub fn reduced_amount(&self, scale_exp: u32) -> Result<AssetAmount, EncodingError> {
-        reduce_field(&self.amount, scale_exp, DepositIntentField::Amount)
+        reduce_to_asset_amount(&self.amount, scale_exp, DepositIntentField::Amount)
     }
 
     /// The `maxFee` field reduced the same way — the depositor-authorized fee ceiling.
@@ -101,14 +103,14 @@ impl DepositIntentHeader {
     /// [`EncodingError::FieldNotAssetAmount`] if the wire value does not reduce to a valid
     /// `AssetAmount` at this scale.
     pub fn reduced_max_fee(&self, scale_exp: u32) -> Result<AssetAmount, EncodingError> {
-        reduce_field(&self.max_fee, scale_exp, DepositIntentField::MaxFee)
+        reduce_to_asset_amount(&self.max_fee, scale_exp, DepositIntentField::MaxFee)
     }
 }
 
-/// Reduces one uint256 wire field, reporting which field failed rather than only why. The
-/// distinction matters off-chain: the relayer has to tell an unmintable `amount` from an
-/// unmintable `maxFee`.
-fn reduce_field(
+/// Reduces one uint256 wire field to the `AssetAmount` it must hold, naming which of the two
+/// amount-shaped fields failed rather than only why: the relayer has to tell an unmintable
+/// `amount` from an unmintable `maxFee`.
+fn reduce_to_asset_amount(
     value: &[u8; 32],
     scale_exp: u32,
     field: DepositIntentField,
@@ -142,8 +144,7 @@ fn bytes32_at(bytes: &[u8], offset: usize) -> [u8; 32] {
 }
 
 /// Structural parse + the library-owned checks (truncation, magic, version, non-zero
-/// fields, total-length relation). Does NOT perform the faucet-owned domain/identifier
-/// equality compares.
+/// fields, total-length relation). Does NOT perform the addressing compares.
 pub fn parse_deposit_intent_header(bytes: &[u8]) -> Result<DepositIntentHeader, EncodingError> {
     // the bounds guard necessarily precedes any field read (the TruncatedHeader case)
     if bytes.len() < DEPOSIT_INTENT_HEADER_LEN {

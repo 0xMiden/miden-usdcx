@@ -692,7 +692,7 @@ fn main() {
         let payload = spec.encode();
         let intent = xusdc_encoding::xreserve::encoding::DepositIntent::new(&payload);
         let carried = xusdc_encoding::xreserve::encoding::MintIntent::from_deposit_intent(
-            &intent, *faucet_id, mi_domain,
+            &intent, *faucet_id,
         )
         .expect("generator invariant: the mp accept specs are DC-14 shaped");
         let amount = intent
@@ -741,14 +741,13 @@ fn main() {
     let mi_reject = |mi: &mut Vec<Value>,
                      id: &str,
                      spec: &IntentSpec,
-                     domain: u32,
                      expected_variant: &str,
                      derivation: &str| {
         let payload = spec.encode();
         let intent = xusdc_encoding::xreserve::encoding::DepositIntent::new(&payload);
         assert!(
             xusdc_encoding::xreserve::encoding::MintIntent::from_deposit_intent(
-                &intent, *faucet_id, domain,
+                &intent, *faucet_id,
             )
             .is_err(),
             "generator invariant: {id} must not compress"
@@ -760,7 +759,7 @@ fn main() {
             "payload_hex": hex_bytes(&payload),
             "faucet_prefix_felt": felt_hex(faucet_id.prefix().as_felt()),
             "faucet_suffix_felt": felt_hex(faucet_id.suffix()),
-            "remote_domain": domain,
+            "remote_domain": mi_domain,
             "expected_variant": expected_variant,
             "cite": "DC-14 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
             "derivation": derivation,
@@ -773,7 +772,6 @@ fn main() {
             &mut mi,
             "mi-rej-local-token-not-address",
             &spec,
-            mi_domain,
             "FieldNotEvmAddress",
             "localToken has non-zero bytes in the leading 12-byte pad, so it is not a 20-byte EVM address",
         );
@@ -785,19 +783,10 @@ fn main() {
             &mut mi,
             "mi-rej-local-depositor-not-address",
             &spec,
-            mi_domain,
             "FieldNotEvmAddress",
             "localDepositor has non-zero bytes in the leading 12-byte pad",
         );
     }
-    mi_reject(
-        &mut mi,
-        "mi-rej-domain-mismatch",
-        &mi_spec(Vec::new(), 0xd0),
-        mi_domain + 1,
-        "RemoteDomainMismatch",
-        "the intent's remoteDomain is 7 but the faucet is configured for 8",
-    );
     {
         let mut spec = mi_spec(Vec::new(), 0xd0);
         spec.remote_token = r_b_bytes32(&ids[2]);
@@ -805,7 +794,6 @@ fn main() {
             &mut mi,
             "mi-rej-remote-token-mismatch",
             &spec,
-            mi_domain,
             "RemoteTokenMismatch",
             "remoteToken is a well-formed account id, but a different faucet's",
         );
@@ -817,7 +805,6 @@ fn main() {
             &mut mi,
             "mi-rej-remote-token-malformed",
             &spec,
-            mi_domain,
             "AccountIdOutOfRange",
             "remoteToken has non-zero bytes in the leading 16-byte account-id pad",
         );
@@ -829,7 +816,6 @@ fn main() {
             &mut mi,
             "mi-rej-max-fee-over-cap",
             &spec,
-            mi_domain,
             "FieldNotAssetAmount",
             "maxFee exceeds AssetAmount::MAX, so it cannot be carried as one felt",
         );
@@ -844,7 +830,6 @@ fn main() {
             &mut mi,
             "mi-rej-recipient-non-canonical",
             &spec,
-            mi_domain,
             "NonCanonicalAccountId",
             "remoteRecipient prefix=suffix=7 is in-field but not a canonical account id",
         );

@@ -203,7 +203,6 @@ fn attested_mint_note(pf: &ProductionFaucet, payload: &[u8], rng_seed: u64) -> R
     XUsdcMintNote::create(
         pf.producer_id,
         pf.faucet_id,
-        TEST_DOMAIN,
         payload,
         &MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes),
         &mut prod_note_rng(rng_seed),

@@ -18,9 +18,10 @@ asm/standards/
   xreserve/                       # xUSDC product-root namespace
     attestation_verify.masm       # FAUCET(01): on-chain attestation verify
     attester_admin.masm           # FAUCET(01): attester allowlist administration
-    deposit_intent.masm           # Circle's DepositIntent wire form (DC-1, 04-owned layout) + `rebuild`, the faucet's on-chain realization of it (DC-14, 01-owned), plus the shared primitives that only it and its callers need (the DC-5 reducer, div_ceil_four)
-    mint_intent.masm              # What the mint note carries (DC-14): the carried felt offsets, the value widths, and the admissibility checks that hold over the carried fields alone (`validate`, `hashed_nonce`, the replay guard + its registry slot)
+    deposit_intent.masm           # Circle's DepositIntent wire form (DC-1, 04-owned layout) + `rebuild`, the faucet's on-chain realization of it (DC-14, 01-owned)
+    mint_intent.masm              # What the mint note carries (DC-14): the carried felt offsets, the value widths, and the admissibility checks that hold over the carried fields alone (`validate`, `hash_nonce`, the replay guard + its registry slot)
     mint_policy.masm              # FAUCET(01): active attestation mint policy
+    packed_mem.masm               # The layout-agnostic primitives `rebuild` writes the packed wire region with (guarded limb copies, big-endian u64/account-id stores)
     mod.masm                      # FAUCET(01): self-contained component root
   notes/
     xreserve_set_attester_note.masm
@@ -37,7 +38,7 @@ Owner→path rule: directory path = MASM module path and the Rust component `NAM
 
 | Owned thing (DC-id) | Canonical owner (concept) | On-chain MASM home (per §Resolved layout) | Off-chain Rust home | Conformance source of truth |
 |---|---|---|---|---|
-| `bytes32 → Word` hash-to-Word, Poseidon2 over 8×u32-LE (DC-3 commitment / DC-4 nonce key) | **shared-encoding (04)** (hash) + **faucet (01)** (nonce-registry & allowlist stores) | `asm/standards/xreserve/mint_intent.masm` → **`xreserve::mint_intent::hashed_nonce`** | harness encode helper | `INV-BYTES32-HASH-TO-WORD`; DC-4; DC-3 |
+| `bytes32 → Word` hash-to-Word, Poseidon2 over 8×u32-LE (DC-3 commitment / DC-4 nonce key) | **shared-encoding (04)** (hash) + **faucet (01)** (nonce-registry & allowlist stores) | `asm/standards/xreserve/mint_intent.masm` → **`xreserve::mint_intent::hash_nonce`** | harness encode helper | `INV-BYTES32-HASH-TO-WORD`; DC-4; DC-3 |
 | `uint256 → AssetAmount` conversion (DC-5) | **shared-encoding (04)** | **Rust-only.** The MASM witness verifier is removed — see the rider below | `crates/xusdc-encoding/src/xreserve/encoding/amount.rs` → `uint256_to_asset_amount` | `DC-5`; `INV-UINT256-TO-ASSETAMOUNT` |
 | ↳ **MASM side removed (human-directed).** Under DC-14 the faucet writes the amount into the preimage from the note's own asset value, so no untrusted witness reaches the chain and nothing called `verify_uint256_to_asset_amount`. It was previously retained against a non-zero `DEPOSIT_SCALE_EXP` (DEV-5, OPEN); it is now deleted, along with `TV-DUAL-2` and the local `ERR_FELT_OUT_OF_FIELD`. **Reopening DEV-5 means restoring it from history**, together with a transport that carries the uint256 again — the reduction is not expressible on-chain without both. The Rust generator is untouched and keeps all its callers. | — | — | — | `DC-5`; `DEV-5` |
 | `AccountId ↔ bytes32` (protocol form 15-byte/two-felt; right-aligned bytes32 packaging; lossless, no keccak fallback) (DC-6) | **shared-encoding (04)** | Rust-primary: no MASM proc in the 04 slice | `crates/xusdc-encoding/src/xreserve/encoding/account_id.rs` | `DC-6`; `INV-ACCOUNTID-ENCODING` |
@@ -66,7 +67,7 @@ The decisions below are binding:
 
 | # | Owner-04 side (normative per `04:210` "MASM procedure names follow `xreserve::encoding::<name>`") | Consumer/faucet-01 side | Bound test rows |
 |---|---|---|---|
-| NS-1 (bytes32, DC-3/DC-4) — **amended twice** | `xreserve::mint_intent::hashed_nonce` | The path moved with the `encoding` module and again with the nonce it hashes; the routine, its body and its owner did not. Rust keeps `bytes32_to_storage_map_key`; do not add a MASM alias. | TV-DUAL-1 |
+| NS-1 (bytes32, DC-3/DC-4) — **amended three times** | `xreserve::mint_intent::hash_nonce` | The path moved with the `encoding` module and again with the nonce it hashes, and the name became a verb for what it does; the routine, its body and its owner did not change. Rust keeps `bytes32_to_storage_map_key`; do not add a MASM alias. | TV-DUAL-1 |
 | NS-2 (DepositIntent parse, DC-1) | ~~`xreserve::deposit_intent_parser::parse`~~ — **retired, superseded by NS-3** | 01 owns the only MASM realization; 04 owns the layout and shared primitives. The Rust `parse_deposit_intent_header` is **unaffected** and keeps its name. | TV-DUAL-3 |
 | NS-3 (DepositIntent write, DC-1/DC-14) | `xreserve::deposit_intent::rebuild` | 01 owns the only MASM realization of the DepositIntent wire form; 04 owns the felt offsets it writes at. Rust: `MintIntent::to_deposit_intent_bytes`. Do not add a MASM alias, and do not reintroduce a second parser. | TV-DUAL-6 |
 

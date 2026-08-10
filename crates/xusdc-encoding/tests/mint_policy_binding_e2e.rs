@@ -173,9 +173,8 @@ async fn mint_rejects_a_structurally_invalid_carried_recipient() -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 38);
-    let carried =
-        MintIntent::from_deposit_intent(&DepositIntent::new(&payload), pf.faucet_id, TEST_DOMAIN)
-            .map_err(|e| anyhow::anyhow!("the base payload compresses: {e}"))?;
+    let carried = MintIntent::from_deposit_intent(&DepositIntent::new(&payload), pf.faucet_id)
+        .map_err(|e| anyhow::anyhow!("the base payload compresses: {e}"))?;
     // the low byte of an account id's suffix is reserved and must be zero
     let dirty_suffix = Felt::new(carried.remote_recipient().suffix().as_canonical_u64() | 1)
         .expect("setting the reserved low bit stays inside the field");
@@ -271,9 +270,8 @@ async fn the_honest_note_carries_the_merged_transport_and_the_routing_target() -
     // only the fields the faucet cannot derive — and the faucet rebuilds the signed message from
     // it. That the two agree is TV-DUAL-6's job; here we only pin that the note carries exactly
     // what the codec says it should.
-    let carried =
-        MintIntent::from_deposit_intent(&DepositIntent::new(&payload), pf.faucet_id, TEST_DOMAIN)
-            .map_err(|e| anyhow::anyhow!("the payload compresses: {e}"))?;
+    let carried = MintIntent::from_deposit_intent(&DepositIntent::new(&payload), pf.faucet_id)
+        .map_err(|e| anyhow::anyhow!("the payload compresses: {e}"))?;
     assert_eq!(
         &transport[TRANSPORT_PAYLOAD_WORD_OFF * 4..],
         carried.to_felts().as_slice(),
@@ -290,7 +288,6 @@ async fn the_honest_note_carries_the_merged_transport_and_the_routing_target() -
     let factory_note = XUsdcMintNote::create(
         pf.producer_id,
         pf.faucet_id,
-        TEST_DOMAIN,
         &payload,
         &MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes),
         &mut note_rng(90),

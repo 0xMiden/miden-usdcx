@@ -50,11 +50,17 @@ const MINT_POLICY_MASM: &str = include_str!("../../../asm/standards/xreserve/min
 const ATTESTER_ADMIN_MASM: &str =
     include_str!("../../../asm/standards/xreserve/attester_admin.masm");
 
+/// The packed-memory primitives the DC-14 preimage writer is built from, read test-side by
+/// reference. It owns the limb guard's error and one width constant; the wire layout stays with
+/// `deposit_intent.masm`.
+const PACKED_MEM_MASM: &str = include_str!("../../../asm/standards/xreserve/packed_mem.masm");
+
 /// Faucet-owned shell error constants declared in MASM, pinned against the test-side
 /// `support::SHELL_ERR_TABLE` (the single Rust source).
 const SHELL_ERRORS_DECLARED: &[&str] = &[
-    // the DC-14 preimage writer (deposit_intent_builder.masm)
+    // the packed-memory primitives the DC-14 preimage writer copies through (packed_mem.masm)
     "ERR_XRESERVE_MINT_INTENT_LIMB",
+    // the DC-14 preimage writer (deposit_intent.masm)
     "ERR_XRESERVE_DOMAIN_NOT_U32",
     // amount validation R-MINT-10 (F2's feeAmount==0 reuses ERR_XRESERVE_FEE_NONZERO, declared below; the old
     // R-MINT-11 <= maxFee compare + ERR_XRESERVE_FEE_OVER_MAX are subsumed and removed)
@@ -159,7 +165,6 @@ const MINT_INTENT_COVERED_NUMS: &[&str] = &[
     // carried-value widths: each carries a derived relation row below
     "BYTES32_PACKED_LIMBS",
     "EVM_ADDRESS_PACKED_LIMBS",
-    "ASSET_AMOUNT_PACKED_LIMBS",
     "ACCOUNT_ID_FELTS",
     // DC-14 carried felt offsets, each pinned directly against its Rust twin
     "MINT_INTENT_NONCE_FELT_OFF",
@@ -208,6 +213,10 @@ const DEPOSIT_INTENT_COVERED_NUMS: &[&str] = &[
     "AMOUNT_LOC",
     "HOOK_DATA_LEN_LOC",
 ];
+
+/// The packed-memory module's only numeric constant: the limb width of a u64, pinned against the
+/// Rust `ASSET_AMOUNT_BYTES` / `BYTES_PER_PACKED_FELT` relation below.
+const PACKED_MEM_COVERED_NUMS: &[&str] = &["U64_PACKED_LIMBS"];
 
 /// Evaluates a MASM numeric constant expression: a decimal or hex literal, a reference to a
 /// constant the same file already declared, or a `+`-chain of those. Returns `None` for anything
@@ -367,10 +376,7 @@ fn masm_rust_constant_parity() {
             "DC-14 right-alignment relation for {masm_name} (pad == 32 bytes - the value's width)"
         );
     }
-    let width_relations: [(&str, usize); 2] = [
-        ("BYTES32_PACKED_LIMBS", BYTES32_LEN),
-        ("ASSET_AMOUNT_PACKED_LIMBS", ASSET_AMOUNT_BYTES),
-    ];
+    let width_relations: [(&str, usize); 1] = [("BYTES32_PACKED_LIMBS", BYTES32_LEN)];
     for (masm_name, value_bytes) in width_relations {
         assert_eq!(
             num(&mi_nums, masm_name, "mint_intent.masm") * 4,
@@ -387,6 +393,15 @@ fn masm_rust_constant_parity() {
         num(&mi_nums, "ACCOUNT_ID_FELTS", "mint_intent.masm"),
         ACCOUNT_ID_FELTS as u64,
         "DC-14 account-id felt-pair width parity"
+    );
+
+    // the stride `store_account_id` advances by between the two u64 halves it writes. An
+    // `AssetAmount` is that same u64, which is why the two constants must agree.
+    let (packed_mem_nums, _, _) = parse_masm_consts(PACKED_MEM_MASM);
+    assert_eq!(
+        num(&packed_mem_nums, "U64_PACKED_LIMBS", "packed_mem.masm") * 4,
+        ASSET_AMOUNT_BYTES as u64,
+        "a u64 spans ASSET_AMOUNT_BYTES bytes of the packed wire region"
     );
 
     // DC-14 carried-payload offsets. Both sides derive these from the widths above, so a width
@@ -533,9 +548,11 @@ fn masm_shell_error_string_parity() {
     let (_, mi_strs, _) = parse_masm_consts(MINT_INTENT_MASM);
     let (_, att_strs, _) = parse_masm_consts(ATTESTATION_VERIFY_MASM);
     let (_, policy_strs, _) = parse_masm_consts(MINT_POLICY_MASM);
+    let (_, packed_mem_strs, _) = parse_masm_consts(PACKED_MEM_MASM);
     strs.extend(mi_strs);
     strs.extend(att_strs);
     strs.extend(policy_strs);
+    strs.extend(packed_mem_strs);
     for name in SHELL_ERRORS_DECLARED {
         let expected = support::SHELL_ERR_TABLE
             .iter()
@@ -557,7 +574,7 @@ fn masm_constants_bidirectional() {
     // every MASM-only string constant must be a known error (the encoding table or the faucet
     // shell table); a new one fails here until it gets a row
     let known_err = |name: &str| support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name);
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 5] = [
+    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 6] = [
         (
             "mint_intent.masm",
             MINT_INTENT_MASM,
@@ -593,6 +610,14 @@ fn masm_constants_bidirectional() {
             ATTESTER_ADMIN_MASM,
             &[],
             EXPECTED_ATTESTER_ADMIN_WORD_CONSTS,
+        ),
+        // packed_mem: the layout-agnostic copy/store primitives. It declares the limb guard's
+        // error (a known shell error) and one width; no slot consts.
+        (
+            "packed_mem.masm",
+            PACKED_MEM_MASM,
+            PACKED_MEM_COVERED_NUMS,
+            &[],
         ),
     ];
     for (file, src, covered_nums, expected_words) in sources {

@@ -37,11 +37,6 @@ pub enum EncodingError {
     FieldNotEvmAddress {
         field: DepositIntentField,
     },
-    /// The intent is addressed to a different destination domain than the faucet's.
-    RemoteDomainMismatch {
-        expected: u32,
-        actual: u32,
-    },
     /// The intent's `remoteToken` is not this faucet's account id.
     RemoteTokenMismatch,
     AccountIdOutOfRange,
@@ -82,12 +77,6 @@ impl fmt::Display for EncodingError {
                 write!(
                     f,
                     "deposit intent field {field:?} is not a right-aligned evm address"
-                )
-            }
-            Self::RemoteDomainMismatch { expected, actual } => {
-                write!(
-                    f,
-                    "deposit intent remote domain {actual} is not the faucet domain {expected}"
                 )
             }
             Self::RemoteTokenMismatch => {

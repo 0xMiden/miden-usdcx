@@ -266,7 +266,6 @@ async fn mint_via_production_note(
     let note = XUsdcMintNote::create(
         pf.producer_id,
         pf.faucet_id,
-        TEST_DOMAIN,
         payload,
         &attestation_for(1, payload),
         &mut note_rng(rng_seed),

@@ -153,7 +153,7 @@ pub fn mint_payload_for(vector: &MiVector, faucet: AccountId, remote_domain: u32
         .reduced_amount(MINT_INTENT_SCALE_EXP)
         .expect("the canonical mi vector's amount is mintable");
 
-    MintIntent::from_deposit_intent(&intent, vector.faucet_id(), vector.remote_domain)
+    MintIntent::from_deposit_intent(&intent, vector.faucet_id())
         .expect("the canonical mi accept vector compresses under its own faucet")
         .to_deposit_intent_bytes(amount, remote_domain, faucet)
 }

@@ -36,7 +36,7 @@ const TOKEN_SUPPLY: u64 = 0;
 // pre-change composition at SEED). Comparing the rendered strings sidesteps any felt-repr ambiguity.
 //
 // Re-captured when the mint intent took ownership of its own admissibility checks (`validate`,
-// `hashed_nonce` and the replay guard moved out of the deposit-intent module, and `rebuild` lost
+// `hash_nonce` and the replay guard moved out of the deposit-intent module, and `rebuild` lost
 // them), the unused `verify_uint256_to_asset_amount` was removed, and the nonce copy became two
 // word moves instead of eight element moves. Three of the four anchors moved with that — the code commitment directly, the storage
 // digest because the active mint policy is stored as `check_policy`'s MAST root, and the initial

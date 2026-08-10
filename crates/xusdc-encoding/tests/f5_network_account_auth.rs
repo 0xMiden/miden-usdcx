@@ -377,7 +377,6 @@ fn mint_note_carries_the_merged_transport_and_the_routing_target() -> Result<()>
     let note = XUsdcMintNote::create(
         test_account_id(3),
         faucet_id,
-        TEST_DOMAIN,
         &payload,
         &MintAttestation::new(att.sig_bytes, att.pubkey_bytes),
         &mut note_rng(1),
@@ -417,9 +416,8 @@ fn mint_note_carries_the_merged_transport_and_the_routing_target() -> Result<()>
         .context("the scheme-4 merged transport attachment is present")?
         .content()
         .to_elements();
-    let carried =
-        MintIntent::from_deposit_intent(&DepositIntent::new(&payload), faucet_id, TEST_DOMAIN)
-            .map_err(|e| anyhow::anyhow!("the attested payload compresses: {e}"))?;
+    let carried = MintIntent::from_deposit_intent(&DepositIntent::new(&payload), faucet_id)
+        .map_err(|e| anyhow::anyhow!("the attested payload compresses: {e}"))?;
     let mut expected: Vec<Felt> = Vec::new();
     expected.extend(
         affine_pubkey_felts(&att.pubkey_bytes)

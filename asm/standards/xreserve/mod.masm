@@ -1,14 +1,6 @@
-# xreserve
-#
-# The namespace root of the hand-written xUSDC faucet library. The assembler includes only
-# modules declared via `mod`/`pub mod` in an artifact, so this root module declares the
-# library tree: the DepositIntent wire form and its on-chain realization, the mint intent the
-# note carries, the attestation verify, the attester allowlist, and the attestation mint policy
-# (the ACTIVE mint policy the stock `mint_and_send` dispatches). It carries no procedures of its
-# own — the callable surface lives in the submodules.
-
 pub mod attestation_verify
 pub mod attester_admin
 pub mod deposit_intent
 pub mod mint_intent
 pub mod mint_policy
+pub mod packed_mem

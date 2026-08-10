@@ -335,7 +335,7 @@ pub fn mint_note<R: FeltRng>(
 ) -> Result<Note> {
     let payload = mint_payload(recipient, amount_raw, max_fee_raw, nonce_salt);
     let attestation = attester.attestation_for(&payload);
-    XUsdcMintNote::create(sender, faucet, MINT_DOMAIN, &payload, &attestation, rng)
+    XUsdcMintNote::create(sender, faucet, &payload, &attestation, rng)
         .context("building the XUsdcMintNote probe")
 }
 

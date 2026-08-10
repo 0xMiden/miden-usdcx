@@ -80,7 +80,6 @@ fn t_delegation_is_byte_for_byte_unit04_create() {
     let built = build_mint_note(
         relayer_sender_id(),
         faucet_id(),
-        fixtures::TEST_REMOTE_DOMAIN,
         &attestation,
         &attester,
         &mut note_rng(0xC1_2C_1E),
@@ -91,7 +90,6 @@ fn t_delegation_is_byte_for_byte_unit04_create() {
     let unit04 = XUsdcMintNote::create(
         relayer_sender_id(),
         faucet_id(),
-        fixtures::TEST_REMOTE_DOMAIN,
         attestation.payload(),
         &MintAttestation::new(attestation.attestation(), *attester.as_bytes()),
         &mut note_rng(0xC1_2C_1E),
@@ -208,7 +206,6 @@ fn t_the_faucet_argument_drives_the_route_and_the_tag() {
     let note = build_mint_note(
         relayer_sender_id(),
         other_faucet_id(),
-        fixtures::TEST_REMOTE_DOMAIN,
         &attestation,
         &attester,
         &mut note_rng(9),
@@ -346,7 +343,6 @@ fn t_the_transport_payload_sub_region_is_the_compressed_intent() {
         let note = build_mint_note(
             relayer_sender_id(),
             faucet_id(),
-            fixtures::TEST_REMOTE_DOMAIN,
             &validated_over_vector_id(vector_id),
             &attester,
             &mut note_rng(seed),
@@ -429,7 +425,6 @@ fn t_the_configured_pubkey_is_the_one_that_travels() {
     let partner = build_mint_note(
         relayer_sender_id(),
         faucet_id(),
-        fixtures::TEST_REMOTE_DOMAIN,
         &attestation,
         &attester_pubkey(),
         &mut note_rng(2),
@@ -438,7 +433,6 @@ fn t_the_configured_pubkey_is_the_one_that_travels() {
     let foreign = build_mint_note(
         relayer_sender_id(),
         faucet_id(),
-        fixtures::TEST_REMOTE_DOMAIN,
         &attestation,
         &foreign_attester_pubkey(),
         &mut note_rng(2),
@@ -474,7 +468,6 @@ fn t_the_validated_signature_is_the_one_that_travels() {
     let a = build_mint_note(
         relayer_sender_id(),
         faucet_id(),
-        fixtures::TEST_REMOTE_DOMAIN,
         &partner_signed,
         &attester_pubkey(),
         &mut note_rng(3),
@@ -483,7 +476,6 @@ fn t_the_validated_signature_is_the_one_that_travels() {
     let b = build_mint_note(
         relayer_sender_id(),
         faucet_id(),
-        fixtures::TEST_REMOTE_DOMAIN,
         &foreign_signed,
         &attester_pubkey(),
         &mut note_rng(3),
@@ -537,7 +529,6 @@ fn t_each_build_draws_a_fresh_serial_number() {
     let first = build_mint_note(
         relayer_sender_id(),
         faucet_id(),
-        fixtures::TEST_REMOTE_DOMAIN,
         &attestation,
         &attester,
         &mut note_rng(10),
@@ -546,7 +537,6 @@ fn t_each_build_draws_a_fresh_serial_number() {
     let second = build_mint_note(
         relayer_sender_id(),
         faucet_id(),
-        fixtures::TEST_REMOTE_DOMAIN,
         &attestation,
         &attester,
         &mut note_rng(11),
@@ -574,7 +564,6 @@ fn t_the_callers_rng_is_the_one_that_is_drawn_from() {
     let first = build_mint_note(
         relayer_sender_id(),
         faucet_id(),
-        fixtures::TEST_REMOTE_DOMAIN,
         &attestation,
         &attester,
         &mut rng,
@@ -583,7 +572,6 @@ fn t_the_callers_rng_is_the_one_that_is_drawn_from() {
     let second = build_mint_note(
         relayer_sender_id(),
         faucet_id(),
-        fixtures::TEST_REMOTE_DOMAIN,
         &attestation,
         &attester,
         &mut rng,
@@ -595,7 +583,6 @@ fn t_the_callers_rng_is_the_one_that_is_drawn_from() {
         build_mint_note(
             relayer_sender_id(),
             faucet_id(),
-        fixtures::TEST_REMOTE_DOMAIN,
             &attestation,
             &attester,
             &mut note_rng(12),
@@ -611,12 +598,8 @@ fn t_the_callers_rng_is_the_one_that_is_drawn_from() {
 /// The carried form of a validated payload — the shared encoding crate's own compress step, called
 /// here so the expected transport content is the OWNER's, not a shape restated in this suite.
 fn carried_payload(payload: &[u8]) -> MintIntent {
-    MintIntent::from_deposit_intent(
-        &DepositIntent::new(payload),
-        faucet_id(),
-        fixtures::TEST_REMOTE_DOMAIN,
-    )
-    .expect("the canonical payload compresses for this faucet")
+    MintIntent::from_deposit_intent(&DepositIntent::new(payload), faucet_id())
+        .expect("the canonical payload compresses for this faucet")
 }
 
 /// The standard note: the canonical vector, the partner attester key, the public faucet.
@@ -624,7 +607,6 @@ fn build_note() -> miden_protocol::note::Note {
     build_mint_note(
         relayer_sender_id(),
         faucet_id(),
-        fixtures::TEST_REMOTE_DOMAIN,
         &validated_test_vector(),
         &attester_pubkey(),
         &mut note_rng(0x5EED),

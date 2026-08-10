@@ -219,7 +219,7 @@ fn carried_payload_felts(payload: &[u8]) -> Vec<Felt> {
     let header = intent.parse_header().expect("the tamper payload parses");
     let claimed_faucet = bytes32_to_account_id(&header.remote_token)
         .expect("the tamper payload names a well-formed faucet");
-    let carried = MintIntent::from_deposit_intent(&intent, claimed_faucet, header.remote_domain)
+    let carried = MintIntent::from_deposit_intent(&intent, claimed_faucet)
         .expect("the tamper payload is DC-14 shaped");
     let mut felts = carried.to_felts();
     while !felts.len().is_multiple_of(4) {

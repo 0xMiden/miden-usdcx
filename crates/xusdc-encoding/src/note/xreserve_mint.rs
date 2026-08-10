@@ -164,7 +164,6 @@ impl XUsdcMintNote {
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
-        remote_domain: u32,
         deposit_intent: &[u8],
         attestation: &MintAttestation,
         rng: &mut R,
@@ -172,7 +171,6 @@ impl XUsdcMintNote {
         Self::builder()
             .sender(sender)
             .faucet_id(faucet_id)
-            .remote_domain(remote_domain)
             .deposit_intent(DepositIntent::new(deposit_intent))
             .attestation(attestation)
             .rng(rng)
@@ -196,7 +194,6 @@ impl XUsdcMintNote {
     pub fn new<'a, R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
-        remote_domain: u32,
         deposit_intent: DepositIntent<'a>,
         attestation: &MintAttestation,
         rng: &mut R,
@@ -209,8 +206,8 @@ impl XUsdcMintNote {
         })?;
         // compress to what the note actually carries. This rejects every intent this faucet could
         // not rebuild byte-for-byte, which on-chain would only ever surface as a bad signature.
-        let payload = MintIntent::from_deposit_intent(&deposit_intent, faucet_id, remote_domain)
-            .map_err(|source| {
+        let payload =
+            MintIntent::from_deposit_intent(&deposit_intent, faucet_id).map_err(|source| {
                 NoteError::other_with_source(
                     "deposit intent cannot be carried by the mint transport",
                     source,

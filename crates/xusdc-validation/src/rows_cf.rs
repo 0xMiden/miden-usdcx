@@ -440,7 +440,7 @@ impl Driver {
             };
             attester.attestation_for(&payload)
         };
-        XUsdcMintNote::create(sender, f, MINT_DOMAIN, &payload, &attestation, self.hc.client.rng())
+        XUsdcMintNote::create(sender, f, &payload, &attestation, self.hc.client.rng())
             .context("building the XUsdcMintNote probe")
     }
     fn burn_note(&mut self, units: u64, salt: u8) -> Result<Note> {

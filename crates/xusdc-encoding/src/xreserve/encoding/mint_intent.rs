@@ -3,14 +3,13 @@
 //!
 //! Circle's DepositIntent does not travel on the mint note. The note carries only the fields the
 //! faucet has no other way to learn, and the faucet rebuilds the canonical message itself before
-//! hashing it. That is what removes the addressing checks from the on-chain path: a field the
-//! faucet writes cannot disagree with the attestation, because a divergent value changes the digest
-//! and the signature stops verifying.
+//! hashing it — so a field the faucet writes cannot disagree with the attestation, because a
+//! divergent value changes the digest and the signature stops verifying.
 //!
 //! This module is the off-chain half. [`MintIntent::from_deposit_intent`] compresses a real Circle
 //! payload and refuses anything this faucet could not rebuild byte-for-byte;
 //! [`MintIntent::to_deposit_intent_bytes`] is the mirror of the MASM writer
-//! `xreserve::deposit_intent_builder::build_preimage`. What binds the two is the round trip, not a
+//! `xreserve::deposit_intent::rebuild`. What binds the two is the round trip, not a
 //! field-by-field comparison — see `TV-DUAL-6` and the reconstruction reference in
 //! `docs/spec/ENCODING-COMPONENT-SPEC.md`.
 //!
@@ -70,7 +69,7 @@ pub const MINT_INTENT_SCALE_EXP: u32 = 0;
 
 /// Felt offsets within the carried payload. The nonce leads so the widest verbatim run starts
 /// word-aligned, and the two single-felt fields trail so every wider field stays contiguous. The
-/// MASM twins are in `asm/standards/xreserve/encoding/layout.masm`.
+/// MASM twins are in `asm/standards/xreserve/mint_intent.masm`.
 pub const MINT_INTENT_NONCE_FELT_OFF: usize = 0;
 pub const MINT_INTENT_LOCAL_TOKEN_FELT_OFF: usize =
     MINT_INTENT_NONCE_FELT_OFF + BYTES32_PACKED_LIMBS;
@@ -181,10 +180,9 @@ impl HookData {
 
 /// Exactly the DepositIntent fields the mint note carries.
 ///
-/// Everything absent from this struct is a field the faucet supplies itself: `magic` and `version`
-/// are scheme constants, `amount` comes from the note's own asset value, `remoteDomain` from the
-/// faucet's config slot, `remoteToken` from its own account id, and `feeAmount` is written zero and
-/// does not exist on this wire at all.
+/// The faucet supplies the rest when it rebuilds the message: `magic` and `version` are scheme
+/// constants, `amount` is the note's own asset value, `remoteDomain` its configured domain,
+/// `remoteToken` its own account id, and `feeAmount` is always zero.
 #[derive(Debug, Clone, PartialEq, Eq, bon::Builder)]
 pub struct MintIntent {
     nonce: DepositNonce,
@@ -201,16 +199,15 @@ impl MintIntent {
 
     /// Compresses a Circle DepositIntent into the felts the mint note carries.
     ///
-    /// Every derivable field is checked against what this faucet would write, because a mismatch
-    /// there is not something the chain can report usefully: the rebuilt digest would simply differ
-    /// and the mint would fail as an invalid signature. Catching it here turns a mystery into a
-    /// named error before the note is ever submitted.
+    /// `faucet_id` is the faucet meant to consume the note, and the intent's `remoteToken` has to
+    /// already name it: the faucet writes its own id into the message it rebuilds, so an intent
+    /// addressed to a different one rebuilds a different digest and dies on-chain as an invalid
+    /// signature. Comparing it here gives that a name before the note is ever submitted.
     ///
     /// # Errors
     ///
     /// Propagates the structural [`EncodingError`]s of the parse, then:
-    /// - [`EncodingError::RemoteDomainMismatch`] / [`EncodingError::RemoteTokenMismatch`] if the
-    ///   intent is addressed elsewhere.
+    /// - [`EncodingError::RemoteTokenMismatch`] if the intent is addressed to another faucet.
     /// - [`EncodingError::AccountIdOutOfRange`] / [`EncodingError::NonCanonicalAccountId`] if
     ///   `remoteToken` or `remoteRecipient` is not a well-formed packaged account id.
     /// - [`EncodingError::FieldNotAssetAmount`] if `maxFee` is not representable.
@@ -220,16 +217,9 @@ impl MintIntent {
     pub fn from_deposit_intent(
         intent: &DepositIntent<'_>,
         faucet_id: AccountId,
-        remote_domain: u32,
     ) -> Result<Self, EncodingError> {
         let header = intent.parse_header()?;
 
-        if header.remote_domain != remote_domain {
-            return Err(EncodingError::RemoteDomainMismatch {
-                expected: remote_domain,
-                actual: header.remote_domain,
-            });
-        }
         if bytes32_to_account_id(&header.remote_token)? != faucet_id {
             return Err(EncodingError::RemoteTokenMismatch);
         }
@@ -251,7 +241,7 @@ impl MintIntent {
     // --------------------------------------------------------------------------------------------
 
     /// Rebuilds the canonical DepositIntent the attestation signed — the Rust mirror of
-    /// `xreserve::deposit_intent_builder::build_preimage`.
+    /// `xreserve::deposit_intent::rebuild`.
     ///
     /// Infallible: every input is a validated domain type, and every byte of the output is either
     /// written here or a structural zero.
@@ -484,9 +474,8 @@ mod tests {
         for vec in accepts() {
             let payload = vec.payload();
             let intent = DepositIntent::new(&payload);
-            let carried =
-                MintIntent::from_deposit_intent(&intent, vec.faucet_id(), vec.remote_domain)
-                    .unwrap_or_else(|e| panic!("vector {}: compress failed: {e}", vec.id));
+            let carried = MintIntent::from_deposit_intent(&intent, vec.faucet_id())
+                .unwrap_or_else(|e| panic!("vector {}: compress failed: {e}", vec.id));
 
             assert_eq!(
                 carried.to_deposit_intent_bytes(vec.amount(), vec.remote_domain, vec.faucet_id()),
@@ -505,9 +494,8 @@ mod tests {
         for vec in accepts() {
             let payload = vec.payload();
             let intent = DepositIntent::new(&payload);
-            let carried =
-                MintIntent::from_deposit_intent(&intent, vec.faucet_id(), vec.remote_domain)
-                    .unwrap_or_else(|e| panic!("vector {}: compress failed: {e}", vec.id));
+            let carried = MintIntent::from_deposit_intent(&intent, vec.faucet_id())
+                .unwrap_or_else(|e| panic!("vector {}: compress failed: {e}", vec.id));
 
             assert_eq!(
                 carried.to_felts(),
@@ -534,9 +522,8 @@ mod tests {
         for vec in accepts() {
             let payload = vec.payload();
             let intent = DepositIntent::new(&payload);
-            let carried =
-                MintIntent::from_deposit_intent(&intent, vec.faucet_id(), vec.remote_domain)
-                    .unwrap_or_else(|e| panic!("vector {}: compress failed: {e}", vec.id));
+            let carried = MintIntent::from_deposit_intent(&intent, vec.faucet_id())
+                .unwrap_or_else(|e| panic!("vector {}: compress failed: {e}", vec.id));
 
             assert_eq!(
                 MintIntent::from_felts(&carried.to_felts()).expect("round trip"),
@@ -556,8 +543,7 @@ mod tests {
         for vec in rejects {
             let payload = vec.payload();
             let intent = DepositIntent::new(&payload);
-            let result =
-                MintIntent::from_deposit_intent(&intent, vec.faucet_id(), vec.remote_domain);
+            let result = MintIntent::from_deposit_intent(&intent, vec.faucet_id());
             let id = &vec.id;
             match vec.expected_variant.as_deref().expect("reject vector") {
                 "FieldNotEvmAddress" => {
@@ -571,13 +557,6 @@ mod tests {
                     assert_matches!(
                         result,
                         Err(EncodingError::FieldNotAssetAmount { .. }),
-                        "vector {id}"
-                    )
-                }
-                "RemoteDomainMismatch" => {
-                    assert_matches!(
-                        result,
-                        Err(EncodingError::RemoteDomainMismatch { .. }),
                         "vector {id}"
                     )
                 }

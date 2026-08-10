@@ -37,7 +37,8 @@ min-burn floor, a missing domain-config seed, or a non-Public faucet) at build t
 |---|---|
 | `mint_policy` | The **attestation mint policy** (`check_policy`, the ACTIVE mint policy the stock `mint_and_send` dispatches): reads and hash-verifies the mint note's transport attachment, binds its word count, rebuilds the signed DepositIntent preimage, runs the remaining validation stages, enforces that the note recipient, amount, tag, and type match their attested derivations, and marks the nonce used — its only state write. |
 | `deposit_intent` | Circle's wire form and the faucet's on-chain realization of it. `rebuild` (`DC-14`) writes the message the attestation signed, from the note's mint intent plus the fields only this account can supply — the configured domain and its own account id, both read here rather than passed in, so no caller-supplied value can reach them. It also holds the `DC-5` reducer and declares the domain-config slot id. |
-| `mint_intent` | What the mint note actually carries (`DC-14`): the carried felt offsets, the widths of the values they hold, and `validate` — the two preconditions the signature cannot express (the fee ceiling and the nonce replay guard), both statements about the carried fields alone. It hashes the carried nonce (`hashed_nonce`) and declares the used-nonces slot id. |
+| `mint_intent` | What the mint note actually carries (`DC-14`): the carried felt offsets, the widths of the values they hold, and `validate` — the two preconditions the signature cannot express (the fee ceiling and the nonce replay guard), both statements about the carried fields alone. It hashes the carried nonce (`hash_nonce`) and declares the used-nonces slot id. |
+| `packed_mem` | The primitives `rebuild` writes the u32-LE-packed region with: guarded limb copies, and the big-endian u64 / account-id stores. It knows no wire offsets, which is why it is separable from the layout at all. |
 | `attestation_verify` | Keccaks the payload, checks the attester pubkey against the allowlist, and verifies the ECDSA signature. |
 | `attester_admin` | The authority-gated `set_attester` allowlist setter. |
 
@@ -90,7 +91,7 @@ rejects stop being separately diagnosable — is spelled out under `R-MINT-*` in
    (The stock `fungible_asset::value_into_amount` would have said all three in one call, but it is
    private in the pinned library and its public sibling `to_amount` documents that it does not
    validate.) `mint_intent::validate` then requires `amount ≥ maxFee`, a single felt compare — both
-   values are `AssetAmount`s by construction — and asserts `usedNonces[hashed_nonce]` is empty,
+   values are `AssetAmount`s by construction — and asserts `usedNonces[hash_nonce]` is empty,
    handing back the hashed nonce the binding and the nonce write both need. Neither check needs the
    message, which is why both run before it exists: one relates the carried ceiling to the note's
    own asset, the other the carried nonce to this faucet's history. The operator `feeAmount` no
@@ -216,9 +217,9 @@ slot words. The three build-seeded fields are typed u32/bytes32 at the builder b
 
 ## 7. What is consumed from the encoding library
 
-The faucet does not re-implement encoding. It consumes `xreserve::encoding::*` by reference:
-`hashed_nonce` (nonce keying), `pubkey_commitment` (attester keying), and the `layout` felt
-offsets (which the preimage writer stores at). The `DC-5` amount reduction is not among them: with
+The faucet does not re-implement encoding. It consumes the shared codecs by reference:
+`mint_intent::hash_nonce` (nonce keying), `attestation_verify::pubkey_commitment` (attester
+keying), and the `DC-1` / `DC-14` felt offsets the preimage writer stores at. The `DC-5` amount reduction is not among them: with
 `DEPOSIT_SCALE_EXP == 0` the faucet writes the amount from the note's own asset value rather than
 verifying a witness against a staged uint256, so the MASM verifier had no caller and is deleted
 (reopening `DEV-5` restores it from history — see the ownership map's `DC-5` rider). See the

@@ -119,7 +119,7 @@ fn word_of(felts: &[Felt]) -> Word {
 // ================================================================================================
 
 #[tokio::test]
-async fn tv_dual_1_hashed_nonce() -> Result<()> {
+async fn tv_dual_1_hash_nonce() -> Result<()> {
     let h = setup()?;
     for vec in &load().families.b32 {
         let limbs = vec.packed_felts_values();
@@ -132,7 +132,7 @@ async fn tv_dual_1_hashed_nonce() -> Result<()> {
 pub proc main
     push.{b1}
     push.{b0}
-    exec.mint_intent::hashed_nonce
+    exec.mint_intent::hash_nonce
     push.{expected}
     assert_eqw.err="vector {id}: key mismatch"
 end
@@ -141,7 +141,7 @@ end
         );
         run_driver(&h, &src).await.unwrap_or_else(|e| {
             panic!(
-                "vector {}: MASM hashed_nonce must produce the canonical key: {e}",
+                "vector {}: MASM hash_nonce must produce the canonical key: {e}",
                 vec.id
             )
         });
@@ -246,7 +246,7 @@ async fn harness_detects_wrong_vector() -> Result<()> {
 pub proc main
     push.{b0}
     push.{b1}
-    exec.mint_intent::hashed_nonce
+    exec.mint_intent::hash_nonce
     push.{wrong}
     assert_eqw.err="meta-test: deliberately wrong expected value"
 end
@@ -272,7 +272,7 @@ fn probe_p1_exports() -> Result<()> {
         .collect();
     // exports render as ABSOLUTE paths (leading `::`) at this assembler version
     for canonical in [
-        "::xreserve::mint_intent::hashed_nonce",
+        "::xreserve::mint_intent::hash_nonce",
         "::xreserve::mint_intent::validate",
         "::xreserve::deposit_intent::rebuild",
     ] {

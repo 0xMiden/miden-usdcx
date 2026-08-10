@@ -750,7 +750,6 @@ async fn mint_to_holder(d: &mut Driver, units: u64, salt: u8) -> Result<u64> {
     let note = xusdc_encoding::note::xreserve_mint::XUsdcMintNote::create(
         owner,
         faucet_id,
-        MINT_DOMAIN,
         &payload,
         &attestation,
         d.hc.client.rng(),

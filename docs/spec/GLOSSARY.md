@@ -163,15 +163,15 @@ Codec decisions owned by the `xusdc-encoding` crate (`xreserve::encoding`).
 | DC-8 | Burn-evidence package assembly (`burnTxId` + `note_id` + `nullifier` + `block_num` + proof-strength labels). Owned by the off-chain **listener**, not this crate. |
 | DC-9 / DC-10 / DC-11 / DC-12 | Circle JSON request/response schema types (off-chain Rust type definitions). Not on-chain. |
 | DC-13 | Optional decoders for Circle-returned binary blobs (`TransferSpec`/`BurnIntent`/`WithdrawHookData`); off-chain validation only, non-gating. |
-| DC-14 | The mint-note carried payload and the on-chain reconstruction of the DepositIntent preimage. The note carries only what the faucet cannot derive — `nonce`, `localToken`, `localDepositor`, `remoteRecipient`, `maxFee`, `hookDataLen` and `hookData`; the faucet writes `magic`, `version`, `amount` (from the note's asset value), `remoteDomain` (from its config slot), `remoteToken` (from its own id) and a zero `feeAmount` into the canonical `240 + hookDataLen`-byte preimage before hashing. Owned by the faucet (01); the felt offsets are 04's (`layout.masm`). Requires `DEPOSIT_SCALE_EXP == 0` and a 20-byte right-aligned EVM address in `localToken` / `localDepositor` — see `DEV-5` and `Q-EVM-ADDR-1`, both **OPEN**. |
+| DC-14 | The mint-note carried payload and the on-chain reconstruction of the DepositIntent preimage. The note carries only what the faucet cannot derive — `nonce`, `localToken`, `localDepositor`, `remoteRecipient`, `maxFee`, `hookDataLen` and `hookData`; the faucet writes `magic`, `version`, `amount` (from the note's asset value), `remoteDomain` (from its config slot), `remoteToken` (from its own id) and a zero `feeAmount` into the canonical `240 + hookDataLen`-byte preimage before hashing. Owned by the faucet (01); the felt offsets are 04's (`mint_intent.masm`). Requires `DEPOSIT_SCALE_EXP == 0` and a 20-byte right-aligned EVM address in `localToken` / `localDepositor` — see `DEV-5` and `Q-EVM-ADDR-1`, both **OPEN**. |
 
 ## Naming decisions — `NS-<n>`
 
 | Id | Decision |
 |---|---|
-| NS-1 | The canonical bytes32→key MASM procedure is `xreserve::mint_intent::hashed_nonce`; the Rust routine is `bytes32_to_storage_map_key`. |
+| NS-1 | The canonical bytes32→key MASM procedure is `xreserve::mint_intent::hash_nonce`; the Rust routine is `bytes32_to_storage_map_key`. |
 | NS-2 | **Retired** (see the ownership map). The on-chain DepositIntent parser is gone: the faucet writes the message rather than reading it. |
-| NS-3 | The canonical on-chain DepositIntent realization is `xreserve::deposit_intent::rebuild`; the `DC-5` reducer moved to the same module when `xreserve::encoding` was dissolved. The nonce hash went to `xreserve::mint_intent` instead, with the admissibility checks that read it (NS-1, amended twice). |
+| NS-3 | The canonical on-chain DepositIntent realization is `xreserve::deposit_intent::rebuild`; the `DC-5` reducer moved to the same module when `xreserve::encoding` was dissolved. The nonce hash went to `xreserve::mint_intent` instead, with the admissibility checks that read it (NS-1, amended three times). |
 
 ## Module-layout & implementation decisions
 
@@ -396,7 +396,7 @@ in `tests/masm_dual.rs`); `-4` is Rust-only because `DC-7` has no MASM side.
 
 | Id | Checks |
 |---|---|
-| TV-DUAL-1 | `hashed_nonce`: Rust and MASM produce the identical key Word on every vector. |
+| TV-DUAL-1 | `hash_nonce`: Rust and MASM produce the identical key Word on every vector. |
 | TV-DUAL-2 | **Retired** with the MASM witness verifier (see the ownership map's `DC-5` rider). The amount conversion is Rust-only; its vectors still drive the Rust unit tests in `amount.rs`. |
 | TV-DUAL-3 | DepositIntent parse: Rust and MASM agree on accept/reject and the 60-felt preimage. Rust-only on the mint path after `DC-14` — the MASM parser is retired (`NS-2`), so the MASM leg is `TV-DUAL-6`. |
 | TV-DUAL-4 | Burn-note items: the Rust-emitted burn note's `NoteStorage.items` match the Rust codec and the golden felts (an emit-vs-codec check within Rust — `DC-7` is Rust-only, there is no MASM burn-item codec). |

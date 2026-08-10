@@ -85,7 +85,7 @@ fn probe_shell_exports() -> Result<()> {
         .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
-    let canonical = "::xreserve::mint_intent::hashed_nonce";
+    let canonical = "::xreserve::mint_intent::hash_nonce";
     assert!(
         exports.iter().any(|e| e == canonical),
         "canonical shell proc path {canonical} missing; exports: {exports:?}"

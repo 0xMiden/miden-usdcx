@@ -205,7 +205,6 @@ fn production_mint_note(
     XUsdcMintNote::create(
         producer,
         faucet_id,
-        TEST_DOMAIN,
         payload,
         &attestation_for(1, payload),
         &mut note_rng(rng_seed),

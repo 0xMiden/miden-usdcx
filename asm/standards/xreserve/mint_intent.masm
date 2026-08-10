@@ -5,14 +5,17 @@
 #
 # Everything absent from this layout is a field the faucet supplies itself when it rebuilds the
 # signed message — the scheme constants, the amount (from the note's own asset value), the
-# destination domain and token identifier (from its own state), and a zero fee. Those are not
-# missing from the wire by omission: carrying them is exactly what this design removes, because a
-# field the faucet writes cannot disagree with the attestation.
+# destination domain and token identifier (from its own state), and a zero fee. A field the faucet
+# writes cannot disagree with the attestation, which is why it is cheaper not to carry it.
 #
 # `validate` is what a carried intent has to pass before `xreserve::deposit_intent` rebuilds a
 # message from it. Both of its checks are statements about the carried fields alone — one against
 # the note's own asset value, one against this faucet's own history — so neither needs the message,
 # and neither can be left to the signature, which can only speak about what Circle signed.
+#
+# The localToken and localDepositor get no checks here as they are directly copied into the message
+# that is hashed. If the signature matches, the value must have been valid. These are never read
+# so they only matter for the signature.
 
 use miden::protocol::active_account
 use miden::standards::utils
@@ -34,7 +37,6 @@ pub const USED_NONCES_SLOT = word("xusdc::xreserve::nonce_registry::used_nonces"
 
 pub const BYTES32_PACKED_LIMBS = 8
 pub const EVM_ADDRESS_PACKED_LIMBS = 5
-pub const ASSET_AMOUNT_PACKED_LIMBS = 2
 
 # An account id travels as the two felts the protocol's account-id procedures consume, not as its
 # packed bytes32 form: the faucet has to validate its structure anyway, and two felts costs less
@@ -114,7 +116,7 @@ pub proc validate
     add.MINT_INTENT_NONCE_FELT_OFF exec.utils::mem_load_double_word_unaligned
     # => [NONCE_LOWER, NONCE_UPPER]
 
-    exec.hashed_nonce
+    exec.hash_nonce
     # => [HASHED_NONCE]
 
     dupw exec.assert_nonce_unused
@@ -138,7 +140,7 @@ end
 #!   (wire bytes 16..32).
 #!
 #! Invocation: exec
-pub proc hashed_nonce
+pub proc hash_nonce
     # poseidon2::merge absorbs the top word first, so NONCE_LOWER (wire bytes 0..16) becomes the
     # first rate word: HASHED_NONCE = Poseidon2(NONCE_LOWER || NONCE_UPPER), matching the Rust
     # mirror's hash_elements order over the 8 packed limbs

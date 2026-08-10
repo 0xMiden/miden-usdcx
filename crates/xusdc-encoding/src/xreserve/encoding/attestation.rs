@@ -139,9 +139,8 @@ impl PublicKey {
     /// to miden-crypto's `PublicKey::to_commitment`
     /// (`Poseidon2::hash_elements(affine_point_to_elements())`) and to the MASM
     /// `xreserve::attestation_verify::pubkey_commitment` the faucet recomputes; the 16-felt input
-    /// sets the sponge capacity domain tag to `16 % 8 = 0`. Handed out as the stock
-    /// [`PublicKeyCommitment`] rather than a raw `Word` — the protocol already owns a newtype over
-    /// exactly that `Word` (`Word::from(commitment)` recovers it).
+    /// sets the sponge capacity domain tag to `16 % 8 = 0`. The commitment is the stock
+    /// [`PublicKeyCommitment`]; `Word::from(commitment)` recovers the raw `Word`.
     ///
     /// # Errors
     ///

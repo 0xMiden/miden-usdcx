@@ -19,7 +19,7 @@ use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
 
 use crate::actors::AttesterKey;
-use crate::mintburn::{mint_payload_opt, nonce_key, MintDomainConfig};
+use crate::mintburn::{mint_payload_opt, nonce_key, MintDomainConfig, MINT_DOMAIN};
 use crate::observations_cf::Verdict;
 
 use super::driver::{

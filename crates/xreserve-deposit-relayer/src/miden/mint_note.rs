@@ -129,8 +129,10 @@ impl AttesterPubkey {
 ///
 /// # Errors
 /// [`RelayerError::MintNoteBuild`] — the shared encoding crate's factory refused the inputs: the
-/// payload is not a structurally valid DepositIntent, or it exceeds the 1024-felt `NoteStorage`
-/// bound, or `faucet_id` is not a public network account. That crate's `NoteError` (and the
+/// payload is not a structurally valid DepositIntent, or it is addressed to a different
+/// faucet, or a field it must carry is unrepresentable (a `maxFee` beyond `AssetAmount::MAX`, a
+/// `localToken` / `localDepositor` that is not a 20-byte address), or `faucet_id` is not a public
+/// network account. That crate's `NoteError` (and the
 /// `EncodingError` beneath it) is preserved as the error's source. The variant is NOT retryable —
 /// none of those conditions clears on its own.
 pub fn build_mint_note<R: FeltRng>(

@@ -22,6 +22,11 @@ use xreserve_deposit_relayer::miden::AttesterPubkey;
 
 use crate::fixtures::{canonical_payload, AttestationVector, PartnerAttester};
 
+/// The xUSDC faucet the suite mints at. Defined in [`crate::fixtures`], because the fixture
+/// payloads are addressed to it, and re-exported here so the mint slices reach it beside the other
+/// account ids.
+pub use crate::fixtures::faucet_id;
+
 /// A DETERMINISTIC note RNG. The serial number a mint note carries is drawn from it, so seeding it
 /// is what lets a test build the SAME note twice — once through the relayer, once through the
 /// shared encoding crate's factory directly — and compare them for equality. Production draws from
@@ -43,18 +48,6 @@ pub fn relayer_sender_id() -> AccountId {
         [0x11; 15],
         AccountIdVersion::Version1,
         AccountType::Private,
-        AssetCallbackFlag::Disabled,
-    )
-}
-
-/// The xUSDC faucet — a PUBLIC (network) account. The mint note's scheme-2 routing attachment binds
-/// the faucet's network account, and only a public id can be bound; the private id below is the
-/// negative.
-pub fn faucet_id() -> AccountId {
-    AccountId::dummy(
-        [0x22; 15],
-        AccountIdVersion::Version1,
-        AccountType::Public,
         AssetCallbackFlag::Disabled,
     )
 }
@@ -114,7 +107,7 @@ pub fn validated(vector: &AttestationVector) -> ValidatedAttestation {
     ValidatedAttestation::validate(object).expect("the fixture vector passes the envelope checks")
 }
 
-/// The standard validated attestation: the partner key over the canonical `di-pos-hookdata`
+/// The standard validated attestation: the partner key over the canonical `mi-pos-hookdata`
 /// payload.
 pub fn validated_test_vector() -> ValidatedAttestation {
     validated(&crate::fixtures::test_vector())

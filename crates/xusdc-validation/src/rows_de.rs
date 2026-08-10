@@ -44,7 +44,7 @@ use crate::config::RunConfig;
 use crate::deploy::build_faucet_account;
 use crate::mintburn::{
     self, fee_limbs_for, hook_data_len, mint_note_with_fee, mint_payload_own_id, nonce_key,
-    raw_for_units, BASE_VECTOR, HOOKDATA_VECTOR,
+    raw_for_units, BASE_VECTOR, HOOKDATA_VECTOR, MINT_DOMAIN,
 };
 use crate::observations_cf::{Verdict, Word4};
 use crate::observations_de::{MintHappy, MintNegative, RowsDeObservations};
@@ -410,7 +410,7 @@ async fn run_mint_happy(
     let recipient_balance_before = d.balance_of(recipient).await?;
 
     let (note, payload) = d.valid_mint(vector_id, units, salt)?;
-    let key = nonce_key(&payload); // the mint sets SERIAL_NUM = bytes32_to_key(nonce)
+    let key = nonce_key(&payload); // the mint sets SERIAL_NUM = bytes32_to_storage_map_key(nonce)
 
     // Commit the mint via path N (the ntx-builder consumes the routed allowlisted note).
     let committed = d

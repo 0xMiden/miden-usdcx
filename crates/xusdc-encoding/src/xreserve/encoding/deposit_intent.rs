@@ -143,20 +143,6 @@ fn bytes32_at(bytes: &[u8], offset: usize) -> [u8; 32] {
         .expect("32-byte window")
 }
 
-/// Test-only spelling of [`DepositIntent::parse_header`]: the byte-frozen `tv_di` suite exercises
-/// the structural parse by this name. The parse itself lives on the type; this is a thin
-/// delegation kept for those tests only, present in no non-test build.
-#[cfg(test)]
-fn parse_deposit_intent_header(bytes: &[u8]) -> Result<DepositIntentHeader, EncodingError> {
-    DepositIntent::new(bytes).parse_header()
-}
-
-/// Test-only spelling of [`DepositIntent::to_packed_felts`] — see [`parse_deposit_intent_header`].
-#[cfg(test)]
-fn deposit_intent_to_packed_felts(bytes: &[u8]) -> Result<Vec<Felt>, EncodingError> {
-    DepositIntent::new(bytes).to_packed_felts()
-}
-
 /// A borrowed DepositIntent payload — the raw Circle-signed wire bytes (`240`-byte header plus
 /// variable hookData).
 ///
@@ -337,7 +323,8 @@ mod tests {
         let v = load();
         for vec in v.families.di.iter().filter(|v| v.kind == "accept") {
             let bytes = vec.bytes();
-            let h = parse_deposit_intent_header(&bytes)
+            let h = DepositIntent::new(&bytes)
+                .parse_header()
                 .unwrap_or_else(|e| panic!("vector {}: must parse, got {e}", vec.id));
             let f = vec.fields.as_ref().expect("accept vector carries fields");
             assert_eq!(h.magic, f.magic, "vector {}: magic", vec.id);
@@ -400,7 +387,7 @@ mod tests {
             .iter()
             .find(|v| v.id == id)
             .expect("vector present");
-        let result = parse_deposit_intent_header(&vec.bytes());
+        let result = DepositIntent::new(&vec.bytes()).parse_header();
         match vec.expected_variant.as_deref() {
             Some("BadMagic") => assert_matches!(result, Err(EncodingError::BadMagic), "{id}"),
             Some("BadVersion") => assert_matches!(result, Err(EncodingError::BadVersion), "{id}"),
@@ -442,7 +429,8 @@ mod tests {
     fn tv_di_7_sixty_felts_and_1024_bound() {
         let v = load();
         for vec in v.families.di.iter().filter(|v| v.kind == "accept") {
-            let felts = deposit_intent_to_packed_felts(&vec.bytes())
+            let felts = DepositIntent::new(&vec.bytes())
+                .to_packed_felts()
                 .unwrap_or_else(|e| panic!("vector {}: must pack, got {e}", vec.id));
             let expected = vec.preimage_values();
             assert_eq!(
@@ -467,7 +455,7 @@ mod tests {
             .find(|v| v.id == "di-rej-hookdata-overflow")
             .expect("vector");
         assert_matches!(
-            deposit_intent_to_packed_felts(&overflow.bytes()),
+            DepositIntent::new(&overflow.bytes()).to_packed_felts(),
             Err(EncodingError::HookDataTooLarge),
             "hookData past the 1024-felt bound must reject"
         );
@@ -486,7 +474,7 @@ mod tests {
             .expect("vector");
         let bytes = vec.bytes();
         let before = bytes.clone();
-        let _ = parse_deposit_intent_header(&bytes);
+        let _ = DepositIntent::new(&bytes).parse_header();
         assert_eq!(bytes, before, "input must be unchanged by parsing");
     }
 

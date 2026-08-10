@@ -218,7 +218,7 @@ async fn burn_note_emitted_items_match_codec_vectors() -> anyhow::Result<()> {
         assert_eq!(
             got.as_slice(),
             expected.as_slice(),
-            "vector {}: emitted NoteStorage.items == encode_burn_note_items",
+            "vector {}: emitted NoteStorage.items == XReserveBurnItems::encode",
             vec.id,
         );
         assert_eq!(

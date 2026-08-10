@@ -23,9 +23,8 @@ use xusdc_encoding::xreserve::encoding::{
 // Signature
 // ================================================================================================
 
-/// `Signature::new(bytes).to_felts()` is byte-identical to the golden signature felts and to the
-/// free `signature_felts`. A reordered/perturbed packing in the method layer goes RED here (the free
-/// function's own tv_att suite would not catch a method-layer mutation).
+/// `Signature::new(bytes).to_felts()` is byte-identical to the golden signature felts. A
+/// reordered/perturbed packing goes RED here.
 #[test]
 fn signature_type_matches_golden() {
     for v in &load().families.att {
@@ -51,7 +50,7 @@ fn signature_type_matches_golden() {
 
 /// `PublicKey::to_affine_felts` and `PublicKey::to_commitment` match the golden affine felts and the
 /// golden commitment word, and the commitment is handed out as the STOCK `PublicKeyCommitment`
-/// newtype whose `Word` round-trip equals the free `pubkey_commitment`.
+/// newtype, which round-trips through `Word`.
 #[test]
 fn public_key_affine_and_commitment_match_golden() {
     for v in &load().families.att {

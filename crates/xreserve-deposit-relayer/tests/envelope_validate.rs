@@ -207,9 +207,9 @@ fn t_rly_20_binding_is_payload_specific() {
 }
 
 /// The fixture's attester identity is the one the allowlist is keyed by: the commitment is the
-/// shared encoding crate's `pubkey_commitment` — Poseidon2 over the 16 affine felts the 33-byte
-/// compressed pubkey decompresses to — and the pubkey is deterministic (pinned). This is what the
-/// later local-node rows seed via `set_attester`.
+/// shared encoding crate's `PublicKey::to_commitment` — Poseidon2 over the 16 affine felts the
+/// 33-byte compressed pubkey decompresses to — and the pubkey is deterministic (pinned). This is
+/// what the later local-node rows seed via `set_attester`.
 #[test]
 fn t_rly_20_partner_attester_identity_is_deterministic_and_canonically_keyed() {
     let attester = PartnerAttester::new();

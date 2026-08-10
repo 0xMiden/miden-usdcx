@@ -51,29 +51,6 @@ pub fn keccak_digest_felts(digest: &[u8; 32]) -> [Felt; 8] {
         .expect("32 bytes always pack to exactly 8 u32 felts")
 }
 
-/// Test-only spelling of [`PublicKey::to_affine_felts`]: the byte-frozen `tv_att` suite exercises
-/// the affine packing by this name. The packing itself lives on the type; this is a thin
-/// delegation kept for those tests only, present in no non-test build.
-#[cfg(test)]
-fn affine_pubkey_felts(pk: &[u8; 33]) -> Result<[Felt; 16], EncodingError> {
-    PublicKey::new(*pk).to_affine_felts()
-}
-
-/// Test-only spelling of [`Signature::to_felts`] — see [`affine_pubkey_felts`].
-#[cfg(test)]
-fn signature_felts(sig: &[u8; 65]) -> [Felt; 17] {
-    Signature::new(*sig).to_felts()
-}
-
-/// Test-only spelling of [`PublicKey::to_commitment`], returning the raw commitment `Word` the
-/// `tv_att` suite compares against — see [`affine_pubkey_felts`].
-#[cfg(test)]
-fn pubkey_commitment(pk: &[u8; 33]) -> Result<miden_protocol::Word, EncodingError> {
-    Ok(miden_protocol::Word::from(
-        PublicKey::new(*pk).to_commitment()?,
-    ))
-}
-
 /// A Circle deposit attestation's raw 65-byte `r‖s‖v` ECDSA signature.
 ///
 /// Wrapping the fixed-width byte array turns the packing into a method — `Signature::new(bytes)
@@ -182,6 +159,7 @@ impl PublicKey {
 #[cfg(test)]
 mod tests {
     use miden_protocol::utils::bytes_to_packed_u32_elements;
+    use miden_protocol::Word;
 
     use super::*;
     use crate::vectors::load;
@@ -191,7 +169,9 @@ mod tests {
     #[test]
     fn tv_att_1_felt_shapes() {
         for v in &load().families.att {
-            let pk = affine_pubkey_felts(&v.pubkey()).expect("vector pubkeys are valid points");
+            let pk = PublicKey::new(v.pubkey())
+                .to_affine_felts()
+                .expect("vector pubkeys are valid points");
             assert_eq!(pk.len(), 16, "{}: pubkey felt width", v.id);
             assert_eq!(
                 pk.as_slice(),
@@ -209,7 +189,7 @@ mod tests {
                 v.id
             );
 
-            let s = signature_felts(&v.sig());
+            let s = Signature::new(v.sig()).to_felts();
             assert_eq!(s.len(), 17, "{}: signature felt width", v.id);
             assert_eq!(
                 s.as_slice(),
@@ -220,16 +200,19 @@ mod tests {
         }
     }
 
-    /// TV-ATT-2 (commitment): `pubkey_commitment(pk)` equals miden-crypto
+    /// TV-ATT-2 (commitment): `PublicKey::to_commitment` equals miden-crypto
     /// `PublicKey::to_commitment`, the attester-allowlist keying primitive the faucet's
     /// attestation verify looks up.
     #[test]
     fn tv_att_2_commitment() {
         for v in &load().families.att {
+            let commitment = PublicKey::new(v.pubkey())
+                .to_commitment()
+                .expect("vector pubkeys are valid points");
             assert_eq!(
-                pubkey_commitment(&v.pubkey()).expect("vector pubkeys are valid points"),
+                Word::from(commitment),
                 v.expected_commitment_word(),
-                "{}: pubkey_commitment must equal miden-crypto PublicKey::to_commitment",
+                "{}: the commitment must equal miden-crypto PublicKey::to_commitment",
                 v.id
             );
         }
@@ -265,7 +248,7 @@ mod tests {
                 v.id
             );
             assert_eq!(
-                signature_felts(&v.sig())[16],
+                Signature::new(v.sig()).to_felts()[16],
                 Felt::from(u32::from(v.v_byte)),
                 "{}: v byte carried in felt 16 (unused on-chain)",
                 v.id
@@ -280,11 +263,11 @@ mod tests {
         let mut bogus = [0xFFu8; 33];
         bogus[0] = 0x02;
         assert_eq!(
-            affine_pubkey_felts(&bogus).unwrap_err(),
+            PublicKey::new(bogus).to_affine_felts().unwrap_err(),
             EncodingError::InvalidPubkey,
         );
         assert_eq!(
-            pubkey_commitment(&bogus).unwrap_err(),
+            PublicKey::new(bogus).to_commitment().unwrap_err(),
             EncodingError::InvalidPubkey,
         );
     }

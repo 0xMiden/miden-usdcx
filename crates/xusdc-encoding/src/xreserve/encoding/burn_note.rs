@@ -86,20 +86,6 @@ impl XReserveBurnItems {
     }
 }
 
-/// Test-only spelling of [`XReserveBurnItems::encode`]: the byte-frozen `tv_bn` suite exercises the
-/// encoder by this name. The encoding itself lives on the type; this is a thin delegation kept for
-/// those tests only, present in no non-test build.
-#[cfg(test)]
-fn encode_burn_note_items(items: &XReserveBurnItems) -> Vec<Felt> {
-    items.encode()
-}
-
-/// Test-only spelling of [`XReserveBurnItems::decode`] — see [`encode_burn_note_items`].
-#[cfg(test)]
-fn decode_burn_note_items(items: &[Felt]) -> Result<XReserveBurnItems, EncodingError> {
-    XReserveBurnItems::decode(items)
-}
-
 // TESTS — TV-BN-1..4
 // ================================================================================================
 
@@ -125,7 +111,7 @@ mod tests {
         assert!(!accept.is_empty(), "bn accept vectors present");
         for vec in accept {
             let x = vec.expected_struct();
-            let encoded = encode_burn_note_items(&x);
+            let encoded = x.encode();
             assert_eq!(encoded.len(), BURN_NOTE_ITEMS_FELTS, "{}: width", vec.id);
             assert_eq!(
                 encoded,
@@ -134,13 +120,13 @@ mod tests {
                 vec.id
             );
             assert_eq!(
-                decode_burn_note_items(&encoded).expect("round-trip decode"),
+                XReserveBurnItems::decode(&encoded).expect("round-trip decode"),
                 x,
                 "{}: decode∘encode",
                 vec.id
             );
             assert_eq!(
-                decode_burn_note_items(&vec.items_values()).expect("golden decode"),
+                XReserveBurnItems::decode(&vec.items_values()).expect("golden decode"),
                 x,
                 "{}: decode golden felts",
                 vec.id
@@ -156,7 +142,7 @@ mod tests {
     fn tv_bn_2_destination_in_items() {
         let v = load();
         for vec in v.families.bn.iter().filter(|x| x.kind == "accept") {
-            let items = encode_burn_note_items(&vec.expected_struct());
+            let items = vec.expected_struct().encode();
             let golden = vec.items_values();
             assert_eq!(items[1], golden[1], "{}: destDomain in items[1]", vec.id);
             assert_eq!(
@@ -180,7 +166,7 @@ mod tests {
     fn tv_bn_3_note_storage_placement() {
         let v = load();
         for vec in v.families.bn.iter().filter(|x| x.kind == "accept") {
-            let n = encode_burn_note_items(&vec.expected_struct()).len();
+            let n = vec.expected_struct().encode().len();
             assert_eq!(n, BURN_NOTE_ITEMS_FELTS, "{}: fixed width", vec.id);
             assert!(n <= 1024, "{}: within the NoteStorage.items bound", vec.id);
         }
@@ -203,7 +189,7 @@ mod tests {
             .find(|x| x.id == id)
             .unwrap_or_else(|| panic!("vector {id} present"));
         assert_matches!(
-            decode_burn_note_items(&vec.items_values()),
+            XReserveBurnItems::decode(&vec.items_values()),
             Err(EncodingError::BurnItemsMalformed),
             "{id}",
         );

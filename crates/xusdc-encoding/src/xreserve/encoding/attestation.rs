@@ -84,10 +84,32 @@ pub fn affine_pubkey_felts(pk: &[u8; 33]) -> Result<[Felt; 16], EncodingError> {
     }))
 }
 
-/// Packs a 65-byte `r‖s‖v` signature into 17 u32-LE field elements; `v` is carried in felt
-/// 16 (byte 64, upper 3 bytes zero-filled) and is unused on-chain.
+/// Canonicalizes a raw ECDSA recovery byte (`v`) to a recovery id in `0..=3`.
+///
+/// The on-chain verify precompile ignores `v` — it verifies `r,s` against the pubkey the faucet
+/// supplies — but its signature deserializer (`miden_crypto`'s `Signature::read_from`) rejects any
+/// byte `> 3`. Circle's EVM-side signer emits Ethereum-style `v ∈ {27,28}` (and EIP-155 forms
+/// `35 + 2·chainId + parity`), which would otherwise abort an otherwise-valid mint. Normalizing at
+/// this packing boundary keeps a valid `r,s` verifiable regardless of the recovery-byte encoding.
+/// Because `v` carries no on-chain meaning here, unrecognized encodings collapse to their parity
+/// bit rather than being rejected, so this never introduces a new failure mode.
+const fn normalize_recovery_id(v: u8) -> u8 {
+    match v {
+        0..=3 => v,
+        27 | 28 => v - 27,
+        31 | 32 => v - 31,
+        _ => v & 1,
+    }
+}
+
+/// Packs a 65-byte `r‖s‖v` signature into 17 u32-LE field elements; `v` is carried in felt 16
+/// (byte 64, upper 3 bytes zero-filled). The recovery byte is normalized to `0..=3` via
+/// [`normalize_recovery_id`] so an Ethereum-style `v` cannot make the on-chain verify's signature
+/// deserialization reject an otherwise-valid attestation; `v` is not otherwise used on-chain.
 pub fn signature_felts(sig: &[u8; 65]) -> [Felt; 17] {
-    bytes_to_packed_u32_elements(sig)
+    let mut sig = *sig;
+    sig[64] = normalize_recovery_id(sig[64]);
+    bytes_to_packed_u32_elements(&sig)
         .try_into()
         .expect("65 bytes always pack to exactly 17 u32 felts")
 }
@@ -127,8 +149,8 @@ impl Signature {
     }
 
     /// Packs the signature into the 17 u32-LE field elements the on-chain attestation surface reads
-    /// (`v` in felt 16, upper three bytes zero-filled). Byte-for-byte identical to
-    /// [`signature_felts`].
+    /// (`v` normalized to `0..=3` in felt 16, upper three bytes zero-filled). Byte-for-byte
+    /// identical to [`signature_felts`].
     pub fn to_felts(&self) -> [Felt; 17] {
         signature_felts(&self.0)
     }
@@ -271,6 +293,34 @@ mod tests {
                 v.id
             );
         }
+    }
+
+    /// The recovery byte is normalized into `0..=3` so the on-chain signature deserializer (which
+    /// rejects `v > 3`) never aborts an otherwise-valid attestation. Ethereum `{27,28}` map to
+    /// `{0,1}`, canonical `0..=3` pass through, and any other encoding collapses to its parity bit.
+    #[test]
+    fn recovery_id_is_normalized_into_range() {
+        assert_eq!(normalize_recovery_id(0), 0);
+        assert_eq!(normalize_recovery_id(1), 1);
+        assert_eq!(normalize_recovery_id(3), 3);
+        assert_eq!(normalize_recovery_id(27), 0);
+        assert_eq!(normalize_recovery_id(28), 1);
+        assert_eq!(normalize_recovery_id(31), 0);
+        assert_eq!(normalize_recovery_id(32), 1);
+        // EIP-155 (v = 35 + 2·chainId + parity) and anything else collapse to parity, always ≤ 3.
+        assert_eq!(normalize_recovery_id(37), 1);
+        assert_eq!(normalize_recovery_id(38), 0);
+        for v in 0u8..=255 {
+            assert!(
+                normalize_recovery_id(v) <= 3,
+                "v={v} must normalize into 0..=3"
+            );
+        }
+
+        // The packed felt 16 always carries a value the on-chain deserializer accepts.
+        let mut eth_sig = [7u8; 65];
+        eth_sig[64] = 28;
+        assert_eq!(signature_felts(&eth_sig)[16], Felt::from(1u32));
     }
 
     /// The SEC1 decompression seam fail-closes: bytes that are not a curve point reject with

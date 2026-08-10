@@ -1,3 +1,0 @@
-pub mod mmr
-pub mod smt
-pub mod sorted_array

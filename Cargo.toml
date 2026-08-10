@@ -91,8 +91,8 @@ tower = { version = "0.5", features = ["util"] }
 # protocol crate is in the graph.
 
 # TEMPORARY (remove when upstream ships verify_bytes in a released core-lib + protocol tag):
-# miden-core-lib 0.29.0 vendored verbatim from crates.io with exactly two files overlaid from
-# miden-vm PR #3563 (rev 374c6838c) — asm/crypto/dsa/ecdsa_k256_keccak.masm and src/dsa.rs —
-# restoring an ECDSA path for in-VM-hashed variable-length messages (upstream issue #3544).
+# miden-core-lib 0.29.0 from miden-vm PR #3563 (base `main`, the 0.29 release line), which adds
+# ecdsa_k256_keccak::verify_bytes — the ECDSA path for in-VM-hashed variable-length messages
+# (upstream issue #3544). Drop this patch and re-lock once the PR merges into a release.
 [patch.crates-io]
-miden-core-lib = { path = "vendor/miden-core-lib" }
+miden-core-lib = { git = "https://github.com/0xMiden/miden-vm", rev = "535d017afc370eddfb2895fafca3621ad6d0b8d1" }

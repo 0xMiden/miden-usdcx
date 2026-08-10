@@ -143,122 +143,13 @@ fn bytes32_at(bytes: &[u8], offset: usize) -> [u8; 32] {
         .expect("32-byte window")
 }
 
-/// Structural parse + the library-owned checks (truncation, magic, version, non-zero
-/// fields, total-length relation). Does NOT perform the addressing compares.
-pub fn parse_deposit_intent_header(bytes: &[u8]) -> Result<DepositIntentHeader, EncodingError> {
-    // the bounds guard necessarily precedes any field read (the TruncatedHeader case)
-    if bytes.len() < DEPOSIT_INTENT_HEADER_LEN {
-        return Err(EncodingError::TruncatedHeader);
-    }
-
-    let magic = be_u32(
-        bytes,
-        deposit_intent_field_offset(DepositIntentField::Magic),
-    );
-    if magic != DEPOSIT_INTENT_MAGIC {
-        return Err(EncodingError::BadMagic);
-    }
-
-    let version = be_u32(
-        bytes,
-        deposit_intent_field_offset(DepositIntentField::Version),
-    );
-    if version != DEPOSIT_INTENT_VERSION {
-        return Err(EncodingError::BadVersion);
-    }
-
-    let amount = bytes32_at(
-        bytes,
-        deposit_intent_field_offset(DepositIntentField::Amount),
-    );
-    if amount.iter().all(|&b| b == 0) {
-        return Err(EncodingError::ZeroField {
-            field: DepositIntentField::Amount,
-        });
-    }
-
-    let local_token = bytes32_at(
-        bytes,
-        deposit_intent_field_offset(DepositIntentField::LocalToken),
-    );
-    if local_token.iter().all(|&b| b == 0) {
-        return Err(EncodingError::ZeroField {
-            field: DepositIntentField::LocalToken,
-        });
-    }
-
-    let local_depositor = bytes32_at(
-        bytes,
-        deposit_intent_field_offset(DepositIntentField::LocalDepositor),
-    );
-    if local_depositor.iter().all(|&b| b == 0) {
-        return Err(EncodingError::ZeroField {
-            field: DepositIntentField::LocalDepositor,
-        });
-    }
-
-    let hook_data_len = be_u32(
-        bytes,
-        deposit_intent_field_offset(DepositIntentField::HookDataLen),
-    );
-    // total = 240 + hookDataLen, computed in u64 so an adversarial length cannot overflow
-    let expected_len = (DEPOSIT_INTENT_HEADER_LEN as u64) + u64::from(hook_data_len);
-    if bytes.len() as u64 != expected_len {
-        return Err(EncodingError::LengthMismatch);
-    }
-
-    Ok(DepositIntentHeader {
-        magic,
-        version,
-        amount,
-        remote_domain: be_u32(
-            bytes,
-            deposit_intent_field_offset(DepositIntentField::RemoteDomain),
-        ),
-        remote_token: bytes32_at(
-            bytes,
-            deposit_intent_field_offset(DepositIntentField::RemoteToken),
-        ),
-        remote_recipient: bytes32_at(
-            bytes,
-            deposit_intent_field_offset(DepositIntentField::RemoteRecipient),
-        ),
-        local_token,
-        local_depositor,
-        max_fee: bytes32_at(
-            bytes,
-            deposit_intent_field_offset(DepositIntentField::MaxFee),
-        ),
-        nonce: bytes32_at(
-            bytes,
-            deposit_intent_field_offset(DepositIntentField::Nonce),
-        ),
-        hook_data_len,
-    })
-}
-
-/// The u32-LE-packed on-chain preimage: 60 felts for the header plus ceil(hookDataLen/4)
-/// felts of hookData (the same `bytes_to_packed_u32_elements` primitive). Validates the
-/// structure first, then errors `HookDataTooLarge` past the protocol's
-/// `MAX_NOTE_STORAGE_ITEMS` bound (1024 felts; the default cap — the exact hookData cap
-/// stays OPEN with Circle).
-pub fn deposit_intent_to_packed_felts(bytes: &[u8]) -> Result<Vec<Felt>, EncodingError> {
-    parse_deposit_intent_header(bytes)?;
-    let felts = bytes_to_packed_u32_elements(bytes);
-    if felts.len() > MAX_NOTE_STORAGE_ITEMS {
-        return Err(EncodingError::HookDataTooLarge);
-    }
-    Ok(felts)
-}
-
 /// A borrowed DepositIntent payload — the raw Circle-signed wire bytes (`240`-byte header plus
 /// variable hookData).
 ///
 /// This gives the two codecs a typed home: `DepositIntent::new(bytes).parse_header()` and
 /// `.to_packed_felts()` read as operations on a DepositIntent rather than free functions over an
-/// anonymous `&[u8]`. Both delegate to the functions that own the layout, so the parsed fields and
-/// the packed preimage are identical to [`parse_deposit_intent_header`] /
-/// [`deposit_intent_to_packed_felts`]; the 240-byte layout is frozen and nothing here moves it.
+/// anonymous `&[u8]`. The type owns the layout — the parse and the packing below — so the 240-byte
+/// layout is frozen and nothing here moves it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DepositIntent<'a>(&'a [u8]);
 
@@ -273,22 +164,122 @@ impl<'a> DepositIntent<'a> {
         self.0
     }
 
-    /// Structural parse + the library-owned checks. Identical to [`parse_deposit_intent_header`].
+    /// Structural parse + the library-owned checks (truncation, magic, version, non-zero fields,
+    /// total-length relation). Does NOT perform the addressing compares.
     ///
     /// # Errors
     ///
-    /// Propagates every [`EncodingError`] [`parse_deposit_intent_header`] raises.
+    /// Returns the specific [`EncodingError`] for the first structural violation
+    /// (`TruncatedHeader`, `BadMagic`, `BadVersion`, `ZeroField`, or `LengthMismatch`).
     pub fn parse_header(&self) -> Result<DepositIntentHeader, EncodingError> {
-        parse_deposit_intent_header(self.0)
+        let bytes = self.0;
+        // the bounds guard necessarily precedes any field read (the TruncatedHeader case)
+        if bytes.len() < DEPOSIT_INTENT_HEADER_LEN {
+            return Err(EncodingError::TruncatedHeader);
+        }
+
+        let magic = be_u32(
+            bytes,
+            deposit_intent_field_offset(DepositIntentField::Magic),
+        );
+        if magic != DEPOSIT_INTENT_MAGIC {
+            return Err(EncodingError::BadMagic);
+        }
+
+        let version = be_u32(
+            bytes,
+            deposit_intent_field_offset(DepositIntentField::Version),
+        );
+        if version != DEPOSIT_INTENT_VERSION {
+            return Err(EncodingError::BadVersion);
+        }
+
+        let amount = bytes32_at(
+            bytes,
+            deposit_intent_field_offset(DepositIntentField::Amount),
+        );
+        if amount.iter().all(|&b| b == 0) {
+            return Err(EncodingError::ZeroField {
+                field: DepositIntentField::Amount,
+            });
+        }
+
+        let local_token = bytes32_at(
+            bytes,
+            deposit_intent_field_offset(DepositIntentField::LocalToken),
+        );
+        if local_token.iter().all(|&b| b == 0) {
+            return Err(EncodingError::ZeroField {
+                field: DepositIntentField::LocalToken,
+            });
+        }
+
+        let local_depositor = bytes32_at(
+            bytes,
+            deposit_intent_field_offset(DepositIntentField::LocalDepositor),
+        );
+        if local_depositor.iter().all(|&b| b == 0) {
+            return Err(EncodingError::ZeroField {
+                field: DepositIntentField::LocalDepositor,
+            });
+        }
+
+        let hook_data_len = be_u32(
+            bytes,
+            deposit_intent_field_offset(DepositIntentField::HookDataLen),
+        );
+        // total = 240 + hookDataLen, computed in u64 so an adversarial length cannot overflow
+        let expected_len = (DEPOSIT_INTENT_HEADER_LEN as u64) + u64::from(hook_data_len);
+        if bytes.len() as u64 != expected_len {
+            return Err(EncodingError::LengthMismatch);
+        }
+
+        Ok(DepositIntentHeader {
+            magic,
+            version,
+            amount,
+            remote_domain: be_u32(
+                bytes,
+                deposit_intent_field_offset(DepositIntentField::RemoteDomain),
+            ),
+            remote_token: bytes32_at(
+                bytes,
+                deposit_intent_field_offset(DepositIntentField::RemoteToken),
+            ),
+            remote_recipient: bytes32_at(
+                bytes,
+                deposit_intent_field_offset(DepositIntentField::RemoteRecipient),
+            ),
+            local_token,
+            local_depositor,
+            max_fee: bytes32_at(
+                bytes,
+                deposit_intent_field_offset(DepositIntentField::MaxFee),
+            ),
+            nonce: bytes32_at(
+                bytes,
+                deposit_intent_field_offset(DepositIntentField::Nonce),
+            ),
+            hook_data_len,
+        })
     }
 
-    /// The u32-LE-packed on-chain preimage. Identical to [`deposit_intent_to_packed_felts`].
+    /// The u32-LE-packed on-chain preimage: 60 felts for the header plus ceil(hookDataLen/4) felts
+    /// of hookData (the same `bytes_to_packed_u32_elements` primitive). Validates the structure
+    /// first, then errors `HookDataTooLarge` past the protocol's `MAX_NOTE_STORAGE_ITEMS` bound
+    /// (1024 felts; the default cap — the exact hookData cap stays OPEN with Circle).
     ///
     /// # Errors
     ///
-    /// Propagates every [`EncodingError`] [`deposit_intent_to_packed_felts`] raises.
+    /// Propagates every structural error [`parse_header`](Self::parse_header) raises, plus
+    /// [`EncodingError::HookDataTooLarge`] past the 1024-felt bound.
     pub fn to_packed_felts(&self) -> Result<Vec<Felt>, EncodingError> {
-        deposit_intent_to_packed_felts(self.0)
+        self.parse_header()?;
+        let felts = bytes_to_packed_u32_elements(self.0);
+        if felts.len() > MAX_NOTE_STORAGE_ITEMS {
+            return Err(EncodingError::HookDataTooLarge);
+        }
+        Ok(felts)
     }
 
     /// The trailing hookData bytes — everything past the fixed header.
@@ -308,9 +299,9 @@ impl<'a> TryFrom<&'a [u8]> for DepositIntentHeader {
     type Error = EncodingError;
 
     /// Decodes a header straight from the wire bytes — the `TryFrom` spelling of
-    /// [`parse_deposit_intent_header`].
+    /// [`DepositIntent::parse_header`].
     fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
-        parse_deposit_intent_header(bytes)
+        DepositIntent::new(bytes).parse_header()
     }
 }
 
@@ -332,7 +323,8 @@ mod tests {
         let v = load();
         for vec in v.families.di.iter().filter(|v| v.kind == "accept") {
             let bytes = vec.bytes();
-            let h = parse_deposit_intent_header(&bytes)
+            let h = DepositIntent::new(&bytes)
+                .parse_header()
                 .unwrap_or_else(|e| panic!("vector {}: must parse, got {e}", vec.id));
             let f = vec.fields.as_ref().expect("accept vector carries fields");
             assert_eq!(h.magic, f.magic, "vector {}: magic", vec.id);
@@ -395,7 +387,7 @@ mod tests {
             .iter()
             .find(|v| v.id == id)
             .expect("vector present");
-        let result = parse_deposit_intent_header(&vec.bytes());
+        let result = DepositIntent::new(&vec.bytes()).parse_header();
         match vec.expected_variant.as_deref() {
             Some("BadMagic") => assert_matches!(result, Err(EncodingError::BadMagic), "{id}"),
             Some("BadVersion") => assert_matches!(result, Err(EncodingError::BadVersion), "{id}"),
@@ -437,7 +429,8 @@ mod tests {
     fn tv_di_7_sixty_felts_and_1024_bound() {
         let v = load();
         for vec in v.families.di.iter().filter(|v| v.kind == "accept") {
-            let felts = deposit_intent_to_packed_felts(&vec.bytes())
+            let felts = DepositIntent::new(&vec.bytes())
+                .to_packed_felts()
                 .unwrap_or_else(|e| panic!("vector {}: must pack, got {e}", vec.id));
             let expected = vec.preimage_values();
             assert_eq!(
@@ -462,7 +455,7 @@ mod tests {
             .find(|v| v.id == "di-rej-hookdata-overflow")
             .expect("vector");
         assert_matches!(
-            deposit_intent_to_packed_felts(&overflow.bytes()),
+            DepositIntent::new(&overflow.bytes()).to_packed_felts(),
             Err(EncodingError::HookDataTooLarge),
             "hookData past the 1024-felt bound must reject"
         );
@@ -481,7 +474,7 @@ mod tests {
             .expect("vector");
         let bytes = vec.bytes();
         let before = bytes.clone();
-        let _ = parse_deposit_intent_header(&bytes);
+        let _ = DepositIntent::new(&bytes).parse_header();
         assert_eq!(bytes, before, "input must be unchanged by parsing");
     }
 

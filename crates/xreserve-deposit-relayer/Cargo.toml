@@ -98,7 +98,7 @@ tower = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 # Partner-held attestation test vector (tests/fixtures): a DETERMINISTIC secp256k1 key SIGNS
 # `keccak256(payload)` — k256 the keypair+signature, rand the seeded (reproducible) RNG. Signing
-# only, in tests only; the Poseidon2 pubkey commitment comes from the shared encoding crate's `pubkey_commitment`
+# only, in tests only; the Poseidon2 pubkey commitment comes from the shared encoding crate's `PublicKey::to_commitment`
 # (single-owner rule — this crate never re-derives it). Mirrors the shared encoding crate's own in-test attestation vectors.
 k256 = { workspace = true }
 rand = { workspace = true }
@@ -106,7 +106,7 @@ rand = { workspace = true }
 # The mint-note tests need account ids of a KNOWN kind — a PUBLIC faucet (the scheme-2 routing
 # attachment can only bind a network account) and a PRIVATE one to prove that path is refused — and
 # `AccountId::dummy` is where the protocol publishes them. The fixture's allowlist key is a Miden
-# `Word` (Poseidon2, via the shared encoding crate's `pubkey_commitment`) and the envelope suite's negative comparator
+# `Word` (Poseidon2, via the shared encoding crate's `PublicKey::to_commitment`) and the envelope suite's negative comparator
 # hashes with the protocol `Hasher`, so the protocol types were already named in tests.
 miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "75d05d962dc82a1d9fff077b043f5e1647d8061d", features = ["testing"] }
 # TEST-only: `NetworkAccountTarget` — the scheme-2 routing attachment the shared encoding crate puts on the mint note.

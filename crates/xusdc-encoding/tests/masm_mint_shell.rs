@@ -44,9 +44,8 @@ use rstest::rstest;
 use support::*;
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
-    deposit_intent_to_packed_felts, MintIntent, DEPOSIT_INTENT_HEADER_FELTS,
-    MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF, MINT_INTENT_LOCAL_TOKEN_FELT_OFF,
-    MINT_INTENT_NONCE_FELT_OFF,
+    DepositIntent, MintIntent, DEPOSIT_INTENT_HEADER_FELTS, MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF,
+    MINT_INTENT_LOCAL_TOKEN_FELT_OFF, MINT_INTENT_NONCE_FELT_OFF,
 };
 
 /// The faucet's domain configuration word: the remote domain id in element 0, zeros elsewhere.
@@ -242,7 +241,9 @@ const ATTESTER_MARKER: [u32; 4] = [1, 0, 0, 0];
 fn attestation_payload() -> (Vec<Felt>, Vec<u8>, u64) {
     let bytes = mi(ATTESTATION_VECTOR).payload();
     let len_bytes = bytes.len() as u64;
-    let felts = deposit_intent_to_packed_felts(&bytes).expect("the vector payload packs");
+    let felts = DepositIntent::new(&bytes)
+        .to_packed_felts()
+        .expect("the vector payload packs");
     (felts, bytes, len_bytes)
 }
 
@@ -465,11 +466,9 @@ async fn run_rebuild(vector_id: &str, poison: bool) -> Result<()> {
     let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
 
     // the account exists now, so the Rust mirror can rebuild the message for ITS id
-    let expected = deposit_intent_to_packed_felts(&carried.to_deposit_intent_bytes(
-        v.amount(),
-        TEST_DOMAIN,
-        h.account_id,
-    ))?;
+    let expected =
+        DepositIntent::new(&carried.to_deposit_intent_bytes(v.amount(), TEST_DOMAIN, h.account_id))
+            .to_packed_felts()?;
     assert_eq!(
         expected.len(),
         num_expected_felts,
@@ -537,11 +536,9 @@ async fn rebuild_places_each_carried_field(#[case] carried_felt_off: usize) -> R
         false,
     );
     let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
-    let expected = deposit_intent_to_packed_felts(&carried.to_deposit_intent_bytes(
-        v.amount(),
-        TEST_DOMAIN,
-        h.account_id,
-    ))?;
+    let expected =
+        DepositIntent::new(&carried.to_deposit_intent_bytes(v.amount(), TEST_DOMAIN, h.account_id))
+            .to_packed_felts()?;
 
     run_call_driver_with_advice(&h, "drive", Some(expected))
         .await

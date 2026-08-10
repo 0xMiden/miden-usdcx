@@ -56,8 +56,7 @@ use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, bytes32_to_packed_felts, bytes32_to_storage_map_key,
-    decode_burn_note_items, XReserveBurnItems,
+    account_id_to_bytes32, bytes32_to_packed_felts, bytes32_to_storage_map_key, XReserveBurnItems,
 };
 
 // ACTORS (the builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3),
@@ -777,7 +776,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S9: metadata.sender == depositor"
     );
     assert_eq!(
-        decode_burn_note_items(
+        XReserveBurnItems::decode(
             &XReserveBurnNote::evidence_items(&burn_note)
                 .expect("S9: the burn note carries the evidence attachment"),
         )

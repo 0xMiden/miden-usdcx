@@ -156,7 +156,7 @@ end
 // its own state (`NS-3`), so `TV-DUAL-3`'s on-chain leg moved to `TV-DUAL-6` in
 // `masm_mint_shell.rs`, where the writer's felts are compared against the Rust mirror's.
 //
-// The Rust half of `TV-DUAL-3` is unaffected and still runs: `parse_deposit_intent_header` remains
+// The Rust half of `TV-DUAL-3` is unaffected and still runs: `DepositIntent::parse_header` remains
 // the compress-side entry and the relayer's pre-validate, covered by the unit tests in
 // `deposit_intent.rs`. The Circle differential (`TV-CIRCLE-DIFF`) likewise keeps its byte-level
 // leg there — what it can no longer do is push those bytes through an on-chain parser, because
@@ -189,8 +189,11 @@ async fn tv_dual_5_pubkey_commitment() -> Result<()> {
         // Rust mirror == the vector oracle (miden-crypto to_commitment): the third anti-drift
         // leg, asserted in-process so a mirror regression fails here too, not only in TV-ATT-2.
         assert_eq!(
-            xusdc_encoding::xreserve::encoding::pubkey_commitment(&vec.pubkey())
-                .expect("vector pubkeys are valid curve points"),
+            miden_protocol::Word::from(
+                xusdc_encoding::xreserve::encoding::PublicKey::new(vec.pubkey())
+                    .to_commitment()
+                    .expect("vector pubkeys are valid curve points")
+            ),
             expected,
             "vector {}: Rust pubkey_commitment must equal miden-crypto to_commitment",
             vec.id
@@ -479,7 +482,8 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
         // pre-validate rides on. There is no on-chain parser to run them through any more — the
         // faucet writes the message rather than reading it — so the differential stops here and
         // the write side is covered by TV-DUAL-6.
-        let packed = xusdc_encoding::xreserve::encoding::deposit_intent_to_packed_felts(&raw)
+        let packed = xusdc_encoding::xreserve::encoding::DepositIntent::new(&raw)
+            .to_packed_felts()
             .unwrap_or_else(|e| panic!("{}: Circle's own bytes must pack: {e}", v.id));
         assert_eq!(
             packed.len(),

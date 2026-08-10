@@ -19,11 +19,11 @@ serde_json = { workspace = true }
 # bon powers the note-factory builders and the dedicated note-storage types (the standards
 # PswapNote / PswapNoteStorage pattern the note factories adopt).
 bon = { workspace = true }
-# k256 is a REGULAR dependency (not vectors-gated): the attester commitment is computed over
-# the affine pubkey form, which makes this crate the owner of the SEC1→affine decompression
-# (the Circle ingress stays the 33-byte compressed pubkey; the on-chain staging is the 16
-# affine-coordinate felts), and the decompression needs k256's curve arithmetic in the library
-# itself — not just in the generator.
+# k256 is a REGULAR dependency (not vectors-gated) because the vector generator is a BINARY, and
+# `cargo run --bin` cannot see dev-dependencies. The library itself does not use it: the
+# SEC1→affine decompression and the attester commitment are the protocol's own
+# `ecdsa_k256_keccak::PublicKey` conversions, reached through miden-protocol, so this crate does
+# not carry a second copy of the curve arithmetic.
 k256 = { workspace = true }
 
 # Vector-generator crates: OPTIONAL, gated behind the `vectors` feature; never

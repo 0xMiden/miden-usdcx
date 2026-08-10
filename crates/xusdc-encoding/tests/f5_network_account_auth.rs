@@ -66,8 +66,7 @@ use xusdc_encoding::note::xreserve_mint::{
     XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, affine_pubkey_felts, signature_felts, DepositIntent, MintIntent,
-    XReserveBurnItems,
+    account_id_to_bytes32, DepositIntent, MintIntent, PublicKey, Signature, XReserveBurnItems,
 };
 
 const MAX_SUPPLY: u64 = 1_000_000;
@@ -420,10 +419,11 @@ fn mint_note_carries_the_merged_transport_and_the_routing_target() -> Result<()>
         .map_err(|e| anyhow::anyhow!("the attested payload compresses: {e}"))?;
     let mut expected: Vec<Felt> = Vec::new();
     expected.extend(
-        affine_pubkey_felts(&att.pubkey_bytes)
+        PublicKey::new(att.pubkey_bytes)
+            .to_affine_felts()
             .map_err(|e| anyhow::anyhow!("the attester key is on the curve: {e}"))?,
     );
-    expected.extend(signature_felts(&att.sig_bytes));
+    expected.extend(Signature::new(att.sig_bytes).to_felts());
     expected.extend([Felt::from(0u32); 3]);
     assert_eq!(
         expected.len(),

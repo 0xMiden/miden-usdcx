@@ -8,8 +8,7 @@ use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
 ///
 /// This is an **alias**, not a second struct. Circle's documented `BurnPayload` is field-for-field
 /// the shared encoding crate's [`XReserveBurnItems`], which is the type that already owns the
-/// burn-item codec (`encode_burn_note_items` / `decode_burn_note_items`, `BURN_NOTE_ITEMS_FELTS =
-/// 18`). Re-declaring it here would create two structs that have to be kept in sync by hand — which
+/// burn-item codec (`XReserveBurnItems::encode` / `::decode`, `BURN_NOTE_ITEMS_FELTS = 18`). Re-declaring it here would create two structs that have to be kept in sync by hand — which
 /// is precisely how a wire format drifts, and this one decides how much USDC a user gets back.
 /// Consumers pin the shared shape by reference (single-owner rule); the alias exists only so the
 /// spec's name resolves.

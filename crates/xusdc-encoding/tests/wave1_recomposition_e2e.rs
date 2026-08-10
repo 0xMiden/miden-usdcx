@@ -123,7 +123,6 @@ async fn stock_mint_note_rejects_a_recipient_mismatch() -> Result<()> {
             tag: Some(NoteTag::with_account_target(pf.recipient_id)),
             public: true,
         },
-        [Felt::from(0u32); 8],
         1,
         None,
         &AttachmentPlan::default(),
@@ -138,38 +137,10 @@ async fn stock_mint_note_rejects_a_recipient_mismatch() -> Result<()> {
     .await
 }
 
-/// E2E NEGATIVE (the keep-zero fee gate): a nonzero feeAmount in the transport's attestation
-/// section trips the frozen `ERR_XRESERVE_FEE_NONZERO` through the merged transport — which also
-/// pins the feeAmount sub-region's offset inside the merged attachment.
-#[tokio::test]
-async fn stock_mint_note_rejects_a_nonzero_fee() -> Result<()> {
-    let _serial = tripwire_serial_guard().await;
-    let mut pf = fixture()?;
-    bring_up(&mut pf, 1).await?;
-    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 3);
-    let note = tampered_mint_note(
-        &pf,
-        &payload,
-        &StoragePlan {
-            recipient: pf.recipient_id,
-            amount: MINT_AMOUNT,
-            tag: None,
-            public: true,
-        },
-        fee_limbs_of(1), // the otherwise-honest note carries feeAmount = 1
-        1,
-        None,
-        &AttachmentPlan::default(),
-        73,
-    )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_FEE_NONZERO"),
-    )
-    .await
-}
+// The keep-zero fee gate has no e2e negative any more, and that is the stronger position: under
+// DC-14 the operator `feeAmount` does not travel on the wire at all, so a non-zero fee is
+// inexpressible rather than rejected. Reintroducing the relayer-fee split (DEV-8) is therefore a
+// transport change, not a policy change — see the faucet spec's fee-handling note.
 
 /// E2E NEGATIVE (nonce replay): replaying an attested nonce through the transport trips the
 /// frozen `ERR_XRESERVE_NONCE_REPLAY` — the policy's nonce-ledger write is load-bearing.

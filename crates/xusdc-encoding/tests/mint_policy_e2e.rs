@@ -25,7 +25,6 @@
 mod support;
 
 use anyhow::Result;
-use miden_protocol::Felt;
 use support::mint_transport::*;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMaxSupplyNote};
@@ -48,7 +47,6 @@ async fn mint_rejects_a_non_allowlisted_attester() -> Result<()> {
             tag: None,
             public: true,
         },
-        [Felt::from(0u32); 8],
         2, // a DIFFERENT keypair — its commitment is not allowlisted
         None,
         &AttachmentPlan::default(),
@@ -80,7 +78,6 @@ async fn mint_rejects_a_forged_signature() -> Result<()> {
             tag: None,
             public: true,
         },
-        [Felt::from(0u32); 8],
         1,
         Some(&other), // allowlisted key, signature over the WRONG payload
         &AttachmentPlan::default(),
@@ -161,7 +158,6 @@ async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<
             tag: None,
             public: true,
         },
-        [Felt::from(0u32); 8],
         1, // the rotated-out keypair
         None,
         &AttachmentPlan::default(),
@@ -186,7 +182,6 @@ async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<
             tag: None,
             public: true,
         },
-        [Felt::from(0u32); 8],
         2, // the rotated-in keypair
         None,
         &AttachmentPlan::default(),
@@ -218,13 +213,7 @@ async fn mint_rejects_a_wrong_domain() -> Result<()> {
     payload[REMOTE_DOMAIN_BYTE_OFF..REMOTE_DOMAIN_BYTE_OFF + 4]
         .copy_from_slice(&TEST_WRONG_DOMAIN.to_be_bytes());
     let note = honest_note(&pf, &payload, 83)?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_WRONG_DOMAIN"),
-    )
-    .await
+    expect_reject(&mut pf, note, &payload, &STDLIB_ECDSA_SIG_INVALID).await
 }
 
 /// A deposit intent whose `remoteToken` is not this faucet's identifier is refused, compared
@@ -242,13 +231,7 @@ async fn mint_rejects_a_wrong_identifier() -> Result<()> {
         &xusdc_encoding::xreserve::encoding::account_id_to_bytes32(pf.recipient_id),
     );
     let note = honest_note(&pf, &payload, 84)?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_WRONG_IDENTIFIER"),
-    )
-    .await
+    expect_reject(&mut pf, note, &payload, &STDLIB_ECDSA_SIG_INVALID).await
 }
 
 // AMOUNT AND FEE BOUNDS — checked inside the policy, before anything is minted

@@ -4,6 +4,8 @@
 
 use std::sync::OnceLock;
 
+use miden_protocol::account::AccountId;
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::{Felt, Word};
 use serde::Deserialize;
 
@@ -21,6 +23,7 @@ pub struct Families {
     pub di: Vec<DiVector>,
     pub att: Vec<AttVector>,
     pub bn: Vec<BnVector>,
+    pub mi: Vec<MiVector>,
 }
 
 /// bytes32 → Word vectors. `lossless_error` marks the TV-B32-2 limb-ge-p entry.
@@ -37,7 +40,7 @@ pub struct B32Vector {
     pub derivation: String,
 }
 
-/// uint256 → AssetAmount vectors. `kind`: accept | reject | ge | dust | guard.
+/// uint256 → AssetAmount vectors. `kind`: accept | reject | ge | dust.
 #[derive(Debug, Deserialize)]
 pub struct AmtVector {
     pub id: String,
@@ -60,15 +63,6 @@ pub struct AmtVector {
     pub ge_result: Option<bool>,
     #[serde(default)]
     pub expected_variant: Option<String>,
-    #[serde(default)]
-    pub masm_err: Option<String>,
-    /// The MASM witness `y` for reject rows (accept rows use `expected_y`; rows without
-    /// either push zero).
-    #[serde(default)]
-    pub witness_y: Option<String>,
-    /// masm-only guard staging: raw felt values pushed as "limbs" (one >= 2^32).
-    #[serde(default)]
-    pub staging_felts: Option<Vec<String>>,
     #[serde(default)]
     pub mode: Option<String>,
     pub cite: String,
@@ -144,6 +138,38 @@ pub struct PackedField {
     pub name: String,
     pub felt_off: u64,
     pub felts: Vec<String>,
+}
+
+/// Mint-payload (`DC-14`) vectors: a Circle DepositIntent, the faucet it is addressed to, the
+/// felts the mint note would carry for it, and the preimage the faucet rebuilds from those felts.
+/// `kind`: accept | reject.
+///
+/// The faucet id here is a fixed SYNTHETIC one. A real faucet's id is a hash over its own code, so
+/// the rebuilt preimage's identity fields are not knowable when this artifact is generated — the
+/// live-account tests check the MASM writer against the Rust mirror instead. The ownership map's
+/// anti-duplication section records that split.
+#[derive(Debug, Deserialize)]
+pub struct MiVector {
+    pub id: String,
+    pub tv: Vec<String>,
+    pub kind: String,
+    pub payload_hex: String,
+    pub faucet_prefix_felt: String,
+    pub faucet_suffix_felt: String,
+    pub remote_domain: u32,
+    /// Accept rows only: the reduced amount the note carries and the faucet writes back.
+    #[serde(default)]
+    pub amount_felt: Option<String>,
+    /// Accept rows only: the carried payload felts, and the 60-plus-hookData felts the writer
+    /// must produce from them.
+    #[serde(default)]
+    pub carried_felts: Vec<String>,
+    #[serde(default)]
+    pub rebuilt_preimage_felts: Vec<String>,
+    #[serde(default)]
+    pub expected_variant: Option<String>,
+    pub cite: String,
+    pub derivation: String,
 }
 
 /// Attestation (ATT) vectors. One independent secp256k1 keypair each:
@@ -298,6 +324,40 @@ impl DiVector {
 
     pub fn preimage_values(&self) -> Vec<Felt> {
         self.preimage_felts
+            .iter()
+            .map(|s| felt_from_hex(s))
+            .collect()
+    }
+}
+
+impl MiVector {
+    pub fn payload(&self) -> Vec<u8> {
+        parse_hex(&self.payload_hex)
+    }
+
+    /// The synthetic faucet this intent is addressed to.
+    pub fn faucet_id(&self) -> AccountId {
+        AccountId::try_from_elements(
+            felt_from_hex(&self.faucet_suffix_felt),
+            felt_from_hex(&self.faucet_prefix_felt),
+        )
+        .expect("the vector's faucet id is canonical")
+    }
+
+    pub fn amount(&self) -> AssetAmount {
+        let felt = felt_from_hex(self.amount_felt.as_deref().expect("accept vector"));
+        AssetAmount::new(felt.as_canonical_u64()).expect("the vector's amount is in range")
+    }
+
+    pub fn carried_values(&self) -> Vec<Felt> {
+        self.carried_felts
+            .iter()
+            .map(|s| felt_from_hex(s))
+            .collect()
+    }
+
+    pub fn rebuilt_preimage_values(&self) -> Vec<Felt> {
+        self.rebuilt_preimage_felts
             .iter()
             .map(|s| felt_from_hex(s))
             .collect()

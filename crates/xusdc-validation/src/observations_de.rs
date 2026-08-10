@@ -46,9 +46,9 @@ pub struct MintHappy {
     pub supply_after: u64,
     /// The `usedNonces[nonce]` marker read AFTER the mint committed — must be `[1,0,0,0]` (set).
     pub nonce_marker_after: Word4,
-    /// The emitted recipient note's serial number (must equal the nonce-derived `bytes32_to_key`).
+    /// The emitted recipient note's serial number (must equal the nonce-derived `bytes32_to_storage_map_key`).
     pub note_serial: Word4,
-    /// The nonce-derived key the serial is checked against (`bytes32_to_key(nonce)`).
+    /// The nonce-derived key the serial is checked against (`bytes32_to_storage_map_key(nonce)`).
     pub expected_serial: Word4,
     /// Whether the emitted note's script root equals the canonical P2ID script root.
     pub note_is_p2id: bool,

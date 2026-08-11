@@ -32,12 +32,11 @@
 //! identifier is not among them and has no slot at all — it is the account's own id, which the
 //! mint path derives on chain, so the composed faucet is mint-ready the moment it exists.
 //!
-//! Packaging: the attestation policy is **runtime-assembled** MASM (no `.masl` asset /
-//! `account_component_code!` here — that is a miden-standards-internal pipeline). The builder
-//! assembles the shipped `xreserve` library into an `AccountComponent` itself (there is exactly one
-//! valid component, so it is not a builder input); the policy procedure root is resolved from that
-//! same installed code via [`AccountComponent::get_procedure_root_by_path`], so the `dynexec` root
-//! the policy manager stores always equals the installed proc's MAST root. The final composed
+//! Packaging: the MASM is assembled at BUILD time and embedded, so the builder binds a shipped
+//! component package rather than assembling anything (there is exactly one valid component, so it is
+//! not a builder input); the policy procedure root is resolved from that same installed code via
+//! [`AccountComponent::get_procedure_root_by_path`], so the `dynexec` root the policy manager stores
+//! always equals the installed proc's MAST root. The final composed
 //! [`Account`] is produced by [`XReserveStablecoinBuilder::build_account`] / the crate-root
 //! [`build_faucet_account`], so account construction is traceable from the library root.
 
@@ -88,9 +87,10 @@ pub const DOM_MANAGER_ROLE: &str = "DOM_MANAGER";
 /// no new rotation machinery. `BLK_MANAGER` is seeded role id 4.
 pub const BLK_MANAGER_ROLE: &str = "BLK_MANAGER";
 
-/// Flat library path of the attestation mint policy's `check_policy` procedure within the
-/// assembled `xreserve` library (namespace `xreserve`, module `mint_policy`).
-pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str = "xreserve::mint_policy::check_policy";
+/// Path of the attestation mint policy's `check_policy` procedure as the faucet component EXPORTS
+/// it. The procedure is defined in the library's `mint_policy` module; the component re-exports it
+/// under its own namespace, and it is that re-export the account installs and resolves by.
+pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str = "xreserve::components::faucet::check_policy";
 
 /// The smallest admissible `min_burn_size` (the zero floor). The stock [`MinBurnAmount`] policy
 /// asserts `min <= amount` ONLY (its authority-gated stock setter even accepts `0`), so the

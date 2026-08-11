@@ -32,7 +32,6 @@ pub use w2admin::{
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use miden_processor::advice::AdviceInputs;
@@ -42,11 +41,11 @@ use miden_protocol::account::{
     Account, AccountComponent, AccountId, AccountIdVersion, AccountProcedureRoot, AccountType,
     AssetCallbackFlag, RoleSymbol, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
 };
-use miden_protocol::assembly::{Linkage, Package, Path as MasmPath};
+use miden_protocol::assembly::Package;
 use miden_protocol::asset::{AssetAmount, AssetCallbacks, FungibleAsset, TokenSymbol};
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{Note, NoteType};
-use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote, TransactionKernel};
+use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Pausable, PausableManager, RoleBasedAccessControl};
@@ -58,14 +57,14 @@ use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::BurnNote;
 use miden_standards::testing::note::NoteBuilder;
-use miden_standards::StandardsLib;
 use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
-    XReserveAdminAuthority, XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH,
-    BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveAdminAuthority, XReserveStablecoinBuilderError, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE,
+    DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::xreserve::encoding::EthBytes32;
+use xusdc_encoding::{errors, XReserveLibrary};
 
 // Attestation fixtures — deterministic secp256k1 keys and signatures generated IN-TEST (the
 // canonical vector artifact is untouched), mirroring the `gen_vectors` att_* helpers: k256 the
@@ -133,114 +132,89 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 // FAUCET ERROR MIRRORS (frozen names)
 // ================================================================================================
 
-/// Name → constant table for the faucet-owned shell errors (string `MasmError`
-/// pattern). The implementation must declare byte-identical strings in MASM. The two
-/// amount/fee errors and every other row are pinned here so the
-/// behavior tests can name their EXACT expected error.
+/// Name → constant table for the faucet-owned shell errors, so a behaviour test can name the EXACT
+/// error it expects. The messages are NOT written here: each row points at the constant `build.rs`
+/// generated from the MASM that raises it, so a message can only be changed in the MASM. What this
+/// table still carries is the NAME set — an error the faucet raises but no test names fails the
+/// bidirectional constant sweep until it gets a row.
 pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
-    // the packed-memory primitives the DC-14 preimage writer copies through (packed_mem.masm)
     (
         "ERR_XRESERVE_MINT_INTENT_LIMB",
-        MasmError::from_static_str("mint intent limb is not a valid u32"),
+        errors::ERR_XRESERVE_MINT_INTENT_LIMB,
     ),
     (
         "ERR_XRESERVE_DOMAIN_NOT_U32",
-        MasmError::from_static_str("faucet domain config is not a valid u32"),
+        errors::ERR_XRESERVE_DOMAIN_NOT_U32,
     ),
     (
         "ERR_XRESERVE_MINT_ZERO_AMOUNT",
-        MasmError::from_static_str("mint note asset amount must be non-zero"),
+        errors::ERR_XRESERVE_MINT_ZERO_AMOUNT,
     ),
     (
         "ERR_XRESERVE_MINT_AMOUNT_OVER_MAX",
-        MasmError::from_static_str("mint note asset amount exceeds the fungible maximum"),
+        errors::ERR_XRESERVE_MINT_AMOUNT_OVER_MAX,
     ),
     (
         "ERR_XRESERVE_AMOUNT_BELOW_FEE",
-        MasmError::from_static_str("deposit intent amount is below the max fee"),
+        errors::ERR_XRESERVE_AMOUNT_BELOW_FEE,
     ),
-    // The nonce replay guard's error, pinned here so the replay test can name its EXACT
-    // expected error, byte-identical to the MASM const.
     (
         "ERR_XRESERVE_NONCE_REPLAY",
-        MasmError::from_static_str("deposit intent nonce has already been used"),
+        errors::ERR_XRESERVE_NONCE_REPLAY,
     ),
-    // The two attestation rejects (attestation_verify.masm). Parity-pinned against the MASM consts.
     (
         "ERR_XRESERVE_DISALLOWED_PUB_KEY",
-        MasmError::from_static_str("deposit attester pubkey commitment is not allowlisted"),
+        errors::ERR_XRESERVE_DISALLOWED_PUB_KEY,
     ),
-    (
-        "ERR_XRESERVE_SIG_INVALID",
-        MasmError::from_static_str("deposit attestation signature verification failed"),
-    ),
-    // The fee gate (deposit_intent_parser.masm): the faucet pays no relayer fee, so the parser rejects
-    // a non-zero advice feeAmount; parity-pinned against the MASM const.
-    // The attestation mint policy (mint_policy.masm) — the TRANSPORT-shape guards on the
-    // stock MintNote's attachments: the scheme-4 merged transport (attestation + deposit intent)
-    // and the scheme-2 routing target must both be present, exactly two in total; the
-    // hash-committed transport word count must cover the attestation and the intent header, and
-    // must match the embedded hookDataLen claim.
+    ("ERR_XRESERVE_SIG_INVALID", errors::ERR_XRESERVE_SIG_INVALID),
     (
         "ERR_XRESERVE_MINT_NOTE_TRANSPORT_MISSING",
-        MasmError::from_static_str("mint note transport attachment is missing"),
+        errors::ERR_XRESERVE_MINT_NOTE_TRANSPORT_MISSING,
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_TARGET_MISSING",
-        MasmError::from_static_str("mint note routing target attachment is missing"),
+        errors::ERR_XRESERVE_MINT_NOTE_TARGET_MISSING,
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT",
-        MasmError::from_static_str("mint note must carry exactly two attachments"),
+        errors::ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT,
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_TRANSPORT_TOO_SHORT",
-        MasmError::from_static_str(
-            "mint note transport attachment is shorter than the attestation and the deposit intent header",
-        ),
+        errors::ERR_XRESERVE_MINT_NOTE_TRANSPORT_TOO_SHORT,
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB",
-        MasmError::from_static_str(
-            "mint note deposit intent hook data length limb is not a valid u32",
-        ),
+        errors::ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB,
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_INTENT_WORDS",
-        MasmError::from_static_str(
-            "mint note deposit intent attachment word count does not match the intent length",
-        ),
+        errors::ERR_XRESERVE_MINT_NOTE_INTENT_WORDS,
     ),
-    // The ASSERT-MATCH binding (mint_policy.masm): the note-supplied output-note
-    // RECIPIENT / ASSET_VALUE / tag / note_type must EQUAL their attested derivations.
     (
         "ERR_XRESERVE_MINT_RECIPIENT_MISMATCH",
-        MasmError::from_static_str(
-            "mint note recipient does not match the attested deposit intent",
-        ),
+        errors::ERR_XRESERVE_MINT_RECIPIENT_MISMATCH,
     ),
     (
         "ERR_XRESERVE_MINT_AMOUNT_MISMATCH",
-        MasmError::from_static_str(
-            "mint note asset amount does not match the attested deposit intent",
-        ),
+        errors::ERR_XRESERVE_MINT_AMOUNT_MISMATCH,
     ),
     (
         "ERR_XRESERVE_MINT_TAG_MISMATCH",
-        MasmError::from_static_str("mint note tag does not match the attested recipient target"),
+        errors::ERR_XRESERVE_MINT_TAG_MISMATCH,
     ),
     (
         "ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC",
-        MasmError::from_static_str("mint note output note type must be public"),
+        errors::ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC,
     ),
 ];
 
-/// The min-burn admin note's zero-floor guard
-/// (`xreserve_set_min_burn_size_note.masm`; the stock `set_min_burn_amount` accepts 0, so the
-/// note rejects a sub-floor `new_min` BEFORE calling it). A NOTE-script error, not an
-/// account-proc shell error — kept beside the table for the same exact-error discipline.
+/// The min-burn admin note's zero-floor guard (`asm/notes/set_min_burn_size/`; the stock
+/// `set_min_burn_amount` accepts 0, so the note rejects a sub-floor `new_min` BEFORE calling it). A
+/// NOTE-script error, not an account-proc shell error — kept beside the table for the same
+/// exact-error discipline, and like the table it names the generated constant rather than the string.
 pub fn err_min_burn_below_floor() -> MasmError {
-    MasmError::from_static_str("minimum burn size must be at least one")
+    errors::ERR_XRESERVE_MIN_BURN_BELOW_FLOOR
 }
 
 /// The stock `MinBurnAmount::check_policy` reject (min_burn_amount.masm) — the burn-side floor
@@ -318,9 +292,6 @@ pub const SHELL_DRIVER_PATH: &str = "xusdc::test_fixtures::shell_driver";
 /// Module path of the slot-binding probe component.
 pub const SLOT_PROBE_PATH: &str = "xusdc::test_fixtures::slot_probe";
 
-/// Assembles the `asm/standards/xreserve` tree into one library under namespace
-/// `xreserve` — lifted from `masm_dual.rs:41-47` (test scaffolding, not an owned
-/// routine; kept byte-equivalent).
 /// A deterministic dummy `AccountId` for the builder's `owner` / DOM role-holder inputs and for the
 /// role-holder / non-holder note senders in the `set_attester` suite. Mirrors
 /// `miden-testing/tests/scripts/rbac.rs:49-51`.
@@ -424,27 +395,31 @@ pub fn add_network_faucet_account(
     Ok(account)
 }
 
+/// The shipped xreserve library, as the build script assembled it.
+///
+/// Assembly moved to build time, so there is nothing left here that can fail; the `Result` is kept
+/// because this fixture has many callers and none of them care.
 pub fn assemble_xreserve_lib() -> Result<Package> {
-    // Link the standards library (mirrors CodeBuilder's own `with_dynamic_library(StandardsLib)`):
-    // attester_admin::set_attester calls the stock `authority::assert_authorized` /
-    // `pausable::assert_not_paused`, which live in StandardsLib. The other xreserve modules stay
-    // core+protocol-only; linking standards only adds resolvable symbols (it does not change their
-    // MAST roots).
-    let assembler = TransactionKernel::assembler()
-        .with_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
-        .map_err(|e| {
-            anyhow::anyhow!("linking the standards library into the xreserve assembler: {e}")
-        })?
-        .with_warnings_as_errors(true);
-    let lib = assembler
-        .assemble_library_from_root(
-            xusdc_encoding::xreserve_asm_dir().join("mod.masm"),
-            Some(MasmPath::new("xreserve")),
-        )
-        // the Display of an assembler report is just its kind ("syntax error"); the Debug form
-        // carries the source span and the label that say WHERE
-        .map_err(|e| anyhow::anyhow!("xreserve library failed to assemble: {e:?}"))?;
-    Ok(*lib)
+    Ok(XReserveLibrary::default().into())
+}
+
+/// Where the attestation mint policy answers inside the LIBRARY, as opposed to
+/// [`ATTESTATION_MINT_POLICY_PROC_PATH`], which is where the shipped faucet component re-exports it.
+/// Both resolve to the same root; the harnesses below install the library directly, so they have to
+/// ask for it by this path.
+const LIBRARY_ATTESTATION_MINT_POLICY_PROC_PATH: &str = "xreserve::mint_policy::check_policy";
+
+/// Resolves the attestation mint policy's root from a component carrying the xreserve library.
+fn library_attestation_mint_policy_root(component: &AccountComponent) -> Result<Word> {
+    component
+        .get_procedure_root_by_path(LIBRARY_ATTESTATION_MINT_POLICY_PROC_PATH)
+        .map(Word::from)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "the harness component does not export \
+                 '{LIBRARY_ATTESTATION_MINT_POLICY_PROC_PATH}'"
+            )
+        })
 }
 
 pub fn production_component_set(
@@ -1664,17 +1639,10 @@ pub fn setup_guarded_mint_account(
         .build()
         .context("failed to build FungibleFaucet")?;
 
-    // Resolve the attestation-policy root from the assembled component (a benign read-only
-    // proc-root lookup; the same value the production builder registers as the active mint policy).
-    let attestation_root: Word = xreserve_component
-        .get_procedure_root_by_path(ATTESTATION_MINT_POLICY_PROC_PATH)
-        .map(Word::from)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "xreserve component does not export the attestation mint policy procedure \
-                 '{ATTESTATION_MINT_POLICY_PROC_PATH}'"
-            )
-        })?;
+    // Resolve the attestation-policy root from the harness component. It carries the whole library,
+    // so the procedure answers to its LIBRARY path here; the shipped faucet component re-exports the
+    // same procedure, and therefore the same root, under its own path.
+    let attestation_root: Word = library_attestation_mint_policy_root(&xreserve_component)?;
     let (mut components, policy_root) = match selection {
         // PRODUCTION path: the real builder — attestation policy ONLY (no reserved alternates).
         // The caller's `domain` word (element 0) is build-seeded.
@@ -1947,14 +1915,7 @@ fn oracle_burn_components(
     } else {
         (allow_burn, real_burn)
     };
-    let attestation_root: Word = xreserve_component
-        .get_procedure_root_by_path(ATTESTATION_MINT_POLICY_PROC_PATH)
-        .map(Word::from)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "xreserve component does not export '{ATTESTATION_MINT_POLICY_PROC_PATH}'"
-            )
-        })?;
+    let attestation_root: Word = library_attestation_mint_policy_root(&xreserve_component)?;
     let manager = TokenPolicyManager::builder()
         .active_mint_policy(
             MintPolicy::custom(

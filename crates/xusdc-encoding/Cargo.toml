@@ -38,6 +38,22 @@ sha3 = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 miden-crypto = { version = "0.28", default-features = false, features = ["std"], optional = true }
 
+# Build-time MASM assembly (`build.rs` → `$OUT_DIR/assets/*.masp`). The assembler family comes from
+# crates.io at the SAME 0.25.8 the frozen protocol graph resolves, pinned in
+# [workspace.dependencies] so `crates/xusdc-validation` cannot drift onto a second copy when it
+# un-parks. miden-protocol and miden-standards repeat the frozen git rev because the build script
+# seeds their assembled packages into the registry the project assembler resolves against.
+[build-dependencies]
+fs-err                 = { workspace = true }
+miden-assembly         = { workspace = true, features = ["std"] }
+miden-core-lib         = { workspace = true }
+miden-package-registry = { workspace = true, features = ["resolver", "std"] }
+miden-project          = { workspace = true, features = ["serde", "std"] }
+miden-protocol         = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c" }
+miden-standards        = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c" }
+regex                  = { workspace = true }
+walkdir                = { workspace = true }
+
 [features]
 # Enables the canonical golden-vector generator binary. Its keccak/commitment crates live
 # behind this feature so they never enter the library or the normal test build (k256 is a

@@ -5,19 +5,17 @@
 //! composing the components vs. turning them into the deployable `Account` — live apart and each file
 //! stays within the Rust file-size ceiling.
 
-use std::sync::Arc;
-
-use miden_protocol::account::component::AccountComponentMetadata;
+use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
     Account, AccountComponent, AccountId, AccountType, AssetCallbackFlag, StorageMap, StorageSlot,
     StorageSlotName,
 };
-use miden_protocol::assembly::{Linkage, Path as MasmPath};
 use miden_protocol::asset::{AssetAmount, AssetCallbacks, TokenSymbol};
-use miden_protocol::transaction::TransactionKernel;
+use miden_protocol::utils::sync::LazyLock;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
-use miden_standards::StandardsLib;
+
+use crate::xreserve_lib::component_code;
 
 use super::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError, DOMAIN_CONFIG_SLOT_LABEL,
@@ -32,6 +30,16 @@ use crate::xreserve::encoding::EthBytes32;
 /// neither of which depends on this string (the byte-identity suite proves it).
 const XRESERVE_COMPONENT_LABEL: &str = "xusdc-xreserve";
 
+/// The faucet's callable surface, assembled at build time from `asm/components/faucet/`. It exports
+/// the two procedures the account answers to and nothing else; the rest of the xreserve library is
+/// reachable only from inside them.
+static FAUCET_COMPONENT_CODE: LazyLock<AccountComponentCode> = LazyLock::new(|| {
+    component_code(include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/assets/components/xreserve-faucet.masp"
+    )))
+});
+
 /// The shipped `xreserve` account component: the assembled MASM library bound to its six declared
 /// storage slots. There is exactly ONE valid value — the shipped MASM — so it is a component TYPE the
 /// builder produces itself rather than a parameter. Like the standards / agglayer component types, it
@@ -41,23 +49,13 @@ const XRESERVE_COMPONENT_LABEL: &str = "xusdc-xreserve";
 pub struct XReserveComponent(AccountComponent);
 
 impl XReserveComponent {
-    /// Assembles the shipped `xreserve` MASM library and binds it with its six declared storage
-    /// slots. The four domain-config value slots start zeroed (build-seeded by
+    /// Binds the shipped faucet component code to its six declared storage slots. The four
+    /// domain-config value slots start zeroed (build-seeded by
     /// [`XReserveStablecoinBuilder::with_domain_config`]) and the two registry maps start empty
-    /// (`set_attester` and the mint path populate them). Assembly failures are invariants of the
-    /// shipped source, so they panic rather than surfacing as a builder error (the same posture the
-    /// admin-note script assembler takes).
+    /// (`set_attester` and the mint path populate them). A binding failure is an invariant of the
+    /// shipped MASM, so it panics rather than surfacing as a builder error.
     pub fn assemble() -> Self {
-        let assembler = TransactionKernel::assembler()
-            .with_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
-            .expect("the standards library links into the xreserve assembler")
-            .with_warnings_as_errors(true);
-        let library = *assembler
-            .assemble_library_from_root(
-                crate::xreserve_asm_dir().join("mod.masm"),
-                Some(MasmPath::new("xreserve")),
-            )
-            .expect("the shipped xreserve component library assembles");
+        let library = FAUCET_COMPONENT_CODE.clone();
         let empty = || Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::ZERO]);
         let value_slot = |label: &str| {
             StorageSlot::with_value(

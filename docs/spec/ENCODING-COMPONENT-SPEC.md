@@ -8,10 +8,10 @@ message, the burn-note payload) and Miden's on-chain types (felts, Words, `Asset
 - **Rust:** `crates/xusdc-encoding/src/xreserve/encoding/` (`bytes32.rs`, `amount.rs`,
   `account_id.rs`, `attestation.rs`, `deposit_intent.rs`, `mint_intent.rs`, `burn_note.rs`,
   `error.rs`).
-- **MASM:** `asm/standards/xreserve/deposit_intent.masm` (the `DC-1` wire layout, the shared codecs,
-  and `rebuild` — the faucet-owned `DC-14` writer), `asm/standards/xreserve/mint_intent.masm`
+- **MASM:** `crates/xusdc-encoding/asm/xreserve/deposit_intent.masm` (the `DC-1` wire layout, the shared codecs,
+  and `rebuild` — the faucet-owned `DC-14` writer), `crates/xusdc-encoding/asm/xreserve/mint_intent.masm`
   (the `DC-14` carried shape, plus the checks and the nonce hash that read it), and
-  `asm/standards/xreserve/packed_mem.masm` (the layout-agnostic primitives `rebuild` writes the
+  `crates/xusdc-encoding/asm/xreserve/packed_mem.masm` (the layout-agnostic primitives `rebuild` writes the
   packed region with). There is no `encoding/` submodule: a format's constants and the procedure
   that realizes them live together.
 

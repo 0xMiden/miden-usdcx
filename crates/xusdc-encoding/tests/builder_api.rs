@@ -25,8 +25,9 @@ use miden_standards::account::policies::{
 };
 use support::*;
 use xusdc_encoding::account::xreserve::{
-    XReserveAdminAuthority, XReserveStablecoinBuilder, XReserveStablecoinBuilderError,
-    ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveAdminAuthority, XReserveComponent, XReserveStablecoinBuilder,
+    XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE,
+    DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::xreserve::encoding::{bytes32_to_packed_felts, EthBytes32};
 
@@ -604,7 +605,12 @@ fn production_components_carry_mutability_config_slot() -> Result<()> {
 #[test]
 fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> {
     let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let xreserve_code = xreserve_component.component_code().clone();
+    // The SHIPPED component code, not the fixture's: the builder assembles its own xreserve
+    // component, so counting the fixture's copy would count something the composition never
+    // installs.
+    let xreserve_code = AccountComponent::from(XReserveComponent::assemble())
+        .component_code()
+        .clone();
     let components = production_builder(faucet, xreserve_component)
         .build_components()
         .context("the production composition must build")?;

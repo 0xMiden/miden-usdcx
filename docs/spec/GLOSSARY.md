@@ -177,7 +177,7 @@ Codec decisions owned by the `xusdc-encoding` crate (`xreserve::encoding`).
 
 | Id | Decision |
 |---|---|
-| D-1A | The module-realization rule: one module per WIRE FORM directly under `asm/standards/xreserve/`, each holding that format's constants and the procedures that realize them. No owner-grouping directory — ownership is a column in the map, not a path segment. |
+| D-1A | The module-realization rule: one module per WIRE FORM directly under `crates/xusdc-encoding/asm/xreserve/`, each holding that format's constants and the procedures that realize them. No owner-grouping directory — ownership is a column in the map, not a path segment. |
 | D-5 | The `AccountId ↔ bytes32` codec (`DC-6`) is Rust-primary — there is no MASM procedure for it in the encoding module (`account_id.rs`). |
 | IMPL-ACCOUNTID-LAYOUT | The shipped AccountId-in-bytes32 packaging (the right-aligned "R-B" layout: 16 zero bytes ‖ prefix u64 BE ‖ suffix u64 BE); see `DEV-10` / `DC-6`. Provisional, pending Circle confirmation. |
 

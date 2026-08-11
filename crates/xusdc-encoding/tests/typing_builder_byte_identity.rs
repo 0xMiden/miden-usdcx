@@ -42,10 +42,18 @@ const TOKEN_SUPPLY: u64 = 0;
 // digest because the active mint policy is stored as `check_policy`'s MAST root, and the initial
 // commitment because it covers both. The account id did NOT move, which is what says the seed
 // derivation and the slot LAYOUT are untouched: only procedure code and the root it is named by.
+//
+// Re-captured again when the account's callable surface moved into its own component MASM. NO
+// procedure changed: the full 61-root list is identical except that `set_attester` and
+// `check_policy` swap positions 19 and 20. The two used to be named by their library modules
+// (`attester_admin` sorting before `mint_policy`) and are now named by one shared component module,
+// where the sort falls through to the procedure name (`check_policy` before `set_attester`). The
+// commitment is taken over the roots IN ORDER, so it moved; the storage digest and the account id
+// did not, which is what says nothing but the ordering changed.
 const GOLDEN_INITIAL_COMMITMENT: &str =
-    "Word([1052646678099504404, 463462926362689613, 17653851081971408789, 2407414798603717391])";
+    "Word([17966623251511595984, 5778353039142539162, 16004825714243359746, 11780323542403086167])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([16976291790698015816, 5888415912956684650, 4290450764110773212, 7150546299912713910])";
+    "Word([9965828662918906490, 3941913867309533484, 2388271730734016088, 9698870604580583594])";
 const GOLDEN_STORAGE_DIGEST: &str =
     "Word([2490542360978853948, 16780434252263796967, 2203274247233403944, 6602689817247658489])";
 const GOLDEN_ACCOUNT_ID: &str = "0x070707060707073107070707070707";

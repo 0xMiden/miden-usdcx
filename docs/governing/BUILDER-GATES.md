@@ -4,14 +4,14 @@
 
 Enforceable gates for every implementation unit. Phrased to be **mechanically checkable**, not matters of taste — agent self-assessment of "is this clean / did I review enough" is not gaugeable. Subjective calls (right abstraction? architecture buckling?) are **reserved for the human**.
 
-**MASM-first premise.** The custom contracts are **hand-written MASM**. Assemble through `miden-standards`' `CodeBuilder` / `TransactionKernel::assembler()` path, create components with `AccountComponent::new`, load note scripts through `NoteScript::from_library_reference`, and execute behavior through MockChain plus the local-node gates. Do not use `cargo miden build` or a hand-built raw `Assembler` for the faucet.
+**MASM-first premise.** The custom contracts are **hand-written MASM**. Assembly is declared, not scripted: every shipped `.masm` tree is a Miden project (`miden-project.toml`) assembled at BUILD time by `crates/xusdc-encoding/build.rs`, which is the single place a raw `Assembler` may be constructed. Create components with `AccountComponent::new`, load note scripts through `NoteScript::from_package`, and execute behavior through MockChain plus the local-node gates. Do not use `cargo miden build` — there is still no Rust-contract path here; a build script calling `miden-assembly` is not that.
 
 **Protocol AI/MASM guidance.** Builder and critic agents must use the protocol-local skills pinned in `.claude/skills/` as mandatory checklist material. These skills are hygiene/review guidance, not runtime API evidence; if a skill conflicts with pinned repository evidence, stop and report the conflict.
 
 ## G0 — Objective gate runs BEFORE any human review
 A unit is not eligible for human review until all of these are green (a green build/test is cheap; human attention is not):
 - The unit's **source-backed build/assembly gate** is clean:
-  - hand-written MASM contract → **assembles** via `CodeBuilder::compile_component_code` / `TransactionKernel::assembler()` using the pinned assembler dependency;
+  - hand-written MASM contract → **assembles** during `cargo build`, through the crate's build script and the pinned assembler dependency, so a MASM error fails the build rather than only the test run;
   - Rust harness/tooling/test crate → its `cargo` build/test is clean.
 - The unit's **happy-path test passes** (written first — see G4). **For any owned routine with a MASM implementation, "passes" means the MASM is EXECUTED against its golden vectors** via `TransactionContext::execute_code` or MockChain; assemble-clean is necessary but not sufficient. **For a note-script unit, the happy path executes the full create→consume cycle**; for the public burn note, exercise the two-block create→consume.
 - **MockChain** test green for on-chain behavior; **local-node validation green** where the unit touches notes, RPC, or lifecycle.
@@ -23,7 +23,7 @@ A unit is not eligible for human review until all of these are green (a green bu
 - Follow the MASM formatting, file-structure, constant placement, padding, and comment conventions in `.claude/skills/` and live `miden-standards` source. **No guessed MASM command or convention may gate a unit; do not fake an assembly pass.**
 - Apply the PR #2927 MASM skills as additional mandatory checklists for each MASM unit: `cheap-masm-equivalents`, `checked-arithmetic`, `felt-construction`, `u32-assert-before-u32-ops`, `masm-error-constants`, `masm-explicit-stack-inputs`, `masm-locals-over-globals`, `masm-named-literals`, `masm-rust-constant-parity`, and **`advice-provider-hygiene`**. The builder's completion note must list which of these were checked and any resulting changes or conflicts.
 - **`advice-provider-hygiene` is MANDATORY and security-critical for the `attestation_verify` proc and the `feeAmount` advice path** (consortium H1). Every advice/`NoteAttachment`-sourced value — the 17-felt ECDSA signature, the 9-felt candidate pubkey, and the operator `feeAmount` — MUST be validated against a kernel-trusted commitment (the pubkey-commitment `assert_eqw` + the keccak-bound signature, frozen faucet spec), use content-addressed advice-map keys, and **ERROR (not default) on missing advice**. A missed advice-commitment / missing-advice check on this path is an unlimited-mint authorization bypass — the worst failure mode in the faucet.
-- **Pinned MASM facts:** core-lib imports use `miden::core::`; `@note_script` and `@locals(N)` are lowercase line-above attributes; `pub proc` exports a component procedure; `word("ns::label")` plus `[0..2]` yields the slot id; the runtime compile path uses `CodeBuilder` with no build dependency; and the pinned core library carries the Keccak/ECDSA precompiles.
+- **Pinned MASM facts:** core-lib imports use `miden::core::`; `@note_script` and `@locals(N)` are lowercase line-above attributes; `pub proc` exports a component procedure; `word("ns::label")` plus `[0..2]` yields the slot id; the compile path is the crate's build script, which assembles each declared Miden project into a `.masp` the Rust side embeds; and the pinned core library carries the Keccak/ECDSA precompiles.
 - **`uint256→AssetAmount` reducer (DC-5, external Circle amount) — pinned obligations (consortium N11):** the Rust mirror MUST use **checked/overflowing arithmetic that surfaces overflow** on the scale / floor-div / cap path (no bare `*`/`-`/`+` on external values — `checked-arithmetic`); the MASM impl MUST `u32assert`/`u32assert2` the externally-supplied uint256 limbs **before** any `u32*` op (`u32-assert-before-u32-ops`); the golden vectors MUST include a cap-boundary case AND a limb-overflow case.
 
 ## G1 — Single ownership / no duplication (per language + cross-language conformance)
@@ -37,7 +37,7 @@ A unit is not eligible for human review until all of these are green (a green bu
 
 ## G3 — Module/file size + structure
 - Default file ceiling **~500–700 lines** for Rust. Split `.masm` logically by routine family rather than by a guessed line count.
-- **D-1A module-realization rule:** one module per WIRE FORM directly under `asm/standards/xreserve/`, holding that format's constants and the procedures that realize them; no owner-grouping directory, and wrapper aliases are banned.
+- **D-1A module-realization rule:** one module per WIRE FORM directly under `crates/xusdc-encoding/asm/xreserve/`, holding that format's constants and the procedures that realize them; no owner-grouping directory, and wrapper aliases are banned.
 - Tests live in their **own module/file**, not inline with implementation.
 
 ## G4 — Test discipline (happy path first)

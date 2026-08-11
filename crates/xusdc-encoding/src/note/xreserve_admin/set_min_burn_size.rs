@@ -1,18 +1,19 @@
-use std::sync::LazyLock;
-
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{Note, NoteScript, NoteScriptRoot};
+use miden_protocol::utils::sync::LazyLock;
 use miden_protocol::Felt;
 
-use super::{build_admin_note, compile_admin_note_script};
+use super::build_admin_note;
+use crate::xreserve_lib::note_script;
 
-const SET_MIN_BURN_SIZE_NOTE_SCRIPT_SRC: &str =
-    include_str!("../../../../../asm/standards/notes/xreserve_set_min_burn_size_note.masm");
-
-static SET_MIN_BURN_SIZE_NOTE_SCRIPT: LazyLock<NoteScript> =
-    LazyLock::new(|| compile_admin_note_script(SET_MIN_BURN_SIZE_NOTE_SCRIPT_SRC));
+static SET_MIN_BURN_SIZE_NOTE_SCRIPT: LazyLock<NoteScript> = LazyLock::new(|| {
+    note_script(include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/assets/notes/xreserve-set-min-burn-size-note.masp"
+    )))
+});
 
 /// The dedicated `set_min_burn_size` note-storage type: the single `[new_min]` item, built with a
 /// `bon` builder (`XReserveSetMinBurnSizeNoteStorage::builder().new_min(..).build()`).

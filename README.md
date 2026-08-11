@@ -12,9 +12,10 @@ plus the Rust encoding library and validation harness that support it.
 
 | Path | What it is |
 |---|---|
-| `asm/standards/xreserve/` | The faucet account component — hand-written MASM. The **attestation mint policy** (`mint_policy` — the active mint policy the stock `mint_and_send` dispatches), admin setters (pause, attester allowlist, blocklist), and the shared `encoding/` library. |
-| `asm/standards/notes/` | The public admin note scripts (the mint note is the STOCK miden-standards `MintNote`). |
-| `crates/xusdc-encoding/` | Rust crate: the encoding library (the Rust mirror of the MASM codecs — bytes32 hashing, uint256→amount reduction, DepositIntent parse), the `XReserveStablecoinBuilder` that composes the faucet account, golden test vectors, and the assemble-and-**execute** test suite. |
+| `crates/xusdc-encoding/asm/xreserve/` | The faucet library — hand-written MASM. The **attestation mint policy** (`mint_policy` — the active mint policy the stock `mint_and_send` dispatches), the attestation verify, and the attester allowlist admin. |
+| `crates/xusdc-encoding/asm/components/faucet/` | The account's callable surface: the two procedures the faucet answers to from outside, and nothing else. |
+| `crates/xusdc-encoding/asm/notes/` | The public admin note scripts, one Miden project each (the mint note is the STOCK miden-standards `MintNote`). |
+| `crates/xusdc-encoding/` | Rust crate: the encoding library (the Rust mirror of the MASM codecs — bytes32 hashing, uint256→amount reduction, DepositIntent parse), the `XReserveStablecoinBuilder` that composes the faucet account, golden test vectors, the `build.rs` that assembles every MASM project above, and the **execute** test suite. |
 | `crates/xusdc-validation/` | Rust crate: the local-node validation harness that deploys the production faucet to a real Miden node and drives the mint/burn/admin acceptance matrix (rows `A`–`L`). |
 | `docs/spec/` | The specification: the faucet component spec, the shared-encoding spec, and the **identifier glossary**. |
 | `docs/governing/` | The pins, module-ownership map, MASM structure conventions, and toolchain grounding the code is built against. |
@@ -85,14 +86,15 @@ The MASM is not compiled by a Rust-contract toolchain; it is assembled and **exe
 suite. Everything below runs offline — the toolchain is pinned in `Cargo.lock` — from the repo root:
 
 ```sh
-cargo build  --locked -p xusdc-encoding                       # compile the encoding crate (Rust; MASM is assembled by the test gate, not here)
-cargo test   --locked -p xusdc-encoding --release             # THE gate: assemble + EXECUTE the MASM, full suite
+cargo build  --locked -p xusdc-encoding                       # compile the crate AND assemble every .masm — a MASM error fails here
+cargo test   --locked -p xusdc-encoding --release             # THE gate: EXECUTE the MASM, full suite
 cargo fmt    --all -- --check                                 # formatting
 cargo clippy --workspace --locked -- -D warnings              # lints
 ```
 
-The primary gate (`cargo test -p xusdc-encoding --release`) assembles every `.masm`, links it into
-the faucet account, and runs the mint/burn/admin behaviour — including the Rust↔MASM
+`build.rs` assembles every `.masm` during `cargo build`, so a broken module fails the build rather
+than a test. The primary gate (`cargo test -p xusdc-encoding --release`) links those assembled
+packages into the faucet account and runs the mint/burn/admin behaviour — including the Rust↔MASM
 cross-implementation vectors — against a mock chain.
 
 ### Real-local-node validation — **un-parked to v16 (offline); live-node rows operator-run**

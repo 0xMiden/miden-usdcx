@@ -479,11 +479,7 @@ async fn production_mint_leaves_no_fractional_remainder() -> Result<()> {
 /// introduced here without changing the transport (`DEV-5` stays OPEN).
 #[test]
 fn shipped_faucet_writes_the_amount_at_the_identity_scale() -> Result<()> {
-    let src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../asm/standards/xreserve/deposit_intent.masm"),
-    )
-    .context("reading the shipped deposit-intent module source")?;
+    let src = include_str!("../asm/xreserve/deposit_intent.masm");
     assert!(
         src.contains(
             "const WRITE_AMOUNT_FELT_OFF = AMOUNT_FELT_OFF + UINT256_ASSET_AMOUNT_LIMB_OFF"

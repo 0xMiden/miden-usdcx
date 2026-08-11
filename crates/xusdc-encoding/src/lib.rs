@@ -8,26 +8,18 @@
 //! Rust-primary AccountId codec, and the DepositIntent layout + parser.
 
 pub mod account;
+pub mod errors;
 pub mod note;
 pub mod vectors;
 pub mod xreserve;
+
+mod xreserve_lib;
 
 /// The crate-root faucet-account constructor: the single entry that turns deploy parameters into the
 /// deployable, attestation-gated xUSDC faucet [`account::xreserve::XReserveStablecoinBuilder`]-composed
 /// `Account`. Surfaced at the library root so account construction is traceable from the top.
 pub use account::xreserve::build_faucet_account;
-
-/// Embedded MASM sources. The on-disk files are the single source of truth; these copies exist so
-/// callers can read the MASM without a filesystem.
-pub const DEPOSIT_INTENT_MASM: &str =
-    include_str!("../../../asm/standards/xreserve/deposit_intent.masm");
-pub const MINT_INTENT_MASM: &str = include_str!("../../../asm/standards/xreserve/mint_intent.masm");
-
-/// Absolute path of the `xreserve` MASM root, assembled from the directory at runtime under the
-/// `xreserve` namespace.
-pub fn xreserve_asm_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../asm/standards/xreserve")
-}
+pub use xreserve_lib::XReserveLibrary;
 
 /// Path of the one canonical golden-vector artifact, loaded by reference from both the Rust
 /// unit tests and the MASM execution tests.

@@ -20,6 +20,21 @@ exclude = [
 # top. Base features are kept minimal here so a crate never inherits a feature it does not use;
 # `serde`'s `derive` is the one exception (every consumer needs it).
 [workspace.dependencies]
+# Build-time MASM assembly, consumed by `crates/xusdc-encoding/build.rs`. The assembler/VM family is
+# EXACTLY 0.25.8 — the version the frozen protocol git graph resolves, and the only live 0.25.x on
+# crates.io (0.25.0–0.25.7 are yanked). Pinned here rather than in the crate because
+# `crates/xusdc-validation` needs the identical set when it un-parks, and a drift between the two
+# would put two copies of the assembler in the graph, at which point the MAST digests stop unifying.
+miden-assembly         = "=0.25.8"
+miden-core-lib         = "=0.25.8"
+miden-package-registry = "=0.25.8"
+miden-project          = "=0.25.8"
+# The build script's error-constant extractor: walk the MASM tree, match the `const ERR_* = "…"`
+# lines, write the file. fs-err is the io-error-with-path wrapper the protocol build scripts use.
+fs-err  = "3"
+regex   = "1"
+walkdir = "2"
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1" }

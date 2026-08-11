@@ -295,60 +295,11 @@ pub proc rebuild
     # => []
 
     # ---- canonical padding: the committed tail past the signed extent must read zero ----
-    # The word-count binding above is exact only at WORD granularity: the final committed word can
-    # carry limbs past the hookData extent, and the final hookData limb can carry bytes past the
-    # hookData length. Neither reaches the keccak extent below, so a non-zero value there would be
-    # committed by the note yet absent from what the attestation signs — reject it, so one signed
-    # intent has exactly one committable transport.
-    loc_load.HOOK_DATA_LEN_LOC u32divmod.4
-    # => [rem_bytes, num_full_limbs]
+    loc_load.HOOK_DATA_LEN_LOC
+    loc_load.MINT_INTENT_PTR_LOC add.MINT_INTENT_FELTS
+    # => [hook_data_ptr, hook_data_len]
 
-    dup neq.0
-    # => [has_partial_limb, rem_bytes, num_full_limbs]
-
-    if.true
-        # the partial limb carries the last rem_bytes signed bytes in its LOW bytes (the packing
-        # is u32-LE), so zero pad bytes means the limb sits below 2^(8*rem_bytes). The limb is a
-        # valid u32 here: the copy above guarded every hookData limb as it moved it.
-        dup.1 loc_load.MINT_INTENT_PTR_LOC add.MINT_INTENT_FELTS add mem_load
-        # => [partial_limb, rem_bytes, num_full_limbs]
-
-        swap mul.8 pow2
-        # => [pad_byte_bound, partial_limb, num_full_limbs]
-
-        u32lt assert.err=ERR_XRESERVE_MINT_NOTE_INTENT_PAD_BYTES
-        # => [num_full_limbs]
-    else
-        drop
-        # => [num_full_limbs]
-    end
-    drop
-    # => []
-
-    loc_load.HOOK_DATA_LEN_LOC exec.packed_mem::div_ceil_four
-    # => [hook_data_num_felts]
-
-    loc_load.MINT_INTENT_PTR_LOC add.MINT_INTENT_FELTS dup.1 add
-    # => [pad_ptr, hook_data_num_felts]
-
-    swap dup exec.packed_mem::div_ceil_four mul.4 swap sub
-    # => [num_pad_limbs, pad_ptr]
-
-    dup neq.0
-    # => [has_pad_limbs, num_pad_limbs, pad_ptr]
-
-    while.true
-        # => [num_pad_limbs, pad_ptr]
-        swap dup mem_load assertz.err=ERR_XRESERVE_MINT_NOTE_INTENT_PAD_LIMB
-        # => [pad_ptr, num_pad_limbs]
-
-        add.1 swap sub.1
-        # => [num_pad_limbs-1, pad_ptr+1]
-
-        dup neq.0
-        # => [has_more, num_pad_limbs-1, pad_ptr+1]
-    end
-    drop drop
+    exec.assert_canonical_padding
     # => []
 
     loc_load.HOOK_DATA_LEN_LOC add.DEPOSIT_INTENT_HEADER_BYTES
@@ -414,5 +365,76 @@ proc load_carried_recipient
 
     swap add.MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF mem_load
     # => [recipient_suffix, recipient_prefix]
+end
+
+#! Asserts the committed hookData tail is canonically padded: every byte and limb past the
+#! hookData extent is zero. The word-count binding is exact only at WORD granularity and the
+#! keccak extent stops at the signed bytes, so this is what keeps one signed intent to ONE
+#! committable transport.
+#!
+#! Inputs:  [hook_data_ptr, hook_data_len]
+#! Outputs: []
+#!
+#! Where:
+#! - hook_data_ptr is the base of the packed hookData inside the hash-verified transport, every
+#!   hookData limb already guarded as a valid u32 by the copy.
+#! - hook_data_len is the carried hookData byte length, already bound to the committed word count.
+#!
+#! Panics if:
+#! - a committed byte or limb past the hookData extent is not zero.
+#!
+#! Invocation: exec
+proc assert_canonical_padding
+    # the final PARTIAL limb, if any: its bytes past hook_data_len are its HIGH bytes (u32-LE
+    # packing), so zero padding means the limb sits below 2^(8 * rem_bytes)
+    dup.1 u32divmod.4
+    # => [rem_bytes, num_full_limbs, hook_data_ptr, hook_data_len]
+
+    dup neq.0
+    # => [has_partial_limb, rem_bytes, num_full_limbs, hook_data_ptr, hook_data_len]
+
+    if.true
+        dup.2 dup.2 add mem_load
+        # => [partial_limb, rem_bytes, num_full_limbs, hook_data_ptr, hook_data_len]
+
+        swap mul.8 pow2
+        # => [pad_byte_bound, partial_limb, num_full_limbs, hook_data_ptr, hook_data_len]
+
+        u32lt assert.err=ERR_XRESERVE_MINT_NOTE_INTENT_PAD_BYTES
+        # => [num_full_limbs, hook_data_ptr, hook_data_len]
+    else
+        drop
+        # => [num_full_limbs, hook_data_ptr, hook_data_len]
+    end
+    drop
+    # => [hook_data_ptr, hook_data_len]
+
+    # the pad FELTS completing the final word: from the limb past the hookData extent up to the
+    # word boundary
+    swap exec.packed_mem::div_ceil_four
+    # => [hook_data_num_felts, hook_data_ptr]
+
+    dup.1 dup.1 add
+    # => [pad_ptr, hook_data_num_felts, hook_data_ptr]
+
+    swap dup exec.packed_mem::div_ceil_four mul.4 swap sub
+    # => [num_pad_limbs, pad_ptr, hook_data_ptr]
+
+    dup neq.0
+    # => [has_pad_limbs, num_pad_limbs, pad_ptr, hook_data_ptr]
+
+    while.true
+        # => [num_pad_limbs, pad_ptr, hook_data_ptr]
+        swap dup mem_load assertz.err=ERR_XRESERVE_MINT_NOTE_INTENT_PAD_LIMB
+        # => [pad_ptr, num_pad_limbs, hook_data_ptr]
+
+        add.1 swap sub.1
+        # => [num_pad_limbs-1, pad_ptr+1, hook_data_ptr]
+
+        dup neq.0
+        # => [has_more, num_pad_limbs-1, pad_ptr+1, hook_data_ptr]
+    end
+    drop drop drop
+    # => []
 end
 

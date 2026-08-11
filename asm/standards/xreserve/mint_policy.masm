@@ -56,13 +56,13 @@ const NONCE_USED_MARKER = ONE_WORD
 # alone, so the region has to read as zero before it runs — and Miden memory is zero-initialized,
 # which a reused procedure frame is not.
 #
-# TODO(miden-protocol 0.16-rc.3): that upgrade dispatches mint policies via `call` rather than
-# `dynexec`, so `check_policy` will enter a completely fresh context and this region is trivially
-# initialized to zero. Until then the policy runs in the PARENT context, sharing global memory with
-# whatever ran before it — so the zero read is a property of this address being unused rather than of the
-# context being new. It holds today, and the failure mode if it ever stopped holding is LIVENESS,
-# not forgery: stale bytes rebuild a message Circle never signed, the signature refuses it, and no
-# mint occurs. `rebuild_depends_on_a_zeroed_region` pins the dependency so it cannot go invisible.
+# As of miden-protocol 0.16-rc.3 the policy manager dispatches mint policies via `dyncall` rather
+# than the earlier `dynexec`, so `check_policy` enters a completely fresh context and this global
+# region is trivially zero-initialized by that fresh context — no longer relying on the address
+# being unused in a shared parent context. The failure mode if the zero read ever stopped holding
+# would be LIVENESS, not forgery: stale bytes rebuild a message Circle never signed, the signature
+# refuses it, and no mint occurs. `rebuild_depends_on_a_zeroed_region` pins the dependency so it
+# cannot go invisible.
 const DEPOSIT_INTENT_PTR = 0x40000000
 
 # `check_policy` locals: the note-supplied interface values it stores for the compares and the
@@ -148,7 +148,7 @@ const ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC = "mint note output note type must 
 
 #! Gates every stock `mint_and_send` on the full attestation pipeline and the ASSERT-MATCH
 #! binding — the attestation mint policy predicate. Registered as the ACTIVE mint policy of the
-#! faucet's TokenPolicyManager and invoked by `policy_manager::execute_mint_policy` via `dynexec`
+#! faucet's TokenPolicyManager and invoked by `policy_manager::execute_mint_policy` via `dyncall`
 #! on every MINT-note consumption (the dispatcher's pause gate runs BEFORE this policy, so a
 #! paused faucet never dispatches it).
 #!
@@ -206,7 +206,7 @@ const ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC = "mint note output note type must 
 #!     - 1092..1116: the carried mint payload
 #!     - 1116..: packed hookData
 #!
-#! Invocation: dynexec
+#! Invocation: call
 @locals(1056)
 @account_procedure
 pub proc check_policy

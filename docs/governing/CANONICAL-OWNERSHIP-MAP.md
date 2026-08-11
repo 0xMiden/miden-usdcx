@@ -27,7 +27,7 @@ crates/xusdc-encoding/asm/
     packed_mem.masm               # The layout-agnostic primitives `rebuild` writes the packed wire region with (guarded limb copies, big-endian u64/account-id stores)
     mod.masm                      # FAUCET(01): self-contained component root
   components/
-    faucet/faucet.masm            # FAUCET(01): the account's CALLABLE SURFACE — re-exports the two `@account_procedure` procs and nothing else
+    faucet_extension/faucet_extension.masm  # FAUCET(01): what the faucet adds to the stock fungible faucet — the two `@account_procedure` procs, and nothing else
   notes/                          # one project per note script, each carrying its own MAST
     set_attester/set_attester.masm
     set_max_supply/set_max_supply.masm

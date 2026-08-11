@@ -61,7 +61,7 @@ mod network_auth;
 mod rbac_seed;
 
 use construction::build_usdcx_faucet;
-pub use construction::{build_faucet_account, XReserveComponent};
+pub use construction::{build_faucet_account, XReserveFaucetExtension};
 pub use error::XReserveStablecoinBuilderError;
 use rbac_seed::seeded_dom_roles_rbac;
 
@@ -90,7 +90,8 @@ pub const BLK_MANAGER_ROLE: &str = "BLK_MANAGER";
 /// Path of the attestation mint policy's `check_policy` procedure as the faucet component EXPORTS
 /// it. The procedure is defined in the library's `mint_policy` module; the component re-exports it
 /// under its own namespace, and it is that re-export the account installs and resolves by.
-pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str = "xreserve::components::faucet::check_policy";
+pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str =
+    "xreserve::components::faucet_extension::check_policy";
 
 /// The smallest admissible `min_burn_size` (the zero floor). The stock [`MinBurnAmount`] policy
 /// asserts `min <= amount` ONLY (its authority-gated stock setter even accepts `0`), so the
@@ -229,7 +230,7 @@ impl XReserveStablecoinBuilder {
     /// decimals and the symbol are guaranteed BY CONSTRUCTION. There is no way to hand the
     /// builder an immutable or mis-configured faucet. The `xreserve` component is likewise not a
     /// parameter — there is exactly one valid value (the shipped MASM), so the builder assembles it
-    /// via [`XReserveComponent`]. The active mint policy is always the attestation policy, hard-wired
+    /// via [`XReserveFaucetExtension`]. The active mint policy is always the attestation policy, hard-wired
     /// at composition. Defaults to the stock [`MinBurnAmount`] as the active burn policy and a
     /// min-burn floor of [`MIN_BURN_SIZE_FLOOR`].
     ///
@@ -247,7 +248,7 @@ impl XReserveStablecoinBuilder {
     ) -> Result<Self, XReserveStablecoinBuilderError> {
         Ok(Self {
             faucet: build_usdcx_faucet(max_supply, token_supply)?,
-            xreserve_component: XReserveComponent::assemble().into(),
+            xreserve_component: XReserveFaucetExtension::new().into(),
             owner,
             pauser_holder,
             manager_holder,
@@ -467,7 +468,7 @@ impl XReserveStablecoinBuilder {
     }
 
     // The final-`Account` constructor ([`Self::build_account`]) and the crate-root
-    // [`build_faucet_account`] / component assembly ([`XReserveComponent`]) live in the sibling
+    // [`build_faucet_account`] / component assembly ([`XReserveFaucetExtension`]) live in the sibling
     // `construction` module (this file composes the component SET; that one turns it into an
     // `Account`).
 

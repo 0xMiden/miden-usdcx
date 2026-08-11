@@ -1,4 +1,4 @@
-//! Faucet-account CONSTRUCTION: the assembled `xreserve` component type, the fixed-identity USDCx
+//! Faucet-account CONSTRUCTION: the faucet-extension component type, the fixed-identity USDCx
 //! faucet, the crate-root `Account` constructor, and [`XReserveStablecoinBuilder::build_account`].
 //!
 //! Split out of `builder/mod.rs` (which composes the component SET) so the two separable concerns —
@@ -7,12 +7,11 @@
 
 use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
-    Account, AccountComponent, AccountId, AccountType, AssetCallbackFlag, StorageMap, StorageSlot,
+    Account, AccountComponent, AccountId, AccountType, AssetCallbackFlag, StorageSlot,
     StorageSlotName,
 };
 use miden_protocol::asset::{AssetAmount, AssetCallbacks, TokenSymbol};
 use miden_protocol::utils::sync::LazyLock;
-use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 
 use crate::xreserve_lib::component_code;
@@ -30,48 +29,46 @@ use crate::xreserve::encoding::EthBytes32;
 /// neither of which depends on this string (the byte-identity suite proves it).
 const XRESERVE_COMPONENT_LABEL: &str = "xusdc-xreserve";
 
-/// The faucet's callable surface, assembled at build time from `asm/components/faucet/`. It exports
-/// the two procedures the account answers to and nothing else; the rest of the xreserve library is
-/// reachable only from inside them.
-static FAUCET_COMPONENT_CODE: LazyLock<AccountComponentCode> = LazyLock::new(|| {
+/// What the faucet adds on top of the stock fungible faucet, assembled at build time from
+/// `asm/components/faucet_extension/`: the attestation mint policy and the attester allowlist
+/// setter, and nothing else. The rest of the xreserve library is reachable only from inside them.
+static FAUCET_EXTENSION_CODE: LazyLock<AccountComponentCode> = LazyLock::new(|| {
     component_code(include_bytes!(concat!(
         env!("OUT_DIR"),
-        "/assets/components/xreserve-faucet.masp"
+        "/assets/components/xreserve-faucet-extension.masp"
     )))
 });
 
-/// The shipped `xreserve` account component: the assembled MASM library bound to its six declared
-/// storage slots. There is exactly ONE valid value — the shipped MASM — so it is a component TYPE the
-/// builder produces itself rather than a parameter. Like the standards / agglayer component types, it
-/// converts into an [`AccountComponent`] via `impl From<XReserveComponent> for AccountComponent`, so
-/// account construction through `.with_component(XReserveComponent::assemble())` is traceable from the
-/// library root.
-pub struct XReserveComponent(AccountComponent);
+/// The xUSDC faucet's extension of the stock [`FungibleFaucet`] component: the attestation-gated
+/// mint policy and the attester administration the stock faucet has no notion of, bound to the six
+/// storage slots they read and write. There is exactly ONE valid value — the shipped MASM — so it is
+/// a component TYPE the builder produces itself rather than a parameter. Like the standards /
+/// agglayer component types, it converts into an [`AccountComponent`] via
+/// `impl From<XReserveFaucetExtension> for AccountComponent`, so account construction through
+/// `.with_component(XReserveFaucetExtension::new())` is traceable from the library root.
+pub struct XReserveFaucetExtension(AccountComponent);
 
-impl XReserveComponent {
-    /// Binds the shipped faucet component code to its six declared storage slots. The four
-    /// domain-config value slots start zeroed (build-seeded by
+impl XReserveFaucetExtension {
+    /// Binds the shipped extension code to its six declared storage slots. The four domain-config
+    /// value slots start zeroed (build-seeded by
     /// [`XReserveStablecoinBuilder::with_domain_config`]) and the two registry maps start empty
     /// (`set_attester` and the mint path populate them). A binding failure is an invariant of the
     /// shipped MASM, so it panics rather than surfacing as a builder error.
-    pub fn assemble() -> Self {
-        let library = FAUCET_COMPONENT_CODE.clone();
-        let empty = || Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::ZERO]);
+    pub fn new() -> Self {
+        let extension = FAUCET_EXTENSION_CODE.clone();
         let value_slot = |label: &str| {
-            StorageSlot::with_value(
+            StorageSlot::with_empty_value(
                 StorageSlotName::new(label).expect("the xreserve slot labels are valid constants"),
-                empty(),
             )
         };
         let map_slot = |label: &str| {
-            StorageSlot::with_map(
+            StorageSlot::with_empty_map(
                 StorageSlotName::new(label).expect("the xreserve slot labels are valid constants"),
-                StorageMap::new(),
             )
         };
         Self(
             AccountComponent::new(
-                library,
+                extension,
                 vec![
                     value_slot(DOMAIN_CONFIG_SLOT_LABEL),
                     value_slot(SOURCE_DOMAIN_CONFIG_SLOT_LABEL),
@@ -82,13 +79,19 @@ impl XReserveComponent {
                 ],
                 AccountComponentMetadata::new(XRESERVE_COMPONENT_LABEL),
             )
-            .expect("the xreserve library binds with its six declared slots"),
+            .expect("the faucet extension binds with its six declared slots"),
         )
     }
 }
 
-impl From<XReserveComponent> for AccountComponent {
-    fn from(component: XReserveComponent) -> Self {
+impl Default for XReserveFaucetExtension {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<XReserveFaucetExtension> for AccountComponent {
+    fn from(component: XReserveFaucetExtension) -> Self {
         component.0
     }
 }

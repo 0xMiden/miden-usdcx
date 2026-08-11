@@ -53,7 +53,7 @@ pub(crate) fn note_script(bytes: &'static [u8]) -> NoteScript {
 /// The shipped `xreserve` MASM library.
 ///
 /// This is the whole library, which is more than the account exposes: the account's callable surface
-/// is the separate `xreserve-faucet` component package. Consumers that need the library as such —
+/// is the separate `xreserve-faucet-extension` component package. Consumers that need the library as such —
 /// harnesses linking it into a script, or an executor that has to resolve its procedures — go
 /// through here.
 #[derive(Clone)]

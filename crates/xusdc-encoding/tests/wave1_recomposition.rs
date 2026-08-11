@@ -47,7 +47,8 @@ use xusdc_encoding::account::xreserve::XReserveStablecoinBuilderError;
 // ================================================================================================
 
 /// The attestation mint policy's path as the faucet component exports it.
-const ATTESTATION_MINT_POLICY_PROC_PATH: &str = "xreserve::components::faucet::check_policy";
+const ATTESTATION_MINT_POLICY_PROC_PATH: &str =
+    "xreserve::components::faucet_extension::check_policy";
 
 /// The dissolved mint-deny guard's former library path (must resolve NOWHERE in the shipped
 /// composition).

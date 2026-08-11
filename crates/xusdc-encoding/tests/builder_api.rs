@@ -25,7 +25,7 @@ use miden_standards::account::policies::{
 };
 use support::*;
 use xusdc_encoding::account::xreserve::{
-    XReserveAdminAuthority, XReserveComponent, XReserveStablecoinBuilder,
+    XReserveAdminAuthority, XReserveFaucetExtension, XReserveStablecoinBuilder,
     XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE,
     DOM_PAUSER_ROLE,
 };
@@ -608,7 +608,7 @@ fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> 
     // The SHIPPED component code, not the fixture's: the builder assembles its own xreserve
     // component, so counting the fixture's copy would count something the composition never
     // installs.
-    let xreserve_code = AccountComponent::from(XReserveComponent::assemble())
+    let xreserve_code = AccountComponent::from(XReserveFaucetExtension::new())
         .component_code()
         .clone();
     let components = production_builder(faucet, xreserve_component)

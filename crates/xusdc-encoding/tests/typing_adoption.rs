@@ -4,7 +4,7 @@
 //! and the builder produces a note byte-identical to the retained `create` convenience; (2) the
 //! mint-note builder takes the typed [`DepositIntent`], and its result matches the `&[u8]`
 //! convenience exactly; (3) the crate-root / account-root `build_faucet_account` constructor is
-//! reachable and composes a valid `Account`; and (4) the [`XReserveComponent`] type converts into an
+//! reachable and composes a valid `Account`; and (4) the [`XReserveFaucetExtension`] type converts into an
 //! `AccountComponent`. A missing builder / storage type / export, or
 //! a builder that drifts from `create`, fails here.
 
@@ -18,7 +18,9 @@ use miden_protocol::note::Note;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
 use support::*;
-use xusdc_encoding::account::xreserve::{XReserveComponent, ATTESTATION_MINT_POLICY_PROC_PATH};
+use xusdc_encoding::account::xreserve::{
+    XReserveFaucetExtension, ATTESTATION_MINT_POLICY_PROC_PATH,
+};
 use xusdc_encoding::note::xreserve_admin::{
     XReserveSetAttesterNote, XReserveSetAttesterNoteStorage, XReserveSetMaxSupplyNote,
     XReserveSetMaxSupplyNoteStorage, XReserveSetMinBurnSizeNote, XReserveSetMinBurnSizeNoteStorage,
@@ -237,7 +239,7 @@ fn crate_root_and_account_root_build_faucet_account_compose_an_account() {
 
 #[test]
 fn xreserve_component_converts_into_account_component() {
-    let component: AccountComponent = XReserveComponent::assemble().into();
+    let component: AccountComponent = XReserveFaucetExtension::new().into();
     assert!(
         component
             .get_procedure_root_by_path(ATTESTATION_MINT_POLICY_PROC_PATH)

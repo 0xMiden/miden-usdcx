@@ -13,7 +13,7 @@ plus the Rust encoding library and validation harness that support it.
 | Path | What it is |
 |---|---|
 | `crates/xusdc-encoding/asm/xreserve/` | The faucet library — hand-written MASM. The **attestation mint policy** (`mint_policy` — the active mint policy the stock `mint_and_send` dispatches), the attestation verify, and the attester allowlist admin. |
-| `crates/xusdc-encoding/asm/components/faucet/` | The account's callable surface: the two procedures the faucet answers to from outside, and nothing else. |
+| `crates/xusdc-encoding/asm/components/faucet_extension/` | What the faucet adds on top of the stock fungible faucet: the attestation mint policy and the attester allowlist setter, and nothing else. |
 | `crates/xusdc-encoding/asm/notes/` | The public admin note scripts, one Miden project each (the mint note is the STOCK miden-standards `MintNote`). |
 | `crates/xusdc-encoding/` | Rust crate: the encoding library (the Rust mirror of the MASM codecs — bytes32 hashing, uint256→amount reduction, DepositIntent parse), the `XReserveStablecoinBuilder` that composes the faucet account, golden test vectors, the `build.rs` that assembles every MASM project above, and the **execute** test suite. |
 | `crates/xusdc-validation/` | Rust crate: the local-node validation harness that deploys the production faucet to a real Miden node and drives the mint/burn/admin acceptance matrix (rows `A`–`L`). |

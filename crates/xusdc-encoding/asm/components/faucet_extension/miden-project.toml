@@ -1,11 +1,11 @@
 [package]
-name              = "xreserve-faucet"
+name              = "xreserve-faucet-extension"
 version.workspace = true
 
 [lib]
 kind      = "account-component"
-namespace = "xreserve::components::faucet"
-path      = "faucet.masm"
+namespace = "xreserve::components::faucet_extension"
+path      = "faucet_extension.masm"
 
 [dependencies]
 xreserve.workspace        = true

@@ -137,7 +137,7 @@ fn compile_xreserve_lib(
 }
 
 /// Assembles every member of the workspace whose manifest sits in `source_dir` and writes each
-/// package to `target_dir`. Each file is named after its package (e.g. `xreserve-faucet.masp`), so
+/// package to `target_dir`. Each file is named after its package (e.g. `xreserve-faucet-extension.masp`), so
 /// the package name is the include path the Rust side uses.
 fn compile_workspace(
     source_dir: &Path,

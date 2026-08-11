@@ -4,7 +4,8 @@
 //!
 //! Every change here is wire-neutral: the composed account must be byte-for-byte what the
 //! pre-change composition produced. This suite freezes the baseline composition's anchors — the
-//! account's `initial_commitment`, its code commitment, a digest over its storage slots, and the
+//! account's `to_commitment` state commitment, its code commitment, a digest over its storage
+//! slots, and the
 //! seed-derived id — captured at a FIXED seed from the baseline path, and asserts:
 //!
 //! 1. the crate-root `build_faucet_account` constructor reproduces them EXACTLY (the faucet it
@@ -18,7 +19,9 @@
 
 mod support;
 
-use miden_protocol::account::{Account, AccountType, AssetCallbackFlag, StorageSlotName};
+use miden_protocol::account::{
+    Account, AccountId, AccountIdVersion, AccountType, AssetCallbackFlag, StorageSlotName,
+};
 use miden_protocol::asset::{AssetAmount, AssetCallbacks};
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Hasher, Word};
@@ -35,20 +38,16 @@ const TOKEN_SUPPLY: u64 = 0;
 // The baseline composition anchors, as their stable `Debug`/`Display` renderings (captured from the
 // pre-change composition at SEED). Comparing the rendered strings sidesteps any felt-repr ambiguity.
 //
-// Re-captured when the mint intent took ownership of its own admissibility checks (`validate`,
-// `hash_nonce` and the replay guard moved out of the deposit-intent module, and `rebuild` lost
-// them), the unused `verify_uint256_to_asset_amount` was removed, and the nonce copy became two
-// word moves instead of eight element moves. Three of the four anchors moved with that — the code commitment directly, the storage
-// digest because the active mint policy is stored as `check_policy`'s MAST root, and the initial
-// commitment because it covers both. The account id did NOT move, which is what says the seed
-// derivation and the slot LAYOUT are untouched: only procedure code and the root it is named by.
-const GOLDEN_INITIAL_COMMITMENT: &str =
-    "Word([1052646678099504404, 463462926362689613, 17653851081971408789, 2407414798603717391])";
+// The account id is the NEW-ACCOUNT derivation: ground from SEED over the composed code and
+// storage commitments, so it moves whenever either commitment moves (unlike the code commitment
+// and storage digest, which isolate their own layer). The initial commitment covers all three.
+const GOLDEN_STATE_COMMITMENT: &str =
+    "Word([16891557576624796355, 16233932667258465778, 10796759357578765983, 1846054966454348887])";
 const GOLDEN_CODE_COMMITMENT: &str =
     "Word([16976291790698015816, 5888415912956684650, 4290450764110773212, 7150546299912713910])";
 const GOLDEN_STORAGE_DIGEST: &str =
     "Word([2490542360978853948, 16780434252263796967, 2203274247233403944, 6602689817247658489])";
-const GOLDEN_ACCOUNT_ID: &str = "0x070707060707073107070707070707";
+const GOLDEN_ACCOUNT_ID: &str = "0x0593efe63eb5eab166f38439bf9ed4";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.
@@ -68,9 +67,9 @@ fn assert_matches_golden(account: &Account, path: &str) {
         "{path}: seed-derived account id drifted",
     );
     assert_eq!(
-        format!("{:?}", account.initial_commitment()),
-        GOLDEN_INITIAL_COMMITMENT,
-        "{path}: account initial commitment drifted (code, storage, id or type changed)",
+        format!("{:?}", account.to_commitment()),
+        GOLDEN_STATE_COMMITMENT,
+        "{path}: account state commitment drifted (code, storage, id or type changed)",
     );
     assert_eq!(
         format!("{:?}", account.code().commitment()),
@@ -110,7 +109,7 @@ fn account_via_component_path() -> Account {
         XReserveStablecoinBuilder::auth_component().expect("the auth component must build"),
     );
     builder
-        .build_existing()
+        .build()
         .expect("the baseline-style composition must build the account")
 }
 
@@ -156,8 +155,8 @@ fn the_two_construction_paths_agree() {
     let via_ctor = account_via_crate_root_constructor();
     let via_components = account_via_component_path();
     assert_eq!(
-        format!("{:?}", via_ctor.initial_commitment()),
-        format!("{:?}", via_components.initial_commitment()),
+        format!("{:?}", via_ctor.to_commitment()),
+        format!("{:?}", via_components.to_commitment()),
         "the crate-root constructor and the component path must compose the identical account",
     );
     assert_eq!(
@@ -177,6 +176,36 @@ fn crate_root_account_carries_the_policed_asset_callback_flag() {
         account.id().asset_callback_flag(),
         AssetCallbackFlag::Enabled,
         "the crate-root constructor must build a policed-asset faucet (Enabled callback flag)",
+    );
+}
+
+/// The deployable faucet is a NEW account whose id is bound to the composed code and storage
+/// commitments: recomputing the id from the account's own seed and commitments must reproduce it,
+/// and the account must carry new-account state (nonce zero, id seed present). A constructor that
+/// derived the id any other way — a dummy id from the raw init seed, say — would fail the
+/// recomputation, because such an id is not a valid hash over the commitments.
+#[test]
+fn crate_root_account_id_is_bound_to_the_composed_commitments() {
+    let account = account_via_crate_root_constructor();
+    let seed = account
+        .seed()
+        .expect("a deployable new account must carry its id seed");
+    let recomputed = AccountId::new(
+        seed,
+        AccountIdVersion::Version1,
+        account.code().commitment(),
+        account.storage().to_commitment(),
+    )
+    .expect("the carried seed must derive a valid id over the composed commitments");
+    assert_eq!(
+        recomputed,
+        account.id(),
+        "the account id must be the commitment-bound derivation from the carried seed",
+    );
+    assert_eq!(
+        account.nonce(),
+        Felt::ZERO,
+        "a deployable new account must start at nonce zero",
     );
 }
 

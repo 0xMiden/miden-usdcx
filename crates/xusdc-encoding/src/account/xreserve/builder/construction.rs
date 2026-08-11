@@ -136,8 +136,12 @@ impl XReserveStablecoinBuilder {
         builder = builder.with_components(
             Self::auth_component().map_err(XReserveStablecoinBuilderError::NetworkAuth)?,
         );
+        // New-account semantics: the id is ground from `init_seed` over the composed code and
+        // storage commitments, so the published identifier is bound to exactly this composition —
+        // a divergent deployment derives a different id instead of silently reusing this one. The
+        // account carries nonce zero and its id seed, which the deploy transaction proves.
         builder
-            .build_existing()
+            .build()
             .map_err(XReserveStablecoinBuilderError::AccountComposition)
     }
 }

@@ -2,22 +2,21 @@
 #
 # slice1_gate.sh — THE slice-1 exit gate (TEMPORARY; deleted by slice 2).
 #
-# The raw test suite is RED BY DESIGN during slice 1: two work items are deferred to slice 2 —
-#   (A) the burn-payload relocation (six tests fail on "burn note expects exactly 8 note storage
-#       items"), and
+# The raw test suite is RED BY DESIGN: one work item is deferred to slice 2 —
 #   (F) the ECDSA signature-verify rebuild (the deleted upstream `verify_prehash` primitive is
 #       stood in for by a fail-closed shim that denies every attestation with a DISTINCT error
 #       identity, so every mint-path test fails on that identity).
-# Judging slice 1 on a raw `cargo test` exit code is therefore unreachable by construction. This
-# wrapper is the pass/fail signal instead.
+# The burn-payload relocation landed in this slice, so its five tests are green and removed from the
+# manifest; only the ECDSA path remains red. Judging on a raw `cargo test` exit code is therefore
+# unreachable by construction. This wrapper is the pass/fail signal instead.
 #
 # It runs the raw suite and exits 0 IF AND ONLY IF:
 #   1. the observed set of failing `<target>::<test>` identifiers equals the frozen manifest
 #      (scripts/ci/slice1-expected-red.txt) EXACTLY — a NEW red fails the gate, and a manifest
 #      entry that unexpectedly PASSES also fails the gate; and
-#   2. every failing test fails for one of a short enumerated list of PERMITTED reasons (the
-#      burn-storage assert, or the shim's distinct unavailable-verifier identity), AND the reason
-#      the manifest pairs with each test is present in that test's captured failure output.
+#   2. every failing test fails for the single PERMITTED reason (the shim's distinct
+#      unavailable-verifier identity), AND the reason the manifest pairs with each test is present
+#      in that test's captured failure output.
 #
 # This is NOT an ignore-failures wrapper: it pins the expected-red set to an exact manifest and
 # rejects any deviation in either direction.
@@ -30,7 +29,6 @@ MANIFEST="$ROOT/scripts/ci/slice1-expected-red.txt"
 # The ONLY reasons a failing test may fail for in slice 1. Any failing test whose captured output
 # contains none of these is a red for an UNEXPECTED reason and fails the gate.
 PERMITTED=(
-  "burn note expects exactly 8 note storage items"
   "deposit attestation signature verification is temporarily unavailable"
 )
 

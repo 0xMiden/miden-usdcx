@@ -44,8 +44,3 @@ w2admin_production_admin_effects::a_standard_note_pause_halts_a_real_mint_and_th
 wave1_recomposition_e2e::stock_mint_note_mints_the_attested_amount	deposit attestation signature verification is temporarily unavailable
 wave1_recomposition_e2e::stock_mint_note_rejects_a_recipient_mismatch	deposit attestation signature verification is temporarily unavailable
 wave1_recomposition_e2e::stock_mint_note_rejects_a_replay	deposit attestation signature verification is temporarily unavailable
-xreserve_burn::burn_note_consumed_by_faucet_decrements	burn note expects exactly 8 note storage items
-xreserve_burn::production_burn_note_same_block_consume_is_erased	burn note expects exactly 8 note storage items
-xreserve_burn::recipient_burns_full_balance	burn note expects exactly 8 note storage items
-xreserve_receive_and_burn::set_min_burn_lower_then_at_new_min_passes	burn note expects exactly 8 note storage items
-xreserve_receive_and_burn::set_min_burn_raise_then_below_new_min_rejects	burn note expects exactly 8 note storage items

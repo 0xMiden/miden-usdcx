@@ -258,7 +258,9 @@ pub fn err_min_burn_below_floor() -> MasmError {
 /// error (there are no custom burn errors: with the floor `>= 1`, a
 /// zero-amount burn rejects HERE).
 pub fn err_burn_below_min_burn_amount() -> MasmError {
-    MasmError::from_static_str("amount to be burned must exceed specified minimum burn amount")
+    MasmError::from_static_str(
+        "amount to be burned must meet or exceed specified minimum burn amount",
+    )
 }
 
 /// Looks up an expected faucet-owned MASM error by name. Errors raised inside the LINKED protocol
@@ -2158,19 +2160,24 @@ pub fn send_burn_note_script(
     // procedures, so note creation runs in ACCOUNT context — the STOCK wallet's `create_note`
     // (defined in `miden::standards::note::note_creator` and re-exported by the BasicWallet
     // component, so the account exposes its root) for the attachment-less stock BurnNote, and the
-    // user-installed emit helper for the single-attachment XReserveBurnNote (whose scheme-2 routing target must be reproduced so the
-    // emitted note's id == burn_note.id(); NoteId commits to attachments). The content is supplied
-    // via the advice map keyed by its commitment (`attachment_advice`, extended in
-    // `try_emit_burn_note`). The returned note_idx feeds move_asset_to_note.
+    // user-installed emit helper for the attachment-bearing XReserveBurnNote (whose scheme-2 routing
+    // target AND scheme-tagged withdrawal payload must both be reproduced so the emitted note's id ==
+    // burn_note.id(); NoteId commits to attachments). Every attachment's content is supplied via the
+    // advice map keyed by its commitment (`attachment_advice`, extended in `try_emit_burn_note`). The
+    // first attachment rides the create-plus-one call; each further attachment gets its own
+    // `add_note_attachment` leg. The producer tx creates exactly ONE output note, so its index is 0 —
+    // which feeds move_asset_to_note (re-established after the add legs, which consume it).
     let attachments: Vec<_> = burn_note.attachments().iter().collect();
-    let create_src = match attachments.as_slice() {
-        [] => "    repeat.10 push.0 end\n\
-               \x20\x20\x20\x20push.{recipient}\n\
-               \x20\x20\x20\x20push.{note_type}\n\
-               \x20\x20\x20\x20push.{tag}\n\
-               \x20\x20\x20\x20call.note_creator::create_note\n"
-            .to_string(),
-        [attachment] => format!(
+    let create_src = if attachments.is_empty() {
+        "    repeat.10 push.0 end\n\
+         \x20\x20\x20\x20push.{recipient}\n\
+         \x20\x20\x20\x20push.{note_type}\n\
+         \x20\x20\x20\x20push.{tag}\n\
+         \x20\x20\x20\x20call.note_creator::create_note\n"
+            .to_string()
+    } else {
+        let first = attachments[0];
+        let mut src = format!(
             "    repeat.5 push.0 end\n\
              \x20\x20\x20\x20push.{commitment}\n\
              \x20\x20\x20\x20push.{scheme}\n\
@@ -2178,13 +2185,25 @@ pub fn send_burn_note_script(
              \x20\x20\x20\x20push.{{note_type}}\n\
              \x20\x20\x20\x20push.{{tag}}\n\
              \x20\x20\x20\x20call.emit_helper::emit_note_with_attachment\n",
-            commitment = attachment.content().to_commitment(),
-            scheme = attachment.attachment_scheme().as_u16(),
-        ),
-        other => panic!(
-            "send_burn_note_script emits a 0- or 1-attachment burn note, got {}",
-            other.len()
-        ),
+            commitment = first.content().to_commitment(),
+            scheme = first.attachment_scheme().as_u16(),
+        );
+        for attachment in attachments.iter().skip(1) {
+            src.push_str(&format!(
+                "\x20\x20\x20\x20push.0\n\
+                 \x20\x20\x20\x20push.{commitment}\n\
+                 \x20\x20\x20\x20push.{scheme}\n\
+                 \x20\x20\x20\x20call.emit_helper::add_note_attachment\n",
+                commitment = attachment.content().to_commitment(),
+                scheme = attachment.attachment_scheme().as_u16(),
+            ));
+        }
+        if attachments.len() > 1 {
+            // the create-plus-one leg left note index 0 on the stack, but each add leg consumes it;
+            // re-establish it for the asset move.
+            src.push_str("\x20\x20\x20\x20push.0\n");
+        }
+        src
     };
     let create_src = create_src
         .replace("{recipient}", &recipient.to_string())

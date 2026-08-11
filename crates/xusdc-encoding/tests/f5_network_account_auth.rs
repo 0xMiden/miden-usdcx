@@ -463,7 +463,7 @@ fn mint_note_carries_the_merged_transport_and_the_routing_target() -> Result<()>
 }
 
 /// The burn note must carry the scheme-2 `NetworkAccountTarget` routing attachment addressed to the
-/// faucet with `NoteExecutionHint::Always` (and nothing else).
+/// faucet with `NoteExecutionHint::Always` (alongside the scheme-tagged withdrawal payload).
 #[test]
 fn burn_note_carries_scheme2_target_to_faucet() -> Result<()> {
     let (_chain, faucet) = production_faucet()?;
@@ -478,8 +478,9 @@ fn burn_note_carries_scheme2_target_to_faucet() -> Result<()> {
 
     assert_eq!(
         note.attachments().num_attachments(),
-        1,
-        "the burn note must carry exactly one attachment: the scheme-2 routing target",
+        2,
+        "the burn note must carry exactly two attachments: the scheme-2 routing target and the \
+         scheme-tagged withdrawal payload",
     );
     let target = NetworkAccountTarget::try_from(note.attachments())
         .map_err(|e| anyhow::anyhow!("the burn note must carry a scheme-2 routing target: {e}"))?;

@@ -154,8 +154,7 @@ impl HookData {
         Ok(Self(bytes))
     }
 
-    /// Wraps hookData bytes from a borrowed slice, checking the length bound BEFORE copying, so an
-    /// oversized payload is rejected without allocating in proportion to its size.
+    /// Wraps hookData bytes from a borrowed slice, checking the length bound before copying.
     ///
     /// # Errors
     ///
@@ -609,7 +608,6 @@ mod tests {
             Err(EncodingError::HookDataTooLarge)
         );
         assert!(HookData::new(vec![0u8; MAX_HOOK_DATA_LEN]).is_ok());
-        // the borrowed-slice path rejects with the same error, before it copies
         assert_matches!(
             HookData::from_slice(&vec![0u8; MAX_HOOK_DATA_LEN + 1]),
             Err(EncodingError::HookDataTooLarge)

@@ -44,25 +44,39 @@ const MAX_SUPPLY: u64 = 1_000_000;
 // ── FROZEN rc.3 VALUES (re-materialized from the pre-bump set; RATIFIED, see the module note) ────
 
 /// The 8 note-script roots of the production faucet's allowlist, as their stable `Debug` renderings.
-/// Per-root movement and cause at the rc.3 bump:
-/// - MintNote, BurnNote (stock): MOVED — a callee-root consequence. Their scripts are textually
-///   unchanged, but each embeds its callee's MAST root (`fungible::mint` / `fungible::receive_and_burn`),
-///   and the upstream fungible mint/burn stack-handling rewrite moved those callees.
-/// - PauseConfigNote, BlocklistConfigNote, RbacConfigNote (stock): MOVED — the upstream config-note
-///   rework changed the compiled note SCRIPTS themselves (the notes were renamed and now carry and
-///   ENFORCE a `NetworkAccountTarget` binding on the consuming account).
-/// - The three custom xUSDC admin setters: did NOT move — which proves their upstream callees
-///   (`min_burn_amount::set_min_burn_amount`, `fungible::set_max_supply`) did not move.
+/// Per-root movement and cause at the rc.3 bump. The causes below were CORRECTED against upstream
+/// ground truth: both revisions were built and every common export root compared directly. An
+/// earlier revision of this block named several causes that do not survive that check; each
+/// correction is called out inline so the wrong mechanism is not reused as a model.
+/// - MintNote (stock): MOVED. Its own script is textually unchanged; the mover is its callee
+///   `policy_manager::execute_mint_policy`, whose dispatch changed from `dynexec` to `dyncall`.
+///   (CORRECTED: the earlier text credited `fungible::mint`, which exists at NEITHER revision, and
+///   a "fungible mint stack-handling rewrite"; `mint_and_send`'s body is byte-identical.)
+/// - BurnNote (stock): MOVED because ITS OWN SCRIPT was rewritten upstream (`notes/burn.masm`,
+///   about +53 lines — the change that made BURN notes store and validate the asset passed to
+///   `receive_and_burn`). (CORRECTED: the earlier text filed this as a callee-root consequence with
+///   an unchanged script, the mirror image of the MintNote error.)
+/// - PauseConfigNote, RbacConfigNote, BlocklistConfigNote (stock): MOVED, with two real movers —
+///   they now ENFORCE a `NetworkAccountTarget` binding on the consuming account, and their error
+///   STRINGS changed, which compile to different error-code felts. (CORRECTED: a rename cannot move
+///   a MAST root, so the earlier "the notes were renamed" mechanism was no mechanism. And
+///   `BlocklistConfigNote` was never renamed — it already existed under this name pre-bump.)
+/// - The three custom xUSDC admin setters: did NOT move. Their upstream callees
+///   `min_burn_amount::set_min_burn_amount` and `fungible::set_max_supply` are byte-identical across
+///   the two revisions, confirmed by DIRECT root comparison with their call closures resolved to a
+///   fixpoint. (CORRECTED: the earlier text inferred callee stability FROM caller stability. That
+///   inference is unsound — upstream `P2idNote`'s root moved at this same bump while `p2id.masm`
+///   stayed blob-identical, because a callee's `@locals` changed. Rely on the direct comparison.)
 const ALLOWLIST_ROOTS: [&str; 8] = [
-    // MintNote (stock) — MOVED (callee-root consequence)
+    // MintNote (stock) — MOVED (callee `execute_mint_policy`: dynexec to dyncall)
     "Word([11109209218350460709, 3213691629472996675, 2255365811080514867, 18088254706611776118])",
-    // BurnNote (stock) — MOVED (callee-root consequence)
+    // BurnNote (stock) — MOVED (its OWN script was rewritten upstream)
     "Word([12122422334946346513, 10122401082904778272, 6707120545647545940, 3821787119724495246])",
-    // PauseConfigNote (stock) — MOVED (config-note rework: rename + enforced target binding)
+    // PauseConfigNote (stock) — MOVED (enforced target binding + error-string change)
     "Word([6364434116874213150, 4164134719637857369, 7386558776359450689, 1580380303471260809])",
-    // BlocklistConfigNote (stock) — MOVED (config-note rework)
+    // BlocklistConfigNote (stock) — MOVED (enforced target binding + error-string change; NOT renamed)
     "Word([16590673221306893276, 933664217937136407, 6546816079571360662, 9137981551125041524])",
-    // RbacConfigNote (stock) — MOVED (config-note rework)
+    // RbacConfigNote (stock) — MOVED (enforced target binding + error-string change)
     "Word([12288918691266617685, 8762671118025779749, 10130882319008906523, 11642151975824730339])",
     // XReserveSetAttesterNote (ours) — unmoved
     "Word([1014266409661146010, 13413563347990402434, 3353735645470309830, 6697281211075163595])",
@@ -80,6 +94,12 @@ const ALLOWLIST_ROOTS: [&str; 8] = [
 /// `verify_attestation`'s root and therefore `check_policy`'s, which embeds its callee's root. This
 /// is NOT a caller-side dispatch change (a caller cannot move a callee's root). SHIM-CONTAMINATED:
 /// the signature-rebuild work rewrites `verify_attestation` again, so this root moves a second time.
+/// SECOND, INDEPENDENT CAUSE, added on correction: `check_policy` also embeds `p2id::prepare_note`,
+/// whose root moved at this same bump for an unrelated upstream reason — `wallets::basic::
+/// move_note_assets_to_account` changed its `@locals` count, which moved the `p2id`, `p2ide`, `swap`
+/// and `tx_fee` script roots with it. So this root has TWO movers, not one, and the shim accounts
+/// for only part of the movement. Do not treat removing the shim as necessarily restoring the
+/// pre-bump value.
 const CHECK_POLICY_ROOT: &str =
     "Word([8626271302954437360, 8610777333073226278, 15617565890196817113, 8361425840678887082])";
 

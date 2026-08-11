@@ -69,11 +69,9 @@ use xusdc_encoding::xreserve::encoding::EthBytes32;
 
 // Attestation fixtures — deterministic secp256k1 keys and signatures generated IN-TEST (the
 // canonical vector artifact is untouched), mirroring the `gen_vectors` att_* helpers: k256 the
-// keypair+signature, sha3 the keccak digest, miden-crypto `PublicKey::to_commitment` the
-// allowlist-key oracle, miden_protocol `bytes_to_packed_u32_elements` the advice felt packing.
+// keypair+signature, sha3 the keccak digest, miden_protocol `bytes_to_packed_u32_elements` the
+// felt packing.
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey};
-use miden_crypto::dsa::ecdsa_k256_keccak::PublicKey;
-use miden_crypto::utils::Deserializable;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use sha3::{Digest, Keccak256};
@@ -122,10 +120,18 @@ pub use xusdc_encoding::account::xreserve::USED_NONCES_SLOT_LABEL;
 pub const TOKEN_CONFIG_SLOT_LABEL: &str = "miden::standards::faucets::fungible::token_config";
 
 /// Label of the `xReserveAttesters` map slot — the attester allowlist the attestation check reads.
-/// The MASM `attestation_verify.masm` declares a `word("…")` const with the byte-identical label
+/// The MASM `attestation.masm` declares a `word("…")` const with the byte-identical label
 /// (parity-enforced); the `set_attester` admin path co-owns the SAME slot. Re-exported
 /// from the production crate (single Rust source with the builder's slot-presence guard).
-pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
+pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTER_KEYS_SLOT_LABEL;
+pub use xusdc_encoding::note::xreserve_admin::{
+    XReserveSetAttesterNote, XReserveSetAttesterNoteStorage,
+};
+
+/// The attester public-key newtype the `set_attester` note builders take, re-exported so every
+/// fixture names the same type the production factory does.
+#[allow(unused_imports)]
+pub use xusdc_encoding::xreserve::encoding::PublicKey;
 
 // NOTE: there is no custom `min_burn_size` slot label — the minimum-burn floor lives in the
 // STOCK `MinBurnAmount::slot_name()` slot (read via [`read_min_burn_size`]).
@@ -137,7 +143,7 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 21] = [
     // the packed-memory primitives the DC-14 preimage writer copies through (packed_mem.masm)
     (
         "ERR_XRESERVE_MINT_INTENT_LIMB",
@@ -165,10 +171,24 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
         "ERR_XRESERVE_NONCE_REPLAY",
         MasmError::from_static_str("deposit intent nonce has already been used"),
     ),
-    // The two attestation rejects (attestation_verify.masm). Parity-pinned against the MASM consts.
+    // The ADMIN-gated key setter's own guards (attestation.masm).
     (
-        "ERR_XRESERVE_DISALLOWED_PUB_KEY",
-        MasmError::from_static_str("deposit attester pubkey commitment is not allowlisted"),
+        "ERR_XRESERVE_SET_ATTESTER_NOTE_STORAGE",
+        MasmError::from_static_str("set_attester note storage item count is invalid"),
+    ),
+    (
+        "ERR_XRESERVE_SET_ATTESTER_INDEX_NOT_U32",
+        MasmError::from_static_str("set_attester attester index is not a valid u32"),
+    ),
+    // The three attestation rejects (attestation.masm). Parity-pinned against the MASM
+    // consts.
+    (
+        "ERR_XRESERVE_ATTESTER_INDEX_NOT_U32",
+        MasmError::from_static_str("deposit attester index is not a valid u32"),
+    ),
+    (
+        "ERR_XRESERVE_ATTESTER_NOT_ENABLED",
+        MasmError::from_static_str("deposit attester public key is not enabled"),
     ),
     (
         "ERR_XRESERVE_SIG_INVALID",
@@ -426,7 +446,7 @@ pub fn add_network_faucet_account(
 
 pub fn assemble_xreserve_lib() -> Result<Package> {
     // Link the standards library (mirrors CodeBuilder's own `with_dynamic_library(StandardsLib)`):
-    // attester_admin::set_attester calls the stock `authority::assert_authorized` /
+    // attestation::set_attester calls the stock `authority::assert_authorized` /
     // `pausable::assert_not_paused`, which live in StandardsLib. The other xreserve modules stay
     // core+protocol-only; linking standards only adds resolvable symbols (it does not change their
     // MAST roots).
@@ -915,22 +935,31 @@ pub async fn run_call_driver_with_advice(
 // D5D ATTESTATION VERIFY HELPERS
 // ================================================================================================
 
-/// A deterministically-generated attester: its 16-felt affine pubkey + 17-felt
-/// signature (as advice felts) over a payload's keccak digest, and its `xReserveAttesters`
-/// allowlist commitment (the miden-crypto `PublicKey::to_commitment` oracle == the on-chain MASM
-/// `pubkey_commitment`).
+/// A deterministically-generated attester: its 16-felt affine pubkey (what the administrator
+/// writes into the faucet's attester key array) and its 17-felt signature over a payload's keccak
+/// digest.
 pub struct AttesterVector {
-    /// 16-felt affine pubkey coordinates `qx_le_u32[8] || qy_le_u32[8]` (the candidate pubkey the
-    /// driver stages in memory; the Circle wire form stays the 33-byte compressed key below).
+    /// 16-felt affine pubkey coordinates `qx_le_u32[8] || qy_le_u32[8]` — the felts the key array
+    /// holds; the Circle wire form stays the 33-byte compressed key below.
     pub pubkey_felts: Vec<Felt>,
     /// 17-felt u32-LE-packed r||s||v signature over keccak256(payload).
     pub sig_felts: Vec<Felt>,
-    /// Poseidon2 commitment Word = the `xReserveAttesters` allowlist key for this pubkey.
-    pub commitment: Word,
-    /// Raw 33-byte compressed SEC1 pubkey (what the relayer hands `XUsdcMintNote::create`).
+    /// Raw 33-byte compressed SEC1 pubkey (what the administrator hands the set_attester note).
     pub pubkey_bytes: [u8; 33],
-    /// Raw 65-byte `r||s||v` signature (what the relayer hands `XUsdcMintNote::create`).
+    /// Raw 65-byte `r||s||v` signature (what the relayer hands `XUsdcMintNote`).
     pub sig_bytes: [u8; 65],
+}
+
+/// The deterministic attester keypair's 33-byte compressed public key. Split out of
+/// [`gen_attester`] because the key does not depend on what was signed, so callers that only need
+/// to install an attester need not conjure a payload first.
+pub fn gen_attester_pubkey(seed: u64) -> [u8; 33] {
+    SigningKey::random(&mut StdRng::seed_from_u64(seed))
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .try_into()
+        .expect("compressed secp256k1 pubkey is 33 bytes")
 }
 
 /// Deterministically generates an attester keypair (k256 + seeded StdRng) and signs
@@ -938,12 +967,7 @@ pub struct AttesterVector {
 /// `gen_vectors` uses. Two distinct seeds over the SAME payload give the seam's key A / key B.
 pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
     let sk = SigningKey::random(&mut StdRng::seed_from_u64(seed));
-    let pk33: [u8; 33] = sk
-        .verifying_key()
-        .to_encoded_point(true)
-        .as_bytes()
-        .try_into()
-        .expect("compressed secp256k1 pubkey is 33 bytes");
+    let pk33 = gen_attester_pubkey(seed);
 
     let mut hasher = Keccak256::new();
     hasher.update(payload);
@@ -956,49 +980,86 @@ pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
     sig65[..64].copy_from_slice(sig.to_bytes().as_slice());
     sig65[64] = recid.to_byte();
 
-    let commitment = PublicKey::read_from_bytes(&pk33)
-        .expect("valid compressed secp256k1 pubkey")
-        .to_commitment();
-
     AttesterVector {
         pubkey_felts: xusdc_encoding::xreserve::encoding::PublicKey::new(pk33)
             .to_affine_felts()
             .expect("the deterministic attester key is a valid curve point")
             .to_vec(),
         sig_felts: bytes_to_packed_u32_elements(&sig65),
-        commitment,
         pubkey_bytes: pk33,
         sig_bytes: sig65,
     }
 }
 
-/// Builds the MockChain account carrying [the xreserve component WITH the `xReserveAttesters` map
-/// slot] + [the generated driver]. `attesters_seed = Some((commitment, marker))` pre-populates the
-/// allowlist (an enabled attester); `None` leaves it empty (no attester allowlisted). The seeding
-/// is a TEST fixture — the real `set_attester` admin setter is a separate path.
+/// The number of attester-key-array entries one public key occupies — the MASM
+/// `xreserve::attestation::PUBKEY_ARRAY_ENTRIES`, mirrored for the seeding fixtures.
+pub const PUBKEY_ARRAY_ENTRIES: u32 = 4;
+/// The attester key-array index every mint fixture installs its attester at.
+pub const TEST_ATTESTER_INDEX: u32 = 1;
+
+/// An index no fixture ever writes a key at — it reads back as the all-zero key, which is exactly
+/// what a disabled attester reads as.
+pub const UNWRITTEN_ATTESTER_INDEX: u32 = 9;
+
+/// The index a rotation moves the incoming attester to. Rotation writes a NEW index and zeroes the
+/// old one; overwriting in place would break notes already in flight (`DC-15`).
+pub const ROTATED_IN_ATTESTER_INDEX: u32 = 2;
+
+/// The attester key array entries that hold `pubkey_felts` at `attester_index`: the 16 affine
+/// felts cut into four words at `PUBKEY_ARRAY_ENTRIES * attester_index + 0..3`. The array keys
+/// each carry the entry number in the word's last element, matching the stock
+/// `data_structures::array` keying.
+pub fn attester_key_entries(
+    attester_index: u32,
+    pubkey_felts: &[Felt],
+) -> Vec<(StorageMapKey, Word)> {
+    pubkey_felts
+        .chunks_exact(4)
+        .enumerate()
+        .map(|(word_idx, chunk)| {
+            let entry = PUBKEY_ARRAY_ENTRIES * attester_index + word_idx as u32;
+            let key = Word::new([
+                Felt::from(0u32),
+                Felt::from(0u32),
+                Felt::from(0u32),
+                Felt::from(entry),
+            ]);
+            let value = Word::new([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            (StorageMapKey::new(key), value)
+        })
+        .collect()
+}
+
+/// Builds the MockChain account carrying [the xreserve component WITH the attester key array
+/// slot] + [the generated driver]. `attesters_seed = Some((index, pubkey_felts))` writes that key
+/// into the array (an enabled attester); `None` leaves the array empty, which reads back as the
+/// all-zero key the verify refuses. The seeding is a TEST fixture — the real `set_attester` admin
+/// setter is a separate path.
 pub fn setup_attestation_account(
-    attesters_seed: Option<(Word, Word)>,
+    attesters_seed: Option<(u32, &[Felt])>,
     driver_src: &str,
     driver_path: &'static str,
 ) -> Result<ShellHarness> {
     let library = assemble_xreserve_lib()?;
 
     let attesters_map = match attesters_seed {
-        Some((key, marker)) => StorageMap::with_entries([(StorageMapKey::new(key), marker)])
-            .map_err(|e| anyhow::anyhow!("seeding the xReserveAttesters map fixture: {e}"))?,
+        Some((index, pubkey_felts)) => {
+            StorageMap::with_entries(attester_key_entries(index, pubkey_felts))
+                .map_err(|e| anyhow::anyhow!("seeding the attester key array fixture: {e}"))?
+        }
         None => StorageMap::new(),
     };
 
     let xreserve_component = AccountComponent::new(
         library.clone(),
         vec![StorageSlot::with_map(
-            StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
-                .context("xReserveAttesters slot label")?,
+            StorageSlotName::new(XRESERVE_ATTESTER_KEYS_SLOT_LABEL)
+                .context("attester key array slot label")?,
             attesters_map,
         )],
         AccountComponentMetadata::new("xusdc-attestation-harness"),
     )
-    .context("binding the xreserve library + attester allowlist slot as a component")?;
+    .context("binding the xreserve library + attester key array slot as a component")?;
 
     let driver_code = CodeBuilder::new()
         .with_dynamically_linked_package(&library)
@@ -1036,18 +1097,18 @@ pub fn setup_attestation_account(
 /// `verify_attestation` shell. The shell returns `[]` (assert-only gate), so the
 /// staged-then-consumed stack restores the 16-depth `call` boundary.
 ///
-/// Taking the pubkey and signature separately is what lets the seam cases pair one attester's
-/// pubkey with another's signature.
+/// Taking the attester index and the signature separately is what lets the seam cases pair one
+/// attester's index with another's signature.
 pub fn attestation_driver_src(
     preimage: &[Felt],
     len_bytes: u64,
-    pubkey_felts: &[Felt],
+    attester_index: u64,
     sig_felts: &[Felt],
 ) -> String {
     let mut src = String::from(
-        "use xreserve::attestation_verify\n\n\
-         #! Test driver: stages a DepositIntent payload, a candidate pubkey and a signature in\n\
-         #! the account context and execs the attestation verify shell.\n\
+        "use xreserve::attestation\n\n\
+         #! Test driver: stages a DepositIntent payload and a signature in the account context and\n\
+         #! execs the attestation verify shell against the named attester index.\n\
          #!\n\
          #! Inputs:  [pad(16)]\n\
          #! Outputs: [pad(16)]\n\
@@ -1057,13 +1118,12 @@ pub fn attestation_driver_src(
          pub proc drive\n",
     );
     stage_preimage(&mut src, preimage);
-    stage_felts(&mut src, pubkey_felts, PUBKEY_PTR);
     stage_felts(&mut src, sig_felts, SIGNATURE_PTR);
     writeln!(src, "    push.{SIGNATURE_PTR}").unwrap();
-    writeln!(src, "    push.{PUBKEY_PTR}").unwrap();
+    writeln!(src, "    push.{attester_index}").unwrap();
     writeln!(src, "    push.{len_bytes}").unwrap();
     writeln!(src, "    push.{INTENT_PTR}").unwrap();
-    src.push_str("    exec.attestation_verify::verify_attestation\n");
+    src.push_str("    exec.attestation::verify_attestation\n");
     src.push_str("end\n");
     src
 }
@@ -1151,36 +1211,17 @@ pub fn composition_supply_probe_src(expected_token_supply: u64) -> String {
     )
 }
 
+/// A `set_attester` note carrying the SHIPPED script and the production 17-item storage
+/// `[pub_key(16), attester_idx]`. `pub_key` is passed as felts rather than a `PublicKey` so the
+/// disable case (sixteen zeros, which is not a curve point) is expressible too.
 pub fn set_attester_note(
     sender: AccountId,
-    commitment: Word,
-    enabled: u8,
+    faucet_id: AccountId,
+    attester_index: u32,
+    pub_key: [Felt; 16],
     seed: u64,
 ) -> Result<Note> {
-    let lib = assemble_xreserve_lib()?;
-    // Stack contract: [PK_COMMITMENT, enabled, pad(11)] (PK_COMMITMENT element-0 on top). Push the
-    // 11 pad felts (deepest), then enabled, then the commitment so c0 ends on top: 11 + 1 + 4 = 16.
-    let src = format!(
-        "use xreserve::attester_admin\n\
-         @note_script\n\
-         pub proc main\n\
-         \x20\x20\x20\x20repeat.11 push.0 end\n\
-         \x20\x20\x20\x20push.{enabled}\n\
-         \x20\x20\x20\x20push.{c3}.{c2}.{c1}.{c0}\n\
-         \x20\x20\x20\x20call.attester_admin::set_attester\n\
-         \x20\x20\x20\x20dropw dropw dropw dropw\n\
-         end\n",
-        c0 = commitment[0],
-        c1 = commitment[1],
-        c2 = commitment[2],
-        c3 = commitment[3],
-    );
-    let script = CodeBuilder::new()
-        .with_dynamically_linked_package(&lib)
-        .context("linking xreserve into the set_attester note script")?
-        .compile_note_script(src.clone())
-        .map_err(|e| anyhow::anyhow!("set_attester note script failed to compile: {e}\n{src}"))?;
-    // Deterministic note rng (RandomCoin satisfies NoteBuilder's `Rng` bound; StdRng's `rand`
+    // Deterministic note rng (RandomCoin satisfies the builder's `Rng` bound; StdRng's `rand`
     // version does not). The seed only affects the note serial, never the gate.
     let mut rng = RandomCoin::new(Word::from([
         Felt::from(seed as u32),
@@ -1188,10 +1229,18 @@ pub fn set_attester_note(
         Felt::from(1u32),
         Felt::from(2u32),
     ]));
-    Ok(NoteBuilder::new(sender, &mut rng)
-        .note_type(NoteType::Private)
-        .script(script)
-        .build()?)
+    XReserveSetAttesterNote::builder()
+        .sender(sender)
+        .faucet_id(faucet_id)
+        .storage(
+            XReserveSetAttesterNoteStorage::builder()
+                .pub_key(pub_key)
+                .attester_index(attester_index)
+                .build(),
+        )
+        .rng(&mut rng)
+        .build()
+        .map_err(|e| anyhow::anyhow!("building the set_attester note: {e}"))
 }
 
 /// Executes a `set_attester` note (sent by `sender`) against the faucet `account`, returning the raw
@@ -1201,11 +1250,11 @@ pub async fn run_set_attester_tx(
     h: &CompositionHarness,
     account: &Account,
     sender: AccountId,
-    commitment: Word,
-    enabled: u8,
+    attester_index: u32,
+    pub_key: [Felt; 16],
     seed: u64,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note = set_attester_note(sender, commitment, enabled, seed)
+    let note = set_attester_note(sender, account.id(), attester_index, pub_key, seed)
         .expect("building the set_attester note (test-setup invariant)");
     h.mock_chain
         .build_transaction(account.clone())
@@ -1579,7 +1628,7 @@ pub fn setup_guarded_mint_account(
     token_supply: u64,
     domain: Word,
     nonce_seed: Option<(Word, Word)>,
-    attesters_seed: Option<(Word, Word)>,
+    attesters_seed: Option<(u32, &[Felt])>,
     driver_src: &str,
     probe_src: &str,
     is_max_supply_mutable: bool,
@@ -1623,9 +1672,17 @@ pub fn setup_guarded_mint_account(
                 map_of(nonce_seed, "usedNonces")?,
             ),
             StorageSlot::with_map(
-                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
-                    .context("xReserveAttesters slot label")?,
-                map_of(attesters_seed, "xReserveAttesters")?,
+                StorageSlotName::new(XRESERVE_ATTESTER_KEYS_SLOT_LABEL)
+                    .context("attester key array slot label")?,
+                match attesters_seed {
+                    Some((index, pubkey_felts)) => {
+                        StorageMap::with_entries(attester_key_entries(index, pubkey_felts))
+                            .map_err(|e| {
+                                anyhow::anyhow!("seeding the attester key array fixture: {e}")
+                            })?
+                    }
+                    None => StorageMap::new(),
+                },
             ),
         ],
         AccountComponentMetadata::new("xusdc-mint-composition-harness"),
@@ -2051,7 +2108,7 @@ pub fn setup_burn_policy_account(
                 StorageMap::new(),
             ),
             StorageSlot::with_map(
-                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+                StorageSlotName::new(XRESERVE_ATTESTER_KEYS_SLOT_LABEL)
                     .context("xReserveAttesters slot label")?,
                 StorageMap::new(),
             ),

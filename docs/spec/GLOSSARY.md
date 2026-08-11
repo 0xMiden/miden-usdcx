@@ -45,8 +45,8 @@ unreachable.
 | R-MINT-10 | `amount ≥ maxFee`. | direct reject, unchanged (now a felt compare) |
 | R-MINT-11 | `feeAmount ≤ maxFee` (MVP: the fee must be zero). | inexpressible — `feeAmount` no longer travels on the wire at all |
 | R-MINT-12 | The DepositIntent `nonce` has not been used before (replay guard). | direct reject, unchanged |
-| R-MINT-13 | The attester's pubkey commitment is enabled in the `xReserveAttesters` allowlist. | direct reject, unchanged |
-| R-MINT-14 | The ECDSA signature verifies over `keccak256(payload)` for that pubkey. | direct reject, unchanged |
+| R-MINT-13 | The carried attester index is a `u32` and the key stored at it is not all-zero. | direct reject; the shape changed with `DC-15` — the note carries an index, not a key, so "enabled" now means a key is present at that index |
+| R-MINT-14 | The ECDSA signature verifies over `keccak256(payload)` for the key stored at that index. | direct reject, unchanged |
 | R-MINT-15 | `token_supply + amount ≤ max_supply` and `max_supply ≤ AssetAmount::MAX` (supply cap). | direct reject, unchanged (stock-owned) |
 | R-MINT-16 | The stock `mint_and_send` path is denied — only the custom `xreserve_mint` may raise supply. | superseded by the Wave-1 recomposition (the stock path IS the gated path) |
 
@@ -122,7 +122,7 @@ Security/correctness properties the faucet must uphold. The faucet-binding ones:
 | INV-NONCE-REPLAY | `usedNonces` is keyed by a Poseidon2 hash-to-Word of the nonce; assert-zero-then-set; replays are rejected. |
 | INV-PUBLIC-BURN-OBSERVABILITY | The burn note is Public, with its payload in `NoteStorage.items` and a fixed 32-bit tag. |
 | INV-TWO-BLOCK-BURN | A burn note is created in block N and consumed in block ≥ N+1; a same-block create+consume is erased. |
-| INV-NO-ECRECOVER | No key recovery on-chain; ECDSA is verified against a supplied candidate pubkey + commitment allowlist. |
+| INV-NO-ECRECOVER | No key recovery on-chain; ECDSA is verified against an explicit candidate pubkey, read from the `DC-15` key array at the index the note carries. |
 | INV-DEPOSITINTENT-PARSE | Fixed-offset 240-byte header = 60 u32-LE-packed felts plus hookData; all field asserts; note input is read-only. |
 | INV-UINT256-TO-ASSETAMOUNT | uint256 reduction: assert the high half is zero, floor-divide by 10^scale, cap at `AssetAmount::MAX`; trap, never saturate. |
 | INV-BYTES32-HASH-TO-WORD | bytes32 → Word via Poseidon2 `hash_elements` over the 8 u32-LE limbs (the raw fallible `TryFrom` is not used on this path). |
@@ -155,7 +155,7 @@ Codec decisions owned by the `xusdc-encoding` crate (`xreserve::encoding`).
 |---|---|
 | DC-1 | DepositIntent wire format: fixed 240-byte big-endian header + variable `hookData`; on-chain = 60 u32-LE-packed felts (4 bytes per felt). |
 | DC-2 | `depositAttestation` = the raw 65-byte `r‖s‖v` secp256k1 signature over `keccak256(payload)` (not EIP-712). |
-| DC-3 | Attester commitment = `Poseidon2(affine pubkey, 16 u32-LE felts)` → one Word (the `xReserveAttesters` key). The wire/ingress form stays the 33-byte compressed SEC1 pubkey; the codec decompresses it to affine `qx‖qy` before hashing (v16, vm#3342 — the v15 preimage was the 33 compressed bytes as 9 felts). |
+| DC-3 | **Retired, superseded by DC-15.** Was: attester commitment = `Poseidon2(affine pubkey, 16 u32-LE felts)` → one Word, the `xReserveAttesters` key. Nothing commits to a pubkey any more, so `pubkey_commitment` is deleted on both sides and the `xReserveAttesters` slot is gone. |
 | DC-4 | Nonce keying: `nonce` (bytes32) → Poseidon2 hash-to-Word → storage-map key. |
 | DC-5 | `amount`/`fee` uint256 → AssetAmount: byte-swap, assert high-4-limbs zero, `floor(x / 10^scale_exp)`, reject if over `AssetAmount::MAX` (no saturation). |
 | DC-6 | AccountId ↔ bytes32 packaging (the "R-B" right-aligned layout; see DEV-10). |
@@ -164,6 +164,7 @@ Codec decisions owned by the `xusdc-encoding` crate (`xreserve::encoding`).
 | DC-9 / DC-10 / DC-11 / DC-12 | Circle JSON request/response schema types (off-chain Rust type definitions). Not on-chain. |
 | DC-13 | Optional decoders for Circle-returned binary blobs (`TransferSpec`/`BurnIntent`/`WithdrawHookData`); off-chain validation only, non-gating. |
 | DC-14 | The mint-note carried payload and the on-chain reconstruction of the DepositIntent preimage. The note carries only what the faucet cannot derive — `nonce`, `localToken`, `localDepositor`, `remoteRecipient`, `maxFee`, `hookDataLen` and `hookData`; the faucet writes `magic`, `version`, `amount` (from the note's asset value), `remoteDomain` (from its config slot), `remoteToken` (from its own id) and a zero `feeAmount` into the canonical `240 + hookDataLen`-byte preimage before hashing. Owned by the faucet (01); the felt offsets are 04's (`mint_intent.masm`). Requires `DEPOSIT_SCALE_EXP == 0` and a 20-byte right-aligned EVM address in `localToken` / `localDepositor` — see `DEV-5` and `Q-EVM-ADDR-1`, both **OPEN**. |
+| DC-15 | The attester public-key array (`xReserveAttesterKeys`), superseding `DC-3`. The 16 affine felts of one secp256k1 key are stored as four words at array entries `PUBKEY_ARRAY_ENTRIES * attester_idx + 0..3`; the mint transport carries only the 1-felt `attester_idx`, which must be a `u32` but is otherwise unbounded. **Presence is the allowlist** — a non-zero key is enabled, an all-zero key is disabled or never written, so the two are indistinguishable on the read path exactly as the old disabled and absent markers were. The wire/ingress form stays the 33-byte compressed SEC1 pubkey; the codec decompresses it to affine `qx‖qy` (v16, vm#3342). Rotate by writing a NEW index and zeroing the old one — overwriting a key in place fails any in-flight note naming that index (liveness, not safety). |
 
 ## Naming decisions — `NS-<n>`
 
@@ -209,7 +210,7 @@ questions (e.g. `Q-CRY-*` cryptography, `Q-BUR-*` burn, `Q-DOM-*` domain, `Q-MIN
 
 | Id | Open item (provisional position taken) |
 |---|---|
-| DEV-1 (Q-CRY-1) | Verify deposit attestations against a relayer-supplied pubkey + Poseidon2-commitment allowlist instead of EVM `ecrecover`. |
+| DEV-1 (Q-CRY-1) | Verify deposit attestations against an allowlisted pubkey instead of EVM `ecrecover`. **Still OPEN, and the shape has changed under an explicitly flagged assumption:** the pubkey is no longer relayer-supplied. It lives in the faucet's own `DC-15` key array and the note carries only an index into it, so the commitment allowlist this item originally described no longer exists. The assumption is that Circle is content for the attester key set to be on-chain administrator state rather than per-note wire data; if Circle wants the key back on the wire, `DC-3` and `pubkey_commitment` must be restored from history. Nothing here is approved or resolved. |
 | DEV-2 (Q-BUR-1/2) | Use a public `XReserveBurnNote` as the burn-event substitute (Miden has no event log). |
 | DEV-5 (Q-CRY-6) | Cap `amount` at `AssetAmount::MAX = 2^63 − 2^31` at 6-dp scale instead of full uint256; the exact cap/scale/dust tolerance await Circle. |
 | DEV-6 (Q-INFRA-5) | Bound `hookData` length (default within the 1024-felt `NoteStorage` limit); the exact cap awaits Circle. |
@@ -221,7 +222,7 @@ questions (e.g. `Q-CRY-*` cryptography, `Q-BUR-*` burn, `Q-DOM-*` domain, `Q-MIN
 Beyond these, `Q-<...>` labels in comments/fixtures mark a value or choice as awaiting Circle:
 - `Q-DOM-1` — which remote-domain id does Circle assign Miden? (so any test `domain` value is a placeholder, never the real value).
 - `Q-BLK-1` (**OPEN** — Circle-owned) — confirm the transfer-blocklist semantics: blocked means full freeze including redemption; mint or transfer to a blocked recipient strands at consume; pause halts all transfers. See `docs/CIRCLE-SEMANTICS-TRANSFER-BLOCKLIST.md`.
-- `Q-ADMIN-1` — is the canonical `xReserveAttesters` key type `address` or `bytes32`?
+- `Q-ADMIN-1` — is the canonical attester-allowlist key type `address` or `bytes32`? (Under `DC-15` the on-chain store is keyed by an array index and holds the raw affine key, so this question now bears only on Circle's own admin-facing form.)
 - `Q-CRY-4` — does the AccountId↔bytes32 encoding (`DEV-10`) apply to `remoteToken` / the faucet's bytes32 identifier as well as to `remoteRecipient`?
 - `Q-DA-QUORUM` (**OPEN** — Circle-owned) — the current transport carries one attestation; confirm whether the production design remains single-signer or requires a quorum.
 - `Q-EVM-ADDR-1` (**OPEN** — Circle-owned) — `DC-14` carries `localToken` and `localDepositor` as 20 bytes each, on the assumption that both bytes32 fields always hold a right-aligned EVM address. Confirm that holds for every source domain Circle will enable. A source chain with a wider address makes such a deposit unmintable under `DC-14` until a new transport ships; the relayer detects it at compress time and never submits the note, so it degrades to an off-chain error rather than a failed transaction.
@@ -264,7 +265,7 @@ are open items with Circle). The ones referenced in this repo:
 | IMPL-DEV-2 | On-chain role symbols `DOM_PAUSER`/`DOM_MANAGER` are ≤12-char aliases of Circle's `DOMAIN_PAUSER`/`DOMAIN_MANAGER` (Miden's `RoleSymbol` limit). |
 | IMPL-DEV-3 | Per-setter admin roles were replaced with a single administrator gate: the setters carry no role of their own and resolve to the built-in `ADMIN` role, seeded on the bootstrap administrator's account (which also matches Circle). `ADMIN` membership is account-bound, and since the admin-surface finalization it is the account's ONLY authority handle — there is no ownership lifecycle beside it; see `IMPL-DEV-23`. |
 | IMPL-DEV-4 | The burn-pause assertion emits the stock `ERR_PAUSABLE_IS_PAUSED`, not a custom string. |
-| IMPL-DEV-6 | Attestation uses a Poseidon2 commitment + keccak256 precompile + `verify_prehash` instead of EVM `ecrecover`; the signature `v` byte is unused. |
+| IMPL-DEV-6 | Attestation uses the keccak256 precompile + `verify_prehash` against a key read from the `DC-15` array instead of EVM `ecrecover`; the signature `v` byte is unused. |
 | IMPL-DEV-7 | The burn note uses a fixed placeholder tag until Circle assigns one. |
 | IMPL-DEV-8 | The burn payload carries `{amount, dest_domain, dest_recipient, salt}` with the depositor in `metadata.sender`. |
 | IMPL-DEV-12 | Cosmetic fix: an `AccountId`-out-of-range error message once said "15-byte region" while the shipped layout is 16-byte-padded; the message now describes the shipped right-aligned bytes32 layout. |
@@ -302,7 +303,7 @@ The `xusdc-validation` crate runs a real-local-node acceptance matrix. Each row 
 | B | Identifier init-once (first succeeds, second rejected). |
 | C | Admin suite: attester set/rotation, `set_min_burn_size`, `set_max_supply`, pause/unpause, role rotation, non-authorized negatives. |
 | D | Mint happy path (both hookData variants); recipient consumes the emitted P2ID note. |
-| E | Mint negatives: replayed nonce, forged sig, non-allowlisted attester, non-zero fee, tampered payload — each rejected with no state change. |
+| E | Mint negatives: replayed nonce, forged sig, unwritten/zeroed attester index, non-zero fee, tampered payload — each rejected with no state change. |
 | F | Auth boundary: a non-allowlisted note and tx-script are both rejected. |
 | G | Burn two-block (Circle read path): committed, tag-discoverable, retrievable after consume, supply decrements. |
 | H | Burn same-block (F7 evidence): client-side consume executes but user-RPC submission is rejected — evidence for the DEV-7 decision, no acceptability verdict. |
@@ -388,10 +389,10 @@ the OPEN `DEV-7` decision and makes no acceptability verdict of its own.
 | Id | Checks |
 |---|---|
 | TV-ATT-1 | Felt shapes: digest = 8 felts, pubkey = 16 affine felts (decompressed from the 33-byte compressed wire key), signature = 17 felts. |
-| TV-ATT-2 | The pubkey commitment is `Poseidon2(affine pubkey, 16 felts)` — identical to miden-crypto `PublicKey::to_commitment` — matching the allowlist keying. |
+| TV-ATT-2 | **Retired** with `DC-3`. Nothing commits to a pubkey any more — the allowlist is the key array itself (`DC-15`), so there is no commitment to pin against miden-crypto `PublicKey::to_commitment`. |
 | TV-ATT-3 | Raw keccak (not EIP-712): the signature covers `keccak256(full payload)` with no domain prefix. |
 
-**dual-implementation vectors (`TV-DUAL-*`)** — `-1`/`-2`/`-3`/`-5` assert Rust↔MASM agreement (run
+**dual-implementation vectors (`TV-DUAL-*`)** — `-1`/`-2`/`-3` assert Rust↔MASM agreement (run
 in `tests/masm_dual.rs`); `-4` is Rust-only because `DC-7` has no MASM side.
 
 | Id | Checks |
@@ -400,7 +401,7 @@ in `tests/masm_dual.rs`); `-4` is Rust-only because `DC-7` has no MASM side.
 | TV-DUAL-2 | **Retired** with the MASM witness verifier (see the ownership map's `DC-5` rider). The amount conversion is Rust-only; its vectors still drive the Rust unit tests in `amount.rs`. |
 | TV-DUAL-3 | DepositIntent parse: Rust and MASM agree on accept/reject and the 60-felt preimage. Rust-only on the mint path after `DC-14` — the MASM parser is retired (`NS-2`), so the MASM leg is `TV-DUAL-6`. |
 | TV-DUAL-4 | Burn-note items: the Rust-emitted burn note's `NoteStorage.items` match the Rust codec and the golden felts (an emit-vs-codec check within Rust — `DC-7` is Rust-only, there is no MASM burn-item codec). |
-| TV-DUAL-5 | Attestation packing/commitment: Rust and MASM produce the identical felts / commitment. |
+| TV-DUAL-5 | **Retired** with `DC-3` and `TV-ATT-2`. There is no commitment left to agree on; the attestation felts the transport carries are still pinned by `TV-ATT-1`, and the key the faucet reads back out of the `DC-15` array is proved by an executing mint. |
 | TV-DUAL-6 | `DC-14` preimage reconstruction, in three parts: the Rust round trip (`to_deposit_intent_bytes` after `from_deposit_intent` returns the original bytes); MASM/Rust parity (the felts `rebuild` writes equal the Rust reconstruction's); and per-field placement (mutating one carried field moves exactly that field's bytes). |
 
 `TV-CIRCLE-DIFF` = a differential check of the DepositIntent parse against a locally-reconstructed
@@ -428,7 +429,7 @@ sections:
 | §3 | (faucet spec) the invariants (`INV-*` list); (shared-encoding spec) the data contracts. |
 | §5.1 | The stock `mint_and_send` effects behind the attestation policy. |
 | §5.2 | The sole-supply-surface property (`INV-MINT-SECURITY`). |
-| §5.5 | `XReserveAttesterAdmin` — home of the `xReserveAttesters` allowlist and `minBurnSize` slots. |
+| §5.5 | `XReserveAttesterAdmin` — home of the `xReserveAttesterKeys` array (`DC-15`) and `minBurnSize` slots. |
 | §5.6 | The `usedNonces` nonce registry. |
 | §5.9 | The three stored domain-config fields are build-seeded; the identifier is derived from the native account id. |
 | §5.12 | The admin setters and pause. |

@@ -162,7 +162,7 @@ pub struct RelayerConfig {
     #[serde(default)]
     relayer_account_id: String,
     #[serde(default)]
-    attester_pubkey_hex: String,
+    attester_index: String,
     #[serde(default = "default_poll_page_size")]
     poll_page_size: u16,
     #[serde(default = "default_poll_interval_ms")]
@@ -272,7 +272,7 @@ impl Default for RelayerConfig {
             max_response_bytes: default_max_response_bytes(),
             store_path: default_store_path(),
             relayer_account_id: String::new(),
-            attester_pubkey_hex: String::new(),
+            attester_index: String::new(),
             poll_page_size: default_poll_page_size(),
             poll_interval_ms: default_poll_interval_ms(),
             domain_token_fast_fail: false,
@@ -385,15 +385,14 @@ impl RelayerConfig {
         &self.relayer_account_id
     }
 
-    /// The operator-configured attester public key (33-byte compressed SEC1, hex).
+    /// The operator-configured attester index, as a decimal `u32`.
     ///
     /// It is CONFIGURATION, not a Circle wire field: Circle's attestation object carries `payload`
-    /// / `messageHash` / `attestation` and no key, but the faucet's on-chain attestation check
-    /// needs the candidate pubkey inside the note. This is the key whose Poseidon2 commitment the
-    /// operator was told is in the faucet's `xReserveAttesters` allowlist — a claim only the chain
-    /// can check.
-    pub fn attester_pubkey_hex(&self) -> &str {
-        &self.attester_pubkey_hex
+    /// / `messageHash` / `attestation` and nothing that says which attester signed, but the faucet
+    /// needs that to pick a key out of its own array. This is the array position the operator was
+    /// told the administrator wrote that attester's key at — a claim only the chain can check.
+    pub fn attester_index(&self) -> &str {
+        &self.attester_index
     }
 
     /// Attestations per batch poll (`pageSize`, 1..=1000 — `BatchQuery::new` is the judge).

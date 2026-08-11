@@ -22,7 +22,7 @@ use miden_standards::StandardsLib;
 use super::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError, DOMAIN_CONFIG_SLOT_LABEL,
     SOURCE_DOMAIN_CONFIG_SLOT_LABEL, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL, USED_NONCES_SLOT_LABEL,
-    XRESERVE_ATTESTERS_SLOT_LABEL, XRESERVE_CONTRACT_HI_SLOT_LABEL,
+    XRESERVE_ATTESTER_KEYS_SLOT_LABEL, XRESERVE_CONTRACT_HI_SLOT_LABEL,
     XRESERVE_CONTRACT_LO_SLOT_LABEL,
 };
 use crate::xreserve::encoding::EthBytes32;
@@ -80,7 +80,7 @@ impl XReserveComponent {
                     value_slot(XRESERVE_CONTRACT_HI_SLOT_LABEL),
                     value_slot(XRESERVE_CONTRACT_LO_SLOT_LABEL),
                     map_slot(USED_NONCES_SLOT_LABEL),
-                    map_slot(XRESERVE_ATTESTERS_SLOT_LABEL),
+                    map_slot(XRESERVE_ATTESTER_KEYS_SLOT_LABEL),
                 ],
                 AccountComponentMetadata::new(XRESERVE_COMPONENT_LABEL),
             )

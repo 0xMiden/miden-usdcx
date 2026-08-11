@@ -1,5 +1,4 @@
-pub mod attestation_verify
-pub mod attester_admin
+pub mod attestation
 pub mod deposit_intent
 pub mod mint_intent
 pub mod mint_policy

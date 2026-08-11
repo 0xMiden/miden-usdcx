@@ -31,7 +31,7 @@ use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
     account_id_to_bytes32, bytes32_to_account_id, bytes32_to_storage_map_key, DepositIntent,
-    MintIntent, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF,
+    MintIntent, PublicKey, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF,
 };
 
 use super::*;
@@ -62,14 +62,16 @@ pub const TRANSPORT_SCHEME: u16 = 4;
 /// The transport layout, test-side: the fixed-width attestation section, then the carried mint
 /// payload, then the packed hookData. Every offset below is parity-pinned in `constant_parity.rs`
 /// against both the Rust factory and the MASM policy, so the harness cannot drift from the wire.
-pub const ATTESTATION_WORDS: usize = 9;
+pub const ATTESTATION_WORDS: usize = 5;
 pub const TRANSPORT_PAYLOAD_WORD_OFF: usize = ATTESTATION_WORDS;
 pub const ATTESTATION_FELTS: usize = ATTESTATION_WORDS * 4;
 
-/// Felt offsets INSIDE the attestation section. The operator `feeAmount` is gone with `DC-14` —
-/// the faucet writes a zero fee into the preimage, so there is no wire field to corrupt.
-pub const ATTESTATION_PUBKEY_FELT_OFF: usize = 0;
-pub const ATTESTATION_SIGNATURE_FELT_OFF: usize = 16;
+/// Felt offsets INSIDE the attestation section. The signature leads it so it stays word-aligned
+/// for the ECDSA precompile. The attester's public key is not on the wire at all — the index
+/// selects it out of the faucet's own array — and the operator `feeAmount` went with `DC-14`,
+/// since the faucet writes a zero fee into the preimage.
+pub const ATTESTATION_SIGNATURE_FELT_OFF: usize = 0;
+pub const ATTESTATION_ATTESTER_IDX_FELT_OFF: usize = 17;
 
 /// The word floor the policy enforces: the attestation plus the six-word carried payload.
 pub const TRANSPORT_FLOOR_WORDS: usize = TRANSPORT_PAYLOAD_WORD_OFF + 6;
@@ -228,12 +230,12 @@ fn carried_payload_felts(payload: &[u8]) -> Vec<Felt> {
     felts
 }
 
-/// The 36-felt attestation section: `[pubkey(16), signature(17), pad(3)]`.
-fn attestation_felts(key_source: &AttesterVector) -> Vec<Felt> {
+/// The 20-felt attestation section: `[signature(17), attester_idx(1), pad(2)]`.
+fn attestation_felts(key_source: &AttesterVector, attester_index: u32) -> Vec<Felt> {
     let mut felts: Vec<Felt> = Vec::new();
-    felts.extend(key_source.pubkey_felts.iter().copied());
     felts.extend(key_source.sig_felts.iter().copied());
-    felts.extend([Felt::from(0u32); 3]);
+    felts.push(Felt::from(attester_index));
+    felts.extend([Felt::from(0u32); 2]);
     debug_assert_eq!(felts.len(), ATTESTATION_FELTS);
     felts
 }
@@ -243,11 +245,12 @@ fn attestation_felts(key_source: &AttesterVector) -> Vec<Felt> {
 fn transport_felts(
     payload: &[u8],
     key_source: &AttesterVector,
+    attester_index: u32,
     plan: &AttachmentPlan,
 ) -> Vec<Felt> {
     let mut felts: Vec<Felt> = Vec::new();
 
-    let mut attestation = attestation_felts(key_source);
+    let mut attestation = attestation_felts(key_source, attester_index);
     if let Some((off, value)) = plan.attestation_felt_tamper {
         attestation[off] = value;
     }
@@ -280,9 +283,10 @@ fn words_of(felts: &[Felt]) -> Vec<Word> {
 fn transport_attachment(
     payload: &[u8],
     key_source: &AttesterVector,
+    attester_index: u32,
     plan: &AttachmentPlan,
 ) -> Result<NoteAttachment> {
-    let mut words = words_of(&transport_felts(payload, key_source, plan));
+    let mut words = words_of(&transport_felts(payload, key_source, attester_index, plan));
     if let Some(truncate) = plan.transport_truncate_words {
         words.truncate(truncate);
     }
@@ -298,13 +302,15 @@ fn transport_attachment(
 
 /// Builds the (possibly tampered) stock mint note. `sig_over` lets the forged-signature case sign
 /// a DIFFERENT byte string than the carried payload; `attester_seed` selects the keypair (seed 1
-/// is the allowlisted attester).
+/// is the installed attester) and `attester_index` the array index the note names (which need not
+/// be where that keypair actually lives — that is how the anti-splice cases are built).
 #[allow(clippy::too_many_arguments)]
 pub fn tampered_mint_note(
     pf: &ProductionFaucet,
     payload: &[u8],
     storage: &StoragePlan,
     attester_seed: u64,
+    attester_index: u32,
     sig_over: Option<&[u8]>,
     plan: &AttachmentPlan,
     rng_seed: u64,
@@ -328,9 +334,19 @@ pub fn tampered_mint_note(
         .mint_storage(mint_storage)
         .serial_number(note_rng(rng_seed).draw_word());
     if plan.transport {
-        builder = builder.attachment(transport_attachment(payload, &key_source, plan)?);
+        builder = builder.attachment(transport_attachment(
+            payload,
+            &key_source,
+            attester_index,
+            plan,
+        )?);
         if plan.duplicate_transport {
-            builder = builder.attachment(transport_attachment(payload, &key_source, plan)?);
+            builder = builder.attachment(transport_attachment(
+                payload,
+                &key_source,
+                attester_index,
+                plan,
+            )?);
         }
     }
     if plan.target {
@@ -369,6 +385,7 @@ pub fn honest_note(pf: &ProductionFaucet, payload: &[u8], rng_seed: u64) -> Resu
         payload,
         &honest_storage(pf),
         1,
+        TEST_ATTESTER_INDEX,
         None,
         &AttachmentPlan::default(),
         rng_seed,
@@ -378,24 +395,34 @@ pub fn honest_note(pf: &ProductionFaucet, payload: &[u8], rng_seed: u64) -> Resu
 // FIXTURE + DRIVERS
 // ================================================================================================
 
-/// The production faucet brought up for minting: attester 1 allowlisted, and nothing else — the
-/// identifier needs no seeding, because the mint path derives it from the faucet's own account id.
-/// `extra_notes` seeds additional admin notes (e.g. the pause note).
+/// The administrator's `set_attester` note that installs `gen_attester(seed, ..)`'s public key at
+/// `index`. The key does not depend on what that attester signed, so this needs only the seed.
+pub fn enable_attester_note(
+    faucet_id: AccountId,
+    index: u32,
+    seed: u64,
+    rng_seed: u64,
+) -> Result<Note> {
+    XReserveSetAttesterNote::enable(
+        administrator(),
+        faucet_id,
+        index,
+        &PublicKey::new(gen_attester_pubkey(seed)),
+        &mut note_rng(rng_seed),
+    )
+    .context("building the administrator set_attester note")
+}
+
+/// The production faucet brought up for minting: attester 1 installed at `TEST_ATTESTER_INDEX`,
+/// and nothing else — the identifier needs no seeding, because the mint path derives it from the
+/// faucet's own account id. `extra_notes` seeds additional admin notes (e.g. the pause note).
 pub fn fixture_with(
     max_supply: u64,
     extra_notes: impl Fn(AccountId, AccountId) -> Vec<Note>,
 ) -> Result<ProductionFaucet> {
     setup_production_faucet(max_supply, 0, |recipient, faucet_id| {
-        let commitment =
-            gen_attester(1, &payload_for(recipient, faucet_id, MINT_AMOUNT, 0)).commitment;
-        let mut notes = vec![XReserveSetAttesterNote::create(
-            administrator(),
-            faucet_id,
-            commitment,
-            1,
-            &mut note_rng(952),
-        )
-        .expect("building the administrator set_attester note")];
+        let mut notes = vec![enable_attester_note(faucet_id, TEST_ATTESTER_INDEX, 1, 952)
+            .expect("the administrator set_attester note builds")];
         notes.extend(extra_notes(recipient, faucet_id));
         notes
     })

@@ -73,13 +73,13 @@ fn payload_for(recipient: AccountId, faucet_id: AccountId, nonce_variant: u8) ->
 /// A production faucet brought up for a real mint: one attester allowlisted through its own admin
 /// note, plus whatever the caller wants seeded.
 fn mint_faucet(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<ProductionFaucet> {
-    setup_production_faucet(MINT_MAX_SUPPLY, 0, |recipient, faucet_id| {
-        let commitment = gen_attester(1, &payload_for(recipient, faucet_id, 0)).commitment;
-        let mut notes = vec![XReserveSetAttesterNote::create(
+    setup_production_faucet(MINT_MAX_SUPPLY, 0, |_recipient, faucet_id| {
+        let pub_key = PublicKey::new(gen_attester_pubkey(1));
+        let mut notes = vec![XReserveSetAttesterNote::enable(
             admin_holder(),
             faucet_id,
-            commitment,
-            1,
+            TEST_ATTESTER_INDEX,
+            &pub_key,
             &mut note_rng(952),
         )
         .expect("building the set_attester note")];
@@ -118,7 +118,7 @@ async fn emit_and_consume_mint(
         pf.producer_id,
         pf.faucet_id,
         payload,
-        &MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes),
+        &MintAttestation::new(attester.sig_bytes, TEST_ATTESTER_INDEX),
         &mut note_rng(seed),
     )
     .map_err(|e| anyhow::anyhow!("building the attested mint note: {e}"))?;

@@ -32,7 +32,7 @@ use xreserve_deposit_relayer::cycle::{MintIdentities, MintSubmission, MintSubmit
 use xreserve_deposit_relayer::error::{Cause, RelayerError};
 use xreserve_deposit_relayer::idempotency::{IdempotencyStore, TxId};
 
-use crate::mint_support::{attester_pubkey, faucet_id, relayer_sender_id};
+use crate::mint_support::{faucet_id, relayer_sender_id, PARTNER_ATTESTER_INDEX};
 use crate::mock_circle::{MockCircle, RecordingSink, MOCK_BASE_URL};
 
 /// The Miden remote domain the cycle suites poll. **Placeholder — the Miden domain id is OPEN
@@ -298,7 +298,7 @@ pub fn cycle_config_with(mutate: impl FnOnce(&mut serde_json::Value)) -> Relayer
 /// The identities the mint note is built from: the relayer's own account, the faucet, and the
 /// operator-configured attester key (the partner fixture's).
 pub fn cycle_identities() -> MintIdentities {
-    MintIdentities::new(relayer_sender_id(), faucet_id(), attester_pubkey())
+    MintIdentities::new(relayer_sender_id(), faucet_id(), PARTNER_ATTESTER_INDEX)
 }
 
 /// A `CircleClient` over `mock`, with the suite's retry policy and the recording sink installed.

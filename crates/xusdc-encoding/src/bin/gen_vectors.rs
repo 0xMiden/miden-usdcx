@@ -12,8 +12,6 @@
 //! nonce@204, hookDataLen@236, hookData@240; header = 240 bytes = 60 u32-LE felts.
 
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey};
-use miden_crypto::dsa::ecdsa_k256_keccak::PublicKey;
-use miden_crypto::utils::Deserializable;
 use miden_protocol::testing::account_id::AccountIdBuilder;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Hasher, Word};
@@ -247,9 +245,7 @@ fn di_reject(
 // Attestation (ATT) entries — Rust + MASM dual surface
 // ================================================================================================
 // the secp256k1 keypair and signature come from the INDEPENDENT `k256` crate and the keccak digest
-// from `sha3`. The commitment oracle is miden-crypto
-// `PublicKey::to_commitment` — the attester-allowlist keying primitive the faucet's attestation
-// verify looks up — deserialized from the exact 33 compressed wire bytes.
+// from `sha3`.
 
 /// Deterministic independent secp256k1 keypair (k256 + seeded StdRng).
 fn att_keypair(seed: u64) -> SigningKey {
@@ -284,16 +280,6 @@ fn att_sign65(sk: &SigningKey, digest: &[u8; 32]) -> [u8; 65] {
     out[..64].copy_from_slice(sig.to_bytes().as_slice()); // 64-byte big-endian r || s
     out[64] = recid.to_byte(); // v in {0..3}
     out
-}
-
-/// The canonical commitment oracle: deserialize the exact 33 compressed wire bytes into the
-/// miden-crypto `PublicKey` and take `to_commitment()` = Poseidon2 over the 16 affine-coordinate
-/// pubkey felts. This is exactly what off-chain `set_attester` keys the `xReserveAttesters`
-/// allowlist by.
-fn att_commitment(pk33: &[u8; 33]) -> Word {
-    PublicKey::read_from_bytes(pk33)
-        .expect("valid compressed secp256k1 pubkey")
-        .to_commitment()
 }
 
 fn main() {
@@ -838,9 +824,8 @@ fn main() {
 
     // ---- att family (attestation surface) ----------------------------------------
     // each vector carries an independent k256 keypair; the digest is keccak256 of a FULL
-    // DepositIntent payload (raw keccak, NOT EIP-712, no struct); the 65-byte r||s||v signature over
-    // that digest; and the canonical commitment from miden-crypto `PublicKey::to_commitment`. The
-    // nonce is varied per seed so digests, sigs, and pubkeys all differ.
+    // DepositIntent payload (raw keccak, NOT EIP-712, no struct); and the 65-byte r||s||v signature
+    // over that digest. The nonce is varied per seed so digests, sigs, and pubkeys all differ.
     let mut att: Vec<Value> = Vec::new();
     for seed in 1u64..=3 {
         let mut spec = IntentSpec::base(recipient_b32);
@@ -851,13 +836,11 @@ fn main() {
         let pk = att_pk33(&sk);
         let digest = att_keccak256(&payload);
         let sig = att_sign65(&sk, &digest);
-        let commitment = att_commitment(&pk);
         att.push(json!({
             "id": format!("att-{seed}"),
-            "tv": ["TV-ATT-1", "TV-ATT-2", "TV-ATT-3", "TV-DUAL-5"],
+            "tv": ["TV-ATT-1", "TV-ATT-3"],
             "pubkey_hex": hex_bytes(&pk),
             "packed_felts": felts_hex(&xusdc_encoding::xreserve::encoding::PublicKey::new(pk).to_affine_felts().expect("generator keys are valid points")),
-            "expected_commitment": word_hex(commitment),
             "digest_hex": hex_bytes(&digest),
             "digest_felts": felts_hex(&packed(&digest)),
             "sig_hex": hex_bytes(&sig),
@@ -866,7 +849,7 @@ fn main() {
             "payload_hex": hex_bytes(&payload),
             "cite": "miden-crypto-0.25.1 dsa/ecdsa_k256_keccak/mod.rs:253,:301 + src/lib.rs:156-170",
             "derivation": format!(
-                "k256 SigningKey::random(StdRng seed {seed}); pk = 33B compressed SEC1 wire key, decompressed to affine qx_le_u32[8]||qy_le_u32[8] (16 felts, vm#3342); sig = 65B r||s||v (17 felts, v carried) over keccak256(full {plen}B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.28.0 (Poseidon2 over the 16 affine pubkey felts)",
+                "k256 SigningKey::random(StdRng seed {seed}); pk = 33B compressed SEC1 wire key, decompressed to affine qx_le_u32[8]||qy_le_u32[8] (16 felts, vm#3342) — the felts the faucet stores in its attester key array; sig = 65B r||s||v (17 felts, v carried) over keccak256(full {plen}B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts",
                 plen = payload.len(),
             ),
         }));

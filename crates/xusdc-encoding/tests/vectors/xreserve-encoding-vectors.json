@@ -383,7 +383,7 @@
     "att": [
       {
         "cite": "miden-crypto-0.25.1 dsa/ecdsa_k256_keccak/mod.rs:253,:301 + src/lib.rs:156-170",
-        "derivation": "k256 SigningKey::random(StdRng seed 1); pk = 33B compressed SEC1 wire key, decompressed to affine qx_le_u32[8]||qy_le_u32[8] (16 felts, vm#3342); sig = 65B r||s||v (17 felts, v carried) over keccak256(full 240B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.28.0 (Poseidon2 over the 16 affine pubkey felts)",
+        "derivation": "k256 SigningKey::random(StdRng seed 1); pk = 33B compressed SEC1 wire key, decompressed to affine qx_le_u32[8]||qy_le_u32[8] (16 felts, vm#3342) — the felts the faucet stores in its attester key array; sig = 65B r||s||v (17 felts, v carried) over keccak256(full 240B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts",
         "digest_felts": [
           "0x7d53c422",
           "0xc6bc144a",
@@ -395,12 +395,6 @@
           "0x5692b4b6"
         ],
         "digest_hex": "0x22c4537d4a14bcc64dc81fc4260265be8b2855de95bec36bf48bb479b6b49256",
-        "expected_commitment": [
-          "0xf5b91758da8d358e",
-          "0x7b725b8e11924cfd",
-          "0x2e1c72d1df5aed81",
-          "0x12ab5a3e8ea9d1b0"
-        ],
         "id": "att-1",
         "packed_felts": [
           "0x5224f69a",
@@ -444,15 +438,13 @@
         "sig_hex": "0xf2c67174502228b93d179dfaa08f32116b824a59899a575139f6f0ee31b3296a737cb8a1684cf813822e41c4ca229d3909c4ec5b4fe87f48006857c3f7dde32201",
         "tv": [
           "TV-ATT-1",
-          "TV-ATT-2",
-          "TV-ATT-3",
-          "TV-DUAL-5"
+          "TV-ATT-3"
         ],
         "v_byte": 1
       },
       {
         "cite": "miden-crypto-0.25.1 dsa/ecdsa_k256_keccak/mod.rs:253,:301 + src/lib.rs:156-170",
-        "derivation": "k256 SigningKey::random(StdRng seed 2); pk = 33B compressed SEC1 wire key, decompressed to affine qx_le_u32[8]||qy_le_u32[8] (16 felts, vm#3342); sig = 65B r||s||v (17 felts, v carried) over keccak256(full 240B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.28.0 (Poseidon2 over the 16 affine pubkey felts)",
+        "derivation": "k256 SigningKey::random(StdRng seed 2); pk = 33B compressed SEC1 wire key, decompressed to affine qx_le_u32[8]||qy_le_u32[8] (16 felts, vm#3342) — the felts the faucet stores in its attester key array; sig = 65B r||s||v (17 felts, v carried) over keccak256(full 240B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts",
         "digest_felts": [
           "0x3e7165eb",
           "0x983f3b68",
@@ -464,12 +456,6 @@
           "0xb18a51a3"
         ],
         "digest_hex": "0xeb65713e683b3f9855a7cee7b68ae05e24cfdb2c6c5320f84d613491a3518ab1",
-        "expected_commitment": [
-          "0x23d8cdc97ac06fb1",
-          "0xf0c442c83a2c0c54",
-          "0xcc1e5af9131ba184",
-          "0xd9040e50eb13b646"
-        ],
         "id": "att-2",
         "packed_felts": [
           "0x47f5a0af",
@@ -513,15 +499,13 @@
         "sig_hex": "0x559771a281f8212861c12b04036fc76a13f2f456fd28f41b57b7e1b9137d268628d168c930895f2d26710d0047e184c93f7e6dc101e46a5799d049e49904bbce00",
         "tv": [
           "TV-ATT-1",
-          "TV-ATT-2",
-          "TV-ATT-3",
-          "TV-DUAL-5"
+          "TV-ATT-3"
         ],
         "v_byte": 0
       },
       {
         "cite": "miden-crypto-0.25.1 dsa/ecdsa_k256_keccak/mod.rs:253,:301 + src/lib.rs:156-170",
-        "derivation": "k256 SigningKey::random(StdRng seed 3); pk = 33B compressed SEC1 wire key, decompressed to affine qx_le_u32[8]||qy_le_u32[8] (16 felts, vm#3342); sig = 65B r||s||v (17 felts, v carried) over keccak256(full 240B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.28.0 (Poseidon2 over the 16 affine pubkey felts)",
+        "derivation": "k256 SigningKey::random(StdRng seed 3); pk = 33B compressed SEC1 wire key, decompressed to affine qx_le_u32[8]||qy_le_u32[8] (16 felts, vm#3342) — the felts the faucet stores in its attester key array; sig = 65B r||s||v (17 felts, v carried) over keccak256(full 240B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts",
         "digest_felts": [
           "0x84a810e1",
           "0xf1f17f60",
@@ -533,12 +517,6 @@
           "0x17766c67"
         ],
         "digest_hex": "0xe110a884607ff1f11ee519a0a87ec74ce3190654a21398c24011fd85676c7617",
-        "expected_commitment": [
-          "0xf3d465281037ad6a",
-          "0x50fa3e9178f86ce5",
-          "0x2c0110a267fe02c0",
-          "0x44373b66994d1c4"
-        ],
         "id": "att-3",
         "packed_felts": [
           "0xb484a551",
@@ -582,9 +560,7 @@
         "sig_hex": "0x068b237c4c7282da372cf1b2438d2f4bd496e43d0f546eec19b82c348812db5701f95c5bea528d722a073264cb82561808726f335c874511baec9d533e39435100",
         "tv": [
           "TV-ATT-1",
-          "TV-ATT-2",
-          "TV-ATT-3",
-          "TV-DUAL-5"
+          "TV-ATT-3"
         ],
         "v_byte": 0
       }

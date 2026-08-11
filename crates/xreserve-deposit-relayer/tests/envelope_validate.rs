@@ -206,10 +206,10 @@ fn t_rly_20_binding_is_payload_specific() {
     });
 }
 
-/// The fixture's attester identity is the one the allowlist is keyed by: the commitment is the
-/// shared encoding crate's `PublicKey::to_commitment` — Poseidon2 over the 16 affine felts the
-/// 33-byte compressed pubkey decompresses to — and the pubkey is deterministic (pinned). This is
-/// what the later local-node rows seed via `set_attester`.
+/// The fixture's attester identity is what the faucet stores: the key felts come from the shared
+/// encoding crate's `PublicKey::to_affine_felts` — the 16 affine felts the 33-byte compressed
+/// pubkey decompresses to — and the pubkey is deterministic (pinned). This is what the later
+/// local-node rows install via `set_attester`.
 #[test]
 fn t_rly_20_partner_attester_identity_is_deterministic_and_canonically_keyed() {
     let attester = PartnerAttester::new();
@@ -222,13 +222,11 @@ fn t_rly_20_partner_attester_identity_is_deterministic_and_canonically_keyed() {
     );
     assert_eq!(pk[0] & 0xfe, 0x02, "compressed SEC1 prefix is 0x02 or 0x03");
     assert_eq!(
-        attester.commitment(),
-        miden_protocol::Word::from(
-            PublicKey::new(pk)
-                .to_commitment()
-                .expect("the deterministic partner key is a valid point"),
-        ),
-        "the allowlist key must be unit-04's owned Poseidon2 commitment (DC-3), never re-derived"
+        attester.key_felts(),
+        PublicKey::new(pk)
+            .to_affine_felts()
+            .expect("the deterministic partner key is a valid point"),
+        "the installed key must be unit-04's owned affine felts (DC-15), never re-derived"
     );
     // a second construction yields the identical key (no hidden RNG state / time dependence)
     assert_eq!(PartnerAttester::new().pubkey(), pk);
@@ -606,9 +604,9 @@ fn t_rly_06_foreign_key_signature_passes_shape_check() {
         "the foreign attester must be a genuinely different key"
     );
     assert_ne!(
-        foreign.commitment(),
-        partner.commitment(),
-        "a different key has a different allowlist commitment (DC-3)"
+        foreign.key_felts(),
+        partner.key_felts(),
+        "a different key has different affine felts in the attester array (DC-15)"
     );
 
     // the SAME payload, signed by the foreign key

@@ -17,11 +17,11 @@
 //! carried and unused on-chain). It stands in only for CIRCLE — the party that holds the real
 //! attester key.
 //!
-//! **Ownership.** The Poseidon2 commitment is NOT re-derived here: it is
-//! [`PublicKey::to_commitment`], the
-//! shared encoding crate's owned allowlist-keying primitive (single-owner rule), the same procedure
-//! the faucet's on-chain attestation check recomputes on-chain. Likewise the payload is the
-//! canonical DepositIntent vector from the ONE golden artifact, never a hand-rolled byte blob.
+//! **Ownership.** The affine key felts are NOT re-derived here: they come from
+//! [`PublicKey::to_affine_felts`], the shared encoding crate's owned SEC1→affine primitive
+//! (single-owner rule) — the same felts the administrator writes into the faucet's attester key
+//! array. Likewise the payload is the canonical DepositIntent vector from the ONE golden artifact,
+//! never a hand-rolled byte blob.
 //!
 //! **Signing only.** `k256` appears in this crate's dev-dependencies to SIGN. The relayer never
 //! verifies an ECDSA signature off-chain — that is on-chain and faucet-owned.
@@ -31,7 +31,7 @@
 use k256::ecdsa::signature::hazmat::PrehashVerifier;
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey, VerifyingKey};
 use miden_protocol::account::{AccountId, AccountIdVersion, AccountType, AssetCallbackFlag};
-use miden_protocol::{Hasher, Word};
+use miden_protocol::{Felt, Hasher, Word};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use sha3::{Digest, Keccak256};
@@ -53,9 +53,9 @@ pub const FOREIGN_KEY_SEED: u64 = 0x464f_5245_4947_4e00; // "FOREIGN\0"
 
 /// The partner key's 33-byte compressed SEC1 pubkey, PINNED. This is a determinism pin, not a
 /// correctness oracle: it fails the moment the seed, the curve, or the key-derivation path changes,
-/// so every later slice (and the local-node allowlist it seeds) is guaranteed the same attester.
-/// Correctness of the commitment derived from it is anchored by the shared encoding crate's
-/// `PublicKey::to_commitment` (pinned == miden-crypto `PublicKey::to_commitment` by TV-ATT-2).
+/// so every later slice (and the local-node attester array it seeds) is guaranteed the same
+/// attester. Correctness of the felts derived from it is anchored by the shared encoding crate's
+/// `PublicKey::to_affine_felts` (pinned by `TV-ATT-1`).
 pub const PARTNER_PUBKEY_HEX: &str =
     "03a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3f";
 
@@ -222,19 +222,16 @@ impl PartnerAttester {
             .expect("compressed secp256k1 pubkey is 33 bytes")
     }
 
-    /// The attester-allowlist key: `Poseidon2(affine pubkey felts)` →
-    /// one `Word` (the compressed wire key is decompressed inside the owned primitive).
+    /// The 16 affine key felts the administrator writes into the faucet's attester key array (the
+    /// compressed wire key is decompressed inside the owned primitive).
     ///
-    /// Delegated to the shared encoding crate's [`PublicKey::to_commitment`] — the SINGLE owner of
-    /// this keying primitive and the exact procedure the faucet's on-chain attestation check
-    /// recomputes on-chain. This fixture never re-implements it, so the local-node allowlist it
-    /// seeds cannot drift from the on-chain lookup.
-    pub fn commitment(&self) -> Word {
-        Word::from(
-            PublicKey::new(self.pubkey())
-                .to_commitment()
-                .expect("the deterministic partner key is a valid point"),
-        )
+    /// Delegated to the shared encoding crate's [`PublicKey::to_affine_felts`] — the SINGLE owner
+    /// of the SEC1→affine seam — so the key this fixture installs cannot drift from what the faucet
+    /// reads back at verify time.
+    pub fn key_felts(&self) -> [Felt; 16] {
+        PublicKey::new(self.pubkey())
+            .to_affine_felts()
+            .expect("the deterministic partner key is a valid point")
     }
 
     /// Signs `keccak256(payload)` — RAW secp256k1 over the raw keccak digest of the FULL payload.
@@ -426,10 +423,9 @@ pub fn personal_sign_digest(payload: &[u8]) -> [u8; 32] {
 
 /// The Miden-native Poseidon2 `Word` over the same payload, serialized to 32 bytes — the
 /// wrong-hash-FAMILY comparator (Poseidon2 is what Miden hashes with everywhere else in this
-/// system: the nonce key, the attester commitment; the attestation digest is the one place it is
-/// keccak). The payload is packed into felts by the shared encoding crate's owned DepositIntent
-/// packer, then hashed with the protocol `Hasher` (Poseidon2) — the same primitive
-/// `PublicKey::to_commitment` uses.
+/// system, the nonce key above all; the attestation digest is the one place it is keccak). The
+/// payload is packed into felts by the shared encoding crate's owned DepositIntent packer, then
+/// hashed with the protocol `Hasher` (Poseidon2).
 pub fn poseidon2_word_digest(payload: &[u8]) -> [u8; 32] {
     let felts = DepositIntent::new(payload)
         .to_packed_felts()

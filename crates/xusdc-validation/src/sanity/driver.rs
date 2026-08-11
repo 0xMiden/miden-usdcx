@@ -26,7 +26,7 @@ use miden_protocol::Word;
 use miden_standards::account::policies::MinBurnAmount;
 use xusdc_encoding::account::xreserve::{
     DOMAIN_CONFIG_SLOT_LABEL, IDENTIFIER_CONFIG_SLOT_LABEL, USED_NONCES_SLOT_LABEL,
-    XRESERVE_ATTESTERS_SLOT_LABEL,
+    XRESERVE_ATTESTER_KEYS_SLOT_LABEL,
 };
 
 use crate::client::HarnessClient;
@@ -121,7 +121,7 @@ pub(crate) fn used_nonce_marker(account: &Account, key: Word) -> Result<Word> {
 }
 
 pub(crate) fn attester_marker(account: &Account, commitment: Word) -> Result<Word> {
-    let name = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+    let name = StorageSlotName::new(XRESERVE_ATTESTER_KEYS_SLOT_LABEL)
         .context("xReserveAttesters slot label")?;
     account
         .storage()

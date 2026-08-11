@@ -20,7 +20,7 @@ use crate::observations_de::{
 };
 
 // EXACT on-chain error substrings the Row-E rejects must carry (single source of truth in the
-// shipped MASM: `deposit_intent_parser.masm`, `attestation_verify.masm`, `mint_policy.masm` — the
+// shipped MASM: `deposit_intent_parser.masm`, `attestation.masm`, `mint_policy.masm` — the
 // Wave-1 S1 home of the attestation pipeline the former `xreserve_mint.masm` drove). A reject that
 // does not carry ITS error is not the gate the negative proves — the assertion rejects it. All
 // four are xreserve-OWNED gates and carry the message on a client-side trap (LNV-2 posture: only

@@ -12,12 +12,10 @@
 //! inline.
 
 use assert_matches::assert_matches;
-use miden_protocol::Word;
 use xusdc_encoding::vectors::{load, parse_hex32};
 use xusdc_encoding::xreserve::encoding::{
     account_id_to_bytes32, bytes32_to_account_id, bytes32_to_packed_felts, DepositIntent,
-    DepositIntentHeader, EncodingError, EthBytes32, PublicKey, PublicKeyCommitment, Signature,
-    XReserveBurnItems,
+    DepositIntentHeader, EncodingError, EthBytes32, PublicKey, Signature, XReserveBurnItems,
 };
 
 // Signature
@@ -45,14 +43,13 @@ fn signature_type_matches_golden() {
     }
 }
 
-// PublicKey + stock PublicKeyCommitment reuse
+// PublicKey
 // ================================================================================================
 
-/// `PublicKey::to_affine_felts` and `PublicKey::to_commitment` match the golden affine felts and the
-/// golden commitment word, and the commitment is handed out as the STOCK `PublicKeyCommitment`
-/// newtype, which round-trips through `Word`.
+/// `PublicKey::to_affine_felts` matches the golden affine felts — the 16 felts the administrator
+/// installs in the faucet's attester key array.
 #[test]
-fn public_key_affine_and_commitment_match_golden() {
+fn public_key_affine_felts_match_golden() {
     for v in &load().families.att {
         let pk = v.pubkey();
         let typed = PublicKey::new(pk);
@@ -67,20 +64,6 @@ fn public_key_affine_and_commitment_match_golden() {
             v.id
         );
 
-        let commitment: PublicKeyCommitment = typed.to_commitment().expect("valid point");
-        assert_eq!(
-            Word::from(commitment),
-            v.expected_commitment_word(),
-            "{}: PublicKey::to_commitment word == golden commitment",
-            v.id
-        );
-        // the stock newtype round-trips (From<Word>): the value we produced IS a PublicKeyCommitment.
-        assert_eq!(
-            PublicKeyCommitment::from(Word::from(commitment)),
-            commitment,
-            "{}: PublicKeyCommitment::from(Word) round-trips",
-            v.id
-        );
         assert_eq!(
             typed.as_bytes(),
             &pk,
@@ -97,7 +80,6 @@ fn public_key_fail_closes_on_off_curve() {
     bogus[0] = 0x02;
     let pk = PublicKey::new(bogus);
     assert_matches!(pk.to_affine_felts(), Err(EncodingError::InvalidPubkey));
-    assert_matches!(pk.to_commitment(), Err(EncodingError::InvalidPubkey));
 }
 
 // DepositIntent owns its codec

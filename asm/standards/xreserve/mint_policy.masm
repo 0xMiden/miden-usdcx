@@ -18,7 +18,7 @@ use miden::standards::note_tag
 use miden::standards::notes::p2id
 use {ONE_WORD} from miden::standards::utils
 use miden::core::sys
-use xreserve::attestation_verify
+use xreserve::attestation
 use xreserve::deposit_intent
 use xreserve::mint_intent
 use {
@@ -36,11 +36,13 @@ use {
 # and leaves a note attachment slot free.
 const XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME = 4
 
-# The attestation section: [pubkey(16), signature(17), pad(3)]. The operator feeAmount is NOT
-# here — the faucet writes a zero fee into the preimage, so a non-zero one is inexpressible rather
-# than rejected.
-const XUSDC_MINT_ATTESTATION_NUM_FELTS = 36
-const XUSDC_MINT_ATTESTATION_NUM_WORDS = 9
+# The attestation section: [signature(17), attester_idx(1), pad(2)]. The signature comes first so
+# it stays word-aligned, which the ECDSA precompile requires of the pointer it is handed. The
+# attester's public key is NOT here — it is account state, and the index selects it. Neither is the
+# operator feeAmount — the faucet writes a zero fee into the preimage, so a non-zero one is
+# inexpressible rather than rejected.
+const XUSDC_MINT_ATTESTATION_NUM_FELTS = 20
+const XUSDC_MINT_ATTESTATION_NUM_WORDS = 5
 
 # The transport's fixed prefix: the attestation and the carried mint intent. Everything past it is
 # packed hookData, so this is both the shape floor and the base of the exact word-count binding.
@@ -85,9 +87,9 @@ const HASHED_NONCE_LOC = 28
 # attachment's content before it returns the word count this policy checks.
 const TRANSPORT_LOC = 32
 const ATTESTATION_LOC = TRANSPORT_LOC
-const ATTESTATION_PUBKEY_LOC = ATTESTATION_LOC
-# the affine pubkey's felt count
-const ATTESTATION_SIGNATURE_LOC = ATTESTATION_LOC + 16
+const ATTESTATION_SIGNATURE_LOC = ATTESTATION_LOC
+# past the packed 65-byte signature's felt count
+const ATTESTATION_ATTESTER_IDX_LOC = ATTESTATION_LOC + 17
 
 # The carried mint intent inside the transport, plus the two felts `check_policy` itself reads out
 # of it for the output-note recipe. `rebuild` reads the rest off the base pointer, and has already
@@ -187,7 +189,7 @@ const ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC = "mint note output note type must 
 #! - the note's asset value is not a mintable fungible amount.
 #! - the carried recipient is not a structurally valid account id.
 #! - the amount is below the carried fee ceiling, or the nonce was already used.
-#! - the attestation verify rejects (attester allowlist, signature).
+#! - the attestation verify rejects (attester index, disabled attester, signature).
 #! - a note-supplied value diverges from its attested derivation (the ASSERT-MATCH errors).
 #!
 #! Locals:
@@ -199,12 +201,14 @@ const ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC = "mint note output note type must 
 #! - 11: the note's asset amount
 #! - 12..28: attachment commitments list (4 words)
 #! - 28..32: the hashed nonce (usedNonces storage-map key == the attested output-note serial)
-#! - 32..1056: the rebuilt DepositIntent preimage
-#! - 1056..2080: the hash-verified transport attachment (MAX_ATTACHMENT_WORDS * 4 felts)
-#!     - 1056..1072: pubkey(16)
-#!     - 1072..1092: signature(17) + pad(3)
-#!     - 1092..1116: the carried mint payload
-#!     - 1116..: packed hookData
+#! - 32..1056: the hash-verified transport attachment (MAX_ATTACHMENT_WORDS * 4 felts)
+#!     - 32..49: signature(17)
+#!     - 49..52: attester_idx(1) + pad(2)
+#!     - 52..76: the carried mint payload
+#!     - 76..: packed hookData
+#!
+#! The rebuilt DepositIntent preimage does NOT live here — it goes to global memory, for the reason
+#! given on DEPOSIT_INTENT_PTR.
 #!
 #! Invocation: dynexec
 @locals(1056)
@@ -301,14 +305,14 @@ pub proc check_policy
     exec.deposit_intent::rebuild
     # => [intent_num_bytes, pad(16)]
 
-    # attestation verify: keccak the rebuilt extent, allowlist gate + ECDSA verify
-    locaddr.ATTESTATION_SIGNATURE_LOC locaddr.ATTESTATION_PUBKEY_LOC
-    # => [pubkey_ptr, signature_ptr, intent_num_bytes, pad(16)]
+    # attestation verify: keccak the rebuilt extent, enabled gate + ECDSA verify
+    locaddr.ATTESTATION_SIGNATURE_LOC loc_load.ATTESTATION_ATTESTER_IDX_LOC
+    # => [attester_idx, signature_ptr, intent_num_bytes, pad(16)]
 
     movup.2 push.DEPOSIT_INTENT_PTR
-    # => [deposit_intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr, pad(16)]
+    # => [deposit_intent_ptr, intent_num_bytes, attester_idx, signature_ptr, pad(16)]
 
-    exec.attestation_verify::verify_attestation
+    exec.attestation::verify_attestation
     # => [pad(16)]
 
     # ---- ASSERT-MATCH ----

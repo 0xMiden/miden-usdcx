@@ -24,8 +24,7 @@
 //!   `note.storage().items()`, `MintNote::script_root()`, `P2idNote::script_root()`) and through
 //!   the shared encoding crate's own codecs (`DepositIntent::parse_header`,
 //!   `MintIntent::from_deposit_intent`, `bytes32_to_account_id`, `bytes32_to_storage_map_key`,
-//!   `uint256_to_asset_amount`, `Signature::to_felts`, `PublicKey::to_affine_felts`) — never
-//!   against a layout
+//!   `uint256_to_asset_amount`, `Signature::to_felts`) — never against a layout
 //!   re-derived here. An assertion that restated the layout would be a SECOND definition of an
 //!   owned format, i.e. exactly the drift seam the ownership map exists to close.
 //!
@@ -56,7 +55,7 @@ use xusdc_encoding::note::xreserve_mint::{
 };
 use xusdc_encoding::xreserve::encoding::{
     bytes32_to_account_id, bytes32_to_packed_u32_limbs, bytes32_to_storage_map_key,
-    uint256_to_asset_amount, DepositIntent, MintIntent, PublicKey, Signature,
+    uint256_to_asset_amount, DepositIntent, MintIntent, Signature,
 };
 
 use mint_support::*;
@@ -75,13 +74,13 @@ use mint_support::*;
 #[test]
 fn t_delegation_is_byte_for_byte_unit04_create() {
     let attestation = validated_test_vector();
-    let attester = attester_pubkey();
+    let attester = PARTNER_ATTESTER_INDEX;
 
     let built = build_mint_note(
         relayer_sender_id(),
         faucet_id(),
         &attestation,
-        &attester,
+        attester,
         &mut note_rng(0xC1_2C_1E),
     )
     .expect("the canonical vector builds a mint note");
@@ -91,7 +90,7 @@ fn t_delegation_is_byte_for_byte_unit04_create() {
         relayer_sender_id(),
         faucet_id(),
         attestation.deposit_intent().as_bytes(),
-        &MintAttestation::new(attestation.attestation(), *attester.as_bytes()),
+        &MintAttestation::new(attestation.attestation(), attester.get()),
         &mut note_rng(0xC1_2C_1E),
     )
     .expect("unit-04's factory builds the same note");
@@ -201,13 +200,13 @@ fn t_the_faucet_argument_drives_the_route_and_the_tag() {
         fixtures::TEST_VECTOR_PAYLOAD_ID,
         other_faucet_id(),
     ));
-    let attester = attester_pubkey();
+    let attester = PARTNER_ATTESTER_INDEX;
 
     let note = build_mint_note(
         relayer_sender_id(),
         other_faucet_id(),
         &attestation,
-        &attester,
+        attester,
         &mut note_rng(9),
     )
     .expect("a second public faucet is routable");
@@ -336,7 +335,7 @@ fn t_storage_embeds_the_attested_output() {
 /// The DepositIntent itself does NOT travel (`DC-14`); the faucet rebuilds it from these felts.
 #[test]
 fn t_the_transport_payload_sub_region_is_the_compressed_intent() {
-    let attester = attester_pubkey();
+    let attester = PARTNER_ATTESTER_INDEX;
     let scheme = NoteAttachmentScheme::new(XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME)
         .expect("unit-04's transport scheme id is a valid scheme");
     let payload_felt_off = XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF * 4;
@@ -346,7 +345,7 @@ fn t_the_transport_payload_sub_region_is_the_compressed_intent() {
             relayer_sender_id(),
             faucet_id(),
             &validated_over_vector_id(vector_id),
-            &attester,
+            attester,
             &mut note_rng(seed),
         )
         .expect("the canonical vector builds");
@@ -391,7 +390,7 @@ fn t_the_transport_payload_sub_region_is_the_compressed_intent() {
 #[test]
 fn t_transport_carries_the_validated_signature_and_configured_pubkey() {
     let attestation = validated_test_vector();
-    let attester = attester_pubkey();
+    let attester = PARTNER_ATTESTER_INDEX;
     let note = build_note();
 
     let elements = note
@@ -405,32 +404,29 @@ fn t_transport_carries_the_validated_signature_and_configured_pubkey() {
         .to_elements();
 
     let signature = Signature::new(attestation.attestation()).to_felts();
-    let pubkey = PublicKey::new(*attester.as_bytes())
-        .to_affine_felts()
-        .expect("the partner key is on the curve");
 
     assert!(
         elements.windows(signature.len()).any(|w| w == signature),
         "the attachment carries the VALIDATED 65-byte signature, in unit-04's packing"
     );
     assert!(
-        elements.windows(pubkey.len()).any(|w| w == pubkey),
-        "the attachment carries the CONFIGURED attester pubkey, in unit-04's packing"
+        elements.contains(&Felt::from(attester.get())),
+        "the attachment carries the CONFIGURED attester index"
     );
 }
 
-/// A different configured attester key produces a different attachment — so the pubkey argument is
-/// really the source of those felts (a builder that hardcoded a key would pass the containment test
+/// A different configured attester index produces a different attachment — so the index argument is
+/// really the source of that felt (a builder that hardcoded one would pass the containment test
 /// above only by accident, and fails here).
 #[test]
-fn t_the_configured_pubkey_is_the_one_that_travels() {
+fn t_the_configured_index_is_the_one_that_travels() {
     let attestation = validated_test_vector();
 
     let partner = build_mint_note(
         relayer_sender_id(),
         faucet_id(),
         &attestation,
-        &attester_pubkey(),
+        PARTNER_ATTESTER_INDEX,
         &mut note_rng(2),
     )
     .expect("builds");
@@ -438,7 +434,7 @@ fn t_the_configured_pubkey_is_the_one_that_travels() {
         relayer_sender_id(),
         faucet_id(),
         &attestation,
-        &foreign_attester_pubkey(),
+        FOREIGN_ATTESTER_INDEX,
         &mut note_rng(2),
     )
     .expect("builds");
@@ -446,7 +442,7 @@ fn t_the_configured_pubkey_is_the_one_that_travels() {
     assert_ne!(
         partner.attachments().to_commitment(),
         foreign.attachments().to_commitment(),
-        "the attester pubkey the operator configured is the one the note carries"
+        "the attester index the operator configured is the one the note carries"
     );
     // same deposit, same serial: ONLY the attestation attachment moved
     assert_eq!(partner.storage().items(), foreign.storage().items());
@@ -473,7 +469,7 @@ fn t_the_validated_signature_is_the_one_that_travels() {
         relayer_sender_id(),
         faucet_id(),
         &partner_signed,
-        &attester_pubkey(),
+        PARTNER_ATTESTER_INDEX,
         &mut note_rng(3),
     )
     .expect("builds");
@@ -481,7 +477,7 @@ fn t_the_validated_signature_is_the_one_that_travels() {
         relayer_sender_id(),
         faucet_id(),
         &foreign_signed,
-        &attester_pubkey(),
+        PARTNER_ATTESTER_INDEX,
         &mut note_rng(3),
     )
     .expect("builds");
@@ -528,13 +524,13 @@ fn t_note_is_public_assetless_and_addressed_to_the_faucet() {
 #[test]
 fn t_each_build_draws_a_fresh_serial_number() {
     let attestation = validated_test_vector();
-    let attester = attester_pubkey();
+    let attester = PARTNER_ATTESTER_INDEX;
 
     let first = build_mint_note(
         relayer_sender_id(),
         faucet_id(),
         &attestation,
-        &attester,
+        attester,
         &mut note_rng(10),
     )
     .expect("builds");
@@ -542,7 +538,7 @@ fn t_each_build_draws_a_fresh_serial_number() {
         relayer_sender_id(),
         faucet_id(),
         &attestation,
-        &attester,
+        attester,
         &mut note_rng(11),
     )
     .expect("builds");
@@ -562,14 +558,14 @@ fn t_each_build_draws_a_fresh_serial_number() {
 #[test]
 fn t_the_callers_rng_is_the_one_that_is_drawn_from() {
     let attestation = validated_test_vector();
-    let attester = attester_pubkey();
+    let attester = PARTNER_ATTESTER_INDEX;
     let mut rng = note_rng(12);
 
     let first = build_mint_note(
         relayer_sender_id(),
         faucet_id(),
         &attestation,
-        &attester,
+        attester,
         &mut rng,
     )
     .expect("builds");
@@ -577,7 +573,7 @@ fn t_the_callers_rng_is_the_one_that_is_drawn_from() {
         relayer_sender_id(),
         faucet_id(),
         &attestation,
-        &attester,
+        attester,
         &mut rng,
     )
     .expect("builds");
@@ -588,7 +584,7 @@ fn t_the_callers_rng_is_the_one_that_is_drawn_from() {
             relayer_sender_id(),
             faucet_id(),
             &attestation,
-            &attester,
+            attester,
             &mut note_rng(12),
         ),
         Ok(note) if note.serial_num() == first.serial_num(),
@@ -612,7 +608,7 @@ fn build_note() -> miden_protocol::note::Note {
         relayer_sender_id(),
         faucet_id(),
         &validated_test_vector(),
-        &attester_pubkey(),
+        PARTNER_ATTESTER_INDEX,
         &mut note_rng(0x5EED),
     )
     .expect("the canonical vector builds a mint note")

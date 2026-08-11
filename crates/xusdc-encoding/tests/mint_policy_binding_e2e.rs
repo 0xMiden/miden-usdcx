@@ -74,6 +74,7 @@ async fn mint_rejects_an_amount_mismatch(
             public: true,
         },
         1,
+        TEST_ATTESTER_INDEX,
         None,
         &AttachmentPlan::default(),
         rng_seed,
@@ -104,6 +105,7 @@ async fn mint_rejects_a_tag_mismatch() -> Result<()> {
             public: true,
         },
         1,
+        TEST_ATTESTER_INDEX,
         None,
         &AttachmentPlan::default(),
         87,
@@ -134,6 +136,7 @@ async fn mint_rejects_a_private_output_note() -> Result<()> {
             public: false, // the 13-item private layout — note_type PRIVATE
         },
         1,
+        TEST_ATTESTER_INDEX,
         None,
         &AttachmentPlan::default(),
         88,
@@ -183,6 +186,7 @@ async fn mint_rejects_a_structurally_invalid_carried_recipient() -> Result<()> {
         &payload,
         &honest_storage(&pf),
         1,
+        TEST_ATTESTER_INDEX,
         None,
         &AttachmentPlan {
             payload_felt_tamper: Some((MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF, dirty_suffix)),
@@ -256,14 +260,14 @@ async fn the_honest_note_carries_the_merged_transport_and_the_routing_target() -
         "the attestation section is {ATTESTATION_WORDS} words"
     );
     assert_eq!(
-        &attestation[ATTESTATION_PUBKEY_FELT_OFF..ATTESTATION_PUBKEY_FELT_OFF + 16],
-        attester.pubkey_felts.as_slice(),
-        "the 16 affine pubkey felts sit at the documented offset"
-    );
-    assert_eq!(
         &attestation[ATTESTATION_SIGNATURE_FELT_OFF..ATTESTATION_SIGNATURE_FELT_OFF + 17],
         attester.sig_felts.as_slice(),
         "the 17 signature felts sit at the documented offset"
+    );
+    assert_eq!(
+        attestation[ATTESTATION_ATTESTER_IDX_FELT_OFF],
+        Felt::from(TEST_ATTESTER_INDEX),
+        "the attester index sits at the documented offset"
     );
 
     // the intent itself does NOT travel. What follows the attestation is the carried payload —
@@ -289,7 +293,7 @@ async fn the_honest_note_carries_the_merged_transport_and_the_routing_target() -
         pf.producer_id,
         pf.faucet_id,
         &payload,
-        &MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes),
+        &MintAttestation::new(attester.sig_bytes, TEST_ATTESTER_INDEX),
         &mut note_rng(90),
     )
     .map_err(|e| anyhow::anyhow!("the production factory must build the note: {e}"))?;
@@ -318,6 +322,7 @@ async fn mint_rejects_a_missing_transport_attachment() -> Result<()> {
         &payload,
         &honest_storage(&pf),
         1,
+        TEST_ATTESTER_INDEX,
         None,
         &AttachmentPlan {
             transport: false,
@@ -346,6 +351,7 @@ async fn mint_rejects_a_missing_routing_target() -> Result<()> {
         &payload,
         &honest_storage(&pf),
         1,
+        TEST_ATTESTER_INDEX,
         None,
         &AttachmentPlan {
             target: false,
@@ -381,6 +387,7 @@ async fn mint_rejects_a_third_attachment(
         &payload,
         &honest_storage(&pf),
         1,
+        TEST_ATTESTER_INDEX,
         None,
         &plan,
         rng_seed,
@@ -406,6 +413,7 @@ async fn mint_rejects_a_truncated_transport() -> Result<()> {
         &payload,
         &honest_storage(&pf),
         1,
+        TEST_ATTESTER_INDEX,
         None,
         &AttachmentPlan {
             transport_truncate_words: Some(TRANSPORT_FLOOR_WORDS - 1),
@@ -463,6 +471,7 @@ async fn mint_rejects_a_transport_length_mismatch(
         &payload,
         &honest_storage(&pf),
         1,
+        TEST_ATTESTER_INDEX,
         None,
         &plan,
         rng_seed,
@@ -488,6 +497,7 @@ async fn mint_rejects_a_non_u32_hook_data_len_limb() -> Result<()> {
         &payload,
         &honest_storage(&pf),
         1,
+        TEST_ATTESTER_INDEX,
         None,
         &AttachmentPlan {
             payload_hook_data_len_felt: Some(
@@ -507,15 +517,14 @@ async fn mint_rejects_a_non_u32_hook_data_len_limb() -> Result<()> {
 }
 
 /// SUB-REGION ISOLATION: corrupting one region of the merged attachment surfaces THAT region's
-/// reject, never another's. The pubkey sub-region is read by the allowlist gate, the signature
-/// sub-region by the ECDSA verify, and the intent sub-region by the keccak — so a merge that
-/// mis-derived any offset would either mis-attribute the failure or, worse, verify the wrong
-/// bytes. Each case's error identity is exactly the one it had when these were separate
-/// attachments.
+/// reject, never another's. The attester-index sub-region selects which stored key the verify runs
+/// against, the signature sub-region is read by the ECDSA verify, and the intent sub-region by the
+/// keccak — so a merge that mis-derived any offset would either mis-attribute the failure or,
+/// worse, verify the wrong bytes.
 #[rstest]
-#[case::pubkey(
-    ATTESTATION_PUBKEY_FELT_OFF,
-    "ERR_XRESERVE_DISALLOWED_PUB_KEY",
+#[case::attester_index(
+    ATTESTATION_ATTESTER_IDX_FELT_OFF,
+    "ERR_XRESERVE_ATTESTER_NOT_ENABLED",
     34,
     101
 )]
@@ -535,6 +544,7 @@ async fn mint_rejects_a_tampered_attestation_sub_region(
         &payload,
         &honest_storage(&pf),
         1,
+        TEST_ATTESTER_INDEX,
         None,
         &AttachmentPlan {
             attestation_felt_tamper: Some((felt_off, Felt::from(0xdead_beefu32))),
@@ -563,6 +573,7 @@ async fn mint_rejects_a_tampered_intent_byte() -> Result<()> {
         &carried,
         &honest_storage(&pf),
         1,
+        TEST_ATTESTER_INDEX,
         Some(&signed),
         &AttachmentPlan::default(),
         103,

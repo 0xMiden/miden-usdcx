@@ -35,7 +35,7 @@
 
 mod support;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use miden_processor::operation::OperationError;
 use miden_processor::ExecutionError;
 use miden_protocol::{Felt, Word};
@@ -202,7 +202,7 @@ async fn unrelated_nonce_passes_replay_protection() -> Result<()> {
 
 // D5D — ATTESTATION VERIFY
 // ================================================================================================
-// Executes the faucet-owned `xreserve::attestation_verify::verify_attestation` on a MockChain.
+// Executes the faucet-owned `xreserve::attestation::verify_attestation` on a MockChain.
 // The proc does three things in order: keccak256 the DepositIntent payload, check that the
 // candidate public key is an enabled attester (its Poseidon2 commitment must have a non-empty
 // entry in the `xReserveAttesters` map), and ECDSA-verify the supplied signature against that
@@ -228,10 +228,6 @@ async fn unrelated_nonce_passes_replay_protection() -> Result<()> {
 /// with no hookData, so the payload is exactly the fixed header.
 const ATTESTATION_VECTOR: &str = "mi-pos-empty-hookdata";
 
-/// The value stored under an attester's commitment to mark it enabled. Any non-empty Word does —
-/// the allowlist check is presence, and an absent key reads back as the empty Word.
-const ATTESTER_MARKER: [u32; 4] = [1, 0, 0, 0];
-
 /// Returns the attestation payload three ways: as the felts staged into the driver, as the raw
 /// bytes the attester signs, and as its byte length.
 ///
@@ -247,51 +243,51 @@ fn attestation_payload() -> (Vec<Felt>, Vec<u8>, u64) {
     (felts, bytes, len_bytes)
 }
 
-/// Generates the two attesters the reject cases need: key A, which the tests allowlist, and key
-/// B, the foreign key. Both sign keccak256 of the same payload, and the assertion pins that their
-/// commitments differ — otherwise "allowlist A, present B" would not actually be a mismatch.
+/// Generates the two attesters the reject cases need: key A, which the tests install in the key
+/// array, and key B, the foreign key. Both sign keccak256 of the same payload, and the assertion
+/// pins that their keys differ — otherwise "install A, name B" would not actually be a mismatch.
 fn seam_keys(payload: &[u8]) -> (AttesterVector, AttesterVector) {
     let a = gen_attester(1, payload);
     let b = gen_attester(2, payload);
     assert_ne!(
-        a.commitment, b.commitment,
-        "seam keys A and B must have distinct commitments"
+        a.pubkey_felts, b.pubkey_felts,
+        "seam keys A and B must be distinct keys"
     );
     (a, b)
 }
 
-/// Builds a driver that stages one attester's public key together with a different attester's
+/// Builds a driver that names one attester's array index while carrying a different attester's
 /// signature — the mix-and-match input an attacker would try.
 fn paired_driver_src(
     preimage: &[Felt],
     len_bytes: u64,
-    pubkey_of: &AttesterVector,
+    attester_index: u32,
     sig_of: &AttesterVector,
 ) -> String {
     attestation_driver_src(
         preimage,
         len_bytes,
-        &pubkey_of.pubkey_felts,
+        u64::from(attester_index),
         &sig_of.sig_felts,
     )
 }
 
-// HAPPY PATH FIRST — an allowlisted attester with its own valid signature
+// HAPPY PATH FIRST — an installed attester with its own valid signature
 // ------------------------------------------------------------------------------------------------
 
 #[tokio::test]
 async fn valid_attestation_passes() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, _b) = seam_keys(&bytes);
-    let driver_src = paired_driver_src(&preimage, len_bytes, &a, &a);
-    // seed the allowlist with A's commitment -> A is an enabled attester
+    let driver_src = paired_driver_src(&preimage, len_bytes, TEST_ATTESTER_INDEX, &a);
+    // write A's key into the array -> A is an enabled attester
     let h = setup_attestation_account(
-        Some((a.commitment, Word::from(ATTESTER_MARKER))),
+        Some((TEST_ATTESTER_INDEX, &a.pubkey_felts)),
         &driver_src,
         SHELL_DRIVER_PATH,
     )?;
     let executed = run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
-        panic!("an allowlisted attester + valid signature must pass attestation verification: {e}")
+        panic!("an installed attester + valid signature must pass attestation verification: {e}")
     });
     // the verify shell is read-only: the only account mutation is the auth nonce increment
     assert_eq!(
@@ -309,18 +305,18 @@ async fn valid_attestation_passes() -> Result<()> {
 // REJECTS — each pins the EXACT expected error (no is_err())
 // ------------------------------------------------------------------------------------------------
 
-/// A signature that does not belong to the presented key is rejected.
+/// A signature that does not belong to the key stored at the named index is rejected.
 ///
-/// The driver stages allowlisted key A together with B's signature. B's signature is
-/// perfectly well-formed — this is a genuine ECDSA verification failure, not a decode abort on
-/// junk bytes — so the case proves the signature check itself, not input validation.
+/// The driver names A's index while carrying B's signature. B's signature is perfectly well-formed
+/// — this is a genuine ECDSA verification failure, not a decode abort on junk bytes — so the case
+/// proves the signature check itself, not input validation.
 #[tokio::test]
 async fn forged_signature_rejects() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, b) = seam_keys(&bytes);
-    let driver_src = paired_driver_src(&preimage, len_bytes, &a, &b);
+    let driver_src = paired_driver_src(&preimage, len_bytes, TEST_ATTESTER_INDEX, &b);
     let h = setup_attestation_account(
-        Some((a.commitment, Word::from(ATTESTER_MARKER))),
+        Some((TEST_ATTESTER_INDEX, &a.pubkey_felts)),
         &driver_src,
         SHELL_DRIVER_PATH,
     )?;
@@ -329,25 +325,53 @@ async fn forged_signature_rejects() -> Result<()> {
     Ok(())
 }
 
-/// A key the faucet does not know is rejected even with a perfectly valid signature.
+/// An index the faucet holds no key at is rejected even with a perfectly valid signature.
 ///
-/// Key B signs the payload correctly, but only A's commitment was seeded into the allowlist, so
-/// the map lookup on B's commitment reads back the empty Word and the proc traps before it ever
-/// gets to the signature. A valid signature by a stranger is not an attestation.
+/// Key B signs the payload correctly, but only A's key was written into the array, so the read at
+/// B's index returns all zeros and the proc traps before it ever gets to the signature. A valid
+/// signature by a stranger is not an attestation.
 #[tokio::test]
-async fn non_allowlisted_attester_rejects() -> Result<()> {
+async fn unwritten_attester_index_rejects() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, b) = seam_keys(&bytes);
-    let driver_src = paired_driver_src(&preimage, len_bytes, &b, &b);
+    let driver_src = paired_driver_src(&preimage, len_bytes, UNWRITTEN_ATTESTER_INDEX, &b);
     let h = setup_attestation_account(
-        Some((a.commitment, Word::from(ATTESTER_MARKER))),
+        Some((TEST_ATTESTER_INDEX, &a.pubkey_felts)),
         &driver_src,
         SHELL_DRIVER_PATH,
     )?;
     let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(
         result,
-        shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY")
+        shell_error_by_name("ERR_XRESERVE_ATTESTER_NOT_ENABLED")
+    );
+    Ok(())
+}
+
+/// An attester index that is not a valid u32 is rejected before it can address the array.
+#[tokio::test]
+async fn non_u32_attester_index_rejects() -> Result<()> {
+    let (preimage, bytes, len_bytes) = attestation_payload();
+    let (a, _b) = seam_keys(&bytes);
+    // one past u32::MAX — a felt, but not an index.
+    let driver_src = attestation_driver_src(&preimage, len_bytes, 1u64 << 32, &a.sig_felts);
+    let h = setup_attestation_account(
+        Some((TEST_ATTESTER_INDEX, &a.pubkey_felts)),
+        &driver_src,
+        SHELL_DRIVER_PATH,
+    )?;
+    let result = run_call_driver(&h, "drive").await;
+    // a failed `u32assert` is not the VM's plain `FailedAssertion`, so the declared message is
+    // matched inside the operation error's own rendering. Still exact, only located differently.
+    let expected = shell_error_by_name("ERR_XRESERVE_ATTESTER_INDEX_NOT_U32");
+    let rendered = result
+        .err()
+        .context("a non-u32 attester index must trap the transaction")?
+        .to_string();
+    anyhow::ensure!(
+        rendered.contains(expected.message()),
+        "expected a u32-assertion trap carrying {:?}, got: {rendered}",
+        expected.message()
     );
     Ok(())
 }
@@ -355,56 +379,61 @@ async fn non_allowlisted_attester_rejects() -> Result<()> {
 // THE SEAM (the catastrophic case) — BOTH attacker arrangements must reject
 // ------------------------------------------------------------------------------------------------
 
-/// Neither way of splitting "who is allowlisted" from "who signed" gets through.
+/// Neither way of splitting "whose key the faucet holds" from "who signed" gets through.
 ///
 /// An attacker holding a valid signature by an unknown key B has two moves, and this test runs
-/// both for real: the allowlisted key A presented with B's signature (the allowlist check passes,
-/// the ECDSA verify then fails) and B's own key presented with it (the ECDSA verify would pass,
-/// but the allowlist check comes first and refuses). There is no third arrangement, because the
-/// proc reads the candidate key exactly once and both checks consume that one copy.
+/// both for real: A's index named with B's signature (the enabled check passes, the ECDSA verify
+/// then fails) and an index of their own choosing (nothing is stored there, so the enabled check
+/// refuses first). There is no third arrangement, because B's key cannot be got INTO the array —
+/// only the administrator writes it, and the note carries an index, never key material.
 #[tokio::test]
 async fn mismatched_attestation_arrangements_reject() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, b) = seam_keys(&bytes);
-    let allowlist_a = Some((a.commitment, Word::from(ATTESTER_MARKER)));
 
-    // arrangement 1: allowlisted key A carries the allowlist check, B's signature fails the verify
-    let mixed_src = paired_driver_src(&preimage, len_bytes, &a, &b);
-    let h1 = setup_attestation_account(allowlist_a, &mixed_src, SHELL_DRIVER_PATH)?;
+    // arrangement 1: A's index carries the enabled check, B's signature fails the verify
+    let mixed_src = paired_driver_src(&preimage, len_bytes, TEST_ATTESTER_INDEX, &b);
+    let h1 = setup_attestation_account(
+        Some((TEST_ATTESTER_INDEX, &a.pubkey_felts)),
+        &mixed_src,
+        SHELL_DRIVER_PATH,
+    )?;
     let r1 = run_call_driver(&h1, "drive").await;
     assert_transaction_executor_error!(r1, shell_error_by_name("ERR_XRESERVE_SIG_INVALID"));
 
-    // arrangement 2: B's key and B's own valid signature, but B was never allowlisted
-    let b_only_src = paired_driver_src(&preimage, len_bytes, &b, &b);
-    let h2 = setup_attestation_account(allowlist_a, &b_only_src, SHELL_DRIVER_PATH)?;
+    // arrangement 2: B's own valid signature at an index B was never written to
+    let b_only_src = paired_driver_src(&preimage, len_bytes, UNWRITTEN_ATTESTER_INDEX, &b);
+    let h2 = setup_attestation_account(
+        Some((TEST_ATTESTER_INDEX, &a.pubkey_felts)),
+        &b_only_src,
+        SHELL_DRIVER_PATH,
+    )?;
     let r2 = run_call_driver(&h2, "drive").await;
-    assert_transaction_executor_error!(r2, shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY"));
+    assert_transaction_executor_error!(
+        r2,
+        shell_error_by_name("ERR_XRESERVE_ATTESTER_NOT_ENABLED")
+    );
     Ok(())
 }
 
-// UNSTAGED OPERANDS — an all-zero pubkey region must fail closed
+// UNSEEDED ARRAY — an all-zero key region must fail closed
 // ------------------------------------------------------------------------------------------------
 
-/// A caller that stages no key and no signature must be rejected, not waved through.
+/// A faucet with nothing in its attester array must reject, not wave the mint through.
 ///
-/// Miden memory reads back as zero, so "nothing staged" is not a read error here — it is sixteen
-/// zero felts that could be mistaken for a key. The allowlist gate is what refuses it: the zero
-/// pubkey's commitment was never enabled, so the lookup reads the empty Word and the proc traps
-/// before the signature check.
+/// Miden storage reads back as zero, so "nothing written" is not a read error here — it is sixteen
+/// zero felts that could be mistaken for a key. The enabled test is what refuses it, before the
+/// signature check ever runs.
 #[tokio::test]
-async fn unstaged_pubkey_rejects() -> Result<()> {
+async fn unseeded_attester_array_rejects() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, _b) = seam_keys(&bytes);
-    let driver_src = attestation_driver_src(&preimage, len_bytes, &[], &[]);
-    let h = setup_attestation_account(
-        Some((a.commitment, Word::from(ATTESTER_MARKER))),
-        &driver_src,
-        SHELL_DRIVER_PATH,
-    )?;
+    let driver_src = paired_driver_src(&preimage, len_bytes, TEST_ATTESTER_INDEX, &a);
+    let h = setup_attestation_account(None, &driver_src, SHELL_DRIVER_PATH)?;
     let result = run_call_driver(&h, "drive").await;
     assert_transaction_executor_error!(
         result,
-        shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY")
+        shell_error_by_name("ERR_XRESERVE_ATTESTER_NOT_ENABLED")
     );
     Ok(())
 }
@@ -415,7 +444,7 @@ async fn unstaged_pubkey_rejects() -> Result<()> {
 /// The assembled library exports `verify_attestation` under its fully-qualified path — the same
 /// rename guard as the other export probes, for the attestation stage.
 #[test]
-fn probe_attestation_verify_exports() -> Result<()> {
+fn probe_attestation_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     let exports: Vec<String> = lib
         .manifest
@@ -423,7 +452,7 @@ fn probe_attestation_verify_exports() -> Result<()> {
         .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
-    let canonical = "::xreserve::attestation_verify::verify_attestation";
+    let canonical = "::xreserve::attestation::verify_attestation";
     assert!(
         exports.iter().any(|e| e == canonical),
         "canonical attestation verification proc path {canonical} missing; exports: {exports:?}"

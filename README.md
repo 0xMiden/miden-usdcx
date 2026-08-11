@@ -48,17 +48,15 @@ deposit and burns it on withdrawal.
   public and two-block so Circle can observe the withdrawal.
 - **Encoding.** The codecs that translate Circle's wire formats to Miden types are **written once** in
   MASM and mirrored in Rust — `bytes32` hashing, `uint256`→amount reduction,
-  the `DepositIntent` parse, and the attester **pubkey commitment** (`DC-3`, a Poseidon2 hash over the
-  already-packed pubkey felts) — with a cross-implementation test (`TV-DUAL-1`/`-2`/`-3`/`-5`) proving
+  and the `DepositIntent` parse — with a cross-implementation test (`TV-DUAL-1`/`-2`/`-3`) proving
   they agree on every golden vector. The remaining codecs are **Rust-only** (the relayer/harness side):
   the burn-note payload (`DC-7`, checked for Rust emit-vs-decode parity), the AccountId↔bytes32 mapping
   (`DC-6`), and the attestation byte→felt packing of the **digest and signature** plus the pubkey's
-  SEC1→affine decompression and packing (`DC-2`/`DC-3`; the 33-byte compressed wire key stages as
-  16 affine felts since v16). `TV-DUAL-5` compares each side's final `pubkey_commitment` Word against the miden-crypto
-  oracle — the MASM proc hashes the vector's pre-packed felts (there is no MASM pubkey packer), while
-  the Rust leg packs the raw key itself — so the byte→felt packing runs only in Rust, with no MASM
-  counterpart to diff against. The keccak digest and the ECDSA signature check themselves are not
-  encoding codecs — they run on-chain in the faucet's attestation verifier.
+  SEC1→affine decompression and packing (`DC-2`/`DC-15`; the 33-byte compressed wire key stages as
+  16 affine felts since v16). The attester key has no MASM codec at all: under `DC-15` the faucet
+  stores those 16 already-affine felts in its own array and reads them straight back, so there is
+  nothing to hash and nothing to diff. The keccak digest and the ECDSA signature check themselves are
+  not encoding codecs — they run on-chain in the faucet's attestation verifier.
 - **Identity.** The faucet's identifier — the value every deposit intent's `remoteToken` is checked
   against — is the faucet's OWN account id in the frozen bytes32 packaging, derived on chain by the
   mint path rather than stored. Nothing seeds it, so the faucet mints from the moment it exists.

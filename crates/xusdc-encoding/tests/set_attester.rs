@@ -15,7 +15,8 @@ mod support;
 
 use anyhow::{Context, Result};
 use miden_protocol::account::{AccountId, StorageMapKey, StorageSlotName, StorageSlotPatch};
-use miden_protocol::Word;
+use miden_protocol::transaction::ExecutedTransaction;
+use miden_protocol::{Felt, Word};
 use miden_standards::account::policies::TokenPolicyManager;
 use miden_testing::assert_transaction_executor_error;
 use support::*;
@@ -78,20 +79,57 @@ fn guarded_faucet() -> Result<GuardedMint> {
     )
 }
 
-/// Reads the `xReserveAttesters` allowlist entry for `commitment` from a committed account (EMPTY_WORD
-/// when unset) — the no-state-change read-back the non-administrator reject uses.
-fn read_attester(account: &miden_protocol::account::Account, commitment: Word) -> Result<Word> {
-    let slot = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)?;
+/// A deterministic attester's affine key felts — what the setter writes into the array.
+fn attester_key(seed: u64) -> [Felt; 16] {
+    PublicKey::new(gen_attester_pubkey(seed))
+        .to_affine_felts()
+        .expect("the deterministic attester key is a valid curve point")
+}
+
+/// The word the executed transaction wrote at `attester_index`'s FIRST key entry.
+fn written_key_entry(executed: &ExecutedTransaction, attester_index: u32) -> Result<Word> {
+    let slot = StorageSlotName::new(XRESERVE_ATTESTER_KEYS_SLOT_LABEL)?;
+    let StorageSlotPatch::Map(delta) = executed
+        .account_patch()
+        .storage()
+        .get(&slot)
+        .context("the attester key array slot must carry a delta")?
+    else {
+        anyhow::bail!("the attester key array must be a Map slot delta");
+    };
+    delta
+        .entries()
+        .context("map patch carries entries")?
+        .as_map()
+        .get(&StorageMapKey::new(key_entry(attester_index)))
+        .copied()
+        .context("the attester's first key entry must appear in the delta")
+}
+
+/// The array key of `attester_index`'s FIRST key entry.
+fn key_entry(attester_index: u32) -> Word {
+    Word::from([0, 0, 0, PUBKEY_ARRAY_ENTRIES * attester_index])
+}
+
+/// The first array word of a staged affine key — what reads back once it is installed.
+fn first_key_word(pub_key: &[Felt; 16]) -> Word {
+    Word::new([pub_key[0], pub_key[1], pub_key[2], pub_key[3]])
+}
+
+/// Reads the attester key array's first entry for `attester_index` from a committed account
+/// (EMPTY_WORD when unset) — the no-state-change read-back the non-administrator reject uses.
+fn read_attester(account: &miden_protocol::account::Account, attester_index: u32) -> Result<Word> {
+    let slot = StorageSlotName::new(XRESERVE_ATTESTER_KEYS_SLOT_LABEL)?;
     Ok(account
         .storage()
-        .get_map_item(&slot, StorageMapKey::new(commitment))?)
+        .get_map_item(&slot, StorageMapKey::new(key_entry(attester_index)))?)
 }
 
 // EXPORT PROBE (green scaffold — flat-path check for the setter)
 // ================================================================================================
 
 #[test]
-fn probe_attester_admin_exports() -> Result<()> {
+fn probe_attestation_module_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;
     let exports: Vec<String> = lib
         .manifest
@@ -99,7 +137,7 @@ fn probe_attester_admin_exports() -> Result<()> {
         .filter(|e| e.is_procedure())
         .map(|e| e.path().to_string())
         .collect();
-    let canonical = "::xreserve::attester_admin::set_attester";
+    let canonical = "::xreserve::attestation::set_attester";
     assert!(
         exports.iter().any(|e| e == canonical),
         "canonical setter path {canonical} missing; exports: {exports:?}"
@@ -142,38 +180,28 @@ fn production_build_gates_mint_on_the_attestation_policy() -> Result<()> {
 // ADMINISTRATOR GATE (the security core) — the unmapped setter resolves to the ADMIN role
 // ================================================================================================
 
-/// An OWNER-sent `set_attester(K, true)` note succeeds and the allowlist entry lands.
+/// An OWNER-sent `set_attester` note succeeds and the key lands in the array.
 #[tokio::test]
 async fn set_attester_administrator_succeeds() -> Result<()> {
     let gm = guarded_faucet()?;
     let account = faucet_account(&gm.harness);
-    let commitment = Word::from([10u32, 11, 12, 13]);
+    let pub_key = attester_key(1);
 
-    let executed = run_set_attester_tx(&gm.harness, &account, administrator(), commitment, 1, 7)
-        .await
-        .expect("the administrator's set_attester(K, true) must succeed");
+    let executed = run_set_attester_tx(
+        &gm.harness,
+        &account,
+        administrator(),
+        TEST_ATTESTER_INDEX,
+        pub_key,
+        7,
+    )
+    .await
+    .expect("the administrator's set_attester must succeed");
 
-    // the allowlist entry landed: xReserveAttesters[K] == [1,0,0,0].
-    let attesters = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)?;
-    let StorageSlotPatch::Map(delta) = executed
-        .account_patch()
-        .storage()
-        .get(&attesters)
-        .expect("xReserveAttesters slot delta")
-    else {
-        panic!("xReserveAttesters must be a Map slot delta");
-    };
-    let written = delta
-        .entries()
-        .expect("map patch carries entries")
-        .as_map()
-        .get(&StorageMapKey::new(commitment))
-        .copied()
-        .expect("the commitment KEY must appear in the xReserveAttesters delta");
     assert_eq!(
-        written,
-        Word::from([1u32, 0, 0, 0]),
-        "enabled marker written"
+        written_key_entry(&executed, TEST_ATTESTER_INDEX)?,
+        first_key_word(&pub_key),
+        "the attester's first key word landed at its array entry"
     );
     Ok(())
 }
@@ -186,16 +214,22 @@ async fn assert_set_attester_non_administrator_rejected(
 ) -> Result<()> {
     let gm = guarded_faucet()?;
     let account = faucet_account(&gm.harness);
-    let commitment = Word::from([key_seed, key_seed + 1, key_seed + 2, key_seed + 3]);
-
-    let result = run_set_attester_tx(&gm.harness, &account, sender, commitment, 1, 7).await;
+    let result = run_set_attester_tx(
+        &gm.harness,
+        &account,
+        sender,
+        key_seed,
+        attester_key(u64::from(key_seed)),
+        7,
+    )
+    .await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
 
-    // no state change: the allowlist entry for the attempted key never landed (reads EMPTY_WORD).
+    // no state change: the array entry for the attempted index never landed (reads EMPTY_WORD).
     assert_eq!(
-        read_attester(&account, commitment)?,
+        read_attester(&account, key_seed)?,
         Word::from([0u32, 0, 0, 0]),
-        "a rejected non-administrator set_attester leaves xReserveAttesters[K] empty"
+        "a rejected non-administrator set_attester leaves the attester key entry empty"
     );
     Ok(())
 }
@@ -227,7 +261,7 @@ async fn set_attester_dom_manager_non_administrator_rejects() -> Result<()> {
 async fn set_attester_administrator_succeeds_while_paused() -> Result<()> {
     let gm = guarded_faucet()?;
     let account = faucet_account(&gm.harness);
-    let commitment = Word::from([1u32, 2, 3, 4]);
+    let pub_key = attester_key(1);
 
     // tx1: the DOM_PAUSER pauses the faucet (is_paused := true).
     let paused = run_dom_pauser_pause(&gm.harness.mock_chain, &account, dom_pauser(), 5)
@@ -236,34 +270,22 @@ async fn set_attester_administrator_succeeds_while_paused() -> Result<()> {
     let mut evolved = account.clone();
     evolved.apply_patch(paused.account_patch())?;
 
-    // tx2: the OWNER's set_attester(K, true) SUCCEEDS while paused — setters are not pause-gated.
-    let executed = run_set_attester_tx(&gm.harness, &evolved, administrator(), commitment, 1, 7)
-        .await
-        .expect(
-            "the administrator's set_attester(K, true) must succeed while the faucet is paused",
-        );
+    // tx2: the OWNER's set_attester SUCCEEDS while paused — setters are not pause-gated.
+    let executed = run_set_attester_tx(
+        &gm.harness,
+        &evolved,
+        administrator(),
+        TEST_ATTESTER_INDEX,
+        pub_key,
+        7,
+    )
+    .await
+    .expect("the administrator's set_attester must succeed while the faucet is paused");
 
-    // the allowlist entry landed despite the pause: xReserveAttesters[K] == [1,0,0,0].
-    let attesters = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)?;
-    let StorageSlotPatch::Map(delta) = executed
-        .account_patch()
-        .storage()
-        .get(&attesters)
-        .expect("xReserveAttesters slot delta")
-    else {
-        panic!("xReserveAttesters must be a Map slot delta");
-    };
-    let written = delta
-        .entries()
-        .expect("map patch carries entries")
-        .as_map()
-        .get(&StorageMapKey::new(commitment))
-        .copied()
-        .expect("the commitment KEY must appear in the xReserveAttesters delta");
     assert_eq!(
-        written,
-        Word::from([1u32, 0, 0, 0]),
-        "enabled marker written while paused"
+        written_key_entry(&executed, TEST_ATTESTER_INDEX)?,
+        first_key_word(&pub_key),
+        "the attester's key landed at its array entry despite the pause"
     );
     Ok(())
 }

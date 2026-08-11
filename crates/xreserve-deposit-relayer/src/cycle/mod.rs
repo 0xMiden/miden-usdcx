@@ -49,7 +49,7 @@ use crate::circle::{
 use crate::config::RelayerConfig;
 use crate::error::RelayerError;
 use crate::idempotency::{ClaimOutcome, IdempotencyStore};
-use crate::miden::{build_mint_note, AttesterPubkey};
+use crate::miden::{build_mint_note, AttesterIndex};
 use crate::observability::{EventSink, RelayerEvent, RelayerMetrics};
 use crate::validate::{check_domain_token_against_info, decode_and_validate_deposit_intent};
 
@@ -70,13 +70,13 @@ pub use report::{CycleEntry, CycleReport, Disposition};
 pub struct MintIdentities {
     sender: AccountId,
     faucet: AccountId,
-    attester: AttesterPubkey,
+    attester: AttesterIndex,
 }
 
 impl MintIdentities {
     /// The relayer's own account (the note's producer), the xUSDC faucet the note is routed at, and
     /// the operator-configured attester key that travels beside every signature.
-    pub fn new(sender: AccountId, faucet: AccountId, attester: AttesterPubkey) -> Self {
+    pub fn new(sender: AccountId, faucet: AccountId, attester: AttesterIndex) -> Self {
         Self {
             sender,
             faucet,
@@ -88,15 +88,14 @@ impl MintIdentities {
     ///
     /// # Errors
     /// [`RelayerError::BadAccountId`] — `relayer_account_id` or `faucet_account_id` is not an
-    /// `AccountId`. [`RelayerError::MalformedHex`] / [`RelayerError::BadAttesterPubkeyLength`] /
-    /// [`RelayerError::InvalidAttesterPubkey`] — `attester_pubkey_hex` is not a 33-byte compressed
-    /// SEC1 curve point. All refused here, at startup: a typo caught now costs a restart, and the
-    /// same typo caught by the chain costs every mint until someone reads the logs.
+    /// `AccountId`. [`RelayerError::MalformedAttesterIndex`] — `attester_index` is not a decimal
+    /// `u32`. All refused here, at startup: a typo caught now costs a restart, and the same typo
+    /// caught by the chain costs every mint until someone reads the logs.
     pub fn from_config(config: &RelayerConfig) -> Result<Self, RelayerError> {
         Ok(Self {
             sender: account_id("relayer_account_id", config.relayer_account_id())?,
             faucet: account_id("faucet_account_id", config.faucet_account_id())?,
-            attester: AttesterPubkey::from_hex(config.attester_pubkey_hex())?,
+            attester: AttesterIndex::parse(config.attester_index())?,
         })
     }
 
@@ -110,10 +109,10 @@ impl MintIdentities {
         self.faucet
     }
 
-    /// The operator-configured attester public key (33-byte compressed SEC1). It is a KEY, not an
-    /// authority: whether it is allowlisted is the faucet's `xReserveAttesters` to say, on-chain.
-    pub fn attester(&self) -> &AttesterPubkey {
-        &self.attester
+    /// The operator-configured attester index. It NAMES an attester; it does not enable one —
+    /// whether a key sits at that index is the faucet's array to say, on-chain.
+    pub fn attester(&self) -> AttesterIndex {
+        self.attester
     }
 }
 

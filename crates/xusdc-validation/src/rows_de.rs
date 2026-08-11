@@ -790,8 +790,8 @@ pub async fn run_rows_de_on(cfg: &RunConfig, client_label: &str) -> Result<RowsD
 
 /// Whether `commitment`'s `xReserveAttesters` marker is the enabled word [1,0,0,0].
 fn attester_enabled(account: &Account, commitment: Word) -> bool {
-    use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
-    StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+    use xusdc_encoding::account::xreserve::XRESERVE_ATTESTER_KEYS_SLOT_LABEL;
+    StorageSlotName::new(XRESERVE_ATTESTER_KEYS_SLOT_LABEL)
         .ok()
         .and_then(|name| {
             account

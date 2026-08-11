@@ -98,16 +98,17 @@ tower = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 # Partner-held attestation test vector (tests/fixtures): a DETERMINISTIC secp256k1 key SIGNS
 # `keccak256(payload)` — k256 the keypair+signature, rand the seeded (reproducible) RNG. Signing
-# only, in tests only; the Poseidon2 pubkey commitment comes from the shared encoding crate's `PublicKey::to_commitment`
-# (single-owner rule — this crate never re-derives it). Mirrors the shared encoding crate's own in-test attestation vectors.
+# only, in tests only; the affine key felts come from the shared encoding crate's
+# `PublicKey::to_affine_felts` (single-owner rule — this crate never re-derives them). Mirrors the
+# shared encoding crate's own in-test attestation vectors.
 k256 = { workspace = true }
 rand = { workspace = true }
 # The `testing` feature on top of the LIBRARY dependency above (same pin; cargo unifies the two).
 # The mint-note tests need account ids of a KNOWN kind — a PUBLIC faucet (the scheme-2 routing
 # attachment can only bind a network account) and a PRIVATE one to prove that path is refused — and
-# `AccountId::dummy` is where the protocol publishes them. The fixture's allowlist key is a Miden
-# `Word` (Poseidon2, via the shared encoding crate's `PublicKey::to_commitment`) and the envelope suite's negative comparator
-# hashes with the protocol `Hasher`, so the protocol types were already named in tests.
+# `AccountId::dummy` is where the protocol publishes them. The fixture's key felts are Miden `Felt`s
+# (via the shared encoding crate's `PublicKey::to_affine_felts`) and the envelope suite's negative
+# comparator hashes with the protocol `Hasher`, so the protocol types were already named in tests.
 miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c", features = ["testing"] }
 # TEST-only: `NetworkAccountTarget` — the scheme-2 routing attachment the shared encoding crate puts on the mint note.
 # The delegation tests read the routing target back through the STANDARD's own parser (its

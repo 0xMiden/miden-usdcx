@@ -1,0 +1,224 @@
+# xreserve::attestation
+#
+# Management of the attester keys and attestation verification.
+#
+# Every attester key is stored as four words in a miden::standards::data_structures::array and are
+# identified by an attester index. Attester index 0's key is stored at 0..4, attester index 1's key
+# is stored at 4..8, and so on.
+#
+# `set_attester` is `Authority`-gated. It is not pause-gated, matching Circle's onlyOwner model, so
+# the administrator can disable a compromised attester while the faucet is paused.
+#
+# A key is enabled if it is non-zero. Consequently, disabling an attester key means writing sixteen
+# zeros over its entries. Rotate by writing a new index and zeroing the old one in two steps.
+# Overwriting a key in place would break any note already in flight that names that index.
+
+use miden::protocol::active_note
+use miden::standards::access::authority
+use miden::standards::data_structures::array
+use miden::core::crypto::hashes::keccak256
+use miden::core::crypto::dsa::ecdsa_k256_keccak
+use miden::core::word
+
+# CONSTANTS
+# =================================================================================================
+
+# The xReserveAttesterKeys array StorageMap slot.
+pub const XRESERVE_ATTESTER_KEYS_SLOT = word("xusdc::xreserve::attestation::xreserve_attester_keys")
+
+# The number of array entries one attester public key occupies, and hence the stride from one
+# attester's base entry to the next.
+pub const PUBKEY_ARRAY_ENTRIES = 4
+
+# The felts one stored key word occupies.
+const PUB_KEY_WORD_FELTS = 4
+
+# The exact note-storage item count for this admin op: [pub_key(16), attester_idx] = 17 felts.
+const SET_ATTESTER_NOTE_NUM_ITEMS = 17
+
+# `set_attester` locals: the staged note storage. The public key comes first so it lands
+# word-aligned and can be read back a word at a time; the index follows the whole key.
+const STAGED_PUB_KEY_LOC = 0
+const STAGED_ATTESTER_IDX_LOC = STAGED_PUB_KEY_LOC + PUBKEY_ARRAY_ENTRIES * PUB_KEY_WORD_FELTS
+
+# `verify_attestation` locals: the keccak digest and the attester public key
+const DIGEST_LO_LOC = 0
+const DIGEST_HI_LOC = 4
+const PUB_KEY_LOC = 8
+
+# ERRORS
+# =================================================================================================
+
+const ERR_XRESERVE_SET_ATTESTER_UNEXPECTED_NUMBER_OF_STORAGE_ITEMS = "expected set_attester note storage item count to be 17"
+
+const ERR_XRESERVE_SET_ATTESTER_INDEX_NOT_U32 = "set_attester attester index is not a valid u32"
+
+const ERR_XRESERVE_ATTESTER_INDEX_NOT_U32 = "deposit attester index is not a valid u32"
+
+const ERR_XRESERVE_ATTESTER_NOT_ENABLED = "deposit attester public key is not enabled"
+
+const ERR_XRESERVE_SIG_INVALID = "deposit attestation signature verification failed"
+
+# PUBLIC INTERFACE
+# =================================================================================================
+
+#! Writes one deposit attester's public key into the xReserveAttesterKeys array — the `ADMIN`-gated
+#! setter. A non-zero key enables that attester; sixteen zeros disable it.
+#!
+#! It takes no parameters. Every value it acts on comes from the consumed note's own storage.
+#!
+#! Note storage is assumed to be as follows:
+#! - pub_key is the attester's affine secp256k1 public key (items 0..16).
+#! - attester_idx is the array index to write it at (item 16).
+#!
+#! Inputs:  [pad(16)]
+#! Outputs: [pad(16)]
+#!
+#! Panics if:
+#! - the note storage does not match the active note's commitment, or no note is active.
+#! - the note storage does not carry exactly 17 items.
+#! - the attester index is not a valid u32.
+#! - the note sender does not hold the role the account's authority requires for this procedure.
+#!
+#! Locals:
+#! - 0..16: the staged public key
+#! - 16: the staged attester index
+#!
+#! The locals run past the 17 staged items because the note storage arrives through
+#! `pipe_elements_preimage_to_memory`, which writes in eight-element chunks.
+#!
+#! Invocation: call
+@locals(24)
+@account_procedure
+pub proc set_attester
+    # gate on the account-wide authority
+    exec.authority::assert_authorized
+    # => [pad(16)]
+
+    # get the note's storage
+    locaddr.STAGED_PUB_KEY_LOC exec.active_note::get_storage
+    # => [num_items, pad(16)]
+
+    eq.SET_ATTESTER_NOTE_NUM_ITEMS assert.err=ERR_XRESERVE_SET_ATTESTER_UNEXPECTED_NUMBER_OF_STORAGE_ITEMS
+    # => [pad(16)]
+
+    locaddr.STAGED_PUB_KEY_LOC
+    # => [key_ptr, pad(16)]
+
+    # compute the key's base index based on the logical attester index.
+    # the u32 assert ensures the multiplication can never overflow
+    loc_load.STAGED_ATTESTER_IDX_LOC u32assert.err=ERR_XRESERVE_SET_ATTESTER_INDEX_NOT_U32
+    mul.PUBKEY_ARRAY_ENTRIES
+    # => [key_base_idx, key_ptr, pad(16)]
+
+    # write the four key words to xReserveAttesterKeys[key_base_idx + i]
+    repeat.PUBKEY_ARRAY_ENTRIES
+        padw dup.5 mem_loadw_le
+        # => [KEY_WORD, key_idx, key_ptr, pad(16)]
+
+        dup.4 push.XRESERVE_ATTESTER_KEYS_SLOT[0..2]
+        # => [slot_id_suffix, slot_id_prefix, key_idx, KEY_WORD, key_idx, key_ptr, pad(16)]
+
+        exec.array::set dropw
+        # => [key_idx, key_ptr, pad(16)]
+
+        # increment idx and ptr in lockstep
+        add.1 swap add.PUB_KEY_WORD_FELTS swap
+        # => [next_key_idx, next_key_ptr, pad(16)]
+    end
+    # => [key_idx_past_key, ptr_past_key, pad(16)]
+
+    drop drop
+    # => [pad(16)]
+end
+
+#! Verifies the mint-time deposit attestation: keccak the payload, read the selected attester's
+#! public key out of the xReserveAttesterKeys array, require it to be enabled, and ECDSA-verify the
+#! signature over the keccak digest.
+#!
+#! The key is account state the administrator wrote, so the note only chooses the attester, but
+#! never the key material itself. This makes an allowlist check unnecessary:
+#! - naming an index whose key is zero (= disabled) is refused here.
+#! - naming an enabled key necessarily requires a valid signature for that key.
+#!
+#! Inputs:  [intent_ptr, intent_num_bytes, attester_idx, signature_ptr]
+#! Outputs: []
+#!
+#! Where:
+#! - intent_ptr is the memory address of the u32-LE-packed DepositIntent payload preimage.
+#! - intent_num_bytes is the payload length in bytes.
+#! - attester_idx is the index of the claimed attester in the xReserveAttesterKeys array.
+#! - signature_ptr is the word-aligned memory address of the 17-felt attestation signature.
+#!
+#! Panics if:
+#! - attester_idx is not a valid u32.
+#! - the key stored at attester_idx is all zeros.
+#! - the signature does not verify over the payload digest.
+#!
+#! Locals:
+#! - 0..8: DIGEST
+#! - 8..24: the public key read out of the attester array
+#!
+#! Invocation: exec
+@locals(24)
+pub proc verify_attestation
+    # hash the full payload into an 8-element digest
+    exec.keccak256::hash_bytes
+    # => [DIGEST_U32[8], attester_idx, signature_ptr]
+
+    loc_storew_le.DIGEST_LO_LOC dropw
+    loc_storew_le.DIGEST_HI_LOC dropw
+    # => [attester_idx, signature_ptr]
+
+    # compute the key's based index based on the logical attester index.
+    # the u32 assert ensures the multiplication can never overflow
+    u32assert.err=ERR_XRESERVE_ATTESTER_INDEX_NOT_U32
+    mul.PUBKEY_ARRAY_ENTRIES
+    # => [key_base_idx, signature_ptr]
+
+    # read the four key words into local memory and compute is_key_all_zero along the way
+    # the flag starts true, so an array that yields four zero words leaves it true
+    push.1 locaddr.PUB_KEY_LOC movup.2
+    # => [key_base_idx, key_ptr, is_key_all_zero = 1, signature_ptr]
+
+    repeat.PUBKEY_ARRAY_ENTRIES
+        dup push.XRESERVE_ATTESTER_KEYS_SLOT[0..2]
+        # => [slot_id_suffix, slot_id_prefix, key_idx, key_idx, key_ptr, is_key_all_zero = 1, signature_ptr]
+
+        exec.array::get
+        # => [KEY_WORD, key_idx, key_ptr, is_key_all_zero, signature_ptr]
+
+        exec.word::testz
+        # => [is_zero, KEY_WORD, key_idx, key_ptr, is_key_all_zero, signature_ptr]
+
+        # compute is_key_all_zero = is_key_all_zero && is_zero
+        movup.7 and movdn.6
+        # => [KEY_WORD, key_idx, key_ptr, is_key_all_zero, signature_ptr]
+
+        dup.5 mem_storew_le dropw
+        # => [key_idx, key_ptr, is_key_all_zero, signature_ptr]
+
+        # increment idx and ptr in lockstep
+        add.1 swap add.PUB_KEY_WORD_FELTS swap
+        # => [next_key_idx, next_key_ptr, is_key_all_zero, signature_ptr]
+    end
+    # => [key_idx_past_key, ptr_past_key, is_key_all_zero, signature_ptr]
+
+    drop drop
+    # => [is_key_all_zero, signature_ptr]
+
+    # reject a key with all zeros which indicates a disabled attester
+    assertz.err=ERR_XRESERVE_ATTESTER_NOT_ENABLED
+    # => [signature_ptr]
+
+    # verify_prehash over the pub key, the digest, and the caller's signature
+    locaddr.DIGEST_LO_LOC locaddr.PUB_KEY_LOC
+    # => [pubkey_ptr, digest_ptr, signature_ptr]
+
+    exec.ecdsa_k256_keccak::verify_prehash
+    # => [result]
+
+    # the signature must verify over the payload digest for the stored pubkey
+    assert.err=ERR_XRESERVE_SIG_INVALID
+    # => []
+end

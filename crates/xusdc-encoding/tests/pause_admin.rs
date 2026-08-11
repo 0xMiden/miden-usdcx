@@ -157,19 +157,17 @@ fn production_pause_fixture() -> Result<GuardedMint> {
 /// actually halts one.
 ///
 /// It uses the real note transport and the account's own network authentication, seeds the domain
-/// allowlists one attester, and adds whatever extra admin
+/// installs one attester, and adds whatever extra admin
 /// notes the caller needs. Everything is seeded at genesis so each admin transaction can be proved
 /// into its own block. The same shape is used by `mint_policy_e2e.rs`.
 fn mint_fixture(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<ProductionFaucet> {
     setup_production_faucet(MINT_MAX_SUPPLY, 0, |recipient, faucet_id| {
-        let commitment =
-            gen_attester(1, &payload_for(recipient, MINT_AMOUNT, 0, faucet_id)).commitment;
-        let route = faucet_id;
-        let mut notes = vec![XReserveSetAttesterNote::create(
+        let pub_key = PublicKey::new(gen_attester_pubkey(1));
+        let mut notes = vec![XReserveSetAttesterNote::enable(
             administrator(),
-            route,
-            commitment,
-            1,
+            faucet_id,
+            TEST_ATTESTER_INDEX,
+            &pub_key,
             &mut prod_note_rng(952),
         )
         .expect("building the administrator set_attester note")];
@@ -204,7 +202,7 @@ fn attested_mint_note(pf: &ProductionFaucet, payload: &[u8], rng_seed: u64) -> R
         pf.producer_id,
         pf.faucet_id,
         payload,
-        &MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes),
+        &MintAttestation::new(attester.sig_bytes, TEST_ATTESTER_INDEX),
         &mut prod_note_rng(rng_seed),
     )
     .map_err(|e| anyhow::anyhow!("building the attested stock mint note: {e}"))

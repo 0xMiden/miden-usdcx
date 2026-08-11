@@ -32,9 +32,10 @@ use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetM
 // ATTESTER ALLOWLIST AND SIGNATURE — who signed, and were they allowed to
 // ================================================================================================
 
-/// A stranger's signature is refused even though it verifies: their key is not allowlisted.
+/// Naming an index the administrator never wrote a key at is refused: the array reads back all
+/// zeros, which is the disabled state.
 #[tokio::test]
-async fn mint_rejects_a_non_allowlisted_attester() -> Result<()> {
+async fn mint_rejects_an_unwritten_attester_index() -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 11);
@@ -47,7 +48,8 @@ async fn mint_rejects_a_non_allowlisted_attester() -> Result<()> {
             tag: None,
             public: true,
         },
-        2, // a DIFFERENT keypair — its commitment is not allowlisted
+        1,
+        UNWRITTEN_ATTESTER_INDEX,
         None,
         &AttachmentPlan::default(),
         81,
@@ -56,12 +58,44 @@ async fn mint_rejects_a_non_allowlisted_attester() -> Result<()> {
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY"),
+        shell_error_by_name("ERR_XRESERVE_ATTESTER_NOT_ENABLED"),
     )
     .await
 }
 
-/// An allowlisted attester's key paired with a signature over different bytes is refused: the
+/// A stranger's signature cannot be smuggled in under an installed attester's index: the faucet
+/// verifies against the key IT holds at that index, so the signature simply does not check out.
+/// This is the anti-splice property — the note picks WHICH key, never WHAT key.
+#[tokio::test]
+async fn mint_rejects_a_stranger_signature_under_an_installed_index() -> Result<()> {
+    let mut pf = fixture()?;
+    bring_up(&mut pf, 1).await?;
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 14);
+    let note = tampered_mint_note(
+        &pf,
+        &payload,
+        &StoragePlan {
+            recipient: pf.recipient_id,
+            amount: MINT_AMOUNT,
+            tag: None,
+            public: true,
+        },
+        2, // a DIFFERENT keypair, presented at the INSTALLED attester's index
+        TEST_ATTESTER_INDEX,
+        None,
+        &AttachmentPlan::default(),
+        83,
+    )?;
+    expect_reject(
+        &mut pf,
+        note,
+        &payload,
+        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
+    )
+    .await
+}
+
+/// An installed attester's key paired with a signature over different bytes is refused: the
 /// signature does not verify against the digest of the deposit actually presented.
 #[tokio::test]
 async fn mint_rejects_a_forged_signature() -> Result<()> {
@@ -79,7 +113,8 @@ async fn mint_rejects_a_forged_signature() -> Result<()> {
             public: true,
         },
         1,
-        Some(&other), // allowlisted key, signature over the WRONG payload
+        TEST_ATTESTER_INDEX,
+        Some(&other), // installed key, signature over the WRONG payload
         &AttachmentPlan::default(),
         82,
     )?;
@@ -94,33 +129,29 @@ async fn mint_rejects_a_forged_signature() -> Result<()> {
 
 /// Removing an attester really revokes them, end to end.
 ///
-/// The account starts with attester 1 allowlisted; a further owner-sent `set_attester` note with
-/// `enabled = 0` writes the empty Word back over their entry. A mint attested by that key is then
-/// refused by the same allowlist check a never-allowlisted key hits. This is the test that proves
-/// the disable path clears the marker rather than merely overwriting it with something else
-/// non-empty — key rotation depends on it.
+/// The account starts with attester 1 installed; a further administrator-sent `set_attester` note
+/// zeroes that index. A mint naming it is then refused by the same enabled check an unwritten index
+/// hits. This is the test that proves the disable path zeroes ALL FOUR array entries rather than
+/// leaving a partial key behind — key rotation depends on it.
 #[tokio::test]
 async fn mint_rejects_a_removed_attester() -> Result<()> {
-    let mut pf = fixture_with(MAX_SUPPLY, |recipient, faucet_id| {
-        let commitment =
-            gen_attester(1, &payload_for(recipient, faucet_id, MINT_AMOUNT, 0)).commitment;
-        vec![XReserveSetAttesterNote::create(
+    let mut pf = fixture_with(MAX_SUPPLY, |_recipient, faucet_id| {
+        vec![XReserveSetAttesterNote::disable(
             administrator(),
             faucet_id,
-            commitment,
-            0,
+            TEST_ATTESTER_INDEX,
             &mut note_rng(954),
         )
         .expect("building the administrator remove-attester note")]
     })?;
-    bring_up(&mut pf, 2).await?; // set_attester(enable) + set_attester(REMOVE)
+    bring_up(&mut pf, 2).await?; // set_attester(enable) + set_attester(ZERO)
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 30);
     let note = honest_note(&pf, &payload, 99)?; // attested by the (now removed) attester 1
     expect_reject(
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY"),
+        shell_error_by_name("ERR_XRESERVE_ATTESTER_NOT_ENABLED"),
     )
     .await
 }
@@ -130,28 +161,22 @@ async fn mint_rejects_a_removed_attester() -> Result<()> {
 /// lands on the SAME chain — the allowlist reflects exactly the rotated state.
 #[tokio::test]
 async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<()> {
-    let mut pf = fixture_with(MAX_SUPPLY, |recipient, faucet_id| {
-        let base = payload_for(recipient, faucet_id, MINT_AMOUNT, 0);
+    let mut pf = fixture_with(MAX_SUPPLY, |_recipient, faucet_id| {
         vec![
-            XReserveSetAttesterNote::create(
+            enable_attester_note(faucet_id, ROTATED_IN_ATTESTER_INDEX, 2, 956)
+                .expect("the rotate-in note builds"),
+            XReserveSetAttesterNote::disable(
                 administrator(),
                 faucet_id,
-                gen_attester(1, &base).commitment,
-                0,
+                TEST_ATTESTER_INDEX,
                 &mut note_rng(955),
             )
             .expect("building the rotate-out note"),
-            XReserveSetAttesterNote::create(
-                administrator(),
-                faucet_id,
-                gen_attester(2, &base).commitment,
-                1,
-                &mut note_rng(956),
-            )
-            .expect("building the rotate-in note"),
         ]
     })?;
-    bring_up(&mut pf, 3).await?; // enable(1) + remove(1) + enable(2)
+    // enable(idx 1) + enable(idx 2, the NEW index) + zero(idx 1). The new key goes in BEFORE the
+    // old one comes out, which is the overlap window a live rotation actually runs in.
+    bring_up(&mut pf, 3).await?;
 
     // the ROTATED-OUT key rejects (exact error + no nonce burned + no supply raised)
     let payload_old = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 31);
@@ -164,7 +189,8 @@ async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<
             tag: None,
             public: true,
         },
-        1, // the rotated-out keypair
+        1, // the rotated-out keypair, at the index that was zeroed
+        TEST_ATTESTER_INDEX,
         None,
         &AttachmentPlan::default(),
         100,
@@ -173,7 +199,7 @@ async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<
         &mut pf,
         note_old,
         &payload_old,
-        shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY"),
+        shell_error_by_name("ERR_XRESERVE_ATTESTER_NOT_ENABLED"),
     )
     .await?;
 
@@ -188,7 +214,8 @@ async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<
             tag: None,
             public: true,
         },
-        2, // the rotated-in keypair
+        2, // the rotated-in keypair, at its own new index
+        ROTATED_IN_ATTESTER_INDEX,
         None,
         &AttachmentPlan::default(),
         101,

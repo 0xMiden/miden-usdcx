@@ -81,10 +81,6 @@ pub enum HexField {
     /// taxonomy, because a second, parallel "bad hex" error family for the same failure is exactly
     /// the drift the single-owner rule exists to prevent.
     TxId,
-    /// The operator-configured attester pubkey, as it is written in the relayer's config (33-byte
-    /// compressed SEC1, hex). Also not a Circle wire field — and for the same reason as
-    /// [`Self::TxId`] it decodes through the one hex taxonomy rather than growing a second one.
-    AttesterPubkey,
 }
 
 impl fmt::Display for HexField {
@@ -94,7 +90,6 @@ impl fmt::Display for HexField {
             Self::MessageHash => write!(f, "messageHash"),
             Self::Attestation => write!(f, "attestation"),
             Self::TxId => write!(f, "transaction id"),
-            Self::AttesterPubkey => write!(f, "attester pubkey"),
         }
     }
 }
@@ -343,17 +338,11 @@ pub enum RelayerError {
     /// `NoteError` is PRESERVED as the source (and the shared encoding crate's `EncodingError`
     /// under it), so an operator reads WHICH rule the payload broke, not "note build failed".
     MintNoteBuild(Cause),
-    /// The operator-configured attester pubkey is not 33 bytes. The attester identity the faucet
-    /// checks is derived from the COMPRESSED SEC1 key (33 bytes; the `xReserveAttesters` key is the
-    /// Poseidon2 commitment over the affine coordinates it decompresses to) — an uncompressed
-    /// 65-byte key, or a truncated one, is not that key, and is refused where it is configured
-    /// rather than at the first mint.
-    BadAttesterPubkeyLength { actual: usize },
-    /// The operator-configured attester pubkey is 33 bytes that do not decode to a secp256k1 point
-    /// (the shared encoding crate's SEC1 decompression is the judge — the same primitive that packs
-    /// the affine felts the faucet verifies against, consumed by reference). A key that is not a
-    /// point could never verify on-chain, so the relayer refuses to start a mint with it.
-    InvalidAttesterPubkey(Cause),
+    /// The operator-configured attester index is not a decimal `u32`. It is the array position the
+    /// faucet reads an attester key from, so it is refused where it is configured rather than at
+    /// the first mint. Whether a key actually sits at that index is something only the faucet
+    /// knows — this catches the misconfiguration the relayer CAN see.
+    MalformedAttesterIndex(Cause),
 
     /// The configured idempotency-store path is not a durable file — SQLite would open it as an
     /// in-memory or temporary database that vanishes when the connection closes (`:memory:`, an

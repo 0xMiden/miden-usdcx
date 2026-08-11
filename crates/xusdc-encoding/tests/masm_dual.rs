@@ -36,17 +36,13 @@ use miden_tx::TransactionExecutorError;
 use serde::Deserialize;
 use xusdc_encoding::vectors::{load, word_from_hex};
 
-/// Memory base for the staged pubkey felts `pubkey_commitment` hashes in place (word-aligned,
-/// clear of `INTENT_PTR`).
-const PUBKEY_PTR: u64 = 8;
-
 // HARNESS (assemble → bind → MockChain account)
 // ================================================================================================
 
 /// Assembles the `asm/standards/xreserve` tree into one library under namespace
 /// `xreserve` — mirrors `miden-standards/build.rs:45,:77` verbatim.
 fn assemble_xreserve_lib() -> Result<Package> {
-    // Link StandardsLib (mirrors support::assemble_xreserve_lib): attester_admin::set_attester calls
+    // Link StandardsLib (mirrors support::assemble_xreserve_lib): attestation::set_attester calls
     // the stock authority/pausable procs, which live in StandardsLib.
     let assembler = TransactionKernel::assembler()
         .with_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
@@ -162,72 +158,12 @@ end
 // leg there — what it can no longer do is push those bytes through an on-chain parser, because
 // none exists.
 
-// PARITY 4 — attester pubkey commitment: the Word the allowlist is keyed by
+// PARITY 4 — RETIRED with `DC-3`
 // ================================================================================================
-// Each attestation vector is run through the MASM commitment routine and the result is checked
-// against two independent references at once: the value pinned in the canonical artifact (which
-// miden-crypto's own `PublicKey::to_commitment` produced) and the Rust mirror used off-chain.
-// All three must agree, because the faucet decides whether an attester is allowlisted by looking
-// up exactly this Word — if the off-chain side computed a different commitment for the same key,
-// a legitimate attester would be seeded under a key the chain never looks at.
-// ================================================================================================
-
-#[tokio::test]
-async fn tv_dual_5_pubkey_commitment() -> Result<()> {
-    let h = setup()?;
-    for vec in &load().families.att {
-        // the public key as 16 field elements, in the affine-coordinate order miden-crypto emits
-        let limbs = vec.packed_felts_values();
-        let (pkw0, pkw1, pkw2, pkw3) = (
-            word_of(&limbs[0..4]),
-            word_of(&limbs[4..8]),
-            word_of(&limbs[8..12]),
-            word_of(&limbs[12..16]),
-        );
-        let expected = vec.expected_commitment_word();
-
-        // Rust mirror == the vector oracle (miden-crypto to_commitment): the third anti-drift
-        // leg, asserted in-process so a mirror regression fails here too, not only in TV-ATT-2.
-        assert_eq!(
-            miden_protocol::Word::from(
-                xusdc_encoding::xreserve::encoding::PublicKey::new(vec.pubkey())
-                    .to_commitment()
-                    .expect("vector pubkeys are valid curve points")
-            ),
-            expected,
-            "vector {}: Rust pubkey_commitment must equal miden-crypto to_commitment",
-            vec.id
-        );
-
-        // MASM proc executed under MockChain: stage the 16 felts (f0 at the lowest address),
-        // push the pointer, exec, assert the returned Word equals the oracle.
-        let (pk_ptr1, pk_ptr2, pk_ptr3) = (PUBKEY_PTR + 4, PUBKEY_PTR + 8, PUBKEY_PTR + 12);
-        let src = format!(
-            r#"use xreserve::attestation_verify
-
-@transaction_script
-pub proc main
-    push.{pkw0} mem_storew_le.{PUBKEY_PTR} dropw
-    push.{pkw1} mem_storew_le.{pk_ptr1} dropw
-    push.{pkw2} mem_storew_le.{pk_ptr2} dropw
-    push.{pkw3} mem_storew_le.{pk_ptr3} dropw
-    push.{PUBKEY_PTR}
-    exec.attestation_verify::pubkey_commitment
-    push.{expected}
-    assert_eqw.err="vector {id}: pubkey_commitment mismatch"
-end
-"#,
-            id = vec.id,
-        );
-        run_driver(&h, &src).await.unwrap_or_else(|e| {
-            panic!(
-                "vector {}: MASM pubkey_commitment must equal miden-crypto to_commitment: {e}",
-                vec.id
-            )
-        });
-    }
-    Ok(())
-}
+// The attester allowlist is no longer a commitment map: the faucet holds the attester public keys
+// themselves (`DC-15`) and the note names one by index, so there is no Word for the two sides to
+// compute differently. `TV-ATT-1` still pins the affine felts the administrator writes, and an
+// executing mint proves the faucet reads back exactly what was written.
 
 // HARNESS META-TEST + PROBES (scaffold surfaces)
 // ================================================================================================

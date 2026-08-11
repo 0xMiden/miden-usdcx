@@ -25,12 +25,10 @@ mod mint_support;
 use assert_matches::assert_matches;
 use rstest::rstest;
 
-use xreserve_deposit_relayer::error::HexField;
-use xreserve_deposit_relayer::miden::{build_mint_note, AttesterPubkey};
+use xreserve_deposit_relayer::miden::{build_mint_note, AttesterIndex};
 use xreserve_deposit_relayer::RelayerError;
 use xusdc_encoding::xreserve::encoding::{DepositIntentField, EncodingError};
 
-use fixtures::{PartnerAttester, PARTNER_PUBKEY_HEX};
 use mint_support::*;
 
 // STRUCTURALLY-INVALID DEPOSITINTENTS (they pass the envelope; the shared encoding crate's codec
@@ -88,7 +86,7 @@ fn t_an_uncarryable_intent_is_a_typed_build_error(#[case] vector_id: &str) {
         // it would fail on the addressing rather than on the row's subject
         vector.faucet_id(),
         &attestation,
-        &attester_pubkey(),
+        PARTNER_ATTESTER_INDEX,
         &mut note_rng(4),
     )
     .expect_err("an intent the mint transport cannot carry never becomes a note");
@@ -120,7 +118,7 @@ fn assert_build_error(
         relayer_sender_id(),
         faucet_id(),
         attestation,
-        &attester_pubkey(),
+        PARTNER_ATTESTER_INDEX,
         &mut note_rng(1),
     )
     .expect_err("a structurally invalid deposit intent cannot become a note");
@@ -180,7 +178,7 @@ fn t_a_private_faucet_id_is_refused() {
         relayer_sender_id(),
         private_faucet_id(),
         &attestation,
-        &attester_pubkey(),
+        PARTNER_ATTESTER_INDEX,
         &mut note_rng(2),
     )
     .expect_err("a private faucet cannot be a network mint target");
@@ -196,81 +194,42 @@ fn t_a_private_faucet_id_is_refused() {
     );
 }
 
-// THE OPERATOR-CONFIGURED ATTESTER KEY
+// THE OPERATOR-CONFIGURED ATTESTER INDEX
 // ================================================================================================
 //
-// The attester pubkey is CONFIGURATION, not a Circle response field: Circle's attestation object
-// carries `payload` / `messageHash` / `attestation` and nothing else. So the 33-byte key the
-// faucet's allowlist commitment is derived from reaches the relayer from its operator — and an operator's typo must be caught
-// where it is typed, not on the first mint attempt six hours later.
+// The attester index is CONFIGURATION, not a Circle response field: Circle's attestation object
+// carries `payload` / `messageHash` / `attestation` and nothing that says which attester signed.
+// So the array position the administrator installed that attester's key at reaches the relayer
+// from its operator — and an operator's typo must be caught where it is typed, not on the first
+// mint attempt six hours later. Whether a key actually sits at that index is something only the
+// faucet knows, so this is the whole of what the relayer can refuse.
 
-#[test]
-fn t_the_partner_key_round_trips_through_the_config_form() {
-    let expected = PartnerAttester::new().pubkey();
-
+#[rstest]
+#[case::zero("0", 0)]
+#[case::one("1", 1)]
+#[case::max("4294967295", u32::MAX)]
+fn t_the_attester_index_round_trips_through_the_config_form(
+    #[case] text: &str,
+    #[case] expected: u32,
+) {
     assert_eq!(
-        AttesterPubkey::from_hex(PARTNER_PUBKEY_HEX)
-            .expect("the pinned partner key parses")
-            .as_bytes(),
-        &expected
-    );
-    assert_eq!(
-        AttesterPubkey::from_hex(&format!("0x{PARTNER_PUBKEY_HEX}"))
-            .expect("the 0x-prefixed wire form parses too")
-            .as_bytes(),
-        &expected,
-        "an operator may paste the key with or without the 0x prefix"
-    );
-}
-
-#[test]
-fn t_a_non_hex_attester_key_is_refused() {
-    assert_matches!(
-        AttesterPubkey::from_hex("nothexatall"),
-        Err(RelayerError::MalformedHex {
-            field: HexField::AttesterPubkey,
-            ..
-        })
+        AttesterIndex::parse(text)
+            .expect("a decimal u32 parses")
+            .get(),
+        expected
     );
 }
 
 #[rstest]
 #[case::empty("")]
-#[case::too_short("03a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d")] // 32 bytes
-#[case::uncompressed_length(
-    "04a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3fa13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3f"
-)] // 65 bytes — the UNCOMPRESSED SEC1 form, not the form the allowlist commitment is derived from
-fn t_an_attester_key_of_the_wrong_length_is_refused(#[case] hex: &str) {
-    let error = AttesterPubkey::from_hex(hex).expect_err("only a 33-byte compressed key is a key");
-
+#[case::not_a_number("nothexatall")]
+#[case::negative("-1")]
+#[case::past_u32("4294967296")]
+#[case::hex_form("0x01")]
+fn t_an_attester_index_that_is_not_a_u32_is_refused(#[case] text: &str) {
     assert_matches!(
-        error,
-        RelayerError::BadAttesterPubkeyLength { actual } if actual == hex.len() / 2
-    );
-}
-
-/// 33 bytes of the right SHAPE that are not a curve point: refused at CONFIGURATION time, by the
-/// shared encoding crate's own SEC1 decompression (the same primitive that packs the affine felts,
-/// consumed by reference — the relayer does not re-implement point decompression). Such a key could
-/// never verify on-chain, so a relayer that started with it would mint nothing and say nothing.
-#[rstest]
-#[case::off_curve("03ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")]
-#[case::bad_prefix("00a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3f")]
-fn t_an_attester_key_that_is_not_a_curve_point_is_refused(#[case] hex: &str) {
-    let error = AttesterPubkey::from_hex(hex).expect_err("not a secp256k1 point");
-
-    assert_matches!(error, RelayerError::InvalidAttesterPubkey(_));
-    assert_eq!(
-        encoding_error_in_chain(&error),
-        Some(EncodingError::InvalidPubkey),
-        "unit-04's verdict on the key is preserved"
-    );
-
-    // …and the same 33 bytes are refused through the raw constructor, not just the hex one
-    let raw: [u8; 33] = hex::decode(hex).expect("hex").try_into().expect("33 bytes");
-    assert_matches!(
-        AttesterPubkey::new(raw),
-        Err(RelayerError::InvalidAttesterPubkey(_))
+        AttesterIndex::parse(text),
+        Err(RelayerError::MalformedAttesterIndex(_))
     );
 }
 

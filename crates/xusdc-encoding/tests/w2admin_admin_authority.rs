@@ -189,7 +189,7 @@ fn the_attester_setter_is_not_mapped_to_a_dedicated_role() -> Result<()> {
     )
     .context("binding the assembled xreserve library to read a procedure root")?;
     let set_attester = component
-        .get_procedure_root_by_path("xreserve::attester_admin::set_attester")
+        .get_procedure_root_by_path("xreserve::attestation::set_attester")
         .context("the assembled xreserve library must expose the attester setter")?;
 
     let roles = XReserveAdminAuthority::new().procedure_roles().clone();

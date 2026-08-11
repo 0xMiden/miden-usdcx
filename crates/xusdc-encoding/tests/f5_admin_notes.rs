@@ -143,7 +143,7 @@ fn stock_revoke_role_note<R: FeltRng>(
 }
 
 /// The shipped `set_attester` admin note, consumed against the production network-auth faucet: an
-/// `ADMIN` holder SUCCEEDS and writes the attester marker at the creator-committed commitment key
+/// `ADMIN` holder SUCCEEDS and writes the attester key at the creator-committed index
 /// (the storage-param marshaling is correct); anyone else PASSES network auth (the script is
 /// allowlisted) but TRAPS at the proc's authority gate — the layered-auth proof.
 #[tokio::test]
@@ -154,11 +154,17 @@ async fn set_attester_admin_note_admin_writes_and_nonadmin_traps() -> Result<()>
     let faucet_id = pf.faucet_id;
     // setup_production_faucet seeds the administrator as test_account_id(1).
     let owner = test_account_id(1);
-    let commitment = gen_attester(1, b"attester").commitment;
+    let pub_key = PublicKey::new(gen_attester_pubkey(1));
 
     // Owner-sent: PASSES network auth (allowlisted) AND the proc owner gate — writes state.
-    let note = XReserveSetAttesterNote::create(owner, faucet_id, commitment, 1, &mut note_rng(1))
-        .context("building the administrator set_attester note")?;
+    let note = XReserveSetAttesterNote::enable(
+        owner,
+        faucet_id,
+        TEST_ATTESTER_INDEX,
+        &pub_key,
+        &mut note_rng(1),
+    )
+    .context("building the administrator set_attester note")?;
     let tx = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
@@ -171,9 +177,9 @@ async fn set_attester_admin_note_admin_writes_and_nonadmin_traps() -> Result<()>
         })?;
 
     // Marshaling correct: the account delta writes the enabled marker [1,0,0,0] at the CREATOR-
-    // committed commitment key (a scrambled marshaling would write a different key).
+    // committed index (a scrambled note-storage read would write elsewhere, or write junk).
     let attesters =
-        StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL).context("attesters slot")?;
+        StorageSlotName::new(XRESERVE_ATTESTER_KEYS_SLOT_LABEL).context("attesters slot")?;
     let StorageSlotPatch::Map(delta) = tx
         .account_patch()
         .storage()
@@ -186,22 +192,27 @@ async fn set_attester_admin_note_admin_writes_and_nonadmin_traps() -> Result<()>
         .entries()
         .expect("map patch carries entries")
         .as_map()
-        .get(&StorageMapKey::new(commitment))
+        .get(&StorageMapKey::new(Word::from([
+            0,
+            0,
+            0,
+            PUBKEY_ARRAY_ENTRIES * TEST_ATTESTER_INDEX,
+        ])))
         .copied()
-        .context("the commitment key must appear in the xReserveAttesters delta")?;
+        .context("the attester's first key entry must appear in the xReserveAttesterKeys delta")?;
+    let key_felts = pub_key.to_affine_felts().context("a valid curve point")?;
     assert_eq!(
         written,
-        Word::from([1u32, 0, 0, 0]),
-        "owner set_attester must write the enabled marker at the creator-committed commitment key \
-         (storage-param marshaling correct)",
+        Word::new([key_felts[0], key_felts[1], key_felts[2], key_felts[3]]),
+        "owner set_attester must write the creator-committed key at the creator-committed index \
+         (note-storage read correct)",
     );
 
     // Non-administrator-sent: PASSES network auth (allowlisted script) but TRAPS at the proc owner gate.
-    let bad = XReserveSetAttesterNote::create(
+    let bad = XReserveSetAttesterNote::disable(
         test_account_id(9),
         faucet_id,
-        commitment,
-        0,
+        TEST_ATTESTER_INDEX,
         &mut note_rng(2),
     )
     .context("building the non-administrator set_attester note")?;

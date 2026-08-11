@@ -25,7 +25,7 @@ use miden_standards::note::{RbacAction, RbacActionNote};
 use miden_testing::assert_transaction_executor_error;
 use support::w2admin::*;
 use support::*;
-use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
+use xusdc_encoding::account::xreserve::XRESERVE_ATTESTER_KEYS_SLOT_LABEL;
 use xusdc_encoding::note::xreserve_admin::{
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
@@ -68,14 +68,26 @@ fn read_role_membership(account: &Account, role: &RoleSymbol, member: AccountId)
         .map_err(|e| anyhow::anyhow!("reading role_membership[{role}][{member}]: {e}"))
 }
 
-/// The attester allowlist entry for `commitment`.
-fn read_attester(account: &Account, commitment: Word) -> Result<Word> {
-    let slot = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+/// The index the handover test lets the PREDECESSOR write at, kept distinct from the successor's
+/// so the refused-write assertion reads an entry nothing ever touched.
+const PREDECESSOR_ATTESTER_INDEX: u32 = 3;
+
+/// The first array word of `pub_key` — what `read_attester` returns once that key is installed.
+fn first_key_word(pub_key: &PublicKey) -> Word {
+    let felts = pub_key.to_affine_felts().expect("a valid curve point");
+    Word::new([felts[0], felts[1], felts[2], felts[3]])
+}
+
+/// The first attester key-array entry for `attester_index` — non-zero exactly when a key is
+/// installed there.
+fn read_attester(account: &Account, attester_index: u32) -> Result<Word> {
+    let slot = StorageSlotName::new(XRESERVE_ATTESTER_KEYS_SLOT_LABEL)
         .context("the attester slot label is a valid constant")?;
+    let entry = Word::from([0, 0, 0, PUBKEY_ARRAY_ENTRIES * attester_index]);
     account
         .storage()
-        .get_map_item(&slot, StorageMapKey::new(commitment))
-        .map_err(|e| anyhow::anyhow!("reading xReserveAttesters[{commitment}]: {e}"))
+        .get_map_item(&slot, StorageMapKey::new(entry))
+        .map_err(|e| anyhow::anyhow!("reading xReserveAttesterKeys[{entry}]: {e}"))
 }
 
 /// A standard role-action note carrying `action`, sent by `sender` and tagged for `faucet_id`. The
@@ -105,16 +117,16 @@ fn role_note(
 /// assuming it.
 #[tokio::test]
 async fn every_remaining_admin_note_still_lands() -> Result<()> {
-    let commitment = Word::from([7u32, 8, 9, 10]);
+    let pub_key = PublicKey::new(gen_attester_pubkey(1));
     let new_max_supply = MAX_SUPPLY * 2;
     let new_min_burn = 42u64;
     let mut pf = admin_faucet(|faucet_id| {
         vec![
-            XReserveSetAttesterNote::create(
+            XReserveSetAttesterNote::enable(
                 admin_holder(),
                 faucet_id,
-                commitment,
-                1,
+                TEST_ATTESTER_INDEX,
+                &pub_key,
                 &mut note_rng(501),
             )
             .expect("the set_attester note builds"),
@@ -142,9 +154,9 @@ async fn every_remaining_admin_note_still_lands() -> Result<()> {
 
     let after = consume_and_commit(&mut pf, &notes[0], "set_attester").await?;
     assert_eq!(
-        read_attester(&after, commitment)?,
-        set_word(),
-        "the attester setter must still write its allowlist entry"
+        read_attester(&after, TEST_ATTESTER_INDEX)?,
+        first_key_word(&pub_key),
+        "the attester setter must still write its key entry"
     );
 
     // token_config is [token_supply, max_supply, decimals, symbol] — the cap is word[1].
@@ -202,17 +214,17 @@ fn successor() -> AccountId {
 #[tokio::test]
 async fn the_administrator_role_hands_over_by_grant_then_revoke() -> Result<()> {
     let admin = RoleBasedAccessControl::admin_role();
-    let successor_commitment = Word::from([21u32, 22, 23, 24]);
-    let predecessor_commitment = Word::from([31u32, 32, 33, 34]);
+    let successor_pub_key = PublicKey::new(gen_attester_pubkey(21));
+    let predecessor_pub_key = PublicKey::new(gen_attester_pubkey(31));
 
     let mut pf = admin_faucet(|faucet_id| {
         vec![
             // 0 — the successor has no administrator-gated capability yet.
-            XReserveSetAttesterNote::create(
+            XReserveSetAttesterNote::enable(
                 successor(),
                 faucet_id,
-                successor_commitment,
-                1,
+                TEST_ATTESTER_INDEX,
+                &successor_pub_key,
                 &mut note_rng(601),
             )
             .expect("the successor's set_attester note builds"),
@@ -228,11 +240,11 @@ async fn the_administrator_role_hands_over_by_grant_then_revoke() -> Result<()> 
             )
             .expect("the ADMIN grant note builds"),
             // 2 — the same capability, retried after the grant.
-            XReserveSetAttesterNote::create(
+            XReserveSetAttesterNote::enable(
                 successor(),
                 faucet_id,
-                successor_commitment,
-                1,
+                TEST_ATTESTER_INDEX,
+                &successor_pub_key,
                 &mut note_rng(603),
             )
             .expect("the successor's second set_attester note builds"),
@@ -248,11 +260,11 @@ async fn the_administrator_role_hands_over_by_grant_then_revoke() -> Result<()> 
             )
             .expect("the ADMIN revoke note builds"),
             // 4 — the predecessor's capability, retried after the revoke.
-            XReserveSetAttesterNote::create(
+            XReserveSetAttesterNote::enable(
                 admin_holder(),
                 faucet_id,
-                predecessor_commitment,
-                1,
+                PREDECESSOR_ATTESTER_INDEX,
+                &predecessor_pub_key,
                 &mut note_rng(605),
             )
             .expect("the predecessor's set_attester note builds"),
@@ -280,8 +292,8 @@ async fn the_administrator_role_hands_over_by_grant_then_revoke() -> Result<()> 
     // CAPABILITY GAINED — the same write the successor was refused now lands.
     let after = consume_and_commit(&mut pf, &notes[2], "successor set_attester").await?;
     assert_eq!(
-        read_attester(&after, successor_commitment)?,
-        set_word(),
+        read_attester(&after, TEST_ATTESTER_INDEX)?,
+        first_key_word(&successor_pub_key),
         "the successor must gain the administrator-gated capability with the role"
     );
 
@@ -304,9 +316,9 @@ async fn the_administrator_role_hands_over_by_grant_then_revoke() -> Result<()> 
     assert_transaction_executor_error!(refused, err_sender_lacks_role());
     let final_state = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
     assert_eq!(
-        read_attester(&final_state, predecessor_commitment)?,
+        read_attester(&final_state, PREDECESSOR_ATTESTER_INDEX)?,
         Word::empty(),
-        "the refused predecessor write must leave the attester allowlist untouched"
+        "the refused predecessor write must leave its attester entry untouched"
     );
     Ok(())
 }

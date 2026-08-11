@@ -34,7 +34,7 @@ use miden_standards::note::{MintNote, MintNoteStorage, P2idNoteStorage};
 
 use crate::xreserve::encoding::{
     bytes32_to_account_id, bytes32_to_storage_map_key, DepositIntent, DepositIntentHeader,
-    MintIntent, PublicKey, Signature,
+    MintIntent, Signature,
 };
 
 /// The mint-note transport attachment scheme (u16, project-chosen: >= 4, clear of
@@ -42,10 +42,12 @@ use crate::xreserve::encoding::{
 /// This attachment carries both the attestation and the DepositIntent preimage.
 pub const XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME: u16 = 4;
 
-/// The attestation section word count: `[pubkey(16), signature(17), pad(3)]` = 36 felts (the
-/// pubkey is the 16-felt affine form). The operator `feeAmount` is not carried at all — the faucet
-/// writes a zero fee into the preimage it rebuilds, so a non-zero one is inexpressible.
-pub const XUSDC_MINT_ATTESTATION_NUM_WORDS: usize = 9;
+/// The attestation section word count: `[signature(17), attester_idx(1), pad(2)]` = 20 felts. The
+/// signature comes first so it stays word-aligned, which the on-chain ECDSA precompile requires of
+/// the pointer it is handed. The attester's public key is not carried — it is faucet storage, and
+/// `attester_idx` selects it. Neither is the operator `feeAmount`: the faucet writes a zero fee into
+/// the preimage it rebuilds, so a non-zero one is inexpressible.
+pub const XUSDC_MINT_ATTESTATION_NUM_WORDS: usize = 5;
 
 /// Word offset of the carried mint payload inside the transport attachment: past the fixed-width
 /// attestation. Constant by construction — see the module docs on why the attestation goes first.
@@ -59,18 +61,24 @@ pub const XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF: usize = XUSDC_MINT_ATTESTATION_
 pub const XUSDC_DEPOSIT_SCALE_EXP: u32 = 0;
 
 /// The Circle deposit attestation crossing the note boundary: the raw 65-byte
-/// `r‖s‖v` ECDSA signature over `keccak256(payload)` and the raw 33-byte compressed SEC1
-/// candidate pubkey.
+/// `r‖s‖v` ECDSA signature over `keccak256(payload)` and the index of the attester who produced it.
+///
+/// The key itself does not travel. The faucet holds its allowlisted attester keys in storage, so the
+/// note names one of them and the faucet reads it back — which is why naming the wrong index is only
+/// ever a rejected mint, never a mint under a key the administrator did not install.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MintAttestation {
     signature: [u8; 65],
-    pubkey: [u8; 33],
+    attester_index: u32,
 }
 
 impl MintAttestation {
-    /// Bundles a raw 65-byte `r‖s‖v` signature with the 33-byte compressed candidate pubkey.
-    pub fn new(signature: [u8; 65], pubkey: [u8; 33]) -> Self {
-        Self { signature, pubkey }
+    /// Bundles a raw 65-byte `r‖s‖v` signature with the signing attester's key-array index.
+    pub fn new(signature: [u8; 65], attester_index: u32) -> Self {
+        Self {
+            signature,
+            attester_index,
+        }
     }
 
     /// The raw 65-byte `r‖s‖v` signature (`v` carried, unused on-chain).
@@ -78,9 +86,9 @@ impl MintAttestation {
         &self.signature
     }
 
-    /// The raw 33-byte compressed SEC1 candidate pubkey.
-    pub fn pubkey(&self) -> &[u8; 33] {
-        &self.pubkey
+    /// The signing attester's index in the faucet's attester key array.
+    pub fn attester_index(&self) -> u32 {
+        self.attester_index
     }
 }
 
@@ -185,7 +193,7 @@ impl XUsdcMintNote {
     /// `sender` is the producer/relayer account, `faucet_id` the consuming faucet, `deposit_intent`
     /// the typed [`DepositIntent`] payload (parsed and packed by the shared codec, so a structurally
     /// invalid payload is rejected here rather than on-chain — it surfaces as a [`NoteError`] carrying
-    /// the codec's error as its source), `attestation` the raw signature and candidate pubkey. The
+    /// the codec's error as its source), `attestation` the raw signature and attester index. The
     /// storage embeds the ATTESTED values (P2ID recipe to the intent's `remoteRecipient` with the
     /// nonce-key serial; the scale-0-reduced amount as a [`FungibleAsset`] of `faucet_id`; the
     /// recipient's account-target tag) so the faucet's attestation policy accepts it under the
@@ -229,32 +237,26 @@ impl XUsdcMintNote {
     /// Builds the scheme-4 transport attachment — everything the faucet needs to rebuild and
     /// verify the Circle-signed message, in three sections:
     ///
-    /// 1. 36 felts `[pubkey(16 affine felts), signature(17), pad(3)]`.
+    /// 1. 20 felts `[signature(17), attester_idx(1), pad(2)]`.
     /// 2. the 24-felt carried mint payload (`DC-14`).
     /// 3. the u32-LE-packed hookData, zero-padded to the word boundary.
     ///
     /// The layout is a contract: the policy hash-verifies these words into one memory region and
     /// reads each section at a constant offset into it, so a reordering here would silently
-    /// repoint them. The DepositIntent itself is NOT carried — the faucet rebuilds it from
-    /// section 2 plus its own state, which is what makes the addressing fields unforgeable.
+    /// repoint them. In particular the signature leads section 1 because the on-chain ECDSA
+    /// precompile takes a word-aligned pointer to it. The DepositIntent itself is NOT carried — the
+    /// faucet rebuilds it from section 2 plus its own state, which is what makes the addressing
+    /// fields unforgeable; nor is the attester's public key, which the faucet reads out of its own
+    /// storage at `attester_idx`.
     fn transport_attachment(
         payload: &MintIntent,
         attestation: &MintAttestation,
     ) -> Result<NoteAttachment, NoteError> {
         let mut felts: Vec<Felt> = Vec::new();
 
-        felts.extend(
-            PublicKey::new(*attestation.pubkey())
-                .to_affine_felts()
-                .map_err(|source| {
-                    NoteError::other_with_source(
-                        "attestation pubkey rejected by the shared codec",
-                        source,
-                    )
-                })?,
-        );
         felts.extend(Signature::new(*attestation.signature()).to_felts());
-        felts.extend([Felt::from(0u32); 3]);
+        felts.push(Felt::from(attestation.attester_index()));
+        felts.extend([Felt::from(0u32); 2]);
         debug_assert_eq!(felts.len(), XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF * 4);
 
         felts.extend(payload.to_felts());

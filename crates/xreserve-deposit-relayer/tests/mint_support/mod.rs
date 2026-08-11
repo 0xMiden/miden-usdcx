@@ -18,7 +18,7 @@ use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::{Felt, Word};
 
 use xreserve_deposit_relayer::circle::schema::{AttestationObject, ValidatedAttestation};
-use xreserve_deposit_relayer::miden::AttesterPubkey;
+use xreserve_deposit_relayer::miden::AttesterIndex;
 
 use crate::fixtures::{canonical_payload, AttestationVector, PartnerAttester};
 
@@ -74,21 +74,16 @@ pub fn private_faucet_id() -> AccountId {
     )
 }
 
-/// The operator-configured attester key: the partner fixture's 33-byte compressed SEC1 pubkey.
+/// The array index the partner attester's key is installed at.
 ///
 /// It is CONFIGURATION, not a Circle response field — Circle's attestation object carries only
-/// `payload` / `messageHash` / `attestation`, so the key the faucet's allowlist commitment
-/// is derived from reaches the relayer through its config, and the builder takes it as an argument.
-pub fn attester_pubkey() -> AttesterPubkey {
-    AttesterPubkey::new(PartnerAttester::new().pubkey()).expect("the partner key is a curve point")
-}
+/// `payload` / `messageHash` / `attestation` and nothing that says WHICH attester signed, so the
+/// index reaches the relayer through its config and the builder takes it as an argument.
+pub const PARTNER_ATTESTER_INDEX: AttesterIndex = AttesterIndex::new(1);
 
-/// A genuinely DIFFERENT attester key (the fixture's foreign signer) — used to prove the attachment
-/// really carries the pubkey it was handed, rather than a hardcoded one.
-pub fn foreign_attester_pubkey() -> AttesterPubkey {
-    AttesterPubkey::new(PartnerAttester::with_seed(crate::fixtures::FOREIGN_KEY_SEED).pubkey())
-        .expect("the foreign key is a curve point")
-}
+/// A genuinely DIFFERENT index — used to prove the attachment really carries the index it was
+/// handed, rather than a hardcoded one.
+pub const FOREIGN_ATTESTER_INDEX: AttesterIndex = AttesterIndex::new(2);
 
 /// Puts a fixture vector through the relayer's REAL validated boundary: the three wire fields are
 /// serialized exactly as Circle returns them (camelCase, `0x`-hex), deserialized into the wire

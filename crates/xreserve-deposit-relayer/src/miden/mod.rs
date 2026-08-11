@@ -22,4 +22,4 @@
 
 pub mod mint_note;
 
-pub use mint_note::{build_mint_note, AttesterPubkey};
+pub use mint_note::{build_mint_note, AttesterIndex};

@@ -173,8 +173,7 @@ pub struct MiVector {
 }
 
 /// Attestation (ATT) vectors. One independent secp256k1 keypair each:
-/// the 33-byte compressed pubkey (decompressed → 16 affine felts, vm#3342) and its
-/// `PublicKey::to_commitment` Word, the
+/// the 33-byte compressed pubkey (decompressed → 16 affine felts, vm#3342), the
 /// 32-byte keccak digest over a full DepositIntent payload (→ 8 felts), and the 65-byte
 /// `r‖s‖v` signature (→ 17 felts; `v` carried in felt 16, unused on-chain).
 #[derive(Debug, Deserialize)]
@@ -183,7 +182,6 @@ pub struct AttVector {
     pub tv: Vec<String>,
     pub pubkey_hex: String,
     pub packed_felts: Vec<String>,
-    pub expected_commitment: [String; 4],
     pub digest_hex: String,
     pub digest_felts: Vec<String>,
     pub sig_hex: String,
@@ -397,10 +395,6 @@ impl AttVector {
 
     pub fn sig_felts_values(&self) -> Vec<Felt> {
         self.sig_felts.iter().map(|s| felt_from_hex(s)).collect()
-    }
-
-    pub fn expected_commitment_word(&self) -> Word {
-        word_from_hex(&self.expected_commitment)
     }
 }
 

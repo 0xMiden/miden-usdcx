@@ -72,32 +72,61 @@ fn assert_results_match(
 // ================================================================================================
 
 #[test]
-fn set_attester_builder_matches_create() {
+fn set_attester_builder_matches_enable() {
     let sender = test_account_id(5);
     let faucet = test_faucet_id(6);
-    let commitment = Word::from([
-        Felt::from(1u32),
-        Felt::from(2u32),
-        Felt::from(3u32),
-        Felt::from(4u32),
-    ]);
+    let pub_key = PublicKey::new(gen_attester_pubkey(1));
+    let pub_key_felts = pub_key.to_affine_felts().expect("a valid curve point");
 
     let via_builder = XReserveSetAttesterNote::builder()
         .sender(sender)
         .faucet_id(faucet)
         .storage(
             XReserveSetAttesterNoteStorage::builder()
-                .commitment(commitment)
-                .enabled(1)
+                .pub_key(pub_key_felts)
+                .attester_index(TEST_ATTESTER_INDEX)
                 .build(),
         )
         .rng(&mut note_rng(RNG_SEED))
         .build()
         .expect("builder note");
-    let via_create =
-        XReserveSetAttesterNote::create(sender, faucet, commitment, 1, &mut note_rng(RNG_SEED))
-            .expect("create note");
-    assert_notes_identical(&via_builder, &via_create, "set_attester");
+    let via_enable = XReserveSetAttesterNote::enable(
+        sender,
+        faucet,
+        TEST_ATTESTER_INDEX,
+        &pub_key,
+        &mut note_rng(RNG_SEED),
+    )
+    .expect("enable note");
+    assert_notes_identical(&via_builder, &via_enable, "set_attester");
+}
+
+/// Disabling is the zero-key case, and it goes through the same builder.
+#[test]
+fn set_attester_disable_matches_a_zero_key_builder() {
+    let sender = test_account_id(5);
+    let faucet = test_faucet_id(6);
+
+    let via_builder = XReserveSetAttesterNote::builder()
+        .sender(sender)
+        .faucet_id(faucet)
+        .storage(
+            XReserveSetAttesterNoteStorage::builder()
+                .pub_key([Felt::from(0u32); 16])
+                .attester_index(TEST_ATTESTER_INDEX)
+                .build(),
+        )
+        .rng(&mut note_rng(RNG_SEED))
+        .build()
+        .expect("builder note");
+    let via_disable = XReserveSetAttesterNote::disable(
+        sender,
+        faucet,
+        TEST_ATTESTER_INDEX,
+        &mut note_rng(RNG_SEED),
+    )
+    .expect("disable note");
+    assert_notes_identical(&via_builder, &via_disable, "set_attester disable");
 }
 
 #[test]
@@ -184,7 +213,7 @@ fn mint_note_builder_takes_typed_deposit_intent_and_matches_create() {
         .first()
         .expect("an attestation vector is present");
     let payload = vector.payload();
-    let attestation = MintAttestation::new(vector.sig(), vector.pubkey());
+    let attestation = MintAttestation::new(vector.sig(), TEST_ATTESTER_INDEX);
 
     let via_builder = XUsdcMintNote::builder()
         .sender(sender)
@@ -287,7 +316,7 @@ fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() {
         .first()
         .expect("an attestation vector is present");
     let payload = vector.payload();
-    let attestation = MintAttestation::new(vector.sig(), vector.pubkey());
+    let attestation = MintAttestation::new(vector.sig(), TEST_ATTESTER_INDEX);
     let via_builder = XUsdcMintNote::builder()
         .sender(test_account_id(5))
         .faucet_id(faucet)
@@ -310,22 +339,23 @@ fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() {
 
 #[test]
 fn admin_storage_types_expose_read_only_accessors_not_public_fields() {
-    let commitment = Word::from([
-        Felt::from(9u32),
-        Felt::from(8u32),
-        Felt::from(7u32),
-        Felt::from(6u32),
-    ]);
+    let pub_key_felts = PublicKey::new(gen_attester_pubkey(1))
+        .to_affine_felts()
+        .expect("a valid curve point");
     let attester = XReserveSetAttesterNoteStorage::builder()
-        .commitment(commitment)
-        .enabled(1)
+        .pub_key(pub_key_felts)
+        .attester_index(TEST_ATTESTER_INDEX)
         .build();
     assert_eq!(
-        attester.commitment(),
-        commitment,
-        "attester commitment accessor"
+        attester.pub_key(),
+        &pub_key_felts,
+        "attester pub_key accessor"
     );
-    assert_eq!(attester.enabled(), 1, "attester enabled accessor");
+    assert_eq!(
+        attester.attester_index(),
+        TEST_ATTESTER_INDEX,
+        "attester index accessor"
+    );
 
     let min_burn = XReserveSetMinBurnSizeNoteStorage::builder()
         .new_min(42)

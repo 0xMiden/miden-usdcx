@@ -124,6 +124,7 @@ async fn stock_mint_note_rejects_a_recipient_mismatch() -> Result<()> {
             public: true,
         },
         1,
+        TEST_ATTESTER_INDEX,
         None,
         &AttachmentPlan::default(),
         72,

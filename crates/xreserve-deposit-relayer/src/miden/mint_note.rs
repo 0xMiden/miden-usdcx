@@ -1,26 +1,26 @@
 //! `build_mint_note` — the DepositIntent-attestation → mint-note translation, and the
-//! operator-configured attester key it needs.
+//! operator-configured attester index it needs.
 //!
 //! The builder is thin ON PURPOSE. It bundles the attestation the relayer VALIDATED (a
 //! `ValidatedAttestation` has passed the raw-keccak digest binding and the 65-byte shape check)
-//! with the attester pubkey the OPERATOR configured, and hands both — plus the DepositIntent payload
-//! (as the typed [`DepositIntent`](xusdc_encoding::xreserve::encoding::DepositIntent)) — to the shared encoding crate's typed [`XUsdcMintNote`] builder,
+//! with the attester index the OPERATOR configured, and hands both — plus the DepositIntent payload
+//! (as the typed [`DepositIntent`](xusdc_encoding::xreserve::encoding::DepositIntent)) — to the
+//! shared encoding crate's typed [`XUsdcMintNote`] builder,
 //! which decides every byte of the note's form: the storage, the two attachments, the note type, and
 //! the script.
 //!
-//! **Why the pubkey is a parameter and the signature is not.** Circle's attestation object carries
-//! `payload`, `messageHash`, and `attestation` (the 65-byte `r‖s‖v`) — but NOT the attester's
-//! public key, which the faucet's on-chain check needs in the note. So the 33-byte compressed key
-//! comes from the relayer's own configuration: it is the key whose commitment (Poseidon2 over the
-//! 16 affine felts it decompresses to) the operator was told is enabled in the faucet's
-//! `xReserveAttesters` allowlist. The payload and the signature are Circle's, and they reach this
+//! **Why the attester index is a parameter and the signature is not.** Circle's attestation object
+//! carries `payload`, `messageHash`, and `attestation` (the 65-byte `r‖s‖v`) — but nothing that
+//! says WHICH attester signed, and the faucet needs that to pick a key out of its own array. So the
+//! index comes from the relayer's own configuration: it is the array position the operator was told
+//! the administrator wrote that attester's key at. The payload and the signature are Circle's, and they reach this
 //! module only through the validated boundary — there is no entry point that takes them as raw
 //! bytes, because a note built from bytes whose `messageHash == keccak256(payload)` binding was
 //! never checked is a transaction spent on an envelope the chain will reject.
 //!
 //! **What the builder can and cannot cause.** It is a liveness component: a bug here withholds a
 //! mint (a note the faucet refuses, an error where a note should have been) — it cannot authorize
-//! one. The nonce assert-then-set, the amount reduction, the attester-allowlist check and the ECDSA
+//! one. The nonce assert-then-set, the amount reduction, the attester-enabled check and the ECDSA
 //! verification are all on-chain and faucet-owned. That is also why every failure path below
 //! is a typed, NON-retryable error: a payload the codec refuses does not become valid on a retry,
 //! and a relayer that looped on one would stop minting everything else.
@@ -30,82 +30,44 @@ use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::Note;
 
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::PublicKey;
 
 use crate::circle::schema::ValidatedAttestation;
-use crate::error::{Cause, HexField, RelayerError};
+use crate::error::{Cause, RelayerError};
 
-/// The 33-byte compressed SEC1 length — the ONLY attester-key form the relayer handles (the
-/// allowlist itself is keyed by the Poseidon2 commitment over the 16 affine felts this
-/// key decompresses to).
-const COMPRESSED_PUBKEY_LEN: usize = 33;
-
-/// The attester public key the relayer is configured with: 33 compressed SEC1 bytes that ARE a
-/// secp256k1 curve point.
+/// The index of the attester whose key the faucet should verify against: a position in the
+/// faucet's on-chain attester key array, travelling in every mint note.
 ///
-/// A newtype, and validated in its constructor, because it is neither a Circle wire field nor a
-/// value any check downstream would catch in time: it arrives from the operator's config, it
-/// travels inside every mint note, and the faucet checks it against `xReserveAttesters` on-chain. A
-/// typo caught at startup costs a restart; the same typo caught by the chain costs every mint until
-/// someone reads the logs. Point validity is judged by the shared encoding crate's own SEC1
-/// decompression ([`PublicKey::to_affine_felts`], the same primitive that packs the affine felts the
-/// faucet verifies) — this crate does not re-implement curve arithmetic.
+/// A newtype rather than a bare `u32` because it is an operator-configured value that reaches the
+/// chain unmodified, and nothing downstream would catch a mix-up with any other number. Its
+/// validity is not something this crate can judge: an index is well-formed by construction, but
+/// whether the ADMINISTRATOR wrote a key at it is known only to the faucet. A wrong index costs
+/// every mint until someone reads the logs — the same failure the previous configured-pubkey form
+/// had, and for the same reason: only the chain holds the truth.
 ///
-/// It is NOT an authority: an allowlisted key is one the FAUCET has in its allowlist, and only the
-/// chain knows that. This type only guarantees the bytes are a key at all.
+/// It is NOT an authority. Naming an index does not enable an attester; only the administrator's
+/// `set_attester` note does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AttesterPubkey([u8; COMPRESSED_PUBKEY_LEN]);
+pub struct AttesterIndex(u32);
 
-impl AttesterPubkey {
-    /// Validates 33 raw bytes as a compressed SEC1 secp256k1 point.
-    ///
-    /// # Errors
-    /// * [`RelayerError::InvalidAttesterPubkey`] — the bytes are not a curve point (the shared
-    ///   encoding crate's
-    ///   [`EncodingError::InvalidPubkey`](xusdc_encoding::xreserve::encoding::EncodingError) is
-    ///   preserved as the source).
-    pub fn new(bytes: [u8; COMPRESSED_PUBKEY_LEN]) -> Result<Self, RelayerError> {
-        // the felts are discarded: this call is here as the OWNER's validity judgement on the key,
-        // not to encode anything (the encoding happens inside the shared encoding crate's note
-        // factory).
-        PublicKey::new(bytes)
-            .to_affine_felts()
-            .map_err(|source| RelayerError::InvalidAttesterPubkey(Cause::new(source)))?;
-
-        Ok(Self(bytes))
+impl AttesterIndex {
+    /// Wraps an attester key-array index.
+    pub const fn new(index: u32) -> Self {
+        Self(index)
     }
 
-    /// Parses the key as an operator writes it in configuration: hex, with or without the `0x`
-    /// prefix.
+    /// Parses the index as an operator writes it in configuration: a plain decimal `u32`.
     ///
     /// # Errors
-    /// * [`RelayerError::MalformedHex`] — not hex ([`HexField::AttesterPubkey`]).
-    /// * [`RelayerError::BadAttesterPubkeyLength`] — not 33 bytes (an uncompressed 65-byte key
-    ///   lands here: it is a different encoding of the point, and not the form the allowlist
-    ///   commitment is derived from).
-    /// * [`RelayerError::InvalidAttesterPubkey`] — 33 bytes that are not a curve point.
-    pub fn from_hex(hex: &str) -> Result<Self, RelayerError> {
-        let bytes = hex::decode(hex.strip_prefix("0x").unwrap_or(hex)).map_err(|source| {
-            RelayerError::MalformedHex {
-                field: HexField::AttesterPubkey,
-                source,
-            }
-        })?;
-
-        let bytes: [u8; COMPRESSED_PUBKEY_LEN] =
-            bytes
-                .as_slice()
-                .try_into()
-                .map_err(|_| RelayerError::BadAttesterPubkeyLength {
-                    actual: bytes.len(),
-                })?;
-
-        Self::new(bytes)
+    /// * [`RelayerError::MalformedAttesterIndex`] — not a decimal `u32`.
+    pub fn parse(text: &str) -> Result<Self, RelayerError> {
+        text.parse::<u32>()
+            .map(Self)
+            .map_err(|source| RelayerError::MalformedAttesterIndex(Cause::new(source)))
     }
 
-    /// The 33 compressed SEC1 bytes.
-    pub fn as_bytes(&self) -> &[u8; COMPRESSED_PUBKEY_LEN] {
-        &self.0
+    /// The raw index.
+    pub const fn get(&self) -> u32 {
+        self.0
     }
 }
 
@@ -121,7 +83,7 @@ impl AttesterPubkey {
 ///   the routing attachment can bind nothing else.
 /// * `attestation` — the validated envelope. Its DepositIntent payload and its 65-byte `r‖s‖v`
 ///   travel together in the merged scheme-4 transport attachment.
-/// * `attester` — the operator-configured candidate pubkey, travelling beside the signature.
+/// * `attester` — the operator-configured attester index, travelling beside the signature.
 /// * `rng` — the caller's randomness. The serial number is drawn from it, which is what makes a
 ///   re-mint of the same DepositIntent a distinct note rather than a collision.
 ///
@@ -142,10 +104,10 @@ pub fn build_mint_note<R: FeltRng>(
     sender: AccountId,
     faucet_id: AccountId,
     attestation: &ValidatedAttestation,
-    attester: &AttesterPubkey,
+    attester: AttesterIndex,
     rng: &mut R,
 ) -> Result<Note, RelayerError> {
-    let mint_attestation = MintAttestation::new(attestation.attestation(), *attester.as_bytes());
+    let mint_attestation = MintAttestation::new(attestation.attestation(), attester.get());
 
     // Adopt the typed builder at the production boundary: the Circle envelope hands over the typed
     // `DepositIntent`, so no raw `&[u8]` crosses the ingestion boundary.

@@ -121,8 +121,8 @@ pub const XRESERVE_CONTRACT_HI_SLOT_LABEL: &str =
 pub const XRESERVE_CONTRACT_LO_SLOT_LABEL: &str =
     "xusdc::xreserve::domain_config::xreserve_contract_lo";
 pub const USED_NONCES_SLOT_LABEL: &str = "xusdc::xreserve::nonce_registry::used_nonces";
-pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str =
-    "xusdc::xreserve::attester_admin::xreserve_attesters";
+pub const XRESERVE_ATTESTER_KEYS_SLOT_LABEL: &str =
+    "xusdc::xreserve::attestation::xreserve_attester_keys";
 
 /// The SIX storage slots the supplied `xreserve` component must declare (the
 /// validate-what-you-ship check): a missing slot would ship a faucet whose reads/writes of it trap
@@ -136,7 +136,7 @@ pub const REQUIRED_XRESERVE_SLOT_LABELS: [&str; 6] = [
     XRESERVE_CONTRACT_HI_SLOT_LABEL,
     XRESERVE_CONTRACT_LO_SLOT_LABEL,
     USED_NONCES_SLOT_LABEL,
-    XRESERVE_ATTESTERS_SLOT_LABEL,
+    XRESERVE_ATTESTER_KEYS_SLOT_LABEL,
 ];
 
 /// The three build-seeded domain-config fields (`domain`, `source_domain`, `xreserve_contract`).

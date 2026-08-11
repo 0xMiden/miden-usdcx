@@ -188,7 +188,7 @@ fn stock_role_action_note<R: miden_protocol::crypto::rand::FeltRng>(
 /// + pubkey the `XUsdcMintNote` factory embeds in the merged transport's attestation section.
 fn attestation_for(seed: u64, payload: &[u8]) -> MintAttestation {
     let attester = gen_attester(seed, payload);
-    MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes)
+    MintAttestation::new(attester.sig_bytes, TEST_ATTESTER_INDEX)
 }
 
 /// The REAL stock mint note for `payload`: the production `XUsdcMintNote` factory (the merged
@@ -310,6 +310,21 @@ fn wallet_balance(account: &Account, faucet_id: AccountId) -> u64 {
 }
 
 /// The map marker word `[1, 0, 0, 0]` (attester enabled / nonce used / role member).
+/// The array key of the installed attester's FIRST key entry.
+fn attester_key_entry() -> Word {
+    Word::from([0, 0, 0, PUBKEY_ARRAY_ENTRIES * TEST_ATTESTER_INDEX])
+}
+
+/// The first array word of a staged affine key — what reads back once it is installed.
+fn first_key_word(pubkey_felts: &[Felt]) -> Word {
+    Word::new([
+        pubkey_felts[0],
+        pubkey_felts[1],
+        pubkey_felts[2],
+        pubkey_felts[3],
+    ])
+}
+
 fn marker() -> Word {
     Word::from([1u32, 0, 0, 0])
 }
@@ -325,21 +340,26 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // seeded here in the order the indices below list, per the header's mechanics. `route` is the
     // routing-only faucet target the factories stamp into tags/attachments; consume-by-id never
     // reads it, so the pre-build dummy id is sound.
-    let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
-        let commitment =
-            gen_attester(1, &payload_for(recipient, MINT_AMOUNT, 0, faucet_id)).commitment;
+    let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
+        let pub_key = PublicKey::new(gen_attester_pubkey(1));
         let route = faucet_id;
         let psym = RoleSymbol::new(DOM_PAUSER_ROLE).expect("valid role symbol");
         vec![
             // 0: S3a stranger set_attester (reject)
-            XReserveSetAttesterNote::create(stranger(), route, commitment, 1, &mut note_rng(913))
-                .expect("building the seeded attester-stranger note"),
+            XReserveSetAttesterNote::enable(
+                stranger(),
+                route,
+                TEST_ATTESTER_INDEX,
+                &pub_key,
+                &mut note_rng(913),
+            )
+            .expect("building the seeded attester-stranger note"),
             // 1: S3a owner set_attester
-            XReserveSetAttesterNote::create(
+            XReserveSetAttesterNote::enable(
                 administrator(),
                 route,
-                commitment,
-                1,
+                TEST_ATTESTER_INDEX,
+                &pub_key,
                 &mut note_rng(914),
             )
             .expect("building the seeded attester-owner note"),
@@ -495,22 +515,26 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet0,
-            XRESERVE_ATTESTERS_SLOT_LABEL,
-            attester1.commitment
+            XRESERVE_ATTESTER_KEYS_SLOT_LABEL,
+            attester_key_entry()
         )?,
         Word::from([0u32, 0, 0, 0]),
-        "S0: the attester allowlist ships EMPTY (set_attester is the bring-up writer)"
+        "S0: the attester key array ships EMPTY (set_attester is the bring-up writer)"
     );
 
-    // ── S3a — ADMIN: owner allowlists the attester; a stranger's attempt is rejected and leaves
-    // the map unchanged.
+    // ── S3a — ADMIN: owner installs the attester's key; a stranger's attempt is rejected and
+    // leaves the array unchanged.
     let faucet = committed(&pf.mock_chain, faucet_id)?;
     let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(0)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
     assert_eq!(
-        read_map_word(&faucet, XRESERVE_ATTESTERS_SLOT_LABEL, attester1.commitment)?,
+        read_map_word(
+            &faucet,
+            XRESERVE_ATTESTER_KEYS_SLOT_LABEL,
+            attester_key_entry()
+        )?,
         Word::from([0u32, 0, 0, 0]),
-        "S3a: the rejected set_attester left the allowlist unchanged"
+        "S3a: the rejected set_attester left the key array unchanged"
     );
     let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(1))
         .await
@@ -519,11 +543,11 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &committed(&pf.mock_chain, faucet_id)?,
-            XRESERVE_ATTESTERS_SLOT_LABEL,
-            attester1.commitment
+            XRESERVE_ATTESTER_KEYS_SLOT_LABEL,
+            attester_key_entry()
         )?,
-        marker(),
-        "S3a: the allowlist marker [1,0,0,0] reads back for the commitment"
+        first_key_word(&attester1.pubkey_felts),
+        "S3a: the attester's first key word reads back at its array entry"
     );
 
     // ── S3b — ADMIN: owner sets max_supply; a stranger's attempt is rejected.
@@ -1019,9 +1043,13 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S13: nonce 2 still marked"
     );
     assert_eq!(
-        read_map_word(&faucet, XRESERVE_ATTESTERS_SLOT_LABEL, attester1.commitment)?,
-        marker(),
-        "S13: the attester allowlist marker survives the whole arc"
+        read_map_word(
+            &faucet,
+            XRESERVE_ATTESTER_KEYS_SLOT_LABEL,
+            attester_key_entry()
+        )?,
+        first_key_word(&attester1.pubkey_felts),
+        "S13: the attester's installed key survives the whole arc"
     );
     assert_eq!(
         read_role_config(&faucet, &pauser_sym)?,
@@ -1059,17 +1087,16 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
 /// helper level.
 #[tokio::test]
 async fn second_mint_to_distinct_recipient() -> Result<()> {
-    let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
-        let commitment =
-            gen_attester(1, &payload_for(recipient, MINT_AMOUNT, 0, faucet_id)).commitment;
+    let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
+        let pub_key = PublicKey::new(gen_attester_pubkey(1));
         let route = faucet_id;
         vec![
             // 0: owner set_attester (bring-up)
-            XReserveSetAttesterNote::create(
+            XReserveSetAttesterNote::enable(
                 administrator(),
                 route,
-                commitment,
-                1,
+                TEST_ATTESTER_INDEX,
+                &pub_key,
                 &mut note_rng(931),
             )
             .expect("building the seeded attester-owner note"),

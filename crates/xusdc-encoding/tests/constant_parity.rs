@@ -34,21 +34,17 @@ use xusdc_encoding::xreserve::encoding::{
     MINT_INTENT_FELTS, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF, MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF,
     MINT_INTENT_LOCAL_TOKEN_FELT_OFF, MINT_INTENT_MAX_FEE_FELT_OFF, MINT_INTENT_NONCE_FELT_OFF,
     MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
-    MINT_INTENT_SCALE_EXP, PUBKEY_FELTS,
+    MINT_INTENT_SCALE_EXP,
 };
 use xusdc_encoding::{DEPOSIT_INTENT_MASM, MINT_INTENT_MASM};
 
-/// The faucet attestation verification attestation-verify shell module source, read test-side by reference.
-const ATTESTATION_VERIFY_MASM: &str =
-    include_str!("../../../asm/standards/xreserve/attestation_verify.masm");
+/// The faucet attester-key module source — the `set_attester` write path and the mint-time
+/// verification read path over one array — read test-side by reference.
+const ATTESTATION_MASM: &str = include_str!("../../../asm/standards/xreserve/attestation.masm");
 
 /// The attestation mint policy module source (the ACTIVE mint policy; owns the merged attachment
 /// transport + ASSERT-MATCH binding constants), read test-side by reference.
 const MINT_POLICY_MASM: &str = include_str!("../../../asm/standards/xreserve/mint_policy.masm");
-
-/// The faucet set_attester admin module source, read test-side by reference.
-const ATTESTER_ADMIN_MASM: &str =
-    include_str!("../../../asm/standards/xreserve/attester_admin.masm");
 
 /// The packed-memory primitives the DC-14 preimage writer is built from, read test-side by
 /// reference. It owns the limb guard's error and one width constant; the wire layout stays with
@@ -70,8 +66,9 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     // the maxFee/fee staging's too-large guard (deposit_intent_parser.masm)
     // replay protection R-MINT-12
     "ERR_XRESERVE_NONCE_REPLAY",
-    // attestation verification R-MINT-13 / R-MINT-14 (attestation_verify.masm)
-    "ERR_XRESERVE_DISALLOWED_PUB_KEY",
+    // attestation verification R-MINT-13 / R-MINT-14 (attestation.masm)
+    "ERR_XRESERVE_ATTESTER_INDEX_NOT_U32",
+    "ERR_XRESERVE_ATTESTER_NOT_ENABLED",
     "ERR_XRESERVE_SIG_INVALID",
     // F2 fee guard (deposit_intent_parser.masm; DEC-2 keep-zero)
     // Transport-shape guards on the stock MintNote's attachments: the attachment set and the
@@ -83,6 +80,9 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_MINT_NOTE_TRANSPORT_TOO_SHORT",
     "ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB",
     "ERR_XRESERVE_MINT_NOTE_INTENT_WORDS",
+    // the ADMIN-gated key setter's own guards (attestation.masm)
+    "ERR_XRESERVE_SET_ATTESTER_NOTE_STORAGE",
+    "ERR_XRESERVE_SET_ATTESTER_INDEX_NOT_U32",
     // the ASSERT-MATCH binding (mint_policy.masm)
     "ERR_XRESERVE_MINT_RECIPIENT_MISMATCH",
     "ERR_XRESERVE_MINT_AMOUNT_MISMATCH",
@@ -100,24 +100,29 @@ const EXPECTED_DEPOSIT_INTENT_WORD_CONSTS: &[(&str, &str)] =
 const EXPECTED_MINT_INTENT_WORD_CONSTS: &[(&str, &str)] =
     &[("USED_NONCES_SLOT", support::USED_NONCES_SLOT_LABEL)];
 
-/// Expected `word("…")` slot-name constants of the attestation verification attestation-verify shell module: NONE. It
-/// imports `XRESERVE_ATTESTERS_SLOT` (and the enabled marker) from the setter module rather than
-/// redeclaring them, so the two sides cannot drift by construction.
-const EXPECTED_ATTESTATION_WORD_CONSTS: &[(&str, &str)] = &[];
-
-/// Expected `word("…")` slot-name constant of the set_attester admin module — the single MASM-side
-/// declaration of the slot the attestation verification read path also keys; the shared label is the single Rust source.
-/// (The `ATTESTER_ENABLED_MARKER` / `ATTESTER_DISABLED_MARKER` Word array literals are not
-/// parity-parsed, like `NONCE_USED_MARKER`.)
-const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] = &[(
-    "XRESERVE_ATTESTERS_SLOT",
-    support::XRESERVE_ATTESTERS_SLOT_LABEL,
+/// Expected `word("…")` slot-name constant of the attester-key module — the single MASM-side
+/// declaration of the slot both the setter and the verification path key; the shared label is the
+/// single Rust source.
+const EXPECTED_ATTESTATION_WORD_CONSTS: &[(&str, &str)] = &[(
+    "XRESERVE_ATTESTER_KEYS_SLOT",
+    support::XRESERVE_ATTESTER_KEYS_SLOT_LABEL,
 )];
 
-/// The attestation verification attestation-verify shell's numeric constants: its `@locals` offsets (the keccak
-/// digest's two words — procedure-local addresses with no Rust counterpart) and `PUBKEY_FELTS`,
-/// which IS parity-asserted against the Rust codec in `masm_rust_constant_parity` below.
-const ATTESTATION_COVERED_NUMS: &[&str] = &["DIGEST_LO_LOC", "DIGEST_HI_LOC", "PUBKEY_FELTS"];
+/// The attester-key module's numeric constants: the array stride (parity-asserted against the
+/// fixture mirror in `masm_rust_constant_parity` below), the note-storage item count, and the two
+/// procedures' `@locals` offsets — procedure-local addresses with no Rust counterpart. The
+/// affine-key felt count is not among them: both paths walk the array a word at a time, so no MASM
+/// constant names that width.
+const ATTESTATION_COVERED_NUMS: &[&str] = &[
+    "PUBKEY_ARRAY_ENTRIES",
+    "PUB_KEY_WORD_FELTS",
+    "SET_ATTESTER_NOTE_NUM_ITEMS",
+    "STAGED_PUB_KEY_LOC",
+    "STAGED_ATTESTER_IDX_LOC",
+    "DIGEST_LO_LOC",
+    "DIGEST_HI_LOC",
+    "PUB_KEY_LOC",
+];
 
 /// Attestation mint-policy numeric consts: the merged transport's attachment scheme + the
 /// attestation section word count are parity-asserted against the `XUsdcMintNote` factory
@@ -148,8 +153,8 @@ const MINT_POLICY_COVERED_NUMS: &[&str] = &[
     "PREIMAGE_MAX_FELTS",
     "TRANSPORT_LOC",
     "ATTESTATION_LOC",
-    "ATTESTATION_PUBKEY_LOC",
     "ATTESTATION_SIGNATURE_LOC",
+    "ATTESTATION_ATTESTER_IDX_LOC",
     "MINT_INTENT_LOC",
     "MINT_INTENT_NONCE_LOC",
     "MINT_INTENT_RECIPIENT_PREFIX_LOC",
@@ -228,17 +233,22 @@ const PACKED_MEM_COVERED_NUMS: &[&str] = &["U64_PACKED_LIMBS"];
 /// written as `A + B` would silently drop out of the bidirectional check, so keeping MASM readable
 /// would cost coverage.
 fn eval_masm_num(value: &str, known: &BTreeMap<String, u64>) -> Option<u64> {
+    let atom = |atom: &str| {
+        let atom = atom.trim();
+        match atom.strip_prefix("0x") {
+            Some(hex) => u64::from_str_radix(hex, 16).ok(),
+            None => atom
+                .parse::<u64>()
+                .ok()
+                .or_else(|| known.get(atom).copied()),
+        }
+    };
     value
         .split('+')
         .map(|term| {
-            let term = term.trim();
-            match term.strip_prefix("0x") {
-                Some(hex) => u64::from_str_radix(hex, 16).ok(),
-                None => term
-                    .parse::<u64>()
-                    .ok()
-                    .or_else(|| known.get(term).copied()),
-            }
+            term.split('*')
+                .map(&atom)
+                .try_fold(1u64, |acc, factor| acc.checked_mul(factor?))
         })
         .try_fold(0u64, |acc, term| acc.checked_add(term?))
 }
@@ -453,13 +463,11 @@ fn masm_rust_constant_parity() {
         "DC-14 reconstruction is only invertible at scale zero (DEV-5 OPEN)"
     );
 
-    // extra row: the affine-pubkey felt count
-    let (att_nums, _, _) = parse_masm_consts(ATTESTATION_VERIFY_MASM);
-    assert_eq!(
-        num(&att_nums, "PUBKEY_FELTS", "attestation_verify.masm"),
-        PUBKEY_FELTS as u64,
-        "affine-pubkey felt count parity (qx||qy -> 16 u32-LE felts; ATT commitment input)"
-    );
+    // There is no affine-pubkey felt-count row any more. No MASM constant names that width: both
+    // key paths walk the array a word at a time, so the only MASM-side expression of 16 is a
+    // locals offset, which is procedure layout rather than a shared format. The Rust-side
+    // `PUBKEY_FELTS` is pinned by the key-array behaviour tests instead — a MASM side that walked
+    // the wrong number of words would fail to verify a signature the Rust codec produced.
 
     // The DOM_PAUSER / BLK_MANAGER role symbols no longer appear in any MASM constant. They used
     // to be hard-coded felts in the custom pause and blocklist wrappers, which is what this suite
@@ -542,11 +550,11 @@ fn masm_rust_constant_parity() {
 /// `support::SHELL_ERR_TABLE` message.
 #[test]
 fn masm_shell_error_string_parity() {
-    // the faucet shell errors live across four modules (mint_intent + deposit_intent +
-    // attestation_verify + mint_policy); merge their string consts before the lookup.
+    // the faucet shell errors live across five modules (mint_intent + deposit_intent +
+    // attestation + mint_policy + packed_mem); merge their string consts before the lookup.
     let (_, mut strs, _) = parse_masm_consts(DEPOSIT_INTENT_MASM);
     let (_, mi_strs, _) = parse_masm_consts(MINT_INTENT_MASM);
-    let (_, att_strs, _) = parse_masm_consts(ATTESTATION_VERIFY_MASM);
+    let (_, att_strs, _) = parse_masm_consts(ATTESTATION_MASM);
     let (_, policy_strs, _) = parse_masm_consts(MINT_POLICY_MASM);
     let (_, packed_mem_strs, _) = parse_masm_consts(PACKED_MEM_MASM);
     strs.extend(mi_strs);
@@ -574,7 +582,7 @@ fn masm_constants_bidirectional() {
     // every MASM-only string constant must be a known error (the encoding table or the faucet
     // shell table); a new one fails here until it gets a row
     let known_err = |name: &str| support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name);
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 6] = [
+    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 5] = [
         (
             "mint_intent.masm",
             MINT_INTENT_MASM,
@@ -587,9 +595,12 @@ fn masm_constants_bidirectional() {
             DEPOSIT_INTENT_COVERED_NUMS,
             EXPECTED_DEPOSIT_INTENT_WORD_CONSTS,
         ),
+        // attestation: pins XRESERVE_ATTESTER_KEYS_SLOT to the shared label, plus the key array's
+        // stride, the setter's staging offsets and the verify path's own locals (the authority-gate
+        // traps reuse the stock ADMIN-role and pause errors, not declared here).
         (
-            "attestation_verify.masm",
-            ATTESTATION_VERIFY_MASM,
+            "attestation.masm",
+            ATTESTATION_MASM,
             ATTESTATION_COVERED_NUMS,
             EXPECTED_ATTESTATION_WORD_CONSTS,
         ),
@@ -602,14 +613,6 @@ fn masm_constants_bidirectional() {
             MINT_POLICY_MASM,
             MINT_POLICY_COVERED_NUMS,
             &[],
-        ),
-        // set_attester: pins XRESERVE_ATTESTERS_SLOT to the shared label (no numeric consts;
-        // the authority-gate traps reuse the stock ADMIN-role and pause errors, not declared here).
-        (
-            "attester_admin.masm",
-            ATTESTER_ADMIN_MASM,
-            &[],
-            EXPECTED_ATTESTER_ADMIN_WORD_CONSTS,
         ),
         // packed_mem: the layout-agnostic copy/store primitives. It declares the limb guard's
         // error (a known shell error) and one width; no slot consts.

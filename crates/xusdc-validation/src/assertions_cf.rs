@@ -28,7 +28,7 @@ use crate::observations_cf::{
 };
 
 // EXACT on-chain error substrings the rejects must carry (single source of truth in the shipped
-// MASM: `deposit_intent_parser.masm` / `attestation_verify.masm` / `mint_policy.masm` /
+// MASM: `deposit_intent_parser.masm` / `attestation.masm` / `mint_policy.masm` /
 // `pause_admin.masm` for the xreserve-owned gates, and — since the Wave-1 S1 recomposition — the
 // STOCK miden-standards MASM for the burn floor (`min_burn_amount.masm`), the supply cap
 // (`fungible.masm` distribute), the owner/role gates, and the note/tx-script allowlist

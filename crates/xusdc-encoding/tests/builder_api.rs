@@ -56,7 +56,7 @@ const ALL_XRESERVE_SLOT_LABELS: [&str; 6] = [
     XRESERVE_CONTRACT_HI_SLOT_LABEL,
     XRESERVE_CONTRACT_LO_SLOT_LABEL,
     USED_NONCES_SLOT_LABEL,
-    XRESERVE_ATTESTERS_SLOT_LABEL,
+    XRESERVE_ATTESTER_KEYS_SLOT_LABEL,
 ];
 
 /// Assembles the xreserve component carrying exactly `labels` (value slots get a dummy word for the
@@ -68,7 +68,7 @@ fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
     for label in labels {
         let name = StorageSlotName::new(*label).with_context(|| format!("slot label {label}"))?;
         let slot = match *label {
-            USED_NONCES_SLOT_LABEL | XRESERVE_ATTESTERS_SLOT_LABEL => {
+            USED_NONCES_SLOT_LABEL | XRESERVE_ATTESTER_KEYS_SLOT_LABEL => {
                 StorageSlot::with_map(name, StorageMap::new())
             }
             l if l == DOMAIN_CONFIG_SLOT_LABEL => {

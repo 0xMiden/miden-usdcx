@@ -197,12 +197,8 @@ impl fmt::Display for RelayerError {
             Self::MintNoteBuild(source) => {
                 write!(f, "the mint note could not be built: {source}")
             }
-            Self::BadAttesterPubkeyLength { actual } => write!(
-                f,
-                "the attester pubkey must be a 33-byte compressed sec1 key, got {actual} bytes"
-            ),
-            Self::InvalidAttesterPubkey(source) => {
-                write!(f, "the attester pubkey is not a secp256k1 point: {source}")
+            Self::MalformedAttesterIndex(source) => {
+                write!(f, "the attester index is not a u32: {source}")
             }
             // the node's own words are quoted, not paraphrased: "which node, saying what" is the
             // whole diagnostic value of a submit failure
@@ -258,7 +254,7 @@ impl core::error::Error for RelayerError {
             | Self::Decode(source)
             | Self::IdempotencyStore(source)
             | Self::MintNoteBuild(source)
-            | Self::InvalidAttesterPubkey(source)
+            | Self::MalformedAttesterIndex(source)
             | Self::TransientSubmit(source)
             | Self::FatalSubmit(source)
             | Self::BadBaseUrl { source, .. }

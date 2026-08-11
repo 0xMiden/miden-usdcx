@@ -41,7 +41,7 @@ use miden_standards::StandardsLib;
 use xusdc_encoding::account::xreserve::{
     XReserveStablecoinBuilder, DOMAIN_CONFIG_SLOT_LABEL, IDENTIFIER_CONFIG_SLOT_LABEL,
     SOURCE_DOMAIN_CONFIG_SLOT_LABEL, USDCX_DECIMALS, USED_NONCES_SLOT_LABEL,
-    XRESERVE_ATTESTERS_SLOT_LABEL, XRESERVE_CONTRACT_HI_SLOT_LABEL,
+    XRESERVE_ATTESTER_KEYS_SLOT_LABEL, XRESERVE_CONTRACT_HI_SLOT_LABEL,
     XRESERVE_CONTRACT_LO_SLOT_LABEL,
 };
 use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
@@ -115,7 +115,7 @@ pub fn build_xreserve_component_seeded(domain: Option<&DomainParams>) -> Result<
                 StorageMap::new(),
             ),
             StorageSlot::with_map(
-                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+                StorageSlotName::new(XRESERVE_ATTESTER_KEYS_SLOT_LABEL)
                     .context("xReserveAttesters slot label")?,
                 StorageMap::new(),
             ),

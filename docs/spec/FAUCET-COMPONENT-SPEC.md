@@ -39,8 +39,7 @@ min-burn floor, a missing domain-config seed, or a non-Public faucet) at build t
 | `deposit_intent` | Circle's wire form and the faucet's on-chain realization of it. `rebuild` (`DC-14`) writes the message the attestation signed, from the note's mint intent plus the fields only this account can supply — the configured domain and its own account id, both read here rather than passed in, so no caller-supplied value can reach them. It also holds the `DC-5` reducer and declares the domain-config slot id. |
 | `mint_intent` | What the mint note actually carries (`DC-14`): the carried felt offsets, the widths of the values they hold, and `validate` — the two preconditions the signature cannot express (the fee ceiling and the nonce replay guard), both statements about the carried fields alone. It hashes the carried nonce (`hash_nonce`) and declares the used-nonces slot id. |
 | `packed_mem` | The primitives `rebuild` writes the u32-LE-packed region with: guarded limb copies, and the big-endian u64 / account-id stores. It knows no wire offsets, which is why it is separable from the layout at all. |
-| `attestation_verify` | Keccaks the payload, checks the attester pubkey against the allowlist, and verifies the ECDSA signature. |
-| `attester_admin` | The authority-gated `set_attester` allowlist setter. |
+| `attestation` | The attester public-key array: the home of the `xReserveAttesterKeys` slot (`DC-15`), the authority-gated `set_attester` setter that writes it, and `verify_attestation`, which keccaks the payload, reads the attester pubkey back out at the index the note carries, requires it to be non-zero, and verifies the ECDSA signature against it. |
 
 The burn floor and its setter are **stock**: the `MinBurnAmount` policy component carries the
 floor slot, its `check_policy` is the active burn policy, and the admin note calls its stock
@@ -63,7 +62,7 @@ component.
 A relayer submits a **stock `MintNote`** whose storage embeds the attested output (the P2ID
 recipe to the intent's recipient with the nonce-key serial, the reduced amount as this faucet's
 asset, the recipient's account-target tag) and whose attachments carry the Circle-signed
-transport: one merged attachment (scheme 4) containing `[pubkey, signature]` followed by the
+transport: one merged attachment (scheme 4) containing `[signature, attester_idx]` followed by the
 **carried mint payload** and its `hookData` tail, plus the network routing target (scheme 2). The
 stock MINT script calls the stock `mint_and_send`, which dispatches the **attestation mint policy**
 first; the policy runs a strict **verify-once-then-write-once** pipeline, and any failure aborts the
@@ -78,7 +77,7 @@ rejects stop being separately diagnosable — is spelled out under `R-MINT-*` in
 1. **Pause gate** — the stock policy dispatcher runs `assert_not_paused` before the policy, so a
    paused faucet never even dispatches the attestation gate.
 2. **Transport shape** (`R-MINT-8`) — the policy locates exactly two attachments and hash-verifies
-   the transport into one local region. Its first 9 words carry the fixed-width attestation, the
+   the transport into one local region. Its first 5 words carry the fixed-width attestation, the
    next 6 the carried payload, and the rest the packed `hookData`. A floor check makes the fixed
    prefix readable, then the embedded `hookDataLen` is bound to the committed word count by an
    **exact** equality — so trailing padding cannot hide data, a smuggled section cannot ride along,
@@ -107,10 +106,11 @@ rejects stop being separately diagnosable — is spelled out under `R-MINT-*` in
    other felt of the region. The identifier and the domain are read inside the writer, not passed to
    it.
 5. **Attestation verification** (`R-MINT-13..14`): keccak the full **rebuilt** payload — the same
-   `240 + hookDataLen` bytes Circle signed — require the attester's
-   pubkey commitment to be enabled in the `xReserveAttesters` allowlist, and ECDSA-verify the
-   signature over the digest. The same pubkey region feeds both the allowlist lookup and the
-   signature check, so an allowlisted pubkey cannot be paired with a foreign signature.
+   `240 + hookDataLen` bytes Circle signed — read the attester's pubkey out of the
+   `xReserveAttesterKeys` array at the index the note carries, require that key to be non-zero, and
+   ECDSA-verify the signature over the digest against it. The key is account state the administrator
+   wrote, so the note chooses only *which* attester is claimed, never the key material itself; naming
+   the wrong index simply yields a key the signature cannot verify under.
 6. **Assert-match binding** (ratified): the policy rebuilds the note-creation arguments with the
    standard `p2id::prepare_note` over the attested target and the nonce-key serial, and every
    value the note supplied must equal what that recipe returns — `RECIPIENT` (one word compare
@@ -135,10 +135,13 @@ cannot be expressed — strictly stronger than the reject it replaces. When Circ
 relayer-fee design (DEV-8), restoring the `feeAmount ≤ maxFee` compare and a relayer-credit note leg
 is a **transport change**, not a policy change: the field has to be carried again first.
 
-**Attestation model** (DEV-1, `INV-NO-ECRECOVER`): Miden has no `ecrecover`, so the signer is
-not recovered on-chain. Instead the relayer supplies the candidate pubkey, the faucet checks a
-`Poseidon2(pubkey)` commitment against an allowlist, and verifies the raw secp256k1 signature
-over `keccak256(payload)` (65-byte `r‖s‖v`, `v` unused; not EIP-712).
+**Attestation model** (DEV-1, `INV-NO-ECRECOVER`, `DC-15`): Miden has no `ecrecover`, so the signer
+is not recovered on-chain. Instead the administrator writes the allowlisted attester keys into the
+faucet's own `xReserveAttesterKeys` array, the relayer names one of them by index, and the faucet
+verifies the raw secp256k1 signature over `keccak256(payload)` against the key it reads back
+(65-byte `r‖s‖v`, `v` unused; not EIP-712). A key is enabled exactly while it is non-zero, so
+disabling an attester means zeroing its entry. `DEV-1` remains **OPEN** — see its glossary row for
+the assumption this shape rests on.
 
 ## 4. Burn
 
@@ -165,11 +168,15 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
   role is the account's single authority handle, and rotating it is a grant and a revoke of that
   role through the standard role-action note. The handover is single-step — there is no
   nominate-then-accept confirmation.
-- **Administrator-gated setters**: `set_attester` (allowlist), the stock `set_min_burn_amount`
+- **Administrator-gated setters**: `set_attester` (the key array), the stock `set_min_burn_amount`
   (behind the note-side floor guard) and `set_max_supply` all resolve through
   the account-wide authority to the `ADMIN` role. They are
   intentionally **not** pause-gated (finding `F6`), so the administrator can, e.g., disable a
-  compromised attester while the faucet is paused.
+  compromised attester while the faucet is paused. `set_attester` takes no parameters: it reads the
+  index and the 16 key felts out of the consumed note's own storage, which the kernel has already
+  bound to the creator's commitment, so nothing it acts on crosses the `call` boundary. Zeroing a
+  key disables that index; rotation writes a **new** index and zeroes the old one, never overwrites
+  in place (`DC-15`).
 - **Pause**: the stock `PausableManager`'s `pause`/`unpause`, gated on the `DOM_PAUSER` role (not
   the administrator) — Circle's distinct-pauser-role model, expressed through the account's per-procedure
   role map rather than a hand-written wrapper. A pause halts both mint and burn-consume.
@@ -218,13 +225,15 @@ slot words. The three build-seeded fields are typed u32/bytes32 at the builder b
 ## 7. What is consumed from the encoding library
 
 The faucet does not re-implement encoding. It consumes the shared codecs by reference:
-`mint_intent::hash_nonce` (nonce keying), `attestation_verify::pubkey_commitment` (attester
-keying), and the `DC-1` / `DC-14` felt offsets the preimage writer stores at. The `DC-5` amount reduction is not among them: with
+`mint_intent::hash_nonce` (nonce keying) and the `DC-1` / `DC-14` felt offsets the preimage writer
+stores at. Attester keying is no longer among them: under `DC-15` the allowlist is an array of raw
+keys, so the only shared piece left on that path is the Rust-side SEC1→affine packing the admin note
+ships. The `DC-5` amount reduction is not among them either: with
 `DEPOSIT_SCALE_EXP == 0` the faucet writes the amount from the note's own asset value rather than
 verifying a witness against a staged uint256, so the MASM verifier had no caller and is deleted
 (reopening `DEV-5` restores it from history — see the ownership map's `DC-5` rider). See the
 encoding spec at `docs/spec/ENCODING-COMPONENT-SPEC.md` and the data
-contracts `DC-1..DC-7` and `DC-14` in the glossary.
+contracts `DC-1..DC-7`, `DC-14` and `DC-15` in the glossary.
 
 ## 8. Invariants (see the glossary for the full list)
 

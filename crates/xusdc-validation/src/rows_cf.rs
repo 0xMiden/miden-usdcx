@@ -40,7 +40,7 @@ use miden_standards::account::access::RoleBasedAccessControl;
 use miden_standards::account::policies::MinBurnAmount;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::P2idNote;
-use xusdc_encoding::account::xreserve::{DOM_PAUSER_ROLE, XRESERVE_ATTESTERS_SLOT_LABEL};
+use xusdc_encoding::account::xreserve::{DOM_PAUSER_ROLE, XRESERVE_ATTESTER_KEYS_SLOT_LABEL};
 use xusdc_encoding::note::xreserve_admin::{
     XReserveGrantRoleNote, XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote,
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
@@ -126,7 +126,7 @@ fn map_item(account: &Account, label: &str, key: Word) -> Result<Word> {
 fn attester_marker(account: &Account, commitment: Word) -> Result<Word4> {
     Ok(word4(map_item(
         account,
-        XRESERVE_ATTESTERS_SLOT_LABEL,
+        XRESERVE_ATTESTER_KEYS_SLOT_LABEL,
         commitment,
     )?))
 }

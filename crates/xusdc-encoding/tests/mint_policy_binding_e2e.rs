@@ -37,7 +37,8 @@ use support::mint_transport::*;
 use support::*;
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::xreserve::encoding::{
-    DepositIntent, MintIntent, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
+    deposit_intent_field_offset, DepositIntent, DepositIntentField, EncodingError, MintIntent,
+    MAX_HOOK_DATA_LEN, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
 };
 
 use miden_protocol::{Felt, Word};
@@ -504,6 +505,78 @@ async fn mint_rejects_a_non_u32_hook_data_len_limb() -> Result<()> {
         shell_error_by_name("ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB"),
     )
     .await
+}
+
+/// The codec's hookData ceiling is EXACTLY the transport's capacity, at the boundary and in both
+/// directions: an intent at `MAX_HOOK_DATA_LEN` builds a factory note whose transport fills the
+/// per-attachment word cap to the last word, and one byte more is refused by the codec itself —
+/// never accepted by the codec only to strand a Circle-attested deposit at the note factory.
+/// (The compile-time pin beside the transport layout keeps the two bounds equal; this is the
+/// behavioral half at the exact edge.)
+#[test]
+fn the_codec_hook_data_ceiling_is_the_transport_capacity() -> Result<()> {
+    let pf = fixture()?;
+    let hook_len_off = deposit_intent_field_offset(DepositIntentField::HookDataLen);
+
+    // at the ceiling: the factory wraps it, and the transport is a FULL attachment
+    let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 43);
+    payload[hook_len_off..hook_len_off + 4].copy_from_slice(
+        &u32::try_from(MAX_HOOK_DATA_LEN)
+            .expect("fits u32")
+            .to_be_bytes(),
+    );
+    payload.extend((0..MAX_HOOK_DATA_LEN).map(|i| i as u8));
+    let attester = gen_attester(1, &payload);
+    let note = XUsdcMintNote::create(
+        pf.producer_id,
+        pf.faucet_id,
+        &payload,
+        &MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes),
+        &mut note_rng(112),
+    )
+    .map_err(|e| anyhow::anyhow!("a ceiling-sized intent must build a mint note: {e}"))?;
+    let transport_scheme =
+        NoteAttachmentScheme::new(TRANSPORT_SCHEME).expect("scheme 4 is a valid attachment scheme");
+    let transport = note
+        .attachments()
+        .iter()
+        .find(|a| a.attachment_scheme() == transport_scheme)
+        .context("the ceiling note carries the merged transport attachment")?;
+    assert_eq!(
+        transport.content().to_elements().len(),
+        usize::from(miden_protocol::note::NoteAttachment::MAX_NUM_WORDS) * 4,
+        "a ceiling-sized intent must fill the transport attachment exactly",
+    );
+
+    // one byte past the ceiling: the CODEC refuses it, so the factory is never reached with an
+    // intent it cannot carry
+    let mut over = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 44);
+    over[hook_len_off..hook_len_off + 4].copy_from_slice(
+        &u32::try_from(MAX_HOOK_DATA_LEN + 1)
+            .expect("fits u32")
+            .to_be_bytes(),
+    );
+    over.extend((0..MAX_HOOK_DATA_LEN + 1).map(|i| i as u8));
+    assert!(
+        matches!(
+            DepositIntent::new(&over).to_packed_felts(),
+            Err(EncodingError::HookDataTooLarge)
+        ),
+        "one byte past the ceiling must be the codec's HookDataTooLarge",
+    );
+    let over_attester = gen_attester(1, &over);
+    assert!(
+        XUsdcMintNote::create(
+            pf.producer_id,
+            pf.faucet_id,
+            &over,
+            &MintAttestation::new(over_attester.sig_bytes, over_attester.pubkey_bytes),
+            &mut note_rng(113),
+        )
+        .is_err(),
+        "the factory must refuse an over-ceiling intent rather than build an oversized transport",
+    );
+    Ok(())
 }
 
 /// SUB-REGION ISOLATION: corrupting one region of the merged attachment surfaces THAT region's

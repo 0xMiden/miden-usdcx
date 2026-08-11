@@ -34,7 +34,7 @@ use miden_standards::note::{MintNote, MintNoteStorage, P2idNoteStorage};
 
 use crate::xreserve::encoding::{
     bytes32_to_account_id, bytes32_to_storage_map_key, DepositIntent, DepositIntentHeader,
-    MintIntent, PublicKey, Signature,
+    MintIntent, PublicKey, Signature, BYTES_PER_PACKED_FELT, MAX_HOOK_DATA_LEN, MINT_INTENT_FELTS,
 };
 
 /// The mint-note transport attachment scheme (u16, project-chosen: >= 4, clear of
@@ -50,6 +50,22 @@ pub const XUSDC_MINT_ATTESTATION_NUM_WORDS: usize = 9;
 /// Word offset of the carried mint payload inside the transport attachment: past the fixed-width
 /// attestation. Constant by construction — see the module docs on why the attestation goes first.
 pub const XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF: usize = XUSDC_MINT_ATTESTATION_NUM_WORDS;
+
+// The codec's hookData ceiling must be EXACTLY this transport's capacity: the protocol's
+// per-attachment word cap, minus the attestation section and the carried mint payload, in bytes.
+// The codec accepting an intent is the guarantee that this factory can wrap it into a mint note,
+// so the two bounds may never drift apart — an attestation section that grew, a protocol cap that
+// moved, or a codec ceiling that loosened each breaks the build here instead of stranding a
+// Circle-attested deposit as unmintable.
+const _: () = assert!(
+    MAX_HOOK_DATA_LEN
+        == (NoteAttachment::MAX_NUM_WORDS as usize
+            - XUSDC_MINT_ATTESTATION_NUM_WORDS
+            - MINT_INTENT_FELTS / 4)
+            * 4
+            * BYTES_PER_PACKED_FELT,
+    "the codec's MAX_HOOK_DATA_LEN must equal the mint transport's hookData capacity"
+);
 
 /// The uint256 -> AssetAmount decimal scale the faucet applies. The cap / scale / dust decision
 /// stays OPEN, pending Circle confirmation; the faucet ships the PROVISIONAL scale-0 position

@@ -94,6 +94,12 @@ pub const MINT_INTENT_FELTS: usize = 24;
 /// limit, exactly as [`super::deposit_intent::DepositIntent::to_packed_felts`] requires. The
 /// faucet's staging region is sized to the same number, so a payload that passes here always fits
 /// on-chain. The exact cap Circle wants is still OPEN (`DEV-6`).
+///
+/// This ceiling is also EXACTLY the mint transport's hookData capacity — the per-attachment word
+/// cap minus the attestation section and the carried payload — so an intent the codec accepts is
+/// always one the note factory can wrap. A compile-time assertion beside the transport layout
+/// (`note::xreserve_mint`) pins the equality, so neither side can drift without breaking the
+/// build.
 pub const MAX_HOOK_DATA_LEN: usize =
     (MAX_NOTE_STORAGE_ITEMS - DEPOSIT_INTENT_HEADER_FELTS) * BYTES_PER_PACKED_FELT;
 

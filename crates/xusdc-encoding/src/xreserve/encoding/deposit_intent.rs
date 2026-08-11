@@ -267,7 +267,10 @@ impl<'a> DepositIntent<'a> {
     /// The u32-LE-packed on-chain preimage: 60 felts for the header plus ceil(hookDataLen/4) felts
     /// of hookData (the same `bytes_to_packed_u32_elements` primitive). Validates the structure
     /// first, then errors `HookDataTooLarge` past the protocol's `MAX_NOTE_STORAGE_ITEMS` bound
-    /// (1024 felts; the default cap — the exact hookData cap stays OPEN with Circle).
+    /// (1024 felts; the default cap — the exact hookData cap stays OPEN with Circle). The bound is
+    /// exactly the mint transport's capacity — see [`super::mint_intent::MAX_HOOK_DATA_LEN`] and
+    /// the compile-time pin beside the transport layout — so an intent this packer accepts is
+    /// always one the mint note can carry.
     ///
     /// # Errors
     ///

@@ -42,11 +42,13 @@
 //! [`build_faucet_account`], so account construction is traceable from the library root.
 
 use miden_protocol::account::{
-    AccountComponent, AccountId, AccountProcedureRoot, StorageSlot, StorageSlotName,
+    AccountComponent, AccountId, AccountProcedureRoot, RoleSymbol, StorageSlot, StorageSlotName,
 };
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::{Felt, Word};
-use miden_standards::account::access::{Pausable, PausableManager};
+use miden_standards::account::access::{
+    Pausable, PausableManager, RoleBasedAccessControl, RoleConfig,
+};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::{
     BasicBlocklist, BlocklistManager, BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager,
@@ -59,12 +61,10 @@ use crate::xreserve::encoding::EthBytes32;
 mod construction;
 mod error;
 mod network_auth;
-mod rbac_seed;
 
 use construction::build_usdcx_faucet;
 pub use construction::{build_faucet_account, XReserveComponent};
 pub use error::XReserveStablecoinBuilderError;
-use rbac_seed::seeded_dom_roles_rbac;
 
 /// The two Circle Domain RoleSymbols this faucet seeds under the ratified Circle-faithful admin
 /// model: `DOM_PAUSER` (pause/unpause) and `DOM_MANAGER` (rotation / role
@@ -451,8 +451,9 @@ impl XReserveStablecoinBuilder {
         // attestation-gate behavior unchanged. There is NO two-step ownership component, so the
         // built-in ADMIN role is the account's only authority handle and no owner slot exists to
         // drift from it. This mirrors `AccessControl::Rbac` (access/mod.rs) with the RBAC SEEDED
-        // with the DOM role members + the external BLK_MANAGER, since the stock constructor cannot
-        // express the `DOM_PAUSER → DOM_MANAGER` administration delegation the seed carries.
+        // with the DOM role members + the external BLK_MANAGER, including the
+        // `DOM_PAUSER → DOM_MANAGER` administration delegation, which the stock RBAC seeding builder
+        // expresses at construction via `RoleConfig::with_admin`.
         let mut components = self.assemble_components(manager, xreserve_component)?;
         components.push(PausableManager.into());
         components.push(BlocklistManager.into());
@@ -607,3 +608,53 @@ impl XReserveStablecoinBuilder {
         ])
     }
 }
+
+/// Seeds the faucet's `RoleBasedAccessControl` `AccountComponent` through the stock RBAC seeding
+/// builder, with four roles:
+///
+/// * `DOM_PAUSER` (→ `pauser_holder`) with administration DELEGATED to `DOM_MANAGER` (the Domain
+///   Manager rotates the Pauser) — the delegation is established atomically at construction, so
+///   `ADMIN` is never transiently able to touch `DOM_PAUSER`.
+/// * `DOM_MANAGER` (→ `manager_holder`) and `BLK_MANAGER` (→ `blocklist_manager_holder`), each left
+///   under the built-in `ADMIN`. `BLK_MANAGER` is capability-isolated: its holder can only block and
+///   unblock, and the administrator rotates or revokes it through the standard role-action note.
+/// * the built-in `ADMIN` role, whose single member is the bootstrap administrator (`owner`) — the
+///   account installs no ownership component, so `ADMIN` membership is its ONLY authority handle.
+///
+/// The builder seeds each role's members and its delegated admin at construction, and `build()`
+/// validates duplicate roles, empty configs, member-count overflow and unmanageable admin chains —
+/// the capability whose absence forced the earlier hand-rolled direct-seed. The resulting storage is
+/// byte-identical to that direct-seed (same code, slots, slot order, maps entry-for-entry, and
+/// metadata); `rbac_seed_equality::stock_builder_seed_is_byte_equal` pins that equality against a
+/// frozen copy of the direct-seed. Construction failures are invariants, so this mirrors the stock
+/// `.expect()` pattern.
+fn seeded_dom_roles_rbac(
+    owner: AccountId,
+    pauser_holder: AccountId,
+    manager_holder: AccountId,
+    blocklist_manager_holder: AccountId,
+) -> AccountComponent {
+    let pauser =
+        RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol (≤12)");
+    let manager =
+        RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol (≤12)");
+    let blk_manager =
+        RoleSymbol::new(BLK_MANAGER_ROLE).expect("BLK_MANAGER is a fixed valid role symbol (≤12)");
+    let admin = RoleBasedAccessControl::admin_role();
+
+    RoleBasedAccessControl::builder()
+        .role(
+            RoleConfig::new(pauser)
+                .with_members([pauser_holder])
+                .with_admin(manager.clone()),
+        )
+        .role(RoleConfig::new(manager).with_members([manager_holder]))
+        .role(RoleConfig::new(admin).with_members([owner]))
+        .role(RoleConfig::new(blk_manager).with_members([blocklist_manager_holder]))
+        .build()
+        .expect("the seeded DOM-roles RBAC configuration mirrors the stock From impl and is valid")
+        .into()
+}
+
+#[cfg(test)]
+mod rbac_seed_equality;

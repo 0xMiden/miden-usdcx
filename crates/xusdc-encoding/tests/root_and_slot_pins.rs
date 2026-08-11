@@ -30,11 +30,19 @@
 //! ratification above was measured against the pre-refresh base; refreshing this branch onto
 //! `implementation` brought in #112, which binds the `SET_ATTESTER` note to its target faucet and
 //! moves that note's script root. `XReserveSetAttesterNote` below carries its NEW, MEASURED value
-//! and is flagged NOT RATIFIED in place: a human must re-ratify it at PR assembly. The other ten
-//! ratified roots were re-measured on the refreshed tree and all HELD. (The refresh also moved the
-//! `typing_builder_byte_identity` account id, storage digest and state commitment — via #112's
-//! allowlist-slot change and #120's commitment-bound id derivation — which are flagged NOT RATIFIED
-//! in that file.)
+//! and is flagged NOT RATIFIED in place: a human must re-ratify it at PR assembly.
+//!
+//! All ELEVEN of the ratified roots HELD — the mover is outside that set. The eleven are the roots
+//! the rc.3 bump moved; `XReserveSetAttesterNote` was ratified in the OPPOSITE direction, as one of
+//! the three custom setters recorded as UNMOVED, and it is that recorded non-movement the refresh
+//! invalidated. Re-measured on the refreshed tree: the five stock allowlist roots are unchanged
+//! literals, and the six callable-surface roots are unchanged because the account CODE COMMITMENT
+//! is bit-identical to its ratified rc.3 value — it binds the account's whole procedure-root list,
+//! and neither #112 (a note script) nor #120 (the id derivation) touches account code.
+//!
+//! (The refresh also moved the `typing_builder_byte_identity` account id, storage digest and state
+//! commitment — via #112's allowlist-slot change and #120's commitment-bound id derivation — which
+//! are flagged NOT RATIFIED in that file.)
 //!
 //! Word values are pinned in their stable `Debug` rendering (decimal limbs), matching the
 //! convention `typing_builder_byte_identity` already uses for the account commitment — comparing the

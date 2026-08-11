@@ -368,16 +368,13 @@ proc load_carried_recipient
 end
 
 #! Asserts the committed hookData tail is canonically padded: every byte and limb past the
-#! hookData extent is zero. The word-count binding is exact only at WORD granularity and the
-#! keccak extent stops at the signed bytes, so this is what keeps one signed intent to ONE
-#! committable transport.
+#! hookData extent is zero.
 #!
 #! Inputs:  [hook_data_ptr, hook_data_len]
 #! Outputs: []
 #!
 #! Where:
-#! - hook_data_ptr is the base of the packed hookData inside the hash-verified transport, every
-#!   hookData limb already guarded as a valid u32 by the copy.
+#! - hook_data_ptr is the base of the packed hookData
 #! - hook_data_len is the carried hookData byte length, already bound to the committed word count.
 #!
 #! Panics if:

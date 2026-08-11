@@ -52,8 +52,7 @@ pub const XUSDC_MINT_ATTESTATION_NUM_WORDS: usize = 9;
 pub const XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF: usize = XUSDC_MINT_ATTESTATION_NUM_WORDS;
 
 // The codec's hookData ceiling must equal this transport's capacity (the per-attachment word cap
-// minus the attestation and the carried payload, in bytes), so every codec-accepted intent is
-// mintable; drift on either side breaks the build here.
+// minus the attestation and the carried payload, in bytes).
 const _: () = assert!(
     MAX_HOOK_DATA_LEN
         == (NoteAttachment::MAX_NUM_WORDS as usize

@@ -162,6 +162,7 @@ mod tests {
     /// cap exceeded / limb overflow (required edge) / scale overflow.
     #[rstest]
     #[case::tv_amt_3_cap_reject("amt-rej-cap")]
+    #[case::tv_amt_3_cap_reject_scale0("amt-rej-cap-scale0")]
     #[case::tv_amt_4_limb_overflow("amt-rej-limb-overflow")]
     #[case::tv_amt_7_scale_overflow("amt-rej-scale-overflow")]
     fn tv_amt_rejects(#[case] id: &str) {

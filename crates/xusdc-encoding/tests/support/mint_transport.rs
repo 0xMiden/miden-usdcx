@@ -107,7 +107,19 @@ pub fn payload_for(
     amount: u64,
     nonce_variant: u8,
 ) -> Vec<u8> {
-    let mut payload = mi(BASE_VECTOR).payload();
+    payload_from_vector(BASE_VECTOR, recipient, faucet_id, amount, nonce_variant)
+}
+
+/// [`payload_for`] over an explicit vector — for the cases that need a payload shape the base
+/// vector cannot express, like a hookData tail whose final word carries padding.
+pub fn payload_from_vector(
+    vector_id: &str,
+    recipient: AccountId,
+    faucet_id: AccountId,
+    amount: u64,
+    nonce_variant: u8,
+) -> Vec<u8> {
+    let mut payload = mi(vector_id).payload();
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]

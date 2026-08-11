@@ -35,19 +35,17 @@ const TOKEN_SUPPLY: u64 = 0;
 // The baseline composition anchors, as their stable `Debug`/`Display` renderings (captured from the
 // pre-change composition at SEED). Comparing the rendered strings sidesteps any felt-repr ambiguity.
 //
-// Re-captured when the mint intent took ownership of its own admissibility checks (`validate`,
-// `hash_nonce` and the replay guard moved out of the deposit-intent module, and `rebuild` lost
-// them), the unused `verify_uint256_to_asset_amount` was removed, and the nonce copy became two
-// word moves instead of eight element moves. Three of the four anchors moved with that — the code commitment directly, the storage
-// digest because the active mint policy is stored as `check_policy`'s MAST root, and the initial
-// commitment because it covers both. The account id did NOT move, which is what says the seed
-// derivation and the slot LAYOUT are untouched: only procedure code and the root it is named by.
+// The three commitment anchors move together whenever procedure code moves: the code commitment
+// directly, the storage digest because the active mint policy is stored as `check_policy`'s MAST
+// root, and the initial commitment because it covers both. The account id moves only when the seed
+// derivation or the slot LAYOUT changes, so an unchanged id under moved commitments says exactly
+// that: only procedure code and the root it is named by.
 const GOLDEN_INITIAL_COMMITMENT: &str =
-    "Word([1052646678099504404, 463462926362689613, 17653851081971408789, 2407414798603717391])";
+    "Word([10462623473389302732, 8937855233518818062, 15776584585295747211, 15416748903993801029])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([16976291790698015816, 5888415912956684650, 4290450764110773212, 7150546299912713910])";
+    "Word([13605426736853901048, 16331830196600718272, 3195670449821321850, 9913728546233861353])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([2490542360978853948, 16780434252263796967, 2203274247233403944, 6602689817247658489])";
+    "Word([11341690671707385129, 16477808049264903504, 4643014952288547939, 9336403897584614694])";
 const GOLDEN_ACCOUNT_ID: &str = "0x070707060707073107070707070707";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a

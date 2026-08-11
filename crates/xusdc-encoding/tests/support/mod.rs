@@ -137,7 +137,7 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 20] = [
     // the packed-memory primitives the DC-14 preimage writer copies through (packed_mem.masm)
     (
         "ERR_XRESERVE_MINT_INTENT_LIMB",
@@ -209,6 +209,21 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
         "ERR_XRESERVE_MINT_NOTE_INTENT_WORDS",
         MasmError::from_static_str(
             "mint note deposit intent attachment word count does not match the intent length",
+        ),
+    ),
+    // The canonical-padding rejects (deposit_intent.masm): the committed values past the signed
+    // byte extent — the final hookData limb's pad bytes and the final word's pad felts — must be
+    // zero, so one signed intent has exactly one committable transport.
+    (
+        "ERR_XRESERVE_MINT_NOTE_INTENT_PAD_BYTES",
+        MasmError::from_static_str(
+            "mint note deposit intent padding bytes beyond the hook data length are not zero",
+        ),
+    ),
+    (
+        "ERR_XRESERVE_MINT_NOTE_INTENT_PAD_LIMB",
+        MasmError::from_static_str(
+            "mint note deposit intent padding limb beyond the hook data extent is not zero",
         ),
     ),
     // The ASSERT-MATCH binding (mint_policy.masm): the note-supplied output-note

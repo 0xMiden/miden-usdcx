@@ -109,6 +109,14 @@ const ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB = "mint note deposit intent hook data
 # along, and a length claim cannot reach past the committed bytes.
 const ERR_XRESERVE_MINT_NOTE_INTENT_WORDS = "mint note deposit intent attachment word count does not match the intent length"
 
+# The final hookData limb's bytes past the hookData length must be zero: they are committed by
+# the note but sit outside the byte extent the attestation signs.
+const ERR_XRESERVE_MINT_NOTE_INTENT_PAD_BYTES = "mint note deposit intent padding bytes beyond the hook data length are not zero"
+
+# The committed limbs past the hookData extent — the pad felts completing the final word — must
+# likewise be zero, for the same reason.
+const ERR_XRESERVE_MINT_NOTE_INTENT_PAD_LIMB = "mint note deposit intent padding limb beyond the hook data extent is not zero"
+
 # The configured destination domain is written into the message as a four-byte wire field.
 const ERR_XRESERVE_DOMAIN_NOT_U32 = "faucet domain config is not a valid u32"
 
@@ -137,6 +145,8 @@ const ERR_XRESERVE_DOMAIN_NOT_U32 = "faucet domain config is not a valid u32"
 #!
 #! Panics if:
 #! - the committed word count disagrees with the carried hookData length.
+#! - a committed limb or byte past the hookData extent — the padding completing the final word —
+#!   is not zero.
 #! - a carried limb, or the configured domain, is not a valid u32.
 #! - the carried recipient is not a structurally valid account id.
 #!
@@ -282,6 +292,63 @@ pub proc rebuild
     # => [num_elements, dst_ptr, src_ptr]
 
     exec.packed_mem::memcopy_u32_elements
+    # => []
+
+    # ---- canonical padding: the committed tail past the signed extent must read zero ----
+    # The word-count binding above is exact only at WORD granularity: the final committed word can
+    # carry limbs past the hookData extent, and the final hookData limb can carry bytes past the
+    # hookData length. Neither reaches the keccak extent below, so a non-zero value there would be
+    # committed by the note yet absent from what the attestation signs — reject it, so one signed
+    # intent has exactly one committable transport.
+    loc_load.HOOK_DATA_LEN_LOC u32divmod.4
+    # => [rem_bytes, num_full_limbs]
+
+    dup neq.0
+    # => [has_partial_limb, rem_bytes, num_full_limbs]
+
+    if.true
+        # the partial limb carries the last rem_bytes signed bytes in its LOW bytes (the packing
+        # is u32-LE), so zero pad bytes means the limb sits below 2^(8*rem_bytes). The limb is a
+        # valid u32 here: the copy above guarded every hookData limb as it moved it.
+        dup.1 loc_load.MINT_INTENT_PTR_LOC add.MINT_INTENT_FELTS add mem_load
+        # => [partial_limb, rem_bytes, num_full_limbs]
+
+        swap mul.8 pow2
+        # => [pad_byte_bound, partial_limb, num_full_limbs]
+
+        u32lt assert.err=ERR_XRESERVE_MINT_NOTE_INTENT_PAD_BYTES
+        # => [num_full_limbs]
+    else
+        drop
+        # => [num_full_limbs]
+    end
+    drop
+    # => []
+
+    loc_load.HOOK_DATA_LEN_LOC exec.packed_mem::div_ceil_four
+    # => [hook_data_num_felts]
+
+    loc_load.MINT_INTENT_PTR_LOC add.MINT_INTENT_FELTS dup.1 add
+    # => [pad_ptr, hook_data_num_felts]
+
+    swap dup exec.packed_mem::div_ceil_four mul.4 swap sub
+    # => [num_pad_limbs, pad_ptr]
+
+    dup neq.0
+    # => [has_pad_limbs, num_pad_limbs, pad_ptr]
+
+    while.true
+        # => [num_pad_limbs, pad_ptr]
+        swap dup mem_load assertz.err=ERR_XRESERVE_MINT_NOTE_INTENT_PAD_LIMB
+        # => [pad_ptr, num_pad_limbs]
+
+        add.1 swap sub.1
+        # => [num_pad_limbs-1, pad_ptr+1]
+
+        dup neq.0
+        # => [has_more, num_pad_limbs-1, pad_ptr+1]
+    end
+    drop drop
     # => []
 
     loc_load.HOOK_DATA_LEN_LOC add.DEPOSIT_INTENT_HEADER_BYTES

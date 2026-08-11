@@ -182,6 +182,7 @@ const ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC = "mint note output note type must 
 #! - an attachment is missing, doubled, or extra (the two finds + the count-two assert).
 #! - the transport is shorter than its fixed prefix, or its committed word count does not match the
 #!   count the carried hookData length implies.
+#! - the transport's committed padding past the signed intent extent is not zero.
 #! - an attachment's advice-map content does not hash to its note-committed commitment (the
 #!   pipe_preimage_to_memory assert inside write_attachment_to_memory).
 #! - the note's asset value is not a mintable fungible amount.

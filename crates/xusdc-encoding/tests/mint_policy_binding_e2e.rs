@@ -37,7 +37,8 @@ use support::mint_transport::*;
 use support::*;
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::xreserve::encoding::{
-    DepositIntent, MintIntent, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
+    DepositIntent, MintIntent, BYTES_PER_PACKED_FELT, DEPOSIT_INTENT_HEADER_FELTS,
+    MINT_INTENT_FELTS, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
 };
 
 use miden_protocol::{Felt, Word};
@@ -502,6 +503,94 @@ async fn mint_rejects_a_non_u32_hook_data_len_limb() -> Result<()> {
         note,
         &payload,
         shell_error_by_name("ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB"),
+    )
+    .await
+}
+
+// CANONICAL PADDING — committed values past the signed byte extent must be ZERO
+// ------------------------------------------------------------------------------------------------
+// The word-count binding above is exact only at WORD granularity: the transport's final word can
+// carry pad felts past the hookData extent, and the final hookData limb can carry pad bytes past
+// the hookData length. Neither reaches the keccak extent, so without these rejects a producer who
+// bypasses the zero-padding factory could commit non-zero values there and mint against SEVERAL
+// distinct committed attachments for one Circle-signed intent — the signature would verify over
+// the signed prefix and never see the difference. Both negatives ride the hookData vector, because
+// only a tail whose final word actually carries padding has anything to tamper with: hookDataLen
+// 10 packs to three limbs, so the hookData word's fourth felt is pure padding and the third limb's
+// top two bytes are pad bytes.
+
+/// A non-zero pad FELT in the transport's final word — past the last hookData limb — rejects.
+#[tokio::test]
+async fn mint_rejects_a_nonzero_pad_felt_after_the_hook_data() -> Result<()> {
+    let mut pf = fixture()?;
+    bring_up(&mut pf, 1).await?;
+    let payload = payload_from_vector(
+        "mi-pos-hookdata",
+        pf.recipient_id,
+        pf.faucet_id,
+        MINT_AMOUNT,
+        41,
+    );
+    let hook_data_len = payload.len() - DEPOSIT_INTENT_HEADER_FELTS * BYTES_PER_PACKED_FELT;
+    let pad_felt_off = MINT_INTENT_FELTS + hook_data_len.div_ceil(BYTES_PER_PACKED_FELT);
+    let note = tampered_mint_note(
+        &pf,
+        &payload,
+        &honest_storage(&pf),
+        1,
+        None,
+        &AttachmentPlan {
+            payload_felt_tamper: Some((pad_felt_off, Felt::from(0xdead_beefu32))),
+            ..AttachmentPlan::default()
+        },
+        110,
+    )?;
+    expect_reject(
+        &mut pf,
+        note,
+        &payload,
+        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_INTENT_PAD_LIMB"),
+    )
+    .await
+}
+
+/// A non-zero pad BYTE in the final hookData limb rejects — with the signed low bytes left intact,
+/// so before the canonical-padding check nothing else would have refused this note: the signature
+/// verifies over the signed extent and the word count still matches.
+#[tokio::test]
+async fn mint_rejects_a_nonzero_pad_byte_in_the_last_hook_data_limb() -> Result<()> {
+    let mut pf = fixture()?;
+    bring_up(&mut pf, 1).await?;
+    let payload = payload_from_vector(
+        "mi-pos-hookdata",
+        pf.recipient_id,
+        pf.faucet_id,
+        MINT_AMOUNT,
+        42,
+    );
+    let header_bytes = DEPOSIT_INTENT_HEADER_FELTS * BYTES_PER_PACKED_FELT;
+    let hook_data = &payload[header_bytes..];
+    // the final limb holds wire bytes 8..10 of the ten hookData bytes in its low half (u32-LE
+    // packing); keep them and set the first pad byte above them
+    let partial_limb_off = MINT_INTENT_FELTS + hook_data.len() / BYTES_PER_PACKED_FELT;
+    let tampered_limb = u32::from_le_bytes([hook_data[8], hook_data[9], 0xab, 0x00]);
+    let note = tampered_mint_note(
+        &pf,
+        &payload,
+        &honest_storage(&pf),
+        1,
+        None,
+        &AttachmentPlan {
+            payload_felt_tamper: Some((partial_limb_off, Felt::from(tampered_limb))),
+            ..AttachmentPlan::default()
+        },
+        111,
+    )?;
+    expect_reject(
+        &mut pf,
+        note,
+        &payload,
+        shell_error_by_name("ERR_XRESERVE_MINT_NOTE_INTENT_PAD_BYTES"),
     )
     .await
 }

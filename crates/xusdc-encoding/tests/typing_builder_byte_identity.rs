@@ -40,12 +40,12 @@ const TOKEN_SUPPLY: u64 = 0;
 // storage commitments, so it moves whenever either commitment moves (unlike the code commitment
 // and storage digest, which isolate their own layer). The initial commitment covers all three.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([16891557576624796355, 16233932667258465778, 10796759357578765983, 1846054966454348887])";
+    "Word([1911135277323030899, 5132525903866533777, 16977445252358507205, 1762011304226738210])";
 const GOLDEN_CODE_COMMITMENT: &str =
     "Word([16976291790698015816, 5888415912956684650, 4290450764110773212, 7150546299912713910])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([2490542360978853948, 16780434252263796967, 2203274247233403944, 6602689817247658489])";
-const GOLDEN_ACCOUNT_ID: &str = "0x0593efe63eb5eab166f38439bf9ed4";
+    "Word([345493706676576914, 583533095193184295, 14946277560135686626, 18108462045088020144])";
+const GOLDEN_ACCOUNT_ID: &str = "0xd3167e85b7d52bb15387e29e332591";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.

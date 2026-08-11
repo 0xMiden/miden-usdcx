@@ -35,7 +35,7 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
-use xusdc_encoding::vectors::{load, DiVector};
+use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
 
 /// Deterministic note rng for the production admin notes (serial only; never affects the gate).
@@ -70,7 +70,9 @@ fn err_paused() -> MasmError {
 // MINT-SEAM FIXTURES (the recomposed REAL stock-MintNote transport — mirrors mint_policy_e2e.rs)
 // ================================================================================================
 
-const BASE_VECTOR: &str = "di-pos-empty-hookdata";
+// the DC-14 rows are the ones whose localToken / localDepositor are address-shaped,
+// which the mint transport requires
+const BASE_VECTOR: &str = "mi-pos-empty-hookdata";
 const MINT_MAX_SUPPLY: u64 = 1_000_000_000_000;
 const MINT_AMOUNT: u64 = 250_000_000;
 const MAX_FEE_RAW: u64 = 1;
@@ -82,13 +84,13 @@ const REMOTE_TOKEN_BYTE_OFF: usize = 11 * 4;
 /// Byte offset of the 32-byte `nonce` field in a DepositIntent (felt 51, 4 bytes/felt).
 const NONCE_BYTE_OFF: usize = 51 * 4;
 
-fn di(id: &str) -> &'static DiVector {
+fn mi(id: &str) -> &'static MiVector {
     load()
         .families
-        .di
+        .mi
         .iter()
         .find(|v| v.id == id)
-        .unwrap_or_else(|| panic!("canonical artifact is missing di vector {id}"))
+        .unwrap_or_else(|| panic!("canonical artifact is missing mp vector {id}"))
 }
 
 /// The canonical accept payload with the wire amount / maxFee spliced in, `remoteRecipient`
@@ -102,7 +104,7 @@ fn payload_for(
     nonce_variant: u8,
     faucet_id: AccountId,
 ) -> Vec<u8> {
-    let mut payload = di(BASE_VECTOR).bytes();
+    let mut payload = mi(BASE_VECTOR).payload();
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]

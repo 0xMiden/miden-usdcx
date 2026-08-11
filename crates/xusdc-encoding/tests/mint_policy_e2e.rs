@@ -25,7 +25,6 @@
 mod support;
 
 use anyhow::Result;
-use miden_protocol::Felt;
 use support::mint_transport::*;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMaxSupplyNote};
@@ -48,7 +47,6 @@ async fn mint_rejects_a_non_allowlisted_attester() -> Result<()> {
             tag: None,
             public: true,
         },
-        [Felt::from(0u32); 8],
         2, // a DIFFERENT keypair — its commitment is not allowlisted
         None,
         &AttachmentPlan::default(),
@@ -80,7 +78,6 @@ async fn mint_rejects_a_forged_signature() -> Result<()> {
             tag: None,
             public: true,
         },
-        [Felt::from(0u32); 8],
         1,
         Some(&other), // allowlisted key, signature over the WRONG payload
         &AttachmentPlan::default(),
@@ -167,7 +164,6 @@ async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<
             tag: None,
             public: true,
         },
-        [Felt::from(0u32); 8],
         1, // the rotated-out keypair
         None,
         &AttachmentPlan::default(),
@@ -192,7 +188,6 @@ async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<
             tag: None,
             public: true,
         },
-        [Felt::from(0u32); 8],
         2, // the rotated-in keypair
         None,
         &AttachmentPlan::default(),
@@ -228,7 +223,7 @@ async fn mint_rejects_a_wrong_domain() -> Result<()> {
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_XRESERVE_WRONG_DOMAIN"),
+        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
     )
     .await
 }
@@ -252,7 +247,7 @@ async fn mint_rejects_a_wrong_identifier() -> Result<()> {
         &mut pf,
         note,
         &payload,
-        shell_error_by_name("ERR_XRESERVE_WRONG_IDENTIFIER"),
+        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
     )
     .await
 }

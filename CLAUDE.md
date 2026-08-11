@@ -8,8 +8,8 @@ Circle **xReserve / xUSDC** (NOT standard USDC, NOT CCTP) on Miden: native USDC 
 2. **Plan first, build after approval.** Builders produce a plan + test matrix and STOP for human/audit approval before any source edit.
 3. **The governing docs bind every builder:** `docs/governing/CANONICAL-OWNERSHIP-MAP.md` (owners, layout, names) and `docs/governing/BUILDER-GATES.md` (G0–G8, G-MASM, G-RUST). Read both before any work. The specs and governing docs under `docs/` are the source of truth for this repository.
 4. **Frozen decisions (do not revisit, do not alias):**
-   - NS-1: bytes32→Word MASM proc = `xreserve::encoding::bytes32_to_key` (the Rust routine keeps `bytes32_to_storage_map_key`).
-   - NS-2: the DepositIntent parser is 01-owned at `xreserve::deposit_intent_parser::parse`; `xreserve::encoding` owns the shared layout and multi-consumer primitives.
+   - NS-1 (amended): bytes32→Word MASM proc = `xreserve::mint_intent::hash_nonce` — the `xreserve::encoding` module is gone, its contents folded into the two modules that own the wire forms. The Rust routine keeps `bytes32_to_storage_map_key`.
+   - NS-3 (supersedes NS-2): the on-chain DepositIntent realization is 01-owned at `xreserve::deposit_intent::rebuild` — the faucet **writes** the signed preimage (DC-14) instead of parsing it, so the NS-2 parser is retired and must not be reintroduced. The Rust `DepositIntent::parse_header` is unaffected.
    - DC-7: the burn-item codec is 04-owned and ships in Rust at `crates/xusdc-encoding/src/xreserve/encoding/burn_note.rs`; there is no `burn_items.masm`.
    - Layout: **SELF-CONTAINED** components; the faucet component ships under `asm/standards/xreserve/` and its note scripts under `asm/standards/notes/`.
 5. **Version pins:** Workspace manifests and `Cargo.lock` are authoritative. Protocol-family crates pin `0xMiden/protocol@4971ec4b38fb1f54e8f73969e6da81ee0cbf850c` (`v0.16.0-beta.1`).
@@ -24,8 +24,9 @@ Circle **xReserve / xUSDC** (NOT standard USDC, NOT CCTP) on Miden: native USDC 
 ## Layout (created only via approved plans)
 
 ```
-asm/standards/xreserve/      # faucet account component (xreserve::*): custom mint, burn policy, admin setters
-  encoding/                  # shared encoding library — mod.masm (procedures) + layout.masm (constants)
+asm/standards/xreserve/      # faucet account component (xreserve::*): the mint policy, the attestation verify, the attester admin
+  deposit_intent.masm        # Circle's wire form + `rebuild`, the on-chain realization of it (DC-1, DC-14)
+  mint_intent.masm           # what the mint note actually carries (DC-14) — constants only
 asm/standards/notes/         # public note scripts — the mint note and the admin notes
 crates/xusdc-encoding/       # Rust: the encoding mirror, the faucet-account builder, golden vectors, assemble-and-execute tests
 crates/xusdc-validation/     # Rust: the real-local-node validation harness (LNV rows A–L)

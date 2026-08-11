@@ -33,7 +33,7 @@ use xreserve_deposit_relayer::cycle::{run_relayer_cycle, Disposition, RelayerCtx
 use xreserve_deposit_relayer::error::RelayerError;
 use xreserve_deposit_relayer::validate::{check_domain_token_against_info, DepositIntent};
 
-use cycle_support::{cycle_client, cycle_identities, cycle_store, ScriptedSubmit, CYCLE_DOMAIN};
+use cycle_support::{cycle_client, cycle_identities, cycle_store, ScriptedSubmit};
 use fixtures::{canonical_payload, TEST_VECTOR_PAYLOAD_ID};
 use mint_support::{faucet_id, note_rng};
 use mock_circle::{
@@ -130,11 +130,15 @@ async fn a_domain_mismatch_is_reported_before_a_token_mismatch() {
 async fn a_configured_domain_circle_does_not_advertise_is_refused() {
     let intent = canonical_intent();
     let config = config_matching(&intent, true);
-    // discovery advertises CYCLE_DOMAIN; the config's expected domain is the intent's, and the
-    // canonical vector does not carry CYCLE_DOMAIN (the fixture domain is a placeholder — the real
-    // id awaits Circle).
-    assert_ne!(intent.remote_domain(), CYCLE_DOMAIN);
-    let info = fetched_info(info_body()).await;
+    // the intent and the config agree, so neither attestation check can fire; discovery is the one
+    // that disagrees, advertising a domain nobody here is configured for. (Both values stay
+    // placeholders — the real Miden domain id awaits Circle.)
+    let unadvertised = intent.remote_domain() + 7;
+    let info = fetched_info(mock_circle::info_body_for(
+        unadvertised,
+        mock_circle::FIXTURE_XUSDC_IDENTIFIER,
+    ))
+    .await;
 
     let error = check_domain_token_against_info(&intent, &info, &config)
         .expect_err("Circle does not advertise the configured domain");
@@ -291,7 +295,7 @@ async fn a_broken_info_fetch_fails_the_cycle_rather_than_disabling_the_check() {
 // HELPERS
 // ================================================================================================
 
-/// The canonical `di-pos-hookdata` DepositIntent, decoded through the relayer's own validator — so
+/// The canonical mint-payload DepositIntent, decoded through the relayer's own validator — so
 /// the expected `remoteDomain`/`remoteToken` are read from the golden artifact, never restated
 /// here.
 fn canonical_intent() -> DepositIntent {

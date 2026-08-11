@@ -101,7 +101,7 @@ pub(crate) fn domain_config(account: &Account) -> Result<u32> {
 }
 
 /// The faucet's configured identifier key (the structural validation `remoteToken` compare target): the stored
-/// `bytes32_to_key(identifier_bytes)` Word. Used to VERIFY a resolved mint config's `remote_token`
+/// `bytes32_to_storage_map_key(identifier_bytes)` Word. Used to VERIFY a resolved mint config's `remote_token`
 /// hashes to what the deployed faucet actually stored, before any mint is emitted.
 pub(crate) fn identifier_config(account: &Account) -> Result<Word> {
     value_slot(account, IDENTIFIER_CONFIG_SLOT_LABEL)

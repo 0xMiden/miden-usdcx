@@ -54,10 +54,9 @@ use xusdc_encoding::note::xreserve_admin::{
 };
 use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
-use xusdc_encoding::vectors::{load, DiVector};
+use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, bytes32_to_packed_felts, bytes32_to_storage_map_key,
-    decode_burn_note_items, XReserveBurnItems,
+    account_id_to_bytes32, bytes32_to_packed_felts, bytes32_to_storage_map_key, XReserveBurnItems,
 };
 
 // ACTORS (the builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3),
@@ -85,7 +84,9 @@ fn stranger() -> AccountId {
 // the build-seeded TEST_DOMAIN / TEST_SOURCE_DOMAIN / test_xreserve_contract() come from support)
 // ================================================================================================
 
-const BASE_VECTOR: &str = "di-pos-empty-hookdata";
+// the DC-14 rows are the ones whose localToken / localDepositor are address-shaped,
+// which the mint transport requires
+const BASE_VECTOR: &str = "mi-pos-empty-hookdata";
 
 /// The attested wire amount of BOTH lifecycle mints. Under the provisional identity scale
 /// (`DEPOSIT_SCALE_EXP = 0`, `y = x` — the cap/scale decision stays OPEN, pending Circle) the
@@ -113,13 +114,13 @@ const REMOTE_TOKEN_BYTE_OFF: usize = 11 * 4;
 /// First byte of the 32-byte `nonce` field (felt 51 x 4 bytes of the fixed header).
 const NONCE_BYTE_OFF: usize = 51 * 4;
 
-fn di(id: &str) -> &'static DiVector {
+fn mi(id: &str) -> &'static MiVector {
     load()
         .families
-        .di
+        .mi
         .iter()
         .find(|v| v.id == id)
-        .unwrap_or_else(|| panic!("canonical artifact is missing di vector {id}"))
+        .unwrap_or_else(|| panic!("canonical artifact is missing mp vector {id}"))
 }
 
 /// The canonical accept payload with amount/maxFee spliced, `remoteRecipient` REPLACED by the REAL
@@ -134,7 +135,7 @@ fn payload_for(
     nonce_variant: u8,
     faucet_id: AccountId,
 ) -> Vec<u8> {
-    let mut payload = di(BASE_VECTOR).bytes();
+    let mut payload = mi(BASE_VECTOR).payload();
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
@@ -775,7 +776,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S9: metadata.sender == depositor"
     );
     assert_eq!(
-        decode_burn_note_items(burn_note.recipient().storage().items())
+        XReserveBurnItems::decode(burn_note.recipient().storage().items())
             .expect("S9: DC-7 items decode"),
         items,
         "S9: NoteStorage.items carries the exact DC-7 payload"

@@ -4,7 +4,8 @@
 //!
 //! Every change here is wire-neutral: the composed account must be byte-for-byte what the
 //! pre-change composition produced. This suite freezes the baseline composition's anchors — the
-//! account's `initial_commitment`, its code commitment, a digest over its storage slots, and the
+//! account's `to_commitment` state commitment, its code commitment, a digest over its storage
+//! slots, and the
 //! seed-derived id — captured at a FIXED seed from the baseline path, and asserts:
 //!
 //! 1. the crate-root `build_faucet_account` constructor reproduces them EXACTLY (the faucet it
@@ -34,13 +35,17 @@ const TOKEN_SUPPLY: u64 = 0;
 
 // The baseline composition anchors, as their stable `Debug`/`Display` renderings (captured from the
 // pre-change composition at SEED). Comparing the rendered strings sidesteps any felt-repr ambiguity.
-const GOLDEN_INITIAL_COMMITMENT: &str =
-    "Word([14339903800170271812, 13492550071757148797, 11078945427537021910, 13762432809097599845])";
+//
+// The account id is the NEW-ACCOUNT derivation: ground from SEED over the composed code and
+// storage commitments, so it moves whenever either commitment moves (unlike the code commitment
+// and storage digest, which isolate their own layer). The initial commitment covers all three.
+const GOLDEN_STATE_COMMITMENT: &str =
+    "Word([1911135277323030899, 5132525903866533777, 16977445252358507205, 1762011304226738210])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([4795957935671222943, 8323907530742077123, 15290569741410167257, 12045743130653956173])";
+    "Word([16976291790698015816, 5888415912956684650, 4290450764110773212, 7150546299912713910])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([9951385742445419553, 13117559525841381404, 14069709388135597986, 5942859512209258597])";
-const GOLDEN_ACCOUNT_ID: &str = "0x070707060707073107070707070707";
+    "Word([345493706676576914, 583533095193184295, 14946277560135686626, 18108462045088020144])";
+const GOLDEN_ACCOUNT_ID: &str = "0xd3167e85b7d52bb15387e29e332591";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.
@@ -60,9 +65,9 @@ fn assert_matches_golden(account: &Account, path: &str) {
         "{path}: seed-derived account id drifted",
     );
     assert_eq!(
-        format!("{:?}", account.initial_commitment()),
-        GOLDEN_INITIAL_COMMITMENT,
-        "{path}: account initial commitment drifted (code, storage, id or type changed)",
+        format!("{:?}", account.to_commitment()),
+        GOLDEN_STATE_COMMITMENT,
+        "{path}: account state commitment drifted (code, storage, id or type changed)",
     );
     assert_eq!(
         format!("{:?}", account.code().commitment()),
@@ -102,7 +107,7 @@ fn account_via_component_path() -> Account {
         XReserveStablecoinBuilder::auth_component().expect("the auth component must build"),
     );
     builder
-        .build_existing()
+        .build()
         .expect("the baseline-style composition must build the account")
 }
 
@@ -148,8 +153,8 @@ fn the_two_construction_paths_agree() {
     let via_ctor = account_via_crate_root_constructor();
     let via_components = account_via_component_path();
     assert_eq!(
-        format!("{:?}", via_ctor.initial_commitment()),
-        format!("{:?}", via_components.initial_commitment()),
+        format!("{:?}", via_ctor.to_commitment()),
+        format!("{:?}", via_components.to_commitment()),
         "the crate-root constructor and the component path must compose the identical account",
     );
     assert_eq!(

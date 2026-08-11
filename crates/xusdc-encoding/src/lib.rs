@@ -19,9 +19,9 @@ pub use account::xreserve::build_faucet_account;
 
 /// Embedded MASM sources. The on-disk files are the single source of truth; these copies exist so
 /// callers can read the MASM without a filesystem.
-pub const ENCODING_MOD_MASM: &str =
-    include_str!("../../../asm/standards/xreserve/encoding/mod.masm");
-pub const LAYOUT_MASM: &str = include_str!("../../../asm/standards/xreserve/encoding/layout.masm");
+pub const DEPOSIT_INTENT_MASM: &str =
+    include_str!("../../../asm/standards/xreserve/deposit_intent.masm");
+pub const MINT_INTENT_MASM: &str = include_str!("../../../asm/standards/xreserve/mint_intent.masm");
 
 /// Absolute path of the `xreserve` MASM root, assembled from the directory at runtime under the
 /// `xreserve` namespace.

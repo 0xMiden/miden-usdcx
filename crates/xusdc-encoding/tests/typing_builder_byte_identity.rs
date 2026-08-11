@@ -35,19 +35,26 @@ const TOKEN_SUPPLY: u64 = 0;
 // The baseline composition anchors, as their stable `Debug`/`Display` renderings (captured from the
 // pre-change composition at SEED). Comparing the rendered strings sidesteps any felt-repr ambiguity.
 //
-// Re-captured when the mint intent took ownership of its own admissibility checks (`validate`,
-// `hash_nonce` and the replay guard moved out of the deposit-intent module, and `rebuild` lost
-// them), the unused `verify_uint256_to_asset_amount` was removed, and the nonce copy became two
-// word moves instead of eight element moves. Three of the four anchors moved with that — the code commitment directly, the storage
-// digest because the active mint policy is stored as `check_policy`'s MAST root, and the initial
-// commitment because it covers both. The account id did NOT move, which is what says the seed
-// derivation and the slot LAYOUT are untouched: only procedure code and the root it is named by.
+// Re-materialized at the v0.16.0-rc.3 protocol bump. Three of the four anchors moved with it — the
+// code commitment because six of the account's procedure roots moved (the fungible mint/burn
+// dispatch rewrite moved `mint_and_send`/`receive_and_burn`; the network-account
+// `auth_network_transaction` moved with the added sponsorship-policy/fee-asset enforcement; the
+// upstream sweep moved `get_min_burn_amount` and the transfer-policy check; and `check_policy`
+// moved because this migration edits `attestation_verify`, which it invokes); the storage digest
+// because TWO things changed under it — the active mint-policy root moved (it is stored as
+// `check_policy`'s MAST root) AND the rc.3 bump ADDED the `sponsor_at_most_collected_fees` slot
+// (54 -> 55); and the initial commitment because it covers both. The account id did NOT move —
+// which says only that the SEED-DERIVED IDENTITY is untouched; it does NOT say the slot layout is
+// unchanged (the layout demonstrably gained that one slot). `check_policy` is measured here against
+// the migration's fail-closed signature-verify stand-in; the later ECDSA-rebuild slice rewrites
+// `attestation_verify`, so these three anchors MOVE AGAIN and must be re-materialized a second time
+// then.
 const GOLDEN_INITIAL_COMMITMENT: &str =
-    "Word([1052646678099504404, 463462926362689613, 17653851081971408789, 2407414798603717391])";
+    "Word([223451725513909618, 9972382910206474275, 6729040912275203006, 2954999722093273053])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([16976291790698015816, 5888415912956684650, 4290450764110773212, 7150546299912713910])";
+    "Word([6071254445460505704, 12653310514341131241, 4080738568322131054, 12639662269255750522])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([2490542360978853948, 16780434252263796967, 2203274247233403944, 6602689817247658489])";
+    "Word([15954610800434419326, 6451156305011702001, 3091154321168034928, 9029760994496162649])";
 const GOLDEN_ACCOUNT_ID: &str = "0x070707060707073107070707070707";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a

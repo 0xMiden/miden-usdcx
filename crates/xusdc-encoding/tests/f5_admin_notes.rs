@@ -31,7 +31,7 @@ use miden_protocol::errors::MasmError;
 use miden_protocol::note::Note;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
-use miden_standards::note::{RbacAction, RbacActionNote};
+use miden_standards::note::{RbacConfig, RbacConfigNote};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
 use xusdc_encoding::account::xreserve::{BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
@@ -91,13 +91,13 @@ fn note_rng(seed: u64) -> RandomCoin {
 fn stock_role_note<R: FeltRng>(
     sender: AccountId,
     faucet_id: AccountId,
-    action: RbacAction,
+    action: RbacConfig,
     rng: &mut R,
 ) -> Result<Note> {
-    let note = RbacActionNote::builder()
+    let note = RbacConfigNote::builder()
         .sender(sender)
-        .account(faucet_id)
-        .action(action)
+        .target(faucet_id)
+        .config(action)
         .serial_number(rng.draw_word())
         .build()
         .map_err(|e| anyhow::anyhow!("building the standard role-action note: {e}"))?;
@@ -115,7 +115,7 @@ fn stock_grant_role_note<R: FeltRng>(
     stock_role_note(
         sender,
         faucet_id,
-        RbacAction::GrantRole {
+        RbacConfig::GrantRole {
             role,
             account: member,
         },
@@ -134,7 +134,7 @@ fn stock_revoke_role_note<R: FeltRng>(
     stock_role_note(
         sender,
         faucet_id,
-        RbacAction::RevokeRole {
+        RbacConfig::RevokeRole {
             role,
             account: member,
         },
@@ -480,9 +480,8 @@ async fn pause_note_args_are_inert() -> Result<()> {
 /// A production faucet paused by a SEEDED DOM_PAUSER pause note (brought up on-chain), so an unpause
 /// tx has a 1 -> 0 `is_paused` transition to observe. Placeholder PUBLIC routing target (routing-only).
 async fn paused_faucet() -> Result<(MockChain, AccountId)> {
-    let route = test_faucet_id(1);
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| {
-        vec![stock_pause_note(test_account_id(2), route, 60)
+    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, faucet_id| {
+        vec![stock_pause_note(test_account_id(2), faucet_id, 60)
             .expect("building the seeded pause note")]
     })
     .context("building the production faucet with a seeded pause")?;
@@ -1031,7 +1030,7 @@ async fn set_role_admin_dom_manager_authorized() -> Result<()> {
     let note = stock_role_note(
         test_account_id(3),
         faucet_id,
-        RbacAction::SetRoleAdmin {
+        RbacConfig::SetRoleAdmin {
             role: pauser_sym(),
             admin_role: Some(blk_manager_sym()),
         },
@@ -1083,7 +1082,7 @@ async fn assert_set_role_admin_rejected(sender: AccountId, seed: u64) -> Result<
     let note = stock_role_note(
         sender,
         faucet_id,
-        RbacAction::SetRoleAdmin {
+        RbacConfig::SetRoleAdmin {
             role: pauser_sym(),
             admin_role: None,
         },
@@ -1136,7 +1135,7 @@ async fn renounce_role_holder_clears_own_membership() -> Result<()> {
     let note = stock_role_note(
         test_account_id(2),
         faucet_id,
-        RbacAction::RenounceRole { role: pauser_sym() },
+        RbacConfig::RenounceRole { role: pauser_sym() },
         &mut note_rng(153),
     )
     .context("building the DOM_PAUSER renounce note")?;
@@ -1176,7 +1175,7 @@ async fn renounce_role_non_holder_rejects() -> Result<()> {
     let note = stock_role_note(
         test_account_id(99),
         faucet_id,
-        RbacAction::RenounceRole { role: pauser_sym() },
+        RbacConfig::RenounceRole { role: pauser_sym() },
         &mut note_rng(154),
     )
     .context("building the non-holder renounce note")?;

@@ -251,7 +251,7 @@ impl PartnerAttester {
             .expect("k256 prehash sign");
 
         let mut attestation = [0u8; 65];
-        attestation[..64].copy_from_slice(sig.to_bytes().as_slice()); // 64-byte big-endian r‖s
+        attestation[..64].copy_from_slice(sig.to_bytes().as_ref()); // 64-byte big-endian r‖s
         attestation[64] = recid.to_byte(); // v ∈ {0..3}
 
         AttestationVector {

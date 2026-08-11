@@ -49,7 +49,7 @@ use miden_standards::errors::standards::{
 };
 use miden_standards::note::{
     BlocklistConfigNote, BurnNote, MintNote, NetworkAccountTarget, NoteExecutionHint,
-    PauseActionNote, RbacActionNote,
+    PauseConfigNote, RbacConfigNote,
 };
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::ExpirationTransactionScript;
@@ -228,11 +228,11 @@ fn production_faucet_note_allowlist_is_exactly_the_8_ratified_roots() -> Result<
         XReserveSetMinBurnSizeNote::script_root(),
         XReserveSetMaxSupplyNote::script_root(),
         // one standard note covers pausing AND unpausing
-        PauseActionNote::script_root(),
+        PauseConfigNote::script_root(),
         // one standard note covers blocking AND unblocking, gated on the blocklist manager role
         BlocklistConfigNote::script_root(),
         // one standard note covers grant, revoke, set-role-admin AND renounce
-        RbacActionNote::script_root(),
+        RbacConfigNote::script_root(),
     ]);
     assert_eq!(
         expected.len(),

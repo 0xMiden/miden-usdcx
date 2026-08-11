@@ -47,7 +47,7 @@ use miden_protocol::errors::MasmError;
 use miden_protocol::note::Note;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
-use miden_standards::note::{RbacAction, RbacActionNote};
+use miden_standards::note::{RbacConfig, RbacConfigNote};
 use miden_testing::assert_transaction_executor_error;
 use miden_tx::TransactionExecutorError;
 use support::*;
@@ -213,13 +213,13 @@ fn note_rng(seed: u64) -> RandomCoin {
 fn role_action_note(
     sender: AccountId,
     faucet_id: AccountId,
-    action: RbacAction,
+    action: RbacConfig,
     seed: u32,
 ) -> Result<Note> {
-    let note = RbacActionNote::builder()
+    let note = RbacConfigNote::builder()
         .sender(sender)
-        .account(faucet_id)
-        .action(action)
+        .target(faucet_id)
+        .config(action)
         .serial_number(Word::from([seed, 3, 4, 5]))
         .build()
         .map_err(|e| anyhow::anyhow!("building the standard role-action note: {e}"))?;
@@ -236,7 +236,7 @@ fn grant_role_note(
     role_action_note(
         sender,
         faucet_id,
-        RbacAction::GrantRole {
+        RbacConfig::GrantRole {
             role: pauser_sym(),
             account: member,
         },
@@ -254,7 +254,7 @@ fn revoke_role_note(
     role_action_note(
         sender,
         faucet_id,
-        RbacAction::RevokeRole {
+        RbacConfig::RevokeRole {
             role: pauser_sym(),
             account: member,
         },
@@ -281,7 +281,7 @@ fn mint_fixture(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<Producti
             &mut note_rng(952),
         )
         .expect("building the administrator set_attester note")];
-        notes.extend(extra_notes(recipient));
+        notes.extend(extra_notes(faucet_id));
         notes
     })
 }
@@ -367,11 +367,11 @@ async fn emit_and_consume_mint(
 /// recomposed stock-`MintNote` transport) at the exact `ERR_PAUSABLE_IS_PAUSED`.
 #[tokio::test]
 async fn dom_manager_grants_pauser_then_new_pauser_halts_mint() -> Result<()> {
-    let mut pf = mint_fixture(|_| {
+    let mut pf = mint_fixture(|faucet_id| {
         vec![
-            grant_role_note(dom_manager(), test_faucet_id(1), new_pauser(), 31)
+            grant_role_note(dom_manager(), faucet_id, new_pauser(), 31)
                 .expect("building the DOM_MANAGER grant_role note"),
-            stock_pause_note(new_pauser(), test_faucet_id(1), 32)
+            stock_pause_note(new_pauser(), faucet_id, 32)
                 .expect("building the candidate's pause note"),
         ]
     })?;
@@ -470,8 +470,8 @@ async fn dom_manager_revokes_pauser_then_pause_rejects() -> Result<()> {
 /// a real attested mint (the recomposed stock-`MintNote` transport).
 #[tokio::test]
 async fn dom_manager_rotates_pauser_revoke_then_grant() -> Result<()> {
-    let mut pf = mint_fixture(|_| {
-        let route = test_faucet_id(1);
+    let mut pf = mint_fixture(|faucet_id| {
+        let route = faucet_id;
         vec![
             revoke_role_note(dom_manager(), route, dom_pauser(), 36)
                 .expect("building the DOM_MANAGER revoke_role note"),

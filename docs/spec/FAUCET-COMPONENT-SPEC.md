@@ -53,8 +53,8 @@ miden-standards `MintNote`** (no custom mint script exists); the faucet-owned ad
 root-pinned scripts (`set_attester`, `set_min_burn_size` — which asserts the floor then calls the
 stock `set_min_burn_amount` —, and `set_max_supply`) that cross into the account and call the
 matching setter. Pausing, the transfer blocklist and role management ship
-**no faucet-owned script**: they use the stock `PauseActionNote`, `BlocklistConfigNote` and
-`RbacActionNote`, each of which covers every one of its actions behind one script root and calls the
+**no faucet-owned script**: they use the stock `PauseConfigNote`, `BlocklistConfigNote` and
+`RbacConfigNote`, each of which covers every one of its actions behind one script root and calls the
 stock component the account installs. There is no ownership note — the faucet installs no ownership
 component.
 

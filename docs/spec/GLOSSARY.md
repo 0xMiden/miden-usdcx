@@ -109,7 +109,7 @@ Labels for the faucet's functional pieces (originally built as incremental slice
 | CMP-B3 | `receive_and_burn` consumption of the burn note. |
 | CMP-F2 | The administrator-gated `set_min_burn_size` setter (unmapped, so the account's role-based authority resolves it to the built-in `ADMIN` role). |
 | CMP-F3 | The custom `DOM_PAUSER`-gated pause/unpause. |
-| CMP-F5 | Role management (role-based access control): `grant_role`/`revoke_role` membership rotation (CIR-ADMIN-3) plus the BUILD-SEEDED `DOM_PAUSER.admin_role = DOM_MANAGER` delegation. Driven by the STOCK `RbacActionNote`, whose single allowlisted script root also carries `set_role_admin` and `renounce_role` — so the delegation graph is runtime-MUTABLE and self-renounce is reachable; both are accepted. See IMPL-DEV-24. |
+| CMP-F5 | Role management (role-based access control): `grant_role`/`revoke_role` membership rotation (CIR-ADMIN-3) plus the BUILD-SEEDED `DOM_PAUSER.admin_role = DOM_MANAGER` delegation. Driven by the STOCK `RbacConfigNote`, whose single allowlisted script root also carries `set_role_admin` and `renounce_role` — so the delegation graph is runtime-MUTABLE and self-renounce is reachable; both are accepted. See IMPL-DEV-24. |
 
 ## Invariants — `INV-<name>`
 
@@ -235,7 +235,7 @@ referenced here:
 
 | Id | Requirement |
 |---|---|
-| CIR-ADMIN-3 | Role rotation: the Domain Manager rotates the Domain Pauser; the built-in `ADMIN` role stands where Circle's `onlyOwner` does. Satisfied by `grant_role`/`revoke_role` through the stock `RbacActionNote`, over the build-seeded delegation. Since the admin-surface finalization there is no ownership component: `ADMIN` is the faucet's sole authority handle and rotates by grant-then-revoke of itself. Note the delegation is EXCLUSIVE — `ADMIN` cannot grant, revoke or re-point `DOM_PAUSER`, which `DOM_MANAGER` governs (see IMPL-DEV-24). |
+| CIR-ADMIN-3 | Role rotation: the Domain Manager rotates the Domain Pauser; the built-in `ADMIN` role stands where Circle's `onlyOwner` does. Satisfied by `grant_role`/`revoke_role` through the stock `RbacConfigNote`, over the build-seeded delegation. Since the admin-surface finalization there is no ownership component: `ADMIN` is the faucet's sole authority handle and rotates by grant-then-revoke of itself. Note the delegation is EXCLUSIVE — `ADMIN` cannot grant, revoke or re-point `DOM_PAUSER`, which `DOM_MANAGER` governs (see IMPL-DEV-24). |
 | CIR-ADMIN-4 | Pausing must halt **both** deposits (mint) and withdrawals (burn-consume) — the pause halt-gates. |
 | CIR-FEE-2 | Circle credits the relayer `feeAmount` on mint (recipient `amount−feeAmount`, relayer `+feeAmount`) — DEFERRED to mainnet/production-final; the MVP fail-loud `feeAmount==0` reject stands in (see `F2` / `Q-FEE-MVP`). |
 | CIR-FEE-3 | xUSDC uses 6 decimals; the amount reducer scales to 6 dp. |
@@ -271,9 +271,9 @@ are open items with Circle). The ones referenced in this repo:
 | IMPL-DEV-16 | The identifier-init procedure and note are removed. The mint path decodes `remoteToken` and compares it directly with the faucet's native account id, so there is no identifier slot or initialization window. |
 | IMPL-DEV-20 | xUSDC ships as a policed fungible asset carrying the stock `BasicBlocklist` as the active send + receive policy, administered by `BLK_MANAGER`. |
 | IMPL-DEV-21 | Mint rejects any nonzero `feeAmount` with `ERR_XRESERVE_FEE_NONZERO`. The relayer-credit fee split is deferred behind the OPEN `Q-FEE-MVP` Circle confirmation. |
-| IMPL-DEV-22 | Self-renounce is reachable through the stock `RbacActionNote`. A sole `ADMIN` can renounce and leave administrator-gated procedures unrecoverable except by redeploy; `Q-ADMIN-RENOUNCE` stays OPEN. |
+| IMPL-DEV-22 | Self-renounce is reachable through the stock `RbacConfigNote`. A sole `ADMIN` can renounce and leave administrator-gated procedures unrecoverable except by redeploy; `Q-ADMIN-RENOUNCE` stays OPEN. |
 | IMPL-DEV-23 | Admin roles use Miden RBAC (`grant_role`/`revoke_role`) rather than Circle's single address slots. There is no ownership component; seeded `ADMIN` membership is the faucet's administrative authority, and rotation is grant-successor before revoke-predecessor. `Q-ADMIN-RBAC-EQUIV` stays OPEN. |
-| IMPL-DEV-24 | The stock `RbacActionNote` is allowlisted as one script root carrying `GRANT_ROLE`/`REVOKE_ROLE`/`SET_ROLE_ADMIN`/`RENOUNCE_ROLE`; all four selectors are reachable. The allowlist is 8 roots and the composed account's callable surface is 61. |
+| IMPL-DEV-24 | The stock `RbacConfigNote` is allowlisted as one script root carrying `GRANT_ROLE`/`REVOKE_ROLE`/`SET_ROLE_ADMIN`/`RENOUNCE_ROLE`; all four selectors are reachable. The allowlist is 8 roots and the composed account's callable surface is 61. |
 | IMPL-DEV-25 | The stock `Authority` component exposes account `freeze`/`unfreeze` roots, but the keyless allowlist faucet has no note-script or tx-script path that reaches them. |
 | IMPL-DEV-26 | The stock `authority::get_authority` accessor is read-only, and the transfer-policy dispatch wrappers are live because the account wires `BasicBlocklist` as its transfer policy. |
 

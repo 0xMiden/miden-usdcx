@@ -37,12 +37,10 @@ mod support;
 
 use std::collections::BTreeSet;
 
-use miden_protocol::asset::AssetAmount;
 use miden_protocol::note::NoteScriptRoot;
 use miden_protocol::Word;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
-use xusdc_encoding::xreserve::encoding::EthBytes32;
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -150,25 +148,6 @@ const SLOT_NAMES: [&str; 55] = [
     "xusdc::xreserve::nonce_registry::used_nonces",
 ];
 
-// ── HELPERS ───────────────────────────────────────────────────────────────────────────────────
-
-fn production_builder() -> XReserveStablecoinBuilder {
-    XReserveStablecoinBuilder::new(
-        AssetAmount::new(MAX_SUPPLY).expect("max supply is a valid asset amount"),
-        AssetAmount::new(0).expect("token supply is a valid asset amount"),
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .expect("the production faucet builder must construct")
-    .with_domain_config(
-        TEST_DOMAIN,
-        TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
-    )
-}
-
 // ── THE THREE PINS ──────────────────────────────────────────────────────────────────────────────
 
 /// PIN 1 — the note-script allowlist, as a frozen SET of roots plus its count. Asserts set equality
@@ -201,7 +180,11 @@ fn note_script_allowlist_set_and_count_are_pinned() {
 /// rebuilt.
 #[test]
 fn attestation_mint_policy_root_is_pinned() {
-    let root = production_builder()
+    // measured through the SHARED production builder (`support::production_builder`), the same one
+    // the production fixtures compose — a local copy of its arguments here would keep this pin
+    // green after the shipped builder's inputs moved.
+    let root = production_builder(MAX_SUPPLY, 0, TEST_DOMAIN)
+        .expect("the production faucet builder must construct")
         .attestation_mint_policy_root()
         .expect("the attestation mint policy root must resolve");
     assert_eq!(

@@ -62,8 +62,8 @@ use miden_standards::StandardsLib;
 use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
-    XReserveAdminAuthority, XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH,
-    BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveAdminAuthority, XReserveStablecoinBuilder, XReserveStablecoinBuilderError,
+    ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::xreserve::encoding::EthBytes32;
 
@@ -458,6 +458,32 @@ pub fn assemble_xreserve_lib() -> Result<Package> {
     Ok(*lib)
 }
 
+/// THE production-shape [`XReserveStablecoinBuilder`] construction — the ONE definition of the
+/// six-argument `new` + `with_domain_config` shape that every production fixture AND every
+/// production PIN is measured through. A second copy of this shape anywhere would keep measuring
+/// the OLD arguments after the production ones changed, leaving a root/slot pin green while the
+/// shipped account moved; so there is exactly one, and callers differ only in `domain`.
+pub fn production_builder(
+    max_supply: u64,
+    token_supply: u64,
+    domain: u32,
+) -> Result<XReserveStablecoinBuilder> {
+    Ok(XReserveStablecoinBuilder::new(
+        AssetAmount::new(max_supply).context("invalid max_supply")?,
+        AssetAmount::new(token_supply).context("invalid token_supply")?,
+        test_account_id(1),
+        test_account_id(2),
+        test_account_id(3),
+        test_account_id(4),
+    )
+    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
+    .with_domain_config(
+        domain,
+        TEST_SOURCE_DOMAIN,
+        EthBytes32::new(test_xreserve_contract()),
+    ))
+}
+
 pub fn production_component_set(
     max_supply: u64,
     token_supply: u64,
@@ -481,20 +507,7 @@ pub fn production_builder_outcome(
     // Neither the faucet nor the xreserve component is a builder input any more — `new` builds the
     // fixed-identity USDCx faucet (mutable max supply) and assembles the one valid component itself
     // — so the fixture only supplies the supply parameters and role holders.
-    let mut builder = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
-        AssetAmount::new(max_supply).context("invalid max_supply")?,
-        AssetAmount::new(token_supply).context("invalid token_supply")?,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
-    .with_domain_config(
-        TEST_DOMAIN,
-        TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
-    );
+    let mut builder = production_builder(max_supply, token_supply, TEST_DOMAIN)?;
     if let Some(min_burn_size) = min_burn_size {
         builder = builder.min_burn_size(min_burn_size);
     }
@@ -1692,22 +1705,10 @@ pub fn setup_guarded_mint_account(
         GuardSelection::ProductionAttestation => {
             let domain_u32 = u32::try_from(domain[0].as_canonical_u64())
                 .context("the fixture domain word element 0 must be a u32")?;
-            let components = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
-                AssetAmount::new(max_supply).context("invalid max_supply")?,
-                AssetAmount::new(token_supply).context("invalid token_supply")?,
-                test_account_id(1),
-                test_account_id(2),
-                test_account_id(3),
-                test_account_id(4),
-            )
-            .map_err(|e| anyhow::anyhow!("building the production attestation faucet: {e}"))?
-            .with_domain_config(
-                domain_u32,
-                TEST_SOURCE_DOMAIN,
-                EthBytes32::new(test_xreserve_contract()),
-            )
-            .build_components()
-            .map_err(|e| anyhow::anyhow!("composing the production attestation faucet: {e}"))?;
+            let components = production_builder(max_supply, token_supply, domain_u32)
+                .context("building the production attestation faucet")?
+                .build_components()
+                .map_err(|e| anyhow::anyhow!("composing the production attestation faucet: {e}"))?;
             (components, attestation_root)
         }
         // TEST-ONLY oracle: allow-all mint + allow-all burn ACTIVE (builder-bypassing contrast).
@@ -2884,22 +2885,9 @@ pub fn setup_production_faucet(
 
     // The builder builds the fixed-identity USDCx faucet and assembles the one valid xreserve
     // component internally, so the fixture only supplies the supply parameters.
-    let components = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
-        AssetAmount::new(max_supply).context("invalid max_supply")?,
-        AssetAmount::new(token_supply).context("invalid token_supply")?,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
-    .with_domain_config(
-        TEST_DOMAIN,
-        TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
-    )
-    .build_components()
-    .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
+    let components = production_builder(max_supply, token_supply, TEST_DOMAIN)?
+        .build_components()
+        .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
 
     // The production faucet is finalized under the stock AuthNetworkAccount (keyless
     // network account) with the frozen note-script allowlist, a tx-script allowlist of EXACTLY

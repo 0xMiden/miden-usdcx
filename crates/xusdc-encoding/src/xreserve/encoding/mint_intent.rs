@@ -154,18 +154,6 @@ impl HookData {
         Ok(Self(bytes))
     }
 
-    /// Wraps hookData bytes from a borrowed slice, checking the length bound before copying.
-    ///
-    /// # Errors
-    ///
-    /// [`EncodingError::HookDataTooLarge`] past [`MAX_HOOK_DATA_LEN`].
-    pub fn from_slice(bytes: &[u8]) -> Result<Self, EncodingError> {
-        if bytes.len() > MAX_HOOK_DATA_LEN {
-            return Err(EncodingError::HookDataTooLarge);
-        }
-        Ok(Self(bytes.to_vec()))
-    }
-
     /// The raw bytes.
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
@@ -236,6 +224,13 @@ impl MintIntent {
             return Err(EncodingError::RemoteTokenMismatch);
         }
 
+        // the length bound is checked BEFORE the tail is copied; the constructor re-checks it as
+        // the type invariant
+        let hook_data = intent.hook_data()?;
+        if hook_data.len() > MAX_HOOK_DATA_LEN {
+            return Err(EncodingError::HookDataTooLarge);
+        }
+
         Ok(Self {
             nonce: DepositNonce::new(header.nonce),
             local_token: evm_address(header.local_token, DepositIntentField::LocalToken)?,
@@ -245,7 +240,7 @@ impl MintIntent {
             )?,
             remote_recipient: bytes32_to_account_id(&header.remote_recipient)?,
             max_fee: header.reduced_max_fee(MINT_INTENT_SCALE_EXP)?,
-            hook_data: HookData::from_slice(intent.hook_data()?)?,
+            hook_data: HookData::new(hook_data.to_vec())?,
         })
     }
 
@@ -608,11 +603,6 @@ mod tests {
             Err(EncodingError::HookDataTooLarge)
         );
         assert!(HookData::new(vec![0u8; MAX_HOOK_DATA_LEN]).is_ok());
-        assert_matches!(
-            HookData::from_slice(&vec![0u8; MAX_HOOK_DATA_LEN + 1]),
-            Err(EncodingError::HookDataTooLarge)
-        );
-        assert!(HookData::from_slice(&vec![0u8; MAX_HOOK_DATA_LEN]).is_ok());
     }
 
     /// A carried-felt run whose declared hookData length disagrees with the felts present is

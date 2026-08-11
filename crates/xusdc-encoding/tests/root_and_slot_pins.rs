@@ -3,11 +3,14 @@
 //! instead of being absorbed silently.
 //!
 //! Why these three: a stock dependency bump can move a compiled MAST root under us (a note script
-//! whose callee's root moved), move the security-core `check_policy` root, or add a storage slot —
-//! and none of the pre-existing membership/reachability tripwires records the literal VALUE, so such
-//! a move used to be invisible. These pins record the value. When a pin goes red, the movement is
-//! real and must be re-derived, its upstream cause identified, and the new value ratified by a human
-//! at PR assembly before the pin is treated as accepted — never hand-edited to match.
+//! whose callee's root moved), move the security-core `check_policy` root, or add a storage slot.
+//! The pre-existing tripwires already DETECT such a move — `typing_builder_byte_identity` pins the
+//! account's code commitment and a digest over its storage slots, and both went red at the rc.3
+//! bump — but they detect it only in AGGREGATE: they say something underneath moved, never WHICH
+//! root or WHICH slot. What these pins add is ATTRIBUTION, not detection. When a pin goes red, the
+//! movement is real and must be re-derived, its upstream cause identified, and the new value
+//! ratified by a human at PR assembly before the pin is treated as accepted — never hand-edited to
+//! match.
 //!
 //! HISTORY: the pinned VALUES here were measured GREEN at the PRE-BUMP base (protocol at the
 //! `4971ec4b38…` git rev), then went RED at the v0.16.0-rc.3 bump — five of the eight allowlist
@@ -22,12 +25,6 @@
 //! signature stand-in) and is EXPECTED to move again when the real signature path is rebuilt; it is
 //! ratified at its current rc.3 value for this slice, and that later movement is expected, not a
 //! regression.
-//!
-//! SHIM-CONTAMINATED (moves again): `check_policy` is measured against the temporary fail-closed
-//! signature-verify stand-in this migration installs; the later signature-rebuild work both deletes
-//! that stand-in and rewrites `check_policy`, so this root — and the account initial commitment that
-//! covers it (pinned by `typing_builder_byte_identity`) — MOVE AGAIN and must be re-materialized a
-//! second time then.
 //!
 //! Word values are pinned in their stable `Debug` rendering (decimal limbs), matching the
 //! convention `typing_builder_byte_identity` already uses for the account commitment — comparing the
@@ -44,7 +41,7 @@ use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
-// ── FROZEN rc.3 VALUES (re-materialized from the pre-bump set; PROVISIONAL, awaiting ratification) ─
+// ── FROZEN rc.3 VALUES (re-materialized from the pre-bump set; RATIFIED, see the module note) ────
 
 /// The 8 note-script roots of the production faucet's allowlist, as their stable `Debug` renderings.
 /// Per-root movement and cause at the rc.3 bump:

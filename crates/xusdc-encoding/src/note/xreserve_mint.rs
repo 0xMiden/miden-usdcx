@@ -51,12 +51,9 @@ pub const XUSDC_MINT_ATTESTATION_NUM_WORDS: usize = 9;
 /// attestation. Constant by construction — see the module docs on why the attestation goes first.
 pub const XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF: usize = XUSDC_MINT_ATTESTATION_NUM_WORDS;
 
-// The codec's hookData ceiling must be EXACTLY this transport's capacity: the protocol's
-// per-attachment word cap, minus the attestation section and the carried mint payload, in bytes.
-// The codec accepting an intent is the guarantee that this factory can wrap it into a mint note,
-// so the two bounds may never drift apart — an attestation section that grew, a protocol cap that
-// moved, or a codec ceiling that loosened each breaks the build here instead of stranding a
-// Circle-attested deposit as unmintable.
+// The codec's hookData ceiling must equal this transport's capacity (the per-attachment word cap
+// minus the attestation and the carried payload, in bytes), so every codec-accepted intent is
+// mintable; drift on either side breaks the build here.
 const _: () = assert!(
     MAX_HOOK_DATA_LEN
         == (NoteAttachment::MAX_NUM_WORDS as usize

@@ -605,6 +605,28 @@ mod tests {
         assert!(HookData::new(vec![0u8; MAX_HOOK_DATA_LEN]).is_ok());
     }
 
+    /// The same bound refused through the real path: a parsed intent whose hookData tail exceeds
+    /// the ceiling is rejected by `from_deposit_intent`, which checks the borrowed tail BEFORE
+    /// copying it out of the intent.
+    #[test]
+    fn from_deposit_intent_rejects_an_over_bound_hook_data_tail() {
+        let vec = load()
+            .families
+            .mi
+            .iter()
+            .find(|v| v.id == "mi-pos-empty-hookdata")
+            .expect("the empty-hookData accept vector is in the artifact");
+        let mut payload = vec.payload();
+        let len_off = deposit_intent_field_offset(DepositIntentField::HookDataLen);
+        let over = u32::try_from(MAX_HOOK_DATA_LEN + 1).expect("the ceiling fits a u32");
+        payload[len_off..len_off + 4].copy_from_slice(&over.to_be_bytes());
+        payload.resize(payload.len() + over as usize, 0);
+        assert_matches!(
+            MintIntent::from_deposit_intent(&DepositIntent::new(&payload), vec.faucet_id()),
+            Err(EncodingError::HookDataTooLarge)
+        );
+    }
+
     /// A carried-felt run whose declared hookData length disagrees with the felts present is
     /// refused rather than silently truncated: on-chain that length picks the keccak extent.
     #[test]

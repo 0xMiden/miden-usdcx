@@ -5,7 +5,6 @@
 
 use miden::protocol::active_account
 use miden::core::crypto::hashes::keccak256
-use miden::core::crypto::dsa::ecdsa_k256_keccak
 use miden::core::crypto::hashes::poseidon2
 use miden::core::word
 use {XRESERVE_ATTESTERS_SLOT, ATTESTER_ENABLED_MARKER} from xreserve::attester_admin
@@ -31,12 +30,22 @@ const ERR_XRESERVE_DISALLOWED_PUB_KEY = "deposit attester pubkey commitment is n
 # The ECDSA signature does not verify over keccak256(payload) for the candidate pubkey.
 const ERR_XRESERVE_SIG_INVALID = "deposit attestation signature verification failed"
 
+# TEMPORARY, RELEASE-BLOCKING. The on-chain signature primitive is unavailable, so the mint-time
+# attestation check refuses every attestation. A DISTINCT identity from ERR_XRESERVE_SIG_INVALID so
+# an unavailable verifier can never be mistaken for a rejected signature.
+const ERR_XRESERVE_SIG_VERIFY_UNAVAILABLE = "deposit attestation signature verification is temporarily unavailable"
+
 # PUBLIC INTERFACE
 # =================================================================================================
 
 #! Verifies the mint-time deposit attestation: keccak the payload, gate the attester pubkey
 #! against the xReserveAttesters allowlist, and ECDSA-verify the signature over the keccak
 #! digest.
+#!
+#! TEMPORARY (release-blocking): the signature-verify step is currently a fail-closed stand-in that
+#! refuses every attestation with ERR_XRESERVE_SIG_VERIFY_UNAVAILABLE, because the on-chain
+#! prehash-ECDSA primitive it called was removed by the miden-vm 0.29 upgrade. The real signature
+#! path is restored in a later work item; until then no attestation can pass this procedure.
 #!
 #! The caller owns the pubkey and signature bytes and passes pointers to them; this procedure
 #! reads nothing from the advice provider, so whatever memory the caller hash-verified is exactly
@@ -94,17 +103,19 @@ pub proc verify_attestation
     assert.err=ERR_XRESERVE_DISALLOWED_PUB_KEY
     # => [pubkey_ptr, signature_ptr]
 
-    # the ECDSA verify: verify_prehash over the SAME pubkey the allowlist gate just cleared, the
-    # digest, and the caller's signature.
-    locaddr.DIGEST_LO_LOC swap
-    # => [pubkey_ptr, digest_ptr, signature_ptr]
-
-    exec.ecdsa_k256_keccak::verify_prehash
-    # => [result]
-
-    # the signature must verify over the payload digest for the candidate pubkey.
-    assert.err=ERR_XRESERVE_SIG_INVALID
+    # ============================================================================================
+    # TEMPORARY FAIL-CLOSED STAND-IN — RELEASE BLOCKER, MUST BE DELETED BEFORE ANY RELEASE.
+    # ============================================================================================
+    # The signature primitive this step used, the exported prehash ECDSA verify, was removed by the
+    # miden-vm 0.29 upgrade. Rebuilding the real on-chain signature verification is a separate,
+    # later work item; until it lands this stand-in refuses EVERY attestation unconditionally, so
+    # minting against a deposit attestation is disabled while it is in the tree. It traps with its
+    # OWN error identity, distinct from a real signature rejection, so no negative test can mistake
+    # an unavailable verifier for a rejected signature and no forged or tampered input can pass.
+    drop drop
     # => []
+    push.0 assert.err=ERR_XRESERVE_SIG_VERIFY_UNAVAILABLE
+    # => [] (unreachable -- the assert above always traps)
 end
 
 #! Computes the commitment of the provided public key.

@@ -137,7 +137,7 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 19] = [
     // the packed-memory primitives the DC-14 preimage writer copies through (packed_mem.masm)
     (
         "ERR_XRESERVE_MINT_INTENT_LIMB",
@@ -173,6 +173,17 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
     (
         "ERR_XRESERVE_SIG_INVALID",
         MasmError::from_static_str("deposit attestation signature verification failed"),
+    ),
+    // TEMPORARY, RELEASE-BLOCKING — the fail-closed signature-verify stand-in's distinct error
+    // (attestation_verify.masm). The on-chain prehash-ECDSA primitive was removed by the miden-vm
+    // 0.29 upgrade, so the stand-in denies every attestation with this identity until the real
+    // signature path is rebuilt. Registered here so the `constant_parity` MASM↔Rust tripwire stays
+    // green; removed together with the stand-in.
+    (
+        "ERR_XRESERVE_SIG_VERIFY_UNAVAILABLE",
+        MasmError::from_static_str(
+            "deposit attestation signature verification is temporarily unavailable",
+        ),
     ),
     // The fee gate (deposit_intent_parser.masm): the faucet pays no relayer fee, so the parser rejects
     // a non-zero advice feeAmount; parity-pinned against the MASM const.
@@ -881,7 +892,7 @@ pub fn fee_amount_felts(limbs: [u32; 8]) -> Vec<Felt> {
 
 /// Like `run_call_driver`, but stages an optional `feeAmount` advice stack into the tx
 /// context (`extend_advice_inputs`). `None` ⇒ no advice staged (the missing-advice case,
-/// which must error). `AdviceInputs::with_stack` preserves order:
+/// which must error). `AdviceInputs::with_advice_stack` preserves order:
 /// the first felt is the first one `adv_push` returns.
 pub async fn run_call_driver_with_advice(
     h: &ShellHarness,
@@ -904,7 +915,7 @@ pub async fn run_call_driver_with_advice(
         .build_transaction(h.account_id)
         .tx_script(tx_script);
     if let Some(stack) = advice_stack {
-        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack));
+        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_advice_stack(stack.into()));
     }
     ctx.build()
         .expect("building the transaction")
@@ -953,7 +964,7 @@ pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
         .sign_prehash_recoverable(&digest)
         .expect("k256 prehash sign");
     let mut sig65 = [0u8; 65];
-    sig65[..64].copy_from_slice(sig.to_bytes().as_slice());
+    sig65[..64].copy_from_slice(sig.to_bytes().as_ref());
     sig65[64] = recid.to_byte();
 
     let commitment = PublicKey::read_from_bytes(&pk33)

@@ -135,7 +135,7 @@ impl XReserveStablecoinBuilder {
             Self::auth_component().map_err(XReserveStablecoinBuilderError::NetworkAuth)?,
         );
         builder
-            .build_existing()
+            .build()
             .map_err(XReserveStablecoinBuilderError::AccountComposition)
     }
 }

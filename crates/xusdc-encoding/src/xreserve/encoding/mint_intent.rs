@@ -69,7 +69,7 @@ pub const MINT_INTENT_SCALE_EXP: u32 = 0;
 
 /// Felt offsets within the carried payload. The nonce leads so the widest verbatim run starts
 /// word-aligned, and the two single-felt fields trail so every wider field stays contiguous. The
-/// MASM twins are in `asm/standards/xreserve/mint_intent.masm`.
+/// MASM twins are in `asm/xreserve/mint_intent.masm`.
 pub const MINT_INTENT_NONCE_FELT_OFF: usize = 0;
 pub const MINT_INTENT_LOCAL_TOKEN_FELT_OFF: usize =
     MINT_INTENT_NONCE_FELT_OFF + BYTES32_PACKED_LIMBS;
@@ -224,6 +224,13 @@ impl MintIntent {
             return Err(EncodingError::RemoteTokenMismatch);
         }
 
+        // the length bound is checked BEFORE the tail is copied; the constructor re-checks it as
+        // the type invariant
+        let hook_data = intent.hook_data()?;
+        if hook_data.len() > MAX_HOOK_DATA_LEN {
+            return Err(EncodingError::HookDataTooLarge);
+        }
+
         Ok(Self {
             nonce: DepositNonce::new(header.nonce),
             local_token: evm_address(header.local_token, DepositIntentField::LocalToken)?,
@@ -233,7 +240,7 @@ impl MintIntent {
             )?,
             remote_recipient: bytes32_to_account_id(&header.remote_recipient)?,
             max_fee: header.reduced_max_fee(MINT_INTENT_SCALE_EXP)?,
-            hook_data: HookData::new(intent.hook_data()?.to_vec())?,
+            hook_data: HookData::new(hook_data.to_vec())?,
         })
     }
 

@@ -4,7 +4,8 @@
 //!
 //! Every change here is wire-neutral: the composed account must be byte-for-byte what the
 //! pre-change composition produced. This suite freezes the baseline composition's anchors — the
-//! account's `initial_commitment`, its code commitment, a digest over its storage slots, and the
+//! account's `to_commitment` state commitment, its code commitment, a digest over its storage
+//! slots, and the
 //! seed-derived id — captured at a FIXED seed from the baseline path, and asserts:
 //!
 //! 1. the crate-root `build_faucet_account` constructor reproduces them EXACTLY (the faucet it
@@ -35,28 +36,24 @@ const TOKEN_SUPPLY: u64 = 0;
 // The baseline composition anchors, as their stable `Debug`/`Display` renderings (captured from the
 // pre-change composition at SEED). Comparing the rendered strings sidesteps any felt-repr ambiguity.
 //
-// Re-captured when the mint intent took ownership of its own admissibility checks (`validate`,
-// `hash_nonce` and the replay guard moved out of the deposit-intent module, and `rebuild` lost
-// them), the unused `verify_uint256_to_asset_amount` was removed, and the nonce copy became two
-// word moves instead of eight element moves. Three of the four anchors moved with that — the code commitment directly, the storage
-// digest because the active mint policy is stored as `check_policy`'s MAST root, and the initial
-// commitment because it covers both. The account id did NOT move, which is what says the seed
-// derivation and the slot LAYOUT are untouched: only procedure code and the root it is named by.
+// The account id is the NEW-ACCOUNT derivation: ground from SEED over the composed code and
+// storage commitments, so it moves whenever either commitment moves (unlike the code commitment
+// and storage digest, which isolate their own layer). The initial commitment covers all three.
 //
-// Re-captured again when the account's callable surface moved into its own component MASM. NO
-// procedure changed: the full 61-root list is identical except that `set_attester` and
-// `check_policy` swap positions 19 and 20. The two used to be named by their library modules
-// (`attester_admin` sorting before `mint_policy`) and are now named by one shared component module,
-// where the sort falls through to the procedure name (`check_policy` before `set_attester`). The
-// commitment is taken over the roots IN ORDER, so it moved; the storage digest and the account id
-// did not, which is what says nothing but the ordering changed.
-const GOLDEN_INITIAL_COMMITMENT: &str =
-    "Word([17966623251511595984, 5778353039142539162, 16004825714243359746, 11780323542403086167])";
+// Re-captured when the account's callable surface moved into its own component MASM. NO procedure
+// changed: the full root list is identical except that `set_attester` and `check_policy` swap
+// places. The two used to be named by their library modules (`attester_admin` sorting before
+// `mint_policy`) and are now named by one shared component module, where the sort falls through to
+// the procedure name (`check_policy` before `set_attester`). The commitment is taken over the roots
+// IN ORDER, so it moved — and because the id grounds on it, so did the id and the state commitment.
+// The storage digest did not, which is what says nothing but the ordering changed.
+const GOLDEN_STATE_COMMITMENT: &str =
+    "Word([3883232002113514037, 2230204493120669809, 10009868233253717709, 1551218337093204])";
 const GOLDEN_CODE_COMMITMENT: &str =
     "Word([9965828662918906490, 3941913867309533484, 2388271730734016088, 9698870604580583594])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([2490542360978853948, 16780434252263796967, 2203274247233403944, 6602689817247658489])";
-const GOLDEN_ACCOUNT_ID: &str = "0x070707060707073107070707070707";
+    "Word([345493706676576914, 583533095193184295, 14946277560135686626, 18108462045088020144])";
+const GOLDEN_ACCOUNT_ID: &str = "0xf504bbedde6efc712024a29380ba65";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.
@@ -76,9 +73,9 @@ fn assert_matches_golden(account: &Account, path: &str) {
         "{path}: seed-derived account id drifted",
     );
     assert_eq!(
-        format!("{:?}", account.initial_commitment()),
-        GOLDEN_INITIAL_COMMITMENT,
-        "{path}: account initial commitment drifted (code, storage, id or type changed)",
+        format!("{:?}", account.to_commitment()),
+        GOLDEN_STATE_COMMITMENT,
+        "{path}: account state commitment drifted (code, storage, id or type changed)",
     );
     assert_eq!(
         format!("{:?}", account.code().commitment()),
@@ -118,7 +115,7 @@ fn account_via_component_path() -> Account {
         XReserveStablecoinBuilder::auth_component().expect("the auth component must build"),
     );
     builder
-        .build_existing()
+        .build()
         .expect("the baseline-style composition must build the account")
 }
 
@@ -164,8 +161,8 @@ fn the_two_construction_paths_agree() {
     let via_ctor = account_via_crate_root_constructor();
     let via_components = account_via_component_path();
     assert_eq!(
-        format!("{:?}", via_ctor.initial_commitment()),
-        format!("{:?}", via_components.initial_commitment()),
+        format!("{:?}", via_ctor.to_commitment()),
+        format!("{:?}", via_components.to_commitment()),
         "the crate-root constructor and the component path must compose the identical account",
     );
     assert_eq!(

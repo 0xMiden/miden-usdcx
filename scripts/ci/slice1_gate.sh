@@ -50,7 +50,24 @@ fi
 echo "slice1_gate: running the raw suite (red by design) ..." >&2
 # --no-fail-fast so every target reports; the raw exit code is intentionally ignored (the suite is
 # red by design). set -o pipefail keeps `tee` from masking a crash of cargo itself.
-( cd "$ROOT" && cargo test --workspace --locked --release --no-fail-fast ) 2>&1 | tee "$RAW"
+#
+# COLOUR MUST BE OFF, and this is not cosmetic — every parser below depends on it.
+# On a TTY-less local run cargo emits plain text, but on a CI runner it colours its own status
+# lines while libtest leaves its output plain. A coloured "   Running …" line then begins with an
+# ESC byte, so `^[[:space:]]+(Running |Doc-tests )` matches nothing, `launches` counts 0 against a
+# non-zero `results`, and the gate aborts at the launch-count check WITHOUT EVER REACHING the
+# manifest comparison. The compile-break sentinel fails the same way: CI renders
+# `<ESC>[1m<ESC>[91merror<ESC>[0m: could not compile`, so the literal substring never matches and
+# the sentinel is dead while looking alive.
+#
+# Belt and braces, because the failure is SILENT and looks like a passing gate locally:
+#   1. suppress colour at the source, for cargo and for libtest;
+#   2. strip any residual ANSI before anything is parsed, so a future tool that colours its output
+#      cannot quietly re-break the parsers.
+# If you ever "simplify" this line, run the gate in CI and confirm `launches` is non-zero.
+( cd "$ROOT" && CARGO_TERM_COLOR=never cargo test --workspace --locked --release --no-fail-fast --color never ) 2>&1 \
+  | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
+  | tee "$RAW"
 raw_status=${PIPESTATUS[0]}
 # A cargo *invocation* failure (compile error, not a test failure) is status 101 with no test
 # lines; distinguish it from an ordinary red suite below by requiring at least one "test result:".

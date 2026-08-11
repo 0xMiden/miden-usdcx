@@ -2,15 +2,8 @@
 #
 # Circle's DepositIntent: its wire layout, and the faucet's on-chain realization of it.
 #
-# The mint note does not carry the intent. It carries a `xreserve::mint_intent` — the fields the
-# faucet has no other way to learn — and everything else is written here. That is the whole point:
-# a field the faucet writes cannot disagree with the attestation, because a divergent value changes
-# the keccak digest and the signature stops verifying. Checks the faucet used to perform on a value
-# it read are therefore not missing, they are unreachable.
-#
-# Two of the written fields are the faucet's own identity, and both are read inside this module
-# rather than passed in. That is the security contract: no caller-supplied value can reach the
-# destination domain or the token identifier.
+# The mint note does not carry the full deposit intent — only the fields the
+# faucet has no other way to learn. Everything else is written here.
 #
 # Whether the intent is ADMISSIBLE is a separate question, and one that does not need the message:
 # `xreserve::mint_intent::validate` answers it over the carried fields, before anything here runs.
@@ -35,8 +28,7 @@ use {
 # CONSTANTS — storage slots
 # =================================================================================================
 
-# Slot — the id derives from the namespaced label string below. Read by `rebuild`, which stamps the
-# configured domain into the message rather than comparing the message against it.
+# The configured destination domain. Read by `rebuild`.
 pub const DOMAIN_CONFIG_SLOT = word("xusdc::xreserve::domain_config::domain")
 
 # CONSTANTS — wire-field felt offsets (byte offset / 4)
@@ -75,15 +67,12 @@ pub const DEPOSIT_INTENT_MAGIC_PACKED = 0xcd0a2e5a
 pub const DEPOSIT_INTENT_VERSION_PACKED = 0x01000000
 
 pub const DEPOSIT_INTENT_HEADER_BYTES = 240
-
-# The header is a whole number of words, so the hookData tail that follows it starts word-aligned.
 pub const DEPOSIT_INTENT_HEADER_WORDS = 15
 
 # CONSTANTS — where each written value lands
 # =================================================================================================
 
-# The field's own offset plus the right-alignment pad its width implies. Deriving these keeps the
-# writer diffable line by line against the layout above.
+# The field's own offset plus the right-alignment pad its width implies.
 const WRITE_AMOUNT_FELT_OFF = AMOUNT_FELT_OFF + UINT256_ASSET_AMOUNT_LIMB_OFF
 const WRITE_REMOTE_TOKEN_FELT_OFF = REMOTE_TOKEN_FELT_OFF + BYTES32_ACCOUNT_ID_LIMB_OFF
 const WRITE_REMOTE_RECIPIENT_FELT_OFF = REMOTE_RECIPIENT_FELT_OFF + BYTES32_ACCOUNT_ID_LIMB_OFF
@@ -91,8 +80,7 @@ const WRITE_LOCAL_TOKEN_FELT_OFF = LOCAL_TOKEN_FELT_OFF + BYTES32_EVM_ADDRESS_LI
 const WRITE_LOCAL_DEPOSITOR_FELT_OFF = LOCAL_DEPOSITOR_FELT_OFF + BYTES32_EVM_ADDRESS_LIMB_OFF
 const WRITE_MAX_FEE_FELT_OFF = MAX_FEE_FELT_OFF + UINT256_ASSET_AMOUNT_LIMB_OFF
 
-# `rebuild` locals: four scalars, more than the write steps can keep on the operand stack while
-# also assembling words.
+# `rebuild` memory locals.
 const DEPOSIT_INTENT_PTR_LOC = 0
 const MINT_INTENT_PTR_LOC = 1
 const AMOUNT_LOC = 2
@@ -101,15 +89,8 @@ const HOOK_DATA_LEN_LOC = 3
 # ERRORS
 # =================================================================================================
 
-# The carried hookData length must be a valid u32 before the length derivation reads it.
 const ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB = "mint note deposit intent hook data length limb is not a valid u32"
-
-# The mint intent's hash-committed word count must equal the count its own hookData length
-# implies — an EXACT equality, so trailing padding cannot hide data, a smuggled section cannot ride
-# along, and a length claim cannot reach past the committed bytes.
 const ERR_XRESERVE_MINT_NOTE_INTENT_WORDS = "mint note deposit intent attachment word count does not match the intent length"
-
-# The configured destination domain is written into the message as a four-byte wire field.
 const ERR_XRESERVE_DOMAIN_NOT_U32 = "faucet domain config is not a valid u32"
 
 # PUBLIC INTERFACE
@@ -132,7 +113,7 @@ const ERR_XRESERVE_DOMAIN_NOT_U32 = "faucet domain config is not a valid u32"
 #!   transport region.
 #! - mint_intent_num_words is that region's hash-committed word count, past the attestation. It is
 #!   bound to the carried hookData length here, before anything reads past the fixed prefix.
-#! - amount is the deposited amount as an AssetAmount, taken from the note's own asset value.
+#! - amount is the deposited amount as an AssetAmount.
 #! - intent_num_bytes is the wire length the attestation covers.
 #!
 #! Panics if:
@@ -215,8 +196,8 @@ pub proc rebuild
     # => []
 
     # ---- the carried recipient ----
-    # validated before it is written, because a structurally invalid id would rebuild a perfectly
-    # consistent message and then mint a note nobody can consume
+    # validated because a structurally invalid id would rebuild a perfectly
+    # consistent message and then mint a note nobody can consume.
     loc_load.MINT_INTENT_PTR_LOC exec.load_carried_recipient
     # => [recipient_suffix, recipient_prefix]
 

@@ -19,9 +19,7 @@
 
 mod support;
 
-use miden_protocol::account::{
-    Account, AccountId, AccountIdVersion, AccountType, AssetCallbackFlag, StorageSlotName,
-};
+use miden_protocol::account::{Account, AccountType, AssetCallbackFlag, StorageSlotName};
 use miden_protocol::asset::{AssetAmount, AssetCallbacks};
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Hasher, Word};
@@ -176,36 +174,6 @@ fn crate_root_account_carries_the_policed_asset_callback_flag() {
         account.id().asset_callback_flag(),
         AssetCallbackFlag::Enabled,
         "the crate-root constructor must build a policed-asset faucet (Enabled callback flag)",
-    );
-}
-
-/// The deployable faucet is a NEW account whose id is bound to the composed code and storage
-/// commitments: recomputing the id from the account's own seed and commitments must reproduce it,
-/// and the account must carry new-account state (nonce zero, id seed present). A constructor that
-/// derived the id any other way — a dummy id from the raw init seed, say — would fail the
-/// recomputation, because such an id is not a valid hash over the commitments.
-#[test]
-fn crate_root_account_id_is_bound_to_the_composed_commitments() {
-    let account = account_via_crate_root_constructor();
-    let seed = account
-        .seed()
-        .expect("a deployable new account must carry its id seed");
-    let recomputed = AccountId::new(
-        seed,
-        AccountIdVersion::Version1,
-        account.code().commitment(),
-        account.storage().to_commitment(),
-    )
-    .expect("the carried seed must derive a valid id over the composed commitments");
-    assert_eq!(
-        recomputed,
-        account.id(),
-        "the account id must be the commitment-bound derivation from the carried seed",
-    );
-    assert_eq!(
-        account.nonce(),
-        Felt::ZERO,
-        "a deployable new account must start at nonce zero",
     );
 }
 

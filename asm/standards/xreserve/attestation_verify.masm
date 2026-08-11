@@ -1,7 +1,7 @@
 # xreserve::attestation_verify
 #
 # The mint-time deposit-attestation check. Its contract is documented on `verify_attestation`
-# itself; what this file is for is that a mint proceeds only for a deposit Circle actually signed.
+# itself; this file ensures a mint proceeds only for a deposit Circle actually signed.
 
 use miden::protocol::active_account
 use miden::core::crypto::hashes::keccak256
@@ -13,9 +13,7 @@ use {XRESERVE_ATTESTERS_SLOT, ATTESTER_ENABLED_MARKER} from xreserve::attester_a
 # CONSTANTS
 # =================================================================================================
 
-# `verify_attestation` locals: the keccak digest is the only value that needs a memory home — the
-# precompile wrappers take their other operands as pointers and leave the stack below their inputs
-# intact, so the caller's pubkey and signature pointers simply ride on the operand stack.
+# `verify_attestation` memory locals.
 const DIGEST_LO_LOC = 0
 const DIGEST_HI_LOC = 4
 
@@ -40,9 +38,7 @@ const ERR_XRESERVE_SIG_INVALID = "deposit attestation signature verification fai
 #!
 #! The caller owns the pubkey and signature bytes and passes pointers to them; this procedure
 #! reads nothing from the advice provider, so whatever memory the caller hash-verified is exactly
-#! what gets checked here. The SAME pubkey pointer feeds both the allowlist commitment
-#! (pubkey_commitment) and the signature check (verify_prehash), so an allowlisted commitment
-#! cannot be paired with a foreign signature.
+#! what gets checked here.
 #!
 #! Inputs:  [intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 #! Outputs: []
@@ -65,9 +61,8 @@ const ERR_XRESERVE_SIG_INVALID = "deposit attestation signature verification fai
 #! Invocation: exec
 @locals(8)
 pub proc verify_attestation
-    # keccak the full payload -> 8-limb digest, stored to the digest local region. hash_bytes
-    # consumes [intent_ptr, intent_num_bytes] and leaves everything below it untouched, so the two
-    # pointers survive the precompile call on the operand stack.
+    # => [intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
+    # hash the full payload -> 8-limb digest.
     exec.keccak256::hash_bytes
     # => [DIGEST_U32[8], pubkey_ptr, signature_ptr]
 
@@ -86,8 +81,7 @@ pub proc verify_attestation
     exec.active_account::get_map_item
     # => [MARKER, pubkey_ptr, signature_ptr]
 
-    # the stored value must be exactly the enabled marker -- a disabled row and an absent row both
-    # read as EMPTY_WORD, meaning the candidate pubkey's commitment is not allowlisted.
+    # the stored value must match the enabled marker to be considered allowlisted
     push.ATTESTER_ENABLED_MARKER exec.word::eq
     # => [is_allowed, pubkey_ptr, signature_ptr]
 
@@ -109,7 +103,7 @@ end
 
 #! Computes the commitment of the provided public key.
 #!
-#! Computes the poseidon2 hash over the 16 u32-LE-packed affine-coordinate limbs, which is the
+#! Computes the Poseidon2 hash over the 16 u32-LE-packed affine-coordinate limbs, which is the
 #! attester-allowlist map key.
 #!
 #! Inputs:  [pubkey_ptr]

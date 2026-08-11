@@ -4,7 +4,8 @@
 //!
 //! Every change here is wire-neutral: the composed account must be byte-for-byte what the
 //! pre-change composition produced. This suite freezes the baseline composition's anchors — the
-//! account's `initial_commitment`, its code commitment, a digest over its storage slots, and the
+//! account's `to_commitment` state commitment, its code commitment, a digest over its storage
+//! slots, and the
 //! seed-derived id — captured at a FIXED seed from the baseline path, and asserts:
 //!
 //! 1. the crate-root `build_faucet_account` constructor reproduces them EXACTLY (the faucet it
@@ -35,27 +36,37 @@ const TOKEN_SUPPLY: u64 = 0;
 // The baseline composition anchors, as their stable `Debug`/`Display` renderings (captured from the
 // pre-change composition at SEED). Comparing the rendered strings sidesteps any felt-repr ambiguity.
 //
-// Re-materialized at the v0.16.0-rc.3 protocol bump. Three of the four anchors moved with it — the
-// code commitment because six of the account's procedure roots moved (the fungible mint/burn
-// dispatch rewrite moved `mint_and_send`/`receive_and_burn`; the network-account
-// `auth_network_transaction` moved with the added sponsorship-policy/fee-asset enforcement; the
-// upstream sweep moved `get_min_burn_amount` and the transfer-policy check; and `check_policy`
-// moved because this migration edits `attestation_verify`, which it invokes); the storage digest
-// because TWO things changed under it — the active mint-policy root moved (it is stored as
-// `check_policy`'s MAST root) AND the rc.3 bump ADDED the `sponsor_at_most_collected_fees` slot
-// (54 -> 55); and the initial commitment because it covers both. The account id did NOT move —
-// which says only that the SEED-DERIVED IDENTITY is untouched; it does NOT say the slot layout is
-// unchanged (the layout demonstrably gained that one slot). `check_policy` is measured here against
-// the migration's fail-closed signature-verify stand-in; the later ECDSA-rebuild slice rewrites
-// `attestation_verify`, so these three anchors MOVE AGAIN and must be re-materialized a second time
-// then.
-const GOLDEN_INITIAL_COMMITMENT: &str =
-    "Word([223451725513909618, 9972382910206474275, 6729040912275203006, 2954999722093273053])";
+// The account id is the NEW-ACCOUNT derivation: ground from SEED over the composed code and
+// storage commitments, so it moves whenever either commitment moves (unlike the code commitment
+// and storage digest, which isolate their own layer). The state commitment covers all three.
+//
+// Re-materialized at the v0.16.0-rc.3 protocol bump. The code commitment moved because six of the
+// account's procedure roots moved (the fungible mint/burn dispatch rewrite moved
+// `mint_and_send`/`receive_and_burn`; the network-account `auth_network_transaction` moved with the
+// added sponsorship-policy/fee-asset enforcement; the upstream sweep moved `get_min_burn_amount`
+// and the transfer-policy check; and `check_policy` moved because this migration edits
+// `attestation_verify`, which it invokes). The storage digest moved for TWO reasons — the active
+// mint-policy root moved (it is stored as `check_policy`'s MAST root) AND the rc.3 bump ADDED the
+// `sponsor_at_most_collected_fees` slot (54 -> 55). The account id and state commitment move with
+// both. `check_policy` is measured here against the migration's fail-closed signature-verify
+// stand-in; the later ECDSA-rebuild slice rewrites `attestation_verify`, so these anchors MOVE
+// AGAIN and must be re-materialized a second time then.
+//
+// NOT RATIFIED — re-derived after this branch was refreshed onto `implementation`, which moved the
+// composition again under the values a human had already ratified against the pre-refresh base:
+// #112 binds the `SET_ATTESTER` note to its target faucet, moving that note-script root and with it
+// the `allowed_note_scripts` slot the storage digest covers, and #120 derives the faucet account id
+// from the composed code and storage commitments. So the storage digest, the account id and the
+// state commitment below are MEASURED, not accepted — a human must re-ratify them at PR assembly.
+// The code commitment is unaffected by either (neither touches account code) and holds at its
+// already-ratified rc.3 value.
+const GOLDEN_STATE_COMMITMENT: &str =
+    "Word([5043968617810723078, 4494464561309402642, 12722296328734308372, 15380588846935581424])";
 const GOLDEN_CODE_COMMITMENT: &str =
     "Word([6071254445460505704, 12653310514341131241, 4080738568322131054, 12639662269255750522])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([15954610800434419326, 6451156305011702001, 3091154321168034928, 9029760994496162649])";
-const GOLDEN_ACCOUNT_ID: &str = "0x070707060707073107070707070707";
+    "Word([7915315767792534777, 12171248434528243376, 17101372089779477071, 7649899744554499996])";
+const GOLDEN_ACCOUNT_ID: &str = "0xc2d736eba3aec4713303c10f68db5b";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.
@@ -75,9 +86,9 @@ fn assert_matches_golden(account: &Account, path: &str) {
         "{path}: seed-derived account id drifted",
     );
     assert_eq!(
-        format!("{:?}", account.initial_commitment()),
-        GOLDEN_INITIAL_COMMITMENT,
-        "{path}: account initial commitment drifted (code, storage, id or type changed)",
+        format!("{:?}", account.to_commitment()),
+        GOLDEN_STATE_COMMITMENT,
+        "{path}: account state commitment drifted (code, storage, id or type changed)",
     );
     assert_eq!(
         format!("{:?}", account.code().commitment()),
@@ -117,7 +128,7 @@ fn account_via_component_path() -> Account {
         XReserveStablecoinBuilder::auth_component().expect("the auth component must build"),
     );
     builder
-        .build_existing()
+        .build()
         .expect("the baseline-style composition must build the account")
 }
 
@@ -163,8 +174,8 @@ fn the_two_construction_paths_agree() {
     let via_ctor = account_via_crate_root_constructor();
     let via_components = account_via_component_path();
     assert_eq!(
-        format!("{:?}", via_ctor.initial_commitment()),
-        format!("{:?}", via_components.initial_commitment()),
+        format!("{:?}", via_ctor.to_commitment()),
+        format!("{:?}", via_components.to_commitment()),
         "the crate-root constructor and the component path must compose the identical account",
     );
     assert_eq!(

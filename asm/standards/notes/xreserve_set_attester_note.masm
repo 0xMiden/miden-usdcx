@@ -4,12 +4,13 @@
 # are CREATOR-COMMITTED in note storage. It stages the note storage into memory, marshals the
 # creator's params onto the stack in the proc's Inputs order, and `call`s the `ADMIN`-role-gated
 # `attester_admin::set_attester` (the sender gate lives in the proc; the note sender is
-# kernel-forced, so a creator without the `ADMIN` role traps there). A scheme-2
-# NetworkAccountTarget routing attachment addresses the note at the faucet (routing-only).
+# kernel-forced, so a creator without the `ADMIN` role traps there). The scheme-2
+# NetworkAccountTarget attachment binds the note to the faucet, enforced as a consume gate.
 #
 # Note storage layout (5 felts): [pk_commitment(4), enabled]. `enabled` is 1 (allowlist) or 0 (remove).
 
 use miden::protocol::active_note
+use miden::standards::attachments::network_account_target
 use xreserve::attester_admin
 
 # CONSTANTS
@@ -23,6 +24,9 @@ const SET_ATTESTER_NOTE_NUM_ITEMS = 5
 
 # The note must carry exactly the 5 param felts; a wrong count is a malformed admin note.
 const ERR_XRESERVE_SET_ATTESTER_NOTE_STORAGE = "set_attester note storage item count is invalid"
+
+# The consuming account must be the faucet the note's NetworkAccountTarget attachment addresses.
+const ERR_XRESERVE_SET_ATTESTER_NOTE_WRONG_FAUCET = "set_attester note is not bound to the consuming faucet"
 
 # PUBLIC INTERFACE
 # =================================================================================================
@@ -47,6 +51,7 @@ const ERR_XRESERVE_SET_ATTESTER_NOTE_STORAGE = "set_attester note storage item c
 #! - enabled is 1 (allowlist: write the enabled marker) or 0 (remove: write EMPTY_WORD) (item 4).
 #!
 #! Panics if:
+#! - the consuming account is not the note's NetworkAccountTarget attachment target.
 #! - the note storage does not carry exactly 5 items.
 #! - the note sender does not hold the `ADMIN` role (attester_admin::set_attester's authority gate).
 #!
@@ -54,6 +59,11 @@ const ERR_XRESERVE_SET_ATTESTER_NOTE_STORAGE = "set_attester note storage item c
 @note_script
 pub proc main
     dropw
+    # => [pad(16)]
+
+    # faucet binding: only the attachment's target faucet may consume this note.
+    exec.network_account_target::active_account_matches_target_account
+    assert.err=ERR_XRESERVE_SET_ATTESTER_NOTE_WRONG_FAUCET
     # => [pad(16)]
 
     # stage the creator-committed params into memory at address zero.

@@ -26,6 +26,16 @@
 //! ratified at its current rc.3 value for this slice, and that later movement is expected, not a
 //! regression.
 //!
+//! NOT RATIFIED — one root moved AFTER that ratification and is therefore NOT covered by it. The
+//! ratification above was measured against the pre-refresh base; refreshing this branch onto
+//! `implementation` brought in #112, which binds the `SET_ATTESTER` note to its target faucet and
+//! moves that note's script root. `XReserveSetAttesterNote` below carries its NEW, MEASURED value
+//! and is flagged NOT RATIFIED in place: a human must re-ratify it at PR assembly. The other ten
+//! ratified roots were re-measured on the refreshed tree and all HELD. (The refresh also moved the
+//! `typing_builder_byte_identity` account id, storage digest and state commitment — via #112's
+//! allowlist-slot change and #120's commitment-bound id derivation — which are flagged NOT RATIFIED
+//! in that file.)
+//!
 //! Word values are pinned in their stable `Debug` rendering (decimal limbs), matching the
 //! convention `typing_builder_byte_identity` already uses for the account commitment — comparing the
 //! rendered string sidesteps any felt-repr ambiguity.
@@ -41,10 +51,12 @@ use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
-// ── FROZEN rc.3 VALUES (re-materialized from the pre-bump set; RATIFIED, see the module note) ────
+// ── FROZEN VALUES (the rc.3 re-materialization, RATIFIED — except the one root the post-rc.3 ─────
+// ── refresh moved, which is measured and NOT RATIFIED; see the module note) ──────────────────────
 
 /// The 8 note-script roots of the production faucet's allowlist, as their stable `Debug` renderings.
-/// Per-root movement and cause at the rc.3 bump. The causes below were CORRECTED against upstream
+/// Per-root movement and cause — at the rc.3 bump for the five stock roots, and repo-side for the
+/// one of ours that moved afterwards. The upstream causes below were CORRECTED against upstream
 /// ground truth: both revisions were built and every common export root compared directly. An
 /// earlier revision of this block named several causes that do not survive that check; each
 /// correction is called out inline so the wrong mechanism is not reused as a model.
@@ -61,12 +73,17 @@ const MAX_SUPPLY: u64 = 1_000_000;
 ///   STRINGS changed, which compile to different error-code felts. (CORRECTED: a rename cannot move
 ///   a MAST root, so the earlier "the notes were renamed" mechanism was no mechanism. And
 ///   `BlocklistConfigNote` was never renamed — it already existed under this name pre-bump.)
-/// - The three custom xUSDC admin setters: did NOT move. Their upstream callees
+/// - The three custom xUSDC admin setters: did NOT move at the rc.3 bump. Their upstream callees
 ///   `min_burn_amount::set_min_burn_amount` and `fungible::set_max_supply` are byte-identical across
 ///   the two revisions, confirmed by DIRECT root comparison with their call closures resolved to a
 ///   fixpoint. (CORRECTED: the earlier text inferred callee stability FROM caller stability. That
 ///   inference is unsound — upstream `P2idNote`'s root moved at this same bump while `p2id.masm`
 ///   stayed blob-identical, because a callee's `@locals` changed. Rely on the direct comparison.)
+/// - XReserveSetAttesterNote (ours): MOVED AFTER the rc.3 bump, and NOT from upstream. #112 added
+///   the `NetworkAccountTarget` consume gate to its own script — the same binding the three stock
+///   config notes gained — so its root moved when this branch was refreshed onto `implementation`.
+///   Measured, NOT RATIFIED (see the module note); deleting just that binding reproduces the
+///   pre-#112 value exactly, which is what identifies #112 as the sole cause.
 const ALLOWLIST_ROOTS: [&str; 8] = [
     // MintNote (stock) — MOVED (callee `execute_mint_policy`: dynexec to dyncall)
     "Word([11109209218350460709, 3213691629472996675, 2255365811080514867, 18088254706611776118])",
@@ -78,8 +95,8 @@ const ALLOWLIST_ROOTS: [&str; 8] = [
     "Word([16590673221306893276, 933664217937136407, 6546816079571360662, 9137981551125041524])",
     // RbacConfigNote (stock) — MOVED (enforced target binding + error-string change)
     "Word([12288918691266617685, 8762671118025779749, 10130882319008906523, 11642151975824730339])",
-    // XReserveSetAttesterNote (ours) — unmoved
-    "Word([1014266409661146010, 13413563347990402434, 3353735645470309830, 6697281211075163595])",
+    // XReserveSetAttesterNote (ours) — MOVED post-refresh by #112's target binding. NOT RATIFIED.
+    "Word([10621302505952483781, 4639415540999186121, 10534906880494260490, 1124375946573662446])",
     // XReserveSetMaxSupplyNote (ours) — unmoved
     "Word([10709095122753693795, 8423686110443497664, 7806138698224003758, 10344805623532725753])",
     // XReserveSetMinBurnSizeNote (ours) — unmoved

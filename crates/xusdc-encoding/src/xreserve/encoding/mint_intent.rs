@@ -224,6 +224,13 @@ impl MintIntent {
             return Err(EncodingError::RemoteTokenMismatch);
         }
 
+        // the length bound is checked BEFORE the tail is copied; the constructor re-checks it as
+        // the type invariant
+        let hook_data = intent.hook_data()?;
+        if hook_data.len() > MAX_HOOK_DATA_LEN {
+            return Err(EncodingError::HookDataTooLarge);
+        }
+
         Ok(Self {
             nonce: DepositNonce::new(header.nonce),
             local_token: evm_address(header.local_token, DepositIntentField::LocalToken)?,
@@ -233,7 +240,7 @@ impl MintIntent {
             )?,
             remote_recipient: bytes32_to_account_id(&header.remote_recipient)?,
             max_fee: header.reduced_max_fee(MINT_INTENT_SCALE_EXP)?,
-            hook_data: HookData::new(intent.hook_data()?.to_vec())?,
+            hook_data: HookData::new(hook_data.to_vec())?,
         })
     }
 

@@ -81,7 +81,7 @@ impl DiscoveryRecord {
     }
 }
 
-/// The details a PUBLIC discovered note carries: its `NoteStorage.items` felts and its
+/// The details a PUBLIC discovered note carries: its withdrawal-payload attachment felts and its
 /// `metadata.sender`. Present exactly when `GetNotesById` returned `details = Some(..)`.
 #[derive(Debug, Clone)]
 pub struct DiscoveredDetails {
@@ -90,7 +90,7 @@ pub struct DiscoveredDetails {
 }
 
 impl DiscoveredDetails {
-    /// From the raw `NoteStorage.items` felts and an already-modelled sender.
+    /// From the raw withdrawal-payload attachment felts and an already-modelled sender.
     pub fn new(items: Vec<Felt>, sender: BurnNoteMetadata) -> Self {
         Self { items, sender }
     }

@@ -120,7 +120,7 @@ Security/correctness properties the faucet must uphold. The faucet-binding ones:
 | INV-MINT-SECURITY | `xreserve_mint` is the **only** supply-increasing surface, gated by an allowlisted-attester signature; the stock `mint_and_send` path is a deny guard. |
 | INV-SUPPLY-CONSERVATION | `token_supply += amount` exactly once per mint and `-= amount` once per burn. |
 | INV-NONCE-REPLAY | `usedNonces` is keyed by a Poseidon2 hash-to-Word of the nonce; assert-zero-then-set; replays are rejected. |
-| INV-PUBLIC-BURN-OBSERVABILITY | The burn note is Public, with its payload in `NoteStorage.items` and a fixed 32-bit tag. |
+| INV-PUBLIC-BURN-OBSERVABILITY | The burn note is Public, with its payload in a scheme-tagged note attachment and a fixed 32-bit tag. |
 | INV-TWO-BLOCK-BURN | A burn note is created in block N and consumed in block ≥ N+1; a same-block create+consume is erased. |
 | INV-NO-ECRECOVER | No key recovery on-chain; ECDSA is verified against a supplied candidate pubkey + commitment allowlist. |
 | INV-DEPOSITINTENT-PARSE | Fixed-offset 240-byte header = 60 u32-LE-packed felts plus hookData; all field asserts; note input is read-only. |
@@ -142,7 +142,7 @@ take. The ones referenced in this repo:
 |---|---|
 | ASG-1 | Do not allow minting via the stock `mint_and_send` (a deny guard must be wired). |
 | ASG-12 | Do not verify only a field subset — keccak the full payload and assert every field. |
-| ASG-13 | Do not put the burn destination in note metadata — the payload goes in `NoteStorage.items`; `metadata.sender` carries only the depositor. |
+| ASG-13 | Do not put the burn destination in note metadata — the payload goes in a scheme-tagged note attachment; `metadata.sender` carries only the depositor. |
 | ASG-14 | Prove the sole-supply-surface property at the procedure-root level, not by asserting `faucet::mint` alone. |
 | ASG-16 | Do not compute the header felt count as 240/8 = 30 — it is 60 u32-LE-packed felts. |
 | ASG-17 | Do not use `NoteInputs`/`aux`/an Encrypted note/a 4-word nullifier — target the current note model (`NoteStorage` ≤ 1024 felts, {Private,Public}, 6-word nullifier). |
@@ -159,7 +159,7 @@ Codec decisions owned by the `xusdc-encoding` crate (`xreserve::encoding`).
 | DC-4 | Nonce keying: `nonce` (bytes32) → Poseidon2 hash-to-Word → storage-map key. |
 | DC-5 | `amount`/`fee` uint256 → AssetAmount: byte-swap, assert high-4-limbs zero, `floor(x / 10^scale_exp)`, reject if over `AssetAmount::MAX` (no saturation). |
 | DC-6 | AccountId ↔ bytes32 packaging (the "R-B" right-aligned layout; see DEV-10). |
-| DC-7 | `XReserveBurnNote` payload codec `(amount, destDomain, destRecipient, salt)` in `NoteStorage.items`. Shipped as Rust only (`xreserve/encoding/burn_note.rs`); there is no `burn_items.masm`. |
+| DC-7 | `XReserveBurnNote` payload codec `(amount, destDomain, destRecipient, salt)` = 18 felts (`amount[0]`, `destDomain[1]`, `destRecipient[2..10]`, `salt[10..18]`), carried in note attachment **scheme 6**, zero-padded to **5 words** (2 pad felts); attachment slots `[scheme-2 routing, scheme-6 payload]`; the decoder rejects any word count ≠ 5. Shipped as Rust only (`xreserve/encoding/burn_note.rs`); there is no `burn_items.masm`. |
 | DC-8 | Burn-evidence package assembly (`burnTxId` + `note_id` + `nullifier` + `block_num` + proof-strength labels). Owned by the off-chain **listener**, not this crate. |
 | DC-9 / DC-10 / DC-11 / DC-12 | Circle JSON request/response schema types (off-chain Rust type definitions). Not on-chain. |
 | DC-13 | Optional decoders for Circle-returned binary blobs (`TransferSpec`/`BurnIntent`/`WithdrawHookData`); off-chain validation only, non-gating. |
@@ -379,8 +379,8 @@ the OPEN `DEV-7` decision and makes no acceptability verdict of its own.
 | Id | Checks |
 |---|---|
 | TV-BN-1 | Encode→decode round-trips the `(amount, destDomain, destRecipient, salt)` payload. |
-| TV-BN-2 | The destination goes in `NoteStorage.items`; `metadata.sender` is the depositor only (`anti-ASG-13`). |
-| TV-BN-3 | The payload targets `NoteStorage.items` (≤ 1024 felts), not `NoteInputs`/`aux` (`anti-ASG-17`). |
+| TV-BN-2 | The destination goes in the payload item felts; `metadata.sender` is the depositor only (`anti-ASG-13`). |
+| TV-BN-3 | The payload fits the note-model felt bound (≤ 1024 felts), not `NoteInputs`/`aux` (`anti-ASG-17`). |
 | TV-BN-4 | A wrong-length items list is rejected. |
 
 **attestation (`TV-ATT-*`)**
@@ -399,7 +399,7 @@ in `tests/masm_dual.rs`); `-4` is Rust-only because `DC-7` has no MASM side.
 | TV-DUAL-1 | `hash_nonce`: Rust and MASM produce the identical key Word on every vector. |
 | TV-DUAL-2 | **Retired** with the MASM witness verifier (see the ownership map's `DC-5` rider). The amount conversion is Rust-only; its vectors still drive the Rust unit tests in `amount.rs`. |
 | TV-DUAL-3 | DepositIntent parse: Rust and MASM agree on accept/reject and the 60-felt preimage. Rust-only on the mint path after `DC-14` — the MASM parser is retired (`NS-2`), so the MASM leg is `TV-DUAL-6`. |
-| TV-DUAL-4 | Burn-note items: the Rust-emitted burn note's `NoteStorage.items` match the Rust codec and the golden felts (an emit-vs-codec check within Rust — `DC-7` is Rust-only, there is no MASM burn-item codec). |
+| TV-DUAL-4 | Burn-note items: the Rust-emitted burn note's withdrawal-payload attachment matches the Rust codec and the golden felts (an emit-vs-codec check within Rust — `DC-7` is Rust-only, there is no MASM burn-item codec). |
 | TV-DUAL-5 | Attestation packing/commitment: Rust and MASM produce the identical felts / commitment. |
 | TV-DUAL-6 | `DC-14` preimage reconstruction, in three parts: the Rust round trip (`to_deposit_intent_bytes` after `from_deposit_intent` returns the original bytes); MASM/Rust parity (the felts `rebuild` writes equal the Rust reconstruction's); and per-field placement (mutating one carried field moves exactly that field's bytes). |
 

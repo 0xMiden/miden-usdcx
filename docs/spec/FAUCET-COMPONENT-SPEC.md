@@ -143,7 +143,10 @@ over `keccak256(payload)` (65-byte `r‖s‖v`, `v` unused; not EIP-712).
 ## 4. Burn
 
 A holder creates a public `XReserveBurnNote` carrying `(amount, destDomain, destRecipient,
-salt)` in the note's storage items, with the depositor in `metadata.sender`. Creating the note
+salt)` in a note attachment (scheme 6): the 18 felts `amount[0]`, `destDomain[1]`,
+`destRecipient[2..10]`, `salt[10..18]`, zero-padded to 5 words (2 pad felts); the note's two
+attachment slots are `[scheme-2 routing, scheme-6 payload]` and the decoder rejects any word count
+≠ 5. The depositor is in `metadata.sender`. Creating the note
 moves the assets out of the holder's vault, so the holder's balance is checked at **creation**
 (`R-BURN-5`), not re-checked at consume.
 

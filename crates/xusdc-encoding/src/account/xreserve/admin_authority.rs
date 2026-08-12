@@ -69,7 +69,7 @@ impl XReserveAdminAuthority {
             ),
             (BlocklistManager::unblock_account_root(), blocklist_manager),
         ]);
-        debug_assert_eq!(
+        assert_eq!(
             procedure_roles.len(),
             ROLE_GATED_PROCEDURE_COUNT,
             "the four manager procedures must be four distinct roots",

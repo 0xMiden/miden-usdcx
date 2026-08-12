@@ -41,7 +41,9 @@ use xusdc_encoding::note::xreserve_mint::{
     MintAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
 };
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, bytes32_to_storage_map_key};
+use xusdc_encoding::xreserve::encoding::{
+    account_id_to_bytes32, bytes32_to_storage_map_key, PublicKey, Signature,
+};
 
 // CIRCLE-FORMAT FIXTURE VALUES
 // ================================================================================================
@@ -192,7 +194,10 @@ async fn bring_up(pf: &mut ProductionFaucet) -> Result<()> {
 
 fn attestation_for(seed: u64, payload: &[u8]) -> MintAttestation {
     let attester = gen_attester(seed, payload);
-    MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes)
+    MintAttestation::new(
+        Signature::new(attester.sig_bytes),
+        PublicKey::new(attester.pubkey_bytes),
+    )
 }
 
 /// Consumes a committed mint note on the faucet with no transaction script and no consume-side

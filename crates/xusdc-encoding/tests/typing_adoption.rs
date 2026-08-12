@@ -26,8 +26,8 @@ use xusdc_encoding::note::xreserve_admin::{
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote, XUsdcMintNoteStorage};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, DepositIntent, DepositIntentHeader, EthBytes32, XReserveBurnItems,
-    DEPOSIT_INTENT_MAGIC, DEPOSIT_INTENT_VERSION,
+    account_id_to_bytes32, DepositIntent, DepositIntentHeader, EthBytes32, PublicKey, Signature,
+    XReserveBurnItems, DEPOSIT_INTENT_MAGIC, DEPOSIT_INTENT_VERSION,
 };
 
 fn note_rng(seed: u64) -> RandomCoin {
@@ -184,7 +184,10 @@ fn mint_note_builder_takes_typed_deposit_intent_and_matches_create() {
         .first()
         .expect("an attestation vector is present");
     let payload = vector.payload();
-    let attestation = MintAttestation::new(vector.sig(), vector.pubkey());
+    let attestation = MintAttestation::new(
+        Signature::new(vector.sig()),
+        PublicKey::new(vector.pubkey()),
+    );
 
     let via_builder = XUsdcMintNote::builder()
         .sender(sender)
@@ -287,7 +290,10 @@ fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() {
         .first()
         .expect("an attestation vector is present");
     let payload = vector.payload();
-    let attestation = MintAttestation::new(vector.sig(), vector.pubkey());
+    let attestation = MintAttestation::new(
+        Signature::new(vector.sig()),
+        PublicKey::new(vector.pubkey()),
+    );
     let via_builder = XUsdcMintNote::builder()
         .sender(test_account_id(5))
         .faucet_id(faucet)

@@ -70,29 +70,32 @@ const _: () = assert!(
 /// faucet applies, so the storage it builds passes the policy's ASSERT-MATCH amount compare.
 pub const XUSDC_DEPOSIT_SCALE_EXP: u32 = 0;
 
-/// The Circle deposit attestation crossing the note boundary: the raw 65-byte
-/// `r‖s‖v` ECDSA signature over `keccak256(payload)` and the raw 33-byte compressed SEC1
-/// candidate pubkey.
+/// The Circle deposit attestation crossing the note boundary: the [`Signature`] over
+/// `keccak256(payload)` and the candidate attester [`PublicKey`].
+///
+/// It holds the two shared-codec newtypes rather than their byte forms, so the raw arrays are
+/// named once — where they arrive from Circle — and every use site downstream already has the
+/// thing rather than bytes that have to be re-interpreted as it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MintAttestation {
-    signature: [u8; 65],
-    pubkey: [u8; 33],
+    signature: Signature,
+    pubkey: PublicKey,
 }
 
 impl MintAttestation {
-    /// Bundles a raw 65-byte `r‖s‖v` signature with the 33-byte compressed candidate pubkey.
-    pub fn new(signature: [u8; 65], pubkey: [u8; 33]) -> Self {
+    /// Bundles the `r‖s‖v` signature with the compressed candidate pubkey.
+    pub fn new(signature: Signature, pubkey: PublicKey) -> Self {
         Self { signature, pubkey }
     }
 
-    /// The raw 65-byte `r‖s‖v` signature (`v` carried, unused on-chain).
-    pub fn signature(&self) -> &[u8; 65] {
-        &self.signature
+    /// The `r‖s‖v` signature (`v` carried, unused on-chain).
+    pub fn signature(&self) -> Signature {
+        self.signature
     }
 
-    /// The raw 33-byte compressed SEC1 candidate pubkey.
-    pub fn pubkey(&self) -> &[u8; 33] {
-        &self.pubkey
+    /// The compressed SEC1 candidate pubkey.
+    pub fn pubkey(&self) -> PublicKey {
+        self.pubkey
     }
 }
 
@@ -255,17 +258,10 @@ impl XUsdcMintNote {
     ) -> Result<NoteAttachment, NoteError> {
         let mut felts: Vec<Felt> = Vec::new();
 
-        felts.extend(
-            PublicKey::new(*attestation.pubkey())
-                .to_affine_felts()
-                .map_err(|source| {
-                    NoteError::other_with_source(
-                        "attestation pubkey rejected by the shared codec",
-                        source,
-                    )
-                })?,
-        );
-        felts.extend(Signature::new(*attestation.signature()).to_felts());
+        felts.extend(attestation.pubkey().to_affine_felts().map_err(|source| {
+            NoteError::other_with_source("attestation pubkey rejected by the shared codec", source)
+        })?);
+        felts.extend(attestation.signature().to_felts());
         felts.extend([Felt::from(0u32); 3]);
         debug_assert_eq!(felts.len(), XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF * 4);
 

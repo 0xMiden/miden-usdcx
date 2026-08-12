@@ -91,7 +91,10 @@ fn t_delegation_is_byte_for_byte_unit04_create() {
         relayer_sender_id(),
         faucet_id(),
         attestation.deposit_intent().as_bytes(),
-        &MintAttestation::new(attestation.attestation(), *attester.as_bytes()),
+        &MintAttestation::new(
+            Signature::new(attestation.attestation()),
+            PublicKey::new(*attester.as_bytes()),
+        ),
         &mut note_rng(0xC1_2C_1E),
     )
     .expect("unit-04's factory builds the same note");

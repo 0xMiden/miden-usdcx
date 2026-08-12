@@ -36,7 +36,7 @@ use support::*;
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
+use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, PublicKey, Signature};
 
 /// Deterministic note rng for the production admin notes (serial only; never affects the gate).
 fn prod_note_rng(seed: u64) -> RandomCoin {
@@ -204,7 +204,10 @@ fn attested_mint_note(pf: &ProductionFaucet, payload: &[u8], rng_seed: u64) -> R
         pf.producer_id,
         pf.faucet_id,
         payload,
-        &MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes),
+        &MintAttestation::new(
+            Signature::new(attester.sig_bytes),
+            PublicKey::new(attester.pubkey_bytes),
+        ),
         &mut prod_note_rng(rng_seed),
     )
     .map_err(|e| anyhow::anyhow!("building the attested stock mint note: {e}"))

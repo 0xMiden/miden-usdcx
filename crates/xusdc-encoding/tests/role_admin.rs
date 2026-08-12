@@ -55,7 +55,7 @@ use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
+use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, PublicKey, Signature};
 
 // The production builder seeds the administrator = id(1) (the sole ADMIN member), DOM_PAUSER =
 // id(2), DOM_MANAGER = id(3).
@@ -342,7 +342,10 @@ async fn emit_and_consume_mint(
         pf.producer_id,
         pf.faucet_id,
         payload,
-        &MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes),
+        &MintAttestation::new(
+            Signature::new(attester.sig_bytes),
+            PublicKey::new(attester.pubkey_bytes),
+        ),
         &mut note_rng(rng_seed),
     )
     .map_err(|e| anyhow::anyhow!("building the attested stock mint note: {e}"))?;

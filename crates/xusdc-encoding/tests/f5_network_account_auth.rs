@@ -377,7 +377,10 @@ fn mint_note_carries_the_merged_transport_and_the_routing_target() -> Result<()>
         test_account_id(3),
         faucet_id,
         &payload,
-        &MintAttestation::new(att.sig_bytes, att.pubkey_bytes),
+        &MintAttestation::new(
+            Signature::new(att.sig_bytes),
+            PublicKey::new(att.pubkey_bytes),
+        ),
         &mut note_rng(1),
     )
     .map_err(|e| anyhow::anyhow!("constructing the mint note: {e}"))?;

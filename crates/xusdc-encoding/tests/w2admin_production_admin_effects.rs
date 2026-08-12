@@ -33,7 +33,7 @@ use xusdc_encoding::account::xreserve::{XReserveAdminAuthority, XReserveStableco
 use xusdc_encoding::note::xreserve_admin::{XReserveBlocklistNote, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
+use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, PublicKey, Signature};
 
 // THE MINT FIXTURE — only the pause-halt proof needs a faucet that can actually mint
 // ================================================================================================
@@ -118,7 +118,10 @@ async fn emit_and_consume_mint(
         pf.producer_id,
         pf.faucet_id,
         payload,
-        &MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes),
+        &MintAttestation::new(
+            Signature::new(attester.sig_bytes),
+            PublicKey::new(attester.pubkey_bytes),
+        ),
         &mut note_rng(seed),
     )
     .map_err(|e| anyhow::anyhow!("building the attested mint note: {e}"))?;

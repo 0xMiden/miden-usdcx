@@ -30,7 +30,7 @@ use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::Note;
 
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::PublicKey;
+use xusdc_encoding::xreserve::encoding::{PublicKey, Signature};
 
 use crate::circle::schema::ValidatedAttestation;
 use crate::error::{Cause, HexField, RelayerError};
@@ -145,7 +145,10 @@ pub fn build_mint_note<R: FeltRng>(
     attester: &AttesterPubkey,
     rng: &mut R,
 ) -> Result<Note, RelayerError> {
-    let mint_attestation = MintAttestation::new(attestation.attestation(), *attester.as_bytes());
+    let mint_attestation = MintAttestation::new(
+        Signature::new(attestation.attestation()),
+        PublicKey::new(*attester.as_bytes()),
+    );
 
     // Adopt the typed builder at the production boundary: the Circle envelope hands over the typed
     // `DepositIntent`, so no raw `&[u8]` crosses the ingestion boundary.

@@ -34,7 +34,7 @@ use support::mint_transport::{note_rng, REMOTE_TOKEN_BYTE_OFF};
 use support::{test_account_id, test_faucet_id};
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, AttVector, MiVector};
-use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
+use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, PublicKey, Signature};
 
 /// The fixed serial-number seed the anchors were captured at (production draws a random serial; a
 /// fixed one makes the note id, the nullifier and the whole serialization deterministic).
@@ -105,7 +105,10 @@ fn note_for(vector_id: &str, attestation_id: &str) -> Note {
         .copy_from_slice(&account_id_to_bytes32(faucet_id));
 
     let source = att(attestation_id);
-    let attestation = MintAttestation::new(source.sig(), source.pubkey());
+    let attestation = MintAttestation::new(
+        Signature::new(source.sig()),
+        PublicKey::new(source.pubkey()),
+    );
 
     XUsdcMintNote::create(
         test_account_id(5),

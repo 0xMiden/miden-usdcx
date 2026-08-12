@@ -56,7 +56,8 @@ use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, bytes32_to_packed_felts, bytes32_to_storage_map_key, XReserveBurnItems,
+    account_id_to_bytes32, bytes32_to_packed_felts, bytes32_to_storage_map_key, PublicKey,
+    Signature, XReserveBurnItems,
 };
 
 // ACTORS (the builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3),
@@ -188,7 +189,10 @@ fn stock_role_action_note<R: miden_protocol::crypto::rand::FeltRng>(
 /// + pubkey the `XUsdcMintNote` factory embeds in the merged transport's attestation section.
 fn attestation_for(seed: u64, payload: &[u8]) -> MintAttestation {
     let attester = gen_attester(seed, payload);
-    MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes)
+    MintAttestation::new(
+        Signature::new(attester.sig_bytes),
+        PublicKey::new(attester.pubkey_bytes),
+    )
 }
 
 /// The REAL stock mint note for `payload`: the production `XUsdcMintNote` factory (the merged

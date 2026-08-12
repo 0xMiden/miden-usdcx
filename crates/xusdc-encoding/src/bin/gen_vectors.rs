@@ -392,6 +392,15 @@ fn main() {
             "generated deterministically by gen_vectors @ protocol v0.15.3",
             "x = (2^63 - 2^31 + 1) * 10^6, post-scale y = MAX + 1 must reject (no saturation)",
         ),
+        amt_reject(
+            "amt-rej-cap-scale0",
+            &["TV-AMT-3"],
+            u256_be_from_u128(max + 1),
+            0,
+            "AmountOverCap",
+            "generated deterministically by gen_vectors @ protocol v0.15.3",
+            "cap reject at the shipped scale-0 identity: x = y = 2^63 - 2^31 + 1 = MAX + 1 must reject (no saturation)",
+        ),
         {
             // bit 130 set => high four limbs nonzero (> 2^128). BE byte 15, bit 2.
             let mut b = [0u8; 32];

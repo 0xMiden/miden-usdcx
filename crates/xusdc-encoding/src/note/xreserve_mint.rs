@@ -23,7 +23,7 @@
 //!   travel — the faucet rebuilds it from the carried payload plus its own state.
 
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::FungibleAsset;
+use miden_protocol::asset::{AssetAmount, FungibleAsset};
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{
@@ -33,8 +33,8 @@ use miden_protocol::{Felt, Word};
 use miden_standards::note::{MintNote, MintNoteStorage, P2idNoteStorage};
 
 use crate::xreserve::encoding::{
-    bytes32_to_account_id, bytes32_to_storage_map_key, DepositIntent, DepositIntentHeader,
-    MintIntent, PublicKey, Signature, BYTES_PER_PACKED_FELT, MAX_HOOK_DATA_LEN, MINT_INTENT_FELTS,
+    DepositIntent, MintIntent, PublicKey, Signature, BYTES_PER_PACKED_FELT, MAX_HOOK_DATA_LEN,
+    MINT_INTENT_FELTS,
 };
 
 /// The mint-note transport attachment scheme (u16, project-chosen: >= 4, clear of
@@ -100,46 +100,38 @@ impl MintAttestation {
 }
 
 /// The mint note's dedicated note-storage type — the attested output-note recipe the faucet's
-/// attestation policy assert-matches. It is DERIVED from the typed inputs (the DepositIntent header
-/// together with the consuming faucet id), never caller-supplied, so the storage cannot diverge from
-/// the attested values. It wraps the stock [`MintNoteStorage`] (a private field with read-only
-/// accessors, per the standards `PswapNoteStorage` pattern) rather than exposing a second copy of the
-/// recipe.
+/// attestation policy assert-matches. It is DERIVED from the typed inputs (the decoded
+/// [`MintIntent`] together with the consuming faucet id), never caller-supplied, so the storage
+/// cannot diverge from the attested values. It wraps the stock [`MintNoteStorage`] (a private field
+/// with read-only accessors, per the standards `PswapNoteStorage` pattern) rather than exposing a
+/// second copy of the recipe.
 pub struct XUsdcMintNoteStorage {
     storage: MintNoteStorage,
 }
 
 impl XUsdcMintNoteStorage {
-    /// Derives the mint-note storage from the attested DepositIntent `header` and the consuming
-    /// `faucet_id`: the P2ID recipe to the intent's `remoteRecipient` (serial = the nonce-derived
-    /// key), the scale-reduced attested amount as a [`FungibleAsset`] of the faucet, and the
-    /// recipient's account-target tag.
+    /// Derives the mint-note storage from the decoded `intent`, its scale-reduced `amount` and the
+    /// consuming `faucet_id`: the P2ID recipe to the intent's `remoteRecipient` (serial = the
+    /// nonce-derived key), the amount as a [`FungibleAsset`] of the faucet, and the recipient's
+    /// account-target tag.
+    ///
+    /// The recipient and the serial come off the already-decoded intent rather than being decoded
+    /// a second time out of the raw header, which is what makes this derivation total: the intent
+    /// only exists because those two fields already decoded.
     ///
     /// # Errors
     ///
-    /// [`NoteError`] if `remoteRecipient` is not a valid account id, the amount is out of range, or
-    /// the mint storage cannot be assembled.
+    /// [`NoteError`] if the amount is out of range for the faucet, or the mint storage cannot be
+    /// assembled.
     pub fn from_attested(
-        header: &DepositIntentHeader,
+        intent: &MintIntent,
+        amount: AssetAmount,
         faucet_id: AccountId,
     ) -> Result<Self, NoteError> {
-        let recipient_id = bytes32_to_account_id(&header.remote_recipient).map_err(|source| {
-            NoteError::other_with_source(
-                "deposit intent remoteRecipient is not a valid account id",
-                source,
-            )
-        })?;
-        let amount = header
-            .reduced_amount(XUSDC_DEPOSIT_SCALE_EXP)
-            .map_err(|source| {
-                NoteError::other_with_source(
-                    "deposit intent amount rejected by the amount reducer",
-                    source,
-                )
-            })?;
+        let recipient_id = intent.remote_recipient();
         let asset = FungibleAsset::new(faucet_id, u64::from(amount))
             .map_err(|source| NoteError::other_with_source("attested amount", source))?;
-        let serial = Word::from(bytes32_to_storage_map_key(&header.nonce));
+        let serial = Word::from(intent.nonce().to_storage_map_key());
         let recipient = P2idNoteStorage::new(recipient_id).into_recipient(serial);
         let tag = NoteTag::with_account_target(recipient_id);
         let storage = MintNoteStorage::new_fungible_public(recipient, asset, tag)?;
@@ -228,9 +220,17 @@ impl XUsdcMintNote {
                     source,
                 )
             })?;
+        let amount = header
+            .reduced_amount(XUSDC_DEPOSIT_SCALE_EXP)
+            .map_err(|source| {
+                NoteError::other_with_source(
+                    "deposit intent amount rejected by the amount reducer",
+                    source,
+                )
+            })?;
         // the attested output-note recipe, encapsulated in the mint note's dedicated storage type —
         // the SAME derivations the on-chain policy re-computes and assert-matches.
-        let storage = XUsdcMintNoteStorage::from_attested(&header, faucet_id)?;
+        let storage = XUsdcMintNoteStorage::from_attested(&payload, amount, faucet_id)?;
         let mint_note = MintNote::builder()
             .sender(sender)
             .mint_storage(storage.into_mint_storage())

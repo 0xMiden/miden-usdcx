@@ -17,6 +17,7 @@ use miden_protocol::errors::NoteError;
 use miden_protocol::note::Note;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
+use miden_standards::interop::eth::EthAddress;
 use support::*;
 use xusdc_encoding::account::xreserve::{XReserveComponent, ATTESTATION_MINT_POLICY_PROC_PATH};
 use xusdc_encoding::note::xreserve_admin::{
@@ -24,10 +25,13 @@ use xusdc_encoding::note::xreserve_admin::{
     XReserveSetMaxSupplyNoteStorage, XReserveSetMinBurnSizeNote, XReserveSetMinBurnSizeNoteStorage,
 };
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
-use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote, XUsdcMintNoteStorage};
+use xusdc_encoding::note::xreserve_mint::{
+    MintAttestation, XUsdcMintNote, XUsdcMintNoteStorage, XUSDC_DEPOSIT_SCALE_EXP,
+};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, DepositIntent, DepositIntentHeader, EthBytes32, PublicKey, Signature,
-    XReserveBurnItems, DEPOSIT_INTENT_MAGIC, DEPOSIT_INTENT_VERSION,
+    account_id_to_bytes32, DepositIntent, DepositIntentHeader, DepositNonce, EthBytes32, HookData,
+    MintIntent, PublicKey, Signature, XReserveBurnItems, DEPOSIT_INTENT_MAGIC,
+    DEPOSIT_INTENT_VERSION,
 };
 
 fn note_rng(seed: u64) -> RandomCoin {
@@ -274,11 +278,25 @@ fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() {
         hook_data_len: 0,
     };
 
-    // The dedicated `XUsdcMintNoteStorage` type is derivable from the typed intent header + faucet id
-    // (the dedicated-storage-type requirement for the fifth factory), and yields the attested
-    // fungible-public P2ID recipe the policy assert-matches.
-    let storage = XUsdcMintNoteStorage::from_attested(&header, faucet)
-        .expect("the mint storage derives from a valid attested header");
+    // The dedicated `XUsdcMintNoteStorage` type is derivable from the decoded intent + the reduced
+    // amount + the faucet id (the dedicated-storage-type requirement for the fifth factory), and
+    // yields the attested fungible-public P2ID recipe the policy assert-matches.
+    let intent = MintIntent::builder()
+        .nonce(DepositNonce::new(header.nonce))
+        .local_token(EthAddress::new([2u8; 20]))
+        .local_depositor(EthAddress::new([3u8; 20]))
+        .remote_recipient(recipient)
+        .max_fee(AssetAmount::new(0).expect("zero is a valid asset amount"))
+        .hook_data(HookData::new(Vec::new()).expect("empty hook data is within the bound"))
+        .build();
+    let storage = XUsdcMintNoteStorage::from_attested(
+        &intent,
+        header
+            .reduced_amount(XUSDC_DEPOSIT_SCALE_EXP)
+            .expect("the attested amount reduces"),
+        faucet,
+    )
+    .expect("the mint storage derives from a valid attested intent");
     let _mint_storage = storage.as_mint_storage();
 
     // Byte-equivalence: the recipe the type derives is exactly what the factory embeds — a mint note

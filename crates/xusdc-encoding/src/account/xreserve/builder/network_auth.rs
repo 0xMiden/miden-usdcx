@@ -13,7 +13,7 @@ use miden_protocol::asset::AssetAmount;
 use miden_protocol::note::NoteScriptRoot;
 use miden_standards::account::auth::{AuthNetworkAccount, NetworkAccountNoteAllowlistError};
 use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
-use miden_standards::note::{BurnNote, MintNote, PauseActionNote, RbacActionNote};
+use miden_standards::note::{BurnNote, MintNote, PauseConfigNote, RbacConfigNote};
 use miden_standards::tx_script::ExpirationTransactionScript;
 
 use super::XReserveStablecoinBuilder;
@@ -73,13 +73,13 @@ impl XReserveStablecoinBuilder {
             crate::note::xreserve_admin::XReserveSetMaxSupplyNote::script_root(),
             // the STOCK pause-action note — pause AND unpause behind one root, calling
             // PausableManager, gated on DOM_PAUSER by the procedure-role map.
-            PauseActionNote::script_root(),
+            PauseConfigNote::script_root(),
             // the STOCK blocklist-config note — block AND unblock behind one root, calling
             // BlocklistManager, gated on BLK_MANAGER by the procedure-role map.
             crate::note::xreserve_admin::XReserveBlocklistNote::script_root(),
             // the STOCK role-action note — grant, revoke, set-role-admin AND renounce behind one
             // root, calling the stock role component, which gates every action on the note sender.
-            RbacActionNote::script_root(),
+            RbacConfigNote::script_root(),
         ])
     }
 

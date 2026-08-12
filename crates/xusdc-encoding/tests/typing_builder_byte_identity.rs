@@ -39,13 +39,15 @@ const TOKEN_SUPPLY: u64 = 0;
 // The account id is the NEW-ACCOUNT derivation: ground from SEED over the composed code and
 // storage commitments, so it moves whenever either commitment moves (unlike the code commitment
 // and storage digest, which isolate their own layer). The initial commitment covers all three.
+// Re-materialized at protocol revision b9750ad6: upstream's standard faucet, network-account auth,
+// policy, and config-note procedures changed, and network auth gained its sponsorship-policy slot.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([1911135277323030899, 5132525903866533777, 16977445252358507205, 1762011304226738210])";
+    "Word([7412424583930637538, 8705633265448681773, 1943329511274929224, 7983283476918219029])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([16976291790698015816, 5888415912956684650, 4290450764110773212, 7150546299912713910])";
+    "Word([2220995771995822370, 1907793975877597126, 3693985818898836095, 17689759684601119804])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([345493706676576914, 583533095193184295, 14946277560135686626, 18108462045088020144])";
-const GOLDEN_ACCOUNT_ID: &str = "0xd3167e85b7d52bb15387e29e332591";
+    "Word([3186486536032878773, 727719394158085031, 13974314627300053315, 14974054200641464198])";
+const GOLDEN_ACCOUNT_ID: &str = "0x66684e54251f9cb145353975042938";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.

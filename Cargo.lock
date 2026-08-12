@@ -1864,7 +1864,7 @@ dependencies = [
 [[package]]
 name = "miden-agglayer"
 version = "0.16.0-beta.1"
-source = "git+https://github.com/0xMiden/protocol?rev=4971ec4b38fb1f54e8f73969e6da81ee0cbf850c#4971ec4b38fb1f54e8f73969e6da81ee0cbf850c"
+source = "git+https://github.com/0xMiden/protocol?rev=b9750ad6acc574e460939a5d8e847b878c59fff2#b9750ad6acc574e460939a5d8e847b878c59fff2"
 dependencies = [
  "alloy-sol-types",
  "fs-err",
@@ -1954,7 +1954,7 @@ dependencies = [
 [[package]]
 name = "miden-block-prover"
 version = "0.16.0-beta.1"
-source = "git+https://github.com/0xMiden/protocol?rev=4971ec4b38fb1f54e8f73969e6da81ee0cbf850c#4971ec4b38fb1f54e8f73969e6da81ee0cbf850c"
+source = "git+https://github.com/0xMiden/protocol?rev=b9750ad6acc574e460939a5d8e847b878c59fff2#b9750ad6acc574e460939a5d8e847b878c59fff2"
 dependencies = [
  "miden-protocol",
  "thiserror",
@@ -2244,7 +2244,7 @@ dependencies = [
 [[package]]
 name = "miden-protocol"
 version = "0.16.0-beta.1"
-source = "git+https://github.com/0xMiden/protocol?rev=4971ec4b38fb1f54e8f73969e6da81ee0cbf850c#4971ec4b38fb1f54e8f73969e6da81ee0cbf850c"
+source = "git+https://github.com/0xMiden/protocol?rev=b9750ad6acc574e460939a5d8e847b878c59fff2#b9750ad6acc574e460939a5d8e847b878c59fff2"
 dependencies = [
  "bech32",
  "fs-err",
@@ -2309,7 +2309,7 @@ dependencies = [
 [[package]]
 name = "miden-standards"
 version = "0.16.0-beta.1"
-source = "git+https://github.com/0xMiden/protocol?rev=4971ec4b38fb1f54e8f73969e6da81ee0cbf850c#4971ec4b38fb1f54e8f73969e6da81ee0cbf850c"
+source = "git+https://github.com/0xMiden/protocol?rev=b9750ad6acc574e460939a5d8e847b878c59fff2#b9750ad6acc574e460939a5d8e847b878c59fff2"
 dependencies = [
  "bon",
  "fs-err",
@@ -2351,7 +2351,7 @@ dependencies = [
 [[package]]
 name = "miden-testing"
 version = "0.16.0-beta.1"
-source = "git+https://github.com/0xMiden/protocol?rev=4971ec4b38fb1f54e8f73969e6da81ee0cbf850c#4971ec4b38fb1f54e8f73969e6da81ee0cbf850c"
+source = "git+https://github.com/0xMiden/protocol?rev=b9750ad6acc574e460939a5d8e847b878c59fff2#b9750ad6acc574e460939a5d8e847b878c59fff2"
 dependencies = [
  "anyhow",
  "itertools 0.15.0",
@@ -2371,7 +2371,7 @@ dependencies = [
 [[package]]
 name = "miden-tx"
 version = "0.16.0-beta.1"
-source = "git+https://github.com/0xMiden/protocol?rev=4971ec4b38fb1f54e8f73969e6da81ee0cbf850c#4971ec4b38fb1f54e8f73969e6da81ee0cbf850c"
+source = "git+https://github.com/0xMiden/protocol?rev=b9750ad6acc574e460939a5d8e847b878c59fff2#b9750ad6acc574e460939a5d8e847b878c59fff2"
 dependencies = [
  "bon",
  "miden-agglayer",
@@ -2385,7 +2385,7 @@ dependencies = [
 [[package]]
 name = "miden-tx-batch"
 version = "0.16.0-beta.1"
-source = "git+https://github.com/0xMiden/protocol?rev=4971ec4b38fb1f54e8f73969e6da81ee0cbf850c#4971ec4b38fb1f54e8f73969e6da81ee0cbf850c"
+source = "git+https://github.com/0xMiden/protocol?rev=b9750ad6acc574e460939a5d8e847b878c59fff2#b9750ad6acc574e460939a5d8e847b878c59fff2"
 dependencies = [
  "miden-processor",
  "miden-protocol",

@@ -122,7 +122,7 @@ async fn run_block(
     target: AccountId,
     seed: u64,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note = stock_block_note(sender, test_faucet_id(1), target, seed)
+    let note = stock_block_note(sender, account.id(), target, seed)
         .expect("building the block_account note (test-setup invariant)");
     chain
         .build_transaction(account.clone())
@@ -141,7 +141,7 @@ async fn run_unblock(
     target: AccountId,
     seed: u64,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note = stock_unblock_note(sender, test_faucet_id(1), target, seed)
+    let note = stock_unblock_note(sender, account.id(), target, seed)
         .expect("building the unblock_account note (test-setup invariant)");
     chain
         .build_transaction(account.clone())

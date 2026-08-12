@@ -12,8 +12,8 @@ description = "xUSDC-on-Miden 04 shared encoding: hand-written MASM + Rust mirro
 # dep is required by the committed vector generator (AccountIdBuilder).
 
 [dependencies]
-miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c", features = ["testing"] }
-miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c" }
+miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "b9750ad6acc574e460939a5d8e847b878c59fff2", features = ["testing"] }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "b9750ad6acc574e460939a5d8e847b878c59fff2" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # bon powers the note-factory builders and the dedicated note-storage types (the standards
@@ -52,9 +52,9 @@ name = "gen_vectors"
 required-features = ["vectors"]
 
 [dev-dependencies]
-miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c", features = ["testing"] }
-miden-testing   = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c" }
-miden-tx        = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c" }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "b9750ad6acc574e460939a5d8e847b878c59fff2", features = ["testing"] }
+miden-testing   = { git = "https://github.com/0xMiden/protocol", rev = "b9750ad6acc574e460939a5d8e847b878c59fff2" }
+miden-tx        = { git = "https://github.com/0xMiden/protocol", rev = "b9750ad6acc574e460939a5d8e847b878c59fff2" }
 # exact-error matching for u32-assert traps (OperationError::U32AssertionFailed); 0.25.8 is the
 # version the frozen protocol graph resolves AND the only live 0.25.x on crates.io (0.25.0–0.25.7
 # are yanked) — the pin moves in lockstep with the protocol family so exactly one processor copy

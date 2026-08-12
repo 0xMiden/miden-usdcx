@@ -28,7 +28,7 @@ use miden_standards::account::access::{
 };
 use miden_standards::account::policies::{BasicBlocklist, BlocklistManager, BlocklistStorage};
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::{BlocklistConfig, BlocklistConfigNote, PauseAction, PauseActionNote};
+use miden_standards::note::{BlocklistConfig, BlocklistConfigNote, PauseConfig, PauseConfigNote};
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
@@ -266,13 +266,13 @@ pub fn note_rng(seed: u64) -> RandomCoin {
 pub fn pause_action_note(
     sender: AccountId,
     account: AccountId,
-    action: PauseAction,
+    action: PauseConfig,
     seed: u32,
 ) -> Result<Note> {
-    let note = PauseActionNote::builder()
+    let note = PauseConfigNote::builder()
         .sender(sender)
-        .account(account)
-        .action(action)
+        .target(account)
+        .config(action)
         .serial_number(serial(seed))
         .build()
         .map_err(|e| anyhow::anyhow!("building the pause action note: {e}"))?;
@@ -400,13 +400,13 @@ fn config_note_serial(seed: u64) -> Word {
 pub fn stock_pause_action_note(
     sender: AccountId,
     faucet_id: AccountId,
-    action: PauseAction,
+    action: PauseConfig,
     seed: u64,
 ) -> Result<Note> {
-    let note = PauseActionNote::builder()
+    let note = PauseConfigNote::builder()
         .sender(sender)
-        .account(faucet_id)
-        .action(action)
+        .target(faucet_id)
+        .config(action)
         .serial_number(config_note_serial(seed))
         .build()
         .map_err(|e| anyhow::anyhow!("building the stock pause action note: {e}"))?;
@@ -415,12 +415,12 @@ pub fn stock_pause_action_note(
 
 /// The stock pause-action note that pauses `faucet_id`.
 pub fn stock_pause_note(sender: AccountId, faucet_id: AccountId, seed: u64) -> Result<Note> {
-    stock_pause_action_note(sender, faucet_id, PauseAction::Pause, seed)
+    stock_pause_action_note(sender, faucet_id, PauseConfig::Pause, seed)
 }
 
 /// The stock pause-action note that unpauses `faucet_id`.
 pub fn stock_unpause_note(sender: AccountId, faucet_id: AccountId, seed: u64) -> Result<Note> {
-    stock_pause_action_note(sender, faucet_id, PauseAction::Unpause, seed)
+    stock_pause_action_note(sender, faucet_id, PauseConfig::Unpause, seed)
 }
 
 /// The faucet's block note for `target`, built through the factory that refuses a self-block.

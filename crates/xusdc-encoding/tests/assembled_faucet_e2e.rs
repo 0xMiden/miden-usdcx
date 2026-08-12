@@ -44,7 +44,7 @@ use miden_protocol::errors::MasmError;
 use miden_protocol::note::{Note, NoteId, NoteTag, NoteType};
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
-use miden_standards::note::{P2idNote, P2idNoteStorage, RbacAction, RbacActionNote};
+use miden_standards::note::{P2idNote, P2idNoteStorage, RbacConfig, RbacConfigNote};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use support::*;
@@ -171,13 +171,13 @@ fn note_rng(seed: u64) -> RandomCoin {
 fn stock_role_action_note<R: miden_protocol::crypto::rand::FeltRng>(
     sender: AccountId,
     faucet_id: AccountId,
-    action: RbacAction,
+    action: RbacConfig,
     rng: &mut R,
 ) -> Result<Note> {
-    let note = RbacActionNote::builder()
+    let note = RbacConfigNote::builder()
         .sender(sender)
-        .account(faucet_id)
-        .action(action)
+        .target(faucet_id)
+        .config(action)
         .serial_number(rng.draw_word())
         .build()
         .map_err(|e| anyhow::anyhow!("building the standard role-action note: {e}"))?;
@@ -379,7 +379,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
             stock_role_action_note(
                 manager(),
                 route,
-                RbacAction::GrantRole {
+                RbacConfig::GrantRole {
                     role: psym.clone(),
                     account: new_pauser(),
                 },
@@ -395,7 +395,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
             stock_role_action_note(
                 manager(),
                 route,
-                RbacAction::RevokeRole {
+                RbacConfig::RevokeRole {
                     role: psym.clone(),
                     account: new_pauser(),
                 },
@@ -776,10 +776,13 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S9: metadata.sender == depositor"
     );
     assert_eq!(
-        XReserveBurnItems::decode(burn_note.recipient().storage().items())
-            .expect("S9: DC-7 items decode"),
+        XReserveBurnItems::decode(
+            &XReserveBurnNote::withdrawal_payload_felts(burn_note.attachments())
+                .expect("S9: burn note carries its withdrawal-payload attachment")
+        )
+        .expect("S9: DC-7 items decode"),
         items,
-        "S9: NoteStorage.items carries the exact DC-7 payload"
+        "S9: the withdrawal-payload attachment carries the exact DC-7 payload"
     );
     let burn_asset = FungibleAsset::new(faucet_id, BURN_OK)?;
     let emit = try_emit_burn_note(

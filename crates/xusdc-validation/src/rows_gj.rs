@@ -49,7 +49,10 @@ use miden_protocol::note::{Note, NoteId, NoteInclusionProof, NoteTag};
 use miden_protocol::transaction::InputNote;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::Word;
+use miden_standards::account::access::PausableStorage;
+use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::MinBurnAmount;
+use xusdc_encoding::account::xreserve::XReserveComponent;
 use xusdc_encoding::note::xreserve_admin::{
     XReserveIdentifierInitNote, XReservePauseNote, XReserveSetAttesterNote,
     XReserveSetMinBurnSizeNote, XReserveUnpauseNote,
@@ -117,25 +120,15 @@ fn word4(w: Word) -> Word4 {
     ]
 }
 
-fn value_slot(account: &Account, label: &str) -> Result<Word> {
-    let name = StorageSlotName::new(label).with_context(|| format!("slot label '{label}'"))?;
+fn value_slot(account: &Account, name: &StorageSlotName) -> Result<Word> {
     account
         .storage()
-        .get_item(&name)
-        .with_context(|| format!("reading value slot '{label}'"))
-}
-
-/// The `token_config` value slot name (`[token_supply, max_supply, decimals, symbol]`).
-fn token_config_slot() -> StorageSlotName {
-    StorageSlotName::new("miden::standards::faucets::fungible::token_config")
-        .expect("the token_config slot label is valid")
+        .get_item(name)
+        .with_context(|| format!("reading value slot '{name}'"))
 }
 
 fn token_supply(account: &Account) -> Result<u64> {
-    Ok(
-        value_slot(account, "miden::standards::faucets::fungible::token_config")?[0]
-            .as_canonical_u64(),
-    )
+    Ok(value_slot(account, FungibleFaucet::token_config_slot())?[0].as_canonical_u64())
 }
 
 /// The committed minimum burn size — read from the STOCK [`MinBurnAmount`] floor slot (`[min,0,0,0]`;
@@ -151,7 +144,7 @@ fn min_burn(account: &Account) -> Result<u64> {
 fn is_paused(account: &Account) -> Result<Word4> {
     Ok(word4(value_slot(
         account,
-        "miden::standards::access::pausable::is_paused",
+        PausableStorage::is_paused_slot(),
     )?))
 }
 
@@ -383,7 +376,11 @@ impl Driver {
             Ok(result) => {
                 // v16: `account_delta()`→`account_patch()`; `StorageSlotDelta::Value(word)`→
                 // `StorageSlotPatch::Value(StorageValuePatch)` read via `.value() -> Option<Word>`.
-                let new_supply = match result.account_patch().storage().get(&token_config_slot()) {
+                let new_supply = match result
+                    .account_patch()
+                    .storage()
+                    .get(FungibleFaucet::token_config_slot())
+                {
                     Some(StorageSlotPatch::Value(vp)) => {
                         vp.value().map(|w| w[0].as_canonical_u64())
                     }
@@ -1047,15 +1044,13 @@ async fn run_row_g(d: &mut Driver) -> Result<BurnTwoBlock> {
 
 /// Whether `commitment`'s `xReserveAttesters` marker is the enabled word [1,0,0,0].
 fn attester_enabled(account: &Account, commitment: Word) -> bool {
-    use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
-    StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+    account
+        .storage()
+        .get_map_item(
+            XReserveComponent::xreserve_attesters_slot(),
+            StorageMapKey::new(commitment),
+        )
         .ok()
-        .and_then(|name| {
-            account
-                .storage()
-                .get_map_item(&name, StorageMapKey::new(commitment))
-                .ok()
-        })
         .map(|w| word4(w) == MARKER_SET)
         .unwrap_or(false)
 }

@@ -23,6 +23,7 @@ use miden_standards::account::policies::MinBurnAmount;
 use miden_testing::assert_transaction_executor_error;
 use support::mint_transport::*;
 use support::*;
+use xusdc_encoding::account::xreserve::XReserveComponent;
 use xusdc_encoding::note::xreserve_admin::XReserveSetMinBurnSizeNote;
 
 const MIN_BURN_VALID: u64 = 5;
@@ -85,7 +86,7 @@ async fn stock_mint_note_mints_the_attested_amount() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            USED_NONCES_SLOT_LABEL,
+            XReserveComponent::used_nonces_slot(),
             nonce_key_of_payload(&payload)
         )?,
         marker(),

@@ -29,7 +29,7 @@ use anyhow::{Context, Result};
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::account::{
     Account, AccountBuilder, AccountComponent, AccountId, AccountType, AssetCallbackFlag,
-    StorageMap, StorageSlot, StorageSlotName,
+    StorageSlot, StorageSlotName,
 };
 use miden_protocol::assembly::{Linkage, Path as MasmPath};
 use miden_protocol::asset::{AssetAmount, TokenSymbol};
@@ -39,10 +39,7 @@ use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::inspection::AccountBuilderSchemaCommitmentExt;
 use miden_standards::StandardsLib;
 use xusdc_encoding::account::xreserve::{
-    XReserveStablecoinBuilder, DOMAIN_CONFIG_SLOT_LABEL, IDENTIFIER_CONFIG_SLOT_LABEL,
-    SOURCE_DOMAIN_CONFIG_SLOT_LABEL, USDCX_DECIMALS, USED_NONCES_SLOT_LABEL,
-    XRESERVE_ATTESTERS_SLOT_LABEL, XRESERVE_CONTRACT_HI_SLOT_LABEL,
-    XRESERVE_CONTRACT_LO_SLOT_LABEL,
+    XReserveComponent, XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL, USDCX_DECIMALS,
 };
 use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
 
@@ -95,30 +92,23 @@ pub fn build_xreserve_component_seeded(domain: Option<&DomainParams>) -> Result<
         }
     };
 
-    let slot = |label: &str, word: Word| -> Result<StorageSlot> {
-        Ok(StorageSlot::with_value(
-            StorageSlotName::new(label).with_context(|| format!("slot label '{label}'"))?,
-            word,
-        ))
-    };
+    let slot = |name: &StorageSlotName, word: Word| StorageSlot::with_value(name.clone(), word);
+    let identifier_name = StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
+        .context("the identifier slot label is a valid constant")?;
 
     AccountComponent::new(
         library,
         vec![
-            slot(DOMAIN_CONFIG_SLOT_LABEL, domain_w)?,
-            slot(IDENTIFIER_CONFIG_SLOT_LABEL, identifier_w)?,
-            slot(SOURCE_DOMAIN_CONFIG_SLOT_LABEL, source_domain_w)?,
-            slot(XRESERVE_CONTRACT_HI_SLOT_LABEL, xrc_hi_w)?,
-            slot(XRESERVE_CONTRACT_LO_SLOT_LABEL, xrc_lo_w)?,
-            StorageSlot::with_map(
-                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
-                StorageMap::new(),
+            slot(XReserveComponent::domain_config_slot(), domain_w),
+            slot(&identifier_name, identifier_w),
+            slot(
+                XReserveComponent::source_domain_config_slot(),
+                source_domain_w,
             ),
-            StorageSlot::with_map(
-                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
-                    .context("xReserveAttesters slot label")?,
-                StorageMap::new(),
-            ),
+            slot(XReserveComponent::xreserve_contract_hi_slot(), xrc_hi_w),
+            slot(XReserveComponent::xreserve_contract_lo_slot(), xrc_lo_w),
+            StorageSlot::with_empty_map(XReserveComponent::used_nonces_slot().clone()),
+            StorageSlot::with_empty_map(XReserveComponent::xreserve_attesters_slot().clone()),
         ],
         AccountComponentMetadata::new("xusdc-production-faucet"),
     )

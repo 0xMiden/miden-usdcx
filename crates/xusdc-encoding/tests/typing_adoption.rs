@@ -198,8 +198,9 @@ fn mint_note_builder_takes_typed_deposit_intent_and_matches_create() {
         .faucet_id(faucet)
         .deposit_intent(DepositIntent::new(&payload))
         .attestation(&attestation)
-        .rng(&mut note_rng(RNG_SEED))
-        .build();
+        .generate_serial_number(&mut note_rng(RNG_SEED))
+        .build()
+        .and_then(Note::try_from);
     let via_create = XUsdcMintNote::create(
         sender,
         faucet,
@@ -317,8 +318,9 @@ fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() {
         .faucet_id(faucet)
         .deposit_intent(DepositIntent::new(&payload))
         .attestation(&attestation)
-        .rng(&mut note_rng(RNG_SEED))
-        .build();
+        .generate_serial_number(&mut note_rng(RNG_SEED))
+        .build()
+        .and_then(Note::try_from);
     let via_create = XUsdcMintNote::create(
         test_account_id(5),
         faucet,

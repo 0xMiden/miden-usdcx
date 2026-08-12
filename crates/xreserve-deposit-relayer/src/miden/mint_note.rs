@@ -157,7 +157,8 @@ pub fn build_mint_note<R: FeltRng>(
         .faucet_id(faucet_id)
         .deposit_intent(attestation.deposit_intent())
         .attestation(&mint_attestation)
-        .rng(rng)
+        .generate_serial_number(rng)
         .build()
+        .and_then(Note::try_from)
         .map_err(|source| RelayerError::MintNoteBuild(Cause::new(source)))
 }

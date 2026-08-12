@@ -30,7 +30,9 @@ use miden_protocol::note::{
     Note, NoteAttachment, NoteAttachmentScheme, NoteScript, NoteScriptRoot, NoteTag,
 };
 use miden_protocol::{Felt, Word};
-use miden_standards::note::{MintNote, MintNoteStorage, P2idNoteStorage};
+use miden_standards::note::{
+    MintNote, MintNoteStorage, NetworkAccountTarget, NoteExecutionHint, P2idNoteStorage,
+};
 
 use crate::xreserve::encoding::{
     DepositIntent, MintIntent, PublicKey, Signature, BYTES_PER_PACKED_FELT, MAX_HOOK_DATA_LEN,
@@ -149,9 +151,104 @@ impl XUsdcMintNoteStorage {
     }
 }
 
-/// The mint-note factory: builds the [`MintNote`] carrying the xUSDC
-/// attested transport.
-pub struct XUsdcMintNote;
+/// The Circle deposit a mint note carries: the decoded [`MintIntent`] together with the
+/// [`MintAttestation`] that authorizes it.
+///
+/// This is the scheme-4 transport attachment in domain form. It converts into the
+/// [`NoteAttachment`] the faucet hash-verifies, the way the standards [`NetworkAccountTarget`]
+/// converts into the scheme-2 routing one.
+pub struct XUsdcDeposit {
+    intent: MintIntent,
+    attestation: MintAttestation,
+}
+
+impl XUsdcDeposit {
+    /// Bundles a decoded intent with the attestation over the payload it was decoded from.
+    pub fn new(intent: MintIntent, attestation: MintAttestation) -> Self {
+        Self {
+            intent,
+            attestation,
+        }
+    }
+
+    /// The carried mint payload.
+    pub fn intent(&self) -> &MintIntent {
+        &self.intent
+    }
+
+    /// The attestation travelling beside it.
+    pub fn attestation(&self) -> MintAttestation {
+        self.attestation
+    }
+}
+
+impl TryFrom<&XUsdcDeposit> for NoteAttachment {
+    type Error = NoteError;
+
+    /// Builds the scheme-4 transport attachment — everything the faucet needs to rebuild and
+    /// verify the Circle-signed message, in three sections:
+    ///
+    /// 1. 36 felts `[pubkey(16 affine felts), signature(17), pad(3)]`.
+    /// 2. the 24-felt carried mint payload (`DC-14`).
+    /// 3. the u32-LE-packed hookData, zero-padded to the word boundary.
+    ///
+    /// The layout is a contract: the policy hash-verifies these words into one memory region and
+    /// reads each section at a constant offset into it, so a reordering here would silently
+    /// repoint them. The DepositIntent itself is NOT carried — the faucet rebuilds it from
+    /// section 2 plus its own state, which is what makes the addressing fields unforgeable.
+    ///
+    /// # Errors
+    ///
+    /// [`NoteError`] if the candidate pubkey does not decompress to a curve point. The conversion
+    /// is fallible for that reason alone; the key is deliberately NOT validated earlier, so the
+    /// rejection keeps surfacing from the same place it always has.
+    fn try_from(deposit: &XUsdcDeposit) -> Result<Self, Self::Error> {
+        let mut felts: Vec<Felt> = Vec::new();
+
+        felts.extend(
+            deposit
+                .attestation
+                .pubkey()
+                .to_affine_felts()
+                .map_err(|source| {
+                    NoteError::other_with_source(
+                        "attestation pubkey rejected by the shared codec",
+                        source,
+                    )
+                })?,
+        );
+        felts.extend(deposit.attestation.signature().to_felts());
+        felts.extend([Felt::from(0u32); 3]);
+        debug_assert_eq!(felts.len(), XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF * 4);
+
+        felts.extend(deposit.intent.to_felts());
+        while !felts.len().is_multiple_of(4) {
+            felts.push(Felt::from(0u32));
+        }
+
+        let words: Vec<Word> = felts
+            .chunks_exact(4)
+            .map(|chunk| Word::new([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        NoteAttachment::with_words(
+            NoteAttachmentScheme::new(XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME)?,
+            words,
+        )
+    }
+}
+
+/// The mint note carrying the xUSDC attested transport: a [`MintNote`] whose two attachments are
+/// the scheme-4 deposit and the scheme-2 routing bind.
+///
+/// It holds its parts — every one of them already decoded and already validated — and converts
+/// into a protocol [`Note`] with `Note::try_from`.
+pub struct XUsdcMintNote {
+    sender: AccountId,
+    storage: XUsdcMintNoteStorage,
+    serial_number: Word,
+    deposit: XUsdcDeposit,
+    network_account_target: NetworkAccountTarget,
+}
 
 impl XUsdcMintNote {
     /// The [`MintNote`] script the transport rides on.
@@ -175,36 +272,38 @@ impl XUsdcMintNote {
         attestation: &MintAttestation,
         rng: &mut R,
     ) -> Result<Note, NoteError> {
-        Self::builder()
-            .sender(sender)
-            .faucet_id(faucet_id)
-            .deposit_intent(DepositIntent::new(deposit_intent))
-            .attestation(attestation)
-            .rng(rng)
-            .build()
+        Note::try_from(
+            Self::builder()
+                .sender(sender)
+                .faucet_id(faucet_id)
+                .deposit_intent(DepositIntent::new(deposit_intent))
+                .attestation(attestation)
+                .generate_serial_number(rng)
+                .build()?,
+        )
     }
 }
 
 #[bon::bon]
 impl XUsdcMintNote {
     /// Builds the production mint note via a `bon` builder
-    /// (`XUsdcMintNote::builder().sender(..).faucet_id(..).deposit_intent(..).attestation(..).rng(..).build()`):
+    /// (`XUsdcMintNote::builder().sender(..).faucet_id(..).deposit_intent(..).attestation(..).generate_serial_number(..).build()`):
     /// `sender` is the producer/relayer account, `faucet_id` the consuming faucet, `deposit_intent`
     /// the typed [`DepositIntent`] payload (parsed and packed by the shared codec, so a structurally
     /// invalid payload is rejected here rather than on-chain — it surfaces as a [`NoteError`] carrying
-    /// the codec's error as its source), `attestation` the raw signature and candidate pubkey. The
+    /// the codec's error as its source), `attestation` the signature and candidate pubkey. The
     /// storage embeds the ATTESTED values (P2ID recipe to the intent's `remoteRecipient` with the
     /// nonce-key serial; the scale-0-reduced amount as a [`FungibleAsset`] of `faucet_id`; the
     /// recipient's account-target tag) so the faucet's attestation policy accepts it under the
     /// ASSERT-MATCH binding.
     #[builder]
-    pub fn new<'a, R: FeltRng>(
+    pub fn new<'a>(
         sender: AccountId,
         faucet_id: AccountId,
         deposit_intent: DepositIntent<'a>,
-        attestation: &MintAttestation,
-        rng: &mut R,
-    ) -> Result<Note, NoteError> {
+        attestation: &'a MintAttestation,
+        serial_number: Word,
+    ) -> Result<Self, NoteError> {
         let header = deposit_intent.parse_header().map_err(|source| {
             NoteError::other_with_source(
                 "deposit intent payload rejected by the shared codec",
@@ -231,52 +330,60 @@ impl XUsdcMintNote {
         // the attested output-note recipe, encapsulated in the mint note's dedicated storage type —
         // the SAME derivations the on-chain policy re-computes and assert-matches.
         let storage = XUsdcMintNoteStorage::from_attested(&payload, amount, faucet_id)?;
+        let network_account_target =
+            NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always).map_err(|err| {
+                NoteError::other_with_source("faucet id is not a public network account", err)
+            })?;
+        Ok(Self {
+            sender,
+            storage,
+            serial_number,
+            deposit: XUsdcDeposit::new(payload, *attestation),
+            network_account_target,
+        })
+    }
+}
+
+// BUILDER EXTENSIONS
+// ================================================================================================
+
+impl<'a, S: x_usdc_mint_note_builder::State> XUsdcMintNoteBuilder<'a, S>
+where
+    S::SerialNumber: x_usdc_mint_note_builder::IsUnset,
+{
+    /// Draws a serial number from `rng` and sets it on the builder — the stock
+    /// `MintNote::generate_serial_number` shape.
+    pub fn generate_serial_number(
+        self,
+        rng: &mut impl FeltRng,
+    ) -> XUsdcMintNoteBuilder<'a, x_usdc_mint_note_builder::SetSerialNumber<S>> {
+        self.serial_number(rng.draw_word())
+    }
+}
+
+// CONVERSIONS
+// ================================================================================================
+
+impl TryFrom<XUsdcMintNote> for Note {
+    type Error = NoteError;
+
+    /// Assembles the stock [`MintNote`] and converts it into a protocol [`Note`]: the derived mint
+    /// storage, the drawn serial, then the two attachments in their frozen order — the scheme-4
+    /// deposit first (fixed-width attestation ahead of the variable payload), the scheme-2 routing
+    /// bind second.
+    ///
+    /// # Errors
+    ///
+    /// [`NoteError`] if the deposit's candidate pubkey does not decompress to a curve point, or if
+    /// the attachments exceed their protocol limit.
+    fn try_from(note: XUsdcMintNote) -> Result<Self, Self::Error> {
         let mint_note = MintNote::builder()
-            .sender(sender)
-            .mint_storage(storage.into_mint_storage())
-            .serial_number(rng.draw_word())
-            .attachment(Self::transport_attachment(&payload, attestation)?)
-            .attachment(super::network_routing_attachment(faucet_id)?)
+            .sender(note.sender)
+            .mint_storage(note.storage.into_mint_storage())
+            .serial_number(note.serial_number)
+            .attachment(NoteAttachment::try_from(&note.deposit)?)
+            .attachment(NoteAttachment::from(note.network_account_target))
             .build()?;
         Ok(Note::from(mint_note))
-    }
-
-    /// Builds the scheme-4 transport attachment — everything the faucet needs to rebuild and
-    /// verify the Circle-signed message, in three sections:
-    ///
-    /// 1. 36 felts `[pubkey(16 affine felts), signature(17), pad(3)]`.
-    /// 2. the 24-felt carried mint payload (`DC-14`).
-    /// 3. the u32-LE-packed hookData, zero-padded to the word boundary.
-    ///
-    /// The layout is a contract: the policy hash-verifies these words into one memory region and
-    /// reads each section at a constant offset into it, so a reordering here would silently
-    /// repoint them. The DepositIntent itself is NOT carried — the faucet rebuilds it from
-    /// section 2 plus its own state, which is what makes the addressing fields unforgeable.
-    fn transport_attachment(
-        payload: &MintIntent,
-        attestation: &MintAttestation,
-    ) -> Result<NoteAttachment, NoteError> {
-        let mut felts: Vec<Felt> = Vec::new();
-
-        felts.extend(attestation.pubkey().to_affine_felts().map_err(|source| {
-            NoteError::other_with_source("attestation pubkey rejected by the shared codec", source)
-        })?);
-        felts.extend(attestation.signature().to_felts());
-        felts.extend([Felt::from(0u32); 3]);
-        debug_assert_eq!(felts.len(), XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF * 4);
-
-        felts.extend(payload.to_felts());
-        while !felts.len().is_multiple_of(4) {
-            felts.push(Felt::from(0u32));
-        }
-
-        let words: Vec<Word> = felts
-            .chunks_exact(4)
-            .map(|chunk| Word::new([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect();
-        NoteAttachment::with_words(
-            NoteAttachmentScheme::new(XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME)?,
-            words,
-        )
     }
 }

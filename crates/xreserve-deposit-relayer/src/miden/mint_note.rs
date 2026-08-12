@@ -29,7 +29,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::Note;
 
-use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
+use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::xreserve::encoding::{PublicKey, Signature};
 
 use crate::circle::schema::ValidatedAttestation;
@@ -145,7 +145,7 @@ pub fn build_mint_note<R: FeltRng>(
     attester: &AttesterPubkey,
     rng: &mut R,
 ) -> Result<Note, RelayerError> {
-    let mint_attestation = MintAttestation::new(
+    let mint_attestation = DepositAttestation::new(
         Signature::new(attestation.attestation()),
         PublicKey::new(*attester.as_bytes()),
     );

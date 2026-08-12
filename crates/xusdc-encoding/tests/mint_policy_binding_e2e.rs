@@ -35,7 +35,7 @@ use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::mint_transport::*;
 use support::*;
-use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
+use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::xreserve::encoding::{
     DepositIntent, MintIntent, PublicKey, Signature, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
 };
@@ -289,7 +289,7 @@ async fn the_honest_note_carries_the_merged_transport_and_the_routing_target() -
         pf.producer_id,
         pf.faucet_id,
         &payload,
-        &MintAttestation::new(
+        &DepositAttestation::new(
             Signature::new(attester.sig_bytes),
             PublicKey::new(attester.pubkey_bytes),
         ),

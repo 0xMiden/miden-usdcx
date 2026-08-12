@@ -53,7 +53,7 @@ use xusdc_encoding::note::xreserve_admin::{
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
 use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
-use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
+use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
     account_id_to_bytes32, bytes32_to_packed_felts, bytes32_to_storage_map_key, PublicKey,
@@ -185,11 +185,11 @@ fn stock_role_action_note<R: miden_protocol::crypto::rand::FeltRng>(
     Ok(Note::from(note))
 }
 
-/// The allowlisted (seed 1) attester's `MintAttestation` over `payload` — the wire-form signature
+/// The allowlisted (seed 1) attester's `DepositAttestation` over `payload` — the wire-form signature
 /// + pubkey the `XUsdcMintNote` factory embeds in the merged transport's attestation section.
-fn attestation_for(seed: u64, payload: &[u8]) -> MintAttestation {
+fn attestation_for(seed: u64, payload: &[u8]) -> DepositAttestation {
     let attester = gen_attester(seed, payload);
-    MintAttestation::new(
+    DepositAttestation::new(
         Signature::new(attester.sig_bytes),
         PublicKey::new(attester.pubkey_bytes),
     )

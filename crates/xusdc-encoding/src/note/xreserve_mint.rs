@@ -79,12 +79,12 @@ pub const XUSDC_DEPOSIT_SCALE_EXP: u32 = 0;
 /// named once — where they arrive from Circle — and every use site downstream already has the
 /// thing rather than bytes that have to be re-interpreted as it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MintAttestation {
+pub struct DepositAttestation {
     signature: Signature,
     pubkey: PublicKey,
 }
 
-impl MintAttestation {
+impl DepositAttestation {
     /// Bundles the `r‖s‖v` signature with the compressed candidate pubkey.
     pub fn new(signature: Signature, pubkey: PublicKey) -> Self {
         Self { signature, pubkey }
@@ -152,19 +152,19 @@ impl XUsdcMintNoteStorage {
 }
 
 /// The Circle deposit a mint note carries: the decoded [`MintIntent`] together with the
-/// [`MintAttestation`] that authorizes it.
+/// [`DepositAttestation`] that authorizes it.
 ///
 /// This is the scheme-4 transport attachment in domain form. It converts into the
 /// [`NoteAttachment`] the faucet hash-verifies, the way the standards [`NetworkAccountTarget`]
 /// converts into the scheme-2 routing one.
 pub struct XUsdcDeposit {
     intent: MintIntent,
-    attestation: MintAttestation,
+    attestation: DepositAttestation,
 }
 
 impl XUsdcDeposit {
     /// Bundles a decoded intent with the attestation over the payload it was decoded from.
-    pub fn new(intent: MintIntent, attestation: MintAttestation) -> Self {
+    pub fn new(intent: MintIntent, attestation: DepositAttestation) -> Self {
         Self {
             intent,
             attestation,
@@ -177,7 +177,7 @@ impl XUsdcDeposit {
     }
 
     /// The attestation travelling beside it.
-    pub fn attestation(&self) -> MintAttestation {
+    pub fn attestation(&self) -> DepositAttestation {
         self.attestation
     }
 }
@@ -269,7 +269,7 @@ impl XUsdcMintNote {
         sender: AccountId,
         faucet_id: AccountId,
         deposit_intent: &[u8],
-        attestation: &MintAttestation,
+        attestation: &DepositAttestation,
         rng: &mut R,
     ) -> Result<Note, NoteError> {
         Note::try_from(
@@ -301,7 +301,7 @@ impl XUsdcMintNote {
         sender: AccountId,
         faucet_id: AccountId,
         deposit_intent: DepositIntent<'a>,
-        attestation: &'a MintAttestation,
+        attestation: &'a DepositAttestation,
         serial_number: Word,
     ) -> Result<Self, NoteError> {
         let header = deposit_intent.parse_header().map_err(|source| {

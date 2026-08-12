@@ -53,7 +53,7 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
-use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
+use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, PublicKey, Signature};
 
@@ -342,7 +342,7 @@ async fn emit_and_consume_mint(
         pf.producer_id,
         pf.faucet_id,
         payload,
-        &MintAttestation::new(
+        &DepositAttestation::new(
             Signature::new(attester.sig_bytes),
             PublicKey::new(attester.pubkey_bytes),
         ),

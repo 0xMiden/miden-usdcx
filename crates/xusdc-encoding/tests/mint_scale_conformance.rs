@@ -38,7 +38,7 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_mint::{
-    MintAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
+    DepositAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
 };
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
@@ -192,9 +192,9 @@ async fn bring_up(pf: &mut ProductionFaucet) -> Result<()> {
     Ok(())
 }
 
-fn attestation_for(seed: u64, payload: &[u8]) -> MintAttestation {
+fn attestation_for(seed: u64, payload: &[u8]) -> DepositAttestation {
     let attester = gen_attester(seed, payload);
-    MintAttestation::new(
+    DepositAttestation::new(
         Signature::new(attester.sig_bytes),
         PublicKey::new(attester.pubkey_bytes),
     )

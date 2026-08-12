@@ -26,7 +26,7 @@ use xusdc_encoding::note::xreserve_admin::{
 };
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
-    MintAttestation, XUsdcMintNote, XUsdcMintNoteStorage, XUSDC_DEPOSIT_SCALE_EXP,
+    DepositAttestation, XUsdcMintNote, XUsdcMintNoteStorage, XUSDC_DEPOSIT_SCALE_EXP,
 };
 use xusdc_encoding::xreserve::encoding::{
     account_id_to_bytes32, DepositIntent, DepositIntentHeader, DepositNonce, EthBytes32, HookData,
@@ -188,7 +188,7 @@ fn mint_note_builder_takes_typed_deposit_intent_and_matches_create() {
         .first()
         .expect("an attestation vector is present");
     let payload = vector.payload();
-    let attestation = MintAttestation::new(
+    let attestation = DepositAttestation::new(
         Signature::new(vector.sig()),
         PublicKey::new(vector.pubkey()),
     );
@@ -309,7 +309,7 @@ fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() {
         .first()
         .expect("an attestation vector is present");
     let payload = vector.payload();
-    let attestation = MintAttestation::new(
+    let attestation = DepositAttestation::new(
         Signature::new(vector.sig()),
         PublicKey::new(vector.pubkey()),
     );

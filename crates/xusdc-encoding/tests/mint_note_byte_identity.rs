@@ -32,7 +32,7 @@ use miden_protocol::utils::serde::Serializable;
 use miden_protocol::Hasher;
 use support::mint_transport::{note_rng, REMOTE_TOKEN_BYTE_OFF};
 use support::{test_account_id, test_faucet_id};
-use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
+use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, AttVector, MiVector};
 use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, PublicKey, Signature};
 
@@ -105,7 +105,7 @@ fn note_for(vector_id: &str, attestation_id: &str) -> Note {
         .copy_from_slice(&account_id_to_bytes32(faucet_id));
 
     let source = att(attestation_id);
-    let attestation = MintAttestation::new(
+    let attestation = DepositAttestation::new(
         Signature::new(source.sig()),
         PublicKey::new(source.pubkey()),
     );

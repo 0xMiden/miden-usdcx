@@ -51,7 +51,7 @@ use miden_standards::note::{MintNote, NetworkAccountTarget, NoteExecutionHint, P
 
 use xreserve_deposit_relayer::miden::build_mint_note;
 use xusdc_encoding::note::xreserve_mint::{
-    MintAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
+    DepositAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
     XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
@@ -91,7 +91,7 @@ fn t_delegation_is_byte_for_byte_unit04_create() {
         relayer_sender_id(),
         faucet_id(),
         attestation.deposit_intent().as_bytes(),
-        &MintAttestation::new(
+        &DepositAttestation::new(
             Signature::new(attestation.attestation()),
             PublicKey::new(*attester.as_bytes()),
         ),

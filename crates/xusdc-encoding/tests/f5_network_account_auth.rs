@@ -62,7 +62,7 @@ use xusdc_encoding::note::xreserve_admin::{
 };
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
-    MintAttestation, XUsdcMintNote, XUSDC_MINT_ATTESTATION_NUM_WORDS,
+    DepositAttestation, XUsdcMintNote, XUSDC_MINT_ATTESTATION_NUM_WORDS,
     XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
@@ -377,7 +377,7 @@ fn mint_note_carries_the_merged_transport_and_the_routing_target() -> Result<()>
         test_account_id(3),
         faucet_id,
         &payload,
-        &MintAttestation::new(
+        &DepositAttestation::new(
             Signature::new(att.sig_bytes),
             PublicKey::new(att.pubkey_bytes),
         ),

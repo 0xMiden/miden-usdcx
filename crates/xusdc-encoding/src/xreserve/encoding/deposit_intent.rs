@@ -27,6 +27,7 @@ use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, MAX_NOTE_STORAGE_ITEMS};
 
 use super::amount::uint256_to_asset_amount;
+use super::bytes32::bytes32_to_packed_u32_limbs;
 use super::error::EncodingError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,20 +116,8 @@ fn reduce_to_asset_amount(
     scale_exp: u32,
     field: DepositIntentField,
 ) -> Result<AssetAmount, EncodingError> {
-    uint256_to_asset_amount(uint256_le_limbs(value), scale_exp)
+    uint256_to_asset_amount(bytes32_to_packed_u32_limbs(value), scale_exp)
         .map_err(|_| EncodingError::FieldNotAssetAmount { field })
-}
-
-/// The 8 u32-LE packed limbs of a big-endian uint256 wire field (limb i = LE-u32 of wire bytes
-/// `[4i, 4i+4)`) — the limb form the shared-encoding reducer consumes.
-pub(crate) fn uint256_le_limbs(bytes: &[u8; 32]) -> [u32; 8] {
-    core::array::from_fn(|i| {
-        u32::from_le_bytes(
-            bytes[4 * i..4 * i + 4]
-                .try_into()
-                .expect("4-byte window of a 32-byte field"),
-        )
-    })
 }
 
 /// Reads a big-endian u32 wire field (the caller has bounds-checked the slice).

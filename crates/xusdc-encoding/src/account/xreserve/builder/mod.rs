@@ -289,21 +289,6 @@ impl XReserveStablecoinBuilder {
             [self.xreserve_component.clone()],
         )
         .map_err(XReserveStablecoinBuilderError::MintPolicy)?;
-        // validate-what-you-ship: every required xreserve slot must be declared on the supplied
-        // component — a missing slot would ship a faucet whose reads / writes of it trap
-        // ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME at runtime. Presence-only for the two maps (the
-        // per-slice fixtures legitimately pre-seed values); the three build-seeded fields are
-        // overwritten below.
-        for name in XReserveComponent::required_slots() {
-            if !self
-                .xreserve_component
-                .storage_slots()
-                .iter()
-                .any(|slot| slot.name() == name)
-            {
-                return Err(XReserveStablecoinBuilderError::MissingXReserveSlot(name));
-            }
-        }
         // token-config exactness (decimals == 6, the amount reducer's scale; symbol == USDCX) is now
         // guaranteed BY CONSTRUCTION: the faucet is built by `build_usdcx_faucet`, which hard-wires
         // both, so there is nothing to validate here — the faucet cannot be handed in mis-configured.

@@ -5,7 +5,6 @@
 
 use core::fmt;
 
-use miden_protocol::account::StorageSlotName;
 use miden_protocol::errors::AccountError;
 use miden_standards::account::auth::NetworkAccountNoteAllowlistError;
 use miden_standards::account::faucets::FungibleFaucetError;
@@ -39,10 +38,6 @@ pub enum XReserveStablecoinBuilderError {
     /// (`2^63 - 2^31`), so it is not a valid burn amount and cannot be seeded into
     /// the stock `MinBurnAmount` floor slot. Carries the offending value.
     MinBurnSizeExceedsMax(u64),
-    /// The supplied `xreserve` component does not declare a required storage slot
-    /// ([`XReserveComponent::required_slots`](super::XReserveComponent::required_slots)); reads and
-    /// writes of a missing slot trap at runtime. Carries the missing slot's name.
-    MissingXReserveSlot(&'static StorageSlotName),
     /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with a privileged
     /// identity — the administrator, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The
     /// transfer-blocklist administrator must be an external entity with no other faucet-admin
@@ -103,10 +98,6 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 f,
                 "min_burn_size {value} exceeds the maximum representable asset amount \
                  (AssetAmount::MAX = 2^63 - 2^31)"
-            ),
-            Self::MissingXReserveSlot(name) => write!(
-                f,
-                "the xreserve component does not declare the required storage slot '{name}'"
             ),
             Self::BlocklistManagerNotIsolated { collides_with } => write!(
                 f,

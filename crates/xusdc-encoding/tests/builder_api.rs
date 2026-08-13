@@ -356,13 +356,6 @@ fn production_components_carry_mutability_config_slot() -> Result<()> {
 // COMPLETENESS GUARDS — the builder rejects an incompletely- or wrongly-composed faucet at build time.
 // ================================================================================================
 
-// The `xreserve` component is now assembled by the builder itself (16d), always carrying its six
-// declared slots, so a component "missing a required slot" cannot be injected through the public API.
-// The `MissingXReserveSlot` guard remains in `build_components` as defence against a future assembly
-// regression, but the former `build_rejects_missing_xreserve_slot` tripwire has no malformed
-// component to feed it. The six slots are still pinned by the Phase-0 baseline
-// (`XReserveComponent::required_slots`) and asserted present by the composed-account surface tests.
-
 // Token-config exactness (decimals == 6, symbol == USDCX) is now guaranteed BY CONSTRUCTION: the
 // builder builds the fixed-identity USDCx faucet itself via `build_usdcx_faucet`, so a
 // wrong-decimals or wrong-symbol faucet cannot be handed in through the public API and the former

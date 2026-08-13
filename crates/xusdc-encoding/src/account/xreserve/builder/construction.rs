@@ -136,18 +136,6 @@ impl XReserveComponent {
     pub fn xreserve_attesters_slot() -> &'static StorageSlotName {
         &XRESERVE_ATTESTERS_SLOT_NAME
     }
-
-    /// Returns the storage slots a supplied `xreserve` component must declare.
-    pub fn required_slots() -> [&'static StorageSlotName; 6] {
-        [
-            Self::domain_config_slot(),
-            Self::source_domain_config_slot(),
-            Self::xreserve_contract_hi_slot(),
-            Self::xreserve_contract_lo_slot(),
-            Self::used_nonces_slot(),
-            Self::xreserve_attesters_slot(),
-        ]
-    }
 }
 
 impl From<XReserveComponent> for AccountComponent {

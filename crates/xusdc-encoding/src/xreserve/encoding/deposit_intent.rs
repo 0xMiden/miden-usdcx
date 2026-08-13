@@ -25,9 +25,9 @@
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, MAX_NOTE_STORAGE_ITEMS};
+use miden_standards::interop::eth::EthAmount;
 
 use super::amount::uint256_to_asset_amount;
-use super::bytes32::bytes32_to_packed_u32_limbs;
 use super::error::EncodingError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,7 +116,7 @@ fn reduce_to_asset_amount(
     scale_exp: u32,
     field: DepositIntentField,
 ) -> Result<AssetAmount, EncodingError> {
-    uint256_to_asset_amount(bytes32_to_packed_u32_limbs(value), scale_exp)
+    uint256_to_asset_amount(EthAmount::new(*value), scale_exp)
         .map_err(|_| EncodingError::FieldNotAssetAmount { field })
 }
 

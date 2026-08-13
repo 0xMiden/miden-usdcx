@@ -34,9 +34,8 @@ use xusdc_encoding::note::xreserve_mint::{
 };
 use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::{
-    bytes32_to_packed_u32_limbs, bytes32_to_storage_map_key, deposit_intent_field_offset,
-    deposit_intent_to_packed_felts, parse_deposit_intent_header, uint256_to_asset_amount,
-    DepositIntentField, EthEmbeddedAccountIdExt, XReserveBurnItems,
+    bytes32_to_storage_map_key, deposit_intent_field_offset, deposit_intent_to_packed_felts,
+    parse_deposit_intent_header, DepositIntentField, EthEmbeddedAccountIdExt, XReserveBurnItems,
 };
 
 use crate::actors::AttesterKey;
@@ -385,7 +384,8 @@ pub fn mint_note_with_fee<R: FeltRng>(
     let recipient_id = EthEmbeddedAccountId::try_from_bytes32(header.remote_recipient)
         .map(EthEmbeddedAccountId::into_account_id)
         .map_err(|e| anyhow::anyhow!("remoteRecipient is not a valid account id: {e}"))?;
-    let amount = uint256_to_asset_amount(bytes32_to_packed_u32_limbs(&header.amount), SCALE_EXP)
+    let amount = header
+        .reduced_amount(SCALE_EXP)
         .map_err(|e| anyhow::anyhow!("amount rejected by the 04 reducer: {e}"))?;
     let asset = FungibleAsset::new(faucet, u64::from(amount))
         .map_err(|e| anyhow::anyhow!("attested amount: {e}"))?;

@@ -25,7 +25,7 @@
 //!   the shared encoding crate's own codecs (`DepositIntent::parse_header`,
 //!   `MintIntent::from_deposit_intent`, `EthEmbeddedAccountId::try_from_bytes32`,
 //!   `bytes32_to_storage_map_key`,
-//!   `uint256_to_asset_amount`, `Signature::to_felts`) and the protocol's own `PublicKey::to_elements` — never
+//!   `DepositIntentHeader::reduced_amount`, `Signature::to_felts`) and the protocol's own `PublicKey::to_elements` — never
 //!   against a layout
 //!   re-derived here. An assertion that restated the layout would be a SECOND definition of an
 //!   owned format, i.e. exactly the drift seam the ownership map exists to close.
@@ -57,8 +57,7 @@ use xusdc_encoding::note::xreserve_mint::{
     XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
-    bytes32_to_packed_u32_limbs, bytes32_to_storage_map_key, uint256_to_asset_amount,
-    DepositIntent, MintIntent, Signature,
+    bytes32_to_storage_map_key, DepositIntent, MintIntent, Signature,
 };
 
 use miden_standards::interop::eth::EthEmbeddedAccountId;
@@ -244,7 +243,7 @@ fn t_the_faucet_argument_drives_the_route_and_the_tag() {
 /// crate's own codecs, consumed by reference: the P2ID recipe targets the intent's
 /// `remoteRecipient` (`EthEmbeddedAccountId::try_from_bytes32`) under the canonical nonce-key serial
 /// (`bytes32_to_storage_map_key`), the asset is the scale-0-reduced attested amount
-/// (`uint256_to_asset_amount` at `XUSDC_DEPOSIT_SCALE_EXP`) bound to the faucet, and the
+/// (`DepositIntentHeader::reduced_amount` at `XUSDC_DEPOSIT_SCALE_EXP`) bound to the faucet, and the
 /// output-note tag targets the attested recipient. This is the storage the faucet's attestation
 /// mint policy re-derives on-chain and `assert_eqw`s — a value invented by the relayer instead of
 /// taken from the payload would fail the ASSERT-MATCH binding there, and fails here first.
@@ -262,11 +261,9 @@ fn t_storage_embeds_the_attested_output() {
     let recipient_id = EthEmbeddedAccountId::try_from_bytes32(header.remote_recipient)
         .map(EthEmbeddedAccountId::into_account_id)
         .expect("the canonical payload's remoteRecipient is a valid account id");
-    let amount = uint256_to_asset_amount(
-        bytes32_to_packed_u32_limbs(&header.amount),
-        XUSDC_DEPOSIT_SCALE_EXP,
-    )
-    .expect("the attested amount reduces at unit-04's scale");
+    let amount = header
+        .reduced_amount(XUSDC_DEPOSIT_SCALE_EXP)
+        .expect("the attested amount reduces at unit-04's scale");
     let asset = FungibleAsset::new(faucet_id(), u64::from(amount))
         .expect("the reduced amount is a fungible asset of the faucet");
 

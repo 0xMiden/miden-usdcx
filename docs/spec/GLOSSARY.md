@@ -124,7 +124,7 @@ Security/correctness properties the faucet must uphold. The faucet-binding ones:
 | INV-TWO-BLOCK-BURN | A burn note is created in block N and consumed in block ≥ N+1; a same-block create+consume is erased. |
 | INV-NO-ECRECOVER | No key recovery on-chain; ECDSA is verified against a supplied candidate pubkey + commitment allowlist. |
 | INV-DEPOSITINTENT-PARSE | Fixed-offset 240-byte header = 60 u32-LE-packed felts plus hookData; all field asserts; note input is read-only. |
-| INV-UINT256-TO-ASSETAMOUNT | uint256 reduction: assert the high half is zero, floor-divide by 10^scale, cap at `AssetAmount::MAX`; trap, never saturate. |
+| INV-UINT256-TO-ASSETAMOUNT | uint256 reduction: floor-divide by 10^scale, reject a quotient wider than a `u64`, cap at `AssetAmount::MAX`; trap, never saturate. |
 | INV-BYTES32-HASH-TO-WORD | bytes32 → Word via Poseidon2 `hash_elements` over the 8 u32-LE limbs (the raw fallible `TryFrom` is not used on this path). |
 | INV-DEPOSIT-ATTESTATION-RAW-KECCAK | Raw secp256k1 ECDSA over `keccak256(full payload)`, 65-byte `r‖s‖v`, `v` unused; not EIP-712. |
 | INV-ACCOUNTID-ENCODING | AccountId ↔ bytes32 is lossless with a fail-closed decode; reject any non-zero byte in the leading pad. |
@@ -346,7 +346,7 @@ the OPEN `DEV-7` decision and makes no acceptability verdict of its own.
 | TV-AMT-1 | An in-bound 6-dp amount reduces to the expected `AssetAmount`. |
 | TV-AMT-2 | Boundary accept: exactly `AssetAmount::MAX` (post-scale) is accepted. |
 | TV-AMT-3 | Boundary reject: `MAX + 1` (post-scale) is rejected (over cap). |
-| TV-AMT-4 | High-limb reject: a value > 2^128 (high 4 limbs non-zero) is rejected ("too large"). |
+| TV-AMT-4 | High-limb reject: a value > 2^128 is rejected ("too large") — no scale in `0..=18` brings it back inside a `u64`. |
 | TV-AMT-5 | Reduced compare: `amount ≥ maxFee` is false when `amount < maxFee` after reduction. |
 | TV-AMT-6 | Dust: a non-zero remainder is surfaced (off-chain only); dust policy stays OPEN (`DEV-5`). |
 | TV-AMT-7 | Scale-overflow reject: `10^scale_exp` overflow is rejected. |

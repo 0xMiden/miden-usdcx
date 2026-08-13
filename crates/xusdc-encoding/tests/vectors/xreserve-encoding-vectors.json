@@ -65,16 +65,6 @@
         "expected_y": "1",
         "id": "amt-pos-1",
         "kind": "accept",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          1078071040
-        ],
         "scale_exp": 6,
         "tv": [
           "TV-AMT-1"
@@ -87,16 +77,6 @@
         "expected_y": "123456789012",
         "id": "amt-pos-2",
         "kind": "accept",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          1268495873,
-          11348902
-        ],
         "scale_exp": 6,
         "tv": [
           "TV-AMT-1"
@@ -109,16 +89,6 @@
         "expected_y": "42",
         "id": "amt-pos-3",
         "kind": "accept",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          704643072
-        ],
         "scale_exp": 0,
         "tv": [
           "TV-AMT-1"
@@ -131,16 +101,6 @@
         "expected_y": "5",
         "id": "amt-pos-4",
         "kind": "accept",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          2190566213,
-          62532
-        ],
         "scale_exp": 18,
         "tv": [
           "TV-AMT-1"
@@ -153,16 +113,6 @@
         "expected_y": "9223372034707292160",
         "id": "amt-cap-accept",
         "kind": "accept",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          530646784,
-          3764320511,
-          0
-        ],
         "scale_exp": 6,
         "tv": [
           "TV-AMT-2"
@@ -175,16 +125,6 @@
         "expected_y": "9223372034707292160",
         "id": "amt-cap-accept-scale0",
         "kind": "accept",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          4294967167,
-          128
-        ],
         "scale_exp": 0,
         "tv": [
           "TV-AMT-2"
@@ -197,16 +137,6 @@
         "expected_variant": "AmountOverCap",
         "id": "amt-rej-cap",
         "kind": "reject",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          530646784,
-          3764320511,
-          1078071040
-        ],
         "scale_exp": 6,
         "tv": [
           "TV-AMT-3"
@@ -219,16 +149,6 @@
         "expected_variant": "AmountOverCap",
         "id": "amt-rej-cap-scale0",
         "kind": "reject",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          4294967167,
-          16777344
-        ],
         "scale_exp": 0,
         "tv": [
           "TV-AMT-3"
@@ -241,16 +161,6 @@
         "expected_variant": "AmountTooLarge",
         "id": "amt-rej-limb-overflow",
         "kind": "reject",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          67108864,
-          0,
-          0,
-          0,
-          0
-        ],
         "scale_exp": 6,
         "tv": [
           "TV-AMT-4"
@@ -263,16 +173,6 @@
         "expected_variant": "ScaleExpTooLarge",
         "id": "amt-rej-scale-overflow",
         "kind": "reject",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          1078071040
-        ],
         "scale_exp": 20,
         "tv": [
           "TV-AMT-7"
@@ -280,32 +180,12 @@
         "uint256_be": "0x00000000000000000000000000000000000000000000000000000000000f4240"
       },
       {
-        "b_le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          2156142080
-        ],
         "b_uint256_be": "0x00000000000000000000000000000000000000000000000000000000001e8480",
         "cite": "CIR-MINT-PRE-8/9 ; amount validation",
         "derivation": "1 < 2 after reduction",
         "ge_result": false,
         "id": "amt-ge-lt",
         "kind": "ge",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          1078071040
-        ],
         "scale_exp": 6,
         "tv": [
           "TV-AMT-5"
@@ -313,32 +193,12 @@
         "uint256_be": "0x00000000000000000000000000000000000000000000000000000000000f4240"
       },
       {
-        "b_le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          3234213120
-        ],
         "b_uint256_be": "0x00000000000000000000000000000000000000000000000000000000002dc6c0",
         "cite": "CIR-MINT-PRE-8/9 ; amount validation",
         "derivation": "3 == 3 after reduction",
         "ge_result": true,
         "id": "amt-ge-eq",
         "kind": "ge",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          3234213120
-        ],
         "scale_exp": 6,
         "tv": [
           "TV-AMT-5"
@@ -346,32 +206,12 @@
         "uint256_be": "0x00000000000000000000000000000000000000000000000000000000002dc6c0"
       },
       {
-        "b_le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          2156142080
-        ],
         "b_uint256_be": "0x00000000000000000000000000000000000000000000000000000000001e8480",
         "cite": "CIR-MINT-PRE-8/9 ; amount validation",
         "derivation": "5 > 2 after reduction",
         "ge_result": true,
         "id": "amt-ge-gt",
         "kind": "ge",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          1078676480
-        ],
         "scale_exp": 6,
         "tv": [
           "TV-AMT-5"
@@ -385,16 +225,6 @@
         "expected_y": "1",
         "id": "amt-dust",
         "kind": "dust",
-        "le_limbs": [
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          3689092608
-        ],
         "scale_exp": 6,
         "tv": [
           "TV-AMT-6"

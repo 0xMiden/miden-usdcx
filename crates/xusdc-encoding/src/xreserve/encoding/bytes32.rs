@@ -44,13 +44,6 @@ pub fn bytes32_to_packed_felts(b: &[u8; 32]) -> [Felt; 8] {
         .expect("32 bytes always pack to exactly 8 u32 felts")
 }
 
-/// The 8 u32-LE packed limbs of a bytes32 (limb i = LE u32 of bytes `[4i, 4i+4)`).
-pub fn bytes32_to_packed_u32_limbs(b: &[u8; 32]) -> [u32; 8] {
-    bytes32_to_packed_felts(b).map(|f| {
-        u32::try_from(f.as_canonical_u64()).expect("u32 packing always yields canonical u32 felts")
-    })
-}
-
 /// The lossless direct conversion. Not usable for external map keys: it returns
 /// `Err(LimbOutOfField)` if any 8-byte LE limb is at or above the field modulus.
 ///

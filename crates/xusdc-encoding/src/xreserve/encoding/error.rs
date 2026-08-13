@@ -5,6 +5,8 @@
 
 use core::fmt;
 
+use miden_standards::interop::eth::EthAmountError;
+
 use super::deposit_intent::DepositIntentField;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,7 +15,10 @@ pub enum EncodingError {
     /// A u32-LE-packed felt limb exceeds `u32::MAX` (the `packed_felts_to_bytes32` guard on the
     /// burn-note item decode, distinct from `LimbOutOfField`'s 8-byte/felt `>= p` Word-packing check).
     LimbNotU32,
+    /// A deposit amount too wide to reduce to an asset amount at all: the quotient does not fit a
+    /// `u64`. Every uint256 above 2^128 lands here, whatever the scale exponent.
     AmountTooLarge,
+    /// The reduced amount fits a `u64` but exceeds `AssetAmount::MAX`.
     AmountOverCap,
     ScaleExpTooLarge,
     BadMagic,
@@ -52,7 +57,7 @@ impl fmt::Display for EncodingError {
         match self {
             Self::LimbOutOfField => write!(f, "a u64 limb is not a valid field element"),
             Self::LimbNotU32 => write!(f, "packed felt exceeds u32 range"),
-            Self::AmountTooLarge => write!(f, "larger than 2**128"),
+            Self::AmountTooLarge => write!(f, "post-scale quotient does not fit a u64"),
             Self::AmountOverCap => {
                 write!(f, "post-scale quotient exceeds the asset amount maximum")
             }
@@ -99,3 +104,19 @@ impl fmt::Display for EncodingError {
 }
 
 impl core::error::Error for EncodingError {}
+
+impl From<EthAmountError> for EncodingError {
+    /// Re-spells the standards reducer's failures in this crate's error vocabulary, so a caller
+    /// of the encoding surface still handles one error type.
+    fn from(error: EthAmountError) -> Self {
+        match error {
+            EthAmountError::ScaleTooLarge => Self::ScaleExpTooLarge,
+            // both spellings of "wider than an asset amount can ever be": a quotient past the u64
+            // range, and a uint256 that overflowed before any scaling
+            EthAmountError::ScaledValueDoesNotFitU64 | EthAmountError::Overflow => {
+                Self::AmountTooLarge
+            }
+            EthAmountError::ScaledValueExceedsMaxFungibleAmount => Self::AmountOverCap,
+        }
+    }
+}

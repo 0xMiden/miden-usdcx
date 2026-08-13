@@ -2,91 +2,45 @@
 //!
 //! Circle states deposit amounts as 256-bit values in the source token's smallest units; a Miden
 //! fungible asset amount is a `u64` bounded by `AssetAmount::MAX`. Every mint therefore has to
-//! cross that gap, and this is the only place it happens off-chain. On-chain the faucet does NOT
-//! re-run this division: it VERIFIES a witness instead — the caller supplies the reduced quotient
-//! and remainder, and the MASM checks `x == y*10^s + z` with `z < 10^s`. So the production routine
-//! here, [`uint256_to_asset_amount`], is the witness GENERATOR the relayer delegates to, and its
-//! result is what the faucet's verifier is handed; a disagreement would make the faucet reject the
-//! relayer's own mint.
+//! cross that gap, and this is the only place it happens: on-chain the faucet does NOT divide,
+//! because under `DC-14` the uint256 never reaches the chain at all.
 //!
-//! The reduction is deliberately conservative at each step. The value arrives as eight
-//! little-endian-packed 32-bit limbs of a big-endian wire field, so the first thing checked is
-//! that the high half is entirely zero: anything above 2^128 is refused outright rather than
-//! wrapped. The remaining half is composed into a `u128`, floor-divided by ten to the scale
-//! exponent to convert decimal places, and the quotient is then handed to `AssetAmount::new`,
-//! which rejects anything past the asset-amount ceiling. Nothing saturates and nothing truncates
-//! silently: every path out is either an exact value or an error.
+//! The arithmetic is the protocol standards' [`EthAmount::scale_to_asset_amount`], so this crate
+//! carries no second implementation of it. What lives here is its adaptation to this crate's error
+//! type and the golden vectors that pin the behaviour Circle's numbers depend on. Nothing
+//! saturates and nothing truncates silently: every path out is either an exact value or an error.
 //!
 //! The exact cap, the scale factor, and how much dust rounding may discard are still Circle's to
 //! decide. The mechanism is implemented; the numbers it is parameterized with remain open, and
 //! nothing here should be read as settling them.
 
 use miden_protocol::asset::AssetAmount;
+use miden_standards::interop::eth::EthAmount;
+#[cfg(test)]
+use primitive_types::U256;
 
 use super::error::EncodingError;
 
-/// The scale exponent bound (scale_exp = EVM decimals − Miden decimals, 0..=18). The MASM
-/// side enforces the same bound inside the linked standards `pow10` ("maximum scaling factor
-/// is 18").
-pub const MAX_SCALE_EXP: u32 = 18;
-
-/// The single reduction core shared by all three public routines: byte-swap → high-half-zero →
-/// low-half u128 → floor-divide by 10^scale_exp → (y, z). Halves are the value's numerically
-/// low and high 128 bits (the MASM reducer's U_LO128/U_HI128), independent of byte order on the
-/// wire. The AssetAmount cap is applied by the callers via [`AssetAmount::new`].
-fn reduce(le_limbs: [u32; 8], scale_exp: u32) -> Result<(u64, u128), EncodingError> {
-    // the high half — wire bytes 0..16 of the big-endian value, arriving as the first four
-    // LE-packed limbs — must be zero; a limb byte-swaps to zero iff it is zero, so the raw
-    // LE-packed limbs are checked directly
-    if le_limbs[..4].iter().any(|&limb| limb != 0) {
-        return Err(EncodingError::AmountTooLarge);
-    }
-
-    // byte-swap the low-half limbs (wire bytes 16..32, the last four) to numeric order
-    // and compose x (limb 4 holds wire bytes 16..20 — the most significant of that half)
-    let mut x: u128 = 0;
-    for &limb in &le_limbs[4..8] {
-        x = (x << 32) | u128::from(limb.swap_bytes());
-    }
-
-    // y = floor(x / 10^scale_exp); the divisor is bounded first
-    if scale_exp > MAX_SCALE_EXP {
-        return Err(EncodingError::ScaleExpTooLarge);
-    }
-    let divisor = 10u128
-        .checked_pow(scale_exp)
-        .ok_or(EncodingError::ScaleExpTooLarge)?;
-    // the divisor is at least 1 by construction, so checked division cannot fail
-    let y = x.checked_div(divisor).expect("divisor is at least 1");
-    let z = x.checked_rem(divisor).expect("divisor is at least 1");
-
-    // the quotient must fit a u64 before the cap compare (x may be up to 2^128 − 1)
-    let y = u64::try_from(y).map_err(|_| EncodingError::AmountOverCap)?;
-    Ok((y, z))
-}
-
-/// uint256 (8 LE u32 limbs) → AssetAmount: byte-swap → assert the high half (wire
-/// bytes 0..16) zero (else `AmountTooLarge`) → the low half as u128 x →
-/// y = floor(x / 10^scale_exp) → reject if y
-/// exceeds `AssetAmount::MAX` (`AmountOverCap`). No saturation or clamping.
+/// uint256 → AssetAmount: `y = floor(x / 10^scale_exp)`, rejecting a scale exponent past 18
+/// (`ScaleExpTooLarge`), a quotient wider than a `u64` (`AmountTooLarge`), and a quotient past
+/// `AssetAmount::MAX` (`AmountOverCap`). No saturation or clamping.
 pub fn uint256_to_asset_amount(
-    le_limbs: [u32; 8],
+    amount: EthAmount,
     scale_exp: u32,
 ) -> Result<AssetAmount, EncodingError> {
-    let (y, _z) = reduce(le_limbs, scale_exp)?;
-    AssetAmount::new(y).map_err(|_| EncodingError::AmountOverCap)
+    let y = amount.scale_to_asset_amount(scale_exp)?;
+    // the standards routine bounds the quotient by the maximum fungible amount, which is
+    // AssetAmount::MAX, so this conversion only re-states that bound in the type
+    AssetAmount::try_from(y).map_err(|_| EncodingError::AmountOverCap)
 }
 
-/// The reduced-compare: reduce both operands, then compare as u64 (the mint's
-/// `amount >= maxFee` check).
+/// The reduced-compare: reduce both operands, then compare (the mint's `amount >= maxFee` check).
 ///
-/// Test-only: it exercises the `reduce` core over the TV-AMT-5 golden-vector rows, which are
+/// Test-only: it exercises the reduction over the TV-AMT-5 golden-vector rows, which are
 /// Rust-fn-only by design; no production path calls it (the on-chain compare is the MASM's).
 #[cfg(test)]
-pub fn reduced_ge(a: [u32; 8], b: [u32; 8], scale_exp: u32) -> Result<bool, EncodingError> {
-    let (ya, _) = reduce(a, scale_exp)?;
-    let (yb, _) = reduce(b, scale_exp)?;
-    Ok(ya >= yb)
+pub fn reduced_ge(a: EthAmount, b: EthAmount, scale_exp: u32) -> Result<bool, EncodingError> {
+    Ok(uint256_to_asset_amount(a, scale_exp)? >= uint256_to_asset_amount(b, scale_exp)?)
 }
 
 /// The non-zero division remainder (dust), surfaced so the caller can apply the
@@ -96,12 +50,15 @@ pub fn reduced_ge(a: [u32; 8], b: [u32; 8], scale_exp: u32) -> Result<bool, Enco
 /// policy is unsettled, so no production path consumes the remainder yet.
 #[cfg(test)]
 pub fn uint256_to_asset_amount_with_dust(
-    le_limbs: [u32; 8],
+    amount: EthAmount,
     scale_exp: u32,
 ) -> Result<(AssetAmount, u128), EncodingError> {
-    let (y, z) = reduce(le_limbs, scale_exp)?;
-    let amount = AssetAmount::new(y).map_err(|_| EncodingError::AmountOverCap)?;
-    Ok((amount, z))
+    let y = uint256_to_asset_amount(amount, scale_exp)?;
+    // the reduction above accepted, so the scale exponent is within 0..=18 and the remainder is
+    // strictly below 10^18 — both the divisor and the dust stay far inside their target types
+    let divisor = U256::from(10u64.pow(scale_exp));
+    let dust = amount.to_u256() % divisor;
+    Ok((y, dust.as_u128()))
 }
 
 // TESTS — TV-AMT-1..7
@@ -126,7 +83,7 @@ mod tests {
             .iter()
             .filter(|v| v.kind == "accept" && v.id != "amt-cap-accept")
         {
-            let y = uint256_to_asset_amount(vec.le_limbs(), vec.scale_exp)
+            let y = uint256_to_asset_amount(vec.amount(), vec.scale_exp)
                 .unwrap_or_else(|e| panic!("vector {}: must accept, got {e}", vec.id));
             assert_eq!(
                 y,
@@ -148,7 +105,7 @@ mod tests {
             .iter()
             .find(|v| v.id == "amt-cap-accept")
             .expect("vector");
-        let y = uint256_to_asset_amount(vec.le_limbs(), vec.scale_exp)
+        let y = uint256_to_asset_amount(vec.amount(), vec.scale_exp)
             .unwrap_or_else(|e| panic!("vector {}: must accept at cap, got {e}", vec.id));
         assert_eq!(y, vec.expected_amount(), "vector {}: cap boundary", vec.id);
         assert_eq!(
@@ -173,7 +130,7 @@ mod tests {
             .iter()
             .find(|v| v.id == id)
             .expect("vector present");
-        let result = uint256_to_asset_amount(vec.le_limbs(), vec.scale_exp);
+        let result = uint256_to_asset_amount(vec.amount(), vec.scale_exp);
         match vec.expected_variant.as_deref() {
             Some("AmountOverCap") => {
                 assert_matches!(result, Err(EncodingError::AmountOverCap), "vector {id}")
@@ -194,7 +151,7 @@ mod tests {
     fn tv_amt_5_reduced_ge() {
         let v = load();
         for vec in v.families.amt.iter().filter(|v| v.kind == "ge") {
-            let got = reduced_ge(vec.le_limbs(), vec.b_le_limbs(), vec.scale_exp)
+            let got = reduced_ge(vec.amount(), vec.b_amount(), vec.scale_exp)
                 .unwrap_or_else(|e| panic!("vector {}: must compare, got {e}", vec.id));
             assert_eq!(got, vec.ge_result.expect("ge vector"), "vector {}", vec.id);
         }
@@ -211,7 +168,7 @@ mod tests {
             .iter()
             .find(|v| v.kind == "dust")
             .expect("dust vector");
-        let (y, z) = uint256_to_asset_amount_with_dust(vec.le_limbs(), vec.scale_exp)
+        let (y, z) = uint256_to_asset_amount_with_dust(vec.amount(), vec.scale_exp)
             .unwrap_or_else(|e| panic!("vector {}: must accept, got {e}", vec.id));
         assert_eq!(y, vec.expected_amount(), "vector {}: quotient", vec.id);
         assert_eq!(z, vec.expected_dust(), "vector {}: remainder", vec.id);

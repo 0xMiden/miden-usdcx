@@ -73,3 +73,6 @@ assert_matches = { workspace = true }
 sha3 = { workspace = true }
 rand = { workspace = true }
 miden-crypto = { version = "0.28", default-features = false, features = ["std"] }
+# The dust helper's remainder arithmetic, on the U256 `EthAmount::to_u256` hands out: the same
+# primitive-types version miden-standards resolves, so exactly one U256 type exists.
+primitive-types = { version = "0.14", default-features = false }

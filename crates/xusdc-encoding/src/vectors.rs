@@ -9,6 +9,7 @@ use miden_protocol::asset::AssetAmount;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::crypto::utils::Deserializable;
 use miden_protocol::{Felt, Word};
+use miden_standards::interop::eth::EthAmount;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -50,13 +51,9 @@ pub struct AmtVector {
     pub kind: String,
     #[serde(default)]
     pub uint256_be: Option<String>,
-    #[serde(default)]
-    pub le_limbs: Option<[u32; 8]>,
     pub scale_exp: u32,
     #[serde(default)]
     pub b_uint256_be: Option<String>,
-    #[serde(default)]
-    pub b_le_limbs: Option<[u32; 8]>,
     #[serde(default)]
     pub expected_y: Option<String>,
     #[serde(default)]
@@ -283,12 +280,22 @@ impl B32Vector {
 }
 
 impl AmtVector {
-    pub fn le_limbs(&self) -> [u32; 8] {
-        self.le_limbs.expect("vector carries le_limbs")
+    /// The vector's uint256 in the wire domain type the reducer consumes.
+    pub fn amount(&self) -> EthAmount {
+        EthAmount::new(parse_hex32(
+            self.uint256_be
+                .as_deref()
+                .expect("vector carries uint256_be"),
+        ))
     }
 
-    pub fn b_le_limbs(&self) -> [u32; 8] {
-        self.b_le_limbs.expect("ge vector carries b_le_limbs")
+    /// The comparand of a `ge` vector, same form.
+    pub fn b_amount(&self) -> EthAmount {
+        EthAmount::new(parse_hex32(
+            self.b_uint256_be
+                .as_deref()
+                .expect("ge vector carries b_uint256_be"),
+        ))
     }
 
     pub fn expected_amount(&self) -> miden_protocol::asset::AssetAmount {

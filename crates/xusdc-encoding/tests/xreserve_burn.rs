@@ -65,6 +65,21 @@ fn sample_items(amount: u64) -> XReserveBurnItems {
     }
 }
 
+/// The carrier tag and word count are Circle-facing wire values. Pinned against literals rather
+/// than against the constants, so a re-tag fails here instead of moving silently through every
+/// site that reads them.
+#[test]
+fn burn_withdrawal_carrier_is_frozen() {
+    assert_eq!(
+        XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME, 6,
+        "the withdrawal-payload attachment scheme is frozen at 6",
+    );
+    assert_eq!(
+        XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS, 5,
+        "the withdrawal-payload attachment is frozen at 5 words",
+    );
+}
+
 /// Reads a burn note's 18-felt withdrawal payload straight out of its scheme-tagged attachment:
 /// the scheme-6 attachment's words with the word-boundary padding dropped. The felts feed the
 /// shared codec's `XReserveBurnItems::decode`, which stays the single owner of the field layout —

@@ -4,18 +4,10 @@
 //! values; the error strings are byte-identical). One-sided edits fail mechanically —
 //! the `masm-rust-constant-parity` obligation, closed at the constant layer.
 //!
-//! Bidirectional hardening: parity is BIDIRECTIONAL — every constant parsed from the MASM
-//! sources (numeric, string, and `word("…")` slot-name) must be covered by a parity row
-//! or a documented exemption, so a new MASM-only constant fails this suite; the faucet shell
-//! modules are included by reference (the encoding crate's `lib.rs` embeds only its own
-//! sources). The generic scale/limb primitives (pow10, the u32 limb merge) are consumed from
-//! the linked miden-standards library and declare no local constants here. Wave-1 S1 re-materialization: the deleted custom-transport modules
-//! (`xreserve_mint` / `xreserve_mint_note_entry` / `mint_deny_guard` / `burn_policy` /
-//! `min_burn_admin` / `domain_config`) left the sweep; the attestation mint policy
-//! (`mint_policy.masm`) joined it, with the merged transport rows — the attachment scheme
-//! (rider A8: >= 4, clear of the reserved value 1 and the standard values 2/3) and the attestation
-//! width that places the intent sub-region — and the DC-5 scale row pinned against the
-//! `XUsdcMintNote` factory constants.
+//! Parity is BIDIRECTIONAL: every constant parsed from the MASM sources (numeric, string, and
+//! `word("…")` slot-name) must be covered by a parity row or a documented exemption, so a new
+//! MASM-only constant fails this suite. The faucet shell modules are included by reference (the
+//! encoding crate's `lib.rs` embeds only its own sources).
 
 mod support;
 

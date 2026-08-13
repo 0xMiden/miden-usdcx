@@ -33,35 +33,14 @@ const SEED: [u8; 32] = [7u8; 32];
 const MAX_SUPPLY: u64 = 1_000_000;
 const TOKEN_SUPPLY: u64 = 0;
 
-// The baseline composition anchors, as their stable `Debug`/`Display` renderings (captured from the
-// pre-change composition at SEED). Comparing the rendered strings sidesteps any felt-repr ambiguity.
+// The baseline composition anchors at SEED, as their stable `Debug`/`Display` renderings (the
+// rendered strings sidestep any felt-repr ambiguity). Cause, per anchor: the CODE COMMITMENT
+// tracks `check_policy`'s MAST root; the STORAGE DIGEST moves with it because the active mint
+// policy is STORED as that root; the ACCOUNT ID and STATE COMMITMENT derive from both. No slot and
+// no procedure was added, removed or reordered — the callable-surface and note-allowlist tripwires
+// pass unedited.
 //
-// The account id is the NEW-ACCOUNT derivation: ground from SEED over the composed code and
-// storage commitments, so it moves whenever either commitment moves (unlike the code commitment
-// and storage digest, which isolate their own layer). The state commitment covers all three.
-//
-// Re-materialized TWICE on this branch, and this is the second time — the one the rc.3
-// re-materialization said would come: "the later ECDSA-rebuild slice rewrites `attestation_verify`,
-// so these anchors MOVE AGAIN". They did, and only for that reason.
-//
-// Cause, per anchor:
-// - CODE COMMITMENT: `check_policy`'s MAST root moved, because it invokes `attestation_verify`,
-//   whose `verify_attestation` now stages the attested key and signature into the advice provider
-//   and calls the core library's `ecdsa_k256_keccak::verify_bytes` instead of the removed
-//   prehash primitive. Different instructions, therefore a different root. No procedure was added
-//   or removed: the callable surface and the note allowlist are unchanged (their own tripwires
-//   still pass unedited).
-// - STORAGE DIGEST: the active mint policy is STORED as `check_policy`'s MAST root, so a moved
-//   policy root moves the slot that holds it. No slot was added, removed or reordered.
-// - ACCOUNT ID and STATE COMMITMENT: derived from the two above, so they move with them.
-//
-// The rc.4 protocol re-pin itself moved NOTHING here — these anchors held byte-identical across it,
-// which is what proved that bump mechanical.
-//
-// NOT RATIFIED — every value below is MEASURED from this composition, not accepted: the earlier
-// refresh onto `implementation` (#112 binding the `SET_ATTESTER` note to its target faucet, #120
-// deriving the faucet account id from the composed commitments) already moved them out from under
-// the values a human had ratified, and the signature rebuild moved them again. A human must
+// NOT RATIFIED — every value below is MEASURED from this composition, not accepted. A human must
 // re-ratify all four at PR assembly.
 const GOLDEN_STATE_COMMITMENT: &str =
     "Word([17519551828931899206, 6218596112168707637, 17898439756689760073, 7982499419310722580])";

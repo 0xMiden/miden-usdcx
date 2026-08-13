@@ -11,7 +11,7 @@
 //! authority and role dispatch inside the called procedures, not the note-script allowlist. Mixing
 //! the two would make a rejection ambiguous.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
@@ -24,7 +24,7 @@ use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::Authority;
 use miden_standards::account::access::{
-    Pausable, PausableManager, PausableStorage, RoleBasedAccessControl,
+    Pausable, PausableManager, PausableStorage, RoleBasedAccessControl, RoleConfig,
 };
 use miden_standards::account::policies::{BasicBlocklist, BlocklistManager, BlocklistStorage};
 use miden_standards::code_builder::CodeBuilder;
@@ -120,21 +120,26 @@ pub fn set_word() -> Word {
 
 /// The standard pieces the admin model is built from, and nothing else.
 ///
-/// The RBAC seed deliberately uses `RoleBasedAccessControl::new` rather than the faucet's
-/// hand-seeded component: the grounding account needs no delegated role admin, so the stock
-/// constructor covers it — which doubles as a check that the constructor seeds role membership the
-/// way the admin model assumes.
+/// The RBAC seed deliberately uses the stock validated builder rather than the faucet's hand-seeded
+/// component: the grounding account needs no delegated role admin, so the standard constructor
+/// covers it — which doubles as a check that the constructor seeds role membership the way the
+/// admin model assumes.
 pub fn grounding_components() -> Vec<AccountComponent> {
-    let role_members = BTreeMap::from([
-        (pauser_symbol(), BTreeSet::from([pauser_holder()])),
-        (blocklist_symbol(), BTreeSet::from([blocklist_holder()])),
-    ]);
+    let role_based_access_control = RoleBasedAccessControl::builder()
+        .roles([
+            RoleConfig::new(RoleBasedAccessControl::admin_role()).with_member(admin_holder()),
+            RoleConfig::new(pauser_symbol()).with_member(pauser_holder()),
+            RoleConfig::new(blocklist_symbol()).with_member(blocklist_holder()),
+        ])
+        .build()
+        .expect("the grounding RBAC fixture should be valid");
+
     vec![
         Pausable::unpaused().into(),
         PausableManager.into(),
         BasicBlocklist::default().into(),
         BlocklistManager.into(),
-        RoleBasedAccessControl::new(BTreeSet::from([admin_holder()]), role_members).into(),
+        role_based_access_control.into(),
         XReserveAdminAuthority::new().into(),
     ]
 }

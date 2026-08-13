@@ -62,6 +62,7 @@ const ASSET_VALUE_LOC = 0
 const RECIPIENT_LOC = 4
 const TAG_LOC = 8
 const NOTE_TYPE_LOC = 9
+const TRANSPORT_IDX_LOC = 10
 
 # The attachment commitments list. Sized to 16 elements, i.e. the protocol's FOUR-attachment ceiling.
 const ATTACHMENT_COMMITMENTS_LOC = 12
@@ -74,8 +75,6 @@ const HASHED_NONCE_LOC = 28
 const TRANSPORT_LOC = 32
 const ATTESTATION_LOC = TRANSPORT_LOC
 const ATTESTATION_PUBKEY_LOC = ATTESTATION_LOC
-# the affine pubkey's felt count
-const ATTESTATION_SIGNATURE_LOC = ATTESTATION_LOC + 16
 
 # The carried mint intent inside the transport, plus the two felts `check_policy` itself reads out
 # of it for the output-note recipe. `rebuild` reads the rest off the base pointer, and has already
@@ -186,6 +185,9 @@ pub proc check_policy
     assert.err=ERR_XRESERVE_MINT_NOTE_TRANSPORT_MISSING
     # => [transport_idx, pad(16)]
 
+    dup loc_store.TRANSPORT_IDX_LOC
+    # => [transport_idx, pad(16)]
+
     push.NETWORK_ACCOUNT_TARGET_ATTACHMENT_SCHEME exec.active_note::find_attachment
     # => [is_found, target_idx, transport_idx, pad(16)]
 
@@ -254,12 +256,18 @@ pub proc check_policy
     exec.deposit_intent::rebuild
     # => [intent_num_bytes, pad(16)]
 
-    # attestation verify: keccak the rebuilt extent, allowlist gate + ECDSA verify
-    locaddr.ATTESTATION_SIGNATURE_LOC locaddr.ATTESTATION_PUBKEY_LOC
-    # => [pubkey_ptr, signature_ptr, intent_num_bytes, pad(16)]
+    # Re-open the content-addressed transport onto the advice stack. RC4's native ECDSA verifier
+    # consumes the first 32 elements: the same pubkey and R/S signature limbs that were already
+    # hash-verified into TRANSPORT_LOC above. Any hostile ambient advice remains underneath it.
+    loc_load.TRANSPORT_IDX_LOC mul.4 locaddr.ATTACHMENT_COMMITMENTS_LOC add
+    padw movup.4 mem_loadw_le
+    adv.push_mapvaln
+    dropw
+    adv_push drop
+    # => [intent_num_bytes, pad(16)]
 
-    movup.2 push.DEPOSIT_INTENT_PTR
-    # => [deposit_intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr, pad(16)]
+    locaddr.ATTESTATION_PUBKEY_LOC swap push.DEPOSIT_INTENT_PTR
+    # => [deposit_intent_ptr, intent_num_bytes, pubkey_ptr, pad(16)]
 
     exec.attestation_verify::verify_attestation
     # => [pad(16)]

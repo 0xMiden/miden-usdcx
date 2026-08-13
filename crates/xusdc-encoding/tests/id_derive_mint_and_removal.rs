@@ -160,13 +160,7 @@ async fn a_foreign_remote_token_rejects_while_the_own_id_intent_mints() -> Resul
     );
 
     let note = honest_note(&pf, &payload, 2012)?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
-    )
-    .await?;
+    expect_reject(&mut pf, note, &payload, err_ecdsa_verification_failed()).await?;
 
     // the discrimination proof: the SAME faucet mints the own-id-bound intent
     let bound = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 33);
@@ -185,19 +179,18 @@ async fn a_foreign_remote_token_rejects_while_the_own_id_intent_mints() -> Resul
     Ok(())
 }
 
-/// The reject error text is the one pinned for the mint, character for character.
+/// The reject error text is the one pinned by the stock RC4 verifier, character for character.
 ///
 /// The string is part of the faucet's MAST root and of what a relayer matches on, so a reworded
-/// message is a wire change dressed up as a comment fix. Under `DC-14` a foreign identifier no
-/// longer has an error of its own — the faucet stamps its own id into the message, so the reject
-/// arrives as the signature failing over a preimage Circle never signed. That IS the frozen
-/// string now.
+/// message is part of the transaction's observable failure surface. Under `DC-14` a foreign
+/// identifier has no error of its own — the faucet stamps its own id into the message, so the
+/// reject arrives from the core signature verifier over a preimage Circle never signed.
 #[test]
 fn the_wrong_identifier_error_text_is_unchanged() {
     assert_eq!(
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID").message(),
-        "deposit attestation signature verification failed",
-        "the wrong-identifier reject text is frozen"
+        err_ecdsa_verification_failed().message(),
+        "ECDSA verification failed: x(VERIFY_POINT) != SIG_R",
+        "the wrong-identifier reject must track the pinned RC4 verifier"
     );
 }
 

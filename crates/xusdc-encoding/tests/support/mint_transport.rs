@@ -228,7 +228,7 @@ fn carried_payload_felts(payload: &[u8]) -> Vec<Felt> {
     felts
 }
 
-/// The 36-felt attestation section: `[pubkey(16), signature(17), pad(3)]`.
+/// The 36-felt attestation section: `[pubkey(16), native R/S signature(17), pad(3)]`.
 fn attestation_felts(key_source: &AttesterVector) -> Vec<Felt> {
     let mut felts: Vec<Felt> = Vec::new();
     felts.extend(key_source.pubkey_felts.iter().copied());
@@ -460,7 +460,7 @@ pub async fn consume_note_with_advice(
         .build_transaction(faucet_id)
         .authenticated_input_note(note_id);
     if let Some(stack) = advice_stack {
-        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack));
+        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_advice_stack(stack.into()));
     }
     ctx.build()
         .expect("building the consume tx")

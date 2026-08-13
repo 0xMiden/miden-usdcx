@@ -12,10 +12,10 @@
 //!   `remoteRecipient`, serial = the key derived from the deposit nonce, asset = the reduced
 //!   attested amount, tag = the attested recipient.
 //! - Two attachments travel with it. Scheme 4 is the whole transport in one attachment: the
-//!   attestation as nine words — attester public key (16 felts), signature (17), 3 padding felts,
-//!   in the order the policy reads them — and then the carried mint payload, zero-padded to a word
-//!   boundary. The policy re-derives the true felt length from the payload's own `hookDataLen`, so
-//!   the padding cannot hide extra data. Scheme 2 routes the note to the faucet's network account.
+//!   attestation as nine words — attester public key (16 felts), native R/S signature limbs plus
+//!   recovery ID (17 felts), 3 padding felts — and then the carried mint payload, zero-padded to a
+//!   word boundary. The policy re-derives the true felt length from the payload's own `hookDataLen`,
+//!   so the padding cannot hide extra data. Scheme 2 routes the note to the faucet's network account.
 //!
 //!   The attestation comes FIRST because it is fixed-width: that keeps the payload's starting
 //!   offset a constant instead of a function of `hookDataLen`, which is what lets the policy read
@@ -43,8 +43,9 @@ use crate::xreserve::encoding::{
 pub const XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME: u16 = 4;
 
 /// The attestation section word count: `[pubkey(16), signature(17), pad(3)]` = 36 felts (the
-/// pubkey is the 16-felt affine form). The operator `feeAmount` is not carried at all — the faucet
-/// writes a zero fee into the preimage it rebuilds, so a non-zero one is inexpressible.
+/// pubkey is the 16-felt affine form; the signature is `R[8] ‖ S[8] ‖ v` in RC4's native limb
+/// order). The operator `feeAmount` is not carried at all — the faucet writes a zero fee into the
+/// preimage it rebuilds, so a non-zero one is inexpressible.
 pub const XUSDC_MINT_ATTESTATION_NUM_WORDS: usize = 9;
 
 /// Word offset of the carried mint payload inside the transport attachment: past the fixed-width

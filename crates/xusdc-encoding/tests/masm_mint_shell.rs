@@ -36,6 +36,7 @@
 mod support;
 
 use anyhow::Result;
+use miden_processor::advice::AdviceError;
 use miden_processor::operation::OperationError;
 use miden_processor::ExecutionError;
 use miden_protocol::{Felt, Word};
@@ -203,15 +204,16 @@ async fn unrelated_nonce_passes_replay_protection() -> Result<()> {
 // D5D — ATTESTATION VERIFY
 // ================================================================================================
 // Executes the faucet-owned `xreserve::attestation_verify::verify_attestation` on a MockChain.
-// The proc does three things in order: keccak256 the DepositIntent payload, check that the
-// candidate public key is an enabled attester (its Poseidon2 commitment must have a non-empty
-// entry in the `xReserveAttesters` map), and ECDSA-verify the supplied signature against that
-// digest and key. Only a deposit Circle actually signed can pass.
+// The proc does three things in order: check that the candidate public key is an enabled attester
+// (its Poseidon2 commitment must have a non-empty
+// entry in the `xReserveAttesters` map), bind the advice copy of that key to the same commitment,
+// and ECDSA-verify the supplied signature against keccak256(payload). Only a deposit Circle
+// actually signed can pass.
 //
-// The security property these cases exist for: the pubkey is read from the advice stack ONCE,
-// into one local memory region, and that same region feeds both the allowlist lookup and the
-// signature check. If the two steps could read different keys, an attacker could present an
-// allowlisted attester's key for the lookup and their own signature for the verification.
+// The security property these cases exist for: the allowlist reads the hash-verified memory key,
+// and the core verifier proves its advice key has the same commitment before using it. If the two
+// steps could use different keys, an attacker could present an allowlisted attester's key for the
+// lookup and their own key and signature for verification.
 //
 // Keypairs and signatures are generated inside the test (k256 + sha3 + miden-crypto) rather than
 // baked into the shared vector artifact, because the tests need two attesters signing the SAME
@@ -219,10 +221,10 @@ async fn unrelated_nonce_passes_replay_protection() -> Result<()> {
 // under the identity of the other.
 //
 // Every case runs the real proc — real keccak, real Poseidon2 commitment, real map read, real
-// `verify_prehash` — and pins the exact outcome: an accepted attestation stops at the
+// RC4 `verify_bytes` — and pins the exact outcome: an accepted attestation stops at the
 // supply-write boundary having written nothing; a rejected one traps with the specific error for
-// the check that failed; and an attestation with nothing staged on the advice stack fails closed
-// rather than proceeding with garbage.
+// the check that failed; and a missing verifier witness fails closed rather than proceeding with
+// garbage.
 
 /// The DepositIntent whose bytes the attestation cases hash and sign: the 240-byte accept vector
 /// with no hookData, so the payload is exactly the fixed header.
@@ -260,20 +262,10 @@ fn seam_keys(payload: &[u8]) -> (AttesterVector, AttesterVector) {
     (a, b)
 }
 
-/// Builds a driver that stages one attester's public key together with a different attester's
-/// signature — the mix-and-match input an attacker would try.
-fn paired_driver_src(
-    preimage: &[Felt],
-    len_bytes: u64,
-    pubkey_of: &AttesterVector,
-    sig_of: &AttesterVector,
-) -> String {
-    attestation_driver_src(
-        preimage,
-        len_bytes,
-        &pubkey_of.pubkey_felts,
-        &sig_of.sig_felts,
-    )
+/// Builds a driver that stages the candidate attester public key. The tests independently choose
+/// the signature in the RC4 advice witness, which is what makes the mix-and-match cases possible.
+fn paired_driver_src(preimage: &[Felt], len_bytes: u64, pubkey_of: &AttesterVector) -> String {
+    attestation_driver_src(preimage, len_bytes, &pubkey_of.pubkey_felts)
 }
 
 // HAPPY PATH FIRST — an allowlisted attester with its own valid signature
@@ -283,14 +275,20 @@ fn paired_driver_src(
 async fn valid_attestation_passes() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, _b) = seam_keys(&bytes);
-    let driver_src = paired_driver_src(&preimage, len_bytes, &a, &a);
+    let driver_src = paired_driver_src(&preimage, len_bytes, &a);
     // seed the allowlist with A's commitment -> A is an enabled attester
     let h = setup_attestation_account(
         Some((a.commitment, Word::from(ATTESTER_MARKER))),
         &driver_src,
         SHELL_DRIVER_PATH,
     )?;
-    let executed = run_call_driver(&h, "drive").await.unwrap_or_else(|e| {
+    let executed = run_call_driver_with_advice(
+        &h,
+        "drive",
+        Some(a.verifier_advice_with_signature_from(&a)),
+    )
+    .await
+    .unwrap_or_else(|e| {
         panic!("an allowlisted attester + valid signature must pass attestation verification: {e}")
     });
     // the verify shell is read-only: the only account mutation is the auth nonce increment
@@ -318,14 +316,16 @@ async fn valid_attestation_passes() -> Result<()> {
 async fn forged_signature_rejects() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, b) = seam_keys(&bytes);
-    let driver_src = paired_driver_src(&preimage, len_bytes, &a, &b);
+    let driver_src = paired_driver_src(&preimage, len_bytes, &a);
     let h = setup_attestation_account(
         Some((a.commitment, Word::from(ATTESTER_MARKER))),
         &driver_src,
         SHELL_DRIVER_PATH,
     )?;
-    let result = run_call_driver(&h, "drive").await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_SIG_INVALID"));
+    let result =
+        run_call_driver_with_advice(&h, "drive", Some(a.verifier_advice_with_signature_from(&b)))
+            .await;
+    assert_transaction_executor_error!(result, err_ecdsa_verification_failed());
     Ok(())
 }
 
@@ -338,13 +338,15 @@ async fn forged_signature_rejects() -> Result<()> {
 async fn non_allowlisted_attester_rejects() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, b) = seam_keys(&bytes);
-    let driver_src = paired_driver_src(&preimage, len_bytes, &b, &b);
+    let driver_src = paired_driver_src(&preimage, len_bytes, &b);
     let h = setup_attestation_account(
         Some((a.commitment, Word::from(ATTESTER_MARKER))),
         &driver_src,
         SHELL_DRIVER_PATH,
     )?;
-    let result = run_call_driver(&h, "drive").await;
+    let result =
+        run_call_driver_with_advice(&h, "drive", Some(b.verifier_advice_with_signature_from(&b)))
+            .await;
     assert_transaction_executor_error!(
         result,
         shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY")
@@ -369,15 +371,25 @@ async fn mismatched_attestation_arrangements_reject() -> Result<()> {
     let allowlist_a = Some((a.commitment, Word::from(ATTESTER_MARKER)));
 
     // arrangement 1: allowlisted key A carries the allowlist check, B's signature fails the verify
-    let mixed_src = paired_driver_src(&preimage, len_bytes, &a, &b);
+    let mixed_src = paired_driver_src(&preimage, len_bytes, &a);
     let h1 = setup_attestation_account(allowlist_a, &mixed_src, SHELL_DRIVER_PATH)?;
-    let r1 = run_call_driver(&h1, "drive").await;
-    assert_transaction_executor_error!(r1, shell_error_by_name("ERR_XRESERVE_SIG_INVALID"));
+    let r1 = run_call_driver_with_advice(
+        &h1,
+        "drive",
+        Some(a.verifier_advice_with_signature_from(&b)),
+    )
+    .await;
+    assert_transaction_executor_error!(r1, err_ecdsa_verification_failed());
 
     // arrangement 2: B's key and B's own valid signature, but B was never allowlisted
-    let b_only_src = paired_driver_src(&preimage, len_bytes, &b, &b);
+    let b_only_src = paired_driver_src(&preimage, len_bytes, &b);
     let h2 = setup_attestation_account(allowlist_a, &b_only_src, SHELL_DRIVER_PATH)?;
-    let r2 = run_call_driver(&h2, "drive").await;
+    let r2 = run_call_driver_with_advice(
+        &h2,
+        "drive",
+        Some(b.verifier_advice_with_signature_from(&b)),
+    )
+    .await;
     assert_transaction_executor_error!(r2, shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY"));
     Ok(())
 }
@@ -395,7 +407,7 @@ async fn mismatched_attestation_arrangements_reject() -> Result<()> {
 async fn unstaged_pubkey_rejects() -> Result<()> {
     let (preimage, bytes, len_bytes) = attestation_payload();
     let (a, _b) = seam_keys(&bytes);
-    let driver_src = attestation_driver_src(&preimage, len_bytes, &[], &[]);
+    let driver_src = attestation_driver_src(&preimage, len_bytes, &[]);
     let h = setup_attestation_account(
         Some((a.commitment, Word::from(ATTESTER_MARKER))),
         &driver_src,
@@ -405,6 +417,29 @@ async fn unstaged_pubkey_rejects() -> Result<()> {
     assert_transaction_executor_error!(
         result,
         shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY")
+    );
+    Ok(())
+}
+
+/// An allowlisted memory key without the RC4 verifier witness fails on the exact missing-advice
+/// variant. This pins the mandatory fail-closed behavior after the allowlist has succeeded.
+#[tokio::test]
+async fn missing_verifier_advice_rejects() -> Result<()> {
+    let (preimage, bytes, len_bytes) = attestation_payload();
+    let (a, _b) = seam_keys(&bytes);
+    let driver_src = paired_driver_src(&preimage, len_bytes, &a);
+    let h = setup_attestation_account(
+        Some((a.commitment, Word::from(ATTESTER_MARKER))),
+        &driver_src,
+        SHELL_DRIVER_PATH,
+    )?;
+    let result = run_call_driver(&h, "drive").await;
+    assert_transaction_executor_error!(
+        result,
+        matches ExecutionError::AdviceError {
+            err: AdviceError::StackReadFailed,
+            ..
+        }
     );
     Ok(())
 }

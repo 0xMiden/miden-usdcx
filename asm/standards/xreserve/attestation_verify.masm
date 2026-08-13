@@ -4,7 +4,6 @@
 # itself; this file ensures a mint proceeds only for a deposit Circle actually signed.
 
 use miden::protocol::active_account
-use miden::core::crypto::hashes::keccak256
 use miden::core::crypto::dsa::ecdsa_k256_keccak
 use miden::core::crypto::hashes::poseidon2
 use miden::core::word
@@ -12,10 +11,6 @@ use {XRESERVE_ATTESTERS_SLOT, ATTESTER_ENABLED_MARKER} from xreserve::attester_a
 
 # CONSTANTS
 # =================================================================================================
-
-# `verify_attestation` memory locals.
-const DIGEST_LO_LOC = 0
-const DIGEST_HI_LOC = 4
 
 # The number of elements in a packed secp256k1 pubkey.
 const PUBKEY_FELTS = 16
@@ -26,21 +21,20 @@ const PUBKEY_FELTS = 16
 # The candidate pubkey's Poseidon2 commitment is not enabled in xReserveAttesters.
 const ERR_XRESERVE_DISALLOWED_PUB_KEY = "deposit attester pubkey commitment is not allowlisted"
 
-# The ECDSA signature does not verify over keccak256(payload) for the candidate pubkey.
-const ERR_XRESERVE_SIG_INVALID = "deposit attestation signature verification failed"
-
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Verifies the mint-time deposit attestation: keccak the payload, gate the attester pubkey
-#! against the xReserveAttesters allowlist, and ECDSA-verify the signature over the keccak
-#! digest.
+#! Verifies the mint-time deposit attestation: gate the attester pubkey against the
+#! xReserveAttesters allowlist, then ECDSA-verify the signature over keccak256(payload).
 #!
-#! The caller owns the pubkey and signature bytes and passes pointers to them; this procedure
-#! reads nothing from the advice provider, so whatever memory the caller hash-verified is exactly
-#! what gets checked here.
+#! The candidate pubkey is supplied both in hash-verified memory and as the first 16 elements of
+#! the advice witness. The RC4 verifier binds the advice copy to the commitment recomputed from
+#! memory before checking the signature, so the allowlist and signature checks cannot use different
+#! keys. The following 16 advice elements are the note-committed signature's native R[8] || S[8]
+#! limbs; the recovery ID is carried by the transport but deliberately not consumed.
 #!
-#! Inputs:  [intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
+#! Inputs:  [intent_ptr, intent_num_bytes, pubkey_ptr]
+#! Advice:  [QX[8] | QY[8] | SIG_R[8] | SIG_S[8] | ...]
 #! Outputs: []
 #!
 #! Where:
@@ -49,54 +43,42 @@ const ERR_XRESERVE_SIG_INVALID = "deposit attestation signature verification fai
 #!   attester signed).
 #! - pubkey_ptr is the word-aligned memory address of the candidate attester pubkey, 16
 #!   u32-LE-packed affine-coordinate felts.
-#! - signature_ptr is the word-aligned memory address of the 17-felt attestation signature.
 #!
 #! Panics if:
 #! - the candidate pubkey's commitment is not allowlisted (ERR_XRESERVE_DISALLOWED_PUB_KEY).
-#! - the signature does not verify over the payload digest (ERR_XRESERVE_SIG_INVALID).
-#!
-#! Locals:
-#! - 0..8: DIGEST
+#! - the advice pubkey does not reproduce the memory pubkey's commitment.
+#! - the advice signature does not verify over keccak256(payload) for that pubkey.
 #!
 #! Invocation: exec
-@locals(8)
 pub proc verify_attestation
-    # hash the full payload -> 8-limb digest.
-    exec.keccak256::hash_bytes
-    # => [DIGEST_U32[8], pubkey_ptr, signature_ptr]
-
-    loc_storew_le.DIGEST_LO_LOC dropw
-    loc_storew_le.DIGEST_HI_LOC dropw
-    # => [pubkey_ptr, signature_ptr]
+    movup.2
+    # => [pubkey_ptr, intent_ptr, intent_num_bytes]
 
     # allowlist gate: commit to the caller's pubkey, then read
     # xReserveAttesters[PUBKEY_COMMITMENT].
     dup exec.pubkey_commitment
-    # => [PUBKEY_COMMITMENT, pubkey_ptr, signature_ptr]
+    # => [PUBKEY_COMMITMENT, pubkey_ptr, intent_ptr, intent_num_bytes]
 
+    dupw
     push.XRESERVE_ATTESTERS_SLOT[0..2]
-    # => [slot_id_suffix, slot_id_prefix, PUBKEY_COMMITMENT, pubkey_ptr, signature_ptr]
+    # => [slot_id_suffix, slot_id_prefix, PUBKEY_COMMITMENT, PUBKEY_COMMITMENT, pubkey_ptr, intent_ptr, intent_num_bytes]
 
     exec.active_account::get_map_item
-    # => [MARKER, pubkey_ptr, signature_ptr]
+    # => [MARKER, PUBKEY_COMMITMENT, pubkey_ptr, intent_ptr, intent_num_bytes]
 
     # the stored value must match the enabled marker to be considered allowlisted
     push.ATTESTER_ENABLED_MARKER exec.word::eq
-    # => [is_allowed, pubkey_ptr, signature_ptr]
+    # => [is_allowed, PUBKEY_COMMITMENT, pubkey_ptr, intent_ptr, intent_num_bytes]
 
     assert.err=ERR_XRESERVE_DISALLOWED_PUB_KEY
-    # => [pubkey_ptr, signature_ptr]
+    # => [PUBKEY_COMMITMENT, pubkey_ptr, intent_ptr, intent_num_bytes]
 
-    # the ECDSA verify: verify_prehash over the SAME pubkey the allowlist gate just cleared, the
-    # digest, and the caller's signature.
-    locaddr.DIGEST_LO_LOC swap
-    # => [pubkey_ptr, digest_ptr, signature_ptr]
+    movup.4 drop
+    # => [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes]
 
-    exec.ecdsa_k256_keccak::verify_prehash
-    # => [result]
-
-    # the signature must verify over the payload digest for the candidate pubkey.
-    assert.err=ERR_XRESERVE_SIG_INVALID
+    # The core verifier re-hashes the exact rebuilt payload extent, binds the advice pubkey to the
+    # commitment just allowlisted, and traps unless the native R/S witness verifies.
+    exec.ecdsa_k256_keccak::verify_bytes
     # => []
 end
 

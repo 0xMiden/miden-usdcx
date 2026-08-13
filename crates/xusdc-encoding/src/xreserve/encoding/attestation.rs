@@ -10,10 +10,11 @@
 //!
 //! This module owns the packing, in both directions of the wire:
 //!
-//! - The digest and the signature are packed into u32-little-endian field elements with the same
-//!   primitive miden-crypto uses for byte streams, four bytes per element. These conversions cannot
-//!   fail: every element is a `u32`, and the lengths come
-//!   from fixed-size arrays rather than from input.
+//! - The digest is packed into u32-little-endian field elements with the same primitive
+//!   miden-crypto uses for byte streams, four bytes per element. The signature keeps its raw
+//!   `r‖s‖v` byte interface but is staged in the verifier's native scalar order: eight
+//!   least-significant-first u32 limbs for `r`, eight for `s`, then `v`. These conversions cannot
+//!   fail: every element is a `u32`, and the lengths come from fixed-size arrays rather than input.
 //! - The public key is different, and its packing IS fallible. Circle hands over the 33-byte
 //!   compressed SEC1 form, while the chain works with the point's affine coordinates as sixteen
 //!   field elements. Decompressing is where a malformed or off-curve key is caught — rejecting it
@@ -74,14 +75,27 @@ impl Signature {
         &self.0
     }
 
-    /// Packs the signature into the 17 u32-LE field elements the on-chain attestation surface reads,
-    /// four bytes per element, with `v` carried in felt 16 (byte 64, upper three bytes zero-filled)
-    /// and unused on-chain. Infallible: every element is a `u32` and the length comes from the
-    /// fixed-size array, not from input.
+    /// Packs the signature into the 17 field elements the on-chain attestation surface reads:
+    /// `R[8] ‖ S[8] ‖ v`, where each scalar is split into least-significant-first u32 limbs and
+    /// `v` is carried in felt 16 but unused on-chain. This is the native RC4 verifier witness order.
+    /// Infallible: every element is a `u32` and the length comes from the fixed-size array, not from
+    /// input.
     pub fn to_felts(&self) -> [Felt; 17] {
-        bytes_to_packed_u32_elements(&self.0)
-            .try_into()
-            .expect("65 bytes always pack to exactly 17 u32 felts")
+        let mut felts = [Felt::from(0u32); 17];
+        for scalar_idx in 0..2 {
+            for limb_idx in 0..8 {
+                let byte_offset = scalar_idx * 32 + (7 - limb_idx) * 4;
+                let limb = u32::from_be_bytes([
+                    self.0[byte_offset],
+                    self.0[byte_offset + 1],
+                    self.0[byte_offset + 2],
+                    self.0[byte_offset + 3],
+                ]);
+                felts[scalar_idx * 8 + limb_idx] = Felt::from(limb);
+            }
+        }
+        felts[16] = Felt::from(u32::from(self.0[64]));
+        felts
     }
 }
 
@@ -158,7 +172,8 @@ mod tests {
     use crate::vectors::load;
 
     /// TV-ATT-1 (felt shapes): the three packers yield exactly 8 / 16 / 17 felts and match
-    /// the canonical packing of every vector's digest / pubkey / signature.
+    /// the canonical packing of every vector's digest / pubkey / signature. Signature scalars use
+    /// the native RC4 verifier limb order while the digest remains packed bytes.
     #[test]
     fn tv_att_1_felt_shapes() {
         for v in &load().families.att {

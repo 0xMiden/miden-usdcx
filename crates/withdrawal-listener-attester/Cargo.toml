@@ -78,7 +78,7 @@ rusqlite = { workspace = true }
 # every real Miden read (the SyncNotes tag scan, GetNotesById retrieval, the evidence reads) is
 # PARKED to a later slice. This slice needs none of them — it is serde wire types, JSON fixtures,
 # and config.
-miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "b9750ad6acc574e460939a5d8e847b878c59fff2" }
+miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "bbe8ec8020d8fdaa6ea703bce1557b1380942444" }
 
 [dev-dependencies]
 # Exact-variant assertions + parameterized reject tables; versions from the workspace table.

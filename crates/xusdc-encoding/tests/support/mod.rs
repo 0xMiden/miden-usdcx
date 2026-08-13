@@ -47,7 +47,6 @@ use miden_protocol::asset::{AssetAmount, AssetCallbacks, FungibleAsset, TokenSym
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{Note, NoteType};
 use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote, TransactionKernel};
-use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{
     Pausable, PausableManager, PausableStorage, RoleBasedAccessControl,
@@ -67,12 +66,12 @@ use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, XReserveComponent, XReserveStablecoinBuilderError,
     ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::xreserve::encoding::EthBytes32;
+use xusdc_encoding::xreserve::encoding::{EthBytes32, Signature};
 
 // Attestation fixtures — deterministic secp256k1 keys and signatures generated IN-TEST (the
 // canonical vector artifact is untouched), mirroring the `gen_vectors` att_* helpers: k256 the
 // keypair+signature, sha3 the keccak digest, miden-crypto `PublicKey::to_commitment` the
-// allowlist-key oracle, miden_protocol `bytes_to_packed_u32_elements` the advice felt packing.
+// allowlist-key oracle, and the shared `Signature` codec for the native RC4 verifier limbs.
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey};
 use miden_crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_crypto::utils::Deserializable;
@@ -113,7 +112,7 @@ pub fn test_xreserve_contract() -> [u8; 32] {
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 17] = [
     // the packed-memory primitives the DC-14 preimage writer copies through (packed_mem.masm)
     (
         "ERR_XRESERVE_MINT_INTENT_LIMB",
@@ -145,10 +144,6 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
     (
         "ERR_XRESERVE_DISALLOWED_PUB_KEY",
         MasmError::from_static_str("deposit attester pubkey commitment is not allowlisted"),
-    ),
-    (
-        "ERR_XRESERVE_SIG_INVALID",
-        MasmError::from_static_str("deposit attestation signature verification failed"),
     ),
     // The fee gate (deposit_intent_parser.masm): the faucet pays no relayer fee, so the parser rejects
     // a non-zero advice feeAmount; parity-pinned against the MASM const.
@@ -211,6 +206,15 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
     ),
 ];
 
+/// The stock RC4 ECDSA verifier's exact reject when a well-formed signature does not satisfy the
+/// secp256k1 verification equation. The faucet delegates this check to the core library, so the
+/// error belongs to that library rather than the faucet-owned shell table above.
+pub fn err_ecdsa_verification_failed() -> &'static MasmError {
+    static ERROR: MasmError =
+        MasmError::from_static_str("ECDSA verification failed: x(VERIFY_POINT) != SIG_R");
+    &ERROR
+}
+
 /// The min-burn admin note's zero-floor guard
 /// (`xreserve_set_min_burn_size_note.masm`; the stock `set_min_burn_amount` accepts 0, so the
 /// note rejects a sub-floor `new_min` BEFORE calling it). A NOTE-script error, not an
@@ -223,7 +227,9 @@ pub fn err_min_burn_below_floor() -> MasmError {
 /// error (there are no custom burn errors: with the floor `>= 1`, a
 /// zero-amount burn rejects HERE).
 pub fn err_burn_below_min_burn_amount() -> MasmError {
-    MasmError::from_static_str("amount to be burned must exceed specified minimum burn amount")
+    MasmError::from_static_str(
+        "amount to be burned must meet or exceed specified minimum burn amount",
+    )
 }
 
 /// Looks up an expected faucet-owned MASM error by name. Errors raised inside the LINKED protocol
@@ -287,7 +293,6 @@ fn collect_masm_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// the hash-verified attestation attachment. All word-aligned and clear of `INTENT_PTR`.
 pub const FEE_AMOUNT_PTR: u64 = 0;
 pub const PUBKEY_PTR: u64 = 8;
-pub const SIGNATURE_PTR: u64 = 24;
 
 /// Module path of the generated per-case shell driver component.
 pub const SHELL_DRIVER_PATH: &str = "xusdc::test_fixtures::shell_driver";
@@ -874,7 +879,7 @@ pub async fn run_call_driver_with_advice(
         .build_transaction(h.account_id)
         .tx_script(tx_script);
     if let Some(stack) = advice_stack {
-        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack));
+        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_advice_stack(stack.into()));
     }
     ctx.build()
         .expect("building the transaction")
@@ -886,14 +891,15 @@ pub async fn run_call_driver_with_advice(
 // ================================================================================================
 
 /// A deterministically-generated attester: its 16-felt affine pubkey + 17-felt
-/// signature (as advice felts) over a payload's keccak digest, and its `xReserveAttesters`
+/// signature (as native RC4 verifier felts) over a payload's keccak digest, and its
+/// `xReserveAttesters`
 /// allowlist commitment (the miden-crypto `PublicKey::to_commitment` oracle == the on-chain MASM
 /// `pubkey_commitment`).
 pub struct AttesterVector {
     /// 16-felt affine pubkey coordinates `qx_le_u32[8] || qy_le_u32[8]` (the candidate pubkey the
     /// driver stages in memory; the Circle wire form stays the 33-byte compressed key below).
     pub pubkey_felts: Vec<Felt>,
-    /// 17-felt u32-LE-packed r||s||v signature over keccak256(payload).
+    /// 17-felt native `R[8] || S[8] || v` signature over keccak256(payload).
     pub sig_felts: Vec<Felt>,
     /// Poseidon2 commitment Word = the `xReserveAttesters` allowlist key for this pubkey.
     pub commitment: Word,
@@ -901,6 +907,16 @@ pub struct AttesterVector {
     pub pubkey_bytes: [u8; 33],
     /// Raw 65-byte `r||s||v` signature (what the relayer hands `XUsdcMintNote::create`).
     pub sig_bytes: [u8; 65],
+}
+
+impl AttesterVector {
+    /// Returns the 32-element witness consumed by RC4's ECDSA verifier: the affine key followed by
+    /// the native R/S limbs. The carried recovery ID remains outside the verifier ABI.
+    pub fn verifier_advice_with_signature_from(&self, signature_from: &Self) -> Vec<Felt> {
+        let mut advice = self.pubkey_felts.clone();
+        advice.extend_from_slice(&signature_from.sig_felts[..16]);
+        advice
+    }
 }
 
 /// Deterministically generates an attester keypair (k256 + seeded StdRng) and signs
@@ -935,7 +951,7 @@ pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
             .to_affine_felts()
             .expect("the deterministic attester key is a valid curve point")
             .to_vec(),
-        sig_felts: bytes_to_packed_u32_elements(&sig65),
+        sig_felts: Signature::new(sig65).to_felts().to_vec(),
         commitment,
         pubkey_bytes: pk33,
         sig_bytes: sig65,
@@ -999,20 +1015,13 @@ pub fn setup_attestation_account(
     })
 }
 
-/// Generates the per-case attestation driver: stages the DepositIntent payload preimage, the
-/// candidate pubkey and the signature in the account context, pushes
-/// `[intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]`, and `exec`s the faucet
-/// `verify_attestation` shell. The shell returns `[]` (assert-only gate), so the
+/// Generates the per-case attestation driver: stages the DepositIntent payload preimage and the
+/// candidate pubkey in the account context, pushes `[intent_ptr, intent_num_bytes, pubkey_ptr]`,
+/// and `exec`s the faucet `verify_attestation` shell. The signature is supplied separately in the
+/// native RC4 advice witness. The shell returns `[]` (assert-only gate), so the
 /// staged-then-consumed stack restores the 16-depth `call` boundary.
 ///
-/// Taking the pubkey and signature separately is what lets the seam cases pair one attester's
-/// pubkey with another's signature.
-pub fn attestation_driver_src(
-    preimage: &[Felt],
-    len_bytes: u64,
-    pubkey_felts: &[Felt],
-    sig_felts: &[Felt],
-) -> String {
+pub fn attestation_driver_src(preimage: &[Felt], len_bytes: u64, pubkey_felts: &[Felt]) -> String {
     let mut src = String::from(
         "use xreserve::attestation_verify\n\n\
          #! Test driver: stages a DepositIntent payload, a candidate pubkey and a signature in\n\
@@ -1027,8 +1036,6 @@ pub fn attestation_driver_src(
     );
     stage_preimage(&mut src, preimage);
     stage_felts(&mut src, pubkey_felts, PUBKEY_PTR);
-    stage_felts(&mut src, sig_felts, SIGNATURE_PTR);
-    writeln!(src, "    push.{SIGNATURE_PTR}").unwrap();
     writeln!(src, "    push.{PUBKEY_PTR}").unwrap();
     writeln!(src, "    push.{len_bytes}").unwrap();
     writeln!(src, "    push.{INTENT_PTR}").unwrap();

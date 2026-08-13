@@ -73,7 +73,6 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_NONCE_REPLAY",
     // attestation verification R-MINT-13 / R-MINT-14 (attestation_verify.masm)
     "ERR_XRESERVE_DISALLOWED_PUB_KEY",
-    "ERR_XRESERVE_SIG_INVALID",
     // F2 fee guard (deposit_intent_parser.masm; DEC-2 keep-zero)
     // Transport-shape guards on the stock MintNote's attachments: the attachment set and the
     // merged transport's floor (mint_policy.masm), then the staged intent's own shape and length
@@ -123,7 +122,7 @@ fn expected_attester_admin_word_consts() -> Vec<(&'static str, &'static str)> {
 /// The attestation verification attestation-verify shell's numeric constants: its `@locals` offsets (the keccak
 /// digest's two words — procedure-local addresses with no Rust counterpart) and `PUBKEY_FELTS`,
 /// which IS parity-asserted against the Rust codec in `masm_rust_constant_parity` below.
-const ATTESTATION_COVERED_NUMS: &[&str] = &["DIGEST_LO_LOC", "DIGEST_HI_LOC", "PUBKEY_FELTS"];
+const ATTESTATION_COVERED_NUMS: &[&str] = &["PUBKEY_FELTS"];
 
 /// Attestation mint-policy numeric consts: the merged transport's attachment scheme + the
 /// attestation section word count are parity-asserted against the `XUsdcMintNote` factory
@@ -140,28 +139,20 @@ const MINT_POLICY_COVERED_NUMS: &[&str] = &[
     "XUSDC_MINT_ATTESTATION_NUM_FELTS",
     "DEPOSIT_INTENT_PTR",
     "XUSDC_MINT_ATTESTATION_NUM_WORDS",
-    "MINT_INTENT_NUM_WORDS",
     "XUSDC_MINT_TRANSPORT_FIXED_WORDS",
     "ASSET_VALUE_LOC",
     "RECIPIENT_LOC",
     "TAG_LOC",
     "NOTE_TYPE_LOC",
-    "HOOK_DATA_LEN_LOC",
-    "AMOUNT_LOC",
+    "TRANSPORT_IDX_LOC",
     "ATTACHMENT_COMMITMENTS_LOC",
     "HASHED_NONCE_LOC",
-    "PREIMAGE_LOC",
-    "PREIMAGE_MAX_FELTS",
     "TRANSPORT_LOC",
     "ATTESTATION_LOC",
     "ATTESTATION_PUBKEY_LOC",
-    "ATTESTATION_SIGNATURE_LOC",
     "MINT_INTENT_LOC",
-    "MINT_INTENT_NONCE_LOC",
     "MINT_INTENT_RECIPIENT_PREFIX_LOC",
     "MINT_INTENT_RECIPIENT_SUFFIX_LOC",
-    "MINT_INTENT_MAX_FEE_LOC",
-    "MINT_INTENT_HOOK_DATA_LEN_LOC",
 ];
 
 /// Numeric-constant coverage sets (bidirectional sweep): every numeric const parsed

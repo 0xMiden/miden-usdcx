@@ -79,13 +79,7 @@ async fn mint_rejects_an_amount_mismatch(
         &AttachmentPlan::default(),
         rng_seed,
     )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
-    )
-    .await
+    expect_reject(&mut pf, note, &payload, err_ecdsa_verification_failed()).await
 }
 
 /// A note whose output tag does not target the attested recipient rejects with the tag binding
@@ -520,7 +514,7 @@ async fn mint_rejects_a_non_u32_hook_data_len_limb() -> Result<()> {
     34,
     101
 )]
-#[case::signature(ATTESTATION_SIGNATURE_FELT_OFF, "ERR_XRESERVE_SIG_INVALID", 35, 102)]
+#[case::signature(ATTESTATION_SIGNATURE_FELT_OFF, "ECDSA_VERIFICATION_FAILED", 35, 102)]
 #[tokio::test]
 async fn mint_rejects_a_tampered_attestation_sub_region(
     #[case] felt_off: usize,
@@ -543,7 +537,11 @@ async fn mint_rejects_a_tampered_attestation_sub_region(
         },
         rng_seed,
     )?;
-    expect_reject(&mut pf, note, &payload, shell_error_by_name(expected_err)).await
+    let expected = match expected_err {
+        "ECDSA_VERIFICATION_FAILED" => err_ecdsa_verification_failed(),
+        faucet_error => shell_error_by_name(faucet_error),
+    };
+    expect_reject(&mut pf, note, &payload, expected).await
 }
 
 /// The other half of the isolation proof: a tampered INTENT byte — the attestation section left
@@ -568,13 +566,7 @@ async fn mint_rejects_a_tampered_intent_byte() -> Result<()> {
         &AttachmentPlan::default(),
         103,
     )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &carried,
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
-    )
-    .await
+    expect_reject(&mut pf, note, &carried, err_ecdsa_verification_failed()).await
 }
 
 // PAUSE HALT — the dispatcher gate (execute_mint_policy runs assert_not_paused FIRST)
@@ -736,16 +728,15 @@ async fn mint_note_routes_to_the_faucet_network_account() -> Result<()> {
 
 /// A mint runs identically whether or not the prover seeds an advice stack.
 ///
-/// Every operand the policy verifies — the deposit intent, the operator fee, the attester pubkey,
-/// the signature — is read out of memory the policy hash-verified against the note's own
-/// attachment commitments. The advice provider is host-controlled, so if any stage still popped
-/// from it, a prover could hand the verify a different payload than the one the note committed to.
+/// Every operand the policy verifies — the deposit intent, the attester pubkey, and the signature —
+/// comes from the transport the policy hash-verifies against the note's own attachment commitment.
+/// RC4's ECDSA verifier consumes advice, so the policy re-opens that content-addressed attachment
+/// immediately before the call; the verifier then binds its advice pubkey to the allowlisted
+/// commitment and checks the signature relation.
 ///
 /// The behavioral half of that guarantee is what this test covers: a hostile stack changes
-/// nothing. It cannot cover the whole of it, because the divergence a real attacker exploits is a
-/// prover serving different bytes on a second read of the same advice-map key, and MockChain's
-/// advice provider is a static map that cannot model it. What closes the gap is a source fact
-/// rather than a behavior: no `.masm` under `asm/` contains an advice-read instruction at all.
+/// nothing. Together with the content-addressed map re-open, this proves ambient prover input cannot
+/// displace the note-committed witness consumed by the verifier.
 #[tokio::test]
 async fn mint_ignores_a_hostile_advice_stack() -> Result<()> {
     let mut pf = fixture()?;
@@ -754,9 +745,8 @@ async fn mint_ignores_a_hostile_advice_stack() -> Result<()> {
     let note = honest_note(&pf, &payload, 83)?;
     emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
 
-    // enough junk to satisfy every read the pre-hardening pipeline made (8 fee limbs + 16 pubkey
-    // felts + 17 signature felts), so a surviving advice read would consume it and diverge rather
-    // than trap on an empty stack
+    // Enough junk to satisfy the verifier if it accidentally consumed ambient advice. The policy
+    // must push the note-committed transport above it before invoking the verifier.
     let hostile: Vec<Felt> = (1u32..=41).map(Felt::from).collect();
     let tx = consume_note_with_advice(&pf.mock_chain, pf.faucet_id, note.id(), Some(hostile))
         .await

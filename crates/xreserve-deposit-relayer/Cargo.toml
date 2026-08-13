@@ -66,7 +66,7 @@ rusqlite = { workspace = true }
 # faucet is a keyless network account) rebuilds the advice map from those attachments. There is no
 # advice provider the relayer can reach, at any protocol version, and the submit leg that would
 # need a client has no v0.16 release to build against.
-miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "b9750ad6acc574e460939a5d8e847b878c59fff2" }
+miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "bbe8ec8020d8fdaa6ea703bce1557b1380942444" }
 # OS entropy for the mint note's SERIAL NUMBER (the binary's `entropy_seed`). The serial number is
 # what makes a re-mint of the same DepositIntent a distinct note rather than a collision, so it must
 # not be reproducible across restarts — which is why the RNG is a parameter of `RelayerCtx` (a test
@@ -108,9 +108,9 @@ rand = { workspace = true }
 # `AccountId::dummy` is where the protocol publishes them. The fixture's allowlist key is a Miden
 # `Word` (Poseidon2, via the shared encoding crate's `PublicKey::to_commitment`) and the envelope suite's negative comparator
 # hashes with the protocol `Hasher`, so the protocol types were already named in tests.
-miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "b9750ad6acc574e460939a5d8e847b878c59fff2", features = ["testing"] }
+miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "bbe8ec8020d8fdaa6ea703bce1557b1380942444", features = ["testing"] }
 # TEST-only: `NetworkAccountTarget` — the scheme-2 routing attachment the shared encoding crate puts on the mint note.
 # The delegation tests read the routing target back through the STANDARD's own parser (its
 # `ATTACHMENT_SCHEME` + `TryFrom<&NoteAttachment>`), so the assertion never restates a layout the
 # standard owns.
-miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "b9750ad6acc574e460939a5d8e847b878c59fff2" }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "bbe8ec8020d8fdaa6ea703bce1557b1380942444" }

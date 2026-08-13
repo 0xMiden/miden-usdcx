@@ -870,12 +870,12 @@ fn main() {
             "digest_hex": hex_bytes(&digest),
             "digest_felts": felts_hex(&packed(&digest)),
             "sig_hex": hex_bytes(&sig),
-            "sig_felts": felts_hex(&packed(&sig)),
+            "sig_felts": felts_hex(&xusdc_encoding::xreserve::encoding::Signature::new(sig).to_felts()),
             "v_byte": sig[64],
             "payload_hex": hex_bytes(&payload),
-            "cite": "miden-crypto-0.25.1 dsa/ecdsa_k256_keccak/mod.rs:253,:301 + src/lib.rs:156-170",
+            "cite": "miden-core-lib-0.29.1 dsa::ecdsa_k256_keccak::encode_signature",
             "derivation": format!(
-                "k256 SigningKey::random(StdRng seed {seed}); pk = 33B compressed SEC1 wire key, decompressed to affine qx_le_u32[8]||qy_le_u32[8] (16 felts, vm#3342); sig = 65B r||s||v (17 felts, v carried) over keccak256(full {plen}B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.28.0 (Poseidon2 over the 16 affine pubkey felts)",
+                "k256 SigningKey::random(StdRng seed {seed}); pk = 33B compressed SEC1 wire key, decompressed to affine qx_le_u32[8]||qy_le_u32[8] (16 felts); sig = 65B r||s||v staged as native R[8]||S[8]||v limbs (17 felts, v carried) over keccak256(full {plen}B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.29.1 (Poseidon2 over the 16 affine pubkey felts)",
                 plen = payload.len(),
             ),
         }));

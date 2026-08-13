@@ -1872,7 +1872,7 @@ fn seeded_dom_roles_rbac_component(
 /// `burn_real_active`, so the real-vs-allow-all pair is CODE-IDENTICAL (both stock burn
 /// companions present in both variants, the SAME floor seed) and differs ONLY in
 /// `active_burn_policy_proc_root`. Mirrors the production
-/// `XReserveStablecoinBuilder::{assemble_components, build_components}` RBAC foundation, but is
+/// `XReserveStablecoinBuilder::build_components` RBAC foundation, but is
 /// the TEST harness — production composition installs the MinBurnAmount policy ONLY (no reserved
 /// allow-all), so no shipped API can construct an allow-all-active burn faucet.
 fn oracle_burn_components(
@@ -1914,12 +1914,10 @@ fn oracle_burn_components(
         .allowed_burn_policy(reserved_burn)
         .build();
 
-    // Component order/contents mirror XReserveStablecoinBuilder::{assemble_components,
-    // build_components}, including the v16 policy-companion seam: the manager iterator yields
-    // [manager, then one companion copy per distinct policy root] — here the attestation custom
-    // carries the xreserve component (dropped: it is installed once below) and the two stock burn
-    // policies carry the MinBurnAmount (with the floor slot) + BurnAllowAll companions (BOTH
-    // kept: the code-identical pair needs them in both variants). The base Pausable component
+    // Production build_components extends the manager iterator (the mint policy already
+    // carries the seeded xreserve). This oracle still partitions the remainder: it keeps BOTH
+    // stock burn companions (MinBurnAmount + BurnAllowAll) and drops the xreserve copy because
+    // it also installs `xreserve_component` separately below. The base Pausable component
     // installs the is_paused slot (v16 — #2944 moved it out of FungibleFaucet) and the stock
     // PausableManager writes it, gated on the Domain pauser role by the procedure-role map.
     let xreserve_code = xreserve_component.component_code().clone();

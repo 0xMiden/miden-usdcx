@@ -363,24 +363,19 @@ fn production_components_carry_mutability_config_slot() -> Result<()> {
 // mis-configured faucet to reject. The identity is asserted positively by the byte-identity suite,
 // which builds the account through `build_faucet_account` and matches the frozen composition.
 
-// THE POLICY-COMPANION SEAM
+// THE POLICY COMPANIONS
 // ================================================================================================
-// At v0.16 the policy descriptors CARRY their companion components, and the manager's iterator
-// emits the companions per DISTINCT policy root after the manager component itself. With the
-// recomposed policy set the remainder is EXACTLY THREE: one xreserve copy (the custom attestation
-// mint policy), one stock `MinBurnAmount` companion (the burn floor), and one `BasicBlocklist`
-// companion (the shared send/receive transfer policy). The builder installs the xreserve component
-// EXACTLY ONCE (dropping the recognized copy) and INSTALLS the two stock companions — anything
-// else is a loud `PolicyCompanionMismatch`, never a silent drop. These two tests pin both
-// directions.
+// The mint policy carries the domain-seeded xreserve component, so the manager iterator is the
+// install set (manager + one companion per distinct policy root). This test pins that the
+// composition carries exactly one of each: xreserve, MinBurnAmount, BasicBlocklist, and the
+// policy manager.
 
 /// POSITIVE shape: the production composition carries EXACTLY ONE component whose code is the
 /// installed xreserve library, EXACTLY ONE policy-manager component, and EXACTLY ONE each of the
 /// stock `MinBurnAmount` + `BasicBlocklist` companions — in the pinned install order
-/// [faucet, Pausable, xreserve, MinBurnAmount, BasicBlocklist, policy manager, PausableManager,
-/// BlocklistManager, RBAC, Authority]. A duplicate xreserve copy would hard-reject
-/// the account build with `DuplicateStorageSlotName`, so this is the build-time tripwire for that
-/// failure.
+/// [faucet, Pausable, policy manager, xreserve, BasicBlocklist, MinBurnAmount, PausableManager,
+/// BlocklistManager, RBAC, Authority]. A duplicate xreserve copy would hard-reject the account
+/// build with `DuplicateStorageSlotName`, so this is the build-time tripwire for that failure.
 #[test]
 fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> {
     // The same component the builder assembles internally, so its code is the code the composition
@@ -406,9 +401,8 @@ fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> 
     assert_eq!(
         count_by_code(&xreserve_code),
         1,
-        "the xreserve component must be installed EXACTLY once (the policy companion copy is \
-         dropped at the seam); a second copy hard-rejects the account build with \
-         DuplicateStorageSlotName"
+        "the xreserve component must be installed EXACTLY once; a second copy hard-rejects the \
+         account build with DuplicateStorageSlotName"
     );
     assert_eq!(
         count_by_code(MinBurnAmount::code()),
@@ -429,32 +423,24 @@ fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> 
         "the composition must carry EXACTLY one policy-manager component"
     );
 
-    // the pinned install ORDER of the identifiable middle run: xreserve at index 2, then the
-    // MinBurnAmount + BasicBlocklist companions, then the manager (the pinned component order).
-    assert!(
-        components[2].component_code().as_package() == xreserve_code.as_package(),
-        "component 2 must be the xreserve component"
+    // Manager iterator first (manager, then companions in procedure-root map order), then the
+    // stock admin components.
+    assert_eq!(
+        components[2].metadata().name(),
+        TokenPolicyManager::NAME,
+        "component 2 must be the policy-manager component"
     );
     assert!(
-        components[3].component_code().as_package() == MinBurnAmount::code().as_package(),
-        "component 3 must be the stock MinBurnAmount companion"
+        components[3].component_code().as_package() == xreserve_code.as_package(),
+        "component 3 must be the xreserve component"
     );
     assert!(
         components[4].component_code().as_package() == BasicBlocklist::code().as_package(),
         "component 4 must be the BasicBlocklist companion"
     );
-    assert_eq!(
-        components[5].metadata().name(),
-        TokenPolicyManager::NAME,
-        "component 5 must be the policy-manager component"
+    assert!(
+        components[5].component_code().as_package() == MinBurnAmount::code().as_package(),
+        "component 5 must be the stock MinBurnAmount companion"
     );
     Ok(())
 }
-
-// The former `seam_rejects_a_smuggled_foreign_policy_companion` tripwire injected a FOREIGN policy
-// companion through `with_active_mint_policy`, the mint-policy override this slice removed (the
-// faucet ships exactly one mint policy, hard-wired to the attestation policy). With no injectable
-// mint policy there is no way to smuggle a foreign companion through the public API, so the seam has
-// no adversarial input to reject. The defensive `PolicyCompanionMismatch` check remains in
-// `build_components`, and the composition's companion shape is asserted positively by
-// `production_composition_installs_one_xreserve_and_one_manager` above.

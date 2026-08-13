@@ -51,23 +51,6 @@ pub enum XReserveStablecoinBuilderError {
     /// The burn-policy descriptor rejected its construction — the burn-slot twin of
     /// [`Self::MintPolicy`].
     BurnPolicy(BurnPolicyError),
-    /// The policy manager's companion components did not have the pinned shape at the composition
-    /// seam: the manager component first, then EXACTLY one xreserve-component copy (the custom
-    /// attestation mint policy), EXACTLY one stock `MinBurnAmount` companion (the burn floor), and
-    /// EXACTLY one `BasicBlocklist` companion (the transfer-blocklist policy shared by the send and
-    /// receive kinds). `found` is the FULL companion remainder the manager emitted; the
-    /// `*_recognized` counters say how many of those were each expected component, so a smuggled
-    /// foreign companion shows up as `found` exceeding their sum rather than hiding behind a
-    /// matching total, and a missing stock companion shows up in its own counter.
-    PolicyCompanionMismatch {
-        expected_xreserve: usize,
-        expected_min_burn: usize,
-        expected_blocklist: usize,
-        found: usize,
-        xreserve_recognized: usize,
-        min_burn_recognized: usize,
-        blocklist_recognized: usize,
-    },
 }
 
 impl fmt::Display for XReserveStablecoinBuilderError {
@@ -107,26 +90,6 @@ impl fmt::Display for XReserveStablecoinBuilderError {
             ),
             Self::MintPolicy(_) => write!(f, "mint policy descriptor construction failed"),
             Self::BurnPolicy(_) => write!(f, "burn policy descriptor construction failed"),
-            Self::PolicyCompanionMismatch {
-                expected_xreserve,
-                expected_min_burn,
-                expected_blocklist,
-                found,
-                xreserve_recognized,
-                min_burn_recognized,
-                blocklist_recognized,
-            } => write!(
-                f,
-                "token policy manager emitted an unexpected companion-component shape: expected \
-                 exactly {expected_xreserve} xreserve-component copy + {expected_min_burn} \
-                 MinBurnAmount companion + {expected_blocklist} BasicBlocklist companion after the \
-                 manager component; the remainder held {found} companions, {xreserve_recognized} \
-                 of them the installed xreserve component, {min_burn_recognized} the MinBurnAmount \
-                 companion, and {blocklist_recognized} the BasicBlocklist companion ({} foreign)",
-                found.saturating_sub(
-                    xreserve_recognized + min_burn_recognized + blocklist_recognized
-                )
-            ),
         }
     }
 }

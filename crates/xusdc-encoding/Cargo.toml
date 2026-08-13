@@ -6,14 +6,14 @@ publish = false
 description = "xUSDC-on-Miden 04 shared encoding: hand-written MASM + Rust mirror and test harness"
 
 # The four protocol-monorepo crates are pinned to the published crates.io release
-# `=0.16.0-rc.3` — an exact version pin, never a floating range, so the build stays
-# reproducible. The rc.3 graph resolves the 0.29 assembler/VM family and miden-crypto 0.29. The
+# `=0.16.0-rc.4` — an exact version pin, never a floating range, so the build stays
+# reproducible. The rc.4 graph resolves the 0.29 assembler/VM family and miden-crypto 0.29. The
 # `testing` feature on the main miden-protocol dep is required by the committed vector generator
 # (AccountIdBuilder).
 
 [dependencies]
-miden-protocol  = { version = "=0.16.0-rc.3", features = ["testing"] }
-miden-standards = { version = "=0.16.0-rc.3" }
+miden-protocol  = { version = "=0.16.0-rc.4", features = ["testing"] }
+miden-standards = { version = "=0.16.0-rc.4" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # bon powers the note-factory builders and the dedicated note-storage types (the standards
@@ -52,11 +52,11 @@ name = "gen_vectors"
 required-features = ["vectors"]
 
 [dev-dependencies]
-miden-standards = { version = "=0.16.0-rc.3", features = ["testing"] }
-miden-testing   = { version = "=0.16.0-rc.3" }
-miden-tx        = { version = "=0.16.0-rc.3" }
+miden-standards = { version = "=0.16.0-rc.4", features = ["testing"] }
+miden-testing   = { version = "=0.16.0-rc.4" }
+miden-tx        = { version = "=0.16.0-rc.4" }
 # exact-error matching for u32-assert traps (OperationError::U32AssertionFailed); 0.29 is the
-# version the rc.3 protocol graph resolves — the pin moves in lockstep with the protocol family so
+# version the rc.4 protocol graph resolves — the pin moves in lockstep with the protocol family so
 # exactly one processor copy exists and the error downcasts unify
 miden-processor = "0.29"
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }

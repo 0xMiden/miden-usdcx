@@ -28,7 +28,7 @@ mod support;
 
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
-use miden_protocol::account::{Account, AccountId, StorageMapKey};
+use miden_protocol::account::{Account, AccountId, StorageMapKey, StorageSlotName};
 use miden_protocol::note::{NoteId, NoteType};
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
@@ -36,6 +36,7 @@ use miden_standards::account::faucets::FungibleFaucet;
 use miden_testing::MockChain;
 use miden_tx::TransactionExecutorError;
 use support::*;
+use xusdc_encoding::account::xreserve::XReserveComponent;
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_mint::{
     DepositAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
@@ -236,15 +237,11 @@ fn committed_token_supply(chain: &MockChain, faucet_id: AccountId) -> Result<u64
     Ok(u64::from(FungibleFaucet::try_from(storage)?.token_supply()))
 }
 
-fn read_map_word(account: &Account, slot_label: &str, key: Word) -> Result<Word> {
+fn read_map_word(account: &Account, slot_name: &StorageSlotName, key: Word) -> Result<Word> {
     account
         .storage()
-        .get_map_item(
-            &miden_protocol::account::StorageSlotName::new(slot_label)
-                .with_context(|| format!("slot label {slot_label}"))?,
-            StorageMapKey::new(key),
-        )
-        .map_err(|e| anyhow::anyhow!("reading map slot {slot_label}: {e}"))
+        .get_map_item(slot_name, StorageMapKey::new(key))
+        .map_err(|e| anyhow::anyhow!("reading map slot {slot_name}: {e}"))
 }
 
 /// The recipient wallet's total balance of the faucet's fungible asset (vault iteration).
@@ -347,7 +344,7 @@ async fn production_mint_delivers_the_circle_amount_unrescaled() -> Result<()> {
     assert_eq!(
         read_map_word(
             &committed(&pf.mock_chain, pf.faucet_id)?,
-            USED_NONCES_SLOT_LABEL,
+            XReserveComponent::used_nonces_slot(),
             nonce_key_of_payload(&payload)
         )?,
         marker(),

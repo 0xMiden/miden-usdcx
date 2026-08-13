@@ -25,8 +25,9 @@ use miden_standards::account::policies::{
 };
 use support::*;
 use xusdc_encoding::account::xreserve::{
-    XReserveAdminAuthority, XReserveStablecoinBuilder, XReserveStablecoinBuilderError,
-    ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveAdminAuthority, XReserveComponent, XReserveStablecoinBuilder,
+    XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE,
+    DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::xreserve::encoding::{bytes32_to_packed_felts, EthBytes32};
 
@@ -44,37 +45,25 @@ const DUMMY_DOMAIN: u32 = 7;
 fn faucet_and_component(is_max_supply_mutable: bool) -> Result<(FungibleFaucet, AccountComponent)> {
     Ok((
         production_faucet(is_max_supply_mutable, 6, "USDCX")?,
-        xreserve_component_with_slots(&ALL_XRESERVE_SLOT_LABELS)?,
+        xreserve_component_with_slots(&XReserveComponent::required_slots())?,
     ))
 }
 
-/// The SIX required xreserve slot labels (the builder's slot-presence guard; the domain-config set
-/// + the two maps; `min_burn_size` is builder-seeded, not caller-declared).
-const ALL_XRESERVE_SLOT_LABELS: [&str; 6] = [
-    DOMAIN_CONFIG_SLOT_LABEL,
-    SOURCE_DOMAIN_CONFIG_SLOT_LABEL,
-    XRESERVE_CONTRACT_HI_SLOT_LABEL,
-    XRESERVE_CONTRACT_LO_SLOT_LABEL,
-    USED_NONCES_SLOT_LABEL,
-    XRESERVE_ATTESTERS_SLOT_LABEL,
-];
-
-/// Assembles the xreserve component carrying exactly `labels` (value slots get a dummy word for the
-/// domain and empty words for the other domain-config slots; the two well-known map labels get
-/// empty maps) — the omission fixture for the slot-presence guard tests.
-fn xreserve_component_with_slots(labels: &[&str]) -> Result<AccountComponent> {
+/// Assembles the xreserve component carrying exactly `names` (value slots get a dummy word for the
+/// domain and empty words for the other domain-config slots; the two map slots get empty maps) —
+/// the omission fixture for the slot-presence guard tests.
+fn xreserve_component_with_slots(names: &[&StorageSlotName]) -> Result<AccountComponent> {
     let library = assemble_xreserve_lib()?;
     let mut slots = Vec::new();
-    for label in labels {
-        let name = StorageSlotName::new(*label).with_context(|| format!("slot label {label}"))?;
-        let slot = match *label {
-            USED_NONCES_SLOT_LABEL | XRESERVE_ATTESTERS_SLOT_LABEL => {
-                StorageSlot::with_map(name, StorageMap::new())
-            }
-            l if l == DOMAIN_CONFIG_SLOT_LABEL => {
-                StorageSlot::with_value(name, Word::from([DUMMY_DOMAIN, 0, 0, 0]))
-            }
-            _ => StorageSlot::with_value(name, Word::from([0u32, 0, 0, 0])),
+    for name in names {
+        let slot = if *name == XReserveComponent::used_nonces_slot()
+            || *name == XReserveComponent::xreserve_attesters_slot()
+        {
+            StorageSlot::with_map((*name).clone(), StorageMap::new())
+        } else if *name == XReserveComponent::domain_config_slot() {
+            StorageSlot::with_value((*name).clone(), Word::from([DUMMY_DOMAIN, 0, 0, 0]))
+        } else {
+            StorageSlot::with_empty_value((*name).clone())
         };
         slots.push(slot);
     }
@@ -409,31 +398,28 @@ fn build_seeds_the_domain_config_slots() -> Result<()> {
         .build_components()
         .context("production build_components must compose")?;
 
-    let slot = |label: &str| -> Result<Word> {
-        find_value_slot(
-            &components,
-            &StorageSlotName::new(label).with_context(|| format!("slot label {label}"))?,
-        )
-        .with_context(|| format!("the composed set must carry the '{label}' slot"))
+    let slot = |name: &StorageSlotName| -> Result<Word> {
+        find_value_slot(&components, name)
+            .with_context(|| format!("the composed set must carry the '{name}' slot"))
     };
     assert_eq!(
-        slot(DOMAIN_CONFIG_SLOT_LABEL)?,
+        slot(XReserveComponent::domain_config_slot())?,
         Word::from([TEST_DOMAIN, 0, 0, 0]),
         "the domain slot must hold the build-seeded [domain, 0, 0, 0]"
     );
     assert_eq!(
-        slot(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)?,
+        slot(XReserveComponent::source_domain_config_slot())?,
         Word::from([TEST_SOURCE_DOMAIN, 0, 0, 0]),
         "the source_domain slot must hold the build-seeded [source_domain, 0, 0, 0]"
     );
     let xrc = bytes32_to_packed_felts(&test_xreserve_contract());
     assert_eq!(
-        slot(XRESERVE_CONTRACT_HI_SLOT_LABEL)?,
+        slot(XReserveComponent::xreserve_contract_hi_slot())?,
         Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]),
         "the xreserve_contract_hi slot must hold the packed wire bytes 0..16"
     );
     assert_eq!(
-        slot(XRESERVE_CONTRACT_LO_SLOT_LABEL)?,
+        slot(XReserveComponent::xreserve_contract_lo_slot())?,
         Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]),
         "the xreserve_contract_lo slot must hold the packed wire bytes 16..32"
     );
@@ -574,7 +560,7 @@ fn production_components_carry_mutability_config_slot() -> Result<()> {
 // The `MissingXReserveSlot` guard remains in `build_components` as defence against a future assembly
 // regression, but the former `build_rejects_missing_xreserve_slot` tripwire has no malformed
 // component to feed it. The six slots are still pinned by the Phase-0 baseline
-// (`REQUIRED_XRESERVE_SLOT_LABELS`) and asserted present by the composed-account surface tests.
+// (`XReserveComponent::required_slots`) and asserted present by the composed-account surface tests.
 
 // Token-config exactness (decimals == 6, symbol == USDCX) is now guaranteed BY CONSTRUCTION: the
 // builder builds the fixed-identity USDCx faucet itself via `build_usdcx_faucet`, so a

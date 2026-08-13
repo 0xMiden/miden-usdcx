@@ -33,8 +33,9 @@ use miden_protocol::asset::Asset;
 use miden_protocol::note::{Note, NoteTag};
 use miden_protocol::transaction::InputNote;
 use miden_protocol::Word;
+use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::note::P2idNote;
-use xusdc_encoding::account::xreserve::USED_NONCES_SLOT_LABEL;
+use xusdc_encoding::account::xreserve::XReserveComponent;
 use xusdc_encoding::note::xreserve_admin::{XReserveIdentifierInitNote, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
 
@@ -92,27 +93,25 @@ fn word4(w: Word) -> Word4 {
     ]
 }
 
-fn value_slot(account: &Account, label: &str) -> Result<Word> {
-    let name = StorageSlotName::new(label).with_context(|| format!("slot label '{label}'"))?;
+fn value_slot(account: &Account, name: &StorageSlotName) -> Result<Word> {
     account
         .storage()
-        .get_item(&name)
-        .with_context(|| format!("reading value slot '{label}'"))
+        .get_item(name)
+        .with_context(|| format!("reading value slot '{name}'"))
 }
 
 fn token_supply(account: &Account) -> Result<u64> {
     // token_config = [token_supply, max_supply, decimals, symbol].
-    Ok(
-        value_slot(account, "miden::standards::faucets::fungible::token_config")?[0]
-            .as_canonical_u64(),
-    )
+    Ok(value_slot(account, FungibleFaucet::token_config_slot())?[0].as_canonical_u64())
 }
 
 fn used_nonce_marker(account: &Account, key: Word) -> Result<Word4> {
-    let name = StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?;
     account
         .storage()
-        .get_map_item(&name, StorageMapKey::new(key))
+        .get_map_item(
+            XReserveComponent::used_nonces_slot(),
+            StorageMapKey::new(key),
+        )
         .map(word4)
         .map_err(|e| anyhow::anyhow!("reading usedNonces[{key:?}]: {e}"))
 }
@@ -790,15 +789,13 @@ pub async fn run_rows_de_on(cfg: &RunConfig, client_label: &str) -> Result<RowsD
 
 /// Whether `commitment`'s `xReserveAttesters` marker is the enabled word [1,0,0,0].
 fn attester_enabled(account: &Account, commitment: Word) -> bool {
-    use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
-    StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
+    account
+        .storage()
+        .get_map_item(
+            XReserveComponent::xreserve_attesters_slot(),
+            StorageMapKey::new(commitment),
+        )
         .ok()
-        .and_then(|name| {
-            account
-                .storage()
-                .get_map_item(&name, StorageMapKey::new(commitment))
-                .ok()
-        })
         .map(|w| word4(w) == crate::observations_cf::MARKER_SET)
         .unwrap_or(false)
 }

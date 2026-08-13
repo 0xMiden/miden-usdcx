@@ -41,9 +41,7 @@
 //! [`Account`] is produced by [`XReserveStablecoinBuilder::build_account`] / the crate-root
 //! [`build_faucet_account`], so account construction is traceable from the library root.
 
-use miden_protocol::account::{
-    AccountComponent, AccountId, AccountProcedureRoot, StorageSlot, StorageSlotName,
-};
+use miden_protocol::account::{AccountComponent, AccountId, AccountProcedureRoot, StorageSlot};
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Pausable, PausableManager};
@@ -109,35 +107,6 @@ pub const USDCX_TOKEN_SYMBOL: &str = "USDCX";
 /// decimal places — the amount reducer scales to 6dp, so a mismatched faucet would silently
 /// mis-scale every minted amount).
 pub const USDCX_DECIMALS: u8 = 6;
-
-/// Canonical Rust labels of the six caller-declared `xreserve` storage slots: the four
-/// domain-config slots + the two registry maps. The four slots hold THREE build-seeded fields —
-/// `xreserve_contract` is one bytes32 spread across its `hi`/`lo` pair — and none of the three
-/// has a runtime writer.
-pub const DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::domain";
-pub const SOURCE_DOMAIN_CONFIG_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::source_domain";
-pub const XRESERVE_CONTRACT_HI_SLOT_LABEL: &str =
-    "xusdc::xreserve::domain_config::xreserve_contract_hi";
-pub const XRESERVE_CONTRACT_LO_SLOT_LABEL: &str =
-    "xusdc::xreserve::domain_config::xreserve_contract_lo";
-pub const USED_NONCES_SLOT_LABEL: &str = "xusdc::xreserve::nonce_registry::used_nonces";
-pub const XRESERVE_ATTESTERS_SLOT_LABEL: &str =
-    "xusdc::xreserve::attester_admin::xreserve_attesters";
-
-/// The SIX storage slots the supplied `xreserve` component must declare (the
-/// validate-what-you-ship check): a missing slot would ship a faucet whose reads/writes of it trap
-/// `ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME` at runtime;
-/// [`XReserveStablecoinBuilder::build_components`] rejects at build time instead. The stock
-/// [`MinBurnAmount`] floor slot is NOT in this set — it rides the policy companion component the
-/// manager emits, not the `xreserve` component.
-pub const REQUIRED_XRESERVE_SLOT_LABELS: [&str; 6] = [
-    DOMAIN_CONFIG_SLOT_LABEL,
-    SOURCE_DOMAIN_CONFIG_SLOT_LABEL,
-    XRESERVE_CONTRACT_HI_SLOT_LABEL,
-    XRESERVE_CONTRACT_LO_SLOT_LABEL,
-    USED_NONCES_SLOT_LABEL,
-    XRESERVE_ATTESTERS_SLOT_LABEL,
-];
 
 /// The three build-seeded domain-config fields (`domain`, `source_domain`, `xreserve_contract`).
 #[derive(Debug, Clone, Copy)]
@@ -368,16 +337,14 @@ impl XReserveStablecoinBuilder {
         // ERR_ACCOUNT_UNKNOWN_STORAGE_SLOT_NAME at runtime. Presence-only for the two maps (the
         // per-slice fixtures legitimately pre-seed values); the three build-seeded fields are
         // overwritten below.
-        for label in REQUIRED_XRESERVE_SLOT_LABELS {
-            let name = StorageSlotName::new(label)
-                .expect("the required xreserve slot labels are valid constants");
+        for name in XReserveComponent::required_slots() {
             if !self
                 .xreserve_component
                 .storage_slots()
                 .iter()
-                .any(|slot| slot.name() == &name)
+                .any(|slot| slot.name() == name)
             {
-                return Err(XReserveStablecoinBuilderError::MissingXReserveSlot(label));
+                return Err(XReserveStablecoinBuilderError::MissingXReserveSlot(name));
             }
         }
         // token-config exactness (decimals == 6, the amount reducer's scale; symbol == USDCX) is now
@@ -476,14 +443,10 @@ impl XReserveStablecoinBuilder {
     /// and the packed `xreserve_contract` hi/lo
     /// words). The two registry maps are carried through as declared.
     fn xreserve_component_with_domain_seed(&self, seed: DomainConfigSeed) -> AccountComponent {
-        let domain_name = StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL)
-            .expect("the domain slot label is a valid constant");
-        let source_name = StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
-            .expect("the source_domain slot label is a valid constant");
-        let hi_name = StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
-            .expect("the xreserve_contract_hi slot label is a valid constant");
-        let lo_name = StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
-            .expect("the xreserve_contract_lo slot label is a valid constant");
+        let domain_name = XReserveComponent::domain_config_slot();
+        let source_name = XReserveComponent::source_domain_config_slot();
+        let hi_name = XReserveComponent::xreserve_contract_hi_slot();
+        let lo_name = XReserveComponent::xreserve_contract_lo_slot();
         let scalar_word =
             |value: u32| Word::from([Felt::from(value), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
         let xrc = seed.xreserve_contract.to_packed_felts();
@@ -494,13 +457,13 @@ impl XReserveStablecoinBuilder {
             .storage_slots()
             .iter()
             .map(|slot| {
-                if slot.name() == &domain_name {
+                if slot.name() == domain_name {
                     StorageSlot::with_value(domain_name.clone(), scalar_word(seed.domain))
-                } else if slot.name() == &source_name {
+                } else if slot.name() == source_name {
                     StorageSlot::with_value(source_name.clone(), scalar_word(seed.source_domain))
-                } else if slot.name() == &hi_name {
+                } else if slot.name() == hi_name {
                     StorageSlot::with_value(hi_name.clone(), hi_word)
-                } else if slot.name() == &lo_name {
+                } else if slot.name() == lo_name {
                     StorageSlot::with_value(lo_name.clone(), lo_word)
                 } else {
                     slot.clone()

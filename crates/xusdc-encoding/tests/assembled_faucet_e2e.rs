@@ -52,7 +52,9 @@ use xusdc_encoding::account::xreserve::{XReserveComponent, DOM_MANAGER_ROLE, DOM
 use xusdc_encoding::note::xreserve_admin::{
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
-use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
+use xusdc_encoding::note::xreserve_burn::{
+    XReserveBurnNote, FIXED_XUSDC_BURN_TAG, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
+};
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
@@ -775,12 +777,17 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         holder_id,
         "S9: metadata.sender == depositor"
     );
+    // The withdrawal payload rides the scheme-6 attachment, zero-padded to the word boundary.
+    let mut payload_felts = burn_note
+        .attachments()
+        .iter()
+        .find(|a| a.attachment_scheme().as_u16() == XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME)
+        .expect("S9: burn note carries its withdrawal-payload attachment")
+        .content()
+        .to_elements();
+    payload_felts.truncate(XReserveBurnNote::NUM_PAYLOAD_ITEMS);
     assert_eq!(
-        XReserveBurnItems::decode(
-            &XReserveBurnNote::withdrawal_payload_felts(burn_note.attachments())
-                .expect("S9: burn note carries its withdrawal-payload attachment")
-        )
-        .expect("S9: DC-7 items decode"),
+        XReserveBurnItems::decode(&payload_felts).expect("S9: DC-7 items decode"),
         items,
         "S9: the withdrawal-payload attachment carries the exact DC-7 payload"
     );

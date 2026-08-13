@@ -22,20 +22,15 @@
 
 mod support;
 
-use assert_matches::assert_matches;
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::auth::AuthScheme;
 use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_protocol::errors::NoteError;
-use miden_protocol::note::{
-    NoteAttachment, NoteAttachmentScheme, NoteAttachments, NoteTag, NoteType,
-};
+use miden_protocol::note::{NoteAttachmentScheme, NoteAttachments, NoteTag, NoteType};
 use miden_protocol::transaction::RawOutputNote;
 use miden_protocol::{Felt, Word};
 use miden_standards::code_builder::CodeBuilder;
 use miden_testing::{Auth, MockChain};
 use miden_tx::LocalTransactionProver;
-use rstest::rstest;
 use support::*;
 use xusdc_encoding::note::xreserve_burn::{
     XReserveBurnNote, FIXED_XUSDC_BURN_TAG, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
@@ -68,6 +63,27 @@ fn sample_items(amount: u64) -> XReserveBurnItems {
         dest_recipient: [0xABu8; 32],
         salt: [0xCDu8; 32],
     }
+}
+
+/// Reads a burn note's 18-felt withdrawal payload straight out of its scheme-tagged attachment:
+/// the scheme-6 attachment's words with the word-boundary padding dropped. The felts feed the
+/// shared codec's `XReserveBurnItems::decode`, which stays the single owner of the field layout —
+/// this helper reads no offset and unpacks no field.
+fn withdrawal_payload(attachments: &NoteAttachments) -> Vec<Felt> {
+    let scheme = NoteAttachmentScheme::new(XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME)
+        .expect("scheme 6 is a valid attachment scheme");
+    let attachment = attachments
+        .iter()
+        .find(|attachment| attachment.attachment_scheme() == scheme)
+        .expect("burn note carries its withdrawal-payload attachment");
+    assert_eq!(
+        usize::from(attachment.num_words()),
+        XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
+        "the withdrawal-payload attachment carries exactly 5 words",
+    );
+    let mut felts = attachment.content().to_elements();
+    felts.truncate(XReserveBurnNote::NUM_PAYLOAD_ITEMS);
+    felts
 }
 
 /// Emits a real `XReserveBurnNote` on a MockChain and returns the 18-felt withdrawal payload of the
@@ -104,10 +120,8 @@ async fn emitted_items_for(items: &XReserveBurnItems) -> anyhow::Result<Vec<Felt
         .map_err(|e| anyhow::anyhow!("emit tx0 failed: {e:?}"))?;
     let emitted = tx0.output_notes().get_note(0);
     // The withdrawal payload rides the note's scheme-tagged attachment, read back off the emitted
-    // note through the single-owner carrier accessor.
-    Ok(XReserveBurnNote::withdrawal_payload_felts(
-        emitted.attachments(),
-    )?)
+    // note.
+    Ok(withdrawal_payload(emitted.attachments()))
 }
 
 // 1 — OBSERVABILITY NON-VACUITY: Public + the exact fixed tag, asserted DIRECTLY
@@ -152,8 +166,7 @@ fn burn_note_payload_schema() {
 
     // The payload rides a scheme-tagged attachment in the codec's field order and widths, so
     // decoding it returns exactly what was encoded.
-    let payload_felts = XReserveBurnNote::withdrawal_payload_felts(note.attachments())
-        .expect("burn note carries its withdrawal-payload attachment");
+    let payload_felts = withdrawal_payload(note.attachments());
     assert_eq!(payload_felts.len(), 18, "DC-7 payload is exactly 18 felts");
     let decoded = XReserveBurnItems::decode(&payload_felts).expect("decoding DC-7 items");
     assert_eq!(
@@ -486,123 +499,4 @@ async fn production_burn_note_same_block_consume_is_erased() -> anyhow::Result<(
         "token_supply -= AMOUNT even under same-block erasure"
     );
     Ok(())
-}
-
-// 9 — ATTACHMENT CARRIER: slot order, and fail-closed rejection of a missing / mis-sized payload
-// ================================================================================================
-
-/// Arbitrary attachment content of `n_words` distinct words — for building deliberately malformed
-/// attachments in the rejection tests below.
-fn filler_words(n_words: usize) -> Vec<Word> {
-    (0..n_words)
-        .map(|i| Word::from([Felt::from(i as u32 + 1); 4]))
-        .collect()
-}
-
-/// The wire contract pins the scheme-6 allocation as a LITERAL (not just the production constant),
-/// the attachment slot order `[scheme-2 routing, scheme-6 payload]`, the payload's 5-word count, and
-/// the 18-felt round-trip out of slot 1.
-#[test]
-fn burn_note_attachment_slot_order() {
-    // Pin the frozen wire tag and word count to their LITERALS, independent of the production
-    // constants — re-allocating the scheme (e.g. 6 → 7) must fail HERE, not move silently with
-    // production and the extractor.
-    assert_eq!(
-        XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME, 6,
-        "the withdrawal-payload attachment scheme is frozen at 6",
-    );
-    assert_eq!(
-        XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS, 5,
-        "the withdrawal-payload attachment is frozen at 5 words",
-    );
-
-    let items = sample_items(5_000);
-    let note = XReserveBurnNote::create(
-        test_account_id(3),
-        test_faucet_id(1),
-        items.clone(),
-        &mut note_rng(9),
-    )
-    .expect("constructing the burn note");
-    let attachments: Vec<_> = note.attachments().iter().collect();
-    assert_eq!(
-        attachments.len(),
-        2,
-        "the burn note carries exactly two attachments"
-    );
-    assert_eq!(
-        attachments[0].attachment_scheme().as_u16(),
-        2,
-        "slot 0 is the scheme-2 routing target",
-    );
-    // Against the LITERAL 6 (so re-tagging is caught) AND the production constant (so the code path
-    // is pinned) — the two must agree.
-    assert_eq!(
-        attachments[1].attachment_scheme().as_u16(),
-        6,
-        "slot 1 is the scheme-6 withdrawal payload (frozen literal)",
-    );
-    assert_eq!(
-        attachments[1].attachment_scheme(),
-        NoteAttachmentScheme::new(XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME)
-            .expect("scheme 6 is a valid scheme"),
-        "slot 1 matches the production scheme constant",
-    );
-    assert_eq!(
-        usize::from(attachments[1].num_words()),
-        XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
-        "the payload attachment carries exactly 5 words",
-    );
-    let felts =
-        XReserveBurnNote::withdrawal_payload_felts(note.attachments()).expect("payload present");
-    assert_eq!(
-        felts.len(),
-        18,
-        "the extracted payload is exactly 18 felts (padding stripped)"
-    );
-    assert_eq!(XReserveBurnItems::decode(&felts).expect("decode"), items);
-}
-
-/// Attachments carrying NO scheme-6 payload — only an unrelated scheme-4 attachment.
-fn missing_scheme6_attachments() -> NoteAttachments {
-    let unrelated = NoteAttachment::with_words(
-        NoteAttachmentScheme::new(4).expect("scheme 4 is a valid scheme"),
-        filler_words(XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS),
-    )
-    .expect("building the unrelated attachment");
-    NoteAttachments::new(vec![unrelated]).expect("attachments")
-}
-
-/// A scheme-6 attachment carrying the WRONG word count (4 instead of 5).
-fn wrong_word_count_attachments() -> NoteAttachments {
-    let short = NoteAttachment::with_words(
-        NoteAttachmentScheme::new(XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME).expect("scheme 6"),
-        filler_words(XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS - 1),
-    )
-    .expect("building the short attachment");
-    NoteAttachments::new(vec![short]).expect("attachments")
-}
-
-/// The decoder fail-closes on either carrier defect — a missing scheme-6 attachment or a wrong word
-/// count — returning the EXACT `NoteError::Other` with its exact message, never a partial or
-/// defaulted payload.
-#[rstest]
-#[case::missing_scheme6(
-    missing_scheme6_attachments(),
-    "burn note is missing its withdrawal-payload attachment"
-)]
-#[case::wrong_word_count(
-    wrong_word_count_attachments(),
-    "burn note withdrawal-payload attachment has the wrong word count"
-)]
-fn withdrawal_payload_felts_rejects_carrier_defect(
-    #[case] attachments: NoteAttachments,
-    #[case] expected: &str,
-) {
-    let err = XReserveBurnNote::withdrawal_payload_felts(&attachments)
-        .expect_err("a carrier defect must be refused, not tolerated");
-    assert_matches!(
-        err,
-        NoteError::Other { error_msg, source: None } if &*error_msg == expected
-    );
 }

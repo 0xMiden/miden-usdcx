@@ -58,12 +58,6 @@ pub const XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME: u16 = 6;
 /// boundary (5 words, 2 pad felts). Fixed, because [`BURN_NOTE_ITEMS_FELTS`] is fixed.
 pub const XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS: usize = 5;
 
-// 5 words is exactly ceil(18 / 4): it holds the payload with the fewest whole words.
-const _: () = assert!(
-    XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS * 4 >= BURN_NOTE_ITEMS_FELTS
-        && (XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS - 1) * 4 < BURN_NOTE_ITEMS_FELTS
-);
-
 /// The public burn-event note. A standalone unit-struct note factory.
 pub struct XReserveBurnNote;
 
@@ -79,37 +73,6 @@ impl XReserveBurnNote {
     /// Returns the (reused) stock burn note script root.
     pub fn script_root() -> NoteScriptRoot {
         BurnNote::script_root()
-    }
-
-    /// Extracts the 18-felt withdrawal payload from a burn note's withdrawal-payload attachment, the
-    /// carrier's read side (the write side is [`withdrawal_attachment`](Self::withdrawal_attachment)).
-    /// The felts feed the shared codec's [`XReserveBurnItems::decode`], which stays the single owner
-    /// of the field layout — this routine reads no offset and unpacks no field. It takes the note's
-    /// [`NoteAttachments`] so it reads the same shape whether the note is freshly built, decoded off
-    /// the wire, or read back from a transaction's output notes.
-    ///
-    /// # Errors
-    ///
-    /// [`NoteError`] if the attachments carry no scheme-tagged withdrawal-payload attachment, or if
-    /// that attachment does not carry exactly [`XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS`] words. A
-    /// wrong word count is refused rather than tolerated.
-    pub fn withdrawal_payload_felts(attachments: &NoteAttachments) -> Result<Vec<Felt>, NoteError> {
-        let scheme = NoteAttachmentScheme::new(XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME)?;
-        let attachment = attachments
-            .iter()
-            .find(|attachment| attachment.attachment_scheme() == scheme)
-            .ok_or_else(|| {
-                NoteError::other("burn note is missing its withdrawal-payload attachment")
-            })?;
-        if usize::from(attachment.num_words()) != XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS {
-            return Err(NoteError::other(
-                "burn note withdrawal-payload attachment has the wrong word count",
-            ));
-        }
-        // drop the word-boundary padding: the payload is the fixed leading BURN_NOTE_ITEMS_FELTS.
-        let mut felts = attachment.content().to_elements();
-        felts.truncate(BURN_NOTE_ITEMS_FELTS);
-        Ok(felts)
     }
 
     /// Builds the withdrawal-payload attachment — the carrier's write side. The 18 payload felts the

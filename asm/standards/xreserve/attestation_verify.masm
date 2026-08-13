@@ -84,8 +84,7 @@ pub proc verify_attestation
     exec.active_account::get_map_item
     # => [MARKER, PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 
-    # the stored value must be exactly the enabled marker -- a disabled row and an absent row both
-    # read as EMPTY_WORD, meaning the candidate pubkey's commitment is not allowlisted.
+    # the stored value must match the enabled marker to be considered allowlisted
     push.ATTESTER_ENABLED_MARKER exec.word::eq
     # => [is_allowed, PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 
@@ -98,7 +97,7 @@ end
 
 #! Computes the commitment of the provided public key.
 #!
-#! Computes the poseidon2 hash over the 16 u32-LE-packed affine-coordinate limbs, which is the
+#! Computes the Poseidon2 hash over the 16 u32-LE-packed affine-coordinate limbs, which is the
 #! attester-allowlist map key.
 #!
 #! Inputs:  [pubkey_ptr]

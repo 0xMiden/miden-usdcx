@@ -48,7 +48,7 @@ use miden_standards::note::{P2idNote, P2idNoteStorage, RbacConfig, RbacConfigNot
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use support::*;
-use xusdc_encoding::account::xreserve::{DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
+use xusdc_encoding::account::xreserve::{XReserveComponent, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
@@ -283,15 +283,11 @@ fn assert_supply(chain: &MockChain, faucet_id: AccountId, expected: u64, what: &
 }
 
 /// Reads a map-slot entry word from an account (the attester-allowlist / usedNonces read-backs).
-fn read_map_word(account: &Account, slot_label: &str, key: Word) -> Result<Word> {
+fn read_map_word(account: &Account, slot_name: &StorageSlotName, key: Word) -> Result<Word> {
     account
         .storage()
-        .get_map_item(
-            &StorageSlotName::new(slot_label)
-                .with_context(|| format!("slot label {slot_label}"))?,
-            StorageMapKey::new(key),
-        )
-        .map_err(|e| anyhow::anyhow!("reading map slot {slot_label}: {e}"))
+        .get_map_item(slot_name, StorageMapKey::new(key))
+        .map_err(|e| anyhow::anyhow!("reading map slot {slot_name}: {e}"))
 }
 
 /// A wallet's total balance of the faucet's fungible asset (vault iteration — the custody
@@ -495,7 +491,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet0,
-            XRESERVE_ATTESTERS_SLOT_LABEL,
+            XReserveComponent::xreserve_attesters_slot(),
             attester1.commitment
         )?,
         Word::from([0u32, 0, 0, 0]),
@@ -508,7 +504,11 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(0)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
     assert_eq!(
-        read_map_word(&faucet, XRESERVE_ATTESTERS_SLOT_LABEL, attester1.commitment)?,
+        read_map_word(
+            &faucet,
+            XReserveComponent::xreserve_attesters_slot(),
+            attester1.commitment
+        )?,
         Word::from([0u32, 0, 0, 0]),
         "S3a: the rejected set_attester left the allowlist unchanged"
     );
@@ -519,7 +519,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &committed(&pf.mock_chain, faucet_id)?,
-            XRESERVE_ATTESTERS_SLOT_LABEL,
+            XReserveComponent::xreserve_attesters_slot(),
             attester1.commitment
         )?,
         marker(),
@@ -629,7 +629,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &committed(&pf.mock_chain, faucet_id)?,
-            USED_NONCES_SLOT_LABEL,
+            XReserveComponent::used_nonces_slot(),
             nonce_key_of_payload(&payload1)
         )?,
         marker(),
@@ -834,7 +834,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            USED_NONCES_SLOT_LABEL,
+            XReserveComponent::used_nonces_slot(),
             nonce_key_of_payload(&payload2)
         )?,
         Word::from([0u32, 0, 0, 0]),
@@ -1006,7 +1006,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            USED_NONCES_SLOT_LABEL,
+            XReserveComponent::used_nonces_slot(),
             nonce_key_of_payload(&payload1)
         )?,
         marker(),
@@ -1015,14 +1015,18 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            USED_NONCES_SLOT_LABEL,
+            XReserveComponent::used_nonces_slot(),
             nonce_key_of_payload(&payload2)
         )?,
         marker(),
         "S13: nonce 2 still marked"
     );
     assert_eq!(
-        read_map_word(&faucet, XRESERVE_ATTESTERS_SLOT_LABEL, attester1.commitment)?,
+        read_map_word(
+            &faucet,
+            XReserveComponent::xreserve_attesters_slot(),
+            attester1.commitment
+        )?,
         marker(),
         "S13: the attester allowlist marker survives the whole arc"
     );

@@ -43,7 +43,7 @@ unreachable.
 | R-MINT-8 | Total preimage length equals `240 + hookDataLen` (header + hookData). | direct reject, unchanged (the exact transport word-count binding) |
 | R-MINT-9 | `amount` / `maxFee` are representable as an `AssetAmount`. | `maxFee`: off-chain typed reject at compress time, since it cannot be carried otherwise. `amount`: a direct on-chain reject against the protocol's `FUNGIBLE_ASSET_MAX_AMOUNT`, because it comes from the note rather than the payload |
 | R-MINT-10 | `amount ≥ maxFee`. | direct reject, unchanged (now a felt compare) |
-| R-MINT-11 | `feeAmount ≤ maxFee` (MVP: the fee must be zero). | inexpressible — `feeAmount` no longer travels on the wire at all |
+| R-MINT-11 | `feeAmount ≤ maxFee` (MVP: the fee must be zero). | not applicable — `feeAmount` is an argument of Circle's `mint` call, never a field of the message, and the MVP relayer charges nothing |
 | R-MINT-12 | The DepositIntent `nonce` has not been used before (replay guard). | direct reject, unchanged |
 | R-MINT-13 | The attester's pubkey commitment is enabled in the `xReserveAttesters` allowlist. | direct reject, unchanged |
 | R-MINT-14 | The ECDSA signature verifies over `keccak256(payload)` for that pubkey. | direct reject, unchanged |
@@ -166,7 +166,7 @@ Codec decisions owned by the `xusdc-encoding` crate (`xreserve::encoding`).
 | DC-8 | Burn-evidence package assembly (`burnTxId` + `note_id` + `nullifier` + `block_num` + proof-strength labels). Owned by the off-chain **listener**, not this crate. |
 | DC-9 / DC-10 / DC-11 / DC-12 | Circle JSON request/response schema types (off-chain Rust type definitions). Not on-chain. |
 | DC-13 | Optional decoders for Circle-returned binary blobs (`TransferSpec`/`BurnIntent`/`WithdrawHookData`); off-chain validation only, non-gating. |
-| DC-14 | The mint-note carried payload and the on-chain reconstruction of the DepositIntent preimage. The note carries only what the faucet cannot derive — `nonce`, `localToken`, `localDepositor`, `remoteRecipient`, `maxFee`, `hookDataLen` and `hookData`; the faucet writes `magic`, `version`, `amount` (from the note's asset value), `remoteDomain` (from its config slot), `remoteToken` (from its own id) and a zero `feeAmount` into the canonical `240 + hookDataLen`-byte preimage before hashing. Owned by the faucet (01); the felt offsets are 04's (`mint_intent.masm`). Requires `DEPOSIT_SCALE_EXP == 0` and a 20-byte right-aligned EVM address in `localToken` / `localDepositor` — see `DEV-5` and `Q-EVM-ADDR-1`, both **OPEN**. |
+| DC-14 | The mint-note carried payload and the on-chain reconstruction of the DepositIntent preimage. The note carries only what the faucet cannot derive — `nonce`, `localToken`, `localDepositor`, `remoteRecipient`, `maxFee`, `hookDataLen` and `hookData`; the faucet writes `magic`, `version`, `amount` (from the note's asset value), `remoteDomain` (from its config slot) and `remoteToken` (from its own id) into the canonical `240 + hookDataLen`-byte preimage before hashing. Owned by the faucet (01); the felt offsets are 04's (`mint_intent.masm`). Requires `DEPOSIT_SCALE_EXP == 0` and a 20-byte right-aligned EVM address in `localToken` / `localDepositor` — see `DEV-5` and `Q-EVM-ADDR-1`, both **OPEN**. |
 
 ## Naming decisions — `NS-<n>`
 
@@ -273,7 +273,7 @@ are open items with Circle). The ones referenced in this repo:
 | IMPL-DEV-12 | Cosmetic fix: an `AccountId`-out-of-range error message once said "15-byte region" while the shipped layout is 16-byte-padded; the message now describes the shipped right-aligned bytes32 layout. |
 | IMPL-DEV-16 | The identifier-init procedure and note are removed. The mint path decodes `remoteToken` and compares it directly with the faucet's native account id, so there is no identifier slot or initialization window. |
 | IMPL-DEV-20 | xUSDC ships as a policed fungible asset carrying the stock `BasicBlocklist` as the active send + receive policy, administered by `BLK_MANAGER`. |
-| IMPL-DEV-21 | Mint rejects any nonzero `feeAmount` with `ERR_XRESERVE_FEE_NONZERO`. The relayer-credit fee split is deferred behind the OPEN `Q-FEE-MVP` Circle confirmation. |
+| IMPL-DEV-21 | `feeAmount` is an argument of Circle's `mint` call rather than a DepositIntent field, and the MVP relayer charges nothing, so it is carried nowhere and the mint has no fee term at all. The earlier fail-loud zero-fee reject (`ERR_XRESERVE_FEE_NONZERO`) went with it. The relayer-credit fee split is deferred behind the OPEN `Q-FEE-MVP` Circle confirmation. |
 | IMPL-DEV-22 | Self-renounce is reachable through the stock `RbacConfigNote`. A sole `ADMIN` can renounce and leave administrator-gated procedures unrecoverable except by redeploy; `Q-ADMIN-RENOUNCE` stays OPEN. |
 | IMPL-DEV-23 | Admin roles use Miden RBAC (`grant_role`/`revoke_role`) rather than Circle's single address slots. There is no ownership component; seeded `ADMIN` membership is the faucet's administrative authority, and rotation is grant-successor before revoke-predecessor. `Q-ADMIN-RBAC-EQUIV` stays OPEN. |
 | IMPL-DEV-24 | The stock `RbacConfigNote` is allowlisted as one script root carrying `GRANT_ROLE`/`REVOKE_ROLE`/`SET_ROLE_ADMIN`/`RENOUNCE_ROLE`; all four selectors are reachable. The allowlist is 8 roots and the composed account's callable surface is 61. |
@@ -288,7 +288,7 @@ name because the code or validation records anchor on them:
 | Id | Meaning |
 |---|---|
 | F1 | The stock `mint_and_send` path dispatching `mint_policy::check_policy` is the sole supply surface. |
-| F2 | Deposit-intent validation rejects nonzero `feeAmount`; the relayer-credit split remains deferred behind the OPEN `Q-FEE-MVP` Circle confirmation. |
+| F2 | Superseded by `IMPL-DEV-21`: there is no `feeAmount` on the wire to reject. The relayer-credit split remains deferred behind the OPEN `Q-FEE-MVP` Circle confirmation. |
 | F4 | xUSDC ships as a policed asset: the stock `BasicBlocklist` is the active send + receive transfer policy and the account id has `AssetCallbackFlag::Enabled`. |
 | F5 | The transaction-level auth boundary for the permissionless-mint model (a non-allowlisted note and tx-script must both be rejected). |
 | F6 | The administrator-gated setters are intentionally **not** pause-gated (matching Circle's `onlyOwner`). |

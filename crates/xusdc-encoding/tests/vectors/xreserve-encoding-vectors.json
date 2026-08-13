@@ -215,6 +215,28 @@
       },
       {
         "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
+        "derivation": "cap reject at the shipped scale-0 identity: x = y = 2^63 - 2^31 + 1 = MAX + 1 must reject (no saturation)",
+        "expected_variant": "AmountOverCap",
+        "id": "amt-rej-cap-scale0",
+        "kind": "reject",
+        "le_limbs": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4294967167,
+          16777344
+        ],
+        "scale_exp": 0,
+        "tv": [
+          "TV-AMT-3"
+        ],
+        "uint256_be": "0x0000000000000000000000000000000000000000000000007fffffff80000001"
+      },
+      {
+        "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
         "derivation": "x = 2^130: high-4 limbs nonzero must reject (limb-overflow edge)",
         "expected_variant": "AmountTooLarge",
         "id": "amt-rej-limb-overflow",

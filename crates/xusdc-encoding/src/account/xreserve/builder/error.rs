@@ -5,6 +5,7 @@
 
 use core::fmt;
 
+use miden_protocol::account::StorageSlotName;
 use miden_protocol::errors::AccountError;
 use miden_standards::account::auth::NetworkAccountNoteAllowlistError;
 use miden_standards::account::faucets::FungibleFaucetError;
@@ -54,9 +55,9 @@ pub enum XReserveStablecoinBuilderError {
     /// A build without them would ship a faucet whose domain compare reads an empty slot.
     MissingDomainConfig,
     /// The supplied `xreserve` component does not declare a required storage slot
-    /// ([`REQUIRED_XRESERVE_SLOT_LABELS`](super::REQUIRED_XRESERVE_SLOT_LABELS)); reads and writes
-    /// of a missing slot trap at runtime. Carries the missing slot's label.
-    MissingXReserveSlot(&'static str),
+    /// ([`XReserveComponent::required_slots`](super::XReserveComponent::required_slots)); reads and
+    /// writes of a missing slot trap at runtime. Carries the missing slot's name.
+    MissingXReserveSlot(&'static StorageSlotName),
     /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with a privileged
     /// identity — the administrator, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The
     /// transfer-blocklist administrator must be an external entity with no other faucet-admin
@@ -134,9 +135,9 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 "the build-seeded domain config (domain, source_domain, xreserve_contract) was \
                  not supplied; call with_domain_config before build_components (DEC-4)"
             ),
-            Self::MissingXReserveSlot(label) => write!(
+            Self::MissingXReserveSlot(name) => write!(
                 f,
-                "the xreserve component does not declare the required storage slot '{label}'"
+                "the xreserve component does not declare the required storage slot '{name}'"
             ),
             Self::BlocklistManagerNotIsolated { collides_with } => write!(
                 f,

@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 
 use miden_protocol::note::NoteAttachmentScheme;
 use miden_standards::note::NetworkAccountTarget;
+use xusdc_encoding::account::xreserve::XReserveComponent;
 use xusdc_encoding::note::xreserve_mint::{
     XUSDC_DEPOSIT_SCALE_EXP, XUSDC_MINT_ATTESTATION_NUM_WORDS,
     XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
@@ -94,29 +95,34 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     "ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC",
 ];
 
-/// Expected `word("…")` slot-name constants of the shell module (name → label), pinned
-/// against the test-side label consts.
-const EXPECTED_DEPOSIT_INTENT_WORD_CONSTS: &[(&str, &str)] =
-    &[("DOMAIN_CONFIG_SLOT", support::DOMAIN_CONFIG_SLOT_LABEL)];
+/// Expected `word("…")` slot-name constants of the shell module (MASM const name → label), pinned
+/// against the production slot names.
+fn expected_deposit_intent_word_consts() -> Vec<(&'static str, &'static str)> {
+    vec![(
+        "DOMAIN_CONFIG_SLOT",
+        XReserveComponent::domain_config_slot().as_str(),
+    )]
+}
 
 /// Expected `word("…")` slot-name constant of the mint-intent module: the nonce registry the
 /// replay guard reads, declared beside the nonce it keys on.
-const EXPECTED_MINT_INTENT_WORD_CONSTS: &[(&str, &str)] =
-    &[("USED_NONCES_SLOT", support::USED_NONCES_SLOT_LABEL)];
-
-/// Expected `word("…")` slot-name constants of the attestation verification attestation-verify shell module: NONE. It
-/// imports `XRESERVE_ATTESTERS_SLOT` (and the enabled marker) from the setter module rather than
-/// redeclaring them, so the two sides cannot drift by construction.
-const EXPECTED_ATTESTATION_WORD_CONSTS: &[(&str, &str)] = &[];
+fn expected_mint_intent_word_consts() -> Vec<(&'static str, &'static str)> {
+    vec![(
+        "USED_NONCES_SLOT",
+        XReserveComponent::used_nonces_slot().as_str(),
+    )]
+}
 
 /// Expected `word("…")` slot-name constant of the set_attester admin module — the single MASM-side
-/// declaration of the slot the attestation verification read path also keys; the shared label is the single Rust source.
+/// declaration of the slot the attestation verification read path also keys; the shared name is the single Rust source.
 /// (The `ATTESTER_ENABLED_MARKER` / `ATTESTER_DISABLED_MARKER` Word array literals are not
 /// parity-parsed, like `NONCE_USED_MARKER`.)
-const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] = &[(
-    "XRESERVE_ATTESTERS_SLOT",
-    support::XRESERVE_ATTESTERS_SLOT_LABEL,
-)];
+fn expected_attester_admin_word_consts() -> Vec<(&'static str, &'static str)> {
+    vec![(
+        "XRESERVE_ATTESTERS_SLOT",
+        XReserveComponent::xreserve_attesters_slot().as_str(),
+    )]
+}
 
 /// The attestation verification attestation-verify shell's numeric constants: `PUBKEY_FELTS`, which
 /// IS parity-asserted against the Rust codec in `masm_rust_constant_parity` below, plus the
@@ -585,24 +591,27 @@ fn masm_constants_bidirectional() {
     // every MASM-only string constant must be a known error (the encoding table or the faucet
     // shell table); a new one fails here until it gets a row
     let known_err = |name: &str| support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name);
-    let sources: [(&str, &str, &[&str], &[(&str, &str)]); 6] = [
+    let sources: [(&str, &str, &[&str], Vec<(&str, &str)>); 6] = [
         (
             "mint_intent.masm",
             MINT_INTENT_MASM,
             MINT_INTENT_COVERED_NUMS,
-            EXPECTED_MINT_INTENT_WORD_CONSTS,
+            expected_mint_intent_word_consts(),
         ),
         (
             "deposit_intent.masm",
             DEPOSIT_INTENT_MASM,
             DEPOSIT_INTENT_COVERED_NUMS,
-            EXPECTED_DEPOSIT_INTENT_WORD_CONSTS,
+            expected_deposit_intent_word_consts(),
         ),
+        // attestation_verify: NO slot consts of its own. It imports `XRESERVE_ATTESTERS_SLOT` (and
+        // the enabled marker) from the setter module rather than redeclaring them, so the two sides
+        // cannot drift by construction.
         (
             "attestation_verify.masm",
             ATTESTATION_VERIFY_MASM,
             ATTESTATION_COVERED_NUMS,
-            EXPECTED_ATTESTATION_WORD_CONSTS,
+            Vec::new(),
         ),
         // the attestation mint policy: declares the transport + binding errors (known
         // shell errors via SHELL_ERR_TABLE) and the covered/parity-asserted numeric consts; its
@@ -612,15 +621,15 @@ fn masm_constants_bidirectional() {
             "mint_policy.masm",
             MINT_POLICY_MASM,
             MINT_POLICY_COVERED_NUMS,
-            &[],
+            Vec::new(),
         ),
-        // set_attester: pins XRESERVE_ATTESTERS_SLOT to the shared label (no numeric consts;
+        // set_attester: pins XRESERVE_ATTESTERS_SLOT to the shared name (no numeric consts;
         // the authority-gate traps reuse the stock ADMIN-role and pause errors, not declared here).
         (
             "attester_admin.masm",
             ATTESTER_ADMIN_MASM,
             &[],
-            EXPECTED_ATTESTER_ADMIN_WORD_CONSTS,
+            expected_attester_admin_word_consts(),
         ),
         // packed_mem: the layout-agnostic copy/store primitives. It declares the limb guard's
         // error (a known shell error) and one width; no slot consts.
@@ -628,7 +637,7 @@ fn masm_constants_bidirectional() {
             "packed_mem.masm",
             PACKED_MEM_MASM,
             PACKED_MEM_COVERED_NUMS,
-            &[],
+            Vec::new(),
         ),
     ];
     for (file, src, covered_nums, expected_words) in sources {
@@ -654,7 +663,7 @@ fn masm_constants_bidirectional() {
                  parity row"
             );
         }
-        for (name, label) in expected_words {
+        for (name, label) in &expected_words {
             let masm_label = words
                 .get(*name)
                 .unwrap_or_else(|| panic!("{file} must define const {name} = word(\"…\")"));

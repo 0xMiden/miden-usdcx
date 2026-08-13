@@ -15,10 +15,11 @@
 
 mod support;
 
-use anyhow::{Context, Result};
-use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey, StorageSlotName};
+use anyhow::Result;
+use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey};
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
+use miden_standards::account::policies::BlocklistStorage;
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use rstest::rstest;
@@ -47,16 +48,9 @@ fn target() -> AccountId {
     test_account_id(50)
 }
 
-/// The stock `blocked_accounts` map slot (installed by the `BasicBlocklist` companion), the primitive's
-/// storage home (`transfer::blocklist::mod.masm`).
-const BLOCKED_ACCOUNTS_SLOT: &str =
-    "miden::standards::faucets::policies::transfer::blocklist::blocked_accounts";
-
 /// Reads the `blocked_accounts[account]` word from a committed/evolved faucet account.
 /// `[1,0,0,0]` = blocked, `[0,0,0,0]` = not blocked (the primitive's key is `[0, 0, suffix, prefix]`).
 fn read_blocked(faucet: &Account, account: AccountId) -> Result<Word> {
-    let slot =
-        StorageSlotName::new(BLOCKED_ACCOUNTS_SLOT).context("blocked_accounts slot label")?;
     let key = Word::from([
         Felt::ZERO,
         Felt::ZERO,
@@ -65,7 +59,10 @@ fn read_blocked(faucet: &Account, account: AccountId) -> Result<Word> {
     ]);
     faucet
         .storage()
-        .get_map_item(&slot, StorageMapKey::new(key))
+        .get_map_item(
+            BlocklistStorage::blocked_accounts_slot(),
+            StorageMapKey::new(key),
+        )
         .map_err(|e| anyhow::anyhow!("reading blocked_accounts[{account}]: {e}"))
 }
 

@@ -3,11 +3,6 @@
 # The faucet's only supply-increasing gate. `check_policy` is registered as the account's ACTIVE
 # mint policy, so the stock `mint_and_send` dispatches it on every mint; its contract is documented
 # on the proc itself.
-#
-# Two properties are worth stating here because neither is local to any one step. Fail-closed: any
-# trap aborts the whole transaction with NO writes, so a failed mint never burns its nonce. And
-# reaching this policy outside note processing — a tx-script `mint_and_send`, say — traps in the
-# kernel's active-note accessors, so there is no mint path that skips the attested transport.
 
 use miden::protocol::active_note
 use miden::protocol::native_account
@@ -32,13 +27,10 @@ use {
 # The mint-note transport attachment scheme (>= 4 — clear of the reserved "none"
 # value 1 and the standard values 2 `NetworkAccountTarget` / 3 `Pswap`). ONE attachment carries
 # the whole Circle-signed transport: the attestation, then the carried mint payload, then the
-# hookData tail. They always travelled together, so merging them saves a find and a hash-verify
-# and leaves a note attachment slot free.
+# hookData tail.
 const XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME = 4
 
-# The attestation section: [pubkey(16), signature(17), pad(3)]. The operator feeAmount is NOT
-# here — the faucet writes a zero fee into the preimage, so a non-zero one is inexpressible rather
-# than rejected.
+# The attestation section: [pubkey(16), signature(17), pad(3)].
 const XUSDC_MINT_ATTESTATION_NUM_FELTS = 36
 const XUSDC_MINT_ATTESTATION_NUM_WORDS = 9
 
@@ -46,11 +38,11 @@ const XUSDC_MINT_ATTESTATION_NUM_WORDS = 9
 # packed hookData, so this is both the shape floor and the base of the exact word-count binding.
 const XUSDC_MINT_TRANSPORT_FIXED_WORDS = XUSDC_MINT_ATTESTATION_NUM_WORDS + MINT_INTENT_WORDS
 
-# The non-empty Word written into usedNonces[KEY] (the replay guard asserts EMPTY_WORD, so any non-empty marker
-# flips it). Whether the marker should carry more than a plain flag is OPEN, pending Circle confirmation.
+# The non-empty Word written into usedNonces[KEY].
+# Whether the marker should carry more than a plain flag is OPEN, pending Circle confirmation.
 const NONCE_USED_MARKER = ONE_WORD
 
-# Where the rebuilt DepositIntent is written: GLOBAL memory, not this procedure's frame.
+# Where the rebuilt DepositIntent is written in global memory.
 #
 # `rebuild` sets only the fields the message actually carries and leaves every structural pad
 # alone, so the region has to read as zero before it runs — and Miden memory is zero-initialized,
@@ -65,17 +57,13 @@ const NONCE_USED_MARKER = ONE_WORD
 # cannot go invisible.
 const DEPOSIT_INTENT_PTR = 0x40000000
 
-# `check_policy` locals: the note-supplied interface values it stores for the compares and the
-# return, the values the pipeline carries between stages, the rebuilt preimage, and the staged
-# transport. Every sub-region that a word instruction touches is word-aligned.
+# `check_policy` memory locals.
 const ASSET_VALUE_LOC = 0
 const RECIPIENT_LOC = 4
 const TAG_LOC = 8
 const NOTE_TYPE_LOC = 9
 
-# The attachment commitments list. Sized to the protocol's FOUR-attachment ceiling rather than the
-# two this policy admits: the kernel writes one commitment per attachment the note actually
-# carries, and it does so BEFORE the count assert below can reject an over-long note.
+# The attachment commitments list. Sized to 16 elements, i.e. the protocol's FOUR-attachment ceiling.
 const ATTACHMENT_COMMITMENTS_LOC = 12
 
 const HASHED_NONCE_LOC = 28
@@ -99,71 +87,40 @@ const MINT_INTENT_RECIPIENT_SUFFIX_LOC = MINT_INTENT_LOC + MINT_INTENT_REMOTE_RE
 # ERRORS
 # =================================================================================================
 
-# The scheme-4 transport attachment must be present on the mint note.
 const ERR_XRESERVE_MINT_NOTE_TRANSPORT_MISSING = "mint note transport attachment is missing"
-
-# The scheme-2 NetworkAccountTarget routing attachment (routing-only — never read for effects)
-# must be present alongside the transport.
 const ERR_XRESERVE_MINT_NOTE_TARGET_MISSING = "mint note routing target attachment is missing"
-
-# Exactly TWO attachments: the scheme-4 transport + the scheme-2 routing target (with both schemes
-# found, count two means one of each).
 const ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT = "mint note must carry exactly two attachments"
 
-# The transport must cover at least the attestation and the carried payload. Checked before
-# anything reads the payload, because every read below is at an offset only a transport of at least
-# this size actually contains.
 const ERR_XRESERVE_MINT_NOTE_TRANSPORT_TOO_SHORT = "mint note transport attachment is shorter than the attestation and the deposit intent header"
 
-# The carried hookData length must be a valid u32 before the length derivation reads it.
 const ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB = "mint note deposit intent hook data length limb is not a valid u32"
-
-# The transport's hash-committed word count must equal the count the carried hookData length
-# implies — an EXACT equality, so trailing padding cannot hide data, a smuggled section cannot ride
-# along, and a length claim cannot reach past the committed bytes.
 const ERR_XRESERVE_MINT_NOTE_INTENT_WORDS = "mint note deposit intent attachment word count does not match the intent length"
 
-# The ASSERT-MATCH binding: the note-supplied output-note RECIPIENT must equal the P2ID recipe
-# derived from the attested intent (target = remoteRecipient, serial = the hashed nonce).
 const ERR_XRESERVE_MINT_RECIPIENT_MISMATCH = "mint note recipient does not match the attested deposit intent"
 
-# The note-supplied ASSET_VALUE must be a fungible asset value word [amount, 0, 0, 0].
 const ERR_XRESERVE_MINT_AMOUNT_MISMATCH = "mint note asset amount does not match the attested deposit intent"
 
-# The amount the faucet writes into the preimage must be a mintable one. A zero amount would build
-# a perfectly consistent message, so nothing downstream would refuse it — it would only burn a
-# nonce.
 const ERR_XRESERVE_MINT_ZERO_AMOUNT = "mint note asset amount must be non-zero"
 const ERR_XRESERVE_MINT_AMOUNT_OVER_MAX = "mint note asset amount exceeds the fungible maximum"
 
-# The ASSERT-MATCH binding: the note-supplied output-note tag must be the attested recipient's
-# account target.
 const ERR_XRESERVE_MINT_TAG_MISMATCH = "mint note tag does not match the attested recipient target"
-
-# The ASSERT-MATCH binding: the attested output note is always public.
 const ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC = "mint note output note type must be public"
 
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Gates every stock `mint_and_send` on the full attestation pipeline and the ASSERT-MATCH
+#! Gates every `mint_and_send` on the full attestation pipeline and the ASSERT-MATCH
 #! binding — the attestation mint policy predicate. Registered as the ACTIVE mint policy of the
 #! faucet's TokenPolicyManager and invoked by `policy_manager::execute_mint_policy` via `dyncall`
-#! on every MINT-note consumption (the dispatcher's pause gate runs BEFORE this policy, so a
-#! paused faucet never dispatches it).
+#! on every MINT-note consumption.
 #!
-#! It hash-verifies the note's transport attachment into ONE region, REBUILDS the DepositIntent the
-#! attestation signed, verifies the signature over what it built, then requires every value the
-#! note supplies to EQUAL the value derived from the attestation. On accept it marks the nonce used
-#! — its only state write — and returns its inputs unchanged.
+#! It hash-verifies the note's transport attachment into ONE region, REBUILDS the DepositIntent
+#! the attestation signed, and verifies the signature over what it built. On accept it marks the
+#! nonce used — its only state write — and returns its inputs unchanged.
 #!
-#! The note does not carry the intent. It carries the fields the faucet cannot derive, and the
-#! faucet supplies the rest: the scheme constants, the amount from the note's own asset value, the
-#! configured domain, its own id as the token identifier, and a zero fee. Those fields are
-#! therefore not checked here, because a divergent value cannot be expressed — it would change the
-#! digest and fail the signature. What that costs is diagnosability: several formerly distinct
-#! rejects now surface as one invalid-signature failure, and the relayer's off-chain mirror is what
-#! keeps them apart.
+#! The note does not carry the full deposit intent. It carries the fields the faucet cannot
+#! derive, and the faucet supplies the rest: the scheme constants, the amount from the note's own
+#! asset value, the configured domain, its own id as the token identifier, and a zero fee.
 #!
 #! Inputs:  [ASSET_VALUE, tag, note_type, RECIPIENT, pad(6)]
 #! Outputs: [ASSET_VALUE, tag, note_type, RECIPIENT, pad(6)]
@@ -236,8 +193,7 @@ pub proc check_policy
     drop
     # => [transport_idx, pad(16)]
 
-    # exactly two attachments total; with both schemes found this is one of each (a doubled scheme
-    # pushes the count to three), so no per-scheme count is needed
+    # with both schemes found, require exactly two attachments total.
     locaddr.ATTACHMENT_COMMITMENTS_LOC exec.active_note::write_attachment_commitments_to_memory
     # => [num_attachments, transport_idx, pad(16)]
 
@@ -246,8 +202,6 @@ pub proc check_policy
 
     # ---- the transport attachment: ONE hash-verify into the policy's own locals ----
 
-    # nothing is re-read from the advice provider afterwards, so what the note committed to is
-    # exactly what gets rebuilt and verified.
     locaddr.TRANSPORT_LOC exec.active_note::write_attachment_to_memory
     # => [transport_num_words, pad(16)]
 
@@ -284,11 +238,10 @@ pub proc check_policy
 
     # ---- Admit the carried intent, then rebuild the message Circle signed from it ----
 
-    # the two preconditions the attestation cannot express hold over the carried fields alone, so
-    # they run before any of those fields reaches a message
     dup locaddr.MINT_INTENT_LOC
     # => [mint_intent_ptr, amount, amount, mint_intent_num_words, pad(16)]
 
+    # validate the two preconditions the attestation cannot express over the carried fields alone.
     exec.mint_intent::validate
     # => [HASHED_NONCE, amount, mint_intent_num_words, pad(16)]
 

@@ -1,14 +1,12 @@
 # xreserve::attester_admin
 #
-# The authority-gated deposit-attester allowlist setter (set_attester): writes the
+# The authority-gated deposit-attester allowlist setter (`set_attester`): writes the
 # xReserveAttesters allowlist — the write side of the allowlist that attestation_verify.masm
-# reads at mint time. Reuses the standard access primitives:
-# authority::assert_authorized (the account-wide Authority gate) + native_account::set_map_item
-# (the write). Under the account's role-based authority this procedure carries no role assignment
-# of its own, so the gate resolves to the built-in ADMIN role, whose sole seeded member is the
-# bootstrap administrator's account — the same identity that held the capability under the
-# earlier owner-based authority. The setter is NOT pause-gated, matching Circle's onlyOwner model,
-# so the administrator can disable a compromised attester while the faucet is paused.
+# reads at mint time. Under the account's role-based authority this procedure carries no
+# role assignment of its own, so the gate resolves to the built-in ADMIN role, whose sole
+# seeded member is the bootstrap administrator's account. The setter is NOT pause-gated,
+# matching Circle's onlyOwner model, so the administrator can disable a compromised
+# attester while the faucet is paused.
 
 use miden::protocol::native_account
 use miden::standards::access::authority
@@ -20,8 +18,7 @@ use {ONE_WORD, ZERO_WORD} from miden::standards::utils
 # The xReserveAttesters allowlist StorageMap slot.
 pub const XRESERVE_ATTESTERS_SLOT = word("xusdc::xreserve::attester_admin::xreserve_attesters")
 
-# The marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1 — the mint-time read
-# path admits an attester only on an exact match against it.
+# The marker written into xReserveAttesters[PK_COMMITMENT] when enabled = 1.
 pub const ATTESTER_ENABLED_MARKER = ONE_WORD
 
 # The marker written when enabled = 0. Equal to EMPTY_WORD, so a disabled row is indistinguishable
@@ -32,15 +29,15 @@ const ATTESTER_DISABLED_MARKER = ZERO_WORD
 # =================================================================================================
 
 #! Enables (enabled = 1) or disables (enabled = 0) a deposit attester keyed by its pubkey
-#! commitment — the `ADMIN`-gated setter for the xReserveAttesters allowlist. It trusts the caller's
-#! commitment Word verbatim and does NOT recompute it from a raw pubkey.
+#! commitment — the `ADMIN`-gated setter for the xReserveAttesters allowlist. It trusts the
+#! caller's commitment Word verbatim and does NOT recompute it from a raw pubkey.
 #!
 #! Inputs:  [PK_COMMITMENT, enabled, pad(11)]
 #! Outputs: [pad(16)]
 #!
 #! Where:
 #! - PK_COMMITMENT is the Poseidon2 pubkey commitment (the xReserveAttesters map key).
-#! - enabled is 1 (allowlist: write the enabled marker) or 0 (remove: write EMPTY_WORD).
+#! - enabled is 1 to allowlist or 0 to remove.
 #!
 #! Panics if:
 #! - the note sender does not hold the role the account's authority requires for this procedure
@@ -50,8 +47,7 @@ const ATTESTER_DISABLED_MARKER = ZERO_WORD
 #! Invocation: call
 @account_procedure
 pub proc set_attester
-    # gate on the account-wide authority (sender-based) only. reads account storage and is
-    # operand-stack-neutral.
+    # gate on the account-wide authority (sender-based) only.
     exec.authority::assert_authorized
     # => [PK_COMMITMENT, enabled, pad(11)]
 

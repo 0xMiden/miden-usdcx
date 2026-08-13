@@ -96,7 +96,7 @@ pub const TEST_WRONG_DOMAIN: u32 = 8;
 pub const TEST_SOURCE_DOMAIN: u32 = 3;
 
 /// Test `xreserve_contract` bytes32 (sequential distinct bytes) — the third build-seeded
-/// domain-config field the production fixtures pass to `with_domain_config`.
+/// domain-config field the production fixtures pass to `XReserveStablecoinBuilder::new`.
 pub fn test_xreserve_contract() -> [u8; 32] {
     core::array::from_fn(|i| 0x10 + i as u8)
 }
@@ -453,13 +453,11 @@ pub fn production_builder_outcome(
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
-    )
-    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
-    .with_domain_config(
         TEST_DOMAIN,
         TEST_SOURCE_DOMAIN,
         EthBytes32::new(test_xreserve_contract()),
-    );
+    )
+    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?;
     if let Some(min_burn_size) = min_burn_size {
         builder = builder.min_burn_size(min_burn_size);
     }
@@ -1532,7 +1530,7 @@ pub struct GuardedMint {
 /// attestation policy rides the same `xreserve` library component (its
 /// `mint_policy::check_policy` proc). The production arm build-seeds the caller's `domain` word
 /// (element 0) plus the canonical test `source_domain`/`xreserve_contract` through
-/// `with_domain_config`.
+/// `XReserveStablecoinBuilder::new`.
 ///
 /// `is_max_supply_mutable` configures the built faucet's stock max-supply mutability flag (threaded
 /// into the `FungibleFaucet::builder()` chain). The production builder REJECTS an immutable
@@ -1639,13 +1637,11 @@ pub fn setup_guarded_mint_account(
                 test_account_id(2),
                 test_account_id(3),
                 test_account_id(4),
-            )
-            .map_err(|e| anyhow::anyhow!("building the production attestation faucet: {e}"))?
-            .with_domain_config(
                 domain_u32,
                 TEST_SOURCE_DOMAIN,
                 EthBytes32::new(test_xreserve_contract()),
             )
+            .map_err(|e| anyhow::anyhow!("building the production attestation faucet: {e}"))?
             .build_components()
             .map_err(|e| anyhow::anyhow!("composing the production attestation faucet: {e}"))?;
             (components, attestation_root)
@@ -2809,13 +2805,11 @@ pub fn setup_production_faucet(
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
-    )
-    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
-    .with_domain_config(
         TEST_DOMAIN,
         TEST_SOURCE_DOMAIN,
         EthBytes32::new(test_xreserve_contract()),
     )
+    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
     .build_components()
     .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
 

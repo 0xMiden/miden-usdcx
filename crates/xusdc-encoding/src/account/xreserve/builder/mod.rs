@@ -123,13 +123,10 @@ struct DomainConfigSeed {
 /// **role-gating admin foundation** (a seeded `RoleBasedAccessControl` +
 /// [`XReserveAdminAuthority`]'s `Authority::RbacControlled`).
 ///
-/// Construct with [`XReserveStablecoinBuilder::new`] (the faucet supply parameters plus the `owner`
-/// and role holders — the faucet and the `xreserve` component are built internally, not passed in),
-/// supply the three build-seeded domain-config fields via
-/// [`XReserveStablecoinBuilder::with_domain_config`] (required — a build without them is rejected),
-/// optionally override the min-burn floor, then call
-/// [`XReserveStablecoinBuilder::build_components`] (or the crate-root `build_faucet_account` /
-/// [`Self::build_account`] for the finished `Account`).
+/// Construct with [`XReserveStablecoinBuilder::new`] (the faucet supply parameters, the `owner` and
+/// role holders, and the three build-seeded domain-config fields), optionally override the min-burn
+/// floor, then call [`XReserveStablecoinBuilder::build_components`] (or the crate-root
+/// `build_faucet_account` / [`Self::build_account`] for the finished `Account`).
 pub struct XReserveStablecoinBuilder {
     faucet: FungibleFaucet,
     xreserve_component: AccountComponent,
@@ -152,12 +149,15 @@ pub struct XReserveStablecoinBuilder {
     /// The minimum burn size (the burn-floor threshold) seeded into the stock [`MinBurnAmount`]
     /// companion's floor slot. Default [`MIN_BURN_SIZE_FLOOR`] (= 1 — the zero floor: burns must
     /// move at least one unit, keeping zero-amount burns rejected); a value below the
-    /// floor is rejected at build. The reworked `set_min_burn_size` admin note (which asserts
-    /// the same floor) mutates the SAME slot at runtime.
+    /// floor is rejected at build.
     min_burn_size: u64,
-    /// The three build-seeded domain-config fields — REQUIRED before
-    /// [`Self::build_components`]; see [`Self::with_domain_config`].
-    domain_config: Option<DomainConfigSeed>,
+    /// The faucet's own Circle domain id.
+    domain: u32,
+    /// The Circle domain deposits are accepted from, written into the declared `source_domain` slot
+    /// at composition time as `[source_domain, 0, 0, 0]`.
+    source_domain: u32,
+    /// The xReserve contract's source-chain address.
+    xreserve_contract: EthBytes32,
 }
 
 impl XReserveStablecoinBuilder {
@@ -169,7 +169,11 @@ impl XReserveStablecoinBuilder {
     /// `pauser_holder` / `manager_holder`
     /// seeded as the sole members of `DOM_PAUSER` / `DOM_MANAGER`, and the
     /// `blocklist_manager_holder` seeded as the sole member of `BLK_MANAGER` (the external
-    /// transfer-blocklist administrator).
+    /// transfer-blocklist administrator), plus the three BUILD-SEEDED domain-config fields: the u32
+    /// `domain` and `source_domain` ids and the `xreserve_contract` remote address. The
+    /// domain-config fields are constructor parameters rather than optional modifiers because a
+    /// faucet without them would ship a domain compare that reads an empty slot — there is no way to
+    /// leave them out.
     ///
     /// The faucet is NOT a parameter: it has a fixed identity — name `USDCx`, symbol
     /// [`USDCX_TOKEN_SYMBOL`], [`USDCX_DECIMALS`] decimals, and `is_max_supply_mutable(true)` — so the
@@ -185,6 +189,7 @@ impl XReserveStablecoinBuilder {
     ///
     /// [`XReserveStablecoinBuilderError::FaucetComposition`] if the supply parameters do not form a
     /// valid `FungibleFaucet`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         max_supply: AssetAmount,
         token_supply: AssetAmount,
@@ -192,6 +197,9 @@ impl XReserveStablecoinBuilder {
         pauser_holder: AccountId,
         manager_holder: AccountId,
         blocklist_manager_holder: AccountId,
+        domain: u32,
+        source_domain: u32,
+        xreserve_contract: EthBytes32,
     ) -> Result<Self, XReserveStablecoinBuilderError> {
         Ok(Self {
             faucet: build_usdcx_faucet(max_supply, token_supply)?,
@@ -201,7 +209,9 @@ impl XReserveStablecoinBuilder {
             manager_holder,
             blocklist_manager_holder,
             min_burn_size: MIN_BURN_SIZE_FLOOR,
-            domain_config: None,
+            domain,
+            source_domain,
+            xreserve_contract,
         })
     }
 
@@ -216,27 +226,6 @@ impl XReserveStablecoinBuilder {
     /// [`XReserveStablecoinBuilderError::MinBurnSizeExceedsMax`].
     pub fn min_burn_size(mut self, min_burn_size: u64) -> Self {
         self.min_burn_size = min_burn_size;
-        self
-    }
-
-    /// Supplies the three BUILD-SEEDED domain-config fields: the u32 `domain` and
-    /// `source_domain` ids and the `xreserve_contract` remote address, typed as [`EthBytes32`] (the
-    /// 32-byte source-chain address newtype) rather than a raw `[u8; 32]`. REQUIRED — a build without
-    /// them is rejected with [`XReserveStablecoinBuilderError::MissingDomainConfig`]. The values are
-    /// written into the declared `domain` / `source_domain` / `xreserve_contract_{hi,lo}` slots
-    /// at composition time (`[domain, 0, 0, 0]` / `[source_domain, 0, 0, 0]` / the raw 8x
-    /// u32-LE packed felts, hi = wire bytes 0..16, lo = bytes 16..32).
-    pub fn with_domain_config(
-        mut self,
-        domain: u32,
-        source_domain: u32,
-        xreserve_contract: EthBytes32,
-    ) -> Self {
-        self.domain_config = Some(DomainConfigSeed {
-            domain,
-            source_domain,
-            xreserve_contract,
-        });
         self
     }
 
@@ -334,10 +323,11 @@ impl XReserveStablecoinBuilder {
         let active_burn = BurnPolicy::min_burn_amount(min_burn);
         // Domain-config build seeding: the three domain-config fields are REQUIRED builder inputs
         // written into the declared slots.
-        let domain_config = self
-            .domain_config
-            .ok_or(XReserveStablecoinBuilderError::MissingDomainConfig)?;
-        let xreserve_component = self.xreserve_component_with_domain_seed(domain_config);
+        let xreserve_component = self.xreserve_component_with_domain_seed(DomainConfigSeed {
+            domain: self.domain,
+            source_domain: self.source_domain,
+            xreserve_contract: self.xreserve_contract,
+        });
         // Transfer blocklist (a ratified decision — see the transfer-blocklist decision record
         // and the adversarially-audited integration research report under `docs/`). The stock
         // `BasicBlocklist` is wired as the ACTIVE policy for BOTH the send and receive kinds,

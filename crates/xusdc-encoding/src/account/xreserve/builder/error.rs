@@ -39,11 +39,6 @@ pub enum XReserveStablecoinBuilderError {
     /// (`2^63 - 2^31`), so it is not a valid burn amount and cannot be seeded into
     /// the stock `MinBurnAmount` floor slot. Carries the offending value.
     MinBurnSizeExceedsMax(u64),
-    /// The three build-seeded domain-config fields (`domain`, `source_domain`,
-    /// `xreserve_contract`) were not supplied — see
-    /// [`XReserveStablecoinBuilder::with_domain_config`](super::XReserveStablecoinBuilder::with_domain_config).
-    /// A build without them would ship a faucet whose domain compare reads an empty slot.
-    MissingDomainConfig,
     /// The supplied `xreserve` component does not declare a required storage slot
     /// ([`XReserveComponent::required_slots`](super::XReserveComponent::required_slots)); reads and
     /// writes of a missing slot trap at runtime. Carries the missing slot's name.
@@ -108,11 +103,6 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 f,
                 "min_burn_size {value} exceeds the maximum representable asset amount \
                  (AssetAmount::MAX = 2^63 - 2^31)"
-            ),
-            Self::MissingDomainConfig => write!(
-                f,
-                "the build-seeded domain config (domain, source_domain, xreserve_contract) was \
-                 not supplied; call with_domain_config before build_components (DEC-4)"
             ),
             Self::MissingXReserveSlot(name) => write!(
                 f,

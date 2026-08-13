@@ -3,8 +3,7 @@
 //! would weaken the mint/burn posture — a non-`Public` account type, an active mint policy that is
 //! not the attestation policy (the sole-supply-surface invariant restated: every supply increase
 //! passes
-//! `xreserve::mint_policy::check_policy`), a sub-floor `min_burn_size`, and a missing build-seeded
-//! domain config.
+//! `xreserve::mint_policy::check_policy`) and a sub-floor `min_burn_size`.
 //! The build-validation tests assert the exact rejection variants (pure builder logic); the
 //! composed-set tests pin the posture the builder ships (active-policy slot, component seam,
 //! domain-config seeding).
@@ -29,11 +28,7 @@ use xusdc_encoding::account::xreserve::{
 use xusdc_encoding::xreserve::encoding::{bytes32_to_packed_felts, EthBytes32};
 
 /// The standard production builder: the seeded principal ids (owner = id(1), DOM_PAUSER = id(2),
-/// DOM_MANAGER = id(3), BLK_MANAGER = id(4)) plus the REQUIRED build-seeded domain config — every
-/// construction in this suite goes through here unless the test's very point is omitting the domain
-/// config. Neither the faucet nor the `xreserve` component is a builder input any more — `new` builds
-/// the fixed-identity USDCx faucet (mutable max supply) and assembles the one valid component itself
-/// — so this fixture supplies only the fixed supply parameters.
+/// DOM_MANAGER = id(3), BLK_MANAGER = id(4)) plus the build-seeded domain config.
 fn production_builder() -> XReserveStablecoinBuilder {
     XReserveStablecoinBuilder::new(
         AssetAmount::new(1_000_000).expect("the fixed test max supply is valid"),
@@ -42,13 +37,11 @@ fn production_builder() -> XReserveStablecoinBuilder {
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
-    )
-    .expect("the fixed-identity USDCx faucet builds")
-    .with_domain_config(
         TEST_DOMAIN,
         TEST_SOURCE_DOMAIN,
         EthBytes32::new(test_xreserve_contract()),
     )
+    .expect("the fixed-identity USDCx faucet builds")
 }
 
 /// Looks up a procedure's root by its library path across every component in the composed set.
@@ -199,30 +192,6 @@ fn build_rejects_min_burn_size_exceeding_max() -> Result<()> {
 
 // DOMAIN-CONFIG SEEDING — required input + build-time slot writes
 // ================================================================================================
-
-/// Omitting `with_domain_config` is rejected with the EXACT `MissingDomainConfig`: the
-/// three domain-config fields are build-seeded, so a build without them would ship a
-/// faucet whose deposit-intent domain compare would read an empty slot. The builder is otherwise fully valid, so the
-/// missing domain config is the SOLE reason for rejection.
-#[test]
-fn build_rejects_missing_domain_config() -> Result<()> {
-    let err = XReserveStablecoinBuilder::new(
-        AssetAmount::new(1_000_000).expect("valid max supply"),
-        AssetAmount::new(0).expect("valid token supply"),
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-    )
-    .expect("the fixed-identity USDCx faucet builds")
-    .build_components()
-    .expect_err("a build without with_domain_config must be rejected (DEC-4)");
-    assert!(
-        matches!(err, XReserveStablecoinBuilderError::MissingDomainConfig),
-        "expected MissingDomainConfig, got {err:?}"
-    );
-    Ok(())
-}
 
 /// The build SEEDS the three build-time domain-config fields into the declared xreserve slots —
 /// `[domain, 0, 0, 0]`, `[source_domain, 0, 0, 0]`, and the packed `xreserve_contract` hi/lo words

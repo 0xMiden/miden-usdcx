@@ -5,32 +5,61 @@
 //! composing the components vs. turning them into the deployable `Account` — live apart and each file
 //! stays within the Rust file-size ceiling.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::account::{
-    Account, AccountComponent, AccountId, AccountType, AssetCallbackFlag, StorageMap, StorageSlot,
+    Account, AccountComponent, AccountId, AccountType, AssetCallbackFlag, StorageSlot,
     StorageSlotName,
 };
 use miden_protocol::assembly::{Linkage, Path as MasmPath};
 use miden_protocol::asset::{AssetAmount, AssetCallbacks, TokenSymbol};
 use miden_protocol::transaction::TransactionKernel;
-use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::StandardsLib;
 
 use super::{
-    XReserveStablecoinBuilder, XReserveStablecoinBuilderError, DOMAIN_CONFIG_SLOT_LABEL,
-    SOURCE_DOMAIN_CONFIG_SLOT_LABEL, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL, USED_NONCES_SLOT_LABEL,
-    XRESERVE_ATTESTERS_SLOT_LABEL, XRESERVE_CONTRACT_HI_SLOT_LABEL,
-    XRESERVE_CONTRACT_LO_SLOT_LABEL,
+    XReserveStablecoinBuilder, XReserveStablecoinBuilderError, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL,
 };
 use crate::xreserve::encoding::EthBytes32;
+
+// CONSTANTS
+// ================================================================================================
 
 /// The metadata label the assembled `xreserve` component carries. It is a build-time label only —
 /// the account's code commitment is over the procedure roots and its storage over the slot values,
 /// neither of which depends on this string (the byte-identity suite proves it).
 const XRESERVE_COMPONENT_LABEL: &str = "xusdc-xreserve";
+
+static DOMAIN_CONFIG_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
+    StorageSlotName::new("xusdc::xreserve::domain_config::domain")
+        .expect("storage slot name should be valid")
+});
+static SOURCE_DOMAIN_CONFIG_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
+    StorageSlotName::new("xusdc::xreserve::domain_config::source_domain")
+        .expect("storage slot name should be valid")
+});
+static XRESERVE_CONTRACT_HI_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
+    StorageSlotName::new("xusdc::xreserve::domain_config::xreserve_contract_hi")
+        .expect("storage slot name should be valid")
+});
+static XRESERVE_CONTRACT_LO_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
+    StorageSlotName::new("xusdc::xreserve::domain_config::xreserve_contract_lo")
+        .expect("storage slot name should be valid")
+});
+
+/// The nonce registry the replay guard reads and the mint path writes.
+static USED_NONCES_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
+    StorageSlotName::new("xusdc::xreserve::nonce_registry::used_nonces")
+        .expect("storage slot name should be valid")
+});
+
+/// The attester allowlist: the attestation check reads it and the `set_attester` admin path writes
+/// it, so the two co-own the same slot.
+static XRESERVE_ATTESTERS_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
+    StorageSlotName::new("xusdc::xreserve::attester_admin::xreserve_attesters")
+        .expect("storage slot name should be valid")
+});
 
 /// The shipped `xreserve` account component: the assembled MASM library bound to its six declared
 /// storage slots. There is exactly ONE valid value — the shipped MASM — so it is a component TYPE the
@@ -58,34 +87,66 @@ impl XReserveComponent {
                 Some(MasmPath::new("xreserve")),
             )
             .expect("the shipped xreserve component library assembles");
-        let empty = || Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-        let value_slot = |label: &str| {
-            StorageSlot::with_value(
-                StorageSlotName::new(label).expect("the xreserve slot labels are valid constants"),
-                empty(),
-            )
-        };
-        let map_slot = |label: &str| {
-            StorageSlot::with_map(
-                StorageSlotName::new(label).expect("the xreserve slot labels are valid constants"),
-                StorageMap::new(),
-            )
-        };
         Self(
             AccountComponent::new(
                 library,
                 vec![
-                    value_slot(DOMAIN_CONFIG_SLOT_LABEL),
-                    value_slot(SOURCE_DOMAIN_CONFIG_SLOT_LABEL),
-                    value_slot(XRESERVE_CONTRACT_HI_SLOT_LABEL),
-                    value_slot(XRESERVE_CONTRACT_LO_SLOT_LABEL),
-                    map_slot(USED_NONCES_SLOT_LABEL),
-                    map_slot(XRESERVE_ATTESTERS_SLOT_LABEL),
+                    StorageSlot::with_empty_value(Self::domain_config_slot().clone()),
+                    StorageSlot::with_empty_value(Self::source_domain_config_slot().clone()),
+                    StorageSlot::with_empty_value(Self::xreserve_contract_hi_slot().clone()),
+                    StorageSlot::with_empty_value(Self::xreserve_contract_lo_slot().clone()),
+                    StorageSlot::with_empty_map(Self::used_nonces_slot().clone()),
+                    StorageSlot::with_empty_map(Self::xreserve_attesters_slot().clone()),
                 ],
                 AccountComponentMetadata::new(XRESERVE_COMPONENT_LABEL),
             )
             .expect("the xreserve library binds with its six declared slots"),
         )
+    }
+
+    // PUBLIC ACCESSORS
+    // --------------------------------------------------------------------------------------------
+
+    /// Returns the [`StorageSlotName`] holding the faucet's own Circle domain id.
+    pub fn domain_config_slot() -> &'static StorageSlotName {
+        &DOMAIN_CONFIG_SLOT_NAME
+    }
+
+    /// Returns the [`StorageSlotName`] holding the source domain deposits are accepted from.
+    pub fn source_domain_config_slot() -> &'static StorageSlotName {
+        &SOURCE_DOMAIN_CONFIG_SLOT_NAME
+    }
+
+    /// Returns the [`StorageSlotName`] holding the high half of the xReserve contract address.
+    pub fn xreserve_contract_hi_slot() -> &'static StorageSlotName {
+        &XRESERVE_CONTRACT_HI_SLOT_NAME
+    }
+
+    /// Returns the [`StorageSlotName`] holding the low half of the xReserve contract address.
+    pub fn xreserve_contract_lo_slot() -> &'static StorageSlotName {
+        &XRESERVE_CONTRACT_LO_SLOT_NAME
+    }
+
+    /// Returns the [`StorageSlotName`] of the consumed-nonce registry map.
+    pub fn used_nonces_slot() -> &'static StorageSlotName {
+        &USED_NONCES_SLOT_NAME
+    }
+
+    /// Returns the [`StorageSlotName`] of the attester allowlist map.
+    pub fn xreserve_attesters_slot() -> &'static StorageSlotName {
+        &XRESERVE_ATTESTERS_SLOT_NAME
+    }
+
+    /// Returns the storage slots a supplied `xreserve` component must declare.
+    pub fn required_slots() -> [&'static StorageSlotName; 6] {
+        [
+            Self::domain_config_slot(),
+            Self::source_domain_config_slot(),
+            Self::xreserve_contract_hi_slot(),
+            Self::xreserve_contract_lo_slot(),
+            Self::used_nonces_slot(),
+            Self::xreserve_attesters_slot(),
+        ]
     }
 }
 

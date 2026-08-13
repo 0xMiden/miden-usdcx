@@ -49,7 +49,9 @@ use miden_protocol::note::{Note, NoteType};
 use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote, TransactionKernel};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
-use miden_standards::account::access::{Pausable, PausableManager, RoleBasedAccessControl};
+use miden_standards::account::access::{
+    Pausable, PausableManager, PausableStorage, RoleBasedAccessControl,
+};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::policies::{
     BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager,
@@ -62,8 +64,8 @@ use miden_standards::StandardsLib;
 use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
-    XReserveAdminAuthority, XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH,
-    BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveAdminAuthority, XReserveComponent, XReserveStablecoinBuilderError,
+    ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::xreserve::encoding::EthBytes32;
 
@@ -99,36 +101,10 @@ pub fn test_xreserve_contract() -> [u8; 32] {
     core::array::from_fn(|i| 0x10 + i as u8)
 }
 
-/// Slot labels (frozen `XReserveDomainConfig` field names under the product namespace), which the
-/// MASM modules must declare as byte-identical `word("…")` consts (parity-enforced).
-// RE-EXPORTED from the production crate (the MIN_BURN_SIZE_SLOT_LABEL precedent, single Rust
-// source: the builder's slot-presence guard and these test bindings can never drift). The two
-// `xreserve_contract` slots carry the raw 8×u32-LE realization (hi = packed felts[0..4]
-// / wire bytes 0..16, lo = felts[4..8]). `source_domain` and `xreserve_contract` are build-seeded
-// by the production builder and have no runtime writer.
-pub use xusdc_encoding::account::xreserve::{
-    DOMAIN_CONFIG_SLOT_LABEL, SOURCE_DOMAIN_CONFIG_SLOT_LABEL, XRESERVE_CONTRACT_HI_SLOT_LABEL,
-    XRESERVE_CONTRACT_LO_SLOT_LABEL,
-};
-
-/// Label of the `usedNonces` map slot — the registry the replay guard reads. The MASM declares a
-/// `word("…")` const with the byte-identical label (parity-enforced). Re-exported from the
-/// production crate (single Rust source with the builder's slot-presence guard).
-pub use xusdc_encoding::account::xreserve::USED_NONCES_SLOT_LABEL;
-
-/// Label of the faucet's `token_config` value slot — the slot the standard `FungibleFaucet` component
-/// installs (`[token_supply, max_supply, decimals, token_symbol]`), which the standard
-/// `mint_and_send` reads and writes. Bound here as the single Rust source for the constant-parity row.
-pub const TOKEN_CONFIG_SLOT_LABEL: &str = "miden::standards::faucets::fungible::token_config";
-
-/// Label of the `xReserveAttesters` map slot — the attester allowlist the attestation check reads.
-/// The MASM `attestation_verify.masm` declares a `word("…")` const with the byte-identical label
-/// (parity-enforced); the `set_attester` admin path co-owns the SAME slot. Re-exported
-/// from the production crate (single Rust source with the builder's slot-presence guard).
-pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
-
-// NOTE: there is no custom `min_burn_size` slot label — the minimum-burn floor lives in the
-// STOCK `MinBurnAmount::slot_name()` slot (read via [`read_min_burn_size`]).
+// NOTE: the tests do not bind slot names of their own. The six xreserve slots come from
+// `XReserveComponent::*_slot()` and the stock ones from their owning standards component
+// (`FungibleFaucet::token_config_slot()`, `MinBurnAmount::slot_name()` — the latter read via
+// [`read_min_burn_size`]), so a test and the shipped faucet can never key different slots.
 
 // FAUCET ERROR MIRRORS (frozen names)
 // ================================================================================================
@@ -547,14 +523,8 @@ fn setup_shell_account_with_lib(
     let xreserve_component = AccountComponent::new(
         library.clone(),
         vec![
-            StorageSlot::with_value(
-                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
-                domain,
-            ),
-            StorageSlot::with_map(
-                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
-                nonce_map,
-            ),
+            StorageSlot::with_value(XReserveComponent::domain_config_slot().clone(), domain),
+            StorageSlot::with_map(XReserveComponent::used_nonces_slot().clone(), nonce_map),
         ],
         AccountComponentMetadata::new("xusdc-mint-shell-harness"),
     )
@@ -824,8 +794,8 @@ pub fn own_token_advice(faucet_id: AccountId) -> Vec<Felt> {
 pub fn slot_probe_src(domain: Word) -> String {
     format!(
         "use miden::protocol::active_account\n\n\
-         # the slot id derives from the SAME label the Rust fixture binds (single source:\n\
-         # the tests/support label consts)\n\
+         # the slot id derives from the SAME name the Rust fixture binds (single source:\n\
+         # the XReserveComponent slot accessors)\n\
          const PROBE_DOMAIN_SLOT = word(\"{domain_label}\")\n\n\
          #! Probe: asserts the domain config slot holds the fixture word.\n\
          #!\n\
@@ -840,7 +810,7 @@ pub fn slot_probe_src(domain: Word) -> String {
              push.{domain}\n\
              assert_eqw.err=\"probe: domain slot mismatch\"\n\
          end\n",
-        domain_label = DOMAIN_CONFIG_SLOT_LABEL,
+        domain_label = XReserveComponent::domain_config_slot(),
     )
 }
 
@@ -992,8 +962,7 @@ pub fn setup_attestation_account(
     let xreserve_component = AccountComponent::new(
         library.clone(),
         vec![StorageSlot::with_map(
-            StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
-                .context("xReserveAttesters slot label")?,
+            XReserveComponent::xreserve_attesters_slot().clone(),
             attesters_map,
         )],
         AccountComponentMetadata::new("xusdc-attestation-harness"),
@@ -1146,7 +1115,7 @@ pub fn composition_supply_probe_src(expected_token_supply: u64) -> String {
          \x20\x20\x20\x20push.{expected} assert_eq.err=\"no-effect: token_supply changed\"\n\
          \x20\x20\x20\x20dropw\n\
          end\n",
-        cfg = TOKEN_CONFIG_SLOT_LABEL,
+        cfg = FungibleFaucet::token_config_slot(),
         expected = expected_token_supply,
     )
 }
@@ -1366,17 +1335,17 @@ pub fn err_sender_lacks_role() -> MasmError {
 /// committed/evolved account — the build-seeded read-back (+ the no-write assert of the guard
 /// tests). Missing-slot reads propagate as errors (the slots are always declared on the fixtures).
 pub fn read_domain_config_words(account: &Account) -> Result<[Word; 4]> {
-    let read = |label: &str| -> Result<Word> {
+    let read = |name: &StorageSlotName| -> Result<Word> {
         account
             .storage()
-            .get_item(&StorageSlotName::new(label).with_context(|| format!("slot label {label}"))?)
-            .map_err(|e| anyhow::anyhow!("reading domain-config slot {label}: {e}"))
+            .get_item(name)
+            .map_err(|e| anyhow::anyhow!("reading domain-config slot {name}: {e}"))
     };
     Ok([
-        read(DOMAIN_CONFIG_SLOT_LABEL)?,
-        read(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)?,
-        read(XRESERVE_CONTRACT_HI_SLOT_LABEL)?,
-        read(XRESERVE_CONTRACT_LO_SLOT_LABEL)?,
+        read(XReserveComponent::domain_config_slot())?,
+        read(XReserveComponent::source_domain_config_slot())?,
+        read(XReserveComponent::xreserve_contract_hi_slot())?,
+        read(XReserveComponent::xreserve_contract_lo_slot())?,
     ])
 }
 
@@ -1533,9 +1502,7 @@ pub async fn run_set_max_supply_tx(
 pub fn read_token_config(account: &Account) -> Result<Word> {
     account
         .storage()
-        .get_item(
-            &StorageSlotName::new(TOKEN_CONFIG_SLOT_LABEL).context("token_config slot label")?,
-        )
+        .get_item(FungibleFaucet::token_config_slot())
         .map_err(|e| anyhow::anyhow!("reading the token_config value slot: {e}"))
 }
 
@@ -1597,34 +1564,18 @@ pub fn setup_guarded_mint_account(
     let xreserve_component = AccountComponent::new(
         library.clone(),
         vec![
-            StorageSlot::with_value(
-                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
-                domain,
-            ),
+            StorageSlot::with_value(XReserveComponent::domain_config_slot().clone(), domain),
             // 4-field domain-config closure: the two new scalar/bytes32 config slots, EMPTY at assembly
             // (domain_init is the sole writer; the fixtures never read them).
-            StorageSlot::with_value(
-                StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
-                    .context("source_domain slot label")?,
-                Word::from([0u32, 0, 0, 0]),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
-                    .context("xreserve_contract_hi slot label")?,
-                Word::from([0u32, 0, 0, 0]),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
-                    .context("xreserve_contract_lo slot label")?,
-                Word::from([0u32, 0, 0, 0]),
-            ),
+            StorageSlot::with_empty_value(XReserveComponent::source_domain_config_slot().clone()),
+            StorageSlot::with_empty_value(XReserveComponent::xreserve_contract_hi_slot().clone()),
+            StorageSlot::with_empty_value(XReserveComponent::xreserve_contract_lo_slot().clone()),
             StorageSlot::with_map(
-                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
+                XReserveComponent::used_nonces_slot().clone(),
                 map_of(nonce_seed, "usedNonces")?,
             ),
             StorageSlot::with_map(
-                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
-                    .context("xReserveAttesters slot label")?,
+                XReserveComponent::xreserve_attesters_slot().clone(),
                 map_of(attesters_seed, "xReserveAttesters")?,
             ),
         ],
@@ -2026,35 +1977,16 @@ pub fn setup_burn_policy_account(
         library.clone(),
         vec![
             StorageSlot::with_value(
-                StorageSlotName::new(DOMAIN_CONFIG_SLOT_LABEL).context("domain slot label")?,
+                XReserveComponent::domain_config_slot().clone(),
                 Word::from([TEST_DOMAIN, 0, 0, 0]),
             ),
             // 4-field domain-config closure: the two new scalar/bytes32 config slots, EMPTY at assembly
             // (domain_init is the sole writer; the burn fixtures never read them).
-            StorageSlot::with_value(
-                StorageSlotName::new(SOURCE_DOMAIN_CONFIG_SLOT_LABEL)
-                    .context("source_domain slot label")?,
-                Word::from([0u32, 0, 0, 0]),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(XRESERVE_CONTRACT_HI_SLOT_LABEL)
-                    .context("xreserve_contract_hi slot label")?,
-                Word::from([0u32, 0, 0, 0]),
-            ),
-            StorageSlot::with_value(
-                StorageSlotName::new(XRESERVE_CONTRACT_LO_SLOT_LABEL)
-                    .context("xreserve_contract_lo slot label")?,
-                Word::from([0u32, 0, 0, 0]),
-            ),
-            StorageSlot::with_map(
-                StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?,
-                StorageMap::new(),
-            ),
-            StorageSlot::with_map(
-                StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
-                    .context("xReserveAttesters slot label")?,
-                StorageMap::new(),
-            ),
+            StorageSlot::with_empty_value(XReserveComponent::source_domain_config_slot().clone()),
+            StorageSlot::with_empty_value(XReserveComponent::xreserve_contract_hi_slot().clone()),
+            StorageSlot::with_empty_value(XReserveComponent::xreserve_contract_lo_slot().clone()),
+            StorageSlot::with_empty_map(XReserveComponent::used_nonces_slot().clone()),
+            StorageSlot::with_empty_map(XReserveComponent::xreserve_attesters_slot().clone()),
             // NOTE: the floor slot rides the STOCK MinBurnAmount policy companion
             // (seeded by `oracle_burn_components`), not the xreserve component.
         ],
@@ -2505,10 +2437,7 @@ pub async fn run_dom_pauser_unpause(
 pub fn read_is_paused(account: &Account) -> Result<Word> {
     account
         .storage()
-        .get_item(
-            &StorageSlotName::new("miden::standards::access::pausable::is_paused")
-                .context("is_paused slot label")?,
-        )
+        .get_item(PausableStorage::is_paused_slot())
         .map_err(|e| anyhow::anyhow!("reading the is_paused value slot: {e}"))
 }
 

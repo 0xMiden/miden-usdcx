@@ -28,7 +28,7 @@ use anyhow::Result;
 use miden_protocol::account::{Account, AccountId};
 use miden_protocol::errors::MasmError;
 use miden_protocol::{Felt, Word};
-use miden_standards::account::policies::MinBurnAmount;
+use miden_standards::account::policies::{BlocklistStorage, MinBurnAmount};
 use miden_testing::assert_transaction_executor_error;
 use support::mint_transport::*;
 use support::*;
@@ -57,15 +57,12 @@ fn err_min_burn_above_max() -> MasmError {
     MasmError::from_static_str("min burn size exceeds the maximum asset amount")
 }
 
-/// The stock `blocked_accounts` map slot (installed by the `BasicBlocklist` companion); key is
-/// `[0, 0, suffix, prefix]`, value `[1,0,0,0]` when blocked.
-const BLOCKED_ACCOUNTS_SLOT: &str =
-    "miden::standards::faucets::policies::transfer::blocklist::blocked_accounts";
-
 fn blocked_word() -> Word {
     Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO])
 }
 
+/// The stock `blocked_accounts` entry for `account` (installed by the `BasicBlocklist` companion);
+/// the key is `[0, 0, suffix, prefix]` and the value `[1,0,0,0]` when blocked.
 fn read_blocked(faucet: &Account, account: AccountId) -> Result<Word> {
     let key = Word::from([
         Felt::ZERO,
@@ -73,7 +70,7 @@ fn read_blocked(faucet: &Account, account: AccountId) -> Result<Word> {
         account.suffix(),
         account.prefix().as_felt(),
     ]);
-    read_map_word(faucet, BLOCKED_ACCOUNTS_SLOT, key)
+    read_map_word(faucet, BlocklistStorage::blocked_accounts_slot(), key)
 }
 
 /// The stock `MinBurnAmount` floor-slot word for a floor `v` (`[v,0,0,0]`), read-back oracle.

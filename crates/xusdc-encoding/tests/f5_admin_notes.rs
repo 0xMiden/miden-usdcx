@@ -31,10 +31,14 @@ use miden_protocol::errors::MasmError;
 use miden_protocol::note::Note;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
+use miden_standards::account::access::PausableStorage;
+use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::note::{RbacAction, RbacActionNote};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
-use xusdc_encoding::account::xreserve::{BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
+use xusdc_encoding::account::xreserve::{
+    XReserveComponent, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+};
 use xusdc_encoding::note::xreserve_admin::{
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
@@ -70,10 +74,6 @@ fn err_account_not_in_role() -> MasmError {
 fn member_marker() -> Word {
     Word::from([1u32, 0, 0, 0])
 }
-
-/// The standardized stock `is_paused` value slot label (installed by the base `Pausable`
-/// component at v0.16 — #2944 moved it out of `FungibleFaucet`).
-const IS_PAUSED_LABEL: &str = "miden::standards::access::pausable::is_paused";
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -172,12 +172,10 @@ async fn set_attester_admin_note_admin_writes_and_nonadmin_traps() -> Result<()>
 
     // Marshaling correct: the account delta writes the enabled marker [1,0,0,0] at the CREATOR-
     // committed commitment key (a scrambled marshaling would write a different key).
-    let attesters =
-        StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL).context("attesters slot")?;
     let StorageSlotPatch::Map(delta) = tx
         .account_patch()
         .storage()
-        .get(&attesters)
+        .get(XReserveComponent::xreserve_attesters_slot())
         .context("xReserveAttesters slot delta")?
     else {
         panic!("xReserveAttesters must be a Map slot delta");
@@ -220,11 +218,10 @@ async fn set_attester_admin_note_admin_writes_and_nonadmin_traps() -> Result<()>
 // ================================================================================================
 
 /// Reads a single value-slot's post-tx word from the account delta (the slot's new value).
-fn value_delta(tx: &ExecutedTransaction, label: &str) -> Word {
-    let slot = StorageSlotName::new(label).expect("valid slot label");
-    match tx.account_patch().storage().get(&slot) {
+fn value_delta(tx: &ExecutedTransaction, name: &StorageSlotName) -> Word {
+    match tx.account_patch().storage().get(name) {
         Some(StorageSlotPatch::Value(w)) => w.value().expect("value patch carries a value"),
-        other => panic!("value slot {label} expected a value delta, got {other:?}"),
+        other => panic!("value slot {name} expected a value delta, got {other:?}"),
     }
 }
 
@@ -409,7 +406,7 @@ async fn pause_dom_pauser_sets_is_paused() -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("DOM_PAUSER pause must succeed under network auth: {e}"))?;
     assert_eq!(
-        value_delta(&tx, IS_PAUSED_LABEL),
+        value_delta(&tx, PausableStorage::is_paused_slot()),
         scalar_word(Felt::from(1u32)),
         "DOM_PAUSER pause must set is_paused = 1",
     );
@@ -467,7 +464,7 @@ async fn pause_note_args_are_inert() -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("pause with bogus NOTE_ARGS must still succeed: {e}"))?;
     assert_eq!(
-        value_delta(&tx, IS_PAUSED_LABEL),
+        value_delta(&tx, PausableStorage::is_paused_slot()),
         scalar_word(Felt::from(1u32)),
         "pause must set is_paused=1 regardless of executor NOTE_ARGS",
     );
@@ -518,7 +515,7 @@ async fn unpause_dom_pauser_clears_is_paused() -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("DOM_PAUSER unpause must succeed under network auth: {e}"))?;
     assert_eq!(
-        value_delta(&tx, IS_PAUSED_LABEL),
+        value_delta(&tx, PausableStorage::is_paused_slot()),
         scalar_word(Felt::from(0u32)),
         "DOM_PAUSER unpause must clear is_paused to 0",
     );
@@ -571,7 +568,7 @@ async fn unpause_note_args_are_inert() -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("unpause with bogus NOTE_ARGS must still succeed: {e}"))?;
     assert_eq!(
-        value_delta(&tx, IS_PAUSED_LABEL),
+        value_delta(&tx, PausableStorage::is_paused_slot()),
         scalar_word(Felt::from(0u32)),
         "unpause must clear is_paused=0 regardless of executor NOTE_ARGS",
     );
@@ -762,7 +759,7 @@ async fn set_max_supply_administrator_writes_cap() -> Result<()> {
             anyhow::anyhow!("owner-sent set_max_supply must succeed under network auth: {e}")
         })?;
     assert_eq!(
-        value_delta(&tx, TOKEN_CONFIG_SLOT_LABEL)[1],
+        value_delta(&tx, FungibleFaucet::token_config_slot())[1],
         Felt::try_from(NEW_MAX_SUPPLY).expect("cap within the field"),
         "owner set_max_supply must write word[1] = the new cap",
     );
@@ -831,7 +828,7 @@ async fn set_max_supply_note_args_are_inert() -> Result<()> {
             anyhow::anyhow!("set_max_supply with bogus NOTE_ARGS must still succeed: {e}")
         })?;
     assert_eq!(
-        value_delta(&tx, TOKEN_CONFIG_SLOT_LABEL)[1],
+        value_delta(&tx, FungibleFaucet::token_config_slot())[1],
         Felt::try_from(NEW_MAX_SUPPLY).expect("cap within the field"),
         "set_max_supply must write the storage-committed cap regardless of executor NOTE_ARGS",
     );

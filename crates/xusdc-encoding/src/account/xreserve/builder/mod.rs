@@ -41,7 +41,7 @@
 //! [`Account`] is produced by [`XReserveStablecoinBuilder::build_account`] / the crate-root
 //! [`build_faucet_account`], so account construction is traceable from the library root.
 
-use miden_protocol::account::{AccountComponent, AccountId, AccountProcedureRoot, StorageSlot};
+use miden_protocol::account::{AccountComponent, AccountId, StorageSlot};
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Pausable, PausableManager};
@@ -228,19 +228,6 @@ impl XReserveStablecoinBuilder {
         self
     }
 
-    // GETTERS
-    // --------------------------------------------------------------------------------------------
-
-    /// Resolves the attestation mint policy's procedure root from the installed `xreserve`
-    /// component. The same root is registered as the active mint policy, so the policy manager's
-    /// stored `dynexec` root equals the installed proc's MAST root.
-    pub fn attestation_mint_policy_root(&self) -> Result<Word, XReserveStablecoinBuilderError> {
-        self.xreserve_component
-            .get_procedure_root_by_path(ATTESTATION_MINT_POLICY_PROC_PATH)
-            .map(Word::from)
-            .ok_or(XReserveStablecoinBuilderError::AttestationPolicyProcNotFound)
-    }
-
     // BUILD / COMPOSE
     // --------------------------------------------------------------------------------------------
 
@@ -274,7 +261,6 @@ impl XReserveStablecoinBuilder {
                 },
             );
         }
-        let attestation_root = self.attestation_mint_policy_root()?;
         if self.min_burn_size < MIN_BURN_SIZE_FLOOR {
             return Err(XReserveStablecoinBuilderError::MinBurnSizeBelowFloor(
                 self.min_burn_size,
@@ -293,7 +279,9 @@ impl XReserveStablecoinBuilder {
         let manager = TokenPolicyManager::builder()
             .active_mint_policy(
                 MintPolicy::custom(
-                    AccountProcedureRoot::from_raw(attestation_root),
+                    xreserve_component
+                        .get_procedure_root_by_path(ATTESTATION_MINT_POLICY_PROC_PATH)
+                        .ok_or(XReserveStablecoinBuilderError::AttestationPolicyProcNotFound)?,
                     [xreserve_component],
                 )
                 .map_err(XReserveStablecoinBuilderError::MintPolicy)?,

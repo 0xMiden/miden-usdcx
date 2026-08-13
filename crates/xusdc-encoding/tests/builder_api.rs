@@ -3,8 +3,8 @@
 //! would weaken the mint/burn posture — a non-`Public` account type, an active mint policy that is
 //! not the attestation policy (the sole-supply-surface invariant restated: every supply increase
 //! passes
-//! `xreserve::mint_policy::check_policy`), an active burn policy that is not the stock
-//! `MinBurnAmount`, a sub-floor `min_burn_size`, and a missing build-seeded domain config.
+//! `xreserve::mint_policy::check_policy`), a sub-floor `min_burn_size`, and a missing build-seeded
+//! domain config.
 //! The build-validation tests assert the exact rejection variants (pure builder logic); the
 //! composed-set tests pin the posture the builder ships (active-policy slot, component seam,
 //! domain-config seeding).
@@ -21,7 +21,7 @@ use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{PausableManager, PausableStorage};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::policies::{
-    BasicBlocklist, BlocklistManager, BurnPolicy, MinBurnAmount, TokenPolicyManager,
+    BasicBlocklist, BlocklistManager, MinBurnAmount, TokenPolicyManager,
 };
 use support::*;
 use xusdc_encoding::account::xreserve::{
@@ -174,95 +174,6 @@ fn build_produces_attestation_gated_public_faucet() -> Result<()> {
 
 // BUILD VALIDATION REJECTS (GREEN)
 // ================================================================================================
-
-// The account type and the active mint policy are no longer builder inputs: the account is composed
-// against the supplied (Public) faucet, and the mint policy is hard-wired to the attestation policy
-// (there is exactly one mint policy). Neither a non-`Public` account type nor a non-attestation mint
-// policy can be expressed through the public builder, so the former `build_rejects_non_public_account_type`
-// and `build_rejects_missing_attestation_mint_policy` tripwires have no input to reject. The
-// posture is enforced by construction and asserted positively by
-// `production_composition_installs_one_xreserve_and_one_manager` and the frozen callable-surface pins.
-
-/// An active burn policy that is not the stock `MinBurnAmount` is rejected (the burn-slot twin of the
-/// hard-wired attestation mint gate): packaging cannot drop the minimum-burn floor
-/// predicate (the zero-burn and minimum-burn rejects preserved through the stock policy). The faucet is
-/// otherwise valid (Public + attestation mint active + mutable max_supply) so the burn policy is the
-/// SOLE reason for rejection — removing the guard makes this build succeed (removal-based
-/// non-vacuity).
-#[test]
-fn build_rejects_non_min_burn_amount_burn_policy() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let result = production_builder(faucet, xreserve_component)
-        .with_active_burn_policy(BurnPolicy::allow_all())
-        .build_components();
-    assert!(
-        matches!(
-            result,
-            Err(XReserveStablecoinBuilderError::MissingMinBurnAmountPolicy)
-        ),
-        "production build_components must reject an AllowAll active burn policy with \
-         MissingMinBurnAmountPolicy (the burn-slot twin of MissingAttestationMintPolicy); got \
-         Ok/other: {:?}",
-        result.as_ref().map(|c| c.len())
-    );
-    Ok(())
-}
-
-/// The same-root zero-floor bypass: an explicit `with_active_burn_policy` override that
-/// carries the STOCK `MinBurnAmount` root — so it slips past the root check — but a ZERO-valued
-/// companion must be rejected with the EXACT `BurnPolicyFloorMismatch`. Without this guard the
-/// override installs its own zero-floor `MinBurnAmount` companion, and the stock predicate is
-/// `min <= amount`, so it restores zero-amount burns despite the builder's `min_burn_size`
-/// validation. This is the adversarial companion the burn-side lacked (only AllowAll and
-/// `min_burn_size(0)` were covered).
-#[test]
-fn build_rejects_same_root_zero_seeded_min_burn_override() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
-    // a SAME-ROOT override (MinBurnAmount::root()) carrying a ZERO floor companion; the default
-    // validated min_burn_size is 1.
-    let zero_override = BurnPolicy::min_burn_amount(AssetAmount::new(0)?);
-    let err = production_builder(faucet, xreserve_component)
-        .with_active_burn_policy(zero_override)
-        .build_components()
-        .expect_err("a same-root zero-seeded MinBurnAmount override must be rejected");
-    assert!(
-        matches!(
-            err,
-            XReserveStablecoinBuilderError::BurnPolicyFloorMismatch {
-                requested: 0,
-                expected: 1
-            }
-        ),
-        "expected BurnPolicyFloorMismatch {{ requested: 0, expected: 1 }}, got {err:?}"
-    );
-    Ok(())
-}
-
-/// Positive control: a same-root override whose companion floor MATCHES the validated
-/// `min_burn_size` is accepted, and the shipped faucet's floor slot is exactly that value — the
-/// override cannot lower the floor, only restate it.
-#[test]
-fn build_accepts_matching_min_burn_override() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let matching = BurnPolicy::min_burn_amount(AssetAmount::new(7)?);
-    let components = production_builder(faucet, xreserve_component)
-        .min_burn_size(7)
-        .with_active_burn_policy(matching)
-        .build_components()
-        .context("a matching-floor override must be accepted")?;
-    let floor = components
-        .iter()
-        .flat_map(|c| c.storage_slots().iter())
-        .find(|s| s.name() == MinBurnAmount::slot_name())
-        .map(|s| s.value())
-        .context("the shipped set must carry the MinBurnAmount floor slot")?;
-    assert_eq!(
-        floor,
-        Word::from([7u32, 0, 0, 0]),
-        "the shipped floor must be the validated min_burn_size (7)"
-    );
-    Ok(())
-}
 
 // The max-supply mutability invariant is now enforced BY CONSTRUCTION: the crate-root
 // `build_faucet_account` builds the faucet `is_max_supply_mutable(true)`, so there is no

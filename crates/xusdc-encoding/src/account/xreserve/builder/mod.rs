@@ -116,24 +116,6 @@ struct DomainConfigSeed {
     xreserve_contract: EthBytes32,
 }
 
-/// Reads the burn floor (element 0 of the value word) from a `BurnPolicy`'s stock [`MinBurnAmount`]
-/// companion, or `None` if the descriptor carries no such companion. Used to reject a same-root
-/// burn-policy override whose seeded floor disagrees with the builder-validated `min_burn_size`
-/// (the same-root zero-floor bypass). Inspects a clone (the descriptor's components are private,
-/// exposed only by its consuming `IntoIterator`).
-fn min_burn_amount_floor_of(policy: &BurnPolicy) -> Option<u64> {
-    policy.clone().into_iter().find_map(|component| {
-        if component.component_code().as_package() != MinBurnAmount::code().as_package() {
-            return None;
-        }
-        component
-            .storage_slots()
-            .iter()
-            .find(|slot| slot.name() == MinBurnAmount::slot_name())
-            .map(|slot| slot.value()[0].as_canonical_u64())
-    })
-}
-
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library
 /// component (attestation mint policy, admin procs) + a `TokenPolicyManager`
 /// with the attestation policy active on the mint side and the stock [`MinBurnAmount`] active on
@@ -145,7 +127,7 @@ fn min_burn_amount_floor_of(policy: &BurnPolicy) -> Option<u64> {
 /// and role holders — the faucet and the `xreserve` component are built internally, not passed in),
 /// supply the three build-seeded domain-config fields via
 /// [`XReserveStablecoinBuilder::with_domain_config`] (required — a build without them is rejected),
-/// optionally override the active burn policy or the min-burn floor, then call
+/// optionally override the min-burn floor, then call
 /// [`XReserveStablecoinBuilder::build_components`] (or the crate-root `build_faucet_account` /
 /// [`Self::build_account`] for the finished `Account`).
 pub struct XReserveStablecoinBuilder {
@@ -167,9 +149,6 @@ pub struct XReserveStablecoinBuilder {
     /// account id is supplied at deploy time; the built-in `ADMIN` rotates/revokes it via
     /// the standard role-action note.
     blocklist_manager_holder: AccountId,
-    /// Overridden active burn policy (default: the stock [`MinBurnAmount`] descriptor). A
-    /// non-MinBurnAmount choice exercises the missing-burn-policy rejection.
-    requested_active_burn_policy: Option<BurnPolicy>,
     /// The minimum burn size (the burn-floor threshold) seeded into the stock [`MinBurnAmount`]
     /// companion's floor slot. Default [`MIN_BURN_SIZE_FLOOR`] (= 1 — the zero floor: burns must
     /// move at least one unit, keeping zero-amount burns rejected); a value below the
@@ -199,8 +178,8 @@ impl XReserveStablecoinBuilder {
     /// builder an immutable or mis-configured faucet. The `xreserve` component is likewise not a
     /// parameter — there is exactly one valid value (the shipped MASM), so the builder assembles it
     /// via [`XReserveComponent`]. The active mint policy is always the attestation policy, hard-wired
-    /// at composition. Defaults to the stock [`MinBurnAmount`] as the active burn policy and a
-    /// min-burn floor of [`MIN_BURN_SIZE_FLOOR`].
+    /// at composition, and so is the stock [`MinBurnAmount`] on the burn side; only its floor is a
+    /// builder input, defaulting to [`MIN_BURN_SIZE_FLOOR`].
     ///
     /// # Errors
     ///
@@ -221,7 +200,6 @@ impl XReserveStablecoinBuilder {
             pauser_holder,
             manager_holder,
             blocklist_manager_holder,
-            requested_active_burn_policy: None,
             min_burn_size: MIN_BURN_SIZE_FLOOR,
             domain_config: None,
         })
@@ -229,16 +207,6 @@ impl XReserveStablecoinBuilder {
 
     // MODIFIERS
     // --------------------------------------------------------------------------------------------
-
-    /// Overrides the requested active burn policy (default: the stock [`MinBurnAmount`]).
-    /// A non-MinBurnAmount choice (e.g. [`BurnPolicy::allow_all`]) is rejected by
-    /// [`Self::build_components`] with
-    /// [`XReserveStablecoinBuilderError::MissingMinBurnAmountPolicy`] — packaging cannot drop
-    /// the burn floor predicate.
-    pub fn with_active_burn_policy(mut self, policy: BurnPolicy) -> Self {
-        self.requested_active_burn_policy = Some(policy);
-        self
-    }
 
     /// Sets the minimum burn size seeded into the stock [`MinBurnAmount`] floor slot (default
     /// [`MIN_BURN_SIZE_FLOOR`] = 1). A value below the floor is rejected by
@@ -288,8 +256,8 @@ impl XReserveStablecoinBuilder {
     // BUILD / COMPOSE
     // --------------------------------------------------------------------------------------------
 
-    /// Production composition: validates that the active burn policy is the stock [`MinBurnAmount`],
-    /// seeds the three build-time domain-config fields, then composes the account components. The
+    /// Production composition: validates the seeded burn floor, seeds the three build-time
+    /// domain-config fields, then composes the account components. The
     /// faucet's `max_supply` mutability is guaranteed by construction (the crate-root
     /// [`Self::build_account`] path builds the faucet `is_max_supply_mutable(true)`), so there is no
     /// runtime mutability reject.
@@ -362,27 +330,7 @@ impl XReserveStablecoinBuilder {
             XReserveStablecoinBuilderError::MinBurnSizeExceedsMax(self.min_burn_size)
         })?;
         // Burn side: the ACTIVE burn policy the manager receives is ALWAYS the STOCK
-        // MinBurnAmount seeded with the VALIDATED floor (`min_burn`, already `>= 1`). An explicit
-        // override exists only to exercise the rejection paths and can NEVER lower the shipped
-        // floor: a wrong-root override is rejected (MissingMinBurnAmountPolicy), and a same-root
-        // override whose MinBurnAmount companion floor disagrees with the validated min_burn_size
-        // is rejected (BurnPolicyFloorMismatch). This closes the same-root zero-floor bypass —
-        // `with_active_burn_policy(BurnPolicy::min_burn_amount(0))` shares MinBurnAmount::root() and
-        // would otherwise smuggle a zero-valued companion that restores zero-amount burns (the
-        // stock predicate is `min <= amount`).
-        if let Some(policy) = &self.requested_active_burn_policy {
-            if policy.root() != MinBurnAmount::root() {
-                return Err(XReserveStablecoinBuilderError::MissingMinBurnAmountPolicy);
-            }
-            let requested = min_burn_amount_floor_of(policy)
-                .ok_or(XReserveStablecoinBuilderError::MissingMinBurnAmountPolicy)?;
-            if requested != self.min_burn_size {
-                return Err(XReserveStablecoinBuilderError::BurnPolicyFloorMismatch {
-                    requested,
-                    expected: self.min_burn_size,
-                });
-            }
-        }
+        // MinBurnAmount seeded with the VALIDATED floor (`min_burn`, already `>= 1`).
         let active_burn = BurnPolicy::min_burn_amount(min_burn);
         // Domain-config build seeding: the three domain-config fields are REQUIRED builder inputs
         // written into the declared slots.

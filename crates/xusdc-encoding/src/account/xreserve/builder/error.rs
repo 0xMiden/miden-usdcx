@@ -29,11 +29,6 @@ pub enum XReserveStablecoinBuilderError {
     /// The supplied `xreserve` component does not export the attestation mint policy procedure
     /// (assembly/path drift). Carries the expected path for diagnosis.
     AttestationPolicyProcNotFound,
-    /// The active burn policy does not resolve to the stock
-    /// `MinBurnAmount` — packaging cannot
-    /// ship a faucet whose burns bypass the floor predicate (the burn-side twin of the hard-wired
-    /// attestation mint gate).
-    MissingMinBurnAmountPolicy,
     /// The requested `min_burn_size` is below [`MIN_BURN_SIZE_FLOOR`]
     /// (= 1). The stock `MinBurnAmount` policy asserts only `min <= amount` and its stock setter
     /// accepts `0`, so a sub-floor seed would silently allow zero-amount burns;
@@ -44,11 +39,6 @@ pub enum XReserveStablecoinBuilderError {
     /// (`2^63 - 2^31`), so it is not a valid burn amount and cannot be seeded into
     /// the stock `MinBurnAmount` floor slot. Carries the offending value.
     MinBurnSizeExceedsMax(u64),
-    /// An explicit `with_active_burn_policy` override carries the stock `MinBurnAmount` root but a
-    /// companion floor that disagrees with the builder-validated `min_burn_size`, which would let a
-    /// same-root override smuggle a sub-floor value past that validation. `requested` is the
-    /// override's companion floor; `expected` the validated `min_burn_size`.
-    BurnPolicyFloorMismatch { requested: u64, expected: u64 },
     /// The three build-seeded domain-config fields (`domain`, `source_domain`,
     /// `xreserve_contract`) were not supplied — see
     /// [`XReserveStablecoinBuilder::with_domain_config`](super::XReserveStablecoinBuilder::with_domain_config).
@@ -108,11 +98,6 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 "the xreserve component does not export the attestation mint policy procedure \
                  '{ATTESTATION_MINT_POLICY_PROC_PATH}'"
             ),
-            Self::MissingMinBurnAmountPolicy => write!(
-                f,
-                "active burn policy is not the stock MinBurnAmount; packaging cannot bypass the \
-                 minimum-burn floor predicate"
-            ),
             Self::MinBurnSizeBelowFloor(value) => write!(
                 f,
                 "min_burn_size {value} is below the floor {MIN_BURN_SIZE_FLOOR}; the stock \
@@ -123,12 +108,6 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 f,
                 "min_burn_size {value} exceeds the maximum representable asset amount \
                  (AssetAmount::MAX = 2^63 - 2^31)"
-            ),
-            Self::BurnPolicyFloorMismatch { requested, expected } => write!(
-                f,
-                "the active burn policy override carries a MinBurnAmount floor of {requested}, but \
-                 the validated min_burn_size is {expected}; an override may not diverge (nor lower) \
-                 the shipped burn floor"
             ),
             Self::MissingDomainConfig => write!(
                 f,

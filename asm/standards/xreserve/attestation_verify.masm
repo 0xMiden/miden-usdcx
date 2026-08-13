@@ -133,13 +133,37 @@ end
 #!   refuses a key that is already present with different values. So a host that pre-seeded either
 #!   key either seeded the identical bytes, or the insert aborts the transaction. Substituting
 #!   values would take a Poseidon2 collision.
-#! - `adv.push_mapval` PREPENDS to the advice stack, and the verifier consumes exactly the 32
-#!   elements pushed here (16 key limbs, then 16 scalar limbs). Anything the host staged earlier
-#!   stays below them and is never read, so an advice stack seeded in advance cannot interleave.
+#! - `adv.push_mapval` PREPENDS to the advice stack, and the verifier consumes a NET 32 elements
+#!   from what is staged here (16 key limbs, then 16 scalar limbs). Anything the host staged
+#!   earlier stays below them and is never read, so an advice stack seeded in advance cannot
+#!   interleave.
+#!
+#! The net-32 figure is not the gross count, and the difference is load-bearing. The verifier reads
+#! advice THREE times, not two: 16 for the key, then 8 inside `keccak256::hash_bytes_mem`
+#! (`finish_hash_assert`), then 16 for the scalars. It nets to 32 only because
+#! `emit.KECCAK256_DIGEST_EVENT` makes the HOST prepend exactly 8 in between, a count the shipped
+#! core-library handler fixes and length-checks.
+#!
+#! So the key and the message are bound STRUCTURALLY — the key by the verifier's own `assert_eqw`
+#! against PK_COMM, the message by keccak over the caller's unchanged extent — but the SIGNATURE
+#! binding is CONTINGENT on that handler pushing exactly 8. The removed `verify_prehash` design
+#! read the scalars from memory pointers and was host-independent here. A prover running a
+#! non-standard handler shifts the alignment and degrades the guarantee to key-and-message binding
+#! alone. That is not a forgery: an accepted mint still requires a genuine allowlisted-attester
+#! signature over the exact rebuilt payload. What is lost is non-repudiation, i.e. the signature
+#! verified need no longer be the signature the note records.
 #!
 #! The message is not hashed here: the verifier keccaks the byte range it is handed, and it is
 #! handed the caller's payload pointer and length unchanged, so the bytes it hashes are the bytes
 #! the attestation covers.
+#!
+#! On low-s: the verifier accepts high-s deliberately and tells adopters that a canonical Ethereum
+#! signature should be bound AND low-s enforced. This procedure binds but does not enforce, and the
+#! binding alone does NOT close malleability — `(r, s)` and `(r, n-s)` are each acceptable inside
+#! their own otherwise-valid note. What actually prevents the second one minting is a guard in
+#! another module: `mint_intent::assert_nonce_unused`, which keys USED_NONCES on the intent's own
+#! hashed nonce and is independent of the signature bytes. A malleated twin therefore carries the
+#! same nonce and is rejected there, not here.
 #!
 #! Inputs:  [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 #! Outputs: []

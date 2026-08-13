@@ -58,9 +58,12 @@ wrong: a divergent value produces a different keccak digest, so the attestation 
 conditions above therefore stop being compares.
 
 The cost is that they stop being *distinguishable*. A wrong domain, a wrong target faucet, a
-mismatched amount and a misplaced field in the writer now all surface as the same
-`ERR_XRESERVE_SIG_INVALID`. Every "by construction" and "subsumed" row above is consequently held
-by a **pair** of tests, and neither half alone discharges it:
+mismatched amount and a misplaced field in the writer now all surface as the same signature-verify
+refusal, which since the v0.16 rebuild is the verifier's own identity
+(`"ECDSA verification failed: x(VERIFY_POINT) != SIG_R"`) rather than a faucet-owned error: the core
+library's `verify_bytes` traps internally, so no faucet assert runs on that path. Every "by
+construction" and "subsumed" row above is consequently held by a **pair** of tests, and neither half
+alone discharges it:
 
 | Half | What it proves | Where |
 |---|---|---|

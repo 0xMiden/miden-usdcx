@@ -95,7 +95,7 @@ rejects stop being separately diagnosable — is spelled out under `R-MINT-*` in
    handing back the hashed nonce the binding and the nonce write both need. Neither check needs the
    message, which is why both run before it exists: one relates the carried ceiling to the note's
    own asset, the other the carried nonce to this faucet's history. The operator `feeAmount` is not
-   part of the message and is carried nowhere, so there is no fee to check here (see fee handling
+   part of the message and is handled offchain, so there is no fee to check here (see fee handling
    below).
 4. **Preimage reconstruction** (`DC-14`, subsuming `R-MINT-1..2` and `R-MINT-6..7`):
    `deposit_intent::rebuild` validates the carried recipient's account-id structure before writing

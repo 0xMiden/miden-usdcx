@@ -20,8 +20,8 @@ use miden_protocol::{Felt, Word};
 
 use xreserve_deposit_relayer::circle::schema::{AttestationObject, ValidatedAttestation};
 use xreserve_deposit_relayer::miden::{build_mint_note, AttesterPubkey};
-use xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent;
 use xreserve_deposit_relayer::RelayerError;
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 use crate::fixtures::{canonical_payload, AttestationVector, PartnerAttester, TEST_REMOTE_DOMAIN};
 
@@ -145,7 +145,8 @@ pub fn build_note_at(
     attester: &AttesterPubkey,
     rng: &mut impl FeltRng,
 ) -> Result<Note, RelayerError> {
-    let intent = decode_and_validate_deposit_intent(attestation.payload())?;
+    let intent = DepositIntent::try_from(attestation.payload())
+        .map_err(RelayerError::from_deposit_intent)?;
     build_mint_note(
         relayer_sender_id(),
         faucet,

@@ -51,7 +51,8 @@ use crate::error::RelayerError;
 use crate::idempotency::{ClaimOutcome, IdempotencyStore};
 use crate::miden::{build_mint_note, AttesterPubkey};
 use crate::observability::{EventSink, RelayerEvent, RelayerMetrics};
-use crate::validate::{check_domain_token_against_info, decode_and_validate_deposit_intent};
+use crate::validate::check_domain_token_against_info;
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 pub use submit::{production_submit_port, MintSubmission, MintSubmit, MintSubmitted};
 
@@ -387,7 +388,9 @@ async fn classify_one<R: FeltRng>(
     // ---- step 4 — the DepositIntent, through the shared encoding crate's codec ------------------------------------
     // The envelope layer validated the BINDING, never the structure — Circle can and does sign a
     // payload this codec refuses — so this is where a non-DepositIntent stops.
-    let intent = match decode_and_validate_deposit_intent(attestation.payload()) {
+    let intent = match DepositIntent::try_from(attestation.payload())
+        .map_err(RelayerError::from_deposit_intent)
+    {
         Ok(intent) => intent,
         Err(error) => return entry(Disposition::Rejected(error)),
     };

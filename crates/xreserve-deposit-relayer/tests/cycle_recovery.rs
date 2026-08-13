@@ -43,6 +43,7 @@ use mock_circle::{
     attestation_page, batch_href, by_hash_wrapper, link_header, Endpoint, MockCircle,
     RecordingSink, Reply, Script,
 };
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 // THE TRANSIENT STRAND — a page-1 transient failure is retried across the cursor advance
 // ================================================================================================
@@ -379,7 +380,7 @@ fn with_distinct_nonce(tweak: u8) -> Vec<u8> {
 
 /// The `DepositIntent.nonce` a vector's payload carries — read through the relayer's own decoder.
 fn nonce_of(vector: &AttestationVector) -> [u8; 32] {
-    *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(vector.payload())
+    *DepositIntent::try_from(vector.payload())
         .expect("the fixture payload is a valid DepositIntent")
         .header()
         .nonce()

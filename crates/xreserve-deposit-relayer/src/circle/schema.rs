@@ -27,7 +27,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::RelayerError;
-use crate::validate::envelope::{validate_attestation_envelope, verify_message_hash_bytes};
+use crate::validate::envelope::{validate_attestation_envelope, verify_message_hash};
 
 /// `remoteDomain` has `minimum: 1` on the `?txHash=` response elements
 /// (`CIRCLE-API-SURFACE.md:51`).
@@ -141,8 +141,7 @@ impl ValidatedAttestation {
     /// * [`RelayerError::MessageHashMismatch`] — the hash does not bind the payload.
     /// * [`RelayerError::BadAttestationLength`] — the attestation is not 65 bytes.
     pub fn validate(object: AttestationObject) -> Result<Self, RelayerError> {
-        let (payload, message_hash) =
-            verify_message_hash_bytes(object.payload(), object.message_hash())?;
+        let (payload, message_hash) = verify_message_hash(object.payload(), object.message_hash())?;
         let attestation = validate_attestation_envelope(object.attestation())?;
 
         Ok(Self {

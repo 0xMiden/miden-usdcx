@@ -37,9 +37,7 @@ use support::mint_transport::*;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveComponent;
 use xusdc_encoding::note::xreserve_mint::DepositAttestation;
-use xusdc_encoding::xreserve::encoding::{
-    DepositIntent, MintIntent, Signature, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
-};
+use xusdc_encoding::xreserve::encoding::{DepositIntent, MintIntent, Signature};
 
 use miden_protocol::{Felt, Word};
 
@@ -190,7 +188,7 @@ async fn mint_rejects_a_structurally_invalid_carried_recipient() -> Result<()> {
         1,
         None,
         &AttachmentPlan {
-            payload_felt_tamper: Some((MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF, dirty_suffix)),
+            payload_felt_tamper: Some((MintIntent::REMOTE_RECIPIENT_SUFFIX_FELT_OFF, dirty_suffix)),
             ..AttachmentPlan::default()
         },
         107,

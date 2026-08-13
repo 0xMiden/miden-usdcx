@@ -24,6 +24,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use assert_matches::assert_matches;
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::account::{AccountComponent, AccountId};
 use miden_protocol::assembly::{Linkage, Package, Path as MasmPath};
@@ -34,7 +35,9 @@ use miden_standards::StandardsLib;
 use miden_testing::{Auth, MockChain};
 use miden_tx::TransactionExecutorError;
 use serde::Deserialize;
+use sha3::{Digest, Keccak256};
 use xusdc_encoding::vectors::{load, word_from_hex};
+use xusdc_encoding::xreserve::encoding::EncodingError;
 
 /// Memory base for the staged pubkey felts `pubkey_commitment` hashes in place (word-aligned,
 /// clear of `INTENT_PTR`).
@@ -326,9 +329,14 @@ fn probe_p4_packing_util() {
 //
 // What this establishes is that the shared parser's envelope — field offsets, field sizes,
 // endianness, the magic and version constants, and the total-length rule — matches Circle's
-// encoder. What it deliberately does not touch is the faucet's identifier compare: Circle treats
-// remoteToken and remoteRecipient as opaque bytes32 and has not fixed how a Miden account id is
-// carried in them, so there is no ground truth to test that against yet.
+// encoder.
+//
+// The fixture carries the identifier fields both ways, because Circle's encoding permits both and
+// this decoder must answer differently: two rows hold opaque bytes32 (what Circle's own sample
+// values look like) and two hold Miden account ids in the packaging this crate reads. The envelope
+// is identical across the pair, so the difference isolates exactly the Miden-side reading — the
+// account-id rows must decode, the opaque ones must be refused rather than misread. How an account
+// id is registered into those fields remains Circle's to settle (`DEV-10`).
 
 const CIRCLE_FIXTURE: &str = include_str!("vectors/circle-depositintent-groundtruth.json");
 
@@ -340,8 +348,10 @@ struct CircleFile {
 #[derive(Deserialize)]
 struct CircleVec {
     id: String,
+    identifier_shape: String,
     bytes_hex: String,
     length: u64,
+    message_hash_keccak256: String,
     fields: CircleFields,
 }
 
@@ -475,19 +485,41 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
         };
         assert_eq!(hd, f.hook_data, "{}: hookData @240", v.id);
 
-        // (2) The bytes are also what the Rust codec packs, which is the leg the relayer's
-        // pre-validate rides on. There is no on-chain parser to run them through any more — the
-        // faucet writes the message rather than reading it — so the differential stops here and
-        // the write side is covered by TV-DUAL-6.
-        let packed = xusdc_encoding::xreserve::encoding::DepositIntent::try_from(raw.as_slice())
-            .unwrap_or_else(|e| panic!("{}: Circle's own bytes must decode: {e}", v.id))
-            .to_preimage_felts();
+        // The fixture's own digest is pinned here rather than trusted: it is what the relayer's
+        // envelope binding is checked against, and a stale one would quietly stop testing anything.
         assert_eq!(
-            packed.len(),
-            raw.len().div_ceil(4),
-            "{}: the packed preimage is four wire bytes per felt",
+            circle_hex(&Keccak256::digest(&raw)),
+            v.message_hash_keccak256,
+            "{}: keccak256 of the encoded bytes",
             v.id
         );
+
+        // (2) The Miden-side reading of the same bytes. There is no on-chain parser to run them
+        // through any more — the faucet writes the message rather than reading it — so the
+        // differential stops at the Rust decode, and the write side is covered by TV-DUAL-6.
+        let decoded = xusdc_encoding::xreserve::encoding::DepositIntent::try_from(raw.as_slice());
+        match v.identifier_shape.as_str() {
+            "account_id" => {
+                let packed = decoded
+                    .unwrap_or_else(|e| panic!("{}: Circle's own bytes must decode: {e}", v.id))
+                    .to_preimage_felts();
+                assert_eq!(
+                    packed.len(),
+                    raw.len().div_ceil(4),
+                    "{}: the packed preimage is four wire bytes per felt",
+                    v.id
+                );
+            }
+            // an identifier this faucet could never mint to is refused with the reason, not
+            // truncated into some nearby account id
+            "opaque" => assert_matches!(
+                decoded,
+                Err(EncodingError::AccountIdOutOfRange),
+                "{}: an opaque bytes32 identifier is not mintable",
+                v.id
+            ),
+            other => panic!("{}: unknown identifier_shape {other:?}", v.id),
+        }
     }
 
     Ok(())

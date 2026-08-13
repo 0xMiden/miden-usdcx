@@ -29,13 +29,8 @@ use xusdc_encoding::note::xreserve_mint::{
     XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
-    deposit_intent_field_offset, DepositIntentField, ACCOUNT_ID_BYTES, ACCOUNT_ID_FELTS,
-    ASSET_AMOUNT_BYTES, BYTES32_LEN, DEPOSIT_INTENT_HEADER_FELTS, DEPOSIT_INTENT_HEADER_LEN,
-    DEPOSIT_INTENT_MAGIC, DEPOSIT_INTENT_VERSION, EVM_ADDRESS_BYTES, EVM_ADDRESS_PACKED_LIMBS,
-    MINT_INTENT_FELTS, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF, MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF,
-    MINT_INTENT_LOCAL_TOKEN_FELT_OFF, MINT_INTENT_MAX_FEE_FELT_OFF, MINT_INTENT_NONCE_FELT_OFF,
-    MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
-    PUBKEY_FELTS,
+    DepositIntent, DepositIntentField, MintIntent, ACCOUNT_ID_BYTES, ASSET_AMOUNT_BYTES,
+    BYTES32_LEN, EVM_ADDRESS_BYTES, EVM_ADDRESS_PACKED_LIMBS, PUBKEY_FELTS,
 };
 use xusdc_encoding::{DEPOSIT_INTENT_MASM, MINT_INTENT_MASM};
 
@@ -327,14 +322,14 @@ fn masm_rust_constant_parity() {
     for (masm_name, field) in offsets {
         assert_eq!(
             num(&nums, masm_name, "deposit_intent.masm") * 4,
-            deposit_intent_field_offset(field) as u64,
+            field.offset() as u64,
             "DC-1 offset relation for {masm_name} (MASM felt offset x 4 == Rust byte offset)"
         );
     }
 
     assert_eq!(
         num(&nums, "DEPOSIT_INTENT_MAGIC_PACKED", "deposit_intent.masm"),
-        u32::from_le_bytes(DEPOSIT_INTENT_MAGIC.to_be_bytes()) as u64,
+        u32::from_le_bytes(DepositIntent::MAGIC.to_be_bytes()) as u64,
         "packed magic must be the u32-LE reinterpretation of the BE wire magic"
     );
     assert_eq!(
@@ -343,24 +338,24 @@ fn masm_rust_constant_parity() {
             "DEPOSIT_INTENT_VERSION_PACKED",
             "deposit_intent.masm"
         ),
-        u32::from_le_bytes(DEPOSIT_INTENT_VERSION.to_be_bytes()) as u64,
+        u32::from_le_bytes(DepositIntent::VERSION.to_be_bytes()) as u64,
         "packed version must be the u32-LE reinterpretation of the BE wire version"
     );
     assert_eq!(
         num(&nums, "DEPOSIT_INTENT_HEADER_BYTES", "deposit_intent.masm"),
-        DEPOSIT_INTENT_HEADER_LEN as u64,
+        DepositIntent::HEADER_SIZE as u64,
         "header byte length must match across languages"
     );
     assert_eq!(
         num(&nums, "DEPOSIT_INTENT_HEADER_BYTES", "deposit_intent.masm"),
-        DEPOSIT_INTENT_HEADER_FELTS as u64 * 4,
+        DepositIntent::HEADER_NUM_FELTS as u64 * 4,
         "header byte length must be 4x the felt count (4 bytes per felt)"
     );
     // the header is a whole number of words, which is what lets the hookData tail start
     // word-aligned and lets the writer zero the header word by word
     assert_eq!(
         num(&nums, "DEPOSIT_INTENT_HEADER_WORDS", "deposit_intent.masm") * 4,
-        DEPOSIT_INTENT_HEADER_FELTS as u64,
+        DepositIntent::HEADER_NUM_FELTS as u64,
         "header word count must be the felt count / 4"
     );
 
@@ -397,7 +392,7 @@ fn masm_rust_constant_parity() {
     );
     assert_eq!(
         num(&mi_nums, "ACCOUNT_ID_FELTS", "mint_intent.masm"),
-        ACCOUNT_ID_FELTS as u64,
+        MintIntent::ACCOUNT_ID_FELTS as u64,
         "DC-14 account-id felt-pair width parity"
     );
 
@@ -413,29 +408,29 @@ fn masm_rust_constant_parity() {
     // DC-14 carried-payload offsets. Both sides derive these from the widths above, so a width
     // edit that lands on only one side moves the offsets apart and fails here.
     let payload_offsets: [(&str, usize); 8] = [
-        ("MINT_INTENT_NONCE_FELT_OFF", MINT_INTENT_NONCE_FELT_OFF),
+        ("MINT_INTENT_NONCE_FELT_OFF", MintIntent::NONCE_FELT_OFF),
         (
             "MINT_INTENT_LOCAL_TOKEN_FELT_OFF",
-            MINT_INTENT_LOCAL_TOKEN_FELT_OFF,
+            MintIntent::LOCAL_TOKEN_FELT_OFF,
         ),
         (
             "MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF",
-            MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF,
+            MintIntent::LOCAL_DEPOSITOR_FELT_OFF,
         ),
         (
             "MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF",
-            MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF,
+            MintIntent::REMOTE_RECIPIENT_FELT_OFF,
         ),
         (
             "MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF",
-            MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
+            MintIntent::REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
         ),
-        ("MINT_INTENT_MAX_FEE_FELT_OFF", MINT_INTENT_MAX_FEE_FELT_OFF),
+        ("MINT_INTENT_MAX_FEE_FELT_OFF", MintIntent::MAX_FEE_FELT_OFF),
         (
             "MINT_INTENT_HOOK_DATA_LEN_FELT_OFF",
-            MINT_INTENT_HOOK_DATA_LEN_FELT_OFF,
+            MintIntent::HOOK_DATA_LEN_FELT_OFF,
         ),
-        ("MINT_INTENT_FELTS", MINT_INTENT_FELTS),
+        ("MINT_INTENT_FELTS", MintIntent::NUM_FELTS),
     ];
     for (masm_name, rust_value) in payload_offsets {
         assert_eq!(

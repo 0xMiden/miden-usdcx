@@ -111,6 +111,9 @@ pub struct DiFields {
     pub version: u32,
     pub remote_domain: u32,
     pub hook_data_len: u32,
+    /// The two amount-shaped fields as the values they reduce to.
+    pub amount: u64,
+    pub max_fee: u64,
     pub amount_hex: String,
     pub remote_token_hex: String,
     pub remote_recipient_hex: String,

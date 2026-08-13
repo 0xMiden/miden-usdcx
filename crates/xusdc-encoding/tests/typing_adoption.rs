@@ -16,7 +16,7 @@ use miden_protocol::asset::AssetAmount;
 use miden_protocol::note::Note;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
-use miden_standards::interop::eth::{EthAddress, EthAmount, EthEmbeddedAccountId};
+use miden_standards::interop::eth::EthAddress;
 use support::*;
 use xusdc_encoding::account::xreserve::{XReserveComponent, ATTESTATION_MINT_POLICY_PROC_PATH};
 use xusdc_encoding::note::xreserve_admin::{
@@ -28,8 +28,8 @@ use xusdc_encoding::note::xreserve_mint::{
     DepositAttestation, XUsdcMintNote, XUsdcMintNoteStorage,
 };
 use xusdc_encoding::xreserve::encoding::{
-    DepositIntent, DepositIntentHeader, DepositNonce, EthAddressExt, HookData, MintIntent,
-    Signature, XReserveBurnItems,
+    DepositIntent, DepositIntentHeader, DepositNonce, HookData, MintIntent, Signature,
+    XReserveBurnItems,
 };
 
 fn note_rng(seed: u64) -> RandomCoin {
@@ -245,18 +245,19 @@ fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() -> Resul
     let faucet = test_faucet_id(6);
     let recipient = test_account_id(7);
 
-    // A DepositIntentHeader is built through its own builder, each field in the type Circle's wire
-    // gives it — no public raw field is left to set.
+    // A DepositIntentHeader is built through its own builder, each field in the domain type the
+    // deposit has to hold — no raw wire field is left to set.
     let local_token = EthAddress::new([2u8; 20]);
     let local_depositor = EthAddress::new([3u8; 20]);
+    let amount = AssetAmount::new(1_000)?;
     let header = DepositIntentHeader::builder()
-        .amount(EthAmount::new(uint256_be(1_000)))
+        .amount(amount)
         .remote_domain(1)
-        .remote_token(EthEmbeddedAccountId::from_account_id(faucet).to_bytes32())
-        .remote_recipient(EthEmbeddedAccountId::from_account_id(recipient).to_bytes32())
-        .local_token(local_token.to_bytes32())
-        .local_depositor(local_depositor.to_bytes32())
-        .max_fee(EthAmount::new([0u8; 32]))
+        .remote_token(faucet)
+        .remote_recipient(recipient)
+        .local_token(local_token)
+        .local_depositor(local_depositor)
+        .max_fee(AssetAmount::new(0)?)
         .nonce(DepositNonce::new([9u8; 32]))
         .build();
 
@@ -268,17 +269,17 @@ fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() -> Resul
         .local_token(local_token)
         .local_depositor(local_depositor)
         .remote_recipient(recipient)
-        .max_fee(header.reduced_max_fee()?)
+        .max_fee(header.max_fee())
         .hook_data(HookData::new(Vec::new())?)
         .build();
-    let storage = XUsdcMintNoteStorage::from_attested(&intent, header.reduced_amount()?, faucet)?;
+    let storage = XUsdcMintNoteStorage::from_attested(&intent, header.amount(), faucet)?;
     let _mint_storage = storage.as_mint_storage();
 
     // and the two types describe the same deposit: expanding the carried intent against the same
     // faucet state reproduces the header it came from.
     assert_eq!(
         intent
-            .to_deposit_intent(header.reduced_amount()?, header.remote_domain(), faucet)
+            .to_deposit_intent(header.amount(), header.remote_domain(), faucet)
             .header(),
         &header,
         "the carried intent expands back to the header it was compressed from"

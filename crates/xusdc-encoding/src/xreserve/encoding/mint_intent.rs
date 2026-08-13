@@ -17,47 +17,14 @@ use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::utils::packed_u32_elements_to_bytes;
 use miden_protocol::Felt;
-use miden_standards::interop::eth::{EthAddress, EthAmount, EthEmbeddedAccountId};
-use primitive_types::U256;
+use miden_standards::interop::eth::EthAddress;
 
-use super::account_id::{EthAddressExt, EthEmbeddedAccountIdExt};
 use super::bytes32::packed_felts_to_bytes32;
 use super::deposit_intent::{
-    DepositIntent, DepositIntentField, DepositIntentHeader, DepositNonce, HookData, BYTES32_LEN,
+    DepositIntent, DepositIntentField, DepositIntentHeader, DepositNonce, HookData,
     BYTES32_PACKED_LIMBS, BYTES_PER_PACKED_FELT, EVM_ADDRESS_PACKED_LIMBS,
 };
 use super::error::EncodingError;
-
-// CARRIED-PAYLOAD FELT OFFSETS
-// ================================================================================================
-
-/// An AccountId travels as the two felts the protocol's account-id procedures consume, not as
-/// its packed bytes32 form: the faucet has to validate its structure anyway, and two felts is
-/// less than the four limbs the packed form would cost.
-pub const ACCOUNT_ID_FELTS: usize = 2;
-
-/// Felt offsets within the carried payload. The nonce leads so the widest verbatim run starts
-/// word-aligned, and the two single-felt fields trail so every wider field stays contiguous. The
-/// MASM twins are in `asm/standards/xreserve/mint_intent.masm`.
-pub const MINT_INTENT_NONCE_FELT_OFF: usize = 0;
-pub const MINT_INTENT_LOCAL_TOKEN_FELT_OFF: usize =
-    MINT_INTENT_NONCE_FELT_OFF + BYTES32_PACKED_LIMBS;
-pub const MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF: usize =
-    MINT_INTENT_LOCAL_TOKEN_FELT_OFF + EVM_ADDRESS_PACKED_LIMBS;
-pub const MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF: usize =
-    MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF + EVM_ADDRESS_PACKED_LIMBS;
-/// The recipient travels as the two felts the protocol's account-id procedures consume, prefix
-/// first. The faucet reads the halves individually, so the suffix carries its own offset.
-pub const MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF: usize =
-    MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF + 1;
-pub const MINT_INTENT_MAX_FEE_FELT_OFF: usize =
-    MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF + ACCOUNT_ID_FELTS;
-/// maxFee is a single `AssetAmount` felt.
-pub const MINT_INTENT_HOOK_DATA_LEN_FELT_OFF: usize = MINT_INTENT_MAX_FEE_FELT_OFF + 1;
-
-/// The payload's 22 content felts padded to the word boundary. hookData follows immediately, so
-/// this is also the offset of the first packed hookData felt.
-pub const MINT_INTENT_FELTS: usize = 24;
 
 // MINT PAYLOAD
 // ================================================================================================
@@ -78,31 +45,46 @@ pub struct MintIntent {
 }
 
 impl MintIntent {
+    /// An AccountId travels as the two felts the protocol's account-id procedures consume, not as
+    /// its packed bytes32 form: the faucet has to validate its structure anyway, and two felts is
+    /// less than the four limbs the packed form would cost.
+    pub const ACCOUNT_ID_FELTS: usize = 2;
+
+    /// Felt offsets within the carried payload. The nonce leads so the widest verbatim run starts
+    /// word-aligned, and the two single-felt fields trail so every wider field stays contiguous.
+    /// The MASM twins are in `asm/standards/xreserve/mint_intent.masm`.
+    pub const NONCE_FELT_OFF: usize = 0;
+    pub const LOCAL_TOKEN_FELT_OFF: usize = Self::NONCE_FELT_OFF + BYTES32_PACKED_LIMBS;
+    pub const LOCAL_DEPOSITOR_FELT_OFF: usize =
+        Self::LOCAL_TOKEN_FELT_OFF + EVM_ADDRESS_PACKED_LIMBS;
+    pub const REMOTE_RECIPIENT_FELT_OFF: usize =
+        Self::LOCAL_DEPOSITOR_FELT_OFF + EVM_ADDRESS_PACKED_LIMBS;
+    /// The recipient travels as the two felts the protocol's account-id procedures consume, prefix
+    /// first. The faucet reads the halves individually, so the suffix carries its own offset.
+    pub const REMOTE_RECIPIENT_SUFFIX_FELT_OFF: usize = Self::REMOTE_RECIPIENT_FELT_OFF + 1;
+    pub const MAX_FEE_FELT_OFF: usize = Self::REMOTE_RECIPIENT_FELT_OFF + Self::ACCOUNT_ID_FELTS;
+    /// maxFee is a single `AssetAmount` felt.
+    pub const HOOK_DATA_LEN_FELT_OFF: usize = Self::MAX_FEE_FELT_OFF + 1;
+
+    /// The payload's 22 content felts padded to the word boundary. hookData follows immediately, so
+    /// this is also the offset of the first packed hookData felt.
+    pub const NUM_FELTS: usize = 24;
+
     // COMPRESS
     // --------------------------------------------------------------------------------------------
 
     /// Compresses a Circle DepositIntent into what the mint note carries.
     ///
-    /// This is where the message is first read AS a Miden mint, so it is where the fields Circle
-    /// leaves open are narrowed: the bytes32 identifiers as packaged account ids (`DEV-10`), the
-    /// source-chain fields as EVM addresses (`Q-EVM-ADDR-1`), and `maxFee` as the single
-    /// `AssetAmount` felt the note carries.
-    ///
     /// `faucet_id` is the faucet meant to consume the note and `remote_domain` the domain that
     /// faucet has configured. Both are values the faucet writes into the message it rebuilds from
     /// its own state, so an intent naming different ones rebuilds a different digest and dies
     /// on-chain as an invalid signature. Comparing them here gives that a name before the note is
-    /// ever submitted.
+    /// ever submitted. Every other field is carried across as it was decoded.
     ///
     /// # Errors
     ///
-    /// - [`EncodingError::AccountIdOutOfRange`] / [`EncodingError::NonCanonicalAccountId`] if
-    ///   `remoteToken` or `remoteRecipient` is not a well-formed packaged account id.
     /// - [`EncodingError::RemoteTokenMismatch`] if the intent is addressed to another faucet.
     /// - [`EncodingError::RemoteDomainMismatch`] if it names another destination domain.
-    /// - [`EncodingError::FieldNotEvmAddress`] if `localToken` or `localDepositor` is wider than a
-    ///   right-aligned 20-byte address.
-    /// - [`EncodingError::FieldNotAssetAmount`] if `maxFee` is not representable.
     pub fn from_deposit_intent(
         intent: &DepositIntent,
         faucet_id: AccountId,
@@ -110,7 +92,7 @@ impl MintIntent {
     ) -> Result<Self, EncodingError> {
         let header = intent.header();
 
-        if account_id(header.remote_token())? != faucet_id {
+        if header.remote_token() != faucet_id {
             return Err(EncodingError::RemoteTokenMismatch);
         }
         if header.remote_domain() != remote_domain {
@@ -122,13 +104,10 @@ impl MintIntent {
 
         Ok(Self {
             nonce: header.nonce(),
-            local_token: evm_address(header.local_token(), DepositIntentField::LocalToken)?,
-            local_depositor: evm_address(
-                header.local_depositor(),
-                DepositIntentField::LocalDepositor,
-            )?,
-            remote_recipient: account_id(header.remote_recipient())?,
-            max_fee: header.reduced_max_fee()?,
+            local_token: header.local_token(),
+            local_depositor: header.local_depositor(),
+            remote_recipient: header.remote_recipient(),
+            max_fee: header.max_fee(),
             hook_data: intent.hook_data().clone(),
         })
     }
@@ -140,8 +119,7 @@ impl MintIntent {
     /// `xreserve::deposit_intent::rebuild`.
     ///
     /// Infallible: every input is a validated domain type, and the three the note does not carry
-    /// come from the faucet's own state. Widening the two amounts back to uint256 is exact because
-    /// the reduction that produced them ran at [`DEPOSIT_SCALE_EXP`].
+    /// come from the faucet's own state.
     pub fn to_deposit_intent(
         &self,
         amount: AssetAmount,
@@ -149,15 +127,13 @@ impl MintIntent {
         remote_token: AccountId,
     ) -> DepositIntent {
         let header = DepositIntentHeader::builder()
-            .amount(widen(amount))
+            .amount(amount)
             .remote_domain(remote_domain)
-            .remote_token(EthEmbeddedAccountId::from_account_id(remote_token).to_bytes32())
-            .remote_recipient(
-                EthEmbeddedAccountId::from_account_id(self.remote_recipient).to_bytes32(),
-            )
-            .local_token(self.local_token.to_bytes32())
-            .local_depositor(self.local_depositor.to_bytes32())
-            .max_fee(widen(self.max_fee))
+            .remote_token(remote_token)
+            .remote_recipient(self.remote_recipient)
+            .local_token(self.local_token)
+            .local_depositor(self.local_depositor)
+            .max_fee(self.max_fee)
             .nonce(self.nonce)
             .build();
         DepositIntent::new(header, self.hook_data.clone())
@@ -169,7 +145,7 @@ impl MintIntent {
     /// The carried wire form: the 24 fixed felts followed by the packed hookData. Word padding of
     /// the hookData tail belongs to the attachment builder, not here.
     pub fn to_elements(&self) -> Vec<Felt> {
-        let mut out = Vec::with_capacity(MINT_INTENT_FELTS);
+        let mut out = Vec::with_capacity(Self::NUM_FELTS);
         out.extend_from_slice(&self.nonce.to_packed_felts());
         out.extend(self.local_token.to_elements());
         out.extend(self.local_depositor.to_elements());
@@ -177,12 +153,12 @@ impl MintIntent {
         out.push(self.remote_recipient.suffix());
         out.push(Felt::from(self.max_fee));
         out.push(Felt::from(self.hook_data.len_u32()));
-        out.resize(MINT_INTENT_FELTS, Felt::from(0u32));
+        out.resize(Self::NUM_FELTS, Felt::from(0u32));
         out.extend(self.hook_data.to_packed_elements());
         out
     }
 
-    /// Inverse of [`Self::to_felts`].
+    /// Inverse of [`Self::to_elements`].
     ///
     /// # Errors
     ///
@@ -191,45 +167,46 @@ impl MintIntent {
     /// [`EncodingError::LimbNotU32`]. `maxFee` and the recipient raise the same typed field errors
     /// the byte decode raises for them.
     pub fn from_elements(felts: &[Felt]) -> Result<Self, EncodingError> {
-        if felts.len() < MINT_INTENT_FELTS {
+        if felts.len() < Self::NUM_FELTS {
             return Err(EncodingError::LengthMismatch);
         }
 
-        let hook_data_len = u32_at(felts, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF)?;
-        let hook_data_felts = felts.len() - MINT_INTENT_FELTS;
+        let hook_data_len = u32_at(felts, Self::HOOK_DATA_LEN_FELT_OFF)?;
+        let hook_data_felts = felts.len() - Self::NUM_FELTS;
         if hook_data_felts != (hook_data_len as usize).div_ceil(BYTES_PER_PACKED_FELT) {
             return Err(EncodingError::LengthMismatch);
         }
         // the payload block is padded to the word boundary; a non-zero pad is a payload this
         // codec did not produce, and on-chain it would ride inside the hash-committed attachment
         // without ever being read
-        for felt in &felts[MINT_INTENT_HOOK_DATA_LEN_FELT_OFF + 1..MINT_INTENT_FELTS] {
+        for felt in &felts[Self::HOOK_DATA_LEN_FELT_OFF + 1..Self::NUM_FELTS] {
             if felt.as_canonical_u64() != 0 {
                 return Err(EncodingError::LengthMismatch);
             }
         }
 
         let nonce_limbs: [Felt; BYTES32_PACKED_LIMBS] = felts
-            [MINT_INTENT_NONCE_FELT_OFF..MINT_INTENT_NONCE_FELT_OFF + BYTES32_PACKED_LIMBS]
+            [Self::NONCE_FELT_OFF..Self::NONCE_FELT_OFF + BYTES32_PACKED_LIMBS]
             .try_into()
             .expect("the length check above guarantees the window");
 
-        let mut hook_data = unpack_bytes(&felts[MINT_INTENT_FELTS..])?;
+        let mut hook_data = unpack_bytes(&felts[Self::NUM_FELTS..])?;
         hook_data.truncate(hook_data_len as usize);
 
         Ok(Self {
             nonce: DepositNonce::new(packed_felts_to_bytes32(&nonce_limbs)?),
-            local_token: evm_address_from_felts(felts, MINT_INTENT_LOCAL_TOKEN_FELT_OFF)?,
-            local_depositor: evm_address_from_felts(felts, MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF)?,
+            local_token: evm_address_from_felts(felts, Self::LOCAL_TOKEN_FELT_OFF)?,
+            local_depositor: evm_address_from_felts(felts, Self::LOCAL_DEPOSITOR_FELT_OFF)?,
             remote_recipient: AccountId::try_from_elements(
-                felts[MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF + 1],
-                felts[MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF],
+                felts[Self::REMOTE_RECIPIENT_FELT_OFF + 1],
+                felts[Self::REMOTE_RECIPIENT_FELT_OFF],
             )
             .map_err(|_| EncodingError::NonCanonicalAccountId)?,
-            max_fee: AssetAmount::new(felts[MINT_INTENT_MAX_FEE_FELT_OFF].as_canonical_u64())
-                .map_err(|_| EncodingError::FieldNotAssetAmount {
+            max_fee: AssetAmount::new(felts[Self::MAX_FEE_FELT_OFF].as_canonical_u64()).map_err(
+                |_| EncodingError::FieldNotAssetAmount {
                     field: DepositIntentField::MaxFee,
-                })?,
+                },
+            )?,
             hook_data: HookData::new(hook_data)?,
         })
     }
@@ -264,25 +241,6 @@ impl MintIntent {
 
 // HELPERS
 // ================================================================================================
-
-/// Zero-extends a reduced amount back into its uint256 wire field.
-fn widen(amount: AssetAmount) -> EthAmount {
-    EthAmount::from_u256(U256::from(amount.as_u64()))
-}
-
-/// Decodes one of the opaque bytes32 identifiers as the packaged Miden account id it has to be for
-/// the deposit to be mintable at all (`DEV-10`).
-fn account_id(bytes: &[u8; BYTES32_LEN]) -> Result<AccountId, EncodingError> {
-    Ok(EthEmbeddedAccountId::try_from_bytes32(*bytes)?.into_account_id())
-}
-
-/// Narrows a bytes32 field to the EVM address it is expected to carry (`Q-EVM-ADDR-1`).
-fn evm_address(
-    bytes: &[u8; BYTES32_LEN],
-    field: DepositIntentField,
-) -> Result<EthAddress, EncodingError> {
-    EthAddress::try_from(*bytes).map_err(|_| EncodingError::FieldNotEvmAddress { field })
-}
 
 /// Reads a felt as a u32-LE-packed limb, fail-closed rather than truncating.
 fn u32_at(felts: &[Felt], index: usize) -> Result<u32, EncodingError> {
@@ -468,7 +426,7 @@ mod tests {
             .find(|v| v.id == "mi-pos-empty-hookdata")
             .expect("vector present");
         let mut felts = vec.carried_values();
-        felts[MINT_INTENT_HOOK_DATA_LEN_FELT_OFF] = Felt::from(4u32);
+        felts[MintIntent::HOOK_DATA_LEN_FELT_OFF] = Felt::from(4u32);
         assert_matches!(
             MintIntent::from_elements(&felts),
             Err(EncodingError::LengthMismatch)

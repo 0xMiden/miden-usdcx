@@ -19,6 +19,13 @@
 //! `typing_builder_byte_identity.rs`. A single felt of drift — a reordered attachment section, a
 //! dropped pad felt, a different serial derivation — flips one of them RED and names which.
 //!
+//! Re-freezing is a reviewed act, and the anchors below were last re-captured when the `att` family
+//! was regenerated: the attestation's SIGNATURE is an input to the transport attachment, so a new
+//! signature necessarily moves the attachments commitment and everything hashed over it. That the
+//! move was ONLY the input was established before re-capturing — restoring the previous signature
+//! bytes alone reproduced the previous anchors exactly, with the recipient recipe, the attachment
+//! shape and the serialized length unchanged throughout.
+//!
 //! The vector payload is used verbatim except for `remoteToken`, which is spliced to a deterministic
 //! PUBLIC faucet id: the routing attachment can only bind a public network account, and the
 //! artifact's synthetic faucet id is not one. The attestation bytes come from the frozen `att`
@@ -55,26 +62,26 @@ struct Anchors {
 /// `mi-pos-empty-hookdata` + the `att-1` attestation.
 const GOLDEN_EMPTY_HOOKDATA: Anchors = Anchors {
     vector: "mi-pos-empty-hookdata",
-    note_id: "0x9e3a3cc38890ceeca1df7f4434f897672c6188de294651fc01f9725ec9ad3b66",
-    nullifier: "0xb81a96fcd0a14cb822d2b418bb4640c4eeadaa67cabebe4b16f82c42d843054d",
+    note_id: "0x6ed60977d4ba5a8d19ff287dd17c0ba008424bb091d23e002a07e28abecf0b74",
+    nullifier: "0x202eb79b3d7caa7580cc6e643bc4a2842e6efcaa9ca8f9069277ec2490363f05",
     recipient_digest:
         "Word([17101642633630574770, 9547937849495022824, 12677163261586172309, 698503456202579577])",
     attachments_commitment:
-        "Word([13904606285131984138, 7855716743153623804, 727235199561804470, 16893747181938907896])",
-    serialized: "811 bytes, digest Word([8717431762996271440, 10878943839548401608, 9260986618860042407, 9896421449654040618])",
+        "Word([4949583752620300865, 7500478060129315829, 10267484878387155575, 9470432395702943070])",
+    serialized: "811 bytes, digest Word([10471099779364619457, 6168766060064259894, 16560332522768614433, 15073590930212756789])",
     attachments: "[scheme=4 words=15, scheme=2 words=1]",
 };
 
 /// `mi-pos-hookdata` (ten bytes of hookData) + the `att-2` attestation.
 const GOLDEN_HOOKDATA: Anchors = Anchors {
     vector: "mi-pos-hookdata",
-    note_id: "0x542bf421117bbca4fb41bc73e9633cbf8a76a4f174d3e2fce62edf69c77ea29f",
-    nullifier: "0xab639aad9c244a365ac50d6a8ee5e3cd96594c97cb31ecbf306efb227ef0a623",
+    note_id: "0x12597e7eed8dc9f0508cfd44dbb067f011a5e3b3ce5d22c76cf81fdaddcb59ff",
+    nullifier: "0x7c8b522fa6f63bee062fa2042ae19d7e7703bc13b13d38dbff4ea9c3bc3ebb8f",
     recipient_digest:
         "Word([14336207517285597793, 11319399176307508164, 10304422099777048793, 10404191312535058985])",
     attachments_commitment:
-        "Word([4818747574958422227, 667946174186218249, 14837704011009157533, 8006666688810848582])",
-    serialized: "843 bytes, digest Word([7023757765558005257, 3281318517977846678, 18392540820244307540, 15758862069335861885])",
+        "Word([4867247121985007125, 16180524918100935745, 15793036598251666395, 3519371683115730640])",
+    serialized: "843 bytes, digest Word([10496780849223666835, 15131099219449228365, 18280214607657113103, 11914361921053238498])",
     attachments: "[scheme=4 words=16, scheme=2 words=1]",
 };
 

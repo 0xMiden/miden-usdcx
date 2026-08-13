@@ -32,7 +32,7 @@ use xreserve_deposit_relayer::config::RelayerConfig;
 use xreserve_deposit_relayer::cycle::{run_relayer_cycle, Disposition, RelayerCtx};
 use xreserve_deposit_relayer::error::RelayerError;
 use xreserve_deposit_relayer::validate::check_domain_token_against_info;
-use xusdc_encoding::xreserve::encoding::DepositIntent;
+use xusdc_encoding::xreserve::encoding::{DepositIntent, EthEmbeddedAccountId};
 
 use cycle_support::{cycle_client, cycle_identities, cycle_store, ScriptedSubmit};
 use fixtures::{canonical_payload, TEST_VECTOR_PAYLOAD_ID};
@@ -86,7 +86,7 @@ async fn reject_remote_domain_mismatch() {
 #[tokio::test]
 async fn reject_remote_token_mismatch() {
     let intent = canonical_intent();
-    let mut foreign = *intent.header().remote_token();
+    let mut foreign = identifier_of(&intent);
     foreign[31] ^= 0xFF;
     let config = with_xusdc_identifier(config_matching(&intent, true), foreign);
     let info = advertised_info(&intent).await;
@@ -97,7 +97,7 @@ async fn reject_remote_token_mismatch() {
     assert_matches!(
         error,
         RelayerError::TokenMismatch { expected, actual }
-            if expected == foreign && actual == *intent.header().remote_token()
+            if expected == foreign && actual == identifier_of(&intent)
     );
     assert!(!error.is_retryable());
 }
@@ -108,7 +108,7 @@ async fn reject_remote_token_mismatch() {
 #[tokio::test]
 async fn a_domain_mismatch_is_reported_before_a_token_mismatch() {
     let intent = canonical_intent();
-    let mut foreign = *intent.header().remote_token();
+    let mut foreign = identifier_of(&intent);
     foreign[0] ^= 0xFF;
     let config = with_xusdc_identifier(
         with_remote_domain(
@@ -306,10 +306,14 @@ async fn a_broken_info_fetch_fails_the_cycle_rather_than_disabling_the_check() {
 /// the expected `remoteDomain`/`remoteToken` are read from the golden artifact, never restated
 /// here.
 fn canonical_intent() -> DepositIntent {
-    xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(&canonical_payload(
-        TEST_VECTOR_PAYLOAD_ID,
-    ))
-    .expect("the canonical vector is a valid DepositIntent")
+    DepositIntent::try_from(canonical_payload(TEST_VECTOR_PAYLOAD_ID).as_slice())
+        .expect("the canonical vector is a valid DepositIntent")
+}
+
+/// The configured-identifier form of an intent's `remoteToken`: the bytes32 packaging the operator
+/// writes it in, which is the form the fast-fail compares against.
+fn identifier_of(intent: &DepositIntent) -> [u8; 32] {
+    EthEmbeddedAccountId::from_account_id(intent.header().remote_token()).to_bytes32()
 }
 
 /// A config whose Circle-owned expectations MATCH `intent` — the values the still-OPEN domain and
@@ -319,7 +323,7 @@ fn config_matching(intent: &DepositIntent, fast_fail: bool) -> RelayerConfig {
     serde_json::from_value(serde_json::json!({
         "circle_base_url": MOCK_BASE_URL,
         "remote_domain": intent.header().remote_domain(),
-        "xusdc_identifier": intent.header().remote_token().to_vec(),
+        "xusdc_identifier": identifier_of(intent).to_vec(),
         "faucet_account_id": faucet_id().to_hex(),
         "rate_qps_per_ip": 5,
         "rate_qps_global": 35,
@@ -349,7 +353,7 @@ fn with_xusdc_identifier(config: RelayerConfig, identifier: [u8; 32]) -> Relayer
 fn advertised_info_body(intent: &DepositIntent) -> serde_json::Value {
     mock_circle::info_body_for(
         intent.header().remote_domain(),
-        &format!("0x{}", hex::encode(intent.header().remote_token())),
+        &format!("0x{}", hex::encode(identifier_of(intent))),
     )
 }
 

@@ -40,14 +40,15 @@ const ATTESTATION_LEN: usize = 65;
 /// Poseidon2).
 ///
 /// Both arguments are the Circle wire hex strings, with or without a `0x` prefix. Returns the
-/// decoded payload bytes, so a caller that goes on to the DepositIntent structural decode does not
-/// re-decode the hex.
+/// decoded payload bytes together with the verified digest, so neither a caller going on to the
+/// DepositIntent decode nor one carrying the digest into a validated attestation has to re-decode
+/// the hex or re-run keccak256 — a second copy of the binding is exactly what would drift. There is
+/// one binding computation, here.
 ///
 /// This does NOT verify the ECDSA signature — see the module docs (that is on-chain, faucet-owned)
 /// — and it does not structurally validate the payload: it establishes only that this hash covers
-/// these bytes. The DepositIntent parse is
-/// [`decode_and_validate_deposit_intent`](super::deposit_intent::decode_and_validate_deposit_intent),
-/// the next filter in the chain.
+/// these bytes. The DepositIntent decode, the next filter in the chain, is the shared crate's
+/// `DepositIntent::try_from`.
 ///
 /// # Errors
 /// * [`RelayerError::MalformedHex`] — `payload_hex` (checked first) or `message_hash_hex` is not
@@ -56,22 +57,6 @@ const ATTESTATION_LEN: usize = 65;
 /// * [`RelayerError::MessageHashMismatch`] — the hash does not equal `keccak256(payload)`; carries
 ///   both the expected raw-keccak digest and the digest that was presented.
 pub fn verify_message_hash(
-    payload_hex: &str,
-    message_hash_hex: &str,
-) -> Result<Vec<u8>, RelayerError> {
-    verify_message_hash_bytes(payload_hex, message_hash_hex).map(|(payload, _digest)| payload)
-}
-
-/// [`verify_message_hash`], returning the verified 32-byte digest alongside the decoded payload.
-///
-/// Identical check, strictly more of its result kept: a caller that needs the digest (the Circle
-/// fetch path, which carries it into the validated attestation) would otherwise have to re-decode
-/// the hex or re-run keccak256 over the payload — a second, drift-prone copy of the binding. There
-/// is exactly one binding computation, here.
-///
-/// # Errors
-/// Identical to [`verify_message_hash`].
-pub fn verify_message_hash_bytes(
     payload_hex: &str,
     message_hash_hex: &str,
 ) -> Result<(Vec<u8>, [u8; MESSAGE_HASH_LEN]), RelayerError> {

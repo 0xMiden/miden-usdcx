@@ -32,12 +32,12 @@ use rstest::rstest;
 use miden_protocol::crypto::utils::DeserializationError;
 use xreserve_deposit_relayer::error::HexField;
 use xreserve_deposit_relayer::miden::{build_mint_note, AttesterPubkey};
-use xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent;
 use xreserve_deposit_relayer::RelayerError;
 use xusdc_encoding::xreserve::encoding::{DepositIntentField, EncodingError};
 
 use fixtures::{PartnerAttester, PARTNER_PUBKEY_HEX};
 use mint_support::*;
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 // STRUCTURALLY-INVALID DEPOSITINTENTS (they pass the envelope; the shared encoding crate's codec
 // refuses them)
@@ -72,14 +72,20 @@ fn t_an_oversized_hookdata_is_a_typed_decode_error() {
 /// The addressing rejects `DC-14` added: an intent for another faucet, or one carrying a field
 /// the mint transport cannot express, is refused HERE, with a name — never submitted to surface
 /// on-chain as an unexplained bad signature.
+///
+/// WHICH step refuses is part of the contract, so each row names it. Everything that is a property
+/// of the payload alone — an identifier that is not an account id, a field too wide for the
+/// transport — is settled by the decode, which is the first place the bytes are read as a Miden
+/// mint. Only the compare against the faucet the note is being built FOR needs the build, because
+/// only there is that faucet known.
 #[rstest]
-#[case::remote_token_mismatch("mi-rej-remote-token-mismatch")]
-#[case::remote_token_malformed("mi-rej-remote-token-malformed")]
-#[case::local_token_not_address("mi-rej-local-token-not-address")]
-#[case::local_depositor_not_address("mi-rej-local-depositor-not-address")]
-#[case::max_fee_over_cap("mi-rej-max-fee-over-cap")]
-#[case::recipient_non_canonical("mi-rej-recipient-non-canonical")]
-fn t_an_uncarryable_intent_is_a_typed_build_error(#[case] vector_id: &str) {
+#[case::remote_token_mismatch("mi-rej-remote-token-mismatch", Step::Build)]
+#[case::remote_token_malformed("mi-rej-remote-token-malformed", Step::Decode)]
+#[case::local_token_not_address("mi-rej-local-token-not-address", Step::Decode)]
+#[case::local_depositor_not_address("mi-rej-local-depositor-not-address", Step::Decode)]
+#[case::max_fee_over_cap("mi-rej-max-fee-over-cap", Step::Decode)]
+#[case::recipient_non_canonical("mi-rej-recipient-non-canonical", Step::Decode)]
+fn t_an_uncarryable_intent_is_a_typed_build_error(#[case] vector_id: &str, #[case] step: Step) {
     let vector = fixtures::mi_vector(vector_id).expect("the canonical MI reject vector");
     let expected = vector
         .expected_variant
@@ -87,25 +93,32 @@ fn t_an_uncarryable_intent_is_a_typed_build_error(#[case] vector_id: &str) {
         .expect("a reject vector names the variant it must produce");
     let attestation = validated_over(&vector.payload());
 
-    // these rows are all well-formed DepositIntents — what they are not is CARRYABLE, so they
-    // decode and then fail at the build
-    let intent = decode_and_validate_deposit_intent(attestation.payload())
-        .expect("an addressing reject is still a well-formed deposit intent");
-    let error = build_mint_note(
-        relayer_sender_id(),
-        // the reject vectors are addressed to the artifact's own synthetic faucet, and each is a
-        // reject for a reason OTHER than the faucet — so the build has to be told that faucet, or
-        // it would fail on the addressing rather than on the row's subject
-        vector.faucet_id(),
-        vector.remote_domain,
-        intent,
-        attestation.attestation(),
-        &attester_pubkey(),
-        &mut note_rng(4),
-    )
-    .expect_err("an intent the mint transport cannot carry never becomes a note");
+    let decoded =
+        DepositIntent::try_from(attestation.payload()).map_err(RelayerError::from_deposit_intent);
+    let error = match step {
+        Step::Decode => decoded.expect_err("the decode owns this row's rejection"),
+        Step::Build => {
+            let intent =
+                decoded.expect("an addressing reject is still a well-formed deposit intent");
+            build_mint_note(
+                relayer_sender_id(),
+                // the reject vectors are addressed to the artifact's own synthetic faucet, and each
+                // is a reject for a reason OTHER than the faucet — so the build has to be told that
+                // faucet, or it would fail on the addressing rather than on the row's subject
+                vector.faucet_id(),
+                vector.remote_domain,
+                intent,
+                attestation.attestation(),
+                &attester_pubkey(),
+                &mut note_rng(4),
+            )
+            .expect_err("an intent the mint transport cannot carry never becomes a note")
+        }
+    };
 
-    assert_matches!(error, RelayerError::MintNoteBuild(_));
+    if matches!(step, Step::Build) {
+        assert_matches!(error, RelayerError::MintNoteBuild(_));
+    }
     // the artifact names the variant, not the field it carries, so the comparison is on the name
     let verdict = format!(
         "{:?}",
@@ -122,13 +135,23 @@ fn t_an_uncarryable_intent_is_a_typed_build_error(#[case] vector_id: &str) {
     );
 }
 
+/// Which step of the relayer's path owns a reject row's verdict.
+#[derive(Clone, Copy, Debug)]
+enum Step {
+    /// The shared codec's decode — everything that is a property of the payload alone.
+    Decode,
+    /// The mint-note build — the compare against the faucet the note is built for.
+    Build,
+}
+
 /// The shared assertion of the structural reject table: a typed, non-retryable decode error whose
 /// source chain still carries the encoding crate's own verdict.
 fn assert_decode_error(
     attestation: &xreserve_deposit_relayer::circle::schema::ValidatedAttestation,
     expected: EncodingError,
 ) {
-    let error = decode_and_validate_deposit_intent(attestation.payload())
+    let error = DepositIntent::try_from(attestation.payload())
+        .map_err(RelayerError::from_deposit_intent)
         .expect_err("a structurally invalid deposit intent cannot become a note");
 
     assert_eq!(
@@ -181,7 +204,8 @@ fn t_a_private_faucet_id_is_refused() {
         private_faucet_id(),
     ));
 
-    let intent = decode_and_validate_deposit_intent(attestation.payload())
+    let intent = DepositIntent::try_from(attestation.payload())
+        .map_err(RelayerError::from_deposit_intent)
         .expect("the payload is a well-formed deposit intent");
     let error = build_mint_note(
         relayer_sender_id(),

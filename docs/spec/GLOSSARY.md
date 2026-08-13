@@ -68,9 +68,10 @@ by a **pair** of tests, and neither half alone discharges it:
 | the placement row | the writer puts *that* field at *that* offset, so the reject is the intended one | the per-field case in `rebuild_places_each_carried_field`, `masm_mint_shell.rs` |
 
 Diagnosability regresses accordingly: during an incident the on-chain error no longer localizes the
-cause. The mitigation is off-chain — the relayer pre-validates with the Rust mirror
-(`MintIntent::from_deposit_intent`), which rejects each of these with its own typed error and
-should never submit such a note.
+cause. The mitigation is off-chain — the relayer pre-validates with the Rust mirror, which rejects each of
+these with its own typed error and should never submit such a note. The decode
+(`DepositIntent::try_from`) owns everything that is a property of the payload alone; the compress
+(`MintIntent::from_deposit_intent`) owns the two compares against the faucet the note is built for.
 
 ## Burn reject conditions — `R-BURN-<n>`
 

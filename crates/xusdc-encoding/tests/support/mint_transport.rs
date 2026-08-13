@@ -29,13 +29,10 @@ use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::{
-    bytes32_to_storage_map_key, DepositIntent, MintIntent, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF,
-};
+use xusdc_encoding::xreserve::encoding::{bytes32_to_storage_map_key, DepositIntent, MintIntent};
 
 use super::*;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
-use xusdc_encoding::xreserve::encoding::EthEmbeddedAccountIdExt;
 
 // FIXTURE VALUES (shared across the split e2e suites)
 // ================================================================================================
@@ -217,9 +214,7 @@ pub struct StoragePlan {
 /// the wrong-domain and wrong-faucet negatives could not reach the chain to fail there.
 fn carried_payload_felts(payload: &[u8]) -> Vec<Felt> {
     let intent = DepositIntent::try_from(payload).expect("the tamper payload decodes");
-    let claimed_faucet = EthEmbeddedAccountId::try_from_bytes32(*intent.header().remote_token())
-        .map(EthEmbeddedAccountId::into_account_id)
-        .expect("the tamper payload names a well-formed faucet");
+    let claimed_faucet = intent.header().remote_token();
     let carried =
         MintIntent::from_deposit_intent(&intent, claimed_faucet, intent.header().remote_domain())
             .expect("the tamper payload is DC-14 shaped");
@@ -260,7 +255,7 @@ fn transport_felts(
         carried[off] = value;
     }
     if let Some(limb) = plan.payload_hook_data_len_felt {
-        carried[MINT_INTENT_HOOK_DATA_LEN_FELT_OFF] = limb;
+        carried[MintIntent::HOOK_DATA_LEN_FELT_OFF] = limb;
     }
     felts.extend(carried);
 

@@ -59,9 +59,8 @@ use xusdc_encoding::xreserve::encoding::{
     bytes32_to_storage_map_key, DepositIntent, MintIntent, Signature,
 };
 
-use miden_standards::interop::eth::EthEmbeddedAccountId;
 use mint_support::*;
-use xusdc_encoding::xreserve::encoding::EthEmbeddedAccountIdExt;
+use xusdc_encoding::xreserve::encoding::DepositIntentField;
 
 // THE DELEGATION ITSELF
 // ================================================================================================
@@ -255,12 +254,8 @@ fn t_storage_embeds_the_attested_output() {
     let intent =
         DepositIntent::try_from(attestation.payload()).expect("the canonical payload decodes");
     let header = intent.header();
-    let recipient_id = EthEmbeddedAccountId::try_from_bytes32(*header.remote_recipient())
-        .map(EthEmbeddedAccountId::into_account_id)
-        .expect("the canonical payload's remoteRecipient is a valid account id");
-    let amount = header
-        .reduced_amount()
-        .expect("the attested amount reduces at unit-04's scale");
+    let recipient_id = header.remote_recipient();
+    let amount = header.amount();
     let asset = FungibleAsset::new(faucet_id(), u64::from(amount))
         .expect("the reduced amount is a fungible asset of the faucet");
 
@@ -298,10 +293,11 @@ fn t_storage_embeds_the_attested_output() {
         asset.to_value_word().as_elements(),
         "ASSET_VALUE carries the reduced attested amount"
     );
-    // …and ASSET_VALUE[0] really is the PAYLOAD's amount (the scale-0 reduction identity): the u64 at
-    // the tail of the 32-byte big-endian wire amount
+    // …and ASSET_VALUE[0] really is the PAYLOAD's amount (the scale-0 reduction identity): the u64
+    // at the tail of the 32-byte big-endian wire amount, read straight off the attested bytes
+    let amount_offset = DepositIntentField::Amount.offset();
     let wire_amount = u64::from_be_bytes(
-        header.amount().as_bytes()[24..32]
+        attestation.payload()[amount_offset + 24..amount_offset + 32]
             .try_into()
             .expect("the 8-byte tail of the 32-byte amount field"),
     );

@@ -53,6 +53,12 @@ fn u256_be_from_u128(x: u128) -> [u8; 32] {
     out
 }
 
+/// The u64 an accept vector's uint256 amount field reduces to (the shipped scale is zero, so the
+/// reduction is the identity and the value is simply the low 8 bytes).
+fn u64_from_be32(b: &[u8; 32]) -> u64 {
+    u64::from_be_bytes(b[24..].try_into().expect("8-byte window"))
+}
+
 fn packed(bytes: &[u8]) -> Vec<Felt> {
     bytes_to_packed_u32_elements(bytes)
 }
@@ -134,20 +140,21 @@ fn evm_bytes32(base: u8) -> [u8; 32] {
 }
 
 impl IntentSpec {
-    /// A structurally well-formed intent. The four bytes32 fields carry arbitrary patterns on
-    /// purpose: Circle's own encoder emits opaque bytes32 there (`DEV-10` / `Q-EVM-ADDR-1`), so the
-    /// structural family must not assume any Miden reading of them. The `mi` family, which IS read
-    /// as a Miden mint, overrides them with values that narrow.
-    fn base(remote_recipient: [u8; 32]) -> Self {
+    /// A structurally well-formed intent. Every field is shaped the way a mintable deposit has to
+    /// shape it — the identifiers as packaged account ids, the source-chain fields as right-aligned
+    /// EVM addresses — because a deposit that is not is not a deposit this system can process at
+    /// all. `remote_token` names a faucet OTHER than the `mi` family's, so a row that confused the
+    /// destination token with the destination account would not pass.
+    fn base(remote_token: [u8; 32], remote_recipient: [u8; 32]) -> Self {
         Self {
             magic: 0x5a2e_0acd, // DepositIntent magic
             version: 1,         // DepositIntent version
             amount: u256_be_from_u128(1_000_000),
             remote_domain: 7,
-            remote_token: pattern32(0xa0),
+            remote_token,
             remote_recipient,
-            local_token: pattern32(0xb0),
-            local_depositor: pattern32(0xc0),
+            local_token: evm_bytes32(0xb0),
+            local_depositor: evm_bytes32(0xc0),
             max_fee: u256_be_from_u128(2_000_000),
             nonce: pattern32(0xd0),
             hook_data: Vec::new(),
@@ -220,6 +227,8 @@ fn di_accept(id: &str, tv: &[&str], spec: &IntentSpec, derivation: &str) -> Valu
             "magic": spec.magic, "version": spec.version,
             "remote_domain": spec.remote_domain,
             "hook_data_len": spec.hook_data.len() as u32,
+            "amount": u64_from_be32(&spec.amount),
+            "max_fee": u64_from_be32(&spec.max_fee),
             "amount_hex": hex_bytes(&spec.amount),
             "remote_token_hex": hex_bytes(&spec.remote_token),
             "remote_recipient_hex": hex_bytes(&spec.remote_recipient),
@@ -454,11 +463,14 @@ fn main() {
         }));
     }
     let recipient_b32: [u8; 32] = r_b_bytes32(&ids[0]);
+    // the structural family is addressed to a DIFFERENT faucet than the `mi` family's, so a row
+    // that mixed up the destination token and the destination account could not pass
+    let di_token_b32: [u8; 32] = r_b_bytes32(&ids[2]);
 
     // ---- di family --------------------------------------------------------------------
     let mut di: Vec<Value> = Vec::new();
     {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.hook_data = (0..10u8).map(|i| 0xe0 + i).collect();
         di.push(di_accept(
             "di-pos-hookdata",
@@ -468,7 +480,7 @@ fn main() {
         ));
     }
     {
-        let spec = IntentSpec::base(recipient_b32);
+        let spec = IntentSpec::base(di_token_b32, recipient_b32);
         di.push(di_accept(
             "di-pos-empty-hookdata",
             &["TV-DI-1", "TV-DI-7", "TV-DUAL-3"],
@@ -476,9 +488,9 @@ fn main() {
             "valid intent, hookDataLen = 0 (exactly the 60-felt header)",
         ));
     }
-    let base_bytes = IntentSpec::base(recipient_b32).encode();
+    let base_bytes = IntentSpec::base(di_token_b32, recipient_b32).encode();
     {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.magic = 0xdead_beef;
         di.push(di_reject(
             "di-rej-bad-magic",
@@ -491,7 +503,7 @@ fn main() {
         ));
     }
     {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.version = 2;
         di.push(di_reject(
             "di-rej-bad-version",
@@ -523,7 +535,7 @@ fn main() {
             "ZeroField:LocalDepositor",
         ),
     ] {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         match field {
             "amount" => spec.amount = [0u8; 32],
             "local_token" => spec.local_token = [0u8; 32],
@@ -541,7 +553,7 @@ fn main() {
         ));
     }
     {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.hook_data = vec![0xee; 4];
         spec.hook_data_len_override = Some(10);
         di.push(di_reject(
@@ -569,7 +581,7 @@ fn main() {
         "first 100 bytes only (< 240-byte header; 25 staged felts < 60)",
     ));
     {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         let hook_len = (1024 - 60) * 4 + 4; // 3860 bytes => 965 felts => 1025 > 1024
         spec.hook_data = vec![0xab; hook_len];
         di.push(di_reject(
@@ -596,7 +608,7 @@ fn main() {
     // each row gets its own nonce: two deposits never share one, and the replay-guard tests need
     // a pair that keys distinctly
     let mi_spec = |hook_data: Vec<u8>, nonce_seed: u8| -> IntentSpec {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.nonce = pattern32(nonce_seed);
         spec.remote_domain = mi_domain;
         spec.remote_token = faucet_b32;
@@ -613,10 +625,7 @@ fn main() {
         let intent =
             xusdc_encoding::xreserve::encoding::DepositIntent::try_from(payload.as_slice())
                 .expect("generator invariant: the spec encodes a valid deposit intent");
-        let amount = intent
-            .header()
-            .reduced_amount()
-            .expect("generator invariant: the spec amount is an AssetAmount");
+        let amount = intent.header().amount();
         let carried = xusdc_encoding::xreserve::encoding::MintIntent::from_deposit_intent(
             &intent, *faucet_id, mi_domain,
         )
@@ -764,7 +773,7 @@ fn main() {
     // nonce is varied per seed so digests, sigs, and pubkeys all differ.
     let mut att: Vec<Value> = Vec::new();
     for seed in 1u64..=3 {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.nonce = pattern32(0xd0u8.wrapping_add(seed as u8));
         let payload = spec.encode();
 

@@ -37,8 +37,7 @@ use miden_standards::note::{
 };
 
 use crate::xreserve::encoding::{
-    DepositIntent, MintIntent, Signature, BYTES_PER_PACKED_FELT, MAX_HOOK_DATA_LEN,
-    MINT_INTENT_FELTS,
+    DepositIntent, HookData, MintIntent, Signature, BYTES_PER_PACKED_FELT,
 };
 
 /// The mint-note transport attachment scheme (u16, project-chosen: >= 4, clear of
@@ -58,13 +57,13 @@ pub const XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF: usize = XUSDC_MINT_ATTESTATION_
 // The codec's hookData ceiling must equal this transport's capacity (the per-attachment word cap
 // minus the attestation and the carried payload, in bytes).
 const _: () = assert!(
-    MAX_HOOK_DATA_LEN
+    HookData::MAX_LEN
         == (NoteAttachment::MAX_NUM_WORDS as usize
             - XUSDC_MINT_ATTESTATION_NUM_WORDS
-            - MINT_INTENT_FELTS / 4)
+            - MintIntent::NUM_FELTS / 4)
             * 4
             * BYTES_PER_PACKED_FELT,
-    "the codec's MAX_HOOK_DATA_LEN must equal the mint transport's hookData capacity"
+    "the codec's HookData::MAX_LEN must equal the mint transport's hookData capacity"
 );
 
 /// The Circle deposit attestation crossing the note boundary: the [`Signature`] over
@@ -271,12 +270,7 @@ impl XUsdcMintNote {
                     source,
                 )
             })?;
-        let amount = deposit_intent.header().reduced_amount().map_err(|source| {
-            NoteError::other_with_source(
-                "deposit intent amount rejected by the amount reducer",
-                source,
-            )
-        })?;
+        let amount = deposit_intent.header().amount();
         // the attested output-note recipe, encapsulated in the mint note's dedicated storage type —
         // the SAME derivations the on-chain policy re-computes and assert-matches.
         let storage = XUsdcMintNoteStorage::from_attested(&payload, amount, faucet_id)?;

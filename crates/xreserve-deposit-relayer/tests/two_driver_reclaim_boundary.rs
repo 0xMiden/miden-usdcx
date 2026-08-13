@@ -29,6 +29,7 @@ use cycle_support::{
 };
 use mint_support::note_rng;
 use mock_circle::{attestation_page, MockCircle, RecordingSink, Reply, Script};
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 /// The config knobs whose envelope this suite is built around: 3 attempts × 30 s deadline + 5 s
 /// backoff base → a 130 s worst-case submit; the validated stale threshold is one second beyond it.
@@ -338,7 +339,7 @@ fn status(store: &IdempotencyStore, nonce: &[u8; 32]) -> SubmissionStatus {
 }
 
 fn nonce_of(vector: &fixtures::AttestationVector) -> [u8; 32] {
-    *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(vector.payload())
+    *DepositIntent::try_from(vector.payload())
         .expect("valid DI")
         .header()
         .nonce()

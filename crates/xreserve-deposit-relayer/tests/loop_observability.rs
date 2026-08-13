@@ -31,6 +31,7 @@ use mint_support::note_rng;
 use mock_circle::{
     attestation_page, batch_href, link_header, MockCircle, RecordingSink, Reply, Script,
 };
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 /// A shared `io::Write` a test reads back.
 #[derive(Clone, Default)]
@@ -278,7 +279,7 @@ async fn the_loop_surfaces_metrics_on_a_failed_cycle_too() {
 /// The canonical payload with its nonce perturbed — a distinct, still-valid deposit.
 fn with_distinct_nonce(tweak: u8) -> Vec<u8> {
     let payload = canonical_payload(fixtures::TEST_VECTOR_PAYLOAD_ID);
-    let nonce = *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(&payload)
+    let nonce = *DepositIntent::try_from(payload.as_slice())
         .expect("valid DI")
         .header()
         .nonce()

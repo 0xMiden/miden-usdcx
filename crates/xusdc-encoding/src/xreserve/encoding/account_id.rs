@@ -11,9 +11,15 @@
 //! The AccountId layout `REQUIRES CIRCLE CONFIRMATION` and `REQUIRES IMPLEMENTATION VALIDATION` —
 //! it stays an OPEN proposal to Circle.
 
-use miden_standards::interop::eth::{AddressConversionError, EthAddress, EthEmbeddedAccountId};
+use miden_standards::interop::eth::AddressConversionError;
 
 use super::error::EncodingError;
+
+// A decoded DepositIntent's fields ARE these types, so no consumer can use this crate's surface
+// without naming them. Re-exporting keeps that from forcing a `miden-standards` dependency on a
+// caller that builds nothing itself — the relayer, whose whole Miden-facing job is to hand this
+// crate's factory its inputs.
+pub use miden_standards::interop::eth::{EthAddress, EthEmbeddedAccountId};
 
 /// `AddressType::AccountId` discriminant (232 = 0b1110_1000). A bech32 discriminant,
 /// NOT part of the bytes32 wire form.

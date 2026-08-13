@@ -148,10 +148,7 @@ pub fn mint_payload_for(vector: &MiVector, faucet: AccountId, remote_domain: u32
     let payload = vector.payload();
     let intent = DepositIntent::try_from(payload.as_slice())
         .expect("the canonical mi vector is a structurally valid deposit intent");
-    let amount = intent
-        .header()
-        .reduced_amount()
-        .expect("the canonical mi vector's amount is mintable");
+    let amount = intent.header().amount();
 
     MintIntent::from_deposit_intent(&intent, vector.faucet_id(), vector.remote_domain)
         .expect("the canonical mi accept vector compresses under its own faucet and domain")

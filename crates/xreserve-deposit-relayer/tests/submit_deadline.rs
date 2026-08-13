@@ -28,6 +28,7 @@ use cycle_support::{
 };
 use mint_support::note_rng;
 use mock_circle::{attestation_page, MockCircle, RecordingSink, Reply, Script};
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 /// A submit that never completes on its own is bounded by the deadline: each attempt times out
 /// (transient), the retry budget is spent, and the attestation ends `Deferred` (retryable next
@@ -83,12 +84,11 @@ async fn a_hung_submit_is_bounded_by_the_deadline_and_deferred() {
         "each of the 3 attempts must be ended by the deadline, not left awaiting the hung future"
     );
     // the deposit is retryable (Failed), not stranded Pending
-    let nonce =
-        *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(vector.payload())
-            .expect("valid DI")
-            .header()
-            .nonce()
-            .as_bytes();
+    let nonce = *DepositIntent::try_from(vector.payload())
+        .expect("valid DI")
+        .header()
+        .nonce()
+        .as_bytes();
     assert_eq!(
         store
             .record(&nonce)

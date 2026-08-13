@@ -43,10 +43,7 @@ use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::*;
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::{
-    DepositIntent, MintIntent, DEPOSIT_INTENT_HEADER_FELTS, MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF,
-    MINT_INTENT_LOCAL_TOKEN_FELT_OFF, MINT_INTENT_NONCE_FELT_OFF,
-};
+use xusdc_encoding::xreserve::encoding::{DepositIntent, MintIntent};
 
 /// The faucet's domain configuration word: the remote domain id in element 0, zeros elsewhere.
 ///
@@ -454,7 +451,7 @@ async fn run_rebuild(vector_id: &str, poison: bool) -> Result<()> {
     let carried = MintIntent::from_elements(&v.carried_values())?;
     let felts = carried.to_elements();
     let num_expected_felts =
-        DEPOSIT_INTENT_HEADER_FELTS + carried.hook_data().as_bytes().len().div_ceil(4);
+        DepositIntent::HEADER_NUM_FELTS + carried.hook_data().as_bytes().len().div_ceil(4);
 
     let driver_src = rebuild_driver_src(
         &felts,
@@ -518,9 +515,9 @@ async fn rebuild_overwrites_a_poisoned_region(#[case] vector_id: &str) -> Result
 /// live here: the placement of each field is pinned individually, against the same mirror the
 /// happy path uses.
 #[rstest]
-#[case::nonce(MINT_INTENT_NONCE_FELT_OFF)]
-#[case::local_token(MINT_INTENT_LOCAL_TOKEN_FELT_OFF)]
-#[case::local_depositor(MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF)]
+#[case::nonce(MintIntent::NONCE_FELT_OFF)]
+#[case::local_token(MintIntent::LOCAL_TOKEN_FELT_OFF)]
+#[case::local_depositor(MintIntent::LOCAL_DEPOSITOR_FELT_OFF)]
 #[tokio::test]
 async fn rebuild_places_each_carried_field(#[case] carried_felt_off: usize) -> Result<()> {
     let v = mi("mi-pos-empty-hookdata");
@@ -532,7 +529,7 @@ async fn rebuild_places_each_carried_field(#[case] carried_felt_off: usize) -> R
         &felts,
         felts.len().div_ceil(4) as u64,
         u64::from(v.amount()),
-        DEPOSIT_INTENT_HEADER_FELTS,
+        DepositIntent::HEADER_NUM_FELTS,
         false,
     );
     let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
@@ -558,14 +555,14 @@ async fn rebuild_rejects_a_non_u32_carried_limb() -> Result<()> {
     let v = mi("mi-pos-empty-hookdata");
     let mut felts = v.carried_values();
     // a felt at 2^32 is a valid field element but NOT a valid u32 limb
-    felts[MINT_INTENT_NONCE_FELT_OFF] =
+    felts[MintIntent::NONCE_FELT_OFF] =
         Felt::try_from(1u64 << 32).expect("2^32 is within the field");
 
     let driver_src = rebuild_driver_src(
         &felts,
         felts.len().div_ceil(4) as u64,
         u64::from(v.amount()),
-        DEPOSIT_INTENT_HEADER_FELTS,
+        DepositIntent::HEADER_NUM_FELTS,
         false,
     );
     let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;

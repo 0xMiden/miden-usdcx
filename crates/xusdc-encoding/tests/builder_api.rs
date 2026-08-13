@@ -12,14 +12,11 @@
 mod support;
 
 use anyhow::{Context, Result};
-use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
-use miden_protocol::account::{
-    AccountComponent, RoleSymbol, StorageMap, StorageSlot, StorageSlotName,
-};
-use miden_protocol::asset::{AssetAmount, TokenSymbol};
+use miden_protocol::account::component::AccountComponentCode;
+use miden_protocol::account::{AccountComponent, RoleSymbol, StorageSlotName};
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{PausableManager, PausableStorage};
-use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::policies::{
     BasicBlocklist, BlocklistManager, MinBurnAmount, TokenPolicyManager,
 };
@@ -31,79 +28,13 @@ use xusdc_encoding::account::xreserve::{
 };
 use xusdc_encoding::xreserve::encoding::{bytes32_to_packed_felts, EthBytes32};
 
-// Dummy faucet config words (the builder does not read them; they only bind the xreserve component's
-// value slots so it assembles, exactly as the composition harness does).
-const DUMMY_DOMAIN: u32 = 7;
-
-/// Builds a fresh `(FungibleFaucet, AccountComponent)` pair from the assembled `xreserve` library —
-/// the two inputs `XReserveStablecoinBuilder::new` consumes. The component carries the standard
-/// 6-slot composition layout (so it binds) AND exports the attestation mint policy `check_policy`
-/// (so `attestation_mint_policy_root` resolves). A fresh pair per call because `new` takes them by
-/// value. `is_max_supply_mutable` selects the faucet's stock mutability flag: production builds pass
-/// `true` (the builder rejects immutable `max_supply`); the rejection tests whose own check fires
-/// first (non-public / missing-attestation-policy) and the immutable-rejection test pass `false`.
-fn faucet_and_component(is_max_supply_mutable: bool) -> Result<(FungibleFaucet, AccountComponent)> {
-    Ok((
-        production_faucet(is_max_supply_mutable, 6, "USDCX")?,
-        xreserve_component_with_slots(&XReserveComponent::required_slots())?,
-    ))
-}
-
-/// Assembles the xreserve component carrying exactly `names` (value slots get a dummy word for the
-/// domain and empty words for the other domain-config slots; the two map slots get empty maps) —
-/// the omission fixture for the slot-presence guard tests.
-fn xreserve_component_with_slots(names: &[&StorageSlotName]) -> Result<AccountComponent> {
-    let library = assemble_xreserve_lib()?;
-    let mut slots = Vec::new();
-    for name in names {
-        let slot = if *name == XReserveComponent::used_nonces_slot()
-            || *name == XReserveComponent::xreserve_attesters_slot()
-        {
-            StorageSlot::with_map((*name).clone(), StorageMap::new())
-        } else if *name == XReserveComponent::domain_config_slot() {
-            StorageSlot::with_value((*name).clone(), Word::from([DUMMY_DOMAIN, 0, 0, 0]))
-        } else {
-            StorageSlot::with_empty_value((*name).clone())
-        };
-        slots.push(slot);
-    }
-    AccountComponent::new(
-        library,
-        slots,
-        AccountComponentMetadata::new("xusdc-builder-api-xreserve"),
-    )
-    .context("binding the xreserve library + composition slots as a component")
-}
-
-/// Builds a `FungibleFaucet` with configurable decimals/symbol — the fixture for the builder's
-/// token-config guard tests (`decimals=6`, the shipped `USDCX` symbol guard constant).
-fn production_faucet(
-    is_max_supply_mutable: bool,
-    decimals: u8,
-    symbol: &str,
-) -> Result<FungibleFaucet> {
-    FungibleFaucet::builder()
-        .name(TokenName::new("USDCx")?)
-        .symbol(TokenSymbol::new(symbol)?)
-        .decimals(decimals)
-        .max_supply(AssetAmount::new(1_000_000).context("invalid max_supply")?)
-        .token_supply(AssetAmount::new(0).context("invalid token_supply")?)
-        .is_max_supply_mutable(is_max_supply_mutable)
-        .build()
-        .context("failed to build FungibleFaucet")
-}
-
 /// The standard production builder: the seeded principal ids (owner = id(1), DOM_PAUSER = id(2),
 /// DOM_MANAGER = id(3), BLK_MANAGER = id(4)) plus the REQUIRED build-seeded domain config — every
 /// construction in this suite goes through here unless the test's very point is omitting the domain
 /// config. Neither the faucet nor the `xreserve` component is a builder input any more — `new` builds
 /// the fixed-identity USDCx faucet (mutable max supply) and assembles the one valid component itself
-/// — so this fixture supplies only the fixed supply parameters. The `_faucet` / `_xreserve_component`
-/// arguments are retained (ignored) so the many call sites keep their shape.
-fn production_builder(
-    _faucet: FungibleFaucet,
-    _xreserve_component: AccountComponent,
-) -> XReserveStablecoinBuilder {
+/// — so this fixture supplies only the fixed supply parameters.
+fn production_builder() -> XReserveStablecoinBuilder {
     XReserveStablecoinBuilder::new(
         AssetAmount::new(1_000_000).expect("the fixed test max supply is valid"),
         AssetAmount::new(0).expect("a zero token supply is valid"),
@@ -154,12 +85,9 @@ fn find_value_slot(components: &[AccountComponent], name: &StorageSlotName) -> O
 /// suites.
 #[test]
 fn build_produces_attestation_gated_public_faucet() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let components = production_builder(faucet, xreserve_component)
-        .build_components()
-        .context(
-            "the default production builder must compose an attestation-gated Public faucet",
-        )?;
+    let components = production_builder().build_components().context(
+        "the default production builder must compose an attestation-gated Public faucet",
+    )?;
 
     let attestation_root = resolve_proc_root(&components, ATTESTATION_MINT_POLICY_PROC_PATH)
         .context("the composed set must carry the attestation mint policy proc")?;
@@ -203,8 +131,7 @@ fn production_seeds_min_burn_size() -> Result<()> {
         MIN_BURN > u32::MAX as u64,
         "MIN_BURN must exceed u32::MAX so the encoding test catches u32 truncation",
     );
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let components = production_builder(faucet, xreserve_component)
+    let components = production_builder()
         .min_burn_size(MIN_BURN)
         .build_components()
         .context("production build_components must compose")?;
@@ -237,8 +164,7 @@ fn production_seeds_min_burn_size() -> Result<()> {
 /// is otherwise valid, so the sub-floor seed is the SOLE reason for rejection.
 #[test]
 fn build_rejects_zero_min_burn_size() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let err = production_builder(faucet, xreserve_component)
+    let err = production_builder()
         .min_burn_size(0)
         .build_components()
         .expect_err("a min_burn_size of 0 must be rejected at build time (zero-floor invariant)");
@@ -260,8 +186,7 @@ fn build_rejects_zero_min_burn_size() -> Result<()> {
 #[test]
 fn build_rejects_min_burn_size_exceeding_max() -> Result<()> {
     let over_max = AssetAmount::MAX.as_u64() + 1;
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let err = production_builder(faucet, xreserve_component)
+    let err = production_builder()
         .min_burn_size(over_max)
         .build_components()
         .expect_err("a min_burn_size exceeding AssetAmount::MAX must be rejected at build time");
@@ -304,8 +229,7 @@ fn build_rejects_missing_domain_config() -> Result<()> {
 /// (hi = packed felts 0..4 / wire bytes 0..16, lo = felts 4..8).
 #[test]
 fn build_seeds_the_domain_config_slots() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let components = production_builder(faucet, xreserve_component)
+    let components = production_builder()
         .build_components()
         .context("production build_components must compose")?;
 
@@ -350,8 +274,7 @@ fn build_seeds_the_domain_config_slots() -> Result<()> {
 /// `administrator_has_no_pause_path` / `administrator_has_no_unpause_path` (pause_admin.rs) and the effects suite.
 #[test]
 fn builder_installs_the_stock_managers_with_their_roles_assigned() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let components = production_builder(faucet, xreserve_component)
+    let components = production_builder()
         .build_components()
         .context("production build_components must compose")?;
 
@@ -405,8 +328,7 @@ fn builder_installs_the_stock_managers_with_their_roles_assigned() -> Result<()>
 /// moment `Pausable` leaves the component list.
 #[test]
 fn production_components_carry_is_paused_slot() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let components = production_builder(faucet, xreserve_component)
+    let components = production_builder()
         .build_components()
         .context("production build_components must compose")?;
 
@@ -434,8 +356,7 @@ fn production_components_carry_is_paused_slot() -> Result<()> {
 /// accessor: a stock rename must fail THIS test, not be silently tracked.
 #[test]
 fn production_components_carry_mutability_config_slot() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let components = production_builder(faucet, xreserve_component)
+    let components = production_builder()
         .build_components()
         .context("production build_components must compose")?;
 
@@ -500,9 +421,12 @@ fn production_components_carry_mutability_config_slot() -> Result<()> {
 /// failure.
 #[test]
 fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> {
-    let (faucet, xreserve_component) = faucet_and_component(true)?;
-    let xreserve_code = xreserve_component.component_code().clone();
-    let components = production_builder(faucet, xreserve_component)
+    // The same component the builder assembles internally, so its code is the code the composition
+    // must carry exactly once.
+    let xreserve_code = AccountComponent::from(XReserveComponent::assemble())
+        .component_code()
+        .clone();
+    let components = production_builder()
         .build_components()
         .context("the production composition must build")?;
 

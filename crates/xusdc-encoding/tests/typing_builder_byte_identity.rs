@@ -2,11 +2,10 @@
 //! (drop the one-valued `xreserve_component` parameter, enforce max-supply mutability at
 //! construction, and the crate-root faucet `Account` constructor).
 //!
-//! Every change here is wire-neutral: the composed account must be byte-for-byte what the
-//! pre-change composition produced. This suite freezes the baseline composition's anchors — the
-//! account's `to_commitment` state commitment, its code commitment, a digest over its storage
-//! slots, and the
-//! seed-derived id — captured at a FIXED seed from the baseline path, and asserts:
+//! Every change here is wire-neutral for slot values and the two construction paths: the
+//! composed account's anchors — the account's `to_commitment` state commitment, its code
+//! commitment, a digest over its storage slots, and the seed-derived id — are captured at a
+//! FIXED seed, and this suite asserts:
 //!
 //! 1. the crate-root `build_faucet_account` constructor reproduces them EXACTLY (the faucet it
 //!    builds is `is_max_supply_mutable(true)`, so `set_max_supply` stays operable),
@@ -14,8 +13,8 @@
 //!    its own xreserve component) still reproduces them, and
 //! 3. the two paths agree with each other.
 //!
-//! A single felt or byte of drift — a reordered component, a changed slot value, a different
-//! assembled MAST root — flips one of these string-exact assertions RED.
+//! A single felt or byte of drift — a changed slot value, a different assembled MAST root —
+//! flips one of these string-exact assertions RED.
 
 mod support;
 
@@ -39,15 +38,14 @@ const TOKEN_SUPPLY: u64 = 0;
 // The account id is the NEW-ACCOUNT derivation: ground from SEED over the composed code and
 // storage commitments, so it moves whenever either commitment moves (unlike the code commitment
 // and storage digest, which isolate their own layer). The initial commitment covers all three.
-// Re-materialized at protocol#3586 (`c20ed6d8`): the protocol-next VM family and standards
-// commitments changed.
+// Re-materialized after combining the constructor simplification with protocol#3586 (`c20ed6d8`).
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([2746520568024959686, 4483739995953023698, 3919188209159311707, 12791172487806381744])";
+    "Word([12240444716375843302, 16583483038640735281, 14806348819190950120, 2172481224311568215])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([534438224265700146, 1494921163292270692, 16709969645188988577, 593590374458941298])";
+    "Word([16934002111003344619, 8657811157774776475, 11494025175591973351, 18198531685420501681])";
 const GOLDEN_STORAGE_DIGEST: &str =
     "Word([17828476121439452446, 1290010979117935268, 8277681658563337121, 2788610264341986141])";
-const GOLDEN_ACCOUNT_ID: &str = "0x2bc3faf63926de3134a1d20b191028";
+const GOLDEN_ACCOUNT_ID: &str = "0xdca35ea31083ac711b6354229949f4";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.

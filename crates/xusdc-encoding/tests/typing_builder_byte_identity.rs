@@ -40,33 +40,36 @@ const TOKEN_SUPPLY: u64 = 0;
 // storage commitments, so it moves whenever either commitment moves (unlike the code commitment
 // and storage digest, which isolate their own layer). The state commitment covers all three.
 //
-// Re-materialized at the v0.16.0-rc.3 protocol bump. The code commitment moved because six of the
-// account's procedure roots moved (the fungible mint/burn dispatch rewrite moved
-// `mint_and_send`/`receive_and_burn`; the network-account `auth_network_transaction` moved with the
-// added sponsorship-policy/fee-asset enforcement; the upstream sweep moved `get_min_burn_amount`
-// and the transfer-policy check; and `check_policy` moved because this migration edits
-// `attestation_verify`, which it invokes). The storage digest moved for TWO reasons — the active
-// mint-policy root moved (it is stored as `check_policy`'s MAST root) AND the rc.3 bump ADDED the
-// `sponsor_at_most_collected_fees` slot (54 -> 55). The account id and state commitment move with
-// both. `check_policy` is measured here against the migration's fail-closed signature-verify
-// stand-in; the later ECDSA-rebuild slice rewrites `attestation_verify`, so these anchors MOVE
-// AGAIN and must be re-materialized a second time then.
+// Re-materialized TWICE on this branch, and this is the second time — the one the rc.3
+// re-materialization said would come: "the later ECDSA-rebuild slice rewrites `attestation_verify`,
+// so these anchors MOVE AGAIN". They did, and only for that reason.
 //
-// NOT RATIFIED — re-derived after this branch was refreshed onto `implementation`, which moved the
-// composition again under the values a human had already ratified against the pre-refresh base:
-// #112 binds the `SET_ATTESTER` note to its target faucet, moving that note-script root and with it
-// the `allowed_note_scripts` slot the storage digest covers, and #120 derives the faucet account id
-// from the composed code and storage commitments. So the storage digest, the account id and the
-// state commitment below are MEASURED, not accepted — a human must re-ratify them at PR assembly.
-// The code commitment is unaffected by either (neither touches account code) and holds at its
-// already-ratified rc.3 value.
+// Cause, per anchor:
+// - CODE COMMITMENT: `check_policy`'s MAST root moved, because it invokes `attestation_verify`,
+//   whose `verify_attestation` now stages the attested key and signature into the advice provider
+//   and calls the core library's `ecdsa_k256_keccak::verify_bytes` instead of the removed
+//   prehash primitive. Different instructions, therefore a different root. No procedure was added
+//   or removed: the callable surface and the note allowlist are unchanged (their own tripwires
+//   still pass unedited).
+// - STORAGE DIGEST: the active mint policy is STORED as `check_policy`'s MAST root, so a moved
+//   policy root moves the slot that holds it. No slot was added, removed or reordered.
+// - ACCOUNT ID and STATE COMMITMENT: derived from the two above, so they move with them.
+//
+// The rc.4 protocol re-pin itself moved NOTHING here — these anchors held byte-identical across it,
+// which is what proved that bump mechanical.
+//
+// NOT RATIFIED — every value below is MEASURED from this composition, not accepted: the earlier
+// refresh onto `implementation` (#112 binding the `SET_ATTESTER` note to its target faucet, #120
+// deriving the faucet account id from the composed commitments) already moved them out from under
+// the values a human had ratified, and the signature rebuild moved them again. A human must
+// re-ratify all four at PR assembly.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([5043968617810723078, 4494464561309402642, 12722296328734308372, 15380588846935581424])";
+    "Word([17519551828931899206, 6218596112168707637, 17898439756689760073, 7982499419310722580])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([6071254445460505704, 12653310514341131241, 4080738568322131054, 12639662269255750522])";
+    "Word([7682244703677211129, 7609356876255543784, 605992994751440827, 11137402984090280590])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([7915315767792534777, 12171248434528243376, 17101372089779477071, 7649899744554499996])";
-const GOLDEN_ACCOUNT_ID: &str = "0xc2d736eba3aec4713303c10f68db5b";
+    "Word([4363712052244048219, 2641855597089613738, 1614590384134086560, 11013628455427548577])";
+const GOLDEN_ACCOUNT_ID: &str = "0x5e4323107acb2af1327a0c2a3efe63";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.

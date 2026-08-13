@@ -1,25 +1,30 @@
 # xreserve::attestation_verify
 #
 # The mint-time deposit-attestation check. Its contract is documented on `verify_attestation`
-# itself; what this file is for is that a mint proceeds only for a deposit Circle actually signed.
+# itself; this file ensures a mint proceeds only for a deposit Circle actually signed.
 
 use miden::protocol::active_account
-use miden::core::crypto::hashes::keccak256
+use miden::core::crypto::dsa::ecdsa_k256_keccak
 use miden::core::crypto::hashes::poseidon2
 use miden::core::word
+use miden::standards::utils
 use {XRESERVE_ATTESTERS_SLOT, ATTESTER_ENABLED_MARKER} from xreserve::attester_admin
 
 # CONSTANTS
 # =================================================================================================
 
-# `verify_attestation` locals: the keccak digest is the only value that needs a memory home — the
-# precompile wrappers take their other operands as pointers and leave the stack below their inputs
-# intact, so the caller's pubkey and signature pointers simply ride on the operand stack.
-const DIGEST_LO_LOC = 0
-const DIGEST_HI_LOC = 4
-
 # The number of elements in a packed secp256k1 pubkey.
 const PUBKEY_FELTS = 16
+
+# One 32-byte ECDSA scalar occupies eight u32 limbs, so the signature's `r` sits at offset 0 of the
+# attested signature region and its `s` one scalar further in.
+const SIGNATURE_SCALAR_LIMBS = 8
+
+# `verify_signature` locals: the two signature scalars rewritten into the limb order the verifier
+# reads them in. This is the only value in this file that needs a memory home — every other operand
+# is a pointer that rides the operand stack.
+const NATIVE_SCALARS_LOC = 0
+const NATIVE_SCALARS_FELTS = SIGNATURE_SCALAR_LIMBS + SIGNATURE_SCALAR_LIMBS
 
 # ERRORS
 # =================================================================================================
@@ -27,31 +32,21 @@ const PUBKEY_FELTS = 16
 # The candidate pubkey's Poseidon2 commitment is not enabled in xReserveAttesters.
 const ERR_XRESERVE_DISALLOWED_PUB_KEY = "deposit attester pubkey commitment is not allowlisted"
 
-# The ECDSA signature does not verify over keccak256(payload) for the candidate pubkey.
-const ERR_XRESERVE_SIG_INVALID = "deposit attestation signature verification failed"
-
-# TEMPORARY, RELEASE-BLOCKING. The on-chain signature primitive is unavailable, so the mint-time
-# attestation check refuses every attestation. A DISTINCT identity from ERR_XRESERVE_SIG_INVALID so
-# an unavailable verifier can never be mistaken for a rejected signature.
-const ERR_XRESERVE_SIG_VERIFY_UNAVAILABLE = "deposit attestation signature verification is temporarily unavailable"
+# A signature scalar limb read out of the attested signature region is not a valid u32, so it
+# cannot be a limb of a 32-byte scalar and the byte-order rewrite below would be meaningless.
+const ERR_XRESERVE_SIG_LIMB = "deposit attestation signature limb is not a valid u32"
 
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Verifies the mint-time deposit attestation: keccak the payload, gate the attester pubkey
-#! against the xReserveAttesters allowlist, and ECDSA-verify the signature over the keccak
-#! digest.
+#! Verifies the mint-time deposit attestation: gate the attester pubkey against the
+#! xReserveAttesters allowlist, then ECDSA-verify the signature over keccak256 of the payload.
 #!
-#! TEMPORARY (release-blocking): the signature-verify step is currently a fail-closed stand-in that
-#! refuses every attestation with ERR_XRESERVE_SIG_VERIFY_UNAVAILABLE, because the on-chain
-#! prehash-ECDSA primitive it called was removed by the miden-vm 0.29 upgrade. The real signature
-#! path is restored in a later work item; until then no attestation can pass this procedure.
-#!
-#! The caller owns the pubkey and signature bytes and passes pointers to them; this procedure
-#! reads nothing from the advice provider, so whatever memory the caller hash-verified is exactly
-#! what gets checked here. The SAME pubkey pointer feeds both the allowlist commitment
-#! (pubkey_commitment) and the signature check (verify_prehash), so an allowlisted commitment
-#! cannot be paired with a foreign signature.
+#! The caller owns the payload, the pubkey and the signature bytes and passes pointers to them.
+#! Everything this procedure checks is read from that memory, which the caller has hash-verified
+#! against the note's own attachment commitment, so what the note committed to is exactly what gets
+#! checked here. The SAME pubkey pointer feeds both the allowlist commitment (pubkey_commitment)
+#! and the signature check, so an allowlisted commitment cannot be paired with a foreign key.
 #!
 #! Inputs:  [intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 #! Outputs: []
@@ -66,56 +61,39 @@ const ERR_XRESERVE_SIG_VERIFY_UNAVAILABLE = "deposit attestation signature verif
 #!
 #! Panics if:
 #! - the candidate pubkey's commitment is not allowlisted (ERR_XRESERVE_DISALLOWED_PUB_KEY).
-#! - the signature does not verify over the payload digest (ERR_XRESERVE_SIG_INVALID).
-#!
-#! Locals:
-#! - 0..8: DIGEST
+#! - a signature scalar limb is not a valid u32 (ERR_XRESERVE_SIG_LIMB).
+#! - the signature does not verify over the payload digest for the candidate pubkey, or the key or
+#!   scalars are malformed — the verifier traps with its own error identity.
 #!
 #! Invocation: exec
-@locals(8)
 pub proc verify_attestation
-    # keccak the full payload -> 8-limb digest, stored to the digest local region. hash_bytes
-    # consumes [intent_ptr, intent_num_bytes] and leaves everything below it untouched, so the two
-    # pointers survive the precompile call on the operand stack.
-    exec.keccak256::hash_bytes
-    # => [DIGEST_U32[8], pubkey_ptr, signature_ptr]
-
-    loc_storew_le.DIGEST_LO_LOC dropw
-    loc_storew_le.DIGEST_HI_LOC dropw
-    # => [pubkey_ptr, signature_ptr]
-
     # allowlist gate: commit to the caller's pubkey, then read
-    # xReserveAttesters[PUBKEY_COMMITMENT].
-    dup exec.pubkey_commitment
-    # => [PUBKEY_COMMITMENT, pubkey_ptr, signature_ptr]
+    # xReserveAttesters[PUBKEY_COMMITMENT]. The commitment survives the lookup because the
+    # signature check needs the very same Word.
+    dup.2 exec.pubkey_commitment
+    # => [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
+
+    dupw
+    # => [PUBKEY_COMMITMENT, PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr,
+    #     signature_ptr]
 
     push.XRESERVE_ATTESTERS_SLOT[0..2]
-    # => [slot_id_suffix, slot_id_prefix, PUBKEY_COMMITMENT, pubkey_ptr, signature_ptr]
+    # => [slot_id_suffix, slot_id_prefix, PUBKEY_COMMITMENT, PUBKEY_COMMITMENT, intent_ptr,
+    #     intent_num_bytes, pubkey_ptr, signature_ptr]
 
     exec.active_account::get_map_item
-    # => [MARKER, pubkey_ptr, signature_ptr]
+    # => [MARKER, PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 
     # the stored value must be exactly the enabled marker -- a disabled row and an absent row both
     # read as EMPTY_WORD, meaning the candidate pubkey's commitment is not allowlisted.
     push.ATTESTER_ENABLED_MARKER exec.word::eq
-    # => [is_allowed, pubkey_ptr, signature_ptr]
+    # => [is_allowed, PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 
     assert.err=ERR_XRESERVE_DISALLOWED_PUB_KEY
-    # => [pubkey_ptr, signature_ptr]
+    # => [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 
-    # ============================================================================================
-    # TEMPORARY FAIL-CLOSED STAND-IN — RELEASE BLOCKER, MUST BE DELETED BEFORE ANY RELEASE.
-    # ============================================================================================
-    # The signature primitive this step used, the exported prehash ECDSA verify, was removed by the
-    # miden-vm 0.29 upgrade. Rebuilding the real on-chain signature verification is a separate,
-    # later work item; until it lands this stand-in refuses EVERY attestation unconditionally, so
-    # minting against a deposit attestation is disabled while it is in the tree. It traps with its
-    # OWN error identity, distinct from a real signature rejection, so no negative test can mistake
-    # an unavailable verifier for a rejected signature and no forged or tampered input can pass.
-    drop drop
+    exec.verify_signature
     # => []
-    push.0 assert.err=ERR_XRESERVE_SIG_VERIFY_UNAVAILABLE
-    # => [] (unreachable -- the assert above always traps)
 end
 
 #! Computes the commitment of the provided public key.
@@ -134,4 +112,187 @@ end
 pub proc pubkey_commitment
     push.PUBKEY_FELTS swap exec.poseidon2::hash_elements
     # => [PUBKEY_COMMITMENT]
+end
+
+# INTERNAL PROCEDURES
+# =================================================================================================
+
+#! ECDSA-verifies the attested signature over keccak256 of the payload, from the caller's memory.
+#!
+#! THE ONE SEAM. `ecdsa_k256_keccak::verify_bytes` takes the public key and the signature scalars
+#! from the ADVICE stack, which the host controls; only the key is bound, by PK_COMM. Handing it
+#! host-supplied scalars would mean the signature the note records need not be the signature that
+#! was verified. This procedure closes that: it copies the caller's own hash-verified bytes into the
+#! advice provider and pushes them onto the advice stack immediately before the call, so the values
+#! consumed are provably the attested ones. Everything that arrangement needs is inside this one
+#! procedure, because a later protocol release is expected to encapsulate it upstream and then this
+#! body — not its callers — is what gets replaced.
+#!
+#! Two properties make the staging binding rather than merely convenient:
+#! - each region is keyed in the advice map by its OWN Poseidon2 commitment, and `adv.insert_mem`
+#!   refuses a key that is already present with different values. So a host that pre-seeded either
+#!   key either seeded the identical bytes, or the insert aborts the transaction. Substituting
+#!   values would take a Poseidon2 collision.
+#! - `adv.push_mapval` PREPENDS to the advice stack, and the verifier consumes exactly the 32
+#!   elements pushed here (16 key limbs, then 16 scalar limbs). Anything the host staged earlier
+#!   stays below them and is never read, so an advice stack seeded in advance cannot interleave.
+#!
+#! The message is not hashed here: the verifier keccaks the byte range it is handed, and it is
+#! handed the caller's payload pointer and length unchanged, so the bytes it hashes are the bytes
+#! the attestation covers.
+#!
+#! Inputs:  [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
+#! Outputs: []
+#!
+#! Where:
+#! - PUBKEY_COMMITMENT is the Poseidon2 commitment of the 16 pubkey limbs at pubkey_ptr, which is
+#!   both the allowlist key and the PK_COMM the verifier binds the advice-supplied key to.
+#! - intent_ptr / intent_num_bytes are the payload extent the attester signed.
+#! - pubkey_ptr / signature_ptr are the hash-verified pubkey and signature regions.
+#!
+#! Panics if:
+#! - a signature scalar limb is not a valid u32 (ERR_XRESERVE_SIG_LIMB).
+#! - the key, the scalars, or the signature itself do not verify (the verifier's own errors).
+#!
+#! Locals:
+#! - 0..16: the two signature scalars in native limb order
+#!
+#! Invocation: exec
+@locals(16)
+proc verify_signature
+    # ---- the signature scalars, rewritten into the verifier's limb order ----
+
+    dup.7 locaddr.NATIVE_SCALARS_LOC
+    # => [scalars_ptr, signature_ptr, PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr,
+    #     signature_ptr]
+
+    exec.store_native_scalars
+    # => [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
+
+    # ---- stage the scalars, then the key, on the advice stack ----
+
+    # the scalars go first because push_mapval prepends: the key must end up on top, which is the
+    # order the verifier reads them in.
+    locaddr.NATIVE_SCALARS_LOC dup add.NATIVE_SCALARS_FELTS swap
+    # => [scalars_ptr, scalars_end, PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr,
+    #     signature_ptr]
+
+    push.NATIVE_SCALARS_FELTS locaddr.NATIVE_SCALARS_LOC exec.poseidon2::hash_elements
+    # => [SCALARS_COMMITMENT, scalars_ptr, scalars_end, PUBKEY_COMMITMENT, intent_ptr,
+    #     intent_num_bytes, pubkey_ptr, signature_ptr]
+
+    exec.stage_region_on_advice
+    # => [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
+
+    # the key doubles as the verifier's PK_COMM operand, and staging consumes it, so keep a copy.
+    dupw
+    # => [PUBKEY_COMMITMENT, PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr,
+    #     signature_ptr]
+
+    dup.10 dup add.PUBKEY_FELTS swap movdn.5 movdn.5
+    # => [PUBKEY_COMMITMENT, pubkey_start, pubkey_end, PUBKEY_COMMITMENT, intent_ptr,
+    #     intent_num_bytes, pubkey_ptr, signature_ptr]
+
+    exec.stage_region_on_advice
+    # => [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
+
+    # ---- verify ----
+
+    movup.7 drop movup.6 drop
+    # => [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes]
+
+    exec.ecdsa_k256_keccak::verify_bytes
+    # => []
+end
+
+#! Publishes a memory region on the advice stack under a caller-supplied key.
+#!
+#! The key is expected to be a commitment to the region's own contents, which is what makes the
+#! insert non-substitutable: `adv.insert_mem` accepts an already-present key only when it maps to
+#! the identical values, and traps otherwise.
+#!
+#! Inputs:  [KEY, start_ptr, end_ptr]
+#! Outputs: []
+#!
+#! Where:
+#! - start_ptr / end_ptr bound the region as memory[start_ptr..end_ptr], in elements.
+#!
+#! Panics if:
+#! - the advice map already holds KEY with different values (the advice provider's own error).
+#!
+#! Invocation: exec
+proc stage_region_on_advice
+    adv.insert_mem
+    # => [KEY, start_ptr, end_ptr]
+
+    adv.push_mapval
+    # => [KEY, start_ptr, end_ptr]
+
+    dropw drop drop
+    # => []
+end
+
+#! Rewrites the attested signature's two scalars into the limb order the ECDSA verifier reads.
+#!
+#! Inputs:  [dst_ptr, signature_ptr]
+#! Outputs: []
+#!
+#! Where:
+#! - dst_ptr is a 16-element region receiving `r` then `s`.
+#! - signature_ptr is the attested signature region; its `v` byte is not part of the witness and is
+#!   left where it is.
+#!
+#! Panics if:
+#! - a limb is not a valid u32 (ERR_XRESERVE_SIG_LIMB).
+#!
+#! Invocation: exec
+proc store_native_scalars
+    dup.1 dup.1
+    # => [dst_ptr, signature_ptr, dst_ptr, signature_ptr]
+
+    exec.store_native_scalar
+    # => [dst_ptr, signature_ptr]
+
+    add.SIGNATURE_SCALAR_LIMBS swap add.SIGNATURE_SCALAR_LIMBS swap
+    # => [dst_ptr + 8, signature_ptr + 8]
+
+    exec.store_native_scalar
+    # => []
+end
+
+#! Rewrites one 32-byte scalar into the limb order the ECDSA verifier reads.
+#!
+#! The attestation wire carries a scalar the way keccak carries bytes: four wire bytes per felt,
+#! most significant limb first. The verifier reads scalars as numeric u32 limbs, least significant
+#! limb first. So the two pointers walk in opposite directions and every limb is byte-swapped on
+#! the way — the same rewrite the verifier applies to its own keccak digest.
+#!
+#! Inputs:  [dst_ptr, src_ptr]
+#! Outputs: []
+#!
+#! Panics if:
+#! - a limb is not a valid u32 (ERR_XRESERVE_SIG_LIMB).
+#!
+#! Invocation: exec
+proc store_native_scalar
+    add.SIGNATURE_SCALAR_LIMBS sub.1
+    # => [write_ptr, src_ptr]
+
+    repeat.SIGNATURE_SCALAR_LIMBS
+        dup.1 mem_load u32assert.err=ERR_XRESERVE_SIG_LIMB
+        # => [wire_limb, write_ptr, src_ptr]
+
+        exec.utils::swap_u32_bytes
+        # => [native_limb, write_ptr, src_ptr]
+
+        dup.1 mem_store
+        # => [write_ptr, src_ptr]
+
+        sub.1 swap add.1 swap
+        # => [write_ptr - 1, src_ptr + 1]
+    end
+    # => [write_ptr, src_ptr]
+
+    drop drop
+    # => []
 end

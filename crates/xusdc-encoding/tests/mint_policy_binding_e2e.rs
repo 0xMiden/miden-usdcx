@@ -78,13 +78,7 @@ async fn mint_rejects_an_amount_mismatch(
         &AttachmentPlan::default(),
         rng_seed,
     )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
-    )
-    .await
+    expect_reject(&mut pf, note, &payload, &ERR_ECDSA_VERIFY_FAILED).await
 }
 
 /// A note whose output tag does not target the attested recipient rejects with the tag binding
@@ -515,15 +509,20 @@ async fn mint_rejects_a_non_u32_hook_data_len_limb() -> Result<()> {
 #[rstest]
 #[case::pubkey(
     ATTESTATION_PUBKEY_FELT_OFF,
-    "ERR_XRESERVE_DISALLOWED_PUB_KEY",
+    shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY"),
     34,
     101
 )]
-#[case::signature(ATTESTATION_SIGNATURE_FELT_OFF, "ERR_XRESERVE_SIG_INVALID", 35, 102)]
+#[case::signature(
+    ATTESTATION_SIGNATURE_FELT_OFF,
+    &ERR_ECDSA_VERIFY_FAILED,
+    35,
+    102
+)]
 #[tokio::test]
 async fn mint_rejects_a_tampered_attestation_sub_region(
     #[case] felt_off: usize,
-    #[case] expected_err: &str,
+    #[case] expected_err: &'static MasmError,
     #[case] nonce_variant: u8,
     #[case] rng_seed: u64,
 ) -> Result<()> {
@@ -542,7 +541,7 @@ async fn mint_rejects_a_tampered_attestation_sub_region(
         },
         rng_seed,
     )?;
-    expect_reject(&mut pf, note, &payload, shell_error_by_name(expected_err)).await
+    expect_reject(&mut pf, note, &payload, expected_err).await
 }
 
 /// The other half of the isolation proof: a tampered INTENT byte — the attestation section left
@@ -567,13 +566,7 @@ async fn mint_rejects_a_tampered_intent_byte() -> Result<()> {
         &AttachmentPlan::default(),
         103,
     )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &carried,
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
-    )
-    .await
+    expect_reject(&mut pf, note, &carried, &ERR_ECDSA_VERIFY_FAILED).await
 }
 
 // PAUSE HALT — the dispatcher gate (execute_mint_policy runs assert_not_paused FIRST)
@@ -737,14 +730,22 @@ async fn mint_note_routes_to_the_faucet_network_account() -> Result<()> {
 ///
 /// Every operand the policy verifies — the deposit intent, the operator fee, the attester pubkey,
 /// the signature — is read out of memory the policy hash-verified against the note's own
-/// attachment commitments. The advice provider is host-controlled, so if any stage still popped
-/// from it, a prover could hand the verify a different payload than the one the note committed to.
+/// attachment commitments. The advice provider is host-controlled, so if any stage took an operand
+/// FROM it, a prover could hand the verify different bytes than the one the note committed to.
 ///
-/// The behavioral half of that guarantee is what this test covers: a hostile stack changes
-/// nothing. It cannot cover the whole of it, because the divergence a real attacker exploits is a
-/// prover serving different bytes on a second read of the same advice-map key, and MockChain's
-/// advice provider is a static map that cannot model it. What closes the gap is a source fact
-/// rather than a behavior: no `.masm` under `asm/` contains an advice-read instruction at all.
+/// One stage does read advice, and cannot avoid it: the core-library ECDSA verifier takes the
+/// public key and the signature scalars off the advice stack. `verify_signature` is what makes that
+/// safe — it publishes the note's own hash-verified bytes into the advice provider and pushes them
+/// immediately before the call, so the 32 elements the verifier consumes are the staged ones. This
+/// test is the behavioral half of that claim: 41 junk felts staged in advance change nothing,
+/// because the push PREPENDS and the junk stays below what the verifier reads.
+///
+/// It cannot cover the whole of it, because the divergence a real attacker exploits is a prover
+/// serving different bytes on a second read of the same advice-map key, and MockChain's advice
+/// provider is a static map that cannot model it. What closes that gap is a source fact rather
+/// than a behavior: the only advice-map key the faucet ever reads under is a Poseidon2 commitment
+/// to the very bytes it just inserted there, and `adv.insert_mem` refuses a key already present
+/// with different values.
 #[tokio::test]
 async fn mint_ignores_a_hostile_advice_stack() -> Result<()> {
     let mut pf = fixture()?;

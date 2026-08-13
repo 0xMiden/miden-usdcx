@@ -351,8 +351,8 @@ pub fn oversized_hook_data_payload() -> Vec<u8> {
 // check).
 
 /// Verifies a 65-byte `r‖s‖v` attestation over `digest` under the 33-byte compressed `pubkey`
-/// (`verify_prehash` — the digest is signed as-is, exactly as the on-chain `verify_prehash` in the
-/// faucet's attestation check consumes the keccak precompile's output). Returns `false` on any
+/// (k256's `verify_prehash` — the digest is verified as-is, exactly as the faucet's on-chain
+/// attestation check verifies over the keccak precompile's output). Returns `false` on any
 /// malformed input rather than panicking, so a negative test cannot pass merely because the oracle
 /// blew up.
 pub fn verify_attestation(pubkey: &[u8; 33], digest: &[u8; 32], attestation: &[u8; 65]) -> bool {

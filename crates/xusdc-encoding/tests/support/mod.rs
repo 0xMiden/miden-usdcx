@@ -137,7 +137,7 @@ pub use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
 /// pattern). The implementation must declare byte-identical strings in MASM. The two
 /// amount/fee errors and every other row are pinned here so the
 /// behavior tests can name their EXACT expected error.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 19] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
     // the packed-memory primitives the DC-14 preimage writer copies through (packed_mem.masm)
     (
         "ERR_XRESERVE_MINT_INTENT_LIMB",
@@ -165,25 +165,17 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 19] = [
         "ERR_XRESERVE_NONCE_REPLAY",
         MasmError::from_static_str("deposit intent nonce has already been used"),
     ),
-    // The two attestation rejects (attestation_verify.masm). Parity-pinned against the MASM consts.
+    // The attestation rejects the faucet still OWNS (attestation_verify.masm). Parity-pinned
+    // against the MASM consts. The signature verdict itself is no longer one of them: the ECDSA
+    // verifier traps internally rather than returning a flag, so a bad signature carries the
+    // verifier's own identity — see `ECDSA_VERIFY_FAILED`.
     (
         "ERR_XRESERVE_DISALLOWED_PUB_KEY",
         MasmError::from_static_str("deposit attester pubkey commitment is not allowlisted"),
     ),
     (
-        "ERR_XRESERVE_SIG_INVALID",
-        MasmError::from_static_str("deposit attestation signature verification failed"),
-    ),
-    // TEMPORARY, RELEASE-BLOCKING — the fail-closed signature-verify stand-in's distinct error
-    // (attestation_verify.masm). The on-chain prehash-ECDSA primitive was removed by the miden-vm
-    // 0.29 upgrade, so the stand-in denies every attestation with this identity until the real
-    // signature path is rebuilt. Registered here so the `constant_parity` MASM↔Rust tripwire stays
-    // green; removed together with the stand-in.
-    (
-        "ERR_XRESERVE_SIG_VERIFY_UNAVAILABLE",
-        MasmError::from_static_str(
-            "deposit attestation signature verification is temporarily unavailable",
-        ),
+        "ERR_XRESERVE_SIG_LIMB",
+        MasmError::from_static_str("deposit attestation signature limb is not a valid u32"),
     ),
     // The fee gate (deposit_intent_parser.masm): the faucet pays no relayer fee, so the parser rejects
     // a non-zero advice feeAmount; parity-pinned against the MASM const.
@@ -262,6 +254,16 @@ pub fn err_burn_below_min_burn_amount() -> MasmError {
         "amount to be burned must meet or exceed specified minimum burn amount",
     )
 }
+
+/// The core library's own ECDSA reject (`miden::core::crypto::dsa::ecdsa_k256_keccak`) — a
+/// signature that is well-formed but does not verify for the presented key and message.
+///
+/// This identity is upstream's, not the faucet's, and that is forced rather than chosen: the
+/// verifier the faucet calls traps on a failed verification instead of returning a flag, so no
+/// faucet-owned assert ever runs. The reject itself is unchanged — the same inputs are refused,
+/// atomically, with nothing written.
+pub static ERR_ECDSA_VERIFY_FAILED: MasmError =
+    MasmError::from_static_str("ECDSA verification failed: x(VERIFY_POINT) != SIG_R");
 
 /// Looks up an expected faucet-owned MASM error by name. Errors raised inside the LINKED protocol
 /// and standards libraries are not here — a test that expects one names that library's own

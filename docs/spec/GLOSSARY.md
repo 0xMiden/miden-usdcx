@@ -264,7 +264,7 @@ are open items with Circle). The ones referenced in this repo:
 | IMPL-DEV-2 | On-chain role symbols `DOM_PAUSER`/`DOM_MANAGER` are ≤12-char aliases of Circle's `DOMAIN_PAUSER`/`DOMAIN_MANAGER` (Miden's `RoleSymbol` limit). |
 | IMPL-DEV-3 | Per-setter admin roles were replaced with a single administrator gate: the setters carry no role of their own and resolve to the built-in `ADMIN` role, seeded on the bootstrap administrator's account (which also matches Circle). `ADMIN` membership is account-bound, and since the admin-surface finalization it is the account's ONLY authority handle — there is no ownership lifecycle beside it; see `IMPL-DEV-23`. |
 | IMPL-DEV-4 | The burn-pause assertion emits the stock `ERR_PAUSABLE_IS_PAUSED`, not a custom string. |
-| IMPL-DEV-6 | Attestation uses a Poseidon2 commitment + keccak256 precompile + `verify_prehash` instead of EVM `ecrecover`; the signature `v` byte is unused. |
+| IMPL-DEV-6 | Attestation uses a Poseidon2 commitment + keccak256 precompile + the core library's `ecdsa_k256_keccak::verify_bytes` instead of EVM `ecrecover`; the signature `v` byte is unused. |
 | IMPL-DEV-7 | The burn note uses a fixed placeholder tag until Circle assigns one. |
 | IMPL-DEV-8 | The burn payload carries `{amount, dest_domain, dest_recipient, salt}` with the depositor in `metadata.sender`. |
 | IMPL-DEV-12 | Cosmetic fix: an `AccountId`-out-of-range error message once said "15-byte region" while the shipped layout is 16-byte-padded; the message now describes the shipped right-aligned bytes32 layout. |

@@ -70,9 +70,13 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     // the maxFee/fee staging's too-large guard (deposit_intent_parser.masm)
     // replay protection R-MINT-12
     "ERR_XRESERVE_NONCE_REPLAY",
-    // attestation verification R-MINT-13 / R-MINT-14 (attestation_verify.masm)
+    // attestation verification R-MINT-13 / R-MINT-14 (attestation_verify.masm). The signature
+    // VERDICT is no longer a faucet-owned error: the core-library ECDSA verifier traps on a failed
+    // verification instead of returning a flag, so the reject carries the verifier's own identity
+    // (support::ERR_ECDSA_VERIFY_FAILED) and no faucet constant can name it. What stays faucet-owned
+    // is the allowlist gate and the limb guard on the scalars the verifier is handed.
     "ERR_XRESERVE_DISALLOWED_PUB_KEY",
-    "ERR_XRESERVE_SIG_INVALID",
+    "ERR_XRESERVE_SIG_LIMB",
     // F2 fee guard (deposit_intent_parser.masm; DEC-2 keep-zero)
     // Transport-shape guards on the stock MintNote's attachments: the attachment set and the
     // merged transport's floor (mint_policy.masm), then the staged intent's own shape and length
@@ -114,10 +118,17 @@ const EXPECTED_ATTESTER_ADMIN_WORD_CONSTS: &[(&str, &str)] = &[(
     support::XRESERVE_ATTESTERS_SLOT_LABEL,
 )];
 
-/// The attestation verification attestation-verify shell's numeric constants: its `@locals` offsets (the keccak
-/// digest's two words — procedure-local addresses with no Rust counterpart) and `PUBKEY_FELTS`,
-/// which IS parity-asserted against the Rust codec in `masm_rust_constant_parity` below.
-const ATTESTATION_COVERED_NUMS: &[&str] = &["DIGEST_LO_LOC", "DIGEST_HI_LOC", "PUBKEY_FELTS"];
+/// The attestation verification attestation-verify shell's numeric constants: `PUBKEY_FELTS`, which
+/// IS parity-asserted against the Rust codec in `masm_rust_constant_parity` below, plus the
+/// signature-staging layout the ECDSA verifier's advice ABI forces — one scalar's limb width and
+/// the `verify_signature` local buffer that holds the two rewritten scalars (procedure-local
+/// addresses with no Rust counterpart; the width is the ECDSA scalar's, not a wire field's).
+const ATTESTATION_COVERED_NUMS: &[&str] = &[
+    "PUBKEY_FELTS",
+    "SIGNATURE_SCALAR_LIMBS",
+    "NATIVE_SCALARS_LOC",
+    "NATIVE_SCALARS_FELTS",
+];
 
 /// Attestation mint-policy numeric consts: the merged transport's attachment scheme + the
 /// attestation section word count are parity-asserted against the `XUsdcMintNote` factory

@@ -94,15 +94,15 @@ rejects stop being separately diagnosable — is spelled out under `R-MINT-*` in
    values are `AssetAmount`s by construction — and asserts `usedNonces[hash_nonce]` is empty,
    handing back the hashed nonce the binding and the nonce write both need. Neither check needs the
    message, which is why both run before it exists: one relates the carried ceiling to the note's
-   own asset, the other the carried nonce to this faucet's history. The operator `feeAmount` no
-   longer travels on the wire, so a non-zero fee is inexpressible rather than rejected (see fee
-   handling below).
+   own asset, the other the carried nonce to this faucet's history. The operator `feeAmount` is not
+   part of the message and is handled offchain, so there is no fee to check here (see fee handling
+   below).
 4. **Preimage reconstruction** (`DC-14`, subsuming `R-MINT-1..2` and `R-MINT-6..7`):
    `deposit_intent::rebuild` validates the carried recipient's account-id structure before writing
    it — a structurally invalid id would rebuild a perfectly consistent message and then mint a note
    nobody can consume, so that one cannot be left to the signature. The writer supplies `magic`,
-   `version`, the amount, the configured `remoteDomain`, its own id as `remoteToken`, and a zero
-   `feeAmount`; it copies the carried `localToken`, `localDepositor`, `remoteRecipient`, `maxFee`,
+   `version`, the amount, the configured `remoteDomain` and its own id as `remoteToken`; it copies
+   the carried `localToken`, `localDepositor`, `remoteRecipient`, `maxFee`,
    `hookDataLen` and `hookData` into their canonical offsets, and writes an explicit zero into every
    other felt of the region. The identifier and the domain are read inside the writer, not passed to
    it.
@@ -128,12 +128,16 @@ every supply increase passes the attestation policy (`INV-MINT-SECURITY`), and a
 the attested note transport (e.g. a bare tx-script `mint_and_send`) fail-closes in the policy's
 kernel reads.
 
-**Fee handling.** The MVP mints a single recipient note and raises supply by the full amount, so
-a non-zero fee would over-count supply against the minted assets. The faucet **writes** a zero
-`feeAmount` into the preimage and the field does not travel on the wire at all, so a non-zero fee
-cannot be expressed — strictly stronger than the reject it replaces. When Circle confirms the
-relayer-fee design (DEV-8), restoring the `feeAmount ≤ maxFee` compare and a relayer-credit note leg
-is a **transport change**, not a policy change: the field has to be carried again first.
+**Fee handling.** `feeAmount` is an argument of Circle's `mint` call, not a field of the
+DepositIntent — the signed message carries only `maxFee`, the ceiling the depositor authorized. So a
+fee is never attested, and the faucet has nothing to rebuild it from. Circle's mint spends it in one
+place: the recipient is credited `amount − feeAmount`, a relayer is credited `feeAmount`, and supply
+rises by the full `amount`. The MVP relayer charges nothing, so `feeAmount` is zero, every one of
+those terms collapses onto what this faucet already does, and the value is carried nowhere.
+
+A non-zero fee is therefore not a transport change. It splits one credit into two, which needs a
+second output-note leg and an identified relayer to credit — a policy change, deferred with the
+relayer-fee design (`CIR-FEE-2`, `DEV-8`, `Q-FEE-MVP`).
 
 **Attestation model** (DEV-1, `INV-NO-ECRECOVER`): Miden has no `ecrecover`, so the signer is
 not recovered on-chain. Instead the relayer supplies the candidate pubkey, the faucet checks a

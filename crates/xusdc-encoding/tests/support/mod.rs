@@ -961,6 +961,33 @@ pub struct AttesterVector {
     pub sig_bytes: [u8; 65],
 }
 
+/// The 32 advice elements the core library's ECDSA verifier consumes for this attester:
+/// `QX[8] || QY[8] || SIG_R[8] || SIG_S[8]`, every value a little-endian numeric u32 limb.
+///
+/// This is the verifier's own witness encoding (`miden_core_lib::dsa::ecdsa_k256_keccak::
+/// encode_signature`), rebuilt here rather than imported because the core library is not a
+/// dependency of this crate. It exists for ONE purpose: to let a test play the malicious host and
+/// stage a witness that WOULD verify, proving the faucet consumes its own hash-verified material
+/// instead. Note the limb order — the attestation wire carries a scalar as packed BYTES, most
+/// significant limb first, while the verifier reads numeric limbs least significant first, which is
+/// exactly the rewrite `attestation_verify::store_native_scalar` performs on-chain.
+pub fn ecdsa_advice_witness(attester: &AttesterVector) -> Vec<Felt> {
+    let mut witness = attester.pubkey_felts.clone();
+    witness.extend(native_scalar_limbs(&attester.sig_bytes[..32]));
+    witness.extend(native_scalar_limbs(&attester.sig_bytes[32..64]));
+    witness
+}
+
+/// One 32-byte big-endian scalar as eight little-endian numeric u32 limbs.
+fn native_scalar_limbs(be: &[u8]) -> [Felt; 8] {
+    core::array::from_fn(|i| {
+        let start = be.len() - 4 * (i + 1);
+        Felt::from(u32::from_be_bytes(
+            be[start..start + 4].try_into().expect("a 4-byte limb"),
+        ))
+    })
+}
+
 /// Deterministically generates an attester keypair (k256 + seeded StdRng) and signs
 /// `keccak256(payload)` (sha3) with it — the SAME independent path
 /// `gen_vectors` uses. Two distinct seeds over the SAME payload give the seam's key A / key B.

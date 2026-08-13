@@ -544,6 +544,43 @@ async fn mint_rejects_a_tampered_attestation_sub_region(
     expect_reject(&mut pf, note, &payload, expected_err).await
 }
 
+/// A signature limb that is not a valid u32 is refused by name, before the verifier sees it.
+///
+/// The attestation region is hash-verified against the note's attachment commitment, not
+/// type-checked, so its felts are whatever the note author put there. The scalars are rewritten
+/// limb by limb into the verifier's own order on the way to the advice provider, and that rewrite
+/// is u32 arithmetic — so a limb above `u32::MAX` gets its own named trap rather than an anonymous
+/// arithmetic failure inside the rewrite.
+#[tokio::test]
+async fn mint_rejects_a_non_u32_signature_limb() -> Result<()> {
+    let mut pf = fixture()?;
+    bring_up(&mut pf, 1).await?;
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 93);
+    let note = tampered_mint_note(
+        &pf,
+        &payload,
+        &honest_storage(&pf),
+        1,
+        None,
+        &AttachmentPlan {
+            // a felt at 2^32 is a valid field element but NOT a valid u32 limb
+            attestation_felt_tamper: Some((
+                ATTESTATION_SIGNATURE_FELT_OFF,
+                Felt::try_from(1u64 << 32).expect("2^32 is within the field"),
+            )),
+            ..AttachmentPlan::default()
+        },
+        193,
+    )?;
+    expect_reject_u32_assert(
+        &mut pf,
+        note,
+        &payload,
+        shell_error_by_name("ERR_XRESERVE_SIG_LIMB"),
+    )
+    .await
+}
+
 /// The other half of the isolation proof: a tampered INTENT byte — the attestation section left
 /// untouched and the signature still over the original payload — rejects at the signature check,
 /// because the keccak'd extent is the intent sub-region and nothing else. A merge that hashed the
@@ -792,4 +829,51 @@ async fn mint_ignores_a_hostile_advice_stack() -> Result<()> {
         "the attested nonce is marked used"
     );
     Ok(())
+}
+
+/// The signature the faucet verifies is the signature the NOTE carries — even when the host offers
+/// a better one.
+///
+/// This is the adversarial half of the advice binding, and the case that discriminates a bound
+/// adoption of the core-library ECDSA verifier from a naive one. The verifier takes its public key
+/// and signature scalars off the host-controlled advice stack and binds only the KEY, to `PK_COMM`.
+/// So a host holding a genuine attestation could, against a naive adoption, stage that genuine
+/// witness while the note carries something else entirely — and the mint would succeed on a
+/// signature no one could later find in the note.
+///
+/// Here the note carries the allowlisted attester's own key (so the allowlist gate passes and the
+/// signature check is really reached) together with that attester's signature over a DIFFERENT
+/// payload, and the host stages the witness that WOULD verify: the same attester's real signature
+/// over the carried payload, in the verifier's own advice encoding. The mint must still reject,
+/// because `verify_signature` publishes the note's own hash-verified bytes and pushes them last, so
+/// the 32 elements the verifier consumes are those and the host's witness stays below them,
+/// unread. If this test ever passes a mint, the binding is gone.
+#[tokio::test]
+async fn mint_rejects_a_forged_signature_the_host_tries_to_rescue() -> Result<()> {
+    let mut pf = fixture()?;
+    bring_up(&mut pf, 1).await?;
+    let carried = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 91);
+    let signed_instead = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 92);
+    let note = tampered_mint_note(
+        &pf,
+        &carried,
+        &honest_storage(&pf),
+        1,
+        Some(&signed_instead),
+        &AttachmentPlan::default(),
+        191,
+    )?;
+    emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
+
+    let rescue = ecdsa_advice_witness(&gen_attester(1, &carried));
+    assert_eq!(
+        rescue.len(),
+        32,
+        "the verifier consumes exactly 32 elements"
+    );
+    let result =
+        consume_note_with_advice(&pf.mock_chain, pf.faucet_id, note.id(), Some(rescue)).await;
+    assert_transaction_executor_error!(result, &ERR_ECDSA_VERIFY_FAILED);
+
+    assert_no_effects(&pf, &carried)
 }

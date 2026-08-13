@@ -6,11 +6,11 @@ members = [
   "crates/withdrawal-listener-attester",
 ]
 # PARKED: `crates/xusdc-validation` sits outside the workspace. The three members above resolve
-# the protocol family from the protocol monorepo's `v0.16.0-rc.4` tag at its frozen git rev, but the
+# the protocol family from the protocol monorepo commit pinned by protocol#3586, but the
 # validation crate needs `miden-client`/`miden-client-sqlite-store`, whose newest releases
-# (`=0.16.0-alpha.1`) pin protocol `=0.16.0-alpha.4` — no client exists for the RC4 graph,
+# (`=0.16.0-alpha.1`) pin protocol `=0.16.0-alpha.4` — no client exists for the pinned graph,
 # so the crate cannot build alongside the rest.
-# It un-parks at the migration onto the released `v0.16.0` crates with a client/node pair.
+# It un-parks when compatible released protocol crates and a client/node pair are available.
 exclude = [
   "crates/xusdc-validation",
 ]

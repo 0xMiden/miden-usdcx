@@ -5,15 +5,15 @@ edition = "2021"
 publish = false
 description = "xUSDC-on-Miden 04 shared encoding: hand-written MASM + Rust mirror and test harness"
 
-# The protocol-monorepo crates come from git at the ONE frozen commit tagged
-# `v0.16.0-rc.4` — always the rev key, never a floating branch pin, which would make the build
+# The protocol-monorepo crates come from the ONE frozen commit used by protocol#3586 — always the
+# rev key, never a floating branch pin, which would make the build
 # non-reproducible. The frozen graph resolves the 0.29.1 assembler/VM/crypto family. The `testing`
 # feature on the main miden-protocol dep is required by the committed vector generator
 # (`AccountIdBuilder`).
 
 [dependencies]
-miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "bbe8ec8020d8fdaa6ea703bce1557b1380942444", features = ["testing"] }
-miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "bbe8ec8020d8fdaa6ea703bce1557b1380942444" }
+miden-protocol  = { git = "https://github.com/0xMiden/protocol", rev = "c20ed6d844552faab8c9d79e57a9e73b9f75becb", features = ["testing"] }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "c20ed6d844552faab8c9d79e57a9e73b9f75becb" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # bon powers the note-factory builders and the dedicated note-storage types (the standards
@@ -52,11 +52,12 @@ name = "gen_vectors"
 required-features = ["vectors"]
 
 [dev-dependencies]
-miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "bbe8ec8020d8fdaa6ea703bce1557b1380942444", features = ["testing"] }
-miden-testing   = { git = "https://github.com/0xMiden/protocol", rev = "bbe8ec8020d8fdaa6ea703bce1557b1380942444" }
-miden-tx        = { git = "https://github.com/0xMiden/protocol", rev = "bbe8ec8020d8fdaa6ea703bce1557b1380942444" }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "c20ed6d844552faab8c9d79e57a9e73b9f75becb", features = ["testing"] }
+miden-testing   = { git = "https://github.com/0xMiden/protocol", rev = "c20ed6d844552faab8c9d79e57a9e73b9f75becb" }
+miden-tx        = { git = "https://github.com/0xMiden/protocol", rev = "c20ed6d844552faab8c9d79e57a9e73b9f75becb" }
 # Exact-error matching for u32-assert traps (`OperationError::U32AssertionFailed`). The pin moves
-# in lockstep with RC4's VM family so exactly one processor copy exists and error downcasts unify.
+# in lockstep with the pinned protocol commit's VM family so exactly one processor copy exists and
+# error downcasts unify.
 miden-processor = "=0.29.1"
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 anyhow = { workspace = true }

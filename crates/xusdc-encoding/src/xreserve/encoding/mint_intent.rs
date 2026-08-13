@@ -20,9 +20,9 @@ use miden_protocol::account::{AccountId, StorageMapKey};
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::utils::packed_u32_elements_to_bytes;
 use miden_protocol::{Felt, MAX_NOTE_STORAGE_ITEMS};
-use miden_standards::interop::eth::EthAddress;
+use miden_standards::interop::eth::{EthAddress, EthEmbeddedAccountId};
 
-use super::account_id::{account_id_to_bytes32, bytes32_to_account_id};
+use super::account_id::EthEmbeddedAccountIdExt;
 use super::bytes32::{
     bytes32_to_packed_felts, bytes32_to_storage_map_key, packed_felts_to_bytes32,
 };
@@ -220,7 +220,9 @@ impl MintIntent {
     ) -> Result<Self, EncodingError> {
         let header = intent.parse_header()?;
 
-        if bytes32_to_account_id(&header.remote_token)? != faucet_id {
+        if EthEmbeddedAccountId::try_from_bytes32(header.remote_token)?.into_account_id()
+            != faucet_id
+        {
             return Err(EncodingError::RemoteTokenMismatch);
         }
 
@@ -238,7 +240,8 @@ impl MintIntent {
                 header.local_depositor,
                 DepositIntentField::LocalDepositor,
             )?,
-            remote_recipient: bytes32_to_account_id(&header.remote_recipient)?,
+            remote_recipient: EthEmbeddedAccountId::try_from_bytes32(header.remote_recipient)?
+                .into_account_id(),
             max_fee: header.reduced_max_fee(MINT_INTENT_SCALE_EXP)?,
             hook_data: HookData::new(hook_data.to_vec())?,
         })
@@ -275,12 +278,12 @@ impl MintIntent {
         write_bytes32(
             &mut out,
             DepositIntentField::RemoteToken,
-            &account_id_to_bytes32(remote_token),
+            &EthEmbeddedAccountId::from_account_id(remote_token).to_bytes32(),
         );
         write_bytes32(
             &mut out,
             DepositIntentField::RemoteRecipient,
-            &account_id_to_bytes32(self.remote_recipient),
+            &EthEmbeddedAccountId::from_account_id(self.remote_recipient).to_bytes32(),
         );
         write_bytes32(
             &mut out,

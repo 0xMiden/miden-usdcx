@@ -29,7 +29,7 @@ use xusdc_encoding::account::xreserve::{
     XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE,
     DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::xreserve::encoding::{bytes32_to_packed_felts, EthBytes32};
+use xusdc_encoding::xreserve::encoding::{bytes32_to_packed_felts, EthAddressExt};
 
 // Dummy faucet config words (the builder does not read them; they only bind the xreserve component's
 // value slots so it assembles, exactly as the composition harness does).
@@ -113,11 +113,7 @@ fn production_builder(
         test_account_id(4),
     )
     .expect("the fixed-identity USDCx faucet builds")
-    .with_domain_config(
-        TEST_DOMAIN,
-        TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
-    )
+    .with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN, test_xreserve_contract())
 }
 
 /// Looks up a procedure's root by its library path across every component in the composed set.
@@ -412,16 +408,16 @@ fn build_seeds_the_domain_config_slots() -> Result<()> {
         Word::from([TEST_SOURCE_DOMAIN, 0, 0, 0]),
         "the source_domain slot must hold the build-seeded [source_domain, 0, 0, 0]"
     );
-    let xrc = bytes32_to_packed_felts(&test_xreserve_contract());
+    let xrc = bytes32_to_packed_felts(&test_xreserve_contract().to_bytes32());
     assert_eq!(
         slot(XReserveComponent::xreserve_contract_hi_slot())?,
         Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]),
-        "the xreserve_contract_hi slot must hold the packed wire bytes 0..16"
+        "the xreserve_contract_hi slot must hold the packed container bytes 0..16"
     );
     assert_eq!(
         slot(XReserveComponent::xreserve_contract_lo_slot())?,
         Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]),
-        "the xreserve_contract_lo slot must hold the packed wire bytes 16..32"
+        "the xreserve_contract_lo slot must hold the packed container bytes 16..32"
     );
     Ok(())
 }

@@ -6,7 +6,7 @@
 //! (that is the pre-signing gate in `validate.rs`). The oracle is deliberately non-vacuous: the
 //! serialized JSON is asserted at the STRING level (the `sourceDepositor` key is absent as text,
 //! not merely absent from the struct), and `remoteDepositor` is pinned to the `0x`-hex of the
-//! shared encoding crate's `account_id_to_bytes32(sender)` on a golden pair.
+//! shared encoding crate's `EthEmbeddedAccountId::from_account_id(sender).to_bytes32()` on a golden pair.
 //!
 //! The builder takes ONE `DiscoveredBurn` — the discovery gate's own output — rather than a payload
 //! and a sender as independent arguments, so "burn A's payload under burn B's depositor" is not a
@@ -28,6 +28,7 @@ use assert_matches::assert_matches;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use withdrawal_listener_attester::circle::schema::PrepareBurnIntentInput;
 use withdrawal_listener_attester::circle::wire::{DecimalAmount, Hex32, SchemaError};
 use withdrawal_listener_attester::config::ListenerConfig;
@@ -36,7 +37,6 @@ use withdrawal_listener_attester::validate::{
     validate_discovery, DiscoveredBurn, DiscoveredDetails, DiscoveryRecord,
 };
 use withdrawal_listener_attester::withdrawal_api::build_prepare_request;
-use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
 
 // ================================================================================================
 // FIXTURES
@@ -165,14 +165,14 @@ fn happy_path_maps_every_field() {
     assert!(input.forwarding_options().is_none());
 }
 
-/// The golden depositor mapping: `remoteDepositor` is `account_id_to_bytes32(sender)` rendered
+/// The golden depositor mapping: `remoteDepositor` is `EthEmbeddedAccountId::from_account_id(sender).to_bytes32()` rendered
 /// 0x-hex, and it matches the OpenAPI's `^0x[a-fA-F0-9]{64}$`.
 #[test]
 fn remote_depositor_is_dc6_of_sender() {
     let sender = a_sender();
     let input = only_input(&a_payload(), sender, &cfg());
 
-    let expected = hex32_str(&account_id_to_bytes32(sender));
+    let expected = hex32_str(&EthEmbeddedAccountId::from_account_id(sender).to_bytes32());
     assert_eq!(
         input.remote_depositor(),
         expected,
@@ -233,7 +233,10 @@ fn exactly_one_value_field_is_set() {
 #[test]
 fn value_xor_rejects_both_and_neither() {
     let recipient = Hex32::new(hex32_str(&DEST_RECIPIENT)).unwrap();
-    let depositor = Hex32::new(hex32_str(&account_id_to_bytes32(a_sender()))).unwrap();
+    let depositor = Hex32::new(hex32_str(
+        &EthEmbeddedAccountId::from_account_id(a_sender()).to_bytes32(),
+    ))
+    .unwrap();
 
     // both set → ValueXor
     let both = PrepareBurnIntentInput::builder()
@@ -286,7 +289,7 @@ fn serialized_request_has_no_source_depositor_key() {
         json.contains("remoteDepositor"),
         "remoteDepositor key present"
     );
-    let expected = hex32_str(&account_id_to_bytes32(a_sender()));
+    let expected = hex32_str(&EthEmbeddedAccountId::from_account_id(a_sender()).to_bytes32());
     assert!(
         json.contains(&expected),
         "the serialized remoteDepositor is the DC-6 hex {expected}: {json}"
@@ -385,7 +388,7 @@ fn distinct_senders_yield_distinct_depositors() {
     );
     assert_eq!(
         b.remote_depositor(),
-        hex32_str(&account_id_to_bytes32(other)),
+        hex32_str(&EthEmbeddedAccountId::from_account_id(other).to_bytes32()),
         "and the second depositor is DC-6 of the second sender"
     );
 }

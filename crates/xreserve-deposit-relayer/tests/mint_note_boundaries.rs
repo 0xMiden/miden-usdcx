@@ -25,6 +25,7 @@ mod mint_support;
 use assert_matches::assert_matches;
 use rstest::rstest;
 
+use miden_protocol::crypto::utils::DeserializationError;
 use xreserve_deposit_relayer::error::HexField;
 use xreserve_deposit_relayer::miden::{build_mint_note, AttesterPubkey};
 use xreserve_deposit_relayer::RelayerError;
@@ -206,19 +207,17 @@ fn t_a_private_faucet_id_is_refused() {
 
 #[test]
 fn t_the_partner_key_round_trips_through_the_config_form() {
-    let expected = PartnerAttester::new().pubkey();
+    let expected = AttesterPubkey::new(PartnerAttester::new().pubkey())
+        .expect("the partner key is a curve point");
 
     assert_eq!(
-        AttesterPubkey::from_hex(PARTNER_PUBKEY_HEX)
-            .expect("the pinned partner key parses")
-            .as_bytes(),
-        &expected
+        AttesterPubkey::from_hex(PARTNER_PUBKEY_HEX).expect("the pinned partner key parses"),
+        expected
     );
     assert_eq!(
         AttesterPubkey::from_hex(&format!("0x{PARTNER_PUBKEY_HEX}"))
-            .expect("the 0x-prefixed wire form parses too")
-            .as_bytes(),
-        &expected,
+            .expect("the 0x-prefixed wire form parses too"),
+        expected,
         "an operator may paste the key with or without the 0x prefix"
     );
 }
@@ -250,9 +249,9 @@ fn t_an_attester_key_of_the_wrong_length_is_refused(#[case] hex: &str) {
 }
 
 /// 33 bytes of the right SHAPE that are not a curve point: refused at CONFIGURATION time, by the
-/// shared encoding crate's own SEC1 decompression (the same primitive that packs the affine felts,
-/// consumed by reference — the relayer does not re-implement point decompression). Such a key could
-/// never verify on-chain, so a relayer that started with it would mint nothing and say nothing.
+/// protocol's own SEC1 decompression (consumed by reference — the relayer does not re-implement
+/// point decompression). Such a key could never verify on-chain, so a relayer that started with it
+/// would mint nothing and say nothing.
 #[rstest]
 #[case::off_curve("03ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")]
 #[case::bad_prefix("00a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3f")]
@@ -260,10 +259,10 @@ fn t_an_attester_key_that_is_not_a_curve_point_is_refused(#[case] hex: &str) {
     let error = AttesterPubkey::from_hex(hex).expect_err("not a secp256k1 point");
 
     assert_matches!(error, RelayerError::InvalidAttesterPubkey(_));
-    assert_eq!(
-        encoding_error_in_chain(&error),
-        Some(EncodingError::InvalidPubkey),
-        "unit-04's verdict on the key is preserved"
+    assert_matches!(
+        deserialization_error_in_chain(&error),
+        Some(DeserializationError::InvalidValue(_)),
+        "the protocol's verdict on the key is preserved"
     );
 
     // …and the same 33 bytes are refused through the raw constructor, not just the hex one
@@ -280,10 +279,21 @@ fn t_an_attester_key_that_is_not_a_curve_point_is_refused(#[case] hex: &str) {
 /// Walks a `RelayerError`'s source chain looking for the shared encoding crate's `EncodingError` —
 /// the assertion that the codec's exact verdict was PRESERVED (not flattened into a message).
 fn encoding_error_in_chain(error: &RelayerError) -> Option<EncodingError> {
+    error_in_chain(error)
+}
+
+/// The same walk for the protocol's own decode verdict — the attester key never reaches the
+/// encoding crate, so its rejection arrives as a `DeserializationError`.
+fn deserialization_error_in_chain(error: &RelayerError) -> Option<DeserializationError> {
+    error_in_chain(error)
+}
+
+/// Walks a `RelayerError`'s source chain looking for a preserved error of one concrete type.
+fn error_in_chain<E: std::error::Error + Clone + 'static>(error: &RelayerError) -> Option<E> {
     let mut source = std::error::Error::source(error);
     while let Some(err) = source {
-        if let Some(encoding) = err.downcast_ref::<EncodingError>() {
-            return Some(encoding.clone());
+        if let Some(found) = err.downcast_ref::<E>() {
+            return Some(found.clone());
         }
         source = err.source();
     }

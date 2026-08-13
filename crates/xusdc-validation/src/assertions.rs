@@ -21,12 +21,13 @@ use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::{
     NetworkAccountNoteAllowlist, NetworkAccountTxScriptAllowlist,
 };
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_standards::tx_script::ExpirationTransactionScript;
 use xusdc_encoding::account::xreserve::{
     XReserveComponent, XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL,
 };
 use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
-use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
+use xusdc_encoding::xreserve::encoding::{bytes32_to_packed_felts, EthAddressExt};
 
 use crate::config::DomainParams;
 use crate::observations::RowsAbObservations;
@@ -140,7 +141,7 @@ fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &st
     );
 
     // The identifier is BOUND to the faucet identity: the `identifier_init` note derives it from the
-    // faucet's OWN id (`identifier_for(faucet_id)` = `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))`,
+    // faucet's OWN id (`identifier_for(faucet_id)` = `bytes32_to_storage_map_key(EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32())`,
     // the own-id fixpoint), NOT from any caller-chosen `params` value (the R2 identifier-binding fix;
     // the deployed-faucet re-check in `sanity` enforces the SAME key). So the expected identifier is
     // derived from `account.id()`, not `params.identifier_word()`.
@@ -172,7 +173,7 @@ fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &st
         params.source_domain,
     );
 
-    let packed = bytes32_to_packed_felts(&params.xreserve_contract);
+    let packed = bytes32_to_packed_felts(&params.xreserve_contract.to_bytes32());
     let xrc_hi = storage_word(account, XReserveComponent::xreserve_contract_hi_slot())?;
     let xrc_lo = storage_word(account, XReserveComponent::xreserve_contract_lo_slot())?;
     ensure!(

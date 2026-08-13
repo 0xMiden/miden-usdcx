@@ -60,7 +60,7 @@
 //! # `remoteDepositor` is NOT `sourceDepositor`
 //!
 //! `remoteDepositor` is the Miden initiator — the burn note's `metadata.sender`, encoded through
-//! the shared encoding crate's `AccountId ↔ bytes32` codec ([`account_id_to_bytes32`], consumed by
+//! the protocol's own `AccountId ↔ bytes32` packaging ([`EthEmbeddedAccountId::to_bytes32`], consumed by
 //! reference, not re-implemented) and rendered as the OpenAPI's `^0x[a-fA-F0-9]{64}$`. It is a
 //! **partner-built** field. `sourceDepositor` is a Gateway `TransferSpec` field Circle ASSIGNS
 //! server-side; [`PrepareBurnIntentInput`] has no such field, so populating it partner-side is not
@@ -89,8 +89,7 @@
 //!   `withdraw` body carries whatever `burnTxId` the batch was built with, imposing no pattern the
 //!   OpenAPI does not (the request-side field has none).
 
-use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
-
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use serde::de::DeserializeOwned;
 
 use crate::attester::{recover_address, QuorumBundle, Signature65};
@@ -147,7 +146,7 @@ const STATUS_WITHDRAWAL_NOT_FOUND: u16 = 404;
 /// * `valueIncludingFees` = `payload.amount`, the smallest-unit amount as a decimal-integer string
 ///   (unscaled — the scale is still OPEN with Circle); `valueExcludingFees` unset;
 /// * `remoteDomain` = `cfg.miden_domain` (Miden's Circle-assigned domain, itself still OPEN);
-/// * `remoteDepositor` = [`account_id_to_bytes32`]`(sender)` as `0x`-hex 32B;
+/// * `remoteDepositor` = the `sender`'s [`EthEmbeddedAccountId::to_bytes32`] form as `0x`-hex 32B;
 /// * `finalDestinationDomain` / `finalDestinationRecipient` = the burn payload's `destDomain` /
 ///   `destRecipient`;
 /// * `salt` = the burn payload's `salt` (so a rebuild of the SAME burn is byte-identical, rather
@@ -173,7 +172,9 @@ pub fn build_prepare_request(
         .value_including_fees(value)
         .remote_domain(cfg.miden_domain())
         // the depositor comes out of the SAME `DiscoveredBurn` as the payload above
-        .remote_depositor(hex32_of(&account_id_to_bytes32(burn.depositor())))
+        .remote_depositor(hex32_of(
+            &EthEmbeddedAccountId::from_account_id(burn.depositor()).to_bytes32(),
+        ))
         .final_destination_domain(payload.dest_domain)
         .final_destination_recipient(hex32_of(&payload.dest_recipient))
         .salt(hex32_of(&payload.salt))

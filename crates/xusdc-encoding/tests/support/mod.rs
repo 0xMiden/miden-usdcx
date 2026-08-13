@@ -58,6 +58,7 @@ use miden_standards::account::policies::{
 };
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
+use miden_standards::interop::eth::EthAddress;
 use miden_standards::note::BurnNote;
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::StandardsLib;
@@ -67,7 +68,6 @@ use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, XReserveComponent, XReserveStablecoinBuilderError,
     ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::xreserve::encoding::EthBytes32;
 
 // Attestation fixtures — deterministic secp256k1 keys and signatures generated IN-TEST (the
 // canonical vector artifact is untouched), mirroring the `gen_vectors` att_* helpers: k256 the
@@ -76,6 +76,8 @@ use xusdc_encoding::xreserve::encoding::EthBytes32;
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey};
 use miden_crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_crypto::utils::Deserializable;
+use miden_crypto::SequentialCommit;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use sha3::{Digest, Keccak256};
@@ -95,10 +97,10 @@ pub const TEST_WRONG_DOMAIN: u32 = 8;
 /// by the production fixtures (there is no runtime writer).
 pub const TEST_SOURCE_DOMAIN: u32 = 3;
 
-/// Test `xreserve_contract` bytes32 (sequential distinct bytes) — the third build-seeded
-/// domain-config field the production fixtures pass to `with_domain_config`.
-pub fn test_xreserve_contract() -> [u8; 32] {
-    core::array::from_fn(|i| 0x10 + i as u8)
+/// Test `xreserve_contract` source-chain address (sequential distinct bytes) — the third
+/// build-seeded domain-config field the production fixtures pass to `with_domain_config`.
+pub fn test_xreserve_contract() -> EthAddress {
+    EthAddress::new(core::array::from_fn(|i| 0x10 + i as u8))
 }
 
 // NOTE: the tests do not bind slot names of their own. The six xreserve slots come from
@@ -455,11 +457,7 @@ pub fn production_builder_outcome(
         test_account_id(4),
     )
     .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
-    .with_domain_config(
-        TEST_DOMAIN,
-        TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
-    );
+    .with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN, test_xreserve_contract());
     if let Some(min_burn_size) = min_burn_size {
         builder = builder.min_burn_size(min_burn_size);
     }
@@ -779,10 +777,10 @@ pub fn rebuild_driver_src(
 const REMOTE_TOKEN_FELT_OFF: u64 = 11;
 
 /// The eight advice felts [`validate_driver_src_own_token`] splices into a staged intent: the packed
-/// limbs of `account_id_to_bytes32(faucet_id)`, produced by the RUST encoder.
+/// limbs of `EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()`, produced by the RUST encoder.
 pub fn own_token_advice(faucet_id: AccountId) -> Vec<Felt> {
     xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts(
-        &xusdc_encoding::xreserve::encoding::account_id_to_bytes32(faucet_id),
+        &EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32(),
     )
     .to_vec()
 }
@@ -897,8 +895,9 @@ pub struct AttesterVector {
     pub sig_felts: Vec<Felt>,
     /// Poseidon2 commitment Word = the `xReserveAttesters` allowlist key for this pubkey.
     pub commitment: Word,
-    /// Raw 33-byte compressed SEC1 pubkey (what the relayer hands `XUsdcMintNote::create`).
-    pub pubkey_bytes: [u8; 33],
+    /// The decoded key itself (what the relayer hands `XUsdcMintNote::create`); the 33-byte
+    /// compressed SEC1 wire form it was read from is recovered with `Serializable::to_bytes`.
+    pub pubkey: PublicKey,
     /// Raw 65-byte `r||s||v` signature (what the relayer hands `XUsdcMintNote::create`).
     pub sig_bytes: [u8; 65],
 }
@@ -926,18 +925,16 @@ pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
     sig65[..64].copy_from_slice(sig.to_bytes().as_slice());
     sig65[64] = recid.to_byte();
 
-    let commitment = PublicKey::read_from_bytes(&pk33)
-        .expect("valid compressed secp256k1 pubkey")
-        .to_commitment();
+    let pubkey =
+        PublicKey::read_from_bytes(&pk33).expect("the deterministic attester key is a curve point");
+    let pubkey_felts = pubkey.to_elements();
+    let commitment = pubkey.to_commitment();
 
     AttesterVector {
-        pubkey_felts: xusdc_encoding::xreserve::encoding::PublicKey::new(pk33)
-            .to_affine_felts()
-            .expect("the deterministic attester key is a valid curve point")
-            .to_vec(),
-        sig_felts: bytes_to_packed_u32_elements(&sig65),
+        pubkey_felts,
         commitment,
-        pubkey_bytes: pk33,
+        sig_felts: bytes_to_packed_u32_elements(&sig65),
+        pubkey,
         sig_bytes: sig65,
     }
 }
@@ -1641,11 +1638,7 @@ pub fn setup_guarded_mint_account(
                 test_account_id(4),
             )
             .map_err(|e| anyhow::anyhow!("building the production attestation faucet: {e}"))?
-            .with_domain_config(
-                domain_u32,
-                TEST_SOURCE_DOMAIN,
-                EthBytes32::new(test_xreserve_contract()),
-            )
+            .with_domain_config(domain_u32, TEST_SOURCE_DOMAIN, test_xreserve_contract())
             .build_components()
             .map_err(|e| anyhow::anyhow!("composing the production attestation faucet: {e}"))?;
             (components, attestation_root)
@@ -2784,7 +2777,7 @@ pub struct ProductionFaucet {
 }
 
 /// Builds the production-component-set faucet fixture. `seed_notes_for` receives the recipient
-/// wallet's `AccountId` (payloads embed `remoteRecipient = account_id_to_bytes32(recipient)`) and
+/// wallet's `AccountId` (payloads embed `remoteRecipient = EthEmbeddedAccountId::from_account_id(recipient).to_bytes32()`) and
 /// returns the admin notes to seed at genesis. The faucet account carries EXACTLY the components
 /// `XReserveStablecoinBuilder::build_components` returns — proving the real-note mint needs no
 /// test-only component.
@@ -2811,11 +2804,7 @@ pub fn setup_production_faucet(
         test_account_id(4),
     )
     .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
-    .with_domain_config(
-        TEST_DOMAIN,
-        TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
-    )
+    .with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN, test_xreserve_contract())
     .build_components()
     .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
 
@@ -2829,7 +2818,7 @@ pub fn setup_production_faucet(
     let account = add_network_faucet_account(&mut mc, components)
         .context("adding the production faucet account")?;
     // The faucet id is now known, so the seed-notes closure binds its notes and its mint payloads
-    // (`remoteToken = account_id_to_bytes32(faucet_id)`) to the REAL faucet identity. Seeded AFTER the account is built; order relative to `mc.build()` is all that
+    // (`remoteToken = EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()`) to the REAL faucet identity. Seeded AFTER the account is built; order relative to `mc.build()` is all that
     // matters for genesis notes.
     let seeded_notes = seed_notes_for(recipient.id(), account.id());
     for note in &seeded_notes {

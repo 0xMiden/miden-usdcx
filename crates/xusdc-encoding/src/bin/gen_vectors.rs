@@ -14,6 +14,7 @@
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey};
 use miden_crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_crypto::utils::Deserializable;
+use miden_crypto::SequentialCommit;
 use miden_protocol::testing::account_id::AccountIdBuilder;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Hasher, Word};
@@ -291,9 +292,13 @@ fn att_sign65(sk: &SigningKey, digest: &[u8; 32]) -> [u8; 65] {
 /// pubkey felts. This is exactly what off-chain `set_attester` keys the `xReserveAttesters`
 /// allowlist by.
 fn att_commitment(pk33: &[u8; 33]) -> Word {
-    PublicKey::read_from_bytes(pk33)
-        .expect("valid compressed secp256k1 pubkey")
-        .to_commitment()
+    att_pubkey(pk33).to_commitment()
+}
+
+/// The 33 compressed wire bytes as the miden-crypto key the affine packing and the commitment both
+/// come off.
+fn att_pubkey(pk33: &[u8; 33]) -> PublicKey {
+    PublicKey::read_from_bytes(pk33).expect("valid compressed secp256k1 pubkey")
 }
 
 fn main() {
@@ -865,7 +870,7 @@ fn main() {
             "id": format!("att-{seed}"),
             "tv": ["TV-ATT-1", "TV-ATT-2", "TV-ATT-3", "TV-DUAL-5"],
             "pubkey_hex": hex_bytes(&pk),
-            "packed_felts": felts_hex(&xusdc_encoding::xreserve::encoding::PublicKey::new(pk).to_affine_felts().expect("generator keys are valid points")),
+            "packed_felts": felts_hex(&att_pubkey(&pk).to_elements()),
             "expected_commitment": word_hex(commitment),
             "digest_hex": hex_bytes(&digest),
             "digest_felts": felts_hex(&packed(&digest)),

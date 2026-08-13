@@ -213,11 +213,13 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
 
 The identifier is not stored: the mint path **writes** the native faucet account id into the
 preimage as `remoteToken`, so there is nothing to compare and nothing that could have been seeded
-wrong. `xreserve_contract` is stored losslessly as its raw 8×u32-LE
-packed limbs across two value slots, because it has no on-chain compare and must be readable from
-storage by off-chain services. `domain` and `source_domain` are u32 scalars in element 0 of their
-slot words. The three build-seeded fields are typed u32/bytes32 at the builder boundary
-(Rust-validated).
+wrong. `xreserve_contract` is a source-chain EVM address, stored losslessly as the 8×u32-LE packed
+limbs of its bytes32 container across two value slots — the full container rather than the
+address's five limbs, because the field has no on-chain compare and off-chain services read the
+bytes32 back out of storage. `domain` and `source_domain` are u32 scalars in element 0 of their
+slot words. The three build-seeded fields are typed u32/`EthAddress` at the builder boundary
+(Rust-validated); a source domain whose addresses do not fit 20 bytes is inexpressible here, the
+same `Q-EVM-ADDR-1` assumption `DC-14` rests on.
 
 ## 7. What is consumed from the encoding library
 

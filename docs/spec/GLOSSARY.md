@@ -355,7 +355,7 @@ the OPEN `DEV-7` decision and makes no acceptability verdict of its own.
 
 | Id | Checks |
 |---|---|
-| TV-AID-1 | Round-trip: `bytes32_to_account_id(account_id_to_bytes32(id)) == id`. |
+| TV-AID-1 | Round-trip: `EthEmbeddedAccountId::try_from_bytes32(embedded.to_bytes32()) == embedded`. |
 | TV-AID-2 | Reject a non-zero byte in the leading pad; reject a non-canonical prefix/suffix. |
 | TV-AID-3 | The address-type discriminant is fixed and there is no keccak-fallback branch. |
 | TV-AID-4 | The two-felt decomposition matches the bytes32 layout: `prefix` at bytes 16..24, `suffix` at bytes 24..32 (loaded on stack as `[suffix, prefix]`). |

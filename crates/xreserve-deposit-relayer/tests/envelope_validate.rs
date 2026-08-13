@@ -42,12 +42,13 @@ use fixtures::{
     PartnerAttester, FOREIGN_KEY_SEED, PARTNER_PUBKEY_HEX, TEST_VECTOR_ATTESTATION_HEX,
     TEST_VECTOR_MESSAGE_HASH_HEX, TEST_VECTOR_PAYLOAD_ID_EMPTY_HOOKDATA,
 };
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
+use miden_protocol::crypto::utils::Deserializable;
 use xreserve_deposit_relayer::error::{HexField, RelayerError};
 use xreserve_deposit_relayer::validate::envelope::{
     validate_attestation_envelope, verify_message_hash,
 };
 use xusdc_encoding::vectors::{load, AttVector};
-use xusdc_encoding::xreserve::encoding::PublicKey;
 
 /// The canonical attestation vectors — the independent oracle (see the module docs).
 fn att_vectors() -> &'static [AttVector] {
@@ -207,7 +208,7 @@ fn t_rly_20_binding_is_payload_specific() {
 }
 
 /// The fixture's attester identity is the one the allowlist is keyed by: the commitment is the
-/// shared encoding crate's `PublicKey::to_commitment` — Poseidon2 over the 16 affine felts the
+/// protocol's own `PublicKey::to_commitment` — Poseidon2 over the 16 affine felts the
 /// 33-byte compressed pubkey decompresses to — and the pubkey is deterministic (pinned). This is
 /// what the later local-node rows seed via `set_attester`.
 #[test]
@@ -223,12 +224,10 @@ fn t_rly_20_partner_attester_identity_is_deterministic_and_canonically_keyed() {
     assert_eq!(pk[0] & 0xfe, 0x02, "compressed SEC1 prefix is 0x02 or 0x03");
     assert_eq!(
         attester.commitment(),
-        miden_protocol::Word::from(
-            PublicKey::new(pk)
-                .to_commitment()
-                .expect("the deterministic partner key is a valid point"),
-        ),
-        "the allowlist key must be unit-04's owned Poseidon2 commitment (DC-3), never re-derived"
+        PublicKey::read_from_bytes(&pk)
+            .expect("the deterministic partner key is a valid point")
+            .to_commitment(),
+        "the allowlist key must be the protocol's own Poseidon2 commitment (DC-3), never re-derived"
     );
     // a second construction yields the identical key (no hidden RNG state / time dependence)
     assert_eq!(PartnerAttester::new().pubkey(), pk);

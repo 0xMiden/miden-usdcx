@@ -16,26 +16,27 @@ use anyhow::{Context, Result};
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::{AssetAmount, FungibleAsset};
 use miden_protocol::crypto::rand::FeltRng;
+use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::note::{
     Note, NoteAssets, NoteAttachment, NoteAttachmentScheme, NoteAttachments, NoteRecipient,
     NoteStorage, NoteTag, NoteType, PartialNoteMetadata,
 };
 use miden_protocol::{Felt, Word};
+use miden_standards::interop::eth::{EthAddress, EthEmbeddedAccountId};
 use miden_standards::note::{
     MintNote, MintNoteStorage, NetworkAccountTarget, NoteExecutionHint, P2idNoteStorage,
 };
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
-    MintAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
+    DepositAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
     XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME, XUSDC_MINT_ATTESTATION_NUM_WORDS,
     XUSDC_MINT_INTENT_ATTACHMENT_SCHEME,
 };
 use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, affine_pubkey_felts, bytes32_to_account_id, bytes32_to_packed_u32_limbs,
-    bytes32_to_storage_map_key, deposit_intent_field_offset, deposit_intent_to_packed_felts,
-    parse_deposit_intent_header, signature_felts, uint256_to_asset_amount, DepositIntentField,
-    XReserveBurnItems,
+    bytes32_to_packed_u32_limbs, bytes32_to_storage_map_key, deposit_intent_field_offset,
+    deposit_intent_to_packed_felts, parse_deposit_intent_header, uint256_to_asset_amount,
+    DepositIntentField, EthEmbeddedAccountIdExt, XReserveBurnItems,
 };
 
 use crate::actors::AttesterKey;
@@ -114,14 +115,14 @@ pub fn hook_data_len(vector_id: &str) -> u32 {
 /// withdrawal identity). The `identifier` is NO LONGER build-seeded from these params: the fresh
 /// faucet's identifier is derived at init from its OWN id
 /// (`XReserveIdentifierInitNote::identifier_for(faucet_id)`), so a fresh mint carries `remoteToken =
-/// account_id_to_bytes32(faucet_id)` ([`mint_payload_own_id`] / [`MintDomainConfig::for_deployed_faucet`]),
+/// EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()` ([`mint_payload_own_id`] / [`MintDomainConfig::for_deployed_faucet`]),
 /// NOT the vector token. `identifier_bytes` is retained only as the legacy synthetic-fixture value
 /// (`DomainParams::identifier_word`); the fresh-init assertions compute the own-id key directly.
 pub fn lnv2_domain_params() -> DomainParams {
     DomainParams {
         domain: MINT_DOMAIN,
         source_domain: 3,
-        xreserve_contract: core::array::from_fn(|i| 0x10 + i as u8),
+        xreserve_contract: EthAddress::new(core::array::from_fn(|i| 0x10 + i as u8)),
         // Legacy vector-token identifier bytes — no longer the fresh faucet's identifier (that is
         // the own-id fixpoint, derived at init). Kept so DomainParams stays fully populated.
         identifier_bytes: parse_hex32(&base_fields().remote_token_hex),
@@ -164,7 +165,7 @@ pub fn mint_payload_from(
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount_raw));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(max_fee_raw));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(recipient));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(recipient).to_bytes32());
     if nonce_salt != 0 {
         payload[NONCE_BYTE_OFF] ^= nonce_salt;
     }
@@ -172,10 +173,10 @@ pub fn mint_payload_from(
 }
 
 /// A mint payload for a FRESH-deployed faucet: [`mint_payload_from`] spliced with the faucet's
-/// OWN-ID `remoteToken` (`account_id_to_bytes32(faucet_id)`). The fresh faucet's identifier is the
+/// OWN-ID `remoteToken` (`EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()`). The fresh faucet's identifier is the
 /// note-derived own-id fixpoint (`XReserveIdentifierInitNote::identifier_for(faucet_id)` =
-/// `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))`), so a mint's `remoteToken` MUST be
-/// `account_id_to_bytes32(faucet_id)` for structural validation's identifier compare to pass — NOT the static
+/// `bytes32_to_storage_map_key(EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32())`), so a mint's `remoteToken` MUST be
+/// `EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()` for structural validation's identifier compare to pass — NOT the static
 /// golden-vector `remoteToken` the vectors carry (the R2 identifier-binding fix). `remoteDomain`
 /// already equals the build-seed [`MINT_DOMAIN`] on the fresh vectors, so only the token is spliced.
 pub fn mint_payload_own_id(
@@ -189,7 +190,7 @@ pub fn mint_payload_own_id(
     let mut payload = mint_payload_from(vector_id, recipient, amount_raw, max_fee_raw, nonce_salt);
     let remote_token_off = deposit_intent_field_offset(DepositIntentField::RemoteToken);
     payload[remote_token_off..remote_token_off + 32]
-        .copy_from_slice(&account_id_to_bytes32(faucet_id));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32());
     payload
 }
 
@@ -199,14 +200,14 @@ pub fn mint_payload_own_id(
 ///
 /// - Fresh-LOCAL full gate: the config is [`MintDomainConfig::for_deployed_faucet`]`(MINT_DOMAIN,
 ///   fresh_faucet_id)` — the build-seed `remoteDomain` ([`MINT_DOMAIN`]) paired with the OWN-ID
-///   `remoteToken` (`account_id_to_bytes32(faucet_id)`), because the fresh faucet's identifier is the
+///   `remoteToken` (`EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()`), because the fresh faucet's identifier is the
 ///   own-id fixpoint the `identifier_init` note derives (NOT the golden-vector token — the R2
 ///   identifier-binding fix). The `remoteDomain` splice is a no-op on [`BASE_VECTOR`]; the `remoteToken`
 ///   splice is what binds the mint to the fresh identity.
 /// - Existing-faucet (`--faucet-id`) re-check: the config is resolved from the DEPLOYED faucet —
 ///   `domain` read from its on-chain domain-config slot, `remote_token` recomputed as
-///   `account_id_to_bytes32(faucet_id)` (the identifier A5's `identifier_init` set from
-///   `account_id_to_bytes32(faucet.id())`). This is the A6 fix: the fixed vector's `remoteDomain` (7)
+///   `EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()` (the identifier A5's `identifier_init` set from
+///   `EthEmbeddedAccountId::from_account_id(faucet.id()).to_bytes32()`). This is the A6 fix: the fixed vector's `remoteDomain` (7)
 ///   did not match a production faucet's stored `domain` (e.g. 10007), so structural validation rejected every mint.
 ///
 /// There is deliberately NO `source_domain` field: the DepositIntent has no `sourceDomain` field and
@@ -242,12 +243,12 @@ impl MintDomainConfig {
     }
 
     /// The config of a DEPLOYED faucet on the `--faucet-id` path: the operator-read on-chain `domain`
-    /// paired with `remote_token = account_id_to_bytes32(faucet_id)` — the identifier A5's
+    /// paired with `remote_token = EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()` — the identifier A5's
     /// `identifier_init` stored (recomputable from `faucet_id` alone, no guessing).
     pub(crate) fn for_deployed_faucet(domain: u32, faucet_id: AccountId) -> Self {
         Self {
             domain,
-            remote_token: account_id_to_bytes32(faucet_id),
+            remote_token: EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32(),
         }
     }
 }
@@ -372,7 +373,7 @@ pub fn mint_note_with_fee<R: FeltRng>(
     sender: AccountId,
     faucet: AccountId,
     payload: &[u8],
-    attestation: &MintAttestation,
+    attestation: &DepositAttestation,
     fee_limbs: [Felt; 8],
     rng: &mut R,
 ) -> Result<Note> {
@@ -381,7 +382,8 @@ pub fn mint_note_with_fee<R: FeltRng>(
     // binding leg and the probe traps at exactly the F2 fee gate.
     let header = parse_deposit_intent_header(payload)
         .map_err(|e| anyhow::anyhow!("deposit intent payload rejected by the 04 codec: {e}"))?;
-    let recipient_id = bytes32_to_account_id(&header.remote_recipient)
+    let recipient_id = EthEmbeddedAccountId::try_from_bytes32(header.remote_recipient)
+        .map(EthEmbeddedAccountId::into_account_id)
         .map_err(|e| anyhow::anyhow!("remoteRecipient is not a valid account id: {e}"))?;
     let amount = uint256_to_asset_amount(bytes32_to_packed_u32_limbs(&header.amount), SCALE_EXP)
         .map_err(|e| anyhow::anyhow!("amount rejected by the 04 reducer: {e}"))?;
@@ -418,11 +420,8 @@ pub fn mint_note_with_fee<R: FeltRng>(
     // the caller-chosen fee limbs (production hardcodes eight zeros — DEV-8).
     let mut felts: Vec<Felt> = Vec::with_capacity(44);
     felts.extend(fee_limbs);
-    felts.extend(
-        affine_pubkey_felts(attestation.pubkey())
-            .map_err(|e| anyhow::anyhow!("attestation pubkey rejected by the 04 codec: {e}"))?,
-    );
-    felts.extend(signature_felts(attestation.signature()));
+    felts.extend(attestation.pubkey().to_elements());
+    felts.extend(attestation.signature().to_felts());
     felts.extend([Felt::from(0u32); 3]);
     let words: Vec<Word> = felts
         .chunks_exact(4)

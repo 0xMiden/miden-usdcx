@@ -24,7 +24,9 @@
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::{AssetAmount, FungibleAsset};
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::crypto::rand::FeltRng;
+use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{
     Note, NoteAttachment, NoteAttachmentScheme, NoteScript, NoteScriptRoot, NoteTag,
@@ -35,7 +37,7 @@ use miden_standards::note::{
 };
 
 use crate::xreserve::encoding::{
-    DepositIntent, MintIntent, PublicKey, Signature, BYTES_PER_PACKED_FELT, MAX_HOOK_DATA_LEN,
+    DepositIntent, MintIntent, Signature, BYTES_PER_PACKED_FELT, MAX_HOOK_DATA_LEN,
     MINT_INTENT_FELTS,
 };
 
@@ -74,18 +76,14 @@ pub const XUSDC_DEPOSIT_SCALE_EXP: u32 = 0;
 
 /// The Circle deposit attestation crossing the note boundary: the [`Signature`] over
 /// `keccak256(payload)` and the candidate attester [`PublicKey`].
-///
-/// It holds the two shared-codec newtypes rather than their byte forms, so the raw arrays are
-/// named once — where they arrive from Circle — and every use site downstream already has the
-/// thing rather than bytes that have to be re-interpreted as it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DepositAttestation {
     signature: Signature,
     pubkey: PublicKey,
 }
 
 impl DepositAttestation {
-    /// Bundles the `r‖s‖v` signature with the compressed candidate pubkey.
+    /// Bundles the `r‖s‖v` signature with the candidate attester key.
     pub fn new(signature: Signature, pubkey: PublicKey) -> Self {
         Self { signature, pubkey }
     }
@@ -95,9 +93,9 @@ impl DepositAttestation {
         self.signature
     }
 
-    /// The compressed SEC1 candidate pubkey.
-    pub fn pubkey(&self) -> PublicKey {
-        self.pubkey
+    /// The candidate attester key.
+    pub fn pubkey(&self) -> &PublicKey {
+        &self.pubkey
     }
 }
 
@@ -177,8 +175,8 @@ impl XUsdcDeposit {
     }
 
     /// The attestation travelling beside it.
-    pub fn attestation(&self) -> DepositAttestation {
-        self.attestation
+    pub fn attestation(&self) -> &DepositAttestation {
+        &self.attestation
     }
 }
 
@@ -199,24 +197,11 @@ impl TryFrom<&XUsdcDeposit> for NoteAttachment {
     ///
     /// # Errors
     ///
-    /// [`NoteError`] if the candidate pubkey does not decompress to a curve point. The conversion
-    /// is fallible for that reason alone; the key is deliberately NOT validated earlier, so the
-    /// rejection keeps surfacing from the same place it always has.
+    /// [`NoteError`] if the assembled words do not form a valid attachment.
     fn try_from(deposit: &XUsdcDeposit) -> Result<Self, Self::Error> {
         let mut felts: Vec<Felt> = Vec::new();
 
-        felts.extend(
-            deposit
-                .attestation
-                .pubkey()
-                .to_affine_felts()
-                .map_err(|source| {
-                    NoteError::other_with_source(
-                        "attestation pubkey rejected by the shared codec",
-                        source,
-                    )
-                })?,
-        );
+        felts.extend(deposit.attestation.pubkey().to_elements());
         felts.extend(deposit.attestation.signature().to_felts());
         felts.extend([Felt::from(0u32); 3]);
         debug_assert_eq!(felts.len(), XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF * 4);
@@ -338,7 +323,7 @@ impl XUsdcMintNote {
             sender,
             storage,
             serial_number,
-            deposit: XUsdcDeposit::new(payload, *attestation),
+            deposit: XUsdcDeposit::new(payload, attestation.clone()),
             network_account_target,
         })
     }

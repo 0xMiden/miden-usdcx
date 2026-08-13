@@ -23,6 +23,7 @@ use miden_standards::account::access::{
     Authority, Ownable2Step, PausableManager, RoleBasedAccessControl,
 };
 use miden_standards::account::policies::BlocklistManager;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_standards::note::{
     AllowlistConfigNote, BlocklistConfigNote, PauseAction, PauseActionNote, RbacActionNote,
 };
@@ -33,7 +34,7 @@ use xusdc_encoding::account::xreserve::{XReserveAdminAuthority, XReserveStableco
 use xusdc_encoding::note::xreserve_admin::{XReserveBlocklistNote, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, PublicKey, Signature};
+use xusdc_encoding::xreserve::encoding::Signature;
 
 // THE MINT FIXTURE — only the pause-halt proof needs a faucet that can actually mint
 // ================================================================================================
@@ -63,9 +64,9 @@ fn payload_for(recipient: AccountId, faucet_id: AccountId, nonce_variant: u8) ->
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(MINT_AMOUNT));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(recipient));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(recipient).to_bytes32());
     payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(faucet_id));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32());
     payload[NONCE_BYTE_OFF] ^= nonce_variant;
     payload
 }
@@ -118,10 +119,7 @@ async fn emit_and_consume_mint(
         pf.producer_id,
         pf.faucet_id,
         payload,
-        &DepositAttestation::new(
-            Signature::new(attester.sig_bytes),
-            PublicKey::new(attester.pubkey_bytes),
-        ),
+        &DepositAttestation::new(Signature::new(attester.sig_bytes), attester.pubkey.clone()),
         &mut note_rng(seed),
     )
     .map_err(|e| anyhow::anyhow!("building the attested mint note: {e}"))?;

@@ -4798,6 +4798,7 @@ dependencies = [
  "hex",
  "k256 0.13.4",
  "miden-protocol",
+ "miden-standards",
  "rand 0.8.7",
  "reqwest",
  "rstest",

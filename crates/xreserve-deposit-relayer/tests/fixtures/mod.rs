@@ -31,15 +31,15 @@
 use k256::ecdsa::signature::hazmat::PrehashVerifier;
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey, VerifyingKey};
 use miden_protocol::account::{AccountId, AccountIdVersion, AccountType, AssetCallbackFlag};
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
+use miden_protocol::crypto::utils::Deserializable;
 use miden_protocol::{Hasher, Word};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use sha3::{Digest, Keccak256};
 
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::{
-    DepositIntent, MintIntent, PublicKey, MINT_INTENT_SCALE_EXP,
-};
+use xusdc_encoding::xreserve::encoding::{DepositIntent, MintIntent, MINT_INTENT_SCALE_EXP};
 
 /// Seed of the partner-held attester key. Deliberately distinct from the seeds the canonical
 /// `att-*` artifact vectors use, so this key is unmistakably the RELAYER-side test key and can
@@ -225,16 +225,14 @@ impl PartnerAttester {
     /// The attester-allowlist key: `Poseidon2(affine pubkey felts)` →
     /// one `Word` (the compressed wire key is decompressed inside the owned primitive).
     ///
-    /// Delegated to the shared encoding crate's [`PublicKey::to_commitment`] — the SINGLE owner of
-    /// this keying primitive and the exact procedure the faucet's on-chain attestation check
-    /// recomputes on-chain. This fixture never re-implements it, so the local-node allowlist it
-    /// seeds cannot drift from the on-chain lookup.
+    /// Delegated to the protocol's own [`PublicKey::to_commitment`] — the SINGLE owner of this
+    /// keying primitive and the exact procedure the faucet's on-chain attestation check recomputes
+    /// on-chain. This fixture never re-implements it, so the local-node allowlist it seeds cannot
+    /// drift from the on-chain lookup.
     pub fn commitment(&self) -> Word {
-        Word::from(
-            PublicKey::new(self.pubkey())
-                .to_commitment()
-                .expect("the deterministic partner key is a valid point"),
-        )
+        PublicKey::read_from_bytes(&self.pubkey())
+            .expect("the deterministic partner key is a valid point")
+            .to_commitment()
     }
 
     /// Signs `keccak256(payload)` — RAW secp256k1 over the raw keccak digest of the FULL payload.

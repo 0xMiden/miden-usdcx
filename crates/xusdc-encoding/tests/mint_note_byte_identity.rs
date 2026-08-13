@@ -30,11 +30,12 @@ mod support;
 use miden_protocol::note::Note;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::Hasher;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use support::mint_transport::{note_rng, REMOTE_TOKEN_BYTE_OFF};
 use support::{test_account_id, test_faucet_id};
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, AttVector, MiVector};
-use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, PublicKey, Signature};
+use xusdc_encoding::xreserve::encoding::Signature;
 
 /// The fixed serial-number seed the anchors were captured at (production draws a random serial; a
 /// fixed one makes the note id, the nullifier and the whole serialization deterministic).
@@ -102,13 +103,10 @@ fn note_for(vector_id: &str, attestation_id: &str) -> Note {
     let faucet_id = test_faucet_id(6);
     let mut payload = mi(vector_id).payload();
     payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(faucet_id));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32());
 
     let source = att(attestation_id);
-    let attestation = DepositAttestation::new(
-        Signature::new(source.sig()),
-        PublicKey::new(source.pubkey()),
-    );
+    let attestation = DepositAttestation::new(Signature::new(source.sig()), source.public_key());
 
     XUsdcMintNote::create(
         test_account_id(5),

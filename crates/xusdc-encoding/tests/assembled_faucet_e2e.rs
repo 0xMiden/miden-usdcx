@@ -44,6 +44,7 @@ use miden_protocol::errors::MasmError;
 use miden_protocol::note::{Note, NoteId, NoteTag, NoteType};
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
+use miden_standards::interop::eth::{EthAddress, EthEmbeddedAccountId};
 use miden_standards::note::{P2idNote, P2idNoteStorage, RbacAction, RbacActionNote};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
@@ -56,8 +57,8 @@ use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, bytes32_to_packed_felts, bytes32_to_storage_map_key, PublicKey,
-    Signature, XReserveBurnItems,
+    bytes32_to_packed_felts, bytes32_to_storage_map_key, EthAddressExt, Signature,
+    XReserveBurnItems,
 };
 
 // ACTORS (the builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3),
@@ -126,7 +127,7 @@ fn mi(id: &str) -> &'static MiVector {
 
 /// The canonical accept payload with amount/maxFee spliced, `remoteRecipient` REPLACED by the REAL
 /// target wallet's right-aligned bytes32 (so the emitted P2ID note targets an account that exists
-/// on this chain and can consume it), `remoteToken` REPLACED by `account_id_to_bytes32(faucet_id)`
+/// on this chain and can consume it), `remoteToken` REPLACED by `EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()`
 /// (the own-id key the mint path derives, so the identifier compare passes), and
 /// one nonce byte XOR-perturbed per `nonce_variant` so each mint consumes a nonce the replay guard
 /// has not seen.
@@ -140,9 +141,9 @@ fn payload_for(
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(recipient));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(recipient).to_bytes32());
     payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(faucet_id));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32());
     payload[NONCE_BYTE_OFF] ^= nonce_variant;
     payload
 }
@@ -189,10 +190,7 @@ fn stock_role_action_note<R: miden_protocol::crypto::rand::FeltRng>(
 /// + pubkey the `XUsdcMintNote` factory embeds in the merged transport's attestation section.
 fn attestation_for(seed: u64, payload: &[u8]) -> DepositAttestation {
     let attester = gen_attester(seed, payload);
-    DepositAttestation::new(
-        Signature::new(attester.sig_bytes),
-        PublicKey::new(attester.pubkey_bytes),
-    )
+    DepositAttestation::new(Signature::new(attester.sig_bytes), attester.pubkey.clone())
 }
 
 /// The REAL stock mint note for `payload`: the production `XUsdcMintNote` factory (the merged
@@ -431,7 +429,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // seeded role delegation, the stock MinBurnAmount builder-default floor.
     let faucet0 = committed(&pf.mock_chain, faucet_id)?;
     let words0 = read_domain_config_words(&faucet0)?;
-    let xrc_felts = bytes32_to_packed_felts(&test_xreserve_contract());
+    let xrc_felts = bytes32_to_packed_felts(&test_xreserve_contract().to_bytes32());
     assert_eq!(
         words0[0],
         Word::from([TEST_DOMAIN, 0, 0, 0]),
@@ -452,8 +450,8 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         Word::new([xrc_felts[4], xrc_felts[5], xrc_felts[6], xrc_felts[7]]),
         "S0: xreserve_contract_lo ships BUILD-SEEDED (DEC-4)"
     );
-    // lossless round-trip: the build-seeded bytes32 round-trips through the FAIL-CLOSED inverse
-    // back to the input — the GetAccount-readable public identity.
+    // lossless round-trip: the build-seeded container round-trips through the FAIL-CLOSED inverse
+    // and the stock address decode back to the input — the GetAccount-readable public identity.
     let stored_xrc: [Felt; 8] = [
         words0[2][0],
         words0[2][1],
@@ -464,10 +462,10 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         words0[3][2],
         words0[3][3],
     ];
+    let stored_container = xusdc_encoding::xreserve::encoding::packed_felts_to_bytes32(&stored_xrc)
+        .expect("S0: build-seeded xreserve_contract limbs are valid u32s (fail-closed inverse)");
     assert_eq!(
-        xusdc_encoding::xreserve::encoding::packed_felts_to_bytes32(&stored_xrc).expect(
-            "S0: build-seeded xreserve_contract limbs are valid u32s (fail-closed inverse)"
-        ),
+        EthAddress::try_from(stored_container).expect("S0: the stored container is left-padded"),
         test_xreserve_contract(),
         "S0: fail-closed bytes32 round-trip == the input xreserve_contract"
     );

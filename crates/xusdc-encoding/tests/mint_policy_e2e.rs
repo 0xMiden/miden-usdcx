@@ -25,6 +25,7 @@
 mod support;
 
 use anyhow::Result;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use support::mint_transport::*;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMaxSupplyNote};
@@ -239,9 +240,8 @@ async fn mint_rejects_a_wrong_identifier() -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 1).await?;
     let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 15);
-    payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32].copy_from_slice(
-        &xusdc_encoding::xreserve::encoding::account_id_to_bytes32(pf.recipient_id),
-    );
+    payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32]
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(pf.recipient_id).to_bytes32());
     let note = honest_note(&pf, &payload, 84)?;
     expect_reject(
         &mut pf,

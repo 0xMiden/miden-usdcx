@@ -33,6 +33,7 @@ use miden_protocol::note::{NoteId, NoteType};
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::FungibleFaucet;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_testing::MockChain;
 use miden_tx::TransactionExecutorError;
 use support::*;
@@ -42,9 +43,7 @@ use xusdc_encoding::note::xreserve_mint::{
     DepositAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
 };
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, bytes32_to_storage_map_key, PublicKey, Signature,
-};
+use xusdc_encoding::xreserve::encoding::{bytes32_to_storage_map_key, Signature};
 
 // CIRCLE-FORMAT FIXTURE VALUES
 // ================================================================================================
@@ -124,9 +123,9 @@ fn payload_for(
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(recipient));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(recipient).to_bytes32());
     payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(faucet_id));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32());
     payload[NONCE_BYTE_OFF] ^= nonce_variant;
     payload
 }
@@ -195,10 +194,7 @@ async fn bring_up(pf: &mut ProductionFaucet) -> Result<()> {
 
 fn attestation_for(seed: u64, payload: &[u8]) -> DepositAttestation {
     let attester = gen_attester(seed, payload);
-    DepositAttestation::new(
-        Signature::new(attester.sig_bytes),
-        PublicKey::new(attester.pubkey_bytes),
-    )
+    DepositAttestation::new(Signature::new(attester.sig_bytes), attester.pubkey.clone())
 }
 
 /// Consumes a committed mint note on the faucet with no transaction script and no consume-side

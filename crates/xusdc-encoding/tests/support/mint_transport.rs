@@ -30,11 +30,12 @@ use miden_tx::TransactionExecutorError;
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, bytes32_to_account_id, bytes32_to_storage_map_key, DepositIntent,
-    MintIntent, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF,
+    bytes32_to_storage_map_key, DepositIntent, MintIntent, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF,
 };
 
 use super::*;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
+use xusdc_encoding::xreserve::encoding::EthEmbeddedAccountIdExt;
 
 // FIXTURE VALUES (shared across the split e2e suites)
 // ================================================================================================
@@ -111,9 +112,9 @@ pub fn payload_for(
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(recipient));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(recipient).to_bytes32());
     payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(faucet_id));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32());
     payload[NONCE_BYTE_OFF] ^= nonce_variant;
     payload
 }
@@ -217,7 +218,8 @@ pub struct StoragePlan {
 fn carried_payload_felts(payload: &[u8]) -> Vec<Felt> {
     let intent = DepositIntent::new(payload);
     let header = intent.parse_header().expect("the tamper payload parses");
-    let claimed_faucet = bytes32_to_account_id(&header.remote_token)
+    let claimed_faucet = EthEmbeddedAccountId::try_from_bytes32(header.remote_token)
+        .map(EthEmbeddedAccountId::into_account_id)
         .expect("the tamper payload names a well-formed faucet");
     let carried = MintIntent::from_deposit_intent(&intent, claimed_faucet)
         .expect("the tamper payload is DC-14 shaped");

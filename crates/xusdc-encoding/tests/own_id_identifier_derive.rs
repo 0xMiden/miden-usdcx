@@ -9,7 +9,7 @@
 //! (`eth::bytes32_to_account_id`) over the bytes the Rust encoder produces, in account context,
 //! and requires the result to be the emitting account.
 //!
-//! The whole design rests on one claim: the bytes `account_id_to_bytes32` produces off chain
+//! The whole design rests on one claim: the bytes `EthEmbeddedAccountId::to_bytes32` produces off chain
 //! decode, on chain, back to exactly the account they were produced for — for every account id, not
 //! just the one a fixture happened to pick. If the two ever disagreed, the faucet would reject
 //! deposits Circle addressed to it, or — worse — accept deposits addressed elsewhere.
@@ -41,13 +41,14 @@ use miden_protocol::errors::MasmError;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_standards::code_builder::CodeBuilder;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_testing::{
     assert_transaction_executor_error, AccountState, Auth, MockChain, MockTransactionInput,
 };
 use miden_tx::TransactionExecutorError;
 use rstest::rstest;
 use support::*;
-use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, bytes32_to_packed_felts};
+use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
 
 /// How many generated account ids the parity spread covers, over and above the production faucet.
 /// The floor this suite has to clear is eight; twelve costs little and spans both account types
@@ -120,7 +121,7 @@ end
 #! Inputs:  [pad(16)]
 #! Outputs: [pad(16)]
 #!
-#! Advice stack: the eight u32-LE-packed limbs of the Rust `account_id_to_bytes32` form, limb 0
+#! Advice stack: the eight u32-LE-packed limbs of the Rust `to_bytes32` form, limb 0
 #! first — the orientation the mint path stages a `remoteToken` in.
 #!
 #! Panics if:
@@ -268,10 +269,10 @@ async fn call_driver(
         .await
 }
 
-/// The Rust side of the packaging: the eight u32-LE-packed limbs of `account_id_to_bytes32(id)`,
+/// The Rust side of the packaging: the eight u32-LE-packed limbs of `EthEmbeddedAccountId::from_account_id(id).to_bytes32()`,
 /// limb 0 first — the order `adv_push` pops them off the advice stack and the driver stages them in.
 fn encoded_bytes32_limbs(id: AccountId) -> Vec<Felt> {
-    bytes32_to_packed_felts(&account_id_to_bytes32(id)).to_vec()
+    bytes32_to_packed_felts(&EthEmbeddedAccountId::from_account_id(id).to_bytes32()).to_vec()
 }
 
 /// The account ids the parity spread covers: `SPREAD_SIZE` freshly generated accounts, alternating
@@ -317,7 +318,7 @@ async fn native_account_id_matches_the_rust_felts_in_account_context() -> Result
 // PARITY — the decode, over the whole spread
 // ================================================================================================
 
-/// The bytes `account_id_to_bytes32` produces for an account decode, on chain, back to that exact
+/// The bytes `EthEmbeddedAccountId::to_bytes32` produces for an account decode, on chain, back to that exact
 /// account — for every id in the spread and for the production faucet.
 ///
 /// This is the layer Circle's wire format actually fixes: sixteen zero bytes, then the prefix as a
@@ -337,7 +338,7 @@ async fn own_id_bytes32_packaging_matches_the_rust_encoding() -> Result<()> {
         .await
         .unwrap_or_else(|e| {
             panic!(
-                "account {}: account_id_to_bytes32 must decode back to the account on chain: {e}",
+                "account {}: to_bytes32 must decode back to the account on chain: {e}",
                 h.account_id
             )
         });

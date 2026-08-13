@@ -25,7 +25,6 @@ use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Hasher, Word};
 use support::*;
 use xusdc_encoding::account::xreserve::{build_faucet_account, XReserveStablecoinBuilder};
-use xusdc_encoding::xreserve::encoding::EthBytes32;
 
 /// The fixed account seed the anchors were captured at (production uses a random seed; a fixed one
 /// makes the seed-derived id and the whole account commitment deterministic).
@@ -36,16 +35,22 @@ const TOKEN_SUPPLY: u64 = 0;
 // The baseline composition anchors, as their stable `Debug`/`Display` renderings (captured from the
 // pre-change composition at SEED). Comparing the rendered strings sidesteps any felt-repr ambiguity.
 //
+// The three id/state/storage anchors were RE-captured when `with_domain_config` narrowed its
+// `xreserve_contract` parameter to a 20-byte `EthAddress`: the fixture's seeded value became that
+// address in its left-padded bytes32 container, so the seeded slot bytes moved with it. The code
+// commitment did not move, which is the evidence the composition itself is unchanged — only the
+// value seeded into it.
+//
 // The account id is the NEW-ACCOUNT derivation: ground from SEED over the composed code and
 // storage commitments, so it moves whenever either commitment moves (unlike the code commitment
 // and storage digest, which isolate their own layer). The initial commitment covers all three.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([1911135277323030899, 5132525903866533777, 16977445252358507205, 1762011304226738210])";
+    "Word([8174433839796051807, 16340523693450898256, 2203917271969332984, 15160426556819828324])";
 const GOLDEN_CODE_COMMITMENT: &str =
     "Word([16976291790698015816, 5888415912956684650, 4290450764110773212, 7150546299912713910])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([345493706676576914, 583533095193184295, 14946277560135686626, 18108462045088020144])";
-const GOLDEN_ACCOUNT_ID: &str = "0xd3167e85b7d52bb15387e29e332591";
+    "Word([17854539145076846593, 417133829943640013, 6543367670500429240, 7124201274121127695])";
+const GOLDEN_ACCOUNT_ID: &str = "0xabbe7f07559738b14cd106f19152fc";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.
@@ -124,7 +129,7 @@ fn account_via_crate_root_constructor() -> Account {
         test_account_id(4),
         TEST_DOMAIN,
         TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
+        test_xreserve_contract(),
     )
     .expect("the crate-root faucet-account constructor must build the account")
 }

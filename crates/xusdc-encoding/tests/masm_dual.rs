@@ -165,11 +165,12 @@ end
 // PARITY 4 — attester pubkey commitment: the Word the allowlist is keyed by
 // ================================================================================================
 // Each attestation vector is run through the MASM commitment routine and the result is checked
-// against two independent references at once: the value pinned in the canonical artifact (which
-// miden-crypto's own `PublicKey::to_commitment` produced) and the Rust mirror used off-chain.
-// All three must agree, because the faucet decides whether an attester is allowlisted by looking
-// up exactly this Word — if the off-chain side computed a different commitment for the same key,
-// a legitimate attester would be seeded under a key the chain never looks at.
+// against two independent references at once: the value pinned in the canonical artifact, and
+// miden-crypto's own `PublicKey::to_commitment` recomputed here — the routine the off-chain side
+// keys the allowlist with. All three must agree, because the faucet decides whether an attester is
+// allowlisted by looking up exactly this Word — if the off-chain side computed a different
+// commitment for the same key, a legitimate attester would be seeded under a key the chain never
+// looks at. Recomputing also catches an artifact that went stale against the pinned crypto crate.
 // ================================================================================================
 
 #[tokio::test]
@@ -186,16 +187,12 @@ async fn tv_dual_5_pubkey_commitment() -> Result<()> {
         );
         let expected = vec.expected_commitment_word();
 
-        // Rust mirror == the vector oracle (miden-crypto to_commitment): the third anti-drift
-        // leg, asserted in-process so a mirror regression fails here too, not only in TV-ATT-2.
+        // recomputed off-chain commitment == the vector oracle: the third anti-drift leg,
+        // asserted in-process so a drift fails here too, not only in TV-ATT-2.
         assert_eq!(
-            miden_protocol::Word::from(
-                xusdc_encoding::xreserve::encoding::PublicKey::new(vec.pubkey())
-                    .to_commitment()
-                    .expect("vector pubkeys are valid curve points")
-            ),
+            vec.public_key().to_commitment(),
             expected,
-            "vector {}: Rust pubkey_commitment must equal miden-crypto to_commitment",
+            "vector {}: the off-chain commitment must equal the pinned oracle",
             vec.id
         );
 

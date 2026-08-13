@@ -23,8 +23,9 @@
 //!   (`note.attachments().find(scheme)`, `NetworkAccountTarget::try_from`,
 //!   `note.storage().items()`, `MintNote::script_root()`, `P2idNote::script_root()`) and through
 //!   the shared encoding crate's own codecs (`DepositIntent::parse_header`,
-//!   `MintIntent::from_deposit_intent`, `bytes32_to_account_id`, `bytes32_to_storage_map_key`,
-//!   `uint256_to_asset_amount`, `Signature::to_felts`, `PublicKey::to_affine_felts`) — never
+//!   `MintIntent::from_deposit_intent`, `EthEmbeddedAccountId::try_from_bytes32`,
+//!   `bytes32_to_storage_map_key`,
+//!   `uint256_to_asset_amount`, `Signature::to_felts`) and the protocol's own `PublicKey::to_elements` — never
 //!   against a layout
 //!   re-derived here. An assertion that restated the layout would be a SECOND definition of an
 //!   owned format, i.e. exactly the drift seam the ownership map exists to close.
@@ -45,6 +46,7 @@ mod mint_support;
 
 use assert_matches::assert_matches;
 use miden_protocol::asset::FungibleAsset;
+use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::note::{NoteAttachmentScheme, NoteTag, NoteType};
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{MintNote, NetworkAccountTarget, NoteExecutionHint, P2idNote};
@@ -55,11 +57,13 @@ use xusdc_encoding::note::xreserve_mint::{
     XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
-    bytes32_to_account_id, bytes32_to_packed_u32_limbs, bytes32_to_storage_map_key,
-    uint256_to_asset_amount, DepositIntent, MintIntent, PublicKey, Signature,
+    bytes32_to_packed_u32_limbs, bytes32_to_storage_map_key, uint256_to_asset_amount,
+    DepositIntent, MintIntent, Signature,
 };
 
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use mint_support::*;
+use xusdc_encoding::xreserve::encoding::EthEmbeddedAccountIdExt;
 
 // THE DELEGATION ITSELF
 // ================================================================================================
@@ -93,7 +97,7 @@ fn t_delegation_is_byte_for_byte_unit04_create() {
         attestation.deposit_intent().as_bytes(),
         &DepositAttestation::new(
             Signature::new(attestation.attestation()),
-            PublicKey::new(*attester.as_bytes()),
+            attester.key().clone(),
         ),
         &mut note_rng(0xC1_2C_1E),
     )
@@ -238,7 +242,7 @@ fn t_the_faucet_argument_drives_the_route_and_the_tag() {
 /// SERIAL(4) + ASSET_ID(4) + ASSET_VALUE(4) + tag(1) + pad(3) + P2ID storage(2)` — and every
 /// attested value embedded in it is derived from the VALIDATED payload by the shared encoding
 /// crate's own codecs, consumed by reference: the P2ID recipe targets the intent's
-/// `remoteRecipient` (`bytes32_to_account_id`) under the canonical nonce-key serial
+/// `remoteRecipient` (`EthEmbeddedAccountId::try_from_bytes32`) under the canonical nonce-key serial
 /// (`bytes32_to_storage_map_key`), the asset is the scale-0-reduced attested amount
 /// (`uint256_to_asset_amount` at `XUSDC_DEPOSIT_SCALE_EXP`) bound to the faucet, and the
 /// output-note tag targets the attested recipient. This is the storage the faucet's attestation
@@ -255,7 +259,8 @@ fn t_storage_embeds_the_attested_output() {
         .deposit_intent()
         .parse_header()
         .expect("the canonical payload parses");
-    let recipient_id = bytes32_to_account_id(&header.remote_recipient)
+    let recipient_id = EthEmbeddedAccountId::try_from_bytes32(header.remote_recipient)
+        .map(EthEmbeddedAccountId::into_account_id)
         .expect("the canonical payload's remoteRecipient is a valid account id");
     let amount = uint256_to_asset_amount(
         bytes32_to_packed_u32_limbs(&header.amount),
@@ -386,10 +391,9 @@ fn t_the_transport_payload_sub_region_is_the_compressed_intent() {
 // ================================================================================================
 
 /// The transport's attestation section carries the 65-byte signature the relayer VALIDATED (from
-/// `ValidatedAttestation`, never from a raw-bytes side door) and the 33-byte attester pubkey the
-/// OPERATOR configured — both in the shared encoding crate's felt encoding, checked by looking for
-/// the owner's own packing (`Signature::to_felts` / `PublicKey::to_affine_felts`) inside the attachment's
-/// elements. The test asserts PRESENCE of the owner-packed runs, not their offsets: the offsets are
+/// `ValidatedAttestation`, never from a raw-bytes side door) and the attester pubkey the OPERATOR
+/// configured — both in their owner's felt encoding, checked by looking for the owner's own packing
+/// (`Signature::to_felts` / `PublicKey::to_elements`) inside the attachment's elements. The test asserts PRESENCE of the owner-packed runs, not their offsets: the offsets are
 /// the shared encoding crate's to choose, and restating them here would fork the layout.
 #[test]
 fn t_transport_carries_the_validated_signature_and_configured_pubkey() {
@@ -408,9 +412,7 @@ fn t_transport_carries_the_validated_signature_and_configured_pubkey() {
         .to_elements();
 
     let signature = Signature::new(attestation.attestation()).to_felts();
-    let pubkey = PublicKey::new(*attester.as_bytes())
-        .to_affine_felts()
-        .expect("the partner key is on the curve");
+    let pubkey = attester.key().to_elements();
 
     assert!(
         elements.windows(signature.len()).any(|w| w == signature),

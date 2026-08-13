@@ -66,7 +66,7 @@ pub use report::{CycleEntry, CycleReport, Disposition};
 /// FOR `faucet` carrying `attester`'s key, and a builder taking three loose arguments — two of them
 /// same-typed `AccountId`s with opposite meanings — is a builder in which swapping them still
 /// compiles.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct MintIdentities {
     sender: AccountId,
     faucet: AccountId,
@@ -110,8 +110,8 @@ impl MintIdentities {
         self.faucet
     }
 
-    /// The operator-configured attester public key (33-byte compressed SEC1). It is a KEY, not an
-    /// authority: whether it is allowlisted is the faucet's `xReserveAttesters` to say, on-chain.
+    /// The operator-configured attester public key. It is a KEY, not an authority: whether it is
+    /// allowlisted is the faucet's `xReserveAttesters` to say, on-chain.
     pub fn attester(&self) -> &AttesterPubkey {
         &self.attester
     }

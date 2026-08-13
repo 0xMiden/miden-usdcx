@@ -38,6 +38,7 @@ use miden_client::store::TransactionFilter;
 use miden_client::transaction::{TransactionId, TransactionRequestBuilder, TransactionStatus};
 use miden_protocol::account::AccountId;
 use miden_protocol::Word;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 
 use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
 use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
@@ -301,7 +302,7 @@ pub async fn run_sanity(cfg: &SanityConfig, node_version: &str) -> Result<Sanity
         faucet_id,
         // Fresh-LOCAL: the fresh faucet's identifier is the own-id fixpoint the `identifier_init`
         // note derives (`identifier_for(faucet_id)`), so mints must carry `remoteToken =
-        // account_id_to_bytes32(faucet_id)` — the OWN-ID config, not the vector token. `remoteDomain`
+        // EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()` — the OWN-ID config, not the vector token. `remoteDomain`
         // already equals the build-seed MINT_DOMAIN. Existing-faucet: resolved from the DEPLOYED
         // faucet below (same own-id shape, read from chain).
         mint_config: Some(mintburn::MintDomainConfig::for_deployed_faucet(
@@ -460,10 +461,10 @@ fn log_check(led: &mut Ledger, log_dir: &Path) {
 
 /// Resolves the DEPLOYED faucet's mint domain config for the `--faucet-id` re-check (the thin
 /// slot-read adapter; the node-free logic lives in [`mintburn::MintDomainConfig`]). Reads the on-chain
-/// `domain` and pairs it with `remote_token = account_id_to_bytes32(faucet_id)` — the two fields the
+/// `domain` and pairs it with `remote_token = EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()` — the two fields the
 /// structural validation mint gate compares. Then VERIFIES the faucet's stored identifier key equals
-/// `bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id))`: if it does not, the deployed
-/// identifier is NOT `account_id_to_bytes32(faucet_id)` and every mint would be rejected at structural validation, so we
+/// `bytes32_to_storage_map_key(EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32())`: if it does not, the deployed
+/// identifier is NOT `EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()` and every mint would be rejected at structural validation, so we
 /// bail HERE with an explicit message instead of letting the operator hit the 300s path-N timeout (the
 /// A6 failure mode). The `domain` compare cannot be pre-verified the same way (the mint payload IS what
 /// establishes the domain), so a wrong stored domain is caught by the resolved config making the mint
@@ -480,9 +481,9 @@ async fn resolve_deployed_mint_config(
     if stored_identifier != expected_identifier {
         bail!(
             "the deployed faucet {faucet_id}'s stored identifier key {stored_identifier:?} does not \
-             match bytes32_to_storage_map_key(account_id_to_bytes32(faucet_id)) {expected_identifier:?}: \
+             match bytes32_to_storage_map_key(EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()) {expected_identifier:?}: \
              the mint gate (structural validation) would reject every mint with WRONG_IDENTIFIER. The --faucet-id \
-             re-check requires the identifier A5's identifier_init set from account_id_to_bytes32(faucet.id())."
+             re-check requires the identifier A5's identifier_init set from EthEmbeddedAccountId::from_account_id(faucet.id()).to_bytes32()."
         );
     }
     println!("resolved deployed-faucet mint config: domain={domain}, identifier verified");

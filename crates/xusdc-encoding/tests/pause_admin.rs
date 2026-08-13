@@ -30,13 +30,14 @@ use miden_protocol::errors::MasmError;
 use miden_protocol::note::Note;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_testing::assert_transaction_executor_error;
 use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, PublicKey, Signature};
+use xusdc_encoding::xreserve::encoding::Signature;
 
 /// Deterministic note rng for the production admin notes (serial only; never affects the gate).
 fn prod_note_rng(seed: u64) -> RandomCoin {
@@ -95,7 +96,7 @@ fn mi(id: &str) -> &'static MiVector {
 
 /// The canonical accept payload with the wire amount / maxFee spliced in, `remoteRecipient`
 /// replaced by the real recipient wallet, `remoteToken` replaced by
-/// `account_id_to_bytes32(faucet_id)` (the own-id key the mint path derives, so the identifier
+/// `EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()` (the own-id key the mint path derives, so the identifier
 /// compare passes), and one nonce byte perturbed per variant so each mint consumes
 /// a nonce the replay guard has not seen.
 fn payload_for(
@@ -108,9 +109,9 @@ fn payload_for(
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(recipient));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(recipient).to_bytes32());
     payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(faucet_id));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32());
     payload[NONCE_BYTE_OFF] ^= nonce_variant;
     payload
 }
@@ -204,10 +205,7 @@ fn attested_mint_note(pf: &ProductionFaucet, payload: &[u8], rng_seed: u64) -> R
         pf.producer_id,
         pf.faucet_id,
         payload,
-        &DepositAttestation::new(
-            Signature::new(attester.sig_bytes),
-            PublicKey::new(attester.pubkey_bytes),
-        ),
+        &DepositAttestation::new(Signature::new(attester.sig_bytes), attester.pubkey.clone()),
         &mut prod_note_rng(rng_seed),
     )
     .map_err(|e| anyhow::anyhow!("building the attested stock mint note: {e}"))

@@ -50,9 +50,10 @@ use miden_standards::account::policies::{
     BasicBlocklist, BlocklistManager, BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager,
     TransferPolicy,
 };
+use miden_standards::interop::eth::EthAddress;
 
 use crate::account::xreserve::XReserveAdminAuthority;
-use crate::xreserve::encoding::EthBytes32;
+use crate::xreserve::encoding::{bytes32_to_packed_felts, EthAddressExt};
 
 mod construction;
 mod error;
@@ -113,7 +114,7 @@ pub const USDCX_DECIMALS: u8 = 6;
 struct DomainConfigSeed {
     domain: u32,
     source_domain: u32,
-    xreserve_contract: EthBytes32,
+    xreserve_contract: EthAddress,
 }
 
 /// Reads the burn floor (element 0 of the value word) from a `BurnPolicy`'s stock [`MinBurnAmount`]
@@ -252,17 +253,17 @@ impl XReserveStablecoinBuilder {
     }
 
     /// Supplies the three BUILD-SEEDED domain-config fields: the u32 `domain` and
-    /// `source_domain` ids and the `xreserve_contract` remote address, typed as [`EthBytes32`] (the
-    /// 32-byte source-chain address newtype) rather than a raw `[u8; 32]`. REQUIRED — a build without
-    /// them is rejected with [`XReserveStablecoinBuilderError::MissingDomainConfig`]. The values are
-    /// written into the declared `domain` / `source_domain` / `xreserve_contract_{hi,lo}` slots
-    /// at composition time (`[domain, 0, 0, 0]` / `[source_domain, 0, 0, 0]` / the raw 8x
-    /// u32-LE packed felts, hi = wire bytes 0..16, lo = bytes 16..32).
+    /// `source_domain` ids and the source-chain `xreserve_contract` address, typed as the stock
+    /// [`EthAddress`] rather than a raw byte array. REQUIRED — a build without them is rejected
+    /// with [`XReserveStablecoinBuilderError::MissingDomainConfig`]. The values are written into
+    /// the declared `domain` / `source_domain` / `xreserve_contract_{hi,lo}` slots at composition
+    /// time (`[domain, 0, 0, 0]` / `[source_domain, 0, 0, 0]` / the 8x u32-LE packed felts of the
+    /// address's bytes32 container, hi = container bytes 0..16, lo = bytes 16..32).
     pub fn with_domain_config(
         mut self,
         domain: u32,
         source_domain: u32,
-        xreserve_contract: EthBytes32,
+        xreserve_contract: EthAddress,
     ) -> Self {
         self.domain_config = Some(DomainConfigSeed {
             domain,
@@ -449,7 +450,7 @@ impl XReserveStablecoinBuilder {
         let lo_name = XReserveComponent::xreserve_contract_lo_slot();
         let scalar_word =
             |value: u32| Word::from([Felt::from(value), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-        let xrc = seed.xreserve_contract.to_packed_felts();
+        let xrc = bytes32_to_packed_felts(&seed.xreserve_contract.to_bytes32());
         let hi_word = Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]);
         let lo_word = Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]);
         let slots = self

@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
+use miden_protocol::crypto::utils::Deserializable;
 use miden_protocol::{Felt, Word};
 use serde::Deserialize;
 
@@ -374,6 +376,18 @@ impl AttVector {
 
     pub fn digest(&self) -> [u8; 32] {
         parse_hex32(&self.digest_hex)
+    }
+
+    /// The wire pubkey decoded into the key every consumer actually works with. A committed
+    /// vector whose key is not a curve point is a broken artifact, so this panics rather than
+    /// making every caller handle an impossible error.
+    pub fn public_key(&self) -> PublicKey {
+        PublicKey::read_from_bytes(&self.pubkey()).unwrap_or_else(|e| {
+            panic!(
+                "vector {}: pubkey does not decode to a curve point: {e}",
+                self.id
+            )
+        })
     }
 
     pub fn sig(&self) -> [u8; 65] {

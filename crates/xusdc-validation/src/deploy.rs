@@ -41,7 +41,7 @@ use miden_standards::StandardsLib;
 use xusdc_encoding::account::xreserve::{
     XReserveComponent, XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL, USDCX_DECIMALS,
 };
-use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
+use xusdc_encoding::xreserve::encoding::{bytes32_to_packed_felts, EthAddressExt};
 
 use crate::config::DomainParams;
 
@@ -74,7 +74,7 @@ pub fn build_xreserve_component_seeded(domain: Option<&DomainParams>) -> Result<
     let (domain_w, identifier_w, source_domain_w, xrc_hi_w, xrc_lo_w) = match domain {
         None => (empty, empty, empty, empty, empty),
         Some(p) => {
-            let packed = bytes32_to_packed_felts(&p.xreserve_contract);
+            let packed = bytes32_to_packed_felts(&p.xreserve_contract.to_bytes32());
             (
                 Word::from([Felt::from(p.domain), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
                 // The identifier ALWAYS ships EMPTY — the builder rejects a build-seeded identifier

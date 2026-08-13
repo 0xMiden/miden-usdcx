@@ -38,7 +38,7 @@ use support::*;
 use xusdc_encoding::account::xreserve::XReserveComponent;
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::xreserve::encoding::{
-    DepositIntent, MintIntent, PublicKey, Signature, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
+    DepositIntent, MintIntent, Signature, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
 };
 
 use miden_protocol::{Felt, Word};
@@ -290,10 +290,7 @@ async fn the_honest_note_carries_the_merged_transport_and_the_routing_target() -
         pf.producer_id,
         pf.faucet_id,
         &payload,
-        &DepositAttestation::new(
-            Signature::new(attester.sig_bytes),
-            PublicKey::new(attester.pubkey_bytes),
-        ),
+        &DepositAttestation::new(Signature::new(attester.sig_bytes), attester.pubkey.clone()),
         &mut note_rng(90),
     )
     .map_err(|e| anyhow::anyhow!("the production factory must build the note: {e}"))?;

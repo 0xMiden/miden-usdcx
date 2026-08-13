@@ -18,6 +18,7 @@ use miden_protocol::note::Note;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
 use miden_standards::interop::eth::EthAddress;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use support::*;
 use xusdc_encoding::account::xreserve::{XReserveComponent, ATTESTATION_MINT_POLICY_PROC_PATH};
 use xusdc_encoding::note::xreserve_admin::{
@@ -29,9 +30,8 @@ use xusdc_encoding::note::xreserve_mint::{
     DepositAttestation, XUsdcMintNote, XUsdcMintNoteStorage, XUSDC_DEPOSIT_SCALE_EXP,
 };
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, DepositIntent, DepositIntentHeader, DepositNonce, EthBytes32, HookData,
-    MintIntent, PublicKey, Signature, XReserveBurnItems, DEPOSIT_INTENT_MAGIC,
-    DEPOSIT_INTENT_VERSION,
+    DepositIntent, DepositIntentHeader, DepositNonce, HookData, MintIntent, Signature,
+    XReserveBurnItems, DEPOSIT_INTENT_MAGIC, DEPOSIT_INTENT_VERSION,
 };
 
 fn note_rng(seed: u64) -> RandomCoin {
@@ -188,10 +188,7 @@ fn mint_note_builder_takes_typed_deposit_intent_and_matches_create() {
         .first()
         .expect("an attestation vector is present");
     let payload = vector.payload();
-    let attestation = DepositAttestation::new(
-        Signature::new(vector.sig()),
-        PublicKey::new(vector.pubkey()),
-    );
+    let attestation = DepositAttestation::new(Signature::new(vector.sig()), vector.public_key());
 
     let via_builder = XUsdcMintNote::builder()
         .sender(sender)
@@ -216,7 +213,7 @@ fn mint_note_builder_takes_typed_deposit_intent_and_matches_create() {
 
 #[test]
 fn crate_root_and_account_root_build_faucet_account_compose_an_account() {
-    // Crate-root export (`xusdc_encoding::build_faucet_account`), taking the typed `EthBytes32`
+    // Crate-root export (`xusdc_encoding::build_faucet_account`), taking the typed `EthAddress`
     // domain-config address.
     let account: Account = xusdc_encoding::build_faucet_account(
         [9u8; 32],
@@ -228,7 +225,7 @@ fn crate_root_and_account_root_build_faucet_account_compose_an_account() {
         test_account_id(4),
         TEST_DOMAIN,
         TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
+        test_xreserve_contract(),
     )
     .expect("the crate-root constructor composes a valid account");
     assert!(
@@ -271,7 +268,7 @@ fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() {
         amount,
         remote_domain: 1,
         remote_token: [1u8; 32],
-        remote_recipient: account_id_to_bytes32(recipient),
+        remote_recipient: EthEmbeddedAccountId::from_account_id(recipient).to_bytes32(),
         local_token: [2u8; 32],
         local_depositor: [3u8; 32],
         max_fee: [0u8; 32],
@@ -309,10 +306,7 @@ fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() {
         .first()
         .expect("an attestation vector is present");
     let payload = vector.payload();
-    let attestation = DepositAttestation::new(
-        Signature::new(vector.sig()),
-        PublicKey::new(vector.pubkey()),
-    );
+    let attestation = DepositAttestation::new(Signature::new(vector.sig()), vector.public_key());
     let via_builder = XUsdcMintNote::builder()
         .sender(test_account_id(5))
         .faucet_id(faucet)

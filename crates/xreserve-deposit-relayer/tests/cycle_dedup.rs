@@ -153,5 +153,7 @@ fn test_vector() -> AttestationVector {
 fn nonce_of(vector: &AttestationVector) -> [u8; 32] {
     *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(vector.payload())
         .expect("the fixture payload is a valid DepositIntent")
+        .header()
         .nonce()
+        .as_bytes()
 }

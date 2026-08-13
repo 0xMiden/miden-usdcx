@@ -24,6 +24,7 @@
 use std::error::Error;
 
 use assert_matches::assert_matches;
+use miden_protocol::utils::serde::Serializable;
 use rstest::rstest;
 
 use xreserve_deposit_relayer::error::RelayerError;
@@ -89,71 +90,66 @@ fn t_rly_12_decode_well_formed_all_offsets(#[case] id: &str) {
     let di =
         decode_and_validate_deposit_intent(&bytes).expect("a canonical accept vector must decode");
 
-    // Every field is checked against the canonical (independent) expectation.
-    assert_eq!(di.magic(), f.magic, "magic@0");
-    assert_eq!(di.version(), f.version, "version@4");
-    assert_eq!(di.amount(), &f.bytes32("amount"), "amount@8");
-    assert_eq!(di.remote_domain(), f.remote_domain, "remoteDomain@40");
+    // Every field is checked against the canonical (independent) expectation. `magic` and
+    // `version` are not fields at all — the decode already refused any payload that carries
+    // anything else, which the reject rows below pin.
+    let header = di.header();
+    assert_eq!(header.amount().as_bytes(), &f.bytes32("amount"), "amount@8");
+    assert_eq!(header.remote_domain(), f.remote_domain, "remoteDomain@40");
     assert_eq!(
-        di.remote_token(),
+        header.remote_token(),
         &f.bytes32("remote_token"),
         "remoteToken@44"
     );
     assert_eq!(
-        di.remote_recipient(),
+        header.remote_recipient(),
         &f.bytes32("remote_recipient"),
         "remoteRecipient@76"
     );
     assert_eq!(
-        di.local_token(),
+        header.local_token(),
         &f.bytes32("local_token"),
         "localToken@108"
     );
     assert_eq!(
-        di.local_depositor(),
+        header.local_depositor(),
         &f.bytes32("local_depositor"),
         "localDepositor@140"
     );
-    assert_eq!(di.max_fee(), &f.bytes32("max_fee"), "maxFee@172");
-    assert_eq!(di.nonce(), &f.bytes32("nonce"), "nonce@204");
-    assert_eq!(di.hook_data_len(), f.hook_data_len, "hookDataLen@236");
-
-    // hookData@240 and the raw preimage relate to the exact payload bytes.
     assert_eq!(
-        di.hook_data().len(),
+        header.max_fee().as_bytes(),
+        &f.bytes32("max_fee"),
+        "maxFee@172"
+    );
+    assert_eq!(header.nonce().as_bytes(), &f.bytes32("nonce"), "nonce@204");
+    assert_eq!(di.hook_data().len_u32(), f.hook_data_len, "hookDataLen@236");
+
+    // hookData@240 and the re-encoded preimage relate to the exact payload bytes.
+    assert_eq!(
+        di.hook_data().as_bytes().len(),
         f.hook_data_len as usize,
         "hookData length"
     );
+    assert_eq!(di.to_bytes(), bytes, "re-encoded preimage == payload");
     assert_eq!(
-        di.raw_preimage(),
-        bytes.as_slice(),
-        "raw preimage == payload"
-    );
-    assert_eq!(
-        di.raw_preimage().len(),
+        di.to_bytes().len(),
         HEADER_LEN + f.hook_data_len as usize,
-        "raw preimage length == 240 + hookDataLen"
+        "preimage length == 240 + hookDataLen"
     );
 }
 
-/// Validity by construction: the decoder is the ONLY way to obtain a `DepositIntent`, so its
-/// private fields cannot disagree — `hook_data`, `hook_data_len`, and `raw_preimage` are always
-/// mutually consistent, and `preimage_felt_len` is derived from the actual bytes, not a trusted
-/// length field.
+/// Validity by construction: the decoded type derives its own hookData length rather than trusting
+/// the wire field, so the declared and actual lengths cannot disagree, and `preimage_felt_len`
+/// follows from the bytes it will actually emit.
 #[rstest]
 #[case("di-pos-hookdata")]
 #[case("di-pos-empty-hookdata")]
 fn decoded_type_is_internally_consistent(#[case] id: &str) {
     let di = decode_and_validate_deposit_intent(&di_by_id(id).bytes()).expect("decodes");
-    assert_eq!(di.hook_data().len(), di.hook_data_len() as usize);
-    assert_eq!(
-        di.raw_preimage().len(),
-        HEADER_LEN + di.hook_data_len() as usize
-    );
-    assert_eq!(
-        di.preimage_felt_len(),
-        60 + (di.hook_data_len() as usize).div_ceil(4)
-    );
+    let hook_data_len = di.hook_data().as_bytes().len();
+    assert_eq!(di.hook_data().len_u32() as usize, hook_data_len);
+    assert_eq!(di.to_bytes().len(), HEADER_LEN + hook_data_len);
+    assert_eq!(di.preimage_felt_len(), 60 + hook_data_len.div_ceil(4));
 }
 
 // ================================================================================================
@@ -172,11 +168,15 @@ fn t_rly_13_amount_and_maxfee_carried_raw(#[case] id: &str) {
 
     // byte-for-byte the canonical 32-byte big-endian value — NO reduction / scaling.
     assert_eq!(
-        di.amount(),
+        di.header().amount().as_bytes(),
         &f.bytes32("amount"),
         "amount carried raw (reduction is on-chain at amount validation)"
     );
-    assert_eq!(di.max_fee(), &f.bytes32("max_fee"), "maxFee carried raw");
+    assert_eq!(
+        di.header().max_fee().as_bytes(),
+        &f.bytes32("max_fee"),
+        "maxFee carried raw"
+    );
 }
 
 // ================================================================================================
@@ -269,9 +269,10 @@ fn t_rly_11_preimage_felt_count(#[case] id: &str, #[case] expected_felts: usize)
     // the decoder's own count matches the canonical artifact...
     assert_eq!(di.preimage_felt_len(), expected_felts);
     //... and matches the shared encoding crate's authoritative packing of the same payload.
-    let packed = xusdc_encoding::xreserve::encoding::DepositIntent::new(&vector.bytes())
-        .to_packed_felts()
-        .expect("packs");
+    let packed =
+        xusdc_encoding::xreserve::encoding::DepositIntent::try_from(vector.bytes().as_slice())
+            .expect("packs")
+            .to_preimage_felts();
     assert_eq!(di.preimage_felt_len(), packed.len());
 }
 
@@ -296,9 +297,9 @@ fn t_rly_11_preimage_exactly_1024_felts_accepted() {
         .expect("a preimage of exactly 1024 felts is accepted (inclusive bound)");
     assert_eq!(di.preimage_felt_len(), 1024);
     assert_eq!(
-        xusdc_encoding::xreserve::encoding::DepositIntent::new(&payload)
-            .to_packed_felts()
+        xusdc_encoding::xreserve::encoding::DepositIntent::try_from(payload.as_slice())
             .expect("packs")
+            .to_preimage_felts()
             .len(),
         1024,
         "unit-04 packs the same payload to exactly 1024 felts"

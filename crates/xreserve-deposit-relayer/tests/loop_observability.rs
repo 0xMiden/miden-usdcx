@@ -280,7 +280,9 @@ fn with_distinct_nonce(tweak: u8) -> Vec<u8> {
     let payload = canonical_payload(fixtures::TEST_VECTOR_PAYLOAD_ID);
     let nonce = *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(&payload)
         .expect("valid DI")
-        .nonce();
+        .header()
+        .nonce()
+        .as_bytes();
     let offset = payload
         .windows(nonce.len())
         .position(|window| window == nonce)

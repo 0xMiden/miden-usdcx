@@ -25,8 +25,8 @@ use miden_protocol::note::NoteAttachmentScheme;
 use miden_standards::note::NetworkAccountTarget;
 use xusdc_encoding::account::xreserve::XReserveComponent;
 use xusdc_encoding::note::xreserve_mint::{
-    XUSDC_DEPOSIT_SCALE_EXP, XUSDC_MINT_ATTESTATION_NUM_WORDS,
-    XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
+    XUSDC_MINT_ATTESTATION_NUM_WORDS, XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME,
+    XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
     deposit_intent_field_offset, DepositIntentField, ACCOUNT_ID_BYTES, ACCOUNT_ID_FELTS,
@@ -35,7 +35,7 @@ use xusdc_encoding::xreserve::encoding::{
     MINT_INTENT_FELTS, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF, MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF,
     MINT_INTENT_LOCAL_TOKEN_FELT_OFF, MINT_INTENT_MAX_FEE_FELT_OFF, MINT_INTENT_NONCE_FELT_OFF,
     MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
-    MINT_INTENT_SCALE_EXP, PUBKEY_FELTS,
+    PUBKEY_FELTS,
 };
 use xusdc_encoding::{DEPOSIT_INTENT_MASM, MINT_INTENT_MASM};
 
@@ -451,13 +451,6 @@ fn masm_rust_constant_parity() {
         0,
         "the carried payload must be a whole number of words"
     );
-    // DEV-5 pin: DC-14 zero-extends the carried AssetAmount back into its uint256 field, which is
-    // lossless ONLY at scale zero. A non-zero scale needs a new transport, not a new constant, so
-    // it has to fail here rather than ship a preimage that can never verify.
-    assert_eq!(
-        MINT_INTENT_SCALE_EXP, 0,
-        "DC-14 reconstruction is only invertible at scale zero (DEV-5 OPEN)"
-    );
 
     // extra row: the affine-pubkey felt count
     let (att_nums, _, _) = parse_masm_consts(ATTESTATION_VERIFY_MASM);
@@ -511,14 +504,11 @@ fn masm_rust_constant_parity() {
         ),
         "the carried payload's word offset must be the attestation width on BOTH sides"
     );
-    // DC-5 scale parity is Rust-only now: the MASM side no longer HAS a scale, because the writer
-    // zero-extends the note's AssetAmount instead of verifying a witness against a staged uint256.
-    // The pin that matters is that both Rust constants agree on zero, which MINT_INTENT_SCALE_EXP
-    // asserts above.
-    assert_eq!(
-        XUSDC_DEPOSIT_SCALE_EXP, MINT_INTENT_SCALE_EXP,
-        "the note factory and the DC-14 mirror must reduce at the same scale"
-    );
+    // DC-5 has no cross-language parity row left: the MASM side no longer HAS a scale, because the
+    // writer zero-extends the note's AssetAmount instead of verifying a witness against a staged
+    // uint256. The one thing left to pin is the value of the single Rust constant, and it is
+    // asserted where it is defined (`amount.rs`, `deposit_scale_exp_is_zero`) — the constant is
+    // module-private, so there is no second spelling that could drift from it.
     // rider A8 (ratified): the xUSDC scheme sits at >= 4 — clear of the protocol-reserved
     // "none" value 1 and the standard values 2 (NetworkAccountTarget, carried on this very
     // note) and 3 (Pswap). Executable so a scheme regression cannot slip in one-sided.

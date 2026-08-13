@@ -54,10 +54,10 @@ async fn t_rly_01_by_hash_flattens_the_wrapper_and_binds_the_raw_keccak_digest()
 
     // (2) keccak256(decode_hex(payload)) == decode_hex(messageHash) — the RAW-keccak binding, on
     //     decoded bytes (not a string compare of the hex).
-    assert_eq!(fetched.deposit_intent().as_bytes(), vector.payload());
+    assert_eq!(fetched.payload(), vector.payload());
     assert_eq!(fetched.message_hash(), vector.message_hash());
     assert_eq!(
-        fixtures::keccak256(fetched.deposit_intent().as_bytes()),
+        fixtures::keccak256(fetched.payload()),
         fetched.message_hash()
     );
 
@@ -151,21 +151,15 @@ async fn t_rly_02_by_tx_hash_returns_the_list_shape_with_remote_domain() {
     for element in &fetched {
         assert!(element.remote_domain() >= 1, "remoteDomain has minimum 1");
         assert_eq!(
-            fixtures::keccak256(element.attestation().deposit_intent().as_bytes()),
+            fixtures::keccak256(element.attestation().payload()),
             element.attestation().message_hash()
         );
         assert_eq!(element.attestation().attestation().len(), 65);
     }
     assert_eq!(fetched[0].remote_domain(), FIXTURE_MIDEN_DOMAIN);
-    assert_eq!(
-        fetched[0].attestation().deposit_intent().as_bytes(),
-        vector_a.payload()
-    );
+    assert_eq!(fetched[0].attestation().payload(), vector_a.payload());
     assert_eq!(fetched[1].remote_domain(), 1);
-    assert_eq!(
-        fetched[1].attestation().deposit_intent().as_bytes(),
-        vector_b.payload()
-    );
+    assert_eq!(fetched[1].attestation().payload(), vector_b.payload());
 
     // the txHash travels as a QUERY param on /v1/attestations (not a path segment).
     let requests = mock.requests_to(Endpoint::ByTxHash);

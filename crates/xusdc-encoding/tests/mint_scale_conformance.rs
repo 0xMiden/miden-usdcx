@@ -39,9 +39,7 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveComponent;
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
-use xusdc_encoding::note::xreserve_mint::{
-    DepositAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
-};
+use xusdc_encoding::note::xreserve_mint::DepositAttestation;
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{bytes32_to_storage_map_key, Signature};
 
@@ -261,14 +259,13 @@ async fn mint_via_production_note(
     payload: &[u8],
     rng_seed: u64,
 ) -> Result<ExecutedTransaction> {
-    let note = XUsdcMintNote::create(
+    let note = mint_note_from_payload(
         pf.producer_id,
         pf.faucet_id,
         payload,
-        &attestation_for(1, payload),
+        attestation_for(1, payload),
         &mut note_rng(rng_seed),
-    )
-    .map_err(|e| anyhow::anyhow!("constructing the production mint note: {e}"))?;
+    )?;
     emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
     consume_mint_note(&pf.mock_chain, pf.faucet_id, note.id())
         .await
@@ -500,10 +497,7 @@ fn shipped_faucet_writes_the_amount_at_the_identity_scale() -> Result<()> {
         !body.to_ascii_lowercase().contains("scale"),
         "the writer applies no scale at all; a scale here would mean a rescale crept back"
     );
-    assert_eq!(
-        XUSDC_DEPOSIT_SCALE_EXP, 0,
-        "the note factory must reduce at the same identity scale the writer expands at"
-    );
+
     Ok(())
 }
 

@@ -32,9 +32,8 @@ use miden_protocol::crypto::utils::Deserializable;
 use miden_protocol::note::Note;
 
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::Signature;
+use xusdc_encoding::xreserve::encoding::{DepositIntent, Signature};
 
-use crate::circle::schema::ValidatedAttestation;
 use crate::error::{Cause, HexField, RelayerError};
 
 /// The 33-byte compressed SEC1 length — the ONLY attester-key form the relayer handles (the
@@ -106,17 +105,18 @@ impl AttesterPubkey {
 }
 
 /// Builds the mint note for a validated Circle deposit attestation, by delegation to the shared
-/// encoding crate's typed [`XUsdcMintNote`] builder (the DepositIntent crosses as
-/// [`DepositIntent`](xusdc_encoding::xreserve::encoding::DepositIntent), handed over by
-/// [`ValidatedAttestation::deposit_intent`](crate::circle::schema::ValidatedAttestation::deposit_intent)).
+/// encoding crate's typed [`XUsdcMintNote`] builder.
 ///
 /// The parameters:
 ///
 /// * `sender` — the relayer's own account.
 /// * `faucet_id` — the xUSDC faucet the note is routed at. It must be a PUBLIC network account:
 ///   the routing attachment can bind nothing else.
-/// * `attestation` — the validated envelope. Its DepositIntent payload and its 65-byte `r‖s‖v`
-///   travel together in the merged scheme-4 transport attachment.
+/// * `remote_domain` — the destination domain that faucet has configured. The faucet writes its own
+///   into the message it rebuilds, so an intent naming a different one could never verify there.
+/// * `deposit_intent` — the decoded Circle message, already through the shared codec.
+/// * `attestation` — the validated 65-byte `r‖s‖v`. It and the intent travel together in the merged
+///   scheme-4 transport attachment.
 /// * `attester` — the operator-configured candidate pubkey, travelling beside the signature.
 /// * `rng` — the caller's randomness. The serial number is drawn from it, which is what makes a
 ///   re-mint of the same DepositIntent a distinct note rather than a collision.
@@ -128,33 +128,31 @@ impl AttesterPubkey {
 ///
 /// # Errors
 /// [`RelayerError::MintNoteBuild`] — the shared encoding crate's factory refused the inputs: the
-/// payload is not a structurally valid DepositIntent, or it is addressed to a different
-/// faucet, or a field it must carry is unrepresentable (a `maxFee` beyond `AssetAmount::MAX`, a
-/// `localToken` / `localDepositor` that is not a 20-byte address), or `faucet_id` is not a public
-/// network account. That crate's `NoteError` (and the
-/// `EncodingError` beneath it) is preserved as the error's source. The variant is NOT retryable —
-/// none of those conditions clears on its own.
+/// intent is addressed to a different faucet or a different domain, or a field it must carry is
+/// unrepresentable (a `maxFee` beyond `AssetAmount::MAX`, a `localToken` / `localDepositor` that is
+/// not a 20-byte address), or `faucet_id` is not a public network account. That crate's `NoteError`
+/// (and the `EncodingError` beneath it) is preserved as the error's source. The variant is NOT
+/// retryable — none of those conditions clears on its own.
 pub fn build_mint_note<R: FeltRng>(
     sender: AccountId,
     faucet_id: AccountId,
-    attestation: &ValidatedAttestation,
+    remote_domain: u32,
+    deposit_intent: DepositIntent,
+    attestation: [u8; 65],
     attester: &AttesterPubkey,
     rng: &mut R,
 ) -> Result<Note, RelayerError> {
-    let mint_attestation = DepositAttestation::new(
-        Signature::new(attestation.attestation()),
-        attester.key().clone(),
-    );
-
-    // Adopt the typed builder at the production boundary: the Circle envelope hands over the typed
-    // `DepositIntent`, so no raw `&[u8]` crosses the ingestion boundary.
     XUsdcMintNote::builder()
         .sender(sender)
         .faucet_id(faucet_id)
-        .deposit_intent(attestation.deposit_intent())
-        .attestation(&mint_attestation)
+        .remote_domain(remote_domain)
+        .deposit_intent(deposit_intent)
+        .attestation(DepositAttestation::new(
+            Signature::new(attestation),
+            attester.key().clone(),
+        ))
         .generate_serial_number(rng)
         .build()
-        .and_then(Note::try_from)
+        .map(Note::from)
         .map_err(|source| RelayerError::MintNoteBuild(Cause::new(source)))
 }

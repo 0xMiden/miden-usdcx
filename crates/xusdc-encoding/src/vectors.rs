@@ -43,7 +43,7 @@ pub struct B32Vector {
     pub derivation: String,
 }
 
-/// uint256 → AssetAmount vectors. `kind`: accept | reject | ge | dust.
+/// uint256 → AssetAmount vectors. `kind`: accept | reject.
 #[derive(Debug, Deserialize)]
 pub struct AmtVector {
     pub id: String,
@@ -51,15 +51,8 @@ pub struct AmtVector {
     pub kind: String,
     #[serde(default)]
     pub uint256_be: Option<String>,
-    pub scale_exp: u32,
-    #[serde(default)]
-    pub b_uint256_be: Option<String>,
     #[serde(default)]
     pub expected_y: Option<String>,
-    #[serde(default)]
-    pub expected_dust: Option<String>,
-    #[serde(default)]
-    pub ge_result: Option<bool>,
     #[serde(default)]
     pub expected_variant: Option<String>,
     #[serde(default)]
@@ -289,15 +282,6 @@ impl AmtVector {
         ))
     }
 
-    /// The comparand of a `ge` vector, same form.
-    pub fn b_amount(&self) -> EthAmount {
-        EthAmount::new(parse_hex32(
-            self.b_uint256_be
-                .as_deref()
-                .expect("ge vector carries b_uint256_be"),
-        ))
-    }
-
     pub fn expected_amount(&self) -> miden_protocol::asset::AssetAmount {
         let y: u64 = self
             .expected_y
@@ -306,14 +290,6 @@ impl AmtVector {
             .parse()
             .expect("u64");
         miden_protocol::asset::AssetAmount::new(y).expect("vector amount within bounds")
-    }
-
-    pub fn expected_dust(&self) -> u128 {
-        self.expected_dust
-            .as_deref()
-            .expect("dust vector")
-            .parse()
-            .expect("u128")
     }
 }
 

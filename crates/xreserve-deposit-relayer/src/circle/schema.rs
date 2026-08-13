@@ -25,7 +25,6 @@
 //! Validated means "worth spending a Miden transaction on", never "authorized to mint".
 
 use serde::{Deserialize, Serialize};
-use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 use crate::error::RelayerError;
 use crate::validate::envelope::{validate_attestation_envelope, verify_message_hash_bytes};
@@ -154,12 +153,14 @@ impl ValidatedAttestation {
         })
     }
 
-    /// The validated payload as the typed [`DepositIntent`] — the Circle ingestion boundary hands
-    /// the shared encoding type to downstream code, never a bare `&[u8]`. A consumer that genuinely
-    /// needs the raw wire bytes (the on-chain parse sees exactly these) takes
-    /// [`DepositIntent::as_bytes`].
-    pub fn deposit_intent(&self) -> DepositIntent<'_> {
-        DepositIntent::new(&self.payload)
+    /// The validated RAW payload — the exact bytes `messageHash` was checked to bind, and the ones
+    /// the shared codec decodes into a [`DepositIntent`]. This is deliberately not a decoded value:
+    /// the envelope layer validated the BINDING, never the structure, so decoding is the next
+    /// step's job and its rejections are the next step's to report.
+    ///
+    /// [`DepositIntent`]: xusdc_encoding::xreserve::encoding::DepositIntent
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
     }
 
     /// The verified `keccak256(payload)` digest.

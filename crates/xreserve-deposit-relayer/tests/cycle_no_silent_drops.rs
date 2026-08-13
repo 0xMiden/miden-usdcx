@@ -530,7 +530,9 @@ fn with_nonce_tweak(tweak: u8) -> Vec<u8> {
     let payload = canonical_payload(TEST_VECTOR_PAYLOAD_ID);
     let nonce = *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(&payload)
         .expect("the canonical payload decodes")
-        .nonce();
+        .header()
+        .nonce()
+        .as_bytes();
     let offset = find_subslice(&payload, &nonce).expect("the nonce appears in its own payload");
 
     let mut tweaked = payload;

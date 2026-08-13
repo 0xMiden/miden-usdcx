@@ -61,35 +61,10 @@
     "amt": [
       {
         "cite": "CIR-FEE-3",
-        "derivation": "x = 10^6, y = 1",
-        "expected_y": "1",
+        "derivation": "y = x = 42",
+        "expected_y": "42",
         "id": "amt-pos-1",
         "kind": "accept",
-        "scale_exp": 6,
-        "tv": [
-          "TV-AMT-1"
-        ],
-        "uint256_be": "0x00000000000000000000000000000000000000000000000000000000000f4240"
-      },
-      {
-        "cite": "CIR-FEE-3",
-        "derivation": "x = 123456789012 * 10^6, y = 123456789012",
-        "expected_y": "123456789012",
-        "id": "amt-pos-2",
-        "kind": "accept",
-        "scale_exp": 6,
-        "tv": [
-          "TV-AMT-1"
-        ],
-        "uint256_be": "0x00000000000000000000000000000000000000000000000001b69b4ba62bad00"
-      },
-      {
-        "cite": "CIR-FEE-3",
-        "derivation": "scale 0: y = x = 42",
-        "expected_y": "42",
-        "id": "amt-pos-3",
-        "kind": "accept",
-        "scale_exp": 0,
         "tv": [
           "TV-AMT-1"
         ],
@@ -97,35 +72,10 @@
       },
       {
         "cite": "CIR-FEE-3",
-        "derivation": "scale 18: x = 5 * 10^18, y = 5",
-        "expected_y": "5",
-        "id": "amt-pos-4",
-        "kind": "accept",
-        "scale_exp": 18,
-        "tv": [
-          "TV-AMT-1"
-        ],
-        "uint256_be": "0x0000000000000000000000000000000000000000000000004563918244f40000"
-      },
-      {
-        "cite": "CIR-FEE-3",
-        "derivation": "cap boundary: x = (2^63 - 2^31) * 10^6, y = AssetAmount::MAX exactly",
+        "derivation": "cap boundary: x = 2^63 - 2^31, y = x = AssetAmount::MAX exactly",
         "expected_y": "9223372034707292160",
         "id": "amt-cap-accept",
         "kind": "accept",
-        "scale_exp": 6,
-        "tv": [
-          "TV-AMT-2"
-        ],
-        "uint256_be": "0x00000000000000000000000000000000000000000007a11ffff85ee000000000"
-      },
-      {
-        "cite": "CIR-FEE-3",
-        "derivation": "cap boundary at the shipped scale-0 identity: x = 2^63 - 2^31, y = x = AssetAmount::MAX exactly",
-        "expected_y": "9223372034707292160",
-        "id": "amt-cap-accept-scale0",
-        "kind": "accept",
-        "scale_exp": 0,
         "tv": [
           "TV-AMT-2"
         ],
@@ -133,23 +83,10 @@
       },
       {
         "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
-        "derivation": "x = (2^63 - 2^31 + 1) * 10^6, post-scale y = MAX + 1 must reject (no saturation)",
+        "derivation": "x = y = 2^63 - 2^31 + 1 = MAX + 1 must reject (no saturation)",
         "expected_variant": "AmountOverCap",
         "id": "amt-rej-cap",
         "kind": "reject",
-        "scale_exp": 6,
-        "tv": [
-          "TV-AMT-3"
-        ],
-        "uint256_be": "0x00000000000000000000000000000000000000000007a11ffff85ee0000f4240"
-      },
-      {
-        "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
-        "derivation": "cap reject at the shipped scale-0 identity: x = y = 2^63 - 2^31 + 1 = MAX + 1 must reject (no saturation)",
-        "expected_variant": "AmountOverCap",
-        "id": "amt-rej-cap-scale0",
-        "kind": "reject",
-        "scale_exp": 0,
         "tv": [
           "TV-AMT-3"
         ],
@@ -161,75 +98,10 @@
         "expected_variant": "AmountTooLarge",
         "id": "amt-rej-limb-overflow",
         "kind": "reject",
-        "scale_exp": 6,
         "tv": [
           "TV-AMT-4"
         ],
         "uint256_be": "0x0000000000000000000000000000000400000000000000000000000000000000"
-      },
-      {
-        "cite": "(scale 0..=18)",
-        "derivation": "scale_exp = 20 exceeds the 0..=18 bound / overflows 10^scale in u64",
-        "expected_variant": "ScaleExpTooLarge",
-        "id": "amt-rej-scale-overflow",
-        "kind": "reject",
-        "scale_exp": 20,
-        "tv": [
-          "TV-AMT-7"
-        ],
-        "uint256_be": "0x00000000000000000000000000000000000000000000000000000000000f4240"
-      },
-      {
-        "b_uint256_be": "0x00000000000000000000000000000000000000000000000000000000001e8480",
-        "cite": "CIR-MINT-PRE-8/9 ; amount validation",
-        "derivation": "1 < 2 after reduction",
-        "ge_result": false,
-        "id": "amt-ge-lt",
-        "kind": "ge",
-        "scale_exp": 6,
-        "tv": [
-          "TV-AMT-5"
-        ],
-        "uint256_be": "0x00000000000000000000000000000000000000000000000000000000000f4240"
-      },
-      {
-        "b_uint256_be": "0x00000000000000000000000000000000000000000000000000000000002dc6c0",
-        "cite": "CIR-MINT-PRE-8/9 ; amount validation",
-        "derivation": "3 == 3 after reduction",
-        "ge_result": true,
-        "id": "amt-ge-eq",
-        "kind": "ge",
-        "scale_exp": 6,
-        "tv": [
-          "TV-AMT-5"
-        ],
-        "uint256_be": "0x00000000000000000000000000000000000000000000000000000000002dc6c0"
-      },
-      {
-        "b_uint256_be": "0x00000000000000000000000000000000000000000000000000000000001e8480",
-        "cite": "CIR-MINT-PRE-8/9 ; amount validation",
-        "derivation": "5 > 2 after reduction",
-        "ge_result": true,
-        "id": "amt-ge-gt",
-        "kind": "ge",
-        "scale_exp": 6,
-        "tv": [
-          "TV-AMT-5"
-        ],
-        "uint256_be": "0x00000000000000000000000000000000000000000000000000000000004c4b40"
-      },
-      {
-        "cite": "DEV-5",
-        "derivation": "x = 1500123, y = floor(x/10^6) = 1, z = 500123; dust POLICY is REQUIRES CIRCLE CONFIRMATION (DEV-5)",
-        "expected_dust": "500123",
-        "expected_y": "1",
-        "id": "amt-dust",
-        "kind": "dust",
-        "scale_exp": 6,
-        "tv": [
-          "TV-AMT-6"
-        ],
-        "uint256_be": "0x000000000000000000000000000000000000000000000000000000000016e3db"
       }
     ],
     "att": [

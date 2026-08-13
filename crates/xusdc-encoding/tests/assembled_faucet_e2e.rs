@@ -54,7 +54,7 @@ use xusdc_encoding::note::xreserve_admin::{
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
 use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
-use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
+use xusdc_encoding::note::xreserve_mint::DepositAttestation;
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
     bytes32_to_packed_felts, bytes32_to_storage_map_key, EthAddressExt, Signature,
@@ -203,14 +203,13 @@ fn production_mint_note(
     payload: &[u8],
     rng_seed: u64,
 ) -> Result<Note> {
-    XUsdcMintNote::create(
+    mint_note_from_payload(
         producer,
         faucet_id,
         payload,
-        &attestation_for(1, payload),
+        attestation_for(1, payload),
         &mut note_rng(rng_seed),
     )
-    .map_err(|e| anyhow::anyhow!("constructing the production mint note: {e}"))
 }
 
 // CHAIN MECHANICS — commit-each-step (the run_burn_consume pattern), committed-state re-fetch

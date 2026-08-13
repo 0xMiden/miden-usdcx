@@ -216,14 +216,14 @@ pub struct StoragePlan {
 /// faucet's, so a note addressed elsewhere still builds a well-formed transport — it has to, or
 /// the wrong-domain and wrong-faucet negatives could not reach the chain to fail there.
 fn carried_payload_felts(payload: &[u8]) -> Vec<Felt> {
-    let intent = DepositIntent::new(payload);
-    let header = intent.parse_header().expect("the tamper payload parses");
-    let claimed_faucet = EthEmbeddedAccountId::try_from_bytes32(header.remote_token)
+    let intent = DepositIntent::try_from(payload).expect("the tamper payload decodes");
+    let claimed_faucet = EthEmbeddedAccountId::try_from_bytes32(*intent.header().remote_token())
         .map(EthEmbeddedAccountId::into_account_id)
         .expect("the tamper payload names a well-formed faucet");
-    let carried = MintIntent::from_deposit_intent(&intent, claimed_faucet)
-        .expect("the tamper payload is DC-14 shaped");
-    let mut felts = carried.to_felts();
+    let carried =
+        MintIntent::from_deposit_intent(&intent, claimed_faucet, intent.header().remote_domain())
+            .expect("the tamper payload is DC-14 shaped");
+    let mut felts = carried.to_elements();
     while !felts.len().is_multiple_of(4) {
         felts.push(Felt::from(0u32));
     }

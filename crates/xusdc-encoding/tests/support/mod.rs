@@ -44,6 +44,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::assembly::{Linkage, Package, Path as MasmPath};
 use miden_protocol::asset::{AssetAmount, AssetCallbacks, FungibleAsset, TokenSymbol};
+use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{Note, NoteType};
 use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote, TransactionKernel};
@@ -68,6 +69,8 @@ use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, XReserveComponent, XReserveStablecoinBuilderError,
     ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
+use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 // Attestation fixtures — deterministic secp256k1 keys and signatures generated IN-TEST (the
 // canonical vector artifact is untouched), mirroring the `gen_vectors` att_* helpers: k256 the
@@ -101,6 +104,45 @@ pub const TEST_SOURCE_DOMAIN: u32 = 3;
 /// build-seeded domain-config field the production fixtures pass to `with_domain_config`.
 pub fn test_xreserve_contract() -> EthAddress {
     EthAddress::new(core::array::from_fn(|i| 0x10 + i as u8))
+}
+
+/// The production mint note over a RAW Circle payload, built exactly the way the relayer builds
+/// one: decode the payload, then drive the typed [`XUsdcMintNote`] builder at [`TEST_DOMAIN`].
+///
+/// The suites carry raw payloads because that is what the golden vectors hold, so this is the one
+/// place the decode step lives.
+pub fn mint_note_from_payload(
+    sender: AccountId,
+    faucet_id: AccountId,
+    payload: &[u8],
+    attestation: DepositAttestation,
+    rng: &mut impl FeltRng,
+) -> Result<Note> {
+    mint_note_from_payload_at_domain(sender, faucet_id, TEST_DOMAIN, payload, attestation, rng)
+}
+
+/// [`mint_note_from_payload`] against a named faucet domain — for the suites that drive a faucet
+/// configured to something other than [`TEST_DOMAIN`].
+pub fn mint_note_from_payload_at_domain(
+    sender: AccountId,
+    faucet_id: AccountId,
+    remote_domain: u32,
+    payload: &[u8],
+    attestation: DepositAttestation,
+    rng: &mut impl FeltRng,
+) -> Result<Note> {
+    let deposit_intent = DepositIntent::try_from(payload)
+        .map_err(|e| anyhow::anyhow!("decoding the deposit intent payload: {e}"))?;
+    let note = XUsdcMintNote::builder()
+        .sender(sender)
+        .faucet_id(faucet_id)
+        .remote_domain(remote_domain)
+        .deposit_intent(deposit_intent)
+        .attestation(attestation)
+        .generate_serial_number(rng)
+        .build()
+        .map_err(|e| anyhow::anyhow!("building the attested stock mint note: {e}"))?;
+    Ok(Note::from(note))
 }
 
 // NOTE: the tests do not bind slot names of their own. The six xreserve slots come from

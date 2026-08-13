@@ -5,9 +5,13 @@
 //! ([`ValidatedAttestation`]) binds `messageHash == keccak256(payload)` and shape-checks the
 //! 65-byte signature — it does NOT parse the DepositIntent. So a payload Circle really signed,
 //! whose digest really binds it, can still be structurally invalid (bad magic, a zero amount,
-//! hookData past the 1024-felt NoteStorage bound). Those reach the builder, and the builder must
-//! surface them as a typed, NON-retryable error — never as a panic, never as a malformed note, and
-//! never as an infinite retry loop that wedges the relayer on one bad attestation.
+//! hookData past the 1024-felt NoteStorage bound). Those reach the ingest path, which must surface
+//! them as a typed, NON-retryable error — never as a panic, never as a malformed note, and never as
+//! an infinite retry loop that wedges the relayer on one bad attestation.
+//!
+//! The path has two steps and each owns its own rejects: the shared codec's DECODE refuses a
+//! payload that is not a well-formed DepositIntent, and the BUILDER refuses one that is well-formed
+//! but not carryable by this faucet's mint transport.
 //!
 //! The reject payloads are the canonical golden-artifact vectors — the `di-rej-*` rows for the
 //! structural parse and the `mi-rej-*` rows for the `DC-14` addressing and carriability checks —
@@ -28,6 +32,7 @@ use rstest::rstest;
 use miden_protocol::crypto::utils::DeserializationError;
 use xreserve_deposit_relayer::error::HexField;
 use xreserve_deposit_relayer::miden::{build_mint_note, AttesterPubkey};
+use xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent;
 use xreserve_deposit_relayer::RelayerError;
 use xusdc_encoding::xreserve::encoding::{DepositIntentField, EncodingError};
 
@@ -46,11 +51,11 @@ use mint_support::*;
 #[case::zero_local_depositor("di-rej-zero-local-depositor", EncodingError::ZeroField { field: DepositIntentField::LocalDepositor })]
 #[case::length_mismatch("di-rej-length-mismatch", EncodingError::LengthMismatch)]
 #[case::truncated_header("di-rej-truncated", EncodingError::TruncatedHeader)]
-fn t_a_payload_unit04_refuses_is_a_typed_build_error(
+fn t_a_payload_unit04_refuses_is_a_typed_decode_error(
     #[case] vector_id: &str,
     #[case] expected: EncodingError,
 ) {
-    assert_build_error(&validated_over_vector_id(vector_id), expected);
+    assert_decode_error(&validated_over_vector_id(vector_id), expected);
 }
 
 /// The hookData bound is the one structural reject that survives the PARSE: a payload can be a
@@ -58,10 +63,10 @@ fn t_a_payload_unit04_refuses_is_a_typed_build_error(
 /// `NoteStorage` can hold. It therefore needs a `DC-14`-shaped payload — one that reaches the
 /// bound instead of tripping an addressing check first.
 #[test]
-fn t_an_oversized_hookdata_is_a_typed_build_error() {
+fn t_an_oversized_hookdata_is_a_typed_decode_error() {
     let attestation = validated_over(&fixtures::oversized_hook_data_payload());
 
-    assert_build_error(&attestation, EncodingError::HookDataTooLarge);
+    assert_decode_error(&attestation, EncodingError::HookDataTooLarge);
 }
 
 /// The addressing rejects `DC-14` added: an intent for another faucet, or one carrying a field
@@ -82,13 +87,19 @@ fn t_an_uncarryable_intent_is_a_typed_build_error(#[case] vector_id: &str) {
         .expect("a reject vector names the variant it must produce");
     let attestation = validated_over(&vector.payload());
 
+    // these rows are all well-formed DepositIntents — what they are not is CARRYABLE, so they
+    // decode and then fail at the build
+    let intent = decode_and_validate_deposit_intent(attestation.payload())
+        .expect("an addressing reject is still a well-formed deposit intent");
     let error = build_mint_note(
         relayer_sender_id(),
         // the reject vectors are addressed to the artifact's own synthetic faucet, and each is a
         // reject for a reason OTHER than the faucet — so the build has to be told that faucet, or
         // it would fail on the addressing rather than on the row's subject
         vector.faucet_id(),
-        &attestation,
+        vector.remote_domain,
+        intent,
+        attestation.attestation(),
         &attester_pubkey(),
         &mut note_rng(4),
     )
@@ -111,22 +122,15 @@ fn t_an_uncarryable_intent_is_a_typed_build_error(#[case] vector_id: &str) {
     );
 }
 
-/// The shared assertion of the two reject tables above: a typed, non-retryable build error whose
+/// The shared assertion of the structural reject table: a typed, non-retryable decode error whose
 /// source chain still carries the encoding crate's own verdict.
-fn assert_build_error(
+fn assert_decode_error(
     attestation: &xreserve_deposit_relayer::circle::schema::ValidatedAttestation,
     expected: EncodingError,
 ) {
-    let error = build_mint_note(
-        relayer_sender_id(),
-        faucet_id(),
-        attestation,
-        &attester_pubkey(),
-        &mut note_rng(1),
-    )
-    .expect_err("a structurally invalid deposit intent cannot become a note");
+    let error = decode_and_validate_deposit_intent(attestation.payload())
+        .expect_err("a structurally invalid deposit intent cannot become a note");
 
-    assert_matches!(error, RelayerError::MintNoteBuild(_));
     assert_eq!(
         encoding_error_in_chain(&error).as_ref(),
         Some(&expected),
@@ -154,7 +158,7 @@ fn t_the_reject_payloads_pass_the_envelope_boundary(#[case] vector_id: &str) {
     let attestation = validated_over(&payload);
 
     assert_eq!(
-        attestation.deposit_intent().as_bytes(),
+        attestation.payload(),
         payload.as_slice(),
         "the validated boundary carries the payload verbatim — the builder's input really is this"
     );
@@ -177,10 +181,14 @@ fn t_a_private_faucet_id_is_refused() {
         private_faucet_id(),
     ));
 
+    let intent = decode_and_validate_deposit_intent(attestation.payload())
+        .expect("the payload is a well-formed deposit intent");
     let error = build_mint_note(
         relayer_sender_id(),
         private_faucet_id(),
-        &attestation,
+        fixtures::TEST_REMOTE_DOMAIN,
+        intent,
+        attestation.attestation(),
         &attester_pubkey(),
         &mut note_rng(2),
     )

@@ -554,7 +554,9 @@ fn with_distinct_nonce(tweak: u8) -> Vec<u8> {
 fn nonce_of(vector: &AttestationVector) -> [u8; 32] {
     *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(vector.payload())
         .expect("the fixture payload is a valid DepositIntent")
+        .header()
         .nonce()
+        .as_bytes()
 }
 
 /// Runs ONE cycle against `mock` with `submit`, returning everything a test asserts on. The temp

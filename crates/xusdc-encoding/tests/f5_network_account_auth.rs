@@ -64,8 +64,8 @@ use xusdc_encoding::note::xreserve_admin::{
 };
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
-    DepositAttestation, XUsdcMintNote, XUSDC_MINT_ATTESTATION_NUM_WORDS,
-    XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
+    DepositAttestation, XUSDC_MINT_ATTESTATION_NUM_WORDS, XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME,
+    XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{DepositIntent, MintIntent, Signature, XReserveBurnItems};
 
@@ -373,14 +373,13 @@ fn mint_note_carries_the_merged_transport_and_the_routing_target() -> Result<()>
     let faucet_id = faucet.id();
     let payload = attested_deposit_intent_payload(test_account_id(3), faucet_id);
     let att = gen_attester(1, &payload);
-    let note = XUsdcMintNote::create(
+    let note = mint_note_from_payload(
         test_account_id(3),
         faucet_id,
         &payload,
-        &DepositAttestation::new(Signature::new(att.sig_bytes), att.pubkey.clone()),
+        DepositAttestation::new(Signature::new(att.sig_bytes), att.pubkey.clone()),
         &mut note_rng(1),
-    )
-    .map_err(|e| anyhow::anyhow!("constructing the mint note: {e}"))?;
+    )?;
 
     assert_eq!(
         note.attachments().num_attachments(),
@@ -415,18 +414,22 @@ fn mint_note_carries_the_merged_transport_and_the_routing_target() -> Result<()>
         .context("the scheme-4 merged transport attachment is present")?
         .content()
         .to_elements();
-    let carried = MintIntent::from_deposit_intent(&DepositIntent::new(&payload), faucet_id)
-        .map_err(|e| anyhow::anyhow!("the attested payload compresses: {e}"))?;
+    let carried = MintIntent::from_deposit_intent(
+        &DepositIntent::try_from(payload.as_slice())?,
+        faucet_id,
+        TEST_DOMAIN,
+    )
+    .map_err(|e| anyhow::anyhow!("the attested payload compresses: {e}"))?;
     let mut expected: Vec<Felt> = Vec::new();
     expected.extend(att.pubkey.to_elements());
-    expected.extend(Signature::new(att.sig_bytes).to_felts());
+    expected.extend(Signature::new(att.sig_bytes).to_elements());
     expected.extend([Felt::from(0u32); 3]);
     assert_eq!(
         expected.len(),
         XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF * 4,
         "the attestation section ({XUSDC_MINT_ATTESTATION_NUM_WORDS} words) precedes the payload"
     );
-    expected.extend(carried.to_felts());
+    expected.extend(carried.to_elements());
     assert_eq!(
         transport, expected,
         "the transport attachment is attestation(36) || the carried mint payload",

@@ -11,6 +11,6 @@ pub mod deposit_intent;
 pub mod domain_token;
 pub mod envelope;
 
-pub use deposit_intent::{decode_and_validate_deposit_intent, DepositIntent};
+pub use deposit_intent::decode_and_validate_deposit_intent;
 pub use domain_token::check_domain_token_against_info;
 pub use envelope::{validate_attestation_envelope, verify_message_hash, verify_message_hash_bytes};

@@ -343,13 +343,13 @@ the OPEN `DEV-7` decision and makes no acceptability verdict of its own.
 
 | Id | Checks |
 |---|---|
-| TV-AMT-1 | An in-bound 6-dp amount reduces to the expected `AssetAmount`. |
-| TV-AMT-2 | Boundary accept: exactly `AssetAmount::MAX` (post-scale) is accepted. |
-| TV-AMT-3 | Boundary reject: `MAX + 1` (post-scale) is rejected (over cap). |
+| TV-AMT-1 | An in-bound amount reduces to the expected `AssetAmount`. |
+| TV-AMT-2 | Boundary accept: exactly `AssetAmount::MAX` is accepted. |
+| TV-AMT-3 | Boundary reject: `MAX + 1` is rejected (over cap). |
 | TV-AMT-4 | High-limb reject: a value > 2^128 is rejected ("too large") — no scale in `0..=18` brings it back inside a `u64`. |
-| TV-AMT-5 | Reduced compare: `amount ≥ maxFee` is false when `amount < maxFee` after reduction. |
-| TV-AMT-6 | Dust: a non-zero remainder is surfaced (off-chain only); dust policy stays OPEN (`DEV-5`). |
-| TV-AMT-7 | Scale-overflow reject: `10^scale_exp` overflow is rejected. |
+| ~~TV-AMT-5~~ | **Retired.** The reduced compare was Rust-fn-only scaffolding around a scale parameter that no longer exists; the `amount ≥ maxFee` compare itself is the MASM's. |
+| ~~TV-AMT-6~~ | **Retired.** Dust is identically zero at the shipped `DEPOSIT_SCALE_EXP == 0`, so there was no remainder left to surface. The dust POLICY stays OPEN (`DEV-5`); reopening it restores the row together with the non-zero-scale transport `DEV-5` needs. |
+| ~~TV-AMT-7~~ | **Retired.** The scale is a crate constant rather than a caller-supplied parameter, so an out-of-range exponent is no longer reachable. `EncodingError::ScaleExpTooLarge` is kept — the standards reducer's error is still mapped exhaustively. |
 
 **AccountId ↔ bytes32 (`TV-AID-*`)**
 
@@ -401,7 +401,7 @@ in `tests/masm_dual.rs`); `-4` is Rust-only because `DC-7` has no MASM side.
 | TV-DUAL-3 | DepositIntent parse: Rust and MASM agree on accept/reject and the 60-felt preimage. Rust-only on the mint path after `DC-14` — the MASM parser is retired (`NS-2`), so the MASM leg is `TV-DUAL-6`. |
 | TV-DUAL-4 | Burn-note items: the Rust-emitted burn note's `NoteStorage.items` match the Rust codec and the golden felts (an emit-vs-codec check within Rust — `DC-7` is Rust-only, there is no MASM burn-item codec). |
 | TV-DUAL-5 | Attestation packing/commitment: Rust and MASM produce the identical felts / commitment. |
-| TV-DUAL-6 | `DC-14` preimage reconstruction, in three parts: the Rust round trip (`to_deposit_intent_bytes` after `from_deposit_intent` returns the original bytes); MASM/Rust parity (the felts `rebuild` writes equal the Rust reconstruction's); and per-field placement (mutating one carried field moves exactly that field's bytes). |
+| TV-DUAL-6 | `DC-14` preimage reconstruction, in three parts: the Rust round trip (`to_deposit_intent` after `from_deposit_intent`, re-encoded, returns the original bytes); MASM/Rust parity (the felts `rebuild` writes equal the Rust reconstruction's); and per-field placement (mutating one carried field moves exactly that field's bytes). |
 
 `TV-CIRCLE-DIFF` = a differential check of the DepositIntent parse against a locally-reconstructed
 Circle ground-truth fixture. The faucet test harness also groups scenarios under module ids

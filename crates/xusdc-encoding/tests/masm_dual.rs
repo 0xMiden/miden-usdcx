@@ -479,9 +479,9 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
         // pre-validate rides on. There is no on-chain parser to run them through any more — the
         // faucet writes the message rather than reading it — so the differential stops here and
         // the write side is covered by TV-DUAL-6.
-        let packed = xusdc_encoding::xreserve::encoding::DepositIntent::new(&raw)
-            .to_packed_felts()
-            .unwrap_or_else(|e| panic!("{}: Circle's own bytes must pack: {e}", v.id));
+        let packed = xusdc_encoding::xreserve::encoding::DepositIntent::try_from(raw.as_slice())
+            .unwrap_or_else(|e| panic!("{}: Circle's own bytes must decode: {e}", v.id))
+            .to_preimage_felts();
         assert_eq!(
             packed.len(),
             raw.len().div_ceil(4),

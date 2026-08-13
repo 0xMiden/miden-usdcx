@@ -5,6 +5,7 @@
 
 use core::fmt;
 
+use miden_protocol::utils::serde::DeserializationError;
 use miden_standards::interop::eth::EthAmountError;
 
 use super::deposit_intent::DepositIntentField;
@@ -44,6 +45,13 @@ pub enum EncodingError {
     },
     /// The intent's `remoteToken` is not this faucet's account id.
     RemoteTokenMismatch,
+    /// The intent's `remoteDomain` is not the domain the consuming faucet has configured. The
+    /// faucet writes its own configured domain into the message it rebuilds, so a divergent one
+    /// changes the digest and the attestation stops verifying.
+    RemoteDomainMismatch {
+        expected: u32,
+        actual: u32,
+    },
     AccountIdOutOfRange,
     NonCanonicalAccountId,
     BurnItemsMalformed,
@@ -86,6 +94,12 @@ impl fmt::Display for EncodingError {
                     "deposit intent remote token is not the faucet account id"
                 )
             }
+            Self::RemoteDomainMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "deposit intent remote domain {actual} is not the faucet's configured domain {expected}"
+                )
+            }
             Self::AccountIdOutOfRange => {
                 // The right-aligned (Agglayer-mirroring) layout: the account id region is the
                 // 16 bytes `bytes[16..32]` (prefix u64 BE + suffix u64 BE) behind a 16-byte zero
@@ -104,6 +118,16 @@ impl fmt::Display for EncodingError {
 }
 
 impl core::error::Error for EncodingError {}
+
+impl From<EncodingError> for DeserializationError {
+    /// Carries the reason across the protocol's deserialization boundary. The specific variant is
+    /// preserved by the typed entry points (`TryFrom<&[u8]>`), which is where callers that branch
+    /// on the failure read it; this spelling exists so the codecs can implement the standard
+    /// [`Deserializable`](miden_protocol::utils::serde::Deserializable) trait.
+    fn from(error: EncodingError) -> Self {
+        Self::InvalidValue(error.to_string())
+    }
+}
 
 impl From<EthAmountError> for EncodingError {
     /// Re-spells the standards reducer's failures in this crate's error vocabulary, so a caller

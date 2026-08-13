@@ -32,14 +32,14 @@ use k256::ecdsa::signature::hazmat::PrehashVerifier;
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey, VerifyingKey};
 use miden_protocol::account::{AccountId, AccountIdVersion, AccountType, AssetCallbackFlag};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
-use miden_protocol::crypto::utils::Deserializable;
+use miden_protocol::crypto::utils::{Deserializable, Serializable};
 use miden_protocol::{Hasher, Word};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use sha3::{Digest, Keccak256};
 
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::{DepositIntent, MintIntent, MINT_INTENT_SCALE_EXP};
+use xusdc_encoding::xreserve::encoding::{DepositIntent, MintIntent};
 
 /// Seed of the partner-held attester key. Deliberately distinct from the seeds the canonical
 /// `att-*` artifact vectors use, so this key is unmistakably the RELAYER-side test key and can
@@ -146,16 +146,17 @@ pub fn mi_vector(id: &str) -> Option<&'static MiVector> {
 /// payload rewritten here.
 pub fn mint_payload_for(vector: &MiVector, faucet: AccountId, remote_domain: u32) -> Vec<u8> {
     let payload = vector.payload();
-    let intent = DepositIntent::new(&payload);
+    let intent = DepositIntent::try_from(payload.as_slice())
+        .expect("the canonical mi vector is a structurally valid deposit intent");
     let amount = intent
-        .parse_header()
-        .expect("the canonical mi vector is a structurally valid deposit intent")
-        .reduced_amount(MINT_INTENT_SCALE_EXP)
+        .header()
+        .reduced_amount()
         .expect("the canonical mi vector's amount is mintable");
 
-    MintIntent::from_deposit_intent(&intent, vector.faucet_id())
-        .expect("the canonical mi accept vector compresses under its own faucet")
-        .to_deposit_intent_bytes(amount, remote_domain, faucet)
+    MintIntent::from_deposit_intent(&intent, vector.faucet_id(), vector.remote_domain)
+        .expect("the canonical mi accept vector compresses under its own faucet and domain")
+        .to_deposit_intent(amount, remote_domain, faucet)
+        .to_bytes()
 }
 
 /// [`canonical_payload`] for an `mi-*` id, addressed to a faucet other than [`faucet_id`] — for the
@@ -429,9 +430,9 @@ pub fn personal_sign_digest(payload: &[u8]) -> [u8; 32] {
 /// packer, then hashed with the protocol `Hasher` (Poseidon2) — the same primitive
 /// `PublicKey::to_commitment` uses.
 pub fn poseidon2_word_digest(payload: &[u8]) -> [u8; 32] {
-    let felts = DepositIntent::new(payload)
-        .to_packed_felts()
-        .expect("the comparator is built over a canonical DC-1 payload");
+    let felts = DepositIntent::try_from(payload)
+        .expect("the comparator is built over a canonical DC-1 payload")
+        .to_preimage_felts();
     word_to_bytes32(Hasher::hash_elements(&felts))
 }
 

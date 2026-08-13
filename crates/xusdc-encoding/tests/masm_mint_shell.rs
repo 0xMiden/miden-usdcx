@@ -129,7 +129,7 @@ const NONCE_MARKER: [u32; 4] = [1, 0, 0, 0];
 /// The `usedNonces` key a carried payload's nonce lands on, through the Rust half of the shared
 /// bytes32→Word codec — the same derivation the policy performs, rather than a hand-pinned Word.
 fn nonce_key(vector_id: &str) -> Result<Word> {
-    let carried = MintIntent::from_felts(&mi(vector_id).carried_values())?;
+    let carried = MintIntent::from_elements(&mi(vector_id).carried_values())?;
     Ok(Word::from(carried.nonce().to_storage_map_key()))
 }
 
@@ -241,9 +241,9 @@ const ATTESTER_MARKER: [u32; 4] = [1, 0, 0, 0];
 fn attestation_payload() -> (Vec<Felt>, Vec<u8>, u64) {
     let bytes = mi(ATTESTATION_VECTOR).payload();
     let len_bytes = bytes.len() as u64;
-    let felts = DepositIntent::new(&bytes)
-        .to_packed_felts()
-        .expect("the vector payload packs");
+    let felts = DepositIntent::try_from(bytes.as_slice())
+        .expect("the vector payload decodes")
+        .to_preimage_felts();
     (felts, bytes, len_bytes)
 }
 
@@ -451,8 +451,8 @@ fn mi(id: &str) -> &'static MiVector {
 /// account actually got. That is precisely the field the faucet supplies rather than reads.
 async fn run_rebuild(vector_id: &str, poison: bool) -> Result<()> {
     let v = mi(vector_id);
-    let carried = MintIntent::from_felts(&v.carried_values())?;
-    let felts = carried.to_felts();
+    let carried = MintIntent::from_elements(&v.carried_values())?;
+    let felts = carried.to_elements();
     let num_expected_felts =
         DEPOSIT_INTENT_HEADER_FELTS + carried.hook_data().as_bytes().len().div_ceil(4);
 
@@ -466,9 +466,9 @@ async fn run_rebuild(vector_id: &str, poison: bool) -> Result<()> {
     let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
 
     // the account exists now, so the Rust mirror can rebuild the message for ITS id
-    let expected =
-        DepositIntent::new(&carried.to_deposit_intent_bytes(v.amount(), TEST_DOMAIN, h.account_id))
-            .to_packed_felts()?;
+    let expected = carried
+        .to_deposit_intent(v.amount(), TEST_DOMAIN, h.account_id)
+        .to_preimage_felts();
     assert_eq!(
         expected.len(),
         num_expected_felts,
@@ -526,7 +526,7 @@ async fn rebuild_places_each_carried_field(#[case] carried_felt_off: usize) -> R
     let v = mi("mi-pos-empty-hookdata");
     let mut felts = v.carried_values();
     felts[carried_felt_off] = Felt::from(0x1234_5678u32);
-    let carried = MintIntent::from_felts(&felts)?;
+    let carried = MintIntent::from_elements(&felts)?;
 
     let driver_src = rebuild_driver_src(
         &felts,
@@ -536,9 +536,9 @@ async fn rebuild_places_each_carried_field(#[case] carried_felt_off: usize) -> R
         false,
     );
     let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
-    let expected =
-        DepositIntent::new(&carried.to_deposit_intent_bytes(v.amount(), TEST_DOMAIN, h.account_id))
-            .to_packed_felts()?;
+    let expected = carried
+        .to_deposit_intent(v.amount(), TEST_DOMAIN, h.account_id)
+        .to_preimage_felts();
 
     run_call_driver_with_advice(&h, "drive", Some(expected))
         .await

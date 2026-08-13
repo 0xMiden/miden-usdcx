@@ -12,11 +12,12 @@
 //! inline.
 
 use assert_matches::assert_matches;
+use miden_protocol::utils::serde::{Deserializable, DeserializationError, Serializable};
 use miden_standards::interop::eth::{EthAddress, EthEmbeddedAccountId};
 use xusdc_encoding::vectors::{load, parse_hex32};
 use xusdc_encoding::xreserve::encoding::{
-    bytes32_to_packed_felts, DepositIntent, DepositIntentHeader, EncodingError, EthAddressExt,
-    EthEmbeddedAccountIdExt, Signature, XReserveBurnItems,
+    bytes32_to_packed_felts, DepositIntent, EncodingError, EthAddressExt, EthEmbeddedAccountIdExt,
+    Signature, XReserveBurnItems,
 };
 
 // Signature
@@ -30,7 +31,7 @@ fn signature_type_matches_golden() {
         let sig = v.sig();
         let typed = Signature::new(sig);
         assert_eq!(
-            typed.to_felts().as_slice(),
+            typed.to_elements().as_slice(),
             v.sig_felts_values().as_slice(),
             "{}: Signature::to_felts == golden sig felts",
             v.id
@@ -51,52 +52,51 @@ fn signature_type_matches_golden() {
 // DepositIntent owns its codec
 // ================================================================================================
 
-/// `DepositIntent::new(bytes).parse_header()` / `.to_packed_felts()` and the `TryFrom<&[u8]>` header
-/// decode match the golden packed preimage.
+/// The `TryFrom<&[u8]>` decode and the `Serializable` encode are inverses over the golden bytes,
+/// and the packed preimage is the golden one.
 #[test]
 fn deposit_intent_type_matches_golden() {
     for vec in load().families.di.iter().filter(|v| v.kind == "accept") {
         let bytes = vec.bytes();
-        let intent = DepositIntent::new(&bytes);
+        let intent = DepositIntent::try_from(bytes.as_slice()).expect("accept vector decodes");
 
-        let typed_header = intent.parse_header().expect("accept vector parses");
-
-        // TryFrom<&[u8]> is the same decode as parse_header.
-        let via_tryfrom =
-            DepositIntentHeader::try_from(bytes.as_slice()).expect("TryFrom parses accept vector");
         assert_eq!(
-            via_tryfrom.nonce, typed_header.nonce,
-            "{}: TryFrom<&[u8]> == parse_header",
-            vec.id
-        );
-
-        let typed_felts = intent.to_packed_felts().expect("accept vector packs");
-        assert_eq!(
-            typed_felts,
+            intent.to_preimage_felts(),
             vec.preimage_values(),
-            "{}: DepositIntent::to_packed_felts == golden preimage",
+            "{}: DepositIntent::to_preimage_felts == golden preimage",
             vec.id
         );
         assert_eq!(
-            intent.as_bytes(),
-            bytes.as_slice(),
-            "{}: as_bytes round-trips",
+            intent.to_bytes(),
+            bytes,
+            "{}: the encode is the decode's inverse",
+            vec.id
+        );
+        // and the standard reader is the same decode as the typed entry point
+        assert_eq!(
+            DepositIntent::read_from_bytes(&bytes).expect("Deserializable reads accept vector"),
+            intent,
+            "{}: Deserializable == TryFrom<&[u8]>",
             vec.id
         );
     }
 }
 
-/// The typed path rejects a truncated payload.
+/// The typed path rejects a truncated payload with the specific variant; the standard reader
+/// carries the same reason across as a `DeserializationError`.
 #[test]
 fn deposit_intent_type_propagates_rejects() {
     let short = [0u8; 10];
     assert_matches!(
-        DepositIntent::new(&short).parse_header(),
+        DepositIntent::try_from(short.as_slice()),
         Err(EncodingError::TruncatedHeader)
     );
-    assert_matches!(
-        DepositIntentHeader::try_from(short.as_slice()),
-        Err(EncodingError::TruncatedHeader)
+    assert_eq!(
+        DepositIntent::read_from_bytes(&short)
+            .expect_err("a truncated payload is not a deposit intent")
+            .to_string(),
+        DeserializationError::from(EncodingError::TruncatedHeader).to_string(),
+        "the standard reader carries the codec's reason"
     );
 }
 

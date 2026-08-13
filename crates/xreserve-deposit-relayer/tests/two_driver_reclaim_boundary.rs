@@ -340,5 +340,7 @@ fn status(store: &IdempotencyStore, nonce: &[u8; 32]) -> SubmissionStatus {
 fn nonce_of(vector: &fixtures::AttestationVector) -> [u8; 32] {
     *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(vector.payload())
         .expect("valid DI")
+        .header()
         .nonce()
+        .as_bytes()
 }

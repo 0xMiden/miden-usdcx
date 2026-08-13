@@ -14,13 +14,16 @@
 #![allow(dead_code)] // a shared fixture: each integration test uses the subset it needs.
 
 use miden_protocol::account::{AccountId, AccountIdVersion, AccountType, AssetCallbackFlag};
-use miden_protocol::crypto::rand::RandomCoin;
+use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
+use miden_protocol::note::Note;
 use miden_protocol::{Felt, Word};
 
 use xreserve_deposit_relayer::circle::schema::{AttestationObject, ValidatedAttestation};
-use xreserve_deposit_relayer::miden::AttesterPubkey;
+use xreserve_deposit_relayer::miden::{build_mint_note, AttesterPubkey};
+use xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent;
+use xreserve_deposit_relayer::RelayerError;
 
-use crate::fixtures::{canonical_payload, AttestationVector, PartnerAttester};
+use crate::fixtures::{canonical_payload, AttestationVector, PartnerAttester, TEST_REMOTE_DOMAIN};
 
 /// The xUSDC faucet the suite mints at. Defined in [`crate::fixtures`], because the fixture
 /// payloads are addressed to it, and re-exported here so the mint slices reach it beside the other
@@ -129,4 +132,36 @@ pub fn validated_over(payload: &[u8]) -> ValidatedAttestation {
 /// own MASM and Rust tests, consumed by reference).
 pub fn validated_over_vector_id(id: &str) -> ValidatedAttestation {
     validated_over(&canonical_payload(id))
+}
+
+/// The relayer's whole ingest path for one validated attestation: decode the payload through the
+/// shared codec, then build the mint note — the same two steps, in the same order, that
+/// `run_relayer_cycle` performs. The suites drive this rather than the builder alone so a test can
+/// never hand the builder an intent that never went through the decode.
+pub fn build_note_at(
+    faucet: AccountId,
+    remote_domain: u32,
+    attestation: &ValidatedAttestation,
+    attester: &AttesterPubkey,
+    rng: &mut impl FeltRng,
+) -> Result<Note, RelayerError> {
+    let intent = decode_and_validate_deposit_intent(attestation.payload())?;
+    build_mint_note(
+        relayer_sender_id(),
+        faucet,
+        remote_domain,
+        intent,
+        attestation.attestation(),
+        attester,
+        rng,
+    )
+}
+
+/// [`build_note_at`] against the suite's own faucet and [`TEST_REMOTE_DOMAIN`].
+pub fn build_note_for(
+    attestation: &ValidatedAttestation,
+    attester: &AttesterPubkey,
+    rng: &mut impl FeltRng,
+) -> Result<Note, RelayerError> {
+    build_note_at(faucet_id(), TEST_REMOTE_DOMAIN, attestation, attester, rng)
 }

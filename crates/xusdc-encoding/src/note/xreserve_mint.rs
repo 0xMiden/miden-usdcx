@@ -67,13 +67,6 @@ const _: () = assert!(
     "the codec's MAX_HOOK_DATA_LEN must equal the mint transport's hookData capacity"
 );
 
-/// The uint256 -> AssetAmount decimal scale the faucet applies. The cap / scale / dust decision
-/// stays OPEN, pending Circle confirmation; the faucet ships the PROVISIONAL scale-0 position
-/// because Circle's on-wire deposit `amount` is 6-decimal smallest units and xUSDC is 6-decimal, so
-/// the reduction is the identity. This factory reduces the attested amount with the SAME scale the
-/// faucet applies, so the storage it builds passes the policy's ASSERT-MATCH amount compare.
-pub const XUSDC_DEPOSIT_SCALE_EXP: u32 = 0;
-
 /// The Circle deposit attestation crossing the note boundary: the [`Signature`] over
 /// `keccak256(payload)` and the candidate attester [`PublicKey`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,9 +173,7 @@ impl XUsdcDeposit {
     }
 }
 
-impl TryFrom<&XUsdcDeposit> for NoteAttachment {
-    type Error = NoteError;
-
+impl From<&XUsdcDeposit> for NoteAttachment {
     /// Builds the scheme-4 transport attachment — everything the faucet needs to rebuild and
     /// verify the Circle-signed message, in three sections:
     ///
@@ -194,31 +185,31 @@ impl TryFrom<&XUsdcDeposit> for NoteAttachment {
     /// reads each section at a constant offset into it, so a reordering here would silently
     /// repoint them. The DepositIntent itself is NOT carried — the faucet rebuilds it from
     /// section 2 plus its own state, which is what makes the addressing fields unforgeable.
-    ///
-    /// # Errors
-    ///
-    /// [`NoteError`] if the assembled words do not form a valid attachment.
-    fn try_from(deposit: &XUsdcDeposit) -> Result<Self, Self::Error> {
-        let mut felts: Vec<Felt> = Vec::new();
+    fn from(deposit: &XUsdcDeposit) -> Self {
+        let mut elements: Vec<Felt> = Vec::new();
 
-        felts.extend(deposit.attestation.pubkey().to_elements());
-        felts.extend(deposit.attestation.signature().to_felts());
-        felts.extend([Felt::from(0u32); 3]);
-        debug_assert_eq!(felts.len(), XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF * 4);
+        elements.extend(deposit.attestation.pubkey().to_elements());
+        elements.extend(deposit.attestation.signature().to_elements());
+        elements.extend([Felt::from(0u32); 3]);
+        debug_assert_eq!(elements.len(), XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF * 4);
 
-        felts.extend(deposit.intent.to_felts());
-        while !felts.len().is_multiple_of(4) {
-            felts.push(Felt::from(0u32));
+        elements.extend(deposit.intent.to_elements());
+        while !elements.len().is_multiple_of(Word::NUM_ELEMENTS) {
+            elements.push(Felt::from(0u32));
         }
 
-        let words: Vec<Word> = felts
+        let words: Vec<Word> = elements
             .chunks_exact(4)
             .map(|chunk| Word::new([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect();
         NoteAttachment::with_words(
-            NoteAttachmentScheme::new(XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME)?,
+            NoteAttachmentScheme::new(XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME)
+                .expect("the transport scheme is neither reserved nor past the protocol maximum"),
             words,
         )
+        // the compile-time assertion above ties MAX_HOOK_DATA_LEN to this transport's capacity, and
+        // the carried hookData is bounded by it, so the assembled words always fit
+        .expect("the hookData bound keeps the transport within the per-attachment word cap")
     }
 }
 
@@ -245,73 +236,47 @@ impl XUsdcMintNote {
     pub fn script_root() -> NoteScriptRoot {
         MintNote::script_root()
     }
-
-    /// Convenience constructor over the RAW Circle-signed DepositIntent payload bytes (a thin
-    /// delegator to the [`builder`](Self::builder)); retained because the frozen conformance suites
-    /// pin this signature. New callers should prefer the typed builder, which takes a
-    /// [`DepositIntent`].
-    pub fn create<R: FeltRng>(
-        sender: AccountId,
-        faucet_id: AccountId,
-        deposit_intent: &[u8],
-        attestation: &DepositAttestation,
-        rng: &mut R,
-    ) -> Result<Note, NoteError> {
-        Note::try_from(
-            Self::builder()
-                .sender(sender)
-                .faucet_id(faucet_id)
-                .deposit_intent(DepositIntent::new(deposit_intent))
-                .attestation(attestation)
-                .generate_serial_number(rng)
-                .build()?,
-        )
-    }
 }
 
 #[bon::bon]
 impl XUsdcMintNote {
     /// Builds the production mint note via a `bon` builder
-    /// (`XUsdcMintNote::builder().sender(..).faucet_id(..).deposit_intent(..).attestation(..).generate_serial_number(..).build()`):
-    /// `sender` is the producer/relayer account, `faucet_id` the consuming faucet, `deposit_intent`
-    /// the typed [`DepositIntent`] payload (parsed and packed by the shared codec, so a structurally
-    /// invalid payload is rejected here rather than on-chain — it surfaces as a [`NoteError`] carrying
-    /// the codec's error as its source), `attestation` the signature and candidate pubkey. The
-    /// storage embeds the ATTESTED values (P2ID recipe to the intent's `remoteRecipient` with the
-    /// nonce-key serial; the scale-0-reduced amount as a [`FungibleAsset`] of `faucet_id`; the
-    /// recipient's account-target tag) so the faucet's attestation policy accepts it under the
-    /// ASSERT-MATCH binding.
+    /// (`XUsdcMintNote::builder().sender(..).faucet_id(..).remote_domain(..).deposit_intent(..).attestation(..).generate_serial_number(..).build()`):
+    /// `sender` is the producer/relayer account, `faucet_id` the consuming faucet, `remote_domain`
+    /// the destination domain that faucet has configured, `deposit_intent` the decoded Circle
+    /// message, `attestation` the signature and candidate pubkey. The storage embeds the ATTESTED
+    /// values (P2ID recipe to the intent's `remoteRecipient` with the nonce-key serial; the reduced
+    /// amount as a [`FungibleAsset`] of `faucet_id`; the recipient's account-target tag) so the
+    /// faucet's attestation policy accepts it under the ASSERT-MATCH binding.
+    ///
+    /// # Errors
+    ///
+    /// [`NoteError`] if the intent is addressed to another faucet or another domain (it could not
+    /// be rebuilt byte-for-byte on-chain, so it would only ever surface as a bad signature), if the
+    /// amount is out of range for the faucet, or if `faucet_id` is not a public network account.
     #[builder]
-    pub fn new<'a>(
+    pub fn new(
         sender: AccountId,
         faucet_id: AccountId,
-        deposit_intent: DepositIntent<'a>,
-        attestation: &'a DepositAttestation,
+        remote_domain: u32,
+        deposit_intent: DepositIntent,
+        attestation: DepositAttestation,
         serial_number: Word,
     ) -> Result<Self, NoteError> {
-        let header = deposit_intent.parse_header().map_err(|source| {
-            NoteError::other_with_source(
-                "deposit intent payload rejected by the shared codec",
-                source,
-            )
-        })?;
-        // compress to what the note actually carries. This rejects every intent this faucet could
-        // not rebuild byte-for-byte, which on-chain would only ever surface as a bad signature.
-        let payload =
-            MintIntent::from_deposit_intent(&deposit_intent, faucet_id).map_err(|source| {
+        // compress to what the note actually carries
+        let payload = MintIntent::from_deposit_intent(&deposit_intent, faucet_id, remote_domain)
+            .map_err(|source| {
                 NoteError::other_with_source(
                     "deposit intent cannot be carried by the mint transport",
                     source,
                 )
             })?;
-        let amount = header
-            .reduced_amount(XUSDC_DEPOSIT_SCALE_EXP)
-            .map_err(|source| {
-                NoteError::other_with_source(
-                    "deposit intent amount rejected by the amount reducer",
-                    source,
-                )
-            })?;
+        let amount = deposit_intent.header().reduced_amount().map_err(|source| {
+            NoteError::other_with_source(
+                "deposit intent amount rejected by the amount reducer",
+                source,
+            )
+        })?;
         // the attested output-note recipe, encapsulated in the mint note's dedicated storage type —
         // the SAME derivations the on-chain policy re-computes and assert-matches.
         let storage = XUsdcMintNoteStorage::from_attested(&payload, amount, faucet_id)?;
@@ -323,7 +288,7 @@ impl XUsdcMintNote {
             sender,
             storage,
             serial_number,
-            deposit: XUsdcDeposit::new(payload, attestation.clone()),
+            deposit: XUsdcDeposit::new(payload, attestation),
             network_account_target,
         })
     }
@@ -332,7 +297,7 @@ impl XUsdcMintNote {
 // BUILDER EXTENSIONS
 // ================================================================================================
 
-impl<'a, S: x_usdc_mint_note_builder::State> XUsdcMintNoteBuilder<'a, S>
+impl<S: x_usdc_mint_note_builder::State> XUsdcMintNoteBuilder<S>
 where
     S::SerialNumber: x_usdc_mint_note_builder::IsUnset,
 {
@@ -341,7 +306,7 @@ where
     pub fn generate_serial_number(
         self,
         rng: &mut impl FeltRng,
-    ) -> XUsdcMintNoteBuilder<'a, x_usdc_mint_note_builder::SetSerialNumber<S>> {
+    ) -> XUsdcMintNoteBuilder<x_usdc_mint_note_builder::SetSerialNumber<S>> {
         self.serial_number(rng.draw_word())
     }
 }
@@ -349,26 +314,24 @@ where
 // CONVERSIONS
 // ================================================================================================
 
-impl TryFrom<XUsdcMintNote> for Note {
-    type Error = NoteError;
-
+impl From<XUsdcMintNote> for Note {
     /// Assembles the stock [`MintNote`] and converts it into a protocol [`Note`]: the derived mint
     /// storage, the drawn serial, then the two attachments in their frozen order — the scheme-4
     /// deposit first (fixed-width attestation ahead of the variable payload), the scheme-2 routing
     /// bind second.
     ///
-    /// # Errors
-    ///
-    /// [`NoteError`] if the deposit's candidate pubkey does not decompress to a curve point, or if
-    /// the attachments exceed their protocol limit.
-    fn try_from(note: XUsdcMintNote) -> Result<Self, Self::Error> {
+    /// Infallible: an [`XUsdcMintNote`] only exists because every one of its parts was accepted at
+    /// construction, and the note's shape — two attachments, both within their word cap — is fixed
+    /// by this function rather than by anything a caller supplies.
+    fn from(note: XUsdcMintNote) -> Self {
         let mint_note = MintNote::builder()
             .sender(note.sender)
             .mint_storage(note.storage.into_mint_storage())
             .serial_number(note.serial_number)
-            .attachment(NoteAttachment::try_from(&note.deposit)?)
+            .attachment(NoteAttachment::from(&note.deposit))
             .attachment(NoteAttachment::from(note.network_account_target))
-            .build()?;
-        Ok(Note::from(mint_note))
+            .build()
+            .expect("two attachments are within the protocol's per-note limit");
+        Note::from(mint_note)
     }
 }

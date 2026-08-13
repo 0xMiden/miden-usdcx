@@ -387,7 +387,7 @@ async fn classify_one<R: FeltRng>(
     // ---- step 4 — the DepositIntent, through the shared encoding crate's codec ------------------------------------
     // The envelope layer validated the BINDING, never the structure — Circle can and does sign a
     // payload this codec refuses — so this is where a non-DepositIntent stops.
-    let intent = match decode_and_validate_deposit_intent(attestation.deposit_intent().as_bytes()) {
+    let intent = match decode_and_validate_deposit_intent(attestation.payload()) {
         Ok(intent) => intent,
         Err(error) => return entry(Disposition::Rejected(error)),
     };
@@ -402,7 +402,7 @@ async fn classify_one<R: FeltRng>(
     // ---- step 6 — the idempotency gate ----------------------------------------------------------
     // Keyed by the DepositIntent's own nonce — the same bytes32 the on-chain `usedNonces` assert
     // keys by, so the liveness backstop and the safety backstop dedup the same thing.
-    let nonce = *intent.nonce();
+    let nonce = *intent.header().nonce().as_bytes();
     match ctx.store.claim_nonce(&nonce, &message_hash) {
         Ok(ClaimOutcome::Claimed(_)) => {}
         Ok(ClaimOutcome::AlreadySeen(record)) => {
@@ -426,7 +426,9 @@ async fn classify_one<R: FeltRng>(
     let note = match build_mint_note(
         ctx.identities.sender(),
         ctx.identities.faucet(),
-        &attestation,
+        ctx.config.remote_domain(),
+        intent,
+        attestation.attestation(),
         ctx.identities.attester(),
         &mut *ctx.rng,
     ) {

@@ -48,7 +48,7 @@ impl Signature {
     /// four bytes per element, with `v` carried in felt 16 (byte 64, upper three bytes zero-filled)
     /// and unused on-chain. Infallible: every element is a `u32` and the length comes from the
     /// fixed-size array, not from input.
-    pub fn to_felts(&self) -> [Felt; 17] {
+    pub fn to_elements(&self) -> [Felt; 17] {
         bytes_to_packed_u32_elements(&self.0)
             .try_into()
             .expect("65 bytes always pack to exactly 17 u32 felts")
@@ -98,7 +98,7 @@ mod tests {
                 v.id
             );
 
-            let s = Signature::new(v.sig()).to_felts();
+            let s = Signature::new(v.sig()).to_elements();
             assert_eq!(s.len(), 17, "{}: signature felt width", v.id);
             assert_eq!(
                 s.as_slice(),
@@ -154,7 +154,7 @@ mod tests {
                 v.id
             );
             assert_eq!(
-                Signature::new(v.sig()).to_felts()[16],
+                Signature::new(v.sig()).to_elements()[16],
                 Felt::from(u32::from(v.v_byte)),
                 "{}: v byte carried in felt 16 (unused on-chain)",
                 v.id

@@ -35,7 +35,7 @@ use miden_testing::assert_transaction_executor_error;
 use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
-use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
+use xusdc_encoding::note::xreserve_mint::DepositAttestation;
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::Signature;
 
@@ -201,14 +201,13 @@ async fn bring_up(pf: &mut ProductionFaucet, count: usize) -> Result<()> {
 /// factory transport: intent + attestation + routing attachments).
 fn attested_mint_note(pf: &ProductionFaucet, payload: &[u8], rng_seed: u64) -> Result<Note> {
     let attester = gen_attester(1, payload);
-    XUsdcMintNote::create(
+    mint_note_from_payload(
         pf.producer_id,
         pf.faucet_id,
         payload,
-        &DepositAttestation::new(Signature::new(attester.sig_bytes), attester.pubkey.clone()),
+        DepositAttestation::new(Signature::new(attester.sig_bytes), attester.pubkey.clone()),
         &mut prod_note_rng(rng_seed),
     )
-    .map_err(|e| anyhow::anyhow!("building the attested stock mint note: {e}"))
 }
 
 /// Emits the attested mint note from the producer and consumes it on the faucet by id (the REAL

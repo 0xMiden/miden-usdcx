@@ -23,7 +23,7 @@
 use crate::circle::schema::InfoResponse;
 use crate::config::RelayerConfig;
 use crate::error::RelayerError;
-use crate::validate::deposit_intent::DepositIntent;
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 /// Runs the fast-fail: does this attestation describe a deposit destined for the xUSDC faucet this
 /// relayer serves?
@@ -48,19 +48,21 @@ pub fn check_domain_token_against_info(
     info: &InfoResponse,
     config: &RelayerConfig,
 ) -> Result<(), RelayerError> {
+    let header = intent.header();
+
     let expected_domain = config.remote_domain();
-    if intent.remote_domain() != expected_domain {
+    if header.remote_domain() != expected_domain {
         return Err(RelayerError::DomainMismatch {
             expected: expected_domain,
-            actual: intent.remote_domain(),
+            actual: header.remote_domain(),
         });
     }
 
     let expected_token = config.xusdc_identifier();
-    if intent.remote_token() != expected_token {
+    if header.remote_token() != expected_token {
         return Err(RelayerError::TokenMismatch {
             expected: *expected_token,
-            actual: *intent.remote_token(),
+            actual: *header.remote_token(),
         });
     }
 

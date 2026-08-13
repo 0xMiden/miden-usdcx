@@ -32,8 +32,8 @@ use miden_protocol::utils::serde::Serializable;
 use miden_protocol::Hasher;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
 use support::mint_transport::{note_rng, REMOTE_TOKEN_BYTE_OFF};
-use support::{test_account_id, test_faucet_id};
-use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
+use support::{mint_note_from_payload, test_account_id, test_faucet_id};
+use xusdc_encoding::note::xreserve_mint::DepositAttestation;
 use xusdc_encoding::vectors::{load, AttVector, MiVector};
 use xusdc_encoding::xreserve::encoding::Signature;
 
@@ -108,11 +108,11 @@ fn note_for(vector_id: &str, attestation_id: &str) -> Note {
     let source = att(attestation_id);
     let attestation = DepositAttestation::new(Signature::new(source.sig()), source.public_key());
 
-    XUsdcMintNote::create(
+    mint_note_from_payload(
         test_account_id(5),
         faucet_id,
         &payload,
-        &attestation,
+        attestation,
         &mut note_rng(RNG_SEED),
     )
     .expect("the production mint note must build for an accept vector")

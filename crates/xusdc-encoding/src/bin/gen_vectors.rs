@@ -13,7 +13,7 @@
 
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey};
 use miden_crypto::dsa::ecdsa_k256_keccak::PublicKey;
-use miden_crypto::utils::Deserializable;
+use miden_crypto::utils::{Deserializable, Serializable};
 use miden_crypto::SequentialCommit;
 use miden_protocol::testing::account_id::AccountIdBuilder;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
@@ -68,18 +68,17 @@ fn poseidon2_key(bytes32: &[u8; 32]) -> Word {
 // uint256 → AssetAmount reducer entries
 // ================================================================================================
 
-#[allow(clippy::too_many_arguments)]
-fn amt_accept(id: &str, tv: &[&str], x: u128, scale_exp: u32, derivation: &str) -> Value {
+fn amt_accept(id: &str, tv: &[&str], x: u128, derivation: &str) -> Value {
     let b = u256_be_from_u128(x);
-    let y = x / 10u128.pow(scale_exp);
     assert!(
-        y <= ASSET_AMOUNT_MAX,
+        x <= ASSET_AMOUNT_MAX,
         "{id}: accept vector must be within the cap"
     );
     json!({
         "id": id, "tv": tv, "kind": "accept",
-        "uint256_be": hex_bytes(&b), "scale_exp": scale_exp,
-        "expected_y": y.to_string(),
+        "uint256_be": hex_bytes(&b),
+        // the shipped scale is zero, so the reduction is the identity
+        "expected_y": x.to_string(),
         "cite": "CIR-FEE-3",
         "derivation": derivation,
     })
@@ -89,14 +88,13 @@ fn amt_reject(
     id: &str,
     tv: &[&str],
     b: [u8; 32],
-    scale_exp: u32,
     variant: &str,
     cite: &str,
     derivation: &str,
 ) -> Value {
     json!({
         "id": id, "tv": tv, "kind": "reject",
-        "uint256_be": hex_bytes(&b), "scale_exp": scale_exp,
+        "uint256_be": hex_bytes(&b),
         "expected_variant": variant,
         "cite": cite, "derivation": derivation,
     })
@@ -126,7 +124,20 @@ fn pattern32(base: u8) -> [u8; 32] {
     core::array::from_fn(|i| base.wrapping_add(i as u8))
 }
 
+/// A 20-byte EVM address right-aligned in a bytes32 (the leading 12 bytes are the zero pad).
+fn evm_bytes32(base: u8) -> [u8; 32] {
+    let mut b = [0u8; 32];
+    for (i, slot) in b[12..].iter_mut().enumerate() {
+        *slot = base.wrapping_add(i as u8);
+    }
+    b
+}
+
 impl IntentSpec {
+    /// A structurally well-formed intent. The four bytes32 fields carry arbitrary patterns on
+    /// purpose: Circle's own encoder emits opaque bytes32 there (`DEV-10` / `Q-EVM-ADDR-1`), so the
+    /// structural family must not assume any Miden reading of them. The `mi` family, which IS read
+    /// as a Miden mint, overrides them with values that narrow.
     fn base(remote_recipient: [u8; 32]) -> Self {
         Self {
             magic: 0x5a2e_0acd, // DepositIntent magic
@@ -344,66 +355,24 @@ fn main() {
 
     // ---- amt family -------------------------------------------------------------------
     let max = ASSET_AMOUNT_MAX;
-    let mut amt = vec![
-        amt_accept(
-            "amt-pos-1",
-            &["TV-AMT-1"],
-            1_000_000,
-            6,
-            "x = 10^6, y = 1",
-        ),
-        amt_accept(
-            "amt-pos-2",
-            &["TV-AMT-1"],
-            123_456_789_012 * 1_000_000,
-            6,
-            "x = 123456789012 * 10^6, y = 123456789012",
-        ),
-        amt_accept(
-            "amt-pos-3",
-            &["TV-AMT-1"],
-            42,
-            0,
-            "scale 0: y = x = 42",
-        ),
-        amt_accept(
-            "amt-pos-4",
-            &["TV-AMT-1"],
-            5 * 10u128.pow(18),
-            18,
-            "scale 18: x = 5 * 10^18, y = 5",
-        ),
+    // The shipped scale is zero (`DEPOSIT_SCALE_EXP`), so the reduction is the identity and every
+    // row below is stated at that scale. A non-zero scale is not a different constant but a
+    // different transport (DC-14 is only invertible at zero), so there are no rows for one.
+    let amt = vec![
+        amt_accept("amt-pos-1", &["TV-AMT-1"], 42, "y = x = 42"),
         amt_accept(
             "amt-cap-accept",
             &["TV-AMT-2"],
-            max * 1_000_000,
-            6,
-            "cap boundary: x = (2^63 - 2^31) * 10^6, y = AssetAmount::MAX exactly",
-        ),
-        amt_accept(
-            "amt-cap-accept-scale0",
-            &["TV-AMT-2"],
             max,
-            0,
-            "cap boundary at the shipped scale-0 identity: x = 2^63 - 2^31, y = x = AssetAmount::MAX exactly",
+            "cap boundary: x = 2^63 - 2^31, y = x = AssetAmount::MAX exactly",
         ),
         amt_reject(
             "amt-rej-cap",
             &["TV-AMT-3"],
-            u256_be_from_u128((max + 1) * 1_000_000),
-            6,
-            "AmountOverCap",
-            "generated deterministically by gen_vectors @ protocol v0.15.3",
-            "x = (2^63 - 2^31 + 1) * 10^6, post-scale y = MAX + 1 must reject (no saturation)",
-        ),
-        amt_reject(
-            "amt-rej-cap-scale0",
-            &["TV-AMT-3"],
             u256_be_from_u128(max + 1),
-            0,
             "AmountOverCap",
             "generated deterministically by gen_vectors @ protocol v0.15.3",
-            "cap reject at the shipped scale-0 identity: x = y = 2^63 - 2^31 + 1 = MAX + 1 must reject (no saturation)",
+            "x = y = 2^63 - 2^31 + 1 = MAX + 1 must reject (no saturation)",
         ),
         {
             // bit 130 set => high four limbs nonzero (> 2^128). BE byte 15, bit 2.
@@ -413,66 +382,12 @@ fn main() {
                 "amt-rej-limb-overflow",
                 &["TV-AMT-4"],
                 b,
-                6,
                 "AmountTooLarge",
                 "generated deterministically by gen_vectors @ protocol v0.15.3",
                 "x = 2^130: high-4 limbs nonzero must reject (limb-overflow edge)",
             )
         },
-        amt_reject(
-            "amt-rej-scale-overflow",
-            &["TV-AMT-7"],
-            u256_be_from_u128(1_000_000),
-            20,
-            "ScaleExpTooLarge",
-            "(scale 0..=18)",
-            "scale_exp = 20 exceeds the 0..=18 bound / overflows 10^scale in u64",
-        ),
     ];
-    // reduced-ge pairs (TV-AMT-5).
-    for (id, a, b, result, note) in [
-        (
-            "amt-ge-lt",
-            1_000_000u128,
-            2_000_000u128,
-            false,
-            "1 < 2 after reduction",
-        ),
-        (
-            "amt-ge-eq",
-            3_000_000,
-            3_000_000,
-            true,
-            "3 == 3 after reduction",
-        ),
-        (
-            "amt-ge-gt",
-            5_000_000,
-            2_000_000,
-            true,
-            "5 > 2 after reduction",
-        ),
-    ] {
-        let ab = u256_be_from_u128(a);
-        let bb = u256_be_from_u128(b);
-        amt.push(json!({
-            "id": id, "tv": ["TV-AMT-5"], "kind": "ge",
-            "uint256_be": hex_bytes(&ab),
-            "b_uint256_be": hex_bytes(&bb),
-            "scale_exp": 6, "ge_result": result,
-            "cite": "CIR-MINT-PRE-8/9 ; amount validation",
-            "derivation": note,
-        }));
-    }
-    // dust (TV-AMT-6).
-    let dust_b = u256_be_from_u128(1_500_123);
-    amt.push(json!({
-        "id": "amt-dust", "tv": ["TV-AMT-6"], "kind": "dust",
-        "uint256_be": hex_bytes(&dust_b), "scale_exp": 6,
-        "expected_y": "1", "expected_dust": "500123",
-        "cite": "DEV-5",
-        "derivation": "x = 1500123, y = floor(x/10^6) = 1, z = 500123; dust POLICY is REQUIRES CIRCLE CONFIRMATION (DEV-5)",
-    }));
     // ---- aid family -------------------------------------------------------------------
     let ids: Vec<miden_protocol::account::AccountId> = (1u8..=3)
         .map(|seed| AccountIdBuilder::new().build_with_seed([seed; 32]))
@@ -678,14 +593,6 @@ fn main() {
     let faucet_id = &ids[1];
     let faucet_b32 = r_b_bytes32(faucet_id);
     let mi_domain = 7u32;
-    // a 20-byte EVM address right-aligned in a bytes32 (the leading 12 bytes are the zero pad)
-    let evm_bytes32 = |base: u8| -> [u8; 32] {
-        let mut b = [0u8; 32];
-        for (i, slot) in b[12..].iter_mut().enumerate() {
-            *slot = base.wrapping_add(i as u8);
-        }
-        b
-    };
     // each row gets its own nonce: two deposits never share one, and the replay-guard tests need
     // a pair that keys distinctly
     let mi_spec = |hook_data: Vec<u8>, nonce_seed: u8| -> IntentSpec {
@@ -703,21 +610,23 @@ fn main() {
     let mut mi: Vec<Value> = Vec::new();
     let mi_accept = |mi: &mut Vec<Value>, id: &str, spec: &IntentSpec, derivation: &str| {
         let payload = spec.encode();
-        let intent = xusdc_encoding::xreserve::encoding::DepositIntent::new(&payload);
+        let intent =
+            xusdc_encoding::xreserve::encoding::DepositIntent::try_from(payload.as_slice())
+                .expect("generator invariant: the spec encodes a valid deposit intent");
+        let amount = intent
+            .header()
+            .reduced_amount()
+            .expect("generator invariant: the spec amount is an AssetAmount");
         let carried = xusdc_encoding::xreserve::encoding::MintIntent::from_deposit_intent(
-            &intent, *faucet_id,
+            &intent, *faucet_id, mi_domain,
         )
         .expect("generator invariant: the mp accept specs are DC-14 shaped");
-        let amount = intent
-            .parse_header()
-            .expect("generator invariant: the spec encodes a valid header")
-            .reduced_amount(xusdc_encoding::xreserve::encoding::MINT_INTENT_SCALE_EXP)
-            .expect("generator invariant: the spec amount is an AssetAmount");
-        let rebuilt = carried.to_deposit_intent_bytes(amount, mi_domain, *faucet_id);
+        let rebuilt = carried.to_deposit_intent(amount, mi_domain, *faucet_id);
         // the law the whole design rests on: what the faucet rebuilds is byte-for-byte what
         // Circle signed. If this ever fails, no note built from this payload could ever mint.
         assert_eq!(
-            rebuilt, payload,
+            rebuilt.to_bytes(),
+            payload,
             "generator invariant: the DC-14 round trip must be exact for {id}"
         );
         mi.push(json!({
@@ -729,12 +638,8 @@ fn main() {
             "faucet_suffix_felt": felt_hex(faucet_id.suffix()),
             "remote_domain": mi_domain,
             "amount_felt": felt_hex(Felt::from(amount)),
-            "carried_felts": felts_hex(&carried.to_felts()),
-            "rebuilt_preimage_felts": felts_hex(
-                &xusdc_encoding::xreserve::encoding::DepositIntent::new(&rebuilt)
-                    .to_packed_felts()
-                    .expect("generator invariant: the rebuilt preimage packs"),
-            ),
+            "carried_felts": felts_hex(&carried.to_elements()),
+            "rebuilt_preimage_felts": felts_hex(&rebuilt.to_preimage_felts()),
             "cite": "DC-14 + DEV-10 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
             "derivation": derivation,
         }));
@@ -758,12 +663,15 @@ fn main() {
                      expected_variant: &str,
                      derivation: &str| {
         let payload = spec.encode();
-        let intent = xusdc_encoding::xreserve::encoding::DepositIntent::new(&payload);
+        // a reject row fails at whichever step owns its narrowing: the byte decode or the compress
         assert!(
-            xusdc_encoding::xreserve::encoding::MintIntent::from_deposit_intent(
-                &intent, *faucet_id,
-            )
-            .is_err(),
+            xusdc_encoding::xreserve::encoding::DepositIntent::try_from(payload.as_slice())
+                .and_then(|intent| {
+                    xusdc_encoding::xreserve::encoding::MintIntent::from_deposit_intent(
+                        &intent, *faucet_id, mi_domain,
+                    )
+                })
+                .is_err(),
             "generator invariant: {id} must not compress"
         );
         mi.push(json!({

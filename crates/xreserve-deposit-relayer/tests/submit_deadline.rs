@@ -86,7 +86,9 @@ async fn a_hung_submit_is_bounded_by_the_deadline_and_deferred() {
     let nonce =
         *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(vector.payload())
             .expect("valid DI")
-            .nonce();
+            .header()
+            .nonce()
+            .as_bytes();
     assert_eq!(
         store
             .record(&nonce)

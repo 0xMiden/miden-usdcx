@@ -348,7 +348,9 @@ fn status(store: &IdempotencyStore, nonce: &[u8; 32]) -> SubmissionStatus {
 fn nonce_of(vector: &AttestationVector) -> [u8; 32] {
     *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(vector.payload())
         .expect("the fixture payload is a valid DepositIntent")
+        .header()
         .nonce()
+        .as_bytes()
 }
 
 /// The canonical payload with its nonce perturbed — a distinct, still-valid deposit. The nonce

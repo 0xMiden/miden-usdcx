@@ -29,8 +29,8 @@ use xusdc_encoding::note::xreserve_mint::{
     XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
-    DepositIntent, DepositIntentField, MintIntent, ACCOUNT_ID_BYTES, ASSET_AMOUNT_BYTES,
-    BYTES32_LEN, EVM_ADDRESS_BYTES, EVM_ADDRESS_PACKED_LIMBS, PUBKEY_FELTS,
+    DepositIntent, DepositIntentField, DepositIntentHeader, MintIntent, ACCOUNT_ID_BYTES,
+    ASSET_AMOUNT_BYTES, BYTES32_LEN, EVM_ADDRESS_BYTES, EVM_ADDRESS_PACKED_LIMBS, PUBKEY_FELTS,
 };
 use xusdc_encoding::{DEPOSIT_INTENT_MASM, MINT_INTENT_MASM};
 
@@ -329,7 +329,7 @@ fn masm_rust_constant_parity() {
 
     assert_eq!(
         num(&nums, "DEPOSIT_INTENT_MAGIC_PACKED", "deposit_intent.masm"),
-        u32::from_le_bytes(DepositIntent::MAGIC.to_be_bytes()) as u64,
+        u32::from_le_bytes(DepositIntentHeader::MAGIC.to_be_bytes()) as u64,
         "packed magic must be the u32-LE reinterpretation of the BE wire magic"
     );
     assert_eq!(
@@ -338,7 +338,7 @@ fn masm_rust_constant_parity() {
             "DEPOSIT_INTENT_VERSION_PACKED",
             "deposit_intent.masm"
         ),
-        u32::from_le_bytes(DepositIntent::VERSION.to_be_bytes()) as u64,
+        u32::from_le_bytes(DepositIntentHeader::VERSION.to_be_bytes()) as u64,
         "packed version must be the u32-LE reinterpretation of the BE wire version"
     );
     assert_eq!(

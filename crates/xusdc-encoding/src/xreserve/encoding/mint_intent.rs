@@ -45,23 +45,21 @@ pub struct MintIntent {
 }
 
 impl MintIntent {
-    /// An AccountId travels as the two felts the protocol's account-id procedures consume, not as
-    /// its packed bytes32 form: the faucet has to validate its structure anyway, and two felts is
-    /// less than the four limbs the packed form would cost.
+    /// An AccountId is encoded as two felts.
     pub const ACCOUNT_ID_FELTS: usize = 2;
 
-    /// Felt offsets within the carried payload. The nonce leads so the widest verbatim run starts
-    /// word-aligned, and the two single-felt fields trail so every wider field stays contiguous.
-    /// The MASM twins are in `asm/standards/xreserve/mint_intent.masm`.
+    // Felt offsets within the carried payload.
     pub const NONCE_FELT_OFF: usize = 0;
+
     pub const LOCAL_TOKEN_FELT_OFF: usize = Self::NONCE_FELT_OFF + BYTES32_PACKED_LIMBS;
     pub const LOCAL_DEPOSITOR_FELT_OFF: usize =
         Self::LOCAL_TOKEN_FELT_OFF + EVM_ADDRESS_PACKED_LIMBS;
+
+    /// The recipient is encoded as two felts.
     pub const REMOTE_RECIPIENT_FELT_OFF: usize =
         Self::LOCAL_DEPOSITOR_FELT_OFF + EVM_ADDRESS_PACKED_LIMBS;
-    /// The recipient travels as the two felts the protocol's account-id procedures consume, prefix
-    /// first. The faucet reads the halves individually, so the suffix carries its own offset.
     pub const REMOTE_RECIPIENT_SUFFIX_FELT_OFF: usize = Self::REMOTE_RECIPIENT_FELT_OFF + 1;
+
     pub const MAX_FEE_FELT_OFF: usize = Self::REMOTE_RECIPIENT_FELT_OFF + Self::ACCOUNT_ID_FELTS;
     /// maxFee is a single `AssetAmount` felt.
     pub const HOOK_DATA_LEN_FELT_OFF: usize = Self::MAX_FEE_FELT_OFF + 1;
@@ -75,11 +73,11 @@ impl MintIntent {
 
     /// Compresses a Circle DepositIntent into what the mint note carries.
     ///
-    /// `faucet_id` is the faucet meant to consume the note and `remote_domain` the domain that
+    /// `target` is the faucet meant to consume the note and `remote_domain` the domain that
     /// faucet has configured. Both are values the faucet writes into the message it rebuilds from
     /// its own state, so an intent naming different ones rebuilds a different digest and dies
-    /// on-chain as an invalid signature. Comparing them here gives that a name before the note is
-    /// ever submitted. Every other field is carried across as it was decoded.
+    /// on-chain as an invalid signature. This is checked here before the note is ever submitted.
+    /// Every other field is carried across as it was decoded.
     ///
     /// # Errors
     ///
@@ -87,12 +85,12 @@ impl MintIntent {
     /// - [`EncodingError::RemoteDomainMismatch`] if it names another destination domain.
     pub fn from_deposit_intent(
         intent: &DepositIntent,
-        faucet_id: AccountId,
+        target: AccountId,
         remote_domain: u32,
     ) -> Result<Self, EncodingError> {
         let header = intent.header();
 
-        if header.remote_token() != faucet_id {
+        if header.remote_token() != target {
             return Err(EncodingError::RemoteTokenMismatch);
         }
         if header.remote_domain() != remote_domain {
@@ -115,11 +113,10 @@ impl MintIntent {
     // EXPAND
     // --------------------------------------------------------------------------------------------
 
-    /// Rebuilds the DepositIntent the attestation signed — the Rust mirror of
-    /// `xreserve::deposit_intent::rebuild`.
+    /// Rebuilds the DepositIntent the attestation signed.
     ///
-    /// Infallible: every input is a validated domain type, and the three the note does not carry
-    /// come from the faucet's own state.
+    /// Expands itself plus the three the [`MintIntent`] does not carry come from the faucet's own
+    /// state.
     pub fn to_deposit_intent(
         &self,
         amount: AssetAmount,
@@ -139,11 +136,12 @@ impl MintIntent {
         DepositIntent::new(header, self.hook_data.clone())
     }
 
-    // CARRIED FELTS
+    // FELT ENCODING
     // --------------------------------------------------------------------------------------------
 
-    /// The carried wire form: the 24 fixed felts followed by the packed hookData. Word padding of
-    /// the hookData tail belongs to the attachment builder, not here.
+    /// The felt encoding: the 24 fixed felts followed by the packed hookData.
+    ///
+    /// Word padding of the hookData tail is not done here.
     pub fn to_elements(&self) -> Vec<Felt> {
         let mut out = Vec::with_capacity(Self::NUM_FELTS);
         out.extend_from_slice(&self.nonce.to_packed_felts());
@@ -153,7 +151,7 @@ impl MintIntent {
         out.push(self.remote_recipient.suffix());
         out.push(Felt::from(self.max_fee));
         out.push(Felt::from(self.hook_data.len_u32()));
-        out.resize(Self::NUM_FELTS, Felt::from(0u32));
+        out.resize(Self::NUM_FELTS, Felt::ZERO);
         out.extend(self.hook_data.to_packed_elements());
         out
     }

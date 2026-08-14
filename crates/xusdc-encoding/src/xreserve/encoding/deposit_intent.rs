@@ -40,7 +40,7 @@ use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::utils::serde::{
     ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable, SliceReader,
 };
-use miden_protocol::{Felt, MAX_NOTE_STORAGE_ITEMS, Word};
+use miden_protocol::{Felt, Word, MAX_NOTE_STORAGE_ITEMS};
 use miden_standards::interop::eth::{EthAddress, EthAmount, EthEmbeddedAccountId};
 
 use super::account_id::{EthAddressExt, EthEmbeddedAccountIdExt};
@@ -196,10 +196,9 @@ impl HookData {
 
 /// The fixed header's fields, each in the domain type the deposit must hold for it to be mintable.
 ///
-/// `magic` and `version` are absent because they are scheme constants, not data: decoding checks
-/// them and encoding writes them. `hookDataLen` is absent because it is derived from the hookData
-/// itself, which is what makes the declared and actual lengths unable to disagree — it is written
-/// and read by [`DepositIntent`], the type that owns the hookData it describes.
+/// - `magic` and `version` are absent because they are scheme constants: decoding checks them and
+///   encoding writes them.
+/// - `hookDataLen` is derived from the hookData.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bon::Builder)]
 pub struct DepositIntentHeader {
     amount: AssetAmount,
@@ -213,6 +212,10 @@ pub struct DepositIntentHeader {
 }
 
 impl DepositIntentHeader {
+    /// The scheme sentinel and version the header carries.
+    pub const MAGIC: u32 = 0x5a2e_0acd;
+    pub const VERSION: u32 = 1;
+
     /// What [`Serializable`] writes: the header's own fields, `magic` through `nonce`. Circle's
     /// fixed prefix is four bytes longer — see [`DepositIntent::HEADER_SIZE`].
     pub const SERIALIZED_SIZE: usize = DepositIntentField::HookDataLen.offset();
@@ -264,10 +267,10 @@ impl DepositIntentHeader {
             .read_array()
             .map_err(|_| EncodingError::TruncatedHeader)?;
 
-        if be_u32(&bytes, DepositIntentField::Magic) != DepositIntent::MAGIC {
+        if be_u32(&bytes, DepositIntentField::Magic) != Self::MAGIC {
             return Err(EncodingError::BadMagic);
         }
-        if be_u32(&bytes, DepositIntentField::Version) != DepositIntent::VERSION {
+        if be_u32(&bytes, DepositIntentField::Version) != Self::VERSION {
             return Err(EncodingError::BadVersion);
         }
 
@@ -300,12 +303,8 @@ impl Serializable for DepositIntentHeader {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
         let mut bytes = [0u8; Self::SERIALIZED_SIZE];
 
-        write_u32(&mut bytes, DepositIntentField::Magic, DepositIntent::MAGIC);
-        write_u32(
-            &mut bytes,
-            DepositIntentField::Version,
-            DepositIntent::VERSION,
-        );
+        write_u32(&mut bytes, DepositIntentField::Magic, Self::MAGIC);
+        write_u32(&mut bytes, DepositIntentField::Version, Self::VERSION);
         write_bytes32(&mut bytes, DepositIntentField::Amount, &widen(self.amount));
         write_u32(
             &mut bytes,
@@ -363,10 +362,6 @@ pub struct DepositIntent {
 }
 
 impl DepositIntent {
-    /// The scheme sentinel and version the header carries.
-    pub const MAGIC: u32 = 0x5a2e_0acd;
-    pub const VERSION: u32 = 1;
-
     /// Circle's fixed prefix: the header's fields plus the `hookDataLen` that closes it.
     pub const HEADER_SIZE: usize = DepositIntentField::HookData.offset();
 
@@ -405,7 +400,10 @@ impl DepositIntent {
         bytes_to_packed_u32_elements(&self.to_bytes())
     }
 
-    /// The typed decode. Reads exactly one message and leaves whatever follows it in `source`.
+    /// The shared decoding implementation.
+    ///
+    /// Trailing bytes are rejected: the payload declares its own total length, so anything past it
+    /// means the sender and this decoder disagree about what was signed.
     fn read<R: ByteReader>(source: &mut R) -> Result<Self, EncodingError> {
         let header = DepositIntentHeader::read(source)?;
 
@@ -424,6 +422,9 @@ impl DepositIntent {
         let hook_data = source
             .read_vec(hook_data_len)
             .map_err(|_| EncodingError::LengthMismatch)?;
+        if source.has_more_bytes() {
+            return Err(EncodingError::LengthMismatch);
+        }
 
         Ok(Self::new(header, HookData::new(hook_data)?))
     }
@@ -452,18 +453,10 @@ impl Deserializable for DepositIntent {
 impl TryFrom<&[u8]> for DepositIntent {
     type Error = EncodingError;
 
-    /// Decodes a payload that is a DepositIntent and nothing else — the entry point every off-chain
-    /// caller takes, because it keeps the specific [`EncodingError`] the payload earned.
-    ///
-    /// Trailing bytes are a rejection, not a remainder: the payload declares its own total length,
-    /// so anything past it means the sender and this decoder disagree about what was signed.
+    /// The entry point every off-chain caller takes, because it keeps the specific
+    /// [`EncodingError`] the payload earned rather than the protocol trait's flattened spelling.
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let mut reader = SliceReader::new(bytes);
-        let intent = Self::read(&mut reader)?;
-        if reader.has_more_bytes() {
-            return Err(EncodingError::LengthMismatch);
-        }
-        Ok(intent)
+        Self::read(&mut SliceReader::new(bytes))
     }
 }
 
@@ -738,7 +731,8 @@ mod tests {
     }
 
     /// A payload followed by bytes that are not part of it is refused rather than silently
-    /// truncated to the message it claims to be.
+    /// truncated to the message it claims to be — on both decode paths, since the check sits in the
+    /// codec rather than in one entry point.
     #[test]
     fn trailing_bytes_reject() {
         let v = load();
@@ -753,6 +747,12 @@ mod tests {
         assert_matches!(
             DepositIntent::try_from(bytes.as_slice()),
             Err(EncodingError::LengthMismatch)
+        );
+        assert_eq!(
+            DepositIntent::read_from_bytes(&bytes)
+                .expect_err("the standard reader refuses the trailing byte too")
+                .to_string(),
+            DeserializationError::from(EncodingError::LengthMismatch).to_string()
         );
     }
 

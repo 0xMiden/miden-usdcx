@@ -12,7 +12,7 @@ assumptions the account leaves to them.
 This document describes `implementation` **as it will stand once the currently open PRs merge**
 (the v16 protocol migration itself is already merged). Where a detail is still in flight it is
 flagged. Exact counts (procedure roots, storage slots) should be re-derived at the audit-start
-revision rather than taken from any document; Section 12 says how.
+revision rather than taken from any document.
 
 ## 2. What the system does
 
@@ -242,26 +242,3 @@ the issuing faucet from its own blocklist, so the faucet cannot be bricked by se
 - **Dependency assumptions:** the Miden network, VM, kernel, and standards provide proof
   verification, state authentication, ordering, nullifiers, and atomicity. A single node response
   is not an independent finality proof.
-
-## 9. Critical invariants
-
-| Invariant | Status |
-|---|---|
-| Every supply increase passes the one fixed local attestation policy | Enforced: the active mint root is fixed and no policy mutator is admitted |
-| The signed message is reconstructed byte-exactly from committed transport and trusted state | Enforced for the implemented format: extent bound before reads, padding beyond the signed extent rejected, returned length drives Keccak |
-| The verifying key is the key whose commitment is enabled | Enforced: commitment lookup and verification use the same presented key |
-| Mint amount equals the asset amount in the signed message and the output | Enforced: one active-asset amount flows through reconstruction and output binding |
-| Output type, tag, recipient commitment, amount, and serial are bound | Enforced: the policy derives and checks the exact output recipe before recording replay state |
-| A deposit nonce authorizes at most one accepted mint | Enforced under protocol atomicity |
-| Mint transport cannot exceed the attachment-bound hook ceiling (3,856 bytes) | Enforced: bounded in Rust before copy, bound in MASM before reads, tied by a compile-time guard |
-| Accepted mint and burn update supply by their actual asset amount | Enforced by the stock faucet procedures |
-| Burn amount is positive and at least the active floor | Enforced on the admitted burn path |
-| Pause blocks policy-controlled mint and burn | Enforced |
-| One blocklist root checks transfer send and receive; the issuer is exempt from its own blocklist | Enforced |
-| The external script surface remains the exact admitted allowlists | Enforced while no new path is admitted; mutators lack a reachable script |
-| Supply conservation starts from a correct genesis | Conditional: genesis `token_supply` is accepted without an asset-distribution proof |
-| Every redemption burn carries a payload whose amount equals the burned asset | **Not enforced on-chain**: the consume script never reads the attachment; the binding is off-chain attester work plus a pending Circle confirmation |
-| Every redemption burn leaves durable, discoverable public state | **Not enforced**: same-block creation and consumption can reduce supply without a surviving note, commitment, or nullifier |
-
-The two unenforced burn properties are the leading fund-adjacent integration area and must not be
-presented as invariants merely because the intended factories satisfy them.

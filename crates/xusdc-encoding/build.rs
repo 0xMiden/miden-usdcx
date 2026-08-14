@@ -95,17 +95,16 @@ fn main() -> Result<()> {
 
 /// Builds the package registry that the declared dependencies resolve against.
 ///
-/// The protocol package declares the kernel and core packages, and the xreserve projects declare the
-/// standards package, so all four have to be present for dependency resolution to succeed.
+/// The protocol package declares the kernel and the core packages, and the xreserve projects declare
+/// the standards package, so all of them have to be present for dependency resolution to succeed.
 fn build_registry() -> Result<InMemoryPackageRegistry> {
     let mut registry = InMemoryPackageRegistry::default();
 
-    for package in [
-        CoreLibrary::default().package(),
+    for package in CoreLibrary::default().packages().into_iter().chain([
         ProtocolLib::default().package(),
         TransactionKernel::package(),
         StandardsLib::default().package(),
-    ] {
+    ]) {
         registry.cache_package(package).into_diagnostic()?;
     }
 

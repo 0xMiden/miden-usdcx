@@ -59,7 +59,7 @@ use miden_protocol::Word;
 use miden_standards::account::access::Authority;
 use miden_standards::account::policies::TokenPolicyManager;
 use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, MintNote, PauseActionNote, RbacActionNote,
+    BlocklistConfigNote, BurnNote, MintNote, PauseConfigNote, RbacConfigNote,
 };
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
@@ -86,7 +86,7 @@ fn production_account() -> Result<Account> {
 /// S1 `MintNote` transport + the `BurnNote`) and six admin/config notes — the three
 /// `ADMIN`-role-gated setters (`set_attester`, `set_min_burn_size`, `set_max_supply`) plus the
 /// three stock admin notes:
-/// `PauseActionNote` (pause+unpause), `BlocklistConfigNote` (block+unblock) and `RbacActionNote`
+/// `PauseConfigNote` (pause+unpause), `BlocklistConfigNote` (block+unblock) and `RbacConfigNote`
 /// (grant+revoke+set_role_admin+renounce). Single-sourced from the
 /// same factories the allowlist itself is built from, so a note that enters the allowlist necessarily
 /// enters this sweep too. There are no ownership notes: the faucet installs no ownership component,
@@ -97,10 +97,10 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
         ("stock_burn_note", BurnNote::script()),
         ("set_attester", XReserveSetAttesterNote::script()),
         ("set_min_burn_size", XReserveSetMinBurnSizeNote::script()),
-        ("stock_pause_action_note", PauseActionNote::script()),
+        ("stock_pause_action_note", PauseConfigNote::script()),
         ("set_max_supply", XReserveSetMaxSupplyNote::script()),
         ("stock_blocklist_config_note", BlocklistConfigNote::script()),
-        ("stock_rbac_action_note", RbacActionNote::script()),
+        ("stock_rbac_action_note", RbacConfigNote::script()),
     ]
 }
 

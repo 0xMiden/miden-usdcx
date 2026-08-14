@@ -21,7 +21,7 @@ use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey};
 use miden_protocol::note::Note;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::RoleBasedAccessControl;
-use miden_standards::note::{RbacAction, RbacActionNote};
+use miden_standards::note::{RbacConfig, RbacConfigNote};
 use miden_testing::assert_transaction_executor_error;
 use support::w2admin::*;
 use support::*;
@@ -84,13 +84,13 @@ fn read_attester(account: &Account, commitment: Word) -> Result<Word> {
 fn role_note(
     sender: AccountId,
     faucet_id: AccountId,
-    action: RbacAction,
+    action: RbacConfig,
     seed: u32,
 ) -> Result<Note> {
-    let note = RbacActionNote::builder()
+    let note = RbacConfigNote::builder()
         .sender(sender)
-        .account(faucet_id)
-        .action(action)
+        .target(faucet_id)
+        .config(action)
         .serial_number(Word::from([seed, 53, 59, 61]))
         .build()
         .map_err(|e| anyhow::anyhow!("building the standard role-action note: {e}"))?;
@@ -221,7 +221,7 @@ async fn the_administrator_role_hands_over_by_grant_then_revoke() -> Result<()> 
             role_note(
                 admin_holder(),
                 faucet_id,
-                RbacAction::GrantRole {
+                RbacConfig::GrantRole {
                     role: RoleBasedAccessControl::admin_role(),
                     account: successor(),
                 },
@@ -241,7 +241,7 @@ async fn the_administrator_role_hands_over_by_grant_then_revoke() -> Result<()> 
             role_note(
                 successor(),
                 faucet_id,
-                RbacAction::RevokeRole {
+                RbacConfig::RevokeRole {
                     role: RoleBasedAccessControl::admin_role(),
                     account: admin_holder(),
                 },
@@ -321,7 +321,7 @@ async fn only_an_administrator_can_grant_the_administrator_role() -> Result<()> 
         vec![role_note(
             role_manager_holder(),
             faucet_id,
-            RbacAction::GrantRole {
+            RbacConfig::GrantRole {
                 role: RoleBasedAccessControl::admin_role(),
                 account: successor(),
             },

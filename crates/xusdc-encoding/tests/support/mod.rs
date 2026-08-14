@@ -62,8 +62,8 @@ use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
-    XReserveAdminAuthority, XReserveFaucetExtension, XReserveStablecoinBuilderError,
-    BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveAdminAuthority, XReserveFaucetExtension, XReserveStablecoinBuilder,
+    XReserveStablecoinBuilderError, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::xreserve::encoding::EthBytes32;
 use xusdc_encoding::{errors, XReserveLibrary};
@@ -142,7 +142,7 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
         "ERR_XRESERVE_DISALLOWED_PUB_KEY",
         errors::ERR_XRESERVE_DISALLOWED_PUB_KEY,
     ),
-    ("ERR_XRESERVE_SIG_INVALID", errors::ERR_XRESERVE_SIG_INVALID),
+    ("ERR_XRESERVE_SIG_LIMB", errors::ERR_XRESERVE_SIG_LIMB),
     (
         "ERR_XRESERVE_MINT_NOTE_TRANSPORT_MISSING",
         errors::ERR_XRESERVE_MINT_NOTE_TRANSPORT_MISSING,
@@ -197,8 +197,20 @@ pub fn err_min_burn_below_floor() -> MasmError {
 /// error (there are no custom burn errors: with the floor `>= 1`, a
 /// zero-amount burn rejects HERE).
 pub fn err_burn_below_min_burn_amount() -> MasmError {
-    MasmError::from_static_str("amount to be burned must exceed specified minimum burn amount")
+    MasmError::from_static_str(
+        "amount to be burned must meet or exceed specified minimum burn amount",
+    )
 }
+
+/// The core library's own ECDSA reject (`miden::core::crypto::dsa::ecdsa_k256_keccak`) — a
+/// signature that is well-formed but does not verify for the presented key and message.
+///
+/// This identity is upstream's, not the faucet's, and that is forced rather than chosen: the
+/// verifier the faucet calls traps on a failed verification instead of returning a flag, so no
+/// faucet-owned assert ever runs. The reject itself is unchanged — the same inputs are refused,
+/// atomically, with nothing written.
+pub static ERR_ECDSA_VERIFY_FAILED: MasmError =
+    MasmError::from_static_str("ECDSA verification failed: x(VERIFY_POINT) != SIG_R");
 
 /// Looks up an expected faucet-owned MASM error by name. Errors raised inside the LINKED protocol
 /// and standards libraries are not here — a test that expects one names that library's own
@@ -398,6 +410,30 @@ fn library_attestation_mint_policy_root(component: &AccountComponent) -> Result<
         })
 }
 
+/// THE production-shape [`XReserveStablecoinBuilder`] construction — the ONE definition of the
+/// `new` argument shape that every production fixture AND every production PIN is measured
+/// through. A second copy of this shape anywhere would keep measuring
+/// the OLD arguments after the production ones changed, leaving a root/slot pin green while the
+/// shipped account moved; so there is exactly one, and callers differ only in `domain`.
+pub fn production_builder(
+    max_supply: u64,
+    token_supply: u64,
+    domain: u32,
+) -> Result<XReserveStablecoinBuilder> {
+    XReserveStablecoinBuilder::new(
+        AssetAmount::new(max_supply).context("invalid max_supply")?,
+        AssetAmount::new(token_supply).context("invalid token_supply")?,
+        test_account_id(1),
+        test_account_id(2),
+        test_account_id(3),
+        test_account_id(4),
+        domain,
+        TEST_SOURCE_DOMAIN,
+        EthBytes32::new(test_xreserve_contract()),
+    )
+    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))
+}
+
 pub fn production_component_set(
     max_supply: u64,
     token_supply: u64,
@@ -421,18 +457,7 @@ pub fn production_builder_outcome(
     // Neither the faucet nor the xreserve component is a builder input any more — `new` builds the
     // fixed-identity USDCx faucet (mutable max supply) and assembles the one valid component itself
     // — so the fixture only supplies the supply parameters and role holders.
-    let mut builder = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
-        AssetAmount::new(max_supply).context("invalid max_supply")?,
-        AssetAmount::new(token_supply).context("invalid token_supply")?,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-        TEST_DOMAIN,
-        TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
-    )
-    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?;
+    let mut builder = production_builder(max_supply, token_supply, TEST_DOMAIN)?;
     if let Some(min_burn_size) = min_burn_size {
         builder = builder.min_burn_size(min_burn_size);
     }
@@ -830,7 +855,7 @@ pub fn fee_amount_felts(limbs: [u32; 8]) -> Vec<Felt> {
 
 /// Like `run_call_driver`, but stages an optional `feeAmount` advice stack into the tx
 /// context (`extend_advice_inputs`). `None` ⇒ no advice staged (the missing-advice case,
-/// which must error). `AdviceInputs::with_stack` preserves order:
+/// which must error). `AdviceInputs::with_advice_stack` preserves order:
 /// the first felt is the first one `adv_push` returns.
 pub async fn run_call_driver_with_advice(
     h: &ShellHarness,
@@ -853,7 +878,7 @@ pub async fn run_call_driver_with_advice(
         .build_transaction(h.account_id)
         .tx_script(tx_script);
     if let Some(stack) = advice_stack {
-        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack));
+        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_advice_stack(stack.into()));
     }
     ctx.build()
         .expect("building the transaction")
@@ -882,6 +907,33 @@ pub struct AttesterVector {
     pub sig_bytes: [u8; 65],
 }
 
+/// The 32 advice elements the core library's ECDSA verifier consumes for this attester:
+/// `QX[8] || QY[8] || SIG_R[8] || SIG_S[8]`, every value a little-endian numeric u32 limb.
+///
+/// This is the verifier's own witness encoding (`miden_core_lib::dsa::ecdsa_k256_keccak::
+/// encode_signature`), rebuilt here rather than imported because the core library is not a
+/// dependency of this crate. It exists for ONE purpose: to let a test play the malicious host and
+/// stage a witness that WOULD verify, proving the faucet consumes its own hash-verified material
+/// instead. Note the limb order — the attestation wire carries a scalar as packed BYTES, most
+/// significant limb first, while the verifier reads numeric limbs least significant first, which is
+/// exactly the rewrite `attestation_verify::store_native_scalar` performs on-chain.
+pub fn ecdsa_advice_witness(attester: &AttesterVector) -> Vec<Felt> {
+    let mut witness = attester.pubkey_felts.clone();
+    witness.extend(native_scalar_limbs(&attester.sig_bytes[..32]));
+    witness.extend(native_scalar_limbs(&attester.sig_bytes[32..64]));
+    witness
+}
+
+/// One 32-byte big-endian scalar as eight little-endian numeric u32 limbs.
+fn native_scalar_limbs(be: &[u8]) -> [Felt; 8] {
+    core::array::from_fn(|i| {
+        let start = be.len() - 4 * (i + 1);
+        Felt::from(u32::from_be_bytes(
+            be[start..start + 4].try_into().expect("a 4-byte limb"),
+        ))
+    })
+}
+
 /// Deterministically generates an attester keypair (k256 + seeded StdRng) and signs
 /// `keccak256(payload)` (sha3) with it — the SAME independent path
 /// `gen_vectors` uses. Two distinct seeds over the SAME payload give the seam's key A / key B.
@@ -902,7 +954,7 @@ pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
         .sign_prehash_recoverable(&digest)
         .expect("k256 prehash sign");
     let mut sig65 = [0u8; 65];
-    sig65[..64].copy_from_slice(sig.to_bytes().as_slice());
+    sig65[..64].copy_from_slice(sig.to_bytes().as_ref());
     sig65[64] = recid.to_byte();
 
     let commitment = PublicKey::read_from_bytes(&pk33)
@@ -1613,20 +1665,10 @@ pub fn setup_guarded_mint_account(
         GuardSelection::ProductionAttestation => {
             let domain_u32 = u32::try_from(domain[0].as_canonical_u64())
                 .context("the fixture domain word element 0 must be a u32")?;
-            let components = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
-                AssetAmount::new(max_supply).context("invalid max_supply")?,
-                AssetAmount::new(token_supply).context("invalid token_supply")?,
-                test_account_id(1),
-                test_account_id(2),
-                test_account_id(3),
-                test_account_id(4),
-                domain_u32,
-                TEST_SOURCE_DOMAIN,
-                EthBytes32::new(test_xreserve_contract()),
-            )
-            .map_err(|e| anyhow::anyhow!("building the production attestation faucet: {e}"))?
-            .build_components()
-            .map_err(|e| anyhow::anyhow!("composing the production attestation faucet: {e}"))?;
+            let components = production_builder(max_supply, token_supply, domain_u32)
+                .context("building the production attestation faucet")?
+                .build_components()
+                .map_err(|e| anyhow::anyhow!("composing the production attestation faucet: {e}"))?;
             (components, attestation_root)
         }
         // TEST-ONLY oracle: allow-all mint + allow-all burn ACTIVE (builder-bypassing contrast).
@@ -2054,19 +2096,24 @@ pub fn send_burn_note_script(
     // procedures, so note creation runs in ACCOUNT context — the STOCK wallet's `create_note`
     // (defined in `miden::standards::note::note_creator` and re-exported by the BasicWallet
     // component, so the account exposes its root) for the attachment-less stock BurnNote, and the
-    // user-installed emit helper for the single-attachment XReserveBurnNote (whose scheme-2 routing target must be reproduced so the
-    // emitted note's id == burn_note.id(); NoteId commits to attachments). The content is supplied
-    // via the advice map keyed by its commitment (`attachment_advice`, extended in
-    // `try_emit_burn_note`). The returned note_idx feeds move_asset_to_note.
+    // user-installed emit helper for the attachment-bearing XReserveBurnNote (whose scheme-2 routing
+    // target AND scheme-tagged withdrawal payload must both be reproduced so the emitted note's id ==
+    // burn_note.id(); NoteId commits to attachments). Every attachment's content is supplied via the
+    // advice map keyed by its commitment (`attachment_advice`, extended in `try_emit_burn_note`). The
+    // first attachment rides the create-plus-one call; each further attachment gets its own
+    // `add_note_attachment` leg. The producer tx creates exactly ONE output note, so its index is 0 —
+    // which feeds move_asset_to_note (re-established after the add legs, which consume it).
     let attachments: Vec<_> = burn_note.attachments().iter().collect();
-    let create_src = match attachments.as_slice() {
-        [] => "    repeat.10 push.0 end\n\
-               \x20\x20\x20\x20push.{recipient}\n\
-               \x20\x20\x20\x20push.{note_type}\n\
-               \x20\x20\x20\x20push.{tag}\n\
-               \x20\x20\x20\x20call.note_creator::create_note\n"
-            .to_string(),
-        [attachment] => format!(
+    let create_src = if attachments.is_empty() {
+        "    repeat.10 push.0 end\n\
+         \x20\x20\x20\x20push.{recipient}\n\
+         \x20\x20\x20\x20push.{note_type}\n\
+         \x20\x20\x20\x20push.{tag}\n\
+         \x20\x20\x20\x20call.note_creator::create_note\n"
+            .to_string()
+    } else {
+        let first = attachments[0];
+        let mut src = format!(
             "    repeat.5 push.0 end\n\
              \x20\x20\x20\x20push.{commitment}\n\
              \x20\x20\x20\x20push.{scheme}\n\
@@ -2074,13 +2121,25 @@ pub fn send_burn_note_script(
              \x20\x20\x20\x20push.{{note_type}}\n\
              \x20\x20\x20\x20push.{{tag}}\n\
              \x20\x20\x20\x20call.emit_helper::emit_note_with_attachment\n",
-            commitment = attachment.content().to_commitment(),
-            scheme = attachment.attachment_scheme().as_u16(),
-        ),
-        other => panic!(
-            "send_burn_note_script emits a 0- or 1-attachment burn note, got {}",
-            other.len()
-        ),
+            commitment = first.content().to_commitment(),
+            scheme = first.attachment_scheme().as_u16(),
+        );
+        for attachment in attachments.iter().skip(1) {
+            src.push_str(&format!(
+                "\x20\x20\x20\x20push.0\n\
+                 \x20\x20\x20\x20push.{commitment}\n\
+                 \x20\x20\x20\x20push.{scheme}\n\
+                 \x20\x20\x20\x20call.emit_helper::add_note_attachment\n",
+                commitment = attachment.content().to_commitment(),
+                scheme = attachment.attachment_scheme().as_u16(),
+            ));
+        }
+        if attachments.len() > 1 {
+            // the create-plus-one leg left note index 0 on the stack, but each add leg consumes it;
+            // re-establish it for the asset move.
+            src.push_str("\x20\x20\x20\x20push.0\n");
+        }
+        src
     };
     let create_src = create_src
         .replace("{recipient}", &recipient.to_string())
@@ -2778,20 +2837,9 @@ pub fn setup_production_faucet(
 
     // The builder builds the fixed-identity USDCx faucet and assembles the one valid xreserve
     // component internally, so the fixture only supplies the supply parameters.
-    let components = xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::new(
-        AssetAmount::new(max_supply).context("invalid max_supply")?,
-        AssetAmount::new(token_supply).context("invalid token_supply")?,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-        TEST_DOMAIN,
-        TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
-    )
-    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
-    .build_components()
-    .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
+    let components = production_builder(max_supply, token_supply, TEST_DOMAIN)?
+        .build_components()
+        .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
 
     // The production faucet is finalized under the stock AuthNetworkAccount (keyless
     // network account) with the frozen note-script allowlist, a tx-script allowlist of EXACTLY

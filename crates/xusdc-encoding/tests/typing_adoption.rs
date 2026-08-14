@@ -145,7 +145,7 @@ fn set_max_supply_builder_matches_create() {
     assert_notes_identical(&via_builder, &via_create, "set_max_supply");
 }
 
-// The burn note: XReserveBurnItems is its dedicated (bon) storage type.
+// The burn note: XReserveBurnItems is its dedicated (bon) payload type.
 // ================================================================================================
 
 #[test]

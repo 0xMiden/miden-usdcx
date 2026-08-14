@@ -287,23 +287,12 @@ impl XReserveStablecoinBuilder {
     }
 }
 
-/// Seeds the faucet's `RoleBasedAccessControl` `AccountComponent` through the stock RBAC seeding
-/// builder, with four roles:
+/// Seeds the faucet's `RoleBasedAccessControl` component with four roles: `DOM_PAUSER` whose admin
+/// is delegated to `DOM_MANAGER`, plus `DOM_MANAGER`, `BLK_MANAGER` and the built-in `ADMIN` seeded
+/// with `owner`. A role with no delegated admin falls under `ADMIN`, which is the account's only
+/// authority handle since it installs no ownership component.
 ///
-/// * `DOM_PAUSER` (→ `pauser_holder`) with administration DELEGATED to `DOM_MANAGER` (the Domain
-///   Manager rotates the Pauser) — the delegation is established atomically at construction, so
-///   `ADMIN` is never transiently able to touch `DOM_PAUSER`.
-/// * `DOM_MANAGER` (→ `manager_holder`) and `BLK_MANAGER` (→ `blocklist_manager_holder`), each left
-///   under the built-in `ADMIN`. `BLK_MANAGER` is capability-isolated: its holder can only block and
-///   unblock, and the administrator rotates or revokes it through the standard role-action note.
-/// * the built-in `ADMIN` role, whose single member is the bootstrap administrator (`owner`) — the
-///   account installs no ownership component, so `ADMIN` membership is its ONLY authority handle.
-///
-/// The builder seeds each role's members and its delegated admin at construction, and `build()`
-/// validates duplicate roles, empty configs, member-count overflow and unmanageable admin chains —
-/// the capability whose absence forced the earlier hand-rolled direct-seed. The resulting storage is
-/// byte-identical to that direct-seed (same code, slots, slot order, maps entry-for-entry, and
-/// metadata). Construction failures are invariants, so this mirrors the stock `.expect()` pattern.
+/// Construction failures are invariants, so this mirrors the stock `.expect()` pattern.
 fn seeded_dom_roles_rbac(
     owner: AccountId,
     pauser_holder: AccountId,

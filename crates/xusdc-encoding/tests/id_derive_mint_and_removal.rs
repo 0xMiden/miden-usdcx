@@ -263,18 +263,6 @@ fn the_composed_faucet_declares_no_identifier_slot() -> Result<()> {
     Ok(())
 }
 
-/// The builder's declared-slot contract no longer lists the identifier slot: a caller composing a
-/// faucet is not asked to declare a slot nothing reads.
-#[test]
-fn the_required_slot_contract_drops_the_identifier() {
-    assert!(
-        !XReserveComponent::required_slots()
-            .iter()
-            .any(|name| name.as_str() == IDENTIFIER_SLOT_LABEL),
-        "the identifier slot must not be a required xreserve slot"
-    );
-}
-
 // HELPERS
 // ================================================================================================
 

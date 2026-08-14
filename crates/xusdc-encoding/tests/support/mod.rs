@@ -97,7 +97,7 @@ pub const TEST_WRONG_DOMAIN: u32 = 8;
 pub const TEST_SOURCE_DOMAIN: u32 = 3;
 
 /// Test `xreserve_contract` bytes32 (sequential distinct bytes) — the third build-seeded
-/// domain-config field the production fixtures pass to `with_domain_config`.
+/// domain-config field the production fixtures pass to `XReserveStablecoinBuilder::new`.
 pub fn test_xreserve_contract() -> [u8; 32] {
     core::array::from_fn(|i| 0x10 + i as u8)
 }
@@ -440,8 +440,8 @@ pub fn assemble_xreserve_lib() -> Result<Package> {
 }
 
 /// THE production-shape [`XReserveStablecoinBuilder`] construction — the ONE definition of the
-/// six-argument `new` + `with_domain_config` shape that every production fixture AND every
-/// production PIN is measured through. A second copy of this shape anywhere would keep measuring
+/// `new` argument shape that every production fixture AND every production PIN is measured
+/// through. A second copy of this shape anywhere would keep measuring
 /// the OLD arguments after the production ones changed, leaving a root/slot pin green while the
 /// shipped account moved; so there is exactly one, and callers differ only in `domain`.
 pub fn production_builder(
@@ -449,20 +449,18 @@ pub fn production_builder(
     token_supply: u64,
     domain: u32,
 ) -> Result<XReserveStablecoinBuilder> {
-    Ok(XReserveStablecoinBuilder::new(
+    XReserveStablecoinBuilder::new(
         AssetAmount::new(max_supply).context("invalid max_supply")?,
         AssetAmount::new(token_supply).context("invalid token_supply")?,
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
-    )
-    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
-    .with_domain_config(
         domain,
         TEST_SOURCE_DOMAIN,
         EthBytes32::new(test_xreserve_contract()),
-    ))
+    )
+    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))
 }
 
 pub fn production_component_set(
@@ -1588,7 +1586,7 @@ pub struct GuardedMint {
 /// attestation policy rides the same `xreserve` library component (its
 /// `mint_policy::check_policy` proc). The production arm build-seeds the caller's `domain` word
 /// (element 0) plus the canonical test `source_domain`/`xreserve_contract` through
-/// `with_domain_config`.
+/// `XReserveStablecoinBuilder::new`.
 ///
 /// `is_max_supply_mutable` configures the built faucet's stock max-supply mutability flag (threaded
 /// into the `FungibleFaucet::builder()` chain). The production builder REJECTS an immutable
@@ -1920,7 +1918,7 @@ fn seeded_dom_roles_rbac_component(
 /// `burn_real_active`, so the real-vs-allow-all pair is CODE-IDENTICAL (both stock burn
 /// companions present in both variants, the SAME floor seed) and differs ONLY in
 /// `active_burn_policy_proc_root`. Mirrors the production
-/// `XReserveStablecoinBuilder::{assemble_components, build_components}` RBAC foundation, but is
+/// `XReserveStablecoinBuilder::build_components` RBAC foundation, but is
 /// the TEST harness — production composition installs the MinBurnAmount policy ONLY (no reserved
 /// allow-all), so no shipped API can construct an allow-all-active burn faucet.
 fn oracle_burn_components(
@@ -1962,12 +1960,10 @@ fn oracle_burn_components(
         .allowed_burn_policy(reserved_burn)
         .build();
 
-    // Component order/contents mirror XReserveStablecoinBuilder::{assemble_components,
-    // build_components}, including the v16 policy-companion seam: the manager iterator yields
-    // [manager, then one companion copy per distinct policy root] — here the attestation custom
-    // carries the xreserve component (dropped: it is installed once below) and the two stock burn
-    // policies carry the MinBurnAmount (with the floor slot) + BurnAllowAll companions (BOTH
-    // kept: the code-identical pair needs them in both variants). The base Pausable component
+    // Production build_components extends the manager iterator (the mint policy already
+    // carries the seeded xreserve). This oracle still partitions the remainder: it keeps BOTH
+    // stock burn companions (MinBurnAmount + BurnAllowAll) and drops the xreserve copy because
+    // it also installs `xreserve_component` separately below. The base Pausable component
     // installs the is_paused slot (v16 — #2944 moved it out of FungibleFaucet) and the stock
     // PausableManager writes it, gated on the Domain pauser role by the procedure-role map.
     let xreserve_code = xreserve_component.component_code().clone();

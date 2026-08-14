@@ -47,18 +47,40 @@ const TOKEN_SUPPLY: u64 = 0;
 // storage commitments, so it moves whenever either commitment moves (unlike the code commitment
 // and storage digest, which isolate their own layer). The initial commitment covers all three.
 //
+// Re-captured when the account's callable surface moved into its own component MASM. NO procedure
+// changed: the full root list is identical except that `set_attester` and `check_policy` swap
+// places. The two used to be named by their library modules (`attester_admin` sorting before
+// `mint_policy`) and are now named by one shared component module, where the sort falls through to
+// the procedure name (`check_policy` before `set_attester`). The commitment is taken over the roots
+// IN ORDER, so it moved — and because the id grounds on it, so did the id and the state commitment.
+// The storage digest did not, which is what says nothing but the ordering changed.
+//
+// Re-captured again when the two lines merged: the component-set composition was simplified on one
+// side while the callable surface moved into its own component MASM on the other. Both touch the
+// installed procedure roots, so the code commitment — and with it the id and the state commitment —
+// moved once more. The storage digest is byte-for-byte the pre-merge value on BOTH sides, which is
+// what says the slot values and layout are untouched by either change.
+//
+// Re-captured once more at the protocol v0.16.0-rc.4 migration, which rewrote the attestation verify
+// and the mint policy: the MASM the faucet installs changed, so the code commitment moved and the id
+// and state commitment followed it. The storage digest here is byte-for-byte the value the migration
+// itself measured, which is what says the migration's slot values survived the merge unchanged.
+//
 // NOT RATIFIED — every value below is MEASURED from this composition, not accepted. A human must
-// re-ratify all four at PR assembly. The id, state and storage anchors were RE-measured when the
-// protocol-release migration met the `EthAddress` narrowing on this branch: both move the seeded
-// slot bytes, so neither pre-merge capture holds. The code commitment is unchanged across the
-// merge — no procedure root moved.
+// re-ratify all four at PR assembly. The id and state anchors were RE-measured when the two lines
+// merged: the callable surface moving into its own component MASM moved the CODE commitment on one
+// side, and narrowing `xreserve_contract` to a 20-byte `EthAddress` moved the seeded slot bytes —
+// and so the STORAGE digest — on the other. The id grounds on both commitments and the state
+// commitment covers both plus the id, so neither pre-merge capture holds for those two. The code
+// commitment and the storage digest are each byte-for-byte the value their own side measured,
+// which is what says the merge composed the two changes rather than disturbing either.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([13628047724546656696, 12649608818023092122, 15573019818373469257, 7432096571854870928])";
+    "Word([13668168734693239322, 1703180734705411886, 4778497770240711770, 14508535432773685585])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([15058775153826961406, 12221757768293569830, 4220212873006231106, 7610009271148123683])";
+    "Word([323014368150543436, 3384185445653237445, 8917474726941958005, 1072673965110081017])";
 const GOLDEN_STORAGE_DIGEST: &str =
     "Word([13346508987964622553, 5988960762892709497, 6782465324179580540, 1354910767027333690])";
-const GOLDEN_ACCOUNT_ID: &str = "0xe0e2b0249343183159c7b031cb5b76";
+const GOLDEN_ACCOUNT_ID: &str = "0x349c16bc313fc4f104123b3b0a3191";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.

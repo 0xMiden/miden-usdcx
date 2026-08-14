@@ -56,6 +56,15 @@ hermetic audit sandboxes deny (`bind: Operation not permitted`). Run it explicit
 (`1 ignored` = it did NOT run). The §11.2 gate claim rides only on real runs (evidence +
 archived logs under `local-node-data/`) plus the LNV-1 human supervision gate.
 
+**Un-parking also has to catch this crate up to build-time MASM assembly.** `src/deploy.rs` still
+assembles the faucet library at runtime from a source path (`xusdc_encoding::xreserve_asm_dir()`),
+and neither that function nor the tree it pointed at exists any more: the MASM is assembled by
+`crates/xusdc-encoding/build.rs` and embedded. Replace that whole path with the shipped component —
+`XReserveFaucetExtension::new()`, or `xusdc_encoding::testing::XReserveLibrary::default()` if the raw
+library is what a row needs — that one is behind the `testing` feature, which this crate does not
+enable today. The seven-slot shape `deploy.rs` declares is stale for the same vintage of
+reasons; the shipped component carries six.
+
 Requirements for the gate run (operator-run, **P1b-b**): the four node binaries on `PATH`, loopback
 ports 57291–57294 free. The harness (`src/stack.rs`) as currently coded targets the **v0.15.1** node
 binaries; running these rows against a **v16** node — and any node-CLI-flag updates that requires —

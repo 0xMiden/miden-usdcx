@@ -14,30 +14,29 @@
 //! recomputed by calling the Rust routine. Comparing the Rust implementation against itself
 //! would pass no matter how far the MASM had drifted.
 //!
-//! The harness itself is assembled the way the protocol assembles its own standard libraries
-//! (warnings as errors, a library built from the source directory, linked dynamically into a
-//! transaction script) so the code under test is exercised through the real pipeline. A handful
-//! of probe tests at the end pin those harness mechanics, so that a toolchain change breaks them
-//! rather than silently changing what the conformance tests mean.
+//! The library under test is the SHIPPED one — the package this crate's build script assembled and
+//! embedded, linked dynamically into a transaction script — so the code exercised here is the code
+//! that ships, not a second assembly of the same sources. A handful of probe tests at the end pin
+//! those harness mechanics, so that a toolchain change breaks them rather than silently changing
+//! what the conformance tests mean.
 
 use std::fmt::Write as _;
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use assert_matches::assert_matches;
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::account::{AccountComponent, AccountId};
-use miden_protocol::assembly::{Linkage, Package, Path as MasmPath};
-use miden_protocol::transaction::{ExecutedTransaction, TransactionKernel};
+use miden_protocol::assembly::Package;
+use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::StandardsLib;
 use miden_testing::{Auth, MockChain};
 use miden_tx::TransactionExecutorError;
 use serde::Deserialize;
 use sha3::{Digest, Keccak256};
 use xusdc_encoding::vectors::{load, word_from_hex};
 use xusdc_encoding::xreserve::encoding::EncodingError;
+use xusdc_encoding::xreserve_lib::XReserveLibrary;
 
 /// Memory base for the staged pubkey felts `pubkey_commitment` hashes in place (word-aligned,
 /// clear of `INTENT_PTR`).
@@ -45,26 +44,6 @@ const PUBKEY_PTR: u64 = 8;
 
 // HARNESS (assemble → bind → MockChain account)
 // ================================================================================================
-
-/// Assembles the `asm/standards/xreserve` tree into one library under namespace
-/// `xreserve` — mirrors `miden-standards/build.rs:45,:77` verbatim.
-fn assemble_xreserve_lib() -> Result<Package> {
-    // Link StandardsLib (mirrors support::assemble_xreserve_lib): attester_admin::set_attester calls
-    // the stock authority/pausable procs, which live in StandardsLib.
-    let assembler = TransactionKernel::assembler()
-        .with_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
-        .map_err(|e| {
-            anyhow::anyhow!("linking the standards library into the xreserve assembler: {e}")
-        })?
-        .with_warnings_as_errors(true);
-    let lib = assembler
-        .assemble_library_from_root(
-            xusdc_encoding::xreserve_asm_dir().join("mod.masm"),
-            Some(MasmPath::new("xreserve")),
-        )
-        .map_err(|e| anyhow::anyhow!("xreserve library failed to assemble: {e}"))?;
-    Ok(*lib)
-}
 
 struct Harness {
     mock_chain: MockChain,
@@ -75,7 +54,7 @@ struct Harness {
 /// Builds the MockChain account that carries the encoding library (registering its MAST
 /// forest with the executor, which is what makes its procedures available to run).
 fn setup() -> Result<Harness> {
-    let library = assemble_xreserve_lib()?;
+    let library = Package::from(XReserveLibrary::default());
     let component = AccountComponent::new(
         library.clone(),
         vec![],
@@ -260,30 +239,6 @@ end
         result.is_err(),
         "a wrong expected value MUST fail execution — the harness cannot pass on a bad vector"
     );
-    Ok(())
-}
-
-/// P1: the assembled library exports exactly the canonical flat proc paths.
-#[test]
-fn probe_p1_exports() -> Result<()> {
-    let lib = assemble_xreserve_lib()?;
-    let exports: Vec<String> = lib
-        .manifest
-        .exports()
-        .filter(|e| e.is_procedure())
-        .map(|e| e.path().to_string())
-        .collect();
-    // exports render as ABSOLUTE paths (leading `::`) at this assembler version
-    for canonical in [
-        "::xreserve::mint_intent::hash_nonce",
-        "::xreserve::mint_intent::validate",
-        "::xreserve::deposit_intent::rebuild",
-    ] {
-        assert!(
-            exports.iter().any(|e| e == canonical),
-            "canonical proc path {canonical} missing; exports: {exports:?}"
-        );
-    }
     Ok(())
 }
 

@@ -41,7 +41,7 @@ use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::MinBurnAmount;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::P2idNote;
-use xusdc_encoding::account::xreserve::{XReserveComponent, DOM_PAUSER_ROLE};
+use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
     XReserveGrantRoleNote, XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote,
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
@@ -125,7 +125,7 @@ fn map_item(account: &Account, name: &StorageSlotName, key: Word) -> Result<Word
 fn attester_marker(account: &Account, commitment: Word) -> Result<Word4> {
     Ok(word4(map_item(
         account,
-        XReserveComponent::xreserve_attesters_slot(),
+        XReserveFaucetExtension::xreserve_attesters_slot(),
         commitment,
     )?))
 }

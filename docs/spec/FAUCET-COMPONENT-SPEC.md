@@ -172,7 +172,8 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
   role through the standard role-action note. The handover is single-step — there is no
   nominate-then-accept confirmation.
 - **Administrator-gated setters**: `set_attester` (allowlist), the stock `set_min_burn_amount`
-  (behind the note-side floor guard) and `set_max_supply` all resolve through
+  (behind the note-side floor guard), `set_max_supply`, and the stock
+  `ConstantFeeManager::set_note_fee` all resolve through
   the account-wide authority to the `ADMIN` role. They are
   intentionally **not** pause-gated (finding `F6`), so the administrator can, e.g., disable a
   compromised attester while the faucet is paused.

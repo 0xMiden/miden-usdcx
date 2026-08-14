@@ -26,7 +26,8 @@ use miden_protocol::account::StorageSlotName;
 use miden_protocol::note::NoteScriptRoot;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, MintNote, PauseConfigNote, RbacConfigNote,
+    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FeeSponsorshipNote, MintNote,
+    PauseConfigNote, RbacConfigNote,
 };
 use support::mint_transport::*;
 use support::*;
@@ -42,9 +43,7 @@ const IDENTIFIER_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::identifier"
 /// The fully-qualified path of the initializer that must no longer exist on the component.
 const INIT_IDENTIFIER_PATH: &str = "::xreserve::identifier_init::init_identifier";
 
-/// The note-script allowlist the production faucet ships once the identifier-init note is gone:
-/// the two supply-side stock notes, the three faucet-owned `ADMIN` setters, and the three stock
-/// admin notes.
+/// Returns the production note-script allowlist without an identifier-initialization note.
 fn expected_allowlist() -> BTreeSet<NoteScriptRoot> {
     BTreeSet::from([
         MintNote::script_root(),
@@ -55,6 +54,8 @@ fn expected_allowlist() -> BTreeSet<NoteScriptRoot> {
         PauseConfigNote::script_root(),
         BlocklistConfigNote::script_root(),
         RbacConfigNote::script_root(),
+        ConstantFeePolicyConfigNote::script_root(),
+        FeeSponsorshipNote::script_root(),
     ])
 }
 
@@ -199,20 +200,20 @@ fn the_wrong_identifier_error_text_is_unchanged() {
 // STRUCTURAL REMOVAL — the mechanism is gone, not merely unused
 // ================================================================================================
 
-/// The production note-script allowlist is exactly the eight surviving roots — the identifier-init
-/// note is not among them, and nothing else was dropped along with it.
+/// The production note-script allowlist contains the expected ten roots and no
+/// identifier-initialization note.
 #[test]
 fn the_allowlist_drops_the_identifier_init_root_and_nothing_else() {
     let allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
     assert_eq!(
         allowlist.len(),
-        8,
-        "the allowlist must hold exactly eight roots after the identifier-init note is removed"
+        10,
+        "the allowlist must contain exactly ten roots"
     );
     assert_eq!(
         allowlist,
         expected_allowlist(),
-        "the allowlist must be exactly the eight surviving note-script roots"
+        "the allowlist must equal the expected ten note-script roots"
     );
 }
 

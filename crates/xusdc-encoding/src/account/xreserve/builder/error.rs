@@ -6,6 +6,7 @@
 use core::fmt;
 
 use miden_protocol::errors::AccountError;
+use miden_protocol::note::NoteScriptRoot;
 use miden_standards::account::auth::NetworkAccountNoteAllowlistError;
 use miden_standards::account::faucets::FungibleFaucetError;
 use miden_standards::account::policies::{BurnPolicyError, MintPolicyError};
@@ -25,6 +26,14 @@ pub enum XReserveStablecoinBuilderError {
     /// The composed faucet [`Account`](miden_protocol::account::Account) could not be built from the
     /// component set (the crate-root `build_account` path). Carries the stock account error.
     AccountComposition(AccountError),
+    /// The supplied `BasicConstantFeePolicy` has no explicit schedule entry for an allowlisted
+    /// note. Unscheduled roots abort fee estimation, including roots intended to be free.
+    MissingFeeScheduleEntry(NoteScriptRoot),
+    /// The supplied `BasicConstantFeePolicy` schedules a note root that the faucet does not
+    /// allowlist. The deploy-time schedule and note allowlist must have exactly the same keys.
+    UnexpectedFeeScheduleEntry(NoteScriptRoot),
+    /// The supplied fee schedule is invalid for constant-fee administration.
+    ZeroConstantFeePolicyConfigFee,
     /// The supplied `xreserve` component does not export the attestation mint policy procedure
     /// (assembly/path drift). Carries the expected path for diagnosis.
     AttestationPolicyProcNotFound,
@@ -62,6 +71,19 @@ impl fmt::Display for XReserveStablecoinBuilderError {
             Self::AccountComposition(_) => {
                 write!(f, "the composed faucet account could not be built")
             }
+            Self::MissingFeeScheduleEntry(root) => write!(
+                f,
+                "the BasicConstantFeePolicy schedule has no explicit entry for allowlisted note \
+                 root {root}"
+            ),
+            Self::UnexpectedFeeScheduleEntry(root) => write!(
+                f,
+                "the BasicConstantFeePolicy schedule contains non-allowlisted note root {root}"
+            ),
+            Self::ZeroConstantFeePolicyConfigFee => write!(
+                f,
+                "the ConstantFeePolicyConfigNote fee must be greater than zero"
+            ),
             Self::AttestationPolicyProcNotFound => write!(
                 f,
                 "the xreserve component does not export the attestation mint policy procedure \
@@ -107,5 +129,11 @@ impl From<MintPolicyError> for XReserveStablecoinBuilderError {
 impl From<BurnPolicyError> for XReserveStablecoinBuilderError {
     fn from(source: BurnPolicyError) -> Self {
         Self::BurnPolicy(source)
+    }
+}
+
+impl From<NetworkAccountNoteAllowlistError> for XReserveStablecoinBuilderError {
+    fn from(source: NetworkAccountNoteAllowlistError) -> Self {
+        Self::NetworkAuth(source)
     }
 }

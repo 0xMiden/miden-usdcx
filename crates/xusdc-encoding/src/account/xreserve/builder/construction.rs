@@ -15,6 +15,7 @@ use miden_protocol::utils::sync::LazyLock;
 use miden_protocol::vm::Package;
 use miden_protocol::Word;
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
+use miden_standards::account::fees::BasicConstantFeePolicy;
 
 use super::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL,
@@ -169,15 +170,12 @@ impl From<XReserveFaucetExtension> for AccountComponent {
 impl XReserveStablecoinBuilder {
     /// Builds the final composed faucet [`Account`] from `init_seed`: [`Self::build_components`] plus
     /// the production keyless-network `AuthNetworkAccount` auth component ([`Self::auth_component`]),
-    /// assembled exactly as the network-deploy path does — `AccountType::Public`, and the asset
+    /// assembled as `AccountType::Public`, with asset
     /// callbacks enabled iff the composition installs the transfer-policy callback slots (it does:
     /// xUSDC is a policed asset).
     ///
-    /// This is the crate-root faucet-account constructor: nothing outside the test harness previously
-    /// turned the components into an `Account`, so account construction is now traceable from the
-    /// library root. Composing the account through this entry is byte-identical to composing the
-    /// components and the auth component by hand with the same seed (the byte-identity suite proves
-    /// it against the pre-change composition).
+    /// This entry is byte-identical to composing the components and auth component with the same
+    /// seed.
     pub fn build_account(
         &self,
         init_seed: [u8; 32],
@@ -204,9 +202,10 @@ impl XReserveStablecoinBuilder {
         for component in components {
             builder = builder.with_component(component);
         }
-        builder = builder.with_components(
-            Self::auth_component().map_err(XReserveStablecoinBuilderError::NetworkAuth)?,
-        );
+        builder = builder.with_components(Self::auth_component(
+            self.fee_faucet_id,
+            self.fee_policy.clone(),
+        )?);
         builder
             .build()
             .map_err(XReserveStablecoinBuilderError::AccountComposition)
@@ -228,6 +227,8 @@ pub fn build_faucet_account(
     pauser_holder: AccountId,
     manager_holder: AccountId,
     blocklist_manager_holder: AccountId,
+    fee_faucet_id: AccountId,
+    fee_policy: BasicConstantFeePolicy,
     domain: u32,
     source_domain: u32,
     xreserve_contract: ForeignChainAddress,
@@ -239,6 +240,8 @@ pub fn build_faucet_account(
         .pauser_holder(pauser_holder)
         .manager_holder(manager_holder)
         .blocklist_manager_holder(blocklist_manager_holder)
+        .fee_faucet_id(fee_faucet_id)
+        .fee_policy(fee_policy)
         .domain(domain)
         .source_domain(source_domain)
         .xreserve_contract(xreserve_contract)

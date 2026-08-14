@@ -21,12 +21,12 @@
 //!
 //! S12 DISPOSITION — `freeze`/`unfreeze` are PRESENT but OPERATIONALLY UNREACHABLE, and this file
 //! proves it rather than asserting it: the faucet is a keyless network account whose
-//! `AuthNetworkAccount` admits ONLY the immutable 8-root note-script allowlist and a tx-script
+//! `AuthNetworkAccount` admits ONLY the immutable 10-root note-script allowlist and a tx-script
 //! allowlist of EXACTLY the one canonical `ExpirationTransactionScript` (S12, RATIFIED 2026-07-20 —
 //! F5). `freeze_and_unfreeze_are_unreachable_from_every_allowlisted_note`
-//! scans the MAST of all 8 allowlisted note scripts and shows not one of them references the
+//! scans the MAST of all 10 allowlisted note scripts and shows not one of them references the
 //! freeze/unfreeze roots; `freeze_and_unfreeze_are_not_admissible_via_either_allowlist` shows the
-//! roots are not among the 8 note-script roots; and `the_auth_component_rejects_a_non_allowlisted_note`
+//! roots are not among the 10 note-script roots; and `the_auth_component_rejects_a_non_allowlisted_note`
 //! / `the_auth_component_rejects_non_expiration_tx_scripts_and_admits_expiration` EXECUTE the two
 //! (and only two) entry vectors and watch the auth component reject every non-admitted script (the
 //! sole admitted tx-script — the expiration bounder — cannot reach freeze). (The allowlist is an epilogue
@@ -59,7 +59,8 @@ use miden_protocol::Word;
 use miden_standards::account::access::Authority;
 use miden_standards::account::policies::TokenPolicyManager;
 use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, MintNote, PauseConfigNote, RbacConfigNote,
+    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FeeSponsorshipNote, MintNote,
+    PauseConfigNote, RbacConfigNote,
 };
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
@@ -82,15 +83,8 @@ fn production_account() -> Result<Account> {
     Ok(account)
 }
 
-/// The 8 allowlisted note SCRIPTS (not just their roots): the two STOCK supply notes (the Wave-1
-/// S1 `MintNote` transport + the `BurnNote`) and six admin/config notes — the three
-/// `ADMIN`-role-gated setters (`set_attester`, `set_min_burn_size`, `set_max_supply`) plus the
-/// three stock admin notes:
-/// `PauseConfigNote` (pause+unpause), `BlocklistConfigNote` (block+unblock) and `RbacConfigNote`
-/// (grant+revoke+set_role_admin+renounce). Single-sourced from the
-/// same factories the allowlist itself is built from, so a note that enters the allowlist necessarily
-/// enters this sweep too. There are no ownership notes: the faucet installs no ownership component,
-/// and rotating the administrator is a grant and a revoke of the `ADMIN` role.
+/// Returns the ten accepted note scripts: two supply notes, six administration and configuration
+/// notes, the constant-fee configuration note, and the sponsorship note.
 fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
     vec![
         ("stock_mint_note", MintNote::script()),
@@ -101,6 +95,11 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
         ("set_max_supply", XReserveSetMaxSupplyNote::script()),
         ("stock_blocklist_config_note", BlocklistConfigNote::script()),
         ("stock_rbac_action_note", RbacConfigNote::script()),
+        (
+            "stock_constant_fee_policy_config_note",
+            ConstantFeePolicyConfigNote::script(),
+        ),
+        ("stock_fee_sponsorship_note", FeeSponsorshipNote::script()),
     ]
 }
 
@@ -131,7 +130,7 @@ fn authority_freeze_and_unfreeze_are_present_on_the_account() -> Result<()> {
     Ok(())
 }
 
-/// UNREACHABLE, leg 1 (static, exhaustive over the allowlist): NOT ONE of the 8 allowlisted note
+/// UNREACHABLE, leg 1 (static, exhaustive over the allowlist): NOT ONE of the 10 allowlisted note
 /// scripts references the freeze or unfreeze root ANYWHERE in its MAST — so no admissible note can
 /// invoke them. Scanning every MAST node digest (not just the entrypoint) catches a call by root, a
 /// call by path, and any nested/external reference alike.
@@ -141,14 +140,14 @@ fn freeze_and_unfreeze_are_unreachable_from_every_allowlisted_note() -> Result<(
     let scripts = allowlisted_note_scripts();
     assert_eq!(
         scripts.len(),
-        8,
-        "the unreachability sweep must cover all 8 allowlisted note scripts"
+        10,
+        "the unreachability sweep must cover all 10 allowlisted note scripts"
     );
     // The scripts swept ARE the allowlist (no script can dodge the sweep by not being listed here).
     let swept: BTreeSet<_> = scripts.iter().map(|(_, s)| s.root()).collect();
     assert_eq!(
         swept, allowlist,
-        "the swept note scripts must be EXACTLY the 8-root note-script allowlist"
+        "the swept note scripts must be EXACTLY the 10-root note-script allowlist"
     );
 
     let forbidden = [
@@ -174,10 +173,12 @@ fn freeze_and_unfreeze_are_unreachable_from_every_allowlisted_note() -> Result<(
 
 /// UNREACHABLE, cross-reference (freeze-specific): the freeze/unfreeze roots are not ADMISSIBLE via
 /// either entry vector. `AuthNetworkAccount` admits an input note only if its script root is one of
-/// the 8 allowlisted roots, and admits a tx script only if its root is in the tx-script allowlist —
-/// which admits EXACTLY the one canonical `ExpirationTransactionScript` (S12), never freeze/unfreeze.
-/// There is no freeze/unfreeze NOTE FACTORY at all (the 8 are the two supply notes + the six admin
-/// notes; none carries freeze), so no freeze-bearing note root can be among the 8, and the one-root
+/// the 10 allowlisted roots, and admits a transaction script only if its root is in the transaction
+/// script allowlist, which admits exactly the canonical `ExpirationTransactionScript` root and
+/// never freeze or unfreeze.
+/// There is no freeze/unfreeze NOTE FACTORY at all (the 10 are the two supply notes, six admin
+/// notes, and two fee notes; none carries freeze), so no freeze-bearing note root can be among the
+/// 10, and the one-root
 /// tx-script allowlist admits only the expiration bounder (not freeze). Combined with the MAST sweep
 /// above (no allowlisted note even references the roots) both entry vectors are provably closed.
 #[test]
@@ -190,7 +191,7 @@ fn freeze_and_unfreeze_are_not_admissible_via_either_allowlist() -> Result<()> {
         let as_note_root = NoteScriptRoot::from_raw(Word::from(root));
         assert!(
             !note_allowlist.contains(&as_note_root),
-            "the `{name}` root must NOT be a member of the 8-root note-script allowlist \
+            "the `{name}` root must NOT be a member of the 10-root note-script allowlist \
              (there is no freeze note factory; a freeze-bearing note is inadmissible)"
         );
     }

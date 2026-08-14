@@ -310,13 +310,13 @@ fn seeded_dom_roles_rbac(
     RoleBasedAccessControl::builder()
         .role(
             RoleConfig::new(pauser)
-                .with_members([pauser_holder])
+                .with_member(pauser_holder)
                 .with_admin(manager.clone()),
         )
-        .role(RoleConfig::new(manager).with_members([manager_holder]))
-        .role(RoleConfig::new(admin).with_members([owner]))
-        .role(RoleConfig::new(blk_manager).with_members([blocklist_manager_holder]))
+        .role(RoleConfig::new(manager).with_member(manager_holder))
+        .role(RoleConfig::new(admin).with_member(owner))
+        .role(RoleConfig::new(blk_manager).with_member(blocklist_manager_holder))
         .build()
-        .expect("the seeded DOM-roles RBAC configuration mirrors the stock From impl and is valid")
+        .expect("the seeded DOM-roles RBAC configuration should be valid")
         .into()
 }

@@ -19,12 +19,12 @@
 //! `typing_builder_byte_identity.rs`. A single felt of drift — a reordered attachment section, a
 //! dropped pad felt, a different serial derivation — flips one of them RED and names which.
 //!
-//! Re-freezing is a reviewed act, and the anchors below were last re-captured when the `att` family
-//! was regenerated: the attestation's SIGNATURE is an input to the transport attachment, so a new
-//! signature necessarily moves the attachments commitment and everything hashed over it. That the
-//! move was ONLY the input was established before re-capturing — restoring the previous signature
-//! bytes alone reproduced the previous anchors exactly, with the recipient recipe, the attachment
-//! shape and the serialized length unchanged throughout.
+//! Re-freezing is a reviewed act, and the anchors below were last re-captured when `localToken` and
+//! `localDepositor` widened from a 20-byte address to the wire form's full bytes32: the carried
+//! payload gained four felts, so the transport attachment is one word longer and everything hashed
+//! over it moves. That the move was only that was established before re-capturing — every anchor
+//! shifted by exactly the one word, and the recipient recipe, which does not depend on either
+//! field, did not move at all.
 //!
 //! The vector payload is used verbatim except for `remoteToken`, which is spliced to a deterministic
 //! PUBLIC faucet id: the routing attachment can only bind a public network account, and the
@@ -62,27 +62,27 @@ struct Anchors {
 /// `mi-pos-empty-hookdata` + the `att-1` attestation.
 const GOLDEN_EMPTY_HOOKDATA: Anchors = Anchors {
     vector: "mi-pos-empty-hookdata",
-    note_id: "0x6ed60977d4ba5a8d19ff287dd17c0ba008424bb091d23e002a07e28abecf0b74",
-    nullifier: "0x202eb79b3d7caa7580cc6e643bc4a2842e6efcaa9ca8f9069277ec2490363f05",
+    note_id: "0x800226797fb0c35999cbe722a493e64c0891ce52e31887bd2651ad9e16801b87",
+    nullifier: "0x12a64b058e600ef4d1431aa73bc68b5db7ffea6249bd5ac632ce6c4d6e1e47ed",
     recipient_digest:
         "Word([17101642633630574770, 9547937849495022824, 12677163261586172309, 698503456202579577])",
     attachments_commitment:
-        "Word([4949583752620300865, 7500478060129315829, 10267484878387155575, 9470432395702943070])",
-    serialized: "811 bytes, digest Word([10471099779364619457, 6168766060064259894, 16560332522768614433, 15073590930212756789])",
-    attachments: "[scheme=4 words=15, scheme=2 words=1]",
+        "Word([353043364000201756, 2103906947509450114, 2847978362983062168, 17438370209489194753])",
+    serialized: "843 bytes, digest Word([3409363603982749820, 856235984904915436, 231700699609315449, 6802710818684486381])",
+    attachments: "[scheme=4 words=16, scheme=2 words=1]",
 };
 
 /// `mi-pos-hookdata` (ten bytes of hookData) + the `att-2` attestation.
 const GOLDEN_HOOKDATA: Anchors = Anchors {
     vector: "mi-pos-hookdata",
-    note_id: "0x12597e7eed8dc9f0508cfd44dbb067f011a5e3b3ce5d22c76cf81fdaddcb59ff",
-    nullifier: "0x7c8b522fa6f63bee062fa2042ae19d7e7703bc13b13d38dbff4ea9c3bc3ebb8f",
+    note_id: "0x2150740020cdb31c9c25e4e26f2855b11c11c95e3b9ad5a91a3a082cac1d52cf",
+    nullifier: "0xe2212b584344f472e22dec7a78896eb72dfdfd8b8f8522691ef9f60827b4bf7c",
     recipient_digest:
         "Word([14336207517285597793, 11319399176307508164, 10304422099777048793, 10404191312535058985])",
     attachments_commitment:
-        "Word([4867247121985007125, 16180524918100935745, 15793036598251666395, 3519371683115730640])",
-    serialized: "843 bytes, digest Word([10496780849223666835, 15131099219449228365, 18280214607657113103, 11914361921053238498])",
-    attachments: "[scheme=4 words=16, scheme=2 words=1]",
+        "Word([17867121675036495872, 14584486229891685892, 2103155763186269017, 7340241149790238384])",
+    serialized: "875 bytes, digest Word([14769470311562535680, 15195218275371400698, 224567637139185212, 8523678824630282860])",
+    attachments: "[scheme=4 words=17, scheme=2 words=1]",
 };
 
 /// Looks a family row up by id, so a renamed or removed vector fails loudly rather than silently

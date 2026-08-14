@@ -59,7 +59,6 @@ use miden_standards::account::policies::{
 };
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::interop::eth::EthAddress;
 use miden_standards::note::BurnNote;
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::StandardsLib;
@@ -70,7 +69,7 @@ use xusdc_encoding::account::xreserve::{
     ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::DepositIntent;
+use xusdc_encoding::xreserve::encoding::{DepositIntent, LocalChainAddress};
 
 // Attestation fixtures — deterministic secp256k1 keys and signatures generated IN-TEST (the
 // canonical vector artifact is untouched), mirroring the `gen_vectors` att_* helpers: k256 the
@@ -102,9 +101,10 @@ pub const TEST_SOURCE_DOMAIN: u32 = 3;
 
 /// Test `xreserve_contract` source-chain address (sequential distinct bytes) — the third
 /// build-seeded domain-config field the production fixtures pass to
-/// `XReserveStablecoinBuilder::new`.
-pub fn test_xreserve_contract() -> EthAddress {
-    EthAddress::new(core::array::from_fn(|i| 0x10 + i as u8))
+/// `XReserveStablecoinBuilder::new`. Its leading bytes are non-zero, so the fixture is a
+/// source-chain address no EVM chain could produce.
+pub fn test_xreserve_contract() -> LocalChainAddress {
+    LocalChainAddress::new(core::array::from_fn(|i| 0x10 + i as u8))
 }
 
 /// The production mint note over a RAW Circle payload, built exactly the way the relayer builds

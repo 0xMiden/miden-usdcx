@@ -20,15 +20,17 @@
 //! or off-chain pre-validation would pass work to the chain that then fails.
 //!
 //! Decoding also NARROWS every field to the domain type it has to hold for the deposit to be
-//! mintable at all: the bytes32 identifiers to account ids, the source-chain fields to EVM
-//! addresses, and the two uint256 amounts to the units the faucet mints in. Circle's encoding
-//! leaves those fields open — `remoteToken` and `remoteRecipient` are opaque bytes32 there, and how
-//! a Miden AccountId packs into one is still an open decision (`DEV-10`), as is whether every
-//! source domain keeps `localToken` / `localDepositor` address-shaped (`Q-EVM-ADDR-1`). Those stay
-//! open as LAYOUT questions. What is not open is that a deposit whose identifiers do not read as
-//! account ids under the shipped layout cannot be minted under any of them: the faucet mints to an
-//! account id or not at all. Refusing it here costs nothing and gives the rejection a name, while a
-//! later layout decision changes only the packaging these conversions apply.
+//! mintable at all: the bytes32 identifiers to account ids, and the two uint256 amounts to the
+//! units the faucet mints in. Circle's encoding leaves the identifier fields open — `remoteToken`
+//! and `remoteRecipient` are opaque bytes32 there, and how a Miden AccountId packs into one is
+//! still an open decision (`DEV-10`). That stays open as a LAYOUT question. What is not open is
+//! that a deposit whose identifiers do not read as account ids under the shipped layout cannot be
+//! minted under any of them: the faucet mints to an account id or not at all. Refusing it here
+//! costs nothing and gives the rejection a name, while a later layout decision changes only the
+//! packaging these conversions apply.
+//!
+//! The two source-chain fields are NOT narrowed. They name a token and a depositor on a chain that
+//! need not be EVM-based, so they keep the wire form's full bytes32 as [`LocalChainAddress`].
 //!
 //! How large hookData may be is still Circle's to decide. The bound applied here is the protocol's
 //! own note-storage limit (`MAX_NOTE_STORAGE_ITEMS`, 1024 field elements — each storage "item" is
@@ -41,12 +43,13 @@ use miden_protocol::utils::serde::{
     ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable, SliceReader,
 };
 use miden_protocol::{Felt, Word, MAX_NOTE_STORAGE_ITEMS};
-use miden_standards::interop::eth::{EthAddress, EthAmount, EthEmbeddedAccountId};
+use miden_standards::interop::eth::{EthAmount, EthEmbeddedAccountId};
 
-use super::account_id::{EthAddressExt, EthEmbeddedAccountIdExt};
+use super::account_id::EthEmbeddedAccountIdExt;
 use super::amount::uint256_to_asset_amount;
 use super::bytes32::{bytes32_to_packed_felts, bytes32_to_storage_map_key};
 use super::error::EncodingError;
+use crate::note::xreserve_mint::XUSDC_MINT_TRANSPORT_HOOK_DATA_MAX_LEN;
 
 // WIRE-SHAPE CONSTANTS
 // ================================================================================================
@@ -55,15 +58,13 @@ use super::error::EncodingError;
 pub const BYTES_PER_PACKED_FELT: usize = 4;
 
 /// A bytes32 wire field, and the widths of the values carried right-aligned inside one: an
-/// AccountId as two big-endian u64s, a 20-byte EVM address, an `AssetAmount` as a big-endian u64.
+/// AccountId as two big-endian u64s, an `AssetAmount` as a big-endian u64.
 pub const BYTES32_LEN: usize = 32;
 pub const ACCOUNT_ID_BYTES: usize = 16;
-pub const EVM_ADDRESS_BYTES: usize = 20;
 pub const ASSET_AMOUNT_BYTES: usize = AssetAmount::SERIALIZED_SIZE;
 
-/// The same widths as packed field elements — the form the mint note's carried payload uses.
+/// A whole bytes32 as packed field elements — the form the mint note's carried payload uses.
 pub const BYTES32_PACKED_LIMBS: usize = BYTES32_LEN / BYTES_PER_PACKED_FELT;
-pub const EVM_ADDRESS_PACKED_LIMBS: usize = EVM_ADDRESS_BYTES / BYTES_PER_PACKED_FELT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DepositIntentField {
@@ -139,6 +140,35 @@ impl DepositNonce {
     }
 }
 
+// LOCAL CHAIN ADDRESS
+// ================================================================================================
+
+/// An address on the source chain — the deposited token, or the depositor.
+///
+/// It stays the wire form's opaque bytes32. The source chain need not be EVM-based, so no narrower
+/// shape can be assumed of it, and nothing here needs one: the faucet never compares or interprets
+/// either value, it only writes them back into the message the attestation signed. A chain whose
+/// addresses are wider than an EVM address is carried like any other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalChainAddress([u8; BYTES32_LEN]);
+
+impl LocalChainAddress {
+    /// Wraps a raw address. Any 32 bytes are one — the faucet places no structure on them.
+    pub const fn new(bytes: [u8; BYTES32_LEN]) -> Self {
+        Self(bytes)
+    }
+
+    /// The raw 32 bytes.
+    pub const fn as_bytes(&self) -> &[u8; BYTES32_LEN] {
+        &self.0
+    }
+
+    /// The 8 u32-LE-packed limbs the mint note's payload carries.
+    pub fn to_packed_felts(&self) -> [Felt; BYTES32_PACKED_LIMBS] {
+        bytes32_to_packed_felts(&self.0)
+    }
+}
+
 // HOOK DATA
 // ================================================================================================
 
@@ -151,11 +181,12 @@ impl DepositNonce {
 pub struct HookData(Vec<u8>);
 
 impl HookData {
-    /// The hookData bound: the packed preimage must stay within the protocol's note-storage item
-    /// limit. The faucet's staging region is sized to the same number, so a payload that passes
-    /// here always fits on-chain. The exact cap Circle wants is still OPEN (`DEV-6`).
-    pub const MAX_LEN: usize =
-        (MAX_NOTE_STORAGE_ITEMS - DepositIntent::HEADER_NUM_FELTS) * BYTES_PER_PACKED_FELT;
+    /// The hookData bound: whatever the mint transport that delivers the deposit can carry. That is
+    /// the tighter of the two ceilings hookData has to pass through — the other being the rebuilt
+    /// preimage's own staging region, which the assertion below keeps in range. A payload that
+    /// passes here therefore fits on-chain at both ends. The exact cap Circle wants is still OPEN
+    /// (`DEV-6`).
+    pub const MAX_LEN: usize = XUSDC_MINT_TRANSPORT_HOOK_DATA_MAX_LEN;
 
     /// Wraps hookData bytes.
     ///
@@ -191,6 +222,15 @@ impl HookData {
     }
 }
 
+// The transport bound above is only the tighter ceiling as long as the rebuilt preimage — a longer
+// fixed prefix than the transport's, plus the same hookData — still fits the faucet's staging
+// region. If a future header or transport change inverts that, `MAX_LEN` is on the wrong side.
+const _: () = assert!(
+    DepositIntent::HEADER_NUM_FELTS + HookData::MAX_LEN / BYTES_PER_PACKED_FELT
+        <= MAX_NOTE_STORAGE_ITEMS,
+    "the rebuilt preimage of a max-length hookData must fit the protocol's note-storage limit"
+);
+
 // DEPOSIT INTENT HEADER
 // ================================================================================================
 
@@ -205,8 +245,8 @@ pub struct DepositIntentHeader {
     remote_domain: u32,
     remote_token: AccountId,
     remote_recipient: AccountId,
-    local_token: EthAddress,
-    local_depositor: EthAddress,
+    local_token: LocalChainAddress,
+    local_depositor: LocalChainAddress,
     max_fee: AssetAmount,
     nonce: DepositNonce,
 }
@@ -241,12 +281,12 @@ impl DepositIntentHeader {
     }
 
     /// The deposited token on the source chain.
-    pub fn local_token(&self) -> EthAddress {
+    pub fn local_token(&self) -> LocalChainAddress {
         self.local_token
     }
 
     /// The depositor on the source chain.
-    pub fn local_depositor(&self) -> EthAddress {
+    pub fn local_depositor(&self) -> LocalChainAddress {
         self.local_depositor
     }
 
@@ -286,8 +326,8 @@ impl DepositIntentHeader {
             remote_domain: be_u32(&bytes, DepositIntentField::RemoteDomain),
             remote_token: account_id(&bytes, DepositIntentField::RemoteToken)?,
             remote_recipient: account_id(&bytes, DepositIntentField::RemoteRecipient)?,
-            local_token: evm_address(local_token, DepositIntentField::LocalToken)?,
-            local_depositor: evm_address(local_depositor, DepositIntentField::LocalDepositor)?,
+            local_token: LocalChainAddress::new(local_token),
+            local_depositor: LocalChainAddress::new(local_depositor),
             max_fee: reduce(
                 bytes32_at(&bytes, DepositIntentField::MaxFee),
                 DepositIntentField::MaxFee,
@@ -324,12 +364,12 @@ impl Serializable for DepositIntentHeader {
         write_bytes32(
             &mut bytes,
             DepositIntentField::LocalToken,
-            &self.local_token.to_bytes32(),
+            self.local_token.as_bytes(),
         );
         write_bytes32(
             &mut bytes,
             DepositIntentField::LocalDepositor,
-            &self.local_depositor.to_bytes32(),
+            self.local_depositor.as_bytes(),
         );
         write_bytes32(&mut bytes, DepositIntentField::MaxFee, &widen(self.max_fee));
         write_bytes32(&mut bytes, DepositIntentField::Nonce, self.nonce.as_bytes());
@@ -522,14 +562,6 @@ fn account_id(
     field: DepositIntentField,
 ) -> Result<AccountId, EncodingError> {
     Ok(EthEmbeddedAccountId::try_from_bytes32(bytes32_at(bytes, field))?.into_account_id())
-}
-
-/// Narrows a bytes32 field to the EVM address it is expected to carry (`Q-EVM-ADDR-1`).
-fn evm_address(
-    bytes: [u8; BYTES32_LEN],
-    field: DepositIntentField,
-) -> Result<EthAddress, EncodingError> {
-    EthAddress::try_from(bytes).map_err(|_| EncodingError::FieldNotEvmAddress { field })
 }
 
 /// Writes a 4-byte big-endian wire field at its layout offset.

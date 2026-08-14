@@ -49,10 +49,9 @@ use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::{
     BlocklistManager, BurnPolicy, MintPolicy, TokenPolicyManager, TransferPolicy,
 };
-use miden_standards::interop::eth::EthAddress;
 
 use crate::account::xreserve::XReserveAdminAuthority;
-use crate::xreserve::encoding::{bytes32_to_packed_felts, EthAddressExt};
+use crate::xreserve::encoding::{bytes32_to_packed_felts, LocalChainAddress};
 
 mod construction;
 mod error;
@@ -113,7 +112,7 @@ pub const USDCX_DECIMALS: u8 = 6;
 struct DomainConfigSeed {
     domain: u32,
     source_domain: u32,
-    xreserve_contract: EthAddress,
+    xreserve_contract: LocalChainAddress,
 }
 
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library
@@ -157,7 +156,7 @@ pub struct XReserveStablecoinBuilder {
     /// at composition time as `[source_domain, 0, 0, 0]`.
     source_domain: u32,
     /// The xReserve contract's source-chain address.
-    xreserve_contract: EthAddress,
+    xreserve_contract: LocalChainAddress,
 }
 
 impl XReserveStablecoinBuilder {
@@ -199,7 +198,7 @@ impl XReserveStablecoinBuilder {
         blocklist_manager_holder: AccountId,
         domain: u32,
         source_domain: u32,
-        xreserve_contract: EthAddress,
+        xreserve_contract: LocalChainAddress,
     ) -> Result<Self, XReserveStablecoinBuilderError> {
         Ok(Self {
             faucet: build_usdcx_faucet(max_supply, token_supply)?,
@@ -324,7 +323,7 @@ impl XReserveStablecoinBuilder {
         let lo_name = XReserveComponent::xreserve_contract_lo_slot();
         let scalar_word =
             |value: u32| Word::from([Felt::from(value), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-        let xrc = bytes32_to_packed_felts(&seed.xreserve_contract.to_bytes32());
+        let xrc = bytes32_to_packed_felts(seed.xreserve_contract.as_bytes());
         let hi_word = Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]);
         let lo_word = Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]);
         let slots = self

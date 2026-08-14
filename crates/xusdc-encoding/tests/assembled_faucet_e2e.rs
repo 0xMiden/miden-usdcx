@@ -44,7 +44,7 @@ use miden_protocol::errors::MasmError;
 use miden_protocol::note::{Note, NoteId, NoteTag, NoteType};
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
-use miden_standards::interop::eth::{EthAddress, EthEmbeddedAccountId};
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_standards::note::{P2idNote, P2idNoteStorage, RbacAction, RbacActionNote};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
@@ -57,8 +57,8 @@ use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG
 use xusdc_encoding::note::xreserve_mint::DepositAttestation;
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
-    bytes32_to_packed_felts, bytes32_to_storage_map_key, EthAddressExt, Signature,
-    XReserveBurnItems,
+    bytes32_to_packed_felts, bytes32_to_storage_map_key, DepositIntent, LocalChainAddress,
+    Signature, XReserveBurnItems,
 };
 
 // ACTORS (the builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3),
@@ -86,8 +86,8 @@ fn stranger() -> AccountId {
 // the build-seeded TEST_DOMAIN / TEST_SOURCE_DOMAIN / test_xreserve_contract() come from support)
 // ================================================================================================
 
-// the DC-14 rows are the ones whose localToken / localDepositor are address-shaped,
-// which the mint transport requires
+// the DC-14 rows are the ones the mint transport can carry; their localToken / localDepositor are
+// deliberately NOT address-shaped, so every mint below is a non-EVM source chain's deposit
 const BASE_VECTOR: &str = "mi-pos-empty-hookdata";
 
 /// The attested wire amount of BOTH lifecycle mints. Under the provisional identity scale
@@ -123,6 +123,31 @@ fn mi(id: &str) -> &'static MiVector {
         .iter()
         .find(|v| v.id == id)
         .unwrap_or_else(|| panic!("canonical artifact is missing mp vector {id}"))
+}
+
+/// The deposit every mint in this file is built from names a source chain whose addresses do not
+/// fit an EVM address, and the faucet mints it anyway.
+///
+/// This is what the widened `localToken` / `localDepositor` buy. It is asserted here rather than
+/// left implicit in the artifact because the whole end-to-end claim — that a non-EVM source chain
+/// is mintable — rests on the payload these lifecycle mints actually carry. Narrowing the fixture
+/// back to a padded 20-byte address would leave every test in this file passing while silently
+/// retiring the coverage.
+#[test]
+fn the_lifecycle_deposit_names_a_non_evm_source_chain() -> Result<()> {
+    let intent = DepositIntent::try_from(mi(BASE_VECTOR).payload().as_slice())?;
+    for (field, value) in [
+        ("localToken", intent.header().local_token()),
+        ("localDepositor", intent.header().local_depositor()),
+    ] {
+        assert_ne!(
+            value.as_bytes()[..12],
+            [0u8; 12],
+            "{field} must carry bytes an EVM address could never occupy, or these mints prove \
+             nothing about a non-EVM source chain"
+        );
+    }
+    Ok(())
 }
 
 /// The canonical accept payload with amount/maxFee spliced, `remoteRecipient` REPLACED by the REAL
@@ -428,7 +453,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // seeded role delegation, the stock MinBurnAmount builder-default floor.
     let faucet0 = committed(&pf.mock_chain, faucet_id)?;
     let words0 = read_domain_config_words(&faucet0)?;
-    let xrc_felts = bytes32_to_packed_felts(&test_xreserve_contract().to_bytes32());
+    let xrc_felts = bytes32_to_packed_felts(test_xreserve_contract().as_bytes());
     assert_eq!(
         words0[0],
         Word::from([TEST_DOMAIN, 0, 0, 0]),
@@ -464,7 +489,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let stored_container = xusdc_encoding::xreserve::encoding::packed_felts_to_bytes32(&stored_xrc)
         .expect("S0: build-seeded xreserve_contract limbs are valid u32s (fail-closed inverse)");
     assert_eq!(
-        EthAddress::try_from(stored_container).expect("S0: the stored container is left-padded"),
+        LocalChainAddress::new(stored_container),
         test_xreserve_contract(),
         "S0: fail-closed bytes32 round-trip == the input xreserve_contract"
     );

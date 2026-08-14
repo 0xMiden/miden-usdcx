@@ -16,7 +16,6 @@ use miden_protocol::asset::AssetAmount;
 use miden_protocol::note::Note;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
-use miden_standards::interop::eth::EthAddress;
 use support::*;
 use xusdc_encoding::account::xreserve::{XReserveComponent, ATTESTATION_MINT_POLICY_PROC_PATH};
 use xusdc_encoding::note::xreserve_admin::{
@@ -28,8 +27,8 @@ use xusdc_encoding::note::xreserve_mint::{
     DepositAttestation, XUsdcMintNote, XUsdcMintNoteStorage,
 };
 use xusdc_encoding::xreserve::encoding::{
-    DepositIntent, DepositIntentHeader, DepositNonce, HookData, MintIntent, Signature,
-    XReserveBurnItems,
+    DepositIntent, DepositIntentHeader, DepositNonce, HookData, LocalChainAddress, MintIntent,
+    Signature, XReserveBurnItems,
 };
 
 fn note_rng(seed: u64) -> RandomCoin {
@@ -198,8 +197,8 @@ fn mint_note_builder_takes_typed_deposit_intent() -> Result<()> {
 
 #[test]
 fn crate_root_and_account_root_build_faucet_account_compose_an_account() {
-    // Crate-root export (`xusdc_encoding::build_faucet_account`), taking the typed `EthAddress`
-    // domain-config address.
+    // Crate-root export (`xusdc_encoding::build_faucet_account`), taking the typed
+    // `LocalChainAddress` domain-config address.
     let account: Account = xusdc_encoding::build_faucet_account(
         [9u8; 32],
         AssetAmount::new(1_000_000).expect("valid max supply"),
@@ -247,8 +246,8 @@ fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() -> Resul
 
     // A DepositIntentHeader is built through its own builder, each field in the domain type the
     // deposit has to hold — no raw wire field is left to set.
-    let local_token = EthAddress::new([2u8; 20]);
-    let local_depositor = EthAddress::new([3u8; 20]);
+    let local_token = LocalChainAddress::new([2u8; 32]);
+    let local_depositor = LocalChainAddress::new([3u8; 32]);
     let amount = AssetAmount::new(1_000)?;
     let header = DepositIntentHeader::builder()
         .amount(amount)

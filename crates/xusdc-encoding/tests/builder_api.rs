@@ -25,7 +25,7 @@ use xusdc_encoding::account::xreserve::{
     XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE,
     DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::xreserve::encoding::{bytes32_to_packed_felts, EthAddressExt};
+use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
 
 /// The standard production builder: the seeded principal ids (owner = id(1), DOM_PAUSER = id(2),
 /// DOM_MANAGER = id(3), BLK_MANAGER = id(4)) plus the build-seeded domain config.
@@ -216,11 +216,11 @@ fn build_seeds_the_domain_config_slots() -> Result<()> {
         Word::from([TEST_SOURCE_DOMAIN, 0, 0, 0]),
         "the source_domain slot must hold the build-seeded [source_domain, 0, 0, 0]"
     );
-    let xrc = bytes32_to_packed_felts(&test_xreserve_contract().to_bytes32());
+    let xrc = bytes32_to_packed_felts(test_xreserve_contract().as_bytes());
     assert_eq!(
         slot(XReserveComponent::xreserve_contract_hi_slot())?,
         Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]),
-        "the xreserve_contract_hi slot must hold the packed container bytes 0..16"
+        "the xreserve_contract_hi slot must hold the packed address bytes 0..16"
     );
     assert_eq!(
         slot(XReserveComponent::xreserve_contract_lo_slot())?,
@@ -373,8 +373,9 @@ fn production_components_carry_mutability_config_slot() -> Result<()> {
 /// POSITIVE shape: the production composition carries EXACTLY ONE component whose code is the
 /// installed xreserve library, EXACTLY ONE policy-manager component, and EXACTLY ONE each of the
 /// stock `MinBurnAmount` + `BasicBlocklist` companions — in the pinned install order
-/// [faucet, Pausable, policy manager, xreserve, BasicBlocklist, MinBurnAmount, PausableManager,
-/// BlocklistManager, RBAC, Authority]. A duplicate xreserve copy would hard-reject the account
+/// [faucet, Pausable, policy manager, BasicBlocklist, MinBurnAmount, xreserve, PausableManager,
+/// BlocklistManager, RBAC, Authority]. The three companions sit in procedure-root map order, so
+/// editing the xreserve MASM can permute them. A duplicate xreserve copy would hard-reject the account
 /// build with `DuplicateStorageSlotName`, so this is the build-time tripwire for that failure.
 #[test]
 fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> {
@@ -431,16 +432,16 @@ fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> 
         "component 2 must be the policy-manager component"
     );
     assert!(
-        components[3].component_code().as_package() == xreserve_code.as_package(),
-        "component 3 must be the xreserve component"
+        components[3].component_code().as_package() == BasicBlocklist::code().as_package(),
+        "component 3 must be the BasicBlocklist companion"
     );
     assert!(
-        components[4].component_code().as_package() == BasicBlocklist::code().as_package(),
-        "component 4 must be the BasicBlocklist companion"
+        components[4].component_code().as_package() == MinBurnAmount::code().as_package(),
+        "component 4 must be the stock MinBurnAmount companion"
     );
     assert!(
-        components[5].component_code().as_package() == MinBurnAmount::code().as_package(),
-        "component 5 must be the stock MinBurnAmount companion"
+        components[5].component_code().as_package() == xreserve_code.as_package(),
+        "component 5 must be the xreserve component"
     );
     Ok(())
 }

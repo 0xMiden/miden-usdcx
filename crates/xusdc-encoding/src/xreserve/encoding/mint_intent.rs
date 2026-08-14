@@ -17,12 +17,11 @@ use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::utils::packed_u32_elements_to_bytes;
 use miden_protocol::Felt;
-use miden_standards::interop::eth::EthAddress;
 
 use super::bytes32::packed_felts_to_bytes32;
 use super::deposit_intent::{
     DepositIntent, DepositIntentField, DepositIntentHeader, DepositNonce, HookData,
-    BYTES32_PACKED_LIMBS, BYTES_PER_PACKED_FELT, EVM_ADDRESS_PACKED_LIMBS,
+    LocalChainAddress, BYTES32_LEN, BYTES32_PACKED_LIMBS, BYTES_PER_PACKED_FELT,
 };
 use super::error::EncodingError;
 
@@ -37,8 +36,8 @@ use super::error::EncodingError;
 #[derive(Debug, Clone, PartialEq, Eq, bon::Builder)]
 pub struct MintIntent {
     nonce: DepositNonce,
-    local_token: EthAddress,
-    local_depositor: EthAddress,
+    local_token: LocalChainAddress,
+    local_depositor: LocalChainAddress,
     remote_recipient: AccountId,
     max_fee: AssetAmount,
     hook_data: HookData,
@@ -52,21 +51,20 @@ impl MintIntent {
     pub const NONCE_FELT_OFF: usize = 0;
 
     pub const LOCAL_TOKEN_FELT_OFF: usize = Self::NONCE_FELT_OFF + BYTES32_PACKED_LIMBS;
-    pub const LOCAL_DEPOSITOR_FELT_OFF: usize =
-        Self::LOCAL_TOKEN_FELT_OFF + EVM_ADDRESS_PACKED_LIMBS;
+    pub const LOCAL_DEPOSITOR_FELT_OFF: usize = Self::LOCAL_TOKEN_FELT_OFF + BYTES32_PACKED_LIMBS;
 
     /// The recipient is encoded as two felts.
     pub const REMOTE_RECIPIENT_FELT_OFF: usize =
-        Self::LOCAL_DEPOSITOR_FELT_OFF + EVM_ADDRESS_PACKED_LIMBS;
+        Self::LOCAL_DEPOSITOR_FELT_OFF + BYTES32_PACKED_LIMBS;
     pub const REMOTE_RECIPIENT_SUFFIX_FELT_OFF: usize = Self::REMOTE_RECIPIENT_FELT_OFF + 1;
 
     pub const MAX_FEE_FELT_OFF: usize = Self::REMOTE_RECIPIENT_FELT_OFF + Self::ACCOUNT_ID_FELTS;
     /// maxFee is a single `AssetAmount` felt.
     pub const HOOK_DATA_LEN_FELT_OFF: usize = Self::MAX_FEE_FELT_OFF + 1;
 
-    /// The payload's 22 content felts padded to the word boundary. hookData follows immediately, so
-    /// this is also the offset of the first packed hookData felt.
-    pub const NUM_FELTS: usize = 24;
+    /// The payload's content felts, which land on the word boundary exactly. hookData follows
+    /// immediately, so this is also the offset of the first packed hookData felt.
+    pub const NUM_FELTS: usize = Self::HOOK_DATA_LEN_FELT_OFF + 1;
 
     // COMPRESS
     // --------------------------------------------------------------------------------------------
@@ -139,19 +137,18 @@ impl MintIntent {
     // FELT ENCODING
     // --------------------------------------------------------------------------------------------
 
-    /// The felt encoding: the 24 fixed felts followed by the packed hookData.
+    /// The felt encoding: the fixed felts followed by the packed hookData.
     ///
     /// Word padding of the hookData tail is not done here.
     pub fn to_elements(&self) -> Vec<Felt> {
         let mut out = Vec::with_capacity(Self::NUM_FELTS);
         out.extend_from_slice(&self.nonce.to_packed_felts());
-        out.extend(self.local_token.to_elements());
-        out.extend(self.local_depositor.to_elements());
+        out.extend_from_slice(&self.local_token.to_packed_felts());
+        out.extend_from_slice(&self.local_depositor.to_packed_felts());
         out.push(self.remote_recipient.prefix().as_felt());
         out.push(self.remote_recipient.suffix());
         out.push(Felt::from(self.max_fee));
         out.push(Felt::from(self.hook_data.len_u32()));
-        out.resize(Self::NUM_FELTS, Felt::ZERO);
         out.extend(self.hook_data.to_packed_elements());
         out
     }
@@ -174,27 +171,20 @@ impl MintIntent {
         if hook_data_felts != (hook_data_len as usize).div_ceil(BYTES_PER_PACKED_FELT) {
             return Err(EncodingError::LengthMismatch);
         }
-        // the payload block is padded to the word boundary; a non-zero pad is a payload this
-        // codec did not produce, and on-chain it would ride inside the hash-committed attachment
-        // without ever being read
-        for felt in &felts[Self::HOOK_DATA_LEN_FELT_OFF + 1..Self::NUM_FELTS] {
-            if felt.as_canonical_u64() != 0 {
-                return Err(EncodingError::LengthMismatch);
-            }
-        }
-
-        let nonce_limbs: [Felt; BYTES32_PACKED_LIMBS] = felts
-            [Self::NONCE_FELT_OFF..Self::NONCE_FELT_OFF + BYTES32_PACKED_LIMBS]
-            .try_into()
-            .expect("the length check above guarantees the window");
 
         let mut hook_data = unpack_bytes(&felts[Self::NUM_FELTS..])?;
         hook_data.truncate(hook_data_len as usize);
 
         Ok(Self {
-            nonce: DepositNonce::new(packed_felts_to_bytes32(&nonce_limbs)?),
-            local_token: evm_address_from_felts(felts, Self::LOCAL_TOKEN_FELT_OFF)?,
-            local_depositor: evm_address_from_felts(felts, Self::LOCAL_DEPOSITOR_FELT_OFF)?,
+            nonce: DepositNonce::new(bytes32_at_felts(felts, Self::NONCE_FELT_OFF)?),
+            local_token: LocalChainAddress::new(bytes32_at_felts(
+                felts,
+                Self::LOCAL_TOKEN_FELT_OFF,
+            )?),
+            local_depositor: LocalChainAddress::new(bytes32_at_felts(
+                felts,
+                Self::LOCAL_DEPOSITOR_FELT_OFF,
+            )?),
             remote_recipient: AccountId::try_from_elements(
                 felts[Self::REMOTE_RECIPIENT_FELT_OFF + 1],
                 felts[Self::REMOTE_RECIPIENT_FELT_OFF],
@@ -216,11 +206,11 @@ impl MintIntent {
         self.nonce
     }
 
-    pub fn local_token(&self) -> EthAddress {
+    pub fn local_token(&self) -> LocalChainAddress {
         self.local_token
     }
 
-    pub fn local_depositor(&self) -> EthAddress {
+    pub fn local_depositor(&self) -> LocalChainAddress {
         self.local_depositor
     }
 
@@ -253,14 +243,12 @@ fn unpack_bytes(felts: &[Felt]) -> Result<Vec<u8>, EncodingError> {
     Ok(packed_u32_elements_to_bytes(felts))
 }
 
-/// Reads the 5-limb EVM address at a carried-payload offset.
-fn evm_address_from_felts(felts: &[Felt], offset: usize) -> Result<EthAddress, EncodingError> {
-    let bytes = unpack_bytes(&felts[offset..offset + EVM_ADDRESS_PACKED_LIMBS])?;
-    Ok(EthAddress::new(
-        bytes
-            .try_into()
-            .expect("five packed limbs are twenty bytes"),
-    ))
+/// Reads the bytes32 whose 8 packed limbs start at a carried-payload offset.
+fn bytes32_at_felts(felts: &[Felt], offset: usize) -> Result<[u8; BYTES32_LEN], EncodingError> {
+    let limbs: [Felt; BYTES32_PACKED_LIMBS] = felts[offset..offset + BYTES32_PACKED_LIMBS]
+        .try_into()
+        .expect("the caller's length check guarantees the window");
+    packed_felts_to_bytes32(&limbs)
 }
 
 // TESTS — TV-DUAL-6 (the Rust half; the MASM half is in tests/masm_mint_shell.rs)
@@ -360,13 +348,6 @@ mod tests {
                 MintIntent::from_deposit_intent(&intent, vec.faucet_id(), vec.remote_domain)
             });
             match vec.expected_variant.as_deref().expect("reject vector") {
-                "FieldNotEvmAddress" => {
-                    assert_matches!(
-                        result,
-                        Err(EncodingError::FieldNotEvmAddress { .. }),
-                        "vector {id}"
-                    )
-                }
                 "FieldNotAssetAmount" => {
                     assert_matches!(
                         result,
@@ -414,6 +395,32 @@ mod tests {
             ),
             Err(EncodingError::RemoteDomainMismatch { .. })
         );
+    }
+
+    /// A source-chain address that fills its whole bytes32 survives the transport.
+    ///
+    /// This is the case the carried payload used to be unable to express: it dropped each address's
+    /// leading 12 bytes on the assumption they were an EVM address's zero pad, so a source chain
+    /// with wider addresses was unmintable. Every byte must now come back, including the bytes that
+    /// pad would have covered.
+    #[test]
+    fn a_source_chain_address_wider_than_an_evm_address_round_trips() {
+        let vec = accepts().next().expect("an accept vector");
+        let wide = LocalChainAddress::new(core::array::from_fn(|i| 0xf0 ^ i as u8));
+        assert_ne!(wide.as_bytes()[..12], [0u8; 12], "not an EVM address");
+
+        let carried = MintIntent::builder()
+            .nonce(carried(vec).nonce())
+            .local_token(wide)
+            .local_depositor(wide)
+            .remote_recipient(vec.faucet_id())
+            .max_fee(vec.amount())
+            .hook_data(HookData::default())
+            .build();
+
+        let back = MintIntent::from_elements(&carried.to_elements()).expect("round trip");
+        assert_eq!(back.local_token(), wide);
+        assert_eq!(back.local_depositor(), wide);
     }
 
     /// A carried-felt run whose declared hookData length disagrees with the felts present is

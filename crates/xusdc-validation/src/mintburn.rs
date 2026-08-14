@@ -22,7 +22,7 @@ use miden_protocol::note::{
     NoteStorage, NoteTag, NoteType, PartialNoteMetadata,
 };
 use miden_protocol::{Felt, Word};
-use miden_standards::interop::eth::{EthAddress, EthEmbeddedAccountId};
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_standards::note::{
     MintNote, MintNoteStorage, NetworkAccountTarget, NoteExecutionHint, P2idNoteStorage,
 };
@@ -35,7 +35,8 @@ use xusdc_encoding::note::xreserve_mint::{
 use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::{
     bytes32_to_storage_map_key, deposit_intent_field_offset, deposit_intent_to_packed_felts,
-    parse_deposit_intent_header, DepositIntentField, EthEmbeddedAccountIdExt, XReserveBurnItems,
+    parse_deposit_intent_header, DepositIntentField, EthEmbeddedAccountIdExt, LocalChainAddress,
+    XReserveBurnItems,
 };
 
 use crate::actors::AttesterKey;
@@ -121,7 +122,7 @@ pub fn lnv2_domain_params() -> DomainParams {
     DomainParams {
         domain: MINT_DOMAIN,
         source_domain: 3,
-        xreserve_contract: EthAddress::new(core::array::from_fn(|i| 0x10 + i as u8)),
+        xreserve_contract: LocalChainAddress::new(core::array::from_fn(|i| 0x10 + i as u8)),
         // Legacy vector-token identifier bytes — no longer the fresh faucet's identifier (that is
         // the own-id fixpoint, derived at init). Kept so DomainParams stays fully populated.
         identifier_bytes: parse_hex32(&base_fields().remote_token_hex),

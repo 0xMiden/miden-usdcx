@@ -37,12 +37,6 @@ pub enum EncodingError {
     FieldNotAssetAmount {
         field: DepositIntentField,
     },
-    /// A bytes32 field the mint note carries as a 20-byte address holds something wider. Whether
-    /// every source domain Circle enables keeps these fields address-shaped is still Circle's to
-    /// confirm.
-    FieldNotEvmAddress {
-        field: DepositIntentField,
-    },
     /// The intent's `remoteToken` is not this faucet's account id.
     RemoteTokenMismatch,
     /// The intent's `remoteDomain` is not the domain the consuming faucet has configured. The
@@ -80,12 +74,6 @@ impl fmt::Display for EncodingError {
                 write!(
                     f,
                     "deposit intent field {field:?} is not a valid asset amount"
-                )
-            }
-            Self::FieldNotEvmAddress { field } => {
-                write!(
-                    f,
-                    "deposit intent field {field:?} is not a right-aligned evm address"
                 )
             }
             Self::RemoteTokenMismatch => {

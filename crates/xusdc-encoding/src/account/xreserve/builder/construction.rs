@@ -16,12 +16,12 @@ use miden_protocol::assembly::{Linkage, Path as MasmPath};
 use miden_protocol::asset::{AssetAmount, AssetCallbacks, TokenSymbol};
 use miden_protocol::transaction::TransactionKernel;
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
-use miden_standards::interop::eth::EthAddress;
 use miden_standards::StandardsLib;
 
 use super::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL,
 };
+use crate::xreserve::encoding::LocalChainAddress;
 
 // CONSTANTS
 // ================================================================================================
@@ -208,7 +208,7 @@ pub fn build_faucet_account(
     blocklist_manager_holder: AccountId,
     domain: u32,
     source_domain: u32,
-    xreserve_contract: EthAddress,
+    xreserve_contract: LocalChainAddress,
 ) -> Result<Account, XReserveStablecoinBuilderError> {
     XReserveStablecoinBuilder::new(
         max_supply,

@@ -34,21 +34,25 @@ const TOKEN_SUPPLY: u64 = 0;
 // The baseline composition anchors, as their stable `Debug`/`Display` renderings (captured from the
 // pre-change composition at SEED). Comparing the rendered strings sidesteps any felt-repr ambiguity.
 //
-// The storage anchor was RE-captured when the builder narrowed its `xreserve_contract` parameter
-// to a 20-byte `EthAddress`: the fixture's seeded value became that address in its left-padded
-// bytes32 container, so the seeded slot bytes moved with it. The code anchor was RE-captured when
-// the builder started installing the manager's companion components as the manager emits them.
+// Both anchors were RE-captured when the source-chain address fields widened to the wire form's
+// full bytes32: the storage anchor because the fixture's seeded `xreserve_contract` is now a
+// 32-byte value with no zero pad, and the code anchor because the mint intent's felt offsets and
+// the writer that fills them are part of the assembled xreserve library.
+//
+// They were re-captured again when the hookData copy moved to `miden::core::mem::memcopy_elements`:
+// any edit to the writer moves the mint procedure's root, which is both a code-commitment input and
+// a stored value (the policy manager's active/allowed mint-policy proc-root slots).
 //
 // The account id is the NEW-ACCOUNT derivation: ground from SEED over the composed code and
 // storage commitments, so it moves whenever either commitment moves (unlike the code commitment
 // and storage digest, which isolate their own layer). The initial commitment covers all three.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([4490039874996369928, 12849117963780719712, 8348349812765257897, 16422034054098951043])";
+    "Word([1965397932457840203, 11615078835370334159, 15021738195179192447, 2398804533562485505])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([2686342393791959322, 18296125387112714431, 12713893831410132138, 13782261319063673720])";
+    "Word([2537863917658537509, 2061244523521173199, 8342447969274466976, 13207010429281319074])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([17854539145076846593, 417133829943640013, 6543367670500429240, 7124201274121127695])";
-const GOLDEN_ACCOUNT_ID: &str = "0xfba6ea4c49258d312080b1a3875b2b";
+    "Word([10410798256944429975, 445522632396524098, 10074202432748276132, 5533664870815984770])";
+const GOLDEN_ACCOUNT_ID: &str = "0xa9e4514186143af124500b72860d82";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.

@@ -7,8 +7,8 @@ use miden_standards::interop::eth::AddressConversionError;
 
 use super::error::EncodingError;
 
-// Re-export these types so callers don't need to depend on miden-standards directly.
-pub use miden_standards::interop::eth::{EthAddress, EthEmbeddedAccountId};
+// Re-export this type so callers don't need to depend on miden-standards directly.
+pub use miden_standards::interop::eth::EthEmbeddedAccountId;
 
 /// The inverse bytes32 decoding of [`EthEmbeddedAccountId::to_bytes32`].
 pub trait EthEmbeddedAccountIdExt: Sized {
@@ -41,20 +41,6 @@ impl EthEmbeddedAccountIdExt for EthEmbeddedAccountId {
             // the source cannot be carried.
             _ => EncodingError::NonCanonicalAccountId,
         })
-    }
-}
-
-/// The inverse bytes32 encoding of `EthAddress::try_from([u8; 32])`.
-pub trait EthAddressExt {
-    /// The bytes32 container an EVM address travels in: 12 zero bytes then the 20 address bytes.
-    fn to_bytes32(&self) -> [u8; 32];
-}
-
-impl EthAddressExt for EthAddress {
-    fn to_bytes32(&self) -> [u8; 32] {
-        let mut bytes = [0u8; 32];
-        bytes[12..].copy_from_slice(self.as_bytes());
-        bytes
     }
 }
 
@@ -157,19 +143,6 @@ mod tests {
             EthEmbeddedAccountId::try_from_bytes32(b),
             Err(EncodingError::AccountIdOutOfRange),
             "pad byte {pad_index}"
-        );
-    }
-
-    /// The EVM-address container round-trips through the stock decode, and leaves the 12 leading
-    /// bytes zero — the padding the stock `TryFrom<[u8; 32]>` insists on.
-    #[test]
-    fn eth_address_bytes32_container_round_trips() {
-        let address = EthAddress::new(core::array::from_fn(|i| 0x10 + i as u8));
-        let bytes32 = address.to_bytes32();
-        assert_eq!(&bytes32[..12], &[0u8; 12], "the leading pad must be zero");
-        assert_eq!(
-            EthAddress::try_from(bytes32).expect("a padded container decodes"),
-            address
         );
     }
 

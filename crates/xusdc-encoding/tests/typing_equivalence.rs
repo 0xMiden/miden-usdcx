@@ -13,11 +13,11 @@
 
 use assert_matches::assert_matches;
 use miden_protocol::utils::serde::{Deserializable, DeserializationError, Serializable};
-use miden_standards::interop::eth::{EthAddress, EthEmbeddedAccountId};
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use xusdc_encoding::vectors::{load, parse_hex32};
 use xusdc_encoding::xreserve::encoding::{
-    bytes32_to_packed_felts, DepositIntent, EncodingError, EthAddressExt, EthEmbeddedAccountIdExt,
-    Signature, XReserveBurnItems,
+    bytes32_to_packed_felts, DepositIntent, EncodingError, EthEmbeddedAccountIdExt,
+    LocalChainAddress, Signature, XReserveBurnItems,
 };
 
 // Signature
@@ -189,22 +189,19 @@ fn account_id_bytes32_form_is_stock_and_byte_identical() {
 // The EVM-address bytes32 container the domain config is seeded through
 // ================================================================================================
 
-/// A source-chain address seeds `xreserve_contract` through its bytes32 container, so the felts the
-/// builder writes are the shared `bytes32_to_packed_felts` packing of that container — the same
-/// packing every other bytes32 goes through — and the stock decode recovers the address.
+/// A source-chain address seeds `xreserve_contract` as its raw bytes32, so the felts the builder
+/// writes are the shared `bytes32_to_packed_felts` packing — the same packing every other bytes32
+/// goes through. The address here has non-zero leading bytes, which no EVM address has: a source
+/// chain wider than 20 bytes must survive the packing unchanged.
 #[test]
-fn eth_address_container_packs_like_the_shared_codec() {
-    let address = EthAddress::new(core::array::from_fn(|i| 0x10 + i as u8));
-    let container = address.to_bytes32();
+fn local_chain_address_packs_like_the_shared_codec() {
+    let bytes: [u8; 32] = core::array::from_fn(|i| 0x10 + i as u8);
+    let address = LocalChainAddress::new(bytes);
 
+    assert_ne!(bytes[..12], [0u8; 12], "the fixture must not be EVM-shaped");
     assert_eq!(
-        bytes32_to_packed_felts(&container).len(),
-        8,
-        "the container packs to the full 8 u32-LE limbs, not the address's 5"
-    );
-    assert_eq!(
-        EthAddress::try_from(container).expect("a padded container decodes"),
-        address,
-        "the container round-trips through the stock decode"
+        address.to_packed_felts(),
+        bytes32_to_packed_felts(&bytes),
+        "the address packs through the shared bytes32 codec, all 8 limbs of it"
     );
 }

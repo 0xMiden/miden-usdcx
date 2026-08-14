@@ -213,13 +213,11 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
 
 The identifier is not stored: the mint path **writes** the native faucet account id into the
 preimage as `remoteToken`, so there is nothing to compare and nothing that could have been seeded
-wrong. `xreserve_contract` is a source-chain EVM address, stored losslessly as the 8×u32-LE packed
-limbs of its bytes32 container across two value slots — the full container rather than the
-address's five limbs, because the field has no on-chain compare and off-chain services read the
-bytes32 back out of storage. `domain` and `source_domain` are u32 scalars in element 0 of their
-slot words. The three build-seeded fields are typed u32/`EthAddress` at the builder boundary
-(Rust-validated); a source domain whose addresses do not fit 20 bytes is inexpressible here, the
-same `Q-EVM-ADDR-1` assumption `DC-14` rests on.
+wrong. `xreserve_contract` is a source-chain address, stored as the 8×u32-LE packed limbs of its
+bytes32 across two value slots. `domain` and `source_domain` are u32 scalars in element 0 of their
+slot words. The three build-seeded fields are typed u32/`LocalChainAddress` at the builder
+boundary; the address keeps the wire form's full 32 bytes, so a source chain whose addresses are
+not EVM-shaped is expressible here — the same widening `DC-14` carries.
 
 ## 7. What is consumed from the encoding library
 
@@ -253,8 +251,7 @@ decision, never self-declared.
 Everything Circle still owns stays OPEN and is not marked approved: the AccountId↔bytes32
 encoding (DEV-10), the amount cap/scale (DEV-5), the `hookData` bound (DEV-6), the
 burn-evidence package (DEV-7), the relayer-fee design (DEV-8), the nonce keying
-(DEV-9), the assigned domain id (`Q-DOM-1`), the attester quorum (`Q-DA-QUORUM`), and the
-20-byte-EVM-address assumption the carried payload rests on (`Q-EVM-ADDR-1`). See the
+(DEV-9), the assigned domain id (`Q-DOM-1`), and the attester quorum (`Q-DA-QUORUM`). See the
 glossary and `docs/spec/ENCODING-COMPONENT-SPEC.md` for the encoding-side open decisions.
 
 Two of these now bind the **wire format** rather than just a validation rule, which changes what it

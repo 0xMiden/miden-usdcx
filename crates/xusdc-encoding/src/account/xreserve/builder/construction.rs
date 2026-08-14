@@ -71,8 +71,8 @@ pub struct XReserveComponent(AccountComponent);
 
 impl XReserveComponent {
     /// Assembles the shipped `xreserve` MASM library and binds it with its six declared storage
-    /// slots. The four domain-config value slots start zeroed (build-seeded by
-    /// [`XReserveStablecoinBuilder::with_domain_config`]) and the two registry maps start empty
+    /// slots. The four domain-config value slots start zeroed (build-seeded from the domain-config
+    /// parameters [`XReserveStablecoinBuilder::new`] takes) and the two registry maps start empty
     /// (`set_attester` and the mint path populate them). Assembly failures are invariants of the
     /// shipped source, so they panic rather than surfacing as a builder error (the same posture the
     /// admin-note script assembler takes).
@@ -135,18 +135,6 @@ impl XReserveComponent {
     /// Returns the [`StorageSlotName`] of the attester allowlist map.
     pub fn xreserve_attesters_slot() -> &'static StorageSlotName {
         &XRESERVE_ATTESTERS_SLOT_NAME
-    }
-
-    /// Returns the storage slots a supplied `xreserve` component must declare.
-    pub fn required_slots() -> [&'static StorageSlotName; 6] {
-        [
-            Self::domain_config_slot(),
-            Self::source_domain_config_slot(),
-            Self::xreserve_contract_hi_slot(),
-            Self::xreserve_contract_lo_slot(),
-            Self::used_nonces_slot(),
-            Self::xreserve_attesters_slot(),
-        ]
     }
 }
 
@@ -229,8 +217,10 @@ pub fn build_faucet_account(
         pauser_holder,
         manager_holder,
         blocklist_manager_holder,
+        domain,
+        source_domain,
+        xreserve_contract,
     )?
-    .with_domain_config(domain, source_domain, xreserve_contract)
     .build_account(init_seed)
 }
 

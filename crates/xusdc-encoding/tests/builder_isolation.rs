@@ -47,9 +47,11 @@ fn build_rejects_blk_manager_colliding_with_a_privileged_role(
         test_account_id(2), // DOM_PAUSER
         test_account_id(3), // DOM_MANAGER
         blk_manager,
+        TEST_DOMAIN,
+        TEST_SOURCE_DOMAIN,
+        test_xreserve_contract(),
     )
     .context("the fixed-identity USDCx faucet builds")?
-    .with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN, test_xreserve_contract())
     .build_components()
     .expect_err("a BLK_MANAGER holder colliding with a privileged role must be rejected");
     match err {
@@ -75,9 +77,11 @@ fn build_accepts_isolated_blk_manager() -> Result<()> {
         test_account_id(2),
         test_account_id(3),
         test_account_id(4), // distinct external BLK_MANAGER
+        TEST_DOMAIN,
+        TEST_SOURCE_DOMAIN,
+        test_xreserve_contract(),
     )
     .context("the fixed-identity USDCx faucet builds")?
-    .with_domain_config(TEST_DOMAIN, TEST_SOURCE_DOMAIN, test_xreserve_contract())
     .build_components()
     .context("a properly isolated BLK_MANAGER holder must build")?;
     Ok(())

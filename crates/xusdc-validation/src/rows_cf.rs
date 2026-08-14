@@ -36,11 +36,12 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::{Note, NoteType};
 use miden_protocol::{Felt, Word};
-use miden_standards::account::access::RoleBasedAccessControl;
+use miden_standards::account::access::{PausableStorage, RoleBasedAccessControl};
+use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::MinBurnAmount;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::P2idNote;
-use xusdc_encoding::account::xreserve::{DOM_PAUSER_ROLE, XRESERVE_ATTESTERS_SLOT_LABEL};
+use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
     XReserveGrantRoleNote, XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote,
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
@@ -107,26 +108,24 @@ fn word4(w: Word) -> Word4 {
     ]
 }
 
-fn value_slot(account: &Account, label: &str) -> Result<Word> {
-    let name = StorageSlotName::new(label).with_context(|| format!("slot label '{label}'"))?;
+fn value_slot(account: &Account, name: &StorageSlotName) -> Result<Word> {
     account
         .storage()
-        .get_item(&name)
-        .with_context(|| format!("reading value slot '{label}'"))
+        .get_item(name)
+        .with_context(|| format!("reading value slot '{name}'"))
 }
 
-fn map_item(account: &Account, label: &str, key: Word) -> Result<Word> {
-    let name = StorageSlotName::new(label).with_context(|| format!("slot label '{label}'"))?;
+fn map_item(account: &Account, name: &StorageSlotName, key: Word) -> Result<Word> {
     account
         .storage()
-        .get_map_item(&name, StorageMapKey::new(key))
-        .map_err(|e| anyhow::anyhow!("reading map slot '{label}': {e}"))
+        .get_map_item(name, StorageMapKey::new(key))
+        .map_err(|e| anyhow::anyhow!("reading map slot '{name}': {e}"))
 }
 
 fn attester_marker(account: &Account, commitment: Word) -> Result<Word4> {
     Ok(word4(map_item(
         account,
-        XRESERVE_ATTESTERS_SLOT_LABEL,
+        XReserveFaucetExtension::xreserve_attesters_slot(),
         commitment,
     )?))
 }
@@ -143,23 +142,17 @@ fn min_burn(account: &Account) -> Result<u64> {
 
 fn max_supply(account: &Account) -> Result<u64> {
     // token_config = [token_supply, max_supply, decimals, symbol].
-    Ok(
-        value_slot(account, "miden::standards::faucets::fungible::token_config")?[1]
-            .as_canonical_u64(),
-    )
+    Ok(value_slot(account, FungibleFaucet::token_config_slot())?[1].as_canonical_u64())
 }
 
 fn token_supply(account: &Account) -> Result<u64> {
-    Ok(
-        value_slot(account, "miden::standards::faucets::fungible::token_config")?[0]
-            .as_canonical_u64(),
-    )
+    Ok(value_slot(account, FungibleFaucet::token_config_slot())?[0].as_canonical_u64())
 }
 
 fn is_paused(account: &Account) -> Result<Word4> {
     Ok(word4(value_slot(
         account,
-        "miden::standards::access::pausable::is_paused",
+        PausableStorage::is_paused_slot(),
     )?))
 }
 

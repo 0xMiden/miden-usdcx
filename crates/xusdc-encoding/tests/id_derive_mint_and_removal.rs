@@ -29,7 +29,7 @@ use miden_standards::note::{
 };
 use support::mint_transport::*;
 use support::*;
-use xusdc_encoding::account::xreserve::{XReserveStablecoinBuilder, REQUIRED_XRESERVE_SLOT_LABELS};
+use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, XReserveStablecoinBuilder};
 use xusdc_encoding::note::xreserve_admin::{
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
@@ -105,7 +105,7 @@ async fn a_never_initialized_faucet_mints() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            USED_NONCES_SLOT_LABEL,
+            XReserveFaucetExtension::used_nonces_slot(),
             nonce_key_of_payload(&payload)
         )?,
         marker(),
@@ -267,16 +267,6 @@ fn the_composed_faucet_declares_no_identifier_slot() -> Result<()> {
         "reading the identifier slot must fail — the slot does not exist"
     );
     Ok(())
-}
-
-/// The builder's declared-slot contract no longer lists the identifier slot: a caller composing a
-/// faucet is not asked to declare a slot nothing reads.
-#[test]
-fn the_required_slot_contract_drops_the_identifier() {
-    assert!(
-        !REQUIRED_XRESERVE_SLOT_LABELS.contains(&IDENTIFIER_SLOT_LABEL),
-        "the identifier slot must not be a required xreserve slot"
-    );
 }
 
 // HELPERS

@@ -28,11 +28,6 @@ pub enum XReserveStablecoinBuilderError {
     /// The supplied `xreserve` component does not export the attestation mint policy procedure
     /// (assembly/path drift). Carries the expected path for diagnosis.
     AttestationPolicyProcNotFound,
-    /// The active burn policy does not resolve to the stock
-    /// `MinBurnAmount` — packaging cannot
-    /// ship a faucet whose burns bypass the floor predicate (the burn-side twin of the hard-wired
-    /// attestation mint gate).
-    MissingMinBurnAmountPolicy,
     /// The requested `min_burn_size` is below [`MIN_BURN_SIZE_FLOOR`]
     /// (= 1). The stock `MinBurnAmount` policy asserts only `min <= amount` and its stock setter
     /// accepts `0`, so a sub-floor seed would silently allow zero-amount burns;
@@ -43,20 +38,6 @@ pub enum XReserveStablecoinBuilderError {
     /// (`2^63 - 2^31`), so it is not a valid burn amount and cannot be seeded into
     /// the stock `MinBurnAmount` floor slot. Carries the offending value.
     MinBurnSizeExceedsMax(u64),
-    /// An explicit `with_active_burn_policy` override carries the stock `MinBurnAmount` root but a
-    /// companion floor that disagrees with the builder-validated `min_burn_size`, which would let a
-    /// same-root override smuggle a sub-floor value past that validation. `requested` is the
-    /// override's companion floor; `expected` the validated `min_burn_size`.
-    BurnPolicyFloorMismatch { requested: u64, expected: u64 },
-    /// The three build-seeded domain-config fields (`domain`, `source_domain`,
-    /// `xreserve_contract`) were not supplied — see
-    /// [`XReserveStablecoinBuilder::with_domain_config`](super::XReserveStablecoinBuilder::with_domain_config).
-    /// A build without them would ship a faucet whose domain compare reads an empty slot.
-    MissingDomainConfig,
-    /// The supplied `xreserve` component does not declare a required storage slot
-    /// ([`REQUIRED_XRESERVE_SLOT_LABELS`](super::REQUIRED_XRESERVE_SLOT_LABELS)); reads and writes
-    /// of a missing slot trap at runtime. Carries the missing slot's label.
-    MissingXReserveSlot(&'static str),
     /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with a privileged
     /// identity — the administrator, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The
     /// transfer-blocklist administrator must be an external entity with no other faucet-admin
@@ -70,23 +51,6 @@ pub enum XReserveStablecoinBuilderError {
     /// The burn-policy descriptor rejected its construction — the burn-slot twin of
     /// [`Self::MintPolicy`].
     BurnPolicy(BurnPolicyError),
-    /// The policy manager's companion components did not have the pinned shape at the composition
-    /// seam: the manager component first, then EXACTLY one xreserve-component copy (the custom
-    /// attestation mint policy), EXACTLY one stock `MinBurnAmount` companion (the burn floor), and
-    /// EXACTLY one `BasicBlocklist` companion (the transfer-blocklist policy shared by the send and
-    /// receive kinds). `found` is the FULL companion remainder the manager emitted; the
-    /// `*_recognized` counters say how many of those were each expected component, so a smuggled
-    /// foreign companion shows up as `found` exceeding their sum rather than hiding behind a
-    /// matching total, and a missing stock companion shows up in its own counter.
-    PolicyCompanionMismatch {
-        expected_xreserve: usize,
-        expected_min_burn: usize,
-        expected_blocklist: usize,
-        found: usize,
-        xreserve_recognized: usize,
-        min_burn_recognized: usize,
-        blocklist_recognized: usize,
-    },
 }
 
 impl fmt::Display for XReserveStablecoinBuilderError {
@@ -107,11 +71,6 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 "the xreserve component does not export the attestation mint policy procedure \
                  '{ATTESTATION_MINT_POLICY_PROC_PATH}'"
             ),
-            Self::MissingMinBurnAmountPolicy => write!(
-                f,
-                "active burn policy is not the stock MinBurnAmount; packaging cannot bypass the \
-                 minimum-burn floor predicate"
-            ),
             Self::MinBurnSizeBelowFloor(value) => write!(
                 f,
                 "min_burn_size {value} is below the floor {MIN_BURN_SIZE_FLOOR}; the stock \
@@ -123,21 +82,6 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 "min_burn_size {value} exceeds the maximum representable asset amount \
                  (AssetAmount::MAX = 2^63 - 2^31)"
             ),
-            Self::BurnPolicyFloorMismatch { requested, expected } => write!(
-                f,
-                "the active burn policy override carries a MinBurnAmount floor of {requested}, but \
-                 the validated min_burn_size is {expected}; an override may not diverge (nor lower) \
-                 the shipped burn floor"
-            ),
-            Self::MissingDomainConfig => write!(
-                f,
-                "the build-seeded domain config (domain, source_domain, xreserve_contract) was \
-                 not supplied; call with_domain_config before build_components (DEC-4)"
-            ),
-            Self::MissingXReserveSlot(label) => write!(
-                f,
-                "the xreserve component does not declare the required storage slot '{label}'"
-            ),
             Self::BlocklistManagerNotIsolated { collides_with } => write!(
                 f,
                 "the BLK_MANAGER holder (transfer-blocklist administrator) must be an external entity \
@@ -146,26 +90,6 @@ impl fmt::Display for XReserveStablecoinBuilderError {
             ),
             Self::MintPolicy(_) => write!(f, "mint policy descriptor construction failed"),
             Self::BurnPolicy(_) => write!(f, "burn policy descriptor construction failed"),
-            Self::PolicyCompanionMismatch {
-                expected_xreserve,
-                expected_min_burn,
-                expected_blocklist,
-                found,
-                xreserve_recognized,
-                min_burn_recognized,
-                blocklist_recognized,
-            } => write!(
-                f,
-                "token policy manager emitted an unexpected companion-component shape: expected \
-                 exactly {expected_xreserve} xreserve-component copy + {expected_min_burn} \
-                 MinBurnAmount companion + {expected_blocklist} BasicBlocklist companion after the \
-                 manager component; the remainder held {found} companions, {xreserve_recognized} \
-                 of them the installed xreserve component, {min_burn_recognized} the MinBurnAmount \
-                 companion, and {blocklist_recognized} the BasicBlocklist companion ({} foreign)",
-                found.saturating_sub(
-                    xreserve_recognized + min_burn_recognized + blocklist_recognized
-                )
-            ),
         }
     }
 }

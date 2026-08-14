@@ -481,15 +481,11 @@ pub fn committed(chain: &MockChain, id: AccountId) -> Result<Account> {
 }
 
 /// Reads one map-slot word from a committed/evolved account.
-pub fn read_map_word(account: &Account, slot_label: &str, key: Word) -> Result<Word> {
+pub fn read_map_word(account: &Account, slot_name: &StorageSlotName, key: Word) -> Result<Word> {
     account
         .storage()
-        .get_map_item(
-            &StorageSlotName::new(slot_label)
-                .with_context(|| format!("slot label {slot_label}"))?,
-            StorageMapKey::new(key),
-        )
-        .map_err(|e| anyhow::anyhow!("reading map slot {slot_label}: {e}"))
+        .get_map_item(slot_name, StorageMapKey::new(key))
+        .map_err(|e| anyhow::anyhow!("reading map slot {slot_name}: {e}"))
 }
 
 /// Asserts fail-closure after a rejected mint: the nonce unburned, the supply unraised.
@@ -498,7 +494,7 @@ pub fn assert_no_effects(pf: &ProductionFaucet, payload: &[u8]) -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            USED_NONCES_SLOT_LABEL,
+            XReserveFaucetExtension::used_nonces_slot(),
             nonce_key_of_payload(payload)
         )?,
         Word::empty(),

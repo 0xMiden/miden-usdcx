@@ -23,9 +23,7 @@ use miden_standards::account::auth::{
 };
 use miden_standards::tx_script::ExpirationTransactionScript;
 use xusdc_encoding::account::xreserve::{
-    XReserveStablecoinBuilder, DOMAIN_CONFIG_SLOT_LABEL, IDENTIFIER_CONFIG_SLOT_LABEL,
-    SOURCE_DOMAIN_CONFIG_SLOT_LABEL, XRESERVE_CONTRACT_HI_SLOT_LABEL,
-    XRESERVE_CONTRACT_LO_SLOT_LABEL,
+    XReserveFaucetExtension, XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL,
 };
 use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
 use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
@@ -40,13 +38,11 @@ use crate::observations::RowsAbObservations;
 pub const ERR_IDENTIFIER_REINIT_TEXT: &str = "identifier has already been initialized";
 
 /// Reads a named value slot from a fetched account's storage.
-fn storage_word(account: &Account, label: &str) -> Result<Word> {
-    let name = StorageSlotName::new(label)
-        .with_context(|| format!("'{label}' is not a valid storage slot name"))?;
+fn storage_word(account: &Account, name: &StorageSlotName) -> Result<Word> {
     account
         .storage()
-        .get_item(&name)
-        .with_context(|| format!("the deployed faucet does not carry the '{label}' slot"))
+        .get_item(name)
+        .with_context(|| format!("the deployed faucet does not carry the '{name}' slot"))
 }
 
 /// **Row A — deploy + recognize.**
@@ -130,7 +126,7 @@ pub fn assert_row_a(obs: &RowsAbObservations) -> Result<()> {
 /// `params`' values, and the `identifier_init`-committed identifier holds the OWN-ID fixpoint key
 /// `identifier_for(account.id())` (derived from the faucet id, NOT from `params` — R2 binding fix).
 fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &str) -> Result<()> {
-    let domain = storage_word(account, DOMAIN_CONFIG_SLOT_LABEL)?;
+    let domain = storage_word(account, XReserveFaucetExtension::domain_config_slot())?;
     ensure!(
         domain
             == Word::from([
@@ -148,7 +144,9 @@ fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &st
     // the own-id fixpoint), NOT from any caller-chosen `params` value (the R2 identifier-binding fix;
     // the deployed-faucet re-check in `sanity` enforces the SAME key). So the expected identifier is
     // derived from `account.id()`, not `params.identifier_word()`.
-    let identifier = storage_word(account, IDENTIFIER_CONFIG_SLOT_LABEL)?;
+    let identifier_name = StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
+        .context("the identifier slot label is a valid constant")?;
+    let identifier = storage_word(account, &identifier_name)?;
     let expected_identifier = XReserveIdentifierInitNote::identifier_for(account.id());
     ensure!(
         identifier == expected_identifier,
@@ -160,7 +158,7 @@ fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &st
         "{ctx}: the stored identifier must be non-empty (it is the init-once sentinel)",
     );
 
-    let source_domain = storage_word(account, SOURCE_DOMAIN_CONFIG_SLOT_LABEL)?;
+    let source_domain = storage_word(account, XReserveFaucetExtension::source_domain_config_slot())?;
     ensure!(
         source_domain
             == Word::from([
@@ -175,8 +173,8 @@ fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &st
     );
 
     let packed = bytes32_to_packed_felts(&params.xreserve_contract);
-    let xrc_hi = storage_word(account, XRESERVE_CONTRACT_HI_SLOT_LABEL)?;
-    let xrc_lo = storage_word(account, XRESERVE_CONTRACT_LO_SLOT_LABEL)?;
+    let xrc_hi = storage_word(account, XReserveFaucetExtension::xreserve_contract_hi_slot())?;
+    let xrc_lo = storage_word(account, XReserveFaucetExtension::xreserve_contract_lo_slot())?;
     ensure!(
         xrc_hi == Word::from([packed[0], packed[1], packed[2], packed[3]]),
         "{ctx}: xreserve_contract_hi slot read-back mismatch",

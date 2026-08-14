@@ -2,11 +2,10 @@
 //! (drop the one-valued `xreserve_component` parameter, enforce max-supply mutability at
 //! construction, and the crate-root faucet `Account` constructor).
 //!
-//! Every change here is wire-neutral: the composed account must be byte-for-byte what the
-//! pre-change composition produced. This suite freezes the baseline composition's anchors — the
-//! account's `to_commitment` state commitment, its code commitment, a digest over its storage
-//! slots, and the
-//! seed-derived id — captured at a FIXED seed from the baseline path, and asserts:
+//! Every change here is wire-neutral for slot values and the two construction paths: the
+//! composed account's anchors — the account's `to_commitment` state commitment, its code
+//! commitment, a digest over its storage slots, and the seed-derived id — are captured at a
+//! FIXED seed, and this suite asserts:
 //!
 //! 1. the crate-root `build_faucet_account` constructor reproduces them EXACTLY (the faucet it
 //!    builds is `is_max_supply_mutable(true)`, so `set_max_supply` stays operable),
@@ -14,8 +13,8 @@
 //!    its own xreserve component) still reproduces them, and
 //! 3. the two paths agree with each other.
 //!
-//! A single felt or byte of drift — a reordered component, a changed slot value, a different
-//! assembled MAST root — flips one of these string-exact assertions RED.
+//! A single felt or byte of drift — a changed slot value, a different assembled MAST root —
+//! flips one of these string-exact assertions RED.
 
 mod support;
 
@@ -47,13 +46,19 @@ const TOKEN_SUPPLY: u64 = 0;
 // the procedure name (`check_policy` before `set_attester`). The commitment is taken over the roots
 // IN ORDER, so it moved — and because the id grounds on it, so did the id and the state commitment.
 // The storage digest did not, which is what says nothing but the ordering changed.
+//
+// Re-captured again when the two lines merged: the component-set composition was simplified on one
+// side while the callable surface moved into its own component MASM on the other. Both touch the
+// installed procedure roots, so the code commitment — and with it the id and the state commitment —
+// moved once more. The storage digest is byte-for-byte the pre-merge value on BOTH sides, which is
+// what says the slot values and layout are untouched by either change.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([3883232002113514037, 2230204493120669809, 10009868233253717709, 1551218337093204])";
+    "Word([17841718476627836186, 5484579611903317703, 5044798649167584369, 1330383737942681633])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([9965828662918906490, 3941913867309533484, 2388271730734016088, 9698870604580583594])";
+    "Word([1043012215778384156, 1766588882448799588, 10914405481967870874, 15491264921198087893])";
 const GOLDEN_STORAGE_DIGEST: &str =
     "Word([345493706676576914, 583533095193184295, 14946277560135686626, 18108462045088020144])";
-const GOLDEN_ACCOUNT_ID: &str = "0xf504bbedde6efc712024a29380ba65";
+const GOLDEN_ACCOUNT_ID: &str = "0x4eb54a0a4c8898712e6958135e174f";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.

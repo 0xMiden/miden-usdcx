@@ -16,8 +16,8 @@
 
 mod support;
 
-use anyhow::{Context, Result};
-use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey, StorageSlotName};
+use anyhow::Result;
+use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey};
 use miden_protocol::note::Note;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::RoleBasedAccessControl;
@@ -25,7 +25,7 @@ use miden_standards::note::{RbacAction, RbacActionNote};
 use miden_testing::assert_transaction_executor_error;
 use support::w2admin::*;
 use support::*;
-use xusdc_encoding::account::xreserve::XRESERVE_ATTESTERS_SLOT_LABEL;
+use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
 use xusdc_encoding::note::xreserve_admin::{
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
@@ -70,11 +70,12 @@ fn read_role_membership(account: &Account, role: &RoleSymbol, member: AccountId)
 
 /// The attester allowlist entry for `commitment`.
 fn read_attester(account: &Account, commitment: Word) -> Result<Word> {
-    let slot = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
-        .context("the attester slot label is a valid constant")?;
     account
         .storage()
-        .get_map_item(&slot, StorageMapKey::new(commitment))
+        .get_map_item(
+            XReserveFaucetExtension::xreserve_attesters_slot(),
+            StorageMapKey::new(commitment),
+        )
         .map_err(|e| anyhow::anyhow!("reading xReserveAttesters[{commitment}]: {e}"))
 }
 

@@ -51,18 +51,39 @@ const TOKEN_SUPPLY: u64 = 0;
 // storage commitments, so it moves whenever either commitment moves (unlike the code commitment
 // and storage digest, which isolate their own layer). The initial commitment covers all three.
 //
+// Re-captured when the account's callable surface moved into its own component MASM. NO procedure
+// changed: the full root list is identical except that `set_attester` and `check_policy` swap
+// places. The two used to be named by their library modules (`attester_admin` sorting before
+// `mint_policy`) and are now named by one shared component module, where the sort falls through to
+// the procedure name (`check_policy` before `set_attester`). The commitment is taken over the roots
+// IN ORDER, so it moved — and because the id grounds on it, so did the id and the state commitment.
+// The storage digest did not, which is what says nothing but the ordering changed.
+//
+// Re-captured again when the two lines merged: the component-set composition was simplified on one
+// side while the callable surface moved into its own component MASM on the other. Both touch the
+// installed procedure roots, so the code commitment — and with it the id and the state commitment —
+// moved once more. The storage digest is byte-for-byte the pre-merge value on BOTH sides, which is
+// what says the slot values and layout are untouched by either change.
+//
+// Re-captured once more at the protocol v0.16.0-rc.4 migration, which rewrote the attestation verify
+// and the mint policy: the MASM the faucet installs changed, so the code commitment moved and the id
+// and state commitment followed it. The storage digest here is byte-for-byte the value the migration
+// itself measured, which is what says the migration's slot values survived the merge unchanged.
+//
 // NOT RATIFIED — every value below is MEASURED from this composition, not accepted. A human must
-// re-ratify all four at PR assembly. All four were RE-measured when the protocol-release migration
-// met the source-chain address widening on this branch: the migration recompiles the stock
-// components, so the code commitment moves, and the widening changes the seeded slot bytes, so the
-// storage digest moves. Neither pre-merge capture holds for any anchor.
+// re-ratify all four at PR assembly. The code, id and state anchors were RE-measured when the
+// callable-surface move landed on top of the source-chain address widening: the move reorders the
+// installed procedure roots, which the code commitment is taken over IN ORDER, and the id and state
+// commitment ground on it. The STORAGE digest is byte-for-byte this branch's own pre-merge value —
+// no procedure BODY changed, so the stored mint-policy root did not move, and the widening's seeded
+// slot bytes came through the merge untouched.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([14737183017606598107, 7833629451636037737, 11413858399240927731, 17066546977025173577])";
+    "Word([12279069345933864066, 206453457384661656, 11345428456839323018, 6226162249499447102])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([16764005812302112501, 17987397186480807924, 5230633221433349408, 17561522729770138399])";
+    "Word([1171372054460893828, 3180962383503063962, 16936606828590149993, 18309783564702138709])";
 const GOLDEN_STORAGE_DIGEST: &str =
     "Word([3029023550697381755, 5874055843915310604, 6907408855997959256, 4126294615369475846])";
-const GOLDEN_ACCOUNT_ID: &str = "0x3f1ad611756a02b151b933e5065783";
+const GOLDEN_ACCOUNT_ID: &str = "0x90ffee0e7f76d53146403bd1722b1e";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.

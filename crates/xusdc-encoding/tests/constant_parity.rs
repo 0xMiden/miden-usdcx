@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 
 use miden_protocol::note::NoteAttachmentScheme;
 use miden_standards::note::NetworkAccountTarget;
-use xusdc_encoding::account::xreserve::XReserveComponent;
+use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
 use xusdc_encoding::note::xreserve_mint::{
     XUSDC_MINT_ATTESTATION_NUM_WORDS, XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME,
     XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
@@ -24,70 +24,33 @@ use xusdc_encoding::xreserve::encoding::{
     DepositIntent, DepositIntentField, DepositIntentHeader, MintIntent, ACCOUNT_ID_BYTES,
     ASSET_AMOUNT_BYTES, BYTES32_LEN, PUBKEY_FELTS,
 };
-use xusdc_encoding::{DEPOSIT_INTENT_MASM, MINT_INTENT_MASM};
+/// The shipped MASM sources, read here as TEXT so the constants written in them can be compared
+/// against their Rust counterparts. This is the only thing in the crate that reads MASM source: the
+/// code that ships is the package the build script assembled, not these strings.
+const DEPOSIT_INTENT_MASM: &str = include_str!("../asm/xreserve/deposit_intent.masm");
+const MINT_INTENT_MASM: &str = include_str!("../asm/xreserve/mint_intent.masm");
 
 /// The faucet attestation verification attestation-verify shell module source, read test-side by reference.
-const ATTESTATION_VERIFY_MASM: &str =
-    include_str!("../../../asm/standards/xreserve/attestation_verify.masm");
+const ATTESTATION_VERIFY_MASM: &str = include_str!("../asm/xreserve/attestation_verify.masm");
 
 /// The attestation mint policy module source (the ACTIVE mint policy; owns the merged attachment
 /// transport + ASSERT-MATCH binding constants), read test-side by reference.
-const MINT_POLICY_MASM: &str = include_str!("../../../asm/standards/xreserve/mint_policy.masm");
+const MINT_POLICY_MASM: &str = include_str!("../asm/xreserve/mint_policy.masm");
 
 /// The faucet set_attester admin module source, read test-side by reference.
-const ATTESTER_ADMIN_MASM: &str =
-    include_str!("../../../asm/standards/xreserve/attester_admin.masm");
+const ATTESTER_ADMIN_MASM: &str = include_str!("../asm/xreserve/attester_admin.masm");
 
 /// The packed-memory primitives the DC-14 preimage writer is built from, read test-side by
 /// reference. It owns the limb guard's error and one width constant; the wire layout stays with
 /// `deposit_intent.masm`.
-const PACKED_MEM_MASM: &str = include_str!("../../../asm/standards/xreserve/packed_mem.masm");
-
-/// Faucet-owned shell error constants declared in MASM, pinned against the test-side
-/// `support::SHELL_ERR_TABLE` (the single Rust source).
-const SHELL_ERRORS_DECLARED: &[&str] = &[
-    // the packed-memory primitives the DC-14 preimage writer copies through (packed_mem.masm)
-    "ERR_XRESERVE_MINT_INTENT_LIMB",
-    // the DC-14 preimage writer (deposit_intent.masm)
-    "ERR_XRESERVE_DOMAIN_NOT_U32",
-    // amount validation R-MINT-10 (F2's feeAmount==0 reuses ERR_XRESERVE_FEE_NONZERO, declared below; the old
-    // R-MINT-11 <= maxFee compare + ERR_XRESERVE_FEE_OVER_MAX are subsumed and removed)
-    "ERR_XRESERVE_MINT_ZERO_AMOUNT",
-    "ERR_XRESERVE_MINT_AMOUNT_OVER_MAX",
-    "ERR_XRESERVE_AMOUNT_BELOW_FEE",
-    // the maxFee/fee staging's too-large guard (deposit_intent_parser.masm)
-    // replay protection R-MINT-12
-    "ERR_XRESERVE_NONCE_REPLAY",
-    // attestation verification R-MINT-13 / R-MINT-14 (attestation_verify.masm). The signature
-    // VERDICT is no longer a faucet-owned error: the core-library ECDSA verifier traps on a failed
-    // verification instead of returning a flag, so the reject carries the verifier's own identity
-    // (support::ERR_ECDSA_VERIFY_FAILED) and no faucet constant can name it. What stays faucet-owned
-    // is the allowlist gate and the limb guard on the scalars the verifier is handed.
-    "ERR_XRESERVE_DISALLOWED_PUB_KEY",
-    "ERR_XRESERVE_SIG_LIMB",
-    // F2 fee guard (deposit_intent_parser.masm; DEC-2 keep-zero)
-    // Transport-shape guards on the stock MintNote's attachments: the attachment set and the
-    // merged transport's floor (mint_policy.masm), then the staged intent's own shape and length
-    // (deposit_intent_parser.masm)
-    "ERR_XRESERVE_MINT_NOTE_TRANSPORT_MISSING",
-    "ERR_XRESERVE_MINT_NOTE_TARGET_MISSING",
-    "ERR_XRESERVE_MINT_NOTE_ATTACHMENT_COUNT",
-    "ERR_XRESERVE_MINT_NOTE_TRANSPORT_TOO_SHORT",
-    "ERR_XRESERVE_MINT_NOTE_HOOK_LEN_LIMB",
-    "ERR_XRESERVE_MINT_NOTE_INTENT_WORDS",
-    // the ASSERT-MATCH binding (mint_policy.masm)
-    "ERR_XRESERVE_MINT_RECIPIENT_MISMATCH",
-    "ERR_XRESERVE_MINT_AMOUNT_MISMATCH",
-    "ERR_XRESERVE_MINT_TAG_MISMATCH",
-    "ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC",
-];
+const PACKED_MEM_MASM: &str = include_str!("../asm/xreserve/packed_mem.masm");
 
 /// Expected `word("…")` slot-name constants of the shell module (MASM const name → label), pinned
 /// against the production slot names.
 fn expected_deposit_intent_word_consts() -> Vec<(&'static str, &'static str)> {
     vec![(
         "DOMAIN_CONFIG_SLOT",
-        XReserveComponent::domain_config_slot().as_str(),
+        XReserveFaucetExtension::domain_config_slot().as_str(),
     )]
 }
 
@@ -96,7 +59,7 @@ fn expected_deposit_intent_word_consts() -> Vec<(&'static str, &'static str)> {
 fn expected_mint_intent_word_consts() -> Vec<(&'static str, &'static str)> {
     vec![(
         "USED_NONCES_SLOT",
-        XReserveComponent::used_nonces_slot().as_str(),
+        XReserveFaucetExtension::used_nonces_slot().as_str(),
     )]
 }
 
@@ -107,7 +70,7 @@ fn expected_mint_intent_word_consts() -> Vec<(&'static str, &'static str)> {
 fn expected_attester_admin_word_consts() -> Vec<(&'static str, &'static str)> {
     vec![(
         "XRESERVE_ATTESTERS_SLOT",
-        XReserveComponent::xreserve_attesters_slot().as_str(),
+        XReserveFaucetExtension::xreserve_attesters_slot().as_str(),
     )]
 }
 
@@ -516,39 +479,11 @@ fn masm_rust_constant_parity() {
     );
 }
 
-// Rust → MASM error-string parity has no rows left to check: the encoding crate declares no MASM
-// error constants of its own any more (see `error.rs`). Every MASM error the faucet raises is
-// faucet-owned and pinned by `masm_shell_error_string_parity` below, against the test-side
-// `support::SHELL_ERR_TABLE`.
-
-/// Shell error-string parity, test-side Rust → MASM: every DECLARED faucet shell error
-/// has an identically-named shell-module constant with the byte-identical
-/// `support::SHELL_ERR_TABLE` message.
-#[test]
-fn masm_shell_error_string_parity() {
-    // the faucet shell errors live across four modules (mint_intent + deposit_intent +
-    // attestation_verify + mint_policy); merge their string consts before the lookup.
-    let (_, mut strs, _) = parse_masm_consts(DEPOSIT_INTENT_MASM);
-    let (_, mi_strs, _) = parse_masm_consts(MINT_INTENT_MASM);
-    let (_, att_strs, _) = parse_masm_consts(ATTESTATION_VERIFY_MASM);
-    let (_, policy_strs, _) = parse_masm_consts(MINT_POLICY_MASM);
-    let (_, packed_mem_strs, _) = parse_masm_consts(PACKED_MEM_MASM);
-    strs.extend(mi_strs);
-    strs.extend(att_strs);
-    strs.extend(policy_strs);
-    strs.extend(packed_mem_strs);
-    for name in SHELL_ERRORS_DECLARED {
-        let expected = support::SHELL_ERR_TABLE
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, e)| e.message())
-            .unwrap_or_else(|| panic!("SHELL_ERR_TABLE must carry {name}"));
-        let masm = strs
-            .get(*name)
-            .unwrap_or_else(|| panic!("a faucet shell module must define const {name} = \"...\""));
-        assert_eq!(masm, expected, "shell error message parity for {name}");
-    }
-}
+// Error-string parity has no test left. `build.rs` generates the Rust `ERR_XRESERVE_*` constants
+// from the MASM that declares them, and `support::SHELL_ERR_TABLE` names those generated
+// constants, so the two sides cannot disagree — comparing them would compare the MASM with itself.
+// The NAME coverage still has teeth: `masm_constants_bidirectional` below fails on a MASM error
+// constant that no `SHELL_ERR_TABLE` row names.
 
 /// Bidirectional sweep: every constant parsed from every MASM source must be
 /// covered by a parity row or a documented exemption — a new MASM-only constant

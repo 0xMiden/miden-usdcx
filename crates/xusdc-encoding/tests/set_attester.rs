@@ -19,7 +19,9 @@ use miden_protocol::Word;
 use miden_standards::account::policies::TokenPolicyManager;
 use miden_testing::assert_transaction_executor_error;
 use support::*;
-use xusdc_encoding::account::xreserve::{XReserveComponent, ATTESTATION_MINT_POLICY_PROC_PATH};
+use xusdc_encoding::account::xreserve::{
+    XReserveFaucetExtension, ATTESTATION_MINT_POLICY_PROC_PATH,
+};
 
 // The seeded principals the reconciled builder installs: the administrator = id(1) (the sole ADMIN member); the two seeded
 // DOM role-holders DOM_PAUSER = id(2) (also the FORMER ATTEST_ADMIN holder) and DOM_MANAGER = id(3) —
@@ -82,7 +84,7 @@ fn guarded_faucet() -> Result<GuardedMint> {
 /// when unset) — the no-state-change read-back the non-administrator reject uses.
 fn read_attester(account: &miden_protocol::account::Account, commitment: Word) -> Result<Word> {
     Ok(account.storage().get_map_item(
-        XReserveComponent::xreserve_attesters_slot(),
+        XReserveFaucetExtension::xreserve_attesters_slot(),
         StorageMapKey::new(commitment),
     )?)
 }
@@ -154,7 +156,7 @@ async fn set_attester_administrator_succeeds() -> Result<()> {
         .expect("the administrator's set_attester(K, true) must succeed");
 
     // the allowlist entry landed: xReserveAttesters[K] == [1,0,0,0].
-    let attesters = XReserveComponent::xreserve_attesters_slot();
+    let attesters = XReserveFaucetExtension::xreserve_attesters_slot();
     let StorageSlotPatch::Map(delta) = executed
         .account_patch()
         .storage()
@@ -244,7 +246,7 @@ async fn set_attester_administrator_succeeds_while_paused() -> Result<()> {
         );
 
     // the allowlist entry landed despite the pause: xReserveAttesters[K] == [1,0,0,0].
-    let attesters = XReserveComponent::xreserve_attesters_slot();
+    let attesters = XReserveFaucetExtension::xreserve_attesters_slot();
     let StorageSlotPatch::Map(delta) = executed
         .account_patch()
         .storage()

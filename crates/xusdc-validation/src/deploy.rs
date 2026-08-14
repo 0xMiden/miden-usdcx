@@ -39,7 +39,7 @@ use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::inspection::AccountBuilderSchemaCommitmentExt;
 use miden_standards::StandardsLib;
 use xusdc_encoding::account::xreserve::{
-    XReserveComponent, XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL, USDCX_DECIMALS,
+    XReserveFaucetExtension, XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL, USDCX_DECIMALS,
 };
 use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
 
@@ -99,16 +99,16 @@ pub fn build_xreserve_component_seeded(domain: Option<&DomainParams>) -> Result<
     AccountComponent::new(
         library,
         vec![
-            slot(XReserveComponent::domain_config_slot(), domain_w),
+            slot(XReserveFaucetExtension::domain_config_slot(), domain_w),
             slot(&identifier_name, identifier_w),
             slot(
-                XReserveComponent::source_domain_config_slot(),
+                XReserveFaucetExtension::source_domain_config_slot(),
                 source_domain_w,
             ),
-            slot(XReserveComponent::xreserve_contract_hi_slot(), xrc_hi_w),
-            slot(XReserveComponent::xreserve_contract_lo_slot(), xrc_lo_w),
-            StorageSlot::with_empty_map(XReserveComponent::used_nonces_slot().clone()),
-            StorageSlot::with_empty_map(XReserveComponent::xreserve_attesters_slot().clone()),
+            slot(XReserveFaucetExtension::xreserve_contract_hi_slot(), xrc_hi_w),
+            slot(XReserveFaucetExtension::xreserve_contract_lo_slot(), xrc_lo_w),
+            StorageSlot::with_empty_map(XReserveFaucetExtension::used_nonces_slot().clone()),
+            StorageSlot::with_empty_map(XReserveFaucetExtension::xreserve_attesters_slot().clone()),
         ],
         AccountComponentMetadata::new("xusdc-production-faucet"),
     )

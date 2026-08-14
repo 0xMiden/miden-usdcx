@@ -28,20 +28,14 @@
 //! There is no ownership note either: the faucet installs no two-step ownership component, so
 //! rotation is a grant and a revoke of the `ADMIN` role through the standard role-action note.
 
-use std::sync::Arc;
-
 use miden_protocol::account::AccountId;
-use miden_protocol::assembly::{Linkage, Path as MasmPath};
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{
     Note, NoteAssets, NoteAttachments, NoteRecipient, NoteScript, NoteStorage, NoteTag, NoteType,
     PartialNoteMetadata,
 };
-use miden_protocol::transaction::TransactionKernel;
 use miden_protocol::Felt;
-use miden_standards::code_builder::CodeBuilder;
-use miden_standards::StandardsLib;
 
 mod blocklist;
 mod set_attester;
@@ -52,26 +46,6 @@ pub use blocklist::{XReserveBlocklistNote, XReserveBlocklistNoteError};
 pub use set_attester::{XReserveSetAttesterNote, XReserveSetAttesterNoteStorage};
 pub use set_max_supply::{XReserveSetMaxSupplyNote, XReserveSetMaxSupplyNoteStorage};
 pub use set_min_burn_size::{XReserveSetMinBurnSizeNote, XReserveSetMinBurnSizeNoteStorage};
-
-/// Compiles an admin note-script source with the shipped `xreserve` component library linked so its
-/// `call.<module>::<proc>` resolves to the SAME proc installed on the faucet account.
-pub(super) fn compile_admin_note_script(src: &str) -> NoteScript {
-    let assembler = TransactionKernel::assembler()
-        .with_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
-        .expect("the standards library links into the xreserve assembler")
-        .with_warnings_as_errors(true);
-    let library = *assembler
-        .assemble_library_from_root(
-            crate::xreserve_asm_dir().join("mod.masm"),
-            Some(MasmPath::new("xreserve")),
-        )
-        .expect("the shipped xreserve component library assembles");
-    CodeBuilder::new()
-        .with_dynamically_linked_package(&library)
-        .expect("the xreserve library links into the admin-note script assembler")
-        .compile_note_script(src)
-        .expect("the admin note script compiles")
-}
 
 /// Assembles an admin note from its fixed-root `script` + the creator-committed storage `items`,
 /// carrying the scheme-2 `NetworkAccountTarget` routing bind to `faucet_id` (routing-only). Shared by

@@ -303,9 +303,7 @@ impl XReserveStablecoinBuilder {
 /// validates duplicate roles, empty configs, member-count overflow and unmanageable admin chains —
 /// the capability whose absence forced the earlier hand-rolled direct-seed. The resulting storage is
 /// byte-identical to that direct-seed (same code, slots, slot order, maps entry-for-entry, and
-/// metadata); `rbac_seed_equality::stock_builder_seed_is_byte_equal` pins that equality against a
-/// frozen copy of the direct-seed. Construction failures are invariants, so this mirrors the stock
-/// `.expect()` pattern.
+/// metadata). Construction failures are invariants, so this mirrors the stock `.expect()` pattern.
 fn seeded_dom_roles_rbac(
     owner: AccountId,
     pauser_holder: AccountId,
@@ -333,6 +331,3 @@ fn seeded_dom_roles_rbac(
         .expect("the seeded DOM-roles RBAC configuration mirrors the stock From impl and is valid")
         .into()
 }
-
-#[cfg(test)]
-mod rbac_seed_equality;

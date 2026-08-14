@@ -18,10 +18,12 @@ use miden_crypto::SequentialCommit;
 use miden_protocol::testing::account_id::AccountIdBuilder;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Hasher, Word};
+use miden_standards::interop::eth::EthAddress;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
+use xusdc_encoding::xreserve::encoding::EthAddressExt;
 
 const ASSET_AMOUNT_MAX: u128 = (1u128 << 63) - (1u128 << 31); // 2^63 - 2^31
 
@@ -132,19 +134,18 @@ fn pattern32(base: u8) -> [u8; 32] {
 
 /// A 20-byte EVM address right-aligned in a bytes32 (the leading 12 bytes are the zero pad).
 fn evm_bytes32(base: u8) -> [u8; 32] {
-    let mut b = [0u8; 32];
-    for (i, slot) in b[12..].iter_mut().enumerate() {
-        *slot = base.wrapping_add(i as u8);
+    let mut bytes = [0u8; 20];
+    for i in 0..20 {
+        bytes[i] = base.wrapping_add(i as u8);
     }
-    b
+
+    EthAddress::new(bytes).to_bytes32()
 }
 
 impl IntentSpec {
-    /// A structurally well-formed intent. Every field is shaped the way a mintable deposit has to
-    /// shape it — the identifiers as packaged account ids, the source-chain fields as right-aligned
-    /// EVM addresses — because a deposit that is not is not a deposit this system can process at
-    /// all. `remote_token` names a faucet OTHER than the `mi` family's, so a row that confused the
-    /// destination token with the destination account would not pass.
+    /// A structurally well-formed intent. `remote_token` names a faucet OTHER than the `mi`
+    /// family's, so a row that confused the destination token with the destination account would
+    /// not pass.
     fn base(remote_token: [u8; 32], remote_recipient: [u8; 32]) -> Self {
         Self {
             magic: 0x5a2e_0acd, // DepositIntent magic
@@ -364,9 +365,6 @@ fn main() {
 
     // ---- amt family -------------------------------------------------------------------
     let max = ASSET_AMOUNT_MAX;
-    // The shipped scale is zero (`DEPOSIT_SCALE_EXP`), so the reduction is the identity and every
-    // row below is stated at that scale. A non-zero scale is not a different constant but a
-    // different transport (DC-14 is only invertible at zero), so there are no rows for one.
     let amt = vec![
         amt_accept("amt-pos-1", &["TV-AMT-1"], 42, "y = x = 42"),
         amt_accept(

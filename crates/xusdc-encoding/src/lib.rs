@@ -13,13 +13,14 @@ pub mod note;
 pub mod vectors;
 pub mod xreserve;
 
-mod xreserve_lib;
+/// Harness-only surface, behind the `testing` feature: the shipped MASM library as a link target.
+#[cfg(feature = "testing")]
+pub mod xreserve_lib;
 
 /// The crate-root faucet-account constructor: the single entry that turns deploy parameters into the
 /// deployable, attestation-gated xUSDC faucet [`account::xreserve::XReserveStablecoinBuilder`]-composed
 /// `Account`. Surfaced at the library root so account construction is traceable from the top.
 pub use account::xreserve::build_faucet_account;
-pub use xreserve_lib::XReserveLibrary;
 
 /// Path of the one canonical golden-vector artifact, loaded by reference from both the Rust
 /// unit tests and the MASM execution tests.

@@ -60,8 +60,9 @@ archived logs under `local-node-data/`) plus the LNV-1 human supervision gate.
 assembles the faucet library at runtime from a source path (`xusdc_encoding::xreserve_asm_dir()`),
 and neither that function nor the tree it pointed at exists any more: the MASM is assembled by
 `crates/xusdc-encoding/build.rs` and embedded. Replace that whole path with the shipped component —
-`XReserveFaucetExtension::new()`, or `xusdc_encoding::XReserveLibrary::default()` if the raw library
-is what a row needs. The seven-slot shape `deploy.rs` declares is stale for the same vintage of
+`XReserveFaucetExtension::new()`, or `xusdc_encoding::testing::XReserveLibrary::default()` if the raw
+library is what a row needs — that one is behind the `testing` feature, which this crate does not
+enable today. The seven-slot shape `deploy.rs` declares is stale for the same vintage of
 reasons; the shipped component carries six.
 
 Requirements for the gate run (operator-run, **P1b-b**): the four node binaries on `PATH`, loopback

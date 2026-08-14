@@ -31,18 +31,9 @@
 //! required builder inputs written into the declared slots at composition time. The faucet
 //! identifier is not among them and has no slot at all — it is the account's own id, which the
 //! mint path derives on chain, so the composed faucet is mint-ready the moment it exists.
-//!
-//! Packaging: the MASM is assembled at BUILD time and embedded, so the builder binds a shipped
-//! component package rather than assembling anything (there is exactly one valid component, so it is
-//! not a builder input); the policy procedure root is resolved from that same installed code via
-//! [`AccountComponent::get_procedure_root_by_path`], so the `dynexec` root the policy manager stores
-//! always equals the installed proc's MAST root. The final composed
-//! [`Account`] is produced by [`XReserveStablecoinBuilder::build_account`] / the crate-root
-//! [`build_faucet_account`], so account construction is traceable from the library root.
 
-use miden_protocol::account::{AccountComponent, AccountId, StorageSlot};
+use miden_protocol::account::{AccountComponent, AccountId};
 use miden_protocol::asset::AssetAmount;
-use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Pausable, PausableManager};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::{
@@ -108,14 +99,6 @@ pub const USDCX_TOKEN_SYMBOL: &str = "USDCX";
 /// mis-scale every minted amount).
 pub const USDCX_DECIMALS: u8 = 6;
 
-/// The three build-seeded domain-config fields (`domain`, `source_domain`, `xreserve_contract`).
-#[derive(Debug, Clone, Copy)]
-struct DomainConfigSeed {
-    domain: u32,
-    source_domain: u32,
-    xreserve_contract: EthBytes32,
-}
-
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library
 /// component (attestation mint policy, admin procs) + a `TokenPolicyManager`
 /// with the attestation policy active on the mint side and the stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) active on
@@ -129,7 +112,6 @@ struct DomainConfigSeed {
 /// `build_faucet_account` / [`Self::build_account`] for the finished `Account`).
 pub struct XReserveStablecoinBuilder {
     faucet: FungibleFaucet,
-    xreserve_component: AccountComponent,
     /// The administrator: seeded as the sole member of the built-in `ADMIN` role, which is what
     /// gates every unmapped authority-gated procedure (`set_attester` / the
     /// stock `set_min_burn_amount` / stock `set_max_supply` / the policy setters) under
@@ -204,7 +186,6 @@ impl XReserveStablecoinBuilder {
     ) -> Result<Self, XReserveStablecoinBuilderError> {
         Ok(Self {
             faucet: build_usdcx_faucet(max_supply, token_supply)?,
-            xreserve_component: XReserveFaucetExtension::new().into(),
             owner,
             pauser_holder,
             manager_holder,
@@ -271,13 +252,15 @@ impl XReserveStablecoinBuilder {
         let min_burn = AssetAmount::new(self.min_burn_size).map_err(|_| {
             XReserveStablecoinBuilderError::MinBurnSizeExceedsMax(self.min_burn_size)
         })?;
+
         // Seed domain config before the mint policy takes the component, so the manager
         // emits the installable copy.
-        let xreserve_component = self.xreserve_component_with_domain_seed(DomainConfigSeed {
-            domain: self.domain,
-            source_domain: self.source_domain,
-            xreserve_contract: self.xreserve_contract,
-        });
+        let xreserve_component = AccountComponent::from(XReserveFaucetExtension::new(
+            self.domain,
+            self.source_domain,
+            self.xreserve_contract,
+        ));
+
         let manager = TokenPolicyManager::builder()
             .active_mint_policy(
                 MintPolicy::custom(
@@ -307,52 +290,5 @@ impl XReserveStablecoinBuilder {
         ));
         components.push(XReserveAdminAuthority::new().into());
         Ok(components)
-    }
-
-    // The final-`Account` constructor ([`Self::build_account`]) and the crate-root
-    // [`build_faucet_account`] / component assembly ([`XReserveFaucetExtension`]) live in the sibling
-    // `construction` module (this file composes the component SET; that one turns it into an
-    // `Account`).
-
-    /// Reconstructs the supplied `xreserve` component with the three BUILD-SEEDED domain-config
-    /// values written into their declared slots (`[domain, 0, 0, 0]`, `[source_domain, 0, 0, 0]`,
-    /// and the packed `xreserve_contract` hi/lo
-    /// words). The two registry maps are carried through as declared.
-    fn xreserve_component_with_domain_seed(&self, seed: DomainConfigSeed) -> AccountComponent {
-        let domain_name = XReserveFaucetExtension::domain_config_slot();
-        let source_name = XReserveFaucetExtension::source_domain_config_slot();
-        let hi_name = XReserveFaucetExtension::xreserve_contract_hi_slot();
-        let lo_name = XReserveFaucetExtension::xreserve_contract_lo_slot();
-        let scalar_word =
-            |value: u32| Word::from([Felt::from(value), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-        let xrc = seed.xreserve_contract.to_packed_felts();
-        let hi_word = Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]);
-        let lo_word = Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]);
-        let slots = self
-            .xreserve_component
-            .storage_slots()
-            .iter()
-            .map(|slot| {
-                if slot.name() == domain_name {
-                    StorageSlot::with_value(domain_name.clone(), scalar_word(seed.domain))
-                } else if slot.name() == source_name {
-                    StorageSlot::with_value(source_name.clone(), scalar_word(seed.source_domain))
-                } else if slot.name() == hi_name {
-                    StorageSlot::with_value(hi_name.clone(), hi_word)
-                } else if slot.name() == lo_name {
-                    StorageSlot::with_value(lo_name.clone(), lo_word)
-                } else {
-                    slot.clone()
-                }
-            })
-            .collect();
-        AccountComponent::new(
-            self.xreserve_component.component_code().clone(),
-            slots,
-            self.xreserve_component.metadata().clone(),
-        )
-        .expect(
-            "the xreserve component reseeded with the domain-config values keeps a valid slot set",
-        )
     }
 }

@@ -3,16 +3,18 @@ use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{Note, NoteScript, NoteScriptRoot};
 use miden_protocol::utils::sync::LazyLock;
+use miden_protocol::vm::Package;
 use miden_protocol::Felt;
 
 use super::build_admin_note;
-use crate::xreserve_lib::note_script;
 
 static SET_MAX_SUPPLY_NOTE_SCRIPT: LazyLock<NoteScript> = LazyLock::new(|| {
-    note_script(include_bytes!(concat!(
+    let package = Package::read_from_bytes_trusted(include_bytes!(concat!(
         env!("OUT_DIR"),
         "/assets/notes/xreserve-set-max-supply-note.masp"
     )))
+    .expect("the shipped note package deserializes");
+    NoteScript::from_package(&package).expect("the note package exports exactly one note script")
 });
 
 /// The dedicated `set_max_supply` note-storage type: the single `[new_max_supply]` item, built with

@@ -1,20 +1,17 @@
-//! The shipped xUSDC MASM, as it enters the binary.
+//! The shipped `xreserve` MASM library as a link target, for harnesses only.
 //!
-//! `build.rs` assembles `asm/` into packages under `$OUT_DIR/assets/` and this module embeds their
-//! bytes, so the faucet's MASM is fixed at build time and no part of the running program reads the
-//! source tree. The three helpers here are what every consumer goes through: the library itself, the
-//! account-component code, and the note scripts.
+//! Deploying and using the faucet never needs this module: an account installs the
+//! [`XReserveFaucetExtension`](crate::account::XReserveFaucetExtension) component, whose package
+//! re-exports the two account procedures and carries the code they reach. What lives here is the
+//! whole `xreserve::*` surface — every internal procedure and constant — so a harness can assemble
+//! its own MASM against it. The whole module is behind the `testing` feature, which keeps that link
+//! target out of the shipped surface and keeps the gate in one place.
 
 use std::sync::Arc;
 
-use miden_protocol::account::component::AccountComponentCode;
 use miden_protocol::assembly::mast::MastForest;
 use miden_protocol::assembly::Package;
-use miden_protocol::note::NoteScript;
 use miden_protocol::utils::sync::LazyLock;
-
-// SHIPPED PACKAGES
-// ================================================================================================
 
 static XRESERVE_PACKAGE: LazyLock<Arc<Package>> = LazyLock::new(|| {
     // These bytes are produced by this crate's build script and embedded in the binary.
@@ -27,35 +24,7 @@ static XRESERVE_PACKAGE: LazyLock<Arc<Package>> = LazyLock::new(|| {
     )
 });
 
-/// Deserializes a build-time-assembled account-component package into its component code.
-pub(crate) fn component_code(bytes: &'static [u8]) -> AccountComponentCode {
-    let package = Package::read_from_bytes_trusted(bytes)
-        .expect("the shipped account-component package deserializes");
-    AccountComponentCode::from(package)
-}
-
-/// Builds a note script from a build-time-assembled note package.
-///
-/// The note projects link the xreserve library statically, so the returned script carries its own
-/// MAST and runs on any executor without the xreserve package having been loaded into it. That is a
-/// property of the linkage declared in `asm/notes/miden-project.toml`, not of this function — if it
-/// is ever flipped to dynamic, this stays correct and the script simply references code the executor
-/// must then supply.
-pub(crate) fn note_script(bytes: &'static [u8]) -> NoteScript {
-    let package =
-        Package::read_from_bytes_trusted(bytes).expect("the shipped note package deserializes");
-    NoteScript::from_package(&package).expect("the note package exports exactly one note script")
-}
-
-// XRESERVE LIBRARY
-// ================================================================================================
-
 /// The shipped `xreserve` MASM library.
-///
-/// This is the whole library, which is more than the account exposes: the account's callable surface
-/// is the separate `xreserve-faucet-extension` component package. Consumers that need the library as such —
-/// harnesses linking it into a script, or an executor that has to resolve its procedures — go
-/// through here.
 #[derive(Clone)]
 pub struct XReserveLibrary(Arc<Package>);
 

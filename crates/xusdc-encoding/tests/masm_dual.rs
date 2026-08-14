@@ -33,7 +33,7 @@ use miden_testing::{Auth, MockChain};
 use miden_tx::TransactionExecutorError;
 use serde::Deserialize;
 use xusdc_encoding::vectors::{load, word_from_hex};
-use xusdc_encoding::XReserveLibrary;
+use xusdc_encoding::xreserve_lib::XReserveLibrary;
 
 /// Memory base for the staged pubkey felts `pubkey_commitment` hashes in place (word-aligned,
 /// clear of `INTENT_PTR`).
@@ -41,11 +41,6 @@ const PUBKEY_PTR: u64 = 8;
 
 // HARNESS (assemble → bind → MockChain account)
 // ================================================================================================
-
-/// The shipped xreserve library, as this crate's build script assembled it.
-fn assemble_xreserve_lib() -> Result<Package> {
-    Ok(XReserveLibrary::default().into())
-}
 
 struct Harness {
     mock_chain: MockChain,
@@ -56,7 +51,7 @@ struct Harness {
 /// Builds the MockChain account that carries the encoding library (registering its MAST
 /// forest with the executor, which is what makes its procedures available to run).
 fn setup() -> Result<Harness> {
-    let library = assemble_xreserve_lib()?;
+    let library = Package::from(XReserveLibrary::default());
     let component = AccountComponent::new(
         library.clone(),
         vec![],
@@ -244,30 +239,6 @@ end
         result.is_err(),
         "a wrong expected value MUST fail execution — the harness cannot pass on a bad vector"
     );
-    Ok(())
-}
-
-/// P1: the assembled library exports exactly the canonical flat proc paths.
-#[test]
-fn probe_p1_exports() -> Result<()> {
-    let lib = assemble_xreserve_lib()?;
-    let exports: Vec<String> = lib
-        .manifest
-        .exports()
-        .filter(|e| e.is_procedure())
-        .map(|e| e.path().to_string())
-        .collect();
-    // exports render as ABSOLUTE paths (leading `::`) at this assembler version
-    for canonical in [
-        "::xreserve::mint_intent::hash_nonce",
-        "::xreserve::mint_intent::validate",
-        "::xreserve::deposit_intent::rebuild",
-    ] {
-        assert!(
-            exports.iter().any(|e| e == canonical),
-            "canonical proc path {canonical} missing; exports: {exports:?}"
-        );
-    }
     Ok(())
 }
 

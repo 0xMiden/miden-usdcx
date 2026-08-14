@@ -20,19 +20,15 @@ exclude = [
 # top. Base features are kept minimal here so a crate never inherits a feature it does not use;
 # `serde`'s `derive` is the one exception (every consumer needs it).
 [workspace.dependencies]
-# Build-time MASM assembly, consumed by `crates/xusdc-encoding/build.rs`. The assembler/VM family is
-# EXACTLY 0.29.1 — the version the pinned protocol release resolves. Pinned here rather than in the
-# crate because a drift would put two copies of the assembler in the graph, at which point the MAST
-# digests stop unifying.
-miden-assembly         = "=0.29.1"
-miden-core-lib         = "=0.29.1"
-miden-package-registry = "=0.29.1"
-miden-project          = "=0.29.1"
-# The build script's error-constant extractor: walk the MASM tree, match the `const ERR_* = "…"`
-# lines, write the file. fs-err is the io-error-with-path wrapper the protocol build scripts use.
-fs-err  = "3"
-regex   = "1"
-walkdir = "2"
+# Build-time MASM assembly, consumed by `crates/xusdc-encoding/build.rs`. `miden-protocol-build-utils`
+# is the protocol's own build-script toolkit — the project/workspace assembly and the MASM
+# error-constant extractor — so the build script carries no copy of either. The assembler family is
+# EXACTLY 0.29.1, the version the pinned protocol release resolves: a drift would put two copies of
+# the assembler in the graph, at which point the MAST digests stop unifying.
+miden-assembly              = "=0.29.1"
+miden-core-lib              = "=0.29.1"
+miden-package-registry      = "=0.29.1"
+miden-protocol-build-utils  = "=0.16.0-rc.4"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

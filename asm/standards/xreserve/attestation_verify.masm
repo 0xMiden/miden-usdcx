@@ -42,11 +42,9 @@ const ERR_XRESERVE_SIG_LIMB = "deposit attestation signature limb is not a valid
 #! Verifies the mint-time deposit attestation: gate the attester pubkey against the
 #! xReserveAttesters allowlist, then ECDSA-verify the signature over keccak256 of the payload.
 #!
-#! The caller owns the payload, the pubkey and the signature bytes and passes pointers to them.
-#! Everything this procedure checks is read from that memory, which the caller has hash-verified
-#! against the note's own attachment commitment, so what the note committed to is exactly what gets
-#! checked here. The SAME pubkey pointer feeds both the allowlist commitment (pubkey_commitment)
-#! and the signature check, so an allowlisted commitment cannot be paired with a foreign key.
+#! Reads from caller memory, hash-verified against the note's attachment commitment. The same
+#! pubkey pointer feeds both the allowlist commitment and the signature check, so an allowlisted
+#! commitment cannot be paired with a foreign key.
 #!
 #! Inputs:  [intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 #! Outputs: []
@@ -67,9 +65,7 @@ const ERR_XRESERVE_SIG_LIMB = "deposit attestation signature limb is not a valid
 #!
 #! Invocation: exec
 pub proc verify_attestation
-    # allowlist gate: commit to the caller's pubkey, then read
-    # xReserveAttesters[PUBKEY_COMMITMENT]. The commitment survives the lookup because the
-    # signature check needs the very same Word.
+    # allowlist gate; the commitment survives the lookup, the signature check needs the same Word.
     dup.2 exec.pubkey_commitment
     # => [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 
@@ -95,10 +91,7 @@ pub proc verify_attestation
     # => []
 end
 
-#! Computes the commitment of the provided public key.
-#!
-#! Computes the Poseidon2 hash over the 16 u32-LE-packed affine-coordinate limbs, which is the
-#! attester-allowlist map key.
+#! Poseidon2 over the 16 u32-LE-packed affine-coordinate limbs: the attester-allowlist map key.
 #!
 #! Inputs:  [pubkey_ptr]
 #! Outputs: [PUBKEY_COMMITMENT]
@@ -118,15 +111,11 @@ end
 
 #! ECDSA-verifies the attested signature over keccak256 of the payload, from the caller's memory.
 #!
-#! `verify_bytes` reads the key and the signature scalars from the ADVICE stack and binds only the
-#! key, so this procedure first stages the caller's own hash-verified pubkey and signature regions
-#! there, each keyed by its own Poseidon2 commitment — `adv.insert_mem` refuses a key already
-#! present with different values, so the verifier consumes the attested bytes or the transaction
-#! aborts. The SIGNATURE half of that binding is contingent on the core-library keccak handler
-#! pushing the advice-element count the verifier's read arithmetic assumes.
-#!
-#! The message is not hashed here: the verifier keccaks the caller's payload pointer and length
-#! unchanged.
+#! `verify_bytes` takes the key and scalars from the ADVICE stack and binds only the key, so this
+#! stages the caller's hash-verified regions there, each keyed by its own Poseidon2 commitment:
+#! `adv.insert_mem` refuses a key already present with different values, so the verifier consumes
+#! the attested bytes or the transaction aborts. The signature half of that binding is contingent
+#! on the core-library keccak handler's advice-element count. The message is not hashed here.
 #!
 #! Inputs:  [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 #! Outputs: []
@@ -147,8 +136,6 @@ end
 #! Invocation: exec
 @locals(16)
 proc verify_signature
-    # ---- the signature scalars, rewritten into the verifier's limb order ----
-
     dup.7 locaddr.NATIVE_SCALARS_LOC
     # => [scalars_ptr, signature_ptr, PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr,
     #     signature_ptr]
@@ -156,10 +143,7 @@ proc verify_signature
     exec.store_native_scalars
     # => [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 
-    # ---- stage the scalars, then the key, on the advice stack ----
-
-    # the scalars go first because push_mapval prepends: the key must end up on top, which is the
-    # order the verifier reads them in.
+    # scalars first: push_mapval prepends, so the key ends on top, the verifier's read order.
     locaddr.NATIVE_SCALARS_LOC dup add.NATIVE_SCALARS_FELTS swap
     # => [scalars_ptr, scalars_end, PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr,
     #     signature_ptr]
@@ -171,7 +155,7 @@ proc verify_signature
     exec.stage_region_on_advice
     # => [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 
-    # the key doubles as the verifier's PK_COMM operand, and staging consumes it, so keep a copy.
+    # the key is also the PK_COMM operand and staging consumes it, so keep a copy.
     dupw
     # => [PUBKEY_COMMITMENT, PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr,
     #     signature_ptr]
@@ -183,8 +167,6 @@ proc verify_signature
     exec.stage_region_on_advice
     # => [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 
-    # ---- verify ----
-
     movup.7 drop movup.6 drop
     # => [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes]
 
@@ -194,9 +176,8 @@ end
 
 #! Publishes a memory region on the advice stack under a caller-supplied key.
 #!
-#! The key is expected to be a commitment to the region's own contents, which is what makes the
-#! insert non-substitutable: `adv.insert_mem` accepts an already-present key only when it maps to
-#! the identical values, and traps otherwise.
+#! The key must be a commitment to the region's own contents: `adv.insert_mem` accepts an
+#! already-present key only when it maps to identical values, which is what makes it substitution-proof.
 #!
 #! Inputs:  [KEY, start_ptr, end_ptr]
 #! Outputs: []

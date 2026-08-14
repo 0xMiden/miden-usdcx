@@ -545,13 +545,8 @@ async fn mint_rejects_a_tampered_attestation_sub_region(
     expect_reject(&mut pf, note, &payload, expected_err).await
 }
 
-/// A signature limb that is not a valid u32 is refused by name, before the verifier sees it.
-///
-/// The attestation region is hash-verified against the note's attachment commitment, not
-/// type-checked, so its felts are whatever the note author put there. The scalars are rewritten
-/// limb by limb into the verifier's own order on the way to the advice provider, and that rewrite
-/// is u32 arithmetic — so a limb above `u32::MAX` gets its own named trap rather than an anonymous
-/// arithmetic failure inside the rewrite.
+/// A signature limb above `u32::MAX` is refused by name, before the verifier sees it: the
+/// limb rewrite into the verifier's order is u32 arithmetic.
 #[tokio::test]
 async fn mint_rejects_a_non_u32_signature_limb() -> Result<()> {
     let mut pf = fixture()?;
@@ -764,26 +759,9 @@ async fn mint_note_routes_to_the_faucet_network_account() -> Result<()> {
 // ADVICE INDEPENDENCE — the host cannot influence a mint
 // ================================================================================================
 
-/// A mint runs identically whether or not the prover seeds an advice stack.
-///
-/// Every operand the policy verifies — the deposit intent, the operator fee, the attester pubkey,
-/// the signature — is read out of memory the policy hash-verified against the note's own
-/// attachment commitments. The advice provider is host-controlled, so if any stage took an operand
-/// FROM it, a prover could hand the verify different bytes than the one the note committed to.
-///
-/// One stage does read advice, and cannot avoid it: the core-library ECDSA verifier takes the
-/// public key and the signature scalars off the advice stack. `verify_signature` is what makes that
-/// safe — it publishes the note's own hash-verified bytes into the advice provider and pushes them
-/// immediately before the call, so the 32 elements the verifier consumes are the staged ones. This
-/// test is the behavioral half of that claim: 41 junk felts staged in advance change nothing,
-/// because the push PREPENDS and the junk stays below what the verifier reads.
-///
-/// It cannot cover the whole of it, because the divergence a real attacker exploits is a prover
-/// serving different bytes on a second read of the same advice-map key, and MockChain's advice
-/// provider is a static map that cannot model it. What closes that gap is a source fact rather
-/// than a behavior: the only advice-map key the faucet ever reads under is a Poseidon2 commitment
-/// to the very bytes it just inserted there, and `adv.insert_mem` refuses a key already present
-/// with different values.
+/// Junk staged on the advice stack in advance does not change the mint: `verify_signature`
+/// pushes the note's own bytes last and `push_mapval` prepends, so the junk stays below the
+/// elements the verifier reads.
 #[tokio::test]
 async fn mint_ignores_a_hostile_advice_stack() -> Result<()> {
     let mut pf = fixture()?;
@@ -832,23 +810,11 @@ async fn mint_ignores_a_hostile_advice_stack() -> Result<()> {
     Ok(())
 }
 
-/// The signature the faucet verifies is the signature the NOTE carries — even when the host offers
-/// a better one.
+/// The faucet verifies the signature the NOTE carries, not one the host offers.
 ///
-/// This is the adversarial half of the advice binding, and the case that discriminates a bound
-/// adoption of the core-library ECDSA verifier from a naive one. The verifier takes its public key
-/// and signature scalars off the host-controlled advice stack and binds only the KEY, to `PK_COMM`.
-/// So a host holding a genuine attestation could, against a naive adoption, stage that genuine
-/// witness while the note carries something else entirely — and the mint would succeed on a
-/// signature no one could later find in the note.
-///
-/// Here the note carries the allowlisted attester's own key (so the allowlist gate passes and the
-/// signature check is really reached) together with that attester's signature over a DIFFERENT
-/// payload, and the host stages the witness that WOULD verify: the same attester's real signature
-/// over the carried payload, in the verifier's own advice encoding. The mint must still reject,
-/// because `verify_signature` publishes the note's own hash-verified bytes and pushes them last, so
-/// the 32 elements the verifier consumes are those and the host's witness stays below them,
-/// unread. If this test ever passes a mint, the binding is gone.
+/// The note carries the allowlisted attester's key with that attester's signature over a
+/// DIFFERENT payload, while the host stages the witness that would verify. The mint must
+/// reject. If this ever passes, the advice binding is gone.
 #[tokio::test]
 async fn mint_rejects_a_forged_signature_the_host_tries_to_rescue() -> Result<()> {
     let mut pf = fixture()?;

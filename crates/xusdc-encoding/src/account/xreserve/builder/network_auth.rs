@@ -13,7 +13,7 @@ use miden_protocol::asset::AssetAmount;
 use miden_protocol::note::NoteScriptRoot;
 use miden_standards::account::auth::{AuthNetworkAccount, NetworkAccountNoteAllowlistError};
 use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
-use miden_standards::note::{BurnNote, MintNote, PauseActionNote, RbacActionNote};
+use miden_standards::note::{BurnNote, MintNote, PauseConfigNote, RbacConfigNote};
 use miden_standards::tx_script::ExpirationTransactionScript;
 
 use super::XReserveStablecoinBuilder;
@@ -28,7 +28,7 @@ impl XReserveStablecoinBuilder {
     /// COMPLETE — the 8-root set: the two supply-side STOCK notes (`MintNote` + `BurnNote`), the
     /// three faucet-owned `ADMIN`-gated setters (`set_attester`, `set_min_burn_size` and
     /// `set_max_supply`), and the three STOCK
-    /// admin notes (`PauseActionNote`, `BlocklistConfigNote` and `RbacActionNote`), each covering
+    /// admin notes (`PauseConfigNote`, `BlocklistConfigNote` and `RbacConfigNote`), each covering
     /// EVERY one of its actions behind one script root. The set is IMMUTABLE IN EFFECT post-deploy:
     /// the stock component does export allowlist mutators at this protocol version, but they are
     /// present-but-UNREACHABLE — no allowlisted note references them and the tx-script allowlist
@@ -46,7 +46,7 @@ impl XReserveStablecoinBuilder {
     /// and a revoke of that role. The handover is single-step — there is no nominate-then-accept
     /// confirmation to protect against naming the wrong successor.
     ///
-    /// Role management is the STOCK `RbacActionNote`, one script root carrying FOUR actions:
+    /// Role management is the STOCK `RbacConfigNote`, one script root carrying FOUR actions:
     /// grant, revoke, set-role-admin and renounce. Allowlisting is per root, so admitting it admits
     /// all four, and two capabilities follow that the faucet did not previously have. The
     /// role-admin graph `seeded_dom_roles_rbac` builds is runtime-MUTABLE: a role's effective
@@ -73,13 +73,13 @@ impl XReserveStablecoinBuilder {
             crate::note::xreserve_admin::XReserveSetMaxSupplyNote::script_root(),
             // the STOCK pause-action note — pause AND unpause behind one root, calling
             // PausableManager, gated on DOM_PAUSER by the procedure-role map.
-            PauseActionNote::script_root(),
+            PauseConfigNote::script_root(),
             // the STOCK blocklist-config note — block AND unblock behind one root, calling
             // BlocklistManager, gated on BLK_MANAGER by the procedure-role map.
             crate::note::xreserve_admin::XReserveBlocklistNote::script_root(),
             // the STOCK role-action note — grant, revoke, set-role-admin AND renounce behind one
             // root, calling the stock role component, which gates every action on the note sender.
-            RbacActionNote::script_root(),
+            RbacConfigNote::script_root(),
         ])
     }
 

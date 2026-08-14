@@ -51,7 +51,7 @@ use miden_standards::errors::standards::{
 use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_standards::note::{
     BlocklistConfigNote, BurnNote, MintNote, NetworkAccountTarget, NoteExecutionHint,
-    PauseActionNote, RbacActionNote,
+    PauseConfigNote, RbacConfigNote,
 };
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::ExpirationTransactionScript;
@@ -228,11 +228,11 @@ fn production_faucet_note_allowlist_is_exactly_the_8_ratified_roots() -> Result<
         XReserveSetMinBurnSizeNote::script_root(),
         XReserveSetMaxSupplyNote::script_root(),
         // one standard note covers pausing AND unpausing
-        PauseActionNote::script_root(),
+        PauseConfigNote::script_root(),
         // one standard note covers blocking AND unblocking, gated on the blocklist manager role
         BlocklistConfigNote::script_root(),
         // one standard note covers grant, revoke, set-role-admin AND renounce
-        RbacActionNote::script_root(),
+        RbacConfigNote::script_root(),
     ]);
     assert_eq!(
         expected.len(),
@@ -462,7 +462,7 @@ fn mint_note_carries_the_merged_transport_and_the_routing_target() -> Result<()>
 }
 
 /// The burn note must carry the scheme-2 `NetworkAccountTarget` routing attachment addressed to the
-/// faucet with `NoteExecutionHint::Always` (and nothing else).
+/// faucet with `NoteExecutionHint::Always` (alongside the scheme-tagged withdrawal payload).
 #[test]
 fn burn_note_carries_scheme2_target_to_faucet() -> Result<()> {
     let (_chain, faucet) = production_faucet()?;
@@ -477,8 +477,9 @@ fn burn_note_carries_scheme2_target_to_faucet() -> Result<()> {
 
     assert_eq!(
         note.attachments().num_attachments(),
-        1,
-        "the burn note must carry exactly one attachment: the scheme-2 routing target",
+        2,
+        "the burn note must carry exactly two attachments: the scheme-2 routing target and the \
+         scheme-tagged withdrawal payload",
     );
     let target = NetworkAccountTarget::try_from(note.attachments())
         .map_err(|e| anyhow::anyhow!("the burn note must carry a scheme-2 routing target: {e}"))?;

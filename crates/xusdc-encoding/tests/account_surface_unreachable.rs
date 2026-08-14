@@ -30,7 +30,7 @@ use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::Word;
 use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, MintNote, PauseActionNote, RbacActionNote,
+    BlocklistConfigNote, BurnNote, MintNote, PauseConfigNote, RbacConfigNote,
 };
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
@@ -83,10 +83,10 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
         ("stock_burn_note", BurnNote::script()),
         ("set_attester", XReserveSetAttesterNote::script()),
         ("set_min_burn_size", XReserveSetMinBurnSizeNote::script()),
-        ("stock_pause_action_note", PauseActionNote::script()),
+        ("stock_pause_action_note", PauseConfigNote::script()),
         ("set_max_supply", XReserveSetMaxSupplyNote::script()),
         ("stock_blocklist_config_note", BlocklistConfigNote::script()),
-        ("stock_rbac_action_note", RbacActionNote::script()),
+        ("stock_rbac_action_note", RbacConfigNote::script()),
     ]
 }
 

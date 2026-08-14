@@ -33,7 +33,6 @@ use support::*;
 use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, XReserveStablecoinBuilder, XReserveStablecoinBuilderError,
 };
-use xusdc_encoding::xreserve::encoding::EthBytes32;
 
 const MAX_SUPPLY: u64 = 1_000_000;
 const NEW_FEE: u64 = 73;
@@ -88,7 +87,7 @@ fn build_with_fee_policy(
         .fee_policy(policy)
         .domain(TEST_DOMAIN)
         .source_domain(TEST_SOURCE_DOMAIN)
-        .xreserve_contract(EthBytes32::new(test_xreserve_contract()))
+        .xreserve_contract(test_xreserve_contract())
         .build()
 }
 

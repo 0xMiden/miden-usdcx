@@ -26,6 +26,7 @@ use miden_protocol::Word;
 use miden_standards::account::access::{Ownable2Step, PausableStorage};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::MinBurnAmount;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, IDENTIFIER_CONFIG_SLOT_LABEL};
 
 use crate::client::HarnessClient;
@@ -188,7 +189,7 @@ pub(crate) struct SanityDriver {
     /// The domain config every mint payload must carry so the structural validation gate accepts it. `None` on the
     /// fresh-LOCAL full gate (mints use the [`crate::mintburn::BASE_VECTOR`] header unchanged);
     /// `Some` on the existing-faucet (`--faucet-id`) re-check — resolved once from the DEPLOYED
-    /// faucet's on-chain `domain` + `account_id_to_bytes32(faucet_id)`, then applied to EVERY mint
+    /// faucet's on-chain `domain` + `EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()`, then applied to EVERY mint
     /// (positives, negatives, and burn-funding), since all target the same faucet.
     pub(crate) mint_config: Option<MintDomainConfig>,
 }

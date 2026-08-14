@@ -16,11 +16,10 @@ pub const USED_NONCES_SLOT = word("xusdc::xreserve::nonce_registry::used_nonces"
 # CONSTANTS — carried-value widths
 # =================================================================================================
 
-# How many u32-LE-packed limbs each carried value occupies. A DepositIntent field is often wider
+# How many u32-LE-packed limbs each carried value occupies. A DepositIntent field is sometimes wider
 # than the value inside it, which is what lets the mint intent carry the value alone; the pad
 # offsets that describe the difference belong with the field, in `xreserve::deposit_intent`.
 pub const BYTES32_PACKED_LIMBS = 8
-pub const EVM_ADDRESS_PACKED_LIMBS = 5
 
 pub const ACCOUNT_ID_FELTS = 2
 
@@ -32,8 +31,8 @@ pub const ACCOUNT_ID_FELTS = 2
 
 pub const MINT_INTENT_NONCE_FELT_OFF = 0
 pub const MINT_INTENT_LOCAL_TOKEN_FELT_OFF = MINT_INTENT_NONCE_FELT_OFF + BYTES32_PACKED_LIMBS
-pub const MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF = MINT_INTENT_LOCAL_TOKEN_FELT_OFF + EVM_ADDRESS_PACKED_LIMBS
-pub const MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF = MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF + EVM_ADDRESS_PACKED_LIMBS
+pub const MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF = MINT_INTENT_LOCAL_TOKEN_FELT_OFF + BYTES32_PACKED_LIMBS
+pub const MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF = MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF + BYTES32_PACKED_LIMBS
 
 # the recipient travels as [prefix, suffix], and the faucet reads the halves individually
 pub const MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF = MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF + 1
@@ -43,10 +42,10 @@ pub const MINT_INTENT_MAX_FEE_FELT_OFF = MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF +
 # maxFee is a single AssetAmount felt
 pub const MINT_INTENT_HOOK_DATA_LEN_FELT_OFF = MINT_INTENT_MAX_FEE_FELT_OFF + 1
 
-# The 22 content felts padded to the word boundary. hookData follows immediately, so this is also
-# the offset of the first packed hookData felt.
-pub const MINT_INTENT_FELTS = 24
-pub const MINT_INTENT_WORDS = 6
+# The content felts, which land on the word boundary exactly. hookData follows immediately, so this
+# is also the offset of the first packed hookData felt.
+pub const MINT_INTENT_FELTS = 28
+pub const MINT_INTENT_WORDS = 7
 
 # ERRORS
 # =================================================================================================

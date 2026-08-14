@@ -5,6 +5,9 @@
 
 use core::fmt;
 
+use miden_protocol::utils::serde::DeserializationError;
+use miden_standards::interop::eth::EthAmountError;
+
 use super::deposit_intent::DepositIntentField;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,7 +16,10 @@ pub enum EncodingError {
     /// A u32-LE-packed felt limb exceeds `u32::MAX` (the `packed_felts_to_bytes32` guard on the
     /// burn-note item decode, distinct from `LimbOutOfField`'s 8-byte/felt `>= p` Word-packing check).
     LimbNotU32,
+    /// A deposit amount too wide to reduce to an asset amount at all: the quotient does not fit a
+    /// `u64`. Every uint256 above 2^128 lands here, whatever the scale exponent.
     AmountTooLarge,
+    /// The reduced amount fits a `u64` but exceeds `AssetAmount::MAX`.
     AmountOverCap,
     ScaleExpTooLarge,
     BadMagic,
@@ -31,21 +37,18 @@ pub enum EncodingError {
     FieldNotAssetAmount {
         field: DepositIntentField,
     },
-    /// A bytes32 field the mint note carries as a 20-byte address holds something wider. Whether
-    /// every source domain Circle enables keeps these fields address-shaped is still Circle's to
-    /// confirm.
-    FieldNotEvmAddress {
-        field: DepositIntentField,
-    },
     /// The intent's `remoteToken` is not this faucet's account id.
     RemoteTokenMismatch,
+    /// The intent's `remoteDomain` is not the domain the consuming faucet has configured. The
+    /// faucet writes its own configured domain into the message it rebuilds, so a divergent one
+    /// changes the digest and the attestation stops verifying.
+    RemoteDomainMismatch {
+        expected: u32,
+        actual: u32,
+    },
     AccountIdOutOfRange,
     NonCanonicalAccountId,
     BurnItemsMalformed,
-    /// The 33-byte compressed SEC1 attester pubkey does not decode to a secp256k1 curve point
-    /// (the SEC1→affine decompression the on-chain affine commitment format requires;
-    /// such a key could never verify on-chain either).
-    InvalidPubkey,
     JsonSchema(String),
     BinaryMagic,
     BinaryLength,
@@ -56,7 +59,7 @@ impl fmt::Display for EncodingError {
         match self {
             Self::LimbOutOfField => write!(f, "a u64 limb is not a valid field element"),
             Self::LimbNotU32 => write!(f, "packed felt exceeds u32 range"),
-            Self::AmountTooLarge => write!(f, "larger than 2**128"),
+            Self::AmountTooLarge => write!(f, "post-scale quotient does not fit a u64"),
             Self::AmountOverCap => {
                 write!(f, "post-scale quotient exceeds the asset amount maximum")
             }
@@ -73,16 +76,16 @@ impl fmt::Display for EncodingError {
                     "deposit intent field {field:?} is not a valid asset amount"
                 )
             }
-            Self::FieldNotEvmAddress { field } => {
-                write!(
-                    f,
-                    "deposit intent field {field:?} is not a right-aligned evm address"
-                )
-            }
             Self::RemoteTokenMismatch => {
                 write!(
                     f,
                     "deposit intent remote token is not the faucet account id"
+                )
+            }
+            Self::RemoteDomainMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "deposit intent remote domain {actual} is not the faucet's configured domain {expected}"
                 )
             }
             Self::AccountIdOutOfRange => {
@@ -95,9 +98,6 @@ impl fmt::Display for EncodingError {
                 write!(f, "bytes do not decode to a canonical account id")
             }
             Self::BurnItemsMalformed => write!(f, "burn note items have the wrong length or shape"),
-            Self::InvalidPubkey => {
-                write!(f, "pubkey bytes do not decode to a secp256k1 curve point")
-            }
             Self::JsonSchema(msg) => write!(f, "circle json does not match the schema: {msg}"),
             Self::BinaryMagic => write!(f, "circle binary decoder magic mismatch"),
             Self::BinaryLength => write!(f, "circle binary length reconciliation failed"),
@@ -106,3 +106,29 @@ impl fmt::Display for EncodingError {
 }
 
 impl core::error::Error for EncodingError {}
+
+impl From<EncodingError> for DeserializationError {
+    /// Carries the reason across the protocol's deserialization boundary. The specific variant is
+    /// preserved by the typed entry points (`TryFrom<&[u8]>`), which is where callers that branch
+    /// on the failure read it; this spelling exists so the codecs can implement the standard
+    /// [`Deserializable`](miden_protocol::utils::serde::Deserializable) trait.
+    fn from(error: EncodingError) -> Self {
+        Self::InvalidValue(error.to_string())
+    }
+}
+
+impl From<EthAmountError> for EncodingError {
+    /// Re-spells the standards reducer's failures in this crate's error vocabulary, so a caller
+    /// of the encoding surface still handles one error type.
+    fn from(error: EthAmountError) -> Self {
+        match error {
+            EthAmountError::ScaleTooLarge => Self::ScaleExpTooLarge,
+            // both spellings of "wider than an asset amount can ever be": a quotient past the u64
+            // range, and a uint256 that overflowed before any scaling
+            EthAmountError::ScaledValueDoesNotFitU64 | EthAmountError::Overflow => {
+                Self::AmountTooLarge
+            }
+            EthAmountError::ScaledValueExceedsMaxFungibleAmount => Self::AmountOverCap,
+        }
+    }
+}

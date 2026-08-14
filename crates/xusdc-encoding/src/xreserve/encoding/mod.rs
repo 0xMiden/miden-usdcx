@@ -11,7 +11,6 @@ mod error;
 mod mint_intent;
 
 pub use account_id::*;
-pub use amount::*;
 pub use attestation::*;
 pub use burn_note::*;
 pub use bytes32::*;

@@ -48,7 +48,7 @@ async fn t_rly_07_404_retries_with_exponential_backoff_then_succeeds() {
         .await
         .expect("(4) the eventual 200 produces the validated triple");
 
-    assert_eq!(fetched.deposit_intent().as_bytes(), vector.payload());
+    assert_eq!(fetched.payload(), vector.payload());
     assert_eq!(fetched.attestation().len(), 65);
 
     // (1) the 404s were retried — three attempts reached the wire
@@ -191,7 +191,7 @@ async fn t_rly_18_500_retries_with_backoff_alerts_after_the_threshold_then_succe
     let fetched = fetch_attestation_by_message_hash(&client, &requested_hash(&vector))
         .await
         .expect("(4) the eventual 200 produces the validated triple");
-    assert_eq!(fetched.deposit_intent().as_bytes(), vector.payload());
+    assert_eq!(fetched.payload(), vector.payload());
 
     // (1) retried with exponential backoff
     let requests = mock.requests_to(Endpoint::ByHash);

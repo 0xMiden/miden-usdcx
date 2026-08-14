@@ -20,7 +20,7 @@ use miden_standards::account::fees::BasicConstantFeePolicy;
 use super::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL,
 };
-use crate::xreserve::encoding::EthBytes32;
+use crate::xreserve::encoding::ForeignChainAddress;
 
 // CONSTANTS
 // ================================================================================================
@@ -79,12 +79,12 @@ static XRESERVE_ATTESTERS_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|
 pub struct XReserveFaucetExtension {
     domain: u32,
     source_domain: u32,
-    xreserve_contract: EthBytes32,
+    xreserve_contract: ForeignChainAddress,
 }
 
 impl XReserveFaucetExtension {
     /// Instantiates a new [`XReserveFaucetExtension`].
-    pub fn new(domain: u32, source_domain: u32, xreserve_contract: EthBytes32) -> Self {
+    pub fn new(domain: u32, source_domain: u32, xreserve_contract: ForeignChainAddress) -> Self {
         Self {
             domain,
             source_domain,
@@ -231,7 +231,7 @@ pub fn build_faucet_account(
     fee_policy: BasicConstantFeePolicy,
     domain: u32,
     source_domain: u32,
-    xreserve_contract: EthBytes32,
+    xreserve_contract: ForeignChainAddress,
 ) -> Result<Account, XReserveStablecoinBuilderError> {
     XReserveStablecoinBuilder::builder()
         .max_supply(max_supply)

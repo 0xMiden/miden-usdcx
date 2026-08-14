@@ -7,9 +7,9 @@
 # knows the DepositIntent layout — `xreserve::deposit_intent` composes these into the writer that
 # does.
 #
-# Every copy guards the limb it moves, because a limb that lands in the region becomes part of the
-# hash-committed message: keccak's host-side byte reader refuses a felt above u32, but as an
-# anonymous host failure rather than an assertion, so the guard is what names the fault.
+# The bytes32 copy guards the limbs it moves, because those fields identify the deposit and a bad
+# limb there is worth naming: keccak's host-side byte reader refuses a felt above u32 too, but as an
+# anonymous host failure rather than an assertion.
 
 use miden::standards::utils
 
@@ -41,55 +41,6 @@ const ERR_XRESERVE_MINT_INTENT_LIMB = "mint intent limb is not a valid u32"
 #! Invocation: exec
 pub proc div_ceil_four
     u32divmod.4 neq.0 add
-end
-
-#! Copies one u32-LE-packed element, guarding it before it lands, and advances both pointers.
-#!
-#! Named for `miden::core::mem::memcopy_elements`, narrowed to the packed-limb case by the guard.
-#!
-#! Inputs:  [dst_ptr, src_ptr]
-#! Outputs: [dst_ptr+1, src_ptr+1]
-#!
-#! Panics if:
-#! - the copied element is not a valid u32 (ERR_XRESERVE_MINT_INTENT_LIMB).
-#!
-#! Invocation: exec
-pub proc memcopy_u32_element
-    dup.1 mem_load u32assert.err=ERR_XRESERVE_MINT_INTENT_LIMB
-    # => [element, dst_ptr, src_ptr]
-
-    dup.1 mem_store
-    # => [dst_ptr, src_ptr]
-
-    add.1 swap add.1 swap
-    # => [dst_ptr+1, src_ptr+1]
-end
-
-#! Copies a run of `num_elements` packed elements whose length is only known at run time.
-#!
-#! Inputs:  [num_elements, dst_ptr, src_ptr]
-#! Outputs: []
-#!
-#! Panics if:
-#! - a copied element is not a valid u32 (ERR_XRESERVE_MINT_INTENT_LIMB).
-#!
-#! Invocation: exec
-pub proc memcopy_u32_elements
-    dup neq.0
-    # => [is_more, num_elements, dst_ptr, src_ptr]
-
-    while.true
-        # => [num_elements, dst_ptr, src_ptr]
-        movdn.2 exec.memcopy_u32_element movup.2
-        # => [num_elements, dst_ptr+1, src_ptr+1]
-
-        sub.1 dup neq.0
-        # => [is_more, num_elements-1, dst_ptr+1, src_ptr+1]
-    end
-    # => [num_elements, dst_ptr, src_ptr]
-
-    drop drop drop
-    # => []
 end
 
 #! Copies a bytes32's eight packed limbs, guarding them.

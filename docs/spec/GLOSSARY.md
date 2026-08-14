@@ -71,9 +71,10 @@ alone discharges it:
 | the placement row | the writer puts *that* field at *that* offset, so the reject is the intended one | the per-field case in `rebuild_places_each_carried_field`, `masm_mint_shell.rs` |
 
 Diagnosability regresses accordingly: during an incident the on-chain error no longer localizes the
-cause. The mitigation is off-chain — the relayer pre-validates with the Rust mirror
-(`MintIntent::from_deposit_intent`), which rejects each of these with its own typed error and
-should never submit such a note.
+cause. The mitigation is off-chain — the relayer pre-validates with the Rust mirror, which rejects each of
+these with its own typed error and should never submit such a note. The decode
+(`DepositIntent::try_from`) owns everything that is a property of the payload alone; the compress
+(`MintIntent::from_deposit_intent`) owns the two compares against the faucet the note is built for.
 
 ## Burn reject conditions — `R-BURN-<n>`
 
@@ -127,7 +128,7 @@ Security/correctness properties the faucet must uphold. The faucet-binding ones:
 | INV-TWO-BLOCK-BURN | A burn note is created in block N and consumed in block ≥ N+1; a same-block create+consume is erased. |
 | INV-NO-ECRECOVER | No key recovery on-chain; ECDSA is verified against a supplied candidate pubkey + commitment allowlist. |
 | INV-DEPOSITINTENT-PARSE | Fixed-offset 240-byte header = 60 u32-LE-packed felts plus hookData; all field asserts; note input is read-only. |
-| INV-UINT256-TO-ASSETAMOUNT | uint256 reduction: assert the high half is zero, floor-divide by 10^scale, cap at `AssetAmount::MAX`; trap, never saturate. |
+| INV-UINT256-TO-ASSETAMOUNT | uint256 reduction: floor-divide by 10^scale, reject a quotient wider than a `u64`, cap at `AssetAmount::MAX`; trap, never saturate. |
 | INV-BYTES32-HASH-TO-WORD | bytes32 → Word via Poseidon2 `hash_elements` over the 8 u32-LE limbs (the raw fallible `TryFrom` is not used on this path). |
 | INV-DEPOSIT-ATTESTATION-RAW-KECCAK | Raw secp256k1 ECDSA over `keccak256(full payload)`, 65-byte `r‖s‖v`, `v` unused; not EIP-712. |
 | INV-ACCOUNTID-ENCODING | AccountId ↔ bytes32 is lossless with a fail-closed decode; reject any non-zero byte in the leading pad. |
@@ -166,7 +167,7 @@ Codec decisions owned by the `xusdc-encoding` crate (`xreserve::encoding`).
 | DC-8 | Burn-evidence package assembly (`burnTxId` + `note_id` + `nullifier` + `block_num` + proof-strength labels). Owned by the off-chain **listener**, not this crate. |
 | DC-9 / DC-10 / DC-11 / DC-12 | Circle JSON request/response schema types (off-chain Rust type definitions). Not on-chain. |
 | DC-13 | Optional decoders for Circle-returned binary blobs (`TransferSpec`/`BurnIntent`/`WithdrawHookData`); off-chain validation only, non-gating. |
-| DC-14 | The mint-note carried payload and the on-chain reconstruction of the DepositIntent preimage. The note carries only what the faucet cannot derive — `nonce`, `localToken`, `localDepositor`, `remoteRecipient`, `maxFee`, `hookDataLen` and `hookData`; the faucet writes `magic`, `version`, `amount` (from the note's asset value), `remoteDomain` (from its config slot) and `remoteToken` (from its own id) into the canonical `240 + hookDataLen`-byte preimage before hashing. Owned by the faucet (01); the felt offsets are 04's (`mint_intent.masm`). Requires `DEPOSIT_SCALE_EXP == 0` and a 20-byte right-aligned EVM address in `localToken` / `localDepositor` — see `DEV-5` and `Q-EVM-ADDR-1`, both **OPEN**. |
+| DC-14 | The mint-note carried payload and the on-chain reconstruction of the DepositIntent preimage. The note carries only what the faucet cannot derive — `nonce`, `localToken`, `localDepositor`, `remoteRecipient`, `maxFee`, `hookDataLen` and `hookData`; the faucet writes `magic`, `version`, `amount` (from the note's asset value), `remoteDomain` (from its config slot) and `remoteToken` (from its own id) into the canonical `240 + hookDataLen`-byte preimage before hashing. Owned by the faucet (01); the felt offsets are 04's (`mint_intent.masm`). `localToken` and `localDepositor` are carried as the wire form's full bytes32, so a source chain whose addresses are not EVM-shaped is mintable. Requires `DEPOSIT_SCALE_EXP == 0` — see `DEV-5`, **OPEN**. |
 
 ## Naming decisions — `NS-<n>`
 
@@ -227,7 +228,6 @@ Beyond these, `Q-<...>` labels in comments/fixtures mark a value or choice as aw
 - `Q-ADMIN-1` — is the canonical `xReserveAttesters` key type `address` or `bytes32`?
 - `Q-CRY-4` — does the AccountId↔bytes32 encoding (`DEV-10`) apply to `remoteToken` / the faucet's bytes32 identifier as well as to `remoteRecipient`?
 - `Q-DA-QUORUM` (**OPEN** — Circle-owned) — the current transport carries one attestation; confirm whether the production design remains single-signer or requires a quorum.
-- `Q-EVM-ADDR-1` (**OPEN** — Circle-owned) — `DC-14` carries `localToken` and `localDepositor` as 20 bytes each, on the assumption that both bytes32 fields always hold a right-aligned EVM address. Confirm that holds for every source domain Circle will enable. A source chain with a wider address makes such a deposit unmintable under `DC-14` until a new transport ships; the relayer detects it at compress time and never submits the note, so it degrades to an off-chain error rather than a failed transaction.
 - `Q-FEE-MVP` — confirm the MVP's fail-loud `feeAmount==0` reject (the CIR-FEE-2 relayer-credit split is deferred to mainnet/production-final; see `F2`). Distinct from the narrower `Q-MIN-2`, which covers only the zero-fee note structure. Question to Circle pending (orchestrator-owned).
 
 ## Circle requirement ids — `CIR-<AREA>-<n>`
@@ -346,19 +346,19 @@ the OPEN `DEV-7` decision and makes no acceptability verdict of its own.
 
 | Id | Checks |
 |---|---|
-| TV-AMT-1 | An in-bound 6-dp amount reduces to the expected `AssetAmount`. |
-| TV-AMT-2 | Boundary accept: exactly `AssetAmount::MAX` (post-scale) is accepted. |
-| TV-AMT-3 | Boundary reject: `MAX + 1` (post-scale) is rejected (over cap). |
-| TV-AMT-4 | High-limb reject: a value > 2^128 (high 4 limbs non-zero) is rejected ("too large"). |
-| TV-AMT-5 | Reduced compare: `amount ≥ maxFee` is false when `amount < maxFee` after reduction. |
-| TV-AMT-6 | Dust: a non-zero remainder is surfaced (off-chain only); dust policy stays OPEN (`DEV-5`). |
-| TV-AMT-7 | Scale-overflow reject: `10^scale_exp` overflow is rejected. |
+| TV-AMT-1 | An in-bound amount reduces to the expected `AssetAmount`. |
+| TV-AMT-2 | Boundary accept: exactly `AssetAmount::MAX` is accepted. |
+| TV-AMT-3 | Boundary reject: `MAX + 1` is rejected (over cap). |
+| TV-AMT-4 | High-limb reject: a value > 2^128 is rejected ("too large") — no scale in `0..=18` brings it back inside a `u64`. |
+| ~~TV-AMT-5~~ | **Retired.** The reduced compare was Rust-fn-only scaffolding around a scale parameter that no longer exists; the `amount ≥ maxFee` compare itself is the MASM's. |
+| ~~TV-AMT-6~~ | **Retired.** Dust is identically zero at the shipped `DEPOSIT_SCALE_EXP == 0`, so there was no remainder left to surface. The dust POLICY stays OPEN (`DEV-5`); reopening it restores the row together with the non-zero-scale transport `DEV-5` needs. |
+| ~~TV-AMT-7~~ | **Retired.** The scale is a crate constant rather than a caller-supplied parameter, so an out-of-range exponent is no longer reachable. `EncodingError::ScaleExpTooLarge` is kept — the standards reducer's error is still mapped exhaustively. |
 
 **AccountId ↔ bytes32 (`TV-AID-*`)**
 
 | Id | Checks |
 |---|---|
-| TV-AID-1 | Round-trip: `bytes32_to_account_id(account_id_to_bytes32(id)) == id`. |
+| TV-AID-1 | Round-trip: `EthEmbeddedAccountId::try_from_bytes32(embedded.to_bytes32()) == embedded`. |
 | TV-AID-2 | Reject a non-zero byte in the leading pad; reject a non-canonical prefix/suffix. |
 | TV-AID-3 | The address-type discriminant is fixed and there is no keccak-fallback branch. |
 | TV-AID-4 | The two-felt decomposition matches the bytes32 layout: `prefix` at bytes 16..24, `suffix` at bytes 24..32 (loaded on stack as `[suffix, prefix]`). |
@@ -404,7 +404,7 @@ in `tests/masm_dual.rs`); `-4` is Rust-only because `DC-7` has no MASM side.
 | TV-DUAL-3 | DepositIntent parse: Rust and MASM agree on accept/reject and the 60-felt preimage. Rust-only on the mint path after `DC-14` — the MASM parser is retired (`NS-2`), so the MASM leg is `TV-DUAL-6`. |
 | TV-DUAL-4 | Burn-note items: the Rust-emitted burn note's withdrawal-payload attachment matches the Rust codec and the golden felts (an emit-vs-codec check within Rust — `DC-7` is Rust-only, there is no MASM burn-item codec). |
 | TV-DUAL-5 | Attestation packing/commitment: Rust and MASM produce the identical felts / commitment. |
-| TV-DUAL-6 | `DC-14` preimage reconstruction, in three parts: the Rust round trip (`to_deposit_intent_bytes` after `from_deposit_intent` returns the original bytes); MASM/Rust parity (the felts `rebuild` writes equal the Rust reconstruction's); and per-field placement (mutating one carried field moves exactly that field's bytes). |
+| TV-DUAL-6 | `DC-14` preimage reconstruction, in three parts: the Rust round trip (`to_deposit_intent` after `from_deposit_intent`, re-encoded, returns the original bytes); MASM/Rust parity (the felts `rebuild` writes equal the Rust reconstruction's); and per-field placement (mutating one carried field moves exactly that field's bytes). |
 
 `TV-CIRCLE-DIFF` = a differential check of the DepositIntent parse against a locally-reconstructed
 Circle ground-truth fixture. The faucet test harness also groups scenarios under module ids

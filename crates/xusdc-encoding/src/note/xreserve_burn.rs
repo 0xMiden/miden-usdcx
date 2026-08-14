@@ -27,7 +27,7 @@ use miden_protocol::note::{
     Note, NoteAssets, NoteAttachment, NoteAttachmentScheme, NoteAttachments, NoteRecipient,
     NoteScript, NoteScriptRoot, NoteStorage, NoteTag, NoteType, PartialNoteMetadata,
 };
-use miden_protocol::{Felt, Word};
+use miden_protocol::{Felt, Word, WORD_SIZE};
 use miden_standards::note::BurnNote;
 
 use crate::xreserve::encoding::{XReserveBurnItems, BURN_NOTE_ITEMS_FELTS};
@@ -58,6 +58,63 @@ pub const XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME: u16 = 6;
 /// boundary (5 words, 2 pad felts). Fixed, because [`BURN_NOTE_ITEMS_FELTS`] is fixed.
 pub const XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS: usize = 5;
 
+/// The withdrawal payload a burn note carries — the [`XReserveBurnItems`] the off-chain attester
+/// decodes.
+///
+/// This is the scheme-6 withdrawal attachment in domain form. It converts into the
+/// [`NoteAttachment`] the note id commits to, the way [`XUsdcDeposit`] converts into the mint
+/// note's scheme-4 transport one.
+///
+/// [`XUsdcDeposit`]: crate::note::xreserve_mint::XUsdcDeposit
+pub struct XUsdcBurnAttachment {
+    items: XReserveBurnItems,
+}
+
+impl XUsdcBurnAttachment {
+    /// Wraps the withdrawal payload the burn note carries.
+    pub fn new(items: XReserveBurnItems) -> Self {
+        Self { items }
+    }
+
+    /// The carried withdrawal payload.
+    pub fn items(&self) -> &XReserveBurnItems {
+        &self.items
+    }
+}
+
+impl From<&XUsdcBurnAttachment> for NoteAttachment {
+    /// Builds the withdrawal attachment: the payload felts, zero-padded to the word boundary.
+    ///
+    /// The encoding is the shared codec the off-chain attester decodes with, so the write and the
+    /// read side cannot drift apart.
+    fn from(attachment: &XUsdcBurnAttachment) -> Self {
+        let mut elements = attachment.items.encode();
+        while !elements.len().is_multiple_of(Word::NUM_ELEMENTS) {
+            elements.push(Felt::ZERO);
+        }
+
+        let words: Vec<Word> = elements
+            .chunks_exact(Word::NUM_ELEMENTS)
+            .map(|chunk| Word::new([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        NoteAttachment::with_words(
+            NoteAttachmentScheme::new(XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME)
+                .expect("the withdrawal scheme is neither reserved nor past the protocol maximum"),
+            words,
+        )
+        // the payload is fixed-width, so the word count is the constant asserted below
+        .expect("the withdrawal payload is within the per-attachment word cap")
+    }
+}
+
+// the padded payload is what fixes the attachment's word count, so the two cannot drift apart — and
+// that fixed count is what makes the conversion above infallible.
+const _: () = assert!(
+    BURN_NOTE_ITEMS_FELTS.div_ceil(WORD_SIZE) == XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS
+        && XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS <= NoteAttachment::MAX_NUM_WORDS as usize,
+    "the padded withdrawal payload must occupy the declared number of words, within the cap"
+);
+
 /// The public burn-event note. A standalone unit-struct note factory.
 pub struct XReserveBurnNote;
 
@@ -73,26 +130,6 @@ impl XReserveBurnNote {
     /// Returns the (reused) stock burn note script root.
     pub fn script_root() -> NoteScriptRoot {
         BurnNote::script_root()
-    }
-
-    /// Builds the withdrawal-payload attachment — the carrier's write side. The 18 payload felts the
-    /// shared codec encodes, zero-padded to the word boundary and wrapped in the scheme-tagged
-    /// attachment. Mirrors the mint transport's `transport_attachment`.
-    fn withdrawal_attachment(items: &XReserveBurnItems) -> Result<NoteAttachment, NoteError> {
-        // the shared codec is the same routine the off-chain attester decodes with, so encode and
-        // decode cannot drift apart.
-        let mut felts = items.encode();
-        while !felts.len().is_multiple_of(4) {
-            felts.push(Felt::from(0u32));
-        }
-        let words: Vec<Word> = felts
-            .chunks_exact(4)
-            .map(|chunk| Word::new([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect();
-        NoteAttachment::with_words(
-            NoteAttachmentScheme::new(XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME)?,
-            words,
-        )
     }
 
     /// Convenience constructor over the [`XReserveBurnItems`] payload (a thin delegator to the
@@ -120,9 +157,7 @@ impl XReserveBurnNote {
     /// `NoteAssets` = the burned xUSDC `FungibleAsset` (`amount` issued by `faucet_id`), and
     /// `NoteStorage.items` = the stock 8-felt asset layout the stock burn script asserts against. The
     /// `(amount, destDomain, destRecipient, salt)` withdrawal payload rides in a scheme-tagged
-    /// [`attachment`](Self::withdrawal_attachment) encoded with the shared codec (the burn note's
-    /// dedicated [`XReserveBurnItems`] payload type). The note's amount is single-sourced from
-    /// `items.amount`.
+    /// [`XUsdcBurnAttachment`]. The note's amount is single-sourced from `items.amount`.
     #[builder]
     pub fn new<R: FeltRng>(
         sender: AccountId,
@@ -155,7 +190,7 @@ impl XReserveBurnNote {
         // receive_and_burn and the burn policy.
         let attachments = NoteAttachments::new(vec![
             super::network_routing_attachment(faucet_id)?,
-            Self::withdrawal_attachment(&items)?,
+            NoteAttachment::from(&XUsdcBurnAttachment::new(items)),
         ])?;
 
         Ok(Note::with_attachments(

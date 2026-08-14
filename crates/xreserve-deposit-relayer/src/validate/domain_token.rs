@@ -23,7 +23,7 @@
 use crate::circle::schema::InfoResponse;
 use crate::config::RelayerConfig;
 use crate::error::RelayerError;
-use crate::validate::deposit_intent::DepositIntent;
+use xusdc_encoding::xreserve::encoding::{DepositIntent, EthEmbeddedAccountId};
 
 /// Runs the fast-fail: does this attestation describe a deposit destined for the xUSDC faucet this
 /// relayer serves?
@@ -48,19 +48,25 @@ pub fn check_domain_token_against_info(
     info: &InfoResponse,
     config: &RelayerConfig,
 ) -> Result<(), RelayerError> {
+    let header = intent.header();
+
     let expected_domain = config.remote_domain();
-    if intent.remote_domain() != expected_domain {
+    if header.remote_domain() != expected_domain {
         return Err(RelayerError::DomainMismatch {
             expected: expected_domain,
-            actual: intent.remote_domain(),
+            actual: header.remote_domain(),
         });
     }
 
+    // the comparison runs in the wire form rather than as account ids: the configured identifier is
+    // an operator-set placeholder that need not be a well-formed one at all (`REQUIRES CIRCLE
+    // CONFIRMATION`), and a mismatch must report what was configured, not fail to parse it
     let expected_token = config.xusdc_identifier();
-    if intent.remote_token() != expected_token {
+    let actual_token = EthEmbeddedAccountId::from_account_id(header.remote_token()).to_bytes32();
+    if &actual_token != expected_token {
         return Err(RelayerError::TokenMismatch {
             expected: *expected_token,
-            actual: *intent.remote_token(),
+            actual: actual_token,
         });
     }
 

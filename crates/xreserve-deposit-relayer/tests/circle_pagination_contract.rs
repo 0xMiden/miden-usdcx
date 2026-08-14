@@ -75,10 +75,7 @@ async fn t_rly_03_batch_poll_puts_the_full_documented_query_surface_on_the_wire(
 
     // the page body decodes (LIST shape, no wrapper) and every element is envelope-validated
     assert_eq!(page.attestations().len(), 1);
-    assert_eq!(
-        page.attestations()[0].deposit_intent().as_bytes(),
-        vector.payload()
-    );
+    assert_eq!(page.attestations()[0].payload(), vector.payload());
     assert_eq!(page.attestations()[0].attestation().len(), 65);
 
     let requests = mock.requests_to(Endpoint::Batch);
@@ -239,8 +236,8 @@ async fn t_rly_03_forward_poll_advances_the_next_cursor_until_it_is_absent() {
         2,
         "both pages were consumed, then the scan stopped"
     );
-    assert_eq!(collected[0].deposit_intent().as_bytes(), vector_a.payload());
-    assert_eq!(collected[1].deposit_intent().as_bytes(), vector_b.payload());
+    assert_eq!(collected[0].payload(), vector_a.payload());
+    assert_eq!(collected[1].payload(), vector_b.payload());
 
     let requests = mock.requests_to(Endpoint::Batch);
     assert_eq!(requests.len(), 2, "exactly two pages were fetched");

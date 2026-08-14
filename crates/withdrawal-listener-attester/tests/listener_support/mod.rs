@@ -56,6 +56,7 @@ use withdrawal_listener_attester::types::BurnPayload;
 use withdrawal_listener_attester::validate::{
     DiscoveredDetails, DiscoveryRecord, ValidatedWithdrawal,
 };
+use xusdc_encoding::xreserve::encoding::ForeignChainAddress;
 
 use evidence_support::UnitPort;
 use mock_circle::{Endpoint, MockCircle, Reply, Script};
@@ -102,7 +103,9 @@ pub fn payload() -> BurnPayload {
     BurnPayload {
         amount: AssetAmount::new(spec["value"].as_str().unwrap().parse().unwrap()).unwrap(),
         dest_domain: spec["destinationDomain"].as_u64().unwrap() as u32,
-        dest_recipient: decode_hex32(spec["destinationRecipient"].as_str().unwrap()),
+        dest_recipient: ForeignChainAddress::new(decode_hex32(
+            spec["destinationRecipient"].as_str().unwrap(),
+        )),
         salt: [0x5a; 32],
     }
 }

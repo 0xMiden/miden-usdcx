@@ -38,12 +38,23 @@ sha3 = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 miden-crypto = { version = "0.29", default-features = false, features = ["std"], optional = true }
 
+[build-dependencies]
+miden-assembly             = { workspace = true, features = ["std"] }
+miden-core-lib             = { workspace = true }
+miden-package-registry     = { workspace = true, features = ["resolver", "std"] }
+miden-protocol             = { version = "=0.16.0-rc.4" }
+miden-protocol-build-utils = { workspace = true }
+miden-standards            = { version = "=0.16.0-rc.4" }
+
 [features]
 # Enables the canonical golden-vector generator binary. Its keccak/commitment crates live
 # behind this feature so they never enter the library or the normal test build (k256 is a
 # regular dependency); regenerate the artifact with
 # `cargo run --bin gen_vectors --features vectors`.
 vectors = ["dep:sha3", "dep:rand", "dep:miden-crypto"]
+
+# Exposes the whole `xreserve` MASM library.
+testing = []
 
 # The committed-artifact generator: a normal binary, so its deps are real
 # [dependencies] (optional, feature-gated) — `cargo run --bin` cannot see dev-deps.
@@ -52,6 +63,8 @@ name = "gen_vectors"
 required-features = ["vectors"]
 
 [dev-dependencies]
+# This crate depends on ITSELF so the `testing` feature is on for the test build.
+xusdc-encoding  = { path = ".", features = ["testing"] }
 miden-standards = { version = "=0.16.0-rc.4", features = ["testing"] }
 miden-testing   = { version = "=0.16.0-rc.4" }
 miden-tx        = { version = "=0.16.0-rc.4" }

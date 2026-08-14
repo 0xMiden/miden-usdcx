@@ -494,7 +494,7 @@ pub fn assert_no_effects(pf: &ProductionFaucet, payload: &[u8]) -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            XReserveComponent::used_nonces_slot(),
+            XReserveFaucetExtension::used_nonces_slot(),
             nonce_key_of_payload(payload)
         )?,
         Word::empty(),

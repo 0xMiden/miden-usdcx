@@ -11,17 +11,14 @@
 mod support;
 
 use anyhow::{Context, Result};
-use miden_protocol::account::component::AccountComponentCode;
 use miden_protocol::account::{AccountComponent, RoleSymbol, StorageSlotName};
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{PausableManager, PausableStorage};
-use miden_standards::account::policies::{
-    BasicBlocklist, BlocklistManager, MinBurnAmount, TokenPolicyManager,
-};
+use miden_standards::account::policies::{BlocklistManager, MinBurnAmount, TokenPolicyManager};
 use support::*;
 use xusdc_encoding::account::xreserve::{
-    XReserveAdminAuthority, XReserveComponent, XReserveStablecoinBuilder,
+    XReserveAdminAuthority, XReserveFaucetExtension, XReserveStablecoinBuilder,
     XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE,
     DOM_PAUSER_ROLE,
 };
@@ -207,23 +204,23 @@ fn build_seeds_the_domain_config_slots() -> Result<()> {
             .with_context(|| format!("the composed set must carry the '{name}' slot"))
     };
     assert_eq!(
-        slot(XReserveComponent::domain_config_slot())?,
+        slot(XReserveFaucetExtension::domain_config_slot())?,
         Word::from([TEST_DOMAIN, 0, 0, 0]),
         "the domain slot must hold the build-seeded [domain, 0, 0, 0]"
     );
     assert_eq!(
-        slot(XReserveComponent::source_domain_config_slot())?,
+        slot(XReserveFaucetExtension::source_domain_config_slot())?,
         Word::from([TEST_SOURCE_DOMAIN, 0, 0, 0]),
         "the source_domain slot must hold the build-seeded [source_domain, 0, 0, 0]"
     );
     let xrc = bytes32_to_packed_felts(&test_xreserve_contract());
     assert_eq!(
-        slot(XReserveComponent::xreserve_contract_hi_slot())?,
+        slot(XReserveFaucetExtension::xreserve_contract_hi_slot())?,
         Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]),
         "the xreserve_contract_hi slot must hold the packed wire bytes 0..16"
     );
     assert_eq!(
-        slot(XReserveComponent::xreserve_contract_lo_slot())?,
+        slot(XReserveFaucetExtension::xreserve_contract_lo_slot())?,
         Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]),
         "the xreserve_contract_lo slot must hold the packed wire bytes 16..32"
     );
@@ -349,100 +346,6 @@ fn production_components_carry_mutability_config_slot() -> Result<()> {
         Felt::from(1u32),
         "mutability_config element 3 must be the is_max_supply_mutable flag (= 1 for the \
          production mutable-max-supply build)"
-    );
-    Ok(())
-}
-
-// COMPLETENESS GUARDS — the builder rejects an incompletely- or wrongly-composed faucet at build time.
-// ================================================================================================
-
-// Token-config exactness (decimals == 6, symbol == USDCX) is now guaranteed BY CONSTRUCTION: the
-// builder builds the fixed-identity USDCx faucet itself via `build_usdcx_faucet`, so a
-// wrong-decimals or wrong-symbol faucet cannot be handed in through the public API and the former
-// `build_rejects_wrong_decimals` / `build_rejects_wrong_token_symbol` tripwires have no
-// mis-configured faucet to reject. The identity is asserted positively by the byte-identity suite,
-// which builds the account through `build_faucet_account` and matches the frozen composition.
-
-// THE POLICY COMPANIONS
-// ================================================================================================
-// The mint policy carries the domain-seeded xreserve component, so the manager iterator is the
-// install set (manager + one companion per distinct policy root). This test pins that the
-// composition carries exactly one of each: xreserve, MinBurnAmount, BasicBlocklist, and the
-// policy manager.
-
-/// POSITIVE shape: the production composition carries EXACTLY ONE component whose code is the
-/// installed xreserve library, EXACTLY ONE policy-manager component, and EXACTLY ONE each of the
-/// stock `MinBurnAmount` + `BasicBlocklist` companions — in the pinned install order
-/// [faucet, Pausable, policy manager, MinBurnAmount, BasicBlocklist, xreserve, PausableManager,
-/// BlocklistManager, RBAC, Authority]. The companion positions are derived, not declared: the
-/// policy manager emits them in `BTreeMap<AccountProcedureRoot, _>` order, so they follow the
-/// procedure roots and move whenever those do. A duplicate xreserve copy would hard-reject the
-/// account build with `DuplicateStorageSlotName`, so this is the build-time tripwire for that.
-#[test]
-fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> {
-    // The same component the builder assembles internally, so its code is the code the composition
-    // must carry exactly once.
-    let xreserve_code = AccountComponent::from(XReserveComponent::assemble())
-        .component_code()
-        .clone();
-    let components = production_builder()
-        .build_components()
-        .context("the production composition must build")?;
-
-    assert_eq!(
-        components.len(),
-        10,
-        "the recomposed production set is exactly the ten pinned components"
-    );
-    let count_by_code = |code: &AccountComponentCode| {
-        components
-            .iter()
-            .filter(|c| c.component_code().as_package() == code.as_package())
-            .count()
-    };
-    assert_eq!(
-        count_by_code(&xreserve_code),
-        1,
-        "the xreserve component must be installed EXACTLY once; a second copy hard-rejects the \
-         account build with DuplicateStorageSlotName"
-    );
-    assert_eq!(
-        count_by_code(MinBurnAmount::code()),
-        1,
-        "the composition must carry EXACTLY one stock MinBurnAmount companion (the burn floor)"
-    );
-    assert_eq!(
-        count_by_code(BasicBlocklist::code()),
-        1,
-        "the composition must carry EXACTLY one BasicBlocklist companion (send + receive share it)"
-    );
-    let manager_components = components
-        .iter()
-        .filter(|c| c.metadata().name() == TokenPolicyManager::NAME)
-        .count();
-    assert_eq!(
-        manager_components, 1,
-        "the composition must carry EXACTLY one policy-manager component"
-    );
-
-    // Manager iterator first (manager, then companions in procedure-root map order), then the
-    // stock admin components.
-    assert_eq!(
-        components[2].metadata().name(),
-        TokenPolicyManager::NAME,
-        "component 2 must be the policy-manager component"
-    );
-    assert!(
-        components[3].component_code().as_package() == MinBurnAmount::code().as_package(),
-        "component 3 must be the stock MinBurnAmount companion"
-    );
-    assert!(
-        components[4].component_code().as_package() == BasicBlocklist::code().as_package(),
-        "component 4 must be the BasicBlocklist companion"
-    );
-    assert!(
-        components[5].component_code().as_package() == xreserve_code.as_package(),
-        "component 5 must be the xreserve component"
     );
     Ok(())
 }

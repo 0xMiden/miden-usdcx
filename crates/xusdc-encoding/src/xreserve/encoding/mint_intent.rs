@@ -69,7 +69,7 @@ pub const MINT_INTENT_SCALE_EXP: u32 = 0;
 
 /// Felt offsets within the carried payload. The nonce leads so the widest verbatim run starts
 /// word-aligned, and the two single-felt fields trail so every wider field stays contiguous. The
-/// MASM twins are in `asm/standards/xreserve/mint_intent.masm`.
+/// MASM twins are in `asm/xreserve/mint_intent.masm`.
 pub const MINT_INTENT_NONCE_FELT_OFF: usize = 0;
 pub const MINT_INTENT_LOCAL_TOKEN_FELT_OFF: usize =
     MINT_INTENT_NONCE_FELT_OFF + BYTES32_PACKED_LIMBS;

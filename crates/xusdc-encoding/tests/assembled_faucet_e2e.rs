@@ -48,7 +48,9 @@ use miden_standards::note::{P2idNote, P2idNoteStorage, RbacConfig, RbacConfigNot
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use support::*;
-use xusdc_encoding::account::xreserve::{XReserveComponent, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
+use xusdc_encoding::account::xreserve::{
+    XReserveFaucetExtension, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+};
 use xusdc_encoding::note::xreserve_admin::{
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
@@ -493,7 +495,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet0,
-            XReserveComponent::xreserve_attesters_slot(),
+            XReserveFaucetExtension::xreserve_attesters_slot(),
             attester1.commitment
         )?,
         Word::from([0u32, 0, 0, 0]),
@@ -508,7 +510,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            XReserveComponent::xreserve_attesters_slot(),
+            XReserveFaucetExtension::xreserve_attesters_slot(),
             attester1.commitment
         )?,
         Word::from([0u32, 0, 0, 0]),
@@ -521,7 +523,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &committed(&pf.mock_chain, faucet_id)?,
-            XReserveComponent::xreserve_attesters_slot(),
+            XReserveFaucetExtension::xreserve_attesters_slot(),
             attester1.commitment
         )?,
         marker(),
@@ -631,7 +633,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &committed(&pf.mock_chain, faucet_id)?,
-            XReserveComponent::used_nonces_slot(),
+            XReserveFaucetExtension::used_nonces_slot(),
             nonce_key_of_payload(&payload1)
         )?,
         marker(),
@@ -841,7 +843,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            XReserveComponent::used_nonces_slot(),
+            XReserveFaucetExtension::used_nonces_slot(),
             nonce_key_of_payload(&payload2)
         )?,
         Word::from([0u32, 0, 0, 0]),
@@ -1013,7 +1015,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            XReserveComponent::used_nonces_slot(),
+            XReserveFaucetExtension::used_nonces_slot(),
             nonce_key_of_payload(&payload1)
         )?,
         marker(),
@@ -1022,7 +1024,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            XReserveComponent::used_nonces_slot(),
+            XReserveFaucetExtension::used_nonces_slot(),
             nonce_key_of_payload(&payload2)
         )?,
         marker(),
@@ -1031,7 +1033,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            XReserveComponent::xreserve_attesters_slot(),
+            XReserveFaucetExtension::xreserve_attesters_slot(),
             attester1.commitment
         )?,
         marker(),

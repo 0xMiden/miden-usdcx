@@ -29,7 +29,7 @@ use miden_standards::note::{
 };
 use support::mint_transport::*;
 use support::*;
-use xusdc_encoding::account::xreserve::{XReserveComponent, XReserveStablecoinBuilder};
+use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, XReserveStablecoinBuilder};
 use xusdc_encoding::note::xreserve_admin::{
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
@@ -105,7 +105,7 @@ async fn a_never_initialized_faucet_mints() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            XReserveComponent::used_nonces_slot(),
+            XReserveFaucetExtension::used_nonces_slot(),
             nonce_key_of_payload(&payload)
         )?,
         marker(),

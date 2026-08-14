@@ -373,9 +373,11 @@ fn production_components_carry_mutability_config_slot() -> Result<()> {
 /// POSITIVE shape: the production composition carries EXACTLY ONE component whose code is the
 /// installed xreserve library, EXACTLY ONE policy-manager component, and EXACTLY ONE each of the
 /// stock `MinBurnAmount` + `BasicBlocklist` companions — in the pinned install order
-/// [faucet, Pausable, policy manager, xreserve, BasicBlocklist, MinBurnAmount, PausableManager,
-/// BlocklistManager, RBAC, Authority]. A duplicate xreserve copy would hard-reject the account
-/// build with `DuplicateStorageSlotName`, so this is the build-time tripwire for that failure.
+/// [faucet, Pausable, policy manager, MinBurnAmount, BasicBlocklist, xreserve, PausableManager,
+/// BlocklistManager, RBAC, Authority]. The companion positions are derived, not declared: the
+/// policy manager emits them in `BTreeMap<AccountProcedureRoot, _>` order, so they follow the
+/// procedure roots and move whenever those do. A duplicate xreserve copy would hard-reject the
+/// account build with `DuplicateStorageSlotName`, so this is the build-time tripwire for that.
 #[test]
 fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> {
     // The same component the builder assembles internally, so its code is the code the composition

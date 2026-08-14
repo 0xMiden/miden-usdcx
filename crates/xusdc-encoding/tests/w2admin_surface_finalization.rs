@@ -25,7 +25,7 @@ use miden_standards::note::{RbacConfig, RbacConfigNote};
 use miden_testing::assert_transaction_executor_error;
 use support::w2admin::*;
 use support::*;
-use xusdc_encoding::account::xreserve::XReserveComponent;
+use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
 use xusdc_encoding::note::xreserve_admin::{
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
 };
@@ -73,7 +73,7 @@ fn read_attester(account: &Account, commitment: Word) -> Result<Word> {
     account
         .storage()
         .get_map_item(
-            XReserveComponent::xreserve_attesters_slot(),
+            XReserveFaucetExtension::xreserve_attesters_slot(),
             StorageMapKey::new(commitment),
         )
         .map_err(|e| anyhow::anyhow!("reading xReserveAttesters[{commitment}]: {e}"))

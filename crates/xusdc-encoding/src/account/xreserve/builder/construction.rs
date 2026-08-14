@@ -1,23 +1,21 @@
-//! Faucet-account CONSTRUCTION: the assembled `xreserve` component type, the fixed-identity USDCx
+//! Faucet-account CONSTRUCTION: the faucet-extension component type, the fixed-identity USDCx
 //! faucet, the crate-root `Account` constructor, and [`XReserveStablecoinBuilder::build_account`].
 //!
 //! Split out of `builder/mod.rs` (which composes the component SET) so the two separable concerns —
 //! composing the components vs. turning them into the deployable `Account` — live apart and each file
 //! stays within the Rust file-size ceiling.
 
-use std::sync::{Arc, LazyLock};
-
-use miden_protocol::account::component::AccountComponentMetadata;
+use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
     Account, AccountComponent, AccountId, AccountType, AssetCallbackFlag, StorageSlot,
     StorageSlotName,
 };
-use miden_protocol::assembly::{Linkage, Path as MasmPath};
 use miden_protocol::asset::{AssetAmount, AssetCallbacks, TokenSymbol};
-use miden_protocol::transaction::TransactionKernel;
+use miden_protocol::utils::sync::LazyLock;
+use miden_protocol::vm::Package;
+use miden_protocol::Word;
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::fees::BasicConstantFeePolicy;
-use miden_standards::StandardsLib;
 
 use super::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL,
@@ -31,6 +29,19 @@ use crate::xreserve::encoding::EthBytes32;
 /// the account's code commitment is over the procedure roots and its storage over the slot values,
 /// neither of which depends on this string (the byte-identity suite proves it).
 const XRESERVE_COMPONENT_LABEL: &str = "xusdc-xreserve";
+
+/// What the faucet adds on top of the stock fungible faucet, assembled at build time from
+/// `asm/components/faucet_extension/`: the attestation mint policy and the attester allowlist
+/// setter.
+static FAUCET_EXTENSION_CODE: LazyLock<AccountComponentCode> = LazyLock::new(|| {
+    AccountComponentCode::from(
+        Package::read_from_bytes_trusted(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/assets/components/xreserve-faucet-extension.masp"
+        )))
+        .expect("the shipped account-component package deserializes"),
+    )
+});
 
 static DOMAIN_CONFIG_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
     StorageSlotName::new("xusdc::xreserve::domain_config::domain")
@@ -62,51 +73,32 @@ static XRESERVE_ATTESTERS_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|
         .expect("storage slot name should be valid")
 });
 
-/// The shipped `xreserve` account component: the assembled MASM library bound to its six declared
-/// storage slots. There is exactly ONE valid value — the shipped MASM — so it is a component TYPE the
-/// builder produces itself rather than a parameter. Like the standards / agglayer component types, it
-/// converts into an [`AccountComponent`] via `impl From<XReserveComponent> for AccountComponent`, so
-/// account construction through `.with_component(XReserveComponent::assemble())` is traceable from the
-/// library root.
-pub struct XReserveComponent(AccountComponent);
+/// The xUSDC faucet's extension of the stock [`FungibleFaucet`] component:
+/// - the attestation-gated mint policy
+/// - the attester administration
+pub struct XReserveFaucetExtension {
+    domain: u32,
+    source_domain: u32,
+    xreserve_contract: EthBytes32,
+}
 
-impl XReserveComponent {
-    /// Assembles the shipped `xreserve` MASM library and binds it with its six declared storage
-    /// slots. The four domain-config value slots start zeroed (build-seeded from the domain-config
-    /// parameters [`XReserveStablecoinBuilder::new`] takes) and the two registry maps start empty
-    /// (`set_attester` and the mint path populate them). Assembly failures are invariants of the
-    /// shipped source, so they panic rather than surfacing as a builder error (the same posture the
-    /// admin-note script assembler takes).
-    pub fn assemble() -> Self {
-        let assembler = TransactionKernel::assembler()
-            .with_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
-            .expect("the standards library links into the xreserve assembler")
-            .with_warnings_as_errors(true);
-        let library = *assembler
-            .assemble_library_from_root(
-                crate::xreserve_asm_dir().join("mod.masm"),
-                Some(MasmPath::new("xreserve")),
-            )
-            .expect("the shipped xreserve component library assembles");
-        Self(
-            AccountComponent::new(
-                library,
-                vec![
-                    StorageSlot::with_empty_value(Self::domain_config_slot().clone()),
-                    StorageSlot::with_empty_value(Self::source_domain_config_slot().clone()),
-                    StorageSlot::with_empty_value(Self::xreserve_contract_hi_slot().clone()),
-                    StorageSlot::with_empty_value(Self::xreserve_contract_lo_slot().clone()),
-                    StorageSlot::with_empty_map(Self::used_nonces_slot().clone()),
-                    StorageSlot::with_empty_map(Self::xreserve_attesters_slot().clone()),
-                ],
-                AccountComponentMetadata::new(XRESERVE_COMPONENT_LABEL),
-            )
-            .expect("the xreserve library binds with its six declared slots"),
-        )
+impl XReserveFaucetExtension {
+    /// Instantiates a new [`XReserveFaucetExtension`].
+    pub fn new(domain: u32, source_domain: u32, xreserve_contract: EthBytes32) -> Self {
+        Self {
+            domain,
+            source_domain,
+            xreserve_contract,
+        }
     }
 
     // PUBLIC ACCESSORS
     // --------------------------------------------------------------------------------------------
+
+    /// Returns the [`AccountComponentCode`] of this component.
+    pub fn code() -> &'static AccountComponentCode {
+        &FAUCET_EXTENSION_CODE
+    }
 
     /// Returns the [`StorageSlotName`] holding the faucet's own Circle domain id.
     pub fn domain_config_slot() -> &'static StorageSlotName {
@@ -139,9 +131,39 @@ impl XReserveComponent {
     }
 }
 
-impl From<XReserveComponent> for AccountComponent {
-    fn from(component: XReserveComponent) -> Self {
-        component.0
+impl From<XReserveFaucetExtension> for AccountComponent {
+    fn from(faucet_ext: XReserveFaucetExtension) -> Self {
+        let contract_addr = faucet_ext.xreserve_contract.to_packed_felts();
+        let contract_addr_hi = Word::new(contract_addr[0..4].try_into().expect("4 felts sliced"));
+        let contract_addr_lo = Word::new(contract_addr[4..8].try_into().expect("4 felts sliced"));
+
+        AccountComponent::new(
+            FAUCET_EXTENSION_CODE.clone(),
+            vec![
+                StorageSlot::with_value(
+                    XReserveFaucetExtension::domain_config_slot().clone(),
+                    Word::from([faucet_ext.domain, 0, 0, 0]),
+                ),
+                StorageSlot::with_value(
+                    XReserveFaucetExtension::source_domain_config_slot().clone(),
+                    Word::from([faucet_ext.source_domain, 0, 0, 0]),
+                ),
+                StorageSlot::with_value(
+                    XReserveFaucetExtension::xreserve_contract_hi_slot().clone(),
+                    contract_addr_hi,
+                ),
+                StorageSlot::with_value(
+                    XReserveFaucetExtension::xreserve_contract_lo_slot().clone(),
+                    contract_addr_lo,
+                ),
+                StorageSlot::with_empty_map(XReserveFaucetExtension::used_nonces_slot().clone()),
+                StorageSlot::with_empty_map(
+                    XReserveFaucetExtension::xreserve_attesters_slot().clone(),
+                ),
+            ],
+            AccountComponentMetadata::new(XRESERVE_COMPONENT_LABEL),
+        )
+        .expect("the faucet extension binds with its six declared slots")
     }
 }
 
@@ -211,20 +233,20 @@ pub fn build_faucet_account(
     source_domain: u32,
     xreserve_contract: EthBytes32,
 ) -> Result<Account, XReserveStablecoinBuilderError> {
-    XReserveStablecoinBuilder::new(
-        max_supply,
-        token_supply,
-        owner,
-        pauser_holder,
-        manager_holder,
-        blocklist_manager_holder,
-        fee_faucet_id,
-        fee_policy,
-        domain,
-        source_domain,
-        xreserve_contract,
-    )?
-    .build_account(init_seed)
+    XReserveStablecoinBuilder::builder()
+        .max_supply(max_supply)
+        .token_supply(token_supply)
+        .owner(owner)
+        .pauser_holder(pauser_holder)
+        .manager_holder(manager_holder)
+        .blocklist_manager_holder(blocklist_manager_holder)
+        .fee_faucet_id(fee_faucet_id)
+        .fee_policy(fee_policy)
+        .domain(domain)
+        .source_domain(source_domain)
+        .xreserve_contract(xreserve_contract)
+        .build()?
+        .build_account(init_seed)
 }
 
 /// Builds the fixed-identity USDCx [`FungibleFaucet`]: name `USDCx`, symbol [`USDCX_TOKEN_SYMBOL`],

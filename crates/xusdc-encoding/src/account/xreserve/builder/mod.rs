@@ -37,20 +37,10 @@
 //! required builder inputs written into the declared slots at composition time. The faucet
 //! identifier is not among them and has no slot at all — it is the account's own id, which the
 //! mint path derives on chain, so the composed faucet is mint-ready the moment it exists.
-//!
-//! Packaging: the attestation policy is **runtime-assembled** MASM (no `.masl` asset /
-//! `account_component_code!` here — that is a miden-standards-internal pipeline). The builder
-//! assembles the shipped `xreserve` library into an `AccountComponent` itself (there is exactly one
-//! valid component, so it is not a builder input); the policy procedure root is resolved from that
-//! same installed code via [`AccountComponent::get_procedure_root_by_path`], so the `dynexec` root
-//! the policy manager stores always equals the installed proc's MAST root. The final composed
-//! [`Account`](miden_protocol::account::Account) is produced by
-//! [`XReserveStablecoinBuilder::build_account`] / the crate-root
-//! [`build_faucet_account`], so account construction is traceable from the library root.
 
-use miden_protocol::account::{AccountComponent, AccountId, StorageSlot};
+use bon::bon;
+use miden_protocol::account::{AccountComponent, AccountId};
 use miden_protocol::asset::AssetAmount;
-use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Pausable, PausableManager};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::fees::{BasicConstantFeePolicy, ConstantFeeManager};
@@ -67,7 +57,7 @@ mod network_auth;
 mod rbac_seed;
 
 use construction::build_usdcx_faucet;
-pub use construction::{build_faucet_account, XReserveComponent};
+pub use construction::{build_faucet_account, XReserveFaucetExtension};
 pub use error::XReserveStablecoinBuilderError;
 use rbac_seed::seeded_dom_roles_rbac;
 
@@ -93,14 +83,16 @@ pub const DOM_MANAGER_ROLE: &str = "DOM_MANAGER";
 /// no new rotation machinery. `BLK_MANAGER` is seeded role id 4.
 pub const BLK_MANAGER_ROLE: &str = "BLK_MANAGER";
 
-/// Flat library path of the attestation mint policy's `check_policy` procedure within the
-/// assembled `xreserve` library (namespace `xreserve`, module `mint_policy`).
-pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str = "xreserve::mint_policy::check_policy";
+/// Path of the attestation mint policy's `check_policy` procedure as the faucet component EXPORTS
+/// it. The procedure is defined in the library's `mint_policy` module; the component re-exports it
+/// under its own namespace, and it is that re-export the account installs and resolves by.
+pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str =
+    "xreserve::components::faucet_extension::check_policy";
 
-/// The smallest admissible `min_burn_size` (the zero floor). The stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) policy
+/// The smallest admissible `min_burn_amount` (the zero floor). The stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) policy
 /// asserts `min <= amount` ONLY (its authority-gated stock setter even accepts `0`), so the
 /// zero-burn reject is preserved structurally: the builder rejects a floor below
-/// this at build time, and the reworked `set_min_burn_size` admin note asserts `new_min >= 1`
+/// this at construction, and the reworked `set_min_burn_size` admin note asserts `new_min >= 1`
 /// BEFORE calling the stock setter — together the floor is `>= 1` at all times, which makes a
 /// zero-amount burn (`0 < min`) unacceptable on every path.
 pub const MIN_BURN_SIZE_FLOOR: u64 = 1;
@@ -115,14 +107,6 @@ pub const USDCX_TOKEN_SYMBOL: &str = "USDCX";
 /// mis-scale every minted amount).
 pub const USDCX_DECIMALS: u8 = 6;
 
-/// The three build-seeded domain-config fields (`domain`, `source_domain`, `xreserve_contract`).
-#[derive(Debug, Clone, Copy)]
-struct DomainConfigSeed {
-    domain: u32,
-    source_domain: u32,
-    xreserve_contract: EthBytes32,
-}
-
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library
 /// component (attestation mint policy, admin procs) + a `TokenPolicyManager`
 /// with the attestation policy active on the mint side and the stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) active on
@@ -130,14 +114,14 @@ struct DomainConfigSeed {
 /// [`ConstantFeeManager`] components + a seeded `RoleBasedAccessControl` governed by
 /// [`XReserveAdminAuthority`]'s `Authority::RbacControlled`.
 ///
-/// Construct with [`XReserveStablecoinBuilder::new`] (the faucet supply parameters, the `owner` and
-/// role holders, the fee faucet and policy, and the three build-seeded domain-config fields),
-/// optionally override the min-burn floor, then call
+/// Construct with the generated [`Self::builder`] (the faucet supply parameters, the `owner` and
+/// role holders, the fee faucet and policy, and the three build-seeded domain-config fields; the
+/// min-burn floor is the one optional input), then call
 /// [`XReserveStablecoinBuilder::build_components`] (or the crate-root `build_faucet_account` /
 /// [`Self::build_account`] for the finished `Account`).
+#[derive(Debug)]
 pub struct XReserveStablecoinBuilder {
     faucet: FungibleFaucet,
-    xreserve_component: AccountComponent,
     /// The administrator: seeded as the sole member of the built-in `ADMIN` role, which is what
     /// gates every unmapped authority-gated procedure (`set_attester` / the
     /// stock `set_min_burn_amount` / stock `set_max_supply` / the policy setters) under
@@ -160,11 +144,10 @@ pub struct XReserveStablecoinBuilder {
     fee_faucet_id: AccountId,
     /// Fee policy installed at deployment.
     fee_policy: BasicConstantFeePolicy,
-    /// The minimum burn size (the burn-floor threshold) seeded into the stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount)
-    /// companion's floor slot. Default [`MIN_BURN_SIZE_FLOOR`] (= 1 — the zero floor: burns must
-    /// move at least one unit, keeping zero-amount burns rejected); a value below the
-    /// floor is rejected at build.
-    min_burn_size: u64,
+    /// The minimum burn amount (the burn-floor threshold) seeded into the stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount)
+    /// companion's floor slot. Default [`MIN_BURN_SIZE_FLOOR`]; validated `>=` the floor at
+    /// construction, so every held value keeps zero-amount burns rejected.
+    min_burn_amount: AssetAmount,
     /// The faucet's own Circle domain id.
     domain: u32,
     /// The Circle domain deposits are accepted from, written into the declared `source_domain` slot
@@ -174,6 +157,7 @@ pub struct XReserveStablecoinBuilder {
     xreserve_contract: EthBytes32,
 }
 
+#[bon]
 impl XReserveStablecoinBuilder {
     // CONSTRUCTORS
     // --------------------------------------------------------------------------------------------
@@ -186,7 +170,7 @@ impl XReserveStablecoinBuilder {
     /// transfer-blocklist administrator), the explicit `fee_faucet_id`, the deploy-time concrete
     /// `fee_policy`, plus the three BUILD-SEEDED domain-config fields: the u32 `domain` and
     /// `source_domain` ids and the `xreserve_contract` remote address. The
-    /// domain-config fields are constructor parameters rather than optional modifiers because a
+    /// domain-config fields are required because a
     /// faucet without them would ship a domain compare that reads an empty slot — there is no way to
     /// leave them out.
     ///
@@ -196,15 +180,19 @@ impl XReserveStablecoinBuilder {
     /// decimals and the symbol are guaranteed BY CONSTRUCTION. There is no way to hand the
     /// builder an immutable or mis-configured faucet. The `xreserve` component is likewise not a
     /// parameter — there is exactly one valid value (the shipped MASM), so the builder assembles it
-    /// via [`XReserveComponent`]. The active mint policy is always the attestation policy, hard-wired
-    /// at composition, and so is the stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) on the burn side; only its floor is a
-    /// builder input, defaulting to [`MIN_BURN_SIZE_FLOOR`].
+    /// via [`XReserveFaucetExtension`]. The active mint policy is always the attestation policy,
+    /// hard-wired at composition, and so is the stock
+    /// [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) on the burn side; only
+    /// its floor, `min_burn_amount`, is a builder input, defaulting to [`MIN_BURN_SIZE_FLOOR`].
     ///
     /// # Errors
     ///
     /// [`XReserveStablecoinBuilderError::FaucetComposition`] if the supply parameters do not form a
-    /// valid `FungibleFaucet`, or the relevant fee-schedule variant if the fee policy is invalid.
-    #[allow(clippy::too_many_arguments)]
+    /// valid `FungibleFaucet`;
+    /// [`XReserveStablecoinBuilderError::MinBurnSizeBelowFloor`] if `min_burn_amount` is below
+    /// [`MIN_BURN_SIZE_FLOOR`] (the zero-floor invariant), or the relevant fee-schedule variant if
+    /// the fee policy is invalid.
+    #[builder]
     pub fn new(
         max_supply: AssetAmount,
         token_supply: AssetAmount,
@@ -217,46 +205,44 @@ impl XReserveStablecoinBuilder {
         domain: u32,
         source_domain: u32,
         xreserve_contract: EthBytes32,
+        min_burn_amount: Option<AssetAmount>,
     ) -> Result<Self, XReserveStablecoinBuilderError> {
         Self::validate_fee_policy(&fee_policy)?;
+        let min_burn_amount = min_burn_amount.unwrap_or(
+            AssetAmount::new(MIN_BURN_SIZE_FLOOR)
+                .expect("the shipped burn floor is a valid asset amount"),
+        );
+        if min_burn_amount.as_u64() < MIN_BURN_SIZE_FLOOR {
+            return Err(XReserveStablecoinBuilderError::MinBurnSizeBelowFloor(
+                min_burn_amount.as_u64(),
+            ));
+        }
         Ok(Self {
             faucet: build_usdcx_faucet(max_supply, token_supply)?,
-            xreserve_component: XReserveComponent::assemble().into(),
             owner,
             pauser_holder,
             manager_holder,
             blocklist_manager_holder,
             fee_faucet_id,
             fee_policy,
-            min_burn_size: MIN_BURN_SIZE_FLOOR,
+            min_burn_amount,
             domain,
             source_domain,
             xreserve_contract,
         })
     }
+}
 
-    // MODIFIERS
-    // --------------------------------------------------------------------------------------------
-
-    /// Sets the minimum burn size seeded into the stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) floor slot (default
-    /// [`MIN_BURN_SIZE_FLOOR`] = 1). A value below the floor is rejected by
-    /// [`Self::build_components`] with
-    /// [`XReserveStablecoinBuilderError::MinBurnSizeBelowFloor`] (the zero-floor invariant);
-    /// a value above [`AssetAmount::MAX`] with
-    /// [`XReserveStablecoinBuilderError::MinBurnSizeExceedsMax`].
-    pub fn min_burn_size(mut self, min_burn_size: u64) -> Self {
-        self.min_burn_size = min_burn_size;
-        self
-    }
-
+impl XReserveStablecoinBuilder {
     // BUILD / COMPOSE
     // --------------------------------------------------------------------------------------------
 
-    /// Production composition: validates the seeded burn floor, seeds the three build-time
+    /// Production composition: seeds the three build-time
     /// domain-config fields, then composes the account components. The
     /// faucet's `max_supply` mutability is guaranteed by construction (the crate-root
     /// [`Self::build_account`] path builds the faucet `is_max_supply_mutable(true)`), so there is no
-    /// runtime mutability reject.
+    /// runtime mutability reject. Public for the integration suite, which composes
+    /// these components under a TEST auth account; [`Self::build_account`] is the production path.
     pub fn build_components(
         &self,
     ) -> Result<Vec<AccountComponent>, XReserveStablecoinBuilderError> {
@@ -282,21 +268,14 @@ impl XReserveStablecoinBuilder {
                 },
             );
         }
-        if self.min_burn_size < MIN_BURN_SIZE_FLOOR {
-            return Err(XReserveStablecoinBuilderError::MinBurnSizeBelowFloor(
-                self.min_burn_size,
-            ));
-        }
-        let min_burn = AssetAmount::new(self.min_burn_size).map_err(|_| {
-            XReserveStablecoinBuilderError::MinBurnSizeExceedsMax(self.min_burn_size)
-        })?;
         // Seed domain config before the mint policy takes the component, so the manager
         // emits the installable copy.
-        let xreserve_component = self.xreserve_component_with_domain_seed(DomainConfigSeed {
-            domain: self.domain,
-            source_domain: self.source_domain,
-            xreserve_contract: self.xreserve_contract,
-        });
+        let xreserve_component = AccountComponent::from(XReserveFaucetExtension::new(
+            self.domain,
+            self.source_domain,
+            self.xreserve_contract,
+        ));
+
         let manager = TokenPolicyManager::builder()
             .active_mint_policy(
                 MintPolicy::custom(
@@ -307,7 +286,7 @@ impl XReserveStablecoinBuilder {
                 )
                 .map_err(XReserveStablecoinBuilderError::MintPolicy)?,
             )
-            .active_burn_policy(BurnPolicy::min_burn_amount(min_burn))
+            .active_burn_policy(BurnPolicy::min_burn_amount(self.min_burn_amount))
             .active_send_policy(TransferPolicy::empty_basic_blocklist())
             .active_receive_policy(TransferPolicy::empty_basic_blocklist())
             .build();
@@ -327,52 +306,5 @@ impl XReserveStablecoinBuilder {
         ));
         components.push(XReserveAdminAuthority::new().into());
         Ok(components)
-    }
-
-    // The final-`Account` constructor ([`Self::build_account`]) and the crate-root
-    // [`build_faucet_account`] / component assembly ([`XReserveComponent`]) live in the sibling
-    // `construction` module (this file composes the component SET; that one turns it into an
-    // `Account`).
-
-    /// Reconstructs the supplied `xreserve` component with the three BUILD-SEEDED domain-config
-    /// values written into their declared slots (`[domain, 0, 0, 0]`, `[source_domain, 0, 0, 0]`,
-    /// and the packed `xreserve_contract` hi/lo
-    /// words). The two registry maps are carried through as declared.
-    fn xreserve_component_with_domain_seed(&self, seed: DomainConfigSeed) -> AccountComponent {
-        let domain_name = XReserveComponent::domain_config_slot();
-        let source_name = XReserveComponent::source_domain_config_slot();
-        let hi_name = XReserveComponent::xreserve_contract_hi_slot();
-        let lo_name = XReserveComponent::xreserve_contract_lo_slot();
-        let scalar_word =
-            |value: u32| Word::from([Felt::from(value), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-        let xrc = seed.xreserve_contract.to_packed_felts();
-        let hi_word = Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]);
-        let lo_word = Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]);
-        let slots = self
-            .xreserve_component
-            .storage_slots()
-            .iter()
-            .map(|slot| {
-                if slot.name() == domain_name {
-                    StorageSlot::with_value(domain_name.clone(), scalar_word(seed.domain))
-                } else if slot.name() == source_name {
-                    StorageSlot::with_value(source_name.clone(), scalar_word(seed.source_domain))
-                } else if slot.name() == hi_name {
-                    StorageSlot::with_value(hi_name.clone(), hi_word)
-                } else if slot.name() == lo_name {
-                    StorageSlot::with_value(lo_name.clone(), lo_word)
-                } else {
-                    slot.clone()
-                }
-            })
-            .collect();
-        AccountComponent::new(
-            self.xreserve_component.component_code().clone(),
-            slots,
-            self.xreserve_component.metadata().clone(),
-        )
-        .expect(
-            "the xreserve component reseeded with the domain-config values keeps a valid slot set",
-        )
     }
 }

@@ -77,19 +77,19 @@ fn priced_fee_policy() -> Result<BasicConstantFeePolicy> {
 fn build_with_fee_policy(
     policy: BasicConstantFeePolicy,
 ) -> Result<XReserveStablecoinBuilder, XReserveStablecoinBuilderError> {
-    XReserveStablecoinBuilder::new(
-        AssetAmount::new(MAX_SUPPLY).expect("the test max supply is valid"),
-        AssetAmount::ZERO,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-        fee_faucet_id(),
-        policy,
-        TEST_DOMAIN,
-        TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
-    )
+    XReserveStablecoinBuilder::builder()
+        .max_supply(AssetAmount::new(MAX_SUPPLY).expect("the test max supply is valid"))
+        .token_supply(AssetAmount::ZERO)
+        .owner(test_account_id(1))
+        .pauser_holder(test_account_id(2))
+        .manager_holder(test_account_id(3))
+        .blocklist_manager_holder(test_account_id(4))
+        .fee_faucet_id(fee_faucet_id())
+        .fee_policy(policy)
+        .domain(TEST_DOMAIN)
+        .source_domain(TEST_SOURCE_DOMAIN)
+        .xreserve_contract(EthBytes32::new(test_xreserve_contract()))
+        .build()
 }
 
 fn scheduled_fee(account: &Account, note_root: NoteScriptRoot) -> Result<Word> {

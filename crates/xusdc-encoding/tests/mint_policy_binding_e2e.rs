@@ -35,7 +35,7 @@ use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::mint_transport::*;
 use support::*;
-use xusdc_encoding::account::xreserve::XReserveComponent;
+use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
 use xusdc_encoding::xreserve::encoding::{
     DepositIntent, MintIntent, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
@@ -747,7 +747,7 @@ async fn mint_note_routes_to_the_faucet_network_account() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            XReserveComponent::used_nonces_slot(),
+            XReserveFaucetExtension::used_nonces_slot(),
             nonce_key_of_payload(&payload)
         )?,
         marker(),
@@ -801,7 +801,7 @@ async fn mint_ignores_a_hostile_advice_stack() -> Result<()> {
     assert_eq!(
         read_map_word(
             &faucet,
-            XReserveComponent::used_nonces_slot(),
+            XReserveFaucetExtension::used_nonces_slot(),
             nonce_key_of_payload(&payload)
         )?,
         marker(),

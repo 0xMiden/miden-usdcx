@@ -1,18 +1,21 @@
-use std::sync::LazyLock;
-
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{Note, NoteScript, NoteScriptRoot};
+use miden_protocol::utils::sync::LazyLock;
+use miden_protocol::vm::Package;
 use miden_protocol::{Felt, Word};
 
-use super::{build_admin_note, compile_admin_note_script};
+use super::build_admin_note;
 
-const SET_ATTESTER_NOTE_SCRIPT_SRC: &str =
-    include_str!("../../../../../asm/standards/notes/xreserve_set_attester_note.masm");
-
-static SET_ATTESTER_NOTE_SCRIPT: LazyLock<NoteScript> =
-    LazyLock::new(|| compile_admin_note_script(SET_ATTESTER_NOTE_SCRIPT_SRC));
+static SET_ATTESTER_NOTE_SCRIPT: LazyLock<NoteScript> = LazyLock::new(|| {
+    let package = Package::read_from_bytes_trusted(include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/assets/notes/xreserve-set-attester-note.masp"
+    )))
+    .expect("the shipped note package deserializes");
+    NoteScript::from_package(&package).expect("the note package exports exactly one note script")
+});
 
 /// The dedicated `set_attester` note-storage type: the `NoteStorage.items` payload
 /// `[pk_commitment(4), enabled]`. Built with a `bon` builder

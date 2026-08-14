@@ -26,7 +26,7 @@ use miden_protocol::Word;
 use miden_standards::account::access::{Ownable2Step, PausableStorage};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::MinBurnAmount;
-use xusdc_encoding::account::xreserve::{XReserveComponent, IDENTIFIER_CONFIG_SLOT_LABEL};
+use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, IDENTIFIER_CONFIG_SLOT_LABEL};
 
 use crate::client::HarnessClient;
 use crate::mintburn::MintDomainConfig;
@@ -86,7 +86,7 @@ pub(crate) fn min_burn(account: &Account) -> Result<u64> {
 /// gate compares a mint's `remoteDomain` against. Read from the DEPLOYED faucet so the `--faucet-id`
 /// mint carries the RIGHT domain (a domain id is a u32, so an out-of-u32 slot value is an error).
 pub(crate) fn domain_config(account: &Account) -> Result<u32> {
-    let raw = value_slot(account, XReserveComponent::domain_config_slot())?[0].as_canonical_u64();
+    let raw = value_slot(account, XReserveFaucetExtension::domain_config_slot())?[0].as_canonical_u64();
     u32::try_from(raw).map_err(|_| {
         anyhow::anyhow!("faucet domain-config slot holds {raw}, which does not fit a u32 domain id")
     })
@@ -110,7 +110,7 @@ pub(crate) fn used_nonce_marker(account: &Account, key: Word) -> Result<Word> {
     account
         .storage()
         .get_map_item(
-            XReserveComponent::used_nonces_slot(),
+            XReserveFaucetExtension::used_nonces_slot(),
             StorageMapKey::new(key),
         )
         .map_err(|e| anyhow::anyhow!("reading usedNonces[{key:?}]: {e}"))
@@ -120,7 +120,7 @@ pub(crate) fn attester_marker(account: &Account, commitment: Word) -> Result<Wor
     account
         .storage()
         .get_map_item(
-            XReserveComponent::xreserve_attesters_slot(),
+            XReserveFaucetExtension::xreserve_attesters_slot(),
             StorageMapKey::new(commitment),
         )
         .map_err(|e| anyhow::anyhow!("reading xReserveAttesters[{commitment:?}]: {e}"))

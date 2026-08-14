@@ -35,7 +35,7 @@ use miden_protocol::transaction::InputNote;
 use miden_protocol::Word;
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::note::P2idNote;
-use xusdc_encoding::account::xreserve::XReserveComponent;
+use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
 use xusdc_encoding::note::xreserve_admin::{XReserveIdentifierInitNote, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
 
@@ -109,7 +109,7 @@ fn used_nonce_marker(account: &Account, key: Word) -> Result<Word4> {
     account
         .storage()
         .get_map_item(
-            XReserveComponent::used_nonces_slot(),
+            XReserveFaucetExtension::used_nonces_slot(),
             StorageMapKey::new(key),
         )
         .map(word4)
@@ -792,7 +792,7 @@ fn attester_enabled(account: &Account, commitment: Word) -> bool {
     account
         .storage()
         .get_map_item(
-            XReserveComponent::xreserve_attesters_slot(),
+            XReserveFaucetExtension::xreserve_attesters_slot(),
             StorageMapKey::new(commitment),
         )
         .ok()

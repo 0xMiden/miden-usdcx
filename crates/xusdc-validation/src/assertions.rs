@@ -23,7 +23,7 @@ use miden_standards::account::auth::{
 };
 use miden_standards::tx_script::ExpirationTransactionScript;
 use xusdc_encoding::account::xreserve::{
-    XReserveComponent, XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL,
+    XReserveFaucetExtension, XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL,
 };
 use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
 use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
@@ -126,7 +126,7 @@ pub fn assert_row_a(obs: &RowsAbObservations) -> Result<()> {
 /// `params`' values, and the `identifier_init`-committed identifier holds the OWN-ID fixpoint key
 /// `identifier_for(account.id())` (derived from the faucet id, NOT from `params` — R2 binding fix).
 fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &str) -> Result<()> {
-    let domain = storage_word(account, XReserveComponent::domain_config_slot())?;
+    let domain = storage_word(account, XReserveFaucetExtension::domain_config_slot())?;
     ensure!(
         domain
             == Word::from([
@@ -158,7 +158,7 @@ fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &st
         "{ctx}: the stored identifier must be non-empty (it is the init-once sentinel)",
     );
 
-    let source_domain = storage_word(account, XReserveComponent::source_domain_config_slot())?;
+    let source_domain = storage_word(account, XReserveFaucetExtension::source_domain_config_slot())?;
     ensure!(
         source_domain
             == Word::from([
@@ -173,8 +173,8 @@ fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &st
     );
 
     let packed = bytes32_to_packed_felts(&params.xreserve_contract);
-    let xrc_hi = storage_word(account, XReserveComponent::xreserve_contract_hi_slot())?;
-    let xrc_lo = storage_word(account, XReserveComponent::xreserve_contract_lo_slot())?;
+    let xrc_hi = storage_word(account, XReserveFaucetExtension::xreserve_contract_hi_slot())?;
+    let xrc_lo = storage_word(account, XReserveFaucetExtension::xreserve_contract_lo_slot())?;
     ensure!(
         xrc_hi == Word::from([packed[0], packed[1], packed[2], packed[3]]),
         "{ctx}: xreserve_contract_hi slot read-back mismatch",

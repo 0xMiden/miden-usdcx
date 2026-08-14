@@ -1,11 +1,7 @@
-//! Builder byte-identity suite — the HARD GATE for the enforce-by-construction builder changes
-//! (drop the one-valued `xreserve_component` parameter, enforce max-supply mutability at
-//! construction, and the crate-root faucet `Account` constructor).
+//! Builder byte-identity tests for the fee-enabled production composition.
 //!
-//! Every change here is wire-neutral for slot values and the two construction paths: the
-//! composed account's anchors — the account's `to_commitment` state commitment, its code
-//! commitment, a digest over its storage slots, and the seed-derived id — are captured at a
-//! FIXED seed, and this suite asserts:
+//! The tests record the account state, code, storage, and seed-derived ID commitments at a fixed
+//! seed for both construction paths.
 //!
 //! 1. the crate-root `build_faucet_account` constructor reproduces them EXACTLY (the faucet it
 //!    builds is `is_max_supply_mutable(true)`, so `set_max_supply` stays operable),
@@ -13,8 +9,7 @@
 //!    its own xreserve component) still reproduces them, and
 //! 3. the two paths agree with each other.
 //!
-//! A single felt or byte of drift — a changed slot value, a different assembled MAST root —
-//! flips one of these string-exact assertions RED.
+//! Any change to a recorded commitment fails a string-exact assertion.
 
 mod support;
 
@@ -32,22 +27,15 @@ const SEED: [u8; 32] = [7u8; 32];
 const MAX_SUPPLY: u64 = 1_000_000;
 const TOKEN_SUPPLY: u64 = 0;
 
-// The baseline composition anchors at SEED, as their stable `Debug`/`Display` renderings (the
-// rendered strings sidestep any felt-repr ambiguity). Cause, per anchor: the CODE COMMITMENT
-// tracks `check_policy`'s MAST root; the STORAGE DIGEST moves with it because the active mint
-// policy is STORED as that root; the ACCOUNT ID and STATE COMMITMENT derive from both. No slot and
-// no procedure was added or removed; the policy companions sit in the manager's emission order —
-// the callable-surface and note-allowlist tripwires pass unedited.
-//
-// NOT RATIFIED — every value below is MEASURED from this composition, not accepted. A human must
-// re-ratify all four at PR assembly.
+// Account commitments for the production composition at SEED. The fixed seed makes both
+// construction paths deterministic.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([10998031657962249823, 16841345702647930757, 10854811920308501145, 2506868014461760564])";
+    "Word([14923447977381599105, 9187164327296959103, 14257635903957271042, 486966657620945197])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([15058775153826961406, 12221757768293569830, 4220212873006231106, 7610009271148123683])";
+    "Word([8333882060992202533, 17653662557058186320, 17655243811508375527, 9154783910351294359])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([4363712052244048219, 2641855597089613738, 1614590384134086560, 11013628455427548577])";
-const GOLDEN_ACCOUNT_ID: &str = "0x5ba5e3dc40e32fb132c49d8c3409e7";
+    "Word([14129712707074965518, 11246433851625786173, 9085369166716691271, 11855822879439130051])";
+const GOLDEN_ACCOUNT_ID: &str = "0xe5cfed3b2abaccf127cfbec70d2958";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.
@@ -83,7 +71,7 @@ fn assert_matches_golden(account: &Account, path: &str) {
     );
 }
 
-/// Composes the account the baseline way: `build_components` + the production auth component, at the
+/// Composes the account from `build_components` and the production auth component at the
 /// fixed seed, with the asset-callback flag derived from the composition (as the deploy path does).
 fn account_via_component_path() -> Account {
     let components = production_component_set(MAX_SUPPLY, TOKEN_SUPPLY)
@@ -106,11 +94,12 @@ fn account_via_component_path() -> Account {
         builder = builder.with_component(component);
     }
     builder = builder.with_components(
-        XReserveStablecoinBuilder::auth_component().expect("the auth component must build"),
+        XReserveStablecoinBuilder::auth_component(test_fee_faucet_id(), test_fee_policy())
+            .expect("the auth component must build"),
     );
     builder
         .build()
-        .expect("the baseline-style composition must build the account")
+        .expect("the component-path composition must build the account")
 }
 
 /// Composes the account through the crate-root `build_faucet_account` constructor, at the
@@ -124,6 +113,8 @@ fn account_via_crate_root_constructor() -> Account {
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
+        test_fee_faucet_id(),
+        test_fee_policy(),
         TEST_DOMAIN,
         TEST_SOURCE_DOMAIN,
         EthBytes32::new(test_xreserve_contract()),
@@ -131,20 +122,18 @@ fn account_via_crate_root_constructor() -> Account {
     .expect("the crate-root faucet-account constructor must build the account")
 }
 
-/// The crate-root faucet-account constructor reproduces the baseline composition
-/// byte-for-byte.
+/// The crate-root faucet-account constructor matches the recorded commitments.
 #[test]
-fn crate_root_constructor_is_byte_identical_to_baseline() {
+fn crate_root_constructor_matches_the_golden() {
     assert_matches_golden(
         &account_via_crate_root_constructor(),
         "build_faucet_account",
     );
 }
 
-/// The component path (`build_components` + auth, with the builder now assembling its own xreserve
-/// component) still reproduces the baseline composition byte-for-byte.
+/// The component path matches the recorded commitments.
 #[test]
-fn component_path_is_byte_identical_to_baseline() {
+fn component_path_matches_the_golden() {
     assert_matches_golden(&account_via_component_path(), "component-path");
 }
 

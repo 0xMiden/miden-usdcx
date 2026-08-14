@@ -15,8 +15,8 @@
 //!
 //! - the tx-script allowlist holds exactly the one expiration root — an extra entry is as much a
 //!   failure as a missing one;
-//! - the note-script allowlist still holds all fourteen of its roots, so adding the tx-script
-//!   allowlist did not disturb the note one (they share a component);
+//! - the note-script allowlist contains all ten roots independently of the transaction-script
+//!   allowlist;
 //! - and enforcement actually happens on-chain: the expiration script is admitted and executes,
 //!   while an arbitrary no-op script is refused with the allowlist's own error.
 
@@ -64,11 +64,12 @@ fn allowlisted_keys(component: &AccountComponent, slot: &StorageSlotName) -> BTr
 /// less.
 #[test]
 fn auth_component_tx_script_allowlist_is_exactly_the_expiration_root() -> Result<()> {
-    let component: AccountComponent = XReserveStablecoinBuilder::auth_component()
-        .map_err(|e| anyhow::anyhow!("auth_component() must build: {e}"))?
-        .into_iter()
-        .next()
-        .expect("the auth component is yielded first");
+    let component: AccountComponent =
+        XReserveStablecoinBuilder::auth_component(test_fee_faucet_id(), test_fee_policy())
+            .map_err(|e| anyhow::anyhow!("auth_component() must build: {e}"))?
+            .into_iter()
+            .next()
+            .expect("the auth component is yielded first");
 
     let tx_keys = allowlisted_keys(&component, AuthNetworkAccount::allowed_tx_scripts_slot());
     let expected = BTreeSet::from([ExpirationTransactionScript::script_root().as_word()]);
@@ -82,30 +83,24 @@ fn auth_component_tx_script_allowlist_is_exactly_the_expiration_root() -> Result
     Ok(())
 }
 
-/// Adding the transaction-script allowlist must not disturb the note-script allowlist.
-///
-/// The two allowlists live in the same auth component, so a change to one is a plausible way to
-/// corrupt the other. This re-reads the note slot and requires all fourteen roots to still be
-/// there: the twelve owner-, role- and pause-gated admin notes plus the two transfer-blocklist
-/// notes.
+/// The note and transaction allowlists occupy separate slots in the auth component.
 #[test]
 fn auth_component_note_script_allowlist_is_untouched_by_s12() -> Result<()> {
-    let component: AccountComponent = XReserveStablecoinBuilder::auth_component()
-        .map_err(|e| anyhow::anyhow!("auth_component() must build: {e}"))?
-        .into_iter()
-        .next()
-        .expect("the auth component is yielded first");
+    let component: AccountComponent =
+        XReserveStablecoinBuilder::auth_component(test_fee_faucet_id(), test_fee_policy())
+            .map_err(|e| anyhow::anyhow!("auth_component() must build: {e}"))?
+            .into_iter()
+            .next()
+            .expect("the auth component is yielded first");
 
     let note_keys = allowlisted_keys(&component, AuthNetworkAccount::allowed_note_scripts_slot());
     assert_eq!(
         note_keys.len(),
-        8,
-        "S12 must leave the note-script allowlist at EXACTLY the 8 roots; found {}",
+        10,
+        "S12 must leave the note-script allowlist at EXACTLY the 10 roots; found {}",
         note_keys.len(),
     );
-    // The exact fourteen-root set is pinned, source and on-chain, in `f5_network_account_auth.rs`;
-    // here we only prove that adding the tx-script allowlist did not
-    // add/remove a note root while flipping the tx-script allowlist.
+    // The exact ten-root set is checked in `f5_network_account_auth.rs`.
     Ok(())
 }
 

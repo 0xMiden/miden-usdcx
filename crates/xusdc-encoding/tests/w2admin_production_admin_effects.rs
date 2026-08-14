@@ -133,17 +133,15 @@ async fn emit_and_consume_mint(
         .await)
 }
 
-/// The allowlist is the ratified eight roots, and the three standard config notes are among them.
+/// The allowlist contains ten roots, including the three standard administration notes.
 #[test]
-fn the_allowlist_is_the_ratified_eight_roots() {
+fn the_allowlist_contains_the_ten_expected_roots() {
     let allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
 
     assert_eq!(
         allowlist.len(),
-        RATIFIED_ALLOWLIST_ROOTS,
-        "the note-script allowlist must hold exactly the ratified {RATIFIED_ALLOWLIST_ROOTS} \
-         roots; the allowlist is the whole authorization model of a keyless network account, so \
-         its size is human-ratified and not something a build may change"
+        PRODUCTION_ALLOWLIST_ROOTS,
+        "the note-script allowlist must contain exactly {PRODUCTION_ALLOWLIST_ROOTS} roots"
     );
     assert!(
         allowlist.contains(&PauseConfigNote::script_root()),

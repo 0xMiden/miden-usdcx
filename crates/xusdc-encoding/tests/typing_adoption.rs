@@ -218,6 +218,8 @@ fn crate_root_and_account_root_build_faucet_account_compose_an_account() {
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
+        test_fee_faucet_id(),
+        test_fee_policy(),
         TEST_DOMAIN,
         TEST_SOURCE_DOMAIN,
         EthBytes32::new(test_xreserve_contract()),

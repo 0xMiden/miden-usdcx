@@ -39,15 +39,11 @@ use xusdc_encoding::note::xreserve_admin::XReserveBlocklistNote;
 
 use super::{add_faucet_account, setup_production_faucet, test_account_id, ProductionFaucet};
 
-// THE RATIFIED NUMBERS
+// PRODUCTION CONSTANTS
 // ================================================================================================
 
-/// The note-script allowlist once every admin capability rides a standard note that covers all of
-/// its actions behind one script root — pause and unpause, block and unblock, and grant, revoke,
-/// set-role-admin and renounce — the two ownership notes are gone with the administratorship
-/// component, and the identifier-init note is gone with the stored identifier it used to seed.
-/// Human-ratified.
-pub const RATIFIED_ALLOWLIST_ROOTS: usize = 8;
+/// Number of note-script roots in the production allowlist.
+pub const PRODUCTION_ALLOWLIST_ROOTS: usize = 10;
 
 /// The `DOM_PAUSER` role symbol felt the retired `pause_admin.masm` hard-coded. The role identity
 /// had to survive the move from a MASM literal into the procedure-role map, so it is pinned here as

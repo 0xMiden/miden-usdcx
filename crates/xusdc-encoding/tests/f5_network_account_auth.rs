@@ -1,19 +1,14 @@
-//! Production transaction authorization: the faucet is a Miden NETWORK ACCOUNT.
+//! Production transaction authorization for the Miden network-account faucet.
 //!
-//! The faucet ships with the standard network-account auth component as its one and only
-//! authorization surface. That choice has three consequences this file pins, because together they
-//! define the entire attack surface of "what can be sent to this account".
+//! The standard network-account auth component is the faucet's only authorization surface.
 //!
-//! It is KEYLESS. There is no signing key that could be stolen or lost; a transaction is authorized
-//! by what it does, not by who signed it.
+//! The account is keyless, so transactions are authorized by their accepted note and transaction
+//! scripts rather than a signature.
 //!
-//! Its note-script allowlist is FIXED at deployment and cannot be changed afterwards. Only the two
-//! supply notes (mint and burn) and the twelve admin notes are admissible; any other note script is
-//! refused by auth before its code runs. Both the exact membership and the exact count are asserted,
-//! at two layers — the builder's single source of truth and the allowlist map inside the built
-//! account — because an extra entry is as much a defect as a missing one. `set_role_admin` is
-//! deliberately not among them: the role-delegation graph is seeded at build time and frozen, and
-//! rotation happens through grant and revoke instead.
+//! The note-script allowlist contains two supply notes, six administration and configuration notes,
+//! the fee configuration note, and the sponsorship note. The general network-account configuration
+//! note is excluded, so accepted notes cannot modify the note or transaction allowlists. The
+//! `RbacConfigNote` supports role grants, revocations, administration changes, and renunciation.
 //!
 //! Its transaction-script allowlist contains exactly one entry, the canonical expiration script.
 //! Any other transaction script is rejected. This is what stops an arbitrary script from being run
@@ -25,8 +20,8 @@
 //! always-execute hint — and a burn note carries the routing attachment. Both the wire form and
 //! the semantics are checked.
 //!
-//! Sibling suites cover the rest: per-operation admin authorization in `f5_admin_notes.rs`, and the
-//! mint transport negatives — missing or miscounted attachments, tampered attestations — in
+//! Sibling suites cover per-operation admin authorization in `f5_admin_notes.rs` and mint transport
+//! failures such as missing attachments and tampered attestations in
 //! `mint_policy_e2e.rs`.
 
 mod support;
@@ -48,8 +43,8 @@ use miden_standards::errors::standards::{
     ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED, ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED,
 };
 use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, MintNote, NetworkAccountTarget, NoteExecutionHint,
-    PauseConfigNote, RbacConfigNote,
+    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FeeSponsorshipNote, MintNote,
+    NetworkAccountTarget, NoteExecutionHint, PauseConfigNote, RbacConfigNote,
 };
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::ExpirationTransactionScript;
@@ -151,7 +146,7 @@ fn production_faucet() -> Result<(MockChain, Account)> {
 fn stock_network_auth_proc_root() -> Word {
     let component: AccountComponent = AuthNetworkAccount::custom(
         BTreeSet::from_iter([MintNote::script_root()]),
-        XReserveStablecoinBuilder::provisional_fee_policy_manager(),
+        test_fee_policy_manager(),
     )
     .expect("non-empty allowlist constructs")
     .into_iter()
@@ -202,22 +197,10 @@ fn production_faucet_auth_component_is_stock_network_account() -> Result<()> {
 // PROOF #5 — the frozen note-script allowlist + a tx-script allowlist of EXACTLY the expiration root
 // ================================================================================================
 
-/// The note-script allowlist is exactly the eight intended roots — two supply notes and six
-/// admin notes — with nothing extra and nothing missing.
-///
-/// The allowlist cannot be changed after deployment, so its contents at build time are its contents
-/// forever; an accidental extra entry would be a permanent hole. It is checked at both layers that
-/// could drift apart: the builder's list, which is the single source, and the allowlist map inside
-/// the account that auth actually consults. The expected roots are taken from the shipped note
-/// factories rather than written out as literals.
-///
-/// Three of the six admin roots are standard notes that each cover a whole capability behind one
-/// script root: pause and unpause; block and unblock; and grant, revoke, set-role-admin and
-/// renounce. There are no ownership notes — the faucet installs no ownership component, so rotating
-/// the administrator is a grant and a revoke of the `ADMIN` role. There is no identifier-init note
-/// either: the mint path derives the identifier from the account's own id, so nothing seeds it.
+/// The note-script allowlist contains exactly ten roots: two supply notes, six administration and
+/// configuration notes, and two fee notes. The builder and built account contain the same set.
 #[test]
-fn production_faucet_note_allowlist_is_exactly_the_8_ratified_roots() -> Result<()> {
+fn production_faucet_note_allowlist_contains_the_ten_expected_roots() -> Result<()> {
     let (_chain, account) = production_faucet()?;
     let expected: BTreeSet<_> = BTreeSet::from([
         // the two supply-side notes: minting uses the standard mint note
@@ -233,27 +216,29 @@ fn production_faucet_note_allowlist_is_exactly_the_8_ratified_roots() -> Result<
         BlocklistConfigNote::script_root(),
         // one standard note covers grant, revoke, set-role-admin AND renounce
         RbacConfigNote::script_root(),
+        ConstantFeePolicyConfigNote::script_root(),
+        FeeSponsorshipNote::script_root(),
     ]);
     assert_eq!(
         expected.len(),
-        8,
-        "the ratified allowlist is exactly 8 distinct roots"
+        10,
+        "the expected allowlist contains exactly 10 distinct roots"
     );
 
-    // Source layer: the builder's single-source allowlist == the 8 ratified roots.
+    // The builder defines the expected allowlist.
     assert_eq!(
         XReserveStablecoinBuilder::allowed_note_scripts(),
         expected,
-        "allowed_note_scripts() must equal EXACTLY the 8 ratified roots (extra/missing = RED)",
+        "allowed_note_scripts() must equal the expected 10 roots",
     );
 
-    // On-chain layer: the built faucet's allowlist storage map == the 8 ratified roots.
+    // The built account stores the same allowlist.
     let allowlist = NetworkAccountNoteAllowlist::try_from(account.storage())
         .map_err(|e| anyhow::anyhow!("the faucet must carry a note-script allowlist slot: {e}"))?;
     assert_eq!(
         allowlist.allowed_script_roots(),
         &expected,
-        "the built faucet's on-chain allowlist map must equal EXACTLY the 8 ratified roots",
+        "the built faucet's allowlist map must equal the expected 10 roots",
     );
     Ok(())
 }

@@ -53,12 +53,13 @@ use miden_standards::account::access::{
     Pausable, PausableManager, PausableStorage, RoleBasedAccessControl,
 };
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
+use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
 use miden_standards::account::policies::{
     BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager,
 };
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::BurnNote;
+use miden_standards::note::{BurnNote, ConstantFeePolicyConfigNote};
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::StandardsLib;
 use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
@@ -339,6 +340,33 @@ pub fn test_faucet_id(seed: u8) -> AccountId {
     )
 }
 
+/// The faucet issuing the test-only fee asset.
+pub fn test_fee_faucet_id() -> AccountId {
+    test_faucet_id(250)
+}
+
+/// Returns the default fee policy used by tests.
+pub fn test_fee_policy() -> BasicConstantFeePolicy {
+    BasicConstantFeePolicy::new()
+        .with_fees(
+            XReserveStablecoinBuilder::allowed_note_scripts()
+                .into_iter()
+                .map(|root| (root, AssetAmount::ZERO)),
+        )
+        .with_fee(
+            ConstantFeePolicyConfigNote::script_root(),
+            AssetAmount::new(1).expect("one is a valid fee"),
+        )
+}
+
+/// Returns a fee manager for tests that instantiate `AuthNetworkAccount` directly.
+pub fn test_fee_policy_manager() -> FeePolicyManager {
+    FeePolicyManager::builder()
+        .fee_faucet_id(test_fee_faucet_id())
+        .active_fee_policy(test_fee_policy().into())
+        .build()
+}
+
 /// Adds a faucet account to the mock chain from its composed `components`, deriving the immutable
 /// `AssetCallbackFlag` FROM THE COMPOSITION: `Enabled` when a protocol asset-callback slot is present
 /// (a transfer policy is wired — the policed asset), else `Disabled` (basic asset). This
@@ -373,18 +401,27 @@ pub fn add_faucet_account(
         .context("adding a faucet account from its composed components (callback-flag derived)")
 }
 
-/// Adds the production network faucet to the chain under the PRODUCTION auth composition —
-/// `XReserveStablecoinBuilder::auth_component()`, the `custom()`-based `AuthNetworkAccount` plus
-/// its fee-policy companions — instead of the `miden-testing` `Auth::NetworkAccount` fixture. The
-/// fixture routes through `AuthNetworkAccount::new()`, which force-inserts the config-note and
-/// fee-sponsorship script roots into the note allowlist; the preserved posture is the EXACT
-/// 8-root allowlist, so the composition must go through `custom()` (which inserts nothing) —
-/// `config_note_absence.rs` is the tripwire. Registering the account without an authenticator
-/// matches the fixture's behavior for the keyless network account (its authenticator is `None`
-/// either way). The callback flag is derived exactly as in [`add_faucet_account`].
+/// Adds the production network faucet using `XReserveStablecoinBuilder::auth_component()`.
 pub fn add_network_faucet_account(
     builder: &mut MockChainBuilder,
     components: Vec<AccountComponent>,
+) -> Result<Account> {
+    let account = build_network_faucet_account_with_fee_policy(
+        components,
+        test_fee_faucet_id(),
+        test_fee_policy(),
+    )?;
+    builder
+        .add_account(account.clone())
+        .context("registering the production network faucet account")?;
+    Ok(account)
+}
+
+/// Builds the production network faucet with an explicitly supplied fee faucet and policy.
+pub fn build_network_faucet_account_with_fee_policy(
+    components: Vec<AccountComponent>,
+    fee_faucet_id: AccountId,
+    fee_policy: BasicConstantFeePolicy,
 ) -> Result<Account> {
     let has_callbacks = components.iter().any(|c| {
         c.storage_slots().iter().any(|s| {
@@ -404,16 +441,12 @@ pub fn add_network_faucet_account(
         account_builder = account_builder.with_component(component);
     }
     account_builder = account_builder.with_components(
-        xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::auth_component()
+        XReserveStablecoinBuilder::auth_component(fee_faucet_id, fee_policy)
             .map_err(|e| anyhow::anyhow!("the production auth component must build: {e}"))?,
     );
-    let account = account_builder
+    account_builder
         .build_existing()
-        .context("building the production network faucet account")?;
-    builder
-        .add_account(account.clone())
-        .context("registering the production network faucet account")?;
-    Ok(account)
+        .context("building the production network faucet account")
 }
 
 pub fn assemble_xreserve_lib() -> Result<Package> {
@@ -456,6 +489,8 @@ pub fn production_builder(
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
+        test_fee_faucet_id(),
+        test_fee_policy(),
         domain,
         TEST_SOURCE_DOMAIN,
         EthBytes32::new(test_xreserve_contract()),
@@ -2863,13 +2898,7 @@ pub fn setup_production_faucet(
         .build_components()
         .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
 
-    // The production faucet is finalized under the stock AuthNetworkAccount (keyless
-    // network account) with the frozen note-script allowlist, a tx-script allowlist of EXACTLY
-    // the one canonical `ExpirationTransactionScript::script_root()`,
-    // and the provisional zero-fee configuration — installed via the deploy path's OWN
-    // `XReserveStablecoinBuilder::auth_component()` (the `custom()`-based composition; the
-    // `Auth::NetworkAccount` fixture is deliberately bypassed because it routes through the
-    // force-inserting `new()` constructor and would grow the 8-root allowlist).
+    // Build the keyless network account with the production allowlists and test fee policy.
     let account = add_network_faucet_account(&mut mc, components)
         .context("adding the production faucet account")?;
     // The faucet id is now known, so the seed-notes closure binds its notes and its mint payloads

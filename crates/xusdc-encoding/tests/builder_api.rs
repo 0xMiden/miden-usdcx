@@ -16,6 +16,7 @@ use miden_protocol::account::{AccountComponent, RoleSymbol, StorageSlotName};
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{PausableManager, PausableStorage};
+use miden_standards::account::fees::ConstantFeeManager;
 use miden_standards::account::policies::{
     BasicBlocklist, BlocklistManager, MinBurnAmount, TokenPolicyManager,
 };
@@ -37,6 +38,8 @@ fn production_builder() -> XReserveStablecoinBuilder {
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
+        test_fee_faucet_id(),
+        test_fee_policy(),
         TEST_DOMAIN,
         TEST_SOURCE_DOMAIN,
         EthBytes32::new(test_xreserve_contract()),
@@ -374,10 +377,10 @@ fn production_components_carry_mutability_config_slot() -> Result<()> {
 /// installed xreserve library, EXACTLY ONE policy-manager component, and EXACTLY ONE each of the
 /// stock `MinBurnAmount` + `BasicBlocklist` companions — in the pinned install order
 /// [faucet, Pausable, policy manager, MinBurnAmount, BasicBlocklist, xreserve, PausableManager,
-/// BlocklistManager, RBAC, Authority]. The companion positions are derived, not declared: the
-/// policy manager emits them in `BTreeMap<AccountProcedureRoot, _>` order, so they follow the
-/// procedure roots and move whenever those do. A duplicate xreserve copy would hard-reject the
-/// account build with `DuplicateStorageSlotName`, so this is the build-time tripwire for that.
+/// BlocklistManager, ConstantFeeManager, RBAC, Authority]. The companion positions follow the
+/// policy manager's `BTreeMap<AccountProcedureRoot, _>` order. This test also verifies that
+/// xreserve is installed once; duplicate installation would fail account construction with
+/// `DuplicateStorageSlotName`.
 #[test]
 fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> {
     // The same component the builder assembles internally, so its code is the code the composition
@@ -391,8 +394,8 @@ fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> 
 
     assert_eq!(
         components.len(),
-        10,
-        "the recomposed production set is exactly the ten pinned components"
+        11,
+        "the recomposed production set is exactly the eleven pinned components"
     );
     let count_by_code = |code: &AccountComponentCode| {
         components
@@ -443,6 +446,11 @@ fn production_composition_installs_one_xreserve_and_one_manager() -> Result<()> 
     assert!(
         components[5].component_code().as_package() == xreserve_code.as_package(),
         "component 5 must be the xreserve component"
+    );
+    assert_eq!(
+        components[8].metadata().name(),
+        ConstantFeeManager::NAME,
+        "component 8 must be the constant-fee manager component"
     );
     Ok(())
 }

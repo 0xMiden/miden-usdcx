@@ -85,7 +85,7 @@ fn t_delegation_is_byte_for_byte_unit04_create() {
     let unit04 = miden_protocol::note::Note::from(
         XUsdcMintNote::builder()
             .sender(relayer_sender_id())
-            .faucet_id(faucet_id())
+            .target(faucet_id())
             .remote_domain(fixtures::TEST_REMOTE_DOMAIN)
             .deposit_intent(
                 DepositIntent::try_from(attestation.payload()).expect("the payload decodes"),

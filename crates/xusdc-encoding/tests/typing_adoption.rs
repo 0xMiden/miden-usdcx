@@ -177,7 +177,7 @@ fn mint_note_builder_takes_typed_deposit_intent() -> Result<()> {
     let note = Note::from(
         XUsdcMintNote::builder()
             .sender(test_account_id(5))
-            .faucet_id(faucet)
+            .target(faucet)
             .remote_domain(TEST_DOMAIN)
             .deposit_intent(DepositIntent::try_from(payload.as_slice())?)
             .attestation(attestation)
@@ -272,8 +272,8 @@ fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() -> Resul
         .max_fee(header.max_fee())
         .hook_data(HookData::new(Vec::new())?)
         .build();
-    let storage = XUsdcMintNoteStorage::from_attested(&intent, header.amount(), faucet)?;
-    let _mint_storage = storage.as_mint_storage();
+    // Conversion works.
+    XUsdcMintNoteStorage::new(&header, faucet);
 
     // and the two types describe the same deposit: expanding the carried intent against the same
     // faucet state reproduces the header it came from.

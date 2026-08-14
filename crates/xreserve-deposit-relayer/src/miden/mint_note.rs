@@ -144,7 +144,7 @@ pub fn build_mint_note<R: FeltRng>(
 ) -> Result<Note, RelayerError> {
     XUsdcMintNote::builder()
         .sender(sender)
-        .faucet_id(faucet_id)
+        .target(faucet_id)
         .remote_domain(remote_domain)
         .deposit_intent(deposit_intent)
         .attestation(DepositAttestation::new(

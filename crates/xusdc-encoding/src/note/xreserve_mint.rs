@@ -1,12 +1,8 @@
 //! `XUsdcMintNote`: builds the note that carries a Circle-attested deposit to the faucet.
 //!
-//! The note is a standard [`MintNote`] driving the standard
-//! `mint_and_send`; everything specific to xUSDC rides along as attachments. The authorization
-//! decision lives entirely in the faucet's active mint policy, which re-derives the note's contents
-//! from the attested payload and refuses anything that does not match — so this factory's only job
-//! is to produce a note that policy will accept.
-//!
-//! What that means field by field:
+//! The note is a standard [`MintNote`] driving the standard `mint_and_send`, everything specific
+//! to xUSDC is in attachments. The authorization decision lives entirely in the faucet's mint
+//! policy.
 //!
 //! - The mint-note storage holds the output note's pay-to-id recipe: target = the intent's
 //!   `remoteRecipient`, serial = the key derived from the deposit nonce, asset = the reduced
@@ -23,7 +19,7 @@
 //!   travel — the faucet rebuilds it from the carried payload plus its own state.
 
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::{AssetAmount, FungibleAsset};
+use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::crypto::SequentialCommit;
@@ -37,7 +33,7 @@ use miden_standards::note::{
 };
 
 use crate::xreserve::encoding::{
-    DepositIntent, HookData, MintIntent, Signature, BYTES_PER_PACKED_FELT,
+    DepositIntent, DepositIntentHeader, HookData, MintIntent, Signature, BYTES_PER_PACKED_FELT,
 };
 
 /// The mint-note transport attachment scheme (u16, project-chosen: >= 4, clear of
@@ -66,8 +62,7 @@ const _: () = assert!(
     "the codec's HookData::MAX_LEN must equal the mint transport's hookData capacity"
 );
 
-/// The Circle deposit attestation crossing the note boundary: the [`Signature`] over
-/// `keccak256(payload)` and the candidate attester [`PublicKey`].
+/// The Circle deposit attestation crossing the note boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DepositAttestation {
     signature: Signature,
@@ -75,12 +70,12 @@ pub struct DepositAttestation {
 }
 
 impl DepositAttestation {
-    /// Bundles the `r‖s‖v` signature with the candidate attester key.
+    /// Bundles the signature with the candidate attester key.
     pub fn new(signature: Signature, pubkey: PublicKey) -> Self {
         Self { signature, pubkey }
     }
 
-    /// The `r‖s‖v` signature (`v` carried, unused on-chain).
+    /// The signature.
     pub fn signature(&self) -> Signature {
         self.signature
     }
@@ -91,43 +86,24 @@ impl DepositAttestation {
     }
 }
 
-/// The mint note's dedicated note-storage type — the attested output-note recipe the faucet's
-/// attestation policy assert-matches. It is DERIVED from the typed inputs (the decoded
-/// [`MintIntent`] together with the consuming faucet id), never caller-supplied, so the storage
-/// cannot diverge from the attested values. It wraps the stock [`MintNoteStorage`] (a private field
-/// with read-only accessors, per the standards `PswapNoteStorage` pattern) rather than exposing a
-/// second copy of the recipe.
+/// The note storage of the [`XUsdcMintNote`] derived from a [`DepositIntent`].
 pub struct XUsdcMintNoteStorage {
     storage: MintNoteStorage,
 }
 
 impl XUsdcMintNoteStorage {
-    /// Derives the mint-note storage from the decoded `intent`, its scale-reduced `amount` and the
-    /// consuming `faucet_id`: the P2ID recipe to the intent's `remoteRecipient` (serial = the
-    /// nonce-derived key), the amount as a [`FungibleAsset`] of the faucet, and the recipient's
-    /// account-target tag.
-    ///
-    /// The recipient and the serial come off the already-decoded intent rather than being decoded
-    /// a second time out of the raw header, which is what makes this derivation total: the intent
-    /// only exists because those two fields already decoded.
-    ///
-    /// # Errors
-    ///
-    /// [`NoteError`] if the amount is out of range for the faucet, or the mint storage cannot be
-    /// assembled.
-    pub fn from_attested(
-        intent: &MintIntent,
-        amount: AssetAmount,
-        faucet_id: AccountId,
-    ) -> Result<Self, NoteError> {
-        let recipient_id = intent.remote_recipient();
-        let asset = FungibleAsset::new(faucet_id, u64::from(amount))
-            .map_err(|source| NoteError::other_with_source("attested amount", source))?;
-        let serial = Word::from(intent.nonce().to_storage_map_key());
-        let recipient = P2idNoteStorage::new(recipient_id).into_recipient(serial);
+    /// Derives the mint-note storage from the decoded `intent` and the target faucet.
+    pub fn new(intent_header: &DepositIntentHeader, target: AccountId) -> Self {
+        let recipient_id = intent_header.remote_recipient();
+        let asset = FungibleAsset::new(target, intent_header.amount().as_u64())
+            .expect("asset amount should be valid");
+        let serial_num = intent_header.nonce().to_word();
+        let recipient = P2idNoteStorage::new(recipient_id).into_recipient(serial_num);
         let tag = NoteTag::with_account_target(recipient_id);
-        let storage = MintNoteStorage::new_fungible_public(recipient, asset, tag)?;
-        Ok(Self { storage })
+        let storage = MintNoteStorage::new_fungible_public(recipient, asset, tag)
+            .expect("p2id note storage should not exceed max number of storage items");
+
+        Self { storage }
     }
 
     /// A read-only view of the derived stock mint storage.
@@ -173,32 +149,27 @@ impl XUsdcDeposit {
 }
 
 impl From<&XUsdcDeposit> for NoteAttachment {
-    /// Builds the scheme-4 transport attachment — everything the faucet needs to rebuild and
-    /// verify the Circle-signed message, in three sections:
+    /// Builds the transport attachment — everything the faucet needs to rebuild and verify the
+    /// Circle-signed message, in three sections:
     ///
-    /// 1. 36 felts `[pubkey(16 affine felts), signature(17), pad(3)]`.
-    /// 2. the 24-felt carried mint payload (`DC-14`).
-    /// 3. the u32-LE-packed hookData, zero-padded to the word boundary.
-    ///
-    /// The layout is a contract: the policy hash-verifies these words into one memory region and
-    /// reads each section at a constant offset into it, so a reordering here would silently
-    /// repoint them. The DepositIntent itself is NOT carried — the faucet rebuilds it from
-    /// section 2 plus its own state, which is what makes the addressing fields unforgeable.
+    /// 1. the [`DepositAttestation`].
+    /// 2. the [`MintIntent`].
+    /// 3. the [`HookData`].
     fn from(deposit: &XUsdcDeposit) -> Self {
         let mut elements: Vec<Felt> = Vec::new();
 
         elements.extend(deposit.attestation.pubkey().to_elements());
         elements.extend(deposit.attestation.signature().to_elements());
-        elements.extend([Felt::from(0u32); 3]);
+        elements.extend([Felt::ZERO; 3]);
         debug_assert_eq!(elements.len(), XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF * 4);
 
         elements.extend(deposit.intent.to_elements());
         while !elements.len().is_multiple_of(Word::NUM_ELEMENTS) {
-            elements.push(Felt::from(0u32));
+            elements.push(Felt::ZERO);
         }
 
         let words: Vec<Word> = elements
-            .chunks_exact(4)
+            .chunks_exact(Word::NUM_ELEMENTS)
             .map(|chunk| Word::new([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect();
         NoteAttachment::with_words(
@@ -213,10 +184,7 @@ impl From<&XUsdcDeposit> for NoteAttachment {
 }
 
 /// The mint note carrying the xUSDC attested transport: a [`MintNote`] whose two attachments are
-/// the scheme-4 deposit and the scheme-2 routing bind.
-///
-/// It holds its parts — every one of them already decoded and already validated — and converts
-/// into a protocol [`Note`] with `Note::try_from`.
+/// the [`XUsdcDeposit`] and the [`NetworkAccountTarget`].
 pub struct XUsdcMintNote {
     sender: AccountId,
     storage: XUsdcMintNoteStorage,
@@ -239,50 +207,45 @@ impl XUsdcMintNote {
 
 #[bon::bon]
 impl XUsdcMintNote {
-    /// Builds the production mint note via a `bon` builder
-    /// (`XUsdcMintNote::builder().sender(..).faucet_id(..).remote_domain(..).deposit_intent(..).attestation(..).generate_serial_number(..).build()`):
-    /// `sender` is the producer/relayer account, `faucet_id` the consuming faucet, `remote_domain`
-    /// the destination domain that faucet has configured, `deposit_intent` the decoded Circle
-    /// message, `attestation` the signature and candidate pubkey. The storage embeds the ATTESTED
-    /// values (P2ID recipe to the intent's `remoteRecipient` with the nonce-key serial; the reduced
-    /// amount as a [`FungibleAsset`] of `faucet_id`; the recipient's account-target tag) so the
-    /// faucet's attestation policy accepts it under the ASSERT-MATCH binding.
+    /// Builds the mint note.
+    ///
+    /// The `sender` is the relayer account and `target` the consuming faucet. The `remote_domain`
+    /// must match the configured remote domain in the target faucet.
     ///
     /// # Errors
     ///
-    /// [`NoteError`] if the intent is addressed to another faucet or another domain (it could not
-    /// be rebuilt byte-for-byte on-chain, so it would only ever surface as a bad signature), if the
-    /// amount is out of range for the faucet, or if `faucet_id` is not a public network account.
+    /// Returns an error if:
+    /// - the intent is addressed to another target faucet or another domain
+    /// - if `target` is not a public account.
     #[builder]
     pub fn new(
         sender: AccountId,
-        faucet_id: AccountId,
+        target: AccountId,
         remote_domain: u32,
         deposit_intent: DepositIntent,
         attestation: DepositAttestation,
         serial_number: Word,
     ) -> Result<Self, NoteError> {
-        // compress to what the note actually carries
-        let payload = MintIntent::from_deposit_intent(&deposit_intent, faucet_id, remote_domain)
+        let mint_intent = MintIntent::from_deposit_intent(&deposit_intent, target, remote_domain)
             .map_err(|source| {
-                NoteError::other_with_source(
-                    "deposit intent cannot be carried by the mint transport",
-                    source,
-                )
-            })?;
-        let amount = deposit_intent.header().amount();
-        // the attested output-note recipe, encapsulated in the mint note's dedicated storage type —
-        // the SAME derivations the on-chain policy re-computes and assert-matches.
-        let storage = XUsdcMintNoteStorage::from_attested(&payload, amount, faucet_id)?;
-        let network_account_target =
-            NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always).map_err(|err| {
-                NoteError::other_with_source("faucet id is not a public network account", err)
-            })?;
+            NoteError::other_with_source(
+                "deposit intent cannot be carried by the mint transport",
+                source,
+            )
+        })?;
+
+        let network_account_target = NetworkAccountTarget::new(target, NoteExecutionHint::Always)
+            .map_err(|err| {
+            NoteError::other_with_source("faucet id is not a public network account", err)
+        })?;
+
+        let storage = XUsdcMintNoteStorage::new(deposit_intent.header(), target);
+
         Ok(Self {
             sender,
             storage,
             serial_number,
-            deposit: XUsdcDeposit::new(payload, attestation),
+            deposit: XUsdcDeposit::new(mint_intent, attestation),
             network_account_target,
         })
     }
@@ -295,8 +258,7 @@ impl<S: x_usdc_mint_note_builder::State> XUsdcMintNoteBuilder<S>
 where
     S::SerialNumber: x_usdc_mint_note_builder::IsUnset,
 {
-    /// Draws a serial number from `rng` and sets it on the builder — the stock
-    /// `MintNote::generate_serial_number` shape.
+    /// Draws a serial number from `rng` and sets it on the builder.
     pub fn generate_serial_number(
         self,
         rng: &mut impl FeltRng,
@@ -309,23 +271,16 @@ where
 // ================================================================================================
 
 impl From<XUsdcMintNote> for Note {
-    /// Assembles the stock [`MintNote`] and converts it into a protocol [`Note`]: the derived mint
-    /// storage, the drawn serial, then the two attachments in their frozen order — the scheme-4
-    /// deposit first (fixed-width attestation ahead of the variable payload), the scheme-2 routing
-    /// bind second.
-    ///
-    /// Infallible: an [`XUsdcMintNote`] only exists because every one of its parts was accepted at
-    /// construction, and the note's shape — two attachments, both within their word cap — is fixed
-    /// by this function rather than by anything a caller supplies.
+    /// Creates the stock [`MintNote`] and converts it into a protocol [`Note`].
     fn from(note: XUsdcMintNote) -> Self {
-        let mint_note = MintNote::builder()
+        MintNote::builder()
             .sender(note.sender)
             .mint_storage(note.storage.into_mint_storage())
             .serial_number(note.serial_number)
-            .attachment(NoteAttachment::from(&note.deposit))
-            .attachment(NoteAttachment::from(note.network_account_target))
+            .attachment(&note.deposit)
+            .attachment(note.network_account_target)
             .build()
-            .expect("two attachments are within the protocol's per-note limit");
-        Note::from(mint_note)
+            .expect("two attachments are within the protocol's per-note limit")
+            .into()
     }
 }

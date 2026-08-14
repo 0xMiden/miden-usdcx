@@ -136,7 +136,7 @@ pub fn mint_note_from_payload_at_domain(
         .map_err(|e| anyhow::anyhow!("decoding the deposit intent payload: {e}"))?;
     let note = XUsdcMintNote::builder()
         .sender(sender)
-        .faucet_id(faucet_id)
+        .target(faucet_id)
         .remote_domain(remote_domain)
         .deposit_intent(deposit_intent)
         .attestation(attestation)

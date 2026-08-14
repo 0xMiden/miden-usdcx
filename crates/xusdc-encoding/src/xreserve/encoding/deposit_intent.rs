@@ -40,7 +40,7 @@ use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::utils::serde::{
     ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable, SliceReader,
 };
-use miden_protocol::{Felt, MAX_NOTE_STORAGE_ITEMS};
+use miden_protocol::{Felt, MAX_NOTE_STORAGE_ITEMS, Word};
 use miden_standards::interop::eth::{EthAddress, EthAmount, EthEmbeddedAccountId};
 
 use super::account_id::{EthAddressExt, EthEmbeddedAccountIdExt};
@@ -59,7 +59,7 @@ pub const BYTES_PER_PACKED_FELT: usize = 4;
 pub const BYTES32_LEN: usize = 32;
 pub const ACCOUNT_ID_BYTES: usize = 16;
 pub const EVM_ADDRESS_BYTES: usize = 20;
-pub const ASSET_AMOUNT_BYTES: usize = 8;
+pub const ASSET_AMOUNT_BYTES: usize = AssetAmount::SERIALIZED_SIZE;
 
 /// The same widths as packed field elements — the form the mint note's carried payload uses.
 pub const BYTES32_PACKED_LIMBS: usize = BYTES32_LEN / BYTES_PER_PACKED_FELT;
@@ -126,6 +126,11 @@ impl DepositNonce {
     /// The 8 u32-LE-packed limbs the mint note's payload carries.
     pub fn to_packed_felts(&self) -> [Felt; BYTES32_PACKED_LIMBS] {
         bytes32_to_packed_felts(&self.0)
+    }
+
+    /// The replay-guard key and output-note serial (`DC-4`).
+    pub fn to_word(&self) -> Word {
+        self.to_storage_map_key().as_word()
     }
 
     /// The replay-guard key and output-note serial (`DC-4`).
@@ -374,7 +379,7 @@ impl DepositIntent {
         Self { header, hook_data }
     }
 
-    /// The typed header fields.
+    /// The header fields.
     pub fn header(&self) -> &DepositIntentHeader {
         &self.header
     }

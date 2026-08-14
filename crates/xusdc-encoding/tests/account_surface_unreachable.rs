@@ -28,11 +28,11 @@ use miden_protocol::Word;
 use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::note::{
     BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
-    FeeSponsorshipNote, MintNote, PauseConfigNote, RbacConfigNote,
+    FeeSponsorshipNote, MinBurnAmountConfigNote, MintNote, PauseConfigNote, RbacConfigNote,
 };
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
-use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -76,7 +76,7 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
         ("stock_mint_note", MintNote::script()),
         ("stock_burn_note", BurnNote::script()),
         ("set_attester", XReserveSetAttesterNote::script()),
-        ("set_min_burn_size", XReserveSetMinBurnSizeNote::script()),
+        ("set_min_burn_amount", MinBurnAmountConfigNote::script()),
         ("stock_pause_action_note", PauseConfigNote::script()),
         ("set_max_supply", FaucetMetadataConfigNote::script()),
         ("stock_blocklist_config_note", BlocklistConfigNote::script()),

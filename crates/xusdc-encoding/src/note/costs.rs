@@ -5,7 +5,7 @@ use miden_protocol::note::NoteScriptRoot;
 use miden_standards::note::costs::{NoteConsumptionCost, NoteCost};
 use miden_standards::note::P2idNote;
 
-use super::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
+use super::xreserve_admin::XReserveSetAttesterNote;
 use super::xreserve_burn::XReserveBurnNote;
 use super::xreserve_mint::XUsdcMintNote;
 
@@ -17,9 +17,6 @@ pub const XUSDC_BURN_CONSUMPTION_CYCLES: u32 = 31540;
 
 /// Cycles of consuming an xUSDC set-attester note: enable 29716, disable 29579.
 pub const XRESERVE_SET_ATTESTER_CONSUMPTION_CYCLES: u32 = 29716;
-
-/// Cycles of consuming an xUSDC set-minimum-burn-size note.
-pub const XRESERVE_SET_MIN_BURN_SIZE_CONSUMPTION_CYCLES: u32 = 28073;
 
 impl NoteConsumptionCost for XUsdcMintNote {
     fn consumption_cycles() -> u32 {
@@ -43,12 +40,6 @@ impl NoteConsumptionCost for XReserveSetAttesterNote {
     }
 }
 
-impl NoteConsumptionCost for XReserveSetMinBurnSizeNote {
-    fn consumption_cycles() -> u32 {
-        XRESERVE_SET_MIN_BURN_SIZE_CONSUMPTION_CYCLES
-    }
-}
-
 /// Returns the xUSDC-specific cost for `root`, or `None` when the standard cost applies.
 pub(crate) fn note_cost(root: NoteScriptRoot) -> Option<NoteCost> {
     if root == XUsdcMintNote::script_root() {
@@ -57,8 +48,6 @@ pub(crate) fn note_cost(root: NoteScriptRoot) -> Option<NoteCost> {
         Some(NoteCost::of::<XReserveBurnNote>())
     } else if root == XReserveSetAttesterNote::script_root() {
         Some(NoteCost::of::<XReserveSetAttesterNote>())
-    } else if root == XReserveSetMinBurnSizeNote::script_root() {
-        Some(NoteCost::of::<XReserveSetMinBurnSizeNote>())
     } else {
         None
     }

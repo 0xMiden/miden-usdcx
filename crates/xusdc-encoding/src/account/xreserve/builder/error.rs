@@ -32,10 +32,7 @@ pub enum XReserveStablecoinBuilderError {
     /// (assembly/path drift). Carries the expected path for diagnosis.
     AttestationPolicyProcNotFound,
     /// The requested `min_burn_amount` is below [`MIN_BURN_SIZE_FLOOR`]
-    /// (= 1). The stock `MinBurnAmount` policy asserts only `min <= amount` and its stock setter
-    /// accepts `0`, so a sub-floor seed would silently allow zero-amount burns;
-    /// rejected at construction (the runtime twin is the `set_min_burn_size` note's floor assert).
-    /// Carries the offending value.
+    /// (= 1). Carries the offending value.
     MinBurnSizeBelowFloor(u64),
     /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with a privileged
     /// identity — the administrator, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The
@@ -73,9 +70,8 @@ impl fmt::Display for XReserveStablecoinBuilderError {
             ),
             Self::MinBurnSizeBelowFloor(value) => write!(
                 f,
-                "min_burn_amount {value} is below the floor {MIN_BURN_SIZE_FLOOR}; the stock \
-                 MinBurnAmount accepts zero, so the zero-burn invariant (R-BURN-1) requires the \
-                 seeded floor be at least {MIN_BURN_SIZE_FLOOR}"
+                "min_burn_amount {value} is below the construction floor \
+                 {MIN_BURN_SIZE_FLOOR}"
             ),
             Self::BlocklistManagerNotIsolated { collides_with } => write!(
                 f,

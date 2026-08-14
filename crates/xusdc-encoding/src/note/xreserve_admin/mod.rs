@@ -12,10 +12,9 @@
 //! proc — the note sender is kernel-forced, so the proc's role gate is sound under permissionless
 //! network execution.
 //!
-//! This module ships the faucet-owned rows of the note-script allowlist: the `set_attester`
-//! reference op, `set_min_burn_size` (targeting the STOCK `set_min_burn_amount` with a note-side
-//! zero-floor guard). Both resolve, through the account-wide authority, to the built-in `ADMIN`
-//! role. Maximum-supply administration uses the standard faucet-metadata configuration note.
+//! This module ships the faucet-owned `set_attester` row of the note-script allowlist. It resolves,
+//! through the account-wide authority, to the built-in `ADMIN` role. Maximum-supply and
+//! minimum-burn administration use the standard configuration notes.
 //!
 //! Three admin surfaces do NOT ship a faucet-owned note script, because a standard note already
 //! covers each of them and calls the standard component the faucet installs. Pausing uses the
@@ -39,11 +38,9 @@ use miden_protocol::Felt;
 
 mod blocklist;
 mod set_attester;
-mod set_min_burn_size;
 
 pub use blocklist::{XReserveBlocklistNote, XReserveBlocklistNoteError};
 pub use set_attester::{XReserveSetAttesterNote, XReserveSetAttesterNoteStorage};
-pub use set_min_burn_size::{XReserveSetMinBurnSizeNote, XReserveSetMinBurnSizeNoteStorage};
 
 /// Assembles an admin note from its fixed-root `script` + the creator-committed storage `items`,
 /// carrying the scheme-2 `NetworkAccountTarget` routing bind to `faucet_id` (routing-only). Shared by

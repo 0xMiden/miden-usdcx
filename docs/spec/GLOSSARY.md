@@ -92,7 +92,7 @@ these with its own typed error and should never submit such a note. The decode
 | Id | Condition enforced |
 |---|---|
 | R-ADMIN-1 | `set_attester` is administrator-gated: it carries no role of its own, so the account's role-based authority resolves it to the built-in `ADMIN` role — whose sole seeded member is the bootstrap administrator's account — and a sender without that role is rejected. |
-| R-ADMIN-2 | `set_min_burn_size` is administrator-gated (unmapped, so it resolves to the built-in `ADMIN` role). |
+| R-ADMIN-2 | `MinBurnAmountConfigNote` is administrator-gated (unmapped, so it resolves to the built-in `ADMIN` role). |
 | R-ADMIN-3 | `pause` / `unpause` require the `DOM_PAUSER` role. |
 | R-ADMIN-4 | Domain config is build-seeded with no runtime writer; the mint path derives the faucet identifier from its native account id. |
 
@@ -106,12 +106,12 @@ Labels for the faucet's functional pieces (originally built as incremental slice
 | CMP-A5 | On-token transfer policy: the stock `BasicBlocklist` is the active send + receive policy, administered by `BLK_MANAGER`. |
 | CMP-A6 | `XReserveDomainConfig` — the faucet's build-seeded domain-config fields (`domain`, `source_domain`, `xreserve_contract`); the identifier is derived, not stored. |
 | CMP-A9 | The stock `mint_and_send` supply-increasing surface, gated by `mint_policy::check_policy`. |
-| CMP-A10 | The burn security policy, run on every `receive_and_burn`: stock `MinBurnAmount::check_policy` with the ≥1 floor invariant enforced by the builder and admin note. |
+| CMP-A10 | The burn policy run on every `receive_and_burn`: stock `MinBurnAmount::check_policy`, initialized by the builder and updated through `MinBurnAmountConfigNote`. |
 | CMP-A15 | `XReserveStablecoinBuilder` — the Rust builder that composes the full faucet account and rejects an invalid wiring (e.g. no deny guard, non-Public faucet) at build time. |
 | CMP-B1 | The stock `MintNote` transport plus the account's attestation mint policy. |
 | CMP-B2 | `XReserveBurnNote` construction (the public withdrawal note). |
 | CMP-B3 | `receive_and_burn` consumption of the burn note. |
-| CMP-F2 | The administrator-gated `set_min_burn_size` setter (unmapped, so the account's role-based authority resolves it to the built-in `ADMIN` role). |
+| CMP-F2 | The administrator-gated `MinBurnAmountConfigNote` (unmapped, so the account's role-based authority resolves it to the built-in `ADMIN` role). |
 | CMP-F3 | The custom `DOM_PAUSER`-gated pause/unpause. |
 | CMP-F5 | Role management (role-based access control): `grant_role`/`revoke_role` membership rotation (CIR-ADMIN-3) plus the BUILD-SEEDED `DOM_PAUSER.admin_role = DOM_MANAGER` delegation. Driven by the STOCK `RbacConfigNote`, whose single allowlisted script root also carries `set_role_admin` and `renounce_role` — so the delegation graph is runtime-MUTABLE and self-renounce is reachable; both are accepted. See IMPL-DEV-24. |
 
@@ -303,7 +303,7 @@ The `xusdc-validation` crate runs a real-local-node acceptance matrix. Each row 
 |---|---|
 | A | Deploy the production faucet to a fresh node; the node recognizes the account. |
 | B | Identifier init-once (first succeeds, second rejected). |
-| C | Admin suite: attester set/rotation, `set_min_burn_size`, `set_max_supply`, pause/unpause, role rotation, non-authorized negatives. |
+| C | Admin suite: attester set/rotation, minimum-burn and maximum-supply configuration, pause/unpause, role rotation, non-authorized negatives. |
 | D | Mint happy path (both hookData variants); recipient consumes the emitted P2ID note. |
 | E | Mint negatives: replayed nonce, forged sig, non-allowlisted attester, non-zero fee, tampered payload — each rejected with no state change. |
 | F | Auth boundary: a non-allowlisted note and tx-script are both rejected. |

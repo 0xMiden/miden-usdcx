@@ -64,6 +64,7 @@ use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::{
     BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfig, FaucetMetadataConfigNote,
+    MinBurnAmountConfigNote,
 };
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::ExpirationTransactionScript;
@@ -172,6 +173,23 @@ pub fn stock_set_max_supply_note<R: FeltRng>(
     Ok(Note::from(note))
 }
 
+/// Builds the standard minimum-burn configuration note.
+pub fn stock_set_min_burn_amount_note<R: FeltRng>(
+    sender: AccountId,
+    faucet_id: AccountId,
+    min_burn_amount: u64,
+    rng: &mut R,
+) -> Result<Note> {
+    let note = MinBurnAmountConfigNote::builder()
+        .sender(sender)
+        .target(faucet_id)
+        .min_burn_amount(AssetAmount::new(min_burn_amount).context("invalid minimum burn amount")?)
+        .generate_serial_number(rng)
+        .build()
+        .context("building the standard minimum-burn configuration note")?;
+    Ok(Note::from(note))
+}
+
 // NOTE: the tests do not bind slot names of their own. The six xreserve slots come from
 // `XReserveFaucetExtension::*_slot()` and the stock ones from their owning standards component
 // (`FungibleFaucet::token_config_slot()`, `MinBurnAmount::slot_name()` — the latter read via
@@ -257,17 +275,8 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
     ),
 ];
 
-/// The min-burn admin note's zero-floor guard (`asm/notes/set_min_burn_size/`; the stock
-/// `set_min_burn_amount` accepts 0, so the note rejects a sub-floor `new_min` BEFORE calling it). A
-/// NOTE-script error, not an account-proc shell error — kept beside the table for the same
-/// exact-error discipline, and like the table it names the generated constant rather than the string.
-pub fn err_min_burn_below_floor() -> MasmError {
-    errors::ERR_XRESERVE_MIN_BURN_BELOW_FLOOR
-}
-
 /// The stock `MinBurnAmount::check_policy` reject (min_burn_amount.masm) — the burn-side floor
-/// error (there are no custom burn errors: with the floor `>= 1`, a
-/// zero-amount burn rejects HERE).
+/// error. There are no custom burn errors.
 pub fn err_burn_below_min_burn_amount() -> MasmError {
     MasmError::from_static_str(
         "amount to be burned must meet or exceed specified minimum burn amount",
@@ -1532,65 +1541,32 @@ pub fn read_domain_config_words(account: &Account) -> Result<[Word; 4]> {
     ])
 }
 
-// set_min_burn_size — ADMIN-gated minBurnSize setter note + slot read-back
+// Minimum-burn configuration note and slot read-back
 // ================================================================================================
 
-/// Builds an unauthenticated note SENT BY `sender` whose script `call`s the STOCK
-/// `min_burn_amount::set_min_burn_amount(new_min)`. Like `set_attester`,
-/// the authority gate reads the note sender, so the sender is what the `ADMIN` role check tests.
-/// `new_min` is the single felt written as element 0 of the stock floor slot. NOTE: this is the
-/// RAW driver — it deliberately BYPASSES the production note script's zero-floor guard so tests
-/// can probe the stock proc directly; the floor-guard behavior itself is tested through the
-/// production `XReserveSetMinBurnSizeNote` factory.
-pub fn set_min_burn_size_note(sender: AccountId, new_min: u64, seed: u64) -> Result<Note> {
-    // Stack contract: [new_min, pad(15)] (new_min on top). Push 15 pad felts (deepest) then new_min so
-    // it ends on top: 15 + 1 = 16. A pure standards proc — CodeBuilder pre-links StandardsLib.
-    let src = format!(
-        "use miden::standards::faucets::policies::burn::min_burn_amount\n\
-         @note_script\n\
-         pub proc main\n\
-         \x20\x20\x20\x20repeat.15 push.0 end\n\
-         \x20\x20\x20\x20push.{new_min}\n\
-         \x20\x20\x20\x20call.min_burn_amount::set_min_burn_amount\n\
-         \x20\x20\x20\x20dropw dropw dropw dropw\n\
-         end\n",
-    );
-    let script = CodeBuilder::new()
-        .compile_note_script(src.clone())
-        .map_err(|e| {
-            anyhow::anyhow!("set_min_burn_size note script failed to compile: {e}\n{src}")
-        })?;
-    // Deterministic note rng (serial only; never affects the gate). Distinct tail [7,8] keeps serials
-    // disjoint from set_attester [1,2] / pause [3,4] / set_max_supply [5,6] / domain_init [9,10].
-    let mut rng = RandomCoin::new(Word::from([
-        Felt::from(seed as u32),
-        Felt::from((seed >> 32) as u32),
-        Felt::from(7u32),
-        Felt::from(8u32),
-    ]));
-    Ok(NoteBuilder::new(sender, &mut rng)
-        .note_type(NoteType::Private)
-        .script(script)
-        .build()?)
-}
-
-/// Executes a `set_min_burn_size` note (sent by `sender`) against the faucet `account` on a bare
+/// Executes a standard minimum-burn configuration note sent by `sender` against `account` on a bare
 /// `&MockChain` (the burn-policy harness is a `BurnPolicyHarness`, not a `CompositionHarness`). Returns
 /// the raw execution result so callers assert success or the exact trap. Mirrors [`run_pause_against`].
-pub async fn run_set_min_burn_size_against(
+pub async fn run_set_min_burn_amount_against(
     chain: &MockChain,
     account: &Account,
     sender: AccountId,
     new_min: u64,
     seed: u64,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note = set_min_burn_size_note(sender, new_min, seed)
-        .expect("building the set_min_burn_size note (test-setup invariant)");
+    let mut rng = RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(7u32),
+        Felt::from(8u32),
+    ]));
+    let note = stock_set_min_burn_amount_note(sender, account.id(), new_min, &mut rng)
+        .expect("building the minimum-burn configuration note (test-setup invariant)");
     chain
         .build_transaction(account.clone())
         .unauthenticated_input_note(note.clone())
         .build()
-        .expect("building the set_min_burn_size transaction")
+        .expect("building the minimum-burn configuration transaction")
         .execute()
         .await
 }

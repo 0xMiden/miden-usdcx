@@ -18,10 +18,10 @@ use support::mint_transport::{
 };
 use support::*;
 use xusdc_encoding::note::costs::{
-    XRESERVE_SET_ATTESTER_CONSUMPTION_CYCLES, XRESERVE_SET_MIN_BURN_SIZE_CONSUMPTION_CYCLES,
-    XUSDC_BURN_CONSUMPTION_CYCLES, XUSDC_MINT_CONSUMPTION_CYCLES,
+    XRESERVE_SET_ATTESTER_CONSUMPTION_CYCLES, XUSDC_BURN_CONSUMPTION_CYCLES,
+    XUSDC_MINT_CONSUMPTION_CYCLES,
 };
-use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::xreserve::encoding::{
     DepositIntentField, ForeignChainAddress, HookData, XReserveBurnItems,
@@ -173,25 +173,6 @@ async fn set_attester_cycles(enabled: u8) -> Result<u32> {
     total_cycles(&executed)
 }
 
-async fn set_min_burn_size_cycles() -> Result<u32> {
-    let faucet = priced_fixture_with(|_, faucet_id| {
-        vec![XReserveSetMinBurnSizeNote::create(
-            administrator(),
-            faucet_id,
-            BURN_AMOUNT,
-            &mut note_rng(2_100),
-        )
-        .expect("building the benchmark minimum-burn-size note")]
-    })?;
-    let note = faucet.seeded_notes[1].clone();
-    let executed = consume_note(&faucet.mock_chain, faucet.faucet_id, note.id())
-        .await
-        .map_err(|err| {
-            anyhow::anyhow!("the benchmark minimum-burn-size note must execute: {err}")
-        })?;
-    total_cycles(&executed)
-}
-
 async fn burn_cycles() -> Result<u32> {
     let mut builder = MockChain::builder()
         .fee_faucet_id(fee_faucet_id())
@@ -234,12 +215,10 @@ async fn checked_in_costs_match_benchmarked_transactions() -> Result<()> {
     let set_attester_enabled = set_attester_cycles(1).await?;
     let set_attester_disabled = set_attester_cycles(0).await?;
     let set_attester = set_attester_enabled.max(set_attester_disabled);
-    let set_min_burn_size = set_min_burn_size_cycles().await?;
-
     eprintln!(
         "xUSDC note costs: mint empty={mint_empty}, mint max-hook-data={mint_max_hook_data}, \
          burn={burn}, set-attester enabled={set_attester_enabled}, set-attester \
-         disabled={set_attester_disabled}, set-min-burn-size={set_min_burn_size}",
+         disabled={set_attester_disabled}",
     );
 
     assert_cost("xUSDC MINT", mint, XUSDC_MINT_CONSUMPTION_CYCLES);
@@ -248,11 +227,6 @@ async fn checked_in_costs_match_benchmarked_transactions() -> Result<()> {
         "xUSDC set-attester",
         set_attester,
         XRESERVE_SET_ATTESTER_CONSUMPTION_CYCLES,
-    );
-    assert_cost(
-        "xUSDC set-minimum-burn-size",
-        set_min_burn_size,
-        XRESERVE_SET_MIN_BURN_SIZE_CONSUMPTION_CYCLES,
     );
     Ok(())
 }

@@ -27,12 +27,12 @@ use miden_protocol::note::NoteScriptRoot;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_standards::note::{
     BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
-    FeeSponsorshipNote, MintNote, PauseConfigNote, RbacConfigNote,
+    FeeSponsorshipNote, MinBurnAmountConfigNote, MintNote, PauseConfigNote, RbacConfigNote,
 };
 use support::mint_transport::*;
 use support::*;
 use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, XReserveStablecoinBuilder};
-use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 
 /// The identifier slot label, spelled out rather than imported: the constant that carried it is one
 /// of the things this slice deletes, and the test has to outlive it.
@@ -47,7 +47,7 @@ fn expected_allowlist() -> BTreeSet<NoteScriptRoot> {
         MintNote::script_root(),
         BurnNote::script_root(),
         XReserveSetAttesterNote::script_root(),
-        XReserveSetMinBurnSizeNote::script_root(),
+        MinBurnAmountConfigNote::script_root(),
         FaucetMetadataConfigNote::script_root(),
         PauseConfigNote::script_root(),
         BlocklistConfigNote::script_root(),

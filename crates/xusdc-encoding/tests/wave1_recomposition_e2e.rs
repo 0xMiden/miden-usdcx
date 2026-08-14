@@ -9,8 +9,8 @@
 //! ratified ASSERT-MATCH binding
 //! (the policy asserts the note-supplied RECIPIENT equals the attested derivation, never
 //! overrides) rejects a tampered recipient with its EXACT error; fee != 0 (the keep-zero fee
-//! gate) and nonce replay keep their frozen errors through the transport; and the
-//! min-burn admin note enforces the `>= 1` floor at runtime. All tests here are
+//! gate) and nonce replay keep their frozen errors through the transport; and the standard
+//! minimum-burn configuration note updates the active burn policy. All tests here are
 //! security tripwires and hold the tripwire serial guard (they flake under parallel
 //! `cargo test`).
 
@@ -24,7 +24,6 @@ use miden_testing::assert_transaction_executor_error;
 use support::mint_transport::*;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
-use xusdc_encoding::note::xreserve_admin::XReserveSetMinBurnSizeNote;
 
 const MIN_BURN_VALID: u64 = 5;
 
@@ -169,33 +168,23 @@ async fn stock_mint_note_rejects_a_replay() -> Result<()> {
     Ok(())
 }
 
-// THE MIN-BURN ADMIN NOTE — the floor enforced at runtime
+// THE MINIMUM-BURN CONFIGURATION NOTE
 // ================================================================================================
 
-/// E2E: the PRODUCTION min-burn admin note (targeting the stock `set_min_burn_amount`)
-/// REJECTS `new_min = 0` with the exact floor error, and a valid `new_min >= 1` write lands in
-/// the STOCK MinBurnAmount slot.
+/// E2E: the standard minimum-burn configuration note updates the stock `MinBurnAmount` slot.
 #[tokio::test]
-async fn min_burn_note_rejects_a_zero_floor_at_runtime() -> Result<()> {
+async fn standard_min_burn_note_updates_the_active_policy() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
-        vec![
-            XReserveSetMinBurnSizeNote::create(administrator(), faucet_id, 0, &mut note_rng(961))
-                .expect("building the zero-floor min-burn note"),
-            XReserveSetMinBurnSizeNote::create(
-                administrator(),
-                faucet_id,
-                MIN_BURN_VALID,
-                &mut note_rng(962),
-            )
-            .expect("building the valid min-burn note"),
-        ]
+        vec![stock_set_min_burn_amount_note(
+            administrator(),
+            faucet_id,
+            MIN_BURN_VALID,
+            &mut note_rng(962),
+        )
+        .expect("building the minimum-burn configuration note")]
     })?;
-    let zero_note = pf.seeded_notes[0].clone();
-    let valid_note = pf.seeded_notes[1].clone();
-
-    let result = consume_note(&pf.mock_chain, pf.faucet_id, zero_note.id()).await;
-    assert_transaction_executor_error!(result, &err_min_burn_below_floor());
+    let valid_note = pf.seeded_notes[0].clone();
 
     let tx = consume_note(&pf.mock_chain, pf.faucet_id, valid_note.id())
         .await
@@ -214,7 +203,7 @@ async fn min_burn_note_rejects_a_zero_floor_at_runtime() -> Result<()> {
             Felt::from(0u32),
             Felt::from(0u32)
         ]),
-        "the reworked admin note writes the STOCK MinBurnAmount slot"
+        "the standard configuration note writes the MinBurnAmount slot"
     );
     Ok(())
 }

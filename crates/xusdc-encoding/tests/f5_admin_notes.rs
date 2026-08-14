@@ -39,7 +39,7 @@ use support::*;
 use xusdc_encoding::account::xreserve::{
     XReserveFaucetExtension, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 
 /// The exact stock RBAC delegation error (v0.16: rbac.masm:66 ERR_SENDER_NOT_ROLE_ADMIN — #3215
 /// re-keyed the v15 ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN and dropped its owner leg).
@@ -239,29 +239,26 @@ fn expected_min_burn() -> Word {
     scalar_word(Felt::try_from(NEW_MIN_BURN).expect("min burn within the field"))
 }
 
-/// An ADMIN-sent set_min_burn_size PASSES auth (allowlisted) + the proc's authority gate and writes
-/// `[new_min,0,0,0]` into the STOCK `MinBurnAmount` slot.
+/// An administrator-sent minimum-burn configuration note passes authorization and writes
+/// `[new_min,0,0,0]` into the standard `MinBurnAmount` slot.
 #[tokio::test]
-async fn set_min_burn_size_administrator_writes_slot() -> Result<()> {
+async fn min_burn_configuration_administrator_writes_slot() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let owner = test_account_id(1);
 
-    let note =
-        XReserveSetMinBurnSizeNote::create(owner, faucet_id, NEW_MIN_BURN, &mut note_rng(40))
-            .context("building the administrator set_min_burn_size note")?;
+    let note = stock_set_min_burn_amount_note(owner, faucet_id, NEW_MIN_BURN, &mut note_rng(40))
+        .context("building the administrator minimum-burn configuration note")?;
     let tx = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
         .build()
-        .context("owner set_min_burn_size tx build")?
+        .context("administrator minimum-burn transaction build")?
         .execute()
         .await
-        .map_err(|e| {
-            anyhow::anyhow!("owner-sent set_min_burn_size must succeed under network auth: {e}")
-        })?;
+        .map_err(|e| anyhow::anyhow!("administrator minimum-burn update must succeed: {e}"))?;
     let mut evolved = chain
         .committed_account(faucet_id)
         .context("committed faucet")?
@@ -270,25 +267,24 @@ async fn set_min_burn_size_administrator_writes_slot() -> Result<()> {
     assert_eq!(
         read_min_burn_size(&evolved)?,
         expected_min_burn(),
-        "owner set_min_burn_size must write [new_min,0,0,0] into the STOCK MinBurnAmount slot",
+        "the minimum-burn update must write [new_min,0,0,0] into the MinBurnAmount slot",
     );
     Ok(())
 }
 
-/// A set_min_burn_size note from a sender without ADMIN PASSES auth but TRAPS at the authority gate.
+/// A minimum-burn configuration note from a sender without `ADMIN` fails authorization.
 async fn assert_set_min_burn_nonadmin_traps(sender: AccountId, seed: u64) -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note =
-        XReserveSetMinBurnSizeNote::create(sender, faucet_id, NEW_MIN_BURN, &mut note_rng(seed))
-            .context("building the non-administrator set_min_burn_size note")?;
+    let note = stock_set_min_burn_amount_note(sender, faucet_id, NEW_MIN_BURN, &mut note_rng(seed))
+        .context("building the non-administrator minimum-burn configuration note")?;
     let result = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
         .build()
-        .context("non-administrator set_min_burn_size tx build")?
+        .context("non-administrator minimum-burn transaction build")?
         .execute()
         .await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
@@ -296,43 +292,42 @@ async fn assert_set_min_burn_nonadmin_traps(sender: AccountId, seed: u64) -> Res
 }
 
 #[tokio::test]
-async fn set_min_burn_size_dom_pauser_traps() -> Result<()> {
+async fn min_burn_configuration_dom_pauser_traps() -> Result<()> {
     assert_set_min_burn_nonadmin_traps(test_account_id(2), 41).await
 }
 
 #[tokio::test]
-async fn set_min_burn_size_dom_manager_traps() -> Result<()> {
+async fn min_burn_configuration_dom_manager_traps() -> Result<()> {
     assert_set_min_burn_nonadmin_traps(test_account_id(3), 42).await
 }
 
 #[tokio::test]
-async fn set_min_burn_size_third_party_traps() -> Result<()> {
+async fn min_burn_configuration_third_party_traps() -> Result<()> {
     assert_set_min_burn_nonadmin_traps(test_account_id(99), 43).await
 }
 
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the written min burn size.
 #[tokio::test]
-async fn set_min_burn_size_note_args_are_inert() -> Result<()> {
+async fn min_burn_configuration_note_args_are_inert() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let owner = test_account_id(1);
 
-    let note =
-        XReserveSetMinBurnSizeNote::create(owner, faucet_id, NEW_MIN_BURN, &mut note_rng(44))
-            .context("building the administrator set_min_burn_size note")?;
+    let note = stock_set_min_burn_amount_note(owner, faucet_id, NEW_MIN_BURN, &mut note_rng(44))
+        .context("building the administrator minimum-burn configuration note")?;
     let bogus_args = Word::from([999u32, 1, 2, 3]);
     let tx = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
         .extend_note_args(BTreeMap::from([(note.id(), bogus_args)]))
         .build()
-        .context("set_min_burn_size note-args tx build")?
+        .context("minimum-burn note-args transaction build")?
         .execute()
         .await
         .map_err(|e| {
-            anyhow::anyhow!("set_min_burn_size with bogus NOTE_ARGS must still succeed: {e}")
+            anyhow::anyhow!("minimum-burn update with unrelated NOTE_ARGS must succeed: {e}")
         })?;
     let mut evolved = chain
         .committed_account(faucet_id)
@@ -342,42 +337,7 @@ async fn set_min_burn_size_note_args_are_inert() -> Result<()> {
     assert_eq!(
         read_min_burn_size(&evolved)?,
         expected_min_burn(),
-        "set_min_burn_size must write the storage-committed param regardless of executor NOTE_ARGS",
-    );
-    Ok(())
-}
-
-/// The production note script's zero-floor guard: an ADMIN-sent note carrying `new_min = 0` PASSES
-/// network auth (allowlisted) AND the authority gate would admit the sender, but the note-side
-/// `new_min >= 1` assert fires BEFORE the stock `set_min_burn_amount` call (the stock setter
-/// itself accepts 0) — the EXACT floor error, and the STOCK slot stays at the build seed.
-#[tokio::test]
-async fn set_min_burn_size_zero_floor_from_the_administrator_traps() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
-        .context("building the production network-auth faucet")?;
-    let chain = pf.mock_chain;
-    let faucet_id = pf.faucet_id;
-    let owner = test_account_id(1);
-
-    let note = XReserveSetMinBurnSizeNote::create(owner, faucet_id, 0, &mut note_rng(45))
-        .context("building the administrator zero-floor set_min_burn_size note")?;
-    let result = chain
-        .build_transaction(faucet_id)
-        .unauthenticated_input_note(note.clone())
-        .build()
-        .context("owner zero-floor set_min_burn_size tx build")?
-        .execute()
-        .await;
-    assert_transaction_executor_error!(result, err_min_burn_below_floor());
-
-    // fail-closed: the committed STOCK floor slot stays at the builder's `>= 1` seed.
-    let committed = chain
-        .committed_account(faucet_id)
-        .context("committed faucet")?;
-    assert_eq!(
-        read_min_burn_size(committed)?,
-        scalar_word(Felt::from(1u32)),
-        "a trapped zero-floor note must leave the stock MinBurnAmount slot at the build seed",
+        "the minimum-burn note must use its committed value regardless of executor NOTE_ARGS",
     );
     Ok(())
 }

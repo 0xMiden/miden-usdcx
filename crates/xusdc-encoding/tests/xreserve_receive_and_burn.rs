@@ -20,9 +20,8 @@
 //!     watching it fail.
 //!
 //! The remaining tests re-confirm the composition end to end with a real note: a valid burn lowers
-//! supply exactly once, and a burn that is below the minimum, zero, or attempted while the faucet
-//! is paused traps with the standard library's own error. Zero is rejected because the minimum is
-//! held at one or above — the faucet has no separate zero-amount check to fail.
+//! supply exactly once, and a burn below the configured minimum traps with the standard library's
+//! own error.
 
 mod support;
 
@@ -130,14 +129,12 @@ async fn allow_all_active_burn_policy_fails_sole_decrement_audit() -> Result<()>
     Ok(())
 }
 
-// THE SEAM BETWEEN SETTING THE FLOOR AND ENFORCING IT — the setter writes the very slot the
+// THE SEAM BETWEEN SETTING THE FLOOR AND ENFORCING IT: the setter writes the same slot the
 // burn policy reads, so a change takes effect on the next burn
 // ================================================================================================
 
-/// Two-tx apply_delta plumbing shared by both seam directions: emit + commit the burn note, run an
-/// OWNER-sent `set_min_burn_size(new_min)` against the committed faucet, evolve the faucet with the
-/// setter delta, then consume the committed note against that evolved (floor-updated) faucet. Returns
-/// the consume RESULT (mirrors `burn_paused_rejected_through_composition`).
+/// Emits and commits a burn note, applies an administrator-sent minimum-burn configuration note to
+/// the faucet, and consumes the burn note against the updated account.
 async fn run_set_min_burn_then_consume(
     seed_floor: u64,
     new_min: u64,
@@ -167,16 +164,17 @@ async fn run_set_min_burn_then_consume(
     chain.add_pending_executed_transaction(&tx0)?;
     chain.prove_next_block()?;
 
-    // The OWNER moves the floor to `new_min`; evolve the committed faucet with the setter delta.
+    // The administrator moves the floor to `new_min`; evolve the committed faucet with the setter
+    // delta.
     let account = chain.committed_account(faucet_id)?.clone();
-    let set = run_set_min_burn_size_against(&chain, &account, administrator(), new_min, 31)
+    let set = run_set_min_burn_amount_against(&chain, &account, administrator(), new_min, 31)
         .await
-        .expect("the administrator's set_min_burn_size must succeed");
+        .expect("the administrator's minimum-burn update must succeed");
     let mut evolved = account.clone();
     evolved.apply_patch(set.account_patch())?;
 
-    // The faucet consumes the committed note against the EVOLVED (floor-updated) faucet — the stock
-    // check_policy reads the SAME MinBurnAmount floor slot the stock setter wrote (the seam).
+    // The faucet consumes the committed note against the updated account. The stock policy reads
+    // the same MinBurnAmount floor slot the standard setter wrote.
     let result = chain
         .build_transaction(evolved)
         .authenticated_input_note(note.id())
@@ -207,8 +205,6 @@ async fn set_min_burn_raise_then_below_new_min_rejects() -> Result<()> {
 #[tokio::test]
 async fn set_min_burn_lower_then_at_new_min_passes() -> Result<()> {
     let result = run_set_min_burn_then_consume(10_000, 2_000, 2_000).await?;
-    result.expect(
-        "a burn == the lowered floor passes the stock check_policy after set_min_burn_size",
-    );
+    result.expect("a burn equal to the lowered floor passes the stock policy");
     Ok(())
 }

@@ -46,8 +46,8 @@ use miden_standards::errors::standards::{
 use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_standards::note::{
     BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
-    FeeSponsorshipNote, MintNote, NetworkAccountTarget, NoteExecutionHint, PauseConfigNote,
-    RbacConfigNote,
+    FeeSponsorshipNote, MinBurnAmountConfigNote, MintNote, NetworkAccountTarget, NoteExecutionHint,
+    PauseConfigNote, RbacConfigNote,
 };
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::ExpirationTransactionScript;
@@ -55,7 +55,7 @@ use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
-use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
     DepositAttestation, XUSDC_MINT_ATTESTATION_NUM_WORDS, XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME,
@@ -209,7 +209,7 @@ fn production_faucet_note_allowlist_contains_the_ten_expected_roots() -> Result<
         BurnNote::script_root(),
         // the three administrator-gated configuration notes
         XReserveSetAttesterNote::script_root(),
-        XReserveSetMinBurnSizeNote::script_root(),
+        MinBurnAmountConfigNote::script_root(),
         FaucetMetadataConfigNote::script_root(),
         // one standard note covers pausing AND unpausing
         PauseConfigNote::script_root(),

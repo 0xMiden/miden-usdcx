@@ -21,8 +21,8 @@ bridge faucet is built: **stock transport and effects, custom policies as the ga
   every mint. Every supply increase passes the attestation policy (`INV-MINT-SECURITY`) because
   the stock path is now the gated path.
 - Burns run through the standard `receive_and_burn` path gated by the **stock `MinBurnAmount`
-  policy** with the floor seeded `≥ 1` (builder-rejected below 1; the admin note asserts the
-  same floor), which preserves the `amount > 0` zero-burn invariant by construction.
+  policy** with an initial floor of at least one. Runtime updates use the standard
+  `MinBurnAmountConfigNote`.
 
 The account is `AccountType::Public`, 6-decimal, symbol "xUSDC". The Rust
 `XReserveStablecoinBuilder` (in `crates/xusdc-encoding`) composes the account and rejects an
@@ -43,20 +43,16 @@ min-burn floor, a missing domain-config seed, or a non-Public faucet) at build t
 | `attester_admin` | The authority-gated `set_attester` allowlist setter. |
 
 The burn floor and its setter are **stock**: the `MinBurnAmount` policy component carries the
-floor slot, its `check_policy` is the active burn policy, and the admin note calls its stock
-`set_min_burn_amount` (behind the note-side floor guard).
+floor slot, its `check_policy` is the active burn policy, and `MinBurnAmountConfigNote` calls its
+stock `set_min_burn_amount` procedure.
 
 ### `notes/` — the note scripts
 
-Public note scripts that drive account procedures when consumed. The mint note is the **stock
-miden-standards `MintNote`** (no custom mint script exists); the faucet-owned admin notes are thin,
-root-pinned scripts (`set_attester`, `set_min_burn_size` — which asserts the floor then calls the
-stock `set_min_burn_amount` —, and `set_max_supply`) that cross into the account and call the
-matching setter. Pausing, the transfer blocklist and role management ship
-**no faucet-owned script**: they use the stock `PauseConfigNote`, `BlocklistConfigNote` and
-`RbacConfigNote`, each of which covers every one of its actions behind one script root and calls the
-stock component the account installs. There is no ownership note — the faucet installs no ownership
-component.
+Public note scripts that drive account procedures when consumed. Minting uses the standard
+`MintNote`, and the only faucet-owned administration note is `set_attester`. Minimum-burn and
+maximum-supply updates use `MinBurnAmountConfigNote` and `FaucetMetadataConfigNote`. Pausing,
+the transfer blocklist, and role management use `PauseConfigNote`, `BlocklistConfigNote`, and
+`RbacConfigNote`. There is no ownership note because the faucet installs no ownership component.
 
 ## 3. Mint
 
@@ -155,10 +151,9 @@ moves the assets out of the holder's vault, so the holder's balance is checked a
 
 The faucet consumes the note in a **later block** (`receive_and_burn`, block ≥ N+1). The stock
 burn wrapper checks pause first (`R-BURN-3`), then dispatches the **stock `MinBurnAmount`**
-policy, which requires `amount ≥ minBurnSize` (`R-BURN-2`); the floor is `≥ 1` at all times
-(builder-rejected below 1 at composition, note-guarded at the only runtime setter path), so a
-zero-amount burn is unacceptable on every path (`R-BURN-1` preserved by construction). Consuming
-the note decrements `token_supply`.
+policy, which requires `amount ≥ minBurnSize` (`R-BURN-2`). The builder initializes the floor to
+at least one, and the administrator can update it through `MinBurnAmountConfigNote`. Consuming the
+note decrements `token_supply`.
 
 The note is always **Public** (`R-BURN-6`, `INV-PUBLIC-BURN-OBSERVABILITY`) so the burn is
 observable to Circle. A same-block create+consume erases the note with no store record, making
@@ -171,8 +166,8 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
   role is the account's single authority handle, and rotating it is a grant and a revoke of that
   role through the standard role-action note. The handover is single-step — there is no
   nominate-then-accept confirmation.
-- **Administrator-gated setters**: `set_attester` (allowlist), the stock `set_min_burn_amount`
-  (behind the note-side floor guard), `set_max_supply`, and the stock
+- **Administrator-gated setters**: `set_attester` (allowlist), the stock `set_min_burn_amount`,
+  `set_max_supply`, and the stock
   `ConstantFeeManager::set_note_fee` all resolve through
   the account-wide authority to the `ADMIN` role. They are
   intentionally **not** pause-gated (finding `F6`), so the administrator can, e.g., disable a

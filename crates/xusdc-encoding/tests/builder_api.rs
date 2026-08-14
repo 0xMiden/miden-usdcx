@@ -97,8 +97,8 @@ fn build_produces_attestation_gated_public_faucet() -> Result<()> {
 /// Production `build_components` SEEDS the STOCK `MinBurnAmount` floor slot
 /// (`MinBurnAmount::slot_name()` = `[min_burn_amount, 0, 0, 0]`, carried by the policy companion
 /// component the manager emits) so the stock burn policy's floor read resolves on a real production
-/// faucet — the builder owns a `min_burn_amount` default/override, and the
-/// `set_min_burn_size` admin note mutates the SAME slot at runtime. The expected value uses the
+/// faucet. The builder owns the initial `min_burn_amount`, and the standard minimum-burn
+/// configuration note mutates the same slot at runtime. The expected value uses the
 /// canonical full-u64 `AssetAmount -> Felt`, so an `as u32` truncation in the seed would fail this
 /// test (see the MIN_BURN choice below).
 #[test]
@@ -145,9 +145,8 @@ fn production_seeds_min_burn_size() -> Result<()> {
 
 /// A `min_burn_amount` below the floor (= 1) is rejected with the EXACT `MinBurnSizeBelowFloor(0)`:
 /// the stock `MinBurnAmount` asserts only `min <= amount` (its stock setter even accepts 0), so a
-/// zero seed would silently drop the zero-burn invariant — the builder half of the
-/// zero-floor guard (the runtime half is the `set_min_burn_size` note's assert). The faucet
-/// is otherwise valid, so the sub-floor seed is the SOLE reason for rejection. (An over-max seed
+/// zero seed is not an admissible initial configuration. The faucet is otherwise valid, so the
+/// sub-floor seed is the sole reason for rejection. (An over-max seed
 /// is unrepresentable by construction: the input is a typed `AssetAmount`.)
 #[test]
 fn build_rejects_zero_min_burn_amount() -> Result<()> {

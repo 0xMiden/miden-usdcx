@@ -8,8 +8,9 @@
 //! Scope (cumulative): it composes the `FungibleFaucet`, the assembled `xreserve` library
 //! component (carrying the attestation mint policy and the `set_attester` admin proc), a
 //! `TokenPolicyManager` whose ACTIVE mint policy is the attestation
-//! policy and whose ACTIVE burn policy is the STOCK [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) (floor-seeded `>= 1`,
-//! so zero-amount burns stay rejected by construction), the STOCK [`PausableManager`] and
+//! policy and whose ACTIVE burn policy is the STOCK
+//! [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) with an initial floor of at
+//! least one, the STOCK [`PausableManager`] and
 //! [`BlocklistManager`] admin components, and the **role-gating admin foundation**
 //! (a seeded `RoleBasedAccessControl` under the
 //! [`XReserveAdminAuthority`]'s `Authority::RbacControlled`). The RBAC seed holds the two Circle
@@ -89,12 +90,8 @@ pub const BLK_MANAGER_ROLE: &str = "BLK_MANAGER";
 pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str =
     "xreserve::components::faucet_extension::check_policy";
 
-/// The smallest admissible `min_burn_amount` (the zero floor). The stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) policy
-/// asserts `min <= amount` ONLY (its authority-gated stock setter even accepts `0`), so the
-/// zero-burn reject is preserved structurally: the builder rejects a floor below
-/// this at construction, and the reworked `set_min_burn_size` admin note asserts `new_min >= 1`
-/// BEFORE calling the stock setter — together the floor is `>= 1` at all times, which makes a
-/// zero-amount burn (`0 < min`) unacceptable on every path.
+/// The smallest `min_burn_amount` accepted by the faucet builder. Runtime updates use the standard
+/// minimum-burn configuration note.
 pub const MIN_BURN_SIZE_FLOOR: u64 = 1;
 
 /// The shipped on-chain `TokenSymbol` guard constant (token config). The token's identity is
@@ -143,8 +140,8 @@ pub struct XReserveStablecoinBuilder {
     /// TODO: Use native fee faucet account construction when it is available.
     fee_parameters: FeeParameters,
     /// The minimum burn amount (the burn-floor threshold) seeded into the stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount)
-    /// companion's floor slot. Default [`MIN_BURN_SIZE_FLOOR`]; validated `>=` the floor at
-    /// construction, so every held value keeps zero-amount burns rejected.
+    /// companion's floor slot. Defaults to [`MIN_BURN_SIZE_FLOOR`] and is validated at
+    /// construction.
     min_burn_amount: AssetAmount,
     /// The faucet's own Circle domain id.
     domain: u32,

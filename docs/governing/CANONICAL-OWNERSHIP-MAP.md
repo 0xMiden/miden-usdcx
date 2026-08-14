@@ -30,7 +30,6 @@ crates/xusdc-encoding/asm/
     faucet_extension/faucet_extension.masm  # FAUCET(01): what the faucet adds to the stock fungible faucet — the two `@account_procedure` procs, and nothing else
   notes/                          # one project per note script, each carrying its own MAST
     set_attester/set_attester.masm
-    set_min_burn_size/set_min_burn_size.masm
 ```
 Owner→path rule: directory path = MASM module path and the Rust component `NAME` must equal it.
 

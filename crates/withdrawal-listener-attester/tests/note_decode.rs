@@ -32,7 +32,7 @@ use xusdc_encoding::xreserve::encoding::{EncodingError, XReserveBurnItems, BURN_
 // HELPERS
 // ================================================================================================
 
-/// The `bn` accept vectors — the golden `NoteStorage.items` layouts (min / typical / max).
+/// The `bn` accept vectors — the golden burn-payload layouts (min / typical / max).
 fn accept_vectors() -> Vec<&'static BnVector> {
     let v: Vec<_> = load()
         .families
@@ -128,8 +128,8 @@ fn t_la_01_decode_is_the_unit_04_codec_by_reference() {
     }
 }
 
-/// Felt-exact round trip: re-encoding what was decoded reproduces the golden `NoteStorage.items`
-/// felts bit for bit. A decoder that dropped, reordered, or truncated a field cannot survive this.
+/// Felt-exact round trip: re-encoding what was decoded reproduces the golden burn-payload felts bit
+/// for bit. A decoder that dropped, reordered, or truncated a field cannot survive this.
 #[test]
 fn t_la_01_decode_round_trips_to_the_golden_felts() {
     for vector in accept_vectors() {

@@ -515,7 +515,7 @@ fn discovery_rejects_a_prefix_only_tag_match() {
     );
 }
 
-/// Malformed `NoteStorage.items` (wrong felt count) is rejected — the shared encoding crate's
+/// Malformed burn payload (wrong felt count) is rejected — the shared encoding crate's
 /// codec's verdict, carried through unflattened.
 #[test]
 fn discovery_rejects_malformed_items() {

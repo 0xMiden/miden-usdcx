@@ -38,7 +38,7 @@ definitions). In summary:
 | DC-4 | **Nonce keying** — the DepositIntent `nonce` (bytes32) → Poseidon2 hash-to-Word → storage-map key. |
 | DC-5 | **amount/fee reduction** — a uint256 → `AssetAmount`: byte-swap to numeric order, assert the high half is zero, floor-divide by `10^scale_exp`, and reject if the quotient exceeds `AssetAmount::MAX`. It traps; it never saturates. |
 | DC-6 | **AccountId ↔ bytes32** — the right-aligned layout (16 zero bytes ‖ prefix u64 BE ‖ suffix u64 BE); lossless, fail-closed decode. See `DEV-10` (OPEN). |
-| DC-7 | **Burn-note payload** — `(amount, destDomain, destRecipient, salt)` encoded into `NoteStorage.items` (18 felts). Shipped Rust-only; there is no `burn_items.masm`. |
+| DC-7 | **Burn-note payload** — `(amount, destDomain, destRecipient, salt)`, carried in a scheme-tagged note attachment. Shipped Rust-only; there is no `burn_items.masm`. Felt count, field offsets, attachment scheme, word count and slot order: see `DC-7` in `docs/spec/GLOSSARY.md`. |
 | DC-14 | **Mint intent + DepositIntent reconstruction** — the mint note carries only the DepositIntent fields the faucet cannot derive; the faucet rebuilds the signed `DC-1` preimage before hashing it. See *Reconstruction reference* below. |
 
 ## Core routines

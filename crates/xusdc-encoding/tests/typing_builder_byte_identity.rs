@@ -31,8 +31,12 @@ const SEED: [u8; 32] = [7u8; 32];
 const MAX_SUPPLY: u64 = 1_000_000;
 const TOKEN_SUPPLY: u64 = 0;
 
-// The baseline composition anchors, as their stable `Debug`/`Display` renderings (captured from the
-// pre-change composition at SEED). Comparing the rendered strings sidesteps any felt-repr ambiguity.
+// The baseline composition anchors at SEED, as their stable `Debug`/`Display` renderings (the
+// rendered strings sidestep any felt-repr ambiguity). Cause, per anchor: the CODE COMMITMENT
+// tracks `check_policy`'s MAST root; the STORAGE DIGEST moves with it because the active mint
+// policy is STORED as that root; the ACCOUNT ID and STATE COMMITMENT derive from both. No slot and
+// no procedure was added or removed; the policy companions sit in the manager's emission order —
+// the callable-surface and note-allowlist tripwires pass unedited.
 //
 // The storage anchor was RE-captured when the builder narrowed its `xreserve_contract` parameter
 // to a 20-byte `EthAddress`: the fixture's seeded value became that address in its left-padded
@@ -42,13 +46,19 @@ const TOKEN_SUPPLY: u64 = 0;
 // The account id is the NEW-ACCOUNT derivation: ground from SEED over the composed code and
 // storage commitments, so it moves whenever either commitment moves (unlike the code commitment
 // and storage digest, which isolate their own layer). The initial commitment covers all three.
+//
+// NOT RATIFIED — every value below is MEASURED from this composition, not accepted. A human must
+// re-ratify all four at PR assembly. The id, state and storage anchors were RE-measured when the
+// protocol-release migration met the `EthAddress` narrowing on this branch: both move the seeded
+// slot bytes, so neither pre-merge capture holds. The code commitment is unchanged across the
+// merge — no procedure root moved.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([4490039874996369928, 12849117963780719712, 8348349812765257897, 16422034054098951043])";
+    "Word([13628047724546656696, 12649608818023092122, 15573019818373469257, 7432096571854870928])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([2686342393791959322, 18296125387112714431, 12713893831410132138, 13782261319063673720])";
+    "Word([15058775153826961406, 12221757768293569830, 4220212873006231106, 7610009271148123683])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([17854539145076846593, 417133829943640013, 6543367670500429240, 7124201274121127695])";
-const GOLDEN_ACCOUNT_ID: &str = "0xfba6ea4c49258d312080b1a3875b2b";
+    "Word([13346508987964622553, 5988960762892709497, 6782465324179580540, 1354910767027333690])";
+const GOLDEN_ACCOUNT_ID: &str = "0xe0e2b0249343183159c7b031cb5b76";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.

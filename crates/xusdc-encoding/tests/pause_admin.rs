@@ -174,7 +174,7 @@ fn mint_fixture(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<Producti
             &mut prod_note_rng(952),
         )
         .expect("building the administrator set_attester note")];
-        notes.extend(extra_notes(recipient));
+        notes.extend(extra_notes(faucet_id));
         notes
     })
 }
@@ -320,8 +320,8 @@ async fn administrator_has_no_unpause_path() -> Result<()> {
 /// raised).
 #[tokio::test]
 async fn dom_pauser_pause_halts_mint() -> Result<()> {
-    let mut pf = mint_fixture(|_| {
-        vec![stock_pause_note(dom_pauser(), test_faucet_id(1), 7)
+    let mut pf = mint_fixture(|faucet_id| {
+        vec![stock_pause_note(dom_pauser(), faucet_id, 7)
             .expect("building the DOM_PAUSER pause note")]
     })?;
     bring_up(&mut pf, 2).await?; // set_attester + pause
@@ -354,7 +354,7 @@ async fn dom_pauser_production_pause_note_halts_mint() -> Result<()> {
     bring_up(&mut pf, 1).await?; // set_attester
 
     let account = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
-    let note = stock_pause_note(dom_pauser(), test_faucet_id(1), 8)?;
+    let note = stock_pause_note(dom_pauser(), pf.faucet_id, 8)?;
     let paused = pf
         .mock_chain
         .build_transaction(account.clone())
@@ -415,7 +415,7 @@ async fn dom_pauser_production_pause_note_halts_burn() -> Result<()> {
 
     // The DOM_PAUSER production pause note pauses the faucet; apply its delta to the evolved account.
     let account = chain.committed_account(faucet_id)?.clone();
-    let note = stock_pause_note(dom_pauser(), test_faucet_id(1), 8)?;
+    let note = stock_pause_note(dom_pauser(), faucet_id, 8)?;
     let paused = chain
         .build_transaction(account.clone())
         .unauthenticated_input_note(note.clone())
@@ -492,11 +492,11 @@ async fn dom_pauser_pause_halts_burn() -> Result<()> {
 #[tokio::test]
 async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
     // --- mint side ---
-    let mut pf = mint_fixture(|_| {
+    let mut pf = mint_fixture(|faucet_id| {
         vec![
-            stock_pause_note(dom_pauser(), test_faucet_id(1), 9)
+            stock_pause_note(dom_pauser(), faucet_id, 9)
                 .expect("building the DOM_PAUSER pause note"),
-            stock_unpause_note(dom_pauser(), test_faucet_id(1), 10)
+            stock_unpause_note(dom_pauser(), faucet_id, 10)
                 .expect("building the DOM_PAUSER unpause note"),
         ]
     })?;

@@ -58,9 +58,12 @@ wrong: a divergent value produces a different keccak digest, so the attestation 
 conditions above therefore stop being compares.
 
 The cost is that they stop being *distinguishable*. A wrong domain, a wrong target faucet, a
-mismatched amount and a misplaced field in the writer now all surface as the same
-`ERR_XRESERVE_SIG_INVALID`. Every "by construction" and "subsumed" row above is consequently held
-by a **pair** of tests, and neither half alone discharges it:
+mismatched amount and a misplaced field in the writer now all surface as the same signature-verify
+refusal, which since the v0.16 rebuild is the verifier's own identity
+(`"ECDSA verification failed: x(VERIFY_POINT) != SIG_R"`) rather than a faucet-owned error: the core
+library's `verify_bytes` traps internally, so no faucet assert runs on that path. Every "by
+construction" and "subsumed" row above is consequently held by a **pair** of tests, and neither half
+alone discharges it:
 
 | Half | What it proves | Where |
 |---|---|---|
@@ -110,7 +113,7 @@ Labels for the faucet's functional pieces (originally built as incremental slice
 | CMP-B3 | `receive_and_burn` consumption of the burn note. |
 | CMP-F2 | The administrator-gated `set_min_burn_size` setter (unmapped, so the account's role-based authority resolves it to the built-in `ADMIN` role). |
 | CMP-F3 | The custom `DOM_PAUSER`-gated pause/unpause. |
-| CMP-F5 | Role management (role-based access control): `grant_role`/`revoke_role` membership rotation (CIR-ADMIN-3) plus the BUILD-SEEDED `DOM_PAUSER.admin_role = DOM_MANAGER` delegation. Driven by the STOCK `RbacActionNote`, whose single allowlisted script root also carries `set_role_admin` and `renounce_role` — so the delegation graph is runtime-MUTABLE and self-renounce is reachable; both are accepted. See IMPL-DEV-24. |
+| CMP-F5 | Role management (role-based access control): `grant_role`/`revoke_role` membership rotation (CIR-ADMIN-3) plus the BUILD-SEEDED `DOM_PAUSER.admin_role = DOM_MANAGER` delegation. Driven by the STOCK `RbacConfigNote`, whose single allowlisted script root also carries `set_role_admin` and `renounce_role` — so the delegation graph is runtime-MUTABLE and self-renounce is reachable; both are accepted. See IMPL-DEV-24. |
 
 ## Invariants — `INV-<name>`
 
@@ -121,7 +124,7 @@ Security/correctness properties the faucet must uphold. The faucet-binding ones:
 | INV-MINT-SECURITY | `xreserve_mint` is the **only** supply-increasing surface, gated by an allowlisted-attester signature; the stock `mint_and_send` path is a deny guard. |
 | INV-SUPPLY-CONSERVATION | `token_supply += amount` exactly once per mint and `-= amount` once per burn. |
 | INV-NONCE-REPLAY | `usedNonces` is keyed by a Poseidon2 hash-to-Word of the nonce; assert-zero-then-set; replays are rejected. |
-| INV-PUBLIC-BURN-OBSERVABILITY | The burn note is Public, with its payload in `NoteStorage.items` and a fixed 32-bit tag. |
+| INV-PUBLIC-BURN-OBSERVABILITY | The burn note is Public, with its payload in a scheme-tagged note attachment and a fixed 32-bit tag. |
 | INV-TWO-BLOCK-BURN | A burn note is created in block N and consumed in block ≥ N+1; a same-block create+consume is erased. |
 | INV-NO-ECRECOVER | No key recovery on-chain; ECDSA is verified against a supplied candidate pubkey + commitment allowlist. |
 | INV-DEPOSITINTENT-PARSE | Fixed-offset 240-byte header = 60 u32-LE-packed felts plus hookData; all field asserts; note input is read-only. |
@@ -143,7 +146,7 @@ take. The ones referenced in this repo:
 |---|---|
 | ASG-1 | Do not allow minting via the stock `mint_and_send` (a deny guard must be wired). |
 | ASG-12 | Do not verify only a field subset — keccak the full payload and assert every field. |
-| ASG-13 | Do not put the burn destination in note metadata — the payload goes in `NoteStorage.items`; `metadata.sender` carries only the depositor. |
+| ASG-13 | Do not put the burn destination in note metadata — the payload goes in a scheme-tagged note attachment; `metadata.sender` carries only the depositor. |
 | ASG-14 | Prove the sole-supply-surface property at the procedure-root level, not by asserting `faucet::mint` alone. |
 | ASG-16 | Do not compute the header felt count as 240/8 = 30 — it is 60 u32-LE-packed felts. |
 | ASG-17 | Do not use `NoteInputs`/`aux`/an Encrypted note/a 4-word nullifier — target the current note model (`NoteStorage` ≤ 1024 felts, {Private,Public}, 6-word nullifier). |
@@ -160,7 +163,7 @@ Codec decisions owned by the `xusdc-encoding` crate (`xreserve::encoding`).
 | DC-4 | Nonce keying: `nonce` (bytes32) → Poseidon2 hash-to-Word → storage-map key. |
 | DC-5 | `amount`/`fee` uint256 → AssetAmount: byte-swap, assert high-4-limbs zero, `floor(x / 10^scale_exp)`, reject if over `AssetAmount::MAX` (no saturation). |
 | DC-6 | AccountId ↔ bytes32 packaging (the "R-B" right-aligned layout; see DEV-10). |
-| DC-7 | `XReserveBurnNote` payload codec `(amount, destDomain, destRecipient, salt)` in `NoteStorage.items`. Shipped as Rust only (`xreserve/encoding/burn_note.rs`); there is no `burn_items.masm`. |
+| DC-7 | `XReserveBurnNote` payload codec `(amount, destDomain, destRecipient, salt)` = 18 felts (`amount[0]`, `destDomain[1]`, `destRecipient[2..10]`, `salt[10..18]`), carried in note attachment **scheme 6**, zero-padded to **5 words** (2 pad felts); attachment slots `[scheme-2 routing, scheme-6 payload]`; the decoder rejects any word count ≠ 5. Shipped as Rust only (`xreserve/encoding/burn_note.rs`); there is no `burn_items.masm`. |
 | DC-8 | Burn-evidence package assembly (`burnTxId` + `note_id` + `nullifier` + `block_num` + proof-strength labels). Owned by the off-chain **listener**, not this crate. |
 | DC-9 / DC-10 / DC-11 / DC-12 | Circle JSON request/response schema types (off-chain Rust type definitions). Not on-chain. |
 | DC-13 | Optional decoders for Circle-returned binary blobs (`TransferSpec`/`BurnIntent`/`WithdrawHookData`); off-chain validation only, non-gating. |
@@ -236,7 +239,7 @@ referenced here:
 
 | Id | Requirement |
 |---|---|
-| CIR-ADMIN-3 | Role rotation: the Domain Manager rotates the Domain Pauser; the built-in `ADMIN` role stands where Circle's `onlyOwner` does. Satisfied by `grant_role`/`revoke_role` through the stock `RbacActionNote`, over the build-seeded delegation. Since the admin-surface finalization there is no ownership component: `ADMIN` is the faucet's sole authority handle and rotates by grant-then-revoke of itself. Note the delegation is EXCLUSIVE — `ADMIN` cannot grant, revoke or re-point `DOM_PAUSER`, which `DOM_MANAGER` governs (see IMPL-DEV-24). |
+| CIR-ADMIN-3 | Role rotation: the Domain Manager rotates the Domain Pauser; the built-in `ADMIN` role stands where Circle's `onlyOwner` does. Satisfied by `grant_role`/`revoke_role` through the stock `RbacConfigNote`, over the build-seeded delegation. Since the admin-surface finalization there is no ownership component: `ADMIN` is the faucet's sole authority handle and rotates by grant-then-revoke of itself. Note the delegation is EXCLUSIVE — `ADMIN` cannot grant, revoke or re-point `DOM_PAUSER`, which `DOM_MANAGER` governs (see IMPL-DEV-24). |
 | CIR-ADMIN-4 | Pausing must halt **both** deposits (mint) and withdrawals (burn-consume) — the pause halt-gates. |
 | CIR-FEE-2 | Circle credits the relayer `feeAmount` on mint (recipient `amount−feeAmount`, relayer `+feeAmount`) — DEFERRED to mainnet/production-final; the MVP fail-loud `feeAmount==0` reject stands in (see `F2` / `Q-FEE-MVP`). |
 | CIR-FEE-3 | xUSDC uses 6 decimals; the amount reducer scales to 6 dp. |
@@ -265,16 +268,16 @@ are open items with Circle). The ones referenced in this repo:
 | IMPL-DEV-2 | On-chain role symbols `DOM_PAUSER`/`DOM_MANAGER` are ≤12-char aliases of Circle's `DOMAIN_PAUSER`/`DOMAIN_MANAGER` (Miden's `RoleSymbol` limit). |
 | IMPL-DEV-3 | Per-setter admin roles were replaced with a single administrator gate: the setters carry no role of their own and resolve to the built-in `ADMIN` role, seeded on the bootstrap administrator's account (which also matches Circle). `ADMIN` membership is account-bound, and since the admin-surface finalization it is the account's ONLY authority handle — there is no ownership lifecycle beside it; see `IMPL-DEV-23`. |
 | IMPL-DEV-4 | The burn-pause assertion emits the stock `ERR_PAUSABLE_IS_PAUSED`, not a custom string. |
-| IMPL-DEV-6 | Attestation uses a Poseidon2 commitment + keccak256 precompile + `verify_prehash` instead of EVM `ecrecover`; the signature `v` byte is unused. |
+| IMPL-DEV-6 | Attestation uses a Poseidon2 commitment + keccak256 precompile + the core library's `ecdsa_k256_keccak::verify_bytes` instead of EVM `ecrecover`; the signature `v` byte is unused. |
 | IMPL-DEV-7 | The burn note uses a fixed placeholder tag until Circle assigns one. |
 | IMPL-DEV-8 | The burn payload carries `{amount, dest_domain, dest_recipient, salt}` with the depositor in `metadata.sender`. |
 | IMPL-DEV-12 | Cosmetic fix: an `AccountId`-out-of-range error message once said "15-byte region" while the shipped layout is 16-byte-padded; the message now describes the shipped right-aligned bytes32 layout. |
 | IMPL-DEV-16 | The identifier-init procedure and note are removed. The mint path decodes `remoteToken` and compares it directly with the faucet's native account id, so there is no identifier slot or initialization window. |
 | IMPL-DEV-20 | xUSDC ships as a policed fungible asset carrying the stock `BasicBlocklist` as the active send + receive policy, administered by `BLK_MANAGER`. |
 | IMPL-DEV-21 | `feeAmount` is an argument of Circle's `mint` call rather than a DepositIntent field, and the MVP relayer charges nothing, so it is carried nowhere and the mint has no fee term at all. The earlier fail-loud zero-fee reject (`ERR_XRESERVE_FEE_NONZERO`) went with it. The relayer-credit fee split is deferred behind the OPEN `Q-FEE-MVP` Circle confirmation. |
-| IMPL-DEV-22 | Self-renounce is reachable through the stock `RbacActionNote`. A sole `ADMIN` can renounce and leave administrator-gated procedures unrecoverable except by redeploy; `Q-ADMIN-RENOUNCE` stays OPEN. |
+| IMPL-DEV-22 | Self-renounce is reachable through the stock `RbacConfigNote`. A sole `ADMIN` can renounce and leave administrator-gated procedures unrecoverable except by redeploy; `Q-ADMIN-RENOUNCE` stays OPEN. |
 | IMPL-DEV-23 | Admin roles use Miden RBAC (`grant_role`/`revoke_role`) rather than Circle's single address slots. There is no ownership component; seeded `ADMIN` membership is the faucet's administrative authority, and rotation is grant-successor before revoke-predecessor. `Q-ADMIN-RBAC-EQUIV` stays OPEN. |
-| IMPL-DEV-24 | The stock `RbacActionNote` is allowlisted as one script root carrying `GRANT_ROLE`/`REVOKE_ROLE`/`SET_ROLE_ADMIN`/`RENOUNCE_ROLE`; all four selectors are reachable. The allowlist is 8 roots and the composed account's callable surface is 61. |
+| IMPL-DEV-24 | The stock `RbacConfigNote` is allowlisted as one script root carrying `GRANT_ROLE`/`REVOKE_ROLE`/`SET_ROLE_ADMIN`/`RENOUNCE_ROLE`; all four selectors are reachable. The allowlist is 8 roots and the composed account's callable surface is 61. |
 | IMPL-DEV-25 | The stock `Authority` component exposes account `freeze`/`unfreeze` roots, but the keyless allowlist faucet has no note-script or tx-script path that reaches them. |
 | IMPL-DEV-26 | The stock `authority::get_authority` accessor is read-only, and the transfer-policy dispatch wrappers are live because the account wires `BasicBlocklist` as its transfer policy. |
 
@@ -380,8 +383,8 @@ the OPEN `DEV-7` decision and makes no acceptability verdict of its own.
 | Id | Checks |
 |---|---|
 | TV-BN-1 | Encode→decode round-trips the `(amount, destDomain, destRecipient, salt)` payload. |
-| TV-BN-2 | The destination goes in `NoteStorage.items`; `metadata.sender` is the depositor only (`anti-ASG-13`). |
-| TV-BN-3 | The payload targets `NoteStorage.items` (≤ 1024 felts), not `NoteInputs`/`aux` (`anti-ASG-17`). |
+| TV-BN-2 | The destination goes in the payload item felts; `metadata.sender` is the depositor only (`anti-ASG-13`). |
+| TV-BN-3 | The payload fits the note-model felt bound (≤ 1024 felts), not `NoteInputs`/`aux` (`anti-ASG-17`). |
 | TV-BN-4 | A wrong-length items list is rejected. |
 
 **attestation (`TV-ATT-*`)**
@@ -400,7 +403,7 @@ in `tests/masm_dual.rs`); `-4` is Rust-only because `DC-7` has no MASM side.
 | TV-DUAL-1 | `hash_nonce`: Rust and MASM produce the identical key Word on every vector. |
 | TV-DUAL-2 | **Retired** with the MASM witness verifier (see the ownership map's `DC-5` rider). The amount conversion is Rust-only; its vectors still drive the Rust unit tests in `amount.rs`. |
 | TV-DUAL-3 | DepositIntent parse: Rust and MASM agree on accept/reject and the 60-felt preimage. Rust-only on the mint path after `DC-14` — the MASM parser is retired (`NS-2`), so the MASM leg is `TV-DUAL-6`. |
-| TV-DUAL-4 | Burn-note items: the Rust-emitted burn note's `NoteStorage.items` match the Rust codec and the golden felts (an emit-vs-codec check within Rust — `DC-7` is Rust-only, there is no MASM burn-item codec). |
+| TV-DUAL-4 | Burn-note items: the Rust-emitted burn note's withdrawal-payload attachment matches the Rust codec and the golden felts (an emit-vs-codec check within Rust — `DC-7` is Rust-only, there is no MASM burn-item codec). |
 | TV-DUAL-5 | Attestation packing/commitment: Rust and MASM produce the identical felts / commitment. |
 | TV-DUAL-6 | `DC-14` preimage reconstruction, in three parts: the Rust round trip (`to_deposit_intent` after `from_deposit_intent`, re-encoded, returns the original bytes); MASM/Rust parity (the felts `rebuild` writes equal the Rust reconstruction's); and per-field placement (mutating one carried field moves exactly that field's bytes). |
 

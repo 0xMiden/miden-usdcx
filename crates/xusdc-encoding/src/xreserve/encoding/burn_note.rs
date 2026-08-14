@@ -1,4 +1,4 @@
-//! Burn-note item codec: the burn-note `NoteStorage.items` payload
+//! Burn-note item codec: the burn-note withdrawal payload
 //! `(amount, destDomain, destRecipient, salt)`.
 //!
 //! This codec is Rust-only and has no MASM counterpart, because nothing on-chain ever reads the
@@ -15,16 +15,16 @@ use miden_protocol::Felt;
 use super::bytes32::{bytes32_to_packed_felts, packed_felts_to_bytes32};
 use super::error::EncodingError;
 
-/// Felt width of the burn-note `NoteStorage.items` payload: `amount` (1) then `destDomain`
+/// Felt width of the burn-note withdrawal payload: `amount` (1) then `destDomain`
 /// (1) then `destRecipient` (8 u32-LE) then `salt` (8 u32-LE), totalling 18 felts
-/// (≤ 1024, the note-storage bound).
+/// (≤ 1024, the note-model felt bound).
 pub const BURN_NOTE_ITEMS_FELTS: usize = 18;
 
 /// The burn-note public payload `(amount, destDomain, destRecipient, salt)` — the burn note's
-/// dedicated note-storage type. Destination fields live in `NoteStorage.items`, never note metadata
-/// (`metadata.sender` carries the burner and nothing else). Built either as a struct literal or with
-/// a `bon` builder (`XReserveBurnItems::builder().amount(..).dest_domain(..)…build()`), the standards
-/// note-storage-type pattern.
+/// dedicated payload type. Destination fields live in the withdrawal-payload attachment, never note
+/// metadata (`metadata.sender` carries the burner and nothing else). Built either as a struct
+/// literal or with a `bon` builder (`XReserveBurnItems::builder().amount(..).dest_domain(..)…build()`),
+/// the standards note-payload-type pattern.
 #[derive(Debug, Clone, PartialEq, Eq, bon::Builder)]
 pub struct XReserveBurnItems {
     pub amount: AssetAmount,
@@ -34,7 +34,7 @@ pub struct XReserveBurnItems {
 }
 
 impl XReserveBurnItems {
-    /// Encodes `(amount, destDomain, destRecipient, salt)` into the `NoteStorage.items` felt layout
+    /// Encodes `(amount, destDomain, destRecipient, salt)` into the payload felt layout
     /// (`amount` at `[0]`, `destDomain` at `[1]`, `destRecipient` at `[2..10]`, `salt` at
     /// `[10..18]`). Infallible: `AssetAmount::MAX = 2^63 − 2^31`, `destDomain` is a `u32`, and both
     /// bytes32 fields pack via the shared `bytes32` codec.
@@ -47,7 +47,7 @@ impl XReserveBurnItems {
         out
     }
 
-    /// Decodes a `NoteStorage.items` payload back into the typed struct — the inverse of
+    /// Decodes a burn-payload felt slice back into the typed struct — the inverse of
     /// [`encode`](Self::encode). Fail-closed: a wrong length, an out-of-range `amount` or
     /// `destDomain`, or a non-u32 bytes32 limb all return [`EncodingError::BurnItemsMalformed`]
     /// (never a panic, never a generic error).
@@ -135,7 +135,7 @@ mod tests {
     }
 
     /// TV-BN-2 (destination-in-items): the destination fields land in the
-    /// `NoteStorage.items` felt layout (`destDomain` at `[1]`, `destRecipient` at `[2..10]`,
+    /// payload felt layout (`destDomain` at `[1]`, `destRecipient` at `[2..10]`,
     /// `salt` at `[10..18]`). `encode` has no metadata path — its only output is `Vec<Felt>`,
     /// so `metadata.sender` is structurally reserved for the depositor.
     #[test]
@@ -160,7 +160,7 @@ mod tests {
         }
     }
 
-    /// TV-BN-3 (note-model placement): the payload targets `NoteStorage.items`
+    /// TV-BN-3 (note-model placement): the payload fits the note-model felt bound
     /// (≤ 1024 felts), not `NoteInputs`/`aux`.
     #[test]
     fn tv_bn_3_note_storage_placement() {
@@ -168,7 +168,7 @@ mod tests {
         for vec in v.families.bn.iter().filter(|x| x.kind == "accept") {
             let n = vec.expected_struct().encode().len();
             assert_eq!(n, BURN_NOTE_ITEMS_FELTS, "{}: fixed width", vec.id);
-            assert!(n <= 1024, "{}: within the NoteStorage.items bound", vec.id);
+            assert!(n <= 1024, "{}: within the note-model felt bound", vec.id);
         }
     }
 

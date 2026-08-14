@@ -67,7 +67,7 @@ deposit and burns it on withdrawal.
   that role. `ADMIN` gates the setters (`set_attester`, the floor-guarded `set_min_burn_size`
   targeting the stock `set_min_burn_amount`, and `set_max_supply`); a separate `DOM_PAUSER`
   gates pause/unpause, which halts both mint and burn-consume. Role management runs on the stock
-  `RbacActionNote`, whose one script root also exposes re-pointing a role's administrator and
+  `RbacConfigNote`, whose one script root also exposes re-pointing a role's administrator and
   self-renounce — both accepted, both pinned by test.
 
 See [`docs/spec/FAUCET-COMPONENT-SPEC.md`](docs/spec/FAUCET-COMPONENT-SPEC.md) for the full pipeline.

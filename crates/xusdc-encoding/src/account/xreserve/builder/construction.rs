@@ -232,18 +232,18 @@ pub fn build_faucet_account(
     source_domain: u32,
     xreserve_contract: EthBytes32,
 ) -> Result<Account, XReserveStablecoinBuilderError> {
-    XReserveStablecoinBuilder::new(
-        max_supply,
-        token_supply,
-        owner,
-        pauser_holder,
-        manager_holder,
-        blocklist_manager_holder,
-        domain,
-        source_domain,
-        xreserve_contract,
-    )?
-    .build_account(init_seed)
+    XReserveStablecoinBuilder::builder()
+        .max_supply(max_supply)
+        .token_supply(token_supply)
+        .owner(owner)
+        .pauser_holder(pauser_holder)
+        .manager_holder(manager_holder)
+        .blocklist_manager_holder(blocklist_manager_holder)
+        .domain(domain)
+        .source_domain(source_domain)
+        .xreserve_contract(xreserve_contract)
+        .build()?
+        .build_account(init_seed)
 }
 
 /// Builds the fixed-identity USDCx [`FungibleFaucet`]: name `USDCx`, symbol [`USDCX_TOKEN_SYMBOL`],

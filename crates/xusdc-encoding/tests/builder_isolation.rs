@@ -41,20 +41,20 @@ fn build_rejects_blk_manager_colliding_with_a_privileged_role(
     #[case] blk_manager: AccountId,
     #[case] expected_role: &str,
 ) -> Result<()> {
-    let err = XReserveStablecoinBuilder::new(
-        AssetAmount::new(1_000_000).context("valid max supply")?,
-        AssetAmount::new(0).context("valid token supply")?,
-        test_account_id(1), // owner
-        test_account_id(2), // DOM_PAUSER
-        test_account_id(3), // DOM_MANAGER
-        blk_manager,
-        TEST_DOMAIN,
-        TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
-    )
-    .context("the fixed-identity USDCx faucet builds")?
-    .build_components()
-    .expect_err("a BLK_MANAGER holder colliding with a privileged role must be rejected");
+    let err = XReserveStablecoinBuilder::builder()
+        .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
+        .token_supply(AssetAmount::new(0).context("valid token supply")?)
+        .owner(test_account_id(1))
+        .pauser_holder(test_account_id(2))
+        .manager_holder(test_account_id(3))
+        .blocklist_manager_holder(blk_manager)
+        .domain(TEST_DOMAIN)
+        .source_domain(TEST_SOURCE_DOMAIN)
+        .xreserve_contract(EthBytes32::new(test_xreserve_contract()))
+        .build()
+        .context("the fixed-identity USDCx faucet builds")?
+        .build_components()
+        .expect_err("a BLK_MANAGER holder colliding with a privileged role must be rejected");
     match err {
         XReserveStablecoinBuilderError::BlocklistManagerNotIsolated { collides_with } => {
             assert_eq!(
@@ -71,19 +71,19 @@ fn build_rejects_blk_manager_colliding_with_a_privileged_role(
 /// succeeds — the isolation guard does not reject a properly external administrator.
 #[test]
 fn build_accepts_isolated_blk_manager() -> Result<()> {
-    XReserveStablecoinBuilder::new(
-        AssetAmount::new(1_000_000).context("valid max supply")?,
-        AssetAmount::new(0).context("valid token supply")?,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4), // distinct external BLK_MANAGER
-        TEST_DOMAIN,
-        TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
-    )
-    .context("the fixed-identity USDCx faucet builds")?
-    .build_components()
-    .context("a properly isolated BLK_MANAGER holder must build")?;
+    XReserveStablecoinBuilder::builder()
+        .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
+        .token_supply(AssetAmount::new(0).context("valid token supply")?)
+        .owner(test_account_id(1))
+        .pauser_holder(test_account_id(2))
+        .manager_holder(test_account_id(3))
+        .blocklist_manager_holder(test_account_id(4)) // distinct external BLK_MANAGER
+        .domain(TEST_DOMAIN)
+        .source_domain(TEST_SOURCE_DOMAIN)
+        .xreserve_contract(EthBytes32::new(test_xreserve_contract()))
+        .build()
+        .context("the fixed-identity USDCx faucet builds")?
+        .build_components()
+        .context("a properly isolated BLK_MANAGER holder must build")?;
     Ok(())
 }

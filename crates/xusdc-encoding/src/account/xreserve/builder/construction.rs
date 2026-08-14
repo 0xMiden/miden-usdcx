@@ -31,7 +31,7 @@ const XRESERVE_COMPONENT_LABEL: &str = "xusdc-xreserve";
 
 /// What the faucet adds on top of the stock fungible faucet, assembled at build time from
 /// `asm/components/faucet_extension/`: the attestation mint policy and the attester allowlist
-/// setter, and nothing else. The rest of the xreserve library is reachable only from inside them.
+/// setter.
 static FAUCET_EXTENSION_CODE: LazyLock<AccountComponentCode> = LazyLock::new(|| {
     AccountComponentCode::from(
         Package::read_from_bytes_trusted(include_bytes!(concat!(

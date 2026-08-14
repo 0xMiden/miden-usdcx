@@ -148,8 +148,7 @@ impl XReserveStablecoinBuilder {
     // CONSTRUCTORS
     // --------------------------------------------------------------------------------------------
 
-    /// Creates a builder (via the generated [`Self::builder`], whose named setters are these
-    /// parameters) from the faucet supply parameters (`max_supply` / `token_supply`), the
+    /// Creates a builder from the faucet supply parameters (`max_supply` / `token_supply`), the
     /// `owner` (the seeded `ADMIN` member that gates every unmapped authority-gated procedure), the
     /// `pauser_holder` / `manager_holder`
     /// seeded as the sole members of `DOM_PAUSER` / `DOM_MANAGER`, and the

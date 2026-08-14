@@ -177,7 +177,8 @@ fn t_la_01_recipient_and_salt_are_not_interchangeable() {
         .expect("bn-pos-typical vector present");
     let expected = vector.expected_struct();
     assert_ne!(
-        expected.dest_recipient, expected.salt,
+        expected.dest_recipient.as_bytes(),
+        &expected.salt,
         "the vector itself must distinguish the two regions, or this test proves nothing"
     );
     let decoded = decode_burn_payload(&vector.items_values()).expect("typical payload decodes");

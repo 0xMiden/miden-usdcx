@@ -22,7 +22,7 @@ use xusdc_encoding::account::xreserve::{
     XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE,
     DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::xreserve::encoding::{bytes32_to_packed_felts, EthAddressExt};
+use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
 
 /// The standard production builder: the fixed test supplies through the ONE production-shape
 /// definition in `support` (owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3), BLK_MANAGER =
@@ -191,11 +191,11 @@ fn build_seeds_the_domain_config_slots() -> Result<()> {
         Word::from([TEST_SOURCE_DOMAIN, 0, 0, 0]),
         "the source_domain slot must hold the build-seeded [source_domain, 0, 0, 0]"
     );
-    let xrc = bytes32_to_packed_felts(&test_xreserve_contract().to_bytes32());
+    let xrc = bytes32_to_packed_felts(test_xreserve_contract().as_bytes());
     assert_eq!(
         slot(XReserveFaucetExtension::xreserve_contract_hi_slot())?,
         Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]),
-        "the xreserve_contract_hi slot must hold the packed container bytes 0..16"
+        "the xreserve_contract_hi slot must hold the packed address bytes 0..16"
     );
     assert_eq!(
         slot(XReserveFaucetExtension::xreserve_contract_lo_slot())?,

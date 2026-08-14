@@ -27,7 +27,7 @@ use xusdc_encoding::account::xreserve::{
     XReserveFaucetExtension, XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL,
 };
 use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
-use xusdc_encoding::xreserve::encoding::{bytes32_to_packed_felts, EthAddressExt};
+use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
 
 use crate::config::DomainParams;
 use crate::observations::RowsAbObservations;
@@ -173,7 +173,7 @@ fn assert_domain_config_slots(account: &Account, params: &DomainParams, ctx: &st
         params.source_domain,
     );
 
-    let packed = bytes32_to_packed_felts(&params.xreserve_contract.to_bytes32());
+    let packed = bytes32_to_packed_felts(params.xreserve_contract.as_bytes());
     let xrc_hi = storage_word(account, XReserveFaucetExtension::xreserve_contract_hi_slot())?;
     let xrc_lo = storage_word(account, XReserveFaucetExtension::xreserve_contract_lo_slot())?;
     ensure!(

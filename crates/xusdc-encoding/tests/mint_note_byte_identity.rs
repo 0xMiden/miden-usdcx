@@ -19,11 +19,13 @@
 //! `typing_builder_byte_identity.rs`. A single felt of drift — a reordered attachment section, a
 //! dropped pad felt, a different serial derivation — flips one of them RED and names which.
 //!
-//! Re-freezing is a reviewed act. The anchors below were last re-captured when this branch merged
-//! the protocol-release migration: that release moves the note recipient recipe, so the id, the
-//! nullifier and the serialization move with it. The move is confined to the protocol's own
-//! derivation — the attachments commitment, the attachment shape and the serialized length are
-//! unchanged, so nothing this crate ENCODES moved.
+//! Re-freezing is a reviewed act, and the anchors below were last re-captured when two moves met on
+//! this branch. `localToken` and `localDepositor` widened from a 20-byte address to the wire form's
+//! full bytes32, so the carried payload gained four felts and the transport attachment is one word
+//! longer — everything hashed over it moves, while the recipient recipe, which depends on neither
+//! field, does not. The protocol-release migration then moved the recipient recipe itself, so the
+//! id, the nullifier and the serialization move with it too; that move is confined to the protocol's
+//! own derivation and changes nothing this crate ENCODES.
 //!
 //! The vector payload is used verbatim except for `remoteToken`, which is spliced to a deterministic
 //! PUBLIC faucet id: the routing attachment can only bind a public network account, and the
@@ -61,27 +63,27 @@ struct Anchors {
 /// `mi-pos-empty-hookdata` + the `att-1` attestation.
 const GOLDEN_EMPTY_HOOKDATA: Anchors = Anchors {
     vector: "mi-pos-empty-hookdata",
-    note_id: "0xd3ac939817772d6b197512ff5b833924a5bca21387a9ab3e7da28bb0aa6a6f48",
-    nullifier: "0xbaa18f9fe5b453d3368d6402308909ec823cf227687ad92db65e05e50565ca7e",
+    note_id: "0xc65a724dce0b5971fef901aef725bf4ba7336916687c456c8b32dbeca58d9a48",
+    nullifier: "0xde2ed6bad214d0706c143c18b0da5a3b0c8251f08734caa4dd416afb83e7193b",
     recipient_digest:
         "Word([1176885386095760737, 7141309783470215903, 6490412469362834449, 13801756655587511038])",
     attachments_commitment:
-        "Word([4949583752620300865, 7500478060129315829, 10267484878387155575, 9470432395702943070])",
-    serialized: "811 bytes, digest Word([4544604914102552970, 7167508297468910473, 6458218642692153722, 17377427383891282993])",
-    attachments: "[scheme=4 words=15, scheme=2 words=1]",
+        "Word([353043364000201756, 2103906947509450114, 2847978362983062168, 17438370209489194753])",
+    serialized: "843 bytes, digest Word([3449811486011593845, 3010906410555033109, 2351261109202290426, 13121967357539788815])",
+    attachments: "[scheme=4 words=16, scheme=2 words=1]",
 };
 
 /// `mi-pos-hookdata` (ten bytes of hookData) + the `att-2` attestation.
 const GOLDEN_HOOKDATA: Anchors = Anchors {
     vector: "mi-pos-hookdata",
-    note_id: "0x8559f245f88d41ac5823e02fec0f880d141701d186efa69e489c2e8d672026e9",
-    nullifier: "0xac0b93c595ce80c687a655ccdb6fb45446a626eb3aab9628949d65a50afe4fba",
+    note_id: "0x505661a0fcbbb216de2d9e2a88ba7aa085108008287105e6e2453e1e8f706031",
+    nullifier: "0x4d386aa89f6213d633af237c668734c7d58bb1735597d66c30a5f146ddc9c9b0",
     recipient_digest:
         "Word([18431265869439854198, 15724352411530353910, 5436862375304751880, 17786228380689675318])",
     attachments_commitment:
-        "Word([4867247121985007125, 16180524918100935745, 15793036598251666395, 3519371683115730640])",
-    serialized: "843 bytes, digest Word([1147084245603704517, 1087546103082318288, 2033779708705292155, 4236667283372440423])",
-    attachments: "[scheme=4 words=16, scheme=2 words=1]",
+        "Word([17867121675036495872, 14584486229891685892, 2103155763186269017, 7340241149790238384])",
+    serialized: "875 bytes, digest Word([14022250953414160237, 4242439243791055096, 15476406379804288216, 14674034305943930482])",
+    attachments: "[scheme=4 words=17, scheme=2 words=1]",
 };
 
 /// Looks a family row up by id, so a renamed or removed vector fails loudly rather than silently

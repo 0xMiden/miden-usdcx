@@ -432,12 +432,12 @@ impl BnVector {
         miden_protocol::asset::AssetAmount::new(a).expect("vector amount within bounds")
     }
 
-    pub fn dest_recipient(&self) -> [u8; 32] {
-        parse_hex32(
+    pub fn dest_recipient(&self) -> crate::xreserve::encoding::ForeignChainAddress {
+        crate::xreserve::encoding::ForeignChainAddress::new(parse_hex32(
             self.dest_recipient
                 .as_deref()
                 .expect("accept vector carries dest_recipient"),
-        )
+        ))
     }
 
     pub fn salt(&self) -> [u8; 32] {

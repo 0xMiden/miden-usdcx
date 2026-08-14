@@ -18,12 +18,10 @@ use miden_crypto::SequentialCommit;
 use miden_protocol::testing::account_id::AccountIdBuilder;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Hasher, Word};
-use miden_standards::interop::eth::EthAddress;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
-use xusdc_encoding::xreserve::encoding::EthAddressExt;
 
 const ASSET_AMOUNT_MAX: u128 = (1u128 << 63) - (1u128 << 31); // 2^63 - 2^31
 
@@ -132,16 +130,6 @@ fn pattern32(base: u8) -> [u8; 32] {
     core::array::from_fn(|i| base.wrapping_add(i as u8))
 }
 
-/// A 20-byte EVM address right-aligned in a bytes32 (the leading 12 bytes are the zero pad).
-fn evm_bytes32(base: u8) -> [u8; 32] {
-    let mut bytes = [0u8; 20];
-    for i in 0..20 {
-        bytes[i] = base.wrapping_add(i as u8);
-    }
-
-    EthAddress::new(bytes).to_bytes32()
-}
-
 impl IntentSpec {
     /// A structurally well-formed intent. `remote_token` names a faucet OTHER than the `mi`
     /// family's, so a row that confused the destination token with the destination account would
@@ -154,8 +142,8 @@ impl IntentSpec {
             remote_domain: 7,
             remote_token,
             remote_recipient,
-            local_token: evm_bytes32(0xb0),
-            local_depositor: evm_bytes32(0xc0),
+            local_token: pattern32(0xb0),
+            local_depositor: pattern32(0xc0),
             max_fee: u256_be_from_u128(2_000_000),
             nonce: pattern32(0xd0),
             hook_data: Vec::new(),
@@ -598,8 +586,9 @@ fn main() {
     // the recipient's, so a row that confused the two would not pass.
     //
     // These intents are DC-14-shaped, which the older `di` rows are not: `remoteToken` carries the
-    // faucet's account id in its bytes32 packaging, and `localToken` / `localDepositor` carry
-    // right-aligned 20-byte EVM addresses. That narrowing is the point of the reject rows below.
+    // faucet's account id in its bytes32 packaging. That narrowing is the point of the reject rows
+    // below. `localToken` / `localDepositor` fill their whole bytes32 and are deliberately not
+    // address-shaped, so the accept rows exercise a source chain that is not EVM-based.
     let faucet_id = &ids[1];
     let faucet_b32 = r_b_bytes32(faucet_id);
     let mi_domain = 7u32;
@@ -610,8 +599,8 @@ fn main() {
         spec.nonce = pattern32(nonce_seed);
         spec.remote_domain = mi_domain;
         spec.remote_token = faucet_b32;
-        spec.local_token = evm_bytes32(0xb0);
-        spec.local_depositor = evm_bytes32(0xc0);
+        spec.local_token = pattern32(0xb0);
+        spec.local_depositor = pattern32(0xc0);
         // the fee ceiling has to sit under the amount for the intent to be mintable at all
         spec.max_fee = u256_be_from_u128(1);
         spec.hook_data = hook_data;
@@ -647,7 +636,7 @@ fn main() {
             "amount_felt": felt_hex(Felt::from(amount)),
             "carried_felts": felts_hex(&carried.to_elements()),
             "rebuilt_preimage_felts": felts_hex(&rebuilt.to_preimage_felts()),
-            "cite": "DC-14 + DEV-10 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
+            "cite": "DC-14 + DEV-10 (REQUIRES CIRCLE CONFIRMATION)",
             "derivation": derivation,
         }));
     };
@@ -690,32 +679,10 @@ fn main() {
             "faucet_suffix_felt": felt_hex(faucet_id.suffix()),
             "remote_domain": mi_domain,
             "expected_variant": expected_variant,
-            "cite": "DC-14 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
+            "cite": "DC-14 (REQUIRES CIRCLE CONFIRMATION)",
             "derivation": derivation,
         }));
     };
-    {
-        let mut spec = mi_spec(Vec::new(), 0xd0);
-        spec.local_token = pattern32(0xb0);
-        mi_reject(
-            &mut mi,
-            "mi-rej-local-token-not-address",
-            &spec,
-            "FieldNotEvmAddress",
-            "localToken has non-zero bytes in the leading 12-byte pad, so it is not a 20-byte EVM address",
-        );
-    }
-    {
-        let mut spec = mi_spec(Vec::new(), 0xd0);
-        spec.local_depositor = pattern32(0xc0);
-        mi_reject(
-            &mut mi,
-            "mi-rej-local-depositor-not-address",
-            &spec,
-            "FieldNotEvmAddress",
-            "localDepositor has non-zero bytes in the leading 12-byte pad",
-        );
-    }
     {
         let mut spec = mi_spec(Vec::new(), 0xd0);
         spec.remote_token = r_b_bytes32(&ids[2]);

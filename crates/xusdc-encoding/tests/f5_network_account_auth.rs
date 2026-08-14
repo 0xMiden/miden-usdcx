@@ -67,7 +67,9 @@ use xusdc_encoding::note::xreserve_mint::{
     DepositAttestation, XUSDC_MINT_ATTESTATION_NUM_WORDS, XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME,
     XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
-use xusdc_encoding::xreserve::encoding::{DepositIntent, MintIntent, Signature, XReserveBurnItems};
+use xusdc_encoding::xreserve::encoding::{
+    DepositIntent, ForeignChainAddress, MintIntent, Signature, XReserveBurnItems,
+};
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -90,7 +92,7 @@ fn sample_burn_items(amount: u64) -> XReserveBurnItems {
     XReserveBurnItems {
         amount: miden_protocol::asset::AssetAmount::new(amount).expect("amount within bounds"),
         dest_domain: 9,
-        dest_recipient: [0xABu8; 32],
+        dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
         salt: [0xCDu8; 32],
     }
 }

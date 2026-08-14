@@ -37,6 +37,7 @@ use withdrawal_listener_attester::validate::{
     validate_discovery, DiscoveredBurn, DiscoveredDetails, DiscoveryRecord,
 };
 use withdrawal_listener_attester::withdrawal_api::build_prepare_request;
+use xusdc_encoding::xreserve::encoding::ForeignChainAddress;
 
 // ================================================================================================
 // FIXTURES
@@ -67,7 +68,7 @@ fn a_payload() -> BurnPayload {
     BurnPayload {
         amount: AssetAmount::new(AMOUNT).unwrap(),
         dest_domain: DEST_DOMAIN,
-        dest_recipient: DEST_RECIPIENT,
+        dest_recipient: ForeignChainAddress::new(DEST_RECIPIENT),
         salt: SALT,
     }
 }

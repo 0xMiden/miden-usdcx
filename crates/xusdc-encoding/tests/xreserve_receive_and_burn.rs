@@ -37,7 +37,7 @@ use miden_testing::assert_transaction_executor_error;
 use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
-use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
+use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
 // Amounts are arbitrary: this suite asserts which code path runs and what it is gated by, never
 // the magnitudes themselves. They match the ones the burn-note suite uses so the shared harness
@@ -71,7 +71,7 @@ fn items(amount: u64) -> Result<XReserveBurnItems> {
     Ok(XReserveBurnItems {
         amount: AssetAmount::new(amount)?,
         dest_domain: 9,
-        dest_recipient: [0xABu8; 32],
+        dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
         salt: [0xCDu8; 32],
     })
 }

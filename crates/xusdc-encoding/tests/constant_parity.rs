@@ -22,7 +22,7 @@ use xusdc_encoding::note::xreserve_mint::{
 };
 use xusdc_encoding::xreserve::encoding::{
     DepositIntent, DepositIntentField, DepositIntentHeader, MintIntent, ACCOUNT_ID_BYTES,
-    ASSET_AMOUNT_BYTES, BYTES32_LEN, EVM_ADDRESS_BYTES, EVM_ADDRESS_PACKED_LIMBS, PUBKEY_FELTS,
+    ASSET_AMOUNT_BYTES, BYTES32_LEN, PUBKEY_FELTS,
 };
 /// The shipped MASM sources, read here as TEXT so the constants written in them can be compared
 /// against their Rust counterparts. This is the only thing in the crate that reads MASM source: the
@@ -131,7 +131,6 @@ const MINT_POLICY_COVERED_NUMS: &[&str] = &[
 const MINT_INTENT_COVERED_NUMS: &[&str] = &[
     // carried-value widths: each carries a derived relation row below
     "BYTES32_PACKED_LIMBS",
-    "EVM_ADDRESS_PACKED_LIMBS",
     "ACCOUNT_ID_FELTS",
     // DC-14 carried felt offsets, each pinned directly against its Rust twin
     "MINT_INTENT_NONCE_FELT_OFF",
@@ -163,7 +162,6 @@ const DEPOSIT_INTENT_COVERED_NUMS: &[&str] = &[
     "HOOK_DATA_LEN_FELT_OFF",
     "HOOK_DATA_FELT_OFF",
     "BYTES32_ACCOUNT_ID_LIMB_OFF",
-    "BYTES32_EVM_ADDRESS_LIMB_OFF",
     "UINT256_ASSET_AMOUNT_LIMB_OFF",
     "DEPOSIT_INTENT_MAGIC_PACKED",
     "DEPOSIT_INTENT_VERSION_PACKED",
@@ -172,8 +170,6 @@ const DEPOSIT_INTENT_COVERED_NUMS: &[&str] = &[
     "WRITE_AMOUNT_FELT_OFF",
     "WRITE_REMOTE_TOKEN_FELT_OFF",
     "WRITE_REMOTE_RECIPIENT_FELT_OFF",
-    "WRITE_LOCAL_TOKEN_FELT_OFF",
-    "WRITE_LOCAL_DEPOSITOR_FELT_OFF",
     "WRITE_MAX_FEE_FELT_OFF",
     "DEPOSIT_INTENT_PTR_LOC",
     "MINT_INTENT_PTR_LOC",
@@ -329,9 +325,8 @@ fn masm_rust_constant_parity() {
     // side counts bytes because it writes bytes. Pinning the DERIVED relation — a value sits at
     // the end of its 32-byte field, so its pad is the field minus its own width — is what keeps
     // the two writers producing the same preimage.
-    let limb_relations: [(&str, usize); 4] = [
+    let limb_relations: [(&str, usize); 3] = [
         ("BYTES32_ACCOUNT_ID_LIMB_OFF", ACCOUNT_ID_BYTES),
-        ("BYTES32_EVM_ADDRESS_LIMB_OFF", EVM_ADDRESS_BYTES),
         ("UINT256_ASSET_AMOUNT_LIMB_OFF", ASSET_AMOUNT_BYTES),
         // a full-width bytes32 has no pad, which is the degenerate case of the same relation
         ("MAGIC_FELT_OFF", BYTES32_LEN),
@@ -351,11 +346,6 @@ fn masm_rust_constant_parity() {
             "DC-14 packed-limb width for {masm_name} (limbs x 4 == the value's byte width)"
         );
     }
-    assert_eq!(
-        num(&mi_nums, "EVM_ADDRESS_PACKED_LIMBS", "mint_intent.masm"),
-        EVM_ADDRESS_PACKED_LIMBS as u64,
-        "DC-14 evm-address limb count parity"
-    );
     assert_eq!(
         num(&mi_nums, "ACCOUNT_ID_FELTS", "mint_intent.masm"),
         MintIntent::ACCOUNT_ID_FELTS as u64,

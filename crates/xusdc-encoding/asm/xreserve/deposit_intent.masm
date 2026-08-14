@@ -12,15 +12,15 @@
 # as u32-LE-packed felts (four wire bytes per felt). Several fields are wider than the value they
 # hold and carry it right-aligned behind a zero pad.
 
+use miden::core::mem
 use miden::protocol::account_id
 use miden::protocol::active_account
 use miden::protocol::native_account
 use miden::standards::utils
 use xreserve::packed_mem
 use {
-    EVM_ADDRESS_PACKED_LIMBS, MINT_INTENT_FELTS, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF,
-    MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF, MINT_INTENT_LOCAL_TOKEN_FELT_OFF,
-    MINT_INTENT_MAX_FEE_FELT_OFF, MINT_INTENT_NONCE_FELT_OFF,
+    MINT_INTENT_FELTS, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF, MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF,
+    MINT_INTENT_LOCAL_TOKEN_FELT_OFF, MINT_INTENT_MAX_FEE_FELT_OFF, MINT_INTENT_NONCE_FELT_OFF,
     MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
     MINT_INTENT_WORDS
 } from xreserve::mint_intent
@@ -51,10 +51,9 @@ pub const HOOK_DATA_FELT_OFF = 60
 # =================================================================================================
 
 # Where the carried value begins inside the wider field that holds it: the field's limb count minus
-# the value's own. An AccountId is four of a bytes32's eight limbs, an EVM address five, an
-# AssetAmount two of a uint256's eight.
+# the value's own. An AccountId is four of a bytes32's eight limbs, an AssetAmount two of a
+# uint256's eight. The source-chain addresses fill their field, so they have no pad.
 pub const BYTES32_ACCOUNT_ID_LIMB_OFF = 4
-pub const BYTES32_EVM_ADDRESS_LIMB_OFF = 3
 pub const UINT256_ASSET_AMOUNT_LIMB_OFF = 6
 
 # CONSTANTS — packed compare values and the header's size
@@ -76,8 +75,6 @@ pub const DEPOSIT_INTENT_HEADER_WORDS = 15
 const WRITE_AMOUNT_FELT_OFF = AMOUNT_FELT_OFF + UINT256_ASSET_AMOUNT_LIMB_OFF
 const WRITE_REMOTE_TOKEN_FELT_OFF = REMOTE_TOKEN_FELT_OFF + BYTES32_ACCOUNT_ID_LIMB_OFF
 const WRITE_REMOTE_RECIPIENT_FELT_OFF = REMOTE_RECIPIENT_FELT_OFF + BYTES32_ACCOUNT_ID_LIMB_OFF
-const WRITE_LOCAL_TOKEN_FELT_OFF = LOCAL_TOKEN_FELT_OFF + BYTES32_EVM_ADDRESS_LIMB_OFF
-const WRITE_LOCAL_DEPOSITOR_FELT_OFF = LOCAL_DEPOSITOR_FELT_OFF + BYTES32_EVM_ADDRESS_LIMB_OFF
 const WRITE_MAX_FEE_FELT_OFF = MAX_FEE_FELT_OFF + UINT256_ASSET_AMOUNT_LIMB_OFF
 
 # `rebuild` memory locals.
@@ -210,28 +207,20 @@ pub proc rebuild
     exec.packed_mem::store_account_id
     # => []
 
-    # ---- the two source-chain addresses, copied limb for limb ----
-    # the fixed-width runs unroll, so their widths are repeat counts rather than loop bounds. A
-    # width that drifted from the shared layout would show up as a message-parity failure against
-    # the Rust mirror, which compares every felt.
+    # ---- the two source-chain addresses ----
+    # each fills its whole field, so the copy is the same verbatim bytes32 move the nonce takes.
     loc_load.MINT_INTENT_PTR_LOC add.MINT_INTENT_LOCAL_TOKEN_FELT_OFF
-    loc_load.DEPOSIT_INTENT_PTR_LOC add.WRITE_LOCAL_TOKEN_FELT_OFF
+    loc_load.DEPOSIT_INTENT_PTR_LOC add.LOCAL_TOKEN_FELT_OFF
     # => [dst_ptr, src_ptr]
 
-    repeat.EVM_ADDRESS_PACKED_LIMBS
-        exec.packed_mem::memcopy_u32_element
-    end
-    drop drop
+    exec.packed_mem::memcopy_bytes32
     # => []
 
     loc_load.MINT_INTENT_PTR_LOC add.MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF
-    loc_load.DEPOSIT_INTENT_PTR_LOC add.WRITE_LOCAL_DEPOSITOR_FELT_OFF
+    loc_load.DEPOSIT_INTENT_PTR_LOC add.LOCAL_DEPOSITOR_FELT_OFF
     # => [dst_ptr, src_ptr]
 
-    repeat.EVM_ADDRESS_PACKED_LIMBS
-        exec.packed_mem::memcopy_u32_element
-    end
-    drop drop
+    exec.packed_mem::memcopy_bytes32
     # => []
 
     # ---- the depositor's fee ceiling ----
@@ -257,12 +246,14 @@ pub proc rebuild
     loc_load.DEPOSIT_INTENT_PTR_LOC add.HOOK_DATA_LEN_FELT_OFF mem_store
     # => []
 
-    loc_load.MINT_INTENT_PTR_LOC add.MINT_INTENT_FELTS
+    # hookData is opaque to the faucet — it only has to reach the message verbatim, so the limbs
+    # move unguarded and a bad one surfaces as keccak's own refusal.
     loc_load.DEPOSIT_INTENT_PTR_LOC add.HOOK_DATA_FELT_OFF
+    loc_load.MINT_INTENT_PTR_LOC add.MINT_INTENT_FELTS
     loc_load.HOOK_DATA_LEN_LOC exec.packed_mem::div_ceil_four
-    # => [num_elements, dst_ptr, src_ptr]
+    # => [num_elements, src_ptr, dst_ptr]
 
-    exec.packed_mem::memcopy_u32_elements
+    exec.mem::memcopy_elements
     # => []
 
     loc_load.HOOK_DATA_LEN_LOC add.DEPOSIT_INTENT_HEADER_BYTES

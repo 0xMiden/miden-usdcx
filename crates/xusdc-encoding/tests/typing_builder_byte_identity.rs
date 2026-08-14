@@ -38,10 +38,14 @@ const TOKEN_SUPPLY: u64 = 0;
 // no procedure was added or removed; the policy companions sit in the manager's emission order —
 // the callable-surface and note-allowlist tripwires pass unedited.
 //
-// The storage anchor was RE-captured when the builder narrowed its `xreserve_contract` parameter
-// to a 20-byte `EthAddress`: the fixture's seeded value became that address in its left-padded
-// bytes32 container, so the seeded slot bytes moved with it. The code anchor was RE-captured when
-// the builder started installing the manager's companion components as the manager emits them.
+// Both anchors were RE-captured when the source-chain address fields widened to the wire form's
+// full bytes32: the storage anchor because the fixture's seeded `xreserve_contract` is now a
+// 32-byte value with no zero pad, and the code anchor because the mint intent's felt offsets and
+// the writer that fills them are part of the assembled xreserve library.
+//
+// They were re-captured again when the hookData copy moved to `miden::core::mem::memcopy_elements`:
+// any edit to the writer moves the mint procedure's root, which is both a code-commitment input and
+// a stored value (the policy manager's active/allowed mint-policy proc-root slots).
 //
 // The account id is the NEW-ACCOUNT derivation: ground from SEED over the composed code and
 // storage commitments, so it moves whenever either commitment moves (unlike the code commitment
@@ -67,20 +71,19 @@ const TOKEN_SUPPLY: u64 = 0;
 // itself measured, which is what says the migration's slot values survived the merge unchanged.
 //
 // NOT RATIFIED — every value below is MEASURED from this composition, not accepted. A human must
-// re-ratify all four at PR assembly. The id and state anchors were RE-measured when the two lines
-// merged: the callable surface moving into its own component MASM moved the CODE commitment on one
-// side, and narrowing `xreserve_contract` to a 20-byte `EthAddress` moved the seeded slot bytes —
-// and so the STORAGE digest — on the other. The id grounds on both commitments and the state
-// commitment covers both plus the id, so neither pre-merge capture holds for those two. The code
-// commitment and the storage digest are each byte-for-byte the value their own side measured,
-// which is what says the merge composed the two changes rather than disturbing either.
+// re-ratify all four at PR assembly. The code, id and state anchors were RE-measured when the
+// callable-surface move landed on top of the source-chain address widening: the move reorders the
+// installed procedure roots, which the code commitment is taken over IN ORDER, and the id and state
+// commitment ground on it. The STORAGE digest is byte-for-byte this branch's own pre-merge value —
+// no procedure BODY changed, so the stored mint-policy root did not move, and the widening's seeded
+// slot bytes came through the merge untouched.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([13668168734693239322, 1703180734705411886, 4778497770240711770, 14508535432773685585])";
+    "Word([12279069345933864066, 206453457384661656, 11345428456839323018, 6226162249499447102])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([323014368150543436, 3384185445653237445, 8917474726941958005, 1072673965110081017])";
+    "Word([1171372054460893828, 3180962383503063962, 16936606828590149993, 18309783564702138709])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([13346508987964622553, 5988960762892709497, 6782465324179580540, 1354910767027333690])";
-const GOLDEN_ACCOUNT_ID: &str = "0x349c16bc313fc4f104123b3b0a3191";
+    "Word([3029023550697381755, 5874055843915310604, 6907408855997959256, 4126294615369475846])";
+const GOLDEN_ACCOUNT_ID: &str = "0x90ffee0e7f76d53146403bd1722b1e";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.

@@ -37,7 +37,7 @@ use xusdc_encoding::note::xreserve_burn::{
     XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
 };
 use xusdc_encoding::vectors::load;
-use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
+use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
 // HARNESS
 // ================================================================================================
@@ -60,7 +60,7 @@ fn sample_items(amount: u64) -> XReserveBurnItems {
     XReserveBurnItems {
         amount: AssetAmount::new(amount).expect("amount within AssetAmount bounds"),
         dest_domain: 9,
-        dest_recipient: [0xABu8; 32],
+        dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
         salt: [0xCDu8; 32],
     }
 }
@@ -302,7 +302,7 @@ async fn burn_note_consumed_by_faucet_decrements() -> anyhow::Result<()> {
     let items = XReserveBurnItems {
         amount: AssetAmount::new(AMOUNT)?,
         dest_domain: 9,
-        dest_recipient: [0xABu8; 32],
+        dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
         salt: [0xCDu8; 32],
     };
     let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items, &mut note_rng(42))?;
@@ -354,7 +354,7 @@ async fn burn_note_insufficient_balance_rejects_create() -> anyhow::Result<()> {
     let items = XReserveBurnItems {
         amount: AssetAmount::new(over)?,
         dest_domain: 9,
-        dest_recipient: [0xABu8; 32],
+        dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
         salt: [0xCDu8; 32],
     };
     let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items, &mut note_rng(7))?;

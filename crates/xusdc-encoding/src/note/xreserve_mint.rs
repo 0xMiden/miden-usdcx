@@ -27,13 +27,13 @@ use miden_protocol::errors::NoteError;
 use miden_protocol::note::{
     Note, NoteAttachment, NoteAttachmentScheme, NoteScript, NoteScriptRoot, NoteTag,
 };
-use miden_protocol::{Felt, Word};
+use miden_protocol::{Felt, Word, WORD_SIZE};
 use miden_standards::note::{
     MintNote, MintNoteStorage, NetworkAccountTarget, NoteExecutionHint, P2idNoteStorage,
 };
 
 use crate::xreserve::encoding::{
-    DepositIntent, DepositIntentHeader, HookData, MintIntent, Signature, BYTES_PER_PACKED_FELT,
+    DepositIntent, DepositIntentHeader, MintIntent, Signature, BYTES_PER_PACKED_FELT,
 };
 
 /// The mint-note transport attachment scheme (u16, project-chosen: >= 4, clear of
@@ -50,17 +50,18 @@ pub const XUSDC_MINT_ATTESTATION_NUM_WORDS: usize = 9;
 /// attestation. Constant by construction — see the module docs on why the attestation goes first.
 pub const XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF: usize = XUSDC_MINT_ATTESTATION_NUM_WORDS;
 
-// The codec's hookData ceiling must equal this transport's capacity (the per-attachment word cap
-// minus the attestation and the carried payload, in bytes).
-const _: () = assert!(
-    HookData::MAX_LEN
-        == (NoteAttachment::MAX_NUM_WORDS as usize
-            - XUSDC_MINT_ATTESTATION_NUM_WORDS
-            - MintIntent::NUM_FELTS / 4)
-            * 4
-            * BYTES_PER_PACKED_FELT,
-    "the codec's HookData::MAX_LEN must equal the mint transport's hookData capacity"
-);
+/// How much hookData this transport can carry: the protocol's per-attachment ceiling less the fixed
+/// prefix (the attestation section and the carried payload), in bytes. Everything past that prefix
+/// is packed hookData, so this is the whole remainder.
+///
+/// This is what bounds hookData — see [`HookData::MAX_LEN`], which is defined as this value.
+///
+/// [`HookData::MAX_LEN`]: crate::xreserve::encoding::HookData::MAX_LEN
+pub const XUSDC_MINT_TRANSPORT_HOOK_DATA_MAX_LEN: usize = (NoteAttachment::MAX_NUM_WORDS as usize
+    * WORD_SIZE
+    - XUSDC_MINT_ATTESTATION_NUM_WORDS * WORD_SIZE
+    - MintIntent::NUM_FELTS)
+    * BYTES_PER_PACKED_FELT;
 
 /// The Circle deposit attestation crossing the note boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,7 +155,7 @@ impl From<&XUsdcDeposit> for NoteAttachment {
     ///
     /// 1. the [`DepositAttestation`].
     /// 2. the [`MintIntent`].
-    /// 3. the [`HookData`].
+    /// 3. the [`HookData`](crate::xreserve::encoding::HookData).
     fn from(deposit: &XUsdcDeposit) -> Self {
         let mut elements: Vec<Felt> = Vec::new();
 

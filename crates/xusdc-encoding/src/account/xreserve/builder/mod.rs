@@ -40,9 +40,9 @@ use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::{
     BlocklistManager, BurnPolicy, MintPolicy, TokenPolicyManager, TransferPolicy,
 };
-use miden_standards::interop::eth::EthAddress;
 
 use crate::account::xreserve::XReserveAdminAuthority;
+use crate::xreserve::encoding::ForeignChainAddress;
 
 mod construction;
 mod error;
@@ -140,7 +140,7 @@ pub struct XReserveStablecoinBuilder {
     /// at composition time as `[source_domain, 0, 0, 0]`.
     source_domain: u32,
     /// The xReserve contract's source-chain address.
-    xreserve_contract: EthAddress,
+    xreserve_contract: ForeignChainAddress,
 }
 
 #[bon]
@@ -186,7 +186,7 @@ impl XReserveStablecoinBuilder {
         blocklist_manager_holder: AccountId,
         domain: u32,
         source_domain: u32,
-        xreserve_contract: EthAddress,
+        xreserve_contract: ForeignChainAddress,
         min_burn_amount: Option<AssetAmount>,
     ) -> Result<Self, XReserveStablecoinBuilderError> {
         let min_burn_amount = min_burn_amount.unwrap_or(

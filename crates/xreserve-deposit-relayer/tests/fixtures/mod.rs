@@ -87,18 +87,20 @@ pub fn faucet_id() -> AccountId {
 /// shared encoding crate's MASM and Rust tests — never a hand-rolled blob.
 pub const TEST_VECTOR_PAYLOAD_ID: &str = "mi-pos-hookdata";
 
-/// [`test_vector`]'s `messageHash` — `keccak256` of the canonical payload, PINNED.
+/// [`test_vector`]'s `messageHash` — `keccak256` of the canonical payload, PINNED. Last re-pinned
+/// when the source-chain address fields widened to the wire form's full bytes32: the artifact's
+/// payload gained those bytes, so what the partner signs over moved with it.
 pub const TEST_VECTOR_MESSAGE_HASH_HEX: &str =
-    "8e24efc812c0bb48f307270843c0f0f6b09b25d0328687c4ce4d2173b9a8a198";
+    "5280d1a7997e6b3532747a828e15df94a9619c94361d296df3d1d1efd13c88fe";
 
 /// [`test_vector`]'s 65-byte `r‖s‖v`, PINNED. secp256k1 signing here is RFC 6979 DETERMINISTIC, so
 /// this is a fixed value — an independent golden pin on the whole chain (key → raw-keccak digest →
 /// signing convention). It moves only if one of those changes, which is exactly when every later
 /// slice reusing this vector needs to know.
 pub const TEST_VECTOR_ATTESTATION_HEX: &str = concat!(
-    "1f3dfce199935983b468a86f0282db1fc683d6ebd0d4a3ec3a5de0611ac7f026", // r
-    "23f373ffa40c3d03f9f74869169fda27cf0a3adaa099003065aa619ad53b67e3", // s
-    "00",                                                               // v (recovery id)
+    "0d7424734d2f57f838b3dada0d789f1b565fda9f7061c623d2d4aea3eed5ccce", // r
+    "734b9abfbd7cfae3e1338cf322428cc46abf06825db18e5ee467064dbc7d0ca0", // s
+    "01",                                                               // v (recovery id)
 );
 
 /// The canonical DepositIntent payload with EMPTY hookData — the second shape (240 bytes exactly),

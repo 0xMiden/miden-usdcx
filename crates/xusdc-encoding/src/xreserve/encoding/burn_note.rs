@@ -13,6 +13,7 @@ use miden_protocol::asset::AssetAmount;
 use miden_protocol::Felt;
 
 use super::bytes32::{bytes32_to_packed_felts, packed_felts_to_bytes32};
+use super::deposit_intent::ForeignChainAddress;
 use super::error::EncodingError;
 
 /// Felt width of the burn-note withdrawal payload: `amount` (1) then `destDomain`
@@ -29,7 +30,7 @@ pub const BURN_NOTE_ITEMS_FELTS: usize = 18;
 pub struct XReserveBurnItems {
     pub amount: AssetAmount,
     pub dest_domain: u32,
-    pub dest_recipient: [u8; 32],
+    pub dest_recipient: ForeignChainAddress,
     pub salt: [u8; 32],
 }
 
@@ -42,7 +43,7 @@ impl XReserveBurnItems {
         let mut out = Vec::with_capacity(BURN_NOTE_ITEMS_FELTS);
         out.push(Felt::from(self.amount)); // [0]
         out.push(Felt::from(self.dest_domain)); // [1]
-        out.extend_from_slice(&bytes32_to_packed_felts(&self.dest_recipient)); // [2..10]
+        out.extend_from_slice(&self.dest_recipient.to_packed_felts()); // [2..10]
         out.extend_from_slice(&bytes32_to_packed_felts(&self.salt)); // [10..18]
         out
     }
@@ -71,6 +72,7 @@ impl XReserveBurnItems {
             .try_into()
             .expect("len == 18 ⇒ items[2..10] is exactly 8 felts");
         let dest_recipient = packed_felts_to_bytes32(&recipient_felts)
+            .map(ForeignChainAddress::new)
             .map_err(|_| EncodingError::BurnItemsMalformed)?;
         let salt_felts: [Felt; 8] = items[10..18]
             .try_into()

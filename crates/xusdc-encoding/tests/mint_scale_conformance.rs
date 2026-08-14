@@ -33,16 +33,15 @@ use miden_protocol::note::{NoteId, NoteType};
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::FungibleFaucet;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_testing::MockChain;
 use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
-use xusdc_encoding::note::xreserve_mint::{
-    MintAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
-};
+use xusdc_encoding::note::xreserve_mint::DepositAttestation;
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::{account_id_to_bytes32, bytes32_to_storage_map_key};
+use xusdc_encoding::xreserve::encoding::{bytes32_to_storage_map_key, Signature};
 
 // CIRCLE-FORMAT FIXTURE VALUES
 // ================================================================================================
@@ -122,9 +121,9 @@ fn payload_for(
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(recipient));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(recipient).to_bytes32());
     payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(faucet_id));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32());
     payload[NONCE_BYTE_OFF] ^= nonce_variant;
     payload
 }
@@ -191,9 +190,9 @@ async fn bring_up(pf: &mut ProductionFaucet) -> Result<()> {
     Ok(())
 }
 
-fn attestation_for(seed: u64, payload: &[u8]) -> MintAttestation {
+fn attestation_for(seed: u64, payload: &[u8]) -> DepositAttestation {
     let attester = gen_attester(seed, payload);
-    MintAttestation::new(attester.sig_bytes, attester.pubkey_bytes)
+    DepositAttestation::new(Signature::new(attester.sig_bytes), attester.pubkey.clone())
 }
 
 /// Consumes a committed mint note on the faucet with no transaction script and no consume-side
@@ -260,14 +259,13 @@ async fn mint_via_production_note(
     payload: &[u8],
     rng_seed: u64,
 ) -> Result<ExecutedTransaction> {
-    let note = XUsdcMintNote::create(
+    let note = mint_note_from_payload(
         pf.producer_id,
         pf.faucet_id,
         payload,
-        &attestation_for(1, payload),
+        attestation_for(1, payload),
         &mut note_rng(rng_seed),
-    )
-    .map_err(|e| anyhow::anyhow!("constructing the production mint note: {e}"))?;
+    )?;
     emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
     consume_mint_note(&pf.mock_chain, pf.faucet_id, note.id())
         .await
@@ -495,10 +493,7 @@ fn shipped_faucet_writes_the_amount_at_the_identity_scale() -> Result<()> {
         !body.to_ascii_lowercase().contains("scale"),
         "the writer applies no scale at all; a scale here would mean a rescale crept back"
     );
-    assert_eq!(
-        XUSDC_DEPOSIT_SCALE_EXP, 0,
-        "the note factory must reduce at the same identity scale the writer expands at"
-    );
+
     Ok(())
 }
 

@@ -24,7 +24,7 @@ use xusdc_encoding::note::costs::{
 use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::xreserve::encoding::{
-    deposit_intent_field_offset, DepositIntentField, XReserveBurnItems, MAX_HOOK_DATA_LEN,
+    DepositIntentField, ForeignChainAddress, HookData, XReserveBurnItems,
 };
 
 const MAX_SUPPLY: u64 = 1_000_000_000_000;
@@ -60,8 +60,8 @@ fn assert_cost(label: &str, measured: u32, committed: u32) {
 }
 
 fn with_hook_data(mut payload: Vec<u8>, hook_data_len: usize) -> Vec<u8> {
-    let len_offset = deposit_intent_field_offset(DepositIntentField::HookDataLen);
-    payload.truncate(deposit_intent_field_offset(DepositIntentField::HookData));
+    let len_offset = DepositIntentField::HookDataLen.offset();
+    payload.truncate(DepositIntentField::HookData.offset());
     payload[len_offset..len_offset + 4].copy_from_slice(
         &u32::try_from(hook_data_len)
             .expect("the hook-data limit fits u32")
@@ -213,7 +213,7 @@ async fn burn_cycles() -> Result<u32> {
         XReserveBurnItems {
             amount: AssetAmount::new(BURN_AMOUNT)?,
             dest_domain: 9,
-            dest_recipient: [0xAB; 32],
+            dest_recipient: ForeignChainAddress::new([0xAB; 32]),
             salt: [0xCD; 32],
         },
         builder.rng_mut(),
@@ -228,7 +228,7 @@ async fn burn_cycles() -> Result<u32> {
 #[tokio::test]
 async fn checked_in_costs_match_benchmarked_transactions() -> Result<()> {
     let mint_empty = mint_cycles(0, 1).await?;
-    let mint_max_hook_data = mint_cycles(MAX_HOOK_DATA_LEN, 2).await?;
+    let mint_max_hook_data = mint_cycles(HookData::MAX_LEN, 2).await?;
     let mint = mint_empty.max(mint_max_hook_data);
     let burn = burn_cycles().await?;
     let set_attester_enabled = set_attester_cycles(1).await?;

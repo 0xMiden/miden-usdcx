@@ -49,7 +49,7 @@ use miden_standards::account::policies::{
 };
 
 use crate::account::xreserve::XReserveAdminAuthority;
-use crate::xreserve::encoding::EthBytes32;
+use crate::xreserve::encoding::ForeignChainAddress;
 
 mod construction;
 mod error;
@@ -152,7 +152,7 @@ pub struct XReserveStablecoinBuilder {
     /// at composition time as `[source_domain, 0, 0, 0]`.
     source_domain: u32,
     /// The xReserve contract's source-chain address.
-    xreserve_contract: EthBytes32,
+    xreserve_contract: ForeignChainAddress,
 }
 
 #[bon]
@@ -200,7 +200,7 @@ impl XReserveStablecoinBuilder {
         fee_parameters: FeeParameters,
         domain: u32,
         source_domain: u32,
-        xreserve_contract: EthBytes32,
+        xreserve_contract: ForeignChainAddress,
         min_burn_amount: Option<AssetAmount>,
     ) -> Result<Self, XReserveStablecoinBuilderError> {
         let min_burn_amount = min_burn_amount.unwrap_or(

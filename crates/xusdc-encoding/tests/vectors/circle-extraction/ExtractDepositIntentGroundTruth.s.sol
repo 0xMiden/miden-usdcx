@@ -23,14 +23,28 @@ import {
 import {DepositIntentLib} from "src/lib/DepositIntentLib.sol";
 
 /// @notice Emits ground-truth encoded DepositIntent bytes via Circle's OWN encoder
-///         (`DepositIntentLib.encodeDepositIntent`) for two fully-known intents and asserts every
+///         (`DepositIntentLib.encodeDepositIntent`) for four fully-known intents and asserts every
 ///         DC-1 byte offset. cctp-free, so it compiles on macOS arm64 with `--skip 'test/**'`.
+///
+///         Two intents carry OPAQUE bytes32 identifiers, which is what Circle's encoding permits;
+///         two carry Miden account ids in the right-aligned packaging Miden reads them with. The
+///         envelope is identical either way — that is the point of the pair — while the Miden side
+///         accepts only the latter, so the differential test can assert both verdicts against bytes
+///         this encoder produced.
 contract ExtractDepositIntentGroundTruth is Script {
     uint32 internal constant VERSION = DEPOSIT_INTENT_VERSION; // 1
     uint256 internal constant AMOUNT = 1_000_000;
     uint32 internal constant REMOTE_DOMAIN = 0xCAFE; // 51966
+    /// Opaque bytes32 identifiers — legal in Circle's encoding, unreadable as Miden account ids.
     bytes32 internal constant REMOTE_TOKEN = 0x52e1ee52e1ee52e1ee52e1ee52e1ee52e1ee52e1ee52e1ee52e1ee52e1ee52e1;
     bytes32 internal constant REMOTE_RECIPIENT = 0x5243aa5243aa5243aa5243aa5243aa5243aa5243aa5243aa5243aa5243aa5243;
+    /// The same fields carrying Miden account ids: 16 zero bytes, then prefix and suffix as
+    /// big-endian u64s. These two ids are `aid-rt-2` and `aid-rt-1` of the Miden golden-vector
+    /// artifact, so the two fixtures describe the same accounts.
+    bytes32 internal constant REMOTE_TOKEN_ACCOUNT_ID =
+        0x000000000000000000000000000000000320a8188931a401038036a64a672c00;
+    bytes32 internal constant REMOTE_RECIPIENT_ACCOUNT_ID =
+        0x000000000000000000000000000000008110548cc41852010140bd1325ff0800;
     bytes32 internal constant LOCAL_TOKEN = bytes32(uint256(uint160(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48)));
     bytes32 internal constant LOCAL_DEPOSITOR = bytes32(uint256(uint160(0x1111111111111111111111111111111111111111)));
     uint256 internal constant MAX_FEE = 5_000;
@@ -38,12 +52,20 @@ contract ExtractDepositIntentGroundTruth is Script {
     bytes internal constant HOOK_DATA = hex"deadbeefcafe"; // 6 bytes
 
     function _intent(bytes memory hookData) internal pure returns (DepositIntent memory) {
+        return _intent(hookData, REMOTE_TOKEN, REMOTE_RECIPIENT);
+    }
+
+    function _intent(bytes memory hookData, bytes32 remoteToken, bytes32 remoteRecipient)
+        internal
+        pure
+        returns (DepositIntent memory)
+    {
         return DepositIntent({
             version: VERSION,
             amount: AMOUNT,
             remoteDomain: REMOTE_DOMAIN,
-            remoteToken: REMOTE_TOKEN,
-            remoteRecipient: REMOTE_RECIPIENT,
+            remoteToken: remoteToken,
+            remoteRecipient: remoteRecipient,
             localToken: LOCAL_TOKEN,
             localDepositor: LOCAL_DEPOSITOR,
             maxFee: MAX_FEE,
@@ -124,6 +146,24 @@ contract ExtractDepositIntentGroundTruth is Script {
         console.logBytes(e2);
         console.log("messageHash (keccak256 of encoded):");
         console.logBytes32(keccak256(e2));
+
+        // ---- Vector di-circle-3 : account-id identifiers, non-empty hookData ----
+        DepositIntent memory i3 = _intent(HOOK_DATA, REMOTE_TOKEN_ACCOUNT_ID, REMOTE_RECIPIENT_ACCOUNT_ID);
+        bytes memory e3 = DepositIntentLib.encodeDepositIntent(i3);
+        _verify(e3, i3);
+        console.log("=== di-circle-3 (account-id identifiers, non-empty hookData) length=%d ===", e3.length);
+        console.logBytes(e3);
+        console.log("messageHash (keccak256 of encoded):");
+        console.logBytes32(keccak256(e3));
+
+        // ---- Vector di-circle-4 : account-id identifiers, empty hookData ----
+        DepositIntent memory i4 = _intent("", REMOTE_TOKEN_ACCOUNT_ID, REMOTE_RECIPIENT_ACCOUNT_ID);
+        bytes memory e4 = DepositIntentLib.encodeDepositIntent(i4);
+        _verify(e4, i4);
+        console.log("=== di-circle-4 (account-id identifiers, empty hookData) length=%d ===", e4.length);
+        console.logBytes(e4);
+        console.log("messageHash (keccak256 of encoded):");
+        console.logBytes32(keccak256(e4));
 
         console.log("ALL ENVELOPE SELF-CHECKS PASSED");
     }

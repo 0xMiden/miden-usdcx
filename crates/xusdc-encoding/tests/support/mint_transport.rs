@@ -29,12 +29,10 @@ use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, bytes32_to_account_id, bytes32_to_storage_map_key, DepositIntent,
-    MintIntent, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF,
-};
+use xusdc_encoding::xreserve::encoding::{bytes32_to_storage_map_key, DepositIntent, MintIntent};
 
 use super::*;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 
 // FIXTURE VALUES (shared across the split e2e suites)
 // ================================================================================================
@@ -111,9 +109,9 @@ pub fn payload_for(
     payload[AMOUNT_BYTE_OFF..AMOUNT_BYTE_OFF + 32].copy_from_slice(&uint256_be(amount));
     payload[MAX_FEE_BYTE_OFF..MAX_FEE_BYTE_OFF + 32].copy_from_slice(&uint256_be(MAX_FEE_RAW));
     payload[REMOTE_RECIPIENT_BYTE_OFF..REMOTE_RECIPIENT_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(recipient));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(recipient).to_bytes32());
     payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32]
-        .copy_from_slice(&account_id_to_bytes32(faucet_id));
+        .copy_from_slice(&EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32());
     payload[NONCE_BYTE_OFF] ^= nonce_variant;
     payload
 }
@@ -215,13 +213,12 @@ pub struct StoragePlan {
 /// faucet's, so a note addressed elsewhere still builds a well-formed transport — it has to, or
 /// the wrong-domain and wrong-faucet negatives could not reach the chain to fail there.
 fn carried_payload_felts(payload: &[u8]) -> Vec<Felt> {
-    let intent = DepositIntent::new(payload);
-    let header = intent.parse_header().expect("the tamper payload parses");
-    let claimed_faucet = bytes32_to_account_id(&header.remote_token)
-        .expect("the tamper payload names a well-formed faucet");
-    let carried = MintIntent::from_deposit_intent(&intent, claimed_faucet)
-        .expect("the tamper payload is DC-14 shaped");
-    let mut felts = carried.to_felts();
+    let intent = DepositIntent::try_from(payload).expect("the tamper payload decodes");
+    let claimed_faucet = intent.header().remote_token();
+    let carried =
+        MintIntent::from_deposit_intent(&intent, claimed_faucet, intent.header().remote_domain())
+            .expect("the tamper payload is DC-14 shaped");
+    let mut felts = carried.to_elements();
     while !felts.len().is_multiple_of(4) {
         felts.push(Felt::from(0u32));
     }
@@ -258,7 +255,7 @@ fn transport_felts(
         carried[off] = value;
     }
     if let Some(limb) = plan.payload_hook_data_len_felt {
-        carried[MINT_INTENT_HOOK_DATA_LEN_FELT_OFF] = limb;
+        carried[MintIntent::HOOK_DATA_LEN_FELT_OFF] = limb;
     }
     felts.extend(carried);
 

@@ -6,7 +6,10 @@ use std::sync::OnceLock;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
+use miden_protocol::crypto::utils::Deserializable;
 use miden_protocol::{Felt, Word};
+use miden_standards::interop::eth::EthAmount;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -40,7 +43,7 @@ pub struct B32Vector {
     pub derivation: String,
 }
 
-/// uint256 → AssetAmount vectors. `kind`: accept | reject | ge | dust.
+/// uint256 → AssetAmount vectors. `kind`: accept | reject.
 #[derive(Debug, Deserialize)]
 pub struct AmtVector {
     pub id: String,
@@ -49,18 +52,7 @@ pub struct AmtVector {
     #[serde(default)]
     pub uint256_be: Option<String>,
     #[serde(default)]
-    pub le_limbs: Option<[u32; 8]>,
-    pub scale_exp: u32,
-    #[serde(default)]
-    pub b_uint256_be: Option<String>,
-    #[serde(default)]
-    pub b_le_limbs: Option<[u32; 8]>,
-    #[serde(default)]
     pub expected_y: Option<String>,
-    #[serde(default)]
-    pub expected_dust: Option<String>,
-    #[serde(default)]
-    pub ge_result: Option<bool>,
     #[serde(default)]
     pub expected_variant: Option<String>,
     #[serde(default)]
@@ -119,6 +111,9 @@ pub struct DiFields {
     pub version: u32,
     pub remote_domain: u32,
     pub hook_data_len: u32,
+    /// The two amount-shaped fields as the values they reduce to.
+    pub amount: u64,
+    pub max_fee: u64,
     pub amount_hex: String,
     pub remote_token_hex: String,
     pub remote_recipient_hex: String,
@@ -282,12 +277,13 @@ impl B32Vector {
 }
 
 impl AmtVector {
-    pub fn le_limbs(&self) -> [u32; 8] {
-        self.le_limbs.expect("vector carries le_limbs")
-    }
-
-    pub fn b_le_limbs(&self) -> [u32; 8] {
-        self.b_le_limbs.expect("ge vector carries b_le_limbs")
+    /// The vector's uint256 in the wire domain type the reducer consumes.
+    pub fn amount(&self) -> EthAmount {
+        EthAmount::new(parse_hex32(
+            self.uint256_be
+                .as_deref()
+                .expect("vector carries uint256_be"),
+        ))
     }
 
     pub fn expected_amount(&self) -> miden_protocol::asset::AssetAmount {
@@ -298,14 +294,6 @@ impl AmtVector {
             .parse()
             .expect("u64");
         miden_protocol::asset::AssetAmount::new(y).expect("vector amount within bounds")
-    }
-
-    pub fn expected_dust(&self) -> u128 {
-        self.expected_dust
-            .as_deref()
-            .expect("dust vector")
-            .parse()
-            .expect("u128")
     }
 }
 
@@ -377,6 +365,18 @@ impl AttVector {
         parse_hex32(&self.digest_hex)
     }
 
+    /// The wire pubkey decoded into the key every consumer actually works with. A committed
+    /// vector whose key is not a curve point is a broken artifact, so this panics rather than
+    /// making every caller handle an impossible error.
+    pub fn public_key(&self) -> PublicKey {
+        PublicKey::read_from_bytes(&self.pubkey()).unwrap_or_else(|e| {
+            panic!(
+                "vector {}: pubkey does not decode to a curve point: {e}",
+                self.id
+            )
+        })
+    }
+
     pub fn sig(&self) -> [u8; 65] {
         let b = parse_hex(&self.sig_hex);
         b.as_slice()
@@ -432,12 +432,12 @@ impl BnVector {
         miden_protocol::asset::AssetAmount::new(a).expect("vector amount within bounds")
     }
 
-    pub fn dest_recipient(&self) -> [u8; 32] {
-        parse_hex32(
+    pub fn dest_recipient(&self) -> crate::xreserve::encoding::ForeignChainAddress {
+        crate::xreserve::encoding::ForeignChainAddress::new(parse_hex32(
             self.dest_recipient
                 .as_deref()
                 .expect("accept vector carries dest_recipient"),
-        )
+        ))
     }
 
     pub fn salt(&self) -> [u8; 32] {

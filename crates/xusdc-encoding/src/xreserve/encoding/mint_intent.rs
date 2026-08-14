@@ -1,179 +1,29 @@
-//! The mint note's carried payload, and the reconstruction of Circle's signed DepositIntent from
-//! it (`DC-14`).
+//! The mint note's carried payload, and its relationship to Circle's DepositIntent (`DC-14`).
 //!
 //! Circle's DepositIntent does not travel on the mint note. The note carries only the fields the
 //! faucet has no other way to learn, and the faucet rebuilds the canonical message itself before
 //! hashing it — so a field the faucet writes cannot disagree with the attestation, because a
 //! divergent value changes the digest and the signature stops verifying.
 //!
-//! This module is the off-chain half. [`MintIntent::from_deposit_intent`] compresses a real Circle
-//! payload and refuses anything this faucet could not rebuild byte-for-byte;
-//! [`MintIntent::to_deposit_intent_bytes`] is the mirror of the MASM writer
+//! This module owns the FELT format — what the note actually carries — and the two conversions to
+//! and from the byte format its sibling `deposit_intent` owns. [`MintIntent::from_deposit_intent`]
+//! compresses a real Circle payload and refuses anything this faucet could not rebuild
+//! byte-for-byte; [`MintIntent::to_deposit_intent`] is the mirror of the MASM writer
 //! `xreserve::deposit_intent::rebuild`. What binds the two is the round trip, not a
 //! field-by-field comparison — see `TV-DUAL-6` and the reconstruction reference in
 //! `docs/spec/ENCODING-COMPONENT-SPEC.md`.
-//!
-//! Nothing here re-reads a wire offset: every write goes through
-//! [`deposit_intent_field_offset`], so the layout has one owner on this side too.
 
-use miden_protocol::account::{AccountId, StorageMapKey};
+use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::utils::packed_u32_elements_to_bytes;
-use miden_protocol::{Felt, MAX_NOTE_STORAGE_ITEMS};
-use miden_standards::interop::eth::EthAddress;
+use miden_protocol::Felt;
 
-use super::account_id::{account_id_to_bytes32, bytes32_to_account_id};
-use super::bytes32::{
-    bytes32_to_packed_felts, bytes32_to_storage_map_key, packed_felts_to_bytes32,
-};
+use super::bytes32::packed_felts_to_bytes32;
 use super::deposit_intent::{
-    deposit_intent_field_offset, DepositIntent, DepositIntentField, DEPOSIT_INTENT_HEADER_FELTS,
-    DEPOSIT_INTENT_HEADER_LEN, DEPOSIT_INTENT_MAGIC, DEPOSIT_INTENT_VERSION,
+    DepositIntent, DepositIntentField, DepositIntentHeader, DepositNonce, ForeignChainAddress,
+    HookData, BYTES32_LEN, BYTES32_PACKED_LIMBS, BYTES_PER_PACKED_FELT,
 };
 use super::error::EncodingError;
-
-// WIRE-SHAPE CONSTANTS
-// ================================================================================================
-
-/// Bytes per u32-LE-packed field element.
-pub const BYTES_PER_PACKED_FELT: usize = 4;
-
-/// A bytes32 wire field, and the widths of the values carried right-aligned inside one: an
-/// AccountId as two big-endian u64s, a 20-byte EVM address, an `AssetAmount` as a big-endian u64.
-pub const BYTES32_LEN: usize = 32;
-pub const ACCOUNT_ID_BYTES: usize = 16;
-pub const EVM_ADDRESS_BYTES: usize = 20;
-pub const ASSET_AMOUNT_BYTES: usize = 8;
-
-/// The same widths as packed field elements — the form the carried payload uses.
-pub const BYTES32_PACKED_LIMBS: usize = BYTES32_LEN / BYTES_PER_PACKED_FELT;
-pub const EVM_ADDRESS_PACKED_LIMBS: usize = EVM_ADDRESS_BYTES / BYTES_PER_PACKED_FELT;
-
-/// An AccountId travels as the two felts the protocol's account-id procedures consume, not as
-/// its packed bytes32 form: the faucet has to validate its structure anyway, and two felts is
-/// less than the four limbs the packed form would cost.
-pub const ACCOUNT_ID_FELTS: usize = 2;
-
-/// The scale `DC-14` is defined at.
-///
-/// The reconstruction zero-extends a carried `AssetAmount` back into its uint256 field, which is
-/// lossless only at scale zero — at any other scale the remainder the reduction dropped is not
-/// recoverable, and the rebuilt digest would not match what Circle signed. A non-zero deposit
-/// scale therefore needs a new transport, not a new constant value; `constant_parity.rs` pins this
-/// against the faucet's `DEPOSIT_SCALE_EXP` so the change fails a test rather than shipping a
-/// preimage that can never verify. `DEV-5` stays OPEN.
-pub const MINT_INTENT_SCALE_EXP: u32 = 0;
-
-// CARRIED-PAYLOAD FELT OFFSETS
-// ================================================================================================
-
-/// Felt offsets within the carried payload. The nonce leads so the widest verbatim run starts
-/// word-aligned, and the two single-felt fields trail so every wider field stays contiguous. The
-/// MASM twins are in `asm/xreserve/mint_intent.masm`.
-pub const MINT_INTENT_NONCE_FELT_OFF: usize = 0;
-pub const MINT_INTENT_LOCAL_TOKEN_FELT_OFF: usize =
-    MINT_INTENT_NONCE_FELT_OFF + BYTES32_PACKED_LIMBS;
-pub const MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF: usize =
-    MINT_INTENT_LOCAL_TOKEN_FELT_OFF + EVM_ADDRESS_PACKED_LIMBS;
-pub const MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF: usize =
-    MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF + EVM_ADDRESS_PACKED_LIMBS;
-/// The recipient travels as the two felts the protocol's account-id procedures consume, prefix
-/// first. The faucet reads the halves individually, so the suffix carries its own offset.
-pub const MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF: usize =
-    MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF + 1;
-pub const MINT_INTENT_MAX_FEE_FELT_OFF: usize =
-    MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF + ACCOUNT_ID_FELTS;
-/// maxFee is a single `AssetAmount` felt.
-pub const MINT_INTENT_HOOK_DATA_LEN_FELT_OFF: usize = MINT_INTENT_MAX_FEE_FELT_OFF + 1;
-
-/// The payload's 22 content felts padded to the word boundary. hookData follows immediately, so
-/// this is also the offset of the first packed hookData felt.
-pub const MINT_INTENT_FELTS: usize = 24;
-
-/// The hookData bound: the packed preimage must stay within the protocol's note-storage item
-/// limit, exactly as [`super::deposit_intent::DepositIntent::to_packed_felts`] requires. The
-/// faucet's staging region is sized to the same number, so a payload that passes here always fits
-/// on-chain. The exact cap Circle wants is still OPEN (`DEV-6`).
-pub const MAX_HOOK_DATA_LEN: usize =
-    (MAX_NOTE_STORAGE_ITEMS - DEPOSIT_INTENT_HEADER_FELTS) * BYTES_PER_PACKED_FELT;
-
-// DEPOSIT NONCE
-// ================================================================================================
-
-/// Circle's unique per-deposit nonce.
-///
-/// It drives two derived values and nothing else: the `usedNonces` replay-guard key and the
-/// attested output note's serial number, which are the same Word. Both go through the shared
-/// `DC-4` hashing routine, so this type only names the value and delegates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DepositNonce([u8; BYTES32_LEN]);
-
-impl DepositNonce {
-    /// Wraps a raw nonce. Any 32 bytes are a valid nonce — the hashing keeps it total.
-    pub const fn new(bytes: [u8; BYTES32_LEN]) -> Self {
-        Self(bytes)
-    }
-
-    /// The raw 32 bytes.
-    pub const fn as_bytes(&self) -> &[u8; BYTES32_LEN] {
-        &self.0
-    }
-
-    /// The 8 u32-LE-packed limbs the payload carries.
-    pub fn to_packed_felts(&self) -> [Felt; BYTES32_PACKED_LIMBS] {
-        bytes32_to_packed_felts(&self.0)
-    }
-
-    /// The replay-guard key and output-note serial (`DC-4`).
-    pub fn to_storage_map_key(&self) -> StorageMapKey {
-        bytes32_to_storage_map_key(&self.0)
-    }
-}
-
-// HOOK DATA
-// ================================================================================================
-
-/// The DepositIntent's opaque trailing payload.
-///
-/// It is carried because the signature covers it, and for no other reason — nothing on-chain reads
-/// it for effects. The length bound is checked here so that everything downstream, including the
-/// faucet's fixed staging region, can treat it as already-bounded.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct HookData(Vec<u8>);
-
-impl HookData {
-    /// Wraps hookData bytes.
-    ///
-    /// # Errors
-    ///
-    /// [`EncodingError::HookDataTooLarge`] past [`MAX_HOOK_DATA_LEN`].
-    pub fn new(bytes: Vec<u8>) -> Result<Self, EncodingError> {
-        if bytes.len() > MAX_HOOK_DATA_LEN {
-            return Err(EncodingError::HookDataTooLarge);
-        }
-        Ok(Self(bytes))
-    }
-
-    /// The raw bytes.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-
-    /// The declared wire length. Fits a u32 by the constructor's bound.
-    pub fn len_u32(&self) -> u32 {
-        u32::try_from(self.0.len()).expect("hook data length is bounded by MAX_HOOK_DATA_LEN")
-    }
-
-    /// Whether there is any hookData at all (the common case is none).
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// The `ceil(len / 4)` u32-LE-packed felts the payload carries, trailing bytes zero-filled.
-    pub fn to_packed_felts(&self) -> Vec<Felt> {
-        miden_protocol::utils::bytes_to_packed_u32_elements(&self.0)
-    }
-}
 
 // MINT PAYLOAD
 // ================================================================================================
@@ -186,197 +36,165 @@ impl HookData {
 #[derive(Debug, Clone, PartialEq, Eq, bon::Builder)]
 pub struct MintIntent {
     nonce: DepositNonce,
-    local_token: EthAddress,
-    local_depositor: EthAddress,
+    local_token: ForeignChainAddress,
+    local_depositor: ForeignChainAddress,
     remote_recipient: AccountId,
     max_fee: AssetAmount,
     hook_data: HookData,
 }
 
 impl MintIntent {
+    /// An AccountId is encoded as two felts.
+    pub const ACCOUNT_ID_FELTS: usize = 2;
+
+    // Felt offsets within the carried payload.
+    pub const NONCE_FELT_OFF: usize = 0;
+
+    pub const LOCAL_TOKEN_FELT_OFF: usize = Self::NONCE_FELT_OFF + BYTES32_PACKED_LIMBS;
+    pub const LOCAL_DEPOSITOR_FELT_OFF: usize = Self::LOCAL_TOKEN_FELT_OFF + BYTES32_PACKED_LIMBS;
+
+    /// The recipient is encoded as two felts.
+    pub const REMOTE_RECIPIENT_FELT_OFF: usize =
+        Self::LOCAL_DEPOSITOR_FELT_OFF + BYTES32_PACKED_LIMBS;
+    pub const REMOTE_RECIPIENT_SUFFIX_FELT_OFF: usize = Self::REMOTE_RECIPIENT_FELT_OFF + 1;
+
+    pub const MAX_FEE_FELT_OFF: usize = Self::REMOTE_RECIPIENT_FELT_OFF + Self::ACCOUNT_ID_FELTS;
+    /// maxFee is a single `AssetAmount` felt.
+    pub const HOOK_DATA_LEN_FELT_OFF: usize = Self::MAX_FEE_FELT_OFF + 1;
+
+    /// The payload's content felts, which land on the word boundary exactly. hookData follows
+    /// immediately, so this is also the offset of the first packed hookData felt.
+    pub const NUM_FELTS: usize = Self::HOOK_DATA_LEN_FELT_OFF + 1;
+
     // COMPRESS
     // --------------------------------------------------------------------------------------------
 
-    /// Compresses a Circle DepositIntent into the felts the mint note carries.
+    /// Compresses a Circle DepositIntent into what the mint note carries.
     ///
-    /// `faucet_id` is the faucet meant to consume the note, and the intent's `remoteToken` has to
-    /// already name it: the faucet writes its own id into the message it rebuilds, so an intent
-    /// addressed to a different one rebuilds a different digest and dies on-chain as an invalid
-    /// signature. Comparing it here gives that a name before the note is ever submitted.
+    /// `target` is the faucet meant to consume the note and `remote_domain` the domain that
+    /// faucet has configured. Both are values the faucet writes into the message it rebuilds from
+    /// its own state, so an intent naming different ones rebuilds a different digest and dies
+    /// on-chain as an invalid signature. This is checked here before the note is ever submitted.
+    /// Every other field is carried across as it was decoded.
     ///
     /// # Errors
     ///
-    /// Propagates the structural [`EncodingError`]s of the parse, then:
     /// - [`EncodingError::RemoteTokenMismatch`] if the intent is addressed to another faucet.
-    /// - [`EncodingError::AccountIdOutOfRange`] / [`EncodingError::NonCanonicalAccountId`] if
-    ///   `remoteToken` or `remoteRecipient` is not a well-formed packaged account id.
-    /// - [`EncodingError::FieldNotAssetAmount`] if `maxFee` is not representable.
-    /// - [`EncodingError::FieldNotEvmAddress`] if `localToken` or `localDepositor` is wider than a
-    ///   right-aligned 20-byte address.
-    /// - [`EncodingError::HookDataTooLarge`] past [`MAX_HOOK_DATA_LEN`].
+    /// - [`EncodingError::RemoteDomainMismatch`] if it names another destination domain.
     pub fn from_deposit_intent(
-        intent: &DepositIntent<'_>,
-        faucet_id: AccountId,
+        intent: &DepositIntent,
+        target: AccountId,
+        remote_domain: u32,
     ) -> Result<Self, EncodingError> {
-        let header = intent.parse_header()?;
+        let header = intent.header();
 
-        if bytes32_to_account_id(&header.remote_token)? != faucet_id {
+        if header.remote_token() != target {
             return Err(EncodingError::RemoteTokenMismatch);
         }
-
-        // the length bound is checked BEFORE the tail is copied; the constructor re-checks it as
-        // the type invariant
-        let hook_data = intent.hook_data()?;
-        if hook_data.len() > MAX_HOOK_DATA_LEN {
-            return Err(EncodingError::HookDataTooLarge);
+        if header.remote_domain() != remote_domain {
+            return Err(EncodingError::RemoteDomainMismatch {
+                expected: remote_domain,
+                actual: header.remote_domain(),
+            });
         }
 
         Ok(Self {
-            nonce: DepositNonce::new(header.nonce),
-            local_token: evm_address(header.local_token, DepositIntentField::LocalToken)?,
-            local_depositor: evm_address(
-                header.local_depositor,
-                DepositIntentField::LocalDepositor,
-            )?,
-            remote_recipient: bytes32_to_account_id(&header.remote_recipient)?,
-            max_fee: header.reduced_max_fee(MINT_INTENT_SCALE_EXP)?,
-            hook_data: HookData::new(hook_data.to_vec())?,
+            nonce: header.nonce(),
+            local_token: header.local_token(),
+            local_depositor: header.local_depositor(),
+            remote_recipient: header.remote_recipient(),
+            max_fee: header.max_fee(),
+            hook_data: intent.hook_data().clone(),
         })
     }
 
     // EXPAND
     // --------------------------------------------------------------------------------------------
 
-    /// Rebuilds the canonical DepositIntent the attestation signed — the Rust mirror of
-    /// `xreserve::deposit_intent::rebuild`.
+    /// Rebuilds the DepositIntent the attestation signed.
     ///
-    /// Infallible: every input is a validated domain type, and every byte of the output is either
-    /// written here or a structural zero.
-    pub fn to_deposit_intent_bytes(
+    /// Expands itself plus the three the [`MintIntent`] does not carry come from the faucet's own
+    /// state.
+    pub fn to_deposit_intent(
         &self,
         amount: AssetAmount,
         remote_domain: u32,
         remote_token: AccountId,
-    ) -> Vec<u8> {
-        let mut out = vec![0u8; DEPOSIT_INTENT_HEADER_LEN + self.hook_data.as_bytes().len()];
-
-        write_u32(&mut out, DepositIntentField::Magic, DEPOSIT_INTENT_MAGIC);
-        write_u32(
-            &mut out,
-            DepositIntentField::Version,
-            DEPOSIT_INTENT_VERSION,
-        );
-        write_bytes32(
-            &mut out,
-            DepositIntentField::Amount,
-            &u64::from(amount).to_be_bytes(),
-        );
-        write_u32(&mut out, DepositIntentField::RemoteDomain, remote_domain);
-        write_bytes32(
-            &mut out,
-            DepositIntentField::RemoteToken,
-            &account_id_to_bytes32(remote_token),
-        );
-        write_bytes32(
-            &mut out,
-            DepositIntentField::RemoteRecipient,
-            &account_id_to_bytes32(self.remote_recipient),
-        );
-        write_bytes32(
-            &mut out,
-            DepositIntentField::LocalToken,
-            self.local_token.as_bytes(),
-        );
-        write_bytes32(
-            &mut out,
-            DepositIntentField::LocalDepositor,
-            self.local_depositor.as_bytes(),
-        );
-        write_bytes32(
-            &mut out,
-            DepositIntentField::MaxFee,
-            &u64::from(self.max_fee).to_be_bytes(),
-        );
-        write_bytes32(&mut out, DepositIntentField::Nonce, self.nonce.as_bytes());
-        write_u32(
-            &mut out,
-            DepositIntentField::HookDataLen,
-            self.hook_data.len_u32(),
-        );
-        out[deposit_intent_field_offset(DepositIntentField::HookData)..]
-            .copy_from_slice(self.hook_data.as_bytes());
-
-        out
+    ) -> DepositIntent {
+        let header = DepositIntentHeader::builder()
+            .amount(amount)
+            .remote_domain(remote_domain)
+            .remote_token(remote_token)
+            .remote_recipient(self.remote_recipient)
+            .local_token(self.local_token)
+            .local_depositor(self.local_depositor)
+            .max_fee(self.max_fee)
+            .nonce(self.nonce)
+            .build();
+        DepositIntent::new(header, self.hook_data.clone())
     }
 
-    // CARRIED FELTS
+    // FELT ENCODING
     // --------------------------------------------------------------------------------------------
 
-    /// The carried wire form: the 24 fixed felts followed by the packed hookData. Word padding of
-    /// the hookData tail belongs to the attachment builder, not here.
-    pub fn to_felts(&self) -> Vec<Felt> {
-        let mut out = Vec::with_capacity(MINT_INTENT_FELTS);
+    /// The felt encoding: the fixed felts followed by the packed hookData.
+    ///
+    /// Word padding of the hookData tail is not done here.
+    pub fn to_elements(&self) -> Vec<Felt> {
+        let mut out = Vec::with_capacity(Self::NUM_FELTS);
         out.extend_from_slice(&self.nonce.to_packed_felts());
-        out.extend(self.local_token.to_elements());
-        out.extend(self.local_depositor.to_elements());
+        out.extend_from_slice(&self.local_token.to_packed_felts());
+        out.extend_from_slice(&self.local_depositor.to_packed_felts());
         out.push(self.remote_recipient.prefix().as_felt());
         out.push(self.remote_recipient.suffix());
         out.push(Felt::from(self.max_fee));
         out.push(Felt::from(self.hook_data.len_u32()));
-        out.resize(MINT_INTENT_FELTS, Felt::from(0u32));
-        out.extend(self.hook_data.to_packed_felts());
+        out.extend(self.hook_data.to_packed_elements());
         out
     }
 
-    /// Inverse of [`Self::to_felts`].
+    /// Inverse of [`Self::to_elements`].
     ///
     /// # Errors
     ///
-    /// [`EncodingError::BurnItemsMalformed`] is *not* used here; a payload that is the wrong
-    /// length, carries a non-u32 packed limb, or declares a hookData length that disagrees with
-    /// the felts present returns [`EncodingError::LengthMismatch`] or
-    /// [`EncodingError::LimbNotU32`]. The typed field errors of
-    /// [`Self::from_deposit_intent`] apply to `maxFee` and the recipient as well.
-    pub fn from_felts(felts: &[Felt]) -> Result<Self, EncodingError> {
-        if felts.len() < MINT_INTENT_FELTS {
+    /// A payload that is the wrong length, carries a non-u32 packed limb, or declares a hookData
+    /// length that disagrees with the felts present returns [`EncodingError::LengthMismatch`] or
+    /// [`EncodingError::LimbNotU32`]. `maxFee` and the recipient raise the same typed field errors
+    /// the byte decode raises for them.
+    pub fn from_elements(felts: &[Felt]) -> Result<Self, EncodingError> {
+        if felts.len() < Self::NUM_FELTS {
             return Err(EncodingError::LengthMismatch);
         }
 
-        let hook_data_len = u32_at(felts, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF)?;
-        let hook_data_felts = felts.len() - MINT_INTENT_FELTS;
+        let hook_data_len = u32_at(felts, Self::HOOK_DATA_LEN_FELT_OFF)?;
+        let hook_data_felts = felts.len() - Self::NUM_FELTS;
         if hook_data_felts != (hook_data_len as usize).div_ceil(BYTES_PER_PACKED_FELT) {
             return Err(EncodingError::LengthMismatch);
         }
-        // the payload block is padded to the word boundary; a non-zero pad is a payload this
-        // codec did not produce, and on-chain it would ride inside the hash-committed attachment
-        // without ever being read
-        for felt in &felts[MINT_INTENT_HOOK_DATA_LEN_FELT_OFF + 1..MINT_INTENT_FELTS] {
-            if felt.as_canonical_u64() != 0 {
-                return Err(EncodingError::LengthMismatch);
-            }
-        }
 
-        let nonce_limbs: [Felt; BYTES32_PACKED_LIMBS] = felts
-            [MINT_INTENT_NONCE_FELT_OFF..MINT_INTENT_NONCE_FELT_OFF + BYTES32_PACKED_LIMBS]
-            .try_into()
-            .expect("the length check above guarantees the window");
-
-        let mut hook_data = unpack_bytes(&felts[MINT_INTENT_FELTS..])?;
+        let mut hook_data = unpack_bytes(&felts[Self::NUM_FELTS..])?;
         hook_data.truncate(hook_data_len as usize);
 
         Ok(Self {
-            nonce: DepositNonce::new(packed_felts_to_bytes32(&nonce_limbs)?),
-            local_token: evm_address_from_felts(felts, MINT_INTENT_LOCAL_TOKEN_FELT_OFF)?,
-            local_depositor: evm_address_from_felts(felts, MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF)?,
+            nonce: DepositNonce::new(bytes32_at_felts(felts, Self::NONCE_FELT_OFF)?),
+            local_token: ForeignChainAddress::new(bytes32_at_felts(
+                felts,
+                Self::LOCAL_TOKEN_FELT_OFF,
+            )?),
+            local_depositor: ForeignChainAddress::new(bytes32_at_felts(
+                felts,
+                Self::LOCAL_DEPOSITOR_FELT_OFF,
+            )?),
             remote_recipient: AccountId::try_from_elements(
-                felts[MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF + 1],
-                felts[MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF],
+                felts[Self::REMOTE_RECIPIENT_FELT_OFF + 1],
+                felts[Self::REMOTE_RECIPIENT_FELT_OFF],
             )
             .map_err(|_| EncodingError::NonCanonicalAccountId)?,
-            max_fee: AssetAmount::new(felts[MINT_INTENT_MAX_FEE_FELT_OFF].as_canonical_u64())
-                .map_err(|_| EncodingError::FieldNotAssetAmount {
+            max_fee: AssetAmount::new(felts[Self::MAX_FEE_FELT_OFF].as_canonical_u64()).map_err(
+                |_| EncodingError::FieldNotAssetAmount {
                     field: DepositIntentField::MaxFee,
-                })?,
+                },
+            )?,
             hook_data: HookData::new(hook_data)?,
         })
     }
@@ -388,11 +206,11 @@ impl MintIntent {
         self.nonce
     }
 
-    pub fn local_token(&self) -> EthAddress {
+    pub fn local_token(&self) -> ForeignChainAddress {
         self.local_token
     }
 
-    pub fn local_depositor(&self) -> EthAddress {
+    pub fn local_depositor(&self) -> ForeignChainAddress {
         self.local_depositor
     }
 
@@ -412,28 +230,6 @@ impl MintIntent {
 // HELPERS
 // ================================================================================================
 
-/// Writes a 4-byte big-endian wire field at its layout offset.
-fn write_u32(out: &mut [u8], field: DepositIntentField, value: u32) {
-    let off = deposit_intent_field_offset(field);
-    out[off..off + BYTES_PER_PACKED_FELT].copy_from_slice(&value.to_be_bytes());
-}
-
-/// Writes a value into a bytes32 wire field, right-aligned behind a leading zero pad. A full
-/// 32-byte value fills the field; a narrower one (an account id, an address, an amount) lands at
-/// the end, which is the packaging every one of those fields uses.
-fn write_bytes32(out: &mut [u8], field: DepositIntentField, value: &[u8]) {
-    let start = deposit_intent_field_offset(field) + BYTES32_LEN - value.len();
-    out[start..start + value.len()].copy_from_slice(value);
-}
-
-/// Narrows a bytes32 field to the EVM address it is expected to carry.
-fn evm_address(
-    value: [u8; BYTES32_LEN],
-    field: DepositIntentField,
-) -> Result<EthAddress, EncodingError> {
-    EthAddress::try_from(value).map_err(|_| EncodingError::FieldNotEvmAddress { field })
-}
-
 /// Reads a felt as a u32-LE-packed limb, fail-closed rather than truncating.
 fn u32_at(felts: &[Felt], index: usize) -> Result<u32, EncodingError> {
     u32::try_from(felts[index].as_canonical_u64()).map_err(|_| EncodingError::LimbNotU32)
@@ -447,14 +243,12 @@ fn unpack_bytes(felts: &[Felt]) -> Result<Vec<u8>, EncodingError> {
     Ok(packed_u32_elements_to_bytes(felts))
 }
 
-/// Reads the 5-limb EVM address at a carried-payload offset.
-fn evm_address_from_felts(felts: &[Felt], offset: usize) -> Result<EthAddress, EncodingError> {
-    let bytes = unpack_bytes(&felts[offset..offset + EVM_ADDRESS_PACKED_LIMBS])?;
-    Ok(EthAddress::new(
-        bytes
-            .try_into()
-            .expect("five packed limbs are twenty bytes"),
-    ))
+/// Reads the bytes32 whose 8 packed limbs start at a carried-payload offset.
+fn bytes32_at_felts(felts: &[Felt], offset: usize) -> Result<[u8; BYTES32_LEN], EncodingError> {
+    let limbs: [Felt; BYTES32_PACKED_LIMBS] = felts[offset..offset + BYTES32_PACKED_LIMBS]
+        .try_into()
+        .expect("the caller's length check guarantees the window");
+    packed_felts_to_bytes32(&limbs)
 }
 
 // TESTS — TV-DUAL-6 (the Rust half; the MASM half is in tests/masm_mint_shell.rs)
@@ -463,12 +257,25 @@ fn evm_address_from_felts(felts: &[Felt], offset: usize) -> Result<EthAddress, E
 #[cfg(test)]
 mod tests {
     use assert_matches::assert_matches;
+    use miden_protocol::utils::serde::Serializable;
 
     use super::*;
     use crate::vectors::{load, MiVector};
 
     fn accepts() -> impl Iterator<Item = &'static MiVector> {
         load().families.mi.iter().filter(|v| v.kind == "accept")
+    }
+
+    /// Decodes an accept vector's payload the way the relayer does.
+    fn intent(vec: &MiVector) -> DepositIntent {
+        DepositIntent::try_from(vec.payload().as_slice())
+            .unwrap_or_else(|e| panic!("vector {}: payload must decode: {e}", vec.id))
+    }
+
+    /// Compresses an accept vector against the faucet and domain it is addressed to.
+    fn carried(vec: &MiVector) -> MintIntent {
+        MintIntent::from_deposit_intent(&intent(vec), vec.faucet_id(), vec.remote_domain)
+            .unwrap_or_else(|e| panic!("vector {}: compress failed: {e}", vec.id))
     }
 
     /// TV-DUAL-6 (happy path, written first): the reconstruction is exact.
@@ -479,14 +286,11 @@ mod tests {
     #[test]
     fn tv_dual_6_round_trip_is_byte_exact() {
         for vec in accepts() {
-            let payload = vec.payload();
-            let intent = DepositIntent::new(&payload);
-            let carried = MintIntent::from_deposit_intent(&intent, vec.faucet_id())
-                .unwrap_or_else(|e| panic!("vector {}: compress failed: {e}", vec.id));
-
             assert_eq!(
-                carried.to_deposit_intent_bytes(vec.amount(), vec.remote_domain, vec.faucet_id()),
-                payload,
+                carried(vec)
+                    .to_deposit_intent(vec.amount(), vec.remote_domain, vec.faucet_id())
+                    .to_bytes(),
+                vec.payload(),
                 "vector {}: the rebuilt preimage must equal what Circle signed",
                 vec.id
             );
@@ -499,24 +303,17 @@ mod tests {
     #[test]
     fn tv_dual_6_carried_and_rebuilt_felts_match_the_vectors() {
         for vec in accepts() {
-            let payload = vec.payload();
-            let intent = DepositIntent::new(&payload);
-            let carried = MintIntent::from_deposit_intent(&intent, vec.faucet_id())
-                .unwrap_or_else(|e| panic!("vector {}: compress failed: {e}", vec.id));
-
+            let carried = carried(vec);
             assert_eq!(
-                carried.to_felts(),
+                carried.to_elements(),
                 vec.carried_values(),
                 "vector {}: carried felts",
                 vec.id
             );
-
-            let rebuilt =
-                carried.to_deposit_intent_bytes(vec.amount(), vec.remote_domain, vec.faucet_id());
             assert_eq!(
-                DepositIntent::new(&rebuilt)
-                    .to_packed_felts()
-                    .expect("the rebuilt preimage packs"),
+                carried
+                    .to_deposit_intent(vec.amount(), vec.remote_domain, vec.faucet_id())
+                    .to_preimage_felts(),
                 vec.rebuilt_preimage_values(),
                 "vector {}: rebuilt preimage felts",
                 vec.id
@@ -528,13 +325,9 @@ mod tests {
     #[test]
     fn tv_dual_6_carried_felts_are_lossless() {
         for vec in accepts() {
-            let payload = vec.payload();
-            let intent = DepositIntent::new(&payload);
-            let carried = MintIntent::from_deposit_intent(&intent, vec.faucet_id())
-                .unwrap_or_else(|e| panic!("vector {}: compress failed: {e}", vec.id));
-
+            let carried = carried(vec);
             assert_eq!(
-                MintIntent::from_felts(&carried.to_felts()).expect("round trip"),
+                MintIntent::from_elements(&carried.to_elements()).expect("round trip"),
                 carried,
                 "vector {}: carried felts must round-trip",
                 vec.id
@@ -544,23 +337,17 @@ mod tests {
 
     /// Every narrowing DC-14 applies, one vector each, asserting the exact variant. These are the
     /// deposits the transport cannot express — the relayer has to reject them here, because
-    /// on-chain they would all fail identically as an invalid signature.
+    /// on-chain they would all fail identically as an invalid signature. The narrowing itself
+    /// happens in the byte decode, so a reject vector fails at whichever of the two steps owns it.
     #[test]
     fn tv_dual_6_rejects_what_the_transport_cannot_carry() {
         let rejects = load().families.mi.iter().filter(|v| v.kind == "reject");
         for vec in rejects {
-            let payload = vec.payload();
-            let intent = DepositIntent::new(&payload);
-            let result = MintIntent::from_deposit_intent(&intent, vec.faucet_id());
             let id = &vec.id;
+            let result = DepositIntent::try_from(vec.payload().as_slice()).and_then(|intent| {
+                MintIntent::from_deposit_intent(&intent, vec.faucet_id(), vec.remote_domain)
+            });
             match vec.expected_variant.as_deref().expect("reject vector") {
-                "FieldNotEvmAddress" => {
-                    assert_matches!(
-                        result,
-                        Err(EncodingError::FieldNotEvmAddress { .. }),
-                        "vector {id}"
-                    )
-                }
                 "FieldNotAssetAmount" => {
                     assert_matches!(
                         result,
@@ -594,15 +381,46 @@ mod tests {
         }
     }
 
-    /// hookData past the bound is refused at construction, so nothing downstream — including the
-    /// faucet's fixed staging region — has to re-check it.
+    /// The faucet writes its OWN configured domain into the message it rebuilds, so an intent
+    /// naming a different one can never verify on-chain. It is refused here, where the reason is
+    /// still legible.
     #[test]
-    fn hook_data_bound_is_enforced_at_construction() {
+    fn compress_rejects_a_foreign_remote_domain() {
+        let vec = accepts().next().expect("an accept vector");
         assert_matches!(
-            HookData::new(vec![0u8; MAX_HOOK_DATA_LEN + 1]),
-            Err(EncodingError::HookDataTooLarge)
+            MintIntent::from_deposit_intent(
+                &intent(vec),
+                vec.faucet_id(),
+                vec.remote_domain.wrapping_add(1)
+            ),
+            Err(EncodingError::RemoteDomainMismatch { .. })
         );
-        assert!(HookData::new(vec![0u8; MAX_HOOK_DATA_LEN]).is_ok());
+    }
+
+    /// A source-chain address that fills its whole bytes32 survives the transport.
+    ///
+    /// This is the case the carried payload used to be unable to express: it dropped each address's
+    /// leading 12 bytes on the assumption they were an EVM address's zero pad, so a source chain
+    /// with wider addresses was unmintable. Every byte must now come back, including the bytes that
+    /// pad would have covered.
+    #[test]
+    fn a_source_chain_address_wider_than_an_evm_address_round_trips() {
+        let vec = accepts().next().expect("an accept vector");
+        let wide = ForeignChainAddress::new(core::array::from_fn(|i| 0xf0 ^ i as u8));
+        assert_ne!(wide.as_bytes()[..12], [0u8; 12], "not an EVM address");
+
+        let carried = MintIntent::builder()
+            .nonce(carried(vec).nonce())
+            .local_token(wide)
+            .local_depositor(wide)
+            .remote_recipient(vec.faucet_id())
+            .max_fee(vec.amount())
+            .hook_data(HookData::default())
+            .build();
+
+        let back = MintIntent::from_elements(&carried.to_elements()).expect("round trip");
+        assert_eq!(back.local_token(), wide);
+        assert_eq!(back.local_depositor(), wide);
     }
 
     /// A carried-felt run whose declared hookData length disagrees with the felts present is
@@ -613,9 +431,9 @@ mod tests {
             .find(|v| v.id == "mi-pos-empty-hookdata")
             .expect("vector present");
         let mut felts = vec.carried_values();
-        felts[MINT_INTENT_HOOK_DATA_LEN_FELT_OFF] = Felt::from(4u32);
+        felts[MintIntent::HOOK_DATA_LEN_FELT_OFF] = Felt::from(4u32);
         assert_matches!(
-            MintIntent::from_felts(&felts),
+            MintIntent::from_elements(&felts),
             Err(EncodingError::LengthMismatch)
         );
     }

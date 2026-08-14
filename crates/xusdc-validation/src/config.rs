@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use miden_protocol::Word;
-use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
+use xusdc_encoding::xreserve::encoding::{bytes32_to_storage_map_key, ForeignChainAddress};
 
 // The v16 node's ACTUAL loopback ports, exactly as the client repo's `start-test-node.sh` binds
 // them (script lines 33-37). The harness only ever dials the sequencer RPC (57291); the other three
@@ -44,8 +44,9 @@ pub struct DomainParams {
     pub domain: u32,
     /// `source_domain` (u32) — the native-USDC source domain id.
     pub source_domain: u32,
-    /// `xreserve_contract` — the raw bytes32, stored as 8 u32-LE packed felts across two slots.
-    pub xreserve_contract: [u8; 32],
+    /// `xreserve_contract` — the source-chain address, stored as the 8 u32-LE packed felts of its
+    /// bytes32 across two slots.
+    pub xreserve_contract: ForeignChainAddress,
     /// `identifier` — a LEGACY raw bytes32 value. It is NO LONGER the faucet's identifier: since the
     /// R2 identifier-binding fix the identifier is DERIVED from the faucet's own id at init
     /// (`XReserveIdentifierInitNote::identifier_for(faucet_id)`, the account-id fixpoint), never from
@@ -68,7 +69,7 @@ impl DomainParams {
         Self {
             domain: 1313,
             source_domain: 7,
-            xreserve_contract: [0xC1; 32],
+            xreserve_contract: ForeignChainAddress::new([0xC1; 32]),
             identifier_bytes: [0x1D; 32],
         }
     }
@@ -82,7 +83,7 @@ impl DomainParams {
         Self {
             domain: 9999,
             source_domain: 42,
-            xreserve_contract: [0xEE; 32],
+            xreserve_contract: ForeignChainAddress::new([0xEE; 32]),
             identifier_bytes: [0x2A; 32],
         }
     }

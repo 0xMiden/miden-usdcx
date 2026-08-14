@@ -33,7 +33,6 @@ use xusdc_encoding::note::costs::{
 };
 use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
-use xusdc_encoding::xreserve::encoding::EthBytes32;
 
 const MAX_SUPPLY: u64 = 1_000_000;
 const NEW_FEE: u64 = 73;
@@ -75,7 +74,7 @@ fn production_builder() -> Result<XReserveStablecoinBuilder> {
         .fee_parameters(fee_parameters())
         .domain(TEST_DOMAIN)
         .source_domain(TEST_SOURCE_DOMAIN)
-        .xreserve_contract(EthBytes32::new(test_xreserve_contract()))
+        .xreserve_contract(test_xreserve_contract())
         .build()?)
 }
 

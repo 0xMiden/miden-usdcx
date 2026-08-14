@@ -35,6 +35,7 @@ use mint_support::note_rng;
 use mock_circle::{
     attestation_page, by_hash_wrapper, Endpoint, MockCircle, RecordingSink, Reply, Script,
 };
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 // STALE-CLAIM RECOVERY — a crashed claim does not strand a deposit forever
 // ================================================================================================
@@ -346,9 +347,11 @@ fn status(store: &IdempotencyStore, nonce: &[u8; 32]) -> SubmissionStatus {
 }
 
 fn nonce_of(vector: &AttestationVector) -> [u8; 32] {
-    *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(vector.payload())
+    *DepositIntent::try_from(vector.payload())
         .expect("the fixture payload is a valid DepositIntent")
+        .header()
         .nonce()
+        .as_bytes()
 }
 
 /// The canonical payload with its nonce perturbed — a distinct, still-valid deposit. The nonce

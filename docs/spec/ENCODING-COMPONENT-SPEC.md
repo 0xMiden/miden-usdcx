@@ -34,7 +34,7 @@ definitions). In summary:
 |---|---|
 | DC-1 | **DepositIntent** — a fixed 240-byte big-endian header + variable `hookData`; on-chain it is 60 u32-LE-packed felts (4 wire bytes per felt). Field offsets are in `deposit_intent.masm` / `deposit_intent.rs`. |
 | DC-2 | **depositAttestation** — the raw 65-byte `r‖s‖v` secp256k1 signature over `keccak256(payload)` (not EIP-712). |
-| DC-3 | **Attester commitment** — `Poseidon2(affine pubkey, 16 u32-LE felts: qx_le_u32[8] ‖ qy_le_u32[8])` → one Word, used as the `xReserveAttesters` allowlist key. The Circle-facing ingress form stays the 33-byte compressed SEC1 pubkey; this crate owns the SEC1→affine decompression (v16 supersession, vm#3342 — the v15 preimage was the 33 compressed bytes as 9 felts). |
+| DC-3 | **Attester commitment** — `Poseidon2(affine pubkey, 16 u32-LE felts: qx_le_u32[8] ‖ qy_le_u32[8])` → one Word, used as the `xReserveAttesters` allowlist key. The Circle-facing ingress form stays the 33-byte compressed SEC1 pubkey; the SEC1→affine decompression is the protocol's own (v16 supersession, vm#3342 — the v15 preimage was the 33 compressed bytes as 9 felts). |
 | DC-4 | **Nonce keying** — the DepositIntent `nonce` (bytes32) → Poseidon2 hash-to-Word → storage-map key. |
 | DC-5 | **amount/fee reduction** — a uint256 → `AssetAmount`: byte-swap to numeric order, assert the high half is zero, floor-divide by `10^scale_exp`, and reject if the quotient exceeds `AssetAmount::MAX`. It traps; it never saturates. |
 | DC-6 | **AccountId ↔ bytes32** — the right-aligned layout (16 zero bytes ‖ prefix u64 BE ‖ suffix u64 BE); lossless, fail-closed decode. See `DEV-10` (OPEN). |
@@ -46,11 +46,11 @@ definitions). In summary:
 | Routine | Contract |
 |---|---|
 | `hash_nonce` (MASM) / `bytes32_to_storage_map_key` (Rust) | Poseidon2 `hash_elements` over the 8 u32-LE limbs of a bytes32 → one canonical Word. The raw fallible `TryFrom<[u8;32]>` is **not** used on this path (`NS-1`, `DC-4`, `INV-BYTES32-HASH-TO-WORD`). |
-| `pubkey_commitment` (MASM) / `PublicKey::to_commitment` (Rust) | Poseidon2 over the 16 u32-LE affine-coordinate limbs of the pubkey → the allowlist commitment Word (`DC-3`; sponge capacity domain tag `16 % 8 = 0`), identical to miden-crypto 0.28 `PublicKey::to_commitment`. The Rust side takes the 33-byte compressed wire key and decompresses to affine internally; the MASM side hashes the 16 already-staged felts. |
-| `uint256_to_asset_amount` (Rust) | The `DC-5` reduction (`INV-UINT256-TO-ASSETAMOUNT`), `y = floor(x / 10^scale_exp)` with `scale_exp` bounded to `0..=18`. **Rust-only:** the MASM witness verifier is removed, because under `DC-14` the uint256 never reaches the chain — see the ownership map's `DC-5` rider before reopening `DEV-5`. |
-| `DepositIntent::parse_header` (Rust) | Structural DepositIntent validation (magic, version, non-zero `amount`/`localToken`/`localDepositor`, the length relation). **Rust-only since `DC-14`** — the on-chain parser is retired (`NS-2`), because the faucet writes those fields instead of reading them. It remains the compress-side entry and the relayer's pre-validate (`INV-DEPOSITINTENT-PARSE`). |
-| `MintIntent::to_deposit_intent_bytes` (Rust) / `rebuild` (MASM) | The `DC-14` reconstruction (`NS-3`). Both take the carried payload plus the three derived values and produce the canonical `240 + hookDataLen` bytes; the MASM side writes them as u32-LE-packed felts straight into the region keccak will hash. The conformance property is the round trip, not a field-by-field compare — see *Reconstruction reference*. |
-| AccountId ↔ bytes32 (`account_id.rs`) | The `DC-6` lossless encode/decode with a fail-closed inverse. |
+| `pubkey_commitment` (MASM) / `PublicKey::to_commitment` (Rust) | Poseidon2 over the 16 u32-LE affine-coordinate limbs of the pubkey → the allowlist commitment Word (`DC-3`; sponge capacity domain tag `16 % 8 = 0`). The Rust side IS miden-crypto's `ecdsa_k256_keccak::PublicKey` — this crate mirrors no part of it: the 33-byte compressed wire key is read with the stock `Deserializable`, `SequentialCommit::to_elements` gives the 16 affine felts, and `to_commitment` gives the Word. The MASM side hashes the 16 already-staged felts. |
+| `uint256_to_asset_amount` (Rust) | The `DC-5` reduction (`INV-UINT256-TO-ASSETAMOUNT`), `y = floor(x / 10^DEPOSIT_SCALE_EXP)`. The scale is not a parameter: `DEPOSIT_SCALE_EXP` is the crate's single constant, fixed at `0` because `DC-14`'s zero-extension is invertible at no other scale, and it is applied here rather than threaded through callers. The arithmetic IS the standards' `EthAmount::scale_to_asset_amount`, called directly; this routine only adapts it to `EncodingError`. **Rust-only:** the MASM witness verifier is removed, because under `DC-14` the uint256 never reaches the chain — see the ownership map's `DC-5` rider before reopening `DEV-5`. |
+| `DepositIntent` `Deserializable` / `TryFrom<&[u8]>` (Rust) | Structural DepositIntent validation (magic, version, non-zero `amount`/`localToken`/`localDepositor`, the length relation, the hookData bound), and the narrowing of every field to the domain type a mintable deposit must hold: the bytes32 identifiers as account ids, the two uint256 amounts through `uint256_to_asset_amount`. The source-chain fields are NOT narrowed — they keep the wire form's full bytes32 as `ForeignChainAddress`, because the source chain need not be EVM-based. Circle's encoder can emit opaque bytes32 in the identifier fields and how an AccountId is registered into them stays OPEN (`DEV-10`) — but a deposit whose identifiers do not read as account ids is unmintable under any layout, so it is refused here rather than carried. The `DepositIntentHeader` owns its own `Serializable`/`Deserializable` for the field block; `DepositIntent` adds `hookDataLen` and the tail. **Rust-only since `DC-14`** — the on-chain parser is retired (`NS-2`), because the faucet writes those fields instead of reading them. It is the compress-side entry and the relayer's pre-validate (`INV-DEPOSITINTENT-PARSE`). |
+| `MintIntent::to_deposit_intent` (Rust) / `rebuild` (MASM) | The `DC-14` reconstruction (`NS-3`). Both take the carried payload plus the three derived values and produce the canonical `240 + hookDataLen` bytes — on the Rust side by rebuilding the `DepositIntent`, whose own `Serializable` owns the byte layout; the MASM side writes them as u32-LE-packed felts straight into the region keccak will hash. The conformance property is the round trip, not a field-by-field compare — see *Reconstruction reference*. |
+| AccountId ↔ bytes32 (`account_id.rs`) | The `DC-6` lossless encode/decode with a fail-closed inverse. The ENCODE is the stock `EthEmbeddedAccountId::to_bytes32`, called directly; only the decode is this crate's, as an extension trait on the same stock type. |
 | Burn-note items (`burn_note.rs`) | The `DC-7` deterministic encode/decode. |
 
 ## Reconstruction reference (`DC-14`)
@@ -65,12 +65,13 @@ domain, the signed bytes are recoverable exactly.
 | felt | field |
 |---|---|
 | 0..8 | `nonce`, 8 u32-LE-packed limbs |
-| 8..13 | `localToken`, the address's 20 bytes as 5 packed limbs |
-| 13..18 | `localDepositor`, likewise |
-| 18, 19 | `remoteRecipient` as an `AccountId` — `[prefix, suffix]`, not bytes32 |
-| 20 | `maxFee` as an `AssetAmount` felt |
-| 21 | `hookDataLen`, a semantic u32 |
-| 22..24 | zero padding to the word boundary |
+| 8..16 | `localToken`, the wire field's 32 bytes as 8 packed limbs |
+| 16..24 | `localDepositor`, likewise |
+| 24, 25 | `remoteRecipient` as an `AccountId` — `[prefix, suffix]`, not bytes32 |
+| 26 | `maxFee` as an `AssetAmount` felt |
+| 27 | `hookDataLen`, a semantic u32 |
+
+The 28 felts land on the word boundary exactly, so there is no padding row.
 
 **Rebuild** the `DC-1` preimage as `240 + hookDataLen` big-endian bytes. Every byte not named below
 is zero:
@@ -83,8 +84,8 @@ is zero:
 | 40..44 | the faucet's configured `remoteDomain` |
 | 60..76 | the faucet's own account id, `prefix` then `suffix`, each a big-endian u64 (`DC-6` right-aligned in the `remoteToken` bytes32) |
 | 92..108 | the carried `remoteRecipient`, same packaging |
-| 120..140 | the carried `localToken`, right-aligned in its bytes32 |
-| 152..172 | the carried `localDepositor`, likewise |
+| 108..140 | the carried `localToken`, filling its bytes32 |
+| 140..172 | the carried `localDepositor`, likewise |
 | 196..204 | the carried `maxFee`, as a big-endian u64 right-aligned in its uint256 |
 | 204..236 | the carried `nonce` |
 | 236..240 | `hookDataLen` |
@@ -131,11 +132,10 @@ testing is therefore the round trip (`TV-DUAL-6`), not a field-by-field comparis
 ## Open items
 
 The encoding layer inherits the Circle-owned OPEN decisions: the amount cap/scale (`DEV-5`), the
-`hookData` bound (`DEV-6`), the AccountId↔bytes32 encoding (`DEV-10`), the nonce keying
-(`DEV-9`), and the 20-byte-EVM-address assumption `DC-14` rests on (`Q-EVM-ADDR-1`). None are
-marked approved. See the glossary.
+`hookData` bound (`DEV-6`), the AccountId↔bytes32 encoding (`DEV-10`), and the nonce keying
+(`DEV-9`). None are marked approved. See the glossary.
 
 `DEV-5` and `DEV-10` now constrain the **wire format** through `DC-14`, not just a validation rule:
 resolving either against the current assumption requires a new transport, because the faucet emits
-those encodings rather than reading them. `Q-EVM-ADDR-1` is the same shape. `DEV-6` is unaffected —
+those encodings rather than reading them. `DEV-6` is unaffected —
 `hookData` still travels, and its bound is still the open question.

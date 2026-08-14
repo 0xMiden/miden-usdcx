@@ -74,7 +74,8 @@ use xusdc_encoding::account::xreserve::{
     XReserveStablecoinBuilderError, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::errors;
-use xusdc_encoding::xreserve::encoding::EthBytes32;
+use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
+use xusdc_encoding::xreserve::encoding::{DepositIntent, ForeignChainAddress};
 use xusdc_encoding::xreserve_lib::XReserveLibrary;
 
 // Attestation fixtures — deterministic secp256k1 keys and signatures generated IN-TEST (the
@@ -84,6 +85,8 @@ use xusdc_encoding::xreserve_lib::XReserveLibrary;
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey};
 use miden_crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_crypto::utils::Deserializable;
+use miden_crypto::SequentialCommit;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use sha3::{Digest, Keccak256};
@@ -103,10 +106,50 @@ pub const TEST_WRONG_DOMAIN: u32 = 8;
 /// by the production fixtures (there is no runtime writer).
 pub const TEST_SOURCE_DOMAIN: u32 = 3;
 
-/// Test `xreserve_contract` bytes32 (sequential distinct bytes) — the third build-seeded
-/// domain-config field the production fixtures seed through the builder.
-pub fn test_xreserve_contract() -> [u8; 32] {
-    core::array::from_fn(|i| 0x10 + i as u8)
+/// Test `xreserve_contract` source-chain address (sequential distinct bytes) — the third
+/// build-seeded domain-config field the production fixtures seed through the builder. Its leading
+/// bytes are non-zero, so the fixture is a source-chain address no EVM chain could produce.
+pub fn test_xreserve_contract() -> ForeignChainAddress {
+    ForeignChainAddress::new(core::array::from_fn(|i| 0x10 + i as u8))
+}
+
+/// The production mint note over a RAW Circle payload, built exactly the way the relayer builds
+/// one: decode the payload, then drive the typed [`XUsdcMintNote`] builder at [`TEST_DOMAIN`].
+///
+/// The suites carry raw payloads because that is what the golden vectors hold, so this is the one
+/// place the decode step lives.
+pub fn mint_note_from_payload(
+    sender: AccountId,
+    faucet_id: AccountId,
+    payload: &[u8],
+    attestation: DepositAttestation,
+    rng: &mut impl FeltRng,
+) -> Result<Note> {
+    mint_note_from_payload_at_domain(sender, faucet_id, TEST_DOMAIN, payload, attestation, rng)
+}
+
+/// [`mint_note_from_payload`] against a named faucet domain — for the suites that drive a faucet
+/// configured to something other than [`TEST_DOMAIN`].
+pub fn mint_note_from_payload_at_domain(
+    sender: AccountId,
+    faucet_id: AccountId,
+    remote_domain: u32,
+    payload: &[u8],
+    attestation: DepositAttestation,
+    rng: &mut impl FeltRng,
+) -> Result<Note> {
+    let deposit_intent = DepositIntent::try_from(payload)
+        .map_err(|e| anyhow::anyhow!("decoding the deposit intent payload: {e}"))?;
+    let note = XUsdcMintNote::builder()
+        .sender(sender)
+        .target(faucet_id)
+        .remote_domain(remote_domain)
+        .deposit_intent(deposit_intent)
+        .attestation(attestation)
+        .generate_serial_number(rng)
+        .build()
+        .map_err(|e| anyhow::anyhow!("building the attested stock mint note: {e}"))?;
+    Ok(Note::from(note))
 }
 
 /// Builds the standard faucet-metadata configuration note for changing a fungible faucet's
@@ -530,7 +573,7 @@ pub fn production_builder_verdict(
         .fee_parameters(test_fee_parameters())
         .domain(domain)
         .source_domain(TEST_SOURCE_DOMAIN)
-        .xreserve_contract(EthBytes32::new(test_xreserve_contract()))
+        .xreserve_contract(test_xreserve_contract())
         .maybe_min_burn_amount(min_burn_amount)
         .build())
 }
@@ -893,10 +936,10 @@ pub fn rebuild_driver_src(
 const REMOTE_TOKEN_FELT_OFF: u64 = 11;
 
 /// The eight advice felts [`validate_driver_src_own_token`] splices into a staged intent: the packed
-/// limbs of `account_id_to_bytes32(faucet_id)`, produced by the RUST encoder.
+/// limbs of `EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()`, produced by the RUST encoder.
 pub fn own_token_advice(faucet_id: AccountId) -> Vec<Felt> {
     xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts(
-        &xusdc_encoding::xreserve::encoding::account_id_to_bytes32(faucet_id),
+        &EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32(),
     )
     .to_vec()
 }
@@ -1011,8 +1054,9 @@ pub struct AttesterVector {
     pub sig_felts: Vec<Felt>,
     /// Poseidon2 commitment Word = the `xReserveAttesters` allowlist key for this pubkey.
     pub commitment: Word,
-    /// Raw 33-byte compressed SEC1 pubkey (what the relayer hands `XUsdcMintNote::create`).
-    pub pubkey_bytes: [u8; 33],
+    /// The decoded key itself (what the relayer hands `XUsdcMintNote::create`); the 33-byte
+    /// compressed SEC1 wire form it was read from is recovered with `Serializable::to_bytes`.
+    pub pubkey: PublicKey,
     /// Raw 65-byte `r||s||v` signature (what the relayer hands `XUsdcMintNote::create`).
     pub sig_bytes: [u8; 65],
 }
@@ -1067,18 +1111,16 @@ pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
     sig65[..64].copy_from_slice(sig.to_bytes().as_ref());
     sig65[64] = recid.to_byte();
 
-    let commitment = PublicKey::read_from_bytes(&pk33)
-        .expect("valid compressed secp256k1 pubkey")
-        .to_commitment();
+    let pubkey =
+        PublicKey::read_from_bytes(&pk33).expect("the deterministic attester key is a curve point");
+    let pubkey_felts = pubkey.to_elements();
+    let commitment = pubkey.to_commitment();
 
     AttesterVector {
-        pubkey_felts: xusdc_encoding::xreserve::encoding::PublicKey::new(pk33)
-            .to_affine_felts()
-            .expect("the deterministic attester key is a valid curve point")
-            .to_vec(),
-        sig_felts: bytes_to_packed_u32_elements(&sig65),
+        pubkey_felts,
         commitment,
-        pubkey_bytes: pk33,
+        sig_felts: bytes_to_packed_u32_elements(&sig65),
+        pubkey,
         sig_bytes: sig65,
     }
 }
@@ -2929,7 +2971,7 @@ pub struct ProductionFaucet {
 }
 
 /// Builds the production-component-set faucet fixture. `seed_notes_for` receives the recipient
-/// wallet's `AccountId` (payloads embed `remoteRecipient = account_id_to_bytes32(recipient)`) and
+/// wallet's `AccountId` (payloads embed `remoteRecipient = EthEmbeddedAccountId::from_account_id(recipient).to_bytes32()`) and
 /// returns the admin notes to seed at genesis. The faucet account carries EXACTLY the components
 /// `XReserveStablecoinBuilder::build_components` returns — proving the real-note mint needs no
 /// test-only component.
@@ -2955,7 +2997,7 @@ pub fn setup_production_faucet(
     let account = add_network_faucet_account(&mut mc, components)
         .context("adding the production faucet account")?;
     // The faucet id is now known, so the seed-notes closure binds its notes and its mint payloads
-    // (`remoteToken = account_id_to_bytes32(faucet_id)`) to the REAL faucet identity. Seeded AFTER the account is built; order relative to `mc.build()` is all that
+    // (`remoteToken = EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()`) to the REAL faucet identity. Seeded AFTER the account is built; order relative to `mc.build()` is all that
     // matters for genesis notes.
     let seeded_notes = seed_notes_for(recipient.id(), account.id());
     for note in &seeded_notes {

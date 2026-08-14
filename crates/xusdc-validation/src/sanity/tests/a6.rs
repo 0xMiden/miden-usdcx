@@ -2,7 +2,7 @@
 //! config, not the fixed BASE_VECTOR's. The mint gate (structural validation `deposit_intent_parser::validate`)
 //! compares a mint's `remoteDomain` against the faucet's stored `domain`, and `bytes32_to_storage_map_key(remoteToken)`
 //! against the stored identifier key. A production faucet was deployed with domain 10007 and an
-//! identifier = account_id_to_bytes32(faucet.id()); the fixed BASE_VECTOR carries domain 7, so structural validation
+//! identifier = EthEmbeddedAccountId::from_account_id(faucet.id()).to_bytes32(); the fixed BASE_VECTOR carries domain 7, so structural validation
 //! rejected every mint (the A6 300s path-N timeout). These node-free tests inject a synthetic deployed
 //! config (a domain D != 7 and a faucet id F) and prove the produced payload carries D + the F-derived
 //! identifier. sourceDomain is NOT asserted on the payload: it is NOT a DepositIntent field and the
@@ -13,9 +13,9 @@
 //! the shared offline fixtures (`dummy_id`, `faucet_id`, `rng`) are reused from the parent `tests`
 //! module.
 
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, deposit_intent_field_offset, parse_deposit_intent_header,
-    DepositIntentField,
+    deposit_intent_field_offset, parse_deposit_intent_header, DepositIntentField,
 };
 
 use super::super::checks::mint_note_for;
@@ -24,7 +24,7 @@ use super::{dummy_id, faucet_id, rng};
 use crate::mintburn;
 
 /// THE A6 core proof: a `--faucet-id` mint payload built for a DEPLOYED faucet config (domain
-/// D != 7, faucet id F) decodes to `remoteDomain == D` and `remoteToken == account_id_to_bytes32(F)`
+/// D != 7, faucet id F) decodes to `remoteDomain == D` and `remoteToken == EthEmbeddedAccountId::from_account_id(F).to_bytes32()`
 /// — NOT the BASE_VECTOR's domain 7 / token. Reverting EITHER splice (the audit mutation) makes this
 /// test RED.
 #[test]
@@ -40,11 +40,11 @@ fn faucet_id_mint_payload_carries_deployed_domain_and_identifier() {
     );
 
     let config = mintburn::MintDomainConfig::for_deployed_faucet(DEPLOYED_DOMAIN, f);
-    // The identifier the mint gate compares is account_id_to_bytes32(faucet_id), recomputed from F.
+    // The identifier the mint gate compares is EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32(), recomputed from F.
     assert_eq!(
         config.remote_token,
-        account_id_to_bytes32(f),
-        "the resolved config's remote_token must be account_id_to_bytes32(F)"
+        EthEmbeddedAccountId::from_account_id(f).to_bytes32(),
+        "the resolved config's remote_token must be EthEmbeddedAccountId::from_account_id(F).to_bytes32()"
     );
 
     let recipient = dummy_id(0x33);
@@ -68,8 +68,8 @@ fn faucet_id_mint_payload_carries_deployed_domain_and_identifier() {
     );
     assert_eq!(
         h.remote_token,
-        account_id_to_bytes32(f),
-        "remoteToken must be account_id_to_bytes32(F) (matches the deployed identifier)"
+        EthEmbeddedAccountId::from_account_id(f).to_bytes32(),
+        "remoteToken must be EthEmbeddedAccountId::from_account_id(F).to_bytes32() (matches the deployed identifier)"
     );
 
     // Both fields ACTUALLY changed vs the BASE_VECTOR (proving a real splice, not a coincidence).
@@ -120,8 +120,8 @@ fn faucet_id_mint_payload_preserves_amount_recipient_and_nonce_splices() {
     // recipient P2ID target.
     assert_eq!(
         h.remote_recipient,
-        account_id_to_bytes32(recipient),
-        "remoteRecipient must be account_id_to_bytes32(recipient)"
+        EthEmbeddedAccountId::from_account_id(recipient).to_bytes32(),
+        "remoteRecipient must be EthEmbeddedAccountId::from_account_id(recipient).to_bytes32()"
     );
     // nonce salt: byte 0 flips by the salt vs an unsalted build; the rest is unchanged.
     let unsalted = parse_deposit_intent_header(&mintburn::mint_payload_for(
@@ -223,7 +223,7 @@ fn deployed_config_diverges_from_local_only_in_domain_and_token() {
     );
     assert!(
         diff.iter().any(|i| token_window.contains(i)),
-        "the remoteToken bytes ({token_window:?}) must change (BASE_VECTOR token -> account_id_to_bytes32(F))"
+        "the remoteToken bytes ({token_window:?}) must change (BASE_VECTOR token -> EthEmbeddedAccountId::from_account_id(F).to_bytes32())"
     );
 }
 
@@ -270,13 +270,13 @@ fn mint_note_for_seam_threads_the_resolved_deployed_config() {
     );
     assert_eq!(
         h.remote_token,
-        account_id_to_bytes32(f),
-        "the mint_note_for seam must carry account_id_to_bytes32(F) as remoteToken"
+        EthEmbeddedAccountId::from_account_id(f).to_bytes32(),
+        "the mint_note_for seam must carry EthEmbeddedAccountId::from_account_id(F).to_bytes32() as remoteToken"
     );
     // The recipient is still correct through the seam (no regression in the pre-existing splice).
     assert_eq!(
         h.remote_recipient,
-        account_id_to_bytes32(recipient),
+        EthEmbeddedAccountId::from_account_id(recipient).to_bytes32(),
         "the seam still points remoteRecipient at the recipient"
     );
 

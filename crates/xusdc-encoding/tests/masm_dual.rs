@@ -23,6 +23,7 @@
 use std::fmt::Write as _;
 
 use anyhow::{Context, Result};
+use assert_matches::assert_matches;
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::account::{AccountComponent, AccountId};
 use miden_protocol::assembly::Package;
@@ -32,7 +33,9 @@ use miden_standards::code_builder::CodeBuilder;
 use miden_testing::{Auth, MockChain};
 use miden_tx::TransactionExecutorError;
 use serde::Deserialize;
+use sha3::{Digest, Keccak256};
 use xusdc_encoding::vectors::{load, word_from_hex};
+use xusdc_encoding::xreserve::encoding::EncodingError;
 use xusdc_encoding::xreserve_lib::XReserveLibrary;
 
 /// Memory base for the staged pubkey felts `pubkey_commitment` hashes in place (word-aligned,
@@ -144,11 +147,12 @@ end
 // PARITY 4 — attester pubkey commitment: the Word the allowlist is keyed by
 // ================================================================================================
 // Each attestation vector is run through the MASM commitment routine and the result is checked
-// against two independent references at once: the value pinned in the canonical artifact (which
-// miden-crypto's own `PublicKey::to_commitment` produced) and the Rust mirror used off-chain.
-// All three must agree, because the faucet decides whether an attester is allowlisted by looking
-// up exactly this Word — if the off-chain side computed a different commitment for the same key,
-// a legitimate attester would be seeded under a key the chain never looks at.
+// against two independent references at once: the value pinned in the canonical artifact, and
+// miden-crypto's own `PublicKey::to_commitment` recomputed here — the routine the off-chain side
+// keys the allowlist with. All three must agree, because the faucet decides whether an attester is
+// allowlisted by looking up exactly this Word — if the off-chain side computed a different
+// commitment for the same key, a legitimate attester would be seeded under a key the chain never
+// looks at. Recomputing also catches an artifact that went stale against the pinned crypto crate.
 // ================================================================================================
 
 #[tokio::test]
@@ -165,16 +169,12 @@ async fn tv_dual_5_pubkey_commitment() -> Result<()> {
         );
         let expected = vec.expected_commitment_word();
 
-        // Rust mirror == the vector oracle (miden-crypto to_commitment): the third anti-drift
-        // leg, asserted in-process so a mirror regression fails here too, not only in TV-ATT-2.
+        // recomputed off-chain commitment == the vector oracle: the third anti-drift leg,
+        // asserted in-process so a drift fails here too, not only in TV-ATT-2.
         assert_eq!(
-            miden_protocol::Word::from(
-                xusdc_encoding::xreserve::encoding::PublicKey::new(vec.pubkey())
-                    .to_commitment()
-                    .expect("vector pubkeys are valid curve points")
-            ),
+            vec.public_key().to_commitment(),
             expected,
-            "vector {}: Rust pubkey_commitment must equal miden-crypto to_commitment",
+            "vector {}: the off-chain commitment must equal the pinned oracle",
             vec.id
         );
 
@@ -284,9 +284,14 @@ fn probe_p4_packing_util() {
 //
 // What this establishes is that the shared parser's envelope — field offsets, field sizes,
 // endianness, the magic and version constants, and the total-length rule — matches Circle's
-// encoder. What it deliberately does not touch is the faucet's identifier compare: Circle treats
-// remoteToken and remoteRecipient as opaque bytes32 and has not fixed how a Miden account id is
-// carried in them, so there is no ground truth to test that against yet.
+// encoder.
+//
+// The fixture carries the identifier fields both ways, because Circle's encoding permits both and
+// this decoder must answer differently: two rows hold opaque bytes32 (what Circle's own sample
+// values look like) and two hold Miden account ids in the packaging this crate reads. The envelope
+// is identical across the pair, so the difference isolates exactly the Miden-side reading — the
+// account-id rows must decode, the opaque ones must be refused rather than misread. How an account
+// id is registered into those fields remains Circle's to settle (`DEV-10`).
 
 const CIRCLE_FIXTURE: &str = include_str!("vectors/circle-depositintent-groundtruth.json");
 
@@ -298,8 +303,10 @@ struct CircleFile {
 #[derive(Deserialize)]
 struct CircleVec {
     id: String,
+    identifier_shape: String,
     bytes_hex: String,
     length: u64,
+    message_hash_keccak256: String,
     fields: CircleFields,
 }
 
@@ -433,19 +440,41 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
         };
         assert_eq!(hd, f.hook_data, "{}: hookData @240", v.id);
 
-        // (2) The bytes are also what the Rust codec packs, which is the leg the relayer's
-        // pre-validate rides on. There is no on-chain parser to run them through any more — the
-        // faucet writes the message rather than reading it — so the differential stops here and
-        // the write side is covered by TV-DUAL-6.
-        let packed = xusdc_encoding::xreserve::encoding::DepositIntent::new(&raw)
-            .to_packed_felts()
-            .unwrap_or_else(|e| panic!("{}: Circle's own bytes must pack: {e}", v.id));
+        // The fixture's own digest is pinned here rather than trusted: it is what the relayer's
+        // envelope binding is checked against, and a stale one would quietly stop testing anything.
         assert_eq!(
-            packed.len(),
-            raw.len().div_ceil(4),
-            "{}: the packed preimage is four wire bytes per felt",
+            circle_hex(&Keccak256::digest(&raw)),
+            v.message_hash_keccak256,
+            "{}: keccak256 of the encoded bytes",
             v.id
         );
+
+        // (2) The Miden-side reading of the same bytes. There is no on-chain parser to run them
+        // through any more — the faucet writes the message rather than reading it — so the
+        // differential stops at the Rust decode, and the write side is covered by TV-DUAL-6.
+        let decoded = xusdc_encoding::xreserve::encoding::DepositIntent::try_from(raw.as_slice());
+        match v.identifier_shape.as_str() {
+            "account_id" => {
+                let packed = decoded
+                    .unwrap_or_else(|e| panic!("{}: Circle's own bytes must decode: {e}", v.id))
+                    .to_preimage_felts();
+                assert_eq!(
+                    packed.len(),
+                    raw.len().div_ceil(4),
+                    "{}: the packed preimage is four wire bytes per felt",
+                    v.id
+                );
+            }
+            // an identifier this faucet could never mint to is refused with the reason, not
+            // truncated into some nearby account id
+            "opaque" => assert_matches!(
+                decoded,
+                Err(EncodingError::AccountIdOutOfRange),
+                "{}: an opaque bytes32 identifier is not mintable",
+                v.id
+            ),
+            other => panic!("{}: unknown identifier_shape {other:?}", v.id),
+        }
     }
 
     Ok(())

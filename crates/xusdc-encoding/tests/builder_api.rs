@@ -191,16 +191,16 @@ fn build_seeds_the_domain_config_slots() -> Result<()> {
         Word::from([TEST_SOURCE_DOMAIN, 0, 0, 0]),
         "the source_domain slot must hold the build-seeded [source_domain, 0, 0, 0]"
     );
-    let xrc = bytes32_to_packed_felts(&test_xreserve_contract());
+    let xrc = bytes32_to_packed_felts(test_xreserve_contract().as_bytes());
     assert_eq!(
         slot(XReserveFaucetExtension::xreserve_contract_hi_slot())?,
         Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]),
-        "the xreserve_contract_hi slot must hold the packed wire bytes 0..16"
+        "the xreserve_contract_hi slot must hold the packed address bytes 0..16"
     );
     assert_eq!(
         slot(XReserveFaucetExtension::xreserve_contract_lo_slot())?,
         Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]),
-        "the xreserve_contract_lo slot must hold the packed wire bytes 16..32"
+        "the xreserve_contract_lo slot must hold the packed container bytes 16..32"
     );
     Ok(())
 }

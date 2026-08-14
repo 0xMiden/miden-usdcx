@@ -284,12 +284,12 @@ fn check_spec(
     }
 
     // destinationRecipient — compared as bytes, so hex casing is irrelevant.
-    let recipient_matches =
-        decode_hex32(spec.destination_recipient()).is_some_and(|b| b == payload.dest_recipient);
+    let recipient_matches = decode_hex32(spec.destination_recipient())
+        .is_some_and(|bytes| &bytes == payload.dest_recipient.as_bytes());
     if !recipient_matches {
         return Err(ValidationMismatch::DestinationRecipient {
             batch,
-            expected: to_hex32(&payload.dest_recipient),
+            expected: to_hex32(payload.dest_recipient.as_bytes()),
             returned: spec.destination_recipient().to_string(),
         });
     }

@@ -23,8 +23,9 @@
 //!   (`note.attachments().find(scheme)`, `NetworkAccountTarget::try_from`,
 //!   `note.storage().items()`, `MintNote::script_root()`, `P2idNote::script_root()`) and through
 //!   the shared encoding crate's own codecs (`DepositIntent::parse_header`,
-//!   `MintIntent::from_deposit_intent`, `bytes32_to_account_id`, `bytes32_to_storage_map_key`,
-//!   `uint256_to_asset_amount`, `Signature::to_felts`, `PublicKey::to_affine_felts`) — never
+//!   `MintIntent::from_deposit_intent`, `EthEmbeddedAccountId::try_from_bytes32`,
+//!   `bytes32_to_storage_map_key`,
+//!   `DepositIntentHeader::reduced_amount`, `Signature::to_felts`) and the protocol's own `PublicKey::to_elements` — never
 //!   against a layout
 //!   re-derived here. An assertion that restated the layout would be a SECOND definition of an
 //!   owned format, i.e. exactly the drift seam the ownership map exists to close.
@@ -45,27 +46,27 @@ mod mint_support;
 
 use assert_matches::assert_matches;
 use miden_protocol::asset::FungibleAsset;
+use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::note::{NoteAttachmentScheme, NoteTag, NoteType};
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{MintNote, NetworkAccountTarget, NoteExecutionHint, P2idNote};
 
-use xreserve_deposit_relayer::miden::build_mint_note;
 use xusdc_encoding::note::xreserve_mint::{
-    MintAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
-    XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
+    DepositAttestation, XUsdcMintNote, XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME,
+    XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
-    bytes32_to_account_id, bytes32_to_packed_u32_limbs, bytes32_to_storage_map_key,
-    uint256_to_asset_amount, DepositIntent, MintIntent, PublicKey, Signature,
+    bytes32_to_storage_map_key, DepositIntent, MintIntent, Signature,
 };
 
 use mint_support::*;
+use xusdc_encoding::xreserve::encoding::DepositIntentField;
 
 // THE DELEGATION ITSELF
 // ================================================================================================
 
-/// The load-bearing proof: `build_mint_note` produces EXACTLY the note
-/// `XUsdcMintNote::create` produces from the same validated inputs and the same RNG seed.
+/// The load-bearing proof: `build_mint_note` produces EXACTLY the note the shared encoding crate's
+/// own builder produces from the same validated inputs and the same RNG seed.
 ///
 /// `Note`'s `PartialEq` covers the header (id, metadata: sender / tag / type / execution hint), the
 /// details (serial number, script root, storage items, assets) and the attachments. So this single
@@ -77,28 +78,30 @@ fn t_delegation_is_byte_for_byte_unit04_create() {
     let attestation = validated_test_vector();
     let attester = attester_pubkey();
 
-    let built = build_mint_note(
-        relayer_sender_id(),
-        faucet_id(),
-        &attestation,
-        &attester,
-        &mut note_rng(0xC1_2C_1E),
-    )
-    .expect("the canonical vector builds a mint note");
+    let built = build_note_for(&attestation, &attester, &mut note_rng(0xC1_2C_1E))
+        .expect("the canonical vector builds a mint note");
 
     // the shared encoding crate's factory, called directly — the same inputs, the same seed.
-    let unit04 = XUsdcMintNote::create(
-        relayer_sender_id(),
-        faucet_id(),
-        attestation.deposit_intent().as_bytes(),
-        &MintAttestation::new(attestation.attestation(), *attester.as_bytes()),
-        &mut note_rng(0xC1_2C_1E),
-    )
-    .expect("unit-04's factory builds the same note");
+    let unit04 = miden_protocol::note::Note::from(
+        XUsdcMintNote::builder()
+            .sender(relayer_sender_id())
+            .target(faucet_id())
+            .remote_domain(fixtures::TEST_REMOTE_DOMAIN)
+            .deposit_intent(
+                DepositIntent::try_from(attestation.payload()).expect("the payload decodes"),
+            )
+            .attestation(DepositAttestation::new(
+                Signature::new(attestation.attestation()),
+                attester.key().clone(),
+            ))
+            .generate_serial_number(&mut note_rng(0xC1_2C_1E))
+            .build()
+            .expect("unit-04's factory builds the same note"),
+    );
 
     assert_eq!(
         built, unit04,
-        "build_mint_note must BE XUsdcMintNote::create — not a second implementation of it"
+        "build_mint_note must BE the XUsdcMintNote builder — not a second implementation of it"
     );
 }
 
@@ -152,10 +155,10 @@ fn t_note_carries_exactly_the_two_attachments() {
     // the transport is word-granular: the attestation, and ⌈carried felts / 4⌉ words of mint
     // payload — every width computed by the shared encoding crate's OWNED codec and constants, not
     // a number restated here
-    let carried = carried_payload(attestation.deposit_intent().as_bytes());
+    let carried = carried_payload(attestation.payload());
     assert_eq!(
         usize::from(transport.content().num_words()),
-        XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF + carried.to_felts().len().div_ceil(4),
+        XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF + carried.to_elements().len().div_ceil(4),
         "the transport is the attestation + the carried mint payload, zero-padded to the word \
          boundary"
     );
@@ -203,9 +206,9 @@ fn t_the_faucet_argument_drives_the_route_and_the_tag() {
     ));
     let attester = attester_pubkey();
 
-    let note = build_mint_note(
-        relayer_sender_id(),
+    let note = build_note_at(
         other_faucet_id(),
+        fixtures::TEST_REMOTE_DOMAIN,
         &attestation,
         &attester,
         &mut note_rng(9),
@@ -235,9 +238,9 @@ fn t_the_faucet_argument_drives_the_route_and_the_tag() {
 /// SERIAL(4) + ASSET_ID(4) + ASSET_VALUE(4) + tag(1) + pad(3) + P2ID storage(2)` — and every
 /// attested value embedded in it is derived from the VALIDATED payload by the shared encoding
 /// crate's own codecs, consumed by reference: the P2ID recipe targets the intent's
-/// `remoteRecipient` (`bytes32_to_account_id`) under the canonical nonce-key serial
+/// `remoteRecipient` (`EthEmbeddedAccountId::try_from_bytes32`) under the canonical nonce-key serial
 /// (`bytes32_to_storage_map_key`), the asset is the scale-0-reduced attested amount
-/// (`uint256_to_asset_amount` at `XUSDC_DEPOSIT_SCALE_EXP`) bound to the faucet, and the
+/// (`DepositIntentHeader::reduced_amount`) bound to the faucet, and the
 /// output-note tag targets the attested recipient. This is the storage the faucet's attestation
 /// mint policy re-derives on-chain and `assert_eqw`s — a value invented by the relayer instead of
 /// taken from the payload would fail the ASSERT-MATCH binding there, and fails here first.
@@ -248,17 +251,11 @@ fn t_storage_embeds_the_attested_output() {
 
     // the attested ingredients, re-derived through the shared encoding crate's OWNED codecs (by
     // reference)
-    let header = attestation
-        .deposit_intent()
-        .parse_header()
-        .expect("the canonical payload parses");
-    let recipient_id = bytes32_to_account_id(&header.remote_recipient)
-        .expect("the canonical payload's remoteRecipient is a valid account id");
-    let amount = uint256_to_asset_amount(
-        bytes32_to_packed_u32_limbs(&header.amount),
-        XUSDC_DEPOSIT_SCALE_EXP,
-    )
-    .expect("the attested amount reduces at unit-04's scale");
+    let intent =
+        DepositIntent::try_from(attestation.payload()).expect("the canonical payload decodes");
+    let header = intent.header();
+    let recipient_id = header.remote_recipient();
+    let amount = header.amount();
     let asset = FungibleAsset::new(faucet_id(), u64::from(amount))
         .expect("the reduced amount is a fungible asset of the faucet");
 
@@ -281,7 +278,7 @@ fn t_storage_embeds_the_attested_output() {
     // payload's nonce, the SAME derivation the on-chain policy recomputes
     assert_eq!(
         &items[4..8],
-        Word::from(bytes32_to_storage_map_key(&header.nonce)).as_elements(),
+        Word::from(bytes32_to_storage_map_key(header.nonce().as_bytes())).as_elements(),
         "the output recipe's serial is the canonical nonce key"
     );
 
@@ -296,10 +293,11 @@ fn t_storage_embeds_the_attested_output() {
         asset.to_value_word().as_elements(),
         "ASSET_VALUE carries the reduced attested amount"
     );
-    // …and ASSET_VALUE[0] really is the PAYLOAD's amount (the scale-0 reduction identity): the u64 at
-    // the tail of the 32-byte big-endian wire amount
+    // …and ASSET_VALUE[0] really is the PAYLOAD's amount (the scale-0 reduction identity): the u64
+    // at the tail of the 32-byte big-endian wire amount, read straight off the attested bytes
+    let amount_offset = DepositIntentField::Amount.offset();
     let wire_amount = u64::from_be_bytes(
-        header.amount[24..32]
+        attestation.payload()[amount_offset + 24..amount_offset + 32]
             .try_into()
             .expect("the 8-byte tail of the 32-byte amount field"),
     );
@@ -342,9 +340,7 @@ fn t_the_transport_payload_sub_region_is_the_compressed_intent() {
     let payload_felt_off = XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF * 4;
 
     let payload_elements = |vector_id: &str, seed: u64| {
-        let note = build_mint_note(
-            relayer_sender_id(),
-            faucet_id(),
+        let note = build_note_for(
             &validated_over_vector_id(vector_id),
             &attester,
             &mut note_rng(seed),
@@ -359,7 +355,7 @@ fn t_the_transport_payload_sub_region_is_the_compressed_intent() {
     };
 
     for vector_id in ["mi-pos-hookdata", "mi-pos-empty-hookdata"] {
-        let mut expected = carried_payload(&fixtures::canonical_payload(vector_id)).to_felts();
+        let mut expected = carried_payload(&fixtures::canonical_payload(vector_id)).to_elements();
         while !expected.len().is_multiple_of(4) {
             expected.push(Felt::ZERO);
         }
@@ -383,10 +379,9 @@ fn t_the_transport_payload_sub_region_is_the_compressed_intent() {
 // ================================================================================================
 
 /// The transport's attestation section carries the 65-byte signature the relayer VALIDATED (from
-/// `ValidatedAttestation`, never from a raw-bytes side door) and the 33-byte attester pubkey the
-/// OPERATOR configured — both in the shared encoding crate's felt encoding, checked by looking for
-/// the owner's own packing (`Signature::to_felts` / `PublicKey::to_affine_felts`) inside the attachment's
-/// elements. The test asserts PRESENCE of the owner-packed runs, not their offsets: the offsets are
+/// `ValidatedAttestation`, never from a raw-bytes side door) and the attester pubkey the OPERATOR
+/// configured — both in their owner's felt encoding, checked by looking for the owner's own packing
+/// (`Signature::to_felts` / `PublicKey::to_elements`) inside the attachment's elements. The test asserts PRESENCE of the owner-packed runs, not their offsets: the offsets are
 /// the shared encoding crate's to choose, and restating them here would fork the layout.
 #[test]
 fn t_transport_carries_the_validated_signature_and_configured_pubkey() {
@@ -404,10 +399,8 @@ fn t_transport_carries_the_validated_signature_and_configured_pubkey() {
         .content()
         .to_elements();
 
-    let signature = Signature::new(attestation.attestation()).to_felts();
-    let pubkey = PublicKey::new(*attester.as_bytes())
-        .to_affine_felts()
-        .expect("the partner key is on the curve");
+    let signature = Signature::new(attestation.attestation()).to_elements();
+    let pubkey = attester.key().to_elements();
 
     assert!(
         elements.windows(signature.len()).any(|w| w == signature),
@@ -426,22 +419,10 @@ fn t_transport_carries_the_validated_signature_and_configured_pubkey() {
 fn t_the_configured_pubkey_is_the_one_that_travels() {
     let attestation = validated_test_vector();
 
-    let partner = build_mint_note(
-        relayer_sender_id(),
-        faucet_id(),
-        &attestation,
-        &attester_pubkey(),
-        &mut note_rng(2),
-    )
-    .expect("builds");
-    let foreign = build_mint_note(
-        relayer_sender_id(),
-        faucet_id(),
-        &attestation,
-        &foreign_attester_pubkey(),
-        &mut note_rng(2),
-    )
-    .expect("builds");
+    let partner =
+        build_note_for(&attestation, &attester_pubkey(), &mut note_rng(2)).expect("builds");
+    let foreign =
+        build_note_for(&attestation, &foreign_attester_pubkey(), &mut note_rng(2)).expect("builds");
 
     assert_ne!(
         partner.attachments().to_commitment(),
@@ -469,22 +450,8 @@ fn t_the_validated_signature_is_the_one_that_travels() {
         "the two envelopes really carry different signatures"
     );
 
-    let a = build_mint_note(
-        relayer_sender_id(),
-        faucet_id(),
-        &partner_signed,
-        &attester_pubkey(),
-        &mut note_rng(3),
-    )
-    .expect("builds");
-    let b = build_mint_note(
-        relayer_sender_id(),
-        faucet_id(),
-        &foreign_signed,
-        &attester_pubkey(),
-        &mut note_rng(3),
-    )
-    .expect("builds");
+    let a = build_note_for(&partner_signed, &attester_pubkey(), &mut note_rng(3)).expect("builds");
+    let b = build_note_for(&foreign_signed, &attester_pubkey(), &mut note_rng(3)).expect("builds");
 
     assert_eq!(
         a.storage().items(),
@@ -530,22 +497,8 @@ fn t_each_build_draws_a_fresh_serial_number() {
     let attestation = validated_test_vector();
     let attester = attester_pubkey();
 
-    let first = build_mint_note(
-        relayer_sender_id(),
-        faucet_id(),
-        &attestation,
-        &attester,
-        &mut note_rng(10),
-    )
-    .expect("builds");
-    let second = build_mint_note(
-        relayer_sender_id(),
-        faucet_id(),
-        &attestation,
-        &attester,
-        &mut note_rng(11),
-    )
-    .expect("builds");
+    let first = build_note_for(&attestation, &attester, &mut note_rng(10)).expect("builds");
+    let second = build_note_for(&attestation, &attester, &mut note_rng(11)).expect("builds");
 
     assert_ne!(first.serial_num(), second.serial_num());
     assert_ne!(first.id(), second.id());
@@ -565,28 +518,12 @@ fn t_the_callers_rng_is_the_one_that_is_drawn_from() {
     let attester = attester_pubkey();
     let mut rng = note_rng(12);
 
-    let first = build_mint_note(
-        relayer_sender_id(),
-        faucet_id(),
-        &attestation,
-        &attester,
-        &mut rng,
-    )
-    .expect("builds");
-    let second = build_mint_note(
-        relayer_sender_id(),
-        faucet_id(),
-        &attestation,
-        &attester,
-        &mut rng,
-    )
-    .expect("builds");
+    let first = build_note_for(&attestation, &attester, &mut rng).expect("builds");
+    let second = build_note_for(&attestation, &attester, &mut rng).expect("builds");
 
     assert_ne!(first.serial_num(), second.serial_num());
     assert_matches!(
-        build_mint_note(
-            relayer_sender_id(),
-            faucet_id(),
+        build_note_for(
             &attestation,
             &attester,
             &mut note_rng(12),
@@ -602,15 +539,14 @@ fn t_the_callers_rng_is_the_one_that_is_drawn_from() {
 /// The carried form of a validated payload — the shared encoding crate's own compress step, called
 /// here so the expected transport content is the OWNER's, not a shape restated in this suite.
 fn carried_payload(payload: &[u8]) -> MintIntent {
-    MintIntent::from_deposit_intent(&DepositIntent::new(payload), faucet_id())
+    let intent = DepositIntent::try_from(payload).expect("the canonical payload decodes");
+    MintIntent::from_deposit_intent(&intent, faucet_id(), fixtures::TEST_REMOTE_DOMAIN)
         .expect("the canonical payload compresses for this faucet")
 }
 
 /// The standard note: the canonical vector, the partner attester key, the public faucet.
 fn build_note() -> miden_protocol::note::Note {
-    build_mint_note(
-        relayer_sender_id(),
-        faucet_id(),
+    build_note_for(
         &validated_test_vector(),
         &attester_pubkey(),
         &mut note_rng(0x5EED),

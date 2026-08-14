@@ -31,15 +31,15 @@
 use k256::ecdsa::signature::hazmat::PrehashVerifier;
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey, VerifyingKey};
 use miden_protocol::account::{AccountId, AccountIdVersion, AccountType, AssetCallbackFlag};
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
+use miden_protocol::crypto::utils::{Deserializable, Serializable};
 use miden_protocol::{Hasher, Word};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use sha3::{Digest, Keccak256};
 
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::{
-    DepositIntent, MintIntent, PublicKey, MINT_INTENT_SCALE_EXP,
-};
+use xusdc_encoding::xreserve::encoding::{DepositIntent, MintIntent};
 
 /// Seed of the partner-held attester key. Deliberately distinct from the seeds the canonical
 /// `att-*` artifact vectors use, so this key is unmistakably the RELAYER-side test key and can
@@ -87,18 +87,20 @@ pub fn faucet_id() -> AccountId {
 /// shared encoding crate's MASM and Rust tests — never a hand-rolled blob.
 pub const TEST_VECTOR_PAYLOAD_ID: &str = "mi-pos-hookdata";
 
-/// [`test_vector`]'s `messageHash` — `keccak256` of the canonical payload, PINNED.
+/// [`test_vector`]'s `messageHash` — `keccak256` of the canonical payload, PINNED. Last re-pinned
+/// when the source-chain address fields widened to the wire form's full bytes32: the artifact's
+/// payload gained those bytes, so what the partner signs over moved with it.
 pub const TEST_VECTOR_MESSAGE_HASH_HEX: &str =
-    "8e24efc812c0bb48f307270843c0f0f6b09b25d0328687c4ce4d2173b9a8a198";
+    "5280d1a7997e6b3532747a828e15df94a9619c94361d296df3d1d1efd13c88fe";
 
 /// [`test_vector`]'s 65-byte `r‖s‖v`, PINNED. secp256k1 signing here is RFC 6979 DETERMINISTIC, so
 /// this is a fixed value — an independent golden pin on the whole chain (key → raw-keccak digest →
 /// signing convention). It moves only if one of those changes, which is exactly when every later
 /// slice reusing this vector needs to know.
 pub const TEST_VECTOR_ATTESTATION_HEX: &str = concat!(
-    "1f3dfce199935983b468a86f0282db1fc683d6ebd0d4a3ec3a5de0611ac7f026", // r
-    "23f373ffa40c3d03f9f74869169fda27cf0a3adaa099003065aa619ad53b67e3", // s
-    "00",                                                               // v (recovery id)
+    "0d7424734d2f57f838b3dada0d789f1b565fda9f7061c623d2d4aea3eed5ccce", // r
+    "734b9abfbd7cfae3e1338cf322428cc46abf06825db18e5ee467064dbc7d0ca0", // s
+    "01",                                                               // v (recovery id)
 );
 
 /// The canonical DepositIntent payload with EMPTY hookData — the second shape (240 bytes exactly),
@@ -146,16 +148,14 @@ pub fn mi_vector(id: &str) -> Option<&'static MiVector> {
 /// payload rewritten here.
 pub fn mint_payload_for(vector: &MiVector, faucet: AccountId, remote_domain: u32) -> Vec<u8> {
     let payload = vector.payload();
-    let intent = DepositIntent::new(&payload);
-    let amount = intent
-        .parse_header()
-        .expect("the canonical mi vector is a structurally valid deposit intent")
-        .reduced_amount(MINT_INTENT_SCALE_EXP)
-        .expect("the canonical mi vector's amount is mintable");
+    let intent = DepositIntent::try_from(payload.as_slice())
+        .expect("the canonical mi vector is a structurally valid deposit intent");
+    let amount = intent.header().amount();
 
-    MintIntent::from_deposit_intent(&intent, vector.faucet_id())
-        .expect("the canonical mi accept vector compresses under its own faucet")
-        .to_deposit_intent_bytes(amount, remote_domain, faucet)
+    MintIntent::from_deposit_intent(&intent, vector.faucet_id(), vector.remote_domain)
+        .expect("the canonical mi accept vector compresses under its own faucet and domain")
+        .to_deposit_intent(amount, remote_domain, faucet)
+        .to_bytes()
 }
 
 /// [`canonical_payload`] for an `mi-*` id, addressed to a faucet other than [`faucet_id`] — for the
@@ -225,16 +225,14 @@ impl PartnerAttester {
     /// The attester-allowlist key: `Poseidon2(affine pubkey felts)` →
     /// one `Word` (the compressed wire key is decompressed inside the owned primitive).
     ///
-    /// Delegated to the shared encoding crate's [`PublicKey::to_commitment`] — the SINGLE owner of
-    /// this keying primitive and the exact procedure the faucet's on-chain attestation check
-    /// recomputes on-chain. This fixture never re-implements it, so the local-node allowlist it
-    /// seeds cannot drift from the on-chain lookup.
+    /// Delegated to the protocol's own [`PublicKey::to_commitment`] — the SINGLE owner of this
+    /// keying primitive and the exact procedure the faucet's on-chain attestation check recomputes
+    /// on-chain. This fixture never re-implements it, so the local-node allowlist it seeds cannot
+    /// drift from the on-chain lookup.
     pub fn commitment(&self) -> Word {
-        Word::from(
-            PublicKey::new(self.pubkey())
-                .to_commitment()
-                .expect("the deterministic partner key is a valid point"),
-        )
+        PublicKey::read_from_bytes(&self.pubkey())
+            .expect("the deterministic partner key is a valid point")
+            .to_commitment()
     }
 
     /// Signs `keccak256(payload)` — RAW secp256k1 over the raw keccak digest of the FULL payload.
@@ -431,9 +429,9 @@ pub fn personal_sign_digest(payload: &[u8]) -> [u8; 32] {
 /// packer, then hashed with the protocol `Hasher` (Poseidon2) — the same primitive
 /// `PublicKey::to_commitment` uses.
 pub fn poseidon2_word_digest(payload: &[u8]) -> [u8; 32] {
-    let felts = DepositIntent::new(payload)
-        .to_packed_felts()
-        .expect("the comparator is built over a canonical DC-1 payload");
+    let felts = DepositIntent::try_from(payload)
+        .expect("the comparator is built over a canonical DC-1 payload")
+        .to_preimage_felts();
     word_to_bytes32(Hasher::hash_elements(&felts))
 }
 

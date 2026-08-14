@@ -19,7 +19,6 @@ use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Hasher, Word};
 use support::*;
 use xusdc_encoding::account::xreserve::{build_faucet_account, XReserveStablecoinBuilder};
-use xusdc_encoding::xreserve::encoding::EthBytes32;
 
 /// The fixed account seed the anchors were captured at (production uses a random seed; a fixed one
 /// makes the seed-derived id and the whole account commitment deterministic).
@@ -30,12 +29,12 @@ const TOKEN_SUPPLY: u64 = 0;
 // Account commitments for the production composition at SEED. The fixed seed makes both
 // construction paths deterministic.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([4663830918945429995, 816399965045286052, 7352979965086757465, 4083579606763752477])";
+    "Word([14857481285524335467, 10802415444132737383, 2002621344258499355, 16053962307618128544])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([7851250526355703932, 7130056375081919230, 7812309859290603536, 10610547280604997762])";
+    "Word([17351782492508381613, 8816109290290102646, 13490910957342147869, 14407050198877650490])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([5693009208396562541, 10977218070125778864, 6924131128177741260, 15493461930745065547])";
-const GOLDEN_ACCOUNT_ID: &str = "0xe80d8a27d6d3973176d9a6d08ab2e7";
+    "Word([9444570937367939900, 17613177497393880026, 13412911147259972446, 14682441136598241128])";
+const GOLDEN_ACCOUNT_ID: &str = "0x39bd53494772913131b627c5617618";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.
@@ -116,7 +115,7 @@ fn account_via_crate_root_constructor() -> Account {
         test_fee_parameters(),
         TEST_DOMAIN,
         TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
+        test_xreserve_contract(),
     )
     .expect("the crate-root faucet-account constructor must build the account")
 }

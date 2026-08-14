@@ -9,8 +9,8 @@ use super::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote}
 use super::xreserve_burn::XReserveBurnNote;
 use super::xreserve_mint::XUsdcMintNote;
 
-/// Cycles of consuming an xUSDC MINT note: empty hook data 43899, maximum hook data 67255.
-pub const XUSDC_MINT_CONSUMPTION_CYCLES: u32 = 67255;
+/// Cycles of consuming an xUSDC MINT note: empty hook data 43997, maximum hook data 62475.
+pub const XUSDC_MINT_CONSUMPTION_CYCLES: u32 = 62475;
 
 /// Cycles of consuming an xUSDC BURN note.
 pub const XUSDC_BURN_CONSUMPTION_CYCLES: u32 = 31540;

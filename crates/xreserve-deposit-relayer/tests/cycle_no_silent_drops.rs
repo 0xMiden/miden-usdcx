@@ -38,6 +38,7 @@ use cycle_support::{
 use fixtures::{canonical_payload, AttestationVector, PartnerAttester, TEST_VECTOR_PAYLOAD_ID};
 use mint_support::note_rng;
 use mock_circle::{attestation_page, MockCircle, RecordingSink, Reply, Script};
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 // LAYER 1 — BEHAVIOURAL: a page of every disposition, and not one of them lost
 // ================================================================================================
@@ -528,9 +529,11 @@ fn mixed_page() -> Vec<(&'static str, AttestationVector)> {
 /// literal this crate restates (the DepositIntent layout is the shared encoding crate's).
 fn with_nonce_tweak(tweak: u8) -> Vec<u8> {
     let payload = canonical_payload(TEST_VECTOR_PAYLOAD_ID);
-    let nonce = *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(&payload)
+    let nonce = *DepositIntent::try_from(payload.as_slice())
         .expect("the canonical payload decodes")
-        .nonce();
+        .header()
+        .nonce()
+        .as_bytes();
     let offset = find_subslice(&payload, &nonce).expect("the nonce appears in its own payload");
 
     let mut tweaked = payload;

@@ -15,8 +15,8 @@ use withdrawal_listener_attester::validate::{
 };
 
 use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
-use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
+use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
+use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
 use crate::actors::AttesterKey;
 use crate::mintburn::{mint_payload_opt, nonce_key, MintDomainConfig, MINT_DOMAIN};
@@ -81,7 +81,7 @@ fn mint_note_forged_sig(
     // Carry the deployed faucet's domain/identifier too, so the mint reaches the attestation verification signature gate
     // (a wrong domain would reject earlier at structural validation, hiding the signature negative under WRONG_DOMAIN).
     let payload = mint_payload_opt(config.as_ref(), recipient, amount_units, 0, nonce_salt);
-    let forged: MintAttestation = attester.attestation_over_digest([0xEE; 32]);
+    let forged: DepositAttestation = attester.attestation_over_digest([0xEE; 32]);
     XUsdcMintNote::create(sender, faucet_id, &payload, &forged, rng)
         .context("building a forged-signature mint note")
 }
@@ -92,7 +92,7 @@ pub(crate) fn burn_items(amount: u64) -> Result<XReserveBurnItems> {
         amount: miden_protocol::asset::AssetAmount::new(amount)
             .context("valid burn AssetAmount")?,
         dest_domain: BURN_DEST_DOMAIN,
-        dest_recipient: [0xAB; 32],
+        dest_recipient: ForeignChainAddress::new([0xAB; 32]),
         salt: [0xCD; 32],
     })
 }

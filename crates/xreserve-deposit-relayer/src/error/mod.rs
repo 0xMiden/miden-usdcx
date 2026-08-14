@@ -132,10 +132,11 @@ pub enum RelayerError {
     /// the u32-LE preimage (60 header felts + `ceil(hookDataLen / 4)`) exceeds the 1024-felt
     /// NoteStorage bound (the header is 60 felts, not 30).
     PreimageTooLarge(EncodingError),
-    /// An encoding-layer error the DepositIntent path does not map to a specific field. Defensive
-    /// catch-all; the shared encoding crate's DepositIntent parser/packer only emit the mapped
-    /// variants above, so in practice this is never constructed by the crate-private
-    /// `Self::from_deposit_intent`.
+    /// An encoding-layer error the DepositIntent path does not map to a specific field. It carries
+    /// the codec's own verdict verbatim, which is what the narrowing rejects arrive as: an
+    /// identifier that is not an account id, a source-chain field that is not an address, an
+    /// amount past the mintable cap. Those are the codec's vocabulary, not a relayer field
+    /// taxonomy, so they are passed through rather than renamed.
     DepositIntentCodec(EncodingError),
 
     // ATTESTATION-ENVELOPE FAMILY (the raw-keccak binding and the 65-byte `r‖s‖v` shape)
@@ -434,7 +435,17 @@ impl RelayerError {
     /// onto the field-specific relayer taxonomy, KEEPING the original error as the mapped variant's
     /// source. The mapping is DepositIntent-context-specific (hence a named function, not a blanket
     /// `From`): `TruncatedHeader → ShortHeader` and `HookDataTooLarge → PreimageTooLarge`.
-    pub(crate) fn from_deposit_intent(err: EncodingError) -> Self {
+    ///
+    /// This is the relayer's whole stake in decoding a payload: the codec is the shared crate's,
+    /// this crate keeps no field model, no offsets and no second parse. That single ownership is
+    /// what keeps the off-chain and on-chain views of the same bytes from drifting.
+    ///
+    /// Decoding is a LIVENESS check here, never a safety one. The faucet re-derives the message
+    /// on-chain and re-runs every assert before it mints, so a bug in this path can only stop a
+    /// legitimate deposit from being relayed, never cause an illegitimate one to be minted. What it
+    /// buys is a fast local rejection naming the rule the payload broke, instead of a transaction
+    /// that fails on-chain.
+    pub fn from_deposit_intent(err: EncodingError) -> Self {
         // Select the variant constructor by inspecting the error (borrow only), then move the
         // error into it — the field-specific name AND the underlying cause are both retained.
         let variant: fn(EncodingError) -> Self = match &err {

@@ -17,7 +17,7 @@ use miden_standards::interop::eth::EthEmbeddedAccountId;
 use xusdc_encoding::vectors::{load, parse_hex32};
 use xusdc_encoding::xreserve::encoding::{
     bytes32_to_packed_felts, DepositIntent, EncodingError, EthEmbeddedAccountIdExt,
-    LocalChainAddress, Signature, XReserveBurnItems,
+    ForeignChainAddress, Signature, XReserveBurnItems,
 };
 
 // Signature
@@ -196,7 +196,7 @@ fn account_id_bytes32_form_is_stock_and_byte_identical() {
 #[test]
 fn local_chain_address_packs_like_the_shared_codec() {
     let bytes: [u8; 32] = core::array::from_fn(|i| 0x10 + i as u8);
-    let address = LocalChainAddress::new(bytes);
+    let address = ForeignChainAddress::new(bytes);
 
     assert_ne!(bytes[..12], [0u8; 12], "the fixture must not be EVM-shaped");
     assert_eq!(

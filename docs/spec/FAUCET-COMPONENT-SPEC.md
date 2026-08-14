@@ -217,7 +217,7 @@ The identifier is not stored: the mint path **writes** the native faucet account
 preimage as `remoteToken`, so there is nothing to compare and nothing that could have been seeded
 wrong. `xreserve_contract` is a source-chain address, stored as the 8×u32-LE packed limbs of its
 bytes32 across two value slots. `domain` and `source_domain` are u32 scalars in element 0 of their
-slot words. The three build-seeded fields are typed u32/`LocalChainAddress` at the builder
+slot words. The three build-seeded fields are typed u32/`ForeignChainAddress` at the builder
 boundary; the address keeps the wire form's full 32 bytes, so a source chain whose addresses are
 not EVM-shaped is expressible here — the same widening `DC-14` carries.
 

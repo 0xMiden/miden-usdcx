@@ -32,6 +32,7 @@ use withdrawal_listener_attester::types::BurnPayload;
 use withdrawal_listener_attester::validate::{
     sign_validated, validate_discovery, validate_returned, DiscoveredDetails, DiscoveryRecord,
 };
+use xusdc_encoding::xreserve::encoding::ForeignChainAddress;
 
 #[path = "support/mod.rs"]
 mod support;
@@ -59,7 +60,9 @@ fn matching_payload() -> BurnPayload {
     BurnPayload {
         amount: AssetAmount::new(10_000_000).unwrap(),
         dest_domain: 0,
-        dest_recipient: hex32("0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e"),
+        dest_recipient: ForeignChainAddress::new(hex32(
+            "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
+        )),
         salt: [0x11; 32],
     }
 }
@@ -150,7 +153,7 @@ fn validate_returned_rejects_destination_domain_mismatch() {
 fn validate_returned_rejects_destination_recipient_mismatch() {
     let resp = response("prepare_withdrawal_200");
     let mut payload = matching_payload();
-    payload.dest_recipient = [0x00; 32];
+    payload.dest_recipient = ForeignChainAddress::new([0x00; 32]);
 
     assert_matches!(
         validate_returned(&resp, &payload, &cfg()),

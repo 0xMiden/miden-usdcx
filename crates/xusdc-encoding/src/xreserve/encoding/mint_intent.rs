@@ -20,8 +20,8 @@ use miden_protocol::Felt;
 
 use super::bytes32::packed_felts_to_bytes32;
 use super::deposit_intent::{
-    DepositIntent, DepositIntentField, DepositIntentHeader, DepositNonce, HookData,
-    LocalChainAddress, BYTES32_LEN, BYTES32_PACKED_LIMBS, BYTES_PER_PACKED_FELT,
+    DepositIntent, DepositIntentField, DepositIntentHeader, DepositNonce, ForeignChainAddress,
+    HookData, BYTES32_LEN, BYTES32_PACKED_LIMBS, BYTES_PER_PACKED_FELT,
 };
 use super::error::EncodingError;
 
@@ -36,8 +36,8 @@ use super::error::EncodingError;
 #[derive(Debug, Clone, PartialEq, Eq, bon::Builder)]
 pub struct MintIntent {
     nonce: DepositNonce,
-    local_token: LocalChainAddress,
-    local_depositor: LocalChainAddress,
+    local_token: ForeignChainAddress,
+    local_depositor: ForeignChainAddress,
     remote_recipient: AccountId,
     max_fee: AssetAmount,
     hook_data: HookData,
@@ -177,11 +177,11 @@ impl MintIntent {
 
         Ok(Self {
             nonce: DepositNonce::new(bytes32_at_felts(felts, Self::NONCE_FELT_OFF)?),
-            local_token: LocalChainAddress::new(bytes32_at_felts(
+            local_token: ForeignChainAddress::new(bytes32_at_felts(
                 felts,
                 Self::LOCAL_TOKEN_FELT_OFF,
             )?),
-            local_depositor: LocalChainAddress::new(bytes32_at_felts(
+            local_depositor: ForeignChainAddress::new(bytes32_at_felts(
                 felts,
                 Self::LOCAL_DEPOSITOR_FELT_OFF,
             )?),
@@ -206,11 +206,11 @@ impl MintIntent {
         self.nonce
     }
 
-    pub fn local_token(&self) -> LocalChainAddress {
+    pub fn local_token(&self) -> ForeignChainAddress {
         self.local_token
     }
 
-    pub fn local_depositor(&self) -> LocalChainAddress {
+    pub fn local_depositor(&self) -> ForeignChainAddress {
         self.local_depositor
     }
 
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn a_source_chain_address_wider_than_an_evm_address_round_trips() {
         let vec = accepts().next().expect("an accept vector");
-        let wide = LocalChainAddress::new(core::array::from_fn(|i| 0xf0 ^ i as u8));
+        let wide = ForeignChainAddress::new(core::array::from_fn(|i| 0xf0 ^ i as u8));
         assert_ne!(wide.as_bytes()[..12], [0u8; 12], "not an EVM address");
 
         let carried = MintIntent::builder()

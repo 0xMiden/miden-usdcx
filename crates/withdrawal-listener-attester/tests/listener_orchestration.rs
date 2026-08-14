@@ -294,7 +294,7 @@ async fn a_b5_spec_mismatch_produces_no_signature_and_no_withdraw(
         },
         "destinationRecipient" => ValidationMismatch::DestinationRecipient {
             batch: 0,
-            expected: format!("0x{}", hex::encode(payload().dest_recipient)),
+            expected: format!("0x{}", hex::encode(payload().dest_recipient.as_bytes())),
             returned: String::from(WRONG_RECIPIENT),
         },
         other => panic!("unmapped mismatch class `{other}`"),

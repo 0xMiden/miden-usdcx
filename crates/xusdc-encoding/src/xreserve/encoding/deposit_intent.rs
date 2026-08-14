@@ -30,7 +30,7 @@
 //! packaging these conversions apply.
 //!
 //! The two source-chain fields are NOT narrowed. They name a token and a depositor on a chain that
-//! need not be EVM-based, so they keep the wire form's full bytes32 as [`LocalChainAddress`].
+//! need not be EVM-based, so they keep the wire form's full bytes32 as [`ForeignChainAddress`].
 //!
 //! How large hookData may be is still Circle's to decide. The bound applied here is the protocol's
 //! own note-storage limit (`MAX_NOTE_STORAGE_ITEMS`, 1024 field elements — each storage "item" is
@@ -140,7 +140,7 @@ impl DepositNonce {
     }
 }
 
-// LOCAL CHAIN ADDRESS
+// FOREIGN CHAIN ADDRESS
 // ================================================================================================
 
 /// An address on the source chain — the deposited token, or the depositor.
@@ -150,9 +150,9 @@ impl DepositNonce {
 /// either value, it only writes them back into the message the attestation signed. A chain whose
 /// addresses are wider than an EVM address is carried like any other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LocalChainAddress([u8; BYTES32_LEN]);
+pub struct ForeignChainAddress([u8; BYTES32_LEN]);
 
-impl LocalChainAddress {
+impl ForeignChainAddress {
     /// Wraps a raw address. Any 32 bytes are one — the faucet places no structure on them.
     pub const fn new(bytes: [u8; BYTES32_LEN]) -> Self {
         Self(bytes)
@@ -245,8 +245,8 @@ pub struct DepositIntentHeader {
     remote_domain: u32,
     remote_token: AccountId,
     remote_recipient: AccountId,
-    local_token: LocalChainAddress,
-    local_depositor: LocalChainAddress,
+    local_token: ForeignChainAddress,
+    local_depositor: ForeignChainAddress,
     max_fee: AssetAmount,
     nonce: DepositNonce,
 }
@@ -281,12 +281,12 @@ impl DepositIntentHeader {
     }
 
     /// The deposited token on the source chain.
-    pub fn local_token(&self) -> LocalChainAddress {
+    pub fn local_token(&self) -> ForeignChainAddress {
         self.local_token
     }
 
     /// The depositor on the source chain.
-    pub fn local_depositor(&self) -> LocalChainAddress {
+    pub fn local_depositor(&self) -> ForeignChainAddress {
         self.local_depositor
     }
 
@@ -326,8 +326,8 @@ impl DepositIntentHeader {
             remote_domain: be_u32(&bytes, DepositIntentField::RemoteDomain),
             remote_token: account_id(&bytes, DepositIntentField::RemoteToken)?,
             remote_recipient: account_id(&bytes, DepositIntentField::RemoteRecipient)?,
-            local_token: LocalChainAddress::new(local_token),
-            local_depositor: LocalChainAddress::new(local_depositor),
+            local_token: ForeignChainAddress::new(local_token),
+            local_depositor: ForeignChainAddress::new(local_depositor),
             max_fee: reduce(
                 bytes32_at(&bytes, DepositIntentField::MaxFee),
                 DepositIntentField::MaxFee,

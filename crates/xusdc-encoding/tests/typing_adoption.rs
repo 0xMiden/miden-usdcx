@@ -27,7 +27,7 @@ use xusdc_encoding::note::xreserve_mint::{
     DepositAttestation, XUsdcMintNote, XUsdcMintNoteStorage,
 };
 use xusdc_encoding::xreserve::encoding::{
-    DepositIntent, DepositIntentHeader, DepositNonce, HookData, LocalChainAddress, MintIntent,
+    DepositIntent, DepositIntentHeader, DepositNonce, ForeignChainAddress, HookData, MintIntent,
     Signature, XReserveBurnItems,
 };
 
@@ -137,7 +137,7 @@ fn burn_note_builder_matches_create() {
     let items = XReserveBurnItems::builder()
         .amount(AssetAmount::new(1_234).expect("valid amount"))
         .dest_domain(9)
-        .dest_recipient([0xAB; 32])
+        .dest_recipient(ForeignChainAddress::new([0xAB; 32]))
         .salt([0xCD; 32])
         .build();
 
@@ -198,7 +198,7 @@ fn mint_note_builder_takes_typed_deposit_intent() -> Result<()> {
 #[test]
 fn crate_root_and_account_root_build_faucet_account_compose_an_account() {
     // Crate-root export (`xusdc_encoding::build_faucet_account`), taking the typed
-    // `LocalChainAddress` domain-config address.
+    // `ForeignChainAddress` domain-config address.
     let account: Account = xusdc_encoding::build_faucet_account(
         [9u8; 32],
         AssetAmount::new(1_000_000).expect("valid max supply"),
@@ -246,8 +246,8 @@ fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() -> Resul
 
     // A DepositIntentHeader is built through its own builder, each field in the domain type the
     // deposit has to hold — no raw wire field is left to set.
-    let local_token = LocalChainAddress::new([2u8; 32]);
-    let local_depositor = LocalChainAddress::new([3u8; 32]);
+    let local_token = ForeignChainAddress::new([2u8; 32]);
+    let local_depositor = ForeignChainAddress::new([3u8; 32]);
     let amount = AssetAmount::new(1_000)?;
     let header = DepositIntentHeader::builder()
         .amount(amount)

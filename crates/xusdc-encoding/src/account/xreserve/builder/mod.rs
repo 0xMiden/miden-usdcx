@@ -51,7 +51,7 @@ use miden_standards::account::policies::{
 };
 
 use crate::account::xreserve::XReserveAdminAuthority;
-use crate::xreserve::encoding::{bytes32_to_packed_felts, LocalChainAddress};
+use crate::xreserve::encoding::{bytes32_to_packed_felts, ForeignChainAddress};
 
 mod construction;
 mod error;
@@ -112,7 +112,7 @@ pub const USDCX_DECIMALS: u8 = 6;
 struct DomainConfigSeed {
     domain: u32,
     source_domain: u32,
-    xreserve_contract: LocalChainAddress,
+    xreserve_contract: ForeignChainAddress,
 }
 
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library
@@ -156,7 +156,7 @@ pub struct XReserveStablecoinBuilder {
     /// at composition time as `[source_domain, 0, 0, 0]`.
     source_domain: u32,
     /// The xReserve contract's source-chain address.
-    xreserve_contract: LocalChainAddress,
+    xreserve_contract: ForeignChainAddress,
 }
 
 impl XReserveStablecoinBuilder {
@@ -198,7 +198,7 @@ impl XReserveStablecoinBuilder {
         blocklist_manager_holder: AccountId,
         domain: u32,
         source_domain: u32,
-        xreserve_contract: LocalChainAddress,
+        xreserve_contract: ForeignChainAddress,
     ) -> Result<Self, XReserveStablecoinBuilderError> {
         Ok(Self {
             faucet: build_usdcx_faucet(max_supply, token_supply)?,

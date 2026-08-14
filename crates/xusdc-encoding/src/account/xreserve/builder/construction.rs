@@ -21,7 +21,7 @@ use miden_standards::StandardsLib;
 use super::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL,
 };
-use crate::xreserve::encoding::LocalChainAddress;
+use crate::xreserve::encoding::ForeignChainAddress;
 
 // CONSTANTS
 // ================================================================================================
@@ -208,7 +208,7 @@ pub fn build_faucet_account(
     blocklist_manager_holder: AccountId,
     domain: u32,
     source_domain: u32,
-    xreserve_contract: LocalChainAddress,
+    xreserve_contract: ForeignChainAddress,
 ) -> Result<Account, XReserveStablecoinBuilderError> {
     XReserveStablecoinBuilder::new(
         max_supply,

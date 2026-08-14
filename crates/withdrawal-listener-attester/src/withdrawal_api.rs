@@ -176,7 +176,7 @@ pub fn build_prepare_request(
             &EthEmbeddedAccountId::from_account_id(burn.depositor()).to_bytes32(),
         ))
         .final_destination_domain(payload.dest_domain)
-        .final_destination_recipient(hex32_of(&payload.dest_recipient))
+        .final_destination_recipient(hex32_of(payload.dest_recipient.as_bytes()))
         .salt(hex32_of(&payload.salt))
         .use_circle_forwarding(false)
         .build()?;

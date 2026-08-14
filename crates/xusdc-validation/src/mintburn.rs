@@ -35,7 +35,7 @@ use xusdc_encoding::note::xreserve_mint::{
 use xusdc_encoding::vectors::{load, parse_hex32, DiFields, DiVector};
 use xusdc_encoding::xreserve::encoding::{
     bytes32_to_storage_map_key, deposit_intent_field_offset, deposit_intent_to_packed_felts,
-    parse_deposit_intent_header, DepositIntentField, EthEmbeddedAccountIdExt, LocalChainAddress,
+    parse_deposit_intent_header, DepositIntentField, EthEmbeddedAccountIdExt, ForeignChainAddress,
     XReserveBurnItems,
 };
 
@@ -122,7 +122,7 @@ pub fn lnv2_domain_params() -> DomainParams {
     DomainParams {
         domain: MINT_DOMAIN,
         source_domain: 3,
-        xreserve_contract: LocalChainAddress::new(core::array::from_fn(|i| 0x10 + i as u8)),
+        xreserve_contract: ForeignChainAddress::new(core::array::from_fn(|i| 0x10 + i as u8)),
         // Legacy vector-token identifier bytes — no longer the fresh faucet's identifier (that is
         // the own-id fixpoint, derived at init). Kept so DomainParams stays fully populated.
         identifier_bytes: parse_hex32(&base_fields().remote_token_hex),
@@ -462,7 +462,7 @@ pub fn burn_note<R: FeltRng>(
     let items = XReserveBurnItems {
         amount: AssetAmount::new(amount).context("burn amount is a valid AssetAmount")?,
         dest_domain: 3,
-        dest_recipient: [0xAB; 32],
+        dest_recipient: ForeignChainAddress::new([0xAB; 32]),
         salt: [dest_salt; 32],
     };
     XReserveBurnNote::create(sender, faucet, items, rng)
@@ -494,7 +494,7 @@ pub fn burn_note_wrong_asset<R: FeltRng>(
         amount: AssetAmount::new(amount)
             .context("wrong-asset burn amount is a valid AssetAmount")?,
         dest_domain: 3,
-        dest_recipient: [0xAB; 32],
+        dest_recipient: ForeignChainAddress::new([0xAB; 32]),
         salt: [dest_salt; 32],
     };
     // DC-7 payload → NoteStorage.items via the shared-encoding codec (consumed by reference; no re-impl).

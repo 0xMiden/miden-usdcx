@@ -59,7 +59,7 @@ use xusdc_encoding::note::xreserve_burn::{
 use xusdc_encoding::note::xreserve_mint::DepositAttestation;
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
-    bytes32_to_packed_felts, bytes32_to_storage_map_key, DepositIntent, LocalChainAddress,
+    bytes32_to_packed_felts, bytes32_to_storage_map_key, DepositIntent, ForeignChainAddress,
     Signature, XReserveBurnItems,
 };
 
@@ -491,7 +491,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let stored_container = xusdc_encoding::xreserve::encoding::packed_felts_to_bytes32(&stored_xrc)
         .expect("S0: build-seeded xreserve_contract limbs are valid u32s (fail-closed inverse)");
     assert_eq!(
-        LocalChainAddress::new(stored_container),
+        ForeignChainAddress::new(stored_container),
         test_xreserve_contract(),
         "S0: fail-closed bytes32 round-trip == the input xreserve_contract"
     );
@@ -759,7 +759,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let low_items = XReserveBurnItems {
         amount: AssetAmount::new(BURN_LOW)?,
         dest_domain: TEST_SOURCE_DOMAIN,
-        dest_recipient: [0xABu8; 32],
+        dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
         salt: [0x01u8; 32],
     };
     let low_note = XReserveBurnNote::create(holder_id, faucet_id, low_items, &mut note_rng(41))?;
@@ -783,7 +783,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let items = XReserveBurnItems {
         amount: AssetAmount::new(BURN_OK)?,
         dest_domain: TEST_SOURCE_DOMAIN,
-        dest_recipient: [0xCDu8; 32],
+        dest_recipient: ForeignChainAddress::new([0xCDu8; 32]),
         salt: [0x02u8; 32],
     };
     let burn_note =
@@ -882,7 +882,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let paused_items = XReserveBurnItems {
         amount: AssetAmount::new(BURN_PAUSED)?,
         dest_domain: TEST_SOURCE_DOMAIN,
-        dest_recipient: [0xEFu8; 32],
+        dest_recipient: ForeignChainAddress::new([0xEFu8; 32]),
         salt: [0x03u8; 32],
     };
     let paused_note =
@@ -939,7 +939,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let resumed_items = XReserveBurnItems {
         amount: AssetAmount::new(BURN_PAUSED)?,
         dest_domain: TEST_SOURCE_DOMAIN,
-        dest_recipient: [0xEFu8; 32],
+        dest_recipient: ForeignChainAddress::new([0xEFu8; 32]),
         salt: [0x04u8; 32],
     };
     let resumed_note =

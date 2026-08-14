@@ -16,7 +16,7 @@ use withdrawal_listener_attester::validate::{
 
 use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
+use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
 use crate::actors::AttesterKey;
 use crate::mintburn::{mint_payload_opt, nonce_key, MintDomainConfig, MINT_DOMAIN};
@@ -92,7 +92,7 @@ pub(crate) fn burn_items(amount: u64) -> Result<XReserveBurnItems> {
         amount: miden_protocol::asset::AssetAmount::new(amount)
             .context("valid burn AssetAmount")?,
         dest_domain: BURN_DEST_DOMAIN,
-        dest_recipient: [0xAB; 32],
+        dest_recipient: ForeignChainAddress::new([0xAB; 32]),
         salt: [0xCD; 32],
     })
 }

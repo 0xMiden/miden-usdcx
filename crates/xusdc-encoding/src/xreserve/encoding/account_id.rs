@@ -1,12 +1,4 @@
-//! The bytes32 containers this crate reads and writes but the protocol only half-provides
-//! (Rust-primary — there is no MASM leg).
-//!
-//! Both are the same shape: a value right-aligned in 32 bytes behind a zero pad. An `AccountId`
-//! travels in the protocol's Agglayer embedded-account-id form, whose forward direction
-//! (`EthEmbeddedAccountId::to_bytes32`) is stock and is called directly — only the DECODE is
-//! missing, so that is what the extension trait below adds. An EVM address travels in the EVM's own
-//! left-padded container, whose decode (`EthAddress::try_from([u8; 32])`) is stock and the ENCODE
-//! is missing.
+//! Additional bytes32 conversion APIs for standard types.
 //!
 //! The AccountId layout `REQUIRES CIRCLE CONFIRMATION` and `REQUIRES IMPLEMENTATION VALIDATION` —
 //! it stays an OPEN proposal to Circle.
@@ -15,18 +7,10 @@ use miden_standards::interop::eth::AddressConversionError;
 
 use super::error::EncodingError;
 
-// A decoded DepositIntent's fields ARE these types, so no consumer can use this crate's surface
-// without naming them. Re-exporting keeps that from forcing a `miden-standards` dependency on a
-// caller that builds nothing itself — the relayer, whose whole Miden-facing job is to hand this
-// crate's factory its inputs.
+// Re-export these types so callers don't need to depend on miden-standards directly.
 pub use miden_standards::interop::eth::{EthAddress, EthEmbeddedAccountId};
 
-/// `AddressType::AccountId` discriminant (232 = 0b1110_1000). A bech32 discriminant,
-/// NOT part of the bytes32 wire form.
-pub const ADDRESS_TYPE_ACCOUNT_ID: u8 = 232;
-
-/// The bytes32 decode the protocol does not ship: the inverse of the stock
-/// [`EthEmbeddedAccountId::to_bytes32`].
+/// The inverse bytes32 decoding of [`EthEmbeddedAccountId::to_bytes32`].
 pub trait EthEmbeddedAccountIdExt: Sized {
     /// Decodes the right-aligned bytes32 form — `bytes[0..16] = 0x00`, `bytes[16..24] = prefix` as
     /// u64 big-endian, `bytes[24..32] = suffix` as canonical u64 big-endian.
@@ -60,14 +44,9 @@ impl EthEmbeddedAccountIdExt for EthEmbeddedAccountId {
     }
 }
 
-/// The bytes32 encode the protocol does not ship: the inverse of the stock
-/// `EthAddress::try_from([u8; 32])`.
+/// The inverse bytes32 encoding of `EthAddress::try_from([u8; 32])`.
 pub trait EthAddressExt {
     /// The bytes32 container an EVM address travels in: 12 zero bytes then the 20 address bytes.
-    ///
-    /// The faucet's `xreserve_contract` domain-config field is stored as this container's 8 u32-LE
-    /// limbs — not the address's 5 — because the field has no on-chain compare and off-chain
-    /// services read the full bytes32 back out of storage.
     fn to_bytes32(&self) -> [u8; 32];
 }
 
@@ -179,20 +158,6 @@ mod tests {
             Err(EncodingError::AccountIdOutOfRange),
             "pad byte {pad_index}"
         );
-    }
-
-    /// TV-AID-3 (constants/API shape): the address type discriminant is 232 and the API
-    /// has no >32-byte / keccak fallback branch (input type is `[u8; 32]` by signature).
-    /// The layout itself `REQUIRES CIRCLE CONFIRMATION`.
-    #[test]
-    fn tv_aid_3_address_type_and_no_fallback() {
-        assert_eq!(
-            ADDRESS_TYPE_ACCOUNT_ID, 232,
-            "AddressType::AccountId discriminant"
-        );
-        // API-shape check: the converter accepts exactly 32 bytes
-        let _shape_check: fn([u8; 32]) -> Result<EthEmbeddedAccountId, EncodingError> =
-            EthEmbeddedAccountId::try_from_bytes32;
     }
 
     /// The EVM-address container round-trips through the stock decode, and leaves the 12 leading

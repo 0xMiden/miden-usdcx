@@ -5,10 +5,10 @@
 //! cross that gap, and this is the only place it happens: on-chain the faucet does NOT divide,
 //! because under `DC-14` the uint256 never reaches the chain at all.
 //!
-//! The arithmetic is the protocol standards' [`EthAmount::scale_to_asset_amount`], so this crate
-//! carries no second implementation of it. What lives here is its adaptation to this crate's error
-//! type and the golden vectors that pin the behaviour Circle's numbers depend on. Nothing
-//! saturates and nothing truncates silently: every path out is either an exact value or an error.
+//! The arithmetic is the standards' [`EthAmount::scale_to_asset_amount`]. What lives here is its
+//! adaptation to this crate's error type and the golden vectors that pin the behaviour Circle's
+//! numbers depend on. Nothing saturates and nothing truncates silently: every path out is either
+//! an exact value or an error.
 //!
 //! The exact cap is still Circle's to decide (`DEV-5`, OPEN). The mechanism is implemented; the
 //! numbers it is parameterized with remain open, and nothing here should be read as settling them.

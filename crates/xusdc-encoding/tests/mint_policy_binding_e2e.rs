@@ -79,13 +79,7 @@ async fn mint_rejects_an_amount_mismatch(
         &AttachmentPlan::default(),
         rng_seed,
     )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
-    )
-    .await
+    expect_reject(&mut pf, note, &payload, &ERR_ECDSA_VERIFY_FAILED).await
 }
 
 /// A note whose output tag does not target the attested recipient rejects with the tag binding
@@ -516,15 +510,20 @@ async fn mint_rejects_a_non_u32_hook_data_len_limb() -> Result<()> {
 #[rstest]
 #[case::pubkey(
     ATTESTATION_PUBKEY_FELT_OFF,
-    "ERR_XRESERVE_DISALLOWED_PUB_KEY",
+    shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY"),
     34,
     101
 )]
-#[case::signature(ATTESTATION_SIGNATURE_FELT_OFF, "ERR_XRESERVE_SIG_INVALID", 35, 102)]
+#[case::signature(
+    ATTESTATION_SIGNATURE_FELT_OFF,
+    &ERR_ECDSA_VERIFY_FAILED,
+    35,
+    102
+)]
 #[tokio::test]
 async fn mint_rejects_a_tampered_attestation_sub_region(
     #[case] felt_off: usize,
-    #[case] expected_err: &str,
+    #[case] expected_err: &'static MasmError,
     #[case] nonce_variant: u8,
     #[case] rng_seed: u64,
 ) -> Result<()> {
@@ -543,7 +542,39 @@ async fn mint_rejects_a_tampered_attestation_sub_region(
         },
         rng_seed,
     )?;
-    expect_reject(&mut pf, note, &payload, shell_error_by_name(expected_err)).await
+    expect_reject(&mut pf, note, &payload, expected_err).await
+}
+
+/// A signature limb above `u32::MAX` is refused by name, before the verifier sees it: the
+/// limb rewrite into the verifier's order is u32 arithmetic.
+#[tokio::test]
+async fn mint_rejects_a_non_u32_signature_limb() -> Result<()> {
+    let mut pf = fixture()?;
+    bring_up(&mut pf, 1).await?;
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 93);
+    let note = tampered_mint_note(
+        &pf,
+        &payload,
+        &honest_storage(&pf),
+        1,
+        None,
+        &AttachmentPlan {
+            // a felt at 2^32 is a valid field element but NOT a valid u32 limb
+            attestation_felt_tamper: Some((
+                ATTESTATION_SIGNATURE_FELT_OFF,
+                Felt::try_from(1u64 << 32).expect("2^32 is within the field"),
+            )),
+            ..AttachmentPlan::default()
+        },
+        193,
+    )?;
+    expect_reject_u32_assert(
+        &mut pf,
+        note,
+        &payload,
+        shell_error_by_name("ERR_XRESERVE_SIG_LIMB"),
+    )
+    .await
 }
 
 /// The other half of the isolation proof: a tampered INTENT byte — the attestation section left
@@ -568,13 +599,7 @@ async fn mint_rejects_a_tampered_intent_byte() -> Result<()> {
         &AttachmentPlan::default(),
         103,
     )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &carried,
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
-    )
-    .await
+    expect_reject(&mut pf, note, &carried, &ERR_ECDSA_VERIFY_FAILED).await
 }
 
 // PAUSE HALT — the dispatcher gate (execute_mint_policy runs assert_not_paused FIRST)
@@ -734,18 +759,9 @@ async fn mint_note_routes_to_the_faucet_network_account() -> Result<()> {
 // ADVICE INDEPENDENCE — the host cannot influence a mint
 // ================================================================================================
 
-/// A mint runs identically whether or not the prover seeds an advice stack.
-///
-/// Every operand the policy verifies — the deposit intent, the operator fee, the attester pubkey,
-/// the signature — is read out of memory the policy hash-verified against the note's own
-/// attachment commitments. The advice provider is host-controlled, so if any stage still popped
-/// from it, a prover could hand the verify a different payload than the one the note committed to.
-///
-/// The behavioral half of that guarantee is what this test covers: a hostile stack changes
-/// nothing. It cannot cover the whole of it, because the divergence a real attacker exploits is a
-/// prover serving different bytes on a second read of the same advice-map key, and MockChain's
-/// advice provider is a static map that cannot model it. What closes the gap is a source fact
-/// rather than a behavior: no `.masm` under `asm/` contains an advice-read instruction at all.
+/// Junk staged on the advice stack in advance does not change the mint: `verify_signature`
+/// pushes the note's own bytes last and `push_mapval` prepends, so the junk stays below the
+/// elements the verifier reads.
 #[tokio::test]
 async fn mint_ignores_a_hostile_advice_stack() -> Result<()> {
     let mut pf = fixture()?;
@@ -792,4 +808,39 @@ async fn mint_ignores_a_hostile_advice_stack() -> Result<()> {
         "the attested nonce is marked used"
     );
     Ok(())
+}
+
+/// The faucet verifies the signature the NOTE carries, not one the host offers.
+///
+/// The note carries the allowlisted attester's key with that attester's signature over a
+/// DIFFERENT payload, while the host stages the witness that would verify. The mint must
+/// reject. If this ever passes, the advice binding is gone.
+#[tokio::test]
+async fn mint_rejects_a_forged_signature_the_host_tries_to_rescue() -> Result<()> {
+    let mut pf = fixture()?;
+    bring_up(&mut pf, 1).await?;
+    let carried = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 91);
+    let signed_instead = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 92);
+    let note = tampered_mint_note(
+        &pf,
+        &carried,
+        &honest_storage(&pf),
+        1,
+        Some(&signed_instead),
+        &AttachmentPlan::default(),
+        191,
+    )?;
+    emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
+
+    let rescue = ecdsa_advice_witness(&gen_attester(1, &carried));
+    assert_eq!(
+        rescue.len(),
+        32,
+        "the verifier consumes exactly 32 elements"
+    );
+    let result =
+        consume_note_with_advice(&pf.mock_chain, pf.faucet_id, note.id(), Some(rescue)).await;
+    assert_transaction_executor_error!(result, &ERR_ECDSA_VERIFY_FAILED);
+
+    assert_no_effects(&pf, &carried)
 }

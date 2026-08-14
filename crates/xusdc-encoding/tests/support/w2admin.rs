@@ -11,7 +11,7 @@
 //! authority and role dispatch inside the called procedures, not the note-script allowlist. Mixing
 //! the two would make a rejection ambiguous.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
@@ -24,11 +24,11 @@ use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::Authority;
 use miden_standards::account::access::{
-    Pausable, PausableManager, PausableStorage, RoleBasedAccessControl,
+    Pausable, PausableManager, PausableStorage, RoleBasedAccessControl, RoleConfig,
 };
 use miden_standards::account::policies::{BasicBlocklist, BlocklistManager, BlocklistStorage};
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::{BlocklistConfig, BlocklistConfigNote, PauseAction, PauseActionNote};
+use miden_standards::note::{BlocklistConfig, BlocklistConfigNote, PauseConfig, PauseConfigNote};
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
@@ -120,21 +120,27 @@ pub fn set_word() -> Word {
 
 /// The standard pieces the admin model is built from, and nothing else.
 ///
-/// The RBAC seed deliberately uses `RoleBasedAccessControl::new` rather than the faucet's
-/// hand-seeded component: the grounding account needs no delegated role admin, so the stock
-/// constructor covers it — which doubles as a check that the constructor seeds role membership the
-/// way the admin model assumes.
+/// The RBAC seed deliberately uses the stock `RoleBasedAccessControl::builder` rather than the
+/// faucet's hand-seeded component: the grounding account needs no delegated role admin, so the
+/// stock builder covers it — which doubles as a check that it seeds role membership the way the
+/// admin model assumes.
 pub fn grounding_components() -> Vec<AccountComponent> {
-    let role_members = BTreeMap::from([
-        (pauser_symbol(), BTreeSet::from([pauser_holder()])),
-        (blocklist_symbol(), BTreeSet::from([blocklist_holder()])),
-    ]);
+    // ADMIN plus the two domain roles, no delegated admin — the same seed the pre-bump
+    // `RoleBasedAccessControl::new(admins, role_members)` produced, now expressed one role config at
+    // a time through the builder that replaced the removed positional constructor. The role graph
+    // (a map keyed by role symbol) is identical regardless of the order the configs are added.
+    let rbac = RoleBasedAccessControl::builder()
+        .role(RoleConfig::new(RoleBasedAccessControl::admin_role()).with_members([admin_holder()]))
+        .role(RoleConfig::new(pauser_symbol()).with_members([pauser_holder()]))
+        .role(RoleConfig::new(blocklist_symbol()).with_members([blocklist_holder()]))
+        .build()
+        .expect("the grounding RBAC seed must build");
     vec![
         Pausable::unpaused().into(),
         PausableManager.into(),
         BasicBlocklist::default().into(),
         BlocklistManager.into(),
-        RoleBasedAccessControl::new(BTreeSet::from([admin_holder()]), role_members).into(),
+        rbac.into(),
         XReserveAdminAuthority::new().into(),
     ]
 }
@@ -266,13 +272,13 @@ pub fn note_rng(seed: u64) -> RandomCoin {
 pub fn pause_action_note(
     sender: AccountId,
     account: AccountId,
-    action: PauseAction,
+    action: PauseConfig,
     seed: u32,
 ) -> Result<Note> {
-    let note = PauseActionNote::builder()
+    let note = PauseConfigNote::builder()
         .sender(sender)
-        .account(account)
-        .action(action)
+        .target(account)
+        .config(action)
         .serial_number(serial(seed))
         .build()
         .map_err(|e| anyhow::anyhow!("building the pause action note: {e}"))?;
@@ -400,13 +406,13 @@ fn config_note_serial(seed: u64) -> Word {
 pub fn stock_pause_action_note(
     sender: AccountId,
     faucet_id: AccountId,
-    action: PauseAction,
+    action: PauseConfig,
     seed: u64,
 ) -> Result<Note> {
-    let note = PauseActionNote::builder()
+    let note = PauseConfigNote::builder()
         .sender(sender)
-        .account(faucet_id)
-        .action(action)
+        .target(faucet_id)
+        .config(action)
         .serial_number(config_note_serial(seed))
         .build()
         .map_err(|e| anyhow::anyhow!("building the stock pause action note: {e}"))?;
@@ -415,12 +421,12 @@ pub fn stock_pause_action_note(
 
 /// The stock pause-action note that pauses `faucet_id`.
 pub fn stock_pause_note(sender: AccountId, faucet_id: AccountId, seed: u64) -> Result<Note> {
-    stock_pause_action_note(sender, faucet_id, PauseAction::Pause, seed)
+    stock_pause_action_note(sender, faucet_id, PauseConfig::Pause, seed)
 }
 
 /// The stock pause-action note that unpauses `faucet_id`.
 pub fn stock_unpause_note(sender: AccountId, faucet_id: AccountId, seed: u64) -> Result<Note> {
-    stock_pause_action_note(sender, faucet_id, PauseAction::Unpause, seed)
+    stock_pause_action_note(sender, faucet_id, PauseConfig::Unpause, seed)
 }
 
 /// The faucet's block note for `target`, built through the factory that refuses a self-block.

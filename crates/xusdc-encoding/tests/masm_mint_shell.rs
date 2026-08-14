@@ -203,26 +203,26 @@ async fn unrelated_nonce_passes_replay_protection() -> Result<()> {
 // D5D — ATTESTATION VERIFY
 // ================================================================================================
 // Executes the faucet-owned `xreserve::attestation_verify::verify_attestation` on a MockChain.
-// The proc does three things in order: keccak256 the DepositIntent payload, check that the
-// candidate public key is an enabled attester (its Poseidon2 commitment must have a non-empty
-// entry in the `xReserveAttesters` map), and ECDSA-verify the supplied signature against that
-// digest and key. Only a deposit Circle actually signed can pass.
+// The proc does two things in order: check that the candidate public key is an enabled attester
+// (its Poseidon2 commitment must have a non-empty entry in the `xReserveAttesters` map), then
+// ECDSA-verify the supplied signature over keccak256 of the DepositIntent payload for that key.
+// Only a deposit Circle actually signed can pass.
 //
-// The security property these cases exist for: the pubkey is read from the advice stack ONCE,
-// into one local memory region, and that same region feeds both the allowlist lookup and the
-// signature check. If the two steps could read different keys, an attacker could present an
-// allowlisted attester's key for the lookup and their own signature for the verification.
+// The security property these cases exist for: the pubkey is read out of ONE caller-owned memory
+// region, and that same region feeds both the allowlist lookup and the signature check. If the two
+// steps could read different keys, an attacker could present an allowlisted attester's key for the
+// lookup and their own signature for the verification.
 //
 // Keypairs and signatures are generated inside the test (k256 + sha3 + miden-crypto) rather than
 // baked into the shared vector artifact, because the tests need two attesters signing the SAME
 // payload: key A and key B, with distinct commitments, so a signature by one can be offered
 // under the identity of the other.
 //
-// Every case runs the real proc — real keccak, real Poseidon2 commitment, real map read, real
-// `verify_prehash` — and pins the exact outcome: an accepted attestation stops at the
+// Every case runs the real proc — real keccak, real Poseidon2 commitment, real map read, the real
+// core-library ECDSA verifier — and pins the exact outcome: an accepted attestation stops at the
 // supply-write boundary having written nothing; a rejected one traps with the specific error for
-// the check that failed; and an attestation with nothing staged on the advice stack fails closed
-// rather than proceeding with garbage.
+// the check that failed; and an attestation with nothing staged in memory fails closed rather than
+// proceeding with garbage.
 
 /// The DepositIntent whose bytes the attestation cases hash and sign: the 240-byte accept vector
 /// with no hookData, so the payload is exactly the fixed header.
@@ -325,7 +325,7 @@ async fn forged_signature_rejects() -> Result<()> {
         SHELL_DRIVER_PATH,
     )?;
     let result = run_call_driver(&h, "drive").await;
-    assert_transaction_executor_error!(result, shell_error_by_name("ERR_XRESERVE_SIG_INVALID"));
+    assert_transaction_executor_error!(result, &ERR_ECDSA_VERIFY_FAILED);
     Ok(())
 }
 
@@ -372,7 +372,7 @@ async fn mismatched_attestation_arrangements_reject() -> Result<()> {
     let mixed_src = paired_driver_src(&preimage, len_bytes, &a, &b);
     let h1 = setup_attestation_account(allowlist_a, &mixed_src, SHELL_DRIVER_PATH)?;
     let r1 = run_call_driver(&h1, "drive").await;
-    assert_transaction_executor_error!(r1, shell_error_by_name("ERR_XRESERVE_SIG_INVALID"));
+    assert_transaction_executor_error!(r1, &ERR_ECDSA_VERIFY_FAILED);
 
     // arrangement 2: B's key and B's own valid signature, but B was never allowlisted
     let b_only_src = paired_driver_src(&preimage, len_bytes, &b, &b);

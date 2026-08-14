@@ -460,7 +460,7 @@ pub async fn consume_note_with_advice(
         .build_transaction(faucet_id)
         .authenticated_input_note(note_id);
     if let Some(stack) = advice_stack {
-        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack));
+        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_advice_stack(stack.into()));
     }
     ctx.build()
         .expect("building the consume tx")

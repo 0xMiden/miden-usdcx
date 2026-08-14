@@ -83,13 +83,7 @@ async fn mint_rejects_a_forged_signature() -> Result<()> {
         &AttachmentPlan::default(),
         82,
     )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
-    )
-    .await
+    expect_reject(&mut pf, note, &payload, &ERR_ECDSA_VERIFY_FAILED).await
 }
 
 /// Removing an attester really revokes them, end to end.
@@ -219,13 +213,7 @@ async fn mint_rejects_a_wrong_domain() -> Result<()> {
     payload[REMOTE_DOMAIN_BYTE_OFF..REMOTE_DOMAIN_BYTE_OFF + 4]
         .copy_from_slice(&TEST_WRONG_DOMAIN.to_be_bytes());
     let note = honest_note(&pf, &payload, 83)?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
-    )
-    .await
+    expect_reject(&mut pf, note, &payload, &ERR_ECDSA_VERIFY_FAILED).await
 }
 
 /// A deposit intent whose `remoteToken` is not this faucet's identifier is refused, compared
@@ -243,13 +231,7 @@ async fn mint_rejects_a_wrong_identifier() -> Result<()> {
         &xusdc_encoding::xreserve::encoding::account_id_to_bytes32(pf.recipient_id),
     );
     let note = honest_note(&pf, &payload, 84)?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
-    )
-    .await
+    expect_reject(&mut pf, note, &payload, &ERR_ECDSA_VERIFY_FAILED).await
 }
 
 // AMOUNT AND FEE BOUNDS — checked inside the policy, before anything is minted

@@ -25,7 +25,7 @@ use anyhow::{Context, Result};
 use miden_protocol::account::StorageSlotName;
 use miden_protocol::note::NoteScriptRoot;
 use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, MintNote, PauseActionNote, RbacActionNote,
+    BlocklistConfigNote, BurnNote, MintNote, PauseConfigNote, RbacConfigNote,
 };
 use support::mint_transport::*;
 use support::*;
@@ -51,9 +51,9 @@ fn expected_allowlist() -> BTreeSet<NoteScriptRoot> {
         XReserveSetAttesterNote::script_root(),
         XReserveSetMinBurnSizeNote::script_root(),
         XReserveSetMaxSupplyNote::script_root(),
-        PauseActionNote::script_root(),
+        PauseConfigNote::script_root(),
         BlocklistConfigNote::script_root(),
-        RbacActionNote::script_root(),
+        RbacConfigNote::script_root(),
     ])
 }
 
@@ -160,13 +160,7 @@ async fn a_foreign_remote_token_rejects_while_the_own_id_intent_mints() -> Resul
     );
 
     let note = honest_note(&pf, &payload, 2012)?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID"),
-    )
-    .await?;
+    expect_reject(&mut pf, note, &payload, &ERR_ECDSA_VERIFY_FAILED).await?;
 
     // the discrimination proof: the SAME faucet mints the own-id-bound intent
     let bound = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 33);
@@ -187,16 +181,16 @@ async fn a_foreign_remote_token_rejects_while_the_own_id_intent_mints() -> Resul
 
 /// The reject error text is the one pinned for the mint, character for character.
 ///
-/// The string is part of the faucet's MAST root and of what a relayer matches on, so a reworded
-/// message is a wire change dressed up as a comment fix. Under `DC-14` a foreign identifier no
-/// longer has an error of its own — the faucet stamps its own id into the message, so the reject
-/// arrives as the signature failing over a preimage Circle never signed. That IS the frozen
-/// string now.
+/// The string is part of what a relayer matches on, so a reworded message is a wire change dressed
+/// up as a comment fix. Under `DC-14` a foreign identifier has no error of its own — the faucet
+/// stamps its own id into the message, so the reject arrives as the signature failing over a
+/// preimage Circle never signed. Since the signature verdict moved into the core library's ECDSA
+/// verifier, which traps rather than returning a flag, the frozen string is that verifier's.
 #[test]
 fn the_wrong_identifier_error_text_is_unchanged() {
     assert_eq!(
-        shell_error_by_name("ERR_XRESERVE_SIG_INVALID").message(),
-        "deposit attestation signature verification failed",
+        ERR_ECDSA_VERIFY_FAILED.message(),
+        "ECDSA verification failed: x(VERIFY_POINT) != SIG_R",
         "the wrong-identifier reject text is frozen"
     );
 }

@@ -261,7 +261,7 @@ async fn call_driver(
     h.mock_chain
         .build_transaction(h.tx_input.clone())
         .tx_script(tx_script)
-        .extend_advice_inputs(AdviceInputs::default().with_stack(advice))
+        .extend_advice_inputs(AdviceInputs::default().with_advice_stack(advice.into()))
         .build()
         .expect("building the transaction")
         .execute()

@@ -211,7 +211,8 @@ pub struct BnVector {
     pub dest_recipient: Option<String>,
     #[serde(default)]
     pub salt: Option<String>,
-    /// Accept: the 18-felt `NoteStorage.items` golden layout. Reject: the malformed felts.
+    /// Accept: the 18-felt burn-payload golden layout (carried in note attachment scheme 6). Reject:
+    /// the malformed felts.
     pub items: Vec<String>,
     #[serde(default)]
     pub expected_variant: Option<String>,

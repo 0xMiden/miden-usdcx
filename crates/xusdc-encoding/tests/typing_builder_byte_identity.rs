@@ -32,19 +32,22 @@ const SEED: [u8; 32] = [7u8; 32];
 const MAX_SUPPLY: u64 = 1_000_000;
 const TOKEN_SUPPLY: u64 = 0;
 
-// The baseline composition anchors, as their stable `Debug`/`Display` renderings (captured from the
-// pre-change composition at SEED). Comparing the rendered strings sidesteps any felt-repr ambiguity.
+// The baseline composition anchors at SEED, as their stable `Debug`/`Display` renderings (the
+// rendered strings sidestep any felt-repr ambiguity). Cause, per anchor: the CODE COMMITMENT
+// tracks `check_policy`'s MAST root; the STORAGE DIGEST moves with it because the active mint
+// policy is STORED as that root; the ACCOUNT ID and STATE COMMITMENT derive from both. No slot and
+// no procedure was added or removed; the policy companions sit in the manager's emission order —
+// the callable-surface and note-allowlist tripwires pass unedited.
 //
-// The account id is the NEW-ACCOUNT derivation: ground from SEED over the composed code and
-// storage commitments, so it moves whenever either commitment moves (unlike the code commitment
-// and storage digest, which isolate their own layer). The initial commitment covers all three.
+// NOT RATIFIED — every value below is MEASURED from this composition, not accepted. A human must
+// re-ratify all four at PR assembly.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([10076373761305706519, 10440539853315739426, 1462352126621038087, 10263001403175429522])";
+    "Word([10998031657962249823, 16841345702647930757, 10854811920308501145, 2506868014461760564])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([2686342393791959322, 18296125387112714431, 12713893831410132138, 13782261319063673720])";
+    "Word([15058775153826961406, 12221757768293569830, 4220212873006231106, 7610009271148123683])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([345493706676576914, 583533095193184295, 14946277560135686626, 18108462045088020144])";
-const GOLDEN_ACCOUNT_ID: &str = "0xf076dba26f73c0f12040a788364980";
+    "Word([4363712052244048219, 2641855597089613738, 1614590384134086560, 11013628455427548577])";
+const GOLDEN_ACCOUNT_ID: &str = "0x5ba5e3dc40e32fb132c49d8c3409e7";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.

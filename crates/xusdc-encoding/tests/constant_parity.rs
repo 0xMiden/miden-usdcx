@@ -4,18 +4,10 @@
 //! values; the error strings are byte-identical). One-sided edits fail mechanically —
 //! the `masm-rust-constant-parity` obligation, closed at the constant layer.
 //!
-//! Bidirectional hardening: parity is BIDIRECTIONAL — every constant parsed from the MASM
-//! sources (numeric, string, and `word("…")` slot-name) must be covered by a parity row
-//! or a documented exemption, so a new MASM-only constant fails this suite; the faucet shell
-//! modules are included by reference (the encoding crate's `lib.rs` embeds only its own
-//! sources). The generic scale/limb primitives (pow10, the u32 limb merge) are consumed from
-//! the linked miden-standards library and declare no local constants here. Wave-1 S1 re-materialization: the deleted custom-transport modules
-//! (`xreserve_mint` / `xreserve_mint_note_entry` / `mint_deny_guard` / `burn_policy` /
-//! `min_burn_admin` / `domain_config`) left the sweep; the attestation mint policy
-//! (`mint_policy.masm`) joined it, with the merged transport rows — the attachment scheme
-//! (rider A8: >= 4, clear of the reserved value 1 and the standard values 2/3) and the attestation
-//! width that places the intent sub-region — and the DC-5 scale row pinned against the
-//! `XUsdcMintNote` factory constants.
+//! Parity is BIDIRECTIONAL: every constant parsed from the MASM sources (numeric, string, and
+//! `word("…")` slot-name) must be covered by a parity row or a documented exemption, so a new
+//! MASM-only constant fails this suite. The faucet shell modules are included by reference (the
+//! encoding crate's `lib.rs` embeds only its own sources).
 
 mod support;
 
@@ -71,9 +63,13 @@ const SHELL_ERRORS_DECLARED: &[&str] = &[
     // the maxFee/fee staging's too-large guard (deposit_intent_parser.masm)
     // replay protection R-MINT-12
     "ERR_XRESERVE_NONCE_REPLAY",
-    // attestation verification R-MINT-13 / R-MINT-14 (attestation_verify.masm)
+    // attestation verification R-MINT-13 / R-MINT-14 (attestation_verify.masm). The signature
+    // VERDICT is no longer a faucet-owned error: the core-library ECDSA verifier traps on a failed
+    // verification instead of returning a flag, so the reject carries the verifier's own identity
+    // (support::ERR_ECDSA_VERIFY_FAILED) and no faucet constant can name it. What stays faucet-owned
+    // is the allowlist gate and the limb guard on the scalars the verifier is handed.
     "ERR_XRESERVE_DISALLOWED_PUB_KEY",
-    "ERR_XRESERVE_SIG_INVALID",
+    "ERR_XRESERVE_SIG_LIMB",
     // F2 fee guard (deposit_intent_parser.masm; DEC-2 keep-zero)
     // Transport-shape guards on the stock MintNote's attachments: the attachment set and the
     // merged transport's floor (mint_policy.masm), then the staged intent's own shape and length
@@ -120,10 +116,17 @@ fn expected_attester_admin_word_consts() -> Vec<(&'static str, &'static str)> {
     )]
 }
 
-/// The attestation verification attestation-verify shell's numeric constants: its `@locals` offsets (the keccak
-/// digest's two words — procedure-local addresses with no Rust counterpart) and `PUBKEY_FELTS`,
-/// which IS parity-asserted against the Rust codec in `masm_rust_constant_parity` below.
-const ATTESTATION_COVERED_NUMS: &[&str] = &["DIGEST_LO_LOC", "DIGEST_HI_LOC", "PUBKEY_FELTS"];
+/// The attestation verification attestation-verify shell's numeric constants: `PUBKEY_FELTS`, which
+/// IS parity-asserted against the Rust codec in `masm_rust_constant_parity` below, plus the
+/// signature-staging layout the ECDSA verifier's advice ABI forces — one scalar's limb width and
+/// the `verify_signature` local buffer that holds the two rewritten scalars (procedure-local
+/// addresses with no Rust counterpart; the width is the ECDSA scalar's, not a wire field's).
+const ATTESTATION_COVERED_NUMS: &[&str] = &[
+    "PUBKEY_FELTS",
+    "SIGNATURE_SCALAR_LIMBS",
+    "NATIVE_SCALARS_LOC",
+    "NATIVE_SCALARS_FELTS",
+];
 
 /// Attestation mint-policy numeric consts: the merged transport's attachment scheme + the
 /// attestation section word count are parity-asserted against the `XUsdcMintNote` factory

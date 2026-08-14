@@ -53,8 +53,8 @@ miden-standards `MintNote`** (no custom mint script exists); the faucet-owned ad
 root-pinned scripts (`set_attester`, `set_min_burn_size` — which asserts the floor then calls the
 stock `set_min_burn_amount` —, and `set_max_supply`) that cross into the account and call the
 matching setter. Pausing, the transfer blocklist and role management ship
-**no faucet-owned script**: they use the stock `PauseActionNote`, `BlocklistConfigNote` and
-`RbacActionNote`, each of which covers every one of its actions behind one script root and calls the
+**no faucet-owned script**: they use the stock `PauseConfigNote`, `BlocklistConfigNote` and
+`RbacConfigNote`, each of which covers every one of its actions behind one script root and calls the
 stock component the account installs. There is no ownership note — the faucet installs no ownership
 component.
 
@@ -147,7 +147,9 @@ over `keccak256(payload)` (65-byte `r‖s‖v`, `v` unused; not EIP-712).
 ## 4. Burn
 
 A holder creates a public `XReserveBurnNote` carrying `(amount, destDomain, destRecipient,
-salt)` in the note's storage items, with the depositor in `metadata.sender`. Creating the note
+salt)` in a scheme-tagged note attachment — for the felt count, field offsets, attachment scheme,
+word count and slot order see `DC-7` in `docs/spec/GLOSSARY.md`. The depositor is in
+`metadata.sender`. Creating the note
 moves the assets out of the holder's vault, so the holder's balance is checked at **creation**
 (`R-BURN-5`), not re-checked at consume.
 

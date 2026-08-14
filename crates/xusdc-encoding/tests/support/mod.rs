@@ -96,7 +96,7 @@ pub const TEST_WRONG_DOMAIN: u32 = 8;
 pub const TEST_SOURCE_DOMAIN: u32 = 3;
 
 /// Test `xreserve_contract` bytes32 (sequential distinct bytes) — the third build-seeded
-/// domain-config field the production fixtures pass to `XReserveStablecoinBuilder::new`.
+/// domain-config field the production fixtures seed through the builder.
 pub fn test_xreserve_contract() -> [u8; 32] {
     core::array::from_fn(|i| 0x10 + i as u8)
 }
@@ -412,27 +412,39 @@ fn library_attestation_mint_policy_root(component: &AccountComponent) -> Result<
 }
 
 /// THE production-shape [`XReserveStablecoinBuilder`] construction — the ONE definition of the
-/// `new` argument shape that every production fixture AND every production PIN is measured
+/// constructor argument shape that every production fixture AND every production PIN is measured
 /// through. A second copy of this shape anywhere would keep measuring
 /// the OLD arguments after the production ones changed, leaving a root/slot pin green while the
-/// shipped account moved; so there is exactly one, and callers differ only in `domain`.
+/// shipped account moved; so there is exactly one, and callers differ only in `domain` and the
+/// optional `min_burn_amount`. Returns the constructor's typed verdict; the outer `Result` carries
+/// fixture setup failures only.
+pub fn production_builder_verdict(
+    max_supply: u64,
+    token_supply: u64,
+    domain: u32,
+    min_burn_amount: Option<AssetAmount>,
+) -> Result<std::result::Result<XReserveStablecoinBuilder, XReserveStablecoinBuilderError>> {
+    Ok(XReserveStablecoinBuilder::builder()
+        .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
+        .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
+        .owner(test_account_id(1))
+        .pauser_holder(test_account_id(2))
+        .manager_holder(test_account_id(3))
+        .blocklist_manager_holder(test_account_id(4))
+        .domain(domain)
+        .source_domain(TEST_SOURCE_DOMAIN)
+        .xreserve_contract(EthBytes32::new(test_xreserve_contract()))
+        .maybe_min_burn_amount(min_burn_amount)
+        .build())
+}
+
 pub fn production_builder(
     max_supply: u64,
     token_supply: u64,
     domain: u32,
 ) -> Result<XReserveStablecoinBuilder> {
-    XReserveStablecoinBuilder::new(
-        AssetAmount::new(max_supply).context("invalid max_supply")?,
-        AssetAmount::new(token_supply).context("invalid token_supply")?,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-        domain,
-        TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
-    )
-    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))
+    production_builder_verdict(max_supply, token_supply, domain, None)?
+        .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))
 }
 
 pub fn production_component_set(
@@ -455,14 +467,14 @@ pub fn production_builder_outcome(
     token_supply: u64,
     min_burn_size: Option<u64>,
 ) -> Result<std::result::Result<Vec<AccountComponent>, XReserveStablecoinBuilderError>> {
-    // Neither the faucet nor the xreserve component is a builder input any more — `new` builds the
-    // fixed-identity USDCx faucet (mutable max supply) and assembles the one valid component itself
-    // — so the fixture only supplies the supply parameters and role holders.
-    let mut builder = production_builder(max_supply, token_supply, TEST_DOMAIN)?;
-    if let Some(min_burn_size) = min_burn_size {
-        builder = builder.min_burn_size(min_burn_size);
-    }
-    Ok(builder.build_components())
+    let min_burn_amount = min_burn_size
+        .map(AssetAmount::new)
+        .transpose()
+        .context("invalid min_burn_size")?;
+    Ok(
+        production_builder_verdict(max_supply, token_supply, TEST_DOMAIN, min_burn_amount)?
+            .and_then(|builder| builder.build_components()),
+    )
 }
 
 pub struct ShellHarness {
@@ -1564,7 +1576,7 @@ pub struct GuardedMint {
 /// attestation policy rides the same `xreserve` library component (its
 /// `mint_policy::check_policy` proc). The production arm build-seeds the caller's `domain` word
 /// (element 0) plus the canonical test `source_domain`/`xreserve_contract` through
-/// `XReserveStablecoinBuilder::new`.
+/// the generated `XReserveStablecoinBuilder::builder()`.
 ///
 /// `is_max_supply_mutable` configures the built faucet's stock max-supply mutability flag (threaded
 /// into the `FungibleFaucet::builder()` chain). The production builder REJECTS an immutable

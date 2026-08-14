@@ -1,6 +1,6 @@
 //! USDCx fee-policy composition and administration.
 //!
-//! The builder constructs the canonical fee policy from the network fee parameters, installs the
+//! The builder constructs the xUSDC fee policy from the network fee parameters, installs the
 //! fee manager and `ConstantFeeManager`, and lets the `ADMIN` role reprice scheduled note roots
 //! through `ConstantFeePolicyConfigNote`.
 
@@ -65,18 +65,18 @@ fn fee_parameters() -> FeeParameters {
 }
 
 fn production_builder() -> Result<XReserveStablecoinBuilder> {
-    Ok(XReserveStablecoinBuilder::new(
-        AssetAmount::new(MAX_SUPPLY).expect("the test max supply is valid"),
-        AssetAmount::ZERO,
-        test_account_id(1),
-        test_account_id(2),
-        test_account_id(3),
-        test_account_id(4),
-        fee_parameters(),
-        TEST_DOMAIN,
-        TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
-    )?)
+    Ok(XReserveStablecoinBuilder::builder()
+        .max_supply(AssetAmount::new(MAX_SUPPLY).expect("the test max supply is valid"))
+        .token_supply(AssetAmount::ZERO)
+        .owner(test_account_id(1))
+        .pauser_holder(test_account_id(2))
+        .manager_holder(test_account_id(3))
+        .blocklist_manager_holder(test_account_id(4))
+        .fee_parameters(fee_parameters())
+        .domain(TEST_DOMAIN)
+        .source_domain(TEST_SOURCE_DOMAIN)
+        .xreserve_contract(EthBytes32::new(test_xreserve_contract()))
+        .build()?)
 }
 
 fn scheduled_fee(account: &Account, note_root: NoteScriptRoot) -> Result<Word> {
@@ -196,7 +196,7 @@ fn production_installs_one_mutable_basic_constant_fee_policy() -> Result<()> {
         .iter()
         .flat_map(|component| component.storage_slots())
         .find(|slot| slot.name() == BasicConstantFeePolicy::fee_schedule_slot_name())
-        .expect("the canonical fee policy carries its schedule");
+        .expect("the constructed fee policy carries its schedule");
     let StorageSlotContent::Map(fee_schedule) = fee_schedule.content() else {
         anyhow::bail!("the fee schedule slot must be a map");
     };
@@ -261,7 +261,7 @@ fn production_installs_one_mutable_basic_constant_fee_policy() -> Result<()> {
 }
 
 #[test]
-fn canonical_policy_prices_standard_and_xusdc_execution_paths() -> Result<()> {
+fn fee_policy_prices_standard_and_xusdc_execution_paths() -> Result<()> {
     let account = build_network_faucet_account(priced_components()?, fee_parameters())?;
     let pricer = note_pricer();
     let own_fee =

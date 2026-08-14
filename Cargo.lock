@@ -5795,9 +5795,13 @@ dependencies = [
  "assert_matches",
  "bon",
  "k256 0.13.4",
+ "miden-assembly",
+ "miden-core-lib",
  "miden-crypto",
+ "miden-package-registry",
  "miden-processor",
  "miden-protocol",
+ "miden-protocol-build-utils",
  "miden-standards",
  "miden-testing",
  "miden-tx",
@@ -5807,6 +5811,7 @@ dependencies = [
  "serde_json",
  "sha3 0.10.9",
  "tokio",
+ "xusdc-encoding",
 ]
 
 [[package]]

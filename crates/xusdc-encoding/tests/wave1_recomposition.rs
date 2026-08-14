@@ -46,8 +46,9 @@ use xusdc_encoding::account::xreserve::XReserveStablecoinBuilderError;
 // are parity-tested against each other — these literals keep the RATIFIED values honest)
 // ================================================================================================
 
-/// The attestation mint policy's library path inside the assembled `xreserve` component.
-const ATTESTATION_MINT_POLICY_PROC_PATH: &str = "xreserve::mint_policy::check_policy";
+/// The attestation mint policy's path as the faucet component exports it.
+const ATTESTATION_MINT_POLICY_PROC_PATH: &str =
+    "xreserve::components::faucet_extension::check_policy";
 
 /// The dissolved mint-deny guard's former library path (must resolve NOWHERE in the shipped
 /// composition).
@@ -102,16 +103,20 @@ fn resolve_proc_root(components: &[AccountComponent], path: &str) -> Option<Word
         .map(Word::from)
 }
 
-fn shipped_masm_path(rel: &str) -> std::path::PathBuf {
-    xusdc_encoding::xreserve_asm_dir().join(rel)
+/// The shipped MASM tree. The tripwires below assert on what is PRESENT and ABSENT in it, which is
+/// the one thing an assembled package cannot answer: a deleted module leaves no trace in it.
+fn shipped_asm_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("asm")
 }
 
-fn shipped_note_masm_path(file: &str) -> std::path::PathBuf {
-    xusdc_encoding::xreserve_asm_dir()
-        .parent()
-        .expect("asm/standards/xreserve has a parent")
-        .join("notes")
-        .join(file)
+fn shipped_masm_path(rel: &str) -> std::path::PathBuf {
+    shipped_asm_dir().join("xreserve").join(rel)
+}
+
+/// A note script is a project directory of its own, so a retired note is a directory that must not
+/// come back rather than a file.
+fn shipped_note_project_dir(name: &str) -> std::path::PathBuf {
+    shipped_asm_dir().join("notes").join(name)
 }
 
 // 1 — POSTURE: the attestation policy IS the active mint policy (the sole supply gate restated)
@@ -184,7 +189,7 @@ fn mint_deny_guard_is_fully_dissolved() -> Result<()> {
     );
     assert!(
         !shipped_masm_path("mint_deny_guard.masm").exists(),
-        "asm/standards/xreserve/mint_deny_guard.masm must be deleted"
+        "asm/xreserve/mint_deny_guard.masm must be deleted"
     );
     Ok(())
 }
@@ -204,16 +209,16 @@ fn custom_mint_transport_masm_is_deleted() -> Result<()> {
     ] {
         assert!(
             !shipped_masm_path(gone).exists(),
-            "asm/standards/xreserve/{gone} must be deleted by the recomposition"
+            "asm/xreserve/{gone} must be deleted by the recomposition"
         );
     }
     assert!(
-        !shipped_note_masm_path("xreserve_mint_note.masm").exists(),
+        !shipped_note_project_dir("mint").exists(),
         "the custom mint note script must be deleted (the stock MintNote is the transport)"
     );
     assert!(
         shipped_masm_path("mint_policy.masm").exists(),
-        "asm/standards/xreserve/mint_policy.masm (the attestation mint policy) must exist"
+        "asm/xreserve/mint_policy.masm (the attestation mint policy) must exist"
     );
     Ok(())
 }
@@ -232,20 +237,20 @@ fn legacy_config_and_burn_masm_are_replaced() -> Result<()> {
     ] {
         assert!(
             !shipped_masm_path(gone).exists(),
-            "asm/standards/xreserve/{gone} must be deleted by the recomposition"
+            "asm/xreserve/{gone} must be deleted by the recomposition"
         );
     }
     assert!(
         !shipped_masm_path("identifier_init.masm").exists(),
-        "asm/standards/xreserve/identifier_init.masm must be deleted — the mint path derives the \
+        "asm/xreserve/identifier_init.masm must be deleted — the mint path derives the \
          identifier from the account's own id, so there is nothing left to initialize"
     );
     assert!(
-        !shipped_note_masm_path("xreserve_domain_init_note.masm").exists(),
+        !shipped_note_project_dir("domain_init").exists(),
         "the four-field domain_init note script must be deleted"
     );
     assert!(
-        !shipped_note_masm_path("xreserve_identifier_init_note.masm").exists(),
+        !shipped_note_project_dir("identifier_init").exists(),
         "the identifier-init note script must be deleted along with the procedure it drove"
     );
     Ok(())
@@ -316,10 +321,7 @@ fn builder_rejects_a_zero_min_burn_floor() -> Result<()> {
 #[test]
 fn min_burn_note_targets_the_stock_setter_with_a_floor_guard() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();
-    let src = std::fs::read_to_string(shipped_note_masm_path(
-        "xreserve_set_min_burn_size_note.masm",
-    ))
-    .context("reading the shipped set_min_burn_size note script")?;
+    let src = include_str!("../asm/notes/set_min_burn_size/set_min_burn_size.masm");
     assert!(
         src.contains("call.min_burn_amount::set_min_burn_amount"),
         "the min-burn admin note must call the STOCK set_min_burn_amount account procedure"

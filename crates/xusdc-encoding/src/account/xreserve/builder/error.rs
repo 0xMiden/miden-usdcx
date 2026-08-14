@@ -26,21 +26,17 @@ pub enum XReserveStablecoinBuilderError {
     /// The composed faucet [`Account`](miden_protocol::account::Account) could not be built from the
     /// component set (the crate-root `build_account` path). Carries the stock account error.
     AccountComposition(AccountError),
-    /// The canonical fee schedule could not be priced from the supplied network fee parameters.
+    /// The xUSDC fee schedule could not be priced from the supplied network fee parameters.
     FeePricing(NotePricingError),
     /// The supplied `xreserve` component does not export the attestation mint policy procedure
     /// (assembly/path drift). Carries the expected path for diagnosis.
     AttestationPolicyProcNotFound,
-    /// The requested `min_burn_size` is below [`MIN_BURN_SIZE_FLOOR`]
+    /// The requested `min_burn_amount` is below [`MIN_BURN_SIZE_FLOOR`]
     /// (= 1). The stock `MinBurnAmount` policy asserts only `min <= amount` and its stock setter
     /// accepts `0`, so a sub-floor seed would silently allow zero-amount burns;
-    /// rejected at build time (the runtime twin is the `set_min_burn_size` note's floor assert).
+    /// rejected at construction (the runtime twin is the `set_min_burn_size` note's floor assert).
     /// Carries the offending value.
     MinBurnSizeBelowFloor(u64),
-    /// The requested `min_burn_size` exceeds [`AssetAmount::MAX`](miden_protocol::asset::AssetAmount::MAX)
-    /// (`2^63 - 2^31`), so it is not a valid burn amount and cannot be seeded into
-    /// the stock `MinBurnAmount` floor slot. Carries the offending value.
-    MinBurnSizeExceedsMax(u64),
     /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with a privileged
     /// identity — the administrator, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The
     /// transfer-blocklist administrator must be an external entity with no other faucet-admin
@@ -69,7 +65,7 @@ impl fmt::Display for XReserveStablecoinBuilderError {
             Self::AccountComposition(_) => {
                 write!(f, "the composed faucet account could not be built")
             }
-            Self::FeePricing(_) => write!(f, "the canonical xUSDC fee schedule could not be priced"),
+            Self::FeePricing(_) => write!(f, "the xUSDC fee schedule could not be priced"),
             Self::AttestationPolicyProcNotFound => write!(
                 f,
                 "the xreserve component does not export the attestation mint policy procedure \
@@ -77,14 +73,9 @@ impl fmt::Display for XReserveStablecoinBuilderError {
             ),
             Self::MinBurnSizeBelowFloor(value) => write!(
                 f,
-                "min_burn_size {value} is below the floor {MIN_BURN_SIZE_FLOOR}; the stock \
+                "min_burn_amount {value} is below the floor {MIN_BURN_SIZE_FLOOR}; the stock \
                  MinBurnAmount accepts zero, so the zero-burn invariant (R-BURN-1) requires the \
                  seeded floor be at least {MIN_BURN_SIZE_FLOOR}"
-            ),
-            Self::MinBurnSizeExceedsMax(value) => write!(
-                f,
-                "min_burn_size {value} exceeds the maximum representable asset amount \
-                 (AssetAmount::MAX = 2^63 - 2^31)"
             ),
             Self::BlocklistManagerNotIsolated { collides_with } => write!(
                 f,

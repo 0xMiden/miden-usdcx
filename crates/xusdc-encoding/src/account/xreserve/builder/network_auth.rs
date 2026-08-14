@@ -69,7 +69,7 @@ impl XReserveStablecoinBuilder {
         )
     }
 
-    /// Constructs the canonical xUSDC fee policy from the network fee parameters.
+    /// Constructs the xUSDC fee policy from the network fee parameters.
     pub(super) fn fee_policy(
         fee_parameters: &FeeParameters,
     ) -> Result<BasicConstantFeePolicy, XReserveStablecoinBuilderError> {

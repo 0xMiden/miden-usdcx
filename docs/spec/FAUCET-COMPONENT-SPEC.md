@@ -2,7 +2,7 @@
 
 This is the specification for the on-chain part of Circle's **xReserve / xUSDC** on Miden: the
 hand-written-MASM faucet account and its note scripts. It is written to match the **shipped
-code** in `asm/standards/`; where the code takes a provisional position on an item Circle has
+code** in `crates/xusdc-encoding/asm/`; where the code takes a provisional position on an item Circle has
 not yet confirmed, that is called out as OPEN (see `docs/spec/GLOSSARY.md`, `DEV-*`/`Q-*`).
 
 Short identifiers used below (`R-MINT-15`, `INV-MINT-SECURITY`, …) are defined once in
@@ -29,7 +29,7 @@ The account is `AccountType::Public`, 6-decimal, symbol "xUSDC". The Rust
 invalid wiring (e.g. a faucet whose active mint policy is not the attestation policy, a zero
 min-burn floor, a missing domain-config seed, or a non-Public faucet) at build time.
 
-## 2. On-chain modules (`asm/standards/`)
+## 2. On-chain modules (`crates/xusdc-encoding/asm/`)
 
 ### `xreserve/` — the faucet account component
 

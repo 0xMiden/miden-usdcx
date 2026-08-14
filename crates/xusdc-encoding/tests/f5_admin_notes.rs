@@ -37,7 +37,7 @@ use miden_standards::note::{RbacConfig, RbacConfigNote};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
 use xusdc_encoding::account::xreserve::{
-    XReserveComponent, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveFaucetExtension, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
 
@@ -173,7 +173,7 @@ async fn set_attester_admin_note_admin_writes_and_nonadmin_traps() -> Result<()>
     let StorageSlotPatch::Map(delta) = tx
         .account_patch()
         .storage()
-        .get(XReserveComponent::xreserve_attesters_slot())
+        .get(XReserveFaucetExtension::xreserve_attesters_slot())
         .context("xReserveAttesters slot delta")?
     else {
         panic!("xReserveAttesters must be a Map slot delta");

@@ -29,9 +29,6 @@
 //! costs nothing and gives the rejection a name, while a later layout decision changes only the
 //! packaging these conversions apply.
 //!
-//! The two source-chain fields are NOT narrowed. They name a token and a depositor on a chain that
-//! need not be EVM-based, so they keep the wire form's full bytes32 as [`ForeignChainAddress`].
-//!
 //! How large hookData may be is still Circle's to decide. The bound applied here is the protocol's
 //! own note-storage limit (`MAX_NOTE_STORAGE_ITEMS`, 1024 field elements — each storage "item" is
 //! a single field element), which is the documented default rather than an answer.
@@ -143,12 +140,9 @@ impl DepositNonce {
 // FOREIGN CHAIN ADDRESS
 // ================================================================================================
 
-/// An address on the source chain — the deposited token, or the depositor.
+/// An address on a foreign chain — the deposited token, the depositor or a contract address.
 ///
-/// It stays the wire form's opaque bytes32. The source chain need not be EVM-based, so no narrower
-/// shape can be assumed of it, and nothing here needs one: the faucet never compares or interprets
-/// either value, it only writes them back into the message the attestation signed. A chain whose
-/// addresses are wider than an EVM address is carried like any other.
+/// These are opaque 32 bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ForeignChainAddress([u8; BYTES32_LEN]);
 

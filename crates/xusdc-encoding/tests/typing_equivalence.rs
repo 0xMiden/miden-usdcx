@@ -12,12 +12,12 @@
 //! inline.
 
 use assert_matches::assert_matches;
-use miden_protocol::Word;
+use miden_protocol::utils::serde::{Deserializable, DeserializationError, Serializable};
+use miden_standards::interop::eth::{EthAddress, EthEmbeddedAccountId};
 use xusdc_encoding::vectors::{load, parse_hex32};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, bytes32_to_account_id, bytes32_to_packed_felts, DepositIntent,
-    DepositIntentHeader, EncodingError, EthBytes32, PublicKey, PublicKeyCommitment, Signature,
-    XReserveBurnItems,
+    bytes32_to_packed_felts, DepositIntent, EncodingError, EthAddressExt, EthEmbeddedAccountIdExt,
+    Signature, XReserveBurnItems,
 };
 
 // Signature
@@ -31,7 +31,7 @@ fn signature_type_matches_golden() {
         let sig = v.sig();
         let typed = Signature::new(sig);
         assert_eq!(
-            typed.to_felts().as_slice(),
+            typed.to_elements().as_slice(),
             v.sig_felts_values().as_slice(),
             "{}: Signature::to_felts == golden sig felts",
             v.id
@@ -45,110 +45,58 @@ fn signature_type_matches_golden() {
     }
 }
 
-// PublicKey + stock PublicKeyCommitment reuse
-// ================================================================================================
-
-/// `PublicKey::to_affine_felts` and `PublicKey::to_commitment` match the golden affine felts and the
-/// golden commitment word, and the commitment is handed out as the STOCK `PublicKeyCommitment`
-/// newtype, which round-trips through `Word`.
-#[test]
-fn public_key_affine_and_commitment_match_golden() {
-    for v in &load().families.att {
-        let pk = v.pubkey();
-        let typed = PublicKey::new(pk);
-
-        let affine = typed
-            .to_affine_felts()
-            .expect("vector keys are valid points");
-        assert_eq!(
-            affine.as_slice(),
-            v.packed_felts_values().as_slice(),
-            "{}: PublicKey::to_affine_felts == golden pubkey felts",
-            v.id
-        );
-
-        let commitment: PublicKeyCommitment = typed.to_commitment().expect("valid point");
-        assert_eq!(
-            Word::from(commitment),
-            v.expected_commitment_word(),
-            "{}: PublicKey::to_commitment word == golden commitment",
-            v.id
-        );
-        // the stock newtype round-trips (From<Word>): the value we produced IS a PublicKeyCommitment.
-        assert_eq!(
-            PublicKeyCommitment::from(Word::from(commitment)),
-            commitment,
-            "{}: PublicKeyCommitment::from(Word) round-trips",
-            v.id
-        );
-        assert_eq!(
-            typed.as_bytes(),
-            &pk,
-            "{}: PublicKey round-trips its bytes",
-            v.id
-        );
-    }
-}
-
-/// The typed pubkey conversions fail-close on an off-curve key.
-#[test]
-fn public_key_fail_closes_on_off_curve() {
-    let mut bogus = [0xFFu8; 33];
-    bogus[0] = 0x02;
-    let pk = PublicKey::new(bogus);
-    assert_matches!(pk.to_affine_felts(), Err(EncodingError::InvalidPubkey));
-    assert_matches!(pk.to_commitment(), Err(EncodingError::InvalidPubkey));
-}
+// The attester key is not a typed API of this crate at all: it is the protocol's own
+// `ecdsa_k256_keccak::PublicKey`, whose affine packing and commitment are locked to the same golden
+// vectors by TV-ATT-1 / TV-ATT-2 in `xreserve::encoding::attestation`.
 
 // DepositIntent owns its codec
 // ================================================================================================
 
-/// `DepositIntent::new(bytes).parse_header()` / `.to_packed_felts()` and the `TryFrom<&[u8]>` header
-/// decode match the golden packed preimage.
+/// The `TryFrom<&[u8]>` decode and the `Serializable` encode are inverses over the golden bytes,
+/// and the packed preimage is the golden one.
 #[test]
 fn deposit_intent_type_matches_golden() {
     for vec in load().families.di.iter().filter(|v| v.kind == "accept") {
         let bytes = vec.bytes();
-        let intent = DepositIntent::new(&bytes);
+        let intent = DepositIntent::try_from(bytes.as_slice()).expect("accept vector decodes");
 
-        let typed_header = intent.parse_header().expect("accept vector parses");
-
-        // TryFrom<&[u8]> is the same decode as parse_header.
-        let via_tryfrom =
-            DepositIntentHeader::try_from(bytes.as_slice()).expect("TryFrom parses accept vector");
         assert_eq!(
-            via_tryfrom.nonce, typed_header.nonce,
-            "{}: TryFrom<&[u8]> == parse_header",
-            vec.id
-        );
-
-        let typed_felts = intent.to_packed_felts().expect("accept vector packs");
-        assert_eq!(
-            typed_felts,
+            intent.to_preimage_felts(),
             vec.preimage_values(),
-            "{}: DepositIntent::to_packed_felts == golden preimage",
+            "{}: DepositIntent::to_preimage_felts == golden preimage",
             vec.id
         );
         assert_eq!(
-            intent.as_bytes(),
-            bytes.as_slice(),
-            "{}: as_bytes round-trips",
+            intent.to_bytes(),
+            bytes,
+            "{}: the encode is the decode's inverse",
+            vec.id
+        );
+        // and the standard reader is the same decode as the typed entry point
+        assert_eq!(
+            DepositIntent::read_from_bytes(&bytes).expect("Deserializable reads accept vector"),
+            intent,
+            "{}: Deserializable == TryFrom<&[u8]>",
             vec.id
         );
     }
 }
 
-/// The typed path rejects a truncated payload.
+/// The typed path rejects a truncated payload with the specific variant; the standard reader
+/// carries the same reason across as a `DeserializationError`.
 #[test]
 fn deposit_intent_type_propagates_rejects() {
     let short = [0u8; 10];
     assert_matches!(
-        DepositIntent::new(&short).parse_header(),
+        DepositIntent::try_from(short.as_slice()),
         Err(EncodingError::TruncatedHeader)
     );
-    assert_matches!(
-        DepositIntentHeader::try_from(short.as_slice()),
-        Err(EncodingError::TruncatedHeader)
+    assert_eq!(
+        DepositIntent::read_from_bytes(&short)
+            .expect_err("a truncated payload is not a deposit intent")
+            .to_string(),
+        DeserializationError::from(EncodingError::TruncatedHeader).to_string(),
+        "the standard reader carries the codec's reason"
     );
 }
 
@@ -201,7 +149,9 @@ fn account_id_two_felt_form_matches_golden() {
         .filter(|v| v.expected_variant.is_none())
     {
         let b = parse_hex32(&vec.bytes32);
-        let id = bytes32_to_account_id(&b).expect("accept vector decodes");
+        let id = EthEmbeddedAccountId::try_from_bytes32(b)
+            .expect("accept vector decodes")
+            .into_account_id();
         let pair = [id.prefix().as_felt(), id.suffix()];
         assert_eq!(
             pair.as_slice(),
@@ -212,13 +162,13 @@ fn account_id_two_felt_form_matches_golden() {
     }
 }
 
-// account_id_to_bytes32 adopts the stock EthEmbeddedAccountId form (byte-identical)
+// The stock EthEmbeddedAccountId bytes32 form (byte-identical)
 // ================================================================================================
 
-/// The forward conversion now delegates to `EthEmbeddedAccountId::to_bytes32()`, and must stay
+/// The AccountId bytes32 packaging IS `EthEmbeddedAccountId::to_bytes32()`, and must stay
 /// byte-identical to the golden bytes32 — the adoption is not lossy.
 #[test]
-fn account_id_to_bytes32_adopts_stock_byte_identical() {
+fn account_id_bytes32_form_is_stock_and_byte_identical() {
     for vec in load()
         .families
         .aid
@@ -226,41 +176,35 @@ fn account_id_to_bytes32_adopts_stock_byte_identical() {
         .filter(|v| v.expected_variant.is_none())
     {
         let b = parse_hex32(&vec.bytes32);
-        let id = bytes32_to_account_id(&b).expect("accept vector decodes");
+        let embedded = EthEmbeddedAccountId::try_from_bytes32(b).expect("accept vector decodes");
         assert_eq!(
-            account_id_to_bytes32(id),
+            embedded.to_bytes32(),
             b,
-            "{}: adopted account_id_to_bytes32 stays byte-identical to the golden bytes32",
+            "{}: the stock bytes32 form stays byte-identical to the golden bytes32",
             vec.id
         );
     }
 }
 
-// EthBytes32 local newtype (32-byte; stock EthAddress is 20-byte)
+// The EVM-address bytes32 container the domain config is seeded through
 // ================================================================================================
 
-/// `EthBytes32` packs through the shared bytes32 codec, so a value packed via the newtype is
-/// identical to one packed by `bytes32_to_packed_felts`, and the byte/`From`/`Into` round-trips hold.
+/// A source-chain address seeds `xreserve_contract` through its bytes32 container, so the felts the
+/// builder writes are the shared `bytes32_to_packed_felts` packing of that container — the same
+/// packing every other bytes32 goes through — and the stock decode recovers the address.
 #[test]
-fn eth_bytes32_newtype_packs_like_the_shared_codec() {
-    for vec in &load().families.b32 {
-        let b = vec.bytes32();
-        let typed = EthBytes32::new(b);
-        assert_eq!(
-            typed.to_packed_felts(),
-            bytes32_to_packed_felts(&b),
-            "{}: EthBytes32::to_packed_felts == shared codec",
-            vec.id
-        );
-        assert_eq!(
-            typed.as_bytes(),
-            &b,
-            "{}: EthBytes32 round-trips its bytes",
-            vec.id
-        );
-        let via_from: EthBytes32 = b.into();
-        assert_eq!(via_from, typed, "{}: From<[u8; 32]>", vec.id);
-        let back: [u8; 32] = typed.into();
-        assert_eq!(back, b, "{}: Into<[u8; 32]>", vec.id);
-    }
+fn eth_address_container_packs_like_the_shared_codec() {
+    let address = EthAddress::new(core::array::from_fn(|i| 0x10 + i as u8));
+    let container = address.to_bytes32();
+
+    assert_eq!(
+        bytes32_to_packed_felts(&container).len(),
+        8,
+        "the container packs to the full 8 u32-LE limbs, not the address's 5"
+    );
+    assert_eq!(
+        EthAddress::try_from(container).expect("a padded container decodes"),
+        address,
+        "the container round-trips through the stock decode"
+    );
 }

@@ -5,8 +5,6 @@ use miden_protocol::account::AccountId;
 use withdrawal_listener_attester::evidence::assemble_evidence;
 use withdrawal_listener_attester::types::ProofStrength;
 
-use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
-
 // The unit adapter — the only way to obtain an `EvidencePackage` now
 // that its constructor
 // is sealed. Shared rather than re-declared, so this file and `evidence_trust_labeling.rs` cannot
@@ -15,6 +13,7 @@ use xusdc_encoding::xreserve::encoding::account_id_to_bytes32;
 mod evidence_support;
 
 use evidence_support::{burn_note_id, burn_nullifier, faucet_id, UnitPort, CREATE_BLOCK};
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 
 /// A real, parseable xUSDC faucet id, not a fabricated one.
 const FAUCET_ID_HEX: &str = "0xbb405fd9fe431bd1135a292de098cb";
@@ -61,7 +60,7 @@ fn the_remote_depositor_encoding_is_unit_04s_account_id_codec_consumed_by_refere
     // This crate does not redefine that encoding — it calls it, and this test pins that the wire
     // string the request carries is exactly what that codec produces.
     let faucet = AccountId::from_hex(FAUCET_ID_HEX).unwrap();
-    let bytes = account_id_to_bytes32(faucet);
+    let bytes = EthEmbeddedAccountId::from_account_id(faucet).to_bytes32();
 
     let wire = format!("0x{}", hex::encode(bytes));
     assert_eq!(wire.len(), 66, "0x + 64 hex digits");

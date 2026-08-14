@@ -5,9 +5,13 @@
 //! ([`ValidatedAttestation`]) binds `messageHash == keccak256(payload)` and shape-checks the
 //! 65-byte signature — it does NOT parse the DepositIntent. So a payload Circle really signed,
 //! whose digest really binds it, can still be structurally invalid (bad magic, a zero amount,
-//! hookData past the 1024-felt NoteStorage bound). Those reach the builder, and the builder must
-//! surface them as a typed, NON-retryable error — never as a panic, never as a malformed note, and
-//! never as an infinite retry loop that wedges the relayer on one bad attestation.
+//! hookData past the 1024-felt NoteStorage bound). Those reach the ingest path, which must surface
+//! them as a typed, NON-retryable error — never as a panic, never as a malformed note, and never as
+//! an infinite retry loop that wedges the relayer on one bad attestation.
+//!
+//! The path has two steps and each owns its own rejects: the shared codec's DECODE refuses a
+//! payload that is not a well-formed DepositIntent, and the BUILDER refuses one that is well-formed
+//! but not carryable by this faucet's mint transport.
 //!
 //! The reject payloads are the canonical golden-artifact vectors — the `di-rej-*` rows for the
 //! structural parse and the `mi-rej-*` rows for the `DC-14` addressing and carriability checks —
@@ -25,6 +29,7 @@ mod mint_support;
 use assert_matches::assert_matches;
 use rstest::rstest;
 
+use miden_protocol::crypto::utils::DeserializationError;
 use xreserve_deposit_relayer::error::HexField;
 use xreserve_deposit_relayer::miden::{build_mint_note, AttesterPubkey};
 use xreserve_deposit_relayer::RelayerError;
@@ -32,6 +37,7 @@ use xusdc_encoding::xreserve::encoding::{DepositIntentField, EncodingError};
 
 use fixtures::{PartnerAttester, PARTNER_PUBKEY_HEX};
 use mint_support::*;
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 // STRUCTURALLY-INVALID DEPOSITINTENTS (they pass the envelope; the shared encoding crate's codec
 // refuses them)
@@ -45,11 +51,11 @@ use mint_support::*;
 #[case::zero_local_depositor("di-rej-zero-local-depositor", EncodingError::ZeroField { field: DepositIntentField::LocalDepositor })]
 #[case::length_mismatch("di-rej-length-mismatch", EncodingError::LengthMismatch)]
 #[case::truncated_header("di-rej-truncated", EncodingError::TruncatedHeader)]
-fn t_a_payload_unit04_refuses_is_a_typed_build_error(
+fn t_a_payload_unit04_refuses_is_a_typed_decode_error(
     #[case] vector_id: &str,
     #[case] expected: EncodingError,
 ) {
-    assert_build_error(&validated_over_vector_id(vector_id), expected);
+    assert_decode_error(&validated_over_vector_id(vector_id), expected);
 }
 
 /// The hookData bound is the one structural reject that survives the PARSE: a payload can be a
@@ -57,23 +63,29 @@ fn t_a_payload_unit04_refuses_is_a_typed_build_error(
 /// `NoteStorage` can hold. It therefore needs a `DC-14`-shaped payload — one that reaches the
 /// bound instead of tripping an addressing check first.
 #[test]
-fn t_an_oversized_hookdata_is_a_typed_build_error() {
+fn t_an_oversized_hookdata_is_a_typed_decode_error() {
     let attestation = validated_over(&fixtures::oversized_hook_data_payload());
 
-    assert_build_error(&attestation, EncodingError::HookDataTooLarge);
+    assert_decode_error(&attestation, EncodingError::HookDataTooLarge);
 }
 
 /// The addressing rejects `DC-14` added: an intent for another faucet, or one carrying a field
 /// the mint transport cannot express, is refused HERE, with a name — never submitted to surface
 /// on-chain as an unexplained bad signature.
+///
+/// WHICH step refuses is part of the contract, so each row names it. Everything that is a property
+/// of the payload alone — an identifier that is not an account id, a field too wide for the
+/// transport — is settled by the decode, which is the first place the bytes are read as a Miden
+/// mint. Only the compare against the faucet the note is being built FOR needs the build, because
+/// only there is that faucet known.
 #[rstest]
-#[case::remote_token_mismatch("mi-rej-remote-token-mismatch")]
-#[case::remote_token_malformed("mi-rej-remote-token-malformed")]
-#[case::local_token_not_address("mi-rej-local-token-not-address")]
-#[case::local_depositor_not_address("mi-rej-local-depositor-not-address")]
-#[case::max_fee_over_cap("mi-rej-max-fee-over-cap")]
-#[case::recipient_non_canonical("mi-rej-recipient-non-canonical")]
-fn t_an_uncarryable_intent_is_a_typed_build_error(#[case] vector_id: &str) {
+#[case::remote_token_mismatch("mi-rej-remote-token-mismatch", Step::Build)]
+#[case::remote_token_malformed("mi-rej-remote-token-malformed", Step::Decode)]
+#[case::local_token_not_address("mi-rej-local-token-not-address", Step::Decode)]
+#[case::local_depositor_not_address("mi-rej-local-depositor-not-address", Step::Decode)]
+#[case::max_fee_over_cap("mi-rej-max-fee-over-cap", Step::Decode)]
+#[case::recipient_non_canonical("mi-rej-recipient-non-canonical", Step::Decode)]
+fn t_an_uncarryable_intent_is_a_typed_build_error(#[case] vector_id: &str, #[case] step: Step) {
     let vector = fixtures::mi_vector(vector_id).expect("the canonical MI reject vector");
     let expected = vector
         .expected_variant
@@ -81,19 +93,32 @@ fn t_an_uncarryable_intent_is_a_typed_build_error(#[case] vector_id: &str) {
         .expect("a reject vector names the variant it must produce");
     let attestation = validated_over(&vector.payload());
 
-    let error = build_mint_note(
-        relayer_sender_id(),
-        // the reject vectors are addressed to the artifact's own synthetic faucet, and each is a
-        // reject for a reason OTHER than the faucet — so the build has to be told that faucet, or
-        // it would fail on the addressing rather than on the row's subject
-        vector.faucet_id(),
-        &attestation,
-        &attester_pubkey(),
-        &mut note_rng(4),
-    )
-    .expect_err("an intent the mint transport cannot carry never becomes a note");
+    let decoded =
+        DepositIntent::try_from(attestation.payload()).map_err(RelayerError::from_deposit_intent);
+    let error = match step {
+        Step::Decode => decoded.expect_err("the decode owns this row's rejection"),
+        Step::Build => {
+            let intent =
+                decoded.expect("an addressing reject is still a well-formed deposit intent");
+            build_mint_note(
+                relayer_sender_id(),
+                // the reject vectors are addressed to the artifact's own synthetic faucet, and each
+                // is a reject for a reason OTHER than the faucet — so the build has to be told that
+                // faucet, or it would fail on the addressing rather than on the row's subject
+                vector.faucet_id(),
+                vector.remote_domain,
+                intent,
+                attestation.attestation(),
+                &attester_pubkey(),
+                &mut note_rng(4),
+            )
+            .expect_err("an intent the mint transport cannot carry never becomes a note")
+        }
+    };
 
-    assert_matches!(error, RelayerError::MintNoteBuild(_));
+    if matches!(step, Step::Build) {
+        assert_matches!(error, RelayerError::MintNoteBuild(_));
+    }
     // the artifact names the variant, not the field it carries, so the comparison is on the name
     let verdict = format!(
         "{:?}",
@@ -110,22 +135,25 @@ fn t_an_uncarryable_intent_is_a_typed_build_error(#[case] vector_id: &str) {
     );
 }
 
-/// The shared assertion of the two reject tables above: a typed, non-retryable build error whose
+/// Which step of the relayer's path owns a reject row's verdict.
+#[derive(Clone, Copy, Debug)]
+enum Step {
+    /// The shared codec's decode — everything that is a property of the payload alone.
+    Decode,
+    /// The mint-note build — the compare against the faucet the note is built for.
+    Build,
+}
+
+/// The shared assertion of the structural reject table: a typed, non-retryable decode error whose
 /// source chain still carries the encoding crate's own verdict.
-fn assert_build_error(
+fn assert_decode_error(
     attestation: &xreserve_deposit_relayer::circle::schema::ValidatedAttestation,
     expected: EncodingError,
 ) {
-    let error = build_mint_note(
-        relayer_sender_id(),
-        faucet_id(),
-        attestation,
-        &attester_pubkey(),
-        &mut note_rng(1),
-    )
-    .expect_err("a structurally invalid deposit intent cannot become a note");
+    let error = DepositIntent::try_from(attestation.payload())
+        .map_err(RelayerError::from_deposit_intent)
+        .expect_err("a structurally invalid deposit intent cannot become a note");
 
-    assert_matches!(error, RelayerError::MintNoteBuild(_));
     assert_eq!(
         encoding_error_in_chain(&error).as_ref(),
         Some(&expected),
@@ -153,7 +181,7 @@ fn t_the_reject_payloads_pass_the_envelope_boundary(#[case] vector_id: &str) {
     let attestation = validated_over(&payload);
 
     assert_eq!(
-        attestation.deposit_intent().as_bytes(),
+        attestation.payload(),
         payload.as_slice(),
         "the validated boundary carries the payload verbatim — the builder's input really is this"
     );
@@ -176,10 +204,15 @@ fn t_a_private_faucet_id_is_refused() {
         private_faucet_id(),
     ));
 
+    let intent = DepositIntent::try_from(attestation.payload())
+        .map_err(RelayerError::from_deposit_intent)
+        .expect("the payload is a well-formed deposit intent");
     let error = build_mint_note(
         relayer_sender_id(),
         private_faucet_id(),
-        &attestation,
+        fixtures::TEST_REMOTE_DOMAIN,
+        intent,
+        attestation.attestation(),
         &attester_pubkey(),
         &mut note_rng(2),
     )
@@ -206,19 +239,17 @@ fn t_a_private_faucet_id_is_refused() {
 
 #[test]
 fn t_the_partner_key_round_trips_through_the_config_form() {
-    let expected = PartnerAttester::new().pubkey();
+    let expected = AttesterPubkey::new(PartnerAttester::new().pubkey())
+        .expect("the partner key is a curve point");
 
     assert_eq!(
-        AttesterPubkey::from_hex(PARTNER_PUBKEY_HEX)
-            .expect("the pinned partner key parses")
-            .as_bytes(),
-        &expected
+        AttesterPubkey::from_hex(PARTNER_PUBKEY_HEX).expect("the pinned partner key parses"),
+        expected
     );
     assert_eq!(
         AttesterPubkey::from_hex(&format!("0x{PARTNER_PUBKEY_HEX}"))
-            .expect("the 0x-prefixed wire form parses too")
-            .as_bytes(),
-        &expected,
+            .expect("the 0x-prefixed wire form parses too"),
+        expected,
         "an operator may paste the key with or without the 0x prefix"
     );
 }
@@ -250,9 +281,9 @@ fn t_an_attester_key_of_the_wrong_length_is_refused(#[case] hex: &str) {
 }
 
 /// 33 bytes of the right SHAPE that are not a curve point: refused at CONFIGURATION time, by the
-/// shared encoding crate's own SEC1 decompression (the same primitive that packs the affine felts,
-/// consumed by reference — the relayer does not re-implement point decompression). Such a key could
-/// never verify on-chain, so a relayer that started with it would mint nothing and say nothing.
+/// protocol's own SEC1 decompression (consumed by reference — the relayer does not re-implement
+/// point decompression). Such a key could never verify on-chain, so a relayer that started with it
+/// would mint nothing and say nothing.
 #[rstest]
 #[case::off_curve("03ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")]
 #[case::bad_prefix("00a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3f")]
@@ -260,10 +291,10 @@ fn t_an_attester_key_that_is_not_a_curve_point_is_refused(#[case] hex: &str) {
     let error = AttesterPubkey::from_hex(hex).expect_err("not a secp256k1 point");
 
     assert_matches!(error, RelayerError::InvalidAttesterPubkey(_));
-    assert_eq!(
-        encoding_error_in_chain(&error),
-        Some(EncodingError::InvalidPubkey),
-        "unit-04's verdict on the key is preserved"
+    assert_matches!(
+        deserialization_error_in_chain(&error),
+        Some(DeserializationError::InvalidValue(_)),
+        "the protocol's verdict on the key is preserved"
     );
 
     // …and the same 33 bytes are refused through the raw constructor, not just the hex one
@@ -280,10 +311,21 @@ fn t_an_attester_key_that_is_not_a_curve_point_is_refused(#[case] hex: &str) {
 /// Walks a `RelayerError`'s source chain looking for the shared encoding crate's `EncodingError` —
 /// the assertion that the codec's exact verdict was PRESERVED (not flattened into a message).
 fn encoding_error_in_chain(error: &RelayerError) -> Option<EncodingError> {
+    error_in_chain(error)
+}
+
+/// The same walk for the protocol's own decode verdict — the attester key never reaches the
+/// encoding crate, so its rejection arrives as a `DeserializationError`.
+fn deserialization_error_in_chain(error: &RelayerError) -> Option<DeserializationError> {
+    error_in_chain(error)
+}
+
+/// Walks a `RelayerError`'s source chain looking for a preserved error of one concrete type.
+fn error_in_chain<E: std::error::Error + Clone + 'static>(error: &RelayerError) -> Option<E> {
     let mut source = std::error::Error::source(error);
     while let Some(err) = source {
-        if let Some(encoding) = err.downcast_ref::<EncodingError>() {
-            return Some(encoding.clone());
+        if let Some(found) = err.downcast_ref::<E>() {
+            return Some(found.clone());
         }
         source = err.source();
     }

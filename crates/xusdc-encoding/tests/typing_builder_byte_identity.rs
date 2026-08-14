@@ -24,7 +24,6 @@ use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Hasher, Word};
 use support::*;
 use xusdc_encoding::account::xreserve::{build_faucet_account, XReserveStablecoinBuilder};
-use xusdc_encoding::xreserve::encoding::EthBytes32;
 
 /// The fixed account seed the anchors were captured at (production uses a random seed; a fixed one
 /// makes the seed-derived id and the whole account commitment deterministic).
@@ -38,6 +37,11 @@ const TOKEN_SUPPLY: u64 = 0;
 // policy is STORED as that root; the ACCOUNT ID and STATE COMMITMENT derive from both. No slot and
 // no procedure was added or removed; the policy companions sit in the manager's emission order —
 // the callable-surface and note-allowlist tripwires pass unedited.
+//
+// The storage anchor was RE-captured when the builder narrowed its `xreserve_contract` parameter
+// to a 20-byte `EthAddress`: the fixture's seeded value became that address in its left-padded
+// bytes32 container, so the seeded slot bytes moved with it. The code anchor was RE-captured when
+// the builder started installing the manager's companion components as the manager emits them.
 //
 // The account id is the NEW-ACCOUNT derivation: ground from SEED over the composed code and
 // storage commitments, so it moves whenever either commitment moves (unlike the code commitment
@@ -63,14 +67,20 @@ const TOKEN_SUPPLY: u64 = 0;
 // itself measured, which is what says the migration's slot values survived the merge unchanged.
 //
 // NOT RATIFIED — every value below is MEASURED from this composition, not accepted. A human must
-// re-ratify all four at PR assembly.
+// re-ratify all four at PR assembly. The id and state anchors were RE-measured when the two lines
+// merged: the callable surface moving into its own component MASM moved the CODE commitment on one
+// side, and narrowing `xreserve_contract` to a 20-byte `EthAddress` moved the seeded slot bytes —
+// and so the STORAGE digest — on the other. The id grounds on both commitments and the state
+// commitment covers both plus the id, so neither pre-merge capture holds for those two. The code
+// commitment and the storage digest are each byte-for-byte the value their own side measured,
+// which is what says the merge composed the two changes rather than disturbing either.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([307259206699395628, 9653990579380642912, 7086457358728030244, 10289344618588923417])";
+    "Word([13668168734693239322, 1703180734705411886, 4778497770240711770, 14508535432773685585])";
 const GOLDEN_CODE_COMMITMENT: &str =
     "Word([323014368150543436, 3384185445653237445, 8917474726941958005, 1072673965110081017])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([4363712052244048219, 2641855597089613738, 1614590384134086560, 11013628455427548577])";
-const GOLDEN_ACCOUNT_ID: &str = "0x0bdbb664c34e82f15d4e550a48f1ec";
+    "Word([13346508987964622553, 5988960762892709497, 6782465324179580540, 1354910767027333690])";
+const GOLDEN_ACCOUNT_ID: &str = "0x349c16bc313fc4f104123b3b0a3191";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.
@@ -149,7 +159,7 @@ fn account_via_crate_root_constructor() -> Account {
         test_account_id(4),
         TEST_DOMAIN,
         TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
+        test_xreserve_contract(),
     )
     .expect("the crate-root faucet-account constructor must build the account")
 }

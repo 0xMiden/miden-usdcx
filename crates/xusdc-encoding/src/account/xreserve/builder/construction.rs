@@ -15,11 +15,12 @@ use miden_protocol::utils::sync::LazyLock;
 use miden_protocol::vm::Package;
 use miden_protocol::Word;
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
+use miden_standards::interop::eth::EthAddress;
 
 use super::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL,
 };
-use crate::xreserve::encoding::EthBytes32;
+use crate::xreserve::encoding::{bytes32_to_packed_felts, EthAddressExt};
 
 // CONSTANTS
 // ================================================================================================
@@ -78,12 +79,12 @@ static XRESERVE_ATTESTERS_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|
 pub struct XReserveFaucetExtension {
     domain: u32,
     source_domain: u32,
-    xreserve_contract: EthBytes32,
+    xreserve_contract: EthAddress,
 }
 
 impl XReserveFaucetExtension {
     /// Instantiates a new [`XReserveFaucetExtension`].
-    pub fn new(domain: u32, source_domain: u32, xreserve_contract: EthBytes32) -> Self {
+    pub fn new(domain: u32, source_domain: u32, xreserve_contract: EthAddress) -> Self {
         Self {
             domain,
             source_domain,
@@ -132,7 +133,7 @@ impl XReserveFaucetExtension {
 
 impl From<XReserveFaucetExtension> for AccountComponent {
     fn from(faucet_ext: XReserveFaucetExtension) -> Self {
-        let contract_addr = faucet_ext.xreserve_contract.to_packed_felts();
+        let contract_addr = bytes32_to_packed_felts(&faucet_ext.xreserve_contract.to_bytes32());
         let contract_addr_hi = Word::new(contract_addr[0..4].try_into().expect("4 felts sliced"));
         let contract_addr_lo = Word::new(contract_addr[4..8].try_into().expect("4 felts sliced"));
 
@@ -230,7 +231,7 @@ pub fn build_faucet_account(
     blocklist_manager_holder: AccountId,
     domain: u32,
     source_domain: u32,
-    xreserve_contract: EthBytes32,
+    xreserve_contract: EthAddress,
 ) -> Result<Account, XReserveStablecoinBuilderError> {
     XReserveStablecoinBuilder::builder()
         .max_supply(max_supply)

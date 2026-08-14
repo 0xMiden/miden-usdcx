@@ -22,7 +22,6 @@ use support::*;
 use xusdc_encoding::account::xreserve::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError,
 };
-use xusdc_encoding::xreserve::encoding::EthBytes32;
 
 // The production builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3), BLK_MANAGER =
 // id(4). A BLK_MANAGER holder equal to id(1)/(2)/(3) collides with the administrator/DOM_PAUSER/DOM_MANAGER.
@@ -50,7 +49,7 @@ fn build_rejects_blk_manager_colliding_with_a_privileged_role(
         .blocklist_manager_holder(blk_manager)
         .domain(TEST_DOMAIN)
         .source_domain(TEST_SOURCE_DOMAIN)
-        .xreserve_contract(EthBytes32::new(test_xreserve_contract()))
+        .xreserve_contract(test_xreserve_contract())
         .build()
         .context("the fixed-identity USDCx faucet builds")?
         .build_components()
@@ -80,7 +79,7 @@ fn build_accepts_isolated_blk_manager() -> Result<()> {
         .blocklist_manager_holder(test_account_id(4)) // distinct external BLK_MANAGER
         .domain(TEST_DOMAIN)
         .source_domain(TEST_SOURCE_DOMAIN)
-        .xreserve_contract(EthBytes32::new(test_xreserve_contract()))
+        .xreserve_contract(test_xreserve_contract())
         .build()
         .context("the fixed-identity USDCx faucet builds")?
         .build_components()

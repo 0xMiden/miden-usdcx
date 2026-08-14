@@ -1,33 +1,69 @@
-//! Reading Circle's DepositIntent: the message that authorizes one mint.
+//! Circle's DepositIntent: the message that authorizes one mint, and the bytes it travels in.
 //!
 //! The wire form is a fixed 240-byte big-endian header followed by variable-length hookData. On
 //! Miden it is carried as u32-little-endian-packed field elements, four wire bytes per element, so
 //! the header occupies exactly 60 of them. Every field sits at a fixed offset, which is what lets
-//! the MASM parser read fields by address without decoding sequentially.
+//! the MASM writer address fields directly instead of encoding sequentially.
 //!
-//! This module owns the STRUCTURAL checks — the ones answering "is this a well-formed
-//! DepositIntent at all": the magic sentinel, the version, that the payload is not truncated, that
-//! the declared total length equals 240 plus the declared hookData length, and that the amount,
-//! `localToken`, and `localDepositor` fields are non-zero. What it deliberately does not check is
-//! whether the intent is addressed to a particular faucet: the token identifier is compared
-//! against the consuming faucet by [`super::mint_intent::MintIntent::from_deposit_intent`], and
-//! the remote domain against the operator's configuration by whoever holds it — for the relayer,
-//! that is its own domain/token check against Circle's `/v1/info`.
+//! This module owns the BYTE format, in both directions: [`Serializable`] writes it and
+//! [`Deserializable`] reads it. Its sibling `mint_intent` owns the felt format, and the two
+//! conversions between the types. Nothing outside this module reads a wire offset — every access
+//! goes through [`DepositIntentField::offset`].
 //!
-//! Validation order matters and is fixed, because the MASM parser performs the same checks in the
-//! same order and the two must reject identically — a payload that fails here must fail on-chain
-//! with the same error, or off-chain pre-validation would pass work to the chain that then fails.
+//! Decoding owns the STRUCTURAL checks — the ones answering "is this a well-formed DepositIntent
+//! at all": the magic sentinel, the version, that the payload is not truncated, that the declared
+//! total length equals 240 plus the declared hookData length, and that the amount, `localToken`
+//! and `localDepositor` fields are non-zero.
+//!
+//! Validation order matters and is fixed, because the faucet's checks run in the same order and the
+//! two must reject identically — a payload that fails here must fail on-chain for the same reason,
+//! or off-chain pre-validation would pass work to the chain that then fails.
+//!
+//! Decoding also NARROWS every field to the domain type it has to hold for the deposit to be
+//! mintable at all: the bytes32 identifiers to account ids, the source-chain fields to EVM
+//! addresses, and the two uint256 amounts to the units the faucet mints in. Circle's encoding
+//! leaves those fields open — `remoteToken` and `remoteRecipient` are opaque bytes32 there, and how
+//! a Miden AccountId packs into one is still an open decision (`DEV-10`), as is whether every
+//! source domain keeps `localToken` / `localDepositor` address-shaped (`Q-EVM-ADDR-1`). Those stay
+//! open as LAYOUT questions. What is not open is that a deposit whose identifiers do not read as
+//! account ids under the shipped layout cannot be minted under any of them: the faucet mints to an
+//! account id or not at all. Refusing it here costs nothing and gives the rejection a name, while a
+//! later layout decision changes only the packaging these conversions apply.
 //!
 //! How large hookData may be is still Circle's to decide. The bound applied here is the protocol's
 //! own note-storage limit (`MAX_NOTE_STORAGE_ITEMS`, 1024 field elements — each storage "item" is
 //! a single field element), which is the documented default rather than an answer.
 
+use miden_protocol::account::{AccountId, StorageMapKey};
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
-use miden_protocol::{Felt, MAX_NOTE_STORAGE_ITEMS};
+use miden_protocol::utils::serde::{
+    ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable, SliceReader,
+};
+use miden_protocol::{Felt, Word, MAX_NOTE_STORAGE_ITEMS};
+use miden_standards::interop::eth::{EthAddress, EthAmount, EthEmbeddedAccountId};
 
+use super::account_id::{EthAddressExt, EthEmbeddedAccountIdExt};
 use super::amount::uint256_to_asset_amount;
+use super::bytes32::{bytes32_to_packed_felts, bytes32_to_storage_map_key};
 use super::error::EncodingError;
+
+// WIRE-SHAPE CONSTANTS
+// ================================================================================================
+
+/// Bytes per u32-LE-packed field element.
+pub const BYTES_PER_PACKED_FELT: usize = 4;
+
+/// A bytes32 wire field, and the widths of the values carried right-aligned inside one: an
+/// AccountId as two big-endian u64s, a 20-byte EVM address, an `AssetAmount` as a big-endian u64.
+pub const BYTES32_LEN: usize = 32;
+pub const ACCOUNT_ID_BYTES: usize = 16;
+pub const EVM_ADDRESS_BYTES: usize = 20;
+pub const ASSET_AMOUNT_BYTES: usize = AssetAmount::SERIALIZED_SIZE;
+
+/// The same widths as packed field elements — the form the mint note's carried payload uses.
+pub const BYTES32_PACKED_LIMBS: usize = BYTES32_LEN / BYTES_PER_PACKED_FELT;
+pub const EVM_ADDRESS_PACKED_LIMBS: usize = EVM_ADDRESS_BYTES / BYTES_PER_PACKED_FELT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DepositIntentField {
@@ -45,264 +81,477 @@ pub enum DepositIntentField {
     HookData,
 }
 
-/// Wire-format constants (the 240-byte header packs to 60 u32-LE felts, 4 bytes per felt).
-pub const DEPOSIT_INTENT_HEADER_LEN: usize = 240;
-pub const DEPOSIT_INTENT_MAGIC: u32 = 0x5a2e_0acd;
-pub const DEPOSIT_INTENT_VERSION: u32 = 1;
-pub const DEPOSIT_INTENT_HEADER_FELTS: usize = 60;
-
-/// Fixed-offset accessor; the offsets are byte positions on the wire.
-pub fn deposit_intent_field_offset(field: DepositIntentField) -> usize {
-    match field {
-        DepositIntentField::Magic => 0,
-        DepositIntentField::Version => 4,
-        DepositIntentField::Amount => 8,
-        DepositIntentField::RemoteDomain => 40,
-        DepositIntentField::RemoteToken => 44,
-        DepositIntentField::RemoteRecipient => 76,
-        DepositIntentField::LocalToken => 108,
-        DepositIntentField::LocalDepositor => 140,
-        DepositIntentField::MaxFee => 172,
-        DepositIntentField::Nonce => 204,
-        DepositIntentField::HookDataLen => 236,
-        DepositIntentField::HookData => 240,
+impl DepositIntentField {
+    /// The field's byte position on the wire.
+    pub const fn offset(self) -> usize {
+        match self {
+            Self::Magic => 0,
+            Self::Version => 4,
+            Self::Amount => 8,
+            Self::RemoteDomain => 40,
+            Self::RemoteToken => 44,
+            Self::RemoteRecipient => 76,
+            Self::LocalToken => 108,
+            Self::LocalDepositor => 140,
+            Self::MaxFee => 172,
+            Self::Nonce => 204,
+            Self::HookDataLen => 236,
+            Self::HookData => 240,
+        }
     }
 }
 
-#[derive(Debug, Clone)]
+// DEPOSIT NONCE
+// ================================================================================================
+
+/// Circle's unique per-deposit nonce.
+///
+/// It drives two derived values and nothing else: the `usedNonces` replay-guard key and the
+/// attested output note's serial number, which are the same Word. Both go through the shared
+/// `DC-4` hashing routine, so this type only names the value and delegates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DepositNonce([u8; BYTES32_LEN]);
+
+impl DepositNonce {
+    /// Wraps a raw nonce. Any 32 bytes are a valid nonce — the hashing keeps it total.
+    pub const fn new(bytes: [u8; BYTES32_LEN]) -> Self {
+        Self(bytes)
+    }
+
+    /// The raw 32 bytes.
+    pub const fn as_bytes(&self) -> &[u8; BYTES32_LEN] {
+        &self.0
+    }
+
+    /// The 8 u32-LE-packed limbs the mint note's payload carries.
+    pub fn to_packed_felts(&self) -> [Felt; BYTES32_PACKED_LIMBS] {
+        bytes32_to_packed_felts(&self.0)
+    }
+
+    /// The replay-guard key and output-note serial (`DC-4`).
+    pub fn to_word(&self) -> Word {
+        self.to_storage_map_key().as_word()
+    }
+
+    /// The replay-guard key and output-note serial (`DC-4`).
+    pub fn to_storage_map_key(&self) -> StorageMapKey {
+        bytes32_to_storage_map_key(&self.0)
+    }
+}
+
+// HOOK DATA
+// ================================================================================================
+
+/// The DepositIntent's opaque trailing payload.
+///
+/// It is carried because the signature covers it, and for no other reason — nothing on-chain reads
+/// it for effects. The length bound is checked here so that everything downstream, including the
+/// faucet's fixed staging region, can treat it as already-bounded.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HookData(Vec<u8>);
+
+impl HookData {
+    /// The hookData bound: the packed preimage must stay within the protocol's note-storage item
+    /// limit. The faucet's staging region is sized to the same number, so a payload that passes
+    /// here always fits on-chain. The exact cap Circle wants is still OPEN (`DEV-6`).
+    pub const MAX_LEN: usize =
+        (MAX_NOTE_STORAGE_ITEMS - DepositIntent::HEADER_NUM_FELTS) * BYTES_PER_PACKED_FELT;
+
+    /// Wraps hookData bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`EncodingError::HookDataTooLarge`] past [`Self::MAX_LEN`].
+    pub fn new(bytes: Vec<u8>) -> Result<Self, EncodingError> {
+        if bytes.len() > Self::MAX_LEN {
+            return Err(EncodingError::HookDataTooLarge);
+        }
+        Ok(Self(bytes))
+    }
+
+    /// The raw bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// The declared wire length. Fits a u32 by the constructor's bound.
+    pub fn len_u32(&self) -> u32 {
+        u32::try_from(self.0.len()).expect("hook data length is bounded by HookData::MAX_LEN")
+    }
+
+    /// Whether there is any hookData at all (the common case is none).
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The `ceil(len / 4)` u32-LE-packed felts the mint note's payload carries, trailing bytes
+    /// zero-filled.
+    pub fn to_packed_elements(&self) -> Vec<Felt> {
+        bytes_to_packed_u32_elements(&self.0)
+    }
+}
+
+// DEPOSIT INTENT HEADER
+// ================================================================================================
+
+/// The fixed header's fields, each in the domain type the deposit must hold for it to be mintable.
+///
+/// - `magic` and `version` are absent because they are scheme constants: decoding checks them and
+///   encoding writes them.
+/// - `hookDataLen` is derived from the hookData.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bon::Builder)]
 pub struct DepositIntentHeader {
-    pub magic: u32,
-    pub version: u32,
-    pub amount: [u8; 32],
-    pub remote_domain: u32,
-    pub remote_token: [u8; 32],
-    pub remote_recipient: [u8; 32],
-    pub local_token: [u8; 32],
-    pub local_depositor: [u8; 32],
-    pub max_fee: [u8; 32],
-    pub nonce: [u8; 32],
-    pub hook_data_len: u32,
+    amount: AssetAmount,
+    remote_domain: u32,
+    remote_token: AccountId,
+    remote_recipient: AccountId,
+    local_token: EthAddress,
+    local_depositor: EthAddress,
+    max_fee: AssetAmount,
+    nonce: DepositNonce,
 }
 
 impl DepositIntentHeader {
-    /// The `amount` field reduced to an `AssetAmount` — the value the mint note carries as its
-    /// asset and the faucet writes back into the preimage.
-    ///
-    /// # Errors
-    ///
-    /// [`EncodingError::FieldNotAssetAmount`] if the wire value does not reduce to a valid
-    /// `AssetAmount` at this scale.
-    pub fn reduced_amount(&self, scale_exp: u32) -> Result<AssetAmount, EncodingError> {
-        reduce_to_asset_amount(&self.amount, scale_exp, DepositIntentField::Amount)
+    /// The scheme sentinel and version the header carries.
+    pub const MAGIC: u32 = 0x5a2e_0acd;
+    pub const VERSION: u32 = 1;
+
+    /// What [`Serializable`] writes: the header's own fields, `magic` through `nonce`. Circle's
+    /// fixed prefix is four bytes longer — see [`DepositIntent::HEADER_SIZE`].
+    pub const SERIALIZED_SIZE: usize = DepositIntentField::HookDataLen.offset();
+
+    /// The deposit amount, in the units the faucet mints.
+    pub fn amount(&self) -> AssetAmount {
+        self.amount
     }
 
-    /// The `maxFee` field reduced the same way — the depositor-authorized fee ceiling.
-    ///
-    /// # Errors
-    ///
-    /// [`EncodingError::FieldNotAssetAmount`] if the wire value does not reduce to a valid
-    /// `AssetAmount` at this scale.
-    pub fn reduced_max_fee(&self, scale_exp: u32) -> Result<AssetAmount, EncodingError> {
-        reduce_to_asset_amount(&self.max_fee, scale_exp, DepositIntentField::MaxFee)
+    /// The destination domain the consuming faucet must have configured.
+    pub fn remote_domain(&self) -> u32 {
+        self.remote_domain
     }
+
+    /// The destination token — the faucet the deposit is addressed to.
+    pub fn remote_token(&self) -> AccountId {
+        self.remote_token
+    }
+
+    /// The account the minted asset is destined for.
+    pub fn remote_recipient(&self) -> AccountId {
+        self.remote_recipient
+    }
+
+    /// The deposited token on the source chain.
+    pub fn local_token(&self) -> EthAddress {
+        self.local_token
+    }
+
+    /// The depositor on the source chain.
+    pub fn local_depositor(&self) -> EthAddress {
+        self.local_depositor
+    }
+
+    /// The depositor-authorized fee ceiling, in the same units as [`Self::amount`].
+    pub fn max_fee(&self) -> AssetAmount {
+        self.max_fee
+    }
+
+    /// The per-deposit nonce.
+    pub fn nonce(&self) -> DepositNonce {
+        self.nonce
+    }
+
+    /// The typed decode of the header block, leaving the reader on `hookDataLen`.
+    fn read<R: ByteReader>(source: &mut R) -> Result<Self, EncodingError> {
+        // the bounds guard necessarily precedes any field read (the TruncatedHeader case)
+        let bytes: [u8; Self::SERIALIZED_SIZE] = source
+            .read_array()
+            .map_err(|_| EncodingError::TruncatedHeader)?;
+
+        if be_u32(&bytes, DepositIntentField::Magic) != Self::MAGIC {
+            return Err(EncodingError::BadMagic);
+        }
+        if be_u32(&bytes, DepositIntentField::Version) != Self::VERSION {
+            return Err(EncodingError::BadVersion);
+        }
+
+        // the zero checks run on the raw bytes and before the narrowings, because zero is a
+        // perfectly valid amount and a perfectly valid address: only the wire form distinguishes
+        // "the depositor sent nothing" from "this field was never filled in"
+        let amount = non_zero_bytes32(&bytes, DepositIntentField::Amount)?;
+        let local_token = non_zero_bytes32(&bytes, DepositIntentField::LocalToken)?;
+        let local_depositor = non_zero_bytes32(&bytes, DepositIntentField::LocalDepositor)?;
+
+        Ok(Self {
+            amount: reduce(amount, DepositIntentField::Amount)?,
+            remote_domain: be_u32(&bytes, DepositIntentField::RemoteDomain),
+            remote_token: account_id(&bytes, DepositIntentField::RemoteToken)?,
+            remote_recipient: account_id(&bytes, DepositIntentField::RemoteRecipient)?,
+            local_token: evm_address(local_token, DepositIntentField::LocalToken)?,
+            local_depositor: evm_address(local_depositor, DepositIntentField::LocalDepositor)?,
+            max_fee: reduce(
+                bytes32_at(&bytes, DepositIntentField::MaxFee),
+                DepositIntentField::MaxFee,
+            )?,
+            nonce: DepositNonce::new(bytes32_at(&bytes, DepositIntentField::Nonce)),
+        })
+    }
+}
+
+impl Serializable for DepositIntentHeader {
+    /// Writes the header's fields at their frozen offsets. The `hookDataLen` that closes Circle's
+    /// 240-byte prefix belongs to [`DepositIntent`], which appends it and the hookData itself.
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
+        let mut bytes = [0u8; Self::SERIALIZED_SIZE];
+
+        write_u32(&mut bytes, DepositIntentField::Magic, Self::MAGIC);
+        write_u32(&mut bytes, DepositIntentField::Version, Self::VERSION);
+        write_bytes32(&mut bytes, DepositIntentField::Amount, &widen(self.amount));
+        write_u32(
+            &mut bytes,
+            DepositIntentField::RemoteDomain,
+            self.remote_domain,
+        );
+        write_bytes32(
+            &mut bytes,
+            DepositIntentField::RemoteToken,
+            &EthEmbeddedAccountId::from_account_id(self.remote_token).to_bytes32(),
+        );
+        write_bytes32(
+            &mut bytes,
+            DepositIntentField::RemoteRecipient,
+            &EthEmbeddedAccountId::from_account_id(self.remote_recipient).to_bytes32(),
+        );
+        write_bytes32(
+            &mut bytes,
+            DepositIntentField::LocalToken,
+            &self.local_token.to_bytes32(),
+        );
+        write_bytes32(
+            &mut bytes,
+            DepositIntentField::LocalDepositor,
+            &self.local_depositor.to_bytes32(),
+        );
+        write_bytes32(&mut bytes, DepositIntentField::MaxFee, &widen(self.max_fee));
+        write_bytes32(&mut bytes, DepositIntentField::Nonce, self.nonce.as_bytes());
+
+        target.write_bytes(&bytes);
+    }
+
+    fn get_size_hint(&self) -> usize {
+        Self::SERIALIZED_SIZE
+    }
+}
+
+impl Deserializable for DepositIntentHeader {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+        Self::read(source).map_err(DeserializationError::from)
+    }
+}
+
+// DEPOSIT INTENT
+// ================================================================================================
+
+/// A decoded Circle DepositIntent: the typed header plus its trailing hookData.
+///
+/// Every instance has been through [`Deserializable`] or was assembled from values that already
+/// were, so holding one means the structural checks passed and every field is representable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepositIntent {
+    header: DepositIntentHeader,
+    hook_data: HookData,
+}
+
+impl DepositIntent {
+    /// Circle's fixed prefix: the header's fields plus the `hookDataLen` that closes it.
+    pub const HEADER_SIZE: usize = DepositIntentField::HookData.offset();
+
+    /// The same prefix as u32-LE-packed field elements (four wire bytes per element, so 60 — not
+    /// 30).
+    pub const HEADER_NUM_FELTS: usize = Self::HEADER_SIZE / BYTES_PER_PACKED_FELT;
+
+    /// Pairs a header with its hookData.
+    pub fn new(header: DepositIntentHeader, hook_data: HookData) -> Self {
+        Self { header, hook_data }
+    }
+
+    /// The header fields.
+    pub fn header(&self) -> &DepositIntentHeader {
+        &self.header
+    }
+
+    /// The opaque trailing payload.
+    pub fn hook_data(&self) -> &HookData {
+        &self.hook_data
+    }
+
+    /// The felt count of the u32-LE-packed preimage: `60 + ceil(hookDataLen / 4)`.
+    pub fn preimage_felt_len(&self) -> usize {
+        Self::HEADER_NUM_FELTS
+            + self
+                .hook_data
+                .as_bytes()
+                .len()
+                .div_ceil(BYTES_PER_PACKED_FELT)
+    }
+
+    /// The u32-LE-packed on-chain preimage — the felts the attestation's digest is taken over.
+    /// Within the protocol's `MAX_NOTE_STORAGE_ITEMS` bound by [`HookData`]'s own invariant.
+    pub fn to_preimage_felts(&self) -> Vec<Felt> {
+        bytes_to_packed_u32_elements(&self.to_bytes())
+    }
+
+    /// The shared decoding implementation.
+    ///
+    /// Trailing bytes are rejected: the payload declares its own total length, so anything past it
+    /// means the sender and this decoder disagree about what was signed.
+    fn read<R: ByteReader>(source: &mut R) -> Result<Self, EncodingError> {
+        let header = DepositIntentHeader::read(source)?;
+
+        // hookDataLen closes Circle's fixed 240-byte prefix, so a payload that stops inside it is
+        // a truncated header rather than a length disagreement
+        let hook_data_len = source
+            .read_array::<BYTES_PER_PACKED_FELT>()
+            .map(u32::from_be_bytes)
+            .map_err(|_| EncodingError::TruncatedHeader)? as usize;
+
+        // the bound is applied to the DECLARED length, before the tail is read, so an adversarial
+        // length cannot drive an allocation
+        if hook_data_len > HookData::MAX_LEN {
+            return Err(EncodingError::HookDataTooLarge);
+        }
+        let hook_data = source
+            .read_vec(hook_data_len)
+            .map_err(|_| EncodingError::LengthMismatch)?;
+        if source.has_more_bytes() {
+            return Err(EncodingError::LengthMismatch);
+        }
+
+        Ok(Self::new(header, HookData::new(hook_data)?))
+    }
+}
+
+impl Serializable for DepositIntent {
+    /// Writes the canonical message the attestation signs: the header at its frozen offsets, then
+    /// the declared hookData length, then hookData.
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
+        self.header.write_into(target);
+        target.write_bytes(&self.hook_data.len_u32().to_be_bytes());
+        target.write_bytes(self.hook_data.as_bytes());
+    }
+
+    fn get_size_hint(&self) -> usize {
+        Self::HEADER_SIZE + self.hook_data.as_bytes().len()
+    }
+}
+
+impl Deserializable for DepositIntent {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+        Self::read(source).map_err(DeserializationError::from)
+    }
+}
+
+impl TryFrom<&[u8]> for DepositIntent {
+    type Error = EncodingError;
+
+    /// The entry point every off-chain caller takes, because it keeps the specific
+    /// [`EncodingError`] the payload earned rather than the protocol trait's flattened spelling.
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Self::read(&mut SliceReader::new(bytes))
+    }
+}
+
+// HELPERS
+// ================================================================================================
+
+/// Reads a big-endian u32 wire field.
+fn be_u32(bytes: &[u8; DepositIntentHeader::SERIALIZED_SIZE], field: DepositIntentField) -> u32 {
+    let offset = field.offset();
+    u32::from_be_bytes(
+        bytes[offset..offset + BYTES_PER_PACKED_FELT]
+            .try_into()
+            .expect("4-byte window"),
+    )
+}
+
+/// Copies a 32-byte wire field.
+fn bytes32_at(
+    bytes: &[u8; DepositIntentHeader::SERIALIZED_SIZE],
+    field: DepositIntentField,
+) -> [u8; BYTES32_LEN] {
+    let offset = field.offset();
+    bytes[offset..offset + BYTES32_LEN]
+        .try_into()
+        .expect("32-byte window")
+}
+
+/// Copies a 32-byte wire field the scheme requires to be non-zero.
+fn non_zero_bytes32(
+    bytes: &[u8; DepositIntentHeader::SERIALIZED_SIZE],
+    field: DepositIntentField,
+) -> Result<[u8; BYTES32_LEN], EncodingError> {
+    let value = bytes32_at(bytes, field);
+    if value.iter().all(|byte| *byte == 0) {
+        return Err(EncodingError::ZeroField { field });
+    }
+    Ok(value)
 }
 
 /// Reduces one uint256 wire field to the `AssetAmount` it must hold, naming which of the two
 /// amount-shaped fields failed rather than only why: the relayer has to tell an unmintable
 /// `amount` from an unmintable `maxFee`.
-fn reduce_to_asset_amount(
-    value: &[u8; 32],
-    scale_exp: u32,
+fn reduce(
+    value: [u8; BYTES32_LEN],
     field: DepositIntentField,
 ) -> Result<AssetAmount, EncodingError> {
-    uint256_to_asset_amount(uint256_le_limbs(value), scale_exp)
+    uint256_to_asset_amount(EthAmount::new(value))
         .map_err(|_| EncodingError::FieldNotAssetAmount { field })
 }
 
-/// The 8 u32-LE packed limbs of a big-endian uint256 wire field (limb i = LE-u32 of wire bytes
-/// `[4i, 4i+4)`) — the limb form the shared-encoding reducer consumes.
-pub(crate) fn uint256_le_limbs(bytes: &[u8; 32]) -> [u32; 8] {
-    core::array::from_fn(|i| {
-        u32::from_le_bytes(
-            bytes[4 * i..4 * i + 4]
-                .try_into()
-                .expect("4-byte window of a 32-byte field"),
-        )
-    })
+/// Zero-extends a reduced amount back into the 32 big-endian bytes of its uint256 wire field.
+/// Exact, because the reduction that produced it ran at a scale of zero.
+fn widen(amount: AssetAmount) -> [u8; BYTES32_LEN] {
+    let mut bytes = [0u8; BYTES32_LEN];
+    bytes[BYTES32_LEN - ASSET_AMOUNT_BYTES..].copy_from_slice(&amount.as_u64().to_be_bytes());
+    bytes
 }
 
-/// Reads a big-endian u32 wire field (the caller has bounds-checked the slice).
-fn be_u32(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("4-byte window"))
+/// Decodes a bytes32 identifier as the packaged Miden account id it has to be for the deposit to be
+/// mintable at all (`DEV-10`).
+fn account_id(
+    bytes: &[u8; DepositIntentHeader::SERIALIZED_SIZE],
+    field: DepositIntentField,
+) -> Result<AccountId, EncodingError> {
+    Ok(EthEmbeddedAccountId::try_from_bytes32(bytes32_at(bytes, field))?.into_account_id())
 }
 
-/// Copies a 32-byte wire field (the caller has bounds-checked the slice).
-fn bytes32_at(bytes: &[u8], offset: usize) -> [u8; 32] {
-    bytes[offset..offset + 32]
-        .try_into()
-        .expect("32-byte window")
+/// Narrows a bytes32 field to the EVM address it is expected to carry (`Q-EVM-ADDR-1`).
+fn evm_address(
+    bytes: [u8; BYTES32_LEN],
+    field: DepositIntentField,
+) -> Result<EthAddress, EncodingError> {
+    EthAddress::try_from(bytes).map_err(|_| EncodingError::FieldNotEvmAddress { field })
 }
 
-/// A borrowed DepositIntent payload — the raw Circle-signed wire bytes (`240`-byte header plus
-/// variable hookData).
-///
-/// This gives the two codecs a typed home: `DepositIntent::new(bytes).parse_header()` and
-/// `.to_packed_felts()` read as operations on a DepositIntent rather than free functions over an
-/// anonymous `&[u8]`. The type owns the layout — the parse and the packing below — so the 240-byte
-/// layout is frozen and nothing here moves it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DepositIntent<'a>(&'a [u8]);
-
-impl<'a> DepositIntent<'a> {
-    /// Wraps a raw DepositIntent payload without copying it.
-    pub const fn new(bytes: &'a [u8]) -> Self {
-        Self(bytes)
-    }
-
-    /// The raw payload bytes.
-    pub const fn as_bytes(&self) -> &'a [u8] {
-        self.0
-    }
-
-    /// Structural parse + the library-owned checks (truncation, magic, version, non-zero fields,
-    /// total-length relation). Does NOT perform the addressing compares.
-    ///
-    /// # Errors
-    ///
-    /// Returns the specific [`EncodingError`] for the first structural violation
-    /// (`TruncatedHeader`, `BadMagic`, `BadVersion`, `ZeroField`, or `LengthMismatch`).
-    pub fn parse_header(&self) -> Result<DepositIntentHeader, EncodingError> {
-        let bytes = self.0;
-        // the bounds guard necessarily precedes any field read (the TruncatedHeader case)
-        if bytes.len() < DEPOSIT_INTENT_HEADER_LEN {
-            return Err(EncodingError::TruncatedHeader);
-        }
-
-        let magic = be_u32(
-            bytes,
-            deposit_intent_field_offset(DepositIntentField::Magic),
-        );
-        if magic != DEPOSIT_INTENT_MAGIC {
-            return Err(EncodingError::BadMagic);
-        }
-
-        let version = be_u32(
-            bytes,
-            deposit_intent_field_offset(DepositIntentField::Version),
-        );
-        if version != DEPOSIT_INTENT_VERSION {
-            return Err(EncodingError::BadVersion);
-        }
-
-        let amount = bytes32_at(
-            bytes,
-            deposit_intent_field_offset(DepositIntentField::Amount),
-        );
-        if amount.iter().all(|&b| b == 0) {
-            return Err(EncodingError::ZeroField {
-                field: DepositIntentField::Amount,
-            });
-        }
-
-        let local_token = bytes32_at(
-            bytes,
-            deposit_intent_field_offset(DepositIntentField::LocalToken),
-        );
-        if local_token.iter().all(|&b| b == 0) {
-            return Err(EncodingError::ZeroField {
-                field: DepositIntentField::LocalToken,
-            });
-        }
-
-        let local_depositor = bytes32_at(
-            bytes,
-            deposit_intent_field_offset(DepositIntentField::LocalDepositor),
-        );
-        if local_depositor.iter().all(|&b| b == 0) {
-            return Err(EncodingError::ZeroField {
-                field: DepositIntentField::LocalDepositor,
-            });
-        }
-
-        let hook_data_len = be_u32(
-            bytes,
-            deposit_intent_field_offset(DepositIntentField::HookDataLen),
-        );
-        // total = 240 + hookDataLen, computed in u64 so an adversarial length cannot overflow
-        let expected_len = (DEPOSIT_INTENT_HEADER_LEN as u64) + u64::from(hook_data_len);
-        if bytes.len() as u64 != expected_len {
-            return Err(EncodingError::LengthMismatch);
-        }
-
-        Ok(DepositIntentHeader {
-            magic,
-            version,
-            amount,
-            remote_domain: be_u32(
-                bytes,
-                deposit_intent_field_offset(DepositIntentField::RemoteDomain),
-            ),
-            remote_token: bytes32_at(
-                bytes,
-                deposit_intent_field_offset(DepositIntentField::RemoteToken),
-            ),
-            remote_recipient: bytes32_at(
-                bytes,
-                deposit_intent_field_offset(DepositIntentField::RemoteRecipient),
-            ),
-            local_token,
-            local_depositor,
-            max_fee: bytes32_at(
-                bytes,
-                deposit_intent_field_offset(DepositIntentField::MaxFee),
-            ),
-            nonce: bytes32_at(
-                bytes,
-                deposit_intent_field_offset(DepositIntentField::Nonce),
-            ),
-            hook_data_len,
-        })
-    }
-
-    /// The u32-LE-packed on-chain preimage: 60 felts for the header plus ceil(hookDataLen/4) felts
-    /// of hookData (the same `bytes_to_packed_u32_elements` primitive). Validates the structure
-    /// first, then errors `HookDataTooLarge` past the protocol's `MAX_NOTE_STORAGE_ITEMS` bound
-    /// (1024 felts; the default cap — the exact hookData cap stays OPEN with Circle).
-    ///
-    /// # Errors
-    ///
-    /// Propagates every structural error [`parse_header`](Self::parse_header) raises, plus
-    /// [`EncodingError::HookDataTooLarge`] past the 1024-felt bound.
-    pub fn to_packed_felts(&self) -> Result<Vec<Felt>, EncodingError> {
-        self.parse_header()?;
-        let felts = bytes_to_packed_u32_elements(self.0);
-        if felts.len() > MAX_NOTE_STORAGE_ITEMS {
-            return Err(EncodingError::HookDataTooLarge);
-        }
-        Ok(felts)
-    }
-
-    /// The trailing hookData bytes — everything past the fixed header.
-    ///
-    /// # Errors
-    ///
-    /// Propagates every [`EncodingError`] [`Self::parse_header`] raises; in particular a payload
-    /// whose declared and actual lengths disagree has no well-defined hookData.
-    pub fn hook_data(&self) -> Result<&'a [u8], EncodingError> {
-        self.parse_header()?;
-        // the length relation the parse just checked makes this slice exact
-        Ok(&self.0[DEPOSIT_INTENT_HEADER_LEN..])
-    }
+/// Writes a 4-byte big-endian wire field at its layout offset.
+fn write_u32(
+    out: &mut [u8; DepositIntentHeader::SERIALIZED_SIZE],
+    field: DepositIntentField,
+    value: u32,
+) {
+    let offset = field.offset();
+    out[offset..offset + BYTES_PER_PACKED_FELT].copy_from_slice(&value.to_be_bytes());
 }
 
-impl<'a> TryFrom<&'a [u8]> for DepositIntentHeader {
-    type Error = EncodingError;
-
-    /// Decodes a header straight from the wire bytes — the `TryFrom` spelling of
-    /// [`DepositIntent::parse_header`].
-    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
-        DepositIntent::new(bytes).parse_header()
-    }
+/// Writes a value into a bytes32 wire field, right-aligned behind a leading zero pad. A full
+/// 32-byte value fills the field; a narrower one (an amount, a nonce) lands at the end, which is
+/// the packaging every one of those fields uses.
+fn write_bytes32(
+    out: &mut [u8; DepositIntentHeader::SERIALIZED_SIZE],
+    field: DepositIntentField,
+    value: &[u8],
+) {
+    let start = field.offset() + BYTES32_LEN - value.len();
+    out[start..start + value.len()].copy_from_slice(value);
 }
 
 // TESTS — TV-DI-1..9
@@ -316,56 +565,91 @@ mod tests {
     use super::*;
     use crate::vectors::load;
 
-    /// TV-DI-1 (happy path, written first): a full header + hookData parses to the exact
-    /// per-field values at the frozen wire offsets.
+    /// TV-DI-1 (happy path, written first): a full header + hookData decodes to the exact per-field
+    /// values at the frozen wire offsets.
+    ///
+    /// The bytes32 fields are checked through the re-encoding rather than by comparing the decoded
+    /// domain types against the vector's hex: the wire bytes are the contract, and asserting them
+    /// at their offsets pins placement and value at once without re-deriving the packaging the
+    /// decoder just applied.
     #[test]
     fn tv_di_1_positive_parse() {
         let v = load();
         for vec in v.families.di.iter().filter(|v| v.kind == "accept") {
             let bytes = vec.bytes();
-            let h = DepositIntent::new(&bytes)
-                .parse_header()
+            let intent = DepositIntent::try_from(bytes.as_slice())
                 .unwrap_or_else(|e| panic!("vector {}: must parse, got {e}", vec.id));
+            let header = intent.header();
             let f = vec.fields.as_ref().expect("accept vector carries fields");
-            assert_eq!(h.magic, f.magic, "vector {}: magic", vec.id);
-            assert_eq!(h.version, f.version, "vector {}: version", vec.id);
+
             assert_eq!(
-                h.remote_domain, f.remote_domain,
+                header.remote_domain(),
+                f.remote_domain,
                 "vector {}: remoteDomain",
                 vec.id
             );
             assert_eq!(
-                h.hook_data_len, f.hook_data_len,
+                intent.hook_data().len_u32(),
+                f.hook_data_len,
                 "vector {}: hookDataLen",
                 vec.id
             );
-            assert_eq!(h.amount, f.bytes32("amount"), "vector {}: amount", vec.id);
             assert_eq!(
-                h.remote_token,
-                f.bytes32("remote_token"),
-                "vector {}: remoteToken",
+                u64::from(header.amount()),
+                f.amount,
+                "vector {}: amount",
                 vec.id
             );
             assert_eq!(
-                h.remote_recipient,
-                f.bytes32("remote_recipient"),
-                "vector {}: remoteRecipient",
+                u64::from(header.max_fee()),
+                f.max_fee,
+                "vector {}: maxFee",
                 vec.id
             );
-            assert_eq!(
-                h.local_token,
-                f.bytes32("local_token"),
-                "vector {}: localToken",
-                vec.id
-            );
-            assert_eq!(
-                h.local_depositor,
-                f.bytes32("local_depositor"),
-                "vector {}: localDepositor",
-                vec.id
-            );
-            assert_eq!(h.max_fee, f.bytes32("max_fee"), "vector {}: maxFee", vec.id);
-            assert_eq!(h.nonce, f.bytes32("nonce"), "vector {}: nonce", vec.id);
+
+            let written = intent.to_bytes();
+            for (name, field, label) in [
+                ("amount", DepositIntentField::Amount, "amount"),
+                (
+                    "remote_token",
+                    DepositIntentField::RemoteToken,
+                    "remoteToken",
+                ),
+                (
+                    "remote_recipient",
+                    DepositIntentField::RemoteRecipient,
+                    "remoteRecipient",
+                ),
+                ("local_token", DepositIntentField::LocalToken, "localToken"),
+                (
+                    "local_depositor",
+                    DepositIntentField::LocalDepositor,
+                    "localDepositor",
+                ),
+                ("max_fee", DepositIntentField::MaxFee, "maxFee"),
+                ("nonce", DepositIntentField::Nonce, "nonce"),
+            ] {
+                let offset = field.offset();
+                assert_eq!(
+                    &written[offset..offset + BYTES32_LEN],
+                    &f.bytes32(name),
+                    "vector {}: {label}",
+                    vec.id
+                );
+            }
+        }
+    }
+
+    /// The decode and the encode are inverses over every accept vector: what Circle signed is
+    /// exactly what this crate writes back. Everything downstream rests on it, because the faucet
+    /// verifies the signature over bytes it rebuilds rather than over bytes it was handed.
+    #[test]
+    fn round_trip_is_byte_exact() {
+        let v = load();
+        for vec in v.families.di.iter().filter(|v| v.kind == "accept") {
+            let bytes = vec.bytes();
+            let intent = DepositIntent::try_from(bytes.as_slice()).expect("accept vector decodes");
+            assert_eq!(intent.to_bytes(), bytes, "vector {}: round trip", vec.id);
         }
     }
 
@@ -387,7 +671,7 @@ mod tests {
             .iter()
             .find(|v| v.id == id)
             .expect("vector present");
-        let result = DepositIntent::new(&vec.bytes()).parse_header();
+        let result = DepositIntent::try_from(vec.bytes().as_slice());
         match vec.expected_variant.as_deref() {
             Some("BadMagic") => assert_matches!(result, Err(EncodingError::BadMagic), "{id}"),
             Some("BadVersion") => assert_matches!(result, Err(EncodingError::BadVersion), "{id}"),
@@ -422,6 +706,56 @@ mod tests {
         }
     }
 
+    /// A payload that stops inside Circle's fixed 240-byte prefix is a truncated header, whichever
+    /// side of the header/hookDataLen seam it stops on — the two are one block on the wire.
+    #[test]
+    fn a_payload_short_of_the_fixed_prefix_is_truncated() {
+        let v = load();
+        let vec = v
+            .families
+            .di
+            .iter()
+            .find(|v| v.id == "di-pos-empty-hookdata")
+            .expect("vector");
+        let bytes = vec.bytes();
+        for len in [
+            DepositIntentHeader::SERIALIZED_SIZE,
+            DepositIntent::HEADER_SIZE - 1,
+        ] {
+            assert_matches!(
+                DepositIntent::try_from(&bytes[..len]),
+                Err(EncodingError::TruncatedHeader),
+                "a {len}-byte payload stops inside the fixed prefix"
+            );
+        }
+    }
+
+    /// A payload followed by bytes that are not part of it is refused rather than silently
+    /// truncated to the message it claims to be — on both decode paths, since the check sits in the
+    /// codec rather than in one entry point.
+    #[test]
+    fn trailing_bytes_reject() {
+        let v = load();
+        let vec = v
+            .families
+            .di
+            .iter()
+            .find(|v| v.id == "di-pos-hookdata")
+            .expect("vector");
+        let mut bytes = vec.bytes();
+        bytes.push(0x00);
+        assert_matches!(
+            DepositIntent::try_from(bytes.as_slice()),
+            Err(EncodingError::LengthMismatch)
+        );
+        assert_eq!(
+            DepositIntent::read_from_bytes(&bytes)
+                .expect_err("the standard reader refuses the trailing byte too")
+                .to_string(),
+            DeserializationError::from(EncodingError::LengthMismatch).to_string()
+        );
+    }
+
     /// TV-DI-7 (boundary): the packed header is exactly 60 felts, equals the committed preimage,
     /// stays within the 1024-felt bound, and the overflow vector rejects with `HookDataTooLarge`
     /// (the hookData cap stays OPEN with Circle).
@@ -429,9 +763,9 @@ mod tests {
     fn tv_di_7_sixty_felts_and_1024_bound() {
         let v = load();
         for vec in v.families.di.iter().filter(|v| v.kind == "accept") {
-            let felts = DepositIntent::new(&vec.bytes())
-                .to_packed_felts()
-                .unwrap_or_else(|e| panic!("vector {}: must pack, got {e}", vec.id));
+            let intent =
+                DepositIntent::try_from(vec.bytes().as_slice()).expect("accept vector decodes");
+            let felts = intent.to_preimage_felts();
             let expected = vec.preimage_values();
             assert_eq!(
                 felts.len(),
@@ -440,13 +774,23 @@ mod tests {
                 vec.id
             );
             assert_eq!(
-                &felts[..60],
-                &expected[..60],
+                felts.len(),
+                intent.preimage_felt_len(),
+                "vector {}: derived felt length",
+                vec.id
+            );
+            assert_eq!(
+                &felts[..DepositIntent::HEADER_NUM_FELTS],
+                &expected[..DepositIntent::HEADER_NUM_FELTS],
                 "vector {}: 60-felt header",
                 vec.id
             );
             assert_eq!(felts, expected, "vector {}: full preimage", vec.id);
-            assert!(felts.len() <= 1024, "vector {}: NoteStorage bound", vec.id);
+            assert!(
+                felts.len() <= MAX_NOTE_STORAGE_ITEMS,
+                "vector {}: NoteStorage bound",
+                vec.id
+            );
         }
         let overflow = v
             .families
@@ -455,13 +799,13 @@ mod tests {
             .find(|v| v.id == "di-rej-hookdata-overflow")
             .expect("vector");
         assert_matches!(
-            DepositIntent::new(&overflow.bytes()).to_packed_felts(),
+            DepositIntent::try_from(overflow.bytes().as_slice()),
             Err(EncodingError::HookDataTooLarge),
             "hookData past the 1024-felt bound must reject"
         );
     }
 
-    /// TV-DI-8 (determinism/immutability): parsing borrows the input immutably and the
+    /// TV-DI-8 (determinism/immutability): decoding borrows the input immutably and the
     /// bytes are unchanged afterwards (note-input immutability analogue).
     #[test]
     fn tv_di_8_input_immutable() {
@@ -474,7 +818,7 @@ mod tests {
             .expect("vector");
         let bytes = vec.bytes();
         let before = bytes.clone();
-        let _ = DepositIntent::new(&bytes).parse_header();
+        let _ = DepositIntent::try_from(bytes.as_slice());
         assert_eq!(bytes, before, "input must be unchanged by parsing");
     }
 
@@ -496,11 +840,18 @@ mod tests {
             (DepositIntentField::HookData, 240),
         ];
         for (field, off) in expected {
-            assert_eq!(
-                deposit_intent_field_offset(field),
-                off,
-                "wire offset of {field:?}"
-            );
+            assert_eq!(field.offset(), off, "wire offset of {field:?}");
         }
+    }
+
+    /// hookData past the bound is refused at construction, so nothing downstream — including the
+    /// faucet's fixed staging region — has to re-check it.
+    #[test]
+    fn hook_data_bound_is_enforced_at_construction() {
+        assert_matches!(
+            HookData::new(vec![0u8; HookData::MAX_LEN + 1]),
+            Err(EncodingError::HookDataTooLarge)
+        );
+        assert!(HookData::new(vec![0u8; HookData::MAX_LEN]).is_ok());
     }
 }

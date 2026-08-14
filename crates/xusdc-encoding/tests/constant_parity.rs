@@ -17,17 +17,12 @@ use miden_protocol::note::NoteAttachmentScheme;
 use miden_standards::note::NetworkAccountTarget;
 use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
 use xusdc_encoding::note::xreserve_mint::{
-    XUSDC_DEPOSIT_SCALE_EXP, XUSDC_MINT_ATTESTATION_NUM_WORDS,
-    XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME, XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
+    XUSDC_MINT_ATTESTATION_NUM_WORDS, XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME,
+    XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
-    deposit_intent_field_offset, DepositIntentField, ACCOUNT_ID_BYTES, ACCOUNT_ID_FELTS,
-    ASSET_AMOUNT_BYTES, BYTES32_LEN, DEPOSIT_INTENT_HEADER_FELTS, DEPOSIT_INTENT_HEADER_LEN,
-    DEPOSIT_INTENT_MAGIC, DEPOSIT_INTENT_VERSION, EVM_ADDRESS_BYTES, EVM_ADDRESS_PACKED_LIMBS,
-    MINT_INTENT_FELTS, MINT_INTENT_HOOK_DATA_LEN_FELT_OFF, MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF,
-    MINT_INTENT_LOCAL_TOKEN_FELT_OFF, MINT_INTENT_MAX_FEE_FELT_OFF, MINT_INTENT_NONCE_FELT_OFF,
-    MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF, MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
-    MINT_INTENT_SCALE_EXP, PUBKEY_FELTS,
+    DepositIntent, DepositIntentField, DepositIntentHeader, MintIntent, ACCOUNT_ID_BYTES,
+    ASSET_AMOUNT_BYTES, BYTES32_LEN, EVM_ADDRESS_BYTES, EVM_ADDRESS_PACKED_LIMBS, PUBKEY_FELTS,
 };
 /// The shipped MASM sources, read here as TEXT so the constants written in them can be compared
 /// against their Rust counterparts. This is the only thing in the crate that reads MASM source: the
@@ -293,14 +288,14 @@ fn masm_rust_constant_parity() {
     for (masm_name, field) in offsets {
         assert_eq!(
             num(&nums, masm_name, "deposit_intent.masm") * 4,
-            deposit_intent_field_offset(field) as u64,
+            field.offset() as u64,
             "DC-1 offset relation for {masm_name} (MASM felt offset x 4 == Rust byte offset)"
         );
     }
 
     assert_eq!(
         num(&nums, "DEPOSIT_INTENT_MAGIC_PACKED", "deposit_intent.masm"),
-        u32::from_le_bytes(DEPOSIT_INTENT_MAGIC.to_be_bytes()) as u64,
+        u32::from_le_bytes(DepositIntentHeader::MAGIC.to_be_bytes()) as u64,
         "packed magic must be the u32-LE reinterpretation of the BE wire magic"
     );
     assert_eq!(
@@ -309,24 +304,24 @@ fn masm_rust_constant_parity() {
             "DEPOSIT_INTENT_VERSION_PACKED",
             "deposit_intent.masm"
         ),
-        u32::from_le_bytes(DEPOSIT_INTENT_VERSION.to_be_bytes()) as u64,
+        u32::from_le_bytes(DepositIntentHeader::VERSION.to_be_bytes()) as u64,
         "packed version must be the u32-LE reinterpretation of the BE wire version"
     );
     assert_eq!(
         num(&nums, "DEPOSIT_INTENT_HEADER_BYTES", "deposit_intent.masm"),
-        DEPOSIT_INTENT_HEADER_LEN as u64,
+        DepositIntent::HEADER_SIZE as u64,
         "header byte length must match across languages"
     );
     assert_eq!(
         num(&nums, "DEPOSIT_INTENT_HEADER_BYTES", "deposit_intent.masm"),
-        DEPOSIT_INTENT_HEADER_FELTS as u64 * 4,
+        DepositIntent::HEADER_NUM_FELTS as u64 * 4,
         "header byte length must be 4x the felt count (4 bytes per felt)"
     );
     // the header is a whole number of words, which is what lets the hookData tail start
     // word-aligned and lets the writer zero the header word by word
     assert_eq!(
         num(&nums, "DEPOSIT_INTENT_HEADER_WORDS", "deposit_intent.masm") * 4,
-        DEPOSIT_INTENT_HEADER_FELTS as u64,
+        DepositIntent::HEADER_NUM_FELTS as u64,
         "header word count must be the felt count / 4"
     );
 
@@ -363,7 +358,7 @@ fn masm_rust_constant_parity() {
     );
     assert_eq!(
         num(&mi_nums, "ACCOUNT_ID_FELTS", "mint_intent.masm"),
-        ACCOUNT_ID_FELTS as u64,
+        MintIntent::ACCOUNT_ID_FELTS as u64,
         "DC-14 account-id felt-pair width parity"
     );
 
@@ -379,29 +374,29 @@ fn masm_rust_constant_parity() {
     // DC-14 carried-payload offsets. Both sides derive these from the widths above, so a width
     // edit that lands on only one side moves the offsets apart and fails here.
     let payload_offsets: [(&str, usize); 8] = [
-        ("MINT_INTENT_NONCE_FELT_OFF", MINT_INTENT_NONCE_FELT_OFF),
+        ("MINT_INTENT_NONCE_FELT_OFF", MintIntent::NONCE_FELT_OFF),
         (
             "MINT_INTENT_LOCAL_TOKEN_FELT_OFF",
-            MINT_INTENT_LOCAL_TOKEN_FELT_OFF,
+            MintIntent::LOCAL_TOKEN_FELT_OFF,
         ),
         (
             "MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF",
-            MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF,
+            MintIntent::LOCAL_DEPOSITOR_FELT_OFF,
         ),
         (
             "MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF",
-            MINT_INTENT_REMOTE_RECIPIENT_FELT_OFF,
+            MintIntent::REMOTE_RECIPIENT_FELT_OFF,
         ),
         (
             "MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF",
-            MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
+            MintIntent::REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
         ),
-        ("MINT_INTENT_MAX_FEE_FELT_OFF", MINT_INTENT_MAX_FEE_FELT_OFF),
+        ("MINT_INTENT_MAX_FEE_FELT_OFF", MintIntent::MAX_FEE_FELT_OFF),
         (
             "MINT_INTENT_HOOK_DATA_LEN_FELT_OFF",
-            MINT_INTENT_HOOK_DATA_LEN_FELT_OFF,
+            MintIntent::HOOK_DATA_LEN_FELT_OFF,
         ),
-        ("MINT_INTENT_FELTS", MINT_INTENT_FELTS),
+        ("MINT_INTENT_FELTS", MintIntent::NUM_FELTS),
     ];
     for (masm_name, rust_value) in payload_offsets {
         assert_eq!(
@@ -416,13 +411,6 @@ fn masm_rust_constant_parity() {
         num(&mi_nums, "MINT_INTENT_FELTS", "mint_intent.masm") % 4,
         0,
         "the carried payload must be a whole number of words"
-    );
-    // DEV-5 pin: DC-14 zero-extends the carried AssetAmount back into its uint256 field, which is
-    // lossless ONLY at scale zero. A non-zero scale needs a new transport, not a new constant, so
-    // it has to fail here rather than ship a preimage that can never verify.
-    assert_eq!(
-        MINT_INTENT_SCALE_EXP, 0,
-        "DC-14 reconstruction is only invertible at scale zero (DEV-5 OPEN)"
     );
 
     // extra row: the affine-pubkey felt count
@@ -477,14 +465,11 @@ fn masm_rust_constant_parity() {
         ),
         "the carried payload's word offset must be the attestation width on BOTH sides"
     );
-    // DC-5 scale parity is Rust-only now: the MASM side no longer HAS a scale, because the writer
-    // zero-extends the note's AssetAmount instead of verifying a witness against a staged uint256.
-    // The pin that matters is that both Rust constants agree on zero, which MINT_INTENT_SCALE_EXP
-    // asserts above.
-    assert_eq!(
-        XUSDC_DEPOSIT_SCALE_EXP, MINT_INTENT_SCALE_EXP,
-        "the note factory and the DC-14 mirror must reduce at the same scale"
-    );
+    // DC-5 has no cross-language parity row left: the MASM side no longer HAS a scale, because the
+    // writer zero-extends the note's AssetAmount instead of verifying a witness against a staged
+    // uint256. The one thing left to pin is the value of the single Rust constant, and it is
+    // asserted where it is defined (`amount.rs`, `deposit_scale_exp_is_zero`) — the constant is
+    // module-private, so there is no second spelling that could drift from it.
     // rider A8 (ratified): the xUSDC scheme sits at >= 4 — clear of the protocol-reserved
     // "none" value 1 and the standard values 2 (NetworkAccountTarget, carried on this very
     // note) and 3 (Pswap). Executable so a scheme regression cannot slip in one-sided.

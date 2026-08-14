@@ -24,6 +24,7 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result};
 use miden_protocol::account::StorageSlotName;
 use miden_protocol::note::NoteScriptRoot;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_standards::note::{
     BlocklistConfigNote, BurnNote, MintNote, PauseConfigNote, RbacConfigNote,
 };
@@ -150,12 +151,12 @@ async fn a_foreign_remote_token_rejects_while_the_own_id_intent_mints() -> Resul
 
     // another live account's id, in the same frozen packaging: decodable, valid, and not ours
     let foreign_token: [u8; 32] =
-        xusdc_encoding::xreserve::encoding::account_id_to_bytes32(pf.recipient_id);
+        EthEmbeddedAccountId::from_account_id(pf.recipient_id).to_bytes32();
     let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 32);
     payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32].copy_from_slice(&foreign_token);
     assert_ne!(
         foreign_token,
-        xusdc_encoding::xreserve::encoding::account_id_to_bytes32(pf.faucet_id),
+        EthEmbeddedAccountId::from_account_id(pf.faucet_id).to_bytes32(),
         "the foreign token must genuinely differ from the faucet's own id encoding"
     );
 

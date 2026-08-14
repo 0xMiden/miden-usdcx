@@ -13,15 +13,17 @@
 
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey};
 use miden_crypto::dsa::ecdsa_k256_keccak::PublicKey;
-use miden_crypto::utils::Deserializable;
+use miden_crypto::utils::{Deserializable, Serializable};
+use miden_crypto::SequentialCommit;
 use miden_protocol::testing::account_id::AccountIdBuilder;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Hasher, Word};
+use miden_standards::interop::eth::EthAddress;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
-use xusdc_encoding::xreserve::encoding::bytes32_to_packed_u32_limbs;
+use xusdc_encoding::xreserve::encoding::EthAddressExt;
 
 const ASSET_AMOUNT_MAX: u128 = (1u128 << 63) - (1u128 << 31); // 2^63 - 2^31
 
@@ -53,6 +55,12 @@ fn u256_be_from_u128(x: u128) -> [u8; 32] {
     out
 }
 
+/// The u64 an accept vector's uint256 amount field reduces to (the shipped scale is zero, so the
+/// reduction is the identity and the value is simply the low 8 bytes).
+fn u64_from_be32(b: &[u8; 32]) -> u64 {
+    u64::from_be_bytes(b[24..].try_into().expect("8-byte window"))
+}
+
 fn packed(bytes: &[u8]) -> Vec<Felt> {
     bytes_to_packed_u32_elements(bytes)
 }
@@ -68,18 +76,17 @@ fn poseidon2_key(bytes32: &[u8; 32]) -> Word {
 // uint256 → AssetAmount reducer entries
 // ================================================================================================
 
-#[allow(clippy::too_many_arguments)]
-fn amt_accept(id: &str, tv: &[&str], x: u128, scale_exp: u32, derivation: &str) -> Value {
+fn amt_accept(id: &str, tv: &[&str], x: u128, derivation: &str) -> Value {
     let b = u256_be_from_u128(x);
-    let y = x / 10u128.pow(scale_exp);
     assert!(
-        y <= ASSET_AMOUNT_MAX,
+        x <= ASSET_AMOUNT_MAX,
         "{id}: accept vector must be within the cap"
     );
     json!({
         "id": id, "tv": tv, "kind": "accept",
-        "uint256_be": hex_bytes(&b), "le_limbs": bytes32_to_packed_u32_limbs(&b), "scale_exp": scale_exp,
-        "expected_y": y.to_string(),
+        "uint256_be": hex_bytes(&b),
+        // the shipped scale is zero, so the reduction is the identity
+        "expected_y": x.to_string(),
         "cite": "CIR-FEE-3",
         "derivation": derivation,
     })
@@ -89,14 +96,13 @@ fn amt_reject(
     id: &str,
     tv: &[&str],
     b: [u8; 32],
-    scale_exp: u32,
     variant: &str,
     cite: &str,
     derivation: &str,
 ) -> Value {
     json!({
         "id": id, "tv": tv, "kind": "reject",
-        "uint256_be": hex_bytes(&b), "le_limbs": bytes32_to_packed_u32_limbs(&b), "scale_exp": scale_exp,
+        "uint256_be": hex_bytes(&b),
         "expected_variant": variant,
         "cite": cite, "derivation": derivation,
     })
@@ -126,17 +132,30 @@ fn pattern32(base: u8) -> [u8; 32] {
     core::array::from_fn(|i| base.wrapping_add(i as u8))
 }
 
+/// A 20-byte EVM address right-aligned in a bytes32 (the leading 12 bytes are the zero pad).
+fn evm_bytes32(base: u8) -> [u8; 32] {
+    let mut bytes = [0u8; 20];
+    for i in 0..20 {
+        bytes[i] = base.wrapping_add(i as u8);
+    }
+
+    EthAddress::new(bytes).to_bytes32()
+}
+
 impl IntentSpec {
-    fn base(remote_recipient: [u8; 32]) -> Self {
+    /// A structurally well-formed intent. `remote_token` names a faucet OTHER than the `mi`
+    /// family's, so a row that confused the destination token with the destination account would
+    /// not pass.
+    fn base(remote_token: [u8; 32], remote_recipient: [u8; 32]) -> Self {
         Self {
             magic: 0x5a2e_0acd, // DepositIntent magic
             version: 1,         // DepositIntent version
             amount: u256_be_from_u128(1_000_000),
             remote_domain: 7,
-            remote_token: pattern32(0xa0),
+            remote_token,
             remote_recipient,
-            local_token: pattern32(0xb0),
-            local_depositor: pattern32(0xc0),
+            local_token: evm_bytes32(0xb0),
+            local_depositor: evm_bytes32(0xc0),
             max_fee: u256_be_from_u128(2_000_000),
             nonce: pattern32(0xd0),
             hook_data: Vec::new(),
@@ -209,6 +228,8 @@ fn di_accept(id: &str, tv: &[&str], spec: &IntentSpec, derivation: &str) -> Valu
             "magic": spec.magic, "version": spec.version,
             "remote_domain": spec.remote_domain,
             "hook_data_len": spec.hook_data.len() as u32,
+            "amount": u64_from_be32(&spec.amount),
+            "max_fee": u64_from_be32(&spec.max_fee),
             "amount_hex": hex_bytes(&spec.amount),
             "remote_token_hex": hex_bytes(&spec.remote_token),
             "remote_recipient_hex": hex_bytes(&spec.remote_recipient),
@@ -291,9 +312,13 @@ fn att_sign65(sk: &SigningKey, digest: &[u8; 32]) -> [u8; 65] {
 /// pubkey felts. This is exactly what off-chain `set_attester` keys the `xReserveAttesters`
 /// allowlist by.
 fn att_commitment(pk33: &[u8; 33]) -> Word {
-    PublicKey::read_from_bytes(pk33)
-        .expect("valid compressed secp256k1 pubkey")
-        .to_commitment()
+    att_pubkey(pk33).to_commitment()
+}
+
+/// The 33 compressed wire bytes as the miden-crypto key the affine packing and the commitment both
+/// come off.
+fn att_pubkey(pk33: &[u8; 33]) -> PublicKey {
+    PublicKey::read_from_bytes(pk33).expect("valid compressed secp256k1 pubkey")
 }
 
 fn main() {
@@ -340,66 +365,21 @@ fn main() {
 
     // ---- amt family -------------------------------------------------------------------
     let max = ASSET_AMOUNT_MAX;
-    let mut amt = vec![
-        amt_accept(
-            "amt-pos-1",
-            &["TV-AMT-1"],
-            1_000_000,
-            6,
-            "x = 10^6, y = 1",
-        ),
-        amt_accept(
-            "amt-pos-2",
-            &["TV-AMT-1"],
-            123_456_789_012 * 1_000_000,
-            6,
-            "x = 123456789012 * 10^6, y = 123456789012",
-        ),
-        amt_accept(
-            "amt-pos-3",
-            &["TV-AMT-1"],
-            42,
-            0,
-            "scale 0: y = x = 42",
-        ),
-        amt_accept(
-            "amt-pos-4",
-            &["TV-AMT-1"],
-            5 * 10u128.pow(18),
-            18,
-            "scale 18: x = 5 * 10^18, y = 5",
-        ),
+    let amt = vec![
+        amt_accept("amt-pos-1", &["TV-AMT-1"], 42, "y = x = 42"),
         amt_accept(
             "amt-cap-accept",
             &["TV-AMT-2"],
-            max * 1_000_000,
-            6,
-            "cap boundary: x = (2^63 - 2^31) * 10^6, y = AssetAmount::MAX exactly",
-        ),
-        amt_accept(
-            "amt-cap-accept-scale0",
-            &["TV-AMT-2"],
             max,
-            0,
-            "cap boundary at the shipped scale-0 identity: x = 2^63 - 2^31, y = x = AssetAmount::MAX exactly",
+            "cap boundary: x = 2^63 - 2^31, y = x = AssetAmount::MAX exactly",
         ),
         amt_reject(
             "amt-rej-cap",
             &["TV-AMT-3"],
-            u256_be_from_u128((max + 1) * 1_000_000),
-            6,
-            "AmountOverCap",
-            "generated deterministically by gen_vectors @ protocol v0.15.3",
-            "x = (2^63 - 2^31 + 1) * 10^6, post-scale y = MAX + 1 must reject (no saturation)",
-        ),
-        amt_reject(
-            "amt-rej-cap-scale0",
-            &["TV-AMT-3"],
             u256_be_from_u128(max + 1),
-            0,
             "AmountOverCap",
             "generated deterministically by gen_vectors @ protocol v0.15.3",
-            "cap reject at the shipped scale-0 identity: x = y = 2^63 - 2^31 + 1 = MAX + 1 must reject (no saturation)",
+            "x = y = 2^63 - 2^31 + 1 = MAX + 1 must reject (no saturation)",
         ),
         {
             // bit 130 set => high four limbs nonzero (> 2^128). BE byte 15, bit 2.
@@ -409,66 +389,12 @@ fn main() {
                 "amt-rej-limb-overflow",
                 &["TV-AMT-4"],
                 b,
-                6,
                 "AmountTooLarge",
                 "generated deterministically by gen_vectors @ protocol v0.15.3",
                 "x = 2^130: high-4 limbs nonzero must reject (limb-overflow edge)",
             )
         },
-        amt_reject(
-            "amt-rej-scale-overflow",
-            &["TV-AMT-7"],
-            u256_be_from_u128(1_000_000),
-            20,
-            "ScaleExpTooLarge",
-            "(scale 0..=18)",
-            "scale_exp = 20 exceeds the 0..=18 bound / overflows 10^scale in u64",
-        ),
     ];
-    // reduced-ge pairs (TV-AMT-5).
-    for (id, a, b, result, note) in [
-        (
-            "amt-ge-lt",
-            1_000_000u128,
-            2_000_000u128,
-            false,
-            "1 < 2 after reduction",
-        ),
-        (
-            "amt-ge-eq",
-            3_000_000,
-            3_000_000,
-            true,
-            "3 == 3 after reduction",
-        ),
-        (
-            "amt-ge-gt",
-            5_000_000,
-            2_000_000,
-            true,
-            "5 > 2 after reduction",
-        ),
-    ] {
-        let ab = u256_be_from_u128(a);
-        let bb = u256_be_from_u128(b);
-        amt.push(json!({
-            "id": id, "tv": ["TV-AMT-5"], "kind": "ge",
-            "uint256_be": hex_bytes(&ab), "le_limbs": bytes32_to_packed_u32_limbs(&ab),
-            "b_uint256_be": hex_bytes(&bb), "b_le_limbs": bytes32_to_packed_u32_limbs(&bb),
-            "scale_exp": 6, "ge_result": result,
-            "cite": "CIR-MINT-PRE-8/9 ; amount validation",
-            "derivation": note,
-        }));
-    }
-    // dust (TV-AMT-6).
-    let dust_b = u256_be_from_u128(1_500_123);
-    amt.push(json!({
-        "id": "amt-dust", "tv": ["TV-AMT-6"], "kind": "dust",
-        "uint256_be": hex_bytes(&dust_b), "le_limbs": bytes32_to_packed_u32_limbs(&dust_b), "scale_exp": 6,
-        "expected_y": "1", "expected_dust": "500123",
-        "cite": "DEV-5",
-        "derivation": "x = 1500123, y = floor(x/10^6) = 1, z = 500123; dust POLICY is REQUIRES CIRCLE CONFIRMATION (DEV-5)",
-    }));
     // ---- aid family -------------------------------------------------------------------
     let ids: Vec<miden_protocol::account::AccountId> = (1u8..=3)
         .map(|seed| AccountIdBuilder::new().build_with_seed([seed; 32]))
@@ -535,11 +461,14 @@ fn main() {
         }));
     }
     let recipient_b32: [u8; 32] = r_b_bytes32(&ids[0]);
+    // the structural family is addressed to a DIFFERENT faucet than the `mi` family's, so a row
+    // that mixed up the destination token and the destination account could not pass
+    let di_token_b32: [u8; 32] = r_b_bytes32(&ids[2]);
 
     // ---- di family --------------------------------------------------------------------
     let mut di: Vec<Value> = Vec::new();
     {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.hook_data = (0..10u8).map(|i| 0xe0 + i).collect();
         di.push(di_accept(
             "di-pos-hookdata",
@@ -549,7 +478,7 @@ fn main() {
         ));
     }
     {
-        let spec = IntentSpec::base(recipient_b32);
+        let spec = IntentSpec::base(di_token_b32, recipient_b32);
         di.push(di_accept(
             "di-pos-empty-hookdata",
             &["TV-DI-1", "TV-DI-7", "TV-DUAL-3"],
@@ -557,9 +486,9 @@ fn main() {
             "valid intent, hookDataLen = 0 (exactly the 60-felt header)",
         ));
     }
-    let base_bytes = IntentSpec::base(recipient_b32).encode();
+    let base_bytes = IntentSpec::base(di_token_b32, recipient_b32).encode();
     {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.magic = 0xdead_beef;
         di.push(di_reject(
             "di-rej-bad-magic",
@@ -572,7 +501,7 @@ fn main() {
         ));
     }
     {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.version = 2;
         di.push(di_reject(
             "di-rej-bad-version",
@@ -604,7 +533,7 @@ fn main() {
             "ZeroField:LocalDepositor",
         ),
     ] {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         match field {
             "amount" => spec.amount = [0u8; 32],
             "local_token" => spec.local_token = [0u8; 32],
@@ -622,7 +551,7 @@ fn main() {
         ));
     }
     {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.hook_data = vec![0xee; 4];
         spec.hook_data_len_override = Some(10);
         di.push(di_reject(
@@ -650,7 +579,7 @@ fn main() {
         "first 100 bytes only (< 240-byte header; 25 staged felts < 60)",
     ));
     {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         let hook_len = (1024 - 60) * 4 + 4; // 3860 bytes => 965 felts => 1025 > 1024
         spec.hook_data = vec![0xab; hook_len];
         di.push(di_reject(
@@ -674,18 +603,10 @@ fn main() {
     let faucet_id = &ids[1];
     let faucet_b32 = r_b_bytes32(faucet_id);
     let mi_domain = 7u32;
-    // a 20-byte EVM address right-aligned in a bytes32 (the leading 12 bytes are the zero pad)
-    let evm_bytes32 = |base: u8| -> [u8; 32] {
-        let mut b = [0u8; 32];
-        for (i, slot) in b[12..].iter_mut().enumerate() {
-            *slot = base.wrapping_add(i as u8);
-        }
-        b
-    };
     // each row gets its own nonce: two deposits never share one, and the replay-guard tests need
     // a pair that keys distinctly
     let mi_spec = |hook_data: Vec<u8>, nonce_seed: u8| -> IntentSpec {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.nonce = pattern32(nonce_seed);
         spec.remote_domain = mi_domain;
         spec.remote_token = faucet_b32;
@@ -699,21 +620,20 @@ fn main() {
     let mut mi: Vec<Value> = Vec::new();
     let mi_accept = |mi: &mut Vec<Value>, id: &str, spec: &IntentSpec, derivation: &str| {
         let payload = spec.encode();
-        let intent = xusdc_encoding::xreserve::encoding::DepositIntent::new(&payload);
+        let intent =
+            xusdc_encoding::xreserve::encoding::DepositIntent::try_from(payload.as_slice())
+                .expect("generator invariant: the spec encodes a valid deposit intent");
+        let amount = intent.header().amount();
         let carried = xusdc_encoding::xreserve::encoding::MintIntent::from_deposit_intent(
-            &intent, *faucet_id,
+            &intent, *faucet_id, mi_domain,
         )
         .expect("generator invariant: the mp accept specs are DC-14 shaped");
-        let amount = intent
-            .parse_header()
-            .expect("generator invariant: the spec encodes a valid header")
-            .reduced_amount(xusdc_encoding::xreserve::encoding::MINT_INTENT_SCALE_EXP)
-            .expect("generator invariant: the spec amount is an AssetAmount");
-        let rebuilt = carried.to_deposit_intent_bytes(amount, mi_domain, *faucet_id);
+        let rebuilt = carried.to_deposit_intent(amount, mi_domain, *faucet_id);
         // the law the whole design rests on: what the faucet rebuilds is byte-for-byte what
         // Circle signed. If this ever fails, no note built from this payload could ever mint.
         assert_eq!(
-            rebuilt, payload,
+            rebuilt.to_bytes(),
+            payload,
             "generator invariant: the DC-14 round trip must be exact for {id}"
         );
         mi.push(json!({
@@ -725,12 +645,8 @@ fn main() {
             "faucet_suffix_felt": felt_hex(faucet_id.suffix()),
             "remote_domain": mi_domain,
             "amount_felt": felt_hex(Felt::from(amount)),
-            "carried_felts": felts_hex(&carried.to_felts()),
-            "rebuilt_preimage_felts": felts_hex(
-                &xusdc_encoding::xreserve::encoding::DepositIntent::new(&rebuilt)
-                    .to_packed_felts()
-                    .expect("generator invariant: the rebuilt preimage packs"),
-            ),
+            "carried_felts": felts_hex(&carried.to_elements()),
+            "rebuilt_preimage_felts": felts_hex(&rebuilt.to_preimage_felts()),
             "cite": "DC-14 + DEV-10 + Q-EVM-ADDR-1 (REQUIRES CIRCLE CONFIRMATION)",
             "derivation": derivation,
         }));
@@ -754,12 +670,15 @@ fn main() {
                      expected_variant: &str,
                      derivation: &str| {
         let payload = spec.encode();
-        let intent = xusdc_encoding::xreserve::encoding::DepositIntent::new(&payload);
+        // a reject row fails at whichever step owns its narrowing: the byte decode or the compress
         assert!(
-            xusdc_encoding::xreserve::encoding::MintIntent::from_deposit_intent(
-                &intent, *faucet_id,
-            )
-            .is_err(),
+            xusdc_encoding::xreserve::encoding::DepositIntent::try_from(payload.as_slice())
+                .and_then(|intent| {
+                    xusdc_encoding::xreserve::encoding::MintIntent::from_deposit_intent(
+                        &intent, *faucet_id, mi_domain,
+                    )
+                })
+                .is_err(),
             "generator invariant: {id} must not compress"
         );
         mi.push(json!({
@@ -852,7 +771,7 @@ fn main() {
     // nonce is varied per seed so digests, sigs, and pubkeys all differ.
     let mut att: Vec<Value> = Vec::new();
     for seed in 1u64..=3 {
-        let mut spec = IntentSpec::base(recipient_b32);
+        let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.nonce = pattern32(0xd0u8.wrapping_add(seed as u8));
         let payload = spec.encode();
 
@@ -865,7 +784,7 @@ fn main() {
             "id": format!("att-{seed}"),
             "tv": ["TV-ATT-1", "TV-ATT-2", "TV-ATT-3", "TV-DUAL-5"],
             "pubkey_hex": hex_bytes(&pk),
-            "packed_felts": felts_hex(&xusdc_encoding::xreserve::encoding::PublicKey::new(pk).to_affine_felts().expect("generator keys are valid points")),
+            "packed_felts": felts_hex(&att_pubkey(&pk).to_elements()),
             "expected_commitment": word_hex(commitment),
             "digest_hex": hex_bytes(&digest),
             "digest_felts": felts_hex(&packed(&digest)),

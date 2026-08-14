@@ -24,18 +24,16 @@
 use std::error::Error;
 
 use assert_matches::assert_matches;
+use miden_protocol::utils::serde::Serializable;
 use rstest::rstest;
 
 use xreserve_deposit_relayer::error::RelayerError;
-use xreserve_deposit_relayer::validate::deposit_intent::decode_and_validate_deposit_intent;
 use xusdc_encoding::vectors::{load, DiVector};
-use xusdc_encoding::xreserve::encoding::{
-    deposit_intent_field_offset, DepositIntentField, EncodingError, DEPOSIT_INTENT_HEADER_LEN,
-};
+use xusdc_encoding::xreserve::encoding::{DepositIntent, DepositIntentField, EncodingError};
 
 /// The fixed DepositIntent header length (bytes), taken from the shared encoding crate (the single
 /// owner of the 240-byte header) — the canonical `len_felts` independently confirms it as 60 felts.
-const HEADER_LEN: usize = DEPOSIT_INTENT_HEADER_LEN;
+const HEADER_LEN: usize = DepositIntent::HEADER_SIZE;
 
 /// Fetches a canonical `di`-family vector by id (the artifact is the single source of test data).
 fn di_by_id(id: &str) -> &'static DiVector {
@@ -86,97 +84,122 @@ fn t_rly_12_decode_well_formed_all_offsets(#[case] id: &str) {
         .as_ref()
         .expect("accept vector carries per-field expectations");
 
-    let di =
-        decode_and_validate_deposit_intent(&bytes).expect("a canonical accept vector must decode");
+    let di = DepositIntent::try_from(bytes.as_slice())
+        .map_err(RelayerError::from_deposit_intent)
+        .expect("a canonical accept vector must decode");
 
-    // Every field is checked against the canonical (independent) expectation.
-    assert_eq!(di.magic(), f.magic, "magic@0");
-    assert_eq!(di.version(), f.version, "version@4");
-    assert_eq!(di.amount(), &f.bytes32("amount"), "amount@8");
-    assert_eq!(di.remote_domain(), f.remote_domain, "remoteDomain@40");
-    assert_eq!(
-        di.remote_token(),
-        &f.bytes32("remote_token"),
-        "remoteToken@44"
-    );
-    assert_eq!(
-        di.remote_recipient(),
-        &f.bytes32("remote_recipient"),
-        "remoteRecipient@76"
-    );
-    assert_eq!(
-        di.local_token(),
-        &f.bytes32("local_token"),
-        "localToken@108"
-    );
-    assert_eq!(
-        di.local_depositor(),
-        &f.bytes32("local_depositor"),
-        "localDepositor@140"
-    );
-    assert_eq!(di.max_fee(), &f.bytes32("max_fee"), "maxFee@172");
-    assert_eq!(di.nonce(), &f.bytes32("nonce"), "nonce@204");
-    assert_eq!(di.hook_data_len(), f.hook_data_len, "hookDataLen@236");
+    // Every field is checked against the canonical (independent) expectation, through the bytes the
+    // decode's inverse writes back: the wire form is what both sides of the seam agree on, and
+    // checking it at the frozen offsets pins placement and value together. `magic` and `version`
+    // are not fields at all — the decode already refused any payload that carries anything else,
+    // which the reject rows below pin.
+    let header = di.header();
+    let written = di.to_bytes();
+    for (name, field, label) in [
+        ("amount", DepositIntentField::Amount, "amount@8"),
+        (
+            "remote_token",
+            DepositIntentField::RemoteToken,
+            "remoteToken@44",
+        ),
+        (
+            "remote_recipient",
+            DepositIntentField::RemoteRecipient,
+            "remoteRecipient@76",
+        ),
+        (
+            "local_token",
+            DepositIntentField::LocalToken,
+            "localToken@108",
+        ),
+        (
+            "local_depositor",
+            DepositIntentField::LocalDepositor,
+            "localDepositor@140",
+        ),
+        ("max_fee", DepositIntentField::MaxFee, "maxFee@172"),
+        ("nonce", DepositIntentField::Nonce, "nonce@204"),
+    ] {
+        let offset = field.offset();
+        assert_eq!(&written[offset..offset + 32], &f.bytes32(name), "{label}");
+    }
+    assert_eq!(header.remote_domain(), f.remote_domain, "remoteDomain@40");
+    assert_eq!(u64::from(header.amount()), f.amount, "amount, reduced");
+    assert_eq!(u64::from(header.max_fee()), f.max_fee, "maxFee, reduced");
+    assert_eq!(di.hook_data().len_u32(), f.hook_data_len, "hookDataLen@236");
 
-    // hookData@240 and the raw preimage relate to the exact payload bytes.
+    // hookData@240 and the re-encoded preimage relate to the exact payload bytes.
     assert_eq!(
-        di.hook_data().len(),
+        di.hook_data().as_bytes().len(),
         f.hook_data_len as usize,
         "hookData length"
     );
+    assert_eq!(di.to_bytes(), bytes, "re-encoded preimage == payload");
     assert_eq!(
-        di.raw_preimage(),
-        bytes.as_slice(),
-        "raw preimage == payload"
-    );
-    assert_eq!(
-        di.raw_preimage().len(),
+        di.to_bytes().len(),
         HEADER_LEN + f.hook_data_len as usize,
-        "raw preimage length == 240 + hookDataLen"
+        "preimage length == 240 + hookDataLen"
     );
 }
 
-/// Validity by construction: the decoder is the ONLY way to obtain a `DepositIntent`, so its
-/// private fields cannot disagree — `hook_data`, `hook_data_len`, and `raw_preimage` are always
-/// mutually consistent, and `preimage_felt_len` is derived from the actual bytes, not a trusted
-/// length field.
+/// Validity by construction: the decoded type derives its own hookData length rather than trusting
+/// the wire field, so the declared and actual lengths cannot disagree, and `preimage_felt_len`
+/// follows from the bytes it will actually emit.
 #[rstest]
 #[case("di-pos-hookdata")]
 #[case("di-pos-empty-hookdata")]
 fn decoded_type_is_internally_consistent(#[case] id: &str) {
-    let di = decode_and_validate_deposit_intent(&di_by_id(id).bytes()).expect("decodes");
-    assert_eq!(di.hook_data().len(), di.hook_data_len() as usize);
-    assert_eq!(
-        di.raw_preimage().len(),
-        HEADER_LEN + di.hook_data_len() as usize
-    );
-    assert_eq!(
-        di.preimage_felt_len(),
-        60 + (di.hook_data_len() as usize).div_ceil(4)
-    );
+    let di = DepositIntent::try_from(di_by_id(id).bytes().as_slice())
+        .map_err(RelayerError::from_deposit_intent)
+        .expect("decodes");
+    let hook_data_len = di.hook_data().as_bytes().len();
+    assert_eq!(di.hook_data().len_u32() as usize, hook_data_len);
+    assert_eq!(di.to_bytes().len(), HEADER_LEN + hook_data_len);
+    assert_eq!(di.preimage_felt_len(), 60 + hook_data_len.div_ceil(4));
 }
 
 // ================================================================================================
-// amount/maxFee NOT reduced off-chain (carried raw).
-// The canonical amount 0x0f4240 (1_000_000) has non-zero low bytes: any uint256 → AssetAmount
-// reduction (÷ 10^scale) would change these bytes (e.g. to 0x01), so raw preservation catches it.
+// amount/maxFee survive the decode with every unit intact.
+// The canonical amount 0x0f4240 (1_000_000) has non-zero low bytes: a decode that divided them away
+// (any scale above zero) would both change the value AND change the bytes written back — and the
+// bytes written back are what the faucet's signature is verified over, so the loss would be fatal
+// rather than cosmetic. Both halves are asserted.
 // ================================================================================================
 
 #[rstest]
 #[case::with_hookdata("di-pos-hookdata")]
 #[case::empty_hookdata("di-pos-empty-hookdata")]
-fn t_rly_13_amount_and_maxfee_carried_raw(#[case] id: &str) {
+fn t_rly_13_amount_and_maxfee_survive_the_decode(#[case] id: &str) {
     let vector = di_by_id(id);
     let f = vector.fields.as_ref().expect("accept vector fields");
-    let di = decode_and_validate_deposit_intent(&vector.bytes()).expect("decodes");
+    let di = DepositIntent::try_from(vector.bytes().as_slice())
+        .map_err(RelayerError::from_deposit_intent)
+        .expect("decodes");
 
-    // byte-for-byte the canonical 32-byte big-endian value — NO reduction / scaling.
     assert_eq!(
-        di.amount(),
-        &f.bytes32("amount"),
-        "amount carried raw (reduction is on-chain at amount validation)"
+        u64::from(di.header().amount()),
+        f.amount,
+        "amount keeps every unit the wire stated"
     );
-    assert_eq!(di.max_fee(), &f.bytes32("max_fee"), "maxFee carried raw");
+    assert_eq!(
+        u64::from(di.header().max_fee()),
+        f.max_fee,
+        "maxFee keeps every unit the wire stated"
+    );
+
+    // and writing it back reproduces the canonical 32-byte big-endian fields exactly
+    let written = di.to_bytes();
+    for (name, field) in [
+        ("amount", DepositIntentField::Amount),
+        ("max_fee", DepositIntentField::MaxFee),
+    ] {
+        let offset = field.offset();
+        assert_eq!(
+            &written[offset..offset + 32],
+            &f.bytes32(name),
+            "{name} is written back byte-for-byte"
+        );
+    }
 }
 
 // ================================================================================================
@@ -218,7 +241,8 @@ fn t_rly_08_structural_reject(
     #[case] expect: Expect,
     #[case] expected_source: EncodingError,
 ) {
-    let err = decode_and_validate_deposit_intent(&di_by_id(id).bytes())
+    let err = DepositIntent::try_from(di_by_id(id).bytes().as_slice())
+        .map_err(RelayerError::from_deposit_intent)
         .expect_err("a canonical reject vector must be rejected");
 
     // (1) the exact field-specific outer variant...
@@ -239,7 +263,9 @@ fn t_rly_08_structural_reject(
 /// boundary the canonical corpus does not carry (it needs no artifact to construct).
 #[test]
 fn t_rly_08_empty_payload_is_short_header() {
-    let err = decode_and_validate_deposit_intent(&[]).expect_err("empty payload rejects");
+    let err = DepositIntent::try_from([].as_slice())
+        .map_err(RelayerError::from_deposit_intent)
+        .expect_err("empty payload rejects");
     assert_matches!(&err, RelayerError::ShortHeader(_));
     assert_exact_source(&err, &EncodingError::TruncatedHeader);
 }
@@ -265,13 +291,16 @@ fn t_rly_11_preimage_felt_count(#[case] id: &str, #[case] expected_felts: usize)
     );
     assert_ne!(vector.len_felts, 30, "anti-ASG-16: never 240/8 = 30");
 
-    let di = decode_and_validate_deposit_intent(&vector.bytes()).expect("decodes");
+    let di = DepositIntent::try_from(vector.bytes().as_slice())
+        .map_err(RelayerError::from_deposit_intent)
+        .expect("decodes");
     // the decoder's own count matches the canonical artifact...
     assert_eq!(di.preimage_felt_len(), expected_felts);
     //... and matches the shared encoding crate's authoritative packing of the same payload.
-    let packed = xusdc_encoding::xreserve::encoding::DepositIntent::new(&vector.bytes())
-        .to_packed_felts()
-        .expect("packs");
+    let packed =
+        xusdc_encoding::xreserve::encoding::DepositIntent::try_from(vector.bytes().as_slice())
+            .expect("packs")
+            .to_preimage_felts();
     assert_eq!(di.preimage_felt_len(), packed.len());
 }
 
@@ -288,17 +317,18 @@ fn t_rly_11_preimage_exactly_1024_felts_accepted() {
     let mut payload = di_by_id("di-pos-empty-hookdata").bytes();
     assert_eq!(payload.len(), HEADER_LEN, "base vector is a bare header");
 
-    let off = deposit_intent_field_offset(DepositIntentField::HookDataLen);
+    let off = DepositIntentField::HookDataLen.offset();
     payload[off..off + 4].copy_from_slice(&HOOK_LEN.to_be_bytes());
     payload.resize(HEADER_LEN + HOOK_LEN as usize, 0u8);
 
-    let di = decode_and_validate_deposit_intent(&payload)
+    let di = DepositIntent::try_from(payload.as_slice())
+        .map_err(RelayerError::from_deposit_intent)
         .expect("a preimage of exactly 1024 felts is accepted (inclusive bound)");
     assert_eq!(di.preimage_felt_len(), 1024);
     assert_eq!(
-        xusdc_encoding::xreserve::encoding::DepositIntent::new(&payload)
-            .to_packed_felts()
+        xusdc_encoding::xreserve::encoding::DepositIntent::try_from(payload.as_slice())
             .expect("packs")
+            .to_preimage_felts()
             .len(),
         1024,
         "unit-04 packs the same payload to exactly 1024 felts"
@@ -311,7 +341,8 @@ fn t_rly_11_oversized_preimage_rejected() {
     let vector = di_by_id("di-rej-hookdata-overflow");
     assert_eq!(vector.len_felts, 1025, "canonical overflow felt count");
 
-    let err = decode_and_validate_deposit_intent(&vector.bytes())
+    let err = DepositIntent::try_from(vector.bytes().as_slice())
+        .map_err(RelayerError::from_deposit_intent)
         .expect_err("an over-bound preimage must reject");
     assert_matches!(&err, RelayerError::PreimageTooLarge(_));
     assert_exact_source(&err, &EncodingError::HookDataTooLarge);

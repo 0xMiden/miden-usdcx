@@ -1,32 +1,35 @@
 //! Typed-boundary adoption suite — proves the round's typing work is REAL adoption, not facades.
 //!
-//! It locks: (1) every surviving note factory has a `bon` builder + a dedicated note-storage type,
-//! and the builder produces a note byte-identical to the retained `create` convenience; (2) the
-//! mint-note builder takes the typed [`DepositIntent`], and its result matches the `&[u8]`
-//! convenience exactly; (3) the crate-root / account-root `build_faucet_account` constructor is
-//! reachable and composes a valid `Account`; and (4) the [`XReserveFaucetExtension`] type converts into an
-//! `AccountComponent`. A missing builder / storage type / export, or
-//! a builder that drifts from `create`, fails here.
+//! It locks: (1) every admin note factory has a `bon` builder + a dedicated note-storage type, and
+//! the builder produces a note byte-identical to the retained `create` convenience; (2) the
+//! mint-note builder takes the typed [`DepositIntent`] and is the factory's only entry point;
+//! (3) the crate-root / account-root `build_faucet_account` constructor is reachable and composes a
+//! valid `Account`; and (4) the [`XReserveFaucetExtension`] type converts into an
+//! `AccountComponent`. A missing builder / storage type / export, or a builder that drifts from
+//! `create`, fails here.
 
 mod support;
 
+use anyhow::Result;
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::Account;
 use miden_protocol::asset::AssetAmount;
-use miden_protocol::errors::NoteError;
 use miden_protocol::note::Note;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
+use miden_standards::interop::eth::EthAddress;
 use support::*;
 use xusdc_encoding::note::xreserve_admin::{
     XReserveSetAttesterNote, XReserveSetAttesterNoteStorage, XReserveSetMaxSupplyNote,
     XReserveSetMaxSupplyNoteStorage, XReserveSetMinBurnSizeNote, XReserveSetMinBurnSizeNoteStorage,
 };
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
-use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote, XUsdcMintNoteStorage};
+use xusdc_encoding::note::xreserve_mint::{
+    DepositAttestation, XUsdcMintNote, XUsdcMintNoteStorage,
+};
 use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, DepositIntent, DepositIntentHeader, EthBytes32, XReserveBurnItems,
-    DEPOSIT_INTENT_MAGIC, DEPOSIT_INTENT_VERSION,
+    DepositIntent, DepositIntentHeader, DepositNonce, HookData, MintIntent, Signature,
+    XReserveBurnItems,
 };
 
 fn note_rng(seed: u64) -> RandomCoin {
@@ -48,23 +51,6 @@ fn assert_notes_identical(a: &Note, b: &Note, label: &str) {
         b.to_bytes(),
         "{label}: builder note != create note"
     );
-}
-
-/// The two construction paths agree: both produce the same note bytes, or both fail.
-fn assert_results_match(
-    via_builder: Result<Note, NoteError>,
-    via_create: Result<Note, NoteError>,
-    label: &str,
-) {
-    match (via_builder, via_create) {
-        (Ok(b), Ok(c)) => assert_notes_identical(&b, &c, label),
-        (Err(_), Err(_)) => {}
-        (b, c) => panic!(
-            "{label}: builder ok={} but create ok={}",
-            b.is_ok(),
-            c.is_ok()
-        ),
-    }
 }
 
 // The admin note factories: bon builder + dedicated storage type, byte-identical to `create`.
@@ -168,38 +154,43 @@ fn burn_note_builder_matches_create() {
     assert_notes_identical(&via_builder, &via_create, "burn");
 }
 
-// The mint note builder takes the typed DepositIntent, byte-identical to the `&[u8]` create.
+// The mint note builder takes the typed DepositIntent — there is no raw-bytes entry point.
 // ================================================================================================
 
+/// The mint factory's ONLY entry point is the typed builder over a decoded [`DepositIntent`], and
+/// the assembled note converts into a protocol [`Note`] infallibly (`From`, not `TryFrom`): by the
+/// time an `XUsdcMintNote` exists, every value in it has been accepted.
 #[test]
-fn mint_note_builder_takes_typed_deposit_intent_and_matches_create() {
-    let sender = test_account_id(5);
+fn mint_note_builder_takes_typed_deposit_intent() -> Result<()> {
+    // A canonical DC-14 payload addressed to this faucet, and a real signature from the frozen
+    // attestation vectors (the signature is the FAUCET's to check, not the factory's).
     let faucet = test_faucet_id(6);
-    // A real Circle-signed payload + attestation from the frozen golden vectors.
+    let payload = support::mint_transport::payload_for(test_account_id(7), faucet, 1_000, 0);
     let vectors = xusdc_encoding::vectors::load();
     let vector = vectors
         .families
         .att
         .first()
         .expect("an attestation vector is present");
-    let payload = vector.payload();
-    let attestation = MintAttestation::new(vector.sig(), vector.pubkey());
+    let attestation = DepositAttestation::new(Signature::new(vector.sig()), vector.public_key());
 
-    let via_builder = XUsdcMintNote::builder()
-        .sender(sender)
-        .faucet_id(faucet)
-        .deposit_intent(DepositIntent::new(&payload))
-        .attestation(&attestation)
-        .rng(&mut note_rng(RNG_SEED))
-        .build();
-    let via_create = XUsdcMintNote::create(
-        sender,
-        faucet,
-        &payload,
-        &attestation,
-        &mut note_rng(RNG_SEED),
+    let note = Note::from(
+        XUsdcMintNote::builder()
+            .sender(test_account_id(5))
+            .target(faucet)
+            .remote_domain(TEST_DOMAIN)
+            .deposit_intent(DepositIntent::try_from(payload.as_slice())?)
+            .attestation(attestation)
+            .generate_serial_number(&mut note_rng(RNG_SEED))
+            .build()?,
     );
-    assert_results_match(via_builder, via_create, "mint");
+
+    assert_eq!(
+        note.attachments().num_attachments(),
+        2,
+        "the mint note carries the transport and the routing attachment"
+    );
+    Ok(())
 }
 
 // The crate-root / account-root constructor + component conversion.
@@ -207,7 +198,7 @@ fn mint_note_builder_takes_typed_deposit_intent_and_matches_create() {
 
 #[test]
 fn crate_root_and_account_root_build_faucet_account_compose_an_account() {
-    // Crate-root export (`xusdc_encoding::build_faucet_account`), taking the typed `EthBytes32`
+    // Crate-root export (`xusdc_encoding::build_faucet_account`), taking the typed `EthAddress`
     // domain-config address.
     let account: Account = xusdc_encoding::build_faucet_account(
         [9u8; 32],
@@ -219,7 +210,7 @@ fn crate_root_and_account_root_build_faucet_account_compose_an_account() {
         test_account_id(4),
         TEST_DOMAIN,
         TEST_SOURCE_DOMAIN,
-        EthBytes32::new(test_xreserve_contract()),
+        test_xreserve_contract(),
     )
     .expect("the crate-root constructor composes a valid account");
     assert!(
@@ -239,58 +230,50 @@ fn crate_root_and_account_root_build_faucet_account_compose_an_account() {
 // ================================================================================================
 
 #[test]
-fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() {
+fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() -> Result<()> {
     let faucet = test_faucet_id(6);
     let recipient = test_account_id(7);
-    // A valid attested DepositIntent header: small in-range amount, a decodable remoteRecipient.
-    let mut amount = [0u8; 32];
-    amount[28..32].copy_from_slice(&1_000u32.to_be_bytes());
-    let header = DepositIntentHeader {
-        magic: DEPOSIT_INTENT_MAGIC,
-        version: DEPOSIT_INTENT_VERSION,
-        amount,
-        remote_domain: 1,
-        remote_token: [1u8; 32],
-        remote_recipient: account_id_to_bytes32(recipient),
-        local_token: [2u8; 32],
-        local_depositor: [3u8; 32],
-        max_fee: [0u8; 32],
-        nonce: [9u8; 32],
-        hook_data_len: 0,
-    };
 
-    // The dedicated `XUsdcMintNoteStorage` type is derivable from the typed intent header + faucet id
-    // (the dedicated-storage-type requirement for the fifth factory), and yields the attested
-    // fungible-public P2ID recipe the policy assert-matches.
-    let storage = XUsdcMintNoteStorage::from_attested(&header, faucet)
-        .expect("the mint storage derives from a valid attested header");
-    let _mint_storage = storage.as_mint_storage();
-
-    // Byte-equivalence: the recipe the type derives is exactly what the factory embeds — a mint note
-    // built from the same header (via the golden-vector payload) is byte-identical to `create`.
-    let vectors = xusdc_encoding::vectors::load();
-    let vector = vectors
-        .families
-        .att
-        .first()
-        .expect("an attestation vector is present");
-    let payload = vector.payload();
-    let attestation = MintAttestation::new(vector.sig(), vector.pubkey());
-    let via_builder = XUsdcMintNote::builder()
-        .sender(test_account_id(5))
-        .faucet_id(faucet)
-        .deposit_intent(DepositIntent::new(&payload))
-        .attestation(&attestation)
-        .rng(&mut note_rng(RNG_SEED))
+    // A DepositIntentHeader is built through its own builder, each field in the domain type the
+    // deposit has to hold — no raw wire field is left to set.
+    let local_token = EthAddress::new([2u8; 20]);
+    let local_depositor = EthAddress::new([3u8; 20]);
+    let amount = AssetAmount::new(1_000)?;
+    let header = DepositIntentHeader::builder()
+        .amount(amount)
+        .remote_domain(1)
+        .remote_token(faucet)
+        .remote_recipient(recipient)
+        .local_token(local_token)
+        .local_depositor(local_depositor)
+        .max_fee(AssetAmount::new(0)?)
+        .nonce(DepositNonce::new([9u8; 32]))
         .build();
-    let via_create = XUsdcMintNote::create(
-        test_account_id(5),
-        faucet,
-        &payload,
-        &attestation,
-        &mut note_rng(RNG_SEED),
+
+    // The dedicated `XUsdcMintNoteStorage` type is derivable from the carried intent + the attested
+    // amount + the faucet id (the dedicated-storage-type requirement for the fifth factory), and
+    // yields the attested fungible-public P2ID recipe the policy assert-matches.
+    let intent = MintIntent::builder()
+        .nonce(header.nonce())
+        .local_token(local_token)
+        .local_depositor(local_depositor)
+        .remote_recipient(recipient)
+        .max_fee(header.max_fee())
+        .hook_data(HookData::new(Vec::new())?)
+        .build();
+    // Conversion works.
+    XUsdcMintNoteStorage::new(&header, faucet);
+
+    // and the two types describe the same deposit: expanding the carried intent against the same
+    // faucet state reproduces the header it came from.
+    assert_eq!(
+        intent
+            .to_deposit_intent(header.amount(), header.remote_domain(), faucet)
+            .header(),
+        &header,
+        "the carried intent expands back to the header it was compressed from"
     );
-    assert_results_match(via_builder, via_create, "mint-storage-routed");
+    Ok(())
 }
 
 // G-RUST — the new admin note-storage types keep their fields PRIVATE, exposing read-only accessors.

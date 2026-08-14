@@ -27,14 +27,12 @@ use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::Word;
 use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FeeSponsorshipNote, MintNote,
-    PauseConfigNote, RbacConfigNote,
+    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
+    FeeSponsorshipNote, MintNote, PauseConfigNote, RbacConfigNote,
 };
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-};
+use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -46,7 +44,7 @@ fn production_components() -> Result<Vec<AccountComponent>> {
     let mut components =
         production_component_set(MAX_SUPPLY, 0).context("the production composition must build")?;
     components.extend(
-        XReserveStablecoinBuilder::auth_component(test_fee_faucet_id(), test_fee_policy())
+        XReserveStablecoinBuilder::auth_component(test_fee_parameters())
             .context("the production auth component must build")?,
     );
     Ok(components)
@@ -80,7 +78,7 @@ fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
         ("set_attester", XReserveSetAttesterNote::script()),
         ("set_min_burn_size", XReserveSetMinBurnSizeNote::script()),
         ("stock_pause_action_note", PauseConfigNote::script()),
-        ("set_max_supply", XReserveSetMaxSupplyNote::script()),
+        ("set_max_supply", FaucetMetadataConfigNote::script()),
         ("stock_blocklist_config_note", BlocklistConfigNote::script()),
         ("stock_rbac_action_note", RbacConfigNote::script()),
         (
@@ -243,7 +241,7 @@ fn fee_and_mutator_procedures_are_not_admissible_via_either_allowlist() -> Resul
     // the production auth component's materialized tx-script allowlist keys (non-empty values
     // mark membership, matching the MASM `word::eqz` check — the s12 view).
     let auth_component: AccountComponent =
-        XReserveStablecoinBuilder::auth_component(test_fee_faucet_id(), test_fee_policy())
+        XReserveStablecoinBuilder::auth_component(test_fee_parameters())
             .map_err(|e| anyhow::anyhow!("auth_component() must build: {e}"))?
             .into_iter()
             .next()

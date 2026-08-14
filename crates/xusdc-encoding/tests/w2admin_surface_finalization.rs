@@ -26,9 +26,7 @@ use miden_testing::assert_transaction_executor_error;
 use support::w2admin::*;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveComponent;
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-};
+use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -119,7 +117,7 @@ async fn every_remaining_admin_note_still_lands() -> Result<()> {
                 &mut note_rng(501),
             )
             .expect("the set_attester note builds"),
-            XReserveSetMaxSupplyNote::create(
+            stock_set_max_supply_note(
                 admin_holder(),
                 faucet_id,
                 new_max_supply,

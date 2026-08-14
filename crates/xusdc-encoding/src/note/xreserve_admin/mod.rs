@@ -14,8 +14,8 @@
 //!
 //! This module ships the faucet-owned rows of the note-script allowlist: the `set_attester`
 //! reference op, `set_min_burn_size` (targeting the STOCK `set_min_burn_amount` with a note-side
-//! zero-floor guard), and `set_max_supply`. All three resolve, through the account-wide authority,
-//! to the built-in `ADMIN` role.
+//! zero-floor guard). Both resolve, through the account-wide authority, to the built-in `ADMIN`
+//! role. Maximum-supply administration uses the standard faucet-metadata configuration note.
 //!
 //! Three admin surfaces do NOT ship a faucet-owned note script, because a standard note already
 //! covers each of them and calls the standard component the faucet installs. Pausing uses the
@@ -45,12 +45,10 @@ use miden_standards::StandardsLib;
 
 mod blocklist;
 mod set_attester;
-mod set_max_supply;
 mod set_min_burn_size;
 
 pub use blocklist::{XReserveBlocklistNote, XReserveBlocklistNoteError};
 pub use set_attester::{XReserveSetAttesterNote, XReserveSetAttesterNoteStorage};
-pub use set_max_supply::{XReserveSetMaxSupplyNote, XReserveSetMaxSupplyNoteStorage};
 pub use set_min_burn_size::{XReserveSetMinBurnSizeNote, XReserveSetMinBurnSizeNoteStorage};
 
 /// Compiles an admin note-script source with the shipped `xreserve` component library linked so its

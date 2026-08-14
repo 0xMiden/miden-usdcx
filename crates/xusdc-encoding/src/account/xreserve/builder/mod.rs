@@ -20,11 +20,10 @@
 //! is what rotates it. That note also makes the delegation graph seeded here RUNTIME-MUTABLE — see
 //! the allowlist doc in `network_auth`.
 //!
-//! Fee administration uses the standard
-//! [`BasicConstantFeePolicy`](miden_standards::account::fees::BasicConstantFeePolicy) supplied at
-//! deployment. The builder constructs the fee manager from that policy and an explicitly supplied
-//! fee faucet, and installs [`ConstantFeeManager`]. `set_note_fee` is authorized through the
-//! account's `ADMIN` role.
+//! Fee administration uses a standard
+//! [`BasicConstantFeePolicy`](miden_standards::account::fees::BasicConstantFeePolicy) constructed
+//! from the network fee parameters and the xUSDC note-cost table. The builder installs
+//! [`ConstantFeeManager`], and `set_note_fee` is authorized through the account's `ADMIN` role.
 //!
 //! Pause and blocklist administration are the STOCK managers gated per procedure: the authority's
 //! role map assigns `pause`/`unpause` to `DOM_PAUSER` and `block_account`/`unblock_account` to
@@ -50,10 +49,11 @@
 
 use miden_protocol::account::{AccountComponent, AccountId, StorageSlot};
 use miden_protocol::asset::AssetAmount;
+use miden_protocol::block::FeeParameters;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Pausable, PausableManager};
 use miden_standards::account::faucets::FungibleFaucet;
-use miden_standards::account::fees::{BasicConstantFeePolicy, ConstantFeeManager};
+use miden_standards::account::fees::ConstantFeeManager;
 use miden_standards::account::policies::{
     BlocklistManager, BurnPolicy, MintPolicy, TokenPolicyManager, TransferPolicy,
 };
@@ -131,7 +131,7 @@ struct DomainConfigSeed {
 /// [`XReserveAdminAuthority`]'s `Authority::RbacControlled`.
 ///
 /// Construct with [`XReserveStablecoinBuilder::new`] (the faucet supply parameters, the `owner` and
-/// role holders, the fee faucet and policy, and the three build-seeded domain-config fields),
+/// role holders, the network fee parameters, and the three build-seeded domain-config fields),
 /// optionally override the min-burn floor, then call
 /// [`XReserveStablecoinBuilder::build_components`] (or the crate-root `build_faucet_account` /
 /// [`Self::build_account`] for the finished `Account`).
@@ -154,12 +154,10 @@ pub struct XReserveStablecoinBuilder {
     /// account id is supplied at deploy time; the built-in `ADMIN` rotates/revokes it via
     /// the standard role-action note.
     blocklist_manager_holder: AccountId,
-    /// Faucet issuing the network fee asset.
+    /// Parameters used to price notes and identify the network fee asset.
     ///
     /// TODO: Use native fee faucet account construction when it is available.
-    fee_faucet_id: AccountId,
-    /// Fee policy installed at deployment.
-    fee_policy: BasicConstantFeePolicy,
+    fee_parameters: FeeParameters,
     /// The minimum burn size (the burn-floor threshold) seeded into the stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount)
     /// companion's floor slot. Default [`MIN_BURN_SIZE_FLOOR`] (= 1 — the zero floor: burns must
     /// move at least one unit, keeping zero-amount burns rejected); a value below the
@@ -183,8 +181,8 @@ impl XReserveStablecoinBuilder {
     /// `pauser_holder` / `manager_holder`
     /// seeded as the sole members of `DOM_PAUSER` / `DOM_MANAGER`, and the
     /// `blocklist_manager_holder` seeded as the sole member of `BLK_MANAGER` (the external
-    /// transfer-blocklist administrator), the explicit `fee_faucet_id`, the deploy-time concrete
-    /// `fee_policy`, plus the three BUILD-SEEDED domain-config fields: the u32 `domain` and
+    /// transfer-blocklist administrator), the network `fee_parameters`, plus the three BUILD-SEEDED
+    /// domain-config fields: the u32 `domain` and
     /// `source_domain` ids and the `xreserve_contract` remote address. The
     /// domain-config fields are constructor parameters rather than optional modifiers because a
     /// faucet without them would ship a domain compare that reads an empty slot — there is no way to
@@ -203,7 +201,7 @@ impl XReserveStablecoinBuilder {
     /// # Errors
     ///
     /// [`XReserveStablecoinBuilderError::FaucetComposition`] if the supply parameters do not form a
-    /// valid `FungibleFaucet`, or the relevant fee-schedule variant if the fee policy is invalid.
+    /// valid `FungibleFaucet`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         max_supply: AssetAmount,
@@ -212,13 +210,11 @@ impl XReserveStablecoinBuilder {
         pauser_holder: AccountId,
         manager_holder: AccountId,
         blocklist_manager_holder: AccountId,
-        fee_faucet_id: AccountId,
-        fee_policy: BasicConstantFeePolicy,
+        fee_parameters: FeeParameters,
         domain: u32,
         source_domain: u32,
         xreserve_contract: EthBytes32,
     ) -> Result<Self, XReserveStablecoinBuilderError> {
-        Self::validate_fee_policy(&fee_policy)?;
         Ok(Self {
             faucet: build_usdcx_faucet(max_supply, token_supply)?,
             xreserve_component: XReserveComponent::assemble().into(),
@@ -226,8 +222,7 @@ impl XReserveStablecoinBuilder {
             pauser_holder,
             manager_holder,
             blocklist_manager_holder,
-            fee_faucet_id,
-            fee_policy,
+            fee_parameters,
             min_burn_size: MIN_BURN_SIZE_FLOOR,
             domain,
             source_domain,

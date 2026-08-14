@@ -6,10 +6,10 @@
 use core::fmt;
 
 use miden_protocol::errors::AccountError;
-use miden_protocol::note::NoteScriptRoot;
 use miden_standards::account::auth::NetworkAccountNoteAllowlistError;
 use miden_standards::account::faucets::FungibleFaucetError;
 use miden_standards::account::policies::{BurnPolicyError, MintPolicyError};
+use miden_tx::NotePricingError;
 
 use super::{ATTESTATION_MINT_POLICY_PROC_PATH, MIN_BURN_SIZE_FLOOR};
 
@@ -26,14 +26,8 @@ pub enum XReserveStablecoinBuilderError {
     /// The composed faucet [`Account`](miden_protocol::account::Account) could not be built from the
     /// component set (the crate-root `build_account` path). Carries the stock account error.
     AccountComposition(AccountError),
-    /// The supplied `BasicConstantFeePolicy` has no explicit schedule entry for an allowlisted
-    /// note. Unscheduled roots abort fee estimation, including roots intended to be free.
-    MissingFeeScheduleEntry(NoteScriptRoot),
-    /// The supplied `BasicConstantFeePolicy` schedules a note root that the faucet does not
-    /// allowlist. The deploy-time schedule and note allowlist must have exactly the same keys.
-    UnexpectedFeeScheduleEntry(NoteScriptRoot),
-    /// The supplied fee schedule is invalid for constant-fee administration.
-    ZeroConstantFeePolicyConfigFee,
+    /// The canonical fee schedule could not be priced from the supplied network fee parameters.
+    FeePricing(NotePricingError),
     /// The supplied `xreserve` component does not export the attestation mint policy procedure
     /// (assembly/path drift). Carries the expected path for diagnosis.
     AttestationPolicyProcNotFound,
@@ -75,19 +69,7 @@ impl fmt::Display for XReserveStablecoinBuilderError {
             Self::AccountComposition(_) => {
                 write!(f, "the composed faucet account could not be built")
             }
-            Self::MissingFeeScheduleEntry(root) => write!(
-                f,
-                "the BasicConstantFeePolicy schedule has no explicit entry for allowlisted note \
-                 root {root}"
-            ),
-            Self::UnexpectedFeeScheduleEntry(root) => write!(
-                f,
-                "the BasicConstantFeePolicy schedule contains non-allowlisted note root {root}"
-            ),
-            Self::ZeroConstantFeePolicyConfigFee => write!(
-                f,
-                "the ConstantFeePolicyConfigNote fee must be greater than zero"
-            ),
+            Self::FeePricing(_) => write!(f, "the canonical xUSDC fee schedule could not be priced"),
             Self::AttestationPolicyProcNotFound => write!(
                 f,
                 "the xreserve component does not export the attestation mint policy procedure \
@@ -124,6 +106,7 @@ impl core::error::Error for XReserveStablecoinBuilderError {
             Self::FaucetComposition(source) => Some(source),
             Self::NetworkAuth(source) => Some(source),
             Self::AccountComposition(source) => Some(source),
+            Self::FeePricing(source) => Some(source),
             _ => None,
         }
     }
@@ -144,5 +127,11 @@ impl From<BurnPolicyError> for XReserveStablecoinBuilderError {
 impl From<NetworkAccountNoteAllowlistError> for XReserveStablecoinBuilderError {
     fn from(source: NetworkAccountNoteAllowlistError) -> Self {
         Self::NetworkAuth(source)
+    }
+}
+
+impl From<NotePricingError> for XReserveStablecoinBuilderError {
+    fn from(source: NotePricingError) -> Self {
+        Self::FeePricing(source)
     }
 }

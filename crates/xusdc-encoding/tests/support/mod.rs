@@ -30,6 +30,7 @@ pub use w2admin::{
     stock_unblock_note, stock_unpause_note,
 };
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -43,7 +44,9 @@ use miden_protocol::account::{
     AssetCallbackFlag, RoleSymbol, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
 };
 use miden_protocol::assembly::{Linkage, Package, Path as MasmPath};
-use miden_protocol::asset::{AssetAmount, AssetCallbacks, FungibleAsset, TokenSymbol};
+use miden_protocol::asset::{Asset, AssetAmount, AssetCallbacks, FungibleAsset, TokenSymbol};
+use miden_protocol::block::FeeParameters;
+use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{Note, NoteType};
 use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote, TransactionKernel};
@@ -52,6 +55,7 @@ use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{
     Pausable, PausableManager, PausableStorage, RoleBasedAccessControl,
 };
+use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
 use miden_standards::account::policies::{
@@ -59,8 +63,11 @@ use miden_standards::account::policies::{
 };
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::{BurnNote, ConstantFeePolicyConfigNote};
+use miden_standards::note::{
+    BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfig, FaucetMetadataConfigNote,
+};
 use miden_standards::testing::note::NoteBuilder;
+use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_standards::StandardsLib;
 use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
@@ -101,6 +108,26 @@ pub const TEST_SOURCE_DOMAIN: u32 = 3;
 /// domain-config field the production fixtures pass to `XReserveStablecoinBuilder::new`.
 pub fn test_xreserve_contract() -> [u8; 32] {
     core::array::from_fn(|i| 0x10 + i as u8)
+}
+
+/// Builds the standard faucet-metadata configuration note for changing a fungible faucet's
+/// maximum supply.
+pub fn stock_set_max_supply_note<R: FeltRng>(
+    sender: AccountId,
+    faucet_id: AccountId,
+    max_supply: u64,
+    rng: &mut R,
+) -> Result<Note> {
+    let note = FaucetMetadataConfigNote::builder()
+        .sender(sender)
+        .target(faucet_id)
+        .config(FaucetMetadataConfig::SetMaxSupply {
+            max_supply: AssetAmount::new(max_supply).context("invalid maximum supply")?,
+        })
+        .generate_serial_number(rng)
+        .build()
+        .context("building the standard maximum-supply configuration note")?;
+    Ok(Note::from(note))
 }
 
 // NOTE: the tests do not bind slot names of their own. The six xreserve slots come from
@@ -345,6 +372,11 @@ pub fn test_fee_faucet_id() -> AccountId {
     test_faucet_id(250)
 }
 
+/// Returns fee parameters with a zero base fee for behavior tests unrelated to fee collection.
+pub fn test_fee_parameters() -> FeeParameters {
+    FeeParameters::new(test_fee_faucet_id(), 0)
+}
+
 /// Returns the default fee policy used by tests.
 pub fn test_fee_policy() -> BasicConstantFeePolicy {
     BasicConstantFeePolicy::new()
@@ -406,22 +438,55 @@ pub fn add_network_faucet_account(
     builder: &mut MockChainBuilder,
     components: Vec<AccountComponent>,
 ) -> Result<Account> {
-    let account = build_network_faucet_account_with_fee_policy(
-        components,
-        test_fee_faucet_id(),
-        test_fee_policy(),
-    )?;
+    let account = build_network_faucet_account(components, test_fee_parameters())?;
     builder
         .add_account(account.clone())
         .context("registering the production network faucet account")?;
     Ok(account)
 }
 
-/// Builds the production network faucet with an explicitly supplied fee faucet and policy.
-pub fn build_network_faucet_account_with_fee_policy(
+/// Builds the production network faucet with the canonical policy derived from `fee_parameters`.
+pub fn build_network_faucet_account(
+    components: Vec<AccountComponent>,
+    fee_parameters: FeeParameters,
+) -> Result<Account> {
+    build_network_faucet_account_with_assets(components, fee_parameters, [])
+}
+
+/// Builds the production network faucet with initial assets and the canonical fee policy.
+pub fn build_network_faucet_account_with_assets(
+    components: Vec<AccountComponent>,
+    fee_parameters: FeeParameters,
+    assets: impl IntoIterator<Item = Asset>,
+) -> Result<Account> {
+    let auth = XReserveStablecoinBuilder::auth_component(fee_parameters)
+        .map_err(|e| anyhow::anyhow!("the production auth component must build: {e}"))?;
+    build_network_faucet_account_with_auth(components, auth, assets)
+}
+
+/// Builds the network faucet with an explicit policy for fee-pricing benchmark fixtures.
+pub fn build_network_faucet_account_with_fee_policy_and_assets(
     components: Vec<AccountComponent>,
     fee_faucet_id: AccountId,
     fee_policy: BasicConstantFeePolicy,
+    assets: impl IntoIterator<Item = Asset>,
+) -> Result<Account> {
+    let fee_policy_manager = FeePolicyManager::builder()
+        .fee_faucet_id(fee_faucet_id)
+        .active_fee_policy(fee_policy.into())
+        .build();
+    let auth = AuthNetworkAccount::custom(
+        XReserveStablecoinBuilder::allowed_note_scripts(),
+        fee_policy_manager,
+    )?
+    .with_allowed_tx_scripts(BTreeSet::from([ExpirationTransactionScript::script_root()]));
+    build_network_faucet_account_with_auth(components, auth, assets)
+}
+
+fn build_network_faucet_account_with_auth(
+    components: Vec<AccountComponent>,
+    auth: AuthNetworkAccount,
+    assets: impl IntoIterator<Item = Asset>,
 ) -> Result<Account> {
     let has_callbacks = components.iter().any(|c| {
         c.storage_slots().iter().any(|s| {
@@ -436,14 +501,12 @@ pub fn build_network_faucet_account_with_fee_policy(
     };
     let mut account_builder = Account::builder(rand::random())
         .account_type(AccountType::Public)
-        .with_asset_callbacks(flag);
+        .with_asset_callbacks(flag)
+        .with_assets(assets);
     for component in components {
         account_builder = account_builder.with_component(component);
     }
-    account_builder = account_builder.with_components(
-        XReserveStablecoinBuilder::auth_component(fee_faucet_id, fee_policy)
-            .map_err(|e| anyhow::anyhow!("the production auth component must build: {e}"))?,
-    );
+    account_builder = account_builder.with_components(auth);
     account_builder
         .build_existing()
         .context("building the production network faucet account")
@@ -489,8 +552,7 @@ pub fn production_builder(
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
-        test_fee_faucet_id(),
-        test_fee_policy(),
+        test_fee_parameters(),
         domain,
         TEST_SOURCE_DOMAIN,
         EthBytes32::new(test_xreserve_contract()),

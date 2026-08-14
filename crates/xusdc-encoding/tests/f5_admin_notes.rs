@@ -39,9 +39,7 @@ use support::*;
 use xusdc_encoding::account::xreserve::{
     XReserveComponent, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-};
+use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
 
 /// The exact stock RBAC delegation error (v0.16: rbac.masm:66 ERR_SENDER_NOT_ROLE_ADMIN — #3215
 /// re-keyed the v15 ERR_SENDER_NOT_OWNER_OR_ROLE_ADMIN and dropped its owner leg).
@@ -740,7 +738,7 @@ async fn set_max_supply_administrator_writes_cap() -> Result<()> {
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReserveSetMaxSupplyNote::create(
+    let note = stock_set_max_supply_note(
         test_account_id(1),
         faucet_id,
         NEW_MAX_SUPPLY,
@@ -771,9 +769,8 @@ async fn assert_set_max_supply_nonadmin_traps(sender: AccountId, seed: u64) -> R
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note =
-        XReserveSetMaxSupplyNote::create(sender, faucet_id, NEW_MAX_SUPPLY, &mut note_rng(seed))
-            .context("building the non-administrator set_max_supply note")?;
+    let note = stock_set_max_supply_note(sender, faucet_id, NEW_MAX_SUPPLY, &mut note_rng(seed))
+        .context("building the non-administrator set_max_supply note")?;
     let result = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
@@ -807,7 +804,7 @@ async fn set_max_supply_note_args_are_inert() -> Result<()> {
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
-    let note = XReserveSetMaxSupplyNote::create(
+    let note = stock_set_max_supply_note(
         test_account_id(1),
         faucet_id,
         NEW_MAX_SUPPLY,

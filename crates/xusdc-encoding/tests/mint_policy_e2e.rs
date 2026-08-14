@@ -27,7 +27,7 @@ mod support;
 use anyhow::Result;
 use support::mint_transport::*;
 use support::*;
-use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMaxSupplyNote};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 
 // ATTESTER ALLOWLIST AND SIGNATURE — who signed, and were they allowed to
 // ================================================================================================
@@ -280,7 +280,7 @@ async fn mint_rejects_an_over_cap_amount() -> Result<()> {
 #[tokio::test]
 async fn mint_rejects_after_the_administrator_lowers_max_supply_below_the_amount() -> Result<()> {
     let mut pf = fixture_with(MAX_SUPPLY, |_, faucet_id| {
-        vec![XReserveSetMaxSupplyNote::create(
+        vec![stock_set_max_supply_note(
             administrator(),
             faucet_id,
             MINT_AMOUNT - 1,
@@ -300,13 +300,10 @@ async fn mint_rejects_after_the_administrator_lowers_max_supply_below_the_amount
 #[tokio::test]
 async fn mint_accepts_at_the_exact_raised_cap_boundary() -> Result<()> {
     let mut pf = fixture_with(MINT_AMOUNT - 1, |_, faucet_id| {
-        vec![XReserveSetMaxSupplyNote::create(
-            administrator(),
-            faucet_id,
-            MINT_AMOUNT,
-            &mut note_rng(958),
-        )
-        .expect("building the administrator raise-to-boundary note")]
+        vec![
+            stock_set_max_supply_note(administrator(), faucet_id, MINT_AMOUNT, &mut note_rng(958))
+                .expect("building the administrator raise-to-boundary note"),
+        ]
     })?;
     bring_up(&mut pf, 2).await?; // set_attester + set_max_supply(= amount)
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 35);
@@ -330,13 +327,10 @@ async fn mint_accepts_at_the_exact_raised_cap_boundary() -> Result<()> {
 #[tokio::test]
 async fn mint_accepts_after_the_administrator_raises_max_supply() -> Result<()> {
     let mut pf = fixture_with(MINT_AMOUNT - 1, |_, faucet_id| {
-        vec![XReserveSetMaxSupplyNote::create(
-            administrator(),
-            faucet_id,
-            MAX_SUPPLY,
-            &mut note_rng(959),
-        )
-        .expect("building the administrator raise-cap note")]
+        vec![
+            stock_set_max_supply_note(administrator(), faucet_id, MAX_SUPPLY, &mut note_rng(959))
+                .expect("building the administrator raise-cap note"),
+        ]
     })?;
     bring_up(&mut pf, 1).await?; // set_attester — the raise stays unconsumed
 

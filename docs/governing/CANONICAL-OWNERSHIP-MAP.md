@@ -25,7 +25,6 @@ asm/standards/
     mod.masm                      # FAUCET(01): self-contained component root
   notes/
     xreserve_set_attester_note.masm
-    xreserve_set_max_supply_note.masm
     xreserve_set_min_burn_size_note.masm
 ```
 Owner→path rule: directory path = MASM module path and the Rust component `NAME` must equal it. **Logical owner ≠ physical parent, and it is no longer a directory boundary either:** the `encoding/` submodule is gone. 04 still owns the wire *layouts* — the DC-1 offsets and the DC-14 carried shape — and the shared codecs; 01 owns the procedures that realize them. They now share two files, one per wire form, because a constant and the single procedure that writes at it are read together and drifted apart when they were not.

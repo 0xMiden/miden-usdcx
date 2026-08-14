@@ -49,9 +49,7 @@ use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::{XReserveComponent, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-};
+use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
 use xusdc_encoding::note::xreserve_burn::{
     XReserveBurnNote, FIXED_XUSDC_BURN_TAG, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
 };
@@ -342,16 +340,11 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
             )
             .expect("building the seeded attester-owner note"),
             // 2: S3b stranger set_max_supply (reject)
-            XReserveSetMaxSupplyNote::create(stranger(), route, NEW_MAX_SUPPLY, &mut note_rng(915))
+            stock_set_max_supply_note(stranger(), route, NEW_MAX_SUPPLY, &mut note_rng(915))
                 .expect("building the seeded max-stranger note"),
             // 3: S3b owner set_max_supply
-            XReserveSetMaxSupplyNote::create(
-                administrator(),
-                route,
-                NEW_MAX_SUPPLY,
-                &mut note_rng(916),
-            )
-            .expect("building the seeded max-owner note"),
+            stock_set_max_supply_note(administrator(), route, NEW_MAX_SUPPLY, &mut note_rng(916))
+                .expect("building the seeded max-owner note"),
             // 4: S3c stranger set_min_burn_size (reject)
             XReserveSetMinBurnSizeNote::create(stranger(), route, MIN_BURN, &mut note_rng(917))
                 .expect("building the seeded min-stranger note"),

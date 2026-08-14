@@ -20,8 +20,8 @@ use miden_protocol::{Felt, Word};
 use support::*;
 use xusdc_encoding::account::xreserve::{XReserveComponent, ATTESTATION_MINT_POLICY_PROC_PATH};
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveSetAttesterNote, XReserveSetAttesterNoteStorage, XReserveSetMaxSupplyNote,
-    XReserveSetMaxSupplyNoteStorage, XReserveSetMinBurnSizeNote, XReserveSetMinBurnSizeNoteStorage,
+    XReserveSetAttesterNote, XReserveSetAttesterNoteStorage, XReserveSetMinBurnSizeNote,
+    XReserveSetMinBurnSizeNoteStorage,
 };
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{MintAttestation, XUsdcMintNote, XUsdcMintNoteStorage};
@@ -121,28 +121,6 @@ fn set_min_burn_size_builder_matches_create() {
     assert_notes_identical(&via_builder, &via_create, "set_min_burn_size");
 }
 
-#[test]
-fn set_max_supply_builder_matches_create() {
-    let sender = test_account_id(5);
-    let faucet = test_faucet_id(6);
-
-    let via_builder = XReserveSetMaxSupplyNote::builder()
-        .sender(sender)
-        .faucet_id(faucet)
-        .storage(
-            XReserveSetMaxSupplyNoteStorage::builder()
-                .new_max_supply(5_000)
-                .build(),
-        )
-        .rng(&mut note_rng(RNG_SEED))
-        .build()
-        .expect("builder note");
-    let via_create =
-        XReserveSetMaxSupplyNote::create(sender, faucet, 5_000, &mut note_rng(RNG_SEED))
-            .expect("create note");
-    assert_notes_identical(&via_builder, &via_create, "set_max_supply");
-}
-
 // The burn note: XReserveBurnItems is its dedicated (bon) payload type.
 // ================================================================================================
 
@@ -218,8 +196,7 @@ fn crate_root_and_account_root_build_faucet_account_compose_an_account() {
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
-        test_fee_faucet_id(),
-        test_fee_policy(),
+        test_fee_parameters(),
         TEST_DOMAIN,
         TEST_SOURCE_DOMAIN,
         EthBytes32::new(test_xreserve_contract()),
@@ -333,9 +310,4 @@ fn admin_storage_types_expose_read_only_accessors_not_public_fields() {
         .new_min(42)
         .build();
     assert_eq!(min_burn.new_min(), 42, "min-burn accessor");
-
-    let max_supply = XReserveSetMaxSupplyNoteStorage::builder()
-        .new_max_supply(9_999)
-        .build();
-    assert_eq!(max_supply.new_max_supply(), 9_999, "max-supply accessor");
 }

@@ -43,8 +43,9 @@ use miden_standards::errors::standards::{
     ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED, ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED,
 };
 use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FeeSponsorshipNote, MintNote,
-    NetworkAccountTarget, NoteExecutionHint, PauseConfigNote, RbacConfigNote,
+    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
+    FeeSponsorshipNote, MintNote, NetworkAccountTarget, NoteExecutionHint, PauseConfigNote,
+    RbacConfigNote,
 };
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::ExpirationTransactionScript;
@@ -52,9 +53,7 @@ use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-};
+use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
     MintAttestation, XUsdcMintNote, XUSDC_MINT_ATTESTATION_NUM_WORDS,
@@ -209,7 +208,7 @@ fn production_faucet_note_allowlist_contains_the_ten_expected_roots() -> Result<
         // the three administrator-gated configuration notes
         XReserveSetAttesterNote::script_root(),
         XReserveSetMinBurnSizeNote::script_root(),
-        XReserveSetMaxSupplyNote::script_root(),
+        FaucetMetadataConfigNote::script_root(),
         // one standard note covers pausing AND unpausing
         PauseConfigNote::script_root(),
         // one standard note covers blocking AND unblocking, gated on the blocklist manager role

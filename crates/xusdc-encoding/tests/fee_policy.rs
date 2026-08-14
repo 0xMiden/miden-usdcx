@@ -1,12 +1,10 @@
 //! USDCx fee-policy composition and administration.
 //!
-//! Deployment supplies a fee faucet and `BasicConstantFeePolicy`. The builder installs the fee
-//! manager and `ConstantFeeManager`, and the `ADMIN` role can reprice scheduled note roots through
-//! `ConstantFeePolicyConfigNote`.
+//! The builder constructs the canonical fee policy from the network fee parameters, installs the
+//! fee manager and `ConstantFeeManager`, and lets the `ADMIN` role reprice scheduled note roots
+//! through `ConstantFeePolicyConfigNote`.
 
 mod support;
-
-use std::collections::BTreeSet;
 
 use anyhow::Result;
 use miden_protocol::account::{
@@ -17,22 +15,24 @@ use miden_protocol::block::FeeParameters;
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{Note, NoteScriptRoot};
 use miden_protocol::testing::account_id::ACCOUNT_ID_FEE_FAUCET;
-use miden_protocol::transaction::RawOutputNote;
+use miden_protocol::transaction::{RawOutputNote, TransactionFee};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::SponsorshipPolicy;
 use miden_standards::account::fees::{
     BasicConstantFeePolicy, ConstantFeeManager, FeePolicyManager,
 };
 use miden_standards::errors::standards::ERR_CONSTANT_FEE_POLICY_CONFIG_ACCOUNT_MISMATCH;
-use miden_standards::note::{
-    ConstantFeePolicyConfigNote, FeeSponsorshipNote, MintNote, NetworkAccountConfigNote,
-};
+use miden_standards::note::{ConstantFeePolicyConfigNote, FeeSponsorshipNote, MintNote, P2idNote};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::NetworkNotePricer;
 use support::*;
-use xusdc_encoding::account::xreserve::{
-    XReserveAdminAuthority, XReserveStablecoinBuilder, XReserveStablecoinBuilderError,
+use xusdc_encoding::account::xreserve::{XReserveAdminAuthority, XReserveStablecoinBuilder};
+use xusdc_encoding::note::costs::{
+    XRESERVE_SET_ATTESTER_CONSUMPTION_CYCLES, XRESERVE_SET_MIN_BURN_SIZE_CONSUMPTION_CYCLES,
+    XUSDC_BURN_CONSUMPTION_CYCLES, XUSDC_MINT_CONSUMPTION_CYCLES,
 };
+use xusdc_encoding::note::xreserve_admin::{XReserveSetAttesterNote, XReserveSetMinBurnSizeNote};
+use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::xreserve::encoding::EthBytes32;
 
 const MAX_SUPPLY: u64 = 1_000_000;
@@ -60,36 +60,23 @@ fn note_pricer() -> NetworkNotePricer {
         .build()
 }
 
-/// Returns a complete fee policy for fee-execution tests.
-fn priced_fee_policy() -> Result<BasicConstantFeePolicy> {
-    let fee = note_pricer().price(ConstantFeePolicyConfigNote::script_root())?;
-    assert!(
-        fee.as_u64() > 0,
-        "the verification base fee must produce a note price"
-    );
-    Ok(BasicConstantFeePolicy::new().with_fees(
-        XReserveStablecoinBuilder::allowed_note_scripts()
-            .into_iter()
-            .map(|root| (root, fee)),
-    ))
+fn fee_parameters() -> FeeParameters {
+    FeeParameters::new(fee_faucet_id(), VERIFICATION_BASE_FEE)
 }
 
-fn build_with_fee_policy(
-    policy: BasicConstantFeePolicy,
-) -> Result<XReserveStablecoinBuilder, XReserveStablecoinBuilderError> {
-    XReserveStablecoinBuilder::new(
+fn production_builder() -> Result<XReserveStablecoinBuilder> {
+    Ok(XReserveStablecoinBuilder::new(
         AssetAmount::new(MAX_SUPPLY).expect("the test max supply is valid"),
         AssetAmount::ZERO,
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
-        fee_faucet_id(),
-        policy,
+        fee_parameters(),
         TEST_DOMAIN,
         TEST_SOURCE_DOMAIN,
         EthBytes32::new(test_xreserve_contract()),
-    )
+    )?)
 }
 
 fn scheduled_fee(account: &Account, note_root: NoteScriptRoot) -> Result<Word> {
@@ -120,8 +107,8 @@ fn repricing_note(
     Ok(Note::from(note))
 }
 
-fn priced_components(policy: BasicConstantFeePolicy) -> Result<Vec<AccountComponent>> {
-    Ok(build_with_fee_policy(policy)?.build_components()?)
+fn priced_components() -> Result<Vec<AccountComponent>> {
+    Ok(production_builder()?.build_components()?)
 }
 
 struct SponsoredConfigFixture {
@@ -129,14 +116,15 @@ struct SponsoredConfigFixture {
     faucet_id: AccountId,
     feature_note: Note,
     sponsorship_note: Note,
-    deployed_fee: AssetAmount,
+    config_note_fee: AssetAmount,
+    mint_fee: AssetAmount,
 }
 
 fn assert_mint_fee_unchanged(fixture: &SponsoredConfigFixture) -> Result<()> {
     let account = fixture.mock_chain.committed_account(fixture.faucet_id)?;
     assert_eq!(
         scheduled_fee(account, MintNote::script_root())?,
-        fee_entry(fixture.deployed_fee.as_u64()),
+        fee_entry(fixture.mint_fee.as_u64()),
         "a rejected config note must leave the schedule unchanged",
     );
     Ok(())
@@ -145,14 +133,11 @@ fn assert_mint_fee_unchanged(fixture: &SponsoredConfigFixture) -> Result<()> {
 fn setup_sponsored_config_note(
     build_note: impl FnOnce(AccountId) -> Result<Note>,
 ) -> Result<SponsoredConfigFixture> {
-    let policy = priced_fee_policy()?;
-    let deployed_fee = *policy
-        .fee_schedule()
-        .get(&ConstantFeePolicyConfigNote::script_root())
-        .expect("the priced fixture schedules the config note");
-    let components = priced_components(policy.clone())?;
-    let account =
-        build_network_faucet_account_with_fee_policy(components, fee_faucet_id(), policy)?;
+    let config_note_fee = note_pricer().price(ConstantFeePolicyConfigNote::script_root())?;
+    let components = priced_components()?;
+    let account = build_network_faucet_account(components, fee_parameters())?;
+    let mint_fee =
+        AssetAmount::new(scheduled_fee(&account, MintNote::script_root())?[0].as_canonical_u64())?;
     let mut builder = MockChain::builder()
         .fee_faucet_id(fee_faucet_id())
         .verification_base_fee(VERIFICATION_BASE_FEE);
@@ -162,7 +147,10 @@ fn setup_sponsored_config_note(
         .sender(feature_note.metadata().sender())
         .target_account(account.id())
         .feature_note_id(feature_note.id())
-        .asset(FungibleAsset::new(fee_faucet_id(), deployed_fee.as_u64())?)
+        .asset(FungibleAsset::new(
+            fee_faucet_id(),
+            config_note_fee.as_u64(),
+        )?)
         .generate_serial_number(builder.rng_mut())
         .build()?
         .into();
@@ -176,40 +164,14 @@ fn setup_sponsored_config_note(
         faucet_id: account.id(),
         feature_note,
         sponsorship_note,
-        deployed_fee,
+        config_note_fee,
+        mint_fee,
     })
 }
 
 #[test]
 fn production_installs_one_mutable_basic_constant_fee_policy() -> Result<()> {
-    let policy = priced_fee_policy()?;
-    let config_note_fee = policy
-        .fee_schedule()
-        .get(&ConstantFeePolicyConfigNote::script_root())
-        .expect("the config note is scheduled");
-    assert!(
-        config_note_fee.as_u64() > 0,
-        "the config note must be priced",
-    );
-    assert!(
-        policy
-            .fee_schedule()
-            .get(&FeeSponsorshipNote::script_root())
-            .expect("the sponsorship note is scheduled")
-            .as_u64()
-            > 0,
-        "the fee-enabled policy must price the sponsorship note",
-    );
-    assert_eq!(
-        policy
-            .fee_schedule()
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>(),
-        XReserveStablecoinBuilder::allowed_note_scripts(),
-        "the policy schedule and note allowlist must have exactly the same roots",
-    );
-    let components = priced_components(policy.clone())?;
+    let components = priced_components()?;
     assert!(
         components
             .iter()
@@ -218,7 +180,7 @@ fn production_installs_one_mutable_basic_constant_fee_policy() -> Result<()> {
     );
 
     let auth_components: Vec<AccountComponent> =
-        XReserveStablecoinBuilder::auth_component(fee_faucet_id(), policy)?
+        XReserveStablecoinBuilder::auth_component(fee_parameters())?
             .into_iter()
             .collect();
     assert_eq!(
@@ -229,6 +191,28 @@ fn production_installs_one_mutable_basic_constant_fee_policy() -> Result<()> {
         1,
         "the auth composition must install exactly one BasicConstantFeePolicy component",
     );
+
+    let fee_schedule = auth_components
+        .iter()
+        .flat_map(|component| component.storage_slots())
+        .find(|slot| slot.name() == BasicConstantFeePolicy::fee_schedule_slot_name())
+        .expect("the canonical fee policy carries its schedule");
+    let StorageSlotContent::Map(fee_schedule) = fee_schedule.content() else {
+        anyhow::bail!("the fee schedule slot must be a map");
+    };
+    let allowed_roots = XReserveStablecoinBuilder::allowed_note_scripts();
+    assert_eq!(
+        fee_schedule.num_entries(),
+        allowed_roots.len(),
+        "the fee schedule and note allowlist must contain the same number of roots",
+    );
+    for root in &allowed_roots {
+        assert_ne!(
+            fee_schedule.get(&StorageMapKey::new(root.as_word())),
+            Word::empty(),
+            "every allowlisted note root must have an explicit schedule entry",
+        );
+    }
 
     let manager_slots = auth_components[0].storage_slots();
     assert_eq!(
@@ -277,55 +261,45 @@ fn production_installs_one_mutable_basic_constant_fee_policy() -> Result<()> {
 }
 
 #[test]
-fn builder_rejects_a_missing_fee_sponsorship_note() -> Result<()> {
-    let missing_root = FeeSponsorshipNote::script_root();
-    let policy = BasicConstantFeePolicy::new().with_fees(
-        test_fee_policy()
-            .fee_schedule()
-            .iter()
-            .filter(|(root, _fee)| **root != missing_root)
-            .map(|(root, fee)| (*root, *fee)),
-    );
+fn canonical_policy_prices_standard_and_xusdc_execution_paths() -> Result<()> {
+    let account = build_network_faucet_account(priced_components()?, fee_parameters())?;
+    let pricer = note_pricer();
+    let own_fee =
+        |cycles| -> Result<u64> { Ok(pricer.fee(TransactionFee::new(cycles)?)?.as_u64()) };
+    let expected_mint =
+        own_fee(XUSDC_MINT_CONSUMPTION_CYCLES)? + pricer.price(P2idNote::script_root())?.as_u64();
 
-    let result = build_with_fee_policy(policy);
-    assert!(matches!(
-        result,
-        Err(XReserveStablecoinBuilderError::MissingFeeScheduleEntry(root))
-            if root == missing_root
-    ));
-    Ok(())
-}
-
-#[test]
-fn builder_rejects_a_non_allowlisted_schedule_entry() -> Result<()> {
-    let unexpected_root = NetworkAccountConfigNote::script_root();
-    assert!(
-        !XReserveStablecoinBuilder::allowed_note_scripts().contains(&unexpected_root),
-        "the general network-account config note must remain outside the allowlist",
-    );
-    let policy = test_fee_policy().with_fee(unexpected_root, AssetAmount::ZERO);
-
-    let result = build_with_fee_policy(policy);
-    assert!(matches!(
-        result,
-        Err(XReserveStablecoinBuilderError::UnexpectedFeeScheduleEntry(root))
-            if root == unexpected_root
-    ));
-    Ok(())
-}
-
-#[test]
-fn builder_rejects_a_free_constant_fee_config_note() -> Result<()> {
-    let policy = test_fee_policy().with_fee(
-        ConstantFeePolicyConfigNote::script_root(),
-        AssetAmount::ZERO,
-    );
-
-    let result = build_with_fee_policy(policy);
-    assert!(matches!(
-        result,
-        Err(XReserveStablecoinBuilderError::ZeroConstantFeePolicyConfigFee)
-    ));
+    for (root, expected) in [
+        (MintNote::script_root(), expected_mint),
+        (
+            XReserveBurnNote::script_root(),
+            own_fee(XUSDC_BURN_CONSUMPTION_CYCLES)?,
+        ),
+        (
+            XReserveSetAttesterNote::script_root(),
+            own_fee(XRESERVE_SET_ATTESTER_CONSUMPTION_CYCLES)?,
+        ),
+        (
+            XReserveSetMinBurnSizeNote::script_root(),
+            own_fee(XRESERVE_SET_MIN_BURN_SIZE_CONSUMPTION_CYCLES)?,
+        ),
+        (
+            ConstantFeePolicyConfigNote::script_root(),
+            pricer
+                .price(ConstantFeePolicyConfigNote::script_root())?
+                .as_u64(),
+        ),
+        (
+            FeeSponsorshipNote::script_root(),
+            pricer.price(FeeSponsorshipNote::script_root())?.as_u64(),
+        ),
+    ] {
+        assert_eq!(scheduled_fee(&account, root)?, fee_entry(expected));
+        assert!(
+            expected > 0,
+            "the verification base fee must price every checked path"
+        );
+    }
     Ok(())
 }
 
@@ -351,7 +325,7 @@ async fn administrator_reprices_a_priced_config_note_under_collected_fees_bound(
     );
     assert_eq!(
         scheduled_fee(&account, ConstantFeePolicyConfigNote::script_root())?,
-        fee_entry(fixture.deployed_fee.as_u64()),
+        fee_entry(fixture.config_note_fee.as_u64()),
         "the config note must retain its deployment fee",
     );
 

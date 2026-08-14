@@ -18,8 +18,8 @@
 //! * `deposit_intent_amount_not_reduced_offchain` — amount/maxFee carried RAW (no reduce).
 //! * `deposit_intent_structural_reject` — per-field rejects, EXACT variant + source.
 //! * `deposit_intent_felt_count_guard` — header is 60 felts (four bytes per felt, so 60 and never
-//!   30), the full preimage `60 + ceil(hookDataLen/4)`, the INCLUSIVE 1024-felt bound accepted, and
-//!   the >1024-felt overflow → PreimageTooLarge.
+//!   30), the full preimage `60 + ceil(hookDataLen/4)`, hookData AT its ceiling accepted and one
+//!   byte past it rejected, and the >1024-felt overflow → PreimageTooLarge.
 
 use std::error::Error;
 
@@ -29,7 +29,9 @@ use rstest::rstest;
 
 use xreserve_deposit_relayer::error::RelayerError;
 use xusdc_encoding::vectors::{load, DiVector};
-use xusdc_encoding::xreserve::encoding::{DepositIntent, DepositIntentField, EncodingError};
+use xusdc_encoding::xreserve::encoding::{
+    DepositIntent, DepositIntentField, EncodingError, HookData,
+};
 
 /// The fixed DepositIntent header length (bytes), taken from the shared encoding crate (the single
 /// owner of the 240-byte header) — the canonical `len_felts` independently confirms it as 60 felts.
@@ -271,8 +273,8 @@ fn t_rly_08_empty_payload_is_short_header() {
 }
 
 // ================================================================================================
-// deposit_intent_felt_count_guard (the same trap + the 1024-felt
-// NoteStorage bound).
+// deposit_intent_felt_count_guard (the same trap + both ceilings a payload has to pass: hookData's
+// own, and the 1024-felt NoteStorage bound).
 // The oracle is the vector's independent `len_felts` (60 / 63 / 1025); cross-checked against
 // the shared encoding crate's authoritative packing.
 // ================================================================================================
@@ -305,34 +307,59 @@ fn t_rly_11_preimage_felt_count(#[case] id: &str, #[case] expected_felts: usize)
 }
 
 #[test]
-fn t_rly_11_preimage_exactly_1024_felts_accepted() {
-    // The INCLUSIVE upper bound: a preimage of EXACTLY 1024 felts must be accepted (so an accidental
-    // `>= 1024` reject cannot pass). The canonical corpus has 60 / 63 / 1025 but not 1024, so this
-    // is a relayer-specific boundary fixture: take a canonical accept vector (240-byte header,
-    // hookDataLen = 0) and extend it to 240 + 3856 = 4096 bytes = exactly 1024 u32-LE felts
-    // (60 header felts + ceil(3856/4) = 60 + 964). Only the hookDataLen field is edited, at
-    // the shared encoding crate's authoritative offset, so the field-decode oracle stays
-    // canonical-vector-driven and this case pins the felt-count bound alone.
-    const HOOK_LEN: u32 = 3856;
+fn t_rly_11_maximal_hook_data_accepted() {
+    // The INCLUSIVE upper bound, so an accidental `>=` reject cannot pass. What binds a payload is
+    // hookData's own ceiling — how much the mint transport that delivers the deposit can still
+    // carry past its fixed prefix — and it is TIGHTER than the 1024-felt NoteStorage bound the
+    // overflow case below trips, so the largest accepted preimage is short of 1024 felts. The
+    // canonical corpus has no vector at the ceiling, so this is a relayer-specific boundary
+    // fixture: take a canonical accept vector (240-byte header, hookDataLen = 0) and extend it to
+    // exactly that many hookData bytes. The length is taken from the shared encoding crate rather
+    // than restated, so a change to the transport's fixed prefix moves this case with it. Only the
+    // hookDataLen field is edited, at the crate's authoritative offset, so the field-decode oracle
+    // stays canonical-vector-driven and this case pins the bound alone.
+    let hook_len = u32::try_from(HookData::MAX_LEN).expect("the hookData ceiling fits its field");
+    let expected_felts = HEADER_LEN / 4 + HookData::MAX_LEN.div_ceil(4);
+
     let mut payload = di_by_id("di-pos-empty-hookdata").bytes();
     assert_eq!(payload.len(), HEADER_LEN, "base vector is a bare header");
 
     let off = DepositIntentField::HookDataLen.offset();
-    payload[off..off + 4].copy_from_slice(&HOOK_LEN.to_be_bytes());
-    payload.resize(HEADER_LEN + HOOK_LEN as usize, 0u8);
+    payload[off..off + 4].copy_from_slice(&hook_len.to_be_bytes());
+    payload.resize(HEADER_LEN + HookData::MAX_LEN, 0u8);
 
     let di = DepositIntent::try_from(payload.as_slice())
         .map_err(RelayerError::from_deposit_intent)
-        .expect("a preimage of exactly 1024 felts is accepted (inclusive bound)");
-    assert_eq!(di.preimage_felt_len(), 1024);
+        .expect("hookData AT the ceiling is accepted (inclusive bound)");
+    assert_eq!(di.preimage_felt_len(), expected_felts);
     assert_eq!(
         xusdc_encoding::xreserve::encoding::DepositIntent::try_from(payload.as_slice())
             .expect("packs")
             .to_preimage_felts()
             .len(),
-        1024,
-        "unit-04 packs the same payload to exactly 1024 felts"
+        expected_felts,
+        "unit-04 packs the same payload to the same felt count"
     );
+}
+
+#[test]
+fn t_rly_11_hook_data_one_byte_past_the_ceiling_rejected() {
+    // The exclusive side of the same bound: one byte more than the case above must reject. Pairing
+    // the two is what makes the ceiling INCLUSIVE rather than merely "somewhere around here" — the
+    // canonical overflow vector below sits far past it and cannot tell the two apart.
+    let hook_len =
+        u32::try_from(HookData::MAX_LEN + 1).expect("one past the hookData ceiling fits its field");
+
+    let mut payload = di_by_id("di-pos-empty-hookdata").bytes();
+    let off = DepositIntentField::HookDataLen.offset();
+    payload[off..off + 4].copy_from_slice(&hook_len.to_be_bytes());
+    payload.resize(HEADER_LEN + HookData::MAX_LEN + 1, 0u8);
+
+    let err = DepositIntent::try_from(payload.as_slice())
+        .map_err(RelayerError::from_deposit_intent)
+        .expect_err("hookData one byte past the ceiling must reject");
+    assert_matches!(&err, RelayerError::PreimageTooLarge(_));
+    assert_exact_source(&err, &EncodingError::HookDataTooLarge);
 }
 
 #[test]

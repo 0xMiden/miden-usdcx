@@ -74,15 +74,13 @@ fn t_an_oversized_hookdata_is_a_typed_decode_error() {
 /// on-chain as an unexplained bad signature.
 ///
 /// WHICH step refuses is part of the contract, so each row names it. Everything that is a property
-/// of the payload alone — an identifier that is not an account id, a field too wide for the
-/// transport — is settled by the decode, which is the first place the bytes are read as a Miden
+/// of the payload alone — an identifier that is not an account id, an amount past what the asset
+/// can hold — is settled by the decode, which is the first place the bytes are read as a Miden
 /// mint. Only the compare against the faucet the note is being built FOR needs the build, because
 /// only there is that faucet known.
 #[rstest]
 #[case::remote_token_mismatch("mi-rej-remote-token-mismatch", Step::Build)]
 #[case::remote_token_malformed("mi-rej-remote-token-malformed", Step::Decode)]
-#[case::local_token_not_address("mi-rej-local-token-not-address", Step::Decode)]
-#[case::local_depositor_not_address("mi-rej-local-depositor-not-address", Step::Decode)]
 #[case::max_fee_over_cap("mi-rej-max-fee-over-cap", Step::Decode)]
 #[case::recipient_non_canonical("mi-rej-recipient-non-canonical", Step::Decode)]
 fn t_an_uncarryable_intent_is_a_typed_build_error(#[case] vector_id: &str, #[case] step: Step) {

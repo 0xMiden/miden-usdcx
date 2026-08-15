@@ -103,7 +103,7 @@ Labels for the faucet's functional pieces (originally built as incremental slice
 
 | Id | Component |
 |---|---|
-| CMP-A5 | On-token transfer policy: the stock `BasicBlocklist` is the active send + receive policy, administered by `BLK_MANAGER`. |
+| CMP-A5 | On-token transfer policy: the stock `BasicBlocklist` is the active send + receive policy, administered by `BLOCK_LISTER`. |
 | CMP-A6 | `XReserveDomainConfig` — the faucet's build-seeded domain-config fields (`domain`, `source_domain`, `xreserve_contract`); the identifier is derived, not stored. |
 | CMP-A9 | The stock `mint_and_send` supply-increasing surface, gated by `mint_policy::check_policy`. |
 | CMP-A10 | The burn security policy, run on every `receive_and_burn`: stock `MinBurnAmount::check_policy` with the ≥1 floor invariant enforced by the builder and admin note. |
@@ -272,7 +272,7 @@ are open items with Circle). The ones referenced in this repo:
 | IMPL-DEV-8 | The burn payload carries `{amount, dest_domain, dest_recipient, salt}` with the depositor in `metadata.sender`. |
 | IMPL-DEV-12 | Cosmetic fix: an `AccountId`-out-of-range error message once said "15-byte region" while the shipped layout is 16-byte-padded; the message now describes the shipped right-aligned bytes32 layout. |
 | IMPL-DEV-16 | The identifier-init procedure and note are removed. The mint path decodes `remoteToken` and compares it directly with the faucet's native account id, so there is no identifier slot or initialization window. |
-| IMPL-DEV-20 | xUSDC ships as a policed fungible asset carrying the stock `BasicBlocklist` as the active send + receive policy, administered by `BLK_MANAGER`. |
+| IMPL-DEV-20 | xUSDC ships as a policed fungible asset carrying the stock `BasicBlocklist` as the active send + receive policy, administered by `BLOCK_LISTER`. |
 | IMPL-DEV-21 | `feeAmount` is an argument of Circle's `mint` call rather than a DepositIntent field, and the MVP relayer charges nothing, so it is carried nowhere and the mint has no fee term at all. The earlier fail-loud zero-fee reject (`ERR_XRESERVE_FEE_NONZERO`) went with it. The relayer-credit fee split is deferred behind the OPEN `Q-FEE-MVP` Circle confirmation. |
 | IMPL-DEV-22 | Self-renounce is reachable through the stock `RbacConfigNote`. A sole `ADMIN` can renounce and leave administrator-gated procedures unrecoverable except by redeploy; `Q-ADMIN-RENOUNCE` stays OPEN. |
 | IMPL-DEV-23 | Admin roles use Miden RBAC (`grant_role`/`revoke_role`) rather than Circle's single address slots. There is no ownership component; seeded `ADMIN` membership is the faucet's administrative authority, and rotation is grant-successor before revoke-predecessor. `Q-ADMIN-RBAC-EQUIV` stays OPEN. |

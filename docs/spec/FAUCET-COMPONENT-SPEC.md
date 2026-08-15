@@ -181,7 +181,7 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
   the administrator) — Circle's distinct-pauser-role model, expressed through the account's per-procedure
   role map rather than a hand-written wrapper. A pause halts both mint and burn-consume.
 - **Transfer blocklist**: the stock `BlocklistManager`'s `block_account`/`unblock_account`, gated on
-  the `BLK_MANAGER` role held by an external administrator with no other capability. The stock
+  the `BLOCK_LISTER` role held by an external administrator with no other capability. The stock
   procedure does not validate its target, so blocking the faucet against itself is reachable on
   chain; the faucet's note factory refuses to build such a note, and the state is recoverable with
   an unblock note (which carries no assets, so no transfer policy runs).

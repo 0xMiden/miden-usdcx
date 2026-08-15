@@ -37,7 +37,7 @@ pause, which halted only mint/burn.
 
 ## Administration — a dedicated external role, not the administrator
 
-Block/unblock is gated on a dedicated **`BLK_MANAGER`** role held by an **external entity** with **no
+Block/unblock is gated on a dedicated **`BLOCK_LISTER`** role held by an **external entity** with **no
 other admin capability** (it cannot set the attester, change max supply, pause, or administer any
 other role). Miden (as the `ADMIN` holder) can rotate or revoke that entity through the standard
 role-grant/revoke mechanism. `ADMIN` itself has **no** direct block/unblock power (two-way capability

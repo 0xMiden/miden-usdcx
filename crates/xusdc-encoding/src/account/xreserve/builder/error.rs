@@ -43,7 +43,7 @@ pub enum XReserveStablecoinBuilderError {
     /// rejected at construction (the runtime twin is the `set_min_burn_size` note's floor assert).
     /// Carries the offending value.
     MinBurnSizeBelowFloor(u64),
-    /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with a privileged
+    /// The `block_lister_holder` (the seeded `BLOCK_LISTER` member) collides with a privileged
     /// identity — the administrator, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The
     /// transfer-blocklist administrator must be an external entity with no other faucet-admin
     /// capability, so that neither `ADMIN` gains a direct block/unblock path nor the pause and
@@ -97,7 +97,7 @@ impl fmt::Display for XReserveStablecoinBuilderError {
             ),
             Self::BlocklistManagerNotIsolated { collides_with } => write!(
                 f,
-                "the BLK_MANAGER holder (transfer-blocklist administrator) must be an external entity \
+                "the BLOCK_LISTER holder (transfer-blocklist administrator) must be an external entity \
                  with no other faucet-admin capability, but it collides with the {collides_with} — \
                  F4-reversal two-way capability isolation is violated"
             ),

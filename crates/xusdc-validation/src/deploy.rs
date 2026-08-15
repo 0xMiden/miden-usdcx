@@ -131,7 +131,7 @@ pub fn production_components(
     owner: AccountId,
     pauser: AccountId,
     manager: AccountId,
-    blk_manager: AccountId,
+    block_lister: AccountId,
     max_supply: u64,
     domain: &DomainParams,
 ) -> Result<Vec<AccountComponent>> {
@@ -151,7 +151,7 @@ pub fn production_components(
         owner,
         pauser,
         manager,
-        blk_manager,
+        block_lister,
     )
     .with_domain_config(
         domain.domain,
@@ -174,7 +174,7 @@ pub fn build_faucet_account(
     owner: AccountId,
     pauser: AccountId,
     manager: AccountId,
-    blk_manager: AccountId,
+    block_lister: AccountId,
     max_supply: u64,
     domain: &DomainParams,
     init_seed: [u8; 32],
@@ -185,7 +185,7 @@ pub fn build_faucet_account(
         owner,
         pauser,
         manager,
-        blk_manager,
+        block_lister,
         max_supply,
         domain,
     )?;

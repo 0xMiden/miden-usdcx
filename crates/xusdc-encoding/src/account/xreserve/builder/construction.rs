@@ -226,7 +226,7 @@ pub fn build_faucet_account(
     owner: AccountId,
     pauser_holder: AccountId,
     manager_holder: AccountId,
-    blocklist_manager_holder: AccountId,
+    block_lister_holder: AccountId,
     fee_faucet_id: AccountId,
     fee_policy: BasicConstantFeePolicy,
     domain: u32,
@@ -239,7 +239,7 @@ pub fn build_faucet_account(
         .owner(owner)
         .pauser_holder(pauser_holder)
         .manager_holder(manager_holder)
-        .blocklist_manager_holder(blocklist_manager_holder)
+        .block_lister_holder(block_lister_holder)
         .fee_faucet_id(fee_faucet_id)
         .fee_policy(fee_policy)
         .domain(domain)

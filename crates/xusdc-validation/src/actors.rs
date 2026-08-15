@@ -99,9 +99,9 @@ pub struct Actors {
     pub owner: Account,
     pub pauser: Account,
     pub manager: Account,
-    /// The F4-reversal BLK_MANAGER holder — the EXTERNAL transfer-blocklist administrator (distinct
+    /// The F4-reversal BLOCK_LISTER holder — the EXTERNAL transfer-blocklist administrator (distinct
     /// from the owner; capability-isolated to block/unblock only).
-    pub blk_manager: Account,
+    pub block_lister: Account,
     pub recipient: Account,
     pub holder: Account,
     /// The C5 rotation target: DOM_MANAGER grants it DOM_PAUSER, then revokes it.
@@ -278,9 +278,9 @@ pub async fn create_actors(hc: &mut HarnessClient, run_root: &Path) -> Result<Ac
     let manager = create_wallet(hc)
         .await
         .context("creating the DOM_MANAGER wallet")?;
-    let blk_manager = create_wallet(hc)
+    let block_lister = create_wallet(hc)
         .await
-        .context("creating the BLK_MANAGER wallet")?;
+        .context("creating the BLOCK_LISTER wallet")?;
     let recipient = create_wallet(hc)
         .await
         .context("creating the recipient wallet")?;
@@ -296,7 +296,7 @@ pub async fn create_actors(hc: &mut HarnessClient, run_root: &Path) -> Result<Ac
         owner,
         pauser,
         manager,
-        blk_manager,
+        block_lister,
         recipient,
         holder,
         new_pauser,

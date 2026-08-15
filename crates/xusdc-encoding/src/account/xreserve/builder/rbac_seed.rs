@@ -7,13 +7,13 @@ use miden_protocol::account::{
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::RoleBasedAccessControl;
 
-use super::{BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
+use super::{BLOCK_LISTER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 
 /// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` with four memberships:
 ///
 /// * `DOM_PAUSER` (→ `pauser_holder`) and `DOM_MANAGER` (→ `manager_holder`), the two Circle
 ///   Domain roles.
-/// * `BLK_MANAGER` (→ `blocklist_manager_holder`), the transfer-blocklist administrator. It is
+/// * `BLOCK_LISTER` (→ `block_lister_holder`), the transfer-blocklist administrator. It is
 ///   capability-isolated — the holder can ONLY block and unblock — and its admin resolves to the
 ///   built-in `ADMIN`, so the administrator rotates or revokes it through the standard role-action
 ///   note.
@@ -21,7 +21,7 @@ use super::{BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE};
 ///
 /// Seeding `ADMIN` with the administrator's account is what grants it role administration. `ADMIN`
 /// is the built-in default admin role (`rbac.masm`) that any role with no delegated admin resolves
-/// to, so this seed gives that one account authority over `DOM_MANAGER` and `BLK_MANAGER` — and,
+/// to, so this seed gives that one account authority over `DOM_MANAGER` and `BLOCK_LISTER` — and,
 /// since the faucet installs no ownership component, `ADMIN` membership is the account's ONLY
 /// authority handle.
 ///
@@ -48,14 +48,14 @@ pub(super) fn seeded_dom_roles_rbac(
     owner: AccountId,
     pauser_holder: AccountId,
     manager_holder: AccountId,
-    blocklist_manager_holder: AccountId,
+    block_lister_holder: AccountId,
 ) -> AccountComponent {
     let pauser =
         RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol (≤12)");
     let manager =
         RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol (≤12)");
-    let blk_manager =
-        RoleSymbol::new(BLK_MANAGER_ROLE).expect("BLK_MANAGER is a fixed valid role symbol (≤12)");
+    let block_lister = RoleSymbol::new(BLOCK_LISTER_ROLE)
+        .expect("BLOCK_LISTER is a fixed valid role symbol (≤12)");
     let admin = RoleBasedAccessControl::admin_role();
     // [1,0,0,0]: role_config member_count = 1 (admin_role = 0 → the built-in ADMIN), and
     // role_membership is_member = 1.
@@ -101,7 +101,7 @@ pub(super) fn seeded_dom_roles_rbac(
                 Felt::ZERO,
                 Felt::ZERO,
                 Felt::ZERO,
-                Felt::from(&blk_manager),
+                Felt::from(&block_lister),
             ])),
             member_word,
         ),
@@ -139,9 +139,9 @@ pub(super) fn seeded_dom_roles_rbac(
         (
             StorageMapKey::new(Word::from([
                 Felt::ZERO,
-                Felt::from(&blk_manager),
-                blocklist_manager_holder.suffix(),
-                blocklist_manager_holder.prefix().as_felt(),
+                Felt::from(&block_lister),
+                block_lister_holder.suffix(),
+                block_lister_holder.prefix().as_felt(),
             ])),
             member_word,
         ),

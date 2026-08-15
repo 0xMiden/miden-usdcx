@@ -177,7 +177,7 @@ pub async fn run_rows_ab_on(cfg: &RunConfig, client_label: &str) -> Result<RowsA
         owner_id,
         actors.pauser.id(),
         actors.manager.id(),
-        actors.blk_manager.id(),
+        actors.block_lister.id(),
         cfg.max_supply,
         &cfg.domain_params,
         os_seed(),

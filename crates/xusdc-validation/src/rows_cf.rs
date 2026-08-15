@@ -495,7 +495,7 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
         owner_id,
         actors.pauser.id(),
         actors.manager.id(),
-        actors.blk_manager.id(),
+        actors.block_lister.id(),
         cfg.max_supply,
         &domain,
         os_seed(),

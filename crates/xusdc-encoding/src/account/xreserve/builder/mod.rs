@@ -15,7 +15,7 @@
 //! [`XReserveAdminAuthority`]'s `Authority::RbacControlled`). The RBAC seed holds the two Circle
 //! Domain role members (`DOM_PAUSER` / `DOM_MANAGER`) with `DOM_PAUSER` administration DELEGATED
 //! to `DOM_MANAGER`, the stock `ADMIN` role on the administrator's account, and the external
-//! `BLK_MANAGER` transfer-blocklist administrator. There is NO two-step ownership component: the
+//! `BLOCK_LISTER` transfer-blocklist administrator. There is NO two-step ownership component: the
 //! built-in `ADMIN` role is the account's only authority handle, and the standard role-action note
 //! is what rotates it. That note also makes the delegation graph seeded here RUNTIME-MUTABLE — see
 //! the allowlist doc in `network_auth`.
@@ -28,7 +28,7 @@
 //!
 //! Pause and blocklist administration are the STOCK managers gated per procedure: the authority's
 //! role map assigns `pause`/`unpause` to `DOM_PAUSER` and `block_account`/`unblock_account` to
-//! `BLK_MANAGER`, so neither capability reaches the administrator — Circle's distinct-role model, expressed
+//! `BLOCK_LISTER`, so neither capability reaches the administrator — Circle's distinct-role model, expressed
 //! in the standard components rather than in hand-rolled wrappers. The managers install no storage
 //! of their own: `is_paused` comes from the base `Pausable` component and `blocked_accounts` from
 //! the `BasicBlocklist` companion, both of which were already installed.
@@ -72,7 +72,7 @@ pub const DOM_PAUSER_ROLE: &str = "DOM_PAUSER";
 pub const DOM_MANAGER_ROLE: &str = "DOM_MANAGER";
 
 /// The dedicated blocklist-administration RoleSymbol this faucet seeds under the ratified
-/// transfer-blocklist decision: `BLK_MANAGER` is held by an EXTERNAL entity that
+/// transfer-blocklist decision: `BLOCK_LISTER` is held by an EXTERNAL entity that
 /// manages the transfer blocklist for Miden and has NO other admin capability (capability isolation
 /// is two-way — the holder can ONLY block/unblock, and the administrator, lacking the role, cannot). The
 /// stock `BlocklistManager`'s `block_account` / `unblock_account` roots are assigned this symbol by
@@ -80,8 +80,8 @@ pub const DOM_MANAGER_ROLE: &str = "DOM_MANAGER";
 /// owner-gated `BlocklistOwnerControlled` variant is the wrong identity and is not installed. Its
 /// admin is left unset → resolves to the built-in `ADMIN`, so Miden rotates
 /// or revokes the external entity through the allowlisted standard role-action note —
-/// no new rotation machinery. `BLK_MANAGER` is seeded role id 4.
-pub const BLK_MANAGER_ROLE: &str = "BLK_MANAGER";
+/// no new rotation machinery. `BLOCK_LISTER` is seeded role id 4.
+pub const BLOCK_LISTER_ROLE: &str = "BLOCK_LISTER";
 
 /// Path of the attestation mint policy's `check_policy` procedure as the faucet component EXPORTS
 /// it. The procedure is defined in the library's `mint_policy` module; the component re-exports it
@@ -133,11 +133,11 @@ pub struct XReserveStablecoinBuilder {
     pauser_holder: AccountId,
     /// The seeded `DOM_MANAGER` role member (role management — the delegated admin of `DOM_PAUSER`).
     manager_holder: AccountId,
-    /// The seeded `BLK_MANAGER` role member — the EXTERNAL entity that administers the transfer
+    /// The seeded `BLOCK_LISTER` role member — the EXTERNAL entity that administers the transfer
     /// blocklist (block/unblock) and holds NO other admin capability. Its concrete
     /// account id is supplied at deploy time; the built-in `ADMIN` rotates/revokes it via
     /// the standard role-action note.
-    blocklist_manager_holder: AccountId,
+    block_lister_holder: AccountId,
     /// Faucet issuing the network fee asset.
     ///
     /// TODO: Use native fee faucet account construction when it is available.
@@ -166,7 +166,7 @@ impl XReserveStablecoinBuilder {
     /// `owner` (the seeded `ADMIN` member that gates every unmapped authority-gated procedure), the
     /// `pauser_holder` / `manager_holder`
     /// seeded as the sole members of `DOM_PAUSER` / `DOM_MANAGER`, and the
-    /// `blocklist_manager_holder` seeded as the sole member of `BLK_MANAGER` (the external
+    /// `block_lister_holder` seeded as the sole member of `BLOCK_LISTER` (the external
     /// transfer-blocklist administrator), the explicit `fee_faucet_id`, the deploy-time concrete
     /// `fee_policy`, plus the three BUILD-SEEDED domain-config fields: the u32 `domain` and
     /// `source_domain` ids and the `xreserve_contract` remote address. The
@@ -199,7 +199,7 @@ impl XReserveStablecoinBuilder {
         owner: AccountId,
         pauser_holder: AccountId,
         manager_holder: AccountId,
-        blocklist_manager_holder: AccountId,
+        block_lister_holder: AccountId,
         fee_faucet_id: AccountId,
         fee_policy: BasicConstantFeePolicy,
         domain: u32,
@@ -222,7 +222,7 @@ impl XReserveStablecoinBuilder {
             owner,
             pauser_holder,
             manager_holder,
-            blocklist_manager_holder,
+            block_lister_holder,
             fee_faucet_id,
             fee_policy,
             min_burn_amount,
@@ -246,22 +246,22 @@ impl XReserveStablecoinBuilder {
     pub fn build_components(
         &self,
     ) -> Result<Vec<AccountComponent>, XReserveStablecoinBuilderError> {
-        // BLK_MANAGER must not collide with ADMIN / DOM_PAUSER / DOM_MANAGER.
-        if self.blocklist_manager_holder == self.owner {
+        // BLOCK_LISTER must not collide with ADMIN / DOM_PAUSER / DOM_MANAGER.
+        if self.block_lister_holder == self.owner {
             return Err(
                 XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
                     collides_with: "ADMIN",
                 },
             );
         }
-        if self.blocklist_manager_holder == self.pauser_holder {
+        if self.block_lister_holder == self.pauser_holder {
             return Err(
                 XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
                     collides_with: "DOM_PAUSER",
                 },
             );
         }
-        if self.blocklist_manager_holder == self.manager_holder {
+        if self.block_lister_holder == self.manager_holder {
             return Err(
                 XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
                     collides_with: "DOM_MANAGER",
@@ -302,7 +302,7 @@ impl XReserveStablecoinBuilder {
             self.owner,
             self.pauser_holder,
             self.manager_holder,
-            self.blocklist_manager_holder,
+            self.block_lister_holder,
         ));
         components.push(XReserveAdminAuthority::new().into());
         Ok(components)

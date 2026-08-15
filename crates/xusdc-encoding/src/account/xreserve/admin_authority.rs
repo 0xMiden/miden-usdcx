@@ -29,7 +29,7 @@ use miden_protocol::account::{AccountComponent, AccountProcedureRoot, RoleSymbol
 use miden_standards::account::access::{Authority, PausableManager};
 use miden_standards::account::policies::BlocklistManager;
 
-use super::{BLK_MANAGER_ROLE, DOM_PAUSER_ROLE};
+use super::{BLOCK_LISTER_ROLE, DOM_PAUSER_ROLE};
 
 /// The number of manager procedures the faucet gates on a dedicated role: pause, unpause, block
 /// and unblock. Every other authority-gated procedure on the account is left unassigned and so
@@ -57,17 +57,14 @@ impl XReserveAdminAuthority {
     pub fn new() -> Self {
         let pauser = RoleSymbol::new(DOM_PAUSER_ROLE)
             .expect("the Domain pauser role symbol is a fixed valid symbol");
-        let blocklist_manager = RoleSymbol::new(BLK_MANAGER_ROLE)
+        let block_lister = RoleSymbol::new(BLOCK_LISTER_ROLE)
             .expect("the blocklist administrator role symbol is a fixed valid symbol");
 
         let procedure_roles = BTreeMap::from([
             (PausableManager::pause_root(), pauser.clone()),
             (PausableManager::unpause_root(), pauser),
-            (
-                BlocklistManager::block_account_root(),
-                blocklist_manager.clone(),
-            ),
-            (BlocklistManager::unblock_account_root(), blocklist_manager),
+            (BlocklistManager::block_account_root(), block_lister.clone()),
+            (BlocklistManager::unblock_account_root(), block_lister),
         ]);
         assert_eq!(
             procedure_roles.len(),

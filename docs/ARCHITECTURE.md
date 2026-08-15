@@ -66,7 +66,7 @@ Rust factories and codecs reject malformed inputs early and create the intended 
 
 1. Network-account authentication requires the mint note's script root to be admitted.
 2. The mint policy requires exactly one mint transport attachment and one routing attachment, obtained through the protocol API that verifies attachment bytes against their commitment.
-3. The active mint policy is fixed at account construction, and no admitted path can change it. The policy checks that the account is not paused and that the note asset is this faucet's fungible asset.
+3. Pause state and the faucet-asset binding sit in the stock layer around the policy rather than in the policy itself: `policy_manager::execute_mint_policy` asserts the account is not paused and then dispatches the mint policy root recorded in storage, and stock `mint_and_send` asserts the note's asset is this faucet's own after the policy returns.
 4. The asset amount must be nonzero and representable; the same amount is inserted into the reconstructed signed bytes and later supplied to stock mint accounting.
 5. The compressed carried intent is admitted, its committed extent is bound before any tail read, and transport padding beyond the signed extent is rejected. The full signed message is reconstructed byte-exactly from constants, trusted account state, the active asset, and carried fields.
 6. The policy hashes exactly the returned message length with Keccak-256, derives a Poseidon2 commitment from the presented secp256k1 key, requires that commitment to be enabled in the attester map, and verifies the signature over the reconstructed message under that same key using the core library's byte-oriented ECDSA verifier (`verify_bytes`).

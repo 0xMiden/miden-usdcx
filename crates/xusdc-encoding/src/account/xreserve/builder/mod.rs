@@ -39,9 +39,11 @@
 //! mint path derives on chain, so the composed faucet is mint-ready the moment it exists.
 
 use bon::bon;
-use miden_protocol::account::{AccountComponent, AccountId};
+use miden_protocol::account::{AccountComponent, AccountId, RoleSymbol};
 use miden_protocol::asset::AssetAmount;
-use miden_standards::account::access::{Pausable, PausableManager};
+use miden_standards::account::access::{
+    Pausable, PausableManager, RoleBasedAccessControl, RoleConfig,
+};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::fees::{BasicConstantFeePolicy, ConstantFeeManager};
 use miden_standards::account::policies::{
@@ -54,12 +56,10 @@ use crate::xreserve::encoding::ForeignChainAddress;
 mod construction;
 mod error;
 mod network_auth;
-mod rbac_seed;
 
 use construction::build_usdcx_faucet;
 pub use construction::{build_faucet_account, XReserveFaucetExtension};
 pub use error::XReserveStablecoinBuilderError;
-use rbac_seed::seeded_dom_roles_rbac;
 
 /// The two Circle Domain RoleSymbols this faucet seeds under the ratified Circle-faithful admin
 /// model: `DOM_PAUSER` (pause/unpause) and `DOM_MANAGER` (rotation / role
@@ -307,4 +307,38 @@ impl XReserveStablecoinBuilder {
         components.push(XReserveAdminAuthority::new().into());
         Ok(components)
     }
+}
+
+/// Seeds the faucet's `RoleBasedAccessControl` component with four roles: `DOM_PAUSER` whose admin
+/// is delegated to `DOM_MANAGER`, plus `DOM_MANAGER`, `BLK_MANAGER` and the built-in `ADMIN` seeded
+/// with `owner`. A role with no delegated admin falls under `ADMIN`, which is the account's only
+/// authority handle since it installs no ownership component.
+///
+/// Construction failures are invariants, so this mirrors the stock `.expect()` pattern.
+fn seeded_dom_roles_rbac(
+    owner: AccountId,
+    pauser_holder: AccountId,
+    manager_holder: AccountId,
+    blocklist_manager_holder: AccountId,
+) -> AccountComponent {
+    let pauser =
+        RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol (≤12)");
+    let manager =
+        RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol (≤12)");
+    let blk_manager =
+        RoleSymbol::new(BLK_MANAGER_ROLE).expect("BLK_MANAGER is a fixed valid role symbol (≤12)");
+    let admin = RoleBasedAccessControl::admin_role();
+
+    RoleBasedAccessControl::builder()
+        .role(
+            RoleConfig::new(pauser)
+                .with_member(pauser_holder)
+                .with_admin(manager.clone()),
+        )
+        .role(RoleConfig::new(manager).with_member(manager_holder))
+        .role(RoleConfig::new(admin).with_member(owner))
+        .role(RoleConfig::new(blk_manager).with_member(blocklist_manager_holder))
+        .build()
+        .expect("the seeded DOM-roles RBAC configuration should be valid")
+        .into()
 }

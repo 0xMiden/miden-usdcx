@@ -77,7 +77,7 @@ Semantics worth stating plainly:
 
 - The signed `maxFee` is a ceiling (`maxFee <= amount`), not an amount paid. No separate `feeAmount` or relayer payout exists; the complete amount goes to the recipient.
 - `localToken`, `localDepositor`, and `hookData` change the signature digest but carry no local semantics. The binding MASM does not yet reject zero `localToken`/`localDepositor` (the off-chain relayer does, but preflight is not the on-chain gate; adding the on-chain checks is planned). These fields are treated as opaque 32-byte values, not EVM-typed addresses. `hookData` is never executed.
-- The supported `hookData` ceiling is 3,840 bytes, bound by the note-attachment capacity after fixed transport prefixes; a compile-time assertion ties the codec constant to that calculation.
+- The supported `hookData` ceiling is 3,840 bytes: the codec constant is computed at compile time as the note-attachment capacity less the fixed transport prefixes, and a compile-time assertion separately keeps the rebuilt preimage within the protocol's note-storage limit.
 
 ## 6. Burn and redemption path
 

@@ -65,7 +65,7 @@ use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, XReserveFaucetExtension, XReserveStablecoinBuilder,
-    XReserveStablecoinBuilderError, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveStablecoinBuilderError, BLOCK_LISTER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::errors;
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
@@ -507,7 +507,7 @@ pub fn production_builder_verdict(
         .owner(test_account_id(1))
         .pauser_holder(test_account_id(2))
         .manager_holder(test_account_id(3))
-        .blocklist_manager_holder(test_account_id(4))
+        .block_lister_holder(test_account_id(4))
         .fee_faucet_id(test_fee_faucet_id())
         .fee_policy(test_fee_policy())
         .domain(domain)
@@ -1371,7 +1371,7 @@ pub const RAW_BLOCKLIST_PATH: &str = "xusdc::test_fixtures::raw_blocklist";
 
 /// A TEST-ONLY account component exposing an UNGUARDED raw self-block proc (`block_self_unchecked`):
 /// it `exec`s the low-level `blocklist::block_account` primitive on the NATIVE id directly,
-/// bypassing both the BLK_MANAGER role gate and the self-block guard in
+/// bypassing both the BLOCK_LISTER role gate and the self-block guard in
 /// the stock `BlocklistManager::block_account`. Its sole use is arming the faucet-blocked sentinel in
 /// `transfer_blocklist_semantics::faucet_side_burn_consume_is_callback_unaffected`: with the
 /// self-block guard in place the
@@ -1385,7 +1385,7 @@ pub fn raw_blocklist_component() -> Result<AccountComponent> {
                use miden::standards::faucets::policies::transfer::blocklist\n\
                \n\
                #! TEST-ONLY: writes blocked_accounts[self] = 1 via the low-level primitive,\n\
-               #! bypassing the BLK_MANAGER role gate AND the PA2 self-block guard.\n\
+               #! bypassing the BLOCK_LISTER role gate AND the PA2 self-block guard.\n\
                #!\n\
                #! Inputs:  [pad(16)]\n\
                #! Outputs: [pad(16)]\n\
@@ -1866,13 +1866,13 @@ fn seeded_dom_roles_rbac_component(
     owner: AccountId,
     pauser_holder: AccountId,
     manager_holder: AccountId,
-    blocklist_manager_holder: AccountId,
+    block_lister_holder: AccountId,
 ) -> AccountComponent {
     let pauser = RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol");
     let manager =
         RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol");
-    let blk_manager =
-        RoleSymbol::new(BLK_MANAGER_ROLE).expect("BLK_MANAGER is a fixed valid role symbol");
+    let block_lister =
+        RoleSymbol::new(BLOCK_LISTER_ROLE).expect("BLOCK_LISTER is a fixed valid role symbol");
     // v16 (#3215): the administrator has no implicit super-admin standing — the stock ADMIN role is
     // seeded on the administrator's account, mirroring the production seed.
     let admin = RoleBasedAccessControl::admin_role();
@@ -1918,7 +1918,7 @@ fn seeded_dom_roles_rbac_component(
                 Felt::ZERO,
                 Felt::ZERO,
                 Felt::ZERO,
-                Felt::from(&blk_manager),
+                Felt::from(&block_lister),
             ])),
             member_word,
         ),
@@ -1956,9 +1956,9 @@ fn seeded_dom_roles_rbac_component(
         (
             StorageMapKey::new(Word::from([
                 Felt::ZERO,
-                Felt::from(&blk_manager),
-                blocklist_manager_holder.suffix(),
-                blocklist_manager_holder.prefix().as_felt(),
+                Felt::from(&block_lister),
+                block_lister_holder.suffix(),
+                block_lister_holder.prefix().as_felt(),
             ])),
             member_word,
         ),
@@ -1999,7 +1999,7 @@ fn oracle_burn_components(
     administrator: AccountId,
     pauser_holder: AccountId,
     manager_holder: AccountId,
-    blocklist_manager_holder: AccountId,
+    block_lister_holder: AccountId,
 ) -> Result<Vec<AccountComponent>> {
     let min_burn =
         AssetAmount::new(min_burn_size).map_err(|e| anyhow::anyhow!("oracle floor: {e}"))?;
@@ -2055,7 +2055,7 @@ fn oracle_burn_components(
         administrator,
         pauser_holder,
         manager_holder,
-        blocklist_manager_holder,
+        block_lister_holder,
     ));
     components.push(XReserveAdminAuthority::new().into());
     Ok(components)

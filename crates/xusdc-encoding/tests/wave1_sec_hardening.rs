@@ -42,9 +42,9 @@ use xusdc_encoding::note::xreserve_admin::{
 // constant is what FIX 2 asserts end-to-end.
 const FUNGIBLE_ASSET_MAX_AMOUNT: u64 = 0x7fffffff_80000000;
 
-// The production builder seeds owner = id(1) and BLK_MANAGER = id(4). A distinct block TARGET for
+// The production builder seeds owner = id(1) and BLOCK_LISTER = id(4). A distinct block TARGET for
 // the not-over-broad positive is any other id.
-fn blk_manager() -> AccountId {
+fn block_lister() -> AccountId {
     test_account_id(4)
 }
 fn other_account() -> AccountId {
@@ -92,15 +92,16 @@ fn min_word(v: u64) -> Word {
 #[test]
 fn a_block_note_targeting_the_faucet_itself_cannot_be_built() {
     let faucet_id = test_faucet_id(1);
-    let err = XReserveBlocklistNote::block(blk_manager(), faucet_id, faucet_id, &mut note_rng(710))
-        .expect_err("the factory must refuse a self-targeting block note");
+    let err =
+        XReserveBlocklistNote::block(block_lister(), faucet_id, faucet_id, &mut note_rng(710))
+            .expect_err("the factory must refuse a self-targeting block note");
     assert!(
         matches!(err, XReserveBlocklistNoteError::SelfBlockRejected { .. }),
         "the refusal must be the specific self-block rejection, not some other note error: {err:?}"
     );
 }
 
-/// The refusal is NOT over-broad: a `BLK_MANAGER`-sent block targeting a DIFFERENT account still
+/// The refusal is NOT over-broad: a `BLOCK_LISTER`-sent block targeting a DIFFERENT account still
 /// builds, SUCCEEDS on chain, and writes the blocked marker (a non-vacuous success — the map write
 /// really happened). Proves FIX 1 refuses ONLY the faucet's own id.
 #[tokio::test]
@@ -108,7 +109,7 @@ async fn block_account_targeting_a_different_account_still_succeeds() -> Result<
     let _serial = tripwire_serial_guard().await;
     let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
         vec![
-            stock_block_note(blk_manager(), faucet_id, other_account(), 711)
+            stock_block_note(block_lister(), faucet_id, other_account(), 711)
                 .expect("building the other-account block note"),
         ]
     })?;
@@ -123,7 +124,7 @@ async fn block_account_targeting_a_different_account_still_succeeds() -> Result<
     assert_eq!(
         read_blocked(&faucet, other_account())?,
         blocked_word(),
-        "after a BLK_MANAGER block of a different account, blocked_accounts[other] == [1,0,0,0]"
+        "after a BLOCK_LISTER block of a different account, blocked_accounts[other] == [1,0,0,0]"
     );
     Ok(())
 }

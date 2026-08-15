@@ -411,13 +411,13 @@ fn masm_rust_constant_parity() {
         "affine-pubkey felt count parity (qx||qy -> 16 u32-LE felts; ATT commitment input)"
     );
 
-    // The DOM_PAUSER / BLK_MANAGER role symbols no longer appear in any MASM constant. They used
+    // The DOM_PAUSER / BLOCK_LISTER role symbols no longer appear in any MASM constant. They used
     // to be hard-coded felts in the custom pause and blocklist wrappers, which is what this suite
     // pinned; the wrappers are gone and the symbols now live in the account's procedure-role map,
     // written from the SAME Rust constants by `XReserveAdminAuthority`. There is nothing left to
     // keep in step across languages, so the parity rows are gone with the wrappers. The role
     // identity is pinned instead where it is now expressed: the felt encodings in
-    // `builder_api.rs` (`RoleSymbol::new(DOM_PAUSER_ROLE)` / `RoleSymbol::new(BLK_MANAGER_ROLE)`)
+    // `builder_api.rs` (`RoleSymbol::new(DOM_PAUSER_ROLE)` / `RoleSymbol::new(BLOCK_LISTER_ROLE)`)
     // and the materialized map in `w2admin_production_admin_effects.rs`.
 
     // The merged mint-note transport must match across languages — the XUsdcMintNote factory

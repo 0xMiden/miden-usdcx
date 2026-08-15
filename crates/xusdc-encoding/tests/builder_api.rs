@@ -19,13 +19,13 @@ use miden_standards::account::policies::{BlocklistManager, MinBurnAmount, TokenP
 use support::*;
 use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, XReserveFaucetExtension, XReserveStablecoinBuilder,
-    XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE,
+    XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH, BLOCK_LISTER_ROLE,
     DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
 
 /// The standard production builder: the fixed test supplies through the ONE production-shape
-/// definition in `support` (owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3), BLK_MANAGER =
+/// definition in `support` (owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3), BLOCK_LISTER =
 /// id(4), plus the build-seeded domain config).
 fn production_builder() -> XReserveStablecoinBuilder {
     support::production_builder(1_000_000, 0, TEST_DOMAIN)
@@ -228,7 +228,7 @@ fn builder_installs_the_stock_managers_with_their_roles_assigned() -> Result<()>
         .collect();
     let roles = XReserveAdminAuthority::new().procedure_roles().clone();
     let pauser = RoleSymbol::new(DOM_PAUSER_ROLE).expect("the Domain pauser role symbol is valid");
-    let blocklist_manager = RoleSymbol::new(BLK_MANAGER_ROLE)
+    let block_lister = RoleSymbol::new(BLOCK_LISTER_ROLE)
         .expect("the blocklist administrator role symbol is valid");
 
     for (what, root, role) in [
@@ -237,12 +237,12 @@ fn builder_installs_the_stock_managers_with_their_roles_assigned() -> Result<()>
         (
             "block_account",
             BlocklistManager::block_account_root(),
-            &blocklist_manager,
+            &block_lister,
         ),
         (
             "unblock_account",
             BlocklistManager::unblock_account_root(),
-            &blocklist_manager,
+            &block_lister,
         ),
     ] {
         assert!(

@@ -7,10 +7,10 @@
 //! document under `docs/`.
 //!
 //! The two new admin notes `block_account` / `unblock_account` are gated on the dedicated
-//! `BLK_MANAGER` role held by an EXTERNAL entity, NOT the administrator. A block/unblock from the BLK_MANAGER
+//! `BLOCK_LISTER` role held by an EXTERNAL entity, NOT the administrator. A block/unblock from the BLOCK_LISTER
 //! holder SUCCEEDS and mutates the `blocked_accounts` map; from a stranger, the OWNER (two-way
 //! capability isolation — the administrator has NO block power), or a DIFFERENT role holder (spoof-proof) it is
-//! REJECTED with the EXACT stock rbac role error; after the administrator (as `ADMIN`) revokes `BLK_MANAGER`
+//! REJECTED with the EXACT stock rbac role error; after the administrator (as `ADMIN`) revokes `BLOCK_LISTER`
 //! via the EXISTING `revoke_role` note, the former holder is REJECTED — rotation with ZERO new machinery.
 
 mod support;
@@ -24,19 +24,19 @@ use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use rstest::rstest;
 use support::*;
-use xusdc_encoding::account::xreserve::BLK_MANAGER_ROLE;
+use xusdc_encoding::account::xreserve::BLOCK_LISTER_ROLE;
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
 // The production builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3),
-// BLK_MANAGER = id(4).
+// BLOCK_LISTER = id(4).
 fn administrator() -> AccountId {
     test_account_id(1)
 }
 fn dom_manager() -> AccountId {
     test_account_id(3)
 }
-fn blk_manager() -> AccountId {
+fn block_lister() -> AccountId {
     test_account_id(4)
 }
 fn stranger() -> AccountId {
@@ -96,7 +96,7 @@ fn placeholder_driver_src() -> String {
 }
 
 /// A policed + Enabled production faucet (attestation-gated production composition), IncrNonce auth
-/// so admin notes execute directly and the BLK_MANAGER role gate is the only gate under test.
+/// so admin notes execute directly and the BLOCK_LISTER role gate is the only gate under test.
 fn policed_faucet() -> Result<GuardedMint> {
     let driver = placeholder_driver_src();
     let probe = composition_supply_probe_src(0);
@@ -152,10 +152,10 @@ async fn run_unblock(
         .await
 }
 
-/// The BLK_MANAGER holder can block an account: the note SUCCEEDS and `blocked_accounts[target]`
+/// The BLOCK_LISTER holder can block an account: the note SUCCEEDS and `blocked_accounts[target]`
 /// flips to the blocked marker (a non-vacuous success — the map write really happened).
 #[tokio::test]
-async fn block_by_blk_manager_holder_succeeds_and_writes_the_map() -> Result<()> {
+async fn block_by_block_lister_holder_succeeds_and_writes_the_map() -> Result<()> {
     let gm = policed_faucet()?;
     let faucet = faucet_account(&gm.harness);
     assert_eq!(
@@ -164,55 +164,61 @@ async fn block_by_blk_manager_holder_succeeds_and_writes_the_map() -> Result<()>
         "precondition: the target starts unblocked (empty initial blocklist)"
     );
 
-    let tx = run_block(&gm.harness.mock_chain, &faucet, blk_manager(), target(), 1)
+    let tx = run_block(&gm.harness.mock_chain, &faucet, block_lister(), target(), 1)
         .await
-        .expect("the BLK_MANAGER holder blocks the account");
+        .expect("the BLOCK_LISTER holder blocks the account");
     let mut evolved = faucet.clone();
     evolved.apply_patch(tx.account_patch())?;
     assert_eq!(
         read_blocked(&evolved, target())?,
         blocked_word(),
-        "after a BLK_MANAGER block, blocked_accounts[target] == [1,0,0,0]"
+        "after a BLOCK_LISTER block, blocked_accounts[target] == [1,0,0,0]"
     );
     Ok(())
 }
 
-/// The BLK_MANAGER holder can unblock an account: block then unblock, and the map returns to the
+/// The BLOCK_LISTER holder can unblock an account: block then unblock, and the map returns to the
 /// unblocked word.
 #[tokio::test]
-async fn unblock_by_blk_manager_holder_succeeds_and_clears_the_map() -> Result<()> {
+async fn unblock_by_block_lister_holder_succeeds_and_clears_the_map() -> Result<()> {
     let gm = policed_faucet()?;
     let faucet = faucet_account(&gm.harness);
 
-    let blocked = run_block(&gm.harness.mock_chain, &faucet, blk_manager(), target(), 1)
+    let blocked = run_block(&gm.harness.mock_chain, &faucet, block_lister(), target(), 1)
         .await
-        .expect("the BLK_MANAGER holder blocks the account");
+        .expect("the BLOCK_LISTER holder blocks the account");
     let mut evolved = faucet.clone();
     evolved.apply_patch(blocked.account_patch())?;
     assert_eq!(read_blocked(&evolved, target())?, blocked_word(), "blocked");
 
-    let unblocked = run_unblock(&gm.harness.mock_chain, &evolved, blk_manager(), target(), 2)
-        .await
-        .expect("the BLK_MANAGER holder unblocks the account");
+    let unblocked = run_unblock(
+        &gm.harness.mock_chain,
+        &evolved,
+        block_lister(),
+        target(),
+        2,
+    )
+    .await
+    .expect("the BLOCK_LISTER holder unblocks the account");
     evolved.apply_patch(unblocked.account_patch())?;
     assert_eq!(
         read_blocked(&evolved, target())?,
         unblocked_word(),
-        "after a BLK_MANAGER unblock, blocked_accounts[target] returns to [0,0,0,0]"
+        "after a BLOCK_LISTER unblock, blocked_accounts[target] returns to [0,0,0,0]"
     );
     Ok(())
 }
 
-/// The block gate is BLK_MANAGER-specific: a stranger, the OWNER (two-way capability isolation — the
+/// The block gate is BLOCK_LISTER-specific: a stranger, the OWNER (two-way capability isolation — the
 /// owner holds no block power), and a DIFFERENT role holder (DOM_MANAGER — spoof-proof, only the
-/// hard-coded BLK_MANAGER symbol passes) are ALL rejected with the EXACT stock role error, and the
+/// hard-coded BLOCK_LISTER symbol passes) are ALL rejected with the EXACT stock role error, and the
 /// map is unchanged.
 #[rstest]
 #[case::stranger(stranger())]
 #[case::owner(administrator())]
 #[case::dom_manager(dom_manager())]
 #[tokio::test]
-async fn block_by_non_blk_manager_is_rejected(#[case] sender: AccountId) -> Result<()> {
+async fn block_by_non_block_lister_is_rejected(#[case] sender: AccountId) -> Result<()> {
     let gm = policed_faucet()?;
     let faucet = faucet_account(&gm.harness);
 
@@ -226,7 +232,7 @@ async fn block_by_non_blk_manager_is_rejected(#[case] sender: AccountId) -> Resu
     Ok(())
 }
 
-/// The unblock gate is likewise BLK_MANAGER-specific (the security-critical direction: an ungated
+/// The unblock gate is likewise BLOCK_LISTER-specific (the security-critical direction: an ungated
 /// unblock would let anyone lift a compliance freeze). A stranger / owner / other-role holder is
 /// rejected with the EXACT role error while the account STAYS blocked.
 #[rstest]
@@ -234,14 +240,14 @@ async fn block_by_non_blk_manager_is_rejected(#[case] sender: AccountId) -> Resu
 #[case::owner(administrator())]
 #[case::dom_manager(dom_manager())]
 #[tokio::test]
-async fn unblock_by_non_blk_manager_is_rejected(#[case] sender: AccountId) -> Result<()> {
+async fn unblock_by_non_block_lister_is_rejected(#[case] sender: AccountId) -> Result<()> {
     let gm = policed_faucet()?;
     let faucet = faucet_account(&gm.harness);
 
-    // Arm the negative on a genuinely blocked account: a real BLK_MANAGER block first.
-    let blocked = run_block(&gm.harness.mock_chain, &faucet, blk_manager(), target(), 4)
+    // Arm the negative on a genuinely blocked account: a real BLOCK_LISTER block first.
+    let blocked = run_block(&gm.harness.mock_chain, &faucet, block_lister(), target(), 4)
         .await
-        .expect("the BLK_MANAGER holder blocks the account");
+        .expect("the BLOCK_LISTER holder blocks the account");
     let mut evolved = faucet.clone();
     evolved.apply_patch(blocked.account_patch())?;
 
@@ -255,36 +261,44 @@ async fn unblock_by_non_blk_manager_is_rejected(#[case] sender: AccountId) -> Re
     Ok(())
 }
 
-/// ROTATION with ZERO new machinery: the administrator (as the built-in `ADMIN`, `BLK_MANAGER`'s effective
-/// admin) revokes `BLK_MANAGER` from its holder via the EXISTING `revoke_role` note; the former
+/// ROTATION with ZERO new machinery: the administrator (as the built-in `ADMIN`, `BLOCK_LISTER`'s effective
+/// admin) revokes `BLOCK_LISTER` from its holder via the EXISTING `revoke_role` note; the former
 /// holder can then no longer block — the block is rejected with the EXACT role error.
 #[tokio::test]
-async fn former_blk_manager_holder_rejected_after_revoke() -> Result<()> {
+async fn former_block_lister_holder_rejected_after_revoke() -> Result<()> {
     let gm = policed_faucet()?;
     let faucet = faucet_account(&gm.harness);
-    let blk_role = RoleSymbol::new(BLK_MANAGER_ROLE).expect("BLK_MANAGER is a valid role symbol");
+    let block_lister_role =
+        RoleSymbol::new(BLOCK_LISTER_ROLE).expect("BLOCK_LISTER is a valid role symbol");
 
     // Precondition: the holder CAN block before the revoke.
-    run_block(&gm.harness.mock_chain, &faucet, blk_manager(), target(), 6)
+    run_block(&gm.harness.mock_chain, &faucet, block_lister(), target(), 6)
         .await
-        .expect("precondition: the BLK_MANAGER holder can block before revoke");
+        .expect("precondition: the BLOCK_LISTER holder can block before revoke");
 
-    // The administrator (ADMIN) revokes BLK_MANAGER from its holder via the existing revoke_role note.
+    // The administrator (ADMIN) revokes BLOCK_LISTER from its holder via the existing revoke_role note.
     let revoked = run_revoke_role_against(
         &gm.harness.mock_chain,
         &faucet,
         administrator(),
-        &blk_role,
-        blk_manager(),
+        &block_lister_role,
+        block_lister(),
         7,
     )
     .await
-    .expect("the administrator (ADMIN) revokes BLK_MANAGER via the standard role-action note");
+    .expect("the administrator (ADMIN) revokes BLOCK_LISTER via the standard role-action note");
     let mut evolved = faucet.clone();
     evolved.apply_patch(revoked.account_patch())?;
 
     // The former holder can no longer block.
-    let result = run_block(&gm.harness.mock_chain, &evolved, blk_manager(), target(), 8).await;
+    let result = run_block(
+        &gm.harness.mock_chain,
+        &evolved,
+        block_lister(),
+        target(),
+        8,
+    )
+    .await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
     Ok(())
 }

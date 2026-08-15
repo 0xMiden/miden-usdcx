@@ -23,8 +23,8 @@ use xusdc_encoding::account::xreserve::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError,
 };
 
-// The production builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3), BLK_MANAGER =
-// id(4). A BLK_MANAGER holder equal to id(1)/(2)/(3) collides with the administrator/DOM_PAUSER/DOM_MANAGER.
+// The production builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3), BLOCK_LISTER =
+// id(4). A BLOCK_LISTER holder equal to id(1)/(2)/(3) collides with the administrator/DOM_PAUSER/DOM_MANAGER.
 
 /// A blocklist manager that collides with any privileged identity is rejected at build time, with
 /// an error naming which one it collided with.
@@ -36,8 +36,8 @@ use xusdc_encoding::account::xreserve::{
 #[case::administrator(test_account_id(1), "ADMIN")]
 #[case::dom_pauser(test_account_id(2), "DOM_PAUSER")]
 #[case::dom_manager(test_account_id(3), "DOM_MANAGER")]
-fn build_rejects_blk_manager_colliding_with_a_privileged_role(
-    #[case] blk_manager: AccountId,
+fn build_rejects_block_lister_colliding_with_a_privileged_role(
+    #[case] block_lister: AccountId,
     #[case] expected_role: &str,
 ) -> Result<()> {
     let err = XReserveStablecoinBuilder::builder()
@@ -46,7 +46,7 @@ fn build_rejects_blk_manager_colliding_with_a_privileged_role(
         .owner(test_account_id(1))
         .pauser_holder(test_account_id(2))
         .manager_holder(test_account_id(3))
-        .blocklist_manager_holder(blk_manager)
+        .block_lister_holder(block_lister)
         .fee_faucet_id(test_fee_faucet_id())
         .fee_policy(test_fee_policy())
         .domain(TEST_DOMAIN)
@@ -55,7 +55,7 @@ fn build_rejects_blk_manager_colliding_with_a_privileged_role(
         .build()
         .context("the fixed-identity USDCx faucet builds")?
         .build_components()
-        .expect_err("a BLK_MANAGER holder colliding with a privileged role must be rejected");
+        .expect_err("a BLOCK_LISTER holder colliding with a privileged role must be rejected");
     match err {
         XReserveStablecoinBuilderError::BlocklistManagerNotIsolated { collides_with } => {
             assert_eq!(
@@ -68,17 +68,17 @@ fn build_rejects_blk_manager_colliding_with_a_privileged_role(
     Ok(())
 }
 
-/// POSITIVE: with the `BLK_MANAGER` holder DISTINCT from owner/DOM_PAUSER/DOM_MANAGER, the build
+/// POSITIVE: with the `BLOCK_LISTER` holder DISTINCT from owner/DOM_PAUSER/DOM_MANAGER, the build
 /// succeeds — the isolation guard does not reject a properly external administrator.
 #[test]
-fn build_accepts_isolated_blk_manager() -> Result<()> {
+fn build_accepts_isolated_block_lister() -> Result<()> {
     XReserveStablecoinBuilder::builder()
         .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
         .token_supply(AssetAmount::new(0).context("valid token supply")?)
         .owner(test_account_id(1))
         .pauser_holder(test_account_id(2))
         .manager_holder(test_account_id(3))
-        .blocklist_manager_holder(test_account_id(4)) // distinct external BLK_MANAGER
+        .block_lister_holder(test_account_id(4)) // distinct external BLOCK_LISTER
         .fee_faucet_id(test_fee_faucet_id())
         .fee_policy(test_fee_policy())
         .domain(TEST_DOMAIN)
@@ -87,6 +87,6 @@ fn build_accepts_isolated_blk_manager() -> Result<()> {
         .build()
         .context("the fixed-identity USDCx faucet builds")?
         .build_components()
-        .context("a properly isolated BLK_MANAGER holder must build")?;
+        .context("a properly isolated BLOCK_LISTER holder must build")?;
     Ok(())
 }

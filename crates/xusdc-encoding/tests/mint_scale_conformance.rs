@@ -93,8 +93,8 @@ fn administrator() -> AccountId {
     test_account_id(1)
 }
 
-/// The BLK_MANAGER holder seeded by the production builder (role id 4).
-fn blk_manager() -> AccountId {
+/// The BLOCK_LISTER holder seeded by the production builder (role id 4).
+fn block_lister() -> AccountId {
     test_account_id(4)
 }
 
@@ -512,7 +512,7 @@ async fn mint_to_a_blocked_recipient_succeeds_then_strands() -> anyhow::Result<(
     use miden_protocol::errors::MasmError;
     use miden_testing::assert_transaction_executor_error;
 
-    // A fixture that additionally seeds a BLK_MANAGER block note targeting the recipient; bring_up
+    // A fixture that additionally seeds a BLOCK_LISTER block note targeting the recipient; bring_up
     // consumes set_attester AND the block note (so the recipient is blocked pre-mint).
     let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
         let commitment = gen_attester(
@@ -529,8 +529,8 @@ async fn mint_to_a_blocked_recipient_succeeds_then_strands() -> anyhow::Result<(
                 &mut note_rng(962),
             )
             .expect("building the administrator set_attester note"),
-            stock_block_note(blk_manager(), faucet_id, recipient, 963)
-                .expect("building the BLK_MANAGER block note targeting the recipient"),
+            stock_block_note(block_lister(), faucet_id, recipient, 963)
+                .expect("building the BLOCK_LISTER block note targeting the recipient"),
         ]
     })?;
     bring_up(&mut pf).await?;

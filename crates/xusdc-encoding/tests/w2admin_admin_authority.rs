@@ -138,7 +138,7 @@ fn the_mapped_roles_are_the_roles_the_current_wrappers_hard_code() {
     );
     assert_eq!(
         Felt::from(&blocklist_symbol()).as_canonical_u64(),
-        BLK_MANAGER_ROLE_FELT,
+        BLOCK_LISTER_ROLE_FELT,
         "the blocklist role symbol must encode to the felt blocklist_admin.masm hard-codes"
     );
 }

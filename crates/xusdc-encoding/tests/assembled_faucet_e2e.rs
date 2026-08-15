@@ -66,7 +66,7 @@ use xusdc_encoding::xreserve::encoding::{
 };
 
 // ACTORS (the builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3),
-// BLK_MANAGER = id(4); id(5) is the unseeded rotation candidate)
+// BLOCK_LISTER = id(4); id(5) is the unseeded rotation candidate)
 // ================================================================================================
 
 fn administrator() -> AccountId {

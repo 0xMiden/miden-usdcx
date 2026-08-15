@@ -345,7 +345,7 @@ async fn a_standard_note_pause_halts_a_real_mint_and_the_unpause_resumes_it() ->
 
 /// The blocklist-role holder blocks a target through the faucet's factory over the standard note.
 #[tokio::test]
-async fn the_blocklist_manager_blocks_a_target_through_the_standard_note() -> Result<()> {
+async fn the_block_lister_blocks_a_target_through_the_standard_note() -> Result<()> {
     let target = stranger();
     let mut pf = admin_faucet(|id| {
         vec![
@@ -372,7 +372,7 @@ async fn the_blocklist_manager_blocks_a_target_through_the_standard_note() -> Re
 
 /// And unblocks it again.
 #[tokio::test]
-async fn the_blocklist_manager_unblocks_a_target_through_the_standard_note() -> Result<()> {
+async fn the_block_lister_unblocks_a_target_through_the_standard_note() -> Result<()> {
     let target = stranger();
     let mut pf = admin_faucet(|id| {
         vec![
@@ -474,7 +474,7 @@ async fn the_pauser_cannot_block() -> Result<()> {
 
 /// Holding the blocklist role grants no pause capability.
 #[tokio::test]
-async fn the_blocklist_manager_cannot_pause() -> Result<()> {
+async fn the_block_lister_cannot_pause() -> Result<()> {
     let pf = admin_faucet(|id| {
         vec![pause_action_note(blocklist_holder(), id, PauseConfig::Pause, 8).expect("pause note")]
     })?;

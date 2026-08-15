@@ -82,7 +82,7 @@ fn build_with_fee_policy(
         .owner(test_account_id(1))
         .pauser_holder(test_account_id(2))
         .manager_holder(test_account_id(3))
-        .blocklist_manager_holder(test_account_id(4))
+        .block_lister_holder(test_account_id(4))
         .fee_faucet_id(fee_faucet_id())
         .fee_policy(policy)
         .domain(TEST_DOMAIN)

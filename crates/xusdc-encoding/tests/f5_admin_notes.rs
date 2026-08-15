@@ -37,7 +37,7 @@ use miden_standards::note::{RbacConfig, RbacConfigNote};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
 use xusdc_encoding::account::xreserve::{
-    XReserveFaucetExtension, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveFaucetExtension, BLOCK_LISTER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::note::xreserve_admin::{
     XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
@@ -59,8 +59,8 @@ fn manager_sym() -> RoleSymbol {
     RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol")
 }
 
-fn blk_manager_sym() -> RoleSymbol {
-    RoleSymbol::new(BLK_MANAGER_ROLE).expect("BLK_MANAGER is a fixed valid role symbol")
+fn block_lister_sym() -> RoleSymbol {
+    RoleSymbol::new(BLOCK_LISTER_ROLE).expect("BLOCK_LISTER is a fixed valid role symbol")
 }
 
 /// The exact stock error the membership assertion raises when a role is cleared for an account
@@ -1029,7 +1029,7 @@ async fn set_role_admin_dom_manager_authorized() -> Result<()> {
         faucet_id,
         RbacConfig::SetRoleAdmin {
             role: pauser_sym(),
-            admin_role: Some(blk_manager_sym()),
+            admin_role: Some(block_lister_sym()),
         },
         &mut note_rng(150),
     )
@@ -1052,7 +1052,7 @@ async fn set_role_admin_dom_manager_authorized() -> Result<()> {
     let after = read_role_config(&evolved, &pauser_sym())?;
     assert_eq!(
         after[1],
-        Felt::from(&blk_manager_sym()),
+        Felt::from(&block_lister_sym()),
         "the delegated admin must be able to re-point the role it administers",
     );
     assert_eq!(

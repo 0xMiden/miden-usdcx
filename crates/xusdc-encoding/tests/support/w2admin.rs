@@ -33,7 +33,7 @@ use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
-    XReserveAdminAuthority, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveAdminAuthority, BLOCK_LISTER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::note::xreserve_admin::XReserveBlocklistNote;
 
@@ -50,13 +50,13 @@ pub const PRODUCTION_ALLOWLIST_ROOTS: usize = 10;
 /// a literal rather than read from a file that no longer exists.
 pub const DOM_PAUSER_ROLE_FELT: u64 = 728_098_706_988_649;
 
-/// The `BLK_MANAGER` role symbol felt the retired `blocklist_admin.masm` hard-coded.
-pub const BLK_MANAGER_ROLE_FELT: u64 = 7_907_587_873_290_749;
+/// The `BLOCK_LISTER` role symbol felt the retired `blocklist_admin.masm` hard-coded.
+pub const BLOCK_LISTER_ROLE_FELT: u64 = 214_145_129_224_312_959;
 
 // ROLE HOLDERS
 // ================================================================================================
 // The production builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3),
-// BLK_MANAGER = id(4). The grounding account seeds the same identities so both suites read alike.
+// BLOCK_LISTER = id(4). The grounding account seeds the same identities so both suites read alike.
 
 /// The bootstrap administrator — the sole member of the built-in `ADMIN` role, which is the
 /// faucet's only authority handle.
@@ -85,7 +85,7 @@ pub fn pauser_symbol() -> RoleSymbol {
 }
 
 pub fn blocklist_symbol() -> RoleSymbol {
-    RoleSymbol::new(BLK_MANAGER_ROLE).expect("the blocklist administrator role symbol is valid")
+    RoleSymbol::new(BLOCK_LISTER_ROLE).expect("the blocklist administrator role symbol is valid")
 }
 
 /// The Domain manager role symbol — the seeded administrator of the Domain pauser role, and so the

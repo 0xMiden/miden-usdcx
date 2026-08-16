@@ -433,9 +433,7 @@ async fn the_owner_still_has_no_unpause_path() -> Result<()> {
 #[tokio::test]
 async fn the_owner_still_has_no_blocklist_path() -> Result<()> {
     let pf = admin_faucet(|id| {
-        vec![
-            stock_block_note(admin_holder(), id, stranger(), 14).expect("block note"),
-        ]
+        vec![stock_block_note(admin_holder(), id, stranger(), 14).expect("block note")]
     })?;
     let note = pf.seeded_notes[0].clone();
 
@@ -455,9 +453,7 @@ async fn the_owner_still_has_no_blocklist_path() -> Result<()> {
 #[tokio::test]
 async fn the_pauser_cannot_block() -> Result<()> {
     let pf = admin_faucet(|id| {
-        vec![
-            stock_block_note(pauser_holder(), id, stranger(), 15).expect("block note"),
-        ]
+        vec![stock_block_note(pauser_holder(), id, stranger(), 15).expect("block note")]
     })?;
     let result = consume(&pf, &pf.seeded_notes[0].clone()).await;
     miden_testing::assert_transaction_executor_error!(result, err_sender_lacks_role());

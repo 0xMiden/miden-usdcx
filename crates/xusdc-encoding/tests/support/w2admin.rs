@@ -13,6 +13,7 @@
 
 use std::collections::BTreeSet;
 
+use super::{add_faucet_account, setup_production_faucet, test_account_id, ProductionFaucet};
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::component::AccountComponentMetadata;
@@ -35,7 +36,6 @@ use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
-use super::{add_faucet_account, setup_production_faucet, test_account_id, ProductionFaucet};
 
 // PRODUCTION CONSTANTS
 // ================================================================================================

@@ -29,12 +29,12 @@ const TOKEN_SUPPLY: u64 = 0;
 // Account commitments for the production composition at SEED. The fixed seed makes both
 // construction paths deterministic.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([12484811819935769545, 1937011634930053354, 7276953461194054844, 15242811964295575105])";
+    "Word([172904876531094406, 10830491093761184242, 15865600995214218205, 15877941183123954939])";
 const GOLDEN_CODE_COMMITMENT: &str =
     "Word([17351782492508381613, 8816109290290102646, 13490910957342147869, 14407050198877650490])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([16049364374224345882, 6897647281838938945, 13588444763766540513, 4630196969274343378])";
-const GOLDEN_ACCOUNT_ID: &str = "0x76d9957df7a7677151440c2a0f2da2";
+    "Word([15891559341600106839, 16090395229243659578, 6335246612077206617, 17338652529675975572])";
+const GOLDEN_ACCOUNT_ID: &str = "0x1223cefb4519fa715815100f3eaa95";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.
@@ -93,7 +93,7 @@ fn account_via_component_path() -> Account {
         builder = builder.with_component(component);
     }
     builder = builder.with_components(
-        XReserveStablecoinBuilder::auth_component(test_fee_faucet_id(), test_fee_policy())
+        XReserveStablecoinBuilder::auth_component(test_fee_parameters())
             .expect("the auth component must build"),
     );
     builder
@@ -112,8 +112,7 @@ fn account_via_crate_root_constructor() -> Account {
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
-        test_fee_faucet_id(),
-        test_fee_policy(),
+        test_fee_parameters(),
         TEST_DOMAIN,
         TEST_SOURCE_DOMAIN,
         test_xreserve_contract(),

@@ -44,7 +44,7 @@ fn production_components() -> Result<Vec<AccountComponent>> {
     let mut components =
         production_component_set(MAX_SUPPLY, 0).context("the production composition must build")?;
     components.extend(
-        XReserveStablecoinBuilder::auth_component(test_fee_faucet_id(), test_fee_policy())
+        XReserveStablecoinBuilder::auth_component(test_fee_parameters())
             .context("the production auth component must build")?,
     );
     Ok(components)
@@ -247,7 +247,7 @@ fn fee_and_mutator_procedures_are_not_admissible_via_either_allowlist() -> Resul
     // the production auth component's materialized tx-script allowlist keys (non-empty values
     // mark membership, matching the MASM `word::eqz` check — the s12 view).
     let auth_component: AccountComponent =
-        XReserveStablecoinBuilder::auth_component(test_fee_faucet_id(), test_fee_policy())
+        XReserveStablecoinBuilder::auth_component(test_fee_parameters())
             .map_err(|e| anyhow::anyhow!("auth_component() must build: {e}"))?
             .into_iter()
             .next()

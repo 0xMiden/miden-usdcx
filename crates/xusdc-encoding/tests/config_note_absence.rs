@@ -80,7 +80,7 @@ fn builder_allowlist_exposes_only_the_fee_config_surface() {
 #[test]
 fn auth_component_materializes_the_exact_fee_enabled_allowlist() -> Result<()> {
     let component: AccountComponent =
-        XReserveStablecoinBuilder::auth_component(test_fee_faucet_id(), test_fee_policy())
+        XReserveStablecoinBuilder::auth_component(test_fee_parameters())
             .map_err(|e| anyhow::anyhow!("auth_component() must build: {e}"))?
             .into_iter()
             .next()

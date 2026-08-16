@@ -14,6 +14,7 @@ description = "xUSDC-on-Miden 04 shared encoding: hand-written MASM + Rust mirro
 [dependencies]
 miden-protocol  = { version = "=0.16.0-rc.4", features = ["testing"] }
 miden-standards = { version = "=0.16.0-rc.4" }
+miden-tx        = { version = "=0.16.0-rc.4" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # bon powers the note-factory builders and the dedicated note-storage types (the standards
@@ -67,7 +68,6 @@ required-features = ["vectors"]
 xusdc-encoding  = { path = ".", features = ["testing"] }
 miden-standards = { version = "=0.16.0-rc.4", features = ["testing"] }
 miden-testing   = { version = "=0.16.0-rc.4" }
-miden-tx        = { version = "=0.16.0-rc.4" }
 # exact-error matching for u32-assert traps (OperationError::U32AssertionFailed); 0.29 is the
 # version the rc.4 protocol graph resolves — the pin moves in lockstep with the protocol family so
 # exactly one processor copy exists and the error downcasts unify

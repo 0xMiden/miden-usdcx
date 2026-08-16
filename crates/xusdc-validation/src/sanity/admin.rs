@@ -8,12 +8,17 @@
 
 use anyhow::{Context, Result};
 use miden_protocol::account::AccountId;
+use miden_protocol::asset::AssetAmount;
+use miden_protocol::crypto::rand::FeltRng;
+use miden_protocol::note::Note;
 use miden_protocol::Word;
+use miden_standards::note::{
+    FaucetMetadataConfig, FaucetMetadataConfigNote, MinBurnAmountConfigNote,
+};
 
 use xusdc_encoding::note::xreserve_admin::{
     XReserveAcceptOwnershipNote, XReservePauseNote, XReserveSetAttesterNote,
-    XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote, XReserveTransferOwnershipNote,
-    XReserveUnpauseNote,
+    XReserveTransferOwnershipNote, XReserveUnpauseNote,
 };
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 
@@ -36,6 +41,40 @@ const SALT_ENFORCE_CAP: u8 = 0xB2;
 
 /// The stock `fungible::set_max_supply` guard: a new cap below the current token supply rejects.
 const ERR_MAX_SUPPLY_BELOW_SUPPLY: &str = "new max supply is less than current token supply";
+
+pub(super) fn max_supply_config_note(
+    sender: AccountId,
+    faucet_id: AccountId,
+    max_supply: u64,
+    rng: &mut impl FeltRng,
+) -> Result<Note> {
+    let note = FaucetMetadataConfigNote::builder()
+        .sender(sender)
+        .target(faucet_id)
+        .config(FaucetMetadataConfig::SetMaxSupply {
+            max_supply: AssetAmount::new(max_supply).context("invalid maximum supply")?,
+        })
+        .generate_serial_number(rng)
+        .build()
+        .context("building the maximum-supply configuration note")?;
+    Ok(Note::from(note))
+}
+
+pub(super) fn min_burn_config_note(
+    sender: AccountId,
+    faucet_id: AccountId,
+    min_burn_amount: u64,
+    rng: &mut impl FeltRng,
+) -> Result<Note> {
+    let note = MinBurnAmountConfigNote::builder()
+        .sender(sender)
+        .target(faucet_id)
+        .min_burn_amount(AssetAmount::new(min_burn_amount).context("invalid minimum burn amount")?)
+        .generate_serial_number(rng)
+        .build()
+        .context("building the minimum-burn configuration note")?;
+    Ok(Note::from(note))
+}
 
 // ATTESTER ALLOWLIST HELPERS
 // ================================================================================================
@@ -275,13 +314,8 @@ async fn admin_checks(
     );
 
     // ── SET_MIN_BURN_SIZE: raise → below-min rejected; lower → at/above-min ACCEPTED ──
-    let raise = XReserveSetMinBurnSizeNote::create(
-        owner_id,
-        d.faucet_id,
-        RAISED_MIN_BURN,
-        d.hc.client.rng(),
-    )
-    .context("set_min_burn_size(raise) note")?;
+    let raise = min_burn_config_note(owner_id, d.faucet_id, RAISED_MIN_BURN, d.hc.client.rng())
+        .context("set_min_burn_size(raise) note")?;
     d.commit_via_ntx(owner_id, raise, "set_min_burn_size(raise)", |a| {
         min_burn(a).map(|m| m == RAISED_MIN_BURN).unwrap_or(false)
     })
@@ -308,13 +342,8 @@ async fn admin_checks(
         ERR_BURN_BELOW_MIN,
     );
 
-    let lower = XReserveSetMinBurnSizeNote::create(
-        owner_id,
-        d.faucet_id,
-        LOWERED_MIN_BURN,
-        d.hc.client.rng(),
-    )
-    .context("set_min_burn_size(lower) note")?;
+    let lower = min_burn_config_note(owner_id, d.faucet_id, LOWERED_MIN_BURN, d.hc.client.rng())
+        .context("set_min_burn_size(lower) note")?;
     d.commit_via_ntx(owner_id, lower, "set_min_burn_size(lower)", |a| {
         min_burn(a).map(|m| m == LOWERED_MIN_BURN).unwrap_or(false)
     })
@@ -343,13 +372,9 @@ async fn admin_checks(
     .context("the at/above-min post-unpause burn")?;
 
     // ── SET_MAX_SUPPLY: mutate + read back → ENFORCE tightened cap → REJECT below-current-supply ──
-    let setcap = XReserveSetMaxSupplyNote::create(
-        owner_id,
-        d.faucet_id,
-        RAISED_MAX_SUPPLY,
-        d.hc.client.rng(),
-    )
-    .context("set_max_supply(raise) note")?;
+    let setcap =
+        max_supply_config_note(owner_id, d.faucet_id, RAISED_MAX_SUPPLY, d.hc.client.rng())
+            .context("set_max_supply(raise) note")?;
     let acct = d
         .commit_via_ntx(owner_id, setcap, "set_max_supply(raise)", |a| {
             max_supply(a)
@@ -370,9 +395,8 @@ async fn admin_checks(
     // rejected — the mutated cap is honored by the mint gate, not merely stored.
     let supply_now = token_supply(&d.fetch_faucet().await?)?;
     let tight_cap = supply_now + BURN_UNITS;
-    let tighten =
-        XReserveSetMaxSupplyNote::create(owner_id, d.faucet_id, tight_cap, d.hc.client.rng())
-            .context("set_max_supply(tighten) note")?;
+    let tighten = max_supply_config_note(owner_id, d.faucet_id, tight_cap, d.hc.client.rng())
+        .context("set_max_supply(tighten) note")?;
     d.commit_via_ntx(owner_id, tighten, "set_max_supply(tighten)", move |a| {
         max_supply(a).map(|m| m == tight_cap).unwrap_or(false)
     })
@@ -402,7 +426,7 @@ async fn admin_checks(
     // REJECTED by the stock proc (ERR_NEW_MAX_SUPPLY_BELOW_TOKEN_SUPPLY). The tightened cap
     // (supply + BURN_UNITS) is already ≥ supply, so no intermediate restore is needed here.
     let supply_guard = token_supply(&d.fetch_faucet().await?)?;
-    let below = XReserveSetMaxSupplyNote::create(
+    let below = max_supply_config_note(
         owner_id,
         d.faucet_id,
         supply_guard.saturating_sub(1),

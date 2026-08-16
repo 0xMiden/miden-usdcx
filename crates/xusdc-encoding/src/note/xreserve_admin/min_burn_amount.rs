@@ -7,16 +7,13 @@
 //! the standard [`MinBurnAmountConfigNote`] supplies the script, its root, and the builder
 //! directly, and the allowlist and callable-surface checks use it as-is.
 //!
-//! What is faucet-specific is which notes are worth creating. The faucet seeds its burn floor at
+//! What is faucet-specific is which notes can be created. The faucet seeds its burn floor at
 //! least [`MIN_BURN_SIZE_FLOOR`] and the builder rejects anything lower, but the standard setter
 //! validates nothing about its value — a zero floor would admit zero-amount burn notes. So
 //! [`XReserveMinBurnAmountNote::create`] refuses to build such a note in the first place — the one
 //! guard the standard note cannot express.
 //!
-//! That refusal is a guard against operator error, not an authorization boundary. The
-//! administrator holds the role and can assemble the standard note directly, past this guard —
-//! recovery in that case is another min-burn note carrying a floor at or above
-//! [`MIN_BURN_SIZE_FLOOR`].
+//! That refusal is a guard against operator error, not an authorization boundary.
 
 use core::fmt;
 
@@ -75,12 +72,12 @@ impl From<NoteError> for XReserveMinBurnAmountNoteError {
 pub struct XReserveMinBurnAmountNote;
 
 impl XReserveMinBurnAmountNote {
-    /// The STOCK standards min-burn-amount config note script.
+    /// The `miden-standards` min-burn-amount config note script.
     pub fn script() -> NoteScript {
         MinBurnAmountConfigNote::script()
     }
 
-    /// The STOCK standards min-burn-amount config note script root.
+    /// The `miden-standards` min-burn-amount config note script root.
     pub fn script_root() -> NoteScriptRoot {
         MinBurnAmountConfigNote::script_root()
     }
@@ -91,7 +88,9 @@ impl XReserveMinBurnAmountNote {
     /// # Errors
     ///
     /// Returns [`XReserveMinBurnAmountNoteError::BelowFloorRejected`] if `min_burn_amount` is
-    /// below [`MIN_BURN_SIZE_FLOOR`]: a zero floor would admit zero-amount burn notes. Returns
+    /// below [`MIN_BURN_SIZE_FLOOR`]: a zero floor would admit zero-amount burn notes. The
+    /// refusal is a construction-time gate only — on chain the note runs the unmodified
+    /// `miden-standards` script, which does not validate the value. Returns
     /// [`XReserveMinBurnAmountNoteError::Note`] if the standard note cannot be assembled.
     pub fn create<R: FeltRng>(
         sender: AccountId,

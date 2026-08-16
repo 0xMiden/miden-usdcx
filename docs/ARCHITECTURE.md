@@ -37,7 +37,7 @@ That is not, by itself, a proof of one-to-one external backing. Local conservati
 
 The faucet is a public network account with no signing key. Its outer external capability boundary is a fixed allowlist of note-script roots plus one transaction-script root (the `miden-standards` expiration script); inner boundaries are RBAC, Authority, the active policy roots, transfer callbacks, mint cryptography, and internal authentication and fee dispatch. A root commits to complete code, but admitting one branching root admits every action that script implements. Permissionless submission does not imply permissionless code execution.
 
-Standard configuration mutators (metadata setters, policy setters, freeze/unfreeze, allowlist mutators) are installed by the stock components but deliberately have no admitted entry path because their roots are absent from the note allowlist.
+Standard configuration mutators (metadata setters, policy setters, freeze/unfreeze, allowlist mutators) are installed by the `miden-standards` components but deliberately have no admitted entry path because their roots are absent from the note allowlist.
 
 Two properties are load-bearing:
 
@@ -46,7 +46,7 @@ Two properties are load-bearing:
 
 ## 4. The faucet: composition and state
 
-The account is composed from the stock components (`FungibleFaucet`, `Pausable`, `MinBurnAmount`, `BasicBlocklist`, `TokenPolicyManager`, `PausableManager`, `BlocklistManager`, `RoleBasedAccessControl`, `Authority`, network-account authentication with its fee-policy companion, and a `ConstantFeeManager`) plus one local `xreserve` component contributing the attester-commitment map, the used-nonce map, and the domain configuration. The local MASM contributes two account procedures: the attester setter and the mint policy.
+The account is composed from the `miden-standards` components (`FungibleFaucet`, `Pausable`, `MinBurnAmount`, `BasicBlocklist`, `TokenPolicyManager`, `PausableManager`, `BlocklistManager`, `RoleBasedAccessControl`, `Authority`, network-account authentication with its fee-policy companion, and a `ConstantFeeManager`) plus one local `xreserve` component contributing the attester-commitment map, the used-nonce map, and the domain configuration. The local MASM contributes two account procedures: the attester setter and the mint policy.
 
 State, grouped by writer posture:
 
@@ -62,7 +62,7 @@ Rust factories and codecs reject malformed inputs early and create the intended 
 
 1. Network-account authentication requires the mint note's script root to be admitted.
 2. The mint policy requires exactly one mint transport attachment and one routing attachment, obtained through the protocol API that verifies attachment bytes against their commitment.
-3. Pause state and the faucet-asset binding sit in the stock layer around the policy rather than in the policy itself: `policy_manager::execute_mint_policy` asserts the account is not paused and then dispatches the mint policy root recorded in storage, and stock `mint_and_send` asserts the note's asset is this faucet's own after the policy returns.
+3. Pause state and the faucet-asset binding sit in the `miden-standards` layer around the policy rather than in the policy itself: `policy_manager::execute_mint_policy` asserts the account is not paused and then dispatches the mint policy root recorded in storage, and the `miden-standards` `mint_and_send` asserts the note's asset is this faucet's own after the policy returns.
 4. The asset amount must be nonzero and representable; the same amount is inserted into the reconstructed signed bytes and later supplied to protocol mint accounting.
 5. The note only carries a compressed intent, and the full signed intent (= message) is reconstructed from constants, onchain faucet account state, the active asset, and the compressed intent.
 6. The policy hashes the deposit intent (= message) with Keccak-256, derives a Poseidon2 commitment from the presented secp256k1 key, requires that commitment to be enabled in the attester map, and verifies the signature over the reconstructed message.
@@ -77,12 +77,12 @@ Semantics worth stating plainly:
 
 ## 6. Burn and redemption path
 
-The burn note factory builds a public note carrying the stock `BurnNote` script, one USDCx asset in the note's storage (the stock script requires storage to hold exactly the burned asset), a fixed use-case tag, and the Circle withdrawal payload (amount, destination domain, destination recipient, salt) as a **committed attachment**. Consumed against the faucet, the stock path receives the asset, runs the burn and transfer policies (minimum-burn floor, pause, blocklist callbacks), destroys the asset, and decrements `token_supply` by the asset amount.
+The burn note factory builds a public note carrying the `miden-standards` `BurnNote` script, one USDCx asset in the note's storage (the script requires storage to hold exactly the burned asset), a fixed use-case tag, and the Circle withdrawal payload (amount, destination domain, destination recipient, salt) as a **committed attachment**. Consumed against the faucet, the `miden-standards` path receives the asset, runs the burn and transfer policies (minimum-burn floor, pause, blocklist callbacks), destroys the asset, and decrements `token_supply` by the asset amount.
 
 The attachment design has a property reviewers must not miss: **the consume script never reads attachments, so the withdrawal payload is not verified on-chain.** It is tamper-evident, because the note identifier commits to the note's attachments, but nothing on-chain checks its content. Consequences:
 
 - **Attachment payload-amount binding is off-chain work.** The chain burns and debits exactly the note's asset amount; the attachment's declared amount is unread. A hand-built note can declare a payload amount that differs from the asset it burns, or use a different tag. The withdrawal attester must therefore validate the attachment payload against the actually burned asset before signing, and Circle's confirmation that payload-equals-asset is required before authorization is one of our open questions to them.
-- **Attachment presence is not guaranteed.** The stock burn script does not require the withdrawal attachment, so a burn note without it, or with a malformed one, still burns on-chain. Discovery and verification must handle such notes rather than assume the attachment exists.
+- **Attachment presence is not guaranteed.** The `BurnNote` script does not require the withdrawal attachment, so a burn note without it, or with a malformed one, still burns on-chain. Discovery and verification must handle such notes rather than assume the attachment exists.
 - **Lifecycle is not staged.** A note can be created and consumed in the same block; the test suite demonstrates that supply then decreases while the note, its commitment, and its nullifier are absent from the discoverable record. A public note is not automatically a durable event-log equivalent. External release needs authenticated inclusion or state paths, the actual burned asset and amount, and an explicit finality rule.
 
 No onchain contract code reads the encoded destination domain, recipient, or salt; those bytes are inputs to the external processing of the withdrawal data.
@@ -116,7 +116,7 @@ flowchart TD
 
 Only the pause pair and the blocklist pair are individually role-gated; everything else Authority-gated falls back to `ADMIN`. `ADMIN` reaches every role: it administers `DOM_MANAGER` and `BLOCK_LISTER` directly and `DOM_PAUSER` in two hops by granting itself `DOM_MANAGER`. This mirrors the single all-powerful owner in Circle's reference token; the role split below `ADMIN` is operational hygiene, not a boundary against a compromised `ADMIN`. The mitigation for `ADMIN` compromise is custody (a multisig holding it), not code.
 
-What the RBAC deliberately lacks, and reviewers should treat as designed-in risk: the stock RBAC root admits grant, revoke, change-role-admin, and self-renounce at runtime, with no two-step handover, no last-admin guard, no timelock, and no prohibition on cycles, overlapping memberships, or emptying a role (including `ADMIN` itself).
+What the RBAC deliberately lacks, and reviewers should treat as designed-in risk: the `miden-standards` RBAC root admits grant, revoke, change-role-admin, and self-renounce at runtime, with no two-step handover, no last-admin guard, no timelock, and no prohibition on cycles, overlapping memberships, or emptying a role (including `ADMIN` itself).
 
 Administrative notes are target-bound: the local set-attester note enforces a consume gate against its `NetworkAccountTarget` attachment, and all the `miden-standards` configuration notes carry the same target binding.
 

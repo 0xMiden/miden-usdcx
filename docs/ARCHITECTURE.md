@@ -2,9 +2,7 @@
 
 ## 1. Scope and state
 
-The audit targets a **tagged commit on the `main` branch** of `0xMiden/miden-usdcx`. The audited surface is the on-chain USDCx faucet: the `crates/xusdc-encoding` crate, containing the Miden Assembly (under its `asm/` tree) together with the account builder, note factories, codecs, and their tests. The two off-chain services (deposit relayer, withdrawal attester) are outside the audit scope; they appear here as external actors together with the assumptions the account leaves to them.
-
-This document describes the repository at the audited tag. Where a detail is still in flight it is flagged.
+The audited surface is the on-chain USDCx faucet of `0xMiden/miden-usdcx`: the `crates/xusdc-encoding` crate, containing the Miden Assembly (under its `asm/` tree) together with the account builder, note factories, codecs, and their tests. The two off-chain services (deposit relayer, withdrawal attester) are outside the audit scope; they appear here as external actors together with the assumptions the account leaves to them. Where a detail is still in flight it is flagged.
 
 ## 2. What the system does
 

@@ -26,9 +26,7 @@ use miden_testing::assert_transaction_executor_error;
 use support::w2admin::*;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -119,20 +117,10 @@ async fn every_remaining_admin_note_still_lands() -> Result<()> {
                 &mut note_rng(501),
             )
             .expect("the set_attester note builds"),
-            XReserveSetMaxSupplyNote::create(
-                admin_holder(),
-                faucet_id,
-                new_max_supply,
-                &mut note_rng(502),
-            )
-            .expect("the set_max_supply note builds"),
-            XReserveSetMinBurnSizeNote::create(
-                admin_holder(),
-                faucet_id,
-                new_min_burn,
-                &mut note_rng(503),
-            )
-            .expect("the set_min_burn_size note builds"),
+            stock_set_max_supply_note(admin_holder(), faucet_id, new_max_supply, 502)
+                .expect("the set_max_supply note builds"),
+            stock_min_burn_note(admin_holder(), faucet_id, new_min_burn, 503)
+                .expect("the min-burn note builds"),
             stock_pause_note(pauser_holder(), faucet_id, 504).expect("the pause note builds"),
             stock_block_note(blocklist_holder(), faucet_id, stranger(), 505)
                 .expect("the block note builds"),
@@ -156,7 +144,7 @@ async fn every_remaining_admin_note_still_lands() -> Result<()> {
         "the supply cap setter must still land"
     );
 
-    let after = consume_and_commit(&mut pf, &notes[2], "set_min_burn_size").await?;
+    let after = consume_and_commit(&mut pf, &notes[2], "min_burn").await?;
     assert_eq!(
         read_min_burn_size(&after)?[0],
         Felt::try_from(new_min_burn).expect("the new burn floor is a valid felt"),

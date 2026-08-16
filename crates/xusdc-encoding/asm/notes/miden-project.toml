@@ -1,5 +1,5 @@
 [workspace]
-members = ["set_attester", "set_max_supply", "set_min_burn_size"]
+members = ["set_attester"]
 
 [workspace.package]
 version = "0.1.0"

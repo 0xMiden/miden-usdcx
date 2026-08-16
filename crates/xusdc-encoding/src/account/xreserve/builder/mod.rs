@@ -91,10 +91,9 @@ pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str =
 
 /// The smallest admissible `min_burn_amount` (the zero floor). The stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) policy
 /// asserts `min <= amount` ONLY (its authority-gated stock setter even accepts `0`), so the
-/// zero-burn reject is preserved structurally: the builder rejects a floor below
-/// this at construction, and the reworked `set_min_burn_size` admin note asserts `new_min >= 1`
-/// BEFORE calling the stock setter — together the floor is `>= 1` at all times, which makes a
-/// zero-amount burn (`0 < min`) unacceptable on every path.
+/// zero-burn reject is enforced at note-building time: the builder rejects a floor below this at
+/// construction, and the [`XReserveMinBurnAmountNote`](crate::note::xreserve_admin::XReserveMinBurnAmountNote)
+/// factory refuses a sub-floor value before assembling the standard config note.
 pub const MIN_BURN_SIZE_FLOOR: u64 = 1;
 
 /// The shipped on-chain `TokenSymbol` guard constant (token config). The token's identity is

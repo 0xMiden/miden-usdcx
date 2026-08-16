@@ -40,8 +40,8 @@ pub enum XReserveStablecoinBuilderError {
     /// The requested `min_burn_amount` is below [`MIN_BURN_SIZE_FLOOR`]
     /// (= 1). The stock `MinBurnAmount` policy asserts only `min <= amount` and its stock setter
     /// accepts `0`, so a sub-floor seed would silently allow zero-amount burns;
-    /// rejected at construction (the runtime twin is the `set_min_burn_size` note's floor assert).
-    /// Carries the offending value.
+    /// rejected at construction (the post-deploy twin is the `XReserveMinBurnAmountNote`
+    /// factory's floor refusal). Carries the offending value.
     MinBurnSizeBelowFloor(u64),
     /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with a privileged
     /// identity — the administrator, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The

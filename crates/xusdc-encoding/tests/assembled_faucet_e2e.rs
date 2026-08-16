@@ -7,7 +7,7 @@
 //! on ONE evolving MockChain. The stages, in the order the S-labels below number them:
 //!
 //! - S0 the build-seeded config read-backs;
-//! - S3 admin bring-up: attester, max_supply, min_burn, and the min-burn zero-floor guard, each
+//! - S3 admin bring-up: attester, max_supply, and min_burn, each
 //!   with its non-administrator reject;
 //! - S4-S6 a REAL attested mint through the STOCK `MintNote` transport (the `XUsdcMintNote`
 //!   factory: the merged scheme-4 transport + scheme-2 routing), then the nonce replay
@@ -52,9 +52,7 @@ use support::*;
 use xusdc_encoding::account::xreserve::{
     XReserveFaucetExtension, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_burn::{
     XReserveBurnNote, FIXED_XUSDC_BURN_TAG, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
 };
@@ -370,42 +368,29 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
             )
             .expect("building the seeded attester-owner note"),
             // 2: S3b stranger set_max_supply (reject)
-            XReserveSetMaxSupplyNote::create(stranger(), route, NEW_MAX_SUPPLY, &mut note_rng(915))
+            stock_set_max_supply_note(stranger(), route, NEW_MAX_SUPPLY, 915)
                 .expect("building the seeded max-stranger note"),
             // 3: S3b owner set_max_supply
-            XReserveSetMaxSupplyNote::create(
-                administrator(),
-                route,
-                NEW_MAX_SUPPLY,
-                &mut note_rng(916),
-            )
-            .expect("building the seeded max-owner note"),
-            // 4: S3c stranger set_min_burn_size (reject)
-            XReserveSetMinBurnSizeNote::create(stranger(), route, MIN_BURN, &mut note_rng(917))
+            stock_set_max_supply_note(administrator(), route, NEW_MAX_SUPPLY, 916)
+                .expect("building the seeded max-owner note"),
+            // 4: S3c stranger min-burn (reject)
+            stock_min_burn_note(stranger(), route, MIN_BURN, 917)
                 .expect("building the seeded min-stranger note"),
-            // 5: S3c owner set_min_burn_size
-            XReserveSetMinBurnSizeNote::create(
-                administrator(),
-                route,
-                MIN_BURN,
-                &mut note_rng(918),
-            )
-            .expect("building the seeded min-owner note"),
-            // 6: S3c owner set_min_burn_size(0) — the note-side zero-floor guard (reject)
-            XReserveSetMinBurnSizeNote::create(administrator(), route, 0, &mut note_rng(919))
-                .expect("building the seeded min-zero note"),
-            // 7: S10 DOM_PAUSER pause
+            // 5: S3c owner min-burn
+            stock_min_burn_note(administrator(), route, MIN_BURN, 918)
+                .expect("building the seeded min-owner note"),
+            // 6: S10 DOM_PAUSER pause
             stock_pause_note(pauser(), route, 920).expect("building the seeded pause-pauser note"),
-            // 8: S10c owner STOCK pause probe (traps UnknownAccountProcedure)
+            // 7: S10c owner STOCK pause probe (traps UnknownAccountProcedure)
             manager_pause_call_note(administrator(), 921)
                 .expect("building the seeded manager pause-call note sent by the administrator"),
-            // 9: S10d stranger custom pause (reject)
+            // 8: S10d stranger custom pause (reject)
             stock_pause_note(stranger(), route, 922)
                 .expect("building the seeded pause-stranger note"),
-            // 10: S11 DOM_PAUSER unpause
+            // 9: S11 DOM_PAUSER unpause
             stock_unpause_note(pauser(), route, 923)
                 .expect("building the seeded unpause-pauser note"),
-            // 11: S12 DOM_MANAGER grant_role(DOM_PAUSER, new_pauser)
+            // 10: S12 DOM_MANAGER grant_role(DOM_PAUSER, new_pauser)
             stock_role_action_note(
                 manager(),
                 route,
@@ -416,12 +401,12 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
                 &mut note_rng(924),
             )
             .expect("building the seeded grant note"),
-            // 12: S12 new pauser pause
+            // 11: S12 new pauser pause
             stock_pause_note(new_pauser(), route, 925).expect("building the seeded pause-new note"),
-            // 13: S12 new pauser unpause
+            // 12: S12 new pauser unpause
             stock_unpause_note(new_pauser(), route, 926)
                 .expect("building the seeded unpause-new note"),
-            // 14: S12 DOM_MANAGER revoke_role(DOM_PAUSER, new_pauser)
+            // 13: S12 DOM_MANAGER revoke_role(DOM_PAUSER, new_pauser)
             stock_role_action_note(
                 manager(),
                 route,
@@ -432,7 +417,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
                 &mut note_rng(927),
             )
             .expect("building the seeded revoke note"),
-            // 15: S12 revoked pauser pause attempt (reject)
+            // 14: S12 revoked pauser pause attempt (reject)
             stock_pause_note(new_pauser(), route, 928)
                 .expect("building the seeded pause-revoked note"),
         ]
@@ -571,14 +556,13 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S3b: token_config[max_supply] read-back"
     );
 
-    // ── S3c — ADMIN: owner sets the min-burn floor (the note targets the STOCK
-    // `set_min_burn_amount`); a stranger's attempt is rejected; the note-side ZERO-FLOOR guard
-    // rejects new_min = 0 with its exact error (the stock setter itself would accept 0).
+    // ── S3c — ADMIN: owner sets the min-burn floor (the standard note targets the STOCK
+    // `set_min_burn_amount`); a stranger's attempt is rejected.
     let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(4)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
     let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(5))
         .await
-        .expect("S3c: the administrator's set_min_burn_size must succeed");
+        .expect("S3c: the administrator's min-burn note must succeed");
     commit(&mut pf.mock_chain, &tx)?;
     let faucet = committed(&pf.mock_chain, faucet_id)?;
     assert_eq!(
@@ -591,14 +575,6 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         ]),
         "S3c: the stock MinBurnAmount floor slot reads [10,0,0,0]"
     );
-    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(6)).await;
-    assert_transaction_executor_error!(result, err_min_burn_below_floor());
-    assert_eq!(
-        read_min_burn_size(&committed(&pf.mock_chain, faucet_id)?)?[0],
-        Felt::from(AssetAmount::new(MIN_BURN)?),
-        "S3c: the rejected zero-floor write left the floor at the S3c value"
-    );
-
     // ── S4 — ATTESTED MINT: a REAL stock MintNote (the XUsdcMintNote factory) emitted by the
     // producer and consumed by the faucet drives the FULL attestation policy chain (full validation pipeline).
     let note_m1 = production_mint_note(producer_id, faucet_id, &payload1, 61)?;
@@ -847,7 +823,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
 
     // ── S10 — PAUSE: DOM_PAUSER pauses; the halt is real on BOTH paths; the administrator has NO path.
     let faucet = committed(&pf.mock_chain, faucet_id)?;
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(7))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(6))
         .await
         .expect("S10: the DOM_PAUSER pause must succeed");
     commit(&mut pf.mock_chain, &tx)?;
@@ -901,14 +877,14 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // S10c: the administrator has NO direct pause path. The stock manager IS installed, so the rejection is
     // the role assertion rather than a missing procedure: the procedure-role map gates pause on the
     // Domain pauser, which the administrator does not hold.
-    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(8)).await;
+    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(7)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
     // S10d: a second non-DOM_PAUSER pause attempt is rejected with the same exact role error.
-    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(9)).await;
+    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(8)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
 
     // ── S11 — UNPAUSE: DOM_PAUSER unpauses; BOTH paths resume.
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(10))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(9))
         .await
         .expect("S11: the DOM_PAUSER unpause must succeed");
     commit(&mut pf.mock_chain, &tx)?;
@@ -971,7 +947,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // ── S12 — ROTATION: DOM_MANAGER grants a new pauser -> the new member can pause
     // (capability-proven against a REAL attested mint); revoke -> they cannot.
     let faucet = committed(&pf.mock_chain, faucet_id)?;
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(11))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(10))
         .await
         .expect("S12: the DOM_MANAGER grant must succeed (delegated admin)");
     commit(&mut pf.mock_chain, &tx)?;
@@ -981,7 +957,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         Word::from([1u32, 0, 0, 0]),
         "S12: the new pauser's membership reads back"
     );
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(12))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(11))
         .await
         .expect("S12: the NEW pauser can pause");
     commit(&mut pf.mock_chain, &tx)?;
@@ -992,12 +968,12 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     emit_note_with_attachments(&mut pf.mock_chain, producer_id, &note_m3).await?;
     let result = consume_committed_note(&pf.mock_chain, &faucet, note_m3.id()).await;
     assert_transaction_executor_error!(result, err_paused());
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(13))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(12))
         .await
         .expect("S12: the new pauser unpauses");
     commit(&mut pf.mock_chain, &tx)?;
     let faucet = committed(&pf.mock_chain, faucet_id)?;
-    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(14))
+    let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(13))
         .await
         .expect("S12: the DOM_MANAGER revoke must succeed");
     commit(&mut pf.mock_chain, &tx)?;
@@ -1007,7 +983,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         Word::from([0u32, 0, 0, 0]),
         "S12: the revoked member's membership is cleared"
     );
-    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(15)).await;
+    let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(14)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
     assert_eq!(
         read_is_paused(&faucet)?,

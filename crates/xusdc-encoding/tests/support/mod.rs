@@ -26,8 +26,8 @@ pub mod w2admin;
 // re-export is legitimately unused in most of them.
 #[allow(unused_imports)]
 pub use w2admin::{
-    raw_stock_block_note, stock_block_note, stock_pause_action_note, stock_pause_note,
-    stock_unblock_note, stock_unpause_note,
+    raw_stock_block_note, stock_block_note, stock_min_burn_note, stock_pause_action_note,
+    stock_pause_note, stock_set_max_supply_note, stock_unblock_note, stock_unpause_note,
 };
 
 use std::fmt::Write as _;
@@ -230,14 +230,6 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
         errors::ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC,
     ),
 ];
-
-/// The min-burn admin note's zero-floor guard (`asm/notes/set_min_burn_size/`; the stock
-/// `set_min_burn_amount` accepts 0, so the note rejects a sub-floor `new_min` BEFORE calling it). A
-/// NOTE-script error, not an account-proc shell error — kept beside the table for the same
-/// exact-error discipline, and like the table it names the generated constant rather than the string.
-pub fn err_min_burn_below_floor() -> MasmError {
-    errors::ERR_XRESERVE_MIN_BURN_BELOW_FLOOR
-}
 
 /// The stock `MinBurnAmount::check_policy` reject (min_burn_amount.masm) — the burn-side floor
 /// error (there are no custom burn errors: with the floor `>= 1`, a
@@ -1478,9 +1470,8 @@ pub fn read_domain_config_words(account: &Account) -> Result<[Word; 4]> {
 /// `min_burn_amount::set_min_burn_amount(new_min)`. Like `set_attester`,
 /// the authority gate reads the note sender, so the sender is what the `ADMIN` role check tests.
 /// `new_min` is the single felt written as element 0 of the stock floor slot. NOTE: this is the
-/// RAW driver — it deliberately BYPASSES the production note script's zero-floor guard so tests
-/// can probe the stock proc directly; the floor-guard behavior itself is tested through the
-/// production `XReserveSetMinBurnSizeNote` factory.
+/// RAW driver — it deliberately BYPASSES the `XReserveMinBurnAmountNote` factory's zero-floor
+/// refusal so tests can probe the stock proc directly.
 pub fn set_min_burn_size_note(sender: AccountId, new_min: u64, seed: u64) -> Result<Note> {
     // Stack contract: [new_min, pad(15)] (new_min on top). Push 15 pad felts (deepest) then new_min so
     // it ends on top: 15 + 1 = 16. A pure standards proc — CodeBuilder pre-links StandardsLib.

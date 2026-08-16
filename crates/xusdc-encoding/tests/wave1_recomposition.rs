@@ -315,28 +315,6 @@ fn builder_rejects_a_zero_min_burn_floor() -> Result<()> {
     Ok(())
 }
 
-/// TRIPWIRE: the min-burn admin note script targets the STOCK `set_min_burn_amount` and carries
-/// the note-side zero-floor assert (the runtime half of the guard; the stock setter itself
-/// accepts 0, so the note MUST reject it first).
-#[test]
-fn min_burn_note_targets_the_stock_setter_with_a_floor_guard() -> Result<()> {
-    let _serial = tripwire_serial_guard_blocking();
-    let src = include_str!("../asm/notes/set_min_burn_size/set_min_burn_size.masm");
-    assert!(
-        src.contains("call.min_burn_amount::set_min_burn_amount"),
-        "the min-burn admin note must call the STOCK set_min_burn_amount account procedure"
-    );
-    assert!(
-        src.contains("ERR_XRESERVE_MIN_BURN_BELOW_FLOOR"),
-        "the min-burn admin note must declare the zero-floor guard error"
-    );
-    assert!(
-        !src.contains("min_burn_admin::set_min_burn_size"),
-        "the custom min_burn_admin target is deleted — the note must not reference it"
-    );
-    Ok(())
-}
-
 // 4 — POSTURE: the note-script allowlist pins the stock MintNote
 // ================================================================================================
 

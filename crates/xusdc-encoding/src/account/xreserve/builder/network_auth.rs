@@ -13,8 +13,8 @@ use miden_protocol::note::NoteScriptRoot;
 use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
 use miden_standards::note::{
-    BurnNote, ConstantFeePolicyConfigNote, FeeSponsorshipNote, MintNote, PauseConfigNote,
-    RbacConfigNote,
+    BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote, FeeSponsorshipNote, MintNote,
+    PauseConfigNote, RbacConfigNote,
 };
 use miden_standards::tx_script::ExpirationTransactionScript;
 
@@ -23,10 +23,12 @@ use super::{XReserveStablecoinBuilder, XReserveStablecoinBuilderError};
 impl XReserveStablecoinBuilder {
     /// Returns the production faucet's note-script allowlist.
     ///
-    /// The ten roots cover mint and burn, three faucet setters, pause and blocklist administration,
-    /// role administration, constant-fee administration, and fee sponsorship. The general network
-    /// account configuration note is excluded, so the note and transaction allowlists cannot be
-    /// modified through an accepted note.
+    /// The ten roots cover mint and burn, one faucet setter (`set_attester`), min-burn,
+    /// max-supply, pause and blocklist administration, role administration, constant-fee
+    /// administration, and fee sponsorship. The general network account configuration note is
+    /// excluded, so the note and transaction allowlists cannot be modified through an accepted
+    /// note. The faucet-metadata root also carries the description/logo-uri/external-link setters,
+    /// which trap at runtime because only the max supply is built mutable.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
         BTreeSet::from([
             // Supply notes.
@@ -34,8 +36,8 @@ impl XReserveStablecoinBuilder {
             BurnNote::script_root(),
             // Faucet administration notes.
             crate::note::xreserve_admin::XReserveSetAttesterNote::script_root(),
-            crate::note::xreserve_admin::XReserveSetMinBurnSizeNote::script_root(),
-            crate::note::xreserve_admin::XReserveSetMaxSupplyNote::script_root(),
+            crate::note::xreserve_admin::XReserveMinBurnAmountNote::script_root(),
+            FaucetMetadataConfigNote::script_root(),
             // Standard administration notes.
             PauseConfigNote::script_root(),
             crate::note::xreserve_admin::XReserveBlocklistNote::script_root(),

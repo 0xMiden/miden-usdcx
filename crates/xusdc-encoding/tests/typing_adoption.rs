@@ -1,7 +1,8 @@
 //! Typed-boundary adoption suite — proves the round's typing work is REAL adoption, not facades.
 //!
-//! It locks: (1) every admin note factory has a `bon` builder + a dedicated note-storage type, and
-//! the builder produces a note byte-identical to the retained `create` convenience; (2) the
+//! It locks: (1) the faucet-owned admin note factory has a `bon` builder + a dedicated
+//! note-storage type, and the builder produces a note byte-identical to the retained `create`
+//! convenience; (2) the
 //! mint-note builder takes the typed [`DepositIntent`] and is the factory's only entry point;
 //! (3) the crate-root / account-root `build_faucet_account` constructor is reachable and composes a
 //! valid `Account`; and (4) the [`XReserveFaucetExtension`] type converts into an
@@ -19,8 +20,7 @@ use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
 use support::*;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveSetAttesterNote, XReserveSetAttesterNoteStorage, XReserveSetMaxSupplyNote,
-    XReserveSetMaxSupplyNoteStorage, XReserveSetMinBurnSizeNote, XReserveSetMinBurnSizeNoteStorage,
+    XReserveSetAttesterNote, XReserveSetAttesterNoteStorage,
 };
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
@@ -52,7 +52,8 @@ fn assert_notes_identical(a: &Note, b: &Note, label: &str) {
     );
 }
 
-// The admin note factories: bon builder + dedicated storage type, byte-identical to `create`.
+// The faucet-owned admin note factory: bon builder + dedicated storage type, byte-identical to
+// `create`.
 // ================================================================================================
 
 #[test]
@@ -82,49 +83,6 @@ fn set_attester_builder_matches_create() {
         XReserveSetAttesterNote::create(sender, faucet, commitment, 1, &mut note_rng(RNG_SEED))
             .expect("create note");
     assert_notes_identical(&via_builder, &via_create, "set_attester");
-}
-
-#[test]
-fn set_min_burn_size_builder_matches_create() {
-    let sender = test_account_id(5);
-    let faucet = test_faucet_id(6);
-
-    let via_builder = XReserveSetMinBurnSizeNote::builder()
-        .sender(sender)
-        .faucet_id(faucet)
-        .storage(
-            XReserveSetMinBurnSizeNoteStorage::builder()
-                .new_min(7)
-                .build(),
-        )
-        .rng(&mut note_rng(RNG_SEED))
-        .build()
-        .expect("builder note");
-    let via_create = XReserveSetMinBurnSizeNote::create(sender, faucet, 7, &mut note_rng(RNG_SEED))
-        .expect("create note");
-    assert_notes_identical(&via_builder, &via_create, "set_min_burn_size");
-}
-
-#[test]
-fn set_max_supply_builder_matches_create() {
-    let sender = test_account_id(5);
-    let faucet = test_faucet_id(6);
-
-    let via_builder = XReserveSetMaxSupplyNote::builder()
-        .sender(sender)
-        .faucet_id(faucet)
-        .storage(
-            XReserveSetMaxSupplyNoteStorage::builder()
-                .new_max_supply(5_000)
-                .build(),
-        )
-        .rng(&mut note_rng(RNG_SEED))
-        .build()
-        .expect("builder note");
-    let via_create =
-        XReserveSetMaxSupplyNote::create(sender, faucet, 5_000, &mut note_rng(RNG_SEED))
-            .expect("create note");
-    assert_notes_identical(&via_builder, &via_create, "set_max_supply");
 }
 
 // The burn note: XReserveBurnItems is its dedicated (bon) payload type.
@@ -277,7 +235,7 @@ fn mint_note_has_dedicated_storage_type_derived_from_the_typed_intent() -> Resul
     Ok(())
 }
 
-// G-RUST — the new admin note-storage types keep their fields PRIVATE, exposing read-only accessors.
+// G-RUST — the admin note-storage type keeps its fields PRIVATE, exposing read-only accessors.
 // ================================================================================================
 
 #[test]
@@ -298,14 +256,4 @@ fn admin_storage_types_expose_read_only_accessors_not_public_fields() {
         "attester commitment accessor"
     );
     assert_eq!(attester.enabled(), 1, "attester enabled accessor");
-
-    let min_burn = XReserveSetMinBurnSizeNoteStorage::builder()
-        .new_min(42)
-        .build();
-    assert_eq!(min_burn.new_min(), 42, "min-burn accessor");
-
-    let max_supply = XReserveSetMaxSupplyNoteStorage::builder()
-        .new_max_supply(9_999)
-        .build();
-    assert_eq!(max_supply.new_max_supply(), 9_999, "max-supply accessor");
 }

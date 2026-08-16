@@ -28,7 +28,9 @@ impl XReserveStablecoinBuilder {
     /// administration, and fee sponsorship. The general network account configuration note is
     /// excluded, so the note and transaction allowlists cannot be modified through an accepted
     /// note. The faucet-metadata root also carries other metadata setters, but this account
-    /// builds those fields immutable, so their setters always trap.
+    /// builds those fields immutable, so their setters always trap: each setter first asserts
+    /// its flag in the faucet's `mutability_config` storage word, which is set at construction
+    /// and has no writer.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
         BTreeSet::from([
             // Supply notes.

@@ -311,7 +311,7 @@ pub proc check_policy
 
     # ---- return the (asserted-matching) policy interface unchanged ----
 
-    # the load overwrites a spent pad word in place instead of pushing over it
+    # the load overwrites a word
     loc_loadw_le.RECIPIENT_LOC
     # => [RECIPIENT, pad(12)]
 

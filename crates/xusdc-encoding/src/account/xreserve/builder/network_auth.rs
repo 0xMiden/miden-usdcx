@@ -27,8 +27,8 @@ impl XReserveStablecoinBuilder {
     /// max-supply, pause and blocklist administration, role administration, constant-fee
     /// administration, and fee sponsorship. The general network account configuration note is
     /// excluded, so the note and transaction allowlists cannot be modified through an accepted
-    /// note. The faucet-metadata root also carries the description/logo-uri/external-link setters,
-    /// which trap at runtime because only the max supply is built mutable.
+    /// note. The faucet-metadata root also carries other metadata setters, but this account
+    /// builds those fields immutable, so their setters always trap.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
         BTreeSet::from([
             // Supply notes.

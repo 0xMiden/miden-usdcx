@@ -21,9 +21,9 @@
 //! covers each of them and calls the standard component the faucet installs. Pausing uses the
 //! standard pause-action note directly, with no faucet wrapper at all. Role management uses the
 //! standard role-action note, whose single script root carries grant, revoke, set-role-admin and
-//! renounce alike. The blocklist uses the standard blocklist-config note through
-//! [`XReserveBlocklistNote`]'s thin factory, which exists solely to refuse building a note that
-//! would block the faucet itself.
+//! renounce alike. The blocklist uses the standard blocklist-config note the same way: the v16
+//! transfer policy exempts the issuing faucet from its own list, so a self-targeting block is
+//! dead state rather than a freeze, and there is nothing faucet-specific left to wrap.
 //!
 //! There is no ownership note either: the faucet installs no two-step ownership component, so
 //! rotation is a grant and a revoke of the `ADMIN` role through the standard role-action note.
@@ -37,12 +37,10 @@ use miden_protocol::note::{
 };
 use miden_protocol::Felt;
 
-mod blocklist;
 mod set_attester;
 mod set_max_supply;
 mod set_min_burn_size;
 
-pub use blocklist::{XReserveBlocklistNote, XReserveBlocklistNoteError};
 pub use set_attester::{XReserveSetAttesterNote, XReserveSetAttesterNoteStorage};
 pub use set_max_supply::{XReserveSetMaxSupplyNote, XReserveSetMaxSupplyNoteStorage};
 pub use set_min_burn_size::{XReserveSetMinBurnSizeNote, XReserveSetMinBurnSizeNoteStorage};

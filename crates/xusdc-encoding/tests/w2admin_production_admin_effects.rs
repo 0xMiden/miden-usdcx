@@ -9,8 +9,7 @@
 //! moved, from a MASM literal into the account's procedure-role map.
 //!
 //! This is the effects proof for that swap on the REAL composition — the same components the deploy
-//! path ships, under the same keyless network auth. The self-block regression that came with the
-//! swap has its own suite (`w2admin_self_block_recovery.rs`).
+//! path ships, under the same keyless network auth.
 
 mod support;
 
@@ -31,7 +30,7 @@ use miden_tx::TransactionExecutorError;
 use support::w2admin::*;
 use support::*;
 use xusdc_encoding::account::xreserve::{XReserveAdminAuthority, XReserveStablecoinBuilder};
-use xusdc_encoding::note::xreserve_admin::{XReserveBlocklistNote, XReserveSetAttesterNote};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_mint::DepositAttestation;
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::Signature;
@@ -343,15 +342,12 @@ async fn a_standard_note_pause_halts_a_real_mint_and_the_unpause_resumes_it() ->
     Ok(())
 }
 
-/// The blocklist-role holder blocks a target through the faucet's factory over the standard note.
+/// The blocklist-role holder blocks a target through the standard blocklist-config note.
 #[tokio::test]
 async fn the_blocklist_manager_blocks_a_target_through_the_standard_note() -> Result<()> {
     let target = stranger();
     let mut pf = admin_faucet(|id| {
-        vec![
-            XReserveBlocklistNote::block(blocklist_holder(), id, target, &mut note_rng(11))
-                .expect("block note"),
-        ]
+        vec![stock_block_note(blocklist_holder(), id, target, 11).expect("block note")]
     })?;
     let note = pf.seeded_notes[0].clone();
     let before = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
@@ -376,10 +372,8 @@ async fn the_blocklist_manager_unblocks_a_target_through_the_standard_note() -> 
     let target = stranger();
     let mut pf = admin_faucet(|id| {
         vec![
-            XReserveBlocklistNote::block(blocklist_holder(), id, target, &mut note_rng(12))
-                .expect("block note"),
-            XReserveBlocklistNote::unblock(blocklist_holder(), id, target, &mut note_rng(13))
-                .expect("unblock note"),
+            stock_block_note(blocklist_holder(), id, target, 12).expect("block note"),
+            stock_unblock_note(blocklist_holder(), id, target, 13).expect("unblock note"),
         ]
     })?;
     let (block, unblock) = (pf.seeded_notes[0].clone(), pf.seeded_notes[1].clone());
@@ -440,8 +434,7 @@ async fn the_owner_still_has_no_unpause_path() -> Result<()> {
 async fn the_owner_still_has_no_blocklist_path() -> Result<()> {
     let pf = admin_faucet(|id| {
         vec![
-            XReserveBlocklistNote::block(admin_holder(), id, stranger(), &mut note_rng(14))
-                .expect("block note"),
+            stock_block_note(admin_holder(), id, stranger(), 14).expect("block note"),
         ]
     })?;
     let note = pf.seeded_notes[0].clone();
@@ -463,8 +456,7 @@ async fn the_owner_still_has_no_blocklist_path() -> Result<()> {
 async fn the_pauser_cannot_block() -> Result<()> {
     let pf = admin_faucet(|id| {
         vec![
-            XReserveBlocklistNote::block(pauser_holder(), id, stranger(), &mut note_rng(15))
-                .expect("block note"),
+            stock_block_note(pauser_holder(), id, stranger(), 15).expect("block note"),
         ]
     })?;
     let result = consume(&pf, &pf.seeded_notes[0].clone()).await;
@@ -490,8 +482,7 @@ async fn the_role_manager_can_neither_pause_nor_block() -> Result<()> {
         vec![
             pause_action_note(role_manager_holder(), id, PauseConfig::Pause, 9)
                 .expect("pause note"),
-            XReserveBlocklistNote::block(role_manager_holder(), id, stranger(), &mut note_rng(16))
-                .expect("block note"),
+            stock_block_note(role_manager_holder(), id, stranger(), 16).expect("block note"),
         ]
     })?;
 
@@ -509,8 +500,7 @@ async fn a_stranger_can_neither_pause_nor_block() -> Result<()> {
     let pf = admin_faucet(|id| {
         vec![
             pause_action_note(stranger(), id, PauseConfig::Pause, 10).expect("pause note"),
-            XReserveBlocklistNote::block(stranger(), id, admin_holder(), &mut note_rng(17))
-                .expect("block note"),
+            stock_block_note(stranger(), id, admin_holder(), 17).expect("block note"),
         ]
     })?;
 

@@ -47,13 +47,13 @@ fn min_word(v: u64) -> Word {
 #[test]
 fn a_min_burn_note_carrying_a_zero_floor_cannot_be_built() {
     let faucet_id = test_faucet_id(1);
-    let err = XReserveMinBurnAmountNote::create(
-        administrator(),
-        faucet_id,
-        AssetAmount::ZERO,
-        &mut note_rng(720),
-    )
-    .expect_err("the factory must refuse a zero-floor min-burn note");
+    let err = XReserveMinBurnAmountNote::builder()
+        .sender(administrator())
+        .target(faucet_id)
+        .min_burn_amount(AssetAmount::ZERO)
+        .generate_serial_number(&mut note_rng(720))
+        .build()
+        .expect_err("the factory must refuse a zero-floor min-burn note");
     assert!(
         matches!(
             err,

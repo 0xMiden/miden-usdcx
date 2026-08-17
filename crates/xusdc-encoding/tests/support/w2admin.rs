@@ -464,7 +464,12 @@ pub fn stock_min_burn_note(
     let mut rng = RandomCoin::new(config_note_serial(seed));
     let new_min = AssetAmount::new(new_min)
         .map_err(|e| anyhow::anyhow!("min-burn amount out of range: {e}"))?;
-    XReserveMinBurnAmountNote::create(sender, faucet_id, new_min, &mut rng)
+    XReserveMinBurnAmountNote::builder()
+        .sender(sender)
+        .target(faucet_id)
+        .min_burn_amount(new_min)
+        .generate_serial_number(&mut rng)
+        .build()
         .map_err(|e| anyhow::anyhow!("building the min-burn note: {e}"))
 }
 

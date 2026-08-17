@@ -13,6 +13,7 @@
 
 use std::collections::BTreeSet;
 
+use super::{add_faucet_account, setup_production_faucet, test_account_id, ProductionFaucet};
 use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::component::AccountComponentMetadata;
@@ -39,9 +40,7 @@ use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::note::xreserve_admin::{XReserveBlocklistNote, XReserveMinBurnAmountNote};
-
-use super::{add_faucet_account, setup_production_faucet, test_account_id, ProductionFaucet};
+use xusdc_encoding::note::xreserve_admin::XReserveMinBurnAmountNote;
 
 // PRODUCTION CONSTANTS
 // ================================================================================================
@@ -285,28 +284,6 @@ pub fn pause_action_note(
     Ok(Note::from(note))
 }
 
-/// A blocklist config note assembled straight from the standard builder.
-///
-/// Two callers want this rather than the faucet's factory. The bare admin model is not a faucet, so
-/// its factory's faucet-shaped refusal does not apply there. And the self-block tests need to get
-/// PAST that refusal on purpose: it is an off-chain guard, and the point of those tests is what the
-/// chain does when someone hand-rolls the note anyway.
-pub fn raw_blocklist_note(
-    sender: AccountId,
-    target_account: AccountId,
-    config: BlocklistConfig,
-    seed: u32,
-) -> Result<Note> {
-    let note = BlocklistConfigNote::builder()
-        .sender(sender)
-        .target(target_account)
-        .config(config)
-        .serial_number(serial(seed))
-        .build()
-        .map_err(|e| anyhow::anyhow!("building the blocklist config note: {e}"))?;
-    Ok(Note::from(note))
-}
-
 /// A note that calls the authority component's `freeze` emergency switch.
 ///
 /// `freeze` carries no entry in the procedure-role map, so consuming this note exercises the
@@ -429,46 +406,50 @@ pub fn stock_unpause_note(sender: AccountId, faucet_id: AccountId, seed: u64) ->
     stock_pause_action_note(sender, faucet_id, PauseConfig::Unpause, seed)
 }
 
-/// The faucet's block note for `target`, built through the factory that refuses a self-block.
+/// The stock blocklist-config note that blocks `target` on `faucet_id`.
 pub fn stock_block_note(
     sender: AccountId,
     faucet_id: AccountId,
     target: AccountId,
     seed: u64,
 ) -> Result<Note> {
-    let mut rng = RandomCoin::new(config_note_serial(seed));
-    XReserveBlocklistNote::block(sender, faucet_id, target, &mut rng)
-        .map_err(|e| anyhow::anyhow!("building the block note: {e}"))
+    stock_block_action_note(
+        sender,
+        faucet_id,
+        BlocklistConfig::BlockAccount { account: target },
+        seed,
+    )
 }
 
-/// The faucet's unblock note for `target`.
+/// The stock blocklist-config note that unblocks `target` on `faucet_id`.
 pub fn stock_unblock_note(
     sender: AccountId,
     faucet_id: AccountId,
     target: AccountId,
     seed: u64,
 ) -> Result<Note> {
-    let mut rng = RandomCoin::new(config_note_serial(seed));
-    XReserveBlocklistNote::unblock(sender, faucet_id, target, &mut rng)
-        .map_err(|e| anyhow::anyhow!("building the unblock note: {e}"))
+    stock_block_action_note(
+        sender,
+        faucet_id,
+        BlocklistConfig::UnblockAccount { account: target },
+        seed,
+    )
 }
 
-/// A block note assembled straight from the standard builder, bypassing the factory's self-block
-/// refusal. Only the tests that exercise a self-block need it: the refusal is off-chain, and the
-/// point is what the chain does when someone hand-rolls the note anyway.
-pub fn raw_stock_block_note(
+/// The stock blocklist-config note for `config`, sent by `sender` and tagged for `faucet_id`.
+pub fn stock_block_action_note(
     sender: AccountId,
     faucet_id: AccountId,
-    target: AccountId,
+    config: BlocklistConfig,
     seed: u64,
 ) -> Result<Note> {
     let note = BlocklistConfigNote::builder()
         .sender(sender)
         .target(faucet_id)
-        .config(BlocklistConfig::BlockAccount { account: target })
+        .config(config)
         .serial_number(config_note_serial(seed))
         .build()
-        .map_err(|e| anyhow::anyhow!("building the raw block note: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("building the stock blocklist config note: {e}"))?;
     Ok(Note::from(note))
 }
 

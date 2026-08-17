@@ -26,8 +26,8 @@ pub mod w2admin;
 // re-export is legitimately unused in most of them.
 #[allow(unused_imports)]
 pub use w2admin::{
-    raw_stock_block_note, stock_block_note, stock_min_burn_note, stock_pause_action_note,
-    stock_pause_note, stock_set_max_supply_note, stock_unblock_note, stock_unpause_note,
+    stock_block_note, stock_min_burn_note, stock_pause_action_note, stock_pause_note,
+    stock_set_max_supply_note, stock_unblock_note, stock_unpause_note,
 };
 
 use std::fmt::Write as _;
@@ -1353,83 +1353,6 @@ pub async fn run_pause_tx(
         .expect("building the pause transaction")
         .execute()
         .await
-}
-
-// raw self-block (TEST-ONLY) — arms the faucet-blocked callback sentinel past the self-block guard
-// ================================================================================================
-
-/// TEST-ONLY component path for the unguarded raw self-block proc.
-pub const RAW_BLOCKLIST_PATH: &str = "xusdc::test_fixtures::raw_blocklist";
-
-/// A TEST-ONLY account component exposing an UNGUARDED raw self-block proc (`block_self_unchecked`):
-/// it `exec`s the low-level `blocklist::block_account` primitive on the NATIVE id directly,
-/// bypassing both the BLK_MANAGER role gate and the self-block guard in
-/// the stock `BlocklistManager::block_account`. Its sole use is arming the faucet-blocked sentinel in
-/// `transfer_blocklist_semantics::faucet_side_burn_consume_is_callback_unaffected`: with the
-/// self-block guard in place the
-/// production admin surface cannot block the faucet, so the sentinel writes
-/// `blocked_accounts[faucet]=1` via the SAME underlying primitive the admin wrapper delegates to
-/// (the exact storage write, minus the new guard). It declares NO storage slots — it shares the
-/// `blocked_accounts` slot the `BasicBlocklist` companion installs (the `blocklist_admin` pattern of
-/// referencing a companion's slot by name).
-pub fn raw_blocklist_component() -> Result<AccountComponent> {
-    let src = "use miden::protocol::native_account\n\
-               use miden::standards::faucets::policies::transfer::blocklist\n\
-               \n\
-               #! TEST-ONLY: writes blocked_accounts[self] = 1 via the low-level primitive,\n\
-               #! bypassing the BLK_MANAGER role gate AND the PA2 self-block guard.\n\
-               #!\n\
-               #! Inputs:  [pad(16)]\n\
-               #! Outputs: [pad(16)]\n\
-               #!\n\
-               #! Invocation: call\n\
-               @account_procedure\n\
-               pub proc block_self_unchecked\n\
-               \x20\x20\x20\x20exec.native_account::get_id\n\
-               \x20\x20\x20\x20exec.blocklist::block_account\n\
-               end\n";
-    let code = CodeBuilder::new()
-        .compile_component_code(RAW_BLOCKLIST_PATH, src)
-        .context("raw self-block test component failed to compile")?;
-    AccountComponent::new(
-        code,
-        vec![],
-        AccountComponentMetadata::new("xusdc-raw-blocklist-test"),
-    )
-    .context("binding the raw self-block test component")
-}
-
-/// A TEST-ONLY note (sent by `sender`) whose script `call`s `raw_blocklist::block_self_unchecked` on
-/// the consuming faucet — arms `blocked_accounts[faucet]=1` for the callback sentinel WITHOUT the
-/// self-block guard. The consuming faucet MUST have [`raw_blocklist_component`] installed (the note's linked
-/// library and the account's proc share one MAST root, so the `call` resolves).
-pub fn raw_self_block_note(sender: AccountId, seed: u64) -> Result<Note> {
-    let component = raw_blocklist_component()?;
-    let src = format!(
-        "use {path}\n\
-         @note_script\n\
-         pub proc main\n\
-         \x20\x20\x20\x20repeat.16 push.0 end\n\
-         \x20\x20\x20\x20call.raw_blocklist::block_self_unchecked\n\
-         \x20\x20\x20\x20dropw dropw dropw dropw\n\
-         end\n",
-        path = RAW_BLOCKLIST_PATH,
-    );
-    let script = CodeBuilder::new()
-        .with_dynamically_linked_package(component.component_code().clone())
-        .context("linking the raw-blocklist test component into the note script")?
-        .compile_note_script(src.clone())
-        .map_err(|e| anyhow::anyhow!("raw self-block note script failed to compile: {e}\n{src}"))?;
-    let mut rng = RandomCoin::new(Word::from([
-        Felt::from(seed as u32),
-        Felt::from((seed >> 32) as u32),
-        Felt::from(11u32),
-        Felt::from(12u32),
-    ]));
-    Ok(NoteBuilder::new(sender, &mut rng)
-        .note_type(NoteType::Private)
-        .script(script)
-        .build()?)
 }
 
 // AUTHORITY-GATE ERROR MIRROR

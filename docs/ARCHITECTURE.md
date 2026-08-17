@@ -85,7 +85,7 @@ The attachment design has a property reviewers must not miss: **the consume scri
 - **Attachment presence is not guaranteed.** The `BurnNote` script does not require the withdrawal attachment, so a burn note without it, or with a malformed one, still burns on-chain. Discovery and verification must handle such notes rather than assume the attachment exists.
 - **Lifecycle is not staged.** A note can be created and consumed in the same block; the test suite demonstrates that supply then decreases while the note, its commitment, and its nullifier are absent from the discoverable record. A public note is not automatically a durable event-log equivalent. External release needs authenticated inclusion or state paths, the actual burned asset and amount, and an explicit finality rule.
 
-No onchain contract code reads the encoded destination domain, recipient, or salt; those bytes are inputs to the external processing of the withdrawal data.
+No onchain contract code reads the encoded destination domain, recipient, or salt; this data is read and verified during withdrawal.
 
 Neither the attachment's presence nor its amount is constrained on chain today; both are tracked in issue #146, which proposes a dedicated burn policy that requires the attachment and the removal of the duplicated amount from it.
 

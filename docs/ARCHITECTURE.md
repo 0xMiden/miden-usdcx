@@ -102,7 +102,7 @@ flowchart TD
     ADMIN -->|administers| DOM_MANAGER
     ADMIN -->|administers| BLOCK_LISTER
     DOM_MANAGER -->|administers| DOM_PAUSER
-    ADMIN --- A1["set_attester<br/>set_max_supply<br/>set_min_burn_size<br/>set_note_fee<br/>RBAC role changes"]
+    ADMIN --- A1["set_attester<br/>set_max_supply<br/>set_min_burn_amount<br/>set_note_fee<br/>RBAC role changes"]
     DOM_PAUSER --- A2["pause / unpause"]
     BLOCK_LISTER --- A3["block_account / unblock_account"]
 ```

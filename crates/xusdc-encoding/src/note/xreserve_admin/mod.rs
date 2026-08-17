@@ -12,16 +12,17 @@
 //! proc — the note sender is kernel-forced, so the proc's role gate is sound under permissionless
 //! network execution.
 //!
-//! This module ships the faucet-owned rows of the note-script allowlist: the `set_attester`
-//! reference op, `set_min_burn_size` (targeting the STOCK `set_min_burn_amount` with a note-side
-//! zero-floor guard), and `set_max_supply`. All three resolve, through the account-wide authority,
-//! to the built-in `ADMIN` role.
+//! This module ships the one faucet-owned row of the note-script allowlist: the `set_attester`
+//! reference op, which resolves, through the account-wide authority, to the built-in `ADMIN` role.
 //!
-//! Three admin surfaces do NOT ship a faucet-owned note script, because a standard note already
-//! covers each of them and calls the standard component the faucet installs. Pausing uses the
-//! standard pause-action note directly, with no faucet wrapper at all. Role management uses the
-//! standard role-action note, whose single script root carries grant, revoke, set-role-admin and
-//! renounce alike. The blocklist uses the standard blocklist-config note.
+//! The other admin surfaces do NOT ship a faucet-owned note script, because a standard note
+//! already covers each of them and calls the standard component the faucet installs. Pausing uses
+//! the standard pause-action note directly, with no faucet wrapper at all, the max-supply cap
+//! uses the standard faucet-metadata config note the same way, and the blocklist uses the
+//! standard blocklist-config note. Role management uses the standard role-action note, whose
+//! single script root carries grant, revoke, set-role-admin and renounce alike. One surface goes
+//! through a thin factory that exists solely to refuse building a note the standard builder would
+//! accept: the burn floor through [`XReserveMinBurnAmountNote`] (no zero floor).
 //!
 //! There is no ownership note either: the faucet installs no two-step ownership component, so
 //! rotation is a grant and a revoke of the `ADMIN` role through the standard role-action note.
@@ -35,13 +36,11 @@ use miden_protocol::note::{
 };
 use miden_protocol::Felt;
 
+mod min_burn_amount;
 mod set_attester;
-mod set_max_supply;
-mod set_min_burn_size;
 
+pub use min_burn_amount::{XReserveMinBurnAmountNote, XReserveMinBurnAmountNoteError};
 pub use set_attester::{XReserveSetAttesterNote, XReserveSetAttesterNoteStorage};
-pub use set_max_supply::{XReserveSetMaxSupplyNote, XReserveSetMaxSupplyNoteStorage};
-pub use set_min_burn_size::{XReserveSetMinBurnSizeNote, XReserveSetMinBurnSizeNoteStorage};
 
 /// Assembles an admin note from its fixed-root `script` + the creator-committed storage `items`,
 /// carrying the scheme-2 `NetworkAccountTarget` routing bind to `faucet_id` (routing-only). Shared by

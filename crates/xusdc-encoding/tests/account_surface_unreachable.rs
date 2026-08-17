@@ -11,10 +11,9 @@
 //!     Tier C contains `set_note_fee`, which is reached through the fee configuration note and
 //!     authorized by `ADMIN`.
 //!
-//! The small conformance helpers (`production_components`/`component_surface`/
-//! `allowlisted_note_scripts`) are duplicated here so this module is
-//! self-contained; both copies are single-sourced from `XReserveStablecoinBuilder`, so neither can
-//! drift from what ships.
+//! The small conformance helpers (`production_components`/`component_surface`) are duplicated
+//! here so this module is self-contained; both copies are single-sourced from
+//! `XReserveStablecoinBuilder`, so neither can drift from what ships.
 
 mod support;
 
@@ -23,18 +22,12 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result};
 use miden_protocol::account::{AccountComponent, StorageSlotContent};
 use miden_protocol::assembly::mast::MastNodeExt;
-use miden_protocol::note::{NoteScript, NoteScriptRoot};
+use miden_protocol::note::NoteScriptRoot;
 use miden_protocol::Word;
 use miden_standards::account::auth::AuthNetworkAccount;
-use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FeeSponsorshipNote, MintNote,
-    PauseConfigNote, RbacConfigNote,
-};
+use miden_standards::note::ConstantFeePolicyConfigNote;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-};
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -67,28 +60,6 @@ fn component_surface(components: &[AccountComponent]) -> Vec<(String, Word)> {
         }
     }
     surface
-}
-
-/// The 10 allowlisted note scripts: two supply notes, six administration and configuration notes,
-/// the constant-fee configuration note, and the sponsorship note. Single-sourced from the
-/// same factories the allowlist itself is built from, so a note that enters the allowlist necessarily
-/// enters this sweep too.
-fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
-    vec![
-        ("stock_mint_note", MintNote::script()),
-        ("stock_burn_note", BurnNote::script()),
-        ("set_attester", XReserveSetAttesterNote::script()),
-        ("set_min_burn_size", XReserveSetMinBurnSizeNote::script()),
-        ("stock_pause_action_note", PauseConfigNote::script()),
-        ("set_max_supply", XReserveSetMaxSupplyNote::script()),
-        ("stock_blocklist_config_note", BlocklistConfigNote::script()),
-        ("stock_rbac_action_note", RbacConfigNote::script()),
-        (
-            "stock_constant_fee_policy_config_note",
-            ConstantFeePolicyConfigNote::script(),
-        ),
-        ("stock_fee_sponsorship_note", FeeSponsorshipNote::script()),
-    ]
 }
 
 // FEE AND MUTATOR PROCEDURES

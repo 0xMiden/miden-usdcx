@@ -65,8 +65,8 @@ deposit and burns it on withdrawal.
   mint path rather than stored. Nothing seeds it, so the faucet mints from the moment it exists.
 - **Admin.** Pure role-based: there is no ownership component and no owner slot, so the built-in
   `ADMIN` role is the account's only authority handle, and rotating it is a grant then a revoke of
-  that role. `ADMIN` gates the setters (`set_attester`, the floor-guarded `set_min_burn_size`
-  targeting the stock `set_min_burn_amount`, and `set_max_supply`); a separate `DOM_PAUSER`
+  that role. `ADMIN` gates the setters (`set_attester`, the stock `set_min_burn_amount` — a
+  zero floor is refused at note-building time — and `set_max_supply`); a separate `DOM_PAUSER`
   gates pause/unpause, which halts both mint and burn-consume. Role management runs on the stock
   `RbacConfigNote`, whose one script root also exposes re-pointing a role's administrator and
   self-renounce — both accepted, both pinned by test.

@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::account::{Account, AccountComponent, AccountId, RoleSymbol, StorageMapKey};
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::Note;
 use miden_protocol::note::NoteType;
@@ -29,13 +30,17 @@ use miden_standards::account::access::{
 };
 use miden_standards::account::policies::{BasicBlocklist, BlocklistManager, BlocklistStorage};
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::{BlocklistConfig, BlocklistConfigNote, PauseConfig, PauseConfigNote};
+use miden_standards::note::{
+    BlocklistConfig, BlocklistConfigNote, FaucetMetadataConfig, FaucetMetadataConfigNote,
+    PauseConfig, PauseConfigNote,
+};
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
+use xusdc_encoding::note::xreserve_admin::XReserveMinBurnAmountNote;
 
 // PRODUCTION CONSTANTS
 // ================================================================================================
@@ -445,5 +450,45 @@ pub fn stock_block_action_note(
         .serial_number(config_note_serial(seed))
         .build()
         .map_err(|e| anyhow::anyhow!("building the stock blocklist config note: {e}"))?;
+    Ok(Note::from(note))
+}
+
+/// The faucet's min-burn note for `new_min`, built through the factory that refuses a sub-floor
+/// value.
+pub fn stock_min_burn_note(
+    sender: AccountId,
+    faucet_id: AccountId,
+    new_min: u64,
+    seed: u64,
+) -> Result<Note> {
+    let mut rng = RandomCoin::new(config_note_serial(seed));
+    let new_min = AssetAmount::new(new_min)
+        .map_err(|e| anyhow::anyhow!("min-burn amount out of range: {e}"))?;
+    XReserveMinBurnAmountNote::builder()
+        .sender(sender)
+        .target(faucet_id)
+        .min_burn_amount(new_min)
+        .generate_serial_number(&mut rng)
+        .build()
+        .map_err(|e| anyhow::anyhow!("building the min-burn note: {e}"))
+}
+
+/// The stock faucet-metadata config note that sets `faucet_id`'s max supply to `new_max_supply`.
+/// One script root covers all four metadata setters; only the max supply is built mutable.
+pub fn stock_set_max_supply_note(
+    sender: AccountId,
+    faucet_id: AccountId,
+    new_max_supply: u64,
+    seed: u64,
+) -> Result<Note> {
+    let max_supply = AssetAmount::new(new_max_supply)
+        .map_err(|e| anyhow::anyhow!("max supply out of range: {e}"))?;
+    let note = FaucetMetadataConfigNote::builder()
+        .sender(sender)
+        .target(faucet_id)
+        .config(FaucetMetadataConfig::SetMaxSupply { max_supply })
+        .serial_number(config_note_serial(seed))
+        .build()
+        .map_err(|e| anyhow::anyhow!("building the stock set-max-supply note: {e}"))?;
     Ok(Note::from(note))
 }

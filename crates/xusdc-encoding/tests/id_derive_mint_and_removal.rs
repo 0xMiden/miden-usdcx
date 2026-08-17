@@ -11,30 +11,21 @@
 //! is somebody else's still rejects, with the byte-identical error the stored-identifier design
 //! rejected with, because the check did not get weaker, only differently sourced.
 //!
-//! The rest assert the mechanism is gone rather than merely unused: no note-script root for it in
-//! the account's allowlist, no callable procedure for it on the assembled component, and no
-//! identifier slot in the composed account's storage. Each is written so it keeps meaning after the
-//! deletion lands — they name what must be absent by string, not by importing the thing that has to
-//! disappear.
+//! The rest assert the mechanism is gone rather than merely unused: no callable procedure for it
+//! on the assembled component, and no identifier slot in the composed account's storage. Each is
+//! written so it keeps meaning after the deletion lands — they name what must be absent by string,
+//! not by importing the thing that has to disappear. (The note-script allowlist itself is pinned
+//! by `f5_network_account_auth.rs` against `XReserveStablecoinBuilder::allowed_note_scripts`.)
 
 mod support;
 
-use std::collections::BTreeSet;
-
 use anyhow::{Context, Result};
 use miden_protocol::account::StorageSlotName;
-use miden_protocol::note::NoteScriptRoot;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
-use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FeeSponsorshipNote, MintNote,
-    PauseConfigNote, RbacConfigNote,
-};
 use support::mint_transport::*;
 use support::*;
-use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, XReserveStablecoinBuilder};
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-};
+use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 
 /// The identifier slot label, spelled out rather than imported: the constant that carried it is one
 /// of the things this slice deletes, and the test has to outlive it.
@@ -42,22 +33,6 @@ const IDENTIFIER_SLOT_LABEL: &str = "xusdc::xreserve::domain_config::identifier"
 
 /// The fully-qualified path of the initializer that must no longer exist on the component.
 const INIT_IDENTIFIER_PATH: &str = "::xreserve::identifier_init::init_identifier";
-
-/// Returns the production note-script allowlist without an identifier-initialization note.
-fn expected_allowlist() -> BTreeSet<NoteScriptRoot> {
-    BTreeSet::from([
-        MintNote::script_root(),
-        BurnNote::script_root(),
-        XReserveSetAttesterNote::script_root(),
-        XReserveSetMinBurnSizeNote::script_root(),
-        XReserveSetMaxSupplyNote::script_root(),
-        PauseConfigNote::script_root(),
-        BlocklistConfigNote::script_root(),
-        RbacConfigNote::script_root(),
-        ConstantFeePolicyConfigNote::script_root(),
-        FeeSponsorshipNote::script_root(),
-    ])
-}
 
 // MINT IMMEDIACY — a faucet that was never initialized still mints
 // ================================================================================================
@@ -199,23 +174,6 @@ fn the_wrong_identifier_error_text_is_unchanged() {
 
 // STRUCTURAL REMOVAL — the mechanism is gone, not merely unused
 // ================================================================================================
-
-/// The production note-script allowlist contains the expected ten roots and no
-/// identifier-initialization note.
-#[test]
-fn the_allowlist_drops_the_identifier_init_root_and_nothing_else() {
-    let allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
-    assert_eq!(
-        allowlist.len(),
-        10,
-        "the allowlist must contain exactly ten roots"
-    );
-    assert_eq!(
-        allowlist,
-        expected_allowlist(),
-        "the allowlist must equal the expected ten note-script roots"
-    );
-}
 
 /// The assembled xreserve component exports no `init_identifier` procedure at all.
 ///

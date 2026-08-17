@@ -26,8 +26,8 @@ pub mod w2admin;
 // re-export is legitimately unused in most of them.
 #[allow(unused_imports)]
 pub use w2admin::{
-    stock_block_note, stock_pause_action_note, stock_pause_note, stock_unblock_note,
-    stock_unpause_note,
+    stock_block_note, stock_min_burn_note, stock_pause_action_note, stock_pause_note,
+    stock_set_max_supply_note, stock_unblock_note, stock_unpause_note,
 };
 
 use std::fmt::Write as _;
@@ -45,7 +45,7 @@ use miden_protocol::assembly::Package;
 use miden_protocol::asset::{AssetAmount, AssetCallbacks, FungibleAsset, TokenSymbol};
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::MasmError;
-use miden_protocol::note::{Note, NoteType};
+use miden_protocol::note::{Note, NoteScript, NoteType};
 use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
@@ -59,7 +59,10 @@ use miden_standards::account::policies::{
 };
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::{BurnNote, ConstantFeePolicyConfigNote};
+use miden_standards::note::{
+    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
+    FeeSponsorshipNote, MintNote, PauseConfigNote, RbacConfigNote,
+};
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
@@ -68,6 +71,7 @@ use xusdc_encoding::account::xreserve::{
     XReserveStablecoinBuilderError, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::errors;
+use xusdc_encoding::note::xreserve_admin::{XReserveMinBurnAmountNote, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::xreserve::encoding::{DepositIntent, ForeignChainAddress};
 use xusdc_encoding::xreserve_lib::XReserveLibrary;
@@ -230,14 +234,6 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
         errors::ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC,
     ),
 ];
-
-/// The min-burn admin note's zero-floor guard (`asm/notes/set_min_burn_size/`; the stock
-/// `set_min_burn_amount` accepts 0, so the note rejects a sub-floor `new_min` BEFORE calling it). A
-/// NOTE-script error, not an account-proc shell error — kept beside the table for the same
-/// exact-error discipline, and like the table it names the generated constant rather than the string.
-pub fn err_min_burn_below_floor() -> MasmError {
-    errors::ERR_XRESERVE_MIN_BURN_BELOW_FLOOR
-}
 
 /// The stock `MinBurnAmount::check_policy` reject (min_burn_amount.masm) — the burn-side floor
 /// error (there are no custom burn errors: with the floor `>= 1`, a
@@ -532,6 +528,33 @@ pub fn production_component_set(
 ) -> Result<Vec<AccountComponent>> {
     production_builder_outcome(max_supply, token_supply, None)?
         .map_err(|e| anyhow::anyhow!("composing the production faucet components: {e}"))
+}
+
+/// The ten allowlisted note scripts as labelled `(name, script)` pairs: two supply notes, six
+/// administration and configuration notes (one faucet-owned, five standard), the constant-fee
+/// configuration note, and the sponsorship note.
+pub fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
+    vec![
+        ("stock_mint_note", MintNote::script()),
+        ("stock_burn_note", BurnNote::script()),
+        ("set_attester", XReserveSetAttesterNote::script()),
+        (
+            "stock_min_burn_amount_config_note",
+            XReserveMinBurnAmountNote::script(),
+        ),
+        ("stock_pause_action_note", PauseConfigNote::script()),
+        (
+            "stock_faucet_metadata_config_note",
+            FaucetMetadataConfigNote::script(),
+        ),
+        ("stock_blocklist_config_note", BlocklistConfigNote::script()),
+        ("stock_rbac_action_note", RbacConfigNote::script()),
+        (
+            "stock_constant_fee_policy_config_note",
+            ConstantFeePolicyConfigNote::script(),
+        ),
+        ("stock_fee_sponsorship_note", FeeSponsorshipNote::script()),
+    ]
 }
 
 /// The PRODUCTION builder verdict with the fixture SETUP errors separated from the builder's own
@@ -1401,9 +1424,8 @@ pub fn read_domain_config_words(account: &Account) -> Result<[Word; 4]> {
 /// `min_burn_amount::set_min_burn_amount(new_min)`. Like `set_attester`,
 /// the authority gate reads the note sender, so the sender is what the `ADMIN` role check tests.
 /// `new_min` is the single felt written as element 0 of the stock floor slot. NOTE: this is the
-/// RAW driver — it deliberately BYPASSES the production note script's zero-floor guard so tests
-/// can probe the stock proc directly; the floor-guard behavior itself is tested through the
-/// production `XReserveSetMinBurnSizeNote` factory.
+/// RAW driver — it deliberately BYPASSES the `XReserveMinBurnAmountNote` factory's zero-floor
+/// refusal so tests can probe the stock proc directly.
 pub fn set_min_burn_size_note(sender: AccountId, new_min: u64, seed: u64) -> Result<Note> {
     // Stack contract: [new_min, pad(15)] (new_min on top). Push 15 pad felts (deepest) then new_min so
     // it ends on top: 15 + 1 = 16. A pure standards proc — CodeBuilder pre-links StandardsLib.

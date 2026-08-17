@@ -1,41 +1,32 @@
-//! SECURITY HARDENING — the `set_min_burn_size` upper-range guard adopted from external security
-//! review.
+//! SECURITY HARDENING — the construction-time guard the min-burn note factory carries.
 //!
-//! Without the guard the operation below would SUCCEED instead of trapping. The suite has its
-//! EXACT-error negative plus the positives that prove the guard is not over-broad (a legitimate
-//! in-range set still succeeds), and the floor boundary is re-proven so the upper bound cannot
-//! silently weaken the pre-existing lower guard.
+//! The standard admin procedures validate nothing about the values they write, so the guard lives
+//! in the factory that builds the note: it refuses the harmful value before a note exists. The
+//! refusal has its exact-error negative plus a positive that proves it is not over-broad (a
+//! legitimate in-range min-burn write still succeeds). The refusal is a guard against operator
+//! error, not an authorization boundary — what the chain does when someone hand-rolls the
+//! standard note past it, and why that state is recoverable, is covered in
+//! `w2admin_production_admin_effects.rs`.
 //!
-//! The runtime `set_min_burn_size` note must reject `new_min > FUNGIBLE_ASSET_MAX_AMOUNT` (an
-//! out-of-range floor makes the stock `check_policy` (`min_burn_amount <= amount`) unsatisfiable
-//! for every real burn, halting all redemptions).
+//! A min-burn floor below `MIN_BURN_SIZE_FLOOR` is refused (a zero floor admits zero-amount burn
+//! notes). Above-range floors are unrepresentable: the factory takes an [`AssetAmount`], whose
+//! constructor rejects values over the fungible-asset maximum.
 //!
-//! The tripwire is driven through the PRODUCTION note factory on the REAL production faucet
-//! composition, so it holds the tripwire serial guard (it shares the mint-transport machinery that
-//! flakes under parallel `cargo test`).
+//! The on-chain positive runs through the PRODUCTION note factory on the REAL production faucet
+//! composition, so it holds the tripwire serial guard (it shares the mint-transport machinery
+//! that flakes under parallel `cargo test`).
 
 mod support;
 
 use anyhow::Result;
-use miden_protocol::errors::MasmError;
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::policies::MinBurnAmount;
-use miden_testing::assert_transaction_executor_error;
 use support::mint_transport::*;
 use support::*;
-use xusdc_encoding::note::xreserve_admin::XReserveSetMinBurnSizeNote;
-
-// The maximum representable fungible-asset amount = 2^63 - 2^31 (miden::protocol::asset
-// FUNGIBLE_ASSET_MAX_AMOUNT = 0x7fffffff80000000). Inlined here (not the MASM const) so the
-// test stands independent of the guard's own constant; parity with the MASM guard's imported
-// constant is what FIX 2 asserts end-to-end.
-const FUNGIBLE_ASSET_MAX_AMOUNT: u64 = 0x7fffffff_80000000;
-
-// EXACT expected guard errors (assert-specific-error-in-tests). Inlined as the literal strings the
-// MASM `ERR_*` constants carry — never `is_err()`.
-fn err_min_burn_above_max() -> MasmError {
-    MasmError::from_static_str("min burn size exceeds the maximum asset amount")
-}
+use xusdc_encoding::note::xreserve_admin::{
+    XReserveMinBurnAmountNote, XReserveMinBurnAmountNoteError,
+};
 
 /// The stock `MinBurnAmount` floor-slot word for a floor `v` (`[v,0,0,0]`), read-back oracle.
 fn min_word(v: u64) -> Word {
@@ -47,99 +38,45 @@ fn min_word(v: u64) -> Word {
     ])
 }
 
-// The min-burn upper-range guard
+// The min-burn zero-floor refusal
 // ================================================================================================
 
-/// A `set_min_burn_size` note with `new_min = FUNGIBLE_ASSET_MAX_AMOUNT + 1` is REJECTED with the
-/// EXACT `ERR_XRESERVE_MIN_BURN_ABOVE_MAX`. Without the guard this SUCCEEDS, wedging the burn floor
-/// above every representable amount so `check_policy` (`min <= amount`) can never pass — all
-/// redemptions halt.
-#[tokio::test]
-async fn set_min_burn_above_the_asset_max_is_rejected() -> Result<()> {
-    let _serial = tripwire_serial_guard().await;
-    let above_max = FUNGIBLE_ASSET_MAX_AMOUNT + 1;
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
-        vec![XReserveSetMinBurnSizeNote::create(
-            administrator(),
-            faucet_id,
-            above_max,
-            &mut note_rng(720),
-        )
-        .expect("building the above-max min-burn note")]
-    })?;
-    let above_max_note = pf.seeded_notes[0].clone();
-
-    let result = consume_note(&pf.mock_chain, pf.faucet_id, above_max_note.id()).await;
-    assert_transaction_executor_error!(result, &err_min_burn_above_max());
-
-    // no state change: the floor slot is untouched by the rejected write.
-    let faucet = committed(&pf.mock_chain, pf.faucet_id)?;
-    let floor = faucet
-        .storage()
-        .get_item(MinBurnAmount::slot_name())
-        .map_err(|e| anyhow::anyhow!("reading the stock MinBurnAmount slot: {e}"))?;
-    assert_ne!(
-        floor,
-        min_word(above_max),
-        "a rejected above-max set_min_burn_size must NOT have written the out-of-range floor"
+/// A min-burn note carrying a floor of 0 cannot be built: the factory refuses it, so the note never
+/// reaches a chain. The stock `set_min_burn_amount` accepts 0, and a zero floor admits zero-amount
+/// burn notes — which is what makes this refusal non-vacuous.
+#[test]
+fn a_min_burn_note_carrying_a_zero_floor_cannot_be_built() {
+    let faucet_id = test_faucet_id(1);
+    let err = XReserveMinBurnAmountNote::builder()
+        .sender(administrator())
+        .target(faucet_id)
+        .min_burn_amount(AssetAmount::ZERO)
+        .generate_serial_number(&mut note_rng(720))
+        .build()
+        .expect_err("the factory must refuse a zero-floor min-burn note");
+    assert!(
+        matches!(
+            err,
+            XReserveMinBurnAmountNoteError::MinBurnAmountTooSmall { min_burn_amount: 0 }
+        ),
+        "the refusal must be the specific below-floor rejection, not some other note error: {err:?}"
     );
-    Ok(())
 }
 
-/// The upper bound is INCLUSIVE: `new_min = FUNGIBLE_ASSET_MAX_AMOUNT` (the boundary) is ACCEPTED and
-/// the full word `[MAX,0,0,0]` lands in the stock `MinBurnAmount` slot. Proves FIX 2 rejects only
-/// STRICTLY-above-max, not the max itself.
-#[tokio::test]
-async fn set_min_burn_at_exactly_the_asset_max_is_accepted() -> Result<()> {
-    let _serial = tripwire_serial_guard().await;
-    let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
-        vec![XReserveSetMinBurnSizeNote::create(
-            administrator(),
-            faucet_id,
-            FUNGIBLE_ASSET_MAX_AMOUNT,
-            &mut note_rng(721),
-        )
-        .expect("building the at-max min-burn note")]
-    })?;
-    let at_max_note = pf.seeded_notes[0].clone();
-
-    let tx = consume_note(&pf.mock_chain, pf.faucet_id, at_max_note.id())
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!("set_min_burn_size(MAX) must succeed (inclusive bound): {e}")
-        })?;
-    commit(&mut pf.mock_chain, &tx)?;
-
-    let faucet = committed(&pf.mock_chain, pf.faucet_id)?;
-    let floor = faucet
-        .storage()
-        .get_item(MinBurnAmount::slot_name())
-        .map_err(|e| anyhow::anyhow!("reading the stock MinBurnAmount slot: {e}"))?;
-    assert_eq!(
-        floor,
-        min_word(FUNGIBLE_ASSET_MAX_AMOUNT),
-        "set_min_burn_size(MAX) writes [MAX,0,0,0] to the stock MinBurnAmount slot"
-    );
-    Ok(())
-}
-
-/// A floor-respecting in-range write (`new_min = 1`, the floor boundary) still SUCCEEDS — FIX 2 does
-/// not disturb the low end. Guards against an accidental sign/order flip that would reject the whole
-/// legitimate range.
+/// The refusal is NOT over-broad: an ADMIN-sent write at the floor boundary (`new_min = 1`) still
+/// builds, SUCCEEDS on chain, and writes `[1,0,0,0]` into the stock `MinBurnAmount` slot.
 #[tokio::test]
 async fn set_min_burn_at_the_floor_still_succeeds() -> Result<()> {
     let _serial = tripwire_serial_guard().await;
     let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
-        vec![
-            XReserveSetMinBurnSizeNote::create(administrator(), faucet_id, 1, &mut note_rng(722))
-                .expect("building the floor min-burn note"),
-        ]
+        vec![stock_min_burn_note(administrator(), faucet_id, 1, 722)
+            .expect("building the floor min-burn note")]
     })?;
     let floor_note = pf.seeded_notes[0].clone();
 
     let tx = consume_note(&pf.mock_chain, pf.faucet_id, floor_note.id())
         .await
-        .map_err(|e| anyhow::anyhow!("set_min_burn_size(1) must still succeed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("a min-burn write of 1 must still succeed: {e}"))?;
     commit(&mut pf.mock_chain, &tx)?;
 
     let faucet = committed(&pf.mock_chain, pf.faucet_id)?;
@@ -150,25 +87,7 @@ async fn set_min_burn_at_the_floor_still_succeeds() -> Result<()> {
     assert_eq!(
         floor,
         min_word(1),
-        "set_min_burn_size(1) writes [1,0,0,0] to the stock MinBurnAmount slot"
+        "a min-burn write of 1 lands [1,0,0,0] in the stock MinBurnAmount slot"
     );
-    Ok(())
-}
-
-/// The pre-existing LOWER guard is intact after FIX 2: `new_min = 0` is STILL rejected with the EXACT
-/// `ERR_XRESERVE_MIN_BURN_BELOW_FLOOR` (FIX 2 adds an upper bound WITHOUT weakening the floor).
-#[tokio::test]
-async fn set_min_burn_zero_still_rejected_by_the_floor() -> Result<()> {
-    let _serial = tripwire_serial_guard().await;
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_recipient, faucet_id| {
-        vec![
-            XReserveSetMinBurnSizeNote::create(administrator(), faucet_id, 0, &mut note_rng(723))
-                .expect("building the zero min-burn note"),
-        ]
-    })?;
-    let zero_note = pf.seeded_notes[0].clone();
-
-    let result = consume_note(&pf.mock_chain, pf.faucet_id, zero_note.id()).await;
-    assert_transaction_executor_error!(result, &err_min_burn_below_floor());
     Ok(())
 }

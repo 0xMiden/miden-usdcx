@@ -17,12 +17,12 @@
 //!
 //! The other admin surfaces do NOT ship a faucet-owned note script, because a standard note
 //! already covers each of them and calls the standard component the faucet installs. Pausing uses
-//! the standard pause-action note directly, with no faucet wrapper at all, and the max-supply cap
-//! uses the standard faucet-metadata config note the same way. Role management uses the standard
-//! role-action note, whose single script root carries grant, revoke, set-role-admin and renounce
-//! alike. Two surfaces go through thin factories that exist solely to refuse building a note the
-//! standard builder would accept: the blocklist through [`XReserveBlocklistNote`] (no blocking the
-//! faucet itself) and the burn floor through [`XReserveMinBurnAmountNote`] (no zero floor).
+//! the standard pause-action note directly, with no faucet wrapper at all, the max-supply cap
+//! uses the standard faucet-metadata config note the same way, and the blocklist uses the
+//! standard blocklist-config note. Role management uses the standard role-action note, whose
+//! single script root carries grant, revoke, set-role-admin and renounce alike. One surface goes
+//! through a thin factory that exists solely to refuse building a note the standard builder would
+//! accept: the burn floor through [`XReserveMinBurnAmountNote`] (no zero floor).
 //!
 //! There is no ownership note either: the faucet installs no two-step ownership component, so
 //! rotation is a grant and a revoke of the `ADMIN` role through the standard role-action note.
@@ -36,11 +36,9 @@ use miden_protocol::note::{
 };
 use miden_protocol::Felt;
 
-mod blocklist;
 mod min_burn_amount;
 mod set_attester;
 
-pub use blocklist::{XReserveBlocklistNote, XReserveBlocklistNoteError};
 pub use min_burn_amount::{XReserveMinBurnAmountNote, XReserveMinBurnAmountNoteError};
 pub use set_attester::{XReserveSetAttesterNote, XReserveSetAttesterNoteStorage};
 

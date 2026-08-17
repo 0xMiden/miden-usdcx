@@ -54,17 +54,12 @@ use miden_protocol::account::Account;
 use miden_protocol::account::AssetCallbackFlag;
 use miden_protocol::assembly::mast::MastNodeExt;
 use miden_protocol::asset::AssetCallbacks;
-use miden_protocol::note::{NoteScript, NoteScriptRoot};
+use miden_protocol::note::NoteScriptRoot;
 use miden_protocol::Word;
 use miden_standards::account::access::Authority;
 use miden_standards::account::policies::TokenPolicyManager;
-use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
-    FeeSponsorshipNote, MintNote, PauseConfigNote, RbacConfigNote,
-};
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
-use xusdc_encoding::note::xreserve_admin::{XReserveMinBurnAmountNote, XReserveSetAttesterNote};
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
@@ -79,33 +74,6 @@ fn production_account() -> Result<Account> {
         .context("the production faucet must be committed")?
         .clone();
     Ok(account)
-}
-
-/// Returns the ten accepted note scripts: two supply notes, six administration and configuration
-/// notes (one faucet-owned, five stock), the constant-fee configuration note, and the sponsorship
-/// note.
-fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
-    vec![
-        ("stock_mint_note", MintNote::script()),
-        ("stock_burn_note", BurnNote::script()),
-        ("set_attester", XReserveSetAttesterNote::script()),
-        (
-            "stock_min_burn_amount_config_note",
-            XReserveMinBurnAmountNote::script(),
-        ),
-        ("stock_pause_action_note", PauseConfigNote::script()),
-        (
-            "stock_faucet_metadata_config_note",
-            FaucetMetadataConfigNote::script(),
-        ),
-        ("stock_blocklist_config_note", BlocklistConfigNote::script()),
-        ("stock_rbac_action_note", RbacConfigNote::script()),
-        (
-            "stock_constant_fee_policy_config_note",
-            ConstantFeePolicyConfigNote::script(),
-        ),
-        ("stock_fee_sponsorship_note", FeeSponsorshipNote::script()),
-    ]
 }
 
 // S12 — FREEZE / UNFREEZE: PRESENT, AND PROVABLY UNREACHABLE

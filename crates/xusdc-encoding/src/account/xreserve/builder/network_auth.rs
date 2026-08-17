@@ -15,8 +15,8 @@ use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
 use miden_standards::note::costs::NoteCost;
 use miden_standards::note::{
-    BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote, FeeSponsorshipNote, MintNote,
-    PauseConfigNote, RbacConfigNote,
+    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
+    FeeSponsorshipNote, MintNote, PauseConfigNote, RbacConfigNote,
 };
 use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_tx::{NetworkNotePricer, NotePricingError};
@@ -46,7 +46,7 @@ impl XReserveStablecoinBuilder {
             // Standard administration notes.
             FaucetMetadataConfigNote::script_root(),
             PauseConfigNote::script_root(),
-            crate::note::xreserve_admin::XReserveBlocklistNote::script_root(),
+            BlocklistConfigNote::script_root(),
             RbacConfigNote::script_root(),
             // Fee administration and sponsorship notes.
             ConstantFeePolicyConfigNote::script_root(),

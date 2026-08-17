@@ -28,7 +28,7 @@ use miden_standards::account::fees::{
 };
 use miden_standards::errors::standards::ERR_CONSTANT_FEE_POLICY_CONFIG_ACCOUNT_MISMATCH;
 use miden_standards::note::{
-    ConstantFeePolicyConfigNote, FaucetMetadataConfigNote, FeeSponsorshipNote,
+    BlocklistConfigNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote, FeeSponsorshipNote,
     MinBurnAmountConfigNote, MintNote, P2idNote, PauseConfigNote, RbacConfigNote, TxFeeNote,
 };
 use miden_testing::{assert_transaction_executor_error, Auth, MockChain};
@@ -40,7 +40,7 @@ use xusdc_encoding::note::costs::{
     XRESERVE_SET_ATTESTER_CONSUMPTION_CYCLES, XUSDC_BURN_CONSUMPTION_CYCLES,
     XUSDC_MINT_CONSUMPTION_CYCLES,
 };
-use xusdc_encoding::note::xreserve_admin::{XReserveBlocklistNote, XReserveSetAttesterNote};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_burn::{
     XReserveBurnNote, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
 };
@@ -539,8 +539,8 @@ fn fee_policy_prices_standard_and_xusdc_execution_paths() -> Result<()> {
             pricer.price(PauseConfigNote::script_root())?.as_u64(),
         ),
         (
-            XReserveBlocklistNote::script_root(),
-            pricer.price(XReserveBlocklistNote::script_root())?.as_u64(),
+            BlocklistConfigNote::script_root(),
+            pricer.price(BlocklistConfigNote::script_root())?.as_u64(),
         ),
         (
             RbacConfigNote::script_root(),

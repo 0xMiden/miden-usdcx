@@ -12,7 +12,6 @@ use {NETWORK_ACCOUNT_TARGET_ATTACHMENT_SCHEME} from miden::standards::attachment
 use miden::standards::note_tag
 use miden::standards::notes::p2id
 use {ONE_WORD} from miden::standards::utils
-use miden::core::sys
 use xreserve::attestation_verify
 use xreserve::deposit_intent
 use xreserve::mint_intent
@@ -312,18 +311,18 @@ pub proc check_policy
 
     # ---- return the (asserted-matching) policy interface unchanged ----
 
-    padw loc_loadw_le.RECIPIENT_LOC
-    # => [RECIPIENT, pad(16)]
+    # the load overwrites a word
+    loc_loadw_le.RECIPIENT_LOC
+    # => [RECIPIENT, pad(12)]
 
     loc_load.NOTE_TYPE_LOC loc_load.TAG_LOC
-    # => [tag, note_type, RECIPIENT, pad(16)]
+    # => [tag, note_type, RECIPIENT, pad(12)]
 
     padw loc_loadw_le.ASSET_VALUE_LOC
-    # => [ASSET_VALUE, tag, note_type, RECIPIENT, pad(16)]
+    # => [ASSET_VALUE, tag, note_type, RECIPIENT, pad(12)]
 
-    # we should not drop the stack elements trailing directly behind `RECIPIENT`, because these
-    # might have come from the invoking procedure.
-    # instead, truncate_stack removes the final ten stack elements.
-    exec.sys::truncate_stack
+    # drop the six excess pads behind the interface so the policy returns at the same 16-element
+    # depth it was dispatched at
+    movupw.3 dropw movup.10 drop movup.10 drop
     # => [ASSET_VALUE, tag, note_type, RECIPIENT, pad(6)]
 end

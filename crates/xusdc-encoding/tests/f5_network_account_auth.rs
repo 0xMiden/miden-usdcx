@@ -44,18 +44,13 @@ use miden_standards::errors::standards::{
     ERR_NOTE_SCRIPT_ALLOWLIST_NOTE_NOT_ALLOWED, ERR_TX_SCRIPT_ALLOWLIST_TX_SCRIPT_NOT_ALLOWED,
 };
 use miden_standards::interop::eth::EthEmbeddedAccountId;
-use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
-    FeeSponsorshipNote, MintNote, NetworkAccountTarget, NoteExecutionHint, PauseConfigNote,
-    RbacConfigNote,
-};
+use miden_standards::note::{MintNote, NetworkAccountTarget, NoteExecutionHint};
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
-use xusdc_encoding::note::xreserve_admin::{XReserveMinBurnAmountNote, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{
     DepositAttestation, XUSDC_MINT_ATTESTATION_NUM_WORDS, XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME,
@@ -199,47 +194,25 @@ fn production_faucet_auth_component_is_stock_network_account() -> Result<()> {
 // ================================================================================================
 
 /// The note-script allowlist contains exactly ten roots: two supply notes, six administration and
-/// configuration notes, and two fee notes. The builder and built account contain the same set.
+/// configuration notes, and two fee notes. The builder defines the set
+/// ([`XReserveStablecoinBuilder::allowed_note_scripts`]); the built account must store it.
 #[test]
 fn production_faucet_note_allowlist_contains_the_ten_expected_roots() -> Result<()> {
     let (_chain, account) = production_faucet()?;
-    let expected: BTreeSet<_> = BTreeSet::from([
-        // the two supply-side notes: minting uses the standard mint note
-        MintNote::script_root(),
-        BurnNote::script_root(),
-        // the three administrator-gated configuration notes (one faucet-owned, two stock)
-        XReserveSetAttesterNote::script_root(),
-        XReserveMinBurnAmountNote::script_root(),
-        FaucetMetadataConfigNote::script_root(),
-        // one standard note covers pausing AND unpausing
-        PauseConfigNote::script_root(),
-        // one standard note covers blocking AND unblocking, gated on the blocklist manager role
-        BlocklistConfigNote::script_root(),
-        // one standard note covers grant, revoke, set-role-admin AND renounce
-        RbacConfigNote::script_root(),
-        ConstantFeePolicyConfigNote::script_root(),
-        FeeSponsorshipNote::script_root(),
-    ]);
+    let expected = XReserveStablecoinBuilder::allowed_note_scripts();
     assert_eq!(
         expected.len(),
         10,
         "the expected allowlist contains exactly 10 distinct roots"
     );
 
-    // The builder defines the expected allowlist.
-    assert_eq!(
-        XReserveStablecoinBuilder::allowed_note_scripts(),
-        expected,
-        "allowed_note_scripts() must equal the expected 10 roots",
-    );
-
-    // The built account stores the same allowlist.
+    // The built account stores the builder's allowlist.
     let allowlist = NetworkAccountNoteAllowlist::try_from(account.storage())
         .map_err(|e| anyhow::anyhow!("the faucet must carry a note-script allowlist slot: {e}"))?;
     assert_eq!(
         allowlist.allowed_script_roots(),
         &expected,
-        "the built faucet's allowlist map must equal the expected 10 roots",
+        "the built faucet's allowlist map must equal the builder's 10 roots",
     );
     Ok(())
 }

@@ -10,8 +10,8 @@
 //! What is faucet-specific is which notes can be created. The faucet seeds its burn floor at
 //! least [`MIN_BURN_SIZE_FLOOR`] and the builder rejects anything lower, but the standard setter
 //! validates nothing about its value — a zero floor would admit zero-amount burn notes. So
-//! [`XReserveMinBurnAmountNote::create`] refuses to build such a note in the first place — the one
-//! guard the standard note cannot express.
+//! [`XReserveMinBurnAmountNote::builder`] refuses to build such a note in the first place — the
+//! one guard the standard note cannot express.
 //!
 //! That refusal is a guard against operator error, not an authorization boundary.
 
@@ -31,7 +31,7 @@ use crate::account::xreserve::MIN_BURN_SIZE_FLOOR;
 #[non_exhaustive]
 pub enum XReserveMinBurnAmountNoteError {
     /// The note would have lowered the burn floor below [`MIN_BURN_SIZE_FLOOR`].
-    BelowFloorRejected { min_burn_amount: u64 },
+    MinBurnAmountTooSmall { min_burn_amount: u64 },
     /// The standard note could not be assembled.
     Note(NoteError),
 }
@@ -39,7 +39,7 @@ pub enum XReserveMinBurnAmountNoteError {
 impl fmt::Display for XReserveMinBurnAmountNoteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BelowFloorRejected { min_burn_amount } => write!(
+            Self::MinBurnAmountTooSmall { min_burn_amount } => write!(
                 f,
                 "refusing to build a note that sets the burn floor to {min_burn_amount}, below \
                  the floor {MIN_BURN_SIZE_FLOOR}; a zero floor would admit zero-amount burn notes"
@@ -56,7 +56,7 @@ impl core::error::Error for XReserveMinBurnAmountNoteError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Note(source) => Some(source),
-            Self::BelowFloorRejected { .. } => None,
+            Self::MinBurnAmountTooSmall { .. } => None,
         }
     }
 }
@@ -71,6 +71,7 @@ impl From<NoteError> for XReserveMinBurnAmountNoteError {
 /// zero-floor refusal. There is no faucet-owned script behind this type.
 pub struct XReserveMinBurnAmountNote;
 
+#[bon::bon]
 impl XReserveMinBurnAmountNote {
     /// The `miden-standards` min-burn-amount config note script.
     pub fn script() -> NoteScript {
@@ -82,32 +83,33 @@ impl XReserveMinBurnAmountNote {
         MinBurnAmountConfigNote::script_root()
     }
 
-    /// Builds a note that sets `faucet_id`'s burn floor to `min_burn_amount` over the standard
+    /// Builds a note that sets `target`'s burn floor to `min_burn_amount` over the standard
     /// [`MinBurnAmountConfigNote`].
     ///
     /// # Errors
     ///
-    /// Returns [`XReserveMinBurnAmountNoteError::BelowFloorRejected`] if `min_burn_amount` is
+    /// Returns [`XReserveMinBurnAmountNoteError::MinBurnAmountTooSmall`] if `min_burn_amount` is
     /// below [`MIN_BURN_SIZE_FLOOR`]: a zero floor would admit zero-amount burn notes. The
     /// refusal is a construction-time gate only — on chain the note runs the unmodified
     /// `miden-standards` script, which does not validate the value. Returns
     /// [`XReserveMinBurnAmountNoteError::Note`] if the standard note cannot be assembled.
-    pub fn create<R: FeltRng>(
+    #[builder]
+    pub fn new<R: FeltRng>(
         sender: AccountId,
-        faucet_id: AccountId,
+        target: AccountId,
         min_burn_amount: AssetAmount,
-        rng: &mut R,
+        generate_serial_number: &mut R,
     ) -> Result<Note, XReserveMinBurnAmountNoteError> {
         if min_burn_amount.as_u64() < MIN_BURN_SIZE_FLOOR {
-            return Err(XReserveMinBurnAmountNoteError::BelowFloorRejected {
+            return Err(XReserveMinBurnAmountNoteError::MinBurnAmountTooSmall {
                 min_burn_amount: min_burn_amount.as_u64(),
             });
         }
         let note = MinBurnAmountConfigNote::builder()
             .sender(sender)
-            .target(faucet_id)
+            .target(target)
             .min_burn_amount(min_burn_amount)
-            .generate_serial_number(rng)
+            .generate_serial_number(generate_serial_number)
             .build()
             .map_err(XReserveMinBurnAmountNoteError::Note)?;
         Ok(Note::from(note))

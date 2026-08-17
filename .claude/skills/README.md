@@ -1,6 +1,6 @@
 # Skills Provenance & Curation Ledger
 
-Every skill in this directory was deliberately curated for the xUSDC-on-Miden build (2026-06-11). Skills are **mandatory checklist material** per `docs/governing/BUILDER-GATES.md` (G-MASM / G-RUST); they do **not** override the frozen Phase 4 spec, the canonical ownership map, or the human NS-1/NS-2/DC-7 decisions — conflicts are findings to report, not guidance to apply.
+Every skill in this directory was deliberately curated for the xUSDC-on-Miden build (2026-06-11). Skills are **mandatory checklist material**; they do **not** override a frozen decision or a wire format — conflicts are findings to report, not guidance to apply.
 
 ## Sources
 

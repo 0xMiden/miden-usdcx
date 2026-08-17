@@ -6,21 +6,17 @@
 
 mod support;
 
-use std::sync::Arc;
-
 use anyhow::Result;
 use miden_protocol::account::{
     Account, AccountComponent, AccountId, AccountType, StorageMapKey, StorageSlotContent,
 };
 use miden_protocol::asset::{AssetAmount, AssetId, FungibleAsset};
 use miden_protocol::block::FeeParameters;
-use miden_protocol::crypto::merkle::smt::SmtProof;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{Note, NoteScriptRoot};
 use miden_protocol::testing::account_id::ACCOUNT_ID_FEE_FAUCET;
 use miden_protocol::transaction::{RawOutputNote, TransactionFee};
-use miden_protocol::vm::AdviceInputs;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::SponsorshipPolicy;
 use miden_standards::account::fees::{
@@ -124,18 +120,6 @@ fn sponsorship_note<R: FeltRng>(
         .generate_serial_number(rng)
         .build()?;
     Ok(Note::from(note))
-}
-
-fn minted_asset_witness(faucet: &Account) -> AdviceInputs {
-    let witness = faucet.vault().open(AssetId::new_fungible(faucet.id()));
-    let mut advice = AdviceInputs::default();
-    advice.store.extend(witness.authenticated_nodes());
-    let smt_proof = SmtProof::from(witness);
-    advice.map.extend([(
-        smt_proof.leaf().hash(),
-        smt_proof.leaf().to_elements().collect::<Arc<[Felt]>>(),
-    )]);
-    advice
 }
 
 fn assert_output_note_roots(
@@ -582,16 +566,11 @@ async fn sponsored_mint_uses_the_installed_xusdc_fee_schedule() -> Result<()> {
     assert_output_note_roots(&activation, &[TxFeeNote::script_root()]);
     commit(&mut fixture.mock_chain, &activation)?;
 
-    let faucet = fixture
-        .mock_chain
-        .committed_account(fixture.faucet_id)?
-        .clone();
     let minted = fixture
         .mock_chain
         .build_transaction(fixture.faucet_id)
         .authenticated_input_note(fixture.mint_note.id())
         .authenticated_input_note(fixture.mint_sponsorship.id())
-        .extend_advice_inputs(minted_asset_witness(&faucet))
         .build()?
         .execute()
         .await?;

@@ -2,16 +2,12 @@
 
 mod support;
 
-use std::sync::Arc;
-
 use anyhow::{Context, Result};
-use miden_protocol::account::{Account, AccountId};
-use miden_protocol::asset::{AssetAmount, AssetId, FungibleAsset};
-use miden_protocol::crypto::merkle::smt::SmtProof;
+use miden_protocol::account::AccountId;
+use miden_protocol::asset::{AssetAmount, FungibleAsset};
 use miden_protocol::testing::account_id::ACCOUNT_ID_FEE_FAUCET;
 use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote};
-use miden_protocol::vm::AdviceInputs;
-use miden_protocol::{Felt, Word};
+use miden_protocol::Word;
 use miden_testing::{Auth, MockChain};
 use support::mint_transport::{
     administrator, bring_up, consume_note, honest_note, note_rng, payload_for,
@@ -115,18 +111,6 @@ fn priced_fixture_with(
     })
 }
 
-fn minted_asset_witness(faucet: &Account) -> AdviceInputs {
-    let witness = faucet.vault().open(AssetId::new_fungible(faucet.id()));
-    let mut advice = AdviceInputs::default();
-    advice.store.extend(witness.authenticated_nodes());
-    let smt_proof = SmtProof::from(witness);
-    advice.map.extend([(
-        smt_proof.leaf().hash(),
-        smt_proof.leaf().to_elements().collect::<Arc<[Felt]>>(),
-    )]);
-    advice
-}
-
 async fn mint_cycles(hook_data_len: usize, nonce_variant: u8) -> Result<u32> {
     let mut faucet = priced_fixture_with(|_, _| vec![])?;
     bring_up(&mut faucet, 1).await?;
@@ -141,12 +125,10 @@ async fn mint_cycles(hook_data_len: usize, nonce_variant: u8) -> Result<u32> {
     );
     let note = honest_note(&faucet, &payload, u64::from(nonce_variant) + 1_000)?;
     emit_note_with_attachments(&mut faucet.mock_chain, faucet.producer_id, &note).await?;
-    let faucet_account = faucet.mock_chain.committed_account(faucet.faucet_id)?;
     let executed = faucet
         .mock_chain
         .build_transaction(faucet.faucet_id)
         .authenticated_input_note(note.id())
-        .extend_advice_inputs(minted_asset_witness(faucet_account))
         .build()?
         .execute()
         .await

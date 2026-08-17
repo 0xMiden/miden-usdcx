@@ -10,8 +10,7 @@
 //! compresses a real Circle payload and refuses anything this faucet could not rebuild
 //! byte-for-byte; [`MintIntent::to_deposit_intent`] is the mirror of the MASM writer
 //! `xreserve::deposit_intent::rebuild`. What binds the two is the round trip, not a
-//! field-by-field comparison — see `TV-DUAL-6` and the reconstruction reference in
-//! `docs/spec/ENCODING-COMPONENT-SPEC.md`.
+//! field-by-field comparison.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;

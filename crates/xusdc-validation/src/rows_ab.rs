@@ -34,6 +34,7 @@ use miden_client::store::TransactionFilter;
 use miden_client::transaction::{TransactionId, TransactionRequestBuilder, TransactionStatus};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::Note;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
 
 use crate::actors::create_actors;
@@ -122,7 +123,7 @@ async fn note_consumed_on_chain(hc: &HarnessClient, note: &Note) -> Result<bool>
 }
 
 /// Builds an `identifier_init` note (owner-sent, faucet-targeted). The seeded identifier is DERIVED
-/// from `faucet` — `identifier_for(faucet)` = `bytes32_to_storage_map_key(account_id_to_bytes32(faucet))`, the
+/// from `faucet` — `identifier_for(faucet)` = `bytes32_to_storage_map_key(EthEmbeddedAccountId::from_account_id(faucet).to_bytes32())`, the
 /// own-id fixpoint — so it is BOUND to its target (the R2 identifier-binding fix; no caller-chosen
 /// identifier). The minimized DEC-4 admin note: the OTHER three domain-config fields are build-seeded
 /// and have no runtime writer.

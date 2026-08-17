@@ -333,7 +333,7 @@ pub fn sign(msg_hash_to_sign: &[u8], key: &SecretKey) -> Result<Signature65, Sig
     })?;
 
     let mut out = [0u8; SIGNATURE_LEN];
-    out[..64].copy_from_slice(signature.to_bytes().as_slice()); // r‖s, 64 big-endian bytes
+    out[..64].copy_from_slice(signature.to_bytes().as_ref()); // r‖s, 64 big-endian bytes
     out[SIGNATURE_LEN - 1] = v; // EVM v ∈ {27, 28}
     Ok(Signature65::from_array(out))
 }

@@ -24,6 +24,7 @@ use mint_support::note_rng;
 use mock_circle::{
     attestation_page, batch_href, link_header, MockCircle, RecordingSink, Reply, Script,
 };
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 // ================================================================================================
 
@@ -151,7 +152,9 @@ fn test_vector() -> AttestationVector {
 
 /// The `DepositIntent.nonce` a vector's payload carries — read through the relayer's OWN decoder.
 fn nonce_of(vector: &AttestationVector) -> [u8; 32] {
-    *xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(vector.payload())
+    *DepositIntent::try_from(vector.payload())
         .expect("the fixture payload is a valid DepositIntent")
+        .header()
         .nonce()
+        .as_bytes()
 }

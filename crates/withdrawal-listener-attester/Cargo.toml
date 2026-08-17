@@ -71,14 +71,18 @@ sha3 = { workspace = true }
 rusqlite = { workspace = true }
 # `AccountId` (the faucet id in config, and the `metadata.sender → remoteDepositor` encoding's input)
 # and `AssetAmount` (the burn payload's amount) are NAMED in this crate's public API, at the same
-# frozen protocol-monorepo git rev the rest of the workspace resolves the protocol family at
+# published protocol release the rest of the workspace resolves the protocol family at
 # (the workspace-wide protocol pin).
 #
 # `miden-client` is deliberately ABSENT: no client release exists for the protocol-`next` graph, so
 # every real Miden read (the SyncNotes tag scan, GetNotesById retrieval, the evidence reads) is
 # PARKED to a later slice. This slice needs none of them — it is serde wire types, JSON fixtures,
 # and config.
-miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "4971ec4b38fb1f54e8f73969e6da81ee0cbf850c" }
+miden-protocol = { version = "=0.16.0-rc.4" }
+# `EthEmbeddedAccountId` owns the `AccountId → bytes32` packaging this crate renders as
+# `remoteDepositor`. It is consumed directly rather than through a wrapper, so the encoding has one
+# definition and this crate cannot drift from it. Same pin as the protocol dependency above.
+miden-standards = { version = "=0.16.0-rc.4" }
 
 [dev-dependencies]
 # Exact-variant assertions + parameterized reject tables; versions from the workspace table.

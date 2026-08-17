@@ -51,7 +51,8 @@ use crate::error::RelayerError;
 use crate::idempotency::{ClaimOutcome, IdempotencyStore};
 use crate::miden::{build_mint_note, AttesterPubkey};
 use crate::observability::{EventSink, RelayerEvent, RelayerMetrics};
-use crate::validate::{check_domain_token_against_info, decode_and_validate_deposit_intent};
+use crate::validate::check_domain_token_against_info;
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 pub use submit::{production_submit_port, MintSubmission, MintSubmit, MintSubmitted};
 
@@ -66,7 +67,7 @@ pub use report::{CycleEntry, CycleReport, Disposition};
 /// FOR `faucet` carrying `attester`'s key, and a builder taking three loose arguments — two of them
 /// same-typed `AccountId`s with opposite meanings — is a builder in which swapping them still
 /// compiles.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct MintIdentities {
     sender: AccountId,
     faucet: AccountId,
@@ -110,8 +111,8 @@ impl MintIdentities {
         self.faucet
     }
 
-    /// The operator-configured attester public key (33-byte compressed SEC1). It is a KEY, not an
-    /// authority: whether it is allowlisted is the faucet's `xReserveAttesters` to say, on-chain.
+    /// The operator-configured attester public key. It is a KEY, not an authority: whether it is
+    /// allowlisted is the faucet's `xReserveAttesters` to say, on-chain.
     pub fn attester(&self) -> &AttesterPubkey {
         &self.attester
     }
@@ -387,7 +388,9 @@ async fn classify_one<R: FeltRng>(
     // ---- step 4 — the DepositIntent, through the shared encoding crate's codec ------------------------------------
     // The envelope layer validated the BINDING, never the structure — Circle can and does sign a
     // payload this codec refuses — so this is where a non-DepositIntent stops.
-    let intent = match decode_and_validate_deposit_intent(attestation.deposit_intent().as_bytes()) {
+    let intent = match DepositIntent::try_from(attestation.payload())
+        .map_err(RelayerError::from_deposit_intent)
+    {
         Ok(intent) => intent,
         Err(error) => return entry(Disposition::Rejected(error)),
     };
@@ -402,7 +405,7 @@ async fn classify_one<R: FeltRng>(
     // ---- step 6 — the idempotency gate ----------------------------------------------------------
     // Keyed by the DepositIntent's own nonce — the same bytes32 the on-chain `usedNonces` assert
     // keys by, so the liveness backstop and the safety backstop dedup the same thing.
-    let nonce = *intent.nonce();
+    let nonce = *intent.header().nonce().as_bytes();
     match ctx.store.claim_nonce(&nonce, &message_hash) {
         Ok(ClaimOutcome::Claimed(_)) => {}
         Ok(ClaimOutcome::AlreadySeen(record)) => {
@@ -426,7 +429,9 @@ async fn classify_one<R: FeltRng>(
     let note = match build_mint_note(
         ctx.identities.sender(),
         ctx.identities.faucet(),
-        &attestation,
+        ctx.config.remote_domain(),
+        intent,
+        attestation.attestation(),
         ctx.identities.attester(),
         &mut *ctx.rng,
     ) {

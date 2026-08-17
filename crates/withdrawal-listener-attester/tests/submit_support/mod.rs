@@ -46,7 +46,7 @@ use withdrawal_listener_attester::validate::{validate_returned, ValidatedWithdra
 use withdrawal_listener_attester::withdrawal_api::{
     authorize_submission, build_withdraw_request, AuthorizedWithdrawal,
 };
-use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
+use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
 use mock_circle::{Endpoint, MockCircle};
 
@@ -133,7 +133,9 @@ pub fn payload_matching_fixture() -> BurnPayload {
     XReserveBurnItems {
         amount: AssetAmount::new(value).unwrap(),
         dest_domain: spec["destinationDomain"].as_u64().unwrap() as u32,
-        dest_recipient: decode_hex32(spec["destinationRecipient"].as_str().unwrap()),
+        dest_recipient: ForeignChainAddress::new(decode_hex32(
+            spec["destinationRecipient"].as_str().unwrap(),
+        )),
         salt: [0u8; 32],
     }
 }

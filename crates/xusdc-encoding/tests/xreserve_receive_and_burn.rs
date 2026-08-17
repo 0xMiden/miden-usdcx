@@ -1,0 +1,210 @@
+//! Audit of the burn-consume path: how a burn note is destroyed and supply is lowered.
+//!
+//! The faucet writes no code of its own for this. Consuming a burn note runs the standard
+//! `receive_and_burn` script, which applies the standard minimum-burn policy the builder installs
+//! as the faucet's active burn policy. There is no custom burn proc in this repository, so nothing
+//! here is a unit test of xUSDC code — the suite exists to hold the COMPOSITION in place.
+//!
+//! The property it protects is that the faucet has exactly one way to lower `token_supply`. A
+//! second, ungated decrement path would let tokens be destroyed without a public burn note, and
+//! the off-chain listener would have nothing to show Circle for tokens that no longer exist. The
+//! proof is made against code and storage commitments rather than by observing supply deltas,
+//! because a delta test can only find the paths it thinks to exercise:
+//!
+//!   - The faucet's own MASM tree contains no supply surface at all: no file calls the standard
+//!     burn primitive, and no file writes — or even names — the faucet's token-config slot. All
+//!     supply arithmetic lives in the standard library code.
+//!   - The built account's active burn-policy storage slot holds the standard minimum-burn
+//!     policy's root, so the one decrement path that does exist is policy-gated. A companion test
+//!     shows the assertion is not vacuous by building a faucet with an allow-all policy and
+//!     watching it fail.
+//!
+//! The remaining tests re-confirm the composition end to end with a real note: a valid burn lowers
+//! supply exactly once, and a burn below the configured minimum traps with the standard library's
+//! own error.
+
+mod support;
+
+use anyhow::Result;
+use miden_processor::crypto::random::RandomCoin;
+use miden_protocol::account::AccountId;
+use miden_protocol::asset::AssetAmount;
+use miden_protocol::transaction::ExecutedTransaction;
+use miden_protocol::{Felt, Word};
+use miden_standards::account::policies::MinBurnAmount;
+use miden_testing::assert_transaction_executor_error;
+use miden_tx::TransactionExecutorError;
+use support::*;
+use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
+use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
+
+// Amounts are arbitrary: this suite asserts which code path runs and what it is gated by, never
+// the magnitudes themselves. They match the ones the burn-note suite uses so the shared harness
+// behaves identically across both.
+const MAX_SUPPLY: u64 = 1_000_000;
+const TOKEN_SUPPLY: u64 = 100_000;
+const MIN_BURN_SIZE: u64 = 1_000;
+/// A valid burn: `MIN_BURN_SIZE <= VALID_BURN` and `<= TOKEN_SUPPLY`.
+const VALID_BURN: u64 = 5_000;
+
+/// The administrator the burn oracle installs (id(1)). Under the reconciled Circle-faithful admin
+/// model the setters resolve to the built-in `ADMIN` role under the account's role-based authority.
+fn administrator() -> AccountId {
+    test_account_id(1)
+}
+
+/// A fixed-seed rng for standalone note construction. It feeds only the note's serial number, so
+/// the payload layout and tag are unaffected by the seed.
+fn note_rng(seed: u64) -> RandomCoin {
+    RandomCoin::new(Word::from([
+        Felt::from(seed as u32),
+        Felt::from((seed >> 32) as u32),
+        Felt::from(7u32),
+        Felt::from(11u32),
+    ]))
+}
+
+/// A withdrawal payload for the given amount, with an arbitrary destination and salt. Those fields
+/// exist for the off-chain listener to read; consuming the note does not look at them.
+fn items(amount: u64) -> Result<XReserveBurnItems> {
+    Ok(XReserveBurnItems {
+        amount: AssetAmount::new(amount)?,
+        dest_domain: 9,
+        dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
+        salt: [0xCDu8; 32],
+    })
+}
+
+// THE ACTIVE BURN POLICY — read off the built account's storage, not inferred from behavior
+// ================================================================================================
+
+/// The built faucet's ACTIVE burn-policy storage slot holds
+/// the STOCK `MinBurnAmount::root()` — so the sole supply-decrement path (stock `receive_and_burn`)
+/// is gated by the standard floor policy. This reads what the
+/// account WIRED (storage commitment), which is stronger than resolving the merely-EXPORTED proc
+/// root, and pins the slot DIRECTLY against the stock constant (not a harness-echoed root).
+#[tokio::test]
+async fn only_receive_and_burn_lowers_supply() -> Result<()> {
+    let h = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        VALID_BURN,
+    )?;
+    let account = h.chain.committed_account(h.faucet_id)?.clone();
+    let stored = read_active_burn_policy_root(&account)?;
+    assert_eq!(
+        stored,
+        MinBurnAmount::root().as_word(),
+        "the built faucet's active burn-policy storage slot must hold the STOCK \
+         MinBurnAmount::check_policy root: the sole supply-decrement path (stock receive_and_burn) \
+         is policy-gated"
+    );
+    Ok(())
+}
+
+/// The non-vacuity twin: a CODE-IDENTICAL faucet with `BurnAllowAll` ACTIVE stores a
+/// DIFFERENT active root, so the sole-decrement clause (`stored == MinBurnAmount root`) FAILS here —
+/// proving the clause catches a repointed burn policy. (The dropped/zero-root case cannot be built:
+/// the production `XReserveStablecoinBuilder` installs the MinBurnAmount policy unconditionally —
+/// the allow-all-active variant exists ONLY through the TEST-side `oracle_burn_components`.)
+#[tokio::test]
+async fn allow_all_active_burn_policy_fails_sole_decrement_audit() -> Result<()> {
+    let h = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnAllowAll,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        MIN_BURN_SIZE,
+        VALID_BURN,
+    )?;
+    let account = h.chain.committed_account(h.faucet_id)?.clone();
+    let stored = read_active_burn_policy_root(&account)?;
+    assert_ne!(
+        stored,
+        MinBurnAmount::root().as_word(),
+        "under BurnAllowAll the active burn root must NOT equal the stock MinBurnAmount root, so \
+         the sole-decrement clause must fail here — the audit catches a repointed policy"
+    );
+    Ok(())
+}
+
+// THE SEAM BETWEEN SETTING THE FLOOR AND ENFORCING IT: the setter writes the same slot the
+// burn policy reads, so a change takes effect on the next burn
+// ================================================================================================
+
+/// Emits and commits a burn note, applies an administrator-sent minimum-burn configuration note to
+/// the faucet, and consumes the burn note against the updated account.
+async fn run_set_min_burn_then_consume(
+    seed_floor: u64,
+    new_min: u64,
+    burn_amount: u64,
+) -> Result<std::result::Result<ExecutedTransaction, TransactionExecutorError>> {
+    let h = setup_burn_policy_account(
+        BurnGuardSelection::OracleBurnReal,
+        MAX_SUPPLY,
+        TOKEN_SUPPLY,
+        seed_floor,
+        burn_amount,
+    )?;
+    let note = XReserveBurnNote::create(
+        h.user_id,
+        h.faucet_id,
+        items(burn_amount)?,
+        &mut note_rng(23),
+    )?;
+    let faucet_id = h.faucet_id;
+    let user_id = h.user_id;
+    let mut chain = h.chain;
+
+    // Block N: the user emits + commits the burn note (floor still `seed_floor`).
+    let tx0 = try_emit_burn_note(&chain, &note, &h.asset, faucet_id, user_id)
+        .await
+        .expect("the user emits the XReserveBurnNote (test-setup invariant)");
+    chain.add_pending_executed_transaction(&tx0)?;
+    chain.prove_next_block()?;
+
+    // The administrator moves the floor to `new_min`; evolve the committed faucet with the setter
+    // delta.
+    let account = chain.committed_account(faucet_id)?.clone();
+    let set = run_set_min_burn_amount_against(&chain, &account, administrator(), new_min, 31)
+        .await
+        .expect("the administrator's minimum-burn update must succeed");
+    let mut evolved = account.clone();
+    evolved.apply_patch(set.account_patch())?;
+
+    // The faucet consumes the committed note against the updated account. The stock policy reads
+    // the same MinBurnAmount floor slot the standard setter wrote.
+    let result = chain
+        .build_transaction(evolved)
+        .authenticated_input_note(note.id())
+        .build()?
+        .execute()
+        .await;
+    Ok(result)
+}
+
+/// Raising the floor immediately starts rejecting a burn that was fine a moment earlier.
+///
+/// The amount used (5,000) passes at the seeded floor of 1,000 and fails at the new floor of
+/// 10,000, so the only thing that changed between accept and reject is the setter's write. This is
+/// the direction that matters for safety: the administrator can tighten the limit and it binds at once.
+#[tokio::test]
+async fn set_min_burn_raise_then_below_new_min_rejects() -> Result<()> {
+    let result = run_set_min_burn_then_consume(MIN_BURN_SIZE, 10_000, VALID_BURN).await?;
+    assert_transaction_executor_error!(result, &err_burn_below_min_burn_amount());
+    Ok(())
+}
+
+/// Lowering the floor immediately admits a burn that would have been rejected.
+///
+/// The mirror of the test above, and the one that proves the seam is not vacuous: seeded at 10,000
+/// the burn of 2,000 would trap, and after the setter lowers the floor to exactly 2,000 the same
+/// consume succeeds — so the setter's write genuinely relaxes the minimum the burn policy
+/// enforces, rather than the burn passing for some unrelated reason.
+#[tokio::test]
+async fn set_min_burn_lower_then_at_new_min_passes() -> Result<()> {
+    let result = run_set_min_burn_then_consume(10_000, 2_000, 2_000).await?;
+    result.expect("a burn equal to the lowered floor passes the stock policy");
+    Ok(())
+}

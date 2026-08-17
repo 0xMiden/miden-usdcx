@@ -23,11 +23,11 @@ use miden_protocol::note::{Note, NoteId, NoteTag};
 use miden_protocol::transaction::InputNote;
 use miden_protocol::Word;
 
+use miden_standards::account::access::{Ownable2Step, PausableStorage};
+use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::MinBurnAmount;
-use xusdc_encoding::account::xreserve::{
-    DOMAIN_CONFIG_SLOT_LABEL, IDENTIFIER_CONFIG_SLOT_LABEL, USED_NONCES_SLOT_LABEL,
-    XRESERVE_ATTESTERS_SLOT_LABEL,
-};
+use miden_standards::interop::eth::EthEmbeddedAccountId;
+use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, IDENTIFIER_CONFIG_SLOT_LABEL};
 
 use crate::client::HarnessClient;
 use crate::mintburn::MintDomainConfig;
@@ -39,12 +39,6 @@ const TX_COMMIT_TIMEOUT: Duration = Duration::from_secs(240);
 const PATHN_TIMEOUT: Duration = Duration::from_secs(300);
 /// Bounded wait for a recipient's committed P2ID note to appear.
 const NOTE_SYNC_TIMEOUT: Duration = Duration::from_secs(240);
-
-const TOKEN_CONFIG_SLOT_LABEL: &str = "miden::standards::faucets::fungible::token_config";
-const IS_PAUSED_SLOT_LABEL: &str = "miden::standards::access::pausable::is_paused";
-/// The Ownable2Step owner slot; the value word is
-/// `[owner_suffix, owner_prefix, nominated_suffix, nominated_prefix]`.
-const OWNER_CONFIG_SLOT_LABEL: &str = "miden::standards::access::ownable2step::owner_config";
 
 // STORAGE READERS (node-truth account state)
 // ================================================================================================
@@ -62,21 +56,20 @@ pub(crate) fn is_zero_word(w: Word) -> bool {
     word4(w) == [0, 0, 0, 0]
 }
 
-fn value_slot(account: &Account, label: &str) -> Result<Word> {
-    let name = StorageSlotName::new(label).with_context(|| format!("slot label '{label}'"))?;
+fn value_slot(account: &Account, name: &StorageSlotName) -> Result<Word> {
     account
         .storage()
-        .get_item(&name)
-        .with_context(|| format!("reading value slot '{label}'"))
+        .get_item(name)
+        .with_context(|| format!("reading value slot '{name}'"))
 }
 
 /// `token_config = [token_supply, max_supply, decimals, symbol]`.
 pub(crate) fn token_supply(account: &Account) -> Result<u64> {
-    Ok(value_slot(account, TOKEN_CONFIG_SLOT_LABEL)?[0].as_canonical_u64())
+    Ok(value_slot(account, FungibleFaucet::token_config_slot())?[0].as_canonical_u64())
 }
 
 pub(crate) fn max_supply(account: &Account) -> Result<u64> {
-    Ok(value_slot(account, TOKEN_CONFIG_SLOT_LABEL)?[1].as_canonical_u64())
+    Ok(value_slot(account, FungibleFaucet::token_config_slot())?[1].as_canonical_u64())
 }
 
 /// The committed minimum burn size — read from the STOCK [`MinBurnAmount`] floor slot
@@ -94,7 +87,7 @@ pub(crate) fn min_burn(account: &Account) -> Result<u64> {
 /// gate compares a mint's `remoteDomain` against. Read from the DEPLOYED faucet so the `--faucet-id`
 /// mint carries the RIGHT domain (a domain id is a u32, so an out-of-u32 slot value is an error).
 pub(crate) fn domain_config(account: &Account) -> Result<u32> {
-    let raw = value_slot(account, DOMAIN_CONFIG_SLOT_LABEL)?[0].as_canonical_u64();
+    let raw = value_slot(account, XReserveFaucetExtension::domain_config_slot())?[0].as_canonical_u64();
     u32::try_from(raw).map_err(|_| {
         anyhow::anyhow!("faucet domain-config slot holds {raw}, which does not fit a u32 domain id")
     })
@@ -104,28 +97,33 @@ pub(crate) fn domain_config(account: &Account) -> Result<u32> {
 /// `bytes32_to_storage_map_key(identifier_bytes)` Word. Used to VERIFY a resolved mint config's `remote_token`
 /// hashes to what the deployed faucet actually stored, before any mint is emitted.
 pub(crate) fn identifier_config(account: &Account) -> Result<Word> {
-    value_slot(account, IDENTIFIER_CONFIG_SLOT_LABEL)
+    let name = StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
+        .context("the identifier slot label is a valid constant")?;
+    value_slot(account, &name)
 }
 
 /// `true` iff the faucet's `is_paused` slot is set (non-zero element 0).
 pub(crate) fn is_paused(account: &Account) -> Result<bool> {
-    Ok(value_slot(account, IS_PAUSED_SLOT_LABEL)?[0].as_canonical_u64() != 0)
+    Ok(value_slot(account, PausableStorage::is_paused_slot())?[0].as_canonical_u64() != 0)
 }
 
 pub(crate) fn used_nonce_marker(account: &Account, key: Word) -> Result<Word> {
-    let name = StorageSlotName::new(USED_NONCES_SLOT_LABEL).context("used_nonces slot label")?;
     account
         .storage()
-        .get_map_item(&name, StorageMapKey::new(key))
+        .get_map_item(
+            XReserveFaucetExtension::used_nonces_slot(),
+            StorageMapKey::new(key),
+        )
         .map_err(|e| anyhow::anyhow!("reading usedNonces[{key:?}]: {e}"))
 }
 
 pub(crate) fn attester_marker(account: &Account, commitment: Word) -> Result<Word> {
-    let name = StorageSlotName::new(XRESERVE_ATTESTERS_SLOT_LABEL)
-        .context("xReserveAttesters slot label")?;
     account
         .storage()
-        .get_map_item(&name, StorageMapKey::new(commitment))
+        .get_map_item(
+            XReserveFaucetExtension::xreserve_attesters_slot(),
+            StorageMapKey::new(commitment),
+        )
         .map_err(|e| anyhow::anyhow!("reading xReserveAttesters[{commitment:?}]: {e}"))
 }
 
@@ -134,7 +132,7 @@ pub(crate) fn attester_marker(account: &Account, commitment: Word) -> Result<Wor
 /// GROUND TRUTH used by the finally-phase restore — never a client-side boolean that a failed/unseen
 /// accept could leave stale.
 pub(crate) fn owner_config(account: &Account) -> Result<(AccountId, Option<AccountId>)> {
-    let w = value_slot(account, OWNER_CONFIG_SLOT_LABEL)?;
+    let w = value_slot(account, Ownable2Step::slot_name())?;
     let owner = AccountId::try_from_elements(w[0], w[1])
         .map_err(|e| anyhow::anyhow!("decoding owner_config current owner: {e}"))?;
     let e = word4(w);
@@ -191,7 +189,7 @@ pub(crate) struct SanityDriver {
     /// The domain config every mint payload must carry so the structural validation gate accepts it. `None` on the
     /// fresh-LOCAL full gate (mints use the [`crate::mintburn::BASE_VECTOR`] header unchanged);
     /// `Some` on the existing-faucet (`--faucet-id`) re-check — resolved once from the DEPLOYED
-    /// faucet's on-chain `domain` + `account_id_to_bytes32(faucet_id)`, then applied to EVERY mint
+    /// faucet's on-chain `domain` + `EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()`, then applied to EVERY mint
     /// (positives, negatives, and burn-funding), since all target the same faucet.
     pub(crate) mint_config: Option<MintDomainConfig>,
 }

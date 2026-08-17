@@ -1,0 +1,264 @@
+//! Faucet-account CONSTRUCTION: the faucet-extension component type, the fixed-identity USDCx
+//! faucet, the crate-root `Account` constructor, and [`XReserveStablecoinBuilder::build_account`].
+//!
+//! Split out of `builder/mod.rs` (which composes the component SET) so the two separable concerns —
+//! composing the components vs. turning them into the deployable `Account` — live apart and each file
+//! stays within the Rust file-size ceiling.
+
+use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
+use miden_protocol::account::{
+    Account, AccountComponent, AccountId, AccountType, AssetCallbackFlag, StorageSlot,
+    StorageSlotName,
+};
+use miden_protocol::asset::{AssetAmount, AssetCallbacks, TokenSymbol};
+use miden_protocol::block::FeeParameters;
+use miden_protocol::utils::sync::LazyLock;
+use miden_protocol::vm::Package;
+use miden_protocol::Word;
+use miden_standards::account::faucets::{FungibleFaucet, TokenName};
+
+use super::{
+    XReserveStablecoinBuilder, XReserveStablecoinBuilderError, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL,
+};
+use crate::xreserve::encoding::ForeignChainAddress;
+
+// CONSTANTS
+// ================================================================================================
+
+/// The metadata label the assembled `xreserve` component carries. It is a build-time label only —
+/// the account's code commitment is over the procedure roots and its storage over the slot values,
+/// neither of which depends on this string (the byte-identity suite proves it).
+const XRESERVE_COMPONENT_LABEL: &str = "xusdc-xreserve";
+
+/// What the faucet adds on top of the stock fungible faucet, assembled at build time from
+/// `asm/components/faucet_extension/`: the attestation mint policy and the attester allowlist
+/// setter.
+static FAUCET_EXTENSION_CODE: LazyLock<AccountComponentCode> = LazyLock::new(|| {
+    AccountComponentCode::from(
+        Package::read_from_bytes_trusted(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/assets/components/xreserve-faucet-extension.masp"
+        )))
+        .expect("the shipped account-component package deserializes"),
+    )
+});
+
+static DOMAIN_CONFIG_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
+    StorageSlotName::new("xusdc::xreserve::domain_config::domain")
+        .expect("storage slot name should be valid")
+});
+static SOURCE_DOMAIN_CONFIG_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
+    StorageSlotName::new("xusdc::xreserve::domain_config::source_domain")
+        .expect("storage slot name should be valid")
+});
+static XRESERVE_CONTRACT_HI_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
+    StorageSlotName::new("xusdc::xreserve::domain_config::xreserve_contract_hi")
+        .expect("storage slot name should be valid")
+});
+static XRESERVE_CONTRACT_LO_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
+    StorageSlotName::new("xusdc::xreserve::domain_config::xreserve_contract_lo")
+        .expect("storage slot name should be valid")
+});
+
+/// The nonce registry the replay guard reads and the mint path writes.
+static USED_NONCES_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
+    StorageSlotName::new("xusdc::xreserve::nonce_registry::used_nonces")
+        .expect("storage slot name should be valid")
+});
+
+/// The attester allowlist: the attestation check reads it and the `set_attester` admin path writes
+/// it, so the two co-own the same slot.
+static XRESERVE_ATTESTERS_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
+    StorageSlotName::new("xusdc::xreserve::attester_admin::xreserve_attesters")
+        .expect("storage slot name should be valid")
+});
+
+/// The xUSDC faucet's extension of the stock [`FungibleFaucet`] component:
+/// - the attestation-gated mint policy
+/// - the attester administration
+pub struct XReserveFaucetExtension {
+    domain: u32,
+    source_domain: u32,
+    xreserve_contract: ForeignChainAddress,
+}
+
+impl XReserveFaucetExtension {
+    /// Instantiates a new [`XReserveFaucetExtension`].
+    pub fn new(domain: u32, source_domain: u32, xreserve_contract: ForeignChainAddress) -> Self {
+        Self {
+            domain,
+            source_domain,
+            xreserve_contract,
+        }
+    }
+
+    // PUBLIC ACCESSORS
+    // --------------------------------------------------------------------------------------------
+
+    /// Returns the [`AccountComponentCode`] of this component.
+    pub fn code() -> &'static AccountComponentCode {
+        &FAUCET_EXTENSION_CODE
+    }
+
+    /// Returns the [`StorageSlotName`] holding the faucet's own Circle domain id.
+    pub fn domain_config_slot() -> &'static StorageSlotName {
+        &DOMAIN_CONFIG_SLOT_NAME
+    }
+
+    /// Returns the [`StorageSlotName`] holding the source domain deposits are accepted from.
+    pub fn source_domain_config_slot() -> &'static StorageSlotName {
+        &SOURCE_DOMAIN_CONFIG_SLOT_NAME
+    }
+
+    /// Returns the [`StorageSlotName`] holding the high half of the xReserve contract address.
+    pub fn xreserve_contract_hi_slot() -> &'static StorageSlotName {
+        &XRESERVE_CONTRACT_HI_SLOT_NAME
+    }
+
+    /// Returns the [`StorageSlotName`] holding the low half of the xReserve contract address.
+    pub fn xreserve_contract_lo_slot() -> &'static StorageSlotName {
+        &XRESERVE_CONTRACT_LO_SLOT_NAME
+    }
+
+    /// Returns the [`StorageSlotName`] of the consumed-nonce registry map.
+    pub fn used_nonces_slot() -> &'static StorageSlotName {
+        &USED_NONCES_SLOT_NAME
+    }
+
+    /// Returns the [`StorageSlotName`] of the attester allowlist map.
+    pub fn xreserve_attesters_slot() -> &'static StorageSlotName {
+        &XRESERVE_ATTESTERS_SLOT_NAME
+    }
+}
+
+impl From<XReserveFaucetExtension> for AccountComponent {
+    fn from(faucet_ext: XReserveFaucetExtension) -> Self {
+        let contract_addr = faucet_ext.xreserve_contract.to_packed_felts();
+        let contract_addr_hi = Word::new(contract_addr[0..4].try_into().expect("4 felts sliced"));
+        let contract_addr_lo = Word::new(contract_addr[4..8].try_into().expect("4 felts sliced"));
+
+        AccountComponent::new(
+            FAUCET_EXTENSION_CODE.clone(),
+            vec![
+                StorageSlot::with_value(
+                    XReserveFaucetExtension::domain_config_slot().clone(),
+                    Word::from([faucet_ext.domain, 0, 0, 0]),
+                ),
+                StorageSlot::with_value(
+                    XReserveFaucetExtension::source_domain_config_slot().clone(),
+                    Word::from([faucet_ext.source_domain, 0, 0, 0]),
+                ),
+                StorageSlot::with_value(
+                    XReserveFaucetExtension::xreserve_contract_hi_slot().clone(),
+                    contract_addr_hi,
+                ),
+                StorageSlot::with_value(
+                    XReserveFaucetExtension::xreserve_contract_lo_slot().clone(),
+                    contract_addr_lo,
+                ),
+                StorageSlot::with_empty_map(XReserveFaucetExtension::used_nonces_slot().clone()),
+                StorageSlot::with_empty_map(
+                    XReserveFaucetExtension::xreserve_attesters_slot().clone(),
+                ),
+            ],
+            AccountComponentMetadata::new(XRESERVE_COMPONENT_LABEL),
+        )
+        .expect("the faucet extension binds with its six declared slots")
+    }
+}
+
+impl XReserveStablecoinBuilder {
+    /// Builds the final composed faucet [`Account`] from `init_seed`: [`Self::build_components`] plus
+    /// the production keyless-network `AuthNetworkAccount` auth component ([`Self::auth_component`]),
+    /// assembled as `AccountType::Public`, with asset
+    /// callbacks enabled iff the composition installs the transfer-policy callback slots (it does:
+    /// xUSDC is a policed asset).
+    ///
+    /// This entry is byte-identical to composing the components and auth component with the same
+    /// seed.
+    pub fn build_account(
+        &self,
+        init_seed: [u8; 32],
+    ) -> Result<Account, XReserveStablecoinBuilderError> {
+        let components = self.build_components()?;
+        // xUSDC is a policed asset: the transfer blocklist is the active send + receive policy, so
+        // the composition installs the two asset-callback slots and the account id must carry the
+        // Enabled flag for the kernel to dispatch the callbacks. Derived from the composition rather
+        // than hard-coded, so a composition that dropped the policy would flip the flag in lockstep.
+        let has_callbacks = components.iter().any(|component| {
+            component.storage_slots().iter().any(|slot| {
+                slot.name() == AssetCallbacks::on_before_asset_added_to_note_slot()
+                    || slot.name() == AssetCallbacks::on_before_asset_added_to_account_slot()
+            })
+        });
+        let flag = if has_callbacks {
+            AssetCallbackFlag::Enabled
+        } else {
+            AssetCallbackFlag::Disabled
+        };
+        let mut builder = Account::builder(init_seed)
+            .account_type(AccountType::Public)
+            .with_asset_callbacks(flag);
+        for component in components {
+            builder = builder.with_component(component);
+        }
+        builder = builder.with_components(Self::auth_component(self.fee_parameters.clone())?);
+        builder
+            .build()
+            .map_err(XReserveStablecoinBuilderError::AccountComposition)
+    }
+}
+
+/// Crate-root constructor for the final xUSDC faucet [`Account`]: builds the fixed-identity USDCx
+/// faucet (`is_max_supply_mutable(true)` — the mutability invariant enforced BY CONSTRUCTION rather
+/// than a runtime reject), then composes it into the attestation-gated keyless network account via
+/// [`XReserveStablecoinBuilder`]. It is the single entry point that turns deploy parameters into the
+/// deployable account, so account construction is traceable from the library root (the agglayer
+/// `create_bridge_account` pattern). `init_seed` seeds the account id.
+#[allow(clippy::too_many_arguments)]
+pub fn build_faucet_account(
+    init_seed: [u8; 32],
+    max_supply: AssetAmount,
+    token_supply: AssetAmount,
+    owner: AccountId,
+    pauser_holder: AccountId,
+    manager_holder: AccountId,
+    blocklist_manager_holder: AccountId,
+    fee_parameters: FeeParameters,
+    domain: u32,
+    source_domain: u32,
+    xreserve_contract: ForeignChainAddress,
+) -> Result<Account, XReserveStablecoinBuilderError> {
+    XReserveStablecoinBuilder::builder()
+        .max_supply(max_supply)
+        .token_supply(token_supply)
+        .owner(owner)
+        .pauser_holder(pauser_holder)
+        .manager_holder(manager_holder)
+        .blocklist_manager_holder(blocklist_manager_holder)
+        .fee_parameters(fee_parameters)
+        .domain(domain)
+        .source_domain(source_domain)
+        .xreserve_contract(xreserve_contract)
+        .build()?
+        .build_account(init_seed)
+}
+
+/// Builds the fixed-identity USDCx [`FungibleFaucet`]: name `USDCx`, symbol [`USDCX_TOKEN_SYMBOL`],
+/// [`USDCX_DECIMALS`] decimals, and `is_max_supply_mutable(true)` so the deployed `set_max_supply`
+/// stays operable. The identity fields are constants (the `.expect`s are invariants); setting the
+/// mutability flag here is what guarantees it by construction, replacing the removed runtime reject.
+pub(super) fn build_usdcx_faucet(
+    max_supply: AssetAmount,
+    token_supply: AssetAmount,
+) -> Result<FungibleFaucet, XReserveStablecoinBuilderError> {
+    FungibleFaucet::builder()
+        .name(TokenName::new("USDCx").expect("USDCx is a valid token name"))
+        .symbol(TokenSymbol::new(USDCX_TOKEN_SYMBOL).expect("the USDCX symbol constant is valid"))
+        .decimals(USDCX_DECIMALS)
+        .max_supply(max_supply)
+        .token_supply(token_supply)
+        .is_max_supply_mutable(true)
+        .build()
+        .map_err(XReserveStablecoinBuilderError::FaucetComposition)
+}

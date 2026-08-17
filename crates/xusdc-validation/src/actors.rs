@@ -22,7 +22,8 @@ use miden_standards::account::inspection::AccountBuilderSchemaCommitmentExt;
 use miden_standards::account::wallets::BasicWallet;
 use rand::rngs::OsRng;
 use sha3::{Digest, Keccak256};
-use xusdc_encoding::note::xreserve_mint::MintAttestation;
+use xusdc_encoding::note::xreserve_mint::DepositAttestation;
+use xusdc_encoding::xreserve::encoding::Signature;
 
 use crate::client::{os_seed, HarnessClient};
 
@@ -37,6 +38,8 @@ pub struct AttesterKey {
     signing_key: SigningKey,
     /// SEC1-compressed public key (33 bytes).
     pub pubkey_sec1: [u8; 33],
+    /// The same key, decoded — what the mint note carries.
+    pub public_key: PublicKey,
     /// SEC1-compressed public key (33 bytes), hex.
     pub pubkey_sec1_hex: String,
     /// `PublicKey::to_commitment()` — the attester-allowlist storage key the faucet stores.
@@ -54,10 +57,10 @@ impl AttesterKey {
     }
 
     /// Signs `keccak256(payload)` with this attester and bundles the raw 65-byte `r‖s‖v` signature
-    /// with the 33-byte compressed pubkey into the production [`MintAttestation`] the relayer hands
+    /// with the decoded pubkey into the production [`DepositAttestation`] the relayer hands
     /// [`xusdc_encoding::note::xreserve_mint::XUsdcMintNote::create`] (same recipe as the
     /// `gen_attester` MockChain fixture).
-    pub fn attestation_for(&self, payload: &[u8]) -> MintAttestation {
+    pub fn attestation_for(&self, payload: &[u8]) -> DepositAttestation {
         let mut hasher = Keccak256::new();
         hasher.update(payload);
         let digest: [u8; 32] = hasher.finalize().into();
@@ -68,7 +71,7 @@ impl AttesterKey {
         let mut sig65 = [0u8; 65];
         sig65[..64].copy_from_slice(sig.to_bytes().as_slice());
         sig65[64] = recid.to_byte();
-        MintAttestation::new(sig65, self.pubkey_sec1)
+        DepositAttestation::new(Signature::new(sig65), self.public_key.clone())
     }
 
     /// Signs an ARBITRARY 32-byte `digest` with this attester's key and bundles it with this
@@ -79,7 +82,7 @@ impl AttesterKey {
     /// commitment gate (the pubkey stays this allowlisted attester's). A well-formed-but-wrong
     /// signature is deliberate: a byte-mangled signature could instead trap inside `verify_prehash`
     /// on a malformed scalar rather than returning "invalid".
-    pub fn attestation_over_digest(&self, digest: [u8; 32]) -> MintAttestation {
+    pub fn attestation_over_digest(&self, digest: [u8; 32]) -> DepositAttestation {
         let (sig, recid): (K256Signature, RecoveryId) = self
             .signing_key
             .sign_prehash_recoverable(&digest)
@@ -87,7 +90,7 @@ impl AttesterKey {
         let mut sig65 = [0u8; 65];
         sig65[..64].copy_from_slice(sig.to_bytes().as_slice());
         sig65[64] = recid.to_byte();
-        MintAttestation::new(sig65, self.pubkey_sec1)
+        DepositAttestation::new(Signature::new(sig65), self.public_key.clone())
     }
 }
 
@@ -181,6 +184,7 @@ impl AttesterKey {
         Ok(AttesterKey {
             signing_key,
             pubkey_sec1,
+            public_key,
             pubkey_sec1_hex,
             commitment,
             commitment_hex,

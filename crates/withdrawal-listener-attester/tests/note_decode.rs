@@ -19,21 +19,20 @@ use assert_matches::assert_matches;
 use miden_protocol::account::AccountId;
 use miden_protocol::note::{NoteAttachments, NoteMetadata, NoteType, PartialNoteMetadata};
 use miden_protocol::Felt;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use rstest::rstest;
 use withdrawal_listener_attester::error::DecodeError;
 use withdrawal_listener_attester::note_decode::{
     decode_burn_payload, read_sender, BurnNoteMetadata,
 };
 use xusdc_encoding::vectors::{load, parse_hex32, BnVector};
-use xusdc_encoding::xreserve::encoding::{
-    account_id_to_bytes32, bytes32_to_account_id, EncodingError, XReserveBurnItems,
-    BURN_NOTE_ITEMS_FELTS,
-};
+use xusdc_encoding::xreserve::encoding::EthEmbeddedAccountIdExt;
+use xusdc_encoding::xreserve::encoding::{EncodingError, XReserveBurnItems, BURN_NOTE_ITEMS_FELTS};
 
 // HELPERS
 // ================================================================================================
 
-/// The `bn` accept vectors — the golden `NoteStorage.items` layouts (min / typical / max).
+/// The `bn` accept vectors — the golden burn-payload layouts (min / typical / max).
 fn accept_vectors() -> Vec<&'static BnVector> {
     let v: Vec<_> = load()
         .families
@@ -60,7 +59,9 @@ fn golden_senders() -> Vec<(AccountId, [u8; 32])> {
         .filter(|a| a.id.starts_with("aid-rt"))
         .map(|a| {
             let bytes = parse_hex32(&a.bytes32);
-            let id = bytes32_to_account_id(&bytes).expect("aid round-trip vector is a valid id");
+            let id = EthEmbeddedAccountId::try_from_bytes32(bytes)
+                .expect("aid round-trip vector is a valid id")
+                .into_account_id();
             (id, bytes)
         })
         .collect();
@@ -127,8 +128,8 @@ fn t_la_01_decode_is_the_unit_04_codec_by_reference() {
     }
 }
 
-/// Felt-exact round trip: re-encoding what was decoded reproduces the golden `NoteStorage.items`
-/// felts bit for bit. A decoder that dropped, reordered, or truncated a field cannot survive this.
+/// Felt-exact round trip: re-encoding what was decoded reproduces the golden burn-payload felts bit
+/// for bit. A decoder that dropped, reordered, or truncated a field cannot survive this.
 #[test]
 fn t_la_01_decode_round_trips_to_the_golden_felts() {
     for vector in accept_vectors() {
@@ -176,7 +177,8 @@ fn t_la_01_recipient_and_salt_are_not_interchangeable() {
         .expect("bn-pos-typical vector present");
     let expected = vector.expected_struct();
     assert_ne!(
-        expected.dest_recipient, expected.salt,
+        expected.dest_recipient.as_bytes(),
+        &expected.salt,
         "the vector itself must distinguish the two regions, or this test proves nothing"
     );
     let decoded = decode_burn_payload(&vector.items_values()).expect("typical payload decodes");
@@ -300,7 +302,7 @@ fn t_la_04_sender_feeds_remote_depositor() {
         let read = read_sender(&BurnNoteMetadata::from_metadata(&public_metadata(sender)))
             .expect("sender reads back");
         assert_eq!(
-            account_id_to_bytes32(read),
+            EthEmbeddedAccountId::from_account_id(read).to_bytes32(),
             bytes32,
             "the burner's bytes32 (= remoteDepositor) is the DC-6 encoding of the sender read"
         );

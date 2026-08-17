@@ -31,7 +31,8 @@ use assert_matches::assert_matches;
 use xreserve_deposit_relayer::config::RelayerConfig;
 use xreserve_deposit_relayer::cycle::{run_relayer_cycle, Disposition, RelayerCtx};
 use xreserve_deposit_relayer::error::RelayerError;
-use xreserve_deposit_relayer::validate::{check_domain_token_against_info, DepositIntent};
+use xreserve_deposit_relayer::validate::check_domain_token_against_info;
+use xusdc_encoding::xreserve::encoding::{DepositIntent, EthEmbeddedAccountId};
 
 use cycle_support::{cycle_client, cycle_identities, cycle_store, ScriptedSubmit};
 use fixtures::{canonical_payload, TEST_VECTOR_PAYLOAD_ID};
@@ -62,7 +63,7 @@ async fn the_matching_domain_and_token_pass() {
 async fn reject_remote_domain_mismatch() {
     let intent = canonical_intent();
     let mut config = config_matching(&intent, true);
-    config = with_remote_domain(config, intent.remote_domain().wrapping_add(1));
+    config = with_remote_domain(config, intent.header().remote_domain().wrapping_add(1));
     let info = advertised_info(&intent).await;
 
     let error = check_domain_token_against_info(&intent, &info, &config)
@@ -71,7 +72,7 @@ async fn reject_remote_domain_mismatch() {
     assert_matches!(
         error,
         RelayerError::DomainMismatch { expected, actual }
-            if expected == intent.remote_domain().wrapping_add(1) && actual == intent.remote_domain()
+            if expected == intent.header().remote_domain().wrapping_add(1) && actual == intent.header().remote_domain()
     );
     assert!(
         !error.is_retryable(),
@@ -85,7 +86,7 @@ async fn reject_remote_domain_mismatch() {
 #[tokio::test]
 async fn reject_remote_token_mismatch() {
     let intent = canonical_intent();
-    let mut foreign = *intent.remote_token();
+    let mut foreign = identifier_of(&intent);
     foreign[31] ^= 0xFF;
     let config = with_xusdc_identifier(config_matching(&intent, true), foreign);
     let info = advertised_info(&intent).await;
@@ -96,7 +97,7 @@ async fn reject_remote_token_mismatch() {
     assert_matches!(
         error,
         RelayerError::TokenMismatch { expected, actual }
-            if expected == foreign && actual == *intent.remote_token()
+            if expected == foreign && actual == identifier_of(&intent)
     );
     assert!(!error.is_retryable());
 }
@@ -107,10 +108,13 @@ async fn reject_remote_token_mismatch() {
 #[tokio::test]
 async fn a_domain_mismatch_is_reported_before_a_token_mismatch() {
     let intent = canonical_intent();
-    let mut foreign = *intent.remote_token();
+    let mut foreign = identifier_of(&intent);
     foreign[0] ^= 0xFF;
     let config = with_xusdc_identifier(
-        with_remote_domain(config_matching(&intent, true), intent.remote_domain() + 7),
+        with_remote_domain(
+            config_matching(&intent, true),
+            intent.header().remote_domain() + 7,
+        ),
         foreign,
     );
 
@@ -133,7 +137,7 @@ async fn a_configured_domain_circle_does_not_advertise_is_refused() {
     // the intent and the config agree, so neither attestation check can fire; discovery is the one
     // that disagrees, advertising a domain nobody here is configured for. (Both values stay
     // placeholders — the real Miden domain id awaits Circle.)
-    let unadvertised = intent.remote_domain() + 7;
+    let unadvertised = intent.header().remote_domain() + 7;
     let info = fetched_info(mock_circle::info_body_for(
         unadvertised,
         mock_circle::FIXTURE_XUSDC_IDENTIFIER,
@@ -144,7 +148,7 @@ async fn a_configured_domain_circle_does_not_advertise_is_refused() {
         .expect_err("Circle does not advertise the configured domain");
     assert_matches!(
         error,
-        RelayerError::InfoDomainNotAdvertised { domain } if domain == intent.remote_domain()
+        RelayerError::InfoDomainNotAdvertised { domain } if domain == intent.header().remote_domain()
     );
 }
 
@@ -221,7 +225,10 @@ async fn the_cycle_refuses_a_domain_mismatch_before_the_submit_port() {
     );
 
     let intent = canonical_intent();
-    let config = with_remote_domain(config_matching(&intent, true), intent.remote_domain() + 1);
+    let config = with_remote_domain(
+        config_matching(&intent, true),
+        intent.header().remote_domain() + 1,
+    );
 
     let sink = RecordingSink::new();
     let client = cycle_client(&mock, &config, sink.clone());
@@ -299,10 +306,14 @@ async fn a_broken_info_fetch_fails_the_cycle_rather_than_disabling_the_check() {
 /// the expected `remoteDomain`/`remoteToken` are read from the golden artifact, never restated
 /// here.
 fn canonical_intent() -> DepositIntent {
-    xreserve_deposit_relayer::validate::decode_and_validate_deposit_intent(&canonical_payload(
-        TEST_VECTOR_PAYLOAD_ID,
-    ))
-    .expect("the canonical vector is a valid DepositIntent")
+    DepositIntent::try_from(canonical_payload(TEST_VECTOR_PAYLOAD_ID).as_slice())
+        .expect("the canonical vector is a valid DepositIntent")
+}
+
+/// The configured-identifier form of an intent's `remoteToken`: the bytes32 packaging the operator
+/// writes it in, which is the form the fast-fail compares against.
+fn identifier_of(intent: &DepositIntent) -> [u8; 32] {
+    EthEmbeddedAccountId::from_account_id(intent.header().remote_token()).to_bytes32()
 }
 
 /// A config whose Circle-owned expectations MATCH `intent` — the values the still-OPEN domain and
@@ -311,8 +322,8 @@ fn canonical_intent() -> DepositIntent {
 fn config_matching(intent: &DepositIntent, fast_fail: bool) -> RelayerConfig {
     serde_json::from_value(serde_json::json!({
         "circle_base_url": MOCK_BASE_URL,
-        "remote_domain": intent.remote_domain(),
-        "xusdc_identifier": intent.remote_token().to_vec(),
+        "remote_domain": intent.header().remote_domain(),
+        "xusdc_identifier": identifier_of(intent).to_vec(),
         "faucet_account_id": faucet_id().to_hex(),
         "rate_qps_per_ip": 5,
         "rate_qps_global": 35,
@@ -341,8 +352,8 @@ fn with_xusdc_identifier(config: RelayerConfig, identifier: [u8; 32]) -> Relayer
 /// identifier are still OPEN).
 fn advertised_info_body(intent: &DepositIntent) -> serde_json::Value {
     mock_circle::info_body_for(
-        intent.remote_domain(),
-        &format!("0x{}", hex::encode(intent.remote_token())),
+        intent.header().remote_domain(),
+        &format!("0x{}", hex::encode(identifier_of(intent))),
     )
 }
 

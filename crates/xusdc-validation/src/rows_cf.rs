@@ -31,7 +31,7 @@ use miden_client::transaction::{
     TransactionId, TransactionRequestBuilder, TransactionScript, TransactionStatus,
 };
 use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey, StorageSlotName};
-use miden_protocol::asset::FungibleAsset;
+use miden_protocol::asset::{AssetAmount, FungibleAsset};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::{Note, NoteType};
@@ -40,12 +40,13 @@ use miden_standards::account::access::{PausableStorage, RoleBasedAccessControl};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::MinBurnAmount;
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::P2idNote;
+use miden_standards::note::{
+    FaucetMetadataConfig, FaucetMetadataConfigNote, MinBurnAmountConfigNote, P2idNote,
+};
 use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, DOM_PAUSER_ROLE};
 use xusdc_encoding::note::xreserve_admin::{
     XReserveGrantRoleNote, XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote,
-    XReserveSetAttesterNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-    XReserveUnpauseNote,
+    XReserveSetAttesterNote, XReserveUnpauseNote,
 };
 use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
 
@@ -387,14 +388,28 @@ impl Driver {
             .context("building a set_attester note")
     }
     fn set_max_supply_note(&mut self, sender: AccountId, cap: u64) -> Result<Note> {
-        let f = self.faucet_id;
-        XReserveSetMaxSupplyNote::create(sender, f, cap, self.rng())
-            .context("building a set_max_supply note")
+        let faucet = self.faucet_id;
+        let note = FaucetMetadataConfigNote::builder()
+            .sender(sender)
+            .target(faucet)
+            .config(FaucetMetadataConfig::SetMaxSupply {
+                max_supply: AssetAmount::new(cap).context("invalid maximum supply")?,
+            })
+            .generate_serial_number(self.rng())
+            .build()
+            .context("building a set_max_supply note")?;
+        Ok(Note::from(note))
     }
     fn set_min_burn_note(&mut self, sender: AccountId, min: u64) -> Result<Note> {
         let f = self.faucet_id;
-        XReserveSetMinBurnSizeNote::create(sender, f, min, self.rng())
-            .context("building a set_min_burn note")
+        let note = MinBurnAmountConfigNote::builder()
+            .sender(sender)
+            .target(f)
+            .min_burn_amount(AssetAmount::new(min).context("invalid minimum burn amount")?)
+            .generate_serial_number(self.rng())
+            .build()
+            .context("building a minimum-burn configuration note")?;
+        Ok(Note::from(note))
     }
     fn pause_note(&mut self, sender: AccountId) -> Result<Note> {
         let f = self.faucet_id;

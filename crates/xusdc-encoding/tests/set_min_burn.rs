@@ -114,11 +114,11 @@ fn probe_stock_min_burn_setter_installed() -> Result<()> {
     Ok(())
 }
 
-// THE SETTER IS NOT PAUSE-GATED — the ADMINISTRATOR may set_min_burn_size while the faucet is paused
+// THE SETTER IS NOT PAUSE-GATED: the administrator may update the minimum while the faucet is paused
 // ================================================================================================
 
 /// After the Domain Pauser pauses the faucet (the stock `PausableManager`, role-gated), an
-/// `ADMIN`-sent `set_min_burn_size` SUCCEEDS while paused: the admin setters are deliberately NOT
+/// An administrator-sent minimum-burn configuration note succeeds while paused: the setter is not
 /// pause-gated, so the burn floor can be adjusted during a pause. The full word `[new_min,0,0,0]`
 /// lands despite is_paused == true; the administrator gate still governs it (the rejection tests
 /// above prove that half).
@@ -135,10 +135,10 @@ async fn set_min_burn_administrator_succeeds_while_paused() -> Result<()> {
     let mut evolved = account.clone();
     evolved.apply_patch(paused.account_patch())?;
 
-    // tx2: the OWNER's set_min_burn_size(M) SUCCEEDS while paused — setters are not pause-gated.
-    let executed = run_set_min_burn_size_against(&h.chain, &evolved, administrator(), NEW_MIN, 7)
+    // tx2: the administrator's minimum-burn update succeeds while paused.
+    let executed = run_set_min_burn_amount_against(&h.chain, &evolved, administrator(), NEW_MIN, 7)
         .await
-        .expect("the administrator's set_min_burn_size(M) must succeed while the faucet is paused");
+        .expect("the administrator's minimum-burn update must succeed while the faucet is paused");
     evolved.apply_patch(executed.account_patch())?;
 
     assert_eq!(

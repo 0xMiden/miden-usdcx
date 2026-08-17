@@ -45,7 +45,7 @@ use miden_protocol::assembly::Package;
 use miden_protocol::asset::{AssetAmount, AssetCallbacks, FungibleAsset, TokenSymbol};
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::MasmError;
-use miden_protocol::note::{Note, NoteType};
+use miden_protocol::note::{Note, NoteScript, NoteType};
 use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
@@ -59,7 +59,10 @@ use miden_standards::account::policies::{
 };
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::{BurnNote, ConstantFeePolicyConfigNote};
+use miden_standards::note::{
+    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
+    FeeSponsorshipNote, MintNote, PauseConfigNote, RbacConfigNote,
+};
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
@@ -68,6 +71,7 @@ use xusdc_encoding::account::xreserve::{
     XReserveStablecoinBuilderError, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::errors;
+use xusdc_encoding::note::xreserve_admin::{XReserveMinBurnAmountNote, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::xreserve::encoding::{DepositIntent, ForeignChainAddress};
 use xusdc_encoding::xreserve_lib::XReserveLibrary;
@@ -524,6 +528,35 @@ pub fn production_component_set(
 ) -> Result<Vec<AccountComponent>> {
     production_builder_outcome(max_supply, token_supply, None)?
         .map_err(|e| anyhow::anyhow!("composing the production faucet components: {e}"))
+}
+
+/// The ten allowlisted note scripts as labelled `(name, script)` pairs: two supply notes, six
+/// administration and configuration notes (one faucet-owned, five standard), the constant-fee
+/// configuration note, and the sponsorship note. Single-sourced from the same factories
+/// [`XReserveStablecoinBuilder::allowed_note_scripts`] draws its roots from; the MAST sweeps that
+/// consume this list assert its roots equal that allowlist, so the two cannot drift.
+pub fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
+    vec![
+        ("stock_mint_note", MintNote::script()),
+        ("stock_burn_note", BurnNote::script()),
+        ("set_attester", XReserveSetAttesterNote::script()),
+        (
+            "stock_min_burn_amount_config_note",
+            XReserveMinBurnAmountNote::script(),
+        ),
+        ("stock_pause_action_note", PauseConfigNote::script()),
+        (
+            "stock_faucet_metadata_config_note",
+            FaucetMetadataConfigNote::script(),
+        ),
+        ("stock_blocklist_config_note", BlocklistConfigNote::script()),
+        ("stock_rbac_action_note", RbacConfigNote::script()),
+        (
+            "stock_constant_fee_policy_config_note",
+            ConstantFeePolicyConfigNote::script(),
+        ),
+        ("stock_fee_sponsorship_note", FeeSponsorshipNote::script()),
+    ]
 }
 
 /// The PRODUCTION builder verdict with the fixture SETUP errors separated from the builder's own

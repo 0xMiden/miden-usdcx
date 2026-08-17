@@ -28,7 +28,7 @@ external redemption decision                    <- signed by the withdrawal atte
 
 The local safety argument has two halves:
 
-1. Supply can increase only through the protocol mint accounting which requires the mint policy with its attestation policy to pass successfully.
+1. Supply can increase only through the standard mint accounting which requires the mint policy with its attestation policy to pass successfully.
 2. An accepted burn destroys the active USDCx asset and reduces `token_supply` by the same asset amount.
 
 That is not, by itself, a proof of one-to-one external backing. Local conservation is conditional on a correct initial state: the constructor accepts the initial `token_supply` independently from any distribution of initial assets. Reserve custody, external release, destination support, and finality policy are outside this code.
@@ -42,7 +42,7 @@ Standard configuration mutators (metadata setters, policy setters, freeze/unfree
 Two properties are load-bearing:
 
 - **Atomicity.** An assertion failure rejects the transaction and rolls back all of its writes.
-- **Two replay layers.** A note's protocol nullifier prevents reuse of that note; the application-level deposit nonce is separate state, because one signed deposit could otherwise be carried by more than one independently constructed mint note.
+- **Two replay layers.** A note's nullifier prevents reuse of that note; the application-level deposit nonce is separate state, because one signed deposit could otherwise be carried by more than one independently constructed mint note.
 
 ## 4. The faucet: composition and state
 
@@ -63,7 +63,7 @@ Rust factories and codecs reject malformed inputs early and create the intended 
 1. Network-account authentication requires the mint note's script root to be admitted.
 2. The mint policy requires exactly one mint transport attachment and one routing attachment, obtained through the protocol API that verifies attachment bytes against their commitment.
 3. Pause state and the faucet-asset binding sit in the `miden-standards` layer around the policy rather than in the policy itself: `policy_manager::execute_mint_policy` asserts the account is not paused and then dispatches the mint policy root recorded in storage, and the `miden-standards` `mint_and_send` asserts the note's asset is this faucet's own after the policy returns.
-4. The asset amount must be nonzero and representable; the same amount is inserted into the reconstructed signed bytes and later supplied to protocol mint accounting.
+4. The asset amount must be nonzero and representable; it is inserted into the reconstructed signed bytes and used for standard supply accounting.
 5. The note only carries a compressed intent, and the full signed intent (= message) is reconstructed from constants, onchain faucet account state, the active asset, and the compressed intent.
 6. The policy hashes the deposit intent (= message) with Keccak-256, derives a Poseidon2 commitment from the presented secp256k1 key, requires that commitment to be enabled in the attester map, and verifies the signature over the reconstructed message.
 7. It binds the output to a public recipient note, a tag derived deterministically from the recipient (`note_tag::create_account_target`), the derived recipient commitment, the exact amount, and a nonce-derived serial number, using the locally validated account-id representation.
@@ -73,7 +73,7 @@ Semantics worth stating plainly:
 
 - The signed `maxFee` is a ceiling (`maxFee <= amount`), not an amount paid. No separate `feeAmount` or relayer payout exists _today_; the complete amount goes to the recipient.
 - `localToken`, `localDepositor`, and `hookData` change the signature digest but carry no local semantics. The binding MASM does not yet reject zero `localToken`/`localDepositor` (the off-chain relayer does, but preflight is not the on-chain gate; adding the on-chain checks is planned). These fields are treated as opaque 32-byte values, not EVM-typed addresses. `hookData` is never executed.
-- The supported `hookData` ceiling is 3,840 bytes: the codec constant is computed at compile time as the note-attachment capacity less the fixed transport prefixes, and a compile-time assertion separately keeps the rebuilt preimage within the protocol's note-storage limit.
+- The supported `hookData` ceiling is 3,840 bytes: the codec constant is computed at compile time as the note-attachment capacity less the fixed transport prefixes, and a compile-time assertion separately keeps the rebuilt preimage within the Miden protocol's note-storage limit.
 
 ## 6. Burn and redemption path
 

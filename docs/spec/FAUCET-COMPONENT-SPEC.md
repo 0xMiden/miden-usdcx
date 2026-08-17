@@ -42,24 +42,23 @@ min-burn floor, a missing domain-config seed, or a non-Public faucet) at build t
 | `attestation_verify` | Keccaks the payload, checks the attester pubkey against the allowlist, and verifies the ECDSA signature. |
 | `attester_admin` | The authority-gated `set_attester` allowlist setter. |
 
-The burn floor and its setter are **stock**: the `MinBurnAmount` policy component carries the
-floor slot, its `check_policy` is the active burn policy, and the stock `MinBurnAmountConfigNote`
-calls its stock `set_min_burn_amount` (the zero floor is enforced by the builder at construction
-and by the `XReserveMinBurnAmountNote` factory at note-building time).
+The burn floor and its setter come from `miden-standards`: the `MinBurnAmount` policy component
+carries the floor slot, its `check_policy` is the active burn policy, and the
+`MinBurnAmountConfigNote` calls its `set_min_burn_amount` (the zero floor is enforced by the
+builder at construction and by the `XReserveMinBurnAmountNote` factory at note-building time).
 
 ### `notes/` — the note scripts
 
-Public note scripts that drive account procedures when consumed. The mint note is the **stock
-miden-standards `MintNote`** (no custom mint script exists); the one faucet-owned admin note is the
-thin, root-pinned `set_attester` script, which crosses into the account and calls the matching
-setter. Every other admin surface ships **no faucet-owned script**: the burn floor uses the stock
-`MinBurnAmountConfigNote` (through the `XReserveMinBurnAmountNote` factory, which refuses a
-zero floor), the supply cap uses the stock `FaucetMetadataConfigNote` (whose one root also carries
-the description/logo-uri/external-link setters — inert at runtime, since only the max supply is
-built mutable), and pausing, the transfer blocklist and role management use the stock
+Public note scripts that drive account procedures when consumed. The mint note is the
+**`miden-standards` `MintNote`** (no custom mint script exists); the one faucet-owned admin note is
+the thin, root-pinned `set_attester` script, which crosses into the account and calls the matching
+setter. Every other admin surface ships **no faucet-owned script**: the burn floor uses the
+`miden-standards` `MinBurnAmountConfigNote` (through the `XReserveMinBurnAmountNote` factory,
+which refuses a zero floor), the supply cap uses the `FaucetMetadataConfigNote` (whose one root
+also carries the description/logo-uri/external-link setters — inert at runtime, since only the max
+supply is built mutable), and pausing, the transfer blocklist and role management use the
 `PauseConfigNote`, `BlocklistConfigNote` and `RbacConfigNote`, each of which covers every one of
-its actions behind one script root and calls the stock component the account installs. There is no
-ownership note — the faucet installs no ownership component.
+its actions behind one script root and calls the `miden-standards` component the account installs.
 
 ## 3. Mint
 
@@ -175,7 +174,7 @@ completed burn is proven to Circle (the burn-evidence package) is OPEN (DEV-7, f
   role through the standard role-action note. The handover is single-step — there is no
   nominate-then-accept confirmation.
 - **Administrator-gated setters**: `set_attester` (allowlist), the stock `set_min_burn_amount`
-  (a zero floor is refused at note-building time), `set_max_supply`, and the stock
+  (a zero floor is refused at note-building time), `set_max_supply`, and the
   `ConstantFeeManager::set_note_fee` all resolve through
   the account-wide authority to the `ADMIN` role. They are
   intentionally **not** pause-gated (finding `F6`), so the administrator can, e.g., disable a

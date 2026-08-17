@@ -22,6 +22,7 @@ use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_tx::{NetworkNotePricer, NotePricingError};
 
 use super::{XReserveStablecoinBuilder, XReserveStablecoinBuilderError};
+use crate::note::xreserve_admin::{XReserveMinBurnAmountNote, XReserveSetAttesterNote};
 
 impl XReserveStablecoinBuilder {
     /// Returns the production faucet's note-script allowlist.
@@ -40,11 +41,10 @@ impl XReserveStablecoinBuilder {
             MintNote::script_root(),
             BurnNote::script_root(),
             // Faucet administration notes.
-            crate::note::xreserve_admin::XReserveSetAttesterNote::script_root(),
-            crate::note::xreserve_admin::XReserveMinBurnAmountNote::script_root(),
+            XReserveSetAttesterNote::script_root(),
+            XReserveMinBurnAmountNote::script_root(),
             FaucetMetadataConfigNote::script_root(),
             // Standard administration notes.
-            FaucetMetadataConfigNote::script_root(),
             PauseConfigNote::script_root(),
             BlocklistConfigNote::script_root(),
             RbacConfigNote::script_root(),

@@ -40,15 +40,21 @@ impl NoteConsumptionCost for XReserveSetAttesterNote {
     }
 }
 
-/// Returns the xUSDC-specific cost for `root`, or `None` when the standard cost applies.
-pub(crate) fn note_cost(root: NoteScriptRoot) -> Option<NoteCost> {
-    if root == XUsdcMintNote::script_root() {
-        Some(NoteCost::of::<XUsdcMintNote>())
-    } else if root == XReserveBurnNote::script_root() {
-        Some(NoteCost::of::<XReserveBurnNote>())
-    } else if root == XReserveSetAttesterNote::script_root() {
-        Some(NoteCost::of::<XReserveSetAttesterNote>())
-    } else {
-        None
-    }
+/// Returns the xUSDC-specific costs keyed by script root, in the shape the pricer's
+/// supplied-cost map takes; every other allowlisted root carries the standard cost.
+pub(crate) fn note_costs() -> [(NoteScriptRoot, NoteCost); 3] {
+    [
+        (
+            XUsdcMintNote::script_root(),
+            NoteCost::of::<XUsdcMintNote>(),
+        ),
+        (
+            XReserveBurnNote::script_root(),
+            NoteCost::of::<XReserveBurnNote>(),
+        ),
+        (
+            XReserveSetAttesterNote::script_root(),
+            NoteCost::of::<XReserveSetAttesterNote>(),
+        ),
+    ]
 }

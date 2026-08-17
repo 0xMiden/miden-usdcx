@@ -6,7 +6,7 @@ members = [
   "crates/withdrawal-listener-attester",
 ]
 # PARKED: `crates/xusdc-validation` sits outside the workspace. The three members above resolve
-# the protocol family from the published crates.io `=0.16.0-rc.4` release, but the validation
+# the protocol family from the published crates.io `=0.16.0-rc.5` release, but the validation
 # crate needs `miden-client`/`miden-client-sqlite-store`, whose newest releases
 # (`=0.16.0-alpha.1`) pin protocol `=0.16.0-alpha.4` — no client reaches rc.4, so the crate
 # cannot build alongside the rest.
@@ -28,7 +28,7 @@ exclude = [
 miden-assembly              = "=0.29.1"
 miden-core-lib              = "=0.29.1"
 miden-package-registry      = "=0.29.1"
-miden-protocol-build-utils  = "=0.16.0-rc.4"
+miden-protocol-build-utils  = "=0.16.0-rc.5"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -93,8 +93,18 @@ tempfile = "3"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query"] }
 tower = { version = "0.5", features = ["util"] }
 
-# No [patch.crates-io] block is needed: the three members resolve the whole protocol family from
-# the published crates.io `=0.16.0-rc.4` release their manifests pin, and the only other consumer
-# of that family — the `miden-client` stack of the parked `crates/xusdc-validation`
-# (`workspace.exclude`) — is outside the graph, so nothing pulls a second protocol copy that a
-# patch block would have to unify. Exactly one copy of each protocol crate is in the graph.
+# The [patch.crates-io] block at the bottom of this file is the TEMPORARY source override for the
+# protocol family the member manifests pin at `=0.16.0-rc.5`; the only other consumer of that
+# family — the `miden-client` stack of the parked `crates/xusdc-validation` (`workspace.exclude`) —
+# is outside the graph, so nothing pulls a second protocol copy. Exactly one copy of each protocol
+# crate is in the graph.
+
+# TEMPORARY until v0.16.0-rc.5 is published to crates.io: the protocol family resolves from the
+# v0.16.0-rc.5 tag of the protocol repository (the release that adds the pricer's supplied
+# note-cost map). Delete this block — and nothing else — once the rc.5 crates are published.
+[patch.crates-io]
+miden-protocol             = { git = "https://github.com/0xMiden/protocol", tag = "v0.16.0-rc.5" }
+miden-standards            = { git = "https://github.com/0xMiden/protocol", tag = "v0.16.0-rc.5" }
+miden-tx                   = { git = "https://github.com/0xMiden/protocol", tag = "v0.16.0-rc.5" }
+miden-testing              = { git = "https://github.com/0xMiden/protocol", tag = "v0.16.0-rc.5" }
+miden-protocol-build-utils = { git = "https://github.com/0xMiden/protocol", tag = "v0.16.0-rc.5" }

@@ -6,7 +6,7 @@ Circle **xReserve / xUSDC** (NOT standard USDC, NOT CCTP) on Miden: native USDC 
 
 1. **MASM-first.** All on-chain code (faucet, encoding module, note scripts) is **hand-written MASM**. Rust exists ONLY for off-chain services, mirrors, tests, harnesses, and tooling. There is NO `cargo miden build` / Rust-contract path in this repo (the `rust-sdk-patterns` skill family was deliberately excluded — see `.claude/skills/README.md`).
 2. **Plan first, build after approval.** Builders produce a plan + test matrix and STOP for human/audit approval before any source edit.
-3. **The governing docs bind every builder:** `docs/governing/CANONICAL-OWNERSHIP-MAP.md` (owners, layout, names) and `docs/governing/BUILDER-GATES.md` (G0–G8, G-MASM, G-RUST). Read both before any work. The specs and governing docs under `docs/` are the source of truth for this repository.
+3. **The code is the source of truth.** Shared formats have exactly one owner and consumers pin by reference; never fork a codec. `docs/ARCHITECTURE.md` is the orientation for how the faucet fits together.
 4. **Frozen decisions (do not revisit, do not alias):**
    - NS-1 (amended): bytes32→Word MASM proc = `xreserve::mint_intent::hash_nonce` — the `xreserve::encoding` module is gone, its contents folded into the two modules that own the wire forms. The Rust routine keeps `bytes32_to_storage_map_key`.
    - NS-3 (supersedes NS-2): the on-chain DepositIntent realization is 01-owned at `xreserve::deposit_intent::rebuild` — the faucet **writes** the signed preimage (DC-14) instead of parsing it, so the NS-2 parser is retired and must not be reintroduced. The Rust `DepositIntent` decode is unaffected.
@@ -32,7 +32,7 @@ crates/xusdc-encoding/       # Rust: the encoding mirror, the faucet-account bui
   asm/components/faucet_extension/  # what the faucet adds to the stock fungible faucet: the mint policy + attester admin
   asm/notes/                 # public admin note scripts, one project each (the mint note is the STOCK MintNote)
 crates/xusdc-validation/     # Rust: the real-local-node validation harness (LNV rows A–L)
-docs/governing/  docs/spec/  # governing conventions + pins; the spec, glossary, and encoding spec
+docs/                        # ARCHITECTURE.md, the orientation for the faucet and its trust model
 ```
 
 (This is the tree as built. The off-chain partner services — relayer, listener, monitoring — are
@@ -42,15 +42,13 @@ Build order: **04 shared encoding → 01 faucet (including its local-node valida
 
 ## Working in this repo (onboarding — for a human or a local coding agent)
 
-New here? Read the specs before the code. `README.md` is the top-level orientation;
-`docs/spec/FAUCET-COMPONENT-SPEC.md` is what the faucet does, and
-`docs/spec/ENCODING-COMPONENT-SPEC.md` is the shared codecs.
+New here? `README.md` is the top-level orientation and `docs/ARCHITECTURE.md` walks the mint and
+burn paths, the admin model, and where the trust boundaries sit.
 
 ### Code comments ↔ docs
 
 Inline code comments carry plain-English prose only — each comment stands on its own with no
-external lookups. Stable requirement, invariant, data-contract, and open-question IDs are defined
-in `docs/spec/GLOSSARY.md`.
+external lookups.
 
 ### Build / test / validate
 
@@ -76,10 +74,8 @@ the per-row `cargo run -p xusdc-validation --bin …` commands.
 
 ### Pairing tips
 
-- Plan first, build after approval (ground rule 2); the governing docs bind every change
-  (`docs/governing/CANONICAL-OWNERSHIP-MAP.md`, `docs/governing/BUILDER-GATES.md`).
-- Shared formats have exactly one owner (the ownership map); consumers pin by reference — don't fork a
-  codec.
+- Plan first, build after approval (ground rule 2).
+- Shared formats have exactly one owner; consumers pin by reference — don't fork a codec.
 - `DEV-*` / `Q-*` items are Circle-owned and stay OPEN; implement per spec, never mark them approved.
 - `.claude/skills/` holds the mandatory checklist skills; reviewer agents are in `.claude/agents/`.
 

@@ -17,8 +17,7 @@ plus the Rust encoding library and validation harness that support it.
 | `crates/xusdc-encoding/asm/notes/` | The public admin note scripts, one Miden project each (the mint note is the STOCK miden-standards `MintNote`). |
 | `crates/xusdc-encoding/` | Rust crate: the encoding library (the Rust mirror of the MASM codecs — bytes32 hashing, uint256→amount reduction, DepositIntent parse), the `XReserveStablecoinBuilder` that composes the faucet account, golden test vectors, the `build.rs` that assembles every MASM project above, and the **execute** test suite. |
 | `crates/xusdc-validation/` | Rust crate: the local-node validation harness that deploys the production faucet to a real Miden node and drives the mint/burn/admin acceptance matrix (rows `A`–`L`). |
-| `docs/spec/` | The specification: the faucet component spec, the shared-encoding spec, and the **identifier glossary**. |
-| `docs/governing/` | The pins, module-ownership map, MASM structure conventions, and toolchain grounding the code is built against. |
+| `docs/` | `ARCHITECTURE.md`: how the faucet fits together, the mint and burn paths, and where the trust boundaries sit. |
 
 ## How it works
 
@@ -71,14 +70,13 @@ deposit and burns it on withdrawal.
   `RbacConfigNote`, whose one script root also exposes re-pointing a role's administrator and
   self-renounce — both accepted, both pinned by test.
 
-See [`docs/spec/FAUCET-COMPONENT-SPEC.md`](docs/spec/FAUCET-COMPONENT-SPEC.md) for the full pipeline.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full pipeline.
 
 ## Start here
 
-- **What the faucet does and how it's built:** [`docs/spec/FAUCET-COMPONENT-SPEC.md`](docs/spec/FAUCET-COMPONENT-SPEC.md).
-- **What every short identifier means** (`R-MINT-15`, `DEV-10`, …):
-  [`docs/spec/GLOSSARY.md`](docs/spec/GLOSSARY.md).
-- **The encoding contracts** (`DC-1`..`DC-7`): [`docs/spec/ENCODING-COMPONENT-SPEC.md`](docs/spec/ENCODING-COMPONENT-SPEC.md).
+- **What the faucet does and how it's built:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+- **The encoding contracts:** the codecs in `crates/xusdc-encoding/src/xreserve/encoding/`, each of
+  which documents its own wire form alongside the MASM module that mirrors it.
 
 ## Build and test
 

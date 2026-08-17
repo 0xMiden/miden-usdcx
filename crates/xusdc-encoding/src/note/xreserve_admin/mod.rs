@@ -21,9 +21,7 @@
 //! covers each of them and calls the standard component the faucet installs. Pausing uses the
 //! standard pause-action note directly, with no faucet wrapper at all. Role management uses the
 //! standard role-action note, whose single script root carries grant, revoke, set-role-admin and
-//! renounce alike. The blocklist uses the standard blocklist-config note the same way: the v16
-//! transfer policy exempts the issuing faucet from its own list, so a self-targeting block is
-//! dead state rather than a freeze, and there is nothing faucet-specific left to wrap.
+//! renounce alike. The blocklist uses the standard blocklist-config note.
 //!
 //! There is no ownership note either: the faucet installs no two-step ownership component, so
 //! rotation is a grant and a revoke of the `ADMIN` role through the standard role-action note.

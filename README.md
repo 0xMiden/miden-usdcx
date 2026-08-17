@@ -17,7 +17,7 @@ plus the Rust encoding library and validation harness that support it.
 | `crates/xusdc-encoding/asm/notes/` | The public admin note scripts, one Miden project each (the mint note is the STOCK miden-standards `MintNote`). |
 | `crates/xusdc-encoding/` | Rust crate: the encoding library (the Rust mirror of the MASM codecs — bytes32 hashing, uint256→amount reduction, DepositIntent parse), the `XReserveStablecoinBuilder` that composes the faucet account, golden test vectors, the `build.rs` that assembles every MASM project above, and the **execute** test suite. |
 | `crates/xusdc-validation/` | Rust crate: the local-node validation harness that deploys the production faucet to a real Miden node and drives the mint/burn/admin acceptance matrix (rows `A`–`L`). |
-| `docs/` | `ARCHITECTURE.md`: how the faucet fits together, the mint and burn paths, and where the trust boundaries sit. |
+| `docs/` | `ARCHITECTURE.md`: how the faucet fits together, the mint and burn paths, and where the trust boundaries sit. `DEVIATIONS.md`: where the implementation deliberately deviates from Circle's spec, plus the known open items. Auditors: start with these two. |
 
 ## How it works
 

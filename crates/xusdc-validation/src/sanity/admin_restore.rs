@@ -9,13 +9,12 @@ use anyhow::{Context, Result};
 use miden_protocol::account::AccountId;
 
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveAcceptOwnershipNote, XReserveSetMaxSupplyNote, XReserveSetMinBurnSizeNote,
-    XReserveTransferOwnershipNote, XReserveUnpauseNote,
+    XReserveAcceptOwnershipNote, XReserveTransferOwnershipNote, XReserveUnpauseNote,
 };
 
 use crate::actors::{Actors, AttesterKey};
 
-use super::admin::set_attester_enabled;
+use super::admin::{max_supply_config_note, min_burn_config_note, set_attester_enabled};
 use super::driver::{
     attester_marker, is_paused, is_zero_word, max_supply, min_burn, owner_config, token_supply,
     SanityDriver,
@@ -416,7 +415,7 @@ async fn restore_unpause(d: &mut SanityDriver, pauser_id: AccountId) -> Result<(
 
 /// Sets `min_burn_size` back to `target` (ADMIN-gated), waiting for the read-back.
 async fn restore_min_burn(d: &mut SanityDriver, owner_id: AccountId, target: u64) -> Result<()> {
-    let note = XReserveSetMinBurnSizeNote::create(owner_id, d.faucet_id, target, d.hc.client.rng())
+    let note = min_burn_config_note(owner_id, d.faucet_id, target, d.hc.client.rng())
         .context("set_min_burn_size(restore) note")?;
     d.commit_via_ntx(owner_id, note, "set_min_burn_size(restore)", move |a| {
         min_burn(a).map(|m| m == target).unwrap_or(false)
@@ -427,7 +426,7 @@ async fn restore_min_burn(d: &mut SanityDriver, owner_id: AccountId, target: u64
 
 /// Sets `max_supply` back to `target` (ADMIN-gated), waiting for the read-back.
 async fn restore_max_supply(d: &mut SanityDriver, owner_id: AccountId, target: u64) -> Result<()> {
-    let note = XReserveSetMaxSupplyNote::create(owner_id, d.faucet_id, target, d.hc.client.rng())
+    let note = max_supply_config_note(owner_id, d.faucet_id, target, d.hc.client.rng())
         .context("set_max_supply(restore) note")?;
     d.commit_via_ntx(owner_id, note, "set_max_supply(restore)", move |a| {
         max_supply(a).map(|m| m == target).unwrap_or(false)

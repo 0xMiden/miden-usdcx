@@ -21,8 +21,8 @@ bridge faucet is built: **stock transport and effects, custom policies as the ga
   every mint. Every supply increase passes the attestation policy (`INV-MINT-SECURITY`) because
   the stock path is now the gated path.
 - Burns run through the standard `receive_and_burn` path gated by the **stock `MinBurnAmount`
-  policy** with the floor seeded `≥ 1` (builder-rejected below 1; the admin note asserts the
-  same floor), which preserves the `amount > 0` zero-burn invariant by construction.
+  policy** with an initial floor of at least one. Runtime updates use the standard
+  `MinBurnAmountConfigNote`.
 
 The account is `AccountType::Public`, 6-decimal, symbol "xUSDC". The Rust
 `XReserveStablecoinBuilder` (in `crates/xusdc-encoding`) composes the account and rejects an
@@ -157,10 +157,9 @@ moves the assets out of the holder's vault, so the holder's balance is checked a
 
 The faucet consumes the note in a **later block** (`receive_and_burn`, block ≥ N+1). The stock
 burn wrapper checks pause first (`R-BURN-3`), then dispatches the **stock `MinBurnAmount`**
-policy, which requires `amount ≥ minBurnSize` (`R-BURN-2`); the floor is `≥ 1` at all times
-(builder-rejected below 1 at composition, note-guarded at the only runtime setter path), so a
-zero-amount burn is unacceptable on every path (`R-BURN-1` preserved by construction). Consuming
-the note decrements `token_supply`.
+policy, which requires `amount ≥ minBurnSize` (`R-BURN-2`). The builder initializes the floor to
+at least one, and the administrator can update it through `MinBurnAmountConfigNote`. Consuming the
+note decrements `token_supply`.
 
 The note is always **Public** (`R-BURN-6`, `INV-PUBLIC-BURN-OBSERVABILITY`) so the burn is
 observable to Circle. A same-block create+consume erases the note with no store record, making

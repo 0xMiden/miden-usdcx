@@ -106,7 +106,7 @@ Labels for the faucet's functional pieces (originally built as incremental slice
 | CMP-A5 | On-token transfer policy: the stock `BasicBlocklist` is the active send + receive policy, administered by `BLK_MANAGER`. |
 | CMP-A6 | `XReserveDomainConfig` — the faucet's build-seeded domain-config fields (`domain`, `source_domain`, `xreserve_contract`); the identifier is derived, not stored. |
 | CMP-A9 | The stock `mint_and_send` supply-increasing surface, gated by `mint_policy::check_policy`. |
-| CMP-A10 | The burn security policy, run on every `receive_and_burn`: stock `MinBurnAmount::check_policy` with the ≥1 floor invariant enforced by the builder and admin note. |
+| CMP-A10 | The burn policy run on every `receive_and_burn`: stock `MinBurnAmount::check_policy`, initialized by the builder and updated through `MinBurnAmountConfigNote`. |
 | CMP-A15 | `XReserveStablecoinBuilder` — the Rust builder that composes the full faucet account and rejects an invalid wiring (e.g. no deny guard, non-Public faucet) at build time. |
 | CMP-B1 | The stock `MintNote` transport plus the account's attestation mint policy. |
 | CMP-B2 | `XReserveBurnNote` construction (the public withdrawal note). |

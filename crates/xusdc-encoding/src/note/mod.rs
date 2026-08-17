@@ -10,6 +10,7 @@ use miden_protocol::errors::NoteError;
 use miden_protocol::note::NoteAttachment;
 use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
 
+pub mod costs;
 pub mod xreserve_admin;
 pub mod xreserve_burn;
 pub mod xreserve_mint;

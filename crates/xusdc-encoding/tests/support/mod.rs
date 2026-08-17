@@ -30,6 +30,7 @@ pub use w2admin::{
     stock_set_max_supply_note, stock_unblock_note, stock_unpause_note,
 };
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -42,7 +43,8 @@ use miden_protocol::account::{
     AssetCallbackFlag, RoleSymbol, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
 };
 use miden_protocol::assembly::Package;
-use miden_protocol::asset::{AssetAmount, AssetCallbacks, FungibleAsset, TokenSymbol};
+use miden_protocol::asset::{Asset, AssetAmount, AssetCallbacks, FungibleAsset, TokenSymbol};
+use miden_protocol::block::FeeParameters;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{Note, NoteScript, NoteType};
@@ -52,6 +54,7 @@ use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{
     Pausable, PausableManager, PausableStorage, RoleBasedAccessControl,
 };
+use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
 use miden_standards::account::policies::{
@@ -64,6 +67,7 @@ use miden_standards::note::{
     FeeSponsorshipNote, MintNote, PauseConfigNote, RbacConfigNote,
 };
 use miden_standards::testing::note::NoteBuilder;
+use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
@@ -236,8 +240,7 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
 ];
 
 /// The stock `MinBurnAmount::check_policy` reject (min_burn_amount.masm) — the burn-side floor
-/// error (there are no custom burn errors: with the floor `>= 1`, a
-/// zero-amount burn rejects HERE).
+/// error. There are no custom burn errors.
 pub fn err_burn_below_min_burn_amount() -> MasmError {
     MasmError::from_static_str(
         "amount to be burned must meet or exceed specified minimum burn amount",
@@ -353,6 +356,11 @@ pub fn test_fee_faucet_id() -> AccountId {
     test_faucet_id(250)
 }
 
+/// Returns fee parameters with a zero base fee for behavior tests unrelated to fee collection.
+pub fn test_fee_parameters() -> FeeParameters {
+    FeeParameters::new(test_fee_faucet_id(), 0)
+}
+
 /// Returns the default fee policy used by tests.
 pub fn test_fee_policy() -> BasicConstantFeePolicy {
     BasicConstantFeePolicy::new()
@@ -414,22 +422,55 @@ pub fn add_network_faucet_account(
     builder: &mut MockChainBuilder,
     components: Vec<AccountComponent>,
 ) -> Result<Account> {
-    let account = build_network_faucet_account_with_fee_policy(
-        components,
-        test_fee_faucet_id(),
-        test_fee_policy(),
-    )?;
+    let account = build_network_faucet_account(components, test_fee_parameters())?;
     builder
         .add_account(account.clone())
         .context("registering the production network faucet account")?;
     Ok(account)
 }
 
-/// Builds the production network faucet with an explicitly supplied fee faucet and policy.
-pub fn build_network_faucet_account_with_fee_policy(
+/// Builds the production network faucet with the xUSDC fee policy derived from `fee_parameters`.
+pub fn build_network_faucet_account(
+    components: Vec<AccountComponent>,
+    fee_parameters: FeeParameters,
+) -> Result<Account> {
+    build_network_faucet_account_with_assets(components, fee_parameters, [])
+}
+
+/// Builds the production network faucet with initial assets and the xUSDC fee policy.
+pub fn build_network_faucet_account_with_assets(
+    components: Vec<AccountComponent>,
+    fee_parameters: FeeParameters,
+    assets: impl IntoIterator<Item = Asset>,
+) -> Result<Account> {
+    let auth = XReserveStablecoinBuilder::auth_component(fee_parameters)
+        .map_err(|e| anyhow::anyhow!("the production auth component must build: {e}"))?;
+    build_network_faucet_account_with_auth(components, auth, assets)
+}
+
+/// Builds the network faucet with an explicit policy for fee-pricing benchmark fixtures.
+pub fn build_network_faucet_account_with_fee_policy_and_assets(
     components: Vec<AccountComponent>,
     fee_faucet_id: AccountId,
     fee_policy: BasicConstantFeePolicy,
+    assets: impl IntoIterator<Item = Asset>,
+) -> Result<Account> {
+    let fee_policy_manager = FeePolicyManager::builder()
+        .fee_faucet_id(fee_faucet_id)
+        .active_fee_policy(fee_policy.into())
+        .build();
+    let auth = AuthNetworkAccount::custom(
+        XReserveStablecoinBuilder::allowed_note_scripts(),
+        fee_policy_manager,
+    )?
+    .with_allowed_tx_scripts(BTreeSet::from([ExpirationTransactionScript::script_root()]));
+    build_network_faucet_account_with_auth(components, auth, assets)
+}
+
+fn build_network_faucet_account_with_auth(
+    components: Vec<AccountComponent>,
+    auth: AuthNetworkAccount,
+    assets: impl IntoIterator<Item = Asset>,
 ) -> Result<Account> {
     let has_callbacks = components.iter().any(|c| {
         c.storage_slots().iter().any(|s| {
@@ -444,14 +485,12 @@ pub fn build_network_faucet_account_with_fee_policy(
     };
     let mut account_builder = Account::builder(rand::random())
         .account_type(AccountType::Public)
-        .with_asset_callbacks(flag);
+        .with_asset_callbacks(flag)
+        .with_assets(assets);
     for component in components {
         account_builder = account_builder.with_component(component);
     }
-    account_builder = account_builder.with_components(
-        XReserveStablecoinBuilder::auth_component(fee_faucet_id, fee_policy)
-            .map_err(|e| anyhow::anyhow!("the production auth component must build: {e}"))?,
-    );
+    account_builder = account_builder.with_components(auth);
     account_builder
         .build_existing()
         .context("building the production network faucet account")
@@ -504,8 +543,7 @@ pub fn production_builder_verdict(
         .pauser_holder(test_account_id(2))
         .manager_holder(test_account_id(3))
         .blocklist_manager_holder(test_account_id(4))
-        .fee_faucet_id(test_fee_faucet_id())
-        .fee_policy(test_fee_policy())
+        .fee_parameters(test_fee_parameters())
         .domain(domain)
         .source_domain(TEST_SOURCE_DOMAIN)
         .xreserve_contract(test_xreserve_contract())
@@ -1417,64 +1455,26 @@ pub fn read_domain_config_words(account: &Account) -> Result<[Word; 4]> {
     ])
 }
 
-// set_min_burn_size — ADMIN-gated minBurnSize setter note + slot read-back
+// Minimum-burn configuration note and slot read-back
 // ================================================================================================
 
-/// Builds an unauthenticated note SENT BY `sender` whose script `call`s the STOCK
-/// `min_burn_amount::set_min_burn_amount(new_min)`. Like `set_attester`,
-/// the authority gate reads the note sender, so the sender is what the `ADMIN` role check tests.
-/// `new_min` is the single felt written as element 0 of the stock floor slot. NOTE: this is the
-/// RAW driver — it deliberately BYPASSES the `XReserveMinBurnAmountNote` factory's zero-floor
-/// refusal so tests can probe the stock proc directly.
-pub fn set_min_burn_size_note(sender: AccountId, new_min: u64, seed: u64) -> Result<Note> {
-    // Stack contract: [new_min, pad(15)] (new_min on top). Push 15 pad felts (deepest) then new_min so
-    // it ends on top: 15 + 1 = 16. A pure standards proc — CodeBuilder pre-links StandardsLib.
-    let src = format!(
-        "use miden::standards::faucets::policies::burn::min_burn_amount\n\
-         @note_script\n\
-         pub proc main\n\
-         \x20\x20\x20\x20repeat.15 push.0 end\n\
-         \x20\x20\x20\x20push.{new_min}\n\
-         \x20\x20\x20\x20call.min_burn_amount::set_min_burn_amount\n\
-         \x20\x20\x20\x20dropw dropw dropw dropw\n\
-         end\n",
-    );
-    let script = CodeBuilder::new()
-        .compile_note_script(src.clone())
-        .map_err(|e| {
-            anyhow::anyhow!("set_min_burn_size note script failed to compile: {e}\n{src}")
-        })?;
-    // Deterministic note rng (serial only; never affects the gate). Distinct tail [7,8] keeps serials
-    // disjoint from set_attester [1,2] / pause [3,4] / set_max_supply [5,6] / domain_init [9,10].
-    let mut rng = RandomCoin::new(Word::from([
-        Felt::from(seed as u32),
-        Felt::from((seed >> 32) as u32),
-        Felt::from(7u32),
-        Felt::from(8u32),
-    ]));
-    Ok(NoteBuilder::new(sender, &mut rng)
-        .note_type(NoteType::Private)
-        .script(script)
-        .build()?)
-}
-
-/// Executes a `set_min_burn_size` note (sent by `sender`) against the faucet `account` on a bare
+/// Executes a standard minimum-burn configuration note sent by `sender` against `account` on a bare
 /// `&MockChain` (the burn-policy harness is a `BurnPolicyHarness`, not a `CompositionHarness`). Returns
 /// the raw execution result so callers assert success or the exact trap. Mirrors [`run_pause_against`].
-pub async fn run_set_min_burn_size_against(
+pub async fn run_set_min_burn_amount_against(
     chain: &MockChain,
     account: &Account,
     sender: AccountId,
     new_min: u64,
     seed: u64,
 ) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note = set_min_burn_size_note(sender, new_min, seed)
-        .expect("building the set_min_burn_size note (test-setup invariant)");
+    let note = stock_min_burn_note(sender, account.id(), new_min, seed)
+        .expect("building the minimum-burn configuration note (test-setup invariant)");
     chain
         .build_transaction(account.clone())
         .unauthenticated_input_note(note.clone())
         .build()
-        .expect("building the set_min_burn_size transaction")
+        .expect("building the minimum-burn configuration transaction")
         .execute()
         .await
 }
@@ -1505,62 +1505,6 @@ pub fn err_max_supply_not_mutable() -> MasmError {
 /// (`fungible.masm:41` ERR_NEW_MAX_SUPPLY_BELOW_TOKEN_SUPPLY).
 pub fn err_new_max_supply_below_token_supply() -> MasmError {
     MasmError::from_static_str("new max supply is less than current token supply")
-}
-
-/// Builds a note SENT BY `sender` whose script `call`s the stock `set_max_supply(new_max_supply)` —
-/// gated on the same owner authority, the not-paused check, and the build-time mutability flag,
-/// fired mutability -> auth -> pause -> below-supply. Stock `set_max_supply` consumes
-/// `[new_max_supply, pad(15)]` and returns `[pad(16)]`. Like `pause_note`, `set_max_supply` is a pure
-/// standards proc (CodeBuilder pre-links StandardsLib), so no xreserve link is needed; the
-/// absolute-path `call` resolves to the same stock proc the faucet account exposes (the path
-/// `run_mint_and_send` reaches `mint_and_send` through).
-pub fn set_max_supply_note(sender: AccountId, new_max_supply: u64, seed: u64) -> Result<Note> {
-    // Stack contract: [new_max_supply, pad(15)] (new_max_supply on top). Push 15 pad felts (deepest)
-    // then new_max_supply so it ends on top: 15 + 1 = 16.
-    let src = format!(
-        "@note_script\n\
-         pub proc main\n\
-         \x20\x20\x20\x20repeat.15 push.0 end\n\
-         \x20\x20\x20\x20push.{new_max_supply}\n\
-         \x20\x20\x20\x20call.::miden::standards::faucets::fungible::set_max_supply\n\
-         \x20\x20\x20\x20dropw dropw dropw dropw\n\
-         end\n",
-    );
-    let script = CodeBuilder::new()
-        .compile_note_script(src.clone())
-        .map_err(|e| anyhow::anyhow!("set_max_supply note script failed to compile: {e}\n{src}"))?;
-    // Deterministic note rng (serial only; never affects the gate). Distinct tail [5,6] keeps serials
-    // disjoint from set_attester [1,2] and pause [3,4].
-    let mut rng = RandomCoin::new(Word::from([
-        Felt::from(seed as u32),
-        Felt::from((seed >> 32) as u32),
-        Felt::from(5u32),
-        Felt::from(6u32),
-    ]));
-    Ok(NoteBuilder::new(sender, &mut rng)
-        .note_type(NoteType::Private)
-        .script(script)
-        .build()?)
-}
-
-/// Executes a `set_max_supply` note (sent by `sender`) against the faucet `account`, returning the raw
-/// execution result so callers can assert success or the exact trap. Mirrors `run_set_attester_tx`.
-pub async fn run_set_max_supply_tx(
-    h: &CompositionHarness,
-    account: &Account,
-    sender: AccountId,
-    new_max_supply: u64,
-    seed: u64,
-) -> std::result::Result<ExecutedTransaction, TransactionExecutorError> {
-    let note = set_max_supply_note(sender, new_max_supply, seed)
-        .expect("building the set_max_supply note (test-setup invariant)");
-    h.mock_chain
-        .build_transaction(account.clone())
-        .unauthenticated_input_note(note.clone())
-        .build()
-        .expect("building the set_max_supply transaction")
-        .execute()
-        .await
 }
 
 /// Reads the faucet `token_config` value word `[token_supply, max_supply, decimals, token_symbol]`

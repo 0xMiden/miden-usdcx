@@ -11,11 +11,11 @@ use miden_protocol::account::{
     StorageSlotName,
 };
 use miden_protocol::asset::{AssetAmount, AssetCallbacks, TokenSymbol};
+use miden_protocol::block::FeeParameters;
 use miden_protocol::utils::sync::LazyLock;
 use miden_protocol::vm::Package;
 use miden_protocol::Word;
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
-use miden_standards::account::fees::BasicConstantFeePolicy;
 
 use super::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL,
@@ -202,10 +202,7 @@ impl XReserveStablecoinBuilder {
         for component in components {
             builder = builder.with_component(component);
         }
-        builder = builder.with_components(Self::auth_component(
-            self.fee_faucet_id,
-            self.fee_policy.clone(),
-        )?);
+        builder = builder.with_components(Self::auth_component(self.fee_parameters.clone())?);
         builder
             .build()
             .map_err(XReserveStablecoinBuilderError::AccountComposition)
@@ -227,8 +224,7 @@ pub fn build_faucet_account(
     pauser_holder: AccountId,
     manager_holder: AccountId,
     blocklist_manager_holder: AccountId,
-    fee_faucet_id: AccountId,
-    fee_policy: BasicConstantFeePolicy,
+    fee_parameters: FeeParameters,
     domain: u32,
     source_domain: u32,
     xreserve_contract: ForeignChainAddress,
@@ -240,8 +236,7 @@ pub fn build_faucet_account(
         .pauser_holder(pauser_holder)
         .manager_holder(manager_holder)
         .blocklist_manager_holder(blocklist_manager_holder)
-        .fee_faucet_id(fee_faucet_id)
-        .fee_policy(fee_policy)
+        .fee_parameters(fee_parameters)
         .domain(domain)
         .source_domain(source_domain)
         .xreserve_contract(xreserve_contract)

@@ -43,7 +43,7 @@ use miden_client::transaction::{
 use miden_protocol::account::{
     Account, AccountId, StorageMapKey, StorageSlotName, StorageSlotPatch,
 };
-use miden_protocol::asset::Asset;
+use miden_protocol::asset::{Asset, AssetAmount};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{Note, NoteId, NoteInclusionProof, NoteTag};
 use miden_protocol::transaction::InputNote;
@@ -52,10 +52,10 @@ use miden_protocol::Word;
 use miden_standards::account::access::PausableStorage;
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::MinBurnAmount;
+use miden_standards::note::MinBurnAmountConfigNote;
 use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
 use xusdc_encoding::note::xreserve_admin::{
-    XReserveIdentifierInitNote, XReservePauseNote, XReserveSetAttesterNote,
-    XReserveSetMinBurnSizeNote, XReserveUnpauseNote,
+    XReserveIdentifierInitNote, XReservePauseNote, XReserveSetAttesterNote, XReserveUnpauseNote,
 };
 use xusdc_encoding::note::xreserve_burn::FIXED_XUSDC_BURN_TAG;
 
@@ -672,9 +672,15 @@ pub async fn run_rows_gj_on(cfg: &RunConfig, client_label: &str) -> Result<RowsG
     .context("allowlisting attester A via path N")?;
 
     // 5. set_min_burn_size(MIN_BURN) (path N) — so the Row-I below-min negative has a floor to fail.
-    let set_min =
-        XReserveSetMinBurnSizeNote::create(owner_id, faucet_id, MIN_BURN, d.hc.client.rng())
-            .context("building set_min_burn_size")?;
+    let set_min = Note::from(
+        MinBurnAmountConfigNote::builder()
+            .sender(owner_id)
+            .target(faucet_id)
+            .min_burn_amount(AssetAmount::new(MIN_BURN).context("invalid minimum burn amount")?)
+            .generate_serial_number(d.hc.client.rng())
+            .build()
+            .context("building the minimum-burn configuration note")?,
+    );
     d.commit_via_ntx(owner_id, set_min, "set_min_burn_size", |a| {
         min_burn(a).map(|m| m == MIN_BURN).unwrap_or(false)
     })

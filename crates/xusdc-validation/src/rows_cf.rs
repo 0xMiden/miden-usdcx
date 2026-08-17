@@ -388,10 +388,10 @@ impl Driver {
             .context("building a set_attester note")
     }
     fn set_max_supply_note(&mut self, sender: AccountId, cap: u64) -> Result<Note> {
-        let f = self.faucet_id;
+        let faucet = self.faucet_id;
         let note = FaucetMetadataConfigNote::builder()
             .sender(sender)
-            .target(f)
+            .target(faucet)
             .config(FaucetMetadataConfig::SetMaxSupply {
                 max_supply: AssetAmount::new(cap).context("invalid maximum supply")?,
             })

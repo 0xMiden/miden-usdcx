@@ -84,9 +84,7 @@ impl XReserveMinBurnAmountNote {
     }
 
     /// Builds a note that sets `target`'s burn floor to `min_burn_amount` over the standard
-    /// [`MinBurnAmountConfigNote`], via a `bon` builder mirroring the standard note's own
-    /// (`XReserveMinBurnAmountNote::builder().sender(..).target(..).min_burn_amount(..)
-    /// .generate_serial_number(..).build()`).
+    /// [`MinBurnAmountConfigNote`].
     ///
     /// # Errors
     ///

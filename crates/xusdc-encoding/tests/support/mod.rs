@@ -532,9 +532,7 @@ pub fn production_component_set(
 
 /// The ten allowlisted note scripts as labelled `(name, script)` pairs: two supply notes, six
 /// administration and configuration notes (one faucet-owned, five standard), the constant-fee
-/// configuration note, and the sponsorship note. Single-sourced from the same factories
-/// [`XReserveStablecoinBuilder::allowed_note_scripts`] draws its roots from; the MAST sweeps that
-/// consume this list assert its roots equal that allowlist, so the two cannot drift.
+/// configuration note, and the sponsorship note.
 pub fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
     vec![
         ("stock_mint_note", MintNote::script()),

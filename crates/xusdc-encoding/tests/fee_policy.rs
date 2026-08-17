@@ -22,7 +22,9 @@ use miden_standards::account::auth::SponsorshipPolicy;
 use miden_standards::account::fees::{
     BasicConstantFeePolicy, ConstantFeeManager, FeePolicyManager,
 };
-use miden_standards::errors::standards::ERR_CONSTANT_FEE_POLICY_CONFIG_ACCOUNT_MISMATCH;
+use miden_standards::errors::standards::{
+    ERR_CONSTANT_FEE_POLICY_CONFIG_ACCOUNT_MISMATCH, ERR_FEE_MANAGER_INPUT_NOTE_FEE_NOT_COVERED,
+};
 use miden_standards::note::{
     BlocklistConfigNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote, FeeSponsorshipNote,
     MinBurnAmountConfigNote, MintNote, P2idNote, PauseConfigNote, RbacConfigNote, TxFeeNote,
@@ -668,10 +670,6 @@ async fn priced_xusdc_note_requires_complete_sponsorship() -> Result<()> {
     let account = build_network_faucet_account(priced_components()?, fee_parameters())?;
     let required = scheduled_fee_amount(&account, XReserveSetAttesterNote::script_root())?.as_u64();
     assert!(required > 0);
-    let expected = MasmError::from_static_str(
-        "the FEE_SPONSORSHIP notes bound to an input note do not cover its required fee",
-    );
-
     for sponsored_amount in [None, Some(required - 1)] {
         let fixture = setup_insufficient_fee(sponsored_amount)?;
         let mut transaction = fixture
@@ -682,7 +680,7 @@ async fn priced_xusdc_note_requires_complete_sponsorship() -> Result<()> {
             transaction = transaction.authenticated_input_note(note.id());
         }
         let result = transaction.build()?.execute().await;
-        assert_transaction_executor_error!(result, &expected);
+        assert_transaction_executor_error!(result, ERR_FEE_MANAGER_INPUT_NOTE_FEE_NOT_COVERED);
     }
     Ok(())
 }

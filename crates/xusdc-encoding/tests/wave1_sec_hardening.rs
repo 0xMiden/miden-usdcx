@@ -57,7 +57,7 @@ fn a_min_burn_note_carrying_a_zero_floor_cannot_be_built() {
     assert!(
         matches!(
             err,
-            XReserveMinBurnAmountNoteError::BelowFloorRejected { min_burn_amount: 0 }
+            XReserveMinBurnAmountNoteError::MinBurnAmountTooSmall { min_burn_amount: 0 }
         ),
         "the refusal must be the specific below-floor rejection, not some other note error: {err:?}"
     );

@@ -31,7 +31,7 @@ use crate::account::xreserve::MIN_BURN_SIZE_FLOOR;
 #[non_exhaustive]
 pub enum XReserveMinBurnAmountNoteError {
     /// The note would have lowered the burn floor below [`MIN_BURN_SIZE_FLOOR`].
-    BelowFloorRejected { min_burn_amount: u64 },
+    MinBurnAmountTooSmall { min_burn_amount: u64 },
     /// The standard note could not be assembled.
     Note(NoteError),
 }
@@ -39,7 +39,7 @@ pub enum XReserveMinBurnAmountNoteError {
 impl fmt::Display for XReserveMinBurnAmountNoteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BelowFloorRejected { min_burn_amount } => write!(
+            Self::MinBurnAmountTooSmall { min_burn_amount } => write!(
                 f,
                 "refusing to build a note that sets the burn floor to {min_burn_amount}, below \
                  the floor {MIN_BURN_SIZE_FLOOR}; a zero floor would admit zero-amount burn notes"
@@ -56,7 +56,7 @@ impl core::error::Error for XReserveMinBurnAmountNoteError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Note(source) => Some(source),
-            Self::BelowFloorRejected { .. } => None,
+            Self::MinBurnAmountTooSmall { .. } => None,
         }
     }
 }
@@ -87,7 +87,7 @@ impl XReserveMinBurnAmountNote {
     ///
     /// # Errors
     ///
-    /// Returns [`XReserveMinBurnAmountNoteError::BelowFloorRejected`] if `min_burn_amount` is
+    /// Returns [`XReserveMinBurnAmountNoteError::MinBurnAmountTooSmall`] if `min_burn_amount` is
     /// below [`MIN_BURN_SIZE_FLOOR`]: a zero floor would admit zero-amount burn notes. The
     /// refusal is a construction-time gate only — on chain the note runs the unmodified
     /// `miden-standards` script, which does not validate the value. Returns
@@ -99,7 +99,7 @@ impl XReserveMinBurnAmountNote {
         rng: &mut R,
     ) -> Result<Note, XReserveMinBurnAmountNoteError> {
         if min_burn_amount.as_u64() < MIN_BURN_SIZE_FLOOR {
-            return Err(XReserveMinBurnAmountNoteError::BelowFloorRejected {
+            return Err(XReserveMinBurnAmountNoteError::MinBurnAmountTooSmall {
                 min_burn_amount: min_burn_amount.as_u64(),
             });
         }

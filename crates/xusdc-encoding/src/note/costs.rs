@@ -40,8 +40,7 @@ impl NoteConsumptionCost for XReserveSetAttesterNote {
     }
 }
 
-/// Returns the xUSDC-specific costs keyed by script root, in the shape the pricer's
-/// supplied-cost map takes; every other allowlisted root carries the standard cost.
+/// Returns the xUSDC-specific costs keyed by script root.
 pub(crate) fn note_costs() -> [(NoteScriptRoot, NoteCost); 3] {
     [
         (

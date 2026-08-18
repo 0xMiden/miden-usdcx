@@ -51,10 +51,9 @@ impl XReserveStablecoinBuilder {
     }
 
     /// Builds the production `AuthNetworkAccount` component from the network fee parameters. It
-    /// constructs the xUSDC fee schedule through the pricer — the xUSDC note-cost map
-    /// ([`crate::note::costs::note_costs`]) shadowing the standard cost tables — uses
-    /// [`Self::allowed_note_scripts`], admits only `ExpirationTransactionScript::script_root()`
-    /// as a transaction script, and excludes the mutable `NetworkAccountConfigNote` entry point.
+    /// constructs the xUSDC fee schedule through the pricer, admits only
+    /// `ExpirationTransactionScript::script_root()` as a transaction script, and excludes the
+    /// mutable `NetworkAccountConfigNote` entry point.
     pub fn auth_component(
         fee_parameters: FeeParameters,
     ) -> Result<AuthNetworkAccount, XReserveStablecoinBuilderError> {

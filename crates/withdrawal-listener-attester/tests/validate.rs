@@ -22,7 +22,8 @@ use assert_matches::assert_matches;
 use rstest::rstest;
 use serde_json::Value;
 
-use miden_protocol::asset::AssetAmount;
+use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
+use miden_protocol::note::NoteScriptRoot;
 use miden_protocol::Felt;
 use withdrawal_listener_attester::attester::{SecretKey, Signature65};
 use withdrawal_listener_attester::circle::schema::PrepareWithdrawalResponse;
@@ -32,6 +33,7 @@ use withdrawal_listener_attester::types::BurnPayload;
 use withdrawal_listener_attester::validate::{
     sign_validated, validate_discovery, validate_returned, DiscoveredDetails, DiscoveryRecord,
 };
+use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::xreserve::encoding::ForeignChainAddress;
 
 #[path = "support/mod.rs"]
@@ -453,6 +455,20 @@ fn abort_is_idempotent_on_retry() {
 // DISCOVERY — validate_discovery (order load-bearing)
 // ================================================================================================
 
+/// The pinned burn-note script root, and the xUSDC vault a note claiming `payload` must carry —
+/// the two facts the fund-safety rungs judge, supplied here so the cases below are about the rung
+/// each one names. `discovery_fund_safety.rs` is where the two are varied.
+fn burn_script_root() -> NoteScriptRoot {
+    XReserveBurnNote::script_root()
+}
+
+fn carried_xusdc(payload: &BurnPayload) -> Vec<Asset> {
+    let faucet_id = ListenerConfig::default().faucet_id();
+    vec![Asset::Fungible(
+        FungibleAsset::new(faucet_id, payload.amount.as_u64()).expect("an in-range amount"),
+    )]
+}
+
 /// Builds a public discovery record whose items decode to `payload` and whose sender is a genuine
 /// account id (the config's faucet id, reused as a valid, canonical id).
 fn public_record(tag: u32, payload: &BurnPayload) -> DiscoveryRecord {
@@ -461,7 +477,13 @@ fn public_record(tag: u32, payload: &BurnPayload) -> DiscoveryRecord {
     let (prefix, suffix) = (faucet_id.prefix().as_felt(), faucet_id.suffix());
     DiscoveryRecord::new(
         tag,
-        Some(DiscoveredDetails::from_raw_sender(items, prefix, suffix)),
+        Some(DiscoveredDetails::from_raw_sender(
+            items,
+            prefix,
+            suffix,
+            burn_script_root(),
+            carried_xusdc(payload),
+        )),
     )
 }
 
@@ -528,7 +550,13 @@ fn discovery_rejects_malformed_items() {
     let items = vec![Felt::from(0u32); 17];
     let record = DiscoveryRecord::new(
         cfg().burn_tag(),
-        Some(DiscoveredDetails::from_raw_sender(items, prefix, suffix)),
+        Some(DiscoveredDetails::from_raw_sender(
+            items,
+            prefix,
+            suffix,
+            burn_script_root(),
+            carried_xusdc(&matching_payload()),
+        )),
     );
     assert_matches!(
         validate_discovery(&record, &cfg()),
@@ -549,6 +577,8 @@ fn discovery_rejects_a_zero_sender() {
             items,
             Felt::from(0u32),
             Felt::from(0u32),
+            burn_script_root(),
+            carried_xusdc(&matching_payload()),
         )),
     );
     assert_matches!(

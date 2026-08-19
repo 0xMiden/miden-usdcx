@@ -35,8 +35,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use miden_protocol::asset::AssetAmount;
-use miden_protocol::note::NoteId;
+use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
+use miden_protocol::note::{NoteId, NoteScriptRoot};
 use withdrawal_listener_attester::attester::{
     address_of, sign, Address, AttesterAllowlist, SecretKey, Signature65,
 };
@@ -56,6 +56,7 @@ use withdrawal_listener_attester::types::BurnPayload;
 use withdrawal_listener_attester::validate::{
     DiscoveredDetails, DiscoveryRecord, ValidatedWithdrawal,
 };
+use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::xreserve::encoding::ForeignChainAddress;
 
 use evidence_support::UnitPort;
@@ -129,13 +130,56 @@ pub fn discovered() -> DiscoveredNote {
 
 /// A discovery report with an arbitrary `tag`, and `None` for a PRIVATE/erased note (`details =
 /// None`) — the two discovery rejects that must stop the flow before Circle is touched.
+///
+/// The script root and the vault are the honest ones (the pinned burn-note root, and exactly the
+/// xUSDC the payload claims), so a case here fails on the rung it names rather than on a fund-safety
+/// rung it did not mean to exercise. [`discovered_forging`] is what varies those two.
 pub fn discovered_with(tag: u32, payload: Option<BurnPayload>) -> DiscoveredNote {
     let details = payload.map(|p| {
         let id = evidence_support::other_account_id();
         let (prefix, suffix) = (id.prefix().as_felt(), id.suffix());
-        DiscoveredDetails::from_raw_sender(p.encode(), prefix, suffix)
+        DiscoveredDetails::from_raw_sender(
+            p.encode(),
+            prefix,
+            suffix,
+            XReserveBurnNote::script_root(),
+            carried_xusdc(&p),
+        )
     });
     DiscoveredNote::new(note_id(), DiscoveryRecord::new(tag, details))
+}
+
+/// The xUSDC vault an honest burn note claiming `payload` carries: exactly the claimed amount,
+/// issued by the faucet the orchestration config watches.
+pub fn carried_xusdc(payload: &BurnPayload) -> Vec<Asset> {
+    vec![Asset::Fungible(
+        FungibleAsset::new(
+            ListenerConfig::default().faucet_id(),
+            payload.amount.as_u64(),
+        )
+        .expect("an in-range amount"),
+    )]
+}
+
+/// A discovery report for the burn under test with its `script_root` and — where `assets` is
+/// `Some` — its VAULT replaced: the two facts the fund-safety rungs judge, driven through the whole
+/// orchestration so a refusal can be counted against the Circle call log rather than read off the
+/// source.
+pub fn discovered_forging(
+    script_root: NoteScriptRoot,
+    assets: Option<Vec<Asset>>,
+) -> DiscoveredNote {
+    let p = payload();
+    let id = evidence_support::other_account_id();
+    let (prefix, suffix) = (id.prefix().as_felt(), id.suffix());
+    let details = DiscoveredDetails::from_raw_sender(
+        p.encode(),
+        prefix,
+        suffix,
+        script_root,
+        assets.unwrap_or_else(|| carried_xusdc(&p)),
+    );
+    DiscoveredNote::new(note_id(), DiscoveryRecord::new(BURN_TAG, Some(details)))
 }
 
 // KEYS, ADDRESSES, THE CONFIG

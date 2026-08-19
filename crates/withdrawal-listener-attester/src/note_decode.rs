@@ -23,15 +23,15 @@
 //! `metadata.sender` (a privacy exposure that stays OPEN with Circle — this module reads that
 //! exposure; it does not claim to fix it).
 //!
-//! # NON-GATING here; the node leg is PARKED
+//! # NON-GATING here; the node leg is the validation harness's
 //!
 //! By design the burn note is `NoteType::Public` with a fixed full-32-bit tag, so `GetNotesById`
 //! returns `details = Some(..)` and this decode has felts and a sender to work on at all; a private
 //! note returns `details = None` and is unacceptable for Circle observability — the
-//! [`BurnNoteMetadata::absent`] case below. PROVING that end-to-end (the exact-tag `SyncNotes`
-//! scan, the retrieval, the inclusion proof) needs a real local node through `miden-client`, which
-//! has no v0.16 release, so those steps are the GATING ones and they are **PARKED** for the
-//! node-backed slice. Everything in this module is pure and node-free, so its own tests are
+//! [`BurnNoteMetadata::absent`] case below. The reads that produce those felts live in
+//! [`miden::discovery`](crate::miden::discovery); PROVING them end-to-end (the exact-tag `SyncNotes`
+//! scan, the retrieval, the inclusion proof) needs a real local node, which is the validation
+//! harness's GATING job. Everything in this module is pure and node-free, so its own tests are
 //! NON-GATING: they prove the decode, not the discovery.
 
 use miden_protocol::account::AccountId;

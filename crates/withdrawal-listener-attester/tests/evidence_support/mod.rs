@@ -3,8 +3,9 @@
 //!
 //! It is a UNIT adapter, not a mock of Miden. It hands back exactly the records a case is about, so
 //! the assertions land on the assembler's REASONING over those records rather than on a
-//! re-implemented node. The real reads are parked on a `miden-client` with no v0.16 release — which
-//! is also why this file exists at all rather than a local-node harness.
+//! re-implemented node. The `miden-client`-backed adapter that fills the same port from a real node
+//! is `miden::evidence`; the translation it performs is covered by `miden_evidence_adapter.rs`,
+//! and what THIS file covers is what the assembler does with the records once they arrive.
 //!
 //! Split out to stay within the ~700-line Rust file ceiling that `crate_posture.rs` sweeps for, the
 //! same way `submit_support` carries the `POST /v1/withdraw` suites.
@@ -14,6 +15,7 @@
 #[path = "../support/mod.rs"]
 pub mod support;
 
+use async_trait::async_trait;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::SparseMerklePath;
@@ -134,7 +136,8 @@ pub fn observed_spend() -> NullifierRecord {
 
 /// A scripted stand-in for the three Miden reads. It is a UNIT adapter, not a mock of Miden: it
 /// hands back exactly the records a case is about, so the assertions are about the assembler's
-/// reasoning over those records. The real reads are parked for the node-backed slice.
+/// reasoning over those records rather than about a re-implemented node. The `miden-client`-backed
+/// implementation of the same port is `miden::evidence`.
 pub struct UnitPort {
     pub note: Result<NoteRecord, EvidenceReadError>,
     pub txs: Result<Vec<TransactionRecord>, EvidenceReadError>,
@@ -153,19 +156,20 @@ impl UnitPort {
     }
 }
 
+#[async_trait]
 impl BurnEvidenceReads for UnitPort {
-    fn note_by_id(&self, _note_id: NoteId) -> Result<NoteRecord, EvidenceReadError> {
+    async fn note_by_id(&self, _note_id: NoteId) -> Result<NoteRecord, EvidenceReadError> {
         self.note.clone()
     }
 
-    fn faucet_transactions(
+    async fn faucet_transactions(
         &self,
         _faucet_id: AccountId,
     ) -> Result<Vec<TransactionRecord>, EvidenceReadError> {
         self.txs.clone()
     }
 
-    fn nullifier_status(
+    async fn nullifier_status(
         &self,
         _nullifier: Nullifier,
     ) -> Result<NullifierRecord, EvidenceReadError> {
@@ -173,6 +177,6 @@ impl BurnEvidenceReads for UnitPort {
     }
 }
 
-pub fn assemble(port: &UnitPort) -> Result<EvidencePackage, EvidenceError> {
-    assemble_evidence(port, burn_note_id(), faucet_id())
+pub async fn assemble(port: &UnitPort) -> Result<EvidencePackage, EvidenceError> {
+    assemble_evidence(port, burn_note_id(), faucet_id()).await
 }

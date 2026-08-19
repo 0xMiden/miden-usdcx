@@ -50,13 +50,13 @@
 //!
 //! # What is a SEAM here, and is deliberately left one
 //!
-//! The Miden reads are not in this crate. `miden-client` has no v0.16 release, so B3's exact-tag
-//! `SyncNotes` scan / `GetNotesById` retrieval and the [`BurnEvidenceReads`] evidence reads are
-//! **PARKED** for the node-backed slice. This module takes them as PORTS — a [`DiscoveredNote`]
-//! handed in, and a `&dyn BurnEvidenceReads` on the context — and nothing here fakes,
-//! stubs-as-real, or simulates a node. The suite that drives this module runs against the
-//! in-process Circle mock and unit read adapters, and is **NON-GATING** accordingly; the GATING
-//! real-node leg is the node-backed slice's.
+//! The Miden reads are PORTS here and stay ports — a [`DiscoveredNote`] handed in, and a
+//! `&dyn BurnEvidenceReads` on the context. Their `miden-client` implementations live in
+//! [`miden::discovery`](crate::miden::discovery) and [`miden::evidence`](crate::miden::evidence),
+//! outside this module, so the orchestration composes reads rather than performing them. Nothing
+//! here fakes, stubs-as-real, or simulates a node: the suite that drives this module runs against
+//! the in-process Circle mock and unit read adapters, and is **NON-GATING** accordingly; the GATING
+//! real-node leg is the validation harness's.
 //!
 //! # Circle-owned questions this module touches — all still OPEN
 //!
@@ -137,9 +137,9 @@ const ONLY_INTENT: usize = 0;
 /// note id is what the burn evidence is resolved FROM — and it must be the id of the very note the
 /// record describes, which is why they travel as one value rather than as two arguments.
 ///
-/// The feed behind it — the exact-tag `SyncNotes` scan and `GetNotesById` — needs `miden-client`,
-/// which has no v0.16 release, so it is **PARKED** for the node-backed slice. This type is the seam
-/// it lands on.
+/// The feed behind it — the exact-tag `SyncNotes` scan and `GetNotesById` — is
+/// [`miden::discovery`](crate::miden::discovery). This type is the seam it lands on, which is why
+/// the orchestration takes one rather than performing the reads itself.
 #[derive(Debug, Clone)]
 pub struct DiscoveredNote {
     note_id: NoteId,
@@ -320,9 +320,9 @@ impl ListenerEvents for NoopEvents {
 /// Everything one [`run_once`] needs: the static config, the Circle client, the durable idempotency
 /// ledger, the B6 signer, the burn-evidence read port, and the event sink.
 ///
-/// Borrowed rather than owned, and assembled by the caller, so the two seams that are PARKED (the
-/// evidence reads, parked) and human-owned (key custody, a later slice) are supplied from outside
-/// rather than constructed here.
+/// Borrowed rather than owned, and assembled by the caller, so both seams — the evidence reads
+/// (whose node-backed implementation is [`miden::evidence`](crate::miden::evidence)) and the
+/// human-owned key custody — are supplied from outside rather than constructed here.
 pub struct RunContext<'a> {
     config: &'a ListenerConfig,
     circle: &'a CircleClient,
@@ -539,7 +539,7 @@ pub async fn run_once(
     // The evidence is assembled HERE, at submit, because `burnTxId` is a required `POST /v1/withdraw` body
     // field (the documented evidence field) — the batch cannot be built without it. It is fail-closed: incomplete, ambiguous
     // or self-contradicting reads yield no package and no submission.
-    let evidence = assemble_evidence(ctx.evidence, note_id, ctx.config.faucet_id())?;
+    let evidence = assemble_evidence(ctx.evidence, note_id, ctx.config.faucet_id()).await?;
     let burn_tx_id = evidence.burn_tx_id().to_string();
     ctx.emit(ListenerEvent::new("B7", "evidence-assembled", note_id).with_burn(&burn_tx_id));
 

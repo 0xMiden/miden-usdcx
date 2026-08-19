@@ -59,9 +59,11 @@ use evidence_support::*;
 /// The four labels the evidence table pins (`MIDEN-RPC-BURN-EVIDENCE.md:69`-`:72`, quoted in
 /// Circle's documentation). Asserted as one table because the failure that matters is a SINGLE
 /// element drifting upward while the other three stay honest.
-#[test]
-fn the_package_carries_the_documented_per_element_proof_strengths() {
-    let package = assemble(&UnitPort::honest()).expect("the honest port assembles");
+#[tokio::test]
+async fn the_package_carries_the_documented_per_element_proof_strengths() {
+    let package = assemble(&UnitPort::honest())
+        .await
+        .expect("the honest port assembles");
 
     assert_eq!(
         package.note_id_strength(),
@@ -86,9 +88,11 @@ fn the_package_carries_the_documented_per_element_proof_strengths() {
 }
 
 /// The package's contents are the reads, not a rewrite of them.
-#[test]
-fn the_package_carries_the_four_elements_it_read() {
-    let package = assemble(&UnitPort::honest()).expect("the honest port assembles");
+#[tokio::test]
+async fn the_package_carries_the_four_elements_it_read() {
+    let package = assemble(&UnitPort::honest())
+        .await
+        .expect("the honest port assembles");
 
     assert_eq!(package.burn_tx_id(), burn_tx_id().to_hex());
     assert_eq!(package.note_id(), burn_note_id().as_word().as_bytes());
@@ -101,9 +105,11 @@ fn the_package_carries_the_four_elements_it_read() {
 /// The two differ by construction (creation and consumption are always in different blocks), so an
 /// implementation that took the block from the linkage would return `CONSUME_BLOCK` here and be
 /// labelling a node-trusted number CRYPTOGRAPHIC.
-#[test]
-fn block_num_is_read_from_the_inclusion_proof_not_from_the_node_trusted_linkage() {
-    let package = assemble(&UnitPort::honest()).expect("the honest port assembles");
+#[tokio::test]
+async fn block_num_is_read_from_the_inclusion_proof_not_from_the_node_trusted_linkage() {
+    let package = assemble(&UnitPort::honest())
+        .await
+        .expect("the honest port assembles");
 
     assert_eq!(package.block_num(), CREATE_BLOCK);
     assert_ne!(
@@ -116,11 +122,13 @@ fn block_num_is_read_from_the_inclusion_proof_not_from_the_node_trusted_linkage(
 /// Re-assembly is deterministic and the labels are stable. A label that moved between two reads of
 /// the same burn would mean the strength is a function of the node's mood rather than of what Miden
 /// proves.
-#[test]
-fn the_package_and_its_labels_are_stable_across_reassembly() {
+#[tokio::test]
+async fn the_package_and_its_labels_are_stable_across_reassembly() {
     let port = UnitPort::honest();
-    let first = assemble(&port).expect("the honest port assembles");
-    let second = assemble(&port).expect("the honest port assembles again");
+    let first = assemble(&port).await.expect("the honest port assembles");
+    let second = assemble(&port)
+        .await
+        .expect("the honest port assembles again");
 
     assert_eq!(
         first, second,
@@ -139,9 +147,11 @@ fn the_package_and_its_labels_are_stable_across_reassembly() {
 ///
 /// Asserted over `elements()` rather than field by field, so an element added later is covered by
 /// this test the day it appears rather than the day someone remembers to extend it.
-#[test]
-fn no_element_is_both_cryptographic_and_a_consumption_claim() {
-    let package = assemble(&UnitPort::honest()).expect("the honest port assembles");
+#[tokio::test]
+async fn no_element_is_both_cryptographic_and_a_consumption_claim() {
+    let package = assemble(&UnitPort::honest())
+        .await
+        .expect("the honest port assembles");
 
     for element in package.elements() {
         assert!(
@@ -156,9 +166,11 @@ fn no_element_is_both_cryptographic_and_a_consumption_claim() {
 
 /// What each element proves, named. The strengths above say how well; these say of WHAT — and the
 /// pair is what makes "cryptographic" unable to quietly mean "burned".
-#[test]
-fn each_element_names_the_fact_it_actually_proves() {
-    let package = assemble(&UnitPort::honest()).expect("the honest port assembles");
+#[tokio::test]
+async fn each_element_names_the_fact_it_actually_proves() {
+    let package = assemble(&UnitPort::honest())
+        .await
+        .expect("the honest port assembles");
 
     assert_eq!(package.note_id_proves(), ProvenFact::NoteCreatedInBlock);
     assert_eq!(package.block_num_proves(), ProvenFact::NoteCreatedInBlock);
@@ -185,9 +197,11 @@ fn a_creation_fact_is_not_a_consumption_claim(
 /// consumption elements' own labels rather than asserted as a constant, so the day one of them is
 /// upgraded (the full-block path) this answer moves with it and cannot be
 /// left behind as a stale promise.
-#[test]
-fn the_burn_happened_claim_is_node_trusted_however_strong_the_creation_proof_is() {
-    let package = assemble(&UnitPort::honest()).expect("the honest port assembles");
+#[tokio::test]
+async fn the_burn_happened_claim_is_node_trusted_however_strong_the_creation_proof_is() {
+    let package = assemble(&UnitPort::honest())
+        .await
+        .expect("the honest port assembles");
 
     assert_eq!(
         package.consumption_trust(),
@@ -206,15 +220,15 @@ fn the_burn_happened_claim_is_node_trusted_however_strong_the_creation_proof_is(
 ///
 /// Output-note proofs do NOT prove input-note consumption. With only the creating tx
 /// present, there is no linkage, and the answer is `reconciliation-required` — never a package.
-#[test]
-fn a_transaction_that_merely_created_the_note_is_never_accepted_as_the_burn() {
+#[tokio::test]
+async fn a_transaction_that_merely_created_the_note_is_never_accepted_as_the_burn() {
     let port = UnitPort {
         txs: Ok(vec![creating_tx()]),
         ..UnitPort::honest()
     };
 
     assert_matches!(
-        assemble(&port),
+        assemble(&port).await,
         Err(EvidenceError::ReconciliationRequired {
             reason: AmbiguityReason::NoConsumingTransaction,
             ..
@@ -225,9 +239,11 @@ fn a_transaction_that_merely_created_the_note_is_never_accepted_as_the_burn() {
 /// The same adapter with the consuming tx restored picks the CONSUMING one — not the creating one
 /// that is still sitting in the same stream. Without this, the test above would pass on an
 /// implementation that simply never resolves anything.
-#[test]
-fn the_burn_tx_id_is_the_consuming_transaction_not_the_creating_one() {
-    let package = assemble(&UnitPort::honest()).expect("the honest port assembles");
+#[tokio::test]
+async fn the_burn_tx_id_is_the_consuming_transaction_not_the_creating_one() {
+    let package = assemble(&UnitPort::honest())
+        .await
+        .expect("the honest port assembles");
 
     assert_eq!(package.burn_tx_id(), burn_tx_id().to_hex());
     assert_ne!(
@@ -240,8 +256,8 @@ fn the_burn_tx_id_is_the_consuming_transaction_not_the_creating_one() {
 /// A transaction belonging to some other account is not the faucet's burn, however tidily it
 /// matches the nullifier. `SyncTransactions` is filtered by account for a reason; the assembler
 /// re-checks it rather than trusting the port to have honoured the filter.
-#[test]
-fn another_accounts_transaction_is_not_accepted_as_the_faucets_burn() {
+#[tokio::test]
+async fn another_accounts_transaction_is_not_accepted_as_the_faucets_burn() {
     let port = UnitPort {
         txs: Ok(vec![TransactionRecord {
             account_id: other_account_id(),
@@ -251,7 +267,7 @@ fn another_accounts_transaction_is_not_accepted_as_the_faucets_burn() {
     };
 
     assert_matches!(
-        assemble(&port),
+        assemble(&port).await,
         Err(EvidenceError::ReconciliationRequired {
             reason: AmbiguityReason::NoConsumingTransaction,
             ..
@@ -265,8 +281,8 @@ fn another_accounts_transaction_is_not_accepted_as_the_faucets_burn() {
 /// The node does not report the nullifier spent. The note exists and its creation is
 /// CRYPTOGRAPHICALLY proved — and that is exactly the trap: a creation proof is not a burn. With no
 /// consumption signal the burn may simply not have happened.
-#[test]
-fn a_creation_proof_without_an_observed_spend_never_yields_a_package() {
+#[tokio::test]
+async fn a_creation_proof_without_an_observed_spend_never_yields_a_package() {
     let port = UnitPort {
         spend: Ok(NullifierRecord {
             nullifier: burn_nullifier(),
@@ -276,7 +292,7 @@ fn a_creation_proof_without_an_observed_spend_never_yields_a_package() {
     };
 
     assert_matches!(
-        assemble(&port),
+        assemble(&port).await,
         Err(EvidenceError::ReconciliationRequired {
             reason: AmbiguityReason::NoSpendObserved,
             ..
@@ -287,8 +303,8 @@ fn a_creation_proof_without_an_observed_spend_never_yields_a_package() {
 /// The node contradicts itself: `SyncNullifiers` says the spend landed in one block, the linkage
 /// says another. Both are node-trusted, neither can be checked, so there is nothing to pick between
 /// them — and picking anyway would publish a number no evidence supports.
-#[test]
-fn a_spend_block_that_disagrees_with_the_linkage_is_refused() {
+#[tokio::test]
+async fn a_spend_block_that_disagrees_with_the_linkage_is_refused() {
     let port = UnitPort {
         spend: Ok(NullifierRecord {
             nullifier: burn_nullifier(),
@@ -298,7 +314,7 @@ fn a_spend_block_that_disagrees_with_the_linkage_is_refused() {
     };
 
     assert_matches!(
-        assemble(&port),
+        assemble(&port).await,
         Err(EvidenceError::ReconciliationRequired {
             reason: AmbiguityReason::SpendBlockDisagreesWithLinkage { .. },
             ..
@@ -311,7 +327,8 @@ fn a_spend_block_that_disagrees_with_the_linkage_is_refused() {
 #[rstest]
 #[case::same_block(CREATE_BLOCK)]
 #[case::before(CREATE_BLOCK - 1)]
-fn a_spend_at_or_before_the_creation_block_is_refused(#[case] spent_in: u32) {
+#[tokio::test]
+async fn a_spend_at_or_before_the_creation_block_is_refused(#[case] spent_in: u32) {
     let port = UnitPort {
         spend: Ok(NullifierRecord {
             nullifier: burn_nullifier(),
@@ -325,7 +342,7 @@ fn a_spend_at_or_before_the_creation_block_is_refused(#[case] spent_in: u32) {
     };
 
     assert_matches!(
-        assemble(&port),
+        assemble(&port).await,
         Err(EvidenceError::ReconciliationRequired {
             reason: AmbiguityReason::ConsumptionPrecedesCreation { .. },
             ..
@@ -337,8 +354,8 @@ fn a_spend_at_or_before_the_creation_block_is_refused(#[case] spent_in: u32) {
 /// nothing here can say which — so neither is published. A first-match implementation would pick
 /// one and be right half the time, at the cost of a release against a fabricated tx id the other
 /// half.
-#[test]
-fn two_transactions_claiming_the_same_burn_are_refused_rather_than_picked_between() {
+#[tokio::test]
+async fn two_transactions_claiming_the_same_burn_are_refused_rather_than_picked_between() {
     let impostor = TransactionRecord {
         transaction_id: TransactionId::from_raw(word(0xDE_AD)),
         ..consuming_tx()
@@ -349,7 +366,7 @@ fn two_transactions_claiming_the_same_burn_are_refused_rather_than_picked_betwee
     };
 
     assert_matches!(
-        assemble(&port),
+        assemble(&port).await,
         Err(EvidenceError::ReconciliationRequired {
             reason: AmbiguityReason::AmbiguousConsumingTransactions { count: 2 },
             ..
@@ -361,14 +378,16 @@ fn two_transactions_claiming_the_same_burn_are_refused_rather_than_picked_betwee
 /// stream is a node artifact, and refusing it would block a perfectly evidenced burn. The negative
 /// control for the case above: it proves that test is about CONFLICTING linkage rather than about
 /// counting rows.
-#[test]
-fn the_same_transaction_reported_twice_is_not_an_ambiguity() {
+#[tokio::test]
+async fn the_same_transaction_reported_twice_is_not_an_ambiguity() {
     let port = UnitPort {
         txs: Ok(vec![consuming_tx(), consuming_tx()]),
         ..UnitPort::honest()
     };
 
-    let package = assemble(&port).expect("one tx reported twice is still one tx");
+    let package = assemble(&port)
+        .await
+        .expect("one tx reported twice is still one tx");
     assert_eq!(package.burn_tx_id(), burn_tx_id().to_hex());
 }
 
@@ -386,7 +405,8 @@ fn the_same_transaction_reported_twice_is_not_an_ambiguity() {
 #[rstest]
 #[case::honest_row_first(false)]
 #[case::conflicting_row_first(true)]
-fn conflicting_rows_for_one_transaction_id_are_refused_in_either_order(
+#[tokio::test]
+async fn conflicting_rows_for_one_transaction_id_are_refused_in_either_order(
     #[case] conflict_first: bool,
 ) {
     // same id, same nullifier, same account — it disagrees ONLY about which block the tx landed in,
@@ -406,7 +426,7 @@ fn conflicting_rows_for_one_transaction_id_are_refused_in_either_order(
     };
 
     assert_matches!(
-        assemble(&port),
+        assemble(&port).await,
         Err(EvidenceError::ReconciliationRequired {
             reason: AmbiguityReason::ContradictoryTransactionRows { count: 2 },
             ..
@@ -419,8 +439,8 @@ fn conflicting_rows_for_one_transaction_id_are_refused_in_either_order(
 /// one row says this transaction consumed the burn note, the other says it consumed nothing. The
 /// filter runs first and would drop the second row, leaving a single "clean" candidate — so the
 /// check has to look at every row carrying the chosen id, not only at the rows that survived.
-#[test]
-fn a_contradictory_row_is_caught_even_when_the_filter_would_have_dropped_it() {
+#[tokio::test]
+async fn a_contradictory_row_is_caught_even_when_the_filter_would_have_dropped_it() {
     let says_it_consumed_nothing = TransactionRecord {
         input_note_nullifiers: Vec::new(),
         ..consuming_tx()
@@ -431,7 +451,7 @@ fn a_contradictory_row_is_caught_even_when_the_filter_would_have_dropped_it() {
     };
 
     assert_matches!(
-        assemble(&port),
+        assemble(&port).await,
         Err(EvidenceError::ReconciliationRequired {
             reason: AmbiguityReason::ContradictoryTransactionRows { .. },
             ..
@@ -445,7 +465,8 @@ fn a_contradictory_row_is_caught_even_when_the_filter_would_have_dropped_it() {
 #[case::note("GetNotesById")]
 #[case::transactions("SyncTransactions")]
 #[case::nullifiers("SyncNullifiers")]
-fn a_failing_read_surfaces_rather_than_reading_as_no_burn(#[case] rpc: &'static str) {
+#[tokio::test]
+async fn a_failing_read_surfaces_rather_than_reading_as_no_burn(#[case] rpc: &'static str) {
     let failure = EvidenceReadError::new(rpc, std::io::Error::other("the node is down"));
     let mut port = UnitPort::honest();
     match rpc {
@@ -454,7 +475,7 @@ fn a_failing_read_surfaces_rather_than_reading_as_no_burn(#[case] rpc: &'static 
         _ => port.spend = Err(failure),
     }
 
-    assert_matches!(assemble(&port), Err(EvidenceError::Read(e)) if e.rpc() == rpc);
+    assert_matches!(assemble(&port).await, Err(EvidenceError::Read(e)) if e.rpc() == rpc);
 }
 
 // THE NOTE ITSELF — unobservable and unknown notes
@@ -462,8 +483,8 @@ fn a_failing_read_surfaces_rather_than_reading_as_no_burn(#[case] rpc: &'static 
 
 /// A private note: `GetNotesById` returns `details = None` and the burn is unobservable.
 /// There is no payload, no nullifier, and therefore no evidence to assemble.
-#[test]
-fn a_private_note_is_rejected_as_unobservable() {
+#[tokio::test]
+async fn a_private_note_is_rejected_as_unobservable() {
     let port = UnitPort {
         note: Ok(NoteRecord {
             note_id: burn_note_id(),
@@ -473,7 +494,7 @@ fn a_private_note_is_rejected_as_unobservable() {
     };
 
     assert_matches!(
-        assemble(&port),
+        assemble(&port).await,
         Err(EvidenceError::NoteNotObservable { .. })
     );
 }
@@ -481,8 +502,8 @@ fn a_private_note_is_rejected_as_unobservable() {
 /// The port answering about a DIFFERENT note than the one asked about. Assembling anyway would
 /// attach another burn's evidence to this one — the same class of durable false evidence
 /// `conflict_evidence.rs` forecloses on the Circle side.
-#[test]
-fn a_port_answering_about_a_different_note_is_refused() {
+#[tokio::test]
+async fn a_port_answering_about_a_different_note_is_refused() {
     let port = UnitPort {
         note: Ok(NoteRecord {
             note_id: NoteId::from_raw(word(0x_07_4E_52)),
@@ -492,15 +513,15 @@ fn a_port_answering_about_a_different_note_is_refused() {
     };
 
     assert_matches!(
-        assemble(&port),
+        assemble(&port).await,
         Err(EvidenceError::WrongNoteAnswered { .. })
     );
 }
 
 /// The same, for the nullifier read: an observation about some other nullifier says nothing about
 /// this burn.
-#[test]
-fn a_port_answering_about_a_different_nullifier_is_refused() {
+#[tokio::test]
+async fn a_port_answering_about_a_different_nullifier_is_refused() {
     let port = UnitPort {
         spend: Ok(NullifierRecord {
             nullifier: Nullifier::from_raw(word(0x_07_4E_52)),
@@ -510,7 +531,7 @@ fn a_port_answering_about_a_different_nullifier_is_refused() {
     };
 
     assert_matches!(
-        assemble(&port),
+        assemble(&port).await,
         Err(EvidenceError::WrongNullifierAnswered { .. })
     );
 }

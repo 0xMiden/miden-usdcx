@@ -13,7 +13,8 @@
 //! step it belongs to. The names are short because operators read them in logs; they mean:
 //!
 //! * **B3 — discovery.** A burn note is found and validated: exact tag, publicly observable,
-//!   payload decodable, sender readable. Nothing leaves the process until this passes.
+//!   consumed by the xUSDC burn script, payload decodable, sender readable, and carrying exactly
+//!   the xUSDC its payload claims. Nothing leaves the process until this passes.
 //! * **B4 — prepare request.** The validated burn is turned into Circle's prepare-withdrawal
 //!   request, payload and depositor taken from that one note.
 //! * **B5 — prepare and validate the response.** Circle returns a burn spec; it is compared to the
@@ -191,6 +192,11 @@
 //! * **The burn note is Public with one fixed tag** (an exact match, never a prefix) —
 //!   [`config::ListenerConfig::burn_tag`] is one FULL 32-bit tag, matched by exact equality;
 //!   `SyncNotes` does not prefix-scan.
+//! * **A tag is not a burn, and a payload is not an amount** — B3 additionally pins the note's
+//!   script root to the shared encoding crate's `XReserveBurnNote::script_root()` (the tag is a
+//!   routing hint anyone can write) and requires the note's VAULT to hold exactly the xUSDC its
+//!   withdrawal payload claims (the chain burns the vault; Circle releases the payload). Both
+//!   refuse BEFORE any Circle call.
 //! * **Single-owner codecs** — [`types::BurnPayload`] IS the shared encoding crate's
 //!   `XReserveBurnItems`, and the `AccountId↔bytes32` encoding behind `remoteDepositor` is the
 //!   shared encoding crate's codec. Both consumed by reference; neither re-implemented.

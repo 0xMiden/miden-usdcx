@@ -27,7 +27,7 @@
 use assert_matches::assert_matches;
 
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::AssetAmount;
+use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_standards::interop::eth::EthEmbeddedAccountId;
 use withdrawal_listener_attester::circle::schema::PrepareBurnIntentInput;
 use withdrawal_listener_attester::circle::wire::{DecimalAmount, Hex32, SchemaError};
@@ -37,6 +37,7 @@ use withdrawal_listener_attester::validate::{
     validate_discovery, DiscoveredBurn, DiscoveredDetails, DiscoveryRecord,
 };
 use withdrawal_listener_attester::withdrawal_api::build_prepare_request;
+use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::xreserve::encoding::ForeignChainAddress;
 
 // ================================================================================================
@@ -112,6 +113,14 @@ fn discovered_burn(
             payload.encode(),
             prefix,
             suffix,
+            // the two fund-safety facts B3 now judges: the pinned burn-note script root, and the
+            // xUSDC the note actually carries. Supplied so the burn under test here is one a real
+            // discovery pass could have produced; `discovery_fund_safety.rs` is what varies them.
+            XReserveBurnNote::script_root(),
+            vec![Asset::Fungible(
+                FungibleAsset::new(cfg.faucet_id(), payload.amount.as_u64())
+                    .expect("an in-range amount"),
+            )],
         )),
     );
     validate_discovery(&record, cfg).expect("a well-formed public burn note passes B3")

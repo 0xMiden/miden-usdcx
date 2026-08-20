@@ -35,8 +35,10 @@
 //!   [`ListenerConfig`] is accepted as the reserved seam for them and not yet read.
 
 use miden_protocol::account::AccountId;
-use miden_protocol::note::NoteMetadata;
+use miden_protocol::asset::Asset;
+use miden_protocol::note::{NoteMetadata, NoteScriptRoot};
 use miden_protocol::Felt;
+use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 
 use crate::attester::{sign, SecretKey, Signature65};
 use crate::circle::schema::{PrepareWithdrawalResponse, TransferSpec};
@@ -54,9 +56,10 @@ use crate::types::BurnPayload;
 ///
 /// It is deliberately the raw report, not a validated note: the `tag` is a full 32-bit `u32`
 /// (matched by exact equality, never a prefix), and `details` is `None` for a PRIVATE or erased
-/// note that came back without its columns, unobservable to Circle. The real feed — the exact-tag
-/// `SyncNotes` scan and the retrieval — is PARKED to a later slice, once a usable `miden-client`
-/// exists; this type is the model discovery validates against in the meantime.
+/// note that came back without its columns, unobservable to Circle. What the node said goes in
+/// here; [`validate_discovery`] is what judges it. The real feed — the exact-tag `SyncNotes` scan
+/// and the `GetNotesById` retrieval — fills this type in
+/// [`miden::discovery`](crate::miden::discovery).
 #[derive(Debug, Clone)]
 pub struct DiscoveryRecord {
     tag: u32,
@@ -81,29 +84,100 @@ impl DiscoveryRecord {
     }
 }
 
-/// The details a PUBLIC discovered note carries: its withdrawal-payload attachment felts and its
-/// `metadata.sender`. Present exactly when `GetNotesById` returned `details = Some(..)`.
+/// The details a PUBLIC discovered note carries, as REPORTED: its withdrawal-payload attachment
+/// felts, its `metadata.sender`, the root of the script that will consume it, and the assets in its
+/// vault. Present exactly when `GetNotesById` returned `details = Some(..)`.
+///
+/// # Why the script root and the vault are here
+///
+/// They are the two facts a burn cannot be judged without, and until they were carried the two
+/// checks that use them were not merely missing — they were **unrepresentable**.
+///
+/// * `metadata.tag` is a routing hint anyone can write, so the tag alone does not say a note is a
+///   burn. The `script_root` is what says the faucet's burn path runs on consumption.
+/// * The chain reduces supply by what is in `assets`; the withdrawal payload in `items` is what
+///   Circle is asked to release. Two numbers, written by the same note author, that nothing forced
+///   to agree.
+///
+/// This type still REPORTS rather than judges: it holds whatever the node handed back — a vault of
+/// any size, an asset from any faucet, any script root at all — and [`validate_discovery`] is what
+/// refuses. A constructor that filled in the canonical root, or derived the asset from the payload,
+/// would make both checks vacuous for every value built through it.
 #[derive(Debug, Clone)]
 pub struct DiscoveredDetails {
     items: Vec<Felt>,
     sender: BurnNoteMetadata,
+    script_root: NoteScriptRoot,
+    assets: Vec<Asset>,
 }
 
 impl DiscoveredDetails {
-    /// From the raw withdrawal-payload attachment felts and an already-modelled sender.
-    pub fn new(items: Vec<Felt>, sender: BurnNoteMetadata) -> Self {
-        Self { items, sender }
+    /// From the raw withdrawal-payload attachment felts, an already-modelled sender, the reported
+    /// script root, and the reported vault.
+    pub fn new(
+        items: Vec<Felt>,
+        sender: BurnNoteMetadata,
+        script_root: NoteScriptRoot,
+        assets: Vec<Asset>,
+    ) -> Self {
+        Self {
+            items,
+            sender,
+            script_root,
+            assets,
+        }
     }
 
     /// From the raw items and a public note's `NoteMetadata` (the happy-path discovery shape).
-    pub fn from_metadata(items: Vec<Felt>, meta: &NoteMetadata) -> Self {
-        Self::new(items, BurnNoteMetadata::from_metadata(meta))
+    pub fn from_metadata(
+        items: Vec<Felt>,
+        meta: &NoteMetadata,
+        script_root: NoteScriptRoot,
+        assets: Vec<Asset>,
+    ) -> Self {
+        Self::new(
+            items,
+            BurnNoteMetadata::from_metadata(meta),
+            script_root,
+            assets,
+        )
     }
 
     /// From the raw items and the reported `(prefix, suffix)` sender felts — the shape a node hands
     /// back before the sender is known to be an account id.
-    pub fn from_raw_sender(items: Vec<Felt>, prefix: Felt, suffix: Felt) -> Self {
-        Self::new(items, BurnNoteMetadata::from_raw_sender(prefix, suffix))
+    pub fn from_raw_sender(
+        items: Vec<Felt>,
+        prefix: Felt,
+        suffix: Felt,
+        script_root: NoteScriptRoot,
+        assets: Vec<Asset>,
+    ) -> Self {
+        Self::new(
+            items,
+            BurnNoteMetadata::from_raw_sender(prefix, suffix),
+            script_root,
+            assets,
+        )
+    }
+
+    /// The reported withdrawal-payload attachment felts.
+    pub fn items(&self) -> &[Felt] {
+        &self.items
+    }
+
+    /// The reported `metadata.sender`.
+    pub fn sender(&self) -> &BurnNoteMetadata {
+        &self.sender
+    }
+
+    /// The reported root of the script that consumes this note.
+    pub fn script_root(&self) -> NoteScriptRoot {
+        self.script_root
+    }
+
+    /// The reported contents of the note's vault — what consuming the note would actually burn.
+    pub fn assets(&self) -> &[Asset] {
+        &self.assets
     }
 }
 
@@ -134,14 +208,30 @@ impl DiscoveredBurn {
 ///    (`SyncNotes` does not prefix-scan — an exact match, never a prefix).
 /// 2. **Observability** — `details = Some(..)`; a `details = None` (private/erased) note is refused
 ///    as unobservable for Circle.
-/// 3. **Payload** — the `(amount, destDomain, destRecipient, salt)` felts are decoded by the shared
+/// 3. **Script root** — the note is consumed by the xUSDC burn script and by nothing else. The tag
+///    above is a routing hint anyone can write; this is the rung that says the faucet's burn path
+///    actually runs. Pinned to [`XReserveBurnNote::script_root()`], read from the shared encoding
+///    crate at every call so the check moves with the note rather than with a digest copied here.
+/// 4. **Payload** — the `(amount, destDomain, destRecipient, salt)` felts are decoded by the shared
 ///    encoding crate's codec (consumed by reference — no re-parse here).
-/// 4. **Sender** — `metadata.sender` is read as the Miden burner; an absent/zero/malformed sender
+/// 5. **Sender** — `metadata.sender` is read as the Miden burner; an absent/zero/malformed sender
 ///    is refused, never defaulted.
+/// 6. **Asset** — the note carries exactly one fungible asset, issued by the configured xUSDC
+///    faucet, in exactly the amount the payload claims, and that amount is not zero. This is the
+///    rung that ties what Miden BURNS to what Circle is asked to RELEASE; without it the two
+///    numbers are independent, and only one of them costs the reserve.
+///
+/// The order puts the two cheap structural rungs (tag, script root) ahead of the decode, so a note
+/// that is not a burn at all is refused without its payload ever being parsed — and puts the asset
+/// rung after the decode, because it has nothing to compare against until the payload exists.
 ///
 /// # Errors
-/// [`DiscoveryReject::TagMismatch`], [`DiscoveryReject::PrivateNoteUnobservable`], or
-/// [`DiscoveryReject::Decode`] (wrapping the codec's / sender read's [`DecodeError`]).
+/// [`DiscoveryReject::TagMismatch`], [`DiscoveryReject::PrivateNoteUnobservable`],
+/// [`DiscoveryReject::ScriptRootMismatch`], [`DiscoveryReject::Decode`] (wrapping the codec's /
+/// sender read's [`DecodeError`]), or one of the asset refusals —
+/// [`DiscoveryReject::AssetCount`], [`DiscoveryReject::AssetNotFungible`],
+/// [`DiscoveryReject::AssetFaucetMismatch`], [`DiscoveryReject::AssetAmountMismatch`],
+/// [`DiscoveryReject::ZeroAmount`].
 ///
 /// [`DecodeError`]: crate::error::DecodeError
 pub fn validate_discovery(
@@ -162,14 +252,84 @@ pub fn validate_discovery(
         .as_ref()
         .ok_or(DiscoveryReject::PrivateNoteUnobservable)?;
 
-    // 3. decode the four-field payload through the shared encoding crate's codec (single-owner;
+    // 3. the note is consumed by the burn script. Checked here, BEFORE the decode, because a note
+    // that merely borrowed the tag is not this listener's note and its payload is not worth
+    // parsing. The expected root is read from the shared encoding crate on every call — a digest
+    // literal here would keep passing this check on the day the burn policy moves the script.
+    let expected_root = XReserveBurnNote::script_root();
+    if details.script_root != expected_root {
+        return Err(DiscoveryReject::ScriptRootMismatch {
+            expected: expected_root,
+            actual: details.script_root,
+        });
+    }
+
+    // 4. decode the four-field payload through the shared encoding crate's codec (single-owner;
     // no re-parse).
     let payload = decode_burn_payload(&details.items).map_err(DiscoveryReject::Decode)?;
 
-    // 4. read metadata.sender as the Miden burner (refused, never defaulted).
+    // 5. read metadata.sender as the Miden burner (refused, never defaulted).
     let depositor = read_sender(&details.sender).map_err(DiscoveryReject::Decode)?;
 
+    // 6. what the note actually burns must be what the payload claims.
+    check_carried_asset(&details.assets, &payload, cfg)?;
+
     Ok(DiscoveredBurn { payload, depositor })
+}
+
+/// Weighs the note's vault against its withdrawal payload — the check that makes "burned" and
+/// "claimed" one number rather than two.
+///
+/// Consuming the note moves `assets` to the faucet and reduces supply by that much; nothing
+/// on-chain reads the payload, and nothing off-chain read the vault before this. Each rung below is
+/// a way the two can disagree, and each is a refusal rather than a reconciliation: there is no
+/// honest way to pick which of two numbers a user meant.
+fn check_carried_asset(
+    assets: &[Asset],
+    payload: &BurnPayload,
+    cfg: &ListenerConfig,
+) -> Result<(), DiscoveryReject> {
+    // exactly one asset. An empty vault burns nothing; a multi-asset vault has no single amount,
+    // and picking the one that agrees is how dust beside a worthless token reads as a full burn.
+    let [asset] = assets else {
+        return Err(DiscoveryReject::AssetCount {
+            count: assets.len(),
+        });
+    };
+
+    // …and it is fungible: a withdrawal is denominated in an amount, which a non-fungible asset
+    // does not have.
+    let Asset::Fungible(carried) = asset else {
+        return Err(DiscoveryReject::AssetNotFungible);
+    };
+
+    // …issued by the configured xUSDC faucet. Another faucet's token is not xUSDC however exactly
+    // its amount matches, which is precisely the case a bare amount check would wave through.
+    if carried.faucet_id() != cfg.faucet_id() {
+        return Err(DiscoveryReject::AssetFaucetMismatch {
+            expected: cfg.faucet_id(),
+            actual: carried.faucet_id(),
+        });
+    }
+
+    // …in exactly the claimed amount. Compared as the same `u64` on both sides, so no rounding,
+    // scaling or tolerance can open a gap between the burn and the release.
+    let carried_amount = carried.amount().as_u64();
+    let claimed_amount = payload.amount.as_u64();
+    if carried_amount != claimed_amount {
+        return Err(DiscoveryReject::AssetAmountMismatch {
+            carried: carried_amount,
+            payload: claimed_amount,
+        });
+    }
+
+    // …and it is not zero. The two halves AGREE at zero, so the equality above passes and this is
+    // the rung that catches a withdrawal with no burn behind it.
+    if carried_amount == 0 {
+        return Err(DiscoveryReject::ZeroAmount);
+    }
+
+    Ok(())
 }
 
 // ================================================================================================

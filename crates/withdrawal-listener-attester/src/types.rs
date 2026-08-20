@@ -15,9 +15,8 @@ use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
 ///
 /// The decode itself is
 /// [`note_decode::decode_burn_payload`](crate::note_decode::decode_burn_payload), which is that
-/// same codec called by reference. What still waits on a client is only the DISCOVERY of the note
-/// whose felts it decodes (the exact-tag scan and the retrieval — PARKED to the `miden-client`
-/// slice).
+/// same codec called by reference. The DISCOVERY of the note whose felts it decodes — the exact-tag
+/// scan and the retrieval — is [`miden::discovery`](crate::miden::discovery).
 pub type BurnPayload = XReserveBurnItems;
 
 /// How strongly a piece of burn evidence is proven — reproduced from the evidence table,

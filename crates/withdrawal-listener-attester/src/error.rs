@@ -12,6 +12,8 @@
 use core::fmt;
 use std::sync::Arc;
 
+use miden_protocol::account::AccountId;
+use miden_protocol::note::NoteScriptRoot;
 use xusdc_encoding::xreserve::encoding::EncodingError;
 
 use crate::attester::Address;
@@ -459,8 +461,10 @@ impl core::error::Error for QuorumError {}
 ///
 /// The order is load-bearing and reflected in the variants' priority: the tag is matched FIRST (a
 /// wrong-tag note is not this listener's note at all), THEN observability (a private note has
-/// nothing to read), and only then is the payload decoded. Every case is a REFUSAL — no partial or
-/// defaulted burn ever leaves this gate.
+/// nothing to read), THEN the script root (a note the burn path will not consume is not a burn,
+/// whatever it carries), and only then is the payload decoded and weighed against the asset the
+/// note actually carries. Every case is a REFUSAL — no partial or defaulted burn ever leaves this
+/// gate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DiscoveryReject {
@@ -475,11 +479,56 @@ pub enum DiscoveryReject {
     /// a note Circle cannot see is refused rather than attested to.
     PrivateNoteUnobservable,
 
+    /// The note will not be consumed by the xUSDC burn script. **The tag is a routing hint anyone
+    /// can write**; the script root is what says the faucet's burn path is what runs on
+    /// consumption. A correctly-tagged note carrying an arbitrary script reduces no supply when it
+    /// is consumed, so attesting to it would ask Circle to release native USDC against a burn that
+    /// never happened.
+    ///
+    /// `expected` is sourced from the shared encoding crate's
+    /// `XReserveBurnNote::script_root()`, never written down here as a digest literal: the planned
+    /// custom burn policy MOVES that root, and a literal would rot into a check that rejects every
+    /// real burn.
+    ScriptRootMismatch {
+        expected: NoteScriptRoot,
+        actual: NoteScriptRoot,
+    },
+
     /// The note came back public and tagged, but its withdrawal-payload attachment or its
     /// `metadata.sender` did not decode — the shared encoding crate's codec's / sender read's
     /// verdict, carried through UNFLATTENED as the preserved [`DecodeError`]
     /// (`preserve-error-source`).
     Decode(DecodeError),
+
+    /// The note's vault does not hold exactly one asset. A burn is one asset moving to the faucet:
+    /// an empty vault burns nothing, and a multi-asset vault has no single amount to weigh the
+    /// payload against — searching one for the asset that happens to agree is how a note carrying
+    /// xUSDC dust beside a worthless token gets read as a full-value burn.
+    AssetCount { count: usize },
+
+    /// The note's single asset is NON-fungible. A withdrawal is denominated in an amount and a
+    /// non-fungible asset has none, so there is nothing for the payload to agree with.
+    AssetNotFungible,
+
+    /// The note's asset was issued by another faucet, so it is not xUSDC — however exactly its
+    /// amount matches the payload. `expected` is the configured
+    /// [`faucet_id`](crate::config::ListenerConfig::faucet_id).
+    AssetFaucetMismatch {
+        expected: AccountId,
+        actual: AccountId,
+    },
+
+    /// **The burned amount and the claimed amount are different numbers.** Miden reduces supply by
+    /// the amount in the note's VAULT and never reads the withdrawal payload; Circle is asked to
+    /// release the amount in that PAYLOAD. Nothing on either side forces the two to agree, so a
+    /// note carrying one unit while claiming a billion would burn one unit and unlock a billion.
+    /// This is the check that makes them one number.
+    AssetAmountMismatch { carried: u64, payload: u64 },
+
+    /// The burn is for zero. The vault and the payload AGREE here — both say zero — so the
+    /// agreement check passes and this is the rung that catches it: a withdrawal with no burn
+    /// behind it must never reach Circle.
+    ZeroAmount,
 }
 
 impl fmt::Display for DiscoveryReject {
@@ -493,7 +542,32 @@ impl fmt::Display for DiscoveryReject {
                 f,
                 "the discovered burn note is private (details = none) and unobservable for circle"
             ),
+            Self::ScriptRootMismatch { expected, actual } => write!(
+                f,
+                "note script root {actual} is not the xusdc burn note script root {expected}"
+            ),
             Self::Decode(source) => write!(f, "the discovered burn note did not decode: {source}"),
+            Self::AssetCount { count } => write!(
+                f,
+                "the discovered burn note carries {count} assets, not exactly one"
+            ),
+            Self::AssetNotFungible => write!(
+                f,
+                "the discovered burn note carries a non-fungible asset, which has no amount to burn"
+            ),
+            Self::AssetFaucetMismatch { expected, actual } => write!(
+                f,
+                "the carried asset was issued by faucet {actual}, not the configured xusdc faucet \
+                 {expected}"
+            ),
+            Self::AssetAmountMismatch { carried, payload } => write!(
+                f,
+                "the note carries {carried} but its withdrawal payload claims {payload}"
+            ),
+            Self::ZeroAmount => write!(
+                f,
+                "the discovered burn note burns zero, so there is nothing to withdraw"
+            ),
         }
     }
 }
@@ -502,7 +576,16 @@ impl core::error::Error for DiscoveryReject {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Decode(source) => Some(source),
-            Self::TagMismatch { .. } | Self::PrivateNoteUnobservable => None,
+            // enumerated rather than caught by `_`, so a new refusal has to declare whether it
+            // carries a cause instead of silently reporting none.
+            Self::TagMismatch { .. }
+            | Self::PrivateNoteUnobservable
+            | Self::ScriptRootMismatch { .. }
+            | Self::AssetCount { .. }
+            | Self::AssetNotFungible
+            | Self::AssetFaucetMismatch { .. }
+            | Self::AssetAmountMismatch { .. }
+            | Self::ZeroAmount => None,
         }
     }
 }

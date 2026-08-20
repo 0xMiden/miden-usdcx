@@ -84,6 +84,13 @@ miden-protocol = { version = "=0.16.0-rc.4" }
 # definition and this crate cannot drift from it. Same pin as the protocol dependency above.
 miden-standards = { version = "=0.16.0-rc.4" }
 
+# `evidence::BurnEvidenceReads` is a trait OBJECT (`RunContext` holds `&dyn BurnEvidenceReads`) and
+# its methods are async, and native async-fn-in-trait is not dyn-compatible — so the port is written
+# with `#[async_trait]`. Declared here as a DIRECT dependency rather than leaned on through
+# `miden-client`'s own copy: the trait is this crate's, and a transitive arrival would make the port
+# compile or not compile depending on a dependency's private choices.
+async-trait = "0.1"
+
 [dev-dependencies]
 # Exact-variant assertions + parameterized reject tables; versions from the workspace table.
 rstest = { workspace = true }

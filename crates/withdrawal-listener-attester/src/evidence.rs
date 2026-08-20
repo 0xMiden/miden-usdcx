@@ -35,14 +35,25 @@
 //!
 //! # Boundary
 //!
-//! [`BurnEvidenceReads`] is a port; the real reads are PARKED until `miden-client` has a v0.16
-//! release. It is shaped as a 1:1 image of the three RPCs that client will expose, so those reads
-//! map onto it without reshaping the assembler. **If node evidence ever contradicts a label —
-//! stronger OR weaker — stop and surface it. Labels change through a deliberate Circle-facing
-//! decision, never silently.**
+//! [`BurnEvidenceReads`] is a port, shaped as a 1:1 image of the three RPCs a node exposes, so the
+//! real reads map onto it without reshaping the assembler. The `miden-client` implementation of it
+//! is [`miden::evidence`](crate::miden::evidence); a test drives the same port with records it
+//! wrote itself. **If node evidence ever contradicts a label — stronger OR weaker — stop and
+//! surface it. Labels change through a deliberate Circle-facing decision, never silently.**
+//!
+//! # Why the port is async, and why it is `#[async_trait]`
+//!
+//! The reads are network calls and the orchestration that drives them is already `async`, so the
+//! port is too: a synchronous method that blocked on a runtime handle inside an already-async call
+//! graph would risk stalling the executor, on the path that releases money. And it is
+//! `#[async_trait]` rather than a native `async fn` in a trait because
+//! [`RunContext`](crate::listener::RunContext) holds `&dyn BurnEvidenceReads` — a trait OBJECT —
+//! and native async-fn-in-trait is not dyn-compatible. Boxing each returned future is what keeps
+//! the seam a seam.
 
 use core::fmt;
 
+use async_trait::async_trait;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteId, NoteInclusionProof, Nullifier};
@@ -54,20 +65,20 @@ use crate::types::EvidencePackage;
 // THE READ PORT
 // ================================================================================================
 
-/// The three Miden reads the evidence rests on — the crate's port onto a v16 client that does not
-/// exist yet (parked for the node-backed slice).
+/// The three Miden reads the evidence rests on — the crate's port onto a node.
 ///
 /// Each method is one RPC, kept a 1:1 image of it so the real adapter is a translation rather than
 /// a redesign. Note what is **not** here, and cannot be added: there is no by-transaction-hash
 /// lookup, because Miden has none (`GetTransactionById` does not exist). A `burnTxId` is
 /// something this module *outputs*; it is never something it can look anything up by (anti-`the
 /// evidence-labelling trap`).
+#[async_trait]
 pub trait BurnEvidenceReads {
     /// `GetNotesById([note_id])` — the note, its details, and its inclusion proof.
     ///
     /// # Errors
     /// The read failed. An unknown note id is a failed read, not an answer.
-    fn note_by_id(&self, note_id: NoteId) -> Result<NoteRecord, EvidenceReadError>;
+    async fn note_by_id(&self, note_id: NoteId) -> Result<NoteRecord, EvidenceReadError>;
 
     /// `SyncTransactions(account_ids = [faucet_id])` — the faucet's transactions. **NODE-TRUSTED**:
     /// the node reports these and nothing proves them.
@@ -77,7 +88,7 @@ pub trait BurnEvidenceReads {
     ///
     /// # Errors
     /// The read failed.
-    fn faucet_transactions(
+    async fn faucet_transactions(
         &self,
         faucet_id: AccountId,
     ) -> Result<Vec<TransactionRecord>, EvidenceReadError>;
@@ -88,7 +99,10 @@ pub trait BurnEvidenceReads {
     ///
     /// # Errors
     /// The read failed.
-    fn nullifier_status(&self, nullifier: Nullifier) -> Result<NullifierRecord, EvidenceReadError>;
+    async fn nullifier_status(
+        &self,
+        nullifier: Nullifier,
+    ) -> Result<NullifierRecord, EvidenceReadError>;
 }
 
 /// A `GetNotesById` reply for one note.
@@ -103,16 +117,24 @@ pub struct NoteRecord {
     pub details: Option<PublicNoteDetails>,
 }
 
-/// The details a PUBLIC note carries — the cryptographic half of the evidence.
+/// The details a PUBLIC note carries — the creation half of the evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicNoteDetails {
     /// The note's nullifier, derived from the note itself. It is the key the spend observation and
     /// the tx-linkage are both looked up by.
     pub nullifier: Nullifier,
 
-    /// The proof of the note's membership in its block's note root — **CRYPTOGRAPHIC**, and
-    /// it proves CREATION. The package's `block_num` is read out of this proof's location and out
-    /// of nothing else, which is what entitles that field to a cryptographic label.
+    /// The node's proof of the note's membership in its block's note root. Whatever it proves, it
+    /// proves CREATION and never consumption — and it arrives **NODE-TRUSTED**: the read adapter
+    /// checks no merkle path against an authenticated block header
+    /// ([`READ_TRUST`](crate::miden::evidence::READ_TRUST)), so this is proof material a node
+    /// handed over rather than a proof this process verified.
+    ///
+    /// The package's `block_num` is read out of this proof's location and out of nothing else,
+    /// which is what keeps it a CREATION fact rather than a consumption one. The **strength**
+    /// the documented evidence table gives that field is Circle's to state — and whether it
+    /// survives the proof being unverified here is an OPEN Circle-owned question, flagged rather
+    /// than silently answered in either direction.
     pub inclusion_proof: NoteInclusionProof,
 }
 
@@ -185,7 +207,7 @@ pub struct NullifierRecord {
 /// * [`EvidenceError::ReconciliationRequired`] — the reads are incomplete, ambiguous, or mutually
 ///   inconsistent. Fail-closed: an operator reconciles it, and no half-evidenced burn goes to
 ///   Circle.
-pub fn assemble_evidence<P>(
+pub async fn assemble_evidence<P>(
     port: &P,
     note_id: NoteId,
     faucet_id: AccountId,
@@ -194,7 +216,7 @@ where
     P: BurnEvidenceReads + ?Sized,
 {
     // 1. The note, and its CRYPTOGRAPHIC creation proof.
-    let record = port.note_by_id(note_id)?;
+    let record = port.note_by_id(note_id).await?;
     if record.note_id != note_id {
         return Err(EvidenceError::WrongNoteAnswered {
             asked: note_id,
@@ -209,7 +231,7 @@ where
     let create_block = details.inclusion_proof.location().block_num();
 
     // 2. The spend observation. NODE-TRUSTED, and required: a created note is not a burned one.
-    let spend = port.nullifier_status(nullifier)?;
+    let spend = port.nullifier_status(nullifier).await?;
     if spend.nullifier != nullifier {
         return Err(EvidenceError::WrongNullifierAnswered {
             asked: nullifier,
@@ -236,7 +258,7 @@ where
     // 3. The linkage — the faucet transaction that CONSUMED this note. Matched on input nullifiers
     // and on nothing else: `output_note_proofs` would match the transaction that CREATED the note,
     // which is in this very stream.
-    let transactions = port.faucet_transactions(faucet_id)?;
+    let transactions = port.faucet_transactions(faucet_id).await?;
     let consuming = transactions
         .iter()
         .filter(|tx| tx.account_id == faucet_id && tx.input_note_nullifiers.contains(&nullifier));

@@ -21,8 +21,8 @@ const FAUCET_ID_HEX: &str = "0xbb405fd9fe431bd1135a292de098cb";
 // THE TYPES THIS SLICE CONSUMES BY REFERENCE
 // ================================================================================================
 
-#[test]
-fn the_evidence_package_labels_each_element_with_its_documented_proof_strength() {
+#[tokio::test]
+async fn the_evidence_package_labels_each_element_with_its_documented_proof_strength() {
     // Circle's documentation — the labels are reproduced from the evidence table, and they are not
     // decoration:
     // `burnTxId` is NODE-TRUSTED (there is no GetTransactionById), while the note id and block
@@ -35,6 +35,7 @@ fn the_evidence_package_labels_each_element_with_its_documented_proof_strength()
     // Minting one from four made-up values is precisely the bypass that narrowing closed, and the
     // labels are worth more asserted on a package that came through the real gate.
     let evidence = assemble_evidence(&UnitPort::honest(), burn_note_id(), faucet_id())
+        .await
         .expect("the honest port assembles");
 
     assert_eq!(evidence.note_id_strength(), ProofStrength::Cryptographic);

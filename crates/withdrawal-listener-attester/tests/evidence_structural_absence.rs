@@ -159,8 +159,8 @@ fn the_assembler_has_no_by_transaction_entry_point() {
 /// transaction stream that names the burn tx and a spend observation to match yield NOTHING. Every
 /// scrap of `burnTxId`-side evidence is present and it is still not a burn — because `burnTxId`
 /// alone proves nothing.
-#[test]
-fn a_burn_tx_id_and_a_spend_observation_without_the_note_yield_no_evidence() {
+#[tokio::test]
+async fn a_burn_tx_id_and_a_spend_observation_without_the_note_yield_no_evidence() {
     let port = UnitPort {
         note: Err(EvidenceReadError::new(
             "GetNotesById",
@@ -169,7 +169,7 @@ fn a_burn_tx_id_and_a_spend_observation_without_the_note_yield_no_evidence() {
         ..UnitPort::honest()
     };
 
-    assert_matches!(assemble(&port), Err(EvidenceError::Read(_)));
+    assert_matches!(assemble(&port).await, Err(EvidenceError::Read(_)));
 }
 
 // THE FULL-BLOCK UPGRADE — deferred, and deferred as a typed error
@@ -178,9 +178,11 @@ fn a_burn_tx_id_and_a_spend_observation_without_the_note_yield_no_evidence() {
 /// P2, deliberately not built (`REQUIRES IMPLEMENTATION VALIDATION`, still open).
 /// The skeleton returns its exact deferral `Err`; a panicking placeholder would take down a service
 /// that releases money, on a path a caller is free to try (`return-error-not-panic`).
-#[test]
-fn the_full_block_upgrade_returns_its_exact_deferral_error() {
-    let package = assemble(&UnitPort::honest()).expect("the honest port assembles");
+#[tokio::test]
+async fn the_full_block_upgrade_returns_its_exact_deferral_error() {
+    let package = assemble(&UnitPort::honest())
+        .await
+        .expect("the honest port assembles");
 
     assert_matches!(
         full_block_upgrade(&package),
@@ -190,9 +192,11 @@ fn the_full_block_upgrade_returns_its_exact_deferral_error() {
 
 /// And the deferral does not quietly upgrade the labels it was going to upgrade: the tx-linkage is
 /// still NODE-TRUSTED after the call, because nothing ran.
-#[test]
-fn the_deferred_upgrade_leaves_the_tx_linkage_node_trusted() {
-    let package = assemble(&UnitPort::honest()).expect("the honest port assembles");
+#[tokio::test]
+async fn the_deferred_upgrade_leaves_the_tx_linkage_node_trusted() {
+    let package = assemble(&UnitPort::honest())
+        .await
+        .expect("the honest port assembles");
     let _ = full_block_upgrade(&package);
 
     assert_eq!(package.burn_tx_id_strength(), ProofStrength::NodeTrusted);
@@ -239,7 +243,7 @@ fn the_source_sweep_reads_declarations_and_not_prose() {
     let source = evidence_source();
 
     assert!(
-        source.contains("pub fn assemble_evidence"),
+        source.contains("pub async fn assemble_evidence"),
         "the sweep must still see the module's declarations"
     );
     assert!(

@@ -4,9 +4,10 @@
 //! **NON-GATING.** The GATING versions of these are the real-local-node runs
 //! (`tests/local_node/tag_scan_retrieval.rs`, `tests/local_node/sender_exposure.rs`): a real public
 //! `XReserveBurnNote`, discovered by an exact-tag `SyncNotes` scan and retrieved by `GetNotesById`.
-//! Those need `miden-client`, which has no v0.16 release — they are PARKED
+//! Those need a running node, which is the validation harness's job rather than this crate's
 //! (`PHASE4-VERIFICATION-HARNESS.md:28`,`:65`-`68`: a non-node leg is NON-GATING and must be paired
-//! with a real-node run). What is testable purely, and is tested here, is the decode itself: given
+//! with a real-node run). The `miden-client`-backed reads that feed them are `miden::discovery`.
+//! What is testable purely, and is tested here, is the decode itself: given
 //! the felts and the sender a node WILL hand over, the module must produce the exact `BurnPayload`
 //! and the exact burner — or refuse.
 //!

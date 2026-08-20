@@ -74,16 +74,22 @@ rusqlite = { workspace = true }
 # published protocol release the rest of the workspace resolves the protocol family at
 # (the workspace-wide protocol pin).
 #
-# `miden-client` is deliberately ABSENT: no client release exists for the protocol-`next` graph, so
-# every real Miden read (the SyncNotes tag scan, GetNotesById retrieval, the evidence reads) is
-# PARKED to a later slice. This slice needs none of them — it is serde wire types, JSON fixtures,
-# and config.
 miden-protocol = { version = "=0.16.0-rc.4" }
 # `EthEmbeddedAccountId` owns the `AccountId → bytes32` packaging this crate renders as
 # `remoteDepositor`. It is consumed directly rather than through a wrapper, so the encoding has one
 # definition and this crate cannot drift from it. Same pin as the protocol dependency above.
 miden-standards = { version = "=0.16.0-rc.4" }
-
+# The Miden reads themselves (`miden::discovery`, `miden::evidence`): the exact-tag `SyncNotes`
+# scan, the `GetNotesById` retrieval, and the three burn-evidence reads. `NodeRpcClient` is the one
+# interface those adapters are written against — one method per RPC — so the crate names the client
+# and nothing below it.
+#
+# The pin resolves against the workspace protocol pin WITHOUT moving it: this release requires
+# `miden-protocol ^0.16.0-rc.4`, a caret, which the `=0.16.0-rc.4` above satisfies. Exactly one copy
+# of each protocol crate stays in the graph. The features mirror `crates/xusdc-validation`, the
+# in-repo precedent for talking to a node: `std` pulls tokio and tonic's transport plus its TLS
+# roots, and `tonic` is what exposes `GrpcClient`. Defaults are off so nothing else rides along.
+miden-client = { version = "=0.16.0-rc.1", default-features = false, features = ["std", "tonic"] }
 # `evidence::BurnEvidenceReads` is a trait OBJECT (`RunContext` holds `&dyn BurnEvidenceReads`) and
 # its methods are async, and native async-fn-in-trait is not dyn-compatible — so the port is written
 # with `#[async_trait]`. Declared here as a DIRECT dependency rather than leaned on through

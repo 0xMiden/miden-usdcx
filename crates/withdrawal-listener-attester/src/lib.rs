@@ -30,18 +30,24 @@
 //! (matched field-for-field to the OpenAPI), the schema-exact mock fixtures, the
 //! [`circle::auth`] posture, the [`circle::transport`] seam **with its production bounded-streaming
 //! transport**, the [`circle::client::CircleClient`], and the three Circle endpoints
-//! ([`withdrawal_api::prepare`], [`submit::submit_withdraw`], [`withdrawal_api::poll_status`]). No
-//! Miden read is made — the drivers are exercised against the in-process mock, and the live
-//! Circle legs stay `REQUIRES CIRCLE CONFIRMATION`.
+//! ([`withdrawal_api::prepare`], [`submit::submit_withdraw`], [`withdrawal_api::poll_status`]) —
+//! the drivers are exercised against the in-process mock, and the live Circle legs stay
+//! `REQUIRES CIRCLE CONFIRMATION`.
+//!
+//! …and the Miden-facing half's reads: [`miden::discovery`] (the exact-tag `SyncNotes` scan and the
+//! `GetNotesById` retrieval) and [`miden::evidence`] (the three burn-evidence reads), both over
+//! `miden-client`. They TRANSLATE and never judge — every refusal belongs to
+//! [`validate::validate_discovery`] or to [`evidence::assemble_evidence`], over records the
+//! adapters reported faithfully.
 //!
 //! # What it deliberately does not ship
 //!
-//! * **Miden reads** (the exact-tag `SyncNotes` scan, `GetNotesById` retrieval, the evidence reads)
-//!   they need `miden-client`, which has **no v0.16 release**, so they are parked to a later slice.
-//!   The dependency is absent from the manifest entirely, not feature-gated. What a discovered note
-//!   *says* is already decodable without any of that, and [`note_decode`] does it: the burn-note
-//!   payload (through the shared encoding crate's codec) and the `metadata.sender` read. Its tests
-//!   are therefore NON-GATING; the gating local-node runs are parked with the discovery leg.
+//! * **The service binary.** There is no daemon here: no polling loop, no durable scan cursor, no
+//!   key custody. Which block range to scan and where the attester keys live are operational
+//!   decisions, and the second is human-owned.
+//! * **A node-backed test suite.** Every suite in this crate is offline. The adapters' translations
+//!   are unit-tested against the client's own reply types; running them against a real node is the
+//!   validation harness's gating job, not this crate's.
 //!
 //! # The orchestration — the order is the product
 //!
@@ -68,9 +74,10 @@
 //! * **Fail-closed at every stage**, and the ledger's durable claim still decides the submission,
 //!   so a re-discovered burn makes zero calls.
 //!
-//! The Miden reads stay PORTS ([`listener::DiscoveredNote`], [`evidence::BurnEvidenceReads`]): they
-//! are PARKED on a `miden-client` with no v0.16 release, and nothing here fakes one — so
-//! this slice's suites are NON-GATING, and the real-node leg, when it lands, is the gating one.
+//! The Miden reads stay PORTS ([`listener::DiscoveredNote`], [`evidence::BurnEvidenceReads`]) even
+//! now that [`miden`] fills them from a real node: the orchestration is driven through the ports in
+//! its own suites, and nothing there fakes a node behind them. Those suites are NON-GATING
+//! accordingly; the real-node leg is the gating one.
 //!
 //! # The burn evidence — the burn evidence, and the honesty of its labels
 //!
@@ -101,10 +108,12 @@
 //!   `burnTxId` is the only evidence field `POST /v1/withdraw` documents, and whether Circle would
 //!   accept more is Circle's to answer, not this crate's to assume.
 //!
-//! The reads behind [`evidence::BurnEvidenceReads`] are a crate-local port with a unit adapter —
-//! the real node-backed leg is parked, so these tests are NON-GATING. The optional full-block
-//! upgrade ([`evidence::full_block_upgrade`]) returns a typed deferral error rather than a
-//! panicking placeholder.
+//! [`evidence::BurnEvidenceReads`] is a port; [`miden::evidence`] is its `miden-client`
+//! implementation, and a unit adapter is what the assembler's own suites drive. Reading from a real
+//! node upgrades no label — an inclusion proof still proves CREATION — and any argument that it
+//! should is a Circle-owned decision, not an implementation detail. The optional full-block upgrade
+//! ([`evidence::full_block_upgrade`]) returns a typed deferral error rather than a panicking
+//! placeholder.
 //!
 //! # Idempotency — the money path's error handling
 //!
@@ -217,6 +226,7 @@ pub mod error;
 pub mod evidence;
 pub mod idempotency;
 pub mod listener;
+pub mod miden;
 pub mod note_decode;
 pub mod submit;
 pub mod types;

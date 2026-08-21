@@ -93,8 +93,8 @@ async fn every_fetched_attestation_is_reported_with_a_reason() {
 
     for (index, ((label, vector), entry)) in cases.iter().zip(report.entries()).enumerate() {
         assert_eq!(
-            entry.message_hash(),
-            &vector.message_hash(),
+            entry.message_hash_hex(),
+            vector.message_hash_hex(),
             "entry {index} ({label}) reports another attestation's messageHash — the report is not \
              in page order, so an operator cannot tell which deposit was dropped"
         );

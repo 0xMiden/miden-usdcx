@@ -68,6 +68,19 @@ pub fn by_tx_hash_list(items: &[(&AttestationVector, u32)]) -> Value {
     json!({ "attestations": attestations })
 }
 
+/// [`by_tx_hash_list`] with element `index` mutated into a malformed one — the one-deposit-per-
+/// element list a source-chain transaction with several deposits returns, carrying exactly one
+/// broken element so the ones beside it can be checked for survival.
+pub fn by_tx_hash_list_with(
+    items: &[(&AttestationVector, u32)],
+    index: usize,
+    mutate: impl FnOnce(&mut Value),
+) -> Value {
+    let mut body = by_tx_hash_list(items);
+    mutate(&mut body["attestations"][index]);
+    body
+}
+
 /// `GET /v1/remote-domains/{remoteDomain}/attestations` — a LIST (no wrapper, no `remoteDomain` on
 /// the elements); pagination travels in the `Link` header (CIRCLE-API-SURFACE.md:58).
 pub fn attestation_page(items: &[&AttestationVector]) -> Value {

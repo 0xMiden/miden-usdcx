@@ -88,6 +88,14 @@ pub struct AttestationByTxHash {
     remote_domain: u32,
 }
 
+impl AttestationByTxHash {
+    /// The wire `messageHash`, verbatim — read before the element is consumed by its validation, so
+    /// a refused one can still be named by what Circle called it.
+    pub fn message_hash(&self) -> &str {
+        self.attestation.message_hash()
+    }
+}
+
 /// `GET /v1/attestations?txHash=` — a LIST (no wrapper).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttestationsByTxHashResponse {
@@ -219,24 +227,37 @@ impl ValidatedAttestationByTxHash {
     }
 }
 
-/// One page of the batch poll: its validated attestations. The cursors live in
-/// [`PageCursors`](super::pagination::PageCursors), parsed from the `Link` header, because that is
-/// where Circle puts them.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// One page of the batch poll: one element per attestation Circle listed, each either validated or
+/// refused. The cursors live in [`PageCursors`](super::pagination::PageCursors), parsed from the
+/// `Link` header, because that is where Circle puts them.
+///
+/// A refusal is an element-level VALUE, not a page-level error. Circle's stream is append-only, so
+/// an element that fails its envelope check is served again on every later poll of that page: a
+/// refusal that failed the page would stop the cursor in front of it and withhold every deposit
+/// behind it, permanently.
+///
+/// Each refusal carries the `messageHash` Circle sent for it as the RAW wire string, verbatim —
+/// including one that is not 32 hex bytes. That string is the only name a refused element has, and
+/// substituting a decoded-or-zero stand-in for it would give every element with an unreadable
+/// `messageHash` the same name and throw away the value an operator needs to find it in Circle's
+/// own logs.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct AttestationPage {
-    attestations: Vec<ValidatedAttestation>,
+    attestations: Vec<Result<ValidatedAttestation, (String, RelayerError)>>,
 }
 
 impl AttestationPage {
-    pub(crate) fn new(attestations: Vec<ValidatedAttestation>) -> Self {
+    pub(crate) fn new(
+        attestations: Vec<Result<ValidatedAttestation, (String, RelayerError)>>,
+    ) -> Self {
         Self { attestations }
     }
 
-    pub fn attestations(&self) -> &[ValidatedAttestation] {
+    pub fn attestations(&self) -> &[Result<ValidatedAttestation, (String, RelayerError)>] {
         &self.attestations
     }
 
-    pub fn into_attestations(self) -> Vec<ValidatedAttestation> {
+    pub fn into_attestations(self) -> Vec<Result<ValidatedAttestation, (String, RelayerError)>> {
         self.attestations
     }
 }

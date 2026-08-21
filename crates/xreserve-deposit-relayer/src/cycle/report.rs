@@ -88,33 +88,46 @@ impl Disposition {
 
 /// One fetched attestation and what became of it.
 ///
-/// Constructed only by `classify_one`, so an entry cannot exist without an attestation behind it
+/// Constructed only by the orchestration, so an entry cannot exist without an attestation behind it
 /// — and an attestation cannot pass through the loop without producing one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CycleEntry {
-    message_hash: [u8; 32],
+    /// How this attestation is NAMED, in the report and in the log: the `0x`-hex of the verified
+    /// `messageHash` when the envelope check passed, and the RAW wire value Circle sent when it did
+    /// not. Held as the rendered identifier rather than as 32 bytes because a refused element may
+    /// have no 32 bytes to hold — and fabricating some (zeros for a `messageHash` that is not 32
+    /// hex digits) would give every such element the same name, which is exactly the traceability
+    /// the entry exists to provide.
+    message_hash: String,
     disposition: Disposition,
 }
 
 impl CycleEntry {
-    /// Pairs a fetched attestation's `messageHash` with what became of it. The ONLY constructor —
-    /// the orchestration builds every entry through it, so an entry cannot exist without a
-    /// disposition, and a disposition cannot exist without being reported.
+    /// Pairs a fetched attestation's VERIFIED `messageHash` with what became of it — the
+    /// constructor for everything past the envelope check, where the digest is known to be 32
+    /// bytes.
     pub(crate) fn new(message_hash: [u8; 32], disposition: Disposition) -> Self {
+        Self {
+            message_hash: format!("0x{}", hex::encode(message_hash)),
+            disposition,
+        }
+    }
+
+    /// Pairs a page element the envelope check REFUSED with its refusal, naming it by the raw wire
+    /// `messageHash` Circle sent for it, verbatim. That string is the only name such an element has:
+    /// its `messageHash` is unverified and may not even be 32 hex digits, so it is reported as it
+    /// arrived rather than repaired into something that looks verified.
+    pub(crate) fn refused(message_hash: String, disposition: Disposition) -> Self {
         Self {
             message_hash,
             disposition,
         }
     }
 
-    /// The attestation's `messageHash` — the identifier that makes the fate traceable to a deposit.
-    pub fn message_hash(&self) -> &[u8; 32] {
-        &self.message_hash
-    }
-
-    /// The `messageHash` as an operator greps for it.
+    /// The `messageHash` as an operator greps for it — the identifier that makes this fate
+    /// traceable to one deposit, and to the element Circle actually served.
     pub fn message_hash_hex(&self) -> String {
-        format!("0x{}", hex::encode(self.message_hash))
+        self.message_hash.clone()
     }
 
     /// What happened.

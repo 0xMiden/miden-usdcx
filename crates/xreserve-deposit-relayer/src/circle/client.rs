@@ -223,16 +223,31 @@ impl CircleClient {
         &self.base
     }
 
-    /// Records a PERMANENT rejection (a decode failure, a broken binding, malformed pagination
-    /// metadata, a malformed request parameter) and hands the error back unchanged: it is logged
-    /// with its reason and alerted, and never silently dropped. The status-code rejections are
-    /// recorded by [`with_backoff`], which is where a status is decided.
+    /// Records a PERMANENT rejection that FAILS the fetch (a decode failure, a broken binding on
+    /// the by-hash lookup, malformed pagination metadata, a malformed request parameter) and hands
+    /// the error back unchanged: it is logged with its reason and alerted, and never silently
+    /// dropped. The status-code rejections are recorded by [`with_backoff`], which is where a
+    /// status is decided.
     pub(crate) fn reject(&self, endpoint: &str, error: RelayerError) -> RelayerError {
-        self.sink.emit(RelayerEvent::Rejected {
+        let error = self.refuse_element(endpoint, error);
+        self.sink.emit(RelayerEvent::Alert {
             endpoint: endpoint.to_string(),
             reason: error.to_string(),
         });
-        self.sink.emit(RelayerEvent::Alert {
+        error
+    }
+
+    /// Records the permanent rejection of ONE list element — a refusal that travels back to the
+    /// caller inside the response instead of failing the fetch.
+    ///
+    /// It emits the `Rejected` record, so the element is visible at the fetch layer like every
+    /// other refusal, but NOT the operator `Alert`. **The alert belongs to the layer that gives the
+    /// element its terminal disposition** — for the batch poll, the cycle's per-attestation
+    /// reporting, which is where every other refused deposit is alerted from. Alerting here too
+    /// would raise two alerts for the one element an ordinary rejection raises one for, and double
+    /// every malformed element in an operator's alert stream.
+    pub(crate) fn refuse_element(&self, endpoint: &str, error: RelayerError) -> RelayerError {
+        self.sink.emit(RelayerEvent::Rejected {
             endpoint: endpoint.to_string(),
             reason: error.to_string(),
         });

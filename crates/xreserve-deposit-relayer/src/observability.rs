@@ -402,7 +402,9 @@ pub enum RelayerEvent {
     /// minted are not the same kind of fact, and an alert that could not tell them apart would fire
     /// on both.
     Attestation {
-        /// The attestation's `messageHash`, `0x`-hex — what an operator greps for.
+        /// The attestation's `messageHash` — what an operator greps for. `0x`-hex for an
+        /// attestation whose envelope check passed; for an element that check REFUSED, the raw wire
+        /// value Circle sent, verbatim, because that is the only name such an element has.
         message_hash: String,
         /// A short, STABLE slug an alert matches on (`"submitted"`, `"rejected"`, `"deferred"`,
         /// `"duplicate"`, `"already-minted"`, `"reconciliation-required"`).

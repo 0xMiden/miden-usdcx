@@ -25,7 +25,9 @@
 //! only WITHHOLD a mint, never cause one.
 //!
 //! Nothing fetched is ever silently dropped: every rejection is emitted to the event sink with its
-//! reason.
+//! reason. A refusal that belongs to ONE element of a list travels back inside the response instead
+//! of failing the fetch, and only the RECORD of it is emitted here — the operator alert is raised
+//! by the layer that gives that element its terminal fate, so one refused element raises one alert.
 
 use crate::circle::client::CircleClient;
 use crate::circle::pagination::{parse_link_header, BatchQuery, PageCursors};
@@ -105,16 +107,25 @@ pub async fn fetch_attestation_by_message_hash(
 /// `GET /v1/attestations?txHash=` — the LIST endpoint keyed by the source-chain
 /// deposit transaction hash. Each element additionally carries `remoteDomain` (≥ 1).
 ///
+/// Like the batch page, an element's own failure — a broken envelope, a `remoteDomain` below the
+/// documented minimum — is carried back INSIDE the list as a refused element beside the raw wire
+/// `messageHash` Circle sent for it, not raised as an error for the whole list. One deposit's bad
+/// attestation must not withhold the other deposits made in the same source-chain transaction.
+///
 /// # Errors
 /// * [`RelayerError::BadTxHashFormat`] — `tx_hash` violates the REQUIRED `^0x[a-fA-F0-9]{64}$`
 ///   pattern. Refused CLIENT-SIDE: no request is issued.
-/// * [`RelayerError::BadRemoteDomain`] — an element's `remoteDomain` is below the documented
-///   minimum of 1.
-/// * otherwise as [`fetch_attestation_by_message_hash`] (status / transport / decode / envelope).
+/// * otherwise as [`fetch_attestation_by_message_hash`], for the failures that belong to the LIST:
+///   the request, its status, and the schema decode. [`RelayerError::BadRemoteDomain`] and the
+///   envelope failures belong to an ELEMENT and are not among them.
+// The refusal rides inside a `Result` whose Ok variant is the larger of the two, so an element is
+// the size it always was; boxing the refusal would buy no space and cost an allocation for every
+// refused element.
+#[allow(clippy::result_large_err)]
 pub async fn fetch_attestations_by_tx_hash(
     client: &CircleClient,
     tx_hash: &str,
-) -> Result<Vec<ValidatedAttestationByTxHash>, RelayerError> {
+) -> Result<Vec<Result<ValidatedAttestationByTxHash, (String, RelayerError)>>, RelayerError> {
     if parse_bytes32_param(tx_hash).is_none() {
         return Err(client.reject(
             ENDPOINT_BY_TX_HASH,
@@ -134,13 +145,21 @@ pub async fn fetch_attestations_by_tx_hash(
 
     let list: AttestationsByTxHashResponse = decode(client, ENDPOINT_BY_TX_HASH, &response.body)?;
 
-    list.into_attestations()
+    // the SAME per-element shape the batch poll below runs: the element's name is read off the wire
+    // before the element is consumed, so a refusal travels back under the name Circle gave it
+    Ok(list
+        .into_attestations()
         .into_iter()
         .map(|element| {
-            ValidatedAttestationByTxHash::validate(element)
-                .map_err(|error| client.reject(ENDPOINT_BY_TX_HASH, error))
+            let message_hash = element.message_hash().to_string();
+            ValidatedAttestationByTxHash::validate(element).map_err(|error| {
+                (
+                    message_hash,
+                    client.refuse_element(ENDPOINT_BY_TX_HASH, error),
+                )
+            })
         })
-        .collect()
+        .collect())
 }
 
 /// `GET /v1/remote-domains/{remoteDomain}/attestations` — one page of the batch poll, plus
@@ -155,9 +174,14 @@ pub async fn fetch_attestations_by_tx_hash(
 /// * [`RelayerError::BadPaginationMetadata`] — a PRESENT `Link` header that cannot be parsed, or
 ///   that advertises `next` without a usable cursor. It is NOT read as a final page: that would
 ///   silently truncate the scan (see [`crate::circle::pagination`]).
-/// * otherwise as [`fetch_attestation_by_message_hash`]: every element of the page runs the SAME
-///   envelope checks, so a single bad element rejects the page rather than slipping through the
-///   list shape.
+/// * otherwise as [`fetch_attestation_by_message_hash`], for the failures that belong to the PAGE:
+///   the request, its status, and the schema decode of the list. An element's own envelope failure
+///   is not one of them — it is carried back inside the page as a refused element, so one malformed
+///   attestation does not withhold the ones beside it or the cursor behind them.
+// The refusal rides inside a `Result` whose Ok variant is the larger of the two, so a page element
+// is the size it always was; boxing the refusal would buy no space and cost an allocation for every
+// refused element.
+#[allow(clippy::result_large_err)]
 pub async fn poll_remote_domain_attestations(
     client: &CircleClient,
     remote_domain: u32,
@@ -172,14 +196,17 @@ pub async fn poll_remote_domain_attestations(
         .await?;
 
     let list: AttestationListResponse = decode(client, ENDPOINT_BATCH, &response.body)?;
+    // every element runs the SAME envelope checks the by-hash path runs; a failure stops that
+    // element and nothing else, and travels back beside the raw `messageHash` Circle sent for it
     let attestations = list
         .into_attestations()
         .into_iter()
         .map(|object| {
+            let message_hash = object.message_hash().to_string();
             ValidatedAttestation::validate(object)
-                .map_err(|error| client.reject(ENDPOINT_BATCH, error))
+                .map_err(|error| (message_hash, client.refuse_element(ENDPOINT_BATCH, error)))
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
 
     // an ABSENT Link header is the documented final page; a PRESENT one must parse
     let cursors = match response.link.as_deref() {

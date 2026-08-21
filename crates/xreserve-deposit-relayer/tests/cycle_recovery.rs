@@ -154,7 +154,7 @@ async fn a_transient_failure_is_retried_across_cycles_not_stranded_behind_the_cu
         second
             .entries()
             .iter()
-            .any(|e| e.message_hash() == &stranded.message_hash()
+            .any(|e| e.message_hash_hex() == stranded.message_hash_hex()
                 && matches!(e.disposition(), Disposition::Submitted { .. })),
         "the retried attestation was not reported as submitted in cycle 2"
     );
@@ -211,7 +211,7 @@ async fn a_retry_whose_refetch_fails_stays_retryable_and_is_reported() {
         second
             .entries()
             .iter()
-            .any(|e| e.message_hash() == &stranded.message_hash()),
+            .any(|e| e.message_hash_hex() == stranded.message_hash_hex()),
         "the retry attempt for the stranded attestation was not reported"
     );
     // …and the deposit is still owed: retryable, so a later cycle tries again

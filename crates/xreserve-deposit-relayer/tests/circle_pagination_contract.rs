@@ -19,8 +19,8 @@ use serde_json::json;
 
 use fixtures::{test_vector, PartnerAttester, TEST_VECTOR_PAYLOAD_ID_EMPTY_HOOKDATA};
 use mock_circle::{
-    attestation_page, batch_href, client_for, info_body, link_header, Endpoint, MockCircle, Reply,
-    Script, FIXTURE_MIDEN_DOMAIN, FIXTURE_XUSDC_IDENTIFIER,
+    attestation_page, batch_href, bound, client_for, info_body, link_header, refused, Endpoint,
+    MockCircle, Reply, Script, FIXTURE_MIDEN_DOMAIN, FIXTURE_XUSDC_IDENTIFIER,
 };
 
 use xreserve_deposit_relayer::circle::{
@@ -75,8 +75,9 @@ async fn t_rly_03_batch_poll_puts_the_full_documented_query_surface_on_the_wire(
 
     // the page body decodes (LIST shape, no wrapper) and every element is envelope-validated
     assert_eq!(page.attestations().len(), 1);
-    assert_eq!(page.attestations()[0].payload(), vector.payload());
-    assert_eq!(page.attestations()[0].attestation().len(), 65);
+    let element = bound(&page.attestations()[0]);
+    assert_eq!(element.payload(), vector.payload());
+    assert_eq!(element.attestation().len(), 65);
 
     let requests = mock.requests_to(Endpoint::Batch);
     assert_eq!(requests.len(), 1);
@@ -236,8 +237,8 @@ async fn t_rly_03_forward_poll_advances_the_next_cursor_until_it_is_absent() {
         2,
         "both pages were consumed, then the scan stopped"
     );
-    assert_eq!(collected[0].payload(), vector_a.payload());
-    assert_eq!(collected[1].payload(), vector_b.payload());
+    assert_eq!(bound(&collected[0]).payload(), vector_a.payload());
+    assert_eq!(bound(&collected[1]).payload(), vector_b.payload());
 
     let requests = mock.requests_to(Endpoint::Batch);
     assert_eq!(requests.len(), 2, "exactly two pages were fetched");
@@ -298,6 +299,9 @@ async fn t_rly_03_a_page_without_a_link_header_terminates_the_scan() {
 /// An element of a batch page whose envelope does not bind its payload is rejected — the batch
 /// path runs the SAME binding checks as the by-hash path, so a bad element cannot slip through by
 /// arriving inside a list.
+///
+/// The refusal belongs to the ELEMENT: it comes back inside the page, so the elements beside it and
+/// the cursor behind them are not held hostage by it (`cycle_malformed_page_element.rs`).
 #[tokio::test]
 async fn t_rly_03_a_batch_page_element_with_a_broken_binding_is_rejected() {
     let vector = test_vector();
@@ -308,11 +312,16 @@ async fn t_rly_03_a_batch_page_element_with_a_broken_binding_is_rejected() {
     let (client, sink) = client_for(&mock, AuthPosture::None);
 
     let query = BatchQuery::forward(1, None).expect("valid query");
-    let err = poll_remote_domain_attestations(&client, FIXTURE_MIDEN_DOMAIN, &query)
+    let (page, _cursors) = poll_remote_domain_attestations(&client, FIXTURE_MIDEN_DOMAIN, &query)
         .await
-        .expect_err("the element's envelope does not bind its payload");
+        .expect("one bad element does not fail the page");
 
+    let (message_hash, err) = refused(&page.attestations()[0]);
     assert_matches!(err, RelayerError::MessageHashMismatch { .. });
+    assert_eq!(
+        message_hash, "0x0000000000000000000000000000000000000000000000000000000000000002",
+        "the refusal carries the messageHash Circle sent for it, verbatim"
+    );
     assert_eq!(sink.rejections().len(), 1);
 }
 

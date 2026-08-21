@@ -22,8 +22,9 @@ use serde_json::{json, Value};
 
 use fixtures::{test_vector, PartnerAttester, TEST_VECTOR_PAYLOAD_ID_EMPTY_HOOKDATA};
 use mock_circle::{
-    attestation_object, by_hash_wrapper, by_tx_hash_list, client_for, requested_hash, wrapper_with,
-    Endpoint, MockCircle, Reply, Script, FIXTURE_MIDEN_DOMAIN, HASH_PARAM, TX_HASH,
+    all_bound, attestation_object, bound, by_hash_wrapper, by_tx_hash_list, by_tx_hash_list_with,
+    client_for, refused, requested_hash, wrapper_with, Endpoint, MockCircle, Reply, Script,
+    FIXTURE_MIDEN_DOMAIN, HASH_PARAM, TX_HASH,
 };
 
 use xreserve_deposit_relayer::circle::{
@@ -138,9 +139,10 @@ async fn t_rly_02_by_tx_hash_returns_the_list_shape_with_remote_domain() {
     let mock = MockCircle::start(Script::new().by_tx_hash(vec![Reply::ok(body)]));
     let (client, _sink) = client_for(&mock, AuthPosture::None);
 
-    let fetched = fetch_attestations_by_tx_hash(&client, TX_HASH)
+    let list = fetch_attestations_by_tx_hash(&client, TX_HASH)
         .await
         .expect("a 200 list response decodes");
+    let fetched = all_bound(&list);
 
     assert_eq!(
         fetched.len(),
@@ -226,7 +228,8 @@ async fn t_rly_02_accepts_a_mixed_case_tx_hash() {
 }
 
 /// `remoteDomain` has `minimum: 1` in the OpenAPI. A `0` is schema-violating and must be rejected,
-/// not silently carried toward the Miden side.
+/// not silently carried toward the Miden side. The refusal belongs to the ELEMENT: it travels back
+/// inside the list, beside the `messageHash` Circle sent for it.
 #[tokio::test]
 async fn t_rly_02_rejects_a_remote_domain_below_the_documented_minimum() {
     let vector = test_vector();
@@ -235,12 +238,54 @@ async fn t_rly_02_rejects_a_remote_domain_below_the_documented_minimum() {
     );
     let (client, sink) = client_for(&mock, AuthPosture::None);
 
-    let err = fetch_attestations_by_tx_hash(&client, TX_HASH)
+    let fetched = fetch_attestations_by_tx_hash(&client, TX_HASH)
         .await
-        .expect_err("remoteDomain = 0 violates the documented minimum of 1");
+        .expect("one refused element does not fail the list");
 
+    let (message_hash, err) = refused(&fetched[0]);
     assert_matches!(err, RelayerError::BadRemoteDomain { actual: 0 });
+    assert_eq!(message_hash, vector.message_hash_hex());
     assert_eq!(sink.rejections().len(), 1);
+}
+
+/// Valid, MALFORMED, valid on ONE `?txHash=` list: every element comes back and only the bad one is
+/// refused. This endpoint runs the SAME per-element shape the batch poll runs — a caller must not
+/// lose the attestations beside a broken one, and the refusal must name the element Circle sent.
+#[tokio::test]
+async fn t_rly_02_a_malformed_element_refuses_only_itself() {
+    let valid = test_vector();
+    let poisoned = PartnerAttester::new().attest(&fixtures::canonical_payload(
+        TEST_VECTOR_PAYLOAD_ID_EMPTY_HOOKDATA,
+    ));
+    let body = by_tx_hash_list_with(&[(&valid, 1), (&poisoned, 2), (&valid, 3)], 1, |element| {
+        element["attestation"] = json!(format!("0x{}", "ab".repeat(66)));
+    });
+    let mock = MockCircle::start(Script::new().by_tx_hash(vec![Reply::ok(body)]));
+    let (client, sink) = client_for(&mock, AuthPosture::None);
+
+    let fetched = fetch_attestations_by_tx_hash(&client, TX_HASH)
+        .await
+        .expect("one malformed element does not fail the list");
+
+    assert_eq!(fetched.len(), 3, "every element comes back, refused or not");
+    for index in [0, 2] {
+        let element = bound(&fetched[index]);
+        assert_eq!(element.attestation().payload(), valid.payload());
+        assert_eq!(element.remote_domain(), index as u32 + 1);
+    }
+
+    let (message_hash, err) = refused(&fetched[1]);
+    assert_matches!(err, RelayerError::BadAttestationLength { actual: 66 });
+    assert_eq!(
+        message_hash,
+        poisoned.message_hash_hex(),
+        "the refusal carries the messageHash Circle sent for it, verbatim"
+    );
+    assert_eq!(
+        sink.rejections().len(),
+        1,
+        "the element-level refusal is recorded, once"
+    );
 }
 
 // messageHash mismatch aborts (the raw-keccak binding, over the wire)

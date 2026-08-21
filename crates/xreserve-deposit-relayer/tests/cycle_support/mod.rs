@@ -25,15 +25,27 @@ use std::sync::{Arc, Mutex};
 
 use miden_protocol::account::AccountId;
 use miden_protocol::note::NoteId;
+use serde_json::{json, Value};
 
 use xreserve_deposit_relayer::circle::{CircleClient, RetryPolicy};
 use xreserve_deposit_relayer::config::RelayerConfig;
-use xreserve_deposit_relayer::cycle::{MintIdentities, MintSubmission, MintSubmit, MintSubmitted};
+use xreserve_deposit_relayer::cycle::{
+    run_relayer_cycle, CycleReport, MintIdentities, MintSubmission, MintSubmit, MintSubmitted,
+    RelayerCtx,
+};
 use xreserve_deposit_relayer::error::{Cause, RelayerError};
 use xreserve_deposit_relayer::idempotency::{IdempotencyStore, TxId};
+use xreserve_deposit_relayer::observability::{MetricsSnapshot, RelayerEvent};
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
-use crate::mint_support::{attester_pubkey, faucet_id, relayer_sender_id};
-use crate::mock_circle::{MockCircle, RecordingSink, MOCK_BASE_URL};
+use crate::fixtures::{
+    canonical_payload, AttestationVector, PartnerAttester, TEST_VECTOR_PAYLOAD_ID,
+};
+use crate::mint_support::{attester_pubkey, faucet_id, note_rng, relayer_sender_id};
+use crate::mock_circle::{
+    attestation_page, batch_href, link_header, Endpoint, MockCircle, RecordedRequest,
+    RecordingSink, Reply, Script, MOCK_BASE_URL,
+};
 
 /// The Miden remote domain the cycle suites poll. **Placeholder — the Miden domain id is OPEN
 /// (`REQUIRES CIRCLE CONFIRMATION`)**: Circle has assigned Miden none. Matches the mock's fixture
@@ -360,4 +372,203 @@ impl xreserve_deposit_relayer::idempotency::Clock for TestClock {
     fn unix_seconds(&self) -> u64 {
         *self.0.lock().unwrap()
     }
+}
+
+// THE MALFORMED-PAGE-ELEMENT DRIVER
+// ================================================================================================
+//
+// The driver, the attester fixtures and the page builders behind
+// `tests/cycle_malformed_page_element.rs`. Each test keeps its own assertions; only the scaffolding
+// that more than one of them needs lives here.
+
+/// The `pageAfter` token [`linked_page`] hands back — what the cursor must hold after a cycle that
+/// consumed such a page.
+pub const PAGE_AFTER_CURSOR: &str = "cursor-past-the-poison";
+
+/// Two `messageHash` values that are not 32 hex bytes, and are not each other — so a refusal that
+/// fabricated a stand-in name for an undecodable hash would visibly collapse them onto one.
+pub const UNDECODABLE_HASH: &str = "0xzzzz";
+pub const OTHER_UNDECODABLE_HASH: &str = "0xwhat-even-is-this";
+
+/// The one mutation more than one test needs: an attestation that is 66 bytes, not 65.
+pub fn signature_of_the_wrong_length(element: &mut Value) {
+    element["attestation"] = json!(format!("0x{}", "ab".repeat(66)));
+}
+
+/// What a run left behind: each cycle's outcome in order, everything emitted, the persisted cursor,
+/// the size of the retry work list, the cumulative metrics, the batch requests that went out, and
+/// how many times the mint port was reached.
+pub struct RanCycles {
+    pub cycles: Vec<Result<CycleReport, RelayerError>>,
+    pub events: Vec<RelayerEvent>,
+    pub cursor: Option<String>,
+    pub retryable: usize,
+    pub metrics: MetricsSnapshot,
+    pub requests: Vec<RecordedRequest>,
+    pub submits: usize,
+}
+
+impl RanCycles {
+    /// Cycle `n`'s report, which must have succeeded.
+    pub fn report(&self, n: usize) -> &CycleReport {
+        self.cycles[n]
+            .as_ref()
+            .expect("a malformed element must not fail the cycle")
+    }
+}
+
+/// Runs `count` cycles over the scripted batch replies — a real client, a real store on a real file,
+/// and the scripted mint port, all shared across the cycles, so cycle 2 resumes from cycle 1's
+/// cursor and store.
+pub async fn run_cycles(batch: Vec<Reply>, count: usize) -> RanCycles {
+    let mock = MockCircle::start(Script::new().batch(batch));
+    let config = cycle_config();
+    let sink = RecordingSink::new();
+    let client = cycle_client(&mock, &config, sink.clone());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = cycle_store(&dir);
+    let submit = ScriptedSubmit::always_accepting();
+    let identities = cycle_identities();
+    let mut rng = note_rng(11);
+    let mut ctx = RelayerCtx::new(
+        &config,
+        &client,
+        &store,
+        submit.as_ref(),
+        sink.as_ref(),
+        &identities,
+        &mut rng,
+    );
+
+    let mut cycles = Vec::new();
+    for _ in 0..count {
+        cycles.push(run_relayer_cycle(&mut ctx).await);
+    }
+
+    RanCycles {
+        cycles,
+        metrics: ctx.metrics().snapshot(),
+        events: sink.events(),
+        cursor: store
+            .read_cursor(CYCLE_DOMAIN)
+            .expect("the cursor reads")
+            .map(|cursor| cursor.page_after().to_string()),
+        retryable: store.retryable(16).expect("the work list reads").len(),
+        requests: mock.requests_to(Endpoint::Batch),
+        submits: submit.call_count(),
+    }
+}
+
+/// Runs ONE cycle over a single linked page.
+pub async fn run_one_page(page: Value) -> RanCycles {
+    run_cycles(vec![linked_page(page)], 1).await
+}
+
+/// `n` REAL, envelope-valid attestations with distinct nonces — Circle signed every one, so a
+/// refusal can only come from the field a test mutated. The nonce's offset comes from the decoder's
+/// own view of the payload, never from a literal restated here.
+pub fn valid_attesters(n: u8) -> Vec<AttestationVector> {
+    let payload = canonical_payload(TEST_VECTOR_PAYLOAD_ID);
+    let nonce = *DepositIntent::try_from(payload.as_slice())
+        .expect("the canonical payload decodes")
+        .header()
+        .nonce()
+        .as_bytes();
+    let at = payload
+        .windows(nonce.len())
+        .position(|window| window == nonce)
+        .expect("the nonce appears in its own payload");
+
+    let attester = PartnerAttester::new();
+    (0..n)
+        .map(|tweak| {
+            let mut tweaked = payload.clone();
+            tweaked[at] ^= tweak;
+            attester.attest(&tweaked)
+        })
+        .collect()
+}
+
+/// The page body for `vectors`, with element `index` mutated into a malformed one. A malformed
+/// fixture differs from the valid page in exactly the one way its mutation names.
+pub fn page_with(
+    vectors: &[AttestationVector],
+    index: usize,
+    mutate: impl FnOnce(&mut Value),
+) -> Value {
+    let borrowed: Vec<&AttestationVector> = vectors.iter().collect();
+    let mut page = attestation_page(&borrowed);
+    mutate(&mut page["attestations"][index]);
+    page
+}
+
+/// The page for `vectors` with element `index` carrying [`signature_of_the_wrong_length`] — the
+/// mixed valid/malformed/valid page most of the suite drives.
+pub fn poisoned_page(vectors: &[AttestationVector], index: usize) -> Value {
+    page_with(vectors, index, signature_of_the_wrong_length)
+}
+
+/// ONE page carrying a valid element (index 0) beside EVERY malformed shape the envelope check can
+/// produce: an attestation of the wrong length, a `messageHash` that does not bind its payload, a
+/// `messageHash` of 31 bytes, a payload that is not hex, and the two `messageHash` values that
+/// cannot be decoded at all. Takes SEVEN vectors, one per element.
+pub fn every_malformed_shape_page(vectors: &[AttestationVector]) -> Value {
+    let mut page = page_with(vectors, 1, signature_of_the_wrong_length);
+    page["attestations"][2]["messageHash"] = json!(format!("0x{}", "11".repeat(32)));
+    page["attestations"][3]["messageHash"] = json!(format!("0x{}", "22".repeat(31)));
+    page["attestations"][4]["payload"] = json!("0xnot-hex-at-all");
+    page["attestations"][5]["messageHash"] = json!(UNDECODABLE_HASH);
+    page["attestations"][6]["messageHash"] = json!(OTHER_UNDECODABLE_HASH);
+    page
+}
+
+/// The baseline a malformed element is compared against: ONE page holding an attestation Circle
+/// really signed, over a payload that is not a DepositIntent. Its envelope binds, so the fetch layer
+/// passes it and the per-attestation pipeline refuses it — one rejected entry, on the ordinary path.
+pub fn page_with_an_ordinary_rejection() -> Value {
+    attestation_page(&[&PartnerAttester::new().attest(&[0xAB; 16])])
+}
+
+/// A poisoned first page, then the documented FINAL page — no `Link` header on page two, which is
+/// what ends the scan. The two-cycle script a cursor stall shows up in. Takes THREE vectors: two on
+/// the poisoned page, one on the final page.
+pub fn poisoned_then_final_pages(vectors: &[AttestationVector]) -> Vec<Reply> {
+    vec![
+        linked_page(poisoned_page(&vectors[..2], 0)),
+        Reply::ok(attestation_page(&[&vectors[2]])),
+    ]
+}
+
+/// A 200 carrying `body` and a `Link: rel=next` cursor — a page with a resume point behind it.
+pub fn linked_page(body: Value) -> Reply {
+    Reply::ok_linked(
+        body,
+        link_header(&[(
+            "next",
+            &batch_href(CYCLE_DOMAIN, 10, Some(("pageAfter", PAGE_AFTER_CURSOR))),
+        )]),
+    )
+}
+
+/// The `(messageHash, outcome)` of every terminal attestation event, in emission order.
+pub fn attestation_events(events: &[RelayerEvent]) -> Vec<(String, &'static str)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            RelayerEvent::Attestation {
+                message_hash,
+                outcome,
+                ..
+            } => Some((message_hash.clone(), *outcome)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// How many operator alerts the COMPLETE event stream carries.
+pub fn alerts(events: &[RelayerEvent]) -> usize {
+    events
+        .iter()
+        .filter(|event| matches!(event, RelayerEvent::Alert { .. }))
+        .count()
 }

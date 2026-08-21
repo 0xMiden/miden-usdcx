@@ -10,10 +10,10 @@
 //! * `classify_one` returns a `CycleEntry` — **not** a `Result`. There is no error to propagate,
 //!   so there is no `?` in the loop, so there is no path on which a fetched attestation ends
 //!   without a disposition. Every failure below is a DISPOSITION, not a return.
-//! * The loop consumes the page BY VALUE and pushes one entry per element. It is a total map: it
-//!   has no arity through which to lose an element. Reintroducing a drop would take a `filter`, a
-//!   `continue`, or a `Result` on that path — each a visible edit, and each one a source sweep
-//!   refuses.
+//! * The loop consumes the page BY VALUE and pushes one entry per element — a validated one and an
+//!   element the envelope check refused alike. It is a total map: it has no arity through which to
+//!   lose an element. Reintroducing a drop would take a `filter`, a `continue`, or a `?` on that
+//!   path — each a visible edit, and each one a source sweep refuses.
 //! * A reason is DERIVED from a typed value ([`Disposition::reason`]), so an entry with nothing to
 //!   say is not constructible.
 //!
@@ -186,8 +186,9 @@ impl<'a, R: FeltRng> RelayerCtx<'a, R> {
 ///
 /// 1. **Poll** — `GET /v1/remote-domains/{d}/attestations` from the persisted cursor. Its envelope
 ///    checks (raw-keccak `messageHash == keccak256(payload)`, the 65-byte `r‖s‖v` shape — the
-///    schema-decode and digest-binding checks) run inside the fetch, so what comes back is already
-///    `ValidatedAttestation`: step 2 is the type, not a call.
+///    schema-decode and digest-binding checks) run inside the fetch, per element, so what comes
+///    back is either a `ValidatedAttestation` or that element's own refusal: step 2 is the type,
+///    not a call. A refused element is reported like any other refusal and the page carries on.
 /// 3. **Discovery** — `GET /v1/info` ONCE, and only if the optional fast-fail is on.
 ///
 /// Steps 4–8 run per attestation, in `classify_one`, and then the cursor advances.
@@ -195,8 +196,9 @@ impl<'a, R: FeltRng> RelayerCtx<'a, R> {
 /// # Errors
 /// A [`RelayerError`] from the PAGE fetch or the discovery fetch — the two steps that happen before
 /// any attestation exists, so failing them drops nothing. A `400` fails the cycle; the next cycle
-/// tries again from the same cursor. Nothing a single attestation does can fail this function: that
-/// is what makes the no-drop invariant hold.
+/// tries again from the same cursor. Nothing a single attestation does can fail this function —
+/// a malformed one included, which is what keeps the cursor moving past it — and that is what makes
+/// the no-drop invariant hold.
 pub async fn run_relayer_cycle<R: FeltRng>(
     ctx: &mut RelayerCtx<'_, R>,
 ) -> Result<CycleReport, RelayerError> {
@@ -276,8 +278,18 @@ async fn run_cycle_inner<R: FeltRng>(
     // failure inside it is a disposition, and a disposition is a report.
     let attestations = page.into_attestations();
     entries.reserve(attestations.len());
-    for attestation in attestations {
-        let entry = classify_one(ctx, attestation, info.as_ref()).await;
+    for element in attestations {
+        let entry = match element {
+            Ok(attestation) => classify_one(ctx, attestation, info.as_ref()).await,
+            // the envelope check refused this element. It is one attestation's permanent refusal,
+            // reported like every other one — under the raw name Circle sent for it, since it has
+            // no verified digest to be named by — and the elements beside it, and the cursor behind
+            // them, carry on past it. The fetch layer recorded the refusal; the ALERT is raised
+            // below, by `record`, so this refusal alerts exactly once like every other rejection.
+            Err((message_hash, error)) => {
+                CycleEntry::refused(message_hash, Disposition::Rejected(error))
+            }
+        };
         record(ctx, &entry);
         entries.push(entry);
     }

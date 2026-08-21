@@ -7,6 +7,7 @@ use std::sync::Arc;
 use xreserve_deposit_relayer::circle::{
     AuthPosture, CircleClient, RateGovernor, RetryPolicy, TransportLimits,
 };
+use xreserve_deposit_relayer::error::RelayerError;
 use xreserve_deposit_relayer::observability::EventSink;
 
 use crate::fixtures::AttestationVector;
@@ -32,6 +33,32 @@ pub const TEST_ALERT_AFTER: u32 = 2;
 /// by-hash endpoint is a lookup by this key, so it is what a successful fetch must ask for.
 pub fn requested_hash(vector: &AttestationVector) -> String {
     vector.message_hash_hex()
+}
+
+/// The validated attestation inside a fetched list/page element, or a failure naming the element
+/// that did not bind. Both list-shaped fetches hand every element back as `Ok(validated)` or
+/// `Err((raw messageHash, refusal))`, so a test that expects an element to bind reads it here.
+pub fn bound<T>(element: &Result<T, (String, RelayerError)>) -> &T {
+    match element {
+        Ok(validated) => validated,
+        Err((message_hash, error)) => {
+            panic!("the element's envelope must bind: {message_hash} was refused with {error}")
+        }
+    }
+}
+
+/// [`bound`] over every element of a list — for the tests where the whole response must bind.
+pub fn all_bound<T>(elements: &[Result<T, (String, RelayerError)>]) -> Vec<&T> {
+    elements.iter().map(bound).collect()
+}
+
+/// The counterpart to [`bound`]: the raw wire `messageHash` and the refusal of an element that must
+/// NOT have bound. Which refusal it must be is the caller's own `assert_matches!`.
+pub fn refused<T>(element: &Result<T, (String, RelayerError)>) -> (&str, &RelayerError) {
+    match element {
+        Ok(_) => panic!("the element was expected to be refused, but its envelope bound"),
+        Err((message_hash, error)) => (message_hash, error),
+    }
 }
 
 /// A client pointed at the mock, with a fast retry policy and a rate ceiling high enough not to

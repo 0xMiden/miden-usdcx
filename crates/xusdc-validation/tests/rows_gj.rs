@@ -10,7 +10,7 @@
 //!    auditor's planted mutation — fails these). Plus one green-shape acceptance (guards against an
 //!    always-failing suite). Row H's checks verify the F7 evidence was CAPTURED and the erasure was
 //!    OBSERVED — never an acceptability decision (DEV-7 stays OPEN).
-//! 2. **The real-node E2E** (`lnv4_rows_gj_against_real_local_node`): boots a FRESH local v0.15.1
+//! 2. **The real-node E2E** (`lnv4_rows_gj_against_real_local_node`): boots a FRESH local v16
 //!    stack, deploys the production faucet, drives the whole G+H+I+J burn arc (Row-G/H/I via path N +
 //!    client-side, the F7 RIV, the conservation ledger), and judges the observations. `#[ignore]`d in
 //!    the default suite because it must bind loopback listener sockets (denied in hermetic audit
@@ -103,7 +103,7 @@ fn green_i() -> Vec<BurnNegative> {
         neg(
             "below-min",
             ERR_BURN_BELOW_MIN,
-            rej("... amount to be burned must exceed specified minimum burn amount ..."),
+            rej("... amount to be burned must meet or exceed specified minimum burn amount ..."),
         ),
         // v16 kernel moved burn origin-validation from fungible_asset::validate_origin (v15
         // faucet.masm:61) to asset::validate_origin (v16 faucet.masm:72); the v15-era expectation
@@ -532,7 +532,7 @@ fn j_rejects_holder_balance_mismatch() {
 /// a network-enabled box (or the `lnv4_rows_gj` binary); the default suite's green carries no
 /// real-node claim.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "real-node E2E: needs the v0.15.1 node binaries + loopback listener binds (denied in \
+#[ignore = "real-node E2E: needs the v16 node toolchain + loopback listener binds (denied in \
             sandboxed audit environments); run with `-- --include-ignored` or the lnv4_rows_gj \
             binary — the §11.2 gate claim rides on real runs + the human gate, never on the \
             default suite"]

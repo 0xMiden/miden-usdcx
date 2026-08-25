@@ -38,11 +38,10 @@ pub use xusdc_encoding::note::xreserve_burn::FIXED_XUSDC_BURN_TAG;
 // `err_code`.
 // ================================================================================================
 
-/// R-BURN-2 — the STOCK `MinBurnAmount::check_policy` floor gate (Wave-1 S1: the custom
-/// `burn_policy.masm` is deleted; the stock policy asserts `min <= amount` against the
-/// `MinBurnAmount::slot_name()` floor slot).
+/// R-BURN-2 — the STOCK `MinBurnAmount::check_policy` floor gate: the policy asserts
+/// `min <= amount` against the `MinBurnAmount::slot_name()` floor slot.
 pub const ERR_BURN_BELOW_MIN: &str =
-    "amount to be burned must exceed specified minimum burn amount";
+    "amount to be burned must meet or exceed specified minimum burn amount";
 /// R-BURN-3 / the stock pause gate (`pausable::assert_not_paused`, `ERR_PAUSABLE_IS_PAUSED`): the
 /// faucet is paused, so `execute_burn_policy` halts the burn before the policy runs.
 pub const ERR_PAUSED: &str = "the contract is paused";

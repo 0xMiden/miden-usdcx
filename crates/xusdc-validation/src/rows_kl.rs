@@ -94,8 +94,8 @@ pub const EXPECTED_LOG_LINES: &[ExpectedLogLine] = &[
         level: "ERROR",
         pattern: "all notes failed to be executed",
         explanation: "the ntx-builder attempting a deliberately-unconsumable routed allowlisted \
-                      note — the rows-A/B second identifier_init (init-once) and the rows-C6 \
-                      non-authorized-sender admin notes; the on-chain MASM gate rejecting them \
+                      note — the rows-C6 non-authorized-sender admin notes; the on-chain MASM \
+                      gate rejecting them \
                       NODE-SIDE is the negative's evidence (doomed notes are retried with \
                       backoff, so the line recurs). A failing POSITIVE cannot hide here: every \
                       positive commit is guarded by its row's bounded committed-effect poll",
@@ -104,9 +104,9 @@ pub const EXPECTED_LOG_LINES: &[ExpectedLogLine] = &[
         level: "ERROR",
         pattern: "network transaction failed",
         explanation: "the wrapper line of the same deliberately-unconsumable routed-note \
-                      attempts (see 'all notes failed to be executed'): rows-A/B second \
-                      identifier_init + rows-C6 non-authorized-sender admin notes, rejected by the \
-                      on-chain MASM gates node-side",
+                      attempts (see 'all notes failed to be executed'): the rows-C6 \
+                      non-authorized-sender admin notes, rejected by the on-chain MASM gates \
+                      node-side",
     },
     ExpectedLogLine {
         level: "ERROR",
@@ -427,7 +427,7 @@ pub fn derive_row_k(commits: Vec<PathNCommit>, ntx_log_evidence: Vec<String>) ->
         }
         (
             Some(format!(
-                "{} — stack: the v0.16.0-alpha.2 four-service topology with the network-tx auth \
+                "{} — stack: the v16 four-service topology with the network-tx auth \
                  token wired (sequencer --rpc.network-tx-auth-header-value / ntx-builder \
                  --rpc.auth-header-value; see VALIDATION-RECORD.md §3)",
                 missing.join("; ")
@@ -448,7 +448,7 @@ pub fn derive_row_k(commits: Vec<PathNCommit>, ntx_log_evidence: Vec<String>) ->
 // THE CONSOLIDATED FULL-MATRIX DRIVER
 // ================================================================================================
 
-/// Runs the WHOLE A–L matrix on ONE fresh local stack: boots the four-service stack once, drives
+/// Runs the WHOLE matrix on ONE fresh local stack: boots the four-service stack once, drives
 /// the LNV-1..4 sub-runs in matrix order against it (each under its own client-store namespace),
 /// stops the stack (so the archived logs are complete), then derives rows K + L from that single
 /// run. With `keep_stack` the services stay up for supervised inspection and the logs are scanned
@@ -462,7 +462,7 @@ pub async fn run_full_matrix(cfg: &RunConfig) -> Result<FullMatrixObservations> 
 
     let ab = run_rows_ab_on(cfg, "ab")
         .await
-        .context("rows A/B sub-run (deploy + identifier_init)")?;
+        .context("row A sub-run (deploy + recognize)")?;
     let cf = run_rows_cf_on(cfg, "cf")
         .await
         .context("rows C/F sub-run (admin + auth boundary)")?;

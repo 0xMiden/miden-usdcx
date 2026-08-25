@@ -5,7 +5,7 @@
 //!
 //! - **Local full gate** (`faucet_id = None`, loopback only): deploys a FRESH production faucet we own
 //!   and runs the WHOLE matrix, including the DESTRUCTIVE admin surface. This is the ONLY mode that
-//!   pauses / rotates the attester / mutates policy / transfers ownership — always against a fresh,
+//!   pauses / rotates the attester / mutates policy / rotates `ADMIN` — always against a fresh,
 //!   throwaway faucet, never a deployed one.
 //! - **Existing-faucet non-destructive re-check** (`faucet_id = Some`, local OR devnet): targets an
 //!   ALREADY-deployed faucet and re-proves ONLY the non-destructive fund-correctness subset — the
@@ -23,7 +23,9 @@
 //!   `assemble_evidence` over a live `BurnEvidenceReads` adapter).
 //! - **Negatives** — wrong-attester, forged signature, replay, over-cap rejected; supply unmoved.
 //! - **Admin** (LOCAL full gate ONLY) — pause (mint+burn rejected) → unpause, attester rotation,
-//!   `set_min_burn_size`, `set_max_supply` (mutate + enforce), owner-gating, 2-step ownership.
+//!   `set_min_burn_size`, `set_max_supply` (mutate + enforce), authority gating, and SAN-HANDOVER:
+//!   `ADMIN` handed to an ephemeral successor and back, with the successor's capability and the
+//!   predecessor's lockout each proven by a real op, and the role never left without a member.
 //! - **Node logs** — scanned for unexpected ERROR/panic/untriaged-WARN lines (the clean-log gate).
 //!
 //! Positive faucet consumptions commit via path N (the node's ntx-builder auto-executes the routed,
@@ -37,14 +39,9 @@ use miden_client::rpc::NodeRpcClient;
 use miden_client::store::TransactionFilter;
 use miden_client::transaction::{TransactionId, TransactionRequestBuilder, TransactionStatus};
 use miden_protocol::account::AccountId;
-use miden_protocol::Word;
-use miden_standards::interop::eth::EthEmbeddedAccountId;
-
-use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
-use xusdc_encoding::xreserve::encoding::bytes32_to_storage_map_key;
 
 use crate::actors::{create_actors, Actors, AttesterKey};
-use crate::client::{os_seed, HarnessClient};
+use crate::client::{node_fee_parameters, os_seed, HarnessClient};
 use crate::deploy::build_faucet_account;
 use crate::mintburn;
 
@@ -300,11 +297,10 @@ pub async fn run_sanity(cfg: &SanityConfig, node_version: &str) -> Result<Sanity
     let mut d = SanityDriver {
         hc,
         faucet_id,
-        // Fresh-LOCAL: the fresh faucet's identifier is the own-id fixpoint the `identifier_init`
-        // note derives (`identifier_for(faucet_id)`), so mints must carry `remoteToken =
-        // EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()` — the OWN-ID config, not the vector token. `remoteDomain`
-        // already equals the build-seed MINT_DOMAIN. Existing-faucet: resolved from the DEPLOYED
-        // faucet below (same own-id shape, read from chain).
+        // The faucet writes its own id into the message it rebuilds, so a mint must carry
+        // `remoteToken = EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()` — the
+        // OWN-ID config, not the vector token. Fresh-LOCAL `remoteDomain` already equals the build
+        // seed MINT_DOMAIN; the existing-faucet domain is read from chain below.
         mint_config: Some(mintburn::MintDomainConfig::for_deployed_faucet(
             mintburn::MINT_DOMAIN,
             faucet_id,
@@ -361,8 +357,8 @@ pub async fn run_sanity(cfg: &SanityConfig, node_version: &str) -> Result<Sanity
     // 3. Burn arc — structure + attester-consumability + DC-8 evidence.
     checks::burn_and_assert(&mut d, &mut led, mint_attester, relayer_id, holder_id).await?;
 
-    // 4. Admin surface — DESTRUCTIVE (pause/unpause, attester rotation, min/max setters, owner-gating,
-    //    2-step ownership + restore). Runs ONLY on a FRESH deploy — a faucet we own and throw away with
+    // 4. Admin surface — DESTRUCTIVE (pause/unpause, attester rotation, min/max setters, authority
+    //    gating + restore). Runs ONLY on a FRESH deploy — a faucet we own and throw away with
     //    the local node. Against an already-deployed faucet (local OR devnet) it NEVER runs, so a
     //    deployed faucet is never mutated; that non-destructive subset is the INTENDED complete matrix.
     if run_admin {
@@ -460,34 +456,21 @@ fn log_check(led: &mut Ledger, log_dir: &Path) {
 }
 
 /// Resolves the DEPLOYED faucet's mint domain config for the `--faucet-id` re-check (the thin
-/// slot-read adapter; the node-free logic lives in [`mintburn::MintDomainConfig`]). Reads the on-chain
-/// `domain` and pairs it with `remote_token = EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()` — the two fields the
-/// structural validation mint gate compares. Then VERIFIES the faucet's stored identifier key equals
-/// `bytes32_to_storage_map_key(EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32())`: if it does not, the deployed
-/// identifier is NOT `EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()` and every mint would be rejected at structural validation, so we
-/// bail HERE with an explicit message instead of letting the operator hit the 300s path-N timeout (the
-/// A6 failure mode). The `domain` compare cannot be pre-verified the same way (the mint payload IS what
-/// establishes the domain), so a wrong stored domain is caught by the resolved config making the mint
-/// carry exactly it.
+/// slot-read adapter; the node-free logic lives in [`mintburn::MintDomainConfig`]). Reads the
+/// on-chain `domain` and pairs it with `remote_token = the faucet's own id` — the two fields the
+/// faucet writes into the message it rebuilds, and so the two a mint payload must name for the
+/// rebuilt digest to match what the attester signed. A wrong stored domain surfaces as the resolved
+/// config making every mint carry exactly it.
 async fn resolve_deployed_mint_config(
     d: &mut SanityDriver,
     faucet_id: AccountId,
 ) -> Result<mintburn::MintDomainConfig> {
     let faucet = d.fetch_faucet().await?;
     let domain = driver::domain_config(&faucet)?;
-    let config = mintburn::MintDomainConfig::for_deployed_faucet(domain, faucet_id);
-    let stored_identifier = driver::identifier_config(&faucet)?;
-    let expected_identifier: Word = bytes32_to_storage_map_key(&config.remote_token).into();
-    if stored_identifier != expected_identifier {
-        bail!(
-            "the deployed faucet {faucet_id}'s stored identifier key {stored_identifier:?} does not \
-             match bytes32_to_storage_map_key(EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()) {expected_identifier:?}: \
-             the mint gate (structural validation) would reject every mint with WRONG_IDENTIFIER. The --faucet-id \
-             re-check requires the identifier A5's identifier_init set from EthEmbeddedAccountId::from_account_id(faucet.id()).to_bytes32()."
-        );
-    }
-    println!("resolved deployed-faucet mint config: domain={domain}, identifier verified");
-    Ok(config)
+    println!("resolved deployed-faucet mint config: domain={domain}");
+    Ok(mintburn::MintDomainConfig::for_deployed_faucet(
+        domain, faucet_id,
+    ))
 }
 
 /// Registers a deployed faucet (existing-faucet re-check) with the client so the client-side negative
@@ -506,13 +489,14 @@ async fn register_existing_faucet(hc: &mut HarnessClient, id: AccountId) -> Resu
     Ok(())
 }
 
-/// Deploys the production faucet on the running node: the three non-identifier domain-config
-/// fields are BUILD-SEEDED from the mint vector's params (Wave-1 S1 / DEC-4), the owner emits
-/// `identifier_init` (the one post-deploy domain-config write), and the faucet's first tx consumes
-/// it (first-deploy exemption); registered w/ client.
+/// Deploys the production faucet on the running node: all four domain-config fields are
+/// BUILD-SEEDED from the mint vector's params against the chain's own fee parameters, and the
+/// faucet's first transaction — scriptless and noteless, which `AuthNetworkAccount` authorizes and
+/// which bumps the new account's nonce 0 → 1 — materializes it on chain; registered w/ client.
 async fn deploy_fresh_faucet(hc: &mut HarnessClient, actors: &Actors) -> Result<AccountId> {
     let owner_id = actors.owner.id();
     let domain = mintburn::lnv2_domain_params();
+    let fee_parameters = node_fee_parameters(&hc.rpc).await?;
     let faucet = build_faucet_account(
         owner_id,
         actors.pauser.id(),
@@ -520,40 +504,26 @@ async fn deploy_fresh_faucet(hc: &mut HarnessClient, actors: &Actors) -> Result<
         actors.blk_manager.id(),
         DEPLOY_MAX_SUPPLY,
         &domain,
+        fee_parameters,
         os_seed(),
     )?;
     let faucet_id = faucet.id();
     println!("deploying fresh faucet {faucet_id}");
-
-    let note1 = XReserveIdentifierInitNote::create(owner_id, faucet_id, hc.client.rng())
-        .context("building the identifier_init note")?;
-
-    let emit1 = TransactionRequestBuilder::new()
-        .own_output_notes(vec![note1.clone()])
-        .build()
-        .context("building the owner identifier_init emit")?;
-    let emit1_tx = hc
-        .client
-        .submit_new_transaction(owner_id, emit1)
-        .await
-        .context("submitting the owner identifier_init emit")?;
-    wait_commit_bare(hc, emit1_tx).await?;
 
     hc.client
         .add_account(&faucet, false)
         .await
         .context("registering the new faucet account with the client")?;
     let deploy = TransactionRequestBuilder::new()
-        .input_notes(vec![(note1, None)])
         .build()
         .context("building the deploy request")?;
     let deploy_tx = hc
         .client
         .submit_new_transaction(faucet_id, deploy)
         .await
-        .context("submitting the faucet deploy (+identifier_init) transaction")?;
+        .context("submitting the faucet deploy transaction")?;
     wait_commit_bare(hc, deploy_tx).await?;
-    println!("faucet deployed + identifier_init committed");
+    println!("faucet deployed");
     Ok(faucet_id)
 }
 

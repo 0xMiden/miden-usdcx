@@ -9,7 +9,7 @@
 //!
 //! The two real-node execution modes the verdicts come from (LNV-1 posture finding):
 //! - **path N (ntx-builder)** — the ONLY way to *commit* a post-deploy faucet state change at
-//!   v0.15.1 (user RPC rejects post-deploy network-account txs; the client cannot present the
+//!   the node (user RPC rejects post-deploy network-account txs; the client cannot present the
 //!   `x-miden-network-tx-auth` header). Every positive admin op (`set_attester`, `set_max_supply`,
 //!   `pause`, role grant/revoke, …) is emitted as a routed allowlisted note and the running
 //!   ntx-builder auto-executes the faucet's consumption; the driver reads the committed effect.

@@ -28,10 +28,9 @@ use crate::observations_cf::{
 };
 
 // EXACT on-chain error substrings the rejects must carry (single source of truth in the shipped
-// MASM: `deposit_intent_parser.masm` / `attestation_verify.masm` / `mint_policy.masm` /
-// `pause_admin.masm` for the xreserve-owned gates, and — since the Wave-1 S1 recomposition — the
-// STOCK miden-standards MASM for the burn floor (`min_burn_amount.masm`), the supply cap
-// (`fungible.masm` distribute), the owner/role gates, and the note/tx-script allowlist
+// MASM: `mint_intent.masm` / `attestation_verify.masm` / `mint_policy.masm` for the xreserve-owned
+// gates, and the STOCK miden-standards MASM for the burn floor (`min_burn_amount.masm`), the supply
+// cap (`fungible.masm` distribute), the role gate (`rbac.masm`), and the note/tx-script allowlist
 // primitives). A reject that does not carry ITS error is not the gate the row proves — the
 // assertion rejects it.
 // ================================================================================================
@@ -39,20 +38,28 @@ use crate::observations_cf::{
 /// attestation verification: the attester pubkey commitment is not in the on-chain `xReserveAttesters` allowlist.
 pub const ERR_ATTESTER_NOT_ALLOWLISTED: &str =
     "deposit attester pubkey commitment is not allowlisted";
-/// R-BURN-2 — the STOCK `MinBurnAmount::check_policy` floor gate (Wave-1 S1: the custom
-/// `burn_policy.masm` below-min error is gone; the stock policy asserts `min <= amount`).
+/// R-BURN-2 — the STOCK `MinBurnAmount::check_policy` floor gate: the policy asserts
+/// `min <= amount` against its own floor slot.
 pub const ERR_BURN_BELOW_MIN: &str =
-    "amount to be burned must exceed specified minimum burn amount";
-/// R-MINT-15 semantics, now STOCK-owned (Wave-1 S1): the supply cap fires in the stock
-/// `fungible.masm` distribute discipline, not a custom xreserve gate.
+    "amount to be burned must meet or exceed specified minimum burn amount";
+/// R-MINT-15 semantics, STOCK-owned: the supply cap fires in the stock `fungible.masm` distribute
+/// discipline, not a custom xreserve gate.
 pub const ERR_SUPPLY_CAP: &str =
     "token_supply plus the amount passed to distribute would exceed the maximum supply";
 /// R-BURN-3 / the mint pause gate: the contract is paused.
 pub const ERR_PAUSED: &str = "the contract is paused";
-/// The administrator gate on the ADMIN-role-gated admin setters.
-pub const ERR_NOT_OWNER: &str = "note sender is not the owner";
-/// The DOM_PAUSER role gate on the custom pause/unpause procs.
+/// The role gate every authority-gated procedure raises for an unauthorized sender: the ones with a
+/// role assigned (pause/unpause under `DOM_PAUSER`, block/unblock under `BLK_MANAGER`) and the ones
+/// without, which fall back to the built-in `ADMIN` role (`set_attester`, the supply cap, the burn
+/// floor, the policy setters). The faucet installs no ownership component, so there is no distinct
+/// owner error.
 pub const ERR_LACKS_ROLE: &str = "note sender does not hold the required role";
+
+/// The C6 sender labels the coverage check keys on: an `ADMIN`-gated op attempted by a non-member,
+/// and a role-mapped op attempted by a non-member. Both raise [`ERR_LACKS_ROLE`], so the row proves
+/// it covers both gate kinds through the SENDER it names, not through the error text.
+pub const SENDER_NON_ADMIN: &str = "non-ADMIN";
+pub const SENDER_NON_DOM_PAUSER: &str = "non-DOM_PAUSER";
 /// `AuthNetworkAccount`: a consumed input note's script root is not in the note-script allowlist.
 pub const ERR_NOTE_NOT_ALLOWLISTED: &str =
     "input note script root is not in the note script allowlist";
@@ -289,7 +296,7 @@ pub fn assert_c6(rejects: &[AdminGateReject]) -> Result<()> {
         !rejects.is_empty(),
         "C6: the negative set must be non-empty"
     );
-    let mut saw_owner_gate = false;
+    let mut saw_admin_gate = false;
     let mut saw_role_gate = false;
     for r in rejects {
         let ctx = format!("C6: {} from a {}", r.op, r.sender);
@@ -299,21 +306,21 @@ pub fn assert_c6(rejects: &[AdminGateReject]) -> Result<()> {
             "{ctx}: the rejected admin note was CONSUMED on-chain — a non-authorized sender's op \
              committed (the proc gate did not hold node-side)",
         );
-        if r.expected_gate == ERR_NOT_OWNER {
-            saw_owner_gate = true;
+        if r.sender == SENDER_NON_ADMIN {
+            saw_admin_gate = true;
         }
-        if r.expected_gate == ERR_LACKS_ROLE {
+        if r.sender == SENDER_NON_DOM_PAUSER {
             saw_role_gate = true;
         }
     }
     ensure!(
-        saw_owner_gate,
-        "C6: the negative set must include at least one authority-gated op rejected from an unauthorized owner \
-         ('{ERR_NOT_OWNER}')",
+        saw_admin_gate,
+        "C6: the negative set must include at least one ADMIN-gated op rejected from a \
+         '{SENDER_NON_ADMIN}' sender",
     );
     ensure!(
         saw_role_gate,
-        "C6: the negative set must include a pause rejected from a non-DOM_PAUSER ('{ERR_LACKS_ROLE}')",
+        "C6: the negative set must include a pause rejected from a '{SENDER_NON_DOM_PAUSER}' sender",
     );
     Ok(())
 }

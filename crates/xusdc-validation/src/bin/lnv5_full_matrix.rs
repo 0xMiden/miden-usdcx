@@ -1,4 +1,4 @@
-//! LNV-5 — THE consolidated full-matrix gate run: rows A–L, one command, one fresh node.
+//! LNV-5 — THE consolidated full-matrix gate run: rows A + C–L, one command, one fresh node.
 //!
 //! Boots ONE fresh local stack and composes the LNV-1..4 drivers on it in matrix order (deploy →
 //! admin → mint → burn → conservation), then settles row K (ntx-builder liveness / path N) and
@@ -22,6 +22,7 @@ use anyhow::Result;
 use xusdc_validation::config::{repo_root, RunConfig};
 use xusdc_validation::record::{
     any_failed, full_matrix_outcomes, validate_row_outcomes, write_lnv5_artifacts, RecordContext,
+    MATRIX_ROW_IDS,
 };
 use xusdc_validation::rows_kl::run_full_matrix;
 
@@ -39,7 +40,7 @@ async fn main() -> Result<()> {
     cfg.keep_stack = keep_stack;
 
     println!(
-        "LNV-5 full matrix (rows A–L) — run root: {}",
+        "LNV-5 full matrix (rows A + C–L) — run root: {}",
         cfg.stack.run_root.display()
     );
     let obs = run_full_matrix(&cfg).await?;
@@ -74,9 +75,12 @@ async fn main() -> Result<()> {
             artifacts.record.display()
         );
     }
+    // The count comes from the matrix itself, and `validate_row_outcomes` above already pinned the
+    // judged outcomes to exactly that list — so what this line claims cannot drift from what ran.
     println!(
-        "LNV-5 full matrix: ALL 12 ROWS PASS — record + packets submitted for HUMAN gate \
-         acceptance (§11.2; the gate verdict is a human decision)"
+        "LNV-5 full matrix: ALL {} ROWS PASS — record + packets submitted for HUMAN gate \
+         acceptance (§11.2; the gate verdict is a human decision)",
+        MATRIX_ROW_IDS.len()
     );
     Ok(())
 }

@@ -14,10 +14,10 @@
 //!   because nothing is submitted the committed `token_supply` / nonce registry cannot move — which
 //!   the driver reads back before/after to prove zero state change.
 //!
-//! The arc: deploy (identifier_init) → allowlist attester A (path N) → Row D variant 1 (empty-hookData,
+//! The arc: deploy → allowlist attester A (path N) → Row D variant 1 (empty-hookData,
 //! committed + recipient-consumed) → Row D variant 2 (hookData-bearing, committed + recipient-consumed)
-//! → Row E negatives (replay, forged signature, non-allowlisted attester, non-zero fee, tampered
-//! payload) each a client-side reject + read-back.
+//! → Row E negatives (replay, forged signature, non-allowlisted attester, tampered payload,
+//! tampered max-fee ceiling) each a client-side reject + read-back.
 
 use std::time::{Duration, Instant};
 
@@ -36,16 +36,15 @@ use miden_protocol::Word;
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::note::P2idNote;
 use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
-use xusdc_encoding::note::xreserve_admin::{XReserveIdentifierInitNote, XReserveSetAttesterNote};
-use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 
 use crate::actors::{create_actors, Actors};
-use crate::client::{build_client, os_seed, HarnessClient};
+use crate::client::{build_client, node_fee_parameters, os_seed, HarnessClient};
 use crate::config::RunConfig;
 use crate::deploy::build_faucet_account;
 use crate::mintburn::{
-    self, fee_limbs_for, hook_data_len, mint_note_with_fee, mint_payload_own_id, nonce_key,
-    raw_for_units, BASE_VECTOR, HOOKDATA_VECTOR, MINT_DOMAIN,
+    self, hook_data_len, max_fee_pad_dirtied, mint_note_from_payload, mint_payload_own_id,
+    nonce_key, raw_for_units, BASE_VECTOR, HOOKDATA_VECTOR, MINT_DOMAIN,
 };
 use crate::observations_cf::{Verdict, Word4};
 use crate::observations_de::{MintHappy, MintNegative, RowsDeObservations};
@@ -62,8 +61,6 @@ const D_HOOK_UNITS: u64 = 150;
 const E_UNITS: u64 = 40;
 /// The maxFee every mint carries (units); reduces to 1 ≤ every amount, so R-MINT-10 holds.
 const MAX_FEE_UNITS: u64 = 1;
-/// The non-zero feeAmount the F2 negative injects (units, reduced ≥ 1 ⇒ the guard fires).
-const FEE_UNITS: u64 = 5;
 
 /// Nonce salts (distinct ⇒ distinct nonces). The empty-hookData Row-D salt is reused by the replay
 /// negative (same nonce ⇒ replay protection replay), so it is fixed here.
@@ -71,8 +68,8 @@ const SALT_D_EMPTY: u8 = 0x01;
 const SALT_D_HOOK: u8 = 0x02;
 const SALT_E_FORGED: u8 = 0x11;
 const SALT_E_BAD_ATTESTER: u8 = 0x12;
-const SALT_E_FEE: u8 = 0x13;
 const SALT_E_TAMPERED: u8 = 0x14;
+const SALT_E_MAX_FEE: u8 = 0x15;
 
 /// Bounded wait for the ntx-builder to commit a path-N faucet consumption (mint) or for a submitted
 /// (recipient) transaction to commit.
@@ -376,8 +373,7 @@ impl Driver {
         let f = self.faucet_id;
         let sender = self.owner();
         let recipient = self.recipient();
-        // Fresh faucet: splice the OWN-ID remoteToken so structural validation's identifier compare passes against the
-        // note-derived own-id identifier (R2 identifier-binding fix).
+        // Fresh faucet: splice the OWN-ID remoteToken so the rebuilt message names this faucet.
         let payload = mint_payload_own_id(
             f,
             vector_id,
@@ -387,8 +383,14 @@ impl Driver {
             salt,
         );
         let attestation = self.actors.attester.attestation_for(&payload);
-        let note = XUsdcMintNote::create(sender, f, &payload, &attestation, self.hc.client.rng())
-            .context("building a valid XUsdcMintNote")?;
+        let note = mint_note_from_payload(
+            sender,
+            f,
+            MINT_DOMAIN,
+            &payload,
+            &attestation,
+            self.hc.client.rng(),
+        )?;
         Ok((note, payload))
     }
 }
@@ -458,7 +460,7 @@ async fn run_mint_happy(
     })
 }
 
-/// Runs all five Row-E negatives client-side, each a reject + committed-state read-back.
+/// Runs every Row-E negative client-side, each a reject + committed-state read-back.
 async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<MintNegative>> {
     let mut out = Vec::new();
 
@@ -467,9 +469,14 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
         let f = d.faucet_id;
         let sender = d.owner();
         let attestation = d.actors.attester.attestation_for(replay_payload);
-        let note =
-            XUsdcMintNote::create(sender, f, replay_payload, &attestation, d.hc.client.rng())
-                .context("building the replay mint note")?;
+        let note = mint_note_from_payload(
+            sender,
+            f,
+            MINT_DOMAIN,
+            replay_payload,
+            &attestation,
+            d.hc.client.rng(),
+        )?;
         let key = nonce_key(replay_payload);
         out.push(
             negative(
@@ -499,8 +506,14 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
         );
         // A well-formed ECDSA signature over a digest that is NOT keccak256(payload).
         let attestation = d.actors.attester.attestation_over_digest([0xAB; 32]);
-        let note = XUsdcMintNote::create(sender, f, &payload, &attestation, d.hc.client.rng())
-            .context("building the forged-signature mint note")?;
+        let note = mint_note_from_payload(
+            sender,
+            f,
+            MINT_DOMAIN,
+            &payload,
+            &attestation,
+            d.hc.client.rng(),
+        )?;
         let key = nonce_key(&payload);
         out.push(
             negative(
@@ -529,52 +542,20 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
             SALT_E_BAD_ATTESTER,
         );
         let attestation = d.actors.attester_b.attestation_for(&payload);
-        let note = XUsdcMintNote::create(sender, f, &payload, &attestation, d.hc.client.rng())
-            .context("building the non-allowlisted-attester mint note")?;
+        let note = mint_note_from_payload(
+            sender,
+            f,
+            MINT_DOMAIN,
+            &payload,
+            &attestation,
+            d.hc.client.rng(),
+        )?;
         let key = nonce_key(&payload);
         out.push(
             negative(
                 d,
                 "non-allowlisted-attester",
                 crate::assertions_de::ERR_XRESERVE_DISALLOWED_PUB_KEY,
-                note,
-                key,
-                false,
-            )
-            .await?,
-        );
-    }
-
-    // E4 — NON-ZERO feeAmount: a valid A attestation, but the attachment carries a non-zero fee (F2).
-    {
-        let f = d.faucet_id;
-        let sender = d.owner();
-        let recipient = d.recipient();
-        let payload = mint_payload_own_id(
-            f,
-            BASE_VECTOR,
-            recipient,
-            raw_for_units(E_UNITS),
-            raw_for_units(MAX_FEE_UNITS),
-            SALT_E_FEE,
-        );
-        let attestation = d.actors.attester.attestation_for(&payload);
-        let fee_limbs = fee_limbs_for(raw_for_units(FEE_UNITS));
-        let note = mint_note_with_fee(
-            sender,
-            f,
-            &payload,
-            &attestation,
-            fee_limbs,
-            d.hc.client.rng(),
-        )
-        .context("building the non-zero-fee mint note")?;
-        let key = nonce_key(&payload);
-        out.push(
-            negative(
-                d,
-                "nonzero-fee",
-                crate::assertions_de::ERR_XRESERVE_FEE_NONZERO,
                 note,
                 key,
                 false,
@@ -606,13 +587,59 @@ async fn run_negatives(d: &mut Driver, replay_payload: &[u8]) -> Result<Vec<Mint
             raw_for_units(MAX_FEE_UNITS),
             SALT_E_TAMPERED,
         );
-        let note = XUsdcMintNote::create(sender, f, &note_payload, &attestation, d.hc.client.rng())
-            .context("building the tampered-payload mint note")?;
+        let note = mint_note_from_payload(
+            sender,
+            f,
+            MINT_DOMAIN,
+            &note_payload,
+            &attestation,
+            d.hc.client.rng(),
+        )?;
         let key = nonce_key(&note_payload);
         out.push(
             negative(
                 d,
                 "tampered-payload",
+                crate::assertions_de::ERR_XRESERVE_SIG_INVALID,
+                note,
+                key,
+                false,
+            )
+            .await?,
+        );
+    }
+
+    // E6 — TAMPERED MAX-FEE CEILING: A signs a preimage whose maxFee pad limbs carry bytes; the note
+    // carries the untouched mint intent, so the faucet rebuilds the ceiling with those limbs zero.
+    {
+        let f = d.faucet_id;
+        let sender = d.owner();
+        let recipient = d.recipient();
+        let note_payload = mint_payload_own_id(
+            f,
+            BASE_VECTOR,
+            recipient,
+            raw_for_units(E_UNITS),
+            raw_for_units(MAX_FEE_UNITS),
+            SALT_E_MAX_FEE,
+        );
+        let attestation = d
+            .actors
+            .attester
+            .attestation_for(&max_fee_pad_dirtied(&note_payload));
+        let note = mint_note_from_payload(
+            sender,
+            f,
+            MINT_DOMAIN,
+            &note_payload,
+            &attestation,
+            d.hc.client.rng(),
+        )?;
+        let key = nonce_key(&note_payload);
+        out.push(
+            negative(
+                d,
+                "tampered-max-fee-ceiling",
                 crate::assertions_de::ERR_XRESERVE_SIG_INVALID,
                 note,
                 key,
@@ -679,13 +706,14 @@ pub async fn run_rows_de_on(cfg: &RunConfig, client_label: &str) -> Result<RowsD
     let main_commit = git_head_commit();
 
     // 2. Client + actors + the production faucet account (domain config BUILD-SEEDED to match the
-    //    mint vector; the identifier committed by the identifier_init note below).
+    //    mint vector, priced against the chain's own fee parameters).
     let mut hc = build_client(&cfg.stack, client_label).await?;
     hc.client.sync_state().await.context("initial sync")?;
     let actor_root = cfg.stack.run_root.join(format!("client-{client_label}"));
     let actors = create_actors(&mut hc, &actor_root).await?;
     let owner_id = actors.owner.id();
     let domain = mintburn::lnv2_domain_params();
+    let fee_parameters = node_fee_parameters(&hc.rpc).await?;
     let faucet = build_faucet_account(
         owner_id,
         actors.pauser.id(),
@@ -693,37 +721,23 @@ pub async fn run_rows_de_on(cfg: &RunConfig, client_label: &str) -> Result<RowsD
         actors.blk_manager.id(),
         cfg.max_supply,
         &domain,
+        fee_parameters,
         os_seed(),
     )?;
     let faucet_id = faucet.id();
 
-    // 3. Deploy: the faucet's first tx consumes the owner's identifier_init (first-deploy exemption).
-    //    The seeded identifier is the faucet's own-id fixpoint (derived from faucet_id).
-    let note1 = XReserveIdentifierInitNote::create(owner_id, faucet_id, hc.client.rng())
-        .context("building the identifier_init note")?;
-    let emit1 = TransactionRequestBuilder::new()
-        .own_output_notes(vec![note1.clone()])
-        .build()
-        .context("building the identifier_init emit")?;
-    let emit1_tx = hc
-        .client
-        .submit_new_transaction(owner_id, emit1)
-        .await
-        .context("emit identifier_init")?;
+    // 3. Deploy: the faucet's first tx is scriptless and noteless — `AuthNetworkAccount` authorizes
+    //    it and increments the new account's nonce 0 → 1, which materializes it on chain.
     let mut d = Driver {
         hc,
         actors,
         faucet_id,
     };
-    d.wait_commit(emit1_tx)
-        .await
-        .context("waiting for the identifier_init emit")?;
     d.hc.client
         .add_account(&faucet, false)
         .await
         .context("registering the faucet with the client")?;
     let deploy = TransactionRequestBuilder::new()
-        .input_notes(vec![(note1.clone(), None)])
         .build()
         .context("building the deploy request")?;
     let deploy_tx =

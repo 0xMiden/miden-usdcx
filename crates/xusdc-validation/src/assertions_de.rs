@@ -4,11 +4,12 @@
 //! Matrix rows:
 //! - **D mint happy path** — a real `XUsdcMintNote` consumption raises `token_supply += amount`,
 //!   sets `usedNonces[nonce]`, and emits a recipient P2ID note; the RECIPIENT wallet consumes it
-//!   (balance += amount). Two variants: hookData-bearing AND no-hookData; `feeAmount = 0`; a genuine
-//!   two-block flow on the real node.
+//!   (balance += amount). Two variants: hookData-bearing AND no-hookData; a genuine two-block flow
+//!   on the real node.
 //! - **E mint negatives** — each REJECTED AND zero state change (supply unchanged, nonce NOT set):
-//!   replayed nonce, forged signature, non-allowlisted attester pubkey, `feeAmount ≠ 0` (F2),
-//!   tampered payload (attachment↔commitment mismatch).
+//!   replayed nonce, forged signature, non-allowlisted attester pubkey, tampered payload
+//!   (attachment↔commitment mismatch), and a fee ceiling the attestation signed but the faucet
+//!   cannot rebuild.
 //!
 //! Every check reads the NODE-fetched verdicts/read-backs carried by [`RowsDeObservations`] — a green
 //! here is a statement about the real chain, not about the client's local store.
@@ -20,24 +21,24 @@ use crate::observations_de::{
 };
 
 // EXACT on-chain error substrings the Row-E rejects must carry (single source of truth in the
-// shipped MASM: `deposit_intent_parser.masm`, `attestation_verify.masm`, `mint_policy.masm` — the
-// Wave-1 S1 home of the attestation pipeline the former `xreserve_mint.masm` drove). A reject that
-// does not carry ITS error is not the gate the negative proves — the assertion rejects it. All
-// four are xreserve-OWNED gates and carry the message on a client-side trap (LNV-2 posture: only
-// STOCK miden-standards gates surface code-only); the matcher still also accepts the derived
-// `err_code` for robustness against a future protocol string/pin drift.
+// shipped MASM — `mint_intent.masm` and `attestation_verify.masm` — and, for the signature check,
+// in the core library's ECDSA verifier, which owns that trap's identity). A reject that does not
+// carry ITS error is not the gate the negative proves — the assertion rejects it. Each carries the
+// message on a client-side trap (LNV-2 posture: only STOCK miden-standards gates surface
+// code-only); the matcher still also accepts the derived `err_code` for robustness against a future
+// protocol string/pin drift.
 // ================================================================================================
 
 /// R-MINT-12 (replay protection): the deposit intent's nonce is already in `usedNonces` (replay).
 pub const ERR_XRESERVE_NONCE_REPLAY: &str = "deposit intent nonce has already been used";
-/// R-MINT-14 (attestation verification): the ECDSA signature does not verify over `keccak256(payload)` for the candidate
-/// pubkey (a forged signature or a payload tampered after signing).
-pub const ERR_XRESERVE_SIG_INVALID: &str = "deposit attestation signature verification failed";
+/// R-MINT-14 (attestation verification): the ECDSA signature does not verify over
+/// `keccak256(payload)` for the candidate pubkey — a forged signature, a payload tampered after
+/// signing, or an intent naming a domain or faucet other than the one the faucet writes into the
+/// message it rebuilds. The trap belongs to the core library's verifier, so this is its error.
+pub const ERR_XRESERVE_SIG_INVALID: &str = "ECDSA verification failed: x(VERIFY_POINT) != SIG_R";
 /// R-MINT-13 (attestation verification): the candidate attester pubkey's commitment is not in the on-chain allowlist.
 pub const ERR_XRESERVE_DISALLOWED_PUB_KEY: &str =
     "deposit attester pubkey commitment is not allowlisted";
-/// F2 (amount validation): the operator `feeAmount` must be zero (fail-loud MVP).
-pub const ERR_XRESERVE_FEE_NONZERO: &str = "mint fee amount must be zero";
 
 // SHARED CHECK HELPERS
 // ================================================================================================
@@ -167,13 +168,13 @@ pub fn assert_d(variants: &[MintHappy]) -> Result<()> {
 
 /// **Row E — mint negatives.**
 ///
-/// The set MUST cover all five negatives (replay, forged signature, non-allowlisted attester,
-/// non-zero feeAmount, tampered payload). For EVERY negative:
+/// The set MUST cover every negative (replay, forged signature, non-allowlisted attester, tampered
+/// payload, tampered max-fee ceiling). For EVERY negative:
 /// - the consumption was REJECTED with ITS exact gate error (message OR derived err_code);
 /// - the committed `token_supply` is UNCHANGED (`supply_after == supply_before`);
 /// - the `usedNonces` marker matches the negative's kind — a FRESH-nonce negative (forged signature /
-///   bad attester / non-zero fee / tampered payload) left its nonce EMPTY (`[0,0,0,0]`, proving the
-///   reject wrote nothing), while the replay negative's already-used nonce stayed SET (`[1,0,0,0]`).
+///   bad attester / either tamper) left its nonce EMPTY (`[0,0,0,0]`, proving the reject wrote
+///   nothing), while the replay negative's already-used nonce stayed SET (`[1,0,0,0]`).
 pub fn assert_e(negatives: &[MintNegative]) -> Result<()> {
     for n in negatives {
         let ctx = format!("E[{}]", n.label);
@@ -202,17 +203,18 @@ pub fn assert_e(negatives: &[MintNegative]) -> Result<()> {
         );
     }
 
-    // Coverage: the row proves EVERY one of the five distinct negative vectors, not a convenient
-    // subset. Requiring each by its LABEL (not just its gate error) is deliberate — forged-signature
-    // and tampered-payload share the SIG_INVALID gate but are DISTINCT attack surfaces (a corrupted
-    // signature vs. a payload the attestation never signed), so an error-only check would let either
-    // one satisfy coverage for both and a driver could silently drop one.
+    // Coverage: the row proves EVERY one of the distinct negative vectors, not a convenient subset.
+    // Requiring each by its LABEL (not just its gate error) is deliberate — three of them share the
+    // SIG_INVALID gate but are DISTINCT attack surfaces (a corrupted signature, a payload the
+    // attestation never signed, and a fee ceiling the faucet cannot rebuild), so an error-only check
+    // would let any one satisfy coverage for all three and a driver could silently drop two.
     for label in REQUIRED_NEGATIVES {
         ensure!(
             negatives.iter().any(|n| n.label == label),
-            "E: the negatives must include the '{label}' negative — all five matrix mint-negative \
-             vectors are required; the two signature-gate vectors (forged-signature and \
-             tampered-payload) are DISTINCT attack surfaces and BOTH must be present",
+            "E: the negatives must include the '{label}' negative — every matrix mint-negative \
+             vector is required; the three signature-gate vectors (forged-signature, \
+             tampered-payload and tampered-max-fee-ceiling) are DISTINCT attack surfaces and ALL \
+             must be present",
         );
     }
     // The replay negative must additionally be a genuine already-used-nonce case (marker set), tying
@@ -224,15 +226,16 @@ pub fn assert_e(negatives: &[MintNegative]) -> Result<()> {
     Ok(())
 }
 
-/// The five DISTINCT Row-E mint-negative vectors the matrix requires, by canonical label. Two of
-/// them (`forged-signature`, `tampered-payload`) trap at the SAME signature gate but are different
-/// attack surfaces, so coverage is keyed on the label — never on the gate error alone.
+/// The DISTINCT Row-E mint-negative vectors the matrix requires, by canonical label. Three of them
+/// (`forged-signature`, `tampered-payload`, `tampered-max-fee-ceiling`) trap at the SAME signature
+/// gate but are different attack surfaces, so coverage is keyed on the label — never on the gate
+/// error alone.
 const REQUIRED_NEGATIVES: [&str; 5] = [
     "replayed-nonce",
     "forged-signature",
     "non-allowlisted-attester",
-    "nonzero-fee",
     "tampered-payload",
+    "tampered-max-fee-ceiling",
 ];
 
 /// Judges every rows-D/E observation. Returns the first failure; the driver / bin records per-row

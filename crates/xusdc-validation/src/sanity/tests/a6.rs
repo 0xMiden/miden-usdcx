@@ -1,32 +1,54 @@
 //! A6 offline tests — the `--faucet-id` (existing-faucet) mint must carry the DEPLOYED faucet's domain
-//! config, not the fixed BASE_VECTOR's. The mint gate (structural validation `deposit_intent_parser::validate`)
-//! compares a mint's `remoteDomain` against the faucet's stored `domain`, and `bytes32_to_storage_map_key(remoteToken)`
-//! against the stored identifier key. A production faucet was deployed with domain 10007 and an
-//! identifier = EthEmbeddedAccountId::from_account_id(faucet.id()).to_bytes32(); the fixed BASE_VECTOR carries domain 7, so structural validation
-//! rejected every mint (the A6 300s path-N timeout). These node-free tests inject a synthetic deployed
-//! config (a domain D != 7 and a faucet id F) and prove the produced payload carries D + the F-derived
-//! identifier. sourceDomain is NOT asserted on the payload: it is NOT a DepositIntent field and the
-//! mint proc never reads one — the mint gate compares ONLY remoteDomain + remoteToken (verified against
-//! `asm/standards/xreserve/deposit_intent_parser.masm::validate`).
+//! config, not the fixed BASE_VECTOR's. The faucet writes its configured `remoteDomain` and its own id
+//! as `remoteToken` into the message it rebuilds, so a mint naming different ones rebuilds a different
+//! digest and dies on chain as an invalid signature; the note factory refuses such an intent up front.
+//! A production faucet was deployed with domain 10007 while the fixed BASE_VECTOR carries domain 7, so
+//! every mint was rejected (the A6 300s path-N timeout). These node-free tests inject a synthetic
+//! deployed config (a domain D != 7 and a faucet id F) and prove the produced payload carries D + F.
+//! sourceDomain is NOT asserted on the payload: it is NOT a DepositIntent field and the mint path never
+//! reads one — only remoteDomain + remoteToken bind a mint to its faucet.
 //!
 //! Split out of `sanity/tests.rs` (BUILDER-GATES G3 file-size ceiling) into this `tests::a6` submodule;
 //! the shared offline fixtures (`dummy_id`, `faucet_id`, `rng`) are reused from the parent `tests`
 //! module.
 
+use miden_protocol::utils::serde::Deserializable;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
-use xusdc_encoding::xreserve::encoding::{
-    deposit_intent_field_offset, parse_deposit_intent_header, DepositIntentField,
-};
+use xusdc_encoding::xreserve::encoding::{DepositIntent, DepositIntentField};
 
 use super::super::checks::mint_note_for;
 use super::super::{MINT_NONROUND_UNITS, MINT_ROUND_UNITS};
 use super::{dummy_id, faucet_id, rng};
 use crate::mintburn;
 
+/// The `field`'s bytes32 window read straight off the wire, so the assertions below stay byte-level.
+/// The window comes from the DepositIntent layout owner, never a restated literal.
+fn field_bytes32(payload: &[u8], field: DepositIntentField) -> [u8; 32] {
+    let off = field.offset();
+    payload[off..off + 32]
+        .try_into()
+        .expect("a bytes32 field window")
+}
+
+/// The `field`'s big-endian u32 read straight off the wire.
+fn field_u32(payload: &[u8], field: DepositIntentField) -> u32 {
+    let off = field.offset();
+    u32::from_be_bytes(
+        payload[off..off + 4]
+            .try_into()
+            .expect("a u32 field window"),
+    )
+}
+
+/// Asserts the payload is a well-formed DepositIntent (the same structural decode the faucet's note
+/// factory runs) and returns it.
+fn decoded(payload: &[u8]) -> DepositIntent {
+    DepositIntent::read_from_bytes(payload).expect("a well-formed DepositIntent")
+}
+
 /// THE A6 core proof: a `--faucet-id` mint payload built for a DEPLOYED faucet config (domain
-/// D != 7, faucet id F) decodes to `remoteDomain == D` and `remoteToken == EthEmbeddedAccountId::from_account_id(F).to_bytes32()`
-/// — NOT the BASE_VECTOR's domain 7 / token. Reverting EITHER splice (the audit mutation) makes this
-/// test RED.
+/// D != 7, faucet id F) decodes to `remoteDomain == D` and `remoteToken == F` — NOT the BASE_VECTOR's
+/// domain 7 / token. Reverting EITHER splice (the audit mutation) makes this test RED.
 #[test]
 fn faucet_id_mint_payload_carries_deployed_domain_and_identifier() {
     // A synthetic deployed faucet: the production domain from the A6 failure (10007 != MINT_DOMAIN 7)
@@ -40,7 +62,7 @@ fn faucet_id_mint_payload_carries_deployed_domain_and_identifier() {
     );
 
     let config = mintburn::MintDomainConfig::for_deployed_faucet(DEPLOYED_DOMAIN, f);
-    // The identifier the mint gate compares is EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32(), recomputed from F.
+    // The remoteToken the faucet writes into the message it rebuilds is its own id, recomputed from F.
     assert_eq!(
         config.remote_token,
         EthEmbeddedAccountId::from_account_id(f).to_bytes32(),
@@ -53,35 +75,40 @@ fn faucet_id_mint_payload_carries_deployed_domain_and_identifier() {
     let salt = 0x77u8;
 
     let payload = mintburn::mint_payload_for(&config, recipient, amount, max_fee, salt);
-    let h = parse_deposit_intent_header(&payload)
-        .expect("the spliced --faucet-id payload must still be a well-formed DepositIntent");
+    let intent = decoded(&payload);
 
     // THE two gated fields carry the DEPLOYED faucet's config, not the fixed vector's.
     assert_eq!(
-        h.remote_domain, DEPLOYED_DOMAIN,
+        intent.header().remote_domain(),
+        DEPLOYED_DOMAIN,
         "remoteDomain must be the DEPLOYED faucet's domain D, not the BASE_VECTOR's 7"
     );
     assert_ne!(
-        h.remote_domain,
+        intent.header().remote_domain(),
         mintburn::MINT_DOMAIN,
         "remoteDomain must NOT be the BASE_VECTOR's MINT_DOMAIN (7)"
     );
     assert_eq!(
-        h.remote_token,
+        intent.header().remote_token(),
+        f,
+        "remoteToken must be F itself (the id the faucet writes into the message it rebuilds)"
+    );
+    assert_eq!(
+        field_bytes32(&payload, DepositIntentField::RemoteToken),
         EthEmbeddedAccountId::from_account_id(f).to_bytes32(),
-        "remoteToken must be EthEmbeddedAccountId::from_account_id(F).to_bytes32() (matches the deployed identifier)"
+        "the remoteToken wire bytes must be EthEmbeddedAccountId::from_account_id(F).to_bytes32()"
     );
 
     // Both fields ACTUALLY changed vs the BASE_VECTOR (proving a real splice, not a coincidence).
-    let base =
-        parse_deposit_intent_header(&mintburn::mint_payload(recipient, amount, max_fee, salt))
-            .expect("the BASE_VECTOR payload parses");
+    let base = mintburn::mint_payload(recipient, amount, max_fee, salt);
     assert_ne!(
-        h.remote_token, base.remote_token,
+        field_bytes32(&payload, DepositIntentField::RemoteToken),
+        field_bytes32(&base, DepositIntentField::RemoteToken),
         "the spliced remoteToken must differ from the BASE_VECTOR's token"
     );
     assert_ne!(
-        h.remote_domain, base.remote_domain,
+        field_u32(&payload, DepositIntentField::RemoteDomain),
+        field_u32(&base, DepositIntentField::RemoteDomain),
         "the spliced remoteDomain must differ from the BASE_VECTOR's domain"
     );
 }
@@ -98,44 +125,45 @@ fn faucet_id_mint_payload_preserves_amount_recipient_and_nonce_splices() {
     let salt = 0x99u8;
 
     let payload = mintburn::mint_payload_for(&config, recipient, amount, max_fee, salt);
-    let h = parse_deposit_intent_header(&payload).expect("must parse");
+    decoded(&payload);
 
     // amount: uint256 big-endian, value in the low 8 bytes, high 24 zero.
+    let amount_bytes = field_bytes32(&payload, DepositIntentField::Amount);
     assert_eq!(
-        &h.amount[..24],
+        &amount_bytes[..24],
         &[0u8; 24],
         "amount high 24 bytes must be zero"
     );
     assert_eq!(
-        u64::from_be_bytes(h.amount[24..].try_into().unwrap()),
+        u64::from_be_bytes(amount_bytes[24..].try_into().unwrap()),
         amount,
         "amount low 8 bytes must decode to the raw amount"
     );
     // maxFee likewise.
+    let max_fee_bytes = field_bytes32(&payload, DepositIntentField::MaxFee);
     assert_eq!(
-        u64::from_be_bytes(h.max_fee[24..].try_into().unwrap()),
+        u64::from_be_bytes(max_fee_bytes[24..].try_into().unwrap()),
         max_fee,
         "maxFee low 8 bytes must decode to the raw max fee"
     );
     // recipient P2ID target.
     assert_eq!(
-        h.remote_recipient,
+        field_bytes32(&payload, DepositIntentField::RemoteRecipient),
         EthEmbeddedAccountId::from_account_id(recipient).to_bytes32(),
         "remoteRecipient must be EthEmbeddedAccountId::from_account_id(recipient).to_bytes32()"
     );
     // nonce salt: byte 0 flips by the salt vs an unsalted build; the rest is unchanged.
-    let unsalted = parse_deposit_intent_header(&mintburn::mint_payload_for(
-        &config, recipient, amount, max_fee, 0,
-    ))
-    .expect("must parse");
+    let unsalted = mintburn::mint_payload_for(&config, recipient, amount, max_fee, 0);
+    let nonce = field_bytes32(&payload, DepositIntentField::Nonce);
+    let unsalted_nonce = field_bytes32(&unsalted, DepositIntentField::Nonce);
     assert_eq!(
-        h.nonce[0],
-        unsalted.nonce[0] ^ salt,
+        nonce[0],
+        unsalted_nonce[0] ^ salt,
         "nonce byte 0 must XOR the salt"
     );
     assert_eq!(
-        &h.nonce[1..],
-        &unsalted.nonce[1..],
+        &nonce[1..],
+        &unsalted_nonce[1..],
         "the rest of the nonce is unchanged by the salt"
     );
 }
@@ -205,8 +233,8 @@ fn deployed_config_diverges_from_local_only_in_domain_and_token() {
 
     // The two gated fields' wire windows come from the layout owner, NOT restated literals:
     // remoteDomain = [dom_off, dom_off+4) (a u32), remoteToken = [tok_off, tok_off+32) (a bytes32).
-    let dom_off = deposit_intent_field_offset(DepositIntentField::RemoteDomain);
-    let tok_off = deposit_intent_field_offset(DepositIntentField::RemoteToken);
+    let dom_off = DepositIntentField::RemoteDomain.offset();
+    let tok_off = DepositIntentField::RemoteToken.offset();
     let domain_window = dom_off..dom_off + 4;
     let token_window = tok_off..tok_off + 32;
     let gated_window = dom_off..tok_off + 32; // remoteDomain immediately precedes remoteToken
@@ -231,9 +259,10 @@ fn deployed_config_diverges_from_local_only_in_domain_and_token() {
 /// this test drives THAT seam (not `mint_payload_for` directly) and asserts the note it returns
 /// carries the resolved deployed config. It is the regression for the round-2 finding that the direct
 /// tests bypass the production call site: if `mint_note_for` were reverted to ignore its `config` and
-/// call the hardcoded `mint_payload`, the `Some(config)` assertions below go RED. Node-free: the
-/// attester is reconstructed from a fixed scalar with `persist=false` (no disk), and note assembly is
-/// pure (no RPC).
+/// call the hardcoded `mint_payload`, the `Some(config)` assertions below go RED — and the `None` leg
+/// pins the factory's refusal of an intent addressed to another faucet. Node-free: the attester is
+/// reconstructed from a fixed scalar with `persist=false` (no disk), and note assembly is pure (no
+/// RPC).
 #[test]
 fn mint_note_for_seam_threads_the_resolved_deployed_config() {
     // A test attester built entirely offline (persist=false ⇒ nothing is written under the dir).
@@ -262,27 +291,38 @@ fn mint_note_for_seam_threads_the_resolved_deployed_config() {
         &mut rng(9),
     )
     .expect("mint_note_for builds a production mint note for the deployed config");
-    let h =
-        parse_deposit_intent_header(&payload).expect("the note's embedded DepositIntent parses");
+    let intent = decoded(&payload);
     assert_eq!(
-        h.remote_domain, DEPLOYED_DOMAIN,
+        intent.header().remote_domain(),
+        DEPLOYED_DOMAIN,
         "the mint_note_for seam must carry the DEPLOYED faucet's domain, not the BASE_VECTOR's 7"
     );
     assert_eq!(
-        h.remote_token,
-        EthEmbeddedAccountId::from_account_id(f).to_bytes32(),
-        "the mint_note_for seam must carry EthEmbeddedAccountId::from_account_id(F).to_bytes32() as remoteToken"
+        intent.header().remote_token(),
+        f,
+        "the mint_note_for seam must carry F as remoteToken"
     );
     // The recipient is still correct through the seam (no regression in the pre-existing splice).
     assert_eq!(
-        h.remote_recipient,
-        EthEmbeddedAccountId::from_account_id(recipient).to_bytes32(),
+        intent.header().remote_recipient(),
+        recipient,
         "the seam still points remoteRecipient at the recipient"
     );
 
-    // None (fresh-LOCAL): the SAME seam leaves the BASE_VECTOR header (domain 7 / vector token), so the
-    // fresh-local mints are unchanged — and the two modes DEMONSTRABLY differ in the gated fields.
-    let (_base_note, base_payload) = mint_note_for(
+    // None (the BASE_VECTOR path): the SAME seam leaves the vector's header (domain 7 / vector
+    // token), which names ANOTHER faucet — so the factory refuses to build a note for F from it.
+    let base_payload = mintburn::mint_payload_opt(None, recipient, amount, 0, salt);
+    assert_eq!(
+        field_u32(&base_payload, DepositIntentField::RemoteDomain),
+        mintburn::MINT_DOMAIN,
+        "None ⇒ the BASE_VECTOR's MINT_DOMAIN (7) through the seam"
+    );
+    assert_ne!(
+        field_bytes32(&base_payload, DepositIntentField::RemoteToken),
+        field_bytes32(&payload, DepositIntentField::RemoteToken),
+        "the two seam modes must carry different remoteTokens (vector token vs F)"
+    );
+    let refused = mint_note_for(
         relayer,
         f,
         &attester,
@@ -291,20 +331,9 @@ fn mint_note_for_seam_threads_the_resolved_deployed_config() {
         salt,
         None,
         &mut rng(9),
-    )
-    .expect("mint_note_for builds a fresh-local mint note");
-    let bh = parse_deposit_intent_header(&base_payload).expect("parses");
-    assert_eq!(
-        bh.remote_domain,
-        mintburn::MINT_DOMAIN,
-        "None ⇒ the BASE_VECTOR's MINT_DOMAIN (7) through the seam"
     );
-    assert_ne!(
-        bh.remote_domain, h.remote_domain,
-        "the two seam modes must carry different domains (7 vs the deployed 10007)"
-    );
-    assert_ne!(
-        bh.remote_token, h.remote_token,
-        "the two seam modes must carry different remoteTokens (vector token vs the F identifier)"
+    assert!(
+        refused.is_err(),
+        "an intent addressed to another faucet must be refused before the note exists"
     );
 }

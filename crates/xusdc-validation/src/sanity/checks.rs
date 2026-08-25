@@ -1,11 +1,12 @@
 //! The check families: mint (scale-0 identity), attestation + fund-safety negatives, the burn arc
 //! (structure + attester-consumability + DC-8 evidence), and the full admin surface (pause/unpause,
-//! attester rotation, min-burn accept/reject, max-supply mutate + enforce, owner-gating, 2-step
-//! ownership). Positive faucet consumptions commit via path N; negatives execute client-side.
+//! attester rotation, min-burn accept/reject, max-supply mutate + enforce, authority gating).
+//! Positive faucet consumptions commit via path N; negatives execute client-side.
 
 use anyhow::{Context, Result};
 use miden_protocol::account::AccountId;
-use miden_protocol::note::Note;
+use miden_protocol::note::{Note, NoteAttachmentScheme};
+use miden_protocol::Felt;
 use miden_standards::note::NetworkAccountTarget;
 
 use withdrawal_listener_attester::config::ListenerConfig;
@@ -14,12 +15,17 @@ use withdrawal_listener_attester::validate::{
     validate_discovery, DiscoveredDetails, DiscoveryRecord,
 };
 
-use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
-use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
+use xusdc_encoding::note::xreserve_burn::{
+    XReserveBurnNote, FIXED_XUSDC_BURN_TAG, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
+    XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
+};
+use xusdc_encoding::note::xreserve_mint::DepositAttestation;
 use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
 use crate::actors::AttesterKey;
-use crate::mintburn::{mint_payload_opt, nonce_key, MintDomainConfig, MINT_DOMAIN};
+use crate::mintburn::{
+    mint_note_from_payload, mint_payload_opt, nonce_key, MintDomainConfig, MINT_DOMAIN,
+};
 use crate::observations_cf::Verdict;
 
 use super::driver::{
@@ -45,9 +51,9 @@ const BURN_DEST_DOMAIN: u32 = 3;
 
 /// A production mint note for `amount_units` (raw==minted under scale-0) to `recipient`, signed by
 /// `attester`. Returns `(note, payload)` so the caller can derive the nonce key. `config` is the
-/// deployed faucet's domain config on the `--faucet-id` path (its `remoteDomain`/`remoteToken` are
-/// spliced so the structural validation gate accepts the mint) and `None` on the fresh-LOCAL gate (the BASE_VECTOR
-/// header is used unchanged).
+/// target faucet's domain config — its `remoteDomain`/`remoteToken` are spliced so the rebuilt
+/// message matches — which every sanity run supplies from the driver. `None` falls back to the
+/// untouched BASE_VECTOR header and is reached only from the offline splice tests.
 pub(crate) fn mint_note_for(
     sender: AccountId,
     faucet_id: AccountId,
@@ -61,8 +67,15 @@ pub(crate) fn mint_note_for(
     // maxFee = 0 (R-MINT-10: maxFee ≤ amount trivially holds); scale-0 ⇒ raw amount == minted units.
     let payload = mint_payload_opt(config.as_ref(), recipient, amount_units, 0, nonce_salt);
     let attestation = attester.attestation_for(&payload);
-    let note = XUsdcMintNote::create(sender, faucet_id, &payload, &attestation, rng)
-        .context("building a production mint note")?;
+    let remote_domain = config.map_or(MINT_DOMAIN, |c| c.domain);
+    let note = mint_note_from_payload(
+        sender,
+        faucet_id,
+        remote_domain,
+        &payload,
+        &attestation,
+        rng,
+    )?;
     Ok((note, payload))
 }
 
@@ -79,11 +92,11 @@ fn mint_note_forged_sig(
     rng: &mut impl miden_protocol::crypto::rand::FeltRng,
 ) -> Result<Note> {
     // Carry the deployed faucet's domain/identifier too, so the mint reaches the attestation verification signature gate
-    // (a wrong domain would reject earlier at structural validation, hiding the signature negative under WRONG_DOMAIN).
+    // (a payload naming another domain is refused before the note exists).
     let payload = mint_payload_opt(config.as_ref(), recipient, amount_units, 0, nonce_salt);
     let forged: DepositAttestation = attester.attestation_over_digest([0xEE; 32]);
-    XUsdcMintNote::create(sender, faucet_id, &payload, &forged, rng)
-        .context("building a forged-signature mint note")
+    let remote_domain = config.map_or(MINT_DOMAIN, |c| c.domain);
+    mint_note_from_payload(sender, faucet_id, remote_domain, &payload, &forged, rng)
 }
 
 /// The mandated burn items (amount + local-test withdrawal identity).
@@ -100,10 +113,36 @@ pub(crate) fn burn_items(amount: u64) -> Result<XReserveBurnItems> {
 // PUBLIC ASSERTION HELPERS (also unit-tested offline)
 // ================================================================================================
 
-/// Structural assertions on a produced `XReserveBurnNote`: exactly ONE attachment — the scheme-2
-/// `NetworkAccountTarget` routing to `faucet_id` — tag `0x4255_524E`, and the DC-7 payload fields
-/// (amount/destDomain/destRecipient/salt) decoding to the expected values. `Ok(detail)` on a correct
-/// note; `Err(specific reason)` naming the exact structural mismatch.
+/// Reads a burn note's withdrawal payload out of its scheme-tagged attachment: the attachment's
+/// words with the word-boundary padding dropped. The felts feed the shared codec, which stays the
+/// single owner of the field layout — this reads no offset and unpacks no field. The note's
+/// `NoteStorage` carries the stock asset layout the stock consume script asserts against, so the
+/// payload is not there.
+pub(crate) fn withdrawal_payload_felts(note: &Note) -> Result<Vec<Felt>, String> {
+    let scheme = NoteAttachmentScheme::new(XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME)
+        .map_err(|e| format!("the withdrawal attachment scheme is invalid: {e}"))?;
+    let attachment = note
+        .attachments()
+        .iter()
+        .find(|attachment| attachment.attachment_scheme() == scheme)
+        .ok_or_else(|| "burn note carries no withdrawal-payload attachment".to_string())?;
+    let words = usize::from(attachment.num_words());
+    if words != XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS {
+        return Err(format!(
+            "the withdrawal-payload attachment carries {words} words, expected \
+             {XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS}"
+        ));
+    }
+    let mut felts = attachment.content().to_elements();
+    felts.truncate(XReserveBurnNote::NUM_PAYLOAD_ITEMS);
+    Ok(felts)
+}
+
+/// Structural assertions on a produced `XReserveBurnNote`: exactly TWO attachments — the
+/// `NetworkAccountTarget` routing to `faucet_id` and the scheme-tagged withdrawal payload — tag
+/// `0x4255_524E`, and the DC-7 payload fields (amount/destDomain/destRecipient/salt) decoding to the
+/// expected values. `Ok(detail)` on a correct note; `Err(specific reason)` naming the exact
+/// structural mismatch.
 pub fn assert_burn_note_structure(
     note: &Note,
     faucet_id: AccountId,
@@ -116,9 +155,10 @@ pub fn assert_burn_note_structure(
         ));
     }
     let num = note.attachments().num_attachments();
-    if num != 1 {
+    if num != 2 {
         return Err(format!(
-            "burn note carries {num} attachments, expected exactly 1 (the routing target)"
+            "burn note carries {num} attachments, expected exactly 2 (the routing target and the \
+             withdrawal payload)"
         ));
     }
     let target = NetworkAccountTarget::try_from(note.attachments())
@@ -130,7 +170,7 @@ pub fn assert_burn_note_structure(
             faucet_id
         ));
     }
-    let items = note.recipient().storage().items().to_vec();
+    let items = withdrawal_payload_felts(note)?;
     let decoded = decode_burn_payload(&items).map_err(|e| format!("DC-7 decode failed: {e:?}"))?;
     if u64::from(decoded.amount) != u64::from(expected.amount) {
         return Err(format!(
@@ -152,7 +192,8 @@ pub fn assert_burn_note_structure(
         return Err("salt mismatch".to_string());
     }
     Ok(format!(
-        "tag 0x{tag:08X}, one NetworkAccountTarget → faucet, amount={} destDomain={} (DC-7 decoded)",
+        "tag 0x{tag:08X}, a NetworkAccountTarget → faucet + the withdrawal payload, amount={} \
+         destDomain={} (DC-7 decoded)",
         u64::from(decoded.amount),
         decoded.dest_domain
     ))
@@ -163,7 +204,7 @@ pub fn assert_burn_note_structure(
 /// `decode_burn_payload`. `Err` is the attester's own rejection reason (used both for the positive
 /// check and to prove a foreign-tag note is REJECTED in the offline tests).
 pub fn assert_attester_consumable(note: &Note, faucet_id: AccountId) -> Result<String, String> {
-    let items = note.recipient().storage().items().to_vec();
+    let items = withdrawal_payload_felts(note)?;
     let tag = note.metadata().tag().as_u32();
     let record = DiscoveryRecord::new(
         tag,

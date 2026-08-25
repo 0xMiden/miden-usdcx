@@ -96,7 +96,7 @@ pub struct BurnTwoBlock {
 /// can decide DEV-7 — it does not decide acceptability here.
 ///
 /// The real-node finding (see the driver): a COMMITTED same-block faucet consume is UNREACHABLE on
-/// this v0.15.1 stack — the faucet is a network account, user RPC rejects post-deploy network-account
+/// this stack — the faucet is a network account, user RPC rejects post-deploy network-account
 /// submissions (captured here as a real-node rejection), the stock client cannot present the
 /// `x-miden-network-tx-auth` header, and the ntx-builder (the only commit path) consumes only
 /// COMMITTED notes → the burn note is ALWAYS committed + discoverable before consumption (Row G's

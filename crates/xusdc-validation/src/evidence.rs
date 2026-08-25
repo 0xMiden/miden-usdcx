@@ -48,10 +48,6 @@ pub struct RunEvidence {
     pub owner_id: String,
     pub deploy_tx_id: String,
     pub deploy_block: u32,
-    pub first_note_id: String,
-    pub second_note_id: String,
-    pub reinit_error: Option<String>,
-    pub second_note_consumed: bool,
     /// Verdicts.
     pub rows: Vec<RowVerdict>,
     /// Archived logs.
@@ -102,7 +98,6 @@ pub fn write_evidence(
     cfg: &RunConfig,
     obs: &RowsAbObservations,
     row_a: &Result<()>,
-    row_b: &Result<()>,
 ) -> Result<PathBuf> {
     let verdict = |row: &str, r: &Result<()>| RowVerdict {
         row: row.to_string(),
@@ -111,10 +106,9 @@ pub fn write_evidence(
     };
     let evidence = RunEvidence {
         main_commit: obs.main_commit.clone(),
-        node_version: "miden-node 0.16.0-alpha.2 (v16 four-service stack via start-test-node.sh)"
-            .to_string(),
-        client_crate: "miden-client =0.16.0-alpha.1 (crates.io)".to_string(),
-        protocol_rev: "0xMiden/protocol crates.io =0.16.0-alpha.4".to_string(),
+        node_version: "miden-node v16 (four-service stack via start-test-node.sh)".to_string(),
+        client_crate: "miden-client =0.16.0-rc.1 (crates.io)".to_string(),
+        protocol_rev: "0xMiden/protocol crates.io =0.16.0-rc.4".to_string(),
         rpc_port: cfg.stack.rpc_port,
         validator_port: cfg.stack.validator_port,
         ntx_builder_port: cfg.stack.ntx_builder_port,
@@ -123,11 +117,7 @@ pub fn write_evidence(
         owner_id: obs.owner_id.to_string(),
         deploy_tx_id: obs.deploy_tx_id.clone(),
         deploy_block: obs.deploy_block,
-        first_note_id: obs.first_note_id.clone(),
-        second_note_id: obs.second_note_id.clone(),
-        reinit_error: obs.reinit_error.clone(),
-        second_note_consumed: obs.second_note_consumed,
-        rows: vec![verdict("A", row_a), verdict("B", row_b)],
+        rows: vec![verdict("A", row_a)],
         logs: log_manifest(&cfg.stack.log_dir()),
     };
     let path = cfg.stack.run_root.join("evidence.json");

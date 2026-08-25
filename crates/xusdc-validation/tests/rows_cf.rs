@@ -8,7 +8,7 @@
 //!    exists to reject and proves the assertion rejects it (a silently-weakened assertion — e.g. the
 //!    auditor's planted mutation — fails these). Plus one green-shape acceptance per row (guards
 //!    against an always-failing suite).
-//! 2. **The real-node E2E** (`lnv2_rows_cf_against_real_local_node`): boots a FRESH local v0.15.1
+//! 2. **The real-node E2E** (`lnv2_rows_cf_against_real_local_node`): boots a FRESH local v16
 //!    stack, deploys the production faucet, drives the whole C+F arc (admin state changes committed
 //!    via the ntx-builder / path N; mint/burn + auth-boundary rejects proven by client-side kernel
 //!    traps), and judges the observations. `#[ignore]`d in the default suite because it must bind
@@ -19,7 +19,7 @@
 use anyhow::{Context, Result};
 use xusdc_validation::assertions_cf::{
     assert_all, assert_c1, assert_c2, assert_c3, assert_c4, assert_c5, assert_c6, assert_f,
-    ERR_ATTESTER_NOT_ALLOWLISTED, ERR_LACKS_ROLE, ERR_NOT_OWNER,
+    ERR_ATTESTER_NOT_ALLOWLISTED, ERR_LACKS_ROLE, SENDER_NON_ADMIN, SENDER_NON_DOM_PAUSER,
 };
 use xusdc_validation::observations_cf::{
     AdminGateReject, C1SetAttester, C2MinBurn, C3MaxSupply, C4Pause, C5RoleRotation, RowF,
@@ -47,7 +47,7 @@ fn green_c2() -> C2MinBurn {
         raised_min: 50,
         committed_after_raise: 50,
         burn_below_raised: rej(
-            "... amount to be burned must exceed specified minimum burn amount ...",
+            "... amount to be burned must meet or exceed specified minimum burn amount ...",
         ),
         lowered_min: 10,
         committed_after_lower: 10,
@@ -89,21 +89,21 @@ fn green_c6() -> Vec<AdminGateReject> {
     vec![
         AdminGateReject {
             op: "set_attester".to_string(),
-            sender: "non-owner".to_string(),
-            expected_gate: ERR_NOT_OWNER.to_string(),
-            verdict: rej("trap: note sender is not the owner"),
+            sender: SENDER_NON_ADMIN.to_string(),
+            expected_gate: ERR_LACKS_ROLE.to_string(),
+            verdict: rej("trap: note sender does not hold the required role"),
             note_unconsumed: true,
         },
         AdminGateReject {
             op: "set_max_supply".to_string(),
-            sender: "non-owner".to_string(),
-            expected_gate: ERR_NOT_OWNER.to_string(),
-            verdict: rej("trap: note sender is not the owner"),
+            sender: SENDER_NON_ADMIN.to_string(),
+            expected_gate: ERR_LACKS_ROLE.to_string(),
+            verdict: rej("trap: note sender does not hold the required role"),
             note_unconsumed: true,
         },
         AdminGateReject {
             op: "pause".to_string(),
-            sender: "non-DOM_PAUSER".to_string(),
+            sender: SENDER_NON_DOM_PAUSER.to_string(),
             expected_gate: ERR_LACKS_ROLE.to_string(),
             verdict: rej("trap: note sender does not hold the required role"),
             note_unconsumed: true,
@@ -207,7 +207,8 @@ fn c2_rejects_below_min_burn_accepted() {
 #[test]
 fn c2_rejects_at_min_burn_rejected() {
     let mut c2 = green_c2();
-    c2.burn_at_lowered = rej("amount to be burned must exceed specified minimum burn amount"); // at-min wrongly rejected
+    c2.burn_at_lowered =
+        rej("amount to be burned must meet or exceed specified minimum burn amount"); // at-min wrongly rejected
     let e = assert_c2(&c2).expect_err("C2 must reject when an at-min burn is rejected");
     assert!(format!("{e:#}").contains("ACCEPTED"), "got: {e:#}");
 }
@@ -401,8 +402,11 @@ fn stock_gate_err_codes_match_the_real_node_observed_values() {
         13643929038179635348,
         "C4 pause gate"
     );
-    assert_eq!(code(ERR_NOT_OWNER), 7385238526269899403, "C6 owner gate");
-    assert_eq!(code(ERR_LACKS_ROLE), 2534091087325248367, "C5 role gate");
+    assert_eq!(
+        code(ERR_LACKS_ROLE),
+        2534091087325248367,
+        "the C5/C6 role gate"
+    );
     assert_eq!(
         code("input note script root is not in the note script allowlist"),
         2177567524790281771,
@@ -455,14 +459,14 @@ fn code_only_stock_gate_rejects_are_matched() {
     let c6 = vec![
         AdminGateReject {
             op: "set_attester".to_string(),
-            sender: "non-owner".to_string(),
-            expected_gate: ERR_NOT_OWNER.to_string(),
-            verdict: rejected_code_only(ERR_NOT_OWNER),
+            sender: SENDER_NON_ADMIN.to_string(),
+            expected_gate: ERR_LACKS_ROLE.to_string(),
+            verdict: rejected_code_only(ERR_LACKS_ROLE),
             note_unconsumed: true,
         },
         AdminGateReject {
             op: "pause".to_string(),
-            sender: "non-DOM_PAUSER".to_string(),
+            sender: SENDER_NON_DOM_PAUSER.to_string(),
             expected_gate: ERR_LACKS_ROLE.to_string(),
             verdict: rejected_code_only(ERR_LACKS_ROLE),
             note_unconsumed: true,
@@ -487,8 +491,8 @@ fn code_only_reject_with_the_wrong_code_is_rejected() {
 // ── the real-node E2E (the gate run for this slice) ──────────────────────────────────────────
 
 /// Rows C + F against a REAL fresh local node: bootstrap genesis, start the four services, deploy
-/// the production faucet (domain config build-seeded to match the mint vector, identifier_init as
-/// the first admin note), drive the whole admin + auth-boundary
+/// the production faucet (domain config build-seeded to match the mint vector), drive the whole
+/// admin + auth-boundary
 /// arc (admin state changes committed via the ntx-builder / path N; mint/burn + auth rejects proven by
 /// client-side kernel traps), and judge every row. Writes `evidence-cf.json` under the gitignored run
 /// root either way.
@@ -498,7 +502,7 @@ fn code_only_reject_with_the_wrong_code_is_rejected() {
 /// network-enabled box (or the `lnv2_rows_cf` binary); the default suite's green carries no real-node
 /// claim.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "real-node E2E: needs the v0.15.1 node binaries + loopback listener binds (denied in \
+#[ignore = "real-node E2E: needs the v16 node toolchain + loopback listener binds (denied in \
             sandboxed audit environments); run with `-- --include-ignored` or the lnv2_rows_cf \
             binary — the §11.2 gate claim rides on real runs + the human gate, never on the \
             default suite"]

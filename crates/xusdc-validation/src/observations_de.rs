@@ -10,7 +10,7 @@
 //!
 //! The two real-node execution modes the values come from (LNV-1 / LNV-2 posture, reused):
 //! - **path N (ntx-builder)** — the ONLY way to *commit* a post-deploy faucet state change at
-//!   v0.15.1. Row D's happy-path mints are emitted as routed, allowlisted `XUsdcMintNote`s and
+//!   the node. Row D's happy-path mints are emitted as routed, allowlisted `XUsdcMintNote`s and
 //!   the running ntx-builder auto-executes the faucet's consumption; the driver reads the committed
 //!   `token_supply` + `usedNonces[nonce]` back and captures the emitted P2ID recipient note.
 //! - **client-side execute** — Row E's negatives (and the recipient's committed P2ID consume). Each
@@ -77,8 +77,8 @@ pub struct MintHappy {
 /// One **Row E** mint negative: a mint that MUST be rejected AND leave the committed state
 /// unchanged (`token_supply` fixed; the relevant `usedNonces` entry unchanged).
 ///
-/// The four fresh-nonce negatives (forged signature, non-allowlisted attester, non-zero feeAmount,
-/// tampered payload) each carry a FRESH nonce that was never minted, so the invariant is
+/// The fresh-nonce negatives (forged signature, non-allowlisted attester, tampered payload,
+/// tampered max-fee ceiling) each carry a FRESH nonce that was never minted, so the invariant is
 /// `nonce_marker_after == [0,0,0,0]` (the rejected consumption never reached the nonce-set write).
 /// The replay negative reuses a nonce a Row-D mint already committed, so its invariant is the
 /// opposite — `nonce_marker_after == [1,0,0,0]` (already-set, and the reject did not re-write or
@@ -108,8 +108,8 @@ pub struct MintNegative {
 ///
 /// `d` carries the happy-path variants (empty-hookData + hookData-bearing), each committed via
 /// path N with the recipient consuming the emitted note; `e` carries every negative (replay, forged
-/// signature, non-allowlisted attester, non-zero fee, tampered payload), each a client-side reject
-/// with a committed-state read-back proving zero state change.
+/// signature, non-allowlisted attester, tampered payload, tampered max-fee ceiling), each a
+/// client-side reject with a committed-state read-back proving zero state change.
 #[derive(Debug, Clone, Serialize)]
 pub struct RowsDeObservations {
     /// The `main` commit the run was built from (ledger metadata; recorded, not asserted).
@@ -121,7 +121,7 @@ pub struct RowsDeObservations {
     /// The Row-D happy-path mint variants (must include both an empty-hookData and a hookData-bearing
     /// mint).
     pub d: Vec<MintHappy>,
-    /// The Row-E negatives (must include all five: replay, forged signature, non-allowlisted
-    /// attester, non-zero fee, tampered payload).
+    /// The Row-E negatives (must include replay, forged signature, non-allowlisted attester,
+    /// tampered payload, and tampered max-fee ceiling).
     pub e: Vec<MintNegative>,
 }

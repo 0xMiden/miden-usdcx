@@ -3,8 +3,8 @@
 //! pause (mint+burn rejected) → unpause (mint AND burn work) → attester rotation (disabled attester's
 //! mint rejected, re-enabled) → `set_min_burn_size` (below-min rejected, at/above-min accepted) →
 //! `set_max_supply` (mutate + read back + tightened-cap ENFORCED + below-current-supply REJECTED) →
-//! owner-gating → 2-step ownership transfer. Split out of `checks.rs` to keep both files within the
-//! G3 file-size ceiling.
+//! authority gating → SAN-HANDOVER (the `ADMIN` rotation arc). Split out of `checks.rs` to keep both
+//! files within the G3 file-size ceiling.
 
 use anyhow::{Context, Result};
 use miden_protocol::account::AccountId;
@@ -12,21 +12,21 @@ use miden_protocol::asset::AssetAmount;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::Note;
 use miden_protocol::Word;
+use miden_standards::account::access::RoleBasedAccessControl;
 use miden_standards::note::{
-    FaucetMetadataConfig, FaucetMetadataConfigNote, MinBurnAmountConfigNote,
+    FaucetMetadataConfig, FaucetMetadataConfigNote, MinBurnAmountConfigNote, PauseConfig,
+    PauseConfigNote, RbacConfig, RbacConfigNote,
 };
 
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveAcceptOwnershipNote, XReservePauseNote, XReserveSetAttesterNote,
-    XReserveTransferOwnershipNote, XReserveUnpauseNote,
-};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 
 use crate::actors::{Actors, AttesterKey};
 
 use super::checks::{burn_items, fund_and_burn, mint_and_assert, mint_note_for, record_rejection};
 use super::driver::{
-    attester_marker, is_paused, is_zero_word, max_supply, min_burn, token_supply, SanityDriver,
+    attester_marker, holds_admin, is_paused, is_zero_word, max_supply, min_burn, token_supply,
+    SanityDriver,
 };
 use super::{
     Ledger, BURN_UNITS, LOWERED_MIN_BURN, MINT_ROUND_UNITS, RAISED_MAX_SUPPLY, RAISED_MIN_BURN,
@@ -39,8 +39,29 @@ const SALT_DISABLED_ATTESTER: u8 = 0x99;
 const SALT_MINT_TO_HOLDER_2: u8 = 0xA1;
 const SALT_ENFORCE_CAP: u8 = 0xB2;
 
+/// How far the SAN-HANDOVER sentinel moves `min_burn_size` off the value the handover starts from.
+/// Any distinct value proves the write landed; the arc puts it back before the suite ends.
+const HANDOVER_MIN_BURN_STEP: u64 = 1;
+
 /// The stock `fungible::set_max_supply` guard: a new cap below the current token supply rejects.
 const ERR_MAX_SUPPLY_BELOW_SUPPLY: &str = "new max supply is less than current token supply";
+
+/// The standard pause-action note that applies `config` to `faucet_id`.
+pub(super) fn pause_config_note(
+    sender: AccountId,
+    faucet_id: AccountId,
+    config: PauseConfig,
+    rng: &mut impl FeltRng,
+) -> Result<Note> {
+    let note = PauseConfigNote::builder()
+        .sender(sender)
+        .target(faucet_id)
+        .config(config)
+        .generate_serial_number(rng)
+        .build()
+        .context("building the pause configuration note")?;
+    Ok(Note::from(note))
+}
 
 pub(super) fn max_supply_config_note(
     sender: AccountId,
@@ -106,6 +127,60 @@ pub(crate) async fn set_attester_enabled(
     Ok(())
 }
 
+// ADMIN-ROLE HELPERS
+// ================================================================================================
+
+/// The standard role-action note that grants or revokes `ADMIN` for `member`. The faucet allowlists
+/// exactly this note script for role management, so it is the only surface that moves the role.
+pub(super) fn admin_role_note(
+    sender: AccountId,
+    faucet_id: AccountId,
+    member: AccountId,
+    grant: bool,
+    rng: &mut impl FeltRng,
+) -> Result<Note> {
+    let role = RoleBasedAccessControl::admin_role();
+    let config = if grant {
+        RbacConfig::GrantRole {
+            role,
+            account: member,
+        }
+    } else {
+        RbacConfig::RevokeRole {
+            role,
+            account: member,
+        }
+    };
+    let note = RbacConfigNote::builder()
+        .sender(sender)
+        .target(faucet_id)
+        .config(config)
+        .generate_serial_number(rng)
+        .build()
+        .context("building the ADMIN role-action note")?;
+    Ok(Note::from(note))
+}
+
+/// Commits a grant or revoke of `ADMIN` for `member` via path N and waits for the committed
+/// membership to reach the requested state. `sender` must already hold `ADMIN`: the role administers
+/// itself, so every caller picks the sender that holds it in the state it is acting from.
+pub(super) async fn set_admin_member(
+    d: &mut SanityDriver,
+    sender: AccountId,
+    member: AccountId,
+    grant: bool,
+    op: &str,
+) -> Result<()> {
+    let note = admin_role_note(sender, d.faucet_id, member, grant, d.hc.client.rng())
+        .with_context(|| format!("building the {op} note"))?;
+    d.commit_via_ntx(sender, note, op, move |a| {
+        holds_admin(a, member).map(|h| h == grant).unwrap_or(false)
+    })
+    .await
+    .with_context(|| format!("committing {op}"))?;
+    Ok(())
+}
+
 /// Owner allowlists the mint attester (`set_attester enabled=1`) via path N.
 pub(crate) async fn allowlist_attester(
     d: &mut SanityDriver,
@@ -130,8 +205,9 @@ pub(crate) async fn allowlist_attester(
 /// The admin-surface entrypoint. SNAPSHOTs the faucet's deployment policy, runs the (destructive)
 /// admin CHECKS, then — ALWAYS, even when a check errors mid-suite — runs a BEST-EFFORT
 /// [`restore_faucet`] so a caller-supplied faucet is never left paused, attester-disabled,
-/// policy-mutated, or owned by the ephemeral wallet. The checks' original error (if any) is what
-/// this returns; restore failures are RECORDED as surfaced findings, never propagated over it.
+/// policy-mutated, or with `ADMIN` still held by the ephemeral successor. The checks' original error
+/// (if any) is what this returns; restore failures are RECORDED as surfaced findings, never
+/// propagated over it.
 pub(crate) async fn admin_suite(
     d: &mut SanityDriver,
     led: &mut Ledger,
@@ -148,9 +224,7 @@ pub(crate) async fn admin_suite(
     let result = admin_checks(d, led, actors, mint_attester, relayer_id, recipient_id).await;
 
     // FINALLY — best-effort restore, regardless of where (or whether) `admin_checks` errored. It
-    // reads the faucet's ON-CHAIN owner/policy as ground truth (not any client-side flag), so an
-    // accept-path failure that leaves ownership unexpectedly moved (or a nomination dangling) is
-    // still detected and undone.
+    // reads the faucet's ON-CHAIN policy as ground truth, not any client-side flag.
     super::admin_restore::restore_faucet(
         d,
         led,
@@ -175,7 +249,7 @@ async fn admin_checks(
     relayer_id: AccountId,
     recipient_id: AccountId,
 ) -> Result<()> {
-    use crate::assertions_cf::{ERR_NOT_OWNER, ERR_PAUSED, ERR_SUPPLY_CAP};
+    use crate::assertions_cf::{ERR_LACKS_ROLE, ERR_PAUSED, ERR_SUPPLY_CAP};
     use crate::assertions_de::ERR_XRESERVE_DISALLOWED_PUB_KEY;
     use crate::assertions_gj::ERR_BURN_BELOW_MIN;
 
@@ -184,8 +258,12 @@ async fn admin_checks(
     let holder_id = actors.holder.id();
 
     // ── PAUSE (DOM_PAUSER) → mint AND burn rejected while paused ──
-    let pause = XReservePauseNote::create(pauser_id, d.faucet_id, d.hc.client.rng())
-        .context("pause note")?;
+    let pause = pause_config_note(
+        pauser_id,
+        d.faucet_id,
+        PauseConfig::Pause,
+        d.hc.client.rng(),
+    )?;
     d.commit_via_ntx(pauser_id, pause, "pause", |a| is_paused(a).unwrap_or(false))
         .await
         .context("pausing")?;
@@ -232,8 +310,12 @@ async fn admin_checks(
     );
 
     // ── UNPAUSE → mint works again ──
-    let unpause = XReserveUnpauseNote::create(pauser_id, d.faucet_id, d.hc.client.rng())
-        .context("unpause note")?;
+    let unpause = pause_config_note(
+        pauser_id,
+        d.faucet_id,
+        PauseConfig::Unpause,
+        d.hc.client.rng(),
+    )?;
     d.commit_via_ntx(pauser_id, unpause, "unpause", |a| {
         is_paused(a).map(|p| !p).unwrap_or(false)
     })
@@ -444,15 +526,11 @@ async fn admin_checks(
     );
 
     // NOTE: min_burn_size + max_supply are left MUTATED here (min = LOWERED, max = TIGHTENED); the
-    // finally-phase `restore_faucet` puts them — and the pause / attester / ownership state — back to
+    // finally-phase `restore_faucet` puts them — and the pause / attester state — back to
     // the pre-run snapshot. No positive mint runs after the tighten above, so the tightened cap does
     // not block the remaining (client-side reject) checks.
 
     // ── AUTHORITY GATING: a set_attester note from a sender without the ADMIN role is REJECTED.
-    //    NOTE (parked-crate debt): the expected error below is still ERR_NOT_OWNER. Since the
-    //    W2-ADMIN slice the setters resolve to the ADMIN role and raise ERR_SENDER_LACKS_ROLE
-    //    instead. This crate is parked out of the workspace and cannot be compiled or run against
-    //    the current pins, so the constant is left as-is rather than changed blind.
     let commitment = actors.attester_b.commitment_word();
     let rogue =
         XReserveSetAttesterNote::create(holder_id, d.faucet_id, commitment, 1, d.hc.client.rng())
@@ -460,57 +538,170 @@ async fn admin_checks(
     let v = d.probe_consume(rogue).await?;
     record_rejection(
         led,
-        "ADMIN-OWNER-GATE",
+        "ADMIN-ROLE-GATE",
         "admin",
         "an unauthorized admin note is REJECTED",
         &v,
-        ERR_NOT_OWNER,
+        ERR_LACKS_ROLE,
     );
 
-    // ── OWNERSHIP TRANSFER (2-step) — LAST so it cannot break earlier owner-gated ops ──
-    let new_owner_id = actors.new_pauser.id();
-    let transfer = XReserveTransferOwnershipNote::create(
-        owner_id,
-        d.faucet_id,
-        new_owner_id,
-        d.hc.client.rng(),
-    )
-    .context("transfer_ownership note")?;
-    d.commit_via_ntx_consumed(owner_id, transfer, "transfer_ownership")
+    // ── SAN-HANDOVER — LAST, so a mid-arc failure cannot strand the earlier ADMIN-gated checks ──
+    admin_handover(d, led, actors).await?;
+
+    Ok(())
+}
+
+/// **SAN-HANDOVER** — the `ADMIN` rotation arc on a real node, through path N.
+///
+/// `ADMIN` is the faucet's sole authority handle, and grant-then-revoke of it is the product's
+/// documented rotation path, so this drives that path end to end against an ephemeral successor:
+/// hand the role out, prove the successor can actually USE it (not merely that the map says so),
+/// prove the predecessor is locked out, then hand it back and prove the lockout reverses. Every
+/// membership mutation commits through path N and is read back from the committed account, and the
+/// two capability probes execute client-side so a rejected op cannot move state.
+///
+/// The order is lockout-safe throughout: a grant always precedes the matching revoke, so `ADMIN`
+/// never drops below one member — an empty `ADMIN` on this faucet is permanent and would forfeit
+/// every ADMIN-gated setter.
+async fn admin_handover(d: &mut SanityDriver, led: &mut Ledger, actors: &Actors) -> Result<()> {
+    use crate::assertions_cf::ERR_LACKS_ROLE;
+
+    let original = actors.owner.id();
+    let successor = actors.new_pauser.id();
+
+    // The value the successor's ADMIN-gated write moves min_burn AWAY from, and the original moves
+    // it back to — read from the live faucet so the restore target is the seeded value, not a guess.
+    let seeded_min_burn = min_burn(&d.fetch_faucet().await?)?;
+
+    // 1. HANDOVER OUT — the original grants ADMIN to the ephemeral successor.
+    set_admin_member(d, original, successor, true, "grant_role(ADMIN, successor)")
         .await
-        .context("committing transfer_ownership")?;
+        .context("granting ADMIN to the ephemeral successor")?;
+    let acct = d.fetch_faucet().await?;
     led.record(
-        "ADMIN-OWNER-TRANSFER",
+        "SAN-HANDOVER-GRANT",
         "admin",
-        "transfer_ownership (step 1) commits",
-        true,
-        format!("pending owner ← {new_owner_id}"),
+        "the original ADMIN grants ADMIN to an ephemeral successor (both hold it)",
+        holds_admin(&acct, successor)? && holds_admin(&acct, original)?,
+        format!("ADMIN membership: original {original} + successor {successor}"),
     );
 
-    let accept = XReserveAcceptOwnershipNote::create(new_owner_id, d.faucet_id, d.hc.client.rng())
-        .context("accept_ownership note")?;
-    match d
-        .commit_via_ntx_consumed(new_owner_id, accept, "accept_ownership")
+    // 2. SUCCESSOR CAPABILITY — proven by an ADMIN-gated WRITE that lands, not by reading the map.
+    //    The sentinel must be a value the floor does not already hold, or the read-back would pass
+    //    without anything having been written — so the step is checked, never wrapped.
+    let sentinel = seeded_min_burn
+        .checked_add(HANDOVER_MIN_BURN_STEP)
+        .context("the min-burn floor is too high to carry a distinct handover sentinel")?;
+    let note = min_burn_config_note(successor, d.faucet_id, sentinel, d.hc.client.rng())
+        .context("set_min_burn_size(successor sentinel) note")?;
+    let acct = d
+        .commit_via_ntx(
+            successor,
+            note,
+            "set_min_burn_size(successor sentinel)",
+            move |a| min_burn(a).map(|m| m == sentinel).unwrap_or(false),
+        )
         .await
-    {
-        Ok(_) => led.record(
-            "ADMIN-OWNER-ACCEPT",
-            "admin",
-            "accept_ownership (step 2) completes the 2-step transfer",
-            true,
-            format!("owner ← {new_owner_id}"),
-        ),
-        Err(e) => led.record(
-            "ADMIN-OWNER-ACCEPT",
-            "admin",
-            "accept_ownership (step 2) completes the 2-step transfer",
-            false,
-            format!("{e:#}"),
-        ),
-    }
+        .context("the successor's ADMIN-gated write")?;
+    led.record(
+        "SAN-HANDOVER-SUCCESSOR-WRITES",
+        "admin",
+        "the successor's ADMIN-gated setter COMMITS and reads back (capability, not membership)",
+        min_burn(&acct)? == sentinel,
+        format!("min_burn_size = {} (sentinel {sentinel})", min_burn(&acct)?),
+    );
 
-    // Ownership restore is the FINALLY phase's job — [`super::admin_restore::restore_faucet`] reads
-    // the ON-CHAIN owner as ground truth and undoes ANY move/nomination, so a failed or unobserved
-    // accept above cannot leave the faucet stranded on the ephemeral wallet.
+    // 3. PREDECESSOR LOCKOUT — the successor revokes the original, whose next ADMIN op then rejects.
+    set_admin_member(
+        d,
+        successor,
+        original,
+        false,
+        "revoke_role(ADMIN, original)",
+    )
+    .await
+    .context("revoking the original's ADMIN")?;
+    let acct = d.fetch_faucet().await?;
+    led.record(
+        "SAN-HANDOVER-REVOKE-PREDECESSOR",
+        "admin",
+        "the successor revokes the predecessor's ADMIN, and the successor still holds it",
+        !holds_admin(&acct, original)? && holds_admin(&acct, successor)?,
+        format!("ADMIN membership: successor {successor} only"),
+    );
+    let locked_out =
+        min_burn_config_note(original, d.faucet_id, seeded_min_burn, d.hc.client.rng())
+            .context("set_min_burn_size(locked-out predecessor) note")?;
+    let v = d.probe_consume(locked_out).await?;
+    record_rejection(
+        led,
+        "SAN-HANDOVER-PREDECESSOR-LOCKED-OUT",
+        "admin",
+        "the revoked predecessor's next ADMIN-gated op is REJECTED",
+        &v,
+        ERR_LACKS_ROLE,
+    );
+
+    // 4. HANDOVER BACK — grant BEFORE revoke, so ADMIN is never empty even between the two commits.
+    set_admin_member(
+        d,
+        successor,
+        original,
+        true,
+        "grant_role(ADMIN, original) (handover back)",
+    )
+    .await
+    .context("granting ADMIN back to the original")?;
+    set_admin_member(
+        d,
+        original,
+        successor,
+        false,
+        "revoke_role(ADMIN, successor)",
+    )
+    .await
+    .context("revoking the ephemeral successor's ADMIN")?;
+    let acct = d.fetch_faucet().await?;
+    led.record(
+        "SAN-HANDOVER-BACK",
+        "admin",
+        "ADMIN is back with the original alone, granted before the successor was revoked",
+        holds_admin(&acct, original)? && !holds_admin(&acct, successor)?,
+        format!("ADMIN membership: original {original} only"),
+    );
+
+    // The original proves its recovered capability the same way the successor proved its own: by
+    // moving the sentinel back to the value the handover started from.
+    let restore = min_burn_config_note(original, d.faucet_id, seeded_min_burn, d.hc.client.rng())
+        .context("set_min_burn_size(sentinel restore) note")?;
+    let acct = d
+        .commit_via_ntx(
+            original,
+            restore,
+            "set_min_burn_size(sentinel restore)",
+            move |a| min_burn(a).map(|m| m == seeded_min_burn).unwrap_or(false),
+        )
+        .await
+        .context("the original's post-handover ADMIN-gated write")?;
+    led.record(
+        "SAN-HANDOVER-ORIGINAL-WRITES",
+        "admin",
+        "the restored original's ADMIN-gated setter COMMITS and reads back the seeded value",
+        min_burn(&acct)? == seeded_min_burn,
+        format!("min_burn_size = {seeded_min_burn} (back to the pre-handover value)"),
+    );
+
+    let ejected = min_burn_config_note(successor, d.faucet_id, sentinel, d.hc.client.rng())
+        .context("set_min_burn_size(ejected successor) note")?;
+    let v = d.probe_consume(ejected).await?;
+    record_rejection(
+        led,
+        "SAN-HANDOVER-SUCCESSOR-LOCKED-OUT",
+        "admin",
+        "the revoked successor's next ADMIN-gated op is REJECTED",
+        &v,
+        ERR_LACKS_ROLE,
+    );
+
     Ok(())
 }

@@ -9,7 +9,7 @@
 //! test node. Targeting an ALREADY-deployed faucet (`--faucet-id`, LOCAL or DEVNET) runs ONLY the
 //! non-destructive fund-correctness subset (scale-0 mints, the attestation/replay/cap negatives, the
 //! burn arc) with the operator's allowlisted attester secret — it NEVER mutates the deployed faucet
-//! (no pause / policy change / ownership transfer). That subset is the INTENDED, COMPLETE devnet gate.
+//! (no pause / policy change). That subset is the INTENDED, COMPLETE devnet gate.
 //!
 //! ```text
 //! # LOCAL full gate — deploys a fresh faucet on the LOCAL node + runs admin; scans the node logs:
@@ -31,8 +31,7 @@ use anyhow::{bail, Context, Result};
 use miden_protocol::account::AccountId;
 use xusdc_validation::sanity::{is_loopback, render_sanity_record, run_sanity, SanityConfig};
 
-const DEFAULT_NODE_VERSION: &str =
-    "miden-node 0.16.0-alpha.2 (v16 start-test-node.sh cached binaries)";
+const DEFAULT_NODE_VERSION: &str = "miden-node v16 (start-test-node.sh cached binaries)";
 const DEFAULT_RPC_URL: &str = "http://127.0.0.1:57291";
 /// Where `start-test-node.sh` writes the v16 node's service logs (override with `MIDEN_V16_NODE_DIR`
 /// or `--node-log-dir`). Only used for the LOCAL clean-log gate.

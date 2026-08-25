@@ -2,143 +2,138 @@
 //!
 //! [`restore_faucet`] runs after the admin CHECKS in ALL cases (see `admin::admin_suite`) — even
 //! when a check errored mid-suite — so a caller-supplied faucet is never left paused,
-//! attester-disabled, policy-mutated, or owned by the ephemeral wallet. Split out of `admin.rs` to
-//! keep both files within the G3 file-size ceiling.
+//! attester-disabled, policy-mutated, or with `ADMIN` held by SAN-HANDOVER's ephemeral successor.
+//! Split out of `admin.rs` to keep both files within the G3 file-size ceiling.
 
 use anyhow::{Context, Result};
 use miden_protocol::account::AccountId;
-
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveAcceptOwnershipNote, XReserveTransferOwnershipNote, XReserveUnpauseNote,
-};
+use miden_standards::note::PauseConfig;
 
 use crate::actors::{Actors, AttesterKey};
 
-use super::admin::{max_supply_config_note, min_burn_config_note, set_attester_enabled};
+use super::admin::{
+    max_supply_config_note, min_burn_config_note, pause_config_note, set_admin_member,
+    set_attester_enabled,
+};
 use super::driver::{
-    attester_marker, is_paused, is_zero_word, max_supply, min_burn, owner_config, token_supply,
+    attester_marker, holds_admin, is_paused, is_zero_word, max_supply, min_burn, token_supply,
     SanityDriver,
 };
 use super::Ledger;
 
-/// What the finally-phase restore must do about ownership — decided PURELY from the ON-CHAIN owner +
-/// nominee (ground truth) versus the run's original owner + ephemeral wallet. Total (every state maps
-/// to a defined action) so an accept-path failure — the ephemeral wallet unexpectedly OWNS the faucet
-/// (a committed-but-unobserved accept), or is left NOMINATED (step-1 committed, accept never
-/// completed) — is always detected and undone. Unit-tested without a node.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OwnershipRestore {
-    /// The original owner still owns and nothing is nominated toward the ephemeral wallet.
-    None,
-    /// The ephemeral wallet OWNS the faucet — transfer it back to the original owner.
-    TransferBack,
-    /// The original owner still owns, but the ephemeral wallet is NOMINATED — cancel that nomination.
-    CancelNomination,
-    /// Owned by neither the original owner nor the ephemeral wallet — cannot restore.
-    UnexpectedOwner(AccountId),
+/// The on-chain `ADMIN` membership of the two accounts SAN-HANDOVER moves the role between. This is
+/// the whole ground truth the finally-phase restore plans from: `ADMIN` is the account's sole
+/// authority handle, membership in it is binary, and there is no nomination step, so two booleans
+/// describe every state the handover can be interrupted in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AdminMembership {
+    /// Whether the run's ORIGINAL administrator still holds `ADMIN`.
+    pub(crate) original: bool,
+    /// Whether the EPHEMERAL successor holds `ADMIN`.
+    pub(crate) ephemeral: bool,
 }
 
-/// Pure ownership-restore decision from ground truth (see [`OwnershipRestore`]).
-pub(crate) fn plan_ownership_restore(
-    cur_owner: AccountId,
-    nominated: Option<AccountId>,
-    orig_owner: AccountId,
-    ephemeral: AccountId,
-) -> OwnershipRestore {
-    if cur_owner == ephemeral {
-        OwnershipRestore::TransferBack
-    } else if cur_owner == orig_owner {
-        if nominated == Some(ephemeral) {
-            OwnershipRestore::CancelNomination
-        } else {
-            OwnershipRestore::None
-        }
-    } else {
-        OwnershipRestore::UnexpectedOwner(cur_owner)
+/// What the finally-phase restore must do about `ADMIN`, decided PURELY from [`AdminMembership`].
+/// Total — every one of the four ground-truth states maps to a defined action — so a handover
+/// interrupted at any step is detected and undone. Unit-tested without a node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AdminRestore {
+    /// The original holds `ADMIN` and the ephemeral successor does not.
+    None,
+    /// Only the successor holds `ADMIN`: grant the original back FIRST, then revoke the successor —
+    /// the reverse order would empty `ADMIN`, which is permanent.
+    GrantOriginalThenRevokeEphemeral,
+    /// Both hold `ADMIN` (the handover committed its grant but not its revoke): revoke the successor.
+    RevokeEphemeral,
+    /// NEITHER holds `ADMIN`. The role has left the pair this run controls, so there is no
+    /// ADMIN-capable sender left to restore with — the membership is carried so the surfaced row
+    /// names the state that was observed.
+    Unexpected(AdminMembership),
+}
+
+/// Pure `ADMIN`-restore decision from ground truth (see [`AdminRestore`]).
+pub(crate) fn plan_admin_restore(membership: AdminMembership) -> AdminRestore {
+    match (membership.original, membership.ephemeral) {
+        (true, false) => AdminRestore::None,
+        (false, true) => AdminRestore::GrantOriginalThenRevokeEphemeral,
+        (true, true) => AdminRestore::RevokeEphemeral,
+        (false, false) => AdminRestore::Unexpected(membership),
     }
 }
 
-/// How many refetch→plan→act cycles the ownership reconcile will attempt before giving up. Each cycle
-/// re-observes fresh ON-CHAIN ground truth, so an accept that commits AFTER an earlier observation
-/// (racing a `CancelNomination` into a `TransferBack`) is caught and re-planned on the next cycle.
-/// Bounded so a persistently-failing action can never loop forever (2 actions is the deepest legit
-/// path — a failed cancel followed by a transfer-back — so 4 leaves headroom for transient RPC errors).
-pub(crate) const MAX_OWNERSHIP_RECONCILE_ATTEMPTS: usize = 4;
+/// How many refetch→plan→act cycles the `ADMIN` reconcile will attempt before giving up. Each cycle
+/// re-observes fresh ON-CHAIN ground truth, so a grant or revoke that commits AFTER an earlier
+/// observation is caught and re-planned on the next cycle. Bounded so a persistently-failing action
+/// can never loop forever (2 actions is the deepest legit path — a grant followed by a revoke — so 4
+/// leaves headroom for transient RPC errors).
+pub(crate) const MAX_ADMIN_RECONCILE_ATTEMPTS: usize = 4;
 
-/// The node interactions the ownership reconcile loop needs, abstracted BEHIND A TRAIT so the bounded
-/// refetch→plan→act loop can be driven by a scripted fake (no node) — including the post-snapshot
-/// accept race a single snapshot cannot catch (the round-8 gap). The production impl is
-/// [`DriverOwnershipOps`]; the test fakes live in `sanity::tests`.
-pub(crate) trait OwnershipOps {
-    /// The current on-chain `(owner, nominated)` ground truth.
-    async fn observe(&mut self) -> Result<(AccountId, Option<AccountId>)>;
-    /// Transfer ownership from the ephemeral wallet back to the original owner (+ accept it).
-    async fn transfer_back(&mut self) -> Result<()>;
-    /// Cancel a dangling ephemeral nomination (re-nominate the current owner to itself).
-    async fn cancel_nomination(&mut self) -> Result<()>;
+/// The node interactions the `ADMIN` reconcile loop needs, abstracted BEHIND A TRAIT so the bounded
+/// refetch→plan→act loop can be driven by a scripted fake (no node) — including the states a single
+/// snapshot cannot catch, where an action commits but its result is never observed. The production
+/// impl is [`DriverAdminOps`]; the test fakes live in `sanity::tests`.
+pub(crate) trait AdminOps {
+    /// The current on-chain `ADMIN` membership of the two accounts.
+    async fn observe(&mut self) -> Result<AdminMembership>;
+    /// Grant `ADMIN` back to the original administrator (sent by the successor, which holds it).
+    async fn grant_original(&mut self) -> Result<()>;
+    /// Revoke the ephemeral successor's `ADMIN` (sent by the original, which holds it).
+    async fn revoke_ephemeral(&mut self) -> Result<()>;
 }
 
-/// The terminal result of the bounded ownership reconcile loop (see [`reconcile_ownership`]).
+/// The terminal result of the bounded `ADMIN` reconcile loop (see [`reconcile_admin`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OwnershipOutcome {
-    /// The original owner owns and nothing is nominated toward the ephemeral wallet.
+pub(crate) enum AdminOutcome {
+    /// The original holds `ADMIN` and the ephemeral successor does not.
     Restored,
-    /// Owned by an account that is neither the original owner nor the ephemeral wallet.
-    UnexpectedOwner(AccountId),
-    /// The reconcile budget was exhausted with the ephemeral wallet still owning/nominated.
-    Unresolved(OwnershipRestore),
-    /// A read (`observe`) failed, so the final ownership state could not be verified.
+    /// Neither account holds `ADMIN` — nothing this run controls can restore it.
+    Unexpected(AdminMembership),
+    /// The reconcile budget was exhausted with the successor still holding `ADMIN`.
+    Unresolved(AdminRestore),
+    /// A read (`observe`) failed, so the final membership could not be verified.
     ObserveFailed(String),
 }
 
-/// Reconciles ownership to the ORIGINAL owner in a BOUNDED refetch→plan→act→verify loop. Each cycle
-/// re-observes fresh ground truth and re-plans, so a committed-but-unobserved accept — even one that
-/// races an in-flight `CancelNomination` (the cancel then fails UNAUTHORIZED because the ephemeral
-/// wallet already owns) — is observed on the next cycle and undone via `TransferBack`, instead of the
-/// round-8 behaviour that recorded the single failed action and stopped. Human-readable action steps
-/// accumulate in `trace`. Returns the terminal [`OwnershipOutcome`]; the caller records the ledger row.
-pub(crate) async fn reconcile_ownership<O: OwnershipOps>(
+/// Reconciles `ADMIN` back to the ORIGINAL administrator in a BOUNDED refetch→plan→act→verify loop.
+/// Each cycle re-observes fresh ground truth and re-plans, so an action that committed but whose
+/// result the client never saw is observed on the next cycle instead of being recorded as a failure
+/// and abandoned. The two-action state acts on the GRANT only and lets the next cycle plan the
+/// revoke, which is what keeps `ADMIN` from ever being emptied. Human-readable action steps
+/// accumulate in `trace`; the caller records the ledger row from the terminal outcome.
+pub(crate) async fn reconcile_admin<O: AdminOps>(
     ops: &mut O,
-    orig_owner: AccountId,
-    ephemeral: AccountId,
     trace: &mut Vec<String>,
-) -> OwnershipOutcome {
-    for attempt in 0..=MAX_OWNERSHIP_RECONCILE_ATTEMPTS {
-        let (cur_owner, nominated) = match ops.observe().await {
-            Ok(v) => v,
-            Err(e) => return OwnershipOutcome::ObserveFailed(format!("{e:#}")),
+) -> AdminOutcome {
+    for attempt in 0..=MAX_ADMIN_RECONCILE_ATTEMPTS {
+        let membership = match ops.observe().await {
+            Ok(m) => m,
+            Err(e) => return AdminOutcome::ObserveFailed(format!("{e:#}")),
         };
-        let (label, res) = match plan_ownership_restore(cur_owner, nominated, orig_owner, ephemeral)
+        let plan = plan_admin_restore(membership);
+        // The final cycle is a pure VERIFY: no action budget is left, so a successor that still
+        // holds ADMIN is surfaced as Unresolved rather than silently passed.
+        if attempt == MAX_ADMIN_RECONCILE_ATTEMPTS
+            && !matches!(plan, AdminRestore::None | AdminRestore::Unexpected(_))
         {
-            OwnershipRestore::None => return OwnershipOutcome::Restored,
-            OwnershipRestore::UnexpectedOwner(other) => {
-                return OwnershipOutcome::UnexpectedOwner(other)
-            }
-            OwnershipRestore::TransferBack => {
-                // The final cycle (attempt == MAX) is a pure VERIFY: no action budget left, so an
-                // ephemeral wallet still owning is surfaced as Unresolved rather than silently passed.
-                if attempt == MAX_OWNERSHIP_RECONCILE_ATTEMPTS {
-                    return OwnershipOutcome::Unresolved(OwnershipRestore::TransferBack);
-                }
-                (
-                    "transfer-back from the ephemeral wallet",
-                    ops.transfer_back().await,
-                )
-            }
-            OwnershipRestore::CancelNomination => {
-                if attempt == MAX_OWNERSHIP_RECONCILE_ATTEMPTS {
-                    return OwnershipOutcome::Unresolved(OwnershipRestore::CancelNomination);
-                }
-                (
-                    "cancel a dangling ephemeral nomination",
-                    ops.cancel_nomination().await,
-                )
-            }
+            return AdminOutcome::Unresolved(plan);
+        }
+        let (label, res) = match plan {
+            AdminRestore::None => return AdminOutcome::Restored,
+            AdminRestore::Unexpected(m) => return AdminOutcome::Unexpected(m),
+            AdminRestore::GrantOriginalThenRevokeEphemeral => (
+                "grant ADMIN back to the original",
+                ops.grant_original().await,
+            ),
+            AdminRestore::RevokeEphemeral => (
+                "revoke the ephemeral successor's ADMIN",
+                ops.revoke_ephemeral().await,
+            ),
         };
         match res {
             Ok(()) => trace.push(format!("{label}: committed")),
-            // A committed accept can make this action STALE (e.g. a cancel sent by the no-longer-owner)
-            // — record the failed attempt and let the NEXT cycle observe fresh truth + re-plan.
+            // An action can be STALE by the time it lands (its effect already committed, or the
+            // sender no longer holds ADMIN) — record the attempt and let the NEXT cycle observe
+            // fresh truth and re-plan.
             Err(e) => trace.push(format!("{label}: attempt failed ({e:#}) — re-observing")),
         }
     }
@@ -147,37 +142,53 @@ pub(crate) async fn reconcile_ownership<O: OwnershipOps>(
     unreachable!("the bounded reconcile loop returns within its attempt budget")
 }
 
-/// The production [`OwnershipOps`]: drives the real node via the [`SanityDriver`]. `transfer_back` /
-/// `cancel_nomination` only run when the loop's plan says so — `TransferBack` only when the ephemeral
-/// wallet OWNS (so the transfer's sender is the ephemeral wallet), `CancelNomination` only when the
-/// original owner owns (so the cancel's sender is that owner).
-struct DriverOwnershipOps<'a> {
+/// The production [`AdminOps`]: drives the real node via the [`SanityDriver`]. Each action's SENDER
+/// is the account that holds `ADMIN` in the state its plan is reached from — the successor grants
+/// (it is the sole holder there), the original revokes (it holds it again by then).
+struct DriverAdminOps<'a> {
     d: &'a mut SanityDriver,
-    orig_owner: AccountId,
+    original: AccountId,
     ephemeral: AccountId,
 }
 
-impl OwnershipOps for DriverOwnershipOps<'_> {
-    async fn observe(&mut self) -> Result<(AccountId, Option<AccountId>)> {
+impl AdminOps for DriverAdminOps<'_> {
+    async fn observe(&mut self) -> Result<AdminMembership> {
         let acct = self.d.fetch_faucet().await?;
-        owner_config(&acct)
+        Ok(AdminMembership {
+            original: holds_admin(&acct, self.original)?,
+            ephemeral: holds_admin(&acct, self.ephemeral)?,
+        })
     }
-    async fn transfer_back(&mut self) -> Result<()> {
-        restore_ownership(self.d, self.ephemeral, self.orig_owner).await
+    async fn grant_original(&mut self) -> Result<()> {
+        set_admin_member(
+            self.d,
+            self.ephemeral,
+            self.original,
+            true,
+            "grant_role(ADMIN, original) (restore)",
+        )
+        .await
     }
-    async fn cancel_nomination(&mut self) -> Result<()> {
-        cancel_nomination(self.d, self.orig_owner).await
+    async fn revoke_ephemeral(&mut self) -> Result<()> {
+        set_admin_member(
+            self.d,
+            self.original,
+            self.ephemeral,
+            false,
+            "revoke_role(ADMIN, successor) (restore)",
+        )
+        .await
     }
 }
 
-/// Cleanup after the admin checks: restores the faucet to its pre-suite owner + policy (unpaused,
-/// mint attester allowlisted, `min_burn_size` + `max_supply` back to the snapshot) so a caller-
-/// supplied faucet is NEVER left paused, attester-disabled, policy-mutated, or owned/nominated by the
-/// ephemeral wallet — and it runs EVEN WHEN an admin check errored mid-suite. Ownership is driven by
-/// the ON-CHAIN owner (ground truth, not a client-side flag), then restored FIRST because the policy
-/// setters are administrator-gated. Every step acts only when a restore is actually needed (idempotent);
-/// failures are RECORDED as surfaced findings, never propagated (`admin_suite` returns the ORIGINAL
-/// error, if any).
+/// Cleanup after the admin checks: restores the faucet to its pre-suite `ADMIN` membership and
+/// policy (unpaused, mint attester allowlisted, `min_burn_size` + `max_supply` back to the snapshot)
+/// so a caller-supplied faucet is NEVER left paused, attester-disabled, policy-mutated, or with
+/// `ADMIN` held by the ephemeral successor — and it runs EVEN WHEN an admin check errored mid-suite.
+/// `ADMIN` is reconciled FIRST because the policy setters are ADMIN-gated. Every target is read from
+/// the live faucet (ground truth, not a client-side flag) and every step acts only when a restore is
+/// actually needed (idempotent); failures are RECORDED as surfaced findings, never propagated
+/// (`admin_suite` returns the ORIGINAL error, if any).
 pub(super) async fn restore_faucet(
     d: &mut SanityDriver,
     led: &mut Ledger,
@@ -188,25 +199,23 @@ pub(super) async fn restore_faucet(
 ) {
     let owner_id = actors.owner.id();
     let pauser_id = actors.pauser.id();
-    let ephemeral_id = actors.new_pauser.id();
+    let successor_id = actors.new_pauser.id();
 
-    // 1. OWNERSHIP — from ON-CHAIN ground truth, FIRST (policy setters are ADMIN-gated). A BOUNDED
-    //    refetch→plan→act→verify loop reconciles against fresh truth each cycle, so an accept that
-    //    committed but the client never observed (Err ≠ not-consumed), a dangling step-1 nomination, OR
-    //    an accept that RACES an in-flight cancel is detected and undone — none of which a client-side
-    //    boolean or a single snapshot could capture.
-    restore_ownership_to_original(d, led, owner_id, ephemeral_id).await;
+    // 1. ADMIN — from ON-CHAIN ground truth, FIRST (the policy setters are ADMIN-gated). A BOUNDED
+    //    refetch→plan→act→verify loop reconciles against fresh truth each cycle, so a SAN-HANDOVER
+    //    interrupted at any step — grant committed but revoke not, revoke committed but the client
+    //    never saw it — is detected and undone, which no client-side flag or single snapshot could do.
+    restore_admin_to_original(d, led, owner_id, successor_id).await;
 
-    // 2. POLICY — read the live faucet AFTER ownership has settled: ground truth for is_paused / min /
-    //    max / supply. Read ONCE here (ownership ops do not touch those slots, and each policy setter
-    //    below verifies its own read-back).
+    // 2. POLICY — read the live faucet once: ground truth for is_paused / min / max / supply. Each
+    //    policy setter below verifies its own read-back.
     let acct = match d.fetch_faucet().await {
         Ok(a) => a,
         Err(e) => {
             led.record(
                 "ADMIN-RESTORE",
                 "admin",
-                "faucet restored to the pre-run owner + policy",
+                "faucet restored to the pre-run policy",
                 false,
                 format!("RESTORE FAILED — could not read the faucet: {e:#}"),
             );
@@ -217,7 +226,7 @@ pub(super) async fn restore_faucet(
     let mut actions: Vec<String> = Vec::new();
     let mut ok = true;
 
-    // UNPAUSE if paused (DOM_PAUSER gated — independent of ownership).
+    // UNPAUSE if paused (DOM_PAUSER gated).
     if is_paused(&acct).unwrap_or(false) {
         match restore_unpause(d, pauser_id).await {
             Ok(()) => actions.push("unpaused".into()),
@@ -298,26 +307,26 @@ pub(super) async fn restore_faucet(
     );
 }
 
-/// Restores ownership to the ORIGINAL owner from ON-CHAIN ground truth via the bounded reconcile loop
-/// ([`reconcile_ownership`]), recording ONE ADMIN-OWNER-RESTORE row from the terminal outcome. Handles
-/// every accept-path-failure state: the ephemeral wallet unexpectedly OWNS (transfer back), is merely
-/// NOMINATED (cancel), an accept that RACES the cancel (re-observed + transferred back), or an
-/// unexpected owner (surfaced as a failure).
-async fn restore_ownership_to_original(
+/// Restores `ADMIN` to the ORIGINAL administrator from ON-CHAIN ground truth via the bounded
+/// reconcile loop ([`reconcile_admin`]), recording ONE SAN-HANDOVER-RESTORE row from the terminal
+/// outcome. Handles every state a handover can be interrupted in: the successor still sole holder
+/// (grant back, then revoke), both holding (revoke the successor), neither holding (surfaced as a
+/// failure — there is no ADMIN-capable sender left).
+async fn restore_admin_to_original(
     d: &mut SanityDriver,
     led: &mut Ledger,
-    orig_owner: AccountId,
+    original: AccountId,
     ephemeral: AccountId,
 ) {
-    let what = "ownership restored to the ORIGINAL owner (the ephemeral wallet retains no control)";
+    let what = "ADMIN restored to the ORIGINAL administrator (the ephemeral successor holds none)";
     let mut trace: Vec<String> = Vec::new();
     let outcome = {
-        let mut ops = DriverOwnershipOps {
+        let mut ops = DriverAdminOps {
             d,
-            orig_owner,
+            original,
             ephemeral,
         };
-        reconcile_ownership(&mut ops, orig_owner, ephemeral, &mut trace).await
+        reconcile_admin(&mut ops, &mut trace).await
     };
     let steps = if trace.is_empty() {
         String::new()
@@ -325,87 +334,51 @@ async fn restore_ownership_to_original(
         format!(" [{}]", trace.join("; "))
     };
     match outcome {
-        OwnershipOutcome::Restored => led.record(
-            "ADMIN-OWNER-RESTORE",
+        AdminOutcome::Restored => led.record(
+            "SAN-HANDOVER-RESTORE",
             "admin",
             what,
             true,
-            format!("owner = {orig_owner}; the ephemeral wallet retains no control{steps}"),
+            format!("ADMIN = {original}; the ephemeral successor holds none{steps}"),
         ),
-        OwnershipOutcome::UnexpectedOwner(other) => led.record(
-            "ADMIN-OWNER-RESTORE",
+        AdminOutcome::Unexpected(m) => led.record(
+            "SAN-HANDOVER-RESTORE",
             "admin",
             what,
             false,
             format!(
-                "faucet owned by an UNEXPECTED account {other} (neither the original owner nor the \
-                 ephemeral wallet) — cannot restore{steps}"
+                "NEITHER the original nor the ephemeral successor holds ADMIN ({m:?}) — no \
+                 ADMIN-capable sender is left to restore with{steps}"
             ),
         ),
-        OwnershipOutcome::Unresolved(remaining) => led.record(
-            "ADMIN-OWNER-RESTORE",
+        AdminOutcome::Unresolved(remaining) => led.record(
+            "SAN-HANDOVER-RESTORE",
             "admin",
             what,
             false,
             format!(
-                "RESTORE UNRESOLVED after {MAX_OWNERSHIP_RECONCILE_ATTEMPTS} reconcile attempts — \
-                 still needs {remaining:?}; the ephemeral wallet may retain control{steps}"
+                "RESTORE UNRESOLVED after {MAX_ADMIN_RECONCILE_ATTEMPTS} reconcile attempts — still \
+                 needs {remaining:?}; the ephemeral successor may retain ADMIN{steps}"
             ),
         ),
-        OwnershipOutcome::ObserveFailed(e) => led.record(
-            "ADMIN-OWNER-RESTORE",
+        AdminOutcome::ObserveFailed(e) => led.record(
+            "SAN-HANDOVER-RESTORE",
             "admin",
             what,
             false,
-            format!("RESTORE UNVERIFIED — could not read the on-chain owner: {e}{steps}"),
+            format!("RESTORE UNVERIFIED — could not read the on-chain ADMIN membership: {e}{steps}"),
         ),
     }
 }
 
-/// Cancels a dangling ownership nomination by re-nominating the current owner to itself (the stock
-/// ownable2step cancel path), so a previously-nominated ephemeral wallet can never accept later.
-async fn cancel_nomination(d: &mut SanityDriver, owner_id: AccountId) -> Result<()> {
-    let note =
-        XReserveTransferOwnershipNote::create(owner_id, d.faucet_id, owner_id, d.hc.client.rng())
-            .context("transfer_ownership (cancel nomination) note")?;
-    d.commit_via_ntx_consumed(
-        owner_id,
-        note,
-        "transfer_ownership (cancel dangling nomination)",
-    )
-    .await
-    .context("committing the nomination cancel")?;
-    Ok(())
-}
-
-/// Transfers ownership from `from_id` back to `to_id` and accepts it (the 2-step restore).
-async fn restore_ownership(
-    d: &mut SanityDriver,
-    from_id: AccountId,
-    to_id: AccountId,
-) -> Result<()> {
-    let back =
-        XReserveTransferOwnershipNote::create(from_id, d.faucet_id, to_id, d.hc.client.rng())
-            .context("transfer_ownership (restore) note")?;
-    d.commit_via_ntx_consumed(
-        from_id,
-        back,
-        "transfer_ownership (restore to original owner)",
-    )
-    .await
-    .context("committing the ownership restore transfer")?;
-    let accept = XReserveAcceptOwnershipNote::create(to_id, d.faucet_id, d.hc.client.rng())
-        .context("accept_ownership (restore) note")?;
-    d.commit_via_ntx_consumed(to_id, accept, "accept_ownership (restore)")
-        .await
-        .context("accepting the ownership restore")?;
-    Ok(())
-}
-
 /// Unpauses the faucet (DOM_PAUSER), waiting for `is_paused` to clear.
 async fn restore_unpause(d: &mut SanityDriver, pauser_id: AccountId) -> Result<()> {
-    let note = XReserveUnpauseNote::create(pauser_id, d.faucet_id, d.hc.client.rng())
-        .context("unpause note (restore)")?;
+    let note = pause_config_note(
+        pauser_id,
+        d.faucet_id,
+        PauseConfig::Unpause,
+        d.hc.client.rng(),
+    )?;
     d.commit_via_ntx(pauser_id, note, "unpause (restore)", |a| {
         is_paused(a).map(|p| !p).unwrap_or(false)
     })

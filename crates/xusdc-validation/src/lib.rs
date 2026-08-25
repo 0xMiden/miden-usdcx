@@ -6,21 +6,21 @@
 //! outcomes — it never modifies production faucet code (validator-not-fixer), and a failing
 //! assertion here is a surfaced production finding, not something to patch around.
 //!
-//! This slice (LNV-1) owns the harness foundation plus matrix rows A (deploy + recognize) and
-//! B (`identifier_init` init-once).
+//! This slice (LNV-1) owns the harness foundation plus matrix row A (deploy + recognize).
 //!
 //! ## Architecture
-//! - [`stack`] — lifecycle of the three-service local node stack at `miden-node v0.15.1`
-//!   (validator + ntx-builder + sequencer, plus the remote tx prover the ntx-builder requires),
-//!   including the local isolated genesis (`bootstrap --file`, never `--network`).
-//! - [`actors`] — local test identities: the five keyed wallets (owner / DOM_PAUSER / DOM_MANAGER
-//!   holders / recipient / holder) and a locally generated secp256k1 attester (NEVER Circle keys).
-//! - [`client`] — the `miden-client 0.16.0-alpha.1` assembly (gRPC + SQLite store + filesystem
-//!   keystore) used for path-C (client-side build+prove+submit) execution.
+//! - [`stack`] — lifecycle of the four-service v16 local node stack (validator + sequencer +
+//!   ntx-builder + the remote tx prover the ntx-builder requires), brought up from the client
+//!   repo's own `start-test-node.sh` against a fresh isolated genesis.
+//! - [`actors`] — local test identities: the keyed wallets (owner / DOM_PAUSER / DOM_MANAGER /
+//!   BLK_MANAGER holders / recipient / holder) and a locally generated secp256k1 attester (NEVER
+//!   Circle keys).
+//! - [`client`] — the `miden-client` assembly (gRPC + SQLite store + filesystem keystore) used for
+//!   path-C (client-side build+prove+submit) execution.
 //! - [`deploy`] — the production faucet composition (the `XReserveStablecoinBuilder` output under
-//!   the frozen `AuthNetworkAccount` allowlist) and the deploy/identifier_init drivers.
-//! - [`rows_ab`] — the row-A/B driver: runs the full flow and returns [`RowsAbObservations`].
-//! - [`assertions`] — the row-A/B assertion suite over those observations (written FIRST,
+//!   the frozen `AuthNetworkAccount` allowlist) and the deploy driver.
+//! - [`rows_ab`] — the row-A driver: runs the full flow and returns [`RowsAbObservations`].
+//! - [`assertions`] — the row-A assertion suite over those observations (written FIRST,
 //!   test-first; the drivers exist to feed them).
 //! - [`evidence`] — the machine-readable run evidence (JSON) + node-log archival manifest.
 

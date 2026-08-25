@@ -12,8 +12,8 @@
 //!    always-failing suite). The record tests pin the HUMAN-GATE invariant: the generated
 //!    VALIDATION RECORD never self-declares the acceptance gate passed — the per-row results are
 //!    machine verdicts; the GATE verdict is a human decision.
-//! 2. **The real-node E2E** (`lnv5_full_matrix_against_real_local_node`): boots ONE fresh local
-//!    v0.15.1 stack and drives the WHOLE A–L matrix on it (the LNV-1..4 drivers composed in order
+//! 2. **The real-node E2E** (`lnv5_full_matrix_against_real_local_node`): boots ONE fresh local v16
+//!    stack and drives the WHOLE matrix on it (the LNV-1..4 drivers composed in order
 //!    on the same node, then rows K + L derived from that single run). `#[ignore]`d in the default
 //!    suite because it must bind loopback listener sockets (denied in hermetic audit sandboxes);
 //!    run it with `-- --include-ignored` or the `lnv5_full_matrix` binary. The full-matrix acceptance-gate claim
@@ -25,23 +25,20 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use miden_protocol::account::{
     Account, AccountBuilder, AccountId, AccountIdVersion, AccountType, AssetCallbackFlag,
-    StorageSlotName,
 };
+use miden_protocol::block::FeeParameters;
 use tempfile::TempDir;
-use xusdc_encoding::account::xreserve::{XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL};
-use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
-use xusdc_validation::assertions::ERR_IDENTIFIER_REINIT_TEXT;
-use xusdc_validation::assertions_cf::{ERR_LACKS_ROLE, ERR_NOT_OWNER};
+use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
+use xusdc_validation::assertions_cf::{ERR_LACKS_ROLE, SENDER_NON_ADMIN, SENDER_NON_DOM_PAUSER};
 use xusdc_validation::assertions_de::{
-    ERR_XRESERVE_DISALLOWED_PUB_KEY, ERR_XRESERVE_FEE_NONZERO, ERR_XRESERVE_NONCE_REPLAY,
-    ERR_XRESERVE_SIG_INVALID,
+    ERR_XRESERVE_DISALLOWED_PUB_KEY, ERR_XRESERVE_NONCE_REPLAY, ERR_XRESERVE_SIG_INVALID,
 };
 use xusdc_validation::assertions_gj::{
     ERR_BURN_BELOW_MIN, ERR_PAUSED, ERR_WRONG_ASSET_ORIGIN, FIXED_XUSDC_BURN_TAG,
 };
 use xusdc_validation::assertions_kl::{assert_k, assert_l};
 use xusdc_validation::config::{DomainParams, RunConfig};
-use xusdc_validation::deploy::{build_xreserve_component_seeded, production_components};
+use xusdc_validation::deploy::production_components;
 use xusdc_validation::observations::RowsAbObservations;
 use xusdc_validation::observations_cf::{
     AdminGateReject, C1SetAttester, C2MinBurn, C3MaxSupply, C4Pause, C5RoleRotation, RowF,
@@ -729,7 +726,7 @@ fn green_cf() -> RowsCfObservations {
         c2: C2MinBurn {
             raised_min: 50,
             committed_after_raise: 50,
-            burn_below_raised: rej("... amount to be burned must exceed specified minimum burn amount ..."),
+            burn_below_raised: rej("... amount to be burned must meet or exceed specified minimum burn amount ..."),
             lowered_min: 10,
             committed_after_lower: 10,
             burn_at_lowered: Verdict::Accepted,
@@ -758,21 +755,21 @@ fn green_cf() -> RowsCfObservations {
         c6: vec![
             AdminGateReject {
                 op: "set_attester".to_string(),
-                sender: "non-owner".to_string(),
-                expected_gate: ERR_NOT_OWNER.to_string(),
-                verdict: rej("trap: note sender is not the owner"),
+                sender: SENDER_NON_ADMIN.to_string(),
+                expected_gate: ERR_LACKS_ROLE.to_string(),
+                verdict: rej("trap: note sender does not hold the required role"),
                 note_unconsumed: true,
             },
             AdminGateReject {
                 op: "set_max_supply".to_string(),
-                sender: "non-owner".to_string(),
-                expected_gate: ERR_NOT_OWNER.to_string(),
-                verdict: rej("trap: note sender is not the owner"),
+                sender: SENDER_NON_ADMIN.to_string(),
+                expected_gate: ERR_LACKS_ROLE.to_string(),
+                verdict: rej("trap: note sender does not hold the required role"),
                 note_unconsumed: true,
             },
             AdminGateReject {
                 op: "pause".to_string(),
-                sender: "non-DOM_PAUSER".to_string(),
+                sender: SENDER_NON_DOM_PAUSER.to_string(),
                 expected_gate: ERR_LACKS_ROLE.to_string(),
                 verdict: rej("trap: note sender does not hold the required role"),
                 note_unconsumed: true,
@@ -861,7 +858,7 @@ fn green_de() -> RowsDeObservations {
             neg(
                 "forged-signature",
                 ERR_XRESERVE_SIG_INVALID,
-                "... deposit attestation signature verification failed ...",
+                "... ECDSA verification failed: x(VERIFY_POINT) != SIG_R ...",
                 false,
             ),
             neg(
@@ -871,15 +868,15 @@ fn green_de() -> RowsDeObservations {
                 false,
             ),
             neg(
-                "nonzero-fee",
-                ERR_XRESERVE_FEE_NONZERO,
-                "... mint fee amount must be zero ...",
+                "tampered-payload",
+                ERR_XRESERVE_SIG_INVALID,
+                "... ECDSA verification failed: x(VERIFY_POINT) != SIG_R ...",
                 false,
             ),
             neg(
-                "tampered-payload",
+                "tampered-max-fee-ceiling",
                 ERR_XRESERVE_SIG_INVALID,
-                "... deposit attestation signature verification failed ...",
+                "... ECDSA verification failed: x(VERIFY_POINT) != SIG_R ...",
                 false,
             ),
         ],
@@ -939,7 +936,7 @@ fn green_gj() -> RowsGjObservations {
                 label: "below-min".to_string(),
                 expected_error: ERR_BURN_BELOW_MIN.to_string(),
                 verdict: rej(
-                    "... amount to be burned must exceed specified minimum burn amount ...",
+                    "... amount to be burned must meet or exceed specified minimum burn amount ...",
                 ),
                 supply_before: 100,
                 supply_after: 100,
@@ -1074,40 +1071,37 @@ fn wallet_id(seed: u8) -> AccountId {
     )
 }
 
-/// A production-shaped deployed faucet `Account` in the post-`identifier_init` shape: the three
-/// build-seeded fields supplied to the recomposed builder, and the identifier the OWN-ID fixpoint
-/// key `identifier_for(faucet_id)` written POST-BUILD. The identifier ships EMPTY at composition (the
-/// builder REJECTS a build-seeded identifier — the DEC-4 account-id fixpoint can never be
-/// build-seeded), so the id is fixed by the empty-identifier build, then the own-id key is written
-/// into the (immutable-id) account — the faithful twin of the post-deploy `identifier_init` write.
+/// Fee parameters for the synthetic fixtures. A real run reads these from the chain it deploys to;
+/// the matrix assertions do not read the fee schedule, only the composition around it.
+fn fee_parameters() -> FeeParameters {
+    FeeParameters::new(wallet_id(5), 0)
+}
+
+/// A production-shaped deployed faucet `Account`: the four build-seeded domain-config fields
+/// supplied to the builder, composed into an EXISTING (nonce-1) account — the shape a real deploy
+/// leaves behind.
 fn synthetic_deployed_faucet(domain: &DomainParams) -> Result<Account> {
-    let xreserve = build_xreserve_component_seeded(None)?;
     let components = production_components(
-        xreserve,
         wallet_id(1),
         wallet_id(2),
         wallet_id(3),
         wallet_id(4),
         MAX_SUPPLY,
         domain,
+        fee_parameters(),
     )?;
-    let auth = XReserveStablecoinBuilder::auth_component()?;
-    let mut account = AccountBuilder::new([7u8; 32])
+    let auth = XReserveStablecoinBuilder::auth_component(fee_parameters())?;
+    Ok(AccountBuilder::new([7u8; 32])
         .account_type(AccountType::Public)
         .with_asset_callbacks(AssetCallbackFlag::Enabled)
-        .with_auth_component(auth)
+        .with_components(auth)
         .with_components(components)
-        .build_existing()?;
-    let slot = StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)?;
-    let key = XReserveIdentifierInitNote::identifier_for(account.id());
-    account.storage_mut().set_item(&slot, key)?;
-    Ok(account)
+        .build_existing()?)
 }
 
 fn green_ab() -> Result<RowsAbObservations> {
     let params = DomainParams::lnv1();
     let deployed = synthetic_deployed_faucet(&params)?;
-    let after_reinit = synthetic_deployed_faucet(&params)?;
     let faucet_id = deployed.id();
     Ok(RowsAbObservations {
         main_commit: "synthetic".to_string(),
@@ -1117,12 +1111,6 @@ fn green_ab() -> Result<RowsAbObservations> {
         deploy_block: 4,
         owner_id: wallet_id(1),
         domain_params: params,
-        reinit_params: DomainParams::lnv1_reinit_attempt(),
-        first_note_id: "0xnote1".to_string(),
-        second_note_id: "0xnote2".to_string(),
-        reinit_error: Some(format!("executor trap: {ERR_IDENTIFIER_REINIT_TEXT}")),
-        after_reinit: Some(after_reinit),
-        second_note_consumed: false,
     })
 }
 
@@ -1139,11 +1127,11 @@ fn green_matrix() -> Result<FullMatrixObservations> {
 }
 
 #[test]
-fn full_matrix_outcomes_green_produces_twelve_ordered_passes() -> Result<()> {
+fn full_matrix_outcomes_green_produces_every_row_in_order() -> Result<()> {
     let outcomes = full_matrix_outcomes(&green_matrix()?);
-    assert_eq!(outcomes.len(), 12);
+    assert_eq!(outcomes.len(), MATRIX_ROW_IDS.len());
     let ids: Vec<&str> = outcomes.iter().map(|o| o.row.as_str()).collect();
-    assert_eq!(ids, MATRIX_ROW_IDS.to_vec(), "rows A..L in matrix order");
+    assert_eq!(ids, MATRIX_ROW_IDS.to_vec(), "every matrix row, in order");
     for o in &outcomes {
         assert!(
             o.pass,
@@ -1223,9 +1211,10 @@ fn synthetic_outcomes() -> Vec<RowOutcome> {
 fn validate_row_outcomes_rejects_a_missing_row() {
     let mut outcomes = synthetic_outcomes();
     outcomes.pop(); // drop L
-    let err = validate_row_outcomes(&outcomes).expect_err("11 rows is not the matrix");
+    let err = validate_row_outcomes(&outcomes).expect_err("a short list is not the matrix");
     assert!(
-        format!("{err:#}").contains('L') || format!("{err:#}").contains("12"),
+        format!("{err:#}").contains('L')
+            || format!("{err:#}").contains(&MATRIX_ROW_IDS.len().to_string()),
         "{err:#}"
     );
 }
@@ -1486,7 +1475,7 @@ fn fresh_under_roots_the_run_under_the_named_track() {
 // Stack service invocations (round-2 row-L disposition: the sequencer's gRPC connection-age
 // override). The LNV-5 round-1 run surfaced sequencer panics at exactly the node's 30-minute
 // DEFAULT_MAX_CONNECTION_AGE (tonic-0.14.6 resumed-after-completion);
-// the HUMAN disposition is to extend that age at the STACK-BOOT CONFIG level (the v0.15.1
+// the HUMAN disposition is to extend that age at the STACK-BOOT CONFIG level (the
 // sequencer CLI exposes `--rpc.grpc.max-connection-age <DURATION>`) so no connection can reach
 // it within a gate run — while the row-L panic detector stays byte-for-byte as strict.
 // ════════════════════════════════════════════════════════════════════════════════════════════
@@ -1542,7 +1531,7 @@ fn v16_services_are_the_four_node_processes() {
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
-#[ignore = "requires the pinned v0.15.1 node binaries + loopback listener binds (the §11.2 gate run); run with -- --include-ignored or the lnv5_full_matrix binary"]
+#[ignore = "requires the v16 node toolchain + loopback listener binds (the §11.2 gate run); run with -- --include-ignored or the lnv5_full_matrix binary"]
 async fn lnv5_full_matrix_against_real_local_node() -> Result<()> {
     use xusdc_validation::config::repo_root;
     use xusdc_validation::rows_kl::run_full_matrix;

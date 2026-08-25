@@ -1,11 +1,16 @@
 //! Offline unit tests for the sanity gate's PURE logic (no node): the scale-0 identity parity, the
 //! URL parser, the error-code matcher, the burn-note structural assertion (accept + SPECIFIC
-//! rejections), the attester-consumability proof (accept + a foreign-tag REJECT), and the record
-//! renderer's verdict logic. The live E2E driver is `tests/sanity.rs` (`#[ignore]`d, operator-run).
+//! rejections), the attester-consumability proof (accept + a foreign-tag REJECT), the record
+//! renderer's verdict logic, and SAN-HANDOVER's finally-phase `ADMIN` restore — its planner over
+//! every ground-truth state and its bounded reconcile loop, driven by a scripted fake. The live E2E
+//! driver is `tests/sanity.rs` (`#[ignore]`d, operator-run).
 
 use miden_protocol::account::{AccountId, AccountIdVersion, AccountType, AssetCallbackFlag};
+use miden_protocol::block::FeeParameters;
 use miden_protocol::crypto::rand::RandomCoin;
+use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::{Felt, Word};
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 use withdrawal_listener_attester::config::ListenerConfig;
 use withdrawal_listener_attester::error::DiscoveryReject;
@@ -14,10 +19,6 @@ use withdrawal_listener_attester::validate::{
 };
 use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
 
-use super::admin_restore::{
-    plan_ownership_restore, reconcile_ownership, OwnershipOutcome, OwnershipRestore,
-    MAX_OWNERSHIP_RECONCILE_ATTEMPTS,
-};
 use super::checks::{
     assert_attester_consumable, assert_burn_note_structure, burn_items, err_code_for, truncate,
 };
@@ -52,10 +53,17 @@ fn faucet_id(seed: u8) -> AccountId {
         dummy_id(4),
         DEPLOY_MAX_SUPPLY,
         &mintburn::lnv2_domain_params(),
+        offline_fee_parameters(),
         [seed; 32],
     )
     .expect("building an offline production faucet")
     .id()
+}
+
+/// Fee parameters for the offline fixtures. A real run reads these from the chain it deploys to;
+/// nothing here depends on the values, only on the faucet composing at all.
+fn offline_fee_parameters() -> FeeParameters {
+    FeeParameters::new(dummy_id(5), 0)
 }
 
 fn rng(seed: u64) -> RandomCoin {
@@ -67,15 +75,23 @@ fn rng(seed: u64) -> RandomCoin {
     ]))
 }
 
-/// The P0 scale-0 identity parity: the harness mirror equals the shipped `DEPOSIT_SCALE_EXP = 0`, so
-/// minted units == the raw 6-decimal deposit amount for BOTH mandated amounts.
+/// The scale-0 identity parity: the shipped codec reduces a raw 6-decimal deposit amount to exactly
+/// itself, and the harness mirror agrees, so minted units == the raw amount for BOTH mandated
+/// amounts. The codec leg reads the reduction out of a real payload rather than comparing mirrored
+/// constants, so a change to the shipped scale fails here.
 #[test]
 fn scale0_identity_parity() {
-    assert_eq!(
-        mintburn::SCALE_EXP,
-        0,
-        "the harness scale must mirror DEPOSIT_SCALE_EXP = 0"
-    );
+    let faucet = faucet_id(0x5c);
+    for amount in [MINT_ROUND_UNITS, MINT_NONROUND_UNITS, BURN_UNITS] {
+        let payload =
+            mintburn::mint_payload_own_id(faucet, mintburn::BASE_VECTOR, dummy_id(6), amount, 0, 0);
+        let intent = DepositIntent::read_from_bytes(&payload).expect("the payload decodes");
+        assert_eq!(
+            intent.header().amount().as_u64(),
+            amount,
+            "the shipped codec must reduce a raw deposit amount to itself"
+        );
+    }
     for amount in [
         MINT_ROUND_UNITS,
         MINT_NONROUND_UNITS,
@@ -183,7 +199,7 @@ fn attester_consumable_accept_and_foreign_tag_reject() {
     assert!(detail.contains(&BURN_UNITS.to_string()));
 
     // REJECT: the attester's exact-tag discovery refuses a note under a FOREIGN tag.
-    let items_felts = note.recipient().storage().items().to_vec();
+    let items_felts = super::checks::withdrawal_payload_felts(&note).unwrap();
     let foreign_tag = FIXED_XUSDC_BURN_TAG ^ 0x1;
     let record = DiscoveryRecord::new(
         foreign_tag,
@@ -223,7 +239,7 @@ fn record_render_reflects_verdict() {
     };
     let mut r = SanityReport {
         rpc_url: "http://127.0.0.1:57291".to_string(),
-        node_version: "miden-node 0.16.0-alpha.2".to_string(),
+        node_version: "miden-node v16".to_string(),
         deployed_fresh: true,
         local_node: true,
         faucet_id: "0xfaucet".to_string(),
@@ -339,46 +355,6 @@ fn write_secret_file_refuses_a_symlink_and_never_writes_through_it() {
     assert_eq!(std::fs::read(&target).unwrap(), b"attacker-owned");
 }
 
-/// The pure ownership-restore planner covers every ground-truth state, including the accept-path
-/// failures the round-7 boolean missed: an unexpectedly-moved owner (committed-but-unobserved accept)
-/// and a dangling step-1 nomination.
-#[test]
-fn plan_ownership_restore_covers_every_ground_truth_state() {
-    let orig = dummy_id(1);
-    let ephemeral = dummy_id(2);
-    let stranger = dummy_id(3);
-
-    // Owner intact, no nomination → nothing to do.
-    assert_eq!(
-        plan_ownership_restore(orig, None, orig, ephemeral),
-        OwnershipRestore::None
-    );
-    // Owner intact, nominated to a harmless party (the orig itself) → still nothing to do.
-    assert_eq!(
-        plan_ownership_restore(orig, Some(orig), orig, ephemeral),
-        OwnershipRestore::None
-    );
-    // Owner intact but the EPHEMERAL wallet is NOMINATED (step-1 committed, accept never ran) → cancel.
-    assert_eq!(
-        plan_ownership_restore(orig, Some(ephemeral), orig, ephemeral),
-        OwnershipRestore::CancelNomination
-    );
-    // The EPHEMERAL wallet OWNS the faucet (accept committed, maybe unobserved by the client) → back.
-    assert_eq!(
-        plan_ownership_restore(ephemeral, None, orig, ephemeral),
-        OwnershipRestore::TransferBack
-    );
-    assert_eq!(
-        plan_ownership_restore(ephemeral, Some(stranger), orig, ephemeral),
-        OwnershipRestore::TransferBack
-    );
-    // Owned by neither → cannot restore (surfaced, not silently ignored).
-    assert_eq!(
-        plan_ownership_restore(stranger, None, orig, ephemeral),
-        OwnershipRestore::UnexpectedOwner(stranger)
-    );
-}
-
 // ----------------------------------------------------------------------------------------------
 // Record ENVIRONMENT / RUN-MODE labeling. The run is labeled by its ACTUAL mode — local-deploy (full
 // gate, admin included) / local-existing / devnet — and an already-deployed faucet is NEVER a
@@ -403,7 +379,7 @@ fn env_report(deployed_fresh: bool, local_node: bool) -> SanityReport {
             "https://rpc.devnet.miden.io"
         }
         .to_string(),
-        node_version: "miden-node 0.16.0-alpha.2".to_string(),
+        node_version: "miden-node v16".to_string(),
         deployed_fresh,
         local_node,
         faucet_id: "0x22c015510392b09170dc544bce3549".to_string(),
@@ -489,194 +465,272 @@ fn record_fresh_deploy_is_the_only_admin_mode() {
 }
 
 // ----------------------------------------------------------------------------------------------
-// Ownership reconcile loop (finding: cleanup raced a committed-but-unobserved accept). Driven with a
-// scripted fake so the POST-SNAPSHOT ownership transition — which a single snapshot could not see — is
-// exercised without a node.
+// SAN-HANDOVER step 5: the finally-phase `ADMIN` restore. The handover itself is node-driven, but
+// the decision it hands to the restore is pure — binary membership of two accounts — so every state
+// it can be interrupted in, and both ways the reconcile can fail to conclude, are proven here
+// without a node. The fake below is the on-chain sender gate in miniature: it refuses an action
+// whose sender does not hold ADMIN, and it records whether ADMIN was ever empty.
 // ----------------------------------------------------------------------------------------------
 
-/// A scripted fake [`super::admin_restore::OwnershipOps`]: it holds the simulated on-chain
-/// `(owner, nominated)` ground truth and lets a test inject the accept race + action failures.
-struct RacingFake {
-    orig: AccountId,
-    ephemeral: AccountId,
-    owner: AccountId,
-    nominated: Option<AccountId>,
-    /// The pending accept commits (ephemeral becomes owner) right AFTER the first observe — exactly
-    /// the race window a single snapshot misses.
-    accept_after_first_observe: bool,
-    accept_committed: bool,
-    /// `transfer_back` always errors (owner never moves) — the persistent-failure injection.
-    transfer_always_fails: bool,
-    /// `observe` always errors — the unreadable-ground-truth injection.
-    observe_always_fails: bool,
-    observes: usize,
-    cancels: usize,
-    transfers: usize,
+use super::admin_restore::{
+    plan_admin_restore, reconcile_admin, AdminMembership, AdminOutcome, AdminRestore,
+    MAX_ADMIN_RECONCILE_ATTEMPTS,
+};
+
+/// Every one of the four ground-truth states maps to a defined action — the planner is total, so a
+/// handover interrupted anywhere is planned for rather than falling through as "nothing to do".
+#[test]
+fn plan_admin_restore_covers_every_ground_truth_state() {
+    let m = |original, ephemeral| AdminMembership {
+        original,
+        ephemeral,
+    };
+
+    // The original holds ADMIN alone — the state the suite must end in.
+    assert_eq!(plan_admin_restore(m(true, false)), AdminRestore::None);
+    // The handover's revoke committed but its grant-back did not: grant FIRST, then revoke.
+    assert_eq!(
+        plan_admin_restore(m(false, true)),
+        AdminRestore::GrantOriginalThenRevokeEphemeral
+    );
+    // The grant-back committed but the successor was never revoked.
+    assert_eq!(
+        plan_admin_restore(m(true, true)),
+        AdminRestore::RevokeEphemeral
+    );
+    // Neither holds it — no ADMIN-capable sender is left, and the state is carried into the row.
+    assert_eq!(
+        plan_admin_restore(m(false, false)),
+        AdminRestore::Unexpected(m(false, false))
+    );
 }
 
-impl RacingFake {
-    fn new(
-        orig: AccountId,
-        ephemeral: AccountId,
-        owner: AccountId,
-        nominated: Option<AccountId>,
-    ) -> Self {
+/// A scripted fake [`super::admin_restore::AdminOps`]: it holds the simulated on-chain `ADMIN`
+/// membership and lets a test inject an unobserved commit and persistent action/read failures. It
+/// enforces the same sender gate the chain does — an action whose sender does not hold `ADMIN` is
+/// refused — so an ordering that would empty `ADMIN` cannot pass here either.
+struct AdminFake {
+    original: bool,
+    ephemeral: bool,
+    /// The grant-back lands in the window right after the first observe, and the action itself then
+    /// reports an error — the committed-but-unobserved commit a single snapshot records as a dead end.
+    grant_commits_unobserved: bool,
+    /// `grant_original` always errors (membership never moves) — the persistent-failure injection.
+    grant_always_fails: bool,
+    /// `observe` always errors — the unreadable-ground-truth injection.
+    observe_always_fails: bool,
+    /// Set if `ADMIN` was ever left with no member at all.
+    ever_empty: bool,
+    observes: usize,
+    grants: usize,
+    revokes: usize,
+}
+
+impl AdminFake {
+    fn new(original: bool, ephemeral: bool) -> Self {
         Self {
-            orig,
+            original,
             ephemeral,
-            owner,
-            nominated,
-            accept_after_first_observe: false,
-            accept_committed: false,
-            transfer_always_fails: false,
+            grant_commits_unobserved: false,
+            grant_always_fails: false,
             observe_always_fails: false,
+            ever_empty: false,
             observes: 0,
-            cancels: 0,
-            transfers: 0,
+            grants: 0,
+            revokes: 0,
+        }
+    }
+    fn note_membership(&mut self) {
+        if !self.original && !self.ephemeral {
+            self.ever_empty = true;
         }
     }
 }
 
-impl super::admin_restore::OwnershipOps for RacingFake {
-    async fn observe(&mut self) -> anyhow::Result<(AccountId, Option<AccountId>)> {
+impl super::admin_restore::AdminOps for AdminFake {
+    async fn observe(&mut self) -> anyhow::Result<AdminMembership> {
         self.observes += 1;
         if self.observe_always_fails {
-            anyhow::bail!("simulated: the on-chain owner is unreadable");
+            anyhow::bail!("simulated: the on-chain ADMIN membership is unreadable");
         }
-        let snapshot = (self.owner, self.nominated);
-        // The pending accept commits in the window right after the FIRST observation.
-        if self.accept_after_first_observe && !self.accept_committed && self.observes == 1 {
-            self.accept_committed = true;
-            self.owner = self.ephemeral;
-            self.nominated = None;
+        let snapshot = AdminMembership {
+            original: self.original,
+            ephemeral: self.ephemeral,
+        };
+        if self.grant_commits_unobserved && self.observes == 1 {
+            self.original = true;
+            self.note_membership();
         }
         Ok(snapshot)
     }
-    async fn transfer_back(&mut self) -> anyhow::Result<()> {
-        self.transfers += 1;
-        if self.transfer_always_fails {
-            anyhow::bail!("simulated: transfer-back keeps failing");
+    async fn grant_original(&mut self) -> anyhow::Result<()> {
+        self.grants += 1;
+        if self.grant_always_fails {
+            anyhow::bail!("simulated: the grant-back keeps failing");
         }
-        if self.owner != self.ephemeral {
-            anyhow::bail!("transfer-back unauthorized: sender does not own the faucet");
+        if !self.ephemeral {
+            anyhow::bail!("grant unauthorized: the sender does not hold ADMIN");
         }
-        self.owner = self.orig;
-        self.nominated = None;
+        // The membership already moved during the first observe; the action reports the error the
+        // client would see, which is exactly the case a single snapshot cannot tell from a dead end.
+        if self.grant_commits_unobserved {
+            anyhow::bail!("simulated: the grant raced a commit the client never observed");
+        }
+        self.original = true;
+        self.note_membership();
         Ok(())
     }
-    async fn cancel_nomination(&mut self) -> anyhow::Result<()> {
-        self.cancels += 1;
-        if self.owner != self.orig {
-            anyhow::bail!("cancel unauthorized: sender is no longer the owner");
+    async fn revoke_ephemeral(&mut self) -> anyhow::Result<()> {
+        self.revokes += 1;
+        if !self.original {
+            anyhow::bail!("revoke unauthorized: the sender does not hold ADMIN");
         }
-        self.nominated = None;
+        self.ephemeral = false;
+        self.note_membership();
         Ok(())
     }
 }
 
-/// THE regression for the round-8 gap: the FIRST snapshot sees the original owner with the ephemeral
-/// wallet nominated (plan = CancelNomination), but the accept commits before the cancel — so the
-/// cancel is UNAUTHORIZED and fails. A single-snapshot cleanup would record that failure and STOP,
-/// leaving the ephemeral wallet as owner. The bounded loop instead RE-OBSERVES the moved owner and
-/// transfers it back, reaching Restored.
+/// From the successor-holds-it-alone state the loop grants BEFORE it revokes, so `ADMIN` is never
+/// empty — and the fake's sender gate is what proves it: the reverse order would be refused.
 #[tokio::test]
-async fn reconcile_recovers_from_post_snapshot_accept_race() {
-    let orig = dummy_id(1);
-    let ephemeral = dummy_id(2);
-    let mut fake = RacingFake::new(orig, ephemeral, orig, Some(ephemeral));
-    fake.accept_after_first_observe = true;
-
+async fn reconcile_grants_the_original_back_before_revoking_the_successor() {
+    let mut fake = AdminFake::new(false, true);
     let mut trace = Vec::new();
-    let outcome = reconcile_ownership(&mut fake, orig, ephemeral, &mut trace).await;
+    let outcome = reconcile_admin(&mut fake, &mut trace).await;
+
+    assert_eq!(outcome, AdminOutcome::Restored);
+    assert_eq!(fake.grants, 1, "one grant back to the original");
+    assert_eq!(fake.revokes, 1, "then one revoke of the successor");
+    assert!(
+        fake.original && !fake.ephemeral,
+        "ADMIN ends with the original alone"
+    );
+    assert!(
+        !fake.ever_empty,
+        "ADMIN must never drop below one member during the restore"
+    );
+    assert_eq!(trace.len(), 2, "both actions are traced: {trace:?}");
+}
+
+/// A handover whose grant-back landed but whose revoke never did is reconciled in one action.
+#[tokio::test]
+async fn reconcile_revokes_a_successor_that_still_holds_admin() {
+    let mut fake = AdminFake::new(true, true);
+    let mut trace = Vec::new();
+    let outcome = reconcile_admin(&mut fake, &mut trace).await;
+
+    assert_eq!(outcome, AdminOutcome::Restored);
+    assert_eq!(fake.grants, 0, "the original already holds ADMIN");
+    assert_eq!(fake.revokes, 1);
+    assert!(!fake.ever_empty);
+}
+
+/// The already-restored state costs no actions at all (the restore is idempotent).
+#[tokio::test]
+async fn reconcile_is_a_no_op_when_admin_is_already_with_the_original() {
+    let mut fake = AdminFake::new(true, false);
+    let mut trace = Vec::new();
+    let outcome = reconcile_admin(&mut fake, &mut trace).await;
+
+    assert_eq!(outcome, AdminOutcome::Restored);
+    assert_eq!((fake.grants, fake.revokes), (0, 0));
+    assert!(trace.is_empty(), "an idempotent no-op traces nothing");
+}
+
+/// `ADMIN` held by neither account is surfaced, never silently passed: the run cannot restore a role
+/// it has no authorized sender for, and the observed membership goes into the row.
+#[tokio::test]
+async fn reconcile_surfaces_an_admin_neither_account_holds() {
+    let mut fake = AdminFake::new(false, false);
+    let mut trace = Vec::new();
+    let outcome = reconcile_admin(&mut fake, &mut trace).await;
 
     assert_eq!(
         outcome,
-        OwnershipOutcome::Restored,
-        "the loop must recover to Restored, not stop at the failed cancel"
+        AdminOutcome::Unexpected(AdminMembership {
+            original: false,
+            ephemeral: false,
+        })
     );
     assert_eq!(
-        fake.cancels, 1,
-        "it attempted the (doomed) cancel from the first snapshot"
-    );
-    assert_eq!(
-        fake.transfers, 1,
-        "then re-observed the moved owner and transferred back"
-    );
-    assert_eq!(
-        fake.owner, orig,
-        "ownership ends back with the original owner"
-    );
-    assert_eq!(fake.nominated, None, "no dangling nomination remains");
-    assert!(
-        trace
-            .iter()
-            .any(|t| t.contains("cancel") && t.contains("attempt failed")),
-        "the trace records the doomed cancel"
-    );
-    assert!(
-        trace
-            .iter()
-            .any(|t| t.contains("transfer-back") && t.contains("committed")),
-        "the trace records the recovery transfer-back"
+        (fake.grants, fake.revokes),
+        (0, 0),
+        "no action is attempted"
     );
 }
 
-/// A committed-but-unobserved accept (the ephemeral wallet already OWNS on the first observe) is
-/// transferred back in one action.
+/// An action that COMMITTED but reported an error is re-observed on the next cycle and the loop
+/// finishes from the moved state, instead of recording the failure and stopping. This is the state a
+/// single-snapshot cleanup gets wrong: it sees one failed grant and leaves the successor holding
+/// `ADMIN`.
 #[tokio::test]
-async fn reconcile_transfers_back_a_committed_accept() {
-    let orig = dummy_id(1);
-    let ephemeral = dummy_id(2);
-    let mut fake = RacingFake::new(orig, ephemeral, ephemeral, None);
-
+async fn reconcile_recovers_from_a_committed_but_unobserved_grant() {
+    let mut fake = AdminFake::new(false, true);
+    fake.grant_commits_unobserved = true;
     let mut trace = Vec::new();
-    let outcome = reconcile_ownership(&mut fake, orig, ephemeral, &mut trace).await;
+    let outcome = reconcile_admin(&mut fake, &mut trace).await;
 
-    assert_eq!(outcome, OwnershipOutcome::Restored);
-    assert_eq!(fake.transfers, 1);
-    assert_eq!(fake.cancels, 0);
-    assert_eq!(fake.owner, orig);
+    assert_eq!(
+        outcome,
+        AdminOutcome::Restored,
+        "the loop must recover to Restored, not stop at the failed grant"
+    );
+    assert_eq!(fake.grants, 1, "it attempted the grant exactly once");
+    assert_eq!(
+        fake.revokes, 1,
+        "then re-observed the moved membership and revoked the successor"
+    );
+    assert!(fake.original && !fake.ephemeral);
+    assert!(!fake.ever_empty);
+    assert!(
+        trace
+            .iter()
+            .any(|s| s.contains("grant") && s.contains("attempt failed")),
+        "the trace records the grant that reported an error: {trace:?}"
+    );
+    assert!(
+        trace
+            .iter()
+            .any(|s| s.contains("revoke") && s.contains("committed")),
+        "the trace records the recovering revoke: {trace:?}"
+    );
 }
 
 /// A persistently-failing action is surfaced as Unresolved after EXACTLY the bounded number of
 /// attempts — never a silent pass and never an infinite loop.
 #[tokio::test]
 async fn reconcile_reports_unresolved_when_the_action_never_succeeds() {
-    let orig = dummy_id(1);
-    let ephemeral = dummy_id(2);
-    let mut fake = RacingFake::new(orig, ephemeral, ephemeral, None);
-    fake.transfer_always_fails = true;
-
+    let mut fake = AdminFake::new(false, true);
+    fake.grant_always_fails = true;
     let mut trace = Vec::new();
-    let outcome = reconcile_ownership(&mut fake, orig, ephemeral, &mut trace).await;
+    let outcome = reconcile_admin(&mut fake, &mut trace).await;
 
     assert_eq!(
         outcome,
-        OwnershipOutcome::Unresolved(OwnershipRestore::TransferBack),
+        AdminOutcome::Unresolved(AdminRestore::GrantOriginalThenRevokeEphemeral),
         "a persistently-failing action is surfaced, not silently passed"
     );
     assert_eq!(
-        fake.transfers, MAX_OWNERSHIP_RECONCILE_ATTEMPTS,
+        fake.grants, MAX_ADMIN_RECONCILE_ATTEMPTS,
         "it tried exactly the bounded number of times, then stopped (no infinite loop)"
     );
 }
 
-/// An unreadable owner is surfaced as ObserveFailed — the run never claims a restore it could not
-/// verify.
+/// An unreadable membership is surfaced as ObserveFailed — the run never claims a restore it could
+/// not verify.
 #[tokio::test]
 async fn reconcile_reports_observe_failure_when_ground_truth_is_unreadable() {
-    let orig = dummy_id(1);
-    let ephemeral = dummy_id(2);
-    let mut fake = RacingFake::new(orig, ephemeral, orig, None);
+    let mut fake = AdminFake::new(true, true);
     fake.observe_always_fails = true;
-
     let mut trace = Vec::new();
-    let outcome = reconcile_ownership(&mut fake, orig, ephemeral, &mut trace).await;
+    let outcome = reconcile_admin(&mut fake, &mut trace).await;
 
     assert!(
-        matches!(outcome, OwnershipOutcome::ObserveFailed(_)),
-        "an unreadable owner is surfaced as unverified, never a silent pass"
+        matches!(outcome, AdminOutcome::ObserveFailed(_)),
+        "an unreadable ADMIN membership is surfaced as unverified, never a silent pass"
     );
+    assert_eq!((fake.grants, fake.revokes), (0, 0));
 }
 
 // ----------------------------------------------------------------------------------------------

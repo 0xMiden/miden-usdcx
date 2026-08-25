@@ -1,7 +1,7 @@
 //! LNV-3 mint-lifecycle gate: the one-command rows-D/E run.
 //!
 //! Boots a FRESH local stack, deploys the production faucet (domain config build-seeded to match
-//! the mint vector, identifier_init as the first admin note),
+//! the mint vector),
 //! allowlists attester A, drives the whole rows-D (mint happy path) + row-E (mint negatives) arc —
 //! the happy-path mints committed via the ntx-builder (path N) with the recipient consuming each
 //! emitted P2ID note; every negative proven by a client-side kernel trap + committed-state read-back

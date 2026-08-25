@@ -8,7 +8,7 @@
 //!    exists to reject, and proves the assertion rejects it (a silently-weakened assertion — e.g. the
 //!    auditor's planted mutation — fails these). Plus one green-shape acceptance per row (guards
 //!    against an always-failing suite).
-//! 2. **The real-node E2E** (`lnv3_rows_de_against_real_local_node`): boots a FRESH local v0.15.1
+//! 2. **The real-node E2E** (`lnv3_rows_de_against_real_local_node`): boots a FRESH local v16
 //!    stack, deploys the production faucet, drives the whole D+E arc (the happy-path mints committed
 //!    via the ntx-builder / path N with the recipient consuming the emitted P2ID note; every negative
 //!    proven by a client-side kernel trap + committed-state read-back), and judges the observations.
@@ -18,10 +18,14 @@
 //!    assertion layer only.
 
 use anyhow::{Context, Result};
+use miden_protocol::account::{AccountId, AccountIdVersion, AccountType, AssetCallbackFlag};
+use miden_protocol::utils::serde::{Deserializable, Serializable};
+use xusdc_encoding::xreserve::encoding::{DepositIntent, DepositIntentField, MintIntent};
 use xusdc_validation::assertions_de::{
-    assert_all, assert_d, assert_e, ERR_XRESERVE_DISALLOWED_PUB_KEY, ERR_XRESERVE_FEE_NONZERO,
-    ERR_XRESERVE_NONCE_REPLAY, ERR_XRESERVE_SIG_INVALID,
+    assert_all, assert_d, assert_e, ERR_XRESERVE_DISALLOWED_PUB_KEY, ERR_XRESERVE_NONCE_REPLAY,
+    ERR_XRESERVE_SIG_INVALID,
 };
+use xusdc_validation::mintburn;
 use xusdc_validation::observations_de::{
     MintHappy, MintNegative, RowsDeObservations, Verdict, Word4, MARKER_CLEAR, MARKER_SET,
 };
@@ -32,10 +36,24 @@ fn rej(msg: &str) -> Verdict {
     Verdict::Rejected(msg.to_string())
 }
 
+fn dummy_id(seed: u8) -> AccountId {
+    AccountId::dummy(
+        [seed; 15],
+        AccountIdVersion::Version1,
+        AccountType::Public,
+        AssetCallbackFlag::Disabled,
+    )
+}
+
 const SERIAL_1: Word4 = [11, 22, 33, 44];
 const SERIAL_2: Word4 = [55, 66, 77, 88];
 const TAG_1: u32 = 0xfffc_0000;
 const TAG_2: u32 = 0xa5a4_0000;
+
+/// The raw uint256 amount and fee ceiling the fee-ceiling tamper fixture carries. The ceiling is
+/// below the amount, so the payload is one a real mint could present.
+const TAMPER_AMOUNT_RAW: u64 = 40;
+const TAMPER_MAX_FEE_RAW: u64 = 1;
 
 /// A green empty-hookData happy variant: supply +100, nonce set, a well-formed P2ID note carrying
 /// 100 units to the recipient, consumed one block LATER.
@@ -123,7 +141,7 @@ fn green_e() -> Vec<MintNegative> {
         neg(
             "forged-signature",
             ERR_XRESERVE_SIG_INVALID,
-            rej("... deposit attestation signature verification failed ..."),
+            rej("... ECDSA verification failed: x(VERIFY_POINT) != SIG_R ..."),
             false,
         ),
         neg(
@@ -133,15 +151,15 @@ fn green_e() -> Vec<MintNegative> {
             false,
         ),
         neg(
-            "nonzero-fee",
-            ERR_XRESERVE_FEE_NONZERO,
-            rej("... mint fee amount must be zero ..."),
+            "tampered-payload",
+            ERR_XRESERVE_SIG_INVALID,
+            rej("... ECDSA verification failed: x(VERIFY_POINT) != SIG_R ..."),
             false,
         ),
         neg(
-            "tampered-payload",
+            "tampered-max-fee-ceiling",
             ERR_XRESERVE_SIG_INVALID,
-            rej("... deposit attestation signature verification failed ..."),
+            rej("... ECDSA verification failed: x(VERIFY_POINT) != SIG_R ..."),
             false,
         ),
     ]
@@ -375,6 +393,24 @@ fn e_requires_the_tampered_payload_negative() {
 }
 
 #[test]
+fn e_requires_the_tampered_max_fee_ceiling_negative() {
+    // Remove ONLY the fee-ceiling tamper. It shares the SIG_INVALID gate with the other two tamper
+    // vectors, so this is the check that neither of them may cover for it: the ceiling the
+    // attestation binds is a distinct surface, and the row must prove the signature gate is what
+    // catches a ceiling the faucet cannot rebuild.
+    let ev: Vec<MintNegative> = green_e()
+        .into_iter()
+        .filter(|n| n.label != "tampered-max-fee-ceiling")
+        .collect();
+    let e = assert_e(&ev).expect_err("E must require the fee-ceiling tamper distinctly");
+    assert!(
+        format!("{e:#}").contains("tampered-max-fee-ceiling")
+            || format!("{e:#}").contains(ERR_XRESERVE_SIG_INVALID),
+        "got: {e:#}"
+    );
+}
+
+#[test]
 fn e_requires_the_bad_attester_negative() {
     let ev: Vec<MintNegative> = green_e()
         .into_iter()
@@ -388,16 +424,62 @@ fn e_requires_the_bad_attester_negative() {
     );
 }
 
+// ── the fee-ceiling tamper fixture: what the attestation binds, the faucet cannot rebuild ──────
+
+/// The fee-ceiling tamper is only a signature-gate negative if the difference it introduces is one
+/// the faucet is unable to reproduce. This pins both halves offline: the dirtied preimage differs
+/// from the carried payload ONLY inside the `maxFee` pad (the ceiling value and every other field
+/// are byte-identical), and the shipped compress→expand round trip — the Rust mirror of what the
+/// faucet does on chain — reproduces the CLEAN payload, never the dirtied one. So a mint carrying
+/// this intent rebuilds a message the attestation did not sign, and only the signature check can
+/// catch it. The window is derived from the `DepositIntent` layout owner, never a restated literal.
 #[test]
-fn e_requires_the_fee_negative() {
-    let ev: Vec<MintNegative> = green_e()
-        .into_iter()
-        .filter(|n| n.label != "nonzero-fee")
+fn the_max_fee_tamper_is_unrebuildable_and_confined_to_the_ceiling_pad() {
+    let faucet = dummy_id(0x4d);
+    let recipient = dummy_id(0x4e);
+    let clean = mintburn::mint_payload_own_id(
+        faucet,
+        mintburn::BASE_VECTOR,
+        recipient,
+        TAMPER_AMOUNT_RAW,
+        TAMPER_MAX_FEE_RAW,
+        0x15,
+    );
+    let dirtied = mintburn::max_fee_pad_dirtied(&clean);
+
+    assert_ne!(
+        clean, dirtied,
+        "the attestation must be taken over genuinely different bytes"
+    );
+    assert_eq!(clean.len(), dirtied.len(), "the tamper is in place");
+    let differing: Vec<usize> = (0..clean.len())
+        .filter(|&i| clean[i] != dirtied[i])
         .collect();
-    let e = assert_e(&ev).expect_err("E must require the non-zero-fee negative");
+    let field = DepositIntentField::MaxFee.offset();
+    let value = DepositIntentField::Nonce.offset() - core::mem::size_of::<u64>();
     assert!(
-        format!("{e:#}").contains(ERR_XRESERVE_FEE_NONZERO) || format!("{e:#}").contains("fee"),
-        "got: {e:#}"
+        differing.iter().all(|&i| (field..value).contains(&i)),
+        "the tamper must be confined to the maxFee pad ({field}..{value}), differing at {differing:?}"
+    );
+    assert!(
+        !differing.is_empty(),
+        "the tamper must actually change the pad"
+    );
+
+    // The compress→expand round trip is what the faucet's rebuild does: the ceiling survives only as
+    // the reduced AssetAmount the note carries, so the pad comes back zero.
+    let intent = DepositIntent::read_from_bytes(&clean).expect("the payload decodes");
+    let rebuilt = MintIntent::from_deposit_intent(&intent, faucet, mintburn::MINT_DOMAIN)
+        .expect("the payload is addressed to this faucet")
+        .to_deposit_intent(intent.header().amount(), mintburn::MINT_DOMAIN, faucet)
+        .to_bytes();
+    assert_eq!(
+        rebuilt, clean,
+        "the rebuild must reproduce the carried payload byte for byte"
+    );
+    assert_ne!(
+        rebuilt, dirtied,
+        "the rebuild can never reproduce the ceiling the attestation signed"
     );
 }
 
@@ -430,10 +512,11 @@ fn code_only_mint_gate_rejects_are_matched() {
 #[test]
 fn code_only_reject_with_the_wrong_code_is_rejected() {
     let mut ev = green_e();
-    ev[3].verdict = rejected_code_only("some entirely unrelated assertion"); // wrong code for the fee gate
+    // wrong code for the tampered-payload negative's signature gate
+    ev[3].verdict = rejected_code_only("some entirely unrelated assertion");
     let e = assert_e(&ev).expect_err("E must reject a code-only reject bearing the WRONG err_code");
     assert!(
-        format!("{e:#}").contains(ERR_XRESERVE_FEE_NONZERO) || format!("{e:#}").contains("fee"),
+        format!("{e:#}").contains(ERR_XRESERVE_SIG_INVALID),
         "got: {e:#}"
     );
 }
@@ -441,20 +524,19 @@ fn code_only_reject_with_the_wrong_code_is_rejected() {
 // ── the real-node E2E (the gate run for this slice) ──────────────────────────────────────────
 
 /// Rows D + E against a REAL fresh local node: bootstrap genesis, start the four services, deploy
-/// the production faucet (domain config build-seeded to match the mint vector, identifier_init as
-/// the first admin note), allowlist attester A, drive both
-/// happy-path mints (empty-hookData + hookData-bearing) committed via the ntx-builder / path N with
-/// the recipient consuming each emitted P2ID note, then every negative (replay, forged signature,
-/// non-allowlisted attester, non-zero fee, tampered payload) proven by a client-side kernel trap +
-/// committed-state read-back, and judge every row. Writes `evidence-de.json` under the gitignored
-/// run root either way.
+/// the production faucet (domain config build-seeded to match the mint vector), allowlist attester
+/// A, drive both happy-path mints (empty-hookData + hookData-bearing) committed via the ntx-builder /
+/// path N with the recipient consuming each emitted P2ID note, then every negative (replay, forged
+/// signature, non-allowlisted attester, tampered payload, tampered max-fee ceiling) proven by a
+/// client-side kernel trap + committed-state read-back, and judge every row. Writes
+/// `evidence-de.json` under the gitignored run root either way.
 ///
 /// Ignored by default (NOT optional for the gate): it must bind loopback listener sockets for the
 /// four node services, which hermetic audit sandboxes forbid. Run it with `-- --include-ignored` on
 /// a network-enabled box (or the `lnv3_rows_de` binary); the default suite's green carries no
 /// real-node claim.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "real-node E2E: needs the v0.15.1 node binaries + loopback listener binds (denied in \
+#[ignore = "real-node E2E: needs the v16 node toolchain + loopback listener binds (denied in \
             sandboxed audit environments); run with `-- --include-ignored` or the lnv3_rows_de \
             binary — the §11.2 gate claim rides on real runs + the human gate, never on the \
             default suite"]

@@ -8,7 +8,7 @@
 //!   user RPC accepts — and the running ntx-builder auto-executes the faucet's consumption. The
 //!   driver polls `GetAccount` until the committed effect appears (`Driver::commit_admin`). (User
 //!   RPC rejects post-deploy network-account txs, and the client cannot present the
-//!   `x-miden-network-tx-auth` header, so path N is the only commit path at v0.15.1.)
+//!   `x-miden-network-tx-auth` header, so path N is the only commit path.)
 //! - **Accept/reject PROBES run client-side (no submission).** A mint/burn/P2ID/tx-script
 //!   consumption is executed locally against the committed on-chain state
 //!   (`Driver::probe_consume` / `Driver::probe_tx_script`); executing Ok = ACCEPTED, a trap =
@@ -17,7 +17,7 @@
 //!   without mutating it (so the arc stays deterministic: committed `token_supply` is fixed by the
 //!   single path-N supply mint).
 //!
-//! The arc (single evolving chain): deploy (identifier_init) → allowlist A → commit one supply mint
+//! The arc (single evolving chain): deploy → allowlist A → commit one supply mint
 //! (A) → C3 cap → C2 min-burn → C1 rotation A→B → C4 pause/unpause (+F6 owner-setters-while-paused)
 //! → C5 DOM_MANAGER role rotation → C6 non-authorized-sender negatives → row-F auth boundary.
 
@@ -41,18 +41,15 @@ use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::MinBurnAmount;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::{
-    FaucetMetadataConfig, FaucetMetadataConfigNote, MinBurnAmountConfigNote, P2idNote,
+    FaucetMetadataConfig, FaucetMetadataConfigNote, MinBurnAmountConfigNote, P2idNote, PauseConfig,
+    PauseConfigNote, RbacConfig, RbacConfigNote,
 };
 use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, DOM_PAUSER_ROLE};
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveGrantRoleNote, XReserveIdentifierInitNote, XReservePauseNote, XReserveRevokeRoleNote,
-    XReserveSetAttesterNote, XReserveUnpauseNote,
-};
-use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 
 use crate::actors::{create_actors, Actors, AttesterKey};
-use crate::assertions_cf::{ERR_LACKS_ROLE, ERR_NOT_OWNER};
-use crate::client::{build_client, os_seed, HarnessClient};
+use crate::assertions_cf::{ERR_LACKS_ROLE, SENDER_NON_ADMIN, SENDER_NON_DOM_PAUSER};
+use crate::client::{build_client, node_fee_parameters, os_seed, HarnessClient};
 use crate::config::RunConfig;
 use crate::deploy::build_faucet_account;
 use crate::mintburn::{self, lnv2_domain_params, raw_for_units, MINT_DOMAIN};
@@ -411,13 +408,22 @@ impl Driver {
             .context("building a minimum-burn configuration note")?;
         Ok(Note::from(note))
     }
-    fn pause_note(&mut self, sender: AccountId) -> Result<Note> {
+    fn pause_config_note(&mut self, sender: AccountId, config: PauseConfig) -> Result<Note> {
         let f = self.faucet_id;
-        XReservePauseNote::create(sender, f, self.rng()).context("building a pause note")
+        let note = PauseConfigNote::builder()
+            .sender(sender)
+            .target(f)
+            .config(config)
+            .generate_serial_number(self.rng())
+            .build()
+            .context("building a pause configuration note")?;
+        Ok(Note::from(note))
+    }
+    fn pause_note(&mut self, sender: AccountId) -> Result<Note> {
+        self.pause_config_note(sender, PauseConfig::Pause)
     }
     fn unpause_note(&mut self, sender: AccountId) -> Result<Note> {
-        let f = self.faucet_id;
-        XReserveUnpauseNote::create(sender, f, self.rng()).context("building an unpause note")
+        self.pause_config_note(sender, PauseConfig::Unpause)
     }
     fn mint_note(
         &mut self,
@@ -428,8 +434,7 @@ impl Driver {
     ) -> Result<Note> {
         let f = self.faucet_id;
         let sender = self.owner();
-        // Fresh faucet: the mint must carry the OWN-ID remoteToken so structural validation's identifier compare passes
-        // against the note-derived own-id identifier (the R2 identifier-binding fix).
+        // Fresh faucet: the mint must carry the OWN-ID remoteToken so the rebuilt message names this faucet.
         let payload = mintburn::mint_payload_own_id(
             f,
             mintburn::BASE_VECTOR,
@@ -448,27 +453,52 @@ impl Driver {
             };
             attester.attestation_for(&payload)
         };
-        XUsdcMintNote::create(sender, f, &payload, &attestation, self.hc.client.rng())
-            .context("building the XUsdcMintNote probe")
+        mintburn::mint_note_from_payload(
+            sender,
+            f,
+            MINT_DOMAIN,
+            &payload,
+            &attestation,
+            self.hc.client.rng(),
+        )
     }
     fn burn_note(&mut self, units: u64, salt: u8) -> Result<Note> {
         let f = self.faucet_id;
         let holder = self.actors.holder.id();
         mintburn::burn_note(holder, f, units, salt, self.rng())
     }
-    fn grant_pauser_note(&mut self, member: AccountId) -> Result<Note> {
+    fn rbac_note(&mut self, sender: AccountId, config: RbacConfig) -> Result<Note> {
         let f = self.faucet_id;
+        let note = RbacConfigNote::builder()
+            .sender(sender)
+            .target(f)
+            .config(config)
+            .generate_serial_number(self.rng())
+            .build()
+            .context("building an RBAC configuration note")?;
+        Ok(Note::from(note))
+    }
+    fn grant_pauser_note(&mut self, member: AccountId) -> Result<Note> {
         let manager = self.actors.manager.id();
         let role = RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a valid role symbol");
-        XReserveGrantRoleNote::create(manager, f, Felt::from(&role), member, self.rng())
-            .context("building a grant_role note")
+        self.rbac_note(
+            manager,
+            RbacConfig::GrantRole {
+                role,
+                account: member,
+            },
+        )
     }
     fn revoke_pauser_note(&mut self, member: AccountId) -> Result<Note> {
-        let f = self.faucet_id;
         let manager = self.actors.manager.id();
         let role = RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a valid role symbol");
-        XReserveRevokeRoleNote::create(manager, f, Felt::from(&role), member, self.rng())
-            .context("building a revoke_role note")
+        self.rbac_note(
+            manager,
+            RbacConfig::RevokeRole {
+                role,
+                account: member,
+            },
+        )
     }
 }
 
@@ -499,13 +529,14 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
     let main_commit = git_head_commit();
 
     // 2. Client + actors + the production faucet account (domain config BUILD-SEEDED to match the
-    //    mint vector; the identifier committed by the identifier_init note below).
+    //    mint vector, priced against the chain's own fee parameters).
     let mut hc = build_client(&cfg.stack, client_label).await?;
     hc.client.sync_state().await.context("initial sync")?;
     let actor_root = cfg.stack.run_root.join(format!("client-{client_label}"));
     let actors = create_actors(&mut hc, &actor_root).await?;
     let owner_id = actors.owner.id();
     let domain = lnv2_domain_params();
+    let fee_parameters = node_fee_parameters(&hc.rpc).await?;
     let faucet = build_faucet_account(
         owner_id,
         actors.pauser.id(),
@@ -513,38 +544,23 @@ pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsC
         actors.blk_manager.id(),
         cfg.max_supply,
         &domain,
+        fee_parameters,
         os_seed(),
     )?;
     let faucet_id = faucet.id();
 
-    // 3. Deploy: the faucet's first tx consumes the owner's identifier_init (first-deploy exemption).
-    //    The seeded identifier is the faucet's own-id fixpoint (derived from faucet_id).
-    let note1 = XReserveIdentifierInitNote::create(owner_id, faucet_id, hc.client.rng())
-        .context("building the identifier_init note")?;
-    let emit1 = TransactionRequestBuilder::new()
-        .own_output_notes(vec![note1.clone()])
-        .build()
-        .context("building the identifier_init emit")?;
-    let emit1_tx = hc
-        .client
-        .submit_new_transaction(owner_id, emit1)
-        .await
-        .context("emit identifier_init")?;
-    // Reuse the driver's wait after we build it; here we poll inline via a temporary.
+    // 3. Deploy: the faucet's first tx is scriptless and noteless — `AuthNetworkAccount` authorizes
+    //    it and increments the new account's nonce 0 → 1, which materializes it on chain.
     let mut d = Driver {
         hc,
         actors,
         faucet_id,
     };
-    d.wait_commit(emit1_tx)
-        .await
-        .context("waiting for the identifier_init emit")?;
     d.hc.client
         .add_account(&faucet, false)
         .await
         .context("registering the faucet with the client")?;
     let deploy = TransactionRequestBuilder::new()
-        .input_notes(vec![(note1.clone(), None)])
         .build()
         .context("building the deploy request")?;
     let deploy_tx =
@@ -838,21 +854,21 @@ async fn run_c6(
     Ok(vec![
         AdminGateReject {
             op: "set_attester".to_string(),
-            sender: "non-owner".to_string(),
-            expected_gate: ERR_NOT_OWNER.to_string(),
+            sender: SENDER_NON_ADMIN.to_string(),
+            expected_gate: ERR_LACKS_ROLE.to_string(),
             verdict: v_attester,
             note_unconsumed: u_attester,
         },
         AdminGateReject {
             op: "set_max_supply".to_string(),
-            sender: "non-owner".to_string(),
-            expected_gate: ERR_NOT_OWNER.to_string(),
+            sender: SENDER_NON_ADMIN.to_string(),
+            expected_gate: ERR_LACKS_ROLE.to_string(),
             verdict: v_max,
             note_unconsumed: u_max,
         },
         AdminGateReject {
             op: "pause".to_string(),
-            sender: "non-DOM_PAUSER".to_string(),
+            sender: SENDER_NON_DOM_PAUSER.to_string(),
             expected_gate: ERR_LACKS_ROLE.to_string(),
             verdict: v_pause,
             note_unconsumed: u_pause,

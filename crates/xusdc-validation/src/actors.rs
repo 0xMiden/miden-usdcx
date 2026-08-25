@@ -104,7 +104,9 @@ pub struct Actors {
     pub blk_manager: Account,
     pub recipient: Account,
     pub holder: Account,
-    /// The C5 rotation target: DOM_MANAGER grants it DOM_PAUSER, then revokes it.
+    /// The rotation target both role arcs hand a role to and take it back from: the LNV-2 C5 row
+    /// (DOM_MANAGER grants it DOM_PAUSER, then revokes it) and the sanity gate's SAN-HANDOVER (the
+    /// original administrator grants it `ADMIN`, then takes it back).
     pub new_pauser: Account,
     /// The FIRST attester (allowlisted first; rotated OUT in C1).
     pub attester: AttesterKey,
@@ -116,8 +118,6 @@ pub struct Actors {
 /// account with the client. The wallet materializes on-chain with its first transaction.
 async fn create_wallet(hc: &mut HarnessClient) -> Result<Account> {
     let key = AuthSecretKey::new_falcon512_poseidon2();
-    // v16: `AuthSingleSig::new` now takes an `Approver` (pubkey commitment + auth scheme) rather
-    // than the two loose args (miden-standards 0.16 auth/singlesig.rs; approver.rs `Approver::new`).
     let auth = AuthSingleSig::new(Approver::new(
         key.public_key().to_commitment(),
         AuthSchemeId::Falcon512Poseidon2,
@@ -125,7 +125,7 @@ async fn create_wallet(hc: &mut HarnessClient) -> Result<Account> {
 
     let account = AccountBuilder::new(os_seed())
         .account_type(AccountType::Public)
-        .with_auth_component(auth)
+        .with_component(auth)
         .with_component(BasicWallet)
         .build_with_schema_commitment()
         .context("building a wallet account")?;

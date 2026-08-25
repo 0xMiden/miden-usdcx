@@ -21,13 +21,12 @@ use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{Note, NoteId, NoteTag};
 use miden_protocol::transaction::InputNote;
-use miden_protocol::Word;
+use miden_protocol::{Felt, Word};
 
-use miden_standards::account::access::{Ownable2Step, PausableStorage};
+use miden_standards::account::access::{PausableStorage, RoleBasedAccessControl};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::MinBurnAmount;
-use miden_standards::interop::eth::EthEmbeddedAccountId;
-use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, IDENTIFIER_CONFIG_SLOT_LABEL};
+use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
 
 use crate::client::HarnessClient;
 use crate::mintburn::MintDomainConfig;
@@ -83,23 +82,15 @@ pub(crate) fn min_burn(account: &Account) -> Result<u64> {
         .context("reading the stock MinBurnAmount floor slot")
 }
 
-/// The faucet's configured `domain` (element 0 of the domain-config slot) — the value the structural validation mint
+/// The faucet's configured `domain` (element 0 of the domain-config slot) — the value the mint
 /// gate compares a mint's `remoteDomain` against. Read from the DEPLOYED faucet so the `--faucet-id`
 /// mint carries the RIGHT domain (a domain id is a u32, so an out-of-u32 slot value is an error).
 pub(crate) fn domain_config(account: &Account) -> Result<u32> {
-    let raw = value_slot(account, XReserveFaucetExtension::domain_config_slot())?[0].as_canonical_u64();
+    let raw =
+        value_slot(account, XReserveFaucetExtension::domain_config_slot())?[0].as_canonical_u64();
     u32::try_from(raw).map_err(|_| {
         anyhow::anyhow!("faucet domain-config slot holds {raw}, which does not fit a u32 domain id")
     })
-}
-
-/// The faucet's configured identifier key (the structural validation `remoteToken` compare target): the stored
-/// `bytes32_to_storage_map_key(identifier_bytes)` Word. Used to VERIFY a resolved mint config's `remote_token`
-/// hashes to what the deployed faucet actually stored, before any mint is emitted.
-pub(crate) fn identifier_config(account: &Account) -> Result<Word> {
-    let name = StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
-        .context("the identifier slot label is a valid constant")?;
-    value_slot(account, &name)
 }
 
 /// `true` iff the faucet's `is_paused` slot is set (non-zero element 0).
@@ -117,6 +108,27 @@ pub(crate) fn used_nonce_marker(account: &Account, key: Word) -> Result<Word> {
         .map_err(|e| anyhow::anyhow!("reading usedNonces[{key:?}]: {e}"))
 }
 
+/// Whether `member` holds the built-in `ADMIN` role on the faucet, read from the committed RBAC
+/// membership map. `ADMIN` is the account's sole authority handle — there is no owner slot — so this
+/// is the ground truth for who can drive the ADMIN-gated setters.
+pub(crate) fn holds_admin(account: &Account, member: AccountId) -> Result<bool> {
+    let role = RoleBasedAccessControl::admin_role();
+    let key = Word::from([
+        Felt::ZERO,
+        Felt::from(&role),
+        member.suffix(),
+        member.prefix().as_felt(),
+    ]);
+    account
+        .storage()
+        .get_map_item(
+            RoleBasedAccessControl::role_membership_slot(),
+            StorageMapKey::new(key),
+        )
+        .map(|w| !is_zero_word(w))
+        .map_err(|e| anyhow::anyhow!("reading the ADMIN membership of {member}: {e}"))
+}
+
 pub(crate) fn attester_marker(account: &Account, commitment: Word) -> Result<Word> {
     account
         .storage()
@@ -125,26 +137,6 @@ pub(crate) fn attester_marker(account: &Account, commitment: Word) -> Result<Wor
             StorageMapKey::new(commitment),
         )
         .map_err(|e| anyhow::anyhow!("reading xReserveAttesters[{commitment:?}]: {e}"))
-}
-
-/// The committed Ownable2Step ownership: `(current_owner, nominated_owner)`. `nominated_owner` is
-/// `None` when no 2-step transfer is pending (the nominee half of the word is all-zero). This is the
-/// GROUND TRUTH used by the finally-phase restore — never a client-side boolean that a failed/unseen
-/// accept could leave stale.
-pub(crate) fn owner_config(account: &Account) -> Result<(AccountId, Option<AccountId>)> {
-    let w = value_slot(account, Ownable2Step::slot_name())?;
-    let owner = AccountId::try_from_elements(w[0], w[1])
-        .map_err(|e| anyhow::anyhow!("decoding owner_config current owner: {e}"))?;
-    let e = word4(w);
-    let nominated = if e[2] == 0 && e[3] == 0 {
-        None
-    } else {
-        Some(
-            AccountId::try_from_elements(w[2], w[3])
-                .map_err(|e| anyhow::anyhow!("decoding owner_config nominated owner: {e}"))?,
-        )
-    };
-    Ok((owner, nominated))
 }
 
 fn wallet_balance(account: &Account, faucet_id: AccountId) -> u64 {
@@ -186,11 +178,13 @@ fn policed_faucet_foreign(note: &Note, faucet_id: AccountId) -> Result<Vec<Forei
 pub(crate) struct SanityDriver {
     pub(crate) hc: HarnessClient,
     pub(crate) faucet_id: AccountId,
-    /// The domain config every mint payload must carry so the structural validation gate accepts it. `None` on the
-    /// fresh-LOCAL full gate (mints use the [`crate::mintburn::BASE_VECTOR`] header unchanged);
-    /// `Some` on the existing-faucet (`--faucet-id`) re-check — resolved once from the DEPLOYED
-    /// faucet's on-chain `domain` + `EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()`, then applied to EVERY mint
-    /// (positives, negatives, and burn-funding), since all target the same faucet.
+    /// The domain config every mint payload must carry so the rebuilt message matches it. Both run
+    /// modes resolve a `Some` here and apply it to EVERY mint (positives, negatives, and
+    /// burn-funding), since all target the same faucet: the fresh-LOCAL gate pairs the build-seed
+    /// `MINT_DOMAIN` with the new faucet's own id, and the existing-faucet (`--faucet-id`) re-check
+    /// reads the DEPLOYED faucet's on-chain `domain` and pairs it with that faucet's own id. `None`
+    /// selects the untouched [`crate::mintburn::BASE_VECTOR`] header — the seam's identity case,
+    /// which only the offline splice tests use.
     pub(crate) mint_config: Option<MintDomainConfig>,
 }
 
@@ -291,33 +285,6 @@ impl SanityDriver {
         }
     }
 
-    /// Path N with a nullifier-based completion check: emit `note`, then poll until the faucet has
-    /// consumed it (its nullifier is recorded on-chain). For admin ops whose effect is not a readable
-    /// storage slot (ownership transfer/accept). Returns the note's consume block.
-    pub(crate) async fn commit_via_ntx_consumed(
-        &mut self,
-        sender: AccountId,
-        note: Note,
-        op: &str,
-    ) -> Result<u32> {
-        self.emit(sender, note.clone())
-            .await
-            .with_context(|| format!("emitting the {op} note"))?;
-        let deadline = Instant::now() + PATHN_TIMEOUT;
-        loop {
-            if let Some(block) = self.note_spent_block(&note).await? {
-                return Ok(block);
-            }
-            if Instant::now() > deadline {
-                bail!(
-                    "path-N consumption of '{op}' timed out after {PATHN_TIMEOUT:?} — the ntx-builder \
-                     did not consume the routed allowlisted note"
-                );
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-    }
-
     /// Node-truth exact-tag discovery: does the node's `SyncNotes` (filtered to `tag`) return the
     /// committed `note_id`? This is the attester's real B3 discovery RPC — proving the burn note is
     /// findable on-chain by its fixed tag, not just decodable from an in-memory copy.
@@ -337,26 +304,6 @@ impl SanityDriver {
             .await
             .map_err(|e| anyhow::anyhow!("SyncNotes(tag={tag:#010x}): {e}"))?;
         Ok(blocks.iter().any(|b| b.notes.contains_key(&note_id)))
-    }
-
-    /// Node-truth: the block `note`'s nullifier was spent in (`None` if not yet spent).
-    pub(crate) async fn note_spent_block(&mut self, note: &Note) -> Result<Option<u32>> {
-        self.sync().await?;
-        let nullifier = note.nullifier();
-        let heights = self
-            .hc
-            .rpc
-            .get_nullifier_commit_heights(
-                std::collections::BTreeSet::from([nullifier]),
-                BlockNumber::from(0u32),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("querying nullifier commit heights: {e}"))?;
-        Ok(heights
-            .get(&nullifier)
-            .copied()
-            .flatten()
-            .map(|b| b.as_u32()))
     }
 
     /// Client-side execute of the faucet consuming `note` (NO submission). Ok = ACCEPTED, a trap =

@@ -1,7 +1,7 @@
 //! Lifecycle of the **v16** local Miden node stack.
 //!
 //! The v16 node is multi-service and has no `bundled` mode; its authoritative bring-up is the client
-//! repo's `scripts/start-test-node.sh`, which installs (cached) and starts the four v0.16.0-alpha.2
+//! repo's `scripts/start-test-node.sh`, which installs (cached) and starts the four v16
 //! services in order — `miden-validator`, `miden-node` (sequencer), `miden-ntx-builder`,
 //! `miden-remote-prover` — on RPC `57291`, generating a fresh isolated genesis each time. This module
 //! DELEGATES to that script (and `stop-test-node.sh`) rather than re-implementing the v0.15-era

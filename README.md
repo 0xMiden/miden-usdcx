@@ -16,7 +16,7 @@ plus the Rust encoding library and validation harness that support it.
 | `crates/xusdc-encoding/asm/components/faucet_extension/` | What the faucet adds on top of the stock fungible faucet: the attestation mint policy and the attester allowlist setter, and nothing else. |
 | `crates/xusdc-encoding/asm/notes/` | The public admin note scripts, one Miden project each (the mint note is the STOCK miden-standards `MintNote`). |
 | `crates/xusdc-encoding/` | Rust crate: the encoding library (the Rust mirror of the MASM codecs — bytes32 hashing, uint256→amount reduction, DepositIntent parse), the `XReserveStablecoinBuilder` that composes the faucet account, golden test vectors, the `build.rs` that assembles every MASM project above, and the **execute** test suite. |
-| `crates/xusdc-validation/` | Rust crate: the local-node validation harness that deploys the production faucet to a real Miden node and drives the mint/burn/admin acceptance matrix (rows `A`–`L`). |
+| `crates/xusdc-validation/` | Rust crate: the local-node validation harness that deploys the production faucet to a real Miden node and drives the mint/burn/admin acceptance matrix (rows `A` + `C`–`L`). |
 | `docs/` | `ARCHITECTURE.md`: how the faucet fits together, the mint and burn paths, and where the trust boundaries sit. `DEVIATIONS.md`: where the implementation deliberately deviates from Circle's spec, plus the known open items. Auditors: start with these two. |
 
 ## How it works
@@ -98,27 +98,28 @@ cross-implementation vectors — against a mock chain.
 ### Real-local-node validation — **un-parked to v16 (offline); live-node rows operator-run**
 
 `crates/xusdc-validation` deploys the production faucet to a **real Miden node** and drives the
-mint/burn/admin acceptance matrix (rows `A`–`L`). Since the v16-alpha `miden-client`
-(`=0.16.0-alpha.1`, which itself pins protocol `=0.16.0-alpha.4`) shipped, the crate is a
-**workspace member again** and builds against this tree. The **offline** half runs
-in the normal workspace gate — `cargo build --workspace --locked` compiles the lib, the `lnv*`
-binaries, and the row test files, and `cargo test --workspace --locked` runs the crate's
-non-ignored (sandbox-safe, no-node) tests.
+mint/burn/admin acceptance matrix — **eleven rows, `A` + `C`–`L`**. There is no row `B`: the
+faucet's identifier is its own account id, derived on chain, so the init-once note and the slot it
+wrote no longer exist. `miden-client` `=0.16.0-rc.1` requires protocol `^0.16.0-rc.4`, which the
+workspace pin satisfies, so the crate is a **workspace member** and builds against this tree. The
+**offline** half runs in the normal workspace gate — `cargo build --workspace --locked` compiles the
+lib, the `lnv*` binaries, and the row test files, and `cargo test --workspace --locked` runs the
+crate's non-ignored (sandbox-safe, no-node) tests.
 
-The **live-node** rows — the real four-service-stack deploy/drive that needs the node binaries on
-`PATH` and loopback ports `57291–57294` free — stay `#[ignore]`d in the default suite and are
-operator-run.
+The **live-node** rows — the real four-service-stack deploy/drive that needs a v16 client-repo
+checkout (`MIDEN_V16_NODE_DIR`) and loopback ports `57291` / `50101` / `50301` / `50051` free — stay
+`#[ignore]`d in the default suite and are operator-run.
 
 Each gate binary bootstraps genesis, starts the four-service node stack (validator, ntx-builder,
 sequencer, tx prover), runs its rows, and tears the stack down:
 
 ```sh
-# LIVE-NODE commands (operator-run, P1b-b — need the node binaries on PATH):
-cargo run -p xusdc-validation --bin lnv1_rows_ab      # rows A/B — deploy + identifier init-once
+# LIVE-NODE commands (operator-run — need the v16 node toolchain):
+cargo run -p xusdc-validation --bin lnv1_rows_ab      # row A — deploy + recognize
 cargo run -p xusdc-validation --bin lnv2_rows_cf      # rows C/F — admin suite + auth boundary
 cargo run -p xusdc-validation --bin lnv3_rows_de      # rows D/E — mint lifecycle + negatives
 cargo run -p xusdc-validation --bin lnv4_rows_gj      # rows G/H/I/J — burn two-block + F7 + conservation
-cargo run -p xusdc-validation --bin lnv5_full_matrix  # the consolidated A–L §11.2 gate run on one fresh node
+cargo run -p xusdc-validation --bin lnv5_full_matrix  # the consolidated §11.2 gate run (rows A + C–L) on one fresh node
 cargo run -p xusdc-validation --bin lnv_stack -- up [label]   # bring a stack up and leave it running (`-- down <run-root>` to stop)
 ```
 

@@ -2,174 +2,98 @@
 //!
 //! EXACTLY the production shape, consumed by reference (single-owner rule — nothing here
 //! re-implements the shared-encoding crate's encoding or the faucet component's composition):
-//! - the `xreserve` MASM library assembled from the shipped `asm/standards/xreserve` tree
-//!   (`xusdc_encoding::xreserve_asm_dir()`), all seven caller-declared slots EMPTY at declaration —
-//!   the builder BUILD-SEEDS `domain`/`source_domain`/`xreserve_contract_{hi,lo}` from the required
-//!   `with_domain_config` input (Wave-1 S1, DEC-4), and the `identifier` slot's ONLY production
-//!   writer is the post-deploy `identifier_init` admin note (the minimized replacement of the
-//!   former four-field `domain_init`);
+//! - the `xreserve` faucet extension, whose MASM is assembled at build time by `xusdc-encoding` and
+//!   embedded in the shipped `XReserveFaucetExtension` component. Its six slots are seeded by the
+//!   builder: `domain`/`source_domain`/`xreserve_contract_{hi,lo}` from the required domain-config
+//!   inputs, plus the two empty maps (the nonce registry and the attester allowlist). The faucet's
+//!   identifier is NOT among them — it is the account's own id, which the mint path reads from the
+//!   kernel, so there is no identifier slot and nothing to initialize post-deploy;
 //! - `FungibleFaucet` with the shipped token config (USDCx / on-chain `USDCX`, 6 decimals,
-//!   mutable max supply, zero initial supply);
+//!   mutable max supply, zero initial supply), built by the builder from `max_supply`;
 //! - `XReserveStablecoinBuilder::build_components()` (the ATTESTATION mint policy active on the
-//!   stock mint path, the stock `MinBurnAmount` burn policy, Ownable2Step owner, seeded DOM roles,
-//!   OwnerControlled authority);
-//! - finalized for deploy with `AccountBuilder::with_auth_component(auth_component())` — the
-//!   stock `AuthNetworkAccount` under the frozen 12-root note allowlist + the single-root tx-script
-//!   allowlist (the `ExpirationTransactionScript` root; v16 no longer ships an empty tx-script
-//!   allowlist).
+//!   stock mint path, the stock `MinBurnAmount` burn policy, the seeded RBAC roles — `ADMIN` on the
+//!   owner, `DOM_PAUSER`/`DOM_MANAGER`/`BLK_MANAGER` on their holders — under the
+//!   `XReserveAdminAuthority`);
+//! - finalized for deploy by `XReserveStablecoinBuilder::build_account`, which installs the stock
+//!   `AuthNetworkAccount` under the frozen note allowlist + the single-root tx-script allowlist
+//!   (the `ExpirationTransactionScript` root).
 //!
-//! MockChain finalizes the same composition via `Auth::NetworkAccount` in the repo's F5 suite;
-//! this is the REAL-deploy twin of that fixture. The `_seeded` variant exists for SYNTHETIC
-//! assertion fixtures only (a pre-initialized identifier slot — the builder validates slot
-//! PRESENCE, not emptiness); the deploy path always ships the identifier EMPTY.
-
-use std::sync::Arc;
+//! The `fee_parameters` come from the chain the faucet is deployed to (the latest block header's
+//! fee parameters — see [`crate::client::node_fee_parameters`]): the auth component prices every
+//! allowlisted note against them, so a faucet built with foreign fee parameters would carry a fee
+//! schedule the node disagrees with.
+//!
+//! MockChain finalizes the same composition in the repo's F5 suite; this is the REAL-deploy twin of
+//! that fixture. [`production_components`] is public so the synthetic assertion fixtures can compose
+//! the same component set into an EXISTING (nonce-1) account, which the deploy path cannot produce.
 
 use anyhow::{Context, Result};
-use miden_protocol::account::component::AccountComponentMetadata;
-use miden_protocol::account::{
-    Account, AccountBuilder, AccountComponent, AccountId, AccountType, AssetCallbackFlag,
-    StorageSlot, StorageSlotName,
-};
-use miden_protocol::assembly::{Linkage, Path as MasmPath};
-use miden_protocol::asset::{AssetAmount, TokenSymbol};
-use miden_protocol::transaction::TransactionKernel;
-use miden_protocol::{Felt, Word};
-use miden_standards::account::faucets::{FungibleFaucet, TokenName};
-use miden_standards::account::inspection::AccountBuilderSchemaCommitmentExt;
-use miden_standards::StandardsLib;
-use xusdc_encoding::account::xreserve::{
-    XReserveFaucetExtension, XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL, USDCX_DECIMALS,
-};
-use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
+use miden_protocol::account::{Account, AccountComponent, AccountId};
+use miden_protocol::asset::AssetAmount;
+use miden_protocol::block::FeeParameters;
+use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 
 use crate::config::DomainParams;
 
-/// Assembles the shipped `xreserve` library and binds it with the seven caller-declared storage
-/// slots. With `domain: None` (the deploy path) all slots are EMPTY; with `Some(params)` the
-/// `domain`/`source_domain`/`xreserve_contract` slots are pre-seeded at the params' values (the
-/// builder overwrites them from `with_domain_config` either way). The IDENTIFIER slot ALWAYS ships
-/// EMPTY: the recomposed builder REJECTS a build-seeded identifier (the DEC-4 account-id fixpoint can
-/// never be build-seeded — the `identifier_init` note is its only writer, post-deploy). Synthetic
-/// fixtures that need the post-init shape write the own-id key into the built account (whose id is
-/// then immutable), mirroring the real deploy.
-pub fn build_xreserve_component_seeded(domain: Option<&DomainParams>) -> Result<AccountComponent> {
-    // The same assembler shape as the repo's F5 fixtures: kernel assembler + StandardsLib (the
-    // admin procs call stock authority/pausable/ownable2step procs living there).
-    // v16 assembler API: `with_dynamic_library(lib)` →
-    // `with_package(Arc<Package>, Linkage::Dynamic)`, and `assemble_library_from_dir(dir, name)` →
-    // `assemble_library_from_root(dir/mod.masm, Some(MasmPath))` (returns a `Box<Library>`).
-    let assembler = TransactionKernel::assembler()
-        .with_package(Arc::new(StandardsLib::default().into()), Linkage::Dynamic)
-        .map_err(|e| anyhow::anyhow!("linking StandardsLib into the xreserve assembler: {e}"))?
-        .with_warnings_as_errors(true);
-    let library = *assembler
-        .assemble_library_from_root(
-            xusdc_encoding::xreserve_asm_dir().join("mod.masm"),
-            Some(MasmPath::new("xreserve")),
-        )
-        .map_err(|e| anyhow::anyhow!("the shipped xreserve library failed to assemble: {e}"))?;
-
-    let empty = Word::empty();
-    let (domain_w, identifier_w, source_domain_w, xrc_hi_w, xrc_lo_w) = match domain {
-        None => (empty, empty, empty, empty, empty),
-        Some(p) => {
-            let packed = bytes32_to_packed_felts(p.xreserve_contract.as_bytes());
-            (
-                Word::from([Felt::from(p.domain), Felt::ZERO, Felt::ZERO, Felt::ZERO]),
-                // The identifier ALWAYS ships EMPTY — the builder rejects a build-seeded identifier
-                // (the account-id fixpoint; the identifier_init note is its only writer).
-                empty,
-                Word::from([
-                    Felt::from(p.source_domain),
-                    Felt::ZERO,
-                    Felt::ZERO,
-                    Felt::ZERO,
-                ]),
-                Word::from([packed[0], packed[1], packed[2], packed[3]]),
-                Word::from([packed[4], packed[5], packed[6], packed[7]]),
-            )
-        }
-    };
-
-    let slot = |name: &StorageSlotName, word: Word| StorageSlot::with_value(name.clone(), word);
-    let identifier_name = StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)
-        .context("the identifier slot label is a valid constant")?;
-
-    AccountComponent::new(
-        library,
-        vec![
-            slot(XReserveFaucetExtension::domain_config_slot(), domain_w),
-            slot(&identifier_name, identifier_w),
-            slot(
-                XReserveFaucetExtension::source_domain_config_slot(),
-                source_domain_w,
-            ),
-            slot(XReserveFaucetExtension::xreserve_contract_hi_slot(), xrc_hi_w),
-            slot(XReserveFaucetExtension::xreserve_contract_lo_slot(), xrc_lo_w),
-            StorageSlot::with_empty_map(XReserveFaucetExtension::used_nonces_slot().clone()),
-            StorageSlot::with_empty_map(XReserveFaucetExtension::xreserve_attesters_slot().clone()),
-        ],
-        AccountComponentMetadata::new("xusdc-production-faucet"),
-    )
-    .context("binding the xreserve library + all seven slots as a component")
-}
-
-/// The deploy-path `xreserve` component: the shipped library + all seven slots EMPTY.
-pub fn build_xreserve_component() -> Result<AccountComponent> {
-    build_xreserve_component_seeded(None)
-}
-
-/// Runs the supplied `xreserve` component through `XReserveStablecoinBuilder` with the shipped
-/// token config and the given admin ids, returning the full production component list. `domain`
-/// supplies the three BUILD-SEEDED domain-config fields the recomposed builder REQUIRES
-/// (`with_domain_config`: `domain`, `source_domain`, `xreserve_contract` — DEC-4); its
-/// `identifier_bytes` are NOT consumed here — the identifier is seeded post-deploy by the
-/// `identifier_init` admin note.
-pub fn production_components(
-    xreserve_component: AccountComponent,
+/// Assembles the production builder from the run's admin ids, supply cap, domain config, and the
+/// chain's fee parameters. The faucet starts at zero supply; its min-burn floor is left at the
+/// builder's default.
+fn production_builder(
     owner: AccountId,
     pauser: AccountId,
     manager: AccountId,
     blk_manager: AccountId,
     max_supply: u64,
     domain: &DomainParams,
-) -> Result<Vec<AccountComponent>> {
-    let faucet = FungibleFaucet::builder()
-        .name(TokenName::new("USDCx").context("the USDCx token name")?)
-        .symbol(TokenSymbol::new("USDCX").context("the USDCX token symbol")?)
-        .decimals(USDCX_DECIMALS)
+    fee_parameters: FeeParameters,
+) -> Result<XReserveStablecoinBuilder> {
+    XReserveStablecoinBuilder::builder()
         .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(0).context("zero token_supply")?)
-        .is_max_supply_mutable(true)
+        .owner(owner)
+        .pauser_holder(pauser)
+        .manager_holder(manager)
+        .blocklist_manager_holder(blk_manager)
+        .fee_parameters(fee_parameters)
+        .domain(domain.domain)
+        .source_domain(domain.source_domain)
+        .xreserve_contract(domain.xreserve_contract)
         .build()
-        .context("building the FungibleFaucet component")?;
+        .map_err(|e| anyhow::anyhow!("composing the production faucet builder: {e}"))
+}
 
-    XReserveStablecoinBuilder::new(
-        faucet,
-        xreserve_component,
+/// The full production component list for the given admin ids, supply cap, and domain config.
+pub fn production_components(
+    owner: AccountId,
+    pauser: AccountId,
+    manager: AccountId,
+    blk_manager: AccountId,
+    max_supply: u64,
+    domain: &DomainParams,
+    fee_parameters: FeeParameters,
+) -> Result<Vec<AccountComponent>> {
+    production_builder(
         owner,
         pauser,
         manager,
         blk_manager,
-    )
-    .with_domain_config(
-        domain.domain,
-        domain.source_domain,
-        domain.xreserve_contract,
-    )
+        max_supply,
+        domain,
+        fee_parameters,
+    )?
     .build_components()
     .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))
 }
 
-/// Builds the deployable production faucet `Account` (new, nonce 0, seed embedded) under the
-/// frozen `AuthNetworkAccount` auth component, using `init_seed` for the account-id derivation.
-/// `domain` supplies the three build-seeded domain-config fields (see [`production_components`]);
-/// the identifier slot ships EMPTY (the `identifier_init` note is its only writer).
-/// The account id is created `AssetCallbackFlag::Enabled` (F4-reversal): the transfer blocklist is
-/// wired as the active send + receive policy, so the kernel dispatches the policy callbacks on every
-/// transfer — a REQUIREMENT that is an immutable property of the account id (building Disabled would
-/// silently disable the callbacks, the audited foot-gun).
+/// Builds the deployable production faucet `Account` (new, nonce 0, seed embedded) under the frozen
+/// `AuthNetworkAccount` auth component, using `init_seed` for the account-id derivation.
+///
+/// The account id is created `AssetCallbackFlag::Enabled`: the transfer blocklist is wired as the
+/// active send + receive policy, so the kernel dispatches the policy callbacks on every transfer — a
+/// REQUIREMENT that is an immutable property of the account id (building Disabled would silently
+/// disable the callbacks, the audited foot-gun). The builder derives the flag from the composition
+/// itself, so it cannot drift from the installed policy.
+#[allow(clippy::too_many_arguments)]
 pub fn build_faucet_account(
     owner: AccountId,
     pauser: AccountId,
@@ -177,26 +101,18 @@ pub fn build_faucet_account(
     blk_manager: AccountId,
     max_supply: u64,
     domain: &DomainParams,
+    fee_parameters: FeeParameters,
     init_seed: [u8; 32],
 ) -> Result<Account> {
-    let xreserve_component = build_xreserve_component()?;
-    let components = production_components(
-        xreserve_component,
+    production_builder(
         owner,
         pauser,
         manager,
         blk_manager,
         max_supply,
         domain,
-    )?;
-    let auth = XReserveStablecoinBuilder::auth_component()
-        .map_err(|e| anyhow::anyhow!("building the frozen AuthNetworkAccount component: {e}"))?;
-
-    AccountBuilder::new(init_seed)
-        .account_type(AccountType::Public)
-        .with_asset_callbacks(AssetCallbackFlag::Enabled)
-        .with_auth_component(auth)
-        .with_components(components)
-        .build_with_schema_commitment()
-        .context("building the deployable production faucet account")
+        fee_parameters,
+    )?
+    .build_account(init_seed)
+    .map_err(|e| anyhow::anyhow!("building the deployable production faucet account: {e}"))
 }

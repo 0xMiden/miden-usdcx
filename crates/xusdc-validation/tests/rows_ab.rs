@@ -1,18 +1,16 @@
-//! LNV-1 test suite — matrix rows A (deploy + recognize) and B (`identifier_init` init-once —
-//! the Wave-1 S1 retarget of the former `domain_init` row), written TEST-FIRST against the
-//! assertion suite + driver API.
+//! LNV-1 test suite — matrix row A (deploy + recognize), written TEST-FIRST against the assertion
+//! suite + driver API.
 //!
 //! Two layers:
-//! 1. **The real-node E2E** (`lnv1_rows_ab_against_real_local_node`): boots a FRESH local
-//!    v0.15.1 stack, deploys the production faucet via path C, drives `identifier_init` #1/#2, and
-//!    judges the observations with the row-A/B assertion suite. This is the gate run for this
-//!    slice; it needs the pinned node binaries installed (`miden-node`/`miden-validator`/
-//!    `miden-ntx-builder`/`miden-remote-prover`) and free loopback ports 57291–57294. It is
-//!    `#[ignore]`d in the DEFAULT suite because it requires loopback LISTENER binds, which
-//!    hermetic audit sandboxes deny (`Operation not permitted` on bind) — run it explicitly:
-//!    `cargo test -p xusdc-validation --locked -- --include-ignored` (or the `lnv1_rows_ab`
-//!    binary). The full-matrix gate claim ("rows A/B pass on a REAL node") rides ONLY on such real
-//!    runs plus the LNV-1 human supervision gate — a green DEFAULT suite is NEVER the gate.
+//! 1. **The real-node E2E** (`lnv1_rows_ab_against_real_local_node`): boots a FRESH local v16 stack,
+//!    deploys the production faucet via path C, and judges the observations with the row-A assertion
+//!    suite. This is the gate run for this slice; it needs the node toolchain installed and free
+//!    loopback ports. It is `#[ignore]`d in the DEFAULT suite because it requires loopback LISTENER
+//!    binds, which hermetic audit sandboxes deny (`Operation not permitted` on bind) — run it
+//!    explicitly: `cargo test -p xusdc-validation --locked -- --include-ignored` (or the
+//!    `lnv1_rows_ab` binary). The full-matrix gate claim ("row A passes on a REAL node") rides ONLY
+//!    on such real runs plus the LNV-1 human supervision gate — a green DEFAULT suite is NEVER the
+//!    gate.
 //! 2. **Assertion negatives** (no node, sandbox-safe — the default suite): synthetic
 //!    observations built from REAL production-composition accounts, each proving one row-check
 //!    actually rejects the state it exists to reject — a silently-weakened assertion suite
@@ -21,20 +19,31 @@
 use anyhow::Result;
 use miden_protocol::account::{
     Account, AccountBuilder, AccountId, AccountIdVersion, AccountType, AssetCallbackFlag,
-    StorageSlotName,
 };
-use miden_protocol::Word;
+use miden_protocol::block::FeeParameters;
+use miden_protocol::utils::serde::Deserializable;
+use miden_protocol::Felt;
 use miden_standards::account::auth::AuthNetworkAccount;
-use xusdc_encoding::account::xreserve::{XReserveStablecoinBuilder, IDENTIFIER_CONFIG_SLOT_LABEL};
-use xusdc_encoding::note::xreserve_admin::XReserveIdentifierInitNote;
-use xusdc_validation::assertions::{assert_row_a, assert_row_b, ERR_IDENTIFIER_REINIT_TEXT};
+use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
+use miden_standards::tx_script::ExpirationTransactionScript;
+use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
+use xusdc_encoding::xreserve::encoding::{
+    DepositIntent, EncodingError, ForeignChainAddress, MintIntent,
+};
+use xusdc_validation::assertions::assert_row_a;
 use xusdc_validation::config::{repo_root, DomainParams, RunConfig};
-use xusdc_validation::deploy::{build_xreserve_component_seeded, production_components};
+use xusdc_validation::deploy::{build_faucet_account, production_components};
 use xusdc_validation::evidence::write_evidence;
+use xusdc_validation::mintburn;
 use xusdc_validation::observations::RowsAbObservations;
 use xusdc_validation::rows_ab::run_rows_ab;
 
 const MAX_SUPPLY: u64 = 1_000_000_000_000;
+
+/// The raw uint256 amount and fee ceiling the identity-binding fixture's deposit intent carries.
+/// Neither is read by the structural gate; they only have to be a well-formed pair.
+const MINT_AMOUNT_RAW: u64 = 100;
+const MINT_MAX_FEE_RAW: u64 = 1;
 
 // ── synthetic-fixture helpers ────────────────────────────────────────────────────────────────
 
@@ -48,82 +57,45 @@ fn wallet_id(seed: u8) -> AccountId {
     )
 }
 
-/// The identifier-slot shape of a synthetic post-deploy faucet. The identifier is BOUND to the
-/// faucet id (the R2 identifier-binding fix): it is DERIVED from the id, never caller-chosen. This
-/// mirrors the real deploy — the account id is fixed by the EMPTY-identifier component, then
-/// `identifier_init` writes the own-id key into the (immutable-id) account.
-#[derive(Clone, Copy)]
-enum Identifier {
-    /// Empty slot — `identifier_init` never executed.
-    Uninitialized,
-    /// The own-id fixpoint key `identifier_for(faucet_id)` — the correct post-init shape.
-    OwnId,
-    /// An explicit WRONG value in the slot — a corrupted / breached identifier (a negative fixture).
-    Wrong(Word),
+/// Fee parameters for the synthetic fixtures. A real run reads these from the chain it deploys to;
+/// the row-A checks do not read the fee schedule, only the composition around it.
+fn fee_parameters() -> FeeParameters {
+    FeeParameters::new(wallet_id(5), 0)
 }
 
-/// A production-shaped faucet `Account` with nonce 1 (as if deployed). The three build-seeded fields
-/// always come from `build_seed` (the recomposed builder REQUIRES them — they exist from
-/// construction and have no runtime writer). `auth_override` optionally REPLACES the frozen
-/// production auth. The identifier slot is written POST-BUILD per `identifier`: the account id is
-/// derived from the EMPTY-identifier component (exactly as the real deploy fixes it), then the
-/// identifier is set into the account whose id is now immutable — the faithful twin of the
-/// post-deploy `identifier_init` write (which cannot be a build seed: the own-id key is a fixpoint of
-/// the id the build produces).
+/// A production-shaped faucet `Account` with nonce 1 (as if deployed), its four domain-config fields
+/// build-seeded from `build_seed` (the builder REQUIRES them — they exist from construction and have
+/// no runtime writer). `auth_override` optionally REPLACES the frozen production auth.
 fn synthetic_deployed_faucet(
-    identifier: Identifier,
     build_seed: &DomainParams,
     auth_override: Option<AuthNetworkAccount>,
 ) -> Result<Account> {
-    // Ship the identifier EMPTY so the id is derived from the empty-identifier component (as the real
-    // deploy does); the builder still seeds domain/source_domain/xreserve_contract from `build_seed`.
-    let xreserve = build_xreserve_component_seeded(None)?;
     let components = production_components(
-        xreserve,
         wallet_id(1),
         wallet_id(2),
         wallet_id(3),
         wallet_id(4),
         MAX_SUPPLY,
         build_seed,
+        fee_parameters(),
     )?;
     let auth = match auth_override {
         Some(auth) => auth,
-        None => XReserveStablecoinBuilder::auth_component()?,
+        None => XReserveStablecoinBuilder::auth_component(fee_parameters())?,
     };
-    let mut account = AccountBuilder::new([7u8; 32])
+    Ok(AccountBuilder::new([7u8; 32])
         .account_type(AccountType::Public)
         .with_asset_callbacks(AssetCallbackFlag::Enabled)
-        .with_auth_component(auth)
+        .with_components(auth)
         .with_components(components)
-        .build_existing()?;
-
-    // Post-build identifier write — the id is fixed now, so this is the exact post-deploy
-    // `identifier_init` shape (the own-id key, or a negative value, without changing the id).
-    let value = match identifier {
-        Identifier::Uninitialized => None,
-        Identifier::OwnId => Some(XReserveIdentifierInitNote::identifier_for(account.id())),
-        Identifier::Wrong(word) => Some(word),
-    };
-    if let Some(word) = value {
-        let slot = StorageSlotName::new(IDENTIFIER_CONFIG_SLOT_LABEL)?;
-        account.storage_mut().set_item(&slot, word)?;
-    }
-    Ok(account)
+        .build_existing()?)
 }
 
-/// A foreign own-id identifier (a DIFFERENT account's key) — guaranteed distinct from any faucet's
-/// own-id key, so it is a valid "wrong identifier" negative for the post-reinit read-back.
-fn foreign_identifier() -> Word {
-    XReserveIdentifierInitNote::identifier_for(wallet_id(9))
-}
-
-/// A green-shaped observation set around `deployed`/`after_reinit` (callers then break exactly
-/// the one surface their test targets).
-fn synthetic_obs(deployed: Option<Account>, after_reinit: Option<Account>) -> RowsAbObservations {
+/// A green-shaped observation set around `deployed` (callers then break exactly the one surface
+/// their test targets).
+fn synthetic_obs(deployed: Option<Account>) -> RowsAbObservations {
     let faucet_id = deployed
         .as_ref()
-        .or(after_reinit.as_ref())
         .map(Account::id)
         .unwrap_or_else(|| wallet_id(9));
     RowsAbObservations {
@@ -134,21 +106,15 @@ fn synthetic_obs(deployed: Option<Account>, after_reinit: Option<Account>) -> Ro
         deploy_block: 1,
         owner_id: wallet_id(1),
         domain_params: DomainParams::lnv1(),
-        reinit_params: DomainParams::lnv1_reinit_attempt(),
-        first_note_id: "0xnote1".to_string(),
-        second_note_id: "0xnote2".to_string(),
-        reinit_error: Some(format!("executor trap: {ERR_IDENTIFIER_REINIT_TEXT}")),
-        after_reinit,
-        second_note_consumed: false,
     }
 }
 
-/// The fully green synthetic shape (post-init faucet, reinit rejected, nothing changed).
+/// The fully green synthetic shape (a deployed faucet carrying the run's build seed).
 fn green_obs() -> Result<RowsAbObservations> {
     let params = DomainParams::lnv1();
-    let deployed = synthetic_deployed_faucet(Identifier::OwnId, &params, None)?;
-    let after = synthetic_deployed_faucet(Identifier::OwnId, &params, None)?;
-    Ok(synthetic_obs(Some(deployed), Some(after)))
+    Ok(synthetic_obs(Some(synthetic_deployed_faucet(
+        &params, None,
+    )?)))
 }
 
 // ── row A negatives ──────────────────────────────────────────────────────────────────────────
@@ -156,7 +122,7 @@ fn green_obs() -> Result<RowsAbObservations> {
 /// Row A must reject a node that does not recognize the deployed account.
 #[test]
 fn row_a_rejects_unrecognized_account() -> Result<()> {
-    let obs = synthetic_obs(None, None);
+    let obs = synthetic_obs(None);
     let err = assert_row_a(&obs).expect_err("row A must fail when GetAccount returns nothing");
     assert!(
         format!("{err:#}").contains("GetAccount"),
@@ -179,11 +145,18 @@ fn row_a_rejects_a_thinned_allowlist() -> Result<()> {
         full.len() - 1,
         "the thinned fixture drops exactly one root"
     );
-    let auth = AuthNetworkAccount::with_allowed_notes(thinned)?;
+    // The production auth shape with ONLY the note set thinned: same fee manager, same one-root
+    // tx-script allowlist, so the row fails on the note allowlist and nothing else.
+    let fee_policy_manager = FeePolicyManager::builder()
+        .fee_faucet_id(fee_parameters().fee_faucet_id())
+        .active_fee_policy(BasicConstantFeePolicy::new().into())
+        .build();
+    let auth = AuthNetworkAccount::custom(thinned, fee_policy_manager)?
+        .with_allowed_tx_scripts([ExpirationTransactionScript::script_root()]);
 
     let params = DomainParams::lnv1();
-    let account = synthetic_deployed_faucet(Identifier::OwnId, &params, Some(auth))?;
-    let obs = synthetic_obs(Some(account), None);
+    let account = synthetic_deployed_faucet(&params, Some(auth))?;
+    let obs = synthetic_obs(Some(account));
     let err = assert_row_a(&obs).expect_err("row A must fail on a thinned allowlist");
     assert!(
         format!("{err:#}").contains("allowlist"),
@@ -202,17 +175,22 @@ fn row_a_accepts_the_production_shape() -> Result<()> {
     Ok(())
 }
 
-// ── row B negatives ──────────────────────────────────────────────────────────────────────────
+// ── row A domain-config read-back negative ───────────────────────────────────────────────────
 
-/// Row B must reject an UNINITIALIZED identifier (an empty identifier slot = identifier_init never
-/// executed; the three build-seeded fields exist from construction — Wave-1 S1).
+/// Row A must reject a faucet whose on-chain domain config does not match the run's build seed —
+/// the read-back is an equality check against the deploy parameters, not a presence check.
 #[test]
-fn row_b_rejects_uninitialized_identifier() -> Result<()> {
-    let params = DomainParams::lnv1();
-    let deployed = synthetic_deployed_faucet(Identifier::Uninitialized, &params, None)?;
-    let after = synthetic_deployed_faucet(Identifier::Uninitialized, &params, None)?;
-    let obs = synthetic_obs(Some(deployed), Some(after));
-    let err = assert_row_b(&obs).expect_err("row B must fail when the identifier slot is empty");
+fn row_a_rejects_a_domain_config_read_back_mismatch() -> Result<()> {
+    // Deployed with an everywhere-different seed; the observation still claims the run's params.
+    let other = DomainParams {
+        domain: 9999,
+        source_domain: 42,
+        xreserve_contract: ForeignChainAddress::new([0xEE; 32]),
+    };
+    let account = synthetic_deployed_faucet(&other, None)?;
+    let obs = synthetic_obs(Some(account));
+    let err =
+        assert_row_a(&obs).expect_err("row A must fail on a domain-config read-back mismatch");
     assert!(
         format!("{err:#}").contains("read-back"),
         "the failure must name the read-back mismatch, got: {err:#}"
@@ -220,89 +198,123 @@ fn row_b_rejects_uninitialized_identifier() -> Result<()> {
     Ok(())
 }
 
-/// Row B must reject a run whose second identifier_init did NOT fail (init-once did not hold).
-#[test]
-fn row_b_requires_a_reinit_failure() -> Result<()> {
-    let mut obs = green_obs()?;
-    obs.reinit_error = None;
-    let err = assert_row_b(&obs).expect_err("row B must fail when the reinit attempt succeeded");
-    assert!(
-        format!("{err:#}").contains("did not fail"),
-        "the failure must say the attempt did not fail, got: {err:#}"
-    );
-    Ok(())
-}
+// ── the deploy path itself, driven in memory ─────────────────────────────────────────────────
 
-/// Row B must reject a reinit failure with the WRONG error (only the init-once gate counts —
-/// e.g. an RPC-layer rejection is NOT the on-chain init-once semantics).
+/// The account the harness actually deploys — `deploy::build_faucet_account`, the thin delegation to
+/// `XReserveStablecoinBuilder` — put through row A's production-shape assertions without a node.
+///
+/// The MASM is assembled at build time and embedded in the shipped component, so the whole
+/// composition resolves in memory; the only thing the real deploy adds is the scriptless, noteless
+/// first transaction, whose entire effect on the account is the nonce bump `AuthNetworkAccount`
+/// authorizes. Reproducing exactly that bump here is what lets row A judge the REAL deploy output
+/// rather than a fixture rebuilt from the same components.
+///
+/// The pre-bump assertions pin the two properties only a NEW account can carry: it is new (nonce 0,
+/// so the deploy transaction has something to commit) and its id was derived with asset callbacks
+/// ENABLED. That flag is immutable in the id, and xUSDC is a policed asset, so a composition that
+/// derived it Disabled would silently skip the transfer-policy callbacks on a live faucet.
 #[test]
-fn row_b_requires_the_exact_reinit_gate_error() -> Result<()> {
-    let mut obs = green_obs()?;
-    obs.reinit_error = Some("Network transactions may not be submitted by users yet".to_string());
-    let err = assert_row_b(&obs).expect_err("row B must fail on a non-gate failure");
-    assert!(
-        format!("{err:#}").contains(ERR_IDENTIFIER_REINIT_TEXT),
-        "the failure must name the expected gate error, got: {err:#}"
-    );
-    Ok(())
-}
-
-/// Row B must reject any post-reinit identifier that is NOT the own-id key (a leaked / corrupted
-/// slot). Post-recomposition the second `identifier_init` derives the SAME own-id key as the first,
-/// so a breach cannot present as a distinct "second identifier" — it shows up as ANY identifier !=
-/// `identifier_for(faucet_id)`, which the post-attempt read-back catches.
-#[test]
-fn row_b_rejects_wrong_post_reinit_identifier() -> Result<()> {
+fn the_deploy_construction_produces_the_row_a_production_shape() -> Result<()> {
     let params = DomainParams::lnv1();
-    let deployed = synthetic_deployed_faucet(Identifier::OwnId, &params, None)?;
-    // The breached shape: a FOREIGN identifier (a different account's own-id key) in the slot after
-    // the rejected reinit — it must NOT equal this faucet's own-id key.
-    let after = synthetic_deployed_faucet(Identifier::Wrong(foreign_identifier()), &params, None)?;
-    let obs = synthetic_obs(Some(deployed), Some(after));
-    let err = assert_row_b(&obs)
-        .expect_err("row B must fail when the post-reinit identifier is not the own-id key");
+    let mut faucet = build_faucet_account(
+        wallet_id(1),
+        wallet_id(2),
+        wallet_id(3),
+        wallet_id(4),
+        MAX_SUPPLY,
+        &params,
+        fee_parameters(),
+        [0x5eu8; 32],
+    )?;
+
     assert!(
-        format!("{err:#}").contains("post-reinit-attempt"),
-        "the failure must name the post-attempt state, got: {err:#}"
+        faucet.is_new(),
+        "the deploy path must produce a NEW account for its first transaction to materialize"
     );
+    assert_eq!(
+        faucet.id().asset_callback_flag(),
+        AssetCallbackFlag::Enabled,
+        "xUSDC is policed: the id must be derived with asset callbacks enabled"
+    );
+
+    // The deploy transaction's whole effect on the account: `AuthNetworkAccount` authorizes a
+    // scriptless, noteless first transaction, which bumps the nonce 0 → 1.
+    faucet.increment_nonce(Felt::from(1u32))?;
+
+    let obs = RowsAbObservations {
+        faucet_id: faucet.id(),
+        deployed: Some(faucet),
+        domain_params: params,
+        ..synthetic_obs(None)
+    };
+    assert_row_a(&obs)?;
     Ok(())
 }
 
-/// Row B must reject an on-chain consumption of the second note within the watch window.
-#[test]
-fn row_b_rejects_a_consumed_second_note() -> Result<()> {
-    let mut obs = green_obs()?;
-    obs.second_note_consumed = true;
-    let err = assert_row_b(&obs).expect_err("row B must fail when note #2 was consumed");
-    assert!(
-        format!("{err:#}").contains("consumed"),
-        "the failure must name the consumption, got: {err:#}"
-    );
-    Ok(())
-}
+// ── row A: the faucet-identity binding of a mint ─────────────────────────────────────────────
 
-/// The green synthetic shape passes row B (guards against an always-failing suite).
+/// The faucet's identifier IS its own account id — there is no identifier slot and no init note — so
+/// a mint names the faucet through the deposit intent's `remoteToken`, and the binding is enforced
+/// in the Rust structural gate before any note exists: `MintIntent::from_deposit_intent` returns
+/// [`EncodingError::RemoteTokenMismatch`] for an intent addressed to a different faucet.
+///
+/// This is deliberately NOT an on-chain assertion. The rebuild OVERWRITES `remoteToken` with the
+/// faucet's own id read from the kernel, so on chain a foreign token can only ever surface as a
+/// signature mismatch — a row-E shape, not an identity check. The positive control below pins that
+/// the same payload addressed to this faucet passes, so the negative cannot hold vacuously.
 #[test]
-fn row_b_accepts_the_initialized_shape() -> Result<()> {
-    let obs = green_obs()?;
-    assert_row_b(&obs)?;
+fn row_a_rejects_a_deposit_intent_addressed_to_another_faucet() -> Result<()> {
+    let faucet = synthetic_deployed_faucet(&DomainParams::lnv1(), None)?.id();
+    let other_faucet = wallet_id(0x3b);
+    assert_ne!(
+        faucet, other_faucet,
+        "the fixture must address a genuinely different faucet"
+    );
+    let recipient = wallet_id(6);
+
+    let elsewhere = mintburn::mint_payload_own_id(
+        other_faucet,
+        mintburn::BASE_VECTOR,
+        recipient,
+        MINT_AMOUNT_RAW,
+        MINT_MAX_FEE_RAW,
+        0x21,
+    );
+    let intent = DepositIntent::read_from_bytes(&elsewhere).expect("the payload decodes");
+    let err = MintIntent::from_deposit_intent(&intent, faucet, mintburn::MINT_DOMAIN)
+        .expect_err("a deposit intent naming another faucet must be refused");
+    assert!(
+        matches!(err, EncodingError::RemoteTokenMismatch),
+        "the refusal must be the remoteToken gate, got: {err:?}"
+    );
+
+    let here = mintburn::mint_payload_own_id(
+        faucet,
+        mintburn::BASE_VECTOR,
+        recipient,
+        MINT_AMOUNT_RAW,
+        MINT_MAX_FEE_RAW,
+        0x21,
+    );
+    let intent = DepositIntent::read_from_bytes(&here).expect("the payload decodes");
+    MintIntent::from_deposit_intent(&intent, faucet, mintburn::MINT_DOMAIN)
+        .expect("an intent addressed to this faucet must be accepted");
     Ok(())
 }
 
 // ── the real-node E2E (the gate run for this slice) ──────────────────────────────────────────
 
-/// Rows A + B against a REAL fresh local node: bootstrap genesis, start
-/// validator/ntx-builder/sequencer/prover, deploy the production faucet (its first transaction
-/// consumes the owner's `identifier_init` — the first admin note; the other three domain-config
-/// fields are build-seeded), verify recognition + read-backs, prove init-once, tear down. Writes
-/// `evidence.json` under the gitignored run root either way.
+/// Row A against a REAL fresh local node: bootstrap genesis, start
+/// validator/ntx-builder/sequencer/prover, deploy the production faucet (its first transaction is
+/// scriptless and noteless; all four domain-config fields are build-seeded), verify recognition +
+/// read-backs, tear down. Writes `evidence.json` under the gitignored run root either way.
 ///
 /// Ignored by default (NOT optional for the gate): it must bind loopback listener sockets for
 /// the four node services, which hermetic audit sandboxes forbid. The gate record requires this
 /// test green via `-- --include-ignored` on a network-enabled box; the default suite's green
 /// carries no real-node claim.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "real-node E2E: needs the v0.15.1 node binaries + loopback listener binds (denied in \
+#[ignore = "real-node E2E: needs the v16 node toolchain + loopback listener binds (denied in \
             sandboxed audit environments); run with `-- --include-ignored` or the lnv1_rows_ab \
             binary — the §11.2 gate claim rides on real runs + the human gate, never on the \
             default suite"]
@@ -319,11 +331,9 @@ async fn lnv1_rows_ab_against_real_local_node() -> Result<()> {
 
     let obs = run_rows_ab(&cfg).await?;
     let row_a = assert_row_a(&obs);
-    let row_b = assert_row_b(&obs);
-    let evidence = write_evidence(&cfg, &obs, &row_a, &row_b)?;
+    let evidence = write_evidence(&cfg, &obs, &row_a)?;
     println!("LNV-1 evidence: {}", evidence.display());
 
     row_a?;
-    row_b?;
     Ok(())
 }

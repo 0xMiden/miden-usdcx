@@ -1,4 +1,4 @@
-//! The `miden-client 0.16.0-alpha.1` assembly used for path-C execution.
+//! The `miden-client` assembly used for path-C execution.
 //!
 //! gRPC against the local sequencer RPC + SQLite store + filesystem keystore (all under the
 //! gitignored run root) + the client's local transaction prover. The harness keeps its own
@@ -11,8 +11,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::rpc::{Endpoint, GrpcClient};
+use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
+use miden_protocol::block::FeeParameters;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::Felt;
 use rand::rngs::OsRng;
@@ -73,4 +74,18 @@ pub async fn build_client(stack: &StackConfig, label: &str) -> Result<HarnessCli
         keystore,
         rpc,
     })
+}
+
+/// The fee parameters of the chain behind `rpc`, read from its latest block header.
+///
+/// The faucet's auth component prices every allowlisted note against these, so the deploy path must
+/// build with the parameters of the node it deploys to — not with a local guess.
+pub async fn node_fee_parameters(rpc: &GrpcClient) -> Result<FeeParameters> {
+    let (header, _) = rpc
+        .get_block_header_by_number(None, false)
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!("reading the latest block header for its fee parameters: {e}")
+        })?;
+    Ok(header.fee_parameters().clone())
 }

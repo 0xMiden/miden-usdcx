@@ -21,7 +21,7 @@
 //!   canary `c2_same_block_erasure_...` starvation, against the PRODUCTION note). Each Row-I negative
 //!   is a client-side trap + committed read-back proving zero state change.
 //!
-//! The arc: deploy (identifier_init) → allowlist attester A (path N) → set_min_burn_size (path N) →
+//! The arc: deploy → allowlist attester A (path N) → set_min_burn_size (path N) →
 //! mint to the holder (path N, holder consumes the P2ID) → Row-I negatives (below-min, wrong-asset,
 //! while-paused — the last pauses + unpauses via path N) → Row-H RIV (client-side execute + user-RPC
 //! submit-rejection) → Row-G two-block burn (path N) → Row-J conservation ledger.
@@ -52,16 +52,14 @@ use miden_protocol::Word;
 use miden_standards::account::access::PausableStorage;
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::policies::MinBurnAmount;
-use miden_standards::note::MinBurnAmountConfigNote;
+use miden_standards::note::{MinBurnAmountConfigNote, PauseConfig, PauseConfigNote};
 use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
-use xusdc_encoding::note::xreserve_admin::{
-    XReserveIdentifierInitNote, XReservePauseNote, XReserveSetAttesterNote, XReserveUnpauseNote,
-};
+use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_burn::FIXED_XUSDC_BURN_TAG;
 
 use crate::actors::{create_actors, Actors};
 use crate::assertions_gj::{ERR_BURN_BELOW_MIN, ERR_PAUSED, ERR_WRONG_ASSET_ORIGIN};
-use crate::client::{build_client, os_seed, HarnessClient};
+use crate::client::{build_client, node_fee_parameters, os_seed, HarnessClient};
 use crate::config::RunConfig;
 use crate::deploy::build_faucet_account;
 use crate::mintburn::{
@@ -584,13 +582,14 @@ pub async fn run_rows_gj_on(cfg: &RunConfig, client_label: &str) -> Result<RowsG
     let main_commit = git_head_commit();
 
     // 2. Client + actors + the production faucet account (domain config BUILD-SEEDED to match the
-    //    mint vector; the identifier committed by the identifier_init note below).
+    //    mint vector, priced against the chain's own fee parameters).
     let mut hc = build_client(&cfg.stack, client_label).await?;
     hc.client.sync_state().await.context("initial sync")?;
     let actor_root = cfg.stack.run_root.join(format!("client-{client_label}"));
     let actors = create_actors(&mut hc, &actor_root).await?;
     let owner_id = actors.owner.id();
     let domain = mintburn::lnv2_domain_params();
+    let fee_parameters = node_fee_parameters(&hc.rpc).await?;
     let faucet = build_faucet_account(
         owner_id,
         actors.pauser.id(),
@@ -598,6 +597,7 @@ pub async fn run_rows_gj_on(cfg: &RunConfig, client_label: &str) -> Result<RowsG
         actors.blk_manager.id(),
         cfg.max_supply,
         &domain,
+        fee_parameters.clone(),
         os_seed(),
     )?;
     let faucet_id = faucet.id();
@@ -610,38 +610,24 @@ pub async fn run_rows_gj_on(cfg: &RunConfig, client_label: &str) -> Result<RowsG
         actors.blk_manager.id(),
         cfg.max_supply,
         &domain,
+        fee_parameters,
         os_seed(),
     )?;
     let other_faucet_id = other_faucet.id();
 
-    // 3. Deploy: the faucet's first tx consumes the owner's identifier_init (first-deploy exemption).
-    //    The seeded identifier is the faucet's own-id fixpoint (derived from faucet_id).
-    let note1 = XReserveIdentifierInitNote::create(owner_id, faucet_id, hc.client.rng())
-        .context("building the identifier_init note")?;
-    let emit1 = TransactionRequestBuilder::new()
-        .own_output_notes(vec![note1.clone()])
-        .build()
-        .context("building the identifier_init emit")?;
-    let emit1_tx = hc
-        .client
-        .submit_new_transaction(owner_id, emit1)
-        .await
-        .context("emit identifier_init")?;
+    // 3. Deploy: the faucet's first tx is scriptless and noteless — `AuthNetworkAccount` authorizes
+    //    it and increments the new account's nonce 0 → 1, which materializes it on chain.
     let mut d = Driver {
         hc,
         actors,
         faucet_id,
         other_faucet_id,
     };
-    d.wait_commit(emit1_tx)
-        .await
-        .context("waiting for the identifier_init emit")?;
     d.hc.client
         .add_account(&faucet, false)
         .await
         .context("registering the faucet with the client")?;
     let deploy = TransactionRequestBuilder::new()
-        .input_notes(vec![(note1.clone(), None)])
         .build()
         .context("building the deploy request")?;
     let deploy_tx =
@@ -738,9 +724,9 @@ async fn mint_to_holder(d: &mut Driver, units: u64, salt: u8) -> Result<u64> {
     let faucet_id = d.faucet_id;
     let supply_before = token_supply(&d.fetch_faucet().await?)?;
 
-    // Produce the attestation under an immutable borrow that ends before the rng borrow. Fresh
-    // faucet: splice the OWN-ID remoteToken so structural validation's identifier compare passes against the
-    // note-derived own-id identifier (R2 identifier-binding fix).
+    // Produce the attestation under an immutable borrow that ends before the rng borrow. The
+    // faucet writes its OWN id into the message it rebuilds, so the payload's remoteToken has to
+    // be that id or the rebuilt digest stops matching what the attester signed.
     let payload = mintburn::mint_payload_own_id(
         faucet_id,
         BASE_VECTOR,
@@ -750,14 +736,14 @@ async fn mint_to_holder(d: &mut Driver, units: u64, salt: u8) -> Result<u64> {
         salt,
     );
     let attestation = d.actors.attester.attestation_for(&payload);
-    let note = xusdc_encoding::note::xreserve_mint::XUsdcMintNote::create(
+    let note = mintburn::mint_note_from_payload(
         owner,
         faucet_id,
+        MINT_DOMAIN,
         &payload,
         &attestation,
         d.hc.client.rng(),
-    )
-    .context("building the mint-to-holder note")?;
+    )?;
 
     let committed = d
         .commit_via_ntx(owner, note, "mint to holder", |a| {
@@ -833,8 +819,15 @@ async fn run_row_i(d: &mut Driver) -> Result<Vec<BurnNegative>> {
     // I3 — WHILE-PAUSED: pause (path N), probe a valid burn (rejected — paused), then unpause.
     {
         let owner_pauser = d.actors.pauser.id();
-        let pause = XReservePauseNote::create(owner_pauser, faucet_id, d.hc.client.rng())
-            .context("building the pause note")?;
+        let pause = Note::from(
+            PauseConfigNote::builder()
+                .sender(owner_pauser)
+                .target(faucet_id)
+                .config(PauseConfig::Pause)
+                .generate_serial_number(d.hc.client.rng())
+                .build()
+                .context("building the pause note")?,
+        );
         d.commit_via_ntx(owner_pauser, pause, "pause", |a| {
             is_paused(a).map(|p| p == MARKER_SET).unwrap_or(false)
         })
@@ -861,8 +854,15 @@ async fn run_row_i(d: &mut Driver) -> Result<Vec<BurnNegative>> {
         });
 
         // Restore: unpause (path N) so Row G / conservation run against an unpaused faucet.
-        let unpause = XReserveUnpauseNote::create(owner_pauser, faucet_id, d.hc.client.rng())
-            .context("building the unpause note")?;
+        let unpause = Note::from(
+            PauseConfigNote::builder()
+                .sender(owner_pauser)
+                .target(faucet_id)
+                .config(PauseConfig::Unpause)
+                .generate_serial_number(d.hc.client.rng())
+                .build()
+                .context("building the unpause note")?,
+        );
         d.commit_via_ntx(owner_pauser, unpause, "unpause", |a| {
             is_paused(a).map(|p| p == MARKER_CLEAR).unwrap_or(false)
         })

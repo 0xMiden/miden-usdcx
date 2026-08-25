@@ -37,7 +37,7 @@ async fn sanity_e2e_live() -> Result<()> {
         attester_secret: None,
         node_log_dir: std::env::var("SANITY_NODE_LOG_DIR").ok().map(PathBuf::from),
     };
-    let report = run_sanity(&cfg, "miden-node 0.16.0-alpha.2 (test)").await?;
+    let report = run_sanity(&cfg, "miden-node v16 (test)").await?;
 
     for c in &report.checks {
         println!(

@@ -140,8 +140,11 @@ pub fn render_sanity_record(report: &SanityReport) -> String {
              work), attester rotation (disabled attester's mint rejected + re-enabled), \
              `set_min_burn_size` (below-min rejected, at/above-min accepted), `set_max_supply` \
              (mutate + read back + tightened-cap ENFORCED on a mint + below-current-supply guard), \
-             owner-gating, `transfer_ownership` + `accept_ownership`, then a best-effort restore. This \
-             DESTRUCTIVE surface runs ONLY here — against a faucet we own and throw away.\n",
+             authority gating, and SAN-HANDOVER (the `ADMIN` rotation arc: hand the role to an \
+             ephemeral successor, prove the successor can USE it and the predecessor is locked out, \
+             hand it back and prove the lockout reverses — grant always before revoke, so `ADMIN` \
+             never empties), then a best-effort restore. This DESTRUCTIVE surface runs ONLY here — \
+             against a faucet we own and throw away.\n",
         );
     }
     s.push_str(
@@ -154,7 +157,7 @@ pub fn render_sanity_record(report: &SanityReport) -> String {
              ALREADY-deployed faucet and re-proves ONLY the fund-correctness subset (scale-0 mints, \
              the attestation/replay/cap negatives, and the burn arc — structure + \
              attester-consumability + DC-8 evidence), using the operator-supplied allowlisted \
-             attester. The DESTRUCTIVE admin surface (pause, `set_*`, ownership transfer) is NEVER \
+             attester. The DESTRUCTIVE admin surface (pause, `set_*`) is NEVER \
              run against a deployed faucet — by DESIGN, not skipped — so this IS the intended, \
              COMPLETE {env_word} gate (it exits 0 on pass). The admin surface is validated separately \
              on a FRESH local faucet we own.\n\n",

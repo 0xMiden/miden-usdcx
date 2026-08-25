@@ -7,15 +7,14 @@
 
 use std::path::{Path, PathBuf};
 
-use miden_protocol::Word;
-use xusdc_encoding::xreserve::encoding::{bytes32_to_storage_map_key, ForeignChainAddress};
+use xusdc_encoding::xreserve::encoding::ForeignChainAddress;
 
 // The v16 node's ACTUAL loopback ports, exactly as the client repo's `start-test-node.sh` binds
 // them (script lines 33-37). The harness only ever dials the sequencer RPC (57291); the other three
 // are the script's internal service ports — recorded truthfully in the evidence so a reproduction
 // frees the right ports, never the old harness-assigned 57292–57294 (which nothing binds).
-/// Sequencer public RPC port — the standard local Miden RPC port the pinned
-/// `miden-client 0.16.0-alpha.1` `for_localhost()` preset also expects.
+/// Sequencer public RPC port — the standard local Miden RPC port the pinned `miden-client`
+/// `for_localhost()` preset also expects.
 pub const RPC_PORT: u16 = 57291;
 /// Validator gRPC port (`start-test-node.sh` binds `127.0.0.1:50101`).
 pub const VALIDATOR_PORT: u16 = 50101;
@@ -24,20 +23,20 @@ pub const NTX_BUILDER_PORT: u16 = 50301;
 /// Remote tx-prover port (`start-test-node.sh` binds `127.0.0.1:50051`).
 pub const TX_PROVER_PORT: u16 = 50051;
 
-/// The shared network-transaction authorization token. v0.15.1 rejects post-deployment
-/// user-RPC transactions against network accounts ("Network transactions may not be submitted by
-/// users yet"); the sequencer accepts them only from a submitter presenting this value in the
-/// `x-miden-network-tx-auth` metadata header. The harness starts the sequencer with this token and
-/// hands it to the ntx-builder, making the local stack's network-transaction path fully
-/// operational (row K exercises it; rows A/B do not depend on it).
+/// The shared network-transaction authorization token. The node rejects post-deployment user-RPC
+/// transactions against network accounts ("Network transactions may not be submitted by users
+/// yet"); the sequencer accepts them only from a submitter presenting this value in the
+/// `x-miden-network-tx-auth` metadata header. The node script wires it into the sequencer and the
+/// ntx-builder, making the local stack's network-transaction path fully operational (row K
+/// exercises it; row A does not depend on it).
 pub const NETWORK_TX_AUTH_TOKEN: &str = "lnv-local-network-tx-auth";
 
-/// The domain-config parameters of a run. Since the Wave-1 S1 recomposition the three fields
-/// `domain`/`source_domain`/`xreserve_contract` are BUILD-SEEDED via the builder's required
-/// `with_domain_config` (DEC-4), and ONLY the `identifier` is committed post-deploy by the owner's
-/// `identifier_init` note (the minimized replacement of the former four-field `domain_init`).
+/// The domain-config parameters of a run. All three fields are BUILD-SEEDED into the faucet's
+/// declared slots at composition time and have no runtime writer at all. The faucet identifier is
+/// not among them: it is the account's own id, which the mint path reads from the kernel.
+///
 /// LOCAL TEST values (Circle's real domain assignment is DEV-gated and stays OPEN — these exist to
-/// prove the seed/write/read-back path, not to bind a real domain).
+/// prove the seed/read-back path, not to bind a real domain).
 #[derive(Debug, Clone)]
 pub struct DomainParams {
     /// `domain` (u32) — the Miden-side domain id, element 0 of the domain slot.
@@ -47,22 +46,9 @@ pub struct DomainParams {
     /// `xreserve_contract` — the source-chain address, stored as the 8 u32-LE packed felts of its
     /// bytes32 across two slots.
     pub xreserve_contract: ForeignChainAddress,
-    /// `identifier` — a LEGACY raw bytes32 value. It is NO LONGER the faucet's identifier: since the
-    /// R2 identifier-binding fix the identifier is DERIVED from the faucet's own id at init
-    /// (`XReserveIdentifierInitNote::identifier_for(faucet_id)`, the account-id fixpoint), never from
-    /// this field. Retained only so `DomainParams` stays fully populated for the record/fixtures.
-    pub identifier_bytes: [u8; 32],
 }
 
 impl DomainParams {
-    /// The LEGACY vector-token identifier as the canonical `bytes32_to_storage_map_key` Word. NOT the faucet's
-    /// actual identifier (that is the own-id fixpoint `identifier_for(faucet_id)`, derived at init) —
-    /// retained only for record/fixture completeness; the fresh-init assertions compute the own-id
-    /// key from `account.id()` directly.
-    pub fn identifier_word(&self) -> Word {
-        bytes32_to_storage_map_key(&self.identifier_bytes).into()
-    }
-
     /// The fixed LNV-1 test parameters (recorded in the evidence; values are arbitrary non-zero
     /// patterns chosen to make read-back mismatches loud).
     pub fn lnv1() -> Self {
@@ -70,21 +56,6 @@ impl DomainParams {
             domain: 1313,
             source_domain: 7,
             xreserve_contract: ForeignChainAddress::new([0xC1; 32]),
-            identifier_bytes: [0x1D; 32],
-        }
-    }
-
-    /// A SECOND, everywhere-different parameter set for the init-once negative: the second
-    /// `identifier_init` note carries THIS set's identifier — if the reinit gate ever failed and
-    /// the second identifier were written, the read-back assertion would mismatch loudly. (The
-    /// other three fields stay everywhere-different too, documenting that no runtime writer for
-    /// them exists at all post-recomposition.)
-    pub fn lnv1_reinit_attempt() -> Self {
-        Self {
-            domain: 9999,
-            source_domain: 42,
-            xreserve_contract: ForeignChainAddress::new([0xEE; 32]),
-            identifier_bytes: [0x2A; 32],
         }
     }
 }
@@ -154,12 +125,8 @@ pub struct RunConfig {
     pub stack: StackConfig,
     /// The faucet's `max_supply` at build (mutable post-deploy via `set_max_supply`).
     pub max_supply: u64,
-    /// The run's domain params: the three build-seeded fields + the identifier the FIRST
-    /// (succeeding) `identifier_init` commits.
+    /// The run's domain params: the three build-seeded fields.
     pub domain_params: DomainParams,
-    /// The everywhere-different params whose identifier the SECOND (rejected) `identifier_init`
-    /// carries.
-    pub reinit_params: DomainParams,
     /// Keep the node stack running after the run (supervised/manual inspection); default false —
     /// the stack MUST be torn down so port 57291 is free for the next run.
     pub keep_stack: bool,
@@ -180,7 +147,6 @@ impl RunConfig {
             stack: StackConfig::new(run_root),
             max_supply: 1_000_000_000_000,
             domain_params: DomainParams::lnv1(),
-            reinit_params: DomainParams::lnv1_reinit_attempt(),
             keep_stack: false,
         }
     }

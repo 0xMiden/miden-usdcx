@@ -31,7 +31,7 @@ crates/xusdc-encoding/       # Rust: the encoding mirror, the faucet-account bui
     mint_intent.masm         # what the mint note actually carries (DC-14) — constants only
   asm/components/faucet_extension/  # what the faucet adds to the stock fungible faucet: the mint policy + attester admin
   asm/notes/                 # public admin note scripts, one project each (the mint note is the STOCK MintNote)
-crates/xusdc-validation/     # Rust: the real-local-node validation harness (LNV rows A–L)
+crates/xusdc-validation/     # Rust: the real-local-node validation harness (LNV rows A + C–L)
 docs/                        # ARCHITECTURE.md, the orientation for the faucet and its trust model
 ```
 

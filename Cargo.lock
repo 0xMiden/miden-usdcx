@@ -745,8 +745,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -4689,6 +4691,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "signal-hook-registry"
+version = "1.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
+dependencies = [
+ "errno",
+ "libc",
+]
+
+[[package]]
 name = "signature"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5045,6 +5057,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
@@ -5197,6 +5210,19 @@ checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
  "valuable",
+]
+
+[[package]]
+name = "tracing-forest"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f09cb459317a3811f76644334473239d696cd8efc606963ae7d1c308cead3b74"
+dependencies = [
+ "chrono",
+ "smallvec",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -5785,6 +5811,30 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower",
+ "xusdc-encoding",
+]
+
+[[package]]
+name = "xreserve-deposit-relayer-lite"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "assert_matches",
+ "hex",
+ "miden-protocol",
+ "rand 0.8.7",
+ "reqwest",
+ "rstest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha3 0.10.9",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-forest",
+ "tracing-subscriber",
  "xusdc-encoding",
 ]
 

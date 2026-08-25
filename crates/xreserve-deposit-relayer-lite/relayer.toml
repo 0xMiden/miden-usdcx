@@ -1,0 +1,61 @@
+# The default config `just run-relayer-lite` runs against.
+#
+# It is a WORKING EXAMPLE, not a deployment: the accounts below are placeholder ids and the domain
+# is a placeholder too, so the relayer starts, validates all of this, and then stops at the one
+# thing that is genuinely missing — the Miden submit port, which needs a `miden-client` for protocol
+# v0.16 and has no release to build against. Copy it and replace the four identity values to point
+# at something real.
+#
+# Unknown keys are REFUSED rather than ignored: a mistyped key that silently kept its default is how
+# an operator ends up debugging a relayer that discarded the value they set.
+
+# ---- Circle ------------------------------------------------------------------------------------
+
+# Circle's API root. The documented testnet host; no credential is baked in anywhere.
+circle_base_url = "https://xreserve-api-testnet.circle.com"
+
+# The remote-domain id Circle assigns Miden.
+# PLACEHOLDER — the real value is Circle-owned and still OPEN (REQUIRES CIRCLE CONFIRMATION).
+remote_domain = 10001
+
+# Circle documents no auth scheme yet, so the credential is an injection point rather than a
+# baked-in key. Uncomment when Circle says what it wants. The value is never logged.
+# api_auth_token = "..."
+# api_auth_header = "Authorization"
+
+# ---- Miden identities --------------------------------------------------------------------------
+
+# The xUSDC faucet the mint notes are routed at. Must be a PUBLIC network account — the note's
+# routing attachment can bind nothing else. PLACEHOLDER.
+faucet_account_id = "0x222222222222221122222222222222"
+
+# The relayer's own account: the note's producer. PLACEHOLDER.
+relayer_account_id = "0x111111101111111111111111111111"
+
+# The attester key that travels beside every signature, 33-byte compressed SEC1 hex.
+#
+# It is a KEY, not an authority. Whether it is allowlisted is the faucet's `xReserveAttesters` to
+# say, on-chain. This is the pinned test-fixture key: a real curve point, so it parses, but NOT
+# Circle's attester. PLACEHOLDER.
+attester_pubkey_hex = "03a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3f"
+
+# ---- Local state -------------------------------------------------------------------------------
+
+# The SQLite file holding the submitted-nonce set and the feed cursor. Under `target/` so the
+# example leaves nothing untracked behind; a deployment points this somewhere durable, because
+# losing it means re-scanning Circle's feed from the beginning.
+store_path = "target/relayer-lite-state.db"
+
+# ---- Tuning (all optional; these are the defaults) ----------------------------------------------
+
+# Attestations per page. Circle documents 1-1000.
+poll_page_size = 100
+
+# How long to wait once the scan has caught up. A deposit intent has no expiry, so polling harder
+# buys nothing but rate-limit pressure.
+poll_interval_ms = 5000
+
+request_timeout_ms = 30000
+
+# The response-size ceiling, so a runaway body cannot exhaust memory.
+max_response_bytes = 8388608

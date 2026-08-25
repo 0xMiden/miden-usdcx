@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/xusdc-encoding",
   "crates/xreserve-deposit-relayer",
+  "crates/xreserve-deposit-relayer-lite",
   "crates/withdrawal-listener-attester",
 ]
 # PARKED: `crates/xusdc-validation` sits outside the workspace. The three members above resolve
@@ -32,8 +33,28 @@ miden-protocol-build-utils  = "=0.16.0-rc.4"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Operator-facing config files. TOML rather than JSON because a config is written by a human: it
+# takes comments, which is where the "why" behind a tuned value lives, and it does not fail on a
+# trailing comma.
+toml = "1"
 tokio = { version = "1" }
 anyhow = "1"
+# Structured logging for the lite relayer (`xreserve-deposit-relayer-lite`), which names a logging
+# framework rather than hand-rolling an event sink. `tracing` is the facade the library code emits
+# through; the BINARY installs the subscriber, so a later monitoring backend swaps the subscriber
+# and touches no call site. Both are already in `Cargo.lock` transitively and in the pinned cargo
+# cache, so the `--locked --offline` gate resolves them without a new download.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# The stdout format: one indented TREE per root span, rather than a flat line stream. It is what
+# makes a per-attestation span legible inside the cycle that produced it. `chrono` timestamps each
+# tree. NOT optional — the relayer always renders this way.
+#
+# ForestLayer buffers a span into its parent and only PRINTS when a ROOT span closes
+# (`layer/mod.rs:320-330`). The relayer's outermost span is a loop that never returns, so every span
+# under it would be buffered forever. `#[instrument(parent = None)]` on the per-cycle span is the
+# fix: it makes each cycle its own root, so a cycle's tree prints the moment that cycle ends.
+tracing-forest = { version = "0.3", features = ["chrono"] }
 rstest = "0.26"
 assert_matches = "1.5"
 

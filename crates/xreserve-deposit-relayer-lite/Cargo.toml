@@ -1,0 +1,67 @@
+[package]
+name = "xreserve-deposit-relayer-lite"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "A minimal deposit relayer: poll Circle, build the xUSDC mint note, submit it. The design and its trade-offs are docs/PLAN-RELAYER-LITE.md."
+
+# This crate is the LITE sibling of `xreserve-deposit-relayer`. It does the same job — turn each
+# Circle-attested deposit into an `XUsdcMintNote` at the faucet — under one different assumption:
+# delivery is AT-LEAST-ONCE, because the faucet's on-chain `usedNonces` assert is the authoritative
+# replay guard and refuses a duplicate. That removes the claim protocol, the submission state
+# machine, the crash-recovery sweep and the re-fetch retry queue the sibling crate carries.
+#
+# The wire formats are NOT restated here: the DepositIntent codec and every byte of the mint note
+# belong to `xusdc-encoding` and are consumed by reference (single-owner rule).
+
+[dependencies]
+xusdc-encoding = { path = "../xusdc-encoding" }
+# The protocol types the mint note is built from (`AccountId`, `Note`, `FeltRng`). Same pin as the
+# rest of the workspace. `miden-client` is deliberately absent — see `src/submit.rs`.
+miden-protocol = { version = "=0.16.0-rc.4" }
+
+# `signal` is the loop's shutdown source (ctrl-c); `time` is the idle sleep between polls.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "signal"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+# `toml` parses the operator's config; `serde_json` decodes Circle's response bodies. Different
+# jobs, so both are here.
+toml = { workspace = true }
+serde_json = { workspace = true }
+# `hex` decodes Circle's wire strings; `sha3` recomputes `keccak256(payload)` to bind the envelope.
+# That binding is a LIVENESS filter only — the ECDSA verify is on-chain and faucet-owned, so `k256`
+# is not a dependency of this crate at all, not even in tests.
+hex = { workspace = true }
+sha3 = { workspace = true }
+# The store: one nonce table plus a one-row cursor table. Already compiled for the sibling crate,
+# so it costs no new dependency and no new build time.
+rusqlite = { workspace = true }
+# OS entropy for the mint note's serial number (in `main` only — the RNG is a parameter everywhere
+# else so tests can seed it).
+rand = { workspace = true }
+# This is a BINARY with no public error API, so errors carry context rather than variants. The one
+# place a typed distinction is needed — transient vs fatal submit, which drives control flow — is a
+# two-variant enum in `src/submit.rs`.
+anyhow = { workspace = true }
+# Structured logging. The library emits through the facade; `main` installs the subscriber. Every
+# function carries an `#[instrument]` span, so the output is a tree per cycle rather than a stream of
+# disconnected lines — see the workspace manifest on why the per-cycle span is parented at `None`.
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-forest = { workspace = true }
+
+[dev-dependencies]
+rstest = { workspace = true }
+assert_matches = { workspace = true }
+# Every store test opens a REAL database on a temporary directory: "survives a restart" is only
+# provable against a file a second, independent handle can reopen, so no test uses an in-memory
+# database.
+tempfile = { workspace = true }
+# NOTE: no axum/tower/wiremock here. This crate's `Transport` seam sits ABOVE the socket, so the
+# mock Circle is a recording fake implementing that trait — it needs no HTTP server at all, binds no
+# socket (the audit/CI sandbox denies `bind(127.0.0.1:0)`), and asserts on the exact `HttpRequest`
+# the client built. No Circle endpoint is ever contacted live.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+# `AccountId::dummy` — the tests need accounts of a KNOWN kind (a PUBLIC faucet, because the mint
+# note's routing attachment can bind nothing else).
+miden-protocol = { version = "=0.16.0-rc.4", features = ["testing"] }

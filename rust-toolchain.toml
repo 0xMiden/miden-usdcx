@@ -1,0 +1,15 @@
+# The toolchain is PINNED, for the same reason the protocol family and `Cargo.lock` are (ground
+# rule 5): a floating `stable` means the compiler that judges a change is whichever one happened to
+# be current that day.
+#
+# This is not hypothetical. CI ran `dtolnay/rust-toolchain@stable` while contributors were on
+# whatever `rustup` last fetched, so 1.98 introduced `clippy::chunks_exact_to_as_chunks` and the
+# clippy job went red against code that was green on every local machine. Pinning here means
+# `just ci` locally and CI run the SAME compiler, and a new lint arrives when someone bumps this
+# file deliberately — as a reviewable change — rather than overnight.
+#
+# To adopt a newer toolchain: bump `channel`, run `just ci`, fix what the new lints find, commit it
+# all together.
+[toolchain]
+channel = "1.98"
+components = ["clippy", "rustfmt"]

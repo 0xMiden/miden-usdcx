@@ -16,11 +16,14 @@ default:
 
 # ---- gates -------------------------------------------------------------------------------------
 
-# The pre-commit gate: formatting, lints, and every suite except the slow MASM one.
+# The fast pre-commit loop: formatting, lints, and every suite except the slow MASM one.
 check: fmt-check lint test
 
-# `check` plus the MASM execution gate. This is the full thing, and it is not fast.
-gate: check test-encoding
+# The three CI jobs run these same three recipes and nothing else, and `rust-toolchain.toml` pins
+# the compiler, so a green run here is a green run there.
+
+# Exactly what CI runs.
+ci: fmt-check lint test-all
 
 # Format every crate in place.
 fmt:
@@ -36,10 +39,17 @@ lint:
 
 # ---- tests -------------------------------------------------------------------------------------
 
-# `xusdc-encoding` is excluded because its tests EXECUTE MASM on a mock chain and want the release
-# profile — see `test-encoding`.
+# Every suite, release profile. This is the CI `test` job verbatim; `xusdc-encoding` EXECUTES MASM
+# on a mock chain, which is why the whole workspace runs in release.
 
-# Every suite except the slow MASM one.
+# Every suite, release — what CI runs.
+test-all:
+    {{cargo}} test --workspace --release
+
+# `xusdc-encoding` is excluded because its tests EXECUTE MASM on a mock chain and want the release
+# profile — see `test-all` and `test-encoding`.
+
+# Fast local loop: every suite except the slow MASM one.
 test:
     {{cargo}} test --workspace --exclude xusdc-encoding
 

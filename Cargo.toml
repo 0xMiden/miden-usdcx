@@ -16,10 +16,6 @@ exclude = [
   "crates/xusdc-validation",
 ]
 
-# Shared dependency versions defined once (workspace-shared-dependencies). Every member consumes
-# these with `dep = { workspace = true, features = [...] }`, adding crate-specific feature sets on
-# top. Base features are kept minimal here so a crate never inherits a feature it does not use;
-# `serde`'s `derive` is the one exception (every consumer needs it).
 [workspace.dependencies]
 # Build-time MASM assembly, consumed by `crates/xusdc-encoding/build.rs`. `miden-protocol-build-utils`
 # is the protocol's own build-script toolkit — the project/workspace assembly and the MASM
@@ -33,89 +29,21 @@ miden-protocol-build-utils  = "=0.16.0-rc.4"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Operator-facing config files. TOML rather than JSON because a config is written by a human: it
-# takes comments, which is where the "why" behind a tuned value lives, and it does not fail on a
-# trailing comma.
 toml = "1"
 tokio = { version = "1" }
 anyhow = "1"
-# Structured logging for the lite relayer (`xreserve-deposit-relayer-lite`), which names a logging
-# framework rather than hand-rolling an event sink. `tracing` is the facade the library code emits
-# through; the BINARY installs the subscriber, so a later monitoring backend swaps the subscriber
-# and touches no call site. Both are already in `Cargo.lock` transitively and in the pinned cargo
-# cache, so the `--locked --offline` gate resolves them without a new download.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-# The stdout format: one indented TREE per root span, rather than a flat line stream. It is what
-# makes a per-attestation span legible inside the cycle that produced it. `chrono` timestamps each
-# tree. NOT optional — the relayer always renders this way.
-#
-# ForestLayer buffers a span into its parent and only PRINTS when a ROOT span closes
-# (`layer/mod.rs:320-330`). The relayer's outermost span is a loop that never returns, so every span
-# under it would be buffered forever. `#[instrument(parent = None)]` on the per-cycle span is the
-# fix: it makes each cycle its own root, so a cycle's tree prints the moment that cycle ends.
 tracing-forest = { version = "0.3", features = ["chrono"] }
 rstest = "0.26"
 assert_matches = "1.5"
-
-# Hex + attestation crypto. `hex` decodes the Circle-facing wire strings (payload / messageHash /
-# attestation) in the relayer. The secp256k1/keccak trio is shared by TWO members — the encoding
-# crate's vector generator + its in-test attestation vectors, and the relayer's envelope binding
-# (`sha3`, the off-chain `keccak256(payload)` recomputation) and its partner-key test fixture
-# (`k256`+`rand`, signing ONLY — the relayer NEVER verifies ECDSA off-chain; that is on-chain,
-# faucet-owned). Pinned here so the two crates cannot drift onto different versions
-# (workspace-shared-dependencies).
 hex = "0.4"
 k256 = { version = "0.13", features = ["ecdsa"] }
-# Generated builders (use-bon-builder). The withdrawal listener's Circle request types are the first
-# adopter: `PrepareBurnIntentInput` carries eleven fields, five of them optional, and a positional
-# constructor for it would be a line of eleven arguments in which swapping `remoteDepositor` and
-# `finalDestinationRecipient` — two same-typed 32-byte hex strings with opposite meanings — still
-# compiles. The generated builder makes every field named and every required one compile-time
-# checked. Pinned here rather than in the crate because the later off-chain services build the same
-# wide Circle request shapes and must not drift onto a different builder.
 bon = "3"
 sha3 = "0.10"
 rand = "0.8"
-
-# Circle-facing HTTP (the relayer's `circle::client` info/attestation-fetch drivers) + the offline
-# mock Circle server its contract tests run against. Both are pinned here, not in the crate, so the
-# later off-chain services (listener, monitoring) cannot drift onto a different HTTP stack.
-#
-# reqwest 0.13 feature names: the TLS feature is `rustls` (NOT `rustls-tls`), and
-# `RequestBuilder::query` — how every Circle query param (`txHash`, `pageSize`, `pageAfter`, …) is
-# built and percent-encoded — sits behind its own `query` feature. `default-features = false`
-# keeps the graph off system OpenSSL and off the default TLS backend; `json` pulls the serde_json
-# body codec. The pinned
-# cargo cache carries reqwest + its hyper/rustls/h2 closure, so the offline `--locked` gate
-# resolves).
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
-# The relayer's idempotency seam (`idempotency::IdempotencyStore`) — the submitted-nonce log + the
-# per-remote-domain `Link` cursor that must survive a restart. SQLite is the persistence choice; it
-# is pinned here, not in the crate, because the withdrawal listener needs the same durable-cursor
-# store and the two must not drift onto different engines.
-#
-# `bundled` compiles SQLite from the amalgamation that ships inside `libsqlite3-sys`. It is not a
-# preference: this box has `libsqlite3.so.0` but no `libsqlite3.so` link target, so a system-linked
-# build would not link at all, and a bundled build additionally cannot drift with the host's SQLite
-# version. `array`/`vtab` are deliberately NOT enabled — the store needs neither.
 rusqlite = { version = "0.37", features = ["bundled"] }
-# Test-only: the on-disk stores every idempotency test opens, in a directory that is removed when the
-# test ends. The restart tests need a REAL file (a store that cannot lose the cursor is the point),
-# so an in-memory database is not an option — not even in tests.
 tempfile = "3"
-# axum ROUTES the schema-exact mock Circle server in the relayer's contract tests, and tower's
-# `ServiceExt::oneshot` drives that router IN PROCESS: the mock is an `HttpTransport`, not a socket
-# server. That is not a preference — the audit/CI sandbox denies `bind(127.0.0.1:0)` with EPERM, so a
-# loopback-server mock cannot be part of a gate that has to be green in every environment. Both are
-# DEV-dependencies: no relayer binary ever serves HTTP. wiremock/httpmock/mockito are NOT in the
-# pinned cache (they would break the offline gate) — and being socket servers, they could not run in
-# the sandbox either.
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query"] }
 tower = { version = "0.5", features = ["util"] }
-
-# No [patch.crates-io] block is needed: the three members resolve the whole protocol family from
-# the published crates.io `=0.16.0-rc.4` release their manifests pin, and the only other consumer
-# of that family — the `miden-client` stack of the parked `crates/xusdc-validation`
-# (`workspace.exclude`) — is outside the graph, so nothing pulls a second protocol copy that a
-# patch block would have to unify. Exactly one copy of each protocol crate is in the graph.

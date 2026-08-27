@@ -2,4 +2,5 @@
 
 pub mod circle;
 pub mod config;
+pub mod mint;
 pub mod store;

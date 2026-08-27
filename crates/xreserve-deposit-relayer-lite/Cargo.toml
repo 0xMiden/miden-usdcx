@@ -22,4 +22,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+rstest = { workspace = true }
 tempfile = { workspace = true }
+miden-protocol = { version = "=0.16.0-rc.6", features = ["testing"] }

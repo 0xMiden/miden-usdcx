@@ -6125,6 +6125,7 @@ dependencies = [
  "miden-protocol",
  "parse_link_header",
  "reqwest",
+ "rstest",
  "serde",
  "serde_json",
  "tempfile",

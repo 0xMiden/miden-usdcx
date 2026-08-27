@@ -1,0 +1,5 @@
+# To adopt a newer toolchain: bump `channel`, run `just ci`, fix what the new lints find, commit it
+# all together.
+[toolchain]
+channel = "1.98"
+components = ["clippy", "rustfmt"]

@@ -6101,6 +6101,7 @@ dependencies = [
  "clap",
  "miden-protocol",
  "tempfile",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "url",

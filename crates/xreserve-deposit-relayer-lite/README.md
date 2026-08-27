@@ -15,6 +15,8 @@ Pass all deployment settings as command-line arguments:
 ```sh
 just run-relayer-lite \
   --circle-url https://xreserve-api-testnet.circle.com \
+  --page-size 100 \
+  --request-timeout 30s \
   --remote-domain 10001 \
   --faucet-account-id 0x222222222222221122222222222222 \
   --relayer-account-id 0x111111101111111111111111111111 \

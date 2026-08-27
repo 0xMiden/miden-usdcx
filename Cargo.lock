@@ -5665,6 +5665,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]
@@ -6091,6 +6092,19 @@ dependencies = [
  "tokio",
  "tower",
  "xusdc-encoding",
+]
+
+[[package]]
+name = "xreserve-deposit-relayer-lite"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "tempfile",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

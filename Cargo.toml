@@ -4,6 +4,7 @@ members = [
   "crates/xusdc-encoding",
   "crates/xusdc-genesis",
   "crates/xreserve-deposit-relayer",
+  "crates/xreserve-deposit-relayer-lite",
   "crates/withdrawal-listener-attester",
 ]
 # PARKED: `crates/xusdc-validation` sits outside the workspace. The members above resolve
@@ -33,10 +34,13 @@ miden-protocol-build-utils  = "=0.17.0-rc.6"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "1"
 tokio = { version = "1" }
 anyhow = "1"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 rstest = "0.26"
 assert_matches = "1.5"
 

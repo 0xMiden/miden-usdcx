@@ -1,15 +1,22 @@
-//! Starts the deposit relayer.
+//! Assembles and starts the deposit relayer.
 //!
 //! Startup fails because a compatible Miden client is not available.
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use clap::Parser;
+use miden_protocol::crypto::rand::RandomCoin;
+use miden_protocol::{Felt, Word};
 use tracing_subscriber::EnvFilter;
 
+use xreserve_deposit_relayer_lite::circle::CircleClient;
 use xreserve_deposit_relayer_lite::config::Config;
-use xreserve_deposit_relayer_lite::mint::Minter;
+use xreserve_deposit_relayer_lite::miden::production_miden_client;
+use xreserve_deposit_relayer_lite::mint::Identities;
+use xreserve_deposit_relayer_lite::store::CursorStore;
+use xreserve_deposit_relayer_lite::{run, Relayer};
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -18,11 +25,39 @@ fn main() -> Result<()> {
         .init();
 
     let config = Config::parse();
-    let _minter = Minter::from_config(&config);
-    tracing::info!(remote_domain = %config.remote_domain, "arguments validated");
+    let identities = Identities::from_config(&config)?;
+    let store = CursorStore::new(config.state_file.clone());
+    let circle = CircleClient::new(
+        config.circle_url.clone(),
+        config.page_size,
+        config.request_timeout,
+    )?;
 
-    bail!(
-        "Miden integration requires a miden-client release for protocol v0.16. No compatible \
-         release is available."
-    )
+    // Startup stops here until a compatible Miden client is available.
+    let miden = production_miden_client()?;
+
+    let mut rng = RandomCoin::new(entropy_seed());
+    let mut relayer = Relayer {
+        config: &config,
+        circle: &circle,
+        store: &store,
+        miden: miden.as_ref(),
+        identities: &identities,
+        rng: &mut rng,
+    };
+
+    run(&mut relayer).await
+}
+
+/// Returns a seed for note serial numbers from the operating system.
+fn entropy_seed() -> Word {
+    use rand::RngCore;
+
+    let mut rng = rand::rngs::OsRng;
+    Word::from([
+        Felt::from(rng.next_u32()),
+        Felt::from(rng.next_u32()),
+        Felt::from(rng.next_u32()),
+        Felt::from(rng.next_u32()),
+    ])
 }

@@ -2,6 +2,8 @@
 //!
 //! Startup fails because a compatible Miden client is not available.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use clap::Parser;
 use miden_protocol::crypto::rand::RandomCoin;
@@ -27,23 +29,22 @@ async fn main() -> Result<()> {
     let config = Config::parse();
     let identities = Identities::from_config(&config)?;
     let store = CursorStore::new(config.state_file.clone());
-    let circle = CircleClient::new(
+    let circle = Arc::new(CircleClient::new(
         config.circle_url.clone(),
         config.page_size,
         config.request_timeout,
-    )?;
+    )?);
 
     // Startup stops here until a compatible Miden client is available.
-    let miden = production_miden_client()?;
+    let miden = Arc::from(production_miden_client()?);
 
-    let mut rng = RandomCoin::new(entropy_seed());
     let relayer = Relayer {
-        config: &config,
-        circle: &circle,
-        store: &store,
-        miden: miden.as_ref(),
-        identities: &identities,
-        rng: &mut rng,
+        config,
+        circle,
+        store,
+        miden,
+        identities,
+        rng: RandomCoin::new(entropy_seed()),
     };
 
     run(relayer).await

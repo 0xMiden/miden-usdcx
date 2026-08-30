@@ -1,5 +1,6 @@
 //! Relays Circle xReserve deposit attestations to the xUSDC faucet.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -23,13 +24,13 @@ use store::CursorStore;
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Dependencies and mutable state required to process feed pages.
-pub struct Relayer<'a, R: FeltRng> {
-    pub config: &'a Config,
-    pub circle: &'a dyn CircleFeed,
-    pub store: &'a CursorStore,
-    pub miden: &'a dyn MidenClient,
-    pub identities: &'a Identities,
-    pub rng: &'a mut R,
+pub struct Relayer<R: FeltRng> {
+    pub config: Config,
+    pub circle: Arc<dyn CircleFeed>,
+    pub store: CursorStore,
+    pub miden: Arc<dyn MidenClient>,
+    pub identities: Identities,
+    pub rng: R,
 }
 
 /// How a cycle ended, and therefore whether the loop should pause.
@@ -54,7 +55,7 @@ pub enum CycleOutcome {
 /// - Fetching the Circle page fails.
 /// - Submitting the mint notes fails.
 /// - Persisting the next cursor fails.
-pub async fn run_cycle<R: FeltRng>(relayer: &mut Relayer<'_, R>) -> Result<CycleOutcome> {
+pub async fn run_cycle<R: FeltRng>(relayer: &mut Relayer<R>) -> Result<CycleOutcome> {
     let cursor = relayer.store.cursor()?;
     let page = relayer
         .circle
@@ -62,10 +63,10 @@ pub async fn run_cycle<R: FeltRng>(relayer: &mut Relayer<'_, R>) -> Result<Cycle
         .await?;
 
     let notes = build_notes(
-        relayer.identities,
+        &relayer.identities,
         relayer.config.remote_domain,
         &page.attestations,
-        &mut *relayer.rng,
+        &mut relayer.rng,
     );
 
     if notes.is_empty() && !page.attestations.is_empty() {
@@ -101,7 +102,7 @@ pub async fn run_cycle<R: FeltRng>(relayer: &mut Relayer<'_, R>) -> Result<Cycle
 /// Additional pages are processed immediately. When the feed is caught up or a cycle fails, the
 /// loop waits for the polling interval. Failed cycles leave the cursor unchanged, so the next
 /// cycle retries the same page.
-pub async fn run<R: FeltRng>(mut relayer: Relayer<'_, R>) -> ! {
+pub async fn run<R: FeltRng>(mut relayer: Relayer<R>) -> ! {
     loop {
         match run_cycle(&mut relayer).await {
             Ok(CycleOutcome::MorePages) => continue,

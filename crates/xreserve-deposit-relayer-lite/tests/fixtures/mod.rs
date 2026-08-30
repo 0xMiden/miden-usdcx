@@ -259,15 +259,15 @@ pub struct ScriptedMiden {
 }
 
 impl ScriptedMiden {
-    pub fn accepting() -> Self {
-        Self::default()
+    pub fn accepting() -> Arc<Self> {
+        Arc::new(Self::default())
     }
 
-    pub fn script(answers: Vec<Answer>) -> Self {
-        Self {
+    pub fn script(answers: Vec<Answer>) -> Arc<Self> {
+        Arc::new(Self {
             answers: Mutex::new(answers.into()),
             submissions: Mutex::new(Vec::new()),
-        }
+        })
     }
 
     /// The note count of every submitted transaction, in order.
@@ -300,44 +300,30 @@ impl MidenClient for ScriptedMiden {
     }
 }
 
-/// Owns the dependencies from which a test can construct a [`Relayer`].
+/// Owns a relayer and the temporary directory containing its cursor store.
 pub struct Fixture {
-    pub config: Config,
-    pub store: CursorStore,
-    pub circle: Arc<MockCircle>,
-    pub identities: Identities,
-    pub rng: RandomCoin,
+    pub relayer: Relayer<RandomCoin>,
     _dir: tempfile::TempDir,
 }
 
 impl Fixture {
-    pub fn new(mock: Arc<MockCircle>) -> Self {
+    pub fn new(mock: Arc<MockCircle>, miden: Arc<dyn MidenClient>) -> Self {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let mut config = test_config();
         config.state_file = dir.path().join("cursor");
 
         let store = CursorStore::new(config.state_file.clone());
         let identities = Identities::from_config(&config).expect("the fixture config is valid");
-
-        Self {
+        let relayer = Relayer {
             config,
-            store,
             circle: mock,
+            store,
+            miden,
             identities,
             // Use a fixed seed to produce stable serial numbers.
             rng: RandomCoin::new(Word::from([Felt::from(7u32); 4])),
-            _dir: dir,
-        }
-    }
+        };
 
-    pub fn relayer<'a>(&'a mut self, miden: &'a dyn MidenClient) -> Relayer<'a, RandomCoin> {
-        Relayer {
-            config: &self.config,
-            circle: self.circle.as_ref(),
-            store: &self.store,
-            miden,
-            identities: &self.identities,
-            rng: &mut self.rng,
-        }
+        Self { relayer, _dir: dir }
     }
 }

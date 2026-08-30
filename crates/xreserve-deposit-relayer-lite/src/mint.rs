@@ -27,8 +27,7 @@ const ATTESTATION_LEN: usize = 65;
 /// The configured identities used to build mint notes.
 ///
 /// These values are parsed before the relay loop starts, so invalid configuration terminates the
-/// process before any deposits are handled. Grouping the two account IDs prevents the sender and
-/// faucet from being accidentally swapped at a call site.
+/// process before any deposits are handled.
 #[derive(Debug, Clone)]
 pub struct Identities {
     sender: AccountId,

@@ -1,5 +1,7 @@
 //! Relays Circle xReserve deposit attestations to the xUSDC faucet.
 
+use std::time::Duration;
+
 use anyhow::Result;
 use miden_protocol::crypto::rand::FeltRng;
 use tracing::{info, warn};
@@ -18,10 +20,9 @@ use store::CursorStore;
 
 /// How long to wait once the scan has caught up with the feed. A deposit intent has no expiry, so
 /// polling harder buys nothing but rate-limit pressure.
-const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Everything one cycle needs, borrowed from the caller — so this module cannot grow a default for
-/// the Miden seam: a relayer missing one must not start.
+/// Dependencies and mutable state required to process feed pages.
 pub struct Relayer<'a, R: FeltRng> {
     pub config: &'a Config,
     pub circle: &'a dyn CircleFeed,
@@ -37,20 +38,22 @@ pub enum CycleOutcome {
     /// The page was handled and there is another one — keep going without sleeping.
     MorePages,
     /// The feed is caught up.
-    Idle,
+    CaughtUp,
 }
 
-/// One cycle: fetch a page from the stored cursor, mint what builds, advance the cursor.
+/// Fetches one page from the stored cursor, builds and submits its notes, and advances the cursor.
 ///
-/// The order is the whole design. Malformed attestations are skipped inside [`build_notes`] (one
-/// bad element must never wedge the feed); the buildable ones go to the chain in ONE transaction;
-/// and the cursor moves only after [`MidenClient::submit_notes`] returns — i.e. after that
-/// transaction is included on chain. A crash or error anywhere leaves the cursor put, so the next
-/// cycle replays the same page and the chain refuses the duplicate mints.
+/// Malformed attestations are skipped inside [`build_notes`]. Buildable notes are submitted in one
+/// transaction, and the cursor advances only after [`MidenClient::submit_notes`] confirms that the
+/// transaction is included on-chain. If an operation fails, the cursor remains unchanged and the
+/// next cycle fetches the same page.
 ///
 /// # Errors
-/// The fetch, the submit, or the cursor write failed. All leave the cursor where it was; the loop
-/// logs, sleeps, and retries the same page.
+///
+/// - Reading the stored cursor fails.
+/// - Fetching the Circle page fails.
+/// - Submitting the mint notes fails.
+/// - Persisting the next cursor fails.
 pub async fn run_cycle<R: FeltRng>(relayer: &mut Relayer<'_, R>) -> Result<CycleOutcome> {
     let cursor = relayer.store.cursor()?;
     let page = relayer
@@ -65,7 +68,12 @@ pub async fn run_cycle<R: FeltRng>(relayer: &mut Relayer<'_, R>) -> Result<Cycle
         &mut *relayer.rng,
     );
 
-    if !notes.is_empty() {
+    if notes.is_empty() && !page.attestations.is_empty() {
+        warn!(
+            fetched = page.attestations.len(),
+            "page produced no mint notes"
+        );
+    } else if !notes.is_empty() {
         let submitted = notes.len();
         let tx = relayer
             .miden
@@ -79,25 +87,25 @@ pub async fn run_cycle<R: FeltRng>(relayer: &mut Relayer<'_, R>) -> Result<Cycle
         );
     }
 
-    // an absent `next` is the documented final page: there is no resume point past the end
-    match page.next {
+    match page.next_cursor() {
         Some(next) => {
-            relayer.store.set_cursor(&next)?;
+            relayer.store.set_cursor(next)?;
             Ok(CycleOutcome::MorePages)
         }
-        None => Ok(CycleOutcome::Idle),
+        None => Ok(CycleOutcome::CaughtUp),
     }
 }
 
-/// Runs cycles forever. A failed cycle does not stop the loop — a 500 from Circle or a lagging
-/// node is exactly what the next cycle is for, and the cursor did not move, so nothing was
-/// skipped — but it does pause first, so a persistent failure is retried at the poll interval
-/// rather than in a hot spin.
-pub async fn run<R: FeltRng>(relayer: &mut Relayer<'_, R>) -> ! {
+/// Runs relay cycles indefinitely.
+///
+/// Additional pages are processed immediately. When the feed is caught up or a cycle fails, the
+/// loop waits for the polling interval. Failed cycles leave the cursor unchanged, so the next
+/// cycle retries the same page.
+pub async fn run<R: FeltRng>(mut relayer: Relayer<'_, R>) -> ! {
     loop {
-        match run_cycle(relayer).await {
+        match run_cycle(&mut relayer).await {
             Ok(CycleOutcome::MorePages) => continue,
-            Ok(CycleOutcome::Idle) => {}
+            Ok(CycleOutcome::CaughtUp) => {}
             Err(error) => warn!(
                 error = format!("{error:#}"),
                 "the cycle failed; the cursor did not move"

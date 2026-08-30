@@ -230,12 +230,10 @@ pub fn undecodable_attestation() -> Attestation {
     }
 }
 
-// THE SCRIPTED MIDEN ADAPTER + THE ASSEMBLED FIXTURE
-// ================================================================================================
+// Scripted Miden adapter and assembled fixture.
 //
-// The adapter answers this crate's `MidenClient` interface from a script. It fakes no Miden
-// behaviour — nothing here is evidence about Miden (Circle may be mocked; Miden may not); it
-// exists so the LOOP's cursor discipline is testable.
+// The adapter returns configured submission outcomes and records successful note counts so the
+// relay loop's cursor behaviour can be tested.
 
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::Note;
@@ -302,7 +300,7 @@ impl MidenClient for ScriptedMiden {
     }
 }
 
-/// Everything one `run_cycle` needs, owned, so a test can borrow a [`Relayer`] out of it.
+/// Owns the dependencies from which a test can construct a [`Relayer`].
 pub struct Fixture {
     pub config: Config,
     pub store: CursorStore,

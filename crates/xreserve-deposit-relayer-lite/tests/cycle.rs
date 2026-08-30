@@ -1,5 +1,5 @@
-//! The loop's cursor discipline: advance only after the page is on chain; never advance past a
-//! failure; never let one bad attestation wedge the feed.
+//! The loop advances its cursor only after the page is on-chain, keeps it unchanged after a
+//! failure, and skips malformed attestations without blocking the feed.
 
 mod fixtures;
 
@@ -9,7 +9,7 @@ use fixtures::{
 };
 use xreserve_deposit_relayer_lite::{run_cycle, CycleOutcome};
 
-/// A full page mints in ONE transaction and the cursor advances.
+/// A full page mints in one transaction and advances the cursor.
 #[tokio::test]
 async fn a_page_mints_in_one_transaction() {
     let mock = MockCircle::new(vec![page(
@@ -26,8 +26,7 @@ async fn a_page_mints_in_one_transaction() {
     assert_eq!(fixture.store.cursor().unwrap().as_deref(), Some("page-2"));
 }
 
-/// **The issue-#160 wedge-bug regression, at the loop level.** A malformed attestation mid-page is
-/// skipped, its neighbours still mint, and the cursor ADVANCES — the feed cannot wedge.
+/// A malformed attestation is skipped while its neighbours mint and the cursor advances.
 #[tokio::test]
 async fn a_malformed_attestation_does_not_wedge_the_page() {
     let mock = MockCircle::new(vec![page(
@@ -44,13 +43,12 @@ async fn a_malformed_attestation_does_not_wedge_the_page() {
     assert_eq!(
         fixture.store.cursor().unwrap().as_deref(),
         Some("page-2"),
-        "THE bug: the cursor must advance past a page carrying a bad element"
+        "the cursor must advance past a page carrying a bad element"
     );
 }
 
-/// A failed submit holds the cursor, and the next cycle replays the SAME page and finishes it.
-/// At-least-once in action: the replay re-submits all three notes; on a real chain the duplicates
-/// are refused by the faucet's usedNonces assert.
+/// A failed submission leaves the cursor unchanged, and the next cycle replays the same page.
+/// The replay resubmits all three notes; on-chain replay protection rejects any duplicate mints.
 #[tokio::test]
 async fn a_failed_submit_holds_the_cursor_and_the_page_is_replayed() {
     let same_page = || {
@@ -68,7 +66,7 @@ async fn a_failed_submit_holds_the_cursor_and_the_page_is_replayed() {
     assert_eq!(
         fixture.store.cursor().unwrap(),
         None,
-        "the cursor must NOT advance past a page that is not on chain"
+        "the cursor must not advance past a page that is not on-chain"
     );
 
     let outcome = run_cycle(&mut fixture.relayer(&miden)).await.unwrap();
@@ -97,7 +95,7 @@ async fn a_scan_resumes_from_the_stored_cursor() {
     );
     assert_eq!(
         run_cycle(&mut fixture.relayer(&miden)).await.unwrap(),
-        CycleOutcome::Idle
+        CycleOutcome::CaughtUp
     );
 
     let requests = mock.requests();
@@ -108,7 +106,7 @@ async fn a_scan_resumes_from_the_stored_cursor() {
     );
 }
 
-/// An empty page submits NO transaction and still advances.
+/// An empty page advances without submitting a transaction.
 #[tokio::test]
 async fn an_empty_page_advances_without_a_transaction() {
     let mock = MockCircle::new(vec![page(&[], Some("page-2"))]);
@@ -122,17 +120,16 @@ async fn an_empty_page_advances_without_a_transaction() {
     assert_eq!(fixture.store.cursor().unwrap().as_deref(), Some("page-2"));
 }
 
-/// The final page (no Link header) reports Idle and leaves the cursor alone — there is no resume
-/// point past the end of the feed.
+/// A page without a next cursor reports that the feed is caught up and leaves the cursor unchanged.
 #[tokio::test]
-async fn the_final_page_is_idle_and_keeps_the_cursor() {
+async fn the_final_page_reports_caught_up_and_keeps_the_cursor() {
     let mock = MockCircle::new(vec![page(&[attestation(1)], None)]);
     let mut fixture = Fixture::new(mock);
     let miden = ScriptedMiden::accepting();
 
     let outcome = run_cycle(&mut fixture.relayer(&miden)).await.unwrap();
 
-    assert_eq!(outcome, CycleOutcome::Idle);
+    assert_eq!(outcome, CycleOutcome::CaughtUp);
     assert_eq!(miden.submissions(), vec![1]);
     assert_eq!(fixture.store.cursor().unwrap(), None);
 }

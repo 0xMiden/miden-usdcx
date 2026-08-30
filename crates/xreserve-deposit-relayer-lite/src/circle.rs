@@ -158,6 +158,13 @@ impl Page {
     }
 }
 
+impl Page {
+    /// Returns the cursor for the next page, or `None` when the feed is caught up.
+    pub fn next_cursor(&self) -> Option<&str> {
+        self.next.as_deref()
+    }
+}
+
 /// The Circle-facing HTTP client.
 #[derive(Debug)]
 pub struct CircleClient {

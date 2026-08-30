@@ -1,11 +1,8 @@
-//! The seam at a Miden node: one transaction per page — build, prove, submit, wait for inclusion.
+//! Miden transaction submission for mint-note pages.
 //!
-//! There is **no production implementation**: it needs a `miden-client` for protocol v0.16 and
-//! there is no such release. The two dishonest stand-ins are both worse than refusing — a no-op
-//! would poll Circle while minting nothing (healthy in every log except the chain's), and a
-//! simulation would make the tests evidence about themselves. Circle may be mocked; Miden may not.
-//! So [`production_miden_client`] refuses by name and `main` exits on it; the later slice that
-//! implements this against a real client changes that one function.
+//! There is no production implementation because a `miden-client` release for protocol v0.16 is
+//! not yet available. [`production_miden_client`] therefore returns an error and prevents the
+//! service from polling Circle without submitting transactions.
 
 use std::fmt;
 use std::future::Future;
@@ -15,15 +12,13 @@ use anyhow::{bail, Result};
 use miden_protocol::account::AccountId;
 use miden_protocol::note::Note;
 
-/// The Miden leg, whole: everything between "here are the page's mint notes" and "they are on
-/// chain".
+/// Submits a page of mint notes to Miden and waits for inclusion on-chain.
 pub trait MidenClient: fmt::Debug + Send + Sync {
-    /// Submits `notes` in ONE transaction from `sender` and returns the transaction id once that
-    /// transaction is **included on chain** (build → prove → submit → wait).
+    /// Submits `notes` in one transaction from `sender` and returns its ID after inclusion
+    /// on-chain.
     ///
-    /// Inclusion-before-return is load-bearing: the caller advances the Circle cursor on success,
-    /// and the cursor is the relayer's only state. Returning at mere acceptance would let a
-    /// dropped transaction advance the cursor past deposits that never minted.
+    /// The caller advances the Circle cursor after this method succeeds. Returning before
+    /// inclusion could advance the cursor past deposits whose transaction is later dropped.
     fn submit_notes<'a>(
         &'a self,
         sender: AccountId,
@@ -31,11 +26,11 @@ pub trait MidenClient: fmt::Debug + Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
 }
 
-/// The production adapter — which does not exist yet, and says so.
+/// Returns the production Miden client.
 ///
 /// # Errors
-/// Always, until a `miden-client` for protocol v0.16 is released and a later slice implements the
-/// trait against it (proven on a real local node).
+///
+/// - A compatible `miden-client` implementation is not yet available.
 pub fn production_miden_client() -> Result<Box<dyn MidenClient>> {
     bail!(
         "the miden leg has no production adapter: it needs a miden-client for protocol v0.16 and \

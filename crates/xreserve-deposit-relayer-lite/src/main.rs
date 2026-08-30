@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
     let miden = production_miden_client()?;
 
     let mut rng = RandomCoin::new(entropy_seed());
-    let mut relayer = Relayer {
+    let relayer = Relayer {
         config: &config,
         circle: &circle,
         store: &store,
@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
         rng: &mut rng,
     };
 
-    run(&mut relayer).await
+    run(relayer).await
 }
 
 /// Returns a seed for note serial numbers from the operating system.

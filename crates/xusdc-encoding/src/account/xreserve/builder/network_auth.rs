@@ -7,19 +7,15 @@
 
 use std::collections::BTreeSet;
 
-use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::FeeParameters;
 use miden_protocol::note::NoteScriptRoot;
-use miden_protocol::transaction::TransactionFee;
 use miden_standards::account::auth::AuthNetworkAccount;
-use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
-use miden_standards::note::costs::NoteCost;
 use miden_standards::note::{
     BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
     FeeSponsorshipNote, MintNote, PauseConfigNote, RbacConfigNote,
 };
 use miden_standards::tx_script::ExpirationTransactionScript;
-use miden_tx::{NetworkNotePricer, NotePricingError};
+use miden_tx::NetworkNotePricer;
 
 use super::{XReserveStablecoinBuilder, XReserveStablecoinBuilderError};
 use crate::note::xreserve_admin::{XReserveMinBurnAmountNote, XReserveSetAttesterNote};
@@ -55,17 +51,17 @@ impl XReserveStablecoinBuilder {
     }
 
     /// Builds the production `AuthNetworkAccount` component from the network fee parameters. It
-    /// constructs the xUSDC fee schedule, uses [`Self::allowed_note_scripts`], admits only
+    /// constructs the xUSDC fee schedule through the pricer, admits only
     /// `ExpirationTransactionScript::script_root()` as a transaction script, and excludes the
     /// mutable `NetworkAccountConfigNote` entry point.
     pub fn auth_component(
         fee_parameters: FeeParameters,
     ) -> Result<AuthNetworkAccount, XReserveStablecoinBuilderError> {
-        let fee_policy = Self::fee_policy(&fee_parameters)?;
-        let fee_policy_manager = FeePolicyManager::builder()
-            .fee_faucet_id(fee_parameters.fee_faucet_id())
-            .active_fee_policy(fee_policy.into())
-            .build();
+        let fee_policy_manager = NetworkNotePricer::builder()
+            .fee_parameters(fee_parameters)
+            .note_costs(crate::note::costs::note_costs())
+            .build()
+            .basic_constant_fee_policy_manager(Self::allowed_note_scripts())?;
         Ok(
             AuthNetworkAccount::custom(Self::allowed_note_scripts(), fee_policy_manager)?
                 .with_allowed_tx_scripts(BTreeSet::from([
@@ -73,38 +69,4 @@ impl XReserveStablecoinBuilder {
                 ])),
         )
     }
-
-    /// Constructs the xUSDC fee policy from the network fee parameters.
-    pub(super) fn fee_policy(
-        fee_parameters: &FeeParameters,
-    ) -> Result<BasicConstantFeePolicy, XReserveStablecoinBuilderError> {
-        let pricer = NetworkNotePricer::builder()
-            .fee_parameters(fee_parameters.clone())
-            .build();
-        let mut policy = BasicConstantFeePolicy::new();
-        for root in Self::allowed_note_scripts() {
-            let price = if let Some(cost) = crate::note::costs::note_cost(root) {
-                price_xusdc_note(&pricer, &cost)?
-            } else {
-                pricer.price(root)?
-            };
-            policy = policy.with_fee(root, price);
-        }
-        Ok(policy)
-    }
-}
-
-/// Prices an xUSDC note from its measured consumption cost and any note it creates.
-fn price_xusdc_note(
-    pricer: &NetworkNotePricer,
-    cost: &NoteCost,
-) -> Result<AssetAmount, NotePricingError> {
-    let fee_inputs = TransactionFee::new(cost.cycles()).map_err(NotePricingError::Fee)?;
-    let mut total = pricer.fee(fee_inputs)?.as_u64();
-    for &created_root in cost.created_notes() {
-        total = total
-            .checked_add(pricer.price(created_root)?.as_u64())
-            .ok_or(NotePricingError::PriceOverflow)?;
-    }
-    AssetAmount::new(total).map_err(NotePricingError::PriceExceedsMaxAssetAmount)
 }

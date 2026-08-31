@@ -1,0 +1,14 @@
+[package]
+name = "xusdc-light-attester"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Off-chain xUSDC withdrawal attester"
+
+[dependencies]
+xusdc-encoding = { path = "../xusdc-encoding" }
+miden-protocol = { version = "=0.16.0-rc.6" }
+miden-standards = { version = "=0.16.0-rc.6" }
+reqwest = { workspace = true }
+rusqlite = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }

@@ -5872,6 +5872,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "xusdc-light-attester"
+version = "0.0.0"
+dependencies = [
+ "miden-protocol",
+ "miden-standards",
+ "reqwest",
+ "rusqlite",
+ "tokio",
+ "xusdc-encoding",
+]
+
+[[package]]
 name = "yoke"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

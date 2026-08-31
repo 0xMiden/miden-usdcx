@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/xusdc-encoding",
   "crates/xusdc-genesis",
+  "crates/xusdc-light-attester",
   "crates/xreserve-deposit-relayer",
   "crates/withdrawal-listener-attester",
 ]

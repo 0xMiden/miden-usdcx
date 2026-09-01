@@ -57,8 +57,8 @@ impl Store {
     /// Durably replaces the cursor: after this returns, a crash leaves either the old cursor or
     /// the new one on disk, never a torn one.
     pub fn set_cursor(&self, cursor: &CircleCursor) -> Result<()> {
-        // Write a sibling temp file, fsync it, then rename over the real file — `rename(2)` is
-        // atomic on POSIX, which is what rules out the torn state.
+        // Write a sibling temp file, fsync it, then rename over the real file. The rename is atomic
+        // on the POSIX hosts this binary targets, which is what rules out the torn state.
         let tmp = self.path.with_extension("tmp");
 
         let mut file = fs::File::create(&tmp)
@@ -74,5 +74,47 @@ impl Store {
                 tmp.display()
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CircleCursor, Store};
+
+    /// What was written survives the handle being dropped and the file reopened.
+    #[test]
+    fn the_cursor_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cursor");
+
+        Store::new(path.clone())
+            .set_cursor(&CircleCursor::new("page-2"))
+            .unwrap();
+
+        let reopened = Store::new(path);
+        assert_eq!(
+            reopened.cursor().unwrap(),
+            Some(CircleCursor::new("page-2"))
+        );
+    }
+
+    /// A first run reads `None`, not an error.
+    #[test]
+    fn a_first_run_has_no_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("cursor"));
+        assert_eq!(store.cursor().unwrap(), None);
+    }
+
+    /// The newest write wins — the file holds one value, not a history.
+    #[test]
+    fn the_cursor_is_replaced_not_appended() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("cursor"));
+
+        store.set_cursor(&CircleCursor::new("first")).unwrap();
+        store.set_cursor(&CircleCursor::new("second")).unwrap();
+
+        assert_eq!(store.cursor().unwrap(), Some(CircleCursor::new("second")));
     }
 }

@@ -14,7 +14,6 @@ pub struct ConfigError;
 
 #[allow(dead_code)]
 pub struct Config {
-    node_rpc_url: Url,
     request_timeout: Duration,
     faucet_account_id: AccountId,
     circle_api_base_url: Url,
@@ -24,9 +23,38 @@ pub struct Config {
     store_path: PathBuf,
 }
 
+#[allow(dead_code)]
 impl Config {
     #[allow(unused_variables)]
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
+        todo!()
+    }
+
+    pub(crate) fn request_timeout(&self) -> Duration {
+        todo!()
+    }
+
+    pub(crate) fn faucet_account_id(&self) -> AccountId {
+        todo!()
+    }
+
+    pub(crate) fn circle_api_base_url(&self) -> &Url {
+        todo!()
+    }
+
+    pub(crate) fn poll_interval(&self) -> Duration {
+        todo!()
+    }
+
+    pub(crate) fn fallback_checkpoint_block(&self) -> BlockNumber {
+        todo!()
+    }
+
+    pub(crate) fn expected_signing_public_keys(&self) -> &[SigningPublicKey] {
+        todo!()
+    }
+
+    pub(crate) fn store_path(&self) -> &Path {
         todo!()
     }
 }

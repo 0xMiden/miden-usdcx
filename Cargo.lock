@@ -5875,10 +5875,12 @@ dependencies = [
 name = "xusdc-light-attester"
 version = "0.0.0"
 dependencies = [
+ "hex",
  "miden-protocol",
  "miden-standards",
  "reqwest",
  "rusqlite",
+ "tempfile",
  "tokio",
  "xusdc-encoding",
 ]

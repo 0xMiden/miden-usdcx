@@ -3,15 +3,12 @@ name = "xreserve-deposit-relayer-lite"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "A minimal xUSDC deposit relayer: poll Circle, mint the attested deposits, advance the cursor."
+description = "Relays Circle xReserve deposit attestations to the xUSDC faucet."
 
 [dependencies]
 anyhow = { workspace = true }
-serde = { workspace = true }
-toml = { workspace = true }
+clap = { workspace = true }
+miden-protocol = { version = "=0.16.1" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-url = { version = "2", features = ["serde"] }
-
-[dev-dependencies]
-tempfile = { workspace = true }
+url = "2"

@@ -5665,7 +5665,6 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
- "serde_derive",
 ]
 
 [[package]]
@@ -6099,9 +6098,8 @@ name = "xreserve-deposit-relayer-lite"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "serde",
- "tempfile",
- "toml",
+ "clap",
+ "miden-protocol",
  "tracing",
  "tracing-subscriber",
  "url",

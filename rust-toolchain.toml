@@ -1,5 +1,4 @@
-# To adopt a newer toolchain: bump `channel`, run `just ci`, fix what the new lints find, commit it
-# all together.
+# To adopt a newer toolchain, update the channel and run `just test`, `just lint`, and `just fmt`.
 #
 # The channel names a patch release because a bare "1.98" resolves to 1.98.0, which carries a
 # miscompilation bug. 1.98.1 is also the release miden-protocol pins.

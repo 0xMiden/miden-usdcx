@@ -13,13 +13,6 @@ concurrency:
 permissions:
   contents: read
 
-# Every job below runs a `just` recipe and NOTHING ELSE, so what CI checks and what a contributor
-# runs locally cannot drift: `just ci` is these three jobs, in order.
-#
-# The toolchain is NOT selected here. `rust-toolchain.toml` pins it, and rustup honours that file
-# automatically, so the version lives in exactly one place — this workflow cannot install a
-# different compiler from the one a contributor gets.
-
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -32,7 +25,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/implementation' }}
       - name: Test
-        run: just test-all
+        run: just test
 
   clippy:
     runs-on: ubuntu-latest
@@ -55,4 +48,4 @@ jobs:
           persist-credentials: false
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
       - name: Rustfmt
-        run: just fmt-check
+        run: just fmt

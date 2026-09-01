@@ -7,6 +7,7 @@ use fixtures::{
     attestation, error_response, page, undecodable_attestation, Answer, Fixture, MockCircle,
     ScriptedMiden,
 };
+use xreserve_deposit_relayer_lite::store::CircleCursor;
 use xreserve_deposit_relayer_lite::{run_cycle, CycleOutcome};
 
 /// A full page mints in one transaction and advances the cursor.
@@ -24,8 +25,8 @@ async fn a_page_mints_in_one_transaction() {
     assert_eq!(outcome, CycleOutcome::MorePages);
     assert_eq!(miden.submissions(), vec![3], "three notes, one transaction");
     assert_eq!(
-        fixture.relayer.store.cursor().unwrap().as_deref(),
-        Some("page-2")
+        fixture.relayer.store.cursor().unwrap(),
+        Some(CircleCursor::new("page-2"))
     );
 }
 
@@ -44,8 +45,8 @@ async fn a_malformed_attestation_does_not_wedge_the_page() {
     assert_eq!(outcome, CycleOutcome::MorePages, "the cycle must not fail");
     assert_eq!(miden.submissions(), vec![2], "the two good deposits mint");
     assert_eq!(
-        fixture.relayer.store.cursor().unwrap().as_deref(),
-        Some("page-2"),
+        fixture.relayer.store.cursor().unwrap(),
+        Some(CircleCursor::new("page-2")),
         "the cursor must advance past a page carrying a bad element"
     );
 }
@@ -80,8 +81,8 @@ async fn a_failed_submit_holds_the_cursor_and_the_page_is_replayed() {
         "the replayed page lands whole"
     );
     assert_eq!(
-        fixture.relayer.store.cursor().unwrap().as_deref(),
-        Some("page-2")
+        fixture.relayer.store.cursor().unwrap(),
+        Some(CircleCursor::new("page-2"))
     );
 }
 
@@ -127,8 +128,8 @@ async fn an_empty_page_advances_without_a_transaction() {
     assert_eq!(outcome, CycleOutcome::MorePages);
     assert!(miden.submissions().is_empty());
     assert_eq!(
-        fixture.relayer.store.cursor().unwrap().as_deref(),
-        Some("page-2")
+        fixture.relayer.store.cursor().unwrap(),
+        Some(CircleCursor::new("page-2"))
     );
 }
 

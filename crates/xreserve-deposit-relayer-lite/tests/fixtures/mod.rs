@@ -241,7 +241,7 @@ use miden_protocol::{Felt, Word};
 
 use xreserve_deposit_relayer_lite::miden::MidenClient;
 use xreserve_deposit_relayer_lite::mint::Identities;
-use xreserve_deposit_relayer_lite::store::CursorStore;
+use xreserve_deposit_relayer_lite::store::Store;
 use xreserve_deposit_relayer_lite::Relayer;
 
 /// What one scripted submit should answer.
@@ -312,7 +312,7 @@ impl Fixture {
         let mut config = test_config();
         config.state_file = dir.path().join("cursor");
 
-        let store = CursorStore::new(config.state_file.clone());
+        let store = Store::new(config.state_file.clone());
         let identities = Identities::from_config(&config).expect("the fixture config is valid");
         let relayer = Relayer {
             config,

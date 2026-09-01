@@ -14,7 +14,7 @@ use xreserve_deposit_relayer_lite::circle::CircleClient;
 use xreserve_deposit_relayer_lite::config::Config;
 use xreserve_deposit_relayer_lite::miden::production_miden_client;
 use xreserve_deposit_relayer_lite::mint::Identities;
-use xreserve_deposit_relayer_lite::store::CursorStore;
+use xreserve_deposit_relayer_lite::store::Store;
 use xreserve_deposit_relayer_lite::{run, Relayer};
 
 #[tokio::main]
@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
 
     let config = Config::parse();
     let identities = Identities::from_config(&config)?;
-    let store = CursorStore::new(config.state_file.clone());
+    let store = Store::new(config.state_file.clone());
     let circle = Arc::new(CircleClient::new(
         config.circle_url.clone(),
         config.page_size,

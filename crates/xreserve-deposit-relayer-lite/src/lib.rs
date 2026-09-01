@@ -17,7 +17,7 @@ use circle::CircleFeed;
 use config::Config;
 use miden::MidenClient;
 use mint::{build_notes, Identities};
-use store::CursorStore;
+use store::{CircleCursor, Store};
 
 /// How long to wait once the scan has caught up with the feed. A deposit intent has no expiry, so
 /// polling harder buys nothing but rate-limit pressure.
@@ -27,7 +27,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(5);
 pub struct Relayer<R: FeltRng> {
     pub config: Config,
     pub circle: Arc<dyn CircleFeed>,
-    pub store: CursorStore,
+    pub store: Store,
     pub miden: Arc<dyn MidenClient>,
     pub identities: Identities,
     pub rng: R,
@@ -59,7 +59,10 @@ pub async fn run_cycle<R: FeltRng>(relayer: &mut Relayer<R>) -> Result<CycleOutc
     let cursor = relayer.store.cursor()?;
     let page = relayer
         .circle
-        .fetch_page(relayer.config.remote_domain, cursor.as_deref())
+        .fetch_page(
+            relayer.config.remote_domain,
+            cursor.as_ref().map(CircleCursor::as_str),
+        )
         .await?;
 
     let notes = build_notes(
@@ -90,7 +93,7 @@ pub async fn run_cycle<R: FeltRng>(relayer: &mut Relayer<R>) -> Result<CycleOutc
 
     match page.next_cursor() {
         Some(next) => {
-            relayer.store.set_cursor(next)?;
+            relayer.store.set_cursor(&CircleCursor::new(next))?;
             Ok(CycleOutcome::MorePages)
         }
         None => Ok(CycleOutcome::CaughtUp),

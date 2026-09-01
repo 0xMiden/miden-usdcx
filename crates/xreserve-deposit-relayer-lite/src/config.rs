@@ -18,7 +18,7 @@ pub struct Config {
     pub page_size: u16,
 
     /// The maximum duration of one Circle request.
-    #[arg(long, value_parser = parse_duration)]
+    #[arg(long, value_parser = humantime::parse_duration)]
     pub request_timeout: Duration,
 
     /// The Circle domain identifier for Miden.
@@ -55,14 +55,5 @@ fn parse_page_size(value: &str) -> Result<u16, String> {
         Ok(page_size)
     } else {
         Err("page size must be between 1 and 1000".to_string())
-    }
-}
-
-fn parse_duration(value: &str) -> Result<Duration, String> {
-    let duration = humantime::parse_duration(value).map_err(|error| error.to_string())?;
-    if duration.is_zero() {
-        Err("request timeout must be greater than zero".to_string())
-    } else {
-        Ok(duration)
     }
 }

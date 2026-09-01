@@ -6,8 +6,7 @@
 //! as the first would make a corrupted header look like the end of the feed and silently end the
 //! scan early.
 //!
-//! No authentication is sent because Circle has not documented an authentication scheme yet
-//! (OPEN).
+//! No authentication is sent because Circle has not documented an authentication scheme yet.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -74,11 +73,16 @@ impl CircleClient {
     /// # Errors
     ///
     /// - The page size is outside Circle's supported range of 1 through 1000.
+    /// - The request timeout is zero.
     /// - The reqwest client cannot be constructed.
     pub fn new(base_url: Url, page_size: u16, request_timeout: Duration) -> Result<Self> {
         ensure!(
             (1..=1000).contains(&page_size),
             "page_size must be between 1 and 1000"
+        );
+        ensure!(
+            !request_timeout.is_zero(),
+            "request timeout must be greater than zero"
         );
         let client = reqwest::Client::builder()
             .timeout(request_timeout)
@@ -163,10 +167,9 @@ pub fn build_page_url(
     url.set_query(None);
     url.set_fragment(None);
 
-    // `query_pairs_mut` percent-encodes the opaque cursor, which may contain base64's `+`, `/`, or
-    // `=` characters. Each character changes meaning when left unescaped in a query.
     url.query_pairs_mut()
         .append_pair("pageSize", &page_size.to_string());
+    // `append_pair` percent-encodes the opaque cursor, which may carry base64's `+`, `/`, and `=`.
     if let Some(cursor) = page_after {
         url.query_pairs_mut().append_pair("pageAfter", cursor);
     }

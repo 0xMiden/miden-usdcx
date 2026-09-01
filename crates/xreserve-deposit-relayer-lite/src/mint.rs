@@ -231,6 +231,7 @@ mod tests {
                 circle_url: "https://circle.test".parse().unwrap(),
                 page_size: PageSize::try_from(100).unwrap(),
                 request_timeout: std::time::Duration::from_secs(30),
+                poll_interval: std::time::Duration::from_secs(5),
                 remote_domain: REMOTE_DOMAIN,
                 faucet_account_id: xusdc_dummy_faucet_id(),
                 relayer_account_id: dummy_account_id(0x11),
